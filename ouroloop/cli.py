@@ -298,8 +298,11 @@ def cmd_replay(args) -> int:
     from .types import brier
     items = replay_items(args.file)
     backend = _backend(args)
-    answers = backend.decide([Request(it["state"], Question(it["type"], it["instructions"], it.get("criteria")))
-                              for it in items])
+    import random
+    answers = backend.decide([
+        Request(it["state"], Question(it["type"], it["instructions"], it.get("criteria"))
+                .presented(random.Random(it["id"])))     # order shuffled per item, reproducibly
+        for it in items])
     rows = []
     for it, ans in zip(items, answers):
         ref = it["reference"]
@@ -328,29 +331,50 @@ def cmd_replay(args) -> int:
 
 
 def ledger_stats(rows) -> dict[str, dict]:
-    """Per point: decisions, how many have a trainable label, and how often the backend's own answer (made in
-    shadow or not) agreed with that label."""
+    """Per point: decisions, how many carry a trainable label, how often the backend's own answer agreed with
+    that label, and what the best constant answer would have scored.
+
+    The baseline is not decoration. A point whose labels are all one value is one a constant answer gets right
+    every time, so an agreement figure there says nothing about the model; `degenerate` marks those, and
+    callers should refuse to report agreement for them.
+    """
     stats: dict[str, dict] = {}
+    labels: dict[str, Counter] = {}
     for r in rows:
-        s = stats.setdefault(r.decision.get("point"), {"decisions": 0, "labelled": 0, "scored": 0, "agree": 0})
+        point = r.decision.get("point")
+        s = stats.setdefault(point, {"decisions": 0, "labelled": 0, "scored": 0, "agree": 0})
         s["decisions"] += 1
         target, probs = r.target(), r.decision.get("probs")
         if target is None:
             continue
         s["labelled"] += 1
+        gold = max(target[0], key=target[0].get)
+        labels.setdefault(point, Counter())[gold] += 1
         if probs:
             s["scored"] += 1
             predicted = r.decision["candidates"][max(range(len(probs)), key=probs.__getitem__)]
-            s["agree"] += predicted == max(target[0], key=target[0].get)
+            s["agree"] += predicted == gold
+    for point, s in stats.items():
+        seen = labels.get(point, Counter())
+        n = sum(seen.values())
+        s["baseline"] = max(seen.values()) / n if n else None      # the best constant answer
+        s["degenerate"] = bool(n) and len(seen) < 2                # one label only: agreement is meaningless
     return stats
 
 
 def cmd_ledger(args) -> int:
     from .ledger import Ledger
     for point, s in sorted(ledger_stats(Ledger(Path(args.dir) / "ledger").rows()).items()):
-        agreement = f"{s['agree'] / s['scored']:.2f} of {s['scored']}" if s["scored"] else "-"
-        print(f"{point:<24} decisions={s['decisions']:<6} labelled={s['labelled']:<6} "
-              f"({s['labelled'] / s['decisions']:.0%})  agreement={agreement}")
+        line = (f"{point:<24} decisions={s['decisions']:<6} labelled={s['labelled']:<6} "
+                f"({s['labelled'] / s['decisions']:.0%})  ")
+        if not s["scored"]:
+            print(line + "agreement=-")
+        elif s["degenerate"]:
+            print(line + f"agreement=NOT REPORTABLE ({s['scored']} scored, every label the same; "
+                         f"a constant answer scores 100%)")
+        else:
+            print(line + f"agreement={s['agree'] / s['scored']:.2f} of {s['scored']} "
+                         f"(best constant answer {s['baseline']:.2f})")
     return 0
 
 

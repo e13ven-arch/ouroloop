@@ -117,3 +117,45 @@ def test_normalize_questions():
         with pytest.raises(QuestionError):
             normalize(b)
     assert fit_state("abcdef", 3) == ("abc", True) and fit_state("ab", 3) == ("ab", False)
+
+
+def test_candidate_order_is_shuffled_at_presentation(tmp_path):
+    import random
+
+    from ouroloop.types import Question
+
+    q = Question("choice", "which", {"a": "A", "b": "B", "c": "C", "d": "D (do nothing)"})
+    orders = {tuple(q.presented(random.Random(s)).labels()) for s in range(30)}
+    assert len(orders) > 1 and all(set(o) == {"a", "b", "c", "d"} for o in orders)
+    assert q.presented(random.Random(7)).criteria == q.presented(random.Random(7)).criteria   # reproducible
+    assert q.presented(random.Random(3)).criteria["d"] == "D (do nothing)"                    # content preserved
+    for fixed in (Question("noul", "q"), Question("score", "q", ["low", "mid", "high"])):
+        assert fixed.presented(random.Random(0)).criteria == fixed.criteria     # ordinal and fixed stay put
+
+
+def test_the_ledger_records_the_order_the_model_was_shown(tmp_path):
+    from ouroloop.decision import Choice
+    from ouroloop.runtime import Runtime
+    from ouroloop.types import Answer
+
+    class Echo:
+        """Answers with a fixed preference by label, so probabilities must follow the labels, not the order."""
+        name = "echo"
+
+        def decide(self, requests):
+            return [Answer({lab: (0.7 if lab == "keep" else 0.3 / (len(r.question.labels()) - 1))
+                            for lab in r.question.labels()}, "echo-1") for r in requests]
+
+    point = Choice("pick", "what next", {"keep": "keep going", "stop": "stop", "ask": "ask a person"},
+                   view=lambda ctx, params: str(ctx))
+    rt = Runtime(tmp_path, {"echo": Echo()}, "echo", seed=0)
+    rt.register(point)
+    for i in range(12):
+        rt.ask("pick", f"context {i}")
+    rows = [r.decision for r in rt.ledger.rows()]
+    assert len({tuple(r["candidates"]) for r in rows}) > 1          # the order varies between decisions
+    for r in rows:
+        assert set(r["candidates"]) == {"keep", "stop", "ask"}
+        shown = dict(zip(r["candidates"], r["probs"]))
+        assert shown["keep"] == 0.7                                  # probabilities align with the recorded order
+        assert r["question"]["criteria"]["keep"] == "keep going"

@@ -54,7 +54,7 @@ class Runtime:
             step: int | None = None) -> Decision:
         p = self.points[point] if isinstance(point, str) else point
         view, truncated = p.render(ctx)
-        q = p.question(ctx)
+        q = p.question(ctx).presented(self.rng)   # candidate order is shuffled, and recorded as shown
         backend = self.backend_for(p.name)
         ans = backend.decide([Request(view, q)])[0]
         ans = Answer(temper(ans.probs, self.temperature(p.name)), ans.model, ans.usage)
@@ -96,6 +96,7 @@ class Runtime:
                      session: str = "research", meta: dict | None = None) -> tuple[Answer, str]:
         """A one-off typed question (no decision point, no view), recorded like any other decision."""
         backend = backend or self.backend_for(name)
+        question = question.presented(self.rng)
         ans = backend.decide([Request(state, question)])[0]
         did = new_id("d")
         self.ledger.decision(did, session=session, point=name, backend=backend.name, model=ans.model, view=state,

@@ -139,7 +139,10 @@ def test_research_round_promotes_a_better_prompt_and_rejects_a_no_op(tmp_path):
     assert runner.executed == 16
     (good,) = [e for e in experience.read(rt.root) if e["gate"] == "accepted"]
     assert good["kind"] == "prompt" and good["verdict"] == "improved" and good["delta"] == -0.5
-    assert good["details"] == {"diff": [f"+ {FIX}"], "effects": {"a": 0.5, "b": 0.5, "c": 0.5}}   # d is held out
+    d = good["details"]
+    assert d["diff"] == [f"+ {FIX}"] and d["gated_on"] == "dev"
+    assert d["effects"] == {"a": 0.5, "b": 0.5, "c": 0.5}          # what the proposer may read: dev only
+    assert d["held_out_effects"] == {"d": 0.5} and d["held_out_n"] == 2 and d["held_out_delta"] == -0.5
     assert BasicResearcher._past_prompt(good)[1:] == [f"    + {FIX}", "    effects: a +0.50, b +0.50, c +0.50"]
 
     before = runner.executed
@@ -181,3 +184,32 @@ max_turns = 3
     a = make(tmp_path, load_suite(tmp_path / "tasks")[0], HarnessPrompt())
     assert identity == "glm-4.6+glm-4.5-air/max_turns=3" and set(a.tiers) == {"large", "small"}
     assert a.config.approve == "auto" and a.config.max_turns == 3
+
+
+
+def test_the_gate_does_not_select_on_held_out_but_records_it(tmp_path):
+    """A held-out split that can veto a candidate is part of the selection, not a check on it. The gate reads
+    the development split; the held-out result is measured and recorded either way."""
+    tasks = [task("a"), task("b"), task("c"), task("d", held_out=True)]
+    rt, _, runner = setup(tmp_path)
+
+    class Selective:
+        """Fixes the bug on every task except the held-out one, which it breaks."""
+        name = model = "selective"
+        supports_history_edits = True
+
+        def chat(self, system, messages, tools):
+            if FIX in system and not any(m["role"] == "tool" for m in messages):
+                broken = "def add(a, b):\n    raise ValueError\n"
+                content = broken if "(d)" in messages[0]["content"] else FIXED
+                return ChatTurn("", [ToolCall("w", "write", {"path": "calc.py", "content": content})], "tool_use")
+            return ChatTurn("done", [], "end")
+
+    runner.make_agent = lambda workdir, t, prompt: Agent(
+        Selective(), rt, Tools(workdir, descriptions=prompt.tools), system=prompt.system,
+        config=AgentConfig(approve="auto", max_turns=t.max_turns), seed=0)
+    ev = prompt_evaluator(tasks, runner, repeats=1, screen=0, min_items=3)
+    res = ev(rt, Candidate("prompt", "harness", {"system": f"{SYSTEM} {FIX}"}, "helps dev, hurts held-out"))
+    assert res.groups == ["a", "b", "c"]                    # the gate's items are the development split
+    assert res.details["held_out_effects"] == {"d": -0.5}   # and the damage is on the record
+    assert res.details["held_out_delta"] == 0.5             # positive loss delta: held-out got worse

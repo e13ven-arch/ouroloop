@@ -8,6 +8,7 @@ One primitive covers all three question types (same convention as Jev and TDE):
 from __future__ import annotations
 
 import math
+import random
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -26,6 +27,21 @@ class Question:
         if self.type == "choice":
             return [str(k) for k in self.criteria]
         return [str(i) for i in range(len(self.criteria))]
+
+    def presented(self, rng: random.Random) -> "Question":
+        """The same question with its candidates in a shuffled order.
+
+        Presentation order is an artefact of how a question was written, and a dataset built from real decisions
+        inherits the writer's habits: the "do nothing" option tends to be written last, and a campaign that
+        rarely abandons anything then teaches "never pick the last option". Shuffling at presentation time
+        removes the artefact from both the answer and the record. `score` is ordinal and `noul` is fixed, so
+        only `choice` is shuffled.
+        """
+        if self.type != "choice" or not isinstance(self.criteria, dict) or len(self.criteria) < 2:
+            return self
+        items = list(self.criteria.items())
+        rng.shuffle(items)
+        return Question(self.type, self.instructions, dict(items))
 
     def to_json(self) -> dict:
         d = {"type": self.type, "instructions": self.instructions}

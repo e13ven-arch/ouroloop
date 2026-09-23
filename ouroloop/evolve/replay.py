@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 import re
 from dataclasses import dataclass, field
 from typing import Callable
@@ -57,7 +58,10 @@ def predict(rt, point: DecisionPoint, spec: Spec, rows: list[tuple], backend=Non
         ctx = rt.sessions.get(row.decision["ctx"])
         view, _ = point.render(ctx, spec)
         views.append(view)
-        requests.append(Request(view, point.question(ctx, spec)))
+        # Seeded on the decision id: every spec and model sees one row in the same candidate order, so a
+        # comparison measures the change and not the permutation.
+        q = point.question(ctx, spec).presented(random.Random(row.decision["id"]))
+        requests.append(Request(view, q))
     if backend is None:
         backend, temperature = rt.backend_for(point.name), rt.temperature(point.name)
     answers = backend.decide(requests) if requests else []

@@ -56,8 +56,10 @@ def test_serve_and_http_backend(tmp_path, monkeypatch):
         assert httpx.post(f"{url}/ask", headers=auth, json={"point": "nope", "ctx": {}}).status_code == 400
         (row,) = [r for r in rt.ledger.rows() if r.decision["point"] == "retry"]
         assert row.target() == ({"yes": 1.0}, 1.0)
-        assert ledger_stats(rt.ledger.rows())["retry"] == {"decisions": 1, "labelled": 1, "scored": 1,
-                                                            "agree": int(row.decision["probs"][0] >= 0.5)}
+        st = ledger_stats(rt.ledger.rows())["retry"]
+        assert st["decisions"] == 1 and st["labelled"] == 1 and st["scored"] == 1
+        assert st["agree"] == int(row.decision["probs"][0] >= 0.5)
+        assert st["degenerate"] and st["baseline"] == 1.0   # one label: a constant answer is always right
     finally:
         server.shutdown()
 
