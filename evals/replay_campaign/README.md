@@ -12,12 +12,22 @@ cherry-picked for score: on the withheld 36 the same backend scores 80.6%, again
 
     ouroloop replay evals/replay_campaign/decisions.jsonl --backend jev
 
+`decisions.jsonl` is the length-matched set: within each item every candidate description is within ±10% of
+that item's mean length. `decisions_as_written.jsonl` is the same 38 items before that pass, kept so the
+difference can be checked.
+
 ## How the items were built
 
 - **Prospective states.** A state contains only what was knowable *before* the decision. It never contains the
   outcome, and never phrases the situation so that the answer follows. Every item records `state_basis`.
 - **Live candidates.** The options are the ones actually available at the time, described honestly. No straw
   alternatives.
+- **Length-matched candidates.** As first written, the option that had actually been chosen carried the fullest
+  argument — in 22 of 29 choice items it had the longest description, by a median of 28 characters — so a
+  heuristic that picks the longest option scored 73.7% without reading anything. Descriptions are now balanced
+  to within ±10% of each item's mean, preserving every option's content; that heuristic now scores 44.7%
+  against 36.4% for chance. A decision backend that scored 84.2% on the unbalanced file scores 78.9% here, and
+  its answers moved on only 2 of 38 items.
 - **Shuffled at presentation.** In the raw record the reference was the last-listed option in only 3 of 53
   choices, because the option written last is usually "abandon this". The harness shuffles candidate order at
   presentation time, seeded per item, so that order carries no signal. The file keeps its written order.
