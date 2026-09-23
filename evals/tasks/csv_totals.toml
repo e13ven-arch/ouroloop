@@ -1,0 +1,69 @@
+prompt = "Write summarize.py: `python3 summarize.py FILE` reads a CSV file with the columns region and amount, and prints one line per region, sorted by region name, in the form `region: total` with the total to two decimals. Try it on sales.csv."
+checks = [
+    "python3 -m unittest -q test_hidden.T.test_sales",
+    "python3 -m unittest -q test_hidden.T.test_other_file",
+]
+
+[files]
+"sales.csv" = '''
+region,amount
+north,10.50
+south,4.25
+north,2.00
+east,7
+south,0.75
+'''
+
+[hidden]
+"other.csv" = '''
+region,amount
+beta,99.99
+alpha,1.11
+beta,0.01
+alpha,2.22
+'''
+"test_hidden.py" = '''
+import subprocess
+import sys
+import unittest
+
+
+def run(path):
+    return subprocess.run([sys.executable, "summarize.py", path], capture_output=True, text=True, timeout=30)
+
+
+class T(unittest.TestCase):
+    def test_sales(self):
+        self.assertEqual(run("sales.csv").stdout.strip().splitlines(), ["east: 7.00", "north: 12.50", "south: 5.00"])
+
+    def test_other_file(self):
+        self.assertEqual(run("other.csv").stdout.strip().splitlines(), ["alpha: 3.33", "beta: 100.00"])
+'''
+"sales.csv" = '''
+region,amount
+north,10.50
+south,4.25
+north,2.00
+east,7
+south,0.75
+'''
+
+[solution]
+"summarize.py" = '''
+import csv
+import sys
+from collections import defaultdict
+
+
+def main(path):
+    totals = defaultdict(float)
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            totals[row["region"]] += float(row["amount"])
+    for region in sorted(totals):
+        print(f"{region}: {totals[region]:.2f}")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1])
+'''

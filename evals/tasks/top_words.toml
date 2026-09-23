@@ -1,0 +1,47 @@
+prompt = 'top_words() in wordcount.py should ignore letter case and punctuation ("Hello," and "hello" are the same word), and break ties in count alphabetically.'
+held_out = true
+checks = [
+    "python3 -m unittest -q test_hidden.T.test_case_and_punctuation",
+    "python3 -m unittest -q test_hidden.T.test_ties_alphabetical",
+    "python3 -m unittest -q test_hidden.T.test_default_n",
+]
+
+[files]
+"wordcount.py" = '''
+from collections import Counter
+
+
+def top_words(text, n=3):
+    """The n most common words of text as (word, count) pairs, most common first."""
+    return Counter(text.split()).most_common(n)
+'''
+
+[hidden]
+"test_hidden.py" = '''
+import unittest
+
+from wordcount import top_words
+
+
+class T(unittest.TestCase):
+    def test_case_and_punctuation(self):
+        self.assertEqual(top_words("Hello, world! Hello again, WORLD. hello", 2), [("hello", 3), ("world", 2)])
+
+    def test_ties_alphabetical(self):
+        self.assertEqual(top_words("b a c b a c d", 3), [("a", 2), ("b", 2), ("c", 2)])
+
+    def test_default_n(self):
+        self.assertEqual(len(top_words("one two three four five")), 3)
+'''
+
+[solution]
+"wordcount.py" = '''
+import re
+from collections import Counter
+
+
+def top_words(text, n=3):
+    """The n most common words of text as (word, count) pairs, most common first."""
+    counts = Counter(re.findall(r"[a-z0-9']+", text.lower()))
+    return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:n]
+'''

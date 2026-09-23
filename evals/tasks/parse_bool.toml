@@ -1,0 +1,55 @@
+prompt = "Make parse_bool() in settings.py accept true/false, yes/no, on/off and 1/0 in any letter case and with surrounding spaces. Anything else must still raise ValueError."
+checks = [
+    "python3 -m unittest -q test_hidden.T.test_true_values",
+    "python3 -m unittest -q test_hidden.T.test_false_values",
+    "python3 -m unittest -q test_hidden.T.test_invalid",
+]
+
+[files]
+"settings.py" = '''
+def parse_bool(value):
+    """Parse a boolean setting."""
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    raise ValueError(f"not a boolean: {value!r}")
+'''
+
+[hidden]
+"test_hidden.py" = '''
+import unittest
+
+from settings import parse_bool
+
+
+class T(unittest.TestCase):
+    def test_true_values(self):
+        for v in ("true", "TRUE", " Yes ", "on", "1"):
+            self.assertIs(parse_bool(v), True, v)
+
+    def test_false_values(self):
+        for v in ("false", "No", " OFF", "0"):
+            self.assertIs(parse_bool(v), False, v)
+
+    def test_invalid(self):
+        for v in ("maybe", "", "2"):
+            with self.assertRaises(ValueError):
+                parse_bool(v)
+'''
+
+[solution]
+"settings.py" = '''
+TRUE = {"true", "yes", "on", "1"}
+FALSE = {"false", "no", "off", "0"}
+
+
+def parse_bool(value):
+    """Parse a boolean setting."""
+    v = value.strip().lower()
+    if v in TRUE:
+        return True
+    if v in FALSE:
+        return False
+    raise ValueError(f"not a boolean: {value!r}")
+'''

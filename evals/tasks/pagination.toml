@@ -1,0 +1,55 @@
+prompt = "paginate() in pagination.py skips the first page of items; pages are numbered from 1. Fix it, and make it raise ValueError for page numbers below 1."
+checks = [
+    "python3 -m unittest -q test_hidden.T.test_first_page",
+    "python3 -m unittest -q test_hidden.T.test_last_page",
+    "python3 -m unittest -q test_hidden.T.test_invalid_page",
+    "python3 -m unittest -q test_hidden.T.test_page_count_unchanged",
+]
+
+[files]
+"pagination.py" = '''
+def paginate(items, page, per_page=10):
+    """The items on the given page. Pages are numbered from 1."""
+    start = page * per_page
+    return items[start:start + per_page]
+
+
+def page_count(n_items, per_page=10):
+    return (n_items + per_page - 1) // per_page
+'''
+
+[hidden]
+"test_hidden.py" = '''
+import unittest
+
+from pagination import page_count, paginate
+
+
+class T(unittest.TestCase):
+    def test_first_page(self):
+        self.assertEqual(paginate(list(range(25)), 1), list(range(10)))
+
+    def test_last_page(self):
+        self.assertEqual(paginate(list(range(25)), 3), [20, 21, 22, 23, 24])
+
+    def test_invalid_page(self):
+        with self.assertRaises(ValueError):
+            paginate([1, 2, 3], 0)
+
+    def test_page_count_unchanged(self):
+        self.assertEqual(page_count(25), 3)
+'''
+
+[solution]
+"pagination.py" = '''
+def paginate(items, page, per_page=10):
+    """The items on the given page. Pages are numbered from 1."""
+    if page < 1:
+        raise ValueError("pages are numbered from 1")
+    start = (page - 1) * per_page
+    return items[start:start + per_page]
+
+
+def page_count(n_items, per_page=10):
+    return (n_items + per_page - 1) // per_page
+'''

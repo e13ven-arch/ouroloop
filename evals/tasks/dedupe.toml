@@ -1,0 +1,48 @@
+prompt = "Implement dedupe() in listutil.py as its docstring describes."
+held_out = true
+checks = [
+    "python3 -m unittest -q test_hidden.T.test_order_kept",
+    "python3 -m unittest -q test_hidden.T.test_key",
+    "python3 -m unittest -q test_hidden.T.test_empty_and_iterators",
+]
+
+[files]
+"listutil.py" = '''
+def dedupe(items, key=None):
+    """The items without repeats, keeping the first occurrence of each and the original order. With key, two items
+    repeat each other when key(item) is equal. items may be any iterable; the result is a list."""
+    raise NotImplementedError
+'''
+
+[hidden]
+"test_hidden.py" = '''
+import unittest
+
+from listutil import dedupe
+
+
+class T(unittest.TestCase):
+    def test_order_kept(self):
+        self.assertEqual(dedupe([3, 1, 3, 2, 1]), [3, 1, 2])
+
+    def test_key(self):
+        self.assertEqual(dedupe(["a", "B", "A", "b", "c"], key=str.lower), ["a", "B", "c"])
+
+    def test_empty_and_iterators(self):
+        self.assertEqual(dedupe([]), [])
+        self.assertEqual(dedupe(iter("abca")), ["a", "b", "c"])
+'''
+
+[solution]
+"listutil.py" = '''
+def dedupe(items, key=None):
+    """The items without repeats, keeping the first occurrence of each and the original order. With key, two items
+    repeat each other when key(item) is equal. items may be any iterable; the result is a list."""
+    seen, out = set(), []
+    for item in items:
+        k = key(item) if key else item
+        if k not in seen:
+            seen.add(k)
+            out.append(item)
+    return out
+'''

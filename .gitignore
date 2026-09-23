@@ -1,0 +1,15 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+ledger/
+sessions/
+models/
+runs/
+.DS_Store
+*.egg-info/
+.pytest_cache/
+examples/workspace*/
+*.local.toml
+build/
+dist/

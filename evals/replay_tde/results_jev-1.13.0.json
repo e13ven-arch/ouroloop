@@ -1,0 +1,178 @@
+{
+  "ts": "2026-09-22T04:59:05.299Z",
+  "backend": "jev",
+  "model": "jev-1.13.0",
+  "summary": {
+    "all": {
+      "n": 11,
+      "agree": 11,
+      "mean_p_reference": 0.8664,
+      "mean_brier": 0.0638
+    },
+    "human": {
+      "n": 8,
+      "agree": 8,
+      "mean_p_reference": 0.8738,
+      "mean_brier": 0.0491
+    },
+    "outcome": {
+      "n": 3,
+      "agree": 3,
+      "mean_p_reference": 0.8467,
+      "mean_brier": 0.1029
+    }
+  },
+  "input_tokens": 4769,
+  "items": [
+    {
+      "id": "exp002_decoder_baseline",
+      "ref_kind": "human",
+      "reference": "no",
+      "label": "no",
+      "agree": true,
+      "p_reference": 0.68,
+      "brier": 0.2048,
+      "probs": {
+        "yes": 0.32,
+        "no": 0.6799999999999999
+      }
+    },
+    {
+      "id": "synth_data_timing",
+      "ref_kind": "human",
+      "reference": "prepare_then_decide",
+      "label": "prepare_then_decide",
+      "agree": true,
+      "p_reference": 0.85,
+      "brier": 0.0338,
+      "probs": {
+        "train_now": 0.08,
+        "prepare_then_decide": 0.85,
+        "wait_idle": 0.07
+      }
+    },
+    {
+      "id": "synth_data_release_ok",
+      "ref_kind": "human",
+      "reference": "yes",
+      "label": "yes",
+      "agree": true,
+      "p_reference": 0.85,
+      "brier": 0.045,
+      "probs": {
+        "yes": 0.85,
+        "no": 0.15000000000000002
+      }
+    },
+    {
+      "id": "joint_readout_claim",
+      "ref_kind": "human",
+      "reference": "no",
+      "label": "no",
+      "agree": true,
+      "p_reference": 0.82,
+      "brier": 0.0648,
+      "probs": {
+        "yes": 0.18,
+        "no": 0.8200000000000001
+      }
+    },
+    {
+      "id": "where_to_train_initial",
+      "ref_kind": "human",
+      "reference": "gpu_host",
+      "label": "gpu_host",
+      "agree": true,
+      "p_reference": 0.95,
+      "brier": 0.0042,
+      "probs": {
+        "mac": 0.04,
+        "gpu_host": 0.95,
+        "split": 0.01
+      }
+    },
+    {
+      "id": "mac_parallel_runs",
+      "ref_kind": "human",
+      "reference": "yes",
+      "label": "yes",
+      "agree": true,
+      "p_reference": 0.86,
+      "brier": 0.0392,
+      "probs": {
+        "yes": 0.86,
+        "no": 0.14
+      }
+    },
+    {
+      "id": "external_repo_review_depth",
+      "ref_kind": "human",
+      "reference": "skim",
+      "label": "skim",
+      "agree": true,
+      "p_reference": 1.0,
+      "brier": 0.0,
+      "probs": {
+        "skim": 1.0,
+        "deep_read": 0.0,
+        "more_agents": 0.0
+      }
+    },
+    {
+      "id": "compute_blocked_experiments",
+      "ref_kind": "human",
+      "reference": "defer_and_record",
+      "label": "defer_and_record",
+      "agree": true,
+      "p_reference": 0.98,
+      "brier": 0.0008,
+      "probs": {
+        "run_reduced": 0.02,
+        "defer_and_record": 0.98,
+        "drop": 0.0
+      }
+    },
+    {
+      "id": "hard_tier_cause",
+      "ref_kind": "outcome",
+      "reference": "missing_supervision",
+      "label": "missing_supervision",
+      "agree": true,
+      "p_reference": 0.95,
+      "brier": 0.0038,
+      "probs": {
+        "architecture": 0.03,
+        "missing_supervision": 0.95,
+        "data_bug": 0.0,
+        "calibration": 0.02
+      }
+    },
+    {
+      "id": "suspicious_slices",
+      "ref_kind": "outcome",
+      "reference": "yes",
+      "label": "yes",
+      "agree": true,
+      "p_reference": 0.61,
+      "brier": 0.3042,
+      "probs": {
+        "yes": 0.61,
+        "no": 0.39
+      }
+    },
+    {
+      "id": "oom_1024_tokens",
+      "ref_kind": "outcome",
+      "reference": "batch2_accum16_checkpointing",
+      "label": "batch2_accum16_checkpointing",
+      "agree": true,
+      "p_reference": 0.98,
+      "brier": 0.0008,
+      "probs": {
+        "batch2_accum16_checkpointing": 0.98,
+        "shorten_states": 0.02,
+        "defer": 0.0
+      }
+    }
+  ]
+}

@@ -1,0 +1,44 @@
+prompt = "Implement slugify() in text_utils.py as its docstring describes."
+checks = [
+    "python3 -m unittest -q test_hidden.T.test_basic",
+    "python3 -m unittest -q test_hidden.T.test_runs_and_ends",
+    "python3 -m unittest -q test_hidden.T.test_digits_and_empty",
+]
+
+[files]
+"text_utils.py" = '''
+def slugify(text):
+    """Lowercase text, turn every run of characters that are not letters or digits into a single "-", and strip
+    "-" from both ends: slugify("Hello, World!") == "hello-world"."""
+    raise NotImplementedError
+'''
+
+[hidden]
+"test_hidden.py" = '''
+import unittest
+
+from text_utils import slugify
+
+
+class T(unittest.TestCase):
+    def test_basic(self):
+        self.assertEqual(slugify("Hello, World!"), "hello-world")
+
+    def test_runs_and_ends(self):
+        self.assertEqual(slugify("  --Multiple   spaces__here-- "), "multiple-spaces-here")
+
+    def test_digits_and_empty(self):
+        self.assertEqual(slugify("Top 10 Tips"), "top-10-tips")
+        self.assertEqual(slugify("!!!"), "")
+'''
+
+[solution]
+"text_utils.py" = '''
+import re
+
+
+def slugify(text):
+    """Lowercase text, turn every run of characters that are not letters or digits into a single "-", and strip
+    "-" from both ends: slugify("Hello, World!") == "hello-world"."""
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+'''

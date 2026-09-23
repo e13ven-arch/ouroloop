@@ -1,0 +1,55 @@
+# ouroloop research --config examples/ouroloop.toml --rounds 3
+# ouroloop evolve    --config examples/ouroloop.toml
+# Paths are relative to this file.
+
+[workspace]
+root = "workspace"          # ledger/, sessions/, harness/, models/, experience.jsonl
+
+[backends.mock]
+type = "mock"
+
+[backends.jev]
+type = "jev"
+model = "jev-1.13.0"        # pin the version: thresholds are fitted against one model
+
+[registry]
+base = "jev"                # what "champion" means before the first trained model is promoted
+
+[points]
+default_backend = "jev"
+
+[points.retry]
+define = "ouroloop.points:retry_point"   # a function returning a DecisionPoint (optional for built-in points)
+backend = "champion"        # the latest promoted model; research and evolve can replace it
+
+[llm]                       # the reasoning model of the agent and the research agent (pip install "ouroloop[anthropic]")
+type = "anthropic"
+model = "claude-opus-5"
+
+# [llm_small]               # optional: a cheaper model for the steps the route point sends to the small tier
+# type = "anthropic"
+# model = "claude-haiku-4-5"
+
+[research]
+agent = "ouroloop.research.basic:BasicResearcher"   # swap in your own class here
+judge = "jev"               # who makes the research judgments
+min_items = 30
+
+[research.options]
+budget = 2
+explore = 0.05
+
+[trainer]                   # trains TDE on a GPU machine over ssh; the checkpoint stays there
+type = "remote_tde"
+host = "user@gpu-host"      # your GPU machine
+remote_repo = "~/tde"       # a TDE checkout on that machine
+# ssh_opts = "-i ~/.ssh/your_key -o BatchMode=yes"
+
+[recipe]                    # overrides of ouroloop.evolve.train.DEFAULT_RECIPE
+init_from = "runs/base"     # the first model's parent run, inside remote_repo
+replay = "data/general/train.jsonl"        # general data mixed in to avoid forgetting
+replay_ratio = 1.0
+
+[checks]                    # thresholds for the data checks before training
+min_train = 1000
+max_mde = 0.03

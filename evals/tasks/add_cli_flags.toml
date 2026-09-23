@@ -1,0 +1,91 @@
+prompt = "Add two flags to sort_lines.py: --reverse prints the lines in reverse sorted order, and --unique drops repeated lines. They can be combined."
+held_out = true
+checks = [
+    "python3 -m unittest -q test_hidden.T.test_default",
+    "python3 -m unittest -q test_hidden.T.test_reverse",
+    "python3 -m unittest -q test_hidden.T.test_unique",
+    "python3 -m unittest -q test_hidden.T.test_both",
+]
+
+[files]
+"sort_lines.py" = '''
+import argparse
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Print the lines of a file in sorted order.")
+    parser.add_argument("file")
+    args = parser.parse_args(argv)
+    with open(args.file) as f:
+        lines = [line.rstrip("\n") for line in f]
+    for line in sorted(lines):
+        print(line)
+
+
+if __name__ == "__main__":
+    main()
+'''
+"words.txt" = '''
+pear
+apple
+fig
+apple
+banana
+'''
+
+[hidden]
+"words.txt" = '''
+pear
+apple
+fig
+apple
+banana
+'''
+"test_hidden.py" = '''
+import subprocess
+import sys
+import unittest
+
+
+def run(*args):
+    out = subprocess.run([sys.executable, "sort_lines.py", "words.txt", *args], capture_output=True, text=True,
+                         timeout=30)
+    return out.stdout.splitlines()
+
+
+class T(unittest.TestCase):
+    def test_default(self):
+        self.assertEqual(run(), ["apple", "apple", "banana", "fig", "pear"])
+
+    def test_reverse(self):
+        self.assertEqual(run("--reverse"), ["pear", "fig", "banana", "apple", "apple"])
+
+    def test_unique(self):
+        self.assertEqual(run("--unique"), ["apple", "banana", "fig", "pear"])
+
+    def test_both(self):
+        self.assertEqual(run("--unique", "--reverse"), ["pear", "fig", "banana", "apple"])
+'''
+
+[solution]
+"sort_lines.py" = '''
+import argparse
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Print the lines of a file in sorted order.")
+    parser.add_argument("file")
+    parser.add_argument("--reverse", action="store_true", help="reverse sorted order")
+    parser.add_argument("--unique", action="store_true", help="drop repeated lines")
+    args = parser.parse_args(argv)
+    with open(args.file) as f:
+        lines = [line.rstrip("\n") for line in f]
+    if args.unique:
+        lines = set(lines)
+    for line in sorted(lines, reverse=args.reverse):
+        print(line)
+
+
+if __name__ == "__main__":
+    main()
+'''

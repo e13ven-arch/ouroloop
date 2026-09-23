@@ -1,0 +1,51 @@
+# 用智谱 GLM 跑 agent（OpenAI 兼容接口），决策点交给 Jev：
+#   ouroloop run "修好 calc.py 里的 bug" --config examples/zhipu.toml --verify "python3 -m unittest -q"
+#   ouroloop suite --config examples/zhipu.toml               # 用当前冠军 prompt 跑一遍任务集
+#   ouroloop research --config examples/zhipu.toml --rounds 2 # 研究 agent 改 harness prompt
+# 路径相对于这个文件。
+
+env_file = "../.env"              # ZHIPUAI_API_KEY 和 TYPESAFE_API_KEY 写在仓库根目录的 .env 里
+
+[workspace]
+root = "workspace-zhipu"
+
+[backends.jev]
+type = "jev"
+model = "jev-1.13.0"
+
+[points]
+default_backend = "jev"
+
+[llm]
+type = "openai_compat"
+base_url = "https://open.bigmodel.cn/api/paas/v4"
+api_key_env = "ZHIPUAI_API_KEY"
+model = "glm-5.3"                 # 账号里能用的模型：GET /models 可以列出来
+source = "frontier_llm"           # 托管模型的回答不当训练目标
+max_tokens = 8192
+
+[llm.extra]                       # 原样加进请求体的字段
+reasoning_effort = "low"          # glm-5.x 始终思考，可选 low / high / max；glm-4.x 可以用 thinking = { type = "disabled" } 关掉
+
+[llm_small]                       # route 决策点的小档位；不需要就删掉这一节
+type = "openai_compat"
+base_url = "https://open.bigmodel.cn/api/paas/v4"
+api_key_env = "ZHIPUAI_API_KEY"
+model = "glm-5.3-flash"
+source = "frontier_llm"
+
+[llm_small.extra]
+thinking = { type = "disabled" }
+
+[research]                        # ouroloop research：研究 agent 用 [llm] 推理，判断交给 Jev
+judge = "jev"
+min_items = 30
+
+[research.options]
+budget = 2
+
+[suite]                           # ouroloop suite / research 用的任务集，路径相对于这个文件
+path = "../evals/tasks"
+repeats = 1                       # 每个任务跑几次；越多越稳，也越贵
+screen = 3                        # 先在前 3 个开发任务上筛，不比冠军差才跑全部任务
+min_items = 10
