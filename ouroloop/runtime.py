@@ -105,8 +105,10 @@ class Runtime:
         """Open a session: fix the release it runs with and record it, with what the session was run with (task,
         held-out, agent models), before any of its decisions. Every later ask of the session uses that model and
         those calibrations: a promotion reaches only sessions opened after it. A session never opened is fixed at its
-        first ask. `harness` describes the prompt, tools and StopGuard settings of an ouroloop harness."""
-        pin = self._keep(session, self.current(harness))
+        first ask, and one opened again keeps what it was fixed at. `harness` describes the prompt, tools and StopGuard
+        settings of an ouroloop harness."""
+        known = session in self._pins or (self.sessions.root / f"{session}.release.json").exists()
+        pin = self._pin(session) if known else self._keep(session, self.current(harness))
         self.ledger.append({**(meta or {}), "type": "session", "session": session, "release": pin.release.to_json(),
                             "champion": pin.version})
         return pin.release

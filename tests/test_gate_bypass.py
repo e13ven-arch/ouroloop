@@ -6,12 +6,15 @@ import json
 import pytest
 
 from ouroloop import config
+from ouroloop.evolve import experience
 from ouroloop.evolve.gate import freeze_template, open_record, records
-from ouroloop.evolve.pipeline import evolve_model
+from ouroloop.evolve.pipeline import evolve_model, prepare_model
 from ouroloop.evolve.registry import Registry
-from ouroloop.evolve.train import TrainResult
+from ouroloop.evolve.train import SignatureTrainer, TrainResult
 from ouroloop.ledger import write_json
-from test_gate_record import ACT_GATE, CFG, OracleTrainer, collect, ctx, workspace
+from ouroloop.research import run_round
+from test_gate_record import (ACT_GATE, CFG, M6_CFG, Model, OracleTrainer, collect, ctx, held_out, m6_sessions,
+                              trained_on, workspace)
 
 
 class Says(OracleTrainer):
@@ -105,3 +108,76 @@ def test_nothing_the_gate_did_not_accept_answers_or_acts(tmp_path):
     assert reg.rollback() is None
     with pytest.raises(ValueError, match="revoked"):
         reg.promote(first["version"], None)
+
+
+# ---------------------------------------------------------------- sessions and data
+def test_a_held_out_session_or_task_stays_held_out(tmp_path):
+    rt = config.build_runtime(M6_CFG, tmp_path)
+    m6_sessions(rt, 300)
+    freeze_template(rt.root, {"checks": {"min_train": 100, "max_mde": 0.2}})
+    sessions, _ = rt.ledger.sessions()
+    held = held_out(rt)
+    for s in held:                                  # relabelled by a later session event
+        rt.ledger.append({"type": "session", "session": s, "task": sessions[s]["task"], "held_out": False})
+    for i in range(20):                             # a held-out task run with the flag off
+        s = f"s_again_{i}"
+        rt.ledger.append({"type": "session", "session": s, "task": "t0", "held_out": False})
+        rt.outcome(rt.record("stop", {**ctx(), "moment": "after a turn"}, session=s, phase="per_turn").id, "yes")
+    card = evolve_model(rt, SignatureTrainer())
+    again = {f"s_again_{i}" for i in range(20)}
+    assert held_out(rt) == held | again and not trained_on(rt, card["version"]) & (held | again)
+
+
+def test_a_session_opened_again_keeps_its_release(tmp_path):
+    rt = workspace(tmp_path)
+    assert rt.session("s_1", {"task": "t"}).model is None
+    evolve_model(config.build_runtime(CFG, tmp_path), OracleTrainer("R1"))
+    assert rt.session("s_1", {"task": "t"}).model is None
+    assert config.build_runtime(CFG, tmp_path).session("s_1", {"task": "t"}).model is None     # another process
+    assert rt.ask("stop", ctx(), session="s_1", phase="per_turn").model == "base"
+    assert rt.session("s_2", {"task": "t"}).model == "R1"
+
+
+def test_a_recipe_changes_the_training_rows_only(tmp_path):
+    rt = config.build_runtime(CFG, tmp_path)
+    for i in range(150):                            # every third session labelled with half weight
+        s, label = f"s_{i:04d}", "yes" if i % 2 else "no"
+        rt.ledger.append({"type": "session", "session": s, "task": f"t{i % 7}", "held_out": False})
+        d = rt.record("stop", {**ctx(label), "moment": "after a turn"}, session=s, phase="per_turn")
+        rt.outcome(d.id, label, weight=0.5 if i % 3 == 0 else 1.0)
+    freeze_template(rt.root, ACT_GATE)
+    record = open_record(rt)
+    usual = prepare_model(rt, OracleTrainer("R1"), record=record)
+    picky = prepare_model(rt, OracleTrainer("R2"), {"min_weight": 1.0}, record=record)
+    assert picky.per_point["stop"][2] == usual.per_point["stop"][2]           # the same test items
+    assert picky.calibrations["stop"].n == usual.calibrations["stop"].n       # and calibration rows
+    assert picky.card["data"]["stop"]["train"] < usual.card["data"]["stop"]["train"]
+
+
+def test_the_trainer_never_gets_the_test_sessions(tmp_path):
+    rt = workspace(tmp_path)
+    got = {}
+
+    class Looks(OracleTrainer):
+        def train(self, job):
+            got["files"] = sorted(p.name for p in job.data_dir.iterdir())
+            return super().train(job)
+
+    evolve_model(rt, Looks("R1"))
+    assert got["files"] == ["calibration.jsonl", "train.jsonl"]
+
+
+def test_the_research_agent_never_sees_held_out_results(tmp_path):
+    rt = workspace(tmp_path)
+    experience.append(rt.root, {"kind": "prompt", "gate": "rejected", "details": {
+        "effects": {"a": 0.5}, "held_out_effects": {"h": -0.5}, "held_out_delta": -0.5, "held_out_n": 2}})
+    experience.append(rt.root, {"kind": "spec", "gate": "rejected", "details": {"held_out": {"n": 3}}})
+    seen = []
+
+    class Reads:
+        def step(self, ws):
+            seen.extend(ws.experience)
+            return []
+
+    run_round(rt, Reads(), None, Model())
+    assert [e["details"] for e in seen] == [{"effects": {"a": 0.5}}, {}]

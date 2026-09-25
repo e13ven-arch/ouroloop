@@ -118,12 +118,12 @@ def ctx(label: str = "yes") -> dict:
 def collect(rt, n: int, start: int = 0, held_every: int = 10) -> None:
     """n sessions as the M6 collection writes them: a session event (task, held_out, agent), then a stop decision
     recorded without asking a model, labelled by the probe. Odd sessions end "yes", even ones "no"; every
-    held_every-th is a held-out task's."""
+    held_every-th is a held-out task's (held out is a property of the task, as in the suite)."""
     stop = rt.points["stop"]
     for i in range(start, start + n):
-        s, label = f"s_{i:04d}", "yes" if i % 2 else "no"
-        rt.ledger.append({"type": "session", "session": s, "task": f"t{i % 7}", "held_out": i % held_every == 0,
-                          "agent": "glm/max_turns=4"})
+        s, label, held = f"s_{i:04d}", "yes" if i % 2 else "no", i % held_every == 0
+        rt.ledger.append({"type": "session", "session": s, "task": f"h{i % 3}" if held else f"t{i % 7}",
+                          "held_out": held, "agent": "glm/max_turns=4"})
         c = {**ctx(label), "moment": "after a turn"}
         view, _ = stop.render(c)
         did = rt.ledger.decision(

@@ -33,7 +33,10 @@ class Workspace:
     def __init__(self, runtime, report: Report, experience: list[dict], llm, judge, kinds: list[str] | None = None,
                  context: dict | None = None):
         self.report = report
-        self.experience = experience
+        # held-out results are for people: a research agent that chose on them would make held-out part of the
+        # selection, no longer an estimate of what it produces
+        self.experience = [{**e, "details": {k: v for k, v in e["details"].items() if not k.startswith("held_out")}}
+                           if isinstance(e.get("details"), dict) else e for e in experience]
         self.kinds = kinds or ["spec"]      # candidate kinds the framework can evaluate
         self.context = context or {}        # e.g. the current training recipe and its allowed keys
         self._rt = runtime

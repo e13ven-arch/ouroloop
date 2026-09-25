@@ -37,6 +37,16 @@ class ModelCandidate:
     inconclusive: list[str] = field(default_factory=list)   # an infrastructure failure, e.g. the trainer's
 
 
+def _parts(rt, record: GateRecord, points: list[str], recipe: dict) -> dict:
+    """Each point's labelled rows as `record` splits them. The recipe's min_weight thins the training rows only: the
+    calibration and test rows are the record's, whatever the candidate."""
+    sessions, _ = rt.ledger.sessions()
+    parts = {name: record.split(labelled(rt, name), sessions, record.cal_frac(name)) for name in points}
+    for part in parts.values():
+        part["train"] = [r for r in part["train"] if r[2] >= recipe["min_weight"]]
+    return parts
+
+
 def prepare_model(rt, trainer, recipe: dict | None = None, *, record: GateRecord, points: list[str] | None = None,
                   registry: Registry | None = None, eval_states: list[str] = ()) -> ModelCandidate:
     """Build and check the data as `record` splits it (test sessions fixed at its freezing, held-out tasks never
@@ -52,9 +62,7 @@ def prepare_model(rt, trainer, recipe: dict | None = None, *, record: GateRecord
     params = record.params
     version = registry.next_version()
     parent = registry.champion()
-    sessions, _ = rt.ledger.sessions()
-    parts = {name: record.split([r for r in labelled(rt, name) if r[2] >= recipe["min_weight"]], sessions,
-                                record.cal_frac(name)) for name in points}
+    parts = _parts(rt, record, points, recipe)
     ds = build(rt, registry.dir / version / "data", rows=parts)
     checks = check(ds, eval_states=eval_states, **params["checks"])
     card = {"version": version, "parent": parent["version"] if parent else None, "points": points, "recipe": recipe,
@@ -91,9 +99,7 @@ def dry_run_model(rt, trainer, recipe: dict | None = None, *, points: list[str] 
     record = open_record(rt)
     recipe = {**DEFAULT_RECIPE, **(recipe or {})}
     version = f"dryrun_{Registry(rt.root).next_version()}"
-    sessions, _ = rt.ledger.sessions()
-    parts = {name: record.split([r for r in labelled(rt, name) if r[2] >= recipe["min_weight"]], sessions,
-                                record.cal_frac(name)) for name in points or model_points(rt)}
+    parts = _parts(rt, record, points or model_points(rt), recipe)
     ds = build(rt, rt.root / "models" / version / "data", rows=parts)
     checks = check(ds, **record.params["checks"])
     out = {"version": version, "round": record.round, "data": ds.stats(), "checks": asdict(checks)}

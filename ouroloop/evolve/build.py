@@ -52,7 +52,8 @@ class Dataset:
 def build(rt, out_dir: str | Path, points: list[str] | None = None, test_frac: float = 0.15,
           cal_frac: float = 0.15, min_weight: float = 0.5, *, rows: dict | None = None) -> Dataset:
     """`rows` ({point: {split: rows}}, as a gate record splits them) replaces the split by test_frac and cal_frac of
-    the rows outside held-out tasks. Held-out rows never become examples."""
+    the rows outside held-out tasks. Held-out rows never become examples. The directory is the trainer's: the test
+    examples stay in the returned Dataset, for the data checks, and are never written there."""
     if rows is None:
         rows = {name: splits(not_held_out(rt, [r for r in labelled(rt, name) if r[2] >= min_weight]), test_frac,
                              cal_frac) for name in points or list(rt.points)}
@@ -66,6 +67,8 @@ def build(rt, out_dir: str | Path, points: list[str] | None = None, test_frac: f
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     for split_name, examples in parts.items():
+        if split_name == "test":
+            continue
         with open(out / f"{split_name}.jsonl", "w", encoding="utf-8") as f:
             for ex in examples:
                 f.write(json.dumps(ex, ensure_ascii=False) + "\n")

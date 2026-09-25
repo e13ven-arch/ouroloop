@@ -152,7 +152,9 @@ class Ledger:
         """Every session by id: the fields of its session event (task, held_out, agent, release; M6 events carry the
         first three, a session without one has none), "start", the position of its first event in the ledger,
         "points", where it made decisions, and "labelled", where a decision with a stored context has a trainable
-        outcome so far. And the number of events read: a session that starts later has a start at or past it."""
+        outcome so far. And the number of events read: a session that starts later has a start at or past it.
+        Held out is for good: a session any of whose events says so, and every session of a task any session of
+        which was held out, whatever a later event says (PLAN_v0.2 M8: never trained or calibrated on)."""
         out: dict[str, dict] = {}
         decided: dict[str, tuple[str, str]] = {}
         n = 0
@@ -167,12 +169,19 @@ class Ledger:
                 continue
             info = out.setdefault(s, {"start": n - 1, "points": set(), "labelled": set()})
             if ev["type"] == "session":
+                held = info.get("held_out") or ev.get("held_out")
                 info.update({k: v for k, v in ev.items()
                              if k not in ("type", "session", "ts", "start", "points", "labelled")})
+                if "held_out" in info:
+                    info["held_out"] = bool(held)
             else:
                 info["points"].add(ev.get("point"))
                 if ev.get("ctx"):
                     decided[ev.get("id")] = (s, ev.get("point"))
+        held_tasks = {info["task"] for info in out.values() if info.get("held_out") and info.get("task")}
+        for info in out.values():
+            if info.get("task") in held_tasks:
+                info["held_out"] = True
         return out, n
 
     def rows(self, point: str | None = None) -> list[Row]:

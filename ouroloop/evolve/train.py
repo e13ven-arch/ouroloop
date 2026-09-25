@@ -77,7 +77,7 @@ def tde_config(recipe: dict, out_dir: str, init_from: str | None, version: str) 
 
 
 def prepare_job(data_dir, cfg_json, replay=None, ratio=1.0, seed=0):
-    """Write <data_dir>/tde/{train,calibration,test}.jsonl (ledger examples plus a seeded replay sample) and the TDE
+    """Write <data_dir>/tde/{train,calibration}.jsonl (ledger examples plus a seeded replay sample) and the TDE
     config, taking the architecture from the parent run. Returns the config path. Standard library only."""
     import json
     import os
@@ -103,9 +103,8 @@ def prepare_job(data_dir, cfg_json, replay=None, ratio=1.0, seed=0):
     random.Random(seed).shuffle(lines)
     with open(os.path.join(out, "train.jsonl"), "w", encoding="utf-8") as f:
         f.writelines(lines)
-    for name in ("calibration.jsonl", "test.jsonl"):
-        if os.path.exists(os.path.join(data_dir, name)):
-            shutil.copy(os.path.join(data_dir, name), os.path.join(out, name))
+    if os.path.exists(os.path.join(data_dir, "calibration.jsonl")):
+        shutil.copy(os.path.join(data_dir, "calibration.jsonl"), os.path.join(out, "calibration.jsonl"))
     cfg = json.loads(cfg_json)
     cfg["data_dir"] = out
     parent = os.path.join(os.path.expanduser(cfg.get("init_from") or ""), "config.json")
