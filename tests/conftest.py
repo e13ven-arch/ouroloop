@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from ouroloop.evolve import gate
 from ouroloop.evolve.gate import freeze_template
 from ouroloop.evolve.registry import Registry
 from ouroloop.ledger import write_json
@@ -43,3 +44,10 @@ def frozen():
     def freeze(root, **params):
         return freeze_template(root, {**SMALL_GATE, **params})
     return freeze
+
+
+@pytest.fixture
+def loose_risk(monkeypatch):
+    """Let a gate template take a risk of 0.2, looser than a real one may (PLAN_v0.2 §0: 5%): a few hundred
+    synthetic sessions then buy a threshold."""
+    monkeypatch.setitem(gate.LIMITS, "risk", (0.0, 0.2))

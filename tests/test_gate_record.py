@@ -35,6 +35,8 @@ from ouroloop.serve import make_server
 from ouroloop.stop import MOMENTS, StopGuard
 from ouroloop.types import Answer
 
+pytestmark = pytest.mark.usefixtures("loose_risk")
+
 
 class Model:
     """Says p(yes) to every question, and reports itself as `model`."""

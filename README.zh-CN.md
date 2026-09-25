@@ -39,6 +39,8 @@ ouroloop calibrate --config examples/ouroloop.toml                  # 报告每�
 ouroloop models --dir examples/workspace                            # 查看模型谱系；加 --rollback 回退并撤销
 ```
 
+门模板只能收紧、不能放宽 5% 的风险、每次过门需要的 30 个新 session 和 bootstrap 次数。每轮的门记录、它的使用和结论都是账本里的事件，`gates/` 里只是副本。只有门记录接受过的候选才能晋升、作答和执行。
+
 关于 TDE：TDE 是单独的项目，之后另行开源；本仓库里的训练器记录了 ouroloop 怎么训练它（`local_tde` 在本机训练，`remote_tde` 通过 ssh 在 GPU 主机上训练，checkpoint 留在主机上）。没有 TDE 时，训练管线用内置的签名小模型（`type = "signature"`）也能完整跑通；接自己的模型只要实现两个方法：`train(job)` 返回训练结果，`backend(result)` 返回能回答决策的后端，然后在配置里写 `type = "your.module:YourTrainer"`。
 
 要让 TDE 实时回答单个决策，就在 GPU 主机上常驻一个决策服务，harness 这边用 `type = "http"` 的后端连过去：

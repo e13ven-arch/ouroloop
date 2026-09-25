@@ -38,6 +38,9 @@ TEMPLATE = {
                      "verdict can only be validated",
     "budget": {"sessions_per_generation": 40},
 }
+# What no template may loosen, (lowest, highest): the execution rule's risk (PLAN_v0.2 §0), the sessions each gate
+# needs (§2), and enough resamples for a 95% interval.
+LIMITS = {"risk": (0.0, 0.05), "min_sessions": (30, None), "n_boot": (1000, None)}
 # Failures of the machinery, not of the candidate: the verdict is "inconclusive", never evidence against it.
 INFRA = (TrainError, OSError, subprocess.SubprocessError, httpx.HTTPError)
 
@@ -51,25 +54,50 @@ def template_path(root: str | Path) -> Path:
 
 
 def freeze_template(root: str | Path, params: dict | None = None, replace_frozen: bool = False) -> tuple[dict, str]:
-    """A person's act: write the gate template, TEMPLATE with `params` changed. Freezing again (replace_frozen) makes
-    a new template, so the next round freezes a new record."""
+    """A person's act: write the gate template, TEMPLATE with `params` changed, within LIMITS. Freezing again
+    (replace_frozen) makes a new template, so the next round freezes a new record."""
     path = template_path(root)
     if path.exists() and not replace_frozen:
         raise ValueError(f"the gate is already frozen: {path}")
     unknown = set(params or {}) - set(TEMPLATE)
     if unknown:
         raise ValueError(f"unknown gate parameters {sorted(unknown)}; the template has {sorted(TEMPLATE)}")
-    write_json(path, {**TEMPLATE, **(params or {}), "frozen": now()})
+    template = {**TEMPLATE, **(params or {}), "frozen": now()}
+    validate(template, records(root))
+    write_json(path, template)
     return load_template(root)
 
 
 def load_template(root: str | Path) -> tuple[dict, str]:
-    """-> (the template, its hash)."""
+    """-> (the template, its hash). A template edited past LIMITS is refused."""
     path = template_path(root)
     if not path.exists():
         raise ValueError(f"no frozen gate in {path.parent}: a person runs `ouroloop gate freeze` first")
     raw = path.read_bytes()
-    return json.loads(raw), _hash(raw)
+    template = json.loads(raw)
+    validate(template)
+    return template, _hash(raw)
+
+
+def _frac(params: dict, point: str) -> float:
+    fracs = params["cal_frac"]
+    return fracs.get(point, fracs.get("*", 0.15))
+
+
+def validate(params: dict, past: list[GateRecord] = ()) -> None:
+    """No template loosens LIMITS. Nor does one give a point a larger share of calibration sessions than an earlier
+    record did: the calibration split is by a hash of the session id, so a larger share would take in sessions a
+    promoted model (or the parent a candidate starts from) was trained on, and its thresholds would be optimistic."""
+    for key, (lo, hi) in LIMITS.items():
+        v = params.get(key)
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or v < lo or (hi is not None and v > hi):
+            raise ValueError(f"gate template: {key} = {v!r} is looser than any template may be "
+                             f"({'at most ' + str(hi) if hi is not None else 'at least ' + str(lo)})")
+    for r in past:
+        for point in {*params["cal_frac"], *r.params["cal_frac"], "*"}:
+            if _frac(params, point) > _frac(r.params, point):
+                raise ValueError(f"gate template: cal_frac of {point!r} grows from {_frac(r.params, point)} (record "
+                                 f"{r.round}) to {_frac(params, point)}; it may only shrink")
 
 
 class GateRecord:
@@ -137,8 +165,7 @@ class GateRecord:
         return set(self.usage["sessions"]) if self.ran_own else set(self.test_sessions)
 
     def cal_frac(self, point: str) -> float:
-        fracs = self.params["cal_frac"]
-        return fracs.get(point, fracs.get("*", 0.15))
+        return _frac(self.params, point)
 
     def split(self, rows: list[tuple], sessions: dict, cal_frac: float = 0.0) -> dict[str, list[tuple]]:
         """Rows (row, target, weight) by their part in the gate: "test", this record's test sessions; "held_out",
@@ -213,6 +240,7 @@ def open_record(rt) -> GateRecord:
         data = _choose(rt, params, past)
         if reuse and not data["fresh"]:
             return last
+        validate(params, past)
         data = {"round": f"r_{len(past) + 1:04d}", "frozen": now(), "template": template, "params": params,
                 "code": {"ouroloop": code, "serve": _serve_versions(rt)}, **data}
         raw = json.dumps(data, ensure_ascii=False, indent=2)

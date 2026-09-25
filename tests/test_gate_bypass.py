@@ -7,7 +7,8 @@ import pytest
 
 from ouroloop import config
 from ouroloop.evolve import experience
-from ouroloop.evolve.gate import freeze_template, open_record, records
+from ouroloop.evolve import gate
+from ouroloop.evolve.gate import freeze_template, load_template, open_record, records, template_path
 from ouroloop.evolve.pipeline import evolve_model, prepare_model
 from ouroloop.evolve.registry import Registry
 from ouroloop.evolve.train import SignatureTrainer, TrainResult
@@ -15,6 +16,8 @@ from ouroloop.ledger import write_json
 from ouroloop.research import run_round
 from test_gate_record import (ACT_GATE, CFG, M6_CFG, Model, OracleTrainer, collect, ctx, held_out, m6_sessions,
                               trained_on, workspace)
+
+pytestmark = pytest.mark.usefixtures("loose_risk")
 
 
 class Says(OracleTrainer):
@@ -181,3 +184,32 @@ def test_the_research_agent_never_sees_held_out_results(tmp_path):
 
     run_round(rt, Reads(), None, Model())
     assert [e["details"] for e in seen] == [{"effects": {"a": 0.5}}, {}]
+
+
+# ---------------------------------------------------------------- the template
+def test_no_template_loosens_the_risk_or_the_evidence_a_gate_needs(tmp_path, monkeypatch):
+    monkeypatch.setitem(gate.LIMITS, "risk", (0.0, 0.05))          # as shipped: PLAN_v0.2 §0's 5%
+    root = tmp_path / "ws"
+    for loose in ({"risk": 0.2}, {"min_sessions": 5}, {"n_boot": 10}, {"risk": True}):
+        with pytest.raises(ValueError, match="looser"):
+            freeze_template(root, loose)
+    assert not template_path(root).exists()
+    freeze_template(root, {"risk": 0.01, "min_sessions": 40})      # tighter is a person's choice
+    path = template_path(root)
+    path.write_text(json.dumps({**json.loads(path.read_text()), "risk": 0.5}))        # by hand
+    with pytest.raises(ValueError, match="looser"):
+        load_template(root)
+
+
+def test_the_calibration_share_never_grows_onto_sessions_a_model_trained_on(tmp_path):
+    rt = workspace(tmp_path)                        # stop's calibration share: 0.4
+    evolve_model(rt, OracleTrainer("R1"))
+    with pytest.raises(ValueError, match="cal_frac"):
+        freeze_template(rt.root, {**ACT_GATE, "cal_frac": {"stop": 0.6, "*": 0.15}}, replace_frozen=True)
+    path = template_path(rt.root)
+    path.write_text(json.dumps({**json.loads(path.read_text()), "cal_frac": {"*": 0.5}}))    # by hand
+    collect(rt, 40, start=150)
+    with pytest.raises(ValueError, match="cal_frac"):
+        open_record(rt)
+    freeze_template(rt.root, {**ACT_GATE, "cal_frac": {"stop": 0.3, "*": 0.1}}, replace_frozen=True)
+    assert open_record(rt).cal_frac("stop") == 0.3
