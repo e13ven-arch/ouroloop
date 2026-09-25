@@ -24,8 +24,8 @@ def candidates(q) -> list[dict]:
 
 
 def to_example(rt, point, row, target: dict, weight: float, split: str) -> dict | None:
-    """The row as a TDE example, its candidates in the order `predict` and a live ask present them (shuffled, seeded on
-    the decision id), not in the order they were written."""
+    """The row as a TDE example, its candidates in the order `predict` presents them (shuffled, seeded on the decision
+    id), not in the order they were written: shuffled, as a live ask shuffles them."""
     ctx = rt.sessions.get(row.decision["ctx"])
     view, truncated = point.render(ctx)
     q = point.question(ctx).presented(random.Random(row.decision["id"]))
