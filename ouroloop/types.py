@@ -65,7 +65,7 @@ class Answer:
     probs: dict[str, float]
     model: str = ""
     usage: dict = field(default_factory=dict)
-    abstained: bool = False     # no usable answer (nothing to parse, no probabilities): never acted on
+    abstained: bool = False     # no usable answer (nothing to parse, no or malformed probabilities): never acted on
 
     @classmethod
     def of(cls, labels: list[str], raw: dict[str, float], model: str = "", usage: dict | None = None) -> "Answer":
@@ -84,9 +84,11 @@ class Answer:
 
     @property
     def decisive(self) -> bool:
-        """Not abstained, and one label is more likely than every other: only such an answer may be acted on."""
+        """Not abstained, every probability a number, and one label more likely than every other: only such an
+        answer may be acted on."""
         top = self.confidence
-        return not self.abstained and sum(top - v < 1e-9 for v in self.probs.values()) == 1
+        return (not self.abstained and all(map(math.isfinite, self.probs.values()))
+                and sum(top - v < 1e-9 for v in self.probs.values()) == 1)
 
 
 class Backend(Protocol):
@@ -97,10 +99,11 @@ class Backend(Protocol):
 
 def normalize(labels: list[str], raw: dict[str, float]) -> dict[str, float] | None:
     """Probabilities over exactly `labels`: missing labels get 0, the rest is renormalised. None when nothing is
-    left (no probabilities, or all zero)."""
-    p = {lab: max(0.0, float(raw.get(lab, 0.0))) for lab in labels}
+    left (no probabilities, or all zero) or a value is not a probability (NaN, infinite, negative): renormalising
+    the others would turn a broken answer into a confident one."""
+    p = {lab: float(raw.get(lab, 0.0)) for lab in labels}
     total = sum(p.values())
-    if total <= 0:
+    if total <= 0 or not all(math.isfinite(v) and v >= 0 for v in p.values()):
         return None
     return {lab: v / total for lab, v in p.items()}
 

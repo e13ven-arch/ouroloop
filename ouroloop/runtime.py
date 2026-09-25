@@ -97,6 +97,8 @@ class Runtime:
             b = self.backend_for(p.name)
             backend = b.name
             ans = b.decide([Request(view, q)])[0]
+            if set(ans.probs) != set(q.labels()):      # an answer to another question: an unknown or missing label
+                raise ValueError(f"answered {sorted(ans.probs)} to {q.labels()}")
             ans = replace(ans, probs=temper(ans.probs, self.temperature(p, ans.model)))
             probs = [ans.probs[lab] for lab in q.labels()]
             r = route(p.policy, ans, label, self.threshold(p, ans.model, phase), self.rng)

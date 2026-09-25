@@ -234,6 +234,35 @@ def test_errors_and_abstentions_take_the_default_and_leave_one_row_each(tmp_path
     assert (d.label, d.action, row.decision["route"], row.decision.get("abstained")) == (None, "yes", "shadow", True)
 
 
+class Raw:
+    """Answers with these probabilities as they are, the way a custom backend may."""
+    name = "raw"
+
+    def __init__(self, probs: dict):
+        self.probs = probs
+
+    def decide(self, requests):
+        return [Answer(dict(self.probs), "A") for _ in requests]
+
+
+def test_malformed_answers_never_act(tmp_path, gated):
+    def served(body: str):
+        return HttpBackend("http://serve", client=httpx.Client(transport=httpx.MockTransport(
+            lambda r: httpx.Response(200, content=body.encode(), headers={"content-type": "application/json"}))))
+
+    cases = {"NaN from serve": served('{"answers": [{"probs": {"yes": 0.3, "no": NaN}, "model": "A"}]}'),
+             "-Infinity from serve": served('{"answers": [{"probs": {"yes": 0.3, "no": -Infinity}, "model": "A"}]}'),
+             "negative from serve": served('{"answers": [{"probs": {"yes": 0.3, "no": -0.5}, "model": "A"}]}'),
+             "an unknown label": Raw({"yes": 0.05, "no": 0.05, "maybe": 0.9}),
+             "a raw NaN": Raw({"yes": 0.9, "no": float("nan")})}
+    for i, (case, backend) in enumerate(cases.items()):
+        rt = stop_runtime(tmp_path / str(i), backend)
+        gated(rt, "stop", "A", 0.5)
+        d = rt.ask("stop", ctx(), phase="per_turn")     # acting on "yes" would end the session
+        assert (d.action, d.acted) == ("no", False), case
+        assert d.route in ("default", "error"), case
+
+
 # ---------------------------------------------------------------- configuration and label sources
 @pytest.mark.parametrize("bad", [{"points": {"stop": {"risk": 0.2}}}, {"points": {"stop": {"default": "no"}}},
                                  {"points": {"tool_gate": {"act": True}}}, {"fallback": "mock"}])
