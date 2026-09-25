@@ -82,6 +82,11 @@ class Answer:
     def confidence(self) -> float:
         return max(self.probs.values()) if self.probs else 0.0
 
+    def over(self, labels: list[str]) -> bool:
+        """Whether the probabilities are a distribution over exactly `labels`."""
+        values = self.probs.values()
+        return set(self.probs) == set(labels) and all(0 <= v <= 1 for v in values) and abs(sum(values) - 1) <= 1e-6
+
     @property
     def decisive(self) -> bool:
         """Not abstained, every probability a number, and one label more likely than every other: only such an

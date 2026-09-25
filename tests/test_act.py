@@ -270,7 +270,9 @@ def test_malformed_answers_never_act(tmp_path, gated):
              "-Infinity from serve": served('{"answers": [{"probs": {"yes": 0.3, "no": -Infinity}, "model": "A"}]}'),
              "negative from serve": served('{"answers": [{"probs": {"yes": 0.3, "no": -0.5}, "model": "A"}]}'),
              "an unknown label": Raw({"yes": 0.05, "no": 0.05, "maybe": 0.9}),
-             "a raw NaN": Raw({"yes": 0.9, "no": float("nan")})}
+             "a raw NaN": Raw({"yes": 0.9, "no": float("nan")}),
+             "raw scores": Raw({"yes": 2.0, "no": 0.7}),
+             "a raw negative": Raw({"yes": 1.5, "no": -0.5})}
     for i, (case, backend) in enumerate(cases.items()):
         rt = stop_runtime(tmp_path / str(i), backend)
         gated(rt, "stop", "A", 0.5)
