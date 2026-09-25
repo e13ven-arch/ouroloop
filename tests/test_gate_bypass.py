@@ -9,13 +9,13 @@ from ouroloop import config
 from ouroloop.evolve import experience
 from ouroloop.evolve import gate
 from ouroloop.evolve.gate import freeze_template, load_template, open_record, records, template_path
-from ouroloop.evolve.pipeline import evolve_model, prepare_model
+from ouroloop.evolve.pipeline import evolve_model, prepare_model, recipe_evaluator
 from ouroloop.evolve.registry import Registry
 from ouroloop.evolve.train import SignatureTrainer, TrainResult
 from ouroloop.ledger import write_json
 from ouroloop.research import run_round
-from test_gate_record import (ACT_GATE, CFG, M6_CFG, Model, OracleTrainer, collect, ctx, held_out, m6_sessions,
-                              trained_on, workspace)
+from test_gate_record import (ACT_GATE, CFG, M6_CFG, Model, OracleTrainer, Proposes, collect, ctx, held_out,
+                              m6_sessions, trained_on, workspace)
 
 pytestmark = pytest.mark.usefixtures("loose_risk")
 
@@ -155,6 +155,23 @@ def test_a_recipe_changes_the_training_rows_only(tmp_path):
     assert picky.per_point["stop"][2] == usual.per_point["stop"][2]           # the same test items
     assert picky.calibrations["stop"].n == usual.calibrations["stop"].n       # and calibration rows
     assert picky.card["data"]["stop"]["train"] < usual.card["data"]["stop"]["train"]
+
+
+def test_a_research_candidate_cannot_point_training_at_other_data(tmp_path):
+    rt = workspace(tmp_path)
+    got = []
+
+    class Records(OracleTrainer):
+        def train(self, job):
+            got.append(job)
+            return super().train(job)
+
+    evaluators = {"recipe": recipe_evaluator(Records("R1"), {"replay": "data/general/train.jsonl"})}
+    agent = Proposes(("recipe", "stop", {"replay": "ouroloop_jobs/m_0001/data/calibration.jsonl"}),
+                     ("recipe", "stop", {"init_from": "runs/trained_on_everything"}))
+    res = run_round(rt, agent, None, Model(), evaluators=evaluators)
+    assert [(e["gate"], e["used"]) for e in res.evaluated] == [("failed", False), ("failed", False)] and not got
+    assert all("a person" in e["reasons"][0] for e in res.evaluated)
 
 
 def test_the_trainer_never_gets_the_test_sessions(tmp_path):

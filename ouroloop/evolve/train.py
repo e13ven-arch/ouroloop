@@ -39,6 +39,9 @@ DEFAULT_RECIPE = {
     "seed": 0,
 }
 RECIPE_KEYS = set(DEFAULT_RECIPE)
+# Files and runs on the training machine: set by a person in [recipe], never by a research candidate, which could
+# name the calibration split, or a run trained on the test sessions.
+PATH_KEYS = {"replay", "init_from"}
 _TDE_KEYS = ("epochs", "max_steps", "lr_backbone", "lr_head", "batch_size", "grad_accum", "max_state_tokens",
              "gradient_checkpointing", "w_rps", "w_perm", "seed")
 

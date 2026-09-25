@@ -15,7 +15,7 @@ from .checks import CheckReport, check
 from .gate import INFRA, GateRecord, open_record, run
 from .registry import Registry
 from .replay import EvalResult, labelled, scored, summarize
-from .train import DEFAULT_RECIPE, RECIPE_KEYS, TrainJob, TrainResult
+from .train import DEFAULT_RECIPE, PATH_KEYS, RECIPE_KEYS, TrainJob, TrainResult
 
 
 def model_points(rt) -> list[str]:
@@ -146,8 +146,11 @@ def model_evaluation(rt, mc: ModelCandidate, registry: Registry, record: GateRec
 
 
 def recipe_evaluator(trainer, base_recipe: dict | None = None, **kw):
-    """Evaluator for research candidates of kind "recipe": train with the changed recipe, gated by gate.run."""
+    """Evaluator for research candidates of kind "recipe": train with the changed recipe, gated by gate.run. A
+    candidate changes hyperparameters, not the files and runs training reads (PATH_KEYS)."""
     def evaluate(rt, cand, record: GateRecord) -> EvalResult:
+        if set(cand.change) & PATH_KEYS:
+            raise ValueError(f"{sorted(set(cand.change) & PATH_KEYS)} name data or runs: a person sets them in [recipe]")
         registry = Registry(rt.root)
         mc = prepare_model(rt, trainer, {**(base_recipe or {}), **cand.change}, record=record, registry=registry,
                            **kw)

@@ -175,7 +175,7 @@ def build_agent_factory(cfg: dict, rt: Runtime):
 def build_research(cfg: dict, rt: Runtime, base: str | Path = "."):
     """-> (agent, llm, judge backend, extra run_round arguments)."""
     from .evolve.pipeline import recipe_evaluator
-    from .evolve.train import DEFAULT_RECIPE, RECIPE_KEYS
+    from .evolve.train import DEFAULT_RECIPE, PATH_KEYS, RECIPE_KEYS
     r = dict(cfg.get("research", {}))
     agent = import_object(r.pop("agent", "ouroloop.research.basic:BasicResearcher"))(**r.pop("options", {}))
     judge = rt.backends[r.pop("judge", rt.default_backend)]
@@ -185,7 +185,7 @@ def build_research(cfg: dict, rt: Runtime, base: str | Path = "."):
     if "trainer" in cfg:
         recipe = cfg.get("recipe", {})
         evaluators["recipe"] = recipe_evaluator(build_trainer(cfg["trainer"]), recipe)
-        context = {"recipe": {**DEFAULT_RECIPE, **recipe}, "recipe_keys": sorted(RECIPE_KEYS)}
+        context = {"recipe": {**DEFAULT_RECIPE, **recipe}, "recipe_keys": sorted(RECIPE_KEYS - PATH_KEYS)}
     if "suite" in cfg:
         from .agent.suite import load_suite
         from .evolve.harness import SuiteRunner, prompt_evaluator, suite_context
