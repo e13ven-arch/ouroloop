@@ -119,7 +119,8 @@ class Runtime:
         self.ledger.decision(did, session=session, point=name, backend=backend.name, model=ans.model, view=state,
                              view_chars=len(state), question=question.to_json(), candidates=question.labels(),
                              probs=[ans.probs[lab] for lab in question.labels()], route="auto", explored=False,
-                             propensity=1.0, action=ans.label, usage=ans.usage, **(meta or {}))
+                             propensity=1.0, action=ans.label, usage=ans.usage, phase=None, default=None,
+                             **(meta or {}))
         return ans, did
 
     def outcome(self, decision: str, label: str | None, source: str = "env", weight: float = 1.0, **extra) -> None:

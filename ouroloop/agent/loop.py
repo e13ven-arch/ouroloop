@@ -4,7 +4,8 @@
     before a gated tool   deny list, then tool_gate (a person approves what the model does not clear)
     after a failed bash   retry: rerun automatically when the model is confident; outcome = the rerun's result
     context too long      compact: drop older outputs judged unneeded; outcome = whether they were read again
-    after a turn          stop (per_turn): is the task done? a confident "yes" ends the session
+    after a turn          stop (per_turn): is the task done? a confident "yes" ends the session, unless the
+                          verification fails
     before finishing      stop (on_finish): is the task really done? a failing verification (or a confident "no")
                           sends the agent back to work, at most max_pushbacks times
 """

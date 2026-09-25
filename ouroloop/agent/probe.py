@@ -3,7 +3,7 @@
 At each stop decision it copies the working directory as it is (the hidden tests are never in it during a run).
 After the session it writes the hidden files into each copy, runs the task's checks there, and labels the
 decisions made on that state. It is not a checker: nothing in the run, neither StopGuard nor the view nor the
-agent, sees its result.
+agent, sees its result. Nor can it fail the run: a state it cannot copy or check stays unlabelled.
 """
 from __future__ import annotations
 
@@ -23,9 +23,12 @@ class Probe:
     def snap(self, decision: str, changes: int) -> None:
         """At a stop decision. `changes` is the agent's change count: an unchanged state is not copied again."""
         if not self.snaps or self.snaps[-1]["changes"] != changes:
-            self.root = self.root or Path(tempfile.mkdtemp(prefix="ouroloop-probe-")).resolve()
-            dest = self.root / str(len(self.snaps))
-            shutil.copytree(self.workdir, dest, symlinks=True)
+            try:
+                self.root = self.root or Path(tempfile.mkdtemp(prefix="ouroloop-probe-")).resolve()
+                dest = self.root / str(len(self.snaps))
+                shutil.copytree(self.workdir, dest, symlinks=True)
+            except OSError:         # e.g. a named pipe or an unreadable file: no copy, no label
+                dest = None
             self.snaps.append({"changes": changes, "dir": dest, "decisions": []})
         self.snaps[-1]["decisions"].append(decision)
 
@@ -33,8 +36,11 @@ class Probe:
         """After the session: label every stop decision from its copy, then delete the copies."""
         try:
             for s in self.snaps:
-                passed = self.checks(s["dir"])
-                for d in s["decisions"]:
+                try:
+                    passed = self.checks(s["dir"]) if s["dir"] else []
+                except Exception:  # noqa: BLE001 - e.g. the agent left a symlink where a hidden file goes
+                    passed = []
+                for d in s["decisions"] if passed else []:
                     self.rt.outcome(d, "yes" if all(passed) else "no", source="env", note="probe",
                                     score=sum(passed) / len(passed))
         finally:
