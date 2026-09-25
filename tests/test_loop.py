@@ -2,13 +2,11 @@ import json
 import random
 
 from ouroloop import config
-from ouroloop.backends import LlmBackend
 from ouroloop.decision import Noul
 from ouroloop.demo import run, seed_ledger
 from ouroloop.evolve import experience
 from ouroloop.evolve.gate import decide
 from ouroloop.policy import Policy
-from ouroloop.providers import MockProvider
 from ouroloop.research import Candidate, run_round
 from ouroloop.runtime import Runtime
 from ouroloop.types import Answer
@@ -48,22 +46,23 @@ class Fixed:
         return [Answer({"yes": self.p_yes, "no": 1 - self.p_yes}, "fixed-1") for _ in requests]
 
 
-def test_runtime_routes_logs_and_escalates(tmp_path):
-    fallback = LlmBackend(MockProvider(lambda s, p: '{"label": "no"}', source="open_llm"))
-    rt = Runtime(tmp_path, {"fixed": Fixed(0.9)}, "fixed", fallback=fallback, seed=0)
-    auto = rt.register(Noul("a", "ok?", policy=Policy(mode="auto", threshold=0.8, explore=0.0)))
-    d = rt.ask(auto, {"x": 1}, session="s1")
-    assert (d.route, d.action, d.model) == ("auto", "yes", "fixed-1")
-    strict = rt.register(Noul("b", "ok?", policy=Policy(mode="auto", threshold=0.95)))
-    assert rt.ask(strict, {"x": 2}, session="s1").action == "no"          # the fallback LLM decided
-    default = rt.register(Noul("c", "ok?", policy=Policy(mode="auto", threshold=0.95, fallback="default",
-                                                         default="no")))
-    assert rt.ask(default, {"x": 3}, session="s1").action == "no"
-    human = rt.register(Noul("d", "ok?", policy=Policy(mode="auto", threshold=0.95, fallback="human")))
-    assert rt.ask(human, {"x": 4}, session="s1").action is None
-    rows = {r.decision["point"]: r for r in rt.ledger.rows()}
-    assert rows["a"].decision["ctx"] == "s1#0" and rt.sessions.get("s1#0") == {"x": 1}
-    assert rows["b"].escalations[0]["source"] == "open_llm" and rows["b"].target() == ({"no": 1.0}, 0.5)
+def test_runtime_acts_takes_defaults_and_logs(tmp_path, gated):
+    rt = Runtime(tmp_path, {"fixed": Fixed(0.9)}, "fixed", seed=0)
+    on = rt.register(Noul("a", "ok?", policy=Policy(act=True, explore=0.0), phases={"here": "no"}))
+    gated(rt, "a", "fixed-1", 0.8)
+    d = rt.ask(on, {"x": 1}, session="s1")
+    assert (d.route, d.action, d.model, d.acted) == ("act", "yes", "fixed-1", True)
+    gated(rt, "a", "fixed-1", 0.95)
+    d = rt.ask(on, {"x": 2}, session="s1")
+    assert (d.route, d.action, d.label, d.acted) == ("default", "no", "yes", False)   # not confident enough
+    off = rt.register(Noul("b", "ok?", phases={"here": "no"}))
+    d = rt.ask(off, {"x": 3}, session="s1")
+    assert (d.route, d.action, d.label) == ("shadow", "no", "yes")      # shadow: the model's answer is only recorded
+    host = rt.register(Noul("c", "ok?"))                 # no phase: no default, the host decides
+    assert rt.ask(host, {"x": 4}, session="s1").action is None
+    first = rt.ledger.rows()[0]
+    assert first.decision["ctx"] == "s1#0" and rt.sessions.get("s1#0") == {"x": 1}
+    assert (first.decision["phase"], first.decision["default"]) == ("here", "no")
 
 
 def test_register_prefers_the_promoted_spec(tmp_path):
@@ -85,6 +84,7 @@ def test_demo_round_promotes_the_criteria_rewrite_only(tmp_path):
     assert worth == ["no", "yes"]
     (pick,) = [r for r in rows if r.decision["point"] == "research.pick_target"]
     assert pick.outcomes[0]["label"] == pick.decision["action"] and pick.outcomes[0]["reward"] == 1.0
+    assert all(o["source"] == "gate" for r in rows for o in r.outcomes if o.get("note") == "promotion gate")
 
 
 class FixedAgent:

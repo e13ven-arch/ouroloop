@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..types import Answer, Request, normalize
+from ..types import Answer, Request
 
 
 class TdeBackend:
@@ -30,6 +30,5 @@ class TdeBackend:
         for state, idx in by_state.items():
             res = decider.decide_batch(state, {f"q{j}": requests[i].question.to_json() for j, i in enumerate(idx)})
             for j, i in enumerate(idx):
-                q = requests[i].question
-                out[i] = Answer(normalize(q.labels(), res[f"q{j}"]["probabilities"]), self.model)
+                out[i] = Answer.of(requests[i].question.labels(), res[f"q{j}"]["probabilities"], self.model)
         return out

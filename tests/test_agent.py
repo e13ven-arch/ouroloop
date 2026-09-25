@@ -85,7 +85,7 @@ def test_agent_runs_tools_and_labels_retry_and_approvals(tmp_path):
     chat = ScriptedChat(turns([("write", {"path": "a.txt", "content": "hello"}), ("bash", {"command": FLAKY})],
                               [("bash", {"command": FLAKY})], [("read", {"path": "a.txt"})], "done"))
     asked = []
-    res = Agent(chat, rt, tools, approve_fn=lambda c: asked.append(c.name) or True, seed=0).run("write a.txt")
+    res = Agent(chat, rt, tools, approve_fn=lambda c: asked.append(c.name) or True).run("write a.txt")
     assert (res.text, res.stop, res.turns) == ("done", "end", 4)
     assert (tools.workdir / "a.txt").read_text() == "hello" and asked == ["write", "bash", "bash"]
     rows = by_point(rt)
@@ -101,39 +101,48 @@ def test_declined_and_denied_actions(tmp_path):
     rt, tools = setup(tmp_path)
     chat = ScriptedChat(turns([("write", {"path": "a.txt", "content": "x"}), ("bash", {"command": "rm -rf /"})], "ok"))
     asked = []
-    Agent(chat, rt, tools, approve_fn=lambda c: asked.append(c.name) or False, seed=0).run("t")
+    Agent(chat, rt, tools, approve_fn=lambda c: asked.append(c.name) or False).run("t")
     assert not (tools.workdir / "a.txt").exists() and asked == ["write"]      # the deny list never asks
-    (gate,) = by_point(rt)["tool_gate"]
+    gate, rule = by_point(rt)["tool_gate"]
     assert gate.outcomes[0]["label"] == "no"
+    assert (rule.decision["route"], rule.decision["action"], rule.outcomes) == ("rule", "no", [])
 
 
-def test_nobody_to_ask_declines_without_a_human_label(tmp_path):
-    points = [tool_gate_point(policy=Policy(mode="auto", threshold=0.6, explore=0.0, fallback="human"))]
-    rt, tools = setup(tmp_path, {"mock": KeywordBackend(), "no": Fixed(0.1)}, {"tool_gate": "no"}, points)
+def test_nobody_to_ask_declines_and_a_cleared_call_records_no_human_label(tmp_path, gated):
+    rt, tools = setup(tmp_path)
     chat = ScriptedChat(turns([("write", {"path": "a.txt", "content": "x"})], "ok"))
-    Agent(chat, rt, tools, config=AgentConfig(approve="auto"), seed=0).run("t")
+    Agent(chat, rt, tools).run("t")                   # approve="ask", and nobody to ask
     (gate,) = by_point(rt)["tool_gate"]
     assert not (tools.workdir / "a.txt").exists() and gate.outcomes == []
+    points = [tool_gate_point(policy=Policy(act=True, explore=0.0))]
+    rt, tools = setup(tmp_path / "b", {"yes": Fixed(0.9)}, points=points)
+    gated(rt, "tool_gate", "fixed-1", 0.6)
+    chat = ScriptedChat(turns([("write", {"path": "a.txt", "content": "x"})], "ok"))
+    Agent(chat, rt, tools).run("t")
+    (gate,) = by_point(rt)["tool_gate"]
+    assert (tools.workdir / "a.txt").exists() and gate.decision["route"] == "act" and gate.outcomes == []
 
 
-def test_confident_retry_reruns_automatically(tmp_path):
-    points = [retry_point(policy=Policy(mode="auto", threshold=0.6, explore=0.0)), tool_gate_point()]
+def test_confident_retry_reruns_automatically(tmp_path, gated):
+    points = [retry_point(policy=Policy(act=True, explore=0.0)), tool_gate_point()]
     rt, tools = setup(tmp_path, {"mock": KeywordBackend(), "yes": Fixed(0.9)}, {"retry": "yes"}, points)
+    gated(rt, "retry", "fixed-1", 0.6)
     seen = []
 
     def script(messages):
         seen.append(messages[-1])
         return turns([("bash", {"command": FLAKY})], "done")[len(seen) - 1]
 
-    Agent(ScriptedChat(script), rt, tools, config=AgentConfig(approve="auto"), seed=0).run("t")
+    Agent(ScriptedChat(script), rt, tools, config=AgentConfig(approve="auto")).run("t")
     assert "[ouroloop reran the command]" in seen[1]["results"][0]["output"] and not seen[1]["results"][0]["is_error"]
     (retry,) = by_point(rt)["retry"]
-    assert (retry.decision["route"], retry.outcomes[0]["label"]) == ("auto", "yes")
+    assert (retry.decision["route"], retry.outcomes[0]["label"]) == ("act", "yes")
 
 
-def test_compaction_drops_unneeded_outputs_and_learns_from_rereads(tmp_path):
-    points = [compact_point(policy=Policy(mode="auto", threshold=0.6, explore=0.0, fallback="default", default="yes"))]
+def test_compaction_drops_unneeded_outputs_and_learns_from_rereads(tmp_path, gated):
+    points = [compact_point(policy=Policy(act=True, explore=0.0))]
     rt, tools = setup(tmp_path, {"mock": KeywordBackend(), "no": Fixed(0.1)}, {"compact": "no"}, points)
+    gated(rt, "compact", "fixed-1", 0.6)
     for name in ("big1", "big2", "big3"):
         (tools.workdir / f"{name}.txt").write_text(name * 40)
     seen = []
@@ -143,22 +152,22 @@ def test_compaction_drops_unneeded_outputs_and_learns_from_rereads(tmp_path):
         return turns([("read", {"path": "big1.txt"})], [("read", {"path": "big2.txt"})],
                      [("read", {"path": "big3.txt"})], [("read", {"path": "big1.txt"})], "done")[len(seen) - 1]
 
-    Agent(ScriptedChat(script), rt, tools, config=AgentConfig(approve="auto", context_chars=50, keep_recent=1),
-          seed=0).run("t")
+    Agent(ScriptedChat(script), rt, tools, config=AgentConfig(approve="auto", context_chars=50, keep_recent=1)).run("t")
     labels = sorted(r.outcomes[0]["label"] for r in by_point(rt)["compact"])
     assert labels == ["no", "no", "yes"]          # big1 was read again; big2 and big3 were not
     assert seen[-1][2]["results"][0]["output"] == DROPPED
 
 
-def test_append_only_providers_are_never_edited(tmp_path):
-    points = [compact_point(policy=Policy(mode="auto", threshold=0.6, explore=0.0))]
+def test_append_only_providers_are_never_edited(tmp_path, gated):
+    points = [compact_point(policy=Policy(act=True, explore=0.0))]
     rt, tools = setup(tmp_path, {"mock": KeywordBackend(), "no": Fixed(0.1)}, {"compact": "no"}, points)
+    gated(rt, "compact", "fixed-1", 0.6)
     (tools.workdir / "f.txt").write_text("x" * 200)
     chat = ScriptedChat(turns([("read", {"path": "f.txt"})], [("read", {"path": "f.txt"})], "done"))
     chat.supports_history_edits = False
     events = []
     Agent(chat, rt, tools, config=AgentConfig(approve="auto", context_chars=50, keep_recent=1),
-          on_event=lambda k, d: events.append(k), seed=0).run("t")
+          on_event=lambda k, d: events.append(k)).run("t")
     assert "compact" not in events and len(by_point(rt)["compact"]) == 1
 
 
@@ -248,55 +257,62 @@ def test_failing_verification_sends_the_agent_back(tmp_path):
     chat = ScriptedChat(turns("all done", [("write", {"path": "done.txt", "content": "ok"})], "now it is done"))
     events = []
     res = Agent(chat, rt, tools, config=AgentConfig(approve="auto", verify_command="test -f done.txt"),
-                on_event=lambda k, d: events.append(k), seed=0).run("create done.txt")
+                on_event=lambda k, d: events.append(k)).run("create done.txt")
     assert (res.text, res.turns, res.verified) == ("now it is done", 3, True) and events.count("pushback") == 1
     stops = by_point(rt)["stop"]
     assert [(r.decision["phase"], [o["label"] for o in r.outcomes]) for r in stops] == [
         ("on_finish", ["no"]), ("per_turn", []), ("on_finish", ["yes"])]    # the checker labels on_finish only
     assert stops[0].outcomes[0]["source"] == "env"
+    # The checker's verdict is a rule's veto; after a turn the shadow point takes its default, and no check runs
+    assert [(r.decision["route"], r.decision["action"]) for r in stops] == [("rule", "no"), ("shadow", "no"),
+                                                                            ("rule", "yes")]
 
 
-def test_confident_stop_pushes_back_and_the_person_confirms(tmp_path):
-    points = [stop_point(policy=Policy(mode="auto", threshold=0.6, explore=0.0, fallback="default", default="yes"))]
+def test_confident_stop_pushes_back_and_the_person_confirms(tmp_path, gated):
+    points = [stop_point(policy=Policy(act=True, explore=0.0))]
     rt, tools = setup(tmp_path, {"mock": KeywordBackend(), "no": Fixed(0.1)}, {"stop": "no"}, points)
+    gated(rt, "stop", "fixed-1", 0.6)
     chat = ScriptedChat(turns("done", "really done", "done, as explained"))
     res = Agent(chat, rt, tools, config=AgentConfig(approve="auto", max_pushbacks=2),
-                confirm_fn=lambda task, text: True, seed=0).run("t")
+                confirm_fn=lambda task, text: True).run("t")
     assert res.turns == 3 and res.text == "done, as explained"
     stops = by_point(rt)["stop"]
     assert len(stops) == 3 and all(r.outcomes[0]["label"] == "yes" and r.outcomes[0]["source"] == "human"
                                    for r in stops)                 # the model was wrong three times
 
 
-def test_a_passing_verification_is_never_overruled_and_is_rechecked_at_the_end(tmp_path):
-    points = [stop_point(policy=Policy(mode="auto", threshold=0.6, explore=0.0, fallback="default", default="yes"))]
+def test_a_passing_verification_is_never_overruled_and_is_rechecked_at_the_end(tmp_path, gated):
+    points = [stop_point(policy=Policy(act=True, explore=0.0))]
     rt, tools = setup(tmp_path, {"mock": KeywordBackend(), "no": Fixed(0.1)}, {"stop": "no"}, points)
+    gated(rt, "stop", "fixed-1", 0.6)
     chat = ScriptedChat(turns([("write", {"path": "done.txt", "content": "ok"})], "done"))
-    res = Agent(chat, rt, tools, config=AgentConfig(approve="auto", verify_command="test -f done.txt"),
-                seed=0).run("t")
+    res = Agent(chat, rt, tools, config=AgentConfig(approve="auto", verify_command="test -f done.txt")).run("t")
     assert (res.turns, res.verified) == (2, True)                  # the model said "no", the check said done
     per_turn, stop = by_point(rt)["stop"]
     assert per_turn.decision["action"] == "no" and per_turn.outcomes == []     # "no" after a turn: keep going
-    assert (stop.decision["action"], stop.outcomes[0]["label"]) == ("no", "yes")
+    assert (stop.decision["route"], stop.decision["action"], stop.outcomes[0]["label"]) == ("rule", "yes", "yes")
+    assert stop.decision["probs"][stop.decision["candidates"].index("no")] == 0.9     # recorded, overruled
     rt2, tools2 = setup(tmp_path / "b", points=[stop_point()])
     chat = ScriptedChat(turns([("write", {"path": "done.txt", "content": "ok"})]))
-    res = Agent(chat, rt2, tools2, config=AgentConfig(approve="auto", max_turns=1, verify_command="test -f done.txt"),
-                seed=0).run("t")
+    res = Agent(chat, rt2, tools2,
+                config=AgentConfig(approve="auto", max_turns=1, verify_command="test -f done.txt")).run("t")
     assert (res.stop, res.verified) == ("max_turns", True)
 
 
-def test_route_tries_the_small_tier_and_learns_from_the_task_outcome(tmp_path):
-    rt, tools = setup(tmp_path, points=[route_point(), stop_point()])
+def test_route_picks_the_small_tier_once_it_acts_and_learns_from_the_task_outcome(tmp_path, gated):
+    rt, tools = setup(tmp_path, {"mock": KeywordBackend(), "cheap": FixedChoice("small")}, {"route": "cheap"},
+                      [route_point(policy=Policy(act=True, explore=0.0)), stop_point()])
+    gated(rt, "route", "fc", 0.6)
     small = ScriptedChat(turns([("bash", {"command": "echo hi"})], "done"))
     large = ScriptedChat(turns("unused"))
     res = Agent(large, rt, tools, tiers={"large": large, "small": small},
-                config=AgentConfig(approve="auto", route_explore=1.0, verify_command="true"), seed=0).run("t")
+                config=AgentConfig(approve="auto", verify_command="true")).run("t")
     assert res.verified and small.calls == 2 and large.calls == 0
     routes = by_point(rt)["route"]
     assert [(r.outcomes[0]["label"], r.outcomes[0]["weight"]) for r in routes] == [("small", 0.5), ("small", 0.5)]
-    rt2, tools2 = setup(tmp_path / "b", {"mock": KeywordBackend(), "big": FixedChoice("large")}, {"route": "big"},
-                        [route_point(policy=Policy(mode="auto", threshold=0.6, explore=0.0))])
+    # Shadow, as built in: every step takes the default tier, whatever the model says
+    rt2, tools2 = setup(tmp_path / "b", {"cheap": FixedChoice("small")}, points=[route_point()])
     big = ScriptedChat(turns("done"))
     Agent(ScriptedChat(turns("never")), rt2, tools2, tiers={"large": big, "small": ScriptedChat(turns("x"))},
-          config=AgentConfig(approve="auto"), seed=0).run("t")
+          config=AgentConfig(approve="auto")).run("t")
     assert big.calls == 1

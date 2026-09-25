@@ -1,18 +1,20 @@
 """The minimal agent loop (PLAN §3): an LLM with read / write / edit / bash, and decision points around it.
 
     before each LLM call  route: which model tier is enough for this step
-    before a gated tool   deny list, then tool_gate (a person approves what the model does not clear)
-    after a failed bash   retry: rerun automatically when the model is confident; outcome = the rerun's result
+    before any tool       the deny list (a rule: never run, whatever any model says)
+    before a gated tool   tool_gate (a person approves what is not cleared)
+    after a failed bash   retry: rerun automatically on a "yes"; outcome = the rerun's result
     context too long      compact: drop older outputs judged unneeded; outcome = whether they were read again
-    after a turn          stop (per_turn): is the task done? a confident "yes" ends the session, unless the
-                          verification fails
-    before finishing      stop (on_finish): is the task really done? a failing verification (or a confident "no")
-                          sends the agent back to work, at most max_pushbacks times
+    after a turn          stop (per_turn): is the task done? a "yes" ends the session, unless the verification fails
+    before finishing      stop (on_finish): is the task really done? a failing verification (or a "no") sends the
+                          agent back to work, at most max_pushbacks times
+
+Each point's action is `Decision.action`: the model's label where it acts, else the phase's default (a shadow point
+always takes it), so nothing here changes what the agent does until a point is switched on and has a threshold.
 """
 from __future__ import annotations
 
 import json
-import random
 from dataclasses import dataclass
 from typing import Callable
 
@@ -32,15 +34,13 @@ DROPPED = "[output removed to save context; run the command or read the file aga
 @dataclass
 class AgentConfig:
     max_turns: int = 30
-    approve: str = "ask"                          # gated tools the model does not clear: "ask" a person, or "auto"
-    gated_tools: tuple[str, ...] = ("bash", "write", "edit")
+    approve: str = "ask"                          # gated tools that are not cleared: "ask" a person, or "auto"
+    gated_tools: tuple[str, ...] = ("bash", "write", "edit")   # the deny list applies to every tool call
     context_chars: int = 60000                    # above this, older outputs become compaction candidates
     keep_recent: int = 4                          # the latest tool outputs are never compacted
-    compact_explore: float = 0.1                  # shadow mode: drop this share anyway, to learn from re-reads
     verify_command: str | None = None             # a shell command that exits 0 when the task is done
     max_pushbacks: int = 2                        # how often stop may send the agent back to work
     default_tier: str = "large"                   # the model tier used unless route decides otherwise
-    route_explore: float = 0.1                    # shadow mode: share of steps tried on the small tier
 
 
 @dataclass
@@ -74,8 +74,8 @@ class Agent:
                  approve_fn: Callable[[ToolCall], bool] | None = None,
                  confirm_fn: Callable[[str, str], bool | None] | None = None, confirm_source: str = "human",
                  on_event: Callable[[str, dict], None] | None = None, tiers: dict[str, ChatProvider] | None = None,
-                 session: str | None = None, system: str | None = None, seed: int | None = None,
-                 probe=None, session_meta: dict | None = None):
+                 session: str | None = None, system: str | None = None, probe=None,
+                 session_meta: dict | None = None):
         self.config = config or AgentConfig()
         self.provider = provider
         self.tiers = tiers or {self.config.default_tier: provider}
@@ -91,7 +91,6 @@ class Agent:
         self.session = session or new_id("s")
         self.session_meta = dict(session_meta or {})   # recorded with the session: task, held-out, agent models
         self.system = (system or SYSTEM).replace("{workdir}", str(tools.workdir))
-        self.rng = random.Random(seed)
         self._items: list[dict] = []        # tool outputs that compaction may drop
         self._pending_retry: dict | None = None
         self._steps: list[dict] = []        # route decisions: which tier ran each step
@@ -173,12 +172,9 @@ class Agent:
         d = self.rt.ask("route", {"task": self._task_head(), "turn": turn,
                                   "last": self._actions[-1] if self._actions else "", "errors": self._errors},
                         session=self.session)
-        explored = False
-        if d.route == "auto" and d.action in self.tiers:
+        if d.action in self.tiers:
             tier = d.action
-        elif d.route == "shadow" and "small" in self.tiers and self.rng.random() < self.config.route_explore:
-            tier, explored = "small", True    # try the cheap tier on some steps so it has outcomes to learn from
-        self._steps.append({"decision": d.id, "tier": tier, "explored": explored})
+        self._steps.append({"decision": d.id, "tier": tier})
         return self.tiers[tier], tier
 
     # ------------------------------------------------------------------ stop
@@ -210,7 +206,12 @@ class Agent:
     # ------------------------------------------------------------------ tools
     def _call(self, call: ToolCall) -> ToolResult:
         self._note_reuse(call)
-        if call.name in self.config.gated_tools and not self._allowed(call):
+        rule = denied(str(call.args.get("command", ""))) if call.name == "bash" else None
+        if rule:
+            self._deny(call, rule)
+            self._pending_retry = None
+            res = ToolResult(f"This command is on the deny list and was not run ({rule}).", True)
+        elif call.name in self.config.gated_tools and not self._allowed(call):
             self._pending_retry = None
             res = ToolResult("The user declined this action.", True)
         else:
@@ -224,20 +225,22 @@ class Agent:
         self._emit("tool", id=call.id, name=call.name, is_error=res.is_error, output=res.output[:2000])
         return res
 
+    def _gate_ctx(self, call: ToolCall) -> dict:
+        return {"task": self._task_head(), "workdir": str(self.tools.workdir), "tool": call.name,
+                "detail": describe(call)}
+
+    def _deny(self, call: ToolCall, rule: str) -> None:
+        """A rule overrules any model: the call never runs, and tool_gate records the veto (route "rule")."""
+        self._emit("denied", id=call.id, rule=rule)
+        if "tool_gate" in self.rt.points:
+            self.rt.ask("tool_gate", self._gate_ctx(call), session=self.session, veto="no")
+
     def _allowed(self, call: ToolCall) -> bool:
-        if call.name == "bash":
-            rule = denied(str(call.args.get("command", "")))
-            if rule:
-                self._emit("denied", id=call.id, rule=rule)
-                return False
         d = None
         if "tool_gate" in self.rt.points:
-            d = self.rt.ask("tool_gate", {"task": self._task_head(), "workdir": str(self.tools.workdir),
-                                          "tool": call.name, "detail": describe(call)}, session=self.session)
-            if d.route == "auto":
-                return True if d.action == "yes" else self._ask_person(call, d)
-            if d.route == "fallback":
-                return self._ask_person(call, d)
+            d = self.rt.ask("tool_gate", self._gate_ctx(call), session=self.session)
+            if d.action == "yes":           # cleared: nobody is asked, and nobody's label is recorded
+                return True
         return self._ask_person(call, d) if self.config.approve == "ask" else True
 
     def _ask_person(self, call: ToolCall, d) -> bool:
@@ -263,7 +266,7 @@ class Agent:
             return res
         d = self.rt.ask("retry", {"command": cmd, "stderr": res.meta.get("stderr") or res.meta.get("stdout", ""),
                                   "exit_code": code}, session=self.session)
-        if d.route == "auto" and d.action == "yes":
+        if d.action == "yes":
             again = self.tools.run("bash", call.args)
             ok = again.meta.get("exit_code", 1) == 0
             self.rt.outcome(d.id, "yes" if ok else "no", note="automatic rerun")
@@ -292,9 +295,7 @@ class Agent:
             d = self.rt.ask("compact", {"task": self._task_head(), "tool": it["name"], "target": it["key"][1],
                                         "age": turn - it["turn"], "output": it["output"]}, session=self.session)
             it["decision"] = d.id
-            drop = ((d.route == "auto" and d.action == "no") or d.explored
-                    or (d.route == "shadow" and self.rng.random() < self.config.compact_explore))
-            if drop and all(p.supports_history_edits for p in self.tiers.values()):
+            if d.action == "no" and all(p.supports_history_edits for p in self.tiers.values()):
                 mi, ri = it["ref"]
                 messages[mi]["results"][ri]["output"] = DROPPED
                 it["dropped"] = True
@@ -324,4 +325,4 @@ class Agent:
             for step in self._steps:
                 if step["tier"] == "small":
                     self.rt.outcome(step["decision"], "small" if done else "large", weight=0.5,
-                                    note="task outcome after a small-tier step", explored=step["explored"])
+                                    note="task outcome after a small-tier step")

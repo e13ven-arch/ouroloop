@@ -4,11 +4,11 @@ English | [中文](README.zh-CN.md)
 
 A lightweight RSI framework. Instead of improving the base model, an LLM improves a small decision model, and the decision model improves the agent harness.
 
-An agent makes many small judgment calls: retry this command? keep this output in context? run this without asking? is the task done? ouroloop sends each of them to a calibrated decision model as a typed question (yes/no, a choice, or a score) and gets probabilities back in one forward pass. When the model is not confident, the call goes to an LLM or a person. Every call, and what actually happened afterwards, goes into a local ledger.
+An agent makes many small judgment calls: retry this command? keep this output in context? run this without asking? is the task done? ouroloop sends each of them to a calibrated decision model as a typed question (yes/no, a choice, or a score) and gets probabilities back in one forward pass. When the model is not confident, or its point is not switched on yet, the point takes its declared default: a fixed action, a rule, an LLM or a person. Every call, and what actually happened afterwards, goes into a local ledger.
 
 Those outcomes are training labels. `ouroloop evolve` trains a new decision model from them, and a research agent (an LLM that reasons, with a decision model as the judge) reads the evaluation results and proposes changes to decision-point specs, training recipes and the harness prompt. You can swap in your own research agent. Every change has to pass held-out evaluation and the same promotion gate before it replaces the current version.
 
-The decision backend can be the Jev API or a small model you train yourself, such as TDE: start with Jev, and let your own model take over decision points one by one as data accumulates. Answers from Jev and from closed LLMs are never training labels: labels come from observed outcomes and from people (answers from open-weight models can count, at half weight).
+The decision backend can be the Jev API or a small model you train yourself, such as TDE: start with Jev, and let your own model take over decision points one by one as data accumulates. Answers from Jev and from closed LLMs are never training labels: labels come from observed outcomes and from people.
 
 The premise: commercial LLMs already reason well, and in real work the decisions are what matter most. ouroloop improves decisions, not reasoning.
 
@@ -45,7 +45,7 @@ ouroloop run "..." --llm anthropic --verify "pytest -q" --small-model claude-hai
 
 - Tool calls ask for your approval (y/N) unless you pass `--yes`. Commands on the deny list (`rm -rf /`, `curl ... | sh` and the like) never run.
 - `--verify` takes a command that exits 0 when the task is done. When the agent wants to stop, ouroloop runs it first and sends the output back if it fails (at most twice). The result also labels the `stop` decision.
-- `--small-model` adds a cheaper tier; the `route` decision point picks the tier for each step. In shadow mode about 10% of steps try the small tier, and the task outcome is a weak label for them.
+- `--small-model` adds a cheaper tier; the `route` decision point picks the tier for each step once it acts; until then every step uses the large tier. The task outcome is a weak label for small-tier steps.
 - In an interactive run, ouroloop asks at the end whether the task was done, and records the answer.
 - `ouroloop hook print-settings` prints Claude Code hooks that record tool calls and their results from your normal Claude Code sessions into the ledger, without changing Claude Code's behaviour.
 
@@ -62,7 +62,7 @@ The research agent and `ouroloop run` work with any model:
 ```bash
 ouroloop research --config examples/ouroloop.toml --rounds 3   # research rounds over the ledger
 ouroloop evolve --config examples/ouroloop.toml                # train a new decision model; promote only if it passes the gate
-ouroloop calibrate --config examples/ouroloop.toml             # fit each point's temperature and threshold
+ouroloop calibrate --config examples/ouroloop.toml             # report each point's temperature and thresholds
 ouroloop models --dir examples/workspace                       # model lineage; --rollback to go back
 ouroloop ledger --dir examples/workspace                       # decisions, label coverage and agreement per point
 ```
@@ -99,9 +99,9 @@ The checks at the end of a task also label that run's `stop` and `route` decisio
 | Path | What it holds |
 |---|---|
 | `ouroloop/decision.py` | decision points and specs (question, candidates, view parameters) |
-| `ouroloop/policy.py` | modes, threshold fitting, exploration and propensities |
+| `ouroloop/policy.py` | the execution rule, threshold fitting, exploration and propensities |
 | `ouroloop/ledger.py` | the ledger, raw contexts, champion specs, redaction |
-| `ouroloop/runtime.py` | ties decision points, backends, fallbacks and the ledger together |
+| `ouroloop/runtime.py` | ties decision points, backends, default answerers and the ledger together |
 | `ouroloop/agent/` | the minimal agent: loop, four tools, harness prompt, task suites |
 | `ouroloop/points/` | built-in points `retry`, `compact`, `tool_gate`, `stop`, `route`, and the deny list |
 | `ouroloop/chat.py` | a provider-neutral chat format |

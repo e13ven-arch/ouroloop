@@ -3,7 +3,7 @@ TDE on the GPU host) and answer single decisions quickly for harnesses elsewhere
 
     GET  /health                                   -> {"ok", "points", "backends"}
     POST /decide  {"backend"?, "requests": [{"state", "question"}]}  -> {"answers": [{"probs", "label", "model"}]}
-    POST /ask     {"point", "ctx", "session"?}      -> the recorded Decision
+    POST /ask     {"point", "ctx", "session"?, "phase"?, "veto"?}  -> the recorded Decision
     POST /outcome {"decision", "label", "source"?, "weight"?, ...}   -> {"ok": true}
 
 Set OUROLOOP_TOKEN to require "Authorization: Bearer <token>". It binds to 127.0.0.1 unless told otherwise, and
@@ -58,7 +58,8 @@ def make_server(rt, host: str = "127.0.0.1", port: int = 8765, token: str | None
                         self._send(200, {"answers": [{"probs": a.probs, "label": a.label, "model": a.model,
                                                       "usage": a.usage} for a in answers]})
                     elif self.path == "/ask":
-                        d = rt.ask(body["point"], body["ctx"], session=body.get("session", "s_http"))
+                        d = rt.ask(body["point"], body["ctx"], session=body.get("session", "s_http"),
+                                   phase=body.get("phase"), veto=body.get("veto"))
                         self._send(200, asdict(d))
                     elif self.path == "/outcome":
                         extra = {k: v for k, v in body.items() if k not in ("decision", "label", "source", "weight")}

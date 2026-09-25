@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from ..decision import DecisionPoint, Spec
-from ..types import Request, brier, temper
+from ..types import Answer, Request, brier, temper
 
 _SIGNATURE = re.compile(r"\b[A-Z][A-Za-z]+(?:Error|Exception)\b|command not found|No such file or directory|"
                         r"timed out|rate limit|Permission denied|refused|Unavailable|Could not get lock|is locked|"
@@ -50,9 +50,8 @@ def splits(rows: list[tuple], test_frac: float = 0.15, cal_frac: float = 0.15) -
     return {"train": [r for r in dev if id(r) not in cal_ids], "calibration": cal, "test": test}
 
 
-def predict(rt, point: DecisionPoint, spec: Spec, rows: list[tuple], backend=None,
-            temperature: float | None = None) -> tuple[list[str], list[dict]]:
-    """Re-render each row's context with `spec` and ask `backend` (default: the point's own, with its calibration)."""
+def answers(rt, point: DecisionPoint, spec: Spec, rows: list[tuple], backend) -> tuple[list[str], list[Answer]]:
+    """Re-render each row's context with `spec` and ask `backend`, untempered."""
     views, requests = [], []
     for row, *_ in rows:
         ctx = rt.sessions.get(row.decision["ctx"])
@@ -62,10 +61,19 @@ def predict(rt, point: DecisionPoint, spec: Spec, rows: list[tuple], backend=Non
         # comparison measures the change and not the permutation.
         q = point.question(ctx, spec).presented(random.Random(row.decision["id"]))
         requests.append(Request(view, q))
+    return views, backend.decide(requests) if requests else []
+
+
+def predict(rt, point: DecisionPoint, spec: Spec, rows: list[tuple], backend=None,
+            temperature: float | None = None) -> tuple[list[str], list[dict]]:
+    """Re-render each row's context with `spec` and ask `backend`. By default the point's own backend, tempered with
+    the calibration of the model it reports on this spec (none for a changed spec, until one is fitted)."""
+    views, answered = answers(rt, point, spec, rows, backend or rt.backend_for(point.name))
     if backend is None:
-        backend, temperature = rt.backend_for(point.name), rt.temperature(point.name)
-    answers = backend.decide(requests) if requests else []
-    return views, [temper(a.probs, temperature or 1.0) for a in answers]
+        h = point.hash_of(spec)
+        return views, [temper(a.probs, rt.calibration.get(a.model, h, point.name).get("temperature", 1.0))
+                       for a in answered]
+    return views, [temper(a.probs, temperature or 1.0) for a in answered]
 
 
 def gold(target: dict) -> str:

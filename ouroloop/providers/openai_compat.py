@@ -41,7 +41,7 @@ class OpenAICompatProvider:
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.api_key_env = api_key_env
-        self.source = source       # set "open_llm" for open-weight models whose answers may be training labels
+        self.source = source       # "open_llm" for open-weight models; answers are for evaluation only either way
         self.max_tokens = max_tokens
         self.timeout = timeout
         self.extra = extra or {}   # provider-specific request fields, e.g. {"thinking": {"type": "disabled"}} for GLM

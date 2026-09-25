@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 
-from ..types import brier
+from ..types import Question, Request, brier
 from . import calibrate, experience
 from .build import build
 from .checks import CheckReport, check
@@ -55,7 +55,7 @@ def prepare_model(rt, trainer, recipe: dict | None = None, *, points: list[str] 
     init_from = parent.get("run") if parent else recipe.get("init_from")
     cand.result = trainer.train(TrainJob(version, ds.dir, recipe, init_from))
     cand.backend = trainer.backend(cand.result)
-    card.update({"run": cand.result.run, "backend": cand.result.backend})
+    card.update({"run": cand.result.run, "backend": cand.result.backend, "model_id": cand.result.model_id})
     for name in points:
         p = rt.points[name]
         cal = calibrate.calibrate_point(rt, name, backend=cand.backend, test_frac=test_frac, cal_frac=cal_frac)
@@ -87,12 +87,18 @@ def dry_run_model(rt, trainer, recipe: dict | None = None, *, points: list[str] 
 
 
 def promote_model(rt, cand: ModelCandidate, registry: Registry) -> None:
+    """Calibrations are keyed by the model id the backend reports, so it must be the one on the card. They carry no
+    gate record's hash before M8: no point acts on them."""
+    reported = cand.backend.decide([Request("model id probe", Question("noul", "Is this a probe?"))])[0].model
+    if reported != cand.result.model_id:
+        raise ValueError(f"{cand.version}: the backend reports model {reported!r}, the card says "
+                         f"{cand.result.model_id!r}")
     registry.promote(cand.version)
     rt.backends["champion"] = cand.backend
     for name in cand.per_point:
         rt.point_backends[name] = "champion"
     for cal in cand.calibrations.values():
-        calibrate.apply(rt, cal, model=cand.version)
+        calibrate.apply(rt, cal, version=cand.version)
 
 
 def recipe_evaluator(trainer, base_recipe: dict | None = None, **kw):
@@ -134,7 +140,7 @@ def evolve_model(rt, trainer, recipe: dict | None = None, *, min_items: int = 30
     else:
         g = decide_points(cand.per_point, min_items=min_items, seed=seed)
         cand.card.update({"gate": g.outcome, "reasons": g.reasons, "metrics": summarize(cand.per_point),
-                          "calibration": {k: {"temperature": c.temperature, "threshold": c.threshold, **c.entry()}
+                          "calibration": {k: {"temperature": c.temperature, "thresholds": c.thresholds, **c.entry()}
                                           for k, c in cand.calibrations.items()}})
         if g.outcome == "accepted":
             promote_model(rt, cand, registry)

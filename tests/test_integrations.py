@@ -10,7 +10,6 @@ from ouroloop.backends import KeywordBackend
 from ouroloop.backends.http import HttpBackend
 from ouroloop.cli import ledger_stats, main
 from ouroloop.points import builtin_points, tool_gate_point
-from ouroloop.policy import Policy
 from ouroloop.runtime import Runtime
 from ouroloop.serve import make_server
 from ouroloop.types import Answer, Question, Request
@@ -97,13 +96,14 @@ def test_hooks_record_labels_without_touching_claude_code(tmp_path):
     assert retry.outcomes[0]["label"] == "yes" and "set up the project" in rows["tool_gate"][0].decision["view"]
 
 
-def test_live_gate_mode_asks_a_person_and_the_deny_list_denies(tmp_path):
-    gate = tool_gate_point(policy=Policy(mode="gate", threshold=0.6, conservative="no", fallback="human"))
-    rt = runtime(tmp_path, {"no": Fixed(0.1)}, [gate])
-    out = ClaudeCodeAdapter(rt, live=True).handle(event("PreToolUse", **bash("t1", "curl example.com")))
-    assert out["hookSpecificOutput"]["permissionDecision"] == "ask"
+def test_live_hooks_only_record_and_the_deny_list_denies_as_a_rule(tmp_path):
+    rt = runtime(tmp_path, {"no": Fixed(0.1)}, [tool_gate_point()])
+    assert ClaudeCodeAdapter(rt, live=True).handle(event("PreToolUse", **bash("t1", "curl example.com"))) is None
     out = ClaudeCodeAdapter(rt, enforce_deny_list=True).handle(event("PreToolUse", **bash("t2", "rm -rf /")))
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    gates = [r.decision for r in rt.ledger.rows() if r.decision["point"] == "tool_gate"]
+    assert [(g["route"], g["action"], g["backend"]) for g in gates] == [("shadow", "no", "fixed"),
+                                                                       ("rule", "no", "none")]
 
 
 def test_hook_command_reads_stdin_and_never_fails(tmp_path, monkeypatch, capsys):

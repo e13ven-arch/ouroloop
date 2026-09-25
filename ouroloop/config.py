@@ -1,14 +1,18 @@
 """Load ouroloop.toml and build the runtime, backends, LLM, trainer and research agent from it."""
 from __future__ import annotations
 
-import importlib
 import os
 import tomllib
 from pathlib import Path
 
 from .backends import JevBackend, KeywordBackend, LlmBackend, TdeBackend
 from .points import BUILTIN
-from .runtime import Runtime
+from .policy import Policy
+from .runtime import Runtime, import_object
+
+# The only keys of a [points.X] table: risk comes from the gate template (M8), defaults from the point's definition.
+POINT_KEYS = {"backend", "define", "act", "explore"}
+ACTING = {"stop"}       # v0.2: the only point that may be switched on
 
 
 def load_dotenv(path: str | Path = ".env") -> None:
@@ -21,12 +25,6 @@ def load_dotenv(path: str | Path = ".env") -> None:
         if line and not line.startswith("#") and "=" in line:
             key, _, value = line.partition("=")
             os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
-
-
-def import_object(ref: str):
-    """"package.module:name" -> the object."""
-    module, _, attr = ref.partition(":")
-    return getattr(importlib.import_module(module), attr)
 
 
 def build_provider(spec: dict):
@@ -104,14 +102,21 @@ def build_runtime(cfg: dict, base: str | Path = ".") -> Runtime:
     if missing:
         raise ValueError(f"unknown backends {sorted(missing)}; a point on 'champion' needs [registry] base "
                          f"until a model has been promoted")
-    rt = Runtime(root, backends, default, point_backends,
-                 backends.get(cfg["fallback"]) if cfg.get("fallback") else None, seed=cfg.get("seed"))
+    if "fallback" in cfg:
+        raise ValueError("the top-level fallback is gone: declare a default answerer in the phases of a point")
+    rt = Runtime(root, backends, default, point_backends, seed=cfg.get("seed"))
     for name, s in points.items():
+        if set(s) - POINT_KEYS:
+            raise ValueError(f"[points.{name}] may only set {sorted(POINT_KEYS)}, not {sorted(set(s) - POINT_KEYS)}")
+        if s.get("act") and name not in ACTING:
+            raise ValueError(f"[points.{name}] act = true: in v0.2 only {sorted(ACTING)} may act")
         if "define" not in s and name not in BUILTIN:
             raise ValueError(f'[points.{name}] needs define = "module:function"')
         point = import_object(s["define"])() if "define" in s else BUILTIN[name]()
         if point.name != name:
             raise ValueError(f"[points.{name}] defines a point named {point.name!r}")
+        # The config is the only switch: a definition cannot turn its own point on.
+        point.policy = Policy(bool(s.get("act", False)), float(s.get("explore", point.policy.explore)))
         rt.register(point)
     return rt
 

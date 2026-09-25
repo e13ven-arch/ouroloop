@@ -69,14 +69,13 @@ def setup(tmp_path):
 
     def make(workdir, t, prompt):
         return Agent(coder, rt, Tools(workdir, descriptions=prompt.tools), system=prompt.system,
-                     config=AgentConfig(approve="auto", max_turns=t.max_turns), seed=0)
+                     config=AgentConfig(approve="auto", max_turns=t.max_turns))
 
     return rt, coder, SuiteRunner(rt.root, make, "coder")
 
 
 def scripted(rt, *turns):
-    return lambda workdir, _t: Agent(ScriptedChat(list(turns)), rt, Tools(workdir), config=AgentConfig(approve="auto"),
-                                     seed=0)
+    return lambda workdir, _t: Agent(ScriptedChat(list(turns)), rt, Tools(workdir), config=AgentConfig(approve="auto"))
 
 
 # ---------------------------------------------------------------- tasks
@@ -211,7 +210,7 @@ def test_the_gate_does_not_select_on_held_out_but_records_it(tmp_path):
 
     runner.make_agent = lambda workdir, t, prompt: Agent(
         Selective(), rt, Tools(workdir, descriptions=prompt.tools), system=prompt.system,
-        config=AgentConfig(approve="auto", max_turns=t.max_turns), seed=0)
+        config=AgentConfig(approve="auto", max_turns=t.max_turns))
     ev = prompt_evaluator(tasks, runner, repeats=1, screen=0, min_items=3)
     res = ev(rt, Candidate("prompt", "harness", {"system": f"{SYSTEM} {FIX}"}, "helps dev, hurts held-out"))
     assert res.groups == ["a", "b", "c"]                    # the gate's items are the development split

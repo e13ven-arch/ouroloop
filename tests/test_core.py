@@ -6,22 +6,22 @@ from ouroloop.decision import Choice, Noul, Spec
 from ouroloop.ledger import Ledger, SessionStore, redact
 from ouroloop.policy import Policy, cp_upper, fit_threshold, route
 from ouroloop.research.ask import NONE_FIT, QuestionError, fit_state, normalize
-from ouroloop.types import Question
+from ouroloop.types import Answer, Question
 
 
 # ---------------------------------------------------------------- policy
-def test_route_modes_and_propensity():
+def test_the_execution_rule_and_propensity():
     rng = random.Random(0)
-    assert route(Policy(mode="shadow"), "yes", 0.99, rng).route == "shadow"
-    assert route(Policy(mode="auto", threshold=None), "yes", 0.99, rng).route == "fallback"
-    r = route(Policy(mode="auto", threshold=0.8, explore=0.0), "yes", 0.9, rng)
-    assert (r.route, r.propensity) == ("auto", 1.0)
-    r = route(Policy(mode="auto", threshold=0.8, explore=1.0), "yes", 0.9, rng)
-    assert (r.route, r.explored, r.propensity) == ("fallback", True, 1.0)
-    assert route(Policy(mode="auto", threshold=0.8), "yes", 0.7, rng).route == "fallback"
-    gate = Policy(mode="gate", threshold=0.8, explore=0.0, conservative="no")
-    assert route(gate, "yes", 0.99, rng).route == "fallback"
-    assert route(gate, "no", 0.99, rng).route == "auto"
+    yes = Answer({"yes": 0.9, "no": 0.1})
+    assert route(Policy(), yes, "no", 0.8, rng).route == "shadow"               # act is off
+    on = Policy(act=True, explore=0.0)
+    assert route(on, yes, "no", None, rng).route == "default"                   # no gated threshold
+    assert route(on, yes, "yes", 0.8, rng).route == "default"                   # the label is the default anyway
+    assert route(on, yes, "no", 0.95, rng).route == "default"                   # not confident enough
+    r = route(on, yes, "no", 0.8, rng)
+    assert (r.route, r.propensity) == ("act", 1.0)
+    r = route(Policy(act=True, explore=1.0), yes, "no", 0.8, rng)
+    assert (r.route, r.explored, r.propensity) == ("default", True, 1.0)
 
 
 def test_clopper_pearson_and_threshold():
@@ -71,8 +71,7 @@ def test_training_targets_follow_label_sources(tmp_path):
     targets = {row.decision["id"]: (t, w) for row, t, w in led.training_rows("p")}
     assert targets[env] == ({"yes": 1.0}, 1.0)
     assert targets[human] == ({"no": 1.0}, 1.0)
-    assert targets[open_llm] == ({"yes": 1.0}, 0.5)
-    assert frontier not in targets and jev not in targets and unknown not in targets
+    assert not {open_llm, frontier, jev, unknown} & set(targets)       # no model's answer is a training target
     with pytest.raises(ValueError):
         led.outcome(env, "yes", source="guess")
 

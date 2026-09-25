@@ -8,8 +8,9 @@ no model and changes nothing in Claude Code, so it adds almost no latency. Label
                 a prompt was shown and the tool had not run when the turn ended -> "no" (human)
     retry       a failed Bash command rerun unchanged as the very next Bash call -> the rerun's result
 
-With live=True the backend is asked at hook time, and points in gate or auto mode may act: a confident "needs a
-person" turns into a permission prompt ("ask"); "allow" is only ever returned in auto mode.
+With live=True the backend is asked at hook time, and its answers are recorded. The adapter never allows a call: every
+call still goes through your own permission rules, so a "yes" above is always a person's, or their rules'. With
+enforce_deny_list=True, a command on the deny list is denied, and the veto is recorded on tool_gate (route "rule").
 """
 from __future__ import annotations
 
@@ -92,32 +93,27 @@ class ClaudeCodeAdapter:
                 self._stop(st)
         return None
 
-    def _decide(self, point: str, ctx: dict, session: str):
+    def _decide(self, point: str, ctx: dict, session: str, veto: str | None = None):
         if self.live:
-            return self.rt.ask(point, ctx, session=session)
-        return self.rt.record(point, ctx, session=session)
+            return self.rt.ask(point, ctx, session=session, veto=veto)
+        return self.rt.record(point, ctx, session=session, veto=veto)
 
     def _pre(self, event: dict, st: dict, session: str) -> dict | None:
+        """Only ever returns the deny list's "deny", or nothing."""
         tool, args = event.get("tool_name", ""), event.get("tool_input") or {}
         if tool not in TOOLS:
             return None
+        ctx = {"task": st.get("task", ""), "workdir": event.get("cwd", ""), "tool": TOOLS[tool],
+               "detail": detail(tool, args)}
         if tool == "Bash" and self.enforce_deny_list and (rule := denied(str(args.get("command", "")))):
+            if "tool_gate" in self.rt.points:
+                self._decide("tool_gate", ctx, session, veto="no")
             return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                            "permissionDecisionReason": f"ouroloop deny list: {rule}"}}
-        if "tool_gate" not in self.rt.points:
-            return None
-        d = self._decide("tool_gate", {"task": st.get("task", ""), "workdir": event.get("cwd", ""),
-                                       "tool": TOOLS[tool], "detail": detail(tool, args)}, session)
-        did = d if isinstance(d, str) else d.id
-        st["gates"][event.get("tool_use_id", did)] = {"decision": did, "asked": False}
-        if isinstance(d, str) or d.route == "shadow":
-            return None
-        if d.route == "auto" and d.action == "yes":
-            decision, reason = "allow", "ouroloop: the decision model cleared this action"
-        else:
-            decision, reason = "ask", "ouroloop: the decision model is not confident this is safe to run unasked"
-        return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": decision,
-                                       "permissionDecisionReason": reason}}
+        if "tool_gate" in self.rt.points:
+            d = self._decide("tool_gate", ctx, session)
+            st["gates"][event.get("tool_use_id", d.id)] = {"decision": d.id, "asked": False}
+        return None
 
     def _post(self, event: dict, st: dict, session: str) -> None:
         gate = st["gates"].pop(event.get("tool_use_id", ""), None)
@@ -139,7 +135,7 @@ class ClaudeCodeAdapter:
         elif code != 0 and "retry" in self.rt.points:
             d = self._decide("retry", {"command": command, "stderr": resp.get("stderr") or resp.get("stdout", ""),
                                        "exit_code": code}, session)
-            st["retry"] = {"command": command, "decision": d if isinstance(d, str) else d.id}
+            st["retry"] = {"command": command, "decision": d.id}
 
     def _stop(self, st: dict) -> None:
         for gate in st["gates"].values():

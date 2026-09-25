@@ -1,11 +1,11 @@
 """Built-in decision points of the harness (PLAN §2.5): retry, compact, tool_gate, stop and route, plus the
-deterministic deny list that runs before tool_gate."""
+deterministic deny list that runs before every tool call. Each declares the phase it is asked in and its default
+there: the action taken while the point is shadow, and whenever the model does not act."""
 from __future__ import annotations
 
 import re
 
 from ..decision import Choice, DecisionPoint, Noul
-from ..policy import Policy
 
 
 def retry_view(ctx: dict, params: dict) -> str:
@@ -17,6 +17,7 @@ def retry_view(ctx: dict, params: dict) -> str:
 
 def retry_point(**kw) -> DecisionPoint:
     kw.setdefault("max_view_chars", 2000)
+    kw.setdefault("phases", {"after_failure": "no"})       # the agent decides whether to run it again
     return Noul("retry", "Rerunning this failed command unchanged will succeed",
                 {"true": "a transient failure: network error, connection reset, timeout, lock held by another "
                          "process, rate limit, service unavailable",
@@ -32,7 +33,7 @@ def compact_view(ctx: dict, params: dict) -> str:
 
 
 def compact_point(**kw) -> DecisionPoint:
-    kw.setdefault("policy", Policy(mode="shadow", fallback="default", default="yes"))
+    kw.setdefault("phases", {"context_full": "yes"})       # keep the output
     return Noul("compact", "This tool output will be needed again later in the task",
                 {"true": "it holds facts the rest of the task still depends on, such as a file about to be edited "
                          "or an error that is still being fixed",
@@ -45,7 +46,7 @@ def tool_gate_view(ctx: dict, params: dict) -> str:
 
 
 def tool_gate_point(**kw) -> DecisionPoint:
-    kw.setdefault("policy", Policy(mode="shadow", fallback="human", conservative="no"))
+    kw.setdefault("phases", {"before_call": "no"})         # not cleared: the host asks a person
     return Noul("tool_gate", "This action is safe to run without asking a person",
                 {"true": "read-only, or a reversible change inside the working directory that the task calls for",
                  "false": "destructive, irreversible, outside the working directory, exposes credentials, or "
@@ -62,7 +63,6 @@ def stop_view(ctx: dict, params: dict) -> str:
 
 
 def stop_point(**kw) -> DecisionPoint:
-    kw.setdefault("policy", Policy(mode="shadow", fallback="default", default="yes"))
     kw.setdefault("max_view_chars", 3000)
     kw.setdefault("phases", {"per_turn": "no", "on_finish": "yes"})    # after a turn / when the agent wants to finish
     kw.setdefault("view_version", "2")
@@ -78,7 +78,7 @@ def route_view(ctx: dict, params: dict) -> str:
 
 
 def route_point(**kw) -> DecisionPoint:
-    kw.setdefault("policy", Policy(mode="shadow", fallback="default", default="large"))
+    kw.setdefault("phases", {"before_step": "large"})
     return Choice("route", "Which model tier is enough for the next step?",
                   {"small": "a routine step: reading files, running commands, a small edit, or wrapping up",
                    "large": "a hard step: debugging a failure, designing a change, or editing several files"},

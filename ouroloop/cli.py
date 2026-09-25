@@ -152,16 +152,16 @@ def cmd_evolve(args) -> int:
 
 
 def cmd_calibrate(args) -> int:
-    from .evolve.calibrate import apply, calibrate_point
+    """Report only. A threshold lets a point act once a promotion through the frozen gate stores it (M8)."""
+    from .evolve.calibrate import calibrate_point
     _, rt = _load_runtime(args.config)
     for name in args.point or list(rt.points):
         cal = calibrate_point(rt, name)
         if cal is None:
             print(f"{name}: not enough calibration data")
             continue
-        apply(rt, cal)
-        print(f"{name}: temperature={cal.temperature:.2f} threshold={cal.threshold} n={cal.n} "
-              f"accuracy={cal.accuracy:.3f} coverage={cal.coverage:.2f}")
+        print(f"{name}: model={cal.model} temperature={cal.temperature:.2f} thresholds={cal.thresholds} n={cal.n} "
+              f"accuracy={cal.accuracy:.3f}")
     return 0
 
 
@@ -350,7 +350,7 @@ def ledger_stats(rows) -> dict[str, dict]:
         s["labelled"] += 1
         gold = max(target[0], key=target[0].get)
         labels.setdefault(point, Counter())[gold] += 1
-        if probs:
+        if probs and not r.decision.get("abstained"):      # an abstention's uniform probabilities predict nothing
             s["scored"] += 1
             predicted = r.decision["candidates"][max(range(len(probs)), key=probs.__getitem__)]
             s["agree"] += predicted == gold
@@ -432,7 +432,7 @@ def main(argv: list[str] | None = None) -> int:
     e.set_defaults(fn=cmd_evolve)
     e.add_argument("--config", default="ouroloop.toml")
     e.add_argument("--dry-run", action="store_true", help="prepare and validate the job on the trainer, no training")
-    c = sub.add_parser("calibrate", help="fit each point's temperature and threshold")
+    c = sub.add_parser("calibrate", help="fit and report each point's temperature and thresholds; writes nothing")
     c.set_defaults(fn=cmd_calibrate)
     c.add_argument("--config", default="ouroloop.toml")
     c.add_argument("--point", action="append")

@@ -65,6 +65,14 @@ class Answer:
     probs: dict[str, float]
     model: str = ""
     usage: dict = field(default_factory=dict)
+    abstained: bool = False     # no usable answer (nothing to parse, no probabilities): never acted on
+
+    @classmethod
+    def of(cls, labels: list[str], raw: dict[str, float], model: str = "", usage: dict | None = None) -> "Answer":
+        """From a backend's raw probabilities. With nothing left after normalising, the backend abstained: the
+        answer is uniform, for evaluation, and is never acted on."""
+        probs = normalize(labels, raw)
+        return cls(probs or {lab: 1.0 / len(labels) for lab in labels}, model, usage or {}, probs is None)
 
     @property
     def label(self) -> str:
@@ -74,6 +82,12 @@ class Answer:
     def confidence(self) -> float:
         return max(self.probs.values()) if self.probs else 0.0
 
+    @property
+    def decisive(self) -> bool:
+        """Not abstained, and one label is more likely than every other: only such an answer may be acted on."""
+        top = self.confidence
+        return not self.abstained and sum(top - v < 1e-9 for v in self.probs.values()) == 1
+
 
 class Backend(Protocol):
     name: str
@@ -81,12 +95,13 @@ class Backend(Protocol):
     def decide(self, requests: list[Request]) -> list[Answer]: ...
 
 
-def normalize(labels: list[str], raw: dict[str, float]) -> dict[str, float]:
-    """Probabilities over exactly `labels`: missing labels get 0, the rest is renormalised (uniform if empty)."""
+def normalize(labels: list[str], raw: dict[str, float]) -> dict[str, float] | None:
+    """Probabilities over exactly `labels`: missing labels get 0, the rest is renormalised. None when nothing is
+    left (no probabilities, or all zero)."""
     p = {lab: max(0.0, float(raw.get(lab, 0.0))) for lab in labels}
     total = sum(p.values())
     if total <= 0:
-        return {lab: 1.0 / len(labels) for lab in labels}
+        return None
     return {lab: v / total for lab, v in p.items()}
 
 

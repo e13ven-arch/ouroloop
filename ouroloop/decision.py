@@ -44,6 +44,9 @@ class Spec:
                     {**self.view_params, **change.get("view_params", {})})
 
 
+ANSWERERS = ("rule:", "llm:")
+
+
 def default_view(ctx: Any, params: dict) -> str:
     return ctx if isinstance(ctx, str) else json.dumps(ctx, ensure_ascii=False)
 
@@ -59,11 +62,38 @@ class DecisionPoint:
     keep: str = "tail"                                    # which end of an over-long view to keep; errors sit at the end
     candidates: Callable[[Any], dict] | None = None       # runtime-generated choice candidates
     view_version: str = "1"                               # bump when the view function's code changes
-    phases: dict[str, str] = field(default_factory=dict)  # where in a loop it is asked -> the default action there
+    phases: dict[str, str | dict] = field(default_factory=dict)   # where in a loop it is asked -> its default there
 
     @property
     def spec_hash(self) -> str:
-        return _digest([self.type, self.spec.to_json(), self.view_version])
+        return self.hash_of(self.spec)
+
+    def hash_of(self, spec: Spec) -> str:
+        """The spec hash with `spec`. It covers the phases' default labels: temperatures and thresholds are keyed by
+        it, and a threshold only means something against the default it was fitted for."""
+        return _digest([self.type, spec.to_json(), self.view_version,
+                        {ph: self.default_for(ph)[1] for ph in self.phases}])
+
+    def default_for(self, phase: str | None = None) -> tuple[str | None, str | None, str | None]:
+        """-> (phase, its fixed label, its default answerer). A phase declares its default as a label, or as
+        {"default": "rule:<module:function>" | "llm:<backend name>", "label": <taken when that answerer fails>}.
+        Without `phase`, a point with exactly one phase is asked in that one; a point with none has no default
+        (None: the host decides) and can never act."""
+        if phase is None:
+            if len(self.phases) > 1:
+                raise ValueError(f"point {self.name!r} is asked in phases {sorted(self.phases)}: pass phase=")
+            if not self.phases:
+                return None, None, None
+            phase = next(iter(self.phases))
+        if phase not in self.phases:
+            raise ValueError(f"point {self.name!r} declares no phase {phase!r} (phases: {sorted(self.phases)})")
+        d = self.phases[phase]
+        default, label = (d.get("default"), d.get("label")) if isinstance(d, dict) else (d, None)
+        if not (isinstance(default, str) and default.startswith(ANSWERERS)):
+            return phase, default, None
+        if label is None:
+            raise ValueError(f"point {self.name!r}, phase {phase!r}: {default} needs a fixed label to fall back to")
+        return phase, label, default
 
     def question(self, ctx: Any = None, spec: Spec | None = None) -> Question:
         s = spec or self.spec
@@ -102,8 +132,9 @@ class Decision:
     label: str
     probs: dict[str, float]
     confidence: float
-    route: str
+    route: str              # "act", "default", "shadow", "rule" or "error"
     explored: bool
     propensity: float
-    action: str | None      # what was done: the model's label (auto), the fallback's label, or None (host decides)
+    action: str | None      # what to do: the model's label when it acted, else the rule's or the phase's default
     model: str
+    acted: bool = False     # the model's own answer is the action (route "act")

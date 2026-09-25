@@ -1,8 +1,8 @@
 """A self-contained run of one research round (PLAN §5.6), with no network and no model by default.
 
-It seeds a workspace with synthetic `retry` decisions and their outcomes, then: report -> the judge picks an
-error group -> a scripted LLM proposes two spec changes -> the judge rates them -> offline replay ->
-promotion gate -> experience record. With judge="jev" the two research judgments go to the real Jev API.
+It seeds a workspace with synthetic `retry` decisions and their outcomes, then: report -> the largest error group
+-> a scripted LLM proposes two spec changes -> offline replay -> promotion gate -> experience record. The judge's
+view of the target and of each candidate is recorded, not acted on. With judge="jev" it is the real Jev API.
 """
 from __future__ import annotations
 
@@ -96,4 +96,4 @@ def run(root: str | Path | None = None, judge: str = "mock", seed: int = 0, sess
         kw = {"evaluators": {"recipe": recipe_evaluator(SignatureTrainer(),
                                                         check_kwargs={"min_train": 100, "max_mde": 0.2})},
               "context": {"recipe": dict(DEFAULT_RECIPE), "recipe_keys": sorted(RECIPE_KEYS)}}
-    return root, run_round(rt, BasicResearcher(budget=3, seed=seed), demo_llm(), judge_backend, seed=seed, **kw)
+    return root, run_round(rt, BasicResearcher(budget=3), demo_llm(), judge_backend, seed=seed, **kw)

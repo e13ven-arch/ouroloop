@@ -4,7 +4,7 @@
 
 一个轻量的 RSI 框架：不去改进大模型本身，而是让 LLM 提升一个小型决策模型的智能，再用这个决策模型提升 agent harness。
 
-agent 运行中有很多判断：要不要重试、这段历史还留不留、这条命令能不能直接执行、任务做完没有。ouroloop 把这些判断交给一个校准过的决策模型（Jev，或者自己训练的小模型，比如 TDE），一次前向给出概率；置信度不够时，再交给 LLM 或人。每次判断的真实结果都写进本地账本。`ouroloop evolve` 用这些结果自动训练新模型；研究 agent（LLM 推理、决策模型判别）读评测结果，提出决策点、训练配方和 prompt 的改进，也可以换成你自己的实现。决策后端可以直接接 Jev API，也可以用自己训练的小模型（比如 TDE）：冷启动时用 Jev，自己的模型攒够数据后逐个接管决策点。所有改动都要通过留出评测和同一个晋升门，才会替换旧版本。
+agent 运行中有很多判断：要不要重试、这段历史还留不留、这条命令能不能直接执行、任务做完没有。ouroloop 把这些判断交给一个校准过的决策模型（Jev，或者自己训练的小模型，比如 TDE），一次前向给出概率；置信度不够、或者决策点还没打开时，走决策点声明的默认动作：固定动作、规则、LLM 或人。每次判断的真实结果都写进本地账本。`ouroloop evolve` 用这些结果自动训练新模型；研究 agent（LLM 推理、决策模型判别）读评测结果，提出决策点、训练配方和 prompt 的改进，也可以换成你自己的实现。决策后端可以直接接 Jev API，也可以用自己训练的小模型（比如 TDE）：冷启动时用 Jev，自己的模型攒够数据后逐个接管决策点。所有改动都要通过留出评测和同一个晋升门，才会替换旧版本。
 
 ## 快速上手
 
@@ -34,7 +34,7 @@ ouroloop run "..." --llm openai_compat --model qwen3 --base-url http://localhost
 ouroloop run "..." --llm anthropic --verify "pytest -q" --small-model claude-haiku-4-5  # 验证命令和小模型档位
 ouroloop research --config examples/ouroloop.toml --rounds 3        # 对积累的账本跑几轮研究循环
 ouroloop evolve --config examples/ouroloop.toml                     # 用账本训练新的 TDE，过晋升门才替换
-ouroloop calibrate --config examples/ouroloop.toml                  # 按决策点拟合温度和阈值
+ouroloop calibrate --config examples/ouroloop.toml                  # 报告每个决策点的温度和阈值，不写入
 ouroloop models --dir examples/workspace                            # 查看模型谱系；加 --rollback 回退
 ```
 
@@ -75,16 +75,16 @@ prompt 候选按下面几步评测：
 
 工具调用默认要你批准（终端里问 y/N），加 `--yes` 自动放行；黑名单里的命令（`rm -rf /`、`curl ... | sh` 等）永远不执行。配置示例见 [examples/ouroloop.toml](examples/ouroloop.toml)。
 
-`--verify` 给一条检查命令，退出码 0 表示任务完成。agent 想结束时先跑它，没通过就把输出发回去让 agent 接着干（最多 2 次）；检查结果同时是 stop 决策点的标签。`--small-model` 配一个同一接口下更便宜的模型，route 决策点决定每一步用哪个；shadow 模式下约 10% 的步骤会试用小模型，任务成败是这些步骤的弱标签。交互运行时，结束后会问你任务做完没有，回答也记进账本。
+`--verify` 给一条检查命令，退出码 0 表示任务完成。agent 想结束时先跑它，没通过就把输出发回去让 agent 接着干（最多 2 次）；检查结果同时是 stop 决策点的标签。`--small-model` 配一个同一接口下更便宜的模型，route 决策点打开之后决定每一步用哪个，在那之前每一步都用大模型；任务成败是小模型步骤的弱标签。交互运行时，结束后会问你任务做完没有，回答也记进账本。
 
 ## 代码结构
 
 | 路径 | 内容 |
 |---|---|
 | `ouroloop/decision.py` | 决策点和 spec（问题、候选、view 参数） |
-| `ouroloop/policy.py` | 三种模式、阈值拟合、探索和倾向分 |
+| `ouroloop/policy.py` | 执行规则、阈值拟合、探索和倾向分 |
 | `ouroloop/ledger.py` | 账本、原始上下文、冠军 spec |
-| `ouroloop/runtime.py` | 把决策点、后端、兜底和账本串起来 |
+| `ouroloop/runtime.py` | 把决策点、后端、默认回答者和账本串起来 |
 | `ouroloop/agent/` | 最小 agent：loop、read / write / edit / bash 四个工具、harness prompt、任务集 |
 | `ouroloop/points/` | 内置决策点 retry、compact、tool_gate、stop、route，以及命令黑名单 |
 | `ouroloop/chat.py` | 与模型无关的对话格式 |

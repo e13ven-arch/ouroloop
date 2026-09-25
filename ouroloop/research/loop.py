@@ -65,8 +65,7 @@ def run_round(rt, agent, llm, judge, *, evaluators: dict | None = None, context=
     target_promoted: dict[str, tuple[str, bool]] = {}
     for cand in agent.step(ws):
         record = {"candidate": cand.id, "kind": cand.kind, "point": cand.point, "change": cand.change,
-                  "hypothesis": cand.hypothesis, "cost": cand.cost, "p_pass": cand.meta.get("p_pass"),
-                  "explored": bool(cand.meta.get("explored"))}
+                  "hypothesis": cand.hypothesis, "cost": cand.cost, "p_pass": cand.meta.get("p_pass")}
         fn = evaluators.get(cand.kind)
         if fn is None:
             experience.append(rt.root, {**record, "gate": "not_evaluated", "verdict": "no evaluator for this kind"})
@@ -90,15 +89,18 @@ def run_round(rt, agent, llm, judge, *, evaluators: dict | None = None, context=
                              if judged else "insufficient"), **({"details": ev.details} if ev.details else {})}
         experience.append(rt.root, entry)
         result.evaluated.append(entry)
-        # The judge's calls become labelled data: did the candidate it rated actually pass the gate?
+        # The judge's calls are scored against the gate: did the candidate it rated actually pass? The gate's verdict
+        # is derived from models' answers, so it is for evaluation only (source "gate"), never a training target.
         if cand.meta.get("worth_trying") and judged:
-            rt.outcome(cand.meta["worth_trying"], "yes" if g.outcome == "accepted" else "no", note="promotion gate")
+            rt.outcome(cand.meta["worth_trying"], "yes" if g.outcome == "accepted" else "no", source="gate",
+                       note="promotion gate")
         if cand.meta.get("pick_target"):
             label, promoted = target_promoted.get(cand.meta["pick_target"], (cand.meta["target"], False))
             target_promoted[cand.meta["pick_target"]] = (label, promoted or g.outcome == "accepted")
     for did, (label, promoted) in target_promoted.items():
         # Only a success says which choice was right; a failure only says this one was not.
-        rt.outcome(did, label if promoted else None, reward=1.0 if promoted else 0.0, note="promotion gate")
+        rt.outcome(did, label if promoted else None, source="gate", reward=1.0 if promoted else 0.0,
+                   note="promotion gate")
     return result
 
 

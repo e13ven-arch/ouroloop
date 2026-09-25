@@ -85,10 +85,12 @@ def test_temperature_and_threshold_fitting(tmp_path):
     rt = seeded(tmp_path)
     cal = calibrate_point(rt, "retry")
     assert cal is not None and cal.n == len(splits(labelled(rt, "retry"))["calibration"])
-    rt.set_calibration("retry", 2.0, 0.9)
+    assert cal.model == "mock-keyword" and set(cal.thresholds) == {"after_failure"}
+    rt.set_calibration("retry", "mock-keyword", 2.0, {"after_failure": 0.9})
     fresh = Runtime(tmp_path, {"mock": KeywordBackend()}, "mock")
-    point = fresh.register(retry_point())
-    assert point.policy.threshold == 0.9 and fresh.temperature("retry") == 2.0
+    fresh.register(retry_point())
+    assert fresh.temperature("retry", "mock-keyword") == 2.0 and fresh.temperature("retry", "other") == 1.0
+    assert fresh.threshold("retry", "mock-keyword", "after_failure") is None      # no gate record: it never acts
 
 
 def test_registry_promote_and_rollback(tmp_path):
@@ -109,8 +111,9 @@ def test_evolve_model_trains_gates_and_promotes(tmp_path):
     card = evolve_model(rt, SignatureTrainer(), {"min_weight": 1.0}, check_kwargs=LOOSE)
     assert card["gate"] == "accepted" and card["version"] == "m_0001"
     assert rt.point_backends["retry"] == "champion" and rt.backends["champion"].name == "signature"
-    assert Registry(tmp_path).champion()["version"] == "m_0001"
-    assert rt.calibration.get("retry")["model"] == "m_0001"
+    assert Registry(tmp_path).champion()["version"] == "m_0001" and card["model_id"] == "signature:m_0001"
+    cal = rt.calibration_for("retry", "signature:m_0001")        # keyed by the id the backend reports
+    assert cal["version"] == "m_0001" and cal["gate"] is None     # no gate record before M8: it cannot act
     assert experience.read(tmp_path)[-1]["kind"] == "model"
     # the promoted model is what a fresh runtime loads for a point on "champion"
     cfg = {"backends": {"mock": {"type": "mock"}}, "points": {"default_backend": "mock",
@@ -209,7 +212,7 @@ def test_llm_can_ask_the_judge_before_finalizing(tmp_path):
         return json.dumps({"candidates": [{"kind": "spec", "change": {"instructions": "Will a rerun succeed?"},
                                            "hypothesis": "after consulting"}]})
 
-    res = run_round(rt, BasicResearcher(seed=0), MockProvider(llm), KeywordBackend(), seed=0)
+    res = run_round(rt, BasicResearcher(), MockProvider(llm), KeywordBackend(), seed=0)
     assert "Answers from the decision model:" in prompts[1] and "Which error family dominates?" in prompts[1]
     assert [e["hypothesis"] for e in res.evaluated] == ["after consulting"]
     asked = [r for r in rt.ledger.rows() if r.decision["point"] == "ask:research"]
@@ -220,6 +223,6 @@ def test_rounds_stop_when_nothing_is_promoted(tmp_path):
     rt = seeded(tmp_path)
     stale = MockProvider(lambda s, p: json.dumps({"candidates": [{"kind": "spec", "hypothesis": "noop",
                                                                    "change": {"view_params": {"unused": 1}}}]}))
-    results = run_rounds(rt, BasicResearcher(seed=0), stale, KeywordBackend(), rounds=5, patience=2)
+    results = run_rounds(rt, BasicResearcher(), stale, KeywordBackend(), rounds=5, patience=2)
     assert len(results) == 2 and all(not r.promoted for r in results)
     assert demo_llm().model == "scripted-demo"

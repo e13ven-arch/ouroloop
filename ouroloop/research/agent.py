@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from ..decision import Decision
 from ..ledger import new_id
-from ..types import Answer
 from .ask import fit_state, normalize
 
 
@@ -46,11 +46,14 @@ class Workspace:
     def point_type(self, point: str) -> str:
         return self._rt.points[point].type
 
-    def ask(self, name: str, question, state: str, *, max_state_chars: int = 8000) -> tuple[Answer, str]:
-        """Ask the judge a typed question; returns the answer and the id of the recorded decision."""
+    def ask(self, name: str, question, state: str, *, default: str | None = None,
+            max_state_chars: int = 8000) -> Decision:
+        """Ask the judge a typed question; returns the recorded decision. Research points are not switched on
+        (PLAN_v0.2 M7): the judge's answer is recorded and `default` is the action."""
         q = normalize(question)
         state, truncated = fit_state(state, max_state_chars)
-        return self._rt.ask_question(name, q, state, backend=self._judge, meta={"truncated": truncated})
+        return self._rt.ask_question(name, q, state, default=default, backend=self._judge,
+                                     meta={"truncated": truncated})
 
     def llm(self, system: str, prompt: str) -> str:
         return self._llm.complete(system, prompt)

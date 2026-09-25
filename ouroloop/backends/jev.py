@@ -6,7 +6,7 @@ import time
 
 import httpx
 
-from ..types import Answer, Question, Request, normalize
+from ..types import Answer, Question, Request
 
 URL = "https://api.typesafe.ai/v1/systemone"
 
@@ -16,10 +16,11 @@ class JevError(RuntimeError):
 
 
 def parse_answer(ans: dict, q: Question) -> dict[str, float]:
+    """Raw probabilities by label (Answer.of normalises them)."""
     if q.type == "noul":
         p = float(ans["noul"])
         return {"yes": p, "no": 1.0 - p}
-    return normalize(q.labels(), ans.get("probabilities") or {})
+    return ans.get("probabilities") or {}
 
 
 class JevBackend:
@@ -64,5 +65,6 @@ class JevBackend:
             model = data.get("model", self.model)
             for j, i in enumerate(idx):
                 usage = data.get("usage", {}) if j == 0 else {}   # a request's usage is counted once
-                out[i] = Answer(parse_answer(data["answers"][f"q{j}"], requests[i].question), model, usage)
+                q = requests[i].question
+                out[i] = Answer.of(q.labels(), parse_answer(data["answers"][f"q{j}"], q), model, usage)
         return out

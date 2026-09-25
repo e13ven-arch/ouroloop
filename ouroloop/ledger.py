@@ -12,10 +12,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-# Labels from these sources may become training targets (with this weight). Jev outputs and frontier-LLM
-# answers never do: they are kept for evaluation only.
-SOURCE_WEIGHTS = {"env": 1.0, "human": 1.0, "open_llm": 0.5}
-EVAL_ONLY = {"frontier_llm", "jev"}
+# Only what the environment and people say may become a training target (PLAN_v0.2 §1 rule 4). Answers of any model
+# or LLM, and labels derived from them such as a promotion gate's verdict, are kept for evaluation only.
+SOURCE_WEIGHTS = {"env": 1.0, "human": 1.0}
+EVAL_ONLY = {"frontier_llm", "open_llm", "jev", "gate"}
 SOURCES = set(SOURCE_WEIGHTS) | EVAL_ONLY
 
 # Applied to everything ouroloop writes: ledger, session contexts, transcripts, run records, experience.
@@ -76,16 +76,13 @@ class Row:
 
     def target(self) -> tuple[dict[str, float], float] | None:
         """The training target (a label distribution) and its weight, or None if nothing trainable was observed.
-        Outcomes win over escalations; conflicting signals become a weighted distribution."""
-        for events in (self.outcomes, self.escalations):
-            votes: dict[str, float] = defaultdict(float)
-            for ev in events:
-                if ev.get("label") is not None and ev.get("source") in SOURCE_WEIGHTS:
-                    votes[str(ev["label"])] += SOURCE_WEIGHTS[ev["source"]] * float(ev.get("weight", 1.0))
-            total = sum(votes.values())
-            if total > 0:
-                return {lab: v / total for lab, v in votes.items()}, min(1.0, total)
-        return None
+        Only outcomes count, never escalations; conflicting signals become a weighted distribution."""
+        votes: dict[str, float] = defaultdict(float)
+        for ev in self.outcomes:
+            if ev.get("label") is not None and ev.get("source") in SOURCE_WEIGHTS:
+                votes[str(ev["label"])] += SOURCE_WEIGHTS[ev["source"]] * float(ev.get("weight", 1.0))
+        total = sum(votes.values())
+        return ({lab: v / total for lab, v in votes.items()}, min(1.0, total)) if total > 0 else None
 
 
 class Ledger:
@@ -170,19 +167,24 @@ class SessionStore:
 
 
 class CalibrationStore:
-    """Per-point temperature and threshold, fitted on the calibration split (PLAN §4.5)."""
+    """Temperature and per-phase thresholds by (model id, spec hash, point), fitted on the calibration split
+    (PLAN_v0.2 M7). The model id is the one the answering backend reports, so a rollback brings the old values back
+    and a changed model, spec or view finds none. A file in the old per-point format is discarded, not migrated."""
+    VERSION = 2
 
     def __init__(self, path: str | Path):
         self.path = Path(path)
-        self.data = json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else {}
+        raw = json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else {}
+        self.data = raw.get("entries", {}) if raw.get("version") == self.VERSION else {}
 
-    def get(self, point: str) -> dict:
-        return self.data.get(point, {})
+    def get(self, model: str, spec_hash: str, point: str) -> dict:
+        return self.data.get(model, {}).get(spec_hash, {}).get(point, {})
 
-    def set(self, point: str, entry: dict) -> None:
-        self.data[point] = {**entry, "ts": now()}
+    def set(self, model: str, spec_hash: str, point: str, entry: dict) -> None:
+        self.data.setdefault(model, {}).setdefault(spec_hash, {})[point] = {**entry, "ts": now()}
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8")
+        self.path.write_text(json.dumps({"version": self.VERSION, "entries": self.data}, ensure_ascii=False,
+                                        indent=2), encoding="utf-8")
 
 
 class SpecStore:

@@ -1,10 +1,12 @@
-"""The default research agent (PLAN §5.1): the judge picks a target, the LLM proposes (asking the judge typed
-questions when it wants a judgment), and the judge filters the candidates. Targets are error groups of decision
-points (spec and recipe candidates) and, when a task suite is configured, the harness prompt's failing tasks."""
+"""The default research agent (PLAN §5.1): it targets the largest error group, the LLM proposes (asking the judge
+typed questions when it wants a judgment), and every candidate within the budget is tried. The judge also answers
+which group to target (research.pick_target) and whether a candidate is worth trying (research.worth_trying), but
+those points are not switched on (PLAN_v0.2 M7): the answers are recorded, and the defaults above are the actions.
+Targets are error groups of decision points (spec and recipe candidates) and, when a task suite is configured, the
+harness prompt's failing tasks."""
 from __future__ import annotations
 
 import json
-import random
 import re
 
 from .agent import Candidate, Workspace
@@ -52,14 +54,11 @@ def parse_candidates(text: str) -> list[dict]:
 
 
 class BasicResearcher:
-    def __init__(self, budget: int = 2, explore: float = 0.05, max_candidates: int = 3, consult: bool = True,
-                 max_questions: int = 3, seed: int | None = None):
-        self.budget = budget                  # candidates evaluated per round, best judged first
-        self.explore = explore                # chance of evaluating a candidate the judge ranked out
+    def __init__(self, budget: int = 2, max_candidates: int = 3, consult: bool = True, max_questions: int = 3):
+        self.budget = budget                  # candidates evaluated per round, in the order they were proposed
         self.max_candidates = max_candidates
         self.consult = consult                # let the LLM ask the judge typed questions before it finalizes
         self.max_questions = max_questions
-        self.rng = random.Random(seed)
 
     def step(self, ws: Workspace) -> list[Candidate]:
         out = []
@@ -79,16 +78,16 @@ class BasicResearcher:
     def _pick_target(self, ws: Workspace, clusters: list[dict]) -> tuple[dict, str | None]:
         if len(clusters) == 1:
             return clusters[0], None
-        shown = clusters[:20]
+        shown = sorted(clusters, key=lambda c: -c["n"])[:20]      # the largest group first: it is the default
         criteria = {c["id"]: f"{c['point']}: {c['n']} errors where {c['gold']} was predicted as {c['predicted']}, "
                              f"signature {c['signature']}" for c in shown}
         state = "\n".join([f"{p}: n={m['n']} brier={m['brier']:.3f} accuracy={m['accuracy']:.3f}"
                            for p, m in ws.report.points.items()] + [f"{k}: {v}" for k, v in criteria.items()])
-        ans, did = ws.ask("research.pick_target", {
+        d = ws.ask("research.pick_target", {
             "type": "choice", "criteria": criteria,
-            "instructions": "Which error group, if fixed, is most likely to yield a promoted improvement?"}, state)
-        chosen = next((c for c in shown if c["id"] == ans.label), None)
-        return (chosen or shown[0]), did   # "none fits" falls back to the largest group
+            "instructions": "Which error group, if fixed, is most likely to yield a promoted improvement?"}, state,
+            default=shown[0]["id"])
+        return next(c for c in shown if c["id"] == d.action), d.id
 
     def _prompt(self, ws: Workspace, target: dict) -> str:
         point = target["point"]
@@ -162,10 +161,10 @@ class BasicResearcher:
                 continue
             state = str(q.pop("state", "") or "")
             try:
-                ans, _ = ws.ask("ask:research", q, state or q.get("instructions", ""))
+                d = ws.ask("ask:research", q, state or q.get("instructions", ""))
             except (QuestionError, KeyError, TypeError):
                 continue
-            answers.append(f"- {q.get('instructions')} -> {ans.label} (p={ans.confidence:.2f})")
+            answers.append(f"- {q.get('instructions')} -> {d.label or 'no clear answer'} (p={d.confidence:.2f})")
         return answers
 
     def _ask_llm(self, ws: Workspace, system: str, prompt: str) -> list[dict]:
@@ -203,20 +202,19 @@ class BasicResearcher:
         return out
 
     def _filter(self, ws: Workspace, situation: str, candidates: list[Candidate]) -> list[Candidate]:
-        for c in candidates:
+        """The candidates within the budget that research.worth_trying clears: all of them while it is not switched
+        on. The judge's answer is recorded, and scored against the gate's verdict."""
+        chosen = []
+        for c in candidates[:self.budget]:
             state = "\n".join([
                 situation,
                 f"Proposed {c.kind} change: {json.dumps(c.change, ensure_ascii=False)}",
                 f"Hypothesis: {c.hypothesis}",
                 f"Cost: {c.cost}",
             ])
-            ans, did = ws.ask("research.worth_trying", PASS_QUESTION, state)
-            c.meta["worth_trying"] = did
-            c.meta["p_pass"] = ans.probs["yes"]
-        ranked = sorted(candidates, key=lambda c: -c.meta["p_pass"])
-        chosen = ranked[:self.budget]
-        for c in ranked[self.budget:]:
-            if self.rng.random() < self.explore:
-                c.meta["explored"] = True
+            d = ws.ask("research.worth_trying", PASS_QUESTION, state, default="yes")
+            c.meta["worth_trying"] = d.id
+            c.meta["p_pass"] = d.probs["yes"]
+            if d.action == "yes":
                 chosen.append(c)
         return chosen

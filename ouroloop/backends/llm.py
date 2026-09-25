@@ -1,5 +1,6 @@
-"""Fallback decider: asks an LLM to pick one candidate. Whether its answers can become labels depends on the
-provider's source (PLAN §2.4)."""
+"""An LLM as a decision backend: a phase's default answerer ("llm:<backend name>") or a judge. It picks one
+candidate; a reply it cannot parse abstains. Its answers are for evaluation only, never training targets
+(PLAN_v0.2 §1 rule 4)."""
 from __future__ import annotations
 
 import json
@@ -45,7 +46,6 @@ class LlmBackend:
             prompt = (f"State:\n{r.state}\n\nQuestion: {q.instructions}\nOptions:\n" + "\n".join(options)
                       + f'\n\nReply with JSON only: {{"label": "<one of {", ".join(labels)}>"}}')
             label = parse_label(self.provider.complete(SYSTEM, prompt), labels)
-            probs = ({lab: float(lab == label) for lab in labels} if label is not None
-                     else {lab: 1.0 / len(labels) for lab in labels})
-            out.append(Answer(probs, model=f"{self.provider.name}:{getattr(self.provider, 'model', '')}"))
+            out.append(Answer.of(labels, {label: 1.0} if label is not None else {},
+                                 f"{self.provider.name}:{getattr(self.provider, 'model', '')}"))
         return out

@@ -1,42 +1,39 @@
-"""From probabilities to an action: modes, thresholds, exploration and propensities (PLAN §2.3)."""
+"""From an answer to an action: the execution rule, exploration and propensities (PLAN_v0.2 §0), and thresholds."""
 from __future__ import annotations
 
 import math
 import random
 from dataclasses import dataclass
 
-MODES = ("shadow", "gate", "auto")
+from .types import Answer
+
+ROUTES = ("act", "default", "shadow", "rule", "error")
 
 
 @dataclass
 class Policy:
-    mode: str = "shadow"               # shadow: only record; gate: may only apply `conservative`; auto: act on the threshold
-    risk: float = 0.05                 # target error rate among automatic actions
-    threshold: float | None = None     # fitted on the calibration split; None means never act automatically
-    fallback: str = "llm"              # who decides when the model does not: "llm", "human" or "default"
-    default: str | None = None         # the label used when fallback == "default"
-    explore: float = 0.05              # share of eligible decisions still sent to the fallback, so both sides get outcomes
-    conservative: str | None = None    # the one label gate mode may apply by itself (e.g. "no" for tool_gate)
+    act: bool = False       # may the model's answer be acted on; off, the point is shadow (v0.2: only stop may act)
+    explore: float = 0.05   # share of decisions the model could act on that still take the default, for outcomes
 
 
 @dataclass
 class Route:
-    route: str          # "shadow", "auto" or "fallback"
+    route: str          # "act", "default" or "shadow" here; the runtime adds "rule" and "error"
     explored: bool
     propensity: float   # probability of taking this route under the policy, for later off-policy correction
 
 
-def route(policy: Policy, label: str, confidence: float, rng: random.Random) -> Route:
-    if policy.mode == "shadow":
+def route(policy: Policy, ans: Answer, default: str | None, threshold: float | None, rng: random.Random) -> Route:
+    """The execution rule: act only when the point's act is on, the answer is decisive (no abstention, no tied top
+    label), its label differs from the phase's default and its tempered confidence reaches a gated threshold.
+    Otherwise the default is taken: on route "shadow" when act is off, "default" when it is on."""
+    if not policy.act:
         return Route("shadow", False, 1.0)
-    eligible = policy.threshold is not None and confidence >= policy.threshold
-    if policy.mode == "gate" and label != policy.conservative:
-        eligible = False
-    if not eligible:
-        return Route("fallback", False, 1.0)
+    if threshold is None or not ans.decisive or ans.label == default or ans.confidence < threshold:
+        return Route("default", False, 1.0)
     if rng.random() < policy.explore:
-        return Route("fallback", True, policy.explore)
-    return Route("auto", False, 1.0 - policy.explore)
+        return Route("default", True, policy.explore)
+    return Route("act", False, 1.0 - policy.explore)
 
 
 def _binom_cdf(k: int, n: int, p: float) -> float:
@@ -63,15 +60,20 @@ def cp_upper(errors: int, n: int, alpha: float = 0.05) -> float:
     return hi
 
 
-def fit_threshold(confidences: list[float], correct: list[bool], risk: float = 0.05,
-                  alpha: float = 0.05) -> float | None:
-    """Lowest confidence cut-off whose accepted decisions have an error upper bound ≤ risk (None if none does)."""
-    pairs = sorted(zip(confidences, correct), key=lambda t: -t[0])
-    best, errors = None, 0
-    for i, (conf, ok) in enumerate(pairs, 1):
-        errors += not ok
-        if i < len(pairs) and pairs[i][0] == conf:
-            continue  # a cut-off accepts every decision with the same confidence
-        if cp_upper(errors, i, alpha) <= risk:
-            best = conf
+def fit_threshold(confidences: list[float], correct: list[bool], sessions: list[str] | None = None,
+                  risk: float = 0.05, alpha: float = 0.05) -> float | None:
+    """Lowest confidence cut-off whose acting decisions keep a Clopper-Pearson error bound <= risk (None if none
+    does). Counted per session: at each cut-off a session counts only its first decision at or above it, the one
+    that would act and change what follows, so a session's many rows are not taken as independent evidence. Pass
+    only decisions that would act (a label other than the default), in time order; without `sessions` every
+    decision is its own session."""
+    sessions = sessions if sessions is not None else list(range(len(confidences)))
+    best = None
+    for cut in sorted(set(confidences), reverse=True):
+        first: dict = {}
+        for conf, ok, s in zip(confidences, correct, sessions):
+            if conf >= cut and s not in first:
+                first[s] = ok
+        if cp_upper(sum(not ok for ok in first.values()), len(first), alpha) <= risk:
+            best = cut
     return best

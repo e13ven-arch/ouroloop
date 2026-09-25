@@ -1,7 +1,7 @@
-"""LLM providers used by the research agent and the `llm` fallback backend.
+"""LLM providers used by the agent, the research agent and `llm` backends (a default answerer or a judge).
 
-A provider has `complete(system, prompt) -> str` and a `source`, which decides whether its answers may ever
-become training targets ("open_llm") or stay evaluation-only ("frontier_llm").
+A provider has `complete(system, prompt) -> str` and a `source` that says where its answers come from
+("frontier_llm" or "open_llm"). Either way they are for evaluation only, never training targets (PLAN_v0.2 §1).
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ class MockProvider:
 
     name = "mock"
 
-    def __init__(self, fn: Callable[[str, str], str], model: str = "scripted", source: str = "open_llm"):
+    def __init__(self, fn: Callable[[str, str], str], model: str = "scripted", source: str = "frontier_llm"):
         self.fn = fn
         self.model = model
         self.source = source

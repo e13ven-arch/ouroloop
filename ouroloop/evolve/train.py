@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Protocol
 
 from ..ledger import new_id
-from ..types import Answer, Request, normalize
+from ..types import Answer, Request
 
 # 8 GB-GPU defaults from the TDE runs: 1024-token states need batch 2 x accumulation 16 plus checkpointing.
 DEFAULT_RECIPE = {
@@ -59,6 +59,7 @@ class TrainJob:
 class TrainResult:
     run: str          # the run directory, on the machine that trained it
     backend: dict     # a backend spec that serves this run (see config.build_backend)
+    model_id: str     # what that backend reports as Answer.model: calibrations and thresholds are keyed by it
 
 
 class Trainer(Protocol):
@@ -177,7 +178,7 @@ class SignatureBackend:
             entry = self.table.get(r.question.instructions, {})
             dist = entry.get(signature(r.state)) or entry.get("*") or {}
             smoothed = {lab: dist.get(lab, 0.0) + 0.5 for lab in labels}    # add-half smoothing
-            out.append(Answer(normalize(labels, smoothed), self.model))
+            out.append(Answer.of(labels, smoothed, self.model))
         return out
 
 
@@ -192,7 +193,7 @@ class SignatureTrainer:
                     counts[e["question"]][key][c["name"]] += t
         path = Path(job.data_dir).parent / "signature_model.json"
         path.write_text(json.dumps(counts, indent=2), encoding="utf-8")
-        return TrainResult(str(path.parent), {"type": "signature", "path": str(path)})
+        return TrainResult(str(path.parent), {"type": "signature", "path": str(path)}, f"signature:{path.parent.name}")
 
     def backend(self, result: TrainResult) -> SignatureBackend:
         return SignatureBackend(result.backend["path"])
@@ -213,7 +214,7 @@ class LocalTdeTrainer:
                                str(self.repo / job.recipe["replay"]), job.recipe.get("replay_ratio", 1.0),
                                job.recipe.get("seed", 0))
         self.runner([self.python, "scripts/train.py", "--config", cfg_path], cwd=self.repo)
-        return TrainResult(str(out), {"type": "tde", "run": str(out)})
+        return TrainResult(str(out), {"type": "tde", "run": str(out)}, f"tde:{out.name}")
 
     def backend(self, result: TrainResult):
         from ..backends import TdeBackend
@@ -284,7 +285,8 @@ class RemoteTdeTrainer:
             self.sleep(self.poll)
         if code != "0":
             raise TrainError(f"training failed (exit {code}):\n{self.remote.ssh(f'tail -n 30 {rjob}/train.log')}")
-        return TrainResult(f"{rjob}/run", {"type": "tde_remote", "run": f"{rjob}/run", **self.spec})
+        return TrainResult(f"{rjob}/run", {"type": "tde_remote", "run": f"{rjob}/run", **self.spec},
+                           f"tde:{job.version}")
 
     def backend(self, result: TrainResult) -> "RemoteTdeBackend":
         spec = {k: v for k, v in result.backend.items() if k != "type"}
@@ -321,4 +323,4 @@ class RemoteTdeBackend:
             self.remote.pull(f"{rdir}/predictions.jsonl", str(dst))
             self.remote.ssh(f"rm -rf {rdir}")    # leave nothing behind on the host
             probs = {r["i"]: r["probabilities"] for r in map(json.loads, dst.read_text(encoding="utf-8").splitlines())}
-        return [Answer(normalize(req.question.labels(), probs[i]), self.model) for i, req in enumerate(requests)]
+        return [Answer.of(req.question.labels(), probs[i], self.model) for i, req in enumerate(requests)]

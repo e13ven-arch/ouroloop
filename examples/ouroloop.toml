@@ -37,7 +37,6 @@ min_items = 30
 
 [research.options]
 budget = 2
-explore = 0.05
 
 [trainer]                   # trains TDE on a GPU machine over ssh; the checkpoint stays there
 type = "remote_tde"

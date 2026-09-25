@@ -6,9 +6,10 @@ a context for the stop point's view, and optionally a checker.
     on_finish   when the agent wants to finish; default "yes". A failing checker, or with no checker a confident
                 "no", sends the agent back to work, at most max_pushbacks times and never on the last turn.
 
-Order: checker -> model -> pushback -> turn cap (per_turn runs the checker only on a confident "yes"). A rule
-overrules the model, never the other way round. The model is asked only when the stop point's policy is "auto";
-otherwise the context is recorded and no model is called.
+Order: checker -> model -> pushback -> turn cap (per_turn runs the checker only on a "yes"). A rule overrules the
+model, never the other way round, and its verdict is recorded as the decision's veto (route "rule"). The model is
+asked only when the stop point's act is on; otherwise the context is recorded, no model is called, and the phase's
+default is the action.
 """
 from __future__ import annotations
 
@@ -40,12 +41,19 @@ class StopGuard:
         if phase == "per_turn":
             if capped:
                 return StopCall(True, "max_turns")
-            decision, action = self._decide(phase, ctx)
-            checked = self.checker()[0] if self.checker and action == "yes" else None
-            done = action == "yes" and checked is not False
-            return StopCall(done, "stop_point" if done else "", decision, checked)
+            seen = {}
+
+            def check(action: str | None) -> str | None:      # a failing checker overrules a "yes"
+                if action != "yes" or self.checker is None:
+                    return None
+                seen["passed"] = self.checker()[0]
+                return None if seen["passed"] else "no"
+
+            decision, action = self._decide(phase, ctx, check)
+            done = action == "yes"
+            return StopCall(done, "stop_point" if done else "", decision, seen.get("passed"))
         checked, feedback = self.checker() if self.checker else (None, "")
-        decision, action = self._decide(phase, ctx)
+        decision, action = self._decide(phase, ctx, None if checked is None else "yes" if checked else "no")
         if checked is False:
             reason = feedback
         elif checked is None and action == "no":
@@ -57,13 +65,12 @@ class StopGuard:
         self.pushbacks += 1
         return StopCall(False, reason, decision, checked)
 
-    def _decide(self, phase: str, ctx: dict) -> tuple[str | None, str | None]:
-        """-> (decision id, the action taken on the model's answer, or None when it did not act)."""
+    def _decide(self, phase: str, ctx: dict, veto) -> tuple[str | None, str | None]:
+        """-> (decision id, the action: the model's label when it acted, else the rule's or the phase's default)."""
         p = self.rt.points.get(self.point)
         if p is None:
             return None, None
         ctx = {**ctx, "moment": MOMENTS[phase]}
-        if p.policy.mode != "auto":
-            return self.rt.record(p, ctx, session=self.session, phase=phase), None
-        d = self.rt.ask(p, ctx, session=self.session, phase=phase)
-        return d.id, d.action if d.route == "auto" else None
+        ask = self.rt.ask if p.policy.act else self.rt.record
+        d = ask(p, ctx, session=self.session, phase=phase, veto=veto)
+        return d.id, d.action

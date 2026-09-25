@@ -50,7 +50,7 @@ def test_every_stop_decision_gets_a_probe_label(tmp_path):
             hidden_seen.append((workdir / "test_hidden.py").exists())
             return script[len(hidden_seen) - 1]
 
-        agents.append(Agent(ScriptedChat(chat), rt, Tools(workdir), session_meta={"agent": "scripted"}, seed=0,
+        agents.append(Agent(ScriptedChat(chat), rt, Tools(workdir), session_meta={"agent": "scripted"},
                             config=AgentConfig(approve="auto", max_turns=task.max_turns, verify_command=task.verify)))
         return agents[-1]
 
@@ -64,7 +64,9 @@ def test_every_stop_decision_gets_a_probe_label(tmp_path):
         ("no", 0.5), ("yes", 1.0), ("yes", 1.0), ("yes", 1.0)]
     # The probe is the only label: neither the verification command nor the end-of-task checks label stop.
     assert all([(o["source"], o["note"]) for o in r.outcomes] == [("env", "probe")] for r in stops)
-    assert all(r.decision["route"] == "shadow" and r.decision["probs"] is None for r in stops)
+    # No model is asked; the verification command's verdict at on_finish is a rule's (M7)
+    assert [r.decision["route"] for r in stops] == ["rule", "shadow", "shadow", "rule"]
+    assert all(r.decision["probs"] is None for r in stops)
 
     views = [r.decision["view"] for r in stops]
     assert not any("verification" in v or "passed" in v or "failed" in v for v in views)
@@ -81,41 +83,43 @@ def test_every_stop_decision_gets_a_probe_label(tmp_path):
     assert not any(s["dir"].exists() for s in probe.snaps)
 
 
-def test_phases_and_a_confident_yes_after_a_turn(tmp_path):
+def test_phases_and_a_confident_yes_after_a_turn(tmp_path, gated):
     rt = Runtime(tmp_path / "ws", {"yes": Fixed(0.9)}, "yes", seed=0)
-    rt.register(stop_point(policy=Policy(mode="auto", threshold=0.6, explore=0.0, fallback="default", default="yes")))
+    rt.register(stop_point(policy=Policy(act=True, explore=0.0)))
+    gated(rt, "stop", "fixed-1", 0.6)
     (tmp_path / "work").mkdir()
     chat = ScriptedChat([ChatTurn("", [ToolCall("b", "bash", {"command": "true"})], "tool_use")])
-    res = Agent(chat, rt, Tools(tmp_path / "work"), config=AgentConfig(approve="auto"), seed=0).run("t")
+    res = Agent(chat, rt, Tools(tmp_path / "work"), config=AgentConfig(approve="auto")).run("t")
     assert (res.stop, res.turns, chat.calls) == ("stop_point", 1, 1)
 
     ctx = {"task": "t", "turns": 1, "files": "", "actions": "", "message": ""}
-    with pytest.raises(ValueError):
-        rt.record("stop", ctx, phase="later")
-    rt.points["stop"].policy.threshold = 0.95       # not confident enough: the phase's default is the action
-    assert [rt.ask("stop", ctx, phase=ph).action for ph in ("per_turn", "on_finish", None)] == ["no", "yes", "yes"]
+    for phase in ("later", None):                   # only a declared phase; stop declares two
+        with pytest.raises(ValueError):
+            rt.record("stop", ctx, phase=phase)
+    gated(rt, "stop", "fixed-1", 0.95)              # not confident enough: the phase's default is the action
+    assert [rt.ask("stop", ctx, phase=ph).action for ph in ("per_turn", "on_finish")] == ["no", "yes"]
     rt.ask_question("research.q", Question("noul", "Worth trying?"), "state")
-    rows = [r.decision for r in rt.ledger.rows()][-4:]
-    assert [(d["phase"], d["default"]) for d in rows] == [("per_turn", "no"), ("on_finish", "yes"), (None, "yes"),
-                                                          (None, None)]
+    rows = [r.decision for r in rt.ledger.rows()][-3:]
+    assert [(d["phase"], d["default"]) for d in rows] == [("per_turn", "no"), ("on_finish", "yes"), (None, None)]
 
 
-def test_a_confident_yes_after_a_turn_needs_the_checker_and_the_last_turn_decides_nothing(tmp_path):
+def test_a_confident_yes_after_a_turn_needs_the_checker_and_the_last_turn_decides_nothing(tmp_path, gated):
     rt = Runtime(tmp_path / "ws", {"yes": Fixed(0.9)}, "yes", seed=0)
-    rt.register(stop_point(policy=Policy(mode="auto", threshold=0.6, explore=0.0, fallback="default", default="yes")))
+    rt.register(stop_point(policy=Policy(act=True, explore=0.0)))
+    gated(rt, "stop", "fixed-1", 0.6)
     for verify, expected in (("test -f f2", ("stop_point", 2)), ("test -f f9", ("max_turns", 3))):
         work = tmp_path / verify[-2:]
         work.mkdir()
         chat = ScriptedChat([ChatTurn("", [ToolCall("w", "write", {"path": f"f{i}", "content": "x"})], "tool_use")
                              for i in (1, 2, 3)])
-        res = Agent(chat, rt, Tools(work), seed=0,
+        res = Agent(chat, rt, Tools(work),
                     config=AgentConfig(approve="auto", max_turns=3, verify_command=verify)).run("t")
         assert (res.stop, res.turns) == expected
-    # "yes" after every turn: a failing verification overrules it (and labels it), and after the last turn, which
-    # nothing follows, there is no decision at all
+    # "yes" after every turn: a failing verification overrules it (a veto, and a label), and after the last turn,
+    # which nothing follows, there is no decision at all
     stops = [r for r in rt.ledger.rows() if r.decision["point"] == "stop"]
-    assert [(r.decision["action"], r.outcomes[0]["label"]) for r in stops] == [("yes", "no"), ("yes", "yes"),
-                                                                               ("yes", "no"), ("yes", "no")]
+    assert [(r.decision["route"], r.decision["action"], r.outcomes[0]["label"]) for r in stops] == [
+        ("rule", "no", "no"), ("act", "yes", "yes"), ("rule", "no", "no"), ("rule", "no", "no")]
 
 
 @pytest.mark.parametrize("command", ["mkfifo pipe", "ln -s /dev/null test_hidden.py"])
@@ -127,7 +131,7 @@ def test_a_state_the_probe_cannot_copy_or_check_stays_unlabelled(tmp_path, comma
     agents = []
 
     def make(workdir, task):
-        agents.append(Agent(ScriptedChat(script), rt, Tools(workdir), seed=0,
+        agents.append(Agent(ScriptedChat(script), rt, Tools(workdir),
                             config=AgentConfig(approve="auto", max_turns=task.max_turns, verify_command=task.verify)))
         return agents[-1]
 

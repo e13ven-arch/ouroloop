@@ -5,7 +5,7 @@ import os
 
 import httpx
 
-from ..types import Answer, Request, normalize
+from ..types import Answer, Request
 
 
 class HttpBackend:
@@ -27,5 +27,5 @@ class HttpBackend:
             "backend": self.backend,
             "requests": [{"state": r.state, "question": r.question.to_json()} for r in requests]})
         resp.raise_for_status()
-        return [Answer(normalize(r.question.labels(), a["probs"]), a.get("model", ""), a.get("usage") or {})
+        return [Answer.of(r.question.labels(), a.get("probs") or {}, a.get("model", ""), a.get("usage"))
                 for r, a in zip(requests, resp.json()["answers"])]
