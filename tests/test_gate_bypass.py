@@ -12,7 +12,7 @@ from ouroloop.evolve.gate import freeze_template, load_template, open_record, re
 from ouroloop.evolve.pipeline import evolve_model, prepare_model, recipe_evaluator
 from ouroloop.evolve.registry import Registry
 from ouroloop.evolve.train import SignatureTrainer, TrainResult
-from ouroloop.ledger import write_json
+from ouroloop.ledger import PromotionConflict, write_json
 from ouroloop.research import run_round
 from test_gate_record import (ACT_GATE, CFG, M6_CFG, Model, OracleTrainer, Proposes, collect, ctx, held_out,
                               m6_sessions, trained_on, workspace)
@@ -113,6 +113,19 @@ def test_nothing_the_gate_did_not_accept_answers_or_acts(tmp_path):
         reg.promote(first["version"], None)
 
 
+def test_a_verdict_promotes_the_step_it_judged_and_nothing_else(tmp_path):
+    rt = workspace(tmp_path)
+    first = evolve_model(rt, OracleTrainer("R1"))
+    collect(rt, 40, start=150)
+    second = evolve_model(rt, OracleTrainer("R2", 0.99))
+    reg = Registry(rt.root)
+    assert (second["gate"], second["parent"], reg.champion()["version"]) == ("accepted", first["version"],
+                                                                            second["version"])
+    with pytest.raises(PromotionConflict, match="built on"):
+        reg.promote(first["version"], second["version"])      # R1 over R2: no gate judged that step
+    assert reg.champion()["version"] == second["version"]
+
+
 # ---------------------------------------------------------------- sessions and data
 def test_a_held_out_session_or_task_stays_held_out(tmp_path):
     rt = config.build_runtime(M6_CFG, tmp_path)
@@ -139,6 +152,18 @@ def test_a_session_opened_again_keeps_its_release(tmp_path):
     assert config.build_runtime(CFG, tmp_path).session("s_1", {"task": "t"}).model is None     # another process
     assert rt.ask("stop", ctx(), session="s_1", phase="per_turn").model == "base"
     assert rt.session("s_2", {"task": "t"}).model == "R1"
+
+
+def test_a_session_id_cannot_reach_outside_the_session_store(tmp_path):
+    rt = workspace(tmp_path)
+    for bad in ("../ledger/2099-01-01", "../models/champion", "/tmp/x", ".hidden", ""):
+        with pytest.raises(ValueError, match="session id"):
+            rt.ask("stop", ctx(), session=bad, phase="per_turn")
+        with pytest.raises(ValueError, match="session id"):
+            rt.session(bad, {"task": "t"})
+    assert not (rt.root / "ledger" / "2099-01-01.jsonl").exists()
+    rt.ledger.rows()                                # the ledger still reads
+    assert rt.ask("stop", ctx(), session="0b5e-4c1f_x.y@host:1", phase="per_turn").route != "error"
 
 
 def test_a_recipe_changes_the_training_rows_only(tmp_path):

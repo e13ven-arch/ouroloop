@@ -107,7 +107,7 @@ class Runtime:
         those calibrations: a promotion reaches only sessions opened after it. A session never opened is fixed at its
         first ask, and one opened again keeps what it was fixed at. `harness` describes the prompt, tools and StopGuard
         settings of an ouroloop harness."""
-        known = session in self._pins or (self.sessions.root / f"{session}.release.json").exists()
+        known = session in self._pins or self.sessions.path(session, ".release.json").exists()
         pin = self._pin(session) if known else self._keep(session, self.current(harness))
         self.ledger.append({**(meta or {}), "type": "session", "session": session, "release": pin.release.to_json(),
                             "champion": pin.version})
@@ -116,14 +116,14 @@ class Runtime:
     def _keep(self, session: str, pin: Pin) -> Pin:
         """Fix `pin` for the session, also on disk beside its contexts: a process that resumes the session (serve
         restarted, the next hook call) runs the same model, never the one promoted since."""
-        write_json(self.sessions.root / f"{session}.release.json", {"release": pin.release.to_json(),
+        write_json(self.sessions.path(session, ".release.json"), {"release": pin.release.to_json(),
                                                                     "champion": pin.version})
         self._pins[session] = pin
         return pin
 
     def _pin(self, session: str) -> Pin:
         if session not in self._pins:
-            path = self.sessions.root / f"{session}.release.json"
+            path = self.sessions.path(session, ".release.json")
             if not path.exists():
                 return self._keep(session, self.current())
             saved = json.loads(path.read_text(encoding="utf-8"))     # before any promotion: the base, still

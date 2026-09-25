@@ -99,8 +99,8 @@ def test_temperature_and_threshold_fitting(tmp_path):
 def test_registry_promote_and_rollback(tmp_path):
     reg = Registry(tmp_path)
     assert reg.next_version() == "m_0001" and reg.champion() is None
-    accept(tmp_path, {"version": "m_0001", "gate": "accepted", "model_id": "A"})
-    accept(tmp_path, {"version": "m_0002", "gate": "accepted", "model_id": "B"})
+    accept(tmp_path, {"version": "m_0001", "parent": None, "gate": "accepted", "model_id": "A"})
+    accept(tmp_path, {"version": "m_0002", "parent": "m_0001", "gate": "accepted", "model_id": "B"})
     reg.promote("m_0001", None)
     reg.promote("m_0002", "m_0001")
     assert reg.champion()["version"] == "m_0002" and reg.next_version() == "m_0003"

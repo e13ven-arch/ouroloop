@@ -209,6 +209,9 @@ class Ledger:
         return out
 
 
+_SESSION_ID = re.compile(r"\w[\w.@:-]{0,199}")
+
+
 class SessionStore:
     """Raw contexts by session and step, so a changed view function can be re-rendered offline."""
 
@@ -216,9 +219,16 @@ class SessionStore:
         self.root = Path(root)
         self._cache: dict[str, dict[int, Any]] = {}
 
+    def path(self, session: str, suffix: str = ".jsonl") -> Path:
+        """A session's file here. The id comes from callers (serve's clients among them), so it may not name a path
+        elsewhere, such as ../ledger/<day>, whose lines would then break every read of the ledger."""
+        if not isinstance(session, str) or not _SESSION_ID.fullmatch(session):
+            raise ValueError(f"session id {session!r}: up to 200 letters, digits and _ . @ : -, not starting with . @ : -")
+        return self.root / f"{session}{suffix}"
+
     def _load(self, session: str) -> dict[int, Any]:
         if session not in self._cache:
-            self._cache[session] = {e["step"]: e["ctx"] for e in _read_jsonl(self.root / f"{session}.jsonl")}
+            self._cache[session] = {e["step"]: e["ctx"] for e in _read_jsonl(self.path(session))}
         return self._cache[session]
 
     def put(self, session: str, ctx: Any, step: int | None = None) -> str:
@@ -226,7 +236,7 @@ class SessionStore:
         if step is None:
             step = max(steps, default=-1) + 1
         ctx = redact(ctx)
-        _append_jsonl(self.root / f"{session}.jsonl", {"step": step, "ctx": ctx})
+        _append_jsonl(self.path(session), {"step": step, "ctx": ctx})
         steps[step] = ctx
         return f"{session}#{step}"
 

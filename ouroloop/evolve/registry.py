@@ -42,6 +42,8 @@ class Registry:
         version it was built on. Two candidates built on one parent cannot both be promoted. Only a version the gate
         record on its card accepted (gate.run), and that was never revoked, can be promoted."""
         card = self.card(version)
+        if card.get("parent") != expected_parent:       # a verdict promotes the step it judged, parent -> version
+            raise PromotionConflict(f"{version} was built on {card.get('parent')}, not {expected_parent}")
         if not Accepted(self.root).promoted(card):
             raise ValueError(f"{version} was not accepted by a gate record: only gate.run promotes")
         if Revoked(self.root / "harness" / "revoked.json").hit(version, card.get("model_id")):
