@@ -97,6 +97,10 @@ def test_a_new_view_version_voids_the_old_threshold(tmp_path, gated):
     rt.register(stop_point(policy=Policy(act=True, explore=0.0), view_version="2"))
     d = rt.ask("stop", ctx(), phase="per_turn")
     assert (d.route, d.action) == ("default", "no")
+    rt.register(stop_point(policy=Policy(act=True, explore=0.0), view_version="1"))
+    assert rt.ask("stop", ctx(), phase="per_turn").acted
+    rt.register(stop_point(policy=Policy(act=True, explore=0.0), view_version="1", max_view_chars=500))
+    assert not rt.ask("stop", ctx(), phase="per_turn").acted        # the view is cut shorter
 
 
 def test_a_rollback_brings_back_the_previous_champions_temperature_and_threshold(tmp_path, gated):

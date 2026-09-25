@@ -69,9 +69,10 @@ class DecisionPoint:
         return self.hash_of(self.spec)
 
     def hash_of(self, spec: Spec) -> str:
-        """The spec hash with `spec`. It covers the phases' default labels: temperatures and thresholds are keyed by
-        it, and a threshold only means something against the default it was fitted for."""
-        return _digest([self.type, spec.to_json(), self.view_version,
+        """The spec hash with `spec`. Temperatures and thresholds are keyed by it, so it covers everything that shapes
+        what the model sees (the view and where it is cut) and the phases' default labels: a threshold only means
+        something against the view and the default it was fitted for."""
+        return _digest([self.type, spec.to_json(), self.view_version, self.max_view_chars, self.keep,
                         {ph: self.default_for(ph)[1] for ph in self.phases}])
 
     def default_for(self, phase: str | None = None) -> tuple[str | None, str | None, str | None]:
