@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 from ..ledger import PromotionConflict, locked, now, write_json
-from ..release import revoke
+from ..release import Accepted, Revoked, revoke
 
 
 class Registry:
@@ -39,7 +39,13 @@ class Registry:
 
     def promote(self, version: str, expected_parent: str | None) -> None:
         """Compare and swap: `version` becomes the champion only while the champion is still `expected_parent`, the
-        version it was built on. Two candidates built on one parent cannot both be promoted."""
+        version it was built on. Two candidates built on one parent cannot both be promoted. Only a version the gate
+        record on its card accepted (gate.run), and that was never revoked, can be promoted."""
+        card = self.card(version)
+        if not Accepted(self.root).promoted(card):
+            raise ValueError(f"{version} was not accepted by a gate record: only gate.run promotes")
+        if Revoked(self.root / "harness" / "revoked.json").hit(version, card.get("model_id")):
+            raise ValueError(f"{version} is revoked")
         with locked(self.dir / "champion.json"):
             pointer = self._pointer()
             if pointer["version"] != expected_parent:

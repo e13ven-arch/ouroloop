@@ -12,7 +12,7 @@ from . import policy
 from .decision import Decision, DecisionPoint, Spec
 from .ledger import CalibrationStore, Ledger, SessionStore, SpecStore, write_json
 from .policy import Policy, Route, route
-from .release import Release, Revoked, harness_hash, spec_hash
+from .release import Accepted, Release, Revoked, harness_hash, spec_hash
 from .types import Backend, Question, Request, temper
 
 
@@ -43,6 +43,7 @@ class Runtime:
         self.specs = SpecStore(self.root / "harness" / "specs.json")
         self.calibration = CalibrationStore(self.root / "harness" / "calibration.json")
         self.revoked = Revoked(self.root / "harness" / "revoked.json")
+        self.accepted = Accepted(self.root)
         self.backends = backends
         self.default_backend = default_backend
         self.point_backends = dict(point_backends or {})
@@ -75,13 +76,16 @@ class Runtime:
     # ------------------------------------------------------------------ releases
     def champion(self, version: str | None = None) -> tuple[dict, Backend | None, str]:
         """The promoted champion as the registry has it now, or a given `version` of it: (its card, empty before the
-        first promotion; its backend; why the backend could not be built). A version's backend is built once."""
+        first promotion; its backend; why the backend could not be built). A version's backend is built once, and
+        only for a version a gate record accepted: any other never answers, so its points take their defaults."""
         from .evolve.registry import Registry
         registry = Registry(self.root)
         card = registry.card(version) if version else registry.champion() or {}
         if not card:
             return {}, None, ""
         version = card["version"]
+        if not self.accepted.promoted(card):
+            return card, None, f"{version} was not promoted through the frozen gate"
         if version not in self._built:
             from .config import build_backend
             try:
@@ -155,10 +159,11 @@ class Runtime:
     def threshold(self, point: str | DecisionPoint, model: str, phase: str | None,
                   entries: dict | None = None) -> float | None:
         """The lowest confidence at which the point may act on this model's answers in this phase (PLAN_v0.2 §0 rule
-        3): only from a calibration that carries the hash of the gate record that promoted it, and only for a model
-        that names itself (an empty id would match every backend that reports none)."""
+        3): only from a calibration that carries the hash of a gate record that accepted the promotion, and only for
+        a model that names itself (an empty id would match every backend that reports none)."""
         cal = self.calibration_for(point, model, entries)
-        return cal.get("thresholds", {}).get(phase) if cal.get("gate") and phase and model else None
+        accepted = cal.get("gate") in self.accepted.by()
+        return cal.get("thresholds", {}).get(phase) if accepted and phase and model else None
 
     def set_calibration(self, point: str, model: str, temperature: float, thresholds: dict | None = None,
                         gate: str | None = None, **extra) -> None:

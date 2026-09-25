@@ -5,10 +5,25 @@ import json
 
 import pytest
 
+from ouroloop import config
 from ouroloop.evolve.gate import freeze_template, open_record, records
 from ouroloop.evolve.pipeline import evolve_model
 from ouroloop.evolve.registry import Registry
-from test_gate_record import ACT_GATE, OracleTrainer, collect, workspace
+from ouroloop.evolve.train import TrainResult
+from ouroloop.ledger import write_json
+from test_gate_record import ACT_GATE, CFG, OracleTrainer, collect, ctx, workspace
+
+
+class Says(OracleTrainer):
+    """Trains nothing: its model says yes with probability p to every question."""
+
+    def __init__(self, model: str, p: float = 0.9):
+        super().__init__(model)
+        self.p = p
+
+    def train(self, job):
+        return TrainResult(f"runs/{job.version}", {"type": "test_gate_record:Model", "p_yes": self.p,
+                                                   "model": self.model}, self.model)
 
 
 # ---------------------------------------------------------------- gate records
@@ -62,3 +77,31 @@ def test_only_the_latest_record_frozen_from_the_current_template_can_decide(tmp_
     with pytest.raises(ValueError, match="superseded"):
         evolve_model(rt, Refreezes("R2", 0.99), record=current)
     assert not records(rt.root)[-2].used and records(rt.root)[-2].round == current.round
+
+
+# ---------------------------------------------------------------- promotions
+def test_nothing_the_gate_did_not_accept_answers_or_acts(tmp_path):
+    rt = workspace(tmp_path)
+    bad = evolve_model(rt, Says("BAD"))
+    assert bad["gate"] == "rejected"
+    reg = Registry(rt.root)
+    with pytest.raises(ValueError, match="not accepted"):
+        reg.promote(bad["version"], None)
+    # by hand: the champion pointer, and a calibration stored with the rejecting record's hash
+    write_json(rt.root / "models" / "champion.json", {"version": bad["version"], "history": [
+        {"version": bad["version"], "parent": None}]})
+    rt.set_calibration("stop", "BAD", 1.0, {"per_turn": 0.5, "on_finish": 0.5}, gate=bad["gate_record"])
+    d = config.build_runtime(CFG, tmp_path).ask("stop", ctx("no"), session="s_bad", phase="per_turn")
+    assert (d.route, d.acted, d.action, d.model) == ("error", False, "no", "")
+    assert "not promoted through the frozen gate" in rt.ledger.rows()[-1].decision["error"]
+    # a promoted champion's calibration rewritten by hand, with a made-up record hash, does not act either
+    rt = workspace(tmp_path / "b")
+    first = evolve_model(rt, OracleTrainer("R1"))
+    assert rt.ask("stop", ctx(), session="s_1", phase="per_turn").acted
+    rt.set_calibration("stop", "R1", 1.0, {"per_turn": 0.0}, gate="0123456789abcdef")
+    assert not rt.ask("stop", ctx(), session="s_2", phase="per_turn").acted
+    # nor can a rolled-back, revoked model be promoted again
+    reg = Registry(rt.root)
+    assert reg.rollback() is None
+    with pytest.raises(ValueError, match="revoked"):
+        reg.promote(first["version"], None)

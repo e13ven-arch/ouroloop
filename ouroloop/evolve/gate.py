@@ -303,12 +303,16 @@ def run(record: GateRecord, ev: Callable[[], EvalResult], *, seed: int = 0) -> t
         g = replace(g, outcome="validated",
                     reasons=[*g.reasons, "on test sessions a gate has used or seen: validated, not promoted"])
     if g.outcome == "accepted":
+        record.close("accepted", g.reasons, ev.sessions)    # what a promotion is checked against, so written first
         try:
             ev.apply()
         except PromotionConflict as e:
             g = replace(g, outcome="conflict", reasons=[str(e)])
+        except Exception as e:
+            record.close("failed", [f"{type(e).__name__}: {e}"[:500]], ev.sessions)
+            raise
     g.used = used
-    if used:
+    if used and g.outcome != "accepted":
         record.close(g.outcome, g.reasons, ev.sessions)
     return g, ev
 

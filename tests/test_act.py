@@ -8,7 +8,7 @@ import re
 import httpx
 import pytest
 
-from conftest import GATE
+from conftest import GATE, accept
 from ouroloop import config, policy
 from ouroloop.adapters.claude_code import ClaudeCodeAdapter
 from ouroloop.agent import Agent, AgentConfig, Tools
@@ -111,8 +111,8 @@ def test_a_rollback_brings_back_the_previous_champions_temperature_and_threshold
     rt = config.build_runtime(cfg, tmp_path)
     reg = Registry(rt.root)
     for version, model, parent in (("m_0001", "A", None), ("m_0002", "B", "m_0001")):
-        reg.record({"version": version, "parent": parent, "points": ["stop"], "model_id": model,
-                    "backend": {"type": "test_act:Model", "model": model}})
+        accept(rt.root, {"version": version, "parent": parent, "points": ["stop"], "model_id": model,
+                         "backend": {"type": "test_act:Model", "model": model}})
         reg.promote(version, parent)
     gated(rt, "stop", "A", {"per_turn": 0.6}, temperature=2.0)
     gated(rt, "stop", "B", {"per_turn": None}, temperature=0.5)
@@ -129,7 +129,7 @@ def test_a_rollback_brings_back_the_previous_champions_temperature_and_threshold
 def test_promotion_checks_the_model_id_the_backend_reports(tmp_path):
     rt = stop_runtime(tmp_path, Model())
     reg = Registry(rt.root)
-    reg.record({"version": "m_0001"})
+    accept(rt.root, {"version": "m_0001"})
     cand = ModelCandidate("m_0001", {}, None, result=TrainResult("run", {}, "A@renamed"), backend=Model(model="A"))
     with pytest.raises(ValueError, match="reports model 'A'"):
         promote_model(rt, cand, reg, GATE)

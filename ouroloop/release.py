@@ -1,5 +1,6 @@
-"""Releases (PLAN_v0.2 M8): the (model, decision spec, harness) triple a session runs with, the revocation list that
-stops a release from acting, and the version of the code that gates and serves them."""
+"""Releases (PLAN_v0.2 M8): the (model, decision spec, harness) triple a session runs with, the gate records that
+accepted what may answer and act, the revocation list that stops a release from acting, and the version of the code
+that gates and serves them."""
 from __future__ import annotations
 
 import hashlib
@@ -37,6 +38,37 @@ def code_version() -> str:
     for f in sorted(p for p in PACKAGE.rglob("*") if p.is_file() and "__pycache__" not in p.parts):
         h.update(f.relative_to(PACKAGE).as_posix().encode() + b"\0" + f.read_bytes() + b"\0")
     return h.hexdigest()[:16]
+
+
+class Accepted:
+    """The gate records that accepted a candidate, from their copies in <workspace>/gates/ (re-read when they change):
+    record hash -> the candidate it accepted. Only a champion promoted through such a record, and thresholds stored
+    with one, may answer and act (PLAN_v0.2 §0 rule 3): a champion pointer, card or calibration written by hand, or
+    one a gate rejected, never does."""
+
+    def __init__(self, root: str | Path):
+        self.dir = Path(root) / "gates"
+        self._key: tuple | None = None
+        self._by: dict = {}
+
+    def by(self) -> dict[str, str]:
+        paths = sorted(self.dir.glob("r_*.used.json"))
+        key = tuple((p.name, file_key(p)) for p in paths)
+        if key != self._key:
+            by = {}
+            for p in paths:
+                try:
+                    use = json.loads(p.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                if use.get("outcome") == "accepted" and use.get("record"):
+                    by[use["record"]] = use.get("by")
+            self._by, self._key = by, key
+        return self._by
+
+    def promoted(self, card: dict) -> bool:
+        """The card's model was promoted by the gate record it names."""
+        return bool(card.get("gate_record")) and self.by().get(card["gate_record"]) == card.get("version")
 
 
 class Revoked:

@@ -10,7 +10,7 @@ from contextlib import contextmanager
 import httpx
 import pytest
 
-from conftest import SMALL_GATE
+from conftest import SMALL_GATE, accept
 from ouroloop import config
 from ouroloop.agent.loop import SYSTEM
 from ouroloop.agent.prompt import PromptStore
@@ -428,13 +428,14 @@ def test_two_candidates_from_one_parent_cannot_both_be_promoted(tmp_path):
     a = prepare_model(rt, OracleTrainer("R1"), record=record, registry=reg)
     b = prepare_model(rt, OracleTrainer("R2", 0.99), record=record, registry=reg)
     assert a.card["parent"] is None and b.card["parent"] is None
+    a.card, b.card = accept(rt.root, a.card), accept(rt.root, b.card)     # as if a gate accepted both
     promote_model(rt, a, reg, record.hash)
     with pytest.raises(PromotionConflict):
         promote_model(rt, b, reg, record.hash)
     assert reg.champion()["version"] == a.version
     # Through the gate: another promotion lands while the candidate trains
-    reg.record({"version": "m_0099", "parent": a.version, "points": ["stop"], "model_id": "X",
-                "backend": {"type": "test_gate_record:Model", "model": "X"}})
+    accept(rt.root, {"version": "m_0099", "parent": a.version, "points": ["stop"], "model_id": "X",
+                     "backend": {"type": "test_gate_record:Model", "model": "X"}})
 
     class Racing(OracleTrainer):
         def train(self, job):
