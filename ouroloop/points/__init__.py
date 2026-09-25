@@ -54,15 +54,18 @@ def tool_gate_point(**kw) -> DecisionPoint:
 
 
 def stop_view(ctx: dict, params: dict) -> str:
-    # Most telling first: a long view keeps its head, so the action log goes last.
-    return (f"task: {ctx['task']}\nverification: {ctx['verification']}\nfinal message:\n{ctx['message']}\n"
-            f"files changed: {ctx['files'] or 'none'}\nturns so far: {ctx['turns']}\n"
-            f"recent actions:\n{ctx['actions'] or '(none)'}")
+    # Most telling first: a long view keeps its head, so the action log goes last. No checker's verdict: where there
+    # is one it decides, so it would be the label written into the view. Contexts before view 2 were all on_finish.
+    return (f"task: {ctx['task']}\nmoment: {ctx.get('moment', 'the agent wants to finish')}\n"
+            f"last message:\n{ctx['message']}\nfiles changed: {ctx['files'] or 'none'}\n"
+            f"turns so far: {ctx['turns']}\nrecent actions:\n{ctx['actions'] or '(none)'}")
 
 
 def stop_point(**kw) -> DecisionPoint:
     kw.setdefault("policy", Policy(mode="shadow", fallback="default", default="yes"))
     kw.setdefault("max_view_chars", 3000)
+    kw.setdefault("phases", {"per_turn": "no", "on_finish": "yes"})    # after a turn / when the agent wants to finish
+    kw.setdefault("view_version", "2")
     return Noul("stop", "The task is complete",
                 {"true": "everything the task asked for has been done and checked",
                  "false": "part of the task is missing, unverified, or still failing"},

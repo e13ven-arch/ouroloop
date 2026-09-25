@@ -30,6 +30,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from .probe import Probe
 from .tools import Tools, clip
 
 
@@ -125,9 +126,11 @@ def validate(task: Task) -> tuple[float, float | None]:
 
 
 def run_task(task: Task, make_agent: Callable, *, keep: bool = False) -> TaskRun:
-    """Run a fresh agent (make_agent(workdir, task) -> Agent) on the task in a temporary directory."""
+    """Run a fresh agent (make_agent(workdir, task) -> Agent) on the task in a temporary directory. A probe labels
+    every stop decision with the checks run on a copy of the directory as it was then."""
     workdir = Path(tempfile.mkdtemp(prefix=f"ouroloop-{task.name}-")).resolve()
     result: dict = {}
+    probe = None
 
     def confirm(_task: str, _text: str) -> bool:
         # Called once the agent has finished: the checks are the outcome of its stop and route decisions.
@@ -139,9 +142,14 @@ def run_task(task: Task, make_agent: Callable, *, keep: bool = False) -> TaskRun
         try:
             agent = make_agent(workdir, task)
             agent.confirm_fn, agent.confirm_source = confirm, "env"
+            agent.probe = probe = Probe(agent.rt, workdir, lambda d: check(task, d)[0])
+            agent.session_meta = {**agent.session_meta, "task": task.name, "held_out": task.held_out}
             res = agent.run(task.prompt)
         except Exception as e:  # noqa: BLE001 - an API failure is no evidence about the prompt
             return TaskRun(task.name, None, error=f"{type(e).__name__}: {e}"[:500])
+        finally:
+            if probe is not None:
+                probe.label()       # the stop decisions made before a failure still saw a real state
         if "passed" not in result:
             confirm(task.prompt, res.text)
         passed = result["passed"]

@@ -100,7 +100,10 @@ def test_hidden_checks_cannot_be_edited_and_label_the_stop_decision(tmp_path):
                                               "tool_use"), ChatTurn("done", [], "end")))
     assert fixed.score == 1.0 and fixed.turns == 2
     stops = [r for r in rt.ledger.rows() if r.decision["point"] == "stop"]
-    assert [(r.outcomes[0]["label"], r.outcomes[0]["source"]) for r in stops] == [("no", "env"), ("yes", "env")]
+    # per_turn after the write, on_finish at "done": each run's probe labels both from the state they saw
+    assert [(r.decision["phase"], r.outcomes[0]["label"]) for r in stops] == [
+        ("per_turn", "no"), ("on_finish", "no"), ("per_turn", "yes"), ("on_finish", "yes")]
+    assert all(len(r.outcomes) == 1 and r.outcomes[0]["note"] == "probe" for r in stops)
 
 
 def test_harness_prompt_changes():
@@ -183,6 +186,7 @@ max_turns = 3
     make, identity = config.build_agent_factory(cfg, rt)
     a = make(tmp_path, load_suite(tmp_path / "tasks")[0], HarnessPrompt())
     assert identity == "glm-4.6+glm-4.5-air/max_turns=3" and set(a.tiers) == {"large", "small"}
+    assert a.session_meta == {"agent": identity}
     assert a.config.approve == "auto" and a.config.max_turns == 3
 
 

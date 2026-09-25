@@ -135,15 +135,16 @@ def build_agent_factory(cfg: dict, rt: Runtime):
     provider = build_provider(large)
     tiers = {"large": provider, "small": build_provider(small)} if small else None
     cap = suite.get("max_turns")
+    # Everything besides the prompt and the task that changes a run belongs in the identity of its records.
+    identity = "+".join(str(s.get("model", s["type"])) for s in (large, small) if s)
+    identity = f"{identity}/max_turns={cap}" if cap else identity
 
     def make(workdir, task, prompt):
         return Agent(provider, rt, Tools(workdir, descriptions=prompt.tools), tiers=tiers, system=prompt.system,
                      config=AgentConfig(approve="auto", max_turns=min(task.max_turns, cap or task.max_turns),
-                                        verify_command=task.verify))
+                                        verify_command=task.verify), session_meta={"agent": identity})
 
-    # Everything besides the prompt and the task that changes a run belongs in the identity of its records.
-    identity = "+".join(str(s.get("model", s["type"])) for s in (large, small) if s)
-    return make, f"{identity}/max_turns={cap}" if cap else identity
+    return make, identity
 
 
 def build_research(cfg: dict, rt: Runtime, base: str | Path = "."):

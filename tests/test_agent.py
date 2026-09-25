@@ -251,7 +251,9 @@ def test_failing_verification_sends_the_agent_back(tmp_path):
                 on_event=lambda k, d: events.append(k), seed=0).run("create done.txt")
     assert (res.text, res.turns, res.verified) == ("now it is done", 3, True) and events.count("pushback") == 1
     stops = by_point(rt)["stop"]
-    assert [r.outcomes[0]["label"] for r in stops] == ["no", "yes"] and stops[0].outcomes[0]["source"] == "env"
+    assert [(r.decision["phase"], [o["label"] for o in r.outcomes]) for r in stops] == [
+        ("on_finish", ["no"]), ("per_turn", []), ("on_finish", ["yes"])]    # the checker labels on_finish only
+    assert stops[0].outcomes[0]["source"] == "env"
 
 
 def test_confident_stop_pushes_back_and_the_person_confirms(tmp_path):
@@ -273,7 +275,8 @@ def test_a_passing_verification_is_never_overruled_and_is_rechecked_at_the_end(t
     res = Agent(chat, rt, tools, config=AgentConfig(approve="auto", verify_command="test -f done.txt"),
                 seed=0).run("t")
     assert (res.turns, res.verified) == (2, True)                  # the model said "no", the check said done
-    (stop,) = by_point(rt)["stop"]
+    per_turn, stop = by_point(rt)["stop"]
+    assert per_turn.decision["action"] == "no" and per_turn.outcomes == []     # "no" after a turn: keep going
     assert (stop.decision["action"], stop.outcomes[0]["label"]) == ("no", "yes")
     rt2, tools2 = setup(tmp_path / "b", points=[stop_point()])
     chat = ScriptedChat(turns([("write", {"path": "done.txt", "content": "ok"})]))

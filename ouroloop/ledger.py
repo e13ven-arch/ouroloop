@@ -1,4 +1,4 @@
-"""Append-only JSONL ledger of decisions, escalations and outcomes (PLAN §2.4), plus the context store
+"""Append-only JSONL ledger of sessions, decisions, escalations and outcomes (PLAN §2.4), plus the context store
 that lets a changed view be re-rendered offline, and the champion spec store."""
 from __future__ import annotations
 
@@ -125,7 +125,7 @@ class Ledger:
             if ev["type"] == "decision":
                 if point is None or ev.get("point") == point:
                     rows[ev["id"]] = Row(ev)
-            else:
+            elif ev["type"] in ("outcome", "escalation"):     # not session events
                 later.append(ev)
         for ev in later:
             row = rows.get(ev.get("decision"))

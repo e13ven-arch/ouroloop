@@ -11,6 +11,15 @@ from .policy import route
 from .types import Answer, Backend, Question, Request, temper
 
 
+def _default(p: DecisionPoint, phase: str | None) -> str | None:
+    """The action taken when the model does not act: the phase's default, else the policy's."""
+    if phase is None:
+        return p.policy.default
+    if phase not in p.phases:
+        raise ValueError(f"point {p.name!r} declares no phase {phase!r} (phases: {sorted(p.phases)})")
+    return p.phases[phase]
+
+
 class Runtime:
     def __init__(self, root: str | Path, backends: dict[str, Backend], default_backend: str,
                  point_backends: dict[str, str] | None = None, fallback: Backend | None = None,
@@ -50,9 +59,14 @@ class Runtime:
         if point in self.points:
             self.points[point].policy.threshold = threshold
 
+    def session(self, session: str, meta: dict | None = None) -> None:
+        """Record what a session was run with (task, held-out, agent models) before any of its decisions."""
+        self.ledger.append({**(meta or {}), "type": "session", "session": session})
+
     def ask(self, point: str | DecisionPoint, ctx: Any, *, session: str = "s_default",
-            step: int | None = None) -> Decision:
+            step: int | None = None, phase: str | None = None) -> Decision:
         p = self.points[point] if isinstance(point, str) else point
+        default = _default(p, phase)
         view, truncated = p.render(ctx)
         q = p.question(ctx).presented(self.rng)   # candidate order is shuffled, and recorded as shown
         backend = self.backend_for(p.name)
@@ -63,7 +77,7 @@ class Runtime:
         escalation = None
         if r.route == "fallback":
             if p.policy.fallback == "default":
-                action = p.policy.default
+                action = default
             elif p.policy.fallback == "llm" and self.fallback is not None:
                 fa = self.fallback.decide([Request(view, q)])[0]
                 action = fa.label
@@ -74,23 +88,26 @@ class Runtime:
             session=session, ctx=self.sessions.put(session, ctx, step), point=p.name, spec_hash=p.spec_hash,
             backend=backend.name, model=ans.model, view=view, view_chars=len(view), truncated=truncated,
             question=q.to_json(), candidates=q.labels(), probs=[ans.probs[lab] for lab in q.labels()],
-            route=r.route, explored=r.explored, propensity=r.propensity, action=action, usage=ans.usage)
+            route=r.route, explored=r.explored, propensity=r.propensity, action=action, usage=ans.usage,
+            phase=phase, default=default)
         if escalation is not None:
             self.ledger.escalation(did, *escalation)
         return Decision(did, p.name, ans.label, ans.probs, ans.confidence, r.route, r.explored, r.propensity,
                         action, ans.model)
 
     def record(self, point: str | DecisionPoint, ctx: Any, *, session: str = "s_default",
-               step: int | None = None) -> str:
+               step: int | None = None, phase: str | None = None) -> str:
         """Log a decision point's context without asking any model (shadow collection at zero cost). The model's
         probabilities can be computed later by offline replay; only the context and the outcome are needed."""
         p = self.points[point] if isinstance(point, str) else point
+        default = _default(p, phase)
         view, truncated = p.render(ctx)
         q = p.question(ctx)
         return self.ledger.decision(
             session=session, ctx=self.sessions.put(session, ctx, step), point=p.name, spec_hash=p.spec_hash,
             backend="none", model="", view=view, view_chars=len(view), truncated=truncated, question=q.to_json(),
-            candidates=q.labels(), probs=None, route="shadow", explored=False, propensity=1.0, action=None, usage={})
+            candidates=q.labels(), probs=None, route="shadow", explored=False, propensity=1.0, action=None, usage={},
+            phase=phase, default=default)
 
     def ask_question(self, name: str, question: Question, state: str, *, backend: Backend | None = None,
                      session: str = "research", meta: dict | None = None) -> tuple[Answer, str]:

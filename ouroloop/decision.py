@@ -59,6 +59,7 @@ class DecisionPoint:
     keep: str = "tail"                                    # which end of an over-long view to keep; errors sit at the end
     candidates: Callable[[Any], dict] | None = None       # runtime-generated choice candidates
     view_version: str = "1"                               # bump when the view function's code changes
+    phases: dict[str, str] = field(default_factory=dict)  # where in a loop it is asked -> the default action there
 
     @property
     def spec_hash(self) -> str:

@@ -4,8 +4,9 @@
     before a gated tool   deny list, then tool_gate (a person approves what the model does not clear)
     after a failed bash   retry: rerun automatically when the model is confident; outcome = the rerun's result
     context too long      compact: drop older outputs judged unneeded; outcome = whether they were read again
-    before finishing      stop: is the task really done? a failing verification (or a confident "no") sends the
-                          agent back to work, at most max_pushbacks times
+    after a turn          stop (per_turn): is the task done? a confident "yes" ends the session
+    before finishing      stop (on_finish): is the task really done? a failing verification (or a confident "no")
+                          sends the agent back to work, at most max_pushbacks times
 """
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ from ..chat import ChatProvider, ToolCall
 from ..ledger import _append_jsonl, new_id, now, redact
 from ..points import denied
 from ..runtime import Runtime
+from ..stop import StopCall, StopGuard
 from .tools import ToolResult, Tools
 
 SYSTEM = ("You are a coding agent working in {workdir}. Use the tools to complete the task: read files before "
@@ -71,7 +73,8 @@ class Agent:
                  approve_fn: Callable[[ToolCall], bool] | None = None,
                  confirm_fn: Callable[[str, str], bool | None] | None = None, confirm_source: str = "human",
                  on_event: Callable[[str, dict], None] | None = None, tiers: dict[str, ChatProvider] | None = None,
-                 session: str | None = None, system: str | None = None, seed: int | None = None):
+                 session: str | None = None, system: str | None = None, seed: int | None = None,
+                 probe=None, session_meta: dict | None = None):
         self.config = config or AgentConfig()
         self.provider = provider
         self.tiers = tiers or {self.config.default_tier: provider}
@@ -83,7 +86,9 @@ class Agent:
         self.confirm_fn = confirm_fn        # asked at the end: was the task done? (True / False / None to skip)
         self.confirm_source = confirm_source  # "human" for a person's answer, "env" for checks run at the end
         self.on_event = on_event
+        self.probe = probe                  # labels every stop decision from a copy of the working directory
         self.session = session or new_id("s")
+        self.session_meta = dict(session_meta or {})   # recorded with the session: task, held-out, agent models
         self.system = (system or SYSTEM).replace("{workdir}", str(tools.workdir))
         self.rng = random.Random(seed)
         self._items: list[dict] = []        # tool outputs that compaction may drop
@@ -94,7 +99,8 @@ class Agent:
         self._modified: set[str] = set()
         self._changes = 0
         self._errors = 0
-        self._pushbacks = 0
+        self.guard = StopGuard(runtime, self.session, checker=self._check if self.config.verify_command else None,
+                               max_pushbacks=self.config.max_pushbacks, max_turns=self.config.max_turns)
         self._verified: bool | None = None
         self._verified_at = -1              # the change count the last verification saw
         self._task = ""
@@ -102,6 +108,7 @@ class Agent:
     # ------------------------------------------------------------------ loop
     def run(self, task: str) -> AgentResult:
         self._task = task
+        self.rt.session(self.session, self.session_meta)
         messages: list[dict] = [{"role": "user", "content": task}]
         self._emit("task", text=task)
         text, stop, turn = "", "max_turns", 0
@@ -115,7 +122,11 @@ class Agent:
                        tool_calls=[{"id": c.id, "name": c.name, "args": c.args} for c in t.tool_calls])
             text = t.text
             if t.stop != "tool_use" or not t.tool_calls:
-                if t.stop in ("end", "other") and self._pushback(messages, text, turn):
+                call = self._stop("on_finish", text, turn) if t.stop in ("end", "other") else None
+                if call is not None and not call.stop:
+                    messages.append({"role": "user", "content": f"{call.reason}\nKeep working on the task, or "
+                                                                f"explain why it is already done."})
+                    self._emit("pushback", reason=call.reason[:300])
                     continue
                 stop = t.stop
                 break
@@ -128,6 +139,10 @@ class Agent:
                                         "ref": (len(messages), len(results) - 1), "output": res.output,
                                         "dropped": False, "decision": None, "labelled": False})
             messages.append({"role": "tool", "results": results})
+            call = self._stop("per_turn", text, turn)
+            if call.stop:
+                stop = call.reason
+                break
         self._finish(text)
         self._emit("end", stop=stop, turns=turn, verified=self._verified)
         return AgentResult(text, turn, stop, self.session, self._verified)
@@ -166,34 +181,22 @@ class Agent:
         return self.tiers[tier], tier
 
     # ------------------------------------------------------------------ stop
-    def _pushback(self, messages: list[dict], text: str, turn: int) -> bool:
-        """At a would-be end: verify, ask the stop point, and send the agent back to work if the task is not done."""
-        verified, verify_out = self._verify()
-        d = None
-        if "stop" in self.rt.points:
-            verification = ("none" if verified is None else "passed" if verified
-                            else f"failed:\n{verify_out[-300:]}")
-            d = self.rt.ask("stop", {"task": self._task_head(), "turns": turn,
-                                     "files": ", ".join(sorted(self._modified))[:500],
-                                     "actions": "\n".join(self._actions[-10:]), "verification": verification,
-                                     "message": text[:1500]}, session=self.session)
-            record = {"decision": d.id, "changes": self._changes, "labelled": verified is not None}
-            self._stops.append(record)
-            if verified is not None:
-                self.rt.outcome(d.id, "yes" if verified else "no", note="verification command")
-        if verified is False:
-            reason = f"The verification command `{self.config.verify_command}` failed:\n{verify_out}"
-        elif verified is None and d is not None and d.route == "auto" and d.action == "no":
-            reason = "The task does not look complete yet."    # a passing verification is never overruled
-        else:
-            return False
-        if self._pushbacks >= self.config.max_pushbacks or turn >= self.config.max_turns:
-            return False
-        self._pushbacks += 1
-        messages.append({"role": "user", "content": f"{reason}\nKeep working on the task, or explain why it is "
-                                                    f"already done."})
-        self._emit("pushback", reason=reason[:300])
-        return True
+    def _stop(self, phase: str, text: str, turn: int) -> StopCall:
+        call = self.guard(phase, {"task": self._task_head(), "turns": turn,
+                                  "files": ", ".join(sorted(self._modified))[:500],
+                                  "actions": "\n".join(self._actions[-10:]), "message": text[:1500]}, turn)
+        if call.decision is not None:
+            if self.probe is not None:      # the probe labels it after the session, from the state it saw
+                self.probe.snap(call.decision, self._changes)
+            elif call.checked is not None:
+                self.rt.outcome(call.decision, "yes" if call.checked else "no", note="verification command")
+            self._stops.append({"decision": call.decision, "changes": self._changes,
+                                "labelled": self.probe is not None or call.checked is not None})
+        return call
+
+    def _check(self) -> tuple[bool, str]:
+        verified, out = self._verify()
+        return bool(verified), f"The verification command `{self.config.verify_command}` failed:\n{out}"
 
     def _verify(self) -> tuple[bool | None, str]:
         if not self.config.verify_command:
@@ -308,7 +311,8 @@ class Agent:
         if self.confirm_fn is not None:
             answer = self.confirm_fn(self._task, text)
             if answer is not None:
-                for s in self._stops:   # a stop decision made after the last change saw the final state
+                # Without a probe: a stop decision made after the last change saw the final state.
+                for s in self._stops:
                     if not s["labelled"] and s["changes"] == self._changes:
                         self.rt.outcome(s["decision"], "yes" if answer else "no", source=self.confirm_source,
                                         note="task outcome at the end")
