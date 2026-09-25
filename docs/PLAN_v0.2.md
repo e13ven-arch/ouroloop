@@ -532,3 +532,11 @@ M6 最先做。它不需要执行、校准或门，而采集是整个计划里�
   - spec 哈希没有覆盖 view 的截断方式；
   - 带引号的 `act = "false"` 会被当成打开。
   - 共 99 个离线测试。
+- M8 已完成（2026-09-26）：门模板和每轮的门记录、新 session 规则、比较交换的持久晋升、发布三元组和 session 固定、撤销名单，以及 M7 安全评审留下的四项。评审修掉两个会让 M9 在真实账本上白白耗掉测试 session 的问题（测试 session 可能没有标签；新 session 不够时冻结的记录会被一直沿用）。绕过门的对抗评审找到并修掉 15 个洞，每个都先写了会失败的测试（`tests/test_gate_bypass.py`），例如：删掉 `used` 标记让测试 session 重新算新；手改 `champion.json` 指向被拒的候选；手改 `calibration.json` 的阈值；配方候选把 `init_from` 或 `replay` 指向本轮的校准数据；`test.jsonl` 被拷给训练器；`gate freeze --replace --set risk=0.5` 放宽之后所有的门；研究 agent 读到 held-out 结果；session id 里的路径穿越写坏账本。共 129 个离线测试。
+- 顺序调整（2026-09-26，见 `docs/DEMO_PLAN.md`）：演示改为贪吃蛇（框架的 demo），行业场景延后。接下来依次是：
+  1. GPU 主机上的训练和服务：M9 里训练路径（经 Hugging Face、按 sha 加载的 serve）那一半，用贪吃蛇来验证，而不是编码 stop。
+  2. 贪吃蛇场景包和 `ouroloop demo`：环境、决策点、环境前瞻打标签、默认的规则蛇、指标。
+  3. M11 研究 agent，先用 `manual` provider 驱动；它和 API provider 的数据协议完全一致。
+  4. 在 GPU 主机上跑多代，得到贪吃蛇的 RSI 曲线（M13）。
+
+  延后：编码 stop 的执行对照验收（M9 的另一半，也省下 GLM 调用）、M10 的行业示例、M12。
