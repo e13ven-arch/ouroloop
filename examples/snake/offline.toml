@@ -12,7 +12,7 @@ root = "workspace-offline"
 scenario = "examples.snake.scenario:Snake"
 path = "../.."
 generations = 6
-games = 60
+games = 120                     # enough calibration sessions for a 5% threshold by generation 3
 plant = 2
 seed = 0
 
