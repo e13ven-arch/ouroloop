@@ -123,7 +123,7 @@ class GateRecord:
         if not used:
             return None
         return {"ts": used["ts"], "by": used["by"],
-                **({k: closed[k] for k in ("outcome", "reasons", "sessions")} if closed else {})}
+                **{k: v for k, v in (closed or {}).items() if k not in ("type", "event", "round", "record", "ts")}}
 
     @property
     def used(self) -> bool:
@@ -155,8 +155,10 @@ class GateRecord:
         self.took = True
         return True
 
-    def close(self, outcome: str, reasons: list, sessions: list[str] = ()) -> None:
-        self._append("closed", outcome=outcome, reasons=reasons, sessions=list(sessions))
+    def close(self, outcome: str, reasons: list, sessions: list[str] = (), calibrations: list[dict] = ()) -> None:
+        """The verdict. An accepting one lists the calibrations the promotion stores: the only ones that may act."""
+        self._append("closed", outcome=outcome, reasons=reasons, sessions=list(sessions),
+                     calibrations=list(calibrations))
 
     @property
     def ran_own(self) -> bool:
@@ -334,7 +336,7 @@ def run(record: GateRecord, ev: Callable[[], EvalResult], *, seed: int = 0) -> t
         g = replace(g, outcome="validated",
                     reasons=[*g.reasons, "on test sessions a gate has used or seen: validated, not promoted"])
     if g.outcome == "accepted":
-        record.close("accepted", g.reasons, ev.sessions)    # what a promotion is checked against, so written first
+        record.close("accepted", g.reasons, ev.sessions, ev.calibrations)   # what a promotion is checked against
         try:
             ev.apply()
         except PromotionConflict as e:

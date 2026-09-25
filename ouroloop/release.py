@@ -42,20 +42,21 @@ def code_version() -> str:
 
 class Accepted:
     """The gate records that accepted a candidate, from their copies in <workspace>/gates/ (re-read when they change):
-    record hash -> the candidate it accepted. Only a champion promoted through such a record, and thresholds stored
-    with one, may answer and act (PLAN_v0.2 §0 rule 3): a champion pointer, card or calibration written by hand, or
-    one a gate rejected, never does."""
+    record hash -> the candidate it accepted, and the calibrations its promotion stores. Only a champion promoted
+    through such a record answers, and only a calibration as such a record accepted it acts (PLAN_v0.2 §0 rule 3): a
+    champion pointer, card or calibration written by hand, or one a gate rejected, never does."""
 
     def __init__(self, root: str | Path):
         self.dir = Path(root) / "gates"
         self._key: tuple | None = None
         self._by: dict = {}
+        self._cal: dict = {}
 
     def by(self) -> dict[str, str]:
         paths = sorted(self.dir.glob("r_*.used.json"))
         key = tuple((p.name, file_key(p)) for p in paths)
         if key != self._key:
-            by = {}
+            by, cal = {}, {}
             for p in paths:
                 try:
                     use = json.loads(p.read_text(encoding="utf-8"))
@@ -63,8 +64,16 @@ class Accepted:
                     continue
                 if use.get("outcome") == "accepted" and use.get("record"):
                     by[use["record"]] = use.get("by")
-            self._by, self._key = by, key
+                    for c in use.get("calibrations") or []:
+                        cal[(use["record"], c["model"], c["spec"], c["point"])] = {
+                            "temperature": c["temperature"], "thresholds": c["thresholds"]}
+            self._by, self._cal, self._key = by, cal, key
         return self._by
+
+    def calibration(self, record: str | None, model: str, spec: str, point: str) -> dict | None:
+        """The temperature and thresholds that `record` accepted for this model, spec and point, if it did."""
+        self.by()
+        return self._cal.get((record, model, spec, point))
 
     def promoted(self, card: dict) -> bool:
         """The card's model was promoted by the gate record it names."""

@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -12,9 +13,11 @@ GATE = "0123456789ab"       # stands in for the hash of the gate record that pro
 SMALL_GATE = {"checks": {"min_train": 100, "max_mde": 0.2}, "min_cal_sessions": 10}
 
 
-def accepted(root, record: str, by: str) -> None:
-    """Stand in for a gate record that accepted a candidate, as gate.run leaves it in <workspace>/gates/."""
-    write_json(Path(root) / "gates" / f"r_{by}.used.json", {"record": record, "outcome": "accepted", "by": by})
+def accepted(root, record: str, by: str, calibrations: list[dict] = ()) -> None:
+    """Stand in for a gate record that accepted a candidate and the calibrations its promotion stores, as gate.run
+    leaves it in <workspace>/gates/."""
+    write_json(Path(root) / "gates" / f"r_{by}.used.json", {"record": record, "outcome": "accepted", "by": by,
+                                                             "calibrations": list(calibrations)})
 
 
 def accept(root, card: dict) -> dict:
@@ -28,12 +31,18 @@ def accept(root, card: dict) -> dict:
 @pytest.fixture
 def gated():
     """Write thresholds as a promotion through the frozen gate would: for one model id, on the point's current
-    spec, with the hash of a gate record that accepted it. A single number applies to every phase of the point."""
+    spec, with the hash of a gate record (a new one each time) that accepted it. A single number applies to every
+    phase of the point."""
+    records = iter(range(10 ** 6))
+
     def write(rt, point, model, thresholds, temperature=1.0):
         if not isinstance(thresholds, dict):
             thresholds = {phase: thresholds for phase in rt.points[point].phases}
-        accepted(rt.root, GATE, "fixture")
-        rt.set_calibration(point, model, temperature, thresholds, gate=GATE)
+        n = next(records)
+        accepted(rt.root, f"{GATE}{n}", f"fixture{n}", [{"model": model, "spec": rt.points[point].spec_hash,
+                                                         "point": point, "temperature": temperature,
+                                                         "thresholds": thresholds}])
+        rt.set_calibration(point, model, temperature, thresholds, gate=f"{GATE}{n}")
     return write
 
 

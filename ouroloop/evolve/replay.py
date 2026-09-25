@@ -117,6 +117,7 @@ class EvalResult:
     details: dict = field(default_factory=dict)            # kept in the experience record, e.g. what changed where
     inconclusive: list[str] = field(default_factory=list)  # an infrastructure failure: no evidence either way
     sessions: list[str] = field(default_factory=list)      # new sessions the evaluation ran as its test set (prompts)
+    calibrations: list[dict] = field(default_factory=list)  # what a promotion stores: model, spec, point, values
 
 
 def scored(rt, point: DecisionPoint, champion: Spec, challenger: Spec, rows: list[tuple], backend=None,
@@ -160,7 +161,8 @@ def evaluate_spec(rt, cand, record) -> EvalResult:
             store(rt, cal, gate=record.hash)
 
     return EvalResult(cand.point, *test, apply, protected_ok, per_point={cand.point: test},
-                      details={"held_out": summarize({cand.point: held})[cand.point]})
+                      details={"held_out": summarize({cand.point: held})[cand.point]},
+                      calibrations=[cal.gated(p.hash_of(challenger))] if cal is not None else [])
 
 
 EVALUATORS = {"spec": evaluate_spec}

@@ -37,6 +37,11 @@ class PointCalibration:
     def entry(self) -> dict:
         return {"n": self.n, "sessions": self.sessions, "accuracy": round(self.accuracy, 4)}
 
+    def gated(self, spec_hash: str) -> dict:
+        """What the gate record that promotes it accepts: the runtime acts on a stored calibration only as this."""
+        return {"model": self.model, "spec": spec_hash, "point": self.point, "temperature": self.temperature,
+                "thresholds": self.thresholds}
+
 
 def calibrate_point(rt, point: str, backend=None, test_frac: float = 0.15, cal_frac: float = 0.15,
                     min_items: int = 30, risk: float = 0.05, *, rows: list[tuple] | None = None, spec=None,

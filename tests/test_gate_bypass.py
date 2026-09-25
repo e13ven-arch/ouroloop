@@ -100,12 +100,21 @@ def test_nothing_the_gate_did_not_accept_answers_or_acts(tmp_path):
     d = config.build_runtime(CFG, tmp_path).ask("stop", ctx("no"), session="s_bad", phase="per_turn")
     assert (d.route, d.acted, d.action, d.model) == ("error", False, "no", "")
     assert "not promoted through the frozen gate" in rt.ledger.rows()[-1].decision["error"]
-    # a promoted champion's calibration rewritten by hand, with a made-up record hash, does not act either
+    # a promoted champion's calibration rewritten by hand does not act: with a made-up record hash, nor with the
+    # hash of the record that promoted it and a lower threshold or a sharper temperature than that record accepted
     rt = workspace(tmp_path / "b")
     first = evolve_model(rt, OracleTrainer("R1"))
+    cal = rt.calibration_for("stop", "R1")
+    assert rt.threshold("stop", "R1", "per_turn") == cal["thresholds"]["per_turn"] > 0
     assert rt.ask("stop", ctx(), session="s_1", phase="per_turn").acted
-    rt.set_calibration("stop", "R1", 1.0, {"per_turn": 0.0}, gate="0123456789abcdef")
+    for temperature, thresholds, gate_hash in [(cal["temperature"], {"per_turn": 0.0}, "0123456789ab"),
+                                               (cal["temperature"], {"per_turn": 0.0}, cal["gate"]),
+                                               (0.01, cal["thresholds"], cal["gate"])]:
+        rt.set_calibration("stop", "R1", temperature, thresholds, gate=gate_hash)
+        assert rt.threshold("stop", "R1", "per_turn") is None
     assert not rt.ask("stop", ctx(), session="s_2", phase="per_turn").acted
+    rt.set_calibration("stop", "R1", cal["temperature"], cal["thresholds"], gate=cal["gate"])     # as promoted
+    assert rt.ask("stop", ctx(), session="s_3", phase="per_turn").acted
     # nor can a rolled-back, revoked model be promoted again
     reg = Registry(rt.root)
     assert reg.rollback() is None

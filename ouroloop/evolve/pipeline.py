@@ -142,7 +142,8 @@ def model_evaluation(rt, mc: ModelCandidate, registry: Registry, record: GateRec
                           insufficient=mc.checks.insufficient, record=file_card)
     flat = [[x for v in mc.per_point.values() for x in v[i]] for i in range(3)]
     return EvalResult("model", *flat, apply=lambda: promote_model(rt, mc, registry, record.hash),
-                      per_point=mc.per_point, record=file_card)
+                      per_point=mc.per_point, record=file_card,
+                      calibrations=[c.gated(rt.points[name].spec_hash) for name, c in mc.calibrations.items()])
 
 
 def recipe_evaluator(trainer, base_recipe: dict | None = None, **kw):
