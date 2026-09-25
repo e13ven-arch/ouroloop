@@ -223,7 +223,8 @@ class SessionStore:
         """A session's file here. The id comes from callers (serve's clients among them), so it may not name a path
         elsewhere, such as ../ledger/<day>, whose lines would then break every read of the ledger."""
         if not isinstance(session, str) or not _SESSION_ID.fullmatch(session):
-            raise ValueError(f"session id {session!r}: up to 200 letters, digits and _ . @ : -, not starting with . @ : -")
+            raise ValueError(f"session id {session!r}: up to 200 letters, digits and _ . @ : -, starting with a "
+                             f"letter or digit")
         return self.root / f"{session}{suffix}"
 
     def _load(self, session: str) -> dict[int, Any]:
