@@ -20,9 +20,8 @@ from typing import Callable
 
 import httpx
 
-from ..ledger import now, write_json
+from ..ledger import PromotionConflict, now, write_json
 from ..release import code_version
-from .registry import PromotionConflict
 from .replay import EvalResult, in_calibration
 from .train import TrainError
 
@@ -34,9 +33,10 @@ TEMPLATE = {
     "min_cal_sessions": 120,        # fewer calibration sessions: no thresholds, the point cannot act
     "checks": {"min_train": 200, "max_mde": 0.10},     # data checks before training (evolve/checks.py)
     "suite": {"min_items": 10},     # prompt gates: development-task runs per side
-    "test_sessions": "the non-held-out sessions that started after the last gate record with fresh sessions was "
-                     "frozen and never went through a gate (the first record: the latest min_sessions); fewer than "
-                     "min_sessions: the latest older ones, and the verdict can only be validated",
+    "test_sessions": "the non-held-out sessions with a labelled decision that started after the freezing of the "
+                     "last gate record whose fresh sessions a gate used, and never went through a gate (the first "
+                     "record: the latest min_sessions); fewer than min_sessions: the latest older ones, and the "
+                     "verdict can only be validated",
     "budget": {"sessions_per_generation": 40},
 }
 # Failures of the machinery, not of the candidate: the verdict is "inconclusive", never evidence against it.
@@ -109,8 +109,14 @@ class GateRecord:
         write_json(self._used, {**(self.usage or {}), "outcome": outcome, "reasons": reasons,
                                 "sessions": list(sessions)})
 
+    @property
+    def ran_own(self) -> bool:
+        """The evaluation that used the record ran its own test sessions (a prompt gate): the record's ledger
+        sessions were never inferred on, so they stay fresh for the next record."""
+        return bool((self.usage or {}).get("sessions"))
+
     def seen(self) -> set[str]:
-        return set(self.test_sessions) | set((self.usage or {}).get("sessions", []))
+        return set(self.usage["sessions"]) if self.ran_own else set(self.test_sessions)
 
     def cal_frac(self, point: str) -> float:
         fracs = self.params["cal_frac"]
@@ -146,26 +152,49 @@ def seen_sessions(root: str | Path) -> set[str]:
 
 def open_record(rt) -> GateRecord:
     """The round's gate record: the latest one while nothing has used it and it was frozen from the current template
-    and code (a rerun after a failure before inference uses the same one), else a new one."""
+    and code (a rerun after a failure before inference uses the same one), else a new one. A latest record without
+    fresh sessions, which can only validate, gives way to a new one once there are enough fresh sessions."""
     params, template = load_template(rt.root)
     code = code_version()
     past = records(rt.root)
     last = past[-1] if past else None
-    if last and not last.used and last.data["template"] == template and last.data["code"]["ouroloop"] == code:
+    reuse = last and not last.used and last.data["template"] == template and last.data["code"]["ouroloop"] == code
+    if reuse and last.fresh:
         return last
-    return _freeze(rt, params, template, code, past)
+    data = _choose(rt, params, past)
+    if reuse and not data["fresh"]:
+        return last
+    data = {"round": f"r_{len(past) + 1:04d}", "frozen": now(), "template": template, "params": params,
+            "code": {"ouroloop": code, "serve": _serve_versions(rt)}, **data}
+    path = Path(rt.root) / "gates" / f"{data['round']}.json"
+    with open(path, "x", encoding="utf-8") as f:       # two processes cannot both freeze this round
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    return GateRecord(path)
 
 
-def _freeze(rt, params: dict, template: str, code: str, past: list[GateRecord]) -> GateRecord:
-    """Choose the test sessions: the non-held-out sessions that started after the last used record with fresh
-    sessions was frozen and never went through a gate (for the first record, the latest `min_sessions` of them). With
-    fewer, the latest older sessions, which can only validate. Only sessions that decided at a registered point
-    count. The held-out tasks' sessions from the same time are reported beside them."""
+def _serve_versions(rt) -> dict:
+    serve = {}
+    for name, backend in rt.backends.items():
+        if hasattr(backend, "code_version"):
+            try:
+                serve[name] = backend.code_version()
+            except Exception:  # noqa: BLE001 - recorded as unknown; the gate's own inference fails later if it is down
+                serve[name] = None
+    return serve
+
+
+def _choose(rt, params: dict, past: list[GateRecord]) -> dict:
+    """Choose the test sessions: the non-held-out sessions that started after the freezing of the last record whose
+    fresh sessions a gate used (a prompt gate uses the runs it makes instead), and never went through a gate (for
+    the first record, the latest `min_sessions` of them). With fewer, the latest older sessions, which can only
+    validate. Only sessions with a labelled decision at a registered point count: one still running, or one that
+    broke before its probe, would be no evidence. The held-out tasks' sessions from the same time are reported
+    beside them."""
     sessions, position = rt.ledger.sessions()
     used = [r for r in past if r.used]
     seen = set().union(*(r.seen() for r in used))
-    window = next((r.data["position"] for r in reversed(used) if r.fresh), None)
-    live = sorted((s for s, info in sessions.items() if info["points"] & set(rt.points)),
+    window = next((r.data["position"] for r in reversed(used) if r.fresh and not r.ran_own), None)
+    live = sorted((s for s, info in sessions.items() if info["labelled"] & set(rt.points)),
                   key=lambda s: sessions[s]["start"])
     pool = [s for s in live if not sessions[s].get("held_out")]
     k = params["min_sessions"]
@@ -176,20 +205,7 @@ def _freeze(rt, params: dict, template: str, code: str, past: list[GateRecord]) 
     test = fresh if len(fresh) >= k else [s for s in pool if window is None or sessions[s]["start"] < window][-k:]
     first = min((sessions[s]["start"] for s in test), default=position)
     held = [s for s in live if sessions[s].get("held_out") and sessions[s]["start"] >= first]
-    serve = {}
-    for name, backend in rt.backends.items():
-        if hasattr(backend, "code_version"):
-            try:
-                serve[name] = backend.code_version()
-            except Exception:  # noqa: BLE001 - recorded as unknown; the gate's own inference fails later if it is down
-                serve[name] = None
-    data = {"round": f"r_{len(past) + 1:04d}", "frozen": now(), "position": position, "template": template,
-            "params": params, "code": {"ouroloop": code, "serve": serve}, "fresh": len(fresh) >= k,
-            "test_sessions": test, "held_out_sessions": held}
-    path = Path(rt.root) / "gates" / f"{data['round']}.json"
-    with open(path, "x", encoding="utf-8") as f:       # two processes cannot both freeze this round
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    return GateRecord(path)
+    return {"position": position, "fresh": len(fresh) >= k, "test_sessions": test, "held_out_sessions": held}
 
 
 @dataclass

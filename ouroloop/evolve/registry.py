@@ -6,12 +6,8 @@ import json
 import re
 from pathlib import Path
 
-from ..ledger import locked, now, write_json
+from ..ledger import PromotionConflict, locked, now, write_json
 from ..release import revoke
-
-
-class PromotionConflict(RuntimeError):
-    """The champion moved while the candidate was evaluated: it was built on another version."""
 
 
 class Registry:
@@ -59,13 +55,13 @@ class Registry:
         with locked(self.dir / "champion.json"):
             pointer = self._pointer()
             retired = pointer["version"]
+            if retired:         # revoked before the pointer moves: no moment where it is neither champion nor revoked
+                card = self.card(retired) if (self.dir / retired / "card.json").exists() else {}
+                revoke(self.root, retired, card.get("model_id"), "rolled back")
             if pointer["history"]:
                 pointer["history"].pop()
             pointer["version"] = pointer["history"][-1]["version"] if pointer["history"] else None
             write_json(self.dir / "champion.json", pointer)
-        if retired:
-            card = self.card(retired) if (self.dir / retired / "card.json").exists() else {}
-            revoke(self.root, retired, card.get("model_id"), "rolled back")
         return pointer["version"]
 
     def seen_sessions(self) -> set[str]:

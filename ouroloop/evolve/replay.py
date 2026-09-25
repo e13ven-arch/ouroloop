@@ -140,7 +140,7 @@ def evaluate_spec(rt, cand, record) -> EvalResult:
     calibration of that model on it, fitted on the calibration sessions and stored with the record's hash."""
     from .calibrate import apply as store, calibrate_point
     p = rt.points[cand.point]
-    champion, challenger = p.spec, p.spec.apply(cand.change)
+    champion, challenger, base = p.spec, p.spec.apply(cand.change), rt.specs.get(cand.point)
     rows = labelled(rt, cand.point)
     parts = record.split(rows, rt.ledger.sessions()[0], record.cal_frac(cand.point))
     params = record.params
@@ -154,7 +154,7 @@ def evaluate_spec(rt, cand, record) -> EvalResult:
     protected_ok = all(gold(probs) == gold(t) for probs, (_, t, _) in zip(pp, protected))
 
     def apply() -> None:
-        rt.specs.set(cand.point, challenger.to_json(), note=f"{cand.id}: {cand.hypothesis}")
+        rt.specs.set(cand.point, challenger.to_json(), note=f"{cand.id}: {cand.hypothesis}", expected=base)
         p.spec = challenger
         if cal is not None:
             store(rt, cal, gate=record.hash)

@@ -150,20 +150,29 @@ class Ledger:
 
     def sessions(self) -> tuple[dict[str, dict], int]:
         """Every session by id: the fields of its session event (task, held_out, agent, release; M6 events carry the
-        first three, a session without one has none), "start", the position of its first event in the ledger, and
-        "points", where it made decisions. And the number of events read: a session that starts later has a start
-        at or past it."""
+        first three, a session without one has none), "start", the position of its first event in the ledger,
+        "points", where it made decisions, and "labelled", where a decision with a stored context has a trainable
+        outcome so far. And the number of events read: a session that starts later has a start at or past it."""
         out: dict[str, dict] = {}
+        decided: dict[str, tuple[str, str]] = {}
         n = 0
         for n, ev in enumerate(self.events(), 1):
+            if ev.get("type") == "outcome":
+                s, point = decided.get(ev.get("decision"), (None, None))
+                if s and ev.get("label") is not None and ev.get("source") in SOURCE_WEIGHTS:
+                    out[s]["labelled"].add(point)
+                continue
             s = ev.get("session")
             if s is None or ev.get("type") not in ("session", "decision"):
                 continue
-            info = out.setdefault(s, {"start": n - 1, "points": set()})
+            info = out.setdefault(s, {"start": n - 1, "points": set(), "labelled": set()})
             if ev["type"] == "session":
-                info.update({k: v for k, v in ev.items() if k not in ("type", "session", "ts", "start", "points")})
+                info.update({k: v for k, v in ev.items()
+                             if k not in ("type", "session", "ts", "start", "points", "labelled")})
             else:
                 info["points"].add(ev.get("point"))
+                if ev.get("ctx"):
+                    decided[ev.get("id")] = (s, ev.get("point"))
         return out, n
 
     def rows(self, point: str | None = None) -> list[Row]:
@@ -256,20 +265,37 @@ class CalibrationStore:
             write_json(self.path, {"version": self.VERSION, "entries": data})
 
 
+class PromotionConflict(RuntimeError):
+    """The champion moved while the candidate was evaluated: it was built on another version."""
+
+
+ANY = object()      # a write that checks nothing (tests, setup)
+
+
 class SpecStore:
-    """The current champion spec of each decision point, with its history."""
+    """The current champion spec of each decision point, with its history. `get` gives the specs as loaded, which
+    the registered points run; a promotion re-reads the file under a lock and compares and swaps (PLAN_v0.2 M8)."""
 
     def __init__(self, path: str | Path):
         self.path = Path(path)
-        self.data = json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else {}
+        self.data = self._read()
+
+    def _read(self) -> dict:
+        return json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else {}
 
     def get(self, point: str) -> dict | None:
         entry = self.data.get(point)
         return entry["spec"] if entry else None
 
-    def set(self, point: str, spec: dict, note: str = "") -> None:
-        entry = self.data.setdefault(point, {"spec": None, "history": []})
-        entry["history"].append({"ts": now(), "spec": spec, "note": note})
-        entry["spec"] = spec
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8")
+    def set(self, point: str, spec: dict, note: str = "", expected: dict | None | object = ANY) -> None:
+        """Make `spec` the point's champion, only while the stored one is still `expected` (None: none promoted),
+        the spec the candidate was evaluated against; other points' entries stay as another process left them."""
+        with locked(self.path):
+            data = self._read()
+            entry = data.setdefault(point, {"spec": None, "history": []})
+            if expected is not ANY and entry["spec"] != expected:
+                raise PromotionConflict(f"the {point} spec changed while the candidate was evaluated")
+            entry["history"].append({"ts": now(), "spec": spec, "note": note})
+            entry["spec"] = spec
+            write_json(self.path, data)
+        self.data = {**self.data, point: entry}     # other points: as loaded, as the registered points run them

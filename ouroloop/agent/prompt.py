@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..ledger import now
+from ..ledger import PromotionConflict, locked, now, write_json
 from .loop import SYSTEM
 from .tools import SPECS
 
@@ -61,18 +61,27 @@ class HarnessPrompt:
 
 
 class PromptStore:
-    """The champion harness prompt, with its history."""
+    """The champion harness prompt, with its history. A promotion compares and swaps (PLAN_v0.2 M8)."""
 
     def __init__(self, root: str | Path):
         self.path = Path(root) / "harness" / "prompt.json"
-        self.data = (json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists()
-                     else {"prompt": None, "history": []})
+        self.data = self._read()
+
+    def _read(self) -> dict:
+        return (json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists()
+                else {"prompt": None, "history": []})
 
     def get(self) -> HarnessPrompt:
         return HarnessPrompt.from_json(self.data["prompt"]) if self.data.get("prompt") else HarnessPrompt()
 
     def set(self, prompt: HarnessPrompt, note: str = "") -> None:
-        self.data["history"].append({"ts": now(), "hash": prompt.hash(), "prompt": prompt.to_json(), "note": note})
-        self.data["prompt"] = prompt.to_json()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8")
+        """Only while the stored champion is still the one this store loaded, which the candidate was evaluated
+        against."""
+        with locked(self.path):
+            data = self._read()
+            if data["prompt"] != self.data["prompt"]:
+                raise PromotionConflict("the harness prompt changed while the candidate was evaluated")
+            data["history"].append({"ts": now(), "hash": prompt.hash(), "prompt": prompt.to_json(), "note": note})
+            data["prompt"] = prompt.to_json()
+            write_json(self.path, data)
+        self.data = data

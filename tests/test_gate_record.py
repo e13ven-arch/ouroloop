@@ -2,6 +2,7 @@
 used; promotions persist and compare-and-swap; a running session keeps its release (PLAN_v0.2 M8). Plus the M7
 safety review's leftovers. The ledger is written the way the M6 collection writes it."""
 import json
+import random
 import re
 import threading
 from contextlib import contextmanager
@@ -17,13 +18,13 @@ from ouroloop.backends import LlmBackend
 from ouroloop.backends.http import HttpBackend
 from ouroloop.cli import main
 from ouroloop.evolve import experience
-from ouroloop.evolve.gate import TEMPLATE, freeze_template, open_record, records, run
+from ouroloop.evolve.gate import TEMPLATE, decide_points, freeze_template, open_record, records, run
 from ouroloop.evolve.harness import prompt_evaluator
 from ouroloop.evolve.pipeline import evolve_model, prepare_model, promote_model, recipe_evaluator
-from ouroloop.evolve.registry import PromotionConflict, Registry
-from ouroloop.evolve.replay import EvalResult
-from ouroloop.evolve.train import TrainError, TrainResult
-from ouroloop.ledger import CalibrationStore
+from ouroloop.evolve.registry import Registry
+from ouroloop.evolve.replay import EVALUATORS, EvalResult
+from ouroloop.evolve.train import SignatureTrainer, TrainError, TrainResult
+from ouroloop.ledger import CalibrationStore, PromotionConflict, SpecStore
 from ouroloop.points import retry_point, stop_point
 from ouroloop.policy import Policy
 from ouroloop.providers import MockProvider
@@ -31,7 +32,7 @@ from ouroloop.release import code_version
 from ouroloop.research import Candidate, run_round
 from ouroloop.runtime import Runtime
 from ouroloop.serve import make_server
-from ouroloop.stop import StopGuard
+from ouroloop.stop import MOMENTS, StopGuard
 from ouroloop.types import Answer
 
 
@@ -59,6 +60,14 @@ class Oracle:
             label = "yes" if re.search(r"say yes", r.state) else "no"
             out.append(Answer({label: self.q, "no" if label == "yes" else "yes": 1 - self.q}, self.model))
         return out
+
+
+class Heeds(Oracle):
+    """An Oracle when asked "Is the task done?", else it cannot tell."""
+
+    def decide(self, requests):
+        return [a if r.question.instructions == "Is the task done?" else Answer({"yes": 0.5, "no": 0.5}, self.model)
+                for r, a in zip(requests, super().decide(requests))]
 
 
 class Down:
@@ -234,6 +243,182 @@ def test_a_prompt_gate_runs_the_champion_again(tmp_path, frozen):
     ran = record.usage["sessions"]
     assert len(ran) == 6 and not set(ran) & {r["session"] for r in recorded}    # champion and challenger, anew
     assert Registry(rt.root).seen_sessions() >= set(ran) and PromptStore(rt.root).get().system.endswith(FIX)
+
+
+M6_CFG = {"workspace": {"root": "ws"}, "registry": {"base": "base"},
+          "backends": {"base": {"type": "test_gate_record:Model", "p_yes": 0.5, "model": "base"},
+                       "mock": {"type": "mock"}},
+          "points": {"default_backend": "mock", "stop": {"backend": "champion", "act": True, "explore": 0.0},
+                     "tool_gate": {}}}
+
+
+def m6_sessions(rt, n: int, start: int = 0, crashed: tuple = ()) -> None:
+    """n sessions as the M6 collection writes them: a session event (agent, task, held_out); stop decisions after
+    two turns and when the agent wants to finish, recorded without a model and labelled by the probe when the session
+    ends (a session in `crashed` broke before its probe); an unlabelled tool_gate decision. Tasks t0..t7 of the 29
+    are held out. The view's last message tells the label; its actions carry an error name that agrees with the
+    label 85% of the time, which is all the signature model reads."""
+    rng = random.Random(start)
+    stop, tool_gate = rt.points["stop"], rt.points["tool_gate"]
+    for i in range(start, start + n):
+        s, task, done = f"s_{i:04d}", f"t{i % 29}", rng.random() < 0.5
+        rt.ledger.append({"agent": "glm-5.3-flash/max_turns=4", "task": task, "held_out": i % 29 < 8,
+                          "type": "session", "session": s})
+        for turn, phase, default in ((1, "per_turn", "no"), (2, "per_turn", "no"), (2, "on_finish", "yes")):
+            label = "yes" if done and turn == 2 else "no"
+            cue = label if rng.random() < 0.85 else {"yes": "no", "no": "yes"}[label]
+            c = {"task": task, "turns": turn, "files": "", "message": f"say {label}", "moment": MOMENTS[phase],
+                 "actions": "bash make -> TimeoutError" if cue == "yes" else "bash make -> KeyError"}
+            view, truncated = stop.render(c)
+            did = rt.ledger.decision(
+                session=s, ctx=rt.sessions.put(s, c), point="stop", spec_hash=stop.spec_hash, backend="none",
+                model="", view=view, view_chars=len(view), truncated=truncated, question=stop.question(c).to_json(),
+                candidates=["yes", "no"], probs=None, route="shadow", explored=False, propensity=1.0, action=default,
+                usage={}, phase=phase, default=default)
+            if i not in crashed:
+                rt.outcome(did, label, source="env", note="probe", score=1.0 if done else 0.25)
+        c = {"task": task, "workdir": "/tmp/w", "tool": "read", "detail": "read calc.py"}
+        view, _ = tool_gate.render(c)
+        rt.ledger.decision(session=s, ctx=rt.sessions.put(s, c), point="tool_gate", spec_hash=tool_gate.spec_hash,
+                           backend="mock", model="mock-keyword", view=view, route="shadow", action="no",
+                           phase="before_call", default="no")
+
+
+def trained_on(rt, version: str) -> set:
+    return {json.loads(line)["source_id"] for part in ("train", "calibration")
+            for line in (rt.root / "models" / version / "data" / f"{part}.jsonl").open()}
+
+
+def test_an_m6_ledger_through_freeze_evolve_gate_promote_and_the_next_rounds(tmp_path):
+    rt = config.build_runtime(M6_CFG, tmp_path)
+    m6_sessions(rt, 300, crashed=(299, 298))           # two of the latest broke before their probe
+    freeze_template(rt.root, {"checks": {"min_train": 100, "max_mde": 0.2}})    # the template's other defaults
+    sessions, _ = rt.ledger.sessions()
+    held = {s for s, info in sessions.items() if info["held_out"]}
+    labelled = [s for s in sorted(sessions, key=lambda s: sessions[s]["start"])
+                if "stop" in sessions[s]["labelled"] and s not in held]
+    assert len(held) == 88 and not {"s_0298", "s_0299"} & set(labelled)
+
+    first = evolve_model(rt, SignatureTrainer())
+    (r1,) = records(rt.root)
+    # the first record: the latest 30 sessions a gate can score, none held out, none without its labels
+    assert r1.fresh and r1.test_sessions == labelled[-30:] and r1.used
+    assert first["gate"] == "accepted" and Registry(rt.root).champion()["version"] == first["version"]
+    assert (first["model_id"], first["gate_record"], first["test_sessions"]) == ("signature:m_0001", r1.hash,
+                                                                                r1.test_sessions)
+    # held-out tasks: never trained or calibrated on, never tested; their Brier is on the card beside the verdict
+    trained = trained_on(rt, "m_0001")
+    assert set(r1.data["held_out_sessions"]) <= held and not held & (set(r1.test_sessions) | trained)
+    assert trained and not trained & set(r1.test_sessions)
+    metrics = first["metrics"]["stop"]
+    assert metrics["sessions"] == 30 and metrics["held_out"]["sessions"] == len(r1.data["held_out_sessions"]) > 0
+    # about 100 calibration sessions, fewer than the template's 120: the promoted model gets a temperature and no
+    # threshold, so it answers the sessions opened from now on and cannot act
+    cal = rt.calibration_for("stop", "signature:m_0001")
+    assert cal["gate"] == r1.hash and cal["sessions"] < 120 and cal["thresholds"] == {"per_turn": None,
+                                                                                       "on_finish": None}
+    rt.session("s_live", {"task": "t9", "held_out": False})
+    d = rt.ask("stop", {**ctx(), "actions": "TimeoutError"}, session="s_live", phase="per_turn")
+    assert (d.model, d.acted) == ("signature:m_0001", False)
+
+    # a second round with no new sessions: the used record's sessions are never scored again for a promotion
+    second = evolve_model(rt, SignatureTrainer())
+    r2 = records(rt.root)[-1]
+    assert r2.round == "r_0002" and r2.used and not r2.fresh and not set(r2.test_sessions) - set(labelled)
+    assert second["gate"] in ("validated", "rejected") and Registry(rt.root).champion()["version"] == "m_0001"
+
+    # ten new sessions: still too few. A training crash leaves that record unused, and the rerun takes it again
+    m6_sessions(rt, 10, start=300)
+    assert evolve_model(rt, OracleTrainer(fail=True))["gate"] == "inconclusive"
+    r3 = records(rt.root)[-1]
+    assert r3.round == "r_0003" and not r3.fresh and not r3.used and open_record(rt).round == "r_0003"
+    # forty more: a record that could only validate gives way to one on the fresh sessions, all of them
+    m6_sessions(rt, 40, start=310)
+    r4 = open_record(rt)
+    m6_sessions(rt, 10, start=350)                  # sessions that start while the candidate trains
+    third = evolve_model(rt, OracleTrainer("R2", 0.9), record=r4)
+    held = held_out(rt)
+    new, later = {f"s_{i:04d}" for i in range(300, 350)} - held, {f"s_{i:04d}" for i in range(350, 360)} - held
+    assert r4.round == "r_0004" and r4.fresh and set(r4.test_sessions) == new and not r3.used
+    assert (third["gate"], third["parent"]) == ("accepted", "m_0001")
+    assert Registry(rt.root).champion()["version"] == third["version"]
+    assert not trained_on(rt, third["version"]) & (new | held | later)     # later: the next record's to test
+    assert Registry(rt.root).seen_sessions() == set(r1.test_sessions) | set(r2.test_sessions) | new
+    # the session opened before keeps its model; a new one runs the new champion
+    rt.session("s_next", {"task": "t9", "held_out": False})
+    assert [rt.ask("stop", ctx(), session=s, phase="per_turn").model for s in ("s_live", "s_next")] == [
+        "signature:m_0001", "R2"]
+
+
+def test_the_gate_counts_sessions_and_calibration_sessions(tmp_path):
+    better = ([0.5] * 60, [0.0] * 60)
+    assert decide_points({"stop": (*better, [f"s{i % 20}" for i in range(60)])}, n_boot=200).outcome == \
+        "insufficient_evidence"                                 # 60 items, but from 20 sessions
+    assert decide_points({"stop": (*better, [f"s{i % 30}" for i in range(60)])}, n_boot=200).outcome == "accepted"
+    # fewer calibration sessions than the template asks: a temperature, no threshold, so the point cannot act
+    rt = config.build_runtime(CFG, tmp_path)
+    collect(rt, 150)
+    freeze_template(rt.root, {**ACT_GATE, "min_cal_sessions": 1000})
+    card = evolve_model(rt, OracleTrainer("R1"))
+    cal = card["calibration"]["stop"]
+    assert card["gate"] == "accepted" and cal["temperature"] < 1 and cal["thresholds"] == {"per_turn": None,
+                                                                                          "on_finish": None}
+    assert rt.ask("stop", ctx(), session="s_new", phase="per_turn").acted is False
+
+
+def test_a_prompt_gate_leaves_the_records_ledger_sessions_fresh(tmp_path):
+    rt = workspace(tmp_path)
+    r1 = open_record(rt)
+
+    def prompt_gate():
+        r1.consume("prompt candidate")          # its test sessions are the runs it makes, not the ledger's
+        return EvalResult("harness", [1.0] * 12, [0.0] * 12, [f"t{i}" for i in range(12)], lambda: None,
+                          sessions=["run_1", "run_2"])
+
+    g, _ = run(r1, prompt_gate)
+    assert g.used and g.outcome == "accepted"
+    assert Registry(rt.root).seen_sessions() == {"run_1", "run_2"}
+    r2 = open_record(rt)
+    assert r2.round == "r_0002" and r2.fresh and r2.test_sessions == r1.test_sessions
+
+
+def test_a_session_answered_by_another_model_than_its_champion_never_acts(tmp_path):
+    rt = workspace(tmp_path)
+    evolve_model(rt, OracleTrainer("R1"))
+    card = Registry(rt.root).champion()
+    card["backend"] = {**card["backend"], "model": "R1-retrained"}      # the card's backend now answers as another id
+    Registry(rt.root).record(card)
+    d = config.build_runtime(CFG, tmp_path).ask("stop", ctx(), session="s_1", phase="per_turn")
+    row = rt.ledger.rows()[-1].decision
+    assert (d.route, d.acted, d.action) == ("error", False, "no") and "the session runs 'R1'" in row["error"]
+
+
+def test_spec_and_prompt_promotions_compare_and_swap(tmp_path):
+    path = tmp_path / "specs.json"
+    a, b = SpecStore(path), SpecStore(path)          # two processes, both loaded before either promoted
+    b.set("stop", {"instructions": "b"}, expected=None)
+    with pytest.raises(PromotionConflict):
+        a.set("stop", {"instructions": "a"}, expected=None)
+    a.set("retry", {"instructions": "r"}, expected=None)       # another point: b's promotion stays
+    assert (SpecStore(path).get("stop"), SpecStore(path).get("retry")) == ({"instructions": "b"},
+                                                                          {"instructions": "r"})
+    with pytest.raises(PromotionConflict):                      # a still runs the stop spec it loaded
+        a.set("stop", {"instructions": "a"}, expected=a.get("stop"))
+    # through the gate: a spec promoted elsewhere while the candidate was evaluated
+    rt = workspace(tmp_path / "ws")
+    rt.backends["champion"] = Heeds("base")
+
+    def elsewhere(rt_, cand, record):
+        SpecStore(rt.root / "harness" / "specs.json").set("stop", rt.points["stop"].spec.to_json(), expected=None)
+        return EVALUATORS["spec"](rt_, cand, record)
+
+    res = run_round(rt, Proposes(("spec", "stop", {"instructions": "Is the task done?"})), None, Model(),
+                    evaluators={"spec": elsewhere})
+    assert [e["gate"] for e in res.evaluated] == ["conflict"]
+    x, y = PromptStore(tmp_path), PromptStore(tmp_path)
+    y.set(x.get().apply({"system": "y"}))
+    with pytest.raises(PromotionConflict):
+        x.set(x.get().apply({"system": "x"}))
 
 
 # ---------------------------------------------------------------- promotion
