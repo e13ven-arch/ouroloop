@@ -108,6 +108,8 @@ def build_runtime(cfg: dict, base: str | Path = ".") -> Runtime:
     for name, s in points.items():
         if set(s) - POINT_KEYS:
             raise ValueError(f"[points.{name}] may only set {sorted(POINT_KEYS)}, not {sorted(set(s) - POINT_KEYS)}")
+        if not isinstance(s.get("act", False), bool):       # act = "false" would switch the point on
+            raise ValueError(f"[points.{name}] act must be true or false, not {s['act']!r}")
         if s.get("act") and name not in ACTING:
             raise ValueError(f"[points.{name}] act = true: in v0.2 only {sorted(ACTING)} may act")
         if "define" not in s and name not in BUILTIN:

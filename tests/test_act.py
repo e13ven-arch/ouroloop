@@ -277,7 +277,8 @@ def test_malformed_answers_never_act(tmp_path, gated):
 
 # ---------------------------------------------------------------- configuration and label sources
 @pytest.mark.parametrize("bad", [{"points": {"stop": {"risk": 0.2}}}, {"points": {"stop": {"default": "no"}}},
-                                 {"points": {"tool_gate": {"act": True}}}, {"fallback": "mock"}])
+                                 {"points": {"tool_gate": {"act": True}}}, {"fallback": "mock"},
+                                 {"points": {"stop": {"act": "false"}}}])        # a string would switch stop on
 def test_config_that_loosens_the_rules_is_a_startup_error(tmp_path, bad):
     cfg = {"backends": {"mock": {"type": "mock"}}, **bad,
            "points": {"default_backend": "mock", **bad.get("points", {})}}
