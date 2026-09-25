@@ -110,12 +110,16 @@ def per_session(items, count: str = "first") -> dict:
 
 def fit_threshold(confidences: list[float], correct: list[bool], sessions: list[str] | None = None,
                   risk: float = 0.05, alpha: float = 0.05, count: str = "first") -> float | None:
-    """Lowest confidence cut-off whose acting decisions keep a Clopper-Pearson error bound <= risk (None if none
-    does). Counted per session, so a session's many rows are not taken as independent evidence: at each cut-off a
-    session counts one of its decisions at or above it, by `count` ("first": its first, the one that would act and
-    change what follows; "sampled": the first in an order drawn by a hash of the session id, see rank). Pass only
-    decisions that would act (a label other than the default), in time order; without `sessions` every decision is
-    its own session."""
+    """The confidence cut-off to act at, None if none: each cut-off is a test that its acting decisions keep a
+    Clopper-Pearson error bound <= risk, taken in a fixed sequence (Learn-then-Test): down from the most confident,
+    starting at the first cut-off with enough sessions to pass at all (a count of sessions, never of errors), the
+    lowest before the first that fails. Keeping any lower cut-off that passes after one failed would let luck pick
+    among dozens of nested tests, and a model above its risk would get a threshold far more often than alpha.
+    Counted per session, so a session's many rows are not taken as independent evidence: at each cut-off a session
+    counts one of its decisions at or above it, by `count` ("first": its first, the one that would act and change
+    what follows; "sampled": the first in an order drawn by a hash of the session id, see rank). Pass only decisions
+    that would act (a label other than the default), in time order; without `sessions` every decision is its own
+    session."""
     if count not in COUNTS:
         raise ValueError(f"count {count!r}: one of {COUNTS}")
     sessions = sessions if sessions is not None else list(range(len(confidences)))
@@ -139,6 +143,9 @@ def fit_threshold(confidences: list[float], correct: list[bool], sessions: list[
             if c is None or key[i] < key[c]:                        # it comes first: the session counts it now
                 errors += (not correct[i]) - (c is not None and not correct[c])
                 counted[s] = i
-        if errors <= risk * len(counted) and cp_upper(errors, len(counted), alpha) <= risk:
-            best = cut
+        if cp_upper(0, len(counted), alpha) > risk:                   # too few sessions to pass: not a test yet
+            continue
+        if errors > risk * len(counted) or cp_upper(errors, len(counted), alpha) > risk:
+            break
+        best = cut
     return best

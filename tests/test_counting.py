@@ -23,8 +23,11 @@ def naive(confidences, correct, sessions, risk, count):
             if conf >= cut:
                 mine.setdefault(s, []).append(i)
         picked = [m[0] if count == "first" else min(m, key=lambda i: rank(s, place[i])) for s, m in mine.items()]
-        if cp_upper(sum(not correct[i] for i in picked), len(picked)) <= risk:
-            best = cut
+        if cp_upper(0, len(picked)) > risk:
+            continue
+        if cp_upper(sum(not correct[i] for i in picked), len(picked)) > risk:
+            break
+        best = cut
     return best
 
 
@@ -42,7 +45,7 @@ def test_the_fast_fit_is_the_rule_cut_off_by_cut_off(count):
 def test_both_rules_count_one_row_per_session():
     rng = random.Random(0)
     conf = [rng.uniform(0.6, 1.0) for _ in range(300)]
-    correct = [rng.random() < 0.97 for _ in conf]
+    correct = [rng.random() < c + 0.1 for c in conf]        # wrong only below 0.9
     one_each = [f"s{i}" for i in range(300)]
     assert fit_threshold(conf, correct, one_each, count="first") == fit_threshold(conf, correct, one_each,
                                                                                count="sampled") is not None
@@ -70,9 +73,9 @@ def test_first_counts_the_first_acting_row_and_sampled_one_chosen_by_the_session
 
 @pytest.mark.parametrize("count", ["first", "sampled"])
 def test_a_model_above_its_risk_rarely_gets_a_threshold(count):
-    """Wrong on 8% of its decisions at every confidence, against a 5% budget. Each cut-off counts one row a session,
-    and the lowest cut-off that passes is kept: a "sampled" row drawn afresh at every cut-off would give some
-    cut-off a lucky draw almost every time (40 of 40 here)."""
+    """Wrong on 8% of its decisions at every confidence, against a 5% budget. Each cut-off counts one row a session:
+    a "sampled" row drawn afresh at every cut-off would give some cut-off a lucky draw almost every time (40 of 40
+    here, when the lowest cut-off that passed anywhere was kept)."""
     granted = 0
     for seed in range(40):
         rng = random.Random(seed)
@@ -81,6 +84,34 @@ def test_a_model_above_its_risk_rarely_gets_a_threshold(count):
         granted += fit_threshold(conf, correct, [f"s{i // 60}" for i in range(len(conf))], 0.05,
                                  count=count) is not None
     assert granted <= 6
+
+
+@pytest.mark.parametrize("count", ["first", "sampled"])
+def test_a_model_just_above_its_risk_gets_a_threshold_at_most_alpha_of_the_time(count):
+    """Wrong on 6% of its decisions at every confidence, against a 5% budget, 100 sessions: each cut-off is a
+    Clopper-Pearson test at alpha = 5%. Keeping the lowest cut-off that passes anywhere, after others failed, lets
+    luck pick among dozens of nested tests: some subset of 59 or more sessions without an error turned up in a
+    quarter of the calibrations. Fixed-sequence testing (Learn-then-Test) stops at the first cut-off that fails."""
+    granted = 0
+    for seed in range(100):
+        rng = random.Random(seed)
+        conf = [round(rng.uniform(0.4, 1.0), 4) for _ in range(100 * 60)]
+        correct = [rng.random() > 0.06 for _ in conf]
+        granted += fit_threshold(conf, correct, [f"s{i // 60}" for i in range(len(conf))], 0.05,
+                                 count=count) is not None
+    assert granted <= 7
+
+
+def test_the_sequence_ends_at_the_first_cut_off_that_fails():
+    # 70 sessions right at 0.99, then 10 wrong at 0.9, then 400 right at 0.8: 0.8 alone would pass (10 of 480
+    # wrong, bound 3.4%), but 0.9 failed first, so 0.99 stands; and the sequence starts at the first cut-off with
+    # enough sessions to pass at all (59), whatever came before it
+    conf = [0.99] * 70 + [0.9] * 10 + [0.8] * 400
+    correct = [True] * 70 + [False] * 10 + [True] * 400
+    assert cp_upper(10, 480) <= 0.05 and fit_threshold(conf, correct) == 0.99
+    assert fit_threshold([1.0] + conf[:80], [False] + correct[:80]) is None       # 1 of 71 wrong: the start fails
+    assert fit_threshold([1.0] * 3 + [0.99] * 100, [False] * 3 + [True] * 100) is None
+    assert fit_threshold([1.0] * 58 + [0.99] * 100, [True] * 58 + [True] * 100) == 0.99
 
 
 def test_a_point_declares_its_count_and_its_thresholds_are_keyed_by_it():

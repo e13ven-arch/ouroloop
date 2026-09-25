@@ -1,6 +1,6 @@
-"""Calibration (PLAN §4.5, PLAN_v0.2 M7): a temperature fitted by NLL on the calibration split, then per phase the
-lowest confidence threshold whose acting decisions keep a Clopper-Pearson error bound below the risk, counted per
-session by the point's counting rule. Both are keyed by the model id the backend reports and by the point's spec
+"""Calibration (PLAN §4.5, PLAN_v0.2 M7): a temperature fitted by NLL on the calibration split, then per phase a
+confidence threshold whose acting decisions keep a Clopper-Pearson error bound below the risk, the cut-offs tested
+in a fixed sequence (policy.fit_threshold), counted per session by the point's counting rule. Both are keyed by the model id the backend reports and by the point's spec
 hash."""
 from __future__ import annotations
 
