@@ -1,8 +1,8 @@
 """The frozen gate (PLAN §4.6, PLAN_v0.2 M8), the one gate for model, spec, recipe and prompt candidates.
 
-A person freezes the gate template (`ouroloop gate freeze`). Each round the framework derives a gate record from it,
-<workspace>/gates/<round>.json, which fixes the round's test sessions before anything is trained; `run(record, ev)`
-evaluates a candidate against it and gives the verdict. A record is used up by the first inference request on its
+A person freezes the gate template (`ouroloop gate freeze`). Each round the framework derives a gate record from it
+and freezes it in the ledger (a copy in <workspace>/gates/<round>.json), which fixes the round's test sessions before
+anything is trained; `run(record, ev)` evaluates a candidate against it and gives the verdict. A record is used up by the first inference request on its
 test sessions, whatever follows; once used, a verdict on its sessions can only be "validated". The verdict, in order:
 evidence complete -> protected samples pass -> no significant regression -> significant improvement.
 """
@@ -11,7 +11,6 @@ from __future__ import annotations
 import hashlib
 import json
 import random
-import re
 import subprocess
 from collections import defaultdict
 from dataclasses import dataclass, replace
@@ -20,7 +19,7 @@ from typing import Callable
 
 import httpx
 
-from ..ledger import PromotionConflict, now, write_json
+from ..ledger import Ledger, PromotionConflict, locked, now, write_json
 from ..release import code_version
 from .replay import EvalResult, in_calibration
 from .train import TrainError
@@ -74,40 +73,59 @@ def load_template(root: str | Path) -> tuple[dict, str]:
 
 
 class GateRecord:
-    """gates/<round>.json, never changed once written; its use is recorded beside it in gates/<round>.used.json."""
+    """A round's gate record as frozen in the ledger, whose gate events also say when it was used and what it decided
+    (the last verdict counts). The ledger is append-only (PLAN_v0.2 §1 rule 3); gates/<round>.json and
+    gates/<round>.used.json are copies, for people and for the runtime, which the gate never reads: deleting or
+    editing them changes no record, frees no test session and undoes no use."""
 
-    def __init__(self, path: str | Path):
-        self.path = Path(path)
-        raw = self.path.read_bytes()
-        self.hash = _hash(raw)
-        self.data = json.loads(raw)
+    def __init__(self, root: str | Path, events: dict):
+        self.root = Path(root)
+        self.hash, self.data = events["frozen"]["record"], events["frozen"]["data"]
         self.round, self.params, self.fresh = self.data["round"], self.data["params"], self.data["fresh"]
         self.test_sessions: list[str] = list(self.data["test_sessions"])
         self.took = False           # this object used the record up (another process may have, instead)
-        self._used = self.path.with_name(f"{self.round}.used.json")
+        self._events = events
 
     @property
     def usage(self) -> dict | None:
-        return json.loads(self._used.read_text(encoding="utf-8")) if self._used.exists() else None
+        used, closed = self._events.get("used"), self._events.get("closed")
+        if not used:
+            return None
+        return {"ts": used["ts"], "by": used["by"],
+                **({k: closed[k] for k in ("outcome", "reasons", "sessions")} if closed else {})}
 
     @property
     def used(self) -> bool:
-        return self._used.exists()
+        return "used" in self._events
+
+    def _append(self, event: str, **fields) -> None:
+        ev = Ledger(self.root / "ledger").append({"type": "gate", "event": event, "round": self.round,
+                                                  "record": self.hash, **fields})
+        self._events = {**self._events, event: ev}
+        self.mirror()
+
+    def mirror(self) -> None:
+        """Write the copies in gates/: the record, and once used, its use and verdict with the record's hash."""
+        write_json(self.root / "gates" / f"{self.round}.json", self.data)
+        if self.used:
+            write_json(self.root / "gates" / f"{self.round}.used.json", {**self.usage, "record": self.hash})
 
     def consume(self, by: str) -> bool:
         """Called right before the first inference request on the test sessions: from then on the record and its
-        sessions are used up, whatever the outcome. False when it already was (by this or another process)."""
-        try:
-            with open(self._used, "x", encoding="utf-8") as f:
-                json.dump({"ts": now(), "by": by}, f)
-        except FileExistsError:
-            return False
+        sessions are used up, whatever the outcome. False when it already was (by this or another process). A record
+        that is no longer the round's (see check) raises before anything is inferred."""
+        with locked(_lock(self.root)):
+            log = _log(self.root)
+            check(self, log)
+            self._events = log[self.round]
+            if self.used:
+                return False
+            self._append("used", by=by)
         self.took = True
         return True
 
     def close(self, outcome: str, reasons: list, sessions: list[str] = ()) -> None:
-        write_json(self._used, {**(self.usage or {}), "outcome": outcome, "reasons": reasons,
-                                "sessions": list(sessions)})
+        self._append("closed", outcome=outcome, reasons=reasons, sessions=list(sessions))
 
     @property
     def ran_own(self) -> bool:
@@ -141,35 +159,68 @@ class GateRecord:
         return out
 
 
-def records(root: str | Path) -> list[GateRecord]:
-    d = Path(root) / "gates"
-    return [GateRecord(p) for p in sorted(d.glob("r_*.json")) if re.fullmatch(r"r_\d{4}\.json", p.name)]
+def _lock(root: str | Path) -> Path:
+    return Path(root) / "gates" / "records"
+
+
+def _log(root: str | Path) -> dict[str, dict]:
+    """The gate events of the workspace's ledger by round: "frozen", "used", "closed" (the last of each)."""
+    out: dict[str, dict] = {}
+    for ev in Ledger(Path(root) / "ledger").events():
+        if ev.get("type") == "gate":
+            out.setdefault(ev["round"], {})[ev["event"]] = ev
+    return out
+
+
+def records(root: str | Path, log: dict | None = None) -> list[GateRecord]:
+    log = _log(root) if log is None else log
+    return [GateRecord(root, e) for _, e in sorted(log.items()) if "frozen" in e]
 
 
 def seen_sessions(root: str | Path) -> set[str]:
     return set().union(*(r.seen() for r in records(root) if r.used))
 
 
+def check(record: GateRecord, log: dict | None = None) -> None:
+    """Only the round's record can decide: the latest one frozen in the ledger, unchanged, from the gate template
+    and the code in force. An older record would score sessions a newer one also holds."""
+    log = _log(record.root) if log is None else log
+    frozen = log.get(record.round, {}).get("frozen")
+    if not frozen or frozen["record"] != record.hash or frozen["data"] != record.data:
+        raise ValueError(f"gate record {record.round} is not the one frozen in the ledger")
+    latest = max(r for r, e in log.items() if "frozen" in e)
+    if record.round != latest:
+        raise ValueError(f"gate record {record.round} was superseded by {latest}")
+    if record.data["template"] != load_template(record.root)[1] or record.data["code"]["ouroloop"] != code_version():
+        raise ValueError(f"gate record {record.round} was frozen from another gate template or code")
+
+
 def open_record(rt) -> GateRecord:
     """The round's gate record: the latest one while nothing has used it and it was frozen from the current template
     and code (a rerun after a failure before inference uses the same one), else a new one. A latest record without
-    fresh sessions, which can only validate, gives way to a new one once there are enough fresh sessions."""
+    fresh sessions, which can only validate, gives way to a new one once there are enough fresh sessions. The copies
+    in gates/ are written again from the ledger."""
     params, template = load_template(rt.root)
     code = code_version()
-    past = records(rt.root)
-    last = past[-1] if past else None
-    reuse = last and not last.used and last.data["template"] == template and last.data["code"]["ouroloop"] == code
-    if reuse and last.fresh:
-        return last
-    data = _choose(rt, params, past)
-    if reuse and not data["fresh"]:
-        return last
-    data = {"round": f"r_{len(past) + 1:04d}", "frozen": now(), "template": template, "params": params,
-            "code": {"ouroloop": code, "serve": _serve_versions(rt)}, **data}
-    path = Path(rt.root) / "gates" / f"{data['round']}.json"
-    with open(path, "x", encoding="utf-8") as f:       # two processes cannot both freeze this round
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    return GateRecord(path)
+    with locked(_lock(rt.root)):
+        past = records(rt.root)
+        for r in past:
+            r.mirror()
+        last = past[-1] if past else None
+        reuse = last and not last.used and last.data["template"] == template and last.data["code"]["ouroloop"] == code
+        if reuse and last.fresh:
+            return last
+        data = _choose(rt, params, past)
+        if reuse and not data["fresh"]:
+            return last
+        data = {"round": f"r_{len(past) + 1:04d}", "frozen": now(), "template": template, "params": params,
+                "code": {"ouroloop": code, "serve": _serve_versions(rt)}, **data}
+        raw = json.dumps(data, ensure_ascii=False, indent=2)
+        ev = rt.ledger.append({"type": "gate", "event": "frozen", "round": data["round"], "record": _hash(raw.encode()),
+                               "data": data})
+        record = GateRecord(rt.root, {"frozen": ev})
+        record.mirror()
+        return record
 
 
 def _serve_versions(rt) -> dict:
@@ -223,7 +274,9 @@ def run(record: GateRecord, ev: Callable[[], EvalResult], *, seed: int = 0) -> t
     first inference request on the test sessions. Only an evaluation that used the record up, on fresh test sessions
     or on new sessions it ran itself (prompt candidates), can be accepted and promoted; on sessions a gate has seen
     the verdict is "validated" at best. An infrastructure failure is "inconclusive"; a promotion that loses the
-    compare-and-swap is "conflict". Gate parameters come from the record, never from the candidate."""
+    compare-and-swap is "conflict". Gate parameters come from the record, never from the candidate. A record that is
+    not the round's (see check) raises before anything is evaluated."""
+    check(record)
     params, before = record.params, record.took
     try:
         ev = ev()

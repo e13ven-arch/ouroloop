@@ -504,6 +504,7 @@ def test_infrastructure_failures_are_inconclusive_and_use_the_record_only_after_
     assert open_record(rt).round == record.round                   # the rerun uses the same record
     rt.backends["champion"] = Down()          # the champion's serve fails once the test inference has begun
     card = evolve_model(rt, OracleTrainer())
+    (record,) = records(rt.root)
     assert card["gate"] == "inconclusive" and record.used and Registry(rt.root).champion() is None
     assert Registry(rt.root).seen_sessions() == set(record.test_sessions)
     assert open_record(rt).round == "r_0002"
