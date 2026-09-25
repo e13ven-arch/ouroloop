@@ -2,9 +2,10 @@
 
 A person freezes the gate template (`ouroloop gate freeze`). Each round the framework derives a gate record from it
 and freezes it in the ledger (a copy in <workspace>/gates/<round>.json), which fixes the round's test sessions before
-anything is trained; `run(record, ev)` evaluates a candidate against it and gives the verdict. A record is used up by the first inference request on its
-test sessions, whatever follows; once used, a verdict on its sessions can only be "validated". The verdict, in order:
-evidence complete -> protected samples pass -> no significant regression -> significant improvement.
+anything is trained; `run(record, ev)` evaluates a candidate against it and gives the verdict. A record is used up by
+the first inference request on its test sessions, whatever follows; once used, a verdict on its sessions can only be
+"validated". The verdict, in order: evidence complete -> protected samples pass -> no significant regression ->
+significant improvement.
 """
 from __future__ import annotations
 

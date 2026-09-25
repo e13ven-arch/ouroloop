@@ -149,8 +149,9 @@ def recipe_evaluator(trainer, base_recipe: dict | None = None, **kw):
     """Evaluator for research candidates of kind "recipe": train with the changed recipe, gated by gate.run. A
     candidate changes hyperparameters, not the files and runs training reads (PATH_KEYS)."""
     def evaluate(rt, cand, record: GateRecord) -> EvalResult:
-        if set(cand.change) & PATH_KEYS:
-            raise ValueError(f"{sorted(set(cand.change) & PATH_KEYS)} name data or runs: a person sets them in [recipe]")
+        paths = sorted(set(cand.change) & PATH_KEYS)
+        if paths:
+            raise ValueError(f"{paths} name data or runs: a person sets them in [recipe]")
         registry = Registry(rt.root)
         mc = prepare_model(rt, trainer, {**(base_recipe or {}), **cand.change}, record=record, registry=registry,
                            **kw)
