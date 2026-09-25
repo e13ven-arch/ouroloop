@@ -5,7 +5,8 @@ for the reply, (text, tool_calls, stop, usage), in <dir>/responses/<id>.json:
     request   {"id", "model", "system", "messages": [history entries, see chat.py, without "native"],
                "tools": [{"name", "description", "schema"}]}
     response  {"text": str, "tool_calls": [{"id", "name", "args": {}}], "stop": "end" | "tool_use" | "max_tokens" |
-               "refusal" | "other", "usage": {name: number}}      (tool_calls and usage may be left out)
+               "refusal" | "other", "usage": {}}      (tool_calls and usage may be left out; usage is any object, as
+               an OpenAI-compatible server's, with its nested details, is passed on)
 
 A reply is checked against what an API provider can return: tool calls only to the tools offered, each with an id and
 an argument object, exactly when the stop reason is "tool_use". `complete(system, prompt)` is one user message and no
@@ -53,9 +54,8 @@ def parse_turn(reply, tools: list[ToolSpec]) -> ChatTurn:
         bad('"text" must be a string')
     if stop not in STOPS:
         bad(f'"stop" must be one of {STOPS}, not {stop!r}')
-    if not isinstance(usage, dict) or not all(isinstance(k, str) and isinstance(v, (int, float))
-                                              and not isinstance(v, bool) for k, v in usage.items()):
-        bad('"usage" must map names to numbers')
+    if not isinstance(usage, dict):
+        bad('"usage" must be an object')
     if not isinstance(calls, list):
         bad('"tool_calls" must be a list')
     offered, out = {t.name for t in tools}, []

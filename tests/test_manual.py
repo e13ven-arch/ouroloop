@@ -91,6 +91,8 @@ def test_a_reply_is_held_to_what_an_api_provider_can_return(tmp_path):
     turn = ask({"text": "", "tool_calls": [call], "stop": "tool_use", "usage": {"input_tokens": 5}})
     assert turn == ChatTurn("", [ToolCall("c1", "write", {"path": "x"})], "tool_use", usage={"input_tokens": 5})
     assert ask({"text": "ok", "stop": "end"}) == ChatTurn("ok", [], "end")
+    openai_usage = {"prompt_tokens": 9, "completion_tokens": 2, "prompt_tokens_details": {"cached_tokens": 0}}
+    assert ask({"text": "ok", "stop": "end", "usage": openai_usage}).usage == openai_usage   # as openai_compat has it
     for bad, why in [({"text": "ok", "stop": "finished"}, "stop"),
                      ({"text": 3, "stop": "end"}, "text"),
                      ({"text": "", "tool_calls": [{**call, "name": "bash"}], "stop": "tool_use"}, "not offered"),
@@ -98,7 +100,7 @@ def test_a_reply_is_held_to_what_an_api_provider_can_return(tmp_path):
                      ({"text": "", "tool_calls": [call, call], "stop": "tool_use"}, "unique"),
                      ({"text": "", "tool_calls": [call], "stop": "end"}, "tool_use"),
                      ({"text": "", "stop": "tool_use"}, "tool_use"),
-                     ({"text": "ok", "stop": "end", "usage": {"input_tokens": "5"}}, "usage"),
+                     ({"text": "ok", "stop": "end", "usage": [5]}, "usage"),
                      ({"text": "ok", "stop": "end", "thinking": "..."}, "unknown"),
                      ({"id": "req_other", "text": "ok", "stop": "end"}, "answers")]:
         with pytest.raises(ProviderError, match=why):
