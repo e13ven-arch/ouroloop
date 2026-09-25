@@ -1,0 +1,130 @@
+prompt = "Rename the public function get_user_name to display_name across the project, and export display_name from the accounts package the way get_user_name is exported now. Code outside this project still calls get_user_name, so keep it working, from accounts and from accounts.users, as a deprecated alias that emits a DeprecationWarning when it is called. Nothing inside this project may call the old name any more."
+held_out = true
+max_turns = 14
+checks = [
+    "python3 -m unittest -q test_hidden.T.test_new_name",
+    "python3 -m unittest -q test_hidden.T.test_old_name_warns",
+    "python3 -m unittest -q test_hidden.T.test_old_name_from_package",
+    "python3 -m unittest -q test_hidden.T.test_callers_updated",
+]
+
+[files]
+"accounts/__init__.py" = '''
+from .users import User, get_user_name
+
+__all__ = ["User", "get_user_name"]
+'''
+"accounts/users.py" = '''
+from dataclasses import dataclass
+
+
+@dataclass
+class User:
+    first: str
+    last: str
+    nickname: str = ""
+
+
+def get_user_name(user):
+    """How to show a user: the nickname when there is one, else "First Last"."""
+    return user.nickname or f"{user.first} {user.last}"
+'''
+"greet.py" = '''
+from accounts import get_user_name
+
+
+def greet(user):
+    return f"Hello, {get_user_name(user)}!"
+'''
+"roster.py" = '''
+import accounts.users
+
+
+def roster(users):
+    """The users' names, one per line, sorted."""
+    return "\n".join(sorted(accounts.users.get_user_name(u) for u in users))
+'''
+
+[hidden]
+"test_hidden.py" = '''
+import unittest
+import warnings
+
+import accounts
+from accounts.users import User
+
+
+class T(unittest.TestCase):
+    def test_new_name(self):
+        from accounts import display_name
+        from accounts.users import display_name as same
+        self.assertIs(display_name, same)
+        self.assertIn("display_name", accounts.__all__)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            self.assertEqual(display_name(User("Ada", "Lovelace")), "Ada Lovelace")
+            self.assertEqual(display_name(User("Ada", "Lovelace", "ada")), "ada")
+
+    def test_old_name_warns(self):
+        from accounts.users import get_user_name
+        with self.assertWarns(DeprecationWarning):
+            self.assertEqual(get_user_name(User("Ada", "Lovelace")), "Ada Lovelace")
+
+    def test_old_name_from_package(self):
+        from accounts import get_user_name
+        with self.assertWarns(DeprecationWarning):
+            self.assertEqual(get_user_name(User("Ada", "Lovelace", "ada")), "ada")
+
+    def test_callers_updated(self):
+        import greet
+        import roster
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            self.assertEqual(greet.greet(User("Alan", "Turing")), "Hello, Alan Turing!")
+            self.assertEqual(roster.roster([User("Grace", "Hopper"), User("Ada", "Lovelace", "ada")]),
+                             "Grace Hopper\nada")
+'''
+
+[solution]
+"accounts/__init__.py" = '''
+from .users import User, display_name, get_user_name
+
+__all__ = ["User", "display_name", "get_user_name"]
+'''
+"accounts/users.py" = '''
+import warnings
+from dataclasses import dataclass
+
+
+@dataclass
+class User:
+    first: str
+    last: str
+    nickname: str = ""
+
+
+def display_name(user):
+    """How to show a user: the nickname when there is one, else "First Last"."""
+    return user.nickname or f"{user.first} {user.last}"
+
+
+def get_user_name(user):
+    """Deprecated: use display_name."""
+    warnings.warn("get_user_name is deprecated, use display_name", DeprecationWarning, stacklevel=2)
+    return display_name(user)
+'''
+"greet.py" = '''
+from accounts import display_name
+
+
+def greet(user):
+    return f"Hello, {display_name(user)}!"
+'''
+"roster.py" = '''
+import accounts.users
+
+
+def roster(users):
+    """The users' names, one per line, sorted."""
+    return "\n".join(sorted(accounts.users.display_name(u) for u in users))
+'''

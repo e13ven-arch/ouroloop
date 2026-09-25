@@ -1,0 +1,94 @@
+prompt = 'Make parse_config() in config.py handle real config files. 1) Skip blank lines and comment lines (the first non-space character is #). 2) Strip spaces around keys and values, split a line at its first "=" only, and remove the double quotes around a quoted value while keeping the spaces inside them: name = " a b " gives " a b ". 3) Turn unquoted whole numbers such as 8080 or -3 into int, and unquoted true/false in any letter case into bool; every other value stays a string. 4) Add ConfigError, a subclass of ValueError, and raise it for a line with no "=", an empty key, or a key that was already set, with a message that starts with "line N:", where N counts every line of the text from 1.'
+max_turns = 15
+checks = [
+    "python3 -m unittest -q test_hidden.T.test_comments_and_blanks",
+    "python3 -m unittest -q test_hidden.T.test_strip_and_quotes",
+    "python3 -m unittest -q test_hidden.T.test_types",
+    "python3 -m unittest -q test_hidden.T.test_bad_line",
+    "python3 -m unittest -q test_hidden.T.test_duplicate_key",
+]
+
+[files]
+"config.py" = '''
+def parse_config(text):
+    """Settings from lines of the form key = value."""
+    settings = {}
+    for line in text.splitlines():
+        key, value = line.split("=")
+        settings[key] = value
+    return settings
+'''
+
+[hidden]
+"test_hidden.py" = '''
+import unittest
+
+import config
+from config import parse_config
+
+
+class T(unittest.TestCase):
+    def test_comments_and_blanks(self):
+        text = "# settings\n\nhost=example.com\n   # indented comment\n\nmode=fast\n"
+        self.assertEqual(parse_config(text), {"host": "example.com", "mode": "fast"})
+
+    def test_strip_and_quotes(self):
+        text = 'host = example.com \nname = " a b "\nurl = http://x.org/?q=1\nversion = "2"'
+        self.assertEqual(parse_config(text),
+                         {"host": "example.com", "name": " a b ", "url": "http://x.org/?q=1", "version": "2"})
+
+    def test_types(self):
+        got = parse_config("port=8080\noffset=-3\ndebug=True\nquiet=false\nratio=1.5\nlevel=high")
+        self.assertEqual(got, {"port": 8080, "offset": -3, "debug": True, "quiet": False, "ratio": "1.5",
+                               "level": "high"})
+        self.assertIs(got["debug"], True)
+        self.assertIs(got["quiet"], False)
+
+    def test_bad_line(self):
+        self.assertTrue(issubclass(config.ConfigError, ValueError))
+        for text, n in (("a=1\njust words\n", 2), ("# c\n\n = x", 3)):
+            with self.assertRaises(config.ConfigError) as cm:
+                parse_config(text)
+            self.assertTrue(str(cm.exception).startswith(f"line {n}:"), str(cm.exception))
+
+    def test_duplicate_key(self):
+        with self.assertRaises(config.ConfigError) as cm:
+            parse_config("a=x\n\n# c\nb=y\na=z")
+        self.assertTrue(str(cm.exception).startswith("line 5:"), str(cm.exception))
+'''
+
+[solution]
+"config.py" = '''
+class ConfigError(ValueError):
+    pass
+
+
+def parse_config(text):
+    """Settings from lines of the form key = value."""
+    settings = {}
+    for n, line in enumerate(text.splitlines(), 1):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, eq, value = line.partition("=")
+        key, value = key.strip(), value.strip()
+        if not eq:
+            raise ConfigError(f"line {n}: expected key = value")
+        if not key:
+            raise ConfigError(f"line {n}: empty key")
+        if key in settings:
+            raise ConfigError(f"line {n}: {key} is set twice")
+        settings[key] = convert(value)
+    return settings
+
+
+def convert(value):
+    if len(value) >= 2 and value[0] == value[-1] == '"':
+        return value[1:-1]
+    if value.lower() in ("true", "false"):
+        return value.lower() == "true"
+    try:
+        return int(value)
+    except ValueError:
+        return value
+'''

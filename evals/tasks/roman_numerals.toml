@@ -1,0 +1,81 @@
+prompt = "Implement to_roman() and from_roman() in roman.py as their docstrings describe."
+max_turns = 10
+checks = [
+    "python3 -m unittest -q test_hidden.T.test_to_roman",
+    "python3 -m unittest -q test_hidden.T.test_to_roman_range",
+    "python3 -m unittest -q test_hidden.T.test_from_roman",
+    "python3 -m unittest -q test_hidden.T.test_from_roman_invalid",
+]
+
+[files]
+"roman.py" = '''
+def to_roman(n):
+    """n as a Roman numeral in the usual subtractive form, from the symbols I V X L C D M: to_roman(1994) == "MCMXCIV".
+    Raise ValueError unless n is an int from 1 to 3999."""
+    raise NotImplementedError
+
+
+def from_roman(s):
+    """The number that the Roman numeral s stands for: from_roman("MCMXCIV") == 1994. Accept exactly the strings that
+    to_roman returns, in upper case, and raise ValueError for any other string, such as "IIII", "IC" or ""."""
+    raise NotImplementedError
+'''
+
+[hidden]
+"test_hidden.py" = '''
+import unittest
+
+from roman import from_roman, to_roman
+
+
+class T(unittest.TestCase):
+    def test_to_roman(self):
+        cases = {1: "I", 4: "IV", 9: "IX", 14: "XIV", 40: "XL", 90: "XC", 400: "CD", 944: "CMXLIV", 2024: "MMXXIV",
+                 3999: "MMMCMXCIX"}
+        for n, s in cases.items():
+            self.assertEqual(to_roman(n), s, n)
+
+    def test_to_roman_range(self):
+        for n in (0, -7, 4000, 2.5):
+            with self.assertRaises(ValueError, msg=repr(n)):
+                to_roman(n)
+
+    def test_from_roman(self):
+        cases = {"III": 3, "XLII": 42, "XCIX": 99, "CDXLIV": 444, "MCMLXXXIV": 1984, "MMMCMXCIX": 3999}
+        for s, n in cases.items():
+            self.assertEqual(from_roman(s), n, s)
+
+    def test_from_roman_invalid(self):
+        for s in ("", "IIII", "VV", "IC", "XM", "IIV", "MMMM", "xiv", "XIV ", "ABC"):
+            with self.assertRaises(ValueError, msg=repr(s)):
+                from_roman(s)
+'''
+
+[solution]
+"roman.py" = '''
+SYMBOLS = [(1000, "M"), (900, "CM"), (500, "D"), (400, "CD"), (100, "C"), (90, "XC"), (50, "L"), (40, "XL"),
+           (10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I")]
+
+
+def to_roman(n):
+    """n as a Roman numeral in the usual subtractive form, from the symbols I V X L C D M: to_roman(1994) == "MCMXCIV".
+    Raise ValueError unless n is an int from 1 to 3999."""
+    if not isinstance(n, int) or not 1 <= n <= 3999:
+        raise ValueError(f"not an int from 1 to 3999: {n!r}")
+    out = []
+    for value, symbol in SYMBOLS:
+        count, n = divmod(n, value)
+        out.append(symbol * count)
+    return "".join(out)
+
+
+NUMBERS = {to_roman(n): n for n in range(1, 4000)}
+
+
+def from_roman(s):
+    """The number that the Roman numeral s stands for: from_roman("MCMXCIV") == 1994. Accept exactly the strings that
+    to_roman returns, in upper case, and raise ValueError for any other string, such as "IIII", "IC" or ""."""
+    if s not in NUMBERS:
+        raise ValueError(f"not a Roman numeral: {s!r}")
+    return NUMBERS[s]
+'''

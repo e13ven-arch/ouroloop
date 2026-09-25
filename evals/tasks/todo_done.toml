@@ -1,0 +1,200 @@
+prompt = "Add a `done ID` subcommand to todo.py that marks an item as done. Put the storage part in store.py as mark_done(path, item_id), which raises KeyError for an id that is not in the list. For an unknown id, `todo.py done` must print a one-line error to stderr (no traceback), exit with status 1 and leave the file as it was. Also give `list` a --pending flag that shows only the items not done yet."
+max_turns = 16
+checks = [
+    "python3 -m unittest -q test_hidden.T.test_add_and_list",
+    "python3 -m unittest -q test_hidden.T.test_store_mark_done",
+    "python3 -m unittest -q test_hidden.T.test_done_command",
+    "python3 -m unittest -q test_hidden.T.test_done_unknown_id",
+    "python3 -m unittest -q test_hidden.T.test_list_pending",
+]
+
+[files]
+"store.py" = '''
+import json
+import os
+
+
+def load(path):
+    """The items of the todo file at path; an empty list when it does not exist yet."""
+    if not os.path.exists(path):
+        return []
+    with open(path) as f:
+        return json.load(f)
+
+
+def save(path, items):
+    with open(path, "w") as f:
+        json.dump(items, f, indent=1)
+
+
+def add(path, text):
+    """Append an item and return its id; ids start at 1 and are never reused."""
+    items = load(path)
+    item_id = max((i["id"] for i in items), default=0) + 1
+    items.append({"id": item_id, "text": text, "done": False})
+    save(path, items)
+    return item_id
+'''
+"todo.py" = '''
+import argparse
+
+import store
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="A tiny todo list.")
+    parser.add_argument("--file", default="todo.json", help="where the list is kept")
+    sub = parser.add_subparsers(dest="command", required=True)
+    p = sub.add_parser("add", help="add an item")
+    p.add_argument("text")
+    sub.add_parser("list", help="show the items")
+    args = parser.parse_args(argv)
+
+    if args.command == "add":
+        print(f"added {store.add(args.file, args.text)}")
+    elif args.command == "list":
+        for item in store.load(args.file):
+            print(f"{item['id']} [{'x' if item['done'] else ' '}] {item['text']}")
+
+
+if __name__ == "__main__":
+    main()
+'''
+
+[hidden]
+"test_hidden.py" = '''
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+
+
+class T(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self.dir.name, "todo.json")
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def run_todo(self, *args):
+        return subprocess.run([sys.executable, "todo.py", "--file", self.path, *args], capture_output=True, text=True,
+                              timeout=30)
+
+    def add(self, *texts):
+        for text in texts:
+            self.assertEqual(self.run_todo("add", text).returncode, 0)
+
+    def test_add_and_list(self):
+        self.add("milk", "eggs")
+        self.assertEqual(self.run_todo("list").stdout.splitlines(), ["1 [ ] milk", "2 [ ] eggs"])
+
+    def test_store_mark_done(self):
+        import store
+        store.add(self.path, "a")
+        store.add(self.path, "b")
+        store.mark_done(self.path, 2)
+        self.assertEqual([i["done"] for i in store.load(self.path)], [False, True])
+        with self.assertRaises(KeyError):
+            store.mark_done(self.path, 7)
+
+    def test_done_command(self):
+        self.add("milk", "eggs")
+        out = self.run_todo("done", "1")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(self.run_todo("list").stdout.splitlines(), ["1 [x] milk", "2 [ ] eggs"])
+
+    def test_done_unknown_id(self):
+        self.add("milk")
+        with open(self.path, "rb") as f:
+            before = f.read()
+        out = self.run_todo("done", "5")
+        self.assertEqual(out.returncode, 1)
+        self.assertTrue(out.stderr.strip())
+        self.assertNotIn("Traceback", out.stderr)
+        with open(self.path, "rb") as f:
+            self.assertEqual(f.read(), before)
+
+    def test_list_pending(self):
+        with open(self.path, "w") as f:
+            json.dump([{"id": 1, "text": "milk", "done": False}, {"id": 2, "text": "eggs", "done": True},
+                       {"id": 3, "text": "bread", "done": False}], f)
+        self.assertEqual(self.run_todo("list", "--pending").stdout.splitlines(), ["1 [ ] milk", "3 [ ] bread"])
+        self.assertEqual(len(self.run_todo("list").stdout.splitlines()), 3)
+'''
+
+[solution]
+"store.py" = '''
+import json
+import os
+
+
+def load(path):
+    """The items of the todo file at path; an empty list when it does not exist yet."""
+    if not os.path.exists(path):
+        return []
+    with open(path) as f:
+        return json.load(f)
+
+
+def save(path, items):
+    with open(path, "w") as f:
+        json.dump(items, f, indent=1)
+
+
+def add(path, text):
+    """Append an item and return its id; ids start at 1 and are never reused."""
+    items = load(path)
+    item_id = max((i["id"] for i in items), default=0) + 1
+    items.append({"id": item_id, "text": text, "done": False})
+    save(path, items)
+    return item_id
+
+
+def mark_done(path, item_id):
+    """Mark an item as done; raises KeyError when there is no item with that id."""
+    items = load(path)
+    for item in items:
+        if item["id"] == item_id:
+            item["done"] = True
+            save(path, items)
+            return
+    raise KeyError(item_id)
+'''
+"todo.py" = '''
+import argparse
+import sys
+
+import store
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="A tiny todo list.")
+    parser.add_argument("--file", default="todo.json", help="where the list is kept")
+    sub = parser.add_subparsers(dest="command", required=True)
+    p = sub.add_parser("add", help="add an item")
+    p.add_argument("text")
+    p = sub.add_parser("list", help="show the items")
+    p.add_argument("--pending", action="store_true", help="only the items not done yet")
+    p = sub.add_parser("done", help="mark an item as done")
+    p.add_argument("id", type=int)
+    args = parser.parse_args(argv)
+
+    if args.command == "add":
+        print(f"added {store.add(args.file, args.text)}")
+    elif args.command == "list":
+        for item in store.load(args.file):
+            if not (args.pending and item["done"]):
+                print(f"{item['id']} [{'x' if item['done'] else ' '}] {item['text']}")
+    elif args.command == "done":
+        try:
+            store.mark_done(args.file, args.id)
+        except KeyError:
+            sys.exit(f"no item {args.id}")
+
+
+if __name__ == "__main__":
+    main()
+'''

@@ -1,0 +1,177 @@
+prompt = "`python3 app.py` crashes with an ImportError caused by circular imports between models.py, serialize.py and validation.py. Fix it so that app.py runs and each of the three modules can also be imported on its own in a fresh interpreter. Keep every class and function in the module it is in now."
+max_turns = 15
+checks = [
+    "python3 -m unittest -q test_hidden.T.test_app_runs",
+    "python3 -m unittest -q test_hidden.T.test_each_module_alone",
+    "python3 -m unittest -q test_hidden.T.test_validation",
+    "python3 -m unittest -q test_hidden.T.test_json_round_trip",
+    "python3 -m unittest -q test_hidden.T.test_layout_kept",
+]
+
+[files]
+"models.py" = '''
+from serialize import user_to_dict
+from validation import check_email
+
+
+class User:
+    def __init__(self, name, email):
+        check_email(email)
+        self.name = name
+        self.email = email
+
+    def to_dict(self):
+        return user_to_dict(self)
+'''
+"serialize.py" = '''
+import json
+
+from models import User
+
+
+def user_to_dict(user):
+    return {"name": user.name, "email": user.email}
+
+
+def to_json(user):
+    return json.dumps(user_to_dict(user))
+
+
+def from_json(text):
+    data = json.loads(text)
+    return User(data["name"], data["email"])
+'''
+"validation.py" = '''
+from models import User
+
+
+def check_email(email):
+    """Raise ValueError unless email looks like name@domain.tld."""
+    name, _, domain = email.partition("@")
+    if not name or "." not in domain:
+        raise ValueError(f"not an email address: {email!r}")
+
+
+def validate_user(user):
+    if not isinstance(user, User):
+        raise TypeError(f"expected a User, got {type(user).__name__}")
+    check_email(user.email)
+    return True
+'''
+"app.py" = '''
+from models import User
+from serialize import from_json, to_json
+from validation import validate_user
+
+
+def main():
+    text = to_json(User("Ada", "ada@example.org"))
+    print(text)
+    print(validate_user(from_json(text)))
+
+
+if __name__ == "__main__":
+    main()
+'''
+
+[hidden]
+"test_hidden.py" = '''
+import subprocess
+import sys
+import unittest
+
+
+def python(*args):
+    return subprocess.run([sys.executable, *args], capture_output=True, text=True, timeout=30)
+
+
+class T(unittest.TestCase):
+    def test_app_runs(self):
+        out = python("app.py")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(out.stdout.splitlines(), ['{"name": "Ada", "email": "ada@example.org"}', "True"])
+
+    def test_each_module_alone(self):
+        for module in ("models", "serialize", "validation"):
+            out = python("-c", f"import {module}")
+            self.assertEqual(out.returncode, 0, f"import {module}: {out.stderr}")
+
+    def test_validation(self):
+        from models import User
+        from validation import check_email, validate_user
+        with self.assertRaises(ValueError):
+            User("Bo", "bo-at-example")
+        with self.assertRaises(ValueError):
+            check_email("@example.org")
+        with self.assertRaises(TypeError):
+            validate_user({"name": "Bo", "email": "bo@example.org"})
+        self.assertIs(validate_user(User("Bo", "bo@example.org")), True)
+
+    def test_json_round_trip(self):
+        from models import User
+        from serialize import from_json, to_json
+        user = from_json(to_json(User("Bo", "bo@example.org")))
+        self.assertIsInstance(user, User)
+        self.assertEqual(user.to_dict(), {"name": "Bo", "email": "bo@example.org"})
+
+    def test_layout_kept(self):
+        import models
+        import serialize
+        import validation
+        self.assertEqual(models.User.__module__, "models")
+        for f in (serialize.user_to_dict, serialize.to_json, serialize.from_json):
+            self.assertEqual(f.__module__, "serialize")
+        for f in (validation.check_email, validation.validate_user):
+            self.assertEqual(f.__module__, "validation")
+'''
+
+[solution]
+"models.py" = '''
+import serialize
+import validation
+
+
+class User:
+    def __init__(self, name, email):
+        validation.check_email(email)
+        self.name = name
+        self.email = email
+
+    def to_dict(self):
+        return serialize.user_to_dict(self)
+'''
+"serialize.py" = '''
+import json
+
+import models
+
+
+def user_to_dict(user):
+    return {"name": user.name, "email": user.email}
+
+
+def to_json(user):
+    return json.dumps(user_to_dict(user))
+
+
+def from_json(text):
+    data = json.loads(text)
+    return models.User(data["name"], data["email"])
+'''
+"validation.py" = '''
+import models
+
+
+def check_email(email):
+    """Raise ValueError unless email looks like name@domain.tld."""
+    name, _, domain = email.partition("@")
+    if not name or "." not in domain:
+        raise ValueError(f"not an email address: {email!r}")
+
+
+def validate_user(user):
+    if not isinstance(user, models.User):
+        raise TypeError(f"expected a User, got {type(user).__name__}")
+    check_email(user.email)
+    return True
+'''

@@ -1,0 +1,151 @@
+prompt = "Move parse_duration() from utils.py into a new module durations.py, so that utils.py no longer has it. Update every place in the project that uses it so that everything keeps working."
+max_turns = 12
+checks = [
+    "python3 -m unittest -q test_hidden.T.test_new_module",
+    "python3 -m unittest -q test_hidden.T.test_gone_from_utils",
+    "python3 -m unittest -q test_hidden.T.test_scheduler",
+    "python3 -m unittest -q test_hidden.T.test_report",
+    "python3 -m unittest -q test_hidden.T.test_cli",
+]
+
+[files]
+"utils.py" = '''
+import re
+
+_UNITS = {"d": 86400, "h": 3600, "m": 60, "s": 1}
+
+
+def clamp(x, lo, hi):
+    return max(lo, min(x, hi))
+
+
+def parse_duration(text):
+    """Seconds in a duration such as "1h30m", "45s" or "2d"; raises ValueError for anything else."""
+    parts = re.findall(r"(\d+)([dhms])", text)
+    if not parts or "".join(n + u for n, u in parts) != text.strip():
+        raise ValueError(f"not a duration: {text!r}")
+    return sum(int(n) * _UNITS[u] for n, u in parts)
+
+
+def plural(n, word):
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+'''
+"scheduler.py" = '''
+from utils import clamp, parse_duration
+
+
+def next_run(last, every, min_gap=60):
+    """When (in seconds) to run next after last, for an interval such as "15m"; never sooner than min_gap."""
+    return last + clamp(parse_duration(every), min_gap, 7 * 86400)
+'''
+"report.py" = '''
+import utils
+
+
+def describe(job, every):
+    minutes = utils.parse_duration(every) // 60
+    return f"{job} runs every {utils.plural(minutes, 'minute')}"
+'''
+"cli.py" = '''
+import sys
+
+from utils import parse_duration
+
+
+def main(argv):
+    print(parse_duration(argv[0]))
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
+'''
+
+[hidden]
+"test_hidden.py" = '''
+import subprocess
+import sys
+import unittest
+
+
+class T(unittest.TestCase):
+    def test_new_module(self):
+        from durations import parse_duration
+        self.assertEqual(parse_duration("1h30m"), 5400)
+        with self.assertRaises(ValueError):
+            parse_duration("soon")
+
+    def test_gone_from_utils(self):
+        import utils
+        self.assertFalse(hasattr(utils, "parse_duration"))
+        self.assertEqual(utils.clamp(5, 0, 3), 3)
+        self.assertEqual(utils.plural(2, "day"), "2 days")
+
+    def test_scheduler(self):
+        from scheduler import next_run
+        self.assertEqual(next_run(1000, "15m"), 1900)
+        self.assertEqual(next_run(0, "10s"), 60)
+
+    def test_report(self):
+        from report import describe
+        self.assertEqual(describe("backup", "2h"), "backup runs every 120 minutes")
+        self.assertEqual(describe("sync", "1m"), "sync runs every 1 minute")
+
+    def test_cli(self):
+        out = subprocess.run([sys.executable, "cli.py", "2d"], capture_output=True, text=True, timeout=30)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(out.stdout.strip(), "172800")
+'''
+
+[solution]
+"durations.py" = '''
+import re
+
+_UNITS = {"d": 86400, "h": 3600, "m": 60, "s": 1}
+
+
+def parse_duration(text):
+    """Seconds in a duration such as "1h30m", "45s" or "2d"; raises ValueError for anything else."""
+    parts = re.findall(r"(\d+)([dhms])", text)
+    if not parts or "".join(n + u for n, u in parts) != text.strip():
+        raise ValueError(f"not a duration: {text!r}")
+    return sum(int(n) * _UNITS[u] for n, u in parts)
+'''
+"utils.py" = '''
+def clamp(x, lo, hi):
+    return max(lo, min(x, hi))
+
+
+def plural(n, word):
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+'''
+"scheduler.py" = '''
+from durations import parse_duration
+from utils import clamp
+
+
+def next_run(last, every, min_gap=60):
+    """When (in seconds) to run next after last, for an interval such as "15m"; never sooner than min_gap."""
+    return last + clamp(parse_duration(every), min_gap, 7 * 86400)
+'''
+"report.py" = '''
+import utils
+from durations import parse_duration
+
+
+def describe(job, every):
+    minutes = parse_duration(every) // 60
+    return f"{job} runs every {utils.plural(minutes, 'minute')}"
+'''
+"cli.py" = '''
+import sys
+
+from durations import parse_duration
+
+
+def main(argv):
+    print(parse_duration(argv[0]))
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
+'''

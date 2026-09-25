@@ -1,0 +1,79 @@
+prompt = "merge() in intervals.py gives wrong results for some inputs, and covered() relies on it. Fix merge() so that it does everything its docstring says."
+held_out = true
+max_turns = 12
+checks = [
+    "python3 -m unittest -q test_hidden.T.test_touching",
+    "python3 -m unittest -q test_hidden.T.test_contained",
+    "python3 -m unittest -q test_hidden.T.test_input_unchanged",
+    "python3 -m unittest -q test_hidden.T.test_empty",
+]
+
+[files]
+"intervals.py" = '''
+def merge(intervals):
+    """Merge (start, end) pairs that overlap or touch, so (1, 3) and (3, 5) become (1, 5). The pairs may come in any
+    order; the result is sorted by start, and no pairs give []. The list passed in is left unchanged."""
+    intervals.sort()
+    out = [intervals[0]]
+    for start, end in intervals[1:]:
+        last_start, last_end = out[-1]
+        if start < last_end:
+            out[-1] = (last_start, end)
+        else:
+            out.append((start, end))
+    return out
+
+
+def covered(intervals):
+    """The total length covered by the intervals, counting overlaps once."""
+    return sum(end - start for start, end in merge(intervals))
+'''
+
+[hidden]
+"test_hidden.py" = '''
+import unittest
+
+from intervals import covered, merge
+
+
+def pairs(intervals):
+    return [tuple(p) for p in merge(intervals)]
+
+
+class T(unittest.TestCase):
+    def test_touching(self):
+        self.assertEqual(pairs([(1, 3), (3, 5)]), [(1, 5)])
+        self.assertEqual(pairs([(1, 2), (4, 5)]), [(1, 2), (4, 5)])
+
+    def test_contained(self):
+        self.assertEqual(pairs([(1, 10), (2, 3)]), [(1, 10)])
+        self.assertEqual(covered([(1, 10), (2, 3), (12, 14)]), 11)
+
+    def test_input_unchanged(self):
+        data = [(5, 6), (1, 2)]
+        self.assertEqual(pairs(data), [(1, 2), (5, 6)])
+        self.assertEqual(data, [(5, 6), (1, 2)])
+
+    def test_empty(self):
+        self.assertEqual(pairs([]), [])
+        self.assertEqual(covered([]), 0)
+'''
+
+[solution]
+"intervals.py" = '''
+def merge(intervals):
+    """Merge (start, end) pairs that overlap or touch, so (1, 3) and (3, 5) become (1, 5). The pairs may come in any
+    order; the result is sorted by start, and no pairs give []. The list passed in is left unchanged."""
+    out = []
+    for start, end in sorted(intervals):
+        if out and start <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], end))
+        else:
+            out.append((start, end))
+    return out
+
+
+def covered(intervals):
+    """The total length covered by the intervals, counting overlaps once."""
+    return sum(end - start for start, end in merge(intervals))
+'''

@@ -82,7 +82,7 @@ def scripted(rt, *turns):
 # ---------------------------------------------------------------- tasks
 def test_starter_tasks_fail_as_given_and_pass_with_their_solution():
     tasks = load_suite(ROOT / "evals" / "tasks")
-    assert len(tasks) == 10 and sum(t.held_out for t in tasks) == 3
+    assert len(tasks) == 29 and sum(t.held_out for t in tasks) == 8
     for t in tasks:
         before, after = validate(t)
         assert before < 1 and after == 1, t.name

@@ -1,0 +1,140 @@
+prompt = "Add a --decimals N option to main.py (default 2) that sets how many decimals every amount in the report is printed with, the total line included. Pass it down as a decimals keyword argument of report.render() and fmt.fmt_amount(), defaulting to 2 in both, so that their existing callers keep working."
+max_turns = 12
+checks = [
+    "python3 -m unittest -q test_hidden.T.test_default_output",
+    "python3 -m unittest -q test_hidden.T.test_cli_decimals",
+    "python3 -m unittest -q test_hidden.T.test_render_decimals",
+    "python3 -m unittest -q test_hidden.T.test_fmt_decimals",
+]
+
+[files]
+"fmt.py" = '''
+def fmt_amount(x):
+    """An amount with thousands separators and two decimals: 1234.5 -> "1,234.50"."""
+    return f"{x:,.2f}"
+'''
+"report.py" = '''
+from fmt import fmt_amount
+
+
+def render(totals):
+    """One line per category, largest total first."""
+    rows = sorted(totals.items(), key=lambda kv: (-kv[1], kv[0]))
+    width = max(len(k) for k in totals)
+    return [f"{name:<{width}}  {fmt_amount(total)}" for name, total in rows]
+'''
+"main.py" = '''
+import argparse
+import csv
+from collections import defaultdict
+
+from fmt import fmt_amount
+from report import render
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Total the amounts of a CSV file by category.")
+    parser.add_argument("file")
+    args = parser.parse_args(argv)
+    totals = defaultdict(float)
+    with open(args.file, newline="") as f:
+        for row in csv.DictReader(f):
+            totals[row["category"]] += float(row["amount"])
+    for line in render(totals):
+        print(line)
+    print(f"total  {fmt_amount(sum(totals.values()))}")
+
+
+if __name__ == "__main__":
+    main()
+'''
+"expenses.csv" = '''
+category,amount
+rent,1200
+food,310.456
+travel,89.9
+food,45.5
+'''
+
+[hidden]
+"expenses.csv" = '''
+category,amount
+rent,1200
+food,310.456
+travel,89.9
+food,45.5
+'''
+"test_hidden.py" = '''
+import subprocess
+import sys
+import unittest
+
+
+def run(*args):
+    out = subprocess.run([sys.executable, "main.py", "expenses.csv", *args], capture_output=True, text=True,
+                         timeout=30)
+    return out.stdout.splitlines()
+
+
+class T(unittest.TestCase):
+    def test_default_output(self):
+        self.assertEqual(run(), ["rent    1,200.00", "food    355.96", "travel  89.90", "total  1,645.86"])
+
+    def test_cli_decimals(self):
+        self.assertEqual(run("--decimals", "0"), ["rent    1,200", "food    356", "travel  90", "total  1,646"])
+        self.assertEqual(run("--decimals", "3"),
+                         ["rent    1,200.000", "food    355.956", "travel  89.900", "total  1,645.856"])
+
+    def test_render_decimals(self):
+        from report import render
+        self.assertEqual(render({"a": 1.5, "bb": 10}, decimals=1), ["bb  10.0", "a   1.5"])
+        self.assertEqual(render({"a": 1.5}), ["a  1.50"])
+
+    def test_fmt_decimals(self):
+        from fmt import fmt_amount
+        self.assertEqual(fmt_amount(1234.5678, decimals=3), "1,234.568")
+        self.assertEqual(fmt_amount(2), "2.00")
+'''
+
+[solution]
+"fmt.py" = '''
+def fmt_amount(x, decimals=2):
+    """An amount with thousands separators and the given number of decimals: 1234.5 -> "1,234.50"."""
+    return f"{x:,.{decimals}f}"
+'''
+"report.py" = '''
+from fmt import fmt_amount
+
+
+def render(totals, decimals=2):
+    """One line per category, largest total first."""
+    rows = sorted(totals.items(), key=lambda kv: (-kv[1], kv[0]))
+    width = max(len(k) for k in totals)
+    return [f"{name:<{width}}  {fmt_amount(total, decimals)}" for name, total in rows]
+'''
+"main.py" = '''
+import argparse
+import csv
+from collections import defaultdict
+
+from fmt import fmt_amount
+from report import render
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Total the amounts of a CSV file by category.")
+    parser.add_argument("file")
+    parser.add_argument("--decimals", type=int, default=2, help="decimals of every amount")
+    args = parser.parse_args(argv)
+    totals = defaultdict(float)
+    with open(args.file, newline="") as f:
+        for row in csv.DictReader(f):
+            totals[row["category"]] += float(row["amount"])
+    for line in render(totals, args.decimals):
+        print(line)
+    print(f"total  {fmt_amount(sum(totals.values()), args.decimals)}")
+
+
+if __name__ == "__main__":
+    main()
+'''
