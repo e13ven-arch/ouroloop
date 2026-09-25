@@ -87,13 +87,13 @@ def tde_config(recipe: dict, out_dir: str, init_from: str | None, version: str) 
 
 def prepare_job(data_dir, cfg_json, replay=None, ratio=1.0, seed=0):
     """Write <data_dir>/tde/train.jsonl (ledger examples plus a seeded replay sample), <data_dir>/tde/calibration.jsonl
-    (the ledger's val split, which TDE selects its checkpoint on; never ouroloop's calibration split) and the TDE
-    config, taking the architecture from the parent run. Paths may start with ~ (the training machine's home).
-    Returns the config path. Standard library only."""
+    (the ledger's val split, which TDE selects its checkpoint on; never ouroloop's calibration split; shuffled, since
+    TDE reads only its first eval_limit rows, and in ledger order those are the oldest sessions) and the TDE config,
+    taking the architecture from the parent run. Paths may start with ~ (the training machine's home). Returns the
+    config path. Standard library only."""
     import json
     import os
     import random
-    import shutil
     data_dir = os.path.expanduser(data_dir)
     out = os.path.join(data_dir, "tde")
     os.makedirs(out, exist_ok=True)
@@ -114,11 +114,13 @@ def prepare_job(data_dir, cfg_json, replay=None, ratio=1.0, seed=0):
     random.Random(seed).shuffle(lines)
     with open(os.path.join(out, "train.jsonl"), "w", encoding="utf-8") as f:
         f.writelines(lines)
-    val = os.path.join(data_dir, "val.jsonl")
-    if os.path.exists(val):
-        shutil.copy(val, os.path.join(out, "calibration.jsonl"))
-    else:
-        open(os.path.join(out, "calibration.jsonl"), "w").close()     # TDE reads the file; empty, it selects none
+    val = []                                # TDE reads the file; empty, it selects none
+    if os.path.exists(os.path.join(data_dir, "val.jsonl")):
+        with open(os.path.join(data_dir, "val.jsonl"), encoding="utf-8") as f:
+            val = [line if line.endswith("\n") else line + "\n" for line in f if line.strip()]
+    random.Random(seed).shuffle(val)
+    with open(os.path.join(out, "calibration.jsonl"), "w", encoding="utf-8") as f:
+        f.writelines(val)
     cfg = json.loads(cfg_json)
     cfg["data_dir"] = out
     cfg["out_dir"] = os.path.expanduser(cfg["out_dir"])     # TDE takes it as is: "~/x" would be a directory named ~

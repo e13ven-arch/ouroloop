@@ -156,7 +156,7 @@ def test_prepare_job_mixes_replay_and_inherits_the_parent_architecture(tmp_path)
     data = tmp_path / "data"
     data.mkdir()
     (data / "train.jsonl").write_text("".join(json.dumps({"id": i}) + "\n" for i in range(10)))
-    (data / "val.jsonl").write_text(json.dumps({"id": "v"}) + "\n")
+    (data / "val.jsonl").write_text("".join(json.dumps({"id": f"v{i}"}) + "\n" for i in range(50)))
     (tmp_path / "replay.jsonl").write_text("".join(json.dumps({"id": f"r{i}"}) + "\n" for i in range(100)))
     parent = tmp_path / "parent"
     parent.mkdir()
@@ -167,7 +167,9 @@ def test_prepare_job_mixes_replay_and_inherits_the_parent_architecture(tmp_path)
     assert cfg["backbone"] == "gliclass" and cfg["data_dir"].endswith("tde") and cfg["epochs"] == 3
     ids = [json.loads(line)["id"] for line in (data / "tde" / "train.jsonl").read_text().splitlines()]
     assert len(ids) == 15 and sum(str(i).startswith("r") for i in ids) == 5
-    assert (data / "tde" / "calibration.jsonl").read_text() == json.dumps({"id": "v"}) + "\n"   # what TDE selects on
+    # what TDE selects on: the val split, shuffled, as TDE evaluates only its first rows (in order, the oldest)
+    val = [json.loads(line)["id"] for line in (data / "tde" / "calibration.jsonl").read_text().splitlines()]
+    assert sorted(val) == sorted(f"v{i}" for i in range(50)) and val[:10] != [f"v{i}" for i in range(10)]
 
 
 class FakeHost:
