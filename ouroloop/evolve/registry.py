@@ -41,7 +41,8 @@ class Registry:
     def promote(self, version: str, expected_parent: str | None) -> None:
         """Compare and swap: `version` becomes the champion only while the champion is still `expected_parent`, the
         version it was built on. Two candidates built on one parent cannot both be promoted. Only a version the gate
-        record on its card accepted (gate.run), and that was never revoked, can be promoted."""
+        record on its card accepted (gate.run), over the parent it was evaluated against, and never rolled back or
+        revoked, can be promoted."""
         card = self.card(version)
         if card.get("parent") != expected_parent:       # a verdict promotes the step it judged, parent -> version
             raise PromotionConflict(f"{version} was built on {card.get('parent')}, not {expected_parent}")

@@ -206,7 +206,7 @@ def _lock(root: str | Path) -> Path:
 
 
 def _log(root: str | Path) -> dict[str, dict]:
-    """The gate events of the workspace's ledger by round: "frozen", "used", "closed" (the last of each)."""
+    """The gate events of the workspace's ledger by round: "frozen", "used", "closed", "revoked" (the last of each)."""
     out: dict[str, dict] = {}
     for ev in Ledger(Path(root) / "ledger").events():
         if ev.get("type") == "gate":
