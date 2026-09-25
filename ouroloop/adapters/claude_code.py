@@ -36,6 +36,15 @@ def detail(tool: str, args: dict) -> str:
     return f"edit {args.get('file_path')}\nreplace:\n{old[:400]}\nwith:\n{str(args.get('new_string', ''))[:400]}"
 
 
+def deny(event: dict) -> dict | None:
+    """The deny list's "deny" for a PreToolUse event of a Bash command on it, else None. It needs no runtime, so the
+    hook still denies when the runtime cannot be built or cannot record."""
+    command = str((event.get("tool_input") or {}).get("command", ""))
+    rule = denied(command) if (event.get("hook_event_name"), event.get("tool_name")) == ("PreToolUse", "Bash") else None
+    return rule and {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                            "permissionDecisionReason": f"ouroloop deny list: {rule}"}}
+
+
 def settings(command: str = "ouroloop hook claude-code") -> dict:
     """The hooks block for .claude/settings.json (or ~/.claude/settings.json)."""
     handler = [{"type": "command", "command": command}]
@@ -105,11 +114,10 @@ class ClaudeCodeAdapter:
             return None
         ctx = {"task": st.get("task", ""), "workdir": event.get("cwd", ""), "tool": TOOLS[tool],
                "detail": detail(tool, args)}
-        if tool == "Bash" and self.enforce_deny_list and (rule := denied(str(args.get("command", "")))):
+        if self.enforce_deny_list and (out := deny(event)):
             if "tool_gate" in self.rt.points:
                 self._decide("tool_gate", ctx, session, veto="no")
-            return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
-                                           "permissionDecisionReason": f"ouroloop deny list: {rule}"}}
+            return out
         if "tool_gate" in self.rt.points:
             d = self._decide("tool_gate", ctx, session)
             st["gates"][event.get("tool_use_id", d.id)] = {"decision": d.id, "asked": False}

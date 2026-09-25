@@ -1,5 +1,6 @@
 """M7 offline acceptance: a point acts only by the execution rule, and takes its declared default on errors and
 doubts (PLAN_v0.2 §0, M7)."""
+import io
 import json
 import random
 import re
@@ -397,6 +398,23 @@ def test_the_adapter_never_allows_whatever_the_route(tmp_path, gated):
         routes |= {r.decision["route"] for r in rt.ledger.rows()}
     assert routes == {"act", "default", "error", "shadow", "rule"}
     assert outs == {("ls", None), ("touch x; echo reboot", "deny")}
+
+
+def test_the_hook_denies_even_when_the_runtime_cannot_start_or_record(tmp_path, monkeypatch, capsys):
+    ok = '[workspace]\nroot = "ws"\n\n[backends.mock]\ntype = "mock"\n'
+    configs = {"pre-M7 fallback": 'fallback = "mock"\n' + ok, "unwritable ledger": ok}
+    for i, (case, text) in enumerate(configs.items()):
+        path = tmp_path / f"{i}.toml"
+        path.write_text(text)
+        if case == "unwritable ledger":
+            monkeypatch.setattr(Ledger, "append", lambda self, event: (_ for _ in ()).throw(OSError("disk full")))
+        for command, expected in (("rm -rf /", "deny"), ("ls", None)):
+            monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({
+                "hook_event_name": "PreToolUse", "session_id": "s", "cwd": "/w", "tool_name": "Bash",
+                "tool_use_id": "t", "tool_input": {"command": command}})))
+            assert main(["hook", "claude-code", "--config", str(path), "--enforce-deny-list"]) == 0
+            out = capsys.readouterr().out
+            assert (json.loads(out)["hookSpecificOutput"]["permissionDecision"] if out else None) == expected, case
 
 
 # ---------------------------------------------------------------- M6 rows still read

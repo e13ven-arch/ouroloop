@@ -273,18 +273,21 @@ def _hook_runtime(path: str | None):
 
 
 def cmd_hook(args) -> int:
-    from .adapters.claude_code import ClaudeCodeAdapter, settings_json
+    from .adapters.claude_code import ClaudeCodeAdapter, deny, settings_json
     if args.target == "print-settings":
         print(settings_json("ouroloop hook claude-code" + (f" --config {Path(args.config).resolve()}"
                                                            if args.config else "")))
         return 0
+    event = None
     try:   # a hook must never break the Claude Code session
+        event = json.load(sys.stdin)
         out = ClaudeCodeAdapter(_hook_runtime(args.config), live=args.live,
-                                enforce_deny_list=args.enforce_deny_list).handle(json.load(sys.stdin))
-        if out:
-            print(json.dumps(out))
-    except Exception as e:  # noqa: BLE001
+                                enforce_deny_list=args.enforce_deny_list).handle(event)
+    except Exception as e:  # noqa: BLE001 - but a broken runtime must not lift the deny list
         print(f"ouroloop hook: {type(e).__name__}: {e}", file=sys.stderr)
+        out = deny(event) if args.enforce_deny_list and isinstance(event, dict) else None
+    if out:
+        print(json.dumps(out))
     return 0
 
 
