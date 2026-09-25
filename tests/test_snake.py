@@ -6,7 +6,7 @@ import random
 import pytest
 
 from examples.snake.game import Game, legal, moved, render, unpack
-from examples.snake.labeler import label
+from examples.snake.labeler import label, path
 from examples.snake.rules import greedy_safe, signature
 from examples.snake.scenario import RULE, move_point
 from ouroloop import config
@@ -80,6 +80,29 @@ def test_the_label_is_safe_progress_with_documented_ties_and_none_when_trapped()
         w, h, body, food, _ = unpack(s)
         safe = [d for d in legal(s) if moved(w, h, body, food, d)[0] is not None]
         assert (label(s) is None) == (not safe) and (label(s) in safe or not safe)
+
+
+def test_the_label_on_hand_built_boards_a_dead_end_food_behind_the_tail_and_a_full_board():
+    # a dead end: the food lies in the two top rows, which the body closes off; the snake could get to it but never
+    # out again. No move is good, so the label keeps the tail in reach; the rule snake heads in
+    dead_end = state([(5, 2), (4, 2), (3, 2), (2, 2), (1, 2), (0, 2), (0, 3), (1, 3), (2, 3), (3, 3), (3, 4), (2, 4),
+                      (1, 4), (0, 4)], (2, 0), "right", n=6)
+    assert (label(dead_end), greedy_safe(dead_end)) == ("down", "up")
+    # the food behind the tail: the only way to it is through the cell the tail leaves (blocked, there is none)
+    behind = state([(3, 0), (2, 0), (2, 1), (2, 2), (2, 3), (2, 4), (2, 5), (1, 5)], (0, 3), "right", n=6)
+    w, h, body, food, _ = unpack(behind)
+    after, _ = moved(w, h, body, food, "down")
+    route = path(w, h, after, food)
+    assert label(behind) == "down" and route is not None and path(w, h, [*after, after[-1]], food) is None
+    # a full board: eating the last food wins the game, although the tail is out of reach afterwards (3 x 3 has no
+    # cycle through every cell); the other safe move, into the tail's cell, only goes round
+    full = {"width": 3, "height": 3, "body": [[1, 0], [1, 1], [2, 1], [2, 2], [1, 2], [0, 2], [0, 1], [0, 0]],
+            "food": [2, 0], "heading": "up"}
+    assert label(full) == "right"
+    game = Game(3, 3, 3, seed=0)
+    game.body, game.heading, game.food = [tuple(c) for c in full["body"]], "up", (2, 0)
+    game.step(label(full))
+    assert game.over and game.alive and len(game.body) == 9
 
 
 def test_the_rule_snake_heads_for_the_food_and_never_dies_when_it_can_help_it():

@@ -7,7 +7,8 @@ only the environment's code runs: the label does not depend on how well any mode
    move is right, and the decision gets an outcome with label None, which no training or calibration reads.
 2. Progress: for each safe move, a shortest path from the new head to the food (BFS; the body blocks, except its
    tail, which moves on). A virtual snake follows it, and the move is good if the snake gets there alive and can then
-   still reach its own tail (or is shorter than 4): eating does not shut it in. Its distance is 1 + the path's length.
+   still reach its own tail (or is shorter than 4): eating does not shut it in. Eating the last food fills the board
+   and wins the game, so that is good too. Its distance is 1 + the path's length.
 3. The label is the good move with the shortest distance.
 4. No good move (no safe route to the food for now): among the safe moves after which the head can still reach the
    tail (all safe moves if none can), the one that leaves the head the most cells it can reach.
@@ -85,7 +86,7 @@ def label(state: dict) -> str | None:
             v, _ = moved(w, h, v, food, step)
             if v is None:
                 break
-        if v is not None and tail_reachable(w, h, v):
+        if v is not None and (len(v) == w * h or tail_reachable(w, h, v)):     # a full board: the game is won
             good[d] = 1 + len(route)
     if good:
         best = min(good.values())
