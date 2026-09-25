@@ -2,11 +2,15 @@
 that lets a changed view be re-rendered offline, and the champion spec store."""
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 import re
+import threading
 import time
 import uuid
 from collections import defaultdict
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -67,6 +71,35 @@ def _read_jsonl(path: Path) -> Iterator[dict]:
                     yield json.loads(line)
 
 
+@contextmanager
+def locked(path: Path):
+    """An exclusive lock on `path` (through a .lock file beside it), shared by every process that writes it."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path.with_name(f"{path.name}.lock"), "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def write_json(path: Path, obj: Any) -> None:
+    """Replace a JSON file in one step: a reader sees the old content or the new, never half of it."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def file_key(path: Path) -> tuple | None:
+    """Changes whenever the file is replaced or rewritten; None when there is none."""
+    try:
+        st = path.stat()
+    except FileNotFoundError:
+        return None
+    return st.st_mtime_ns, st.st_size, st.st_ino
+
+
 @dataclass
 class Row:
     """One decision joined with what happened afterwards."""
@@ -114,6 +147,24 @@ class Ledger:
     def events(self) -> Iterator[dict]:
         for path in sorted(self.root.glob("*.jsonl")):
             yield from _read_jsonl(path)
+
+    def sessions(self) -> tuple[dict[str, dict], int]:
+        """Every session by id: the fields of its session event (task, held_out, agent, release; M6 events carry the
+        first three, a session without one has none), "start", the position of its first event in the ledger, and
+        "points", where it made decisions. And the number of events read: a session that starts later has a start
+        at or past it."""
+        out: dict[str, dict] = {}
+        n = 0
+        for n, ev in enumerate(self.events(), 1):
+            s = ev.get("session")
+            if s is None or ev.get("type") not in ("session", "decision"):
+                continue
+            info = out.setdefault(s, {"start": n - 1, "points": set()})
+            if ev["type"] == "session":
+                info.update({k: v for k, v in ev.items() if k not in ("type", "session", "ts", "start", "points")})
+            else:
+                info["points"].add(ev.get("point"))
+        return out, n
 
     def rows(self, point: str | None = None) -> list[Row]:
         rows: dict[str, Row] = {}
@@ -169,22 +220,40 @@ class SessionStore:
 class CalibrationStore:
     """Temperature and per-phase thresholds by (model id, spec hash, point), fitted on the calibration split
     (PLAN_v0.2 M7). The model id is the one the answering backend reports, so a rollback brings the old values back
-    and a changed model, spec or view finds none. A file in the old per-point format is discarded, not migrated."""
+    and a changed model, spec or view finds none. A file in the old per-point format is discarded, not migrated.
+
+    Reads follow the file (it is re-read when it changes); a write re-reads it under a lock and changes one entry,
+    so a process never writes back a stale copy over another's entries (PLAN_v0.2 M8). Loaded entries are never
+    changed in place: a session's snapshot stays as it was when the session opened."""
     VERSION = 2
 
     def __init__(self, path: str | Path):
         self.path = Path(path)
+        self._key: tuple | None = None
+        self._entries: dict = {}
+
+    def _read(self) -> dict:
         raw = json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else {}
-        self.data = raw.get("entries", {}) if raw.get("version") == self.VERSION else {}
+        return raw.get("entries", {}) if raw.get("version") == self.VERSION else {}
+
+    def entries(self) -> dict:
+        key = file_key(self.path)
+        if key != self._key:
+            self._entries, self._key = self._read(), key
+        return self._entries
+
+    @staticmethod
+    def lookup(entries: dict, model: str, spec_hash: str, point: str) -> dict:
+        return entries.get(model, {}).get(spec_hash, {}).get(point, {})
 
     def get(self, model: str, spec_hash: str, point: str) -> dict:
-        return self.data.get(model, {}).get(spec_hash, {}).get(point, {})
+        return self.lookup(self.entries(), model, spec_hash, point)
 
     def set(self, model: str, spec_hash: str, point: str, entry: dict) -> None:
-        self.data.setdefault(model, {}).setdefault(spec_hash, {})[point] = {**entry, "ts": now()}
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps({"version": self.VERSION, "entries": self.data}, ensure_ascii=False,
-                                        indent=2), encoding="utf-8")
+        with locked(self.path):
+            data = self._read()
+            data.setdefault(model, {}).setdefault(spec_hash, {})[point] = {**entry, "ts": now()}
+            write_json(self.path, {"version": self.VERSION, "entries": data})
 
 
 class SpecStore:

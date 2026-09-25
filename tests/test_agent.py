@@ -4,11 +4,12 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
+from ouroloop import policy
 from ouroloop.agent import Agent, AgentConfig, Tools
 from ouroloop.agent.loop import DROPPED
 from ouroloop.backends import KeywordBackend
 from ouroloop.chat import ChatTurn, ScriptedChat, ToolCall, ToolSpec
-from ouroloop.points import (builtin_points, compact_point, denied, retry_point, route_point, stop_point,
+from ouroloop.points import (BUILTIN, builtin_points, compact_point, denied, retry_point, route_point, stop_point,
                              tool_gate_point)
 from ouroloop.policy import Policy
 from ouroloop.providers import ProviderError
@@ -18,6 +19,12 @@ from ouroloop.runtime import Runtime
 from ouroloop.types import Answer
 
 FLAKY = "test -f flag || { touch flag; echo 'ConnectionResetError: connection reset by peer' >&2; exit 1; }"
+
+
+@pytest.fixture(autouse=True)
+def every_point_may_act(monkeypatch):
+    """These tests wire the agent loop for every point acting, beyond v0.2, where only stop may."""
+    monkeypatch.setattr(policy, "ACTING", set(BUILTIN))
 
 
 class Fixed:

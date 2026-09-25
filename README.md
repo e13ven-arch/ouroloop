@@ -60,10 +60,11 @@ The research agent and `ouroloop run` work with any model:
 ## Research and evolution
 
 ```bash
+ouroloop gate freeze --config examples/ouroloop.toml           # once, by a person: the gate every promotion goes through
 ouroloop research --config examples/ouroloop.toml --rounds 3   # research rounds over the ledger
 ouroloop evolve --config examples/ouroloop.toml                # train a new decision model; promote only if it passes the gate
 ouroloop calibrate --config examples/ouroloop.toml             # report each point's temperature and thresholds
-ouroloop models --dir examples/workspace                       # model lineage; --rollback to go back
+ouroloop models --dir examples/workspace                       # model lineage; --rollback to go back (and revoke)
 ouroloop ledger --dir examples/workspace                       # decisions, label coverage and agreement per point
 ```
 
@@ -88,9 +89,9 @@ ouroloop research --config examples/zhipu.toml --rounds 2   # with a [suite], th
 A prompt candidate is evaluated in steps:
 
 - a change that only touches whitespace is rejected without running anything;
-- it runs on a few development tasks first, and only if it does no worse than the champion does it run on every task, held-out ones included, before the promotion gate;
+- it runs on a few development tasks first, and only if it does no worse than the champion do the champion and the candidate both run again on every task, held-out ones included, for the promotion gate;
 - the research agent never sees held-out results;
-- each run is recorded once per (prompt, model, task, repeat) in `harness/runs.jsonl` and reused: the champion's runs carry over between rounds, and re-running a prompt until it gets lucky is not possible.
+- each run is recorded once per (prompt, model, task, repeat) in `harness/runs.jsonl`; recorded runs serve the first step only, and a round gates once, so re-running a prompt until it gets lucky is not possible.
 
 The checks at the end of a task also label that run's `stop` and `route` decisions. Suite runs execute bash automatically, in a temporary directory with the deny list in force; use a container or a VM if you do not trust the model.
 
@@ -101,14 +102,15 @@ The checks at the end of a task also label that run's `stop` and `route` decisio
 | `ouroloop/decision.py` | decision points and specs (question, candidates, view parameters) |
 | `ouroloop/policy.py` | the execution rule, threshold fitting, exploration and propensities |
 | `ouroloop/ledger.py` | the ledger, raw contexts, champion specs, redaction |
-| `ouroloop/runtime.py` | ties decision points, backends, default answerers and the ledger together |
+| `ouroloop/runtime.py` | ties decision points, backends, default answerers and the ledger together; fixes each session's release |
+| `ouroloop/release.py` | the release a session runs with (model, decision spec, harness) and the revocation list |
 | `ouroloop/agent/` | the minimal agent: loop, four tools, harness prompt, task suites |
 | `ouroloop/points/` | built-in points `retry`, `compact`, `tool_gate`, `stop`, `route`, and the deny list |
 | `ouroloop/chat.py` | a provider-neutral chat format |
 | `ouroloop/providers/` | Anthropic (official SDK) and OpenAI-compatible APIs |
 | `ouroloop/backends/` | decision backends: `mock`, `jev`, `tde`, `llm`, `http` |
 | `ouroloop/research/` | question conversion, the research agent interface and default, research rounds |
-| `ouroloop/evolve/` | dataset building, data checks, trainers, calibration, the promotion gate, model registry, prompt candidates, experience records |
+| `ouroloop/evolve/` | dataset building, data checks, trainers, calibration, the frozen promotion gate and its records, model registry, prompt candidates, experience records |
 | `ouroloop/serve.py` | the HTTP decision service |
 | `ouroloop/adapters/` | Claude Code hooks (an optional data source) |
 

@@ -8,7 +8,8 @@ import re
 import httpx
 import pytest
 
-from ouroloop import config
+from conftest import GATE
+from ouroloop import config, policy
 from ouroloop.adapters.claude_code import ClaudeCodeAdapter
 from ouroloop.agent import Agent, AgentConfig, Tools
 from ouroloop.backends import KeywordBackend, LlmBackend
@@ -109,19 +110,20 @@ def test_a_rollback_brings_back_the_previous_champions_temperature_and_threshold
            "points": {"default_backend": "base", "stop": {"backend": "champion", "act": True, "explore": 0.0}}}
     rt = config.build_runtime(cfg, tmp_path)
     reg = Registry(rt.root)
-    for version, model in (("m_0001", "A"), ("m_0002", "B")):
-        reg.record({"version": version, "backend": {"type": "test_act:Model", "model": model}})
-        reg.promote(version)
+    for version, model, parent in (("m_0001", "A", None), ("m_0002", "B", "m_0001")):
+        reg.record({"version": version, "parent": parent, "points": ["stop"], "model_id": model,
+                    "backend": {"type": "test_act:Model", "model": model}})
+        reg.promote(version, parent)
     gated(rt, "stop", "A", {"per_turn": 0.6}, temperature=2.0)
     gated(rt, "stop", "B", {"per_turn": None}, temperature=0.5)
 
-    def ask():
-        d = config.build_runtime(cfg, tmp_path).ask("stop", ctx(), phase="per_turn")
+    def ask(session):
+        d = config.build_runtime(cfg, tmp_path).ask("stop", ctx(), session=session, phase="per_turn")
         return d.model, d.acted, round(d.confidence, 6)
 
-    assert ask() == ("B", False, round(temper({"yes": 0.99, "no": 0.01}, 0.5)["yes"], 6))
+    assert ask("s1") == ("B", False, round(temper({"yes": 0.99, "no": 0.01}, 0.5)["yes"], 6))
     assert reg.rollback() == "m_0001"
-    assert ask() == ("A", True, round(temper({"yes": 0.99, "no": 0.01}, 2.0)["yes"], 6))
+    assert ask("s2") == ("A", True, round(temper({"yes": 0.99, "no": 0.01}, 2.0)["yes"], 6))   # a new session
 
 
 def test_promotion_checks_the_model_id_the_backend_reports(tmp_path):
@@ -130,10 +132,10 @@ def test_promotion_checks_the_model_id_the_backend_reports(tmp_path):
     reg.record({"version": "m_0001"})
     cand = ModelCandidate("m_0001", {}, None, result=TrainResult("run", {}, "A@renamed"), backend=Model(model="A"))
     with pytest.raises(ValueError, match="reports model 'A'"):
-        promote_model(rt, cand, reg)
+        promote_model(rt, cand, reg, GATE)
     assert reg.champion() is None
     cand.result.model_id = "A"
-    promote_model(rt, cand, reg)
+    promote_model(rt, cand, reg, GATE)
     assert reg.champion()["version"] == "m_0001"
 
 
@@ -371,10 +373,11 @@ class Naysayer:
         return out
 
 
-def test_research_points_are_shadow_and_take_their_defaults(tmp_path):
+def test_research_points_are_shadow_and_take_their_defaults(tmp_path, frozen):
     rt = Runtime(tmp_path, {"mock": KeywordBackend()}, "mock", seed=0)
     rt.register(retry_point())
     seed_ledger(rt, 40)
+    frozen(tmp_path)
     llm = MockProvider(lambda s, p: json.dumps({"candidates": [
         {"kind": "spec", "change": {"instructions": "Will a rerun succeed?"}, "hypothesis": "judged no"}]}))
     res = run_round(rt, BasicResearcher(consult=False), llm, Naysayer())
@@ -401,7 +404,8 @@ def test_the_deny_list_runs_before_every_tool_call_and_leaves_a_rule_row(tmp_pat
     assert (gate["route"], gate["action"]) == ("rule", "no")
 
 
-def test_the_adapter_never_allows_whatever_the_route(tmp_path, gated):
+def test_the_adapter_never_allows_whatever_the_route(tmp_path, gated, monkeypatch):
+    monkeypatch.setattr(policy, "ACTING", {"stop", "tool_gate"})     # beyond v0.2: tool_gate acting, to see "act"
     outs, routes = set(), set()
     for i, (backend, live) in enumerate([(Model(0.99), True), (Model(0.01), True), (Broken(), True),
                                          (Model(0.99), False)]):

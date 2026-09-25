@@ -2,14 +2,17 @@
 from __future__ import annotations
 
 import importlib
+import json
 import random
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
+from . import policy
 from .decision import Decision, DecisionPoint, Spec
-from .ledger import CalibrationStore, Ledger, SessionStore, SpecStore
+from .ledger import CalibrationStore, Ledger, SessionStore, SpecStore, write_json
 from .policy import Policy, Route, route
+from .release import Release, Revoked, harness_hash, spec_hash
 from .types import Backend, Question, Request, temper
 
 
@@ -17,6 +20,18 @@ def import_object(ref: str):
     """"package.module:name" -> the object."""
     module, _, attr = ref.partition(":")
     return getattr(importlib.import_module(module), attr)
+
+
+@dataclass(frozen=True)
+class Pin:
+    """What a session runs with, fixed when it opens (PLAN_v0.2 M8): its release, the champion's registry version
+    and backend, the points the champion serves, and the calibrations as they were then."""
+    release: Release
+    version: str | None
+    backend: Backend | None
+    points: frozenset
+    calibration: dict
+    error: str = ""         # why the champion's backend could not be built
 
 
 class Runtime:
@@ -27,15 +42,20 @@ class Runtime:
         self.sessions = SessionStore(self.root / "sessions")
         self.specs = SpecStore(self.root / "harness" / "specs.json")
         self.calibration = CalibrationStore(self.root / "harness" / "calibration.json")
+        self.revoked = Revoked(self.root / "harness" / "revoked.json")
         self.backends = backends
         self.default_backend = default_backend
         self.point_backends = dict(point_backends or {})
         self.points: dict[str, DecisionPoint] = {}
         self.rng = random.Random(seed)
+        self._pins: dict[str, Pin] = {}
+        self._built: dict[str, tuple[Backend | None, str]] = {}     # champion version -> (backend, error)
 
     def register(self, point: DecisionPoint) -> DecisionPoint:
         """Add a decision point. A promoted spec (harness/specs.json) replaces the one in code. Each phase's default
-        must be one of the point's labels, and its default answerer must resolve."""
+        must be one of the point's labels, and its default answerer must resolve. In v0.2 only stop may act."""
+        if point.policy.act and point.name not in policy.ACTING:
+            raise ValueError(f"point {point.name!r} has act on: in v0.2 only {sorted(policy.ACTING)} may act")
         stored = self.specs.get(point.name)
         if stored is not None:
             point.spec = Spec.from_json(stored)
@@ -52,22 +72,92 @@ class Runtime:
         self.points[point.name] = point
         return point
 
-    def backend_for(self, point: str) -> Backend:
-        return self.backends[self.point_backends.get(point, self.default_backend)]
+    # ------------------------------------------------------------------ releases
+    def champion(self, version: str | None = None) -> tuple[dict, Backend | None, str]:
+        """The promoted champion as the registry has it now, or a given `version` of it: (its card, empty before the
+        first promotion; its backend; why the backend could not be built). A version's backend is built once."""
+        from .evolve.registry import Registry
+        registry = Registry(self.root)
+        card = registry.card(version) if version else registry.champion() or {}
+        if not card:
+            return {}, None, ""
+        version = card["version"]
+        if version not in self._built:
+            from .config import build_backend
+            try:
+                self._built[version] = (build_backend(card["backend"]), "")
+            except Exception as e:  # noqa: BLE001 - a champion that cannot load never answers, so never acts
+                self._built[version] = (None, f"{type(e).__name__}: {e}"[:300])
+        return card, *self._built[version]
 
-    def calibration_for(self, point: str | DecisionPoint, model: str) -> dict:
-        """The calibration of this model (as its backend reports it) on the point's current spec, if any."""
+    def current(self, harness: dict | None = None) -> Pin:
+        """What a session opened now runs with: the champion in models/champion.json and the calibrations in
+        harness/calibration.json, both read again."""
+        card, backend, error = self.champion()
+        return Pin(Release(card.get("model_id"), spec_hash(self.points), harness_hash(harness)), card.get("version"),
+                   backend, frozenset(card.get("points", ())), self.calibration.entries(), error)
+
+    def session(self, session: str, meta: dict | None = None, harness: dict | None = None) -> Release:
+        """Open a session: fix the release it runs with and record it, with what the session was run with (task,
+        held-out, agent models), before any of its decisions. Every later ask of the session uses that model and
+        those calibrations: a promotion reaches only sessions opened after it. A session never opened is fixed at its
+        first ask. `harness` describes the prompt, tools and StopGuard settings of an ouroloop harness."""
+        pin = self._keep(session, self.current(harness))
+        self.ledger.append({**(meta or {}), "type": "session", "session": session, "release": pin.release.to_json(),
+                            "champion": pin.version})
+        return pin.release
+
+    def _keep(self, session: str, pin: Pin) -> Pin:
+        """Fix `pin` for the session, also on disk beside its contexts: a process that resumes the session (serve
+        restarted, the next hook call) runs the same model, never the one promoted since."""
+        write_json(self.sessions.root / f"{session}.release.json", {"release": pin.release.to_json(),
+                                                                    "champion": pin.version})
+        self._pins[session] = pin
+        return pin
+
+    def _pin(self, session: str) -> Pin:
+        if session not in self._pins:
+            path = self.sessions.root / f"{session}.release.json"
+            if not path.exists():
+                return self._keep(session, self.current())
+            saved = json.loads(path.read_text(encoding="utf-8"))     # before any promotion: the base, still
+            card, backend, error = self.champion(saved["champion"]) if saved["champion"] else ({}, None, "")
+            self._pins[session] = Pin(Release(**saved["release"]), saved["champion"], backend,
+                                      frozenset(card.get("points", ())), self.calibration.entries(), error)
+        return self._pins[session]
+
+    def backend_name(self, point: str, pin: Pin | None = None) -> str:
+        points = pin.points if pin else frozenset(self.champion()[0].get("points", ()))
+        return "champion" if point in points else self.point_backends.get(point, self.default_backend)
+
+    def backend_for(self, point: str, pin: Pin | None = None) -> Backend:
+        """The backend that answers `point`: on "champion", the promoted champion (the session's, with `pin`; the
+        registry's now, without), or the base before the first promotion; else the configured one."""
+        pin = pin or self.current()
+        name = self.backend_name(point, pin)
+        if name == "champion" and pin.version:
+            if pin.backend is None:
+                raise RuntimeError(f"the champion {pin.version} has no backend: {pin.error}")
+            return pin.backend
+        return self.backends[name]
+
+    # ------------------------------------------------------------------ calibration
+    def calibration_for(self, point: str | DecisionPoint, model: str, entries: dict | None = None) -> dict:
+        """The calibration of this model (as its backend reports it) on the point's current spec, if any: from
+        `entries` (a session's snapshot), or as stored now."""
         p = self.points[point] if isinstance(point, str) else point
-        return self.calibration.get(model, p.spec_hash, p.name)
+        return CalibrationStore.lookup(self.calibration.entries() if entries is None else entries, model,
+                                       p.spec_hash, p.name)
 
-    def temperature(self, point: str | DecisionPoint, model: str) -> float:
-        return float(self.calibration_for(point, model).get("temperature", 1.0))
+    def temperature(self, point: str | DecisionPoint, model: str, entries: dict | None = None) -> float:
+        return float(self.calibration_for(point, model, entries).get("temperature", 1.0))
 
-    def threshold(self, point: str | DecisionPoint, model: str, phase: str | None) -> float | None:
+    def threshold(self, point: str | DecisionPoint, model: str, phase: str | None,
+                  entries: dict | None = None) -> float | None:
         """The lowest confidence at which the point may act on this model's answers in this phase (PLAN_v0.2 §0 rule
         3): only from a calibration that carries the hash of the gate record that promoted it, and only for a model
         that names itself (an empty id would match every backend that reports none)."""
-        cal = self.calibration_for(point, model)
+        cal = self.calibration_for(point, model, entries)
         return cal.get("thresholds", {}).get(phase) if cal.get("gate") and phase and model else None
 
     def set_calibration(self, point: str, model: str, temperature: float, thresholds: dict | None = None,
@@ -77,44 +167,67 @@ class Runtime:
         self.calibration.set(model, self.points[point].spec_hash, point,
                              {"temperature": temperature, "thresholds": dict(thresholds or {}), "gate": gate, **extra})
 
-    def session(self, session: str, meta: dict | None = None) -> None:
-        """Record what a session was run with (task, held-out, agent models) before any of its decisions."""
-        self.ledger.append({**(meta or {}), "type": "session", "session": session})
-
+    # ------------------------------------------------------------------ decisions
     def ask(self, point: str | DecisionPoint, ctx: Any, *, session: str = "s_default", step: int | None = None,
             phase: str | None = None, veto: str | Callable[[str | None], str | None] | None = None) -> Decision:
         """Ask the point's backend and apply the execution rule (PLAN_v0.2 §0). When the model does not act, the
         phase's default answerer answers, or its fixed label is taken. `veto` is a rule's verdict: a label, or a
         function of the action about to be taken that returns a label to overrule it. The rule's label is the action
         (route "rule") and the model's answer is only recorded. Whatever breaks on the way (view, question, backend,
-        calibration, routing) is recorded on route "error" with the raw context, and the default is taken."""
+        calibration, routing, the rule) is recorded on route "error" with the raw context, and the default is
+        taken. The session's release decides which model answers and which calibration applies; once that model is
+        revoked or rolled back, the session takes its defaults."""
+        return self._decide(point, ctx, session, step, phase, veto, asking=True)
+
+    def record(self, point: str | DecisionPoint, ctx: Any, *, session: str = "s_default", step: int | None = None,
+               phase: str | None = None, veto: str | Callable[[str | None], str | None] | None = None) -> Decision:
+        """Log a decision point's context without asking the decision model (shadow collection): the action is the
+        phase's default, as its answerer gives it (see `ask`), or a rule's `veto` (route "rule"). The model's
+        probabilities can be computed later by offline replay; only the context and the outcome are needed."""
+        return self._decide(point, ctx, session, step, phase, veto, asking=False)
+
+    def _decide(self, point, ctx, session, step, phase, veto, asking: bool) -> Decision:
         p = self.points[point] if isinstance(point, str) else point
         phase, label, answerer = p.default_for(phase)
         ref = self.sessions.put(session, ctx, step)
-        view, truncated, q, ans, probs, backend, extra = None, False, None, None, None, "", {}
+        view, truncated, q, ans, probs, extra = None, False, None, None, None, {}
+        backend, r = ("", None) if asking else ("none", Route("shadow", False, 1.0))
         try:
             view, truncated = p.render(ctx)
-            q = p.question(ctx).presented(self.rng)   # candidate order is shuffled, and recorded as shown
-            b = self.backend_for(p.name)
-            backend = b.name
-            ans = b.decide([Request(view, q)])[0]
-            if not ans.over(q.labels()):     # a backend may build its Answer itself: an unknown label, raw scores
-                raise ValueError(f"answered {ans.probs}, not a distribution over {q.labels()}")
-            ans = replace(ans, probs=temper(ans.probs, self.temperature(p, ans.model)))
-            probs = [ans.probs[lab] for lab in q.labels()]
-            r = route(p.policy, ans, label, self.threshold(p, ans.model, phase), self.rng)
+            q = p.question(ctx)
+            if asking:
+                pin = self._pin(session)
+                q = q.presented(self.rng)   # candidate order is shuffled, and recorded as shown
+                b = self.backend_for(p.name, pin)
+                backend = b.name
+                ans = b.decide([Request(view, q)])[0]
+                if not ans.over(q.labels()):     # a backend may build its Answer itself: an unknown label, raw scores
+                    raise ValueError(f"answered {ans.probs}, not a distribution over {q.labels()}")
+                if pin.version and self.backend_name(p.name, pin) == "champion" and ans.model != pin.release.model:
+                    raise ValueError(f"answered as {ans.model!r}; the session runs {pin.release.model!r}")
+                ans = replace(ans, probs=temper(ans.probs, self.temperature(p, ans.model, pin.calibration)))
+                probs = [ans.probs[lab] for lab in q.labels()]
+                revoked = self.revoked.hit(pin.version, pin.release.model, ans.model)
+                if revoked:
+                    extra["revoked"] = revoked
+                threshold = None if revoked else self.threshold(p, ans.model, phase, pin.calibration)
+                r = route(p.policy if p.name in policy.ACTING else Policy(), ans, label, threshold, self.rng)
         except Exception as e:  # noqa: BLE001 - whatever breaks, the default is taken and the row says why
             r, extra["error"] = Route("error", False, 1.0), f"{type(e).__name__}: {e}"[:500]
         if ans is not None and ans.abstained:
             extra["abstained"] = True
-        if isinstance(veto, str):
-            action = veto
-        elif r.route == "act":
-            action = ans.label
-        else:
-            action = self._default(ctx, view, q, label, answerer, extra)
-        if callable(veto):
-            veto = veto(action)
+        try:
+            if isinstance(veto, str):
+                action = veto
+            elif r.route == "act":
+                action = ans.label
+            else:
+                action = self._default(ctx, view, q, label, answerer, extra)
+            if callable(veto):
+                veto = veto(action)
+        except Exception as e:  # noqa: BLE001 - a rule that breaks overrules nothing: the fixed default is taken
+            r, veto, action = Route("error", False, 1.0), None, label
+            extra["error"] = f"{type(e).__name__}: {e}"[:500]
         if veto is not None:
             r, action = Route("rule", False, 1.0), veto
         model = ans.model if ans else ""
@@ -149,27 +262,6 @@ class Runtime:
         except Exception as e:  # noqa: BLE001 - the fixed label is the default of last resort
             extra["answerer_error"] = f"{type(e).__name__}: {e}"[:300]
             return label
-
-    def record(self, point: str | DecisionPoint, ctx: Any, *, session: str = "s_default", step: int | None = None,
-               phase: str | None = None, veto: str | Callable[[str | None], str | None] | None = None) -> Decision:
-        """Log a decision point's context without asking the decision model (shadow collection): the action is the
-        phase's default, as its answerer gives it (see `ask`), or a rule's `veto` (route "rule"). The model's
-        probabilities can be computed later by offline replay; only the context and the outcome are needed."""
-        p = self.points[point] if isinstance(point, str) else point
-        phase, label, answerer = p.default_for(phase)
-        view, truncated = p.render(ctx)
-        q = p.question(ctx)
-        extra: dict = {}
-        action = veto if isinstance(veto, str) else self._default(ctx, view, q, label, answerer, extra)
-        if callable(veto):
-            veto = veto(action)
-        r, action = ("shadow", action) if veto is None else ("rule", veto)
-        did = self.ledger.decision(
-            session=session, ctx=self.sessions.put(session, ctx, step), point=p.name, spec_hash=p.spec_hash,
-            backend="none", model="", view=view, view_chars=len(view), truncated=truncated, question=q.to_json(),
-            candidates=q.labels(), probs=None, route=r, explored=False, propensity=1.0, action=action, usage={},
-            phase=phase, default=label, **extra)
-        return Decision(did, p.name, None, {}, 0.0, r, False, 1.0, action, "")
 
     def ask_question(self, name: str, question: Question, state: str, *, default: str | None = None,
                      backend: Backend | None = None, session: str = "research", meta: dict | None = None) -> Decision:

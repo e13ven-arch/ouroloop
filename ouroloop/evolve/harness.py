@@ -1,10 +1,11 @@
-"""Harness prompt candidates (PLAN §4.8): run the task suite with the candidate prompt, screen it on a few
-development tasks, then compare it with the champion on every task, held-out tasks included, through the promotion
+"""Harness prompt candidates (PLAN §4.8, PLAN_v0.2 M8): run the task suite with the candidate prompt, screen it on
+a few development tasks, then compare it with the champion on every task, held-out tasks included, through the frozen
 gate.
 
 The loss of a run is 1 - the share of checks passed, so lower is better, as with Brier in the other gates. Each run
-is recorded once per (prompt, agent model, task, repeat) in harness/runs.jsonl and reused from then on: the
-champion's runs carry over between rounds, and a prompt cannot be re-run until it gets lucky.
+is recorded once per (prompt, agent model, task, repeat) in harness/runs.jsonl. The record serves screening and the
+research agent's view of the champion only: at the gate, champion and challenger both run again, in the same batch,
+and those runs' sessions are the gate's test sessions.
 """
 from __future__ import annotations
 
@@ -97,19 +98,19 @@ def _failures(rows: list[dict]) -> list[str]:
     return [f"{len(failed)} runs broke before their checks, e.g. {failed[0]['task']}: {failed[0]['error']}"] if failed else []
 
 
-def prompt_evaluator(tasks: list[Task], runner: SuiteRunner, *, repeats: int = 2, screen: int = 3,
-                     min_items: int = 10):
+def prompt_evaluator(tasks: list[Task], runner: SuiteRunner, *, repeats: int = 2, screen: int = 3):
     """Evaluator for research candidates of kind "prompt"; change = {"system": ..., "tools": {name: description}}.
 
     The gate sees the development split only. Held-out tasks are still run, and their result is recorded, but it
     takes no part in accepting or rejecting: a split that vetoes candidates is part of the selection procedure,
     not an independent estimate of what that procedure produces. Screening is a cost device, not a filter with
     standing: it only stops a candidate that is strictly worse on the screening subset, and it has no power to
-    stop one whose screening tasks sit at their floor.
+    stop one whose screening tasks sit at their floor. It may use recorded runs; the gate never does. Runs that
+    break (an API failure) are no evidence about the prompt: the candidate is inconclusive.
     """
     dev = [t for t in tasks if not t.held_out]
 
-    def evaluate(rt, cand, test_frac: float = 0.15) -> EvalResult:
+    def evaluate(rt, cand, record) -> EvalResult:
         store = PromptStore(rt.root)
         champion = store.get()
         challenger = champion.apply(cand.change)
@@ -125,7 +126,7 @@ def prompt_evaluator(tasks: list[Task], runner: SuiteRunner, *, repeats: int = 2
             part = dev[:screen]
             ra, rb = runner.runs(champion, part), runner.runs(challenger, part)
             if _failures(ra + rb):
-                return EvalResult("harness", [], [], [], apply, details=details, insufficient=_failures(ra + rb))
+                return EvalResult("harness", [], [], [], apply, details=details, inconclusive=_failures(ra + rb))
             a, b = _losses(ra), _losses(rb)
             if sum(b) > sum(a):
                 return EvalResult("harness", a, b, [t.name for t in part], apply,
@@ -134,9 +135,12 @@ def prompt_evaluator(tasks: list[Task], runner: SuiteRunner, *, repeats: int = 2
                                   rejected=[
                                       f"screening: solved {len(part) - sum(b):.2f} of {len(part)} dev tasks, "
                                       f"the champion {len(part) - sum(a):.2f}"])
-        ra, rb = runner.runs(champion, tasks, repeats), runner.runs(challenger, tasks, repeats)
+        record.consume(cand.id)         # the gate's own runs are its test sessions: the record is used from here
+        ra, rb = runner.runs(champion, tasks, repeats, fresh=True), runner.runs(challenger, tasks, repeats, fresh=True)
+        sessions = [r["session"] for r in ra + rb if r["session"]]
         if _failures(ra + rb):
-            return EvalResult("harness", [], [], [], apply, details=details, insufficient=_failures(ra + rb))
+            return EvalResult("harness", [], [], [], apply, details=details, inconclusive=_failures(ra + rb),
+                              sessions=sessions)
         dev_i = [i for i, r in enumerate(ra) if not r["held_out"]]
         held_i = [i for i, r in enumerate(ra) if r["held_out"]]
         a, b = _losses(ra), _losses(rb)
@@ -149,8 +153,7 @@ def prompt_evaluator(tasks: list[Task], runner: SuiteRunner, *, repeats: int = 2
                    "held_out_n": len(held_i), "gated_on": "dev"}
         # The gate's items are the development split; held-out is measured and reported, never selected on.
         return EvalResult("harness", [a[i] for i in dev_i], [b[i] for i in dev_i], [groups[i] for i in dev_i],
-                          apply, details=details,
-                          gate={"min_items": min_items, "metric": "task failure rate"})
+                          apply, details=details, gate={"metric": "task failure rate"}, sessions=sessions)
 
     return evaluate
 

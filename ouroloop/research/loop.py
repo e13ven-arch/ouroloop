@@ -1,21 +1,25 @@
-"""Research rounds (PLAN §5.1): report -> agent proposes -> framework evaluates, gates, records."""
+"""Research rounds (PLAN §5.1, PLAN_v0.2 M8): report -> agent proposes -> framework evaluates, and gates through the
+round's frozen gate record -> records."""
 from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
 
-from ..evolve import experience
-from ..evolve.gate import GateResult, decide, decide_points
-from ..evolve.replay import EVALUATORS, gold, labelled, predict, signature, split
+from ..evolve import experience, gate
+from ..evolve.gate import GateRecord
+from ..evolve.replay import EVALUATORS, gold, labelled, predict, signature
 from ..types import brier
 from .agent import Report, Workspace
 
 
-def build_report(rt, test_frac: float = 0.15, max_examples: int = 3) -> Report:
-    """Dev-split metrics and error groups for every registered point, from the current champion specs."""
+def build_report(rt, record: GateRecord, max_examples: int = 3) -> Report:
+    """Metrics and error groups for every registered point, from the current champion specs, on the sessions the
+    round may train on: never the record's test sessions, never a held-out task's."""
     metrics, clusters = {}, []
+    sessions, _ = rt.ledger.sessions()
     for name, p in rt.points.items():
-        dev, _ = split(labelled(rt, name), test_frac)
+        parts = record.split(labelled(rt, name), sessions)
+        dev = parts["train"] + parts["calibration"]
         if not dev:
             continue
         views, preds = predict(rt, p, p.spec, dev)
@@ -35,6 +39,7 @@ def build_report(rt, test_frac: float = 0.15, max_examples: int = 3) -> Report:
 @dataclass
 class RoundResult:
     report: Report
+    record: str = ""                      # the gate record the round went through
     evaluated: list[dict] = field(default_factory=list)
 
     @property
@@ -42,51 +47,48 @@ class RoundResult:
         return [e for e in self.evaluated if e["gate"] == "accepted"]
 
 
-def _gate(ev, min_items: int, seed: int) -> GateResult:
-    if ev.rejected:
-        return GateResult("rejected", ev.rejected, len(ev.challenger))
-    if ev.blocked or ev.insufficient:
-        return GateResult("blocked" if ev.blocked else "insufficient_data", ev.blocked or ev.insufficient, 0)
-    if ev.per_point:
-        return decide_points(ev.per_point, protected_ok=ev.protected_ok, min_items=min_items, seed=seed)
-    return decide(ev.champion, ev.challenger, ev.groups, protected_ok=ev.protected_ok,
-                  **{"min_items": min_items, "seed": seed, **ev.gate})
-
-
 def run_round(rt, agent, llm, judge, *, evaluators: dict | None = None, context=None,
-              min_items: int = 30, test_frac: float = 0.15, seed: int = 0) -> RoundResult:
-    """`context` is a dict, or a function returning one at the start of each round (e.g. the current prompt and
-    its task results)."""
+              record: GateRecord | None = None, seed: int = 0) -> RoundResult:
+    """One round through one gate record: `record`, or the open one (gate.open_record). Every candidate goes through
+    gate.run in the order proposed. The first whose evaluation uses the record up gives the round's only verdict and
+    ends the round; a candidate stopped before that (a no-op, screening, the data checks, a failure before inference)
+    leaves the record to the next. With a record used before the round, nothing can be promoted. `context` is a
+    dict, or a function returning one at the start of each round (e.g. the current prompt and its task results)."""
+    record = record or gate.open_record(rt)
     evaluators = {**EVALUATORS, **(evaluators or {})}
     context = context() if callable(context) else context
-    report = build_report(rt, test_frac)
+    report = build_report(rt, record)
     ws = Workspace(rt, report, experience.read(rt.root), llm, judge, kinds=sorted(evaluators), context=context)
-    result = RoundResult(report)
+    result = RoundResult(report, record.round)
     target_promoted: dict[str, tuple[str, bool]] = {}
     for cand in agent.step(ws):
-        record = {"candidate": cand.id, "kind": cand.kind, "point": cand.point, "change": cand.change,
-                  "hypothesis": cand.hypothesis, "cost": cand.cost, "p_pass": cand.meta.get("p_pass")}
+        entry = {"candidate": cand.id, "kind": cand.kind, "point": cand.point, "change": cand.change,
+                 "hypothesis": cand.hypothesis, "cost": cand.cost, "p_pass": cand.meta.get("p_pass"),
+                 "record": record.round}
         fn = evaluators.get(cand.kind)
         if fn is None:
-            experience.append(rt.root, {**record, "gate": "not_evaluated", "verdict": "no evaluator for this kind"})
+            experience.append(rt.root, {**entry, "gate": "not_evaluated", "verdict": "no evaluator for this kind"})
             continue
+        took = record.took
         try:
-            ev = fn(rt, cand, test_frac=test_frac)
-        except Exception as e:  # noqa: BLE001 - a broken candidate must not end the round
-            entry = {**record, "gate": "failed", "reasons": [f"{type(e).__name__}: {e}"], "verdict": "failed"}
+            g, ev = gate.run(record, lambda: fn(rt, cand, record), seed=seed)
+        except Exception as e:  # noqa: BLE001 - a broken candidate must not end the round, unless it used the record
+            entry = {**entry, "gate": "failed", "reasons": [f"{type(e).__name__}: {e}"], "verdict": "failed",
+                     "used": record.took and not took}
             experience.append(rt.root, entry)
             result.evaluated.append(entry)
+            if entry["used"]:
+                break
             continue
-        g = _gate(ev, min_items, seed)
         if ev.record:
             ev.record(g.outcome, g.reasons)
-        if g.outcome == "accepted":
-            ev.apply()
-        judged = g.outcome in ("accepted", "rejected")
-        entry = {**record, "gate": g.outcome, "reasons": g.reasons, "n": g.n, "delta": g.delta,
-                 "ci": list(g.ci) if g.ci else None,
-                 "verdict": (experience.verdict([b - a for a, b in zip(ev.champion, ev.challenger)])
-                             if judged else "insufficient"), **({"details": ev.details} if ev.details else {})}
+        judged = g.used and g.outcome in ("accepted", "rejected")     # a verdict of the gate, on fresh evidence
+        compared = g.outcome in ("accepted", "rejected", "validated", "conflict")
+        entry = {**entry, "gate": g.outcome, "reasons": g.reasons, "n": g.n, "delta": g.delta,
+                 "ci": list(g.ci) if g.ci else None, "used": g.used,
+                 "verdict": (experience.verdict([b - a for a, b in zip(ev.champion, ev.challenger)]) if compared
+                             else "inconclusive" if g.outcome == "inconclusive" else "insufficient"),
+                 **({"details": ev.details} if ev.details else {})}
         experience.append(rt.root, entry)
         result.evaluated.append(entry)
         # The judge's calls are scored against the gate: did the candidate it rated actually pass? The gate's verdict
@@ -97,6 +99,8 @@ def run_round(rt, agent, llm, judge, *, evaluators: dict | None = None, context=
         if cand.meta.get("pick_target"):
             label, promoted = target_promoted.get(cand.meta["pick_target"], (cand.meta["target"], False))
             target_promoted[cand.meta["pick_target"]] = (label, promoted or g.outcome == "accepted")
+        if g.used:
+            break               # one verdict per round: "rejected" ends it, and so does any use of the record
     for did, (label, promoted) in target_promoted.items():
         # Only a success says which choice was right; a failure only says this one was not.
         rt.outcome(did, label if promoted else None, source="gate", reward=1.0 if promoted else 0.0,
@@ -106,7 +110,7 @@ def run_round(rt, agent, llm, judge, *, evaluators: dict | None = None, context=
 
 def run_rounds(rt, agent, llm, judge, *, rounds: int = 5, patience: int = 2, **kw) -> list[RoundResult]:
     """Repeat rounds until `rounds` is reached, the agent has nothing to propose, or `patience` rounds in a row
-    promote nothing."""
+    promote nothing. Each round opens its own gate record."""
     results, idle = [], 0
     for _ in range(rounds):
         res = run_round(rt, agent, llm, judge, **kw)

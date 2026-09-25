@@ -5,6 +5,7 @@ import os
 import tomllib
 from pathlib import Path
 
+from . import policy
 from .backends import JevBackend, KeywordBackend, LlmBackend, TdeBackend
 from .points import BUILTIN
 from .policy import Policy
@@ -12,7 +13,8 @@ from .runtime import Runtime, import_object
 
 # The only keys of a [points.X] table: risk comes from the gate template (M8), defaults from the point's definition.
 POINT_KEYS = {"backend", "define", "act", "explore"}
-ACTING = {"stop"}       # v0.2: the only point that may be switched on
+# Once the gate is frozen, its parameters come from the gate template only (PLAN_v0.2 M8), never from the config.
+FROZEN = (("research", "min_items"), ("suite", "min_items"), ("checks", None))
 
 
 def load_dotenv(path: str | Path = ".env") -> None:
@@ -84,21 +86,37 @@ def load(path: str | Path = "ouroloop.toml") -> dict:
     return cfg
 
 
+def workspace_root(cfg: dict, base: str | Path = ".") -> Path:
+    return Path(base) / cfg.get("workspace", {}).get("root", ".")
+
+
+def check_frozen(cfg: dict) -> None:
+    """A config that sets a gate parameter is an error once the gate is frozen: loosening one is not a retry."""
+    bad = [f"[{t}] {k}" if k else f"[{t}]" for t, k in FROZEN if t in cfg and (k is None or k in cfg[t])]
+    if bad:
+        raise ValueError(f"the gate is frozen: remove {', '.join(bad)} from the config; gate parameters come from "
+                         f"the gate template (ouroloop gate freeze)")
+
+
 def build_runtime(cfg: dict, base: str | Path = ".") -> Runtime:
+    from .evolve.gate import template_path
     from .evolve.registry import Registry
+    root = workspace_root(cfg, base)
+    if template_path(root).exists():
+        check_frozen(cfg)
     backends = {name: build_backend(s) for name, s in cfg.get("backends", {"mock": {"type": "mock"}}).items()}
     points = dict(cfg.get("points", {}))
     default = points.pop("default_backend", next(iter(backends)))
-    root = Path(base) / cfg.get("workspace", {}).get("root", ".")
-    # "champion" is the latest promoted model; before the first promotion it is the [registry] base backend.
+    # "champion" is the latest promoted model: the runtime reads it from the registry whenever a session opens.
+    # Before the first promotion it is the [registry] base backend. The config gives the initial mapping of points
+    # to backends; the champion's card adds the points it serves.
     champion = Registry(root).champion()
-    if "champion" not in backends:
-        if champion and champion.get("backend"):
-            backends["champion"] = build_backend(champion["backend"])
-        elif cfg.get("registry", {}).get("base"):
-            backends["champion"] = backends[cfg["registry"]["base"]]
+    if "champion" not in backends and cfg.get("registry", {}).get("base"):
+        backends["champion"] = backends[cfg["registry"]["base"]]
     point_backends = {name: s["backend"] for name, s in points.items() if "backend" in s}
-    missing = {b for b in [default, *point_backends.values()] if b not in backends}
+    point_backends.update({name: "champion" for name in (champion or {}).get("points", [])})
+    missing = {b for b in [default, *point_backends.values()]
+               if b not in backends and not (b == "champion" and champion)}
     if missing:
         raise ValueError(f"unknown backends {sorted(missing)}; a point on 'champion' needs [registry] base "
                          f"until a model has been promoted")
@@ -110,8 +128,8 @@ def build_runtime(cfg: dict, base: str | Path = ".") -> Runtime:
             raise ValueError(f"[points.{name}] may only set {sorted(POINT_KEYS)}, not {sorted(set(s) - POINT_KEYS)}")
         if not isinstance(s.get("act", False), bool):       # act = "false" would switch the point on
             raise ValueError(f"[points.{name}] act must be true or false, not {s['act']!r}")
-        if s.get("act") and name not in ACTING:
-            raise ValueError(f"[points.{name}] act = true: in v0.2 only {sorted(ACTING)} may act")
+        if s.get("act") and name not in policy.ACTING:
+            raise ValueError(f"[points.{name}] act = true: in v0.2 only {sorted(policy.ACTING)} may act")
         if "define" not in s and name not in BUILTIN:
             raise ValueError(f'[points.{name}] needs define = "module:function"')
         point = import_object(s["define"])() if "define" in s else BUILTIN[name]()
@@ -162,11 +180,11 @@ def build_research(cfg: dict, rt: Runtime, base: str | Path = "."):
     agent = import_object(r.pop("agent", "ouroloop.research.basic:BasicResearcher"))(**r.pop("options", {}))
     judge = rt.backends[r.pop("judge", rt.default_backend)]
     llm = build_provider(cfg["llm"]) if "llm" in cfg else None
-    kw = {k: r[k] for k in ("min_items", "test_frac", "seed") if k in r}
+    kw = {k: r[k] for k in ("seed",) if k in r}       # gate parameters come from the frozen gate template
     evaluators, context = {}, {}
     if "trainer" in cfg:
         recipe = cfg.get("recipe", {})
-        evaluators["recipe"] = recipe_evaluator(build_trainer(cfg["trainer"]), recipe, check_kwargs=cfg.get("checks"))
+        evaluators["recipe"] = recipe_evaluator(build_trainer(cfg["trainer"]), recipe)
         context = {"recipe": {**DEFAULT_RECIPE, **recipe}, "recipe_keys": sorted(RECIPE_KEYS)}
     if "suite" in cfg:
         from .agent.suite import load_suite
@@ -175,8 +193,7 @@ def build_research(cfg: dict, rt: Runtime, base: str | Path = "."):
         tasks = load_suite(Path(base) / s.get("path", "tasks"))
         register_builtin_points(rt)
         runner = SuiteRunner(rt.root, *build_agent_factory(cfg, rt))
-        evaluators["prompt"] = prompt_evaluator(tasks, runner, **{k: s[k] for k in ("repeats", "screen", "min_items")
-                                                                   if k in s})
+        evaluators["prompt"] = prompt_evaluator(tasks, runner, **{k: s[k] for k in ("repeats", "screen") if k in s})
         static, current = context, suite_context(tasks, runner)
         context = lambda: {**static, **current()}   # noqa: E731 - recomputed each round: the champion may change
     if evaluators:

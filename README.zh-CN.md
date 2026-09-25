@@ -32,10 +32,11 @@ pytest -m live                   # 真实 API 的冒烟测试
 ouroloop run "修好 tests 里失败的测试" --llm anthropic --judge jev     # agent 在当前目录干活，决策点交给 Jev
 ouroloop run "..." --llm openai_compat --model qwen3 --base-url http://localhost:11434/v1
 ouroloop run "..." --llm anthropic --verify "pytest -q" --small-model claude-haiku-4-5  # 验证命令和小模型档位
+ouroloop gate freeze --config examples/ouroloop.toml                # 由人冻结一次：所有晋升都过这个门
 ouroloop research --config examples/ouroloop.toml --rounds 3        # 对积累的账本跑几轮研究循环
 ouroloop evolve --config examples/ouroloop.toml                     # 用账本训练新的 TDE，过晋升门才替换
 ouroloop calibrate --config examples/ouroloop.toml                  # 报告每个决策点的温度和阈值，不写入
-ouroloop models --dir examples/workspace                            # 查看模型谱系；加 --rollback 回退
+ouroloop models --dir examples/workspace                            # 查看模型谱系；加 --rollback 回退并撤销
 ```
 
 关于 TDE：TDE 是单独的项目，之后另行开源；本仓库里的训练器记录了 ouroloop 怎么训练它（`local_tde` 在本机训练，`remote_tde` 通过 ssh 在 GPU 主机上训练，checkpoint 留在主机上）。没有 TDE 时，训练管线用内置的签名小模型（`type = "signature"`）也能完整跑通；接自己的模型只要实现两个方法：`train(job)` 返回训练结果，`backend(result)` 返回能回答决策的后端，然后在配置里写 `type = "your.module:YourTrainer"`。
@@ -65,9 +66,9 @@ ouroloop research --config examples/zhipu.toml --rounds 2    # 配了 [suite] �
 prompt 候选按下面几步评测：
 
 - 只改了空白字符的直接拒绝；
-- 先在前几个开发任务上筛一遍，不比冠军差才跑全部任务（含 held-out），再过同一个晋升门；
+- 先在前几个开发任务上筛一遍，不比冠军差，冠军和候选才在全部任务（含 held-out）上都重新跑一遍，再过同一个晋升门；
 - 研究 agent 看不到 held-out 任务的结果；
-- 每次运行按（prompt、模型、任务、第几次）记在 `harness/runs.jsonl`。冠军的结果跨轮复用，同一个 prompt 不能靠重跑碰运气。
+- 每次运行按（prompt、模型、任务、第几次）记在 `harness/runs.jsonl`，记下的结果只用于筛选；每轮只过一次门，同一个 prompt 不能靠重跑碰运气。
 
 任务跑完时的检查结果，也会作为这次运行里 stop / route 决策的标签。跑任务集时 agent 会自动执行 bash：命令在临时目录里执行，黑名单照样生效。不放心模型的话，放在容器或虚拟机里跑。
 
@@ -84,7 +85,8 @@ prompt 候选按下面几步评测：
 | `ouroloop/decision.py` | 决策点和 spec（问题、候选、view 参数） |
 | `ouroloop/policy.py` | 执行规则、阈值拟合、探索和倾向分 |
 | `ouroloop/ledger.py` | 账本、原始上下文、冠军 spec |
-| `ouroloop/runtime.py` | 把决策点、后端、默认回答者和账本串起来 |
+| `ouroloop/runtime.py` | 把决策点、后端、默认回答者和账本串起来；每个 session 固定自己的发布三元组 |
+| `ouroloop/release.py` | session 运行的发布三元组（模型、决策 spec、harness）和撤销名单 |
 | `ouroloop/agent/` | 最小 agent：loop、read / write / edit / bash 四个工具、harness prompt、任务集 |
 | `ouroloop/points/` | 内置决策点 retry、compact、tool_gate、stop、route，以及命令黑名单 |
 | `ouroloop/chat.py` | 与模型无关的对话格式 |
@@ -93,7 +95,7 @@ prompt 候选按下面几步评测：
 | `ouroloop/backends/` | `mock`、`jev`、`tde`、`llm` 四种决策后端 |
 | `ouroloop/providers/` | LLM 接入：Anthropic（官方 SDK）、OpenAI 兼容接口 |
 | `ouroloop/research/` | 问题转换、研究 agent 接口和默认实现、一轮研究流程 |
-| `ouroloop/evolve/` | 建数据、数据检查、训练（签名小模型 / 本机 TDE / 远程 TDE）、校准、晋升门、模型注册表、prompt 候选评测、经验记录 |
+| `ouroloop/evolve/` | 建数据、数据检查、训练（签名小模型 / 本机 TDE / 远程 TDE）、校准、冻结的晋升门和门记录、模型注册表、prompt 候选评测、经验记录 |
 
 ## 状态
 

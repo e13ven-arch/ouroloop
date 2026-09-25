@@ -1,5 +1,5 @@
-"""Command line: ouroloop run | suite | decide | smoke | demo | research | evolve | calibrate | models | serve | hook |
-ledger."""
+"""Command line: ouroloop run | suite | decide | smoke | demo | research | evolve | calibrate | gate | models | serve |
+hook | ledger."""
 from __future__ import annotations
 
 import argparse
@@ -140,14 +140,34 @@ def cmd_evolve(args) -> int:
         return 2
     if args.dry_run:
         from .evolve.pipeline import dry_run_model
-        print(json.dumps(dry_run_model(rt, config.build_trainer(cfg["trainer"]), cfg.get("recipe"),
-                                       check_kwargs=cfg.get("checks")), ensure_ascii=False, indent=2, default=str))
+        print(json.dumps(dry_run_model(rt, config.build_trainer(cfg["trainer"]), cfg.get("recipe")),
+                         ensure_ascii=False, indent=2, default=str))
         return 0
-    card = evolve_model(rt, config.build_trainer(cfg["trainer"]), cfg.get("recipe"),
-                        min_items=cfg.get("research", {}).get("min_items", 30), check_kwargs=cfg.get("checks"))
+    card = evolve_model(rt, config.build_trainer(cfg["trainer"]), cfg.get("recipe"))
     print(f"{card['version']}: {card['gate']} - {'; '.join(card.get('reasons', []))}")
+
+    def brier(m: dict) -> str:
+        return (f"n={m['n']} champion={m['champion_brier']:.3f} candidate={m['challenger_brier']:.3f}" if m and m['n']
+                else "n=0")
+
     for point, m in (card.get("metrics") or {}).items():
-        print(f"  {point}: n={m['n']} champion={m['champion_brier']:.3f} candidate={m['challenger_brier']:.3f}")
+        print(f"  {point}: {brier(m)}; held-out tasks, not gated: {brier(m.get('held_out'))}")
+    return 0
+
+
+def cmd_gate(args) -> int:
+    """`ouroloop gate freeze`: a person freezes the gate template of a workspace (PLAN_v0.2 M8)."""
+    from .evolve.gate import freeze_template
+    cfg = config.load(args.config)
+    config.check_frozen(cfg)        # a config that would not start once the gate is frozen
+    params = {}
+    for item in args.set or []:
+        key, _, value = item.partition("=")
+        params[key] = json.loads(value)
+    template, digest = freeze_template(config.workspace_root(cfg, Path(args.config).resolve().parent), params,
+                                       replace_frozen=args.replace)
+    print(json.dumps(template, ensure_ascii=False, indent=2))
+    print(f"gate template {digest} frozen")
     return 0
 
 
@@ -169,13 +189,15 @@ def cmd_models(args) -> int:
     from .evolve.registry import Registry
     reg = Registry(Path(args.dir))
     if args.rollback:
-        print(f"champion is now {reg.rollback()}")
+        print(f"champion is now {reg.rollback()}; the retired model is revoked")
         return 0
     champion = (reg.champion() or {}).get("version")
     for v in reg.versions():
+        if not (reg.dir / v / "card.json").exists():
+            continue
         card = reg.card(v)
-        print(f"{v}{' *' if v == champion else '  '} {card.get('gate', '-'):<18} parent={card.get('parent')} "
-              f"{'; '.join(card.get('reasons', []))[:80]}")
+        print(f"{v}{' *' if v == champion else '  '} {card.get('gate', card.get('status', '-')):<18} "
+              f"parent={card.get('parent')} model={card.get('model_id')} {'; '.join(card.get('reasons', []))[:80]}")
     return 0
 
 
@@ -450,6 +472,12 @@ def main(argv: list[str] | None = None) -> int:
     hk.add_argument("--config", help="ouroloop.toml (default: $OUROLOOP_CONFIG or ~/.ouroloop/ouroloop.toml)")
     hk.add_argument("--live", action="store_true", help="ask the decision backend at hook time")
     hk.add_argument("--enforce-deny-list", action="store_true", help="deny commands on the built-in deny list")
+    g = sub.add_parser("gate", help="freeze the gate template that every promotion goes through")
+    g.set_defaults(fn=cmd_gate)
+    g.add_argument("action", choices=["freeze"])
+    g.add_argument("--config", default="ouroloop.toml")
+    g.add_argument("--set", action="append", metavar="KEY=JSON", help='change a parameter, e.g. min_sessions=40')
+    g.add_argument("--replace", action="store_true", help="freeze again; the next round freezes a new record")
     mo = sub.add_parser("models", help="list trained models, or roll back the champion")
     mo.set_defaults(fn=cmd_models)
     mo.add_argument("--dir", default=".")

@@ -90,7 +90,8 @@ class Agent:
         self.probe = probe                  # labels every stop decision from a copy of the working directory
         self.session = session or new_id("s")
         self.session_meta = dict(session_meta or {})   # recorded with the session: task, held-out, agent models
-        self.system = (system or SYSTEM).replace("{workdir}", str(tools.workdir))
+        self.prompt = system or SYSTEM      # before {workdir} is filled in: the same prompt in every directory
+        self.system = self.prompt.replace("{workdir}", str(tools.workdir))
         self._items: list[dict] = []        # tool outputs that compaction may drop
         self._pending_retry: dict | None = None
         self._steps: list[dict] = []        # route decisions: which tier ran each step
@@ -106,9 +107,14 @@ class Agent:
         self._task = ""
 
     # ------------------------------------------------------------------ loop
+    def harness(self) -> dict:
+        """The harness component of the session's release (PLAN_v0.2 M8): prompt, tools and StopGuard settings."""
+        return {"system": self.prompt, "tools": {s.name: s.description for s in self.tools.specs()},
+                "stop": {"point": self.guard.point, "max_pushbacks": self.guard.max_pushbacks}}
+
     def run(self, task: str) -> AgentResult:
         self._task = task
-        self.rt.session(self.session, self.session_meta)
+        self.rt.session(self.session, self.session_meta, harness=self.harness())
         messages: list[dict] = [{"role": "user", "content": task}]
         self._emit("task", text=task)
         text, stop, turn = "", "max_turns", 0

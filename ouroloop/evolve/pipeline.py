@@ -1,25 +1,26 @@
-"""Model evolution (PLAN §4): ledger -> build -> check -> train -> calibrate -> evaluate -> gate -> promote.
+"""Model evolution (PLAN §4, PLAN_v0.2 M8): ledger -> build -> check -> train -> calibrate -> evaluate -> the frozen
+gate -> promote.
 
-`prepare_model` does everything up to the gate, so the research loop can evaluate a training-recipe candidate with
-the same code and apply its own gate; `evolve_model` is the whole pipeline for `ouroloop evolve`.
+`prepare_model` does everything up to the verdict on the sessions a gate record fixed; `recipe_evaluator` turns it
+into an evaluation for gate.run, which the research loop and `evolve_model` (`ouroloop evolve`) both go through.
 """
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 
-from ..types import Question, Request, brier
+from ..types import Question, Request
 from . import calibrate, experience
 from .build import build
 from .checks import CheckReport, check
-from .gate import decide_points
+from .gate import INFRA, GateRecord, open_record, run
 from .registry import Registry
-from .replay import labelled, predict, splits
+from .replay import EvalResult, labelled, scored, summarize
 from .train import DEFAULT_RECIPE, RECIPE_KEYS, TrainJob, TrainResult
 
 
 def model_points(rt) -> list[str]:
-    """Points served by the trained model: those whose backend is "champion", or every point if none is."""
-    chosen = [name for name in rt.points if rt.point_backends.get(name) == "champion"]
+    """Points served by the trained model: those on "champion", or every point if none is."""
+    chosen = [name for name in rt.points if rt.backend_name(name) == "champion"]
     return chosen or list(rt.points)
 
 
@@ -27,58 +28,75 @@ def model_points(rt) -> list[str]:
 class ModelCandidate:
     version: str
     card: dict
-    checks: CheckReport
+    checks: CheckReport | None
     per_point: dict = field(default_factory=dict)       # point -> (champion Brier, challenger Brier, sessions)
+    held_out: dict = field(default_factory=dict)        # the same on the held-out tasks' sessions, for the card only
     calibrations: dict = field(default_factory=dict)    # point -> PointCalibration of the new model
     result: TrainResult | None = None
     backend: object = None
+    inconclusive: list[str] = field(default_factory=list)   # an infrastructure failure, e.g. the trainer's
 
 
-def prepare_model(rt, trainer, recipe: dict | None = None, *, points: list[str] | None = None,
-                  registry: Registry | None = None, eval_states: list[str] = (), check_kwargs: dict | None = None,
-                  test_frac: float = 0.15, cal_frac: float = 0.15) -> ModelCandidate:
+def prepare_model(rt, trainer, recipe: dict | None = None, *, record: GateRecord, points: list[str] | None = None,
+                  registry: Registry | None = None, eval_states: list[str] = ()) -> ModelCandidate:
+    """Build and check the data as `record` splits it (test sessions fixed at its freezing, held-out tasks never
+    trained or calibrated on), train, file the candidate's card, calibrate on the calibration sessions, then use the
+    record up and score champion and candidate on its test sessions. Infrastructure failures are caught: the
+    candidate is inconclusive, and the record is used only if they came after the first test inference."""
     registry = registry or Registry(rt.root)
     unknown = set(recipe or {}) - RECIPE_KEYS
     if unknown:
         raise ValueError(f"unknown recipe keys: {sorted(unknown)}")
     recipe = {**DEFAULT_RECIPE, **(recipe or {})}
     points = points or model_points(rt)
+    params = record.params
     version = registry.next_version()
     parent = registry.champion()
-    ds = build(rt, registry.dir / version / "data", points, test_frac, cal_frac, recipe["min_weight"])
-    checks = check(ds, eval_states=eval_states, **(check_kwargs or {}))
+    sessions, _ = rt.ledger.sessions()
+    parts = {name: record.split([r for r in labelled(rt, name) if r[2] >= recipe["min_weight"]], sessions,
+                                record.cal_frac(name)) for name in points}
+    ds = build(rt, registry.dir / version / "data", rows=parts)
+    checks = check(ds, eval_states=eval_states, **params["checks"])
     card = {"version": version, "parent": parent["version"] if parent else None, "points": points, "recipe": recipe,
-            "data": ds.stats(), "checks": asdict(checks)}
+            "status": "candidate", "gate_record": record.hash, "round": record.round,
+            "test_sessions": record.test_sessions, "data": ds.stats(), "checks": asdict(checks)}
     cand = ModelCandidate(version, card, checks)
     if not checks.ok:
         return cand
-    init_from = parent.get("run") if parent else recipe.get("init_from")
-    cand.result = trainer.train(TrainJob(version, ds.dir, recipe, init_from))
-    cand.backend = trainer.backend(cand.result)
-    card.update({"run": cand.result.run, "backend": cand.result.backend, "model_id": cand.result.model_id})
-    for name in points:
-        p = rt.points[name]
-        cal = calibrate.calibrate_point(rt, name, backend=cand.backend, test_frac=test_frac, cal_frac=cal_frac)
-        if cal is not None:
-            cand.calibrations[name] = cal
-        test = splits(labelled(rt, name), test_frac, cal_frac)["test"]
-        _, champion = predict(rt, p, p.spec, test)
-        _, challenger = predict(rt, p, p.spec, test, backend=cand.backend, temperature=cal.temperature if cal else 1.0)
-        cand.per_point[name] = ([brier(pr, t) for pr, (_, t, _) in zip(champion, test)],
-                                [brier(pr, t) for pr, (_, t, _) in zip(challenger, test)],
-                                [r.decision.get("session", "") for r, _, _ in test])
+    try:
+        cand.result = trainer.train(TrainJob(version, ds.dir, recipe,
+                                             parent.get("run") if parent else recipe.get("init_from")))
+        cand.backend = trainer.backend(cand.result)
+        card.update({"run": cand.result.run, "backend": cand.result.backend, "model_id": cand.result.model_id})
+        registry.record(card)                   # the candidate's card, before it is evaluated
+        for name in points:
+            cal = calibrate.calibrate_point(rt, name, backend=cand.backend, rows=parts[name]["calibration"],
+                                            risk=params["risk"], min_sessions=params["min_cal_sessions"])
+            if cal is not None:
+                cand.calibrations[name] = cal
+        record.consume(version)                 # the first inference request on the test sessions uses it up
+        for name in points:
+            p, cal = rt.points[name], cand.calibrations.get(name)
+            t = cal.temperature if cal else 1.0
+            cand.per_point[name] = scored(rt, p, p.spec, p.spec, parts[name]["test"], cand.backend, t)
+            cand.held_out[name] = scored(rt, p, p.spec, p.spec, parts[name]["held_out"], cand.backend, t)
+    except INFRA as e:
+        cand.inconclusive = [f"{type(e).__name__}: {e}"[:500]]
     return cand
 
 
-def dry_run_model(rt, trainer, recipe: dict | None = None, *, points: list[str] | None = None,
-                  check_kwargs: dict | None = None, test_frac: float = 0.15, cal_frac: float = 0.15) -> dict:
-    """Build and check the data, then let the trainer prepare and validate the job without training."""
+def dry_run_model(rt, trainer, recipe: dict | None = None, *, points: list[str] | None = None) -> dict:
+    """Build and check the data as the round's gate record splits it, then let the trainer prepare and validate the
+    job without training. Uses nothing up."""
+    record = open_record(rt)
     recipe = {**DEFAULT_RECIPE, **(recipe or {})}
     version = f"dryrun_{Registry(rt.root).next_version()}"
-    ds = build(rt, rt.root / "models" / version / "data", points or model_points(rt), test_frac, cal_frac,
-               recipe["min_weight"])
-    checks = check(ds, **(check_kwargs or {}))
-    out = {"version": version, "data": ds.stats(), "checks": asdict(checks)}
+    sessions, _ = rt.ledger.sessions()
+    parts = {name: record.split([r for r in labelled(rt, name) if r[2] >= recipe["min_weight"]], sessions,
+                                record.cal_frac(name)) for name in points or model_points(rt)}
+    ds = build(rt, rt.root / "models" / version / "data", rows=parts)
+    checks = check(ds, **record.params["checks"])
+    out = {"version": version, "round": record.round, "data": ds.stats(), "checks": asdict(checks)}
     if hasattr(trainer, "dry_run"):
         parent = Registry(rt.root).champion()
         out["job"] = trainer.dry_run(TrainJob(version, ds.dir, recipe,
@@ -86,66 +104,70 @@ def dry_run_model(rt, trainer, recipe: dict | None = None, *, points: list[str] 
     return out
 
 
-def promote_model(rt, cand: ModelCandidate, registry: Registry) -> None:
-    """Calibrations are keyed by the model id the backend reports, so it must be the one on the card. They carry no
-    gate record's hash before M8: no point acts on them."""
+def promote_model(rt, cand: ModelCandidate, registry: Registry, gate: str) -> None:
+    """Calibrations are keyed by the model id the backend reports, so it must be the one on the card. The champion
+    pointer moves by compare-and-swap on the candidate's parent; then its calibrations are stored with `gate`, the
+    hash of the gate record that promoted it, so its thresholds may act. The runtime needs no change: sessions opened
+    from now on run the new champion, sessions already running keep theirs."""
     reported = cand.backend.decide([Request("model id probe", Question("noul", "Is this a probe?"))])[0].model
     if reported != cand.result.model_id:
         raise ValueError(f"{cand.version}: the backend reports model {reported!r}, the card says "
                          f"{cand.result.model_id!r}")
-    registry.promote(cand.version)
-    rt.backends["champion"] = cand.backend
-    for name in cand.per_point:
-        rt.point_backends[name] = "champion"
+    registry.promote(cand.version, cand.card.get("parent"))
     for cal in cand.calibrations.values():
-        calibrate.apply(rt, cal, version=cand.version)
+        calibrate.apply(rt, cal, gate=gate, version=cand.version)
+
+
+def model_evaluation(rt, mc: ModelCandidate, registry: Registry, record: GateRecord, meta: dict | None = None
+                     ) -> EvalResult:
+    """A prepared model candidate as gate.run sees it. Its `record` callback files the card with the verdict."""
+    def file_card(outcome: str, reasons: list) -> None:
+        mc.card.update({"gate": outcome, "status": outcome, "reasons": reasons, **(meta or {}),
+                        "metrics": {name: {**m, "held_out": summarize(mc.held_out).get(name)}
+                                    for name, m in summarize(mc.per_point).items()},
+                        "calibration": {k: {"temperature": c.temperature, "thresholds": c.thresholds, **c.entry()}
+                                        for k, c in mc.calibrations.items()}})
+        registry.record(mc.card)
+
+    if mc.inconclusive:
+        return EvalResult("model", [], [], [], lambda: None, inconclusive=mc.inconclusive, record=file_card)
+    if not mc.checks.ok:
+        return EvalResult("model", [], [], [], lambda: None, blocked=mc.checks.blocking,
+                          insufficient=mc.checks.insufficient, record=file_card)
+    flat = [[x for v in mc.per_point.values() for x in v[i]] for i in range(3)]
+    return EvalResult("model", *flat, apply=lambda: promote_model(rt, mc, registry, record.hash),
+                      per_point=mc.per_point, record=file_card)
 
 
 def recipe_evaluator(trainer, base_recipe: dict | None = None, **kw):
-    """Evaluator for research candidates of kind "recipe": train with the changed recipe, gate in the research loop."""
-    from .replay import EvalResult
-
-    def evaluate(rt, cand, test_frac: float = 0.15) -> EvalResult:
+    """Evaluator for research candidates of kind "recipe": train with the changed recipe, gated by gate.run."""
+    def evaluate(rt, cand, record: GateRecord) -> EvalResult:
         registry = Registry(rt.root)
-        mc = prepare_model(rt, trainer, {**(base_recipe or {}), **cand.change}, registry=registry,
-                           test_frac=test_frac, **kw)
-
-        def record(outcome: str, reasons: list) -> None:
-            mc.card.update({"gate": outcome, "reasons": reasons, "metrics": summarize(mc.per_point),
-                            "candidate": cand.id, "hypothesis": cand.hypothesis})
-            registry.record(mc.card)
-
-        if not mc.checks.ok:
-            return EvalResult(cand.point, [], [], [], lambda: None, blocked=mc.checks.blocking,
-                              insufficient=mc.checks.insufficient, record=record)
-        flat = [[x for v in mc.per_point.values() for x in v[i]] for i in range(3)]
-        return EvalResult(cand.point, *flat, apply=lambda: promote_model(rt, mc, registry), per_point=mc.per_point,
-                          record=record)
+        mc = prepare_model(rt, trainer, {**(base_recipe or {}), **cand.change}, record=record, registry=registry,
+                           **kw)
+        return model_evaluation(rt, mc, registry, record, {"candidate": cand.id, "hypothesis": cand.hypothesis})
 
     return evaluate
 
 
-def summarize(per_point: dict) -> dict:
-    return {name: {"n": len(a), "champion_brier": sum(a) / len(a) if a else None,
-                   "challenger_brier": sum(b) / len(b) if b else None} for name, (a, b, _) in per_point.items()}
-
-
-def evolve_model(rt, trainer, recipe: dict | None = None, *, min_items: int = 30, seed: int = 0,
+def evolve_model(rt, trainer, recipe: dict | None = None, *, record: GateRecord | None = None, seed: int = 0,
                  registry: Registry | None = None, **kw) -> dict:
+    """`ouroloop evolve`: one model candidate through the round's gate record (or `record`). -> its card."""
     registry = registry or Registry(rt.root)
-    cand = prepare_model(rt, trainer, recipe, registry=registry, **kw)
-    if not cand.checks.ok:
-        outcome = "blocked" if cand.checks.blocking else "insufficient_data"
-        cand.card.update({"gate": outcome, "reasons": cand.checks.blocking or cand.checks.insufficient})
-    else:
-        g = decide_points(cand.per_point, min_items=min_items, seed=seed)
-        cand.card.update({"gate": g.outcome, "reasons": g.reasons, "metrics": summarize(cand.per_point),
-                          "calibration": {k: {"temperature": c.temperature, "thresholds": c.thresholds, **c.entry()}
-                                          for k, c in cand.calibrations.items()}})
-        if g.outcome == "accepted":
-            promote_model(rt, cand, registry)
-    registry.record(cand.card)
-    experience.append(rt.root, {"kind": "model", "version": cand.version, "point": ",".join(cand.card["points"]),
-                                "change": {k: v for k, v in cand.card["recipe"].items() if v != DEFAULT_RECIPE.get(k)},
-                                "gate": cand.card["gate"], "reasons": cand.card["reasons"]})
-    return cand.card
+    record = record or open_record(rt)
+    out: dict = {}
+
+    def evaluate() -> EvalResult:
+        out["mc"] = prepare_model(rt, trainer, recipe, record=record, registry=registry, **kw)
+        return model_evaluation(rt, out["mc"], registry, record)
+
+    g, ev = run(record, evaluate, seed=seed)
+    if ev.record:
+        ev.record(g.outcome, g.reasons)
+    card = out["mc"].card if "mc" in out else {"version": None, "gate": g.outcome, "reasons": g.reasons, "points": []}
+    experience.append(rt.root, {"kind": "model", "version": card["version"], "point": ",".join(card["points"]),
+                                "change": {k: v for k, v in card.get("recipe", {}).items()
+                                           if v != DEFAULT_RECIPE.get(k)},
+                                "gate": g.outcome, "reasons": g.reasons, "record": record.round, "used": g.used,
+                                **({"verdict": "inconclusive"} if g.outcome == "inconclusive" else {})})
+    return card

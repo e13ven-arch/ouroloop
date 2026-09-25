@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from .types import Answer
 
 ROUTES = ("act", "default", "shadow", "rule", "error")
+ACTING = {"stop"}       # v0.2: the only point that may be switched on, wherever it is switched on
 
 
 @dataclass

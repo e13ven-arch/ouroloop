@@ -1,9 +1,11 @@
 """A small HTTP decision service (standard library only), so a model can stay loaded on one machine (for example
 TDE on the GPU host) and answer single decisions quickly for harnesses elsewhere.
 
-    GET  /health                                   -> {"ok", "points", "backends"}
-    POST /decide  {"backend"?, "requests": [{"state", "question"}]}  -> {"answers": [{"probs", "label", "model"}]}
-    POST /ask     {"point", "ctx", "session"?, "phase"?, "veto"?}  -> the recorded Decision
+    GET  /health                                   -> {"ok", "points", "backends", "code"}
+    POST /decide  {"backend"?, "requests": [{"state", "question"}]}
+                                        -> {"answers": [{"probs", "label", "model", "usage", "abstained"}]}
+    POST /ask     {"point", "ctx", "session"?, "phase"?, "veto"?}  -> the recorded Decision; a session runs the
+                                                                     release that was current at its first ask
     POST /outcome {"decision", "label", "source"?, "weight"?, ...}   -> {"ok": true}
 
 Set OUROLOOP_TOKEN to require "Authorization: Bearer <token>". It binds to 127.0.0.1 unless told otherwise, and
@@ -17,6 +19,7 @@ import threading
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from .release import code_version
 from .types import Question, Request
 
 
@@ -28,6 +31,7 @@ def make_server(rt, host: str = "127.0.0.1", port: int = 8765, token: str | None
         raise ValueError(f"serving on {host} needs a token: set OUROLOOP_TOKEN, or bind to 127.0.0.1")
     lock = threading.Lock()   # one model call and one ledger write at a time
     expected = f"Bearer {token}".encode() if token else b""
+    code = code_version()     # the inference code's version, for the gate records (M8)
 
     class Handler(BaseHTTPRequestHandler):
         def _send(self, code: int, obj: dict) -> None:
@@ -40,7 +44,8 @@ def make_server(rt, host: str = "127.0.0.1", port: int = 8765, token: str | None
 
         def do_GET(self) -> None:
             if self.path == "/health":
-                self._send(200, {"ok": True, "points": sorted(rt.points), "backends": sorted(rt.backends)})
+                self._send(200, {"ok": True, "points": sorted(rt.points), "backends": sorted(rt.backends),
+                                 "code": code})
             else:
                 self._send(404, {"error": "not found"})
 
@@ -56,7 +61,7 @@ def make_server(rt, host: str = "127.0.0.1", port: int = 8765, token: str | None
                         answers = backend.decide([Request(r["state"], Question.from_json(r["question"]))
                                                   for r in body["requests"]])
                         self._send(200, {"answers": [{"probs": a.probs, "label": a.label, "model": a.model,
-                                                      "usage": a.usage} for a in answers]})
+                                                      "usage": a.usage, "abstained": a.abstained} for a in answers]})
                     elif self.path == "/ask":
                         d = rt.ask(body["point"], body["ctx"], session=body.get("session", "s_http"),
                                    phase=body.get("phase"), veto=body.get("veto"))

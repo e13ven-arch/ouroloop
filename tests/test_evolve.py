@@ -13,13 +13,15 @@ from ouroloop.evolve import experience
 from ouroloop.evolve.build import build
 from ouroloop.evolve.calibrate import calibrate_point, fit_temperature
 from ouroloop.evolve.checks import check
-from ouroloop.evolve.pipeline import evolve_model
+from ouroloop.evolve.gate import records
+from ouroloop.evolve.pipeline import evolve_model, recipe_evaluator
 from ouroloop.evolve.registry import Registry
 from ouroloop.evolve.replay import labelled, split, splits
 from ouroloop.evolve.train import (RemoteTdeBackend, RemoteTdeTrainer, SignatureTrainer, TrainJob, prepare_job)
 from ouroloop.points import retry_point
 from ouroloop.providers import MockProvider
-from ouroloop.research import BasicResearcher, run_round
+from ouroloop.release import Revoked
+from ouroloop.research import BasicResearcher, Candidate, run_round
 from ouroloop.research.loop import run_rounds
 from ouroloop.runtime import Runtime
 from ouroloop.types import Question, Request, temper
@@ -96,24 +98,26 @@ def test_temperature_and_threshold_fitting(tmp_path):
 def test_registry_promote_and_rollback(tmp_path):
     reg = Registry(tmp_path)
     assert reg.next_version() == "m_0001" and reg.champion() is None
-    reg.record({"version": "m_0001", "gate": "accepted"})
-    reg.record({"version": "m_0002", "gate": "accepted"})
-    reg.promote("m_0001")
-    reg.promote("m_0002")
+    reg.record({"version": "m_0001", "gate": "accepted", "model_id": "A"})
+    reg.record({"version": "m_0002", "gate": "accepted", "model_id": "B"})
+    reg.promote("m_0001", None)
+    reg.promote("m_0002", "m_0001")
     assert reg.champion()["version"] == "m_0002" and reg.next_version() == "m_0003"
     assert reg.rollback() == "m_0001" and reg.champion()["version"] == "m_0001"
+    assert Revoked(tmp_path / "harness" / "revoked.json").ids() == {"m_0002", "B"}     # the retired model
     assert reg.rollback() is None and reg.champion() is None
 
 
 # ---------------------------------------------------------------- the model pipeline
-def test_evolve_model_trains_gates_and_promotes(tmp_path):
+def test_evolve_model_trains_gates_and_promotes(tmp_path, frozen):
     rt = seeded(tmp_path)
-    card = evolve_model(rt, SignatureTrainer(), {"min_weight": 1.0}, check_kwargs=LOOSE)
+    frozen(tmp_path, cal_frac={"*": 0.3})
+    card = evolve_model(rt, SignatureTrainer(), {"min_weight": 1.0})
     assert card["gate"] == "accepted" and card["version"] == "m_0001"
-    assert rt.point_backends["retry"] == "champion" and rt.backends["champion"].name == "signature"
+    assert rt.backend_name("retry") == "champion" and rt.backend_for("retry").name == "signature"
     assert Registry(tmp_path).champion()["version"] == "m_0001" and card["model_id"] == "signature:m_0001"
     cal = rt.calibration_for("retry", "signature:m_0001")        # keyed by the id the backend reports
-    assert cal["version"] == "m_0001" and cal["gate"] is None     # no gate record before M8: it cannot act
+    assert cal["version"] == "m_0001" and cal["gate"] == card["gate_record"]     # stored by the frozen gate
     assert experience.read(tmp_path)[-1]["kind"] == "model"
     # the promoted model is what a fresh runtime loads for a point on "champion"
     cfg = {"backends": {"mock": {"type": "mock"}}, "points": {"default_backend": "mock",
@@ -122,11 +126,12 @@ def test_evolve_model_trains_gates_and_promotes(tmp_path):
     assert fresh.backend_for("retry").name == "signature"
 
 
-def test_evolve_model_waits_when_data_is_thin(tmp_path):
+def test_evolve_model_waits_when_data_is_thin(tmp_path, frozen):
     rt = seeded(tmp_path, sessions=20)
-    card = evolve_model(rt, SignatureTrainer(), check_kwargs={"min_train": 1000})
+    frozen(tmp_path, checks={"min_train": 1000, "max_mde": 0.2})
+    card = evolve_model(rt, SignatureTrainer())
     assert card["gate"] == "insufficient_data" and Registry(tmp_path).champion() is None
-    assert rt.point_backends.get("retry") != "champion"
+    assert rt.backend_name("retry") != "champion" and not records(tmp_path)[0].used
 
 
 def test_champion_needs_a_base_before_the_first_promotion(tmp_path):
@@ -192,15 +197,26 @@ def test_remote_trainer_runs_detached_and_backend_batches(tmp_path):
 
 
 # ---------------------------------------------------------------- research with recipes and questions
-def test_demo_round_promotes_a_spec_and_a_model(tmp_path):
+class RecipeAgent:
+    def step(self, ws):
+        return [Candidate("recipe", "retry", {"min_weight": 1.0}, "train on the point's own outcomes")]
+
+
+def test_demo_rounds_promote_a_spec_then_a_model(tmp_path):
     root, res = run(tmp_path, seed=0)
-    assert [(e["kind"], e["gate"]) for e in res.evaluated] == [("spec", "accepted"), ("spec", "rejected"),
-                                                              ("recipe", "accepted")]
+    assert [(e["kind"], e["gate"]) for e in res.evaluated] == [("spec", "accepted")]     # one verdict per round
+    rt = Runtime(tmp_path, {"mock": KeywordBackend()}, "mock", seed=1)
+    rt.register(retry_point())
+    seed_ledger(rt, 40, seed=1, start=120)          # new sessions for the next round's gate
+    res = run_round(rt, RecipeAgent(), None, KeywordBackend(),
+                    evaluators={"recipe": recipe_evaluator(SignatureTrainer())})
+    assert [(e["kind"], e["gate"], e["record"]) for e in res.evaluated] == [("recipe", "accepted", "r_0002")]
     assert Registry(tmp_path).champion()["version"] == "m_0001"
 
 
-def test_llm_can_ask_the_judge_before_finalizing(tmp_path):
+def test_llm_can_ask_the_judge_before_finalizing(tmp_path, frozen):
     rt = seeded(tmp_path)
+    frozen(tmp_path)
     prompts = []
 
     def llm(system, prompt):
@@ -219,8 +235,9 @@ def test_llm_can_ask_the_judge_before_finalizing(tmp_path):
     assert len(asked) == 1 and "none_fit" in asked[0].decision["candidates"]
 
 
-def test_rounds_stop_when_nothing_is_promoted(tmp_path):
+def test_rounds_stop_when_nothing_is_promoted(tmp_path, frozen):
     rt = seeded(tmp_path)
+    frozen(tmp_path)
     stale = MockProvider(lambda s, p: json.dumps({"candidates": [{"kind": "spec", "hypothesis": "noop",
                                                                    "change": {"view_params": {"unused": 1}}}]}))
     results = run_rounds(rt, BasicResearcher(), stale, KeywordBackend(), rounds=5, patience=2)

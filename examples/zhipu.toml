@@ -1,6 +1,7 @@
 # 用智谱 GLM 跑 agent（OpenAI 兼容接口），决策点交给 Jev：
 #   ouroloop run "修好 calc.py 里的 bug" --config examples/zhipu.toml --verify "python3 -m unittest -q"
 #   ouroloop suite --config examples/zhipu.toml               # 用当前冠军 prompt 跑一遍任务集
+#   ouroloop gate freeze --config examples/zhipu.toml         # 人先冻结门模板，一次即可
 #   ouroloop research --config examples/zhipu.toml --rounds 2 # 研究 agent 改 harness prompt
 # 路径相对于这个文件。
 
@@ -37,9 +38,8 @@ source = "frontier_llm"
 [llm_small.extra]
 thinking = { type = "disabled" }
 
-[research]                        # ouroloop research：研究 agent 用 [llm] 推理，判断交给 Jev
+[research]                        # ouroloop research：研究 agent 用 [llm] 推理，判断交给 Jev；门的参数在冻结的门模板里
 judge = "jev"
-min_items = 30
 
 [research.options]
 budget = 2
@@ -48,4 +48,3 @@ budget = 2
 path = "../evals/tasks"
 repeats = 1                       # 每个任务跑几次；越多越稳，也越贵
 screen = 3                        # 先在前 3 个开发任务上筛，不比冠军差才跑全部任务
-min_items = 10

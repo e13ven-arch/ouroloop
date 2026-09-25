@@ -1,8 +1,9 @@
 """A self-contained run of one research round (PLAN §5.6), with no network and no model by default.
 
-It seeds a workspace with synthetic `retry` decisions and their outcomes, then: report -> the largest error group
--> a scripted LLM proposes two spec changes -> offline replay -> promotion gate -> experience record. The judge's
-view of the target and of each candidate is recorded, not acted on. With judge="jev" it is the real Jev API.
+It seeds a workspace with synthetic `retry` decisions and their outcomes and freezes a gate (standing in for the
+person who does), then: report -> the largest error group -> a scripted LLM proposes two spec changes -> offline
+replay -> the frozen gate, once per round -> experience record. The judge's view of the target and of each candidate
+is recorded, not acted on. With judge="jev" it is the real Jev API.
 """
 from __future__ import annotations
 
@@ -13,6 +14,7 @@ import tempfile
 from pathlib import Path
 
 from .backends import JevBackend, KeywordBackend
+from .evolve.gate import freeze_template, template_path
 from .evolve.pipeline import recipe_evaluator
 from .evolve.train import DEFAULT_RECIPE, RECIPE_KEYS, SignatureTrainer
 from .points import retry_point  # noqa: F401 - also exposed as ouroloop.demo:retry_point
@@ -52,9 +54,10 @@ def make_context(rng: random.Random) -> tuple[dict, str]:
     return {"command": cmd, "stderr": "\n".join(frames + [err]), "exit_code": 1}, ("yes" if transient else "no")
 
 
-def seed_ledger(rt: Runtime, sessions: int = 120, per_session: int = 3, seed: int = 0) -> None:
+def seed_ledger(rt: Runtime, sessions: int = 120, per_session: int = 3, seed: int = 0, start: int = 0) -> None:
+    """`sessions` sessions, numbered from `start`: new sessions for a later round start past the earlier ones."""
     rng = random.Random(seed)
-    for s in range(sessions):
+    for s in range(start, start + sessions):
         for _ in range(per_session):
             ctx, label = make_context(rng)
             d = rt.ask("retry", ctx, session=f"s{s:03d}")
@@ -83,17 +86,23 @@ def demo_llm() -> MockProvider:
     return MockProvider(_propose, model="scripted-demo")
 
 
+# A gate a single synthetic point can pass: the checks and the calibration sessions scaled to the demo's ledger.
+DEMO_GATE = {"checks": {"min_train": 100, "max_mde": 0.2}, "min_cal_sessions": 10}
+
+
 def run(root: str | Path | None = None, judge: str = "mock", seed: int = 0, sessions: int = 120, train: bool = True):
-    """One round. With train=True the LLM may also propose a training recipe, trained in-process by a small
-    signature model (the stand-in for TDE on a GPU host), so the demo shows spec and model evolution."""
+    """One round, through one gate record: the first candidate to reach the gate's verdict ends it. With train=True
+    the LLM may also propose a training recipe, trained in-process by a small signature model (the stand-in for TDE
+    on a GPU host)."""
     root = Path(root) if root else Path(tempfile.mkdtemp(prefix="ouroloop-demo-"))
     rt = Runtime(root, {"mock": KeywordBackend()}, default_backend="mock", seed=seed)
     rt.register(retry_point())
     seed_ledger(rt, sessions, seed=seed)
+    if not template_path(root).exists():
+        freeze_template(root, DEMO_GATE)
     judge_backend = JevBackend() if judge == "jev" else KeywordBackend()
     kw = {}
     if train:
-        kw = {"evaluators": {"recipe": recipe_evaluator(SignatureTrainer(),
-                                                        check_kwargs={"min_train": 100, "max_mde": 0.2})},
+        kw = {"evaluators": {"recipe": recipe_evaluator(SignatureTrainer())},
               "context": {"recipe": dict(DEFAULT_RECIPE), "recipe_keys": sorted(RECIPE_KEYS)}}
     return root, run_round(rt, BasicResearcher(budget=3), demo_llm(), judge_backend, seed=seed, **kw)

@@ -48,12 +48,13 @@ class Fixed:
 
 def test_runtime_acts_takes_defaults_and_logs(tmp_path, gated):
     rt = Runtime(tmp_path, {"fixed": Fixed(0.9)}, "fixed", seed=0)
-    on = rt.register(Noul("a", "ok?", policy=Policy(act=True, explore=0.0), phases={"here": "no"}))
-    gated(rt, "a", "fixed-1", 0.8)
+    on = rt.register(Noul("stop", "ok?", policy=Policy(act=True, explore=0.0), phases={"here": "no"}))
+    gated(rt, "stop", "fixed-1", 0.8)
     d = rt.ask(on, {"x": 1}, session="s1")
     assert (d.route, d.action, d.model, d.acted) == ("act", "yes", "fixed-1", True)
-    gated(rt, "a", "fixed-1", 0.95)
-    d = rt.ask(on, {"x": 2}, session="s1")
+    gated(rt, "stop", "fixed-1", 0.95)
+    assert rt.ask(on, {"x": 2}, session="s1").acted     # a session keeps the calibration it opened with
+    d = rt.ask(on, {"x": 2}, session="s2")
     assert (d.route, d.action, d.label, d.acted) == ("default", "no", "yes", False)   # not confident enough
     off = rt.register(Noul("b", "ok?", phases={"here": "no"}))
     d = rt.ask(off, {"x": 3}, session="s1")
@@ -74,14 +75,14 @@ def test_register_prefers_the_promoted_spec(tmp_path):
 # ---------------------------------------------------------------- one research round
 def test_demo_round_promotes_the_criteria_rewrite_only(tmp_path):
     root, res = run(tmp_path, seed=0, train=False)
-    assert [e["gate"] for e in res.evaluated] == ["accepted", "rejected"]
+    assert [e["gate"] for e in res.evaluated] == ["accepted"]      # the round's one verdict ends it
     assert "criteria" in res.promoted[0]["change"]
     specs = json.loads((tmp_path / "harness" / "specs.json").read_text())
     assert "ModuleNotFoundError" in specs["retry"]["spec"]["criteria"]["false"]
-    assert len(experience.read(tmp_path)) == 2
+    assert len(experience.read(tmp_path)) == 1
     rows = Runtime(tmp_path, {}, "none").ledger.rows()
-    worth = sorted(r.outcomes[0]["label"] for r in rows if r.decision["point"] == "research.worth_trying")
-    assert worth == ["no", "yes"]
+    worth = [r.outcomes[0]["label"] for r in rows if r.decision["point"] == "research.worth_trying" and r.outcomes]
+    assert worth == ["yes"]
     (pick,) = [r for r in rows if r.decision["point"] == "research.pick_target"]
     assert pick.outcomes[0]["label"] == pick.decision["action"] and pick.outcomes[0]["reward"] == 1.0
     assert all(o["source"] == "gate" for r in rows for o in r.outcomes if o.get("note") == "promotion gate")
@@ -104,11 +105,12 @@ def test_example_config_builds_without_network():
     agent, llm, judge, kw = config.build_research(cfg, rt)
     assert set(rt.points) == {"retry"} and judge.name == "jev" and llm.model == "claude-opus-5"
     assert rt.backend_for("retry").name == "jev"                    # "champion" falls back to [registry] base
-    assert agent.budget == 2 and kw["min_items"] == 30 and "recipe" in kw["evaluators"]
+    assert agent.budget == 2 and "min_items" not in kw and "recipe" in kw["evaluators"]
     assert kw["context"]["recipe"]["replay"] == "data/general/train.jsonl"
+    config.check_frozen(cfg)                        # it starts once the gate is frozen: no gate parameters in it
 
 
-def test_agent_and_backends_are_swapped_by_config_only(tmp_path):
+def test_agent_and_backends_are_swapped_by_config_only(tmp_path, frozen):
     (tmp_path / "ouroloop.toml").write_text("""
 [workspace]
 root = "ws"
@@ -129,13 +131,14 @@ define = "ouroloop.points:retry_point"
 [research]
 agent = "test_loop:FixedAgent"
 judge = "judge"
-min_items = 20
+seed = 3
 """)
     cfg = config.load(tmp_path / "ouroloop.toml")
     rt = config.build_runtime(cfg, tmp_path)
     agent, llm, judge, kw = config.build_research(cfg, rt)
-    assert isinstance(agent, FixedAgent) and llm is None and judge is rt.backends["judge"] and kw == {"min_items": 20}
+    assert isinstance(agent, FixedAgent) and llm is None and judge is rt.backends["judge"] and kw == {"seed": 3}
     seed_ledger(rt, sessions=40)
+    frozen(rt.root)
     res = run_round(rt, agent, llm, judge, **kw)
     assert [e["hypothesis"] for e in res.evaluated] == ["config-loaded agent"]
     assert rt.root == tmp_path / "ws"

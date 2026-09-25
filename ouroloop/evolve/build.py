@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from .replay import labelled, splits
+from .replay import labelled, not_held_out, splits
 
 
 def candidates(q) -> list[dict]:
@@ -50,12 +50,16 @@ class Dataset:
 
 
 def build(rt, out_dir: str | Path, points: list[str] | None = None, test_frac: float = 0.15,
-          cal_frac: float = 0.15, min_weight: float = 0.5) -> Dataset:
+          cal_frac: float = 0.15, min_weight: float = 0.5, *, rows: dict | None = None) -> Dataset:
+    """`rows` ({point: {split: rows}}, as a gate record splits them) replaces the split by test_frac and cal_frac of
+    the rows outside held-out tasks. Held-out rows never become examples."""
+    if rows is None:
+        rows = {name: splits(not_held_out(rt, [r for r in labelled(rt, name) if r[2] >= min_weight]), test_frac,
+                             cal_frac) for name in points or list(rt.points)}
     parts: dict[str, list[dict]] = {"train": [], "calibration": [], "test": []}
-    for name in points or list(rt.points):
-        rows = [r for r in labelled(rt, name) if r[2] >= min_weight]
-        for split_name, split_rows in splits(rows, test_frac, cal_frac).items():
-            for row, target, weight in split_rows:
+    for name, split_rows in rows.items():
+        for split_name in parts:
+            for row, target, weight in split_rows.get(split_name, []):
                 ex = to_example(rt, rt.points[name], row, target, weight, split_name)
                 if ex is not None:
                     parts[split_name].append(ex)

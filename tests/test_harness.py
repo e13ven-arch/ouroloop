@@ -13,6 +13,7 @@ from ouroloop.agent.suite import Task, load_suite, run_task, validate
 from ouroloop.backends import KeywordBackend
 from ouroloop.chat import ChatTurn, ScriptedChat, ToolCall
 from ouroloop.evolve import experience
+from ouroloop.evolve.gate import open_record, records
 from ouroloop.evolve.harness import SuiteRunner, prompt_evaluator, suite_context
 from ouroloop.points import builtin_points
 from ouroloop.research.agent import Candidate
@@ -124,21 +125,22 @@ def test_tool_descriptions_and_the_workdir_reach_the_model(tmp_path):
 
 
 # ---------------------------------------------------------------- prompt candidates
-def test_research_round_promotes_a_better_prompt_and_rejects_a_no_op(tmp_path):
+def test_research_round_promotes_a_better_prompt_and_rejects_a_no_op(tmp_path, frozen):
     tasks = [task("a"), task("b"), task("c"), task("d", held_out=True)]
     rt, _, runner = setup(tmp_path)
+    frozen(rt.root, suite={"min_items": 4})
     llm = ResearchLLM(json.dumps({"candidates": [
         {"kind": "prompt", "change": {"system": SYSTEM + "  "}, "hypothesis": "whitespace only"},
         {"kind": "prompt", "change": {"system": f"{SYSTEM} {FIX}"}, "hypothesis": "tell the agent to fix bugs"}]}))
-    ev = prompt_evaluator(tasks, runner, repeats=2, screen=2, min_items=4)
+    ev = prompt_evaluator(tasks, runner, repeats=2, screen=2)
     res = run_round(rt, BasicResearcher(budget=2, consult=False), llm, rt.backends["mock"],
                     evaluators={"prompt": ev}, context=suite_context(tasks, runner))
     assert {e["hypothesis"]: e["gate"] for e in res.evaluated} == {"whitespace only": "rejected",
                                                                      "tell the agent to fix bugs": "accepted"}
     assert PromptStore(rt.root).get().system.endswith(FIX)
     assert "Fix add() in calc.py (a)" in llm.prompts[0] and "(d)" not in llm.prompts[0]   # held-out stays hidden
-    # context: 3 champion runs; no-op: none; screening: 2 new; full run: 5 champion + 6 challenger runs not yet done
-    assert runner.executed == 16
+    # context: 3 champion runs; no-op: none; screening: 2 new; the gate: 8 champion + 8 challenger runs, all new
+    assert runner.executed == 21
     (good,) = [e for e in experience.read(rt.root) if e["gate"] == "accepted"]
     assert good["kind"] == "prompt" and good["verdict"] == "improved" and good["delta"] == -0.5
     d = good["details"]
@@ -147,8 +149,9 @@ def test_research_round_promotes_a_better_prompt_and_rejects_a_no_op(tmp_path):
     assert d["held_out_effects"] == {"d": 0.5} and d["held_out_n"] == 2 and d["held_out_delta"] == -0.5
     assert BasicResearcher._past_prompt(good)[1:] == [f"    + {FIX}", "    effects: a +0.50, b +0.50, c +0.50"]
 
+    assert res.record == "r_0001" and len(records(rt.root)[0].usage["sessions"]) == 16    # the gate's own runs
     before = runner.executed
-    worse = ev(rt, Candidate("prompt", "harness", {"system": "Reply done."}, "shorter"))
+    worse = ev(rt, Candidate("prompt", "harness", {"system": "Reply done."}, "shorter"), open_record(rt))
     assert worse.rejected[0].startswith("screening") and runner.executed == before + 2
     # Every dev task is solved now: nothing to propose, and every champion run comes from the record.
     assert run_round(rt, BasicResearcher(consult=False), llm, rt.backends["mock"], evaluators={"prompt": ev},
@@ -190,7 +193,7 @@ max_turns = 3
 
 
 
-def test_the_gate_does_not_select_on_held_out_but_records_it(tmp_path):
+def test_the_gate_does_not_select_on_held_out_but_records_it(tmp_path, frozen):
     """A held-out split that can veto a candidate is part of the selection, not a check on it. The gate reads
     the development split; the held-out result is measured and recorded either way."""
     tasks = [task("a"), task("b"), task("c"), task("d", held_out=True)]
@@ -211,8 +214,10 @@ def test_the_gate_does_not_select_on_held_out_but_records_it(tmp_path):
     runner.make_agent = lambda workdir, t, prompt: Agent(
         Selective(), rt, Tools(workdir, descriptions=prompt.tools), system=prompt.system,
         config=AgentConfig(approve="auto", max_turns=t.max_turns))
-    ev = prompt_evaluator(tasks, runner, repeats=1, screen=0, min_items=3)
-    res = ev(rt, Candidate("prompt", "harness", {"system": f"{SYSTEM} {FIX}"}, "helps dev, hurts held-out"))
+    frozen(rt.root)
+    ev = prompt_evaluator(tasks, runner, repeats=1, screen=0)
+    res = ev(rt, Candidate("prompt", "harness", {"system": f"{SYSTEM} {FIX}"}, "helps dev, hurts held-out"),
+             open_record(rt))
     assert res.groups == ["a", "b", "c"]                    # the gate's items are the development split
     assert res.details["held_out_effects"] == {"d": -0.5}   # and the damage is on the record
     assert res.details["held_out_delta"] == 0.5             # positive loss delta: held-out got worse
