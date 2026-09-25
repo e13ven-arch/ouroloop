@@ -13,8 +13,8 @@ not. The next generation plays with what the round promoted, so its data comes f
 generation's round is planted: its candidate is trained on shuffled labels and goes through the same gate.
 
 The same games (session ids, seeds, generation) are played again by the defaults alone, no model asked, in
-<workspace>/baseline/ ([demo] baseline = false: not), and their metrics printed beside: what a bigger board, other
-seeds or luck do shows there too. Every number printed is on disk: each game's metrics as a "metrics" event in the
+<workspace>/baseline/ ([demo] baseline = false: not), and their metrics printed beside: what a changed environment,
+other seeds or luck do shows there too. Every number printed is on disk: each game's metrics as a "metrics" event in the
 ledger it was played into, each generation's line as a "generation" event.
 """
 from __future__ import annotations
@@ -97,7 +97,7 @@ def _aggregate(metrics: list[dict]) -> dict:
 
 
 def _metrics(mine: dict, base: dict | None) -> str:
-    """key=value (the baseline's value), the bracket left out for a text the baseline shares, such as the board."""
+    """key=value (the baseline's value), the bracket left out for a text the baseline shares."""
     def show(v) -> str:
         return f"{v[0]}/{v[1]}" if isinstance(v, list) else f"{v:.1f}" if isinstance(v, float) else str(v)
     out = []
