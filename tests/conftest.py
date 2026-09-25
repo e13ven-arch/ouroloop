@@ -38,9 +38,11 @@ def gated():
 
 
 @pytest.fixture
-def frozen():
+def frozen(monkeypatch):
     """Freeze the gate template of a workspace, as a person does with `ouroloop gate freeze`: SMALL_GATE, changed by
-    `params`."""
+    `params`. A prompt gate may then run on a few tasks, fewer than a real template allows."""
+    monkeypatch.setitem(gate.LIMITS, "suite.min_items", (1, None))
+
     def freeze(root, **params):
         return freeze_template(root, {**SMALL_GATE, **params})
     return freeze

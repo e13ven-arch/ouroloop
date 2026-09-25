@@ -40,8 +40,8 @@ TEMPLATE = {
     "budget": {"sessions_per_generation": 40},
 }
 # What no template may loosen, (lowest, highest): the execution rule's risk (PLAN_v0.2 §0), the sessions each gate
-# needs (§2), and enough resamples for a 95% interval.
-LIMITS = {"risk": (0.0, 0.05), "min_sessions": (30, None), "n_boot": (1000, None)}
+# needs (§2), enough resamples for a 95% interval, and the runs a prompt gate needs (the template's own default).
+LIMITS = {"risk": (0.0, 0.05), "min_sessions": (30, None), "n_boot": (1000, None), "suite.min_items": (10, None)}
 # Failures of the machinery, not of the candidate: the verdict is "inconclusive", never evidence against it.
 INFRA = (TrainError, OSError, subprocess.SubprocessError, httpx.HTTPError)
 
@@ -90,7 +90,9 @@ def validate(params: dict, past: list[GateRecord] = ()) -> None:
     record did: the calibration split is by a hash of the session id, so a larger share would take in sessions a
     promoted model (or the parent a candidate starts from) was trained on, and its thresholds would be optimistic."""
     for key, (lo, hi) in LIMITS.items():
-        v = params.get(key)
+        v = params
+        for part in key.split("."):
+            v = v.get(part) if isinstance(v, dict) else None
         if isinstance(v, bool) or not isinstance(v, (int, float)) or v < lo or (hi is not None and v > hi):
             raise ValueError(f"gate template: {key} = {v!r} is looser than any template may be "
                              f"({'at most ' + str(hi) if hi is not None else 'at least ' + str(lo)})")
