@@ -240,8 +240,10 @@ def check(record: GateRecord, log: dict | None = None) -> None:
 def open_record(rt) -> GateRecord:
     """The round's gate record: the latest one while nothing has used it and it was frozen from the current template
     and code (a rerun after a failure before inference uses the same one), else a new one. A latest record without
-    fresh sessions, which can only validate, gives way to a new one once there are enough fresh sessions. The copies
-    in gates/ are written again from the ledger."""
+    fresh sessions, which can only validate, gives way to a new one once there are enough fresh sessions; so does an
+    unused one once newer labelled sessions would change its test set: no inference has touched its test sessions,
+    so they can train the new round instead of starving it (a first record that tested on most of the sessions
+    there were). The copies in gates/ are written again from the ledger."""
     params, template = load_template(rt.root)
     code = code_version()
     with locked(_lock(rt.root)):
@@ -250,10 +252,8 @@ def open_record(rt) -> GateRecord:
             r.mirror()
         last = past[-1] if past else None
         reuse = last and not last.used and last.data["template"] == template and last.data["code"]["ouroloop"] == code
-        if reuse and last.fresh:
-            return last
         data = _choose(rt, params, past)
-        if reuse and not data["fresh"]:
+        if reuse and (not data["fresh"] or (last.fresh and data["test_sessions"] == last.test_sessions)):
             return last
         validate(params, past)
         data = {"round": f"r_{len(past) + 1:04d}", "frozen": now(), "template": template, "params": params,

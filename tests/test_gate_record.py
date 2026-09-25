@@ -570,3 +570,17 @@ def test_serve_forwards_an_abstention_to_its_clients(tmp_path, gated):
         assert HttpBackend(url, token_env=None).code_version() == code_version()    # for the gate records
     finally:
         server.shutdown()
+
+
+def test_an_unused_record_gives_way_once_newer_sessions_would_change_its_test_set(tmp_path):
+    # The first record tests on the latest sessions; with few sessions that leaves almost nothing to train on, and
+    # the round stops before inference. Reusing that record forever would starve every later round: once newer
+    # sessions arrive, a new record tests on them, and the old record's never-scored sessions can train.
+    rt = workspace(tmp_path, n=40)
+    r1 = open_record(rt)
+    assert open_record(rt).round == r1.round                        # nothing new: the rerun takes it again
+    collect(rt, 40, start=40)
+    r2 = open_record(rt)
+    newer = {f"s_{i:04d}" for i in range(40, 80)}
+    assert r2.round == "r_0002" and r2.fresh and not r1.used
+    assert set(r2.test_sessions) <= newer and not set(r2.test_sessions) & set(r1.test_sessions)
