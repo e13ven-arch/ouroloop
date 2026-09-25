@@ -73,9 +73,16 @@ def test_position_leak_is_blocked_for_choice_points(tmp_path):
     point = rt.register(Choice("route", "which", {"a": "first", "b": "second", "c": "third"}))
     for s in range(60):
         d = rt.ask(point, f"case {s}", session=f"s{s}")
-        rt.outcome(d.id, "a")                                         # the answer is always the first option
-    report = check(build(rt, tmp_path / "data"), min_train=10, max_mde=1.0)
-    assert any("position" in b for b in report.blocking)
+        rt.outcome(d.id, "a" if s % 5 else "b")                 # 80% one label, written first in the definition
+    ds = build(rt, tmp_path / "data")
+    for e in ds.splits["train"]:        # written in the order predict and a live ask present them, not as defined
+        q = point.question(f"case {e['source_id'][1:]}").presented(random.Random(e["id"]))
+        assert [c["name"] for c in e["candidates"]] == q.labels()
+    assert not any("position" in b for b in check(ds, min_train=10, max_mde=1.0).blocking)
+    for part in ds.splits.values():     # a real position leak: the answer always in the first place shown
+        for e in part:
+            e["target"] = [1.0] + [0.0] * (len(e["candidates"]) - 1)
+    assert any("position" in b for b in check(ds, min_train=10, max_mde=1.0).blocking)
 
 
 # ---------------------------------------------------------------- calibration and registry
@@ -149,7 +156,7 @@ def test_prepare_job_mixes_replay_and_inherits_the_parent_architecture(tmp_path)
     data = tmp_path / "data"
     data.mkdir()
     (data / "train.jsonl").write_text("".join(json.dumps({"id": i}) + "\n" for i in range(10)))
-    (data / "calibration.jsonl").write_text(json.dumps({"id": "c"}) + "\n")
+    (data / "val.jsonl").write_text(json.dumps({"id": "v"}) + "\n")
     (tmp_path / "replay.jsonl").write_text("".join(json.dumps({"id": f"r{i}"}) + "\n" for i in range(100)))
     parent = tmp_path / "parent"
     parent.mkdir()
@@ -160,7 +167,7 @@ def test_prepare_job_mixes_replay_and_inherits_the_parent_architecture(tmp_path)
     assert cfg["backbone"] == "gliclass" and cfg["data_dir"].endswith("tde") and cfg["epochs"] == 3
     ids = [json.loads(line)["id"] for line in (data / "tde" / "train.jsonl").read_text().splitlines()]
     assert len(ids) == 15 and sum(str(i).startswith("r") for i in ids) == 5
-    assert (data / "tde" / "calibration.jsonl").exists()
+    assert (data / "tde" / "calibration.jsonl").read_text() == json.dumps({"id": "v"}) + "\n"   # what TDE selects on
 
 
 class FakeHost:

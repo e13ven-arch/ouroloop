@@ -15,6 +15,7 @@ python3.12 -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"      # 默认只依赖 httpx
 pytest -q                    # 离线测试：不联网，不跑模型
 ouroloop demo                # 用合成数据离线跑一轮研究循环
+ouroloop demo snake --config examples/snake/offline.toml   # 贪吃蛇连跑几代，用小模型（见 examples/snake）
 ```
 
 接入 Jev：把 key 写进仓库根目录的 `.env`（`TYPESAFE_API_KEY=...`，已被 git 忽略）。

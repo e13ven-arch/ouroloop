@@ -10,7 +10,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from .policy import Policy
+from .policy import COUNTS, Policy
 from .types import Question
 
 
@@ -63,6 +63,11 @@ class DecisionPoint:
     candidates: Callable[[Any], dict] | None = None       # runtime-generated choice candidates
     view_version: str = "1"                               # bump when the view function's code changes
     phases: dict[str, str | dict] = field(default_factory=dict)   # where in a loop it is asked -> its default there
+    count: str = "first"            # how thresholds and the post-act monitor count its sessions (policy.COUNTS)
+
+    def __post_init__(self):
+        if self.count not in COUNTS:
+            raise ValueError(f"point {self.name!r}: count {self.count!r} is not one of {COUNTS}")
 
     @property
     def spec_hash(self) -> str:
@@ -70,16 +75,19 @@ class DecisionPoint:
 
     def hash_of(self, spec: Spec) -> str:
         """The spec hash with `spec`. Temperatures and thresholds are keyed by it, so it covers everything that shapes
-        what the model sees (the view and where it is cut) and the phases' default labels: a threshold only means
-        something against the view and the default it was fitted for."""
+        what the model sees (the view and where it is cut), the phases' default labels and how the thresholds count:
+        a threshold only means something against the view, the default and the count it was fitted for."""
         return _digest([self.type, spec.to_json(), self.view_version, self.max_view_chars, self.keep,
-                        {ph: self.default_for(ph)[1] for ph in self.phases}])
+                        {ph: self.default_for(ph)[1] for ph in self.phases},
+                        *([self.count] if self.count != "first" else [])])     # older hashes stand
 
     def default_for(self, phase: str | None = None) -> tuple[str | None, str | None, str | None]:
         """-> (phase, its fixed label, its default answerer). A phase declares its default as a label, or as
         {"default": "rule:<module:function>" | "llm:<backend name>", "label": <taken when that answerer fails>}.
-        Without `phase`, a point with exactly one phase is asked in that one; a point with none has no default
-        (None: the host decides) and can never act."""
+        A point whose candidates change with the context may leave the label out, since no one label is always a
+        candidate: when its answerer fails the host decides (None), and any answer may act. Without `phase`, a point
+        with exactly one phase is asked in that one; a point with none has no default (None: the host decides) and
+        can never act."""
         if phase is None:
             if len(self.phases) > 1:
                 raise ValueError(f"point {self.name!r} is asked in phases {sorted(self.phases)}: pass phase=")
@@ -92,7 +100,7 @@ class DecisionPoint:
         default, label = (d.get("default"), d.get("label")) if isinstance(d, dict) else (d, None)
         if not (isinstance(default, str) and default.startswith(ANSWERERS)):
             return phase, default, None
-        if label is None:
+        if label is None and self.candidates is None:
             raise ValueError(f"point {self.name!r}, phase {phase!r}: {default} needs a fixed label to fall back to")
         return phase, label, default
 

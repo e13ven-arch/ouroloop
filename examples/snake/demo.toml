@@ -1,0 +1,57 @@
+# ouroloop demo snake --generations 8
+# On the GPU host, from the ouroloop checkout, with ouroloop installed into the TDE venv (see README.md). Paths are
+# relative to this file; set tde_repo and the checkpoint to where they are on your host, or copy this file to
+# demo.local.toml (git ignores it) and pass --config examples/snake/demo.local.toml.
+
+seed = 0                        # the runtime's: candidate order and exploration
+
+[workspace]
+root = "workspace"              # ledger/, gates/, models/, harness/, sessions/
+
+[demo]
+scenario = "examples.snake.scenario:Snake"
+path = "../.."                  # where examples.snake imports from: the ouroloop checkout
+generations = 8
+games = 80                      # games (sessions) a generation; they are the next round's fresh test sessions
+plant = 2                       # this generation's candidate is trained on shuffled labels: the gate must reject it
+seed = 0
+
+[demo.options]                  # the scenario's own
+board = 8                       # 8 x 8 games
+change_at = 5                   # the environment changes: from generation 5 on, 10 x 10 games
+board_after = 10
+
+[demo.gate]                     # the gate template the demo freezes once, standing in for a person (risk stays 5%)
+min_cal_sessions = 60
+cal_frac = { move = 0.5, "*" = 0.15 }
+checks = { min_train = 1000, max_mde = 0.10 }
+
+[backends.general]              # the general TDE checkpoint: it answers (without acting) until a model is promoted
+type = "tde"
+run = "~/tde/release/tde-general-v0.1"
+
+[registry]
+base = "general"
+
+[points]
+default_backend = "general"
+
+[points.move]
+define = "examples.snake.scenario:move_point"
+backend = "champion"
+act = true
+explore = 0.05
+
+[trainer]                       # TDE's trainer on this machine; each run lands beside its card in models/
+type = "local_tde"
+tde_repo = "~/tde"
+
+[recipe]                        # small and fast: one epoch over a sample of a few thousand moves
+epochs = 1.0
+train_limit = 5000
+batch_size = 16
+grad_accum = 2
+max_state_tokens = 256
+gradient_checkpointing = false
+min_weight = 1.0
+init_from = "~/tde/release/tde-general-v0.1"   # the first model's parent; every later one starts from the champion

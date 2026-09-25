@@ -54,9 +54,11 @@ class Runtime:
 
     def register(self, point: DecisionPoint) -> DecisionPoint:
         """Add a decision point. A promoted spec (harness/specs.json) replaces the one in code. Each phase's default
-        must be one of the point's labels, and its default answerer must resolve. In v0.2 only stop may act."""
-        if point.policy.act and point.name not in policy.ACTING:
-            raise ValueError(f"point {point.name!r} has act on: in v0.2 only {sorted(policy.ACTING)} may act")
+        must be one of the point's labels, and its default answerer must resolve. In v0.2 the harness's built-in
+        points other than stop may not act (policy.may_act)."""
+        if point.policy.act and not policy.may_act(point.name):
+            raise ValueError(f"point {point.name!r} has act on: of the built-in points only "
+                             f"{sorted(policy.ACTING)} may act in v0.2")
         stored = self.specs.get(point.name)
         if stored is not None:
             point.spec = Spec.from_json(stored)
@@ -222,7 +224,7 @@ class Runtime:
                 if revoked:
                     extra["revoked"] = revoked
                 threshold = None if revoked else self.threshold(p, ans.model, phase, pin.calibration)
-                r = route(p.policy if p.name in policy.ACTING else Policy(), ans, label, threshold, self.rng)
+                r = route(p.policy if policy.may_act(p.name) else Policy(), ans, label, threshold, self.rng)
         except Exception as e:  # noqa: BLE001 - whatever breaks, the default is taken and the row says why
             r, extra["error"] = Route("error", False, 1.0), f"{type(e).__name__}: {e}"[:500]
         if ans is not None and ans.abstained:

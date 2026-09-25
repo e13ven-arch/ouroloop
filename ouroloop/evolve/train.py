@@ -1,12 +1,14 @@
 """Trainers turn a built dataset into a new decision model (PLAN §4.3).
 
-    SignatureTrainer    a tiny in-process model (label frequencies per error signature), for tests and demos
-    LocalTdeTrainer     TDE's trainer as a subprocess, on a GPU machine that has the TDE repository
+    SignatureTrainer    a tiny in-process model (label frequencies per error signature, or per any key of the view
+                        a scenario defines), for tests and demos
+    LocalTdeTrainer     TDE's trainer as a subprocess, on the GPU host, with ouroloop installed into the TDE venv
     RemoteTdeTrainer    TDE's trainer on a GPU host over ssh; the checkpoint stays on the host, and
                         RemoteTdeBackend runs batch inference there
 
 TDE, the small decision model these trainers were built around, is a separate project released on its own. Any
-other model plugs in through the Trainer protocol below: train(job) -> TrainResult, backend(result) -> a backend.
+other model plugs in through the Trainer protocol below: train(job) -> TrainResult, backend(result) -> a backend,
+and supports_weights. The training data never holds ouroloop's calibration or test sessions (build.py).
 
 `prepare_job` and `predict_file` are self-contained (standard library, plus tde for prediction) so the exact same
 code runs locally or is sent to the host.
@@ -18,6 +20,7 @@ import json
 import os
 import shlex
 import subprocess
+import sys
 import tempfile
 import time
 from collections import defaultdict
@@ -36,6 +39,7 @@ DEFAULT_RECIPE = {
     "replay_ratio": 1.0,     # replay examples per ledger example
     "min_weight": 0.5,       # 1.0 keeps only environment and human labels
     "init_from": None,       # the first model's parent run, e.g. "runs/base"
+    "train_limit": None,     # train on at most this many examples, a seeded sample of the ledger's and replay's
     "seed": 0,
 }
 RECIPE_KEYS = set(DEFAULT_RECIPE)
@@ -43,7 +47,7 @@ RECIPE_KEYS = set(DEFAULT_RECIPE)
 # name the calibration split, or a run trained on the test sessions.
 PATH_KEYS = {"replay", "init_from"}
 _TDE_KEYS = ("epochs", "max_steps", "lr_backbone", "lr_head", "batch_size", "grad_accum", "max_state_tokens",
-             "gradient_checkpointing", "w_rps", "w_perm", "seed")
+             "gradient_checkpointing", "w_rps", "w_perm", "train_limit", "seed")
 
 
 class TrainError(RuntimeError):
@@ -66,6 +70,8 @@ class TrainResult:
 
 
 class Trainer(Protocol):
+    supports_weights: bool      # it weighs each example by meta.weight; if not, it is given weight-1.0 rows only
+
     def train(self, job: TrainJob) -> TrainResult: ...
 
     def backend(self, result: TrainResult): ...
@@ -80,8 +86,10 @@ def tde_config(recipe: dict, out_dir: str, init_from: str | None, version: str) 
 
 
 def prepare_job(data_dir, cfg_json, replay=None, ratio=1.0, seed=0):
-    """Write <data_dir>/tde/{train,calibration}.jsonl (ledger examples plus a seeded replay sample) and the TDE
-    config, taking the architecture from the parent run. Returns the config path. Standard library only."""
+    """Write <data_dir>/tde/train.jsonl (ledger examples plus a seeded replay sample), <data_dir>/tde/calibration.jsonl
+    (the ledger's val split, which TDE selects its checkpoint on; never ouroloop's calibration split) and the TDE
+    config, taking the architecture from the parent run. Paths may start with ~ (the training machine's home).
+    Returns the config path. Standard library only."""
     import json
     import os
     import random
@@ -106,18 +114,24 @@ def prepare_job(data_dir, cfg_json, replay=None, ratio=1.0, seed=0):
     random.Random(seed).shuffle(lines)
     with open(os.path.join(out, "train.jsonl"), "w", encoding="utf-8") as f:
         f.writelines(lines)
-    if os.path.exists(os.path.join(data_dir, "calibration.jsonl")):
-        shutil.copy(os.path.join(data_dir, "calibration.jsonl"), os.path.join(out, "calibration.jsonl"))
+    val = os.path.join(data_dir, "val.jsonl")
+    if os.path.exists(val):
+        shutil.copy(val, os.path.join(out, "calibration.jsonl"))
+    else:
+        open(os.path.join(out, "calibration.jsonl"), "w").close()     # TDE reads the file; empty, it selects none
     cfg = json.loads(cfg_json)
     cfg["data_dir"] = out
-    parent = os.path.join(os.path.expanduser(cfg.get("init_from") or ""), "config.json")
-    if cfg.get("init_from") and os.path.exists(parent):
-        with open(parent, encoding="utf-8") as f:
-            pc = json.load(f)
-        for key in ("backbone", "readout", "marker", "pool", "branch_layers", "branch_through_backbone", "finetune"):
-            if key in pc and key not in cfg:
-                cfg[key] = pc[key]
+    cfg["out_dir"] = os.path.expanduser(cfg["out_dir"])     # TDE takes it as is: "~/x" would be a directory named ~
+    if cfg.get("init_from"):
         cfg["init_from"] = os.path.expanduser(cfg["init_from"])
+        parent = os.path.join(cfg["init_from"], "config.json")
+        if os.path.exists(parent):
+            with open(parent, encoding="utf-8") as f:
+                pc = json.load(f)
+            for key in ("backbone", "readout", "marker", "pool", "branch_layers", "branch_through_backbone",
+                        "finetune"):
+                if key in pc and key not in cfg:
+                    cfg[key] = pc[key]
     path = os.path.join(out, "config.yaml")   # JSON is valid YAML
     with open(path, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
@@ -167,60 +181,100 @@ class SignatureBackend:
     """Predicts the label distribution seen in training for the same question and error signature."""
     name = "signature"
 
-    def __init__(self, path: str | None = None, table: dict | None = None):
+    def __init__(self, path: str | None = None, table: dict | None = None, signature: str | None = None):
+        """`signature`: "module:function", view -> key, in place of the error signature (replay.signature)."""
         self.path = path
         self.table = table if table is not None else json.loads(Path(path).read_text(encoding="utf-8"))
         self.model = f"signature:{Path(path).parent.name if path else 'memory'}"
+        self.signature = _signature(signature)
 
     def decide(self, requests: list[Request]) -> list[Answer]:
-        from .replay import signature
         out = []
         for r in requests:
             labels = r.question.labels()
             entry = self.table.get(r.question.instructions, {})
-            dist = entry.get(signature(r.state)) or entry.get("*") or {}
+            dist = entry.get(self.signature(r.state)) or entry.get("*") or {}
             smoothed = {lab: dist.get(lab, 0.0) + 0.5 for lab in labels}    # add-half smoothing
             out.append(Answer.of(labels, smoothed, self.model))
         return out
 
 
+def _signature(ref: str | None):
+    from ..runtime import import_object
+    from .replay import signature
+    return import_object(ref) if ref else signature
+
+
 class SignatureTrainer:
+    supports_weights = True
+
+    def __init__(self, signature: str | None = None):
+        self.ref = signature
+
     def train(self, job: TrainJob) -> TrainResult:
-        from .replay import signature
+        key_of = _signature(self.ref)
         counts: dict = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
         for line in open(Path(job.data_dir) / "train.jsonl", encoding="utf-8"):
             e = json.loads(line)
-            for key in (signature(e["state"]), "*"):
+            for key in (key_of(e["state"]), "*"):
                 for c, t in zip(e["candidates"], e["target"]):
-                    counts[e["question"]][key][c["name"]] += t
+                    counts[e["question"]][key][c["name"]] += t * float(e["meta"].get("weight", 1.0))
         path = Path(job.data_dir).parent / "signature_model.json"
         path.write_text(json.dumps(counts, indent=2), encoding="utf-8")
-        return TrainResult(str(path.parent), {"type": "signature", "path": str(path)}, f"signature:{path.parent.name}")
+        spec = {"type": "signature", "path": str(path), **({"signature": self.ref} if self.ref else {})}
+        return TrainResult(str(path.parent), spec, f"signature:{path.parent.name}")
 
     def backend(self, result: TrainResult) -> SignatureBackend:
-        return SignatureBackend(result.backend["path"])
+        return SignatureBackend(result.backend["path"], signature=result.backend.get("signature"))
 
 
 # ---------------------------------------------------------------------- TDE on this machine
 class LocalTdeTrainer:
-    def __init__(self, tde_repo: str, python: str | None = None, runs_dir: str = "runs/ouroloop", runner=None):
+    """TDE's trainer on this machine, run by the Python that has the tde package: ouroloop installed into the TDE venv
+    on the GPU host. `tde_repo` is the TDE checkout (scripts/train.py; a recipe's replay path is relative to it). A
+    run goes to <runs_dir>/<version> (relative to the checkout), by default beside the candidate's card:
+    <workspace>/models/<version>/run. In-process TDE backends let go of the GPU while it trains."""
+    supports_weights = False            # TDE's trainer does not read meta.weight
+
+    def __init__(self, tde_repo: str, python: str | None = None, runs_dir: str | None = None,
+                 device: str | None = None, runner=None):
         self.repo = Path(tde_repo).expanduser()
-        self.python = python or str(self.repo / ".venv" / "bin" / "python")
-        self.runs_dir = runs_dir
+        self.python = python or sys.executable
+        self.runs_dir = Path(runs_dir).expanduser() if runs_dir else None
+        self.device = device            # of the in-process backends that serve the runs
         self.runner = runner or (lambda args, **kw: subprocess.run(args, check=True, **kw))
+        try:                            # fail at startup, not at the first training job
+            self.runner([self.python, "-c", "import tde.train"], cwd=self.repo, capture_output=True, text=True)
+        except (OSError, subprocess.CalledProcessError) as e:
+            why = (getattr(e, "stderr", None) or str(e)).strip().splitlines()[-1:]
+            raise TrainError(f"local_tde: {self.python} cannot import tde.train ({'; '.join(why)}). Run ouroloop from "
+                             f"the TDE venv on the GPU host (pip install -e <ouroloop> there), with tde_repo = the "
+                             f"TDE checkout") from e
 
     def train(self, job: TrainJob) -> TrainResult:
-        out = self.repo / self.runs_dir / job.version
+        from ..backends.tde import TdeBackend
+        out = self.repo / self.runs_dir / job.version if self.runs_dir else Path(job.data_dir).resolve().parent / "run"
         cfg = tde_config(job.recipe, str(out), job.init_from, job.version)
         cfg_path = prepare_job(str(job.data_dir), json.dumps(cfg), job.recipe.get("replay") and
                                str(self.repo / job.recipe["replay"]), job.recipe.get("replay_ratio", 1.0),
                                job.recipe.get("seed", 0))
-        self.runner([self.python, "scripts/train.py", "--config", cfg_path], cwd=self.repo)
-        return TrainResult(str(out), {"type": "tde", "run": str(out)}, f"tde:{out.name}")
+        out.mkdir(parents=True, exist_ok=True)
+        log = out / "train.log"
+        TdeBackend.release()
+        with open(log, "w", encoding="utf-8") as f:
+            try:
+                self.runner([self.python, "scripts/train.py", "--config", cfg_path], cwd=self.repo, stdout=f,
+                            stderr=subprocess.STDOUT)
+            except subprocess.CalledProcessError as e:
+                tail = "".join(log.read_text(encoding="utf-8", errors="replace").splitlines(True)[-30:])
+                raise TrainError(f"training failed (exit {e.returncode}); the end of {log}:\n{tail}") from e
+        model = f"tde:{job.version}"
+        return TrainResult(str(out), {"type": "tde", "run": str(out), "model": model,
+                                      **({"device": self.device} if self.device else {})}, model)
 
     def backend(self, result: TrainResult):
-        from ..backends import TdeBackend
-        return TdeBackend(result.run)
+        from ..config import build_backend
+        return build_backend(result.backend)
 
 
 # ---------------------------------------------------------------------- TDE on a GPU host
@@ -244,6 +298,8 @@ class Remote:
 
 
 class RemoteTdeTrainer:
+    supports_weights = False
+
     def __init__(self, host: str, remote_repo: str, python: str = ".venv/bin/python", jobs_dir: str = "ouroloop_jobs",
                  ssh_opts: str = "-o BatchMode=yes", poll: float = 30.0, timeout: float = 8 * 3600, runner=None,
                  sleep=time.sleep):

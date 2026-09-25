@@ -38,6 +38,9 @@ def build_provider(spec: dict):
     if kind == "openai_compat":
         from .providers.openai_compat import OpenAICompatProvider
         return OpenAICompatProvider(**spec)
+    if kind == "manual":
+        from .providers.manual import ManualProvider
+        return ManualProvider(**spec)
     return import_object(kind)(**spec)
 
 
@@ -54,7 +57,7 @@ def build_backend(spec: dict):
         return LlmBackend(build_provider(spec["provider"]))
     if kind == "signature":
         from .evolve.train import SignatureBackend
-        return SignatureBackend(spec["path"])
+        return SignatureBackend(spec["path"], signature=spec.get("signature"))
     if kind == "tde_remote":
         from .evolve.train import RemoteTdeBackend
         return RemoteTdeBackend(**spec)
@@ -69,7 +72,7 @@ def build_trainer(spec: dict):
     spec = dict(spec)
     kind = spec.pop("type")
     if kind == "signature":
-        return SignatureTrainer()
+        return SignatureTrainer(**spec)
     if kind == "local_tde":
         return LocalTdeTrainer(**spec)
     if kind == "remote_tde":
@@ -128,8 +131,9 @@ def build_runtime(cfg: dict, base: str | Path = ".") -> Runtime:
             raise ValueError(f"[points.{name}] may only set {sorted(POINT_KEYS)}, not {sorted(set(s) - POINT_KEYS)}")
         if not isinstance(s.get("act", False), bool):       # act = "false" would switch the point on
             raise ValueError(f"[points.{name}] act must be true or false, not {s['act']!r}")
-        if s.get("act") and name not in policy.ACTING:
-            raise ValueError(f"[points.{name}] act = true: in v0.2 only {sorted(policy.ACTING)} may act")
+        if s.get("act") and not policy.may_act(name):
+            raise ValueError(f"[points.{name}] act = true: of the built-in points only {sorted(policy.ACTING)} "
+                             f"may act in v0.2")
         if "define" not in s and name not in BUILTIN:
             raise ValueError(f'[points.{name}] needs define = "module:function"')
         point = import_object(s["define"])() if "define" in s else BUILTIN[name]()

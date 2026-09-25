@@ -287,8 +287,9 @@ def m6_sessions(rt, n: int, start: int = 0, crashed: tuple = ()) -> None:
 
 
 def trained_on(rt, version: str) -> set:
-    return {json.loads(line)["source_id"] for part in ("train", "calibration")
-            for line in (rt.root / "models" / version / "data" / f"{part}.jsonl").open()}
+    """Every session in the trainer's directory."""
+    return {json.loads(line)["source_id"] for p in (rt.root / "models" / version / "data").glob("*.jsonl")
+            for line in p.open()}
 
 
 def test_an_m6_ledger_through_freeze_evolve_gate_promote_and_the_next_rounds(tmp_path):
@@ -493,8 +494,7 @@ def test_a_promotion_reaches_new_sessions_only_and_a_rollback_stops_the_old_ones
     assert r1.data["held_out_sessions"] and set(r1.data["held_out_sessions"]) <= held
     assert not set(r1.test_sessions) & held
     assert first["metrics"]["stop"]["held_out"]["sessions"] == len(r1.data["held_out_sessions"])
-    trained = {json.loads(line)["source_id"] for part in ("train", "calibration")
-               for line in (rt.root / "models" / first["version"] / "data" / f"{part}.jsonl").open()}
+    trained = trained_on(rt, first["version"])
     assert trained and not trained & (held | set(r1.test_sessions))
 
 

@@ -21,6 +21,7 @@ python3 -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"      # the only runtime dependency is httpx
 pytest -q                    # offline: no network, no models
 ouroloop demo                # one research round on synthetic data, offline
+ouroloop demo snake --config examples/snake/offline.toml   # Snake, several generations, a tiny model (examples/snake)
 ```
 
 To use Jev, put `TYPESAFE_API_KEY=...` in `.env` at the repository root (git ignores it).

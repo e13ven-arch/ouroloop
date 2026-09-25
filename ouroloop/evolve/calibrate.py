@@ -1,6 +1,7 @@
 """Calibration (PLAN §4.5, PLAN_v0.2 M7): a temperature fitted by NLL on the calibration split, then per phase the
 lowest confidence threshold whose acting decisions keep a Clopper-Pearson error bound below the risk, counted per
-session. Both are keyed by the model id the backend reports and by the point's spec hash."""
+session by the point's counting rule. Both are keyed by the model id the backend reports and by the point's spec
+hash."""
 from __future__ import annotations
 
 import math
@@ -78,7 +79,8 @@ def calibrate_point(rt, point: str, backend=None, test_frac: float = 0.15, cal_f
                 conf.append(max(pr.values()))
                 correct.append(gold(pr) == gold(target))
                 sessions.append(row.decision.get("session", ""))
-        thresholds[phase] = fit_threshold(conf, correct, sessions, risk) if n_sessions >= min_sessions else None
+        thresholds[phase] = (fit_threshold(conf, correct, sessions, risk, count=p.count)
+                             if n_sessions >= min_sessions else None)
     accuracy = sum(gold(pr) == gold(y) for pr, y in zip(tempered, targets)) / len(rows)
     return PointCalibration(point, models.pop(), t, thresholds, len(rows), accuracy, n_sessions)
 

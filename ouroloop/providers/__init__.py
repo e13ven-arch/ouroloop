@@ -2,6 +2,8 @@
 
 A provider has `complete(system, prompt) -> str` and a `source` that says where its answers come from
 ("frontier_llm" or "open_llm"). Either way they are for evaluation only, never training targets (PLAN_v0.2 §1).
+Besides the API providers (anthropic, openai_compat) there is `manual` (manual.py): the same requests and replies,
+as files that a person or another process answers.
 """
 from __future__ import annotations
 

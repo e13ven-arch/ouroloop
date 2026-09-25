@@ -67,6 +67,14 @@ def _print_round(root, res) -> None:
 
 
 def cmd_demo(args) -> int:
+    if args.scenario:           # a scenario pack's multi-generation loop: examples/<scenario>/
+        from .generations import run as run_generations
+        path = Path(args.config or f"examples/{args.scenario}/demo.toml")
+        if not path.exists():
+            print(f"no {path}: run from the ouroloop checkout, or pass --config", file=sys.stderr)
+            return 2
+        run_generations(config.load(path), path.resolve().parent, generations=args.generations, root=args.dir)
+        return 0
     from .demo import run
     root, res = run(args.dir, judge=args.judge, seed=args.seed)
     _print_round(root, res)
@@ -422,9 +430,13 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("--question", required=True)
     d.add_argument("--state", required=True)
     d.add_argument("--criteria", help="JSON: noul {true,false}, choice {label: description}, score [levels]")
-    m = sub.add_parser("demo", help="one offline research round on synthetic data")
+    m = sub.add_parser("demo", help="one offline research round on synthetic data; with a scenario pack's name, "
+                                    "its multi-generation loop")
     m.set_defaults(fn=cmd_demo)
-    m.add_argument("--dir")
+    m.add_argument("scenario", nargs="?", help="a scenario pack: reads examples/<scenario>/demo.toml")
+    m.add_argument("--config", help="the scenario's config (default examples/<scenario>/demo.toml)")
+    m.add_argument("--generations", type=int, help="how many generations to run (default: the config's)")
+    m.add_argument("--dir", help="the workspace (default: the config's)")
     m.add_argument("--judge", choices=["mock", "jev"], default="mock")
     m.add_argument("--seed", type=int, default=0)
     a = sub.add_parser("run", help="run the agent on a task in the current directory")

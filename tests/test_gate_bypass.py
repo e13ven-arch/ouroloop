@@ -202,11 +202,18 @@ def test_a_recipe_changes_the_training_rows_only(tmp_path):
         rt.outcome(d.id, label, weight=0.5 if i % 3 == 0 else 1.0)
     freeze_template(rt.root, ACT_GATE)
     record = open_record(rt)
-    usual = prepare_model(rt, OracleTrainer("R1"), record=record)
-    picky = prepare_model(rt, OracleTrainer("R2"), {"min_weight": 1.0}, record=record)
+
+    class Weighs(OracleTrainer):
+        supports_weights = True
+
+    usual = prepare_model(rt, Weighs("R1"), record=record)
+    picky = prepare_model(rt, Weighs("R2"), {"min_weight": 1.0}, record=record)
     assert picky.per_point["stop"][2] == usual.per_point["stop"][2]           # the same test items
     assert picky.calibrations["stop"].n == usual.calibrations["stop"].n       # and calibration rows
     assert picky.card["data"]["stop"]["train"] < usual.card["data"]["stop"]["train"]
+    # a trainer that does not weigh examples never takes a half-weight label for a full one
+    unweighted = prepare_model(rt, OracleTrainer("R3"), record=record)
+    assert unweighted.card["data"]["stop"] == picky.card["data"]["stop"]
 
 
 def test_a_research_candidate_cannot_point_training_at_other_data(tmp_path):
@@ -226,17 +233,26 @@ def test_a_research_candidate_cannot_point_training_at_other_data(tmp_path):
     assert all("a person" in e["reasons"][0] for e in res.evaluated)
 
 
-def test_the_trainer_never_gets_the_test_sessions(tmp_path):
+def test_the_trainer_never_gets_the_test_or_the_calibration_sessions(tmp_path):
     rt = workspace(tmp_path)
     got = {}
 
     class Looks(OracleTrainer):
         def train(self, job):
             got["files"] = sorted(p.name for p in job.data_dir.iterdir())
+            got["sessions"] = {json.loads(line)["source_id"] for p in job.data_dir.iterdir() for line in p.open()}
             return super().train(job)
 
     evolve_model(rt, Looks("R1"))
-    assert got["files"] == ["calibration.jsonl", "train.jsonl"]
+    (record,) = records(rt.root)
+    parts = record.split([(r, None, 1.0) for r in rt.ledger.rows("stop")], rt.ledger.sessions()[0],
+                         record.cal_frac("stop"))
+    sessions = {name: {r.decision["session"] for r, _, _ in rows} for name, rows in parts.items()}
+    # val: training sessions the trainer may select its checkpoint on; never the calibration split, which the
+    # thresholds are fitted on, nor the test sessions
+    assert got["files"] == ["train.jsonl", "val.jsonl"] and got["sessions"] <= sessions["train"]
+    assert sessions["calibration"] and sessions["test"] and not got["sessions"] & (sessions["calibration"] |
+                                                                                   sessions["test"])
 
 
 def test_the_research_agent_never_sees_held_out_results(tmp_path):

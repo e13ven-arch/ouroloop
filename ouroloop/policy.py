@@ -1,19 +1,33 @@
 """From an answer to an action: the execution rule, exploration and propensities (PLAN_v0.2 §0), and thresholds."""
 from __future__ import annotations
 
+import bisect
+import hashlib
 import math
 import random
 from dataclasses import dataclass
+from functools import lru_cache
 
 from .types import Answer
 
 ROUTES = ("act", "default", "shadow", "rule", "error")
-ACTING = {"stop"}       # v0.2: the only point that may be switched on, wherever it is switched on
+# The harness's built-in points (ouroloop.points). In v0.2 stop is the only one of them that may be switched on
+# (PLAN_v0.2 §3: the others wait for their triggers); a point that a scenario pack or a contract user defines may be.
+HARNESS = frozenset({"retry", "compact", "tool_gate", "stop", "route"})
+ACTING = {"stop"}
+# How thresholds and the post-act monitor count a session's acting decisions, one per session either way: "first",
+# its first one (a terminal decision such as stop acts once and changes what follows); "sampled", one chosen by a
+# hash of the session id (a decision repeated within a session, such as a move in a game).
+COUNTS = ("first", "sampled")
+
+
+def may_act(point: str) -> bool:
+    return point in ACTING or point not in HARNESS
 
 
 @dataclass
 class Policy:
-    act: bool = False       # may the model's answer be acted on; off, the point is shadow (v0.2: only stop may act)
+    act: bool = False       # may the model's answer be acted on; off, the point is shadow (see may_act)
     explore: float = 0.05   # share of decisions the model could act on that still take the default, for outcomes
 
 
@@ -47,6 +61,7 @@ def _binom_cdf(k: int, n: int, p: float) -> float:
                         for i in range(k + 1)))
 
 
+@lru_cache(maxsize=65536)
 def cp_upper(errors: int, n: int, alpha: float = 0.05) -> float:
     """One-sided Clopper-Pearson upper bound on an error rate after `errors` mistakes in `n` trials."""
     if n == 0 or errors >= n:
@@ -61,20 +76,57 @@ def cp_upper(errors: int, n: int, alpha: float = 0.05) -> float:
     return hi
 
 
+def cp_lower(errors: int, n: int, alpha: float = 0.05) -> float:
+    """One-sided Clopper-Pearson lower bound on an error rate after `errors` mistakes in `n` trials."""
+    if n == 0 or errors <= 0:
+        return 0.0
+    lo, hi = 0.0, errors / n
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        if 1.0 - _binom_cdf(errors - 1, n, mid) < alpha:
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
+def pick(session, salt: str, n: int) -> int:
+    """The row a "sampled" count takes among a session's n rows: by a hash of the session id and `salt`."""
+    return int(hashlib.sha1(f"{session}\x00{salt}".encode()).hexdigest()[:15], 16) % n
+
+
+def per_session(items, count: str = "first", salt: str = "") -> dict:
+    """(session, value) pairs in time order -> one value per session, by the counting rule (see COUNTS)."""
+    by: dict = {}
+    for s, v in items:
+        by.setdefault(s, []).append(v)
+    return {s: vs[0] if count == "first" else vs[pick(s, salt, len(vs))] for s, vs in by.items()}
+
+
 def fit_threshold(confidences: list[float], correct: list[bool], sessions: list[str] | None = None,
-                  risk: float = 0.05, alpha: float = 0.05) -> float | None:
+                  risk: float = 0.05, alpha: float = 0.05, count: str = "first") -> float | None:
     """Lowest confidence cut-off whose acting decisions keep a Clopper-Pearson error bound <= risk (None if none
-    does). Counted per session: at each cut-off a session counts only its first decision at or above it, the one
-    that would act and change what follows, so a session's many rows are not taken as independent evidence. Pass
-    only decisions that would act (a label other than the default), in time order; without `sessions` every
-    decision is its own session."""
+    does). Counted per session, so a session's many rows are not taken as independent evidence: at each cut-off a
+    session counts one of its decisions at or above it, by `count` ("first": its first, the one that would act and
+    change what follows; "sampled": one chosen by a hash of the session id and the cut-off). Pass only decisions that
+    would act (a label other than the default), in time order; without `sessions` every decision is its own session."""
+    if count not in COUNTS:
+        raise ValueError(f"count {count!r}: one of {COUNTS}")
     sessions = sessions if sessions is not None else list(range(len(confidences)))
-    best = None
-    for cut in sorted(set(confidences), reverse=True):
-        first: dict = {}
-        for conf, ok, s in zip(confidences, correct, sessions):
-            if conf >= cut and s not in first:
-                first[s] = ok
-        if cp_upper(sum(not ok for ok in first.values()), len(first), alpha) <= risk:
+    order = sorted(range(len(confidences)), key=lambda i: -confidences[i])
+    rows: dict = {}             # session -> its rows at or above the cut-off (time indices, in time order)
+    errors, best, k = 0, None, 0
+    while k < len(order):
+        cut = confidences[order[k]]
+        while k < len(order) and confidences[order[k]] == cut:     # the cut-off takes in every row at it
+            i = order[k]
+            k += 1
+            mine = rows.setdefault(sessions[i], [])
+            if count == "first" and (not mine or i < mine[0]):     # a new first row for its session
+                errors += (not correct[i]) - (bool(mine) and not correct[mine[0]])
+            bisect.insort(mine, i)
+        if count == "sampled":
+            errors = sum(not correct[m[pick(s, repr(cut), len(m))]] for s, m in rows.items())
+        if errors <= risk * len(rows) and cp_upper(errors, len(rows), alpha) <= risk:
             best = cut
     return best

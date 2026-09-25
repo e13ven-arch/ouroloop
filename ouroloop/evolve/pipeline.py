@@ -37,13 +37,15 @@ class ModelCandidate:
     inconclusive: list[str] = field(default_factory=list)   # an infrastructure failure, e.g. the trainer's
 
 
-def _parts(rt, record: GateRecord, points: list[str], recipe: dict) -> dict:
+def _parts(rt, record: GateRecord, points: list[str], recipe: dict, trainer) -> dict:
     """Each point's labelled rows as `record` splits them. The recipe's min_weight thins the training rows only: the
-    calibration and test rows are the record's, whatever the candidate."""
+    calibration and test rows are the record's, whatever the candidate. A trainer that does not weigh examples
+    (supports_weights) is given full-weight rows only, so it never takes a weak label for a strong one."""
     sessions, _ = rt.ledger.sessions()
     parts = {name: record.split(labelled(rt, name), sessions, record.cal_frac(name)) for name in points}
+    least = recipe["min_weight"] if getattr(trainer, "supports_weights", False) else max(recipe["min_weight"], 1.0)
     for part in parts.values():
-        part["train"] = [r for r in part["train"] if r[2] >= recipe["min_weight"]]
+        part["train"] = [r for r in part["train"] if r[2] >= least]
     return parts
 
 
@@ -62,7 +64,7 @@ def prepare_model(rt, trainer, recipe: dict | None = None, *, record: GateRecord
     params = record.params
     version = registry.next_version()
     parent = registry.champion()
-    parts = _parts(rt, record, points, recipe)
+    parts = _parts(rt, record, points, recipe, trainer)
     ds = build(rt, registry.dir / version / "data", rows=parts)
     checks = check(ds, eval_states=eval_states, **params["checks"])
     card = {"version": version, "parent": parent["version"] if parent else None, "points": points, "recipe": recipe,
@@ -99,7 +101,7 @@ def dry_run_model(rt, trainer, recipe: dict | None = None, *, points: list[str] 
     record = open_record(rt)
     recipe = {**DEFAULT_RECIPE, **(recipe or {})}
     version = f"dryrun_{Registry(rt.root).next_version()}"
-    parts = _parts(rt, record, points or model_points(rt), recipe)
+    parts = _parts(rt, record, points or model_points(rt), recipe, trainer)
     ds = build(rt, rt.root / "models" / version / "data", rows=parts)
     checks = check(ds, **record.params["checks"])
     out = {"version": version, "round": record.round, "data": ds.stats(), "checks": asdict(checks)}
@@ -162,15 +164,16 @@ def recipe_evaluator(trainer, base_recipe: dict | None = None, **kw):
 
 
 def evolve_model(rt, trainer, recipe: dict | None = None, *, record: GateRecord | None = None, seed: int = 0,
-                 registry: Registry | None = None, **kw) -> dict:
-    """`ouroloop evolve`: one model candidate through the round's gate record (or `record`). -> its card."""
+                 registry: Registry | None = None, meta: dict | None = None, **kw) -> dict:
+    """`ouroloop evolve`: one model candidate through the round's gate record (or `record`). -> its card, which
+    also carries `meta`."""
     registry = registry or Registry(rt.root)
     record = record or open_record(rt)
     out: dict = {}
 
     def evaluate() -> EvalResult:
         out["mc"] = prepare_model(rt, trainer, recipe, record=record, registry=registry, **kw)
-        return model_evaluation(rt, out["mc"], registry, record)
+        return model_evaluation(rt, out["mc"], registry, record, meta)
 
     g, ev = run(record, evaluate, seed=seed)
     if ev.record:
@@ -180,5 +183,6 @@ def evolve_model(rt, trainer, recipe: dict | None = None, *, record: GateRecord 
                                 "change": {k: v for k, v in card.get("recipe", {}).items()
                                            if v != DEFAULT_RECIPE.get(k)},
                                 "gate": g.outcome, "reasons": g.reasons, "record": record.round, "used": g.used,
-                                **({"verdict": "inconclusive"} if g.outcome == "inconclusive" else {})})
+                                **({"verdict": "inconclusive"} if g.outcome == "inconclusive" else {}),
+                                **(meta or {})})
     return card
