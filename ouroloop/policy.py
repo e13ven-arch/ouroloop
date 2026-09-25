@@ -1,7 +1,6 @@
 """From an answer to an action: the execution rule, exploration and propensities (PLAN_v0.2 §0), and thresholds."""
 from __future__ import annotations
 
-import bisect
 import hashlib
 import math
 import random
@@ -16,8 +15,8 @@ ROUTES = ("act", "default", "shadow", "rule", "error")
 HARNESS = frozenset({"retry", "compact", "tool_gate", "stop", "route"})
 ACTING = {"stop"}
 # How thresholds and the post-act monitor count a session's acting decisions, one per session either way: "first",
-# its first one (a terminal decision such as stop acts once and changes what follows); "sampled", one chosen by a
-# hash of the session id (a decision repeated within a session, such as a move in a game).
+# its first one (a terminal decision such as stop acts once and changes what follows); "sampled", one drawn at random
+# by a hash of the session id (a decision repeated within a session, such as a move in a game), see rank.
 COUNTS = ("first", "sampled")
 
 
@@ -90,17 +89,23 @@ def cp_lower(errors: int, n: int, alpha: float = 0.05) -> float:
     return lo
 
 
-def pick(session, salt: str, n: int) -> int:
-    """The row a "sampled" count takes among a session's n rows: by a hash of the session id and `salt`."""
-    return int(hashlib.sha1(f"{session}\x00{salt}".encode()).hexdigest()[:15], 16) % n
+def rank(session, j: int) -> str:
+    """Where the j-th row of a session (in time order) comes in the order a "sampled" count goes by, a hash of the
+    session id: a count takes the row that comes first among those it looks at. So the row it takes is drawn at
+    random, whatever the rows' outcomes, and stays drawn: among more rows (a lower cut-off) it changes only to a row
+    that comes earlier. Drawn afresh at every cut-off, some cut-off would be a lucky draw, and the lowest one that
+    passes would let a model act above its risk."""
+    return hashlib.sha1(f"{session}\x00{j}".encode()).hexdigest()
 
 
-def per_session(items, count: str = "first", salt: str = "") -> dict:
+def per_session(items, count: str = "first") -> dict:
     """(session, value) pairs in time order -> one value per session, by the counting rule (see COUNTS)."""
     by: dict = {}
     for s, v in items:
         by.setdefault(s, []).append(v)
-    return {s: vs[0] if count == "first" else vs[pick(s, salt, len(vs))] for s, vs in by.items()}
+    if count == "first":
+        return {s: vs[0] for s, vs in by.items()}
+    return {s: vs[min(range(len(vs)), key=lambda j: rank(s, j))] for s, vs in by.items()}
 
 
 def fit_threshold(confidences: list[float], correct: list[bool], sessions: list[str] | None = None,
@@ -108,25 +113,32 @@ def fit_threshold(confidences: list[float], correct: list[bool], sessions: list[
     """Lowest confidence cut-off whose acting decisions keep a Clopper-Pearson error bound <= risk (None if none
     does). Counted per session, so a session's many rows are not taken as independent evidence: at each cut-off a
     session counts one of its decisions at or above it, by `count` ("first": its first, the one that would act and
-    change what follows; "sampled": one chosen by a hash of the session id and the cut-off). Pass only decisions that
-    would act (a label other than the default), in time order; without `sessions` every decision is its own session."""
+    change what follows; "sampled": the first in an order drawn by a hash of the session id, see rank). Pass only
+    decisions that would act (a label other than the default), in time order; without `sessions` every decision is
+    its own session."""
     if count not in COUNTS:
         raise ValueError(f"count {count!r}: one of {COUNTS}")
     sessions = sessions if sessions is not None else list(range(len(confidences)))
+    if count == "first":
+        key: list = list(range(len(confidences)))
+    else:
+        seen: dict = {}
+        key = []
+        for s in sessions:
+            seen[s] = seen.get(s, -1) + 1
+            key.append(rank(s, seen[s]))
     order = sorted(range(len(confidences)), key=lambda i: -confidences[i])
-    rows: dict = {}             # session -> its rows at or above the cut-off (time indices, in time order)
+    counted: dict = {}          # session -> the row it counts among those at or above the cut-off
     errors, best, k = 0, None, 0
     while k < len(order):
         cut = confidences[order[k]]
         while k < len(order) and confidences[order[k]] == cut:     # the cut-off takes in every row at it
-            i = order[k]
+            i, s = order[k], sessions[order[k]]
             k += 1
-            mine = rows.setdefault(sessions[i], [])
-            if count == "first" and (not mine or i < mine[0]):     # a new first row for its session
-                errors += (not correct[i]) - (bool(mine) and not correct[mine[0]])
-            bisect.insort(mine, i)
-        if count == "sampled":
-            errors = sum(not correct[m[pick(s, repr(cut), len(m))]] for s, m in rows.items())
-        if errors <= risk * len(rows) and cp_upper(errors, len(rows), alpha) <= risk:
+            c = counted.get(s)
+            if c is None or key[i] < key[c]:                        # it comes first: the session counts it now
+                errors += (not correct[i]) - (c is not None and not correct[c])
+                counted[s] = i
+        if errors <= risk * len(counted) and cp_upper(errors, len(counted), alpha) <= risk:
             best = cut
     return best

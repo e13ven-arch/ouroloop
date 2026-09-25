@@ -8,20 +8,21 @@ import pytest
 from ouroloop.decision import Noul, _digest
 from ouroloop.evolve.calibrate import calibrate_point
 from ouroloop.evolve.monitor import realized, watch
-from ouroloop.policy import Policy, cp_lower, cp_upper, fit_threshold, per_session, pick
+from ouroloop.policy import Policy, cp_lower, cp_upper, fit_threshold, per_session, rank
 from ouroloop.runtime import Runtime
 from ouroloop.types import Answer
 
 
 def naive(confidences, correct, sessions, risk, count):
     """fit_threshold as its docstring says, cut-off by cut-off."""
+    place = [sessions[:i].count(s) for i, s in enumerate(sessions)]       # a row's place in its session
     best = None
     for cut in sorted(set(confidences), reverse=True):
         mine = {}
         for i, (conf, s) in enumerate(zip(confidences, sessions)):
             if conf >= cut:
                 mine.setdefault(s, []).append(i)
-        picked = [m[0] if count == "first" else m[pick(s, repr(cut), len(m))] for s, m in mine.items()]
+        picked = [m[0] if count == "first" else min(m, key=lambda i: rank(s, place[i])) for s, m in mine.items()]
         if cp_upper(sum(not correct[i] for i in picked), len(picked)) <= risk:
             best = cut
     return best
@@ -61,10 +62,25 @@ def test_first_counts_the_first_acting_row_and_sampled_one_chosen_by_the_session
     assert fit_threshold(conf, correct, sessions, 0.2, count="first") is None       # 60 of 60 wrong
     assert fit_threshold(conf, correct, sessions, 0.2, count="sampled") == 0.9      # about 3 of 60 wrong
     items = list(zip(sessions, correct))
-    first, sampled = per_session(items, "first"), per_session(items, "sampled", "m")
+    first, sampled = per_session(items, "first"), per_session(items, "sampled")
     assert len(first) == len(sampled) == 60 and not any(first.values()) and 50 < sum(sampled.values()) < 60
-    assert sampled == per_session(items, "sampled", "m")                           # deterministic
-    assert len({pick(s, "m", 20) for s in first}) > 10                              # spread over the rows
+    assert sampled == per_session(items, "sampled")                                # deterministic
+    assert len({min(range(20), key=lambda j: rank(s, j)) for s in first}) > 10      # spread over the rows
+
+
+@pytest.mark.parametrize("count", ["first", "sampled"])
+def test_a_model_above_its_risk_rarely_gets_a_threshold(count):
+    """Wrong on 8% of its decisions at every confidence, against a 5% budget. Each cut-off counts one row a session,
+    and the lowest cut-off that passes is kept: a "sampled" row drawn afresh at every cut-off would give some
+    cut-off a lucky draw almost every time (40 of 40 here)."""
+    granted = 0
+    for seed in range(40):
+        rng = random.Random(seed)
+        conf = [round(rng.uniform(0.4, 1.0), 4) for _ in range(100 * 60)]
+        correct = [rng.random() > 0.08 for _ in conf]
+        granted += fit_threshold(conf, correct, [f"s{i // 60}" for i in range(len(conf))], 0.05,
+                                 count=count) is not None
+    assert granted <= 6
 
 
 def test_a_point_declares_its_count_and_its_thresholds_are_keyed_by_it():
@@ -104,9 +120,9 @@ def play(rt, sessions, first_wrong=True, start=0):
 @pytest.mark.parametrize("count", ["first", "sampled"])
 def test_calibration_counts_as_the_point_declares(tmp_path, count):
     rt = acting(tmp_path, count)
-    play(rt, 40)
+    play(rt, 60)
     cal = calibrate_point(rt, "check", rows=[(r, *r.target()) for r in rt.ledger.rows("check")], risk=0.2)
-    assert (cal.thresholds["here"] is None) == (count == "first")       # 40 of 40 wrong; about 2 of 40
+    assert (cal.thresholds["here"] is None) == (count == "first")       # 60 of 60 wrong; about 3 of 60
 
 
 def test_the_monitor_revokes_a_model_whose_acting_errors_exceed_the_budget(tmp_path, gated):

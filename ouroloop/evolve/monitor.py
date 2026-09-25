@@ -28,7 +28,7 @@ def realized(rt, point: str, sessions=None, model: str | None = None) -> tuple[i
     errors = n = 0
     for m, items in acted(rt, point, sessions).items():
         if model is None or m == model:
-            picked = per_session(items, rt.points[point].count, m)
+            picked = per_session(items, rt.points[point].count)
             errors, n = errors + sum(not ok for ok in picked.values()), n + len(picked)
     return errors, n
 
@@ -44,7 +44,7 @@ def watch(rt, risk: float, alpha: float = 0.05, sessions=None) -> list[dict]:
     out = []
     for point in rt.points:
         for model, items in acted(rt, point, sessions).items():
-            picked = per_session(items, rt.points[point].count, model)
+            picked = per_session(items, rt.points[point].count)
             errors, n = sum(not ok for ok in picked.values()), len(picked)
             lower = cp_lower(errors, n, alpha)
             if lower <= risk or rt.revoked.hit(versions.get(model), model):
