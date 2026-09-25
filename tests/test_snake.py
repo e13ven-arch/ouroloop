@@ -11,10 +11,11 @@ from examples.snake.rules import greedy_safe, signature
 from examples.snake.scenario import RULE, move_point
 from ouroloop import config
 from ouroloop.backends import TdeBackend
-from ouroloop.evolve import experience
+from ouroloop.evolve import experience, monitor
 from ouroloop.evolve.gate import records
 from ouroloop.evolve.registry import Registry
 from ouroloop.generations import run
+from ouroloop.ledger import Ledger
 from ouroloop.policy import Policy
 from ouroloop.runtime import Runtime
 
@@ -224,3 +225,59 @@ def test_the_demo_command_reads_the_scenarios_config_and_continues_a_workspace(t
     assert [line.split()[0] for line in out.splitlines() if line[:3].strip().isdigit()] == ["1", "2"]
     assert "ledger/" in out and "gates/" in out and "models/" in out
     assert main(["demo", "nowhere"]) == 2
+
+
+def metrics_of(ledger, generation):
+    return {e["session"]: e["metrics"] for e in ledger.events()
+            if e.get("type") == "metrics" and e["generation"] == generation}
+
+
+@pytest.mark.usefixtures("loose_risk")
+def test_every_printed_number_is_on_disk_beside_the_same_games_played_by_the_defaults(tmp_path):
+    """DEMO_PLAN §0.2: every number the demo prints comes from this run and can be checked on disk; here each is
+    recomputed from the workspace alone. And each generation's games are played again by the defaults alone (the
+    rule snake: no model is asked), on the same seeds and board, in baseline/, and printed beside them: a bigger
+    board, other seeds or luck cannot pass for what the model did."""
+    lines = []
+    root = run(CFG, tmp_path, generations=3, out=lines.append)
+    rt = config.build_runtime(CFG, tmp_path)
+    base = Ledger(root / "baseline" / "ledger")
+    sessions, _ = rt.ledger.sessions()
+    base_sessions, _ = base.sessions()
+    summaries = [e for e in rt.ledger.events() if e.get("type") == "generation"]
+    assert [e["generation"] for e in summaries] == [1, 2, 3]
+    for g, line, summary in zip((1, 2, 3), lines[2:5], summaries):
+        mine = sorted(s for s, info in sessions.items() if info.get("generation") == g)
+        rows = [r.decision for r in rt.ledger.rows("move") if r.decision["session"] in mine]
+        games, again = metrics_of(rt.ledger, g), metrics_of(base, g)
+        assert sorted(games) == sorted(again) == mine
+        for s in mine:              # a game's metrics are its decisions': a move a step, the food, a fatal last move
+            moves = [d for d in rows if d["session"] == s]
+            first, last = rt.sessions.get(moves[0]["ctx"]), rt.sessions.get(moves[-1]["ctx"])
+            w, h, body, food, _ = unpack(last)
+            after, eats = moved(w, h, body, food, moves[-1]["action"])
+            assert (games[s]["steps"], games[s]["died"]) == (len(moves), after is None)
+            assert games[s]["food"] == len(body) - len(first["body"]) + eats
+            assert {k: base_sessions[s][k] for k in ("board", "seed")} == {k: sessions[s][k] for k in ("board", "seed")}
+        base_rows = [r.decision for r in base.rows("move") if r.decision["session"] in mine]
+        assert base_rows and all(d["route"] == "shadow" and d["backend"] == "none" and
+                                 d["action"] == greedy_safe(rt.sessions.get(d["ctx"])) for d in base_rows[:500])
+        played = {sessions[s]["champion"] or "base" for s in mine}
+        acted = sum(d["route"] == "act" for d in rows)
+        errors, n = monitor.realized(rt, "move", set(mine))
+        card = Registry(root).card(f"m_{g:04d}")
+        assert (summary["played"], summary["decisions"], summary["acted"], summary["errors"], summary["judged"]) == (
+            sorted(played), len(rows), acted, errors, n)
+        assert (summary["candidate"], summary["gate"]) == (card["version"], card["gate"])
+        mean = {k: sum(m[k] for m in games.values()) / len(games) for k in ("food", "steps")}
+        base_mean = {k: sum(m[k] for m in again.values()) / len(again) for k in ("food", "steps")}
+        died, base_died = sum(m["died"] for m in games.values()), sum(m["died"] for m in again.values())
+        assert line.split()[:3] == [str(g), ",".join(sorted(played)), f"{acted / len(rows):.0%}"]
+        for piece in [f"{errors}/{n}=" if n else " - ", f"food={mean['food']:.1f} ({base_mean['food']:.1f})",
+                      f"steps={mean['steps']:.1f} ({base_mean['steps']:.1f})",
+                      f"died={died}/{len(mine)} ({base_died}/{len(mine)})", "board=6x6 ",
+                      f"{card['version']} {card['gate']}"]:
+            assert piece in line, (piece, line)
+        if g == 1:                  # nothing has been promoted: no model acts, and the games are the defaults' games
+            assert acted == 0 and games == again
+
