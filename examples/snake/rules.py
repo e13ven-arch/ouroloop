@@ -27,7 +27,8 @@ def greedy_safe(state: dict) -> str:
 def signature(view: str) -> str:
     """The key the signature trainer counts labels by, read from the board text: the heading, what lies next to the
     head in each direction ("." free, the tail included since it moves on; "#" wall or body; "F" food) and the sign
-    of the food's offset from the head. What a tiny model can learn: the local picture, no lookahead."""
+    of the food's offset from the head. What a tiny model can learn: the local picture, no lookahead. It is all the
+    rule snake reads, so a model keyed by it can at most copy the rule snake where the labels agree with it."""
     lines = view.split("\n")
     heading = lines[0].rstrip(".").rsplit(" ", 1)[-1]
     grid = [row[1::2] for row in lines[1:]]           # every cell is " X"
