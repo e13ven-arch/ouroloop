@@ -147,7 +147,7 @@ def run(cfg: dict, base: str | Path = ".", *, generations: int | None = None, ro
     baseline = Defaults(rt.root / "baseline", {}, "") if d.get("baseline", True) else None
     if baseline is not None:
         baseline.points = rt.points
-    registry, pooled = Registry(rt.root), [0, 0]
+    registry = Registry(rt.root)
     out(f"workspace {rt.root}; {games} games a generation; risk budget {budget:.0%}")
     out(f"{'gen':>3}  {'data from':<9}  {'auto':>5}  {'realized error <=CP95 vs budget':<31}  metrics"
         f"{' (the same games, defaults only)' if baseline is not None else ''}  |  round")
@@ -164,7 +164,6 @@ def run(cfg: dict, base: str | Path = ".", *, generations: int | None = None, ro
         for point in rt.points:
             e, k = monitor.realized(rt, point, mine)
             errors, n = errors + e, n + k
-        pooled = [pooled[0] + errors, pooled[1] + n]
         revoked = monitor.watch(rt, budget, sessions=mine)
         planted = g == plant
         card = evolve_model(rt, Shuffled(trainer, seed) if planted else trainer, cfg.get("recipe"), seed=seed,
@@ -176,7 +175,9 @@ def run(cfg: dict, base: str | Path = ".", *, generations: int | None = None, ro
             "candidate": card["version"], "gate": card["gate"],
             "champion": (registry.champion() or {}).get("version"), "planted": planted, "revoked": revoked})
         out(_line(summary))
-    out(f"all generations: realized error {_risk(*pooled, budget)}")
+    every = [e for e in rt.ledger.events() if e.get("type") == "generation"]     # a continued workspace's too
+    out(f"all {len(every)} generations: realized error "
+        f"{_risk(sum(e['errors'] for e in every), sum(e['judged'] for e in every), budget)}")
     out(f"on disk, in {rt.root}:\n"
         f"  ledger/   every session (its release), decision (its route and model) and outcome; each game's metrics "
         f"and each generation's line; gate and monitor events\n"

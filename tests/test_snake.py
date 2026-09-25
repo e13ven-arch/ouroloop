@@ -291,3 +291,24 @@ def test_the_games_of_a_revoked_champion_say_so(tmp_path):
     lines = []
     run(CFG, tmp_path, generations=1, out=lines.append)
     assert lines[2].startswith(f"  2  {champion['version']} (revoked)") and lines[2].split()[3] == "0%"
+
+
+@pytest.mark.usefixtures("loose_risk")
+def test_the_planted_candidate_is_rejected_for_its_labels_and_the_pooled_line_covers_every_generation(tmp_path):
+    """The same round without the plant: the same gate on the same test games accepts the candidate its real labels
+    train, so the planted one fails for its labels, nothing else. And a workspace continued by a second run pools
+    every generation on disk, not only the second run's."""
+    real = {**CFG, "demo": {**CFG["demo"], "plant": None}}
+    lines = []
+    root = run(real, tmp_path / "real", generations=3, out=lines.append)
+    planted = run(CFG, tmp_path / "planted", generations=2, out=lambda line: None)
+    (a, b), (c, d) = ([Registry(r).card(v) for v in ("m_0001", "m_0002")] for r in (root, planted))
+    assert a["test_sessions"] == c["test_sessions"] and b["test_sessions"] == d["test_sessions"]
+    assert (b["gate"], d["gate"], d["reasons"]) == ("accepted", "rejected", ["significant regression on move"])
+    assert b["metrics"]["move"]["champion_brier"] == d["metrics"]["move"]["champion_brier"]
+    run(real, tmp_path / "real", generations=1, out=lines.append)
+    summaries = [e for e in config.build_runtime(real, tmp_path / "real").ledger.events()
+                 if e.get("type") == "generation"]
+    errors, n = sum(e["errors"] for e in summaries), sum(e["judged"] for e in summaries)
+    assert [e["generation"] for e in summaries] == [1, 2, 3, 4] and summaries[2]["judged"] and summaries[3]["judged"]
+    assert lines[-2].startswith(f"all 4 generations: realized error {errors}/{n}=")
