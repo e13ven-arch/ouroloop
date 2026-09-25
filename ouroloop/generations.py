@@ -157,7 +157,7 @@ def run(cfg: dict, base: str | Path = ".", *, generations: int | None = None, ro
         metrics = _play(scenario, rt, ids, seeds, g)
         again = _play(scenario, baseline, ids, seeds, g) if baseline is not None else None
         pinned = {json.loads(rt.sessions.path(s, ".release.json").read_text())["champion"] for s in ids}
-        played = sorted(v or "base" for v in pinned)
+        played = sorted(f"{v} (revoked)" if rt.revoked.hit(v) else v or "base" for v in pinned)
         mine = set(ids)
         rows = [r for r in rt.ledger.rows() if r.decision.get("session") in mine]
         errors = n = 0

@@ -17,6 +17,7 @@ from ouroloop.evolve.registry import Registry
 from ouroloop.generations import run
 from ouroloop.ledger import Ledger
 from ouroloop.policy import Policy
+from ouroloop.release import revoke
 from ouroloop.runtime import Runtime
 
 
@@ -281,3 +282,12 @@ def test_every_printed_number_is_on_disk_beside_the_same_games_played_by_the_def
         if g == 1:                  # nothing has been promoted: no model acts, and the games are the defaults' games
             assert acted == 0 and games == again
 
+
+@pytest.mark.usefixtures("loose_risk")
+def test_the_games_of_a_revoked_champion_say_so(tmp_path):
+    root = run(CFG, tmp_path, generations=1, out=lambda line: None)
+    champion = Registry(root).champion()
+    revoke(root, champion["version"], champion["model_id"], "a test")
+    lines = []
+    run(CFG, tmp_path, generations=1, out=lines.append)
+    assert lines[2].startswith(f"  2  {champion['version']} (revoked)") and lines[2].split()[3] == "0%"
