@@ -47,6 +47,9 @@ def test_the_board_text_is_the_jev_integrations():
                                    " . . . . . . . .",
                                    " . . . . . . . .",
                                    " . . . . . . . ."])
+    long = state([(5, 1), (4, 1), (3, 1), (2, 1), (1, 1), (0, 1), (0, 2), (0, 3), (0, 4), (1, 4), (1, 5)], (0, 0),
+                 "right", n=6)
+    assert render(long).split("\n")[:3] == ["Length 11. Heading right.", " F . . . . .", " 6 7 8 9 9 H"]  # 9: or more
     assert Game(8, 8, 3, seed=1).state()["body"] == [[4, 4], [3, 4], [2, 4]]     # the middle, heading right
 
 
