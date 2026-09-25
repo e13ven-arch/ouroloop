@@ -115,10 +115,10 @@ def test_nothing_the_gate_did_not_accept_answers_or_acts(tmp_path):
     assert not rt.ask("stop", ctx(), session="s_2", phase="per_turn").acted
     rt.set_calibration("stop", "R1", cal["temperature"], cal["thresholds"], gate=cal["gate"])     # as promoted
     assert rt.ask("stop", ctx(), session="s_3", phase="per_turn").acted
-    # nor can a rolled-back, revoked model be promoted again
+    # nor can a rolled-back model be promoted again
     reg = Registry(rt.root)
     assert reg.rollback() is None
-    with pytest.raises(ValueError, match="revoked"):
+    with pytest.raises(ValueError, match="rolled back"):
         reg.promote(first["version"], None)
 
 
@@ -133,6 +133,24 @@ def test_a_verdict_promotes_the_step_it_judged_and_nothing_else(tmp_path):
     with pytest.raises(PromotionConflict, match="built on"):
         reg.promote(first["version"], second["version"])      # R1 over R2: no gate judged that step
     assert reg.champion()["version"] == second["version"]
+
+
+def test_a_rollback_holds_without_the_revocation_list(tmp_path):
+    rt = workspace(tmp_path)
+    first = evolve_model(rt, OracleTrainer("R1"))
+    collect(rt, 40, start=150)
+    second = evolve_model(rt, OracleTrainer("R2", 0.99))
+    rt.session("s_r2", {"task": "t"})
+    assert rt.ask("stop", ctx(), session="s_r2", phase="per_turn").acted
+    reg = Registry(rt.root)
+    assert reg.rollback() == first["version"]
+    (rt.root / "harness" / "revoked.json").unlink()        # the revocation list, deleted
+    d = rt.ask("stop", ctx(), session="s_r2", phase="per_turn")
+    assert (d.model, d.acted) == ("R2", False)
+    with pytest.raises(ValueError, match="rolled back"):
+        reg.promote(second["version"], first["version"])
+    rt.session("s_r1", {"task": "t"})
+    assert rt.ask("stop", ctx(), session="s_r1", phase="per_turn").acted      # the previous champion still acts
 
 
 # ---------------------------------------------------------------- sessions and data

@@ -1,5 +1,6 @@
 """The model registry (PLAN §4.6, PLAN_v0.2 M8): one card per trained candidate, written before it is evaluated; a
-champion pointer that only a compare-and-swap promotion moves; one-step rollback, which revokes the retired model."""
+champion pointer that only a compare-and-swap promotion moves; one-step rollback, which revokes the retired model and
+withdraws the gate record's acceptance of it."""
 from __future__ import annotations
 
 import json
@@ -44,8 +45,8 @@ class Registry:
         card = self.card(version)
         if card.get("parent") != expected_parent:       # a verdict promotes the step it judged, parent -> version
             raise PromotionConflict(f"{version} was built on {card.get('parent')}, not {expected_parent}")
-        if not Accepted(self.root).promoted(card):
-            raise ValueError(f"{version} was not accepted by a gate record: only gate.run promotes")
+        if not Accepted(self.root).promoted(card, standing=True):
+            raise ValueError(f"{version} was not accepted by a gate record, or was rolled back: only gate.run promotes")
         if Revoked(self.root / "harness" / "revoked.json").hit(version, card.get("model_id")):
             raise ValueError(f"{version} is revoked")
         with locked(self.dir / "champion.json"):
@@ -64,8 +65,11 @@ class Registry:
             pointer = self._pointer()
             retired = pointer["version"]
             if retired:         # revoked before the pointer moves: no moment where it is neither champion nor revoked
+                from .gate import revoke_record
                 card = self.card(retired) if (self.dir / retired / "card.json").exists() else {}
                 revoke(self.root, retired, card.get("model_id"), "rolled back")
+                if card.get("round"):
+                    revoke_record(self.root, card["round"], f"{retired} rolled back")
             if pointer["history"]:
                 pointer["history"].pop()
             pointer["version"] = pointer["history"][-1]["version"] if pointer["history"] else None

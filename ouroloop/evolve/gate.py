@@ -122,8 +122,10 @@ class GateRecord:
         used, closed = self._events.get("used"), self._events.get("closed")
         if not used:
             return None
+        revoked = self._events.get("revoked")
         return {"ts": used["ts"], "by": used["by"],
-                **{k: v for k, v in (closed or {}).items() if k not in ("type", "event", "round", "record", "ts")}}
+                **{k: v for k, v in (closed or {}).items() if k not in ("type", "event", "round", "record", "ts")},
+                **({"revoked": revoked["ts"], "revoked_because": revoked["reason"]} if revoked else {})}
 
     @property
     def used(self) -> bool:
@@ -189,6 +191,14 @@ class GateRecord:
             elif not info.get("held_out") and info.get("start", position) < position:
                 out["calibration" if in_calibration(s, cal_frac) else "train"].append(r)
         return out
+
+
+def revoke_record(root: str | Path, round: str, reason: str) -> None:
+    """Withdraw what a gate record accepted (a rollback of the model it promoted): from then on the promotion it
+    made neither answers nor acts, whatever harness/revoked.json says, and cannot be made again."""
+    log = _log(root)
+    if "used" in log.get(round, {}):
+        GateRecord(root, log[round])._append("revoked", reason=reason)
 
 
 def _lock(root: str | Path) -> Path:

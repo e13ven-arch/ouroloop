@@ -44,19 +44,22 @@ class Accepted:
     """The gate records that accepted a candidate, from their copies in <workspace>/gates/ (re-read when they change):
     record hash -> the candidate it accepted, and the calibrations its promotion stores. Only a champion promoted
     through such a record answers, and only a calibration as such a record accepted it acts (PLAN_v0.2 §0 rule 3): a
-    champion pointer, card or calibration written by hand, or one a gate rejected, never does."""
+    champion pointer, card or calibration written by hand, or one a gate rejected, never does. A rollback withdraws
+    the record's acceptance: its model still answers the sessions pinned to it, but neither it nor its calibrations
+    act again, and it cannot be promoted again."""
 
     def __init__(self, root: str | Path):
         self.dir = Path(root) / "gates"
         self._key: tuple | None = None
         self._by: dict = {}
         self._cal: dict = {}
+        self._withdrawn: set = set()
 
     def by(self) -> dict[str, str]:
         paths = sorted(self.dir.glob("r_*.used.json"))
         key = tuple((p.name, file_key(p)) for p in paths)
         if key != self._key:
-            by, cal = {}, {}
+            by, cal, withdrawn = {}, {}, set()
             for p in paths:
                 try:
                     use = json.loads(p.read_text(encoding="utf-8"))
@@ -64,20 +67,24 @@ class Accepted:
                     continue
                 if use.get("outcome") == "accepted" and use.get("record"):
                     by[use["record"]] = use.get("by")
+                    if use.get("revoked"):
+                        withdrawn.add(use["record"])
                     for c in use.get("calibrations") or []:
                         cal[(use["record"], c["model"], c["spec"], c["point"])] = {
                             "temperature": c["temperature"], "thresholds": c["thresholds"]}
-            self._by, self._cal, self._key = by, cal, key
+            self._by, self._cal, self._withdrawn, self._key = by, cal, withdrawn, key
         return self._by
 
     def calibration(self, record: str | None, model: str, spec: str, point: str) -> dict | None:
-        """The temperature and thresholds that `record` accepted for this model, spec and point, if it did."""
+        """The temperature and thresholds that `record` accepted for this model, spec and point, while it stands."""
         self.by()
-        return self._cal.get((record, model, spec, point))
+        return None if record in self._withdrawn else self._cal.get((record, model, spec, point))
 
-    def promoted(self, card: dict) -> bool:
-        """The card's model was promoted by the gate record it names."""
-        return bool(card.get("gate_record")) and self.by().get(card["gate_record"]) == card.get("version")
+    def promoted(self, card: dict, standing: bool = False) -> bool:
+        """The card's model was promoted by the gate record it names (`standing`: and was not rolled back since)."""
+        record = card.get("gate_record")
+        return (bool(record) and self.by().get(record) == card.get("version")
+                and not (standing and record in self._withdrawn))
 
 
 class Revoked:
