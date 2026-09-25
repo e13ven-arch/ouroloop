@@ -149,21 +149,23 @@ class Runtime:
 
     def record(self, point: str | DecisionPoint, ctx: Any, *, session: str = "s_default", step: int | None = None,
                phase: str | None = None, veto: str | Callable[[str | None], str | None] | None = None) -> Decision:
-        """Log a decision point's context without asking any model (shadow collection at zero cost): the action is the
-        phase's fixed label, or a rule's `veto` (route "rule"). The model's probabilities can be computed later by
-        offline replay; only the context and the outcome are needed."""
+        """Log a decision point's context without asking the decision model (shadow collection): the action is the
+        phase's default, as its answerer gives it (see `ask`), or a rule's `veto` (route "rule"). The model's
+        probabilities can be computed later by offline replay; only the context and the outcome are needed."""
         p = self.points[point] if isinstance(point, str) else point
-        phase, label, _ = p.default_for(phase)
+        phase, label, answerer = p.default_for(phase)
         view, truncated = p.render(ctx)
         q = p.question(ctx)
+        extra: dict = {}
+        action = veto if isinstance(veto, str) else self._default(ctx, view, q, label, answerer, extra)
         if callable(veto):
-            veto = veto(label)
-        r, action = ("shadow", label) if veto is None else ("rule", veto)
+            veto = veto(action)
+        r, action = ("shadow", action) if veto is None else ("rule", veto)
         did = self.ledger.decision(
             session=session, ctx=self.sessions.put(session, ctx, step), point=p.name, spec_hash=p.spec_hash,
             backend="none", model="", view=view, view_chars=len(view), truncated=truncated, question=q.to_json(),
             candidates=q.labels(), probs=None, route=r, explored=False, propensity=1.0, action=action, usage={},
-            phase=phase, default=label)
+            phase=phase, default=label, **extra)
         return Decision(did, p.name, None, {}, 0.0, r, False, 1.0, action, "")
 
     def ask_question(self, name: str, question: Question, state: str, *, default: str | None = None,
@@ -178,7 +180,8 @@ class Runtime:
                                    view_chars=len(state), question=question.to_json(), candidates=question.labels(),
                                    probs=[ans.probs[lab] for lab in question.labels()], route=r.route,
                                    explored=r.explored, propensity=r.propensity, action=default, usage=ans.usage,
-                                   phase=None, default=default, **(meta or {}))
+                                   phase=None, default=default, **({"abstained": True} if ans.abstained else {}),
+                                   **(meta or {}))
         return Decision(did, name, ans.label if ans.decisive else None, ans.probs, ans.confidence, r.route,
                         r.explored, r.propensity, default, ans.model)
 

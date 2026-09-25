@@ -8,8 +8,8 @@ a context for the stop point's view, and optionally a checker.
 
 Order: checker -> model -> pushback -> turn cap (per_turn runs the checker only on a "yes"). A rule overrules the
 model, never the other way round, and its verdict is recorded as the decision's veto (route "rule"). The model is
-asked only when the stop point's act is on; otherwise the context is recorded, no model is called, and the phase's
-default is the action.
+asked only when the stop point's act is on; otherwise the context is recorded, the decision model is not called, and
+the phase's default (its answerer's answer, or its fixed label) is the action.
 """
 from __future__ import annotations
 

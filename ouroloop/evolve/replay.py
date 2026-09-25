@@ -67,12 +67,16 @@ def answers(rt, point: DecisionPoint, spec: Spec, rows: list[tuple], backend) ->
 def predict(rt, point: DecisionPoint, spec: Spec, rows: list[tuple], backend=None,
             temperature: float | None = None) -> tuple[list[str], list[dict]]:
     """Re-render each row's context with `spec` and ask `backend`. By default the point's own backend, tempered with
-    the calibration of the model it reports on this spec (none for a changed spec, until one is fitted)."""
+    the calibration of the model it reports on this spec; a changed spec without one of its own replays at the current
+    spec's temperature, so a comparison with the champion measures the change and not the temperature."""
     views, answered = answers(rt, point, spec, rows, backend or rt.backend_for(point.name))
     if backend is None:
         h = point.hash_of(spec)
-        return views, [temper(a.probs, rt.calibration.get(a.model, h, point.name).get("temperature", 1.0))
-                       for a in answered]
+
+        def temperature(model: str) -> float:
+            cal = rt.calibration.get(model, h, point.name) or rt.calibration.get(model, point.spec_hash, point.name)
+            return cal.get("temperature", 1.0)
+        return views, [temper(a.probs, temperature(a.model)) for a in answered]
     return views, [temper(a.probs, temperature or 1.0) for a in answered]
 
 

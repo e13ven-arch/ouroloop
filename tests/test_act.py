@@ -17,14 +17,18 @@ from ouroloop.cli import ledger_stats, main
 from ouroloop.demo import seed_ledger
 from ouroloop.evolve.build import build
 from ouroloop.evolve.calibrate import calibrate_point
+from ouroloop.evolve.pipeline import ModelCandidate, promote_model
 from ouroloop.evolve.registry import Registry
+from ouroloop.evolve.replay import labelled, predict
+from ouroloop.evolve.train import TrainResult
 from ouroloop.ledger import Ledger
 from ouroloop.points import builtin_points, retry_point, stop_point, tool_gate_point
 from ouroloop.policy import Policy, fit_threshold
 from ouroloop.providers import MockProvider
 from ouroloop.research import BasicResearcher, run_round
 from ouroloop.runtime import Runtime
-from ouroloop.types import Answer, temper
+from ouroloop.stop import StopGuard
+from ouroloop.types import Answer, Question, temper
 
 
 class Model:
@@ -115,6 +119,30 @@ def test_a_rollback_brings_back_the_previous_champions_temperature_and_threshold
     assert ask() == ("A", True, round(temper({"yes": 0.99, "no": 0.01}, 2.0)["yes"], 6))
 
 
+def test_promotion_checks_the_model_id_the_backend_reports(tmp_path):
+    rt = stop_runtime(tmp_path, Model())
+    reg = Registry(rt.root)
+    reg.record({"version": "m_0001"})
+    cand = ModelCandidate("m_0001", {}, None, result=TrainResult("run", {}, "A@renamed"), backend=Model(model="A"))
+    with pytest.raises(ValueError, match="reports model 'A'"):
+        promote_model(rt, cand, reg)
+    assert reg.champion() is None
+    cand.result.model_id = "A"
+    promote_model(rt, cand, reg)
+    assert reg.champion()["version"] == "m_0001"
+
+
+def test_a_changed_spec_replays_at_the_same_models_temperature(tmp_path, gated):
+    rt = stop_runtime(tmp_path, Model(0.9), act=False)
+    gated(rt, "stop", "A", None, temperature=0.5)
+    for i in range(3):
+        rt.outcome(rt.record("stop", ctx(), session=f"s{i}", phase="per_turn").id, "yes")
+    p, rows = rt.points["stop"], labelled(rt, "stop")
+    _, champion = predict(rt, p, p.spec, rows)
+    _, challenger = predict(rt, p, p.spec.apply({"instructions": "Is the task done?"}), rows)
+    assert champion == challenger and champion[0]["yes"] == temper({"yes": 0.9, "no": 0.1}, 0.5)["yes"]
+
+
 def test_old_format_ungated_and_tied_answers_never_act(tmp_path, gated):
     path = tmp_path / "harness" / "calibration.json"
     path.parent.mkdir()
@@ -174,6 +202,14 @@ def test_a_phase_threshold_is_fitted_on_the_decisions_that_would_act(tmp_path):
     assert fit_threshold(conf, correct) == 0.9        # pooled over every row, the right "no"s would buy one
 
 
+def test_calibration_counts_a_sessions_rows_once(tmp_path):
+    rt = stop_runtime(tmp_path, Reads(), act=False)
+    for i in range(120):                              # 120 right "yes" answers, but from 30 sessions
+        rt.outcome(rt.record("stop", ctx("say yes 0.99"), session=f"s{i % 30:02d}", phase="per_turn").id, "yes")
+    assert calibrate_point(rt, "stop", test_frac=0.0, cal_frac=1.0).thresholds["per_turn"] is None
+    assert fit_threshold([0.99] * 120, [True] * 120) == 0.99      # counted by row, they would buy one
+
+
 # ---------------------------------------------------------------- errors take the default
 def test_errors_and_abstentions_take_the_default_and_leave_one_row_each(tmp_path, gated):
     empty = httpx.Client(transport=httpx.MockTransport(
@@ -192,6 +228,10 @@ def test_errors_and_abstentions_take_the_default_and_leave_one_row_each(tmp_path
         assert (d.route, d.action, d.acted) == (route, "no", False), case
         assert row.decision["route"] == route and row.decision[field] and row.decision["action"] == "no", case
         assert rt.sessions.get(row.decision["ctx"]) == c, case           # the raw state is kept
+    rt = Runtime(tmp_path / "judge", {"j": LlmBackend(MockProvider(lambda s, p: "hard to say"))}, "j")
+    d = rt.ask_question("research.worth_trying", Question("noul", "Worth trying?"), "state", default="yes")
+    (row,) = rt.ledger.rows()
+    assert (d.label, d.action, row.decision["route"], row.decision.get("abstained")) == (None, "yes", "shadow", True)
 
 
 # ---------------------------------------------------------------- configuration and label sources
@@ -236,6 +276,16 @@ def test_a_declared_default_answerer_answers_when_the_model_does_not_act(tmp_pat
     assert [(r.decision["id"], t) for r, t, _ in rt.ledger.training_rows()] == [(rows[0]["id"], {"yes": 1.0})]
     with pytest.raises(ValueError, match="no backend"):
         rt.register(stop_point(phases={"per_turn": {"default": "llm:nowhere", "label": "no"}}))
+
+
+def test_a_shadow_stop_takes_its_answerers_default_without_asking_the_model(tmp_path):
+    rt = Runtime(tmp_path, {"m": Broken()}, "m", seed=0)
+    rt.register(stop_point(phases={"per_turn": {"default": "rule:test_act:always_yes", "label": "no"},
+                                   "on_finish": "yes"}))
+    assert StopGuard(rt, "s")("per_turn", ctx(), 1).stop            # act is off: StopGuard only records
+    (row,) = [r.decision for r in rt.ledger.rows()]
+    assert (row["route"], row["action"], row["answerer"], row["backend"]) == ("shadow", "yes",
+                                                                             "rule:test_act:always_yes", "none")
 
 
 def test_calibrate_reports_and_writes_nothing(tmp_path, capsys):
@@ -346,11 +396,25 @@ def test_rows_written_by_m6_still_read(tmp_path):
                                  probs=[0.5, 0.5], route="shadow", explored=False, propensity=1.0, action=None,
                                  usage={}, phase=None, default=None)
         rt.outcome(did, "no", source="human", note="approval")
-    assert len(rt.ledger.training_rows("stop")) == 120 and len(rt.ledger.training_rows("tool_gate")) == 60
-    ds = build(rt, tmp_path / "data", ["stop", "tool_gate"])
-    assert sum(len(part) for part in ds.splits.values()) == 180
+        r = {"command": "make", "stderr": "say no 0.6", "exit_code": 1}
+        route, action = ("auto", "no") if i % 2 else ("fallback", None)      # M6 routes of an asked point
+        did = rt.ledger.decision(session=s, ctx=rt.sessions.put(s, r), point="retry", spec_hash="531169554799",
+                                 backend="mock", model="mock-keyword", view="v", view_chars=1, truncated=False,
+                                 question={"type": "noul", "instructions": "q"}, candidates=["yes", "no"],
+                                 probs=[0.4, 0.6], route=route, explored=False, propensity=0.95, action=action,
+                                 usage={}, phase=None, default=None)
+        rt.ledger.escalation(did, "yes", {"yes": 1.0, "no": 0.0}, "llm:qwen", "open_llm")   # M6: half a target
+        if i % 2:
+            rt.outcome(did, "no", note="rerun by the agent")
+    assert [len(rt.ledger.training_rows(p)) for p in ("stop", "tool_gate", "retry")] == [120, 60, 30]
+    ds = build(rt, tmp_path / "data", ["stop", "tool_gate", "retry"])
+    assert sum(len(part) for part in ds.splits.values()) == 210
     stats = ledger_stats(rt.ledger.rows())
-    assert (stats["stop"]["labelled"], stats["stop"]["scored"], stats["tool_gate"]["scored"]) == (120, 0, 60)
+    assert [(stats[p]["labelled"], stats[p]["scored"]) for p in ("stop", "tool_gate", "retry")] == [
+        (120, 0), (60, 60), (30, 30)]
+    _, probs = predict(rt, stop, stop.spec, labelled(rt, "stop"))
+    assert len(probs) == 120
+    assert set(calibrate_point(rt, "retry", test_frac=0.1, cal_frac=0.9, min_items=10).thresholds) == {"after_failure"}
     cal = calibrate_point(rt, "stop", test_frac=0.1, cal_frac=0.5, min_items=10)
     assert set(cal.thresholds) == {"per_turn", "on_finish"} and cal.accuracy == 1.0
     cal = calibrate_point(rt, "tool_gate", test_frac=0.1, cal_frac=0.5, min_items=10)
