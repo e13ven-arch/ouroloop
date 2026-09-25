@@ -25,11 +25,11 @@ class Route:
 
 def route(policy: Policy, ans: Answer, default: str | None, threshold: float | None, rng: random.Random) -> Route:
     """The execution rule: act only when the point's act is on, the answer is decisive (no abstention, no tied top
-    label), its label differs from the phase's default and its tempered confidence reaches a gated threshold.
-    Otherwise the default is taken: on route "shadow" when act is off, "default" when it is on."""
+    label), its label differs from the phase's default and its tempered confidence reaches a gated threshold (which
+    a NaN threshold never is). Otherwise the default is taken: on route "shadow" when act is off, "default" when on."""
     if not policy.act:
         return Route("shadow", False, 1.0)
-    if threshold is None or not ans.decisive or ans.label == default or ans.confidence < threshold:
+    if threshold is None or not ans.decisive or ans.label == default or not ans.confidence >= threshold:
         return Route("default", False, 1.0)
     if rng.random() < policy.explore:
         return Route("default", True, policy.explore)

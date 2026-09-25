@@ -109,7 +109,10 @@ def normalize(labels: list[str], raw: dict[str, float]) -> dict[str, float] | No
 
 
 def temper(probs: dict[str, float], temperature: float) -> dict[str, float]:
-    """Temperature scaling on log-probabilities: T > 1 softens, T < 1 sharpens."""
+    """Temperature scaling on log-probabilities: T > 1 softens, T < 1 sharpens. Any other T is an error: T <= 0
+    would make the least likely label the most likely one."""
+    if not 0 < temperature < math.inf:
+        raise ValueError(f"temperature {temperature} is not a positive number")
     if temperature == 1.0 or not probs:
         return probs
     z = {k: math.log(max(v, 1e-12)) / temperature for k, v in probs.items()}

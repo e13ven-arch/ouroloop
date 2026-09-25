@@ -65,9 +65,10 @@ class Runtime:
 
     def threshold(self, point: str | DecisionPoint, model: str, phase: str | None) -> float | None:
         """The lowest confidence at which the point may act on this model's answers in this phase (PLAN_v0.2 §0 rule
-        3): only from a calibration that carries the hash of the gate record that promoted it."""
+        3): only from a calibration that carries the hash of the gate record that promoted it, and only for a model
+        that names itself (an empty id would match every backend that reports none)."""
         cal = self.calibration_for(point, model)
-        return cal.get("thresholds", {}).get(phase) if cal.get("gate") and phase else None
+        return cal.get("thresholds", {}).get(phase) if cal.get("gate") and phase and model else None
 
     def set_calibration(self, point: str, model: str, temperature: float, thresholds: dict | None = None,
                         gate: str | None = None, **extra) -> None:

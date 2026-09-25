@@ -160,6 +160,17 @@ def test_old_format_ungated_and_tied_answers_never_act(tmp_path, gated):
     assert (d.route, d.action, d.label) == ("default", "no", None)
 
 
+def test_a_malformed_or_anonymous_calibration_never_acts(tmp_path, gated):
+    cases = {"NaN threshold": ("A", float("nan"), 1.0, 0.51),
+             "negative temperature": ("A", 0.9, -0.1, 0.2),     # it would turn p(yes) = 0.2 into a confident yes
+             "no model id": ("", 0.5, 1.0, 0.99)}               # it names no model, so it is fitted for none
+    for i, (case, (model, threshold, temperature, p_yes)) in enumerate(cases.items()):
+        rt = stop_runtime(tmp_path / str(i), Model(p_yes, model))
+        gated(rt, "stop", model, threshold, temperature=temperature)
+        d = rt.ask("stop", ctx(), phase="per_turn")
+        assert (d.action, d.acted) == ("no", False), case
+
+
 # ---------------------------------------------------------------- thresholds counted per session
 def test_rows_of_one_session_are_not_independent_evidence():
     rng = random.Random(0)
