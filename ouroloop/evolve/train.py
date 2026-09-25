@@ -136,8 +136,23 @@ def prepare_job(data_dir, cfg_json, replay=None, ratio=1.0, seed=0):
                     cfg[key] = pc[key]
     path = os.path.join(out, "config.yaml")   # JSON is valid YAML
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2)
+        f.write(yaml_json(cfg))
     return path
+
+
+def yaml_json(value, depth: int = 0) -> str:
+    """JSON that YAML reads back with the same types. PyYAML takes a float without a dot in its mantissa, such as
+    json's 2e-05, for a string, and TDE's trainer then multiplies that string by a float."""
+    pad, inner = "  " * depth, "  " * (depth + 1)
+    if isinstance(value, dict) and value:
+        return "{\n" + ",\n".join(f"{inner}{json.dumps(str(k))}: {yaml_json(v, depth + 1)}"
+                                    for k, v in value.items()) + f"\n{pad}}}"
+    if isinstance(value, (list, tuple)) and value:
+        return "[\n" + ",\n".join(f"{inner}{yaml_json(v, depth + 1)}" for v in value) + f"\n{pad}]"
+    if isinstance(value, float) and value == value and abs(value) != float("inf"):
+        mantissa, e, exponent = repr(value).partition("e")
+        return f"{mantissa}.0e{exponent}" if e and "." not in mantissa else repr(value)
+    return json.dumps(value)
 
 
 def predict_file(run, src, dst, device=None):
