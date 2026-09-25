@@ -14,8 +14,8 @@ generation's round is planted: its candidate is trained on shuffled labels and g
 
 The same games (session ids, seeds, generation) are played again by the defaults alone, no model asked, in
 <workspace>/baseline/ ([demo] baseline = false: not), and their metrics printed beside: what a changed environment,
-other seeds or luck do shows there too. Every number printed is on disk: each game's metrics as a "metrics" event in the
-ledger it was played into, each generation's line as a "generation" event.
+other seeds or luck do shows there too. Every number printed is on disk: each game's metrics as a "metrics" event in
+the ledger it was played into, each generation's line as a "generation" event.
 """
 from __future__ import annotations
 
@@ -171,7 +171,8 @@ def run(cfg: dict, base: str | Path = ".", *, generations: int | None = None, ro
         summary = rt.ledger.append({
             "type": "generation", "generation": g, "played": played, "decisions": len(rows),
             "acted": sum(r.decision.get("route") == "act" for r in rows), "errors": errors, "judged": n,
-            "risk": budget, "metrics": _aggregate(metrics), "baseline": _aggregate(again) if again is not None else None,
+            "risk": budget, "metrics": _aggregate(metrics),
+            "baseline": _aggregate(again) if again is not None else None,
             "candidate": card["version"], "gate": card["gate"],
             "champion": (registry.champion() or {}).get("version"), "planted": planted, "revoked": revoked})
         out(_line(summary))
