@@ -18,13 +18,14 @@ from ouroloop.evolve.gate import records
 from ouroloop.evolve.pipeline import evolve_model, recipe_evaluator
 from ouroloop.evolve.registry import Registry
 from ouroloop.evolve.replay import labelled, split, splits
-from ouroloop.evolve.train import SignatureTrainer, prepare_job
 from ouroloop.points import retry_point
 from ouroloop.providers import MockProvider
 from ouroloop.release import Revoked
 from ouroloop.research import BasicResearcher, Candidate, run_round
 from ouroloop.research.loop import run_rounds
 from ouroloop.runtime import Runtime
+from ouroloop.trainers.signature import SignatureTrainer
+from ouroloop.trainers.tde import prepare_job
 from ouroloop.types import temper
 
 LOOSE = {"min_train": 100, "max_mde": 0.2}

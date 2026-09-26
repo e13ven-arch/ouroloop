@@ -16,11 +16,12 @@ from pathlib import Path
 from .backends import JevBackend, KeywordBackend
 from .evolve.gate import freeze_template, template_path
 from .evolve.pipeline import recipe_evaluator
-from .evolve.train import DEFAULT_RECIPE, PATH_KEYS, RECIPE_KEYS, SignatureTrainer
+from .evolve.train import DEFAULT_RECIPE, PATH_KEYS, RECIPE_KEYS
 from .points import retry_point  # noqa: F401 - also exposed as ouroloop.demo:retry_point
 from .providers import MockProvider
 from .research import BasicResearcher, run_round
 from .runtime import Runtime
+from .trainers.signature import SignatureTrainer
 
 TRANSIENT = [
     ("pip install -r requirements.txt", "ConnectionResetError: [Errno 54] Connection reset by peer"),

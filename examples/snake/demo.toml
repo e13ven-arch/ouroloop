@@ -1,7 +1,10 @@
-# ouroloop demo snake --generations 8
-# On the GPU host, from the ouroloop checkout, with ouroloop installed into the TDE venv (see README.md). Paths are
-# relative to this file; set tde_repo and the checkpoint to where they are on your host, or copy this file to
-# demo.local.toml (git ignores it) and pass --config examples/snake/demo.local.toml.
+# On the GPU host, from the ouroloop checkout (see README.md). Once, to install this ouroloop and TDE ([trainers.tde]
+# source) into ~/.ouroloop/venv:
+#     python -m ouroloop host init local --config examples/snake/demo.toml
+# then run the demo with that Python, which has TDE for the general checkpoint and the trained models:
+#     ~/.ouroloop/venv/bin/python -m ouroloop demo snake --generations 8
+# Paths are relative to this file; set [trainers.tde] and the checkpoint to where they are on your host, or copy this
+# file to demo.local.toml (git ignores it) and pass --config examples/snake/demo.local.toml.
 
 seed = 0                        # the runtime's: candidate order and exploration
 
@@ -42,9 +45,12 @@ backend = "champion"
 act = true
 explore = 0.05
 
-[trainer]                       # TDE's trainer as a job on this machine: <jobs_root>/<job id>/run
+[trainer]                       # the tde plugin as a job on this machine, under this Python: <jobs_root>/<job id>/run
 type = "tde"
-tde_repo = "~/tde"
+
+[trainers.tde]
+source = "~/tde"                # the TDE checkout host init installs
+init_from = "~/tde/release/tde-general-v0.1"   # the first model's parent; every later one starts from the champion
 
 [models]                        # the trained models, loaded in-process from their jobs' directories
 jobs_root = "~/.ouroloop/jobs"
@@ -57,4 +63,3 @@ grad_accum = 2
 max_state_tokens = 256
 gradient_checkpointing = false
 min_weight = 1.0
-init_from = "~/tde/release/tde-general-v0.1"   # the first model's parent; every later one starts from the champion

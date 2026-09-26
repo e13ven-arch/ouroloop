@@ -1,13 +1,13 @@
 """Where training jobs run (PLAN_v0.2 M9): this machine, or one host over ssh, the same way. A job is a new directory
 <jobs_root>/<job id>/ holding exactly the files it was given, and one detached process group:
 
-    nohup sh -c '<python> worker.py spec.json "$0" > log 2>&1; echo $? > exit' <job id>
+    nohup sh -c '<python> -m ouroloop.worker spec.json "$0" > log 2>&1; echo $? > exit' <job id>
 
 whose leader's pid is in `pid`; the leader and the worker both carry the job id as their last argument, so a pid that
 now belongs to another process, or to another job, is never taken for this one. The shell line holds only paths a
-person set (python, jobs_root) and the job id; everything else reaches the job through its files. `poll` reads the
-exit code, result.json and the end of the log; `cancel` stops the process group; `unfinished` lists the jobs of a
-workspace that never exited.
+person set (python, jobs_root) and the job id; everything else reaches the job through its files. The worker is
+installed on the host (hosts/, `ouroloop host init`), never copied. `poll` reads the exit code, result.json and the
+end of the log; `cancel` stops the process group; `unfinished` lists the jobs of a workspace that never exited.
 """
 from __future__ import annotations
 
@@ -21,9 +21,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from .worker import JOB_ID
+from ..worker import JOB_ID
 
-MARK = "worker.py spec.json"        # what a job's processes run, followed by the job id as their last argument
+MARK = "ouroloop.worker spec.json"  # what a job's processes run, followed by the job id as their last argument
 TAIL = 40                           # log lines a finished job reports
 SEP = "----ouroloop-log----"
 SSH_TIMEOUT_S = 120                 # the longest one ssh command may take (a status read, a launch, a cancel)
@@ -41,15 +41,16 @@ class Status:
 
 
 class Remote:
-    """ssh and rsync to one host. `runner(args, input=None)` returns a CompletedProcess (injectable for tests)."""
+    """ssh and rsync to one host. `runner(args, input=None, timeout=...)` returns a CompletedProcess (injectable for
+    tests)."""
 
     def __init__(self, host: str, ssh_opts: str = "-o BatchMode=yes", runner=None):
         self.host = host
         self.ssh_opts = [os.path.expanduser(t) for t in shlex.split(ssh_opts)] + SSH_ALIVE
         self.runner = runner or _run
 
-    def ssh(self, command: str, input: str | None = None) -> str:
-        return self.runner(["ssh", *self.ssh_opts, self.host, command], input=input).stdout
+    def ssh(self, command: str, input: str | None = None, timeout: float = SSH_TIMEOUT_S) -> str:
+        return self.runner(["ssh", *self.ssh_opts, self.host, command], input=input, timeout=timeout).stdout
 
     def push(self, local: str, remote: str) -> None:
         self.runner(["rsync", "-az", "--timeout=120", "-e", shlex.join(["ssh", *self.ssh_opts]), local,
@@ -60,11 +61,10 @@ class Remote:
                      f"{self.host}:{remote}", local])
 
 
-def _run(args: list, input: str | None = None) -> subprocess.CompletedProcess:
-    """ssh within SSH_TIMEOUT_S (a TimeoutExpired is a SubprocessError: a status read then counts as running); rsync
+def _run(args: list, input: str | None = None, timeout: float | None = None) -> subprocess.CompletedProcess:
+    """ssh within `timeout` (a TimeoutExpired is a SubprocessError: a status read then counts as running); rsync
     stops by itself once no data moves for its --timeout."""
-    return subprocess.run(args, input=input, capture_output=True, text=True, check=True,
-                          timeout=SSH_TIMEOUT_S if args[0] == "ssh" else None)
+    return subprocess.run(args, input=input, capture_output=True, text=True, check=True, timeout=timeout)
 
 
 def _q(path: str) -> str:
@@ -141,7 +141,7 @@ class Compute:
     @staticmethod
     def line(python: str, job_id: str, quote=shlex.quote) -> str:
         """The job's shell line: the only command a job runs."""
-        return ("nohup sh -c " + shlex.quote(f'{quote(python)} {MARK} "$0" > log 2>&1; echo $? > exit') + " "
+        return ("nohup sh -c " + shlex.quote(f'{quote(python)} -m {MARK} "$0" > log 2>&1; echo $? > exit') + " "
                 + shlex.quote(job_id))
 
     # ------------------------------------------------------------------ this machine
@@ -160,9 +160,10 @@ class Compute:
         return _mine(pid, job_id)[1 if group else 0]
 
     # ------------------------------------------------------------------ operations
-    def launch(self, job_id: str, files: list, python: str) -> str:
+    def launch(self, job_id: str, files: list, python: str, env: dict | None = None) -> str:
         """Make the job's directory (never one that exists), copy exactly `files` into it under their names, and
-        start the job detached in its own process group. -> the shell line it runs."""
+        start the job detached in its own process group, on this machine with `env` (default: this process's).
+        -> the shell line it runs."""
         names = [Path(f).name for f in files]
         if len(set(names)) != len(names):
             raise ValueError(f"two files with one name: {names}")
@@ -177,7 +178,7 @@ class Compute:
             for f, name in zip(files, names):
                 shutil.copyfile(f, d / name)
             proc = subprocess.Popen(["sh", "-c", line], cwd=d, start_new_session=True, stdin=subprocess.DEVNULL,
-                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
             self._procs[job_id] = proc
             (d / "pid").write_text(f"{proc.pid}\n")
             return line

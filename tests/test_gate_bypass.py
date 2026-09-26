@@ -11,9 +11,10 @@ from ouroloop.evolve import gate
 from ouroloop.evolve.gate import freeze_template, load_template, open_record, records, template_path
 from ouroloop.evolve.pipeline import evolve_model, prepare_model, recipe_evaluator
 from ouroloop.evolve.registry import Registry
-from ouroloop.evolve.train import SignatureTrainer, TrainResult
+from ouroloop.evolve.train import TrainResult
 from ouroloop.ledger import PromotionConflict, write_json
 from ouroloop.research import run_round
+from ouroloop.trainers.signature import SignatureTrainer
 from test_gate_record import (ACT_GATE, CFG, M6_CFG, SOME, Model, OracleTrainer, Proposes, collect, ctx, held_out,
                               m6_sessions, trained_on, workspace)
 

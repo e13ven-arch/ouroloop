@@ -1,0 +1,9 @@
+# The build context is the ouroloop checkout; the image needs only what host init would pack, and start.sh.
+*
+!pyproject.toml
+!README.md
+!LICENSE
+!ouroloop/
+!docker/worker/start.sh
+**/__pycache__
+**/*.pyc

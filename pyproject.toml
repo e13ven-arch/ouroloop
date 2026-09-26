@@ -41,6 +41,9 @@ ouroloop = "ouroloop.cli:main"
 [tool.setuptools.packages.find]
 include = ["ouroloop*"]
 
+[tool.setuptools.package-data]
+"ouroloop.hosts" = ["bootstrap.sh"]     # host init sends it; the worker image runs it
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]          # the scenario packs in examples/

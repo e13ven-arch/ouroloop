@@ -18,12 +18,12 @@ from ouroloop.evolve import experience, monitor
 from ouroloop.evolve.gate import records
 from ouroloop.evolve.registry import Registry
 from ouroloop.evolve.replay import right
-from ouroloop.evolve.train import SignatureBackend, SignatureTrainer
 from ouroloop.generations import _line, run
 from ouroloop.ledger import Ledger, SessionStore
 from ouroloop.policy import Policy
 from ouroloop.release import revoke
 from ouroloop.runtime import Runtime
+from ouroloop.trainers.signature import SignatureBackend, SignatureTrainer
 
 
 def state(body, food, heading, n=8):
@@ -280,7 +280,9 @@ def test_the_demo_command_reads_the_scenarios_config_and_continues_a_workspace(t
         '[registry]', 'base = "general"',
         '[points]', 'default_backend = "general"',
         '[points.move]', 'define = "examples.snake.scenario:move_point"', 'backend = "champion"', 'act = true',
-        '[trainer]', 'type = "signature"', 'signature = "examples.snake.rules:signature"']))
+        '[trainer]', 'type = "signature"', f'jobs_root = "{tmp_path / "jobs"}"', 'poll_s = 0.05',
+        '[trainers.signature]', 'signature = "examples.snake.rules:signature"',
+        '[models]', f'jobs_root = "{tmp_path / "jobs"}"']))
     assert main(["demo", "snake", "--config", str(path), "--generations", "1"]) == 0
     assert main(["demo", "snake", "--config", str(path), "--generations", "1"]) == 0
     out = capsys.readouterr().out

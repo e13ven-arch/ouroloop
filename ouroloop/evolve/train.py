@@ -1,13 +1,13 @@
 """Trainers turn a built dataset into a new decision model (PLAN §4.3).
 
-    SignatureTrainer    a tiny in-process model (label frequencies per error signature, or per any key of the view
-                        a scenario defines), for tests and demos
-    TdeTrainer          TDE's trainer as a job (worker.py) on this machine or on a training host over ssh
-                        (compute.py); the model it yields is a ref: the job id, or <repo>@<commit> on Hugging Face
+    JobTrainer          a trainer plugin (ouroloop.trainers: tde, signature, ...) as a job (ouroloop/worker.py) on
+                        this machine or on a training host over ssh (compute.py); the model it yields is a ref: the
+                        job id, or <repo>@<commit> on Hugging Face
+    SignatureTrainer    the signature model trained in this process, for tests and demos (trainers/signature.py)
 
-TDE, the small decision model these trainers were built around, is a separate project released on its own. Any
-other model plugs in through the Trainer protocol below: train(job) -> TrainResult, backend(result) -> a backend,
-and supports_weights. The training data never holds ouroloop's calibration or test sessions (build.py).
+Any trainer plugs in through the Trainer protocol below: train(job) -> TrainResult, backend(result) -> a backend,
+and supports_weights; a plugin gets all of the job path for a few functions. The training data never holds
+ouroloop's calibration or test sessions (build.py).
 """
 from __future__ import annotations
 
@@ -17,23 +17,21 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
 from ..ledger import new_id
-from ..types import Answer, Request
-from .worker import TDE_KEYS, git_state, locate, prepare_job, tde_config, validate_job, yaml_json  # noqa: F401
 
-# 8 GB-GPU defaults from the TDE runs: 1024-token states need batch 2 x accumulation 16 plus checkpointing.
+# The recipe: what a plugin maps to its trainer (trainers/tde.py: TDE_KEYS). The defaults are TDE's for an 8 GB GPU:
+# 1024-token states need batch 2 x accumulation 16 plus checkpointing.
 DEFAULT_RECIPE = {
     "epochs": 3.0, "max_steps": None, "lr_backbone": 2e-5, "lr_head": 1e-4, "batch_size": 2, "grad_accum": 16,
     "max_state_tokens": 1024, "gradient_checkpointing": True, "w_rps": 1.0, "w_perm": 0.3,
-    "replay": None,          # general training data on the training machine, e.g. "data/general/train.jsonl"
+    "replay": None,          # general training data on the training machine, e.g. "~/data/general/train.jsonl"
     "replay_ratio": 1.0,     # replay examples per ledger example
     "min_weight": 0.5,       # 1.0 keeps only environment and human labels
-    "init_from": None,       # the first model's parent run, e.g. "runs/base"
+    "init_from": None,       # the first model's parent run on the training machine (or the plugin's init_from)
     "train_limit": None,     # train on at most this many examples, a seeded sample of the ledger's and replay's
     "focus": None,           # share of the ledger's training rows that are default errors (pipeline._parts)
     "seed": 0,
@@ -72,117 +70,70 @@ class Trainer(Protocol):
     def backend(self, result: TrainResult): ...
 
 
-# ---------------------------------------------------------------------- a tiny model for tests and demos
-class SignatureBackend:
-    """Predicts the label distribution seen in training for the same question and error signature."""
-    name = "signature"
-
-    def __init__(self, path: str | None = None, table: dict | None = None, signature: str | None = None):
-        """`signature`: "module:function", view -> key, in place of the error signature (replay.signature)."""
-        self.path = path
-        self.table = table if table is not None else json.loads(Path(path).read_text(encoding="utf-8"))
-        self.model = f"signature:{Path(path).parent.name if path else 'memory'}"
-        self.signature = _signature(signature)
-
-    def decide(self, requests: list[Request]) -> list[Answer]:
-        out = []
-        for r in requests:
-            labels = r.question.labels()
-            entry = self.table.get(r.question.instructions, {})
-            dist = entry.get(self.signature(r.state)) or entry.get("*") or {}
-            smoothed = {lab: dist.get(lab, 0.0) + 0.5 for lab in labels}    # add-half smoothing
-            out.append(Answer.of(labels, smoothed, self.model))
-        return out
-
-
-def _signature(ref: str | None):
-    from ..runtime import import_object
-    from .replay import signature
-    return import_object(ref) if ref else signature
-
-
-class SignatureTrainer:
-    supports_weights = True
-
-    def __init__(self, signature: str | None = None):
-        self.ref = signature
-
-    def train(self, job: TrainJob) -> TrainResult:
-        key_of = _signature(self.ref)
-        counts: dict = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
-        for line in open(Path(job.data_dir) / "train.jsonl", encoding="utf-8"):
-            e = json.loads(line)
-            for key in (key_of(e["state"]), "*"):
-                for c, t in zip(e["candidates"], e["target"]):
-                    counts[e["question"]][key][c["name"]] += t * float(e["meta"].get("weight", 1.0))
-        path = Path(job.data_dir).parent / "signature_model.json"
-        path.write_text(json.dumps(counts, indent=2), encoding="utf-8")
-        spec = {"type": "signature", "path": str(path), **({"signature": self.ref} if self.ref else {})}
-        return TrainResult(f"signature:{path.parent.name}", spec)
-
-    def backend(self, result: TrainResult) -> SignatureBackend:
-        return SignatureBackend(result.backend["path"], signature=result.backend.get("signature"))
-
-
-
-
-# ---------------------------------------------------------------------- TDE as a job
-WORKER = Path(__file__).with_name("worker.py")
+# ---------------------------------------------------------------------- a plugin as a job
 CHECKOUT = Path(__file__).resolve().parents[2]      # this ouroloop checkout, whose HEAD each job records
 
 
-class TdeTrainer:
-    """TDE's trainer as a job (worker.py) on this machine (host None) or on one host over ssh ("user@box"): the same
-    job either way, in a new directory <jobs_root>/<job id>/ on that machine with four files: spec.json, worker.py,
-    train.jsonl and val.jsonl. `tde_repo` and `python` are the TDE checkout and the Python that has the tde package
-    there (paths may start with ~, that machine's home); a recipe's replay and a path init_from are relative to the
-    checkout. With transport "direct" the run stays in the job's directory and the model ref is the job id; with
-    "hf" the job commits the run once to a private repository <hf_prefix><job id> and the ref is <repo>@<commit>.
+class JobTrainer:
+    """A trainer plugin (ouroloop.trainers) as a job on this machine or on one host over ssh: the same job either
+    way, in a new directory <jobs_root>/<job id>/ on that machine with three files, spec.json, train.jsonl and
+    val.jsonl, run by the worker installed there (python -m ouroloop.worker). `host`:
+
+        None        this machine, under this Python, which imports what this process imports; no host.json
+        "local"     this machine, under ~/.ouroloop/venv (`ouroloop host init local`)
+        "user@box"  that host over ssh, under ~/.ouroloop/venv there (`ouroloop host init user@box`)
+
+    With a host, the trainer reads its host.json before each job and runs host init when the host runs another
+    ouroloop, lacks the plugin or has it from another source (hosts.ensure); an init that fails is a TrainError,
+    before anything is used up. `options` are the plugin's ([trainers.<name>]): they travel in spec.json, and the
+    model's backend spec carries them. jobs_root may start with ~, that machine's home. With transport "direct" the
+    run stays in the job's directory and the model ref is the job id; with "hf" the job commits the run once to a
+    private repository <hf_prefix><job id> and the ref is <repo>@<commit>.
 
     `models` is the config's [models] table: how the trained models are served (config.build_backend), checked here,
-    before any job starts. Runs on a host are served by a model server there (url), or with transport "hf" loaded
-    in-process from Hugging Face (hf_prefix); this machine's jobs_root never holds them. With "hf", `publish_s` of
-    the deadline is kept for the commit.
+    before any job starts. Runs on a host over ssh are served by a model server there (url), or with transport "hf"
+    loaded in-process from Hugging Face (hf_prefix); this machine's jobs_root never holds them. With "hf",
+    `publish_s` of the deadline is kept for the commit.
 
     Any failure of the job or of reaching it is a TrainError, which the gate takes for inconclusive: a job that exits
     non-zero, is lost (no exit code, its process gone), outlives deadline_s by two polls, or leaves no well-formed
     result.json. A job this process is waiting on is cancelled when the wait ends in any other way (an exception,
     KeyboardInterrupt), and the first job of a process cancels the jobs of the same workspace a killed process left
     running: there is no reattaching, the round runs again."""
-    supports_weights = False            # TDE's trainer does not read meta.weight
     _swept: set = set()                 # (host, jobs_root, workspace) whose leftover jobs this process cancelled
 
-    def __init__(self, tde_repo: str, python: str | None = None, host: str | None = None,
+    def __init__(self, plugin: str, options: dict | None = None, host: str | None = None,
                  jobs_root: str = "~/.ouroloop/jobs", transport: str = "direct", hf_prefix: str | None = None,
                  deadline_s: float = 28800, poll_s: float = 30, ssh_opts: str = "-o BatchMode=yes",
                  models: dict | None = None, publish_s: float = 900, runner=None, sleep=time.sleep):
         from ..config import check_models
+        from ..hosts import PYTHON
+        from ..trainers import load
         from .compute import Compute
         if transport not in ("direct", "hf"):
             raise ValueError(f'transport {transport!r}: "direct" or "hf"')
         if transport == "hf" and not hf_prefix:
             raise ValueError('transport "hf" needs hf_prefix, e.g. "your-org/ouroloop-"')
-        if python is None and host:
-            raise ValueError("a trainer on a host needs python: the TDE venv's Python there")
+        self.name, self.plugin, self.options = plugin, load(plugin), dict(options or {})
+        self.supports_weights = bool(getattr(self.plugin, "SUPPORTS_WEIGHTS", False))
         self.models = check_models(models)
-        if host and not self.models.get("url") and not (transport == "hf" and self.models.get("hf_prefix")):
+        remote = host not in (None, "local")
+        if remote and not self.models.get("url") and not (transport == "hf" and self.models.get("hf_prefix")):
             raise ValueError(f"the models trained on {host} stay there: [models] needs url (`ouroloop serve` there), "
                              f"or transport \"hf\" and hf_prefix to load them here")
-        python = python or sys.executable
-        if host:                    # the job's directory is its cwd: a relative path would be relative to it
-            for name, path in (("tde_repo", tde_repo), ("jobs_root", jobs_root), ("python", python)):
-                if (name != "python" or "/" in path) and not path.startswith(("/", "~")):
-                    raise ValueError(f"{name} {path!r}: absolute, or from ~ (the home on {host})")
-        else:
-            tde_repo, jobs_root = (os.path.abspath(os.path.expanduser(p)) for p in (tde_repo, jobs_root))
-            python = os.path.abspath(os.path.expanduser(python)) if "/" in python else python
-        self.tde_repo, self.python = tde_repo, python
+        if remote and not jobs_root.startswith(("/", "~")):     # a job's cwd is its directory, not the home
+            raise ValueError(f"jobs_root {jobs_root!r}: absolute, or from ~ (the home on {host})")
+        if not remote:
+            jobs_root = os.path.abspath(os.path.expanduser(jobs_root))
+        self.python = PYTHON if remote else os.path.expanduser(PYTHON) if host == "local" else sys.executable
         self.host, self.jobs_root, self.transport, self.hf_prefix = host, jobs_root, transport, hf_prefix
-        self.deadline_s, self.poll_s, self.sleep = float(deadline_s), float(poll_s), sleep
+        self.deadline_s, self.poll_s, self.sleep, self.ssh_opts = float(deadline_s), float(poll_s), sleep, ssh_opts
         self.publish_s = float(publish_s) if transport == "hf" else 0.0
-        self.compute = Compute(host, jobs_root, ssh_opts, runner)
+        self.runner = runner
+        self.compute = Compute(host if remote else None, jobs_root, ssh_opts, runner)
 
     def train(self, job: TrainJob) -> TrainResult:
+        from ..worker import locate
         job_id, spec, result = self._run(job, check_only=False)
         ref = result.get("model")
         try:
@@ -192,13 +143,13 @@ class TdeTrainer:
         mine = ref == job_id if self.transport == "direct" else bool(place and place[0] == spec["hf_repo"])
         if not mine:
             raise TrainError(f"job {job_id}: result.json names model {ref!r}, not this job's")
-        return TrainResult(ref, {"type": "model", "model": ref},
-                           {"id": job_id, "host": self.host, "dir": self.compute.dir(job_id), "spec": spec,
-                            "result": result})
+        backend = {"type": "model", "model": ref, "trainer": self.name,
+                   **({"options": self.options} if self.options else {})}
+        return TrainResult(ref, backend, {"id": job_id, "host": self.host, "dir": self.compute.dir(job_id),
+                                          "spec": spec, "result": result})
 
     def dry_run(self, job: TrainJob) -> dict:
-        """Everything up to training, as a job on the training machine: the data composed with the replay sample,
-        the config, and TDE's own validation of both. Uses no GPU."""
+        """Everything up to training, as a job on the training machine: the plugin's validate. Uses no GPU."""
         job_id, _, result = self._run(job, check_only=True)
         return {"job": job_id, "host": self.host, "dir": self.compute.dir(job_id), **result}
 
@@ -207,21 +158,23 @@ class TdeTrainer:
         return build_backend(result.backend, self.models)
 
     def _run(self, job: TrainJob, check_only: bool) -> tuple[str, dict, dict]:
-        if not job.init_from:
-            raise ValueError(f"{job.version}: no parent to train from: no champion, and no init_from in [recipe]")
+        from ..release import code_version
+        from ..worker import git_state
+        parent = job.init_from or self.options.get("init_from")
+        if getattr(self.plugin, "NEEDS_PARENT", False) and not parent:
+            raise ValueError(f"{job.version}: no parent to train from: no champion, and no init_from in [recipe] or "
+                             f"[trainers.{self.name}]")
         workspace = str(Path(job.data_dir).resolve().parents[2])    # <workspace>/models/<version>/data
         if not check_only:              # a dry run may start beside a live one, whose job is not a leftover
             self._sweep(workspace)
+        self._ready()
         job_id = new_id(job.version)
-        recipe = job.recipe
-        spec = {"job": job_id, "version": job.version, "parent": job.init_from,
-                "tde": {k: recipe[k] for k in TDE_KEYS if recipe.get(k) is not None},
-                "replay": recipe.get("replay"), "replay_ratio": recipe.get("replay_ratio", 1.0),
-                "seed": recipe.get("seed", 0), "tde_repo": self.tde_repo, "python": self.python,
-                "jobs_root": self.jobs_root, "deadline_s": self.deadline_s, "publish_s": self.publish_s,
-                "transport": self.transport,
+        spec = {"job": job_id, "version": job.version, "parent": parent, "trainer": self.name,
+                "options": self.options, "recipe": job.recipe, "host": self.host, "jobs_root": self.jobs_root,
+                "deadline_s": self.deadline_s, "publish_s": self.publish_s, "transport": self.transport,
                 "hf_repo": f"{self.hf_prefix}{job_id}" if self.transport == "hf" else None,
-                "ouroloop": git_state(CHECKOUT), "workspace": workspace, "check_only": check_only}
+                "ouroloop": {"code": code_version(), "git": git_state(CHECKOUT)}, "workspace": workspace,
+                "check_only": check_only}
         if not check_only:
             self._release()
         where = self.compute.where()
@@ -229,8 +182,8 @@ class TdeTrainer:
             (Path(tmp) / "spec.json").write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
             data = Path(job.data_dir)
             try:
-                self.compute.launch(job_id, [Path(tmp) / "spec.json", WORKER, data / "train.jsonl",
-                                             data / "val.jsonl"], self.python)
+                self.compute.launch(job_id, [Path(tmp) / "spec.json", data / "train.jsonl", data / "val.jsonl"],
+                                    self.python, self._env())
             except (OSError, subprocess.SubprocessError, ValueError) as e:
                 self._cancel(job_id, workspace)         # it may have started before the failure
                 raise TrainError(f"job {job_id} could not start on {where}: {_why(e)}") from e
@@ -240,6 +193,30 @@ class TdeTrainer:
         if not isinstance(status.result, dict):
             raise TrainError(f"job {job_id} on {where} exited 0 without a readable result.json")
         return job_id, spec, status.result
+
+    def _env(self) -> dict | None:
+        """A job on this machine under this Python imports what this process imports; under the host's venv, only
+        what is installed there."""
+        if self.host is None:
+            paths = [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p]
+            paths += [os.path.abspath(p) for p in sys.path if p and os.path.isdir(p)]
+            return {**os.environ, "PYTHONPATH": os.pathsep.join(dict.fromkeys(paths))}
+        if self.host == "local":
+            return {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        return None
+
+    def _ready(self) -> None:
+        """A host that is not ready for the job is prepared (host init) first; one that cannot be is a TrainError."""
+        if self.host is None:
+            return
+        from ..hosts import HostError, ensure
+        try:
+            ensure(self.host, {self.name: self.options}, self.ssh_opts, self.transport == "hf", self.runner,
+                   say=lambda m: print(f"trainer: {m}", file=sys.stderr))
+        except HostError as e:
+            raise TrainError(str(e)) from e
+        except (OSError, subprocess.SubprocessError) as e:
+            raise TrainError(f"could not read the host.json of {self.host}: {_why(e)}") from e
 
     def _wait(self, job_id: str, workspace: str):
         where, deadline = self.compute.where(), time.time() + self.deadline_s + 2 * self.poll_s
@@ -263,27 +240,28 @@ class TdeTrainer:
         try:
             self.compute.cancel(job_id)
         except Exception as e:  # noqa: BLE001 - the first failure is the one to report
-            print(f"tde trainer: could not cancel job {job_id} on {self.compute.where()}: {_why(e)}", file=sys.stderr)
-            TdeTrainer._swept.discard((self.host, self.jobs_root, workspace))
+            print(f"trainer: could not cancel job {job_id} on {self.compute.where()}: {_why(e)}", file=sys.stderr)
+            JobTrainer._swept.discard((self.host, self.jobs_root, workspace))
 
     def _sweep(self, workspace: str) -> None:
         """Cancel the jobs of this workspace that a killed process left unfinished, once per process."""
         key = (self.host, self.jobs_root, workspace)
-        if key in TdeTrainer._swept:
+        if key in JobTrainer._swept:
             return
         try:
             for job_id in self.compute.unfinished(workspace):
-                print(f"tde trainer: cancelling job {job_id} on {self.compute.where()}, left unfinished by an "
-                      f"earlier run of this workspace", file=sys.stderr)
+                print(f"trainer: cancelling job {job_id} on {self.compute.where()}, left unfinished by an earlier "
+                      f"run of this workspace", file=sys.stderr)
                 self.compute.cancel(job_id)
         except (OSError, subprocess.SubprocessError) as e:
             raise TrainError(f"could not list the unfinished jobs on {self.compute.where()}: {_why(e)}") from e
-        TdeTrainer._swept.add(key)
+        JobTrainer._swept.add(key)
 
     def _release(self) -> None:
         """Let go of the models resident on the GPU before a job needs it: in this process, and on the model server."""
-        from ..backends.tde import TdeBackend
-        TdeBackend.release()
+        release = getattr(self.plugin, "release", None)
+        if callable(release):
+            release()
         if self.models and self.models.get("url"):
             import httpx
 
@@ -291,7 +269,7 @@ class TdeTrainer:
             try:
                 HttpBackend(self.models["url"], token_env=self.models.get("token_env", "OUROLOOP_TOKEN")).release()
             except httpx.HTTPError as e:
-                print(f"tde trainer: the model server did not release its models: {_why(e)}", file=sys.stderr)
+                print(f"trainer: the model server did not release its models: {_why(e)}", file=sys.stderr)
 
 
 def _why(e: BaseException) -> str:

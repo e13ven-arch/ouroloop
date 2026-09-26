@@ -1,5 +1,5 @@
 """Command line: ouroloop run | suite | decide | smoke | demo | research | evolve | calibrate | gate | models | serve |
-hook | ledger."""
+host | hook | ledger."""
 from __future__ import annotations
 
 import argparse
@@ -146,12 +146,12 @@ def cmd_evolve(args) -> int:
     if "trainer" not in cfg:
         print("no [trainer] in the config", file=sys.stderr)
         return 2
+    trainer = config.build_trainer(cfg["trainer"], cfg.get("models"), cfg.get("trainers"))
     if args.dry_run:
         from .evolve.pipeline import dry_run_model
-        print(json.dumps(dry_run_model(rt, config.build_trainer(cfg["trainer"], cfg.get("models")),
-                                       cfg.get("recipe")), ensure_ascii=False, indent=2, default=str))
+        print(json.dumps(dry_run_model(rt, trainer, cfg.get("recipe")), ensure_ascii=False, indent=2, default=str))
         return 0
-    card = evolve_model(rt, config.build_trainer(cfg["trainer"], cfg.get("models")), cfg.get("recipe"))
+    card = evolve_model(rt, trainer, cfg.get("recipe"))
     print(f"{card['version']}: {card['gate']} - {'; '.join(card.get('reasons', []))}")
 
     def gains(m: dict) -> str:
@@ -284,15 +284,42 @@ def cmd_run(args) -> int:
 def cmd_serve(args) -> int:
     import os
     from .serve import make_server
-    _, rt = _load_runtime(args.config)
+    cfg, rt = _load_runtime(args.config)
     try:
-        server = make_server(rt, args.host, args.port, os.environ.get("OUROLOOP_TOKEN"))
+        server = make_server(rt, args.host, args.port, os.environ.get("OUROLOOP_TOKEN"), config.plugin_options(cfg))
     except ValueError as e:
         print(e, file=sys.stderr)
         return 2
     print(f"serving {sorted(rt.backends)} and points {sorted(rt.points)} on http://{args.host}:{server.server_port}")
     server.serve_forever()
     return 0
+
+
+def cmd_host(args) -> int:
+    """`ouroloop host init|check <target>`: prepare a training host for this ouroloop and the trainer plugins, or say
+    what keeps it from running their jobs (docs/TRAINING_HOSTS.md). Plugins and their options come from --trainer and
+    the config's [trainer] and [trainers.<name>] tables."""
+    from .hosts import HostError, init, read, stale
+    cfg = config.load(args.config) if args.config else {}
+    options, table = config.plugin_options(cfg), cfg.get("trainer") or {}
+    names = args.trainer or [n for n in [table.get("type")] if n and ":" not in n]
+    trainers = {name: options.get(name, {}) for name in names}
+    ssh_opts = args.ssh_opts or table.get("ssh_opts", "-o BatchMode=yes")
+    hf = args.hf or table.get("transport") == "hf"
+    try:
+        if args.action == "init":
+            m, log = init(args.target, trainers, ssh_opts, hf)
+            print(log, end="", file=sys.stderr)
+        else:
+            m = read(args.target, ssh_opts)
+    except HostError as e:
+        print(e, file=sys.stderr)
+        return 1
+    if m:
+        print(json.dumps(m, indent=2))
+    why = stale(m, trainers, hf)
+    print(f"{args.target}: {'not ready: ' + '; '.join(why) if why else 'ready'}", file=sys.stderr)
+    return 1 if why else 0
 
 
 def _hook_runtime(path: str | None):
@@ -484,6 +511,15 @@ def main(argv: list[str] | None = None) -> int:
     sv.add_argument("--config", default="ouroloop.toml")
     sv.add_argument("--host", default="127.0.0.1")
     sv.add_argument("--port", type=int, default=8765)
+    ho = sub.add_parser("host", help="prepare a training host (init), or check that it runs this ouroloop")
+    ho.set_defaults(fn=cmd_host)
+    ho.add_argument("action", choices=["init", "check"])
+    ho.add_argument("target", help='"local" (this machine) or user@host over ssh')
+    ho.add_argument("--trainer", action="append", help="a trainer plugin to install, e.g. tde; repeatable "
+                                                        "(default: the config's [trainer] type)")
+    ho.add_argument("--config", help="an ouroloop.toml: its [trainer] and [trainers.<name>] options")
+    ho.add_argument("--ssh-opts", help='e.g. "-i ~/.ssh/key -o BatchMode=yes" (default: the config\'s)')
+    ho.add_argument("--hf", action="store_true", help='also make it ready for transport "hf"')
     hk = sub.add_parser("hook", help="Claude Code hooks: record decisions and outcomes from normal sessions")
     hk.set_defaults(fn=cmd_hook)
     hk.add_argument("target", choices=["claude-code", "print-settings"])

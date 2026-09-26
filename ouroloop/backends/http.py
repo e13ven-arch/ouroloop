@@ -17,8 +17,9 @@ class HttpBackend:
 
     def __init__(self, url: str, backend: str | None = None, token_env: str | None = "OUROLOOP_TOKEN",
                  timeout: float = 30.0, client: httpx.Client | None = None, model: str | None = None,
-                 chunk: int = 256, retries: int = 3, sleep=time.sleep):
-        """`model`: a trained model's ref, which the server loads (in place of one of its named backends). Requests
+                 chunk: int = 256, retries: int = 3, sleep=time.sleep, trainer: str | None = None):
+        """`model`: a trained model's ref, which the server loads (in place of one of its named backends) through the
+        trainer plugin `trainer` (default: the server's). Requests
         go in chunks of `chunk`, each with its own `timeout` (connecting: at most CONNECT_S). In a call of more than
         one request (an evaluation), a chunk that fails to arrive or gets a server error is sent again, up to
         `retries` times with a growing pause: the same model and requests give the same answers. A single decision
@@ -26,6 +27,7 @@ class HttpBackend:
         self.url = url.rstrip("/")
         self.backend = backend          # which backend on the server; None means the server's default
         self.model = model
+        self.trainer = trainer
         self.token_env = token_env
         self.timeout = httpx.Timeout(timeout, connect=min(timeout, CONNECT_S))
         self.client = client or httpx.Client()
@@ -57,6 +59,7 @@ class HttpBackend:
         for i in range(0, len(requests), self.chunk):
             part = requests[i:i + self.chunk]
             body = {"backend": self.backend, **({"model": self.model} if self.model else {}),
+                    **({"trainer": self.trainer} if self.model and self.trainer else {}),
                     "requests": [{"state": r.state, "question": r.question.to_json()} for r in part]}
             answers = self._post("/decide", body, self.retries if len(requests) > 1 else 0).json()["answers"]
             if len(answers) != len(part):

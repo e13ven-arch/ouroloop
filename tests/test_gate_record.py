@@ -24,7 +24,7 @@ from ouroloop.evolve.pipeline import (default_errors, evolve_model, prepare_mode
                                       schedule)
 from ouroloop.evolve.registry import Registry
 from ouroloop.evolve.replay import EVALUATORS, EvalResult, labelled
-from ouroloop.evolve.train import SignatureTrainer, TrainError, TrainResult
+from ouroloop.evolve.train import TrainError, TrainResult
 from ouroloop.ledger import CalibrationStore, PromotionConflict, SpecStore
 from ouroloop.points import retry_point, stop_point
 from ouroloop.policy import Policy
@@ -34,6 +34,7 @@ from ouroloop.research import Candidate, run_round
 from ouroloop.runtime import Runtime
 from ouroloop.serve import make_server
 from ouroloop.stop import MOMENTS, StopGuard
+from ouroloop.trainers.signature import SignatureTrainer
 from ouroloop.types import Answer
 
 pytestmark = pytest.mark.usefixtures("loose_risk")

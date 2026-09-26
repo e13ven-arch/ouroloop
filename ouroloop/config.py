@@ -47,9 +47,9 @@ def build_provider(spec: dict):
 
 
 def build_backend(spec: dict, models: dict | None = None):
-    """A backend from its config table. {"type": "model", "model": ref} is a trained model, served as `models` (the
-    config's [models] table) says: by a model server (url, token_env), or in-process from jobs_root (and hf_prefix
-    for <repo>@<commit> refs)."""
+    """A backend from its config table. {"type": "model", "model": ref, "trainer": plugin, "options": {...}} is a
+    trained model, served as `models` (the config's [models] table) says: by a model server (url, token_env), or
+    in-process from jobs_root (and hf_prefix for <repo>@<commit> refs) by the plugin that trained it."""
     spec = dict(spec)
     kind = spec.pop("type")
     if kind == "mock":
@@ -58,12 +58,12 @@ def build_backend(spec: dict, models: dict | None = None):
         return JevBackend(**spec)
     if kind == "tde":
         return TdeBackend(**spec)
-    if kind == "model":
-        return model_backend(spec["model"], models)
+    if kind == "model":         # a card from before trainer plugins names none: TDE's
+        return model_backend(spec["model"], models, spec.get("trainer", "tde"), spec.get("options"))
     if kind == "llm":
         return LlmBackend(build_provider(spec["provider"]))
     if kind == "signature":
-        from .evolve.train import SignatureBackend
+        from .trainers.signature import SignatureBackend
         return SignatureBackend(spec["path"], signature=spec.get("signature"))
     if kind == "http":
         from .backends.http import HttpBackend
@@ -82,38 +82,52 @@ def check_models(models: dict | None) -> dict:
     return models
 
 
-def model_backend(ref: str, models: dict | None):
-    """The backend of a model ref, as [models] serves it: the model server checks the ref itself (timeout: per chunk
-    of requests, long enough for the server's first load of a model), in-process it must be one a job yields
-    (worker.locate)."""
-    from .evolve.worker import locate
+def model_backend(ref: str, models: dict | None, trainer: str = "tde", options: dict | None = None):
+    """The backend of a model ref, as [models] serves it: the model server checks the ref itself and loads it
+    through `trainer` (timeout: per chunk of requests, long enough for the server's first load of a model);
+    in-process, the plugin `trainer` loads it with its `options` and [models] (worker.locate: a ref a job yields)."""
+    from .trainers import load as load_plugin
     models = check_models(models)
     if models.get("url"):
         from .backends.http import HttpBackend
-        return HttpBackend(models["url"], model=ref, token_env=models.get("token_env", "OUROLOOP_TOKEN"),
+        return HttpBackend(models["url"], model=ref, trainer=trainer,
+                           token_env=models.get("token_env", "OUROLOOP_TOKEN"),
                            timeout=float(models.get("timeout", 600)))
-    run, revision = locate(ref, models["jobs_root"], models.get("hf_prefix"))
-    return TdeBackend(run, device=models.get("device"), model=ref, revision=revision)
+    return load_plugin(trainer).backend(ref, {**(options or {}), **models})
 
 
-def build_trainer(spec: dict, models: dict | None = None):
-    """A trainer from the [trainer] table; `models` is the [models] table its models are served by."""
-    from .evolve.train import SignatureTrainer, TdeTrainer
+def build_trainer(spec: dict, models: dict | None = None, trainers: dict | None = None):
+    """A trainer from the [trainer] table: its type is a trainer plugin (ouroloop.trainers), run as a job with the
+    plugin's options ([trainers.<type>], or the table's own `options`), or "module:Class", a Trainer made here.
+    `models` is the [models] table its models are served by."""
     spec = dict(spec)
     kind = spec.pop("type")
-    if kind == "signature":
-        return SignatureTrainer(**spec)
-    if kind == "tde":
-        return TdeTrainer(**spec, models=models)
-    return import_object(kind)(**spec)
+    if ":" in kind:
+        return import_object(kind)(**spec)
+    from .evolve.train import JobTrainer
+    options = spec.pop("options", None)
+    return JobTrainer(kind, options if options is not None else (trainers or {}).get(kind), models=models, **spec)
+
+
+def plugin_options(cfg: dict) -> dict:
+    """{plugin: options} of every trainer plugin the config names: [trainer] type and each [trainers.<name>]."""
+    out = {name: dict(options) for name, options in cfg.get("trainers", {}).items()}
+    kind = (cfg.get("trainer") or {}).get("type")
+    if kind and ":" not in kind:
+        out.setdefault(kind, dict(cfg["trainer"].get("options") or {}))
+    return out
 
 
 def load(path: str | Path = "ouroloop.toml") -> dict:
-    """Read a config; its optional top-level env_file (relative to the config) is loaded like .env."""
+    """Read a config; its optional top-level env_file (relative to the config) is loaded like .env. The options of
+    the [trainer] type's plugin, [trainers.<type>], are also its `options`, so the table builds the trainer alone."""
     with open(path, "rb") as f:
         cfg = tomllib.load(f)
     if cfg.get("env_file"):
         load_dotenv(Path(path).resolve().parent / cfg["env_file"])
+    trainer = cfg.get("trainer")
+    if isinstance(trainer, dict) and "options" not in trainer and trainer.get("type") in cfg.get("trainers", {}):
+        cfg["trainer"] = {**trainer, "options": cfg["trainers"][trainer["type"]]}
     return cfg
 
 
@@ -216,7 +230,8 @@ def build_research(cfg: dict, rt: Runtime, base: str | Path = "."):
     evaluators, context = {}, {}
     if "trainer" in cfg:
         recipe = cfg.get("recipe", {})
-        evaluators["recipe"] = recipe_evaluator(build_trainer(cfg["trainer"], cfg.get("models")), recipe)
+        trainer = build_trainer(cfg["trainer"], cfg.get("models"), cfg.get("trainers"))
+        evaluators["recipe"] = recipe_evaluator(trainer, recipe)
         context = {"recipe": {**DEFAULT_RECIPE, **recipe}, "recipe_keys": sorted(RECIPE_KEYS - PATH_KEYS)}
     if "suite" in cfg:
         from .agent.suite import load_suite
