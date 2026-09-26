@@ -42,7 +42,7 @@ ouroloop = "ouroloop.cli:main"
 include = ["ouroloop*"]
 
 [tool.setuptools.package-data]
-"ouroloop.hosts" = ["bootstrap.sh"]     # host init sends it; the worker image runs it
+"ouroloop.hosts" = ["bootstrap.sh", "start.sh"]     # host init sends bootstrap.sh; images and cloud instances start with start.sh
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -9,9 +9,9 @@
 #
 #   docker run -d --gpus all -p 2222:22 -e PUBLIC_KEY="$(cat ~/.ssh/id_ed25519.pub)" ouroloop-worker
 #
-# and set [trainer] host = "root@<box>" with ssh_opts = "-p 2222 ...". RunPod and Vast.ai run it as it is (PUBLIC_KEY,
-# HF_TOKEN from their environment settings). No secret is in the image: the key, the token and the ssh host keys
-# arrive when the container starts. A host whose ouroloop differs from the control plane's is initialized again by
+# and set [trainer] host = "root@<box>" with ssh_opts = "-p 2222 ...". [trainer.cloud] (RunPod, Vast.ai) runs it per
+# job with the same start script, ouroloop/hosts/start.sh. No secret is in the image: the key, the token and the ssh
+# host keys arrive when the container starts. A host whose ouroloop differs from the control plane's is initialized again by
 # the trainer, over ssh, before its first job.
 
 ARG BASE=ubuntu:24.04
@@ -44,7 +44,7 @@ RUN set -eu; cd /opt/ouroloop/checkout; args=""; \
     sh /opt/ouroloop/init/bootstrap.sh /opt/ouroloop/init; \
     rm -rf /opt/ouroloop/init /opt/ouroloop/sources /root/.cache/pip
 
-COPY docker/worker/start.sh /usr/local/bin/ouroloop-start
+COPY ouroloop/hosts/start.sh /usr/local/bin/ouroloop-start
 RUN chmod +x /usr/local/bin/ouroloop-start
 EXPOSE 22
 CMD ["/usr/local/bin/ouroloop-start"]
