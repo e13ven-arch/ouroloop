@@ -1,5 +1,5 @@
-"""The research agent interface (PLAN §5.4). An agent only proposes candidates; the framework evaluates,
-promotes and records them, so a custom agent cannot bypass the promotion gate or see test data."""
+"""The research agent interface. An agent only proposes candidates; the framework evaluates, promotes and records them,
+so a custom agent cannot bypass the promotion gate or see test data."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -51,8 +51,8 @@ class Workspace:
 
     def ask(self, name: str, question, state: str, *, default: str | None = None,
             max_state_chars: int = 8000) -> Decision:
-        """Ask the judge a typed question; returns the recorded decision. Research points are not switched on
-        (PLAN_v0.2 M7): the judge's answer is recorded and `default` is the action."""
+        """Ask the judge a typed question; returns the recorded decision. Research points are not switched on:
+        the judge's answer is recorded and `default` is the action."""
         q = normalize(question)
         state, truncated = fit_state(state, max_state_chars)
         return self._rt.ask_question(name, q, state, default=default, backend=self._judge,

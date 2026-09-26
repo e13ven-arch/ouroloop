@@ -1,7 +1,7 @@
-"""The default research agent (PLAN §5.1): it targets the largest error group, the LLM proposes (asking the judge
+"""The default research agent: it targets the largest error group, the LLM proposes (asking the judge
 typed questions when it wants a judgment), and every candidate within the budget is tried. The judge also answers
 which group to target (research.pick_target) and whether a candidate is worth trying (research.worth_trying), but
-those points are not switched on (PLAN_v0.2 M7): the answers are recorded, and the defaults above are the actions.
+those points are not switched on: the answers are recorded, and the defaults above are the actions.
 Targets are error groups of decision points (spec and recipe candidates) and, when a task suite is configured, the
 harness prompt's failing tasks."""
 from __future__ import annotations

@@ -1,5 +1,5 @@
 """M7 offline acceptance: a point acts only by the execution rule, and takes its declared default on errors and
-doubts (PLAN_v0.2 §0, M7)."""
+doubts (docs/DESIGN.md invariant 1)."""
 import io
 import json
 import random

@@ -1,11 +1,10 @@
-"""The round: data -> diagnosis -> hypothesis -> plan -> admission -> training (PLAN_v0.2 M11). Only the last step
-spends GPU.
+"""The round: data -> diagnosis -> hypothesis -> plan -> admission -> training (docs/RESEARCH_AGENT.md §2). Only the
+last step spends GPU.
 
-`diagnose` reads the ledger, the registry, the revocation list and the experience log and says what the data holds;
-a planner turns that into a `Plan`, a hypothesis with the change it tries, what it expects to gain and the evidence
-that would confirm or deny it; `admit` refuses a plan the data cannot decide, naming what is missing. Nothing trains
-without a plan that passed admission. `plan` below is the built-in rule planner and the interface the research agent
-(M11) implements.
+`diagnose` reads the ledger, the registry and the revocation list and says what the data holds; a planner turns that
+into a `Plan`, a hypothesis with the change it tries, what it expects to gain and the evidence that would confirm or
+deny it; `admit` refuses a plan the data cannot decide, naming what is missing. Nothing trains without a plan that
+passed admission. `plan` below is the built-in rule planner and the interface the research agent (M11) implements.
 
 The decisive fact is computable before training: with risk r and no error at all, a threshold needs `sessions_needed`
 sessions (59 at r = 0.05), and only a session holding a default error can buy one, because only there does a model
@@ -174,9 +173,9 @@ class Plan:
 
 
 def diagnose(rt, points: list | None = None) -> Diagnosis:
-    """Read the ledger, the registry, the revocation list and the experience log: no training, no inference, and
-    nothing frozen or used up. The test sessions are the ones a record frozen now would take, so what the diagnosis
-    says about the gate is what the round would meet."""
+    """Read the ledger, the registry and the revocation list (admission reads the experience log, in `repeated`):
+    no training, no inference, and nothing frozen or used up. The test sessions are the ones a record frozen now
+    would take, so what the diagnosis says about the gate is what the round would meet."""
     from .pipeline import model_points
     params = load_template(rt.root)[0]
     registry = Registry(rt.root)

@@ -1,4 +1,4 @@
-"""The model registry (PLAN §4.6, PLAN_v0.2 M8): one card per trained candidate, written before it is evaluated; a
+"""The model registry (docs/DESIGN.md invariant 7): one card per trained candidate, written before it is evaluated; a
 champion pointer that only a compare-and-swap promotion (after a deploy) changes; rollback, which revokes the
 retired model, withdraws the gate record's acceptance of it and returns the champion to the last good ancestor."""
 from __future__ import annotations

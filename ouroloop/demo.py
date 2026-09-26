@@ -1,4 +1,4 @@
-"""A self-contained run of one research round (PLAN §5.6), with no network and no model by default.
+"""A self-contained run of one research round, with no network and no model by default.
 
 It seeds a workspace with synthetic `retry` decisions and their outcomes and freezes a gate (standing in for the
 person who does), then: report -> the largest error group -> a scripted LLM proposes two spec changes -> offline

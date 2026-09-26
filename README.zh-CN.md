@@ -117,11 +117,11 @@ prompt 候选按下面几步评测：
 
 ## 状态
 
-v0.1。已完成：决策层和端到端骨架（M0）、agent harness（M1）、训练管线和研究 agent（M2）、接入（M3）、五个内置决策点、prompt 进化（M5）。用真实 LLM（智谱 GLM 加 Jev）跑通了 agent、10 个任务的任务集和两轮 prompt 进化。
+v0.2 进行中。已建好：决策层与执行规则（风险按 session 计，阈值用 Clopper-Pearson 在固定序列里拟合）；冻结的门，一份记录判一个候选、一次、在新鲜 session 上、按它对路由默认的增益；执行后监控，由运行时在每个 session 打开时跑，被害 session 超出预算就撤销并回退冠军；训练任务路径，训练器是插件，主机可一键初始化，也可以每个任务开一台 RunPod 或 Vast 实例；模型库与推理服务从训练里拆开，上线是独立一步；以及准入，一轮只训练有计划支撑的候选。
 
-还没做：M4，也就是让研究 agent 无人值守地连续运行，证明自动执行的比例逐代上升。这一版提供的是机制；证据目前是 TDE 的实验记录和上面的流程测试。
+还没建：写这些计划的 LLM 研究 agent（内置的规则计划器和它必须通过的准入已经在了）、harness / prompt 这条轨道，以及无人值守长跑、证明自动执行比例逐代上升。现在有的是机制；证据在 [docs/JOURNAL.md](docs/JOURNAL.md) 里。
 
-设计见 [docs/PLAN.md](docs/PLAN.md)，研究循环的来龙去脉见 [docs/RESEARCH_LOOP.md](docs/RESEARCH_LOOP.md)。
+权威设计见 [docs/DESIGN.md](docs/DESIGN.md)，已经建好的和下一步见 [docs/ROADMAP.md](docs/ROADMAP.md)，研究 agent 和研究循环的来龙去脉见 [docs/RESEARCH_AGENT.md](docs/RESEARCH_AGENT.md)，改动和证据见 [docs/JOURNAL.md](docs/JOURNAL.md)。
 
 ## 许可证
 

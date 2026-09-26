@@ -1,4 +1,4 @@
-"""The minimal agent loop (PLAN §3): an LLM with read / write / edit / bash, and decision points around it.
+"""The minimal agent loop: an LLM with read / write / edit / bash, and decision points around it.
 
     before each LLM call  route: which model tier is enough for this step
     before any tool       the deny list (a rule: never run, whatever any model says)
@@ -108,7 +108,7 @@ class Agent:
 
     # ------------------------------------------------------------------ loop
     def harness(self) -> dict:
-        """The harness component of the session's release (PLAN_v0.2 M8): prompt, tools and StopGuard settings."""
+        """The harness component of the session's release: prompt, tools and StopGuard settings."""
         return {"system": self.prompt, "tools": {s.name: s.description for s in self.tools.specs()},
                 "stop": {"point": self.guard.point, "max_pushbacks": self.guard.max_pushbacks}}
 

@@ -17,7 +17,8 @@ from .runtime import Runtime, import_object
 
 # The only keys of a [points.X] table: risk comes from the gate template (M8), defaults from the point's definition.
 POINT_KEYS = {"backend", "define", "act", "explore"}
-# Once the gate is frozen, its parameters come from the gate template only (PLAN_v0.2 M8), never from the config.
+# Once the gate is frozen, its parameters come from the gate template only (docs/DESIGN.md invariant 4), never from the
+# config.
 FROZEN = (("research", "min_items"), ("suite", "min_items"), ("checks", None))
 # Keys of an old config's [models] table (now [serving]) that name the store; read as its [store] (store_table).
 MODELS_STORE_KEYS = {"jobs_root", "hf_prefix"}

@@ -1,4 +1,4 @@
-"""Experience records: one line per evaluated candidate (PLAN §4.8). Not promoted does not mean useless."""
+"""Experience records: one line per evaluated candidate. Not promoted does not mean useless."""
 from __future__ import annotations
 
 from pathlib import Path

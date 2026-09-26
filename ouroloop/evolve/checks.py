@@ -1,4 +1,4 @@
-"""Data checks before training (PLAN §4.2). Each one comes from a defect that silently wasted a TDE run:
+"""Data checks before training. Each one comes from a defect that silently wasted a TDE run:
 truncated states (Exp 005 multi-hop), answer-position leakage (HotpotQA), split leakage, benchmark overlap,
 and test sets too small to detect a real difference."""
 from __future__ import annotations

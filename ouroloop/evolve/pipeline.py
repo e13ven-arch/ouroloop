@@ -1,5 +1,4 @@
-"""Model evolution (PLAN §4, PLAN_v0.2 M8): ledger -> build -> check -> train -> calibrate -> evaluate -> the frozen
-gate -> deploy -> promote.
+"""Model evolution: ledger -> build -> check -> train -> calibrate -> evaluate -> the frozen gate -> deploy -> promote.
 
 `prepare_model` does everything up to the verdict on the sessions a gate record fixed; `recipe_evaluator` turns it
 into an evaluation for gate.run, which the research loop and `evolve_model` (`ouroloop evolve`) both go through.

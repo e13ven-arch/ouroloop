@@ -1,5 +1,5 @@
-"""Serving (PLAN_v0.2, roles): the one way a trained model is asked. The runtime's sessions, calibration, the gate's
-test scoring and the deploy probe all get a model's backend here, never from the trainer that made it.
+"""Serving (docs/DESIGN.md, the four roles): the one way a trained model is asked. The runtime's sessions, calibration,
+the gate's test scoring and the deploy probe all get a model's backend here, never from the trainer that made it.
 
 [serving] (formerly [models]) says how:
 

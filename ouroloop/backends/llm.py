@@ -1,6 +1,6 @@
 """An LLM as a decision backend: a phase's default answerer ("llm:<backend name>") or a judge. It picks one
 candidate; a reply it cannot parse abstains. Its answers are for evaluation only, never training targets
-(PLAN_v0.2 §1 rule 4)."""
+(docs/DESIGN.md invariant 6)."""
 from __future__ import annotations
 
 import json

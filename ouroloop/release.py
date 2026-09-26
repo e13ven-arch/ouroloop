@@ -1,6 +1,6 @@
-"""Releases (PLAN_v0.2 M8): the (model, decision spec, harness) triple a session runs with, the gate records that
-accepted what may answer and act, the revocation list that stops a release from acting, and the version of the code
-that gates and serves them."""
+"""Releases (docs/DESIGN.md invariant 7): the (model, decision spec, harness) triple a session runs with, the gate
+records that accepted what may answer and act, the revocation list that stops a release from acting, and the version of
+the code that gates and serves them."""
 from __future__ import annotations
 
 import hashlib
@@ -54,10 +54,10 @@ def code_version() -> str:
 class Accepted:
     """The gate records that accepted a candidate, from their copies in <workspace>/gates/ (re-read when they change):
     record hash -> the candidate it accepted, and the calibrations its promotion stores. Only a champion promoted
-    through such a record answers, and only a calibration as such a record accepted it acts (PLAN_v0.2 §0 rule 3): a
-    champion pointer, card or calibration written by hand, or one a gate rejected, never does. A rollback withdraws
-    the record's acceptance: its model still answers the sessions pinned to it, but neither it nor its calibrations
-    act again, and it cannot be promoted again."""
+    through such a record answers, and only a calibration as such a record accepted it acts (docs/DESIGN.md invariant
+    1): a champion pointer, card or calibration written by hand, or one a gate rejected, never does. A rollback
+    withdraws the record's acceptance: its model still answers the sessions pinned to it, but neither it nor its
+    calibrations act again, and it cannot be promoted again."""
 
     def __init__(self, root: str | Path):
         self.dir = Path(root) / "gates"

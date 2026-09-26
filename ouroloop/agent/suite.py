@@ -1,4 +1,5 @@
-"""Task suites: small scripted tasks for acceptance runs and for harness prompt candidates (PLAN §4.8).
+"""Task suites: small scripted tasks for acceptance runs and for harness prompt candidates (docs/DESIGN.md §2.2,
+pipeline 4).
 
 One TOML file per task:
 

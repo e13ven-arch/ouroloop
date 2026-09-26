@@ -1,7 +1,7 @@
-"""The training job path (PLAN_v0.2 M9): JobTrainer -> Compute -> python -m ouroloop.worker -> the tde plugin ->
-TDE, on this machine against a stub TDE checkout, and over a stand-in for ssh; model refs served in-process and through
-`ouroloop serve`; Hugging Face through a stand-in package. Nothing trains, nothing leaves this machine. Hosts and the
-signature plugin end to end: test_hosts.py."""
+"""The training job path (docs/DESIGN.md §2.2, pipeline 2): JobTrainer -> Compute -> python -m ouroloop.worker -> the
+tde plugin -> TDE, on this machine against a stub TDE checkout, and over a stand-in for ssh; model refs served
+in-process and through `ouroloop serve`; Hugging Face through a stand-in package. Nothing trains, nothing leaves this
+machine. Hosts and the signature plugin end to end: test_hosts.py."""
 import importlib.machinery
 import importlib.util
 import json

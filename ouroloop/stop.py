@@ -1,5 +1,5 @@
-"""StopGuard: whether an agent loop should end (PLAN_v0.2 M6). Any harness can use it; it only needs the runtime,
-a context for the stop point's view, and optionally a checker.
+"""StopGuard: whether an agent loop should end (docs/ROADMAP.md §2.1). Any harness can use it; it only needs the
+runtime, a context for the stop point's view, and optionally a checker.
 
     per_turn    after a turn that did something, except the last (nothing follows it); default "no" (keep going).
                 A confident "yes" ends the session, unless the checker fails.

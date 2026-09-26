@@ -1,6 +1,6 @@
-"""The four roles (PLAN_v0.2, roles): a model store behind one interface ("dir", "hf"), serving as the one way a
-trained model is asked, a deploy between the gate's verdict and the champion pointer, and a rollback to the last good
-ancestor. Old configs (transport, [models]) still load. Nothing trains, nothing leaves this machine."""
+"""The four roles (docs/DESIGN.md, roles and layouts): a model store behind one interface ("dir", "hf"), serving as the one
+way a trained model is asked, a deploy between the gate's verdict and the champion pointer, and a rollback to the last
+good ancestor. Old configs (transport, [models]) still load. Nothing trains, nothing leaves this machine."""
 import importlib.util
 import json
 import sys

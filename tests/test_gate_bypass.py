@@ -277,7 +277,7 @@ def test_the_research_agent_never_sees_held_out_results(tmp_path):
 
 # ---------------------------------------------------------------- the template
 def test_no_template_loosens_the_risk_or_the_evidence_a_gate_needs(tmp_path, monkeypatch):
-    monkeypatch.setitem(gate.LIMITS, "risk", (0.0, 0.05))          # as shipped: PLAN_v0.2 §0's 5%
+    monkeypatch.setitem(gate.LIMITS, "risk", (0.0, 0.05))          # as shipped: docs/DESIGN.md, gate.LIMITS, 5%
     root = tmp_path / "ws"
     for loose in ({"risk": 0.2}, {"min_sessions": 5}, {"n_boot": 10}, {"risk": True}, {"suite": {"min_items": 2}}):
         with pytest.raises(ValueError, match="looser"):

@@ -1,4 +1,4 @@
-"""Trainers turn a built dataset into a new decision model (PLAN §4.3).
+"""Trainers turn a built dataset into a new decision model (docs/DESIGN.md §2.2, pipeline 2).
 
     JobTrainer          a trainer plugin (ouroloop.trainers: tde, signature, ...) as a job (ouroloop/worker.py) on
                         this machine or on a training host over ssh (compute.py); the model it yields is a ref in

@@ -1,5 +1,5 @@
-"""Append-only JSONL ledger of sessions, decisions, escalations and outcomes (PLAN §2.4), plus the context store
-that lets a changed view be re-rendered offline, and the champion spec store."""
+"""Append-only JSONL ledger of sessions, decisions, escalations and outcomes, plus the context store that lets a changed
+view be re-rendered offline, and the champion spec store."""
 from __future__ import annotations
 
 import fcntl
@@ -16,8 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-# Only what the environment and people say may become a training target (PLAN_v0.2 §1 rule 4). Answers of any model
-# or LLM, and labels derived from them such as a promotion gate's verdict, are kept for evaluation only.
+# Only what the environment and people say may become a training target (docs/DESIGN.md invariant 6). Answers of any
+# model or LLM, and labels derived from them such as a promotion gate's verdict, are kept for evaluation only.
 SOURCE_WEIGHTS = {"env": 1.0, "human": 1.0}
 EVAL_ONLY = {"frontier_llm", "open_llm", "jev", "gate"}
 SOURCES = set(SOURCE_WEIGHTS) | EVAL_ONLY
@@ -163,7 +163,7 @@ class Ledger:
         "points", where it made decisions, and "labelled", where a decision with a stored context has a trainable
         outcome so far. And the number of events read: a session that starts later has a start at or past it.
         Held out is for good: a session any of whose events says so, and every session of a task any session of
-        which was held out, whatever a later event says (PLAN_v0.2 M8: never trained or calibrated on)."""
+        which was held out, whatever a later event says (docs/DESIGN.md invariant 3: never trained or calibrated on)."""
         out: dict[str, dict] = {}
         decided: dict[str, tuple[str, str]] = {}
         n = 0
@@ -257,12 +257,13 @@ class SessionStore:
 
 class CalibrationStore:
     """Temperature and per-phase thresholds by (model id, spec hash, point), fitted on the calibration split
-    (PLAN_v0.2 M7). The model id is the one the answering backend reports, so a rollback brings the old values back
-    and a changed model, spec or view finds none. A file in the old per-point format is discarded, not migrated.
+    (docs/DESIGN.md invariant 1). The model id is the one the answering backend reports, so a rollback brings the old
+    values back and a changed model, spec or view finds none. A file in the old per-point format is discarded, not
+    migrated.
 
-    Reads follow the file (it is re-read when it changes); a write re-reads it under a lock and changes one entry,
-    so a process never writes back a stale copy over another's entries (PLAN_v0.2 M8). Loaded entries are never
-    changed in place: a session's snapshot stays as it was when the session opened."""
+    Reads follow the file (it is re-read when it changes); a write re-reads it under a lock and changes one entry, so a
+    process never writes back a stale copy over another's entries. Loaded entries are never changed in place: a
+    session's snapshot stays as it was when the session opened."""
     VERSION = 2
 
     def __init__(self, path: str | Path):
@@ -302,8 +303,9 @@ ANY = object()      # a write that checks nothing (tests, setup)
 
 
 class SpecStore:
-    """The current champion spec of each decision point, with its history. `get` gives the specs as loaded, which
-    the registered points run; a promotion re-reads the file under a lock and compares and swaps (PLAN_v0.2 M8)."""
+    """The current champion spec of each decision point, with its history. `get` gives the specs as loaded, which the
+    registered points run; a promotion re-reads the file under a lock and compares and swaps (docs/DESIGN.md invariant
+    7)."""
 
     def __init__(self, path: str | Path):
         self.path = Path(path)

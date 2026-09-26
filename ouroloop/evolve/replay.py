@@ -63,7 +63,8 @@ def splits(rows: list[tuple], test_frac: float = 0.15, cal_frac: float = 0.15) -
 
 
 def not_held_out(rt, rows: list[tuple]) -> list[tuple]:
-    """The rows outside held-out tasks' sessions: those never enter training or calibration (PLAN_v0.2 M8)."""
+    """The rows outside held-out tasks' sessions: those never enter training or calibration (docs/DESIGN.md invariant
+    3)."""
     sessions, _ = rt.ledger.sessions()
     return [r for r in rows if not sessions.get(r[0].decision.get("session", ""), {}).get("held_out")]
 

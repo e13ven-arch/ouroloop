@@ -1,6 +1,6 @@
-"""Built-in decision points of the harness (PLAN §2.5): retry, compact, tool_gate, stop and route, plus the
-deterministic deny list that runs before every tool call. Each declares the phase it is asked in and its default
-there: the action taken while the point is shadow, and whenever the model does not act."""
+"""Built-in decision points of the harness: retry, compact, tool_gate, stop and route, plus the deterministic deny list
+that runs before every tool call. Each declares the phase it is asked in and its default there: the action taken while
+the point is shadow, and whenever the model does not act."""
 from __future__ import annotations
 
 import re

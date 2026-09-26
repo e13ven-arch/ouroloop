@@ -1,4 +1,4 @@
-"""Question conversion (PLAN §5.3): check and complete a typed question before a decision model sees it."""
+"""Question conversion: check and complete a typed question before a decision model sees it."""
 from __future__ import annotations
 
 from ..types import TYPES, Question

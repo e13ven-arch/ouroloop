@@ -1,5 +1,6 @@
-"""Ledger -> training data (PLAN §4.1): the data contract every trainer plugin reads (ouroloop/trainers). Each labelled
-decision is re-rendered with the point's current spec and written as one example, a JSON line:
+"""Ledger -> training data (docs/DESIGN.md §2.2, pipeline 1): the data contract every trainer plugin reads
+(ouroloop/trainers). Each labelled decision is re-rendered with the point's current spec and written as one example, a
+JSON line:
 
     id, source_id (the session), dataset (the point), split ("train" or "val"), primitive (noul, choice, score),
     state (the rendered view), question, candidates [{name, description}], target (a distribution over the
@@ -15,7 +16,8 @@ from pathlib import Path
 
 from .replay import in_calibration, labelled, not_held_out, splits
 
-VAL_FRAC = 0.1      # share of the training sessions the trainer may select its checkpoint on (PLAN_v0.2 M9)
+# The share of the training sessions the trainer may select its checkpoint on (docs/DESIGN.md invariant 3).
+VAL_FRAC = 0.1
 
 
 def candidates(q) -> list[dict]:

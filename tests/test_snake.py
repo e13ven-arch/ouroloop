@@ -359,7 +359,7 @@ def test_every_printed_number_is_on_disk_beside_the_same_games_played_by_the_def
 def test_a_revoked_champion_is_rolled_back_and_its_revocation_alone_trains_nothing(tmp_path):
     """A champion revoked but still the champion is a rollback that did not finish: the first session of the next
     generation finishes it, so no game runs the revoked model. And the revocation is evidence, not a trigger: it
-    acted nowhere, so it left no new data and the round trains nothing (PLAN_v0.2 M11)."""
+    acted nowhere, so it left no new data and the round trains nothing (docs/RESEARCH_AGENT.md §4)."""
     cfg = {**CFG, "demo": {**CFG["demo"], "plant": None}}
     root = run(cfg, tmp_path, generations=2, out=lambda line: None)
     champion = Registry(root).champion()

@@ -1,5 +1,5 @@
-"""`ouroloop demo <scenario> --generations N`: the whole loop, several generations in a row (DEMO_PLAN §1, PLAN_v0.2
-M13), on a scenario pack that the config names. The kernel knows the pack only through this interface:
+"""`ouroloop demo <scenario> --generations N`: the whole loop, several generations in a row (DEMO_PLAN §1,
+docs/ROADMAP.md §3.4), on a scenario pack that the config names. The kernel knows the pack only through this interface:
 
     [demo] scenario = "module:Class", options from [demo.options]   (path: where the module imports from)
     Class(**options).play(rt, session, seed, generation) -> {metric: number | bool | str}

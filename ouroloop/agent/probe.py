@@ -1,4 +1,4 @@
-"""The probe (PLAN_v0.2 M6): an environment label for every stop decision, whatever the agent did next.
+"""The probe (docs/ROADMAP.md §2.1): an environment label for every stop decision, whatever the agent did next.
 
 At each stop decision it copies the working directory as it is (the hidden tests are never in it during a run).
 After the session it writes the hidden files into each copy, runs the task's checks there, and labels the

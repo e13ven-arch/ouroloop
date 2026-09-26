@@ -1,5 +1,5 @@
-"""Harness prompt candidates (PLAN §4.8, PLAN_v0.2 M8): run the task suite with the candidate prompt, screen it on
-a few development tasks, then compare it with the champion on every task, held-out tasks included, through the frozen
+"""Harness prompt candidates (docs/DESIGN.md §2.2, pipeline 4): run the task suite with the candidate prompt, screen it
+on a few development tasks, then compare it with the champion on every task, held-out tasks included, through the frozen
 gate.
 
 The loss of a run is 1 - the share of checks passed, so lower is better, as with -gain in the other gates. Each run

@@ -1,5 +1,5 @@
-"""Where training jobs run (PLAN_v0.2 M9): this machine, or one host over ssh, the same way. A job is a new directory
-<jobs_root>/<job id>/ holding exactly the files it was given, and one detached process group:
+"""Where training jobs run (docs/DESIGN.md §2.2, pipeline 2): this machine, or one host over ssh, the same way. A job
+is a new directory <jobs_root>/<job id>/ holding exactly the files it was given, and one detached process group:
 
     nohup sh -c '<python> -m ouroloop.worker spec.json "$0" > log 2>&1; echo $? > exit' <job id>
 

@@ -1,4 +1,4 @@
-"""Decision points: a typed question asked at a fixed place in a loop (PLAN §2.1).
+"""Decision points: a typed question asked at a fixed place in a loop.
 
 The evolvable text of a point (question wording, candidate descriptions, view parameters) lives in a `Spec`,
 so a research agent can propose a changed spec and the framework can replay it offline.

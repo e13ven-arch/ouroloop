@@ -1,5 +1,5 @@
-"""The harness prompt: the agent's system prompt and tool descriptions, the part of the harness that prompt
-candidates change (PLAN §4.8). The champion lives in <workspace>/harness/prompt.json, with its history."""
+"""The harness prompt: the agent's system prompt and tool descriptions, the part of the harness that prompt candidates
+change (docs/DESIGN.md §2.2, pipeline 4). The champion lives in <workspace>/harness/prompt.json, with its history."""
 from __future__ import annotations
 
 import hashlib
@@ -61,7 +61,8 @@ class HarnessPrompt:
 
 
 class PromptStore:
-    """The champion harness prompt, with its history. A promotion compares and swaps (PLAN_v0.2 M8)."""
+    """The champion harness prompt, with its history. A promotion compares and swaps (docs/DESIGN.md §2.2, pipeline 4).
+    """
 
     def __init__(self, root: str | Path):
         self.path = Path(root) / "harness" / "prompt.json"

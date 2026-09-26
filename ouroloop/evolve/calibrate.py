@@ -1,4 +1,4 @@
-"""Calibration (PLAN §4.5, PLAN_v0.2 M7): a temperature fitted by NLL on the calibration split, then per phase a
+"""Calibration (docs/DESIGN.md invariant 3): a temperature fitted by NLL on the calibration split, then per phase a
 confidence threshold at which the share of harmed sessions (any acted decision wrong) among those the model would act
 in keeps a Clopper-Pearson bound below the phase's share of the risk, the cut-offs tested in a fixed sequence
 (policy.fit_threshold). Both are keyed by the model id the backend reports and by the point's spec hash."""
@@ -54,7 +54,7 @@ def calibrate_point(rt, point: str, backend=None, test_frac: float = 0.15, cal_f
     those change what happens. The point's risk is monitored and gated per session over all its phases, so the k
     phases that would act each get risk / k at level 0.05 / k (a union bound). A row whose phase cannot be told (no
     phase on a point that has several) counts for the temperature only. With fewer than `min_sessions` calibration
-    sessions no phase gets a threshold: the point cannot act (PLAN_v0.2 M8)."""
+    sessions no phase gets a threshold: the point cannot act (docs/DESIGN.md invariant 1)."""
     p = rt.points[point]
     if rows is None:
         rows = splits(not_held_out(rt, labelled(rt, point)), test_frac, cal_frac)["calibration"]

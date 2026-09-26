@@ -1,4 +1,4 @@
-"""The frozen gate (PLAN §4.6, PLAN_v0.2 M8), the one gate for model, spec, recipe and prompt candidates.
+"""The frozen gate (docs/DESIGN.md invariant 4), the one gate for model, spec, recipe and prompt candidates.
 
 A person freezes the gate template (`ouroloop gate freeze`). Each round the framework derives a gate record from it
 and freezes it in the ledger (a copy in <workspace>/gates/<round>.json), which fixes the round's test sessions before
@@ -43,8 +43,9 @@ TEMPLATE = {
     "target": {"fixed_share": 0.5},     # stop training once the accepted model fixes this share of default errors
     "budget": {"sessions_per_generation": 40, "max_trainings": 10},
 }
-# What no template may loosen, (lowest, highest): the execution rule's risk (PLAN_v0.2 §0), the sessions each gate
-# needs (§2), enough resamples for a 95% interval, and the runs a prompt gate needs (the template's own default).
+# What no template may loosen, (lowest, highest): the execution rule's risk (docs/DESIGN.md invariant 2), the sessions
+# each gate needs (§2), enough resamples for a 95% interval, and the runs a prompt gate needs (the template's own
+# default).
 LIMITS = {"risk": (0.0, 0.05), "min_sessions": (30, None), "n_boot": (1000, None), "suite.min_items": (10, None)}
 # Failures of the machinery, not of the candidate: the verdict is "inconclusive", never evidence against it.
 INFRA = (TrainError, OSError, subprocess.SubprocessError, httpx.HTTPError)
@@ -109,7 +110,7 @@ def validate(params: dict, past: list[GateRecord] = ()) -> None:
 
 class GateRecord:
     """A round's gate record as frozen in the ledger, whose gate events also say when it was used and what it decided
-    (the last verdict counts). The ledger is append-only (PLAN_v0.2 §1 rule 3); gates/<round>.json and
+    (the last verdict counts). The ledger is append-only; gates/<round>.json and
     gates/<round>.used.json are copies, for people and for the runtime, which the gate never reads: deleting or
     editing them changes no record, frees no test session and undoes no use."""
 

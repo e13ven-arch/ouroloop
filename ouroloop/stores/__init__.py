@@ -1,4 +1,5 @@
-"""Model stores (PLAN_v0.2, roles): where a trained model lives, apart from where it was trained and where it is served.
+"""Model stores (docs/DESIGN.md, the four roles): where a trained model lives, apart from where it was trained and where
+it is served.
 
 The training worker publishes each run to the store once; what comes back is an immutable model ref, the only thing
 cards, calibrations, pins and revocations hold. Serving fetches a ref from the same store, on whatever machine can

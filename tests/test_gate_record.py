@@ -1,5 +1,5 @@
-"""M8 offline acceptance: every promotion goes through one gate frozen before the round, on sessions no gate has
-used; promotions persist and compare-and-swap; a running session keeps its release (PLAN_v0.2 M8). Plus the M7
+"""M8 offline acceptance: every promotion goes through one gate frozen before the round, on sessions no gate has used;
+promotions persist and compare-and-swap; a running session keeps its release (docs/DESIGN.md invariant 4). Plus the M7
 safety review's leftovers. The ledger is written the way the M6 collection writes it."""
 import json
 import random
@@ -432,7 +432,8 @@ def test_the_gate_judges_the_gain_over_the_default_within_the_risk(tmp_path):
 def test_no_model_trains_before_the_data_could_buy_a_threshold(tmp_path):
     """The decisive fact, before a GPU minute is spent: with risk r a threshold needs sessions_needed(r) sessions
     with no error at all, and only a session holding a default error can buy one, because only there does a model
-    act. With fewer, no model trained on this data could ever act, and the round says so (PLAN_v0.2 M11)."""
+    act. With fewer, no model trained on this data could ever act, and the round says so (docs/RESEARCH_AGENT.md
+    §3.4)."""
     assert (sessions_needed(0.05), sessions_needed(0.2)) == (59, 14)
     rt = workspace(tmp_path / "thin", n=60)
     proposed, train, reasons, d = decide(rt)

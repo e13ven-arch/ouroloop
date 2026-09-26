@@ -1,4 +1,5 @@
-"""From an answer to an action: the execution rule, exploration and propensities (PLAN_v0.2 §0), and thresholds.
+"""From an answer to an action: the execution rule, exploration and propensities (docs/DESIGN.md invariant 1), and
+thresholds.
 
 The risk a threshold and the post-act monitor bound is per session: a session is harmed when any decision the model
 acted on in it is wrong, and the budget is the share of the sessions the model acts in that are harmed. A decision
@@ -15,7 +16,8 @@ from .types import Answer
 
 ROUTES = ("act", "default", "shadow", "rule", "error")
 # The harness's built-in points (ouroloop.points). In v0.2 stop is the only one of them that may be switched on
-# (PLAN_v0.2 §3: the others wait for their triggers); a point that a scenario pack or a contract user defines may be.
+# (docs/ROADMAP.md §5: the others wait for their triggers); a point that a scenario pack or a contract user defines may
+# be.
 HARNESS = frozenset({"retry", "compact", "tool_gate", "stop", "route"})
 ACTING = {"stop"}
 

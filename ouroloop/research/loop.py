@@ -1,5 +1,5 @@
-"""Research rounds (PLAN §5.1, PLAN_v0.2 M8): report -> agent proposes -> framework evaluates, and gates through the
-round's frozen gate record -> records."""
+"""Research rounds: report -> agent proposes -> framework evaluates, and gates through the round's frozen gate record ->
+records."""
 from __future__ import annotations
 
 from collections import defaultdict

@@ -24,7 +24,7 @@ def import_object(ref: str):
 
 @dataclass(frozen=True)
 class Pin:
-    """What a session runs with, fixed when it opens (PLAN_v0.2 M8): its release, the champion's registry version
+    """What a session runs with, fixed when it opens: its release, the champion's registry version
     and backend, the points the champion serves, and the calibrations as they were then."""
     release: Release
     version: str | None
@@ -184,9 +184,9 @@ class Runtime:
 
     def threshold(self, point: str | DecisionPoint, model: str, phase: str | None,
                   entries: dict | None = None) -> float | None:
-        """The lowest confidence at which the point may act on this model's answers in this phase (PLAN_v0.2 §0 rule
-        3): only from a calibration that carries the hash of a gate record that accepted the promotion, with the
-        temperature and thresholds that record accepted for this model, spec and point, and only for a model that
+        """The lowest confidence at which the point may act on this model's answers in this phase (docs/DESIGN.md
+        invariant 1): only from a calibration that carries the hash of a gate record that accepted the promotion, with
+        the temperature and thresholds that record accepted for this model, spec and point, and only for a model that
         names itself (an empty id would match every backend that reports none)."""
         p = self.points[point] if isinstance(point, str) else point
         cal = self.calibration_for(p, model, entries)
@@ -205,11 +205,11 @@ class Runtime:
     # ------------------------------------------------------------------ decisions
     def ask(self, point: str | DecisionPoint, ctx: Any, *, session: str = "s_default", step: int | None = None,
             phase: str | None = None, veto: str | Callable[[str | None], str | None] | None = None) -> Decision:
-        """Ask the point's backend and apply the execution rule (PLAN_v0.2 §0). A phase whose default answerer is a
-        rule has it answer first: its answer is the routing default the model's answer is compared with, so a model
-        that agrees with the rule never acts, and it is the action when the model does not act. Otherwise, when the
-        model does not act, the phase's LLM answerer answers, or its fixed label is taken; the routing default is
-        the fixed label (an LLM is asked only when the model does not act). `veto` is a rule's verdict: a label, or a
+        """Ask the point's backend and apply the execution rule (docs/DESIGN.md invariant 1). A phase whose default
+        answerer is a rule has it answer first: its answer is the routing default the model's answer is compared with,
+        so a model that agrees with the rule never acts, and it is the action when the model does not act. Otherwise,
+        when the model does not act, the phase's LLM answerer answers, or its fixed label is taken; the routing default
+        is the fixed label (an LLM is asked only when the model does not act). `veto` is a rule's verdict: a label, or a
         function of the action about to be taken that returns a label to overrule it. The rule's label is the action
         (route "rule") and the model's answer is only recorded. Whatever breaks on the way (view, question, backend,
         calibration, routing, the rule) is recorded on route "error" with the raw context, and the default is

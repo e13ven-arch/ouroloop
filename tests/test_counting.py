@@ -1,5 +1,5 @@
 """How thresholds and the post-act monitor count risk: per session, a session harmed when any decision the model acted
-on in it is wrong; the budget is the harmed share of the sessions it acts in (PLAN_v0.2 M7, M9)."""
+on in it is wrong; the budget is the harmed share of the sessions it acts in (docs/DESIGN.md invariant 2)."""
 import json
 import random
 

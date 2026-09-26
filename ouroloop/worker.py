@@ -1,4 +1,4 @@
-"""A training job (PLAN_v0.2 M9), run the same way on this machine and on a training host:
+"""A training job (docs/DESIGN.md §2.2, pipeline 2), run the same way on this machine and on a training host:
 
     <python> -m ouroloop.worker spec.json <job id>         in the job's directory, <jobs_root>/<job id>/
 

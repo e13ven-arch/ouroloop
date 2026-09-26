@@ -134,11 +134,18 @@ The checks at the end of a task also label that run's `stop` and `route` decisio
 
 ## Status
 
-v0.1. Done: the decision layer and an end-to-end skeleton (M0), the agent harness (M1), the training pipeline and research agent (M2), integrations (M3), five built-in decision points, and prompt evolution (M5). The agent, the 10-task suite and two rounds of prompt evolution have run with real models (Zhipu GLM, with Jev as the decision backend).
+v0.2 in progress. Built: the decision layer and the execution rule (risk per session, thresholds fitted by
+Clopper-Pearson in a fixed sequence); the frozen gate, which judges one candidate once, on fresh sessions, by its
+gain over the routing default; the post-act monitor, which the runtime runs as each session opens and which revokes
+and rolls back a champion that harms more sessions than the budget; the training job path with trainers as plugins,
+host bootstrap, and RunPod or Vast.ai instances per job; the model store and serving split from training, with
+deploy as its own step; and admission, so a round trains only what a plan justified.
 
-Not done yet: M4, a long unattended run showing that the share of automatic decisions rises from one generation to the next. This release provides the mechanism; the evidence so far is the TDE experiment record and the flow tests above.
+Not built yet: the LLM research agent that writes those plans (the built-in rule planner and the admission it must
+pass are there), the harness/prompt track, and a long unattended run showing the share of automatic decisions rising
+from one generation to the next. What is built is the mechanism; the evidence so far is in [docs/JOURNAL.md](docs/JOURNAL.md).
 
-The design docs are in Chinese for now: [docs/PLAN.md](docs/PLAN.md) (design and milestones) and [docs/RESEARCH_LOOP.md](docs/RESEARCH_LOOP.md) (how the research loop grew out of the TDE experiments).
+The design docs are in Chinese for now: [docs/DESIGN.md](docs/DESIGN.md) (the authoritative design, its invariants and the settled trade-offs), [docs/ROADMAP.md](docs/ROADMAP.md) (what is built, what is next, and the deferred items), [docs/RESEARCH_AGENT.md](docs/RESEARCH_AGENT.md) (the research agent, and how the research loop grew out of the TDE experiments) and [docs/JOURNAL.md](docs/JOURNAL.md) (what changed, with the evidence).
 
 ## License
 

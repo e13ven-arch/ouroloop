@@ -187,8 +187,8 @@ def cmd_deploy(args) -> int:
 
 
 def cmd_plan(args) -> int:
-    """`ouroloop plan`: what the data says, what the planner proposes and whether it is admitted (PLAN_v0.2 M11).
-    Reads only: nothing is frozen, used up or trained."""
+    """`ouroloop plan`: what the data says, what the planner proposes and whether it is admitted (docs/RESEARCH_AGENT.md
+    §2). Reads only: nothing is frozen, used up or trained."""
     from .evolve.plan import decide
     _, rt = _load_runtime(args.config)
     try:
@@ -208,7 +208,7 @@ def cmd_plan(args) -> int:
 
 
 def cmd_gate(args) -> int:
-    """`ouroloop gate freeze`: a person freezes the gate template of a workspace (PLAN_v0.2 M8)."""
+    """`ouroloop gate freeze`: a person freezes the gate template of a workspace (docs/DESIGN.md invariant 4)."""
     from .evolve.gate import freeze_template
     cfg = config.load(args.config)
     config.check_frozen(cfg)        # a config that would not start once the gate is frozen

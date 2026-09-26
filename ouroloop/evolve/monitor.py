@@ -1,11 +1,11 @@
-"""The post-act risk monitor (PLAN_v0.2 M9): the realized share of harmed sessions among those a model acted in, a
-session harmed when any decision the model acted on in it, at any point, is wrong by its outcome (not among its right
-answers, replay.right; a decision with no trainable outcome counts for nothing). The runtime runs it as each new
-session opens, before the session is pinned (Runtime.session): once the Clopper-Pearson lower bound on the champion's
-harmed share is above the frozen gate template's risk, the champion is revoked and rolled back to its last good
-ancestor (Registry.rollback: accepted, deployed and not revoked; else none, the defaults), and serving drops it. The
-new session is then pinned to the rolled-back champion, and the sessions already pinned to the revoked one take their
-defaults from their next ask on.
+"""The post-act risk monitor (docs/DESIGN.md invariant 8): the realized share of harmed sessions among those a model
+acted in, a session harmed when any decision the model acted on in it, at any point, is wrong by its outcome (not among
+its right answers, replay.right; a decision with no trainable outcome counts for nothing). The runtime runs it as each
+new session opens, before the session is pinned (Runtime.session): once the Clopper-Pearson lower bound on the
+champion's harmed share is above the frozen gate template's risk, the champion is revoked and rolled back to its last
+good ancestor (Registry.rollback: accepted, deployed and not revoked; else none, the defaults), and serving drops it.
+The new session is then pinned to the rolled-back champion, and the sessions already pinned to the revoked one take
+their defaults from their next ask on.
 
 The gate judged the model on logged states, but a decision that acts changes the states that follow it: the states
 the model reaches once it acts are not the ones it was calibrated on. The monitor judges it on those.

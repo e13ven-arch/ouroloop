@@ -84,7 +84,7 @@ class ManualProvider:
                  timeout: float = 24 * 3600.0, sleep=time.sleep):
         self.dir = Path(dir).expanduser()
         self.model = model
-        self.source = source        # whoever answers, the answers are for evaluation only (PLAN_v0.2 §1 rule 4)
+        self.source = source        # whoever answers, the answers are for evaluation only (docs/DESIGN.md invariant 6)
         self.poll, self.timeout, self.sleep = poll, timeout, sleep
 
     def complete(self, system: str, prompt: str) -> str:

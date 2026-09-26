@@ -59,6 +59,6 @@ def frozen(monkeypatch):
 
 @pytest.fixture
 def loose_risk(monkeypatch):
-    """Let a gate template take a risk of 0.2, looser than a real one may (PLAN_v0.2 §0: 5%): a few hundred
-    synthetic sessions then buy a threshold."""
+    """Let a gate template take a risk of 0.2, looser than a real one may (docs/DESIGN.md, gate.LIMITS: 5%): a few
+    hundred synthetic sessions then buy a threshold."""
     monkeypatch.setitem(gate.LIMITS, "risk", (0.0, 0.2))
