@@ -293,8 +293,9 @@ def test_init_over_ssh_sends_one_tar_so_a_host_without_rsync_can_be_prepared(hom
     assert list((home / ".ouroloop" / "incoming").iterdir()) == []       # the bundle is removed after
 
 
-def test_bootstrap_tries_a_versioned_python_when_the_default_is_too_old(home, tmp_path):
-    """Ubuntu 22.04's python3 is 3.10: bootstrap then installs python3.12, else python3.11, each on its own."""
+def _bootstrap_tree(tmp_path, home):
+    """A bootstrap plan and a PATH holding only what the script may use: its shell tools, a root `id`, an `apt-get`
+    that logs and has no python3.12, and a stub python3 the caller then writes."""
     from ouroloop.hosts import plan
     d = plan({}, tmp_path / "init")
     bare = tmp_path / "bin"
@@ -306,15 +307,43 @@ def test_bootstrap_tries_a_versioned_python_when_the_default_is_too_old(home, tm
     (bare / "apt-get").write_text(f'#!/bin/sh\necho "$@" >> {log}\n'
                                   'case "$*" in *python3.12*) exit 100;; esac\n')     # jammy has no python3.12
     (bare / "env").write_text('#!/bin/sh\nshift; exec "$@"\n')            # env DEBIAN_FRONTEND=... apt-get ...
-    (bare / "python3").write_text("#!/bin/sh\nexit 1\n")                 # too old
-    for tool in ("id", "apt-get", "env", "python3"):
+    for tool in ("id", "apt-get", "env"):
         (bare / tool).chmod(0o755)
-    out = subprocess.run([str(bare / "sh"), str(d / "bootstrap.sh"), str(d)], capture_output=True, text=True,
-                         env={"HOME": str(home), "PATH": str(bare)})
+    return d, bare, log
+
+
+def _run_bootstrap(d, bare, home):
+    return subprocess.run([str(bare / "sh"), str(d / "bootstrap.sh"), str(d)], capture_output=True, text=True,
+                          env={"HOME": str(home), "PATH": str(bare)})
+
+
+def test_bootstrap_tries_a_versioned_python_when_the_default_is_too_old(home, tmp_path):
+    """Ubuntu 22.04's python3 is 3.10: bootstrap then installs python3.12, else python3.11, each on its own."""
+    d, bare, log = _bootstrap_tree(tmp_path, home)
+    (bare / "python3").write_text("#!/bin/sh\nexit 1\n")                 # too old
+    (bare / "python3").chmod(0o755)
+    out = _run_bootstrap(d, bare, home)
     installs = [line.split()[3:] for line in log.read_text().splitlines() if line.startswith("install")]
     assert installs == [["python3", "python3-venv"], ["python3.12", "python3.12-venv"],
                         ["python3.11", "python3.11-venv"]]
-    assert out.returncode == 1 and "no Python >= 3.11 with venv here" in out.stderr and "OUROLOOP_PYTHON" in out.stderr
+    assert out.returncode == 1 and "no usable Python >= 3.11 here" in out.stderr and "OUROLOOP_PYTHON" in out.stderr
+    assert "does not run" in out.stderr                     # and it says what is wrong with the python3 that is here
+
+
+def test_the_bootstrap_says_what_is_wrong_with_the_python_that_is_here(home, tmp_path):
+    """A host whose python3 is new enough but has no pip (Debian splits it into python3-venv) once got "no Python
+    >= 3.11 with venv here", which sends a person to install a Python they already have. The message names what is
+    actually missing."""
+    d, bare, _ = _bootstrap_tree(tmp_path, home)
+    (bare / "python3").write_text("#!/bin/sh\n"
+                                  'case "$*" in\n'
+                                  '  *ensurepip*) exit 1;;\n'             # venv is there, pip is not
+                                  '  *print*) echo 3.14; exit 0;;\n'
+                                  'esac\nexit 0\n')
+    (bare / "python3").chmod(0o755)
+    out = _run_bootstrap(d, bare, home)
+    assert out.returncode == 1 and "is 3.14 with venv but no pip" in out.stderr
+
 
 
 def test_a_signature_run_says_what_it_is_so_a_model_server_loads_the_same_model(tmp_path):

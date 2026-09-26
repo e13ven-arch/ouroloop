@@ -56,6 +56,16 @@ usable() {                          # a Python >= 3.11 that can make a venv (wit
     [ -n "${OUROLOOP_TEST_PIP:-}" ] || "$1" -c 'import ensurepip' 2>/dev/null
 }
 
+why_unusable() {                    # what is wrong with the python3 that is here, for an error a person can act on
+    p=$(command -v python3 2>/dev/null) || { echo "no python3 on PATH"; return; }
+    v=$("$p" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null) || { echo "$p does not run"; return; }
+    "$p" -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null ||
+        { echo "$p is $v, older than 3.11"; return; }
+    "$p" -c 'import venv' 2>/dev/null || { echo "$p is $v but has no venv (the python3-venv package)"; return; }
+    "$p" -c 'import ensurepip' 2>/dev/null || { echo "$p is $v with venv but no pip (the python3-venv package)"; return; }
+    echo "$p is $v and looks usable"
+}
+
 find_python() {
     for p in ${OUROLOOP_PYTHON:-} python3.13 python3.12 python3.11 python3; do
         if command -v "$p" >/dev/null 2>&1 && usable "$(command -v "$p")"; then command -v "$p"; return 0; fi
@@ -73,8 +83,8 @@ PY=$(find_python) || {
             install_packages python3.11 python3.11-venv || true
     else install_packages python3 || true
     fi
-    PY=$(find_python) || die "no Python >= 3.11 with venv here: install one, and set OUROLOOP_PYTHON to it if it is \
-not python3.x on PATH"
+    PY=$(find_python) || die "no usable Python >= 3.11 here: $(why_unusable). Install one with venv and pip, or set \
+OUROLOOP_PYTHON to one that has both (it need not be python3.x on PATH: a conda or pyenv interpreter will do)"
 }
 
 if [ -x "$VENV/bin/python" ] && ! "$VENV/bin/python" -c 'import sys; sys.exit(sys.version_info < (3, 11))'; then
