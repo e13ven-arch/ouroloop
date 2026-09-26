@@ -2,9 +2,13 @@
 
 [English](README.md) | 中文
 
-一个轻量的 RSI 框架：不去改进大模型本身，而是让 LLM 提升一个小型决策模型的智能，再用这个决策模型提升 agent harness。
+一个轻量的 RSI 框架：从任务执行反馈中学习可复用的小型决策策略，在有限预算下改善 agent 的完整任务表现。
 
-agent 运行中有很多判断：要不要重试、这段历史还留不留、这条命令能不能直接执行、任务做完没有。ouroloop 把这些判断交给一个校准过的决策模型（Jev，或者自己训练的小模型，比如 TDE），一次前向给出概率；置信度不够、或者决策点还没打开时，走决策点声明的默认动作：固定动作、规则、LLM 或人。每次判断的真实结果都写进本地账本。`ouroloop evolve` 用这些结果自动训练新模型；研究 agent（LLM 推理、决策模型判别）读评测结果，提出决策点、训练配方和 prompt 的改进，也可以换成你自己的实现。决策后端可以直接接 Jev API，也可以用自己训练的小模型（比如 TDE）：冷启动时用 Jev，自己的模型攒够数据后逐个接管决策点。所有改动都要通过留出评测和同一个晋升门，才会替换旧版本。
+当前设计目标是在 AutomationBench Marketing 上跑通业务改进闭环，与业界领先模型和同底座改进前的 agent 比较。prompt 和工作流程的改进同样有效；训练出的决策模型需要证明额外的任务效果或成本收益。
+
+**实现状态：** 决策层、账本、训练作业、模型库与服务已有实现；AutomationBench 适配器、业务反馈构造、完整任务晋升闭环及评测结果尚未完成。见 [v0.4 设计](docs/DESIGN.md)与[实施路线图](docs/ROADMAP.md)。下面的可运行示例检查现有机制，不代表已取得业务 benchmark 收益。
+
+agent 会反复判断是否重试、保留上下文、验证或结束。ouroloop 将适合学习的判断声明为决策点，接入 Jev 或自己训练的小模型；未启用、弃权或服务失败时走既定默认策略。有依据的动作标签才能进入监督训练，整段任务得分不能直接当每一步的标签。候选接口可以提出 spec、训练配方和 prompt 改动，接下来要将它们与完整业务任务评测连接起来。
 
 ## RSI 是怎么发生的
 
@@ -12,13 +16,13 @@ agent 运行中有很多判断：要不要重试、这段历史还留不留、�
 
 <p align="center"><img src="docs/assets/architecture.zh-CN.gif" alt="ouroloop 架构：一个环，上半圈每个 session 都在跑，下半圈每一轮跑一次" width="100%"></p>
 
-上半圈是在线部分，每个 session 都在跑：业务 agent 问运行时，环境给出结果，账本记录，监控盯着。数据通过准入、计划成立后进入下半圈：研究 agent 在开发集上试几种改法，挑最好的一个去训练，冻结的门用新 session 判一次。第一轮的候选被拒，第二轮通过，谱系长出 v2，之后的 session 就用上 v2。
+图示说明反馈循环的设计，不是业务实测结果。现有场景循环采集决策和标签，由内置计划器准入，训练、评测并在后续 session 使用选定版本。自动研究员与完整业务任务评测器仍需接入。
 
-为什么是递归的：晋升的模型会改变它所在的 session。它执行的地方，agent 会走到默认永远到不了的状态；这些状态的结果写进账本，下一轮就用它们训练。更好的策略，带来新的状态，新状态产生数据，数据训练出更好的策略。
+迭代机制是：更新后的策略改变后续执行到达的状态，新反馈再驱动下一轮更新。是否提高新任务表现，需要重新运行完整任务验证；晋升和局部准确率提高都不保证下一代更强。
 
-靠什么保证安全：模型只在校准后的置信度过了阈值、且答案和默认不同时才执行，其余地方照旧走默认。阈值和晋升门都按 session 限制风险（有任何一次执行出错就算这个 session 受损，比例最多 5%）；晋升门由人冻结，在候选从没训练过的新 session 上按相对默认的增益评判。执行会改变之后的状态，所以在历史状态上安全的模型，到了线上仍可能造成伤害：runtime 的监控在每个 session 打开时检查冠军，受损比例的 95% 下界超出预算就撤销它，已经在用它的 session 从下一个决策起走默认。这个下界在每个 session 打开时都检查一次，所以接近预算的模型被偶然撤销的概率也会高于 5%。
+现有接管策略有校准阈值、按有标签 session 的风险检查和运行时撤销，依赖相应反馈与统计假设，不构成“业务任务失败率最多 5%”的保证。拟建 benchmark profile 按独立的完整任务协议评测，保留原部署 profile。
 
-还没做：循环里的研究 agent。`ouroloop research` 单独按轮提出决策点 spec、训练配方和 prompt 的候选；上面的循环用配置里的配方训练。
+`ouroloop research` 当前与场景世代循环分别运行；研究、业务反馈、训练和任务评测的接线见路线图。
 
 ## 快速上手
 
@@ -57,7 +61,7 @@ ouroloop models --dir examples/workspace                            # 查看模�
 
 门模板只能收紧、不能放宽 5% 的风险、每次过门需要的 30 个新 session 和 bootstrap 次数。每轮的门记录、它的使用和结论都是账本里的事件，`gates/` 里只是副本。只有门记录接受过的候选才能晋升、作答和执行。
 
-关于 TDE：TDE 是单独的项目，之后另行开源；本仓库里的 `tde` 训练器记录了 ouroloop 怎么训练它：作为一个任务（`ouroloop/evolve/worker.py`）在本机运行，或者设 `host = "user@box"` 通过 ssh 在 GPU 主机上运行，每个任务在那台机器上有一个新目录 `<jobs_root>/<job id>/`。任务把 run 发布到模型库 `[store]`，训练出的模型是一个引用：`type = "dir"` 时是任务 id（一个目录，有训练主机时在那台主机上），`type = "hf"` 时是 `<repo>@<commit>`（run 提交一次到私有的 Hugging Face 仓库）。`[serving]`（旧名 `[models]`）说明这些引用怎么问：`url`（和 `token_env`）指向能读模型库的主机上的 `ouroloop serve`，或者在进程内从模型库加载。过门的模型先部署再成为冠军（部署失败用 `ouroloop deploy <version>` 重试）。控制面、训练、模型库、服务是四个角色；一台 GPU 主机包下其中三个只是一种布局（docs/TRAINING_HOSTS.md）。没有 TDE 时，训练管线用内置的签名小模型（`type = "signature"`）也能完整跑通；接自己的模型就写一个训练器插件（`ouroloop/trainers/__init__.py`，docs/TRAINING_HOSTS.md §1）：`train` 作为作业在训练机器上跑，`backend(run, ref, options)` 为服务加载模型；配置里写 `type = "your.module"`。写成 `type = "your.module:YourTrainer"` 的训练器在当前进程里训练，后端也在这里建，不经过模型库和 `[serving]`，只用于测试和 demo。
+关于 TDE：TDE 是单独的项目，之后另行开源；本仓库里的 `tde` 训练器记录了 ouroloop 怎么训练它：作为一个任务（`ouroloop/worker.py`）在本机运行，或者设 `host = "user@box"` 通过 ssh 在 GPU 主机上运行，每个任务在那台机器上有一个新目录 `<jobs_root>/<job id>/`。任务把 run 发布到模型库 `[store]`，训练出的模型是一个引用：`type = "dir"` 时是任务 id（一个目录，有训练主机时在那台主机上），`type = "hf"` 时是 `<repo>@<commit>`（run 提交一次到私有的 Hugging Face 仓库）。`[serving]`（旧名 `[models]`）说明这些引用怎么问：`url`（和 `token_env`）指向能读模型库的主机上的 `ouroloop serve`，或者在进程内从模型库加载。过门的模型先部署再成为冠军（部署失败用 `ouroloop deploy <version>` 重试）。控制面、训练、模型库、服务是四个角色；一台 GPU 主机包下其中三个只是一种布局（docs/TRAINING_HOSTS.md）。没有 TDE 时，训练管线用内置的签名小模型（`type = "signature"`）也能完整跑通；接自己的模型就写一个训练器插件（`ouroloop/trainers/__init__.py`，docs/TRAINING_HOSTS.md §1）：`train` 作为作业在训练机器上跑，`backend(run, ref, options)` 为服务加载模型；配置里写 `type = "your.module"`。写成 `type = "your.module:YourTrainer"` 的训练器在当前进程里训练，后端也在这里建，不经过模型库和 `[serving]`，只用于测试和 demo。
 
 要让 TDE 实时回答单个决策，就在 GPU 主机上常驻一个决策服务，harness 这边用 `type = "http"` 的后端连过去：
 
@@ -117,11 +121,11 @@ prompt 候选按下面几步评测：
 
 ## 状态
 
-v0.2 进行中。已建好：决策层与执行规则（风险按 session 计，阈值用 Clopper-Pearson 在固定序列里拟合）；冻结的门，一份记录判一个候选、一次、在新鲜 session 上、按它对路由默认的增益；执行后监控，由运行时在每个 session 打开时跑，被害 session 超出预算就撤销并回退冠军；训练任务路径，训练器是插件，主机可一键初始化，也可以每个任务开一台 RunPod 或 Vast 实例；模型库与推理服务从训练里拆开，上线是独立一步；以及准入，一轮只训练有计划支撑的候选。
+当前代码具备决策点、账本、监督训练作业、训练器插件、模型库与服务、校准、版本管理、场景世代循环，以及独立的研究与 prompt 候选路径。
 
-还没建：写这些计划的 LLM 研究 agent（内置的规则计划器和它必须通过的准入已经在了）、harness / prompt 这条轨道，以及无人值守长跑、证明自动执行比例逐代上升。现在有的是机制；证据在 [docs/JOURNAL.md](docs/JOURNAL.md) 里。
+设计 v0.4 的主线是 AutomationBench Marketing。待完成：环境适配、任务组划分、有依据的业务训练信号、完整任务评测与晋升、研究循环接线、领先模型比较和可复现报告。本仓库尚无 AutomationBench 性能收益。历史证据保留在 [docs/JOURNAL.md](docs/JOURNAL.md)。
 
-权威设计见 [docs/DESIGN.md](docs/DESIGN.md)，已经建好的和下一步见 [docs/ROADMAP.md](docs/ROADMAP.md)，研究 agent 和研究循环的来龙去脉见 [docs/RESEARCH_AGENT.md](docs/RESEARCH_AGENT.md)，改动和证据见 [docs/JOURNAL.md](docs/JOURNAL.md)。
+权威设计见 [docs/DESIGN.md](docs/DESIGN.md)，实现状态与下一步见 [docs/ROADMAP.md](docs/ROADMAP.md)，研究员职责与接口见 [docs/RESEARCH_AGENT.md](docs/RESEARCH_AGENT.md)，演示与结果呈现见 [docs/DEMO.md](docs/DEMO.md)，改动和证据见 [docs/JOURNAL.md](docs/JOURNAL.md)。
 
 ## 许可证
 

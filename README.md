@@ -2,15 +2,19 @@
 
 English | [中文](README.zh-CN.md)
 
-A lightweight RSI framework. Instead of improving the base model, an LLM improves a small decision model, and the decision model improves the agent harness.
+A lightweight RSI framework for improving agent task outcomes from execution feedback. The core research direction is to train a small decision model that helps an agent choose better actions under a fixed budget.
+
+The current design target is an end-to-end improvement loop on AutomationBench Marketing, evaluated against leading models and the same base agent before improvement. Prompt and workflow changes are valid improvements; a trained decision model must show additional task-quality or cost benefits to justify its use.
+
+**Status:** the decision and training infrastructure exists. The AutomationBench adapter, business feedback construction, task-level promotion loop and benchmark results are not implemented yet. See the [v0.4 design](docs/DESIGN.md) and [implementation roadmap](docs/ROADMAP.md). The runnable examples below exercise the current mechanisms; they do not demonstrate business benchmark gains.
 
 An agent makes many small judgment calls: retry this command? keep this output in context? run this without asking? is the task done? ouroloop sends each of them to a calibrated decision model as a typed question (yes/no, a choice, or a score) and gets probabilities back in one forward pass. When the model is not confident, or its point is not switched on yet, the point takes its declared default: a fixed action, a rule, an LLM or a person. Every call, and what actually happened afterwards, goes into a local ledger.
 
-Those outcomes are training labels. `ouroloop evolve` trains a new decision model from them, and a research agent (an LLM that reasons, with a decision model as the judge) reads the evaluation results and proposes changes to decision-point specs, training recipes and the harness prompt. You can swap in your own research agent. Every change has to pass held-out evaluation and the same promotion gate before it replaces the current version.
+Outcomes with a justified action label can become supervised training examples. A final task reward alone does not label every intermediate decision. `ouroloop evolve` trains from labelled data; the separate research loop can propose decision-spec, recipe and harness-prompt candidates. Connecting research, business feedback, training and complete task evaluation is the next implementation step.
 
 The decision backend can be the Jev API or a small model you train yourself, such as TDE: start with Jev, and let your own model take over decision points one by one as data accumulates. Answers from Jev and from closed LLMs are never training labels: labels come from observed outcomes and from people.
 
-The premise: commercial LLMs already reason well, and in real work the decisions are what matter most. ouroloop improves decisions, not reasoning.
+Small models are an empirical choice for recurring decisions with useful feedback. Clear rules and effective prompts remain valid alternatives; a small answer space does not imply an easy reasoning problem.
 
 ## How the loop improves itself
 
@@ -18,13 +22,13 @@ The premise: commercial LLMs already reason well, and in real work the decisions
 
 <p align="center"><img src="docs/assets/architecture.gif" alt="ouroloop architecture: a loop whose top half runs every session and whose bottom half runs every round" width="100%"></p>
 
-Sessions run along the top: the business agent asks the runtime, the environment answers, the ledger records, the monitor watches. When the data admits a plan, the research agent tries changes on dev data, the best one trains, and the frozen gate judges it once on fresh sessions: rejected in the first round, accepted in the second, and the lineage grows a v2 that the next sessions run.
+The diagram illustrates the feedback-loop design, not a measured business result. Current scenario runs collect decisions and labels, apply the built-in planner, train and evaluate candidates, and use the selected release in later sessions. The automatic researcher and complete business-task evaluator still need to be connected.
 
-Why this is recursive: a promoted model changes the sessions it runs in. Where it acts, the agent reaches states the default would never have reached; their outcomes go into the ledger, and the next round trains on them. Better policy, new states, data from those states, better policy.
+An updated policy changes the states encountered in later sessions; their feedback can inform the next update. This is the iterative learning mechanism under study. Neither promotion nor a better score on logged states guarantees improvement on new tasks.
 
-What keeps it safe: the model acts only where its calibrated confidence clears a threshold and its answer differs from the default, so everywhere else the default runs as before. The threshold and the gate bound the risk per session (the share of sessions harmed by any wrong act, 5% at most), and the gate, frozen by a person, judges each candidate on fresh sessions it never trained on, by its gain over the default. Because acting changes the states that follow, a model safe on logged states can still harm live ones: the runtime's monitor checks the champion as each session opens and revokes it once the 95% lower bound on its harmed share is above the budget, and sessions already running it take their defaults from their next decision on. The bound is checked again as each session opens, so a model near its budget is also revoked by chance more often than 5%.
+The existing takeover policy uses calibrated thresholds, labelled-session risk checks and runtime revocation. These controls depend on their feedback and statistical assumptions; they do not establish a 5% business-task failure bound. The planned benchmark profile will evaluate complete task outcomes under a separately fixed protocol while preserving the existing deployment profile.
 
-Not built yet: the research agent inside this loop. `ouroloop research` proposes spec, recipe and prompt candidates in rounds of its own; the loop above trains with the config's recipe.
+`ouroloop research` currently runs separately from the scenario generation loop. Its integration with task feedback and training is tracked in the roadmap.
 
 ## Quick start
 
@@ -86,7 +90,7 @@ ouroloop ledger --dir examples/workspace                       # decisions, labe
 
 The gate template can tighten, never loosen, the 5% risk, the 30 fresh sessions each gate needs and the bootstrap. Each round's gate record, its use and its verdict are events in the ledger; `gates/` holds copies. Only what a gate record accepted can be promoted, answer or act.
 
-About TDE: TDE is a separate project that will be released on its own. The `tde` trainer records how ouroloop trains it: as a job (`ouroloop/evolve/worker.py`) on this machine, or on a GPU host over ssh with `host = "user@box"`, in a new directory `<jobs_root>/<job id>/` there. The job publishes its run to the model store, `[store]`, and the model it yields is a ref: the job id with `type = "dir"` (a directory, on the training host when there is one), or `<repo>@<commit>` with `type = "hf"`, which commits the run once to a private Hugging Face repository. `[serving]` (formerly `[models]`) says how refs are asked: `url` (and `token_env`) for `ouroloop serve` on a host that can read the store, or in-process from the store. A model the gate accepts is deployed before it becomes the champion (`ouroloop deploy <version>` retries a failed deploy). Control plane, training, store and serving are four roles; one GPU host that holds three of them is a layout (docs/TRAINING_HOSTS.md). Without TDE, the whole pipeline runs with the built-in signature model (`type = "signature"`). To bring your own model, write a trainer plugin (`ouroloop/trainers/__init__.py`, docs/TRAINING_HOSTS.md §1): `train` runs as the job on the training machine, `backend(run, ref, options)` loads the model for serving; name it in the config as `type = "your.module"`. A `type = "your.module:YourTrainer"` trainer trains in this process and its backend is built here, outside the store and `[serving]`: for tests and demos.
+About TDE: TDE is a separate project that will be released on its own. The `tde` trainer records how ouroloop trains it: as a job (`ouroloop/worker.py`) on this machine, or on a GPU host over ssh with `host = "user@box"`, in a new directory `<jobs_root>/<job id>/` there. The job publishes its run to the model store, `[store]`, and the model it yields is a ref: the job id with `type = "dir"` (a directory, on the training host when there is one), or `<repo>@<commit>` with `type = "hf"`, which commits the run once to a private Hugging Face repository. `[serving]` (formerly `[models]`) says how refs are asked: `url` (and `token_env`) for `ouroloop serve` on a host that can read the store, or in-process from the store. A model the gate accepts is deployed before it becomes the champion (`ouroloop deploy <version>` retries a failed deploy). Control plane, training, store and serving are four roles; one GPU host that holds three of them is a layout (docs/TRAINING_HOSTS.md). Without TDE, the whole pipeline runs with the built-in signature model (`type = "signature"`). To bring your own model, write a trainer plugin (`ouroloop/trainers/__init__.py`, docs/TRAINING_HOSTS.md §1): `train` runs as the job on the training machine, `backend(run, ref, options)` loads the model for serving; name it in the config as `type = "your.module"`. A `type = "your.module:YourTrainer"` trainer trains in this process and its backend is built here, outside the store and `[serving]`: for tests and demos.
 
 To serve a model for harnesses on other machines, run the decision service where the model lives and point an `http` backend at it. Binding to anything other than localhost requires a token, because `/outcome` writes training labels into the ledger.
 
@@ -134,18 +138,11 @@ The checks at the end of a task also label that run's `stop` and `route` decisio
 
 ## Status
 
-v0.2 in progress. Built: the decision layer and the execution rule (risk per session, thresholds fitted by
-Clopper-Pearson in a fixed sequence); the frozen gate, which judges one candidate once, on fresh sessions, by its
-gain over the routing default; the post-act monitor, which the runtime runs as each session opens and which revokes
-and rolls back a champion that harms more sessions than the budget; the training job path with trainers as plugins,
-host bootstrap, and RunPod or Vast.ai instances per job; the model store and serving split from training, with
-deploy as its own step; and admission, so a round trains only what a plan justified.
+The current implementation provides decision points, the ledger, supervised training jobs, trainer plugins, model storage and serving, calibration, version management, a scenario generation loop, and a separate research/prompt candidate path.
 
-Not built yet: the LLM research agent that writes those plans (the built-in rule planner and the admission it must
-pass are there), the harness/prompt track, and a long unattended run showing the share of automatic decisions rising
-from one generation to the next. What is built is the mechanism; the evidence so far is in [docs/JOURNAL.md](docs/JOURNAL.md).
+Design v0.4 prioritizes AutomationBench Marketing. Missing work includes the adapter, task-group data splits, justified business feedback, complete-task evaluation and promotion, the integrated researcher, and reproducible comparisons with leading models. No AutomationBench performance gain has been measured in this repository. Existing evidence remains in [docs/JOURNAL.md](docs/JOURNAL.md).
 
-The design docs are in Chinese for now: [docs/DESIGN.md](docs/DESIGN.md) (the authoritative design, its invariants and the settled trade-offs), [docs/ROADMAP.md](docs/ROADMAP.md) (what is built, what is next, and the deferred items), [docs/RESEARCH_AGENT.md](docs/RESEARCH_AGENT.md) (the research agent, and how the research loop grew out of the TDE experiments) and [docs/JOURNAL.md](docs/JOURNAL.md) (what changed, with the evidence).
+The design docs are in Chinese for now: [docs/DESIGN.md](docs/DESIGN.md) (the authoritative design, its invariants and the settled trade-offs), [docs/ROADMAP.md](docs/ROADMAP.md) (what is built, what is next, and the deferred items), [docs/RESEARCH_AGENT.md](docs/RESEARCH_AGENT.md) (the researcher: what it reads, the experiment it writes, its boundaries), [docs/DEMO.md](docs/DEMO.md) (the interactive demo and the video) and [docs/JOURNAL.md](docs/JOURNAL.md) (what changed, with the evidence).
 
 ## License
 
