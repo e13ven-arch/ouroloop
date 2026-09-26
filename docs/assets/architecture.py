@@ -278,7 +278,8 @@ def models(d, t, v2: bool, flash: bool) -> None:
     x = x0 + 14
     for k, (pt, ver) in enumerate(((f"{t['point']} A", "v2" if v2 else "v1"), (f"{t['point']} B", "v1"))):
         hot = flash and k == 0
-        x += chip(d, x, y0 + 70, f"{pt} → {ver}" if LANG[0] == "zh" else f"{pt}: {ver}", EMBER if hot else ONLINE[1], "#FDEEE6" if hot else ONLINE[0]) + 12
+        label = f"{pt} → {ver}" if LANG[0] == "zh" else f"{pt}: {ver}"      # Helvetica has no arrow
+        x += chip(d, x, y0 + 70, label, EMBER if hot else ONLINE[1], "#FDEEE6" if hot else ONLINE[0]) + 12
 
 
 def experiments(d, t, key, shown: int, chosen: int | None) -> None:
