@@ -12,7 +12,7 @@
 | 准入 `admit`（阈值可达、门能判、headroom、功效、目标、预算、重复） | 已实现 | `ouroloop/evolve/plan.py` |
 | 一轮的决策 `decide` 与 `ouroloop plan` 打印 | 已实现 | `ouroloop/evolve/plan.py`、`ouroloop/cli.py:cmd_plan` |
 | 计划随卡片和经验日志落盘，门量到的增益与预测并排 | 已实现 | `ouroloop/evolve/pipeline.py:evolve_model`、`Plan.measured` |
-| 撤销冷却期（撤销是证据，不是触发器） | **部分实现**：规则挂在冠军指针上，监控回滚之后就不触发（见 §4） | `plan.plan` + `Champion.new_sessions/rows` |
+| 撤销冷却期（撤销是证据，不是触发器） | **部分实现**：不会因撤销而重训（旧的 `schedule()` 已删），但规则挂在冠军指针上，监控回滚之后就不触发，漂移后的恢复只能等翻倍规则（见 §4） | `plan.plan` + `Champion.new_sessions/rows` |
 | 研究 agent 能看见的视图 `Workspace` / `Report` / `Candidate` | 已实现（给 spec、recipe、prompt 候选用） | `ouroloop/research/agent.py`、`ouroloop/research/loop.py` |
 | LLM 计划器（实现 `plan(rt, d)` 的那一个） | **未实现** | — |
 | 指纹式重复锁（点、类型、错误分组签名、规范化改动） | **未实现**，今天是 (kind, change, train_rows) | `plan.repeated` |
@@ -154,7 +154,7 @@ def plan(rt, d: Diagnosis) -> tuple[Plan | None, str]:      # ouroloop/evolve/pl
 
 **这条规则今天挂在冠军指针上，无人值守的循环里不会触发。** `plan.plan` 第 4 条判的是 `d.champion.revoked`，而 `d.champion` 永远是当前冠军指针指向的那张卡（`_acting` / `_champion`），`revoked` 只有当这张卡本身在撤销名单上才非空。运行时的监控却是撤销与回滚一次做完的：`monitor.watch` 撤销之后立刻调 `_roll_back` → `Registry.rollback`，指针被移到 `last_good`——一个被接受、已部署、**未被撤销**的祖先，没有就移到 None。所以监控撤销之后冠军已经不是被撤销的那个模型，`d.champion.revoked` 为 None，第 4 条不会触发，`acted_sessions` / `harmed` / `rows` 描述的也是回滚到的那个祖先。唯一能命中的是「已撤销但还是冠军」这个残局，而 `watch` 自己在下一个 session 钉住之前就把它修掉。`generations.run` 正是先打完一代 session（每个 session 都跑 `watch`）再调 `decide`。上面那个测试能走通，是因为它直接调 `release.revoke` 而不做回滚，指针仍指着 `m_0001`。
 
-因此它拦住的那次失败（撤销即重训）今天仍然敞着。要落地，这条分支得改成从 `harness/revoked.json` 读最近一次被撤销的模型和它执行过的 session，而不是读冠军指针。
+方向要说清楚：这条分支不触发，等于撤销既不触发训练也不阻挡训练，一切交给翻倍规则。所以它本来要拦的那次失败（撤销即重训）今天是关着的——旧的 `schedule()` 已经删除，没有任何别的路径会因为一次撤销去训练。敞着的是另一半：环境漂移之后，被撤销的模型执行过的那批数据本该立刻用上，现在只能等默认错误自己翻倍。要落地，这条分支得改成从 `harness/revoked.json` 读最近一次被撤销的模型和它执行过的 session，而不是读冠军指针。
 
 ## 5. 失败族（设计，未实现）
 
