@@ -455,22 +455,34 @@ def test_no_model_trains_before_the_data_could_buy_a_threshold(tmp_path):
 def test_a_revocation_is_evidence_not_a_reason_to_train(tmp_path):
     """A champion revoked after acting in two sessions leaves almost the same data behind: the next candidate would
     see it and fail the same way, so the round trains nothing. Once the revoked model's sessions do add materially
-    to the training rows, the revocation is a reason."""
+    to the training rows, the revocation is a reason - once. Only the acting sessions a candidate could train on
+    count: not this round's test sessions, and not the ones the last candidate already saw, so one revocation
+    never proposes a round again and again while the ledger grows around it."""
     rt = workspace(tmp_path, n=150)
     accept(rt.root, {"version": "m_0001", "gate": "accepted", "model_id": "R1", "points": ["stop"],
                      "parent": None, "default_errors": default_errors(rt, ["stop"]),
                      "data": {"stop": {"train": 60, "val": 5}},
+                     "backend": {"type": "test_gate_record:Oracle", "model": "R1", "q": 0.7},
                      "metrics": {"stop": {"challenger": {"fixed_share": 0.2}}}})
     Registry(rt.root).promote("m_0001", None)
     collect(rt, 2, start=150, held_every=999, acted_by="R1")          # the two sessions it acted in
     revoke(rt.root, "m_0001", "R1", "the monitor")
     proposed, train, reasons, d = decide(rt)
-    assert proposed is None and not train and (d.champion.acted_sessions, d.champion.rows) == (2, 2)
-    assert reasons == [f"m_0001 was revoked after acting in 2 sessions, which left 2 labelled rows: too little new "
-                       f"data to train on again; a revocation is evidence, not a reason to train"]
+    assert proposed is None and not train and (d.champion.acted_sessions, d.champion.rows) == (2, 0)
+    assert reasons == [f"m_0001 was revoked after acting in 2 sessions, which left 0 labelled rows no candidate has "
+                       f"trained on: too little new data to train on again; a revocation is evidence, not a reason "
+                       f"to train"]
     collect(rt, 40, start=152, held_every=999, acted_by="R1")         # sessions enough to be worth another try
-    proposed, _, reasons, d = decide(rt)
-    assert proposed is not None and d.champion.rows == 42 and "brought 42 labelled rows" in reasons[0]
+    proposed, train, reasons, d = decide(rt)
+    # the 30 latest of the 42 sessions it acted in are this round's test set: only the other 12 could train anything
+    assert proposed is not None and train and (d.champion.acted_sessions, d.champion.rows) == (42, 12)
+    assert (d.champion.new_sessions, d.points["stop"].test_sessions) == (12, 30)
+    assert "brought 12 labelled rows no candidate has trained on" in reasons[0]
+    # a candidate trains on them and is rejected; the same revocation is not a reason a second time
+    card = evolve_model(rt, Trainer("NO", type="test_gate_record:Model", p_yes=0.01), plan=proposed)
+    assert card["gate"] == "rejected"
+    proposed, train, reasons, d = decide(rt)
+    assert proposed is None and not train and d.champion.rows == 0 and "too little new data" in reasons[0]
 
 
 def test_a_hypothesis_that_already_failed_on_as_much_data_is_refused(tmp_path):
@@ -486,6 +498,94 @@ def test_a_hypothesis_that_already_failed_on_as_much_data_is_refused(tmp_path):
                                   f"point's gain rose significantly); a new hypothesis or more data is needed"]
     grown = replace(proposed, data={**proposed.data, "train_rows": proposed.data["train_rows"] + 100})
     assert admit(rt, grown, d, params) == (True, [])
+
+
+def test_an_infrastructure_failure_leaves_the_same_plan_to_run_again(tmp_path):
+    """A crashed training job is a failure of the machinery, not of the hypothesis (gate.INFRA: "never evidence
+    against it"), so the plan is still the right thing to run and the next round runs it, instead of asking for a
+    new hypothesis until the ledger has grown."""
+    rt = workspace(tmp_path, n=150)
+    proposed, train, _, _ = decide(rt)
+    assert train
+    card = evolve_model(rt, OracleTrainer(fail=True), plan=proposed)
+    assert card["gate"] == "inconclusive" and [e["gate"] for e in experience.read(rt.root)] == ["inconclusive"]
+    again, train, reasons, _ = decide(rt)
+    assert train and reasons == ["no candidate trained yet"] and again.data == proposed.data
+
+
+def test_no_model_trains_where_the_template_fits_no_threshold_at_all(tmp_path):
+    """min_cal_sessions is as hard a precondition as the risk: below it calibrate_point gives every phase a
+    threshold of None, so the candidate could never act and the gate could only reject it. The round refuses before
+    the GPU minutes, however many calibration sessions hold a default error."""
+    rt = config.build_runtime(CFG, tmp_path)
+    collect(rt, 150)
+    freeze_template(rt.root, {**ACT_GATE, "min_cal_sessions": 1000})
+    proposed, train, reasons, d = decide(rt)
+    cal = d.points["stop"].calibration_sessions
+    assert proposed is not None and not train and d.points["stop"].error_sessions >= sessions_needed(0.2)
+    assert reasons == [f"stop: {cal} calibration sessions, the template fits no threshold below 1000; no model "
+                       f"trained on this data could ever act, so collect {1000 - cal} more"]
+
+
+def test_a_risk_no_threshold_could_meet_is_a_reason_not_a_search(tmp_path):
+    """A risk of 0 is a template gate.LIMITS still allows, and no number of clean sessions bounds an error rate
+    below it: the round says so, instead of counting sessions forever."""
+    with pytest.raises(ValueError, match="a risk of 0 lets no threshold be fitted at all"):
+        sessions_needed(0)
+    rt = config.build_runtime(CFG, tmp_path)
+    collect(rt, 150)
+    freeze_template(rt.root, {**ACT_GATE, "risk": 0.0})
+    proposed, train, reasons, _ = decide(rt)
+    assert proposed is not None and not train and len(reasons) == 1
+    assert reasons[0].startswith("gate template: a risk of 0.0 lets no threshold be fitted at all")
+
+
+def test_a_point_that_cannot_decide_is_left_out_of_the_plan_not_a_veto(tmp_path):
+    """The gate neither passes nor blocks on a point with too few test sessions (decide_points), so the admission
+    drops it and trains on the points that can decide: a rare second point must not keep the main one from ever
+    training."""
+    rt = config.build_runtime({**CFG, "points": {**CFG["points"], "retry": {"backend": "champion"}}}, tmp_path)
+    collect(rt, 150)
+    freeze_template(rt.root, ACT_GATE)
+    proposed, train, reasons, d = decide(rt)
+    assert set(d.points) == {"stop", "retry"} and d.points["retry"].test_sessions == 0
+    assert train and proposed.points == ["stop"]
+    assert reasons == ["retry is left out of the plan: test items from 0 sessions, the gate needs 30; neither a pass "
+                       "nor a block could come from this point"]
+
+
+def test_the_plan_aims_at_a_gain_the_rounds_test_set_could_show(tmp_path):
+    """A standing model near the target leaves a residual the round's test set cannot detect. A plan that predicted
+    it could never be admitted, however much data arrived, so the planner aims at the smallest gain that test set
+    could confirm and lets the gate measure the real one."""
+    rt = workspace(tmp_path, n=150)
+    Registry(rt.root).record({"version": "m_0001", "gate": "accepted", "model_id": "R1", "default_errors": 1,
+                              "data": {"stop": {"train": 60}},
+                              "metrics": {"stop": {"challenger": {"fixed_share": 0.45}}}})
+    proposed, train, reasons, d = decide(rt)
+    point = d.points["stop"]
+    assert (d.reached, d.target) == (0.45, 0.5) and reasons[0].startswith("default errors doubled since m_0001")
+    assert train and proposed.predicted_gain > d.target - d.reached       # the residual, 5%, is below the mde
+    assert proposed.per_row(point) > point.mde > 0 and f"{proposed.predicted_gain:.0%}" in proposed.hypothesis
+
+
+def test_the_default_errors_doubling_since_the_last_candidate_is_a_reason_to_train(tmp_path):
+    """The other side of the schedule: a candidate trained and was rejected, and the round trains again once the
+    data a model could learn from has doubled - not before."""
+    rt = workspace(tmp_path, n=150)
+    proposed, train, _, _ = decide(rt)
+    assert train
+    card = evolve_model(rt, Trainer("NO", type="test_gate_record:Model", p_yes=0.01), plan=proposed)
+    before = card["default_errors"]
+    assert card["gate"] == "rejected" and before > 0
+    proposed, train, reasons, d = decide(rt)
+    assert proposed is None and not train
+    assert reasons == [f"default errors {d.default_errors}, not yet twice the {before} at m_0001"]
+    collect(rt, 200, start=150, held_every=999)         # enough new sessions to double them
+    proposed, train, reasons, d = decide(rt)
+    assert d.default_errors >= 2 * before and train
+    assert reasons == [f"default errors doubled since m_0001 ({before} -> {d.default_errors})"]
+    assert proposed.data["train_rows"] > card["data"]["stop"]["train"]
 
 
 def test_the_target_reached_and_the_budget_spent_still_stop_training(tmp_path):
