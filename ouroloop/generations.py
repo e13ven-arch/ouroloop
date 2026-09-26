@@ -54,7 +54,14 @@ class Shuffled:
 
     def __init__(self, trainer, seed: int = 0):
         self.trainer, self.seed = trainer, seed
-        self.supports_weights = getattr(trainer, "supports_weights", False)
+
+    def __getattr__(self, name):
+        """Everything else the framework asks of a trainer is the wrapped one's: its recipe keys and their defaults,
+        which keys name files on the host, whether it weighs examples. A planted candidate differs in its labels and
+        in nothing else, so it must go through the gate on the same recipe as a real one."""
+        if name == "trainer":                       # before __init__ set it: no recursion
+            raise AttributeError(name)
+        return getattr(self.trainer, name)
 
     def train(self, job):
         rng = random.Random(self.seed)

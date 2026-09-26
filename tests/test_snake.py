@@ -408,3 +408,23 @@ def test_a_round_that_ran_and_failed_is_not_reported_as_skipped():
          "gate": "inconclusive", "skipped": None, "champion": "m_0001", "planted": False, "revoked": []}
     assert _line(e).endswith("|  - inconclusive")
     assert _line({**e, "gate": None, "skipped": "target reached"}).endswith("|  skipped: target reached")
+
+
+def test_the_planted_trainer_offers_the_same_recipe_as_the_one_it_wraps():
+    """The plant differs in its labels and in nothing else. When it hid the plugin's recipe keys, the demo's own
+    config stopped loading at the planted generation: "unknown recipe keys: ['batch_size', 'epochs', ...]"."""
+    from ouroloop.evolve.train import path_keys, recipe_defaults
+    from ouroloop.generations import Shuffled
+
+    class Trainer:
+        recipe_defaults = {"focus": None, "seed": 0, "epochs": 3.0, "batch_size": 2}
+        path_keys = {"replay"}
+        supports_weights = False
+
+        def train(self, job):
+            raise AssertionError("not reached")
+
+    real = Trainer()
+    planted = Shuffled(real, seed=1)
+    assert recipe_defaults(planted) == recipe_defaults(real) and path_keys(planted) == path_keys(real)
+    assert planted.supports_weights is real.supports_weights
