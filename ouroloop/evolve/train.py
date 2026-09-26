@@ -195,7 +195,8 @@ class JobTrainer:
             if not check_only:          # a dry run may start beside a live one, whose job is not a leftover
                 self._sweep(workspace)
             self._ready()
-            return (job_id, *self._job(job, job_id, parent, workspace, check_only), {})
+            with _signals_raise():      # a job on a host is cancelled on a signal too, not only a cloud instance
+                return (job_id, *self._job(job, job_id, parent, workspace, check_only), {})
         where = {"cloud": {"provider": self.cloud["provider"]}}
         with self._instance(workspace, job_id, where["cloud"], sweep=not check_only):
             spec, result = self._job(job, job_id, parent, workspace, check_only)
@@ -493,7 +494,8 @@ TTL_MARGIN_S = 1800                     # an instance's life beyond its boot, a 
 @contextlib.contextmanager
 def _signals_raise():
     """SIGTERM and SIGHUP, which would end this process without running a finally, raise SystemExit instead while a
-    cloud instance runs (in the main thread only: signal handlers are set there)."""
+    job runs (in the main thread only: signal handlers are set there). Without this, the way an unattended loop is
+    usually stopped (systemd, docker stop, a kill) leaves the training job running and holding the GPU."""
     import threading
     if threading.current_thread() is not threading.main_thread():
         yield

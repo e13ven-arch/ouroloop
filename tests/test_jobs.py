@@ -653,3 +653,22 @@ def test_a_research_recipe_sets_only_hyperparameters_of_their_types():
 
     with pytest.raises(ValueError, match="must be a number"):
         recipe_evaluator(Untouched())(None, Candidate("recipe", "stop", {"min_weight": "fast"}, "h"), None)
+
+
+def test_a_sigterm_during_a_job_cancels_it_before_the_process_ends(tmp_path, repo, monkeypatch):
+    """systemd, docker stop and a plain kill all send SIGTERM. Left to its default it ends the process without
+    running any finally, so the training job would keep the GPU with nothing left to collect it."""
+    monkeypatch.setenv("STUB_TDE", "hold")
+    monkeypatch.setenv("STUB_PID", str(tmp_path / "tde.pid"))
+    jobs = tmp_path / "jobs"
+
+    def sigterm(seconds):                   # the signal a service manager sends, once TDE is training
+        held(tmp_path / "tde.pid")
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    with pytest.raises(SystemExit):
+        trainer(repo, jobs, sleep=sigterm).train(a_job(tmp_path / "ws"))
+    (d,) = jobs.iterdir()
+    assert gone(int((d / "pid").read_text())) and (d / "exit").read_text().strip() == "143"
+    assert gone(held(tmp_path / "tde.pid"))
+    assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL       # the handler is not left behind
