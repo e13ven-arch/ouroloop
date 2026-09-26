@@ -60,6 +60,6 @@ init_from = "~/tde-runs/base"       # the first model's parent run, on the host
 url = "http://gpu-host:8765"
 token_env = "OUROLOOP_TOKEN"
 
-[recipe]                    # overrides of ouroloop.evolve.train.DEFAULT_RECIPE, which the plugin maps to its trainer
+[recipe]                    # the framework's keys (evolve/train.py) and the plugin's RECIPE (trainers/tde.py)
 replay = "~/tde-data/general/train.jsonl"  # general data on the host, mixed in to avoid forgetting
 replay_ratio = 1.0

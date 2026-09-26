@@ -26,13 +26,14 @@ from ouroloop.backends.http import HttpBackend
 from ouroloop.evolve import compute as compute_module
 from ouroloop.evolve.compute import SEP, Compute
 from ouroloop.evolve.gate import freeze_template, records
-from ouroloop.evolve.pipeline import check_change, evolve_model, recipe_evaluator
+from ouroloop.evolve.pipeline import check_change, evolve_model, recipe_evaluator, research_context
 from ouroloop.evolve.registry import Registry
 from ouroloop.evolve.train import CHECKOUT, DEFAULT_RECIPE, JobTrainer, TrainError, TrainJob
 from ouroloop.release import code_version
 from ouroloop.research import Candidate
 from ouroloop.runtime import Runtime
 from ouroloop.serve import make_server
+from ouroloop.trainers.signature import SignatureTrainer
 from ouroloop.types import Question, Request
 from test_gate_record import ACT_GATE, CFG, collect, ctx
 
@@ -616,9 +617,10 @@ def test_the_http_backend_sends_a_chunk_again_after_a_failure(tmp_path):
 
 # ---------------------------------------------------------------- research candidates
 def test_a_research_recipe_sets_only_hyperparameters_of_their_types():
+    tde = JobTrainer("tde", models={"jobs_root": "j"})
     for good in ({"epochs": 2}, {"lr_head": 1e-4}, {"max_steps": 100}, {"focus": 0.5}, {"batch_size": 4},
                  {"gradient_checkpointing": False}):
-        check_change(good)
+        check_change(good, tde)
     for bad, why in (({"epochs": "3"}, "must be a number"), ({"batch_size": 2.5}, "must be an integer"),
                      ({"batch_size": True}, "must be an integer"),
                      ({"gradient_checkpointing": 1}, "must be true or false"),
@@ -626,11 +628,22 @@ def test_a_research_recipe_sets_only_hyperparameters_of_their_types():
                      ({"init_from": "runs/x"}, "a person"), ({"replay": "cal.jsonl"}, "a person"),
                      ({"out_dir": "/tmp"}, "unknown")):
         with pytest.raises(ValueError, match=why):
-            check_change(bad)
+            check_change(bad, tde)
+    # the keys are the framework's and the plugin's own: signature has no TDE knobs, nor does an in-process trainer
+    signature = JobTrainer("signature", models={"jobs_root": "j"})
+    for trainer in (signature, SignatureTrainer(), None):
+        check_change({"min_weight": 1.0, "focus": 0.5, "seed": 3}, trainer)
+        with pytest.raises(ValueError, match="unknown recipe keys: \\['lr_backbone'\\]"):
+            check_change({"lr_backbone": 5e-5}, trainer)
+    assert research_context(signature, {"min_weight": 1.0})["recipe_keys"] == ["focus", "min_weight", "seed"]
+    ctx = research_context(tde, {"replay": "~/general.jsonl"})
+    assert ctx["recipe"]["replay"] == "~/general.jsonl" and ctx["recipe"]["lr_head"] == 1e-4
+    keys = ctx["recipe_keys"]
+    assert "replay" not in keys and "init_from" not in keys and "w_rps" in keys
 
     class Untouched:
         def train(self, job):
             raise AssertionError("no job may start")
 
     with pytest.raises(ValueError, match="must be a number"):
-        recipe_evaluator(Untouched())(None, Candidate("recipe", "stop", {"lr_head": "fast"}, "h"), None)
+        recipe_evaluator(Untouched())(None, Candidate("recipe", "stop", {"min_weight": "fast"}, "h"), None)

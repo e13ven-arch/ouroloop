@@ -199,6 +199,10 @@ def main(path: str) -> int:
         print(f"worker: {e}", flush=True)
         return e.code
     ref, commit = spec["job"], None
+    if spec.get("transport") != "hf" and os.path.realpath(run_dir) != os.path.realpath(os.path.join(job_dir, "run")):
+        print(f"worker: trainer {spec['trainer']} left its run in {run_dir}, not in {os.path.join(job_dir, 'run')}: "
+              f"with transport \"direct\" the model ref is the job id, and its run is <job>/run", flush=True)
+        return 1
     if spec.get("transport") == "hf":
         commit = publish(run_dir, job_dir, spec["hf_repo"])
         ref = f"{spec['hf_repo']}@{commit}"

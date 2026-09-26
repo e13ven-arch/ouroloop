@@ -11,9 +11,10 @@ from ouroloop.evolve import gate
 from ouroloop.evolve.gate import freeze_template, load_template, open_record, records, template_path
 from ouroloop.evolve.pipeline import evolve_model, prepare_model, recipe_evaluator
 from ouroloop.evolve.registry import Registry
-from ouroloop.evolve.train import TrainResult
+from ouroloop.evolve.train import DEFAULT_RECIPE, PATH_KEYS, TrainResult
 from ouroloop.ledger import PromotionConflict, write_json
 from ouroloop.research import run_round
+from ouroloop.trainers import tde
 from ouroloop.trainers.signature import SignatureTrainer
 from test_gate_record import (ACT_GATE, CFG, M6_CFG, SOME, Model, OracleTrainer, Proposes, collect, ctx, held_out,
                               m6_sessions, trained_on, workspace)
@@ -221,6 +222,9 @@ def test_a_research_candidate_cannot_point_training_at_other_data(tmp_path):
     got = []
 
     class Records(OracleTrainer):
+        recipe_defaults = {**DEFAULT_RECIPE, **tde.RECIPE}      # a plugin's path key (replay) and the framework's
+        path_keys = PATH_KEYS | tde.PATH_KEYS
+
         def train(self, job):
             got.append(job)
             return super().train(job)
@@ -298,3 +302,30 @@ def test_the_calibration_share_never_grows_onto_sessions_a_model_trained_on(tmp_
         open_record(rt)
     freeze_template(rt.root, {**ACT_GATE, "cal_frac": {"stop": 0.3, "*": 0.1}}, replace_frozen=True)
     assert open_record(rt).cal_frac("stop") == 0.3
+
+
+def test_a_champion_of_another_plugin_is_no_parent(tmp_path):
+    """After [trainer] type changes, the champion is another kind of model: the new plugin's first job starts from
+    [recipe] init_from (or the plugin's own), not from it. A champion of the same trainer is the parent."""
+    from ouroloop.evolve.pipeline import dry_run_model, parent_ref
+    from ouroloop.evolve.train import JobTrainer
+    rt = workspace(tmp_path)
+    assert evolve_model(rt, OracleTrainer("R1", 0.7, knows=SOME))["gate"] == "accepted"
+
+    class Named(OracleTrainer):
+        def dry_run(self, job):
+            return {"parent": job.init_from}
+
+    same, other = Named("R2"), Named("R3")
+    same.name, other.name = None, "tde"         # the champion's trainer names no plugin; a tde job
+    assert dry_run_model(rt, same)["job"] == {"parent": "R1"}
+    assert dry_run_model(rt, other, {"init_from": "~/tde-runs/base"})["job"] == {"parent": "~/tde-runs/base"}
+    assert dry_run_model(rt, other)["job"] == {"parent": None}      # JobTrainer then takes [trainers.tde] init_from
+    # by the card's backend: the plugin that trained it, and a card from before plugins is TDE's
+    tde, signature = (JobTrainer(n, models={"jobs_root": "j"}) for n in ("tde", "signature"))
+    card = {"model_id": "m_0003_x", "backend": {"type": "model", "model": "m_0003_x", "trainer": "signature"}}
+    assert parent_ref(card, tde, {"init_from": "~/base"}) == "~/base" and parent_ref(card, signature, {}) == "m_0003_x"
+    old = {"model_id": "m_0001_x", "backend": {"type": "model", "model": "m_0001_x"}}
+    assert parent_ref(old, tde, {}) == "m_0001_x" and parent_ref(old, signature, {}) is None
+    in_process = {"model_id": "signature:m_0002", "backend": {"type": "signature", "path": "p"}}
+    assert parent_ref(in_process, tde, {"init_from": "~/base"}) == "~/base"

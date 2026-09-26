@@ -2,7 +2,8 @@
 interface:
 
     start(tag, job, options, env) -> id     an instance named <tag>-<job>, running start.sh with `env`
-    ready(id) -> (user@host, port) | None   where its ssh listens, once the provider says it can; None while booting
+    ready(id) -> (user@host, port) | None   where its ssh listens, once the provider says it can; None while booting;
+                                            Gone when it is gone, or stopped and will not run again
     stop(id)                                terminated: nothing of it bills any more
     running(tag) -> [id]                    the instances named `tag` or <tag>-..., not terminated: a workspace's,
                                             or with <tag>-<job>, one job's
@@ -17,8 +18,9 @@ https://docs.vast.ai/api-reference and vast-cli's vast.py); where the docs are u
 """
 from __future__ import annotations
 
-import hashlib
 import os
+import re
+import secrets
 import time
 from pathlib import Path
 
@@ -37,10 +39,37 @@ class CloudError(RuntimeError):
     pass
 
 
+class Gone(CloudError):
+    """The instance is gone, or stopped for good: whatever runs on it is lost."""
+
+
+class Unanswered(CloudError):
+    """A request whose answer was lost (a broken connection, a 5xx): it may or may not have been carried out."""
+
+
 def tag(workspace: str) -> str:
-    """A workspace's tag on its instances: short, fixed in length (so <tag>- is a prefix no other tag has), and no
-    path of this machine."""
-    return "ouroloop-" + hashlib.sha256(workspace.encode()).hexdigest()[:12]
+    """A workspace's tag on its instances: a random id made once and kept in <workspace>/models/.cloud_id, so two
+    control planes on one account never share a tag, even at the same path. Short, fixed in length (so <tag>- is a
+    prefix no other tag has), and no path of this machine."""
+    path = Path(workspace) / "models" / ".cloud_id"
+    valid = re.compile(r"[0-9a-f]{12}")
+    try:
+        id = path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        id = ""
+    if not valid.fullmatch(id):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        new = secrets.token_hex(6)
+        try:
+            with open(path, "x", encoding="utf-8") as f:     # two processes of a workspace keep the first one's
+                f.write(new + "\n")
+            id = new
+        except FileExistsError:
+            id = path.read_text(encoding="utf-8").strip()
+            if not valid.fullmatch(id):
+                path.write_text(new + "\n", encoding="utf-8")
+                id = new
+    return "ouroloop-" + id
 
 
 def _named(name, tag: str) -> bool:
@@ -77,6 +106,7 @@ class Provider:
     def __init__(self, transport=None, sleep=time.sleep):
         self.sleep = sleep
         self.placed: dict[str, dict] = {}
+        self.unsure: set[str] = set()      # names of instances whose create lost an answer: there may be two
         self._client = httpx.Client(base_url=self.BASE, transport=transport, timeout=TIMEOUT_S)
 
     @classmethod
@@ -96,19 +126,24 @@ class Provider:
             raise CloudError(f"{self.KEY_ENV} is not set: the {self.NAME} API key is read from the environment only")
         return key
 
-    def _call(self, method: str, path: str, ok=(), **kw) -> httpx.Response:
+    def _call(self, method: str, path: str, ok=(), retry: bool = True, **kw) -> httpx.Response:
         """A request with the key; 429, 5xx and broken connections are tried again, anything else not 2xx (or in
-        `ok`) is a CloudError that names the status and the provider's message."""
+        `ok`) is a CloudError that names the status and the provider's message. Without `retry` (a create, which
+        must not be sent twice blindly) only a 429 is tried again: a broken connection or a 5xx is Unanswered."""
         headers = {"Authorization": f"Bearer {self._key()}", "Accept": "application/json"}
         for attempt in range(RETRIES):
             last = attempt == RETRIES - 1
             try:
                 r = self._client.request(method, path, headers=headers, **kw)
             except httpx.TransportError as e:
+                if not retry:
+                    raise Unanswered(f"{self.NAME} {method} {path}: {type(e).__name__}") from None
                 if last:
                     raise CloudError(f"{self.NAME} {method} {path}: {type(e).__name__}") from None
                 self.sleep(BACKOFF_S * (attempt + 1))
                 continue
+            if r.status_code >= 500 and not retry:
+                raise Unanswered(f"{self.NAME} {method} {path}: {r.status_code} {_problem(r)}")
             if r.status_code == 429 or r.status_code >= 500:
                 if last:
                     raise CloudError(f"{self.NAME} {method} {path}: {r.status_code} {_problem(r)}")
@@ -121,6 +156,23 @@ class Provider:
             if r.is_success or r.status_code in ok:
                 return r
             raise CloudError(f"{self.NAME} {method} {path}: {r.status_code} {_problem(r)}")
+        raise AssertionError("unreachable")
+
+    def _create(self, name: str, method: str, path: str, **kw) -> tuple[httpx.Response | None, str | None]:
+        """A create of the instance `name`, never sent twice blindly: when its answer is lost, the instance is looked
+        up by its name and adopted, and the create is sent again only if there is none. -> (the answer, None), or
+        (None, the id of the instance it made)."""
+        for attempt in range(RETRIES):
+            try:
+                return self._call(method, path, retry=False, **kw), None
+            except Unanswered as e:
+                self.unsure.add(name)
+                found = self.running(name)      # a CloudError here: no second create; the job's stop sweeps it
+                if found:
+                    return None, found[0]
+                if attempt == RETRIES - 1:
+                    raise CloudError(str(e)) from None
+                self.sleep(BACKOFF_S * (attempt + 1))
         raise AssertionError("unreachable")
 
     def start(self, tag: str, job: str, options: dict, env: dict) -> str: ...
@@ -189,8 +241,8 @@ class RunPod(Provider):
             body["dataCenterIds"] = list(options["data_centers"])
         # 400 is a rule violation or no capacity (the API does not tell them apart), 402 no balance, 403 a pool this
         # key cannot use, 422 an invalid body: none is worth another try with the same body.
-        pod = self._call("POST", "/v2/pods", json=body).json()
-        id = str(pod.get("id") or "")
+        r, adopted = self._create(body["name"], "POST", "/v2/pods", json=body)
+        id = adopted or str(r.json().get("id") or "")
         if not id:
             raise CloudError("runpod: the create answered without a pod id")
         self.placed[id] = {"gpu": f"{body['gpu']['count']} x {options['gpu']}", "price_per_hour": price,
@@ -202,11 +254,11 @@ class RunPod(Provider):
         trainer still probes ssh."""
         r = self._call("GET", f"/v2/pods/{id}", ok=(404,))
         if r.status_code == 404:
-            raise CloudError(f"runpod: pod {id} is gone")
+            raise Gone(f"runpod: pod {id} is gone")
         pod = r.json()
         status = str(pod.get("status") or "")
         if status in self.GONE:
-            raise CloudError(f"runpod: pod {id} is {status} and will not start")
+            raise Gone(f"runpod: pod {id} is {status} and will not start")
         info = self.placed.setdefault(id, {})
         if pod.get("cost"):
             info["price_per_hour"] = float(pod["cost"])
@@ -295,11 +347,12 @@ class VastAI(Provider):
         for i, offer in enumerate(offers[:int(options.get("offers", 3))]):
             if i:
                 self.sleep(self.CREATE_GAP_S)
-            r = self._call("PUT", f"/api/v0/asks/{offer['id']}/", json=body, ok=(404, 410))
-            if r.status_code in (404, 410):      # no_such_ask: the offer went to someone else
+            r, adopted = self._create(body["label"], "PUT", f"/api/v0/asks/{offer['id']}/", json=body,
+                                      ok=(404, 410))
+            if r is not None and r.status_code in (404, 410):      # no_such_ask: the offer went to someone else
                 tried.append(str(offer["id"]))
                 continue
-            id = str(r.json().get("new_contract") or "")
+            id = adopted or str(r.json().get("new_contract") or "")
             if not id:
                 raise CloudError(f"vast: the create of offer {offer['id']} answered without an instance id")
             self.placed[id] = {"gpu": f"{offer.get('num_gpus', options.get('gpu_count', 1))} x "
@@ -317,10 +370,10 @@ class VastAI(Provider):
         proxy (ssh_host, ssh_port, plus one for a jupyter runtype), as vast-cli's _ssh_url; user root."""
         inst = self._call("GET", f"/api/v0/instances/{id}/").json().get("instances")
         if not inst:
-            raise CloudError(f"vast: instance {id} is gone")
+            raise Gone(f"vast: instance {id} is gone")
         status = inst.get("actual_status")
         if status in self.GONE:
-            raise CloudError(f"vast: instance {id} is {status} and will not start")
+            raise Gone(f"vast: instance {id} is {status} and will not start")
         if status != "running":
             return None
         ports = inst.get("ports")

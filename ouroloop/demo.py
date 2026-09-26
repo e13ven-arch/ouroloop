@@ -15,8 +15,7 @@ from pathlib import Path
 
 from .backends import JevBackend, KeywordBackend
 from .evolve.gate import freeze_template, template_path
-from .evolve.pipeline import recipe_evaluator
-from .evolve.train import DEFAULT_RECIPE, PATH_KEYS, RECIPE_KEYS
+from .evolve.pipeline import recipe_evaluator, research_context
 from .points import retry_point  # noqa: F401 - also exposed as ouroloop.demo:retry_point
 from .providers import MockProvider
 from .research import BasicResearcher, run_round
@@ -105,6 +104,6 @@ def run(root: str | Path | None = None, judge: str = "mock", seed: int = 0, sess
     judge_backend = JevBackend() if judge == "jev" else KeywordBackend()
     kw = {}
     if train:
-        kw = {"evaluators": {"recipe": recipe_evaluator(SignatureTrainer())},
-              "context": {"recipe": dict(DEFAULT_RECIPE), "recipe_keys": sorted(RECIPE_KEYS - PATH_KEYS)}}
+        trainer = SignatureTrainer()
+        kw = {"evaluators": {"recipe": recipe_evaluator(trainer)}, "context": research_context(trainer, None)}
     return root, run_round(rt, BasicResearcher(budget=3), demo_llm(), judge_backend, seed=seed, **kw)

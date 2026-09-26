@@ -79,8 +79,13 @@ def manifest(plan: dict | None = None) -> dict:
     for name, info in (plan.get("plugins") or {}).items():
         plugin = load(name)
         check = getattr(plugin, "check", None)
+        if callable(check):
+            try:
+                result = check(info.get("options") or {})
+            except Exception as e:  # noqa: BLE001 - recorded: the host is then not ready (stale), and says why
+                result = {"ok": False, "why": f"{type(e).__name__}: {e}"}
         plugins[name] = {"version": version(plugin), "source": info.get("source"),
-                         **({"check": check()} if callable(check) else {})}
+                         **({"check": result} if callable(check) else {})}
     return {"ouroloop": {"version": __version__, "code": code_version(), "git": plan.get("git")},
             "python": platform.python_version(), "platform": platform.platform(), "gpu": gpus(),
             "plugins": plugins, "hf": _hf(), "ts": now()}
@@ -91,7 +96,9 @@ def files(source: Path) -> list[str]:
     """The files of a plugin's source directory: those git tracks in a checkout (no runs, data or venvs), else all
     of them but caches."""
     try:
-        out = subprocess.run(["git", "-C", str(source), "ls-files", "-z"], capture_output=True, check=True).stdout
+        # safe.directory: a tree another user owns (a docker build's bind mount) is read too, not walked whole
+        out = subprocess.run(["git", "-c", "safe.directory=*", "-C", str(source), "ls-files", "-z"],
+                             capture_output=True, check=True).stdout
         names = [n for n in out.decode().split("\0") if n and (source / n).is_file()]
         if names:
             return sorted(names)
@@ -119,14 +126,14 @@ def _tar(path: Path, prefix: str, root: Path, names: list[str]) -> Path:
 
 
 def pack_ouroloop(out: Path) -> Path:
-    """This ouroloop as an sdist: pyproject.toml, README.md, LICENSE and every file of the package, exactly the files
-    code_version hashes, so the host runs this code."""
+    """This ouroloop as an sdist: pyproject.toml, README.md, LICENSE and the package's files that pip installs,
+    exactly the files code_version hashes (release.package_files), so the host runs this code."""
     from .. import __version__
+    from ..release import package_files
     if not (CHECKOUT / "pyproject.toml").exists():
         raise HostError(f"{PACKAGE} is an installed copy: run host init from an ouroloop checkout")
     names = [n for n in SDIST if (CHECKOUT / n).exists()]
-    names += sorted(p.relative_to(CHECKOUT).as_posix() for p in PACKAGE.rglob("*")
-                    if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc")
+    names += [p.relative_to(CHECKOUT).as_posix() for p in package_files()]
     return _tar(out / "ouroloop.tar.gz", f"ouroloop-{__version__}", CHECKOUT, names)
 
 
@@ -167,7 +174,8 @@ def plan(trainers: dict, out: str | Path, hf: bool = False) -> Path:
         elif kind == "pip":
             reqs.append(value)
         reqs += list(getattr(plugin, "REQUIREMENTS", []))
-        plugins[name] = {"source": source_id(options)}
+        plugins[name] = {"source": source_id(options),     # the options, for the plugin's check() there
+                         "options": {k: v for k, v in (options or {}).items() if k != "source"}}
     if hf:
         reqs.append("huggingface_hub")
     (out / "requirements.txt").write_text("".join(f"{r}\n" for r in reqs), encoding="utf-8")
@@ -183,18 +191,37 @@ def _remote(target: str, ssh_opts: str, runner):
     return Remote(target, ssh_opts, runner)
 
 
+LIVE = "#ouroloop-live-code"
+LIVE_CODE = "from ouroloop.release import code_version; print(code_version())"
+
+
 def read(target: str, ssh_opts: str = "-o BatchMode=yes", runner=None) -> dict | None:
-    """host.json on `target`, None if it has none (or an unreadable one)."""
+    """host.json on `target`, None if it has none (or an unreadable one). Its ouroloop code is what the venv runs
+    now, asked in the same call: a venv broken or changed since host.json was written ("none": it runs no
+    ouroloop) is not taken for a ready one."""
     if target == "local":
         path = Path(os.path.expanduser(MANIFEST))
         text = path.read_text(encoding="utf-8") if path.exists() else ""
+        try:
+            live = subprocess.run([os.path.expanduser(PYTHON), "-I", "-c", LIVE_CODE], capture_output=True,
+                                  text=True, timeout=120).stdout
+        except (OSError, subprocess.SubprocessError):
+            live = ""
+        text += f"\n{LIVE}\n{live}"
     else:
-        text = _remote(target, ssh_opts, runner).ssh(f'cat "$HOME"/{MANIFEST[2:]} 2>/dev/null || true')
+        text = _remote(target, ssh_opts, runner).ssh(
+            f'cat "$HOME"/{MANIFEST[2:]} 2>/dev/null; echo; echo "{LIVE}"; '
+            f'"$HOME"/{PYTHON[2:]} -I -c "{LIVE_CODE}" 2>/dev/null || true')     # -I: the venv's, not the cwd's
+    text, marked, live = text.partition(f"\n{LIVE}\n")
     try:
         m = json.loads(text) if text.strip() else None
     except ValueError:
         return None
-    return m if isinstance(m, dict) else None
+    if not isinstance(m, dict):
+        return None
+    if marked and isinstance(m.get("ouroloop"), dict):
+        m["ouroloop"]["code"] = live.strip() or "none"
+    return m
 
 
 def stale(m: dict | None, trainers: dict, hf: bool = False) -> list[str]:
@@ -212,6 +239,8 @@ def stale(m: dict | None, trainers: dict, hf: bool = False) -> list[str]:
             why.append(f"no trainer plugin {name}")
         elif p.get("source") != source_id(options):
             why.append(f"plugin {name} is from another source")
+        elif (p.get("check") or {}).get("ok") is False:
+            why.append(f"plugin {name}'s check fails there: {p['check'].get('why') or p['check']}")
     if hf and not (m.get("hf") or {}).get("hub"):
         why.append('no huggingface_hub for transport "hf"')
     if hf and not (m.get("hf") or {}).get("token"):
@@ -238,14 +267,20 @@ def init(target: str, trainers: dict, ssh_opts: str = "-o BatchMode=yes", hf: bo
             if proc.returncode:
                 raise HostError(f"host init on this machine failed (exit {proc.returncode}):\n{_tail(log)}")
         else:
+            import base64
+            import io
+
             from ..ledger import new_id
             remote, name = _remote(target, ssh_opts, runner), new_id("init")
             where = f'"$HOME"/.ouroloop/incoming/{name}'
+            bundle = io.BytesIO()           # one tar through ssh: the host may have no rsync yet (bootstrap adds it)
+            with tarfile.open(fileobj=bundle, mode="w:gz") as tar:
+                for p in sorted(d.iterdir()):
+                    tar.add(p, arcname=p.name)
             try:
-                remote.ssh('mkdir -p "$HOME"/.ouroloop/incoming')
-                remote.push(f"{d}/", f".ouroloop/incoming/{name}/")         # rsync: relative to the remote home
-                log = remote.ssh(f"sh {where}/bootstrap.sh {where} 2>&1; code=$?; rm -rf {where}; exit $code",
-                                 timeout=INIT_TIMEOUT_S)
+                log = remote.ssh(f"mkdir -p {where} && base64 -d | tar -xzf - -C {where} && "
+                                 f"sh {where}/bootstrap.sh {where} 2>&1; code=$?; rm -rf {where}; exit $code",
+                                 input=base64.b64encode(bundle.getvalue()).decode(), timeout=INIT_TIMEOUT_S)
             except subprocess.CalledProcessError as e:
                 raise HostError(f"host init on {target} failed (exit {e.returncode}):\n"
                                 f"{_tail((e.stdout or '') + (e.stderr or ''))}") from e

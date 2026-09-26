@@ -167,7 +167,7 @@ class Ssh:
                 self.pushed[local.name] = local.read_text()
             return subprocess.CompletedProcess(args, 0, "", "")
         command = args[-1]
-        if command == "true":
+        if command == 'test -f "$HOME"/.ouroloop/started':      # start.sh is done
             self.probes += 1
             if self.probes == 1:
                 raise subprocess.CalledProcessError(255, args, stderr="ssh: connect to host: Connection refused")
@@ -269,10 +269,12 @@ def test_a_job_runs_on_a_new_instance_which_is_stopped_after_it(tmp_path, keys, 
         assert a[a.index("-p") + 1] == port and a[a.index("-i") + 1] == keys
         assert "StrictHostKeyChecking=accept-new" in a
     assert tr.host is None and tr.compute.host is None          # the next job gets an instance of its own
-    # the instance was stopped after the job, the last thing done
-    last = api.requests[-1]
-    assert last[0] == "DELETE"
+    # the instance was stopped after the job, the last thing done but a look for others of the job
+    stop = max(i for i, r in enumerate(api.requests) if r[0] == "DELETE")
+    assert all(r[0] == "GET" and r[1] in ("/v2/pods", "/api/v1/instances/") for r in api.requests[stop + 1:])
     assert "stopped instance" in capsys.readouterr().err
+    # its life is bounded without this process too: the boot, a host init, the deadline and a margin
+    assert int(body["env"]["OUROLOOP_TTL_S"]) == 900 + 3600 + 28800 + 0 + 1800
 
 
 def test_an_image_without_the_worker_is_initialized_before_the_job(tmp_path, keys):
@@ -308,7 +310,7 @@ def test_an_instance_that_never_answers_is_stopped_at_the_boot_timeout(tmp_path,
     ssh = Ssh()
 
     def refuse(args, input=None, timeout=None):     # on Vast.ai the API says running; ssh never answers
-        if args[0] == "ssh" and args[-1] == "true":
+        if args[0] == "ssh" and ".ouroloop/started" in args[-1]:
             raise subprocess.CalledProcessError(255, args, stderr="Connection refused")
         return ssh(args, input, timeout)
     runner = refuse if provider == "vast" else ssh
@@ -358,7 +360,7 @@ def test_an_instance_that_fails_to_start_is_a_train_error_and_stopped(tmp_path, 
 # ---------------------------------------------------------------- leftovers
 @pytest.mark.parametrize("provider", ["runpod", "vast"])
 def test_the_first_job_stops_only_this_workspaces_leftover_instances(tmp_path, keys, provider, capsys):
-    ws, other = tmp_path / "ws", cloud.tag("/somewhere/else")
+    ws, other = tmp_path / "ws", cloud.tag(str(tmp_path / "else"))
     mine = ws_tag(ws)
     if provider == "runpod":
         api = RunPodApi(pods=[
@@ -386,21 +388,165 @@ def test_the_first_job_stops_only_this_workspaces_leftover_instances(tmp_path, k
     assert "left running by an earlier run of this workspace" in capsys.readouterr().err
 
 
-def test_a_create_whose_answer_was_lost_is_stopped_too(tmp_path, keys):
-    """A 5xx after the pod was made: the create is retried (the docs' advice), and both pods are stopped."""
-    api = RunPodApi()
+@pytest.mark.parametrize("provider", ["runpod", "vast"])
+@pytest.mark.parametrize("made", [True, False])
+def test_a_create_whose_answer_was_lost_is_never_sent_twice_blindly(tmp_path, keys, provider, made):
+    """A 5xx or a broken connection on a create: the instance is looked up by its name and adopted if the create made
+    it; only if none is there is the create sent again. One instance, stopped after the job."""
+    api = RunPodApi() if provider == "runpod" else VastApi()
+    create = ("POST", "/v2/pods") if provider == "runpod" else ("PUT", "/api/v0/asks/11/")
     handle, state = api.handle, {"n": 0}
 
     def flaky(method, path, params, body):
-        r = handle(method, path, params, body)
-        if method == "POST" and path == "/v2/pods":
+        if (method, path) == create:
             state["n"] += 1
             if state["n"] == 1:
-                return httpx.Response(502, json={"title": "Bad Gateway"})
-        return r
+                if made:
+                    handle(method, path, params, body)
+                    return httpx.Response(502, json={"title": "Bad Gateway"})
+                raise httpx.ReadTimeout("lost")
+        return handle(method, path, params, body)
     api.handle = flaky
+    result = trainer(options(provider, keys), api, Ssh()).train(a_job(tmp_path / "ws"))
+    assert state["n"] == (1 if made else 2)
+    if provider == "runpod":
+        assert [(i, p["status"]) for i, p in api.pods.items()] == [("pod1", "TERMINATED")]
+        assert result.job["cloud"]["instance"] == "pod1"
+    else:
+        assert api.instances == {} and result.job["cloud"]["instance"] == "7001" and api.n == 7001
+
+
+def test_a_second_instance_made_for_the_job_is_stopped_before_the_boot(tmp_path, keys, capsys):
+    """A lost create whose instance the listing did not show yet: the create is sent again, and once one is started
+    the other of the same job is stopped at once, not after the job."""
+    api = RunPodApi()
+    handle, state = api.handle, {"posts": 0, "lists": 0}
+
+    def late(method, path, params, body):
+        if (method, path) == ("POST", "/v2/pods"):
+            state["posts"] += 1
+            r = handle(method, path, params, body)
+            return httpx.Response(502, json={"title": "Bad Gateway"}) if state["posts"] == 1 else r
+        if (method, path) == ("GET", "/v2/pods"):
+            state["lists"] += 1
+            if state["lists"] == 2:                 # the lookup after the lost create: not listed yet
+                return httpx.Response(200, json={"pods": [], "pagination": {"hasNextPage": False}})
+        return handle(method, path, params, body)
+    api.handle = late
     trainer(options("runpod", keys), api, Ssh()).train(a_job(tmp_path / "ws"))
-    assert sorted(p["status"] for p in api.pods.values()) == ["TERMINATED", "TERMINATED"]
+    deletes = [r[1] for r in api.calls("DELETE")]
+    assert deletes == ["/v2/pods/pod1", "/v2/pods/pod2"]
+    first_get = next(i for i, r in enumerate(api.requests) if r[0] == "GET" and r[1] == "/v2/pods/pod2")
+    assert api.requests.index(next(r for r in api.requests if r[1] == "/v2/pods/pod1" and r[0] == "DELETE")) < first_get
+    assert "a second one made for job" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("provider", ["runpod", "vast"])
+def test_an_instance_that_dies_during_the_job_fails_it_at_once(tmp_path, keys, provider):
+    api = RunPodApi() if provider == "runpod" else VastApi()
+    ssh = Ssh(job="hang")
+    handle = api.handle
+
+    def dies(method, path, params, body):
+        r = handle(method, path, params, body)
+        if ssh.id and method == "GET" and path in ("/v2/pods/pod1", "/api/v0/instances/7001/"):
+            if provider == "runpod":
+                api.pods["pod1"]["status"] = "EXITED"
+                return httpx.Response(200, json=api.pods["pod1"])
+            return httpx.Response(200, json={"instances": {**api.instances["7001"], "actual_status": "offline"}})
+        return r
+    api.handle = dies
+    tr = trainer(options(provider, keys), api, ssh)            # deadline_s: 8 h
+    with pytest.raises(TrainError, match="EXITED|offline"):
+        tr.train(a_job(tmp_path / "ws"))
+    polls = [a for a in ssh.commands if a[0] == "ssh" and "ps -ww -o args=" in a[-1]]
+    assert len(polls) == 1
+
+
+def test_a_failed_stop_is_on_the_card_and_left_to_the_next_job(tmp_path, keys, capsys):
+    api = RunPodApi()
+    api.fail[("DELETE", "/v2/pods/pod1")] = (400, {"title": "Bad Request"})
+    tr = trainer(options("runpod", keys), api, Ssh())
+    result = tr.train(a_job(tmp_path / "ws"))
+    assert result.job["cloud"]["stop_failed"] == ["pod1"] and "COULD NOT STOP instance pod1" in capsys.readouterr().err
+    tag = ws_tag(tmp_path / "ws")
+    assert ("runpod", tag) not in JobTrainer._stopped              # the next job sweeps the workspace again
+    del api.fail[("DELETE", "/v2/pods/pod1")]
+    tr.train(a_job(tmp_path / "ws", "m_0002"))
+    assert api.pods["pod1"]["status"] == "TERMINATED"
+
+
+def test_a_listing_that_fails_after_the_job_is_left_to_the_next_job(tmp_path, keys):
+    api = RunPodApi()
+    handle, state = api.handle, {"deleted": False}
+
+    def down(method, path, params, body):
+        if method == "DELETE":
+            state["deleted"] = True
+        if (method, path) == ("GET", "/v2/pods") and state["deleted"]:
+            return httpx.Response(503, json={"title": "Service Unavailable"})
+        return handle(method, path, params, body)
+    api.handle = down
+    tr = trainer(options("runpod", keys), api, Ssh())
+    tr.train(a_job(tmp_path / "ws"))
+    assert api.pods["pod1"]["status"] == "TERMINATED"
+    assert ("runpod", ws_tag(tmp_path / "ws")) not in JobTrainer._stopped
+
+
+@pytest.mark.parametrize("how", ["interrupt", "sigterm"])
+def test_an_interrupt_during_the_stop_still_stops_the_known_instance(tmp_path, keys, how):
+    """^C again while the instance is being stopped, or SIGTERM while the job runs: the known instance is stopped
+    first, before any listing, and the interrupt comes out after."""
+    import os
+    import signal
+    api = RunPodApi()
+    handle, state = api.handle, {"lists": 0}
+    ssh = Ssh(job="hang")
+    polled = ssh.__call__
+
+    def poll(args, input=None, timeout=None):
+        if how == "sigterm" and args[0] == "ssh" and "ps -ww -o args=" in args[-1]:
+            os.kill(os.getpid(), signal.SIGTERM)
+        return polled(args, input, timeout)
+
+    def interrupted(method, path, params, body):
+        if (method, path) == ("GET", "/v2/pods"):
+            state["lists"] += 1
+            if how == "interrupt" and state["lists"] == 2:      # the listing after the known pod's stop
+                raise KeyboardInterrupt
+        return handle(method, path, params, body)
+    api.handle = interrupted
+    before = signal.getsignal(signal.SIGTERM)
+    tr = trainer(options("runpod", keys), api, poll if how == "sigterm" else ssh, deadline_s=0)
+    with pytest.raises(KeyboardInterrupt if how == "interrupt" else SystemExit):
+        tr.train(a_job(tmp_path / "ws"))
+    assert api.pods["pod1"]["status"] == "TERMINATED" and signal.getsignal(signal.SIGTERM) is before
+    assert not any("kill -s TERM" in a[-1] for a in ssh.commands if a[0] == "ssh")      # no ssh cancel to wait on
+
+
+def test_the_workspace_tag_is_a_random_id_kept_in_the_workspace(tmp_path):
+    ws = tmp_path / "ws"
+    first = cloud.tag(str(ws))
+    assert re.fullmatch(r"ouroloop-[0-9a-f]{12}", first) and cloud.tag(str(ws)) == first
+    assert (ws / "models" / ".cloud_id").read_text().strip() == first.removeprefix("ouroloop-")
+    (ws / "models" / ".cloud_id").unlink()              # another control plane at the same path: another tag
+    assert cloud.tag(str(ws)) != first
+
+
+def test_start_sh_marks_when_it_is_done(tmp_path):
+    """The trainer's boot waits for this marker: on Vast.ai sshd answers before start.sh (onstart) is done."""
+    home = tmp_path / "home"
+    (home / ".ouroloop").mkdir(parents=True)
+    (home / ".ouroloop" / "started").write_text("")        # a marker from an earlier boot is removed first
+    env = {"HOME": str(home), "PATH": "/usr/bin:/bin", "OUROLOOP_SSHD": "0", "PUBLIC_KEY": "ssh-ed25519 AAAAk",
+           "HF_TOKEN": "hf_x"}
+    out = subprocess.run(["sh", str(cloud.START)], env=env, capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    assert (home / ".ouroloop" / "started").exists()
+    assert (home / ".ssh" / "authorized_keys").read_text() == "ssh-ed25519 AAAAk\n"
+    assert (home / ".cache" / "huggingface" / "token").read_text() == "hf_x"
+    script = cloud.START.read_text()
+    assert script.index('rm -f "$ouro/started"') < script.index("authorized_keys") < script.index(': > "$ouro/started"')
 
 
 # ---------------------------------------------------------------- refused before anything is used

@@ -6,6 +6,8 @@ Options ([trainers.tde]):
                 such as "git+ssh://git@github.com/your-org/tde.git@v0.1.1"
     init_from   the first model's parent run, a path on the host (absolute, or from ~); later ones start from the
                 champion. A [recipe] init_from does the same.
+    device      TDE's device ("cuda", "cpu", ...); by default a host whose torch sees no CUDA device is not ready,
+                and "cpu" allows one. Loading a model in-process uses it too, unless [models] device says otherwise.
 
 The recipe's TDE_KEYS become TDE's TrainConfig; replay (a path on the host) mixes general data in. TDE selects its
 checkpoint on val.jsonl, never on ouroloop's calibration split, and does not weigh examples.
@@ -23,6 +25,16 @@ NAME = "tde"
 REQUIREMENTS: list[str] = []          # TDE brings torch, transformers and the rest: its source
 SUPPORTS_WEIGHTS = False
 NEEDS_PARENT = True
+# TDE's recipe keys and their defaults, for an 8 GB GPU: 1024-token states need batch 2 x accumulation 16 plus
+# checkpointing. The framework's own (min_weight, focus, seed, init_from) come on top (evolve/train.py).
+RECIPE = {
+    "epochs": 3.0, "max_steps": None, "lr_backbone": 2e-5, "lr_head": 1e-4, "batch_size": 2, "grad_accum": 16,
+    "max_state_tokens": 1024, "gradient_checkpointing": True, "w_rps": 1.0, "w_perm": 0.3,
+    "train_limit": None,     # train on at most this many examples, a seeded sample of the ledger's and replay's
+    "replay": None,          # general training data on the host, e.g. "~/data/general/train.jsonl"
+    "replay_ratio": 1.0,     # replay examples per ledger example
+}
+PATH_KEYS = {"replay"}       # a file on the host: a person sets it, never a research candidate
 TDE_KEYS = ("epochs", "max_steps", "lr_backbone", "lr_head", "batch_size", "grad_accum", "max_state_tokens",
             "gradient_checkpointing", "w_rps", "w_perm", "train_limit", "seed")
 ARCHITECTURE = ("backbone", "readout", "marker", "pool", "branch_layers", "branch_through_backbone", "finetune")
@@ -65,7 +77,8 @@ def prepare_job(data_dir, cfg_json, replay=None, ratio=1.0, seed=0):
     val = []                                # TDE reads the file; empty, it selects none
     if os.path.exists(os.path.join(data_dir, "val.jsonl")):
         with open(os.path.join(data_dir, "val.jsonl"), encoding="utf-8") as f:
-            val = [line if line.endswith("\n") else line + "\n" for line in f if line.strip()]
+            val = [json.dumps({**json.loads(line), "split": "calibration"}, ensure_ascii=False) + "\n"
+                   for line in f if line.strip()]           # TDE's name for the split it selects on
     random.Random(seed).shuffle(val)
     with open(os.path.join(out, "calibration.jsonl"), "w", encoding="utf-8") as f:
         f.writelines(val)
@@ -137,6 +150,8 @@ def _prepare(spec: dict, job_dir: str) -> tuple[str, str | None]:
     recipe = spec["recipe"]
     parent = parent_run(spec.get("parent"), os.path.dirname(job_dir))
     cfg = tde_config(recipe, os.path.join(job_dir, "run"), parent, spec["version"])
+    if (spec.get("options") or {}).get("device"):
+        cfg["device"] = spec["options"]["device"]
     replay = _host_path(recipe.get("replay"), "replay")
     return prepare_job(job_dir, json.dumps(cfg), replay, recipe.get("replay_ratio", 1.0), recipe.get("seed", 0)), parent
 
@@ -173,12 +188,17 @@ def version() -> str | None:
     return " ".join(x for x in (installed, head) if x) or None
 
 
-def check() -> dict:
-    """TDE imports, and whether torch sees a CUDA device."""
+def check(options: dict) -> dict:
+    """TDE imports, and torch sees a CUDA device: a host without one is not ready (TDE would train on its CPU until
+    the deadline), unless the options say device = "cpu"."""
     import tde  # noqa: F401
     import torch
     cuda = torch.cuda.is_available()
-    return {"torch": torch.__version__, "cuda": cuda, "device": torch.cuda.get_device_name(0) if cuda else None}
+    cpu = (options or {}).get("device") == "cpu"
+    return {"ok": cuda or cpu, "torch": torch.__version__, "cuda": cuda,
+            "device": torch.cuda.get_device_name(0) if cuda else None,
+            **({} if cuda or cpu else {"why": 'torch sees no CUDA device (a driver or torch mismatch?); set device = '
+                                              '"cpu" in [trainers.tde] to train on the CPU'})}
 
 
 # ---------------------------------------------------------------------- the plugin: control side

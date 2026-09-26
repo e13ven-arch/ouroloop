@@ -65,7 +65,12 @@ find_python() {
 
 PY=$(find_python) || {
     say "installing python3 with venv"
-    if command -v apt-get >/dev/null 2>&1; then install_packages python3 python3-venv || true
+    if command -v apt-get >/dev/null 2>&1; then
+        # the default python3 may be older than 3.11 (3.10 on Ubuntu 22.04): then a versioned one, each on its own,
+        # since apt-get refuses a whole list for one unknown name
+        install_packages python3 python3-venv || true
+        find_python >/dev/null || install_packages python3.12 python3.12-venv || \
+            install_packages python3.11 python3.11-venv || true
     else install_packages python3 || true
     fi
     PY=$(find_python) || die "no Python >= 3.11 with venv here: install one, and set OUROLOOP_PYTHON to it if it is \

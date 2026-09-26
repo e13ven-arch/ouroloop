@@ -2,7 +2,9 @@
 view a scenario defines ("module:function", view -> key). Tiny, standard library only: a plugin that runs through
 the real job path in the offline tests, and, as SignatureTrainer, in this process for tests and demos.
 
-Options ([trainers.signature]): signature, the key function (it must import on the host too)."""
+Options ([trainers.signature]): signature, the key function (it must import on the host too). A run is
+self-describing: its model.json holds the key function it was trained with beside the table, so a model server
+without these options loads the same model."""
 from __future__ import annotations
 
 import json
@@ -16,6 +18,7 @@ from ..types import Answer, Request
 NAME = "signature"
 REQUIREMENTS: list[str] = []
 SUPPORTS_WEIGHTS = True
+RECIPE: dict = {}               # no hyperparameters: the framework's recipe keys only
 MODEL = "model.json"            # in the run directory
 
 
@@ -101,9 +104,10 @@ def validate(spec: dict, job_dir: str) -> dict:
 def train(spec: dict, job_dir: str, deadline: float) -> str:
     run = os.path.join(job_dir, "run")
     os.makedirs(run, exist_ok=True)
-    counts = fit(os.path.join(job_dir, "train.jsonl"), key_function((spec.get("options") or {}).get("signature")))
+    ref = (spec.get("options") or {}).get("signature")
+    counts = fit(os.path.join(job_dir, "train.jsonl"), key_function(ref))
     with open(os.path.join(run, MODEL), "w", encoding="utf-8") as f:
-        json.dump(counts, f)
+        json.dump({"signature": ref, "table": counts}, f)
     return run
 
 
@@ -119,4 +123,8 @@ def backend(ref: str, options: dict) -> SignatureBackend:
     path = os.path.join(run, MODEL)
     if not os.path.exists(path):
         raise ValueError(f"no model {ref!r} here")
-    return SignatureBackend(path, signature=options.get("signature"), model=ref)
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    if isinstance(data, dict) and set(data) == {"signature", "table"}:        # the run says what it is
+        return SignatureBackend(path, table=data["table"], signature=data["signature"], model=ref)
+    return SignatureBackend(path, table=data, signature=options.get("signature"), model=ref)   # an older run

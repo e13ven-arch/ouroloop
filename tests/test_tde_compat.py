@@ -19,15 +19,18 @@ from ouroloop.backends import KeywordBackend, TdeBackend
 from ouroloop.decision import Choice, Score
 from ouroloop.demo import seed_ledger
 from ouroloop.evolve.build import build
-from ouroloop.evolve.train import DEFAULT_RECIPE, RECIPE_KEYS
+from ouroloop.evolve import train
 from ouroloop.points import retry_point
 from ouroloop.runtime import Runtime
+from ouroloop.trainers import tde
 from ouroloop.trainers.tde import prepare_job, tde_config
 from ouroloop.types import Question, Request
 
 REPO = Path(os.environ.get("TDE_REPO", Path(__file__).resolve().parents[2] / "jev"))
 needs_tde = pytest.mark.skipif(not (REPO / "tde" / "schema.py").exists(), reason="TDE repository not found")
 has_tde = importlib.util.find_spec("tde") is not None
+DEFAULT_RECIPE = {**train.DEFAULT_RECIPE, **tde.RECIPE}        # the recipe of a tde trainer
+RECIPE_KEYS = set(DEFAULT_RECIPE)
 SNAKE = Path(__file__).resolve().parents[1] / "examples" / "snake"
 
 
@@ -54,9 +57,14 @@ def test_built_examples_pass_tdes_own_validation(tmp_path):
     sys.modules["tde_schema"] = schema          # dataclasses resolve annotations through sys.modules
     spec.loader.exec_module(schema)
     ds = build(all_primitives(tmp_path), tmp_path / "data")
+    assert ds.splits["val"] and {e["split"] for e in ds.splits["val"]} == {"val"}      # the framework's name
+    # what TDE reads: the job's files as the plugin prepares them (val -> TDE's "calibration", which it selects on)
+    prepare_job(str(tmp_path / "data"), json.dumps(tde_config(DEFAULT_RECIPE, "run", None, "m_0001")))
     seen = set()
-    for part in ds.splits.values():
-        for e in part:
+    for name, split in (("train", "train"), ("calibration", "calibration")):
+        rows = [json.loads(line) for line in (tmp_path / "data" / "tde" / f"{name}.jsonl").read_text().splitlines()]
+        assert rows and {e["split"] for e in rows} == {split}
+        for e in rows + ds.splits["test"]:
             schema.DecisionExample.from_dict(e).validate()
             seen.add(e["primitive"])
     assert seen == {"noul", "choice", "score"}
@@ -197,6 +205,9 @@ def test_a_tilde_in_a_run_path_is_the_training_machines_home(tmp_path):
     assert written["out_dir"] == os.path.expanduser("~/tde/ouroloop_jobs/m_0001/run")      # not a directory named ~
     assert written["init_from"] == os.path.expanduser("~/tde/runs/base")
     assert (data / "tde" / "calibration.jsonl").read_text() == ""      # no val split: TDE has nothing to select on
+    (data / "val.jsonl").write_text(json.dumps({"id": 2, "split": "val"}) + "\n")
+    prepare_job(str(data), json.dumps(cfg))
+    assert json.loads((data / "tde" / "calibration.jsonl").read_text()) == {"id": 2, "split": "calibration"}
 
 
 def test_the_snake_recipe_is_small_and_fast():

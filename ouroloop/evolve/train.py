@@ -15,6 +15,7 @@ import contextlib
 import json
 import os
 import shlex
+import signal
 import subprocess
 import sys
 import tempfile
@@ -25,23 +26,27 @@ from typing import Protocol
 
 from ..ledger import new_id
 
-# The recipe: what a plugin maps to its trainer (trainers/tde.py: TDE_KEYS). The defaults are TDE's for an 8 GB GPU:
-# 1024-token states need batch 2 x accumulation 16 plus checkpointing.
+# The recipe's keys the framework reads itself (pipeline._parts, the parent). A plugin adds its trainer's own
+# (ouroloop.trainers: RECIPE, PATH_KEYS); a trainer's recipe_defaults are both, and only those keys are accepted.
 DEFAULT_RECIPE = {
-    "epochs": 3.0, "max_steps": None, "lr_backbone": 2e-5, "lr_head": 1e-4, "batch_size": 2, "grad_accum": 16,
-    "max_state_tokens": 1024, "gradient_checkpointing": True, "w_rps": 1.0, "w_perm": 0.3,
-    "replay": None,          # general training data on the training machine, e.g. "~/data/general/train.jsonl"
-    "replay_ratio": 1.0,     # replay examples per ledger example
     "min_weight": 0.5,       # 1.0 keeps only environment and human labels
     "init_from": None,       # the first model's parent run on the training machine (or the plugin's init_from)
-    "train_limit": None,     # train on at most this many examples, a seeded sample of the ledger's and replay's
     "focus": None,           # share of the ledger's training rows that are default errors (pipeline._parts)
     "seed": 0,
 }
-RECIPE_KEYS = set(DEFAULT_RECIPE)
 # Files and runs on the training machine: set by a person in [recipe], never by a research candidate, which could
 # name the calibration split, or a run trained on the test sessions.
-PATH_KEYS = {"replay", "init_from"}
+PATH_KEYS = {"init_from"}
+
+
+def recipe_defaults(trainer) -> dict:
+    """The recipe keys `trainer` accepts, with their defaults: the framework's, and its plugin's."""
+    return getattr(trainer, "recipe_defaults", DEFAULT_RECIPE)
+
+
+def path_keys(trainer) -> set:
+    """The recipe keys of `trainer` that name files or runs on the training machine."""
+    return getattr(trainer, "path_keys", PATH_KEYS)
 
 
 class TrainError(RuntimeError):
@@ -104,7 +109,7 @@ class JobTrainer:
     running: there is no reattaching, the round runs again.
 
     `cloud` ([trainer.cloud], cloud.py) runs each job on a new RunPod or Vast.ai instance instead of a host: it is
-    started, tagged with the workspace and the job, waited for (ssh answers) within boot_timeout_s, checked and
+    started, tagged with the workspace and the job, waited for (its start.sh done) within boot_timeout_s, checked and
     initialized like any host, runs the job over ssh, and is stopped however the job ends. The first job of a process
     stops the instances a killed run of the same workspace left. Its models travel through Hugging Face only
     (transport "hf"); HF_TOKEN reaches the instance as its environment variable, the API key never leaves this
@@ -128,6 +133,8 @@ class JobTrainer:
             raise ValueError('transport "hf" needs hf_prefix, e.g. "your-org/ouroloop-"')
         self.name, self.plugin, self.options = plugin, load(plugin), dict(options or {})
         self.supports_weights = bool(getattr(self.plugin, "SUPPORTS_WEIGHTS", False))
+        self.recipe_defaults = {**DEFAULT_RECIPE, **dict(getattr(self.plugin, "RECIPE", {}))}
+        self.path_keys = PATH_KEYS | set(getattr(self.plugin, "PATH_KEYS", ()))
         self.models = check_models(models)
         self.cloud, self.provider = None, None
         if cloud is not None:
@@ -154,6 +161,7 @@ class JobTrainer:
         self._base_ssh = ssh_opts
         self.publish_s = float(publish_s) if transport == "hf" else 0.0
         self.runner = runner
+        self._instance_id = None            # the cloud instance the job at hand runs on
         self.compute = Compute(host if remote and not self.cloud else None, jobs_root, ssh_opts, runner)
 
     def train(self, job: TrainJob) -> TrainResult:
@@ -233,16 +241,23 @@ class JobTrainer:
     @contextlib.contextmanager
     def _instance(self, workspace: str, job_id: str, record: dict, sweep: bool = True):
         """A new instance for the job, ready for it (self.host and self.compute reach it while the job runs), and
-        always stopped afterwards, with `record` (the card's) filled in: instance, gpu, price_per_hour, uptime_s.
-        With `sweep`, first the instances a killed run of the workspace left (a dry run may start beside a live
-        job, whose instance is not a leftover)."""
+        always stopped afterwards, with `record` (the card's) filled in: instance, gpu, price_per_hour, uptime_s,
+        and stop_failed, the instances that could not be stopped. With `sweep`, first the instances a killed run of
+        the workspace left (a dry run may start beside a live job, whose instance is not a leftover).
+
+        What bounds its life when this process cannot stop it: SIGTERM and SIGHUP end the job by the same path as an
+        exception (so the instance is stopped), and the instance ends its own container after OUROLOOP_TTL_S
+        (start.sh): the boot, a host init and the job's deadline, with a margin. Only kill -9 of this process and a
+        provider that keeps a stopped container billing outlast both; the next job of the workspace stops those."""
+        from ..hosts import INIT_TIMEOUT_S
         from . import cloud as clouds
         from .compute import Compute
         name, provider, opts = self.cloud["provider"], self.provider, self.cloud
         tag = clouds.tag(workspace)
         if sweep:
             self._stop_leftovers(tag)
-        env = {"PUBLIC_KEY": self._public_key()}
+        ttl = float(opts.get("boot_timeout_s", 900)) + INIT_TIMEOUT_S + self.deadline_s + 2 * self.poll_s + TTL_MARGIN_S
+        env = {"PUBLIC_KEY": self._public_key(), "OUROLOOP_TTL_S": str(int(ttl))}
         if self.transport == "hf":
             token = os.environ.get("HF_TOKEN", "").strip()
             if not token:
@@ -250,15 +265,21 @@ class JobTrainer:
                                  'instance gets the token from this environment')
             env["HF_TOKEN"] = token
         id, began = None, None
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, _signals_raise():
             try:
                 try:
                     id = provider.start(tag, job_id, opts, env)
                     began = time.monotonic()
+                    self._instance_id = id
                     record.update({"instance": id, **{k: v for k, v in provider.placed.get(id, {}).items()
                                                       if k in ("gpu", "price_per_hour")}})
                     say(f"{name}: started instance {id} for job {job_id} ({record.get('gpu')}, "
                         f"${record.get('price_per_hour') or 0:.3f}/hr)")
+                    if f"{tag}-{job_id}" in provider.unsure:       # a create that lost its answer may have made two
+                        for other in provider.running(f"{tag}-{job_id}"):
+                            if other != id:
+                                say(f"{name}: stopping instance {other}, a second one made for job {job_id}")
+                                provider.stop(other)
                     host, port = self._boot(id, Path(tmp) / "known_hosts")
                     if provider.placed.get(id, {}).get("price_per_hour") is not None:    # what it bills, once known
                         record["price_per_hour"] = provider.placed[id]["price_per_hour"]
@@ -270,11 +291,14 @@ class JobTrainer:
                 self._ready()
                 yield
             finally:
-                self._stop(tag, job_id, id)
-                if began is not None:
-                    record["uptime_s"] = round(time.monotonic() - began, 1)
-                self.host, self.ssh_opts = None, self._base_ssh
-                self.compute = Compute(None, self.jobs_root, self.ssh_opts, self.runner)
+                self._instance_id = None
+                try:
+                    self._stop(tag, job_id, id, record)
+                finally:
+                    if began is not None:
+                        record["uptime_s"] = round(time.monotonic() - began, 1)
+                    self.host, self.ssh_opts = None, self._base_ssh
+                    self.compute = Compute(None, self.jobs_root, self.ssh_opts, self.runner)
 
     def _public_key(self) -> str:
         path = os.path.expanduser(str(self.cloud.get("ssh_key", "~/.ssh/id_ed25519"))) + ".pub"
@@ -295,7 +319,9 @@ class JobTrainer:
                          "StrictHostKeyChecking=accept-new", "-o", shlex.quote(f"UserKnownHostsFile={known_hosts}")])
 
     def _boot(self, id: str, known_hosts: Path) -> tuple[str, int]:
-        """Wait for the instance's ssh, within boot_timeout_s: the provider's word, then a real ssh answer."""
+        """Wait for the instance, within boot_timeout_s: the provider's word, then an ssh answer that start.sh has
+        finished (its marker, STARTED): on Vast.ai sshd is up before start.sh ran, and start.sh still installs
+        rsync, writes the Hugging Face token and records host.json."""
         from . import cloud as clouds
         from .compute import Remote
         limit = float(self.cloud.get("boot_timeout_s", 900))
@@ -306,33 +332,53 @@ class JobTrainer:
             if place is not None:
                 host, port = place
                 try:
-                    Remote(host, self._instance_ssh(port, known_hosts), self.runner).ssh("true", timeout=60)
+                    Remote(host, self._instance_ssh(port, known_hosts), self.runner).ssh(
+                        f'test -f "$HOME"/{STARTED}', timeout=60)
                     return host, port
                 except (OSError, subprocess.SubprocessError):
-                    pass                    # sshd not up yet, or start.sh still installing it
+                    pass                    # sshd not up yet, or start.sh not done
             if max(time.monotonic() - t0, slept) >= limit:
                 raise clouds.CloudError(f"{self.cloud['provider']}: instance {id} did not answer ssh within "
                                         f"{limit:.0f}s (boot_timeout_s)")
             self.sleep(poll)
             slept += poll
 
-    def _stop(self, tag: str, job_id: str, id: str | None) -> None:
-        """Stop the job's instance, and any other the provider made for this job (a create retried after a lost
-        answer). One that cannot be stopped is said loudly and left to the next sweep of the workspace."""
-        name = self.cloud["provider"]
-        try:
-            ids = ([id] if id else []) + [i for i in self.provider.running(f"{tag}-{job_id}") if i != id]
-        except Exception as e:  # noqa: BLE001 - in a finally: nothing may hide the job's own outcome
-            ids = [id] if id else []
-            say(f"{name}: could not list the instances of job {job_id}: {e}")
-        for i in ids:
+    def _stop(self, tag: str, job_id: str, id: str | None, record: dict) -> None:
+        """Stop the job's instance first, then any other the provider made for this job (a create whose answer was
+        lost, or one whose id start() never returned). One that cannot be stopped is said loudly and left to the
+        next sweep of the workspace. A KeyboardInterrupt (or a signal) meanwhile is held until all is tried, then
+        raised. The ids that could not be stopped go into `record` (the card's): stop_failed."""
+        name, failed, held = self.cloud["provider"], [], None
+
+        def stop(i: str) -> None:
+            nonlocal held
             try:
                 self.provider.stop(i)
                 say(f"{name}: stopped instance {i}")
-            except Exception as e:  # noqa: BLE001 - the same
-                say(f"{name}: COULD NOT STOP instance {i} (job {job_id}); it may still bill: {e}. It is stopped "
+            except BaseException as e:  # noqa: BLE001 - in a finally: nothing may hide the job's own outcome
+                if not isinstance(e, Exception):
+                    held = held or e
+                failed.append(i)
+                record["stop_failed"] = failed
+                say(f"{name}: COULD NOT STOP instance {i} (job {job_id}); it may still bill: {e!r}. It is stopped "
                     f"by the next job of this workspace, or stop it in the {name} console")
                 JobTrainer._stopped.discard((name, tag))
+
+        if id:
+            stop(id)
+        try:
+            others = [i for i in self.provider.running(f"{tag}-{job_id}") if i != id]
+        except BaseException as e:  # noqa: BLE001 - the same
+            if not isinstance(e, Exception):
+                held = held or e
+            others = []
+            say(f"{name}: could not list the instances of job {job_id}: {e!r}; the next job of this workspace "
+                f"looks again")
+            JobTrainer._stopped.discard((name, tag))
+        for i in others:
+            stop(i)
+        if held is not None:
+            raise held
 
     def _stop_leftovers(self, tag: str) -> None:
         """Stop the instances of this workspace that a killed process left, once per process; never another's."""
@@ -378,6 +424,7 @@ class JobTrainer:
                 status = self.compute.poll(job_id)
                 if status.state == "exited":
                     return status
+                self._alive(job_id, where)
                 if status.state == "lost":
                     raise TrainError(f"job {job_id} on {where} was lost: no exit code, and its process is gone "
                                      f"(a reboot, kill -9)")
@@ -385,8 +432,23 @@ class JobTrainer:
                     raise TrainError(f"job {job_id} on {where} passed its deadline ({self.deadline_s:.0f}s)")
                 self.sleep(self.poll_s)
         except BaseException:
-            self._cancel(job_id, workspace)
+            if self.cloud is None:          # a cloud instance is stopped at once, with its job: no ssh to wait on
+                self._cancel(job_id, workspace)
             raise
+
+    def _alive(self, job_id: str, where: str) -> None:
+        """On a cloud instance, the provider's word that it still runs, each poll: an instance that is gone (a Vast.ai
+        host offline, a RunPod pod exited) fails the job now, not at its deadline. An API that does not answer says
+        nothing."""
+        if self.cloud is None or self._instance_id is None:
+            return
+        from . import cloud as clouds
+        try:
+            self.provider.ready(self._instance_id)
+        except clouds.Gone as e:
+            raise TrainError(f"job {job_id} on {where}: {e}") from None
+        except clouds.CloudError:
+            pass
 
     def _cancel(self, job_id: str, workspace: str) -> None:
         """Cancel a job as best one can; one that cannot be is left to the next sweep of `workspace`."""
@@ -423,6 +485,30 @@ class JobTrainer:
                 HttpBackend(self.models["url"], token_env=self.models.get("token_env", "OUROLOOP_TOKEN")).release()
             except httpx.HTTPError as e:
                 print(f"trainer: the model server did not release its models: {_why(e)}", file=sys.stderr)
+
+
+STARTED = ".ouroloop/started"          # under the home: start.sh writes it when it is done, on each boot
+TTL_MARGIN_S = 1800                     # an instance's life beyond its boot, a host init and its job's deadline
+
+
+@contextlib.contextmanager
+def _signals_raise():
+    """SIGTERM and SIGHUP, which would end this process without running a finally, raise SystemExit instead while a
+    cloud instance runs (in the main thread only: signal handlers are set there)."""
+    import threading
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    def ended(signum, frame):
+        raise SystemExit(128 + signum)
+
+    before = {sig: signal.signal(sig, ended) for sig in (signal.SIGTERM, signal.SIGHUP)}
+    try:
+        yield
+    finally:
+        for sig, handler in before.items():
+            signal.signal(sig, handler)
 
 
 def say(message: str) -> None:

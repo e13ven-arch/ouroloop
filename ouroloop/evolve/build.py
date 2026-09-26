@@ -1,5 +1,11 @@
-"""Ledger -> TDE training data (PLAN §4.1). Each labelled decision is re-rendered with the point's current spec and
-written as a TDE DecisionExample, so TDE's trainer reads the files directly."""
+"""Ledger -> training data (PLAN §4.1): the data contract every trainer plugin reads (ouroloop/trainers). Each labelled
+decision is re-rendered with the point's current spec and written as one example, a JSON line:
+
+    id, source_id (the session), dataset (the point), split ("train" or "val"), primitive (noul, choice, score),
+    state (the rendered view), question, candidates [{name, description}], target (a distribution over the
+    candidates), template_id (the spec hash), meta {weight, truncated, ts, source_spec}
+
+A plugin maps them to its trainer's format itself (trainers/tde.py: TDE's DecisionExample)."""
 from __future__ import annotations
 
 import json
@@ -13,7 +19,7 @@ VAL_FRAC = 0.1      # share of the training sessions the trainer may select its 
 
 
 def candidates(q) -> list[dict]:
-    """Candidates with descriptions, in the same form TDE's Decider builds them at inference time."""
+    """Candidates with descriptions, as a model is shown them at inference time (TDE's Decider builds the same)."""
     if q.type == "noul":
         crit = q.criteria or {}
         return [{"name": "yes", "description": str(crit.get("true") or "")},
@@ -24,7 +30,7 @@ def candidates(q) -> list[dict]:
 
 
 def to_example(rt, point, row, target: dict, weight: float, split: str) -> dict | None:
-    """The row as a TDE example, its candidates in the order `predict` presents them (shuffled, seeded on the decision
+    """The row as an example, its candidates in the order `predict` presents them (shuffled, seeded on the decision
     id), not in the order they were written: shuffled, as a live ask shuffles them."""
     ctx = rt.sessions.get(row.decision["ctx"])
     view, truncated = point.render(ctx)
@@ -34,7 +40,7 @@ def to_example(rt, point, row, target: dict, weight: float, split: str) -> dict 
     if sum(t) <= 0:
         return None   # the observed label is not among the current candidates
     return {"id": row.decision["id"], "source_id": row.decision.get("session", ""), "dataset": point.name,
-            "split": "calibration" if split == "val" else split,      # TDE's name for what it selects on
+            "split": split,
             "primitive": q.type, "state": view, "question": q.instructions, "candidates": cands,
             "target": [x / sum(t) for x in t], "template_id": point.spec_hash,
             "meta": {"weight": weight, "truncated": truncated, "ts": row.decision["ts"],
@@ -44,7 +50,7 @@ def to_example(rt, point, row, target: dict, weight: float, split: str) -> dict 
 @dataclass
 class Dataset:
     dir: Path
-    splits: dict[str, list[dict]]    # "train" / "val" / "calibration" / "test" -> TDE example dicts
+    splits: dict[str, list[dict]]    # "train" / "val" / "calibration" / "test" -> example dicts
 
     def stats(self) -> dict:
         out: dict = {}

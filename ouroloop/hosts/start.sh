@@ -6,10 +6,13 @@
 #   PUBLIC_KEY      authorized for root's ssh
 #   HF_TOKEN        written to ~/.cache/huggingface/token, since ssh sessions do not see the container's environment
 #   OUROLOOP_SSHD   0: sshd is someone else's (Vast.ai's ssh runtypes start their own); otherwise it is started here
+#   OUROLOOP_TTL_S  a cloud instance's longest life (its boot, a host init and its job's deadline, with a margin):
+#                   after it the container is ended, should the control plane that started it never stop it
 #
 # It installs what is missing of sshd and rsync (the control plane needs both before host init can run), makes this
 # container's own ssh host keys, records host.json again when ~/.ouroloop/venv exists (the GPU is only visible now),
-# and runs sshd until the container stops. A host without the venv is prepared by the trainer (host init) over ssh.
+# writes ~/.ouroloop/started (the trainer waits for it: on Vast.ai sshd answers before this script is done), and
+# runs sshd until the container stops. A host without the venv is prepared by the trainer (host init) over ssh.
 set -u
 
 say() { echo "ouroloop-start: $*" >&2; }
@@ -30,6 +33,15 @@ install_packages() {
     else return 1
     fi
 }
+
+ouro="$HOME/.ouroloop"
+mkdir -p "$ouro"
+rm -f "$ouro/started"               # this boot's marker, written once all below is done
+
+if [ -n "${OUROLOOP_TTL_S:-}" ]; then
+    # End the container after the TTL: its main process (sshd here; the provider's init on Vast.ai) is asked to stop.
+    ( sleep "$OUROLOOP_TTL_S" && kill -TERM 1 ) >/dev/null 2>&1 &
+fi
 
 sshd_bin() { command -v sshd 2>/dev/null || { [ -x /usr/sbin/sshd ] && echo /usr/sbin/sshd; }; }
 
@@ -52,7 +64,6 @@ if [ -n "${HF_TOKEN:-}" ]; then
     (umask 077 && printf '%s' "$HF_TOKEN" > "$HOME/.cache/huggingface/token")
 fi
 
-ouro="$HOME/.ouroloop"
 if [ -x "$ouro/venv/bin/python" ] && [ -f "$ouro/plan.json" ]; then
     if "$ouro/venv/bin/python" -m ouroloop.hosts record "$ouro/plan.json" > "$ouro/host.json.tmp"; then
         mv "$ouro/host.json.tmp" "$ouro/host.json"
@@ -62,6 +73,7 @@ if [ -x "$ouro/venv/bin/python" ] && [ -f "$ouro/plan.json" ]; then
     fi
 fi
 
+: > "$ouro/started"
 [ "${OUROLOOP_SSHD:-1}" != 0 ] || exit 0
 sshd=$(sshd_bin) || { say "no sshd: the control plane cannot reach this host"; exec sleep infinity; }
 mkdir -p /run/sshd
