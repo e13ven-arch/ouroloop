@@ -36,8 +36,10 @@ class Pin:
 
 class Runtime:
     def __init__(self, root: str | Path, backends: dict[str, Backend], default_backend: str,
-                 point_backends: dict[str, str] | None = None, seed: int | None = None, models: dict | None = None):
-        """`models`: the config's [models] table, how the trained models (refs) on the registry's cards are served."""
+                 point_backends: dict[str, str] | None = None, seed: int | None = None, serving=None):
+        """`serving`: how the trained models on the registry's cards are asked (serving.Serving; default: in-process,
+        with no store)."""
+        from .serving import Serving
         self.root = Path(root)
         self.ledger = Ledger(self.root / "ledger")
         self.sessions = SessionStore(self.root / "sessions")
@@ -46,7 +48,7 @@ class Runtime:
         self.revoked = Revoked(self.root / "harness" / "revoked.json")
         self.accepted = Accepted(self.root)
         self.backends = backends
-        self.models = models
+        self.serving = serving or Serving()
         self.default_backend = default_backend
         self.point_backends = dict(point_backends or {})
         self.points: dict[str, DecisionPoint] = {}
@@ -92,12 +94,20 @@ class Runtime:
         if not self.accepted.promoted(card):
             return card, None, f"{version} was not promoted through the frozen gate"
         if version not in self._built:
-            from .config import build_backend
             try:
-                self._built[version] = (build_backend(card["backend"], self.models), "")
+                self._built[version] = (self.serving.backend(card["backend"]), "")
             except Exception as e:  # noqa: BLE001 - a champion that cannot load never answers, so never acts
                 self._built[version] = (None, f"{type(e).__name__}: {e}"[:300])
         return card, *self._built[version]
+
+    def drop(self, version: str, spec: dict | None) -> None:
+        """Let go of a version that is not the champion (a revoked one, or one that lost a promotion): serving drops
+        its model. Sessions pinned to a revoked one keep asking it, and take their defaults."""
+        self._built.pop(version, None)
+        try:
+            self.serving.drop(spec)
+        except Exception:  # noqa: BLE001 - a model server that cannot be told still never lets the revoked one act
+            pass
 
     def current(self, harness: dict | None = None) -> Pin:
         """What a session opened now runs with: the champion in models/champion.json and the calibrations in

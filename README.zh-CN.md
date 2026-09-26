@@ -56,7 +56,7 @@ ouroloop models --dir examples/workspace                            # 查看模�
 
 门模板只能收紧、不能放宽 5% 的风险、每次过门需要的 30 个新 session 和 bootstrap 次数。每轮的门记录、它的使用和结论都是账本里的事件，`gates/` 里只是副本。只有门记录接受过的候选才能晋升、作答和执行。
 
-关于 TDE：TDE 是单独的项目，之后另行开源；本仓库里的 `tde` 训练器记录了 ouroloop 怎么训练它：作为一个任务（`ouroloop/evolve/worker.py`）在本机运行，或者设 `host = "user@box"` 通过 ssh 在 GPU 主机上运行，每个任务在那台机器上有一个新目录 `<jobs_root>/<job id>/`。训练出的模型是一个引用：任务 id（run 留在这个目录里），或者设 `transport = "hf"` 时的 `<repo>@<commit>`（run 提交一次到私有的 Hugging Face 仓库）。`[models]` 表说明这些引用怎么服务：`url`（和 `token_env`）指向 GPU 主机上的 `ouroloop serve`，或者用 `jobs_root`（和 `hf_prefix`）在进程内加载。没有 TDE 时，训练管线用内置的签名小模型（`type = "signature"`）也能完整跑通；接自己的模型只要实现两个方法：`train(job)` 返回训练结果，`backend(result)` 返回能回答决策的后端，然后在配置里写 `type = "your.module:YourTrainer"`。
+关于 TDE：TDE 是单独的项目，之后另行开源；本仓库里的 `tde` 训练器记录了 ouroloop 怎么训练它：作为一个任务（`ouroloop/evolve/worker.py`）在本机运行，或者设 `host = "user@box"` 通过 ssh 在 GPU 主机上运行，每个任务在那台机器上有一个新目录 `<jobs_root>/<job id>/`。任务把 run 发布到模型库 `[store]`，训练出的模型是一个引用：`type = "dir"` 时是任务 id（一个目录，有训练主机时在那台主机上），`type = "hf"` 时是 `<repo>@<commit>`（run 提交一次到私有的 Hugging Face 仓库）。`[serving]`（旧名 `[models]`）说明这些引用怎么问：`url`（和 `token_env`）指向能读模型库的主机上的 `ouroloop serve`，或者在进程内从模型库加载。过门的模型先部署再成为冠军（部署失败用 `ouroloop deploy <version>` 重试）。控制面、训练、模型库、服务是四个角色；一台 GPU 主机包下其中三个只是一种布局（docs/TRAINING_HOSTS.md）。没有 TDE 时，训练管线用内置的签名小模型（`type = "signature"`）也能完整跑通；接自己的模型就写一个训练器插件（`ouroloop/trainers/__init__.py`，docs/TRAINING_HOSTS.md §1）：`train` 作为作业在训练机器上跑，`backend(run, ref, options)` 为服务加载模型；配置里写 `type = "your.module"`。写成 `type = "your.module:YourTrainer"` 的训练器在当前进程里训练，后端也在这里建，不经过模型库和 `[serving]`，只用于测试和 demo。
 
 要让 TDE 实时回答单个决策，就在 GPU 主机上常驻一个决策服务，harness 这边用 `type = "http"` 的后端连过去：
 

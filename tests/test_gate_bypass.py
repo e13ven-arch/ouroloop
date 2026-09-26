@@ -322,9 +322,14 @@ def test_a_champion_of_another_plugin_is_no_parent(tmp_path):
     assert dry_run_model(rt, other, {"init_from": "~/tde-runs/base"})["job"] == {"parent": "~/tde-runs/base"}
     assert dry_run_model(rt, other)["job"] == {"parent": None}      # JobTrainer then takes [trainers.tde] init_from
     # by the card's backend: the plugin that trained it, and a card from before plugins is TDE's
-    tde, signature = (JobTrainer(n, models={"jobs_root": "j"}) for n in ("tde", "signature"))
+    tde, signature = (JobTrainer(n) for n in ("tde", "signature"))
     card = {"model_id": "m_0003_x", "backend": {"type": "model", "model": "m_0003_x", "trainer": "signature"}}
     assert parent_ref(card, tde, {"init_from": "~/base"}) == "~/base" and parent_ref(card, signature, {}) == "m_0003_x"
+    # nor is a model in another store: after [store] changes, the first model starts where the config says
+    hub = JobTrainer("signature", store={"type": "hf", "prefix": "org/ouroloop-"})
+    assert parent_ref(card, hub, {"init_from": "~/base"}) == "~/base"
+    ref = f"org/ouroloop-m_0003_x@{'a' * 40}"
+    assert parent_ref({"model_id": ref, "backend": {**card["backend"], "model": ref}}, hub, {}) == ref
     old = {"model_id": "m_0001_x", "backend": {"type": "model", "model": "m_0001_x"}}
     assert parent_ref(old, tde, {}) == "m_0001_x" and parent_ref(old, signature, {}) is None
     in_process = {"model_id": "signature:m_0002", "backend": {"type": "signature", "path": "p"}}

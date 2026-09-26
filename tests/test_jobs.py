@@ -33,6 +33,8 @@ from ouroloop.release import code_version
 from ouroloop.research import Candidate
 from ouroloop.runtime import Runtime
 from ouroloop.serve import make_server
+from ouroloop.serving import Serving
+from ouroloop.stores import make as make_store
 from ouroloop.trainers.signature import SignatureTrainer
 from ouroloop.types import Question, Request
 from test_gate_record import ACT_GATE, CFG, collect, ctx
@@ -159,7 +161,7 @@ def decider(monkeypatch) -> list:
 def trainer(repo, jobs, **kw) -> JobTrainer:
     """The tde plugin as a job on this machine, under this Python; the first parent is the stub's runs/base."""
     return JobTrainer("tde", kw.pop("options", {"init_from": str(repo / "runs" / "base")}), jobs_root=str(jobs),
-                      poll_s=kw.pop("poll_s", 0.05), models=kw.pop("models", {"jobs_root": str(jobs)}), **kw)
+                      poll_s=kw.pop("poll_s", 0.05), **kw)
 
 
 def a_job(root, version="m_0001", parent=None, **recipe) -> TrainJob:
@@ -214,13 +216,13 @@ def on_this_machine(args, input=None, timeout=None):
 # ---------------------------------------------------------------- a round, end to end
 def test_an_evolve_round_trains_a_job_and_the_next_one_starts_from_its_model(tmp_path, repo, decider):
     jobs = tmp_path / "jobs"
-    cfg = {**CFG, "models": {"jobs_root": str(jobs)}}
+    base = str(repo / "runs" / "base")
+    cfg = {**CFG, "store": {"type": "dir", "root": str(jobs)},
+           "trainer": {"type": "tde", "jobs_root": str(jobs), "poll_s": 0.05}, "trainers": {"tde": {"init_from": base}}}
     rt = config.build_runtime(cfg, tmp_path)
     collect(rt, 150)
     freeze_template(rt.root, ACT_GATE)
-    base = str(repo / "runs" / "base")
-    tde = config.build_trainer({"type": "tde", "jobs_root": str(jobs), "poll_s": 0.05}, cfg["models"],
-                               {"tde": {"init_from": base}})
+    tde = config.build_trainer(cfg, rt.serving)
     recipe = {"replay": str(repo / "data" / "replay.jsonl"), "replay_ratio": 0.5, "lr_head": 0.000123}
     first = evolve_model(rt, tde, recipe)
     job = first["job"]
@@ -229,7 +231,8 @@ def test_an_evolve_round_trains_a_job_and_the_next_one_starts_from_its_model(tmp
     assert first["backend"] == {"type": "model", "model": job["id"], "trainer": "tde", "options": {"init_from": base}}
     assert "run" not in first and job["host"] is None and job["id"].startswith("m_0001_")
     result = job["result"]
-    assert (result["model"], result["ouroloop"], result["hf_commit"]) == (job["id"], code_version(), None)
+    assert (result["model"], result["ouroloop"]) == (job["id"], code_version()) and job["spec"]["store"] == {
+        "type": "dir", "root": str(jobs)}
     assert result["plugin"] == {"name": "tde", "version": f"git {git(repo, 'rev-parse', 'HEAD').strip()}"}
     assert result["host"]["gpu"] == [] and result["host"]["python"]
     spec = job["spec"]
@@ -261,7 +264,7 @@ def test_an_evolve_round_trains_a_job_and_the_next_one_starts_from_its_model(tmp
 # ---------------------------------------------------------------- failures are TrainError: inconclusive
 def test_a_failed_job_leaves_the_round_inconclusive_and_the_record_unused(tmp_path, repo, monkeypatch):
     monkeypatch.setenv("STUB_TDE", "fail")
-    rt = config.build_runtime({**CFG, "models": {"jobs_root": str(tmp_path / "jobs")}}, tmp_path)
+    rt = config.build_runtime({**CFG, "store": {"type": "dir", "root": str(tmp_path / "jobs")}}, tmp_path)
     collect(rt, 150)
     freeze_template(rt.root, ACT_GATE)
     card = evolve_model(rt, trainer(repo, tmp_path / "jobs"))
@@ -284,7 +287,7 @@ def test_a_job_that_hangs_is_stopped_at_its_deadline(tmp_path, repo, monkeypatch
 def test_hf_keeps_publish_s_of_the_deadline_for_the_commit(tmp_path, repo, monkeypatch):
     monkeypatch.setenv("STUB_TDE", "hold")
     monkeypatch.setenv("STUB_PID", str(tmp_path / "tde.pid"))
-    tde = trainer(repo, tmp_path / "jobs", deadline_s=600, publish_s=600, transport="hf", hf_prefix="org/ouroloop-")
+    tde = trainer(repo, tmp_path / "jobs", deadline_s=600, publish_s=600, store={"type": "hf", "prefix": "org/o-"})
     start = time.time()
     with pytest.raises(TrainError, match="exit 124"):          # no time left to train: all of it is the commit's
         tde.train(a_job(tmp_path / "ws"))
@@ -403,8 +406,7 @@ def test_a_job_without_a_parent_is_refused(tmp_path, repo):
 def test_a_parent_job_resolves_in_the_jobs_directory_whatever_the_paths_were_relative_to(tmp_path, repo,
                                                                                           monkeypatch):
     monkeypatch.chdir(tmp_path)
-    tde = JobTrainer("tde", {"init_from": str(repo / "runs" / "base")}, jobs_root="jobs", poll_s=0.05,
-                     models={"jobs_root": "jobs"})
+    tde = JobTrainer("tde", {"init_from": str(repo / "runs" / "base")}, jobs_root="jobs", poll_s=0.05)
     first = tde.train(a_job(tmp_path / "ws"))
     out = tde.dry_run(a_job(tmp_path / "ws", "m_0002", parent=first.model_id))
     assert out["check"]["parent"] == str(tmp_path / "jobs" / first.model_id / "run")
@@ -412,19 +414,23 @@ def test_a_parent_job_resolves_in_the_jobs_directory_whatever_the_paths_were_rel
         tde.dry_run(a_job(tmp_path / "ws", "m_0003", parent="m_0001_gone"))
 
 
-def test_a_trainer_checks_how_its_models_are_served_before_any_job(tmp_path):
+def test_a_trainer_checks_how_its_models_are_stored_and_served_before_any_job(tmp_path):
     host = {"host": "u@gpu", "runner": Host()}
-    for kw, why in (({"models": None}, "needs a \\[models\\] table"),
-                    ({"models": {"jobs_root": "j", "port": 1}}, "may only set"),
-                    ({**host, "models": {"jobs_root": "~/.ouroloop/jobs"}}, "stay there"),
-                    ({**host, "models": {"jobs_root": "j", "hf_prefix": "o/p-"}}, "stay there"),
-                    ({**host, "models": {"url": "http://gpu:8765"}, "jobs_root": "jobs"}, "jobs_root 'jobs'")):
+    url = {"serving": {"url": "http://gpu:8765"}}
+    for kw, why in (({"serving": {"url": "http://gpu:8765", "port": 1}}, "may only set"),
+                    ({"store": {"type": "s3"}}, '"dir" or "hf"'),
+                    ({"store": {"type": "hf"}}, "needs prefix"),
+                    ({"store": {"type": "dir", "jobs_root": "j"}}, "may only set"),
+                    (host, "stay there"),
+                    ({**host, "store": {"type": "dir", "root": "~/.ouroloop/jobs"}}, "stay there"),
+                    ({**host, **url, "jobs_root": "jobs"}, "jobs_root 'jobs'"),
+                    ({**host, **url, "store": {"type": "dir", "root": "models"}}, "root 'models'")):
         with pytest.raises(ValueError, match=why):
-            JobTrainer("tde", **{"models": {"jobs_root": "j"}, **kw})
-    JobTrainer("tde", **host, models={"url": "http://gpu:8765"})
-    JobTrainer("tde", **host, models={"jobs_root": "j", "hf_prefix": "o/p-"}, transport="hf", hf_prefix="o/p-")
+            JobTrainer("tde", **kw)
+    JobTrainer("tde", **host, **url)                                            # a model server on the host
+    JobTrainer("tde", **host, store={"type": "hf", "prefix": "o/p-"})          # loaded here, from the Hub
     # a host over ssh runs the jobs under the venv host init made there
-    assert JobTrainer("tde", **host, models={"url": "http://gpu:8765"}).python == "~/.ouroloop/venv/bin/python"
+    assert JobTrainer("tde", **host, **url).python == "~/.ouroloop/venv/bin/python"
 
 
 # ---------------------------------------------------------------- over ssh
@@ -464,7 +470,7 @@ class Host:
 def test_over_ssh_status_reads_may_fail_and_no_spec_value_reaches_a_shell(tmp_path):
     host = Host(drop=2)
     tde = JobTrainer("tde", {"init_from": "~/tde/runs/base"}, host="user@gpu", runner=host, sleep=lambda s: None,
-                     models={"url": "http://127.0.0.1:9"})
+                     serving={"url": "http://127.0.0.1:9"})
     job = a_job(tmp_path / "ws", parent="runs/base", lr_head=0.000123)
     result = tde.train(job)
     assert result.model_id == host.job and result.job["host"] == "user@gpu" and host.polls == 4
@@ -490,7 +496,7 @@ def test_a_job_whose_launch_failed_is_cancelled_or_left_to_the_next_sweep(tmp_pa
         host = Host(fail_launch=True, fail_cancel=fail_cancel)
         ws = tmp_path / f"ws{fail_cancel}"
         tde = JobTrainer("tde", {"init_from": "~/tde/runs/base"}, host="user@gpu", runner=host,
-                         sleep=lambda s: None, models={"url": "http://127.0.0.1:9"})
+                         sleep=lambda s: None, serving={"url": "http://127.0.0.1:9"})
         with pytest.raises(TrainError, match="could not start.*Connection reset"):
             tde.train(a_job(ws))
         assert any("kill -s TERM" in a[-1] for a in host.commands)          # it may have started
@@ -520,18 +526,17 @@ def test_hf_commits_the_run_once_and_the_ref_loads_at_that_commit(tmp_path, repo
     spec.loader.exec_module(hub)
     monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
     jobs = tmp_path / "jobs"
-    models = {"jobs_root": str(jobs), "hf_prefix": "org/ouroloop-"}
-    tde = trainer(repo, jobs, transport="hf", hf_prefix="org/ouroloop-", models=models)
+    tde = trainer(repo, jobs, store={"type": "hf", "prefix": "org/ouroloop-"})
     result = tde.train(a_job(tmp_path / "ws"))
     repo_id, _, sha = result.model_id.partition("@")
     assert repo_id == f"org/ouroloop-{result.job['id']}" and re.fullmatch(r"[0-9a-f]{40}", sha)
-    assert result.job["result"]["hf_commit"] == sha
+    assert result.job["spec"]["store"] == {"type": "hf", "prefix": "org/ouroloop-"}
     stored = tmp_path / "hub" / repo_id
     assert json.loads((stored / "repo.json").read_text()) == {"private": True}
     assert sorted(str(p.relative_to(stored / sha)) for p in (stored / sha).rglob("*") if p.is_file()) == [
         "best.pt", "config.json", "job/spec.json", "job/train.jsonl", "job/val.jsonl"]
     # served in-process at that commit, reporting its ref
-    ans = tde.backend(result).decide([Request("say yes", Question("noul", "done?"))])
+    ans = tde.serving.backend(result.backend).decide([Request("say yes", Question("noul", "done?"))])
     assert ans[0].model == result.model_id and decider[-1] == str(stored / sha)
     # the next job starts from it, downloaded at that commit
     second = tde.train(a_job(tmp_path / "ws", "m_0002", parent=result.model_id))
@@ -540,7 +545,7 @@ def test_hf_commits_the_run_once_and_the_ref_loads_at_that_commit(tmp_path, repo
     # a ref outside the prefix, or anything that is not a ref, is refused
     for bad in (f"else/where@{sha}", f"{repo_id}@main", "../x", "/etc", "a/b"):
         with pytest.raises(ValueError, match="not a model ref"):
-            config.build_backend({"type": "model", "model": bad}, models)
+            tde.serving.backend({"type": "model", "model": bad, "trainer": "tde"})
 
 
 # ---------------------------------------------------------------- serving refs
@@ -548,8 +553,8 @@ def test_serve_loads_a_job_by_its_ref_and_refuses_anything_else(tmp_path, decide
     jobs = tmp_path / "jobs"
     (jobs / "m_0001_abc" / "run").mkdir(parents=True)
     rt = Runtime(tmp_path / "ws", {"mock": KeywordBackend()}, "mock",
-                 models={"jobs_root": str(jobs), "hf_prefix": "org/ouroloop-"})
-    server = make_server(rt, port=0, trainers={"tde": {}})
+                 serving=Serving(store=make_store({"type": "dir", "root": str(jobs)}), plugins={"tde": {}}))
+    server = make_server(rt, port=0)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     url = f"http://127.0.0.1:{server.server_port}"
     q = Question("noul", "done?")
@@ -610,14 +615,15 @@ def test_the_http_backend_sends_a_chunk_again_after_a_failure(tmp_path):
     with pytest.raises(httpx.HTTPStatusError):                       # a single decision: its caller takes the default
         down.decide([Request("s", Question("noul", "q?"))])
     assert pauses == [1.0, 2.0, 1.0, 2.0, 4.0]
-    served = config.model_backend("m_0001_abc", {"url": "http://serve"})
+    ref = {"type": "model", "model": "m_0001_abc"}
+    served = Serving({"url": "http://serve"}).backend(ref)
     assert served.timeout.read == 600 and served.timeout.connect == 10          # long enough for a first load
-    assert config.model_backend("m_0001_abc", {"url": "http://serve", "timeout": 60}).timeout.read == 60
+    assert Serving({"url": "http://serve", "timeout": 60}).backend(ref).timeout.read == 60
 
 
 # ---------------------------------------------------------------- research candidates
 def test_a_research_recipe_sets_only_hyperparameters_of_their_types():
-    tde = JobTrainer("tde", models={"jobs_root": "j"})
+    tde = JobTrainer("tde")
     for good in ({"epochs": 2}, {"lr_head": 1e-4}, {"max_steps": 100}, {"focus": 0.5}, {"batch_size": 4},
                  {"gradient_checkpointing": False}):
         check_change(good, tde)
@@ -630,7 +636,7 @@ def test_a_research_recipe_sets_only_hyperparameters_of_their_types():
         with pytest.raises(ValueError, match=why):
             check_change(bad, tde)
     # the keys are the framework's and the plugin's own: signature has no TDE knobs, nor does an in-process trainer
-    signature = JobTrainer("signature", models={"jobs_root": "j"})
+    signature = JobTrainer("signature")
     for trainer in (signature, SignatureTrainer(), None):
         check_change({"min_weight": 1.0, "focus": 0.5, "seed": 3}, trainer)
         with pytest.raises(ValueError, match="unknown recipe keys: \\['lr_backbone'\\]"):

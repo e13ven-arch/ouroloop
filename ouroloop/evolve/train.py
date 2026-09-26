@@ -1,13 +1,14 @@
 """Trainers turn a built dataset into a new decision model (PLAN §4.3).
 
     JobTrainer          a trainer plugin (ouroloop.trainers: tde, signature, ...) as a job (ouroloop/worker.py) on
-                        this machine or on a training host over ssh (compute.py); the model it yields is a ref: the
-                        job id, or <repo>@<commit> on Hugging Face
+                        this machine or on a training host over ssh (compute.py); the model it yields is a ref in
+                        the model store (ouroloop/stores): the job id, or <repo>@<commit> on Hugging Face
     SignatureTrainer    the signature model trained in this process, for tests and demos (trainers/signature.py)
 
-Any trainer plugs in through the Trainer protocol below: train(job) -> TrainResult, backend(result) -> a backend,
-and supports_weights; a plugin gets all of the job path for a few functions. The training data never holds
-ouroloop's calibration or test sessions (build.py).
+Any trainer plugs in through the Trainer protocol below: train(job) -> TrainResult, and supports_weights; a plugin
+gets all of the job path for a few functions. A trainer only trains: its model is asked through serving
+(serving.py), by the backend spec on its result. The training data never holds ouroloop's calibration or test
+sessions (build.py).
 """
 from __future__ import annotations
 
@@ -23,6 +24,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
+from urllib.parse import urlparse
 
 from ..ledger import new_id
 
@@ -65,7 +67,7 @@ class TrainJob:
 class TrainResult:
     model_id: str           # the model ref, which the backend reports as Answer.model: calibrations, thresholds,
                             # revocations and session pins are keyed by it, and the next job starts from it
-    backend: dict           # a backend spec that serves it (see config.build_backend)
+    backend: dict           # the backend spec serving asks it by (serving.py): {"type": "model", ...} for a stored one
     job: dict | None = None     # the training job: id, host, dir, spec, result
 
 
@@ -73,8 +75,6 @@ class Trainer(Protocol):
     supports_weights: bool      # it weighs each example by meta.weight; if not, it is given weight-1.0 rows only
 
     def train(self, job: TrainJob) -> TrainResult: ...
-
-    def backend(self, result: TrainResult): ...
 
 
 # ---------------------------------------------------------------------- a plugin as a job
@@ -93,14 +93,16 @@ class JobTrainer:
     With a host, the trainer reads its host.json before each job and runs host init when the host runs another
     ouroloop, lacks the plugin or has it from another source (hosts.ensure); an init that fails is a TrainError,
     before anything is used up. `options` are the plugin's ([trainers.<name>]): they travel in spec.json, and the
-    model's backend spec carries them. jobs_root may start with ~, that machine's home. With transport "direct" the
-    run stays in the job's directory and the model ref is the job id; with "hf" the job commits the run once to a
-    private repository <hf_prefix><job id> and the ref is <repo>@<commit>.
+    model's backend spec carries them. jobs_root may start with ~, that machine's home.
 
-    `models` is the config's [models] table: how the trained models are served (config.build_backend), checked here,
-    before any job starts. Runs on a host over ssh are served by a model server there (url), or with transport "hf"
-    loaded in-process from Hugging Face (hf_prefix); this machine's jobs_root never holds them. With "hf",
-    `publish_s` of the deadline is kept for the commit.
+    `store` is the model store the job publishes its run to (a [store] table, or a store; default: a "dir" store
+    at jobs_root, where the run stays in the job's directory and the ref is the job id). A "dir" store is on the
+    machine that trains; an "hf" store commits the run once to a private repository <prefix><job id>, and the ref is
+    <repo>@<commit>. `publish_s` of the deadline is kept for publishing, unless the run stays in place (a "dir" store
+    at jobs_root). `serving` (a [serving] table, or a Serving; default: in-process) is how the models are asked; it
+    is checked here, before any job starts: a "dir" store on a host over ssh is served by a model server there (url),
+    since this machine never holds its runs. Before a job the trainer asks a serving on the job's machine to let go of
+    the models on the GPU (_release).
 
     Any failure of the job or of reaching it is a TrainError, which the gate takes for inconclusive: a job that exits
     non-zero, is lost (no exit code, its process gone), outlives deadline_s by two polls, or leaves no well-formed
@@ -111,70 +113,66 @@ class JobTrainer:
     `cloud` ([trainer.cloud], cloud.py) runs each job on a new RunPod or Vast.ai instance instead of a host: it is
     started, tagged with the workspace and the job, waited for (its start.sh done) within boot_timeout_s, checked and
     initialized like any host, runs the job over ssh, and is stopped however the job ends. The first job of a process
-    stops the instances a killed run of the same workspace left. Its models travel through Hugging Face only
-    (transport "hf"); HF_TOKEN reaches the instance as its environment variable, the API key never leaves this
-    process. A provider or boot failure is a TrainError, before anything is used up. `api`: an httpx transport for the
-    provider's API (tests)."""
+    stops the instances a killed run of the same workspace left. Its models go to a store that outlives the instance
+    ("hf"); what the store needs (its ENV: HF_TOKEN) reaches the instance as environment variables, the API key
+    never leaves this process. A provider or boot failure is a TrainError, before anything is used up. `api`: an
+    httpx transport for the provider's API (tests)."""
     _swept: set = set()                 # (host, jobs_root, workspace) whose leftover jobs this process cancelled
     _stopped: set = set()               # (provider, tag) whose leftover instances this process stopped
 
     def __init__(self, plugin: str, options: dict | None = None, host: str | None = None,
-                 jobs_root: str = "~/.ouroloop/jobs", transport: str = "direct", hf_prefix: str | None = None,
-                 deadline_s: float = 28800, poll_s: float = 30, ssh_opts: str = "-o BatchMode=yes",
-                 models: dict | None = None, publish_s: float = 900, cloud: dict | None = None, api=None,
-                 runner=None, sleep=time.sleep):
-        from ..config import check_models
+                 jobs_root: str = "~/.ouroloop/jobs", store=None, serving=None, deadline_s: float = 28800,
+                 poll_s: float = 30, ssh_opts: str = "-o BatchMode=yes", publish_s: float = 900,
+                 cloud: dict | None = None, api=None, runner=None, sleep=time.sleep):
         from ..hosts import PYTHON
+        from ..serving import Serving
+        from ..stores import make
         from ..trainers import load
         from .compute import Compute
-        if transport not in ("direct", "hf"):
-            raise ValueError(f'transport {transport!r}: "direct" or "hf"')
-        if transport == "hf" and not hf_prefix:
-            raise ValueError('transport "hf" needs hf_prefix, e.g. "your-org/ouroloop-"')
         self.name, self.plugin, self.options = plugin, load(plugin), dict(options or {})
         self.supports_weights = bool(getattr(self.plugin, "SUPPORTS_WEIGHTS", False))
         self.recipe_defaults = {**DEFAULT_RECIPE, **dict(getattr(self.plugin, "RECIPE", {}))}
         self.path_keys = PATH_KEYS | set(getattr(self.plugin, "PATH_KEYS", ()))
-        self.models = check_models(models)
         self.cloud, self.provider = None, None
         if cloud is not None:
             from . import cloud as clouds
             if host is not None:
                 raise ValueError("[trainer] host and [trainer.cloud]: a job runs on one or the other")
-            if transport != "hf":           # an instance is gone after its job: its run must be on the Hub by then
-                raise ValueError(f'[trainer.cloud] needs transport "hf" (and hf_prefix), not {transport!r}: a cloud '
-                                 f'instance is terminated when its job ends, and its run with it')
             self.cloud = clouds.check(cloud)
             self.provider = clouds.make(self.cloud, api, sleep)
         remote = host not in (None, "local") or self.cloud is not None
         where = host or "a cloud instance"
-        if remote and not self.models.get("url") and not (transport == "hf" and self.models.get("hf_prefix")):
-            raise ValueError(f"the models trained on {where} stay there: [models] needs url (`ouroloop serve` "
-                             f"there), or transport \"hf\" and hf_prefix to load them here")
         if remote and not jobs_root.startswith(("/", "~")):     # a job's cwd is its directory, not the home
             raise ValueError(f"jobs_root {jobs_root!r}: absolute, or from ~ (the home on {where})")
         if not remote:
             jobs_root = os.path.abspath(os.path.expanduser(jobs_root))
+        store = store if hasattr(store, "publish") else make(store or {"type": "dir", "root": jobs_root})
+        self.store = store if remote else store.here()          # a job on this machine: its paths, from here
+        if self.cloud is not None and self.store.ON_TRAINING_HOST:
+            raise ValueError(f'[trainer.cloud] needs a [store] that outlives the instance (type "hf"), not '
+                             f'{self.store.TYPE!r}: a cloud instance is terminated when its job ends, and its run '
+                             f'with it')
+        root = str(getattr(self.store, "root", "/"))
+        if self.store.ON_TRAINING_HOST and remote and not root.startswith(("/", "~")):
+            raise ValueError(f"[store] root {root!r}: absolute, or from ~ (the home on {where})")
+        self.serving = serving if isinstance(serving, Serving) else Serving(serving, self.store, {plugin: self.options})
+        if remote and self.store.ON_TRAINING_HOST and not self.serving.url:
+            raise ValueError(f"the models trained on {where} stay there (a {self.store.TYPE!r} store): [serving] "
+                             f"needs url (`ouroloop serve` there), or a [store] of type \"hf\" to load them here")
         self.python = PYTHON if remote else os.path.expanduser(PYTHON) if host == "local" else sys.executable
-        self.host, self.jobs_root, self.transport, self.hf_prefix = host, jobs_root, transport, hf_prefix
+        self.host, self.jobs_root = host, jobs_root
         self.deadline_s, self.poll_s, self.sleep, self.ssh_opts = float(deadline_s), float(poll_s), sleep, ssh_opts
         self._base_ssh = ssh_opts
-        self.publish_s = float(publish_s) if transport == "hf" else 0.0
+        self.publish_s = 0.0 if self.store.in_place(jobs_root) else float(publish_s)    # a copy or an upload: time
         self.runner = runner
         self._instance_id = None            # the cloud instance the job at hand runs on
         self.compute = Compute(host if remote and not self.cloud else None, jobs_root, ssh_opts, runner)
 
     def train(self, job: TrainJob) -> TrainResult:
-        from ..worker import locate
         job_id, spec, result, where = self._run(job, check_only=False)
         ref = result.get("model")
-        try:
-            place = locate(ref, self.jobs_root, self.hf_prefix)
-        except ValueError:
-            place = None
-        mine = ref == job_id if self.transport == "direct" else bool(place and place[0] == spec["hf_repo"])
-        if not mine:
-            raise TrainError(f"job {job_id}: result.json names model {ref!r}, not this job's")
+        if self.store.job(ref) != job_id:
+            raise TrainError(f"job {job_id}: result.json names model {ref!r}, not this job's in the store")
         backend = {"type": "model", "model": ref, "trainer": self.name,
                    **({"options": self.options} if self.options else {})}
         return TrainResult(ref, backend, {"id": job_id, "host": spec["host"], "dir": self.compute.dir(job_id),
@@ -184,10 +182,6 @@ class JobTrainer:
         """Everything up to training, as a job on the training machine: the plugin's validate. Uses no GPU."""
         job_id, spec, result, where = self._run(job, check_only=True)
         return {"job": job_id, "host": spec["host"], "dir": self.compute.dir(job_id), **where, **result}
-
-    def backend(self, result: TrainResult):
-        from ..config import build_backend
-        return build_backend(result.backend, self.models)
 
     def _run(self, job: TrainJob, check_only: bool) -> tuple[str, dict, dict, dict]:
         """-> (job id, spec, result.json, where it ran: {} on a host, {"cloud": ...} on a cloud instance)"""
@@ -214,8 +208,7 @@ class JobTrainer:
         from ..worker import git_state
         spec = {"job": job_id, "version": job.version, "parent": parent, "trainer": self.name,
                 "options": self.options, "recipe": job.recipe, "host": self.host, "jobs_root": self.jobs_root,
-                "deadline_s": self.deadline_s, "publish_s": self.publish_s, "transport": self.transport,
-                "hf_repo": f"{self.hf_prefix}{job_id}" if self.transport == "hf" else None,
+                "deadline_s": self.deadline_s, "publish_s": self.publish_s, "store": self.store.table,
                 "ouroloop": {"code": code_version(), "git": git_state(CHECKOUT)}, "workspace": workspace,
                 "check_only": check_only}
         if not check_only and self.cloud is None:     # a cloud job has a GPU of its own
@@ -258,12 +251,12 @@ class JobTrainer:
             self._stop_leftovers(tag)
         ttl = float(opts.get("boot_timeout_s", 900)) + INIT_TIMEOUT_S + self.deadline_s + 2 * self.poll_s + TTL_MARGIN_S
         env = {"PUBLIC_KEY": self._public_key(), "OUROLOOP_TTL_S": str(int(ttl))}
-        if self.transport == "hf":
-            token = os.environ.get("HF_TOKEN", "").strip()
-            if not token:
-                raise TrainError('HF_TOKEN is not set here: a cloud job publishes its run to Hugging Face, and the '
-                                 'instance gets the token from this environment')
-            env["HF_TOKEN"] = token
+        for key in self.store.ENV:              # what publishing to the store needs there
+            value = os.environ.get(key, "").strip()
+            if not value:
+                raise TrainError(f'{key} is not set here: a cloud job publishes its run to the {self.store.TYPE!r} '
+                                 f'store, and the instance gets {key} from this environment')
+            env[key] = value
         id, began = None, None
         with tempfile.TemporaryDirectory() as tmp, _signals_raise():
             try:
@@ -410,7 +403,7 @@ class JobTrainer:
             return
         from ..hosts import HostError, ensure
         try:
-            ensure(self.host, {self.name: self.options}, self.ssh_opts, self.transport == "hf", self.runner,
+            ensure(self.host, {self.name: self.options}, self.ssh_opts, self.store, self.runner,
                    say=lambda m: print(f"trainer: {m}", file=sys.stderr))
         except HostError as e:
             raise TrainError(str(e)) from e
@@ -473,21 +466,27 @@ class JobTrainer:
         JobTrainer._swept.add(key)
 
     def _release(self) -> None:
-        """Let go of the models resident on the GPU before a job needs it: in this process, and on the model server."""
+        """Let go of the models resident on the GPU before a job needs it, only where they share the job's machine:
+        in this process for a job on this machine, and on a model server at loopback (a job here) or at the training
+        host's name (the part after @). A serving elsewhere keeps its models loaded."""
+        local = self.host in (None, "local")
+        if self.serving.url:
+            at = urlparse(self.serving.url).hostname or ""
+            if not (at in LOOPBACK if local else at == self.host.rpartition("@")[2]):
+                return
+        elif not local:
+            return
         release = getattr(self.plugin, "release", None)
-        if callable(release):
+        if callable(release) and local:
             release()
-        if self.models and self.models.get("url"):
-            import httpx
-
-            from ..backends.http import HttpBackend
-            try:
-                HttpBackend(self.models["url"], token_env=self.models.get("token_env", "OUROLOOP_TOKEN")).release()
-            except httpx.HTTPError as e:
-                print(f"trainer: the model server did not release its models: {_why(e)}", file=sys.stderr)
+        try:
+            self.serving.release()
+        except Exception as e:  # noqa: BLE001 - a server that cannot let go leaves the job less GPU, no more
+            print(f"trainer: serving did not release its models: {_why(e)}", file=sys.stderr)
 
 
 STARTED = ".ouroloop/started"          # under the home: start.sh writes it when it is done, on each boot
+LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 TTL_MARGIN_S = 1800                     # an instance's life beyond its boot, a host init and its job's deadline
 
 

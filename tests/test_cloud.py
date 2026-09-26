@@ -23,7 +23,7 @@ RUNPOD_KEY, VAST_KEY, HF_TOKEN = "rpa_SECRET_RUNPOD_KEY", "vast_SECRET_VAST_KEY"
 GPU_RP, GPU_VAST = "NVIDIA GeForce RTX 4090", "RTX 4090"
 PREFIX = "org/ouro-"
 COMMIT = "a" * 40
-MODELS = {"jobs_root": "~/.ouroloop/jobs", "hf_prefix": PREFIX}   # models load from the Hub here
+STORE = {"type": "hf", "prefix": PREFIX}      # the models outlive the instance, on the Hub
 
 
 @pytest.fixture
@@ -156,7 +156,7 @@ class Ssh:
 
     def manifest(self):
         return {"ouroloop": {"code": code_version()}, "plugins": {"signature": {"source": None}},
-                "hf": {"hub": True, "token": True}}
+                "stores": {"hf": {"hub": True, "token": True}}}
 
     def __call__(self, args, input=None, timeout=None):
         self.commands.append(args)
@@ -212,8 +212,8 @@ def options(provider, key, **kw):
 
 
 def trainer(cloud_options, api, ssh, **kw) -> JobTrainer:
-    return JobTrainer("signature", cloud=cloud_options, api=api.transport(), runner=ssh, transport="hf",
-                      hf_prefix=PREFIX, models=MODELS, poll_s=0, sleep=lambda s: None, **kw)
+    return JobTrainer("signature", cloud=cloud_options, api=api.transport(), runner=ssh, store=STORE,
+                      poll_s=0, sleep=lambda s: None, **kw)
 
 
 def ws_tag(ws) -> str:
@@ -315,7 +315,7 @@ def test_an_instance_that_never_answers_is_stopped_at_the_boot_timeout(tmp_path,
         return ssh(args, input, timeout)
     runner = refuse if provider == "vast" else ssh
     tr = JobTrainer("signature", cloud=options(provider, keys, boot_timeout_s=60), api=api.transport(),
-                    runner=runner, transport="hf", hf_prefix=PREFIX, models=MODELS, poll_s=0,
+                    runner=runner, store=STORE, poll_s=0,
                     sleep=lambda s: None)
     with pytest.raises(TrainError, match="did not answer ssh within 60s"):
         tr.train(a_job(tmp_path / "ws"))
@@ -333,8 +333,8 @@ def test_an_interrupted_boot_stops_the_instance(tmp_path, keys):
     def interrupt(s):
         raise KeyboardInterrupt
 
-    tr = JobTrainer("signature", cloud=options("runpod", keys), api=api.transport(), runner=Ssh(), transport="hf",
-                    hf_prefix=PREFIX, models=MODELS, sleep=interrupt)
+    tr = JobTrainer("signature", cloud=options("runpod", keys), api=api.transport(), runner=Ssh(), store=STORE,
+                    sleep=interrupt)
     with pytest.raises(KeyboardInterrupt):
         tr.train(a_job(tmp_path / "ws"))
     assert api.pods["pod1"]["status"] == "TERMINATED"
@@ -550,30 +550,31 @@ def test_start_sh_marks_when_it_is_done(tmp_path):
 
 
 # ---------------------------------------------------------------- refused before anything is used
-def test_a_cloud_trainer_refuses_transport_direct_and_bad_options(keys):
-    base = {"models": {"url": "http://gpu:8765"}}
-    with pytest.raises(ValueError, match='needs transport "hf"'):
+def test_a_cloud_trainer_refuses_a_dir_store_and_bad_options(keys):
+    base = {"serving": {"url": "http://gpu:8765"}}
+    with pytest.raises(ValueError, match='needs a \\[store\\] that outlives the instance'):
         JobTrainer("signature", cloud=options("runpod", keys), **base)
     with pytest.raises(ValueError, match="one or the other"):
-        JobTrainer("signature", cloud=options("runpod", keys), host="u@gpu", transport="hf", hf_prefix=PREFIX, **base)
+        JobTrainer("signature", cloud=options("runpod", keys), host="u@gpu", store=STORE, **base)
     with pytest.raises(ValueError, match="needs max_price"):
-        JobTrainer("signature", cloud={**options("vast", keys), "max_price": None}, transport="hf", hf_prefix=PREFIX,
-                   **base)
+        JobTrainer("signature", cloud={**options("vast", keys), "max_price": None}, store=STORE, **base)
     with pytest.raises(ValueError, match="may only set"):
-        JobTrainer("signature", cloud={**options("runpod", keys), "api_key": "x"}, transport="hf", hf_prefix=PREFIX,
-                   **base)
+        JobTrainer("signature", cloud={**options("runpod", keys), "api_key": "x"}, store=STORE, **base)
     with pytest.raises(ValueError, match="provider"):
-        JobTrainer("signature", cloud={"provider": "aws"}, transport="hf", hf_prefix=PREFIX, **base)
-    # built from the config: [trainer.cloud]
-    tr = config.build_trainer({"type": "signature", "transport": "hf", "hf_prefix": PREFIX,
-                               "cloud": options("vast", keys)}, MODELS)
-    assert tr.cloud["provider"] == "vast" and tr.python == "~/.ouroloop/venv/bin/python"
+        JobTrainer("signature", cloud={"provider": "aws"}, store=STORE, **base)
+    # built from the config: [trainer.cloud], and [store]; an old config's transport "hf" is that store
+    for cfg in ({"trainer": {"type": "signature", "cloud": options("vast", keys)}, "store": STORE},
+                {"trainer": {"type": "signature", "transport": "hf", "hf_prefix": PREFIX,
+                             "cloud": options("vast", keys)}, "models": {"jobs_root": "~/.ouroloop/jobs"}}):
+        tr = config.build_trainer(cfg)
+        assert tr.cloud["provider"] == "vast" and tr.python == "~/.ouroloop/venv/bin/python"
+        assert tr.store.table == STORE and not tr.serving.url
 
 
 @pytest.mark.parametrize("provider", ["runpod", "vast"])
 def test_no_offer_under_the_price_leaves_the_round_inconclusive_before_anything_is_used(tmp_path, keys, provider):
     api = RunPodApi(price=2.5) if provider == "runpod" else VastApi()
-    rt = config.build_runtime({**CFG, "models": dict(MODELS)}, tmp_path)
+    rt = config.build_runtime({**CFG, "store": STORE}, tmp_path)
     collect(rt, 150)
     freeze_template(rt.root, ACT_GATE)
     ssh = Ssh()

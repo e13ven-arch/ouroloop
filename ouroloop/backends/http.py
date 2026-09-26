@@ -1,4 +1,5 @@
-"""A backend served by `ouroloop serve` on another machine (for example TDE kept loaded on the GPU host)."""
+"""A backend served by `ouroloop serve` on another machine (for example TDE kept loaded on the GPU host), and the
+deploy calls a model server takes (serving.py)."""
 from __future__ import annotations
 
 import os
@@ -72,6 +73,15 @@ class HttpBackend:
     def release(self) -> None:
         """Ask the server to let go of the models it keeps loaded, e.g. before a training job on its GPU."""
         self._post("/release", {})
+
+    def load(self) -> str:
+        """Deploy `model` on the server: it loads the model and asks it the probe. -> the model id it answers as."""
+        return self._post("/load", {"model": self.model, **({"trainer": self.trainer} if self.trainer else {})}
+                          ).json()["model"]
+
+    def drop(self) -> None:
+        """Ask the server to let go of `model` (a revoked one)."""
+        self._post("/drop", {"model": self.model})
 
     def code_version(self) -> str | None:
         """The version of the code the server runs, for gate records."""

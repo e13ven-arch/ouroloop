@@ -80,9 +80,6 @@ class SignatureTrainer:
         spec = {"type": "signature", "path": str(path), **({"signature": self.ref} if self.ref else {})}
         return TrainResult(f"signature:{path.parent.name}", spec)
 
-    def backend(self, result: TrainResult) -> SignatureBackend:
-        return SignatureBackend(result.backend["path"], signature=result.backend.get("signature"))
-
 
 # ---------------------------------------------------------------------- the plugin: worker side
 def validate(spec: dict, job_dir: str) -> dict:
@@ -112,17 +109,10 @@ def train(spec: dict, job_dir: str, deadline: float) -> str:
 
 
 # ---------------------------------------------------------------------- the plugin: control side
-def backend(ref: str, options: dict) -> SignatureBackend:
-    from ..worker import locate
-    if not options.get("jobs_root"):
-        raise ValueError("no [models] jobs_root to load signature models from")
-    run, revision = locate(ref, options["jobs_root"], options.get("hf_prefix"))
-    if revision:
-        from huggingface_hub import snapshot_download
-        run = snapshot_download(repo_id=run, revision=revision)
+def backend(run: str, ref: str, options: dict) -> SignatureBackend:
     path = os.path.join(run, MODEL)
     if not os.path.exists(path):
-        raise ValueError(f"no model {ref!r} here")
+        raise ValueError(f"no model {ref!r} in {run}")
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
     if isinstance(data, dict) and set(data) == {"signature", "table"}:        # the run says what it is

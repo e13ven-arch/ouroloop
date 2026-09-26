@@ -57,6 +57,11 @@ class TdeBackend:
             cls._loaded.clear()
             _free()
 
+    def close(self) -> None:
+        """Let go of this run (it loads again when next asked), e.g. a revoked model."""
+        if TdeBackend._loaded.pop((self.run, self.revision, self.device), None) is not None:
+            _free()
+
     def decide(self, requests: list[Request]) -> list[Answer]:
         decider = self._load()
         if len(requests) > 1 and TdeBackend._many and hasattr(decider, "dtok"):     # a tde Decider: batch them all

@@ -39,15 +39,15 @@ judge = "jev"               # who makes the research judgments
 [research.options]
 budget = 2
 
-[trainer]                   # a trainer plugin as a job on a GPU machine over ssh; the run stays there
+# Four roles, whatever the number of machines: this machine is the control plane; [trainer] trains, [store] keeps
+# the models, [serving] asks them. Here one GPU host trains, stores and serves: a layout (docs/TRAINING_HOSTS.md).
+[trainer]                   # a trainer plugin as a job on a GPU machine over ssh
 type = "tde"                # the plugin (ouroloop/trainers/): "tde", "signature", or your own module
 host = "user@gpu-host"      # ssh with a key is all it needs: the first job runs `ouroloop host init` there if the
                             # host lacks this ouroloop or the plugin; "local": this machine's ~/.ouroloop/venv;
                             # leave it out to train on this machine under this Python
 # jobs_root = "~/.ouroloop/jobs"    # each job's directory, <jobs_root>/<job id>/, on that machine
 # ssh_opts = "-i ~/.ssh/your_key -o BatchMode=yes"
-# transport = "hf"          # also commit each run once to a private repository <hf_prefix><job id>; the host
-# hf_prefix = "your-org/ouroloop-"  #   needs HF_TOKEN (or `hf auth login`) there
 # deadline_s = 28800        # a job is stopped after this long
 # poll_s = 30
 
@@ -56,8 +56,15 @@ source = "~/tde"            # a TDE checkout here, which host init sends; or a p
                             # "git+ssh://git@github.com/your-org/tde.git@v0.1.1"
 init_from = "~/tde-runs/base"       # the first model's parent run, on the host
 
-[models]                    # how trained models are served: `ouroloop serve` on the GPU machine, from its jobs_root
-url = "http://gpu-host:8765"
+[store]                     # where models are kept: a directory on the training host; the ref is the job id
+type = "dir"
+root = "~/.ouroloop/jobs"
+# type = "hf"               # or private repositories <prefix><job id>, one commit each; the ref is <repo>@<commit>,
+# prefix = "your-org/ouroloop-"     # readable anywhere; the host needs HF_TOKEN (or `hf auth login`)
+
+[serving]                   # how models are asked: `ouroloop serve` on the host that holds the store, whose config
+url = "http://gpu-host:8765"        # has this [store] and no url; with [store] type "hf" you may leave url out to
+                                    # load them in this process
 token_env = "OUROLOOP_TOKEN"
 
 [recipe]                    # the framework's keys (evolve/train.py) and the plugin's RECIPE (trainers/tde.py)

@@ -45,15 +45,17 @@ backend = "champion"
 act = true
 explore = 0.05
 
-[trainer]                       # the tde plugin as a job on this machine, under this Python: <jobs_root>/<job id>/run
+[trainer]                       # the tde plugin as a job on this machine, under this Python: one box holds all roles
 type = "tde"
 
 [trainers.tde]
 source = "~/tde"                # the TDE checkout host init installs
 init_from = "~/tde/release/tde-general-v0.1"   # the first model's parent; every later one starts from the champion
 
-[models]                        # the trained models, loaded in-process from their jobs' directories
-jobs_root = "~/.ouroloop/jobs"
+[store]                         # the trained models stay in their jobs' directories: <root>/<job id>/run
+type = "dir"
+root = "~/.ouroloop/jobs"
+                                # no [serving] url: they are loaded in this process
 
 [recipe]                        # small and fast: one epoch over a sample of a few thousand moves
 epochs = 1.0

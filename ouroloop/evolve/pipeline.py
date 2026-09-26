@@ -1,9 +1,11 @@
 """Model evolution (PLAN §4, PLAN_v0.2 M8): ledger -> build -> check -> train -> calibrate -> evaluate -> the frozen
-gate -> promote.
+gate -> deploy -> promote.
 
 `prepare_model` does everything up to the verdict on the sessions a gate record fixed; `recipe_evaluator` turns it
 into an evaluation for gate.run, which the research loop and `evolve_model` (`ouroloop evolve`) both go through.
-`schedule` says whether a round should train at all: the least training that reaches the template's target.
+Every model is asked through the runtime's serving (serving.py), never through its trainer. `deploy_version`
+(`ouroloop deploy`) retries the deploy of an accepted version. `schedule` says whether a round should train at all:
+the least training that reaches the template's target.
 """
 from __future__ import annotations
 
@@ -11,7 +13,7 @@ import json
 import random
 from dataclasses import asdict, dataclass, field
 
-from ..types import Question, Request
+from ..ledger import PromotionConflict, now
 from . import calibrate, experience
 from .build import build
 from .checks import CheckReport, check
@@ -36,7 +38,7 @@ class ModelCandidate:
     held_out: dict = field(default_factory=dict)        # the same on the held-out tasks' sessions, for the card only
     calibrations: dict = field(default_factory=dict)    # point -> PointCalibration of the new model
     result: TrainResult | None = None
-    backend: object = None
+    backend: object = None                              # its backend, from serving
     inconclusive: list[str] = field(default_factory=list)   # an infrastructure failure, e.g. the trainer's
 
 
@@ -58,10 +60,10 @@ def schedule(rt, points: list[str] | None = None) -> tuple[bool, str]:
     """Whether a round trains a candidate, and why: the least training for the template's goal. It trains the first
     candidate (the data checks still decide whether there is enough), after the champion was revoked since the last
     trained candidate (drift), or once the default errors at `points` have at least doubled since it (the data a
-    model could learn from). It does not once the latest accepted model fixes the template's target share of the
-    default errors on its test rows, at every point that had any (unless revoked since), nor once the template's
-    training budget is spent. A planted candidate uses budget but is never the last trained one: it learned nothing
-    and says nothing about drift."""
+    model could learn from). It does not once the latest accepted model that was deployed fixes the template's target
+    share of the default errors on its test rows, at every point that had any (unless revoked since), nor once the
+    template's training budget is spent. A planted candidate uses budget but is never the last trained one: it
+    learned nothing and says nothing about drift."""
     params = load_template(rt.root)[0]
     registry = Registry(rt.root)
     cards = [registry.card(v) for v in registry.versions() if (registry.dir / v / "card.json").exists()]
@@ -78,7 +80,8 @@ def schedule(rt, points: list[str] | None = None) -> tuple[bool, str]:
     if any(e["ts"] >= last["updated"] for e in revoked):
         return True, f"the champion was revoked since {last['version']}"
     target = {**TEMPLATE["target"], **params.get("target", {})}["fixed_share"]
-    accepted = next((c for c in reversed(cards) if c.get("gate") == "accepted"), {})
+    deployed = [c for c in cards if c.get("gate") == "accepted" and c.get("deployed") is not False]   # not failed
+    accepted = deployed[-1] if deployed else {}
     shares = [s for m in accepted.get("metrics", {}).values()        # a card from before gain has no share
               if (s := (m.get("challenger") or {}).get("fixed_share")) is not None]
     standing = accepted and not rt.revoked.hit(accepted["version"], accepted.get("model_id"))
@@ -138,15 +141,25 @@ def full_recipe(trainer, recipe: dict | None) -> dict:
 
 
 def parent_ref(champion: dict | None, trainer, recipe: dict) -> str | None:
-    """The job's parent: the champion's model when the same plugin trained it, else [recipe] init_from (and then the
-    plugin's own init_from). A model of another kind is no parent: after [trainer] type changes, the first model of
-    the new kind starts where the config says. A card from before trainer plugins names none: TDE's."""
+    """The job's parent: the champion's model when the same plugin trained it into the trainer's store, else [recipe]
+    init_from (and then the plugin's own init_from). A model of another kind, or in another store, is no parent:
+    after [trainer] type or [store] changes, the first model starts where the config says. A store on the training
+    machine ("dir") is another store on another machine: after [trainer] host changes, too. A card from before
+    trainer plugins names none: TDE's."""
     if champion:
         backend = champion.get("backend") or {}
         made_by = backend.get("trainer") or ("tde" if backend.get("type") == "model" else None)
-        if made_by == getattr(trainer, "name", None):
+        store = getattr(trainer, "store", None)
+        here = _machine((champion.get("job") or {}).get("host")) == _machine(getattr(trainer, "host", None))
+        if made_by == getattr(trainer, "name", None) and (store is None or (
+                store.job(champion.get("model_id")) and (here or not store.ON_TRAINING_HOST))):
             return champion.get("model_id")
     return recipe.get("init_from")
+
+
+def _machine(host: str | None) -> str | None:
+    """A training host as a machine: None and "local" are both this one."""
+    return None if host in (None, "local") else host
 
 
 def research_context(trainer, recipe: dict | None) -> dict:
@@ -159,8 +172,9 @@ def prepare_model(rt, trainer, recipe: dict | None = None, *, record: GateRecord
                   registry: Registry | None = None, eval_states: list[str] = ()) -> ModelCandidate:
     """Build and check the data as `record` splits it (test sessions fixed at its freezing, held-out tasks never
     trained or calibrated on), train, file the candidate's card, calibrate on the calibration sessions, then use the
-    record up and score champion and candidate on its test sessions. Infrastructure failures are caught: the
-    candidate is inconclusive, and the record is used only if they came after the first test inference."""
+    record up and score champion and candidate on its test sessions; the candidate is asked through the runtime's
+    serving. Infrastructure failures are caught: the candidate is inconclusive, and the record is used only if they
+    came after the first test inference."""
     registry = registry or Registry(rt.root)
     recipe = full_recipe(trainer, recipe)
     points = points or model_points(rt)
@@ -179,7 +193,7 @@ def prepare_model(rt, trainer, recipe: dict | None = None, *, record: GateRecord
         return cand
     try:
         cand.result = trainer.train(TrainJob(version, ds.dir, recipe, parent_ref(parent, trainer, recipe)))
-        cand.backend = trainer.backend(cand.result)
+        cand.backend = rt.serving.backend(cand.result.backend)
         card.update({"model_id": cand.result.model_id, "backend": cand.result.backend, "job": cand.result.job})
         registry.record(card)                   # the candidate's card, before it is evaluated
         for name in points:
@@ -213,18 +227,70 @@ def dry_run_model(rt, trainer, recipe: dict | None = None, *, points: list[str] 
     return out
 
 
+def deploy(rt, registry: Registry, card: dict) -> bool:
+    """Serving loads the card's model and asks it the probe; the model id it answers as must be the card's, since
+    calibrations, thresholds, pins and revocations are keyed by it. A failure is infrastructure, not a verdict: the
+    card says so (deploy_error; deployed false, unless it was deployed before) and nothing changes. -> whether it
+    deployed."""
+    try:
+        reported = rt.serving.deploy(card["backend"])
+        if reported != card["model_id"]:
+            raise ValueError(f"serving reports model {reported!r}, the card says {card['model_id']!r}")
+    except Exception as e:  # noqa: BLE001 - whatever keeps it from serving, nothing is promoted and nothing acts
+        card["deploy_error"] = f"{type(e).__name__}: {e}"[:500]
+        if not registry.deployed(card):         # a deploy that once succeeded still did: a rollback may return to it
+            card["deployed"] = False
+        registry.record(card)
+        return False
+    return True
+
+
+def promote(rt, registry: Registry, card: dict, calibrations, gate: str) -> bool:
+    """Deploy the accepted version on `card`, then promote it: the champion pointer changes by compare-and-swap on its
+    parent, and its calibrations are stored with `gate`, the hash of the gate record that accepted it, so its
+    thresholds may act. A deploy that fails leaves the champion and the calibrations unchanged (-> False). The
+    runtime needs no change: sessions opened from now on run the new champion, sessions already running keep theirs."""
+    if not deploy(rt, registry, card):
+        return False
+    try:
+        registry.promote(card["version"], card.get("parent"))
+    except PromotionConflict:
+        rt.drop(card["version"], card["backend"])
+        raise
+    card["deployed"] = now()
+    card.pop("deploy_error", None)
+    registry.record(card)
+    for cal in calibrations:
+        calibrate.apply(rt, cal, gate=gate, version=card["version"])
+    return True
+
+
 def promote_model(rt, cand: ModelCandidate, registry: Registry, gate: str) -> None:
-    """Calibrations are keyed by the model id the backend reports, so it must be the one on the card. The champion
-    pointer moves by compare-and-swap on the candidate's parent; then its calibrations are stored with `gate`, the
-    hash of the gate record that promoted it, so its thresholds may act. The runtime needs no change: sessions opened
-    from now on run the new champion, sessions already running keep theirs."""
-    reported = cand.backend.decide([Request("model id probe", Question("noul", "Is this a probe?"))])[0].model
-    if reported != cand.result.model_id:
-        raise ValueError(f"{cand.version}: the backend reports model {reported!r}, the card says "
-                         f"{cand.result.model_id!r}")
-    registry.promote(cand.version, cand.card.get("parent"))
-    for cal in cand.calibrations.values():
-        calibrate.apply(rt, cal, gate=gate, version=cand.version)
+    """What an accepting gate verdict applies: deploy and promote the candidate (see promote)."""
+    promote(rt, registry, cand.card, cand.calibrations.values(), gate)
+
+
+def deploy_version(rt, version: str, registry: Registry | None = None) -> bool:
+    """`ouroloop deploy`: deploy and promote a version later, one a gate record accepted (and that was not rolled
+    back) and that is not revoked, over the parent it was judged against (while that is still the champion, else a
+    PromotionConflict before anything loads), with the calibrations that record accepted. The champion is deployed
+    already. -> whether it is deployed."""
+    registry = registry or Registry(rt.root)
+    card = registry.card(version)
+    if not rt.accepted.promoted(card, standing=True):
+        raise ValueError(f"{version}: no gate record accepted it, or it was rolled back; only an accepted version "
+                         f"is deployed")
+    if rt.revoked.hit(version, card.get("model_id")):
+        raise ValueError(f"{version} is revoked")
+    champion = (registry.champion() or {}).get("version")
+    if champion == version:
+        return True
+    if card.get("parent") != champion:          # the swap would fail: no deploy for nothing
+        raise PromotionConflict(f"{version} was built on {card.get('parent')}, but the champion is now {champion}")
+    cals = [calibrate.PointCalibration(point, card["model_id"], c["temperature"], c["thresholds"], c["n"],
+                                       c["accuracy"], c.get("sessions", 0))
+            for point, c in (card.get("calibration") or {}).items()]
+    return promote(rt, registry, card, cals, card["gate_record"])
 
 
 def model_evaluation(rt, mc: ModelCandidate, registry: Registry, record: GateRecord, meta: dict | None = None

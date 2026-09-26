@@ -7,7 +7,7 @@ Options ([trainers.tde]):
     init_from   the first model's parent run, a path on the host (absolute, or from ~); later ones start from the
                 champion. A [recipe] init_from does the same.
     device      TDE's device ("cuda", "cpu", ...); by default a host whose torch sees no CUDA device is not ready,
-                and "cpu" allows one. Loading a model in-process uses it too, unless [models] device says otherwise.
+                and "cpu" allows one. Loading a model in-process uses it too, unless [serving] device says otherwise.
 
 The recipe's TDE_KEYS become TDE's TrainConfig; replay (a path on the host) mixes general data in. TDE selects its
 checkpoint on val.jsonl, never on ouroloop's calibration split, and does not weigh examples.
@@ -148,7 +148,7 @@ def _prepare(spec: dict, job_dir: str) -> tuple[str, str | None]:
     """-> (the TDE config's path, the parent run)."""
     from ..worker import parent_run
     recipe = spec["recipe"]
-    parent = parent_run(spec.get("parent"), os.path.dirname(job_dir))
+    parent = parent_run(spec, job_dir)
     cfg = tde_config(recipe, os.path.join(job_dir, "run"), parent, spec["version"])
     if (spec.get("options") or {}).get("device"):
         cfg["device"] = spec["options"]["device"]
@@ -202,19 +202,10 @@ def check(options: dict) -> dict:
 
 
 # ---------------------------------------------------------------------- the plugin: control side
-def backend(ref: str, options: dict):
-    """The run of a ref, loaded in-process by TDE's Decider (at most two stay loaded)."""
-    from pathlib import Path
-
+def backend(run: str, ref: str, options: dict):
+    """The run the store fetched for a ref, loaded in-process by TDE's Decider (at most two stay loaded)."""
     from ..backends.tde import TdeBackend
-    from ..worker import locate
-    if not options.get("jobs_root"):
-        raise ValueError("no [models] jobs_root to load models from")
-    run, revision = locate(ref, options["jobs_root"], options.get("hf_prefix"))
-    backend = TdeBackend(run, device=options.get("device"), model=ref, revision=revision)
-    if revision is None and not Path(run).is_dir():
-        raise ValueError(f"no model {ref!r} here")
-    return backend
+    return TdeBackend(run, device=options.get("device"), model=ref)
 
 
 def release() -> None:

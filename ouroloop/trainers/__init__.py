@@ -1,8 +1,9 @@
 """Trainer plugins: what turns a job's data into a model, and loads that model again by its ref.
 
 ouroloop trains decision models of any kind; a plugin is one kind. The framework does the rest the same way for all:
-it builds the data, runs the job on a host (evolve/compute.py, ouroloop/worker.py), gates, calibrates and serves the
-model by its ref (a job id, or <repo>@<commit> on Hugging Face). A plugin is a module with:
+it builds the data, runs the job on a host (evolve/compute.py, ouroloop/worker.py), publishes the run to the model
+store (ouroloop/stores: a ref, a job id or <repo>@<commit>), gates, calibrates, deploys and serves the model by its
+ref (serving.py). A plugin is a module with:
 
     NAME             its name, the [trainer] type
     REQUIREMENTS     pip requirement strings its host needs besides ouroloop (`ouroloop host init` installs them);
@@ -19,21 +20,19 @@ model by its ref (a job id, or <repo>@<commit> on Hugging Face). A plugin is a m
 
   worker side (on the host, in the job's directory; spec is spec.json: job, version, parent, recipe, options, ...)
     validate(spec, job_dir) -> dict      what a dry run checks, without training
-    train(spec, job_dir, deadline) -> the run directory, job_dir/run: the worker publishes it with transport "hf",
-                     and with "direct" the model ref is the job id, found at <jobs_root>/<job id>/run (worker.locate,
-                     worker.parent_run); reads job_dir/train.jsonl and val.jsonl (the examples evolve/build.py
-                     describes) and maps spec["recipe"] to its trainer; runs any process through
-                     ouroloop.worker.run, which stops it at `deadline`
+    train(spec, job_dir, deadline) -> the run directory, job_dir/run, which the worker publishes to the store;
+                     reads job_dir/train.jsonl and val.jsonl (the examples evolve/build.py describes) and maps
+                     spec["recipe"] to its trainer, starting from worker.parent_run(spec, job_dir); runs any process
+                     through ouroloop.worker.run, which stops it at `deadline`
     version() -> str | None             optional: what it trains with, recorded in result.json and host.json
     check(options) -> dict              optional: run by host init after installing, with the plugin's options, e.g.
                      whether a GPU is usable; "ok": False (with "why") keeps the host from being taken as ready
 
-  control side (in the process that asks the model)
-    backend(ref, options) -> Backend    the model a ref names, loaded in-process; options: the plugin's
-                     [trainers.<name>] table and the [models] table (jobs_root, hf_prefix, device). The model server
-                     loads refs through the same call, with its own config's options: options say only where and how
-                     to load (jobs_root, hf_prefix, device); what the model is (its key function, its architecture)
-                     is read from the run, which train() writes self-describing
+  serving side (in the process that asks the model: the control plane, or a model server)
+    backend(run, ref, options) -> Backend   the model in `run`, a directory the store fetched for `ref`, loaded
+                     in-process and answering as `ref`; options: the card's plugin options (a model server: its own
+                     config's [trainers.<name>]) and [serving] device. Options say only how to load; what the model is
+                     (its key function, its architecture) is read from the run, which train() writes self-describing
     release()                           optional: let go of loaded models (a job is about to use the GPU)
 
 A plugin in this package is named by its module name ("tde", "signature"); any other by its module path

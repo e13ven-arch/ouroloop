@@ -51,28 +51,16 @@ def gpus() -> list[str]:
     return [line.strip() for line in out.splitlines() if line.strip()]
 
 
-def _hf() -> dict:
-    import importlib.util
-    hub = importlib.util.find_spec("huggingface_hub") is not None
-    token = bool(os.environ.get("HF_TOKEN"))
-    if hub and not token:
-        try:
-            from huggingface_hub import get_token
-            token = bool(get_token())
-        except ImportError:
-            pass
-    token = token or os.path.exists(os.path.expanduser("~/.cache/huggingface/token"))
-    return {"hub": hub, "token": token}
-
-
 def manifest(plan: dict | None = None) -> dict:
     """This host as host.json has it: ouroloop (its code version, and the control plane's git state it was sent
-    from), Python, GPUs, Hugging Face, and each plugin of `plan` (plan.json) with its version, source and check."""
+    from), Python, GPUs, each model store as it sees it there (stores: its probe()), and each plugin of `plan`
+    (plan.json) with its version, source and check."""
     import platform
 
     from .. import __version__
     from ..ledger import now
     from ..release import code_version
+    from ..stores import kind, types
     from ..trainers import load, version
     plan = plan or {}
     plugins = {}
@@ -88,7 +76,7 @@ def manifest(plan: dict | None = None) -> dict:
                          **({"check": result} if callable(check) else {})}
     return {"ouroloop": {"version": __version__, "code": code_version(), "git": plan.get("git")},
             "python": platform.python_version(), "platform": platform.platform(), "gpu": gpus(),
-            "plugins": plugins, "hf": _hf(), "ts": now()}
+            "plugins": plugins, "stores": {t: kind(t).probe() for t in types()}, "ts": now()}
 
 
 # ---------------------------------------------------------------------- what init sends
@@ -157,9 +145,10 @@ def source_id(options: dict) -> str | None:
     return fingerprint(value) if kind == "dir" else value
 
 
-def plan(trainers: dict, out: str | Path, hf: bool = False) -> Path:
+def plan(trainers: dict, out: str | Path, store=None) -> Path:
     """Write what init sends into `out`: the ouroloop sdist, each local plugin source as <name>.tar.gz,
-    requirements.txt (those, and the plugins' requirements), plan.json and bootstrap.sh."""
+    requirements.txt (those, and the requirements of the plugins and of `store`, a store or its class), plan.json
+    and bootstrap.sh."""
     from ..trainers import load
     from ..worker import git_state
     out = Path(out)
@@ -176,8 +165,7 @@ def plan(trainers: dict, out: str | Path, hf: bool = False) -> Path:
         reqs += list(getattr(plugin, "REQUIREMENTS", []))
         plugins[name] = {"source": source_id(options),     # the options, for the plugin's check() there
                          "options": {k: v for k, v in (options or {}).items() if k != "source"}}
-    if hf:
-        reqs.append("huggingface_hub")
+    reqs += list(getattr(store, "REQUIREMENTS", ()))
     (out / "requirements.txt").write_text("".join(f"{r}\n" for r in reqs), encoding="utf-8")
     (out / "plan.json").write_text(json.dumps({"git": git_state(CHECKOUT), "plugins": plugins}, indent=2),
                                    encoding="utf-8")
@@ -224,8 +212,9 @@ def read(target: str, ssh_opts: str = "-o BatchMode=yes", runner=None) -> dict |
     return m
 
 
-def stale(m: dict | None, trainers: dict, hf: bool = False) -> list[str]:
-    """Why a host with manifest `m` cannot run this ouroloop's jobs of `trainers` ({name: options}); none if it can."""
+def stale(m: dict | None, trainers: dict, store=None) -> list[str]:
+    """Why a host with manifest `m` cannot run this ouroloop's jobs of `trainers` ({name: options}) that publish to
+    `store` (a store or its class); none if it can."""
     from ..release import code_version
     if not m:
         return [f"no {MANIFEST}"]
@@ -241,10 +230,8 @@ def stale(m: dict | None, trainers: dict, hf: bool = False) -> list[str]:
             why.append(f"plugin {name} is from another source")
         elif (p.get("check") or {}).get("ok") is False:
             why.append(f"plugin {name}'s check fails there: {p['check'].get('why') or p['check']}")
-    if hf and not (m.get("hf") or {}).get("hub"):
-        why.append('no huggingface_hub for transport "hf"')
-    if hf and not (m.get("hf") or {}).get("token"):
-        why.append('no Hugging Face token for transport "hf": set HF_TOKEN there, or run `hf auth login` there')
+    if store is not None:
+        why += store.ready((m.get("stores") or {}).get(store.TYPE))
     return why
 
 
@@ -252,11 +239,11 @@ def _tail(text: str) -> str:
     return "".join((text or "").splitlines(True)[-TAIL:])
 
 
-def init(target: str, trainers: dict, ssh_opts: str = "-o BatchMode=yes", hf: bool = False,
+def init(target: str, trainers: dict, ssh_opts: str = "-o BatchMode=yes", store=None,
          runner=None) -> tuple[dict | None, str]:
     """Run bootstrap.sh on `target` with this ouroloop and `trainers` ({name: options}). -> (host.json, the log)."""
     with tempfile.TemporaryDirectory() as tmp:
-        d = plan(trainers, Path(tmp) / "init", hf)
+        d = plan(trainers, Path(tmp) / "init", store)
         if target == "local":
             try:
                 proc = subprocess.run(["sh", str(d / "bootstrap.sh"), str(d)], capture_output=True, text=True,
@@ -289,17 +276,17 @@ def init(target: str, trainers: dict, ssh_opts: str = "-o BatchMode=yes", hf: bo
     return read(target, ssh_opts, runner), log
 
 
-def ensure(target: str, trainers: dict, ssh_opts: str = "-o BatchMode=yes", hf: bool = False, runner=None,
+def ensure(target: str, trainers: dict, ssh_opts: str = "-o BatchMode=yes", store=None, runner=None,
            say=print) -> dict:
     """host.json of a host ready for this ouroloop's jobs of `trainers`: as it is, or after host init. HostError if
     init fails or leaves it not ready."""
     m = read(target, ssh_opts, runner)
-    why = stale(m, trainers, hf)
+    why = stale(m, trainers, store)
     if not why:
         return m
     say(f"host {target}: {'; '.join(why)}: running host init")
-    m, _ = init(target, trainers, ssh_opts, hf, runner)
-    why = stale(m, trainers, hf)
+    m, _ = init(target, trainers, ssh_opts, store, runner)
+    why = stale(m, trainers, store)
     if why:
         raise HostError(f"host {target} after host init: {'; '.join(why)}")
     return m

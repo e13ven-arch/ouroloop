@@ -84,10 +84,11 @@ def test_generated_config_only_uses_real_trainconfig_fields():
 # ---------------------------------------------------------------- the local TDE path on the GPU host
 @pytest.mark.skipif(has_tde, reason="tde is importable here")
 def test_without_tde_the_local_path_fails_at_once_and_says_why(tmp_path):
+    (tmp_path / "m_0001_x" / "run").mkdir(parents=True)
+    serving = config.build_serving({"store": {"type": "dir", "root": str(tmp_path)}})
     for build in (lambda: TdeBackend("runs/m_0001"), lambda: config.build_backend({"type": "tde", "run": "r"}),
-                  lambda: config.build_backend({"type": "model", "model": "m_0001_x"}, {"jobs_root": str(tmp_path)}),
-                  lambda: config.build_backend({"type": "model", "model": "m_0001_x", "trainer": "tde"},
-                                               {"jobs_root": str(tmp_path)})):
+                  lambda: config.build_backend({"type": "model", "model": "m_0001_x"}, serving),
+                  lambda: config.build_backend({"type": "model", "model": "m_0001_x", "trainer": "tde"}, serving)):
         with pytest.raises(ImportError, match="host init local --trainer tde"):
             build()
 
@@ -118,6 +119,10 @@ def test_the_tde_backend_keeps_two_runs_loaded_and_lets_go_of_them_for_training(
     TdeBackend.release()                                             # a training job takes the GPU
     a.decide([q])
     assert Path(loads[-1]).name == "a" and len(TdeBackend._loaded) == 1
+    b.decide([q])
+    a.close()                                                        # a revoked model: its memory, not only its name
+    assert [Path(k[0]).name for k in TdeBackend._loaded] == ["b"]
+    a.close()
 
 
 class Tensor:

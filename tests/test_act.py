@@ -137,17 +137,19 @@ def test_a_rollback_brings_back_the_previous_champions_temperature_and_threshold
     assert ask("s2") == ("A", True, round(temper({"yes": 0.99, "no": 0.01}, 2.0)["yes"], 6))   # a new session
 
 
-def test_promotion_checks_the_model_id_the_backend_reports(tmp_path):
+def test_a_deploy_checks_the_model_id_serving_reports_before_the_champion_moves(tmp_path):
     rt = stop_runtime(tmp_path, Model())
     reg = Registry(rt.root)
-    accept(rt.root, {"version": "m_0001"})
-    cand = ModelCandidate("m_0001", {}, None, result=TrainResult("A@renamed", {}), backend=Model(model="A"))
-    with pytest.raises(ValueError, match="reports model 'A'"):
-        promote_model(rt, cand, reg, GATE)
-    assert reg.champion() is None
-    cand.result.model_id = "A"
+    card = accept(rt.root, {"version": "m_0001", "parent": None, "model_id": "A@renamed",
+                            "backend": {"type": "test_act:Model", "model": "A"}})
+    cand = ModelCandidate("m_0001", card, None, result=TrainResult("A@renamed", card["backend"]))
     promote_model(rt, cand, reg, GATE)
-    assert reg.champion()["version"] == "m_0001"
+    assert reg.champion() is None and reg.card("m_0001")["deployed"] is False
+    assert "serving reports model 'A'" in reg.card("m_0001")["deploy_error"]
+    card["model_id"] = "A"
+    promote_model(rt, cand, reg, GATE)
+    assert reg.champion()["version"] == "m_0001" and reg.card("m_0001")["deployed"]
+    assert "deploy_error" not in reg.card("m_0001")
 
 
 def test_a_changed_spec_replays_at_the_same_models_temperature(tmp_path, gated):

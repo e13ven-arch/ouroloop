@@ -21,7 +21,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..worker import JOB_ID
+from ..stores import JOB_ID
 
 MARK = "ouroloop.worker spec.json"  # what a job's processes run, followed by the job id as their last argument
 TAIL = 40                           # log lines a finished job reports

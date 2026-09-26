@@ -1,4 +1,8 @@
-"""Load ouroloop.toml and build the runtime, backends, LLM, trainer and research agent from it."""
+"""Load ouroloop.toml and build the runtime, backends, LLM, trainer and research agent from it.
+
+A config names the four roles, whatever the number of machines: this process is the control plane; [trainer] (and
+[trainers.<name>]) where models train; [store] where they are kept; [serving] how they are asked. One GPU host that
+trains, stores and serves is a layout of these tables, not a design (docs/TRAINING_HOSTS.md)."""
 from __future__ import annotations
 
 import os
@@ -15,8 +19,8 @@ from .runtime import Runtime, import_object
 POINT_KEYS = {"backend", "define", "act", "explore"}
 # Once the gate is frozen, its parameters come from the gate template only (PLAN_v0.2 M8), never from the config.
 FROZEN = (("research", "min_items"), ("suite", "min_items"), ("checks", None))
-# How trained models (refs) are served: a model server, or in-process from the jobs' directories (PLAN_v0.2 M9).
-MODELS_KEYS = {"url", "token_env", "timeout", "jobs_root", "hf_prefix", "device"}
+# Keys of an old config's [models] table (now [serving]) that name the store; read as its [store] (store_table).
+MODELS_STORE_KEYS = {"jobs_root", "hf_prefix"}
 
 
 def load_dotenv(path: str | Path = ".env") -> None:
@@ -46,10 +50,9 @@ def build_provider(spec: dict):
     return import_object(kind)(**spec)
 
 
-def build_backend(spec: dict, models: dict | None = None):
+def build_backend(spec: dict, serving=None):
     """A backend from its config table. {"type": "model", "model": ref, "trainer": plugin, "options": {...}} is a
-    trained model, served as `models` (the config's [models] table) says: by a model server (url, token_env), or
-    in-process from jobs_root (and hf_prefix for <repo>@<commit> refs) by the plugin that trained it."""
+    trained model, asked through `serving` (serving.Serving: the config's [serving] and [store])."""
     spec = dict(spec)
     kind = spec.pop("type")
     if kind == "mock":
@@ -58,8 +61,10 @@ def build_backend(spec: dict, models: dict | None = None):
         return JevBackend(**spec)
     if kind == "tde":
         return TdeBackend(**spec)
-    if kind == "model":         # a card from before trainer plugins names none: TDE's
-        return model_backend(spec["model"], models, spec.get("trainer", "tde"), spec.get("options"))
+    if kind == "model":
+        if serving is None:
+            raise ValueError("a trained model is asked through serving: build it with the config's [serving]")
+        return serving.backend({"type": kind, **spec})
     if kind == "llm":
         return LlmBackend(build_provider(spec["provider"]))
     if kind == "signature":
@@ -71,42 +76,62 @@ def build_backend(spec: dict, models: dict | None = None):
     return import_object(kind)(**spec)
 
 
-def check_models(models: dict | None) -> dict:
-    """The [models] table, which serves every trained model: a model server (url) or jobs_root."""
-    models = models or {}
-    unknown = set(models) - MODELS_KEYS
-    if unknown:
-        raise ValueError(f"[models] may only set {sorted(MODELS_KEYS)}, not {sorted(unknown)}")
-    if not models.get("url") and not models.get("jobs_root"):
-        raise ValueError("the config needs a [models] table with url (a model server) or jobs_root")
-    return models
+def store_table(cfg: dict) -> dict:
+    """The [store] table. An old config has none: its [trainer] transport says which, "hf" a store under hf_prefix
+    ([trainer] or [models]), "direct" a "dir" store at [models] jobs_root, else [trainer] jobs_root. Without a
+    transport it is "direct", unless [models] has hf_prefix: an old model server's config, which loaded refs from the
+    Hub. A [store] beside those old keys is an error: keep one."""
+    trainer, models = cfg.get("trainer") or {}, cfg.get("models") or {}
+    if "store" in cfg:
+        old = [f"[trainer] {k}" for k in ("transport", "hf_prefix") if k in trainer]
+        old += [f"[models] {k}" for k in sorted(MODELS_STORE_KEYS) if k in models]
+        if old:
+            raise ValueError(f"[store] and {', '.join(old)}: those are the old way to name the store; keep one")
+        return dict(cfg["store"])
+    transport = trainer.get("transport", "hf" if models.get("hf_prefix") else "direct")
+    if transport not in ("direct", "hf"):
+        raise ValueError(f'[trainer] transport {transport!r}: "direct" or "hf" (now a [store] table)')
+    if transport == "hf":
+        return {"type": "hf", "prefix": trainer.get("hf_prefix") or models.get("hf_prefix")}
+    root = models.get("jobs_root") or trainer.get("jobs_root")
+    return {"type": "dir", **({"root": root} if root else {})}
 
 
-def model_backend(ref: str, models: dict | None, trainer: str = "tde", options: dict | None = None):
-    """The backend of a model ref, as [models] serves it: the model server checks the ref itself and loads it
-    through `trainer` (timeout: per chunk of requests, long enough for the server's first load of a model);
-    in-process, the plugin `trainer` loads it with its `options` and [models] (worker.locate: a ref a job yields)."""
-    from .trainers import load as load_plugin
-    models = check_models(models)
-    if models.get("url"):
-        from .backends.http import HttpBackend
-        return HttpBackend(models["url"], model=ref, trainer=trainer,
-                           token_env=models.get("token_env", "OUROLOOP_TOKEN"),
-                           timeout=float(models.get("timeout", 600)))
-    return load_plugin(trainer).backend(ref, {**(options or {}), **models})
+def serving_table(cfg: dict) -> dict:
+    """The [serving] table; an old config's [models] is read as it, less the keys that now belong to [store]."""
+    if "serving" in cfg and "models" in cfg:
+        raise ValueError("[serving] and [models]: [models] is the old name of [serving]; keep one")
+    if "serving" in cfg:
+        return dict(cfg["serving"])
+    return {k: v for k, v in (cfg.get("models") or {}).items() if k not in MODELS_STORE_KEYS}
 
 
-def build_trainer(spec: dict, models: dict | None = None, trainers: dict | None = None):
-    """A trainer from the [trainer] table: its type is a trainer plugin (ouroloop.trainers), run as a job with the
-    plugin's options ([trainers.<type>], or the table's own `options`), or "module:Class", a Trainer made here.
-    `models` is the [models] table its models are served by."""
-    spec = dict(spec)
+def build_store(cfg: dict):
+    from .stores import make
+    return make(store_table(cfg))
+
+
+def build_serving(cfg: dict):
+    """How the config's trained models are asked: [serving] over [store], loading with the config's plugins."""
+    from .serving import Serving
+    return Serving(serving_table(cfg), build_store(cfg), plugin_options(cfg))
+
+
+def build_trainer(cfg: dict, serving=None):
+    """The trainer of the [trainer] table: its type is a trainer plugin (ouroloop.trainers), run as a job with the
+    plugin's options ([trainers.<type>], or the table's own `options`) that publishes to [store], its models asked
+    through `serving` (default: the config's); or "module:Class", a Trainer made here. An old table's transport and
+    hf_prefix are read as the [store] (store_table)."""
+    spec = dict(cfg["trainer"])
     kind = spec.pop("type")
     if ":" in kind:
         return import_object(kind)(**spec)
     from .evolve.train import JobTrainer
+    for key in ("transport", "hf_prefix"):
+        spec.pop(key, None)
     options = spec.pop("options", None)
-    return JobTrainer(kind, options if options is not None else (trainers or {}).get(kind), models=models, **spec)
+    options = options if options is not None else (cfg.get("trainers") or {}).get(kind)
+    return JobTrainer(kind, options, store=store_table(cfg), serving=serving or build_serving(cfg), **spec)
 
 
 def plugin_options(cfg: dict) -> dict:
@@ -149,7 +174,8 @@ def build_runtime(cfg: dict, base: str | Path = ".") -> Runtime:
     root = workspace_root(cfg, base)
     if template_path(root).exists():
         check_frozen(cfg)
-    backends = {name: build_backend(s) for name, s in cfg.get("backends", {"mock": {"type": "mock"}}).items()}
+    serving = build_serving(cfg)
+    backends = {name: build_backend(s, serving) for name, s in cfg.get("backends", {"mock": {"type": "mock"}}).items()}
     points = dict(cfg.get("points", {}))
     default = points.pop("default_backend", next(iter(backends)))
     # "champion" is the latest promoted model: the runtime reads it from the registry whenever a session opens.
@@ -167,7 +193,7 @@ def build_runtime(cfg: dict, base: str | Path = ".") -> Runtime:
                          f"until a model has been promoted")
     if "fallback" in cfg:
         raise ValueError("the top-level fallback is gone: declare a default answerer in the phases of a point")
-    rt = Runtime(root, backends, default, point_backends, seed=cfg.get("seed"), models=cfg.get("models"))
+    rt = Runtime(root, backends, default, point_backends, seed=cfg.get("seed"), serving=serving)
     for name, s in points.items():
         if set(s) - POINT_KEYS:
             raise ValueError(f"[points.{name}] may only set {sorted(POINT_KEYS)}, not {sorted(set(s) - POINT_KEYS)}")
@@ -229,7 +255,7 @@ def build_research(cfg: dict, rt: Runtime, base: str | Path = "."):
     evaluators, context = {}, {}
     if "trainer" in cfg:
         recipe = cfg.get("recipe", {})
-        trainer = build_trainer(cfg["trainer"], cfg.get("models"), cfg.get("trainers"))
+        trainer = build_trainer(cfg, rt.serving)
         evaluators["recipe"] = recipe_evaluator(trainer, recipe)
         context = research_context(trainer, recipe)
     if "suite" in cfg:

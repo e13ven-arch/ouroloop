@@ -9,9 +9,9 @@ only what that code makes of them.
 
 It loads the trainer plugin spec.trainer names (ouroloop.trainers), records the host manifest and the plugin's
 version, has the plugin validate the job (spec.check_only stops there: `ouroloop evolve --dry-run`), trains until the
-deadline less publish_s, publishes the run to a private Hugging Face repository with transport "hf", and writes
-result.json (by os.replace): {model: the model ref, ouroloop, plugin, host, hf_commit}. The ref is the job id
-(transport "direct": the run stays in <job>/run) or <repo>@<commit> (transport "hf").
+deadline less publish_s, publishes the run to the model store spec.store names (ouroloop.stores; without one, a "dir"
+store in the jobs' directory), and writes result.json (by os.replace): {model: the ref the store gave, ouroloop,
+plugin, host}.
 
 A plugin's processes run through `run` below: in their own process group, stopped at the deadline, and when the
 worker is asked to stop (Compute.cancel).
@@ -20,14 +20,11 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import signal
 import subprocess
 import sys
 import time
 
-JOB_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
-HF_REF = re.compile(r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)@([0-9a-f]{40})")
 GRACE_S = 3.0           # between asking a plugin's process group to stop and killing it
 REFUSED = 3             # the exit code of a job this host cannot run: another ouroloop, or a plugin missing
 
@@ -53,54 +50,26 @@ def git_state(path) -> dict | None:
     return {"head": head, "dirty": bool(status.strip())}
 
 
-def locate(ref: str, jobs_root: str, hf_prefix: str | None = None) -> tuple[str, str | None]:
-    """A model ref -> where its run is: (<jobs_root>/<job id>/run, None) for a job id, or (repo, commit) for
-    <repo>@<40 hex> whose repo is <hf_prefix><job id>. Anything else is a ValueError: a ref never names a path."""
-    m = HF_REF.fullmatch(ref) if isinstance(ref, str) else None
-    if m and hf_prefix and m.group(1).startswith(hf_prefix) and JOB_ID.fullmatch(m.group(1)[len(hf_prefix):]):
-        return m.group(1), m.group(2)
-    if isinstance(ref, str) and JOB_ID.fullmatch(ref):
-        return os.path.join(os.path.expanduser(jobs_root), ref, "run"), None
-    raise ValueError(f"not a model ref: {ref!r} (a job id, or <{hf_prefix or 'hf_prefix'}job id>@<commit>)")
+def store(spec: dict, job_dir: str):
+    """The model store of the job: spec.store, or a "dir" store in the jobs' directory."""
+    from .stores import make
+    return make(spec.get("store") or {"type": "dir", "root": os.path.dirname(os.path.abspath(job_dir))})
 
 
-def parent_run(parent: str | None, jobs_dir: str) -> str | None:
-    """The parent model as a directory on this machine: <repo>@<commit> is downloaded at that commit, a job id is its
-    run in `jobs_dir` (the directory this job is in), anything else is a path on this machine (absolute, or from ~)."""
+def parent_run(spec: dict, job_dir: str) -> str | None:
+    """The job's parent model as a directory on this machine: a ref of the job's store is fetched from it, anything
+    else is a path on this machine (absolute, or from ~)."""
+    parent = spec.get("parent")
     if not parent:
         return None
-    m = HF_REF.fullmatch(parent)
-    if m:
-        from huggingface_hub import snapshot_download
-        return snapshot_download(repo_id=m.group(1), revision=m.group(2))
+    models = store(spec, job_dir)
+    if models.job(parent):
+        return models.fetch(parent)
     path = os.path.expanduser(parent)
-    if JOB_ID.fullmatch(parent):
-        run = os.path.join(jobs_dir, parent, "run")
-        if os.path.isdir(run):
-            return run
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"parent {parent!r}: no run {run}, and no {path}")
     if not os.path.isabs(path):
-        raise ValueError(f"parent {parent!r}: a path on the training machine is absolute, or starts with ~")
+        raise ValueError(f"parent {parent!r}: not a model of the store, and a path on the training machine is "
+                         f"absolute, or starts with ~")
     return path
-
-
-def publish(run: str, job_dir: str, repo: str) -> str:
-    """One commit to a new private repository: the run at its root, the job's spec and data under job/. -> the
-    commit's sha."""
-    from huggingface_hub import CommitOperationAdd, HfApi
-    api = HfApi()
-    api.create_repo(repo, private=True, exist_ok=False)
-    ops = []
-    for base, _, names in os.walk(run):
-        for name in sorted(names):
-            path = os.path.join(base, name)
-            ops.append(CommitOperationAdd(path_in_repo=os.path.relpath(path, run).replace(os.sep, "/"),
-                                          path_or_fileobj=path))
-    for name in ("spec.json", "train.jsonl", "val.jsonl"):
-        ops.append(CommitOperationAdd(path_in_repo=f"job/{name}", path_or_fileobj=os.path.join(job_dir, name)))
-    info = api.create_commit(repo, operations=ops, commit_message=f"ouroloop {os.path.basename(job_dir)}")
-    return info.oid
 
 
 # ---------------------------------------------------------------------- a plugin's processes
@@ -198,15 +167,12 @@ def main(path: str) -> int:
     except Failed as e:
         print(f"worker: {e}", flush=True)
         return e.code
-    ref, commit = spec["job"], None
-    if spec.get("transport") != "hf" and os.path.realpath(run_dir) != os.path.realpath(os.path.join(job_dir, "run")):
-        print(f"worker: trainer {spec['trainer']} left its run in {run_dir}, not in {os.path.join(job_dir, 'run')}: "
-              f"with transport \"direct\" the model ref is the job id, and its run is <job>/run", flush=True)
+    try:
+        ref = store(spec, job_dir).publish(run_dir, job_dir, spec["job"])
+    except ValueError as e:
+        print(f"worker: trainer {spec['trainer']}: {e}", flush=True)
         return 1
-    if spec.get("transport") == "hf":
-        commit = publish(run_dir, job_dir, spec["hf_repo"])
-        ref = f"{spec['hf_repo']}@{commit}"
-    _result(job_dir, {"model": ref, **base, "hf_commit": commit})
+    _result(job_dir, {"model": ref, **base})
     print(f"worker: done, model {ref}", flush=True)
     return 0
 

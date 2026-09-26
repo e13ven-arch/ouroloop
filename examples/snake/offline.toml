@@ -51,8 +51,10 @@ poll_s = 0.2                    # a job takes about a second
 [trainers.signature]
 signature = "examples.snake.rules:signature"
 
-[models]                        # the trained models, loaded in-process from their jobs' directories
-jobs_root = "~/.ouroloop/jobs"
+[store]                         # the trained models stay in their jobs' directories: <root>/<job id>/run
+type = "dir"
+root = "~/.ouroloop/jobs"
+                                # no [serving] url: they are loaded in this process
 
 [recipe]
 min_weight = 1.0

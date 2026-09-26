@@ -103,9 +103,6 @@ class Trainer:
     def train(self, job):
         return TrainResult(self.model, self.config)
 
-    def backend(self, result):
-        return config.build_backend(result.backend)
-
 
 class OracleTrainer:
     """Trains nothing: its model is an Oracle. With `fail`, it raises as a crashed training job does."""
@@ -118,9 +115,6 @@ class OracleTrainer:
             raise TrainError("CUDA out of memory")
         return TrainResult(self.model, {"type": "test_gate_record:Oracle", "model": self.model, "q": self.q,
                                         "knows": self.knows})
-
-    def backend(self, result):
-        return config.build_backend(result.backend)
 
 
 class Proposes:

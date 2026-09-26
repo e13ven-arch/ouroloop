@@ -70,9 +70,6 @@ class Shuffled:
             path.write_text("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in examples), encoding="utf-8")
         return self.trainer.train(job)
 
-    def backend(self, result):
-        return self.trainer.backend(result)
-
 
 class Defaults(Runtime):
     """A runtime that never asks a model: every ask takes the point's default, as its answerer gives it
@@ -142,7 +139,8 @@ def _line(e: dict) -> str:
         verdict = f"skipped: {e['skipped']}"
     else:
         verdict = (f"{e['candidate'] or '-'} {e['gate']}" +
-                   (" -> champion" if e["candidate"] and e["champion"] == e["candidate"] else ""))
+                   (" -> champion" if e["candidate"] and e["champion"] == e["candidate"] else "") +
+                   (" (not deployed)" if e.get("deployed") is False else ""))
     notes = [*(["planted: trained on shuffled labels"] if e["planted"] else []),
              *(f"monitor revoked {r['version'] or r['model']} ({r['harmed']}/{r['sessions']} sessions harmed, lower "
                f"bound {r['lower']:.1%})" for r in e["revoked"])]
@@ -168,7 +166,7 @@ def run(cfg: dict, base: str | Path = ".", *, generations: int | None = None, ro
         freeze_template(rt.root, d.get("gate"))       # the demo stands in for the person who freezes the gate
     budget = load_template(rt.root)[0]["risk"]
     scenario = import_object(d["scenario"])(**d.get("options", {}))
-    trainer = config.build_trainer(cfg["trainer"], cfg.get("models"))
+    trainer = config.build_trainer(cfg, rt.serving)
     games, plant, seed = int(d.get("games", 60)), d.get("plant"), int(d.get("seed", 0))
     done = max((int(m.group(1)) for s in rt.ledger.sessions()[0] if (m := _ID.fullmatch(s))), default=0)
     baseline = Defaults(rt.root / "baseline", {}, "") if d.get("baseline", True) else None
@@ -203,7 +201,8 @@ def run(cfg: dict, base: str | Path = ".", *, generations: int | None = None, ro
             "harmed": sum(b for b, _ in harm), "acted_sessions": sum(n for _, n in harm),
             "risk": budget, "metrics": _aggregate(metrics),
             "baseline": _aggregate(again) if again is not None else None,
-            "candidate": card["version"], "gate": card["gate"], "skipped": None if train else why,
+            "candidate": card["version"], "gate": card["gate"], "deployed": card.get("deployed"),
+            "skipped": None if train else why,
             "champion": (registry.champion() or {}).get("version"), "planted": planted, "revoked": revoked})
         out(_line(summary))
     every = {s for s in rt.ledger.sessions()[0] if _ID.fullmatch(s)}     # a continued workspace's too, from the ledger

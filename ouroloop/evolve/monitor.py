@@ -2,8 +2,10 @@
 session harmed when any decision the model acted on in it, at any point, is wrong by its outcome (not among its right
 answers, replay.right; a decision with no trainable outcome counts for nothing). The runtime runs it as each new
 session opens, before the session is pinned (Runtime.session): once the Clopper-Pearson lower bound on the champion's
-harmed share is above the frozen gate template's risk, the champion is revoked. The new session then takes its
-defaults, and the sessions already pinned to it do from their next ask on.
+harmed share is above the frozen gate template's risk, the champion is revoked and rolled back to its last good
+ancestor (Registry.rollback: accepted, deployed and not revoked; else none, the defaults), and serving drops it. The
+new session is then pinned to the rolled-back champion, and the sessions already pinned to the revoked one take their
+defaults from their next ask on.
 
 The gate judged the model on logged states, but a decision that acts changes the states that follow it: the states
 the model reaches once it acts are not the ones it was calibrated on. The monitor judges it on those.
@@ -121,14 +123,18 @@ class Tally:
 
 def watch(rt, tally: Tally, alpha: float = 0.05) -> dict | None:
     """The check before a new session is pinned: revoke the champion, if it may act and is not revoked, once the
-    share of the sessions it acted in that it harmed is above the gate template's risk with confidence 1 - alpha.
-    -> the revocation, also written to the ledger for people. Without a frozen gate template there is no budget and
-    no check."""
-    if not template_path(rt.root).exists():
-        return None
+    share of the sessions it acted in that it harmed is above the gate template's risk with confidence 1 - alpha;
+    then roll it back and drop it from serving. -> the revocation, also written to the ledger for people. Without a
+    frozen gate template there is no budget and no check. A champion already revoked is a rollback that has not
+    finished (one that died, or runs in another process): it is finished first."""
     card = Registry(rt.root).champion() or {}
     version, model = card.get("version"), card.get("model_id")
-    if not model or not rt.accepted.promoted(card, standing=True) or rt.revoked.hit(version, model):
+    if version and rt.revoked.hit(version, model):          # revoked, yet the champion: a rollback not finished
+        _roll_back(rt, card, "finishing the rollback of a revoked champion")
+        return None
+    if not template_path(rt.root).exists():
+        return None
+    if not model or not rt.accepted.promoted(card, standing=True):
         return None
     risk = load_template(rt.root)[0]["risk"]
     tally.update()
@@ -142,6 +148,16 @@ def watch(rt, tally: Tally, alpha: float = 0.05) -> dict | None:
     reason = (f"harmed {bad} of the {n} sessions it acted in at {at}: its {1 - alpha:.0%} lower bound {lower:.3f} "
               f"is above the budget {risk}")
     if not revoke(rt.root, version, model, reason):
-        return None                                         # another process revoked it first
-    return rt.ledger.append({"type": "monitor", "event": "revoked", "point": at, "model": model, "version": version,
-                             "harmed": bad, "sessions": n, "lower": round(lower, 4), "risk": risk})
+        _roll_back(rt, card, reason)                        # another process revoked it first: its rollback, or ours
+        return None
+    event = rt.ledger.append({"type": "monitor", "event": "revoked", "point": at, "model": model, "version": version,
+                              "harmed": bad, "sessions": n, "lower": round(lower, 4), "risk": risk})
+    _roll_back(rt, card, reason)
+    return event
+
+
+def _roll_back(rt, card: dict, reason: str) -> None:
+    """Roll the revoked champion `card` back and drop it from serving. Only while it is still the champion (under the
+    pointer's lock): a process that finds a revoked champion finishes a rollback another one began, or waits for it."""
+    Registry(rt.root).rollback(reason, expected=card["version"])
+    rt.drop(card["version"], card.get("backend"))

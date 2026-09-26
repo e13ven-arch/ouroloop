@@ -1,5 +1,5 @@
-"""Command line: ouroloop run | suite | decide | smoke | demo | research | evolve | calibrate | gate | models | serve |
-host | hook | ledger."""
+"""Command line: ouroloop run | suite | decide | smoke | demo | research | evolve | deploy | calibrate | gate | models |
+serve | host | hook | ledger."""
 from __future__ import annotations
 
 import argparse
@@ -146,13 +146,16 @@ def cmd_evolve(args) -> int:
     if "trainer" not in cfg:
         print("no [trainer] in the config", file=sys.stderr)
         return 2
-    trainer = config.build_trainer(cfg["trainer"], cfg.get("models"), cfg.get("trainers"))
+    trainer = config.build_trainer(cfg, rt.serving)
     if args.dry_run:
         from .evolve.pipeline import dry_run_model
         print(json.dumps(dry_run_model(rt, trainer, cfg.get("recipe")), ensure_ascii=False, indent=2, default=str))
         return 0
     card = evolve_model(rt, trainer, cfg.get("recipe"))
     print(f"{card['version']}: {card['gate']} - {'; '.join(card.get('reasons', []))}")
+    if card.get("deployed") is False:
+        print(f"  not deployed, the champion is unchanged: {card['deploy_error']}; retry with `ouroloop deploy "
+              f"{card['version']}`")
 
     def gains(m: dict) -> str:
         def side(x: dict) -> str:
@@ -164,6 +167,23 @@ def cmd_evolve(args) -> int:
     for point, m in (card.get("metrics") or {}).items():
         print(f"  {point}: {gains(m)}; held-out tasks, not gated: {gains(m.get('held_out'))}")
     return 0
+
+
+def cmd_deploy(args) -> int:
+    """`ouroloop deploy <version>`: deploy and promote a version the gate accepted whose deploy failed."""
+    from .evolve.pipeline import deploy_version
+    from .evolve.registry import Registry
+    from .ledger import PromotionConflict
+    _, rt = _load_runtime(args.config)
+    registry = Registry(rt.root)
+    try:
+        ok = deploy_version(rt, args.version, registry)
+    except (ValueError, OSError, PromotionConflict) as e:
+        print(e, file=sys.stderr)
+        return 1
+    card = registry.card(args.version)
+    print(f"{args.version}: deployed, the champion" if ok else f"{args.version}: not deployed: {card['deploy_error']}")
+    return 0 if ok else 1
 
 
 def cmd_gate(args) -> int:
@@ -208,7 +228,9 @@ def cmd_models(args) -> int:
             continue
         card = reg.card(v)
         job = card.get("job") or {}
-        print(f"{v}{' *' if v == champion else '  '} {card.get('gate', card.get('status', '-')):<18} "
+        status = card.get("gate", card.get("status", "-"))
+        status += " (not deployed)" if card.get("deployed") is False else ""
+        print(f"{v}{' *' if v == champion else '  '} {status:<18} "
               f"parent={card.get('parent')} model={card.get('model_id')} job={job.get('id')} "
               f"host={job.get('host') or ('this machine' if job else None)} "
               f"{'; '.join(card.get('reasons', []))[:80]}")
@@ -284,9 +306,9 @@ def cmd_run(args) -> int:
 def cmd_serve(args) -> int:
     import os
     from .serve import make_server
-    cfg, rt = _load_runtime(args.config)
+    _, rt = _load_runtime(args.config)
     try:
-        server = make_server(rt, args.host, args.port, os.environ.get("OUROLOOP_TOKEN"), config.plugin_options(cfg))
+        server = make_server(rt, args.host, args.port, os.environ.get("OUROLOOP_TOKEN"))
     except ValueError as e:
         print(e, file=sys.stderr)
         return 2
@@ -305,10 +327,11 @@ def cmd_host(args) -> int:
     names = args.trainer or [n for n in [table.get("type")] if n and ":" not in n]
     trainers = {name: options.get(name, {}) for name in names}
     ssh_opts = args.ssh_opts or table.get("ssh_opts", "-o BatchMode=yes")
-    hf = args.hf or table.get("transport") == "hf"
+    from .stores import kind
+    store = kind("hf" if args.hf else config.store_table(cfg).get("type", "dir"))
     try:
         if args.action == "init":
-            m, log = init(args.target, trainers, ssh_opts, hf)
+            m, log = init(args.target, trainers, ssh_opts, store)
             print(log, end="", file=sys.stderr)
         else:
             m = read(args.target, ssh_opts)
@@ -317,7 +340,7 @@ def cmd_host(args) -> int:
         return 1
     if m:
         print(json.dumps(m, indent=2))
-    why = stale(m, trainers, hf)
+    why = stale(m, trainers, store)
     print(f"{args.target}: {'not ready: ' + '; '.join(why) if why else 'ready'}", file=sys.stderr)
     return 1 if why else 0
 
@@ -502,11 +525,15 @@ def main(argv: list[str] | None = None) -> int:
     e.set_defaults(fn=cmd_evolve)
     e.add_argument("--config", default="ouroloop.toml")
     e.add_argument("--dry-run", action="store_true", help="prepare and validate the job on the trainer, no training")
+    dp = sub.add_parser("deploy", help="deploy and promote a version the gate accepted whose deploy failed")
+    dp.set_defaults(fn=cmd_deploy)
+    dp.add_argument("version")
+    dp.add_argument("--config", default="ouroloop.toml")
     c = sub.add_parser("calibrate", help="fit and report each point's temperature and thresholds; writes nothing")
     c.set_defaults(fn=cmd_calibrate)
     c.add_argument("--config", default="ouroloop.toml")
     c.add_argument("--point", action="append")
-    sv = sub.add_parser("serve", help="HTTP decision service for harnesses on other machines")
+    sv = sub.add_parser("serve", help="HTTP decision service for harnesses on other machines; a model server")
     sv.set_defaults(fn=cmd_serve)
     sv.add_argument("--config", default="ouroloop.toml")
     sv.add_argument("--host", default="127.0.0.1")
@@ -519,7 +546,7 @@ def main(argv: list[str] | None = None) -> int:
                                                         "(default: the config's [trainer] type)")
     ho.add_argument("--config", help="an ouroloop.toml: its [trainer] and [trainers.<name>] options")
     ho.add_argument("--ssh-opts", help='e.g. "-i ~/.ssh/key -o BatchMode=yes" (default: the config\'s)')
-    ho.add_argument("--hf", action="store_true", help='also make it ready for transport "hf"')
+    ho.add_argument("--hf", action="store_true", help='also make it ready for a [store] of type "hf"')
     hk = sub.add_parser("hook", help="Claude Code hooks: record decisions and outcomes from normal sessions")
     hk.set_defaults(fn=cmd_hook)
     hk.add_argument("target", choices=["claude-code", "print-settings"])

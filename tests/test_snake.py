@@ -202,9 +202,6 @@ class SeenTrainer(SignatureTrainer):
         result = super().train(job)
         return replace(result, backend={**result.backend, "type": "test_snake:Seen"})
 
-    def backend(self, result):
-        return Seen(result.backend["path"], signature=result.backend.get("signature"))
-
 
 # Generation 1 leaves too few training rows beside its 30 test games (the data checks stop it before training);
 # generation 2 trains the first candidate; generation 3's is planted.
@@ -356,14 +353,18 @@ def test_every_printed_number_is_on_disk_beside_the_same_games_played_by_the_def
 
 
 @pytest.mark.usefixtures("loose_risk")
-def test_the_games_of_a_revoked_champion_say_so_and_its_revocation_trains_again(tmp_path):
+def test_a_revoked_champion_is_rolled_back_before_its_games_and_its_revocation_trains_again(tmp_path):
+    """A champion revoked but still the champion is a rollback that did not finish: the first session of the next
+    generation finishes it, so no game runs the revoked model."""
     cfg = {**CFG, "demo": {**CFG["demo"], "plant": None}}
     root = run(cfg, tmp_path, generations=2, out=lambda line: None)
     champion = Registry(root).champion()
     revoke(root, champion["version"], champion["model_id"], "a test")
     lines = []
     run(cfg, tmp_path, generations=1, out=lines.append)
-    assert lines[2].startswith(f"  3  {champion['version']} (revoked)") and lines[2].split()[3] == "0%"
+    (event,) = [e for e in Ledger(root / "ledger").events() if e["type"] == "registry"]
+    assert (event["event"], event["retired"]) == ("rollback", champion["version"])
+    assert lines[2].split()[1] == (event["champion"] or "base") and "(revoked)" not in lines[2].split("|")[0]
     assert "skipped" not in lines[2] and Registry(root).versions()[-1] == "m_0003"
 
 

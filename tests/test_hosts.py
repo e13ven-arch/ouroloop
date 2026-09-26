@@ -17,6 +17,7 @@ from ouroloop.evolve.registry import Registry
 from ouroloop.evolve.train import CHECKOUT, DEFAULT_RECIPE, JobTrainer, TrainError, TrainJob
 from ouroloop.hosts import MANIFEST, read, stale
 from ouroloop.release import code_version
+from ouroloop.stores import kind
 from ouroloop.trainers import load
 from test_gate_record import ACT_GATE, CFG, collect, ctx
 
@@ -111,7 +112,7 @@ def test_host_init_prepares_this_machine_once_and_again_changes_nothing(home, ca
     m = json.loads((home / ".ouroloop" / "host.json").read_text())
     assert printed == m and m["ouroloop"]["code"] == code_version() and m["gpu"] == []
     assert m["plugins"] == {"signature": {"version": None, "source": None}}
-    assert m["hf"] == {"hub": False, "token": False}
+    assert m["stores"] == {"dir": {}, "hf": {"hub": False, "token": False}}
     calls = pip_calls(home)
     assert calls[0] == ["install", "-q", "-r", "requirements.txt"] and calls[1][-1] == "./ouroloop.tar.gz"
     # the venv runs the ouroloop it was sent, installed: not this checkout
@@ -146,26 +147,27 @@ def test_a_host_on_another_version_is_initialized_again_before_the_job(home, tmp
         "code"] == code_version()
     assert stale(read("local"), {"signature": {}}) == [f"it runs ouroloop {theirs}, this is {code_version()}"]
     before = len(pip_calls(home))
-    tr = JobTrainer("signature", host="local", jobs_root="~/jobs", poll_s=0.05, models={"jobs_root": "~/jobs"})
+    tr = JobTrainer("signature", host="local", jobs_root="~/jobs", poll_s=0.05)
     result = tr.train(a_job(tmp_path / "ws"))
     assert len(pip_calls(home)) == before + 2 and read("local")["ouroloop"]["code"] == code_version()
     job = result.job
     assert job["result"]["host"]["ouroloop"]["code"] == code_version()        # the host manifest, recorded
     assert (home / "jobs" / job["id"] / "run" / "model.json").exists()
-    # the model, loaded here by its ref through the plugin that trained it
+    # the model, fetched from the store by its ref and loaded here through the plugin that trained it
     assert result.backend == {"type": "model", "model": job["id"], "trainer": "signature"}
-    assert tr.backend(result).model == job["id"]
+    assert tr.serving.backend(result.backend).model == job["id"]
 
 
 def test_a_host_that_cannot_be_initialized_leaves_the_round_inconclusive_before_anything_is_used(home, tmp_path,
                                                                                                   monkeypatch):
     monkeypatch.setenv("STUB_PIP", "fail")
     jobs = tmp_path / "jobs"
-    cfg = {**CFG, "models": {"jobs_root": str(jobs)}}
+    cfg = {**CFG, "models": {"jobs_root": str(jobs)},             # an old config: [models] and no [store]
+           "trainer": {"type": "signature", "host": "local", "jobs_root": str(jobs)}}
     rt = config.build_runtime(cfg, tmp_path)
     collect(rt, 150)
     freeze_template(rt.root, ACT_GATE)
-    trainer = config.build_trainer({"type": "signature", "host": "local", "jobs_root": str(jobs)}, cfg["models"])
+    trainer = config.build_trainer(cfg, rt.serving)
     card = evolve_model(rt, trainer)
     (record,) = records(rt.root)
     assert card["gate"] == "inconclusive" and not record.used and "model_id" not in card
@@ -196,7 +198,7 @@ def test_a_local_source_is_sent_and_a_change_to_it_is_a_reason_to_init_again(hom
     (src / "pkg" / "__pycache__").mkdir()
     (src / "pkg" / "__pycache__" / "junk.pyc").write_bytes(b"\0")
     options = {"source": str(src)}
-    d = plan({"signature": options}, tmp_path / "init", hf=True)
+    d = plan({"signature": options}, tmp_path / "init", kind("hf"))
     assert (d / "requirements.txt").read_text().splitlines() == ["./ouroloop.tar.gz", "./signature.tar.gz",
                                                                   "huggingface_hub"]
     import tarfile
@@ -205,11 +207,12 @@ def test_a_local_source_is_sent_and_a_change_to_it_is_a_reason_to_init_again(hom
     assert json.loads((d / "plan.json").read_text())["plugins"] == {"signature": {"source": fingerprint(src),
                                                                                    "options": {}}}
     m = {"ouroloop": {"code": code_version()}, "plugins": {"signature": {"source": source_id(options)}},
-         "hf": {"hub": True, "token": True}}
-    assert stale(m, {"signature": options}, hf=True) == []
+         "stores": {"hf": {"hub": True, "token": True}}}
+    assert stale(m, {"signature": options}, kind("hf")) == []
     (src / "pkg" / "__init__.py").write_text("x = 2\n")
-    assert stale(m, {"signature": options}, hf=True) == ["plugin signature is from another source"]
-    assert "no Hugging Face token" in stale({**m, "hf": {"hub": True, "token": False}}, {}, hf=True)[0]
+    assert stale(m, {"signature": options}, kind("hf")) == ["plugin signature is from another source"]
+    assert "no Hugging Face token" in stale({**m, "stores": {"hf": {"hub": True, "token": False}}}, {}, kind("hf"))[0]
+    assert stale({**m, "stores": {}}, {}, kind("dir")) == []
     url = "git+ssh://git@example.com/org/tde.git@v1"
     assert source_id({"source": url}) == url
 
@@ -220,7 +223,7 @@ def test_a_broken_venv_or_a_failed_plugin_check_is_not_ready(home, tmp_path):
     assert stale(read("local"), {"signature": {}}) == []
     shutil.rmtree(home / ".ouroloop" / "venv")          # host.json stays, the venv is gone
     assert stale(read("local"), {"signature": {}}) == [f"it runs ouroloop none, this is {code_version()}"]
-    m = {"ouroloop": {"code": code_version()}, "hf": {"hub": True, "token": True},
+    m = {"ouroloop": {"code": code_version()}, "stores": {"hf": {"hub": True, "token": True}},
          "plugins": {"tde": {"source": None, "check": {"ok": False, "cuda": False, "why": "torch sees no CUDA"}}}}
     assert stale(m, {"tde": {}}) == ["plugin tde's check fails there: torch sees no CUDA"]
     m["plugins"]["tde"]["check"]["ok"] = True
@@ -325,12 +328,12 @@ def test_a_signature_run_says_what_it_is_so_a_model_server_loads_the_same_model(
     (job / "train.jsonl").write_text(json.dumps(example) + "\n")
     signature.train({"options": {"signature": "test_hosts:says"}}, str(job), 0)
     for options in ({}, {"signature": "ouroloop.evolve.replay:signature"}):     # the server's own options
-        backend = signature.backend("m_0001_x", {**options, "jobs_root": str(tmp_path / "jobs")})
+        backend = signature.backend(str(job / "run"), "m_0001_x", options)
         assert backend.signature is says and backend.model == "m_0001_x"
     old = tmp_path / "jobs" / "m_0000_x" / "run"            # a run from before: the table alone, options say the key
     old.mkdir(parents=True)
     (old / "model.json").write_text(json.dumps({"done?": {"yes": {"yes": 1.0}}}))
-    backend = signature.backend("m_0000_x", {"signature": "test_hosts:says", "jobs_root": str(tmp_path / "jobs")})
+    backend = signature.backend(str(old), "m_0000_x", {"signature": "test_hosts:says"})
     assert backend.signature is says and backend.table == {"done?": {"yes": {"yes": 1.0}}}
 
 
@@ -346,8 +349,9 @@ def test_the_worker_refuses_a_job_made_by_another_ouroloop(tmp_path):
     assert not (d / "result.json").exists()
 
 
-def test_with_transport_direct_the_run_must_be_the_jobs_run_directory(tmp_path):
-    """The ref is then the job id, found at <jobs_root>/<job id>/run: a plugin that trained elsewhere fails the job."""
+def test_a_dir_store_takes_the_jobs_run_directory_and_copies_it_to_its_root_once(tmp_path):
+    """The ref is the job id, its run <root>/<job id>/run: a plugin that trained elsewhere fails the job; a root
+    other than the jobs' directory gets a copy of the run."""
     pkg = tmp_path / "plugins" / "elsewhere"
     pkg.mkdir(parents=True)
     (pkg / "__init__.py").write_text("")
@@ -356,20 +360,27 @@ def test_with_transport_direct_the_run_must_be_the_jobs_run_directory(tmp_path):
         "def validate(spec, job_dir): return {'ok': True}\n"
         "def train(spec, job_dir, deadline):\n"
         "    run = os.path.join(os.path.dirname(job_dir), 'elsewhere')\n"
+        "    os.makedirs(os.path.join(job_dir, 'run'), exist_ok=True)\n"
+        "    open(os.path.join(job_dir, 'run', 'model'), 'w').close()\n"
         "    os.makedirs(run, exist_ok=True)\n"
         "    return run if spec['job'].startswith('m_0001') else os.path.join(job_dir, 'run')\n"
-        "def backend(ref, options): raise NotImplementedError\n")
+        "def backend(run, ref, options): raise NotImplementedError\n")
     env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(CHECKOUT), str(tmp_path / "plugins")])}
-    for job, code in (("m_0001_x", 1), ("m_0002_x", 0)):
+    models = tmp_path / "models"
+    for job, code, store in (("m_0001_x", 1, None), ("m_0002_x", 0, None),
+                             ("m_0003_x", 0, {"type": "dir", "root": str(models)})):
         d = tmp_path / "jobs" / job
         d.mkdir(parents=True)
-        (d / "spec.json").write_text(json.dumps({"job": job, "trainer": "elsewhere.trainer", "transport": "direct",
+        (d / "spec.json").write_text(json.dumps({"job": job, "trainer": "elsewhere.trainer", "store": store,
                                                  "deadline_s": 60, "ouroloop": {"code": code_version(), "git": None}}))
         out = subprocess.run([sys.executable, "-m", "ouroloop.worker", "spec.json", job], cwd=d, capture_output=True,
                              text=True, env=env)
         assert out.returncode == code, out.stdout + out.stderr
         assert (d / "result.json").exists() == (code == 0)
         assert ("its run is <job>/run" in out.stdout) == (code == 1)
+        if code == 0:
+            assert json.loads((d / "result.json").read_text())["model"] == job
+    assert (models / "m_0003_x" / "run" / "model").exists() and not (models / "m_0002_x").exists()
 
 
 # ---------------------------------------------------------------- the plugin contract, end to end
@@ -387,13 +398,13 @@ def test_the_signature_plugin_through_the_job_path_to_a_promoted_model(tmp_path)
     """spec.json -> python -m ouroloop.worker -> run -> result.json -> the backend by its ref -> calibration and the
     gate -> the champion answers new sessions as its ref."""
     jobs = tmp_path / "jobs"
-    cfg = {**CFG, "models": {"jobs_root": str(jobs)},
+    cfg = {**CFG, "store": {"type": "dir", "root": str(jobs)},
            "trainer": {"type": "signature", "jobs_root": str(jobs), "poll_s": 0.05},
            "trainers": {"signature": {"signature": "test_hosts:says"}}}
     rt = config.build_runtime(cfg, tmp_path)
     collect(rt, 150)
     freeze_template(rt.root, ACT_GATE)
-    trainer = config.build_trainer(cfg["trainer"], cfg["models"], cfg["trainers"])
+    trainer = config.build_trainer(cfg, rt.serving)
     assert trainer.supports_weights
     out = trainer.dry_run(a_job(tmp_path / "ws", "m_0000"))
     assert out["check"] == {"ok": True, "counts": {"train": 5, "val": 1}}
@@ -411,14 +422,12 @@ def test_the_signature_plugin_through_the_job_path_to_a_promoted_model(tmp_path)
 
 
 def test_a_trainer_checks_its_config_before_any_job():
-    for kw, why in (({"models": None}, "needs a \\[models\\] table"),
-                    ({"host": "u@gpu", "models": {"jobs_root": "j"}}, "stay there"),
-                    ({"host": "u@gpu", "models": {"url": "http://gpu:8765"}, "jobs_root": "jobs"}, "jobs_root"),
-                    ({"transport": "hf"}, "hf_prefix")):
+    for kw, why in (({"host": "u@gpu"}, "stay there"),
+                    ({"host": "u@gpu", "serving": {"url": "http://gpu:8765"}, "jobs_root": "jobs"}, "jobs_root"),
+                    ({"store": {"type": "hf"}}, "needs prefix")):
         with pytest.raises(ValueError, match=why):
-            JobTrainer("signature", **{"models": {"jobs_root": "j"}, **kw})
+            JobTrainer("signature", **kw)
     with pytest.raises(ModuleNotFoundError):
-        JobTrainer("nosuchplugin", models={"jobs_root": "j"})
-    assert JobTrainer("signature", host="local", models={"jobs_root": "j"}).python == os.path.expanduser(
-        "~/.ouroloop/venv/bin/python")
+        JobTrainer("nosuchplugin")
+    assert JobTrainer("signature", host="local").python == os.path.expanduser("~/.ouroloop/venv/bin/python")
     assert MANIFEST == "~/.ouroloop/host.json"
