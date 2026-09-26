@@ -392,9 +392,10 @@ def decide_points(results: dict[str, tuple], *, protected_ok: bool = True, min_s
                   n_boot: int = 2000, seed: int = 0, risk: float | None = None, alpha: float = 0.05) -> GateResult:
     """A model serves several decision points; each point's results are (champion loss, challenger loss, session,
     ...) per test row, a loss being -gain. Reject a challenger that harms more than `risk` of the test sessions it
-    acts in with confidence (the post-act monitor's rule, before promotion); else accept if at least one point's gain
-    rises significantly and no point's falls significantly. Points with test items from fewer than `min_sessions`
-    sessions can neither pass nor block."""
+    acts in with confidence (the post-act monitor's rule, before promotion; an act of no gain, a right default
+    swapped for another right answer, is not counted, which only makes the rule stricter); else accept if at least
+    one point's gain rises significantly and no point's falls significantly. Points with test items from fewer than
+    `min_sessions` sessions can neither pass nor block."""
     if not protected_ok:
         return GateResult("rejected", ["a protected sample failed"], sum(len(r[0]) for r in results.values()))
     improved, regressed, thin, harmful, n = [], [], [], [], 0

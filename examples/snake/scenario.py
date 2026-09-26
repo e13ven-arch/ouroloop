@@ -8,7 +8,7 @@ from .game import Game, legal, render
 from .labeler import label
 
 QUESTION = "Which way should the snake move?"
-RULE = "rule:examples.snake.rules:greedy_safe"
+RULE = "rule:examples.snake.rules:keep_going"
 
 
 def moves(state: dict) -> dict:

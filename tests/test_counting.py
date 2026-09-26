@@ -4,9 +4,14 @@ import random
 
 import pytest
 
+from ouroloop.cli import main
 from ouroloop.decision import Noul, _digest
 from ouroloop.evolve.calibrate import calibrate_point
 from ouroloop.evolve.monitor import realized, watch
+from ouroloop.evolve.pipeline import default_errors
+from ouroloop.evolve.replay import gain, summarize
+from ouroloop.generations import _judged
+from ouroloop.ledger import Ledger
 from ouroloop.policy import Policy, cp_lower, cp_upper, fit_threshold, harmed
 from ouroloop.runtime import Runtime
 from ouroloop.types import Answer
@@ -200,3 +205,44 @@ def test_the_monitor_counts_a_session_once_however_many_of_its_acts_are_wrong(tm
     play(rt, 40, wrong=())
     assert realized(rt, "check") == (0, 40) and watch(rt, 0.05) == []
     assert realized(rt, "check", sessions={"s000", "s001"}) == (0, 2)
+
+
+def test_an_answer_among_several_right_ones_is_right_everywhere(tmp_path, gated):
+    """An outcome may name several right labels: an answer among them counts as right for the calibration, the
+    monitor and the gain, and a default among them is no default error."""
+    rt = acting(tmp_path)
+    gated(rt, "check", "A", 0.5)
+    for i in range(60):                      # acts on every decision ("yes"); the first two of each session: either
+        for j in range(20):
+            d = rt.ask("check", {"i": i, "j": j}, session=f"s{i:03d}")
+            rt.outcome(d.id, ["no", "yes"] if j == 0 else ["yes", "no"] if j == 1 else "yes", source="env")
+    assert realized(rt, "check") == (0, 60)
+    rows = [(r, *r.target()) for r in rt.ledger.rows("check")]
+    cal = calibrate_point(rt, "check", rows=rows, risk=0.2)
+    assert cal.thresholds["here"] is not None and cal.accuracy == 1.0
+    assert default_errors(rt, ["check"]) == 60 * 18          # the default "no" is right where either is
+    assert gain({"yes": 0.9, "no": 0.1}, {"no": 0.5, "yes": 0.5}, "no", 0.5) == 0     # a right default swapped
+    assert gain({"yes": 0.9, "no": 0.1}, {"yes": 0.5, "maybe": 0.5}, "no", 0.5) == 1
+    assert gain({"yes": 0.9, "no": 0.1}, {"no": 1.0}, "no", 0.5) == -1
+    # four rows where the default was right too, one default error: one fix, a share of the headroom of at most 1
+    losses = [-gain({"yes": 0.9, "no": 0.1}, t, "no", 0.5) for t in [{"no": 0.5, "yes": 0.5}] * 4 + [{"yes": 1.0}]]
+    m = summarize({"check": ([0] * 5, losses, list("abcde"), [False] * 4 + [True])})["check"]["challenger"]
+    assert (m["fixes"], m["harms"], m["fixed_share"]) == (1, 0, 1.0)
+
+
+def test_a_demo_generation_counts_a_fix_only_where_the_default_was_wrong(tmp_path):
+    led = Ledger(tmp_path)
+    for route, action, default, label in [("act", "yes", "no", ["no", "yes"]),     # a right default swapped: neither
+                                          ("act", "yes", "no", "yes"), ("act", "yes", "no", "no"),
+                                          ("shadow", "no", "no", "yes"), ("act", "yes", "no", None)]:
+        led.outcome(led.decision(point="check", route=route, action=action, default=default), label)
+    assert _judged(led.rows()) == (1, 1)
+
+
+def test_the_ledger_report_calls_one_answer_right_every_time_not_reportable(tmp_path, capsys):
+    """Labels that differ but always share one answer: a constant answer scores 100%, so agreement says nothing."""
+    rt = acting(tmp_path)
+    for j, label in enumerate([["no", "yes"], "yes"]):
+        rt.outcome(rt.ask("check", {"j": j}, session="s").id, label, source="env")
+    assert main(["ledger", "--dir", str(tmp_path)]) == 0
+    assert "NOT REPORTABLE (2 scored, one answer right every time;" in capsys.readouterr().out

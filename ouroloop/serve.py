@@ -7,7 +7,8 @@ TDE on the GPU host) and answer single decisions quickly for harnesses elsewhere
     POST /release                                  -> {"ok": true}; loaded models let go of the GPU
     POST /ask     {"point", "ctx", "session"?, "phase"?, "veto"?}  -> the recorded Decision; a session runs the
                                                                      release that was current at its first ask
-    POST /outcome {"decision", "label", "source"?, "weight"?, ...}   -> {"ok": true}
+    POST /outcome {"decision", "label", "source"?, "weight"?, ...}   -> {"ok": true}; "label" is the right answer, a
+                                                                     list of answers that are all right, or null
 
 "model" is a trained model's ref, loaded in-process as the server config's [models] table says (jobs_root, and
 hf_prefix for <repo>@<commit>): a job id (letters, digits, _ and -) or <hf_prefix><job id>@<40 hex>; any other is

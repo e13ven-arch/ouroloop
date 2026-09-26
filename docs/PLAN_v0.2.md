@@ -336,7 +336,7 @@ M6 最先做。它不需要执行、校准或门，而采集是整个计划里�
 
 - `ouroloop/contract.py`：
   - 决策 spec 文件 `points.toml`：写明每个决策点的类型、问题、封闭的标签集合、各阶段的默认动作，以及哪些结果来源能当训练目标（比如 CRM 回调记为 `env`，人工复核记为 `human`）。这个文件的哈希就是决策 spec 的版本。
-  - 接口：`Client`（进程内或 HTTP）、`Client.session(meta)`、`Session.ask(point, state, candidates=None, phase=None, veto=None)`、`Client.outcome(decision, label, source)`。候选必须是已声明标签的子集，阶段必须已经声明，否则报错。
+  - 接口：`Client`（进程内或 HTTP）、`Client.session(meta)`、`Session.ask(point, state, candidates=None, phase=None, veto=None)`、`Client.outcome(decision, label, source)`，label 是对的答案、一组同样对的答案（列表），或 None（没有对的）。候选必须是已声明标签的子集，阶段必须已经声明，否则报错。
   - SDK 在客户端生成 decision id。连不上 serve 或者超时的时候，执行默认动作，把这一行（路线为 `error`）写进本地缓冲；恢复连接后补发到 `/v1/ask?record_only=1`，serve 按 id 去重。
 - `serve.py`：
   - 用 `/v1/session`、`/v1/ask`、`/v1/outcome` 取代现有的 `/ask` 和 `/outcome`。现有的 `/ask` 只能问服务端已定义的决策点，也不固定 session。
@@ -552,3 +552,8 @@ M6 最先做。它不需要执行、校准或门，而采集是整个计划里�
   - 增益：会执行且对 +1，会执行且错 −1，否则 0。门比较冠军（按它现在门认可的校准）和候选（按它新拟合的校准）的增益，仍是按 session 的配对 bootstrap；Brier 不再参与判定，卡上改报每一侧的执行、修对、弄错、受害 session、默认错误和修好的比例。候选在测试 session 上受害比例的下界超过 risk 就拒掉。
   - 默认错误：路由默认不等于标签的有标签行，模型只能在这些行上有所增益；修好的比例 = (修对 − 弄错) / 默认错误。
   - 训练日程（`pipeline.schedule`，多代运行每轮先问它）：还没训练过、上次训练后冠军被撤销、或默认错误比上次训练时至少翻倍才训练（植入的候选不算上次训练；门记录的测试 session 最多取一代的量，更早的新 session 留给训练）；最近通过的门修好的比例达到模板的 `target.fixed_share`（0.5），或训练次数达到 `budget.max_trainings`（10），就不训练。追求够好，不追求完美。
+- 多个正确答案（2026-09-26）：一个决策常有几个同样对的答案（贪吃蛇里几步同样快、同样安全地吃到食物；客服、补货里几个动作都行）。结果只写一个标签时，同样对的答案被算成错：风险（受害 session）被高估，增益惩罚同样好的推翻，任意的平局规则成了训练目标。在贪吃蛇账本上量过：一个训练得好的模型推翻规则的 6348 步里，4920 步是同样好的一步被算成错。改动：
+  - `outcome(decision, label)` 和 serve 的 `/outcome` 接受一个标签、None（没有对的，训练和校准照旧不读），或一组都对的标签（非空、不重复的字符串列表）；账本照原样存。
+  - `Row.target`：一组标签平分这条结果的权重，训练目标在它的正确答案上均匀；几条结果照旧按来源权重合并。`build.to_example` 本来就按候选归一，不用改。
+  - `replay.right(target)`：目标里权重最大的标签（含并列）。所有判对错的地方都用它，不再比 argmax：校准、执行后监控、增益和卡上的统计、默认错误（路由默认不在正确答案里）和 `focused`、卡片、CLI 和研究报告的准确率、受保护样本。数据检查的标签和位置统计把并列的答案平分计数：取 argmax 会把并列全算到第一个呈现的位置上。
+  - 贪吃蛇：`labeler.label` 返回所有和最好的一步一样好的方向（按 DIRS 顺序），不再有平局规则；默认回答者换成 `rules.keep_going`，一条一直往前走、只在要撞死时才转弯的天真规则蛇，删掉 `greedy_safe`。

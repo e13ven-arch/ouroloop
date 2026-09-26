@@ -25,7 +25,7 @@ BACK = {"up": "down", "down": "up", "left": "right", "right": "left"}
 
 
 def first(moves, heading: str) -> str:
-    """The tie-break everywhere in the pack: keep the heading if it is among `moves`, else the first in DIRS order."""
+    """Keep the heading if it is among `moves`, else the first in DIRS order: the rule snake's choice."""
     return heading if heading in moves else next(d for d in DIRS if d in moves)
 
 

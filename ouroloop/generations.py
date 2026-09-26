@@ -16,7 +16,7 @@ the same gate.
 
 Each line reports what the champion added over the defaults: the share of decisions it acted on, the sessions it
 harmed (any acted decision wrong) of those it acted in against the risk budget, and its gain, the fixes (acted and
-right) less the harms (acted and wrong) per session.
+right where the default was not) less the harms (acted and wrong) per session.
 
 The same games (session ids, seeds, generation) are played again by the defaults alone, no model asked, in
 <workspace>/baseline/ ([demo] baseline = false: not), and their metrics printed beside: what a changed environment,
@@ -37,6 +37,7 @@ from .evolve import monitor
 from .evolve.gate import freeze_template, load_template, template_path
 from .evolve.pipeline import evolve_model, schedule
 from .evolve.registry import Registry
+from .evolve.replay import right
 from .policy import cp_upper
 from .runtime import Runtime, import_object
 
@@ -117,6 +118,19 @@ def _risk(bad: int, n: int, budget: float) -> str:
     return f"{bad}/{n}={bad / n:.1%} <={cp_upper(bad, n):.1%} vs {budget:.0%}" if n else "-"
 
 
+def _judged(rows) -> tuple[int, int]:
+    """(fixes, harms) of the labelled acts among `rows`: acted and right where the default was not, acted and wrong.
+    An act that swaps a right default for another right answer is neither."""
+    fixes = harms = 0
+    for r in rows:
+        target = r.target() if r.decision.get("route") == "act" else None
+        if target:
+            good = right(target[0])
+            fixes += r.decision.get("action") in good and r.decision.get("default") not in good
+            harms += r.decision.get("action") not in good
+    return fixes, harms
+
+
 def _line(e: dict) -> str:
     played = ",".join(e["played"])
     share = f"{e['acted'] / e['decisions']:.0%}" if e["decisions"] else "-"
@@ -170,7 +184,7 @@ def run(cfg: dict, base: str | Path = ".", *, generations: int | None = None, ro
         played = sorted(f"{v} (revoked)" if rt.revoked.hit(v) else v or "base" for v in pinned)
         mine = set(ids)
         rows = [r for r in rt.ledger.rows() if r.decision.get("session") in mine]
-        acts = [items for point in rt.points for items in monitor.acted(rt, point, mine).values()]   # per model
+        fixes, harms = _judged(rows)
         harm = [monitor.realized(rt, point, mine) for point in rt.points]
         revoked = monitor.watch(rt, budget, sessions=mine)
         planted = g == plant
@@ -181,8 +195,7 @@ def run(cfg: dict, base: str | Path = ".", *, generations: int | None = None, ro
         summary = rt.ledger.append({
             "type": "generation", "generation": g, "played": played, "sessions": len(ids), "decisions": len(rows),
             "acted": sum(r.decision.get("route") == "act" for r in rows),
-            "fixes": sum(ok for items in acts for _, ok in items),
-            "harms": sum(not ok for items in acts for _, ok in items),
+            "fixes": fixes, "harms": harms,
             "harmed": sum(b for b, _ in harm), "acted_sessions": sum(n for _, n in harm),
             "risk": budget, "metrics": _aggregate(metrics),
             "baseline": _aggregate(again) if again is not None else None,

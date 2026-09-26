@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 from ..evolve import experience, gate
 from ..evolve.gate import GateRecord
-from ..evolve.replay import EVALUATORS, gold, labelled, predict, signature
+from ..evolve.replay import EVALUATORS, gold, labelled, predict, right, signature
 from ..types import brier
 from .agent import Report, Workspace
 
@@ -23,13 +23,13 @@ def build_report(rt, record: GateRecord, max_examples: int = 3) -> Report:
         if not dev:
             continue
         views, preds = predict(rt, p, p.spec, dev)
-        correct = [gold(pr) == gold(t) for pr, (_, t, _) in zip(preds, dev)]
+        correct = [gold(pr) in right(t) for pr, (_, t, _) in zip(preds, dev)]
         metrics[name] = {"n": len(dev), "brier": sum(brier(pr, t) for pr, (_, t, _) in zip(preds, dev)) / len(dev),
                          "accuracy": sum(correct) / len(dev)}
         groups: dict[tuple, list[str]] = defaultdict(list)
         for view, pr, (_, t, _), ok in zip(views, preds, dev, correct):
             if not ok:
-                groups[(gold(t), gold(pr), signature(view))].append(view)
+                groups[(" or ".join(sorted(right(t))), gold(pr), signature(view))].append(view)
         for (g, pred, sig), items in sorted(groups.items(), key=lambda kv: -len(kv[1])):
             clusters.append({"id": f"c{len(clusters) + 1}", "point": name, "gold": g, "predicted": pred,
                              "signature": sig, "n": len(items), "examples": items[:max_examples]})

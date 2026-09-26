@@ -3,12 +3,13 @@ offline: the signature trainer stands in for TDE's, and a fake TDE backend for t
 import json
 import random
 import re
+from dataclasses import replace
 
 import pytest
 
 from examples.snake.game import Game, legal, moved, render, unpack
 from examples.snake.labeler import label, path
-from examples.snake.rules import greedy_safe, signature
+from examples.snake.rules import keep_going, signature
 from examples.snake.scenario import QUESTION, RULE, move_point, moves
 from ouroloop import config
 from ouroloop.backends import TdeBackend
@@ -16,6 +17,8 @@ from ouroloop.decision import Choice
 from ouroloop.evolve import experience, monitor
 from ouroloop.evolve.gate import records
 from ouroloop.evolve.registry import Registry
+from ouroloop.evolve.replay import right
+from ouroloop.evolve.train import SignatureBackend, SignatureTrainer
 from ouroloop.generations import _line, run
 from ouroloop.ledger import Ledger, SessionStore
 from ouroloop.policy import Policy
@@ -35,7 +38,7 @@ def states(n_games=30, board=8, seed=0):
         game = Game(board, board, 3, rng.randrange(10 ** 6))
         while not game.over and game.steps < 300:
             out.append(game.state())
-            game.step(greedy_safe(game.state()) if rng.random() < 0.8 else rng.choice(legal(game.state())))
+            game.step(keep_going(game.state()) if rng.random() < 0.8 else rng.choice(legal(game.state())))
     return out
 
 
@@ -73,51 +76,56 @@ def test_the_rules():
 
 
 # ---------------------------------------------------------------- the environment's label and the rule snake
-def test_the_label_is_safe_progress_with_documented_ties_and_none_when_trapped():
-    assert label(state([(4, 4), (3, 4), (2, 4)], (6, 4), "right")) == "right"      # straight at the food
-    assert label(state([(4, 4), (3, 4), (2, 4)], (5, 3), "right")) == "right"      # a tie: the heading
-    assert label(state([(4, 4), (4, 5), (4, 6)], (5, 3), "up")) == "up"
-    assert label(state([(4, 4), (4, 5), (4, 6)], (3, 5), "up")) == "left"          # a tie without it: DIRS order
+def test_the_label_is_every_best_move_in_dirs_order_and_none_when_trapped():
+    assert label(state([(4, 4), (3, 4), (2, 4)], (6, 4), "right")) == ["right"]    # straight at the food
+    assert label(state([(4, 4), (3, 4), (2, 4)], (5, 3), "right")) == ["up", "right"]   # as short either way: both
+    assert label(state([(4, 4), (4, 5), (4, 6)], (5, 3), "up")) == ["up", "right"]
+    assert label(state([(4, 4), (4, 5), (4, 6)], (3, 5), "up")) == ["left"]
     trapped = state([(0, 0), (0, 1), (1, 1), (1, 0), (2, 0)], (7, 7), "up")      # the wall, and its own body
     assert [d for d in legal(trapped) if moved(*unpack(trapped)[:4], d)[0] is not None] == [] and label(trapped) is None
     # the food in a pocket the snake could not leave after eating: the label keeps it out, the rule snake goes in
     pocket = state([(1, 0), (1, 1), (0, 1), (0, 2), (0, 3), (1, 3), (2, 3)], (0, 0), "up", n=6)
-    assert (label(pocket), greedy_safe(pocket)) == ("right", "left")
+    assert (label(pocket), keep_going(pocket)) == (["right"], "left")
     for s in states():
         w, h, body, food, _ = unpack(s)
         safe = [d for d in legal(s) if moved(w, h, body, food, d)[0] is not None]
-        assert (label(s) is None) == (not safe) and (label(s) in safe or not safe)
+        good = label(s)
+        assert (good is None) == (not safe) and (not safe or good == [d for d in safe if d in good])
 
 
 def test_the_label_on_hand_built_boards_a_dead_end_food_behind_the_tail_and_a_full_board():
     # a dead end: the food lies in the two top rows, which the body closes off; the snake could get to it but never
-    # out again. No move is good, so the label keeps the tail in reach; the rule snake heads in
+    # out again. No move is good, so the label keeps the tail in reach; the rule snake turns in
     dead_end = state([(5, 2), (4, 2), (3, 2), (2, 2), (1, 2), (0, 2), (0, 3), (1, 3), (2, 3), (3, 3), (3, 4), (2, 4),
                       (1, 4), (0, 4)], (2, 0), "right", n=6)
-    assert (label(dead_end), greedy_safe(dead_end)) == ("down", "up")
+    assert (label(dead_end), keep_going(dead_end)) == (["down"], "up")
     # the food behind the tail: the only way to it is through the cell the tail leaves (blocked, there is none)
     behind = state([(3, 0), (2, 0), (2, 1), (2, 2), (2, 3), (2, 4), (2, 5), (1, 5)], (0, 3), "right", n=6)
     w, h, body, food, _ = unpack(behind)
     after, _ = moved(w, h, body, food, "down")
     route = path(w, h, after, food)
-    assert label(behind) == "down" and route is not None and path(w, h, [*after, after[-1]], food) is None
+    assert label(behind) == ["down"] and route is not None and path(w, h, [*after, after[-1]], food) is None
     # a full board: eating the last food wins the game, although the tail is out of reach afterwards (3 x 3 has no
     # cycle through every cell); the other safe move, into the tail's cell, only goes round
     full = {"width": 3, "height": 3, "body": [[1, 0], [1, 1], [2, 1], [2, 2], [1, 2], [0, 2], [0, 1], [0, 0]],
             "food": [2, 0], "heading": "up"}
-    assert label(full) == "right"
+    assert label(full) == ["right"]
     game = Game(3, 3, 3, seed=0)
     game.body, game.heading, game.food = [tuple(c) for c in full["body"]], "up", (2, 0)
-    game.step(label(full))
+    game.step(label(full)[0])
     assert game.over and game.alive and len(game.body) == 9
 
 
-def test_the_rule_snake_heads_for_the_food_and_never_dies_when_it_can_help_it():
-    assert greedy_safe(state([(4, 4), (3, 4), (2, 4)], (4, 1), "right")) == "up"
+def test_the_rule_snake_keeps_going_and_only_turns_to_avoid_dying():
+    assert keep_going(state([(4, 4), (3, 4), (2, 4)], (4, 1), "right")) == "right"     # the food does not turn it
+    assert keep_going(state([(7, 4), (6, 4), (5, 4)], (4, 1), "right")) == "up"        # the wall: the first safe
+    assert keep_going(state([(7, 0), (6, 0), (5, 0)], (4, 1), "right")) == "down"
+    trapped = state([(0, 0), (0, 1), (1, 1), (1, 0), (2, 0)], (7, 7), "up")
+    assert keep_going(trapped) == "up"
     for s in states(seed=1):
         w, h, body, food, heading = unpack(s)
         safe = [d for d in legal(s) if moved(w, h, body, food, d)[0] is not None]
-        assert greedy_safe(s) in (safe or [heading])
+        assert keep_going(s) == (heading if heading in safe else safe[0] if safe else heading)
 
 
 def test_the_tiny_models_key_is_the_local_picture():
@@ -135,7 +143,7 @@ def test_the_move_point_asks_the_legal_moves_and_the_rule_snake_answers_until_a_
     d = rt.ask("move", s, session="g1")
     row = rt.ledger.rows()[-1].decision
     assert sorted(row["candidates"]) == ["left", "right", "up"] and row["view"] == render(s)
-    assert (d.route, d.action, row["answerer"], row["default"]) == ("default", greedy_safe(s), RULE, greedy_safe(s))
+    assert (d.route, d.action, row["answerer"], row["default"]) == ("default", keep_going(s), RULE, keep_going(s))
 
 
 # ---------------------------------------------------------------- the demo loop
@@ -165,15 +173,37 @@ def seeing_move_point(**kw):
 
 
 def sees(view: str) -> str:
-    """The signature trainer's key: the environment's label and the legal moves, read from the state in the view. A
-    model keyed by it learns what the labeler knows, where the rule snake goes wrong too (TDE's part on a GPU host).
-    Trained on shuffled labels it learns nothing: within a key every candidate is always there, so a label shuffled
-    in lands on each alike."""
+    """The signature trainer's key: the environment's right moves and the legal moves, read from the state in the
+    view. A model keyed by it learns what the labeler knows, where the rule snake goes wrong too (TDE's part on a GPU
+    host), and has nothing to pick among several right moves. Trained on shuffled labels it learns nothing: within a
+    key every candidate is always there, so a label shuffled in lands on each alike."""
     try:
         state = json.loads(view.rsplit("\n", 1)[-1])
     except ValueError:                  # not a board (the model id probe)
         return "other"
-    return f"{label(state)} {' '.join(legal(state))}"
+    return f"{' '.join(label(state) or ['trapped'])} | {' '.join(legal(state))}"
+
+
+class Seen(SignatureBackend):
+    """The signature model, abstaining on a key it was not trained on: its fallback, the label counts over every key,
+    would otherwise act on a guess where the champion's games lead the snake somewhere the defaults' games did not."""
+
+    def decide(self, requests):
+        answers = super().decide(requests)
+        for r, a in zip(requests, answers):
+            a.abstained = self.signature(r.state) not in self.table.get(r.question.instructions, {})
+        return answers
+
+
+class SeenTrainer(SignatureTrainer):
+    """The signature trainer, its models served by Seen."""
+
+    def train(self, job):
+        result = super().train(job)
+        return replace(result, backend={**result.backend, "type": "test_snake:Seen"})
+
+    def backend(self, result):
+        return Seen(result.backend["path"], signature=result.backend.get("signature"))
 
 
 # Generation 1 leaves too few training rows beside its 30 test games (the data checks stop it before training);
@@ -187,7 +217,7 @@ CFG = {"workspace": {"root": "ws"}, "seed": 0,
        "registry": {"base": "general"},
        "points": {"default_backend": "general",
                   "move": {"define": "test_snake:seeing_move_point", "backend": "champion", "act": True}},
-       "trainer": {"type": "signature", "signature": "test_snake:sees"},
+       "trainer": {"type": "test_snake:SeenTrainer", "signature": "test_snake:sees"},
        "recipe": {"min_weight": 1.0}}
 
 
@@ -293,11 +323,14 @@ def test_every_printed_number_is_on_disk_beside_the_same_games_played_by_the_def
             assert {k: base_sessions[s][k] for k in ("board", "seed")} == {k: sessions[s][k] for k in ("board", "seed")}
         base_rows = [r.decision for r in base.rows("move") if r.decision["session"] in mine]
         assert base_rows and all(d["route"] == "shadow" and d["backend"] == "none" and
-                                 d["action"] == greedy_safe(base_contexts.get(d["ctx"])) for d in base_rows[:500])
+                                 d["action"] == keep_going(base_contexts.get(d["ctx"])) for d in base_rows[:500])
         played = {sessions[s]["champion"] or "base" for s in mine}
         acted = sum(d["route"] == "act" for d in rows)
-        judged = [x for items in monitor.acted(rt, "move", set(mine)).values() for x in items]
-        fixes, harms = sum(ok for _, ok in judged), sum(not ok for _, ok in judged)
+        # each labelled act: (right, the default was right too: a swap between right moves, no fix)
+        judged = [(r.decision["action"] in right(t[0]), r.decision["default"] in right(t[0]))
+                  for r in rt.ledger.rows("move")
+                  if r.decision["session"] in mine and r.decision["route"] == "act" and (t := r.target())]
+        fixes, harms = sum(ok and not same for ok, same in judged), sum(not ok for ok, _ in judged)
         bad, n = monitor.realized(rt, "move", set(mine))
         card = Registry(root).card(f"m_{g:04d}")
         assert (summary["played"], summary["sessions"], summary["decisions"], summary["acted"], summary["fixes"],

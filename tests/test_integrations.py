@@ -52,6 +52,9 @@ def test_serve_and_http_backend(tmp_path, monkeypatch):
                        "ctx": {"command": "pip install x", "stderr": "ConnectionResetError", "exit_code": 1}}).json()
         assert d["point"] == "retry" and d["route"] == "shadow"
         assert httpx.post(f"{url}/outcome", headers=auth, json={"decision": d["id"], "label": "yes"}).json()["ok"]
+        for bad in ([], ["yes", "yes"]):            # a list of right answers: non-empty, distinct strings
+            assert httpx.post(f"{url}/outcome", headers=auth,
+                              json={"decision": d["id"], "label": bad}).status_code == 400
         assert httpx.post(f"{url}/ask", headers=auth, json={"point": "nope", "ctx": {}}).status_code == 400
         (row,) = [r for r in rt.ledger.rows() if r.decision["point"] == "retry"]
         assert row.target() == ({"yes": 1.0}, 1.0)

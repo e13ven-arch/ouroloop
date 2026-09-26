@@ -370,13 +370,14 @@ def cmd_replay(args) -> int:
 
 
 def ledger_stats(rows) -> dict[str, dict]:
-    """Per point: decisions, how many carry a trainable label, how often the backend's own answer agreed with
-    that label, and what the best constant answer would have scored.
+    """Per point: decisions, how many carry a trainable label, how often the backend's own answer was among the
+    right answers, and what the best constant answer would have scored.
 
-    The baseline is not decoration. A point whose labels are all one value is one a constant answer gets right
+    The baseline is not decoration. A point where one answer is always right is one a constant answer gets right
     every time, so an agreement figure there says nothing about the model; `degenerate` marks those, and
     callers should refuse to report agreement for them.
     """
+    from .evolve.replay import right
     stats: dict[str, dict] = {}
     labels: dict[str, Counter] = {}
     for r in rows:
@@ -387,17 +388,16 @@ def ledger_stats(rows) -> dict[str, dict]:
         if target is None:
             continue
         s["labelled"] += 1
-        gold = max(target[0], key=target[0].get)
-        labels.setdefault(point, Counter())[gold] += 1
+        good = right(target[0])
+        labels.setdefault(point, Counter()).update(good)
         if probs and not r.decision.get("abstained"):      # an abstention's uniform probabilities predict nothing
             s["scored"] += 1
             predicted = r.decision["candidates"][max(range(len(probs)), key=probs.__getitem__)]
-            s["agree"] += predicted == gold
+            s["agree"] += predicted in good
     for point, s in stats.items():
-        seen = labels.get(point, Counter())
-        n = sum(seen.values())
+        seen, n = labels.get(point, Counter()), s["labelled"]
         s["baseline"] = max(seen.values()) / n if n else None      # the best constant answer
-        s["degenerate"] = bool(n) and len(seen) < 2                # one label only: agreement is meaningless
+        s["degenerate"] = bool(n) and max(seen.values()) == n      # one answer always right: agreement is meaningless
     return stats
 
 
@@ -409,7 +409,7 @@ def cmd_ledger(args) -> int:
         if not s["scored"]:
             print(line + "agreement=-")
         elif s["degenerate"]:
-            print(line + f"agreement=NOT REPORTABLE ({s['scored']} scored, every label the same; "
+            print(line + f"agreement=NOT REPORTABLE ({s['scored']} scored, one answer right every time; "
                          f"a constant answer scores 100%)")
         else:
             print(line + f"agreement={s['agree'] / s['scored']:.2f} of {s['scored']} "

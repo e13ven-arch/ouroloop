@@ -1,9 +1,9 @@
 # ouroloop demo snake --config examples/snake/offline.toml
 # The notebook version: the same loop in a few minutes on any machine, no GPU, no model download, no key. The tiny
 # signature model (label counts per local picture of the board, rules.signature) stands in for TDE, and the keyword
-# stand-in (knows nothing of Snake) for the general checkpoint. The tiny model sees what the rule snake sees, so it
-# has nothing to add where the rule snake goes wrong: this version shows the machinery, and its games equal the
-# baseline's (the brackets); a snake that plays better than the rule snake needs TDE (demo.toml).
+# stand-in (knows nothing of Snake) for the general checkpoint. The tiny model sees the local picture and the food's
+# direction, no lookahead: it can turn toward the food where the rule snake keeps going, but never sees a dead end
+# coming. This version shows the machinery; a snake that plays well needs TDE (demo.toml).
 
 seed = 0                        # the runtime's: candidate order and exploration, so a run repeats exactly
 

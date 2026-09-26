@@ -76,6 +76,23 @@ def test_training_targets_follow_label_sources(tmp_path):
         led.outcome(env, "yes", source="guess")
 
 
+def test_an_outcome_with_several_right_labels_is_a_uniform_target_and_a_bad_list_is_refused(tmp_path):
+    led = Ledger(tmp_path)
+    several = led.decision(point="p")
+    led.outcome(several, ["left", "up", "right"], source="env")
+    mixed = led.decision(point="p")
+    led.outcome(mixed, ["left", "up"], source="env")
+    led.outcome(mixed, "up", source="human")
+    targets = {row.decision["id"]: (t, w) for row, t, w in led.training_rows("p")}
+    assert targets[several] == ({"left": 1 / 3, "up": 1 / 3, "right": 1 / 3}, 1.0)
+    assert targets[mixed] == ({"left": 0.25, "up": 0.75}, 1.0)
+    for bad in ([], ["up", "up"], ["up", 1], [None], (), ("up",), {"up"}, 1):     # a list only, not another iterable
+        with pytest.raises(ValueError):
+            led.outcome(several, bad, source="env")
+    assert [e["label"] for e in led.events() if e["type"] == "outcome"] == [["left", "up", "right"], ["left", "up"],
+                                                                            "up"]
+
+
 def test_redaction_and_session_store(tmp_path):
     assert "sk-" not in redact("key sk-abcdefghijklmnopqrstuvwx here")
     assert "[REDACTED]" in redact("Authorization: Bearer abcdefghijklmnopqrstuvwxyz")

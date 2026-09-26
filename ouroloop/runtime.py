@@ -306,5 +306,8 @@ class Runtime:
         return Decision(did, name, ans.label if ans.decisive else None, ans.probs, ans.confidence, r.route,
                         r.explored, r.propensity, default, ans.model)
 
-    def outcome(self, decision: str, label: str | None, source: str = "env", weight: float = 1.0, **extra) -> None:
+    def outcome(self, decision: str, label: str | list[str] | None, source: str = "env", weight: float = 1.0,
+                **extra) -> None:
+        """Record what happened after `decision`: its right answer, a list of answers that are all right, or None
+        when none was."""
         self.ledger.outcome(decision, label, source, weight, **extra)

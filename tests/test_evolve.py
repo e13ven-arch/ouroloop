@@ -83,6 +83,13 @@ def test_position_leak_is_blocked_for_choice_points(tmp_path):
         for e in part:
             e["target"] = [1.0] + [0.0] * (len(e["candidates"]) - 1)
     assert any("position" in b for b in check(ds, min_train=10, max_mde=1.0).blocking)
+    examples = [e for part in ds.splits.values() for e in part]
+    for i, e in enumerate(examples):    # two right answers, at every pair of places in turn: no place is favoured
+        pair = [(0, 1), (0, 2), (1, 2)][i % 3]
+        e["target"] = [0.5 if j in pair else 0.0 for j in range(3)]
+    report = check(ds, min_train=10, max_mde=1.0)
+    assert abs(report.stats["route.position_skew"]) < 0.02
+    assert not any("position" in x for x in report.blocking + report.warnings)
 
 
 # ---------------------------------------------------------------- calibration and registry

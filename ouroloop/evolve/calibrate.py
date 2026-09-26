@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 from ..policy import fit_threshold
 from ..types import nll, temper
-from .replay import answers, gold, labelled, not_held_out, routing_default, splits
+from .replay import answers, gold, labelled, not_held_out, right, routing_default, splits
 
 
 def fit_temperature(probs: list[dict], targets: list[dict]) -> float:
@@ -77,12 +77,12 @@ def calibrate_point(rt, point: str, backend=None, test_frac: float = 0.15, cal_f
         if phase in acting and a.decisive and gold(pr) != default:
             conf, correct, sessions = acting[phase]
             conf.append(max(pr.values()))
-            correct.append(gold(pr) == gold(target))
+            correct.append(gold(pr) in right(target))
             sessions.append(row.decision.get("session", ""))
     k = max(1, sum(bool(conf) for conf, _, _ in acting.values()))    # phases that would act share the risk
     thresholds = {phase: fit_threshold(*acting[phase], risk / k, 0.05 / k) if n_sessions >= min_sessions else None
                   for phase in p.phases}
-    accuracy = sum(gold(pr) == gold(y) for pr, y in zip(tempered, targets)) / len(rows)
+    accuracy = sum(gold(pr) in right(y) for pr, y in zip(tempered, targets)) / len(rows)
     return PointCalibration(point, models.pop(), t, thresholds, len(rows), accuracy, n_sessions)
 
 

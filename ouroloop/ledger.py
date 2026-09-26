@@ -109,11 +109,14 @@ class Row:
 
     def target(self) -> tuple[dict[str, float], float] | None:
         """The training target (a label distribution) and its weight, or None if nothing trainable was observed.
-        Only outcomes count, never escalations; conflicting signals become a weighted distribution."""
+        Only outcomes count, never escalations; conflicting signals become a weighted distribution. An outcome that
+        names several right labels splits its weight evenly among them."""
         votes: dict[str, float] = defaultdict(float)
         for ev in self.outcomes:
             if ev.get("label") is not None and ev.get("source") in SOURCE_WEIGHTS:
-                votes[str(ev["label"])] += SOURCE_WEIGHTS[ev["source"]] * float(ev.get("weight", 1.0))
+                labels = ev["label"] if isinstance(ev["label"], list) else [ev["label"]]
+                for lab in labels:
+                    votes[str(lab)] += SOURCE_WEIGHTS[ev["source"]] * float(ev.get("weight", 1.0)) / len(labels)
         total = sum(votes.values())
         return ({lab: v / total for lab, v in votes.items()}, min(1.0, total)) if total > 0 else None
 
@@ -138,9 +141,15 @@ class Ledger:
         self.append({"type": "escalation", "decision": decision, "label": label, "probs": probs, "by": by,
                      "source": source})
 
-    def outcome(self, decision: str, label: str | None, source: str = "env", weight: float = 1.0, **extra) -> None:
+    def outcome(self, decision: str, label: str | list[str] | None, source: str = "env", weight: float = 1.0,
+                **extra) -> None:
+        """What happened after `decision`: `label` is the right answer, a list of answers that are all right, or None
+        when none was (no training or calibration reads it)."""
         if source not in SOURCES:
             raise ValueError(f"unknown label source {source!r}")
+        if not (label is None or isinstance(label, str) or isinstance(label, list) and label
+                and all(isinstance(x, str) for x in label) and len(set(label)) == len(label)):
+            raise ValueError(f"label {label!r}: a string, None, or a non-empty list of distinct strings")
         self.append({"type": "outcome", "decision": decision, "label": label, "source": source, "weight": weight,
                      **extra})
 

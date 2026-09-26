@@ -1,9 +1,9 @@
 """Offline replay: re-render logged contexts with a (changed) spec and score it against recorded outcomes.
 
 A side (the champion, or a candidate) is scored by its gain over the routing default on each row: +1 where it would
-act and be right, -1 where it would act and be wrong, 0 where it would take the default. Rows where the default is
-already right can only lose; the default errors (rows whose routing default is not the label) are the only rows a
-model can add anything on."""
+act and be right, -1 where it would act and be wrong, 0 where it would take the default. An answer is right when it is
+among the target's right answers (right). Rows where the default is already right can only lose; the default errors
+(rows whose routing default is not among the right answers) are the only rows a model can add anything on."""
 from __future__ import annotations
 
 import hashlib
@@ -96,7 +96,16 @@ def predict(rt, point: DecisionPoint, spec: Spec, rows: list[tuple]) -> tuple[li
 
 
 def gold(target: dict) -> str:
+    """The label of the largest weight, the first on a tie: a model's answer, or one label of a target where a
+    statistic needs one. Whether an answer is right is for `right` to say."""
     return max(target, key=target.get)
+
+
+def right(target: dict) -> set[str]:
+    """The right answers of a target: every label of its largest weight, ties included (an outcome may name several
+    labels that are all right). Every check of correctness uses it."""
+    top = max(target.values())
+    return {lab for lab, v in target.items() if top - v < 1e-9}
 
 
 def protected_ids(rt, point: str) -> set[str]:
@@ -126,11 +135,14 @@ _ACTING = Policy(act=True, explore=0.0)
 
 
 def gain(probs: dict, target: dict, default: str | None, threshold: float | None) -> int:
-    """+1 if the execution rule would act on this answer (at `threshold`, against the routing default) and it is the
-    label, -1 if it would act and is not, 0 if it would take the default."""
+    """-1 if the execution rule would act on this answer (at `threshold`, against the routing default) and it is not
+    among the right answers; +1 if it would act, is among them and the default is not; else 0 (the default taken, or
+    swapped for another right answer)."""
     if route(_ACTING, Answer(probs), default, threshold, random.Random(0)).route != "act":
         return 0
-    return 1 if gold(probs) == gold(target) else -1
+    if gold(probs) not in right(target):
+        return -1
+    return 0 if default in right(target) else 1
 
 
 @dataclass
@@ -191,15 +203,16 @@ def scored(rt, point: DecisionPoint, rows: list[tuple], challenger: Spec, cal=No
     if cal is not None:             # a challenger without a calibration never acts: no need to ask it
         b = losses(answers(rt, point, challenger, rows, backend or rt.backend_for(point.name))[1],
                    lambda model: (cal.temperature, cal.thresholds) if model == cal.model else (1.0, {}))
-    errors = [phase is not None and default != gold(target) for (_, target, _), phase, default in
+    errors = [phase is not None and default not in right(target) for (_, target, _), phase, default in
               zip(rows, phases, defaults)]
     return a, b, [row.decision.get("session", "") for row, _, _ in rows], errors
 
 
 def summarize(per_point: dict) -> dict:
     """Per point: the rows and sessions scored, the default errors among them, and for each side the rows it would
-    act on, its fixes (acted and right) and harms (acted and wrong), the sessions it acts in and those harmed (any
-    of its acts wrong), and its fixed share of the headroom, (fixes - harms) / default errors."""
+    act on, its fixes (acted and right on a default error) and harms (acted and wrong), the sessions it acts in and
+    those harmed (any of its acts wrong), and its fixed share of the headroom, (fixes - harms) / default errors. An
+    act that swaps a right default for another right answer has no gain, so it is counted in none of these."""
     def side(losses: list, groups: list, errors: int) -> dict:
         fixes, harms = sum(x < 0 for x in losses), sum(x > 0 for x in losses)
         return {"acted": fixes + harms, "fixes": fixes, "harms": harms,
@@ -231,7 +244,7 @@ def evaluate_spec(rt, cand, record) -> EvalResult:
     guarded = protected_ids(rt, cand.point)
     protected = [r for r in rows if r[0].decision["id"] in guarded]
     _, pp = predict(rt, p, challenger, protected)
-    protected_ok = all(gold(probs) == gold(t) for probs, (_, t, _) in zip(pp, protected))
+    protected_ok = all(gold(probs) in right(t) for probs, (_, t, _) in zip(pp, protected))
 
     def apply() -> None:
         rt.specs.set(cand.point, challenger.to_json(), note=f"{cand.id}: {cand.hypothesis}", expected=base)

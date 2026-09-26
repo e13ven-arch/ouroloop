@@ -49,14 +49,20 @@ def check(ds, *, eval_states: list[str] = (), max_truncated: float = 0.05, min_t
         r.stats[f"{point}.truncated"] = round(truncated, 4)
         if truncated > max_truncated:
             r.blocking.append(f"{point}: {truncated:.0%} of states are truncated (limit {max_truncated:.0%})")
-        gold = [max(range(len(e["target"])), key=e["target"].__getitem__) for e in examples]
-        labels = Counter(e["candidates"][g]["name"] for e, g in zip(examples, gold))
+        # An example's answer is its target's largest weight; several right answers tie there and share the count
+        # (an argmax would put every tie at the first position the candidates were presented in).
+        labels, positions = Counter(), Counter()
+        for e in examples:
+            top = [i for i, t in enumerate(e["target"]) if max(e["target"]) - t < 1e-9]
+            for i in top:
+                labels[e["candidates"][i]["name"]] += 1 / len(top)
+                positions[i] += 1 / len(top)
         minority = min(labels.values()) / len(examples) if len(labels) > 1 else 0.0
         if minority < minority_warn:
             r.warnings.append(f"{point}: minority label share {minority:.1%}")
         if examples[0]["primitive"] == "choice":
             k = min(len(e["candidates"]) for e in examples)
-            share = max(Counter(g for g in gold if g < k).values()) / len(examples)
+            share = max((v for i, v in positions.items() if i < k), default=0) / len(examples)
             skew = share - 1.0 / k
             r.stats[f"{point}.position_skew"] = round(skew, 4)
             if skew > position_block:

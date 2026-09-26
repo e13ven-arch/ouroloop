@@ -24,7 +24,7 @@ class Candidate:
 @dataclass
 class Report:
     points: dict              # point -> {"n", "brier", "accuracy"} on the dev split
-    clusters: list[dict]      # dev-split errors grouped by (gold, predicted, error signature)
+    clusters: list[dict]      # dev-split errors grouped by (right answers, predicted, error signature)
 
 
 class Workspace:

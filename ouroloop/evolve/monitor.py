@@ -7,19 +7,19 @@ from __future__ import annotations
 from ..policy import cp_lower, harmed
 from ..release import revoke
 from .registry import Registry
-from .replay import gold
+from .replay import right
 
 
 def acted(rt, point: str, sessions=None) -> dict[str, list[tuple[str, bool]]]:
     """model -> (session, correct) of the labelled decisions it acted on at `point`, in time order (within
-    `sessions`, if given). Correct: the action is the outcome's label."""
+    `sessions`, if given). Correct: the action is among the outcomes' right answers (replay.right)."""
     out: dict[str, list] = {}
     for row in rt.ledger.rows(point):
         d = row.decision
         target = row.target()
         if d.get("route") != "act" or target is None or (sessions is not None and d.get("session") not in sessions):
             continue
-        out.setdefault(d.get("model", ""), []).append((d.get("session", ""), d.get("action") == gold(target[0])))
+        out.setdefault(d.get("model", ""), []).append((d.get("session", ""), d.get("action") in right(target[0])))
     return out
 
 

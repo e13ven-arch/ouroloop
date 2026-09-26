@@ -17,7 +17,7 @@ from .build import build
 from .checks import CheckReport, check
 from .gate import INFRA, TEMPLATE, GateRecord, load_template, open_record, run
 from .registry import Registry
-from .replay import EvalResult, gold, labelled, not_held_out, routing_default, scored, summarize
+from .replay import EvalResult, labelled, not_held_out, right, routing_default, scored, summarize
 from .train import DEFAULT_RECIPE, PATH_KEYS, RECIPE_KEYS, TrainJob, TrainResult
 
 
@@ -42,13 +42,13 @@ class ModelCandidate:
 
 def default_errors(rt, points: list[str] | None = None) -> int:
     """The labelled rows outside held-out tasks, at `points` (default: model_points), whose routing default is not
-    their label: the rows a model could add anything on."""
+    among their right answers: the rows a model could add anything on."""
     n = 0
     for name in points or model_points(rt):
         for row, target, _ in not_held_out(rt, labelled(rt, name)):
             try:
                 if rt.points[name].default_for(row.decision.get("phase"))[0] is not None:   # no phase: never acts
-                    n += routing_default(rt, name, row) != gold(target)
+                    n += routing_default(rt, name, row) not in right(target)
             except ValueError:          # a row whose phase cannot be told never acts
                 continue
     return n
@@ -93,15 +93,15 @@ def schedule(rt, points: list[str] | None = None) -> tuple[bool, str]:
 
 
 def focused(rt, point: str, rows: list[tuple], focus: float, seed: int = 0) -> list[tuple]:
-    """The training rows with every default error (a row whose routing default is not its label: the only rows a
-    model can add anything on) kept, and a seeded sample of the others, so that the errors make up `focus` of them
-    (all the others when there are too few). Time order is kept."""
+    """The training rows with every default error (a row whose routing default is not among its right answers: the
+    only rows a model can add anything on) kept, and a seeded sample of the others, so that the errors make up `focus`
+    of them (all the others when there are too few). Time order is kept."""
     p = rt.points[point]
     errors = []
     for row, target, _ in rows:
         try:
             errors.append(p.default_for(row.decision.get("phase"))[0] is not None     # no phase: never acts
-                          and routing_default(rt, p, row) != gold(target))
+                          and routing_default(rt, p, row) not in right(target))
         except ValueError:          # a row whose phase cannot be told never acts either
             errors.append(False)
     others = [i for i, e in enumerate(errors) if not e]

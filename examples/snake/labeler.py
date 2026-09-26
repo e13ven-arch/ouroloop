@@ -1,7 +1,7 @@
 """The environment's label of a move (DEMO_PLAN §2.2), written as an outcome with source "env". A BFS lookahead that
 only the environment's code runs: the label does not depend on how well any model, or the rule snake, plays.
 
-    label(state) -> the move to learn, or None
+    label(state) -> every move as good as the best one (in DIRS order), or None
 
 1. Safe moves: the legal moves that do not die at once. With none the snake is trapped: every legal move dies, no
    move is right, and the decision gets an outcome with label None, which no training or calibration reads.
@@ -9,18 +9,18 @@ only the environment's code runs: the label does not depend on how well any mode
    tail, which moves on). A virtual snake follows it, and the move is good if the snake gets there alive and can then
    still reach its own tail (or is shorter than 4): eating does not shut it in. Eating the last food fills the board
    and wins the game, so that is good too. Its distance is 1 + the path's length.
-3. The label is the good move with the shortest distance.
+3. The label is the good moves with the shortest distance.
 4. No good move (no safe route to the food for now): among the safe moves after which the head can still reach the
-   tail (all safe moves if none can), the one that leaves the head the most cells it can reach.
+   tail (all safe moves if none can), those that leave the head the most cells it can reach.
 
-Ties, in 3 and 4: keep the heading if it is among them, else the first of up, down, left, right (game.first). The
-rule is a fixed function of the board, so a model can learn it exactly.
+The moves of a label are all right: none is preferred, so no tie-break becomes something to learn. The label is a
+fixed function of the board.
 """
 from __future__ import annotations
 
 from collections import deque
 
-from .game import DELTA, DIRS, first, legal, moved, unpack
+from .game import DELTA, DIRS, legal, moved, unpack
 
 
 def _neighbours(w: int, h: int, c: tuple):
@@ -67,8 +67,8 @@ def tail_reachable(w: int, h: int, body: list[tuple]) -> bool:
     return len(body) < 4 or body[-1] in reach(w, h, body)
 
 
-def label(state: dict) -> str | None:
-    w, h, body, food, heading = unpack(state)
+def label(state: dict) -> list[str] | None:
+    w, h, body, food, _ = unpack(state)
     after = {}
     for d in legal(state):
         b, eats = moved(w, h, body, food, d)
@@ -90,7 +90,7 @@ def label(state: dict) -> str | None:
             good[d] = 1 + len(route)
     if good:
         best = min(good.values())
-        return first([d for d, n in good.items() if n == best], heading)
+        return [d for d, n in good.items() if n == best]
     pool = [d for d, (b, _) in after.items() if tail_reachable(w, h, b)] or list(after)
     room = {d: len(reach(w, h, after[d][0])) for d in pool}
-    return first([d for d in pool if room[d] == max(room.values())], heading)
+    return [d for d in pool if room[d] == max(room.values())]
