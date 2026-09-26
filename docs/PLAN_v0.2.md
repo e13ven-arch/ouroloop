@@ -280,11 +280,17 @@ M6 最先做。它不需要执行、校准或门，而采集是整个计划里�
 - `evolve/train.py` `prepare_job`（第 108～117 行）：`out_dir` 也要做 `expanduser`。目前 `remote_repo = "~/tde"` 时，checkpoint 会写进一个名字就叫 `~` 的目录，因为 TDE 的 `tde/train.py` 第 239 行直接用 `Path(out_dir)`。
 - 训练任务（2026-09-26 消融后的 v1，只有下面这些）：
   1. `evolve/worker.py`：本地和远程同一条路径。准备任务，调 TDE 训练（带超时），写 `result.json`；`transport = "hf"` 时再往 private 仓库提交一次。
-  2. Compute：`launch` 建一个新的任务目录，只传 `spec.json`、`worker.py`、`train.jsonl`、`val.jsonl` 四个文件，后台启动；`poll` 读退出码、`result.json` 和日志尾部。任何故障都是 `TrainError`，即 `inconclusive`。
-  3. 模型引用：`direct` 是 job id，`hf` 是 `<repo>@<sha>`。它就是卡上的 `model_id`，也是校准、撤销和 session 固定的键；卡上不记主机路径。父模型按引用找。
-  4. 卡上记下 ouroloop 和 TDE 的 git HEAD，带 dirty 标记。
+  2. Compute：`launch` 建一个新的任务目录，只传 `spec.json`、`worker.py`、`train.jsonl`、`val.jsonl` 四个文件，后台启动；`poll` 读退出码、`result.json` 和日志尾部；`cancel` 杀掉任务的进程组。任何故障都是 `TrainError`，即 `inconclusive`。
+  3. 无人值守时的鲁棒性（研究 agent 自己就在多轮循环里跑，框架和训练又常在两台机器上）：
+     - 超时：worker 到点杀掉 TDE，`poll` 到点放弃。
+     - 断线：`poll` 读不到状态（ssh 失败、开发机睡眠）算还在跑，直到超时。
+     - 丢失：进程已经不在、又没有退出码（重启、`kill -9`），立刻算失败，不等到超时。
+     - 取消：框架被中断时取消自己的任务；框架启动时，本工作区还有没结束的任务，一律取消。不做接管：那一轮重新来，最多损失一次训练的时间。
+     - `/decide` 分块发送，失败的块重试（同一个模型和请求，答案不变）。
+  4. 模型引用：`direct` 是 job id，`hf` 是 `<repo>@<sha>`。它就是卡上的 `model_id`，也是校准、撤销和 session 固定的键；卡上不记主机路径。父模型按引用找。
+  5. 卡上记下 ouroloop 和 TDE 的 git HEAD，带 dirty 标记。
 - 删掉 `LocalTdeTrainer`、`RemoteTdeTrainer` 和 `tde_remote` 后端，由上面这一条路径取代。`tde_remote` 每次决策都要做 ssh 和 rsync，并重新加载整个模型。
-- 不做：GPU 锁、取消和断线重连、自己的内容哈希、跨主机拷贝模型、数据经 HF 中转、任务目录清理。这些由使用者在运维上保证，或者用不上。
+- 不做：GPU 锁和任务目录清理（使用者在运维上保证），自己的内容哈希、跨主机拷贝模型、数据经 HF 中转（v1 用不上）。
 
 **改动：服务和执行**
 
@@ -292,7 +298,7 @@ M6 最先做。它不需要执行、校准或门，而采集是整个计划里�
   - 只接受配置里的任务目录或 HF 前缀下的引用，别的一律 400。
   - 按 LRU 最多驻留 2 个版本，超出时按需重新加载，不拒绝请求。
   - 新增 `/release`，启动训练前释放显存。
-  - `HttpBackend` 加上 `model` 参数，分块发送。
+  - `HttpBackend` 加上 `model` 参数。
 - `Answer.model` 改用模型引用，目前是 `tde:<目录名>`。它与 session 固定的模型不一致时，按 `error` 路线走默认动作。没晋升的版本可以加载来评测，但它没有阈值，永远不会执行。
 - StopGuard 打开执行：
   - `per_turn` 阶段有把握地判 yes，就结束会话，防止无限探索。
