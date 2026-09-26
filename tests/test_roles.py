@@ -14,7 +14,8 @@ from ouroloop import config
 from ouroloop.cli import main
 from ouroloop.decision import Noul
 from ouroloop.evolve.gate import freeze_template, records
-from ouroloop.evolve.pipeline import deploy, deploy_version, evolve_model, full_recipe, parent_ref, schedule
+from ouroloop.evolve.pipeline import deploy, deploy_version, evolve_model, full_recipe, parent_ref
+from ouroloop.evolve.plan import decide
 from ouroloop.evolve.train import JobTrainer, TrainError
 from ouroloop.evolve.registry import Registry
 from ouroloop.ledger import Ledger, PromotionConflict
@@ -378,7 +379,7 @@ def test_a_failed_deploy_leaves_the_champion_as_it_was(tmp_path):
     assert (rt.root / "models" / "champion.json").read_text() == pointer
     assert rt.threshold("stop", "R1", "per_turn") is not None and rt.threshold("stop", "R2", "per_turn") is None
     assert rt.ask("stop", ctx(), session="s_new", phase="per_turn").model == "R1"     # new sessions: the old one
-    assert not schedule(rt)[1].startswith(f"target reached: {card['version']}")       # not deployed: reached nothing
+    assert not any(r.startswith(f"target reached: {card['version']}") for r in decide(rt)[2])   # not deployed
     spy.down = False
     assert deploy_version(rt, card["version"]) and reg.champion()["version"] == card["version"]
     history = json.loads((rt.root / "models" / "champion.json").read_text())["history"]

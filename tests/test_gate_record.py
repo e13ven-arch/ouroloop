@@ -18,10 +18,11 @@ from ouroloop.backends import LlmBackend
 from ouroloop.backends.http import HttpBackend
 from ouroloop.cli import main
 from ouroloop.evolve import experience
-from ouroloop.evolve.gate import TEMPLATE, decide_points, freeze_template, open_record, records, run
+from ouroloop.evolve.gate import (TEMPLATE, decide_points, freeze_template, load_template, open_record,
+                                  records, run)
 from ouroloop.evolve.harness import prompt_evaluator
-from ouroloop.evolve.pipeline import (default_errors, evolve_model, prepare_model, promote_model, recipe_evaluator,
-                                      schedule)
+from ouroloop.evolve.plan import admit, decide, sessions_needed
+from ouroloop.evolve.pipeline import default_errors, evolve_model, prepare_model, promote_model, recipe_evaluator
 from ouroloop.evolve.registry import Registry
 from ouroloop.evolve.replay import EVALUATORS, EvalResult, labelled
 from ouroloop.evolve.train import TrainError, TrainResult
@@ -141,10 +142,11 @@ def ctx(label: str = "yes") -> dict:
     return {"task": "t0", "turns": 1, "files": "", "actions": "", "message": f"say {label}"}
 
 
-def collect(rt, n: int, start: int = 0, held_every: int = 10, turns: int = 1) -> None:
+def collect(rt, n: int, start: int = 0, held_every: int = 10, turns: int = 1, acted_by: str = "") -> None:
     """n sessions as the M6 collection writes them: a session event (task, held_out, agent), then a stop decision
     recorded without asking a model, labelled by the probe. Odd sessions end "yes", even ones "no"; every
-    held_every-th is a held-out task's (held out is a property of the task, as in the suite)."""
+    held_every-th is a held-out task's (held out is a property of the task, as in the suite). With `acted_by`, that
+    model acted on the decision and was right, as the post-act monitor counts an act."""
     stop = rt.points["stop"]
     for i in range(start, start + n):
         s, label, held = f"s_{i:04d}", "yes" if i % 2 else "no", i % held_every == 0
@@ -153,10 +155,11 @@ def collect(rt, n: int, start: int = 0, held_every: int = 10, turns: int = 1) ->
         c = {**ctx(label), "task": task, "turns": turns, "moment": "after a turn"}
         view, _ = stop.render(c)
         did = rt.ledger.decision(
-            session=s, ctx=rt.sessions.put(s, c), point="stop", spec_hash=stop.spec_hash, backend="none", model="",
+            session=s, ctx=rt.sessions.put(s, c), point="stop", spec_hash=stop.spec_hash,
+            backend="champion" if acted_by else "none", model=acted_by,
             view=view, view_chars=len(view), truncated=False, question=stop.question(c).to_json(),
-            candidates=["yes", "no"], probs=None, route="shadow", explored=False, propensity=1.0, action="no",
-            usage={}, phase="per_turn", default="no")
+            candidates=["yes", "no"], probs=None, route="act" if acted_by else "shadow", explored=False,
+            propensity=1.0, action=label if acted_by else "no", usage={}, phase="per_turn", default="no")
         rt.outcome(did, label, source="env", note="probe", score=1.0)
 
 
@@ -426,63 +429,214 @@ def test_the_gate_judges_the_gain_over_the_default_within_the_risk(tmp_path):
     assert decide_points(gains, n_boot=200, risk=0.2).outcome == "rejected"
 
 
-def test_the_schedule_trains_only_while_it_can_still_pay(tmp_path):
+def test_no_model_trains_before_the_data_could_buy_a_threshold(tmp_path):
+    """The decisive fact, before a GPU minute is spent: with risk r a threshold needs sessions_needed(r) sessions
+    with no error at all, and only a session holding a default error can buy one, because only there does a model
+    act. With fewer, no model trained on this data could ever act, and the round says so (PLAN_v0.2 M11)."""
+    assert (sessions_needed(0.05), sessions_needed(0.2)) == (59, 14)
+    rt = workspace(tmp_path / "thin", n=60)
+    proposed, train, reasons, d = decide(rt)
+    assert proposed is not None and not train and d.points["stop"].error_sessions < 14
+    assert reasons[0].startswith("stop: ") and "needs 14" in reasons[0] and "could ever act" in reasons[0]
+    # the same data grown: the sessions that hold a default error can buy a threshold, and the plan is admitted
+    rt = workspace(tmp_path / "enough", n=150)
+    proposed, train, reasons, d = decide(rt)
+    assert train and reasons == ["no candidate trained yet"] and d.points["stop"].error_sessions >= 14
+    assert proposed.predicted_gain == 0.5 and proposed.cost_minutes is None      # nothing has trained: no wall time
+    assert proposed.hypothesis.startswith("no candidate trained yet") and proposed.change == {}
+
+
+def test_a_revocation_is_evidence_not_a_reason_to_train(tmp_path):
+    """A champion revoked after acting in two sessions leaves almost the same data behind: the next candidate would
+    see it and fail the same way, so the round trains nothing. Once the revoked model's sessions do add materially
+    to the training rows, the revocation is a reason - once. Only the acting sessions a candidate could train on
+    count: not this round's test sessions, and not the ones the last candidate already saw, so one revocation
+    never proposes a round again and again while the ledger grows around it."""
     rt = workspace(tmp_path, n=150)
-    assert schedule(rt) == (True, "no candidate trained yet")
-    evolve_model(rt, OracleTrainer("R1"))                   # fixes every default error it is tested on
-    train, why = schedule(rt)
-    assert not train and why.startswith("target reached: m_0001 fixes 100%")
-    champion = Registry(rt.root).champion()
-    revoke(rt.root, champion["version"], champion["model_id"], "drift")
-    assert schedule(rt) == (True, "the champion was revoked since m_0001")
-    # with a target the champion has not reached: train again once the default errors have doubled
-    rt = config.build_runtime(CFG, tmp_path / "more")
-    collect(rt, 150)
-    freeze_template(rt.root, {**ACT_GATE, "target": {"fixed_share": 1.0}})
-    card = evolve_model(rt, OracleTrainer("R1", knows=SOME))
-    assert card["gate"] == "accepted" and card["default_errors"] > 0
-    train, why = schedule(rt)
-    assert not train and why.startswith(f"default errors {card['default_errors']}, not yet twice")
-    collect(rt, 150, start=150)
-    train, why = schedule(rt)
-    assert train and why.startswith(f"default errors doubled since m_0001 ({card['default_errors']} -> ")
-    # the round it triggers tests on a generation's worth of the new sessions and trains on the others
-    record = open_record(rt)
-    new = {f"s_{i:04d}" for i in range(150, 300)}
-    assert record.fresh and len(record.test_sessions) == 40 and set(record.test_sessions) <= new
-    parts = record.split(labelled(rt, "stop"), rt.ledger.sessions()[0], record.cal_frac("stop"))
-    assert len({r[0].decision["session"] for r in parts["train"] + parts["calibration"]} & new) > 50
-    # the training budget is spent: nothing trains, whatever else holds
-    rt = config.build_runtime(CFG, tmp_path / "budget")
-    collect(rt, 150)
-    freeze_template(rt.root, {**ACT_GATE, "budget": {"sessions_per_generation": 40, "max_trainings": 1}})
-    evolve_model(rt, Trainer("NO", type="test_gate_record:Model", p_yes=0.01))
-    revoke(rt.root, None, "NO", "a test")
-    assert schedule(rt) == (False, "training budget spent (1 of 1)")
-    # evolve_model (`ouroloop evolve`) does not ask the schedule: called again, it trains a round all the same
-    collect(rt, 150, start=150)
-    card = evolve_model(rt, Trainer("NO2", type="test_gate_record:Model", p_yes=0.01))
-    assert card["model_id"] == "NO2" and card["gate"] == "rejected"
+    accept(rt.root, {"version": "m_0001", "gate": "accepted", "model_id": "R1", "points": ["stop"],
+                     "parent": None, "default_errors": default_errors(rt, ["stop"]),
+                     "data": {"stop": {"train": 60, "val": 5}},
+                     "backend": {"type": "test_gate_record:Oracle", "model": "R1", "q": 0.7},
+                     "metrics": {"stop": {"challenger": {"fixed_share": 0.2}}}})
+    Registry(rt.root).promote("m_0001", None)
+    collect(rt, 2, start=150, held_every=999, acted_by="R1")          # the two sessions it acted in
+    revoke(rt.root, "m_0001", "R1", "the monitor")
+    proposed, train, reasons, d = decide(rt)
+    assert proposed is None and not train and (d.champion.acted_sessions, d.champion.rows) == (2, 0)
+    assert reasons == [f"m_0001 was revoked after acting in 2 sessions, which left 0 labelled rows no candidate has "
+                       f"trained on: too little new data to train on again; a revocation is evidence, not a reason "
+                       f"to train"]
+    collect(rt, 40, start=152, held_every=999, acted_by="R1")         # sessions enough to be worth another try
+    proposed, train, reasons, d = decide(rt)
+    # the 30 latest of the 42 sessions it acted in are this round's test set: only the other 12 could train anything
+    assert proposed is not None and train and (d.champion.acted_sessions, d.champion.rows) == (42, 12)
+    assert (d.champion.new_sessions, d.points["stop"].test_sessions) == (12, 30)
+    assert "brought 12 labelled rows no candidate has trained on" in reasons[0]
+    # a candidate trains on them and is rejected; the same revocation is not a reason a second time
+    card = evolve_model(rt, Trainer("NO", type="test_gate_record:Model", p_yes=0.01), plan=proposed)
+    assert card["gate"] == "rejected"
+    proposed, train, reasons, d = decide(rt)
+    assert proposed is None and not train and d.champion.rows == 0 and "too little new data" in reasons[0]
 
 
-def test_the_schedule_reads_planted_old_and_headroom_less_cards(tmp_path):
+def test_a_hypothesis_that_already_failed_on_as_much_data_is_refused(tmp_path):
+    from dataclasses import replace
+    rt = workspace(tmp_path, n=150)
+    proposed, train, _, d = decide(rt)
+    assert train
+    experience.append(rt.root, {"kind": "model", "version": "m_0001", "gate": "rejected",
+                                "reasons": ["no point's gain rose significantly"], "plan": proposed.to_json()})
+    params = load_template(rt.root)[0]
+    ok, reasons = admit(rt, proposed, d, params)
+    assert not ok and reasons == [f"the same recipe change already failed on as much data (m_0001: rejected - no "
+                                  f"point's gain rose significantly); a new hypothesis or more data is needed"]
+    grown = replace(proposed, data={**proposed.data, "train_rows": proposed.data["train_rows"] + 100})
+    assert admit(rt, grown, d, params) == (True, [])
+
+
+def test_an_infrastructure_failure_leaves_the_same_plan_to_run_again(tmp_path):
+    """A crashed training job is a failure of the machinery, not of the hypothesis (gate.INFRA: "never evidence
+    against it"), so the plan is still the right thing to run and the next round runs it, instead of asking for a
+    new hypothesis until the ledger has grown."""
+    rt = workspace(tmp_path, n=150)
+    proposed, train, _, _ = decide(rt)
+    assert train
+    card = evolve_model(rt, OracleTrainer(fail=True), plan=proposed)
+    assert card["gate"] == "inconclusive" and [e["gate"] for e in experience.read(rt.root)] == ["inconclusive"]
+    again, train, reasons, _ = decide(rt)
+    assert train and reasons == ["no candidate trained yet"] and again.data == proposed.data
+
+
+def test_no_model_trains_where_the_template_fits_no_threshold_at_all(tmp_path):
+    """min_cal_sessions is as hard a precondition as the risk: below it calibrate_point gives every phase a
+    threshold of None, so the candidate could never act and the gate could only reject it. The round refuses before
+    the GPU minutes, however many calibration sessions hold a default error."""
+    rt = config.build_runtime(CFG, tmp_path)
+    collect(rt, 150)
+    freeze_template(rt.root, {**ACT_GATE, "min_cal_sessions": 1000})
+    proposed, train, reasons, d = decide(rt)
+    cal = d.points["stop"].calibration_sessions
+    assert proposed is not None and not train and d.points["stop"].error_sessions >= sessions_needed(0.2)
+    assert reasons == [f"stop: {cal} calibration sessions, the template fits no threshold below 1000; no model "
+                       f"trained on this data could ever act, so collect {1000 - cal} more"]
+
+
+def test_a_risk_no_threshold_could_meet_is_a_reason_not_a_search(tmp_path):
+    """A risk of 0 is a template gate.LIMITS still allows, and no number of clean sessions bounds an error rate
+    below it: the round says so, instead of counting sessions forever."""
+    with pytest.raises(ValueError, match="a risk of 0 lets no threshold be fitted at all"):
+        sessions_needed(0)
+    rt = config.build_runtime(CFG, tmp_path)
+    collect(rt, 150)
+    freeze_template(rt.root, {**ACT_GATE, "risk": 0.0})
+    proposed, train, reasons, _ = decide(rt)
+    assert proposed is not None and not train and len(reasons) == 1
+    assert reasons[0].startswith("gate template: a risk of 0.0 lets no threshold be fitted at all")
+
+
+def test_a_point_that_cannot_decide_is_left_out_of_the_plan_not_a_veto(tmp_path):
+    """The gate neither passes nor blocks on a point with too few test sessions (decide_points), so the admission
+    drops it and trains on the points that can decide: a rare second point must not keep the main one from ever
+    training."""
+    rt = config.build_runtime({**CFG, "points": {**CFG["points"], "retry": {"backend": "champion"}}}, tmp_path)
+    collect(rt, 150)
+    freeze_template(rt.root, ACT_GATE)
+    proposed, train, reasons, d = decide(rt)
+    assert set(d.points) == {"stop", "retry"} and d.points["retry"].test_sessions == 0
+    assert train and proposed.points == ["stop"]
+    assert reasons == ["retry is left out of the plan: test items from 0 sessions, the gate needs 30; neither a pass "
+                       "nor a block could come from this point"]
+
+
+def test_the_plan_aims_at_a_gain_the_rounds_test_set_could_show(tmp_path):
+    """A standing model near the target leaves a residual the round's test set cannot detect. A plan that predicted
+    it could never be admitted, however much data arrived, so the planner aims at the smallest gain that test set
+    could confirm and lets the gate measure the real one."""
+    rt = workspace(tmp_path, n=150)
+    Registry(rt.root).record({"version": "m_0001", "gate": "accepted", "model_id": "R1", "default_errors": 1,
+                              "deployed": True, "data": {"stop": {"train": 60}},
+                              "metrics": {"stop": {"challenger": {"fixed_share": 0.45}}}})
+    proposed, train, reasons, d = decide(rt)
+    point = d.points["stop"]
+    assert (d.reached, d.target) == (0.45, 0.5) and reasons[0].startswith("default errors doubled since m_0001")
+    assert train and proposed.predicted_gain > d.target - d.reached       # the residual, 5%, is below the mde
+    assert proposed.per_row(point) > point.mde > 0 and f"{proposed.predicted_gain:.0%}" in proposed.hypothesis
+
+
+def test_the_default_errors_doubling_since_the_last_candidate_is_a_reason_to_train(tmp_path):
+    """The other side of the schedule: a candidate trained and was rejected, and the round trains again once the
+    data a model could learn from has doubled - not before."""
+    rt = workspace(tmp_path, n=150)
+    proposed, train, _, _ = decide(rt)
+    assert train
+    card = evolve_model(rt, Trainer("NO", type="test_gate_record:Model", p_yes=0.01), plan=proposed)
+    before = card["default_errors"]
+    assert card["gate"] == "rejected" and before > 0
+    proposed, train, reasons, d = decide(rt)
+    assert proposed is None and not train
+    assert reasons == [f"default errors {d.default_errors}, not yet twice the {before} at m_0001"]
+    collect(rt, 200, start=150, held_every=999)         # enough new sessions to double them
+    proposed, train, reasons, d = decide(rt)
+    assert d.default_errors >= 2 * before and train
+    assert reasons == [f"default errors doubled since m_0001 ({before} -> {d.default_errors})"]
+    assert proposed.data["train_rows"] > card["data"]["stop"]["train"]
+
+
+def test_the_target_reached_and_the_budget_spent_still_stop_training(tmp_path):
     rt = workspace(tmp_path)
     registry = Registry(rt.root)
     # the other point had no default errors on its test rows (no share): the target is reached where there were
-    registry.record({"version": "m_0001", "gate": "accepted", "model_id": "R1",
-                     "default_errors": 10, "metrics": {"stop": {"challenger": {"fixed_share": 0.8}},
-                                                       "retry": {"challenger": {"fixed_share": None}}}})
-    assert schedule(rt) == (False, "target reached: m_0001 fixes 80% of the default errors")
-    # a planted candidate after a revocation uses budget but is not the last trained one: the drift still retrains
-    revoke(rt.root, "m_0001", "R1", "drift")
-    registry.record({"version": "m_0002", "model_id": "P", "gate": "rejected", "planted": "shuffled labels",
-                     "default_errors": 10 ** 6})
-    assert schedule(rt) == (True, "the champion was revoked since m_0001")
+    registry.record({"version": "m_0001", "gate": "accepted", "model_id": "R1", "default_errors": 10,
+                     "deployed": True, "data": {"stop": {"train": 60}},
+                     "metrics": {"stop": {"challenger": {"fixed_share": 0.8}},
+                                 "retry": {"challenger": {"fixed_share": None}}}})
+    proposed, train, reasons, _ = decide(rt)     # the default errors doubled since it, so there is a plan
+    assert proposed is not None and not train
+    assert "target reached: m_0001 fixes 80% of the default errors" in reasons
+    # with a target it has not reached, the training budget still stops the round
+    freeze_template(rt.root, {**ACT_GATE, "target": {"fixed_share": 1.0}, "budget": {"max_trainings": 1}},
+                    replace_frozen=True)
+    proposed, train, reasons, _ = decide(rt)
+    assert proposed is not None and not train and "training budget spent (1 of 1)" in reasons
     # an accepted card from before the gain objective: Brier metrics, no count of default errors
     rt = workspace(tmp_path / "old")
     Registry(rt.root).record({"version": "m_0001", "gate": "accepted", "model_id": "R1",
                               "metrics": {"stop": {"n": 40, "champion_brier": 0.25, "challenger_brier": 0.1}}})
-    assert schedule(rt) == (True, "m_0001 has no count of default errors to compare with")
+    proposed, _, reasons, _ = decide(rt)
+    assert proposed is not None and reasons[0].startswith("m_0001 has no count of default errors")
+
+
+def test_the_experience_record_pairs_the_plans_prediction_with_the_measured_gain(tmp_path):
+    rt = workspace(tmp_path, n=150)
+    proposed, train, _, _ = decide(rt)
+    assert train
+    card = evolve_model(rt, OracleTrainer("R1"), plan=proposed)     # fixes every default error it is tested on
+    (record,) = experience.read(rt.root)
+    assert card["plan"]["hypothesis"] == proposed.hypothesis and card["train_seconds"] >= 0
+    assert record["prediction"] == {"hypothesis": proposed.hypothesis, "change": {}, "predicted_gain": 0.5,
+                                    "gain": card["metrics"]["stop"]["challenger"]["fixed_share"],
+                                    "verdict": "accepted"}
+    assert record["prediction"]["gain"] == 1.0          # it did better than the plan predicted
+    # the next round has the wall time and the rows of that job: it can say what another one would cost
+    assert decide(rt)[3].minutes_per_row is not None
+
+
+def test_the_plan_command_prints_the_diagnosis_and_what_is_missing(tmp_path, capsys):
+    toml = tmp_path / "ouroloop.toml"
+    toml.write_text('[workspace]\nroot = "ws"\n\n[registry]\nbase = "base"\n\n[backends.base]\n'
+                    'type = "test_gate_record:Model"\np_yes = 0.5\nmodel = "base"\n\n'
+                    '[points]\ndefault_backend = "base"\n\n[points.stop]\nbackend = "champion"\nact = true\n'
+                    'explore = 0.0\n')
+    rt = config.build_runtime(config.load(toml), tmp_path)
+    collect(rt, 60)
+    freeze_template(rt.root, ACT_GATE)
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    assert main(["plan", "--config", str(toml)]) == 0
+    out = capsys.readouterr().out
+    assert "stop: 30 default errors in 54 labelled sessions" in out and "champion: none promoted yet" in out
+    assert "plan: recipe {} at stop: no candidate trained yet" in out and "verdict: no training" in out
+    assert "no model trained on this data could ever act" in out
+    assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
 
 
 def test_default_errors_leave_out_points_that_can_never_act(tmp_path):

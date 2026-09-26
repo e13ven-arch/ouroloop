@@ -1,5 +1,5 @@
-"""Command line: ouroloop run | suite | decide | smoke | demo | research | evolve | deploy | calibrate | gate | models |
-serve | host | hook | ledger."""
+"""Command line: ouroloop run | suite | decide | smoke | demo | research | plan | evolve | deploy | calibrate | gate |
+models | serve | host | hook | ledger."""
 from __future__ import annotations
 
 import argparse
@@ -184,6 +184,27 @@ def cmd_deploy(args) -> int:
     card = registry.card(args.version)
     print(f"{args.version}: deployed, the champion" if ok else f"{args.version}: not deployed: {card['deploy_error']}")
     return 0 if ok else 1
+
+
+def cmd_plan(args) -> int:
+    """`ouroloop plan`: what the data says, what the planner proposes and whether it is admitted (PLAN_v0.2 M11).
+    Reads only: nothing is frozen, used up or trained."""
+    from .evolve.plan import decide
+    _, rt = _load_runtime(args.config)
+    try:
+        proposed, train, reasons, diagnosis = decide(rt)
+    except ValueError as e:
+        print(e, file=sys.stderr)
+        return 2
+    for line in diagnosis.lines():
+        print(line)
+    print(f"plan: {proposed.line() if proposed is not None else 'none'}")
+    if proposed is not None:
+        print(f"  evidence: {proposed.evidence}")
+    print(f"verdict: {'train' if train else 'no training'}")
+    for reason in reasons:
+        print(f"  {reason}")
+    return 0
 
 
 def cmd_gate(args) -> int:
@@ -529,6 +550,10 @@ def main(argv: list[str] | None = None) -> int:
     dp.set_defaults(fn=cmd_deploy)
     dp.add_argument("version")
     dp.add_argument("--config", default="ouroloop.toml")
+    pl = sub.add_parser("plan", help="what the data says, what the planner proposes and whether it is admitted; "
+                                     "trains nothing and writes nothing")
+    pl.set_defaults(fn=cmd_plan)
+    pl.add_argument("--config", default="ouroloop.toml")
     c = sub.add_parser("calibrate", help="fit and report each point's temperature and thresholds; writes nothing")
     c.set_defaults(fn=cmd_calibrate)
     c.add_argument("--config", default="ouroloop.toml")
