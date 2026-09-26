@@ -53,6 +53,7 @@ class Runtime:
         self.rng = random.Random(seed)
         self._pins: dict[str, Pin] = {}
         self._built: dict[str, tuple[Backend | None, str]] = {}     # champion version -> (backend, error)
+        self._tally = None      # the post-act monitor's counts (evolve.monitor.Tally), built at its first check
 
     def register(self, point: DecisionPoint) -> DecisionPoint:
         """Add a decision point. A promoted spec (harness/specs.json) replaces the one in code. Each phase's default
@@ -110,12 +111,21 @@ class Runtime:
         held-out, agent models), before any of its decisions. Every later ask of the session uses that model and
         those calibrations: a promotion reaches only sessions opened after it. A session never opened is fixed at its
         first ask, and one opened again keeps what it was fixed at. `harness` describes the prompt, tools and StopGuard
-        settings of an ouroloop harness."""
+        settings of an ouroloop harness. Before a new session is fixed, the post-act monitor checks the champion it
+        would run (evolve.monitor.watch): one revoked then leaves the session its defaults."""
         known = session in self._pins or self.sessions.path(session, ".release.json").exists()
-        pin = self._pin(session) if known else self._keep(session, self.current(harness))
+        pin = self._pin(session) if known else self._open(session, harness)
         self.ledger.append({**(meta or {}), "type": "session", "session": session, "release": pin.release.to_json(),
                             "champion": pin.version})
         return pin.release
+
+    def _open(self, session: str, harness: dict | None = None) -> Pin:
+        """Fix a new session at the current release, once the post-act monitor has checked the champion (it reads
+        only the ledger events appended since its last check)."""
+        from .evolve import monitor
+        self._tally = self._tally or monitor.Tally(self.ledger)
+        monitor.watch(self, self._tally)
+        return self._keep(session, self.current(harness))
 
     def _keep(self, session: str, pin: Pin) -> Pin:
         """Fix `pin` for the session, also on disk beside its contexts: a process that resumes the session (serve
@@ -129,7 +139,7 @@ class Runtime:
         if session not in self._pins:
             path = self.sessions.path(session, ".release.json")
             if not path.exists():
-                return self._keep(session, self.current())
+                return self._open(session)
             saved = json.loads(path.read_text(encoding="utf-8"))     # before any promotion: the base, still
             card, backend, error = self.champion(saved["champion"]) if saved["champion"] else ({}, None, "")
             self._pins[session] = Pin(Release(**saved["release"]), saved["champion"], backend,

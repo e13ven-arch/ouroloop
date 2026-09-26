@@ -464,6 +464,10 @@ def test_the_schedule_trains_only_while_it_can_still_pay(tmp_path):
     evolve_model(rt, Trainer("NO", type="test_gate_record:Model", p_yes=0.01))
     revoke(rt.root, None, "NO", "a test")
     assert schedule(rt) == (False, "training budget spent (1 of 1)")
+    # evolve_model (`ouroloop evolve`) does not ask the schedule: called again, it trains a round all the same
+    collect(rt, 150, start=150)
+    card = evolve_model(rt, Trainer("NO2", type="test_gate_record:Model", p_yes=0.01))
+    assert card["model_id"] == "NO2" and card["gate"] == "rejected"
 
 
 def test_the_schedule_reads_planted_old_and_headroom_less_cards(tmp_path):

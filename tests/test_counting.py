@@ -1,14 +1,17 @@
 """How thresholds and the post-act monitor count risk: per session, a session harmed when any decision the model acted
 on in it is wrong; the budget is the harmed share of the sessions it acts in (PLAN_v0.2 M7, M9)."""
+import json
 import random
 
 import pytest
 
+from conftest import accept
 from ouroloop.cli import main
 from ouroloop.decision import Noul, _digest
 from ouroloop.evolve.calibrate import calibrate_point
-from ouroloop.evolve.monitor import realized, watch
+from ouroloop.evolve.monitor import Tally, acted, realized
 from ouroloop.evolve.pipeline import default_errors
+from ouroloop.evolve.registry import Registry
 from ouroloop.evolve.replay import gain, summarize
 from ouroloop.generations import _judged
 from ouroloop.ledger import Ledger
@@ -174,36 +177,137 @@ def test_the_phases_that_would_act_share_the_points_risk(tmp_path):
     assert calibrate_point(rt, "check", rows=rows, risk=0.2).thresholds == {"a": None, "b": None}
 
 
-def test_the_monitor_revokes_a_model_that_harms_more_sessions_than_the_budget(tmp_path, gated):
-    rt = acting(tmp_path)
-    gated(rt, "check", "A", 0.5)
-    rng = random.Random(0)
-    for i in range(40):                      # acts on every decision; wrong on 3% of them
-        for j in range(20):
-            d = rt.ask("check", {"i": i, "j": j}, session=f"s{i:03d}")
-            assert d.acted
-            rt.outcome(d.id, "no" if rng.random() < 0.03 else "yes", source="env")
-    bad, n = realized(rt, "check")
-    assert n == 40 and 10 < bad < 30 and cp_lower(bad, n) > 0.05
-    assert watch(rt, 0.5) == []                              # within a loose budget: nothing happens
-    (event,) = watch(rt, 0.05)
-    assert (event["model"], event["harmed"], event["sessions"]) == ("A", bad, 40)
-    assert watch(rt, 0.05) == []                             # once
-    assert [e for e in rt.ledger.events() if e["type"] == "monitor"][0]["model"] == "A"
-    d = rt.ask("check", {"i": 99}, session="s_after")        # never acts again, in any session
+class Champion:
+    """A workspace whose champion m_0001 (model A, saying "yes" to everything) serves check and may act on it, under
+    a frozen gate template (risk 5%), unless `frozen` is None. The default is "no"."""
+
+    def __init__(self, root, gated=None, frozen=None):
+        self.root = root
+        rt = self.runtime()
+        accept(root, {"version": "m_0001", "parent": None, "points": ["check"], "model_id": "A",
+                      "backend": {"type": "test_counting:Says", "model": "A"}})
+        Registry(root).promote("m_0001", None)
+        gated(rt, "check", "A", 0.5)
+        if frozen is not None:
+            frozen(root)
+
+    def runtime(self):
+        """A runtime on the workspace: another process, or this one restarted."""
+        rt = Runtime(self.root, {"base": Says(model="base")}, "base", seed=0)
+        rt.register(Noul("check", "ok?", phases={"here": "no"}, policy=Policy(act=True, explore=0.0)))
+        return rt
+
+
+def session(rt, s, harmed=True, steps=5):
+    """Open session `s` and play it; the environment says "no" at its first step if `harmed`, else "yes" throughout.
+    -> the decisions the champion acted on."""
+    rt.session(s)
+    acts = 0
+    for j in range(steps):
+        d = rt.ask("check", {"s": s, "j": j}, session=s)
+        acts += d.acted
+        rt.outcome(d.id, "no" if harmed and j == 0 else "yes", source="env")
+    return acts
+
+
+def revocations(rt):
+    return [{k: v for k, v in e.items() if k != "ts"} for e in rt.ledger.events() if e["type"] == "monitor"]
+
+
+def test_the_runtime_revokes_a_champion_that_harms_every_session_as_the_next_one_opens(tmp_path, gated, frozen):
+    rt = Champion(tmp_path, gated, frozen).runtime()
+    rt.session("early")                                         # pinned to the champion before the revocation
+    assert [session(rt, f"s{i}") for i in range(8)] == [5, 5] + [0] * 6
+    assert revocations(rt) == [{"type": "monitor", "event": "revoked", "point": "check", "model": "A",
+                                "version": "m_0001", "harmed": 2, "sessions": 2, "lower": round(cp_lower(2, 2), 4),
+                                "risk": 0.05}]           # at the third session: 1 of 1 is no evidence, 2 of 2 is
+    d = rt.ask("check", {"s": "early"}, session="early")     # a session pinned before stops acting at its next ask
     assert (d.route, d.acted, d.action) == ("default", False, "no")
-    assert rt.ledger.rows("check")[-1].decision["revoked"] == "A"
+    assert rt.ledger.rows("check")[-1].decision["revoked"] == "m_0001"
+
+
+def test_a_champion_within_its_risk_is_not_revoked_and_each_check_reads_only_new_events(tmp_path, gated, frozen):
+    rt = Champion(tmp_path, gated, frozen).runtime()
+    for i in range(300):                                        # harms one session in 25: 4%, within 5%
+        assert session(rt, f"s{i:03d}", harmed=i % 25 == 12, steps=2) == 2
+        assert rt._tally.parsed == sum(1 for _ in rt.ledger.events()) - 5    # but the session's own 5 events
+    assert revocations(rt) == [] and rt._tally.harmed("A") == (12, 299, ["check"])
+
+
+def test_without_a_frozen_gate_template_there_is_no_check(tmp_path, gated):
+    rt = Champion(tmp_path, gated).runtime()
+    assert [session(rt, f"s{i}") for i in range(6)] == [5] * 6
+    assert revocations(rt) == [] and rt._tally.parsed == 0
+
+
+def test_a_restarted_runtime_reaches_the_same_verdict(tmp_path, gated, frozen):
+    one = Champion(tmp_path / "one", gated, frozen).runtime()
+    for i in range(3):
+        session(one, f"s{i}")
+    ws = Champion(tmp_path / "two", gated, frozen)
+    a, b = ws.runtime(), ws.runtime()                           # two processes on one workspace
+    session(a, "s0")
+    session(b, "s1")                                            # b's first check reads a's events
+    assert revocations(a) == []
+    session(ws.runtime(), "s2")                                 # a restarted runtime catches up once
+    assert revocations(a) == revocations(one) and len(revocations(a)) == 1
+    assert session(a, "s3") == session(b, "s4") == 0            # revoked for every process, and only once
+    assert len(revocations(a)) == 1
+
+
+def test_a_torn_ledger_line_is_skipped_and_the_events_after_it_still_count(tmp_path, gated, frozen):
+    rt = Champion(tmp_path, gated, frozen).runtime()
+    session(rt, "s0")
+    path = sorted(rt.ledger.root.glob("*.jsonl"))[-1]
+    with open(path, "a", encoding="utf-8") as f:
+        f.write('{"type": "decision", "rou')                   # a torn append; the next event goes on after it
+    session(rt, "s1")
+    assert rt._tally.skipped == 0                               # s1's session event ends the torn line
+    assert session(rt, "s2") == 0 and rt._tally.skipped == 1   # s1 still counts: revoked as s2 opens, as ever
+    lines = [x for x in path.read_text(encoding="utf-8").splitlines() if "rou{" not in x]  # Ledger.events stops
+    (event,) = [e for e in map(json.loads, lines) if e["type"] == "monitor"]
+    assert (event["harmed"], event["sessions"]) == (2, 2)
+    fresh = Tally(rt.ledger)
+    fresh.update()
+    assert fresh.skipped == 1 and fresh.harmed("A")[:2] == rt._tally.harmed("A")[:2] == (2, 2)
+
+
+def test_the_tally_is_the_count_of_the_whole_ledger(tmp_path):
+    """Read a little at a time, with outcomes that change a decision's verdict, several right answers, no answer and
+    outcomes of a model's own source: the same count as the monitor's report over the whole ledger."""
+    rng = random.Random(0)
+    led = Ledger(tmp_path)
+    tally = Tally(led)
+    acted_ids = []
+    for k in range(600):
+        if rng.random() < 0.5 or not acted_ids:
+            acted_ids.append(led.decision(point=rng.choice(["p", "q"]), route=rng.choice(["act", "act", "default"]),
+                                          model=rng.choice(["A", "B"]), session=f"s{rng.randrange(40)}",
+                                          action=rng.choice(["x", "y"])))
+        else:
+            label = rng.choice(["x", "y", ["x", "y"], None])
+            led.outcome(rng.choice(acted_ids), label, source=rng.choice(["env", "env", "jev"]),
+                        weight=rng.choice([1.0, 2.0]))
+        if k % 50 == 0:
+            tally.update()
+    tally.update()
+    rt = type("Rt", (), {"ledger": led})()
+    for model in ("A", "B"):
+        items = [x for point in ("p", "q") for x in acted(rt, point).get(model, [])]
+        by = harmed(items)
+        assert tally.harmed(model)[:2] == (sum(by.values()), len(by)) and len(by) > 10
+    assert tally.parsed == sum(1 for _ in led.events())
 
 
 def test_the_monitor_counts_a_session_once_however_many_of_its_acts_are_wrong(tmp_path, gated):
     rt = acting(tmp_path / "harmed")
     gated(rt, "check", "A", 0.5)
     play(rt, 40, wrong=(0, 5, 10))
-    assert realized(rt, "check") == (40, 40) and watch(rt, 0.05)
+    assert realized(rt, "check") == (40, 40)
     rt = acting(tmp_path / "right")
     gated(rt, "check", "A", 0.5)
     play(rt, 40, wrong=())
-    assert realized(rt, "check") == (0, 40) and watch(rt, 0.05) == []
+    assert realized(rt, "check") == (0, 40)
     assert realized(rt, "check", sessions={"s000", "s001"}) == (0, 2)
 
 

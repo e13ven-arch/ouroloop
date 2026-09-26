@@ -12,6 +12,20 @@ The decision backend can be the Jev API or a small model you train yourself, suc
 
 The premise: commercial LLMs already reason well, and in real work the decisions are what matter most. ouroloop improves decisions, not reasoning.
 
+## How the loop improves itself
+
+`ouroloop demo <scenario> --generations N` runs this loop generation by generation ([ouroloop/generations.py](ouroloop/generations.py)); a harness of your own runs the online half on every session. Only the demo asks the schedule whether to train: each `ouroloop evolve` call runs one round (the training job, calibration, the gate, promotion) whatever the schedule would say.
+
+<p align="center"><img src="docs/assets/architecture.gif" alt="ouroloop architecture: a loop whose top half runs every session and whose bottom half runs every round" width="100%"></p>
+
+Sessions run along the top: the business agent asks the runtime, the environment answers, the ledger records, the monitor watches. When the schedule fires, the research agent tries changes on dev data, the best one trains, and the frozen gate judges it once on fresh sessions: rejected in the first round, accepted in the second, and the lineage grows a v2 that the next sessions run.
+
+Why this is recursive: a promoted model changes the sessions it runs in. Where it acts, the agent reaches states the default would never have reached; their outcomes go into the ledger, and the next round trains on them. Better policy, new states, data from those states, better policy.
+
+What keeps it safe: the model acts only where its calibrated confidence clears a threshold and its answer differs from the default, so everywhere else the default runs as before. The threshold and the gate bound the risk per session (the share of sessions harmed by any wrong act, 5% at most), and the gate, frozen by a person, judges each candidate on fresh sessions it never trained on, by its gain over the default. Because acting changes the states that follow, a model safe on logged states can still harm live ones: the runtime's monitor checks the champion as each session opens and revokes it once the 95% lower bound on its harmed share is above the budget, and sessions already running it take their defaults from their next decision on. The bound is checked again as each session opens, so a model near its budget is also revoked by chance more often than 5%.
+
+Not built yet: the research agent inside this loop. `ouroloop research` proposes spec, recipe and prompt candidates in rounds of its own; the loop above trains with the config's recipe.
+
 ## Quick start
 
 Python 3.11 or newer, on macOS or Linux (the agent's tools use bash; on Windows, use WSL).

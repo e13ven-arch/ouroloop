@@ -110,9 +110,15 @@ class Revoked:
         return next((i for i in ids if i and i in revoked), None)
 
 
-def revoke(root: str | Path, version: str | None, model: str | None, reason: str) -> None:
+def revoke(root: str | Path, version: str | None, model: str | None, reason: str) -> bool:
+    """Put the version and model on the revocation list. -> False when both were on it already (another process
+    revoked them first), and nothing is written."""
     path = Path(root) / "harness" / "revoked.json"
     with locked(path):
         data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"revoked": []}
+        listed = {x for e in data["revoked"] for x in (e.get("version"), e.get("model")) if x}
+        if {version, model} - {None} <= listed:
+            return False
         data["revoked"].append({"ts": now(), "version": version, "model": model, "reason": reason})
         write_json(path, data)
+    return True

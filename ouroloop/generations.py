@@ -7,7 +7,8 @@ M13), on a scenario pack that the config names. The kernel knows the pack only t
         outcomes, return its metrics
 
 Each generation: play `games` sessions with the current release (the champion acts where the execution rule lets
-it, the points' default answerers elsewhere) -> the post-act monitor on them -> one round, if the training schedule
+it, the points' default answerers elsewhere; the runtime's post-act monitor checks the champion as each session opens,
+and one it revokes leaves the rest of the generation its defaults) -> one round, if the training schedule
 (pipeline.schedule) says to train: a gate record frozen now, whose test sessions are the latest fresh ones (this
 generation's, at most budget.sessions_per_generation), build, check, train, calibrate, the gate, promote or not. The
 next generation plays with what the round promoted, so its data comes from the model this one produced. One
@@ -16,7 +17,8 @@ the same gate.
 
 Each line reports what the champion added over the defaults: the share of decisions it acted on, the sessions it
 harmed (any acted decision wrong) of those it acted in against the risk budget, and its gain, the fixes (acted and
-right where the default was not) less the harms (acted and wrong) per session.
+right where the default was not) less the harms (acted and wrong) per session; and the revocations the monitor made
+while the generation was played (its "monitor" events in the ledger).
 
 The same games (session ids, seeds, generation) are played again by the defaults alone, no model asked, in
 <workspace>/baseline/ ([demo] baseline = false: not), and their metrics printed beside: what a changed environment,
@@ -38,6 +40,7 @@ from .evolve.gate import freeze_template, load_template, template_path
 from .evolve.pipeline import evolve_model, schedule
 from .evolve.registry import Registry
 from .evolve.replay import right
+from .ledger import now
 from .policy import cp_upper
 from .runtime import Runtime, import_object
 
@@ -178,7 +181,9 @@ def run(cfg: dict, base: str | Path = ".", *, generations: int | None = None, ro
     for g in range(done + 1, done + 1 + (generations or int(d.get("generations", 3)))):
         ids = [f"g{g:03d}-{i:04d}" for i in range(games)]
         seeds = [seed * 1_000_000 + g * 10_000 + i for i in range(games)]
+        start = now()
         metrics = _play(scenario, rt, ids, seeds, g)
+        revoked = [e for e in rt.ledger.events() if e.get("type") == "monitor" and e["ts"] >= start]
         again = _play(scenario, baseline, ids, seeds, g) if baseline is not None else None
         pinned = {json.loads(rt.sessions.path(s, ".release.json").read_text())["champion"] for s in ids}
         played = sorted(f"{v} (revoked)" if rt.revoked.hit(v) else v or "base" for v in pinned)
@@ -186,7 +191,6 @@ def run(cfg: dict, base: str | Path = ".", *, generations: int | None = None, ro
         rows = [r for r in rt.ledger.rows() if r.decision.get("session") in mine]
         fixes, harms = _judged(rows)
         harm = [monitor.realized(rt, point, mine) for point in rt.points]
-        revoked = monitor.watch(rt, budget, sessions=mine)
         planted = g == plant
         train, why = (True, "planted") if planted else schedule(rt)
         card = (evolve_model(rt, Shuffled(trainer, seed) if planted else trainer, cfg.get("recipe"), seed=seed,
