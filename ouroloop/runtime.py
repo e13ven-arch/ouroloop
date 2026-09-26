@@ -183,8 +183,11 @@ class Runtime:
     # ------------------------------------------------------------------ decisions
     def ask(self, point: str | DecisionPoint, ctx: Any, *, session: str = "s_default", step: int | None = None,
             phase: str | None = None, veto: str | Callable[[str | None], str | None] | None = None) -> Decision:
-        """Ask the point's backend and apply the execution rule (PLAN_v0.2 §0). When the model does not act, the
-        phase's default answerer answers, or its fixed label is taken. `veto` is a rule's verdict: a label, or a
+        """Ask the point's backend and apply the execution rule (PLAN_v0.2 §0). A phase whose default answerer is a
+        rule has it answer first: its answer is the routing default the model's answer is compared with, so a model
+        that agrees with the rule never acts, and it is the action when the model does not act. Otherwise, when the
+        model does not act, the phase's LLM answerer answers, or its fixed label is taken; the routing default is
+        the fixed label (an LLM is asked only when the model does not act). `veto` is a rule's verdict: a label, or a
         function of the action about to be taken that returns a label to overrule it. The rule's label is the action
         (route "rule") and the model's answer is only recorded. Whatever breaks on the way (view, question, backend,
         calibration, routing, the rule) is recorded on route "error" with the raw context, and the default is
@@ -202,15 +205,19 @@ class Runtime:
     def _decide(self, point, ctx, session, step, phase, veto, asking: bool) -> Decision:
         p = self.points[point] if isinstance(point, str) else point
         phase, label, answerer = p.default_for(phase)
+        rule = answerer if answerer and answerer.startswith("rule:") else None
         ref = self.sessions.put(session, ctx, step)
         view, truncated, q, ans, probs, extra = None, False, None, None, None, {}
         backend, r = ("", None) if asking else ("none", Route("shadow", False, 1.0))
+        default, ruled = label, False       # the routing default; whether the rule has answered it
         try:
             view, truncated = p.render(ctx)
             q = p.question(ctx)
             if asking:
                 pin = self._pin(session)
                 q = q.presented(self.rng)   # candidate order is shuffled, and recorded as shown
+                if rule:
+                    default, ruled = self._default(ctx, view, q, label, rule, extra), True
                 b = self.backend_for(p.name, pin)
                 backend = b.name
                 ans = b.decide([Request(view, q)])[0]
@@ -224,7 +231,7 @@ class Runtime:
                 if revoked:
                     extra["revoked"] = revoked
                 threshold = None if revoked else self.threshold(p, ans.model, phase, pin.calibration)
-                r = route(p.policy if policy.may_act(p.name) else Policy(), ans, label, threshold, self.rng)
+                r = route(p.policy if policy.may_act(p.name) else Policy(), ans, default, threshold, self.rng)
         except Exception as e:  # noqa: BLE001 - whatever breaks, the default is taken and the row says why
             r, extra["error"] = Route("error", False, 1.0), f"{type(e).__name__}: {e}"[:500]
         if ans is not None and ans.abstained:
@@ -234,6 +241,10 @@ class Runtime:
                 action = veto
             elif r.route == "act":
                 action = ans.label
+            elif rule:
+                if not ruled:
+                    default = self._default(ctx, view, q, label, rule, extra)
+                action = default
             else:
                 action = self._default(ctx, view, q, label, answerer, extra)
             if callable(veto):
@@ -248,7 +259,7 @@ class Runtime:
             session=session, ctx=ref, point=p.name, spec_hash=p.spec_hash, backend=backend, model=model, view=view,
             view_chars=len(view or ""), truncated=truncated, question=q.to_json() if q else None,
             candidates=q.labels() if q else None, probs=probs, route=r.route, explored=r.explored,
-            propensity=r.propensity, action=action, usage=ans.usage if ans else {}, phase=phase, default=label,
+            propensity=r.propensity, action=action, usage=ans.usage if ans else {}, phase=phase, default=default,
             **extra)
         return Decision(did, p.name, ans.label if ans and ans.decisive else None, ans.probs if ans else {},
                         ans.confidence if ans else 0.0, r.route, r.explored, r.propensity, action, model,

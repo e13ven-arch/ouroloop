@@ -23,10 +23,9 @@ def board(state: dict, params: dict) -> str:
 
 def move_point(**kw) -> DecisionPoint:
     """Choose one of the legal moves. Wherever the model does not act, the rule snake does (there is no fixed label a
-    move could fall back to: which moves are legal depends on the heading). A move is asked many times in a game, so
-    thresholds and the post-act monitor count one sampled acting move per game."""
+    move could fall back to: which moves are legal depends on the heading), and the model acts only on a move other
+    than the rule snake's."""
     kw.setdefault("phases", {"move": {"default": RULE}})
-    kw.setdefault("count", "sampled")
     return Choice("move", QUESTION, moves, view=board, **kw)
 
 

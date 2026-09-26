@@ -118,8 +118,8 @@ def test_registry_promote_and_rollback(tmp_path):
 
 # ---------------------------------------------------------------- the model pipeline
 def test_evolve_model_trains_gates_and_promotes(tmp_path, frozen):
-    rt = seeded(tmp_path)
-    frozen(tmp_path, cal_frac={"*": 0.3})
+    rt = seeded(tmp_path, 400)                  # enough calibration sessions for a threshold at the 5% risk
+    frozen(tmp_path, cal_frac={"*": 0.5})
     card = evolve_model(rt, SignatureTrainer(), {"min_weight": 1.0})
     assert card["gate"] == "accepted" and card["version"] == "m_0001"
     assert rt.backend_name("retry") == "champion" and rt.backend_for("retry").name == "signature"
@@ -217,7 +217,7 @@ def test_demo_rounds_promote_a_spec_then_a_model(tmp_path):
     assert [(e["kind"], e["gate"]) for e in res.evaluated] == [("spec", "accepted")]     # one verdict per round
     rt = Runtime(tmp_path, {"mock": KeywordBackend()}, "mock", seed=1)
     rt.register(retry_point())
-    seed_ledger(rt, 40, seed=1, start=120)          # new sessions for the next round's gate
+    seed_ledger(rt, 40, seed=1, start=400)          # new sessions for the next round's gate
     res = run_round(rt, RecipeAgent(), None, KeywordBackend(),
                     evaluators={"recipe": recipe_evaluator(SignatureTrainer())})
     assert [(e["kind"], e["gate"], e["record"]) for e in res.evaluated] == [("recipe", "accepted", "r_0002")]

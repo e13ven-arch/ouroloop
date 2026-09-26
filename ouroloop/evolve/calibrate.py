@@ -1,7 +1,7 @@
 """Calibration (PLAN §4.5, PLAN_v0.2 M7): a temperature fitted by NLL on the calibration split, then per phase a
-confidence threshold whose acting decisions keep a Clopper-Pearson error bound below the risk, the cut-offs tested
-in a fixed sequence (policy.fit_threshold), counted per session by the point's counting rule. Both are keyed by the
-model id the backend reports and by the point's spec hash."""
+confidence threshold at which the share of harmed sessions (any acted decision wrong) among those the model would act
+in keeps a Clopper-Pearson bound below the phase's share of the risk, the cut-offs tested in a fixed sequence
+(policy.fit_threshold). Both are keyed by the model id the backend reports and by the point's spec hash."""
 from __future__ import annotations
 
 import math
@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 from ..policy import fit_threshold
 from ..types import nll, temper
-from .replay import answers, gold, labelled, not_held_out, splits
+from .replay import answers, gold, labelled, not_held_out, routing_default, splits
 
 
 def fit_temperature(probs: list[dict], targets: list[dict]) -> float:
@@ -50,9 +50,11 @@ def calibrate_point(rt, point: str, backend=None, test_frac: float = 0.15, cal_f
     """Fit on the calibration split: `rows`, as a gate record splits them, or else a split by `test_frac` and
     `cal_frac` of the rows outside held-out tasks (for reports). `backend` defaults to the point's current one
     (without its old temperature), `spec` to the point's. A phase's threshold is fitted only on the decisions that
-    would act there: a decisive label other than the phase's default, since only those change what happens. A row
-    whose phase cannot be told (no phase on a point that has several) counts for the temperature only. With fewer
-    than `min_sessions` calibration sessions no phase gets a threshold: the point cannot act (PLAN_v0.2 M8)."""
+    would act there: a decisive label other than the row's routing default (replay.routing_default), since only
+    those change what happens. The point's risk is monitored and gated per session over all its phases, so the k
+    phases that would act each get risk / k at level 0.05 / k (a union bound). A row whose phase cannot be told (no
+    phase on a point that has several) counts for the temperature only. With fewer than `min_sessions` calibration
+    sessions no phase gets a threshold: the point cannot act (PLAN_v0.2 M8)."""
     p = rt.points[point]
     if rows is None:
         rows = splits(not_held_out(rt, labelled(rt, point)), test_frac, cal_frac)["calibration"]
@@ -66,21 +68,20 @@ def calibrate_point(rt, point: str, backend=None, test_frac: float = 0.15, cal_f
     t = fit_temperature([a.probs for a in answered], targets)
     tempered = [temper(a.probs, t) for a in answered]
     n_sessions = len({row.decision.get("session", "") for row, _, _ in rows})
-    thresholds = {}
-    for phase in p.phases:
-        default = p.default_for(phase)[1]
-        conf, correct, sessions = [], [], []
-        for (row, target, _), a, pr in zip(rows, answered, tempered):
-            try:
-                in_phase = p.default_for(row.decision.get("phase"))[0] == phase
-            except ValueError:
-                continue
-            if in_phase and a.decisive and gold(pr) != default:
-                conf.append(max(pr.values()))
-                correct.append(gold(pr) == gold(target))
-                sessions.append(row.decision.get("session", ""))
-        thresholds[phase] = (fit_threshold(conf, correct, sessions, risk, count=p.count)
-                             if n_sessions >= min_sessions else None)
+    acting: dict = {phase: ([], [], []) for phase in p.phases}      # phase -> confidences, correct, sessions
+    for (row, target, _), a, pr in zip(rows, answered, tempered):
+        try:
+            phase, default = p.default_for(row.decision.get("phase"))[0], routing_default(rt, p, row)
+        except ValueError:
+            continue
+        if phase in acting and a.decisive and gold(pr) != default:
+            conf, correct, sessions = acting[phase]
+            conf.append(max(pr.values()))
+            correct.append(gold(pr) == gold(target))
+            sessions.append(row.decision.get("session", ""))
+    k = max(1, sum(bool(conf) for conf, _, _ in acting.values()))    # phases that would act share the risk
+    thresholds = {phase: fit_threshold(*acting[phase], risk / k, 0.05 / k) if n_sessions >= min_sessions else None
+                  for phase in p.phases}
     accuracy = sum(gold(pr) == gold(y) for pr, y in zip(tempered, targets)) / len(rows)
     return PointCalibration(point, models.pop(), t, thresholds, len(rows), accuracy, n_sessions)
 

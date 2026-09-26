@@ -2,20 +2,22 @@
 offline: the signature trainer stands in for TDE's, and a fake TDE backend for the general checkpoint."""
 import json
 import random
+import re
 
 import pytest
 
 from examples.snake.game import Game, legal, moved, render, unpack
 from examples.snake.labeler import label, path
 from examples.snake.rules import greedy_safe, signature
-from examples.snake.scenario import RULE, move_point
+from examples.snake.scenario import QUESTION, RULE, move_point, moves
 from ouroloop import config
 from ouroloop.backends import TdeBackend
+from ouroloop.decision import Choice
 from ouroloop.evolve import experience, monitor
 from ouroloop.evolve.gate import records
 from ouroloop.evolve.registry import Registry
-from ouroloop.generations import run
-from ouroloop.ledger import Ledger
+from ouroloop.generations import _line, run
+from ouroloop.ledger import Ledger, SessionStore
 from ouroloop.policy import Policy
 from ouroloop.release import revoke
 from ouroloop.runtime import Runtime
@@ -128,12 +130,12 @@ def test_the_tiny_models_key_is_the_local_picture():
 def test_the_move_point_asks_the_legal_moves_and_the_rule_snake_answers_until_a_model_may_act(tmp_path):
     rt = Runtime(tmp_path, {"base": FakeTde("general")}, "base", seed=0)
     point = rt.register(move_point(policy=Policy(act=True)))
-    assert point.count == "sampled" and point.default_for() == ("move", None, RULE)
+    assert point.default_for() == ("move", None, RULE)
     s = state([(4, 4), (4, 5), (4, 6)], (4, 1), "up")
     d = rt.ask("move", s, session="g1")
     row = rt.ledger.rows()[-1].decision
     assert sorted(row["candidates"]) == ["left", "right", "up"] and row["view"] == render(s)
-    assert (d.route, d.action, row["answerer"], row["default"]) == ("default", greedy_safe(s), RULE, None)
+    assert (d.route, d.action, row["answerer"], row["default"]) == ("default", greedy_safe(s), RULE, greedy_safe(s))
 
 
 # ---------------------------------------------------------------- the demo loop
@@ -151,16 +153,41 @@ class FakeTde(TdeBackend):
         super().__init__(run, decider=Uniform(), model=model)
 
 
+def seen(state: dict, params: dict) -> str:
+    """The board, and the state it was drawn from."""
+    return f"{render(state)}\n{json.dumps(state)}"
+
+
+def seeing_move_point(**kw):
+    """The move point with a view the whole state can be read from."""
+    kw.setdefault("phases", {"move": {"default": RULE}})
+    return Choice("move", QUESTION, moves, view=seen, **kw)
+
+
+def sees(view: str) -> str:
+    """The signature trainer's key: the environment's label and the legal moves, read from the state in the view. A
+    model keyed by it learns what the labeler knows, where the rule snake goes wrong too (TDE's part on a GPU host).
+    Trained on shuffled labels it learns nothing: within a key every candidate is always there, so a label shuffled
+    in lands on each alike."""
+    try:
+        state = json.loads(view.rsplit("\n", 1)[-1])
+    except ValueError:                  # not a board (the model id probe)
+        return "other"
+    return f"{label(state)} {' '.join(legal(state))}"
+
+
+# Generation 1 leaves too few training rows beside its 30 test games (the data checks stop it before training);
+# generation 2 trains the first candidate; generation 3's is planted.
 CFG = {"workspace": {"root": "ws"}, "seed": 0,
-       "demo": {"scenario": "examples.snake.scenario:Snake", "games": 40, "plant": 2, "seed": 0,
+       "demo": {"scenario": "examples.snake.scenario:Snake", "games": 40, "plant": 3, "seed": 0,
                 "options": {"board": 6, "max_steps": 60},
                 "gate": {"risk": 0.2, "min_cal_sessions": 10, "cal_frac": {"move": 0.5, "*": 0.15},
-                         "checks": {"min_train": 100, "max_mde": 0.5}}},
+                         "checks": {"min_train": 400, "max_mde": 0.5}}},
        "backends": {"general": {"type": "test_snake:FakeTde", "run": "~/tde/release/tde-general-v0.1"}},
        "registry": {"base": "general"},
        "points": {"default_backend": "general",
-                  "move": {"define": "examples.snake.scenario:move_point", "backend": "champion", "act": True}},
-       "trainer": {"type": "signature", "signature": "examples.snake.rules:signature"},
+                  "move": {"define": "test_snake:seeing_move_point", "backend": "champion", "act": True}},
+       "trainer": {"type": "signature", "signature": "test_snake:sees"},
        "recipe": {"min_weight": 1.0}}
 
 
@@ -173,14 +200,16 @@ def test_each_generation_learns_from_the_last_ones_model_on_fresh_games_and_the_
     registry = Registry(root)
     cards = [registry.card(v) for v in registry.versions()]
     assert [c["version"] for c in cards] == ["m_0001", "m_0002", "m_0003"]
+    # generation 1: too few training rows, nothing trained; generation 2: the first candidate, promoted
+    assert cards[0]["gate"] == "insufficient_data" and "run" not in cards[0]
+    assert cards[1]["gate"] == "accepted" and cards[1]["metrics"]["move"]["challenger"]["fixes"] > 0
     # the planted candidate, trained on shuffled labels, went through the same gate and was rejected
-    planted = cards[1]
+    planted = cards[2]
     assert planted["planted"] == "shuffled labels" and planted["gate"] == "rejected"
     history = json.loads((root / "models" / "champion.json").read_text())["history"]
-    assert "m_0002" not in [h["version"] for h in history]
-    assert [e.get("planted") for e in experience.read(root)] == [None, "shuffled labels", None]
+    assert "m_0003" not in [h["version"] for h in history]
+    assert [e.get("planted") for e in experience.read(root)] == [None, None, "shuffled labels"]
     # a generation's games are played by the champion the previous generation's round left: its model id is on them
-    assert cards[0]["gate"] == "accepted"
     champion_after = {0: (None, None)}
     for g, card in enumerate(cards, 1):
         before = champion_after[g - 1]
@@ -191,19 +220,21 @@ def test_each_generation_learns_from_the_last_ones_model_on_fresh_games_and_the_
         assert played == {champion_after[g - 1]}, g
         assert all(sessions[s]["board"] == "6x6" and "seed" in sessions[s] for s in sessions
                    if sessions[s].get("generation") == g)
-    assert champion_after[1] == ("m_0001", "signature:m_0001")
+    assert champion_after[2] == ("m_0002", "signature:m_0002")
     # every round's gate scored fresh games only: exactly the generation just played, never gated before, never
-    # trained or calibrated on by its candidate
+    # trained or calibrated on by its candidate; the first round stopped before inference and used nothing
+    first, *used = records(root)
+    assert not first.used and [r.used for r in used] == [True, True]
     seen = set()
-    for g, record in enumerate(records(root), 1):
+    for g, record in zip((2, 3), used):
         games = sorted(s for s in sessions if sessions[s].get("generation") == g)
-        assert record.used and record.fresh and not seen & set(record.test_sessions)
-        assert set(record.test_sessions) <= set(games) and len(record.test_sessions) == (30 if g == 1 else 40)
+        assert record.fresh and not seen & set(record.test_sessions)
+        assert set(record.test_sessions) <= set(games) and len(record.test_sessions) == (30 if g == 2 else 40)
         data = root / "models" / f"m_{g:04d}" / "data"
         trained = {json.loads(line)["source_id"] for p in data.glob("*.jsonl") for line in p.open()}
         assert trained and not trained & set(record.test_sessions)
         seen |= set(record.test_sessions)
-    assert len(lines) == 2 + 3 + 2 and lines[3].split()[:2] == ["2", "m_0001"] and "planted" in lines[3]
+    assert len(lines) == 2 + 3 + 2 and lines[4].split()[:2] == ["3", "m_0002"] and "planted" in lines[4]
 
 
 @pytest.mark.usefixtures("loose_risk")
@@ -242,7 +273,7 @@ def test_every_printed_number_is_on_disk_beside_the_same_games_played_by_the_def
     lines = []
     root = run(CFG, tmp_path, generations=3, out=lines.append)
     rt = config.build_runtime(CFG, tmp_path)
-    base = Ledger(root / "baseline" / "ledger")
+    base, base_contexts = Ledger(root / "baseline" / "ledger"), SessionStore(root / "baseline" / "sessions")
     sessions, _ = rt.ledger.sessions()
     base_sessions, _ = base.sessions()
     summaries = [e for e in rt.ledger.events() if e.get("type") == "generation"]
@@ -262,35 +293,43 @@ def test_every_printed_number_is_on_disk_beside_the_same_games_played_by_the_def
             assert {k: base_sessions[s][k] for k in ("board", "seed")} == {k: sessions[s][k] for k in ("board", "seed")}
         base_rows = [r.decision for r in base.rows("move") if r.decision["session"] in mine]
         assert base_rows and all(d["route"] == "shadow" and d["backend"] == "none" and
-                                 d["action"] == greedy_safe(rt.sessions.get(d["ctx"])) for d in base_rows[:500])
+                                 d["action"] == greedy_safe(base_contexts.get(d["ctx"])) for d in base_rows[:500])
         played = {sessions[s]["champion"] or "base" for s in mine}
         acted = sum(d["route"] == "act" for d in rows)
-        errors, n = monitor.realized(rt, "move", set(mine))
+        judged = [x for items in monitor.acted(rt, "move", set(mine)).values() for x in items]
+        fixes, harms = sum(ok for _, ok in judged), sum(not ok for _, ok in judged)
+        bad, n = monitor.realized(rt, "move", set(mine))
         card = Registry(root).card(f"m_{g:04d}")
-        assert (summary["played"], summary["decisions"], summary["acted"], summary["errors"], summary["judged"]) == (
-            sorted(played), len(rows), acted, errors, n)
+        assert (summary["played"], summary["sessions"], summary["decisions"], summary["acted"], summary["fixes"],
+                summary["harms"], summary["harmed"], summary["acted_sessions"]) == (
+            sorted(played), len(mine), len(rows), acted, fixes, harms, bad, n)
         assert (summary["candidate"], summary["gate"]) == (card["version"], card["gate"])
         mean = {k: sum(m[k] for m in games.values()) / len(games) for k in ("food", "steps")}
         base_mean = {k: sum(m[k] for m in again.values()) / len(again) for k in ("food", "steps")}
         died, base_died = sum(m["died"] for m in games.values()), sum(m["died"] for m in again.values())
         assert line.split()[:3] == [str(g), ",".join(sorted(played)), f"{acted / len(rows):.0%}"]
-        for piece in [f"{errors}/{n}=" if n else " - ", f"food={mean['food']:.1f} ({base_mean['food']:.1f})",
+        for piece in [f"{bad}/{n}=" if n else " - ", f" {(fixes - harms) / len(mine):+.2f} ",
+                      f"food={mean['food']:.1f} ({base_mean['food']:.1f})",
                       f"steps={mean['steps']:.1f} ({base_mean['steps']:.1f})",
                       f"died={died}/{len(mine)} ({base_died}/{len(mine)})", "board=6x6 ",
                       f"{card['version']} {card['gate']}"]:
             assert piece in line, (piece, line)
+        if g == 3:                  # the champion acts where the rule snake goes wrong, and harms no game
+            assert acted and fixes and not harms
         if g == 1:                  # nothing has been promoted: no model acts, and the games are the defaults' games
             assert acted == 0 and games == again
 
 
 @pytest.mark.usefixtures("loose_risk")
-def test_the_games_of_a_revoked_champion_say_so(tmp_path):
-    root = run(CFG, tmp_path, generations=1, out=lambda line: None)
+def test_the_games_of_a_revoked_champion_say_so_and_its_revocation_trains_again(tmp_path):
+    cfg = {**CFG, "demo": {**CFG["demo"], "plant": None}}
+    root = run(cfg, tmp_path, generations=2, out=lambda line: None)
     champion = Registry(root).champion()
     revoke(root, champion["version"], champion["model_id"], "a test")
     lines = []
-    run(CFG, tmp_path, generations=1, out=lines.append)
-    assert lines[2].startswith(f"  2  {champion['version']} (revoked)") and lines[2].split()[3] == "0%"
+    run(cfg, tmp_path, generations=1, out=lines.append)
+    assert lines[2].startswith(f"  3  {champion['version']} (revoked)") and lines[2].split()[3] == "0%"
+    assert "skipped" not in lines[2] and Registry(root).versions()[-1] == "m_0003"
 
 
 @pytest.mark.usefixtures("loose_risk")
@@ -299,16 +338,31 @@ def test_the_planted_candidate_is_rejected_for_its_labels_and_the_pooled_line_co
     train, so the planted one fails for its labels, nothing else. And a workspace continued by a second run pools
     every generation on disk, not only the second run's."""
     real = {**CFG, "demo": {**CFG["demo"], "plant": None}}
+    planted = {**CFG, "demo": {**CFG["demo"], "plant": 2}}
     lines = []
-    root = run(real, tmp_path / "real", generations=3, out=lines.append)
-    planted = run(CFG, tmp_path / "planted", generations=2, out=lambda line: None)
+    root = run(real, tmp_path / "real", generations=2, out=lines.append)
+    planted = run(planted, tmp_path / "planted", generations=2, out=lambda line: None)
     (a, b), (c, d) = ([Registry(r).card(v) for v in ("m_0001", "m_0002")] for r in (root, planted))
     assert a["test_sessions"] == c["test_sessions"] and b["test_sessions"] == d["test_sessions"]
-    assert (b["gate"], d["gate"], d["reasons"]) == ("accepted", "rejected", ["significant regression on move"])
-    assert b["metrics"]["move"]["champion_brier"] == d["metrics"]["move"]["champion_brier"]
-    run(real, tmp_path / "real", generations=1, out=lines.append)
+    assert (b["gate"], d["gate"], d["reasons"]) == ("accepted", "rejected", ["no point's gain rose significantly"])
+    assert b["metrics"]["move"]["champion"] == d["metrics"]["move"]["champion"]
+    assert d["metrics"]["move"]["challenger"]["fixes"] < b["metrics"]["move"]["challenger"]["fixes"]
+    # the promoted model fixes the target share of the default errors: the next rounds train nothing
+    run(real, tmp_path / "real", generations=2, out=lines.append)
     summaries = [e for e in config.build_runtime(real, tmp_path / "real").ledger.events()
                  if e.get("type") == "generation"]
-    errors, n = sum(e["errors"] for e in summaries), sum(e["judged"] for e in summaries)
-    assert [e["generation"] for e in summaries] == [1, 2, 3, 4] and summaries[2]["judged"] and summaries[3]["judged"]
-    assert lines[-2].startswith(f"all 4 generations: realized error {errors}/{n}=")
+    assert [e["generation"] for e in summaries] == [1, 2, 3, 4]
+    assert all(e["candidate"] is None and e["skipped"].startswith("target reached: m_0002") for e in summaries[2:])
+    assert Registry(root).versions() == ["m_0001", "m_0002"] and summaries[3]["acted_sessions"]
+    bad, n = sum(e["harmed"] for e in summaries), sum(e["acted_sessions"] for e in summaries)
+    assert lines[-2].startswith(f"all 4 generations: harmed sessions {bad}/{n}=")
+    header, first = lines[1], lines[2]          # the gain sits under its header: 57 characters of columns before it
+    assert header[57:62] == " gain" and re.fullmatch(r" *([+-]\d\.\d\d|-)", first[57:62]) and first[62:64] == "  "
+
+
+def test_a_round_that_ran_and_failed_is_not_reported_as_skipped():
+    e = {"generation": 2, "played": ["m_0001"], "decisions": 10, "acted": 1, "fixes": 1, "harms": 0, "sessions": 5,
+         "harmed": 0, "acted_sessions": 1, "risk": 0.05, "metrics": {}, "baseline": None, "candidate": None,
+         "gate": "inconclusive", "skipped": None, "champion": "m_0001", "planted": False, "revoked": []}
+    assert _line(e).endswith("|  - inconclusive")
+    assert _line({**e, "gate": None, "skipped": "target reached"}).endswith("|  skipped: target reached")

@@ -3,18 +3,20 @@ gate -> promote.
 
 `prepare_model` does everything up to the verdict on the sessions a gate record fixed; `recipe_evaluator` turns it
 into an evaluation for gate.run, which the research loop and `evolve_model` (`ouroloop evolve`) both go through.
+`schedule` says whether a round should train at all: the least training that reaches the template's target.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass, field
 
 from ..types import Question, Request
 from . import calibrate, experience
 from .build import build
 from .checks import CheckReport, check
-from .gate import INFRA, GateRecord, open_record, run
+from .gate import INFRA, TEMPLATE, GateRecord, load_template, open_record, run
 from .registry import Registry
-from .replay import EvalResult, labelled, scored, summarize
+from .replay import EvalResult, gold, labelled, not_held_out, routing_default, scored, summarize
 from .train import DEFAULT_RECIPE, PATH_KEYS, RECIPE_KEYS, TrainJob, TrainResult
 
 
@@ -29,12 +31,64 @@ class ModelCandidate:
     version: str
     card: dict
     checks: CheckReport | None
-    per_point: dict = field(default_factory=dict)       # point -> (champion Brier, challenger Brier, sessions)
+    per_point: dict = field(default_factory=dict)       # point -> replay.scored on the test sessions
     held_out: dict = field(default_factory=dict)        # the same on the held-out tasks' sessions, for the card only
     calibrations: dict = field(default_factory=dict)    # point -> PointCalibration of the new model
     result: TrainResult | None = None
     backend: object = None
     inconclusive: list[str] = field(default_factory=list)   # an infrastructure failure, e.g. the trainer's
+
+
+def default_errors(rt, points: list[str] | None = None) -> int:
+    """The labelled rows outside held-out tasks, at `points` (default: model_points), whose routing default is not
+    their label: the rows a model could add anything on."""
+    n = 0
+    for name in points or model_points(rt):
+        for row, target, _ in not_held_out(rt, labelled(rt, name)):
+            try:
+                if rt.points[name].default_for(row.decision.get("phase"))[0] is not None:   # no phase: never acts
+                    n += routing_default(rt, name, row) != gold(target)
+            except ValueError:          # a row whose phase cannot be told never acts
+                continue
+    return n
+
+
+def schedule(rt, points: list[str] | None = None) -> tuple[bool, str]:
+    """Whether a round trains a candidate, and why: the least training for the template's goal. It trains the first
+    candidate (the data checks still decide whether there is enough), after the champion was revoked since the last
+    trained candidate (drift), or once the default errors at `points` have at least doubled since it (the data a
+    model could learn from). It does not once the latest accepted model fixes the template's target share of the
+    default errors on its test rows, at every point that had any (unless revoked since), nor once the template's
+    training budget is spent. A planted candidate uses budget but is never the last trained one: it learned nothing
+    and says nothing about drift."""
+    params = load_template(rt.root)[0]
+    registry = Registry(rt.root)
+    cards = [registry.card(v) for v in registry.versions() if (registry.dir / v / "card.json").exists()]
+    trained = [c for c in cards if c.get("run")]
+    budget = {**TEMPLATE["budget"], **params.get("budget", {})}["max_trainings"]
+    if len(trained) >= budget:
+        return False, f"training budget spent ({len(trained)} of {budget})"
+    real = [c for c in trained if not c.get("planted")]
+    if not real:
+        return True, "no candidate trained yet"
+    last = real[-1]
+    path = rt.revoked.path
+    revoked = json.loads(path.read_text(encoding="utf-8"))["revoked"] if path.exists() else []
+    if any(e["ts"] >= last["updated"] for e in revoked):
+        return True, f"the champion was revoked since {last['version']}"
+    target = {**TEMPLATE["target"], **params.get("target", {})}["fixed_share"]
+    accepted = next((c for c in reversed(cards) if c.get("gate") == "accepted"), {})
+    shares = [s for m in accepted.get("metrics", {}).values()        # a card from before gain has no share
+              if (s := (m.get("challenger") or {}).get("fixed_share")) is not None]
+    standing = accepted and not rt.revoked.hit(accepted["version"], accepted.get("model_id"))
+    if standing and shares and min(shares) >= target:
+        return False, f"target reached: {accepted['version']} fixes {min(shares):.0%} of the default errors"
+    if "default_errors" not in last:
+        return True, f"{last['version']} has no count of default errors to compare with"
+    now, before = default_errors(rt, points), last["default_errors"]
+    if now and now >= 2 * before:
+        return True, f"default errors doubled since {last['version']} ({before} -> {now})"
+    return False, f"default errors {now}, not yet twice the {before} at {last['version']}"
 
 
 def _parts(rt, record: GateRecord, points: list[str], recipe: dict, trainer) -> dict:
@@ -69,7 +123,8 @@ def prepare_model(rt, trainer, recipe: dict | None = None, *, record: GateRecord
     checks = check(ds, eval_states=eval_states, **params["checks"])
     card = {"version": version, "parent": parent["version"] if parent else None, "points": points, "recipe": recipe,
             "status": "candidate", "gate_record": record.hash, "round": record.round,
-            "test_sessions": record.test_sessions, "data": ds.stats(), "checks": asdict(checks)}
+            "test_sessions": record.test_sessions, "data": ds.stats(), "checks": asdict(checks),
+            "default_errors": default_errors(rt, points)}
     cand = ModelCandidate(version, card, checks)
     if not checks.ok:
         return cand
@@ -87,9 +142,8 @@ def prepare_model(rt, trainer, recipe: dict | None = None, *, record: GateRecord
         record.consume(version)                 # the first inference request on the test sessions uses it up
         for name in points:
             p, cal = rt.points[name], cand.calibrations.get(name)
-            t = cal.temperature if cal else 1.0
-            cand.per_point[name] = scored(rt, p, p.spec, p.spec, parts[name]["test"], cand.backend, t)
-            cand.held_out[name] = scored(rt, p, p.spec, p.spec, parts[name]["held_out"], cand.backend, t)
+            cand.per_point[name] = scored(rt, p, parts[name]["test"], p.spec, cal, cand.backend)
+            cand.held_out[name] = scored(rt, p, parts[name]["held_out"], p.spec, cal, cand.backend)
     except INFRA as e:
         cand.inconclusive = [f"{type(e).__name__}: {e}"[:500]]
     return cand

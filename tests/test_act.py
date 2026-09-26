@@ -77,6 +77,17 @@ def always_yes(_ctx) -> str:
     return "yes"
 
 
+RULE_CALLS = []
+
+
+def ruled(ctx) -> str:
+    """A rule answerer: the label the context names, counting its calls."""
+    RULE_CALLS.append(ctx)
+    if ctx.get("rule") == "crash":
+        raise RuntimeError("the rule crashed")
+    return ctx.get("rule", "no")
+
+
 # ---------------------------------------------------------------- the act switch and thresholds
 def test_a_threshold_lets_only_the_model_it_was_fitted_for_act(tmp_path, gated):
     cfg = {"workspace": {"root": "ws"},
@@ -188,19 +199,19 @@ def test_rows_of_one_session_are_not_independent_evidence():
     assert five is None
 
 
-def test_59_sessions_without_an_error_are_needed_and_only_a_sessions_first_act_counts():
-    def fit(n, rows=1):
-        # each session acts first on a right answer; its later rows, all wrong, never act
+def test_59_sessions_without_a_harm_are_needed_and_one_wrong_act_harms_its_session():
+    def fit(n, rows=1, later_right=True):
+        # each session acts first on a right answer, then on its later rows
         conf, correct, sessions = [], [], []
         for i in range(n):
             for j in range(rows):
                 conf.append(0.9)
-                correct.append(j == 0)
+                correct.append(j == 0 or later_right)
                 sessions.append(f"s{i}")
         return fit_threshold(conf, correct, sessions)
 
     assert fit(59) == 0.9 and fit(58) is None
-    assert fit(59, rows=3) == 0.9
+    assert fit(59, rows=3) == 0.9 and fit(59, rows=3, later_right=False) is None
 
 
 def test_a_phase_threshold_is_fitted_on_the_decisions_that_would_act(tmp_path):
@@ -326,6 +337,38 @@ def test_a_declared_default_answerer_answers_when_the_model_does_not_act(tmp_pat
     assert [(r.decision["id"], t) for r, t, _ in rt.ledger.training_rows()] == [(rows[0]["id"], {"yes": 1.0})]
     with pytest.raises(ValueError, match="no backend"):
         rt.register(stop_point(phases={"per_turn": {"default": "llm:nowhere", "label": "no"}}))
+
+
+def test_a_rule_answers_first_and_the_model_acts_only_against_it(tmp_path, gated):
+    rt = Runtime(tmp_path, {"m": Model(0.99)}, "m", seed=0)
+    rt.register(stop_point(policy=Policy(act=True, explore=0.0),
+                           phases={"per_turn": {"default": "rule:test_act:ruled", "label": "no"}, "on_finish": "yes"}))
+    gated(rt, "stop", "A", 0.9)
+    out = []
+    for rule in ("yes", "no", "crash"):
+        RULE_CALLS.clear()
+        d = rt.ask("stop", {**ctx(), "rule": rule}, phase="per_turn")
+        row = rt.ledger.rows()[-1].decision
+        out.append((d.route, d.action, row["default"], "answerer_error" in row, len(RULE_CALLS)))
+    assert out == [("default", "yes", "yes", False, 1),      # the model agrees with the rule: it does not act
+                   ("act", "yes", "no", False, 1),           # a confident answer other than the rule's acts
+                   ("act", "yes", "no", True, 1)]            # a failing rule: its fixed label is the default
+    rt.point_backends["stop"] = "n"
+    rt.backends["n"] = Model(0.5)
+    RULE_CALLS.clear()
+    d = rt.ask("stop", {**ctx(), "rule": "yes"}, phase="per_turn")
+    assert (d.route, d.action, len(RULE_CALLS)) == ("default", "yes", 1)     # a tie: the rule's answer, asked once
+
+
+def test_a_threshold_is_fitted_on_the_answers_other_than_the_rules(tmp_path):
+    rt = Runtime(tmp_path, {"r": Reads()}, "r", seed=0)
+    rt.register(stop_point(phases={"per_turn": {"default": "rule:test_act:ruled", "label": "no"}, "on_finish": "yes"}))
+    for i in range(170):                # 100 "yes" answers that agree with the rule, all wrong; 70 against it, right
+        agrees = i < 100
+        c = {**ctx("say yes 0.99"), "rule": "yes" if agrees else "no"}
+        rt.outcome(rt.record("stop", c, session=f"s{i:03d}", phase="per_turn").id, "no" if agrees else "yes")
+    cal = calibrate_point(rt, "stop", test_frac=0.0, cal_frac=1.0)
+    assert cal.thresholds["per_turn"] is not None     # against the fixed label "no", the 100 wrong ones would count
 
 
 def test_a_shadow_stop_takes_its_answerers_default_without_asking_the_model(tmp_path):

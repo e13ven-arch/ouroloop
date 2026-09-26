@@ -1,7 +1,11 @@
-"""From an answer to an action: the execution rule, exploration and propensities (PLAN_v0.2 §0), and thresholds."""
+"""From an answer to an action: the execution rule, exploration and propensities (PLAN_v0.2 §0), and thresholds.
+
+The risk a threshold and the post-act monitor bound is per session: a session is harmed when any decision the model
+acted on in it is wrong, and the budget is the share of the sessions the model acts in that are harmed. A decision
+asked many times in a session compounds its per-decision error over them, so a per-decision budget would say nothing
+about what a session risks."""
 from __future__ import annotations
 
-import hashlib
 import math
 import random
 from dataclasses import dataclass
@@ -14,10 +18,6 @@ ROUTES = ("act", "default", "shadow", "rule", "error")
 # (PLAN_v0.2 §3: the others wait for their triggers); a point that a scenario pack or a contract user defines may be.
 HARNESS = frozenset({"retry", "compact", "tool_gate", "stop", "route"})
 ACTING = {"stop"}
-# How thresholds and the post-act monitor count a session's acting decisions, one per session either way: "first",
-# its first one (a terminal decision such as stop acts once and changes what follows); "sampled", one drawn at random
-# by a hash of the session id (a decision repeated within a session, such as a move in a game), see rank.
-COUNTS = ("first", "sampled")
 
 
 def may_act(point: str) -> bool:
@@ -39,8 +39,9 @@ class Route:
 
 def route(policy: Policy, ans: Answer, default: str | None, threshold: float | None, rng: random.Random) -> Route:
     """The execution rule: act only when the point's act is on, the answer is decisive (no abstention, no tied top
-    label), its label differs from the phase's default and its tempered confidence reaches a gated threshold (which
-    a NaN threshold never is). Otherwise the default is taken: on route "shadow" when act is off, "default" when on."""
+    label), its label differs from `default` (the routing default: the phase's rule answer, or its fixed label) and
+    its tempered confidence reaches a gated threshold (which a NaN threshold never is). Otherwise the default is
+    taken: on route "shadow" when act is off, "default" when on."""
     if not policy.act:
         return Route("shadow", False, 1.0)
     if threshold is None or not ans.decisive or ans.label == default or not ans.confidence >= threshold:
@@ -89,63 +90,41 @@ def cp_lower(errors: int, n: int, alpha: float = 0.05) -> float:
     return lo
 
 
-def rank(session, j: int) -> str:
-    """Where the j-th row of a session (in time order) comes in the order a "sampled" count goes by, a hash of the
-    session id: a count takes the row that comes first among those it looks at. So the row it takes is drawn at
-    random, whatever the rows' outcomes, and stays drawn: among more rows (a lower cut-off) it changes only to a row
-    that comes earlier. Drawn afresh at every cut-off, some cut-off would be a lucky draw, and the lowest one that
-    passes would let a model act above its risk."""
-    return hashlib.sha1(f"{session}\x00{j}".encode()).hexdigest()
+def harmed(items) -> dict:
+    """(session, correct) pairs of the decisions a model acted on -> session -> whether it is harmed (any of them
+    wrong)."""
+    out: dict = {}
+    for s, ok in items:
+        out[s] = out.get(s, False) or not ok
+    return out
 
 
-def per_session(items, count: str = "first") -> dict:
-    """(session, value) pairs in time order -> one value per session, by the counting rule (see COUNTS)."""
-    by: dict = {}
-    for s, v in items:
-        by.setdefault(s, []).append(v)
-    if count == "first":
-        return {s: vs[0] for s, vs in by.items()}
-    return {s: vs[min(range(len(vs)), key=lambda j: rank(s, j))] for s, vs in by.items()}
-
-
-def fit_threshold(confidences: list[float], correct: list[bool], sessions: list[str] | None = None,
-                  risk: float = 0.05, alpha: float = 0.05, count: str = "first") -> float | None:
-    """The confidence cut-off to act at, None if none: each cut-off is a test that its acting decisions keep a
-    Clopper-Pearson error bound <= risk, taken in a fixed sequence (Learn-then-Test): down from the most confident,
-    starting at the first cut-off with enough sessions to pass at all (a count of sessions, never of errors), the
-    lowest before the first that fails. Keeping any lower cut-off that passes after one failed would let luck pick
-    among dozens of nested tests, and a model above its risk would get a threshold far more often than alpha.
-    Counted per session, so a session's many rows are not taken as independent evidence: at each cut-off a session
-    counts one of its decisions at or above it, by `count` ("first": its first, the one that would act and change
-    what follows; "sampled": the first in an order drawn by a hash of the session id, see rank). Pass only decisions
-    that would act (a label other than the default), in time order; without `sessions` every decision is its own
-    session."""
-    if count not in COUNTS:
-        raise ValueError(f"count {count!r}: one of {COUNTS}")
+def fit_threshold(confidences: list[float], correct: list[bool], sessions: list | None = None,
+                  risk: float = 0.05, alpha: float = 0.05) -> float | None:
+    """The confidence cut-off to act at, None if none: each cut-off is a test that the sessions it would act in keep
+    a Clopper-Pearson bound on the harmed share <= risk, taken in a fixed sequence (Learn-then-Test): down from the
+    most confident (ties taken together), starting at the first cut-off with enough sessions to pass at all (a count
+    of sessions, never of errors), the lowest before the first that fails. Keeping any lower cut-off that passes
+    after one failed would let luck pick among dozens of nested tests, and a model above its risk would get a
+    threshold far more often than alpha. At a cut-off, the sessions with a row at or above it are counted, and one is
+    harmed when any of those rows is wrong: a session's many rows are neither independent evidence nor independent
+    risks. Pass only decisions that would act (a label other than the routing default); without `sessions` every
+    decision is its own session."""
     sessions = sessions if sessions is not None else list(range(len(confidences)))
-    if count == "first":
-        key: list = list(range(len(confidences)))
-    else:
-        seen: dict = {}
-        key = []
-        for s in sessions:
-            seen[s] = seen.get(s, -1) + 1
-            key.append(rank(s, seen[s]))
     order = sorted(range(len(confidences)), key=lambda i: -confidences[i])
-    counted: dict = {}          # session -> the row it counts among those at or above the cut-off
-    errors, best, k = 0, None, 0
+    bad: dict = {}              # session -> harmed by its rows at or above the cut-off
+    n_harmed, best, k = 0, None, 0
     while k < len(order):
         cut = confidences[order[k]]
         while k < len(order) and confidences[order[k]] == cut:     # the cut-off takes in every row at it
-            i, s = order[k], sessions[order[k]]
+            i = order[k]
             k += 1
-            c = counted.get(s)
-            if c is None or key[i] < key[c]:                        # it comes first: the session counts it now
-                errors += (not correct[i]) - (c is not None and not correct[c])
-                counted[s] = i
-        if cp_upper(0, len(counted), alpha) > risk:                   # too few sessions to pass: not a test yet
+            was = bad.get(sessions[i], False)
+            bad[sessions[i]] = was or not correct[i]
+            n_harmed += bad[sessions[i]] and not was
+        if cp_upper(0, len(bad), alpha) > risk:                     # too few sessions to pass: not a test yet
             continue
-        if errors > risk * len(counted) or cp_upper(errors, len(counted), alpha) > risk:
+        if n_harmed > risk * len(bad) or cp_upper(n_harmed, len(bad), alpha) > risk:
             break
         best = cut
     return best

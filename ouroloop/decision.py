@@ -10,7 +10,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from .policy import COUNTS, Policy
+from .policy import Policy
 from .types import Question
 
 
@@ -63,11 +63,6 @@ class DecisionPoint:
     candidates: Callable[[Any], dict] | None = None       # runtime-generated choice candidates
     view_version: str = "1"                               # bump when the view function's code changes
     phases: dict[str, str | dict] = field(default_factory=dict)   # where in a loop it is asked -> its default there
-    count: str = "first"            # how thresholds and the post-act monitor count its sessions (policy.COUNTS)
-
-    def __post_init__(self):
-        if self.count not in COUNTS:
-            raise ValueError(f"point {self.name!r}: count {self.count!r} is not one of {COUNTS}")
 
     @property
     def spec_hash(self) -> str:
@@ -75,11 +70,12 @@ class DecisionPoint:
 
     def hash_of(self, spec: Spec) -> str:
         """The spec hash with `spec`. Temperatures and thresholds are keyed by it, so it covers everything that shapes
-        what the model sees (the view and where it is cut), the phases' default labels and how the thresholds count:
-        a threshold only means something against the view, the default and the count it was fitted for."""
+        what the model sees (the view and where it is cut) and the phases' routing defaults (their labels, and the
+        rule answerers whose answer is the default instead, when there are any): a threshold only means something
+        against the view and the default it was fitted for. A rule's code is not hashed: bump view_version with it."""
+        rules = {ph: a for ph in self.phases if (a := self.default_for(ph)[2] or "").startswith("rule:")}
         return _digest([self.type, spec.to_json(), self.view_version, self.max_view_chars, self.keep,
-                        {ph: self.default_for(ph)[1] for ph in self.phases},
-                        *([self.count] if self.count != "first" else [])])     # older hashes stand
+                        {ph: self.default_for(ph)[1] for ph in self.phases}, *([rules] if rules else [])])
 
     def default_for(self, phase: str | None = None) -> tuple[str | None, str | None, str | None]:
         """-> (phase, its fixed label, its default answerer). A phase declares its default as a label, or as

@@ -7,10 +7,16 @@ M13), on a scenario pack that the config names. The kernel knows the pack only t
         outcomes, return its metrics
 
 Each generation: play `games` sessions with the current release (the champion acts where the execution rule lets
-it, the points' default answerers elsewhere) -> the post-act monitor on them -> one round: a gate record frozen now,
-whose test sessions are the fresh ones (this generation's), build, check, train, calibrate, the gate, promote or
-not. The next generation plays with what the round promoted, so its data comes from the model this one produced. One
-generation's round is planted: its candidate is trained on shuffled labels and goes through the same gate.
+it, the points' default answerers elsewhere) -> the post-act monitor on them -> one round, if the training schedule
+(pipeline.schedule) says to train: a gate record frozen now, whose test sessions are the latest fresh ones (this
+generation's, at most budget.sessions_per_generation), build, check, train, calibrate, the gate, promote or not. The
+next generation plays with what the round promoted, so its data comes from the model this one produced. One
+generation's round is planted, whatever the schedule: its candidate is trained on shuffled labels and goes through
+the same gate.
+
+Each line reports what the champion added over the defaults: the share of decisions it acted on, the sessions it
+harmed (any acted decision wrong) of those it acted in against the risk budget, and its gain, the fixes (acted and
+right) less the harms (acted and wrong) per session.
 
 The same games (session ids, seeds, generation) are played again by the defaults alone, no model asked, in
 <workspace>/baseline/ ([demo] baseline = false: not), and their metrics printed beside: what a changed environment,
@@ -29,7 +35,7 @@ from pathlib import Path
 from . import config
 from .evolve import monitor
 from .evolve.gate import freeze_template, load_template, template_path
-from .evolve.pipeline import evolve_model
+from .evolve.pipeline import evolve_model, schedule
 from .evolve.registry import Registry
 from .policy import cp_upper
 from .runtime import Runtime, import_object
@@ -107,20 +113,24 @@ def _metrics(mine: dict, base: dict | None) -> str:
     return " ".join(out)
 
 
-def _risk(errors: int, n: int, budget: float) -> str:
-    return f"{errors}/{n}={errors / n:.1%} <={cp_upper(errors, n):.1%} vs {budget:.0%}" if n else "-"
+def _risk(bad: int, n: int, budget: float) -> str:
+    return f"{bad}/{n}={bad / n:.1%} <={cp_upper(bad, n):.1%} vs {budget:.0%}" if n else "-"
 
 
 def _line(e: dict) -> str:
     played = ",".join(e["played"])
-    auto = f"{e['acted'] / e['decisions']:.0%}" if e["decisions"] else "-"
-    verdict = f"{e['candidate']} {e['gate']}" + (" -> champion" if e["champion"] and e["champion"] == e["candidate"]
-                                                 else "")
+    share = f"{e['acted'] / e['decisions']:.0%}" if e["decisions"] else "-"
+    gain = f"{(e['fixes'] - e['harms']) / e['sessions']:+.2f}" if e["sessions"] else "-"
+    if e.get("skipped"):
+        verdict = f"skipped: {e['skipped']}"
+    else:
+        verdict = (f"{e['candidate'] or '-'} {e['gate']}" +
+                   (" -> champion" if e["candidate"] and e["champion"] == e["candidate"] else ""))
     notes = [*(["planted: trained on shuffled labels"] if e["planted"] else []),
-             *(f"monitor revoked {r['version'] or r['model']} ({r['errors']}/{r['sessions']} wrong, lower bound "
-               f"{r['lower']:.1%})" for r in e["revoked"])]
-    return (f"{e['generation']:>3}  {played:<9}  {auto:>5}  {_risk(e['errors'], e['judged'], e['risk']):<31}  "
-            f"{_metrics(e['metrics'], e['baseline'])}  |  {verdict}{''.join(f'; {x}' for x in notes)}")
+             *(f"monitor revoked {r['version'] or r['model']} ({r['harmed']}/{r['sessions']} sessions harmed, lower "
+               f"bound {r['lower']:.1%})" for r in e["revoked"])]
+    return (f"{e['generation']:>3}  {played:<9}  {share:>5}  {_risk(e['harmed'], e['acted_sessions'], e['risk']):<32}  "
+            f"{gain:>5}  {_metrics(e['metrics'], e['baseline'])}  |  {verdict}{''.join(f'; {x}' for x in notes)}")
 
 
 def _print(line: str) -> None:
@@ -149,7 +159,7 @@ def run(cfg: dict, base: str | Path = ".", *, generations: int | None = None, ro
         baseline.points = rt.points
     registry = Registry(rt.root)
     out(f"workspace {rt.root}; {games} games a generation; risk budget {budget:.0%}")
-    out(f"{'gen':>3}  {'data from':<9}  {'auto':>5}  {'realized error <=CP95 vs budget':<31}  metrics"
+    out(f"{'gen':>3}  {'data from':<9}  {'acted':>5}  {'harmed sessions <=CP95 vs budget':<32}  {'gain':>5}  metrics"
         f"{' (the same games, defaults only)' if baseline is not None else ''}  |  round")
     for g in range(done + 1, done + 1 + (generations or int(d.get("generations", 3)))):
         ids = [f"g{g:03d}-{i:04d}" for i in range(games)]
@@ -160,25 +170,29 @@ def run(cfg: dict, base: str | Path = ".", *, generations: int | None = None, ro
         played = sorted(f"{v} (revoked)" if rt.revoked.hit(v) else v or "base" for v in pinned)
         mine = set(ids)
         rows = [r for r in rt.ledger.rows() if r.decision.get("session") in mine]
-        errors = n = 0
-        for point in rt.points:
-            e, k = monitor.realized(rt, point, mine)
-            errors, n = errors + e, n + k
+        acts = [items for point in rt.points for items in monitor.acted(rt, point, mine).values()]   # per model
+        harm = [monitor.realized(rt, point, mine) for point in rt.points]
         revoked = monitor.watch(rt, budget, sessions=mine)
         planted = g == plant
-        card = evolve_model(rt, Shuffled(trainer, seed) if planted else trainer, cfg.get("recipe"), seed=seed,
-                            meta={"planted": "shuffled labels"} if planted else None)
+        train, why = (True, "planted") if planted else schedule(rt)
+        card = (evolve_model(rt, Shuffled(trainer, seed) if planted else trainer, cfg.get("recipe"), seed=seed,
+                             meta={"planted": "shuffled labels"} if planted else None)
+                if train else {"version": None, "gate": None})
         summary = rt.ledger.append({
-            "type": "generation", "generation": g, "played": played, "decisions": len(rows),
-            "acted": sum(r.decision.get("route") == "act" for r in rows), "errors": errors, "judged": n,
+            "type": "generation", "generation": g, "played": played, "sessions": len(ids), "decisions": len(rows),
+            "acted": sum(r.decision.get("route") == "act" for r in rows),
+            "fixes": sum(ok for items in acts for _, ok in items),
+            "harms": sum(not ok for items in acts for _, ok in items),
+            "harmed": sum(b for b, _ in harm), "acted_sessions": sum(n for _, n in harm),
             "risk": budget, "metrics": _aggregate(metrics),
             "baseline": _aggregate(again) if again is not None else None,
-            "candidate": card["version"], "gate": card["gate"],
+            "candidate": card["version"], "gate": card["gate"], "skipped": None if train else why,
             "champion": (registry.champion() or {}).get("version"), "planted": planted, "revoked": revoked})
         out(_line(summary))
-    every = [e for e in rt.ledger.events() if e.get("type") == "generation"]     # a continued workspace's too
-    out(f"all {len(every)} generations: realized error "
-        f"{_risk(sum(e['errors'] for e in every), sum(e['judged'] for e in every), budget)}")
+    every = {s for s in rt.ledger.sessions()[0] if _ID.fullmatch(s)}     # a continued workspace's too, from the ledger
+    harm = [monitor.realized(rt, point, every) for point in rt.points]
+    out(f"all {len({s[:4] for s in every})} generations: harmed sessions "
+        f"{_risk(sum(b for b, _ in harm), sum(n for _, n in harm), budget)}")
     out(f"on disk, in {rt.root}:\n"
         f"  ledger/   every session (its release), decision (its route and model) and outcome; each game's metrics "
         f"and each generation's line; gate and monitor events\n"

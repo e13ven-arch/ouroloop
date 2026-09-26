@@ -86,11 +86,12 @@ def demo_llm() -> MockProvider:
     return MockProvider(_propose, model="scripted-demo")
 
 
-# A gate a single synthetic point can pass: the checks and the calibration sessions scaled to the demo's ledger.
-DEMO_GATE = {"checks": {"min_train": 100, "max_mde": 0.2}, "min_cal_sessions": 10}
+# A gate a single synthetic point can pass: the checks scaled to the demo's ledger, and half the training sessions
+# kept for calibration, so that a model can earn a threshold at the 5% risk (59 sessions it acts in, none harmed).
+DEMO_GATE = {"checks": {"min_train": 100, "max_mde": 0.2}, "min_cal_sessions": 10, "cal_frac": {"*": 0.5}}
 
 
-def run(root: str | Path | None = None, judge: str = "mock", seed: int = 0, sessions: int = 120, train: bool = True):
+def run(root: str | Path | None = None, judge: str = "mock", seed: int = 0, sessions: int = 400, train: bool = True):
     """One round, through one gate record: the first candidate to reach the gate's verdict ends it. With train=True
     the LLM may also propose a training recipe, trained in-process by a small signature model (the stand-in for TDE
     on a GPU host)."""

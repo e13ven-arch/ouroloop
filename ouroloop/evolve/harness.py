@@ -2,7 +2,7 @@
 a few development tasks, then compare it with the champion on every task, held-out tasks included, through the frozen
 gate.
 
-The loss of a run is 1 - the share of checks passed, so lower is better, as with Brier in the other gates. Each run
+The loss of a run is 1 - the share of checks passed, so lower is better, as with -gain in the other gates. Each run
 is recorded once per (prompt, agent model, task, repeat) in harness/runs.jsonl. The record serves screening and the
 research agent's view of the champion only: at the gate, champion and challenger both run again, in the same batch,
 and those runs' sessions are the gate's test sessions.

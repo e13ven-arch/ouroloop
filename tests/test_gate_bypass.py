@@ -14,7 +14,7 @@ from ouroloop.evolve.registry import Registry
 from ouroloop.evolve.train import SignatureTrainer, TrainResult
 from ouroloop.ledger import PromotionConflict, write_json
 from ouroloop.research import run_round
-from test_gate_record import (ACT_GATE, CFG, M6_CFG, Model, OracleTrainer, Proposes, collect, ctx, held_out,
+from test_gate_record import (ACT_GATE, CFG, M6_CFG, SOME, Model, OracleTrainer, Proposes, collect, ctx, held_out,
                               m6_sessions, trained_on, workspace)
 
 pytestmark = pytest.mark.usefixtures("loose_risk")
@@ -35,7 +35,7 @@ class Says(OracleTrainer):
 # ---------------------------------------------------------------- gate records
 def test_deleting_or_editing_the_gate_files_frees_no_session_and_changes_no_record(tmp_path):
     rt = workspace(tmp_path)
-    first = evolve_model(rt, OracleTrainer("R1"))
+    first = evolve_model(rt, OracleTrainer("R1", knows=SOME))
     (r1,) = records(rt.root)
     assert first["gate"] == "accepted"
     for p in (rt.root / "gates").glob("r_0001*"):
@@ -124,7 +124,7 @@ def test_nothing_the_gate_did_not_accept_answers_or_acts(tmp_path):
 
 def test_a_verdict_promotes_the_step_it_judged_and_nothing_else(tmp_path):
     rt = workspace(tmp_path)
-    first = evolve_model(rt, OracleTrainer("R1"))
+    first = evolve_model(rt, OracleTrainer("R1", knows=SOME))
     collect(rt, 40, start=150)
     second = evolve_model(rt, OracleTrainer("R2", 0.99))
     reg = Registry(rt.root)
@@ -137,7 +137,7 @@ def test_a_verdict_promotes_the_step_it_judged_and_nothing_else(tmp_path):
 
 def test_a_rollback_holds_without_the_revocation_list(tmp_path):
     rt = workspace(tmp_path)
-    first = evolve_model(rt, OracleTrainer("R1"))
+    first = evolve_model(rt, OracleTrainer("R1", knows=SOME))
     collect(rt, 40, start=150)
     second = evolve_model(rt, OracleTrainer("R2", 0.99))
     rt.session("s_r2", {"task": "t"})

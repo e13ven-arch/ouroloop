@@ -5,7 +5,9 @@ and freezes it in the ledger (a copy in <workspace>/gates/<round>.json), which f
 anything is trained; `run(record, ev)` evaluates a candidate against it and gives the verdict. A record is used up by
 the first inference request on its test sessions, whatever follows; once used, a verdict on its sessions can only be
 "validated". The verdict, in order: evidence complete -> protected samples pass -> no significant regression ->
-significant improvement.
+significant improvement. Model and spec candidates are judged by their gain over the routing default on the test rows
+(replay.scored): what a model adds is only where it acts against the default, and a Brier score over every row is
+dominated by rows the default already gets right.
 """
 from __future__ import annotations
 
@@ -21,23 +23,25 @@ from typing import Callable
 import httpx
 
 from ..ledger import Ledger, PromotionConflict, locked, now, write_json
+from ..policy import cp_lower
 from ..release import code_version
 from .replay import EvalResult, in_calibration
 from .train import TrainError
 
 TEMPLATE = {
-    "risk": 0.05,                   # thresholds: Clopper-Pearson bound on the acting decisions, counted per session
+    "risk": 0.05,                   # the share of sessions acted in that may be harmed (any acted decision wrong)
     "n_boot": 2000,                 # paired bootstrap resamples, by session
     "min_sessions": 30,             # non-held-out test sessions a model or spec gate needs, per point
     "cal_frac": {"stop": 0.4, "*": 0.15},  # share of the training sessions kept for calibration, per point
     "min_cal_sessions": 120,        # fewer calibration sessions: no thresholds, the point cannot act
     "checks": {"min_train": 200, "max_mde": 0.10},     # data checks before training (evolve/checks.py)
     "suite": {"min_items": 10},     # prompt gates: development-task runs per side
-    "test_sessions": "the non-held-out sessions with a labelled decision that started after the freezing of the "
-                     "last gate record whose fresh sessions a gate used, and never went through a gate (the first "
-                     "record: the latest min_sessions); fewer than min_sessions: the latest older ones, and the "
-                     "verdict can only be validated",
-    "budget": {"sessions_per_generation": 40},
+    "test_sessions": "the latest non-held-out sessions with a labelled decision that started after the freezing of "
+                     "the last gate record whose fresh sessions a gate used, and never went through a gate, at most "
+                     "budget.sessions_per_generation (the first record: the latest min_sessions); fewer than "
+                     "min_sessions: the latest older ones, and the verdict can only be validated",
+    "target": {"fixed_share": 0.5},     # stop training once the accepted model fixes this share of default errors
+    "budget": {"sessions_per_generation": 40, "max_trainings": 10},
 }
 # What no template may loosen, (lowest, highest): the execution rule's risk (PLAN_v0.2 §0), the sessions each gate
 # needs (§2), enough resamples for a 95% interval, and the runs a prompt gate needs (the template's own default).
@@ -278,12 +282,13 @@ def _serve_versions(rt) -> dict:
 
 
 def _choose(rt, params: dict, past: list[GateRecord]) -> dict:
-    """Choose the test sessions: the non-held-out sessions that started after the freezing of the last record whose
-    fresh sessions a gate used (a prompt gate uses the runs it makes instead), and never went through a gate (for
-    the first record, the latest `min_sessions` of them). With fewer, the latest older sessions, which can only
-    validate. Only sessions with a labelled decision at a registered point count: one still running, or one that
-    broke before its probe, would be no evidence. The held-out tasks' sessions from the same time are reported
-    beside them."""
+    """Choose the test sessions: the latest of the non-held-out sessions that started after the freezing of the last
+    record whose fresh sessions a gate used (a prompt gate uses the runs it makes instead), and never went through a
+    gate, at most a generation's (budget.sessions_per_generation, at least `min_sessions`; for the first record, the
+    latest `min_sessions`). The older of them train the round: after rounds that trained nothing, the data that made
+    the schedule train is not all held for testing. With fewer, the latest older sessions, which can only validate.
+    Only sessions with a labelled decision at a registered point count: one still running, or one that broke before
+    its probe, would be no evidence. The held-out tasks' sessions from the same time are reported beside them."""
     sessions, position = rt.ledger.sessions()
     used = [r for r in past if r.used]
     seen = set().union(*(r.seen() for r in used))
@@ -295,7 +300,8 @@ def _choose(rt, params: dict, past: list[GateRecord]) -> dict:
     if window is None:
         fresh = [s for s in pool if s not in seen][-k:]
     else:
-        fresh = [s for s in pool if sessions[s]["start"] >= window and s not in seen]
+        most = max(k, params.get("budget", {}).get("sessions_per_generation", k))
+        fresh = [s for s in pool if sessions[s]["start"] >= window and s not in seen][-most:]
     test = fresh if len(fresh) >= k else [s for s in pool if window is None or sessions[s]["start"] < window][-k:]
     first = min((sessions[s]["start"] for s in test), default=position)
     held = [s for s in live if sessions[s].get("held_out") and sessions[s]["start"] >= first]
@@ -307,7 +313,7 @@ class GateResult:
     outcome: str      # accepted, rejected, validated, inconclusive, conflict, insufficient_evidence, blocked, ...
     reasons: list[str]
     n: int
-    delta: float | None = None            # mean challenger - champion loss (Brier, failure rate); negative is better
+    delta: float | None = None            # mean challenger - champion loss (-gain, failure rate); negative is better
     ci: tuple[float, float] | None = None
     used: bool = False                    # this evaluation used the record up: its verdict is the round's
 
@@ -338,7 +344,7 @@ def run(record: GateRecord, ev: Callable[[], EvalResult], *, seed: int = 0) -> t
         g = GateResult("blocked" if ev.blocked else "insufficient_data", ev.blocked or ev.insufficient, 0)
     elif ev.per_point:
         g = decide_points(ev.per_point, protected_ok=ev.protected_ok, min_sessions=params["min_sessions"],
-                          n_boot=params["n_boot"], seed=seed)
+                          n_boot=params["n_boot"], seed=seed, risk=params["risk"])
     else:
         g = decide(ev.champion, ev.challenger, ev.groups, protected_ok=ev.protected_ok,
                    **{**ev.gate, "min_items": params["suite"]["min_items"], "n_boot": params["n_boot"], "seed": seed})
@@ -382,17 +388,23 @@ def paired_bootstrap(a: list[float], b: list[float], groups: list[str], n_boot: 
     return point, means[int(0.025 * n_boot)], means[int(0.975 * n_boot) - 1]
 
 
-def decide_points(results: dict[str, tuple[list[float], list[float], list[str]]], *, protected_ok: bool = True,
-                  min_sessions: int = 30, n_boot: int = 2000, seed: int = 0) -> GateResult:
-    """A model serves several decision points: accept if at least one point improves significantly and no point
-    gets significantly worse. Points with test items from fewer than `min_sessions` sessions can neither pass nor
-    block."""
+def decide_points(results: dict[str, tuple], *, protected_ok: bool = True, min_sessions: int = 30,
+                  n_boot: int = 2000, seed: int = 0, risk: float | None = None, alpha: float = 0.05) -> GateResult:
+    """A model serves several decision points; each point's results are (champion loss, challenger loss, session,
+    ...) per test row, a loss being -gain. Reject a challenger that harms more than `risk` of the test sessions it
+    acts in with confidence (the post-act monitor's rule, before promotion); else accept if at least one point's gain
+    rises significantly and no point's falls significantly. Points with test items from fewer than `min_sessions`
+    sessions can neither pass nor block."""
     if not protected_ok:
-        return GateResult("rejected", ["a protected sample failed"], sum(len(a) for a, _, _ in results.values()))
-    improved, regressed, thin, n = [], [], [], 0
+        return GateResult("rejected", ["a protected sample failed"], sum(len(r[0]) for r in results.values()))
+    improved, regressed, thin, harmful, n = [], [], [], [], 0
     summary = {}
-    for name, (a, b, g) in results.items():
+    for name, (a, b, g, *_) in results.items():
         n += len(a)
+        acts = {s for x, s in zip(b, g) if x}
+        bad = {s for x, s in zip(b, g) if x > 0}
+        if risk is not None and cp_lower(len(bad), len(acts), alpha) > risk:
+            harmful.append(f"{name} harms {len(bad)} of the {len(acts)} test sessions it acts in")
         if len(set(g)) < max(2, min_sessions):
             thin.append(name)
             continue
@@ -405,19 +417,21 @@ def decide_points(results: dict[str, tuple[list[float], list[float], list[str]]]
     pooled = [(d, lo, hi) for d, lo, hi in summary.values()]
     delta = sum(d for d, _, _ in pooled) / len(pooled) if pooled else None
     ci = (min(lo for _, lo, _ in pooled), max(hi for _, _, hi in pooled)) if pooled else None
+    if harmful:
+        return GateResult("rejected", [f"{'; '.join(harmful)}: above the risk {risk} with confidence"], n, delta, ci)
     if regressed:
-        return GateResult("rejected", [f"significant regression on {', '.join(regressed)}"], n, delta, ci)
+        return GateResult("rejected", [f"gain fell significantly on {', '.join(regressed)}"], n, delta, ci)
     if improved:
-        return GateResult("accepted", [f"Brier improved on {', '.join(improved)}"], n, delta, ci)
+        return GateResult("accepted", [f"gain rose significantly on {', '.join(improved)}"], n, delta, ci)
     if len(thin) == len(results):
         return GateResult("insufficient_evidence", [f"test items from fewer than {min_sessions} sessions on "
                                                     f"{', '.join(thin)}"], n)
-    return GateResult("rejected", ["no point improved significantly"], n, delta, ci)
+    return GateResult("rejected", ["no point's gain rose significantly"], n, delta, ci)
 
 
 def decide(champion: list[float], challenger: list[float], groups: list[str], *, protected_ok: bool = True,
            regressions: dict | None = None, min_items: int = 30, n_boot: int = 2000, seed: int = 0,
-           metric: str = "Brier") -> GateResult:
+           metric: str = "the loss") -> GateResult:
     """Per-item losses (lower is better) of the champion and the challenger on the same items."""
     n = len(champion)
     if n != len(challenger) or n != len(groups) or any(v is None for v in champion + challenger):

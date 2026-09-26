@@ -20,15 +20,16 @@ from ouroloop.cli import main
 from ouroloop.evolve import experience
 from ouroloop.evolve.gate import TEMPLATE, decide_points, freeze_template, open_record, records, run
 from ouroloop.evolve.harness import prompt_evaluator
-from ouroloop.evolve.pipeline import evolve_model, prepare_model, promote_model, recipe_evaluator
+from ouroloop.evolve.pipeline import (default_errors, evolve_model, prepare_model, promote_model, recipe_evaluator,
+                                      schedule)
 from ouroloop.evolve.registry import Registry
-from ouroloop.evolve.replay import EVALUATORS, EvalResult
+from ouroloop.evolve.replay import EVALUATORS, EvalResult, labelled
 from ouroloop.evolve.train import SignatureTrainer, TrainError, TrainResult
 from ouroloop.ledger import CalibrationStore, PromotionConflict, SpecStore
 from ouroloop.points import retry_point, stop_point
 from ouroloop.policy import Policy
 from ouroloop.providers import MockProvider
-from ouroloop.release import code_version
+from ouroloop.release import code_version, revoke
 from ouroloop.research import Candidate, run_round
 from ouroloop.runtime import Runtime
 from ouroloop.serve import make_server
@@ -50,16 +51,20 @@ class Model:
 
 
 class Oracle:
-    """Reads the label from the view ("say yes" / "say no") and gives it probability q."""
+    """Reads the label from the view ("say yes" / "say no") and gives it probability q; with `knows`, only on the
+    tasks it matches, and cannot tell on the others."""
     name = "oracle"
 
-    def __init__(self, model: str = "R1", q: float = 0.7):
-        self.model, self.q = model, q
+    def __init__(self, model: str = "R1", q: float = 0.7, knows: str | None = None):
+        self.model, self.q, self.knows = model, q, knows
 
     def decide(self, requests):
         out = []
         for r in requests:
             label = "yes" if re.search(r"say yes", r.state) else "no"
+            if self.knows and not re.search(rf"task: {self.knows}\n", r.state):
+                out.append(Answer({"yes": 0.5, "no": 0.5}, self.model))
+                continue
             out.append(Answer({label: self.q, "no" if label == "yes" else "yes": 1 - self.q}, self.model))
         return out
 
@@ -72,6 +77,14 @@ class Heeds(Oracle):
                 for r, a in zip(requests, super().decide(requests))]
 
 
+class Drifts(Oracle):
+    """An Oracle on a session's first turn; after it, the opposite of the label."""
+
+    def decide(self, requests):
+        return [a if "turns so far: 1\n" in r.state else Answer({k: 1 - v for k, v in a.probs.items()}, self.model)
+                for r, a in zip(requests, super().decide(requests))]
+
+
 class Down:
     """A serve that cannot be reached."""
     name = "down"
@@ -80,17 +93,30 @@ class Down:
         raise ConnectionError("serve is down")
 
 
+class Trainer:
+    """Trains nothing: its model is `backend` (a backend config), as `model`."""
+
+    def __init__(self, model: str, **backend):
+        self.model, self.config = model, {**backend, "model": model}
+
+    def train(self, job):
+        return TrainResult(f"runs/{job.version}", self.config, self.model)
+
+    def backend(self, result):
+        return config.build_backend(result.backend)
+
+
 class OracleTrainer:
     """Trains nothing: its model is an Oracle. With `fail`, it raises as a crashed training job does."""
 
-    def __init__(self, model: str = "R1", q: float = 0.7, fail: bool = False):
-        self.model, self.q, self.fail = model, q, fail
+    def __init__(self, model: str = "R1", q: float = 0.7, fail: bool = False, knows: str | None = None):
+        self.model, self.q, self.fail, self.knows = model, q, fail, knows
 
     def train(self, job):
         if self.fail:
             raise TrainError("CUDA out of memory")
         return TrainResult(f"runs/{job.version}", {"type": "test_gate_record:Oracle", "model": self.model,
-                                                   "q": self.q}, self.model)
+                                                   "q": self.q, "knows": self.knows}, self.model)
 
     def backend(self, result):
         return config.build_backend(result.backend)
@@ -111,22 +137,25 @@ CFG = {"workspace": {"root": "ws"}, "registry": {"base": "base"},
        "points": {"default_backend": "base", "stop": {"backend": "champion", "act": True, "explore": 0.0}}}
 # Scaled to a few hundred synthetic sessions: a looser risk, so that about 20 calibration sessions buy a threshold.
 ACT_GATE = {**SMALL_GATE, "risk": 0.2, "checks": {"min_train": 20, "max_mde": 0.5}}
+# The tasks a first model knows (an Oracle there, unsure elsewhere): it fixes some of the default errors, so a later
+# model that knows every task still has something to gain.
+SOME = "t[0-4]"
 
 
 def ctx(label: str = "yes") -> dict:
-    return {"task": "t", "turns": 1, "files": "", "actions": "", "message": f"say {label}"}
+    return {"task": "t0", "turns": 1, "files": "", "actions": "", "message": f"say {label}"}
 
 
-def collect(rt, n: int, start: int = 0, held_every: int = 10) -> None:
+def collect(rt, n: int, start: int = 0, held_every: int = 10, turns: int = 1) -> None:
     """n sessions as the M6 collection writes them: a session event (task, held_out, agent), then a stop decision
     recorded without asking a model, labelled by the probe. Odd sessions end "yes", even ones "no"; every
     held_every-th is a held-out task's (held out is a property of the task, as in the suite)."""
     stop = rt.points["stop"]
     for i in range(start, start + n):
         s, label, held = f"s_{i:04d}", "yes" if i % 2 else "no", i % held_every == 0
-        rt.ledger.append({"type": "session", "session": s, "task": f"h{i % 3}" if held else f"t{i % 7}",
-                          "held_out": held, "agent": "glm/max_turns=4"})
-        c = {**ctx(label), "moment": "after a turn"}
+        task = f"h{i % 3}" if held else f"t{i % 7}"
+        rt.ledger.append({"type": "session", "session": s, "task": task, "held_out": held, "agent": "glm/max_turns=4"})
+        c = {**ctx(label), "task": task, "turns": turns, "moment": "after a turn"}
         view, _ = stop.render(c)
         did = rt.ledger.decision(
             session=s, ctx=rt.sessions.put(s, c), point="stop", spec_hash=stop.spec_hash, backend="none", model="",
@@ -187,7 +216,7 @@ def test_once_frozen_the_config_cannot_loosen_the_gate(tmp_path):
 # ---------------------------------------------------------------- test sessions and verdicts
 def test_a_record_is_used_once_and_old_sessions_can_only_validate(tmp_path):
     rt = workspace(tmp_path)
-    first = evolve_model(rt, OracleTrainer("R1", 0.7))
+    first = evolve_model(rt, OracleTrainer("R1", 0.7, knows=SOME))
     (r1,) = records(rt.root)
     assert first["gate"] == "accepted" and r1.used and r1.fresh
     again = evolve_model(rt, OracleTrainer("R2", 0.99), record=r1)          # the same test sessions again
@@ -208,7 +237,7 @@ def test_a_record_is_used_once_and_old_sessions_can_only_validate(tmp_path):
 def test_research_candidates_of_every_kind_go_through_the_record(tmp_path):
     rt = workspace(tmp_path)
     spec = ("spec", "stop", {"instructions": "Is the task complete?"})
-    evaluators = {"recipe": recipe_evaluator(OracleTrainer("R1"))}
+    evaluators = {"recipe": recipe_evaluator(OracleTrainer("R1", knows=SOME))}
     res = run_round(rt, Proposes(spec, ("recipe", "stop", {"epochs": 1.0})), None, Model(), evaluators=evaluators)
     # the spec changes nothing the model sees: rejected, and the round's one verdict ends the round
     assert [(e["kind"], e["gate"], e["record"], e["used"]) for e in res.evaluated] == [("spec", "rejected", "r_0001",
@@ -295,7 +324,7 @@ def trained_on(rt, version: str) -> set:
 def test_an_m6_ledger_through_freeze_evolve_gate_promote_and_the_next_rounds(tmp_path):
     rt = config.build_runtime(M6_CFG, tmp_path)
     m6_sessions(rt, 300, crashed=(299, 298))           # two of the latest broke before their probe
-    freeze_template(rt.root, {"checks": {"min_train": 100, "max_mde": 0.2}})    # the template's other defaults
+    freeze_template(rt.root, {"checks": {"min_train": 100, "max_mde": 0.2}, "min_cal_sessions": 60, "risk": 0.2})
     sessions, _ = rt.ledger.sessions()
     held = {s for s, info in sessions.items() if info["held_out"]}
     labelled = [s for s in sorted(sessions, key=lambda s: sessions[s]["start"])
@@ -306,29 +335,28 @@ def test_an_m6_ledger_through_freeze_evolve_gate_promote_and_the_next_rounds(tmp
     (r1,) = records(rt.root)
     # the first record: the latest 30 sessions a gate can score, none held out, none without its labels
     assert r1.fresh and r1.test_sessions == labelled[-30:] and r1.used
-    assert first["gate"] == "accepted" and Registry(rt.root).champion()["version"] == first["version"]
     assert (first["model_id"], first["gate_record"], first["test_sessions"]) == ("signature:m_0001", r1.hash,
                                                                                 r1.test_sessions)
-    # held-out tasks: never trained or calibrated on, never tested; their Brier is on the card beside the verdict
+    # the signature model reads a cue that is wrong 15% of the time: acting on it would harm more sessions than the
+    # risk allows, so it gets no threshold, adds nothing over the defaults and is not promoted
+    assert first["gate"] == "rejected" and Registry(rt.root).champion() is None
+    assert first["calibration"]["stop"]["thresholds"] == {"per_turn": None, "on_finish": None}
+    # held-out tasks: never trained or calibrated on, never tested; their scores are on the card beside the verdict
     trained = trained_on(rt, "m_0001")
     assert set(r1.data["held_out_sessions"]) <= held and not held & (set(r1.test_sessions) | trained)
     assert trained and not trained & set(r1.test_sessions)
     metrics = first["metrics"]["stop"]
     assert metrics["sessions"] == 30 and metrics["held_out"]["sessions"] == len(r1.data["held_out_sessions"]) > 0
-    # about 100 calibration sessions, fewer than the template's 120: the promoted model gets a temperature and no
-    # threshold, so it answers the sessions opened from now on and cannot act
-    cal = rt.calibration_for("stop", "signature:m_0001")
-    assert cal["gate"] == r1.hash and cal["sessions"] < 120 and cal["thresholds"] == {"per_turn": None,
-                                                                                       "on_finish": None}
+    assert metrics["default_errors"] > 0 and metrics["challenger"]["acted"] == metrics["champion"]["acted"] == 0
     rt.session("s_live", {"task": "t9", "held_out": False})
     d = rt.ask("stop", {**ctx(), "actions": "TimeoutError"}, session="s_live", phase="per_turn")
-    assert (d.model, d.acted) == ("signature:m_0001", False)
+    assert (d.model, d.acted) == ("base", False)
 
     # a second round with no new sessions: the used record's sessions are never scored again for a promotion
     second = evolve_model(rt, SignatureTrainer())
     r2 = records(rt.root)[-1]
     assert r2.round == "r_0002" and r2.used and not r2.fresh and not set(r2.test_sessions) - set(labelled)
-    assert second["gate"] in ("validated", "rejected") and Registry(rt.root).champion()["version"] == "m_0001"
+    assert second["gate"] in ("validated", "rejected") and Registry(rt.root).champion() is None
 
     # ten new sessions: still too few. A training crash leaves that record unused, and the rerun takes it again
     m6_sessions(rt, 10, start=300)
@@ -343,30 +371,126 @@ def test_an_m6_ledger_through_freeze_evolve_gate_promote_and_the_next_rounds(tmp
     held = held_out(rt)
     new, later = {f"s_{i:04d}" for i in range(300, 350)} - held, {f"s_{i:04d}" for i in range(350, 360)} - held
     assert r4.round == "r_0004" and r4.fresh and set(r4.test_sessions) == new and not r3.used
-    assert (third["gate"], third["parent"]) == ("accepted", "m_0001")
+    assert (third["gate"], third["parent"]) == ("accepted", None)
     assert Registry(rt.root).champion()["version"] == third["version"]
     assert not trained_on(rt, third["version"]) & (new | held | later)     # later: the next record's to test
     assert Registry(rt.root).seen_sessions() == set(r1.test_sessions) | set(r2.test_sessions) | new
     # the session opened before keeps its model; a new one runs the new champion
     rt.session("s_next", {"task": "t9", "held_out": False})
     assert [rt.ask("stop", ctx(), session=s, phase="per_turn").model for s in ("s_live", "s_next")] == [
-        "signature:m_0001", "R2"]
+        "base", "R2"]
 
 
 def test_the_gate_counts_sessions_and_calibration_sessions(tmp_path):
-    better = ([0.5] * 60, [0.0] * 60)
+    better = ([0] * 60, [-1] * 60)                              # the candidate fixes a default error on every row
     assert decide_points({"stop": (*better, [f"s{i % 20}" for i in range(60)])}, n_boot=200).outcome == \
         "insufficient_evidence"                                 # 60 items, but from 20 sessions
     assert decide_points({"stop": (*better, [f"s{i % 30}" for i in range(60)])}, n_boot=200).outcome == "accepted"
-    # fewer calibration sessions than the template asks: a temperature, no threshold, so the point cannot act
+    # fewer calibration sessions than the template asks: a temperature, no threshold, so the candidate could never
+    # act and adds nothing over the defaults, however well it answers
     rt = config.build_runtime(CFG, tmp_path)
     collect(rt, 150)
     freeze_template(rt.root, {**ACT_GATE, "min_cal_sessions": 1000})
     card = evolve_model(rt, OracleTrainer("R1"))
     cal = card["calibration"]["stop"]
-    assert card["gate"] == "accepted" and cal["temperature"] < 1 and cal["thresholds"] == {"per_turn": None,
+    assert card["gate"] == "rejected" and cal["temperature"] < 1 and cal["thresholds"] == {"per_turn": None,
                                                                                           "on_finish": None}
+    assert card["metrics"]["stop"]["challenger"]["acted"] == 0 and Registry(rt.root).champion() is None
     assert rt.ask("stop", ctx(), session="s_new", phase="per_turn").acted is False
+
+
+# ---------------------------------------------------------------- the gain objective and the training schedule
+def test_the_gate_judges_the_gain_over_the_default_within_the_risk(tmp_path):
+    # a model that only says what the default says ("no", confidently) never acts: it gains nothing
+    rt = workspace(tmp_path / "agrees")
+    card = evolve_model(rt, Trainer("NO", type="test_gate_record:Model", p_yes=0.01))
+    m = card["metrics"]["stop"]
+    assert (card["gate"], card["reasons"]) == ("rejected", ["no point's gain rose significantly"])
+    assert m["challenger"]["acted"] == 0 and m["default_errors"] > 0 and Registry(rt.root).champion() is None
+    # one that fixes default errors and harms no session is promoted; its card says how much of the headroom
+    rt = workspace(tmp_path / "fixes")
+    card = evolve_model(rt, OracleTrainer("R1"))
+    m = card["metrics"]["stop"]
+    assert card["gate"] == "accepted" and card["reasons"] == ["gain rose significantly on stop"]
+    assert m["challenger"]["fixes"] == m["default_errors"] > 0 and m["challenger"]["harms"] == 0
+    assert m["challenger"]["fixed_share"] == 1.0 and m["champion"]["acted"] == 0 and card["default_errors"] > 0
+    # one right on the calibration sessions that harms most of the test sessions it acts in is not
+    rt = config.build_runtime(CFG, tmp_path / "drifts")
+    collect(rt, 150)
+    collect(rt, 40, start=150, turns=2)             # the test sessions: later turns, where it answers wrong
+    freeze_template(rt.root, ACT_GATE)
+    card = evolve_model(rt, Trainer("D", type="test_gate_record:Drifts"))
+    assert card["calibration"]["stop"]["thresholds"]["per_turn"] is not None and card["gate"] == "rejected"
+    assert re.fullmatch(r"stop harms (\d+) of the \1 test sessions it acts in: above the risk 0.2 with confidence",
+                        card["reasons"][0])
+    # the monitor's rule, before promotion: a candidate that gains overall but harms every session it acts in
+    rows = [-1, -1, -1, 1] * 40
+    sessions = [f"s{i // 4}" for i in range(160)]
+    gains = {"stop": ([0] * 160, rows, sessions)}
+    assert decide_points(gains, n_boot=200).outcome == "accepted"
+    assert decide_points(gains, n_boot=200, risk=0.2).outcome == "rejected"
+
+
+def test_the_schedule_trains_only_while_it_can_still_pay(tmp_path):
+    rt = workspace(tmp_path, n=150)
+    assert schedule(rt) == (True, "no candidate trained yet")
+    evolve_model(rt, OracleTrainer("R1"))                   # fixes every default error it is tested on
+    train, why = schedule(rt)
+    assert not train and why.startswith("target reached: m_0001 fixes 100%")
+    champion = Registry(rt.root).champion()
+    revoke(rt.root, champion["version"], champion["model_id"], "drift")
+    assert schedule(rt) == (True, "the champion was revoked since m_0001")
+    # with a target the champion has not reached: train again once the default errors have doubled
+    rt = config.build_runtime(CFG, tmp_path / "more")
+    collect(rt, 150)
+    freeze_template(rt.root, {**ACT_GATE, "target": {"fixed_share": 1.0}})
+    card = evolve_model(rt, OracleTrainer("R1", knows=SOME))
+    assert card["gate"] == "accepted" and card["default_errors"] > 0
+    train, why = schedule(rt)
+    assert not train and why.startswith(f"default errors {card['default_errors']}, not yet twice")
+    collect(rt, 150, start=150)
+    train, why = schedule(rt)
+    assert train and why.startswith(f"default errors doubled since m_0001 ({card['default_errors']} -> ")
+    # the round it triggers tests on a generation's worth of the new sessions and trains on the others
+    record = open_record(rt)
+    new = {f"s_{i:04d}" for i in range(150, 300)}
+    assert record.fresh and len(record.test_sessions) == 40 and set(record.test_sessions) <= new
+    parts = record.split(labelled(rt, "stop"), rt.ledger.sessions()[0], record.cal_frac("stop"))
+    assert len({r[0].decision["session"] for r in parts["train"] + parts["calibration"]} & new) > 50
+    # the training budget is spent: nothing trains, whatever else holds
+    rt = config.build_runtime(CFG, tmp_path / "budget")
+    collect(rt, 150)
+    freeze_template(rt.root, {**ACT_GATE, "budget": {"sessions_per_generation": 40, "max_trainings": 1}})
+    evolve_model(rt, Trainer("NO", type="test_gate_record:Model", p_yes=0.01))
+    revoke(rt.root, None, "NO", "a test")
+    assert schedule(rt) == (False, "training budget spent (1 of 1)")
+
+
+def test_the_schedule_reads_planted_old_and_headroom_less_cards(tmp_path):
+    rt = workspace(tmp_path)
+    registry = Registry(rt.root)
+    # the other point had no default errors on its test rows (no share): the target is reached where there were
+    registry.record({"version": "m_0001", "run": "runs/m_0001", "gate": "accepted", "model_id": "R1",
+                     "default_errors": 10, "metrics": {"stop": {"challenger": {"fixed_share": 0.8}},
+                                                       "retry": {"challenger": {"fixed_share": None}}}})
+    assert schedule(rt) == (False, "target reached: m_0001 fixes 80% of the default errors")
+    # a planted candidate after a revocation uses budget but is not the last trained one: the drift still retrains
+    revoke(rt.root, "m_0001", "R1", "drift")
+    registry.record({"version": "m_0002", "run": "runs/m_0002", "gate": "rejected", "planted": "shuffled labels",
+                     "default_errors": 10 ** 6})
+    assert schedule(rt) == (True, "the champion was revoked since m_0001")
+    # an accepted card from before the gain objective: Brier metrics, no count of default errors
+    rt = workspace(tmp_path / "old")
+    Registry(rt.root).record({"version": "m_0001", "run": "runs/m_0001", "gate": "accepted", "model_id": "R1",
+                              "metrics": {"stop": {"n": 40, "champion_brier": 0.25, "challenger_brier": 0.1}}})
+    assert schedule(rt) == (True, "m_0001 has no count of default errors to compare with")
+
+
+def test_default_errors_leave_out_points_that_can_never_act(tmp_path):
+    rt = workspace(tmp_path)
+    assert default_errors(rt, ["stop"]) > 0
+    rt.points["stop"].phases = {}               # a contract point: no phase, no default, never acts
+    assert default_errors(rt, ["stop"]) == 0
 
 
 def test_a_prompt_gate_leaves_the_records_ledger_sessions_fresh(tmp_path):
@@ -455,7 +579,7 @@ def test_a_promotion_reaches_new_sessions_only_and_a_rollback_stops_the_old_ones
     harness = {"system": "p", "tools": {}, "stop": {"max_pushbacks": 2}}
     with serving(rt) as ask:
         rt.session("s_before", {"task": "t"}, harness)
-        first = evolve_model(config.build_runtime(CFG, tmp_path), OracleTrainer("R1"))   # another process
+        first = evolve_model(config.build_runtime(CFG, tmp_path), OracleTrainer("R1", knows=SOME))   # elsewhere
         (r1,) = records(rt.root)
         assert (first["model_id"], first["gate_record"], first["test_sessions"]) == ("R1", r1.hash,
                                                                                     r1.test_sessions)

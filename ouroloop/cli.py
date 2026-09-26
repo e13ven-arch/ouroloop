@@ -154,12 +154,15 @@ def cmd_evolve(args) -> int:
     card = evolve_model(rt, config.build_trainer(cfg["trainer"]), cfg.get("recipe"))
     print(f"{card['version']}: {card['gate']} - {'; '.join(card.get('reasons', []))}")
 
-    def brier(m: dict) -> str:
-        return (f"n={m['n']} champion={m['champion_brier']:.3f} candidate={m['challenger_brier']:.3f}" if m and m['n']
-                else "n=0")
+    def gains(m: dict) -> str:
+        def side(x: dict) -> str:
+            return (f"fixes={x['fixes']} harms={x['harms']} harmed sessions={x['harmed_sessions']}/"
+                    f"{x['sessions_acted']}")
+        return (f"n={m['n']} default errors={m['default_errors']}; champion {side(m['champion'])}; candidate "
+                f"{side(m['challenger'])}" if m and m['n'] else "n=0")
 
     for point, m in (card.get("metrics") or {}).items():
-        print(f"  {point}: {brier(m)}; held-out tasks, not gated: {brier(m.get('held_out'))}")
+        print(f"  {point}: {gains(m)}; held-out tasks, not gated: {gains(m.get('held_out'))}")
     return 0
 
 
