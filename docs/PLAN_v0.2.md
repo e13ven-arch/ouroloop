@@ -34,9 +34,9 @@
 **运行位置**
 
 - 开发机上不做模型训练和推理。离线测试只用 mock 和签名小模型。harness 和任务集可以在开发机上跑，但只调用 LLM API；决策点的推理一律发给 GPU 主机上的 serve，还没有 serve 时用 `rt.record` 只记上下文。
-- 训练：v0.2 的无人值守路径（M11、M13）只在 GPU 主机上训练。RunPod 临时 pod 只作为手动目标：人启动 pod，再把 ssh 目标写进 `*.local.toml`。数据和 checkpoint 经 Hugging Face 中转，仓库必须是 private，推数据要在 `*.local.toml` 里显式打开。主机、仓库名和密钥只写在被 git 忽略的 `*.local.toml` 里。
-- 服务：`ouroloop serve` 在 GPU 主机上运行，装在 TDE 的 venv 里，TDE 加载在进程内；harness 通过 `HttpBackend` 调用。模型一律用 `<hf id>@<commit sha>` 引用：sha 不可改写，分支名和标签可以。
-- GPU 主机只有一张卡：训练时 serve 切到 CPU（`TdeBackend(device="cpu")`）或暂停新 session。`ouroloop loop` 每代严格按"采集 → 训练 → 评测"的顺序执行；需要边采集边训练时，训练放到 RunPod 上。
+- 训练：本机或一台远程主机作为训练服务，同一份代码，只差配置里的 `host`（不填是本机，填 `user@box` 走 ssh）。传输是一个配置项 `transport`：默认 `direct`，任务文件经 ssh 传过去，权重留在训练机器上；`hf` 可选，训练完往 private 仓库提交一次。主机、仓库名和密钥只写在被 git 忽略的 `*.local.toml` 里。大规模分布式训练 TBD。
+- 服务：`ouroloop serve` 在训练主机上运行，装在 TDE 的 venv 里，按模型引用加载（`direct` 是 job id，`hf` 是 `<repo>@<commit sha>`）；harness 通过 `HttpBackend` 调用。
+- 一个循环严格按"采集 → 训练 → 评测"的顺序执行；启动训练前 serve 释放显存。同一张卡上不同时跑别的训练，由使用者保证。
 - build、门和注册表在账本所在的机器上运行，评测时的推理也走 serve。
 
 **起点**：v0.1 的机制都在，但没有一个决策点能真正执行动作：配置打不开执行开关，阈值不区分模型版本，晋升只改内存，门参数每次从 TOML 重新读取。现有 stop 记录只有 11 条，全部是 yes 标签（只有最后状态被打上标签），没有 no。这些问题逐条归到下面的里程碑里。
@@ -241,7 +241,7 @@ M6 最先做。它不需要执行、校准或门，而采集是整个计划里�
   - `Registry.promote(version, expected_parent)` 做比较交换：冠军指针已经不是 `card.parent` 时，晋升失败。
 - 晋升持久化：目前 `promote_model` 只在内存里把决策点切到 champion（`pipeline.py` 第 91～93 行），重启后映射只看 TOML。改为冠军卡记下它服务哪些决策点，`build_runtime` 从注册表恢复映射，TOML 只提供初始映射。
 - 发布三元组：新增 `ouroloop/release.py` `Release(model, spec, harness)`：
-  - model 是 `model_id`（M9 起为 `<hf id>@<sha>`）；
+  - model 是 `model_id`（M9 起为模型引用：job id 或 `<repo>@<sha>`）；
   - spec 是已注册决策点 spec 的哈希，含 `view_version`（M10 起，契约接入改用 `points.toml` 的哈希）；
   - harness 是 prompt、工具和 StopGuard 配置的哈希。
 - session 固定：每次开 session，`Runtime.session(meta)` 都重新读取 `models/champion.json` 和 `harness/calibration.json`，把三元组记进 session 事件；这个 session 之后的 ask 都用三元组里的模型和校准。目前 serve 进程只在启动时读一次（`config.py` 第 96～99 行，`ledger.py` 第 177 行），别的进程做了晋升，要重启 serve 才生效。
@@ -265,7 +265,7 @@ M6 最先做。它不需要执行、校准或门，而采集是整个计划里�
 
 ### M9 stop 纵切：经 ouroloop 训练的模型执行动作
 
-**目标**：stop 模型在 GPU 主机上经 ouroloop 训练，通过冻结的门，由 serve 按 `<hf id>@<sha>` 加载，在新 session 上执行动作。
+**目标**：stop 模型在 GPU 主机上经 ouroloop 训练，通过冻结的门，由 serve 按模型引用加载，在新 session 上执行动作。
 
 **改动：数据**
 
@@ -278,22 +278,22 @@ M6 最先做。它不需要执行、校准或门，而采集是整个计划里�
 **改动：训练**
 
 - `evolve/train.py` `prepare_job`（第 108～117 行）：`out_dir` 也要做 `expanduser`。目前 `remote_repo = "~/tde"` 时，checkpoint 会写进一个名字就叫 `~` 的目录，因为 TDE 的 `tde/train.py` 第 239 行直接用 `Path(out_dir)`。
-- 新增 `HubTdeTrainer`：
-  1. 把 train 和 val 推到 private 的 HF 数据集仓库。
-  2. 通过 ssh 在 GPU 主机上运行 job 脚本：从 HF 下载数据和父模型（TDE 的 `init_from` 只认本地目录），训练，导出，再上传到 private 的模型仓库，记下 HF 返回的 commit sha。
-  3. `TrainResult.backend` 为 `{"type": "http", "model": "<hf id>@<sha>"}`，卡上的 `model_id` 与之相同。
-- 删掉 `tde_remote` 后端和 `RemoteTdeTrainer`，由 `HubTdeTrainer` 取代。`tde_remote` 每次决策都要做 ssh 和 rsync，并重新加载整个模型（第 287、306～324 行），而 `build_runtime` 会把它装成冠军（`config.py` 第 98～99 行）。
-- `local_tde` 训练器只能在 GPU 主机上用，在其他机器上选它就报错；它的产物同样上传到 HF，由 serve 加载。
-  - `TdeBackend` 在 ouroloop 的 venv 里 import `tde`（`backends/tde.py` 第 20 行），但那个 venv 里没装 tde。
-  - 以后开发机上的 ouroloop 不再 import tde。
+- 训练任务（2026-09-26 消融后的 v1，只有下面这些）：
+  1. `evolve/worker.py`：本地和远程同一条路径。准备任务，调 TDE 训练（带超时），写 `result.json`；`transport = "hf"` 时再往 private 仓库提交一次。
+  2. Compute：`launch` 建一个新的任务目录，只传 `spec.json`、`worker.py`、`train.jsonl`、`val.jsonl` 四个文件，后台启动；`poll` 读退出码、`result.json` 和日志尾部。任何故障都是 `TrainError`，即 `inconclusive`。
+  3. 模型引用：`direct` 是 job id，`hf` 是 `<repo>@<sha>`。它就是卡上的 `model_id`，也是校准、撤销和 session 固定的键；卡上不记主机路径。父模型按引用找。
+  4. 卡上记下 ouroloop 和 TDE 的 git HEAD，带 dirty 标记。
+- 删掉 `LocalTdeTrainer`、`RemoteTdeTrainer` 和 `tde_remote` 后端，由上面这一条路径取代。`tde_remote` 每次决策都要做 ssh 和 rsync，并重新加载整个模型。
+- 不做：GPU 锁、取消和断线重连、自己的内容哈希、跨主机拷贝模型、数据经 HF 中转、任务目录清理。这些由使用者在运维上保证，或者用不上。
 
 **改动：服务和执行**
 
 - `serve.py` `/decide` 接受 `model` 参数：
-  - 只允许 `*.local.toml` 里配置的模型仓库，只按 sha 加载。
+  - 只接受配置里的任务目录或 HF 前缀下的引用，别的一律 400。
   - 按 LRU 最多驻留 2 个版本，超出时按需重新加载，不拒绝请求。
-  - `HttpBackend` 加上 `model` 参数。
-- `Answer.model` 改用 `<hf id>@<sha>`，目前是 `tde:<目录名>`。它与 session 固定的模型不一致时，按 `error` 路线走默认动作。没晋升的版本可以加载来评测，但它没有阈值，永远不会执行。
+  - 新增 `/release`，启动训练前释放显存。
+  - `HttpBackend` 加上 `model` 参数，分块发送。
+- `Answer.model` 改用模型引用，目前是 `tde:<目录名>`。它与 session 固定的模型不一致时，按 `error` 路线走默认动作。没晋升的版本可以加载来评测，但它没有阈值，永远不会执行。
 - StopGuard 打开执行：
   - `per_turn` 阶段有把握地判 yes，就结束会话，防止无限探索。
   - `on_finish` 阶段有把握地判 no，就把 agent 发回去继续干，最多 2 次。
@@ -304,15 +304,15 @@ M6 最先做。它不需要执行、校准或门，而采集是整个计划里�
 
 - build 写出的候选顺序与 `predict` 一致；80% 的决策选同一个标签的 choice 决策点，不再被位置检查挡住。
 - `remote_repo` 以 `~` 开头时，生成的配置里 `out_dir` 是绝对路径。
-- 推给训练器和 HF 的数据里，没有 calibration 和 test 的 session；不支持权重的训练器拿不到权重小于 1 的样本。
-- 在假 HF 上走完全流程：推数据 → 训练 → 上传 → 卡上记下 `<hf id>@<sha>` → serve 按 sha 加载 → 新 session 用新模型。配置之外的模型仓库被 serve 拒绝。
+- 交给训练器的数据里，没有 calibration 和 test 的 session；不支持权重的训练器拿不到权重小于 1 的样本。
+- 用假 TDE 走完全流程：launch → poll → 卡上记下模型引用 → serve 按引用加载 → 新 session 用新模型；`hf` 用假的 HF 走一遍。配置之外的引用被 serve 拒绝。
 - StopGuard：发回不超过 2 次，轮数上限生效；有把握的 yes 能在中途结束会话；有 checker 时，模型推翻不了它。
 - 执行错误超出预算的版本被自动撤销，之后它的 session 都走默认动作。
 
 **验收（真实，需 GPU 主机）**
 
 - M6 的采集达到约 450 个 session（非 held-out 约 330 个），stop 的 yes 和 no 两种标签都有。
-- `ouroloop evolve` 从通用 TDE checkpoint 出发，在 GPU 主机上训练 stop，数据和 checkpoint 都经过 HF。
+- `ouroloop evolve` 从通用 TDE checkpoint 出发，在 GPU 主机上训练 stop；先本机，再从开发机经 ssh 把 GPU 主机当训练服务，`hf` 走一次。
   - 门在新 session 上判为 `accepted`，卡上并列报告 held-out 任务的 Brier。
   - 校准 session 至少 120 个，`per_turn` 阶段的 yes 拿到阈值；`on_finish` 阶段的 no 如果拿不到阈值，就不执行。
   - 门拒绝时，再采至少 40 个新 session 重试，最多 3 轮。3 轮都被拒，就停下来复盘 stop 的 view 和标签，不进入 M11。
