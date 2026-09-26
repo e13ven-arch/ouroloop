@@ -8,7 +8,7 @@ from conftest import accept
 from ouroloop import config
 from ouroloop.backends import KeywordBackend
 from ouroloop.chat import ScriptedChat  # noqa: F401 - keeps the chat module importable in isolation
-from ouroloop.decision import Choice
+from ouroloop.decision import Choice, Noul
 from ouroloop.demo import demo_llm, run, seed_ledger
 from ouroloop.evolve import experience
 from ouroloop.evolve.build import build
@@ -253,3 +253,22 @@ def test_rounds_stop_when_nothing_is_promoted(tmp_path, frozen):
     results = run_rounds(rt, BasicResearcher(), stale, KeywordBackend(), rounds=5, patience=2)
     assert len(results) == 2 and all(not r.promoted for r in results)
     assert demo_llm().model == "scripted-demo"
+
+
+def test_focus_keeps_every_default_error_and_a_sample_of_the_rest(tmp_path):
+    """A row whose label is not the routing default is a default error; focus keeps all of them and samples the
+    others so that the errors are that share of the training rows."""
+    from ouroloop.evolve.pipeline import focused
+    from ouroloop.evolve.replay import gold, labelled
+    rt = Runtime(tmp_path, {"mock": KeywordBackend()}, "mock", seed=0)
+    rt.register(Noul("check", "ok?", phases={"here": "no"}))
+    for i in range(10):
+        for j in range(20):
+            d = rt.record("check", {"i": i, "j": j}, session=f"s{i:03d}")
+            rt.outcome(d.id, "yes" if j == 0 else "no", source="env")
+    rows = labelled(rt, "check")
+    for focus, n in ((1.0, 10), (0.5, 20), (0.1, 100), (0.01, 200)):
+        kept = focused(rt, "check", rows, focus, seed=0)
+        assert len(kept) == n and sum(gold(t) == "yes" for _, t, _ in kept) == 10
+        assert [r[0].decision["ts"] for r in kept] == sorted(r[0].decision["ts"] for r in kept)
+    assert focused(rt, "check", rows, 0.5, seed=0) == focused(rt, "check", rows, 0.5, seed=0)

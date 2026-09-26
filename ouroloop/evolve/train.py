@@ -40,6 +40,7 @@ DEFAULT_RECIPE = {
     "min_weight": 0.5,       # 1.0 keeps only environment and human labels
     "init_from": None,       # the first model's parent run, e.g. "runs/base"
     "train_limit": None,     # train on at most this many examples, a seeded sample of the ledger's and replay's
+    "focus": None,           # share of the ledger's training rows that are default errors (pipeline._parts)
     "seed": 0,
 }
 RECIPE_KEYS = set(DEFAULT_RECIPE)

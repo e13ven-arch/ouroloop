@@ -8,6 +8,7 @@ into an evaluation for gate.run, which the research loop and `evolve_model` (`ou
 from __future__ import annotations
 
 import json
+import random
 from dataclasses import asdict, dataclass, field
 
 from ..types import Question, Request
@@ -91,15 +92,36 @@ def schedule(rt, points: list[str] | None = None) -> tuple[bool, str]:
     return False, f"default errors {now}, not yet twice the {before} at {last['version']}"
 
 
+def focused(rt, point: str, rows: list[tuple], focus: float, seed: int = 0) -> list[tuple]:
+    """The training rows with every default error (a row whose routing default is not its label: the only rows a
+    model can add anything on) kept, and a seeded sample of the others, so that the errors make up `focus` of them
+    (all the others when there are too few). Time order is kept."""
+    p = rt.points[point]
+    errors = []
+    for row, target, _ in rows:
+        try:
+            errors.append(p.default_for(row.decision.get("phase"))[0] is not None     # no phase: never acts
+                          and routing_default(rt, p, row) != gold(target))
+        except ValueError:          # a row whose phase cannot be told never acts either
+            errors.append(False)
+    others = [i for i, e in enumerate(errors) if not e]
+    k = round(sum(errors) * (1 - focus) / focus)
+    keep = set(random.Random(seed).sample(others, k)) if k < len(others) else set(others)
+    return [r for i, r in enumerate(rows) if errors[i] or i in keep]
+
+
 def _parts(rt, record: GateRecord, points: list[str], recipe: dict, trainer) -> dict:
     """Each point's labelled rows as `record` splits them. The recipe's min_weight thins the training rows only: the
     calibration and test rows are the record's, whatever the candidate. A trainer that does not weigh examples
-    (supports_weights) is given full-weight rows only, so it never takes a weak label for a strong one."""
+    (supports_weights) is given full-weight rows only, so it never takes a weak label for a strong one. The recipe's
+    focus, if set, keeps the training rows on the default's errors (see focused)."""
     sessions, _ = rt.ledger.sessions()
     parts = {name: record.split(labelled(rt, name), sessions, record.cal_frac(name)) for name in points}
     least = recipe["min_weight"] if getattr(trainer, "supports_weights", False) else max(recipe["min_weight"], 1.0)
-    for part in parts.values():
+    for name, part in parts.items():
         part["train"] = [r for r in part["train"] if r[2] >= least]
+        if recipe.get("focus") is not None:
+            part["train"] = focused(rt, name, part["train"], recipe["focus"], recipe["seed"])
     return parts
 
 
@@ -114,6 +136,8 @@ def prepare_model(rt, trainer, recipe: dict | None = None, *, record: GateRecord
     if unknown:
         raise ValueError(f"unknown recipe keys: {sorted(unknown)}")
     recipe = {**DEFAULT_RECIPE, **(recipe or {})}
+    if recipe["focus"] is not None and not 0 < recipe["focus"] <= 1:
+        raise ValueError(f"recipe focus {recipe['focus']!r}: a share in (0, 1]")
     points = points or model_points(rt)
     params = record.params
     version = registry.next_version()
