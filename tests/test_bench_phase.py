@@ -170,3 +170,59 @@ class TestCli:
         path = self.write(tmp_path, fake_upstream)
         assert cli.main(["bench", "--config", str(path), "--phase", "report"]) == 2
         assert "M6 in docs/ROADMAP.md" in capsys.readouterr().err
+
+
+class TestRunIdentity:
+    def test_the_whole_llm_table_is_recorded_not_a_shortlist(self, tmp_path, fake_upstream, monkeypatch):
+        """A reasoning effort passed through a provider's `extra` must not be the setting that went unrecorded."""
+        cfg = config(fake_upstream, bench={"ratios": {"dev": 1.0}, "smoke_tasks": 1},
+                     llm={"type": "openai_compat", "model": "glm-5.3", "api_key_env": "SOME_KEY",
+                          "extra": {"reasoning_effort": "max"}})
+        monkeypatch.setattr(bench.config_mod, "build_provider",
+                            lambda spec: ScriptedChat([ChatTurn("Nothing to do.", [], "end")]))
+        printed = []
+        report = bench.smoke(cfg, tmp_path, out=printed.append)
+        model = report["run"]["model"]
+        assert model["config"]["extra"]["reasoning_effort"] == "max"
+        assert model["config"]["model"] == "glm-5.3"
+        # Two runs that differ only in that effort are not the same run.
+        other = dict(cfg["llm"], extra={"reasoning_effort": "low"})
+        assert bench.RunManifest("base", "base", "dev", {"config": other}).hash() != \
+               bench.RunManifest("base", "base", "dev", {"config": cfg["llm"]}).hash()
+
+
+class TestTaskSelection:
+    def test_named_tasks_are_not_capped_by_smoke_tasks(self, tmp_path, fake_upstream):
+        cfg = config(fake_upstream, bench={"ratios": {"dev": 1.0}, "smoke_tasks": 1})
+        printed = []
+        report = bench.smoke(cfg, tmp_path, tasks=[LEAD, HOLD], run_agent=False, out=printed.append)
+        assert sorted(report["contract"]["checked"]) == sorted([HOLD, LEAD])
+
+    def test_the_default_selection_is_capped(self, tmp_path, fake_upstream):
+        cfg = config(fake_upstream, bench={"ratios": {"dev": 1.0}, "smoke_tasks": 1})
+        report = bench.smoke(cfg, tmp_path, run_agent=False, out=lambda _line: None)
+        assert len(report["contract"]["checked"]) == 1
+
+    def test_limit_overrides_both(self, tmp_path, fake_upstream):
+        cfg = config(fake_upstream, bench={"ratios": {"dev": 1.0}, "smoke_tasks": 2})
+        report = bench.smoke(cfg, tmp_path, tasks=[LEAD, HOLD], limit=1, run_agent=False, out=lambda _l: None)
+        assert report["contract"]["checked"] == [LEAD]
+
+
+class TestModelIdentity:
+    def provider(self):
+        return ScriptedChat([ChatTurn("", [], "end")])
+
+    def test_a_key_in_the_table_never_reaches_the_manifest(self):
+        identity = bench.model_identity(self.provider(), {"type": "openai_compat", "model": "m",
+                                                          "api_key": "sk-abcdefghijklmnopqrstuvwxyz",
+                                                          "api_key_env": "ZHIPUAI_API_KEY"})
+        assert "api_key" not in identity["config"]
+        assert identity["config"]["api_key_env"] == "ZHIPUAI_API_KEY"   # a variable name, not a secret
+        assert "sk-abcdefghijklmnopqrstuvwxyz" not in json.dumps(identity)
+
+    def test_everything_that_changes_a_result_is_kept(self):
+        identity = bench.model_identity(self.provider(), {"type": "anthropic", "model": "m", "max_tokens": 8192,
+                                                          "extra": {"reasoning_effort": "max"}})
+        assert identity["config"]["max_tokens"] == 8192
+        assert identity["config"]["extra"] == {"reasoning_effort": "max"}

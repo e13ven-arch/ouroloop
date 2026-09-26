@@ -243,12 +243,10 @@ def tool_spec(func: Callable) -> ToolSpec:
         entry: dict[str, Any] = {"type": _json_type(hints.get(name, str))}
         if name in descriptions:
             entry["description"] = descriptions[name]
-        if p.default is not p.empty:
-            entry["default"] = p.default if not isinstance(p.default, type(None)) else None
-            if entry["default"] is None:
-                entry.pop("default")
-        else:
+        if p.default is p.empty:
             required.append(name)
+        elif p.default is not None:          # an optional argument's default is its absence, not a null
+            entry["default"] = p.default
         props[name] = entry
     # The docstring keeps its Args block: it is what the model is told about each field, and cutting it would
     # make this surface weaker than upstream's without saying so.
@@ -273,7 +271,14 @@ class BenchTask:
 
     @property
     def trigger(self) -> str:
+        """Everything that is not the system prompt, as the agent's first message. Upstream's public tasks are one
+        trigger message each; `contract_check` reports a task that is not, because flattening several turns into
+        one is a change to what the model was given."""
         return "\n\n".join(str(m.get("content", "")) for m in self.messages if m.get("role") != "system")
+
+    @property
+    def turns(self) -> int:
+        return sum(1 for m in self.messages if m.get("role") != "system")
 
     def entry(self, family_id: str) -> TaskEntry:
         return TaskEntry(self.task_id, family_id, self.example_id, self.contract, tuple(self.tools))
@@ -418,6 +423,7 @@ class Episode:
         self.versions = versions
         self._grading = grading
         self._funcs = {f.__name__: f for f in API_TOOLS}
+        self._takes_world = {f.__name__: "world" in inspect.signature(f).parameters for f in API_TOOLS}
         self._specs = [tool_spec(f) for f in API_TOOLS]
         self.max_output_chars = max_output_chars
         # Both copies are deep, as upstream's runner makes them: the world the tools write to must not share a
@@ -440,7 +446,7 @@ class Episode:
         # Upstream drops an empty object before a call: several models emit {} for an argument they mean to omit,
         # and the parameter's own default is what they meant. Mirrored here so a run behaves as upstream's would.
         args = {k: v for k, v in (args or {}).items() if not (isinstance(v, dict) and not v)}
-        if "world" in inspect.signature(func).parameters:
+        if self._takes_world[name]:
             args = {**args, "world": self.world}
         t0 = time.monotonic()
         try:
@@ -658,6 +664,9 @@ def contract_check(suite: Suite, task_ids: list[str]) -> dict:
                             f"schemas offered to the model were built here from the same functions")
 
     for tid in ids:
+        if suite.tasks[tid].turns != 1:
+            out["failed"].append(f"{tid}: upstream gives it {suite.tasks[tid].turns} non-system messages; this "
+                                 f"adapter hands the agent one, so the model would not see what upstream sends")
         ep = suite.episode(tid)
         try:
             base = ep.score()

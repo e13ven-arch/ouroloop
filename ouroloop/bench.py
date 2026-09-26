@@ -13,6 +13,7 @@ pointer rather than quietly doing something else.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -20,12 +21,23 @@ from typing import Callable
 from . import config as config_mod
 from .adapters import automationbench as ab
 from .benchmark import Budget, Results, RunManifest, SplitManifest, assign_splits, digest, summarise
+from .ledger import redact
 
 PHASES = ("smoke", "baseline", "collect", "improve", "evaluate", "report")
 IMPLEMENTED = ("smoke",)
 NOT_YET = {"baseline": "M2", "collect": "M3", "improve": "M5", "evaluate": "M6", "report": "M6"}
 BENCH_KEYS = {"domain", "upstream_path", "toolset", "seed", "ratios", "budget", "families", "smoke_tasks",
               "near_duplicate_threshold", "repeats"}
+# A key whose value is the secret itself, rather than the name of the variable that holds it (api_key_env is a
+# name and belongs in the manifest). redact() reads a value's shape and a bare key has none, so the key decides.
+SECRET_KEY = re.compile(r"(?i)(api[_-]?key|token|secret|passw(or)?d|credential)$")
+
+
+def model_identity(provider, table: dict) -> dict:
+    """What a run's model was, for the manifest: the whole [llm] table less any secret, because a setting that
+    changes results must not be the one that went unrecorded (docs/DESIGN.md §3.2)."""
+    config = {k: v for k, v in table.items() if k != "type" and not SECRET_KEY.match(k)}
+    return {"provider": provider.name, "model": getattr(provider, "model", ""), "config": redact(config)}
 
 
 @dataclass
@@ -127,7 +139,9 @@ def smoke(cfg: dict, base: str | Path = ".", *, tasks: list[str] | None = None, 
         out(f"           overlap {j}: {a} / {b} — read these before declaring [bench.families]")
 
     dev = manifest.ids("dev")
-    chosen = [t for t in (tasks or dev) if t in suite.tasks][:limit or bench.smoke_tasks]
+    # Named tasks are taken as named; only the default selection is capped by smoke_tasks.
+    chosen = [t for t in tasks if t in suite.tasks] if tasks else dev[:limit or bench.smoke_tasks]
+    chosen = chosen[:limit] if limit else chosen
     if tasks:
         outside = sorted(set(tasks) - set(dev))
         if outside:
@@ -193,9 +207,7 @@ def _attempt(cfg: dict, base: str | Path, bench: BenchConfig, suite: ab.Suite, m
     rt = config_mod.build_runtime(cfg, base)
     config_mod.register_builtin_points(rt)
     provider = config_mod.build_provider(cfg["llm"])
-    model = {"provider": provider.name, "model": getattr(provider, "model", ""),
-             **{k: v for k, v in cfg["llm"].items() if k in ("effort", "reasoning_effort", "temperature",
-                                                             "max_tokens", "fallback")}}
+    model = model_identity(provider, cfg["llm"])
     # The prompt of this run is whatever system prompt upstream ships with the tasks being attempted. They are
     # normally one per domain; hashing all of the distinct ones keeps the manifest honest if they are not.
     prompts = sorted({suite.tasks[t].system for t in chosen})

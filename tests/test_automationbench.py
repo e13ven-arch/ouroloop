@@ -349,3 +349,18 @@ class TestBudgeted:
     def test_it_offers_the_episode_s_tools(self, suite):
         surface = Budgeted(suite.episode(LEAD), Budget())
         assert [s.name for s in surface.specs()] == ["api_search", "api_fetch", "base64_encode"]
+
+
+class TestMultiTurnPrompt:
+    def test_a_task_upstream_sends_in_several_turns_is_reported(self, suite):
+        """The agent is given one first message, so flattening several would change what the model was sent."""
+        task = suite.tasks[LEAD]
+        multi = ab.BenchTask(task.task_id, task.example_id,
+                             task.messages + ({"role": "user", "content": "And also post a summary."},),
+                             task.tools, task.contract)
+        assert multi.turns == 2 and "And also post a summary." in multi.trigger
+        widened = ab.Suite("marketing", {LEAD: multi}, {LEAD: suite.grading(LEAD)}, suite.versions)
+        assert any("non-system messages" in f for f in ab.contract_check(widened, [LEAD])["failed"])
+
+    def test_the_public_tasks_are_one_turn_each(self, suite):
+        assert all(suite.tasks[t].turns == 1 for t in suite.ids())
