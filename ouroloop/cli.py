@@ -1,5 +1,5 @@
-"""Command line: ouroloop run | suite | decide | smoke | demo | research | plan | evolve | deploy | calibrate | gate |
-models | serve | host | hook | ledger."""
+"""Command line: ouroloop run | suite | bench | decide | smoke | demo | research | plan | evolve | deploy |
+calibrate | gate | models | serve | host | hook | ledger."""
 from __future__ import annotations
 
 import argparse
@@ -398,6 +398,23 @@ def cmd_hook(args) -> int:
     return 0
 
 
+def cmd_bench(args) -> int:
+    """A benchmark phase on a configured domain. Exit 1 means a check failed, not that the agent scored badly."""
+    from .adapters.automationbench import UpstreamError
+    from .bench import run_phase
+    cfg = config.load(args.config)
+    try:
+        report = run_phase(cfg, Path(args.config).resolve().parent, phase=args.phase, tasks=args.task,
+                           limit=args.limit, run_agent=not args.checks_only, replace_splits=args.replace_splits)
+    except (UpstreamError, NotImplementedError, ValueError) as e:
+        print(f"ouroloop bench: {e}", file=sys.stderr)
+        return 2
+    if args.out:
+        Path(args.out).write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        print(f"report: {args.out}")
+    return 0 if report.get("ok") else 1
+
+
 def replay_items(path: str | Path) -> list[dict]:
     return [json.loads(line) for line in Path(path).read_text(encoding="utf-8").splitlines() if line.strip()]
 
@@ -489,6 +506,7 @@ def cmd_ledger(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from .bench import PHASES
     config.load_dotenv(".env")
     p = argparse.ArgumentParser(prog="ouroloop")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -537,6 +555,17 @@ def main(argv: list[str] | None = None) -> int:
     su.add_argument("--repeats", type=int, default=1)
     su.add_argument("--cached", action="store_true", help="reuse recorded runs instead of running again")
     su.add_argument("--validate", action="store_true", help="check each task against its files and solution, no LLM")
+    bn = sub.add_parser("bench", help="AutomationBench: check the runner against upstream and run full tasks")
+    bn.set_defaults(fn=cmd_bench)
+    bn.add_argument("--config", required=True, help="e.g. examples/automationbench/marketing.toml")
+    bn.add_argument("--phase", choices=list(PHASES), default="smoke",
+                    help="smoke: versions, frozen splits, contract checks, input audit and a few dev attempts")
+    bn.add_argument("--task", action="append", help="only this task; repeatable (development tasks only)")
+    bn.add_argument("--limit", type=int, help="how many tasks to attempt (default: [bench] smoke_tasks)")
+    bn.add_argument("--checks-only", action="store_true", help="run the checks and call no model")
+    bn.add_argument("--replace-splits", action="store_true",
+                    help="freeze the task groups again; refused once the workspace holds results")
+    bn.add_argument("--out", help="write the phase report as JSON")
     r = sub.add_parser("research", help="research rounds on a configured workspace")
     r.set_defaults(fn=cmd_research)
     r.add_argument("--config", default="ouroloop.toml")

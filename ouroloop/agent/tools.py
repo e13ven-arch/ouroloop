@@ -1,9 +1,14 @@
-"""The four tools of the minimal agent: read, write, edit and bash. File tools stay inside the working directory."""
+"""The four tools of the minimal agent: read, write, edit and bash. File tools stay inside the working directory.
+
+`Tools` is one tool surface; a benchmark episode's business tools are another (adapters/automationbench.py).
+`ToolSurface` is what the agent loop needs of either.
+"""
 from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 from ..chat import ToolSpec
 
@@ -17,6 +22,21 @@ class ToolResult:
 
 class ToolError(Exception):
     pass
+
+
+@runtime_checkable
+class ToolSurface(Protocol):
+    """What the agent loop needs of a set of tools: what to offer the model, and how to run one call.
+
+    A surface may also carry a `workdir`; without one, the loop fills no {workdir} into the prompt and the
+    tool-gate context names no directory. The loop's file- and bash-specific handling (the deny list, automatic
+    reruns, compaction of read output) keys off the tool names of `Tools`, so a surface that has no tool called
+    read, write, edit or bash never reaches it.
+    """
+
+    def specs(self) -> list[ToolSpec]: ...
+
+    def run(self, name: str, args: dict) -> "ToolResult": ...
 
 
 def clip(text: str, limit: int) -> str:

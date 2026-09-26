@@ -1,0 +1,58 @@
+# AutomationBench, Marketing domain (docs/ROADMAP.md M1).
+#
+#   ouroloop bench --config examples/automationbench/marketing.toml --phase smoke --checks-only
+#   ouroloop bench --config examples/automationbench/marketing.toml --phase smoke
+#
+# The first form calls no model: it reports which upstream this is, freezes the task groups, checks that this
+# adapter scores what upstream scores, and audits what reaches the agent. The second also attempts a couple of
+# development tasks with [llm]. Paths are relative to this file. See README.md here for what to install.
+#
+# The later phases (baseline, collect, improve, evaluate, report) are not implemented and are refused.
+
+env_file = "../../.env"
+
+[workspace]
+root = "workspace-marketing"    # ledger/, sessions/, transcripts/, harness/, bench/marketing/
+
+[bench]
+domain = "marketing"
+# The upstream checkout. Or leave it out and set OUROLOOP_AUTOMATIONBENCH, or pip install it beside ouroloop.
+upstream_path = "~/workspace/AutomationBench"
+toolset = "api"                 # upstream's default toolset: api_search, api_fetch, base64_encode
+seed = 1                        # fixed before the first run: it decides the split, so changing it is a new experiment
+smoke_tasks = 2                 # how many development tasks the smoke phase attempts
+near_duplicate_threshold = 0.8  # report task pairs above this tool/assertion overlap as possible variants
+
+[bench.ratios]                  # intended proportions of task families; the frozen manifest records what they gave
+train = 0.5
+dev = 0.25
+test = 0.25
+
+[bench.budget]                  # the same limits for every version compared (docs/DESIGN.md §3.2)
+max_steps = 50                  # upstream's default --max-steps
+max_tool_calls = 200
+max_seconds = 900
+
+# [bench.families]              # task_id = family_id, for tasks that are variants of one workflow. Upstream ships
+# "marketing.social_mention_response" = "marketing.social_response"     # no variant field, so declare them here
+# "marketing.social_comment_response_queue" = "marketing.social_response"   # after reading the overlap report.
+
+[backends.mock]
+type = "mock"
+
+[points]
+default_backend = "mock"        # M1 runs no decision model: every point is shadow and takes its default
+
+# The target base model, chosen and frozen when the experiment starts. Record the provider, the exact model id,
+# the reasoning effort and any fallback: changing one of them is a different experiment (docs/DESIGN.md §3.2).
+[llm]
+type = "anthropic"
+model = "claude-opus-5"
+
+# [llm]                         # or an OpenAI-compatible endpoint
+# type = "openai_compat"
+# base_url = "https://open.bigmodel.cn/api/paas/v4"
+# api_key_env = "ZHIPUAI_API_KEY"
+# model = "glm-5.3"
+# source = "frontier_llm"       # a hosted model's answers are never a training target
+# max_tokens = 8192

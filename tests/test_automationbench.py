@@ -1,0 +1,351 @@
+"""The AutomationBench adapter, against the miniature upstream in tests/fake_upstream.
+
+What is checked here is the boundary, not the benchmark: the agent gets the task and the tools and nothing that
+grades it, the score comes from the world the tools left, a branch is independent of the world it came from, and a
+run that only narrates success is scored on what it wrote.
+"""
+import json
+import os
+
+import pytest
+
+from ouroloop.adapters import automationbench as ab
+from ouroloop.agent import AgentConfig
+from ouroloop.backends import KeywordBackend
+from ouroloop.benchmark import Budget, RunManifest, Results, SplitManifest, assign_splits
+from ouroloop.chat import ChatTurn, ScriptedChat, ToolCall
+from ouroloop.evolve.task_eval import Budgeted, run_attempt, run_tasks
+from ouroloop.points import builtin_points
+from ouroloop.runtime import Runtime
+
+LEAD = "marketing.lead_followup"
+HOLD = "marketing.unverified_request_hold"
+SLACK = "https://slack.com/api/chat.postMessage"
+HUBSPOT = "https://api.hubapi.com/crm/v3/objects/contacts"
+
+
+@pytest.fixture
+def suite(fake_upstream):
+    return ab.load_suite("marketing", fake_upstream)
+
+
+@pytest.fixture
+def splits(suite):
+    fams, rule = ab.families(suite)
+    entries = suite.entries(fams)
+    # Both tasks in dev: the point of these tests is the runner, and test must not be read by a development loop.
+    return SplitManifest("marketing", suite.versions, rule, entries, {f: "dev" for f in fams.values()})
+
+
+def solve(world_calls):
+    """A scripted model that makes these tool calls, then reports."""
+    turns = [ChatTurn("", [ToolCall(f"c{i}", name, args)], "tool_use")
+             for i, (name, args) in enumerate(world_calls)]
+    return ScriptedChat(turns + [ChatTurn("Done.", [], "end")])
+
+
+def runtime(tmp_path):
+    rt = Runtime(tmp_path / "ws", {"mock": KeywordBackend()}, "mock", seed=0)
+    for p in builtin_points():
+        rt.register(p)
+    return rt
+
+
+def factory(rt, provider, budget=None):
+    from ouroloop.evolve.task_eval import make_agent_factory
+    return make_agent_factory(rt, provider, budget=budget or Budget(max_steps=8, max_tool_calls=8))
+
+
+class TestProbe:
+    def test_a_directory_that_is_not_a_checkout_is_named(self, tmp_path):
+        assert "not an AutomationBench checkout" in ab.probe(tmp_path)["missing"][0]
+
+    def test_the_fake_reports_no_missing_pieces_and_its_own_runner(self, fake_upstream):
+        report = ab.probe(fake_upstream)
+        assert report["missing"] == [] and report["package"] == "0.0.0-fake"
+        # Without upstream's runner this adapter supplies the two functions itself, and says so.
+        assert report["runner"] == "ouroloop"
+        assert any("compute_allowed_services" in n for n in report["notes"])
+
+    def test_require_raises_with_what_to_do(self, tmp_path):
+        with pytest.raises(ab.UpstreamError, match="upstream_path"):
+            ab.require(tmp_path)
+
+
+class TestLoading:
+    def test_tasks_carry_the_prompt_the_tools_and_a_fingerprint(self, suite):
+        task = suite.tasks[LEAD]
+        assert task.example_id == 9001 and len(task.contract) == 64
+        assert "workflow automation agent" in task.system
+        assert "pricing guide" in task.trigger
+        assert "hubspot_update_contact" in task.tools
+
+    def test_a_task_the_agent_sees_carries_no_grading(self, suite):
+        task = suite.tasks[LEAD]
+        assert not hasattr(task, "assertions") and not hasattr(task, "initial_state")
+        assert "assertions" not in json.dumps(task.__dict__, default=str)
+
+    def test_the_services_a_world_is_subscribed_to_come_from_the_task(self, suite):
+        assert suite.grading(LEAD).allowed_services == ("hubspot", "slack")
+        assert suite.grading(HOLD).allowed_services == ("hubspot",)
+
+    def test_one_family_per_task_by_default(self, suite):
+        fams, rule = ab.families(suite)
+        assert rule == "task_name" and fams == {t: t for t in suite.ids()}
+
+    def test_declared_families_group_variants(self, suite):
+        fams, rule = ab.families(suite, {LEAD: "marketing.followup", HOLD: "marketing.followup"})
+        assert rule == "declared" and set(fams.values()) == {"marketing.followup"}
+
+    def test_a_declared_family_for_an_unknown_task_is_refused(self, suite):
+        with pytest.raises(ValueError, match="upstream does not have"):
+            ab.families(suite, {"marketing.nope": "f"})
+
+    def test_near_duplicates_are_reported_not_grouped(self, suite):
+        pairs = ab.near_duplicates(suite, 0.0)
+        assert pairs and pairs[0][2] < 1.0        # the two tasks overlap on hubspot, and are not merged
+        assert ab.families(suite)[0][LEAD] == LEAD
+
+
+class TestTools:
+    def test_the_injected_world_is_not_in_the_schema(self, suite):
+        ep = suite.episode(LEAD)
+        fetch = next(s for s in ep.specs() if s.name == "api_fetch")
+        assert "world" not in fetch.schema["properties"] and "world" not in fetch.description
+        assert fetch.schema["required"] == ["method", "url"]
+        assert fetch.schema["properties"]["params"]["description"].startswith("Query parameters")
+
+    def test_a_call_changes_the_world(self, suite):
+        ep = suite.episode(LEAD)
+        res = ep.run("api_fetch", {"method": "POST", "url": SLACK,
+                                   "body": json.dumps({"channel": "C1", "text": "quarterly pipeline review"})})
+        assert not res.is_error and ep.world.slack.messages[0]["text"] == "quarterly pipeline review"
+        assert ep.calls[0]["tool"] == "api_fetch" and ep.tool_calls == 1
+
+    def test_a_service_the_task_is_not_subscribed_to_is_refused(self, suite):
+        ep = suite.episode(HOLD)     # hubspot only
+        res = ep.run("api_fetch", {"method": "POST", "url": SLACK, "body": json.dumps({"text": "hi"})})
+        assert res.is_error and "no slack account" in res.output.lower()
+
+    def test_an_api_error_body_counts_as_an_error(self, suite):
+        ep = suite.episode(LEAD)
+        assert ep.run("api_fetch", {"method": "GET", "url": "https://example.test/nope"}).is_error
+        assert ep.errors == 1
+
+    def test_bad_arguments_end_the_call_not_the_episode(self, suite):
+        ep = suite.episode(LEAD)
+        assert ep.run("api_fetch", {"method": "POST"}).is_error          # no url
+        assert ep.run("nope", {}).is_error
+        assert not ep.run("api_search", {"query": "slack"}).is_error
+
+    def test_an_empty_object_means_the_argument_was_omitted(self, suite):
+        ep = suite.episode(LEAD)
+        res = ep.run("api_search", {"query": "slack", "top_k": {}})
+        assert not res.is_error and json.loads(res.output)
+
+    def test_a_live_api_key_is_hidden_while_a_tool_runs(self, suite, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-should-not-be-visible")
+        ep = suite.episode(LEAD)
+        ep.world.meta.allowed_services = list(ep.world.meta.allowed_services) + ["chatgpt"]
+        res = ep.run("api_fetch", {"method": "POST", "url": "https://api.openai.com/v1/chat/completions",
+                                   "body": json.dumps({"prompt": "hi"})})
+        assert json.loads(res.output)["live"] is False
+        assert os.environ["OPENAI_API_KEY"] == "sk-should-not-be-visible"   # restored afterwards
+
+
+class TestScoring:
+    def test_doing_nothing_scores_zero_and_finishing_scores_one(self, suite):
+        ep = suite.episode(LEAD)
+        assert ep.score().partial_credit == 0.0
+        ep.run("api_fetch", {"method": "PATCH", "url": HUBSPOT,
+                             "body": json.dumps({"id": "c1", "stage": "opportunity"})})
+        assert ep.score().partial_credit == 0.5
+        ep.run("api_fetch", {"method": "POST", "url": SLACK,
+                             "body": json.dumps({"channel": "C1", "text": "quarterly pipeline review"})})
+        score = ep.score()
+        assert score.success and score.partial_credit == 1.0 and (score.passed, score.scored) == (2, 2)
+
+    def test_the_inverse_task_passes_by_leaving_the_world_alone(self, suite):
+        assert suite.episode(HOLD).score().success is True
+        ep = suite.episode(HOLD)
+        ep.run("api_fetch", {"method": "PATCH", "url": HUBSPOT,
+                             "body": json.dumps({"id": "c1", "stage": "customer"})})
+        assert ep.score().success is False
+
+    def test_the_score_is_the_world_not_the_story(self, suite):
+        """A wrong write plus a confident summary scores the wrong write."""
+        ep = suite.episode(LEAD)
+        ep.run("api_fetch", {"method": "PATCH", "url": HUBSPOT,
+                             "body": json.dumps({"id": "c2", "stage": "opportunity"})})   # wrong contact
+        ep.run("api_fetch", {"method": "POST", "url": SLACK,
+                             "body": json.dumps({"channel": "C1", "text": "All done, moved Dana and posted the "
+                                                                          "quarterly pipeline review."})})
+        score = ep.score()
+        assert not score.success and score.partial_credit == 0.5     # the message passed, the stage did not
+
+    def test_the_state_the_scorer_sees_is_upstream_shaped(self, suite):
+        state = suite.episode(LEAD).state()
+        assert set(state) == {"info", "initial_state", "world"}
+        assert state["info"]["task_name"] == LEAD and state["info"]["assertions"]
+
+    def test_the_baseline_of_an_episode_is_independent_of_its_progress(self, suite):
+        ep = suite.episode(LEAD)
+        ep.run("api_fetch", {"method": "PATCH", "url": HUBSPOT,
+                             "body": json.dumps({"id": "c1", "stage": "opportunity"})})
+        assert ep.baseline_score().partial_credit == 0.0 and ep.score().partial_credit == 0.5
+
+
+class TestBranching:
+    def test_a_snapshot_does_not_move_with_the_world(self, suite):
+        ep = suite.episode(LEAD)
+        snap = ep.snapshot()
+        ep.run("api_fetch", {"method": "POST", "url": SLACK, "body": json.dumps({"text": "first"})})
+        assert getattr(snap.slack, "messages", []) == []
+        assert len(ep.world.slack.messages) == 1
+
+    def test_restoring_returns_the_world_and_keeps_the_snapshot_reusable(self, suite):
+        ep = suite.episode(LEAD)
+        snap = ep.snapshot()
+        ep.run("api_fetch", {"method": "POST", "url": SLACK, "body": json.dumps({"text": "branch a"})})
+        ep.restore(snap)
+        assert ep.world.slack.messages == []
+        ep.run("api_fetch", {"method": "POST", "url": SLACK, "body": json.dumps({"text": "branch b"})})
+        assert [m["text"] for m in ep.world.slack.messages] == ["branch b"]
+        assert getattr(snap.slack, "messages", []) == []
+
+
+class TestAgentInputs:
+    def test_the_payload_is_the_prompt_and_the_tools(self, suite):
+        ep = suite.episode(LEAD)
+        payload = ab.agent_payload(suite.tasks[LEAD], ep)
+        assert set(payload) == {"system", "task", "tools", "schemas"}
+        assert set(payload["tools"]) == {"api_search", "api_fetch", "base64_encode"}
+
+    def test_nothing_that_grades_the_task_reaches_the_agent(self, suite):
+        ep = suite.episode(LEAD)
+        found = ab.audit_inputs(suite.tasks[LEAD], suite.grading(LEAD), ab.agent_payload(suite.tasks[LEAD], ep))
+        assert found["leaks"] == []
+
+    def test_an_assertion_in_the_prompt_is_a_leak(self, suite):
+        grading = suite.grading(LEAD)
+        payload = {"system": "You may check " + json.dumps(grading.assertions[0], sort_keys=True), "task": "go"}
+        found = ab.audit_inputs(suite.tasks[LEAD], grading, payload)
+        assert any("appears verbatim" in line for line in found["leaks"])
+
+    def test_the_expected_state_reaching_the_agent_is_a_leak(self, suite):
+        payload = {"system": "s", "task": "go", "extra": {"assertions": []}}
+        assert ab.audit_inputs(suite.tasks[LEAD], suite.grading(LEAD), payload)["leaks"]
+
+    def test_a_phrase_the_task_asks_for_is_an_overlap_to_read_not_a_leak(self, suite):
+        ep = suite.episode(LEAD)
+        found = ab.audit_inputs(suite.tasks[LEAD], suite.grading(LEAD), ab.agent_payload(suite.tasks[LEAD], ep))
+        assert found["leaks"] == []
+        assert any("quarterly pipeline review" in line for line in found["overlaps"])
+
+
+class TestContractCheck:
+    def test_it_checks_no_task_it_was_not_given(self, suite):
+        """The per-task part scores a task's seeded state, so which tasks are read is the caller's decision."""
+        checks = ab.contract_check(suite, [])
+        assert checks["checked"] == [] and checks.get("baseline") is None
+        assert checks["notes"]            # the rubric and schema checks do not need a task and still ran
+
+    def test_the_fake_passes_and_says_what_it_could_not_compare(self, suite):
+        checks = ab.contract_check(suite, suite.ids())
+        assert checks["failed"] == []
+        assert checks["inverse_tasks"] == [HOLD]
+        assert any("create_rubric" in n for n in checks["notes"])
+        assert checks["baseline"][LEAD]["scored"] == 2
+
+    def test_it_reports_a_snapshot_that_is_not_independent(self, suite, monkeypatch):
+        ep = suite.episode(LEAD)
+        monkeypatch.setattr(type(ep.world), "model_copy", lambda self, deep=False: self, raising=False)
+        monkeypatch.setattr(ab.Suite, "episode", lambda self, tid: ep)
+        assert any("branches would not be independent" in f for f in ab.contract_check(suite, [LEAD])["failed"])
+
+
+class TestRunAttempt:
+    def test_a_solved_task_is_a_valid_passing_result(self, tmp_path, suite, splits):
+        rt = runtime(tmp_path)
+        run = RunManifest("base", "base", "dev", {"model": "scripted"}, data=splits.hash(),
+                          budget=Budget(max_steps=8, max_tool_calls=8))
+        provider = solve([("api_fetch", {"method": "PATCH", "url": HUBSPOT,
+                                         "body": json.dumps({"id": "c1", "stage": "opportunity"})}),
+                          ("api_fetch", {"method": "POST", "url": SLACK,
+                                         "body": json.dumps({"channel": "C1",
+                                                             "text": "quarterly pipeline review done"})})])
+        attempt = run_attempt(suite, LEAD, factory(rt, provider), run=run, splits=splits)
+        r = attempt.result
+        assert (r.validity, r.success, r.partial_credit) == ("valid", True, 1.0)
+        assert (r.termination, r.tool_calls, r.family_id, r.split) == ("finished", 2, LEAD, "dev")
+        assert r.evidence and r.contract == suite.tasks[LEAD].contract
+
+    def test_a_run_that_only_reports_success_fails(self, tmp_path, suite, splits):
+        run = RunManifest("base", "base", "dev", {"model": "scripted"}, data=splits.hash())
+        provider = ScriptedChat([ChatTurn("I moved Dana to opportunity and posted the quarterly pipeline review.",
+                                          [], "end")])
+        r = run_attempt(suite, LEAD, factory(runtime(tmp_path), provider), run=run, splits=splits).result
+        assert r.validity == "valid" and not r.success and r.partial_credit == 0.0 and r.tool_calls == 0
+
+    def test_a_provider_failure_is_an_invalid_attempt(self, tmp_path, suite, splits):
+        class Broken:
+            name, model, supports_history_edits = "broken", "broken", True
+
+            def chat(self, system, messages, tools):
+                raise RuntimeError("upstream API 500")
+
+        run = RunManifest("base", "base", "dev", {"model": "broken"}, data=splits.hash())
+        r = run_attempt(suite, LEAD, factory(runtime(tmp_path), Broken()), run=run, splits=splits).result
+        assert r.validity == "invalid" and r.termination == "harness_error"
+        assert "upstream API 500" in r.invalid_reason and r.success is False
+
+    def test_a_task_that_changed_upstream_is_not_scored(self, tmp_path, suite, splits):
+        stale = SplitManifest.from_json({**splits.to_json(), "hash": None,
+                                         "entries": [{**e.to_json(), "contract": "old"} if e.task_id == LEAD
+                                                     else e.to_json() for e in splits.entries]})
+        run = RunManifest("base", "base", "dev", {"model": "scripted"}, data=stale.hash())
+        r = run_attempt(suite, LEAD, factory(runtime(tmp_path), solve([])), run=run, splits=stale).result
+        assert r.validity == "invalid" and "changed since the split was frozen" in r.invalid_reason
+
+    def test_a_run_reading_another_split_is_refused(self, tmp_path, suite, splits):
+        run = RunManifest("base", "base", "test", {"model": "scripted"}, data=splits.hash())
+        with pytest.raises(ValueError, match="this run reads test"):
+            run_attempt(suite, LEAD, factory(runtime(tmp_path), solve([])), run=run, splits=splits)
+
+    def test_the_budget_stops_the_run_and_the_result_says_so(self, tmp_path, suite, splits):
+        budget = Budget(max_steps=8, max_tool_calls=1)
+        run = RunManifest("base", "base", "dev", {"model": "scripted"}, data=splits.hash(), budget=budget)
+        calls = [("api_search", {"query": "slack"})] * 3
+        r = run_attempt(suite, LEAD, factory(runtime(tmp_path), solve(calls), budget), run=run,
+                        splits=splits).result
+        assert r.termination == "budget" and r.validity == "valid" and r.tool_calls == 1
+
+    def test_a_test_task_session_is_held_out(self, tmp_path, suite):
+        fams, rule = ab.families(suite)
+        held = SplitManifest("marketing", suite.versions, rule, suite.entries(fams),
+                             {f: "test" for f in fams.values()})
+        run = RunManifest("base", "base", "test", {"model": "scripted"}, data=held.hash())
+        rt = runtime(tmp_path)
+        r = run_attempt(suite, LEAD, factory(rt, solve([])), run=run, splits=held).result
+        sessions, _ = rt.ledger.sessions()
+        assert sessions[r.evidence]["held_out"] is True and sessions[r.evidence]["task"] == LEAD
+
+    def test_run_tasks_records_every_attempt_as_it_finishes(self, tmp_path, suite, splits):
+        run = RunManifest("base", "base", "dev", {"model": "scripted"}, data=splits.hash(), repeats=2)
+        results = Results(tmp_path / "ws", "marketing")
+        rows = run_tasks(suite, [LEAD], factory(runtime(tmp_path), solve([])), run=run, splits=splits,
+                         results=results, repeats=2)
+        assert [r.attempt for r in rows] == [0, 1]
+        assert len(results.of_run(run.hash())) == 2
+
+
+class TestBudgeted:
+    def test_a_refused_call_tells_the_model_the_run_is_over(self, suite):
+        surface = Budgeted(suite.episode(LEAD), Budget(max_tool_calls=0))
+        res = surface.run("api_search", {"query": "slack"})
+        assert res.is_error and "budget is exhausted" in res.output and surface.exhausted
+        assert surface.episode.tool_calls == 0      # and the call never reached the world
+
+    def test_it_offers_the_episode_s_tools(self, suite):
+        surface = Budgeted(suite.episode(LEAD), Budget())
+        assert [s.name for s in surface.specs()] == ["api_search", "api_fetch", "base64_encode"]

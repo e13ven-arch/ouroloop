@@ -91,7 +91,10 @@ class Agent:
         self.session = session or new_id("s")
         self.session_meta = dict(session_meta or {})   # recorded with the session: task, held-out, agent models
         self.prompt = system or SYSTEM      # before {workdir} is filled in: the same prompt in every directory
-        self.system = self.prompt.replace("{workdir}", str(tools.workdir))
+        # A tool surface that is not a working directory (the business tools of a benchmark episode) has no
+        # workdir, and a prompt written for it has no {workdir} to fill in.
+        self.workdir = getattr(tools, "workdir", None)
+        self.system = self.prompt.replace("{workdir}", str(self.workdir)) if self.workdir else self.prompt
         self._items: list[dict] = []        # tool outputs that compaction may drop
         self._pending_retry: dict | None = None
         self._steps: list[dict] = []        # route decisions: which tier ran each step
@@ -152,6 +155,11 @@ class Agent:
         self._finish(text)
         self._emit("end", stop=stop, turns=turn, verified=self._verified)
         return AgentResult(text, turn, stop, self.session, self._verified)
+
+    def decision_ids(self) -> list[str]:
+        """The decisions this session made at the points the loop calls, in the order they were made. The ledger
+        holds them; this is the join a task result records without reading it back."""
+        return [d["decision"] for d in self._steps] + [s["decision"] for s in self._stops if s["decision"]]
 
     def _emit(self, kind: str, **data) -> None:
         _append_jsonl(self.rt.root / "transcripts" / f"{self.session}.jsonl",
@@ -232,7 +240,7 @@ class Agent:
         return res
 
     def _gate_ctx(self, call: ToolCall) -> dict:
-        return {"task": self._task_head(), "workdir": str(self.tools.workdir), "tool": call.name,
+        return {"task": self._task_head(), "workdir": str(self.workdir or ""), "tool": call.name,
                 "detail": describe(call)}
 
     def _deny(self, call: ToolCall, rule: str) -> None:
