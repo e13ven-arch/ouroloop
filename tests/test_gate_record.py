@@ -24,7 +24,7 @@ from ouroloop.evolve.pipeline import (default_errors, evolve_model, prepare_mode
                                       schedule)
 from ouroloop.evolve.registry import Registry
 from ouroloop.evolve.replay import EVALUATORS, EvalResult, labelled
-from ouroloop.evolve.train import SignatureTrainer, TrainError, TrainResult
+from ouroloop.evolve.train import TrainError, TrainResult
 from ouroloop.ledger import CalibrationStore, PromotionConflict, SpecStore
 from ouroloop.points import retry_point, stop_point
 from ouroloop.policy import Policy
@@ -34,6 +34,7 @@ from ouroloop.research import Candidate, run_round
 from ouroloop.runtime import Runtime
 from ouroloop.serve import make_server
 from ouroloop.stop import MOMENTS, StopGuard
+from ouroloop.trainers.signature import SignatureTrainer
 from ouroloop.types import Answer
 
 pytestmark = pytest.mark.usefixtures("loose_risk")
@@ -238,17 +239,17 @@ def test_research_candidates_of_every_kind_go_through_the_record(tmp_path):
     rt = workspace(tmp_path)
     spec = ("spec", "stop", {"instructions": "Is the task complete?"})
     evaluators = {"recipe": recipe_evaluator(OracleTrainer("R1", knows=SOME))}
-    res = run_round(rt, Proposes(spec, ("recipe", "stop", {"epochs": 1.0})), None, Model(), evaluators=evaluators)
+    res = run_round(rt, Proposes(spec, ("recipe", "stop", {"seed": 1})), None, Model(), evaluators=evaluators)
     # the spec changes nothing the model sees: rejected, and the round's one verdict ends the round
     assert [(e["kind"], e["gate"], e["record"], e["used"]) for e in res.evaluated] == [("spec", "rejected", "r_0001",
                                                                                          True)]
     collect(rt, 40, start=150)
-    res = run_round(rt, Proposes(("recipe", "stop", {"epochs": 1.0}), spec), None, Model(), evaluators=evaluators)
+    res = run_round(rt, Proposes(("recipe", "stop", {"seed": 1}), spec), None, Model(), evaluators=evaluators)
     assert [(e["kind"], e["gate"], e["record"]) for e in res.evaluated] == [("recipe", "accepted", "r_0002")]
     champion = Registry(rt.root).champion()["version"]
     # With no unused record, no candidate of any kind is promoted
     evaluators = {"recipe": recipe_evaluator(OracleTrainer("R3", 0.99))}
-    res = run_round(rt, Proposes(spec, ("recipe", "stop", {"epochs": 2.0})), None, Model(), evaluators=evaluators,
+    res = run_round(rt, Proposes(spec, ("recipe", "stop", {"seed": 2})), None, Model(), evaluators=evaluators,
                     record=records(rt.root)[-1])
     assert [(e["kind"], e["gate"], e["used"]) for e in res.evaluated] == [("spec", "rejected", False),
                                                                           ("recipe", "validated", False)]

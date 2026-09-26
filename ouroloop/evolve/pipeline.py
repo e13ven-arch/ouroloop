@@ -18,7 +18,7 @@ from .checks import CheckReport, check
 from .gate import INFRA, TEMPLATE, GateRecord, load_template, open_record, run
 from .registry import Registry
 from .replay import EvalResult, labelled, not_held_out, right, routing_default, scored, summarize
-from .train import DEFAULT_RECIPE, PATH_KEYS, RECIPE_KEYS, TrainJob, TrainResult
+from .train import TrainJob, TrainResult, path_keys, recipe_defaults
 
 
 def model_points(rt) -> list[str]:
@@ -125,6 +125,36 @@ def _parts(rt, record: GateRecord, points: list[str], recipe: dict, trainer) -> 
     return parts
 
 
+def full_recipe(trainer, recipe: dict | None) -> dict:
+    """`recipe` over the trainer's defaults (the framework's keys and its plugin's); any other key is a ValueError."""
+    defaults = recipe_defaults(trainer)
+    unknown = set(recipe or {}) - set(defaults)
+    if unknown:
+        raise ValueError(f"unknown recipe keys: {sorted(unknown)} (this trainer's: {sorted(defaults)})")
+    recipe = {**defaults, **(recipe or {})}
+    if recipe["focus"] is not None and not 0 < recipe["focus"] <= 1:
+        raise ValueError(f"recipe focus {recipe['focus']!r}: a share in (0, 1]")
+    return recipe
+
+
+def parent_ref(champion: dict | None, trainer, recipe: dict) -> str | None:
+    """The job's parent: the champion's model when the same plugin trained it, else [recipe] init_from (and then the
+    plugin's own init_from). A model of another kind is no parent: after [trainer] type changes, the first model of
+    the new kind starts where the config says. A card from before trainer plugins names none: TDE's."""
+    if champion:
+        backend = champion.get("backend") or {}
+        made_by = backend.get("trainer") or ("tde" if backend.get("type") == "model" else None)
+        if made_by == getattr(trainer, "name", None):
+            return champion.get("model_id")
+    return recipe.get("init_from")
+
+
+def research_context(trainer, recipe: dict | None) -> dict:
+    """What a research candidate of kind "recipe" is shown: the recipe it changes, and the keys it may set."""
+    return {"recipe": {**recipe_defaults(trainer), **(recipe or {})},
+            "recipe_keys": sorted(set(recipe_defaults(trainer)) - path_keys(trainer))}
+
+
 def prepare_model(rt, trainer, recipe: dict | None = None, *, record: GateRecord, points: list[str] | None = None,
                   registry: Registry | None = None, eval_states: list[str] = ()) -> ModelCandidate:
     """Build and check the data as `record` splits it (test sessions fixed at its freezing, held-out tasks never
@@ -132,12 +162,7 @@ def prepare_model(rt, trainer, recipe: dict | None = None, *, record: GateRecord
     record up and score champion and candidate on its test sessions. Infrastructure failures are caught: the
     candidate is inconclusive, and the record is used only if they came after the first test inference."""
     registry = registry or Registry(rt.root)
-    unknown = set(recipe or {}) - RECIPE_KEYS
-    if unknown:
-        raise ValueError(f"unknown recipe keys: {sorted(unknown)}")
-    recipe = {**DEFAULT_RECIPE, **(recipe or {})}
-    if recipe["focus"] is not None and not 0 < recipe["focus"] <= 1:
-        raise ValueError(f"recipe focus {recipe['focus']!r}: a share in (0, 1]")
+    recipe = full_recipe(trainer, recipe)
     points = points or model_points(rt)
     params = record.params
     version = registry.next_version()
@@ -153,8 +178,7 @@ def prepare_model(rt, trainer, recipe: dict | None = None, *, record: GateRecord
     if not checks.ok:
         return cand
     try:
-        cand.result = trainer.train(TrainJob(version, ds.dir, recipe,
-                                             parent.get("model_id") if parent else recipe.get("init_from")))
+        cand.result = trainer.train(TrainJob(version, ds.dir, recipe, parent_ref(parent, trainer, recipe)))
         cand.backend = trainer.backend(cand.result)
         card.update({"model_id": cand.result.model_id, "backend": cand.result.backend, "job": cand.result.job})
         registry.record(card)                   # the candidate's card, before it is evaluated
@@ -177,7 +201,7 @@ def dry_run_model(rt, trainer, recipe: dict | None = None, *, points: list[str] 
     """Build and check the data as the round's gate record splits it, then let the trainer prepare and validate the
     job without training. Uses nothing up."""
     record = open_record(rt)
-    recipe = {**DEFAULT_RECIPE, **(recipe or {})}
+    recipe = full_recipe(trainer, recipe)
     version = f"dryrun_{Registry(rt.root).next_version()}"
     parts = _parts(rt, record, points or model_points(rt), recipe, trainer)
     ds = build(rt, rt.root / "models" / version / "data", rows=parts)
@@ -185,8 +209,7 @@ def dry_run_model(rt, trainer, recipe: dict | None = None, *, points: list[str] 
     out = {"version": version, "round": record.round, "data": ds.stats(), "checks": asdict(checks)}
     if hasattr(trainer, "dry_run"):
         parent = Registry(rt.root).champion()
-        out["job"] = trainer.dry_run(TrainJob(version, ds.dir, recipe,
-                                              parent.get("model_id") if parent else recipe.get("init_from")))
+        out["job"] = trainer.dry_run(TrainJob(version, ds.dir, recipe, parent_ref(parent, trainer, recipe)))
     return out
 
 
@@ -226,18 +249,19 @@ def model_evaluation(rt, mc: ModelCandidate, registry: Registry, record: GateRec
                       calibrations=[c.gated(rt.points[name].spec_hash) for name, c in mc.calibrations.items()])
 
 
-def check_change(change: dict) -> None:
-    """A research candidate's recipe change: hyperparameters only, never the files and runs training reads
-    (PATH_KEYS), each of the type of its default (an int for a float; a number for one that is None by default).
-    Raises ValueError before any job starts."""
-    paths = sorted(set(change) & PATH_KEYS)
+def check_change(change: dict, trainer=None) -> None:
+    """A research candidate's recipe change: hyperparameters of `trainer` only (recipe_defaults: the framework's and
+    its plugin's), never the files and runs training reads (path_keys), each of the type of its default (an int for
+    a float; a number for one that is None by default). Raises ValueError before any job starts."""
+    defaults = recipe_defaults(trainer)
+    paths = sorted(set(change) & path_keys(trainer))
     if paths:
         raise ValueError(f"{paths} name data or runs: a person sets them in [recipe]")
-    unknown = sorted(set(change) - RECIPE_KEYS)
+    unknown = sorted(set(change) - set(defaults))
     if unknown:
         raise ValueError(f"unknown recipe keys: {unknown}")
     for key, value in change.items():
-        default = DEFAULT_RECIPE[key]
+        default = defaults[key]
         number = isinstance(value, (int, float)) and not isinstance(value, bool)
         ok = (isinstance(value, bool) if isinstance(default, bool)
               else number and not isinstance(value, float) if isinstance(default, int)
@@ -251,7 +275,7 @@ def recipe_evaluator(trainer, base_recipe: dict | None = None, **kw):
     """Evaluator for research candidates of kind "recipe": train with the changed recipe, gated by gate.run. A
     candidate changes hyperparameters of the right types, not the files and runs training reads (check_change)."""
     def evaluate(rt, cand, record: GateRecord) -> EvalResult:
-        check_change(cand.change)
+        check_change(cand.change, trainer)
         registry = Registry(rt.root)
         mc = prepare_model(rt, trainer, {**(base_recipe or {}), **cand.change}, record=record, registry=registry,
                            **kw)
@@ -278,7 +302,7 @@ def evolve_model(rt, trainer, recipe: dict | None = None, *, record: GateRecord 
     card = out["mc"].card if "mc" in out else {"version": None, "gate": g.outcome, "reasons": g.reasons, "points": []}
     experience.append(rt.root, {"kind": "model", "version": card["version"], "point": ",".join(card["points"]),
                                 "change": {k: v for k, v in card.get("recipe", {}).items()
-                                           if v != DEFAULT_RECIPE.get(k)},
+                                           if v != recipe_defaults(trainer).get(k)},
                                 "gate": g.outcome, "reasons": g.reasons, "record": record.round, "used": g.used,
                                 **({"verdict": "inconclusive"} if g.outcome == "inconclusive" else {}),
                                 **(meta or {})})

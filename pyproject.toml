@@ -41,6 +41,11 @@ ouroloop = "ouroloop.cli:main"
 [tool.setuptools.packages.find]
 include = ["ouroloop*"]
 
+[tool.setuptools.package-data]
+# host init sends bootstrap.sh; images and cloud instances start with start.sh. Keep release.PACKAGE_DATA the same:
+# code_version hashes, and host init sends, the modules and these files only.
+"ouroloop.hosts" = ["bootstrap.sh", "start.sh"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]          # the scenario packs in examples/

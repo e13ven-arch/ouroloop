@@ -12,6 +12,9 @@ from .decision import _digest
 from .ledger import file_key, locked, now, write_json
 
 PACKAGE = Path(__file__).resolve().parent
+# The package's files besides its modules that pip installs: pyproject.toml's [tool.setuptools.package-data], which
+# must say the same.
+PACKAGE_DATA = ("hosts/bootstrap.sh", "hosts/start.sh")
 
 
 @dataclass(frozen=True)
@@ -32,10 +35,18 @@ def harness_hash(harness: dict | None) -> str | None:
     return None if harness is None else _digest(harness)
 
 
+def package_files() -> list[Path]:
+    """The files of the ouroloop package that an install of it holds: its modules and PACKAGE_DATA. A stray file
+    beside them (.DS_Store, an editor's swap file) is never installed, so it is no part of the code."""
+    return sorted(p for p in PACKAGE.rglob("*") if p.is_file() and "__pycache__" not in p.parts
+                  and (p.suffix == ".py" or p.relative_to(PACKAGE).as_posix() in PACKAGE_DATA))
+
+
 def code_version() -> str:
-    """A hash of every file of the ouroloop package: the code that builds, gates and serves."""
+    """A hash of the ouroloop package's files (package_files): the code that builds, gates and serves, the same here
+    and in any install of it."""
     h = hashlib.sha256()
-    for f in sorted(p for p in PACKAGE.rglob("*") if p.is_file() and "__pycache__" not in p.parts):
+    for f in package_files():
         h.update(f.relative_to(PACKAGE).as_posix().encode() + b"\0" + f.read_bytes() + b"\0")
     return h.hexdigest()[:16]
 

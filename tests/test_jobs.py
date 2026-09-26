@@ -1,6 +1,7 @@
-"""The training job path (PLAN_v0.2 M9): TdeTrainer -> Compute -> worker.py -> TDE, on this machine against a stub
-TDE checkout, and over a stand-in for ssh; model refs served in-process and through `ouroloop serve`; Hugging Face
-through a stand-in package. Nothing trains, nothing leaves this machine."""
+"""The training job path (PLAN_v0.2 M9): JobTrainer -> Compute -> python -m ouroloop.worker -> the tde plugin ->
+TDE, on this machine against a stub TDE checkout, and over a stand-in for ssh; model refs served in-process and through
+`ouroloop serve`; Hugging Face through a stand-in package. Nothing trains, nothing leaves this machine. Hosts and the
+signature plugin end to end: test_hosts.py."""
 import importlib.machinery
 import importlib.util
 import json
@@ -25,12 +26,14 @@ from ouroloop.backends.http import HttpBackend
 from ouroloop.evolve import compute as compute_module
 from ouroloop.evolve.compute import SEP, Compute
 from ouroloop.evolve.gate import freeze_template, records
-from ouroloop.evolve.pipeline import check_change, evolve_model, recipe_evaluator
+from ouroloop.evolve.pipeline import check_change, evolve_model, recipe_evaluator, research_context
 from ouroloop.evolve.registry import Registry
-from ouroloop.evolve.train import CHECKOUT, DEFAULT_RECIPE, WORKER, TdeTrainer, TrainError, TrainJob
+from ouroloop.evolve.train import CHECKOUT, DEFAULT_RECIPE, JobTrainer, TrainError, TrainJob
+from ouroloop.release import code_version
 from ouroloop.research import Candidate
 from ouroloop.runtime import Runtime
 from ouroloop.serve import make_server
+from ouroloop.trainers.signature import SignatureTrainer
 from ouroloop.types import Question, Request
 from test_gate_record import ACT_GATE, CFG, collect, ctx
 
@@ -38,25 +41,29 @@ pytestmark = pytest.mark.usefixtures("loose_risk")
 
 STUB_TRAIN = """
 import json, os, pathlib, sys, time
-cfg = json.loads(pathlib.Path(sys.argv[sys.argv.index("--config") + 1]).read_text())
-mode = os.environ.get("STUB_TDE", "")
-if mode == "fail":
-    print("CUDA out of memory")
-    sys.exit(1)
-if mode == "hang":                      # until stopped, or until the worker that started it is gone
-    parent = os.getppid()
-    while os.getppid() == parent:
-        time.sleep(0.05)
-    sys.exit(0)
-if mode == "hold":                      # until stopped, whatever becomes of the worker; its pid in STUB_PID
-    pathlib.Path(os.environ["STUB_PID"]).write_text(str(os.getpid()))
-    time.sleep(60)
-    sys.exit(0)
-out = pathlib.Path(cfg["out_dir"])
-out.mkdir(parents=True, exist_ok=True)
-n = sum(1 for _ in open(pathlib.Path(cfg["data_dir"]) / "train.jsonl"))
-(out / "config.json").write_text(json.dumps({**cfg, "n_train": n}))
-(out / "best.pt").write_bytes(b"")
+class TrainConfig:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+def train(cfg):
+    mode = os.environ.get("STUB_TDE", "")
+    if mode == "fail":
+        print("CUDA out of memory", flush=True)
+        sys.exit(1)
+    if mode == "hang":                  # until stopped, or until the worker that started it is gone
+        parent = os.getppid()
+        while os.getppid() == parent:
+            time.sleep(0.05)
+        sys.exit(0)
+    if mode == "hold":                  # until stopped, whatever becomes of the worker; its pid in STUB_PID
+        pathlib.Path(os.environ["STUB_PID"]).write_text(str(os.getpid()))
+        time.sleep(60)
+        sys.exit(0)
+    out = pathlib.Path(cfg.out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    n = sum(1 for _ in open(pathlib.Path(cfg.data_dir) / "train.jsonl"))
+    (out / "config.json").write_text(json.dumps({**cfg.__dict__, "n_train": n}))
+    (out / "best.pt").write_bytes(b"")
+    return {"n_train": n}
 """
 STUB_SCHEMA = """
 import json, os, time
@@ -69,11 +76,6 @@ def load_jsonl(path):
     if os.environ.get("STUB_TDE") == "hang_validate":
         time.sleep(60)
     return [Example(json.loads(line)) for line in open(path) if line.strip()]
-"""
-STUB_CONFIG = """
-class TrainConfig:
-    def __init__(self, **kw):
-        self.__dict__.update(kw)
 """
 FAKE_HF = """
 import hashlib, json, os, shutil
@@ -111,19 +113,21 @@ def git(repo, *args) -> str:
 
 
 @pytest.fixture
-def repo(tmp_path) -> Path:
-    """A TDE checkout that trains nothing: its scripts/train.py writes a run from the config (STUB_TDE=fail exits 1,
-    STUB_TDE=hang runs until stopped or its worker is gone, STUB_TDE=hold until stopped), its tde package validates
-    what the job prepared (STUB_TDE=hang_validate: for a minute). A git repository."""
+def repo(tmp_path, monkeypatch) -> Path:
+    """A TDE checkout that trains nothing, importable by the jobs (PYTHONPATH): its tde.train writes a run from the
+    config (STUB_TDE=fail exits 1, STUB_TDE=hang runs until stopped or its worker is gone, STUB_TDE=hold until
+    stopped), its tde.schema validates what the job prepared (STUB_TDE=hang_validate: for a minute). A git
+    repository, with a parent run and replay data."""
     r = tmp_path / "tde"
-    for path, text in {"scripts/train.py": STUB_TRAIN, "tde/__init__.py": "", "tde/schema.py": STUB_SCHEMA,
-                       "tde/train.py": STUB_CONFIG, "runs/base/config.json": json.dumps({"backbone": "gliclass"}),
+    for path, text in {"tde/__init__.py": "", "tde/schema.py": STUB_SCHEMA, "tde/train.py": STUB_TRAIN,
+                       "runs/base/config.json": json.dumps({"backbone": "gliclass"}),
                        "data/replay.jsonl": "".join(EXAMPLE + "\n" for _ in range(500))}.items():
         (r / path).parent.mkdir(parents=True, exist_ok=True)
         (r / path).write_text(text)
     git(r, "init", "-q")
     git(r, "add", ".")
     git(r, "commit", "-qm", "stub")
+    monkeypatch.setenv("PYTHONPATH", str(r))
     return r
 
 
@@ -152,18 +156,19 @@ def decider(monkeypatch) -> list:
     return loads
 
 
-def trainer(repo, jobs, **kw) -> TdeTrainer:
-    return TdeTrainer(str(repo), sys.executable, jobs_root=str(jobs), poll_s=kw.pop("poll_s", 0.05),
-                      models=kw.pop("models", {"jobs_root": str(jobs)}), **kw)
+def trainer(repo, jobs, **kw) -> JobTrainer:
+    """The tde plugin as a job on this machine, under this Python; the first parent is the stub's runs/base."""
+    return JobTrainer("tde", kw.pop("options", {"init_from": str(repo / "runs" / "base")}), jobs_root=str(jobs),
+                      poll_s=kw.pop("poll_s", 0.05), models=kw.pop("models", {"jobs_root": str(jobs)}), **kw)
 
 
-def a_job(root, version="m_0001", parent="runs/base", **recipe) -> TrainJob:
+def a_job(root, version="m_0001", parent=None, **recipe) -> TrainJob:
     """A job as the pipeline hands it over: its data in <workspace>/models/<version>/data."""
     data = Path(root) / "models" / version / "data"
     data.mkdir(parents=True)
     (data / "train.jsonl").write_text((EXAMPLE + "\n") * 5)
     (data / "val.jsonl").write_text(EXAMPLE + "\n")
-    return TrainJob(version, data, {**DEFAULT_RECIPE, "init_from": parent, **recipe}, parent)
+    return TrainJob(version, data, {**DEFAULT_RECIPE, **recipe}, parent)
 
 
 def gone(pid: int) -> bool:
@@ -184,21 +189,22 @@ def held(path: Path) -> int:
 
 
 def left(tmp_path, jobs, name, tag) -> Path:
-    """A job of workspace `tag` whose worker sleeps a minute, started by a process that is gone by now, as a killed
-    control plane leaves its jobs."""
-    sleeper = tmp_path / "left" / "worker.py"
+    """A job of workspace `tag` whose worker sleeps a minute (a "python" that does), started by a process that is
+    gone by now, as a killed control plane leaves its jobs."""
+    sleeper = tmp_path / "left" / "python"
     sleeper.parent.mkdir(exist_ok=True)
-    sleeper.write_text("import time\ntime.sleep(60)\n")
+    sleeper.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(60)\n")
+    sleeper.chmod(0o755)
     spec = tmp_path / "left" / name / "spec.json"
     spec.parent.mkdir()
     spec.write_text(json.dumps({"workspace": tag}))
     subprocess.run([sys.executable, "-c", "import sys; from ouroloop.evolve.compute import Compute; "
-                    "Compute(None, sys.argv[1]).launch(sys.argv[2], sys.argv[3:], sys.executable)",
+                    "Compute(None, sys.argv[1]).launch(sys.argv[2], sys.argv[3:-1], sys.argv[-1])",
                     str(jobs), name, str(spec), str(sleeper)], check=True, cwd=CHECKOUT)
     return jobs / name
 
 
-def on_this_machine(args, input=None):
+def on_this_machine(args, input=None, timeout=None):
     """ssh to a host that is this machine: the command runs in a local shell."""
     if args[0] != "ssh":
         raise AssertionError(args)
@@ -212,22 +218,28 @@ def test_an_evolve_round_trains_a_job_and_the_next_one_starts_from_its_model(tmp
     rt = config.build_runtime(cfg, tmp_path)
     collect(rt, 150)
     freeze_template(rt.root, ACT_GATE)
-    tde = config.build_trainer({"type": "tde", "tde_repo": str(repo), "python": sys.executable,
-                                "jobs_root": str(jobs), "poll_s": 0.05}, cfg["models"])
-    recipe = {"init_from": "runs/base", "replay": "data/replay.jsonl", "replay_ratio": 0.5, "lr_head": 0.000123}
+    base = str(repo / "runs" / "base")
+    tde = config.build_trainer({"type": "tde", "jobs_root": str(jobs), "poll_s": 0.05}, cfg["models"],
+                               {"tde": {"init_from": base}})
+    recipe = {"replay": str(repo / "data" / "replay.jsonl"), "replay_ratio": 0.5, "lr_head": 0.000123}
     first = evolve_model(rt, tde, recipe)
     job = first["job"]
     assert first["gate"] == "accepted" and Registry(rt.root).champion()["version"] == first["version"]
-    assert first["model_id"] == job["id"] and first["backend"] == {"type": "model", "model": job["id"]}
+    assert first["model_id"] == job["id"]
+    assert first["backend"] == {"type": "model", "model": job["id"], "trainer": "tde", "options": {"init_from": base}}
     assert "run" not in first and job["host"] is None and job["id"].startswith("m_0001_")
-    assert job["result"] == {"model": job["id"], "tde_head": git(repo, "rev-parse", "HEAD").strip(),
-                             "tde_dirty": False, "hf_commit": None}
-    assert job["spec"]["workspace"] == str(rt.root.resolve()) and job["spec"]["tde"]["lr_head"] == 0.000123
-    # the job's directory: the four files it was given, and what the job wrote
+    result = job["result"]
+    assert (result["model"], result["ouroloop"], result["hf_commit"]) == (job["id"], code_version(), None)
+    assert result["plugin"] == {"name": "tde", "version": f"git {git(repo, 'rev-parse', 'HEAD').strip()}"}
+    assert result["host"]["gpu"] == [] and result["host"]["python"]
+    spec = job["spec"]
+    assert spec["workspace"] == str(rt.root.resolve()) and spec["recipe"]["lr_head"] == 0.000123
+    assert spec["ouroloop"]["code"] == code_version() and spec["parent"] == base
+    # the job's directory: the three files it was given, and what the job wrote
     d = jobs / job["id"]
     assert sorted(p.name for p in d.iterdir()) == ["exit", "log", "pid", "result.json", "run", "spec.json", "tde",
-                                                   "train.jsonl", "val.jsonl", "worker.py"]
-    assert (d / "worker.py").read_bytes() == WORKER.read_bytes() and (d / "exit").read_text().strip() == "0"
+                                                   "train.jsonl", "val.jsonl"]
+    assert (d / "exit").read_text().strip() == "0"
     run = json.loads((d / "run" / "config.json").read_text())
     n = sum(1 for _ in open(rt.root / "models" / "m_0001" / "data" / "train.jsonl"))
     assert run["init_from"] == str(repo / "runs" / "base") and run["backbone"] == "gliclass"
@@ -237,11 +249,11 @@ def test_an_evolve_round_trains_a_job_and_the_next_one_starts_from_its_model(tmp
     assert d_new.model == job["id"] and str(d / "run") in decider
 
     # the next round starts from the champion's model, and records that the TDE checkout changed
-    (repo / "scripts" / "train.py").write_text(STUB_TRAIN + "# changed\n")
+    (repo / "tde" / "train.py").write_text(STUB_TRAIN + "# changed\n")
     collect(rt, 40, start=150)
     second = evolve_model(rt, tde, recipe)
     assert second["parent"] == first["version"] and second["job"]["spec"]["parent"] == job["id"]
-    assert second["job"]["result"]["tde_dirty"] is True
+    assert second["job"]["result"]["plugin"]["version"].endswith("-dirty")
     run = json.loads((jobs / second["job"]["id"] / "run" / "config.json").read_text())
     assert run["init_from"] == str(d / "run") and run["backbone"] == "gliclass"
 
@@ -252,7 +264,7 @@ def test_a_failed_job_leaves_the_round_inconclusive_and_the_record_unused(tmp_pa
     rt = config.build_runtime({**CFG, "models": {"jobs_root": str(tmp_path / "jobs")}}, tmp_path)
     collect(rt, 150)
     freeze_template(rt.root, ACT_GATE)
-    card = evolve_model(rt, trainer(repo, tmp_path / "jobs"), {"init_from": "runs/base"})
+    card = evolve_model(rt, trainer(repo, tmp_path / "jobs"))
     (record,) = records(rt.root)
     assert card["gate"] == "inconclusive" and not record.used and "model_id" not in card
     assert "exit 1" in card["reasons"][0] and "CUDA out of memory" in card["reasons"][0]   # the end of its log
@@ -373,57 +385,64 @@ def test_a_recorded_pid_that_now_leads_another_job_is_not_this_job(tmp_path):
 
 def test_a_dry_run_is_the_job_up_to_training(tmp_path, repo, monkeypatch):
     monkeypatch.setenv("STUB_TDE", "fail")                  # it never gets to TDE's trainer
-    out = trainer(repo, tmp_path / "jobs").dry_run(a_job(tmp_path / "ws", replay="data/replay.jsonl"))
+    out = trainer(repo, tmp_path / "jobs").dry_run(a_job(tmp_path / "ws", replay=str(repo / "data/replay.jsonl")))
     assert out["check"] == {"ok": True, "counts": {"train": 10, "calibration": 1}, "backbone": "gliclass",
-                            "parent_checkpoint": False}
-    assert out["parent"] == str(repo / "runs" / "base") and not (tmp_path / "jobs" / out["job"] / "run").exists()
+                            "parent_checkpoint": False, "parent": str(repo / "runs" / "base")}
+    assert not (tmp_path / "jobs" / out["job"] / "run").exists()
+    with pytest.raises(TrainError, match="a path on the host is absolute"):       # no checkout to be relative to
+        trainer(repo, tmp_path / "jobs").dry_run(a_job(tmp_path / "ws", "m_0002", replay="data/replay.jsonl"))
 
 
 def test_a_job_without_a_parent_is_refused(tmp_path, repo):
     job = a_job(tmp_path / "ws", parent=None)
     with pytest.raises(ValueError, match="no parent"):
-        trainer(repo, tmp_path / "jobs").train(job)
+        trainer(repo, tmp_path / "jobs", options={}).train(job)
     assert not (tmp_path / "jobs").exists()
 
 
 def test_a_parent_job_resolves_in_the_jobs_directory_whatever_the_paths_were_relative_to(tmp_path, repo,
                                                                                           monkeypatch):
     monkeypatch.chdir(tmp_path)
-    tde = TdeTrainer(str(repo), sys.executable, jobs_root="jobs", poll_s=0.05, models={"jobs_root": "jobs"})
+    tde = JobTrainer("tde", {"init_from": str(repo / "runs" / "base")}, jobs_root="jobs", poll_s=0.05,
+                     models={"jobs_root": "jobs"})
     first = tde.train(a_job(tmp_path / "ws"))
     out = tde.dry_run(a_job(tmp_path / "ws", "m_0002", parent=first.model_id))
-    assert out["parent"] == str(tmp_path / "jobs" / first.model_id / "run")
+    assert out["check"]["parent"] == str(tmp_path / "jobs" / first.model_id / "run")
     with pytest.raises(TrainError, match="no run"):             # a job id without a run is not a path
         tde.dry_run(a_job(tmp_path / "ws", "m_0003", parent="m_0001_gone"))
 
 
-def test_a_trainer_checks_how_its_models_are_served_before_any_job(tmp_path, repo):
-    host = {"host": "u@gpu", "python": "~/tde/.venv/bin/python", "runner": Host()}
+def test_a_trainer_checks_how_its_models_are_served_before_any_job(tmp_path):
+    host = {"host": "u@gpu", "runner": Host()}
     for kw, why in (({"models": None}, "needs a \\[models\\] table"),
                     ({"models": {"jobs_root": "j", "port": 1}}, "may only set"),
                     ({**host, "models": {"jobs_root": "~/.ouroloop/jobs"}}, "stay there"),
                     ({**host, "models": {"jobs_root": "j", "hf_prefix": "o/p-"}}, "stay there"),
-                    ({**host, "models": {"url": "http://gpu:8765"}, "jobs_root": "jobs"}, "jobs_root 'jobs'"),
-                    ({**host, "models": {"url": "http://gpu:8765"}, "python": ".venv/bin/python"}, "python")):
+                    ({**host, "models": {"url": "http://gpu:8765"}, "jobs_root": "jobs"}, "jobs_root 'jobs'")):
         with pytest.raises(ValueError, match=why):
-            TdeTrainer("~/tde", **{"models": {"jobs_root": "j"}, **kw})
-    TdeTrainer("~/tde", **host, models={"url": "http://gpu:8765"})
-    TdeTrainer("~/tde", **host, models={"jobs_root": "j", "hf_prefix": "o/p-"}, transport="hf", hf_prefix="o/p-")
+            JobTrainer("tde", **{"models": {"jobs_root": "j"}, **kw})
+    JobTrainer("tde", **host, models={"url": "http://gpu:8765"})
+    JobTrainer("tde", **host, models={"jobs_root": "j", "hf_prefix": "o/p-"}, transport="hf", hf_prefix="o/p-")
+    # a host over ssh runs the jobs under the venv host init made there
+    assert JobTrainer("tde", **host, models={"url": "http://gpu:8765"}).python == "~/.ouroloop/venv/bin/python"
 
 
 # ---------------------------------------------------------------- over ssh
 class Host:
-    """Stands in for ssh and rsync to a host whose home is /home/u. Status reads fail `drop` times first."""
+    """Stands in for ssh and rsync to a host whose home is /home/u, prepared by host init for this ouroloop and the
+    tde plugin. Status reads fail `drop` times first."""
 
     def __init__(self, drop: int = 2, fail_launch: bool = False, fail_cancel: bool = False):
         self.commands, self.drop, self.polls, self.job = [], drop, 0, None
         self.fail_launch, self.fail_cancel = fail_launch, fail_cancel
 
-    def __call__(self, args, input=None):
+    def __call__(self, args, input=None, timeout=None):
         self.commands.append(args)
         out = ""
         command = args[-1] if args[0] == "ssh" else ""
-        if 'echo "$HOME"' in command:
+        if "/.ouroloop/host.json" in command:
+            out = json.dumps({"ouroloop": {"code": code_version()}, "plugins": {"tde": {"source": None}}})
+        elif 'echo "$HOME"' in command:
             out = "/home/u\n"
         elif command.startswith("mkdir"):
             self.job = re.search(r"(m_0001_[0-9a-f]+)", command).group(1)
@@ -437,29 +456,30 @@ class Host:
                 raise subprocess.CalledProcessError(255, args, stderr="ssh: connect to host gpu: timed out")
             out = "running\n" if self.polls == self.drop + 1 else "exited\n"
         elif command.startswith("cd") and SEP in command:
-            result = {"model": self.job, "tde_head": "a" * 40, "tde_dirty": False, "hf_commit": None}
+            result = {"model": self.job, "plugin": {"name": "tde", "version": "0.1.1"}, "hf_commit": None}
             out = f"0\n{SEP}\n{json.dumps(result)}\n\n{SEP}\nworker: done\n"
         return subprocess.CompletedProcess(args, 0, out, "")
 
 
 def test_over_ssh_status_reads_may_fail_and_no_spec_value_reaches_a_shell(tmp_path):
     host = Host(drop=2)
-    tde = TdeTrainer("~/tde", "~/tde/.venv/bin/python", host="user@gpu", runner=host, sleep=lambda s: None,
+    tde = JobTrainer("tde", {"init_from": "~/tde/runs/base"}, host="user@gpu", runner=host, sleep=lambda s: None,
                      models={"url": "http://127.0.0.1:9"})
     job = a_job(tmp_path / "ws", parent="runs/base", lr_head=0.000123)
     result = tde.train(job)
     assert result.model_id == host.job and result.job["host"] == "user@gpu" and host.polls == 4
     ssh = [a[-1] for a in host.commands if a[0] == "ssh"]
     launch = next(c for c in ssh if "setsid" in c)
-    assert f"jobs/{host.job} " in launch and "setsid nohup sh -c" in launch and "worker.py spec.json" in launch
+    assert f"jobs/{host.job} " in launch and "setsid nohup sh -c" in launch and "-m ouroloop.worker spec.json" in launch
+    assert '"$HOME"/.ouroloop/venv/bin/python' in launch        # the worker host init installed there
     assert launch.split(" > /dev/null")[0].endswith(f" {host.job}")    # the job id marks its processes
     for a in host.commands:                             # a dead peer is noticed in about a minute
         ssh = a if a[0] == "ssh" else shlex.split(a[a.index("-e") + 1])
         assert "ConnectTimeout=20" in ssh and "ServerAliveInterval=15" in ssh
     assert '"$HOME"' in launch                           # ~ is the host's home, not this machine's
     pushed = sorted(a[-1] for a in host.commands if a[0] == "rsync")
-    assert pushed == [f"user@gpu:/home/u/.ouroloop/jobs/{host.job}/{n}"
-                      for n in ("spec.json", "train.jsonl", "val.jsonl", "worker.py")]
+    assert pushed == [f"user@gpu:/home/u/.ouroloop/jobs/{host.job}/{n}" for n in ("spec.json", "train.jsonl",
+                                                                                  "val.jsonl")]
     shell = " ".join(ssh + pushed)          # what a shell on either side reads: spec values only reach it as a file
     for value in (str(tmp_path), "runs/base", "0.000123"):
         assert value not in shell
@@ -469,12 +489,12 @@ def test_a_job_whose_launch_failed_is_cancelled_or_left_to_the_next_sweep(tmp_pa
     for fail_cancel in (False, True):
         host = Host(fail_launch=True, fail_cancel=fail_cancel)
         ws = tmp_path / f"ws{fail_cancel}"
-        tde = TdeTrainer("~/tde", "~/tde/.venv/bin/python", host="user@gpu", runner=host, sleep=lambda s: None,
-                         models={"url": "http://127.0.0.1:9"})
+        tde = JobTrainer("tde", {"init_from": "~/tde/runs/base"}, host="user@gpu", runner=host,
+                         sleep=lambda s: None, models={"url": "http://127.0.0.1:9"})
         with pytest.raises(TrainError, match="could not start.*Connection reset"):
             tde.train(a_job(ws))
         assert any("kill -s TERM" in a[-1] for a in host.commands)          # it may have started
-        swept = ("user@gpu", "~/.ouroloop/jobs", str(ws.resolve())) in TdeTrainer._swept
+        swept = ("user@gpu", "~/.ouroloop/jobs", str(ws.resolve())) in JobTrainer._swept
         assert swept is not fail_cancel
 
 
@@ -494,7 +514,7 @@ def test_hf_commits_the_run_once_and_the_ref_loads_at_that_commit(tmp_path, repo
     (fake / "huggingface_hub").mkdir(parents=True)
     (fake / "huggingface_hub" / "__init__.py").write_text(FAKE_HF)
     monkeypatch.setenv("FAKE_HF", str(tmp_path / "hub"))
-    monkeypatch.setenv("PYTHONPATH", str(fake))          # the job's Python finds the stand-in
+    monkeypatch.setenv("PYTHONPATH", f"{fake}{os.pathsep}{repo}")      # the job's Python finds the stand-ins
     spec = importlib.util.spec_from_file_location("huggingface_hub", fake / "huggingface_hub" / "__init__.py")
     hub = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(hub)
@@ -529,7 +549,7 @@ def test_serve_loads_a_job_by_its_ref_and_refuses_anything_else(tmp_path, decide
     (jobs / "m_0001_abc" / "run").mkdir(parents=True)
     rt = Runtime(tmp_path / "ws", {"mock": KeywordBackend()}, "mock",
                  models={"jobs_root": str(jobs), "hf_prefix": "org/ouroloop-"})
-    server = make_server(rt, port=0)
+    server = make_server(rt, port=0, trainers={"tde": {}})
     threading.Thread(target=server.serve_forever, daemon=True).start()
     url = f"http://127.0.0.1:{server.server_port}"
     q = Question("noul", "done?")
@@ -548,6 +568,13 @@ def test_serve_loads_a_job_by_its_ref_and_refuses_anything_else(tmp_path, decide
             resp = httpx.post(f"{url}/decide", json={"model": bad, "requests": [
                 {"state": "s", "question": q.to_json()}]})
             assert resp.status_code == 400, bad
+        for trainer in ("os", "ouroloop.cli", "nosuch"):                 # a request never names a module to import
+            resp = httpx.post(f"{url}/decide", json={"model": "m_0001_abc", "trainer": trainer, "requests": [
+                {"state": "s", "question": q.to_json()}]})
+            assert resp.status_code == 400 and "no trainer plugin" in resp.json()["error"], trainer
+        signature = HttpBackend(url, model="m_0001_abc", trainer="signature")    # this package's: loads, or says no
+        with pytest.raises(httpx.HTTPStatusError):
+            signature.decide([Request("x", q)])
         with pytest.raises(httpx.HTTPStatusError):                   # a bad request is not sent again
             HttpBackend(url, model="../x", sleep=pauses.append).decide([Request("x", q)])
         assert not pauses
@@ -590,9 +617,10 @@ def test_the_http_backend_sends_a_chunk_again_after_a_failure(tmp_path):
 
 # ---------------------------------------------------------------- research candidates
 def test_a_research_recipe_sets_only_hyperparameters_of_their_types():
+    tde = JobTrainer("tde", models={"jobs_root": "j"})
     for good in ({"epochs": 2}, {"lr_head": 1e-4}, {"max_steps": 100}, {"focus": 0.5}, {"batch_size": 4},
                  {"gradient_checkpointing": False}):
-        check_change(good)
+        check_change(good, tde)
     for bad, why in (({"epochs": "3"}, "must be a number"), ({"batch_size": 2.5}, "must be an integer"),
                      ({"batch_size": True}, "must be an integer"),
                      ({"gradient_checkpointing": 1}, "must be true or false"),
@@ -600,11 +628,22 @@ def test_a_research_recipe_sets_only_hyperparameters_of_their_types():
                      ({"init_from": "runs/x"}, "a person"), ({"replay": "cal.jsonl"}, "a person"),
                      ({"out_dir": "/tmp"}, "unknown")):
         with pytest.raises(ValueError, match=why):
-            check_change(bad)
+            check_change(bad, tde)
+    # the keys are the framework's and the plugin's own: signature has no TDE knobs, nor does an in-process trainer
+    signature = JobTrainer("signature", models={"jobs_root": "j"})
+    for trainer in (signature, SignatureTrainer(), None):
+        check_change({"min_weight": 1.0, "focus": 0.5, "seed": 3}, trainer)
+        with pytest.raises(ValueError, match="unknown recipe keys: \\['lr_backbone'\\]"):
+            check_change({"lr_backbone": 5e-5}, trainer)
+    assert research_context(signature, {"min_weight": 1.0})["recipe_keys"] == ["focus", "min_weight", "seed"]
+    ctx = research_context(tde, {"replay": "~/general.jsonl"})
+    assert ctx["recipe"]["replay"] == "~/general.jsonl" and ctx["recipe"]["lr_head"] == 1e-4
+    keys = ctx["recipe_keys"]
+    assert "replay" not in keys and "init_from" not in keys and "w_rps" in keys
 
     class Untouched:
         def train(self, job):
             raise AssertionError("no job may start")
 
     with pytest.raises(ValueError, match="must be a number"):
-        recipe_evaluator(Untouched())(None, Candidate("recipe", "stop", {"lr_head": "fast"}, "h"), None)
+        recipe_evaluator(Untouched())(None, Candidate("recipe", "stop", {"min_weight": "fast"}, "h"), None)

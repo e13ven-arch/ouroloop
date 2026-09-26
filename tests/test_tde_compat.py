@@ -19,14 +19,18 @@ from ouroloop.backends import KeywordBackend, TdeBackend
 from ouroloop.decision import Choice, Score
 from ouroloop.demo import seed_ledger
 from ouroloop.evolve.build import build
-from ouroloop.evolve.train import DEFAULT_RECIPE, RECIPE_KEYS, prepare_job, tde_config
+from ouroloop.evolve import train
 from ouroloop.points import retry_point
 from ouroloop.runtime import Runtime
+from ouroloop.trainers import tde
+from ouroloop.trainers.tde import prepare_job, tde_config
 from ouroloop.types import Question, Request
 
 REPO = Path(os.environ.get("TDE_REPO", Path(__file__).resolve().parents[2] / "jev"))
 needs_tde = pytest.mark.skipif(not (REPO / "tde" / "schema.py").exists(), reason="TDE repository not found")
 has_tde = importlib.util.find_spec("tde") is not None
+DEFAULT_RECIPE = {**train.DEFAULT_RECIPE, **tde.RECIPE}        # the recipe of a tde trainer
+RECIPE_KEYS = set(DEFAULT_RECIPE)
 SNAKE = Path(__file__).resolve().parents[1] / "examples" / "snake"
 
 
@@ -53,9 +57,14 @@ def test_built_examples_pass_tdes_own_validation(tmp_path):
     sys.modules["tde_schema"] = schema          # dataclasses resolve annotations through sys.modules
     spec.loader.exec_module(schema)
     ds = build(all_primitives(tmp_path), tmp_path / "data")
+    assert ds.splits["val"] and {e["split"] for e in ds.splits["val"]} == {"val"}      # the framework's name
+    # what TDE reads: the job's files as the plugin prepares them (val -> TDE's "calibration", which it selects on)
+    prepare_job(str(tmp_path / "data"), json.dumps(tde_config(DEFAULT_RECIPE, "run", None, "m_0001")))
     seen = set()
-    for part in ds.splits.values():
-        for e in part:
+    for name, split in (("train", "train"), ("calibration", "calibration")):
+        rows = [json.loads(line) for line in (tmp_path / "data" / "tde" / f"{name}.jsonl").read_text().splitlines()]
+        assert rows and {e["split"] for e in rows} == {split}
+        for e in rows + ds.splits["test"]:
             schema.DecisionExample.from_dict(e).validate()
             seen.add(e["primitive"])
     assert seen == {"noul", "choice", "score"}
@@ -75,12 +84,12 @@ def test_generated_config_only_uses_real_trainconfig_fields():
 # ---------------------------------------------------------------- the local TDE path on the GPU host
 @pytest.mark.skipif(has_tde, reason="tde is importable here")
 def test_without_tde_the_local_path_fails_at_once_and_says_why(tmp_path):
-    with pytest.raises(ImportError, match="TDE venv"):
-        TdeBackend("runs/m_0001")
-    with pytest.raises(ImportError, match="TDE venv"):
-        config.build_backend({"type": "tde", "run": "runs/m_0001"})
-    with pytest.raises(ImportError, match="TDE venv"):
-        config.build_backend({"type": "model", "model": "m_0001_x"}, {"jobs_root": str(tmp_path)})
+    for build in (lambda: TdeBackend("runs/m_0001"), lambda: config.build_backend({"type": "tde", "run": "r"}),
+                  lambda: config.build_backend({"type": "model", "model": "m_0001_x"}, {"jobs_root": str(tmp_path)}),
+                  lambda: config.build_backend({"type": "model", "model": "m_0001_x", "trainer": "tde"},
+                                               {"jobs_root": str(tmp_path)})):
+        with pytest.raises(ImportError, match="host init local --trainer tde"):
+            build()
 
 
 def test_the_tde_backend_keeps_two_runs_loaded_and_lets_go_of_them_for_training(monkeypatch):
@@ -196,6 +205,9 @@ def test_a_tilde_in_a_run_path_is_the_training_machines_home(tmp_path):
     assert written["out_dir"] == os.path.expanduser("~/tde/ouroloop_jobs/m_0001/run")      # not a directory named ~
     assert written["init_from"] == os.path.expanduser("~/tde/runs/base")
     assert (data / "tde" / "calibration.jsonl").read_text() == ""      # no val split: TDE has nothing to select on
+    (data / "val.jsonl").write_text(json.dumps({"id": 2, "split": "val"}) + "\n")
+    prepare_job(str(data), json.dumps(cfg))
+    assert json.loads((data / "tde" / "calibration.jsonl").read_text()) == {"id": 2, "split": "calibration"}
 
 
 def test_the_snake_recipe_is_small_and_fast():
@@ -203,7 +215,9 @@ def test_the_snake_recipe_is_small_and_fast():
     assert set(recipe) <= RECIPE_KEYS
     cfg = tde_config({**DEFAULT_RECIPE, **recipe}, "run", None, "m_0001")
     assert cfg["epochs"] == 1.0 and 1000 <= cfg["train_limit"] <= 10000 and not cfg["gradient_checkpointing"]
-    assert recipe["init_from"].endswith("tde-general-v0.1") and recipe["min_weight"] == 1.0
-    for name in ("demo.toml", "offline.toml"):
+    trainer = config.load(SNAKE / "demo.toml")["trainer"]
+    assert trainer["options"]["init_from"].endswith("tde-general-v0.1") and recipe["min_weight"] == 1.0
+    for name, plugin in (("demo.toml", "tde"), ("offline.toml", "signature")):
         cfg = config.load(SNAKE / name)
         assert cfg["points"]["move"]["act"] and set(cfg["recipe"]) <= RECIPE_KEYS
+        assert cfg["trainer"]["type"] == plugin and cfg["trainer"]["options"] == cfg["trainers"][plugin]

@@ -4,15 +4,16 @@
 
 ## 在 GPU 主机上跑
 
-整个循环都在 GPU 主机上：TDE 的 venv（已装 torch+CUDA 和 tde）里装上 ouroloop，推理在进程内，训练是子进程。
+整个循环都在 GPU 主机上：推理在进程内，训练是同一台机器上的作业。先准备一次这台机器：`ouroloop host init` 建 `~/.ouroloop/venv`，装上这份 ouroloop 和 `[trainers.tde] source` 指向的 TDE（连同 torch 等依赖，见 `docs/TRAINING_HOSTS.md`），之后用这个 venv 的 Python 跑。
 
 ```bash
-cd ~/ouroloop && pip install -e .     # 装进 TDE 的 venv
-ouroloop demo snake --generations 2   # 在 ouroloop 的 checkout 根目录运行；先试两代
-ouroloop demo snake                   # 默认 8 代，每代 80 局
+cd ~/ouroloop
+python -m ouroloop host init local --config examples/snake/demo.toml   # 一次
+~/.ouroloop/venv/bin/python -m ouroloop demo snake --generations 2     # 在 checkout 根目录运行；先试两代
+~/.ouroloop/venv/bin/python -m ouroloop demo snake                     # 默认 8 代，每代 80 局
 ```
 
-`demo.toml` 里的 `tde_repo`、`[backends.general] run` 和 `[recipe] init_from` 按本机 TDE checkout 和通用 checkpoint（tde-general-v0.1）的位置改；也可以复制成 `demo.local.toml`（git 忽略），用 `--config examples/snake/demo.local.toml`。同一个工作区再跑会接着上一代往下跑；`--dir` 换一个工作区。
+`demo.toml` 里的 `[trainers.tde]`（TDE checkout 的位置 `source`，第一个模型的父模型 `init_from`）和 `[backends.general] run` 按本机 TDE checkout 和通用 checkpoint（tde-general-v0.1）的位置改；也可以复制成 `demo.local.toml`（git 忽略），用 `--config examples/snake/demo.local.toml`。同一个工作区再跑会接着上一代往下跑；`--dir` 换一个工作区。
 
 没有 GPU 时用笔记本版：`ouroloop demo snake --config examples/snake/offline.toml`，用一个按局部棋面计数的小模型（签名模型）代替 TDE，几分钟跑完，不需要任何 key。
 

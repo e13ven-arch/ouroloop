@@ -43,9 +43,16 @@ backend = "champion"
 act = true
 explore = 0.05
 
-[trainer]
+[trainer]                       # the signature plugin through the real job path, on this machine, under this Python
 type = "signature"
+jobs_root = "~/.ouroloop/jobs"
+poll_s = 0.2                    # a job takes about a second
+
+[trainers.signature]
 signature = "examples.snake.rules:signature"
+
+[models]                        # the trained models, loaded in-process from their jobs' directories
+jobs_root = "~/.ouroloop/jobs"
 
 [recipe]
 min_weight = 1.0

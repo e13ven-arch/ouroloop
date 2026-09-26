@@ -106,7 +106,8 @@ def test_example_config_builds_without_network():
     assert set(rt.points) == {"retry"} and judge.name == "jev" and llm.model == "claude-opus-5"
     assert rt.backend_for("retry").name == "jev"                    # "champion" falls back to [registry] base
     assert agent.budget == 2 and "min_items" not in kw and "recipe" in kw["evaluators"]
-    assert kw["context"]["recipe"]["replay"] == "data/general/train.jsonl"
+    assert kw["context"]["recipe"]["replay"] == "~/tde-data/general/train.jsonl"
+    assert cfg["trainer"]["options"] == cfg["trainers"]["tde"] and cfg["trainers"]["tde"]["source"] == "~/tde"
     config.check_frozen(cfg)                        # it starts once the gate is frozen: no gate parameters in it
 
 
