@@ -8,6 +8,15 @@
 
 ---
 
+## 2026-09-27 M1：先有运行契约，再有分数
+
+- 做了什么：`benchmark.py`（冻结的任务分组、运行 manifest、`TaskResult`、预算）、`adapters/automationbench.py`（延迟导入上游、`api` 工具集、官方评分、快照、契约检查与输入审计）、`evolve/task_eval.py`（一次尝试、有效性、预算）、`bench.py` 与 `ouroloop bench --phase smoke`、`examples/automationbench/marketing.toml`，以及 `tests/fake_upstream/`——上游的微缩替身，使 88 个新测试不需要真实上游。
+- 读源码确认的上游事实（`zapier/AutomationBench` @ `4a8e106`，2026-08-04）：默认工具集是 `api`，只有三个函数（`api_search`、`api_fetch`、`base64_encode`），都是 pydantic `WorldState` 上的普通同步函数，所以评分和工具都不需要 `verifiers`；`rubric.partial_credit` 和 `task_completed_correctly` 是 state dict 上的纯函数，后者读前者缓存的值，因此调用顺序是契约的一部分。公开 Marketing 是 100 个任务，`info` 只有 `zapier_tools` / `initial_state` / `assertions` 三个键，**没有 family 或 variant 字段**——所以默认一任务一家族，只保证同一任务的尝试、分支与重复不跨 split；`near_duplicates` 报工具与断言重叠高的任务对供人工声明。`automationbench.tools` 会连带导入整个 Zapier 工具注册表，其中一个模块在模块级 `from openai import OpenAI`，所以哪怕只用 `api` 工具集也必须装 `openai`。`tools/zapier/chatgpt/completions.py` 在有 `OPENAI_API_KEY` 时会真的调 OpenAI，没有 key 时返回固定串；公开 Marketing 的 100 个任务都没有 seed 或授予 chatgpt，上游的服务订阅门也会拒，episode 仍在工具运行期间隐藏这个变量，双重保险。
+- 证据：测试过程发现两个真实缺陷，都先写了会失败的测试。其一，`WorldState(**grading.initial_state)` 与评分时重建的初始世界共享嵌套结构，agent 改完 HubSpot 阶段后，"初始状态"里也变了，于是那条断言被判成"本来就成立"而被排除出分母，`partial_credit` 从 0.5 变回 0.0——上游 runner 自己 deep-copy 过初始状态，适配器没有；现在两份都是深拷贝。其二，leak 审计原先在 `json.dumps(payload)` 上做子串匹配，一条粘进 system prompt 的断言在那里是转义的（`\"type\"`），搜不到；现在遍历结构里的每个字符串和每个键。契约检查也因此发现自己的洞：`contract_check` 原来在 `task_ids` 为空时回退到全部任务，会去读 test 任务的初始状态得分，现在必须指名。
+- 因此改了：`ids()` 必须指名 split（空调用报错，不返回全部也不返回空）；冻结的 split 文件被改派时报错，工作区已有结果时连 `--replace-splits` 也拒绝；未测到的费用一路保持 `null`，汇总另报"缺在几次尝试上"；infrastructure 类终止不能是有效尝试；test split 的 session 带 `held_out`，已有的建数据路径取不到；M2～M6 的 phase 名报错并指向路线图，不悄悄做别的事。
+- 尚未做：没在真实 checkout 上跑过（适配器是按上游源码写的，`contract_check` 正是为此而写），没有真实模型运行，没有真实成绩，`zapier` / `limited_zapier` 工具集未接。
+- commit：a10572a
+
 ## 2026-09-27 主线更新：AutomationBench 业务闭环与领先模型比较（v0.4）
 
 **目标。** 在 AutomationBench Marketing 上跑通执行反馈、改进、可选训练、完整任务评测和版本更新。外部比较对象为实验启动时业界领先模型；同底座前后比较验证迭代收益，同一 prompt/workflow 下的默认策略与小决策模型比较验证训练的增量价值。

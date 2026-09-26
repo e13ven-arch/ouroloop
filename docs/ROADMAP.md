@@ -1,7 +1,7 @@
 # ouroloop 路线图（v0.4）
 
 > 2026-09-27。目标与协议以 [DESIGN.md](DESIGN.md) 为准；本路线图把 AutomationBench 闭环拆为可执行工作项。
-> 当前仍处于设计阶段，以下 M1～M6 均未完成。本文的 `bench` 子命令、配置和新增文件是**拟实现接口**，不是已有用法。每项实现后才更新状态。
+> **M1 的运行契约与检查已实现**（`ouroloop bench --phase smoke`）；真实 checkout 与真实模型上的运行尚未做。M2～M6 未实现，对应 phase 名被明确拒绝。每项实现后才更新状态。
 
 ## 0. 当前基础与缺口
 
@@ -33,22 +33,35 @@ M6 最终比较与交付 ← M5 自动迭代 ← M4 小模型训练与完整任�
 
 **目的：** 能用同一驱动器运行目标模型和领先模型，拿到与官方语义一致的结果。
 
-**改动：**
+**状态：已实现运行契约、适配器与检查；尚未在真实 checkout 和真实模型上跑过。**
 
-- 新建 `ouroloop/benchmark.py`：任务 manifest、family/split、运行 manifest、TaskResult，固定版本和预算。
-- 新建 `ouroloop/adapters/automationbench.py`：初始化、工具发现与调用、结束评分、销毁隔离环境；评分入口与 agent 可见工具分开。
-- 复用 `agent/` 与 `providers/`，允许业务工具接口；保留旧文件/bash 场景。
-- 新建 `examples/automationbench/marketing.toml`、任务分组 manifest 与可选依赖说明。上游运行环境与核心依赖隔离，记录兼容 Python 和包版本。
-- 在首次模型运行前固定 train/dev/test 分组；先检查上游任务家族/变体信息，不能直接按轨迹随机拆分。
+**已改动：**
 
-**验收：**
+- `ouroloop/benchmark.py`：任务分组 manifest（冻结后不可改派，重复冻结同一内容不算改动）、运行 manifest、`TaskResult`、预算。两条规则写在记录里而不是交给调用方：split 按家族分配，所以同一任务的全部尝试、分支和重复都落在同一侧；`ids()` 必须指名 split，空调用报错。未测到的费用一路保持缺失，不在汇总里当成零。
+- `ouroloop/adapters/automationbench.py`：延迟导入上游，缺什么就说缺什么、为了什么而缺。agent 拿到的是 `BenchTask`（prompt 与被授予的工具名）；断言和初始状态在它收不到的 `Grading` 里，评分只读工具留下的世界。只接上游默认的 `api` 工具集（`api_search`、`api_fetch`、`base64_encode`），其他工具集直接拒绝而不是悄悄替换。
+- `ouroloop/evolve/task_eval.py`：一次尝试 = 新 episode + 新 agent + 官方评分；预算超出记 `budget` 终止，provider 或 harness 失败记无效尝试而不是零分。test split 的 session 标记 `held_out`，已有的建数据路径取不到它。
+- `ouroloop/bench.py` 与 `cli.py`：`ouroloop bench --config ... --phase smoke [--checks-only]`。
+- `examples/automationbench/marketing.toml` 与同目录 README：依赖、命令、smoke 阶段能与不能证明什么。
+- `tests/fake_upstream/`：上游的微缩替身（两个任务，其中一个是"正确做法是什么都不做"的反向任务），使适配器的测试不需要真实上游。
 
-- 新增适配器契约检查：同一终态通过官方评分器与适配器得到相同 success/partial_credit；错误写入不能被文字总结变成成功。
-- 输入审计证明没有断言、参考答案或未来环境状态进入 agent；模拟操作不会调用真实 SaaS。
-- 少量预定开发任务完成真实模型运行，输出 TaskResult、工具轨迹、终止原因和完整 manifest；尚不宣称能力提升。
-- 验证快照或 reset+前缀重放是否可用，记录限制，供 M3 决定信号路径。
+**已验收：**
 
-**拟实现入口：** `ouroloop bench --config examples/automationbench/marketing.toml --phase smoke`。
+- 适配器契约检查 `contract_check`：在依赖装齐时，把官方 rubric 入口、服务订阅门（`compute_allowed_services`）和工具 schema 与上游自己的实现对比，并说明哪几项比不了；对每个被指名的任务核验快照与世界互不影响，再核验一次与断言无关的写入不会移动分数。
+- 错误写入不能被文字总结变成成功：有测试写错联系人再发一条"已完成"的消息，得分只反映写错的那一半。
+- 输入审计：agent 可见载荷只有 system prompt、触发消息和工具 schema；断言、期望值或初始状态出现在其中就是 leak。prompt 里合法出现的长字符串（任务本身要求写的措辞）列为待人工查看的 overlap，不判失败。
+- 模拟操作不调用真实 SaaS：任务只订阅它 seed、断言或授予工具的服务，其余被上游以凭据错误拒绝；此外 episode 在工具运行期间隐藏 `OPENAI_API_KEY`，使模拟的 ChatGPT 动作走上游自带的离线分支。
+- 隔离与分支：`Episode.snapshot/restore` 基于世界的深拷贝；上游 `WorldState` 是 pydantic 模型，`contract_check` 逐任务核验而不是假定。reset+前缀重放尚未需要，留到 M3 按信号路径决定。
+- 374 个测试通过、1 个跳过（新增 88 个）。检查过程发现两个真实缺陷：初始状态与工具写入的世界共享嵌套结构，导致 agent 满足的断言被当成"本来就成立"而被排除出分母；leak 审计原先搜索 JSON 渲染，prompt 里粘进去的断言在那里是转义的，搜不到。
+
+**尚未做（M1 剩余）：**
+
+- 未在真实 checkout 上运行。适配器是按上游 `4a8e106`（2026-08-04）的源码写的，验证对象是微缩替身；`contract_check` 就是为了在真实 checkout 上跑而写的，但还没跑过。
+- 未做真实模型运行，因此没有真实的 `TaskResult`、轨迹和用量。需要凭据与预算。
+- 未对真实的 100 个 Marketing 任务冻结 split。上游不提供 family/variant 字段（已读源码确认），因此默认一任务一家族，`near_duplicates` 报告工具与断言重叠高的任务对供人工在 `[bench.families]` 里声明；尚未声明。
+- 费用未测：`cost_usd` 为 null，汇总说明缺在几次尝试上，不报成零。
+- `zapier` / `limited_zapier` 工具集未接（schema 由另一个包生成）。
+
+**入口：** `ouroloop bench --config examples/automationbench/marketing.toml --phase smoke`。
 
 ### M2：建立领先模型与目标 agent 基线
 
@@ -68,7 +81,7 @@ M6 最终比较与交付 ← M5 自动迭代 ← M4 小模型训练与完整任�
 - 输出一份有轨迹证据的失败诊断，选出**一个**优先干预点及其可见输入、动作集合、默认策略。
 - 如果基线尚不稳定，先修运行器；如果失败没有可学习的决策结构，记录并调整切入点。
 
-**拟实现入口：** `ouroloop bench --config examples/automationbench/marketing.toml --phase baseline`。
+**拟实现入口：** `ouroloop bench --config examples/automationbench/marketing.toml --phase baseline`（现在被拒绝并指向本节）。
 
 ### M3：验证一次有效干预，构造训练反馈
 
@@ -179,4 +192,4 @@ ouroloop bench --config examples/automationbench/marketing.toml --phase report
 
 不再以游戏分数、必须改特征、逐代单调、训练研究员或大规模消融矩阵作为首个交付前提。记录完整系统的有效性，并保留一个判断小模型是否值得的必要对照。
 
-本轮只更新设计文件与状态说明，没有实现以上模块、运行 benchmark 或产生新模型。
+M1 实现了运行契约、适配器与检查（见该节状态），没有运行真实 benchmark、没有真实成绩、没有产生新模型。M2～M6 仍只是设计。

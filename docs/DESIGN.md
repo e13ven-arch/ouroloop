@@ -14,7 +14,7 @@ ouroloop 从任务执行反馈中学习可复用的小型决策策略，在有�
 
 新版本在训练池继续执行，获得它实际到达的状态和反馈。所有失败与无收益实验保留。更换版本不保证下一代更强；开发集筛选也不保证独立测试收益。
 
-已有决策点、账本、监督数据构建、训练器插件、训练作业、模型库、服务、版本与晋升机制，以及场景世代循环和独立研究候选循环。**尚无 AutomationBench 适配器、业务训练信号方案、业务任务晋升闭环和实测收益。** 研究候选循环尚未成为世代训练循环里的自动研究员。游戏实验用于检查机制，不作为业务能力证据。
+已有决策点、账本、监督数据构建、训练器插件、训练作业、模型库、服务、版本与晋升机制，以及场景世代循环和独立研究候选循环。AutomationBench 的运行契约、适配器、完整任务执行与边界检查已实现（ROADMAP M1），但**尚未在真实 checkout 与真实模型上运行，因此没有任何实测成绩**；**仍无业务训练信号方案和业务任务晋升闭环**。研究候选循环尚未成为世代训练循环里的自动研究员。游戏实验用于检查机制，不作为业务能力证据。
 
 ## 1. 第一性原理与范围
 
@@ -142,9 +142,9 @@ dev 分数是搜索过程证据。晋升门减少无依据替换，不能保证�
 
 | 模块 | v0.4 职责 | 状态 |
 |---|---|---|
-| `ouroloop/benchmark.py` | 任务分组 manifest、运行配置、完整任务结果与证据身份 | 新建 |
-| `ouroloop/adapters/automationbench.py` | 环境初始化、合法工具调用、结束评分、隔离快照或前缀重放、训练反馈构造 | 新建；先验证环境能力 |
-| `agent/`、`providers/`、`decision.py` | 复用调用与决策点，在业务工具边界接入循环 | 改造；现有最小 agent 面向文件和 bash |
+| `ouroloop/benchmark.py` | 任务分组 manifest、运行配置、完整任务结果与证据身份 | 已建（M1） |
+| `ouroloop/adapters/automationbench.py` | 环境初始化、合法工具调用、结束评分、隔离快照或前缀重放、训练反馈构造 | 已建（M1）：初始化、`api` 工具集、官方评分、快照与契约检查；训练反馈构造留到 M3 |
+| `agent/`、`providers/`、`decision.py` | 复用调用与决策点，在业务工具边界接入循环 | 已改造（M1）：`ToolSurface` 让同一循环跑业务工具；文件/bash 专属处理按工具名自然不触发 |
 | `runtime.py`、`ledger.py` | 决策、默认策略、反馈与任务结果关联 | 已建；扩任务组、split、运行身份与反馈来源 |
 | `policy.py`、`stop.py` | 实际执行、回退与停止 | 改造；benchmark 策略与现有部署策略显式区分 |
 | `evolve/build.py`、`checks.py` | 监督样本构建与检查 | 已建；业务数据按任务家族切分，禁止只按 session 切 |
@@ -152,11 +152,11 @@ dev 分数是搜索过程证据。晋升门减少无依据替换，不能保证�
 | `research/agent.py`、`basic.py`、`loop.py` | 现有候选接口接入任务证据与业务实验 | 改造，保留接口兼容，不新建第二套研究循环 |
 | `research/experiment.py`、`context.py` | 薄实验记录、可见证据、预算与提案校验 | 新建 |
 | `evolve/plan.py`、`pipeline.py` | 准入、可选训练、衔接完整任务评测 | 改造；当前模型路径主要按历史标签回放评分 |
-| `evolve/task_eval.py` | 运行双方完整任务、聚合结果、处理有效性与预算 | 新建；不以 replay 准确率替代任务结果 |
+| `evolve/task_eval.py` | 运行双方完整任务、聚合结果、处理有效性与预算 | 已建（M1）：单候选的尝试、有效性与预算；配对比较留到 M4 |
 | `evolve/gate.py`、`registry.py`、`release.py` | 固定条件、接受开发候选、追溯完整版本 | 改造；加显式 task profile，保留原 decision profile |
 | `evolve/harness.py` | prompt 筛选接入统一任务评测 | 改造；不照搬旧 suite 的测试使用方式 |
 | `generations.py`、`evolve/experience.py` | 研究、执行、新版本采集与预算日志 | 改造；保留游戏 smoke 路径 |
-| `report.py`、`cli.py`、`examples/automationbench/` | 入口、比较表、开发曲线、证据回放 | 新建／改造，命令尚未实现 |
+| `report.py`、`cli.py`、`examples/automationbench/` | 入口、比较表、开发曲线、证据回放 | `bench --phase smoke` 与示例配置已建（M1）；`report.py`、比较表与开发曲线未建，M2～M6 的 phase 名被拒绝 |
 
 ### 5.1 最小运行契约
 

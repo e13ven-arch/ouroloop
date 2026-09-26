@@ -6,7 +6,7 @@ A lightweight RSI framework for improving agent task outcomes from execution fee
 
 The current design target is an end-to-end improvement loop on AutomationBench Marketing, evaluated against leading models and the same base agent before improvement. Prompt and workflow changes are valid improvements; a trained decision model must show additional task-quality or cost benefits to justify its use.
 
-**Status:** the decision and training infrastructure exists. The AutomationBench adapter, business feedback construction, task-level promotion loop and benchmark results are not implemented yet. See the [v0.4 design](docs/DESIGN.md) and [implementation roadmap](docs/ROADMAP.md). The runnable examples below exercise the current mechanisms; they do not demonstrate business benchmark gains.
+**Status:** the decision and training infrastructure exists, and so does the AutomationBench run contract: task groups frozen before the first result, the official scorer over the world the agent's tools left, and the checks that say the runner measures what upstream measures (`ouroloop bench --phase smoke`, roadmap M1). It has not been run against a real checkout or a real model, so **there are no benchmark results here**. Business feedback construction and the task-level promotion loop are not implemented. See the [v0.4 design](docs/DESIGN.md) and [implementation roadmap](docs/ROADMAP.md). The runnable examples below exercise the current mechanisms; they do not demonstrate business benchmark gains.
 
 An agent makes many small judgment calls: retry this command? keep this output in context? run this without asking? is the task done? ouroloop sends each of them to a calibrated decision model as a typed question (yes/no, a choice, or a score) and gets probabilities back in one forward pass. When the model is not confident, or its point is not switched on yet, the point takes its declared default: a fixed action, a rule, an LLM or a person. Every call, and what actually happened afterwards, goes into a local ledger.
 
@@ -117,6 +117,30 @@ A prompt candidate is evaluated in steps:
 
 The checks at the end of a task also label that run's `stop` and `route` decisions. Suite runs execute bash automatically, in a temporary directory with the deny list in force; use a container or a VM if you do not trust the model.
 
+## AutomationBench
+
+[AutomationBench](https://github.com/zapier/AutomationBench) simulates business workflows across 47 SaaS tools and
+checks whether the agent left the world in the correct state. It is a separate runtime that ouroloop imports
+lazily; clone it and point `[bench] upstream_path` at the checkout
+([examples/automationbench/README.md](examples/automationbench/README.md) lists what to install).
+
+```bash
+ouroloop bench --config examples/automationbench/marketing.toml --phase smoke --checks-only   # no model called
+ouroloop bench --config examples/automationbench/marketing.toml --phase smoke                 # and a few dev tasks
+```
+
+The smoke phase reports which upstream this is, freezes the train/dev/test task groups into
+`<workspace>/bench/<domain>/splits.json` before any result is looked at, checks this adapter against upstream's own
+rubric entry point, service gate and tool schemas, audits that nothing grading-related reaches the agent, and then
+attempts a couple of development tasks end to end. It makes no claim about capability, and a local score on the
+public task set is not an official leaderboard score — the leaderboard runs a private set.
+
+The boundaries are structural rather than a matter of care: the agent is handed the task prompt and the tool
+schemas while the assertions and the seeded state live in an object it never receives, and the score comes from
+the world the tools left, so a run that writes the wrong record and then reports success scores what it wrote.
+Baseline, frontier-model comparison, training signal and the full-task evaluation are M2 to M6 in the roadmap;
+those phase names are refused until they exist.
+
 ## Code layout
 
 | Path | What it holds |
@@ -134,13 +158,20 @@ The checks at the end of a task also label that run's `stop` and `route` decisio
 | `ouroloop/research/` | question conversion, the research agent interface and default, research rounds |
 | `ouroloop/evolve/` | dataset building, data checks, trainers and their training jobs (worker, compute), calibration, the frozen promotion gate and its records, model registry, prompt candidates, experience records |
 | `ouroloop/serve.py` | the HTTP decision service |
-| `ouroloop/adapters/` | Claude Code hooks (an optional data source) |
+| `ouroloop/benchmark.py` | the benchmark run contract: frozen task groups, run identity, one attempt's result |
+| `ouroloop/bench.py` | the phases of `ouroloop bench` |
+| `ouroloop/adapters/` | AutomationBench (tasks, business tools, the official scorer); Claude Code hooks (an optional data source) |
 
 ## Status
 
 The current implementation provides decision points, the ledger, supervised training jobs, trainer plugins, model storage and serving, calibration, version management, a scenario generation loop, and a separate research/prompt candidate path.
 
-Design v0.4 prioritizes AutomationBench Marketing. Missing work includes the adapter, task-group data splits, justified business feedback, complete-task evaluation and promotion, the integrated researcher, and reproducible comparisons with leading models. No AutomationBench performance gain has been measured in this repository. Existing evidence remains in [docs/JOURNAL.md](docs/JOURNAL.md).
+Design v0.4 prioritizes AutomationBench Marketing. The adapter, the task-group splits and the full-task runner now
+exist and are tested against a miniature stand-in for upstream (`tests/fake_upstream`); they have not been run
+against a real checkout or a real model. Missing work includes justified business feedback, complete-task
+evaluation and promotion, the integrated researcher, and reproducible comparisons with leading models. **No
+AutomationBench performance has been measured in this repository.** Existing evidence remains in
+[docs/JOURNAL.md](docs/JOURNAL.md).
 
 The design docs are in Chinese for now: [docs/DESIGN.md](docs/DESIGN.md) (the authoritative design, its invariants and the settled trade-offs), [docs/ROADMAP.md](docs/ROADMAP.md) (what is built, what is next, and the deferred items), [docs/RESEARCH_AGENT.md](docs/RESEARCH_AGENT.md) (the researcher: what it reads, the experiment it writes, its boundaries), [docs/DEMO.md](docs/DEMO.md) (the interactive demo and the video) and [docs/JOURNAL.md](docs/JOURNAL.md) (what changed, with the evidence).
 
