@@ -2,10 +2,12 @@ import json
 import random
 
 from ouroloop import config
+from ouroloop.backends import KeywordBackend
 from ouroloop.decision import Noul
 from ouroloop.demo import run, seed_ledger
 from ouroloop.evolve import experience
 from ouroloop.evolve.gate import decide
+from ouroloop.points import retry_point
 from ouroloop.policy import Policy
 from ouroloop.research import Candidate, run_round
 from ouroloop.runtime import Runtime
@@ -143,3 +145,26 @@ seed = 3
     res = run_round(rt, agent, llm, judge, **kw)
     assert [e["hypothesis"] for e in res.evaluated] == ["config-loaded agent"]
     assert rt.root == tmp_path / "ws"
+
+
+def test_the_report_leaves_out_the_calibration_sessions(tmp_path, frozen):
+    """What the agent sees is what the round may train on. A candidate chosen by looking at the calibration rows is
+    chosen on the rows its own thresholds are then fitted on, and the bound they carry no longer holds."""
+    from ouroloop.evolve.gate import open_record
+    from ouroloop.evolve.replay import labelled
+    from ouroloop.research import build_report
+
+    rt = Runtime(tmp_path, {"mock": KeywordBackend()}, "mock", seed=0)
+    rt.register(retry_point())
+    seed_ledger(rt, sessions=120)
+    frozen(rt.root, cal_frac={"*": 0.5})
+    record = open_record(rt)
+    rows, sessions = labelled(rt, "retry"), rt.ledger.sessions()[0]
+    parts = record.split(rows, sessions, record.cal_frac("retry"))
+    assert parts["calibration"] and parts["train"]                  # the split is worth testing
+
+    report = build_report(rt, record)
+    assert report.points["retry"]["n"] == len(parts["train"])       # not the calibration rows, as it once was
+    assert len(parts["train"]) < len(record.split(rows, sessions)["train"])
+    shown = sum(c["n"] for c in report.clusters if c["point"] == "retry")
+    assert 0 < shown <= len(parts["train"])

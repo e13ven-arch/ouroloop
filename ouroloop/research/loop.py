@@ -13,13 +13,17 @@ from .agent import Report, Workspace
 
 
 def build_report(rt, record: GateRecord, max_examples: int = 3) -> Report:
-    """Metrics and error groups for every registered point, from the current champion specs, on the sessions the
-    round may train on: never the record's test sessions, never a held-out task's."""
+    """Metrics and error groups for every registered point, from the current champion specs, on the round's training
+    sessions only: never the record's test sessions, never the calibration sessions, never a held-out task's.
+
+    The calibration split is left out although the agent could learn from it, because a candidate chosen by looking
+    at it is chosen on the rows its own thresholds are then fitted on: the Clopper-Pearson bound those thresholds
+    carry would no longer hold (Learn-then-Test needs the candidate fixed before the calibration data is seen), and
+    the risk the gate reports would be optimistic. What the agent may see is what the round may train on."""
     metrics, clusters = {}, []
     sessions, _ = rt.ledger.sessions()
     for name, p in rt.points.items():
-        parts = record.split(labelled(rt, name), sessions)
-        dev = parts["train"] + parts["calibration"]
+        dev = record.split(labelled(rt, name), sessions, record.cal_frac(name))["train"]
         if not dev:
             continue
         views, preds = predict(rt, p, p.spec, dev)
