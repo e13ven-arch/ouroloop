@@ -256,7 +256,7 @@ def open_record(rt) -> GateRecord:
             r.mirror()
         last = past[-1] if past else None
         reuse = last and not last.used and last.data["template"] == template and last.data["code"]["ouroloop"] == code
-        data = _choose(rt, params, past)
+        data = choose(rt, params, past)
         if reuse and (not data["fresh"] or (last.fresh and data["test_sessions"] == last.test_sessions)):
             return last
         validate(params, past)
@@ -281,12 +281,13 @@ def _serve_versions(rt) -> dict:
     return serve
 
 
-def _choose(rt, params: dict, past: list[GateRecord]) -> dict:
+def choose(rt, params: dict, past: list[GateRecord]) -> dict:
     """Choose the test sessions: the latest of the non-held-out sessions that started after the freezing of the last
     record whose fresh sessions a gate used (a prompt gate uses the runs it makes instead), and never went through a
     gate, at most a generation's (budget.sessions_per_generation, at least `min_sessions`; for the first record, the
-    latest `min_sessions`). The older of them train the round: after rounds that trained nothing, the data that made
-    the schedule train is not all held for testing. With fewer, the latest older sessions, which can only validate.
+    latest `min_sessions`). The older of them train the round: after rounds that trained nothing, the data that
+    justified the plan is not all held for testing. With fewer, the latest older sessions, which can only validate.
+    The round's diagnosis (evolve/plan.py) calls this before anything is frozen, to see what the gate would get.
     Only sessions with a labelled decision at a registered point count: one still running, or one that broke before
     its probe, would be no evidence. The held-out tasks' sessions from the same time are reported beside them."""
     sessions, position = rt.ledger.sessions()

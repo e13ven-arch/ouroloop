@@ -14,11 +14,11 @@ The premise: commercial LLMs already reason well, and in real work the decisions
 
 ## How the loop improves itself
 
-`ouroloop demo <scenario> --generations N` runs this loop generation by generation ([ouroloop/generations.py](ouroloop/generations.py)); a harness of your own runs the online half on every session. Only the demo asks the schedule whether to train: each `ouroloop evolve` call runs one round (the training job, calibration, the gate, promotion) whatever the schedule would say.
+`ouroloop demo <scenario> --generations N` runs this loop generation by generation ([ouroloop/generations.py](ouroloop/generations.py)); a harness of your own runs the online half on every session. Only the demo plans each round (`ouroloop plan` shows the same reading): a round trains only what a plan's admission passed, so a round with nothing new to learn from spends no GPU. Each `ouroloop evolve` call runs one round (the training job, calibration, the gate, promotion) whatever the plan would say.
 
 <p align="center"><img src="docs/assets/architecture.gif" alt="ouroloop architecture: a loop whose top half runs every session and whose bottom half runs every round" width="100%"></p>
 
-Sessions run along the top: the business agent asks the runtime, the environment answers, the ledger records, the monitor watches. When the schedule fires, the research agent tries changes on dev data, the best one trains, and the frozen gate judges it once on fresh sessions: rejected in the first round, accepted in the second, and the lineage grows a v2 that the next sessions run.
+Sessions run along the top: the business agent asks the runtime, the environment answers, the ledger records, the monitor watches. When the data admits a plan, the research agent tries changes on dev data, the best one trains, and the frozen gate judges it once on fresh sessions: rejected in the first round, accepted in the second, and the lineage grows a v2 that the next sessions run.
 
 Why this is recursive: a promoted model changes the sessions it runs in. Where it acts, the agent reaches states the default would never have reached; their outcomes go into the ledger, and the next round trains on them. Better policy, new states, data from those states, better policy.
 
@@ -77,6 +77,7 @@ The research agent and `ouroloop run` work with any model:
 ```bash
 ouroloop gate freeze --config examples/ouroloop.toml           # once, by a person: the gate every promotion goes through
 ouroloop research --config examples/ouroloop.toml --rounds 3   # research rounds over the ledger
+ouroloop plan --config examples/ouroloop.toml                  # what the data says, and whether a round should train
 ouroloop evolve --config examples/ouroloop.toml                # train a new decision model; promote only if it passes the gate
 ouroloop calibrate --config examples/ouroloop.toml             # report each point's temperature and thresholds
 ouroloop models --dir examples/workspace                       # model lineage; --rollback to go back (and revoke)

@@ -131,6 +131,18 @@ def routing_default(rt, point: DecisionPoint | str, row, ctx=None) -> str | None
         return label
 
 
+def default_error(rt, point: DecisionPoint | str, row, target: dict) -> bool:
+    """Whether the row's routing default is not among its right answers: the only rows a model can add anything on.
+    A row at a phase that never acts, or whose phase cannot be told, is no default error."""
+    p = rt.points[point] if isinstance(point, str) else point
+    try:
+        if p.default_for(row.decision.get("phase"))[0] is None:      # no phase: never acts
+            return False
+        return routing_default(rt, p, row) not in right(target)
+    except ValueError:          # a row whose phase cannot be told never acts either
+        return False
+
+
 _ACTING = Policy(act=True, explore=0.0)
 
 

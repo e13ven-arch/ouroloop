@@ -8,12 +8,12 @@ M13), on a scenario pack that the config names. The kernel knows the pack only t
 
 Each generation: play `games` sessions with the current release (the champion acts where the execution rule lets
 it, the points' default answerers elsewhere; the runtime's post-act monitor checks the champion as each session opens,
-and one it revokes leaves the rest of the generation its defaults) -> one round, if the training schedule
-(pipeline.schedule) says to train: a gate record frozen now, whose test sessions are the latest fresh ones (this
-generation's, at most budget.sessions_per_generation), build, check, train, calibrate, the gate, promote or not. The
-next generation plays with what the round promoted, so its data comes from the model this one produced. One
-generation's round is planted, whatever the schedule: its candidate is trained on shuffled labels and goes through
-the same gate.
+and one it revokes leaves the rest of the generation its defaults) -> one round, which trains only what a plan
+admission passed (evolve/plan.py: data -> diagnosis -> hypothesis -> plan -> admission -> training): a gate record
+frozen now, whose test sessions are the latest fresh ones (this generation's, at most
+budget.sessions_per_generation), build, check, train, calibrate, the gate, promote or not. The next generation plays
+with what the round promoted, so its data comes from the model this one produced. One generation's round is planted,
+whatever the plan says: its candidate is trained on shuffled labels and goes through the same gate.
 
 Each line reports what the champion added over the defaults: the share of decisions it acted on, the sessions it
 harmed (any acted decision wrong) of those it acted in against the risk budget, and its gain, the fixes (acted and
@@ -37,7 +37,8 @@ from pathlib import Path
 from . import config
 from .evolve import monitor
 from .evolve.gate import freeze_template, load_template, template_path
-from .evolve.pipeline import evolve_model, schedule
+from .evolve.pipeline import evolve_model
+from .evolve.plan import decide
 from .evolve.registry import Registry
 from .evolve.replay import right
 from .ledger import now
@@ -192,9 +193,9 @@ def run(cfg: dict, base: str | Path = ".", *, generations: int | None = None, ro
         fixes, harms = _judged(rows)
         harm = [monitor.realized(rt, point, mine) for point in rt.points]
         planted = g == plant
-        train, why = (True, "planted") if planted else schedule(rt)
+        proposed, train, reasons, _ = (None, True, ["planted"], None) if planted else decide(rt)
         card = (evolve_model(rt, Shuffled(trainer, seed) if planted else trainer, cfg.get("recipe"), seed=seed,
-                             meta={"planted": "shuffled labels"} if planted else None)
+                             plan=proposed, meta={"planted": "shuffled labels"} if planted else None)
                 if train else {"version": None, "gate": None})
         summary = rt.ledger.append({
             "type": "generation", "generation": g, "played": played, "sessions": len(ids), "decisions": len(rows),
@@ -203,7 +204,9 @@ def run(cfg: dict, base: str | Path = ".", *, generations: int | None = None, ro
             "harmed": sum(b for b, _ in harm), "acted_sessions": sum(n for _, n in harm),
             "risk": budget, "metrics": _aggregate(metrics),
             "baseline": _aggregate(again) if again is not None else None,
-            "candidate": card["version"], "gate": card["gate"], "skipped": None if train else why,
+            "candidate": card["version"], "gate": card["gate"],
+            "plan": proposed.hypothesis if proposed is not None else None,
+            "skipped": None if train else "; ".join(reasons),
             "champion": (registry.champion() or {}).get("version"), "planted": planted, "revoked": revoked})
         out(_line(summary))
     every = {s for s in rt.ledger.sessions()[0] if _ID.fullmatch(s)}     # a continued workspace's too, from the ledger

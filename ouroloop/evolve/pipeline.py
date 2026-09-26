@@ -3,21 +3,21 @@ gate -> promote.
 
 `prepare_model` does everything up to the verdict on the sessions a gate record fixed; `recipe_evaluator` turns it
 into an evaluation for gate.run, which the research loop and `evolve_model` (`ouroloop evolve`) both go through.
-`schedule` says whether a round should train at all: the least training that reaches the template's target.
+Whether a round trains at all is not decided here: a round trains only what a plan admission passed (evolve/plan.py).
 """
 from __future__ import annotations
 
-import json
 import random
+import time
 from dataclasses import asdict, dataclass, field
 
 from ..types import Question, Request
 from . import calibrate, experience
 from .build import build
 from .checks import CheckReport, check
-from .gate import INFRA, TEMPLATE, GateRecord, load_template, open_record, run
+from .gate import INFRA, GateRecord, open_record, run
 from .registry import Registry
-from .replay import EvalResult, labelled, not_held_out, right, routing_default, scored, summarize
+from .replay import EvalResult, default_error, labelled, not_held_out, scored, summarize
 from .train import TrainJob, TrainResult, path_keys, recipe_defaults
 
 
@@ -41,55 +41,11 @@ class ModelCandidate:
 
 
 def default_errors(rt, points: list[str] | None = None) -> int:
-    """The labelled rows outside held-out tasks, at `points` (default: model_points), whose routing default is not
-    among their right answers: the rows a model could add anything on."""
-    n = 0
-    for name in points or model_points(rt):
-        for row, target, _ in not_held_out(rt, labelled(rt, name)):
-            try:
-                if rt.points[name].default_for(row.decision.get("phase"))[0] is not None:   # no phase: never acts
-                    n += routing_default(rt, name, row) not in right(target)
-            except ValueError:          # a row whose phase cannot be told never acts
-                continue
-    return n
-
-
-def schedule(rt, points: list[str] | None = None) -> tuple[bool, str]:
-    """Whether a round trains a candidate, and why: the least training for the template's goal. It trains the first
-    candidate (the data checks still decide whether there is enough), after the champion was revoked since the last
-    trained candidate (drift), or once the default errors at `points` have at least doubled since it (the data a
-    model could learn from). It does not once the latest accepted model fixes the template's target share of the
-    default errors on its test rows, at every point that had any (unless revoked since), nor once the template's
-    training budget is spent. A planted candidate uses budget but is never the last trained one: it learned nothing
-    and says nothing about drift."""
-    params = load_template(rt.root)[0]
-    registry = Registry(rt.root)
-    cards = [registry.card(v) for v in registry.versions() if (registry.dir / v / "card.json").exists()]
-    trained = [c for c in cards if c.get("model_id")]
-    budget = {**TEMPLATE["budget"], **params.get("budget", {})}["max_trainings"]
-    if len(trained) >= budget:
-        return False, f"training budget spent ({len(trained)} of {budget})"
-    real = [c for c in trained if not c.get("planted")]
-    if not real:
-        return True, "no candidate trained yet"
-    last = real[-1]
-    path = rt.revoked.path
-    revoked = json.loads(path.read_text(encoding="utf-8"))["revoked"] if path.exists() else []
-    if any(e["ts"] >= last["updated"] for e in revoked):
-        return True, f"the champion was revoked since {last['version']}"
-    target = {**TEMPLATE["target"], **params.get("target", {})}["fixed_share"]
-    accepted = next((c for c in reversed(cards) if c.get("gate") == "accepted"), {})
-    shares = [s for m in accepted.get("metrics", {}).values()        # a card from before gain has no share
-              if (s := (m.get("challenger") or {}).get("fixed_share")) is not None]
-    standing = accepted and not rt.revoked.hit(accepted["version"], accepted.get("model_id"))
-    if standing and shares and min(shares) >= target:
-        return False, f"target reached: {accepted['version']} fixes {min(shares):.0%} of the default errors"
-    if "default_errors" not in last:
-        return True, f"{last['version']} has no count of default errors to compare with"
-    now, before = default_errors(rt, points), last["default_errors"]
-    if now and now >= 2 * before:
-        return True, f"default errors doubled since {last['version']} ({before} -> {now})"
-    return False, f"default errors {now}, not yet twice the {before} at {last['version']}"
+    """The labelled rows outside held-out tasks, at `points` (default: model_points), that are default errors
+    (replay.default_error): the rows a model could add anything on."""
+    return sum(default_error(rt, name, row, target)
+               for name in points or model_points(rt)
+               for row, target, _ in not_held_out(rt, labelled(rt, name)))
 
 
 def focused(rt, point: str, rows: list[tuple], focus: float, seed: int = 0) -> list[tuple]:
@@ -97,13 +53,7 @@ def focused(rt, point: str, rows: list[tuple], focus: float, seed: int = 0) -> l
     only rows a model can add anything on) kept, and a seeded sample of the others, so that the errors make up `focus`
     of them (all the others when there are too few). Time order is kept."""
     p = rt.points[point]
-    errors = []
-    for row, target, _ in rows:
-        try:
-            errors.append(p.default_for(row.decision.get("phase"))[0] is not None     # no phase: never acts
-                          and routing_default(rt, p, row) not in right(target))
-        except ValueError:          # a row whose phase cannot be told never acts either
-            errors.append(False)
+    errors = [default_error(rt, p, row, target) for row, target, _ in rows]
     others = [i for i, e in enumerate(errors) if not e]
     k = round(sum(errors) * (1 - focus) / focus)
     keep = set(random.Random(seed).sample(others, k)) if k < len(others) else set(others)
@@ -178,9 +128,11 @@ def prepare_model(rt, trainer, recipe: dict | None = None, *, record: GateRecord
     if not checks.ok:
         return cand
     try:
+        start = time.monotonic()
         cand.result = trainer.train(TrainJob(version, ds.dir, recipe, parent_ref(parent, trainer, recipe)))
         cand.backend = trainer.backend(cand.result)
-        card.update({"model_id": cand.result.model_id, "backend": cand.result.backend, "job": cand.result.job})
+        card.update({"model_id": cand.result.model_id, "backend": cand.result.backend, "job": cand.result.job,
+                     "train_seconds": round(time.monotonic() - start, 1)})    # what the next round's plan costs
         registry.record(card)                   # the candidate's card, before it is evaluated
         for name in points:
             cal = calibrate.calibrate_point(rt, name, backend=cand.backend, rows=parts[name]["calibration"],
@@ -285,11 +237,16 @@ def recipe_evaluator(trainer, base_recipe: dict | None = None, **kw):
 
 
 def evolve_model(rt, trainer, recipe: dict | None = None, *, record: GateRecord | None = None, seed: int = 0,
-                 registry: Registry | None = None, meta: dict | None = None, **kw) -> dict:
+                 registry: Registry | None = None, meta: dict | None = None, plan=None, **kw) -> dict:
     """`ouroloop evolve`: one model candidate through the round's gate record (or `record`). -> its card, which
-    also carries `meta`."""
+    also carries `meta`. `plan` is the round's plan (evolve/plan.py): it goes on the card and its prediction is
+    recorded against what the gate measured, which is what makes plan quality visible."""
     registry = registry or Registry(rt.root)
     record = record or open_record(rt)
+    meta = {**(meta or {}), **({"plan": plan.to_json()} if plan is not None else {})}
+    if plan is not None and plan.kind == "recipe" and plan.change:
+        check_change(plan.change, trainer)          # a plan changes hyperparameters, never data or runs
+        recipe = {**(recipe or {}), **plan.change}
     out: dict = {}
 
     def evaluate() -> EvalResult:
@@ -305,5 +262,6 @@ def evolve_model(rt, trainer, recipe: dict | None = None, *, record: GateRecord 
                                            if v != recipe_defaults(trainer).get(k)},
                                 "gate": g.outcome, "reasons": g.reasons, "record": record.round, "used": g.used,
                                 **({"verdict": "inconclusive"} if g.outcome == "inconclusive" else {}),
-                                **(meta or {})})
+                                **(meta or {}),
+                                **({"prediction": plan.measured(card)} if plan is not None else {})})
     return card

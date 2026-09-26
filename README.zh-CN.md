@@ -8,11 +8,11 @@ agent 运行中有很多判断：要不要重试、这段历史还留不留、�
 
 ## RSI 是怎么发生的
 
-`ouroloop demo <scenario> --generations N` 按代运行这个循环（[ouroloop/generations.py](ouroloop/generations.py)）；自己的 harness 在每个 session 里跑在线的一半。只有 demo 会先问调度要不要训练：`ouroloop evolve` 每次调用都跑一轮（训练、校准、过门、晋升），不管调度怎么说。
+`ouroloop demo <scenario> --generations N` 按代运行这个循环（[ouroloop/generations.py](ouroloop/generations.py)）；自己的 harness 在每个 session 里跑在线的一半。只有 demo 会先为这一轮做计划（`ouroloop plan` 给出同一份判断）：只有通过准入的计划才会训练，没有新东西可学的一轮不花算力。`ouroloop evolve` 每次调用都跑一轮（训练、校准、过门、晋升），不管计划怎么说。
 
 <p align="center"><img src="docs/assets/architecture.zh-CN.gif" alt="ouroloop 架构：一个环，上半圈每个 session 都在跑，下半圈每一轮跑一次" width="100%"></p>
 
-上半圈是在线部分，每个 session 都在跑：业务 agent 问运行时，环境给出结果，账本记录，监控盯着。日程触发后进入下半圈：研究 agent 在开发集上试几种改法，挑最好的一个去训练，冻结的门用新 session 判一次。第一轮的候选被拒，第二轮通过，谱系长出 v2，之后的 session 就用上 v2。
+上半圈是在线部分，每个 session 都在跑：业务 agent 问运行时，环境给出结果，账本记录，监控盯着。数据通过准入、计划成立后进入下半圈：研究 agent 在开发集上试几种改法，挑最好的一个去训练，冻结的门用新 session 判一次。第一轮的候选被拒，第二轮通过，谱系长出 v2，之后的 session 就用上 v2。
 
 为什么是递归的：晋升的模型会改变它所在的 session。它执行的地方，agent 会走到默认永远到不了的状态；这些状态的结果写进账本，下一轮就用它们训练。更好的策略，带来新的状态，新状态产生数据，数据训练出更好的策略。
 
@@ -49,6 +49,7 @@ ouroloop run "..." --llm openai_compat --model qwen3 --base-url http://localhost
 ouroloop run "..." --llm anthropic --verify "pytest -q" --small-model claude-haiku-4-5  # 验证命令和小模型档位
 ouroloop gate freeze --config examples/ouroloop.toml                # 由人冻结一次：所有晋升都过这个门
 ouroloop research --config examples/ouroloop.toml --rounds 3        # 对积累的账本跑几轮研究循环
+ouroloop plan --config examples/ouroloop.toml                       # 数据现状，以及这一轮该不该训练
 ouroloop evolve --config examples/ouroloop.toml                     # 用账本训练新的 TDE，过晋升门才替换
 ouroloop calibrate --config examples/ouroloop.toml                  # 报告每个决策点的温度和阈值，不写入
 ouroloop models --dir examples/workspace                            # 查看模型谱系；加 --rollback 回退并撤销
