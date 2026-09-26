@@ -71,7 +71,7 @@ ouroloop ledger --dir examples/workspace                       # decisions, labe
 
 The gate template can tighten, never loosen, the 5% risk, the 30 fresh sessions each gate needs and the bootstrap. Each round's gate record, its use and its verdict are events in the ledger; `gates/` holds copies. Only what a gate record accepted can be promoted, answer or act.
 
-About TDE: TDE is a separate project that will be released on its own. The trainers in this repository record how ouroloop trains it: `local_tde` on the same machine, `remote_tde` on a GPU host over ssh, where the checkpoint stays. Without TDE, the whole pipeline runs with the built-in signature model (`type = "signature"`). To bring your own model, write a trainer with two methods, `train(job)` returning a result and `backend(result)` returning a backend that answers decisions, and name it in the config as `type = "your.module:YourTrainer"`.
+About TDE: TDE is a separate project that will be released on its own. The `tde` trainer records how ouroloop trains it: as a job (`ouroloop/evolve/worker.py`) on this machine, or on a GPU host over ssh with `host = "user@box"`, in a new directory `<jobs_root>/<job id>/` there. The model it yields is a ref: the job id, whose run stays in that directory, or `<repo>@<commit>` with `transport = "hf"`, which commits the run once to a private Hugging Face repository. A `[models]` table says how refs are served: `url` (and `token_env`) for `ouroloop serve` on the GPU host, or `jobs_root` (and `hf_prefix`) to load them in-process there. Without TDE, the whole pipeline runs with the built-in signature model (`type = "signature"`). To bring your own model, write a trainer with two methods, `train(job)` returning a result and `backend(result)` returning a backend that answers decisions, and name it in the config as `type = "your.module:YourTrainer"`.
 
 To serve a model for harnesses on other machines, run the decision service where the model lives and point an `http` backend at it. Binding to anything other than localhost requires a token, because `/outcome` writes training labels into the ledger.
 
@@ -113,7 +113,7 @@ The checks at the end of a task also label that run's `stop` and `route` decisio
 | `ouroloop/providers/` | Anthropic (official SDK) and OpenAI-compatible APIs |
 | `ouroloop/backends/` | decision backends: `mock`, `jev`, `tde`, `llm`, `http` |
 | `ouroloop/research/` | question conversion, the research agent interface and default, research rounds |
-| `ouroloop/evolve/` | dataset building, data checks, trainers, calibration, the frozen promotion gate and its records, model registry, prompt candidates, experience records |
+| `ouroloop/evolve/` | dataset building, data checks, trainers and their training jobs (worker, compute), calibration, the frozen promotion gate and its records, model registry, prompt candidates, experience records |
 | `ouroloop/serve.py` | the HTTP decision service |
 | `ouroloop/adapters/` | Claude Code hooks (an optional data source) |
 

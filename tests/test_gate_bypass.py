@@ -28,8 +28,7 @@ class Says(OracleTrainer):
         self.p = p
 
     def train(self, job):
-        return TrainResult(f"runs/{job.version}", {"type": "test_gate_record:Model", "p_yes": self.p,
-                                                   "model": self.model}, self.model)
+        return TrainResult(self.model, {"type": "test_gate_record:Model", "p_yes": self.p, "model": self.model})
 
 
 # ---------------------------------------------------------------- gate records

@@ -42,7 +42,7 @@ ouroloop models --dir examples/workspace                            # 查看模�
 
 门模板只能收紧、不能放宽 5% 的风险、每次过门需要的 30 个新 session 和 bootstrap 次数。每轮的门记录、它的使用和结论都是账本里的事件，`gates/` 里只是副本。只有门记录接受过的候选才能晋升、作答和执行。
 
-关于 TDE：TDE 是单独的项目，之后另行开源；本仓库里的训练器记录了 ouroloop 怎么训练它（`local_tde` 在本机训练，`remote_tde` 通过 ssh 在 GPU 主机上训练，checkpoint 留在主机上）。没有 TDE 时，训练管线用内置的签名小模型（`type = "signature"`）也能完整跑通；接自己的模型只要实现两个方法：`train(job)` 返回训练结果，`backend(result)` 返回能回答决策的后端，然后在配置里写 `type = "your.module:YourTrainer"`。
+关于 TDE：TDE 是单独的项目，之后另行开源；本仓库里的 `tde` 训练器记录了 ouroloop 怎么训练它：作为一个任务（`ouroloop/evolve/worker.py`）在本机运行，或者设 `host = "user@box"` 通过 ssh 在 GPU 主机上运行，每个任务在那台机器上有一个新目录 `<jobs_root>/<job id>/`。训练出的模型是一个引用：任务 id（run 留在这个目录里），或者设 `transport = "hf"` 时的 `<repo>@<commit>`（run 提交一次到私有的 Hugging Face 仓库）。`[models]` 表说明这些引用怎么服务：`url`（和 `token_env`）指向 GPU 主机上的 `ouroloop serve`，或者用 `jobs_root`（和 `hf_prefix`）在进程内加载。没有 TDE 时，训练管线用内置的签名小模型（`type = "signature"`）也能完整跑通；接自己的模型只要实现两个方法：`train(job)` 返回训练结果，`backend(result)` 返回能回答决策的后端，然后在配置里写 `type = "your.module:YourTrainer"`。
 
 要让 TDE 实时回答单个决策，就在 GPU 主机上常驻一个决策服务，harness 这边用 `type = "http"` 的后端连过去：
 

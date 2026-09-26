@@ -1,7 +1,7 @@
-"""A TDE run directory loaded in-process. Needs the `tde` package, torch and a checkpoint: run ouroloop from the TDE
-venv on the GPU host. At most `max_loaded` runs stay loaded (the least recently used is let go, and loaded again when
-asked), and a training job on the same GPU lets go of all of them (release). Many requests at once (the gate,
-calibration) are batched across their states."""
+"""A TDE run loaded in-process: a run directory, or a Hugging Face repository at a commit (revision). Needs the `tde`
+package, torch and a checkpoint: run ouroloop from the TDE venv on the GPU host. At most `max_loaded` runs stay
+loaded (the least recently used is let go, and loaded again when asked), and a training job on the same GPU lets go
+of all of them (release). Many requests at once (the gate, calibration) are batched across their states."""
 from __future__ import annotations
 
 import importlib.util
@@ -15,15 +15,18 @@ from ..types import Answer, Request
 class TdeBackend:
     name = "tde"
     max_loaded = 2
-    _loaded: OrderedDict = OrderedDict()       # (run, device) -> Decider, least recently used first
+    _loaded: OrderedDict = OrderedDict()       # (run, revision, device) -> Decider, least recently used first
     _many = True                               # several requests go through _decide_many
 
-    def __init__(self, run: str, device: str | None = None, decider=None, model: str | None = None):
-        """`model`: the id the answers report (a trained run's card says which); by default tde:<run dir name>."""
+    def __init__(self, run: str, device: str | None = None, decider=None, model: str | None = None,
+                 revision: str | None = None):
+        """`run`: a run directory, or with `revision` (a commit) a Hugging Face repository holding one. `model`: the
+        id the answers report, a trained model's ref; by default tde:<run dir name>."""
         if decider is None and importlib.util.find_spec("tde") is None:
             raise ImportError(f"the tde backend needs the tde package, which {sys.executable} cannot import: run "
                               f"ouroloop from the TDE venv on the GPU host (pip install -e <ouroloop> there)")
-        self.run = str(Path(run).expanduser())
+        self.run = run if revision else str(Path(run).expanduser())
+        self.revision = revision
         self.device = device
         self._decider = decider
         self.model = model or f"tde:{Path(run).name}"
@@ -31,10 +34,14 @@ class TdeBackend:
     def _load(self):
         if self._decider is not None:
             return self._decider
-        key, loaded = (self.run, self.device), TdeBackend._loaded
+        key, loaded = (self.run, self.revision, self.device), TdeBackend._loaded
         if key not in loaded:
             from tde.inference import Decider
-            loaded[key] = Decider.from_run(self.run, device=self.device)
+            path = self.run
+            if self.revision:
+                from huggingface_hub import snapshot_download
+                path = snapshot_download(repo_id=self.run, revision=self.revision)
+            loaded[key] = Decider.from_run(path, device=self.device)
             while len(loaded) > self.max_loaded:
                 loaded.popitem(last=False)
                 _free()

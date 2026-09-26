@@ -1,6 +1,6 @@
 """Checks against the real TDE repository (skipped when it is not next to this one; set TDE_REPO to point at it).
-They prove the training path produces what TDE accepts, without training anything. And the local TDE path on the
-GPU host (ouroloop installed into the TDE venv), with TDE stood in for."""
+They prove the training path produces what TDE accepts, without training anything. And the in-process TDE backend on
+the GPU host (ouroloop installed into the TDE venv), with TDE stood in for. The training job itself: test_jobs.py."""
 import ast
 import contextlib
 import importlib.machinery
@@ -19,8 +19,7 @@ from ouroloop.backends import KeywordBackend, TdeBackend
 from ouroloop.decision import Choice, Score
 from ouroloop.demo import seed_ledger
 from ouroloop.evolve.build import build
-from ouroloop.evolve.train import (DEFAULT_RECIPE, RECIPE_KEYS, LocalTdeTrainer, TrainError, TrainJob, prepare_job,
-                                   tde_config)
+from ouroloop.evolve.train import DEFAULT_RECIPE, RECIPE_KEYS, prepare_job, tde_config
 from ouroloop.points import retry_point
 from ouroloop.runtime import Runtime
 from ouroloop.types import Question, Request
@@ -73,54 +72,15 @@ def test_generated_config_only_uses_real_trainconfig_fields():
         assert set(cfg) | {"data_dir"} | inherited <= fields
 
 
-FAKE_TRAIN = """
-import argparse, json, pathlib
-ap = argparse.ArgumentParser(); ap.add_argument("--config"); a = ap.parse_args()
-cfg = json.loads(pathlib.Path(a.config).read_text())
-out = pathlib.Path(cfg["out_dir"]); out.mkdir(parents=True, exist_ok=True)
-n = sum(1 for _ in open(pathlib.Path(cfg["data_dir"]) / "train.jsonl"))
-(out / "config.json").write_text(json.dumps({**cfg, "n_train": n})); (out / "best.pt").write_bytes(b"")
-"""
-
-
-def test_local_trainer_runs_the_repositorys_train_script(tmp_path):
-    repo = tmp_path / "tde_repo"
-    (repo / "scripts").mkdir(parents=True)
-    (repo / "scripts" / "train.py").write_text(FAKE_TRAIN)
-    (repo / "tde").mkdir()
-    (repo / "tde" / "__init__.py").write_text("")
-    (repo / "tde" / "train.py").write_text("")          # what the trainer checks it can import
-    (repo / "data").mkdir()
-    (repo / "data" / "replay.jsonl").write_text("".join(json.dumps({"id": f"r{i}"}) + "\n" for i in range(500)))
-    parent = repo / "runs" / "parent"
-    parent.mkdir(parents=True)
-    (parent / "config.json").write_text(json.dumps({"backbone": "gliclass-modern-base"}))
-    rt = Runtime(tmp_path / "ws", {"mock": KeywordBackend()}, "mock")
-    rt.register(retry_point())
-    seed_ledger(rt, sessions=40)
-    ds = build(rt, tmp_path / "data")
-    recipe = {**DEFAULT_RECIPE, "replay": "data/replay.jsonl", "replay_ratio": 0.5}
-    result = LocalTdeTrainer(str(repo), python=sys.executable).train(TrainJob("m_0001", ds.dir, recipe, str(parent)))
-    cfg = json.loads((Path(result.run) / "config.json").read_text())
-    assert (Path(result.run) / "best.pt").exists() and Path(result.run) == ds.dir.resolve().parent / "run"
-    assert result.backend == {"type": "tde", "run": result.run, "model": "tde:m_0001"} == {
-        **result.backend, "model": result.model_id}
-    assert cfg["backbone"] == "gliclass-modern-base" and cfg["data_dir"].endswith("tde")
-    assert cfg["n_train"] == len(ds.splits["train"]) + int(len(ds.splits["train"]) * 0.5)
-    (repo / "scripts" / "train.py").write_text("import sys; print('CUDA out of memory'); sys.exit(1)")
-    with pytest.raises(TrainError, match="CUDA out of memory"):          # the end of its log, to fix it by
-        LocalTdeTrainer(str(repo), python=sys.executable).train(TrainJob("m_0002", ds.dir, recipe, str(parent)))
-
-
 # ---------------------------------------------------------------- the local TDE path on the GPU host
 @pytest.mark.skipif(has_tde, reason="tde is importable here")
 def test_without_tde_the_local_path_fails_at_once_and_says_why(tmp_path):
     with pytest.raises(ImportError, match="TDE venv"):
         TdeBackend("runs/m_0001")
-    with pytest.raises(TrainError, match="cannot import tde.train"):
-        LocalTdeTrainer(str(tmp_path), python=sys.executable)
     with pytest.raises(ImportError, match="TDE venv"):
         config.build_backend({"type": "tde", "run": "runs/m_0001"})
+    with pytest.raises(ImportError, match="TDE venv"):
+        config.build_backend({"type": "model", "model": "m_0001_x"}, {"jobs_root": str(tmp_path)})
 
 
 def test_the_tde_backend_keeps_two_runs_loaded_and_lets_go_of_them_for_training(monkeypatch):

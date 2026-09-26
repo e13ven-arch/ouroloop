@@ -141,7 +141,7 @@ def test_promotion_checks_the_model_id_the_backend_reports(tmp_path):
     rt = stop_runtime(tmp_path, Model())
     reg = Registry(rt.root)
     accept(rt.root, {"version": "m_0001"})
-    cand = ModelCandidate("m_0001", {}, None, result=TrainResult("run", {}, "A@renamed"), backend=Model(model="A"))
+    cand = ModelCandidate("m_0001", {}, None, result=TrainResult("A@renamed", {}), backend=Model(model="A"))
     with pytest.raises(ValueError, match="reports model 'A'"):
         promote_model(rt, cand, reg, GATE)
     assert reg.champion() is None

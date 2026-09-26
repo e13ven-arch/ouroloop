@@ -42,9 +42,12 @@ backend = "champion"
 act = true
 explore = 0.05
 
-[trainer]                       # TDE's trainer on this machine; each run lands beside its card in models/
-type = "local_tde"
+[trainer]                       # TDE's trainer as a job on this machine: <jobs_root>/<job id>/run
+type = "tde"
 tde_repo = "~/tde"
+
+[models]                        # the trained models, loaded in-process from their jobs' directories
+jobs_root = "~/.ouroloop/jobs"
 
 [recipe]                        # small and fast: one epoch over a sample of a few thousand moves
 epochs = 1.0

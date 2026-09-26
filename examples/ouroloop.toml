@@ -39,13 +39,21 @@ judge = "jev"               # who makes the research judgments
 [research.options]
 budget = 2
 
-[trainer]                   # trains TDE on a GPU machine over ssh; the checkpoint stays there
-type = "remote_tde"
-host = "user@gpu-host"      # your GPU machine
-remote_repo = "~/tde"       # a TDE checkout on that machine
+[trainer]                   # TDE's trainer as a job on a GPU machine over ssh; the run stays there
+type = "tde"
+host = "user@gpu-host"      # your GPU machine; leave it out to train on this one
+tde_repo = "~/tde"          # a TDE checkout on that machine
+python = "~/tde/.venv/bin/python"   # the Python there that has the tde package
+# jobs_root = "~/.ouroloop/jobs"    # each job's directory, <jobs_root>/<job id>/, on that machine
 # ssh_opts = "-i ~/.ssh/your_key -o BatchMode=yes"
+# transport = "hf"          # also commit each run once to a private repository <hf_prefix><job id>
+# hf_prefix = "your-org/ouroloop-"
+
+[models]                    # how trained models are served: `ouroloop serve` on the GPU machine, from its jobs_root
+url = "http://gpu-host:8765"
+token_env = "OUROLOOP_TOKEN"
 
 [recipe]                    # overrides of ouroloop.evolve.train.DEFAULT_RECIPE
-init_from = "runs/base"     # the first model's parent run, inside remote_repo
+init_from = "runs/base"     # the first model's parent run, inside tde_repo
 replay = "data/general/train.jsonl"        # general data mixed in to avoid forgetting
 replay_ratio = 1.0

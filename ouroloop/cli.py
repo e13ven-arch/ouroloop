@@ -148,10 +148,10 @@ def cmd_evolve(args) -> int:
         return 2
     if args.dry_run:
         from .evolve.pipeline import dry_run_model
-        print(json.dumps(dry_run_model(rt, config.build_trainer(cfg["trainer"]), cfg.get("recipe")),
-                         ensure_ascii=False, indent=2, default=str))
+        print(json.dumps(dry_run_model(rt, config.build_trainer(cfg["trainer"], cfg.get("models")),
+                                       cfg.get("recipe")), ensure_ascii=False, indent=2, default=str))
         return 0
-    card = evolve_model(rt, config.build_trainer(cfg["trainer"]), cfg.get("recipe"))
+    card = evolve_model(rt, config.build_trainer(cfg["trainer"], cfg.get("models")), cfg.get("recipe"))
     print(f"{card['version']}: {card['gate']} - {'; '.join(card.get('reasons', []))}")
 
     def gains(m: dict) -> str:
@@ -207,8 +207,11 @@ def cmd_models(args) -> int:
         if not (reg.dir / v / "card.json").exists():
             continue
         card = reg.card(v)
+        job = card.get("job") or {}
         print(f"{v}{' *' if v == champion else '  '} {card.get('gate', card.get('status', '-')):<18} "
-              f"parent={card.get('parent')} model={card.get('model_id')} {'; '.join(card.get('reasons', []))[:80]}")
+              f"parent={card.get('parent')} model={card.get('model_id')} job={job.get('id')} "
+              f"host={job.get('host') or ('this machine' if job else None)} "
+              f"{'; '.join(card.get('reasons', []))[:80]}")
     return 0
 
 

@@ -151,7 +151,7 @@ def run(cfg: dict, base: str | Path = ".", *, generations: int | None = None, ro
         freeze_template(rt.root, d.get("gate"))       # the demo stands in for the person who freezes the gate
     budget = load_template(rt.root)[0]["risk"]
     scenario = import_object(d["scenario"])(**d.get("options", {}))
-    trainer = config.build_trainer(cfg["trainer"])
+    trainer = config.build_trainer(cfg["trainer"], cfg.get("models"))
     games, plant, seed = int(d.get("games", 60)), d.get("plant"), int(d.get("seed", 0))
     done = max((int(m.group(1)) for s in rt.ledger.sessions()[0] if (m := _ID.fullmatch(s))), default=0)
     baseline = Defaults(rt.root / "baseline", {}, "") if d.get("baseline", True) else None

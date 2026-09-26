@@ -100,7 +100,7 @@ class Trainer:
         self.model, self.config = model, {**backend, "model": model}
 
     def train(self, job):
-        return TrainResult(f"runs/{job.version}", self.config, self.model)
+        return TrainResult(self.model, self.config)
 
     def backend(self, result):
         return config.build_backend(result.backend)
@@ -115,8 +115,8 @@ class OracleTrainer:
     def train(self, job):
         if self.fail:
             raise TrainError("CUDA out of memory")
-        return TrainResult(f"runs/{job.version}", {"type": "test_gate_record:Oracle", "model": self.model,
-                                                   "q": self.q, "knows": self.knows}, self.model)
+        return TrainResult(self.model, {"type": "test_gate_record:Oracle", "model": self.model, "q": self.q,
+                                        "knows": self.knows})
 
     def backend(self, result):
         return config.build_backend(result.backend)
@@ -470,18 +470,18 @@ def test_the_schedule_reads_planted_old_and_headroom_less_cards(tmp_path):
     rt = workspace(tmp_path)
     registry = Registry(rt.root)
     # the other point had no default errors on its test rows (no share): the target is reached where there were
-    registry.record({"version": "m_0001", "run": "runs/m_0001", "gate": "accepted", "model_id": "R1",
+    registry.record({"version": "m_0001", "gate": "accepted", "model_id": "R1",
                      "default_errors": 10, "metrics": {"stop": {"challenger": {"fixed_share": 0.8}},
                                                        "retry": {"challenger": {"fixed_share": None}}}})
     assert schedule(rt) == (False, "target reached: m_0001 fixes 80% of the default errors")
     # a planted candidate after a revocation uses budget but is not the last trained one: the drift still retrains
     revoke(rt.root, "m_0001", "R1", "drift")
-    registry.record({"version": "m_0002", "run": "runs/m_0002", "gate": "rejected", "planted": "shuffled labels",
+    registry.record({"version": "m_0002", "model_id": "P", "gate": "rejected", "planted": "shuffled labels",
                      "default_errors": 10 ** 6})
     assert schedule(rt) == (True, "the champion was revoked since m_0001")
     # an accepted card from before the gain objective: Brier metrics, no count of default errors
     rt = workspace(tmp_path / "old")
-    Registry(rt.root).record({"version": "m_0001", "run": "runs/m_0001", "gate": "accepted", "model_id": "R1",
+    Registry(rt.root).record({"version": "m_0001", "gate": "accepted", "model_id": "R1",
                               "metrics": {"stop": {"n": 40, "champion_brier": 0.25, "challenger_brier": 0.1}}})
     assert schedule(rt) == (True, "m_0001 has no count of default errors to compare with")
 

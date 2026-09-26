@@ -2,11 +2,16 @@
 TDE on the GPU host) and answer single decisions quickly for harnesses elsewhere.
 
     GET  /health                                   -> {"ok", "points", "backends", "code"}
-    POST /decide  {"backend"?, "requests": [{"state", "question"}]}
+    POST /decide  {"backend"? | "model"?, "requests": [{"state", "question"}]}
                                         -> {"answers": [{"probs", "label", "model", "usage", "abstained"}]}
+    POST /release                                  -> {"ok": true}; loaded models let go of the GPU
     POST /ask     {"point", "ctx", "session"?, "phase"?, "veto"?}  -> the recorded Decision; a session runs the
                                                                      release that was current at its first ask
     POST /outcome {"decision", "label", "source"?, "weight"?, ...}   -> {"ok": true}
+
+"model" is a trained model's ref, loaded in-process as the server config's [models] table says (jobs_root, and
+hf_prefix for <repo>@<commit>): a job id (letters, digits, _ and -) or <hf_prefix><job id>@<40 hex>; any other is
+refused (400), so a request never names a path. At most two stay loaded (backends/tde.py).
 
 Set OUROLOOP_TOKEN to require "Authorization: Bearer <token>". It binds to 127.0.0.1 unless told otherwise, and
 refuses any other address without a token: /outcome writes training labels into the ledger.
@@ -18,10 +23,10 @@ import json
 import threading
 from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 from .release import code_version
 from .types import Question, Request
-
 
 LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 
@@ -32,6 +37,17 @@ def make_server(rt, host: str = "127.0.0.1", port: int = 8765, token: str | None
     lock = threading.Lock()   # one model call and one ledger write at a time
     expected = f"Bearer {token}".encode() if token else b""
     code = code_version()     # the inference code's version, for the gate records (M8)
+    models = getattr(rt, "models", None) or {}
+
+    def model(ref) -> object:
+        from .backends.tde import TdeBackend
+        from .evolve.worker import locate
+        if not models.get("jobs_root"):
+            raise ValueError("this server has no [models] jobs_root to load models from")
+        run, revision = locate(ref, models["jobs_root"], models.get("hf_prefix"))
+        if revision is None and not Path(run).is_dir():
+            raise ValueError(f"no model {ref!r} here")
+        return TdeBackend(run, device=models.get("device"), model=ref, revision=revision)
 
     class Handler(BaseHTTPRequestHandler):
         def _send(self, code: int, obj: dict) -> None:
@@ -57,11 +73,16 @@ def make_server(rt, host: str = "127.0.0.1", port: int = 8765, token: str | None
                 body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
                 with lock:
                     if self.path == "/decide":
-                        backend = rt.backends[body.get("backend") or rt.default_backend]
+                        backend = (model(body["model"]) if body.get("model") is not None
+                                   else rt.backends[body.get("backend") or rt.default_backend])
                         answers = backend.decide([Request(r["state"], Question.from_json(r["question"]))
                                                   for r in body["requests"]])
                         self._send(200, {"answers": [{"probs": a.probs, "label": a.label, "model": a.model,
                                                       "usage": a.usage, "abstained": a.abstained} for a in answers]})
+                    elif self.path == "/release":
+                        from .backends.tde import TdeBackend
+                        TdeBackend.release()
+                        self._send(200, {"ok": True})
                     elif self.path == "/ask":
                         d = rt.ask(body["point"], body["ctx"], session=body.get("session", "s_http"),
                                    phase=body.get("phase"), veto=body.get("veto"))
@@ -75,6 +96,8 @@ def make_server(rt, host: str = "127.0.0.1", port: int = 8765, token: str | None
                         self._send(404, {"error": "not found"})
             except (KeyError, ValueError, TypeError) as e:
                 self._send(400, {"error": f"{type(e).__name__}: {e}"})
+            except Exception as e:  # noqa: BLE001 - an answer, not a dropped connection: the client may retry
+                self._send(500, {"error": f"{type(e).__name__}: {e}"[:500]})
 
         def log_message(self, fmt, *args) -> None:   # keep the terminal quiet
             pass

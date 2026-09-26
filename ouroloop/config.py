@@ -15,6 +15,8 @@ from .runtime import Runtime, import_object
 POINT_KEYS = {"backend", "define", "act", "explore"}
 # Once the gate is frozen, its parameters come from the gate template only (PLAN_v0.2 M8), never from the config.
 FROZEN = (("research", "min_items"), ("suite", "min_items"), ("checks", None))
+# How trained models (refs) are served: a model server, or in-process from the jobs' directories (PLAN_v0.2 M9).
+MODELS_KEYS = {"url", "token_env", "timeout", "jobs_root", "hf_prefix", "device"}
 
 
 def load_dotenv(path: str | Path = ".env") -> None:
@@ -44,7 +46,10 @@ def build_provider(spec: dict):
     return import_object(kind)(**spec)
 
 
-def build_backend(spec: dict):
+def build_backend(spec: dict, models: dict | None = None):
+    """A backend from its config table. {"type": "model", "model": ref} is a trained model, served as `models` (the
+    config's [models] table) says: by a model server (url, token_env), or in-process from jobs_root (and hf_prefix
+    for <repo>@<commit> refs)."""
     spec = dict(spec)
     kind = spec.pop("type")
     if kind == "mock":
@@ -53,30 +58,53 @@ def build_backend(spec: dict):
         return JevBackend(**spec)
     if kind == "tde":
         return TdeBackend(**spec)
+    if kind == "model":
+        return model_backend(spec["model"], models)
     if kind == "llm":
         return LlmBackend(build_provider(spec["provider"]))
     if kind == "signature":
         from .evolve.train import SignatureBackend
         return SignatureBackend(spec["path"], signature=spec.get("signature"))
-    if kind == "tde_remote":
-        from .evolve.train import RemoteTdeBackend
-        return RemoteTdeBackend(**spec)
     if kind == "http":
         from .backends.http import HttpBackend
         return HttpBackend(**spec)
     return import_object(kind)(**spec)
 
 
-def build_trainer(spec: dict):
-    from .evolve.train import LocalTdeTrainer, RemoteTdeTrainer, SignatureTrainer
+def check_models(models: dict | None) -> dict:
+    """The [models] table, which serves every trained model: a model server (url) or jobs_root."""
+    models = models or {}
+    unknown = set(models) - MODELS_KEYS
+    if unknown:
+        raise ValueError(f"[models] may only set {sorted(MODELS_KEYS)}, not {sorted(unknown)}")
+    if not models.get("url") and not models.get("jobs_root"):
+        raise ValueError("the config needs a [models] table with url (a model server) or jobs_root")
+    return models
+
+
+def model_backend(ref: str, models: dict | None):
+    """The backend of a model ref, as [models] serves it: the model server checks the ref itself (timeout: per chunk
+    of requests, long enough for the server's first load of a model), in-process it must be one a job yields
+    (worker.locate)."""
+    from .evolve.worker import locate
+    models = check_models(models)
+    if models.get("url"):
+        from .backends.http import HttpBackend
+        return HttpBackend(models["url"], model=ref, token_env=models.get("token_env", "OUROLOOP_TOKEN"),
+                           timeout=float(models.get("timeout", 600)))
+    run, revision = locate(ref, models["jobs_root"], models.get("hf_prefix"))
+    return TdeBackend(run, device=models.get("device"), model=ref, revision=revision)
+
+
+def build_trainer(spec: dict, models: dict | None = None):
+    """A trainer from the [trainer] table; `models` is the [models] table its models are served by."""
+    from .evolve.train import SignatureTrainer, TdeTrainer
     spec = dict(spec)
     kind = spec.pop("type")
     if kind == "signature":
         return SignatureTrainer(**spec)
-    if kind == "local_tde":
-        return LocalTdeTrainer(**spec)
-    if kind == "remote_tde":
-        return RemoteTdeTrainer(**spec)
+    if kind == "tde":
+        return TdeTrainer(**spec, models=models)
     return import_object(kind)(**spec)
 
 
@@ -125,7 +153,7 @@ def build_runtime(cfg: dict, base: str | Path = ".") -> Runtime:
                          f"until a model has been promoted")
     if "fallback" in cfg:
         raise ValueError("the top-level fallback is gone: declare a default answerer in the phases of a point")
-    rt = Runtime(root, backends, default, point_backends, seed=cfg.get("seed"))
+    rt = Runtime(root, backends, default, point_backends, seed=cfg.get("seed"), models=cfg.get("models"))
     for name, s in points.items():
         if set(s) - POINT_KEYS:
             raise ValueError(f"[points.{name}] may only set {sorted(POINT_KEYS)}, not {sorted(set(s) - POINT_KEYS)}")
@@ -188,7 +216,7 @@ def build_research(cfg: dict, rt: Runtime, base: str | Path = "."):
     evaluators, context = {}, {}
     if "trainer" in cfg:
         recipe = cfg.get("recipe", {})
-        evaluators["recipe"] = recipe_evaluator(build_trainer(cfg["trainer"]), recipe)
+        evaluators["recipe"] = recipe_evaluator(build_trainer(cfg["trainer"], cfg.get("models")), recipe)
         context = {"recipe": {**DEFAULT_RECIPE, **recipe}, "recipe_keys": sorted(RECIPE_KEYS - PATH_KEYS)}
     if "suite" in cfg:
         from .agent.suite import load_suite

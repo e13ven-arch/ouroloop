@@ -201,7 +201,7 @@ def test_each_generation_learns_from_the_last_ones_model_on_fresh_games_and_the_
     cards = [registry.card(v) for v in registry.versions()]
     assert [c["version"] for c in cards] == ["m_0001", "m_0002", "m_0003"]
     # generation 1: too few training rows, nothing trained; generation 2: the first candidate, promoted
-    assert cards[0]["gate"] == "insufficient_data" and "run" not in cards[0]
+    assert cards[0]["gate"] == "insufficient_data" and "model_id" not in cards[0]
     assert cards[1]["gate"] == "accepted" and cards[1]["metrics"]["move"]["challenger"]["fixes"] > 0
     # the planted candidate, trained on shuffled labels, went through the same gate and was rejected
     planted = cards[2]

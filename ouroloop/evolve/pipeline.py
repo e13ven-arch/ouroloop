@@ -65,7 +65,7 @@ def schedule(rt, points: list[str] | None = None) -> tuple[bool, str]:
     params = load_template(rt.root)[0]
     registry = Registry(rt.root)
     cards = [registry.card(v) for v in registry.versions() if (registry.dir / v / "card.json").exists()]
-    trained = [c for c in cards if c.get("run")]
+    trained = [c for c in cards if c.get("model_id")]
     budget = {**TEMPLATE["budget"], **params.get("budget", {})}["max_trainings"]
     if len(trained) >= budget:
         return False, f"training budget spent ({len(trained)} of {budget})"
@@ -154,9 +154,9 @@ def prepare_model(rt, trainer, recipe: dict | None = None, *, record: GateRecord
         return cand
     try:
         cand.result = trainer.train(TrainJob(version, ds.dir, recipe,
-                                             parent.get("run") if parent else recipe.get("init_from")))
+                                             parent.get("model_id") if parent else recipe.get("init_from")))
         cand.backend = trainer.backend(cand.result)
-        card.update({"run": cand.result.run, "backend": cand.result.backend, "model_id": cand.result.model_id})
+        card.update({"model_id": cand.result.model_id, "backend": cand.result.backend, "job": cand.result.job})
         registry.record(card)                   # the candidate's card, before it is evaluated
         for name in points:
             cal = calibrate.calibrate_point(rt, name, backend=cand.backend, rows=parts[name]["calibration"],
@@ -186,7 +186,7 @@ def dry_run_model(rt, trainer, recipe: dict | None = None, *, points: list[str] 
     if hasattr(trainer, "dry_run"):
         parent = Registry(rt.root).champion()
         out["job"] = trainer.dry_run(TrainJob(version, ds.dir, recipe,
-                                              parent.get("run") if parent else recipe.get("init_from")))
+                                              parent.get("model_id") if parent else recipe.get("init_from")))
     return out
 
 
@@ -226,13 +226,32 @@ def model_evaluation(rt, mc: ModelCandidate, registry: Registry, record: GateRec
                       calibrations=[c.gated(rt.points[name].spec_hash) for name, c in mc.calibrations.items()])
 
 
+def check_change(change: dict) -> None:
+    """A research candidate's recipe change: hyperparameters only, never the files and runs training reads
+    (PATH_KEYS), each of the type of its default (an int for a float; a number for one that is None by default).
+    Raises ValueError before any job starts."""
+    paths = sorted(set(change) & PATH_KEYS)
+    if paths:
+        raise ValueError(f"{paths} name data or runs: a person sets them in [recipe]")
+    unknown = sorted(set(change) - RECIPE_KEYS)
+    if unknown:
+        raise ValueError(f"unknown recipe keys: {unknown}")
+    for key, value in change.items():
+        default = DEFAULT_RECIPE[key]
+        number = isinstance(value, (int, float)) and not isinstance(value, bool)
+        ok = (isinstance(value, bool) if isinstance(default, bool)
+              else number and not isinstance(value, float) if isinstance(default, int)
+              else number)                  # a float, or None by default
+        if not ok:
+            want = {bool: "true or false", int: "an integer"}.get(type(default), "a number")
+            raise ValueError(f"recipe {key} = {value!r}: must be {want} (default {default!r})")
+
+
 def recipe_evaluator(trainer, base_recipe: dict | None = None, **kw):
     """Evaluator for research candidates of kind "recipe": train with the changed recipe, gated by gate.run. A
-    candidate changes hyperparameters, not the files and runs training reads (PATH_KEYS)."""
+    candidate changes hyperparameters of the right types, not the files and runs training reads (check_change)."""
     def evaluate(rt, cand, record: GateRecord) -> EvalResult:
-        paths = sorted(set(cand.change) & PATH_KEYS)
-        if paths:
-            raise ValueError(f"{paths} name data or runs: a person sets them in [recipe]")
+        check_change(cand.change)
         registry = Registry(rt.root)
         mc = prepare_model(rt, trainer, {**(base_recipe or {}), **cand.change}, record=record, registry=registry,
                            **kw)

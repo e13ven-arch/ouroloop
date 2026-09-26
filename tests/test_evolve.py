@@ -18,14 +18,14 @@ from ouroloop.evolve.gate import records
 from ouroloop.evolve.pipeline import evolve_model, recipe_evaluator
 from ouroloop.evolve.registry import Registry
 from ouroloop.evolve.replay import labelled, split, splits
-from ouroloop.evolve.train import (RemoteTdeBackend, RemoteTdeTrainer, SignatureTrainer, TrainJob, prepare_job)
+from ouroloop.evolve.train import SignatureTrainer, prepare_job
 from ouroloop.points import retry_point
 from ouroloop.providers import MockProvider
 from ouroloop.release import Revoked
 from ouroloop.research import BasicResearcher, Candidate, run_round
 from ouroloop.research.loop import run_rounds
 from ouroloop.runtime import Runtime
-from ouroloop.types import Question, Request, temper
+from ouroloop.types import temper
 
 LOOSE = {"min_train": 100, "max_mde": 0.2}
 
@@ -170,40 +170,6 @@ def test_prepare_job_mixes_replay_and_inherits_the_parent_architecture(tmp_path)
     # what TDE selects on: the val split, shuffled, as TDE evaluates only its first rows (in order, the oldest)
     val = [json.loads(line)["id"] for line in (data / "tde" / "calibration.jsonl").read_text().splitlines()]
     assert sorted(val) == sorted(f"v{i}" for i in range(50)) and val[:10] != [f"v{i}" for i in range(10)]
-
-
-class FakeHost:
-    """Stands in for ssh/rsync: remembers commands, answers the polling and prediction steps."""
-
-    def __init__(self):
-        self.commands = []
-
-    def __call__(self, args, input=None):
-        self.commands.append((args, input))
-        out = ""
-        if args[0] == "ssh":
-            command = args[-1]
-            if "cat " in command and "exit_code" in command:
-                out = "0\n"
-            elif command.endswith(" -") and "prepare_job" in (input or ""):
-                out = "~/tde/ouroloop_jobs/m_0001/data/tde/config.yaml\n"
-        elif args[0] == "rsync" and not args[-1].count(":"):   # a pull: write predictions locally
-            Path(args[-1]).write_text(json.dumps({"i": 0, "probabilities": {"yes": 0.8, "no": 0.2}}) + "\n")
-        return type("P", (), {"stdout": out})()
-
-
-def test_remote_trainer_runs_detached_and_backend_batches(tmp_path):
-    host = FakeHost()
-    (tmp_path / "data").mkdir()
-    trainer = RemoteTdeTrainer("user@gpu-host", "~/tde", runner=host, sleep=lambda s: None)
-    result = trainer.train(TrainJob("m_0001", tmp_path / "data", {"epochs": 1}, "runs/base"))
-    ssh = [a[-1] for a, _ in host.commands if a[0] == "ssh"]
-    assert any("nohup bash -c" in c and "scripts/train.py --config" in c for c in ssh)
-    assert not any("pkill" in c for c in ssh)
-    assert result.run == "~/tde/ouroloop_jobs/m_0001/run" and result.backend["type"] == "tde_remote"
-    backend = trainer.backend(result)
-    ans = backend.decide([Request("state", Question("noul", "q"))])
-    assert isinstance(backend, RemoteTdeBackend) and ans[0].probs == {"yes": 0.8, "no": 0.2}
 
 
 # ---------------------------------------------------------------- research with recipes and questions
