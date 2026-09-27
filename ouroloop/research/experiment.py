@@ -79,18 +79,22 @@ def check_input_coverage(proposal, *, context, **_kw) -> tuple[str, str, tuple]:
     coverage = (context.inspection or {}).get("coverage") or {}
     if not coverage:
         return "warn", "no trace coverage for this release yet: nothing says which fields were visible", ()
-    missing = []
+    missing, empty = [], []
     for schema, entry in coverage.items():
         if not entry.get("n"):
             continue
+        required = set(ct.SCHEMAS.get(schema, {}).get("required") or ())
         for field_name, share in (entry.get("present") or {}).items():
-            if share == 0:
-                missing.append(f"{schema}.{field_name}")
+            if share:
+                continue
+            (missing if field_name in required else empty).append(f"{schema}.{field_name}")
     if missing and any(t.get("point") for t in proposal.training):
         return "block", f"training was proposed while these fields never reached the decision: {missing[:5]}", ()
     if missing:
-        return "warn", f"fields never present in the observed traces: {missing[:5]}", ()
-    return "pass", "every declared field was present in the observed traces", ()
+        return "warn", f"required fields never present in the observed traces: {missing[:5]}", ()
+    if empty:
+        return "warn", f"optional fields were always empty: {empty[:5]}", ()
+    return "pass", "every field the core requires was present in the observed traces", ()
 
 
 def check_label_availability(proposal, *, context, **_kw) -> tuple[str, str, tuple]:

@@ -258,3 +258,138 @@ def collect(root, suite, splits, *, worker_ref=None, provider=None, tasks=(), pr
                         repeats=repeats, arm=arm, plan_ref=plan_ref, release_ref=release)
     return {"rt": rt, "objects": objects, "bound": bound, "results": results, "releases": releases,
             "release": release, "run": manifest}
+
+
+# ---------------------------------------------------------------------------- a scripted research step
+class ScriptedResearcher:
+    """A research step that reads the context it is given.
+
+    It names a gap only where the results it can see show tasks that half-passed, and it cites evidence that is
+    actually in the context. It proposes the carrier it was configured for, so a test can exercise the
+    prompt-only path and the training path through the same loop. It never looks at a candidate's name, and it
+    cannot see a task outside its partitions, because the context does not contain one.
+    """
+
+    def __init__(self, *, carrier: str = "prompt", instruction: str | None = None, min_labels: int = 4,
+                 cite_missing: bool = False, target: str = "worker.finish", follow_prompt: bool = False):
+        self.carrier = carrier
+        self.instruction = instruction
+        self.min_labels = min_labels
+        self.cite_missing = cite_missing       # RL-04: cite evidence that does not exist
+        self.target = target
+        # With follow_prompt, the change it proposes depends on what the loaded research policy's propose prompt
+        # asks for: that is how a campaign can tell two research policies apart by what they produce.
+        self.follow_prompt = follow_prompt
+        self.seen: list = []
+        self.requests: list = []
+
+    def diagnose(self, context, prompt: str):
+        self.requests.append({"step": "diagnose", "prompt": prompt,
+                              "prompt_hash": ct.digest({"system": prompt})[:16]})
+        self.seen.append(context)
+        out = []
+        for task_id, entry in sorted((context.results or {}).get("tasks", {}).items()):
+            if entry.get("pass_rate") in (None, 1.0):
+                continue
+            if not entry.get("mean_partial_credit"):
+                continue
+            out.append({"id": f"req:{task_id}", "context": f"{task_id} in {entry['split']}",
+                        "expected_behavior": "every requirement of the request is carried out, including the "
+                                             "one stated at the end",
+                        "observed_behavior": f"the task scored {entry['mean_partial_credit']} and completed "
+                                             f"{entry['pass_rate']}",
+                        "evidence_refs": list(context.evidence[:2]), "acceptance": "the task completes",
+                        "recurrence": entry.get("attempts", 1)})
+        return out
+
+    def propose(self, context, prompt: str, requirements, experience=()):
+        from ouroloop.research.experiment import ProposalResult
+        self.requests.append({"step": "propose", "prompt": prompt,
+                              "prompt_hash": ct.digest({"system": prompt})[:16]})
+        if not requirements:
+            return ProposalResult([], next_action="collect", reason="no task in the context shows a gap")
+        evidence = tuple(context.evidence[:2])
+        if self.cite_missing:
+            evidence = ("evidence:sha256:" + "f" * 64,)
+        if self.carrier == "train":
+            labels = int((context.feedback or {}).get("valid") or 0)
+            if labels < self.min_labels:
+                return ProposalResult([], next_action="collect",
+                                      reason=f"{labels} labels is too few to train on")
+            options = (context.targets or {}).get("worker.stop.training")
+            if not options:
+                return ProposalResult([], next_action="stop",
+                                      reason="this activity has no trainer, so training cannot be proposed")
+            proposal = ct.ExperimentProposal(
+                owner="worker", hypothesis="a learned completion judgement stops the agent from finishing early",
+                requirements=tuple(r["id"] for r in requirements), evidence_refs=evidence, changes=(),
+                training=({"point": options["point"], "feedback_ref": options["feedback"][0],
+                           "data_selection_ref": options["data_selection_ref"],
+                           "recipe_ref": options["recipe_ref"]},),
+                expected="the model proposes no at the moment the notification is still missing")
+            return ProposalResult([proposal], next_action="none", evidence_refs=evidence)
+        text = self.instruction
+        if text is None:
+            from ouroloop.policies import FINISH_CHECK
+            text = FINISH_CHECK
+            if self.follow_prompt and "finish check" not in (prompt or "").lower():
+                # The prompt did not ask for a check of the request's requirements, so this step proposes the
+                # blander change it was told to: the step follows its instructions, not a version name.
+                text = "Keep your final message short and say what you did."
+        change = ({"target": self.target, "kind": "workflow",
+                   "change": {"builtin": "finish_check.v1", "instruction": text}}
+                  if self.carrier == "workflow" else
+                  {"target": self.target, "kind": "prompt", "change": {"text": text}})
+        proposal = ct.ExperimentProposal(
+            owner="worker", hypothesis="the agent finishes before doing the step stated at the end of the request",
+            requirements=tuple(r["id"] for r in requirements), evidence_refs=evidence,
+            changes=(change,), expected="the half-passing tasks complete, and the others do not regress",
+            abandon_if="the tasks that already passed start failing")
+        return ProposalResult([proposal], next_action="none", evidence_refs=evidence)
+
+
+class ResearchPolicyProposer:
+    """A research step that proposes a change to its own R, from what the research history shows.
+
+    It looks for rounds that ended without an installed candidate — evidence that the way this policy proposes
+    changes is not closing the gaps — and proposes a propose-prompt that names the missing step. It reads the
+    experience it was given; it does not know which version it is running as.
+    """
+
+    def __init__(self, *, target: str = "research.propose", instruction: str | None = None):
+        self.target = target
+        self.instruction = instruction
+        self.requests: list = []
+
+    def diagnose(self, context, prompt: str):
+        self.requests.append({"step": "diagnose", "prompt_hash": ct.digest({"system": prompt})[:16]})
+        idle = [e for e in (context.experience or ())
+                if e.get("kind") == "round" or (e.get("kind") == "experiment" and not e.get("installed"))]
+        half = [t for t, entry in ((context.results or {}).get("tasks") or {}).items()
+                if entry.get("pass_rate") not in (None, 1.0) and entry.get("mean_partial_credit")]
+        if not idle and not half:
+            return []
+        return [{"id": "req:research.propose", "context": "the research history of this activity",
+                 "expected_behavior": "a proposal names the step the request asks for at the end and how it "
+                                      "would be checked",
+                 "observed_behavior": f"{len(idle)} rounds installed nothing while {len(half)} tasks kept "
+                                      f"half-passing",
+                 "evidence_refs": list(context.evidence[:1]), "acceptance": "the next proposal closes the gap",
+                 "recurrence": max(len(idle), 1)}]
+
+    def propose(self, context, prompt: str, requirements, experience=()):
+        from ouroloop.research.experiment import ProposalResult
+        self.requests.append({"step": "propose", "prompt_hash": ct.digest({"system": prompt})[:16]})
+        if not requirements:
+            return ProposalResult([], next_action="collect", reason="the research history shows no gap yet")
+        from ouroloop.policies import PROPOSE
+        text = self.instruction or (
+            PROPOSE + " When a request states a requirement at its end, propose a finish check that names the "
+                      "tool result showing each requirement is done.")
+        proposal = ct.ExperimentProposal(
+            owner="research", hypothesis="a propose step that asks for a finish check produces candidates that "
+                                        "close end-of-request gaps",
+            requirements=tuple(r["id"] for r in requirements), evidence_refs=tuple(context.evidence[:1]),
+            changes=({"target": self.target, "kind": "prompt", "change": {"text": text}},),
+            expected="the worker candidates this policy proposes close the gap the requirement names")
+        return ProposalResult([proposal], next_action="none", evidence_refs=tuple(context.evidence[:1]))

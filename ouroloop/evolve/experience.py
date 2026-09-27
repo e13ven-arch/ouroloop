@@ -30,7 +30,7 @@ SUMMARY_STATUS = ("supported", "negative", "regression", "inconclusive", "expire
 def experiment_record(*, experiment_id: str, proposal_ref: str, owner: str, hypothesis: str, changes,
                       requirements=(), build=None, receipt=None, installation=None, activity=None,
                       release_before: str = "", release_after: str = "", costs=None, evidence_refs=(),
-                      open_questions=(), targets=(), tags=(), notes: str = "") -> dict:
+                      open_questions=(), targets=(), tags=(), trained: bool = False, notes: str = "") -> dict:
     """The facts of one experiment, whether or not it was installed.
 
     What went in, what was actually assembled, what it did while running, what the full-task comparison said, what
@@ -43,7 +43,7 @@ def experiment_record(*, experiment_id: str, proposal_ref: str, owner: str, hypo
             "requirements": [str(r) for r in requirements], "targets": sorted(targets or
                                                                              {c["target"] for c in changes}),
             "tags": sorted(tags or ()),
-            "build": getattr(build, "status", None), "trained": bool(getattr(build, "artifacts", {}) or {}),
+            "build": getattr(build, "status", None), "trained": bool(trained),
             "activity": dict(activity or {}),
             "verdict": getattr(receipt, "verdict", None), "receipt": receipt.ref() if receipt else None,
             "reasons": list(getattr(receipt, "reasons", ()) or ()),

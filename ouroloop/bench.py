@@ -422,16 +422,29 @@ class Improvement:
                 "toolset": ab.TOOLSET, "runner": self.suite.versions.get("runner", "")}
 
     # -------------------------------------------------------------- evidence
-    def collect(self, *, tasks=None, release_ref: str | None = None, repeats: int = 1) -> dict:
-        """Run the current version on training tasks and label the completion decisions from the states they were
-        made on. Nothing here reads a dev or final label."""
+    def collect(self, *, tasks=None, release_ref: str | None = None, repeats: int = 1, dev: bool = True) -> dict:
+        """Run the current version and gather what a round may learn from.
+
+        Training tasks are run with the completion probe, which labels each stop decision from the state it was
+        made on. The development tasks are run too, without a probe and without any online score: a behaviour gap
+        is something the current version does on tasks it will be judged on, and a round that only saw the
+        training pool could not name one (docs/DESIGN.md §4.3). The version changes between rounds, so this is
+        measured per round rather than once.
+        """
         release_ref = release_ref or self.releases.active()["release_ref"]
         tasks = tuple(tasks or self.train_tasks or self.splits.ids("train"))
         order = [(t, i) for t in tasks for i in range(repeats)]
-        results = self.run_arm("collect", release_ref, order, plan_ref="", split="train", candidate="current",
-                               role="base", probe=self.probe_train)
+        train_results = self.run_arm("collect", release_ref, order, plan_ref="", split="train",
+                                     candidate="current", role="base", probe=self.probe_train)
+        dev_results = []
+        if dev and self.dev_tasks:
+            dev_results = self.run_arm("dev_baseline", release_ref,
+                                       [(t, i) for t in self.dev_tasks for i in range(self.repeats)],
+                                       plan_ref="", split=_split_of_tasks(self.splits, self.dev_tasks),
+                                       candidate="current", role="base")
         feedback = _feedback.build_feedback(self.rt, objects=self.objects, scope_id=self.scope_id)
-        return {"results": results, "feedback": feedback, "release": release_ref}
+        return {"results": [*train_results, *dev_results], "train": train_results, "dev": dev_results,
+                "feedback": feedback, "release": release_ref}
 
     def context(self, *, goal: str, release_ref: str, evidence: dict, experience=(),
                 experience_ref: str = "") -> object:
@@ -446,8 +459,26 @@ class Improvement:
                              results=_task_results_summary(evidence["results"], splits=self.splits),
                              feedback=evidence["feedback"].summary(), experience=experience,
                              budget=self.budget.remaining() if self.budget else {},
-                             targets={t: {"binding": r.binding, "kinds": list(r.allowed_kinds), "site": r.site}
-                                      for t, r in _P.REGISTRY.items() if r.owner == self.owner})
+                             targets={**{t: {"binding": r.binding, "kinds": list(r.allowed_kinds),
+                                            "site": r.site}
+                                         for t, r in _P.REGISTRY.items() if r.owner == self.owner},
+                                      **self.training_options()})
+
+    def training_options(self) -> dict:
+        """What a training proposal may name, when this activity has a trainer at all.
+
+        The data selection and the recipe are frozen objects the researcher refers to, not text it writes: the
+        selection decides which rows exist and the recipe decides what a job costs, and neither is something an
+        untrusted proposal should be able to invent (docs/modules/04_RESEARCH_LOOP.md §2.6).
+        """
+        if self.trainer is None:
+            return {}
+        selection = self.objects.put_json("change", {"seed": self.order_seed, "validation": 0.25,
+                                                     "max_per_task": 20, "min_groups": 1})
+        recipe = self.objects.put_json("change", {})
+        return {"worker.stop.training": {"feedback": ["completion_snapshot@v1"],
+                                         "data_selection_ref": selection, "recipe_ref": recipe,
+                                         "point": "worker.stop"}}
 
     # -------------------------------------------------------------- handlers
     def handlers(self) -> dict:
@@ -544,6 +575,15 @@ class Improvement:
         bound = _P.bind_release(target_release, profile="preflight", services=self.services())
         return {"release": target_release, "policies": _P.describe(bound),
                 "prompt": bound.system_prompt("")[1]}
+
+
+def _split_of_tasks(splits: SplitManifest, tasks) -> str:
+    """The one split these tasks are in. One run reads one split, so a mixed list is a configuration error rather
+    than something to sort out silently."""
+    found = {splits.split_of(t) for t in tasks}
+    if len(found) != 1:
+        raise ValueError(f"these tasks span several splits ({sorted(found)}): one run reads one split")
+    return found.pop()
 
 
 def _trace_refs(objects: _ct.Objects) -> tuple:
@@ -1094,3 +1134,69 @@ def report(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pr
         paths = write_report(root, bench.domain, data)
         out(f"wrote      {paths['json']} and {paths['markdown']}")
     return data
+
+
+def research_slot(cfg: dict, base: str | Path = ".", *, pairs, researcher, arm_researcher=None,
+                  out: Callable[[str], None] = print, worker_rounds: int = 1, gate: GatePlan | None = None,
+                  arm_budget: dict | None = None, phase: str = "research_dev",
+                  discovery: str = "scripted") -> dict:
+    """One research slot: the current R proposes a change to R, the change is compared, and the winner is installed.
+
+    The proposal goes through the same admission and the same build as a worker candidate — only the owner and
+    the evaluator differ (docs/modules/04_RESEARCH_LOOP.md §4). The campaign plan is frozen from `pairs` once R1
+    exists, because a plan naming a candidate that does not exist yet could not be checked; nothing about the
+    thresholds or the task pools is decided after the arms run.
+
+    `discovery` travels into the receipt: a change a person wrote exercises this path and is not evidence that
+    the system found it (RC-10).
+    """
+    from .research.campaign import CampaignPlan
+    from .research.experiment import admit, freeze, propose_experiment
+    from .research.campaign import CampaignPair  # noqa: F401 - pairs are already CampaignPair objects
+    activity = open_activity(cfg, base, out=out)
+    release_ref = activity.releases.active()["release_ref"]
+    provider = config_mod.build_provider(cfg["llm"])
+    work = improvement(activity, template_ref=activity.rsi.task_plan_ref, provider=provider, owner="research")
+    evidence = work.collect()
+    experience, experience_ref = __import__("ouroloop.evolve.experience", fromlist=["x"]).snapshot(activity.root)
+    context = work.context(goal="improve how this research policy finds and verifies changes",
+                           release_ref=release_ref, evidence=evidence, experience=experience,
+                           experience_ref=experience_ref)
+    bound = _P.bind_release(release_ref, profile="task", services=work.services(), authorization="installed")
+    proposal_result = propose_experiment(context, bound, "research", researcher=researcher,
+                                         objects=activity.objects, experience=experience)
+    if not proposal_result.proposals:
+        out(f"slot       no research proposal ({proposal_result.next_action}: {proposal_result.reason})")
+        return {"outcome": "no_proposal", "reason": proposal_result.reason, "release": release_ref}
+    core = activity.objects.load(work.core_ref, _ct.CoreManifest)
+    admission = admit(proposal_result.proposals[0], context=context, core=core, objects=activity.objects,
+                      owner="research", checks=tuple(bound.preflight or ()))
+    if not admission.ok:
+        out(f"slot       {admission.status}: {'; '.join(admission.reasons)[:200]}")
+        return {"outcome": admission.status, "reasons": admission.reasons, "release": release_ref}
+    experiment = freeze(admission.proposal_ref, objects=activity.objects, parent_release=release_ref,
+                        experience_ref=experience_ref, core_ref=work.core_ref,
+                        eval_template_ref=activity.rsi.task_plan_ref or "", budget_scope=activity.rsi.scope_id)
+    activity.objects.put(experiment)
+    build = _P.build_candidate(experiment, objects=activity.objects, parent_release=release_ref, owner="research",
+                              services=work.services())
+    if build.status != "ready":
+        out(f"slot       build {build.status}: {'; '.join(build.errors)[:200]}")
+        return {"outcome": build.status, "reasons": list(build.errors), "release": release_ref}
+    r0 = _ct.SystemRelease.from_json(activity.objects.get(release_ref)).research_ref
+    out(f"slot       R1 {_ct.short(build.candidate_ref)} proposed by R0 {_ct.short(r0)}")
+    plan = CampaignPlan(id=f"campaign-{_ct.digest({'r1': build.candidate_ref})[:10]}", phase=phase,
+                        core_ref=work.core_ref, r_control_ref=r0, r_candidate_ref=build.candidate_ref,
+                        campaign_pairs=tuple(activity.objects.put(p) for p in pairs),
+                        arm_budget=dict(arm_budget or {"model_calls": 2000, "tool_calls": 2000}),
+                        worker_round_limit=worker_rounds,
+                        worker_gate_plan_ref=activity.objects.put(gate or GatePlan(min_groups=1, min_gain=0.01,
+                                                                                  bootstrap_replicates=200)),
+                        research_gate_plan=(gate or GatePlan(min_groups=1, min_gain=0.05,
+                                                            bootstrap_replicates=200)).to_json(),
+                        selection_rule="last_installed", discovery=discovery)
+    plan_ref = activity.objects.put(plan)
+    cfg = {**cfg, "rsi": {**cfg.get("rsi", {}), "research_plan_ref": plan_ref}}
+    outcome = research(cfg, base, out=out, researcher=arm_researcher or researcher, campaign_ref=plan_ref)
+    return {"outcome": outcome["verdict"], "r1": build.candidate_ref, "campaign": plan_ref,
+            "experiment": experiment.id, **outcome}

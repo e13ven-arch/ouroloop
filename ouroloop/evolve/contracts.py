@@ -132,10 +132,15 @@ def visible(partition: str, allowed: tuple[str, ...]) -> bool:
 # built, so an unknown view or an invented action vocabulary never reaches a run (CT-03).
 SCHEMAS: dict[str, dict] = {
     # views a decision policy may read
-    "stop.file.v2": {"kind": "input", "fields": ["task", "moment", "message", "files", "turns", "actions"]},
+    # `required` is what a decision at this point cannot be judged without, declared by the core rather than
+    # inferred: a field that is legitimately empty (nothing was truncated, a task needed no tool call) is not a
+    # field that never reached the decision (docs/modules/01_POLICY_RUNTIME.md §2).
+    "stop.file.v2": {"kind": "input", "fields": ["task", "moment", "message", "files", "turns", "actions"],
+                     "required": ["task", "message"]},
     "stop.business.v1": {"kind": "input",
                          "fields": ["task_text", "phase", "step", "final_message", "tool_events",
-                                    "budget_remaining", "truncation"]},
+                                    "budget_remaining", "truncation"],
+                         "required": ["task_text", "tool_events"]},
     # action vocabularies
     "action.stop.v1": {"kind": "output", "actions": ["yes", "no", "abstain"]},
     # configuration payloads

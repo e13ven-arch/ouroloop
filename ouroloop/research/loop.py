@@ -206,7 +206,9 @@ def run_worker_round(round_context: RoundContext, budget) -> _ct.RoundResult:
     record = _experience.experiment_record(
         experiment_id=experiment.id, proposal_ref=admission.proposal_ref, owner=ctx.owner,
         hypothesis=proposal.hypothesis, changes=proposal.changes,
-        requirements=[getattr(r, "id", r) for r in proposal_result.requirements], build=outcome.get("build"),
+        requirements=[r.get("id") if isinstance(r, dict) else getattr(r, "id", r)
+                      for r in proposal_result.requirements],
+        build=outcome.get("build"), trained=bool(proposal.training),
         receipt=receipt, installation=installation, activity=ctx.bound.activity.to_json(),
         release_before=before, release_after=after, costs=budget.remaining() if budget else {},
         evidence_refs=proposal.evidence_refs,

@@ -268,6 +268,19 @@ class Budgets:
                     total[k] += float(v)
         return total
 
+    def touched(self, scope_id: str, book: dict) -> set:
+        """The dimensions this subtree has actually reserved or spent, whatever the amount.
+
+        A measured zero is a measurement: reporting it as absent would read as "training was never run" when a
+        job ran and cost less than the resolution of the clock.
+        """
+        scopes = self.subtree(scope_id, book)
+        out: set = set()
+        for r in book["reservations"].values():
+            if r["scope_id"] in scopes and r["status"] != "released":
+                out |= {k for k in (*r["bound"], *(r.get("measured") or {})) if k in LIMITS}
+        return out
+
     def stopped(self, scope_id: str, book: dict | None = None) -> str:
         book = book or self._read()
         for entry in book.get("stopped", []):
@@ -403,7 +416,9 @@ class BudgetAccount:
         entry = self.budgets.scope(self.scope_id, book)
         used = self.budgets.usage(self.scope_id, book)
         out = {dim: round(float(limit) - used.get(dim, 0.0), 6) for dim, limit in entry["limits"].items()}
-        return {"limits": dict(entry["limits"]), "used": {k: round(v, 6) for k, v in used.items() if v},
+        touched = self.budgets.touched(self.scope_id, book)
+        return {"limits": dict(entry["limits"]),
+                "used": {k: round(v, 6) for k, v in used.items() if v or k in touched},
                 "remaining": out, "allocations": dict(entry.get("allocations") or {}),
                 "unknown": sum(1 for r in book["reservations"].values()
                                if r["status"] == "unknown" and r["scope_id"] in

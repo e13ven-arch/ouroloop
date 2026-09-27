@@ -94,10 +94,14 @@ def parse_builtin(builtin: str, config: Any) -> dict:
             raise ContractError(f"default.v1 does not take {unknown}")
         return {"action": config.get("action")} if "action" in config else {}
     if builtin == "finish_check.v1":
-        if set(config) != {"instruction_ref"}:
-            raise ContractError("finish_check.v1 takes instruction_ref only")
-        ct.parse_ref(config["instruction_ref"])
-        return dict(config)
+        # Either the stored instruction or its text. A proposal has no store, so it writes the text and the build
+        # step stores it (normalize_builtin); what is installed always holds the ref.
+        if set(config) == {"instruction_ref"}:
+            ct.parse_ref(config["instruction_ref"])
+            return dict(config)
+        if set(config) == {"instruction"}:
+            return {"instruction": parse_prompt({"text": config["instruction"]})["text"]}
+        raise ContractError("finish_check.v1 takes instruction_ref, or instruction as text")
     if builtin == "research_retrieve.v1":
         allowed = {"tags", "targets", "statuses", "max_items", "sort"}
         unknown = sorted(set(config) - allowed)
@@ -123,6 +127,13 @@ def parse_builtin(builtin: str, config: Any) -> dict:
             raise ContractError("preflight checks are an ordered list without repeats")
         return {"checks": tuple(checks)}
     raise ContractError(f"unknown built-in {builtin!r}: {list(BUILTINS)}")
+
+
+def normalize_builtin(objects: ct.Objects, builtin: str, config: dict) -> dict:
+    """A parsed configuration with its inline text stored, so the installed config is all refs."""
+    if builtin == "finish_check.v1" and "instruction" in config:
+        return {"instruction_ref": objects.put_json("change", {"text": config["instruction"]})}
+    return config
 
 
 def parse_inference(config: Any, actions: tuple[str, ...]) -> dict:
@@ -245,7 +256,9 @@ def descriptor(objects: ct.Objects, target: str, kind: str, payload: Any, *, own
     elif kind in ("rule", "workflow"):
         builtin = payload.pop("builtin") if isinstance(payload, dict) and "builtin" in payload else reg.builtins[0]
         impl = {"kind": kind, "builtin": builtin,
-                "config_ref": objects.put_json("change", parse_builtin(builtin, payload))}
+                "config_ref": objects.put_json("change",
+                                               normalize_builtin(objects, builtin,
+                                                                 parse_builtin(builtin, payload)))}
     elif kind == "model":
         spec = {"input_schema": reg.input_schema, **dict(payload or {})}
         impl = {"kind": "model", "model_ref": model_ref or "",
