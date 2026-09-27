@@ -1,1 +1,0 @@
-{"applicability":{},"binding":"decision","evidence_refs":[],"fallback":"yes","implementation":{"builtin":"default.v1","config_ref":"change:sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a","kind":"rule"},"input_schema":"stop.business.v1","limits":{},"output_schema":"action.stop.v1","owner":"worker","schema_version":2,"target":"worker.stop"}

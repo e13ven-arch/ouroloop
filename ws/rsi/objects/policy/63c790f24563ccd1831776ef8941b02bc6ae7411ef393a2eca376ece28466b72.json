@@ -1,1 +1,0 @@
-{"applicability":{},"binding":"config","evidence_refs":[],"fallback":"default","implementation":{"builtin":"finish_check.v1","config_ref":"change:sha256:8c26730c88ead71d70891cb4248118b2792149d86598386ad8f56c8da1a284e0","kind":"workflow"},"input_schema":"research.context.v1","limits":{},"output_schema":"finish_check.v1","owner":"worker","schema_version":2,"target":"worker.finish"}
