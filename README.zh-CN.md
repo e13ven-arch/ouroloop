@@ -6,7 +6,7 @@
 
 当前设计目标是在 AutomationBench Marketing 上跑通业务改进闭环，与业界领先模型和同底座改进前的 agent 比较。prompt 和工作流程的改进同样有效；训练出的决策模型需要证明额外的任务效果或成本收益。
 
-**实现状态：** 决策层、账本、训练作业、模型库与服务已有实现；AutomationBench 的运行契约也已实现——任务分组在看到第一个结果前冻结，官方评分器读工具留下的世界，以及一组说明"这个驱动器测的是上游测的东西"的检查（`ouroloop bench --phase smoke`，路线图 M1）。它还没在真实 checkout 和真实模型上跑过，因此**本仓库没有任何 benchmark 成绩**。业务反馈构造与完整任务晋升闭环尚未完成。见 [v0.4 设计](docs/DESIGN.md)与[实施路线图](docs/ROADMAP.md)。下面的可运行示例检查现有机制，不代表已取得业务 benchmark 收益。
+**实现状态：** 决策层、账本、训练作业、模型库与服务已有实现；AutomationBench 的运行契约也已实现——任务分组在看到第一个结果前冻结，官方评分器读工具留下的世界，以及一组说明"这个驱动器测的是上游测的东西"的检查（`ouroloop bench --phase smoke`，路线图 M1）。它已在真实 checkout（上游 `4a8e106`、package 1.0.6）上核验：25 个开发任务全部通过契约检查，上游自己的 rubric 入口、服务订阅门和工具 schema 都与本适配器一致。**还没用真实模型跑过，因此本仓库没有任何 benchmark 成绩。** 第一条反馈路径已实现：完成度探针在运行结束后给每个 stop 决策标上"当时活是不是真干完了"。完整任务晋升闭环尚未完成。见 [v0.4 设计](docs/DESIGN.md)与[实施路线图](docs/ROADMAP.md)。下面的可运行示例检查现有机制，不代表已取得业务 benchmark 收益。
 
 agent 会反复判断是否重试、保留上下文、验证或结束。ouroloop 将适合学习的判断声明为决策点，接入 Jev 或自己训练的小模型；未启用、弃权或服务失败时走既定默认策略。有依据的动作标签才能进入监督训练，整段任务得分不能直接当每一步的标签。候选接口可以提出 spec、训练配方和 prompt 改动，接下来要将它们与完整业务任务评测连接起来。
 
@@ -138,7 +138,7 @@ smoke 阶段报告这是哪个上游版本，把 train/dev/test 任务分组冻�
 
 当前代码具备决策点、账本、监督训练作业、训练器插件、模型库与服务、校准、版本管理、场景世代循环，以及独立的研究与 prompt 候选路径。
 
-设计 v0.4 的主线是 AutomationBench Marketing。环境适配、任务组划分和完整任务运行器已实现，验证对象是上游的微缩替身（`tests/fake_upstream`），尚未在真实 checkout 和真实模型上运行。待完成：有依据的业务训练信号、完整任务评测与晋升、研究循环接线、领先模型比较和可复现报告。**本仓库尚未测过任何 AutomationBench 成绩。** 历史证据保留在 [docs/JOURNAL.md](docs/JOURNAL.md)。
+设计 v0.4 的主线是 AutomationBench Marketing。环境适配、任务组划分和完整任务运行器已实现，契约检查在真实 checkout 上通过，测试跑在上游的微缩替身（`tests/fake_upstream`）上；尚未用真实模型运行。待完成：有依据的业务训练信号、完整任务评测与晋升、研究循环接线、领先模型比较和可复现报告。**本仓库尚未测过任何 AutomationBench 成绩。** 历史证据保留在 [docs/JOURNAL.md](docs/JOURNAL.md)。
 
 权威设计见 [docs/DESIGN.md](docs/DESIGN.md)，实现状态与下一步见 [docs/ROADMAP.md](docs/ROADMAP.md)，研究员职责与接口见 [docs/RESEARCH_AGENT.md](docs/RESEARCH_AGENT.md)，演示与结果呈现见 [docs/DEMO.md](docs/DEMO.md)，改动和证据见 [docs/JOURNAL.md](docs/JOURNAL.md)。
 

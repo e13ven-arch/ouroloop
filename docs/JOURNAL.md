@@ -8,6 +8,16 @@
 
 ---
 
+## 2026-09-27 一个任务是被漏掉一项要求输掉的
+
+- 做了什么：在真实上游上核验 M1，按核验里量到的东西选定干预点，并实现 M3 的信号路径 1——`CompletionProbe`：每个 stop 决策处留一份世界快照，episode 结束后用官方 rubric 给每份快照打分，把"当时活干完了吗"写成 `env` 标签。评分只在运行结束后发生，官方评分器不做在线 checker。只在 train split 上挂；session 的 `held_out` 改成 `split != "train"`（dev 是裁判数据）。
+- 证据（真实 checkout：`zapier/AutomationBench` @ `4a8e106`、package 1.0.6、Python 3.12.14、`api` 工具集，装了 `verifiers` 和 `openai-agents`，所以每项比较都真做了）：25 个 dev 任务全部通过契约检查——官方 rubric 入口是 `['partial_credit', 'task_completed_correctly']`、权重 `[1.0, 0.0]`，服务订阅门与上游 `compute_allowed_services` 逐任务一致，工具 schema 的参数名与必填项和上游 `agents.function_schema` 一致，快照独立性在真实 pydantic world 上逐任务成立，与断言无关的写入不移动分数，0 处 leak。split 已冻结：train 52 / dev 25 / test 23。
+- 决定干预点的测量：dev 任务需要中位数 **12** 个计分断言（均值 14.1，最多 39）全部通过，没有任务靠什么都不做能通过（中位数另有 7 条断言初始就成立、被排除出分母）。`task_completed_correctly` 是合取，所以每项 90% 可靠只有约 31% 的任务通过率，95% 是 53%，98% 是 76%。**任务是被漏掉一项要求输掉的**，于是"活是不是真干完了"这个判断——当时状态可见、训练任务上可核验、`policy.ACTING` 本来就只放它执行——是有依据的第一个干预点，不是因为"二分类适合小模型"。
+- 离线验收（不花 API）：同一个脚本模型同一个任务，点不执行时失败在 partial 0.5 且这次漏掉被记成 stop 的 `no`；一个有把握的"没干完"把 agent 送回去，任务通过 1.0；答案低于阈值就走默认、什么都不变。快照代价在最大的真实 world 上是每份 1 ms、0.1 MB。
+- 因此改了：`ToolSurface.mutates` 由工具面回答"这次调用可能改了世界吗"——原先循环拿 write/edit/bash 这三个工作目录的工具名去问，业务工具面永远答不上来。这不是洁癖：`Budgeted` 包住 episode 却没透传它，改动计数一直是 0，探针于是把每个 stop 决策都按第一次停下时的状态打标签，一次真实采集的全部训练样本都会是错标签。现在探针构造时就拒绝答不出改动的工具面。家族判定也修了：只按工具与断言类型算签名时有 172 对任务重叠超过 0.8，读了两对之后发现那只是"读表格、发邮件提建议"同一个形状；把断言的期望值也算进签名后，100 个任务里任意两个的重叠都不超过 0.42——一任务一家族从此是有证据的结论。
+- 尚未做：没有真实模型运行，因此没有任何成绩；信号路径 2（有限分支比较）未实现；`prompt_best` 对照未做，而 DESIGN §1 要求小模型必须先比它更好。
+- commit：1e1b56f、（本条）
+
 ## 2026-09-27 M1：先有运行契约，再有分数
 
 - 做了什么：`benchmark.py`（冻结的任务分组、运行 manifest、`TaskResult`、预算）、`adapters/automationbench.py`（延迟导入上游、`api` 工具集、官方评分、快照、契约检查与输入审计）、`evolve/task_eval.py`（一次尝试、有效性、预算）、`bench.py` 与 `ouroloop bench --phase smoke`、`examples/automationbench/marketing.toml`，以及 `tests/fake_upstream/`——上游的微缩替身，使 88 个新测试不需要真实上游。

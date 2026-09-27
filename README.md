@@ -6,7 +6,7 @@ A lightweight RSI framework for improving agent task outcomes from execution fee
 
 The current design target is an end-to-end improvement loop on AutomationBench Marketing, evaluated against leading models and the same base agent before improvement. Prompt and workflow changes are valid improvements; a trained decision model must show additional task-quality or cost benefits to justify its use.
 
-**Status:** the decision and training infrastructure exists, and so does the AutomationBench run contract: task groups frozen before the first result, the official scorer over the world the agent's tools left, and the checks that say the runner measures what upstream measures (`ouroloop bench --phase smoke`, roadmap M1). It has not been run against a real checkout or a real model, so **there are no benchmark results here**. Business feedback construction and the task-level promotion loop are not implemented. See the [v0.4 design](docs/DESIGN.md) and [implementation roadmap](docs/ROADMAP.md). The runnable examples below exercise the current mechanisms; they do not demonstrate business benchmark gains.
+**Status:** the decision and training infrastructure exists, and so does the AutomationBench run contract: task groups frozen before the first result, the official scorer over the world the agent's tools left, and the checks that say the runner measures what upstream measures (`ouroloop bench --phase smoke`, roadmap M1). It has been verified against a real checkout (upstream `4a8e106`, package 1.0.6): all 25 development tasks pass the contract checks, and upstream's own rubric entry point, service gate and tool schemas agree with this adapter's. It has **not** been run with a real model, so **there are no benchmark results here**. The first feedback path is implemented: a completion probe labels each stop decision, offline, with whether the task was actually finished at that moment. The task-level promotion loop is not. See the [v0.4 design](docs/DESIGN.md) and [implementation roadmap](docs/ROADMAP.md). The runnable examples below exercise the current mechanisms; they do not demonstrate business benchmark gains.
 
 An agent makes many small judgment calls: retry this command? keep this output in context? run this without asking? is the task done? ouroloop sends each of them to a calibrated decision model as a typed question (yes/no, a choice, or a score) and gets probabilities back in one forward pass. When the model is not confident, or its point is not switched on yet, the point takes its declared default: a fixed action, a rule, an LLM or a person. Every call, and what actually happened afterwards, goes into a local ledger.
 
@@ -167,8 +167,8 @@ those phase names are refused until they exist.
 The current implementation provides decision points, the ledger, supervised training jobs, trainer plugins, model storage and serving, calibration, version management, a scenario generation loop, and a separate research/prompt candidate path.
 
 Design v0.4 prioritizes AutomationBench Marketing. The adapter, the task-group splits and the full-task runner now
-exist and are tested against a miniature stand-in for upstream (`tests/fake_upstream`); they have not been run
-against a real checkout or a real model. Missing work includes justified business feedback, complete-task
+exist; the contract checks pass against a real checkout, and the tests run against a miniature stand-in for it
+(`tests/fake_upstream`). Nothing has been run with a real model. Missing work includes justified business feedback, complete-task
 evaluation and promotion, the integrated researcher, and reproducible comparisons with leading models. **No
 AutomationBench performance has been measured in this repository.** Existing evidence remains in
 [docs/JOURNAL.md](docs/JOURNAL.md).

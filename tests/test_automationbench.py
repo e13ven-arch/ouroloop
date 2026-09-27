@@ -580,3 +580,27 @@ class TestTheInterventionWorks:
         rt, at = self.attempt(tmp_path, suite, [stop_point(policy=Policy(act=True, explore=0.0))],
                               backends={"fixed": NotDone(0.55)}, gated=gated, confidence=0.9)
         assert at.result.success is False      # below the threshold: on_finish keeps its default, "yes"
+
+
+class TestTaskSignature:
+    def test_the_signature_includes_what_the_assertions_expect(self, suite):
+        sig = ab.task_signature(suite, LEAD)
+        assert "svc:slack" in sig and "a:slack_message_contains" in sig
+        assert "v:text=quarterly pipeline review" in sig      # the value, not just the type
+        assert "hubspot_update_contact" in sig
+
+    def test_two_tasks_over_the_same_shape_are_not_near_duplicates(self, suite):
+        """Sharing every tool, service and assertion type is a shape; a variant also expects the same values."""
+        task = suite.tasks[HOLD]
+        g = suite.grading(HOLD)
+        same_shape = ab.Grading(g.initial_state,
+                                ({"type": "hubspot_contact_stage", "contact_id": "c2", "stage": "churned",
+                                  "excluded": False},),
+                                g.allowed_services, {**g.info, "assertions": [
+                                    {"type": "hubspot_contact_stage", "contact_id": "c2", "stage": "churned",
+                                     "excluded": False}]})
+        other = ab.BenchTask("marketing.other", 9003, task.messages, task.tools, "c3")
+        widened = ab.Suite("marketing", {HOLD: task, "marketing.other": other},
+                           {HOLD: g, "marketing.other": same_shape}, suite.versions)
+        overlap = dict(((a, b), j) for a, b, j in ab.near_duplicates(widened, 0.0))
+        assert overlap and max(overlap.values()) < 0.8

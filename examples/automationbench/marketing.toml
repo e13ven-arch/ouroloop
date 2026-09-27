@@ -21,7 +21,7 @@ upstream_path = "~/workspace/AutomationBench"
 toolset = "api"                 # upstream's default toolset: api_search, api_fetch, base64_encode
 seed = 1                        # fixed before the first run: it decides the split, so changing it is a new experiment
 smoke_tasks = 2                 # how many development tasks the smoke phase attempts
-near_duplicate_threshold = 0.8  # report task pairs above this tool/assertion overlap as possible variants
+near_duplicate_threshold = 0.6  # report task pairs above this signature overlap as possible variants
 
 [bench.ratios]                  # intended proportions of task families; the frozen manifest records what they gave
 train = 0.5
@@ -34,8 +34,8 @@ max_tool_calls = 200
 max_seconds = 900
 
 # [bench.families]              # task_id = family_id, for tasks that are variants of one workflow. Upstream ships
-# "marketing.social_mention_response" = "marketing.social_response"     # no variant field, so declare them here
-# "marketing.social_comment_response_queue" = "marketing.social_response"   # after reading the overlap report.
+# "marketing.a" = "marketing.f" # no variant field; on the public Marketing set no pair of tasks has a signature
+# "marketing.b" = "marketing.f" # overlap above 0.42, so one task is one family and this table stays empty.
 
 [backends.mock]
 type = "mock"

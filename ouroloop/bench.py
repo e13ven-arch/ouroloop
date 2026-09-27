@@ -51,7 +51,7 @@ class BenchConfig:
     families: dict[str, str] = field(default_factory=dict)
     budget: Budget = field(default_factory=Budget)
     smoke_tasks: int = 2
-    near_duplicate_threshold: float = 0.8
+    near_duplicate_threshold: float = 0.6
     repeats: int = 1
 
     @classmethod
@@ -133,10 +133,13 @@ def smoke(cfg: dict, base: str | Path = ".", *, tasks: list[str] | None = None, 
         out(f"DRIFT      {line}")
 
     dups = ab.near_duplicates(suite, bench.near_duplicate_threshold)
-    out(f"families   {len(manifest.splits)} groups; {len(dups)} task pairs above "
-        f"{bench.near_duplicate_threshold} tool/assertion overlap")
+    top = max((j for _a, _b, j in ab.near_duplicates(suite, 0.0)), default=0.0)
+    out(f"families   {len(manifest.splits)} groups, rule {manifest.family_rule}; highest signature overlap "
+        f"between any two tasks {top:.2f}, {len(dups)} pairs above {bench.near_duplicate_threshold}")
     for a, b, j in dups[:10]:
         out(f"           overlap {j}: {a} / {b} — read these before declaring [bench.families]")
+    if not dups:
+        out(f"           no pair is close enough to be a variant of another, so one task is one family")
 
     dev = manifest.ids("dev")
     # Named tasks are taken as named; only the default selection is capped by smoke_tasks.

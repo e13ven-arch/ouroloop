@@ -403,15 +403,34 @@ def families(suite: Suite, declared: dict[str, str] | None = None) -> tuple[dict
     return {tid: declared.get(tid, tid) for tid in suite.ids()}, "declared"
 
 
+def task_signature(suite: Suite, task_id: str) -> set[str]:
+    """What a task is over: its granted tools, the services its world is subscribed to, its assertion types, and
+    the values those assertions expect.
+
+    The values are what make this discriminating. Many distinct Marketing workflows share a shape -- read a
+    spreadsheet, email a recommendation -- and so share every tool, service and assertion type; two variants of
+    one workflow also expect the same recipients, records and phrases.
+    """
+    g = suite.grading(task_id)
+    sig = set(suite.tasks[task_id].tools) | {f"svc:{s}" for s in g.allowed_services}
+    for a in g.assertions:
+        sig.add(f"a:{a.get('type')}")
+        for key, value in a.items():
+            if key != "type" and isinstance(value, (str, int, float, bool)):
+                text = str(value)
+                if 2 <= len(text) <= 120:
+                    sig.add(f"v:{key}={text}")
+    return sig
+
+
 def near_duplicates(suite: Suite, threshold: float = 0.8) -> list[tuple[str, str, float]]:
-    """Task pairs whose granted tools and asserted services overlap enough to be worth reading as possible
-    variants of one workflow, highest overlap first. A hint for a human before the split is frozen, never a
-    grouping: two tasks over the same services are usually different work."""
-    sig = {}
-    for tid in suite.ids():
-        g = suite.grading(tid)
-        sig[tid] = set(suite.tasks[tid].tools) | {f"svc:{s}" for s in g.allowed_services} | \
-                   {f"a:{a.get('type')}" for a in g.assertions}
+    """Task pairs whose signatures overlap enough to be worth reading as possible variants of one workflow,
+    highest overlap first.
+
+    A hint for a human before the split is frozen, never a grouping: a high overlap says two tasks are over the
+    same things, not that one is a variant of the other. Nothing declares a family on this alone.
+    """
+    sig = {tid: task_signature(suite, tid) for tid in suite.ids()}
     out = []
     ids = suite.ids()
     for i, a in enumerate(ids):
