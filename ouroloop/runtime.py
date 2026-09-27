@@ -295,7 +295,7 @@ class Runtime:
     def propose(self, point: str | DecisionPoint, ctx: Any, *, policy, session: str = "s_default",
                 step: int | None = None, phase: str | None = None,
                 veto: str | Callable[[str | None], str | None] | None = None,
-                extra: dict | None = None) -> Decision:
+                extra: dict | None = None, on_record: Callable[[dict], None] | None = None) -> Decision:
         """Ask a bound policy of the task/research profile (policies.StopDecider) and record what happened.
 
         This path never reads the champion pointer or the legacy calibration: what may act in that profile is
@@ -305,6 +305,10 @@ class Runtime:
         The row separates the two facts a trace needs: `proposed` is the policy's answer, `action` is what was
         executed, and `executor` says who decided it. A policy that abstains, or whose service is unavailable,
         leaves the phase's fixed default and the reason is recorded — it is not written down as agreement.
+
+        `on_record` receives the row as it was written. A caller that needs it (the agent, to store the decision's
+        trace) gets it here rather than reading the ledger back: the ledger is append-only and grows with the run,
+        so re-reading it per decision would make a long run quadratic in its own history.
         """
         p = self.points[point] if isinstance(point, str) else point
         phase, label, _ = p.default_for(phase)
@@ -345,13 +349,15 @@ class Runtime:
         except Exception as e:  # noqa: BLE001 - a checker that breaks overrules nothing
             route_name, executor = "error", "default"
             action, fields["error"] = label, f"{type(e).__name__}: {e}"[:500]
-        did = self.ledger.decision(
-            session=session, ctx=ref, point=p.name, spec_hash=p.spec_hash, backend="policy",
-            model=getattr(policy, "ref", ""), view=view, view_chars=len(view or ""), truncated=truncated,
-            question=q.to_json() if q else None, candidates=q.labels() if q else None, probs=None,
-            route=route_name, explored=False, propensity=1.0, action=action, usage={}, phase=phase,
-            default=label, proposed=proposed, executor=executor,
-            policy_ref=getattr(policy, "ref", ""), policy_kind=getattr(policy, "kind", ""), **fields)
+        row = dict(session=session, ctx=ref, point=p.name, spec_hash=p.spec_hash, backend="policy",
+                   model=getattr(policy, "ref", ""), view=view, view_chars=len(view or ""), truncated=truncated,
+                   question=q.to_json() if q else None, candidates=q.labels() if q else None, probs=None,
+                   route=route_name, explored=False, propensity=1.0, action=action, usage={}, phase=phase,
+                   default=label, proposed=proposed, executor=executor,
+                   policy_ref=getattr(policy, "ref", ""), policy_kind=getattr(policy, "kind", ""), **fields)
+        did = self.ledger.decision(**row)
+        if on_record is not None:
+            on_record({"id": did, **row})
         return Decision(did, p.name, proposed, {}, 0.0, route_name, False, 1.0, action,
                         getattr(policy, "ref", ""), route_name == "policy")
 

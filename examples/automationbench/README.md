@@ -46,9 +46,16 @@ Into the environment ouroloop runs in:
 Cost is not measured: `cost_usd` is `null` and the summary says on how many attempts it is missing. It is not
 reported as zero.
 
+## The later phases
+
+`baseline`, `collect`, `improve`, `research`, `evaluate` and `report` are implemented and wired to the same driver.
+Three of them run against frozen plans rather than config settings — a development task plan, a campaign plan and a
+sealed finalization plan — which are objects in the workspace, created through the Python API
+(`bench.freeze_task_plan`, `bench.seal`) and named under `[rsi]`. A phase whose plan, model table or price snapshot
+is missing says which piece is missing before it calls a model.
+
 ## Not established here
 
-The smoke phase makes no claim about capability. Baselines, frontier-model comparison, training signal and the
-full-task evaluation are M2 to M6 in [docs/ROADMAP.md](../../docs/ROADMAP.md), and those phase names are refused
-until they exist. Local public-task scores are also not official leaderboard scores: the leaderboard runs a
-private task set.
+The smoke phase makes no claim about capability, and neither does a phase that runs. Nothing here has been run with
+a real model: there are no baselines, no frontier measurements and no C1 to C4 results in this repository. Local
+public-task scores are also not official leaderboard scores: the leaderboard runs a private task set.

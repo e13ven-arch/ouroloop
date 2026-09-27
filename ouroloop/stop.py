@@ -46,7 +46,7 @@ class StopGuard:
         self.pushbacks = 0
         self.overruled: list[dict] = []      # proposals the guard did not follow, with the reason
 
-    def __call__(self, phase: str, ctx: dict, turn: int) -> StopCall:
+    def __call__(self, phase: str, ctx: dict, turn: int, on_record=None) -> StopCall:
         capped = self.max_turns is not None and turn >= self.max_turns
         if phase == "per_turn" and capped:
             return StopCall(True, "max_turns")
@@ -62,7 +62,7 @@ class StopGuard:
                 return None if seen["passed"] else "no"
             return "yes" if seen["passed"] else "no"
 
-        decision, action = self._decide(phase, ctx, check)
+        decision, action = self._decide(phase, ctx, check, on_record)
         checked = seen.get("passed")
         if phase == "per_turn":
             done = action == "yes"
@@ -92,7 +92,7 @@ class StopGuard:
             self.rt.ledger.append({"type": "override", "decision": decision, "session": self.session,
                                    "asked_for": "no", "executed": "yes", "executor": "guard", "reason": reason})
 
-    def _decide(self, phase: str, ctx: dict, veto) -> tuple[str | None, str | None]:
+    def _decide(self, phase: str, ctx: dict, veto, on_record=None) -> tuple[str | None, str | None]:
         """-> (decision id, the action: the model's label when it acted, else the rule's or the phase's default)."""
         p = self.rt.points.get(self.point)
         if p is None and self.policy is None:   # no stop point: nothing is recorded, the checker still decides
@@ -101,7 +101,7 @@ class StopGuard:
         if self.policy is not None:
             asked = self.policy if self.policy.enabled(phase) else None
             d = self.rt.propose(self.policy.point or p, ctx, policy=asked, session=self.session, phase=phase,
-                                veto=veto)
+                                veto=veto, on_record=on_record)
             return d.id, d.action
         ask = self.rt.ask if p.policy.act else self.rt.record
         d = ask(p, ctx, session=self.session, phase=phase, veto=veto)

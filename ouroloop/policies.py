@@ -726,7 +726,7 @@ def build_candidate(experiment, *, objects: ct.Objects, parent_release: str, own
                                      {**(core.capabilities or {}), "targets": core.targets or None})
     if not validation.ok:
         return ct.BuildResult(status="invalid", artifacts=artifacts, errors=tuple(validation.errors), costs=costs)
-    if services is not None and services.serving is not None:
+    if services is not None:
         # An artifact that cannot be assembled is caught here rather than during the comparison, where it would
         # cost a full dev run to discover.
         try:

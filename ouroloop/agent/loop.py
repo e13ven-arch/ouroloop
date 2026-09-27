@@ -210,9 +210,10 @@ class Agent:
     # ------------------------------------------------------------------ stop
     def _stop(self, phase: str, text: str, turn: int) -> StopCall:
         ctx = self._stop_ctx(phase, text, turn)
-        call = self.guard(phase, ctx, turn)
+        rows: list = []
+        call = self.guard(phase, ctx, turn, on_record=rows.append)
         if call.decision is not None and self.policy is not None:
-            self._trace(call, ctx, phase)
+            self._trace(call, ctx, phase, rows[-1] if rows else {})
         if call.decision is not None:
             if self.probe is not None:      # the probe labels it after the session, from the state it saw
                 self.probe.snap(call.decision, self._changes)
@@ -238,19 +239,16 @@ class Agent:
                 "tool_events": list(self._tool_events), "budget_remaining": remaining,
                 "truncation": {"tool_results_cut": cut} if cut else {}}
 
-    def _trace(self, call: StopCall, ctx: dict, phase: str) -> None:
+    def _trace(self, call: StopCall, ctx: dict, phase: str, decision: dict) -> None:
         """One observation and one trace per decision of a bound policy.
 
         The proposed and the executed action come from two different places — the policy's answer and what the
         guard did with it — which is the only way a later round can tell "the policy was overruled" from "the
-        policy agreed" (docs/modules/00_CONTRACTS.md §2).
+        policy agreed" (docs/modules/00_CONTRACTS.md §2). `decision` is the row as the runtime wrote it.
         """
         from ..evolve import contracts as ct
         if self.objects is None:
             return
-        row = next((r for r in reversed(self.rt.ledger.rows(self.guard.point))
-                    if r.decision["id"] == call.decision), None)
-        decision = row.decision if row else {}
         observation = ct.Observation(
             task_text=ctx.get("task_text", ""), tool_events=tuple(json.dumps(e, sort_keys=True, default=str)
                                                                   for e in ctx.get("tool_events") or ()),
