@@ -368,6 +368,7 @@ class Improvement:
     train_tasks: tuple = ()
     owner: str = "worker"
     plan_installs: bool = True
+    pricing: object = None                      # execution.Pricing: what the agent's calls cost
     _plans: dict = _field(default_factory=dict)
     _experiment_ref: str = ""
 
@@ -389,9 +390,18 @@ class Improvement:
 
     def run_arm(self, arm: str, release_ref: str, order, *, plan_ref: str, split: str = "dev",
                 candidate: str = "candidate", role: str = "evolved", probe: bool = False,
-                permit: str | None = None, scope: str | None = None, retry_index: int = 0) -> list:
+                permit: str | None = None, scope: str | None = None, retry_index: int = 0,
+                resume: bool = False, supersedes: dict | None = None) -> list:
         """One arm's attempts. Each arm is assembled from its own release, with its own session, tool environment
-        and episode; nothing mutable is shared between the two sides (docs/modules/03_EVALUATION_RELEASE.md §2)."""
+        and episode; nothing mutable is shared between the two sides (docs/modules/03_EVALUATION_RELEASE.md §2).
+
+        Every model call of the arm's agent goes through the activity's budget book when there is one
+        (MeteredProvider): reserved before the call, settled on its measured usage, and refused once a limit is
+        reached. With `resume`, attempts this same run already recorded are returned as they were rather than
+        paid for again: the attempt id is determined by the run, the task, the repeat, the arm and the retry, so
+        a restarted plan finds exactly the attempts it had finished (docs/modules/05_EXECUTION_BUDGET.md §4).
+        """
+        from .evolve.execution import MeteredProvider, Pricing
         from .evolve.task_eval import make_agent_factory, run_tasks
         if permit is not None:
             self.releases.authorize(release_ref, profile="evaluation", plan_ref=plan_ref,
@@ -411,12 +421,26 @@ class Improvement:
                           input_schema_refs=(self.stop_view,))
         if self.results is not None:
             self.results.put_run(run)
-        factory = make_agent_factory(self.rt, self.provider, budget=self.attempt_budget, bound=bound,
+        order = list(order)
+        reused: list = []
+        if resume and self.results is not None:
+            recorded = {(r.task_id, r.attempt, _retry_of(r.attempt_id)): r for r in self.results.of_run(run.hash())
+                        if r.attempt_id}
+            reused = [recorded[(t, i, retry_index)] for t, i in order if (t, i, retry_index) in recorded]
+            order = [(t, i) for t, i in order if (t, i, retry_index) not in recorded]
+            if not order:
+                return reused
+        provider = self.provider
+        if self.budget is not None:
+            provider = MeteredProvider(self.provider, self.budget, self.pricing or Pricing(),
+                                       operation=f"{self.scope_id}:{arm}:{run.hash()}", max_retries=0)
+        factory = make_agent_factory(self.rt, provider, budget=self.attempt_budget, bound=bound,
                                      objects=self.objects, stop_view=self.stop_view,
                                      meta={"arm": arm, "scope": self.scope_id})
-        return run_tasks(self.suite, [t for t, _ in order], factory, run=run, splits=self.splits,
-                         results=self.results, probe=probe, arm=arm, plan_ref=plan_ref,
-                         release_ref=release_ref, order=list(order), retry_index=retry_index)
+        return reused + run_tasks(self.suite, [t for t, _ in order], factory, run=run, splits=self.splits,
+                                  results=self.results, probe=probe, arm=arm, plan_ref=plan_ref,
+                                  release_ref=release_ref, order=order, retry_index=retry_index,
+                                  pricing=self.pricing, supersedes=supersedes)
 
     def rt_environment(self) -> dict:
         return {"upstream": self.suite.versions.get("commit", ""), "package": self.suite.versions.get("package", ""),
@@ -483,8 +507,13 @@ class Improvement:
 
     # -------------------------------------------------------------- handlers
     def handlers(self) -> dict:
-        return {"build": self._build, "screen": self._screen, "evaluate": self._evaluate,
-                "install": self._install, "verify_bound": self._verify_bound()}
+        return {"begin": self._begin, "build": self._build, "screen": self._screen, "evaluate": self._evaluate,
+                "install": self._install, "verify_bound": self._verify_bound(),
+                "load_receipt": lambda ref: self.objects.load(ref, _ct.EvaluationReceipt)}
+
+    def _begin(self, experiment) -> None:
+        """The receipt names the experiment it came from, also when a resumed experiment reuses its build."""
+        self._experiment_ref = experiment.ref()
 
     def _verify_bound(self) -> dict:
         """What a full comparison plus the install probe will cost at least, so a candidate that could not be
@@ -549,12 +578,12 @@ class Improvement:
         arm_release = self.releases.candidate_release(parent, candidate_ref, permit)
         self._plans[candidate_ref] = (plan_ref, arm_release)
 
-        def run(arm, order, retry=0):
+        def run(arm, order, retry=0, supersedes=None):
             if arm == "subject":
                 return self.run_arm(arm, arm_release, order, plan_ref=plan_ref, permit=permit,
-                                    retry_index=retry)
+                                    retry_index=retry, resume=True, supersedes=supersedes)
             return self.run_arm(arm, parent, order, plan_ref=plan_ref, candidate="control", role="base",
-                                retry_index=retry)
+                                retry_index=retry, resume=True, supersedes=supersedes)
 
         receipt = evaluate_task(plan, run=run, objects=self.objects, experiment_ref=self._experiment_ref,
                                 families=self.families())
@@ -578,6 +607,12 @@ class Improvement:
         bound = _P.bind_release(target_release, profile="preflight", services=self.services())
         return {"release": target_release, "policies": _P.describe(bound),
                 "prompt": bound.system_prompt("")[1]}
+
+
+def _retry_of(attempt_id: str) -> int:
+    """The retry index an attempt id carries (benchmark.attempt_id: `...#<retry>`)."""
+    _, _, retry = attempt_id.rpartition("#")
+    return int(retry) if retry.isdigit() else 0
 
 
 def _split_of_tasks(splits: SplitManifest, tasks) -> str:
@@ -658,6 +693,20 @@ def open_activity(cfg: dict, base: str | Path = ".", *, out: Callable[[str], Non
                     release_ref, Budgets(root), bootstrapped)
 
 
+def activity_budget(activity: Activity, cfg: dict, phase: str):
+    """The phase's account: a child of the activity's one root, whose limits come from the frozen budget object.
+
+    One root per activity is the whole point. Opening another root with the same limits — for a campaign, say —
+    would hand that phase a fresh copy of the budget, and the activity could then spend twice what it declared
+    (docs/modules/05_EXECUTION_BUDGET.md §2). Without a budget object the root has no limits: spend is still
+    measured and recorded, it is just not capped.
+    """
+    rsi_cfg = RsiConfig.load(cfg)
+    limits = activity.objects.get(rsi_cfg.budget_ref) if rsi_cfg.budget_ref else {}
+    root = activity.budgets.account(rsi_cfg.scope_id, limits)
+    return root.child(f"{rsi_cfg.scope_id}:{phase}", {})
+
+
 def freeze_task_plan(objects: _ct.Objects, *, core_ref: str, split_ref: str, task_ids, gate: GatePlan,
                      repeats: int = 1, order_seed: int = 0, screen_ids=(), installs: bool = True,
                      per_attempt_budget: dict | None = None) -> str:
@@ -671,7 +720,8 @@ def freeze_task_plan(objects: _ct.Objects, *, core_ref: str, split_ref: str, tas
 
 
 def improvement(activity: Activity, *, template_ref: str | None = None, provider=None, trainer=None,
-                scope_id: str | None = None, owner: str = "worker", installs: bool | None = None) -> Improvement:
+                scope_id: str | None = None, owner: str = "worker", installs: bool | None = None,
+                pricing=None, budget=None) -> Improvement:
     """The activity's Improvement, with its comparison policy read from the frozen template."""
     template = TaskEvalPlan.from_json(activity.objects.get(template_ref)) if template_ref else None
     gate = template.gate() if template and template.gate_plan else GatePlan()
@@ -687,8 +737,9 @@ def improvement(activity: Activity, *, template_ref: str | None = None, provider
         repeats=template.repeats if template else activity.rsi.repeats,
         order_seed=template.order_seed if template else activity.rsi.order_seed,
         screen_ids=template.screen_ids if template else (), serving=activity.rt.serving, trainer=trainer,
+        budget=budget,
         results=activity.results, stop_view=activity.rsi.stop_view, attempt_budget=attempt,
-        probe_train=True, train_tasks=tuple(activity.splits.ids("train")), owner=owner,
+        probe_train=True, train_tasks=tuple(activity.splits.ids("train")), owner=owner, pricing=pricing,
         plan_installs=template.installs if template and installs is None else (True if installs is None
                                                                                else installs))
 
@@ -700,7 +751,7 @@ def require(problems: list, *, phase: str) -> None:
 
 
 # ---------------------------------------------------------------------------- baseline
-FRONTIER_KEYS = {"llm", "effort", "fallback", "source", "date", "note"}
+FRONTIER_KEYS = {"llm", "effort", "fallback", "source", "date", "note", "pricing"}
 
 
 def frontier_configs(cfg: dict) -> dict:
@@ -745,7 +796,10 @@ def baseline(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = 
             report["absent"].append({"arm": candidate, "reason": f"{type(e).__name__}: {e}"[:200]})
             out(f"ABSENT     {candidate}: {type(e).__name__}: {e}"[:160])
             continue
-        work = improvement(activity, provider=provider)
+        arm_pricing = pricing_of({"pricing": frontier[candidate].get("pricing")}) if candidate in frontier \
+            else pricing_of(cfg)
+        work = improvement(activity, provider=provider, pricing=arm_pricing,
+                           budget=activity_budget(activity, cfg, f"baseline:{candidate}"))
         order = [(t, i) for t in dev for i in range(work.repeats)]
         rows = work.run_arm(candidate, activity.release_ref, order, plan_ref="", candidate=candidate, role=role)
         summary = summarise(rows)
@@ -770,7 +824,8 @@ def collect(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
     """
     activity = open_activity(cfg, base, out=out)
     require(startup_checks(activity, cfg, phase="collect"), phase="collect")
-    work = improvement(activity, provider=config_mod.build_provider(cfg["llm"]))
+    work = improvement(activity, provider=config_mod.build_provider(cfg["llm"]), pricing=pricing_of(cfg),
+                       budget=activity_budget(activity, cfg, "collect"))
     evidence = work.collect(tasks=tasks, repeats=repeats)
     summary = evidence["feedback"].summary()
     rows = summarise(evidence["results"])
@@ -808,10 +863,10 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
     work = improvement(activity, template_ref=activity.rsi.task_plan_ref, provider=provider, trainer=trainer)
     schedule = Schedule(**(activity.objects.get(activity.rsi.schedule_ref) if activity.rsi.schedule_ref
                            else {"worker_rounds": rounds or 1}))
-    limits = activity.objects.get(activity.rsi.budget_ref) if activity.rsi.budget_ref else {}
-    budget = activity.budgets.account(activity.rsi.scope_id, limits)
+    budget = activity_budget(activity, cfg, "improve")
     work.budget = budget
-    researcher = researcher or _default_researcher(cfg, activity)
+    work.pricing = pricing_of(cfg)
+    researcher = researcher or _default_researcher(cfg, activity, budget=budget)
     history: list = []
     log: list = []
 
@@ -831,7 +886,11 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
                             experience_ref=experience_ref, experience=tuple(experience), owner="worker",
                             schedule=schedule, history=tuple(history), root=activity.root)
 
-    results = run_worker_rounds(make_round, budget, schedule=schedule, root=activity.root)
+    from .research.loop import resume_unfinished
+    resumed = resume_unfinished(activity.root, activity.objects, work.handlers(), budget)
+    for result in resumed:
+        out(f"resume     {result.experiment_id}: {result.outcome} ({result.reason})")
+    results = resumed + run_worker_rounds(make_round, budget, schedule=schedule, root=activity.root)
     for result in results:
         out(f"round      {result.outcome}"
             + (f" experiment={result.experiment_id}" if result.experiment_id else "")
@@ -842,12 +901,18 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
             "release": activity.releases.active()["release_ref"]}
 
 
-def _default_researcher(cfg: dict, activity: Activity):
+def _default_researcher(cfg: dict, activity: Activity, *, budget=None):
+    """The research step on the configured model. Its calls are reserved and settled on the same book as the
+    agent's: research is part of what an improvement costs, not overhead outside it."""
+    from .evolve.execution import MeteredProvider
     from .research.basic import PolicyResearcher
     if "llm" not in cfg:
         raise ValueError("a researcher needs an [llm] table, or pass one in")
     table = dict(cfg.get("research") or {}).get("llm") or cfg["llm"]
     provider = config_mod.build_provider(table)
+    if budget is not None:
+        provider = MeteredProvider(provider, budget, pricing_of(cfg), operation=f"{budget.scope_id}:research",
+                                   max_retries=0)
     return PolicyResearcher(_Completions(provider))
 
 
@@ -882,22 +947,27 @@ def research(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = 
         raise ValueError("the candidate R is part of the frozen plan and cannot be replaced on the command line")
     require(startup_checks(activity, cfg, phase="research"), phase="research")
     provider = config_mod.build_provider(cfg["llm"])
-    limits = activity.objects.get(activity.rsi.budget_ref) if activity.rsi.budget_ref else {}
-    budget = activity.budgets.account(f"campaign:{plan.id}", limits)
+    budget = activity_budget(activity, cfg, f"campaign:{plan.id}")
     out(f"campaign   {plan.id} phase={plan.phase} pairs={len(plan.campaign_pairs)} "
         f"discovery={plan.discovery} R0={_ct.short(plan.r_control_ref)} R1={_ct.short(plan.r_candidate_ref)}")
 
-    def make_researcher():
-        """A fresh research step per arm: its recorded requests are then that arm's own, which is how a fixture
-        tells R0's calls from R1's (docs/modules/06_RESEARCH_CAMPAIGN.md §5)."""
-        return researcher() if callable(researcher) else (researcher or _default_researcher(cfg, activity))
+    def make_researcher(arm_budget):
+        """A fresh research step per arm, metered on that arm's budget: its recorded requests are then that arm's
+        own, which is how a fixture tells R0's calls from R1's (docs/modules/06_RESEARCH_CAMPAIGN.md §5)."""
+        return researcher() if callable(researcher) else (researcher or _default_researcher(cfg, activity,
+                                                                                           budget=arm_budget))
+
+    pricing = pricing_of(cfg)
 
     def run_arm(pair: CampaignPair, arm: str, r_ref: str, arm_budget) -> object:
         return _run_campaign_arm(activity, plan, pair, arm, r_ref, arm_budget, provider=provider,
-                                 researcher=make_researcher(), out=out)
+                                 researcher=make_researcher(arm_budget), out=out, pricing=pricing)
 
     def evaluate_outer(pair: CampaignPair, sealed: dict) -> dict:
-        return _evaluate_outer(activity, plan, pair, sealed, provider=provider, out=out)
+        # The outer runs are the evaluator's, and cost the same for both arms: a child scope of the campaign, so
+        # they are counted in the comparison's total and reported apart from either arm (docs/modules/06 §3).
+        return _evaluate_outer(activity, plan, pair, sealed, provider=provider, out=out, pricing=pricing,
+                               budget=budget.child(f"{budget.scope_id}:outer:{pair.pair_id}", {}))
 
     receipt = run_campaign(plan, run_arm=run_arm, evaluate_outer=evaluate_outer, objects=activity.objects,
                            budget=budget, events=_ct.Events(activity.root))
@@ -924,7 +994,7 @@ def research(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = 
 
 
 def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_budget, *, provider,
-                      researcher, out=print):
+                      researcher, out=print, pricing=None):
     """One arm's whole improvement loop, in its own workspace.
 
     The arm gets the pair's W0, its own R, the shared core and nothing else: no mainline pointer, no other arm's
@@ -948,6 +1018,7 @@ def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_
                         scope_id=f"{plan.id}:{pair.pair_id}:{arm}", repeats=pair.repeats,
                         order_seed=pair.seed_schedule[0] if pair.seed_schedule else 0,
                         budget=arm_budget, serving=rt.serving, results=Results(root, activity.bench.domain),
+                        pricing=pricing,
                         stop_view=activity.rsi.stop_view, attempt_budget=activity.bench.budget,
                         probe_train=True, train_tasks=tuple(_tasks_of(activity, pair.inner_train_groups)))
     step = researcher
@@ -986,13 +1057,15 @@ def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_
     return outcome
 
 
-def _evaluate_outer(activity: Activity, plan, pair, sealed: dict, *, provider, out=print) -> dict:
+def _evaluate_outer(activity: Activity, plan, pair, sealed: dict, *, provider, out=print, pricing=None,
+                    budget=None) -> dict:
     """The evaluator's own run: both sealed W* on the same outer tasks, with the same repeats and order."""
     parent = activity.release_ref
     core_ref = _ct.SystemRelease.from_json(activity.objects.get(parent)).core_ref
     tasks = _tasks_of(activity, pair.outer_groups)
     order = [(t, i) for t in tasks for i in range(pair.repeats)]
-    work = improvement(activity, provider=provider, scope_id=f"{plan.id}:{pair.pair_id}:outer", installs=False)
+    work = improvement(activity, provider=provider, scope_id=f"{plan.id}:{pair.pair_id}:outer", installs=False,
+                       pricing=pricing, budget=budget)
     work.dev_tasks = tuple(tasks)
     rows = {}
     for arm, w_star in sealed.items():
@@ -1083,7 +1156,13 @@ def evaluate(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = 
 
     A comparison that turns out badly stays in the report: the plan was fixed before these tasks were read, so
     dropping an arm now would make the remaining numbers a selection rather than a measurement (BR-06).
+
+    Run again after an interruption, it runs only what is missing (BR-05): each attempt id is determined by the
+    plan, the arm, the task, the repeat and the retry, so the attempts already on record are found and kept as
+    they were, with their cost. Attempts that failed for infrastructure reasons are refilled under the plan's
+    `stop_rules.max_infrastructure_retries`; a legitimate failure is never re-rolled.
     """
+    from .evolve.task_gate import refill_attempts
     activity = open_activity(cfg, base, out=out, bootstrap=False)
     ref = plan_ref or activity.rsi.final_plan_ref
     if not ref or not activity.objects.has(ref):
@@ -1101,6 +1180,11 @@ def evaluate(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = 
         f"repeats={plan.repeats} status={state['status']}")
     write_json(state_path, {**state, "status": "running"})
     rows: dict = {}
+    budget = activity_budget(activity, cfg, f"final:{plan.experiment_id}")
+    retries = int((plan.stop_rules or {}).get("max_infrastructure_retries", 0))
+    # What is already on record, from the results themselves rather than the state file: a run that died inside an
+    # arm recorded its attempts one by one, before the state file heard of any of them.
+    recorded_before = {r.attempt_id for r in activity.results.all() if r.attempt_id}
     for comparison in plan.comparisons:
         arm = comparison["subject"]
         llm = comparison.get("llm") or cfg.get("llm")
@@ -1113,11 +1197,22 @@ def evaluate(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = 
             rows[arm] = {"absent": f"{type(e).__name__}: {e}"[:200]}
             continue
         release_ref = plan.release_refs.get(arm) or activity.release_ref
-        work = improvement(activity, provider=provider, scope_id=f"final:{plan.experiment_id}", installs=False)
+        arm_pricing = pricing_of({"pricing": comparison["pricing"]}) if comparison.get("pricing") \
+            else pricing_of(cfg)
+        work = improvement(activity, provider=provider, scope_id=f"final:{plan.experiment_id}", installs=False,
+                           pricing=arm_pricing, budget=budget)
         work.dev_tasks = tuple(plan.task_ids)
         order = [(t, i) for t in plan.task_ids for i in range(plan.repeats)]
-        attempts = work.run_arm(arm, release_ref, order, plan_ref=ref, split="test", candidate=arm,
-                                role=comparison.get("role", arm))
+        role = comparison.get("role", arm)
+
+        def run(arm_name, pairs, retry=0, supersedes=None, _work=work, _release=release_ref, _role=role):
+            return _work.run_arm(arm_name, _release, pairs, plan_ref=ref, split="test", candidate=arm_name,
+                                 role=_role, retry_index=retry, resume=resume, supersedes=supersedes)
+
+        attempts = refill_attempts(run(arm, order), run, arm, retries)
+        reused = sum(1 for a in attempts if a.attempt_id in recorded_before)
+        if reused:
+            out(f"resume     {arm}: {reused} attempts already on record were kept, not run again")
         rows[arm] = {"summary": summarise(attempts), "attempts": [a.to_json() for a in attempts]}
         state["attempts"].extend({"attempt_id": a.attempt_id, "arm": arm} for a in attempts
                                  if a.attempt_id not in done)
@@ -1210,7 +1305,7 @@ def research_slot(cfg: dict, base: str | Path = ".", *, pairs, researcher, arm_r
 
 # ---------------------------------------------------------------------------- startup checks
 PRICING_KEYS = {"input_per_1k", "output_per_1k", "max_input_tokens", "max_output_tokens", "declared_fallbacks",
-                "hidden_fallback", "source"}
+                "hidden_fallback", "source", "cache_read_per_1k", "cache_write_per_1k"}
 
 
 def pricing_of(cfg: dict):
@@ -1268,3 +1363,87 @@ def startup_checks(activity: Activity, cfg: dict, *, phase: str, needs_model: bo
     except Exception as e:  # noqa: BLE001 - a release that does not assemble is not something to run
         problems.append(f"the active release does not assemble: {type(e).__name__}: {e}"[:300])
     return problems
+
+
+# ---------------------------------------------------------------------------- freezing plans
+FREEZE_TABLES = {"task_plan", "schedule", "budget", "final"}
+TASK_PLAN_KEYS = {"tasks", "repeats", "order_seed", "screen", "installs", "per_attempt_budget", "gate"}
+FINAL_KEYS = {"experiment_id", "claims", "comparisons", "release_refs", "tasks", "repeats", "statistical_plan",
+              "stop_rules", "research_campaign_plan_ref"}
+
+
+def _task_ids(activity: Activity, spec, what: str) -> tuple:
+    """A split name ("dev", "test") resolved against the frozen manifest, or an explicit list checked against it.
+    The plan stores the ids themselves, so a later change to the manifest cannot change what a plan ran."""
+    if isinstance(spec, str):
+        ids = tuple(activity.splits.ids(spec))
+        if not ids:
+            raise ValueError(f"[freeze.{what}] tasks = {spec!r}: the frozen manifest has no such tasks")
+        return ids
+    known = {e.task_id for e in activity.splits.entries}
+    missing = sorted(set(spec) - known)
+    if missing:
+        raise ValueError(f"[freeze.{what}] names tasks the frozen manifest does not have: {missing[:5]}")
+    return tuple(spec)
+
+
+def _only(table: dict, allowed: set, what: str) -> dict:
+    unknown = sorted(set(table) - allowed)
+    if unknown:
+        raise ValueError(f"[freeze.{what}] does not take {unknown}; it takes {sorted(allowed)}")
+    return dict(table)
+
+
+def freeze(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = print) -> dict:
+    """Freeze the `[freeze.*]` tables into workspace objects and print the `[rsi]` lines that name them.
+
+    The tables are the input to this command, not the plan: once frozen, a plan is the content-addressed object,
+    and editing the table afterwards changes nothing that already ran — it can only produce a different object
+    with a different ref, which a phase then has to be told about. Freezing the same tables twice gives the same
+    refs. The final plan is sealed as it is frozen; a different final plan under the same experiment id is
+    refused (docs/modules/07_BENCH_REPORT.md §3).
+    """
+    from .evolve.execution import LIMITS
+    tables = dict(cfg.get("freeze") or {})
+    unknown = sorted(set(tables) - FREEZE_TABLES)
+    if unknown:
+        raise ValueError(f"[freeze] has no tables {unknown}; it takes {sorted(FREEZE_TABLES)}")
+    if not tables:
+        raise ValueError("nothing to freeze: add [freeze.task_plan], [freeze.schedule], [freeze.budget] or "
+                         "[freeze.final] to the config")
+    activity = open_activity(cfg, base, out=out)
+    core_ref = _ct.SystemRelease.from_json(activity.objects.get(activity.release_ref)).core_ref
+    refs: dict = {}
+    if "task_plan" in tables:
+        t = _only(tables["task_plan"], TASK_PLAN_KEYS, "task_plan")
+        gate = GatePlan(**dict(t.get("gate") or {}))
+        refs["task_plan_ref"] = freeze_task_plan(
+            activity.objects, core_ref=core_ref, split_ref=activity.splits.hash(),
+            task_ids=_task_ids(activity, t.get("tasks", "dev"), "task_plan"), gate=gate,
+            repeats=int(t.get("repeats", 1)), order_seed=int(t.get("order_seed", 0)),
+            screen_ids=tuple(t.get("screen") or ()), installs=bool(t.get("installs", True)),
+            per_attempt_budget=dict(t.get("per_attempt_budget") or {}))
+    if "schedule" in tables:
+        schedule = Schedule(**dict(tables["schedule"]))       # an unknown key is a TypeError here, on purpose
+        refs["schedule_ref"] = activity.objects.put_json("schedule", asdict(schedule))
+    if "budget" in tables:
+        limits = _only(tables["budget"], set(LIMITS), "budget")
+        refs["budget_ref"] = activity.objects.put_json("budget", {k: float(v) for k, v in limits.items()})
+    if "final" in tables:
+        t = _only(tables["final"], FINAL_KEYS, "final")
+        plan = FinalizationPlan(
+            experiment_id=str(t.get("experiment_id") or ""), core_ref=core_ref, split_ref=activity.splits.hash(),
+            claims=tuple(t.get("claims") or ("C1", "C2")), comparisons=tuple(dict(c) for c in t.get("comparisons")
+                                                                             or ()),
+            release_refs=dict(t.get("release_refs") or {}),
+            task_ids=_task_ids(activity, t.get("tasks", "test"), "final"), repeats=int(t.get("repeats", 1)),
+            statistical_plan=dict(t.get("statistical_plan") or {}), stop_rules=dict(t.get("stop_rules") or {}),
+            research_campaign_plan_ref=t.get("research_campaign_plan_ref"))
+        if not plan.experiment_id:
+            raise ValueError("[freeze.final] needs an experiment_id: it is what a resumed run finds its state by")
+        refs["final_plan_ref"] = seal(plan, activity.root, activity.objects)["plan"]
+    out("frozen     name these under [rsi]:")
+    out("[rsi]")
+    for key, ref in refs.items():
+        out(f'{key} = "{ref}"')
+    return refs

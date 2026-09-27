@@ -382,8 +382,10 @@ class Budgets:
                 raise BudgetError(f"no reservation {reservation_id}")
             breach = {}
             if status == "settled":
-                breach = {k: {"bound": r["bound"].get(k, 0.0), "measured": v} for k, v in measured.items()
-                          if v > float(r["bound"].get(k, 0.0)) + 1e-9}
+                # Only a dimension the reservation actually bounded can be breached. One it could not bound (no
+                # token cap was declared, say) is measured and counted, not compared with an imaginary zero.
+                breach = {k: {"bound": r["bound"][k], "measured": v} for k, v in measured.items()
+                          if k in r["bound"] and v > float(r["bound"][k]) + 1e-9}
             r["status"], r["measured"] = status, measured if status == "settled" else {}
             if breach:
                 r["measured"] = measured         # the real spend is what is recorded, over the bound or not
@@ -471,45 +473,82 @@ def execute_experiment(experiment, handlers: dict, *, budget: BudgetAccount, exe
     only decides the order, what the budget must allow before a step starts, and which state each result means.
     A candidate that cannot be verified is not started: an experiment that could only train is not an experiment
     (EX-03).
+
+    Called on an experiment that was interrupted, it continues from the state on record instead of starting over
+    (docs/modules/05_EXECUTION_BUDGET.md §4): a finished build is reused from its operation rather than trained
+    again, an evaluation reruns only the attempts it had not finished (the evaluate handler resumes by attempt
+    id), an accepted receipt goes straight to installing, and an install replays its own operation, which commits
+    at most once. Nothing is redecided: not the candidate, the plan, the seed or the thresholds.
     """
-    out: dict = {"experiment_id": execution.experiment_id, "states": [], "receipt": None, "installation": None}
-
-    def step(status: str, **fields) -> None:
+    state = execution.state()
+    status, history = state["status"], state["history"]
+    out: dict = {"experiment_id": execution.experiment_id, "states": [], "receipt": None, "installation": None,
+                 "resumed_from": status if status != "drafted" else None}
+    if handlers.get("begin"):
+        handlers["begin"](experiment)
+    if status in TERMINAL and status != "installation_failed":
         out["states"].append(status)
-        execution.advance(status, **fields)
+        return out
 
-    step("admitted")
-    if not budget.affordable(handlers.get("verify_bound") or {}, allocation="verification"):
-        step("inconclusive", reason="budget_exhausted")
-        return out
-    step("building")
-    op = execution.operation("build", (experiment.proposal_ref,))
-    build = handlers["build"](experiment, budget)
-    execution.finish(op, "done" if build.status == "ready" else "failed",
-                     output_refs=(build.candidate_ref,) if build.candidate_ref else ())
-    out["build"] = build
-    if build.status != "ready":
-        step("invalid" if build.status == "invalid" else "inconclusive",
-             reason="; ".join(build.errors)[:300])
-        return out
-    screen = handlers.get("screen")
-    if screen is not None:
-        step("screening")
-        verdict, reasons = screen(build.candidate_ref, budget)
-        if verdict != "pass":
-            step("screened_out" if verdict == "screened_out" else "invalid", reason="; ".join(reasons)[:300])
+    def step(new: str, **fields) -> None:
+        out["states"].append(new)
+        execution.advance(new, **fields)
+
+    def recorded(field_name: str) -> str | None:
+        return next((e[field_name] for e in reversed(history) if e.get(field_name)), None)
+
+    receipt = None
+    if status in ("evaluated", "accepted", "installing", "installation_failed") and recorded("receipt"):
+        receipt = handlers["load_receipt"](recorded("receipt"))
+    if receipt is None:
+        if status == "drafted":
+            step("admitted", experiment=experiment.ref())
+            if not budget.affordable(handlers.get("verify_bound") or {}, allocation="verification"):
+                step("inconclusive", reason="budget_exhausted")
+                return out
+        op = execution.operation("build", (experiment.proposal_ref,))
+        if op.status == "done" and op.output_refs:
+            from .contracts import BuildResult
+            build = BuildResult(status="ready", candidate_ref=op.output_refs[0],
+                                artifacts={"reused": "build operation already done"})
+        else:
+            if status != "building":
+                step("building")
+            build = handlers["build"](experiment, budget)
+            execution.finish(op, "done" if build.status == "ready" else "failed",
+                             output_refs=(build.candidate_ref,) if build.candidate_ref else ())
+        out["build"] = build
+        if build.status != "ready":
+            step("invalid" if build.status == "invalid" else "inconclusive",
+                 reason="; ".join(build.errors)[:300])
             return out
-    step("evaluating")
-    op = execution.operation("evaluate", (build.candidate_ref,))
-    receipt = handlers["evaluate"](build.candidate_ref, budget)
+        screen = handlers.get("screen")
+        if screen is not None and status not in ("evaluating",):
+            step("screening")
+            verdict, reasons = screen(build.candidate_ref, budget)
+            if verdict != "pass":
+                step("screened_out" if verdict == "screened_out" else "invalid", reason="; ".join(reasons)[:300])
+                return out
+        if status != "evaluating" or out["states"]:
+            step("evaluating")
+        op = execution.operation("evaluate", (build.candidate_ref,))
+        receipt = handlers["evaluate"](build.candidate_ref, budget)
+        execution.finish(op, "done", output_refs=(receipt.ref(),))
+        step("evaluated", receipt=receipt.ref(), verdict=receipt.verdict)
+        if receipt.verdict != "accepted":
+            step(receipt.verdict if receipt.verdict in STATES else "invalid",
+                 reason="; ".join(receipt.reasons)[:300], receipt=receipt.ref())
+            out["receipt"] = receipt
+            return out
+        step("accepted", receipt=receipt.ref())
+    elif status == "evaluated":
+        if receipt.verdict != "accepted":
+            step(receipt.verdict if receipt.verdict in STATES else "invalid",
+                 reason="; ".join(receipt.reasons)[:300], receipt=receipt.ref())
+            out["receipt"] = receipt
+            return out
+        step("accepted", receipt=receipt.ref())
     out["receipt"] = receipt
-    execution.finish(op, "done", output_refs=(receipt.ref(),))
-    step("evaluated", receipt=receipt.ref(), verdict=receipt.verdict)
-    if receipt.verdict != "accepted":
-        step(receipt.verdict if receipt.verdict in STATES else "invalid",
-             reason="; ".join(receipt.reasons)[:300], receipt=receipt.ref())
-        return out
-    step("accepted", receipt=receipt.ref())
     install = handlers.get("install")
     if install is None:
         return out
@@ -520,7 +559,45 @@ def execute_experiment(experiment, handlers: dict, *, budget: BudgetAccount, exe
     return out
 
 
+def unfinished(root: str | Path) -> list[dict]:
+    """Experiments whose last recorded state is not final, with the experiment ref they were admitted with.
+
+    A failed installation counts as final here: retrying it is a person's decision (a new install operation on the
+    same accepted artifact), not something a restart should do on its own every time it starts.
+    """
+    directory = Path(root) / "rsi" / "execution"
+    out = []
+    for path in sorted(directory.glob("*.state.json")) if directory.exists() else ():
+        state = json.loads(path.read_text(encoding="utf-8"))
+        if state["status"] in TERMINAL:
+            continue
+        ref = next((e.get("experiment") for e in state["history"] if e.get("experiment")), None)
+        out.append({"experiment_id": state["experiment_id"], "status": state["status"], "experiment_ref": ref})
+    return out
+
+
 # ---------------------------------------------------------------------------- paid calls
+def normalize_usage(usage: dict | None) -> dict:
+    """One provider's usage in one vocabulary: uncached input, cache reads, cache writes, output.
+
+    The providers disagree. Anthropic reports `input_tokens` without the cached part and the cache reads and writes
+    beside it; OpenAI-compatible APIs report `prompt_tokens` with the cached part inside and `completion_tokens` for
+    the output. Reading one as the other prices a call at zero or counts its cache twice — and a zero is exactly
+    the number an unknown cost must never become.
+    """
+    usage = dict(usage or {})
+    if "input_tokens" in usage or "output_tokens" in usage:
+        return {"input_tokens": int(usage.get("input_tokens") or 0),
+                "output_tokens": int(usage.get("output_tokens") or 0),
+                "cache_read_tokens": int(usage.get("cache_read_input_tokens") or 0),
+                "cache_write_tokens": int(usage.get("cache_creation_input_tokens") or 0)}
+    details = usage.get("prompt_tokens_details") or {}
+    cached = int((details.get("cached_tokens") if isinstance(details, dict) else 0) or 0)
+    return {"input_tokens": max(int(usage.get("prompt_tokens") or 0) - cached, 0),
+            "output_tokens": int(usage.get("completion_tokens") or 0),
+            "cache_read_tokens": cached, "cache_write_tokens": 0}
+
+
 @dataclass(frozen=True)
 class Pricing:
     """What a call can cost at most, and what it did cost.
@@ -529,6 +606,9 @@ class Pricing:
     fallback declared. A provider that may silently retry or fall back to another model has no bound we can
     compute, so a plan that asked for a strict dollar limit does not start rather than reporting a limit it never
     enforced (docs/modules/05_EXECUTION_BUDGET.md §3).
+
+    Cached tokens are priced by their own rates. A call that used the cache when no cache rate was declared has
+    an unknown cost, not the cost of its uncached part.
     """
     input_per_1k: float | None = None
     output_per_1k: float | None = None
@@ -537,6 +617,8 @@ class Pricing:
     declared_fallbacks: tuple[str, ...] = ()
     hidden_fallback: bool = False             # the provider may fall back to something it does not report
     source: str = ""                          # where the prices came from, with their date
+    cache_read_per_1k: float | None = None
+    cache_write_per_1k: float | None = None
 
     @property
     def bounded(self) -> bool:
@@ -556,12 +638,27 @@ class Pricing:
         return out
 
     def measure(self, usage: dict) -> dict:
-        out = {"model_calls": 1, "input_tokens": usage.get("input_tokens", 0),
-               "output_tokens": usage.get("output_tokens", 0)}
-        if self.input_per_1k is not None and self.output_per_1k is not None:
-            out["usd"] = (out["input_tokens"] / 1000 * self.input_per_1k
-                          + out["output_tokens"] / 1000 * self.output_per_1k)
+        """The measured cost of one call, in budget dimensions. `usd` is present only when every token class the
+        call used has a declared price."""
+        u = normalize_usage(usage)
+        out = {"model_calls": 1, "input_tokens": u["input_tokens"] + u["cache_read_tokens"] + u["cache_write_tokens"],
+               "output_tokens": u["output_tokens"]}
+        usd = self.cost(u)
+        if usd is not None:
+            out["usd"] = usd
         return out
+
+    def cost(self, usage: dict) -> float | None:
+        """USD for a normalized usage, or None when some part of it has no declared price."""
+        if self.input_per_1k is None or self.output_per_1k is None:
+            return None
+        parts = [(usage.get("input_tokens", 0), self.input_per_1k),
+                 (usage.get("output_tokens", 0), self.output_per_1k),
+                 (usage.get("cache_read_tokens", 0), self.cache_read_per_1k),
+                 (usage.get("cache_write_tokens", 0), self.cache_write_per_1k)]
+        if any(tokens and price is None for tokens, price in parts):
+            return None
+        return round(sum(tokens / 1000 * price for tokens, price in parts if tokens), 8)
 
 
 def check_pricing(pricing: Pricing, limits: dict) -> str:

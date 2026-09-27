@@ -419,6 +419,19 @@ def cmd_bench(args) -> int:
     return 0 if report.get("ok", True) else 1
 
 
+def cmd_freeze(args) -> int:
+    """Freeze the [freeze.*] tables of a config into workspace objects, and print the [rsi] lines naming them."""
+    from .adapters.automationbench import UpstreamError
+    from .bench import freeze
+    cfg = config.load(args.config)
+    try:
+        freeze(cfg, Path(args.config).resolve().parent)
+    except (UpstreamError, ValueError, TypeError) as e:
+        print(f"ouroloop freeze: {e}", file=sys.stderr)
+        return 2
+    return 0
+
+
 def replay_items(path: str | Path) -> list[dict]:
     return [json.loads(line) for line in Path(path).read_text(encoding="utf-8").splitlines() if line.strip()]
 
@@ -570,6 +583,10 @@ def main(argv: list[str] | None = None) -> int:
     bn.add_argument("--rounds", type=int, help="improve: how many worker rounds (default: the frozen schedule)")
     bn.add_argument("--repeats", type=int, help="collect: attempts per training task")
     bn.add_argument("--plan", help="research/evaluate: the frozen plan to run, instead of the one in [rsi]")
+    fz = sub.add_parser("freeze", help="freeze the plans in [freeze.*] (task plan, schedule, budget, final plan) "
+                                       "into the workspace and print the [rsi] lines that name them")
+    fz.set_defaults(fn=cmd_freeze)
+    fz.add_argument("--config", required=True, help="e.g. examples/automationbench/marketing.toml")
     r = sub.add_parser("research", help="research rounds on a configured workspace")
     r.set_defaults(fn=cmd_research)
     r.add_argument("--config", default="ouroloop.toml")

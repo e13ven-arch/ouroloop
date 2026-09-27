@@ -97,7 +97,7 @@ M6 业务比较 ← M5 任务自动改进与经验继承 ← M4 策略构建与�
 - 新建 `research/inspection.py` 的最小 runtime 快照：实际加载版本、启用点、输入字段、默认策略和动作执行者。不能只读计划文件推断当前状态。
 - 如果基线尚不稳定，先修运行器；如果失败没有可学习的决策结构，记录并调整切入点。
 
-**拟实现入口：** `ouroloop bench --config examples/automationbench/marketing.toml --phase baseline`（现在被拒绝并指向本节）。
+**入口：** `ouroloop bench --config examples/automationbench/marketing.toml --phase baseline`（已实现；前沿模型在 `[frontier.a]` / `[frontier.b]` 声明）。
 
 ### M3：验证一次有效干预，构造训练反馈
 
@@ -142,7 +142,7 @@ M6 业务比较 ← M5 任务自动改进与经验继承 ← M4 策略构建与�
 - 整段失败不会自动把全部决策标错；test 任务及其变体不能进入数据生成。
 - 如果干预没有收益或信号不足，输出负结论，先修改假设；不以扩大模型或增加专家数量作为默认补救。
 
-**拟实现入口：** `ouroloop bench --config examples/automationbench/marketing.toml --phase collect`。
+**入口：** `ouroloop bench --config examples/automationbench/marketing.toml --phase collect`（已实现）。
 
 ### M4：构建可替换策略，训练一个小模型并测完整任务
 
@@ -191,7 +191,7 @@ M6 业务比较 ← M5 任务自动改进与经验继承 ← M4 策略构建与�
 - 最后一轮无验证预算时不安装新策略，未评测提案单独保存。
 - 多轮运行成功是工程验收，不要求每轮或最终分数预定上涨。
 
-**拟实现入口：** `ouroloop bench --config examples/automationbench/marketing.toml --phase improve`。
+**入口：** `ouroloop freeze --config examples/automationbench/marketing.toml` 冻结开发计划、调度与预算后，`ouroloop bench --config examples/automationbench/marketing.toml --phase improve`（已实现；中断后再运行会从记录的状态续跑）。
 
 ### M6：独立测试、领先模型比较与可复现交付
 
@@ -213,13 +213,15 @@ M6 业务比较 ← M5 任务自动改进与经验继承 ← M4 策略构建与�
 - 另一位开发者可按配置运行同一协议；远程模型波动通过版本、时间和重复统计说明，不承诺字节级相同输出。
 - 真实模型调用、GPU 与完整复跑需要凭据和预算；离线回放只展示已有证据，不能冒充重新训练。
 
-**拟实现入口：**
+**入口（已实现）：**
 
 ```bash
-# 拟实现接口；当前版本不能直接运行。
+ouroloop freeze --config examples/automationbench/marketing.toml      # [freeze.final] 冻结并密封最终计划
 ouroloop bench --config examples/automationbench/marketing.toml --phase evaluate
 ouroloop bench --config examples/automationbench/marketing.toml --phase report
 ```
+
+`evaluate` 中断后再运行只补缺失的尝试（BR-05），已记录的结果与费用原样保留。
 
 ### M7：研究策略的递归改进
 
@@ -280,6 +282,8 @@ ouroloop bench --config examples/automationbench/marketing.toml --phase report
 - 预算与恢复：共享账本、子树汇总、unknown 保留占用、verification 额度双向限制、崩溃后按 operation 恢复且只提交一次。
 - 报告：纯离线投影，C1～C4 各自状态，unknown 成本保持 unknown。
 
-**没有新增的真实收益。** 验收全部由离线夹具（`tests/fake_upstream` 的 `rsi` 域、脚本 worker/研究员、fake trainer）完成：`python -m pytest -q` → 535 passed, 1 deselected。夹具的数字是夹具定义的；IT-03 的研究改动由脚本提出，标 `scripted`，不构成自动发现证据。
+**没有新增的真实收益。** 验收全部由离线夹具（`tests/fake_upstream` 的 `rsi` 域、脚本 worker/研究员、fake trainer）完成：`python -m pytest -q` → 553 passed, 1 deselected。夹具的数字是夹具定义的；IT-03 的研究改动由脚本提出，标 `scripted`，不构成自动发现证据。
 
-**仍待交付：** 真实模型的 baseline 与 frontier 实测、真实小模型训练、冻结最终计划下的 C1～C3、独立 campaign 支持的 C4；以及各模块“已知缺口”列出的分支比较 builder、经济模式 campaign、进程级隔离、自动补跑与 calibration 接线。
+**付费运行前的补齐（2026-09-28）：** 模型调用全部经由共享预算账（每次调用前预留、按实测结算、超限即停止），一个活动只有一个预算根、各阶段为其子额度；每次尝试按 `[pricing]` 计算 `cost_usd`，先把各供应商的用量词汇统一（输入、缓存读、缓存写、输出），缓存无价时费用记 unknown；`evaluate` 与 `improve` 中断后从记录续跑，只补缺失的尝试，训练好的构建不重训；补跑在写入时记下它替代的尝试；新增 `ouroloop freeze` 从 `[freeze.*]` 冻结计划。验收：`tests/test_paid_run_safety.py`。
+
+**仍待交付：** 真实模型运行、真实小模型训练、冻结最终计划下的 C1～C3、独立 campaign 支持的 C4；以及各模块“已知缺口”列出的分支比较 builder、经济模式 campaign、进程级隔离与 calibration 接线。

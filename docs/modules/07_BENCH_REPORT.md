@@ -88,7 +88,9 @@ C1 支持而 C3 不支持时，可以报告框架迭代有效，不能声称训�
 
 阶段在调用模型之前拒绝缺失的冻结引用；`[rsi]`、`[pricing]`、`[frontier.*]` 三张表都拒绝未知键与占位符。
 
-验收：`python -m pytest tests/test_report.py tests/test_bench_phase.py -q` → 42 passed，覆盖 BR-01～BR-08 与启动检查；`examples/automationbench/marketing.toml` 给出三张表的完整示例（引用位留空并说明由 Python API 冻结）。
+验收：`python -m pytest tests/test_report.py tests/test_bench_phase.py tests/test_paid_run_safety.py -q` 覆盖 BR-01～BR-08 与启动检查；`examples/automationbench/marketing.toml` 给出各表的示例。
+
+更正（2026-09-28）：此前把 BR-05 记为已覆盖是写过头了——当时 `evaluate` 恢复时会重跑全部尝试，只是不重复写状态文件。现已按验收实现：尝试 id 由计划、臂、任务、重复与重试决定，再次运行时已记录的尝试原样保留（含费用），只运行缺失的，基础设施失败按 `stop_rules.max_infrastructure_retries` 补跑并在写入时记下替代关系。计划冻结不再只能用 Python API：`ouroloop freeze --config <path>` 读取 `[freeze.task_plan]`、`[freeze.schedule]`、`[freeze.budget]`、`[freeze.final]`，写入对象并打印要填进 `[rsi]` 的引用；同样的表冻结出同样的引用，同一 experiment_id 下的不同最终计划被拒绝。
 
 C1～C3 的 `supported` 只能来自密封最终计划：报告用该计划的统计参数在 final 记录上做家族层配对 bootstrap，区间全大于零才写 supported，含零写 inconclusive，全小于零写 not_supported；开发记录无论多好都只写 inconclusive 并说明需要最终计划。
 

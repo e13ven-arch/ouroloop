@@ -75,4 +75,6 @@ research campaign 内禁用 research slots；R 固定，内部仅改 W。主线�
 
 验收：`python -m pytest tests/test_execution.py -q` → 19 passed，覆盖 EX-01～EX-04、EX-06～EX-08 与状态机；EX-05 见 `tests/test_rsi_integration.py::test_it04_*`，跨支预算见 `test_it06_*` 与 `tests/test_campaign.py`。
 
-已知缺口：`wall_seconds` 维度可声明但没有自动计时预留；供应商幂等键未使用（每次重试都是新外部调用）；取消后的对账依赖调用方查询 job/request ID。
+2026-09-28 补齐：`MeteredProvider` 已接到所有阶段——agent 的每次调用与研究员的每次调用都先预留、再按实测结算，额度用尽时尝试记为 `budget_exhausted`（不补跑，比较记 inconclusive）。一个活动只有一个预算根（`[rsi] scope_id`，额度来自冻结的 budget 对象），collect、improve、campaign（含各支与外层评测）、final 都是其子额度，不存在第二个根；此前 campaign 另开根会使预算翻倍，已修。`settle` 只在预留时真正设了上界的维度上判定越界（未声明 token 上限时，用量照记、不与虚构的 0 比较）。`normalize_usage` 统一 Anthropic 与 OpenAI 兼容接口的用量词汇，`Pricing` 增加缓存读/写单价，缓存无价则费用 unknown。`execute_experiment` 可从记录的状态续跑，`unfinished`/`resume_unfinished` 在新一轮前完成中断的实验。验收：`python -m pytest tests/test_paid_run_safety.py -q` → 18 passed。
+
+已知缺口：`wall_seconds` 维度可声明但没有自动计时预留；供应商幂等键未使用（每次重试都是新外部调用）；进程崩溃时未结算的预留保持 open 并按上界占用（与 unknown 同样保守），尚无按 request ID 的自动对账；SDK 自带的内部重试（如 Anthropic 客户端默认 2 次）在计量层看作一次调用。

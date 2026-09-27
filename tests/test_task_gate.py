@@ -156,14 +156,15 @@ def test_er02_the_retry_policy_refills_only_the_infrastructure_failures(tmp_path
     calls = []
     first = {"subject": True}
 
-    def run(arm, order, retry=0):
+    def run(arm, order, retry=0, supersedes=None):
         calls.append((arm, tuple(t for t, _ in order), retry))
         if arm == "subject" and first["subject"]:
             first["subject"] = False
             return [*rows(p, {"t1": True}, validity="invalid", failure_class="infrastructure"),
                     *rows(p, {"t3": True, "t4": False})]
         if arm == "subject":
-            return rows(p, {"t1": True}, attempt_suffix="#1")
+            # the runner writes the refill with the id of the attempt it replaces, as it is recorded
+            return rows(p, {"t1": True}, attempt_suffix="#1", supersedes=supersedes[("t1", 0)])
         return rows(p, {"t1": False, "t3": False, "t4": False})
 
     receipt = evaluate_task(p, run=run, objects=objects, experiment_ref="experiment:sha256:" + "a" * 64,
@@ -207,7 +208,7 @@ def test_evaluate_task_files_every_attempt_and_the_order(tmp_path):
     outcomes = {"subject": {"t1": True, "t3": True, "t4": True}, "control": {"t1": False, "t3": True, "t4": False}}
     seen = []
 
-    def run(arm, order, retry=0):
+    def run(arm, order, retry=0, supersedes=None):
         seen.append((arm, tuple(order), retry))
         return rows(p, outcomes[arm])
 

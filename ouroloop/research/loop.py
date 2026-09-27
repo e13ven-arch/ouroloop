@@ -221,6 +221,44 @@ def run_worker_round(round_context: RoundContext, budget) -> _ct.RoundResult:
                            reason="; ".join(getattr(receipt, "reasons", ()) or ())[:300])
 
 
+def resume_unfinished(root, objects: _ct.Objects, handlers: dict, budget, *, activity=None) -> list:
+    """Finish the experiments an interrupted run left mid-way, before any new round starts.
+
+    Each continues from the state it recorded (execution.execute_experiment): nothing is re-proposed, rebuilt that
+    was built, or re-run that was run. An experiment with no recorded experiment ref cannot be continued faithfully
+    and is closed as cancelled, with the reason, rather than guessed at.
+    """
+    from ..evolve.execution import unfinished
+    results = []
+    for entry in unfinished(root):
+        execution = Execution(root, entry["experiment_id"])
+        if not entry["experiment_ref"] or not objects.has(entry["experiment_ref"]):
+            execution.advance("cancelled", reason="cannot resume: the experiment it was admitted with is not on "
+                                                  "record")
+            results.append(_ct.RoundResult(outcome="cancelled", experiment_id=entry["experiment_id"],
+                                           reason="not resumable"))
+            continue
+        experiment = objects.load(entry["experiment_ref"], _ct.Experiment)
+        outcome = execute_experiment(experiment, handlers, budget=budget, execution=execution,
+                                     expected_parent=experiment.parent_release)
+        proposal = objects.load(experiment.proposal_ref, _ct.ExperimentProposal)
+        receipt, installation = outcome.get("receipt"), outcome.get("installation")
+        _experience.append(root, _experience.experiment_record(
+            experiment_id=experiment.id, proposal_ref=experiment.proposal_ref, owner=proposal.owner,
+            hypothesis=proposal.hypothesis, changes=proposal.changes, build=outcome.get("build"),
+            receipt=receipt, installation=installation, release_before=experiment.parent_release,
+            release_after=(installation.target_release if installation is not None
+                           and installation.status == "installed" else experiment.parent_release),
+            trained=bool(proposal.training), evidence_refs=proposal.evidence_refs,
+            notes=f"resumed from {entry['status']}: {'->'.join(outcome['states'])}"))
+        results.append(_ct.RoundResult(
+            outcome=outcome["states"][-1] if outcome["states"] else entry["status"], experiment_id=experiment.id,
+            release_before=experiment.parent_release,
+            release_after=installation.target_release if installation is not None else experiment.parent_release,
+            receipt_ref=receipt.ref() if receipt else None, reason=f"resumed from {entry['status']}"))
+    return results
+
+
 def run_worker_rounds(make_round, budget, *, schedule: Schedule | None = None, root=None) -> list:
     """Rounds until one of the fixed stop rules fires (execution.Schedule).
 

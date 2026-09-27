@@ -85,6 +85,6 @@ preflight 失败：installation_failed，旧指针不动，可以在 artifact �
 
 验收：`python -m pytest tests/test_task_gate.py -q` → 23 passed，覆盖 ER-01～ER-08、ER-10 及统计定义；ER-03/ER-09 见 `tests/test_policy_runtime.py`，崩溃恢复矩阵见 `tests/test_rsi_integration.py::test_it04_*`。
 
-基础设施补跑按计划的 `retry_policy` 执行（`task_gate.refill`）：只补 `failure_class == infrastructure` 的配对，原尝试与费用留在记录里，补跑结果写 `supersedes`；agent 自己失败的任务和候选缺陷都不重抽。
+基础设施补跑按计划的 `retry_policy` 执行（`task_gate.refill` / `refill_attempts`）：只补 `failure_class == infrastructure` 的配对，原尝试与费用留在记录里，补跑结果在写入结果库时就带上 `supersedes`（只追加的结果库不能事后补字段）；agent 自己失败的任务、候选缺陷和预算用尽（`budget_exhausted`，比较记 inconclusive）都不重抽。评测处理器按尝试 id 续跑，中断后不重复付费。
 
 已知缺口：`cache_policy` 记录在计划里但不复用 screen 结果（总是重跑）；旧 decision profile 的 GateRecord 路径未改动。

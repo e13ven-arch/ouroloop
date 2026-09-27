@@ -194,6 +194,11 @@ def integrity(plan: TaskEvalPlan, subject: list[TaskResult], control: list[TaskR
     evaluator = [r for r in (*subject, *control) if r.failure_class == "evaluator"]
     if evaluator:
         return "inconclusive", [f"evaluator failure on {r.task_id}: {r.invalid_reason}" for r in evaluator[:5]]
+    exhausted = [r for r in (*subject, *control) if r.failure_class == "budget_exhausted"]
+    if exhausted:
+        # The total budget ran out before the comparison finished: whatever the partial numbers say, they are the
+        # numbers of a comparison nobody planned (docs/modules/05_EXECUTION_BUDGET.md §1).
+        return "inconclusive", [f"budget_exhausted after {len(exhausted)} attempts could not run"]
     expected = {pair_key(plan.ref(), t, i) for t in plan.task_ids for i in range(plan.repeats)}
     have = {arm: {r.pair_key for r in rows if r.validity == "valid"} for arm, rows in
             (("subject", subject), ("control", control))}
@@ -310,29 +315,34 @@ def screen(plan: TaskEvalPlan, subject: list[TaskResult], control: list[TaskResu
                     + ("" if s_tasks else "; no task result yet")]
 
 
-def refill(plan: TaskEvalPlan, arm: str, rows: list, run) -> list:
-    """Re-run the attempts that failed for infrastructure reasons, under the plan's frozen retry policy.
+def refill_attempts(rows: list, run, arm: str, limit: int) -> list:
+    """Re-run the attempts that failed for infrastructure reasons, at most `limit` times per pair.
 
-    Only those: a task the agent legitimately failed is evidence and is never re-rolled, and a candidate defect is
-    the candidate's (docs/modules/03_EVALUATION_RELEASE.md §3). The original attempt and its cost stay on record,
-    and the refill says which attempt it supersedes — a comparison that deleted its failures would be describing a
-    different run.
+    Only those: a task the agent legitimately failed is evidence and is never re-rolled, a candidate defect is the
+    candidate's, and an exhausted budget ends the comparison (docs/modules/03_EVALUATION_RELEASE.md §3). The
+    original attempt and its cost stay on record, and each refill is written with the id of the attempt it
+    supersedes — a comparison that deleted its failures would be describing a different run.
+
+    `run(arm, order, retry, supersedes)` runs `order` at retry index `retry`, where `supersedes` maps each
+    (task, repeat) to the attempt it replaces.
     """
-    limit = int((plan.retry_policy or {}).get("max_infrastructure_retries", 0))
     out = list(rows)
     for attempt_index in range(1, limit + 1):
-        done = {r.pair_key for r in out if r.validity == "valid"}
-        broken = [r for r in out if r.validity == "invalid" and r.failure_class == "infrastructure"
-                  and r.pair_key not in done]
-        if not broken:
+        done = {(r.task_id, r.attempt) for r in out if r.validity == "valid"}
+        latest: dict = {}
+        for r in out:
+            if r.failure_class == "infrastructure" and (r.task_id, r.attempt) not in done:
+                latest[(r.task_id, r.attempt)] = r
+        if not latest:
             break
-        order = [(r.task_id, r.attempt) for r in broken]
-        for refilled in run(arm, order, attempt_index):
-            original = next((r for r in broken if r.pair_key == refilled.pair_key), None)
-            if original is not None:
-                refilled.supersedes = original.attempt_id
-            out.append(refilled)
+        order = sorted(latest)
+        out.extend(run(arm, order, attempt_index, {key: latest[key].attempt_id for key in order}))
     return out
+
+
+def refill(plan: TaskEvalPlan, arm: str, rows: list, run) -> list:
+    """refill_attempts under the plan's frozen retry policy."""
+    return refill_attempts(rows, run, arm, int((plan.retry_policy or {}).get("max_infrastructure_retries", 0)))
 
 
 def evaluate_task(plan: TaskEvalPlan, *, run, objects: ct.Objects, experiment_ref: str,
@@ -340,17 +350,17 @@ def evaluate_task(plan: TaskEvalPlan, *, run, objects: ct.Objects, experiment_re
                   results_sink=None) -> ct.EvaluationReceipt:
     """Run both arms of a frozen plan and file the receipt.
 
-    `run(arm, order, retry=0) -> list[TaskResult]` belongs to the caller: this module fixes the order, the
-    statistics and the verdict, and the runner belongs to whoever owns the environment. Every attempt and its cost
-    go into the receipt's results object, including the failures — a receipt that kept only the attempts that
-    worked would be describing a different run.
+    `run(arm, order, retry=0, supersedes=None) -> list[TaskResult]` belongs to the caller: this module fixes the
+    order, the statistics and the verdict, and the runner belongs to whoever owns the environment. Every attempt
+    and its cost go into the receipt's results object, including the failures — a receipt that kept only the
+    attempts that worked would be describing a different run.
     """
     plan_ref = objects.put(plan)
     order = plan.order()
     rows = {"subject": [], "control": []}
     for arm in ("subject", "control"):
         arm_order = [(task, repeat) for task, repeat, side in order if side == arm]
-        rows[arm] = refill(plan, arm, list(run(arm, arm_order, 0)), run)
+        rows[arm] = refill(plan, arm, list(run(arm, arm_order, 0, None)), run)
         if results_sink is not None:
             for r in rows[arm]:
                 results_sink(arm, r)

@@ -14,9 +14,14 @@
 # development tasks with [llm]. Paths are relative to this file. See README.md here for what to install.
 #
 # improve, research and evaluate run against frozen plans, which are objects in the workspace rather than settings
-# in this file: a plan a researcher could edit between rounds would not be a plan. Freeze them with the Python
-# API (bench.freeze_task_plan, bench.seal) and name the refs under [rsi]; a phase whose ref is missing says so
-# before it calls a model.
+# in this file: a plan a researcher could edit between rounds would not be a plan. Freeze the [freeze.*] tables
+# below with
+#
+#   ouroloop freeze --config examples/automationbench/marketing.toml
+#
+# which prints the [rsi] lines naming the frozen objects. Editing a [freeze.*] table afterwards changes nothing
+# already frozen; freezing it again makes a new object with a new ref. A phase whose ref is missing says so before
+# it calls a model, and an interrupted improve or evaluate continues from what it recorded.
 
 env_file = "../../.env"
 
@@ -87,10 +92,41 @@ order_seed = 1
 # [pricing]
 # input_per_1k = 0.003
 # output_per_1k = 0.015
+# cache_read_per_1k = 0.0003    # a call that used the cache without a cache rate declared has an unknown cost
+# cache_write_per_1k = 0.00375
 # max_input_tokens = 8000
 # max_output_tokens = 2000
 # declared_fallbacks = ["claude-opus-5"]
 # source = "vendor pricing page, 2026-09-27"
+
+# The inputs to `ouroloop freeze`. Thresholds are fixed here once, before the first candidate runs.
+# [freeze.task_plan]
+# tasks = "dev"                 # a split of the frozen manifest, or a list of task ids
+# repeats = 2
+# order_seed = 1
+# [freeze.task_plan.gate]
+# mode = "quality"
+# min_gain = 0.05
+# min_groups = 5
+# max_regression_rate = 0.1
+#
+# [freeze.schedule]
+# worker_rounds = 3
+# patience = 2
+#
+# [freeze.budget]               # the whole activity: every phase, the research, the campaign, the final run
+# model_calls = 5000
+# usd = 200
+#
+# [freeze.final]                # sealed as it is frozen; the final tasks are read only by `--phase evaluate`
+# experiment_id = "marketing-final-1"
+# claims = ["C1"]
+# tasks = "test"
+# repeats = 2
+# comparisons = [{claim = "C1", subject = "evolved", control = "base", role = "evolved"},
+#                {claim = "C1", subject = "base", control = "base", role = "base"}]
+# stop_rules = {max_infrastructure_retries = 1}
+# statistical_plan = {confidence = 0.95, bootstrap_replicates = 2000}
 
 # The leading models this experiment compares against (phase baseline). Two vendors is what a complete C2 needs;
 # one is published as an incomplete C2 and no weaker model is substituted (docs/DESIGN.md §3.2).

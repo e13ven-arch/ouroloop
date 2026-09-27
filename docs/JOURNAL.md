@@ -8,6 +8,15 @@
 
 ---
 
+## 2026-09-28 付费运行前的补齐：计量、计费、续跑与计划冻结
+
+- 做了什么：`MeteredProvider` 接到所有阶段，agent 与研究员的每次模型调用先预留、按实测结算，额度用尽的尝试记为 `budget_exhausted`（不补跑，比较记 inconclusive）；一个活动只有一个预算根，各阶段、campaign 各支与外层评测都是其子额度。每次尝试按 `[pricing]` 计算 `cost_usd`，先用 `normalize_usage` 统一供应商的用量词汇，缓存读写单独计价，缺价则 unknown。`evaluate` 与 `improve` 中断后从记录续跑：尝试 id 由计划、臂、任务、重复与重试决定，已记录的尝试原样保留，构建已完成的不重训，安装重放自身 operation 最多提交一次。补跑在写入结果库时就带上 `supersedes`。新增 `ouroloop freeze`，从 `[freeze.task_plan]`、`[freeze.schedule]`、`[freeze.budget]`、`[freeze.final]` 冻结对象并打印 `[rsi]` 引用。
+- 更正：此前把 BR-05 记为已覆盖，实际 `evaluate` 恢复时会把全部尝试重跑一遍，只是不重复写状态文件；已按验收实现并在 07 文档里写明。
+- 补齐过程中发现并修正的四处：其一，`settle` 把预留时没有上界的维度当作上界 0，第一次调用的 token 用量就会被判越界并停止一切付费操作——计量一接上，第一条集成测试就停在这里；其二，campaign 原先另开一个预算根并拿到同样的额度，等于把活动预算翻倍；其三，OpenAI 兼容接口报 `prompt_tokens`/`completion_tokens`，按 `input_tokens` 读会把费用算成 0，而 0 正是未知费用绝不能变成的数；其四，补跑的 `supersedes` 原本在结果写入之后才在内存里补上，只追加的结果库和据此生成的报告永远看不到它。
+- 证据：`python -m pytest -q` → 553 passed, 1 deselected（新增 18 项在 `tests/test_paid_run_safety.py`）。模拟进程在最终评测第一臂中途死亡后再运行：8 个计划尝试各出现一次，崩溃前记录的全部保留；模拟在改进轮评测中途死亡后再运行：同一实验从 evaluating 续跑并安装，恰好一次安装事件。
+- 证据边界：仍没有真实模型运行；计量与计费由夹具供应商的固定用量验证。
+- commit：见本条记录的 Git 历史。
+
 ## 2026-09-27 删除贪吃蛇场景包与多代演示循环
 
 - 做了什么：删除 `examples/snake/`（游戏、标签器、规则、场景、两份配置）、`tests/test_snake.py`（14 项）与 `ouroloop/generations.py`（场景包的多代循环）；`ouroloop demo` 只保留合成数据上的离线一轮，不再接场景包参数。`tests/test_counting.py` 去掉依赖 `generations._judged` 的那一项——同一处计数由它上面基于 `replay.summarize` 的用例覆盖；`tests/test_tde_compat.py` 原先从 `examples/snake/demo.toml` 读配方，改为内联一份同形状的小配方，并删掉只检查那两份示例配置的用例。

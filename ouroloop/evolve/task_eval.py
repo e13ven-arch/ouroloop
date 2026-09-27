@@ -20,6 +20,7 @@ from ..benchmark import Budget, RunManifest, SplitManifest, TaskResult
 from ..benchmark import attempt_id as bench_attempt_id
 from ..benchmark import pair_key as bench_pair_key
 from .contracts import CandidateDefect
+from .execution import BudgetError, normalize_usage
 
 # The agent's stop reason -> how the attempt ended. Anything else is a task outcome: the model stopped, refused,
 # or ran out of output, and that is evidence about the agent.
@@ -74,7 +75,7 @@ class Budgeted:
 def run_attempt(suite, task_id: str, make_agent: Callable, *, run: RunManifest, splits: SplitManifest,
                 attempt: int = 0, system: str | None = None, probe: bool = False, arm: str = "subject",
                 retry_index: int = 0, plan_ref: str = "", release_ref: str | None = None,
-                budget_receipt_ref: str | None = None) -> Attempt:
+                budget_receipt_ref: str | None = None, pricing=None, supersedes: str = "") -> Attempt:
     """One attempt at one task. `make_agent(surface, task, system) -> Agent`.
 
     Every failure that is not the agent's is an invalid attempt with a reason, never a zero: a benchmark that
@@ -90,6 +91,10 @@ def run_attempt(suite, task_id: str, make_agent: Callable, *, run: RunManifest, 
     made on. It is refused outside the train split: dev decides between candidates and test is only read at the
     end, so a label from either would be training on the data that is supposed to judge the training
     (docs/DESIGN.md §3.1.3).
+
+    `pricing` (execution.Pricing) turns the attempt's usage into `cost_usd`, call by call, after normalizing each
+    provider's usage vocabulary. Without prices, or with a token class that has no price, the cost stays None:
+    unknown, not free.
     """
     family, split = splits.family_of(task_id), splits.split_of(task_id)
     if split != run.split:
@@ -100,7 +105,8 @@ def run_attempt(suite, task_id: str, make_agent: Callable, *, run: RunManifest, 
     entry, task = splits.entry(task_id), suite.tasks[task_id]
     ids = {"attempt_id": bench_attempt_id(run.hash(), task_id, attempt, arm, retry_index),
            "pair_key": bench_pair_key(plan_ref, task_id, attempt) if plan_ref else "",
-           "system_release_ref": release_ref, "budget_receipt_ref": budget_receipt_ref}
+           "system_release_ref": release_ref, "budget_receipt_ref": budget_receipt_ref,
+           "supersedes": supersedes}
     if entry.contract != task.contract:
         return Attempt(TaskResult.broken(task_id, family, split, attempt, run, splits.hash(),
                                          f"contract: the task changed since the split was frozen "
@@ -108,11 +114,20 @@ def run_attempt(suite, task_id: str, make_agent: Callable, *, run: RunManifest, 
                                          contract=task.contract, failure_class="evaluator", **ids), None)
     episode, agent, t0 = None, None, time.monotonic()
     usage: dict[str, int] = {}
+    costs: list = []                  # per call: USD, or None when that call cannot be priced
 
     def on_event(kind: str, data: dict) -> None:
-        for key, value in (data.get("usage") or {}).items():
+        raw = data.get("usage") or {}
+        for key, value in raw.items():
             if isinstance(value, (int, float)):
                 usage[key] = usage.get(key, 0) + value
+        if raw and pricing is not None:
+            costs.append(pricing.cost(normalize_usage(raw)))
+
+    def cost() -> float | None:
+        if pricing is None or not costs or any(c is None for c in costs):
+            return None
+        return round(sum(costs), 8)
 
     def broken(reason: str, failure_class: str, termination: str = "infrastructure") -> Attempt:
         if agent is not None and agent.probe is not None:
@@ -121,7 +136,7 @@ def run_attempt(suite, task_id: str, make_agent: Callable, *, run: RunManifest, 
             task_id, family, split, attempt, run, splits.hash(), reason[:400], termination=termination,
             contract=task.contract, evidence=agent.session if agent else "",
             elapsed=round(time.monotonic() - t0, 2),
-            tool_calls=episode.tool_calls if episode is not None else 0, usage=dict(usage),
+            tool_calls=episode.tool_calls if episode is not None else 0, usage=dict(usage), cost_usd=cost(),
             failure_class=failure_class,
             observation_refs=list(getattr(agent, "_observation_refs", ())), **ids), episode)
 
@@ -144,6 +159,10 @@ def run_attempt(suite, task_id: str, make_agent: Callable, *, run: RunManifest, 
         res = agent.run(task.trigger)
     except CandidateDefect as e:
         return broken(f"candidate: {e}", "candidate_defect", "harness_error")
+    except BudgetError as e:
+        # The activity's total budget ran out mid-attempt. Not evidence about the agent, and not a transient
+        # failure to be refilled either: the comparison it belonged to ends as inconclusive (budget_exhausted).
+        return broken(f"budget: {e}", "budget_exhausted", "infrastructure")
     except Exception as e:  # noqa: BLE001 - a provider or harness failure is no evidence about the candidate
         return broken(f"harness: {type(e).__name__}: {e}", "infrastructure", "harness_error")
     labelled = agent.probe.label() if agent.probe is not None else 0
@@ -156,7 +175,8 @@ def run_attempt(suite, task_id: str, make_agent: Callable, *, run: RunManifest, 
                               contract=task.contract, success=score.success,
                               partial_credit=round(score.partial_credit, 6),
                               assertions_passed=score.passed, assertions_scored=score.scored,
-                              usage=dict(usage), elapsed=round(time.monotonic() - t0, 2), steps=res.turns,
+                              usage=dict(usage), cost_usd=cost(), elapsed=round(time.monotonic() - t0, 2),
+                              steps=res.turns,
                               tool_calls=episode.tool_calls, termination=termination, stop=res.stop,
                               evidence=res.session, decisions=agent.decision_ids(), labelled=labelled,
                               failure_class="" if score.success else "task_outcome",
@@ -168,7 +188,7 @@ def run_tasks(suite, task_ids: list[str], make_agent: Callable, *, run: RunManif
               results=None, repeats: int = 1, system: str | None = None, probe: bool = False,
               on_result: Callable[[TaskResult], None] | None = None, arm: str = "subject", plan_ref: str = "",
               release_ref: str | None = None, order: list[tuple[str, int]] | None = None,
-              retry_index: int = 0) -> list[TaskResult]:
+              retry_index: int = 0, pricing=None, supersedes: dict | None = None) -> list[TaskResult]:
     """Every attempt of a run, in a fixed order, each one recorded as it finishes.
 
     Results are appended as they come so an interrupted run keeps the attempts it paid for; nothing here reruns
@@ -180,7 +200,8 @@ def run_tasks(suite, task_ids: list[str], make_agent: Callable, *, run: RunManif
     for task_id, i in (order if order is not None else [(t, i) for t in task_ids for i in range(repeats)]):
         attempt = run_attempt(suite, task_id, make_agent, run=run, splits=splits, attempt=i, system=system,
                               probe=probe, arm=arm, plan_ref=plan_ref, release_ref=release_ref,
-                              retry_index=retry_index)
+                              retry_index=retry_index, pricing=pricing,
+                              supersedes=(supersedes or {}).get((task_id, i), ""))
         try:
             out.append(attempt.result)
             if results is not None:
