@@ -52,6 +52,15 @@ class ContractError(ValueError):
     """A record that does not satisfy the contract. Raised before anything is written or run."""
 
 
+class CandidateDefect(RuntimeError):
+    """The candidate is broken: an illegal action, a schema mismatch, a deterministic misconfiguration.
+
+    Kept apart from an infrastructure failure on purpose. An infrastructure failure may be refilled under a
+    fixed rule; a defect may not, because retrying a candidate until the broken task happens to pass is how a
+    defective candidate gets promoted (docs/modules/03_EVALUATION_RELEASE.md §3).
+    """
+
+
 # ---------------------------------------------------------------------------- identity
 def canonical(obj: Any) -> bytes:
     """The bytes an object's identity is taken over: UTF-8, sorted keys, compact separators, lists in order.

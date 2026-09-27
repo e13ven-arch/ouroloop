@@ -215,6 +215,23 @@ class SplitManifest:
         return cls.from_json(json.loads(Path(path).read_text(encoding="utf-8")))
 
 
+# ---------------------------------------------------------------------------- attempt identity
+# A run is not an attempt (docs/modules/00_CONTRACTS.md §2): one run holds every task, repeat and refill. The
+# attempt key is what an arm's attempt is identified by, the attempt id adds the retry that produced it, and the
+# pair key is what two arms are compared on. None of them is a session id: a comparison keyed on a random session
+# would silently pair a candidate's attempt with a control's other task.
+def attempt_key(run: str, task_id: str, repeat_index: int, arm: str = "subject") -> str:
+    return f"{run}/{task_id}/r{repeat_index}/{arm}"
+
+
+def attempt_id(run: str, task_id: str, repeat_index: int, arm: str = "subject", retry_index: int = 0) -> str:
+    return f"{attempt_key(run, task_id, repeat_index, arm)}#{retry_index}"
+
+
+def pair_key(plan_ref: str, task_id: str, repeat_index: int) -> str:
+    return f"{plan_ref}/{task_id}/r{repeat_index}"
+
+
 # ---------------------------------------------------------------------------- budget
 @dataclass(frozen=True)
 class Budget:

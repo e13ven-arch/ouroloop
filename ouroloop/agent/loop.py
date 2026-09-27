@@ -41,6 +41,11 @@ class AgentConfig:
     verify_command: str | None = None             # a shell command that exits 0 when the task is done
     max_pushbacks: int = 2                        # how often stop may send the agent back to work
     default_tier: str = "large"                   # the model tier used unless route decides otherwise
+    # Which input schema the stop decision reads (contracts.SCHEMAS). "stop.file.v2" is the original coding-task
+    # view; "stop.business.v1" carries the whole request and the tool results, which is what a business task's
+    # requirements live in (docs/modules/01_POLICY_RUNTIME.md §3).
+    stop_view: str = "stop.file.v2"
+    max_event_result_chars: int = 2000            # per tool result kept in the observation, before the view cuts
 
 
 @dataclass
@@ -75,7 +80,7 @@ class Agent:
                  confirm_fn: Callable[[str, str], bool | None] | None = None, confirm_source: str = "human",
                  on_event: Callable[[str, dict], None] | None = None, tiers: dict[str, ChatProvider] | None = None,
                  session: str | None = None, system: str | None = None, probe=None,
-                 session_meta: dict | None = None):
+                 session_meta: dict | None = None, policy=None, objects=None):
         self.config = config or AgentConfig()
         self.provider = provider
         self.tiers = tiers or {self.config.default_tier: provider}
@@ -103,8 +108,18 @@ class Agent:
         self._modified: set[str] = set()
         self._changes = 0
         self._errors = 0
+        self._turn = 0
+        # The task/research profile: `policy` is the bound release (policies.BoundRuntime), whose worker.stop
+        # policy answers at stop/on_finish and whose activity counters record what it did. `objects` is where the
+        # observation and the trace of each decision are stored, so a later round can say what was visible.
+        self.policy = policy
+        self.objects = objects
+        self._tool_events: list[dict] = []
+        self._trace_refs: list[str] = []
+        self._observation_refs: list[str] = []
         self.guard = StopGuard(runtime, self.session, checker=self._check if self.config.verify_command else None,
-                               max_pushbacks=self.config.max_pushbacks, max_turns=self.config.max_turns)
+                               max_pushbacks=self.config.max_pushbacks, max_turns=self.config.max_turns,
+                               policy=policy.stop if policy is not None else None)
         self._verified: bool | None = None
         self._verified_at = -1              # the change count the last verification saw
         self._task = ""
@@ -122,6 +137,7 @@ class Agent:
         self._emit("task", text=task)
         text, stop, turn = "", "max_turns", 0
         for turn in range(1, self.config.max_turns + 1):
+            self._turn = turn
             self._compact(messages, turn)
             provider, tier = self._route(turn)
             t = provider.chat(self.system, messages, self.tools.specs())
@@ -193,9 +209,10 @@ class Agent:
 
     # ------------------------------------------------------------------ stop
     def _stop(self, phase: str, text: str, turn: int) -> StopCall:
-        call = self.guard(phase, {"task": self._task_head(), "turns": turn,
-                                  "files": ", ".join(sorted(self._modified))[:500],
-                                  "actions": "\n".join(self._actions[-10:]), "message": text[:1500]}, turn)
+        ctx = self._stop_ctx(phase, text, turn)
+        call = self.guard(phase, ctx, turn)
+        if call.decision is not None and self.policy is not None:
+            self._trace(call, ctx, phase)
         if call.decision is not None:
             if self.probe is not None:      # the probe labels it after the session, from the state it saw
                 self.probe.snap(call.decision, self._changes)
@@ -204,6 +221,62 @@ class Agent:
             self._stops.append({"decision": call.decision, "changes": self._changes,
                                 "labelled": self.probe is not None or call.checked is not None})
         return call
+
+    def _stop_ctx(self, phase: str, text: str, turn: int) -> dict:
+        """What the stop decision may see. Nothing derived from a scorer, a reference answer or a later turn."""
+        if self.config.stop_view != "stop.business.v1":
+            return {"task": self._task_head(), "turns": turn,
+                    "files": ", ".join(sorted(self._modified))[:500],
+                    "actions": "\n".join(self._actions[-10:]), "message": text[:1500]}
+        cut = [e["call_id"] for e in self._tool_events if e.get("truncated")]
+        budget = getattr(self.tools, "budget", None)
+        remaining = {"steps": max(self.config.max_turns - turn, 0)}
+        if budget is not None:
+            remaining["tool_calls"] = max(budget.max_tool_calls - getattr(self.tools, "tool_calls",
+                                                                         len(self._tool_events)), 0)
+        return {"task_text": self._task, "final_message": text[:4000], "phase": phase, "step": turn,
+                "tool_events": list(self._tool_events), "budget_remaining": remaining,
+                "truncation": {"tool_results_cut": cut} if cut else {}}
+
+    def _trace(self, call: StopCall, ctx: dict, phase: str) -> None:
+        """One observation and one trace per decision of a bound policy.
+
+        The proposed and the executed action come from two different places — the policy's answer and what the
+        guard did with it — which is the only way a later round can tell "the policy was overruled" from "the
+        policy agreed" (docs/modules/00_CONTRACTS.md §2).
+        """
+        from ..evolve import contracts as ct
+        if self.objects is None:
+            return
+        row = next((r for r in reversed(self.rt.ledger.rows(self.guard.point))
+                    if r.decision["id"] == call.decision), None)
+        decision = row.decision if row else {}
+        observation = ct.Observation(
+            task_text=ctx.get("task_text", ""), tool_events=tuple(json.dumps(e, sort_keys=True, default=str)
+                                                                  for e in ctx.get("tool_events") or ()),
+            phase=phase, step=int(ctx.get("step") or 0), final_message=ctx.get("final_message", ""),
+            budget_remaining=dict(ctx.get("budget_remaining") or {}),
+            truncation=dict(ctx.get("truncation") or {}))
+        obs_ref = self.objects.put(observation)
+        trace = ct.DecisionTrace(
+            decision_id=call.decision or "", observation_ref=obs_ref,
+            policy_ref=getattr(self.policy.stop, "ref", ""), input_schema=self.config.stop_view,
+            rendered_input_ref=self.objects.put_json("change", {"view": decision.get("view") or ""}),
+            proposed_action=decision.get("proposed"), executed_action=decision.get("action"),
+            executor=decision.get("executor") or "default",
+            fallback_reason=decision.get("fallback_reason"), override_reason=decision.get("override_reason"))
+        self._observation_refs.append(obs_ref)
+        self._trace_refs.append(self.objects.put(trace))
+        target = "worker.stop"
+        if not decision.get("policy_ref"):
+            return                      # no policy was bound at this phase: an observation, not a call
+        self.policy.activity.call(target)
+        self.policy.activity.propose(target, decision.get("proposed"))
+        self.policy.activity.execute(target, decision.get("action"))
+        if decision.get("fallback_reason"):
+            self.policy.activity.fallback(target, str(decision["fallback_reason"])[:80])
+        if decision.get("override_reason") or any(o["decision"] == call.decision for o in self.guard.overruled):
+            self.policy.activity.override(target, str(decision.get("override_reason") or "guard limit"))
 
     def _check(self) -> tuple[bool, str]:
         verified, out = self._verify()
@@ -237,6 +310,11 @@ class Agent:
                     self._modified.add(str(target))
         self._errors += res.is_error
         self._actions.append(f"{_short(call)} -> {'error' if res.is_error else 'ok'}")
+        limit = self.config.max_event_result_chars
+        self._tool_events.append({"call_id": call.id, "name": call.name, "args": call.args,
+                                  "result_excerpt": "" if res.is_error else res.output[:limit],
+                                  "error": res.output[:limit] if res.is_error else "",
+                                  "truncated": len(res.output) > limit, "step": self._turn})
         self._emit("tool", id=call.id, name=call.name, is_error=res.is_error, output=res.output[:2000])
         return res
 

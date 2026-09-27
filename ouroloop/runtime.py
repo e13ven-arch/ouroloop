@@ -10,6 +10,7 @@ from typing import Any, Callable
 
 from . import policy
 from .decision import Decision, DecisionPoint, Spec
+from .evolve.contracts import CandidateDefect
 from .ledger import CalibrationStore, Ledger, SessionStore, SpecStore, write_json
 from .policy import Policy, Route, route
 from .release import Accepted, Release, Revoked, harness_hash, spec_hash
@@ -20,6 +21,10 @@ def import_object(ref: str):
     """"package.module:name" -> the object."""
     module, _, attr = ref.partition(":")
     return getattr(importlib.import_module(module), attr)
+
+
+class _NoPolicy(Exception):
+    """No policy is bound at this phase: the fixed default is taken, and nothing is recorded as proposed."""
 
 
 @dataclass(frozen=True)
@@ -286,6 +291,69 @@ class Runtime:
         return Decision(did, p.name, ans.label if ans and ans.decisive else None, ans.probs if ans else {},
                         ans.confidence if ans else 0.0, r.route, r.explored, r.propensity, action, model,
                         r.route == "act")
+
+    def propose(self, point: str | DecisionPoint, ctx: Any, *, policy, session: str = "s_default",
+                step: int | None = None, phase: str | None = None,
+                veto: str | Callable[[str | None], str | None] | None = None,
+                extra: dict | None = None) -> Decision:
+        """Ask a bound policy of the task/research profile (policies.StopDecider) and record what happened.
+
+        This path never reads the champion pointer or the legacy calibration: what may act in that profile is
+        decided by the release's authorisation (docs/modules/01_POLICY_RUNTIME.md §4), and reusing the old
+        thresholds here would be borrowing a permission that was granted for another version.
+
+        The row separates the two facts a trace needs: `proposed` is the policy's answer, `action` is what was
+        executed, and `executor` says who decided it. A policy that abstains, or whose service is unavailable,
+        leaves the phase's fixed default and the reason is recorded — it is not written down as agreement.
+        """
+        p = self.points[point] if isinstance(point, str) else point
+        phase, label, _ = p.default_for(phase)
+        ref = self.sessions.put(session, ctx, step)
+        fields: dict = dict(extra or {})
+        view, truncated, q, proposed, reason = None, False, None, None, ""
+        route_name, executor = "default", "default"
+        action = label
+        try:
+            view, truncated = p.render(ctx)
+            q = p.question(ctx)
+            if policy is None:      # no policy is bound at this phase: the fixed default, and nothing proposed
+                raise _NoPolicy
+            proposed, reason = policy.propose(ctx)
+            if proposed in (q.labels() if q else ()):
+                action, route_name, executor = proposed, "policy", "policy"
+            else:
+                fields["fallback_reason"] = reason
+        except CandidateDefect as e:
+            self.ledger.decision(session=session, ctx=ref, point=p.name, spec_hash=p.spec_hash, backend="policy",
+                                 model=getattr(policy, "ref", ""), view=view, view_chars=len(view or ""),
+                                 truncated=truncated, question=q.to_json() if q else None, probs=None,
+                                 candidates=q.labels() if q else None, route="error", explored=False,
+                                 propensity=1.0, action=None, usage={}, phase=phase, default=label,
+                                 executor="none", policy_ref=getattr(policy, "ref", ""),
+                                 defect=f"{e}"[:500], **fields)
+            raise                       # a defective candidate does not get the default's result recorded as its own
+        except _NoPolicy:
+            pass
+        except Exception as e:  # noqa: BLE001 - whatever breaks, the fixed default is taken and the row says why
+            route_name, fields["error"] = "error", f"{type(e).__name__}: {e}"[:500]
+        try:
+            if isinstance(veto, str):
+                action, route_name, executor = veto, "rule", "guard"
+            elif callable(veto) and (verdict := veto(action)) is not None:
+                fields["override_reason"] = f"guard overruled {action!r}"
+                action, route_name, executor = verdict, "rule", "guard"
+        except Exception as e:  # noqa: BLE001 - a checker that breaks overrules nothing
+            route_name, executor = "error", "default"
+            action, fields["error"] = label, f"{type(e).__name__}: {e}"[:500]
+        did = self.ledger.decision(
+            session=session, ctx=ref, point=p.name, spec_hash=p.spec_hash, backend="policy",
+            model=getattr(policy, "ref", ""), view=view, view_chars=len(view or ""), truncated=truncated,
+            question=q.to_json() if q else None, candidates=q.labels() if q else None, probs=None,
+            route=route_name, explored=False, propensity=1.0, action=action, usage={}, phase=phase,
+            default=label, proposed=proposed, executor=executor,
+            policy_ref=getattr(policy, "ref", ""), policy_kind=getattr(policy, "kind", ""), **fields)
+        return Decision(did, p.name, proposed, {}, 0.0, route_name, False, 1.0, action,
+                        getattr(policy, "ref", ""), route_name == "policy")
 
     def _default(self, ctx: Any, view: str | None, q: Question | None, label: str | None, answerer: str | None,
                  extra: dict) -> str | None:

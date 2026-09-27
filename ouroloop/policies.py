@@ -341,6 +341,12 @@ class StopDecider:
     def kind(self) -> str:
         return self.descriptor.kind
 
+    def enabled(self, phase: str | None) -> bool:
+        """worker.stop is bound at stop/on_finish only. per_turn keeps its fixed default: a learned judgement
+        there is a separate target with its own evidence, not a free extension of this one
+        (docs/modules/01_POLICY_RUNTIME.md §3)."""
+        return phase in (None, "on_finish")
+
     def propose(self, observation: dict) -> tuple[str, str]:
         """-> (action, why). A rule policy proposes the registered default; a model policy proposes its own
         answer, and abstains on a tie, an unknown class or a confidence below its threshold."""
@@ -353,11 +359,14 @@ class StopDecider:
             ans = self.backend.decide([Request(view, q)])[0]
         except Exception as e:  # noqa: BLE001 - a serving failure is a declared fallback, not a verdict
             return "abstain", f"unavailable: {type(e).__name__}"
-        if not ans.over(q.labels()) or not ans.decisive:
-            return "abstain", "not a decisive distribution over the declared classes"
+        if not ans.over(q.labels()):
+            raise ct.CandidateDefect(f"{self.descriptor.target}: the model answered {sorted(ans.probs)}, not a "
+                                     f"distribution over {q.labels()}")
+        if not ans.decisive:
+            return "abstain", "no single most likely class"
         label = self.inference.get("actions", {}).get(ans.label, ans.label)
         if label not in self.actions:
-            return "abstain", f"unknown class {ans.label!r}"
+            raise ct.CandidateDefect(f"{self.descriptor.target}: {label!r} is not one of {list(self.actions)}")
         threshold = self.inference.get("threshold")
         if threshold is not None and ans.confidence < threshold:
             return "abstain", f"confidence {ans.confidence:.3f} below {threshold}"
@@ -460,15 +469,21 @@ def _bind_one(bound: BoundRuntime, target: str, p: PolicyDescriptor, services: S
 
 
 def _bind_stop(p: PolicyDescriptor, services: Services) -> StopDecider:
+    """The bound completion policy, always over the view its descriptor declares.
+
+    A rule policy gets the same point as a model policy: what is recorded at the decision must be the input the
+    registration names, or a later comparison between a default arm and a model arm would be comparing two
+    different records of the same moment.
+    """
     from .decision import Spec
     from .points import business_stop_point
     reg = resolve(p.target)
+    point = business_stop_point()
     if p.kind == "rule":
-        return StopDecider(p, default=reg.fallback)
+        return StopDecider(p, point=point, default=reg.fallback)
     spec = services.objects.get(p.implementation["spec_ref"])
     inference = parse_inference(services.objects.get(p.implementation["inference_ref"]),
                                actions_of(p.output_schema))
-    point = business_stop_point()
     point.spec = Spec(spec.get("instructions") or point.spec.instructions,
                       spec.get("criteria") or point.spec.criteria, dict(spec.get("view_params") or {}))
     backend_spec = spec.get("backend") or {"type": "model", "model": p.implementation["model_ref"]}
@@ -568,3 +583,70 @@ def bootstrap_workspace(root, *, objects: ct.Objects | None = None, worker_ref: 
     research_ref = research_ref or default_research_set(objects)
     core_ref = core_ref or default_core(objects, **core_kw)
     return releases, releases.bootstrap(worker_ref, research_ref, core_ref)
+
+
+class SessionBinder:
+    """Which release each session runs (docs/modules/01_POLICY_RUNTIME.md §4).
+
+    A new session reads the active pointer once; a session already open keeps the release it opened with, so an
+    install reaches only the sessions that start after it. Before each step the revocation list is checked, and a
+    session whose release was revoked continues on the defaults release — the fixed safe version — rather than
+    hot-swapping to whatever is active now.
+    """
+
+    def __init__(self, releases, services: Services, *, profile: str = "task"):
+        self.releases = releases
+        self.services = services
+        self.profile = profile
+        self._pins: dict[str, BoundRuntime] = {}
+        self._reasons: dict[str, str] = {}
+
+    def open(self, session: str) -> BoundRuntime:
+        if session not in self._pins:
+            ref = self.releases.active()["release_ref"]
+            if ref is None:
+                raise BindError("nothing is installed: bootstrap a release before opening a session")
+            kind = self.releases.authorize(ref, profile=self.profile)
+            self._pins[session] = bind_release(ref, profile=self.profile, services=self.services,
+                                               authorization=kind)
+        return self._pins[session]
+
+    def current(self, session: str) -> BoundRuntime:
+        """The session's release, or the fixed safe version when it has been revoked since the session opened.
+
+        The defaults release if there is one that still stands, otherwise the registered defaults themselves
+        (fixed_defaults). Either way the session does not hot-swap to whatever is active now: that version was
+        never the one this session was pinned to, and mid-session swapping is how two halves of one run end up
+        attributed to one version.
+        """
+        bound = self.open(session)
+        if not self.releases.revoked(bound.release_ref):
+            return bound
+        self._reasons[session] = f"{ct.short(bound.release_ref)} revoked"
+        fallback = self.releases.defaults()
+        if fallback is None or self.releases.revoked(fallback):
+            self._pins[session] = fixed_defaults(self.services, profile=self.profile)
+        else:
+            self._pins[session] = bind_release(fallback, profile=self.profile, services=self.services,
+                                               authorization="defaults_after_revocation")
+        return self._pins[session]
+
+    def reason(self, session: str) -> str:
+        """Why this session is no longer on the release it opened with."""
+        return self._reasons.get(session, "")
+
+
+def fixed_defaults(services: Services, *, profile: str = "task") -> BoundRuntime:
+    """The registered default at every target: no extra prompt, no model, the fallback action.
+
+    This is what a session runs when its release is revoked and no installed ancestor stands. It is deliberately
+    not a release and is never written to the pointer: a pointer may only name a version that was evaluated and
+    installed (docs/modules/03_EVALUATION_RELEASE.md §4).
+    """
+    default = descriptor(services.objects, "worker.stop", "rule", {"builtin": "default.v1"})
+    from .points import business_stop_point
+    return BoundRuntime(release_ref="", profile=profile, authorization="fixed_defaults",
+                        worker={"worker.stop": default},
+                        stop=StopDecider(default, point=business_stop_point(),
+                                         default=resolve("worker.stop").fallback),
+                        services=services)
