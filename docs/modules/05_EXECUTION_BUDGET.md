@@ -1,6 +1,6 @@
 # M5：共同执行状态机与总预算
 
-> 待实现；`evolve/execution.py` 为薄控制层，`generations.py` 选择旧场景或新 task/research profile。复用现有作业、锁和账本，不引入分布式调度服务。
+> 待实现；`evolve/execution.py` 为薄控制层。复用现有作业、锁和账本，不引入分布式调度服务。
 
 ## 1. 状态机
 

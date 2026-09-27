@@ -10,7 +10,7 @@ AutomationBench Marketing is the first proving ground, evaluated against leading
 
 **Status:** the decision and training infrastructure exists, and so does the AutomationBench run contract: task groups frozen before the first result, the official scorer over the world the agent's tools left, and the checks that say the runner measures what upstream measures (`ouroloop bench --phase smoke`). It has been verified against a real checkout (upstream `4a8e106`, package 1.0.6): all 25 development tasks pass the contract checks, and upstream's own rubric entry point, service gate and tool schemas agree with this adapter's.
 
-The improvement loop is now implemented end to end and verified against offline fixtures: typed policies over registered targets, a business completion view that carries the whole request and the tool results, complete W/R releases installed by compare-and-swap after preflight, feedback that only observed facts produce, training with no promotion side effect, paired full-task evaluation with a frozen gate, a research round, one shared budget book, a campaign that compares two research policies by what they produce, and seven benchmark phases with an offline report (`python -m pytest -q` → 547 passed; see [implementation status](docs/ROADMAP.md#5-实现状态2026-09-27)).
+The improvement loop is now implemented end to end and verified against offline fixtures: typed policies over registered targets, a business completion view that carries the whole request and the tool results, complete W/R releases installed by compare-and-swap after preflight, feedback that only observed facts produce, training with no promotion side effect, paired full-task evaluation with a frozen gate, a research round, one shared budget book, a campaign that compares two research policies by what they produce, and seven benchmark phases with an offline report (`python -m pytest -q` → 535 passed; see [implementation status](docs/ROADMAP.md#5-实现状态2026-09-27)).
 
 It has **not** been run with a real model, so **there are no benchmark results here**: the fixtures show the path is real — the installed policy is the one that runs, labels come from observed facts, the pointer moves only through a receipt, a crash leaves something recoverable — and the fixtures' numbers are the fixtures'. C1 to C4 have not been run, and the research change in the fixture is proposed by a script and labelled `scripted`, which is not automatic discovery. See the [v0.5 design](docs/DESIGN.md) and [implementation roadmap](docs/ROADMAP.md).
 
@@ -24,17 +24,17 @@ Small models are an empirical choice for recurring decisions with useful feedbac
 
 ## How the loop improves itself
 
-`ouroloop demo <scenario> --generations N` runs this loop generation by generation ([ouroloop/generations.py](ouroloop/generations.py)); a harness of your own runs the online half on every session. Only the demo plans each round (`ouroloop plan` shows the same reading): a round trains only what a plan's admission passed, so a round with nothing new to learn from spends no GPU. Each `ouroloop evolve` call runs one round (the training job, calibration, the gate, promotion) whatever the plan would say.
+`ouroloop bench --phase improve` runs this loop round by round on the business benchmark ([ouroloop/bench.py](ouroloop/bench.py)); a harness of your own runs the online half on every session. A round trains only what an admission passed, so a round with nothing new to learn from spends no GPU (`ouroloop plan` shows the same reading). Each `ouroloop evolve` call runs one round of the legacy decision profile (the training job, calibration, the gate, promotion) whatever the plan would say.
 
 <p align="center"><img src="docs/assets/architecture.gif" alt="ouroloop architecture: a loop whose top half runs every session and whose bottom half runs every round" width="100%"></p>
 
-The diagram illustrates the feedback-loop design, not a measured business result. Current scenario runs collect decisions and labels, apply the built-in planner, train and evaluate candidates, and use the selected release in later sessions. The automatic researcher and complete business-task evaluator still need to be connected.
+The diagram illustrates the feedback-loop design, not a measured business result. The loop collects decisions and labels, diagnoses behaviour gaps, builds and evaluates candidates against full tasks, and installs the accepted version for later sessions — verified against offline fixtures, with no real model run yet.
 
 An updated task policy changes the states encountered in later sessions; evidence from those sessions informs the next proposal. The complete design adds a second path: update a research policy, evaluate its ability to produce useful task improvements under the same budget, and use the accepted version for later research. Updating a prompt, rule or research tool can close this path without training a separate researcher model. Neither path guarantees continual improvement.
 
 The existing takeover policy uses calibrated thresholds, labelled-session risk checks and runtime revocation. These controls depend on their feedback and statistical assumptions; they do not establish a 5% business-task failure bound. The planned benchmark profile will evaluate complete task outcomes under a separately fixed protocol while preserving the existing deployment profile.
 
-`ouroloop research` currently runs separately from the scenario generation loop. Its integration with task feedback and training is tracked in the roadmap.
+`ouroloop research` is the legacy decision profile's own round, kept as it was; the business loop's rounds run through `ouroloop bench --phase improve` and `--phase research`.
 
 ## Quick start
 
@@ -45,7 +45,6 @@ python3 -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"      # the only runtime dependency is httpx
 pytest -q                    # offline: no network, no models
 ouroloop demo                # one research round on synthetic data, offline
-ouroloop demo snake --config examples/snake/offline.toml   # Snake, several generations, a tiny model (examples/snake)
 ```
 
 To use Jev, put `TYPESAFE_API_KEY=...` in `.env` at the repository root (git ignores it).
@@ -176,7 +175,7 @@ it calls a model.
 
 ## Status
 
-The current implementation provides decision points, the ledger, supervised training jobs, trainer plugins, model storage and serving, calibration, version management, a scenario generation loop, and a separate research/prompt candidate path.
+The current implementation provides decision points, the ledger, supervised training jobs, trainer plugins, model storage and serving, calibration, version management, complete W/R releases, and both the task-improvement and research-improvement loops.
 
 Design v0.5 prioritizes AutomationBench Marketing. The adapter, the task-group splits and the full-task runner now
 exist; the contract checks pass against a real checkout, and the tests run against a miniature stand-in for it

@@ -31,11 +31,11 @@ needs_tde = pytest.mark.skipif(not (REPO / "tde" / "schema.py").exists(), reason
 has_tde = importlib.util.find_spec("tde") is not None
 DEFAULT_RECIPE = {**train.DEFAULT_RECIPE, **tde.RECIPE}        # the recipe of a tde trainer
 RECIPE_KEYS = set(DEFAULT_RECIPE)
-SNAKE = Path(__file__).resolve().parents[1] / "examples" / "snake"
-
-
-def snake_recipe() -> dict:
-    return config.load(SNAKE / "demo.toml")["recipe"]
+# A recipe of the shape a scenario's config carries: one epoch over a sample of a few thousand rows. It is inline
+# because what this test checks is that such a recipe still maps onto TDE's own TrainConfig fields, not that any
+# particular example config exists.
+SMALL_RECIPE = {"epochs": 1.0, "train_limit": 5000, "batch_size": 16, "grad_accum": 2,
+                "max_state_tokens": 256, "gradient_checkpointing": False, "min_weight": 1.0}
 
 
 def all_primitives(tmp_path) -> Runtime:
@@ -76,7 +76,7 @@ def test_generated_config_only_uses_real_trainconfig_fields():
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "TrainConfig")
     fields = {s.target.id for s in cls.body if isinstance(s, ast.AnnAssign)}
     inherited = {"backbone", "readout", "marker", "pool", "branch_layers", "branch_through_backbone", "finetune"}
-    for recipe in ({**DEFAULT_RECIPE, "max_steps": 10}, {**DEFAULT_RECIPE, **snake_recipe()}):
+    for recipe in ({**DEFAULT_RECIPE, "max_steps": 10}, {**DEFAULT_RECIPE, **SMALL_RECIPE}):
         cfg = tde_config(recipe, "runs/x", "runs/parent", "m_0001")
         assert set(cfg) | {"data_dir"} | inherited <= fields
 
@@ -215,14 +215,7 @@ def test_a_tilde_in_a_run_path_is_the_training_machines_home(tmp_path):
     assert json.loads((data / "tde" / "calibration.jsonl").read_text()) == {"id": 2, "split": "calibration"}
 
 
-def test_the_snake_recipe_is_small_and_fast():
-    recipe = snake_recipe()
-    assert set(recipe) <= RECIPE_KEYS
-    cfg = tde_config({**DEFAULT_RECIPE, **recipe}, "run", None, "m_0001")
+def test_a_small_recipe_stays_within_the_trainers_keys_and_is_cheap():
+    assert set(SMALL_RECIPE) <= RECIPE_KEYS
+    cfg = tde_config({**DEFAULT_RECIPE, **SMALL_RECIPE}, "run", None, "m_0001")
     assert cfg["epochs"] == 1.0 and 1000 <= cfg["train_limit"] <= 10000 and not cfg["gradient_checkpointing"]
-    trainer = config.load(SNAKE / "demo.toml")["trainer"]
-    assert trainer["options"]["init_from"].endswith("tde-general-v0.1") and recipe["min_weight"] == 1.0
-    for name, plugin in (("demo.toml", "tde"), ("offline.toml", "signature")):
-        cfg = config.load(SNAKE / name)
-        assert cfg["points"]["move"]["act"] and set(cfg["recipe"]) <= RECIPE_KEYS
-        assert cfg["trainer"]["type"] == plugin and cfg["trainer"]["options"] == cfg["trainers"][plugin]

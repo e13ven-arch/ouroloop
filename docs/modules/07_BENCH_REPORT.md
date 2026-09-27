@@ -49,7 +49,7 @@ task_plan_ref = "<development task plan ref>"
 
 ## 4. 报告数据与结论
 
-输出机器可读 `report.json` 和 Markdown。report 是原始引用的投影，可重算，不能手填分数。按数据协议版本分别聚合，不把旧 decision replay、snake 或脚本 fixture 与业务任务结果混在一表。
+输出机器可读 `report.json` 和 Markdown。report 是原始引用的投影，可重算，不能手填分数。按数据协议版本分别聚合，不把旧 decision replay 或脚本 fixture 与业务任务结果混在一表。
 
 | 部分 | 必需内容 |
 |---|---|

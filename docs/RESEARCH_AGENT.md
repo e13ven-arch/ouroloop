@@ -13,7 +13,6 @@
 | `research/agent.py` 的 Candidate / Workspace / ResearchAgent.step | 已建，原样保留；新 profile 用 `ExperimentProposal` 表达 owner、行为要求、证据与策略版本 |
 | `research/basic.py`、`research/loop.py` | 已建：旧候选循环保留，新增 `PolicyResearcher`（用已加载 R 的 prompt 发请求）与 `run_worker_round` / `run_worker_rounds` |
 | `evolve/plan.py`、`evolve/pipeline.py` | 已建：旧准入与监督训练保留，新增无晋升副作用的 `train_artifact`；不训练的策略构建走 `policies.build_candidate` |
-| `generations.py` | 已建场景循环，未改；固定 R 的任务改进由 `bench improve` 驱动 |
 | `evolve/experience.py` | 已建：`experiment_record` / `summary_record` / `snapshot` / `requirement_status`，含机制活动、回归与来源 |
 | `research/inspection.py`、`context.py`、`experiment.py` | 已建：实际装配快照与字段覆盖率、白名单 Context、提案规范化与两层准入 |
 | `research/campaign.py` | 已建：隔离两支比较 R/R'，复用同一任务改进循环，不建立第二个循环框架 |

@@ -84,6 +84,6 @@ Then R1 的检查真实运行，产生并评测 W2；R1 artifact、调用 trace�
 | IT-06 严格总预算与未知收费 | 通过 | `test_it06_*`、`tests/test_execution.py` |
 | IT-07 报告不能反向选冠军 | 通过 | `test_it07_*`、`tests/test_report.py::test_br07_*`/`test_br08_*` |
 
-全仓：`python -m pytest -q` → 547 passed, 1 deselected（含此前 399 项既有测试，全部保留通过）。
+全仓：`python -m pytest -q` → 535 passed, 1 deselected（既有测试全部保留通过；贪吃蛇相关 15 项已随场景包删除）。
 
 不能由此推出：夹具的数字是夹具定义的，脚本研究员的提案不是自动发现，也没有任何真实模型的业务成绩。IT-03 标 `scripted`；真实自动递归与 C1～C4 需要冻结的付费实验。

@@ -150,7 +150,7 @@ jobs_root = "~/.ouroloop/jobs"
 poll_s = 0.2
 
 [trainers.signature]
-signature = "examples.snake.rules:signature"   # 视图 -> 键；主机上也要能导入
+signature = "mypackage.rules:signature"       # 视图 -> 键；主机上也要能导入
 
 [store]
 type = "dir"

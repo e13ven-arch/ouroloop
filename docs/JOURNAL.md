@@ -2,11 +2,19 @@
 
 倒序，最新在上。一条记录一次有意义的改动：做了什么、证据（真实运行或测试量到的数，带数字）、因此改了什么设计、commit id。日期取自 git log。
 
-证据只写量到过的：贪吃蛇（`examples/snake`）在一台 GPU 主机上的几次多代运行（下称 run4、run5、run6）、离线运行、决策集上的统计，以及先写失败测试再修的评审。没有证据的改动照实说"没有运行证据"。
+证据只写量到过的：贪吃蛇（当时的 `examples/snake`）在一台 GPU 主机上的几次多代运行（下称 run4、run5、run6）、离线运行、决策集上的统计，以及先写失败测试再修的评审。没有证据的改动照实说"没有运行证据"。
 
-哪些数字能复算，哪些不能：决策集上的统计从 `evals/replay_campaign/` 重算；M6 的真实验收从 `examples/workspace-m6/ledger/` 重算；离线演示的数字由读者自己用 `ouroloop demo snake --config examples/snake/offline.toml` 生成一个 `workspace-offline/` 重跑（屏幕上每个数都是账本里的 `metrics` 和 `generation` 事件）。run4、run5、run6 跑在一台 GPU 主机上，工作区没有发布，它们的数字在仓库里复算不出来。
+哪些数字能复算，哪些不能：决策集上的统计从 `evals/replay_campaign/` 重算；M6 的真实验收从 `examples/workspace-m6/ledger/` 重算。**贪吃蛇场景包与多代演示循环已于 2026-09-27 删除**（见当日第二条记录），因此所有贪吃蛇数字——离线演示与 run4～run6——现在都无法从本仓库复算；它们留在下面的历史条目里，作为当时改动的依据，不作为可复现结果。run4、run5、run6 本来也跑在一台未发布工作区的 GPU 主机上。
 
 ---
+
+## 2026-09-27 删除贪吃蛇场景包与多代演示循环
+
+- 做了什么：删除 `examples/snake/`（游戏、标签器、规则、场景、两份配置）、`tests/test_snake.py`（14 项）与 `ouroloop/generations.py`（场景包的多代循环）；`ouroloop demo` 只保留合成数据上的离线一轮，不再接场景包参数。`tests/test_counting.py` 去掉依赖 `generations._judged` 的那一项——同一处计数由它上面基于 `replay.summarize` 的用例覆盖；`tests/test_tde_compat.py` 原先从 `examples/snake/demo.toml` 读配方，改为内联一份同形状的小配方，并删掉只检查那两份示例配置的用例。
+- 为什么：v0.5 的主线是 AutomationBench 业务闭环，贪吃蛇只作 smoke；场景包删除后 `generations.py` 没有可运行的住户，留着就是死代码。保留的是业务循环用得到的东西：`ouroloop/demo.py` 的合成离线一轮（四个测试文件在用）、`evolve/monitor.py`、`trainers/signature.py`、旧 decision profile 的全部路径。
+- 证据：`python -m pytest -q` → 535 passed, 1 deselected（此前 550，减去 15 项贪吃蛇与世代计数用例）；套件耗时从约 90 秒降到约 55 秒。删除本身没有产生新的运行证据。
+- 因此改了文档：README（中英）、DEMO、ROADMAP、DESIGN、RESEARCH_AGENT、TRAINING_HOSTS、modules/README、modules/05、modules/07 里指向贪吃蛇或 `generations.py` 的说法改为业务循环入口；本文件头部说明贪吃蛇数字已无法复算。历史条目原样保留。
+- commit：见本条记录的 Git 历史。
 
 ## 2026-09-27 M0～M7 实现：完整改进闭环与研究策略回用
 

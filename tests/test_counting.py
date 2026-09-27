@@ -13,7 +13,6 @@ from ouroloop.evolve.monitor import Tally, acted, realized
 from ouroloop.evolve.pipeline import default_errors
 from ouroloop.evolve.registry import Registry
 from ouroloop.evolve.replay import gain, summarize
-from ouroloop.generations import _judged
 from ouroloop.ledger import Ledger
 from ouroloop.policy import Policy, cp_lower, cp_upper, fit_threshold, harmed
 from ouroloop.runtime import Runtime
@@ -332,15 +331,6 @@ def test_an_answer_among_several_right_ones_is_right_everywhere(tmp_path, gated)
     losses = [-gain({"yes": 0.9, "no": 0.1}, t, "no", 0.5) for t in [{"no": 0.5, "yes": 0.5}] * 4 + [{"yes": 1.0}]]
     m = summarize({"check": ([0] * 5, losses, list("abcde"), [False] * 4 + [True])})["check"]["challenger"]
     assert (m["fixes"], m["harms"], m["fixed_share"]) == (1, 0, 1.0)
-
-
-def test_a_demo_generation_counts_a_fix_only_where_the_default_was_wrong(tmp_path):
-    led = Ledger(tmp_path)
-    for route, action, default, label in [("act", "yes", "no", ["no", "yes"]),     # a right default swapped: neither
-                                          ("act", "yes", "no", "yes"), ("act", "yes", "no", "no"),
-                                          ("shadow", "no", "no", "yes"), ("act", "yes", "no", None)]:
-        led.outcome(led.decision(point="check", route=route, action=action, default=default), label)
-    assert _judged(led.rows()) == (1, 1)
 
 
 def test_the_ledger_report_calls_one_answer_right_every_time_not_reportable(tmp_path, capsys):

@@ -53,6 +53,6 @@ include = ["ouroloop*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]          # the scenario packs in examples/
+pythonpath = ["."]          # tests import the package and the examples from the checkout
 markers = ["live: calls a real external API and needs its key"]
 addopts = "-m 'not live'"
