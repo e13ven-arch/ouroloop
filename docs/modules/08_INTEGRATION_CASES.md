@@ -67,3 +67,23 @@ Then R1 的检查真实运行，产生并评测 W2；R1 artifact、调用 trace�
 | 研究效果 | 独立 campaign 的 C4 支持 | 各业务域均有效 |
 
 后续实现 agent 应在各模块文件末尾补实际测试命令、结果和已知缺项，最后汇总到 ROADMAP/JOURNAL。文档里的 use case 不能直接打勾当通过，不能把历史的 382 项测试写成新架构已验证。
+
+## 4. 实现状态（2026-09-27）
+
+夹具：`tests/fake_upstream` 新增 `rsi` 域（读取并更新、更新后通知且要求写在请求末尾、合法 no-op、重复发送即回归，另有 dev 与 final 任务），`tests/rsi.py` 提供显式 family 与 split、脚本 worker（读请求、系统提示与工具结果）、`PhraseDecider`/`PhraseTrainer`、`ScriptedResearcher`、`ResearchPolicyProposer` 与 `collect` 辅助。marketing 域仍是两个任务，既有测试不受影响。
+
+验收：`python -m pytest tests/test_rsi_integration.py -q` → 10 passed。
+
+| 场景 | 状态 | 用例 |
+|---|---|---|
+| IT-01 不训练完成改进 | 通过 | `test_it01_*`、`test_the_installed_version_makes_the_failing_dev_task_pass` |
+| IT-02 训练得到的决策器影响执行 | 通过 | `test_it02_*` |
+| IT-03 真正回用更新后的研究方法 | 通过（scripted 发现） | `test_it03_*`、`tests/test_campaign.py::test_rc03_*`/`test_rc07_and_rc08_*` |
+| IT-04 完整安装的崩溃恢复 | 通过 | `test_it04_*`、`tests/test_task_gate.py::test_er06_*`/`test_er08_*` |
+| IT-05 阻止结果与权限污染 | 通过 | `test_it05_*`、`tests/test_evidence_training.py::test_dt05_*` |
+| IT-06 严格总预算与未知收费 | 通过 | `test_it06_*`、`tests/test_execution.py` |
+| IT-07 报告不能反向选冠军 | 通过 | `test_it07_*`、`tests/test_report.py::test_br07_*`/`test_br08_*` |
+
+全仓：`python -m pytest -q` → 547 passed, 1 deselected（含此前 399 项既有测试，全部保留通过）。
+
+不能由此推出：夹具的数字是夹具定义的，脚本研究员的提案不是自动发现，也没有任何真实模型的业务成绩。IT-03 标 `scripted`；真实自动递归与 C1～C4 需要冻结的付费实验。

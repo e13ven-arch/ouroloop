@@ -268,3 +268,27 @@ def test_execute_experiment_records_every_state_and_its_operations(tmp_path):
     saved = json.loads((tmp_path / "rsi" / "operations" /
                         f"{operation_id('exp-7', 'evaluate', (candidate,))}.json").read_text())
     assert saved["status"] == "done" and saved["output_refs"] == [receipt.ref()]
+
+
+# ---------------------------------------------------------------------------- EX-06
+def test_ex06_a_research_arm_that_proposes_a_research_change_is_refused(tmp_path):
+    """Inside a campaign the research policy is fixed: a nested research proposal is a candidate defect, and it
+    does not open a third level of budget."""
+    from ouroloop.evolve.contracts import CoreManifest, ExperimentProposal, Objects
+    from ouroloop.research.context import make_context
+    from ouroloop.research.experiment import admit
+    objects = Objects(tmp_path)
+    context = make_context("campaign:pair-1:candidate", goal="improve W", release_ref="release:sha256:" + "a" * 64,
+                           objects=objects)
+    nested = ExperimentProposal(owner="research", hypothesis="change how I propose",
+                                changes=({"target": "research.propose", "kind": "prompt",
+                                          "change": {"text": "try harder"}},))
+    admission = admit(nested, context=context, core=CoreManifest(domain="rsi"), objects=objects, owner="worker")
+    assert admission.status == "invalid"
+    assert any("this round produces worker candidates" in r for r in admission.reasons)
+    book = Budgets(tmp_path)
+    top = book.account("campaign", {"model_calls": 100})
+    arm = top.child("campaign:pair-1:candidate", {"model_calls": 50})
+    assert set(json.loads((tmp_path / "rsi" / "budget" / "book.json").read_text())["scopes"]) == {
+        "campaign", "campaign:pair-1:candidate"}
+    assert arm.remaining()["limits"] == {"model_calls": 50.0}

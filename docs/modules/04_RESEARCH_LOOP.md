@@ -57,3 +57,13 @@ M5 固定 R0，worker round 只能输出 worker owner。在已启用的 research
 | RL-08 | 研究员返回空列表、需要材料或停止 | 形成结构化 next_action 和 reason；不制造空训练作业 |
 
 用脚本研究员检查控制流与经验权限；真实研究模型是否能提出有效改动属于后续业务实验，不用手写正确候选的测试冒充自动发现。
+
+## 6. 实现状态（2026-09-27）
+
+已实现：`ouroloop/research/experiment.py`（`ProposalResult`、`normalize`、三项辅助检查、`core_checks`/`admit`、`freeze`、`propose_experiment`、`retrieve`）、`ouroloop/research/loop.py` 的 `run_worker_round` 与 `run_worker_rounds`（旧 `run_round` 原样保留）、`ouroloop/research/basic.py` 的 `PolicyResearcher`（用已加载 R 的 prompt 发请求，记录 prompt hash）、`ouroloop/evolve/experience.py` 的 `experiment_record`/`summary_record`/`snapshot`/`requirement_status`。
+
+辅助检查 block 时按原因区分 `collect` 与 `repair_runtime`；核心检查无论辅助列表如何都执行，且默认反馈构造器取注册表（空默认会让所有训练提案因错误原因作废）。`verdict` 与 `installed` 在经验记录里是两个字段。
+
+验收：`python -m pytest tests/test_research_round.py -q` → 11 passed，覆盖 RL-01～RL-04、RL-06、RL-08 及实验冻结；RL-05 见 `tests/test_rsi_integration.py::test_it01_*`，RL-07 见 `test_it03_*`。
+
+已知缺口：`research.diagnose` 的输出仍是字典而非持久化 `Requirement` 对象（requirement id 只落在经验记录里）；`abandon_if` 记录但未自动执行；经验检索只做标签过滤与稳定排序，没有语义检索。

@@ -81,3 +81,13 @@ C1 支持而 C3 不支持时，可以报告框架迭代有效，不能声称训�
 | BR-08 | prompt 有效、小模型无增益或 C4 未运行 | 各结论分别显示，不将整体有效夸大为所有组件有效 |
 
 复用 `test_bench_phase.py`、`test_benchmark.py`，新增 finalization 与纯离线报告测试。真实 benchmark 运行是单独的付费实验交付，不是每次单元测试的前置要求。
+
+## 6. 实现状态（2026-09-27）
+
+已实现：`ouroloop/bench.py` 的七个阶段（smoke 原样保留；baseline 含 frontier 配置与缺席记录；collect 含反馈与数据审查；improve 接 M4+M5；research 接 M6；evaluate 运行密封的 `FinalizationPlan`；report 纯离线聚合）、`Activity`/`open_activity`、`freeze_task_plan`、`Improvement`（四个 handler、run_arm、context、training_options）、`startup_checks`（上游漂移、scorer 契约、模型表、每次尝试上限、预算可执行性、独立组数、release 可装配与授权）、`pricing_of`、`seal`、`research_slot`；`ouroloop/report.py`（身份与范围、任务效果、运行成本、改进成本、改进证据、RSI 证据、C1～C4 状态、Markdown 渲染、可重算写出）；`ouroloop/cli.py` 的 `--phase`、`--rounds`、`--repeats`、`--plan`（每个阶段只接受对它有意义的参数）。
+
+阶段在调用模型之前拒绝缺失的冻结引用；`[rsi]`、`[pricing]`、`[frontier.*]` 三张表都拒绝未知键与占位符。
+
+验收：`python -m pytest tests/test_report.py tests/test_bench_phase.py -q` → 42 passed，覆盖 BR-01～BR-08 与启动检查；`examples/automationbench/marketing.toml` 给出三张表的完整示例（引用位留空并说明由 Python API 冻结）。
+
+已知缺口：`FinalizationPlan` 的统计计划只被记录，配对区间由 report 的 receipt 投影给出，尚无独立的最终配对统计入口；C3 需要调用方显式声明 `prompt_best` 与默认决策对照两条运行；真实 benchmark 成绩、frontier 实测与 C1～C4 结论都未运行。

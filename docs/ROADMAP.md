@@ -2,7 +2,9 @@
 
 > 2026-09-27。目标与协议以 [DESIGN.md](DESIGN.md) 为准；本路线图覆盖任务策略 W 与研究策略 R 的完整改进闭环。
 > 实施前阅读 [架构审查](RSI_REVIEW.md)和 [模块详细设计](modules/README.md)。模块编号与本页里程碑编号不同，映射及共享文件责任见模块入口。
-> **M1 运行契约已完成**（真实上游 `4a8e106` / package 1.0.6，split 已冻结）；**M3 的信号路径 1 已实现**（完成度探针）。尚无真实模型业务成绩。M2、M4～M7 未实现；当前 CLI 只开放 smoke，其余阶段均为目标接口。M1/M3 下的测量和测试数来自已有记录，本次未重跑。
+> **M1 运行契约已完成**（真实上游 `4a8e106` / package 1.0.6，split 已冻结）；**M3 的信号路径 1 已实现**（完成度探针）。
+> **模块 M0～M7 的工程闭环已实现并由离线夹具验收**（§5 实现状态）：`baseline / collect / improve / research / evaluate / report` 六个阶段都已接通，CLI 不再只开放 smoke。
+> **仍无真实模型业务成绩**：没有付费运行、没有真实小模型、C1～C4 全部未运行。M1/M3 下的测量数来自已有记录，本次未重跑。
 
 ## 0. 当前基础与缺口
 
@@ -70,7 +72,7 @@ M6 业务比较 ← M5 任务自动改进与经验继承 ← M4 策略构建与�
 
 **尚未做（M1 剩余）：**
 
-- 未做真实模型运行，因此没有真实的 `TaskResult`、轨迹和用量。需要凭据与预算。
+- 未做真实模型运行，因此没有真实的 `TaskResult`、轨迹和用量。需要凭据与预算。（夹具域 `rsi` 上的完整闭环已跑通，见 §5；它不是业务成绩。）
 - 费用未测：`cost_usd` 为 null，汇总说明缺在几次尝试上，不报成零。
 - `zapier` / `limited_zapier` 工具集未接（schema 由另一个包生成）。
 
@@ -122,8 +124,8 @@ M6 业务比较 ← M5 任务自动改进与经验继承 ← M4 策略构建与�
 
 - 信号路径 2（有限分支比较）未实现。快照/恢复的机制已核验，分支后续策略、重复数与预算记账未做。
 - 没有真实运行的干预收益：需要真实模型跑 train/dev，才能说这个点上的判断有没有可学的结构。
-- prompt/workflow 对照（`prompt_best`）未做——DESIGN §1 要求先用 prompt 解决，小模型必须比它更好才算成立。
-- `ledger.py` 的反馈关联元数据只到 point / decision / split / 任务组 / score 这一层，构造器版本号未加。
+- prompt/workflow 对照（`prompt_best`）作为运行需要调用方显式声明两条对照运行；接口已具备（M7 的 comparisons），实测未做。
+- 已补：反馈构造器版本进入记录（`FeedbackRecord.feedback_ref` 为 `completion_snapshot@v1`，记录 id 由决策、构造器与证据共同决定）。
 
 **其余改动（未做）：**
 
@@ -268,4 +270,16 @@ ouroloop bench --config examples/automationbench/marketing.toml --phase report
 
 不以游戏分数、逐代单调、额外研究员模型或大规模消融矩阵作为交付前提。任务层保留小模型是否值得的必要对照，研究层只增加证明 C4 所需的同起点 campaign 比较。
 
-本次只更新设计。M1 的运行契约与真实上游检查、M3 的完成度探针和离线干预记录保留；没有新增代码、模型运行或收益。当前待做是 M2、M3 剩余项及 M4～M7，完成状态按各节更新。
+## 5. 实现状态（2026-09-27）
+
+模块 M0～M7 与集成验收已实现，代码落点、验收命令与已知缺口写在 [模块详细设计](modules/README.md)各文档末尾的“实现状态”。工程闭环包括：
+
+- 完整版本发布：`rsi/active.json` 单一指针、preflight 后锁内 CAS、失败可重试、父版本变动为 stale_parent、撤销后回到已授权祖先或固定默认。
+- 任务改进一轮：采集（train 带完成度探针、dev 测当前版本）→ 诊断 → 提案 → 准入 → 构建（可选训练）→ screen → 配对 dev 评测 → 裁决 → 安装，下一轮实际加载新版本。
+- 研究改进一轮：R0 提出 R1 → 两支隔离 campaign（同 W0/E、同额度、关闭 research slot）→ 外层任务比较 → 安装 R → 下一轮用 R1 提出并评测 W2。
+- 预算与恢复：共享账本、子树汇总、unknown 保留占用、verification 额度双向限制、崩溃后按 operation 恢复且只提交一次。
+- 报告：纯离线投影，C1～C4 各自状态，unknown 成本保持 unknown。
+
+**没有新增的真实收益。** 验收全部由离线夹具（`tests/fake_upstream` 的 `rsi` 域、脚本 worker/研究员、fake trainer）完成：`python -m pytest -q` → 547 passed, 1 deselected。夹具的数字是夹具定义的；IT-03 的研究改动由脚本提出，标 `scripted`，不构成自动发现证据。
+
+**仍待交付：** 真实模型的 baseline 与 frontier 实测、真实小模型训练、冻结最终计划下的 C1～C3、独立 campaign 支持的 C4；以及各模块“已知缺口”列出的分支比较 builder、经济模式 campaign、进程级隔离、自动补跑与 calibration 接线。

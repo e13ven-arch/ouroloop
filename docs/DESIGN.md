@@ -18,7 +18,9 @@ ouroloop 把 agent 执行和研究中的反复判断，变成可观察、可修�
 
 首个业务验证是 AutomationBench Marketing：以完整任务通过率、成本和延迟，与领先模型及同底座起点比较。外部能力参照仍是业界领先模型；借鉴的框架仅作为设计来源，不设框架排行榜。
 
-**当前代码基础：** 决策层、账本、训练器、作业、模型库、服务、版本和独立研究候选循环已有实现。M1 已在真实上游 checkout 验证运行契约；M3 已有完成度探针及脚本模型的离线干预检查。**尚无真实模型的业务成绩、完整任务晋升闭环、集成研究循环或研究策略自更新。** 实现和历史测量细节保留在路线图；本版不重做已完成部分。
+**当前代码基础：** 决策层、账本、训练器、作业、模型库、服务、版本和独立研究候选循环已有实现。M1 已在真实上游 checkout 验证运行契约；M3 已有完成度探针及脚本模型的离线干预检查。本版的模块 M0～M7 已实现：类型化策略与注册目标、业务完成视图、完整 W/R 发布与安装恢复、证据与无晋升副作用的训练、配对任务评测与裁决、研究一轮、共享预算与状态机、研究策略 campaign 与回用、七个 benchmark 阶段与离线报告；工程闭环由离线夹具验收（[实现状态](ROADMAP.md#5-实现状态2026-09-27)）。
+
+**尚无真实模型的业务成绩。** 夹具证明的是路径真实（安装的策略确实被加载、标签来自观测事实、指针只经凭据移动、崩溃可恢复），夹具的数字由夹具定义；C1～C4 全部未运行，IT-03 的研究改动由脚本提出、标 `scripted`，不构成自动发现证据。实现和历史测量细节保留在路线图。
 
 ## 1. RSI 定义与系统边界
 
@@ -222,19 +224,19 @@ M1 中多个断言必须同时满足的测量支持“遗漏检查值得研究�
 | `benchmark.py`、`bench.py`、`adapters/automationbench.py` | 已建 M1：运行契约、工具、评分、快照；M3 完成度探针已建；其他反馈及 phase 待接 |
 | `agent/`、`providers/`、`decision.py`、`runtime.py` | 已有执行与类型化决策；扩展 W/R 的策略身份和机制活动 |
 | `policy.py`、`stop.py` | 已有动作与回退；保留 on_finish，核对实际执行和预算 |
-| `evolve/contracts.py`（新建） | 策略、实验、证据、评测与安装的公共类型及版本兼容 |
-| `policies.py`（新建） | 薄策略描述与已注册目标，接 Candidate；不建立第二个执行器 |
-| `research/inspection.py`（新建） | 从实际 runtime 读取生效策略、输入覆盖和执行证据，产出允许公开的快照 |
+| `evolve/contracts.py` | 已建：策略、实验、证据、评测与安装的公共类型、对象库、事件日志与版本兼容 |
+| `policies.py` | 已建：策略描述、已注册目标、装配与候选构建；不建立第二个执行器 |
+| `research/inspection.py` | 已建：从实际 runtime 读取生效策略、输入覆盖和执行证据，产出允许公开的快照 |
 | `ledger.py`、`evolve/experience.py` | 复用追加记录，扩行为缺口、激活、回归、W/R 身份和经验索引 |
 | `evolve/build.py`、`evolve/checks.py`、`evolve/train.py`、`trainers/`、`worker.py`、`stores/`、`serving.py` | 复用监督数据、作业与服务；扩任务组划分、反馈版本和真实成本 |
 | `research/agent.py`、`research/basic.py`、`research/loop.py` | 保留入口；逻辑上先诊断再设计，worker/research 候选共用 |
-| `research/experiment.py`、`research/context.py`（新建） | 薄实验记录、候选 owner、只读可见证据和提案校验 |
+| `research/experiment.py`、`research/context.py` | 已建：实验冻结、候选 owner、只读可见证据、准入与提案校验 |
 | `evolve/plan.py`、`evolve/pipeline.py`、`evolve/harness.py` | 准入、可选训练、构建与评测；现有模型路径仍主要是标签 replay |
-| `evolve/task_eval.py`、`evolve/task_gate.py`（后者新建） | 已建单候选运行；扩配对、筛选和完整任务裁决，保留原 decision 门 |
-| `research/campaign.py`（新建） | M7 复用任务改进循环比较两个 R，不另建训练平台 |
+| `evolve/task_eval.py`、`evolve/task_gate.py` | 已建：配对运行、筛选、完整任务裁决与资源生命周期，保留原 decision 门 |
+| `research/campaign.py` | 已建：复用任务改进循环比较两个 R，不另建训练平台 |
 | `evolve/gate.py`、`evolve/registry.py`、`release.py` | 复用裁决与版本；区分 decision/task/research 评测类型，扩完整策略引用 |
-| `evolve/execution.py`（新建）、`generations.py` | 薄状态/预算记录与共用调度连接采集、研究、训练、评测、安装；游戏路径保留 |
-| `report.py`、`cli.py`、`examples/automationbench/` | smoke 已建；其余入口、报告、回放和研究比较未建 |
+| `evolve/execution.py`、`generations.py` | 已建：状态机、operation 记录、共享预算账与调度；游戏路径保留 |
+| `bench.py`、`report.py`、`cli.py`、`examples/automationbench/` | 已建：七个阶段、启动检查、离线报告与示例配置；真实付费运行未做 |
 
 ### 5.1 最小契约与版本
 

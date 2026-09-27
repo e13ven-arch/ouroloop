@@ -75,3 +75,13 @@ run_worker_round(round_context, budget) -> RoundResult           # M4
 | CT-06 | 未接受候选获得指定 plan 的 evaluation permit；尝试普通 session/安装 | 隔离评测可以执行；普通 session/安装拒绝，permit 不升级为 accepted |
 
 下游模块用本文件的结构作为契约测试夹具；模块自有内部类型无需全部放进公共文件。
+
+## 6. 实现状态（2026-09-27）
+
+已实现于 `ouroloop/evolve/contracts.py`：规范 JSON 与 `type:sha256:<64hex>` 身份、分区合并（派生记录继承最严格来源）、schema 注册表（含各视图的 `required` 字段）、本文表中的全部记录类型、`Objects` 对象库（原子落盘、写入即去重、读取校验哈希）、`Events` 追加日志、`copy_closure`（跨工作区复制且身份不变）。`CandidateDefect` 在此定义：候选缺陷与基础设施故障必须分开，否则坏候选会被无限重试到通过。
+
+`RunManifest v2` 与 `TaskResult v2` 在 `ouroloop/benchmark.py` 扩展：v2 字段未设置时不进入哈希载荷，旧运行的 hash 不变；`RunManifest.v2()` 明确回答"这是否是完整 v2 运行"，缺字段的旧记录不能冒充。
+
+验收：`python -m pytest tests/test_contracts.py -q` → 13 passed（CT-01、CT-02、CT-04 及对象库/事件日志）；CT-03 见 `tests/test_policies.py`、CT-05/CT-06 见 `tests/test_policies.py` 的 profile 与 permit 用例。
+
+已知缺口：`ArtifactRef` 只记录摘要，不校验大文件字节；短 ID 仅用于显示，没有解析路径；旧 `Candidate` 仍由 `ExperimentProposal` 包装，未提供自动迁移工具。

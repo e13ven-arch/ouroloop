@@ -690,6 +690,12 @@ def improvement(activity: Activity, *, template_ref: str | None = None, provider
                                                                                else installs))
 
 
+def require(problems: list, *, phase: str) -> None:
+    """Refuse a phase whose preconditions do not hold, naming every one of them."""
+    if problems:
+        raise ValueError(f"the {phase} phase cannot start: " + "; ".join(problems))
+
+
 # ---------------------------------------------------------------------------- baseline
 FRONTIER_KEYS = {"llm", "effort", "fallback", "source", "date", "note"}
 
@@ -717,8 +723,7 @@ def baseline(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = 
     declared fallback, and a model that cannot be called is recorded as absent rather than replaced.
     """
     activity = open_activity(cfg, base, out=out)
-    if "llm" not in cfg:
-        raise ValueError("the baseline phase needs an [llm] table: it runs real attempts")
+    require(startup_checks(activity, cfg, phase="baseline"), phase="baseline")
     dev = list(tasks or activity.splits.ids("dev"))[:limit] if limit else list(tasks or activity.splits.ids("dev"))
     frontier = frontier_configs(cfg)
     out(f"baseline   {len(dev)} dev tasks; frontier configurations: {sorted(frontier) or 'none declared'}")
@@ -761,8 +766,7 @@ def collect(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
     from one task.
     """
     activity = open_activity(cfg, base, out=out)
-    if "llm" not in cfg:
-        raise ValueError("the collect phase needs an [llm] table: it runs real attempts")
+    require(startup_checks(activity, cfg, phase="collect"), phase="collect")
     work = improvement(activity, provider=config_mod.build_provider(cfg["llm"]))
     evidence = work.collect(tasks=tasks, repeats=repeats)
     summary = evidence["feedback"].summary()
@@ -795,8 +799,7 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
     missing = activity.rsi.check(activity.objects, needs=("task_plan_ref",))
     if missing:
         raise ValueError("; ".join(missing) + "; freeze one with bench.freeze_task_plan")
-    if "llm" not in cfg:
-        raise ValueError("the improve phase needs an [llm] table")
+    require(startup_checks(activity, cfg, phase="improve"), phase="improve")
     provider = config_mod.build_provider(cfg["llm"])
     trainer = config_mod.build_trainer(cfg, activity.rt.serving) if cfg.get("trainer") else None
     work = improvement(activity, template_ref=activity.rsi.task_plan_ref, provider=provider, trainer=trainer)
@@ -875,6 +878,7 @@ def research(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = 
     plan = CampaignPlan.from_json(activity.objects.get(ref))
     if r_candidate_ref and r_candidate_ref != plan.r_candidate_ref:
         raise ValueError("the candidate R is part of the frozen plan and cannot be replaced on the command line")
+    require(startup_checks(activity, cfg, phase="research"), phase="research")
     provider = config_mod.build_provider(cfg["llm"])
     limits = activity.objects.get(activity.rsi.budget_ref) if activity.rsi.budget_ref else {}
     budget = activity.budgets.account(f"campaign:{plan.id}", limits)
@@ -1083,6 +1087,7 @@ def evaluate(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = 
     if not ref or not activity.objects.has(ref):
         raise ValueError("[rsi] final_plan_ref must name a sealed FinalizationPlan (bench.seal)")
     plan = FinalizationPlan.from_json(activity.objects.get(ref))
+    require(startup_checks(activity, cfg, phase="evaluate"), phase="evaluate")
     state_path = Path(activity.root) / "rsi" / "finalization" / f"{plan.experiment_id}.json"
     if not state_path.exists():
         seal(plan, activity.root, activity.objects)
@@ -1200,3 +1205,65 @@ def research_slot(cfg: dict, base: str | Path = ".", *, pairs, researcher, arm_r
     outcome = research(cfg, base, out=out, researcher=arm_researcher or researcher, campaign_ref=plan_ref)
     return {"outcome": outcome["verdict"], "r1": build.candidate_ref, "campaign": plan_ref,
             "experiment": experiment.id, **outcome}
+
+
+# ---------------------------------------------------------------------------- startup checks
+PRICING_KEYS = {"input_per_1k", "output_per_1k", "max_input_tokens", "max_output_tokens", "declared_fallbacks",
+                "hidden_fallback", "source"}
+
+
+def pricing_of(cfg: dict):
+    """The `[pricing]` snapshot: prices, caps and whether the provider may fall back to something it does not
+    report. Without it a dollar budget cannot be enforced, and this says so rather than pretending."""
+    from .evolve.execution import Pricing
+    table = dict(cfg.get("pricing") or {})
+    unknown = sorted(set(table) - PRICING_KEYS)
+    if unknown:
+        raise ValueError(f"[pricing] does not take {unknown}; it takes {sorted(PRICING_KEYS)}")
+    table["declared_fallbacks"] = tuple(table.get("declared_fallbacks") or ())
+    return Pricing(**table)
+
+
+def startup_checks(activity: Activity, cfg: dict, *, phase: str, needs_model: bool = True) -> list[str]:
+    """What has to hold before an expensive phase starts (docs/modules/07_BENCH_REPORT.md §2).
+
+    Upstream and the scorer contract, the model table, the per-attempt limits, whether the declared budget can
+    actually be enforced, whether the plan has enough independent groups, and whether the installed release still
+    assembles. A missing piece is named here rather than discovered half way through a paid run.
+    """
+    from .evolve.execution import check_pricing
+    problems = []
+    # The [rsi] table is read from the config given here, not from the snapshot the activity was opened with: the
+    # caller may have frozen a plan in between, and checking the stale table would check the wrong plan.
+    rsi_cfg = RsiConfig.load(cfg)
+    if activity.drift:
+        problems.append(f"upstream drifted from the frozen manifest: {activity.drift[:3]}")
+    checks = ab.contract_check(activity.suite, list(activity.splits.ids("dev"))[:1])
+    problems += [f"scorer contract: {line}" for line in checks["failed"]]
+    if needs_model and "llm" not in cfg:
+        problems.append(f"the {phase} phase needs an [llm] table: it runs real attempts")
+    budget = activity.bench.budget
+    if not (budget.max_steps and budget.max_tool_calls and budget.max_seconds):
+        problems.append("[bench.budget] needs a step, tool-call and time limit per attempt")
+    limits = activity.objects.get(rsi_cfg.budget_ref) if rsi_cfg.budget_ref else {}
+    if limits:
+        reason = check_pricing(pricing_of(cfg), limits)
+        if reason:
+            problems.append(f"the declared budget cannot be enforced: {reason}")
+    if rsi_cfg.task_plan_ref and activity.objects.has(rsi_cfg.task_plan_ref):
+        plan = TaskEvalPlan.from_json(activity.objects.get(rsi_cfg.task_plan_ref))
+        families = {activity.splits.family_of(t) for t in plan.task_ids
+                    if t in {e.task_id for e in activity.splits.entries}}
+        missing = sorted(set(plan.task_ids) - {e.task_id for e in activity.splits.entries})
+        if missing:
+            problems.append(f"the plan names tasks the manifest does not have: {missing[:3]}")
+        if plan.gate_plan and len(families) < plan.gate().min_groups:
+            problems.append(f"the plan runs {len(families)} independent groups and its gate needs "
+                            f"{plan.gate().min_groups}")
+    try:
+        _P.bind_release(activity.release_ref, profile="preflight",
+                        services=_P.Services(activity.objects, serving=activity.rt.serving))
+        activity.releases.authorize(activity.release_ref, profile="task")
+    except Exception as e:  # noqa: BLE001 - a release that does not assemble is not something to run
+        problems.append(f"the active release does not assemble: {type(e).__name__}: {e}"[:300])
+    return problems

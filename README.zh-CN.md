@@ -6,9 +6,13 @@
 
 核心研究方向是从执行反馈中训练小而可复用的决策模型。v0.5 设计让 prompt、规则、工作流和模型共用策略接口，任务策略与研究策略共用证据、评测和版本机制。训练出的模型需要证明额外的任务效果或成本收益，不要求每次改进都训练。
 
-AutomationBench Marketing 是首个证明场，与业界领先模型和同底座起点比较完整任务表现。v0.5 的完整目标还包括：评测更新后的研究策略，并将它用于下一轮改进。这条研究递归路径尚未实现。
+AutomationBench Marketing 是首个证明场，与业界领先模型和同底座起点比较完整任务表现。v0.5 的完整目标还包括：评测更新后的研究策略，并将它用于下一轮改进。这条研究递归路径的工程链已实现并由离线夹具验收，尚无真实模型证据。
 
-**实现状态：** 决策层、账本、训练作业、模型库与服务已有实现；AutomationBench 的运行契约也已实现——任务分组在看到第一个结果前冻结，官方评分器读工具留下的世界，以及一组说明"这个驱动器测的是上游测的东西"的检查（`ouroloop bench --phase smoke`，路线图 M1）。它已在真实 checkout（上游 `4a8e106`、package 1.0.6）上核验：25 个开发任务全部通过契约检查，上游自己的 rubric 入口、服务订阅门和工具 schema 都与本适配器一致。**还没用真实模型跑过，因此本仓库没有任何 benchmark 成绩。** 第一条反馈路径已实现：完成度探针在运行结束后给每个 stop 决策标上"当时活是不是真干完了"。完整任务晋升闭环尚未完成。见 [v0.5 设计](docs/DESIGN.md)与[实施路线图](docs/ROADMAP.md)。下面的可运行示例检查现有机制，不代表已取得业务 benchmark 收益。
+**实现状态：** 决策层、账本、训练作业、模型库与服务已有实现；AutomationBench 的运行契约也已实现——任务分组在看到第一个结果前冻结，官方评分器读工具留下的世界，以及一组说明"这个驱动器测的是上游测的东西"的检查（`ouroloop bench --phase smoke`）。它已在真实 checkout（上游 `4a8e106`、package 1.0.6）上核验：25 个开发任务全部通过契约检查，上游自己的 rubric 入口、服务订阅门和工具 schema 都与本适配器一致。
+
+改进闭环现已实现，并由离线夹具验收：注册目标上的类型化策略、携带完整请求与工具返回的业务完成视图、preflight 后 CAS 安装的完整 W/R 版本、只由观测事实产生的反馈、无晋升副作用的训练、固定门下的配对完整任务评测、研究一轮、单一共享预算账、以产出比较两个研究策略的 campaign，以及七个 benchmark 阶段与离线报告（`python -m pytest -q` → 547 passed；见[实现状态](docs/ROADMAP.md#5-实现状态2026-09-27)）。
+
+**还没用真实模型跑过，因此本仓库没有任何 benchmark 成绩。** 夹具证明的是路径真实——安装的策略确实被加载、标签来自观测事实、指针只经凭据移动、崩溃后可恢复——夹具的数字由夹具定义；C1～C4 全部未运行，夹具里的研究改动由脚本提出并标 `scripted`，不是自动发现。见 [v0.5 设计](docs/DESIGN.md)与[实施路线图](docs/ROADMAP.md)。
 
 agent 会反复判断是否重试、保留上下文、验证或结束。ouroloop 将适合学习的判断声明为决策点，接入 Jev 或自己训练的小模型；未启用、弃权或服务失败时走既定默认策略。有依据的动作标签才能进入监督训练，整段任务得分不能直接当每一步的标签。候选接口可以提出 spec、训练配方和 prompt 改动，接下来要将它们与完整业务任务评测连接起来。
 
@@ -113,7 +117,7 @@ ouroloop bench --config examples/automationbench/marketing.toml --phase smoke   
 
 smoke 阶段报告这是哪个上游版本，把 train/dev/test 任务分组冻结到 `<workspace>/bench/<domain>/splits.json`（在看到任何结果之前），把本适配器与上游自己的 rubric 入口、服务订阅门和工具 schema 对比，审计有没有评分信息进到 agent 的输入里，然后完整跑几个开发任务。它不对能力下任何结论；本地公开任务集的分数也不是官方榜单成绩——榜单跑的是私有任务集。
 
-agent 拿到的是任务 prompt 和工具 schema，断言与初始状态在它收不到的对象里；分数来自工具留下的世界，所以写错记录再汇报成功，得到的就是写错的那份分数。离线完成度探针已实现；基线、领先模型比较、自动采集入口和配对任务评测仍按 M2～M6 接入，对应 phase 名在实现前会被拒绝。M7 另补研究策略的更新与回用。
+agent 拿到的是任务 prompt 和工具 schema，断言与初始状态在它收不到的对象里；分数来自工具留下的世界，所以写错记录再汇报成功，得到的就是写错的那份分数。其余阶段跑的是同一条闭环：`baseline` 用同一个驱动器测合理基线与声明的领先模型，`collect` 离线给完成判断打标签，`improve` 以固定研究策略跑任务改进，`research` 在隔离两支中比较两个研究策略，`evaluate` 运行一次密封的最终计划，`report` 从磁盘上的记录重算一切。它们都读工作区里的冻结计划对象，而不是配置文件里的可改设置；缺计划或缺模型表的阶段会在调用模型之前说明缺什么。
 
 ## 代码结构
 
@@ -123,18 +127,20 @@ agent 拿到的是任务 prompt 和工具 schema，断言与初始状态在它�
 | `ouroloop/policy.py` | 执行规则、阈值拟合、探索和倾向分 |
 | `ouroloop/ledger.py` | 账本、原始上下文、冠军 spec |
 | `ouroloop/runtime.py` | 把决策点、后端、默认回答者和账本串起来；每个 session 固定自己的发布三元组 |
-| `ouroloop/release.py` | session 运行的发布三元组（模型、决策 spec、harness）和撤销名单 |
+| `ouroloop/release.py` | session 运行的发布：旧三元组，以及完整 W/R 版本的凭据、安装、恢复与撤销 |
+| `ouroloop/policies.py` | 已注册的策略目标、每个目标可绑定什么、装配、会话 pin 与候选构建 |
 | `ouroloop/agent/` | 最小 agent：loop、read / write / edit / bash 四个工具、harness prompt、任务集 |
 | `ouroloop/points/` | 内置决策点 retry、compact、tool_gate、stop、route，以及命令黑名单 |
 | `ouroloop/chat.py` | 与模型无关的对话格式 |
 | `ouroloop/serve.py` | HTTP 决策服务 |
 | `ouroloop/benchmark.py` | benchmark 运行契约：冻结的任务分组、运行身份、一次尝试的结果 |
-| `ouroloop/bench.py` | `ouroloop bench` 的各个 phase |
+| `ouroloop/bench.py` | `ouroloop bench` 的各个 phase、启动检查，以及一次改进活动共用的接线 |
+| `ouroloop/report.py` | 离线报告：身份与范围、任务效果、成本、改进与 RSI 证据、C1～C4 状态 |
 | `ouroloop/adapters/` | AutomationBench（任务、业务工具、官方评分器）；Claude Code hooks 适配器（可选的数据来源） |
 | `ouroloop/backends/` | `mock`、`jev`、`tde`、`llm` 四种决策后端 |
 | `ouroloop/providers/` | LLM 接入：Anthropic（官方 SDK）、OpenAI 兼容接口 |
-| `ouroloop/research/` | 问题转换、研究 agent 接口和默认实现、一轮研究流程 |
-| `ouroloop/evolve/` | 建数据、数据检查、训练（签名小模型 / 本机 TDE / 远程 TDE）、校准、冻结的晋升门和门记录、模型注册表、prompt 候选评测、经验记录 |
+| `ouroloop/research/` | 问题转换、研究 agent 接口和默认实现、一轮研究流程，研究员可读什么（`context.py`）、实际跑了什么（`inspection.py`）、提案与准入（`experiment.py`）、研究策略 campaign（`campaign.py`） |
+| `ouroloop/evolve/` | 公共契约与对象库（`contracts.py`）、反馈构造器、建数据、数据检查、训练（签名小模型 / 本机 TDE / 远程 TDE）、校准、冻结的晋升门和门记录、配对任务门（`task_gate.py`）、执行状态机与预算账（`execution.py`）、模型注册表、经验记录 |
 
 ## 状态
 

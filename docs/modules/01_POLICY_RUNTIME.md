@@ -75,3 +75,13 @@ inspect(bound_runtime, trace_refs=()) -> Inspection
 | PR-07 | 候选把评分函数名写进 rule 配置 | 注册表拒绝；线上工具仍仅有合法工具集 |
 
 复用 `tests/test_agent.py`、`test_act.py`、`test_harness.py`、`test_roles.py`，新增业务视图/注册表测试。脚本 provider 用于证明接线与回退；不能据此宣称小模型有真实收益。
+
+## 6. 实现状态（2026-09-27）
+
+已实现：`ouroloop/policies.py`（`TargetRegistration` 与本文七个目标、内置配置解析且拒绝未知字段、`validate_policy_set` 要求完整集合、`descriptor`/`replace_policies`、`StopDecider`、`Activity`、`BoundRuntime`、`bind_release`、`SessionBinder`、`fixed_defaults`、`build_candidate`）、`ouroloop/research/inspection.py`（`inspect`、字段覆盖率、`public` 投影）、`ouroloop/points/__init__.py` 的 `stop.business.v1` 视图与 `business_stop_point`、`ouroloop/runtime.py` 的 `propose`（route `policy`，记录 proposed/executed/executor/fallback_reason）、`ouroloop/stop.py` 的 `policy=` 接线与 override 事件、`ouroloop/agent/loop.py` 的业务观察、工具事件与 Observation/DecisionTrace 落盘。
+
+`worker.stop` 只在 `on_finish` 生效：`per_turn` 记录观察但不询问策略，行里 `proposed` 为空、`executor` 为 `default`。模型输出非法类别抛 `CandidateDefect`（尝试作废），声明的弃权、低于阈值和服务不可用走回退并记录原因。
+
+验收：`python -m pytest tests/test_policies.py tests/test_policy_runtime.py -q` → 25 passed，覆盖 PR-01～PR-05、PR-07、ER-03、ER-09 及 CT-03/CT-05/CT-06。PR-06 在 `tests/test_rsi_integration.py::test_it03_*` 以真实请求的 prompt hash 验证。
+
+已知缺口：`worker.stop` 的 `spec` 载体通过"同 model_ref、新 spec"表达，没有独立的 spec kind；`retry/route/compact/tool_gate` 未注册为可改目标；校准阈值只支持 `argmax` 与预先给定的阈值来源，没有接入自动 calibration 产出；进程级隔离未实现，首版只执行声明式配置。

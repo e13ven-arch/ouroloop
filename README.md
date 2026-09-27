@@ -8,7 +8,11 @@ The core research direction is to learn small, reusable decision models from exe
 
 AutomationBench Marketing is the first proving ground, evaluated against leading models and the same base agent before improvement. The complete v0.5 target also includes evaluating revised research policies and using them in subsequent improvement rounds. This recursive path is planned, not yet implemented.
 
-**Status:** the decision and training infrastructure exists, and so does the AutomationBench run contract: task groups frozen before the first result, the official scorer over the world the agent's tools left, and the checks that say the runner measures what upstream measures (`ouroloop bench --phase smoke`, roadmap M1). It has been verified against a real checkout (upstream `4a8e106`, package 1.0.6): all 25 development tasks pass the contract checks, and upstream's own rubric entry point, service gate and tool schemas agree with this adapter's. It has **not** been run with a real model, so **there are no benchmark results here**. The first feedback path is implemented: a completion probe labels each stop decision, offline, with whether the task was actually finished at that moment. The task-level promotion loop is not. See the [v0.5 design](docs/DESIGN.md) and [implementation roadmap](docs/ROADMAP.md). The runnable examples below exercise the current mechanisms; they do not demonstrate business benchmark gains.
+**Status:** the decision and training infrastructure exists, and so does the AutomationBench run contract: task groups frozen before the first result, the official scorer over the world the agent's tools left, and the checks that say the runner measures what upstream measures (`ouroloop bench --phase smoke`). It has been verified against a real checkout (upstream `4a8e106`, package 1.0.6): all 25 development tasks pass the contract checks, and upstream's own rubric entry point, service gate and tool schemas agree with this adapter's.
+
+The improvement loop is now implemented end to end and verified against offline fixtures: typed policies over registered targets, a business completion view that carries the whole request and the tool results, complete W/R releases installed by compare-and-swap after preflight, feedback that only observed facts produce, training with no promotion side effect, paired full-task evaluation with a frozen gate, a research round, one shared budget book, a campaign that compares two research policies by what they produce, and seven benchmark phases with an offline report (`python -m pytest -q` → 547 passed; see [implementation status](docs/ROADMAP.md#5-实现状态2026-09-27)).
+
+It has **not** been run with a real model, so **there are no benchmark results here**: the fixtures show the path is real — the installed policy is the one that runs, labels come from observed facts, the pointer moves only through a receipt, a crash leaves something recoverable — and the fixtures' numbers are the fixtures'. C1 to C4 have not been run, and the research change in the fixture is proposed by a script and labelled `scripted`, which is not automatic discovery. See the [v0.5 design](docs/DESIGN.md) and [implementation roadmap](docs/ROADMAP.md).
 
 An agent makes many small judgment calls: retry this command? keep this output in context? run this without asking? is the task done? ouroloop sends each of them to a calibrated decision model as a typed question (yes/no, a choice, or a score) and gets probabilities back in one forward pass. When the model is not confident, or its point is not switched on yet, the point takes its declared default: a fixed action, a rule, an LLM or a person. Every call, and what actually happened afterwards, goes into a local ledger.
 
@@ -140,9 +144,12 @@ public task set is not an official leaderboard score — the leaderboard runs a 
 The boundaries are structural rather than a matter of care: the agent is handed the task prompt and the tool
 schemas while the assertions and the seeded state live in an object it never receives, and the score comes from
 the world the tools left, so a run that writes the wrong record and then reports success scores what it wrote.
-Baseline, frontier-model comparison, automated collection and paired task evaluation are M2 to M6 in the roadmap;
-their phase names are refused until they exist. The offline completion probe already exists; M7 adds the planned
-research-policy improvement path.
+The later phases run the same loop: `baseline` measures a reasonable base version and the declared frontier models
+through this same driver, `collect` labels completion decisions offline, `improve` runs the worker loop with a fixed
+research policy, `research` compares two research policies in isolated arms, `evaluate` runs one sealed final plan,
+and `report` recomputes everything from the records on disk. They run against frozen plans — objects in the
+workspace rather than settings in the config file — and a phase whose plan or model table is missing says so before
+it calls a model.
 
 ## Code layout
 
@@ -152,17 +159,19 @@ research-policy improvement path.
 | `ouroloop/policy.py` | the execution rule, threshold fitting, exploration and propensities |
 | `ouroloop/ledger.py` | the ledger, raw contexts, champion specs, redaction |
 | `ouroloop/runtime.py` | ties decision points, backends, default answerers and the ledger together; fixes each session's release |
-| `ouroloop/release.py` | the release a session runs with (model, decision spec, harness) and the revocation list |
+| `ouroloop/release.py` | the release a session runs with: the legacy triple, and the complete W/R release with its permits, installs, recovery and revocations |
+| `ouroloop/policies.py` | the registered policy targets, what may be bound to each, assembly, session pinning and candidate building |
 | `ouroloop/agent/` | the minimal agent: loop, four tools, harness prompt, task suites |
 | `ouroloop/points/` | built-in points `retry`, `compact`, `tool_gate`, `stop`, `route`, and the deny list |
 | `ouroloop/chat.py` | a provider-neutral chat format |
 | `ouroloop/providers/` | Anthropic (official SDK) and OpenAI-compatible APIs |
 | `ouroloop/backends/` | decision backends: `mock`, `jev`, `tde`, `llm`, `http` |
-| `ouroloop/research/` | question conversion, the research agent interface and default, research rounds |
-| `ouroloop/evolve/` | dataset building, data checks, trainers and their training jobs (worker, compute), calibration, the frozen promotion gate and its records, model registry, prompt candidates, experience records |
+| `ouroloop/research/` | question conversion, the research agent interface and default, research rounds, what a researcher may read (`context.py`), what actually ran (`inspection.py`), proposals and admission (`experiment.py`), research-policy campaigns (`campaign.py`) |
+| `ouroloop/evolve/` | the shared contracts and object store (`contracts.py`), feedback builders, dataset building, data checks, trainers and their training jobs (worker, compute), calibration, the frozen promotion gate and its records, the paired task gate (`task_gate.py`), the execution state machine and budget book (`execution.py`), model registry, experience records |
 | `ouroloop/serve.py` | the HTTP decision service |
 | `ouroloop/benchmark.py` | the benchmark run contract: frozen task groups, run identity, one attempt's result |
-| `ouroloop/bench.py` | the phases of `ouroloop bench` |
+| `ouroloop/bench.py` | the phases of `ouroloop bench`, the startup checks and the wiring one improvement activity runs through |
+| `ouroloop/report.py` | the offline report: identity, task effect, costs, improvement and RSI evidence, C1 to C4 states |
 | `ouroloop/adapters/` | AutomationBench (tasks, business tools, the official scorer); Claude Code hooks (an optional data source) |
 
 ## Status
@@ -177,7 +186,7 @@ researcher with evidence-based experience, research-policy revision and reuse, a
 AutomationBench performance has been measured in this repository.** Existing evidence remains in
 [docs/JOURNAL.md](docs/JOURNAL.md).
 
-Implementation handoff: [architecture review](docs/RSI_REVIEW.md), [module specifications and acceptance cases](docs/modules/README.md). These describe planned work, not implemented benchmark gains.
+Implementation handoff: [architecture review](docs/RSI_REVIEW.md), [module specifications and acceptance cases](docs/modules/README.md). Each module document ends with what was built, the command that verifies it and its known gaps. None of it is a benchmark gain.
 
 The design docs are in Chinese for now: [docs/DESIGN.md](docs/DESIGN.md) (the authoritative design, its invariants and the settled trade-offs), [docs/ROADMAP.md](docs/ROADMAP.md) (what is built, what is next, and the deferred items), [docs/RESEARCH_AGENT.md](docs/RESEARCH_AGENT.md) (the researcher: what it reads, the experiment it writes, its boundaries), [docs/DEMO.md](docs/DEMO.md) (the interactive demo and the video) and [docs/JOURNAL.md](docs/JOURNAL.md) (what changed, with the evidence).
 

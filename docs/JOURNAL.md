@@ -8,6 +8,14 @@
 
 ---
 
+## 2026-09-27 M0～M7 实现：完整改进闭环与研究策略回用
+
+- 做了什么：按 v0.5 模块详细设计实现全部八个模块。新增 `evolve/contracts.py`（内容寻址身份、分区血缘、对象库与事件日志）、`policies.py`（七个注册目标、内置配置、装配、会话 pin、候选构建）、`research/inspection.py`、`research/context.py`、`evolve/feedback.py`、`evolve/task_gate.py`、`evolve/execution.py`、`research/experiment.py`、`research/campaign.py`、`report.py`；改造 `runtime.py`（`propose`：route `policy`，分别记录提议、执行与执行者）、`stop.py`（策略接线与 override 事件）、`agent/loop.py`（业务观察、工具事件、Observation/DecisionTrace）、`points/__init__.py`（`stop.business.v1` 视图）、`release.py`（完整 release、permit、preflight+CAS 安装、恢复、撤销）、`benchmark.py`（v2 字段不改旧 hash）、`evolve/build.py`、`evolve/pipeline.py`（`train_artifact` 无晋升副作用）、`research/loop.py`（`run_worker_round`）、`bench.py`（七个阶段、启动检查、`Improvement` 四个 handler、`research_slot`）、`cli.py`。
+- 证据：全仓 `python -m pytest -q` → 547 passed, 1 deselected（此前 399 项既有测试全部保留通过）。新增 147 项按验收 ID 组织：CT-01～06、PR-01～07、DT-01～08、ER-01～10、RL-01～08、EX-01～08、RC-01～10、BR-01～08、IT-01～07。夹具为 `tests/fake_upstream` 新增的 `rsi` 域（更新后通知的要求写在请求末尾、合法 no-op、重复发送即回归）与脚本 worker/研究员/trainer；脚本 worker 依据请求、系统提示与工具结果响应，不看候选名字。IT-01：W0 漏通知（partial 0.5）→ R0 提出 finish check → 配对 dev 评测 accepted → 安装 → 新 session 的提示里确有该指令，该 dev 任务通过且其他任务不回归，`train_jobs` 为 0。IT-02：脚本 trainer 产出的决策器在“通知仍缺”时提出 no，StopGuard 实际打回，随后任务完成。IT-03：R0 提出 R1，两支隔离 campaign 在同起点同额度下比较各自产出的 W*，外层任务（两支内层都没碰过的家族）候选支 1.0 对照支 0.0，安装 R1，下一轮的研究请求 prompt hash 确为 R1。
+- 实现中被测试推翻的四处：其一，只看训练池的一轮提不出缺口，于是每轮增加“当前版本在 dev 上的测量”，缺口必须来自将被评判的任务；其二，输入覆盖检查把从未出现的可选字段（本次没有截断，`truncation` 恒空）当成缺失而阻断训练提案，改为由 schema 声明 `required`；其三，verification 额度原先只挡别人不挡自己，改为双向限制，装不下验证的候选就不启动；其四，准入的反馈构造器默认空集合，会让所有训练提案因错误理由作废，改为取注册表。另修：经验记录的 `trained` 原本按“有 artifact”判断，prompt 候选会被写成训练过。
+- 证据边界：**没有任何真实模型的业务成绩。** 夹具的数字由夹具定义；IT-03 的研究改动由脚本提出并标 `scripted`，不是自动发现；C1～C4 全部未运行。仍待交付：分支比较 builder、经济模式 campaign、进程级隔离、自动补跑与 calibration 接线，以及冻结计划下的付费实验。
+- commit：2cc8f28, 2a255c0, 78eee0d, d10abb4, 4e1744a, 1f5015f, 550f60b, bf34d29
+
 ## 2026-09-27 v0.5 架构审查与模块开发交接
 
 - 做了什么：对照 Raven 固定提交与当前源码审查 RSI 完整性，新增 RSI_REVIEW 和 modules 下的公共契约、七个实现模块及集成验收。明确代码所有权、依赖顺序、接口、状态、错误、预算、恢复和用例。

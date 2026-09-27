@@ -74,3 +74,13 @@ quality：同额度下 outer 任务质量按预设开发门达到增益与回归
 | RC-10 | R1 改动由人手写，循环正常运行 | 标 manual_seed；工程测试通过，自动递归发现主张不通过 |
 
 离线夹具必须能区分 R0/R1 的真实请求/步骤，不能只按版本名字返回更高分。真实 C4 所需独立数据不足不阻碍交付框架，但阻碍效果结论。
+
+## 6. 实现状态（2026-09-27）
+
+已实现：`ouroloop/research/campaign.py`（`CampaignPair` 构造时拒绝内外层重叠、`CampaignPlan`、`validate` 的血缘与独立组检查、`arm_workspace`、`ArmOutcome`、`select_w`、`run_campaign`、`judge_research` 以 independence_group 为统计单位）、`ouroloop/bench.py` 的 `_run_campaign_arm`（每支独立工作区、独立 active.json 与经验、固定子预算、research slots 关闭）、`_evaluate_outer`（同一外层任务与重复由评测者运行）、`research` 阶段与 `research_slot`（R0 提出 R1 → 冻结 campaign → 比较 → 安装 R）。
+
+分支 W* 只经 `copy_closure` 回到评测者的对象库，主线 W 不变；`discovery` 字段区分 automatic/scripted/manual_seed 并进入 receipt。
+
+验收：`python -m pytest tests/test_campaign.py -q` → 13 passed，覆盖 RC-01～RC-10；完整链条见 `tests/test_rsi_integration.py::test_it03_*`。
+
+已知缺口：内层任务改进只跑到 `worker_round_limit`，没有经济模式（按达到质量阈值的时间/成本比较）；arm 隔离是目录与 scope 级，不是进程隔离，开放生成代码前必须升级；C4 的独立数据不足，fixture 的 1 个 independence group 只能出探索性结论。

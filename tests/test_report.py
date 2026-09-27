@@ -179,3 +179,32 @@ def test_a_research_receipt_that_is_not_significant_is_not_c4_support():
 def test_a_strict_dollar_plan_is_refused_when_the_price_cannot_be_bounded():
     assert check_pricing(Pricing(hidden_fallback=True), {"usd": 5.0})
     assert not check_pricing(Pricing(0.003, 0.015, 1000, 500, source="snapshot"), {"usd": 5.0})
+
+
+# ---------------------------------------------------------------------------- startup checks
+def test_a_phase_refuses_to_start_when_the_declared_budget_cannot_be_enforced(fake_upstream, tmp_path):
+    cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
+    cfg["rsi"]["budget_ref"] = activity.objects.put_json("change", {"usd": 5.0, "model_calls": 100})
+    cfg["pricing"] = {"hidden_fallback": True}
+    problems = bench.startup_checks(activity, cfg, phase="improve")
+    assert any("cannot be enforced" in p for p in problems)
+    with pytest.raises(ValueError, match="cannot start"):
+        bench.improve(cfg, ".", out=lambda _l: None, researcher=rsi.ScriptedResearcher())
+    # with a bounded price snapshot the same budget is fine
+    cfg["pricing"] = {"input_per_1k": 0.003, "output_per_1k": 0.015, "max_input_tokens": 4000,
+                      "max_output_tokens": 1000, "source": "vendor page 2026-09-27"}
+    assert not [p for p in bench.startup_checks(activity, cfg, phase="improve") if "enforced" in p]
+
+
+def test_a_plan_with_too_few_independent_groups_is_named_before_the_run(fake_upstream, tmp_path):
+    from ouroloop.evolve.task_gate import GatePlan
+    cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path,
+                                             gate=GatePlan(min_gain=0.05, min_groups=9,
+                                                           bootstrap_replicates=100))
+    problems = bench.startup_checks(activity, cfg, phase="improve")
+    assert any("independent groups" in p for p in problems)
+
+
+def test_a_pricing_table_with_an_unknown_key_is_refused():
+    with pytest.raises(ValueError, match="does not take"):
+        bench.pricing_of({"pricing": {"input_per_1k": 0.001, "discount": 0.5}})

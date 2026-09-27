@@ -66,3 +66,13 @@ task 调用只得到未授权模型 artifact；加载探针检查 model id、输
 | DT-08 | 训练中控制器重启且远端作业运行 | 查询并接回原 job；同 operation 不重复提交 |
 
 复用 `test_probe.py`、`test_evolve.py`、`test_jobs.py`、`test_roles.py`；保留原 decision 数据划分回归测试，为 task profile 增加分组与无副作用训练验收。
+
+## 7. 实现状态（2026-09-27）
+
+已实现：`ouroloop/evolve/feedback.py`（`FeedbackBuilder` 注册表与 `completion_snapshot.v1`，内容决定的记录 id、env/human 冲突判定、`supersedes`）、`ouroloop/evolve/build.py` 的 `build_task_dataset`（按冻结 family map 分组、一次性按家族划分 fit/validation/calibration 并记录 seed 与排序组 ID、每任务上限、排除原因、`DataManifest`）与 `check_lineage`、`ouroloop/evolve/pipeline.py` 的 `train_artifact`（提交前预留预算、失败仍结算、加载探针校验 model id 与输出类别、`attach` 查询未知远端作业、不动任何指针）、`ouroloop/research/context.py`（`make_context` 白名单投影、`task_results_summary`）。`CompletionProbe` 现在把无法评分的状态写成 label=None，于是反馈为 `unknown` 而不是静默缺失。
+
+视图可声明 `requires`；历史观察缺该字段时拒绝重渲染并要求重新采集，不从最终状态补齐。
+
+验收：`python -m pytest tests/test_evidence_training.py -q` → 17 passed，覆盖 DT-01～DT-08 与 Context 权限。
+
+已知缺口：分支比较 builder（第二条信号路径）未实现，需另附重放等价性证明；calibration 组可生成但尚未接入阈值拟合；`prepare_model` 仍保留旧校准与门流程，未共用新的构建函数（旧路径的回归测试照旧通过）。

@@ -66,3 +66,13 @@ research campaign 内禁用 research slots；R 固定，内部仅改 W。主线�
 | EX-08 | 无有效提案、耐心耗尽或连续 infra 失败 | 按固定 reason 停止，保留可用 release，不安装未验证最后一代 |
 
 测试使用 fake clock/provider/job 和故障注入，不能用长 sleep 或实际云费用验证预算。`test_jobs.py`、`test_counting.py` 的既有取消与计数行为必须保留。
+
+## 6. 实现状态（2026-09-27）
+
+已实现于 `ouroloop/evolve/execution.py`：状态机（`STATES`/`NEXT`，终态不可改写，`installation_failed` 可重试同一 accepted artifact）、`Execution`（journal + 快照，快照可由 journal 重建，operation id 由 experiment+step+冻结输入决定）、`Budgets`/`BudgetAccount`（共享账本、子树汇总、祖先校验、`allocate` 双向限制、`settle` 的 settled/unknown/released、`budget_breach` 后停止付费操作）、`Pricing`/`check_pricing`、`MeteredProvider`（调用前预留、失败按 unknown 结算、重试有上限且逐次计费）、`Schedule` 的固定停止理由、`execute_experiment`。
+
+`remaining()["used"]` 报告被触碰过的维度即使实测为 0：跑得比时钟分辨率快的作业不是没跑的作业。
+
+验收：`python -m pytest tests/test_execution.py -q` → 19 passed，覆盖 EX-01～EX-04、EX-06～EX-08 与状态机；EX-05 见 `tests/test_rsi_integration.py::test_it04_*`，跨支预算见 `test_it06_*` 与 `tests/test_campaign.py`。
+
+已知缺口：`wall_seconds` 维度可声明但没有自动计时预留；供应商幂等键未使用（每次重试都是新外部调用）；取消后的对账依赖调用方查询 job/request ID。

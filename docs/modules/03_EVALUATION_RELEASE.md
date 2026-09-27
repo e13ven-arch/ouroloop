@@ -76,3 +76,13 @@ preflight 失败：installation_failed，旧指针不动，可以在 artifact �
 | ER-10 | 撤销模型；旧 session 和新 session 同时运行 | 旧 session 固定默认，新 session 合法祖先；无幽灵授权 |
 
 复用 `test_benchmark.py`、`test_automationbench.py`、`test_gate_bypass.py`、`test_gate_record.py`、`test_roles.py`；新增 task gate 和 SystemRelease 故障注入测试。旧 GateRecord 不能被新 receipt 测试替代。
+
+## 6. 实现状态（2026-09-27）
+
+已实现：`ouroloop/evolve/task_gate.py`（`GatePlan`/`TaskEvalPlan`、交替顺序、按任务聚合、家族层配对 bootstrap、回归率、`integrity`、`judge`、`screen`、`evaluate_task`）、`ouroloop/release.py` 的 `Releases`（bootstrap/permit/candidate_release/accepted_release、`authorize`、`register_receipt`、`install`→preflight→锁内 CAS→原子替换、`recover`、`revoke`、`last_good`、`rollback`、`resolve_profile`）、`ouroloop/evolve/task_eval.py` 的统一资源生命周期与 failure_class 分类。
+
+开发接受与显著性分开：`uncertainty.significant` 显式写 true/false，区间含零时 reason 里说明"不是显著提升"。economy 模式下未测成本一律 inconclusive。
+
+验收：`python -m pytest tests/test_task_gate.py -q` → 23 passed，覆盖 ER-01～ER-08、ER-10 及统计定义；ER-03/ER-09 见 `tests/test_policy_runtime.py`，崩溃恢复矩阵见 `tests/test_rsi_integration.py::test_it04_*`。
+
+已知缺口：`cache_policy` 记录在计划里但不复用 screen 结果（总是重跑）；基础设施补跑由调用方按计划执行，未提供自动补跑循环；旧 decision profile 的 GateRecord 路径未改动。
