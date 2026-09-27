@@ -48,6 +48,11 @@ class Budgeted:
     def specs(self):
         return self.episode.specs()
 
+    def mutates(self, name: str, args: dict) -> bool:
+        """The episode's answer. A wrapper that dropped this would leave the agent's change count at zero, and the
+        completion probe would then label every stop decision from the state at the first one."""
+        return self.episode.mutates(name, args)
+
     def run(self, name: str, args: dict) -> ToolResult:
         over = self.budget.exceeded(tool_calls=self.episode.tool_calls + 1,
                                     seconds=time.monotonic() - self.started)
@@ -59,15 +64,23 @@ class Budgeted:
 
 
 def run_attempt(suite, task_id: str, make_agent: Callable, *, run: RunManifest, splits: SplitManifest,
-                attempt: int = 0, system: str | None = None) -> Attempt:
+                attempt: int = 0, system: str | None = None, probe: bool = False) -> Attempt:
     """One attempt at one task. `make_agent(surface, task, system) -> Agent`.
 
     Every failure that is not the agent's is an invalid attempt with a reason, never a zero: a benchmark that
     scores its own broken runs reports the runner, not the model (docs/DESIGN.md §5.2).
+
+    `probe` attaches the completion probe, which labels this episode's stop decisions from the states they were
+    made on. It is refused outside the train split: dev decides between candidates and test is only read at the
+    end, so a label from either would be training on the data that is supposed to judge the training
+    (docs/DESIGN.md §3.1.3).
     """
     family, split = splits.family_of(task_id), splits.split_of(task_id)
     if split != run.split:
         raise ValueError(f"{task_id} is in {split}, but this run reads {run.split}")
+    if probe and split != "train":
+        raise ValueError(f"{task_id} is in {split}: the completion probe writes training labels, and only the "
+                         f"train split may produce them")
     entry, task = splits.entry(task_id), suite.tasks[task_id]
     if entry.contract != task.contract:
         return Attempt(TaskResult.broken(task_id, family, split, attempt, run, splits.hash(),
@@ -85,19 +98,25 @@ def run_attempt(suite, task_id: str, make_agent: Callable, *, run: RunManifest, 
     surface = Budgeted(episode, run.budget)
     agent = make_agent(surface, task, system if system is not None else task.system)
     agent.on_event = on_event
-    # The split travels with the session: a test task's session is held out, so the existing data builders can
-    # never draw a training sample from it (ledger.Ledger.sessions, docs/DESIGN.md §3.1).
+    if probe:
+        from ..adapters.automationbench import CompletionProbe
+        agent.probe = CompletionProbe(agent.rt, episode, surface=surface)
+    # The split travels with the session: anything but train is held out, so the existing data builders can never
+    # draw a training sample from a task that is meant to judge the training (ledger.Ledger.sessions).
     agent.session_meta = {**agent.session_meta, "task": task_id, "family": family, "split": split,
-                          "held_out": split == "test", "run": run.hash(), "candidate": run.candidate,
+                          "held_out": split != "train", "run": run.hash(), "candidate": run.candidate,
                           "attempt": attempt}
     try:
         res = agent.run(task.trigger)
     except Exception as e:  # noqa: BLE001 - a provider or harness failure is no evidence about the candidate
+        if agent.probe is not None:
+            agent.probe.label()     # the stop decisions made before the failure still saw a real state
         return Attempt(TaskResult.broken(task_id, family, split, attempt, run, splits.hash(),
                                          f"harness: {type(e).__name__}: {e}"[:400],
                                          termination="harness_error", contract=task.contract,
                                          evidence=agent.session, elapsed=round(time.monotonic() - t0, 2),
                                          tool_calls=episode.tool_calls, usage=dict(usage)), episode)
+    labelled = agent.probe.label() if agent.probe is not None else 0
     score = episode.score()
     termination = "budget" if surface.exhausted else STOPS.get(res.stop, "finished")
     return Attempt(TaskResult(task_id, family, split, attempt, run.candidate, run.hash(), splits.hash(),
@@ -106,12 +125,12 @@ def run_attempt(suite, task_id: str, make_agent: Callable, *, run: RunManifest, 
                               assertions_passed=score.passed, assertions_scored=score.scored,
                               usage=dict(usage), elapsed=round(time.monotonic() - t0, 2), steps=res.turns,
                               tool_calls=episode.tool_calls, termination=termination, stop=res.stop,
-                              evidence=res.session, decisions=agent.decision_ids()),
+                              evidence=res.session, decisions=agent.decision_ids(), labelled=labelled),
                    episode, score)
 
 
 def run_tasks(suite, task_ids: list[str], make_agent: Callable, *, run: RunManifest, splits: SplitManifest,
-              results=None, repeats: int = 1, system: str | None = None,
+              results=None, repeats: int = 1, system: str | None = None, probe: bool = False,
               on_result: Callable[[TaskResult], None] | None = None) -> list[TaskResult]:
     """Every attempt of a run, in a fixed order, each one recorded as it finishes.
 
@@ -122,7 +141,8 @@ def run_tasks(suite, task_ids: list[str], make_agent: Callable, *, run: RunManif
     out = []
     for task_id in task_ids:
         for i in range(repeats):
-            attempt = run_attempt(suite, task_id, make_agent, run=run, splits=splits, attempt=i, system=system)
+            attempt = run_attempt(suite, task_id, make_agent, run=run, splits=splits, attempt=i, system=system,
+                                  probe=probe)
             if attempt.episode is not None:
                 attempt.episode.close()
             out.append(attempt.result)

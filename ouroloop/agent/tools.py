@@ -38,6 +38,12 @@ class ToolSurface(Protocol):
 
     def run(self, name: str, args: dict) -> "ToolResult": ...
 
+    def mutates(self, name: str, args: dict) -> bool:
+        """Whether this call may have changed the world. The loop counts those changes, and the probe snapshots
+        the state on each new count, so a surface whose writing tools are not called write, edit or bash has to
+        say which ones they are."""
+        ...
+
 
 def clip(text: str, limit: int) -> str:
     if len(text) <= limit:
@@ -81,6 +87,10 @@ class Tools:
     def specs(self) -> list[ToolSpec]:
         return [replace(s, description=self.descriptions[s.name]) if s.name in self.descriptions else s
                 for s in SPECS]
+
+    def mutates(self, name: str, args: dict) -> bool:
+        """write and edit change files; bash may."""
+        return name in ("write", "edit", "bash")
 
     def resolve(self, path: str) -> Path:
         p = (self.workdir / path).resolve()

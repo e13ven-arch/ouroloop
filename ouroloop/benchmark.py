@@ -308,6 +308,7 @@ class TaskResult:
     invalid_reason: str = ""
     evidence: str = ""                        # the session id; its transcript is transcripts/<session>.jsonl
     decisions: list[str] = field(default_factory=list)
+    labelled: int = 0                         # decisions the completion probe labelled from this attempt
     schema: str = RESULT_SCHEMA
 
     def __post_init__(self) -> None:

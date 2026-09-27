@@ -18,6 +18,25 @@ from ouroloop.evolve.task_eval import Budgeted, run_attempt, run_tasks
 from ouroloop.points import builtin_points
 from ouroloop.runtime import Runtime
 
+class NotDone:
+    """A decision backend that answers "the task is not done" with a fixed confidence."""
+    name = "fixed"
+
+    def __init__(self, p_no: float):
+        self.p_no = p_no
+
+    def decide(self, requests):
+        from ouroloop.types import Answer
+        return [Answer({"no": self.p_no, "yes": 1 - self.p_no}, "fixed-1") for _ in requests]
+
+
+@pytest.fixture
+def every_stop_may_act(monkeypatch):
+    """v0.2 already lets `stop` act; this pins it so the test does not depend on that staying true."""
+    from ouroloop import policy
+    monkeypatch.setattr(policy, "ACTING", set(policy.ACTING) | {"stop"})
+
+
 LEAD = "marketing.lead_followup"
 HOLD = "marketing.unverified_request_hold"
 SLACK = "https://slack.com/api/chat.postMessage"
@@ -364,3 +383,200 @@ class TestMultiTurnPrompt:
 
     def test_the_public_tasks_are_one_turn_each(self, suite):
         assert all(suite.tasks[t].turns == 1 for t in suite.ids())
+
+
+class TestCompletionProbe:
+    """The stop point's environment label: was the task actually complete when the agent decided to stop?"""
+
+    def train(self, suite):
+        fams, rule = ab.families(suite)
+        return SplitManifest("marketing", suite.versions, rule, suite.entries(fams),
+                             {f: "train" for f in fams.values()})
+
+    def run(self, tmp_path, suite, calls, splits=None, probe=True):
+        splits = splits or self.train(suite)
+        run = RunManifest("base", "base", splits.split_of(LEAD), {"model": "scripted"}, data=splits.hash(),
+                          budget=Budget(max_steps=8, max_tool_calls=8))
+        rt = runtime(tmp_path)
+        attempt = run_attempt(suite, LEAD, factory(rt, solve(calls)), run=run, splits=splits, probe=probe)
+        return rt, attempt.result
+
+    def test_a_finished_task_labels_its_stop_decisions_yes(self, tmp_path, suite):
+        rt, result = self.run(tmp_path, suite,
+                              [("api_fetch", {"method": "PATCH", "url": HUBSPOT,
+                                              "body": json.dumps({"id": "c1", "stage": "opportunity"})}),
+                               ("api_fetch", {"method": "POST", "url": SLACK,
+                                              "body": json.dumps({"channel": "C1",
+                                                                  "text": "quarterly pipeline review"})})])
+        assert result.success and result.labelled > 0
+        labels = [(r.decision["point"], t[0]) for r, t, _w in
+                  [(row, row.target(), 0) for row in rt.ledger.rows() if row.target()]]
+        assert labels and all(point == "stop" for point, _ in labels)
+        assert any(dist.get("yes") == 1.0 for _point, dist in labels)
+
+    def test_stopping_too_early_is_labelled_no(self, tmp_path, suite):
+        """One of the two required writes done: the task is not complete, and the stop decision says so."""
+        rt, result = self.run(tmp_path, suite,
+                              [("api_fetch", {"method": "PATCH", "url": HUBSPOT,
+                                              "body": json.dumps({"id": "c1", "stage": "opportunity"})})])
+        assert not result.success and result.partial_credit == 0.5 and result.labelled > 0
+        dists = [row.target()[0] for row in rt.ledger.rows() if row.target()]
+        assert dists and all(d.get("no") == 1.0 for d in dists)
+
+    def test_a_label_is_an_env_outcome_that_training_may_read(self, tmp_path, suite):
+        rt, _ = self.run(tmp_path, suite, [])
+        outcomes = [e for e in rt.ledger.events() if e["type"] == "outcome"]
+        assert outcomes and all(e["source"] == "env" for e in outcomes)
+        assert all(e["note"] == "completion probe" for e in outcomes)
+        assert rt.ledger.training_rows("stop")          # the existing builder can draw from these
+
+    def test_each_state_is_labelled_from_its_own_snapshot(self, tmp_path, suite):
+        """The decision made before the second write must not be labelled from the state after it."""
+        rt, result = self.run(tmp_path, suite,
+                              [("api_fetch", {"method": "PATCH", "url": HUBSPOT,
+                                              "body": json.dumps({"id": "c1", "stage": "opportunity"})}),
+                               ("api_fetch", {"method": "POST", "url": SLACK,
+                                              "body": json.dumps({"channel": "C1",
+                                                                  "text": "quarterly pipeline review"})})])
+        scores = sorted(e["score"] for e in rt.ledger.events() if e["type"] == "outcome")
+        assert scores[0] < scores[-1]      # the earlier state scored lower than the final one
+        assert scores[-1] == 1.0
+
+    def test_a_read_does_not_count_as_a_change(self, suite):
+        ep = suite.episode(LEAD)
+        assert ep.mutates("api_fetch", {"method": "POST", "url": SLACK})
+        assert not ep.mutates("api_fetch", {"method": "GET", "url": SLACK})
+        assert not ep.mutates("api_search", {"query": "slack"})
+        assert not ep.mutates("base64_encode", {"text": "hi"})
+
+    def test_the_probe_is_refused_outside_train(self, tmp_path, suite):
+        fams, rule = ab.families(suite)
+        dev = SplitManifest("marketing", suite.versions, rule, suite.entries(fams),
+                            {f: "dev" for f in fams.values()})
+        with pytest.raises(ValueError, match="only the train split"):
+            self.run(tmp_path, suite, [], splits=dev)
+
+    def test_only_the_train_split_is_trainable(self, tmp_path, suite):
+        """dev decides between candidates, so its sessions are held out from training just as test's are."""
+        fams, rule = ab.families(suite)
+        dev = SplitManifest("marketing", suite.versions, rule, suite.entries(fams),
+                            {f: "dev" for f in fams.values()})
+        rt, result = self.run(tmp_path, suite, [], splits=dev, probe=False)
+        sessions, _ = rt.ledger.sessions()
+        assert sessions[result.evidence]["held_out"] is True
+
+    def test_the_scorer_is_never_consulted_during_the_run(self, tmp_path, suite, monkeypatch):
+        """An official scorer used as an online checker would quietly correct the agent's mistakes."""
+        seen = []
+        original = ab.Episode.score
+        monkeypatch.setattr(ab.Episode, "score",
+                            lambda self, world=None: (seen.append(len(self.calls)), original(self, world))[1])
+        rt, result = self.run(tmp_path, suite,
+                              [("api_fetch", {"method": "PATCH", "url": HUBSPOT,
+                                              "body": json.dumps({"id": "c1", "stage": "opportunity"})})])
+        # Every scoring happened after the last tool call, never between them.
+        assert seen and all(n == result.tool_calls for n in seen)
+
+    def test_a_world_that_cannot_be_copied_stays_unlabelled(self, tmp_path, suite, monkeypatch):
+        ep = suite.episode(LEAD)
+        monkeypatch.setattr(ab.Suite, "episode", lambda self, tid: ep)
+        monkeypatch.setattr(type(ep.world), "model_copy",
+                            lambda self, deep=False: (_ for _ in ()).throw(RuntimeError("no copy")), raising=False)
+        rt, result = self.run(tmp_path, suite, [])
+        assert result.validity == "valid" and result.labelled == 0      # no label, and the run still stands
+
+    def test_snapshots_are_bounded(self, tmp_path, suite):
+        probe = ab.CompletionProbe(runtime(tmp_path), suite.episode(LEAD), max_snapshots=2)
+        for i in range(5):
+            probe.snap(f"d{i}", i)
+        assert sum(s["world"] is not None for s in probe.snaps) == 2 and probe.dropped == 3
+
+    def test_the_wrapped_surface_still_reports_changes(self, suite):
+        surface = Budgeted(suite.episode(LEAD), Budget())
+        assert surface.mutates("api_fetch", {"method": "POST", "url": SLACK})
+        assert not surface.mutates("api_search", {"query": "slack"})
+
+    def test_a_surface_that_cannot_report_changes_is_refused(self, tmp_path, suite):
+        class Opaque:
+            def specs(self):
+                return []
+
+            def run(self, name, args):
+                return None
+
+        with pytest.raises(ab.UpstreamError, match="which calls change the world"):
+            ab.CompletionProbe(runtime(tmp_path), suite.episode(LEAD), surface=Opaque())
+
+
+class TestTheInterventionWorks:
+    """Whether the stop point, once it acts, can change a benchmark task's outcome.
+
+    A Marketing task's `task_completed_correctly` is a conjunction over a median of twelve scored assertions, so a
+    task is lost by leaving one requirement undone. This is the mechanism that is supposed to catch that; these
+    tests check that it is wired, not that a model would judge well.
+    """
+
+    def train(self, suite):
+        fams, rule = ab.families(suite)
+        return SplitManifest("marketing", suite.versions, rule, suite.entries(fams),
+                             {f: "train" for f in fams.values()})
+
+    def half_then_finish_when_pushed(self):
+        """Stops after one of the two required writes; does the second only if sent back to work."""
+        def script(messages):
+            done = {json.loads(m["results"][0]["output"]).get("ok") for m in messages if m.get("role") == "tool"}
+            writes = sum(1 for m in messages if m.get("role") == "tool")
+            pushed = any(m.get("role") == "user" and "Keep working" in str(m.get("content", ""))
+                         for m in messages[1:])
+            if writes == 0:
+                return ChatTurn("", [ToolCall("c0", "api_fetch",
+                                              {"method": "PATCH", "url": HUBSPOT,
+                                               "body": json.dumps({"id": "c1", "stage": "opportunity"})})],
+                                "tool_use")
+            if pushed and writes == 1:
+                return ChatTurn("", [ToolCall("c1", "api_fetch",
+                                              {"method": "POST", "url": SLACK,
+                                               "body": json.dumps({"channel": "C1",
+                                                                   "text": "quarterly pipeline review"})})],
+                                "tool_use")
+            return ChatTurn("All done." if done else "Done.", [], "end")
+        return ScriptedChat(script)
+
+    def attempt(self, tmp_path, suite, points, backends=None, gated=None, confidence=0.9):
+        splits = self.train(suite)
+        run = RunManifest("base", "base", "train", {"model": "scripted"}, data=splits.hash(),
+                          budget=Budget(max_steps=8, max_tool_calls=8))
+        rt = Runtime(tmp_path / "ws", backends or {"mock": KeywordBackend()},
+                     "mock" if not backends else next(iter(backends)), seed=0)
+        for p in points:
+            rt.register(p)
+        if gated is not None:
+            gated(rt, "stop", "fixed-1", confidence - 0.3)
+        return rt, run_attempt(suite, LEAD, factory(rt, self.half_then_finish_when_pushed()), run=run,
+                               splits=splits, probe=True)
+
+    def test_without_the_point_acting_the_task_is_lost(self, tmp_path, suite, every_stop_may_act):
+        rt, at = self.attempt(tmp_path, suite, builtin_points())
+        assert at.result.success is False and at.result.partial_credit == 0.5
+        assert at.result.labelled > 0          # and the miss is on record as a "no" for the stop point
+        assert all(d.get("no") == 1.0 for d in [r.target()[0] for r in rt.ledger.rows() if r.target()])
+
+    def test_a_confident_not_done_sends_the_agent_back_and_the_task_passes(self, tmp_path, suite, gated,
+                                                                          every_stop_may_act):
+        from ouroloop.points import stop_point
+        from ouroloop.policy import Policy
+        rt, at = self.attempt(tmp_path, suite, [stop_point(policy=Policy(act=True, explore=0.0))],
+                              backends={"fixed": NotDone(0.9)}, gated=gated)
+        assert at.result.success is True and at.result.partial_credit == 1.0
+        assert at.result.steps > 2             # it was sent back to work
+        # The same scripted model, the same task: the only difference is the point acting.
+        scores = sorted(e["score"] for e in rt.ledger.events() if e["type"] == "outcome")
+        assert scores[0] == 0.5 and scores[-1] == 1.0
+
+    def test_an_unconfident_answer_takes_the_default_and_changes_nothing(self, tmp_path, suite, gated,
+                                                                        every_stop_may_act):
+        from ouroloop.points import stop_point
+        from ouroloop.policy import Policy
+        rt, at = self.attempt(tmp_path, suite, [stop_point(policy=Policy(act=True, explore=0.0))],
+                              backends={"fixed": NotDone(0.55)}, gated=gated, confidence=0.9)
+        assert at.result.success is False      # below the threshold: on_finish keeps its default, "yes"

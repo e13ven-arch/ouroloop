@@ -230,14 +230,22 @@ class Agent:
             res = ToolResult("The user declined this action.", True)
         else:
             res = self._retry(call, self.tools.run(call.name, call.args))
-            if call.name in ("write", "edit", "bash"):
-                self._changes += 1                  # bash may change files too
-                if call.name != "bash" and not res.is_error:
-                    self._modified.add(str(call.args.get("path", "")))
+            if self._mutates(call):
+                self._changes += 1
+                target = call.args.get("path") or call.args.get("url")
+                if target and not res.is_error:
+                    self._modified.add(str(target))
         self._errors += res.is_error
         self._actions.append(f"{_short(call)} -> {'error' if res.is_error else 'ok'}")
         self._emit("tool", id=call.id, name=call.name, is_error=res.is_error, output=res.output[:2000])
         return res
+
+    def _mutates(self, call: ToolCall) -> bool:
+        """Whether the call may have changed the world, as its surface says (Tools: write, edit and bash). The
+        change count is what the probe snapshots on, so a surface that never answers would leave every stop
+        decision labelled from one state."""
+        mutates = getattr(self.tools, "mutates", None)
+        return bool(mutates(call.name, call.args)) if mutates else call.name in ("write", "edit", "bash")
 
     def _gate_ctx(self, call: ToolCall) -> dict:
         return {"task": self._task_head(), "workdir": str(self.workdir or ""), "tool": call.name,

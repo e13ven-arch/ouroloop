@@ -85,6 +85,24 @@ def _commit(root: Path | None) -> str:
     return out.stdout.strip() if out.returncode == 0 else ""
 
 
+def _version(root: Path | None) -> str:
+    """Upstream's package version. Its own module does not carry one, so this reads the checkout's pyproject, and
+    falls back to the installed distribution's metadata. The version is part of what a result is pinned to, so an
+    unknown one is worth seeing rather than defaulting to something."""
+    if root is not None:
+        try:
+            for line in (root / "pyproject.toml").read_text(encoding="utf-8").splitlines():
+                if line.startswith("version"):
+                    return line.partition("=")[2].strip().strip('"\'')
+        except OSError:
+            pass
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+        return version("automation-bench")
+    except Exception:  # noqa: BLE001 - not installed as a distribution; the commit still pins it
+        return ""
+
+
 def probe(path: str | Path | None = None) -> dict:
     """What upstream this process would run, and what it cannot do. Never raises: the report is the point.
 
@@ -112,7 +130,7 @@ def probe(path: str | Path | None = None) -> dict:
             __import__(module)
         except Exception as e:  # noqa: BLE001 - any import failure is a missing capability, reported not raised
             report["missing"].append(f"{module} ({need}): {type(e).__name__}: {e}"[:300])
-    report["package"] = str(getattr(sys.modules.get("automationbench"), "__version__", "") or "")
+    report["package"] = _version(root)
     report["pydantic"] = str(getattr(sys.modules.get("pydantic"), "VERSION", "") or "")
     try:
         import automationbench.runner  # noqa: F401
@@ -465,29 +483,36 @@ class Episode:
                            "is_error": res.is_error, "elapsed": round(time.monotonic() - t0, 3)})
         return res
 
+    def mutates(self, name: str, args: dict) -> bool:
+        """A read cannot change the world, so only a writing `api_fetch` counts. The loop's change count is what
+        the completion probe snapshots on: counting reads would snapshot identical states, and counting nothing
+        would label every stop decision from the state at the end."""
+        return name == "api_fetch" and str((args or {}).get("method", "")).upper() not in ("GET", "HEAD")
+
     @property
     def tool_calls(self) -> int:
         return len(self.calls)
 
     # -------------------------------------------------------------- scoring
-    def score(self) -> Score:
-        """The official metrics on the world the tools left.
+    def score(self, world=None) -> Score:
+        """The official metrics on the world the tools left, or on a snapshot of an earlier one.
 
         Nothing the agent wrote in a message is an input here. Upstream's `task_completed_correctly` reads the
         `partial_credit` its sibling caches on the state, so the two are called in that order on one state.
         """
         from automationbench import rubric
-        partial = float(rubric.partial_credit(state := self.state()))
+        partial = float(rubric.partial_credit(state := self.state(world)))
         success = bool(rubric.task_completed_correctly(state) == 1.0)
         results = list(state.get("_assertion_results", []))
         scored = [r for r in results if not r.get("excluded")]
         return Score(success, partial, sum(bool(r["passed"]) for r in scored), len(scored),
                      len(results) - len(scored), results, state.get("_end_state", {}))
 
-    def state(self) -> dict:
+    def state(self, world=None) -> dict:
         """The state dict the official scorer is called with, in the shape upstream's runner builds it."""
         info = self._grading.info or {"assertions": [dict(a) for a in self._grading.assertions]}
-        return {"info": copy.deepcopy(info), "initial_state": self._initial, "world": self.world}
+        return {"info": copy.deepcopy(info), "initial_state": self._initial,
+                "world": self.world if world is None else world}
 
     def baseline_score(self) -> Score:
         """What doing nothing scores. Upstream excludes assertions that already pass, so this is normally 0; a
@@ -707,3 +732,69 @@ def _plain_type(entry: dict) -> str | None:
         rest = [x.get("type") for x in entry["anyOf"] if x.get("type") != "null"]
         return rest[0] if len(rest) == 1 else None
     return t
+
+
+# ---------------------------------------------------------------------------- the completion probe
+class CompletionProbe:
+    """An environment label for every stop decision of an episode: was the task actually complete at that moment?
+
+    This is the first of the two feedback paths in docs/DESIGN.md §4.2 -- a locally verifiable outcome. At each
+    stop decision it keeps a snapshot of the world; after the episode it scores each snapshot with the official
+    rubric and labels the decisions that were made on that state. What it trains is the completion judgement, not
+    a claim that continuing is always worth it.
+
+    It is not a checker. The scoring happens after the run, so neither StopGuard nor the view nor the agent can
+    see it, and an official scorer is never consulted while the agent is working (§5.2). Nor can it fail a run: a
+    state it cannot copy or score stays unlabelled.
+
+    Why this point and this label: a Marketing task's `task_completed_correctly` is a conjunction over a median of
+    twelve scored assertions, so a task is lost by leaving one requirement undone. Whether the work is finished is
+    exactly the judgement that decides that, it is visible from the state at the time, and on a training task it
+    can be checked. Whether a model learns it is a separate question, which the task results answer.
+    """
+
+    def __init__(self, rt, episode: Episode, max_snapshots: int = 60, surface=None):
+        # `surface` is what the agent actually calls, which may wrap the episode. The probe snapshots on the
+        # agent's change count, and that count comes from the surface's `mutates`: a surface that cannot answer
+        # would leave the count at zero and every label would describe the state at the first stop decision. That
+        # is a silent wrong label on every training example, so it is refused here rather than discovered later.
+        if surface is not None and getattr(surface, "mutates", None) is None:
+            raise UpstreamError(f"{type(surface).__name__} does not report which calls change the world, so the "
+                                f"probe cannot tell one state from another")
+        self.rt = rt
+        self.episode = episode
+        self.max_snapshots = max_snapshots        # a bound on memory, not a judgement: ~0.1 MB per world
+        self.snaps: list[dict] = []               # {"changes", "world", "decisions"}
+        self.dropped = 0
+
+    def snap(self, decision: str, changes: int) -> None:
+        """At a stop decision. `changes` is the agent's count of calls that may have changed the world: an
+        unchanged state is not copied again, and the decisions made on it share one snapshot."""
+        if not self.snaps or self.snaps[-1]["changes"] != changes:
+            world = None
+            if len(self.snaps) < self.max_snapshots:
+                try:
+                    world = self.episode.snapshot()
+                except Exception:  # noqa: BLE001 - a state that cannot be copied stays unlabelled
+                    world = None
+            else:
+                self.dropped += 1
+            self.snaps.append({"changes": changes, "world": world, "decisions": []})
+        self.snaps[-1]["decisions"].append(decision)
+
+    def label(self) -> int:
+        """After the episode: label every stop decision from its own snapshot. Returns how many were labelled."""
+        labelled = 0
+        for s in self.snaps:
+            if s["world"] is None:
+                continue
+            try:
+                score = self.episode.score(s["world"])
+            except Exception:  # noqa: BLE001 - a snapshot the scorer cannot read stays unlabelled
+                continue
+            for d in s["decisions"]:
+                self.rt.outcome(d, "yes" if score.success else "no", source="env", note="completion probe",
+                                score=round(score.partial_credit, 6), assertions=f"{score.passed}/{score.scored}")
+                labelled += 1
+        self.snaps = [{**s, "world": None} for s in self.snaps]      # the worlds are not needed again
+        return labelled
