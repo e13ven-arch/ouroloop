@@ -94,14 +94,18 @@ M7 完成后增加研究证据页：`R0 → R1 → R1 产生 W2`，显示经验�
 
 **真实复跑：** 安装锁定的 benchmark 环境，准备模型凭据及训练资源，按冻结配置重新执行。需要时间和预算，不承诺免费或十分钟内完成。
 
-拟实现命令：
+命令（已实现；`improve` / `research` / `evaluate` 需要先冻结对应计划并在 `[rsi]` 里命名，缺引用时阶段会在调用模型之前说明缺什么）：
 
 ```bash
-# 目标接口，尚未实现；落地以后才移入 README 的可执行 Quick start。
+ouroloop bench --config examples/automationbench/marketing.toml --phase baseline
+ouroloop bench --config examples/automationbench/marketing.toml --phase collect
 ouroloop bench --config examples/automationbench/marketing.toml --phase improve
+ouroloop bench --config examples/automationbench/marketing.toml --phase research
 ouroloop bench --config examples/automationbench/marketing.toml --phase evaluate
 ouroloop bench --config examples/automationbench/marketing.toml --phase report
 ```
+
+阶段可运行不等于已有成绩：本仓库尚未用真实模型跑过其中任何一个，演示用的数字目前只来自离线夹具。
 
 现有 `ouroloop demo snake` 保留为本地机制检查，不用它的成绩代替业务能力。报告先用静态 HTML、SVG 和文件索引，不增加实时服务。
 

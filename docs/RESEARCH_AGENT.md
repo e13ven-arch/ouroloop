@@ -1,22 +1,22 @@
 # 研究员：改进任务策略，也改进研究方法（v0.5）
 
 > 2026-09-27。配合 [DESIGN.md](DESIGN.md) 的 W/R/E/K 定义与 [ROADMAP.md](ROADMAP.md) 的 M2～M7。
-> 已有 Candidate、ResearchAgent 和训练作业继续复用；本文的完整业务研究 Context、策略版本与 research campaign 尚未实现。
+> 已有 Candidate、ResearchAgent 和训练作业继续复用；本文的完整业务研究 Context、策略版本与 research campaign 已实现（见各模块“实现状态”），尚无真实模型证据。
 > 实现接口及用例见 [研究循环](modules/04_RESEARCH_LOOP.md)、[研究 campaign](modules/06_RESEARCH_CAMPAIGN.md)；公共字段以 [契约](modules/00_CONTRACTS.md)为准。
 
 ## 0. 角色与当前状态
 
 研究员读允许使用的任务和实验证据，提出可执行策略改动。框架负责运行、训练、计费、评测和安装。反馈整理、失败诊断、策略设计是一个研究步骤中的逻辑阶段，不要求三个独立 agent。
 
-| 部分 | 当前状态与改动 |
+| 部分 | 当前状态 |
 |---|---|
-| `research/agent.py` 的 Candidate / Workspace / ResearchAgent.step | 已建；扩 owner、行为要求、证据与策略版本 |
-| `research/basic.py`、`research/loop.py` | 已建独立候选循环；接入完整任务和研究策略评测 |
-| `evolve/plan.py`、`evolve/pipeline.py` | 已有准入和监督训练；支持不训练的策略构建及任务 profile |
-| `generations.py` | 已有场景循环；接入固定 R 的 M5 自动研究 |
-| `evolve/experience.py` | 已有实验记录；扩机制活动、行为缺口和有来源的经验检索 |
-| `research/inspection.py`、`context.py`、`experiment.py` | 新建薄运行快照、输入视图与实验记录 |
-| `research/campaign.py` | M7 新建；复用 M5 比较 R/R'，不建立第二个循环框架 |
+| `research/agent.py` 的 Candidate / Workspace / ResearchAgent.step | 已建，原样保留；新 profile 用 `ExperimentProposal` 表达 owner、行为要求、证据与策略版本 |
+| `research/basic.py`、`research/loop.py` | 已建：旧候选循环保留，新增 `PolicyResearcher`（用已加载 R 的 prompt 发请求）与 `run_worker_round` / `run_worker_rounds` |
+| `evolve/plan.py`、`evolve/pipeline.py` | 已建：旧准入与监督训练保留，新增无晋升副作用的 `train_artifact`；不训练的策略构建走 `policies.build_candidate` |
+| `generations.py` | 已建场景循环，未改；固定 R 的任务改进由 `bench improve` 驱动 |
+| `evolve/experience.py` | 已建：`experiment_record` / `summary_record` / `snapshot` / `requirement_status`，含机制活动、回归与来源 |
+| `research/inspection.py`、`context.py`、`experiment.py` | 已建：实际装配快照与字段覆盖率、白名单 Context、提案规范化与两层准入 |
+| `research/campaign.py` | 已建：隔离两支比较 R/R'，复用同一任务改进循环，不建立第二个循环框架 |
 
 ## 1. 研究的输入先是事实
 
@@ -187,3 +187,14 @@ R' 通过固定裁决及加载检查后，在下一研究轮替换 R；当轮仍
 - M7：至少一条系统提出的研究改动经验证并进入下一轮研究的完整链；C4 效果另由独立比较支持。
 
 业务收益、训练收益、研究收益都可能未被证实。遇到负结果应改假设或保留简单方案，不靠扩大模型数量补叙事。
+
+## 8. 实现状态（2026-09-27）
+
+路线图 M2～M7 对应的模块已实现，接口落点与已知缺口见 [研究循环](modules/04_RESEARCH_LOOP.md#6-实现状态2026-09-27)与 [研究 campaign](modules/06_RESEARCH_CAMPAIGN.md#6-实现状态2026-09-27)。按 §7 的四条验收：
+
+- M2/M3：反馈只由观测事实产生（`completion_snapshot@v1`），输入与离线真值分开——在线视图里没有 rubric、断言或世界快照，离线标注只用当时快照。夹具验收通过，尚无真实模型证据。
+- M4：策略可替换、实际影响行为（trace 分别记录提议与执行）、按完整任务配对比较并整体安装或回退。夹具验收通过。
+- M5：`bench improve` 的连续轮次从上一轮留下的版本、经验与结果出发；R 身份固定且在 trace 中可追溯。夹具里已跑通两轮相连改进。
+- M7：完整链条已跑通一次——R0 提出 R1、隔离两支比较、安装 R1、下一轮用 R1 的 prompt 提出并评测 W2。但该 R 改动由脚本研究员提出（标 `scripted`），因此**不是系统自动发现的实例**；C4 也未运行。
+
+真实研究模型能否从事实里提出有效改动，是后续付费实验的问题；本节不把工程链条算成研究收益。
