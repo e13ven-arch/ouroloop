@@ -208,3 +208,44 @@ def test_a_plan_with_too_few_independent_groups_is_named_before_the_run(fake_ups
 def test_a_pricing_table_with_an_unknown_key_is_refused():
     with pytest.raises(ValueError, match="does not take"):
         bench.pricing_of({"pricing": {"input_per_1k": 0.001, "discount": 0.5}})
+
+
+# ---------------------------------------------------------------------------- formal support
+def test_only_the_sealed_final_plan_can_make_a_claim_supported(fake_upstream, tmp_path):
+    cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
+    results = Results(activity.root, rsi.DOMAIN)
+    # development records: better on record, still not a claim
+    record(results, candidate="base", role="base", success=False, partial=0.5)
+    record(results, candidate="evolved", role="evolved", success=True)
+    assert build_report(activity.root, rsi.DOMAIN)["claims"]["C1"]["state"] == "inconclusive"
+    # the same versions under a sealed final plan, on the final tasks
+    plan = bench.FinalizationPlan(
+        experiment_id="final-2", core_ref=activity.objects.load(release, ct.SystemRelease).core_ref,
+        split_ref=activity.splits.hash(), claims=("C1",),
+        comparisons=({"claim": "C1", "subject": "evolved", "control": "base", "role": "evolved"},),
+        release_refs={"evolved": release}, task_ids=tuple(rsi.FINAL), repeats=1,
+        statistical_plan={"confidence": 0.95, "bootstrap_replicates": 300, "bootstrap_seed": 1})
+    bench.seal(plan, activity.root, activity.objects)
+    record(results, candidate="evolved", role="evolved", split="test", tasks=list(rsi.FINAL), success=True)
+    record(results, candidate="base", role="base", split="test", tasks=list(rsi.FINAL), success=False,
+           partial=0.5)
+    claims = build_report(activity.root, rsi.DOMAIN)["claims"]
+    assert claims["C1"]["state"] == "supported" and claims["C1"]["interval"]["low"] > 0
+    assert "sealed final plan" in claims["C1"]["detail"]
+
+
+def test_a_final_comparison_that_goes_the_other_way_is_not_supported(fake_upstream, tmp_path):
+    cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
+    results = Results(activity.root, rsi.DOMAIN)
+    plan = bench.FinalizationPlan(
+        experiment_id="final-3", core_ref=activity.objects.load(release, ct.SystemRelease).core_ref,
+        split_ref=activity.splits.hash(), claims=("C1",),
+        comparisons=({"claim": "C1", "subject": "evolved", "control": "base", "role": "evolved"},),
+        task_ids=tuple(rsi.FINAL), repeats=1,
+        statistical_plan={"confidence": 0.95, "bootstrap_replicates": 300})
+    bench.seal(plan, activity.root, activity.objects)
+    record(results, candidate="evolved", role="evolved", split="test", tasks=list(rsi.FINAL), success=False,
+           partial=0.5)
+    record(results, candidate="base", role="base", split="test", tasks=list(rsi.FINAL), success=True)
+    claims = build_report(activity.root, rsi.DOMAIN)["claims"]
+    assert claims["C1"]["state"] == "not_supported" and claims["C1"]["interval"]["high"] < 0

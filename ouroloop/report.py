@@ -18,6 +18,7 @@ import json
 from pathlib import Path
 
 from .benchmark import Results, RunManifest, SplitManifest, summarise
+from .evolve.task_gate import per_task
 from .evolve import contracts as ct
 from .evolve import experience as experience_mod
 from .ledger import _read_jsonl, write_json
@@ -45,6 +46,9 @@ def build_report(root: str | Path, domain: str, *, protocol: str = "ouroloop.ben
         arms[run_hash] = {
             "candidate": rows[0].candidate, "role": getattr(run, "role", ""),
             "split": rows[0].split, "v2": bool(run and run.v2()),
+            # Per task, so a claim can be judged the way the plan said: repeats averaged first, families kept.
+            "per_task": per_task(rows), "families": {r.task_id: r.family_id for r in rows},
+            "final": rows[0].split == "test",
             "model": getattr(run, "model", {}), "prompt_hash": getattr(run, "prompt_hash", ""),
             "release": getattr(run, "system_release_ref", None),
             "worker": getattr(run, "worker_ref", None), "research": getattr(run, "research_ref", None),
@@ -54,6 +58,7 @@ def build_report(root: str | Path, domain: str, *, protocol: str = "ouroloop.ben
             "refills": [r.attempt_id for r in rows if r.supersedes],
         }
     receipts = _receipts(objects, events)
+    finalization = _finalization(root, objects)
     installs = [e for e in events if e.get("event") in ("installed", "installation_failed", "stale_parent",
                                                         "rolled_back", "revoked")]
     entries = experience_mod.read(root)
@@ -66,6 +71,7 @@ def build_report(root: str | Path, domain: str, *, protocol: str = "ouroloop.ben
             "runs": len(by_run), "attempts": len(attempts),
             "releases": sorted({a["release"] for a in arms.values() if a["release"]}),
             "missing": _missing(arms, manifest),
+            "finalization": finalization,
         },
         "task_effect": {"arms": arms},
         "run_cost": {run: {"cost_usd": a["summary"]["cost_usd"], "cost_missing": a["summary"]["cost_missing"],
@@ -85,6 +91,22 @@ def build_report(root: str | Path, domain: str, *, protocol: str = "ouroloop.ben
     }
     report["claims"] = claim_states(report)
     return report
+
+
+def _finalization(root: Path, objects: ct.Objects) -> dict | None:
+    """The sealed final plan and its state, if this workspace has one. Without it there is no formal claim to
+    make: a development comparison describes the search that produced the version, not the version."""
+    directory = root / "rsi" / "finalization"
+    for path in sorted(directory.glob("*.json")) if directory.exists() else ():
+        state = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            plan = objects.get(state["plan"])
+        except (KeyError, ct.ContractError):
+            continue
+        return {"plan": state["plan"], "status": state.get("status"), "claims": plan.get("claims", []),
+                "statistical_plan": plan.get("statistical_plan", {}), "task_ids": plan.get("task_ids", []),
+                "repeats": plan.get("repeats", 1), "attempts": len(state.get("attempts", []))}
+    return None
 
 
 def _runs(results: Results) -> dict:
@@ -170,27 +192,32 @@ def _rsi_evidence(objects: ct.Objects, events: list, receipts: list) -> dict:
 
 
 def claim_states(report: dict) -> dict:
-    """Each claim's state, from what is on record. Nothing is upgraded: a development acceptance is not support,
-    and an interval that contains zero is not a demonstrated gain (docs/modules/07_BENCH_REPORT.md §4)."""
+    """Each claim's state, from what is on record.
+
+    Support comes from the sealed final plan's paired interval, in the direction the plan named, and from nothing
+    else: a development acceptance describes the search that produced the version, and an interval containing zero
+    is not a demonstrated gain (docs/modules/07_BENCH_REPORT.md §4).
+    """
     arms = report["task_effect"]["arms"]
     receipts = report["improvement_evidence"]["receipts"]
+    plan = (report.get("identity") or {}).get("finalization")
     by_role = {}
     for arm in arms.values():
         by_role.setdefault(arm["role"], []).append(arm)
     out = {}
-    out["C1"] = _pair_claim(by_role.get("evolved"), by_role.get("base"), "iteration over the same base")
+    out["C1"] = _pair_claim(by_role.get("evolved"), by_role.get("base"), "iteration over the same base", plan)
     frontier = [a for role, rows in by_role.items() if role.startswith("frontier") for a in rows]
     if not frontier or not by_role.get("evolved"):
         out["C2"] = {"state": "not_run", "detail": "no frontier comparison on record"}
     else:
         complete = len({a["role"] for a in frontier}) >= 2
-        out["C2"] = {**_pair_claim(by_role.get("evolved"), frontier, "position against leading models"),
+        out["C2"] = {**_pair_claim(by_role.get("evolved"), frontier, "position against leading models", plan),
                      "complete": complete}
         if not complete:
             out["C2"]["state"] = "inconclusive"
             out["C2"]["detail"] += "; fewer than two vendors, so C2 is incomplete"
     out["C3"] = _pair_claim(by_role.get("evolved"), by_role.get("prompt_best"),
-                            "the decision model against the same prompt without it")
+                            "the decision model against the same prompt without it", plan)
     research = [r for r in receipts if r["profile"] == "research"]
     if not research:
         out["C4"] = {"state": "not_run", "detail": "no research campaign on record"}
@@ -204,18 +231,57 @@ def claim_states(report: dict) -> dict:
     return out
 
 
-def _pair_claim(subject, control, what: str) -> dict:
+def _pair_claim(subject, control, what: str, plan: dict | None = None) -> dict:
+    """One claim's state. With final-split runs on both sides and a sealed plan, the paired interval decides."""
     if not subject or not control:
         return {"state": "not_run", "detail": f"{what}: both sides are not on record"}
-    s = _rate(subject)
-    c = _rate(control)
+    s, c = _rate(subject), _rate(control)
     if s is None or c is None:
         return {"state": "inconclusive", "detail": f"{what}: no valid attempts on one side"}
+    final = [a for a in subject if a.get("final")], [a for a in control if a.get("final")]
+    if plan and all(final):
+        interval = _final_interval(final[0], final[1], plan)
+        if interval["low"] is None:
+            return {"state": "inconclusive", "detail": f"{what}: the final interval could not be computed",
+                    "interval": interval}
+        if interval["low"] > 0:
+            return {"state": "supported",
+                    "detail": f"{what}: paired difference {interval['point']}, interval "
+                              f"[{interval['low']}, {interval['high']}] above zero on the sealed final plan",
+                    "interval": interval}
+        if interval["high"] < 0:
+            return {"state": "not_supported",
+                    "detail": f"{what}: paired difference {interval['point']}, interval "
+                              f"[{interval['low']}, {interval['high']}] below zero", "interval": interval}
+        return {"state": "inconclusive",
+                "detail": f"{what}: paired difference {interval['point']}, interval "
+                          f"[{interval['low']}, {interval['high']}] contains zero", "interval": interval}
     if s > c:
         return {"state": "inconclusive",
-                "detail": f"{what}: {s} against {c} on record; a formal claim needs the sealed final plan's "
-                          f"paired interval"}
+                "detail": f"{what}: {s} against {c} on development records; a formal claim needs the sealed "
+                          f"final plan's paired interval"}
     return {"state": "not_supported", "detail": f"{what}: {s} against {c}"}
+
+
+def _final_interval(subject: list, control: list, plan: dict) -> dict:
+    """The paired difference over the final tasks, resampled over families, with the plan's own parameters."""
+    from .evolve.task_gate import paired_bootstrap
+    stats = dict(plan.get("statistical_plan") or {})
+    s_tasks = _merge(subject)
+    c_tasks = _merge(control)
+    families = {task: family for arm in (*subject, *control) for task, family in (arm.get("families") or {}).items()}
+    return paired_bootstrap(s_tasks, c_tasks, families, seed=int(stats.get("bootstrap_seed", 0)),
+                            replicates=int(stats.get("bootstrap_replicates", 2000)),
+                            confidence=float(stats.get("confidence", 0.95)))
+
+
+def _merge(arms: list) -> dict:
+    """Task -> its mean over these runs. Two runs of one identity are one arm."""
+    totals: dict[str, list] = {}
+    for arm in arms:
+        for task, value in (arm.get("per_task") or {}).items():
+            totals.setdefault(task, []).append(float(value))
+    return {task: sum(values) / len(values) for task, values in totals.items()}
 
 
 def _rate(arms: list) -> float | None:

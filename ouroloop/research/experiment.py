@@ -235,7 +235,6 @@ def propose_experiment(context, bound, owner: str = "worker", *, researcher, obj
     configuration of a registered stage, so a round using R1 makes its real requests with R1's text — a manifest
     that merely names R1 while calling R0's prompt fails the acceptance (RL-07).
     """
-    from ..policies import Activity   # noqa: F401 - the activity object belongs to the bound runtime
     diagnose_prompt = bound.prompts.get("research.diagnose", "")
     propose_prompt = bound.prompts.get("research.propose", "")
     bound.activity.call("research.diagnose")

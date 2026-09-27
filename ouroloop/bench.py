@@ -281,6 +281,7 @@ from dataclasses import field as _field
 
 from . import policies as _P
 from .evolve import contracts as _ct
+from .evolve import experience as _experience
 from .evolve import feedback as _feedback
 from .evolve.build import build_task_dataset as _build_task_dataset
 from .evolve.execution import Budgets, Schedule
@@ -815,8 +816,7 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
     def make_round(index: int) -> RoundContext:
         release_ref = activity.releases.active()["release_ref"]
         evidence = work.collect()
-        experience, experience_ref = __import__("ouroloop.evolve.experience", fromlist=["x"]).snapshot(
-            activity.root)
+        experience, experience_ref = _experience.snapshot(activity.root)
         context = work.context(goal="improve the full-task pass rate on the development tasks",
                                release_ref=release_ref, evidence=evidence, experience=experience,
                                experience_ref=experience_ref)
@@ -870,7 +870,7 @@ def research(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = 
     and the same starting experience under an equal fixed budget. The arms cannot read each other or the outer
     tasks; the evaluator runs both sealed W* on the outer pool.
     """
-    from .research.campaign import CampaignPair, CampaignPlan, arm_workspace, run_campaign
+    from .research.campaign import CampaignPair, CampaignPlan, run_campaign
     activity = open_activity(cfg, base, out=out)
     ref = campaign_ref or activity.rsi.research_plan_ref
     if not ref or not activity.objects.has(ref):
@@ -956,7 +956,7 @@ def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_
     def make_round(index: int) -> RoundContext:
         release_ref = releases.active()["release_ref"]
         evidence = inner.collect()
-        experience, experience_ref = __import__("ouroloop.evolve.experience", fromlist=["x"]).snapshot(root)
+        experience, experience_ref = _experience.snapshot(root)
         context = inner.context(goal="improve the full-task pass rate on this campaign's development tasks",
                                release_ref=release_ref, evidence=evidence, experience=experience,
                                experience_ref=experience_ref)
@@ -1157,13 +1157,12 @@ def research_slot(cfg: dict, base: str | Path = ".", *, pairs, researcher, arm_r
     """
     from .research.campaign import CampaignPlan
     from .research.experiment import admit, freeze, propose_experiment
-    from .research.campaign import CampaignPair  # noqa: F401 - pairs are already CampaignPair objects
     activity = open_activity(cfg, base, out=out)
     release_ref = activity.releases.active()["release_ref"]
     provider = config_mod.build_provider(cfg["llm"])
     work = improvement(activity, template_ref=activity.rsi.task_plan_ref, provider=provider, owner="research")
     evidence = work.collect()
-    experience, experience_ref = __import__("ouroloop.evolve.experience", fromlist=["x"]).snapshot(activity.root)
+    experience, experience_ref = _experience.snapshot(activity.root)
     context = work.context(goal="improve how this research policy finds and verifies changes",
                            release_ref=release_ref, evidence=evidence, experience=experience,
                            experience_ref=experience_ref)

@@ -90,4 +90,6 @@ C1 支持而 C3 不支持时，可以报告框架迭代有效，不能声称训�
 
 验收：`python -m pytest tests/test_report.py tests/test_bench_phase.py -q` → 42 passed，覆盖 BR-01～BR-08 与启动检查；`examples/automationbench/marketing.toml` 给出三张表的完整示例（引用位留空并说明由 Python API 冻结）。
 
-已知缺口：`FinalizationPlan` 的统计计划只被记录，配对区间由 report 的 receipt 投影给出，尚无独立的最终配对统计入口；C3 需要调用方显式声明 `prompt_best` 与默认决策对照两条运行；真实 benchmark 成绩、frontier 实测与 C1～C4 结论都未运行。
+C1～C3 的 `supported` 只能来自密封最终计划：报告用该计划的统计参数在 final 记录上做家族层配对 bootstrap，区间全大于零才写 supported，含零写 inconclusive，全小于零写 not_supported；开发记录无论多好都只写 inconclusive 并说明需要最终计划。
+
+已知缺口：C3 需要调用方显式声明 `prompt_best` 与默认决策对照两条运行；多重比较校正只记录在 `statistical_plan` 里，没有自动施加；真实 benchmark 成绩、frontier 实测与 C1～C4 结论都未运行。

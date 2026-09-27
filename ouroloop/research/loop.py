@@ -229,24 +229,25 @@ def run_worker_rounds(make_round, budget, *, schedule: Schedule | None = None, r
     """
     schedule = schedule or Schedule()
     results, idle, infra = [], 0, 0
-    for index in range(schedule.worker_rounds):
-        stop = schedule.stop(round_index=index, idle=idle, infra_failures=infra, proposals=True,
+
+    def stop_now(index: int, proposals: bool = True) -> str:
+        return schedule.stop(round_index=index, idle=idle, infra_failures=infra, proposals=proposals,
                              affordable=budget.affordable({}) if budget else True)
+
+    for index in range(schedule.worker_rounds):
+        stop = stop_now(index)
         if stop:
             results.append(_ct.RoundResult(outcome="stopped", reason=stop))
-            break
+            return results
         result = run_worker_round(make_round(index), budget)
         results.append(result)
         if result.outcome == "no_proposal":
             results.append(_ct.RoundResult(outcome="stopped", reason="no_proposal"))
-            break
+            return results
         idle = 0 if result.outcome == "installed" else idle + 1
         infra = infra + 1 if result.outcome in ("inconclusive", "installation_failed") else 0
-        if schedule.stop(round_index=index + 1, idle=idle, infra_failures=infra, proposals=True,
-                         affordable=budget.affordable({}) if budget else True):
-            results.append(_ct.RoundResult(
-                outcome="stopped",
-                reason=schedule.stop(round_index=index + 1, idle=idle, infra_failures=infra, proposals=True,
-                                     affordable=budget.affordable({}) if budget else True)))
-            break
+        stop = stop_now(index + 1)
+        if stop:
+            results.append(_ct.RoundResult(outcome="stopped", reason=stop))
+            return results
     return results

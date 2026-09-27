@@ -86,12 +86,15 @@ def make_context(scope_id: str, *, goal: str, release_ref: str, experience_ref: 
     if bad:
         raise AccessDenied(f"evidence outside the {list(partitions)} boundary: {bad[:5]}")
     shown = public(inspection) if isinstance(inspection, Inspection) else _scrub(inspection or {})
+    # What each target actually did, from the inspection: a target with no observation is left out rather than
+    # reported as zero calls (research/inspection.py makes the same distinction).
+    activity = {target: entry.get("calls")
+                for target, entry in {**shown.get("worker", {}), **shown.get("research", {})}.items()
+                if entry.get("observed")}
     return ResearchContext(
         scope_id=scope_id, goal=goal, partitions=tuple(partitions), release_ref=release_ref,
         experience_ref=experience_ref, inspection=shown, results=_scrub(results or {}),
-        requirements=tuple(_scrub(dict(r)) for r in requirements), activity=shown.get("worker", {}) and
-        {t: e.get("calls") for t, e in {**shown.get("worker", {}), **shown.get("research", {})}.items()
-         if e.get("observed")},
+        requirements=tuple(_scrub(dict(r)) for r in requirements), activity=activity,
         feedback=_scrub(feedback or {}), experience=tuple(_scrub(dict(e)) for e in experience),
         budget=dict(budget or {}), evidence=tuple(evidence_refs), targets=dict(targets or {}),
         notes=tuple(notes))
