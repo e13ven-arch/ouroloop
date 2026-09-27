@@ -320,3 +320,46 @@ def test_it03_the_arms_cannot_read_each_other_or_the_mainline(fake_upstream, tmp
     control_experience = (control / "experience.jsonl").read_text()
     candidate_experience = (candidate / "experience.jsonl").read_text()
     assert control_experience != candidate_experience
+
+
+# ---------------------------------------------------------------------------- IT-06
+def test_it06_a_total_budget_that_cannot_verify_a_candidate_does_not_start_one(fake_upstream, tmp_path):
+    lines = []
+    cfg, activity, release, plan_ref = prepared(fake_upstream, tmp_path, out=lines.append)
+    # the earmark set aside for verification no longer covers what a full comparison and the install probe cost
+    budget = activity.budgets.account("tight", {"model_calls": 200, "tool_calls": 200})
+    budget.allocate("verification", {"model_calls": 10})
+    assert not budget.affordable({"model_calls": 20}, allocation="verification")
+    assert not budget.affordable({"model_calls": 195})       # nor may training eat what is left for verifying
+    from ouroloop.evolve.execution import Execution, execute_experiment
+    from ouroloop.research.experiment import freeze
+    experiment = freeze(activity.objects.put_json("proposal", {"owner": "worker"}), objects=activity.objects,
+                        parent_release=release, experience_ref="e",
+                        core_ref=ct.SystemRelease.from_json(activity.objects.get(release)).core_ref,
+                        eval_template_ref=plan_ref, budget_scope="tight")
+    started = []
+    out = execute_experiment(experiment, {"verify_bound": {"model_calls": 20},
+                                          "build": lambda *a: started.append("build"),
+                                          "evaluate": lambda *a: started.append("evaluate")},
+                             budget=budget, execution=Execution(activity.root, "tight-1"))
+    assert out["states"] == ["admitted", "inconclusive"] and not started
+    assert Execution(activity.root, "tight-1").state()["history"][-1]["reason"] == "budget_exhausted"
+
+
+def test_it06_the_arms_of_a_comparison_share_one_book_and_unknown_calls_keep_their_bound(fake_upstream, tmp_path):
+    from ouroloop.evolve.execution import BudgetError
+    cfg, activity, release, plan_ref = prepared(fake_upstream, tmp_path)
+    top = activity.budgets.account("campaign", {"model_calls": 100, "usd": 10.0})
+    a = top.child("campaign:arm-a", {"model_calls": 50, "usd": 5.0})
+    b = top.child("campaign:arm-b", {"model_calls": 50, "usd": 5.0})
+    lost = a.reserve("call-1", {"model_calls": 1, "usd": 3.0})
+    a.settle(lost.id, None, "unknown")                 # the response never came back
+    assert a.remaining()["remaining"]["usd"] == 2.0 and a.remaining()["unknown"] == 1
+    failed = b.reserve("train-1", {"model_calls": 1, "usd": 4.0})
+    b.settle(failed.id, {"model_calls": 1, "usd": 4.0})      # a failed training job still costs
+    with pytest.raises(BudgetError):
+        b.reserve("train-2", {"usd": 2.0})
+    assert top.remaining()["remaining"]["usd"] == 3.0        # 3 unknown + 4 spent, counted once each
+    report = build_report(activity.root, rsi.DOMAIN)
+    scopes = report["improvement_cost"]["scopes"]
+    assert scopes["campaign:arm-b"]["settled"]["usd"] == 4.0 and scopes["campaign:arm-a"]["unknown"] == 1

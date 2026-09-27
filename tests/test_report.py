@@ -1,0 +1,181 @@
+"""M7 acceptance (docs/modules/07_BENCH_REPORT.md §5): the frontier configuration, the sealed final plan, and a
+report that is a projection rather than a choice."""
+import json
+
+import pytest
+import rsi
+
+from ouroloop import bench
+from ouroloop.benchmark import Results, RunManifest, TaskResult, summarise
+from ouroloop.evolve import contracts as ct
+from ouroloop.evolve.execution import Pricing, check_pricing
+from ouroloop.report import build_report, claim_states, render_markdown, write_report
+
+
+def setup(fake_upstream, tmp_path, **kw):
+    from test_rsi_integration import prepared
+    return prepared(fake_upstream, tmp_path, out=lambda _l: None, **kw)
+
+
+def record(results: Results, *, candidate, role, split="dev", tasks=None, cost=None, success=True,
+           partial=1.0, v2=True):
+    run = rsi.run_manifest(candidate, role, split, **({"system_release_ref": "release:sha256:" + "a" * 64,
+                                                      "worker_ref": "policyset:sha256:" + "b" * 64,
+                                                      "research_ref": "policyset:sha256:" + "c" * 64,
+                                                      "core_ref": "core:sha256:" + "d" * 64} if v2 else {}))
+    results.put_run(run)
+    for task in tasks or ["rsi.dev_update_stage", "rsi.dev_notify_after_update"]:
+        results.append(TaskResult(task, f"family_{task}", split, 0, candidate, run.hash(), "man",
+                                  success=success, partial_credit=partial, cost_usd=cost))
+    return run
+
+
+# ---------------------------------------------------------------------------- BR-02 / BR-03
+def test_br03_a_frontier_table_without_a_model_or_with_extra_keys_is_refused():
+    with pytest.raises(ValueError, match="needs an"):
+        bench.frontier_configs({"frontier": {"a": {"effort": "max"}}})
+    with pytest.raises(ValueError, match="does not take"):
+        bench.frontier_configs({"frontier": {"a": {"llm": {"type": "mock"}, "temperature": 1}}})
+    parsed = bench.frontier_configs({"frontier": {"a": {"llm": {"type": "mock"}, "source": "official page",
+                                                       "date": "2026-09-27", "fallback": "declared"}}})
+    assert parsed["a"]["source"] == "official page"
+
+
+def test_br03_one_vendor_is_an_incomplete_c2_and_no_weaker_model_is_substituted(fake_upstream, tmp_path):
+    cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
+    cfg["frontier"] = {"a": {"llm": {"type": "rsi:BusinessWorker"}, "source": "fixture", "date": "2026-09-27"}}
+    lines = []
+    report = bench.baseline(cfg, ".", out=lines.append, tasks=["rsi.dev_update_stage"])
+    assert report["c2_complete"] is False
+    assert any("fewer than two vendors" in line for line in lines)
+    assert set(report["arms"]) == {"base", "a"}
+    built = build_report(activity.root, rsi.DOMAIN)
+    assert built["claims"]["C2"]["state"] in ("inconclusive", "not_run")
+    assert any("frontier" in line for line in built["identity"]["missing"])
+
+
+def test_a_model_that_cannot_be_built_is_recorded_as_absent(fake_upstream, tmp_path):
+    cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
+    cfg["frontier"] = {"a": {"llm": {"type": "rsi:BusinessWorker"}},
+                       "b": {"llm": {"type": "rsi:NoSuchProvider"}}}
+    report = bench.baseline(cfg, ".", out=lambda _l: None, tasks=["rsi.dev_update_stage"])
+    assert report["absent"] and report["absent"][0]["arm"] == "b"
+    assert "b" not in report["arms"]
+
+
+def test_br02_identical_configurations_share_one_run_identity(fake_upstream, tmp_path):
+    cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
+    results = Results(activity.root, rsi.DOMAIN)
+    base = record(results, candidate="base", role="base")
+    same = record(results, candidate="base", role="base")
+    other = record(results, candidate="prompt_best", role="prompt_best")
+    assert base.hash() == same.hash() and other.hash() != base.hash()
+    built = build_report(activity.root, rsi.DOMAIN)
+    assert built["task_effect"]["arms"][base.hash()]["summary"]["attempts"] == 4    # one identity, both runs
+    assert other.hash() in built["task_effect"]["arms"]
+
+
+# ---------------------------------------------------------------------------- BR-04
+def test_br04_unknown_cost_stays_unknown_and_partial_credit_is_not_a_pass_rate(fake_upstream, tmp_path):
+    cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
+    results = Results(activity.root, rsi.DOMAIN)
+    run = record(results, candidate="evolved", role="evolved", success=False, partial=0.9, cost=None)
+    built = build_report(activity.root, rsi.DOMAIN)
+    arm = built["task_effect"]["arms"][run.hash()]
+    assert arm["summary"]["pass_rate"] == 0.0 and arm["summary"]["partial_credit"] == 0.9
+    assert built["run_cost"][run.hash()]["cost_usd"] is None
+    assert built["run_cost"][run.hash()]["cost_missing"] == 2
+    text = render_markdown(built)
+    assert "unknown" in text
+
+
+def test_a_run_from_before_the_v2_manifest_is_named_as_such(fake_upstream, tmp_path):
+    cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
+    results = Results(activity.root, rsi.DOMAIN)
+    record(results, candidate="old", role="base", v2=False)
+    built = build_report(activity.root, rsi.DOMAIN)
+    assert any("predate the v2 manifest" in line for line in built["identity"]["missing"])
+    assert not list(built["task_effect"]["arms"].values())[0]["v2"]
+
+
+# ---------------------------------------------------------------------------- BR-05 / BR-06
+def test_br05_a_sealed_plan_resumes_and_br06_cannot_be_changed_afterwards(fake_upstream, tmp_path):
+    cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
+    plan = bench.FinalizationPlan(
+        experiment_id="final-1", core_ref=activity.objects.load(release, ct.SystemRelease).core_ref,
+        split_ref=activity.splits.hash(), claims=("C1",),
+        comparisons=({"claim": "C1", "subject": "evolved", "control": "base", "role": "evolved"},
+                     {"claim": "C1", "subject": "base", "control": "base", "role": "base"}),
+        release_refs={"evolved": release, "base": release}, task_ids=tuple(rsi.FINAL), repeats=1,
+        statistical_plan={"paired": True, "confidence": 0.95})
+    sealed = bench.seal(plan, activity.root, activity.objects)
+    cfg["rsi"]["final_plan_ref"] = sealed["plan"]
+    out = bench.evaluate(cfg, ".", out=lambda _l: None)
+    assert set(out["arms"]) == {"evolved", "base"}
+    state = json.loads(sealed["path"].read_text())
+    assert state["status"] == "completed" and len(state["attempts"]) == 4
+    # a changed final plan is a new activity, not a reseal
+    changed = bench.FinalizationPlan(**{**{k: getattr(plan, k) for k in plan.__dataclass_fields__},
+                                        "task_ids": (rsi.FINAL[0],)})
+    with pytest.raises(ValueError, match="new activity"):
+        bench.seal(changed, activity.root, activity.objects)
+    # rerunning the same plan does not change the versions it compares
+    again = bench.evaluate(cfg, ".", out=lambda _l: None)
+    assert set(again["arms"]) == {"evolved", "base"}
+
+
+def test_a_final_plan_needs_its_tasks_and_a_c1_comparison():
+    with pytest.raises(ct.ContractError, match="names the final tasks"):
+        bench.FinalizationPlan(experiment_id="x", claims=("C1",))
+    with pytest.raises(ct.ContractError, match="C1 needs"):
+        bench.FinalizationPlan(experiment_id="x", claims=("C1",), task_ids=("t1",), comparisons=())
+
+
+# ---------------------------------------------------------------------------- BR-07 / BR-08
+def test_br07_the_same_directory_reports_the_same_numbers_without_a_model(fake_upstream, tmp_path):
+    cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
+    bench.improve(cfg, ".", out=lambda _l: None, researcher=rsi.ScriptedResearcher())
+    first = bench.report(cfg, ".", out=lambda _l: None)
+    second = bench.report(cfg, ".", out=lambda _l: None)
+    assert json.dumps(first, sort_keys=True, default=str) == json.dumps(second, sort_keys=True, default=str)
+    paths = write_report(activity.root, rsi.DOMAIN, first)
+    assert paths["json"].exists() and "# ouroloop report" in paths["markdown"].read_text()
+
+
+def test_br08_each_claim_has_its_own_state(fake_upstream, tmp_path):
+    cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
+    results = Results(activity.root, rsi.DOMAIN)
+    record(results, candidate="base", role="base", success=False, partial=0.5)
+    record(results, candidate="evolved", role="evolved", success=True)
+    record(results, candidate="prompt_best", role="prompt_best", success=True)
+    built = build_report(activity.root, rsi.DOMAIN)
+    claims = built["claims"]
+    # the prompt worked, the decision model added nothing over the same prompt, and C4 was never run
+    assert claims["C1"]["state"] == "inconclusive" and "sealed final plan" in claims["C1"]["detail"]
+    assert claims["C3"]["state"] == "not_supported"
+    assert claims["C2"]["state"] == "not_run" and claims["C4"]["state"] == "not_run"
+    text = render_markdown(built)
+    for claim in ("C1", "C2", "C3", "C4"):
+        assert f"**{claim}**" in text
+
+
+def test_a_claim_with_only_one_side_on_record_is_not_run():
+    report = {"task_effect": {"arms": {"r1": {"role": "evolved", "summary": {"pass_rate": 1.0}}}},
+              "improvement_evidence": {"receipts": []}}
+    states = claim_states(report)
+    assert states["C1"]["state"] == "not_run" and states["C3"]["state"] == "not_run"
+
+
+def test_a_research_receipt_that_is_not_significant_is_not_c4_support():
+    report = {"task_effect": {"arms": {}},
+              "improvement_evidence": {"receipts": [
+                  {"profile": "research", "verdict": "accepted", "reasons": ["development acceptance"],
+                   "metrics": {"gain": 0.5}, "uncertainty": {"significant": False}}]}}
+    assert claim_states(report)["C4"]["state"] == "inconclusive"
+    report["improvement_evidence"]["receipts"][0]["uncertainty"]["significant"] = True
+    assert claim_states(report)["C4"]["state"] == "supported"
+
+
+def test_a_strict_dollar_plan_is_refused_when_the_price_cannot_be_bounded():
+    assert check_pricing(Pricing(hidden_fallback=True), {"usd": 5.0})
+    assert not check_pricing(Pricing(0.003, 0.015, 1000, 500, source="snapshot"), {"usd": 5.0})

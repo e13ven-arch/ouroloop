@@ -135,10 +135,18 @@ AUXILIARY = {"input_coverage": check_input_coverage, "label_availability": check
 
 
 # ---------------------------------------------------------------------------- core admission
+def registered_builders() -> tuple[str, ...]:
+    """The feedback builders this installation has. Trusted code, so the default is what is registered rather than
+    nothing: an empty default would make every training proposal invalid for the wrong reason."""
+    from ..evolve.feedback import BUILDERS
+    return tuple(sorted({builder.ref for builder in BUILDERS.values()}))
+
+
 def core_checks(proposal: ct.ExperimentProposal, *, context, core: ct.CoreManifest, objects: ct.Objects,
-                owner: str, budget=None, feedback_builders=()) -> list[str]:
+                owner: str, budget=None, feedback_builders=None) -> list[str]:
     """What no research policy may change, reorder or remove. Every reason returned blocks the experiment."""
     reasons = []
+    feedback_builders = registered_builders() if feedback_builders is None else feedback_builders
     if proposal.owner != owner:
         reasons.append(f"this round produces {owner} candidates; the proposal says {proposal.owner}")
     for change in proposal.changes:
@@ -175,7 +183,7 @@ def core_checks(proposal: ct.ExperimentProposal, *, context, core: ct.CoreManife
 
 def admit(proposal: ct.ExperimentProposal, *, context, core: ct.CoreManifest, objects: ct.Objects,
           owner: str = "worker", checks: tuple[str, ...] = (), history=(), budget=None,
-          feedback_builders=()) -> Admission:
+          feedback_builders=None) -> Admission:
     """The auxiliary checks in the order the research policy asked for, then the core checks always.
 
     An auxiliary `block` sends the round to collect or repair rather than spending the experiment's budget; a

@@ -309,7 +309,20 @@ class Budgets:
 
     def _exceeds(self, scope_id: str, book: dict, bound: dict, *, allocation: str | None,
                  extra_allocation: str | None = None) -> dict:
-        """Which dimension of which scope this bound would break, if any."""
+        """Which dimension of which scope this bound would break, if any.
+
+        An allocation is a limit in both directions: nothing else may eat it, and what is tagged with it may not
+        exceed it. A verification that no longer fits in its earmark is a candidate that cannot be verified, and
+        the answer to that is not to start it (EX-03).
+        """
+        if allocation is not None:
+            limits = (self.scope(scope_id, book).get("allocations") or {}).get(allocation) or {}
+            spent = self.usage(scope_id, book, allocation=allocation)
+            for dim, limit in limits.items():
+                total = spent.get(dim, 0.0) + float(bound.get(dim, 0.0))
+                if total > float(limit) + 1e-9:
+                    return {"scope_id": scope_id, "dimension": dim, "limit": limit, "would_be": round(total, 6),
+                            "allocation": allocation}
         for name in (scope_id, *self.ancestors(scope_id, book)):
             entry = self.scope(name, book)
             used = self.usage(name, book)
