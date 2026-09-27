@@ -17,6 +17,7 @@ evals/replay_campaign/REVIEW.md
 evals/replay_campaign/excluded_wrong_calls.jsonl
 evals/replay_campaign/withheld.jsonl
 examples/*/workspace*/
-ws/                             # a scratch workspace a config with [workspace] root = "ws" leaves behind
+# a scratch workspace a config with [workspace] root = "ws" leaves behind
+ws/
 
 .claude/worktrees/
