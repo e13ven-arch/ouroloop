@@ -802,14 +802,25 @@ class CompletionProbe:
         self.snaps[-1]["decisions"].append(decision)
 
     def label(self) -> int:
-        """After the episode: label every stop decision from its own snapshot. Returns how many were labelled."""
+        """After the episode: label every stop decision from its own snapshot. Returns how many were labelled.
+
+        A snapshot the scorer cannot read is recorded as a label nobody could give (label None), not skipped and
+        certainly not guessed: a feedback builder then reports `unknown`, and a "no" that came from a broken
+        scorer would be a wrong label on a real decision (docs/modules/02_EVIDENCE_TRAINING.md §2).
+        """
         labelled = 0
         for s in self.snaps:
             if s["world"] is None:
+                for d in s["decisions"]:
+                    self.rt.outcome(d, None, source="env", note="completion probe",
+                                    error="the state at this decision could not be copied")
                 continue
             try:
                 score = self.episode.score(s["world"])
-            except Exception:  # noqa: BLE001 - a snapshot the scorer cannot read stays unlabelled
+            except Exception as e:  # noqa: BLE001 - the scorer failed: unknown, never a guessed label
+                for d in s["decisions"]:
+                    self.rt.outcome(d, None, source="env", note="completion probe",
+                                    error=f"{type(e).__name__}: {e}"[:300])
                 continue
             for d in s["decisions"]:
                 self.rt.outcome(d, "yes" if score.success else "no", source="env", note="completion probe",

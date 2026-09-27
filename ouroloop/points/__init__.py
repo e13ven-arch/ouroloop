@@ -80,7 +80,7 @@ def stop_point(**kw) -> DecisionPoint:
 #
 # Everything here was visible at the decision. No rubric, no assertion, no world snapshot: the order is fixed, the
 # budget is deterministic, and whatever is cut is named in the text rather than dropped quietly.
-BUSINESS_VIEW_KEYS = {"max_task_chars", "max_events", "max_result_chars", "keep"}
+BUSINESS_VIEW_KEYS = {"max_task_chars", "max_events", "max_result_chars", "keep", "requires"}
 BUSINESS_VIEW_LIMITS = {"max_task_chars": 6000, "max_events": 40, "max_result_chars": 600}
 
 
@@ -103,6 +103,12 @@ def business_stop_view(ctx: dict, params: dict) -> str:
     unknown = sorted(set(params) - BUSINESS_VIEW_KEYS)
     if unknown:
         raise ValueError(f"the business stop view does not take {unknown}; it takes {sorted(BUSINESS_VIEW_KEYS)}")
+    for field in params.get("requires") or ():
+        # A view that needs a field the observation never stored is not rendered from whatever is at hand: the
+        # row has to be collected again, and reading the field off the final state would be reading the future
+        # (docs/modules/02_EVIDENCE_TRAINING.md §4.4).
+        if ctx.get(field) in (None, "", [], {}, ()):
+            raise KeyError(field)
     limits = {k: min(int(params.get(k, v)), v) for k, v in BUSINESS_VIEW_LIMITS.items()}
     how = params.get("keep", "head_tail")
     if how not in ("head", "tail", "head_tail"):

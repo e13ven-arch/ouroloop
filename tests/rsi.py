@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 
 from ouroloop.adapters import automationbench as ab
 from ouroloop.backends import KeywordBackend
@@ -169,3 +170,91 @@ class BusinessWorker:
                 usage=usage)
         return ChatTurn("Done: the record is updated." + (" Message posted." if done["sent"] else ""), [],
                         "end", usage=usage)
+
+
+# ---------------------------------------------------------------------------- a fixture decision model
+class PhraseDecider:
+    """A decision backend that reads the view: the task is complete when the phrase the request asked for appears
+    in a tool result, and the record has been updated if the request asked for that.
+
+    A fixture, not a training result. Its quality is defined here, so a test that shows the model changing what
+    the agent does shows the wiring; whether a real small model can learn this is what a real experiment answers.
+    """
+    name = "phrase"
+
+    def __init__(self, model: str = "trained-1", confidence: float = 0.9):
+        self.model, self.confidence = model, confidence
+        self.views: list[str] = []
+
+    def decide(self, requests):
+        from ouroloop.types import Answer
+        out = []
+        for r in requests:
+            self.views.append(r.state)
+            head, _, tail = r.state.partition("tool calls and what they returned")
+            phrase = re.search(r"phrase ([a-z ]+?)(?:,|\.|$)", head)
+            needs_update = "opportunity stage" in head and "change nothing" not in head
+            done = (phrase is None or phrase.group(1).strip() in tail) and (
+                not needs_update or "PATCH" in tail)
+            p = self.confidence if done else 1 - self.confidence
+            out.append(Answer({"yes": p, "no": 1 - p}, self.model))
+        return out
+
+
+class PhraseTrainer:
+    """Trains nothing and says so: it reads the dataset the framework built (so a missing file is still an error)
+    and returns a PhraseDecider as the artifact."""
+    supports_weights = True
+    name = "phrase"
+
+    def __init__(self, model: str = "trained-1", fail: bool = False, confidence: float = 0.9):
+        self.model, self.fail, self.confidence = model, fail, confidence
+        self.jobs: list = []
+        self.attached: list = []
+
+    def train(self, job):
+        from ouroloop.evolve.train import TrainError, TrainResult
+        if self.fail:
+            raise TrainError("CUDA out of memory")
+        rows = sum(1 for _ in open(Path(job.data_dir) / "train.jsonl", encoding="utf-8"))
+        self.jobs.append({"version": job.version, "rows": rows, "recipe": dict(job.recipe)})
+        return TrainResult(self.model, {"type": "rsi:PhraseDecider", "model": self.model,
+                                       "confidence": self.confidence},
+                           {"id": f"job-{job.version}", "host": "local", "result": {"rows": rows}})
+
+
+class UnknownJobTrainer(PhraseTrainer):
+    """A trainer whose remote job state cannot be read: `attach` returns nothing, and nothing is resubmitted."""
+
+    def attach(self, job_id):
+        self.attached.append(job_id)
+        return None
+
+
+def collect(root, suite, splits, *, worker_ref=None, provider=None, tasks=(), probe=True, serving=None,
+            releases=None, objects=None, rt=None, split="train", repeats=1, candidate="W0", role="base",
+            arm="subject", plan_ref="", stop_view=None):
+    """Run some tasks with a bound release and return everything a later step needs.
+
+    With `probe`, the completion probe labels each stop decision from the state it was made on, which is what the
+    train split is for; the runner refuses it anywhere else.
+    """
+    from ouroloop import policies as P
+    from ouroloop.evolve.task_eval import make_agent_factory, run_tasks
+    rt = rt or runtime(root)
+    objects = objects or ct.Objects(root)
+    if releases is None:
+        releases, release, objects = workspace(root, split_ref=splits.hash(), worker_ref=worker_ref)
+    release = releases.active()["release_ref"]
+    bound = P.bind_release(release, profile="task", services=P.Services(objects, serving=serving),
+                           authorization="bootstrap")
+    manifest = run_manifest(candidate, role, split, data=splits.hash(), system_release_ref=release,
+                            worker_ref=objects.load(release, ct.SystemRelease).worker_ref,
+                            research_ref=objects.load(release, ct.SystemRelease).research_ref,
+                            core_ref=objects.load(release, ct.SystemRelease).core_ref)
+    factory = make_agent_factory(rt, provider or BusinessWorker(), budget=manifest.budget, bound=bound,
+                                objects=objects, stop_view=stop_view)
+    results = run_tasks(suite, list(tasks or TRAIN), factory, run=manifest, splits=splits, probe=probe,
+                        repeats=repeats, arm=arm, plan_ref=plan_ref, release_ref=release)
+    return {"rt": rt, "objects": objects, "bound": bound, "results": results, "releases": releases,
+            "release": release, "run": manifest}
