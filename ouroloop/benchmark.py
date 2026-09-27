@@ -36,6 +36,11 @@ SPLITS = ("train", "dev", "test")
 # agent and make the attempt invalid (docs/DESIGN.md §5.2).
 TERMINATIONS = ("finished", "step_limit", "budget", "tool_refused", "harness_error", "infrastructure")
 VALID_TERMINATIONS = TERMINATIONS[:4]
+# The RunManifest fields added in v2. Unset, they stay out of the hashed payload, so every result already
+# recorded keeps the run hash it was written with.
+V2_FIELDS = ("system_release_ref", "worker_ref", "research_ref", "experience_ref", "core_ref",
+             "eval_plan_ref", "feedback_ref", "input_schema_refs", "data_lineage_ref", "budget_scope",
+             "pricing_ref", "capability_ref")
 
 
 def digest(obj: Any) -> str:
@@ -255,11 +260,33 @@ class RunManifest:
     data: str = ""                            # SplitManifest.hash()
     repeats: int = 1
     notes: str = ""
+    # v2 (docs/modules/00_CONTRACTS.md §2): the complete identity of what produced the run. Each one is left out
+    # of the payload while it is unset, so a v1 manifest keeps the hash its results were recorded under.
+    system_release_ref: str | None = None
+    worker_ref: str | None = None
+    research_ref: str | None = None
+    experience_ref: str | None = None
+    core_ref: str | None = None
+    eval_plan_ref: str | None = None
+    feedback_ref: str | None = None
+    input_schema_refs: tuple[str, ...] = ()
+    data_lineage_ref: str | None = None
+    budget_scope: str | None = None
+    pricing_ref: str | None = None
+    capability_ref: str | None = None
 
     def payload(self) -> dict:
         d = asdict(self)
         d["budget"] = asdict(self.budget)
-        return {k: v for k, v in d.items() if k != "notes"}
+        d["input_schema_refs"] = list(self.input_schema_refs)
+        return {k: v for k, v in d.items()
+                if k != "notes" and not (k in V2_FIELDS and not v)}
+
+    def v2(self) -> bool:
+        """Whether this manifest carries the v2 identity. A run missing any of it is a v1 run, and saying so is
+        the point: a report that needs the release, the core and the plan may not read a manifest that has none
+        of them as though it had them (CT-02)."""
+        return all(getattr(self, k) for k in ("system_release_ref", "worker_ref", "research_ref", "core_ref"))
 
     def hash(self) -> str:
         return digest(self.payload())[:16]
@@ -272,7 +299,9 @@ class RunManifest:
         d = dict(d)
         d.pop("hash", None)
         budget = d.pop("budget", None) or {}
-        return cls(**d, budget=Budget(**budget))
+        if "input_schema_refs" in d:
+            d["input_schema_refs"] = tuple(d["input_schema_refs"] or ())
+        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__}, budget=Budget(**budget))
 
 
 # ---------------------------------------------------------------------------- one attempt
@@ -309,6 +338,15 @@ class TaskResult:
     evidence: str = ""                        # the session id; its transcript is transcripts/<session>.jsonl
     decisions: list[str] = field(default_factory=list)
     labelled: int = 0                         # decisions the completion probe labelled from this attempt
+    # v2: which attempt this was, which pair it belongs to, and what produced it. `pair_key` is the formal
+    # pairing key (plan, task, repeat): two arms are compared on it, never on a session id that happens to match.
+    attempt_id: str = ""
+    pair_key: str = ""
+    system_release_ref: str | None = None
+    failure_class: str = ""                   # task_outcome | candidate_defect | infrastructure | evaluator
+    supersedes: str = ""                      # the attempt_id this refill replaces; the original stays on record
+    budget_receipt_ref: str | None = None
+    observation_refs: list[str] = field(default_factory=list)
     schema: str = RESULT_SCHEMA
 
     def __post_init__(self) -> None:
