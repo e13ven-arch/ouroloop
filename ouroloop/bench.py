@@ -389,7 +389,7 @@ class Improvement:
 
     def run_arm(self, arm: str, release_ref: str, order, *, plan_ref: str, split: str = "dev",
                 candidate: str = "candidate", role: str = "evolved", probe: bool = False,
-                permit: str | None = None, scope: str | None = None) -> list:
+                permit: str | None = None, scope: str | None = None, retry_index: int = 0) -> list:
         """One arm's attempts. Each arm is assembled from its own release, with its own session, tool environment
         and episode; nothing mutable is shared between the two sides (docs/modules/03_EVALUATION_RELEASE.md §2)."""
         from .evolve.task_eval import make_agent_factory, run_tasks
@@ -416,7 +416,7 @@ class Improvement:
                                      meta={"arm": arm, "scope": self.scope_id})
         return run_tasks(self.suite, [t for t, _ in order], factory, run=run, splits=self.splits,
                          results=self.results, probe=probe, arm=arm, plan_ref=plan_ref,
-                         release_ref=release_ref, order=list(order))
+                         release_ref=release_ref, order=list(order), retry_index=retry_index)
 
     def rt_environment(self) -> dict:
         return {"upstream": self.suite.versions.get("commit", ""), "package": self.suite.versions.get("package", ""),
@@ -549,10 +549,12 @@ class Improvement:
         arm_release = self.releases.candidate_release(parent, candidate_ref, permit)
         self._plans[candidate_ref] = (plan_ref, arm_release)
 
-        def run(arm, order):
+        def run(arm, order, retry=0):
             if arm == "subject":
-                return self.run_arm(arm, arm_release, order, plan_ref=plan_ref, permit=permit)
-            return self.run_arm(arm, parent, order, plan_ref=plan_ref, candidate="control", role="base")
+                return self.run_arm(arm, arm_release, order, plan_ref=plan_ref, permit=permit,
+                                    retry_index=retry)
+            return self.run_arm(arm, parent, order, plan_ref=plan_ref, candidate="control", role="base",
+                                retry_index=retry)
 
         receipt = evaluate_task(plan, run=run, objects=self.objects, experiment_ref=self._experiment_ref,
                                 families=self.families())

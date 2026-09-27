@@ -310,22 +310,47 @@ def screen(plan: TaskEvalPlan, subject: list[TaskResult], control: list[TaskResu
                     + ("" if s_tasks else "; no task result yet")]
 
 
+def refill(plan: TaskEvalPlan, arm: str, rows: list, run) -> list:
+    """Re-run the attempts that failed for infrastructure reasons, under the plan's frozen retry policy.
+
+    Only those: a task the agent legitimately failed is evidence and is never re-rolled, and a candidate defect is
+    the candidate's (docs/modules/03_EVALUATION_RELEASE.md §3). The original attempt and its cost stay on record,
+    and the refill says which attempt it supersedes — a comparison that deleted its failures would be describing a
+    different run.
+    """
+    limit = int((plan.retry_policy or {}).get("max_infrastructure_retries", 0))
+    out = list(rows)
+    for attempt_index in range(1, limit + 1):
+        done = {r.pair_key for r in out if r.validity == "valid"}
+        broken = [r for r in out if r.validity == "invalid" and r.failure_class == "infrastructure"
+                  and r.pair_key not in done]
+        if not broken:
+            break
+        order = [(r.task_id, r.attempt) for r in broken]
+        for refilled in run(arm, order, attempt_index):
+            original = next((r for r in broken if r.pair_key == refilled.pair_key), None)
+            if original is not None:
+                refilled.supersedes = original.attempt_id
+            out.append(refilled)
+    return out
+
+
 def evaluate_task(plan: TaskEvalPlan, *, run, objects: ct.Objects, experiment_ref: str,
                   families: dict[str, str], protected: dict | None = None,
                   results_sink=None) -> ct.EvaluationReceipt:
     """Run both arms of a frozen plan and file the receipt.
 
-    `run(arm, order) -> list[TaskResult]` belongs to the caller: this module fixes the order, the statistics and
-    the verdict, and the runner belongs to whoever owns the environment. Every attempt and its cost go into the
-    receipt's results object, including the failures — a receipt that kept only the attempts that worked would be
-    describing a different run.
+    `run(arm, order, retry=0) -> list[TaskResult]` belongs to the caller: this module fixes the order, the
+    statistics and the verdict, and the runner belongs to whoever owns the environment. Every attempt and its cost
+    go into the receipt's results object, including the failures — a receipt that kept only the attempts that
+    worked would be describing a different run.
     """
     plan_ref = objects.put(plan)
     order = plan.order()
     rows = {"subject": [], "control": []}
     for arm in ("subject", "control"):
         arm_order = [(task, repeat) for task, repeat, side in order if side == arm]
-        rows[arm] = list(run(arm, arm_order))
+        rows[arm] = refill(plan, arm, list(run(arm, arm_order, 0)), run)
         if results_sink is not None:
             for r in rows[arm]:
                 results_sink(arm, r)

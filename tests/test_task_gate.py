@@ -148,6 +148,35 @@ def test_er02_a_refill_completes_the_pair_and_the_failed_attempt_stays_on_record
     assert verdict == "inconclusive" and any("pairs are incomplete" in r for r in reasons)
 
 
+def test_er02_the_retry_policy_refills_only_the_infrastructure_failures(tmp_path):
+    """ER-02 as the production path runs it: the plan's retry policy refills the broken attempt, the original
+    stays on record, and a task the agent simply failed is never re-rolled."""
+    objects = ct.Objects(tmp_path)
+    p = plan(tmp_path, task_ids=("t1", "t3", "t4"), retry_policy={"max_infrastructure_retries": 1})
+    calls = []
+    first = {"subject": True}
+
+    def run(arm, order, retry=0):
+        calls.append((arm, tuple(t for t, _ in order), retry))
+        if arm == "subject" and first["subject"]:
+            first["subject"] = False
+            return [*rows(p, {"t1": True}, validity="invalid", failure_class="infrastructure"),
+                    *rows(p, {"t3": True, "t4": False})]
+        if arm == "subject":
+            return rows(p, {"t1": True}, attempt_suffix="#1")
+        return rows(p, {"t1": False, "t3": False, "t4": False})
+
+    receipt = evaluate_task(p, run=run, objects=objects, experiment_ref="experiment:sha256:" + "a" * 64,
+                           families=FAMILIES)
+    assert calls[1] == ("subject", ("t1",), 1) and len(calls) == 3      # only the broken pair, once
+    stored = objects.get(receipt.results_ref)["attempts"]["subject"]
+    assert len(stored) == 4 and [a["validity"] for a in stored].count("invalid") == 1
+    assert [a for a in stored if a["supersedes"]][0]["supersedes"].startswith("run-1/t1")
+    assert receipt.verdict == "accepted" and receipt.metrics["invalid"]["subject"] == 1
+    # the task the agent failed (t4) is not re-run: it is evidence
+    assert all("t4" not in tasks or retry == 0 for _arm, tasks, retry in calls)
+
+
 def test_a_candidate_defect_is_invalid_and_cannot_be_dropped_as_infrastructure(tmp_path):
     p = plan(tmp_path, task_ids=("t1", "t3", "t4"))
     subject = [*rows(p, {"t1": True, "t3": True}), *rows(p, {"t4": False}, validity="invalid",
@@ -178,8 +207,8 @@ def test_evaluate_task_files_every_attempt_and_the_order(tmp_path):
     outcomes = {"subject": {"t1": True, "t3": True, "t4": True}, "control": {"t1": False, "t3": True, "t4": False}}
     seen = []
 
-    def run(arm, order):
-        seen.append((arm, tuple(order)))
+    def run(arm, order, retry=0):
+        seen.append((arm, tuple(order), retry))
         return rows(p, outcomes[arm])
 
     receipt = evaluate_task(p, run=run, objects=objects, experiment_ref="experiment:sha256:" + "f" * 64,
@@ -187,7 +216,7 @@ def test_evaluate_task_files_every_attempt_and_the_order(tmp_path):
     assert receipt.verdict == "accepted" and receipt.profile == "task"
     stored = objects.get(receipt.results_ref)
     assert len(stored["attempts"]["subject"]) == 3 and len(stored["order"]) == 6
-    assert {arm for arm, _ in seen} == {"subject", "control"}
+    assert {arm for arm, *_rest in seen} == {"subject", "control"}
     assert objects.get(receipt.plan_ref)["task_ids"] == ["t1", "t3", "t4"]
 
 

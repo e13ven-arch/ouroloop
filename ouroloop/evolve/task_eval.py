@@ -167,7 +167,8 @@ def run_attempt(suite, task_id: str, make_agent: Callable, *, run: RunManifest, 
 def run_tasks(suite, task_ids: list[str], make_agent: Callable, *, run: RunManifest, splits: SplitManifest,
               results=None, repeats: int = 1, system: str | None = None, probe: bool = False,
               on_result: Callable[[TaskResult], None] | None = None, arm: str = "subject", plan_ref: str = "",
-              release_ref: str | None = None, order: list[tuple[str, int]] | None = None) -> list[TaskResult]:
+              release_ref: str | None = None, order: list[tuple[str, int]] | None = None,
+              retry_index: int = 0) -> list[TaskResult]:
     """Every attempt of a run, in a fixed order, each one recorded as it finishes.
 
     Results are appended as they come so an interrupted run keeps the attempts it paid for; nothing here reruns
@@ -178,7 +179,8 @@ def run_tasks(suite, task_ids: list[str], make_agent: Callable, *, run: RunManif
     out = []
     for task_id, i in (order if order is not None else [(t, i) for t in task_ids for i in range(repeats)]):
         attempt = run_attempt(suite, task_id, make_agent, run=run, splits=splits, attempt=i, system=system,
-                              probe=probe, arm=arm, plan_ref=plan_ref, release_ref=release_ref)
+                              probe=probe, arm=arm, plan_ref=plan_ref, release_ref=release_ref,
+                              retry_index=retry_index)
         try:
             out.append(attempt.result)
             if results is not None:
