@@ -125,3 +125,126 @@ def run_rounds(rt, agent, llm, judge, *, rounds: int = 5, patience: int = 2, **k
         if idle >= patience:
             break
     return results
+
+
+# ---------------------------------------------------------------------------- the task/research profile's round
+# docs/modules/04_RESEARCH_LOOP.md §1. The legacy round above stays exactly as it was: it goes through a gate
+# record, a replay evaluator and the champion pointer. This round goes through a full-task receipt and a complete
+# release, and the two never borrow each other's authorisation.
+from dataclasses import dataclass as _dataclass
+from dataclasses import field as _field
+
+from ..evolve import contracts as _ct
+from ..evolve import experience as _experience
+from ..evolve.execution import Execution, Schedule, execute_experiment
+from .experiment import admit, freeze, propose_experiment
+
+
+@_dataclass
+class RoundContext:
+    """Everything one worker round is fixed to before it starts."""
+    releases: object                      # release.Releases
+    objects: _ct.Objects
+    scope_id: str
+    context: object                       # research.context.ResearchContext
+    researcher: object                    # .diagnose(context, prompt) / .propose(context, prompt, reqs, exp)
+    bound: object                         # the loaded release (policies.BoundRuntime), whose R runs the steps
+    core_ref: str
+    eval_template_ref: str
+    handlers: dict                        # build / evaluate / install / screen / verify_bound
+    experience_ref: str = ""
+    experience: tuple = ()
+    owner: str = "worker"
+    schedule: Schedule = _field(default_factory=Schedule)
+    history: tuple = ()                   # proposal signatures this activity has already frozen
+    feedback_builders: tuple = ("completion_snapshot@v1",)
+    experiment_id: str | None = None
+    root: object = None
+
+
+def run_worker_round(round_context: RoundContext, budget) -> _ct.RoundResult:
+    """One improvement round: propose, admit, build, evaluate, install, then write down what happened.
+
+    The outcome is the execution's own terminal state, never a gate verdict standing in for it: `accepted` and
+    `installed` are different facts, and a round that accepted a candidate it then failed to install has to say
+    so (docs/modules/00_CONTRACTS.md §3).
+    """
+    ctx = round_context
+    root = ctx.root or ctx.releases.root
+    before = ctx.releases.active()["release_ref"]
+    core = ctx.objects.load(ctx.core_ref, _ct.CoreManifest)
+    proposal_result = propose_experiment(ctx.context, ctx.bound, ctx.owner, researcher=ctx.researcher,
+                                        objects=ctx.objects, max_candidates=ctx.schedule.candidates_per_round,
+                                        experience=ctx.experience)
+    if not proposal_result.proposals:
+        _experience.append(root, {"kind": "round", "outcome": "no_proposal",
+                                  "next_action": proposal_result.next_action, "reason": proposal_result.reason,
+                                  "scope": ctx.scope_id, "release": before})
+        return _ct.RoundResult(outcome="no_proposal", release_before=before, release_after=before,
+                               reason=proposal_result.reason or proposal_result.next_action,
+                               evidence_refs=tuple(proposal_result.evidence_refs))
+    proposal = proposal_result.proposals[0]
+    admission = admit(proposal, context=ctx.context, core=core, objects=ctx.objects, owner=ctx.owner,
+                      checks=tuple(ctx.bound.preflight or ()), history=ctx.history, budget=budget,
+                      feedback_builders=ctx.feedback_builders)
+    if not admission.ok:
+        _experience.append(root, {"kind": "round", "outcome": admission.status, "reasons": admission.reasons,
+                                  "checks": admission.checks, "scope": ctx.scope_id, "release": before,
+                                  "hypothesis": proposal.hypothesis})
+        return _ct.RoundResult(outcome=admission.status, release_before=before, release_after=before,
+                               reason="; ".join(admission.reasons)[:300])
+    experiment = freeze(admission.proposal_ref, objects=ctx.objects, parent_release=before,
+                        experience_ref=ctx.experience_ref, core_ref=ctx.core_ref,
+                        eval_template_ref=ctx.eval_template_ref, budget_scope=ctx.scope_id,
+                        experiment_id=ctx.experiment_id)
+    ctx.objects.put(experiment)
+    execution = Execution(root, experiment.id)
+    outcome = execute_experiment(experiment, ctx.handlers, budget=budget, execution=execution,
+                                expected_parent=before)
+    after = ctx.releases.active()["release_ref"]
+    receipt, installation = outcome.get("receipt"), outcome.get("installation")
+    record = _experience.experiment_record(
+        experiment_id=experiment.id, proposal_ref=admission.proposal_ref, owner=ctx.owner,
+        hypothesis=proposal.hypothesis, changes=proposal.changes,
+        requirements=[getattr(r, "id", r) for r in proposal_result.requirements], build=outcome.get("build"),
+        receipt=receipt, installation=installation, activity=ctx.bound.activity.to_json(),
+        release_before=before, release_after=after, costs=budget.remaining() if budget else {},
+        evidence_refs=proposal.evidence_refs,
+        open_questions=[c["detail"] for c in admission.checks if c["verdict"] == "warn"],
+        notes=f"states: {'->'.join(outcome['states'])}")
+    _experience.append(root, record)
+    return _ct.RoundResult(outcome=outcome["states"][-1], experiment_id=experiment.id, release_before=before,
+                           release_after=after, evidence_refs=proposal.evidence_refs,
+                           receipt_ref=receipt.ref() if receipt else None,
+                           reason="; ".join(getattr(receipt, "reasons", ()) or ())[:300])
+
+
+def run_worker_rounds(make_round, budget, *, schedule: Schedule | None = None, root=None) -> list:
+    """Rounds until one of the fixed stop rules fires (execution.Schedule).
+
+    `make_round(index) -> RoundContext` is called per round, so each round sees the release, the experience and
+    the results that the previous one left — which is the whole point of a loop whose versions persist.
+    """
+    schedule = schedule or Schedule()
+    results, idle, infra = [], 0, 0
+    for index in range(schedule.worker_rounds):
+        stop = schedule.stop(round_index=index, idle=idle, infra_failures=infra, proposals=True,
+                             affordable=budget.affordable({}) if budget else True)
+        if stop:
+            results.append(_ct.RoundResult(outcome="stopped", reason=stop))
+            break
+        result = run_worker_round(make_round(index), budget)
+        results.append(result)
+        if result.outcome == "no_proposal":
+            results.append(_ct.RoundResult(outcome="stopped", reason="no_proposal"))
+            break
+        idle = 0 if result.outcome == "installed" else idle + 1
+        infra = infra + 1 if result.outcome in ("inconclusive", "installation_failed") else 0
+        if schedule.stop(round_index=index + 1, idle=idle, infra_failures=infra, proposals=True,
+                         affordable=budget.affordable({}) if budget else True):
+            results.append(_ct.RoundResult(
+                outcome="stopped",
+                reason=schedule.stop(round_index=index + 1, idle=idle, infra_failures=infra, proposals=True,
+                                     affordable=budget.affordable({}) if budget else True)))
+            break
+    return results

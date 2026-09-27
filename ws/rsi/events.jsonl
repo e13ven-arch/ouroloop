@@ -1,0 +1,2 @@
+{"ts": "2026-09-27T12:27:37.792Z", "event": "release_created", "release": "release:sha256:8398defb3a3b803ca038503f9a9939af3b4296fc35de6411b1c0bcded0231520", "authorization": "bootstrap", "reason": "initial version from the configuration"}
+{"ts": "2026-09-27T12:27:37.792Z", "event": "installed", "release": "release:sha256:8398defb3a3b803ca038503f9a9939af3b4296fc35de6411b1c0bcded0231520", "revision": 1, "authorization": "bootstrap"}

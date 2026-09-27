@@ -1,0 +1,1 @@
+{"applicability":{},"binding":"research_step","evidence_refs":[],"fallback":"default","implementation":{"artifact_ref":"change:sha256:5ccaf46a73371662951e1a87e270e3f9558d9df03b5109c5b62758ba8c7a9c0c","kind":"prompt"},"input_schema":"research.context.v1","limits":{},"output_schema":"requirement_list.v1","owner":"research","schema_version":2,"target":"research.diagnose"}

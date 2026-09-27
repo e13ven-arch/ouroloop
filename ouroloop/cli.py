@@ -399,20 +399,32 @@ def cmd_hook(args) -> int:
 
 
 def cmd_bench(args) -> int:
-    """A benchmark phase on a configured domain. Exit 1 means a check failed, not that the agent scored badly."""
+    """A benchmark phase on a configured domain. Exit 1 means a check failed, not that the agent scored badly.
+
+    Each phase takes only the arguments that mean something for it, so `--checks-only` cannot quietly turn an
+    improvement round into something else.
+    """
     from .adapters.automationbench import UpstreamError
     from .bench import run_phase
     cfg = config.load(args.config)
+    kw = {"smoke": dict(tasks=args.task, limit=args.limit, run_agent=not args.checks_only,
+                        replace_splits=args.replace_splits),
+          "baseline": dict(tasks=args.task, limit=args.limit),
+          "collect": dict(tasks=args.task, repeats=args.repeats),
+          "improve": dict(rounds=args.rounds),
+          "research": dict(campaign_ref=args.plan),
+          "evaluate": dict(plan_ref=args.plan),
+          "report": {}}[args.phase]
     try:
-        report = run_phase(cfg, Path(args.config).resolve().parent, phase=args.phase, tasks=args.task,
-                           limit=args.limit, run_agent=not args.checks_only, replace_splits=args.replace_splits)
-    except (UpstreamError, NotImplementedError, ValueError) as e:
+        report = run_phase(cfg, Path(args.config).resolve().parent, phase=args.phase,
+                           **{k: v for k, v in kw.items() if v is not None})
+    except (UpstreamError, NotImplementedError, ValueError, TypeError) as e:
         print(f"ouroloop bench: {e}", file=sys.stderr)
         return 2
     if args.out:
         Path(args.out).write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
         print(f"report: {args.out}")
-    return 0 if report.get("ok") else 1
+    return 0 if report.get("ok", True) else 1
 
 
 def replay_items(path: str | Path) -> list[dict]:
@@ -559,13 +571,17 @@ def main(argv: list[str] | None = None) -> int:
     bn.set_defaults(fn=cmd_bench)
     bn.add_argument("--config", required=True, help="e.g. examples/automationbench/marketing.toml")
     bn.add_argument("--phase", choices=list(PHASES), default="smoke",
-                    help="smoke: versions, frozen splits, contract checks, input audit and a few dev attempts")
+                    help="smoke: versions, frozen splits, contract checks, input audit and a few dev attempts; "
+                         "then baseline, collect, improve, research, evaluate, report")
     bn.add_argument("--task", action="append", help="only this task; repeatable (development tasks only)")
     bn.add_argument("--limit", type=int, help="how many tasks to attempt (default: [bench] smoke_tasks)")
     bn.add_argument("--checks-only", action="store_true", help="run the checks and call no model")
     bn.add_argument("--replace-splits", action="store_true",
                     help="freeze the task groups again; refused once the workspace holds results")
     bn.add_argument("--out", help="write the phase report as JSON")
+    bn.add_argument("--rounds", type=int, help="improve: how many worker rounds (default: the frozen schedule)")
+    bn.add_argument("--repeats", type=int, help="collect: attempts per training task")
+    bn.add_argument("--plan", help="research/evaluate: the frozen plan to run, instead of the one in [rsi]")
     r = sub.add_parser("research", help="research rounds on a configured workspace")
     r.set_defaults(fn=cmd_research)
     r.add_argument("--config", default="ouroloop.toml")

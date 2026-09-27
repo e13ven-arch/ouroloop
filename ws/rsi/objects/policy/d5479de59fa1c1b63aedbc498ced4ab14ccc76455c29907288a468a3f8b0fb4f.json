@@ -1,0 +1,1 @@
+{"applicability":{},"binding":"research_step","evidence_refs":[],"fallback":"default","implementation":{"artifact_ref":"change:sha256:b4949c768bfc2e6565913167179cece2eb2abae3fb1d9ed0459e02e846fa070a","kind":"prompt"},"input_schema":"research.context.v1","limits":{},"output_schema":"proposal_list.v1","owner":"research","schema_version":2,"target":"research.propose"}

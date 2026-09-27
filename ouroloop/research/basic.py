@@ -218,3 +218,84 @@ class BasicResearcher:
             if d.action == "yes":
                 chosen.append(c)
         return chosen
+
+
+# ---------------------------------------------------------------------------- the task/research profile
+# docs/modules/04_RESEARCH_LOOP.md §2. BasicResearcher above proposes changes to decision-point specs and recipes
+# through the legacy gate. This one proposes changes to registered policy targets, from a ResearchContext, using
+# the prompts of the research policy set that is actually loaded — so replacing R replaces the text of the real
+# request, and a version that only renamed itself makes identical requests and fails the acceptance.
+from ..evolve import contracts as _ct
+from .experiment import ProposalResult as _ProposalResult
+
+REQUIREMENT_FORMAT = (
+    'Reply with JSON only: {"requirements": [{"id": "...", "context": "...", "expected_behavior": "...", '
+    '"observed_behavior": "...", "evidence_refs": ["..."], "acceptance": "...", "recurrence": 1}]}. '
+    "Every observed_behavior must cite evidence from the context. Do not propose a fix here.")
+PROPOSAL_FORMAT = (
+    'Reply with JSON only: {"next_action": "none|collect|repair_runtime|stop", "reason": "...", '
+    '"proposals": [{"hypothesis": "...", "requirements": ["..."], "evidence_refs": ["..."], '
+    '"changes": [{"target": "...", "kind": "prompt|rule|workflow|model", "change": {...}}], '
+    '"training": [], "expected": "...", "abandon_if": "..."}]}. '
+    "The targets you may change, and what each accepts, are in the context. Choose the simplest carrier that "
+    "could close the gap. Do not fill in results, verdicts or thresholds.")
+
+
+class PolicyResearcher:
+    """The researcher of the task profile: a fixed base model, prompts from the loaded research policy set.
+
+    It proposes and nothing more. It cannot write a verdict, a threshold or a result — those fields do not exist
+    on a proposal — and every reference it cites is checked against the context it was given, so a hallucinated
+    evidence id is an invalid proposal rather than a fact (RL-04).
+    """
+
+    def __init__(self, llm, *, max_proposals: int = 1, max_state_chars: int = 12000):
+        self.llm = llm                      # .complete(system, prompt) -> text
+        self.max_proposals = max_proposals
+        self.max_state_chars = max_state_chars
+        self.requests: list[dict] = []      # what was actually sent, so a test can see which R ran
+
+    def diagnose(self, context, prompt: str) -> list[dict]:
+        text = self._ask(prompt, context, REQUIREMENT_FORMAT, "diagnose")
+        out = []
+        for item in parse_json(text).get("requirements", []) or []:
+            if not isinstance(item, dict) or not item.get("observed_behavior"):
+                continue
+            cited = [r for r in item.get("evidence_refs") or [] if r in set(context.evidence)]
+            out.append({**{k: item.get(k, "") for k in ("id", "context", "expected_behavior",
+                                                        "observed_behavior", "acceptance")},
+                        "evidence_refs": cited, "recurrence": int(item.get("recurrence") or 1),
+                        "uncited": [r for r in item.get("evidence_refs") or [] if r not in set(context.evidence)]})
+        return out
+
+    def propose(self, context, prompt: str, requirements, experience=()) -> _ProposalResult:
+        text = self._ask(prompt, context, PROPOSAL_FORMAT, "propose",
+                         extra={"requirements": requirements, "experience": list(experience)[:10]})
+        data = parse_json(text)
+        proposals = []
+        for item in (data.get("proposals") or [])[:self.max_proposals]:
+            if not isinstance(item, dict):
+                continue
+            try:
+                proposals.append(_ct.ExperimentProposal(
+                    owner="worker", hypothesis=str(item.get("hypothesis", ""))[:2000],
+                    requirements=tuple(str(r) for r in item.get("requirements") or ()),
+                    evidence_refs=tuple(r for r in item.get("evidence_refs") or () if r in set(context.evidence)),
+                    changes=tuple(item.get("changes") or ()), training=tuple(item.get("training") or ()),
+                    expected=str(item.get("expected", ""))[:1000],
+                    abandon_if=str(item["abandon_if"])[:500] if item.get("abandon_if") else None))
+            except _ct.ContractError:
+                continue                    # a malformed proposal is dropped here and counted by the caller
+        action = data.get("next_action") if data.get("next_action") in ("collect", "repair_runtime", "stop",
+                                                                       "none") else "none"
+        return _ProposalResult(proposals=proposals, next_action=action if not proposals else "none",
+                               reason=str(data.get("reason", ""))[:500],
+                               evidence_refs=tuple(context.evidence))
+
+    def _ask(self, prompt: str, context, fmt: str, step: str, extra: dict | None = None) -> str:
+        state = context.prompt_state(self.max_state_chars)
+        if extra:
+            state += "\n" + json.dumps(extra, ensure_ascii=False, default=str)[:4000]
+        system = f"{prompt}\n\n{fmt}" if prompt else fmt
+        self.requests.append({"step": step, "system": system, "prompt_hash": _ct.digest({"system": system})[:16]})
+        return self.llm.complete(system, state)

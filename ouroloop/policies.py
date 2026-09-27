@@ -650,3 +650,78 @@ def fixed_defaults(services: Services, *, profile: str = "task") -> BoundRuntime
                         stop=StopDecider(default, point=business_stop_point(),
                                          default=resolve("worker.stop").fallback),
                         services=services)
+
+
+# ---------------------------------------------------------------------------- a proposal as a candidate version
+def build_candidate(experiment, *, objects: ct.Objects, parent_release: str, owner: str = "worker",
+                    services: Services | None = None, train=None, budget=None) -> ct.BuildResult:
+    """An admitted proposal becomes a complete candidate policy set (the `build_candidate` of M0 §3).
+
+    Nothing is promoted here and nothing is installed: the result is a policy set that an evaluation may be given
+    a permit for. A change that cannot be turned into a valid descriptor is an invalid build with the reason —
+    never an empty candidate that later reads as "the default did fine" (docs/modules/00_CONTRACTS.md §3).
+
+    `train(entry, budget) -> {"model_ref", "spec", "inference", "artifacts", "costs"}` is the caller's training
+    step (pipeline.train_artifact over a built dataset). It is called only for the proposal's training entries,
+    and a training failure is a failed build, not a silent prompt-only candidate.
+    """
+    proposal = objects.load(experiment.proposal_ref, ct.ExperimentProposal)
+    parent = objects.load(parent_release, ct.SystemRelease)
+    parent_set = parent.worker_ref if owner == "worker" else parent.research_ref
+    artifacts: dict = {}
+    costs: dict = {}
+    changed: list[PolicyDescriptor] = []
+    errors: list[str] = []
+    for change in proposal.changes:
+        target, kind = change["target"], change["kind"]
+        try:
+            payload = objects.get(change["change_ref"]) if "change_ref" in change else change["change"]
+            changed.append(descriptor(objects, target, kind, dict(payload) if isinstance(payload, dict)
+                                      else payload, evidence_refs=proposal.evidence_refs))
+            artifacts[target] = change.get("change_ref")
+        except (ct.ContractError, KeyError, TypeError, ValueError) as e:
+            errors.append(f"{target}: {e}")
+    for entry in proposal.training:
+        if train is None:
+            errors.append(f"training {entry['point']} was proposed and this build has no training step")
+            continue
+        try:
+            trained = train(entry, budget)
+        except Exception as e:  # noqa: BLE001 - a training failure is a failed build with its reason
+            errors.append(f"training {entry['point']}: {type(e).__name__}: {e}"[:300])
+            continue
+        if not trained or not trained.get("model_ref"):
+            errors.append(f"training {entry['point']}: {trained.get('reason') if trained else 'no artifact'}")
+            continue
+        target = trained.get("target", "worker.stop")
+        changed.append(descriptor(objects, target, "model", trained.get("spec") or {},
+                                  model_ref=trained["model_ref"], inference=trained.get("inference") or {},
+                                  evidence_refs=proposal.evidence_refs))
+        artifacts[target] = trained.get("artifact_ref")
+        costs.update(trained.get("costs") or {})
+    if errors:
+        return ct.BuildResult(status="invalid", artifacts=artifacts, errors=tuple(errors), costs=costs)
+    try:
+        candidate = replace_policies(objects, parent_set, changed,
+                                     provenance_ref=objects.put_json("change", {
+                                         "experiment": experiment.id, "proposal": experiment.proposal_ref,
+                                         "parent_release": parent_release}))
+    except ct.ContractError as e:
+        return ct.BuildResult(status="invalid", artifacts=artifacts, errors=(str(e),), costs=costs)
+    core = objects.load(parent.core_ref, ct.CoreManifest)
+    validation = validate_policy_set(objects.load(candidate, PolicySet), objects,
+                                     {**(core.capabilities or {}), "targets": core.targets or None})
+    if not validation.ok:
+        return ct.BuildResult(status="invalid", artifacts=artifacts, errors=tuple(validation.errors), costs=costs)
+    if services is not None and services.serving is not None:
+        # An artifact that cannot be assembled is caught here rather than during the comparison, where it would
+        # cost a full dev run to discover.
+        try:
+            release = ct.SystemRelease(
+                worker_ref=candidate if owner == "worker" else parent.worker_ref,
+                research_ref=candidate if owner == "research" else parent.research_ref,
+                core_ref=parent.core_ref, authorization_ref=parent.authorization_ref, parent_ref=parent_release)
+            bind_release(objects.put(release), profile="preflight", services=services)
+        except BindError as e:
+            return ct.BuildResult(status="invalid", artifacts=artifacts, errors=(str(e),), costs=costs)
+    return ct.BuildResult(status="ready", candidate_ref=candidate, artifacts=artifacts, costs=costs)

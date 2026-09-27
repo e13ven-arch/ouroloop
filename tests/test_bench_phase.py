@@ -135,9 +135,20 @@ class TestSmoke:
 
 
 class TestPhases:
-    def test_an_unimplemented_phase_is_refused_with_the_milestone(self, fake_upstream):
-        with pytest.raises(NotImplementedError, match="M2 in docs/ROADMAP.md"):
+    def test_br01_a_phase_whose_requirements_are_missing_is_refused_before_a_model_is_called(self, fake_upstream):
+        """BR-01: the refusal names the missing piece, and the smoke entry keeps working."""
+        with pytest.raises(ValueError, match=r"\[llm\] table"):
             bench.run_phase(config(fake_upstream), phase="baseline")
+        with pytest.raises(ValueError, match="task_plan_ref"):
+            bench.run_phase(config(fake_upstream, llm={"type": "mock"}), phase="improve")
+        with pytest.raises(ValueError, match="research_plan_ref"):
+            bench.run_phase(config(fake_upstream, llm={"type": "mock"}), phase="research")
+        with pytest.raises(ValueError, match="final_plan_ref"):
+            bench.run_phase(config(fake_upstream, llm={"type": "mock"}), phase="evaluate")
+
+    def test_a_phase_refuses_arguments_that_do_not_apply_to_it(self, fake_upstream):
+        with pytest.raises(TypeError, match="does not take"):
+            bench.run_phase(config(fake_upstream), phase="report", limit=1)
 
     def test_an_unknown_phase_is_refused(self, fake_upstream):
         with pytest.raises(ValueError, match="unknown phase"):
@@ -166,10 +177,12 @@ class TestCli:
         assert cli.main(["bench", "--config", str(path), "--checks-only"]) == 2
         assert "not an AutomationBench checkout" in capsys.readouterr().err
 
-    def test_an_unimplemented_phase_exits_two(self, tmp_path, fake_upstream, capsys):
+    def test_a_phase_that_cannot_run_yet_exits_two_and_says_why(self, tmp_path, fake_upstream, capsys):
         path = self.write(tmp_path, fake_upstream)
-        assert cli.main(["bench", "--config", str(path), "--phase", "report"]) == 2
-        assert "M6 in docs/ROADMAP.md" in capsys.readouterr().err
+        assert cli.main(["bench", "--config", str(path), "--phase", "improve"]) == 2
+        assert "task_plan_ref" in capsys.readouterr().err
+        assert cli.main(["bench", "--config", str(path), "--phase", "nope" if False else "baseline"]) == 2
+        assert "[llm] table" in capsys.readouterr().err
 
 
 class TestRunIdentity:

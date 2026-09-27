@@ -1,0 +1,1 @@
+{"applicability":{},"binding":"config","evidence_refs":[],"fallback":"default","implementation":{"artifact_ref":"change:sha256:63be7e41e020bc00ee1c7926929730c6f0a0b9c0c3d83427c76eb5acfba8dc67","kind":"prompt"},"input_schema":"research.context.v1","limits":{},"output_schema":"prompt.v1","owner":"worker","schema_version":2,"target":"worker.system_prompt"}

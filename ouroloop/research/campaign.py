@@ -1,0 +1,276 @@
+"""M6: comparing two research policies by what they produce (docs/modules/06_RESEARCH_CAMPAIGN.md).
+
+A research candidate is not a better-sounding prompt. It has to improve task policies under the same starting
+point and the same budget, and be measured on tasks the inner loop never saw. So a campaign is:
+
+    two arms, R0 and R1, from the same W0 and the same starting experience, with equal fixed budgets
+    each arm runs the ordinary worker loop, research slots disabled, and seals the W it actually installed
+    both sealed W* are then run on the same outer tasks, by the evaluator, and compared
+
+What the module refuses is the interesting part. An arm cannot read the other arm's results, the outer oracle or
+the mainline pointer — not because a prompt asks it not to, but because it is handed a different workspace and a
+scope that does not include them. Repeating one task pool with ten seeds stays one independence group, because
+the seeds do not make the tasks independent. And the W* an arm produced does not reach the mainline: it is
+evidence about a research policy, and adopting it means comparing it as a task policy on its own.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from ..evolve import contracts as ct
+from ..evolve.task_gate import GatePlan, paired_bootstrap, per_task, regression_rate
+
+PHASES = ("research_dev", "final")
+SELECTION_RULES = ("last_installed", "last_accepted")
+
+
+@dataclass
+class CampaignPair(ct.Record):
+    """One starting point, run by both arms. `independence_group` is the statistical unit: two pairs over the same
+    task pool share one, whatever their seeds."""
+    TYPE = "campaignpair"
+    pair_id: str = ""
+    independence_group: str = ""
+    initial_w_ref: str = ""
+    initial_experience_ref: str = ""
+    inner_train_groups: tuple[str, ...] = ()
+    inner_dev_groups: tuple[str, ...] = ()
+    outer_groups: tuple[str, ...] = ()
+    split_ref: str = ""
+    repeats: int = 1
+    seed_schedule: tuple[int, ...] = (0,)
+    schema_version: int = ct.SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        overlap = sorted((set(self.inner_train_groups) | set(self.inner_dev_groups)) & set(self.outer_groups))
+        if overlap:
+            raise ct.ContractError(f"the outer groups of {self.pair_id} are also inner groups: {overlap}; a task "
+                                   f"the inner loop optimises on cannot measure what the inner loop produced")
+        if not self.outer_groups:
+            raise ct.ContractError(f"{self.pair_id} has no outer groups to be measured on")
+
+
+@dataclass
+class CampaignPlan(ct.Record):
+    TYPE = "campaign"
+    id: str = ""
+    phase: str = "research_dev"
+    core_ref: str = ""
+    r_control_ref: str = ""
+    r_candidate_ref: str = ""
+    campaign_pairs: tuple[str, ...] = ()          # CampaignPair refs
+    arm_budget: dict = field(default_factory=dict)
+    worker_round_limit: int = 2
+    worker_gate_plan_ref: str = ""
+    research_gate_plan: dict = field(default_factory=dict)
+    retry_policy: dict = field(default_factory=dict)
+    selection_rule: str = "last_installed"
+    finalization_ref: str | None = None
+    discovery: str = "automatic"                  # automatic | scripted | manual_seed (RC-10)
+    schema_version: int = ct.SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        if self.phase not in PHASES:
+            raise ct.ContractError(f"campaign phase {self.phase!r}: one of {list(PHASES)}")
+        if self.selection_rule not in SELECTION_RULES:
+            raise ct.ContractError(f"selection rule {self.selection_rule!r}: one of {list(SELECTION_RULES)}")
+        if not self.campaign_pairs:
+            raise ct.ContractError("a campaign plan names its pairs before it runs")
+        if self.r_control_ref == self.r_candidate_ref:
+            raise ct.ContractError("the two arms would run the same research policy")
+        if self.discovery not in ("automatic", "scripted", "manual_seed"):
+            raise ct.ContractError(f"discovery {self.discovery!r}")
+        GatePlan.from_json(self.research_gate_plan) if self.research_gate_plan else None
+
+    def gate(self) -> GatePlan:
+        return GatePlan.from_json(self.research_gate_plan)
+
+
+class CampaignError(RuntimeError):
+    """A campaign that cannot be run as declared, or an arm that reached outside its scope."""
+
+
+# ---------------------------------------------------------------------------- validation
+def validate(plan: CampaignPlan, *, objects: ct.Objects, lineage=None) -> list[str]:
+    """What makes this campaign unusable before anything is paid for.
+
+    `lineage(ref) -> set of family ids` reports which task families a starting W or experience was derived from.
+    An initial version trained on an outer family makes the outer pool a development pool, and renaming the task
+    does not change that (RC-04).
+    """
+    reasons = []
+    for owner, ref in (("control", plan.r_control_ref), ("candidate", plan.r_candidate_ref)):
+        try:
+            policy_set = objects.load(ref, ct.PolicySet)
+        except (KeyError, ct.ContractError) as e:
+            reasons.append(f"the {owner} research policy set is unreadable: {e}")
+            continue
+        if policy_set.owner != "research":
+            reasons.append(f"the {owner} arm was given a {policy_set.owner} policy set")
+    groups: dict[str, list[str]] = {}
+    for ref in plan.campaign_pairs:
+        try:
+            pair = objects.load(ref, CampaignPair)
+        except (KeyError, ct.ContractError) as e:
+            reasons.append(f"pair {ct.short(ref)} is unreadable: {e}")
+            continue
+        groups.setdefault(pair.independence_group, []).append(pair.pair_id)
+        if lineage is not None:
+            seen = set(lineage(pair.initial_w_ref)) | set(lineage(pair.initial_experience_ref))
+            leaked = sorted(seen & set(pair.outer_groups))
+            if leaked:
+                reasons.append(f"{pair.pair_id}: the starting version or experience already comes from the outer "
+                               f"families {leaked}")
+    if plan.phase == "final" and len(groups) < 2:
+        reasons.append(f"a final campaign reports over independence groups and this plan has {len(groups)}: "
+                       f"more seeds on one pool do not make it two")
+    return reasons
+
+
+def arm_workspace(root: str | Path, pair_id: str, arm: str) -> Path:
+    """Each arm's own workspace: its own pointer, its own experience index, its own objects.
+
+    The separation is what keeps the arms independent; it is not a security boundary, and the docs say so. Once
+    policy code can be executed, this has to become real process and filesystem isolation.
+    """
+    return Path(root) / "campaigns" / pair_id / arm
+
+
+# ---------------------------------------------------------------------------- execution
+@dataclass
+class ArmOutcome:
+    arm: str
+    pair_id: str
+    w_star: str = ""                          # the sealed W: the last installed one, or W0
+    rounds: tuple = ()
+    installed: tuple = ()
+    stop_reason: str = ""
+    costs: dict = field(default_factory=dict)
+    inner_evidence: tuple = ()
+    research_requests: tuple = ()             # what the arm's R actually sent, so R0 and R1 are distinguishable
+
+    def to_json(self) -> dict:
+        return {"arm": self.arm, "pair_id": self.pair_id, "w_star": self.w_star,
+                "rounds": [dict(r) for r in self.rounds], "installed": list(self.installed),
+                "stop_reason": self.stop_reason, "costs": dict(self.costs),
+                "research_requests": list(self.research_requests)}
+
+
+def select_w(outcome: ArmOutcome, pair: CampaignPair, rule: str = "last_installed") -> str:
+    """The W this arm produced, by the rule fixed before the campaign: the last one it actually installed, or the
+    starting W when it installed none. Never chosen by the outer score."""
+    if rule == "last_installed":
+        return outcome.installed[-1] if outcome.installed else pair.initial_w_ref
+    accepted = [r for r in outcome.rounds if r.get("verdict") == "accepted"]
+    return accepted[-1].get("release_after") or pair.initial_w_ref if accepted else pair.initial_w_ref
+
+
+def run_campaign(plan: CampaignPlan, *, run_arm, evaluate_outer, objects: ct.Objects, budget,
+                 experiment_ref: str = "", lineage=None, events=None) -> ct.EvaluationReceipt:
+    """Run every declared pair with both arms, then compare what they produced on the outer tasks.
+
+    `run_arm(pair, arm, r_ref, workspace, budget) -> ArmOutcome` runs the ordinary worker loop in isolation, and
+    `evaluate_outer(pair, {arm: w_star}) -> {arm: [TaskResult]}` is the evaluator's own run. Both belong to the
+    caller: this function fixes the order, the isolation, the budgets and the verdict.
+    """
+    reasons = validate(plan, objects=objects, lineage=lineage)
+    if reasons:
+        raise CampaignError("; ".join(reasons))
+    plan_ref = objects.put(plan)
+    pairs = [objects.load(ref, CampaignPair) for ref in plan.campaign_pairs]
+    outer: dict[str, dict[str, list]] = {}
+    arms_out: dict[str, list[ArmOutcome]] = {"control": [], "candidate": []}
+    for pair in pairs:
+        sealed = {}
+        for arm, r_ref in (("control", plan.r_control_ref), ("candidate", plan.r_candidate_ref)):
+            # A fixed child budget per arm: what one arm does not spend is not handed to the other, because equal
+            # spend is part of what makes the comparison a comparison (docs/modules/05_EXECUTION_BUDGET.md §2).
+            child = budget.child(f"{plan.id}:{pair.pair_id}:{arm}", dict(plan.arm_budget))
+            outcome = run_arm(pair, arm, r_ref, child)
+            outcome.w_star = outcome.w_star or select_w(outcome, pair, plan.selection_rule)
+            arms_out[arm].append(outcome)
+            sealed[arm] = outcome.w_star
+            if events is not None:
+                events.append("campaign_arm", campaign=plan.id, pair=pair.pair_id, arm=arm,
+                              w_star=outcome.w_star, stop_reason=outcome.stop_reason,
+                              installed=list(outcome.installed))
+        outer[pair.pair_id] = evaluate_outer(pair, sealed)
+    verdict, notes, metrics, uncertainty = judge_research(plan, pairs, outer, arms_out)
+    results_ref = objects.put_json("change", {
+        "campaign": plan_ref, "arms": {arm: [o.to_json() for o in outs] for arm, outs in arms_out.items()},
+        "outer": {pid: {arm: [r.to_json() for r in rows] for arm, rows in by_arm.items()}
+                  for pid, by_arm in outer.items()}})
+    return ct.EvaluationReceipt(experiment_ref=experiment_ref, profile="research",
+                                subject_ref=plan.r_candidate_ref, control_ref=plan.r_control_ref,
+                                plan_ref=plan_ref, results_ref=results_ref, verdict=verdict,
+                                reasons=tuple(notes), metrics=metrics, uncertainty=uncertainty,
+                                costs=_costs(arms_out))
+
+
+def _costs(arms_out: dict) -> dict:
+    out = {}
+    for arm, outcomes in arms_out.items():
+        total: dict = {}
+        for outcome in outcomes:
+            for key, value in (outcome.costs or {}).items():
+                if isinstance(value, (int, float)):
+                    total[key] = round(total.get(key, 0) + value, 6)
+        out[arm] = total
+    return out
+
+
+def judge_research(plan: CampaignPlan, pairs, outer: dict, arms_out: dict) -> tuple[str, list[str], dict, dict]:
+    """The research verdict: the outer full-task quality of what each arm produced, by independence group.
+
+    The unit is the independence group, not the pair and not the task: pairs over one task pool are correlated, so
+    they are merged before anything is resampled, and a plan with one group can only report an exploratory result.
+    """
+    gate = plan.gate()
+    groups = {pair.pair_id: pair.independence_group for pair in pairs}
+    per_group: dict[str, dict[str, list[float]]] = {}
+    notes: list[str] = []
+    for pair_id, by_arm in outer.items():
+        group = groups.get(pair_id, pair_id)
+        for arm in ("control", "candidate"):
+            tasks = per_task(by_arm.get(arm) or [])
+            if not tasks:
+                notes.append(f"{pair_id}/{arm}: no valid outer attempt")
+            mean = sum(tasks.values()) / len(tasks) if tasks else None
+            if mean is not None:
+                per_group.setdefault(group, {}).setdefault(arm, []).append(mean)
+    subject = {g: sum(v["candidate"]) / len(v["candidate"]) for g, v in per_group.items() if v.get("candidate")}
+    control = {g: sum(v["control"]) / len(v["control"]) for g, v in per_group.items() if v.get("control")}
+    shared = sorted(set(subject) & set(control))
+    stats = paired_bootstrap(subject, control, {g: g for g in shared}, seed=gate.bootstrap_seed,
+                             replicates=gate.bootstrap_replicates, confidence=gate.confidence_level)
+    metrics = {"groups": len(shared), "pairs": len(outer),
+               "candidate_outer_pass_rate": round(sum(subject.values()) / len(subject), 6) if subject else None,
+               "control_outer_pass_rate": round(sum(control.values()) / len(control), 6) if control else None,
+               "gain": stats["point"], "regression_rate": regression_rate(subject, control),
+               "not_reached": [f"{o.pair_id}/{arm}" for arm, outs in arms_out.items() for o in outs
+                               if o.stop_reason and o.stop_reason != "rounds_done"],
+               "installed": {arm: [len(o.installed) for o in outs] for arm, outs in arms_out.items()},
+               "discovery": plan.discovery}
+    uncertainty = {"outer": stats, "significant": bool(stats.get("excludes_zero") and len(shared) >= 3),
+                   "note": "one campaign pool shows stability within its conditions, never a general "
+                           "improvement in research ability"}
+    if plan.discovery == "manual_seed":
+        notes.append("the research change was written by hand: the engineering chain is exercised, automatic "
+                     "discovery is not claimed")
+    if not shared:
+        return "inconclusive", [*notes, "no independence group produced outer results on both arms"], metrics, \
+            uncertainty
+    if len(shared) < gate.min_groups:
+        return "inconclusive", [*notes, f"{len(shared)} independence groups, the plan needs {gate.min_groups}: "
+                                        f"exploratory only"], metrics, uncertainty
+    if stats["point"] < gate.min_gain:
+        return "rejected", [*notes, f"the candidate's W produced {stats['point']} more than the control's, below "
+                                    f"the plan's {gate.min_gain}"], metrics, uncertainty
+    if metrics["regression_rate"] > gate.max_regression_rate:
+        return "rejected", [*notes, f"regression rate {metrics['regression_rate']} above "
+                                    f"{gate.max_regression_rate}"], metrics, uncertainty
+    return "accepted", [*notes, "development acceptance of the research policy"
+                                + ("" if uncertainty["significant"] else "; the interval still contains zero, so "
+                                                                        "C4 is not supported by this run")], \
+        metrics, uncertainty

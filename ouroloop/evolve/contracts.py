@@ -723,3 +723,40 @@ class Events:
         for e in self.all():
             if e.get("event") == kind:
                 yield e
+
+
+def refs_in(payload: Any) -> set[str]:
+    """Every content reference inside a payload, at any depth."""
+    out: set[str] = set()
+    if isinstance(payload, str):
+        if REF.fullmatch(payload):
+            out.add(payload)
+    elif isinstance(payload, dict):
+        for value in payload.values():
+            out |= refs_in(value)
+    elif isinstance(payload, (list, tuple)):
+        for value in payload:
+            out |= refs_in(value)
+    return out
+
+
+def copy_closure(source: Objects, target: Objects, refs) -> set[str]:
+    """Copy these objects and everything they refer to into another store. -> the refs copied.
+
+    Identity travels with the bytes: the same object has the same ref in both stores, which is what lets an
+    isolated arm hand a version back to the evaluator without either side trusting the other's directory
+    (docs/modules/06_RESEARCH_CAMPAIGN.md §3).
+    """
+    seen: set[str] = set()
+    frontier = [r for r in refs if r]
+    while frontier:
+        ref = frontier.pop()
+        if ref in seen:
+            continue
+        seen.add(ref)
+        payload = source.get(ref)
+        copied = target.put_json(parse_ref(ref)[0], payload)
+        if copied != ref:
+            raise ContractError(f"{short(ref)} changed identity when copied: {short(copied)}")
+        frontier.extend(r for r in refs_in(payload) if r not in seen)
+    return seen
