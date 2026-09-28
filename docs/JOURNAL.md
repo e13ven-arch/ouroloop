@@ -8,6 +8,14 @@
 
 ---
 
+## 2026-09-28 第一次真实模型运行：GLM-5.3 跑一个 Marketing dev 任务
+
+- 做了什么：领先模型改为引用公布数字，不在本地运行（DESIGN §3.2、ROADMAP M2、模块 07）。来源两个：官方榜单（私有集）与上游 README 的公开集结果（含 GLM 5.2 max 26.17%，六域合计）。本地用智谱 GLM-5.3（OpenAI 兼容接口，thinking 为默认开启），经我们的 W0（含 finish check、业务停止视图、计量）跑 dev 任务 `marketing.product_adoption`（14 个断言，长度居中）：`ouroloop bench --config examples/automationbench/marketing.local.toml --phase baseline --task marketing.product_adoption`。
+- 证据：通过（task_completed_correctly = 1，partial 1.0），15 轮、29 次工具调用、229 秒。prompt 共 225,196 tokens，其中缓存命中 197,568（88%）；输出 11,662，其中推理 6,441。
+- token 从哪来：第一轮 prompt 只有 1,210 tokens（系统提示、工具定义与任务），之后每次请求都带上全部历史，平均每轮增加约 1.85k，到第 15 轮是 27,132。增长主要来自 `api_search` 返回的端点目录（top_k 10～15，每次约 2.5k～4k tokens）和 base64 编码的邮件正文；另有两轮花在未连接的 Salesforce、HubSpot（401），两轮花在回读已发邮件核对。
+- 证据边界：一个任务、一次运行，不代表通过率。这次的 `cost_usd` 为空（运行时没有 `[pricing]`），费用由逐轮用量离线换算。
+- commit：见本条记录的 Git 历史。
+
 ## 2026-09-28 付费运行前的补齐：计量、计费、续跑与计划冻结
 
 - 做了什么：`MeteredProvider` 接到所有阶段，agent 与研究员的每次模型调用先预留、按实测结算，额度用尽的尝试记为 `budget_exhausted`（不补跑，比较记 inconclusive）；一个活动只有一个预算根，各阶段、campaign 各支与外层评测都是其子额度。每次尝试按 `[pricing]` 计算 `cost_usd`，先用 `normalize_usage` 统一供应商的用量词汇，缓存读写单独计价，缺价则 unknown。`evaluate` 与 `improve` 中断后从记录续跑：尝试 id 由计划、臂、任务、重复与重试决定，已记录的尝试原样保留，构建已完成的不重训，安装重放自身 operation 最多提交一次。补跑在写入结果库时就带上 `supersedes`。新增 `ouroloop freeze`，从 `[freeze.task_plan]`、`[freeze.schedule]`、`[freeze.budget]`、`[freeze.final]` 冻结对象并打印 `[rsi]` 引用。

@@ -311,3 +311,28 @@ def test_the_freeze_command_exits_two_on_a_bad_table(fake_upstream, tmp_path, ca
 def test_the_pricing_table_takes_the_cache_rates():
     pricing = bench.pricing_of({"pricing": {**PRICING, "cache_read_per_1k": 0.0003, "cache_write_per_1k": 0.00375}})
     assert pricing.cache_read_per_1k == 0.0003 and pricing.cache_write_per_1k == 0.00375
+
+
+class CachedWorker(rsi.BusinessWorker):
+    """The scripted worker, reporting its usage the way an OpenAI-compatible API does, with a cache hit."""
+
+    def chat(self, system, messages, specs):
+        turn = super().chat(system, messages, specs)
+        turn.usage = {"prompt_tokens": 1000, "completion_tokens": 50,
+                      "prompt_tokens_details": {"cached_tokens": 800}}
+        return turn
+
+
+def test_an_attempt_keeps_its_cache_counts_so_its_cost_can_be_recomputed(fake_upstream, tmp_path):
+    cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
+    work = bench.improvement(activity, template_ref=plan_ref, provider=CachedWorker(),
+                             pricing=bench.pricing_of({"pricing": {**PRICING, "cache_read_per_1k": 0.0003}}))
+    row = work.run_arm("cached", release, [("rsi.dev_update_stage", 0)], plan_ref="", split="dev")[0]
+    calls = row.usage["prompt_tokens"] // 1000
+    assert row.usage["cache_read_tokens"] == 800 * calls
+    # recomputed from the record alone, the cost is the one the attempt was written with
+    recomputed = Pricing(0.003, 0.015, cache_read_per_1k=0.0003).cost(
+        {"input_tokens": row.usage["prompt_tokens"] - row.usage["cache_read_tokens"],
+         "output_tokens": row.usage["completion_tokens"], "cache_read_tokens": row.usage["cache_read_tokens"],
+         "cache_write_tokens": 0})
+    assert row.cost_usd == pytest.approx(recomputed)

@@ -9,14 +9,14 @@
 | phase | 读取 | 执行与写入 |
 |---|---|---|
 | smoke | adapter/固定 split/少量 dev | 保留现有契约检查，checks-only 不调模型 |
-| baseline | 固定候选模型/合法配置、dev | 合理 base、至少两家 frontier 配置的开发测量、输入审查与失败分布 |
+| baseline | 目标底座的合法配置、dev | 合理 base 的开发测量、输入审查与失败分布；领先模型不在本地运行 |
 | collect | 明确的 train groups | 当前 W 执行、CompletionProbe 离线反馈和数据审查；不读 dev/test 标签训练 |
 | improve | 当前 W/R/E、train/dev | M4+M5 的固定 R worker 循环，可选择训练；形成开发 prompt_best/evolved |
 | research | 已冻结 CampaignPlan、research_dev | M6 比较和安装 R，后续 worker round 验证 R1 回用 |
 | evaluate | 一次冻结的 FinalizationPlan | 固定 C1～C3 版本及可选 C4 final campaigns，运行独立最终任务；不晋升或调优 |
 | report | 已存 manifests/results/receipts | 纯离线聚合与回放，不调模型、不按最终分数选最优版本 |
 
-baseline 的 frontier 选择依据实验启动日目标域的官方资料，保存来源、日期与供应商精确 model/effort/fallback；至少两家是完整 C2 交付要求。缺席一家的记录可以发布，但状态为 C2 不完整，不换弱模型充数。基础配置合理化计入优化预算，不能故意给 base 缺失必要工具说明。
+领先模型的数字取自官方榜单（私有集）与上游 README 的公开集结果，不在本地运行（2026-09-28 决定，见 DESIGN §3.2）。引用时保存来源、抓取日期、条目、effort 与评测集；报告里与本地成绩并列时标明两者不是同一套题。`[frontier.*]` 表与 baseline 阶段里的 frontier 臂仍然保留，只在日后需要同题比较时启用。基础配置合理化计入优化预算，不能故意给 base 缺失必要工具说明。
 
 ## 2. 配置边界
 

@@ -121,6 +121,14 @@ def run_attempt(suite, task_id: str, make_agent: Callable, *, run: RunManifest, 
         for key, value in raw.items():
             if isinstance(value, (int, float)):
                 usage[key] = usage.get(key, 0) + value
+        if raw:
+            # The cache counts sit in nested fields for some providers (OpenAI's prompt_tokens_details), and a
+            # flat sum drops them. Kept here under one name, so the attempt's cost can be recomputed later from
+            # its own record at any price, rather than only from the transcript.
+            normalized = normalize_usage(raw)
+            for key in ("cache_read_tokens", "cache_write_tokens"):
+                if normalized[key]:
+                    usage[key] = usage.get(key, 0) + normalized[key]
         if raw and pricing is not None:
             costs.append(pricing.cost(normalize_usage(raw)))
 
