@@ -78,7 +78,8 @@ def test_the_research_step_is_metered_too(fake_upstream, tmp_path):
     context = type("C", (), {"prompt_state": lambda self, n=0: "{}", "evidence": ()})()
     researcher.diagnose(context, "diagnose prompt")
     ops = [r["operation_id"] for r in book(activity)["reservations"].values()]
-    assert any(op.endswith(":research#0.0") for op in ops)
+    # booked under the research operation and labelled with its step, so a report can say what each step cost
+    assert any(op.endswith(":research:diagnose#0.0") for op in ops)
 
 
 def test_a_candidate_the_budget_cannot_verify_is_not_started(fake_upstream, tmp_path):

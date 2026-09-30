@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
@@ -455,3 +456,121 @@ class Releases:
                                           "last_operation_id": op})
         self.events.append("rolled_back", release=target, retired=current, reason=reason, operation=op)
         return target
+
+
+# ---------------------------------------------------------------------------- the minimal app (M3 §4)
+EXPORT_KINDS = ("policyset", "policy", "change", "model_identity", "package", "bundle", "file", "manifest",
+                "harness")
+LOCAL_PATH = re.compile(r"(^|[\s\"'])(/Users/|/home/|/private/|[A-Za-z]:\\\\)")
+
+
+def export_deployment(releases: "Releases", release_ref: str, destination: str | Path) -> str:
+    """Write the runnable subset of an installed, unrevoked release into `destination`. -> the manifest ref.
+
+    A whitelist walk from the worker set: the W policies and the artifacts they bind (prompts, the finish
+    instruction, the stop rule, the actor's identity and provider configuration, the capability package's run
+    bundle and manifest). Not copied: R, the package's test bundle, evidence, proposals and experiments, notes,
+    grading, results, the experience log. What K contributes is a runtime projection — the targets, the toolset,
+    the package limits — with the core's identity as a digest. Anything that looks like a credential or a local
+    path refuses the export (docs/modules/03_EVALUATION_RELEASE.md §4).
+    """
+    from .evolve import contracts as ct
+    objects = releases.objects
+    installed = {e.get("release") for e in ct.Events(releases.root).of("installed")}
+    if release_ref not in installed or releases.revoked(release_ref):
+        raise NotAuthorized(f"{ct.short(release_ref)} is not an installed, unrevoked release")
+    rel = objects.load(release_ref, ct.SystemRelease)
+    # Built in a staging directory beside the destination and moved in only once the whole export is scanned: a
+    # refused export leaves nothing of what it refused behind.
+    import shutil
+    import tempfile
+    Path(destination).parent.mkdir(parents=True, exist_ok=True)
+    stage = Path(tempfile.mkdtemp(prefix=".export-", dir=Path(destination).parent))
+    try:
+        manifest_ref = _export_into(objects, releases, rel, release_ref, stage)
+        shutil.copytree(stage, destination, dirs_exist_ok=True)
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+    write_json(Path(destination) / "deployment.json", {"manifest_ref": manifest_ref})
+    return manifest_ref
+
+
+def _export_into(objects, releases, rel, release_ref: str, destination: Path) -> str:
+    from .evolve import contracts as ct
+    out = ct.Objects(destination)
+    copied: set = set()
+
+    def copy(ref: str) -> None:
+        if not ref or ref in copied or not ct.REF.fullmatch(str(ref)):
+            return
+        kind = ct.parse_ref(ref)[0]
+        if kind not in EXPORT_KINDS or not objects.has(ref):
+            return
+        payload = objects.get(ref)
+        copied.add(ref)
+        out.put_json(kind, payload)
+        if kind == "policyset":
+            for policy in payload.get("policies") or ():
+                copy(policy)
+            return                             # parent and provenance stay strings: never followed
+        if kind == "policy":
+            for key, value in (payload.get("implementation") or {}).items():
+                if key != "kind":
+                    copy(value)
+            return                             # evidence_refs are not part of what runs
+        if kind == "package":
+            for key in ("bundle_ref", "manifest_ref", "package_api_ref", "dependency_set_ref"):
+                copy(payload.get(key))
+            return                             # the test bundle never ships
+        if kind == "model_identity":
+            copy(payload.get("inference_ref"))
+            return
+        for value in ct.refs_in(payload):
+            copy(value)
+
+    copy(rel.worker_ref)
+    core = objects.load(rel.core_ref, ct.CoreManifest)
+    harness = (core.capabilities or {}).get("harness") or {}
+    worker_targets = [t for t in (core.targets or ()) if t.startswith("worker.")]
+    required_core = out.put_json("change", {"core": ct.short(rel.core_ref), "domain": core.domain,
+                                             "toolset": core.toolset, "targets": worker_targets,
+                                             "package_limits": harness.get("package"),
+                                             "worker": {"image": harness.get("image"),
+                                                        "image_id": harness.get("image_id")}
+                                             if harness.get("sandbox") else None})
+    auth = objects.load(rel.authorization_ref, ct.Authorization)
+    validation = {"authorization": auth.kind, "release": ct.short(release_ref)}
+    if auth.kind == "accepted" and auth.ref and objects.has(auth.ref):
+        receipt = objects.load(auth.ref, ct.EvaluationReceipt)
+        metrics = receipt.metrics or {}
+        validation.update({"verdict": receipt.verdict, "gain": metrics.get("gain"),
+                           "regression_rate": metrics.get("regression_rate"),
+                           "significant": (receipt.uncertainty or {}).get("significant"),
+                           "receipt": ct.short(auth.ref)})
+    validation_ref = out.put_json("change", validation)
+    package_ref, identities = None, []
+    for policy_ref in objects.load(rel.worker_ref, ct.PolicySet).policies:
+        p = objects.load(policy_ref, ct.PolicyDescriptor)
+        if p.target == "worker.harness":
+            package_ref = objects.get(p.implementation["config_ref"])["package_ref"]
+        if p.target == "worker.actor":
+            identities.append(p.implementation["model_identity_ref"])
+    dependencies: dict = {"python": ">=3.11", "runtime": "ouroloop"}
+    for ref in identities:
+        identity = objects.load(ref, ct.ModelIdentity)
+        config = objects.get(identity.inference_ref)
+        dependencies["model_service"] = {"provider": identity.provider, "model": identity.base_model,
+                                         "endpoint": config.get("base_url"), "credential_env": config.get("api_key_env"),
+                                         "mutable": identity.mutable, "offline": False}
+    if package_ref is not None and harness.get("sandbox"):
+        dependencies["worker"] = {"image": harness.get("image"), "image_id": harness.get("image_id")}
+    manifest = ct.DeploymentManifest(
+        source_release_ref=release_ref, worker_ref=rel.worker_ref, required_core_ref=required_core,
+        validation_ref=validation_ref, target_harness_ref=rel.target_harness_ref, package_ref=package_ref,
+        model_refs=tuple(identities), external_dependencies=dependencies)
+    manifest_ref = out.put(manifest)
+    for path in Path(destination).rglob("*.json"):
+        text = path.read_text(encoding="utf-8")
+        if LOCAL_PATH.search(text) or re.search(r'"(api_key|token|secret|password)"\s*:', text, re.I):
+            raise ValueError(f"the export would carry a local path or a credential ({path.name}); refusing")
+    return manifest_ref

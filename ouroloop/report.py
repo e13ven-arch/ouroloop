@@ -87,10 +87,171 @@ def build_report(root: str | Path, domain: str, *, protocol: str = "ouroloop.ben
             "installations": installs,
         },
         "rsi_evidence": _rsi_evidence(objects, events, receipts),
+        "harness": _harness_evidence(root, objects, events, entries, attempts, receipts,
+                                     train_total=len(manifest.ids("train")) if manifest is not None else None),
+        "external_references": _external_references(root, domain),
         "claims": {},
     }
     report["claims"] = claim_states(report)
     return report
+
+
+# ---------------------------------------------------------------------------- the first version's evidence
+def _harness_evidence(root: Path, objects: ct.Objects, events: list, entries: list, attempts: list,
+                      receipts: list, train_total: int | None = None) -> dict | None:
+    """What the capability package was and did (docs/modules/07_BENCH_REPORT.md §4), from records only.
+
+    The package of each release, what the actor actually read and which hooks and package tools fired, how long
+    the isolated worker ran, which train tasks each measurement ran (a rerun of the failures is its own row, never
+    a whole train score), how much of each round's failures the notes covered, what the draft checks refused and
+    what each research step cost; the gates with their frozen thresholds; the cycle's steps and whether an
+    installed R was then used. None for an activity that never ran the first version.
+    """
+    diagnosis = [e for e in entries if e.get("kind") == "diagnosis"]
+    cycle_path = root / "rsi" / "cycle.json"
+    first = bool(diagnosis) or cycle_path.exists() or any(e.get("event") == "model_observed" for e in events)
+    if not first:
+        return None
+    packages = {}
+    for release in sorted({a.system_release_ref for a in attempts if a.system_release_ref}):
+        info = _package_of(objects, release)
+        if info is not None:
+            packages[release] = info
+    behaviour = {"sessions": 0, "skill_reads": {}, "hooks": {}, "package_tools": {}, "worker_sessions": 0,
+                 "worker_seconds": 0.0}
+    transcripts = root / "transcripts"
+    for attempt in attempts:
+        if not attempt.evidence or attempt.system_release_ref not in packages:
+            continue
+        behaviour["sessions"] += 1
+        for row in _read_jsonl(transcripts / f"{attempt.evidence}.jsonl"):
+            kind = row.get("kind")
+            if kind == "assistant":
+                for call in row.get("tool_calls") or ():
+                    if call.get("name") == "read_skill":
+                        name = str((call.get("args") or {}).get("name", ""))
+                        behaviour["skill_reads"][name] = behaviour["skill_reads"].get(name, 0) + 1
+            elif kind == "hook":
+                site = behaviour["hooks"].setdefault(str(row.get("site")), {})
+                site[str(row.get("action"))] = site.get(str(row.get("action")), 0) + 1
+            elif kind == "package_tool":
+                name = str(row.get("tool"))
+                behaviour["package_tools"][name] = behaviour["package_tools"].get(name, 0) + 1
+            elif kind == "worker_session":
+                behaviour["worker_sessions"] += 1
+                behaviour["worker_seconds"] = round(behaviour["worker_seconds"] + float(row.get("seconds") or 0), 3)
+    measurements: dict = {}
+    for attempt in attempts:
+        if "/measure" in (attempt.attempt_id or "") and attempt.system_release_ref:
+            m = measurements.setdefault(attempt.system_release_ref, {"release": attempt.system_release_ref,
+                                                                     "tasks": 0, "passed": 0})
+            m["tasks"] += 1
+            m["passed"] += int(bool(attempt.success))
+    for m in measurements.values():
+        m["scope"] = ("all train tasks" if train_total is not None and m["tasks"] >= train_total
+                      else "a rerun of the previous version's failures, not a train score")
+    drafts = {"checks": 0, "refused": 0, "infrastructure": 0, "finished": {}}
+    for e in events:
+        if e.get("event") == "draft_check":
+            drafts["checks"] += 1
+            drafts["refused"] += int(not e.get("ok"))
+            drafts["infrastructure"] += int(bool(e.get("infrastructure")))
+        elif e.get("event") == "draft_finished":
+            drafts["finished"][e.get("status")] = drafts["finished"].get(e.get("status"), 0) + 1
+    gates = []
+    for r in receipts:
+        if r["profile"] != "task":
+            continue
+        plan = objects.get(r["plan"]) if r.get("plan") and objects.has(r["plan"]) else {}
+        gate = (plan or {}).get("gate_plan") or {}
+        gates.append({"receipt": r.get("ref"), "verdict": r["verdict"], "min_gain": gate.get("min_gain"),
+                      "max_regression_rate": gate.get("max_regression_rate"),
+                      "gain": (r.get("metrics") or {}).get("gain"),
+                      "regression_rate": (r.get("metrics") or {}).get("regression_rate"),
+                      "regressions": (r.get("metrics") or {}).get("regressions")})
+    cycle = json.loads(cycle_path.read_text(encoding="utf-8")) if cycle_path.exists() else None
+    reuse = [{"slot": name, **step["reuse"]} for name, step in ((cycle or {}).get("steps") or {}).items()
+             if isinstance(step, dict) and step.get("reuse")]
+    return {
+        "packages": packages, "behaviour": behaviour,
+        "measurements": list(measurements.values()),
+        "measurement_note": "a measurement after an install reruns only the previous failures: its row is that "
+                            "subset, and the passes it did not rerun belong to the version that produced them",
+        "notes": [{k: d.get(k) for k in ("round", "scope", "noted", "failures", "reused", "included",
+                                         "not_included")} | {"invalid": len(d.get("invalid") or ())}
+                  for d in diagnosis],
+        "drafts": drafts, "research_cost": _research_cost(root), "gates": gates,
+        "research_steps": [{k: e.get(k) for k in ("scope", "release", "research_ref", "context_ref")}
+                           | {"requests": len(e.get("steps") or ())}
+                           for e in events if e.get("event") == "research_steps"],
+        "cycle": None if cycle is None else {"status": cycle.get("status"), "steps": cycle.get("steps")},
+        "reuse": reuse,
+        "not_run": {"C3": "the first version trains no decision model: C3 belongs to the second version",
+                    "distillation": "the first version trains no model: distillation belongs to the second version"},
+    }
+
+
+def _package_of(objects: ct.Objects, release_ref: str) -> dict | None:
+    """The package a release mounts, as a summary: its kinds and names, never its text."""
+    from .agent import harness_package as hp
+    from .policies import parse_builtin
+    try:
+        release = ct.SystemRelease.from_json(objects.get(release_ref))
+        for ref in objects.load(release.worker_ref, ct.PolicySet).policies:
+            p = objects.load(ref, ct.PolicyDescriptor)
+            if p.target != "worker.harness":
+                continue
+            config = parse_builtin(p.implementation["builtin"], objects.get(p.implementation["config_ref"]))
+            run, tests = hp.files_of(objects, config["package_ref"])
+            manifest = hp.parse_manifest(run["manifest.json"], {**run, **tests})
+            return {"package_ref": config["package_ref"], "files": len(run), "test_files": len(tests),
+                    "skills": [s["name"] for s in manifest["skills"]],
+                    "hooks": [{"name": h["name"], "site": h["site"]} for h in manifest["hooks"]],
+                    "tools": [t["name"] for t in manifest["tools"]],
+                    "memory": bool(manifest["memory"].get("enabled")),
+                    "kinds": sorted(hp.kinds_of(manifest, {**run, **tests}))}
+    except (KeyError, ct.ContractError, ValueError, TypeError):
+        return None
+    return None
+
+
+def _research_cost(root: Path) -> dict:
+    """Settled research spend by step (note, propose, revise, research_slot, ...), from the budget book's
+    operation labels. Unknown reservations are counted, not priced."""
+    path = root / "rsi" / "budget" / "book.json"
+    if not path.exists():
+        return {}
+    out: dict = {}
+    for reservation in json.loads(path.read_text(encoding="utf-8")).get("reservations", {}).values():
+        operation = str(reservation.get("operation_id") or "")
+        if ":research" not in operation:
+            continue
+        step = operation.split(":research", 1)[1].split("#", 1)[0].lstrip(":") or "unlabelled"
+        row = out.setdefault(step, {"calls": 0, "unknown": 0, "settled": {}})
+        row["calls"] += 1
+        if reservation.get("status") == "settled":
+            for key, value in (reservation.get("measured") or {}).items():
+                row["settled"][key] = round(row["settled"].get(key, 0) + float(value), 6)
+        elif reservation.get("status") == "unknown":
+            row["unknown"] += 1
+    return out
+
+
+EXTERNAL_KEYS = ("source_url", "retrieved_at", "model", "effort", "score", "metric", "task_set", "domain",
+                 "protocol_notes")
+
+
+def _external_references(root: Path, domain: str) -> list:
+    """Published numbers (docs/modules/07_BENCH_REPORT.md §4), from `bench/<domain>/external_references.json`:
+    background material with its source and task set, never a local attempt. An entry missing a field is kept
+    and marked incomplete rather than repaired."""
+    path = root / "bench" / domain / "external_references.json"
+    if not path.exists():
+        return []
+    rows = json.loads(path.read_text(encoding="utf-8"))
+    return [{**{k: row.get(k) for k in EXTERNAL_KEYS},
+             "incomplete": sorted(k for k in EXTERNAL_KEYS if row.get(k) in (None, ""))}
+            for row in rows if isinstance(row, dict)]
 
 
 def _finalization(root: Path, objects: ct.Objects) -> dict | None:
@@ -216,8 +377,18 @@ def claim_states(report: dict) -> dict:
         if not complete:
             out["C2"]["state"] = "inconclusive"
             out["C2"]["detail"] += "; fewer than two vendors, so C2 is incomplete"
-    out["C3"] = _pair_claim(by_role.get("evolved"), by_role.get("prompt_best"),
-                            "the decision model against the same prompt without it", plan)
+    if not frontier and report.get("external_references"):
+        # Published numbers only: background, not a same-task comparison (docs/modules/07_BENCH_REPORT.md §4).
+        out["C2"] = {"state": "inconclusive", "evidence_kind": "external_reference",
+                     "detail": f"{len(report['external_references'])} published results cited; no local run on "
+                               f"the same tasks, so no position is claimed"}
+    if report.get("harness"):
+        # The first version trains no decision model; the evolved/prompt_best mapping would misname a package
+        # or prompt change as a decision-model contribution.
+        out["C3"] = {"state": "not_run", "detail": report["harness"]["not_run"]["C3"]}
+    else:
+        out["C3"] = _pair_claim(by_role.get("evolved"), by_role.get("prompt_best"),
+                                "the decision model against the same prompt without it", plan)
     research = [r for r in receipts if r["profile"] == "research"]
     if not research:
         out["C4"] = {"state": "not_run", "detail": "no research campaign on record"}
@@ -325,6 +496,44 @@ def render_markdown(report: dict) -> str:
               "", "## Claims", ""]
     for claim, state in report["claims"].items():
         lines.append(f"- **{claim}**: {state['state']} — {state['detail']}")
+    harness = report.get("harness")
+    if harness:
+        lines += ["", "## Capability package", ""]
+        for release, pkg in harness["packages"].items():
+            lines.append(f"- {ct.short(release)}: package {ct.short(pkg['package_ref'])}, {pkg['files']} files, "
+                         f"kinds {pkg['kinds'] or 'none'}, skills {pkg['skills'] or 'none'}, hooks "
+                         f"{[h['site'] for h in pkg['hooks']] or 'none'}, tools {pkg['tools'] or 'none'}, "
+                         f"memory {'on' if pkg['memory'] else 'off'}")
+        b = harness["behaviour"]
+        lines += [f"- behaviour over {b['sessions']} sessions: skill reads {b['skill_reads'] or 'none'}; hooks "
+                  f"{b['hooks'] or 'none'}; package tools {b['package_tools'] or 'none'}; worker "
+                  f"{b['worker_sessions']} sessions, {b['worker_seconds']} s"]
+        for m in harness["measurements"]:
+            lines.append(f"- measured {ct.short(m['release'])}: {m['passed']}/{m['tasks']} passed — {m['scope']}")
+        lines.append(f"- {harness['measurement_note']}")
+        for n in harness["notes"]:
+            lines.append(f"- notes round {n['round']}: {n['noted']}/{n['failures']} failures of {n['scope']} "
+                         f"({n['reused']} reused, {n['invalid']} invalid, {len(n['not_included'] or ())} not "
+                         f"included)")
+        d = harness["drafts"]
+        lines.append(f"- drafts: {d['checks']} checks, {d['refused']} refused, {d['infrastructure']} on "
+                     f"infrastructure; finished {d['finished'] or 'none'}")
+        for g in harness["gates"]:
+            lines.append(f"- gate {g['verdict']}: gain {g['gain']} (min_gain {g['min_gain']}), regression rate "
+                         f"{g['regression_rate']} (max {g['max_regression_rate']})")
+        lines.append(f"- research cost by step: {json.dumps(harness['research_cost'], sort_keys=True)}")
+        if harness["cycle"]:
+            lines.append(f"- cycle: {harness['cycle']['status']}; steps {sorted(harness['cycle']['steps'] or {})}")
+        for r in harness["reuse"]:
+            lines.append(f"- reuse after {r['slot']}: {r['state']} — {r['detail']}")
+        for name, why in harness["not_run"].items():
+            lines.append(f"- {name}: not_run — {why}")
+    if report.get("external_references"):
+        lines += ["", "## Published results (background, not a local comparison)", "",
+                  "| model | effort | score | metric | task set | source | retrieved |", "|---|---|---|---|---|---|---|"]
+        for r in report["external_references"]:
+            lines.append(f"| {r['model']} | {r['effort']} | {r['score']} | {r['metric']} | {r['task_set']} | "
+                         f"{r['source_url']} | {r['retrieved_at']} |")
     lines += ["", "## Improvement cost", "",
               f"- {report['improvement_cost'].get('experiments', 0)} experiments, "
               f"{report['improvement_cost'].get('failed_experiments', 0)} without an accepted verdict",

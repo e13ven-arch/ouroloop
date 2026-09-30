@@ -160,6 +160,11 @@ class RoundContext:
     feedback_builders: tuple = ("completion_snapshot@v1",)
     experiment_id: str | None = None
     root: object = None
+    # v0.6 (docs/modules/04_RESEARCH_LOOP.md §1–2): the per-task diagnosis input, the pre-freeze draft check, and
+    # this round's index in the segment, which the note selection uses to rotate through the failures.
+    diagnosis: object = None
+    drafts: object = None
+    round_index: int = 0
 
 
 def run_worker_round(round_context: RoundContext, budget) -> _ct.RoundResult:
@@ -173,17 +178,86 @@ def run_worker_round(round_context: RoundContext, budget) -> _ct.RoundResult:
     root = ctx.root or ctx.releases.root
     before = ctx.releases.active()["release_ref"]
     core = ctx.objects.load(ctx.core_ref, _ct.CoreManifest)
-    proposal_result = propose_experiment(ctx.context, ctx.bound, ctx.owner, researcher=ctx.researcher,
-                                        objects=ctx.objects, max_candidates=ctx.schedule.candidates_per_round,
-                                        experience=ctx.experience)
+    from ..evolve.execution import BudgetError
+    resume = ctx.drafts.pending() if ctx.drafts is not None else None
+    try:
+        if resume is not None:
+            # A draft a restart interrupted: continue it rather than asking R for a new proposal (EX6-12).
+            proposal = ctx.objects.load(resume["proposal_ref"], _ct.ExperimentProposal)
+            drafted = ctx.drafts.resolve(proposal, revise=ctx.researcher.revise,
+                                         prompt=ctx.bound.prompts.get("research.propose", ""), resume=resume)
+            return _after_drafts(ctx, drafted, proposal, before, core, root, budget, requirements=())
+        sent_before = len(getattr(ctx.researcher, "requests", ()) or ())
+        proposal_result = propose_experiment(ctx.context, ctx.bound, ctx.owner, researcher=ctx.researcher,
+                                            objects=ctx.objects, max_candidates=ctx.schedule.candidates_per_round,
+                                            experience=ctx.experience, diagnosis=ctx.diagnosis)
+        _record_research_steps(ctx, root, before, sent_before, proposal_result)
+    except BudgetError as e:
+        _experience.append(root, {"kind": "round", "outcome": "budget_exhausted", "reason": str(e)[:300],
+                                  "scope": ctx.scope_id, "release": before})
+        return _ct.RoundResult(outcome="budget_exhausted", release_before=before, release_after=before,
+                               reason=str(e)[:300], next_action="stop")
+    if proposal_result.diagnosis is not None:
+        # What the notes covered, so the next round rotates to failures not yet read and a report cannot present
+        # a partial diagnosis as a complete one (docs/modules/04_RESEARCH_LOOP.md §1).
+        _experience.append(root, {"kind": "diagnosis", "scope": ctx.scope_id, "release": before,
+                                  **proposal_result.diagnosis})
     if not proposal_result.proposals:
-        _experience.append(root, {"kind": "round", "outcome": "no_proposal",
+        # The v0.6 driver records a collect request as needs_collection; a v2 round keeps its old outcome.
+        collect = proposal_result.next_action == "collect" and ctx.diagnosis is not None
+        outcome = "needs_collection" if collect else "no_proposal"
+        _experience.append(root, {"kind": "round", "outcome": outcome,
                                   "next_action": proposal_result.next_action, "reason": proposal_result.reason,
                                   "scope": ctx.scope_id, "release": before})
-        return _ct.RoundResult(outcome="no_proposal", release_before=before, release_after=before,
+        return _ct.RoundResult(outcome=outcome, release_before=before, release_after=before,
                                reason=proposal_result.reason or proposal_result.next_action,
-                               evidence_refs=tuple(proposal_result.evidence_refs))
+                               evidence_refs=tuple(proposal_result.evidence_refs),
+                               next_action=proposal_result.next_action)
     proposal = proposal_result.proposals[0]
+    if ctx.drafts is not None and _has_patch(proposal, ctx.objects):
+        try:
+            drafted = ctx.drafts.resolve(proposal, revise=ctx.researcher.revise,
+                                         prompt=ctx.bound.prompts.get("research.propose", ""))
+        except BudgetError as e:
+            return _ct.RoundResult(outcome="budget_exhausted", release_before=before, release_after=before,
+                                   reason=str(e)[:300], next_action="stop")
+        return _after_drafts(ctx, drafted, proposal, before, core, root, budget,
+                             requirements=proposal_result.requirements)
+    return _admit_and_run(ctx, proposal, before, core, root, budget, requirements=proposal_result.requirements)
+
+
+def _record_research_steps(ctx, root, before: str, sent_before: int, proposal_result) -> None:
+    """Which R this round loaded and what its steps actually sent (docs/modules/06_RESEARCH_CAMPAIGN.md §4): the
+    loaded R, the context, each request's step and prompt digest, the bound prompts' digests and the proposals.
+    It is how a later report shows that an installed R1 was used, rather than copying its name. An event, not an
+    experience row: R never reads its own request log back."""
+    sent = list(getattr(ctx.researcher, "requests", ()) or ())[sent_before:]
+    _ct.Events(root).append(
+        "research_steps", scope=ctx.scope_id, release=before,
+        research_ref=ctx.objects.load(before, _ct.SystemRelease).research_ref,
+        context_ref=ctx.objects.put_json("change", ctx.context.to_json()),
+        steps=[{"step": r.get("step"), "prompt_hash": r.get("prompt_hash")} for r in sent if isinstance(r, dict)],
+        prompts={t: _ct.digest({"text": text})[:16] for t, text in sorted(ctx.bound.prompts.items())
+                 if t.startswith("research.")},
+        proposals=[ctx.objects.put(p) for p in proposal_result.proposals])
+
+
+def _after_drafts(ctx, drafted, proposal, before, core, root, budget, *, requirements) -> _ct.RoundResult:
+    if drafted.status != "ready":
+        infrastructure = drafted.status == "infrastructure_failed"
+        _experience.append(root, {"kind": "round", "outcome": drafted.status, "reason": drafted.reason,
+                                  "drafts": drafted.drafts, "scope": ctx.scope_id, "release": before,
+                                  "hypothesis": proposal.hypothesis})
+        return _ct.RoundResult(outcome=drafted.status, release_before=before, release_after=before,
+                               reason=drafted.reason[:300],
+                               next_action="repair_runtime" if infrastructure else None)
+    # Stored again, so what is evaluated and what may be installed are the same checked package bytes.
+    from .experiment import normalize as _normalize
+    return _admit_and_run(ctx, _normalize(drafted.proposal, ctx.objects), before, core, root, budget,
+                          requirements=requirements)
+
+
+def _admit_and_run(ctx, proposal, before, core, root, budget, *, requirements) -> _ct.RoundResult:
     admission = admit(proposal, context=ctx.context, core=core, objects=ctx.objects, owner=ctx.owner,
                       checks=tuple(ctx.bound.preflight or ()), history=ctx.history, budget=budget,
                       feedback_builders=ctx.feedback_builders)
@@ -192,7 +266,8 @@ def run_worker_round(round_context: RoundContext, budget) -> _ct.RoundResult:
                                   "checks": admission.checks, "scope": ctx.scope_id, "release": before,
                                   "hypothesis": proposal.hypothesis})
         return _ct.RoundResult(outcome=admission.status, release_before=before, release_after=before,
-                               reason="; ".join(admission.reasons)[:300])
+                               reason="; ".join(admission.reasons)[:300],
+                               next_action="collect" if admission.status == "collect" else None)
     experiment = freeze(admission.proposal_ref, objects=ctx.objects, parent_release=before,
                         experience_ref=ctx.experience_ref, core_ref=ctx.core_ref,
                         eval_template_ref=ctx.eval_template_ref, budget_scope=ctx.scope_id,
@@ -207,7 +282,7 @@ def run_worker_round(round_context: RoundContext, budget) -> _ct.RoundResult:
         experiment_id=experiment.id, proposal_ref=admission.proposal_ref, owner=ctx.owner,
         hypothesis=proposal.hypothesis, changes=proposal.changes,
         requirements=[r.get("id") if isinstance(r, dict) else getattr(r, "id", r)
-                      for r in proposal_result.requirements],
+                      for r in requirements],
         build=outcome.get("build"), trained=bool(proposal.training),
         receipt=receipt, installation=installation, activity=ctx.bound.activity.to_json(),
         release_before=before, release_after=after, costs=budget.remaining() if budget else {},
@@ -219,6 +294,11 @@ def run_worker_round(round_context: RoundContext, budget) -> _ct.RoundResult:
                            release_after=after, evidence_refs=proposal.evidence_refs,
                            receipt_ref=receipt.ref() if receipt else None,
                            reason="; ".join(getattr(receipt, "reasons", ()) or ())[:300])
+
+
+def _has_patch(proposal, objects) -> bool:
+    from .drafts import patch_of
+    return any(patch_of(c, objects) is not None for c in proposal.changes)
 
 
 def resume_unfinished(root, objects: _ct.Objects, handlers: dict, budget, *, activity=None) -> list:
@@ -259,14 +339,54 @@ def resume_unfinished(root, objects: _ct.Objects, handlers: dict, budget, *, act
     return results
 
 
-def run_worker_rounds(make_round, budget, *, schedule: Schedule | None = None, root=None) -> list:
+# Round results that are markers rather than completed rounds, and the reasons that make an inconclusive round an
+# infrastructure one: the loop's stop marker and collection batches are not rounds, and a round that ended on
+# infrastructure produced no valid comparison, so a resumed arm or segment runs it again rather than counting it.
+ROUND_MARKERS = ("stopped", "collected", "collection_no_progress")
+INFRASTRUCTURE_REASONS = ("pairs are incomplete", "evaluator failure", "infrastructure")
+
+
+def infrastructure_round(row: dict) -> bool:
+    outcome, reason = row.get("outcome"), str(row.get("reason") or "")
+    return outcome in ("infrastructure_failed", "installation_failed") or (
+        outcome == "inconclusive" and any(k in reason for k in INFRASTRUCTURE_REASONS))
+
+
+def completed_round(row: dict) -> bool:
+    return row.get("outcome") not in ROUND_MARKERS and not infrastructure_round(row)
+
+
+def pause_of(rows: list, stop_reason: str) -> str:
+    """Why a run of rounds is paused rather than finished (docs/modules/06_RESEARCH_CAMPAIGN.md §3,
+    docs/modules/00_CONTRACTS.md §3), or "": a runtime repair, repeated infrastructure failures, or rounds that
+    ran out with the last one lost to infrastructure. A spent budget ends; it does not pause."""
+    from .campaign import PAUSES
+    if stop_reason in PAUSES:
+        return stop_reason
+    real = [r for r in rows if r.get("outcome") not in ROUND_MARKERS]
+    if real and infrastructure_round(real[-1]) and stop_reason in ("rounds_done", "patience"):
+        return "infrastructure"
+    return ""
+
+
+def run_worker_rounds(make_round, budget, *, schedule: Schedule | None = None, root=None, collect=None,
+                      collected_before: int = 0, on_result=None) -> list:
     """Rounds until one of the fixed stop rules fires (execution.Schedule).
 
     `make_round(index) -> RoundContext` is called per round, so each round sees the release, the experience and
     the results that the previous one left — which is the whole point of a loop whose versions persist.
     """
     schedule = schedule or Schedule()
-    results, idle, infra = [], 0, 0
+    idle, infra, batches = 0, 0, collected_before
+
+    class _Results(list):
+        # Every result is handed to `on_result` as it happens, so a caller that keeps its own record of completed
+        # rounds (a campaign arm, a cycle segment) survives a crash in the next round.
+        def append(self, result):
+            super().append(result)
+            if on_result is not None:
+                on_result(result)
+    results = _Results()
 
     def stop_now(index: int, proposals: bool = True) -> str:
         return schedule.stop(round_index=index, idle=idle, infra_failures=infra, proposals=proposals,
@@ -279,11 +399,41 @@ def run_worker_rounds(make_round, budget, *, schedule: Schedule | None = None, r
             return results
         result = run_worker_round(make_round(index), budget)
         results.append(result)
-        if result.outcome == "no_proposal":
-            results.append(_ct.RoundResult(outcome="stopped", reason="no_proposal"))
+        if result.outcome == "budget_exhausted":
+            results.append(_ct.RoundResult(outcome="stopped", reason="budget_exhausted"))
+            return results
+        if result.next_action == "repair_runtime":
+            # A missing capability (the isolated worker) suspends the activity rather than ending a segment that
+            # the schedule would then move past (docs/modules/00_CONTRACTS.md §3).
+            results.append(_ct.RoundResult(outcome="stopped", reason="repair_runtime", next_action="repair_runtime"))
+            return results
+        if result.next_action == "collect" and collect is not None:
+            # docs/modules/04_RESEARCH_LOOP.md §4: a request for more evidence is dispatched through the same
+            # driver within the frozen batch limit, and the next round rebuilds its context from what came back.
+            # A batch is not a candidate: it leaves the idle and failure counts as they were.
+            if batches >= schedule.collection_batches:
+                results.append(_ct.RoundResult(outcome="stopped", reason="collection_limit"))
+                return results
+            after = stop_now(index + 1)
+            if after:                  # no round would read the batch: do not pay for it
+                results.append(_ct.RoundResult(outcome="stopped", reason=after))
+                return results
+            batches += 1
+            got = collect(result, batch=batches)
+            result.action_ref = got.get("request_ref")
+            results.append(_ct.RoundResult(outcome="collected" if got["progress"] else "collection_no_progress",
+                                           reason=got.get("reason", ""), next_action="collect",
+                                           action_ref=got.get("request_ref")))
+            if not got["progress"]:
+                results.append(_ct.RoundResult(outcome="stopped", reason="collection_no_progress"))
+                return results
+            continue
+        if result.outcome in ("no_proposal", "needs_collection"):
+            results.append(_ct.RoundResult(outcome="stopped", reason=result.outcome))
             return results
         idle = 0 if result.outcome == "installed" else idle + 1
-        infra = infra + 1 if result.outcome in ("inconclusive", "installation_failed") else 0
+        infra = infra + 1 if result.outcome in ("inconclusive", "installation_failed", "infrastructure_failed") \
+            else 0
         stop = stop_now(index + 1)
         if stop:
             results.append(_ct.RoundResult(outcome="stopped", reason=stop))

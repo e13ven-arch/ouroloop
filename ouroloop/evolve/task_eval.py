@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from ..agent import Agent, AgentConfig
+from ..agent.harness_package import mount
 from ..agent.tools import ToolResult
 from ..benchmark import Budget, RunManifest, SplitManifest, TaskResult
 from ..benchmark import attempt_id as bench_attempt_id
@@ -161,6 +162,9 @@ def run_attempt(suite, task_id: str, make_agent: Callable, *, run: RunManifest, 
         agent.session_meta = {**agent.session_meta, "task": task_id, "family": family, "split": split,
                               "held_out": split != "train", "run": run.hash(), "candidate": run.candidate,
                               "attempt": attempt, "arm": arm, "attempt_id": ids["attempt_id"]}
+    except CandidateDefect as e:
+        # The candidate could not be assembled for a reason of its own (a package tool shadowing a base tool).
+        return broken(f"candidate: {e}", "candidate_defect", "harness_error")
     except Exception as e:  # noqa: BLE001 - the episode or the agent could not be built: no evidence either way
         return broken(f"harness: {type(e).__name__}: {e}", "infrastructure", "harness_error")
     try:
@@ -214,6 +218,9 @@ def run_tasks(suite, task_ids: list[str], make_agent: Callable, *, run: RunManif
             out.append(attempt.result)
             if results is not None:
                 results.append(attempt.result)
+                if attempt.score is not None and hasattr(results, "put_grading"):
+                    # M3 keeps the grader's per-assertion outcome apart from the result (grading.jsonl).
+                    results.put_grading(attempt.result, getattr(attempt.score, "assertions", None))
             if on_result:
                 on_result(attempt.result)
         finally:
@@ -229,7 +236,7 @@ def run_tasks(suite, task_ids: list[str], make_agent: Callable, *, run: RunManif
 
 
 def make_agent_factory(rt, provider, *, budget: Budget, tiers: dict | None = None, meta: dict | None = None,
-                       bound=None, objects=None, stop_view: str | None = None):
+                       bound=None, objects=None, stop_view: str | None = None, worker=None):
     """-> make_agent(surface, task, system): an agent over a benchmark episode's business tools.
 
     Tool approval is off: there is nobody to ask in a benchmark run, and a declined call would be recorded as
@@ -245,10 +252,24 @@ def make_agent_factory(rt, provider, *, budget: Budget, tiers: dict | None = Non
     def make(surface, task, system: str):
         prompt = system
         if bound is not None:
-            prompt, _ = bound.system_prompt(system)
-        return Agent(provider, rt, surface, tiers=tiers, system=prompt,
-                     config=AgentConfig(approve="auto", max_turns=budget.max_steps, gated_tools=(),
-                                        stop_view=view),
-                     session_meta={**(meta or {}), "task": task.task_id}, policy=bound, objects=objects)
+            prompt, parts = bound.system_prompt(system)
+            if "worker.harness" in parts["parts"]:
+                bound.activity.call("worker.harness")       # the package's text reached the actor's prompt
+            # The capability package: skills are read through the host's read_skill, and a package that runs
+            # code needs the isolated worker, refused here otherwise (docs/modules/01_POLICY_RUNTIME.md §1).
+            surface = mount(surface, bound, worker=worker, on_read=lambda name, found: bound.activity.execute(
+                "worker.harness", f"read_skill:{name}" if found else "read_skill:missing"))
+        agent = Agent(provider, rt, surface, tiers=tiers, system=prompt,
+                      config=AgentConfig(approve="auto", max_turns=budget.max_steps, gated_tools=(),
+                                         stop_view=view),
+                      session_meta={**(meta or {}), "task": task.task_id}, policy=bound, objects=objects)
+        runtime = getattr(surface, "runtime", None)
+        if runtime is not None:
+            # Every hook answer and package tool call, with its broker calls, goes to the session transcript.
+            def record(kind, data, agent=agent, bound=bound):
+                agent._emit(kind, **data)
+                bound.activity.execute("worker.harness", f"{kind}:{data.get('hook') or data.get('tool')}")
+            runtime.on_event = record
+        return agent
 
     return make

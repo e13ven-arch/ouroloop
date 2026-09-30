@@ -2,19 +2,19 @@
 
 [English](README.md) | 中文
 
-一个以可学习决策策略为核心的轻量 RSI 框架：既改进 agent 怎样完成任务，也改进系统怎样诊断失败、设计实验和产生下一版本。
+一个轻量的 RSI 框架：从任务反馈发现有效方法，验证并固化为可运行的 agent 应用，让经过验证的改进方法继续参与下一轮。
 
-核心研究方向是从执行反馈中训练小而可复用的决策模型。v0.5 设计让 prompt、规则、工作流和模型共用策略接口，任务策略与研究策略共用证据、评测和版本机制。训练出的模型需要证明额外的任务效果或成本收益，不要求每次改进都训练。
+[v0.6 设计](docs/DESIGN.md)围绕能力的发现、验证、固化和递归回用。用户提供环境、目标、权限、初始模型与预算；首版自动演化版本化能力包内的工具/中间件代码及技能/经验，通过固定 API 隔离运行、任务评测和回归后发布同 actor 的 app，并比较/更新/回用改进策略。第二版再完善教师引导蒸馏和训练；actor/controller 分离及已有决策 trainer 保持兼容。Tinker 是拟选训练后端，不是首版运行前提。
 
-AutomationBench Marketing 是首个证明场，与业界领先模型和同底座起点比较完整任务表现。v0.5 的完整目标还包括：评测更新后的研究策略，并将它用于下一轮改进。这条研究递归路径的工程链已实现并由离线夹具验收，尚无真实模型证据。
+**已实现：** 决策与训练基础设施、AutomationBench adapter、配对完整任务评测、完整 W/R 发布、共享预算与恢复、任务改进循环，以及研究策略隔离比较和回用（工程验证与已知缺口见 [实现快照](docs/history/V0_5_IMPLEMENTATION.md)）。首版工程链路也已接通：train 失败的逐题诊断，版本化能力包（经验、技能、hook 与工具）及冻结前的草稿检查，包代码只在隔离 Docker worker 中运行，基于该循环的研究方法比较并核对已安装的 R1 确实被用上，带 preset 的 `cycle` 入口，以及把已安装版本导出为最小 app。以上都只用 fixture 世界和脚本研究员做了离线验证；Docker 隔离测试尚未在有 worker 镜像的机器上跑过。
 
-**实现状态：** 决策层、账本、训练作业、模型库与服务已有实现；AutomationBench 的运行契约也已实现——任务分组在看到第一个结果前冻结，官方评分器读工具留下的世界，以及一组说明"这个驱动器测的是上游测的东西"的检查（`ouroloop bench --phase smoke`）。它已在真实 checkout（上游 `4a8e106`、package 1.0.6）上核验：25 个开发任务全部通过契约检查，上游自己的 rubric 入口、服务订阅门和工具 schema 都与本适配器一致。
+**已有实测：** 2026-09-28，GLM-5.3 完成一个 Marketing dev 任务。这是一次真实运行，不是通过率，也没有证明改进收益。首版循环尚未用真实模型运行，因此没有能力包演化或递归研究的实测收益；actor 蒸馏、Tinker 接入与教师审阅属于第二版。详见 [日志](docs/JOURNAL.md)。
 
-改进闭环现已实现，并由离线夹具验收：注册目标上的类型化策略、携带完整请求与工具返回的业务完成视图、preflight 后 CAS 安装的完整 W/R 版本、只由观测事实产生的反馈、无晋升副作用的训练、固定门下的配对完整任务评测、研究一轮、单一共享预算账、以产出比较两个研究策略的 campaign，以及七个 benchmark 阶段与离线报告（`python -m pytest -q` → 553 passed；见[实现状态](docs/ROADMAP.md#5-实现状态2026-09-27)）。
+AutomationBench Marketing 仍是首个证明场：首版比较同一 actor（GLM-5.3）在能力包演化前后及有效的 prompt/workflow；第二版换 Qwen3.5-9B 学生时 h* 在学生上重新演化后再蒸馏；并以领先模型公布数字作单独的外部能力参照；沿用最近的决定，默认不在本地运行领先模型。教师辅助采集分数与无教师部署成绩分开报告。
 
-**还没用真实模型跑过，因此本仓库没有任何 benchmark 成绩。** 夹具证明的是路径真实——安装的策略确实被加载、标签来自观测事实、指针只经凭据移动、崩溃后可恢复——夹具的数字由夹具定义；C1～C4 全部未运行，夹具里的研究改动由脚本提出并标 `scripted`，不是自动发现。见 [v0.5 设计](docs/DESIGN.md)与[实施路线图](docs/ROADMAP.md)。
+决策标签仍需环境事实或人工反馈；最终任务得分不能直接当作所有中间动作的标签。新增教师轨迹进入独立的模仿学习通道，不放开决策真值限制。现有 Jev 和本地决策 trainer 保留。
 
-agent 会反复判断是否重试、保留上下文、验证或结束。ouroloop 将适合学习的判断声明为决策点，接入 Jev 或自己训练的小模型；未启用、弃权或服务失败时走既定默认策略。有依据的动作标签才能进入监督训练，整段任务得分不能直接当每一步的标签。候选接口可以提出 spec、训练配方和 prompt 改动，接下来要将它们与完整业务任务评测连接起来。
+开发入口：[路线图](docs/ROADMAP.md)、[技术选型](docs/TECHNOLOGY.md)、[模块详细设计](docs/modules/README.md)。下方命令说明现有功能；第二版配置（蒸馏、教师、训练）在文档中标为待实现，读取时会被拒绝。
 
 ## RSI 是怎么发生的
 
@@ -22,11 +22,11 @@ agent 会反复判断是否重试、保留上下文、验证或结束。ouroloop
 
 <p align="center"><img src="docs/assets/architecture.zh-CN.gif" alt="ouroloop 架构：一个环，上半圈每个 session 都在跑，下半圈每一轮跑一次" width="100%"></p>
 
-图示说明反馈循环的设计，不是业务实测结果。循环采集决策与标签、诊断行为缺口、构建并按完整任务评测候选、安装被接受的版本供后续 session 使用；这条链由离线夹具验收，尚未用真实模型跑过。
+图示对应现有决策学习循环，不是已测得的业务改进，也未覆盖 v0.6 的完整蒸馏路径；新架构以设计文档为准。
 
-任务改进是：更新后的策略改变后续执行到达的状态，新反馈再驱动下一轮更新。完整设计还包括研究改进：更新诊断、经验检索或实验方法，在相同预算下验证其后续产出，再用于下一轮研究。该路径可通过 prompt、规则和研究工具实现，不必另训一个研究员模型。两种改进都以实际结果验证，不保证下一代更强。
+首版将受限能力包代码演化接入已有自动循环：R 从反馈提出包内修改，固定执行器负责隔离、权限、预算、评分和发布；新 W 用于后续任务，验证通过的新 R 用于下一次实际改进调用。蒸馏训练在第二版完善，递归核心仍是首版验收。真实 harness 演化与递归收益尚未证明。
 
-现有接管策略有校准阈值、按有标签 session 的风险检查和运行时撤销，依赖相应反馈与统计假设，不构成“业务任务失败率最多 5%”的保证。拟建 benchmark profile 按独立的完整任务协议评测，保留原部署 profile。
+现有接管策略有校准阈值、按有标签 session 的风险检查和运行时撤销，依赖相应反馈与统计假设，不构成“业务任务失败率最多 5%”的保证。benchmark profile 按独立的完整任务协议评测，保留原部署 profile。
 
 `ouroloop research` 是旧 decision profile 自己的一轮，原样保留；业务循环的轮次走 `ouroloop bench --phase improve` 与 `--phase research`。
 
@@ -114,9 +114,17 @@ ouroloop bench --config examples/automationbench/marketing.toml --phase smoke --
 ouroloop bench --config examples/automationbench/marketing.toml --phase smoke                 # 再跑几个开发任务
 ```
 
+首版自动循环是一条命令，配置里有 `[improvement]` preset 和预算即可（[examples/automationbench/improvement.toml](examples/automationbench/improvement.toml)）：冻结未给出的计划，跑起点版本的基线、一个 worker 段、已计划的 research slot，再跑一段来确认已安装的 R 是否被用上，最后生成离线报告。中断后续跑，已记录的部分不重复付费。包代码只在隔离 worker 镜像中运行：
+
+```bash
+docker build -f docker/worker.Dockerfile -t ouroloop-worker:py3.12 .
+ouroloop bench --config examples/automationbench/improvement.toml --phase cycle
+ouroloop export --config examples/automationbench/improvement.toml --to exported-marketing
+```
+
 smoke 阶段报告这是哪个上游版本，把 train/dev/test 任务分组冻结到 `<workspace>/bench/<domain>/splits.json`（在看到任何结果之前），把本适配器与上游自己的 rubric 入口、服务订阅门和工具 schema 对比，审计有没有评分信息进到 agent 的输入里，然后完整跑几个开发任务。它不对能力下任何结论；本地公开任务集的分数也不是官方榜单成绩——榜单跑的是私有任务集。
 
-agent 拿到的是任务 prompt 和工具 schema，断言与初始状态在它收不到的对象里；分数来自工具留下的世界，所以写错记录再汇报成功，得到的就是写错的那份分数。其余阶段跑的是同一条闭环：`baseline` 用同一个驱动器测合理基线与声明的领先模型，`collect` 离线给完成判断打标签，`improve` 以固定研究策略跑任务改进，`research` 在隔离两支中比较两个研究策略，`evaluate` 运行一次密封的最终计划，`report` 从磁盘上的记录重算一切。它们都读工作区里的冻结计划对象，而不是配置文件里的可改设置；缺计划或缺模型表的阶段会在调用模型之前说明缺什么。
+agent 拿到的是任务 prompt 和工具 schema，断言与初始状态在它收不到的对象里；分数来自工具留下的世界，所以写错记录再汇报成功，得到的就是写错的那份分数。其余阶段跑的是同一条闭环：`baseline` 测合理基线（也支持显式配置的领先模型臂，但当前方案只引用其公布数字），`collect` 离线给完成判断打标签，`improve` 以固定研究策略跑任务改进，`research` 在隔离两支中比较两个研究策略，`evaluate` 运行一次密封的最终计划，`report` 从磁盘上的记录重算一切。它们都读工作区里的冻结计划对象，而不是配置文件里的可改设置；缺计划或缺模型表的阶段会在调用模型之前说明缺什么。
 
 ## 代码结构
 
@@ -128,7 +136,8 @@ agent 拿到的是任务 prompt 和工具 schema，断言与初始状态在它�
 | `ouroloop/runtime.py` | 把决策点、后端、默认回答者和账本串起来；每个 session 固定自己的发布三元组 |
 | `ouroloop/release.py` | session 运行的发布：旧三元组，以及完整 W/R 版本的凭据、安装、恢复与撤销 |
 | `ouroloop/policies.py` | 已注册的策略目标、每个目标可绑定什么、装配、会话 pin 与候选构建 |
-| `ouroloop/agent/` | 最小 agent：loop、read / write / edit / bash 四个工具、harness prompt、任务集 |
+| `ouroloop/agent/` | 最小 agent：loop、read / write / edit / bash 四个工具、harness prompt、任务集；能力包（`harness_package.py`）及运行包代码的隔离 worker（`worker.py`、`worker_runner.py`） |
+| `ouroloop/app.py` | 导出版本运行时的最小 app |
 | `ouroloop/points/` | 内置决策点 retry、compact、tool_gate、stop、route，以及命令黑名单 |
 | `ouroloop/chat.py` | 与模型无关的对话格式 |
 | `ouroloop/serve.py` | HTTP 决策服务 |
@@ -138,18 +147,14 @@ agent 拿到的是任务 prompt 和工具 schema，断言与初始状态在它�
 | `ouroloop/adapters/` | AutomationBench（任务、业务工具、官方评分器）；Claude Code hooks 适配器（可选的数据来源） |
 | `ouroloop/backends/` | `mock`、`jev`、`tde`、`llm` 四种决策后端 |
 | `ouroloop/providers/` | LLM 接入：Anthropic（官方 SDK）、OpenAI 兼容接口 |
-| `ouroloop/research/` | 问题转换、研究 agent 接口和默认实现、一轮研究流程，研究员可读什么（`context.py`）、实际跑了什么（`inspection.py`）、提案与准入（`experiment.py`）、研究策略 campaign（`campaign.py`） |
+| `ouroloop/research/` | 问题转换、研究 agent 接口和默认实现、一轮研究流程，研究员可读什么（`context.py`）、实际跑了什么（`inspection.py`）、提案与准入（`experiment.py`）、研究策略 campaign（`campaign.py`）、train 失败的逐题诊断（`diagnosis.py`）、草稿检查与修订（`drafts.py`） |
 | `ouroloop/evolve/` | 公共契约与对象库（`contracts.py`）、反馈构造器、建数据、数据检查、训练（签名小模型 / 本机 TDE / 远程 TDE）、校准、冻结的晋升门和门记录、配对任务门（`task_gate.py`）、执行状态机与预算账（`execution.py`）、模型注册表、经验记录 |
 
 ## 状态
 
-当前代码具备决策点、账本、监督训练作业、训练器插件、模型库与服务、校准、版本管理、完整 W/R 版本发布，以及任务改进与研究改进两条循环。
+当前已有 v0.5 工程闭环、首版能力包演化循环（[路线图](docs/ROADMAP.md)阶段 A–E，fixture 离线验证）和一次真实 Marketing 任务运行；第二版（教学适配、蒸馏、训练）已有详细设计，尚未实现。历史测试和已知缺口保留在 [实现快照](docs/history/V0_5_IMPLEMENTATION.md)，测量记录见 [日志](docs/JOURNAL.md)。
 
-设计 v0.5 的首个证明场是 AutomationBench Marketing。环境适配、任务组划分、完整任务运行器和 train 完成度探针已实现，契约检查在真实 checkout 上通过，测试跑在上游的微缩替身（`tests/fake_upstream`）上；尚未用真实模型运行。待完成：真实轨迹与有效训练数据、配对任务评测与晋升、研究循环与经验继承、研究策略更新及回用、领先模型比较和可复现报告。**本仓库尚未测过任何 AutomationBench 成绩。** 历史证据保留在 [docs/JOURNAL.md](docs/JOURNAL.md)。
-
-开发交接见 [架构审查](docs/RSI_REVIEW.md)与[模块详细设计及验收用例](docs/modules/README.md)；这些是待实现契约，不代表已有业务收益。
-
-权威设计见 [docs/DESIGN.md](docs/DESIGN.md)，实现状态与下一步见 [docs/ROADMAP.md](docs/ROADMAP.md)，研究员职责与接口见 [docs/RESEARCH_AGENT.md](docs/RESEARCH_AGENT.md)，演示与结果呈现见 [docs/DEMO.md](docs/DEMO.md)，改动和证据见 [docs/JOURNAL.md](docs/JOURNAL.md)。
+文档入口：[整体设计](docs/DESIGN.md)、[技术选型](docs/TECHNOLOGY.md)、[路线图](docs/ROADMAP.md)、[模块与用例](docs/modules/README.md)、[研究协议](docs/RESEARCH_AGENT.md)、[设计审查](docs/RSI_REVIEW.md)、[演示和证据](docs/DEMO.md)。
 
 ## 许可证
 

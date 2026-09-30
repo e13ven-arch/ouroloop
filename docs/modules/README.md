@@ -1,47 +1,42 @@
-# RSI 模块详细设计与开发入口
+# 模块详细设计与开发交接（v0.6）
 
-> 2026-09-27，配套 v0.5。本文档集原为**待实现契约**；M0～M7 与集成验收现已实现，各文档末尾的“实现状态”一节写明落点、验收命令、真实测试结果与已知缺口。先读 [架构审查](../RSI_REVIEW.md)和 [总设计](../DESIGN.md)。
->
-> 工程闭环已通过离线夹具验收（`python -m pytest -q` → 553 passed），**但没有任何真实模型的业务成绩**：夹具的数字由夹具定义，脚本研究员的提案不是自动发现，C1～C4 全部未运行。
+> 代码基线 `b1cb7a7`，2026-09-30 修订交付边界。首版交付能力包代码演化/发布/递归；第二版完善训练，保留其详细规格。M0～M7 既有实现不重写。历史状态见 [快照](../history/V0_5_IMPLEMENTATION.md)。首版 `*6-` 用例已按阶段 A～E 实现为离线测试（覆盖清单见 [JOURNAL](../JOURNAL.md)），标为第二版的用例仍是待实现规格；离线通过只证明接线，不是真实收益。
 
-目标交付：同一个受预算约束的循环能改进任务策略 W，也能提出、验证并安装研究策略 R；后续执行实际使用更新版本。先完成工程闭环，再用独立实验判断 C1～C4 是否成立。完整性不意味着无限自修改，不要求每轮训练。
+先读 [总设计](../DESIGN.md)、[技术选型](../TECHNOLOGY.md)和 [实施顺序](../ROADMAP.md)。核心交付是自动发现有效方法、验证、固化、发布，并让改进方法的更新实际参与下一轮。源 harness 可以演化；单次蒸馏的目标 harness 冻结。人工流程可调试，不能替代核心自动路径。
 
-## 文档与模块责任
+## 模块所有权
 
-| 模块 | 详细设计 | 独占的新文件；主要改造点 | 依赖 |
+代码路径相对 `ouroloop/`。拟增文件可合并进现有小文件，不得另建同职责系统。
+
+| 模块 | 设计目标 | 复用/改造位置 | 允许新增核心位置 |
 |---|---|---|---|
-| M0 公共契约 | [00_CONTRACTS](00_CONTRACTS.md) | `evolve/contracts.py`；公共类型、schema 与兼容读取 | 无 |
-| M1 策略与实际运行 | [01_POLICY_RUNTIME](01_POLICY_RUNTIME.md) | `policies.py`、`research/inspection.py`；`agent/`、`runtime.py`、`stop.py` | M0 |
-| M2 证据、分组与训练 | [02_EVIDENCE_TRAINING](02_EVIDENCE_TRAINING.md) | `research/context.py`；`ledger.py`、`adapters/automationbench.py`、`evolve/build.py`、`evolve/pipeline.py` | M0，M1 输入契约 |
-| M3 完整任务评测与发布 | [03_EVALUATION_RELEASE](03_EVALUATION_RELEASE.md) | `evolve/task_gate.py`；`evolve/task_eval.py`、`evolve/registry.py`、`release.py` | M0、M1、M5 预算接口 |
-| M4 研究与经验循环 | [04_RESEARCH_LOOP](04_RESEARCH_LOOP.md) | `research/experiment.py`；`research/agent.py`、`basic.py`、`loop.py`、`evolve/experience.py` | M0～M3、M5 |
-| M5 执行状态与总预算 | [05_EXECUTION_BUDGET](05_EXECUTION_BUDGET.md) | `evolve/execution.py`；provider 调用边界 | M0 |
-| M6 研究策略递归评测 | [06_RESEARCH_CAMPAIGN](06_RESEARCH_CAMPAIGN.md) | `research/campaign.py`；复用 M3～M5 的入口 | M0～M5 |
-| M7 Benchmark 与报告 | [07_BENCH_REPORT](07_BENCH_REPORT.md) | `bench.py`、`benchmark.py`、`report.py`、`cli.py`、`examples/automationbench/` | 各模块按阶段接入 |
-| 集成验收 | [08_INTEGRATION_CASES](08_INTEGRATION_CASES.md) | 测试与可复现夹具；不另建生产子系统 | 全部 |
+| M0 [公共契约](00_CONTRACTS.md) | 身份、源/目标方法、两类模型、权限、v2/v3 兼容 | `evolve/contracts.py` | 无新类型中心 |
+| M1 [运行时](01_POLICY_RUNTIME.md) | 首版包代码/API/broker/hook/材料装配；第二版教师/sampling | policies.py、agent/loop.py、runtime.py、stop.py、providers/ | 首版 agent/harness_package.py；第二版 providers/tinker.py |
+| M2 [证据与训练](02_EVIDENCE_TRAINING.md) | 既有反馈/训练兼容；第二版模仿/事实监督、SFT/artifact | evolve/build.py、evolve/pipeline.py、evolve/feedback.py、research/context.py、trainers/store/jobs | 第二版 trainers/tinker.py；按需 evolve/trajectories.py |
+| M3 [评测与发布](03_EVALUATION_RELEASE.md) | 源验证、无教师 gate、完整 release、最小 app 导出 | `evolve/task_eval.py`、`evolve/task_gate.py`、`release.py` | 不新增发布服务 |
+| M4 [自动改进](04_RESEARCH_LOOP.md) | 从反馈产生候选、选择固化方法、记经验 | `research/agent.py`、`basic.py`、`context.py`（首版失败摘要/诊断输入）、`experiment.py`、`loop.py`、`evolve/experience.py` | 无新研究平台 |
+| M5 [执行预算](05_EXECUTION_BUDGET.md) | 唯一状态机、全活动预算及恢复 | `evolve/execution.py`、jobs | 无第二编排器 |
+| M6 [递归比较](06_RESEARCH_CAMPAIGN.md) | 相同起点比较改进方法、验证 R1 实际回用 | `research/campaign.py` | 无新 campaign 系统 |
+| M7 [任务与报告](07_BENCH_REPORT.md) | 配置/preset、cycle 入口、后端、证据报告 | `bench.py`、`benchmark.py`、`report.py`、`cli.py`、`adapters/automationbench.py` | 按需 `adapters/harbor.py` |
+| M8 [工作流蒸馏](09_DISTILLATION.md) | 第二版：自动教学适配、teacher、学生在环采集 | 调用 M1/M2/M5 | 第二版 distill/teacher.py、distill/collect.py |
+| [集成验收](08_INTEGRATION_CASES.md) | 自动闭环、独立部署、递归和故障场景 | 现有 tests 与离线 fixture | 少量集成 fixture，无新生产模块 |
 
-表内代码路径相对 `ouroloop/`，唯 `examples/automationbench/` 相对仓库根。模块 M0～M7 是开发分工，**不是**路线图的里程碑 M1～M7；里程碑映射如下。
+M0 独占公共字段；M1 独占实际运行/provider 绑定；M2 独占建集/训练；M3 独占安装；M4 选择候选但不直接发布；M5 独占状态/预算；M6 复用 M4/M5 做分支；M7 独占 CLI/config/RunManifest；M8 不复制 Agent 循环或训练器。
 
-## 实施顺序与共享文件
+## 开发顺序与完成条件
 
-按此顺序实现完毕；每一步的验收命令见对应文档的“实现状态”。
+1. 首版先做诊断输入与文本能力包：M1 pin GLM-5.3 actor；M0 HarnessPackage/worker.harness 身份；M1 宿主装配 skills/memory，纯文本包不启动隔离 worker；M4 train/fit 失败摘要与断言明细、逐题笔记→汇总、harness_edit 文本组件；M4/M5 文本草稿检查（结构/路径/manifest）与有界修订；M3 的 run_tasks 另存判分明细 `bench/<domain>/grading.jsonl`，M7 结果存储按冻结 split 读取；所需上限（max_failure_notes、失败摘要条目长度上限、max_draft_repairs）由 preset/K 先行固定。首轮真实演化前运行 GLM-5.3 的 train+dev 基线；补任务反馈后按有界 driver 继续，零人工优化方案即可起步，不需要 Docker、trainer 或 teacher。
+2. 首版再接代码组件与隔离：M1 固定 API/工具 broker/Docker 隔离 worker、hook（先 on_finish）与包工具；M4 harness_edit 代码组件；M4/M5 把冻结前草稿试跑修复扩展到 isolated_probe/package_test，次数由同一 preset 上限固定。生成代码只在 worker 执行、不在控制面 import，组件种类由 K 冻结，K 允许代码时 freeze/smoke 须确认 worker，运行中不可用按 M0 §3 记 infrastructure_failed/repair_runtime 并暂停活动，不收窄种类；保留旧绑定/身份。本机 Docker daemon 可用是真实检查前提。
+3. 首版 M3 同 actor gate、成功任务回归、完整安装/回退/导出；M7 给无 trainer/teacher 的 preset/cycle/报告。
+4. 首版 M4/M6 在共同 package API/资源下比较 R0/R1，验证安装后的实际改进请求；这条递归核心不能因训练后置而取消。
+5. 第二版再接 M8 教学源验证/适配/采集、M2 SFT/Tinker、M1 教师/sampling 及 actor/controller 新训练验证。保留既有规格/用例，按分版验收执行。
 
-1. M0 冻结公共类型；M5 先提供本地预算账和状态存储。离线验证，不调用付费模型。
-2. M1、M2 完成真实输入与数据契约；M7 接 `baseline`/`collect`。对应路线图 M2～M3。
-3. M2 完成无副作用的训练构建；M3 完成任务评测和完整发布。对应路线图 M4。
-4. M4 接通固定 R 的任务循环；M7 接 `improve`。对应路线图 M5。
-5. M6 接研究候选、隔离 campaign、R1 回用；M7 接 `research`。对应路线图 M7。
-6. 冻结所有待报告版本与比较协议后，由 M7 执行独立 `evaluate`/`report`。对应路线图 M6 及 C4 最终验证，可统一安排，避免过早用掉测试集。
+前四步构成首版最小完整 RSI，第五步是第二版模型固化。函数签名可适配既有风格，包的真实执行、故障、预算与递归边界不得缩水。公共字段/运行接口分别以 M0/M1 为权威，避免多个模块另定义一套 package schema。
 
-M0 是共享类型唯一所有者。M1 修改 `runtime.py` 的策略 pin/调用；M3 只提供 release 读取、授权与安装 API。M2 修改 `pipeline.py` 的训练抽取；M3 不复制训练逻辑。M5 独占调度整合；M4 提供一轮函数。M7 独占 CLI 与 RunManifest 序列化；其他模块通过 M0 约定字段提出改动。多人同时实现时先合并公共接口，按以上所有权处理共享文件，不能各建一套同名记录。
+## 兼容与控制规模
 
-## 开发交付规则
+保留旧 CLI、decision profile、旧 hash、v0.5 用例及完整 release。v3 generation 不复用旧 `.decide()` 路径；旧 run 按旧规则解释。未实现配置启动时拒绝，不走伪 fallback。
 
-- 每个模块先核对当前代码和本文列出的差距；保留既有 CLI、decision profile 与旧账本读取。
-- 只实现已注册目标、声明式配置和现有可信执行器。生成 Python、任意补丁、额外专家池、向量库均不属于首版必要范围。
-- 每个公开接口的错误分类、持久化和重启行为与成功路径一起交付。示例中的假结果只进测试夹具，不能进业务报告。
-- 每份模块文档的用例 ID 都是验收条目；覆盖关键路径即可，不为数据类字段机械增加测试。集成用例负责跨模块故障。
-- 未完成的后续模块使用明确的 stub 并拒绝生产执行；不得静默退到不同评测器或伪造 accepted。
-- 设计更改先修改公共契约及受影响文档。实现完成后更新状态和真实验证记录，不提前把“设计支持”写成“已经证明”。
+包内工具/中间件代码生成属于首版；Harbor/DeepAgents、新决策点、新训练算法、全仓代码演化、通用插件平台和市场服务不属于首版核心。默认单控制面加固定隔离 worker（只由含代码的草稿检查与运行含代码的包使用）、串行实验、一套重试；新增宿主 API/依赖仍按工程接入，不让候选自己扩权。
 
-默认部署为一个本地 Python 控制进程、已有作业/模型服务和文件账本；模块是代码边界，不是新增微服务。
+每个模块交付须含实现、对应行为测试、准确示例和状态更新。工程 fixture 不写成真实收益；真实结果无提升不伪造成功，效果目标与工程完成状态分别报告。

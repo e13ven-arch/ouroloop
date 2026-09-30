@@ -8,6 +8,123 @@
 
 ---
 
+## 2026-09-30 首版阶段 B～E 实现：隔离 worker、导出、递归比较与 cycle
+
+- 做了什么：
+  - B 代码组件与隔离（`agent/worker.py`、`agent/worker_runner.py`、`docker/worker.Dockerfile`）：
+    - 包代码只在 worker 进程内执行，宿主经 stdin/stdout 协议通信。
+    - DockerWorker 是唯一合格的 worker：无网络、只读根目录、tmpfs、uid 65534、去掉全部 capability、有 CPU/内存/PID 上限，按 K 冻结的镜像内容 id 运行。ProcessWorker 只供协议测试。
+    - broker 只能调用本回合的基础工具，hook 的 broker 只读。
+    - 宿主在 before_tool、after_tool、on_finish 三处调用 hook。before_tool 的 block 停掉本回合其余调用；after_tool 的反馈作为单独一条消息；on_finish 的回推与 StopGuard 共用上限，最后一回合不回推。
+    - 包工具不得与基础工具或 read_skill 同名，草稿检查与挂载时都会拒绝。
+    - 草稿检查扩展为 isolated_probe → package_test，包测试只在由 train 构造的世界里运行。
+  - 故障归属：包代码抛异常、调 sys.exit、杀死或挂住 worker 时，如果新起的 worker 仍能正常应答，记为候选缺陷。只有新 worker 也不应答才算基础设施，并以 repair_runtime 暂停活动。worker 的 stderr 边读边丢弃，只留末尾；输出与单行长度都有上限；超时的容器会被删除。
+  - C 导出（`release.export_deployment`、`app.py`、`ouroloop export`）：
+    - 按白名单导出 W、actor 身份、包的运行部分和 K 的运行投影，不含 R、测试和证据。
+    - 先在临时目录构建，扫描凭据和本地路径后再移入目标目录。
+    - App 只在合格且镜像一致的 worker 上运行含代码的包。
+  - D 递归比较（`research/campaign.py`、`bench.research`）：
+    - 两支都跑首版循环，工作区按 campaign 分开。
+    - W0 的 train 测量在 campaign 级只做一次，判分明细与轨迹复制进各支。两支第一轮的笔记请求完全一致时，笔记在 campaign 级只写一次，作为共同输入。
+    - 各支逐轮记录已完成的轮次，崩溃后只补缺，崩溃前中断的实验先按记录续完。
+    - 暂停的一支（worker 失联，或末轮因基础设施失败）修复后续跑到冻结轮数；暂停期间 campaign 判 inconclusive，不做外测。
+    - 已出 receipt 的 campaign 不再重跑，接受后的安装只做一次。
+    - R1 改过的 prompt 必须出现在候选支的实际请求里，否则判 invalid；只改 manifest 的 R1 在付费前拒绝。receipt 的成本包含两支、共同输入和外测。
+    - 每轮记录加载的 R、context 和各步请求摘要（`research_steps` 事件）。研究请求按步骤（note/propose/revise/research_slot）分别记账。
+  - E 用户入口（`bench.cycle`、`[improvement]`、preset `marketing_harness_v1`、`examples/automationbench/improvement.toml`）：
+    - reader 只接受已实现的枚举，第二版方法按名拒绝。
+    - preset 的 harness 数值是上限，`[harness_evolution]` 只能收窄；镜像由 preset 固定。
+    - 允许的方法冻结进 K，准入时强制执行。
+    - cycle 先冻结缺少的计划（不得放宽 preset，[rsi] 已给的计划同样检查），然后：基线一次 → worker 段 → research slot → 下一个 worker 段（检查 R1 是否真的被用上）→ 离线报告。无提案不会吞掉 slot；暂停与预算耗尽按规则停止；重跑只补缺，基线也只补缺。
+    - 首版的 research slot 由当前 R 读取经验投影和自身的 prompt，提出 R 候选。
+    - 报告新增：包的组成；实际技能读取、hook、包工具与 worker 时长；每次测量的范围；笔记覆盖；草稿检查；按步骤的研究费用；gate 门槛；cycle 与回用状态；公开数字背景表。首版的 C3 与蒸馏标为 not_run。
+- 证据：
+  - `.venv/bin/python -m pytest -q` → 667 passed, 1 skipped, 1 deselected（阶段 A 结束时为 611）。跳过的是 IT6-23 Docker 隔离测试：本机 Docker daemon 未运行，镜像也未构建。
+  - 覆盖的首版用例（含阶段 A）：CT6-01/14、PR6-01/10/11/12、RL6-11/17/18/20/22/23/25/26、EX6-12、ER6-06/14/15、RC6-10/11、IT6-11/16/19/21/22/23/28、BR6-01/09/10/12/14/15/16/17。
+  - fixture 上的完整 cycle：冻结计划 → 基线 → 段 0 无提案 → slot 中 R1 被接受并安装 → 段 1 加载 R1、按 R1 的 propose 文本发出请求 → 报告。重跑 cycle 不新增任何尝试或研究请求。
+- 独立审查：B/C、D、E 三个审查共报 31 条（分别为 12、7、12 条，含低严重度项），复核后全部成立并已修正。需要 Docker 的三处（删除超时容器、docker 客户端环境、按镜像内容 id 运行）本机无法测试，其余都补了测试。最重要的几条：
+  - 包代码自行退出或挂住 worker 会被当作基础设施，活动永久暂停。
+  - worker 的 stderr 无人读取，输出多时会挂住。
+  - 超时的容器不会被删除。
+  - 两个 campaign 用同名配对时，后一个会复用前一个已完成的分支。
+  - 分支与段的进度只在结束时写盘，崩溃后会多跑轮次。
+  - 已完成的 campaign 重跑会再付一次外测费用，并在安装时失败。
+  - slot 的研究门槛组数取自 worker gate，示例配置下 R1 永远无法安装。
+  - slot 暂停后 cycle 仍继续下一段。
+- 设计补充（写入 M7 §2）：research slot 的配对规则（开发家族按冻结顺序对半，前一半为内层 gate，后一半为外层）与每支预算比例由 preset 固定；`test_timeout_seconds` 用作 worker 每个请求的时限。
+- 证据边界：全部为离线 fixture 与脚本研究员，只证明接线，不是收益。没有付费运行，没有真实模型的能力包演化或 C4 结果。Docker 隔离尚未在真实 daemon 上验证（构建命令：`docker build -f docker/worker.Dockerfile -t ouroloop-worker:py3.12 .`）。上一条记录中的未决问题（dev 回归被拒时的诊断信号）不因实现而改变。
+- commit：未提交。
+
+## 2026-09-30 首版阶段 A 实现：诊断输入与文本能力包
+
+- 做了什么：按 ROADMAP §2 阶段 A 实现，不含 Docker、trainer 或 teacher。
+  - 契约：既有记录加默认 None 的字段，旧 ref 与 v2 prompt_hash 不变；`from_json` 拒绝未知键与未知 schema_version；RunManifest 读取改为严格，新字段只在非 None 时写出。新记录 ModelIdentity、TargetHarness、HarnessPackage、CollectionRequest；新增 `generation` 绑定。
+  - 目标：`worker.actor`、`worker.harness` 为可选目标，只在 K 列出时要求；完整性按 K 的 `core.targets` 校验，旧 core 与旧工作集照常绑定。`research.diagnose` 同时接受旧的 requirement_list 与新的 failure_summary.v1 → failure_note.v1；R 候选沿用父策略的契约。
+  - 能力包（`agent/harness_package.py`）：固定目录形状与上限；运行判定与检查判定分开（tests 只影响检查）；K 不允许代码时任何 .py 都是结构错误；memory 未启用、清单外的技能文件、空 patch、与父包相同的 patch 均被拒绝；宿主把 memory 与技能索引放进系统提示，`read_skill` 作为宿主读取并记录。
+  - 判分明细：`run_tasks` 写入 `grading.jsonl`，结果存储按冻结划分读取，默认只给 train。
+  - 诊断（`research/diagnosis.py`）：只摘要 train 失败，含全部计分断言及其 passed，不含被排除的；逐题笔记的身份是渲染后的完整请求加模型配置；无效笔记不缓存；每轮读取数有上限，按全活动的诊断位置轮换；汇总调用只读笔记、覆盖、允许的种类、当前包，以及经验的固定投影（原因只保留枚举）。
+  - 草稿检查（`research/drafts.py`）：冻结前检查形状、种类和字面量（邮箱/标识符/记录名，来自 train 断言 params 与 train 初始状态，按整词匹配，检查解码后的 manifest，回传只报类别数量）；初稿之后有界修订；每份草稿都存下来；空修订计为失败；重启后按记录的修订序号续跑，不再调用 R 重新提案；worker 不可用时暂停活动，草稿保持打开。
+  - 驱动：v0.6 下每轮只测 train，改版后只重跑上次失败的任务，无安装则复用，重启时从记录重建；`collect` 记为 needs_collection 并指向 CollectionRequest，批次在重启后不重置，只有新执行的尝试算进展，没有后续轮次时不跑补采；预算耗尽时干净停止。
+  - bench：`[harness_evolution]` 在 bootstrap 时把限值冻结进 K，把配置的模型固定为 actor（观测时间记为事件），装空包，用写笔记的 R0；release 固定的 actor 不被 `[llm]` 覆盖，前沿臂显式覆盖；基线对首版活动同时跑 train；K 允许代码或当前包含代码而没有 worker 时，smoke/freeze/各阶段在付费前拒绝；既有 v2 工作区加这个表会被明确拒绝。
+- 证据：`.venv/bin/python -m pytest -q` → 611 passed, 1 deselected（原 554 条全部保留）。新增 `tests/test_harness_package.py`、`tests/test_diagnosis.py`、`tests/test_harness_loop.py`，覆盖 CT6-01/14、PR6-01/13/14、RL6-11/17–22/24–27、EX6-12、ER6-15、BR6-16/17、IT6-19/22（文本部分）/27/28。离线闭环用 fixture 世界与 scripted R：train 失败 → 笔记 → 汇总提文本包 → 首稿失败、修订通过 → gate 接受 → 安装 → 新会话挂载并读取技能，dev 通知任务由失败变通过。
+- 独立审查：三个角度（规格、正确性、泄漏）共报 37 条，34 条经复核成立，已全部修正并补测试。其中最重要的几条：文本 K 下多余的 middleware 文件会挂起活动；字面量检查把普通词当答案；汇总调用读到的原始经验行含 dev 任务 id 与评分器报错；最终评测的前沿臂实际跑的是固定 actor；v2 release 的 prompt_hash 被改变。
+- 证据边界：全部为离线 fixture，scripted R 只证明接线，不是真实收益；没有付费运行。（阶段 B～E 见上一条。）
+- commit：未提交。
+
+## 2026-09-30 对照 Harness-Zero 的 h* 产出流程补齐首版规格
+
+- 做了什么：逐环节对照 Harness-Zero 的学生 harness 演化 skill（`.agents/skills/student-harness-evolve/SKILL.md`，@ aa63a77）与论文，把差距写成首版规格。诊断输入：失败的 train/fit 尝试给出失败摘要与逐条断言明细，串行做“逐题笔记（research.diagnose）→ 一次汇总（research.propose）”，产出至多一个 patch 或 next_action；dev 只给汇总，final 不进入。判分明细分存 `bench/<domain>/grading.jsonl`，由 M3 写入、M7 按冻结 split 读取。冻结前草稿检查与有界修订（初稿之后最多 3 次，纯文本草稿只查结构/路径/manifest）。组件优先级为 memory/skills → on_finish → before/after_tool → 包工具；纯文本包不需要 Docker。每轮 measure 在执行身份匹配时复用上轮 gate 的 dev 结果（只进 R 上下文），只为诊断重跑失败的 train 任务，dev gate 仍完整执行。交付分段改为 A 诊断输入与文本包、B 代码组件与隔离。首版 actor 定为 GLM-5.3；第二版换 Qwen3.5-9B 学生时 h* 在学生上重新演化。版本机制改为在既有记录上加默认 None 的字段（`Record.payload()` 跳过 None，`from_json` 拒绝未知键），不做 v3 reader 分派；RunManifest 与 RoundResult 的例外写明。
+- 依据（读源码与论文得到）：Harness-Zero 每轮只评上一轮失败的 train 任务，不做回归；最多 10 个子 agent 逐题写笔记，主 agent 汇总、冒烟后才评测；组件在 agent 进程内 importlib 加载，任务环境在 Harbor 容器里；三个学生库共 12 个中间件、3 个 skill、3 个工具（工具只在 USPTO）。结果 base@h / base+h* / 蒸馏@h：SpreadsheetBench 31.0/39.0/44.0，AppWorld 26.8/48.2/58.9，USPTO 12.0/38.0/30.0。本项目现有研究上下文只给逐题 success/partial，不含断言和轨迹，且截到 12,000 字符（`research/context.py:50`、`:116-146`）。
+- 一致性修正：ROADMAP 的测试数改为 554 passed, 1 deselected；那次 GLM 运行改为“14 条断言中 8 条计分、全部通过，另 6 条初始即成立、不计分”。IT6-18/20 标为第二版。新增用例 CT6-14、PR6-13、RL6-17～20、EX6-12、ER6-15、BR6-15/16、IT6-27/28；IT6-27/28 列入首版必做。
+- 文档检查：本地链接/锚点、代码围栏与表格列数通过；159 个用例 ID 无重复；`git diff --check` 通过。用例是待实现规格，不是通过结果。
+- 真实运行：GLM-5.3 的 train+dev 基线启动后，在第一个任务中途按“先写好文档再执行”的决定中止：结算 4 次模型调用（不到 $0.02），没有完成的尝试，不算基线；中断那次调用的预留按设计以最坏值留在预算账上。为这次运行做的判分明细存储代码已撤回，改为上面的待实现规格；本机 Docker daemon 未运行。
+- 同日复核七项判断（用户确认并补充，随后逐条推敲、再经独立审查）：① 纯文本草稿也可修订，max_draft_repairs 指初稿之后最多 3 次；② 组件种类由 K 在 freeze 时固定（freeze/smoke 还核对当前包种类在 K 内、需要时确认 worker），运行中 worker 不可用按基础设施故障处理：重试后 infrastructure_failed，并以 repair_runtime 暂停活动，修复后以原草稿续跑。不中途收窄为文本菜单，也不结束 worker 段，否则同段前后与 M6 两支的条件或轮数会不一致；③ 上游评分器只排除“初始成立且结束时仍成立”或作者声明不计分的断言，被破坏的初始成立断言按失败计分，照常给 R（`automationbench/rubric/__init__.py` 的 free-assertion 分支）；④ 笔记上限改为每轮读取数（缓存加新生成），久未纳入的失败优先，覆盖按诊断工作集如实记录；⑤ tests/*.py 是代码：检查判定含 test bundle，运行判定不含，任务执行、安装与导出不因只有 tests 而要求 worker；⑥ 失败子集重跑只用于诊断，gate 每次重跑自身对照臂（`bench.py:571-591`），复用的 dev 结果只进 R 上下文并标明是被选中的抽样；每轮成本据此更正为约 $10–40、5–6 小时；⑦ 笔记身份为渲染后的完整请求摘要加模型配置；`research.diagnose` 改为逐题契约 failure_summary.v1 → failure_note.v1，旧 requirement_list.v1 路径保留，R0 形成新身份。另加：包文本字面量检查（防止把 train 断言中的具体值写进包）、草稿检查只在 fixture 或仅 train 构造的世界中运行、M6 第一轮笔记作为 campaign 级共同输入。
+- 未决（待真实被拒候选出现后再讨论，不写入设计规则）：候选因 dev 回归被拒时，R 只能看到 dev 汇总；此前通过的 train 任务不重跑，所以没有 train 侧回归证据。同一议题还包括：已安装版本在未重跑 train 任务上的回归同样看不到，诊断工作集只会缩小；只重跑失败题时，偶然失败的任务回到均值，会被误记为修复。拒绝的具体原因与表现、补跑 train 能否提供有效信号，以及 gate 只给汇总这一机制本身是否需要调整，都尚不清楚。
+- commit：未提交。
+
+## 2026-09-30 首版收敛：受限能力包代码演化，训练完善后置
+
+- 按本轮讨论调整交付边界：首版从任务失败自动生成/修改工具封装、中间件、技能和经验，验证后交付同 actor 的 h* 应用；第二版完善教师适配、蒸馏与新增训练。首版保留 R0/R1 比较、安装和下一真实改进调用回用，不把 RSI 核心交回人工。
+- 编辑集中在交付范围和对应契约：M0 HarnessPackage/worker.harness、M1 固定 API/Docker worker/broker、M4 包内 patch、M5 隔离检查/预算/恢复、M3 回归/发布/同字节导出、M6 相同资源代码搜索与 M7 无训练依赖的 preset/报告。评分、权限、预算、发布核心、宿主 API/依赖不在自动修改范围内。
+- 保留原训练/教学详细设计，仅标记第二版；保留旧 CLI、代码、历史证据与用例原义。同步设计入口、路线图、审查/演示与首/二版验收归属；新增 IT6-22～26 和相应模块边界用例。
+- 文档检查：22 份 Markdown 的本地链接/锚点、围栏/表格与配置示例通过；134 个当前用例 ID 无重复，git diff --check 通过。用例是待实现规格，不是通过结果。
+- 仅编辑相关文档，未改代码、未提交、未执行训练、模型付费调用或 benchmark；新包演化与真实递归收益仍待实现/验证。
+
+## 2026-09-28 设计审查修订：新 harness、自动补采与教学源验证
+
+- 根据定位对齐审查修复三处规格缺口，没有改变最小完整 RSI 的产品目标。只改文档，未改代码、未提交，未运行训练或 benchmark。
+- 更换目标 harness：M3 准备保留 W/R/K 的受限新基线 B；M0 明确 parent 与 execution_base_ref，采集/训练绑定 B，系统 gate/CAS 仍对原生产 parent。补齐运行许可、无环引用、兼容失败与恢复规则，不允许仅替换配置就沿用旧基线。
+- 自动补采：CollectionRequest 和 RoundResult 保留 needs_collection/next_action/action_ref，M4 的同一驱动在额度内采集、重建 context、继续提案；无进展/缺能力才停止当前 worker 段。M7 不吞掉后续获准 research slot；M6 两支共用该规则，重启不重置计数或重花钱。
+- 教学源与发布分开：Experiment 冻结 purpose，source_validation 的 train 验证通过以 validated 完成并可立即适配，不必跑生产 dev gate、没有安装权；直接发布另建 deployment 实验。复用原执行器、评分与预算，不增加第二调度器。
+- 同步总设计、路线图、研究协议、技术原则、模块接口/流程、审查和演示，新增跨模块 IT6-18～21 及相应边界用例。当前技术来源与领先模型默认仅引用公布数字的决定保持不变。
+- 文档检查：22 份 Markdown 的本地链接/锚点、表格、代码围栏及配置示例通过；118 个当前 v0.6 用例 ID 无重复，撤销的 IT6-14 不计入。`git diff --check` 通过；新增规格仍待实现，未运行代码测试。
+
+## 2026-09-28 定位修正：围绕最小完整 RSI 核心交付
+
+- 修正上一条范围决定：用户要求减少外围功能，而非把自动发现交给人或取消 RSI 验收。框架输入是任务环境/目标/权限/初始资源，输出是可运行 app 和可继续演化的工作区；不要求用户逐轮准备优化工作流与配方。
+- 主线改为自动发现 → 源方法真实验证 → 自动教学适配 → 学生在环 → 训练固化 → 无教师评测/发布 → 改进方法更新并实际回用。明确源 harness 可演化、目标 harness 在一次蒸馏内固定，首个模型/算法/后端不是框架定义。
+- 实现继续复用 M0～M7，仅新增 M8。研究员保留为已有 provider 上的有界逻辑职责；首版复用 R0/R1 campaign 验证方法及下一调用的真实绑定，不新增研究平台。actor/controller 分离能力保留，应用可按效果关闭 controller。
+- 更新总设计、技术选择、路线图、全部模块交接、演示/审查与中英文 README；撤销草案 IT6-14，增加零人工 source 启动、源方法实际执行、自动适配、递归伪阳性和 cycle 恢复用例。保留领先模型默认只引用公布数字的决定。
+- 证据边界：只有文档变更；没有代码实现、付费调用、训练或新增 benchmark 结果。真实 C1/C4 仍待验证，不以 fixture 代替；本次未提交。
+- 文档验证：22 份 Markdown 的本地链接/锚点、代码围栏、表格及 TOML/JSON 示例检查通过；95 个当前 v0.6 用例 ID 无重复，撤销的 IT6-14 不计入。`git diff --check` 通过；没有运行代码测试。
+
+## 2026-09-28 范围收紧：研究员退出首轮交付（已被上条定位修正取代）
+
+- 根据用户反馈：先完成一件可验证的事，暂停研究员新增开发。当前只做人工工作流/配方驱动的采集、actor 训练、无教师评测、发布；controller 之后单独决定，自动研究与递归比较不排期。
+- 改了什么：整体流程图和路线图只保留 A～C；M7 人工入口直接复用 admission/executor，不依赖 `run_worker_round` 或研究 provider。M4/M6 新设计与用例标为暂缓，已有代码/CLI/完整 release 保持兼容，R ref 原样继承；C4 为 not_run。
+- 验收边界：新增 IT6-14，要求缺少研究配置也能完成蒸馏全链，研究员构造/调用失败哨兵不被触发；研究、controller、Harbor 的后续用例与当前必做集合分开。
+- 文档检查：22 份文档的链接/锚点、表格、代码围栏和配置示例检查通过；77 个保留/新增用例 ID 无重复；`git diff --check` 通过。
+- 证据边界：只改文档，没有实现代码、训练或 benchmark 新结果；未提交。
+
+## 2026-09-28 v0.6 设计：完整工作流蒸馏、独立决策与 RSI 回用
+
+- 做了什么：修订整体设计、技术选型、路线图、研究协议、演示、审查和模块详细设计；保留 M0～M7，新增 M8 工作流蒸馏；新增 v0.5 实现快照，保留原测试和缺口记录。中英文 README 修正过时状态。
+- 关键决策：先冻结目标 harness，以教师执行前 PASS/REPLACE 采集学生真实轨迹，按环境成功筛选后做 actor SFT，再无教师评测与发布；独立 controller 在同 actor 上验证增益；研究策略更新继续复用现有 campaign。Tinker 为首个生成训练后端，Harbor/DeepAgents 按需要可选；不建设另一套平台或应用市场。
+- 开发交接：明确 schema 兼容、两类监督来源、模型实际绑定、token mask、模块所有权、错误/恢复/预算、部署白名单、实施顺序及新验收用例。保留最近“领先模型只引用公布数字”的决定，修正新 actor 路径下的 C3 对照映射。第三方只参考设计，不复制源码。
+- 文档检查：22 份 Markdown 的本地链接/锚点、表格列数、代码围栏通过；TOML/JSON 示例可解析；76 个新增验收用例 ID 无重复；`git diff --check` 通过。未运行代码测试。
+- 证据边界：本次仅文档与来源核对，没有代码实现、付费调用、训练或 benchmark 新结果；新用例均为待实现规格。已有真实单任务运行和历史工程验证不扩大为改进收益。
+- commit：本次尚未提交。
+
 ## 2026-09-28 第一次真实模型运行：GLM-5.3 跑一个 Marketing dev 任务
 
 - 做了什么：领先模型改为引用公布数字，不在本地运行（DESIGN §3.2、ROADMAP M2、模块 07）。来源两个：官方榜单（私有集）与上游 README 的公开集结果（含 GLM 5.2 max 26.17%，六域合计）。本地用智谱 GLM-5.3（OpenAI 兼容接口，thinking 为默认开启），经我们的 W0（含 finish check、业务停止视图、计量）跑 dev 任务 `marketing.product_adoption`（14 个断言，长度居中）：`ouroloop bench --config examples/automationbench/marketing.local.toml --phase baseline --task marketing.product_adoption`。

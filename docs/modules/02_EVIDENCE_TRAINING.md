@@ -1,78 +1,71 @@
-# M2：证据、反馈、数据分组与训练构建
+# M2：两类训练数据与模型构建
 
-> 待实现；复用账本、CompletionProbe、Dataset、TrainJob、trainer/store/serving。新增 Context 投影，改造 build/pipeline；不重写训练后端。
+> 交付范围：本文件新增 actor/SFT/Tinker 与 controller 新训练验证归第二版，原详细规格保留；文中“首版”指本模块首次接入版本。第一版只保持已有 feedback/trainer/jobs/store 兼容，不要求训练账号或执行新训练。目标仍是两类监督分开、训练阶段不晋升。
 
-## 1. 输入、输出与责任
+## 1. 两条数据路径
 
-输入为 Observation/DecisionTrace、环境反馈、冻结 family/split、反馈构造器和训练配方。输出为可审计 Evidence、只读 ResearchContext、DataManifest 和未晋升的模型 artifact。M3 决定候选是否可安装；本模块不得移动任何冠军指针。
+| 路径 | 输入与允许的监督 | 输出/消费者 |
+|---|---|---|
+| 决策学习 | Observation + DecisionTrace + 有事实依据的 env/human FeedbackRecord | 既有 DataManifest → 决策 trainer → 校准/弃权配置 |
+| actor 模仿学习 | M8 学生在环真实执行、环境成功的 student-visible trajectory | SFTDataManifest → Tinker SFT → GenerationArtifact |
 
-现有 `build.to_example` 会用当前 point 重新渲染历史 ctx；`build` 按 session hash 分训练验证；`pipeline.prepare_model` 将构建、校准、消费 GateRecord 和 replay 测试串在一起。业务路径不能仅传入一些 rows 就认为隔离完成，也不能借旧门取得新业务授权。
+保持旧规则：Jev/LLM 的决策回答、研究员意见、EVAL_ONLY 记录不能转为决策真值。
 
-## 2. 反馈构造与可见性
+本轮增加 actor 蒸馏并保留独立 controller 的实际训练/装配路径；M4 根据数据可得性选择，应用无需同时训练两种模型。ResearchContext 只增加选择方法必需的数据目录/数量/适用性摘要，不把所有轨迹交给 R。新增 actor 模仿是单独的数据目的和入口；实施须审计 providers 文档与训练来源校验，不能删掉全局限制后让所有 LLM 输出可训练。teacher 模仿数据记录来源模型、材料许可/限制和采集条件；不把教师理由当作经环境验证的事实。
 
-`FeedbackBuilder` 为固定注册实现：`id/version, eligible_partitions, required_evidence, label_schema, build(trace, evaluator_evidence)`。第一版注册 `completion_snapshot.v1`，只处理 train 的 stop/on_finish；snapshot 在决策时捕获，episode 后官方 rubric 评分。不可捕获或评分失败返回 unknown，不能猜 no。
+`completion_snapshot.v1` 仍只对 train 的 on_finish 状态评分：决策时捕获可复现快照、episode 后调用官方评分；失败或不可捕获返回 unknown。最终任务失败不自动否定此前独立有效的快照；冲突和修订沿用 conflicted/supersedes。Harbor 只给最终 reward 时不得推导 stop 标签。
 
-持久化只保留标签与可追溯受限证据，完整世界快照不进入 Context、训练文本或在线工具；需调试时单独受限保存。每条反馈 id 由 `(decision_id, builder_ref, evidence_digest)` 决定，恢复重复标注不得产生双倍样本。不同可信来源冲突时 status=conflicted，排除训练并保留双方；新反馈用 supersedes，禁止覆盖原始记录。
+## 2. actor 数据构建算法
 
-env/human 标签须有对应事实。研究员判断、晋升结果、LLM 自评、最终 reward 展开成逐步标签均拒绝。completion 标签回答“此刻是否完成”，不回答“继续是否值得”。分支比较是后续 builder，必须另有重放等价性和后续策略/预算身份，首版不实现它也能完成闭环。
+拟建 `build_sft_dataset(plan_ref, trajectory_refs, selection_ref, objects) -> DatasetBuild`；M8 不自建第二个 dataset builder。
 
-任务最后失败不自动否定此前可独立核验的快照标签；仅在该快照契约完整且未受环境故障污染时保留，记录 `episode_failed=true`。数据集 manifest 公布此类样本数量和纳入规则。评分器版本或标签语义变化生成新反馈；旧标签不能换名字直接复用。
+1. 验证 plan、学生版本、目标 harness、动作与消息 schema；沿血缘检查所有任务事实属于外层 train，任务家族与冻结映射一致。
+2. 只选官方成功条件满足、无环境/运行器故障、执行记录完整的轨迹。初版不混 partial-success/离线改写/仅教师答题样本；排除原因逐类计数。没有成功轨迹返回 insufficient_data，不伪造正样本。
+3. 使用 plan 在采集前冻结的内部 fit/validation family 分配；教师参考的任务示例仅来自 fit，validation 内容不能参与编写参考。重复轨迹、同任务前缀、变体和增强样本全部同侧。以 selection 声明每任务上限或权重，不把长任务变成隐式多数。
+4. 重建每个 accepted turn 当时的学生输入；工具响应来自实际执行。审计流中的原提议、review 理由、私有 TeachingReference、oracle、后续消息不进入输入或目标。
+5. 训练所有合格的 accepted assistant turns，包括 PASS 与 REPLACE，不只训练被纠正的步骤。role mask：system/user/tool/参考示例的 assistant token 为 0；本次执行产生的目标 assistant token 为 1。多模态或未支持的消息类型显式拒绝。
+6. 模型 renderer 处理 tool-call 编码、边界与 EOS；固定 tokenizer/renderer/mask policy 的版本和摘要。允许全会话多目标或等价逐步样本，但不可让同一目标被重复加权；实际上下文裁剪后存在差异时必须逐步重建输入。
+7. 超长样本首版排除并计数，不从任意 token 处截断 JSON/工具结果。记录原始/保留轨迹数、tokens、任务家族数和 PASS/REPLACE 分布；不能把训练集近乎排空仍返回 ready。
 
-## 3. Context 与经验访问
+没有 fit/validation 家族就 insufficient_data；最小 smoke 可明确使用非成绩用途的单任务数据检查管线，但不能据它选模型或报告泛化。存在固定公共示例时，采集与无教师评测都使用相同示例，且示例 assistant 不承受训练 loss。
 
-`make_context(scope, release_ref, experience_ref, evidence_refs) -> ResearchContext` 是白名单投影，不返回 Runtime、episode、文件句柄、provider 凭证或 oracle。结构包含总目标、实际 Inspection、允许的 train/dev 结果、Requirement、机制活动、反馈目录、经验和剩余预算。
+## 3. 训练、checkpoint 与装载
 
-Context 读取服务先核验证据及其所有祖先的分组，再做脱敏和裁剪；原始文件路径不能当作绕过权限的引用。研究步骤使用控制器提供的固定模型调用，不开放本机 shell/任意文件读取。摘要仍是派生证据，必须保存 refs、生成方法和版本。缺来源的意见可作为 hypothesis，但不能作为已验证结论或训练真值。
+在 `train_artifact` 既有纯构建边界增加 role/method 分派，保持旧调用签名与默认 decision 行为。目标接口：
 
-全局 train/dev/test 是最外层边界，campaign 再缩小可见任务集合。禁止依据“当前目录在 train”推断所有对象可见。经验检索不自动搜索整个工作区；只在 scope 可见的索引快照查询。
-
-## 4. 分组、表示与样本生成
-
-1. 用冻结 family map 解析任务；同任务的全部 session、重复、前缀分支和变体同组。显式家族规则优先于字符串相似度。
-2. 在外层 train 内一次性按 family 分 fit/validation/可选 calibration，并冻结 manifest。分配使用记录的 seed 和排序后 group ID；不按行或 session 随机分。
-3. 过滤 feedback status、来源、版本与 view 兼容性。训练 point 候选名不一致、未知 action、空输入均记录排除原因。
-4. 默认使用当时已存的 rendered_input。新 view 只可从当时保留的合法 Observation 重渲染，必须记录 transform ref；缺字段就重新采集，不从未来轨迹或世界状态补齐。
-5. 生成 train/val 文件及 ref，校准数据保持独立；局部 test 不需要单独从业务 test 取。外层完整任务 dev 负责候选比较，最终 test 不给 trainer。
-6. 数据检查覆盖 family 交集、血缘、标签分布、有效组数、默认策略表现、输入截断、重复样本权重。重复决策不增加独立家族数；按任务/家族设上限或权重，政策入 manifest。
-
-fit/validation 组数不足就 `insufficient_data`，不退回行随机划分。calibration 仅在所选推理策略确实需要时启用，并提前预留；不借现有 5% 风险参数声称业务失败保证。view、prompt 或后续策略变化时校验 feedback applicability，特别是分支标签；不兼容的旧数据不自动进入新训练。
-
-现有“一任务一家族”可以保留作已冻结实验，但签名重叠低不是语义独立证明。发现跨 split 的同工作流变体时标记原实验的独立性局限；要更改分组需新 split 身份并重新检查污染，不改旧 manifest 来美化结果。
-
-## 5. 无晋升副作用的训练接口
-
-```python
-build_task_dataset(selection, split_manifest, feedback_ref, input_schema) -> DatasetBuild
-train_artifact(dataset_ref, recipe_ref, parent_model_ref, budget) -> TrainingBuild
+```text
+build_task_dataset(...) -> 既有决策 DatasetBuild
+build_sft_dataset(...) -> DatasetBuild(status, dataset_ref, exclusions)
+train_artifact(..., role=actor 或 controller) -> TrainingBuild
 ```
 
-`DatasetBuild` 为 `{status: ready|insufficient_data|invalid, dataset_ref?, exclusions}`；`TrainingBuild` 为 `{status: ready|failed|cancelled, model_ref?, job_ref, recipe_ref, dataset_ref, metrics, costs}`。由 `pipeline.py` 抽出已有构建/检查/TrainJob/后端装载的纯构建部分，旧 prepare_model 继续包裹它并执行原校准/门流程，保持旧 API。
+M0 的 GenerationArtifact 由 ready 训练结果引用；不修改 active/champion。actor 探针交 M1 provider：加载确切底座/adapter、生成合法 ChatTurn、工具消息往返、接受历史重放。controller 保留 `.decide()` 的输出类与 schema 探针，按需独立 calibration。
 
-task 调用只得到未授权模型 artifact；加载探针检查 model id、输出类别与输入 schema。checkpoint 仅根据训练内部 validation 选；teacher/伪标签默认关闭。需要阈值时由独立 calibration 产生版本化 inference 配置，与模型一起成为 PolicyDescriptor，最终仍由完整任务 gate 验收。
+配方显式记录 `init_model_ref`，默认从 DistillationPlan.student_release_ref 的 actor 初始化；若策略选择从同底座重训而非延续 adapter，必须在冻结配方及比较中明确。后端不支持该 checkpoint 初始化时预检失败，不能偷偷退回 base。一次新实验允许按配方重置 optimizer，但必须记录；同一被中断作业的精确恢复仍须恢复 optimizer/游标，二者不能混称。
 
-训练开始前 M5 预留 GPU/模型/时长预算；取消或中断调用已有 worker 取消机制，记录 job 状态。远端状态不明先查原 job ID，不能直接发第二个训练；失败产物不能登记为 ready。失败与废弃作业成本照计。
+Tinker trainer 首版仅 LoRA SFT：validate 模型/renderer/预算 → 创建 client → 固定数据顺序与 batch 计划 → forward/backward → optim step → validation → checkpoint → sampling artifact → probe。记录 base、rank、学习率、epochs/steps、seed、batch/sequence 上限、SDK/renderer、数据摘要、实际 token 和费用；参数须有边界，研究员不能取消上限。checkpoint 选择只看内部 validation，dev 任务只由 M3 gate 使用。
 
-## 6. 用例与验证
+Tinker 训练状态与 sampling 权重不是同一产物。恢复保存 training state、已确认 step、数据游标及 optimizer 状态；无法确认最近 optim step 是否生效时，不盲目重放该 step。由 M5 保持 unknown、核对或终止该候选，已花费用不抹去。不能只加载采样权重就宣称精确恢复优化器。
 
-| ID | 场景 | 预期 |
+训练不满足服务访问、数据权限、模型能力或计量条件时，在提交前失败。外部作业失败后保留诊断和费用；没有 ready artifact 不创建可装配 actor。数据少或只学会格式时回到采集/工作流，不自动升级模型规模、启动 RL 或增加专家池。
+
+## 4. 决策模型独立性与漂移
+
+首个参考 controller 仍是 `worker.stop`，输入只含当时可见事实，标签回答“此刻是否满足完成条件”。它不天然回答“继续的期望收益是否大于费用”。后者需要分支实验和明确成本效用，暂不混用标签。
+
+actor 的版本是 controller 数据 applicability 的一部分。换 actor 后允许保留逻辑上兼容的历史完成标签，但必须重新检查输入分布、校准及完整任务行为；阈值不自动继承。actor 自己也能生成 finish 请求，controller 只是独立检查这一动作，不要求把所有停止意识从 actor 权重中删除。
+
+## 5. 用例
+
+| ID | 条件 | 预期 |
 |---|---|---|
-| DT-01 | 同任务 20 次决策、两个变体、不同 session | 全部同 family 同侧；样本数和独立组数分别报告 |
-| DT-02 | train episode 先缺一步后全部完成 | 两个快照分别 no/yes；在线输入没有 oracle；dev 挂 probe 被拒绝 |
-| DT-03 | 重启重复 label；随后人工纠正 | 首次去重；更正追加 supersedes，冲突未解决前不训练 |
-| DT-04 | 新 view 需要历史未存字段 | 拒绝该重渲染并提示重新采集；不读最终状态填补 |
-| DT-05 | 数据选择混入 dev/final 或 final 衍生摘要 | 数据构建失败，训练器未启动 |
-| DT-06 | task train_artifact 成功或失败 | 不消费旧 GateRecord、不运行外层 test、不移动 pointer；全部 job 成本可追溯 |
-| DT-07 | scorer 抛错但 agent 声称完成 | feedback unknown；不产生 yes/no 标签 |
-| DT-08 | 训练中控制器重启且远端作业运行 | 查询并接回原 job；同 operation 不重复提交 |
+| DT6-01 | PASS/REPLACE 混合成功轨迹，另含失败/中断轨迹 | 前两者合格动作进入 SFT；其余排除并列原因 |
+| DT6-02 | teacher 私有标记、原草稿和 oracle 有唯一字符串 | 所有训练输入和目标均无这些字符串 |
+| DT6-03 | 工具 JSON、公共 assistant 示例、EOS 与超长样本 | mask 与边界正确；示例不计 loss；超长不破坏动作 |
+| DT6-04 | 同任务多前缀、变体；dev 或内部 validation 答案进入教学参考 | family 不跨组；污染使构建失败且未发训练 |
+| DT6-05 | actor artifact 被送入旧 decide probe | role 分派到生成探针；错误 schema 明确拒绝 |
+| DT6-06 | optim step 后响应丢失，重启 | 不盲重训；保留收费与未确认状态 |
+| DT6-07 | 仅有最终 reward、教师说 stop=yes | 没有 env/human 状态标签，不启动 controller 训练 |
+| DT6-08 | 训练成功但 gate 未运行；或数据为空 | 前者无晋升，后者 insufficient_data 且无 GPU 请求 |
 
-复用 `test_probe.py`、`test_evolve.py`、`test_jobs.py`、`test_roles.py`；保留原 decision 数据划分回归测试，为 task profile 增加分组与无副作用训练验收。
-
-## 7. 实现状态（2026-09-27）
-
-已实现：`ouroloop/evolve/feedback.py`（`FeedbackBuilder` 注册表与 `completion_snapshot.v1`，内容决定的记录 id、env/human 冲突判定、`supersedes`）、`ouroloop/evolve/build.py` 的 `build_task_dataset`（按冻结 family map 分组、一次性按家族划分 fit/validation/calibration 并记录 seed 与排序组 ID、每任务上限、排除原因、`DataManifest`）与 `check_lineage`、`ouroloop/evolve/pipeline.py` 的 `train_artifact`（提交前预留预算、失败仍结算、加载探针校验 model id 与输出类别、`attach` 查询未知远端作业、不动任何指针）、`ouroloop/research/context.py`（`make_context` 白名单投影、`task_results_summary`）。`CompletionProbe` 现在把无法评分的状态写成 label=None，于是反馈为 `unknown` 而不是静默缺失。
-
-视图可声明 `requires`；历史观察缺该字段时拒绝重渲染并要求重新采集，不从最终状态补齐。
-
-验收：`python -m pytest tests/test_evidence_training.py -q` → 17 passed，覆盖 DT-01～DT-08 与 Context 权限。
-
-已知缺口：分支比较 builder（第二条信号路径）未实现，需另附重放等价性证明；calibration 组可生成但尚未接入阈值拟合；`prepare_model` 仍保留旧校准与门流程，未共用新的构建函数（旧路径的回归测试照旧通过）。
+复用 `test_evidence_training.py`、`test_train_config.py`、`test_jobs.py`；新增少量生成 renderer/mask 与 fake Tinker 测试。实际云 smoke 单列，不放默认离线测试。

@@ -33,7 +33,8 @@ from .adapters import automationbench as ab
 from .benchmark import Budget, Results, RunManifest, SplitManifest, assign_splits, digest, summarise
 from .ledger import now, redact, write_json
 
-PHASES = ("smoke", "baseline", "collect", "improve", "research", "evaluate", "report")
+# The seven phases, and `cycle`: the thin automatic entry that calls them in the frozen order (M7 §1).
+PHASES = ("smoke", "baseline", "collect", "improve", "research", "evaluate", "report", "cycle")
 IMPLEMENTED = PHASES
 # Every phase is wired; what a phase needs is checked before it starts (a frozen plan, a model table, two
 # frontier configurations), and a missing piece is named rather than quietly skipped (BR-01).
@@ -203,7 +204,13 @@ def smoke(cfg: dict, base: str | Path = ".", *, tasks: list[str] | None = None, 
               # Nothing checked is not the same as nothing wrong.
               "ok": bool(chosen) and not checks["failed"] and not audit["leaks"] and not drift}
 
-    if run_agent and chosen:
+    code_problems = config_harness_problems(cfg)
+    for line in code_problems:
+        out(f"REFUSED    {line}")
+    if code_problems:
+        report["ok"] = False
+        report["harness"] = code_problems
+    if run_agent and chosen and not code_problems:
         report.update(_attempt(cfg, base, bench, suite, manifest, results, chosen, versions, out))
     elif run_agent:
         out("run        no development task to attempt")
@@ -261,11 +268,12 @@ def run_phase(cfg: dict, base: str | Path = ".", *, phase: str = "smoke", **kw) 
     if phase == "smoke":
         return smoke(cfg, base, **kw)
     runner = {"baseline": baseline, "collect": collect, "improve": improve, "research": research,
-              "evaluate": evaluate, "report": report}[phase]
+              "evaluate": evaluate, "report": report, "cycle": cycle}[phase]
     allowed = {"baseline": {"out", "limit", "tasks"}, "collect": {"out", "repeats", "tasks"},
-               "improve": {"out", "rounds", "researcher"},
+               "improve": {"out", "rounds", "researcher", "segment"},
                "research": {"out", "researcher", "campaign_ref", "r_candidate_ref"},
-               "evaluate": {"out", "plan_ref", "resume"}, "report": {"out", "write"}}[phase]
+               "evaluate": {"out", "plan_ref", "resume"}, "report": {"out", "write"},
+               "cycle": {"out", "researcher", "slot_researcher", "arm_researcher"}}[phase]
     unknown = sorted(set(kw) - allowed)
     if unknown:
         raise TypeError(f"the {phase} phase does not take {unknown}; it takes {sorted(allowed)}")
@@ -369,12 +377,17 @@ class Improvement:
     owner: str = "worker"
     plan_installs: bool = True
     pricing: object = None                      # execution.Pricing: what the agent's calls cost
+    harness: dict | None = None                 # v0.6: the package/diagnosis limits K froze, or None (v2 loop)
+    worker: object = None                       # the qualified isolated worker for package code, or None
+    actor_override: bool = False                # a frontier arm runs its own provider, as a separate comparison
+    segment: str | None = None                  # the cycle's worker segment, whose collection quota is its own
     _plans: dict = _field(default_factory=dict)
     _experiment_ref: str = ""
 
     # -------------------------------------------------------------- pieces
     def services(self) -> _P.Services:
-        return _P.Services(self.objects, runtime=self.rt, serving=self.serving)
+        return _P.Services(self.objects, runtime=self.rt, serving=self.serving,
+                           provider_factory=lambda identity, config: config_mod.build_provider(config))
 
     def families(self) -> dict:
         return {e.task_id: e.family_id for e in self.splits.entries}
@@ -410,7 +423,14 @@ class Improvement:
             self.releases.authorize(release_ref, profile="task")
         bound = _P.bind_release(release_ref, profile="evaluation" if permit else "task",
                                 services=self.services(), authorization=permit or "installed")
-        run = RunManifest(candidate, role, split, model_identity(self.provider, {}),
+        # The release pins the actor it runs; the configured [llm] only bootstrapped it and cannot override it.
+        # A frontier arm is the one exception, and it is a different comparison (docs/modules/01_POLICY_RUNTIME.md).
+        actor = self.provider
+        if bound.actor_identity is not None and not self.actor_override:
+            if bound.actor is None:
+                raise _P.BindError(f"{_ct.short(release_ref)} pins an actor and no provider could be built for it")
+            actor = bound.actor
+        run = RunManifest(candidate, role, split, model_identity(actor, {}),
                           prompt_hash=digest(bound.system_prompt("")[1])[:16],
                           environment=self.rt_environment(), budget=self.attempt_budget,
                           data=self.splits.hash(), repeats=self.repeats,
@@ -418,7 +438,10 @@ class Improvement:
                           worker_ref=self.objects.load(release_ref, _ct.SystemRelease).worker_ref,
                           research_ref=self.objects.load(release_ref, _ct.SystemRelease).research_ref,
                           core_ref=self.core_ref, eval_plan_ref=plan_ref, budget_scope=self.scope_id,
-                          input_schema_refs=(self.stop_view,))
+                          input_schema_refs=(self.stop_view,),
+                          actor_identity_ref=(bound.actor_identity.ref() if bound.actor_identity is not None
+                                              and not self.actor_override else None),
+                          package_ref=bound.package.ref if bound.package is not None else None)
         if self.results is not None:
             self.results.put_run(run)
         order = list(order)
@@ -430,13 +453,13 @@ class Improvement:
             order = [(t, i) for t, i in order if (t, i, retry_index) not in recorded]
             if not order:
                 return reused
-        provider = self.provider
+        provider = actor
         if self.budget is not None:
-            provider = MeteredProvider(self.provider, self.budget, self.pricing or Pricing(),
+            provider = MeteredProvider(actor, self.budget, self.pricing or Pricing(),
                                        operation=f"{self.scope_id}:{arm}:{run.hash()}", max_retries=0)
         factory = make_agent_factory(self.rt, provider, budget=self.attempt_budget, bound=bound,
                                      objects=self.objects, stop_view=self.stop_view,
-                                     meta={"arm": arm, "scope": self.scope_id})
+                                     meta={"arm": arm, "scope": self.scope_id}, worker=self.worker)
         return reused + run_tasks(self.suite, [t for t, _ in order], factory, run=run, splits=self.splits,
                                   results=self.results, probe=probe, arm=arm, plan_ref=plan_ref,
                                   release_ref=release_ref, order=order, retry_index=retry_index,
@@ -486,8 +509,157 @@ class Improvement:
                              budget=self.budget.remaining() if self.budget else {},
                              targets={**{t: {"binding": r.binding, "kinds": list(r.allowed_kinds),
                                             "site": r.site}
-                                         for t, r in _P.REGISTRY.items() if r.owner == self.owner},
+                                         for t, r in _P.REGISTRY.items() if r.owner == self.owner
+                                         and t in _P.core_targets(self.objects.load(self.core_ref,
+                                                                                    _ct.CoreManifest))
+                                         and t != "worker.actor"},
                                       **self.training_options()})
+
+    def measure(self, release_ref: str, previous: dict | None = None) -> dict:
+        """The first version's per-round measurement (docs/modules/04_RESEARCH_LOOP.md §4), train only.
+
+        Dev reaches R only as aggregates in the experience log, and every gate reruns its own control arm, so a
+        round has no use for a fresh dev measurement. The first round measures every train task. After an
+        install, only the train tasks that failed in the latest measurement are rerun: that set is the diagnosis
+        working set, and the passing results it does not rerun stay history of the version that produced them,
+        never part of a new version's train score. With no install, the version is unchanged and the latest
+        measurement is reused as it is. Attempts are recorded under their run identity, so a restart reuses what
+        was paid for. A new release that runs tasks exactly as the measured one did — only R changed — is the same
+        version for this purpose, and the measurement is reused (docs/modules/04_RESEARCH_LOOP.md §4).
+        """
+        if previous is not None and (previous["release"] == release_ref
+                                     or self._runs_like(previous["release"], release_ref)):
+            return {**previous, "release": release_ref, "measured_release": previous.get("measured_release")
+                    or previous["release"], "reused": True}
+        tasks = list(previous["failed"]) if previous is not None else list(self.train_tasks or
+                                                                            self.splits.ids("train"))
+        rows = self.run_arm("measure", release_ref, [(t, 0) for t in tasks], plan_ref="", split="train",
+                            candidate="current", role="base", resume=True) if tasks else []
+        failed = [r.task_id for r in rows if not r.success]
+        feedback = _feedback.build_feedback(self.rt, objects=self.objects, scope_id=self.scope_id)
+        return {"release": release_ref, "results": list(rows), "train": list(rows), "dev": [],
+                "feedback": feedback, "failed": failed, "scope": "all train tasks" if previous is None else
+                "train tasks that failed in the latest measurement", "reused": False}
+
+    def _runs_like(self, a: str, b: str) -> bool:
+        """Whether two releases execute a task identically: the same W and the same K. R takes no part in a run."""
+        try:
+            ra = self.objects.load(a, _ct.SystemRelease)
+            rb = self.objects.load(b, _ct.SystemRelease)
+        except (KeyError, _ct.ContractError):
+            return False
+        return (ra.worker_ref, ra.core_ref) == (rb.worker_ref, rb.core_ref)
+
+    def collect_batch(self, measured: dict, *, batch: int, root, max_tasks: int = 10) -> dict:
+        """One bounded task_feedback batch (docs/modules/04_RESEARCH_LOOP.md §4): plain train attempts of the
+        current version on the latest failures (or, with none, the first train tasks), frozen as a
+        CollectionRequest before anything runs. New valid results join the measurement the next round reads;
+        none is no progress, which ends the segment rather than collecting in a loop."""
+        release_ref = measured["release"]
+        tasks = (list(measured.get("failed") or ()) or list(self.train_tasks or self.splits.ids("train")))[:max_tasks]
+        request = _ct.CollectionRequest(
+            purpose="task_feedback", release_ref=release_ref,
+            task_selection_ref=self.objects.put_json("change", {"rule": "latest train failures, else train order",
+                                                                "tasks": tasks}),
+            limits_ref=self.objects.put_json("change", {"max_tasks": max_tasks, "attempt": batch}))
+        request_ref = self.objects.put(request)
+        before = {r.attempt_id for r in self.results.all()} if self.results is not None else set()
+        used = [r.attempt for r in self.results.all() if "/collect" in (r.attempt_id or "")
+                and r.system_release_ref == release_ref] if self.results is not None else []
+        attempt = max(used, default=0) + 1          # a fresh attempt index: a re-issued batch is not free data
+        rows = self.run_arm("collect", release_ref, [(t, attempt) for t in tasks], plan_ref="", split="train",
+                            candidate="current", role="base", resume=True)
+        # Progress is what this batch actually ran: attempts returned from the resume path are not new evidence.
+        valid = [r for r in rows if r.validity == "valid" and r.attempt_id not in before]
+        measured["results"] = [*measured.get("results", ()), *rows]
+        measured["train"] = [*measured.get("train", ()), *rows]
+        _experience.append(root, {"kind": "collection", "request": request_ref, "batch": batch,
+                                  "scope": self.scope_id, "tasks": tasks, "valid": len(valid),
+                                  "attempts": len(rows), **({"segment": self.segment} if self.segment else {})})
+        return {"progress": bool(valid), "request_ref": request_ref,
+                "reason": f"{len(valid)} new valid train attempts" if valid else "no new valid evidence"}
+
+    def last_measurement(self, release_ref: str) -> dict | None:
+        """The measurement a restarted loop continues from, rebuilt from recorded results: the latest measured
+        release and its failed train tasks. A restart after an install then reruns only those failures, as an
+        uninterrupted loop would (RL6-20)."""
+        if self.results is None:
+            return None
+        by_release: dict = {}
+        for r in self.results.all():
+            if "/measure" in (r.attempt_id or "") and r.system_release_ref:
+                by_release.setdefault(r.system_release_ref, []).append(r)
+        if not by_release:
+            return None
+        latest = release_ref if release_ref in by_release else list(by_release)[-1]
+        rows = by_release[latest]
+        feedback = _feedback.build_feedback(self.rt, objects=self.objects, scope_id=self.scope_id)
+        return {"release": latest, "results": rows, "train": rows, "dev": [], "feedback": feedback,
+                "failed": [r.task_id for r in rows if not r.success], "reused": True,
+                "scope": "train tasks of the latest recorded measurement"}
+
+    def round_inputs(self, index: int, evidence: dict, experience, bound, *, root, research_model: dict,
+                     shared_notes=None):
+        """The first version's per-round inputs: the diagnosis of the train failures and the draft check. Both
+        read their limits from K, and both are None for a v2 activity (docs/modules/04_RESEARCH_LOOP.md §1–2)."""
+        if not self.harness:
+            return None, None
+        from .agent import harness_package as hp
+        from .research import diagnosis as dg
+        from .research.drafts import Drafts
+        limits = dg.DiagnosisLimits(**self.harness["diagnosis"])
+        package = hp.Limits.from_json(self.harness["package"])
+        if bound.package is None:
+            raise _P.BindError("a first-version activity mounts a capability package, and this release has none")
+        run_files, test_files = hp.files_of(self.objects, bound.package.ref)
+        diagnosis = dg.Diagnosis(
+            summaries=dg.failure_summaries(evidence.get("train") or (), store=self.results,
+                                           transcripts=Path(self.rt.root) / "transcripts", limits=limits),
+            order=list(self.splits.ids("train")), history=dg.last_included(experience, self.scope_id),
+            limits=limits, cache=dg.NoteCache(Path(root), self.objects, shared=shared_notes), model=research_model,
+            round_index=dg.diagnosis_count(experience, self.scope_id),
+            components=package.components, package={**run_files, **test_files},
+            scope=evidence.get("scope") or "train failures of the latest measurement")
+        drafts = Drafts(self.objects, parent_ref=bound.package.ref, limits=package,
+                        literals=dg.train_literals(self.results) | self.train_state_literals(),
+                        max_repairs=int(self.harness["max_draft_repairs"]), events=_ct.Events(root),
+                        worker=self.worker, round_index=index, scope=self.scope_id,
+                        allowed_literals=self.tool_vocabulary(), fixture=self.fixture_world,
+                        reserved_names=self.tool_vocabulary(names_only=True))
+        return diagnosis, drafts
+
+    def fixture_world(self):
+        """The world package tests run against: a fresh episode of the first train task, never dev or final
+        (docs/modules/05_EXECUTION_BUDGET.md §1)."""
+        return self.suite.episode(next(iter(self.train_tasks or self.splits.ids("train"))))
+
+    def train_state_literals(self) -> set:
+        """Task-specific identifiers in the initial state of train tasks (record ids, e-mails, record names): R
+        sees them in tool outputs, and none may be written into a shared component (docs/modules/00_CONTRACTS.md
+        §3). Read from the grading side of the suite, train tasks only."""
+        from .agent.harness_package import literals_of
+        out: set = set()
+        for task_id in self.train_tasks or self.splits.ids("train"):
+            try:
+                out |= literals_of(self.suite.grading(task_id).initial_state)
+            except Exception:  # noqa: BLE001 - a task without a readable initial state adds nothing
+                continue
+        return out
+
+    def tool_vocabulary(self, *, names_only: bool = False) -> set:
+        """Names of the business tools and their parameters: the host's vocabulary, never a task's answer. With
+        `names_only`, the tool names alone — the names a package tool may not take."""
+        names: set = set()
+        try:
+            episode = self.suite.episode(next(iter(self.train_tasks or self.splits.ids("train"))))
+            for spec in episode.specs():
+                names.add(spec.name)
+                if not names_only:
+                    names |= set((spec.schema or {}).get("properties", {}))
+            episode.close()
+        except Exception:  # noqa: BLE001 - without an episode the vocabulary is simply empty
+            pass
+        return names
 
     def training_options(self) -> dict:
         """What a training proposal may name, when this activity has a trainer at all.
@@ -603,10 +775,22 @@ class Improvement:
         return self.releases.install(ref, expected_parent, operation, preflight=self._preflight)
 
     def _preflight(self, target_release: str) -> dict:
-        """Assemble the release that is about to go live, in isolation, and probe what it loads."""
+        """Assemble the release that is about to go live, in isolation, and probe what it loads.
+
+        A package that runs code is installed only where the qualified worker it was evaluated with is there
+        (docs/modules/03_EVALUATION_RELEASE.md §3): the package bytes are the evaluated ones by content address,
+        and the worker's image must be the one K froze. A missing worker fails the preflight; nothing falls back.
+        """
         bound = _P.bind_release(target_release, profile="preflight", services=self.services())
-        return {"release": target_release, "policies": _P.describe(bound),
-                "prompt": bound.system_prompt("")[1]}
+        out = {"release": target_release, "policies": _P.describe(bound), "prompt": bound.system_prompt("")[1]}
+        if bound.package is not None:
+            out["package"] = bound.package.ref
+            if bound.package.runs_code:
+                if self.worker is None:
+                    raise _P.BindError(f"package {_ct.short(bound.package.ref)} runs code and no qualified isolated "
+                                       f"worker is available to run it")
+                out["worker"] = self.worker.describe()
+        return out
 
 
 def _retry_of(attempt_id: str) -> int:
@@ -649,6 +833,151 @@ class Activity:
     bootstrapped: bool = False
 
 
+# ---------------------------------------------------------------------------- the first version's harness table
+HARNESS_KEYS = {"package_api", "components", "sandbox", "image", "max_files", "max_package_bytes",
+                "max_memory_chars", "max_skill_chars", "max_skills", "test_timeout_seconds", "max_draft_repairs",
+                "max_failure_notes", "max_entry_chars"}
+
+
+# ---------------------------------------------------------------------------- [improvement] and its presets
+# docs/modules/07_BENCH_REPORT.md §2. The reader accepts only what is implemented: an unknown preset, mode or
+# method fails here, before anything is paid for, and a second-version method is refused by name.
+IMPROVEMENT_KEYS = {"mode", "preset", "allowed_methods", "max_candidates_per_round", "max_collection_batches"}
+METHODS = ("policy_edit", "harness_edit")
+LATER_METHODS = ("distill_actor", "decision_train")
+PRESETS = {
+    # The first version's Marketing preset. Its harness numbers are ceilings: [harness_evolution] may narrow the
+    # component kinds and lower a limit, never raise one; once frozen into K, R cannot raise them either.
+    "marketing_harness_v1": {
+        "domain": "marketing",
+        "harness": {"package_api": "harness_package.v1",
+                    "components": ["memory", "skills", "on_finish", "before_tool", "after_tool", "tools"],
+                    "sandbox": "docker", "image": "ouroloop-worker:py3.12", "max_files": 24, "max_package_bytes": 262144, "max_memory_chars": 8000,
+                    "max_skill_chars": 8000, "max_skills": 12, "test_timeout_seconds": 30,
+                    "max_draft_repairs": 3, "max_failure_notes": 30, "max_entry_chars": 600},
+        # One worker segment, one research slot, one more worker segment that shows the installed R is used.
+        "schedule": {"worker_rounds": 3, "research_slots": 1, "patience": 2, "max_infrastructure_failures": 2},
+        # The existing worker gate's own fields; no second regression layer.
+        "task_plan": {"tasks": "dev", "repeats": 1, "order_seed": 0,
+                      "gate": {"mode": "quality", "min_gain": 0.05, "min_groups": 5, "max_regression_rate": 0.1}},
+        # A research slot's comparison: each arm gets the same fixed share of the frozen activity budget, and
+        # the frozen dev families are halved by their frozen order — the arms' inner gate reads the first half,
+        # the outer comparison the second, which neither arm touches (the research_dev pool of M6 §1).
+        "campaign": {"worker_round_limit": 2, "arm_share": 0.15, "min_gain": 0.05, "min_groups": 1},
+    },
+}
+
+
+def improvement_settings(cfg: dict) -> dict | None:
+    """`[improvement]`, validated against its preset. None when the table is absent (the older entry points)."""
+    table = dict(cfg.get("improvement") or {})
+    if not table:
+        return None
+    unknown = sorted(set(table) - IMPROVEMENT_KEYS)
+    if unknown:
+        raise ValueError(f"[improvement] does not take {unknown}; it takes {sorted(IMPROVEMENT_KEYS)}")
+    mode = table.get("mode", "automatic")
+    if mode != "automatic":
+        raise ValueError(f"[improvement] mode {mode!r}: this reader runs the automatic loop; a manual proposal "
+                         f"goes through `ouroloop propose`, and scripted researchers exist for fixtures only")
+    name = table.get("preset")
+    if name not in PRESETS:
+        raise ValueError(f"[improvement] preset {name!r}: one of {sorted(PRESETS)}")
+    if "allowed_methods" in table and not table["allowed_methods"]:
+        raise ValueError("[improvement] allowed_methods is empty: name at least one of "
+                         f"{list(METHODS)}, or leave the key out for both")
+    methods = list(table.get("allowed_methods") or METHODS)
+    later = sorted(set(methods) & set(LATER_METHODS))
+    if later:
+        raise ValueError(f"[improvement] allowed_methods {later} belong to the second version and are not "
+                         f"implemented; this version allows {list(METHODS)}")
+    unknown = sorted(set(methods) - set(METHODS))
+    if unknown:
+        raise ValueError(f"[improvement] allowed_methods {unknown}: one of {list(METHODS)}")
+    preset = PRESETS[name]
+    domain = dict(cfg.get("bench") or {}).get("domain", "marketing")
+    if domain != preset["domain"]:
+        raise ValueError(f"[improvement] preset {name!r} is for the {preset['domain']} domain, not {domain!r}")
+    candidates = int(table.get("max_candidates_per_round", 1))
+    batches = int(table.get("max_collection_batches", 2))
+    if candidates != 1:
+        raise ValueError("[improvement] max_candidates_per_round: this version runs one candidate per round")
+    if not 0 <= batches <= 2:
+        raise ValueError("[improvement] max_collection_batches: at most 2 per worker segment in this preset")
+    return {"mode": mode, "preset": name, "allowed_methods": methods, "candidates_per_round": candidates,
+            "collection_batches": batches, **{k: preset[k] for k in ("harness", "schedule", "task_plan",
+                                                                         "campaign")}}
+
+
+def _preset_harness(cfg: dict, preset: dict) -> dict:
+    """The preset's harness table narrowed by [harness_evolution]: fewer component kinds, lower limits."""
+    table = dict(cfg.get("harness_evolution") or {})
+    unknown = sorted(set(table) - HARNESS_KEYS)
+    if unknown:
+        raise ValueError(f"[harness_evolution] does not take {unknown}; it takes {sorted(HARNESS_KEYS)}")
+    out = dict(preset)
+    for key, value in table.items():
+        if key == "components":
+            wider = sorted(set(value) - set(preset["components"]))
+            if wider:
+                raise ValueError(f"[harness_evolution] components {wider} are outside the preset's "
+                                 f"{preset['components']}: a preset is not widened from the config")
+            out[key] = [k for k in preset["components"] if k in set(value)]
+        elif key in ("sandbox", "image", "package_api"):
+            if value != preset.get(key):
+                raise ValueError(f"[harness_evolution] {key} {value!r}: the preset fixes {preset.get(key)!r}")
+            out[key] = value
+        elif int(value) > int(preset[key]):
+            raise ValueError(f"[harness_evolution] {key} = {value} is above the preset's {preset[key]}: a limit "
+                             f"may be lowered here, not raised")
+        else:
+            out[key] = int(value)
+    return out
+
+
+def harness_settings(cfg: dict) -> dict | None:
+    """`[harness_evolution]`, validated, as the object K freezes. None when neither it nor an [improvement]
+    preset is set: the activity then runs the v2 loop unchanged. Once frozen into K, rounds read these limits
+    from K, never from the config, so R cannot raise them (docs/modules/07_BENCH_REPORT.md §2)."""
+    from .agent import harness_package as hp
+    from .research.diagnosis import DiagnosisLimits
+    improvement_cfg = improvement_settings(cfg)
+    if improvement_cfg is not None:
+        table = _preset_harness(cfg, improvement_cfg["harness"])
+    else:
+        table = dict(cfg.get("harness_evolution") or {})
+    if not table:
+        return None
+    unknown = sorted(set(table) - HARNESS_KEYS)
+    if unknown:
+        raise ValueError(f"[harness_evolution] does not take {unknown}; it takes {sorted(HARNESS_KEYS)}")
+    if table.get("package_api", hp.API_VERSION) != hp.API_VERSION:
+        raise ValueError(f"[harness_evolution] package_api {table['package_api']!r}: this host serves "
+                         f"{hp.API_VERSION}")
+    limits = hp.Limits(components=tuple(table.get("components") or hp.TEXT_KINDS),
+                       **{k: int(table[k]) for k in ("max_files", "max_package_bytes", "max_memory_chars",
+                                                     "max_skill_chars", "max_skills") if k in table})
+    diagnosis = DiagnosisLimits(**{k2: int(table[k1]) for k1, k2 in (("max_failure_notes", "max_notes"),
+                                                                     ("max_entry_chars", "max_entry_chars"))
+                                   if k1 in table})
+    repairs = int(table.get("max_draft_repairs", 3))
+    if repairs < 0:
+        raise ValueError("[harness_evolution] max_draft_repairs is a count of revisions after the first draft")
+    return {"package": limits.to_json(), "diagnosis": diagnosis.to_json(), "max_draft_repairs": repairs,
+            "sandbox": table.get("sandbox"), "image": table.get("image"),
+            "test_timeout_seconds": int(table.get("test_timeout_seconds", 30))}
+
+
+def actor_identity(objects: _ct.Objects, table: dict) -> str:
+    """The configured model as the actor W0 pins: its provider configuration less any secret. A hosted alias is
+    recorded as mutable with when it was seen, not as frozen weights (docs/modules/00_CONTRACTS.md §2)."""
+    config = {k: v for k, v in table.items() if not SECRET_KEY.match(k)}
+    return objects.put(_ct.ModelIdentity(role="actor", provider=str(config.get("type", "")),
+                                         base_model=str(config.get("model") or config.get("type", "")),
+                                         inference_ref=objects.put_json("change", config), mutable=True,
+                                         observed_at=now()))
+
+
 def open_activity(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = print,
                   bootstrap: bool = True) -> Activity:
     """Load the environment, freeze the splits if they are not frozen, and find or create the initial release.
@@ -675,13 +1004,45 @@ def open_activity(cfg: dict, base: str | Path = ".", *, out: Callable[[str], Non
             raise ValueError("; ".join(missing))
         release_ref = release_ref or rsi.initial_release_ref
     elif release_ref is None and bootstrap:
+        harness = harness_settings(cfg)
+        targets = ()
+        capabilities = {"training": bool(cfg.get("trainer"))}
+        worker_kw: dict = {}
+        if harness is not None:
+            # The first version (docs/modules/00_CONTRACTS.md §1): K opens the actor and the package targets and
+            # freezes the package limits; W0 pins the configured model and an empty package; R0 writes notes.
+            from .agent import harness_package as hp
+            if "llm" not in cfg:
+                raise ValueError("[harness_evolution] needs an [llm] table: W0 pins it as the actor")
+            targets = (*_P.targets_of("worker"), "worker.actor", "worker.harness", *_P.targets_of("research"))
+            if harness.get("sandbox") == "docker":
+                # K freezes the worker image by content id when there is one to freeze.
+                from .agent.worker import DEFAULT_IMAGE, DockerWorker
+                harness = {**harness, "image": harness.get("image") or DEFAULT_IMAGE,
+                           "image_id": DockerWorker(harness.get("image") or DEFAULT_IMAGE).image_id()}
+            capabilities = {**capabilities, "training": False, "harness": harness}
+            settings = improvement_settings(cfg)
+            if settings is not None:
+                # The methods the activity allows, frozen with K: admission refuses a change of any other kind.
+                capabilities["methods"] = list(settings["allowed_methods"])
+            worker_kw = {"actor_identity_ref": actor_identity(objects, cfg["llm"]),
+                         "package_ref": hp.empty_package(objects)}
         core_ref = rsi.core_ref or _P.default_core(
             objects, domain=bench.domain, split_ref=manifest.hash(),
             adapter="ouroloop.adapters.automationbench", scorer="automationbench.rubric",
-            toolset=bench.toolset,
-            capabilities={"training": bool(cfg.get("trainer"))})
-        release_ref = releases.bootstrap(_P.default_worker_set(objects), _P.default_research_set(objects),
+            toolset=bench.toolset, targets=targets, capabilities=capabilities)
+        release_ref = releases.bootstrap(_P.default_worker_set(objects, **worker_kw),
+                                        _P.default_research_set(objects, note_contract=harness is not None),
                                         core_ref, reason="initial version from the configuration")
+        if harness is not None:
+            # The alias's observation time is kept out of the identity (it would change the ref) and recorded
+            # here, where a report can find when the hosted model was seen (docs/modules/00_CONTRACTS.md §2).
+            _ct.Events(root).append("model_observed", identity=worker_kw["actor_identity_ref"], observed_at=now())
+            out(f"harness    K froze components={harness['package']['components']} "
+                f"max_draft_repairs={harness['max_draft_repairs']} "
+                f"max_failure_notes={harness['diagnosis']['max_notes']} "
+                f"max_entry_chars={harness['diagnosis']['max_entry_chars']} "
+                f"max_files={harness['package']['max_files']} max_package_bytes={harness['package']['max_package_bytes']}")
         bootstrapped = True
         out(f"release    {_ct.short(release_ref)} bootstrapped (W0, R0, K); no comparison has been made yet")
     if release_ref is None:
@@ -740,6 +1101,7 @@ def improvement(activity: Activity, *, template_ref: str | None = None, provider
         budget=budget,
         results=activity.results, stop_view=activity.rsi.stop_view, attempt_budget=attempt,
         probe_train=True, train_tasks=tuple(activity.splits.ids("train")), owner=owner, pricing=pricing,
+        harness=_harness_of(activity), worker=isolated_worker(_harness_of(activity)),
         plan_installs=template.installs if template and installs is None else (True if installs is None
                                                                                else installs))
 
@@ -752,6 +1114,21 @@ def require(problems: list, *, phase: str) -> None:
 
 # ---------------------------------------------------------------------------- baseline
 FRONTIER_KEYS = {"llm", "effort", "fallback", "source", "date", "note", "pricing"}
+
+
+def _harness_of(activity: Activity) -> dict | None:
+    rel = _ct.SystemRelease.from_json(activity.objects.get(activity.release_ref))
+    return (activity.objects.load(rel.core_ref, _ct.CoreManifest).capabilities or {}).get("harness")
+
+
+def _pinned_actor(activity: Activity):
+    """The ModelIdentity the active release pins, or None for a v2 release."""
+    rel = _ct.SystemRelease.from_json(activity.objects.get(activity.release_ref))
+    for ref in activity.objects.load(rel.worker_ref, _ct.PolicySet).policies:
+        p = activity.objects.load(ref, _ct.PolicyDescriptor)
+        if p.target == "worker.actor":
+            return activity.objects.load(p.implementation["model_identity_ref"], _ct.ModelIdentity)
+    return None
 
 
 def frontier_configs(cfg: dict) -> dict:
@@ -789,24 +1166,45 @@ def baseline(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = 
                                                              for k, v in frontier.items()}}
     arms = [("base", "base", cfg["llm"])] + [(name, f"frontier_{name}", table["llm"])
                                              for name, table in sorted(frontier.items())]
+    pinned = _pinned_actor(activity)
     for candidate, role, llm in arms:
-        try:
-            provider = config_mod.build_provider(llm)
-        except Exception as e:  # noqa: BLE001 - an unavailable model is an absence, never a zero
-            report["absent"].append({"arm": candidate, "reason": f"{type(e).__name__}: {e}"[:200]})
-            out(f"ABSENT     {candidate}: {type(e).__name__}: {e}"[:160])
-            continue
+        own = candidate in frontier
+        provider = None
+        if own or pinned is None:
+            try:
+                provider = config_mod.build_provider(llm)
+            except Exception as e:  # noqa: BLE001 - an unavailable model is an absence, never a zero
+                report["absent"].append({"arm": candidate, "reason": f"{type(e).__name__}: {e}"[:200]})
+                out(f"ABSENT     {candidate}: {type(e).__name__}: {e}"[:160])
+                continue
         arm_pricing = pricing_of({"pricing": frontier[candidate].get("pricing")}) if candidate in frontier \
             else pricing_of(cfg)
         work = improvement(activity, provider=provider, pricing=arm_pricing,
                            budget=activity_budget(activity, cfg, f"baseline:{candidate}"))
+        # A frontier arm runs its own model on purpose: a different comparison, never the pinned actor swapped.
+        work.actor_override = own
         order = [(t, i) for t in dev for i in range(work.repeats)]
-        rows = work.run_arm(candidate, activity.release_ref, order, plan_ref="", candidate=candidate, role=role)
+        # Attempts already on record for this run are kept, not paid again: a restarted baseline (a cycle that
+        # stopped half way through it) runs only what is missing.
+        rows = work.run_arm(candidate, activity.release_ref, order, plan_ref="", candidate=candidate, role=role,
+                            resume=True)
         summary = summarise(rows)
-        report["arms"][candidate] = {"role": role, "summary": summary,
-                                     "model": model_identity(provider, llm),
+        # The label is what actually ran: the pinned actor, unless the arm names its own model.
+        label = model_identity(provider, llm) if (own or pinned is None) else \
+            {"provider": pinned.provider, "model": pinned.base_model, "actor_identity_ref": pinned.ref()}
+        report["arms"][candidate] = {"role": role, "summary": summary, "model": label,
                                      "terminations": summary["terminations"],
                                      "failures": {r.task_id: r.failure_class for r in rows if not r.success}}
+        if work.harness and not own:
+            # The first version's "before" is train and dev (docs/ROADMAP.md §2 stage A): the train split runs
+            # as its own run, never merged into the dev figures.
+            train = list(activity.splits.ids("train"))[:limit] if limit else list(activity.splits.ids("train"))
+            train_rows = work.run_arm(candidate, activity.release_ref, [(t, i) for t in train
+                                                                       for i in range(work.repeats)],
+                                      plan_ref="", split="train", candidate=candidate, role=role, resume=True)
+            report["arms"][candidate]["train"] = summarise(train_rows)
+            out(f"arm        {candidate} ({role}) train: {report['arms'][candidate]['train']['passed']}/"
+                f"{report['arms'][candidate]['train']['tasks']} passed")
         out(f"arm        {candidate} ({role}): {summary['passed']}/{summary['tasks']} passed, "
             f"partial={summary['partial_credit']}, cost="
             f"{'unmeasured' if summary['cost_usd'] is None else summary['cost_usd']}")
@@ -846,11 +1244,15 @@ def collect(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
 
 # ---------------------------------------------------------------------------- improve
 def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = print, rounds: int | None = None,
-            researcher=None) -> dict:
+            researcher=None, segment: str | None = None) -> dict:
     """The worker loop with a fixed R: collect, diagnose, propose, build, evaluate, install, repeat.
 
     Every round starts from what the previous one left — the installed release, the appended experience and the
     results that produced it — which is what makes this a loop rather than a series of independent trials.
+
+    With `segment` (the cycle's worker segments, docs/modules/07_BENCH_REPORT.md §1), the segment keeps its own
+    record of completed rounds: calling it again resumes at the round it could not complete, a finished segment
+    is not run again, and its collection batches are counted per segment across restarts.
     """
     from .research.loop import RoundContext, run_worker_rounds
     activity = open_activity(cfg, base, out=out)
@@ -867,30 +1269,78 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
     work.budget = budget
     work.pricing = pricing_of(cfg)
     researcher = researcher or _default_researcher(cfg, activity, budget=budget)
+    # The model that writes the notes is part of each note's identity (docs/modules/04_RESEARCH_LOOP.md §1).
+    research_table = dict(cfg.get("research") or {}).get("llm") or cfg.get("llm") or {}
+    research_model = {k: v for k, v in research_table.items() if not SECRET_KEY.match(k)}
     history: list = []
     log: list = []
+    seglog = RoundLog(Path(activity.root) / "rsi" / "segments" / f"{segment}.json",
+                      {"segment": segment, "scope": activity.rsi.scope_id,
+                       "schedule": activity.rsi.schedule_ref}) if segment else None
+    if seglog is not None and seglog.finished:
+        out(f"segment    {segment} already finished ({seglog.state['stop_reason']}); not run again")
+        return {"rounds": seglog.state["rounds"], "log": [], "budget": budget.remaining(), "segment": segment,
+                "release": activity.releases.active()["release_ref"], "stop_reason": seglog.state["stop_reason"]}
+    if seglog is not None:
+        seglog.watch(researcher)
+    done = 0
+    if segment:
+        work.segment = segment
+
+    measured: dict = {}
+    if work.harness:
+        previous = work.last_measurement(activity.releases.active()["release_ref"])
+        if previous is not None:
+            measured["last"] = previous
 
     def make_round(index: int) -> RoundContext:
+        index += done
         release_ref = activity.releases.active()["release_ref"]
-        evidence = work.collect()
+        if work.harness:
+            evidence = work.measure(release_ref, measured.get("last"))
+            measured["last"] = evidence
+        else:
+            evidence = work.collect()
         experience, experience_ref = _experience.snapshot(activity.root)
         context = work.context(goal="improve the full-task pass rate on the development tasks",
                                release_ref=release_ref, evidence=evidence, experience=experience,
                                experience_ref=experience_ref)
         bound = _P.bind_release(release_ref, profile="task", services=work.services(),
                                 authorization="installed")
+        diagnosis, drafts = work.round_inputs(index, evidence, experience, bound, root=activity.root,
+                                              research_model=research_model)
         log.append({"round": index, "release": release_ref, "feedback": evidence["feedback"].summary()})
         return RoundContext(releases=activity.releases, objects=activity.objects, scope_id=activity.rsi.scope_id,
                             context=context, researcher=researcher, bound=bound, core_ref=work.core_ref,
                             eval_template_ref=activity.rsi.task_plan_ref, handlers=work.handlers(),
                             experience_ref=experience_ref, experience=tuple(experience), owner="worker",
-                            schedule=schedule, history=tuple(history), root=activity.root)
+                            schedule=schedule, history=tuple(history), root=activity.root,
+                            diagnosis=diagnosis, drafts=drafts, round_index=index)
 
     from .research.loop import resume_unfinished
     resumed = resume_unfinished(activity.root, activity.objects, work.handlers(), budget)
     for result in resumed:
         out(f"resume     {result.experiment_id}: {result.outcome} ({result.reason})")
-    results = resumed + run_worker_rounds(make_round, budget, schedule=schedule, root=activity.root)
+        if seglog is not None:
+            seglog.add(result)             # the interrupted round of this segment, finished
+    if seglog is not None:
+        # Only the rounds this segment has not completed; make_round numbers them after the completed ones.
+        done = seglog.done()
+        schedule = Schedule(**{**asdict(schedule), "worker_rounds": max(schedule.worker_rounds - done, 0)})
+    collector = None
+    if work.harness:
+        def collector(result, *, batch: int) -> dict:
+            return work.collect_batch(measured["last"], batch=batch, root=activity.root)
+    collected = sum(1 for e in _experience.read(activity.root) if e.get("kind") == "collection"
+                    and e.get("scope") == activity.rsi.scope_id
+                    and (segment is None or e.get("segment") == segment)) if work.harness else 0
+    results = resumed + run_worker_rounds(make_round, budget, schedule=schedule, root=activity.root,
+                                          collect=collector, collected_before=collected,
+                                          on_result=seglog.add if seglog is not None else None)
+    stop_reason = next((r.reason for r in reversed(results) if r.outcome == "stopped"), "rounds_done")
+    if seglog is not None:
+        seglog.end(stop_reason)
+        stop_reason = seglog.state["stop_reason"]
     for result in results:
         out(f"round      {result.outcome}"
             + (f" experiment={result.experiment_id}" if result.experiment_id else "")
@@ -898,7 +1348,8 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
                if result.release_after and result.release_after != result.release_before else "")
             + (f" ({result.reason})" if result.reason else ""))
     return {"rounds": [vars(r) for r in results], "log": log, "budget": budget.remaining(),
-            "release": activity.releases.active()["release_ref"]}
+            "release": activity.releases.active()["release_ref"], "stop_reason": stop_reason,
+            **({"segment": segment} if segment else {})}
 
 
 def _default_researcher(cfg: dict, activity: Activity, *, budget=None):
@@ -927,6 +1378,24 @@ class _Completions:
         turn = self.provider.chat(system, [{"role": "user", "content": prompt}], ())
         return turn.text or ""
 
+    def label(self, step: str):
+        """While a research step runs, a metered provider books its calls as `<operation>:<step>`."""
+        import contextlib
+        provider = self.provider
+
+        @contextlib.contextmanager
+        def labelled():
+            base = getattr(provider, "operation", None)
+            if base is None:
+                yield
+                return
+            provider.operation = f"{base}:{step}"
+            try:
+                yield
+            finally:
+                provider.operation = base
+        return labelled()
+
 
 # ---------------------------------------------------------------------------- research (M6)
 def research(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = print, researcher=None,
@@ -945,6 +1414,20 @@ def research(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = 
     plan = CampaignPlan.from_json(activity.objects.get(ref))
     if r_candidate_ref and r_candidate_ref != plan.r_candidate_ref:
         raise ValueError("the candidate R is part of the frozen plan and cannot be replaced on the command line")
+    if researcher is not None and not callable(researcher):
+        raise ValueError("research() takes a factory of research steps: each arm gets its own, metered on its own "
+                         "budget, so one arm's requests and spend are never the other's")
+    # A campaign that already has its receipt is not run again: its arms, its outer comparison and its install
+    # are on record, and running them again would pay twice and draw on research_dev twice (M6 §3, M7 §1).
+    result_path = Path(activity.root) / "campaigns" / plan.id / "result.json"
+    if result_path.exists():
+        recorded = json.loads(result_path.read_text())
+        out(f"campaign   {plan.id} already has its receipt ({recorded['verdict']}); not run again")
+        if recorded["installation"] is None:
+            # accepted, and a crash came before the install: install now, from the recorded receipt
+            recorded["installation"] = _install_research(activity, plan, recorded, out)
+            write_json(result_path, recorded)
+        return {**recorded, "release": activity.releases.active()["release_ref"]}
     require(startup_checks(activity, cfg, phase="research"), phase="research")
     provider = config_mod.build_provider(cfg["llm"])
     budget = activity_budget(activity, cfg, f"campaign:{plan.id}")
@@ -954,56 +1437,92 @@ def research(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = 
     def make_researcher(arm_budget):
         """A fresh research step per arm, metered on that arm's budget: its recorded requests are then that arm's
         own, which is how a fixture tells R0's calls from R1's (docs/modules/06_RESEARCH_CAMPAIGN.md §5)."""
-        return researcher() if callable(researcher) else (researcher or _default_researcher(cfg, activity,
-                                                                                           budget=arm_budget))
+        return researcher() if callable(researcher) else _default_researcher(cfg, activity, budget=arm_budget)
 
     pricing = pricing_of(cfg)
-
-    def run_arm(pair: CampaignPair, arm: str, r_ref: str, arm_budget) -> object:
-        return _run_campaign_arm(activity, plan, pair, arm, r_ref, arm_budget, provider=provider,
-                                 researcher=make_researcher(arm_budget), out=out, pricing=pricing)
 
     def evaluate_outer(pair: CampaignPair, sealed: dict) -> dict:
         # The outer runs are the evaluator's, and cost the same for both arms: a child scope of the campaign, so
         # they are counted in the comparison's total and reported apart from either arm (docs/modules/06 §3).
         return _evaluate_outer(activity, plan, pair, sealed, provider=provider, out=out, pricing=pricing,
-                               budget=budget.child(f"{budget.scope_id}:outer:{pair.pair_id}", {}))
+                               budget=budget.child(f"{plan.id}:{pair.pair_id}:outer", {}))
 
+    def run_arm(pair: CampaignPair, arm: str, r_ref: str, arm_budget, shared=None) -> object:
+        return _run_campaign_arm(activity, plan, pair, arm, r_ref, arm_budget, provider=provider,
+                                 researcher=make_researcher(arm_budget), out=out, pricing=pricing, shared=shared)
+
+    research_table = dict(cfg.get("research") or {}).get("llm") or cfg.get("llm") or {}
+    research_model = {k: v for k, v in research_table.items() if not SECRET_KEY.match(k)}
+
+    def prepare_pair(pair: CampaignPair, common_budget) -> dict | None:
+        if not _harness_of(activity):
+            return None
+        return _campaign_common(activity, plan, pair, common_budget, provider=provider, pricing=pricing,
+                                researcher=make_researcher(common_budget), research_model=research_model, out=out)
+
+    prompts = {"control": _P.prompts_of(activity.objects, plan.r_control_ref),
+               "candidate": _P.prompts_of(activity.objects, plan.r_candidate_ref)}
+    by_target = {arm: {activity.objects.load(r, _ct.PolicyDescriptor).target: r
+                       for r in activity.objects.load(ref, _ct.PolicySet).policies}
+                 for arm, ref in (("control", plan.r_control_ref), ("candidate", plan.r_candidate_ref))}
+    changed = tuple(sorted(t for t in set(by_target["control"]) | set(by_target["candidate"])
+                           if by_target["control"].get(t) != by_target["candidate"].get(t)))
     receipt = run_campaign(plan, run_arm=run_arm, evaluate_outer=evaluate_outer, objects=activity.objects,
-                           budget=budget, events=_ct.Events(activity.root))
+                           budget=budget, events=_ct.Events(activity.root), prepare_pair=prepare_pair,
+                           prompts=prompts, changed=changed)
     receipt_ref = activity.objects.put(receipt)
     activity.releases.register_receipt(receipt_ref, plan=receipt.plan_ref, subject=plan.r_candidate_ref,
                                       verdict=receipt.verdict, profile="research")
     out(f"verdict    {receipt.verdict}: {'; '.join(receipt.reasons)[:200]}")
     out(f"metrics    {receipt.metrics}")
-    installation = None
-    if receipt.verdict == "accepted" and plan.phase != "final":
-        installation = activity.releases.install(
-            receipt_ref, activity.releases.active()["release_ref"],
-            f"install-r-{_ct.digest({'receipt': receipt_ref})[:12]}",
-            preflight=lambda target: {"release": target,
-                                      "policies": _P.describe(_P.bind_release(
-                                          target, profile="preflight",
-                                          services=_P.Services(activity.objects, serving=activity.rt.serving)))})
-        out(f"install    {installation.status} {_ct.short(installation.target_release)}"
-            + (f" ({installation.reason})" if installation.reason else ""))
-    return {"receipt": receipt_ref, "verdict": receipt.verdict, "metrics": receipt.metrics,
-            "uncertainty": receipt.uncertainty, "costs": receipt.costs,
-            "installation": None if installation is None else vars(installation),
-            "release": activity.releases.active()["release_ref"]}
+    paused = any("paused" in r for r in receipt.reasons) and receipt.verdict == "inconclusive"
+    recorded = {"receipt": receipt_ref, "verdict": receipt.verdict, "metrics": receipt.metrics,
+                "uncertainty": receipt.uncertainty, "costs": receipt.costs, "installation": None}
+    if not paused:
+        write_json(result_path, recorded)      # before the install: a crash there does not re-run the campaign
+    recorded["installation"] = _install_research(activity, plan, recorded, out)
+    if not paused:
+        write_json(result_path, recorded)
+    return {**recorded, "release": activity.releases.active()["release_ref"]}
+
+
+def _install_research(activity: Activity, plan, recorded: dict, out) -> dict | None:
+    """Install R1 from an accepted research receipt, once: None when the verdict does not install (or the plan is
+    the final one), and the recorded installation when R1 is already the active research policy."""
+    if recorded["verdict"] != "accepted" or plan.phase == "final":
+        return None
+    active = activity.releases.active()["release_ref"]
+    if _ct.SystemRelease.from_json(activity.objects.get(active)).research_ref == plan.r_candidate_ref:
+        out("install    R1 is already the active research policy")
+        return {"status": "installed", "target_release": active, "reason": "already active"}
+    receipt_ref = recorded["receipt"]
+    installation = activity.releases.install(
+        receipt_ref, active, f"install-r-{_ct.digest({'receipt': receipt_ref})[:12]}",
+        preflight=lambda target: {"release": target,
+                                  "policies": _P.describe(_P.bind_release(
+                                      target, profile="preflight",
+                                      services=_P.Services(activity.objects, serving=activity.rt.serving)))})
+    out(f"install    {installation.status} {_ct.short(installation.target_release)}"
+        + (f" ({installation.reason})" if installation.reason else ""))
+    return {k: v for k, v in vars(installation).items() if isinstance(v, (str, int, float, bool, type(None)))}
 
 
 def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_budget, *, provider,
-                      researcher, out=print, pricing=None):
+                      researcher, out=print, pricing=None, shared=None):
     """One arm's whole improvement loop, in its own workspace.
 
     The arm gets the pair's W0, its own R, the shared core and nothing else: no mainline pointer, no other arm's
     experience, no outer task. Its W* is whatever it actually installed (RC-02: an arm that installed nothing
     still returns W0 and its full costs).
+
+    An arm keeps its own record of the rounds it completed. A finished arm is not run again; a paused one
+    (docs/modules/06_RESEARCH_CAMPAIGN.md §3) resumes at the round it could not complete, so after the repair it
+    reaches the frozen round count and no more.
     """
     from .research.campaign import ArmOutcome, arm_workspace
-    from .research.loop import RoundContext, run_worker_rounds
-    root = arm_workspace(activity.root, pair.pair_id, arm)
+    from .research.loop import RoundContext, resume_unfinished, run_worker_rounds
+    root = arm_workspace(activity.root, pair.pair_id, arm, plan.id)
+    log = RoundLog(Path(root) / "rsi" / "arm.json", {"plan": plan.id, "pair": pair.pair_id, "arm": arm, "r": r_ref})
     objects = _ct.Objects(root)
     core_ref = _ct.SystemRelease.from_json(activity.objects.get(activity.release_ref)).core_ref
     _ct.copy_closure(activity.objects, objects, [pair.initial_w_ref, r_ref, core_ref])
@@ -1020,41 +1539,210 @@ def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_
                         budget=arm_budget, serving=rt.serving, results=Results(root, activity.bench.domain),
                         pricing=pricing,
                         stop_view=activity.rsi.stop_view, attempt_budget=activity.bench.budget,
-                        probe_train=True, train_tasks=tuple(_tasks_of(activity, pair.inner_train_groups)))
+                        probe_train=True, train_tasks=tuple(_tasks_of(activity, pair.inner_train_groups)),
+                        harness=_harness_of(activity), worker=isolated_worker(_harness_of(activity)))
     step = researcher
-    schedule = Schedule(worker_rounds=plan.worker_round_limit, research_slots=0, patience=plan.worker_round_limit)
-    history: list = []
     outcome = ArmOutcome(arm=arm, pair_id=pair.pair_id)
+    if log.finished:
+        return _arm_outcome(outcome, log.state, objects, releases, start, activity, pair, arm_budget, out)
+    log.watch(step)
+    # An experiment a crash left mid-way is finished first, from what it recorded, and counts as its round.
+    for result in resume_unfinished(root, objects, inner.handlers(), arm_budget):
+        log.add(result)
+    # Rounds that ended on infrastructure are rerun, not counted: the arms are compared at equal completed rounds.
+    done = log.done()
+    schedule = Schedule(worker_rounds=max(plan.worker_round_limit - done, 0), research_slots=0,
+                        patience=plan.worker_round_limit)
+    history: list = []
+    measured: dict = {}
+    if inner.harness and shared:
+        # Both arms start from the one W0 measurement (docs/modules/06_RESEARCH_CAMPAIGN.md §2): its grading and
+        # transcripts are copied in, so the arm reads only its own workspace, and it stands for the arm's start
+        # release because that release runs the same W0. A restarted arm continues from its own measurements.
+        _copy_measurement(shared["measurement"], shared["results"], shared["transcripts"], inner.results,
+                          Path(rt.root) / "transcripts")
+        own = inner.last_measurement(releases.active()["release_ref"])
+        measured["last"] = own if own is not None else {**shared["measurement"], "release": start}
+    research_model = (shared or {}).get("research_model", {})
 
     def make_round(index: int) -> RoundContext:
+        index += done
         release_ref = releases.active()["release_ref"]
-        evidence = inner.collect()
+        if inner.harness:
+            evidence = inner.measure(release_ref, measured.get("last"))
+            measured["last"] = evidence
+        else:
+            evidence = inner.collect()
         experience, experience_ref = _experience.snapshot(root)
         context = inner.context(goal="improve the full-task pass rate on this campaign's development tasks",
                                release_ref=release_ref, evidence=evidence, experience=experience,
                                experience_ref=experience_ref)
         bound = _P.bind_release(release_ref, profile="task", services=inner.services(),
                                 authorization="installed")
+        diagnosis, drafts = inner.round_inputs(
+            index, evidence, experience, bound, root=root, research_model=research_model,
+            shared_notes=shared.get("notes") if shared and index == 0 else None)
         return RoundContext(releases=releases, objects=objects, scope_id=inner.scope_id, context=context,
                             researcher=step, bound=bound, core_ref=core_ref,
                             eval_template_ref=activity.rsi.task_plan_ref or "", handlers=inner.handlers(),
                             experience_ref=experience_ref, experience=tuple(experience), owner="worker",
-                            schedule=schedule, history=tuple(history), root=root)
+                            schedule=schedule, history=tuple(history), root=root,
+                            diagnosis=diagnosis, drafts=drafts, round_index=index)
 
-    rounds = run_worker_rounds(make_round, arm_budget, schedule=schedule, root=root)
-    outcome.rounds = tuple({"outcome": r.outcome, "experiment": r.experiment_id, "reason": r.reason,
-                            "release_after": r.release_after} for r in rounds)
-    outcome.installed = tuple(r.release_after for r in rounds if r.outcome == "installed" and r.release_after)
-    outcome.stop_reason = next((r.reason for r in reversed(rounds) if r.outcome == "stopped"), "rounds_done")
+    collector = None
+    if inner.harness:
+        def collector(result, *, batch: int) -> dict:
+            return inner.collect_batch(measured["last"], batch=batch, root=root)
+    collected = sum(1 for e in _experience.read(root) if e.get("kind") == "collection"
+                    and e.get("scope") == inner.scope_id) if inner.harness else 0
+    rounds = run_worker_rounds(make_round, arm_budget, schedule=schedule, root=root, collect=collector,
+                               collected_before=collected, on_result=log.add)
+    log.end(next((r.reason for r in reversed(rounds) if r.outcome == "stopped"), "rounds_done"))
+    return _arm_outcome(outcome, log.state, objects, releases, start, activity, pair, arm_budget, out)
+
+
+class RoundLog:
+    """A run of rounds that has to survive a restart — a campaign arm, a cycle's worker segment.
+
+    Every round result is written as it happens, so a crash in round n leaves rounds 1..n-1 on record and a restart
+    runs only what is missing. The log belongs to one identity (a campaign plan's arm, a segment of one schedule)
+    and refuses state written for another. Completed rounds exclude markers and rounds lost to infrastructure,
+    which are run again; a run whose stop is a pause (docs/modules/06_RESEARCH_CAMPAIGN.md §3) is not finished.
+    """
+
+    def __init__(self, path: Path, identity: dict):
+        self.path = Path(path)
+        self.state = json.loads(self.path.read_text()) if self.path.exists() else {
+            "identity": identity, "rounds": [], "requests": []}
+        if self.state.get("identity") != identity:
+            raise ValueError(f"{self.path} records {self.state.get('identity')}, not {identity}: another run's "
+                             f"rounds are not this one's")
+        self.state.pop("finished", None) if not self.state.get("stop_reason") else None
+        self._base = list(self.state["requests"])
+        self._step = None
+
+    @property
+    def finished(self) -> bool:
+        return bool(self.state.get("finished"))
+
+    def watch(self, step) -> None:
+        """Keep the research step's recorded requests with the rounds that made them."""
+        self._step = step
+
+    def done(self) -> int:
+        from .research.loop import completed_round
+        return sum(1 for r in self.state["rounds"] if completed_round(r))
+
+    def add(self, result) -> None:
+        self.state["rounds"].append({"outcome": result.outcome, "experiment": result.experiment_id,
+                                     "reason": result.reason, "release_after": result.release_after,
+                                     "next_action": result.next_action})
+        self.state["finished"] = False
+        self._save()
+
+    def end(self, stop_reason: str) -> None:
+        from .research.loop import pause_of
+        pause = pause_of(self.state["rounds"], stop_reason)
+        self.state["stop_reason"] = pause or stop_reason
+        self.state["finished"] = not pause
+        self._save()
+
+    def _save(self) -> None:
+        if self._step is not None:
+            self.state["requests"] = [*self._base, *(dict(r) for r in getattr(self._step, "requests", ()) or ())]
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        write_json(self.path, self.state)
+
+
+def _arm_outcome(outcome, state: dict, objects, releases, start: str, activity: Activity, pair, arm_budget, out):
+    outcome.rounds = tuple(state["rounds"])
+    active = releases.active()["release_ref"]
+    installed = [r["release_after"] for r in state["rounds"] if r["outcome"] == "installed" and r["release_after"]]
+    if active != start and active not in installed:
+        installed.append(active)          # installed by an experiment whose round a crash never recorded
+    outcome.installed = tuple(installed)
+    outcome.stop_reason = state.get("stop_reason", "")
     outcome.costs = arm_budget.remaining()
-    outcome.research_requests = tuple(dict(r) for r in getattr(step, "requests", ()))
-    installed = releases.active()["release_ref"]
-    outcome.w_star = _ct.SystemRelease.from_json(objects.get(installed)).worker_ref if outcome.installed \
+    outcome.research_requests = tuple(state["requests"])
+    # W* is what the arm's own pointer holds: its last install, or W0 when it installed nothing.
+    outcome.w_star = _ct.SystemRelease.from_json(objects.get(active)).worker_ref if active != start \
         else pair.initial_w_ref
     _ct.copy_closure(objects, activity.objects, [outcome.w_star])
-    out(f"arm        {pair.pair_id}/{arm}: {len(outcome.installed)} installed, W*={_ct.short(outcome.w_star)}, "
-        f"stop={outcome.stop_reason}")
+    out(f"arm        {pair.pair_id}/{outcome.arm}: {len(outcome.installed)} installed, "
+        f"W*={_ct.short(outcome.w_star)}, stop={outcome.stop_reason}"
+        + (" (paused: resumes on the next run)" if outcome.paused else ""))
     return outcome
+
+
+def _campaign_common(activity: Activity, plan, pair, budget, *, provider, pricing, researcher, research_model,
+                     out=print) -> dict:
+    """What both arms of a pair start from, made once in the pair's common workspace and charged to the
+    campaign's common scope (docs/modules/06_RESEARCH_CAMPAIGN.md §2).
+
+    W0's train measurement is always common: the arms run the same W0 on the same train tasks, and R takes no
+    part in a task run. The first round's note selection is the same rule on the same failures in both arms.
+    When every selected failure's note request is identical under R0 and R1 — the full note identity of
+    docs/modules/04_RESEARCH_LOOP.md §1 — the notes are written once here and each arm reads them as a shared
+    input; otherwise each arm writes its own on the same selection under the same cap, and nothing is made here
+    that one arm would get for free.
+    """
+    from .research import diagnosis as dg
+    from .research.campaign import arm_workspace
+    from .research.experiment import note_contract
+    root = arm_workspace(activity.root, pair.pair_id, "common", plan.id)
+    objects = _ct.Objects(root)
+    core_ref = _ct.SystemRelease.from_json(activity.objects.get(activity.release_ref)).core_ref
+    _ct.copy_closure(activity.objects, objects, [pair.initial_w_ref, plan.r_control_ref, plan.r_candidate_ref,
+                                                 core_ref])
+    releases = Releases(root, objects)
+    rt = config_mod.build_runtime({"workspace": {"root": str(root)}, "backends": {"mock": {"type": "mock"}}}, ".")
+    config_mod.register_builtin_points(rt)
+    start = releases.bootstrap(pair.initial_w_ref, plan.r_control_ref, core_ref,
+                               reason=f"campaign {plan.id} {pair.pair_id} common inputs")
+    common = Improvement(rt=rt, suite=activity.suite, splits=activity.splits, objects=objects, releases=releases,
+                         provider=provider, core_ref=core_ref, gate=_gate_of(activity, plan),
+                         dev_tasks=tuple(_tasks_of(activity, pair.inner_dev_groups)),
+                         scope_id=f"{plan.id}:{pair.pair_id}:common", budget=budget, serving=rt.serving,
+                         results=Results(root, activity.bench.domain), pricing=pricing,
+                         stop_view=activity.rsi.stop_view, attempt_budget=activity.bench.budget,
+                         train_tasks=tuple(_tasks_of(activity, pair.inner_train_groups)),
+                         harness=_harness_of(activity), worker=isolated_worker(_harness_of(activity)))
+    measurement = common.measure(start, None)
+    shared: dict = {"measurement": measurement, "results": common.results, "transcripts": Path(rt.root) / "transcripts",
+                    "research_model": research_model, "notes": None}
+    bound = _P.bind_release(start, profile="task", services=common.services(), authorization="installed")
+    diagnosis, _ = common.round_inputs(0, measurement, (), bound, root=root, research_model=research_model)
+    selected, _rest = dg.select_failures(diagnosis.summaries, order=diagnosis.order, last_included={},
+                                         cap=diagnosis.limits.max_notes)
+    prompts = {arm: _P.prompts_of(objects, r_ref).get("research.diagnose")
+               for arm, r_ref in (("control", plan.r_control_ref), ("candidate", plan.r_candidate_ref))}
+    same = all(p is not None for p in prompts.values()) and all(
+        len({dg.note_identity(*researcher.note_request(s, prompts[arm], allowed=tuple(diagnosis.components)),
+                              research_model) for arm in prompts}) == 1 for s in selected)
+    if same and selected and note_contract(bound):
+        diagnosis.run(researcher, prompts["control"])
+        shared["notes"] = diagnosis.cache
+    _ct.Events(activity.root).append("campaign_common", pair=pair.pair_id, release=start,
+                                   measured=len(measurement["train"]), failed=len(measurement["failed"]),
+                                   selected=[s["task_id"] for s in selected], notes_shared=shared["notes"] is not None)
+    out(f"common     {pair.pair_id}: W0 measured on {len(measurement['train'])} train tasks, "
+        f"{len(measurement['failed'])} failed; first-round notes "
+        + ("written once for both arms" if shared["notes"] is not None else "written by each arm"))
+    return shared
+
+
+def _copy_measurement(measurement: dict, source: Results, transcripts: Path, target: Results,
+                      target_transcripts: Path) -> None:
+    """A common measurement's grading rows and transcripts, copied into one branch's workspace as recorded."""
+    import shutil
+    rows = measurement.get("train") or ()
+    target.copy_grading(source, [r.attempt_id for r in rows])
+    target_transcripts.mkdir(parents=True, exist_ok=True)
+    for r in rows:
+        src = Path(transcripts) / f"{r.evidence}.jsonl"
+        dst = target_transcripts / src.name
+        if r.evidence and src.exists() and not dst.exists():
+            shutil.copyfile(src, dst)
 
 
 def _evaluate_outer(activity: Activity, plan, pair, sealed: dict, *, provider, out=print, pricing=None,
@@ -1075,7 +1763,7 @@ def _evaluate_outer(activity: Activity, plan, pair, sealed: dict, *, provider, o
         rows[arm] = work.run_arm(f"outer_{arm}", release, order, plan_ref=plan_ref, split=_split_of(activity,
                                                                                                    tasks),
                                 candidate=f"{arm}_w_star", role="evolved", permit=permit,
-                                scope=f"{plan.id}:{pair.pair_id}:outer")
+                                scope=f"{plan.id}:{pair.pair_id}:outer", resume=True)
         out(f"outer      {pair.pair_id}/{arm}: {summarise(rows[arm])['passed']}/"
             f"{summarise(rows[arm])['tasks']} passed")
     return rows
@@ -1201,6 +1889,9 @@ def evaluate(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = 
             else pricing_of(cfg)
         work = improvement(activity, provider=provider, scope_id=f"final:{plan.experiment_id}", installs=False,
                            pricing=arm_pricing, budget=budget)
+        # A comparison that names its own model (a frontier arm) runs that model, a separate comparison; every
+        # other arm runs the actor its release pins.
+        work.actor_override = bool(comparison.get("llm"))
         work.dev_tasks = tuple(plan.task_ids)
         order = [(t, i) for t in plan.task_ids for i in range(plan.repeats)]
         role = comparison.get("role", arm)
@@ -1238,10 +1929,255 @@ def report(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pr
     return data
 
 
+# ---------------------------------------------------------------------------- cycle (M7 §1)
+def cycle(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = print, researcher=None,
+          slot_researcher=None, arm_researcher=None) -> dict:
+    """`bench --phase cycle`: the automatic loop, as calls to the existing phases in the frozen order.
+
+    Plans the config does not name are frozen first, from [freeze.*] tables or the preset, so no ref has to be
+    written by hand. Then: the baseline of the starting version, once; a worker segment; each research slot the
+    schedule plans; after every slot, another worker segment — which is where an installed R1 has to show that it
+    is used. A segment that ends without a candidate does not cancel a planned slot; a paused segment (the
+    isolated worker went away) stops the activity until the repair, and a spent budget ends it. The final split is
+    never run from here. Every step is on record, so running the cycle again resumes where it stopped and pays
+    for nothing already done.
+    """
+    from .research.campaign import PAUSES
+    settings = improvement_settings(cfg)
+    if settings is None:
+        raise ValueError("the cycle phase runs the automatic loop an [improvement] table describes "
+                         "(examples/automationbench/improvement.toml)")
+    cfg = _cycle_config(cfg, base, settings, out)
+    activity = open_activity(cfg, base, out=out)
+    # Plans named in [rsi] are checked as much as the ones frozen here: none may loosen the preset.
+    problems = _beyond_preset(settings, activity.objects.get(activity.rsi.schedule_ref),
+                              TaskEvalPlan.from_json(activity.objects.get(activity.rsi.task_plan_ref)).gate_plan)
+    if problems:
+        raise ValueError("the cycle's plans go beyond the preset: " + "; ".join(problems))
+    require(startup_checks(activity, cfg, phase="improve"), phase="cycle")
+    state_path = Path(activity.root) / "rsi" / "cycle.json"
+    state = json.loads(state_path.read_text()) if state_path.exists() else {"steps": {}}
+
+    def save() -> None:
+        write_json(state_path, state)
+
+    schedule = Schedule(**activity.objects.get(activity.rsi.schedule_ref))
+    status = "done"
+    if state["steps"].get("baseline"):
+        out("cycle      the starting version's baseline is on record; not run again")
+    else:
+        baseline(cfg, base, out=out)
+        state["steps"]["baseline"] = {"release": activity.releases.active()["release_ref"], "ts": now()}
+        save()
+    for index in range(schedule.research_slots + 1):
+        segment = f"segment-{index}"
+        out(f"cycle      worker {segment}")
+        result = improve(cfg, base, out=out, researcher=researcher, segment=segment)
+        state["steps"][segment] = {"stop_reason": result["stop_reason"], "release": result["release"]}
+        pending = state.get("reuse_pending")
+        if pending and not state["steps"].get(pending["slot"], {}).get("reuse"):
+            state["steps"][pending["slot"]]["reuse"] = _reuse_fact(activity, pending["r1"], pending.get("r0"),
+                                                                   segment)
+            out(f"reuse      {state['steps'][pending['slot']]['reuse']['state']}: "
+                f"{state['steps'][pending['slot']]['reuse']['detail']}")
+            state.pop("reuse_pending")
+        save()
+        if result["stop_reason"] in PAUSES:
+            status = "paused"
+            out(f"cycle      paused in {segment} ({result['stop_reason']}): no further segment or research slot "
+                f"runs until the runtime is repaired; running the cycle again resumes here")
+            break
+        if result["stop_reason"] == "budget_exhausted":
+            status = "budget_exhausted"
+            out("cycle      the activity's budget is spent: the activity ends here")
+            break
+        if index == schedule.research_slots:
+            break
+        slot = f"slot-{index}"
+        outcome = _cycle_slot(cfg, base, activity, settings, slot, state, save, out=out,
+                              researcher=slot_researcher, arm_researcher=arm_researcher)
+        if outcome in ("budget_exhausted", "paused"):
+            status = outcome
+            if outcome == "paused":
+                out(f"cycle      paused in research {slot}: repair the runtime and run the cycle again; the slot "
+                    f"resumes and the next worker segment runs after it")
+            break
+    for step in state["steps"].values():
+        if isinstance(step, dict) and step.get("reuse") is None and step.get("installed"):
+            step["reuse"] = {"state": "not_completed", "detail": "no worker segment ran after the install"}
+    state["status"] = status
+    save()
+    data = report(cfg, base, out=out)
+    # A paused cycle needs someone to act, so the command says so (exit 1); a spent budget is a normal end.
+    return {"status": status, "ok": status != "paused", "steps": state["steps"],
+            "report": data.get("claims") if isinstance(data, dict) else None}
+
+
+def _cycle_config(cfg: dict, base, settings: dict, out) -> dict:
+    """The config with every plan the cycle needs named: what [rsi] names is used as it is; the rest is frozen
+    from [freeze.*] when present, else from the preset. Freezing is content-addressed, so a restart freezes the
+    same objects and gets the same refs. A missing budget is refused before anything is paid for."""
+    rsi_table = dict(cfg.get("rsi") or {})
+    tables = dict(cfg.get("freeze") or {})
+    need: dict = {}
+    if not rsi_table.get("task_plan_ref"):
+        need["task_plan"] = tables.get("task_plan") or settings["task_plan"]
+    if not rsi_table.get("schedule_ref"):
+        need["schedule"] = {**settings["schedule"], "candidates_per_round": settings["candidates_per_round"],
+                            "collection_batches": settings["collection_batches"], **(tables.get("schedule") or {})}
+    if not rsi_table.get("budget_ref"):
+        if "budget" not in tables:
+            raise ValueError("the cycle pays for model calls and needs the activity's budget first: set [rsi] "
+                             "budget_ref or a [freeze.budget] table")
+        need["budget"] = tables["budget"]
+    if not need:
+        return cfg
+    refs = freeze({**cfg, "freeze": need}, base, out=lambda _line: None)
+    out("cycle      froze " + ", ".join(f"{k}={_ct.short(v)}" for k, v in refs.items()))
+    return {**cfg, "rsi": {**rsi_table, **refs}}
+
+
+def _beyond_preset(settings: dict, schedule: dict | None, gate: dict | None) -> list[str]:
+    """What a schedule or gate would loosen beyond [improvement] and its preset: more candidates or collection
+    batches than the reader allows, a lower min_gain or a higher max_regression_rate than the preset's."""
+    problems = []
+    if schedule is not None:
+        if int(schedule.get("candidates_per_round", 1)) != settings["candidates_per_round"]:
+            problems.append(f"candidates_per_round {schedule.get('candidates_per_round')}: this version runs "
+                            f"{settings['candidates_per_round']}")
+        if int(schedule.get("collection_batches", 0)) > settings["collection_batches"]:
+            problems.append(f"collection_batches {schedule.get('collection_batches')} is above "
+                            f"max_collection_batches {settings['collection_batches']}")
+    if gate is not None:
+        preset = settings["task_plan"]["gate"]
+        if float(gate.get("min_gain", preset["min_gain"])) < float(preset["min_gain"]):
+            problems.append(f"min_gain {gate.get('min_gain')} is below the preset's {preset['min_gain']}")
+        if float(gate.get("max_regression_rate", preset["max_regression_rate"])) > float(preset["max_regression_rate"]):
+            problems.append(f"max_regression_rate {gate.get('max_regression_rate')} is above the preset's "
+                            f"{preset['max_regression_rate']}")
+    return problems
+
+
+def _cycle_slot(cfg, base, activity: Activity, settings: dict, slot: str, state: dict, save, *, out, researcher,
+                arm_researcher) -> str:
+    """One planned research slot, recorded step by step: the frozen campaign plan before any arm runs, then the
+    receipt. A restart resumes the same plan (its arms resume too), and a slot with a receipt is not run again."""
+    step = state["steps"].setdefault(slot, {})
+    if step.get("receipt") or step.get("outcome") in ("no_proposal", "invalid", "rejected", "failed"):
+        out(f"cycle      research {slot} already on record ({step.get('verdict') or step.get('outcome')})")
+        return "done"
+    budget = activity_budget(activity, cfg, slot)
+    if not budget.affordable({}):
+        step["outcome"] = "budget_exhausted"
+        save()
+        return "budget_exhausted"
+    if not step.get("campaign"):
+        pairs = cycle_pairs(activity, cfg)
+        campaign = settings["campaign"]
+        template = TaskEvalPlan.from_json(activity.objects.get(activity.rsi.task_plan_ref))
+        inner_groups = len(pairs[0].inner_dev_groups)
+        # The arms' inner gate is the mainline gate on fewer families; the research verdict is over independence
+        # groups, and the preset's pair rule makes one, so its min_groups comes from the preset (exploratory).
+        gate = GatePlan(min_gain=float(template.gate().min_gain),
+                        min_groups=max(1, min(template.gate().min_groups, inner_groups)),
+                        max_regression_rate=template.gate().max_regression_rate)
+        research_gate = GatePlan(min_gain=float(campaign["min_gain"]), min_groups=int(campaign["min_groups"]))
+        limits = activity.objects.get(activity.rsi.budget_ref) if activity.rsi.budget_ref else {}
+        arm_budget = {k: round(float(v) * float(campaign["arm_share"]), 6) for k, v in limits.items()}
+        discovery = "automatic" if researcher is None else "scripted"
+        researcher = researcher or _default_researcher(cfg, activity, budget=budget)
+        planned = research_slot(cfg, base, pairs=pairs, researcher=researcher, out=out,
+                                worker_rounds=int(campaign["worker_round_limit"]), gate=gate,
+                                research_gate=research_gate, arm_budget=arm_budget, discovery=discovery,
+                                run=False)
+        if planned["outcome"] in ("repair_runtime", "infrastructure_failed"):
+            step.update(outcome="paused", reason="; ".join(planned.get("reasons") or ()))
+            save()
+            return "paused"
+        if planned["outcome"] != "planned":
+            step.update(outcome=planned["outcome"], reason="; ".join(planned.get("reasons") or ())
+                        or planned.get("reason", ""))
+            save()
+            out(f"cycle      research {slot}: {planned['outcome']}; the next worker segment runs as scheduled")
+            return "done"
+        step.update(campaign=planned["campaign"], r1=planned["r1"], experiment=planned["experiment"],
+                    r0=_ct.SystemRelease.from_json(activity.objects.get(
+                        activity.releases.active()["release_ref"])).research_ref)
+        save()
+    cfg = {**cfg, "rsi": {**dict(cfg.get("rsi") or {}), "research_plan_ref": step["campaign"]}}
+    result = research(cfg, base, out=out, researcher=arm_researcher, campaign_ref=step["campaign"])
+    installed = (result.get("installation") or {}).get("status") == "installed"
+    step.update(receipt=result["receipt"], verdict=result["verdict"], installed=installed,
+                release=result["release"])
+    if result["verdict"] == "inconclusive" and any("paused" in r for r in
+                                                   activity.objects.load(result["receipt"],
+                                                                         _ct.EvaluationReceipt).reasons):
+        # A paused arm: not a finished comparison. Keep the plan so the next run resumes it, and suspend the
+        # activity: the next worker segment must not run before the slot finishes (docs/modules/07 §1).
+        step.pop("receipt")
+        step["outcome"] = "paused"
+        save()
+        return "paused"
+    if installed:
+        state["reuse_pending"] = {"slot": slot, "r1": step["r1"], "r0": step.get("r0")}
+    save()
+    return "done"
+
+
+def cycle_pairs(activity: Activity, cfg: dict) -> list:
+    """The research slot's one pair, fixed from frozen objects (the preset's campaign rule): the current W as the
+    common start, the train families as the inner training pool, and the development plan's families halved by
+    their frozen order — the first half is the arms' inner gate, the second the outer comparison neither arm
+    touches."""
+    from .research.campaign import CampaignPair
+    template = TaskEvalPlan.from_json(activity.objects.get(activity.rsi.task_plan_ref))
+    family = {e.task_id: e.family_id for e in activity.splits.entries}
+    dev_families = list(dict.fromkeys(family[t] for t in template.task_ids))
+    if len(dev_families) < 2:
+        raise ValueError("a research slot needs at least two development families: one for the arms' inner gate "
+                         "and one for the outer comparison")
+    half = len(dev_families) // 2
+    train_families = list(dict.fromkeys(family[t] for t in activity.splits.ids("train")))
+    active = _ct.SystemRelease.from_json(activity.objects.get(activity.releases.active()["release_ref"]))
+    entries, _ref = _experience.snapshot(activity.root)
+    return [CampaignPair(pair_id="pair-1", independence_group="group-1", initial_w_ref=active.worker_ref,
+                         initial_experience_ref=activity.objects.put_json("change", {"experience": entries}),
+                         inner_train_groups=tuple(train_families), inner_dev_groups=tuple(dev_families[:half]),
+                         outer_groups=tuple(dev_families[half:]), split_ref=activity.splits.hash(), repeats=1,
+                         seed_schedule=(0,))]
+
+
+def _reuse_fact(activity: Activity, r1: str, r0: str | None, segment: str) -> dict:
+    """Whether the worker segment after an install actually used R1 (docs/modules/06_RESEARCH_CAMPAIGN.md §4):
+    research_steps records of that segment's rounds that name R1 as the loaded R, bound R1's text for every prompt
+    R1 changed, and sent at least one request of the step that text drives. A pointer that names R1 is not
+    enough, and neither is a round that loaded R1 and sent nothing."""
+    from .research.campaign import RESEARCH_STEPS
+    new = _P.prompts_of(activity.objects, r1)
+    old = _P.prompts_of(activity.objects, r0) if r0 and activity.objects.has(r0) else {}
+    changed = [t for t in RESEARCH_STEPS if new.get(t) and new.get(t) != old.get(t)]
+    rows = []
+    for e in _ct.Events(activity.root).of("research_steps"):
+        if e.get("research_ref") != r1 or e.get("scope") != activity.rsi.scope_id:
+            continue
+        steps = {s.get("step") for s in e.get("steps") or ()}
+        if all((e.get("prompts") or {}).get(t) == _ct.digest({"text": new[t]})[:16]
+               and steps & set(RESEARCH_STEPS[t]) for t in changed) and steps:
+            rows.append(e)
+    if not rows:
+        return {"state": "not_completed", "segment": segment,
+                "detail": f"no research step of {segment} sent a request from R1's changed prompts "
+                          f"{changed or '(none changed)'}: the install is not shown to be used"}
+    return {"state": "verified", "segment": segment, "steps": len(rows), "context_refs": [r["context_ref"]
+                                                                                          for r in rows],
+            "detail": f"{len(rows)} research rounds of {segment} loaded R1 and sent "
+                      f"{sum(len(r.get('steps') or ()) for r in rows)} requests"}
+
+
 def research_slot(cfg: dict, base: str | Path = ".", *, pairs, researcher, arm_researcher=None,
                   out: Callable[[str], None] = print, worker_rounds: int = 1, gate: GatePlan | None = None,
                   arm_budget: dict | None = None, phase: str = "research_dev",
-                  discovery: str = "scripted") -> dict:
+                  discovery: str = "scripted", run: bool = True, research_gate: GatePlan | None = None) -> dict:
     """One research slot: the current R proposes a change to R, the change is compared, and the winner is installed.
 
     The proposal goes through the same admission and the same build as a worker candidate — only the owner and
@@ -1251,6 +2187,9 @@ def research_slot(cfg: dict, base: str | Path = ".", *, pairs, researcher, arm_r
 
     `discovery` travels into the receipt: a change a person wrote exercises this path and is not evidence that
     the system found it (RC-10).
+
+    With `run=False` the slot stops once the campaign plan is frozen and returns its ref, so a caller that has
+    to survive a restart (the cycle) can record the plan before any arm runs and resume that same plan.
     """
     from .research.campaign import CampaignPlan
     from .research.experiment import admit, freeze, propose_experiment
@@ -1258,7 +2197,14 @@ def research_slot(cfg: dict, base: str | Path = ".", *, pairs, researcher, arm_r
     release_ref = activity.releases.active()["release_ref"]
     provider = config_mod.build_provider(cfg["llm"])
     work = improvement(activity, template_ref=activity.rsi.task_plan_ref, provider=provider, owner="research")
-    evidence = work.collect()
+    if work.harness:
+        # A first-version slot reads how the rounds went, not a fresh run of the tasks: the latest recorded
+        # measurement stands for the current version, and R's input is the experience log's projection.
+        evidence = work.last_measurement(release_ref) or {
+            "results": [], "train": [], "dev": [], "release": release_ref,
+            "feedback": _feedback.build_feedback(activity.rt, objects=activity.objects, scope_id=work.scope_id)}
+    else:
+        evidence = work.collect()
     experience, experience_ref = _experience.snapshot(activity.root)
     context = work.context(goal="improve how this research policy finds and verifies changes",
                            release_ref=release_ref, evidence=evidence, experience=experience,
@@ -1293,12 +2239,14 @@ def research_slot(cfg: dict, base: str | Path = ".", *, pairs, researcher, arm_r
                         worker_round_limit=worker_rounds,
                         worker_gate_plan_ref=activity.objects.put(gate or GatePlan(min_groups=1, min_gain=0.01,
                                                                                   bootstrap_replicates=200)),
-                        research_gate_plan=(gate or GatePlan(min_groups=1, min_gain=0.05,
-                                                            bootstrap_replicates=200)).to_json(),
+                        research_gate_plan=(research_gate or gate or GatePlan(min_groups=1, min_gain=0.05,
+                                                                             bootstrap_replicates=200)).to_json(),
                         selection_rule="last_installed", discovery=discovery)
     plan_ref = activity.objects.put(plan)
+    if not run:
+        return {"outcome": "planned", "r1": build.candidate_ref, "campaign": plan_ref, "experiment": experiment.id}
     cfg = {**cfg, "rsi": {**cfg.get("rsi", {}), "research_plan_ref": plan_ref}}
-    outcome = research(cfg, base, out=out, researcher=arm_researcher or researcher, campaign_ref=plan_ref)
+    outcome = research(cfg, base, out=out, researcher=arm_researcher, campaign_ref=plan_ref)
     return {"outcome": outcome["verdict"], "r1": build.candidate_ref, "campaign": plan_ref,
             "experiment": experiment.id, **outcome}
 
@@ -1357,11 +2305,86 @@ def startup_checks(activity: Activity, cfg: dict, *, phase: str, needs_model: bo
             problems.append(f"the plan runs {len(families)} independent groups and its gate needs "
                             f"{plan.gate().min_groups}")
     try:
-        _P.bind_release(activity.release_ref, profile="preflight",
-                        services=_P.Services(activity.objects, serving=activity.rt.serving))
+        bound = _P.bind_release(activity.release_ref, profile="preflight",
+                                services=_P.Services(activity.objects, serving=activity.rt.serving))
         activity.releases.authorize(activity.release_ref, profile="task")
     except Exception as e:  # noqa: BLE001 - a release that does not assemble is not something to run
         problems.append(f"the active release does not assemble: {type(e).__name__}: {e}"[:300])
+        return problems
+    problems += harness_checks(activity, bound)
+    try:
+        wanted = harness_settings(cfg)
+    except ValueError as e:
+        problems.append(str(e))
+        wanted = None
+    core = activity.objects.load(_ct.SystemRelease.from_json(activity.objects.get(activity.release_ref)).core_ref,
+                                 _ct.CoreManifest)
+    if wanted is not None and not (core.capabilities or {}).get("harness"):
+        problems.append("[harness_evolution] is set, and the active release was bootstrapped without it: a "
+                        "first-version activity starts in a fresh workspace (or scope) so W0, R0 and K are "
+                        "bootstrapped with it; it is not applied to an existing v2 activity")
+    return problems
+
+
+def config_harness_problems(cfg: dict) -> list[str]:
+    """BR6-17 before anything is paid, from the config alone (smoke has no activity yet): a first-version table
+    that allows code components needs the isolated worker."""
+    from .agent import harness_package as hp
+    settings = harness_settings(cfg)
+    if settings is None:
+        return []
+    limits = hp.Limits.from_json(settings["package"])
+    if limits.allows_code and isolated_worker(settings) is None:
+        return [f"[harness_evolution] allows code components "
+                f"{[k for k in limits.components if k in hp.CODE_KINDS]} and no qualified isolated worker is "
+                f"available"]
+    return []
+
+
+def isolated_worker(settings: dict | None):
+    """The qualified isolated worker for package code, or None: the Docker worker of the harness settings, when
+    docker runs and its image is built. Never an unisolated fallback (docs/modules/01_POLICY_RUNTIME.md §1)."""
+    from .agent.worker import DEFAULT_IMAGE, docker_worker
+    if not settings or settings.get("sandbox") != "docker":
+        return None
+    from .agent.worker import WorkerLimits
+    worker = docker_worker(settings.get("image") or DEFAULT_IMAGE)
+    if worker is not None and settings.get("image_id") and worker.image_id() != settings["image_id"]:
+        return None            # K froze another image: this one is not the qualified worker of this activity
+    if worker is not None:
+        # K's limits, not the defaults: the per-request time a package test, tool or hook gets, and the image by
+        # the content id K froze rather than by its tag.
+        worker.limits = WorkerLimits(request_seconds=float(settings.get("test_timeout_seconds") or 30))
+        worker.pinned_id = settings.get("image_id")
+    return worker
+
+
+def harness_checks(activity: Activity, bound) -> list[str]:
+    """What a first-version activity must satisfy before it pays for anything (docs/modules/00_CONTRACTS.md §3,
+    BR6-17): the current package's component kinds are within K, and a worker is there whenever K allows code or
+    the current package runs code. The fallback to a text-only preset holds only for a package without code."""
+    from .agent import harness_package as hp
+    core = activity.objects.load(_ct.SystemRelease.from_json(activity.objects.get(activity.release_ref)).core_ref,
+                                 _ct.CoreManifest)
+    harness = (core.capabilities or {}).get("harness")
+    if not harness:
+        return []
+    problems = []
+    limits = hp.Limits.from_json(harness["package"])
+    if bound.package is None:
+        return ["a first-version core mounts a capability package, and the active release has none"]
+    run, tests = hp.files_of(activity.objects, bound.package.ref)
+    outside = sorted(hp.kinds_of(bound.package.manifest, {**run, **tests}) - set(limits.components))
+    if outside:
+        problems.append(f"the active package uses component kinds {outside} that K does not allow "
+                        f"({list(limits.components)})")
+    worker = isolated_worker(harness)
+    if limits.allows_code and worker is None:
+        problems.append(f"K allows code components {[k for k in limits.components if k in hp.CODE_KINDS]} and no "
+                        f"qualified isolated worker is available; freeze a text-only preset (memory, skills) or "
+                        f"provide the worker")
+    if bound.package.runs_code and worker is None:
+        problems.append("the active package runs code and no qualified isolated worker is available")
     return problems
 
 
@@ -1411,7 +2434,14 @@ def freeze(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pr
     if not tables:
         raise ValueError("nothing to freeze: add [freeze.task_plan], [freeze.schedule], [freeze.budget] or "
                          "[freeze.final] to the config")
+    problems = config_harness_problems(cfg)
+    if problems:
+        raise ValueError("freeze refused: " + "; ".join(problems))
     activity = open_activity(cfg, base, out=out)
+    bound = _P.bind_release(activity.release_ref, profile="preflight", services=_P.Services(activity.objects))
+    problems = harness_checks(activity, bound)
+    if problems:
+        raise ValueError("freeze refused: " + "; ".join(problems))
     core_ref = _ct.SystemRelease.from_json(activity.objects.get(activity.release_ref)).core_ref
     refs: dict = {}
     if "task_plan" in tables:

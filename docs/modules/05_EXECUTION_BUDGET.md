@@ -1,80 +1,77 @@
-# M5：共同执行状态机与总预算
+# M5：统一执行、预算与恢复
 
-> 待实现；`evolve/execution.py` 为薄控制层。复用现有作业、锁和账本，不引入分布式调度服务。
+> 首版在冻结前加入能力包草稿检查（同一 operation 日志），并将构建/隔离执行加入现有一次候选执行；第二版再加入蒸馏子操作。复用 `evolve/execution.py`、jobs、计量 provider 和事件账，明确恢复已确认工作，不能重复未知付费或副作用。
 
-## 1. 状态机
+## 1. 状态机与子操作
 
-状态描述实验进度；EvaluationReceipt 描述证据；InstallationReceipt 描述是否生效，三者不能合为一个 promoted 布尔值。
+deployment 保留已有 drafted → admitted → building → screening（可选）→ evaluating → evaluated → accepted → installing → installed；其他终态保持 rejected/inconclusive/invalid/screened_out/installation_failed/stale_parent/cancelled。installation_failed 仅可重试同一已接受 artifact 的安装。
 
-```text
-drafted → admitted → building → screening → evaluating → evaluated
-   │          │          │          │           │          ├→ rejected
-   │          │          │          │           │          ├→ inconclusive
-   │          │          │          │           │          └→ accepted → installing → installed
-   └──────────┴──────────┴──────────┴───────────┴→ invalid                 ├→ installation_failed
-                                  └→ screened_out                         └→ stale_parent
-```
+首版 harness_edit 的包检查为 package_check → isolated_probe → package_test，先在冻结前对草稿包运行（草稿检查）；building 按相同输入摘要引用已确认的草稿检查结果，不重复运行；应用 patch/形成草稿 bundle 属于 M0/M4 的纯规范化，检查结果不得事后改写包。M4 把 patch 规范化成草稿包后，M5 在同一 operation 日志中运行草稿检查：operation 记录 activity、分支 scope、轮次与修订序号；检查输入摘要覆盖草稿 bundle/manifest/test bundle、固定 API/image、测试输入与限额。只含 skills/memory 的草稿只做结构/路径/manifest 检查，不需要 isolated_probe。building 子操作的 operation key 仍包含 experiment、bundle/manifest、固定 API/image、测试输入与限额；复用已确认草稿检查只比较上述输入摘要（不含 experiment）。每份草稿（初稿与每次修订）检查前先做组件种类与字面量检查：种类不在 K 内或包文本含 train 断言 params/任务特定标识时为结构错误（回传 R、占用一次修订）。含代码（M0 §2 检查判定）的草稿需要隔离 worker；K 允许而 worker 不可用时为基础设施故障，按唯一重试策略处理，仍不可用则本轮 `infrastructure_failed` 并暂停活动（M0 §3），不消耗修订次数、不回传 R，不收窄组件种类（M1 §1）。isolated_probe 与 package_test 只在合成 fixture 世界或仅由 train 任务构造的世界中运行，从不绑定 dev/final 任务；回传 R 的检查输出有长度上限并去除任务数据，fixture 身份计入检查输入摘要。
 
-`screening` 可在无 screen 的冻结计划中跳过，但不能跳过必要 preflight；building 包含可选训练，prompt 候选也生成完整 artifact。任意未终结状态可因用户取消进入 cancelled；预算不足进入 inconclusive，reason=budget_exhausted。安装已提交后不能再标 cancelled，只能记录后续停止。基础设施错误按原状态的重试政策处理，次数用尽进入 inconclusive。
+草稿检查失败时，只把检查输出回传 R，不含任何任务结果或评分；R 可修订，修订次数上限 `max_draft_repairs` 由 preset/K 固定（默认 3，初稿之后最多修订 3 次、最多 4 份草稿），R 不能提高。每次修订形成新草稿包 ref，草稿与检查逐次记录并计费，重启不重置修订计数。只有检查通过的草稿才冻结进 Experiment；次数用尽则本轮以无效提案结束（RoundResult `outcome=invalid`，M0 §3）并计入 schedule 轮次与失败上限，不冻结 Experiment。冻结后源码不变；building 按相同输入摘要复用已确认的草稿检查，不重复运行。冻结后仍出现的路径/接口/候选代码错误判 invalid；隔离设施故障独立记录，不能卸载包继续评测：building/evaluating 中 worker 不可用同样按唯一重试策略，仍不可用则实验记 infrastructure_failed（评测侧 inconclusive，不当候选失败）并暂停活动。修复只在冻结前、同一轮内有界进行，不另开 proposal，也不占用额外 schedule 轮次；冻结实验内不更换文件。
 
-`installation_failed` 是本次安装终态，可新建 install operation 重试同 accepted artifact；stale_parent 不可直接重试。终态事件不可改写。每个 operation 保存 `{id, experiment_id, step, input_refs, status, attempts, output_refs, reservation_ids}`，operation_id 由 experiment+step+冻结输入确定，外部尝试有独立 attempt_id。
+代码检查、候选自写测试与任务评测都不在控制面 import 包。M1 提供固定隔离 worker（只含 skills/memory 的包不启动 worker），M5 用现有 operation/run/deadline 管理生命周期、资源输出、取消与清理；不新增代码编排服务。已确认检查只在全部输入摘要一致时复用，已存在文件不等于检查完成。未知工具副作用按下节核对，不能因 worker 重启重放复合工具。
 
-append journal 和当前状态快照在工作区锁下协调；快照可由 journal 重建。执行前先落 intent，完成后写结果及其引用，再推进状态；恢复对照实际 job、artifact、pointer，不凭最后一条日志猜成功。
+第二版 distill_actor 在 building 内依次记录 collect/dataset/train/probe 子操作；沿用 experiment + step + 冻结 input refs 的身份与日志。子操作结果落盘后才能推进，不新增顶层训练状态机或让 collect 自行发布。
 
-## 2. 预算接口与层级
+v3 `purpose=source_validation` 复用同一 executor 的 build/evaluate：drafted → admitted → building → evaluating → evaluated → **validated**。只新增 validated 这个非发布终态；校验/执行故障仍走 invalid/inconclusive，源验证未达门槛走 rejected。evaluate 返回源验证 artifact，结果为 passed 时写 SourceWorkflow 并结束，receipt/installation 为空；不得进入 accepted/installing。可选 screen 仅用于便宜的预检，不代替源验证。旧 v2/deployment 状态解释不变。
 
-```python
-budget.child(scope_id, limits) -> BudgetAccount
-budget.reserve(operation_id, upper_bound) -> Reservation
-budget.settle(reservation_id, measured, status) -> BudgetReceipt
-budget.remaining() -> BudgetRemaining
-```
+build/evaluate operation 身份包含 purpose、parent、execution base 和冻结输入；恢复时按原 purpose 加载 source 结果或正式 receipt，不能把 validated 解释成待安装。相同内容的纯构建 artifact 可复用，但改变用途/比较条件必须新建 experiment 和评测操作。
 
-额度含 `usd?, model_calls, input_tokens?, output_tokens?, tool_calls, training_seconds?, wall_seconds, candidates, rounds, train_jobs`；只启用可观测/可约束的维度。每次叶子操作在一个共享账本内同时校验祖先与本 scope 的 `spent + reserved + bound <= limit`，原子预留；settle 只记一次叶子支出，祖先汇总，不能重复计费。两个 research arms 的总额之和不得超过父预算，任何 retry、fallback、离线 label/分支、筛选和失败训练都在此账中。
+harness preparation、首版草稿检查/修复、M8 教学适配和补采使用同一 operation 日志：输入先冻结、权限/预算先检查、产物落盘后才能生成依赖它的 proposal。harness preparation 记录兼容检查、基线 release/permit、baseline attempts 和结果；期间不移动 active。材料准备不是第二实验状态机，也不能绕过 activity schedule 隐藏无限搜索。
 
-首版任务/研究比较使用固定子预算，不把一支省下的钱自动转给另一支；公平比较要求两边同额度。候选开始前估算最少完整评测和安装探针开销，划出不可挪给训练的子额度；若不足，输出未运行提案，不启动一个只能训练不能验证的候选。子额度是分配限制，不是另一笔付费 reservation；实际调用仍逐次预留，账本只对叶子操作记一次占用/支出，不能把子额度和其叶子预留相加，也不能把粗估值当真实费用。
+补采由持久化 CollectionRequest 驱动，operation key 包含 activity、分支 scope、请求 ref、冻结任务/attempt 身份；事件记录请求、pending、已完成 refs、计数和后续 round 的关联。恢复优先完成/核对 pending，再用实际结果重建 context。只复用已确认数据，未知 API/副作用仍按下节处理；不重置补采上限，不重跑完成批次。
 
-## 3. 真实收费与未知状态
+collect 可引用已有完整轨迹；dataset 身份固定选择规则/投影；train 身份固定数据/配方/底座；probe 固定实际 artifact/runtime。任何上游输入变化生成新操作，不覆盖旧结果。同一 plan 的未完成采集只补计划允许的缺口；不能挑最好轨迹无限重试。
 
-费用来自供应商 usage、模型单价快照、训练作业/服务账。本地推理没有 API 账单仍记录 GPU/CPU 时间及估算政策，不能默认零成本。上界根据最大输入/输出 tokens、推理 tokens 上限、fallback 和供应商已知计费推导；隐藏用量不能保守界定时，该调用不可用于严格 max_usd 模式。
+## 2. 预算所有权
 
-当前 Budget.max_usd 在费用未知时不会阻止调用；必须在 provider、serving、训练提交前补上 reserve，不能只在工具 wrapper 里检查。模型调用设置 timeout 和可支持的 token 上限；不支持可执行时间上界的 provider 记录限制，严格时间模式拒绝。取消请求可能仍产生账单，纳入 reconciliation。
+一个 activity 一个预算根；源工作流实验、材料适配、collect/train/eval、研究提案、campaign 两支及外层验证都用其子额度。计入 actor/R/teacher API、训练 tokens/时间、环境费用、失败与重试。子额度是限额不是额外消费，实际叶子操作只收费一次；不得因开始研究比较另开同额根。
 
-响应丢失/进程崩溃时，reservation 转 unknown，保留最坏上界占用预算；优先按 request/job ID 查询。确认未执行才释放；确认已执行则结算；无法确认不自行置零。新的重试视为新外部调用、另行预留并计数。只有供应商确实支持幂等键才能复用外部请求 ID；本地 journal 的幂等不等于付费调用 exactly-once。
+首版还计入逐题失败笔记与汇总的 R 调用、每份草稿的检查及 R 修订调用（含未通过的草稿）、代码生成、隔离构建/测试、worker 资源时间及 broker 内部的每次基础工具调用；不能只计复合工具外层调用。笔记是 train 血缘 artifact，每轮笔记数上限 `max_failure_notes` 与修订上限 `max_draft_repairs` 由 preset/K 固定，R 不能提高；已落盘笔记只在完整笔记身份（M4 §1：渲染后的笔记请求摘要与模型/推理配置）一致时复用，已确认检查在全部输入摘要一致时复用，均不重复收费；max_failure_notes 限制每轮汇总调用读取的笔记数（缓存加新生成）。诊断笔记、草稿检查/修复与构建前均预留正式 gate/回归/安装探针及已安排的 R 比较额度，包代码不能改 timeout/call cap 或另开收费 client。第二版 teacher/训练费用在相应方法启用后计入，不因保留设计就要求首版预留训练账户额度。
 
-实测费用超过预留上界时记录 `budget_breach`，停止后续付费操作并报告偏差；不能撤销已发生费用。没有可靠费用的模式只能声明 token/调用/时间预算，不得输出“严格美元预算内”的结论。
+按用途预留验证额度：deployment 预留正式 gate 和安装探针；source_validation 预留冻结的源验证，不要求预留并执行无关生产 gate；补采预留该批采集及下一次提案/准入；换 h 预留兼容探针、新基线及所计划后续实验的最低验证。各预留属于同一总根；source 的轻量验证不豁免活动级已冻结的后续发布/递归验证保留额度，不能把钱全花在源搜索、教师或训练。预算维度和计价版本固定：调用/tokens/train_jobs/training_seconds/环境时间/费用按实际后端能力选。未知成本不能算 0，也不能声称严格 USD 限额已保证。
 
-## 4. 调度与恢复
+外部收费前 reserve；返回后按实际 usage settle。Tinker 需分别记录训练和 sampling 的计价维度，不能直接用聊天 API 输入/输出价格计算梯度训练。后端提供可执行上界时才能使用严格美元/时间模式；否则启动前要求选择可执行的调用/token/job 限额并报告费用限制，不能静默降级。
 
-`execute_experiment(experiment, handlers, budget)` 分发已注册 owner 的 build/evaluate，安装共用 M3。`run_worker_round` 只生成/执行 worker 候选。顶层 schedule 在 K 中预先指定 worker 轮数、research slots、patience 和连续基础设施失败上限；slot 只有显式启用 M7 才可提出 research 候选。R 可以建议停止/继续采集，不能增加轮数或自行创建无限嵌套 campaign。
+本地 CPU/GPU 资源也记录时间/估算依据。教师无外部副作用的文件读取无需假造 API 费用，但读取权限和工具次数受 collect limits 约束。实际费用超上界记 budget_breach 并停止后续付费；无法撤回已发生账单。
 
-research campaign 内禁用 research slots；R 固定，内部仅改 W。主线可以在若干 worker 轮后执行 research slot，但父版本冻结后必须完成该 slot 再继续主线，首版单控制器避免无意义的晋升竞争。CAS 仍保留用于重启/多进程误启动防护。
+## 3. 重试与不确定结果
 
-恢复规则：已知 ready artifact 直接核验后复用；训练运行中接回 job；配对任务只补计划规定的未完成 attempt；unknown 外部调用按上节处理；accepted 未安装继续安装；installed 直接进入下一轮。无权重新修改 seed、任务清单、阈值或增加 repetitions 来“恢复”。
+仅一层负责外部重试。禁用 SDK 隐式重试，或将每次尝试显式计入预算；Harbor 负责它的 trial 内环境恢复时，ouroloop 不再嵌套重试同一动作。供应商幂等只有确实受支持才使用，本地 journal 不等于外部 exactly-once。
 
-## 5. 用例与验证
+响应丢失、进程死亡或提交后未保存 ID：保留 open/unknown reservation 的最坏占用，不直接释放；按 request/client/job/checkpoint ID 核对。确认未执行可重试，确认已执行复用，不能确定则停候选并标 inconclusive，等待可核对事实。新请求必有新预留，不能把相同 operation ID 当作免费重放。
 
-| ID | 场景 | 预期 |
+Tinker optim_step 若状态不明，不能重复 apply。只有已确认训练 checkpoint、optimizer 状态及数据游标可恢复时继续；否则终止该候选或另建有明确预算的新训练，历史费用保留。Harbor 是否可 attach/resume 由能力声明决定，不能默认存在稳定恢复 API。
+
+## 4. episode 与副作用恢复
+
+采集记录草稿 → review → accepted → execution 各事实；写入采用已有原子对象与追加事件机制。不对失败的草稿执行任何工具。动作执行后、结果落盘前崩溃形成不确定副作用：优先查询环境真实状态，不能直接重发营销通知等操作。
+
+首版 benchmark 可将未完成 episode 标 incomplete，并在全新可重建世界中按冻结 retry policy 补一次；旧轨迹和费用保留，不进入 SFT。真实业务环境不能 reset 时，必须有工具幂等/查询契约或人工处理；没有该能力就停止，不把 benchmark 的重建能力承诺给生产。
+
+cancel 停新付费请求并尽力取消后台作业；取消仍可能收费，保留对账。已完成 artifact 核验后复用；已评测配对只补缺项；accepted 未安装继续同一次安装，CAS 已提交以实际 pointer 为准。
+
+## 5. 当前已知差距与用例
+
+当前已有逐调用预算、未知占用、活动预算根和实验续跑。待补：自动 wall time 计量、SDK 隐式重试覆盖、外部请求对账，以及教师/Tinker/Harbor 新边界。不能把这些设计写成当前严格保证。
+
+首版按 [ROADMAP §2](../ROADMAP.md) 阶段补：阶段 A 补文本草稿检查（结构/路径/manifest）与有界修订、笔记调用计量；阶段 B 把同一修复循环扩展到 isolated_probe/package_test，并补包 worker 生命周期/资源与 broker 内部工具调用计量。教师/Tinker 的新恢复路径归第二版，已有旧 job/serving 兼容不删除。
+
+| ID | 条件 | 预期 |
 |---|---|---|
-| EX-01 | 两个嵌套 arm 同时预留最后额度 | 共享锁只放行合法额度；不重置父预算、不重复统计 |
-| EX-02 | 模型响应丢失、控制器重启 | unknown 仍占额度；查询或新预留重试，支出不归零 |
-| EX-03 | 预算只够训练、不够完整验证 | 不启动训练，保存未运行提案及原因 |
-| EX-04 | provider 无限内部重试/fallback | wrapper 限制重试并逐次扣款；未知隐式 fallback 的配置拒绝严格预算 |
-| EX-05 | accepted 后崩溃或 cancelled 恰逢 pointer commit | 用 M3 提交事实恢复；不把已安装写成未安装 |
-| EX-06 | research arm 提出 research owner | 拒绝嵌套并记录候选缺陷；不产生第三层预算 |
-| EX-07 | USD 计费不可测但调用数可测 | 严格 USD 计划不启动；已声明调用数模式可运行且费用标 unknown |
-| EX-08 | 无有效提案、耐心耗尽或连续 infra 失败 | 按固定 reason 停止，保留可用 release，不安装未验证最后一代 |
+| EX6-01 | 工作流搜索+适配+actor/teacher+训练+campaign+外评记账 | 共享一个根，叶子无重复累计；子额度不增加总可花预算 |
+| EX6-02 | 钱够采集训练但不够最低评测 | admission 不启动付费构建 |
+| EX6-03 | teacher 或 optim_step 响应丢失 | 额度继续占用；核对或 inconclusive，不盲重试 |
+| EX6-04 | collect/dataset/train/probe 各完成后崩溃 | 已确认产物按身份复用；只恢复缺失部分 |
+| EX6-05 | 工具已执行但回执未保存 | 不重复副作用；隔离世界按冻结策略重建，旧 episode incomplete |
+| EX6-06 | SDK 自动重试或 Harbor 内外双重重试 | 启动配置阻止，或每次外部收费可追溯 |
+| EX6-07 | 取消恰逢安装提交 | 读取安装事实，不把已安装记成未安装 |
+| EX6-08 | source validated 后重启，installer 设失败哨兵 | 恢复已完成源产物，零安装调用；不进入 accepted/installing |
+| EX6-09 | 补采已返回数据、后续提案前崩溃 | 已完成批次不重跑，计数和证据保留，下一轮从新 context 继续 |
+| EX6-10 | 新 h 基线部分完成后中断 | 保留 preparation/parent，补缺项且共用原预算，不将 B 设为 active |
+| EX6-11 | 包测试完成后重启，或复合工具执行后 worker 失联 | 同输入复用已确认检查；未知工具副作用先核对、不重放；计数/费用/资源占用不清零 |
+| EX6-12 | 草稿检查失败、R 修订后通过；期间重启，随后冻结并进入 building | 每份草稿、检查与修订调用逐次记录计费，修订计数不重置；重启复用已确认检查；building 按输入摘要复用，不重跑 |
+| EX6-13 | 含代码草稿检查时 worker 失联；另一次 building/evaluating 中失联 | 唯一重试后 infrastructure_failed，修订计数与失败上限不变，已发生费用保留，活动暂停；恢复后以原草稿 ref/修订序号或原 operation 续跑，不重复收费，不 in-process 执行 |
 
-测试使用 fake clock/provider/job 和故障注入，不能用长 sleep 或实际云费用验证预算。`test_jobs.py`、`test_counting.py` 的既有取消与计数行为必须保留。
-
-## 6. 实现状态（2026-09-27）
-
-已实现于 `ouroloop/evolve/execution.py`：状态机（`STATES`/`NEXT`，终态不可改写，`installation_failed` 可重试同一 accepted artifact）、`Execution`（journal + 快照，快照可由 journal 重建，operation id 由 experiment+step+冻结输入决定）、`Budgets`/`BudgetAccount`（共享账本、子树汇总、祖先校验、`allocate` 双向限制、`settle` 的 settled/unknown/released、`budget_breach` 后停止付费操作）、`Pricing`/`check_pricing`、`MeteredProvider`（调用前预留、失败按 unknown 结算、重试有上限且逐次计费）、`Schedule` 的固定停止理由、`execute_experiment`。
-
-`remaining()["used"]` 报告被触碰过的维度即使实测为 0：跑得比时钟分辨率快的作业不是没跑的作业。
-
-验收：`python -m pytest tests/test_execution.py -q` → 19 passed，覆盖 EX-01～EX-04、EX-06～EX-08 与状态机；EX-05 见 `tests/test_rsi_integration.py::test_it04_*`，跨支预算见 `test_it06_*` 与 `tests/test_campaign.py`。
-
-2026-09-28 补齐：`MeteredProvider` 已接到所有阶段——agent 的每次调用与研究员的每次调用都先预留、再按实测结算，额度用尽时尝试记为 `budget_exhausted`（不补跑，比较记 inconclusive）。一个活动只有一个预算根（`[rsi] scope_id`，额度来自冻结的 budget 对象），collect、improve、campaign（含各支与外层评测）、final 都是其子额度，不存在第二个根；此前 campaign 另开根会使预算翻倍，已修。`settle` 只在预留时真正设了上界的维度上判定越界（未声明 token 上限时，用量照记、不与虚构的 0 比较）。`normalize_usage` 统一 Anthropic 与 OpenAI 兼容接口的用量词汇，`Pricing` 增加缓存读/写单价，缓存无价则费用 unknown。`execute_experiment` 可从记录的状态续跑，`unfinished`/`resume_unfinished` 在新一轮前完成中断的实验。验收：`python -m pytest tests/test_paid_run_safety.py -q` → 18 passed。
-
-已知缺口：`wall_seconds` 维度可声明但没有自动计时预留；供应商幂等键未使用（每次重试都是新外部调用）；进程崩溃时未结算的预留保持 open 并按上界占用（与 unknown 同样保守），尚无按 request ID 的自动对账；SDK 自带的内部重试（如 Anthropic 客户端默认 2 次）在计量层看作一次调用。
+复用 `test_execution.py`、`test_paid_run_safety.py`、`test_jobs.py`；使用 fake provider/job/clock 故障注入，不用真账单证明预算正确。

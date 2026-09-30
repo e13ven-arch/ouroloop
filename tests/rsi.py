@@ -148,9 +148,19 @@ class BusinessWorker:
         task = next((m["content"] for m in messages if m.get("role") == "user"), "")
         want, done = _needs(task), _done(messages)
         pushed = any(PUSHBACK in str(m.get("content", "")) for m in messages if m.get("role") == "user")
+        # A capability package speaks through the same channels: its memory is in the system prompt, and a skill's
+        # text arrives as the result of a read_skill call the worker chose to make.
+        read = [r.get("output", "") for m in messages if m.get("role") == "tool" for r in m.get("results") or ()]
         reminded = (FINISH_CHECK_MARK in (system or "") and not self.ignore_finish_check) or \
-                   (pushed and not self.ignore_pushback)
+                   (pushed and not self.ignore_pushback) or any(FINISH_CHECK_MARK in str(r) for r in read)
         usage = {"input_tokens": 100, "output_tokens": 20}
+        skills = re.findall(r"^- ([a-z0-9_-]+)", (system or "").split("read_skill tool", 1)[1], re.M) \
+            if "read_skill tool" in (system or "") else []
+        asked = {c.args.get("name") for m in messages for c in m.get("tool_calls") or () if c.name == "read_skill"}
+        unread = [name for name in skills if name not in asked]
+        if unread and any(sp.name == "read_skill" for sp in specs or ()):
+            return ChatTurn("", [ToolCall(f"k{len(asked)}", "read_skill", {"name": unread[0]})], "tool_use",
+                            usage=usage)
         if want["hold"]:
             return ChatTurn("The request is not allowed by the data policy, so I changed nothing.", [], "end",
                             usage=usage)

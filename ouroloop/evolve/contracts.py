@@ -33,7 +33,13 @@ from ..ledger import _append_jsonl, _read_jsonl, now, redact
 SCHEMA_VERSION = 2
 
 OWNERS = ("worker", "research")
-BINDINGS = ("decision", "config", "research_step")
+BINDINGS = ("decision", "config", "research_step", "generation")
+# The schema versions a reader accepts. v0.6 adds fields that default to None instead of a new version
+# (docs/modules/00_CONTRACTS.md §1), so anything but these is refused rather than read with a guess.
+KNOWN_SCHEMA_VERSIONS = (SCHEMA_VERSION,)
+COLLECTION_PURPOSES = ("task_feedback", "decision_feedback", "actor_imitation")
+MODEL_ROLES = ("actor", "controller")
+ORIGINS = ("manual", "scripted", "llm")
 # Every partition an evidence record can belong to, from the most freely readable to the one a result may only
 # be read out of once (docs/DESIGN.md §3.1). The order is the strictness order combine() uses.
 PARTITIONS = ("train", "dev", "research_dev", "final")
@@ -154,6 +160,18 @@ SCHEMAS: dict[str, dict] = {
                                                         "activity", "feedback", "experience", "budget"]},
     "requirement_list.v1": {"kind": "output", "fields": ["requirements"]},
     "proposal_list.v1": {"kind": "output", "fields": ["proposals", "next_action", "reason"]},
+    # v0.6 (docs/modules/00_CONTRACTS.md §2): the actor's generation, the capability package, and the per-task
+    # diagnosis of the first version's research step.
+    "chat.messages.v1": {"kind": "input", "fields": ["system", "messages", "tools"], "required": ["messages"]},
+    "chat.turn.v1": {"kind": "output", "fields": ["text", "tool_calls", "stop"]},
+    "harness_package.v1": {"kind": "output", "fields": ["package_ref"]},
+    "failure_summary.v1": {"kind": "input",
+                           "fields": ["task_id", "family_id", "task_text", "termination", "partial_credit",
+                                      "turns", "tool_errors", "events", "checks"],
+                           "required": ["task_id", "task_text", "turns"]},
+    "failure_note.v1": {"kind": "output",
+                        "fields": ["task_id", "failure_class", "root_cause", "mechanism", "component",
+                                   "generality"]},
 }
 
 
@@ -172,7 +190,7 @@ def actions_of(name: str) -> tuple[str, ...]:
 
 # ---------------------------------------------------------------------------- records
 # Fields that describe a record rather than identify it: two records that differ only in these are one object.
-VOLATILE = ("created", "ts", "note", "notes", "display", "path_hint")
+VOLATILE = ("created", "ts", "note", "notes", "display", "path_hint", "observed_at")
 
 
 @dataclass
@@ -203,6 +221,10 @@ class Record:
         unknown = sorted(set(d) - known - {"ref"})
         if unknown:
             raise ContractError(f"{cls.__name__} does not take {unknown}")
+        version = d.get("schema_version")
+        if version is not None and version not in KNOWN_SCHEMA_VERSIONS:
+            raise ContractError(f"{cls.__name__} schema_version {version!r}: this reader knows "
+                                f"{list(KNOWN_SCHEMA_VERSIONS)}")
         return cls(**{k: v for k, v in d.items() if k in known})
 
 
@@ -271,7 +293,7 @@ class PolicyDescriptor(Record):
             raise ContractError(f"binding {self.binding!r}: one of {list(BINDINGS)}")
         known_schema(self.input_schema, "input")
         known_schema(self.output_schema)
-        check_implementation(self.implementation)
+        check_implementation(self.implementation, binding=self.binding)
         if self.binding != "decision" and actions_of(self.output_schema):
             raise ContractError(f"{self.target}: only a decision policy has an action vocabulary, and "
                                 f"{self.output_schema!r} declares one")
@@ -284,8 +306,13 @@ class PolicyDescriptor(Record):
         return self.implementation.get("kind", "")
 
 
-def check_implementation(impl: dict) -> None:
-    """The tagged union of what a policy can be. No `eval`, no import path, no arbitrary code."""
+def check_implementation(impl: dict, binding: str | None = None) -> None:
+    """The tagged union of what a policy can be. No `eval`, no import path, no arbitrary code.
+
+    A model is dispatched by its binding (docs/modules/00_CONTRACTS.md §2): a decision model carries its spec and
+    inference over a finite action set; a generation model (the actor) carries the identity of the provider and
+    base model it runs, and a trained actor additionally the artifact that identity was trained into.
+    """
     if not isinstance(impl, dict):
         raise ContractError("implementation must be an object")
     kind = impl.get("kind")
@@ -293,13 +320,18 @@ def check_implementation(impl: dict) -> None:
         raise ContractError(f"implementation kind {kind!r}: one of {list(IMPLEMENTATIONS)}")
     required = {"prompt": {"artifact_ref"}, "rule": {"builtin", "config_ref"},
                 "workflow": {"builtin", "config_ref"}, "model": {"model_ref", "spec_ref", "inference_ref"}}[kind]
+    optional: set = set()
+    if kind == "model" and binding == "generation":
+        required, optional = {"model_identity_ref"}, {"artifact_ref"}
+    if kind != "model" and binding == "generation":
+        raise ContractError("a generation binding takes a model implementation only")
     missing = sorted(required - set(impl))
     if missing:
         raise ContractError(f"a {kind} implementation needs {missing}")
-    extra = sorted(set(impl) - required - {"kind"})
+    extra = sorted(set(impl) - required - optional - {"kind"})
     if extra:
         raise ContractError(f"a {kind} implementation does not take {extra}")
-    for key in ("artifact_ref", "config_ref", "spec_ref", "inference_ref"):
+    for key in ("artifact_ref", "config_ref", "spec_ref", "inference_ref", "model_identity_ref"):
         if key in impl:
             parse_ref(impl[key])
 
@@ -353,8 +385,16 @@ class SystemRelease(Record):
     parent_ref: str | None = None
     provenance_ref: str | None = None
     schema_version: int = SCHEMA_VERSION
+    # v0.6, None when unset so a v2 release keeps its ref: the host execution contract the release runs on, and
+    # the runtime capabilities it needs (an old runtime refuses the unknown field instead of ignoring it).
+    target_harness_ref: str | None = None
+    required_capabilities: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
+        if self.target_harness_ref is not None:
+            check_refs([self.target_harness_ref], kind="harness", what="target harness")
+        if self.required_capabilities is not None:
+            self.required_capabilities = tuple(sorted(set(str(c) for c in self.required_capabilities)))
         check_refs([self.worker_ref], kind="policyset", what="worker policy set")
         check_refs([self.research_ref], kind="policyset", what="research policy set")
         check_refs([self.core_ref], kind="core", what="core manifest")
@@ -438,10 +478,15 @@ class ExperimentProposal(Record):
     abandon_if: str | None = None
     notes: str = ""
     schema_version: int = SCHEMA_VERSION
+    # v0.6: which entry point produced the proposal, written by that entry point and never by the model
+    # (docs/modules/00_CONTRACTS.md §3). None on proposals made before it existed.
+    origin: str | None = None
 
     def __post_init__(self) -> None:
         if self.owner not in OWNERS:
             raise ContractError(f"owner {self.owner!r}: one of {list(OWNERS)}")
+        if self.origin is not None and self.origin not in ORIGINS:
+            raise ContractError(f"origin {self.origin!r}: one of {list(ORIGINS)}")
         self.changes = tuple(_change(c) for c in self.changes)
         self.training = tuple(_training(t) for t in self.training)
         if not self.changes and not self.training:
@@ -612,6 +657,144 @@ class FeedbackRecord(Record):
 
 
 # ---------------------------------------------------------------------------- results of the core interfaces
+# ---------------------------------------------------------------------------- v0.6 records
+# New record types join at the current SCHEMA_VERSION; they are not a second schema (docs/modules/00_CONTRACTS.md).
+@dataclass
+class ModelIdentity(Record):
+    """Which generation or decision model a policy runs, and how far that identity can be pinned.
+
+    A hosted alias is not frozen weights: `mutable=True` says so, with when it was observed, instead of inventing a
+    revision. `inference_ref` holds the provider configuration a runtime rebuilds the client from — endpoint,
+    model name, output limit and the name of the environment variable that holds the key, never the key.
+    """
+    TYPE = "model_identity"
+    role: str = "actor"
+    provider: str = ""
+    base_model: str = ""
+    inference_ref: str = ""
+    revision: str | None = None
+    adapter_ref: str | None = None
+    tokenizer_ref: str | None = None
+    renderer_ref: str | None = None
+    artifact_digest: str | None = None
+    mutable: bool = True
+    observed_at: str | None = None          # volatile: when the alias was seen, not part of the identity
+    schema_version: int = SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        if self.role not in MODEL_ROLES:
+            raise ContractError(f"model role {self.role!r}: one of {list(MODEL_ROLES)}")
+        if not self.provider or not self.base_model:
+            raise ContractError("a model identity names its provider and base model")
+        check_refs([self.inference_ref], kind="change", what="inference configuration")
+        if self.adapter_ref is not None:
+            parse_ref(self.adapter_ref)
+
+
+@dataclass
+class TargetHarness(Record):
+    """The host execution contract a release runs on: runtime, tools, messages, context, completion and limits.
+
+    It describes fixed semantics only. Everything a candidate may change lives in W (prompts, the capability
+    package, the actor); changing anything here is a new contract and a new comparison identity.
+    """
+    TYPE = "harness"
+    runtime_ref: str = ""
+    tool_schema_ref: str = ""
+    action_schema_ref: str = ""
+    message_schema_ref: str = ""
+    context_policy_ref: str = ""
+    finish_protocol_ref: str = ""
+    permission_ref: str = ""
+    limits_ref: str = ""
+    extension_api_ref: str | None = None
+    schema_version: int = SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        for name in ("runtime_ref", "tool_schema_ref", "action_schema_ref", "message_schema_ref",
+                     "context_policy_ref", "finish_protocol_ref", "permission_ref", "limits_ref"):
+            check_refs([getattr(self, name)], kind="change", what=name)
+        if self.extension_api_ref is not None:
+            check_refs([self.extension_api_ref], kind="change", what="extension_api_ref")
+
+
+@dataclass
+class HarnessPackage(Record):
+    """A versioned capability package: the run bundle, its manifest, the package API it targets, its fixed
+    dependency set, and the test bundle kept apart so evaluation and deployment mount the same run bytes."""
+    TYPE = "package"
+    bundle_ref: str = ""
+    manifest_ref: str = ""
+    package_api_ref: str = ""
+    dependency_set_ref: str = ""
+    test_bundle_ref: str | None = None
+    evidence_refs: tuple[str, ...] = ()
+    schema_version: int = SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        check_refs([self.bundle_ref], kind="bundle", what="run bundle")
+        check_refs([self.manifest_ref], kind="manifest", what="manifest")
+        check_refs([self.package_api_ref], kind="change", what="package API")
+        check_refs([self.dependency_set_ref], kind="change", what="dependency set")
+        if self.test_bundle_ref is not None:
+            check_refs([self.test_bundle_ref], kind="bundle", what="test bundle")
+
+
+@dataclass
+class CollectionRequest(Record):
+    """A bounded request for more evidence, handed back to the same driver instead of ending the round.
+
+    The first version collects `task_feedback`: plain train attempts whose task results re-enter the diagnosis.
+    Reviewed collection belongs to the second version and needs the plan it pins to.
+    """
+    TYPE = "collection_request"
+    purpose: str = "task_feedback"
+    release_ref: str = ""
+    task_selection_ref: str = ""
+    limits_ref: str = ""
+    mode: str = "plain"
+    target_harness_ref: str | None = None
+    plan_ref: str | None = None
+    requirement_refs: tuple[str, ...] = ()
+    schema_version: int = SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        if self.purpose not in COLLECTION_PURPOSES:
+            raise ContractError(f"collection purpose {self.purpose!r}: one of {list(COLLECTION_PURPOSES)}")
+        if self.mode not in ("plain", "reviewed"):
+            raise ContractError(f"collection mode {self.mode!r}: plain or reviewed")
+        if self.mode == "reviewed" and not self.plan_ref:
+            raise ContractError("a reviewed collection needs the distillation plan it pins to")
+        if self.purpose == "task_feedback" and self.mode != "plain":
+            raise ContractError("task_feedback runs plain train attempts only")
+        check_refs([self.release_ref], kind="release", what="release")
+        check_refs([self.task_selection_ref], kind="change", what="task selection")
+        check_refs([self.limits_ref], kind="change", what="limits")
+
+
+@dataclass
+class DeploymentManifest(Record):
+    """What an exported app is: the runnable subset of one installed release (docs/modules/03_EVALUATION_RELEASE.md
+    §4). A whitelist, never a copy of the release's whole object closure: no R, no teacher material, no data, no
+    tests, no oracle, no credentials, no local paths."""
+    TYPE = "deployment"
+    source_release_ref: str = ""
+    worker_ref: str = ""
+    required_core_ref: str = ""               # the runtime projection of K: targets, permissions, limits
+    validation_ref: str = ""                  # what the release's acceptance says, as a summary
+    target_harness_ref: str | None = None
+    package_ref: str | None = None
+    model_refs: tuple[str, ...] = ()
+    external_dependencies: dict = field(default_factory=dict)
+    schema_version: int = SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        check_refs([self.source_release_ref], kind="release", what="source release")
+        check_refs([self.worker_ref], kind="policyset", what="worker policy set")
+        check_refs([self.required_core_ref], kind="change", what="runtime core projection")
+        check_refs([self.validation_ref], kind="change", what="validation summary")
+
+
 @dataclass
 class BuildResult:
     status: str = "ready"                   # ready | invalid | infrastructure_failed
@@ -639,12 +822,18 @@ class RoundResult:
     budget_receipt_ref: str | None = None
     reason: str = ""
     receipt_ref: str | None = None
+    # v0.6: what the driver should do next, kept as a field instead of folded into `reason`. RoundResult is not a
+    # Record and never enters the object store; what must survive a restart is the CollectionRequest and the
+    # operation log that action_ref points to (docs/modules/00_CONTRACTS.md §1).
+    next_action: str | None = None
+    action_ref: str | None = None
 
 
 TYPES = {c.TYPE: c for c in (ArtifactRef, EvidenceRef, PolicyDescriptor, PolicySet, Authorization, SystemRelease,
                              EvaluationPermit, CoreManifest, Requirement, ExperimentProposal, Experiment,
                              EvaluationReceipt, InstallationReceipt, DataManifest, Observation, DecisionTrace,
-                             FeedbackRecord)}
+                             FeedbackRecord, ModelIdentity, TargetHarness, HarnessPackage,
+                             CollectionRequest, DeploymentManifest)}
 
 
 # ---------------------------------------------------------------------------- storage

@@ -287,6 +287,12 @@ def test_it03_a_research_policy_is_proposed_compared_installed_and_then_used(fak
     assert researcher.requests and any(r["prompt_hash"] == ct.digest({"system": r1_prompt})[:16]
                                        for r in researcher.requests if r["step"] == "propose")
     assert r1_prompt != _prompt_of(objects, r0, "research.propose")
+    # and that use is on record, not only in the researcher's memory: the round names the R it loaded and the
+    # digest of what its propose step sent (docs/modules/06_RESEARCH_CAMPAIGN.md §4)
+    steps = [e for e in ct.Events(activity.root).of("research_steps") if e["research_ref"] == r1]
+    assert steps and any(s["step"] == "propose" and s["prompt_hash"] == ct.digest({"system": r1_prompt})[:16]
+                         for s in steps[-1]["steps"])
+    assert objects.has(steps[-1]["context_ref"])
     # and a W2 came out of it, through the ordinary task gate
     rounds = [r for r in result["rounds"] if r["outcome"] != "stopped"]
     assert rounds and rounds[0]["outcome"] in ("installed", "rejected", "inconclusive")
@@ -305,12 +311,14 @@ def test_it03_the_arms_cannot_read_each_other_or_the_mainline(fake_upstream, tmp
     lines = []
     cfg, activity, w0_release, plan_ref = prepared(fake_upstream, tmp_path, out=lines.append)
     w0 = ct.SystemRelease.from_json(activity.objects.get(w0_release)).worker_ref
-    bench.research_slot(cfg, ".", pairs=campaign_pairs(activity, initial_w=w0),
-                        researcher=rsi.ResearchPolicyProposer(),
-                        arm_researcher=lambda: rsi.ScriptedResearcher(follow_prompt=True), out=lines.append,
-                        worker_rounds=1)
-    control = arm_workspace(activity.root, "pair-1", "control")
-    candidate = arm_workspace(activity.root, "pair-1", "candidate")
+    slot = bench.research_slot(cfg, ".", pairs=campaign_pairs(activity, initial_w=w0),
+                               researcher=rsi.ResearchPolicyProposer(),
+                               arm_researcher=lambda: rsi.ScriptedResearcher(follow_prompt=True), out=lines.append,
+                               worker_rounds=1)
+    from ouroloop.research.campaign import CampaignPlan
+    plan_id = activity.objects.load(slot["campaign"], CampaignPlan).id
+    control = arm_workspace(activity.root, "pair-1", "control", plan_id)
+    candidate = arm_workspace(activity.root, "pair-1", "candidate", plan_id)
     for side in (control, candidate):
         assert (side / "rsi" / "active.json").exists() and (side / "experience.jsonl").exists()
     # each arm has its own pointer and its own experience; neither is the mainline's
@@ -363,3 +371,354 @@ def test_it06_the_arms_of_a_comparison_share_one_book_and_unknown_calls_keep_the
     report = build_report(activity.root, rsi.DOMAIN)
     scopes = report["improvement_cost"]["scopes"]
     assert scopes["campaign:arm-b"]["settled"]["usd"] == 4.0 and scopes["campaign:arm-a"]["unknown"] == 1
+
+
+# ---------------------------------------------------------------------------- RC6-11 / IT6-10: first-version arms
+def v06_campaign(fake_upstream, tmp_path, *, r1_diagnose=None, r1_propose="Propose one package change.",
+                 rounds=1, code=False):
+    """A first-version activity and a frozen campaign whose R1 differs from R0 only where the test says."""
+    from test_harness_loop import v06_prepared
+    from ouroloop.research.campaign import CampaignPlan
+    cfg, activity, w0_release = v06_prepared(fake_upstream, tmp_path)
+    objects = activity.objects
+    rel = ct.SystemRelease.from_json(objects.get(w0_release))
+    if code:
+        # the same activity under a core that allows an on_finish hook, which only a worker can check
+        core = objects.load(rel.core_ref, ct.CoreManifest)
+        harness = {**core.capabilities["harness"], "sandbox": "docker",
+                   "package": {**core.capabilities["harness"]["package"],
+                               "components": ["memory", "skills", "on_finish"]}}
+        core2 = objects.put(ct.CoreManifest(**{**{f: getattr(core, f) for f in core.__dataclass_fields__},
+                                               "capabilities": {**core.capabilities, "harness": harness}}))
+        release = activity.releases.bootstrap(rel.worker_ref, rel.research_ref, core2, reason="code allowed",
+                                              activate=False)
+        from ouroloop.ledger import write_json
+        write_json(activity.releases.active_path, {"release_ref": release, "revision": 2, "last_operation_id": None})
+        cfg["rsi"]["task_plan_ref"] = bench.freeze_task_plan(objects, core_ref=core2, split_ref=activity.splits.hash(),
+                                                             task_ids=tuple(rsi.DEV),
+                                                             gate=GatePlan(min_gain=0.05, min_groups=1,
+                                                                           bootstrap_replicates=200))
+        rel = ct.SystemRelease.from_json(objects.get(release))
+    r1 = P.default_research_set(objects, note_contract=True, diagnose=r1_diagnose, propose=r1_propose)
+    assert r1 != rel.research_ref
+    gate = GatePlan(min_groups=1, min_gain=0.01, bootstrap_replicates=200)
+    campaign = CampaignPlan(id="c6", core_ref=rel.core_ref, r_control_ref=rel.research_ref, r_candidate_ref=r1,
+                            campaign_pairs=(objects.put(v06_pair(activity, initial_w=rel.worker_ref)),),
+                            arm_budget={"model_calls": 2000, "tool_calls": 2000}, worker_round_limit=rounds,
+                            worker_gate_plan_ref=objects.put(gate), research_gate_plan=gate.to_json(),
+                            discovery="scripted")
+    cfg["rsi"]["research_plan_ref"] = objects.put(campaign)
+    return cfg, activity, campaign
+
+
+def v06_pair(activity, *, initial_w: str):
+    """The inner train pool holds the family W0 fails (it stops after the update), so round one has failures
+    to diagnose; the outer families are ones the inner loop never touches."""
+    from ouroloop.research.campaign import CampaignPair
+    return CampaignPair(pair_id="pair-1", independence_group="group-1", initial_w_ref=initial_w,
+                        initial_experience_ref=activity.objects.put_json("change", {"experience": []}),
+                        inner_train_groups=("rsi.update", "rsi.notify_after_update"),
+                        inner_dev_groups=("rsi.dev_notify_after_update",),
+                        outer_groups=("rsi.notify_once", "rsi.hold"), split_ref=activity.splits.hash(),
+                        repeats=1, seed_schedule=(0,))
+
+
+def researchers(make):
+    """A researcher factory that keeps each researcher, in the order the campaign asks: common, control,
+    candidate."""
+    made = []
+
+    def factory():
+        made.append(make())
+        return made[-1]
+    return factory, made
+
+
+def notes_of(researcher) -> list:
+    return [r["task"] for r in researcher.requests if r["step"] == "note"]
+
+
+def test_rc6_11_an_r1_that_changes_only_propose_shares_the_first_rounds_notes(fake_upstream, tmp_path):
+    from test_harness_loop import NoteResearcher
+    from ouroloop.evolve import experience as xp
+    from ouroloop.research.campaign import arm_workspace
+    cfg, activity, campaign = v06_campaign(fake_upstream, tmp_path)
+    factory, made = researchers(lambda: NoteResearcher(broken_first_draft=False))
+    receipt = bench.research(cfg, ".", out=lambda _line: None, researcher=factory)
+    common, control, candidate = made
+    # W0 measured once, and the first round's notes written once, at campaign scope
+    event = list(ct.Events(activity.root).of("campaign_common"))[-1]
+    assert event["notes_shared"] is True and event["selected"] and event["measured"] >= event["failed"] >= 1
+    assert sorted(notes_of(common)) == sorted(event["selected"])
+    # neither arm paid for a first-round note: each read the common ones as a shared input
+    assert notes_of(control) == [] and notes_of(candidate) == []
+    for arm in ("control", "candidate"):
+        root = arm_workspace(activity.root, "pair-1", arm, "c6")
+        diagnosis = [e for e in xp.read(root) if e.get("kind") == "diagnosis"]
+        assert diagnosis[0]["reused"] == diagnosis[0]["noted"] == len(event["selected"])
+        assert diagnosis[0]["included"] == event["selected"]
+        shared = [json.loads(line) for line in (root / "rsi" / "notes.jsonl").read_text().splitlines()]
+        assert shared and all(row.get("shared") for row in shared)
+        # the arm measured nothing of its own for round one: the common measurement stood for W0
+        assert not any("/measure" in (r.attempt_id or "") for r in bench.Results(root, rsi.DOMAIN).all())
+    assert receipt["verdict"] in ("accepted", "rejected", "inconclusive")
+
+
+def test_rc6_11_an_r1_that_changes_diagnose_writes_its_own_notes_on_the_same_selection(fake_upstream, tmp_path):
+    from test_harness_loop import NoteResearcher
+    from ouroloop.evolve import experience as xp
+    from ouroloop.research.campaign import arm_workspace
+    cfg, activity, campaign = v06_campaign(fake_upstream, tmp_path,
+                                           r1_diagnose="Diagnose the failure from the checks first.")
+    factory, made = researchers(lambda: NoteResearcher(broken_first_draft=False))
+    bench.research(cfg, ".", out=lambda _line: None, researcher=factory)
+    common, control, candidate = made
+    event = list(ct.Events(activity.root).of("campaign_common"))[-1]
+    assert event["notes_shared"] is False
+    # nothing was written at campaign scope that only one arm could use
+    assert notes_of(common) == []
+    assert sorted(notes_of(control)) == sorted(notes_of(candidate)) == sorted(event["selected"])
+    included = [[e for e in xp.read(arm_workspace(activity.root, "pair-1", arm, "c6"))
+                 if e.get("kind") == "diagnosis"]
+                [0]["included"] for arm in ("control", "candidate")]
+    assert included[0] == included[1] == event["selected"]
+
+
+class FlakyWorker:
+    """The protocol-test worker, with a switch that takes it off line the way a stopped Docker daemon would."""
+    down = False
+
+    def __new__(cls):
+        from ouroloop.agent.worker import ProcessWorker, WorkerUnavailable
+
+        class _Flaky(ProcessWorker):
+            def start(self):
+                if FlakyWorker.down:
+                    raise WorkerUnavailable("the worker could not start: the daemon is not running")
+                return super().start()
+        return _Flaky()
+
+
+def test_rc6_11_an_arm_whose_worker_goes_away_pauses_and_resumes_to_the_frozen_rounds(fake_upstream, tmp_path,
+                                                                                       monkeypatch):
+    """R1's arm loses its worker in round 2: the arm is paused, the campaign is inconclusive and measures nothing
+    outside; once the worker is back, running the campaign again resumes that arm at round 2 — its open draft,
+    not a new proposal — and does not run the finished control arm again."""
+    from test_harness_loop import NoteResearcher
+    from test_package_worker import FINISH_GUARD
+    from ouroloop.agent import harness_package as hp
+    from ouroloop.research.campaign import arm_workspace
+    from ouroloop.research.experiment import ProposalResult
+    monkeypatch.setattr(FlakyWorker, "down", False)
+    monkeypatch.setattr(bench, "isolated_worker", lambda settings: FlakyWorker() if settings else None)
+    cfg, activity, campaign = v06_campaign(fake_upstream, tmp_path, rounds=2, code=True)
+
+    class Control(NoteResearcher):
+        def summarize(self, *a, **kw):
+            self.requests.append({"step": "propose"})
+            return ProposalResult(next_action="stop", reason="nothing to change")
+
+    class Candidate(NoteResearcher):
+        """Round 1: a draft it cannot repair (a completed, invalid round). Round 2: an on_finish guard, whose
+        check needs the worker — which is gone by then."""
+        def summarize(self, context, prompt, notes, coverage, experience=(), *, package=None, allowed=()):
+            self.requests.append({"step": "propose"})
+            if sum(r["step"] == "propose" for r in self.requests) == 1:
+                self.repairable = False
+                return super().summarize(context, prompt, notes, coverage, experience, package=package,
+                                         allowed=allowed)
+            FlakyWorker.down = True
+            manifest = {**hp.empty_manifest(),
+                        "hooks": [{"name": "guard", "site": "on_finish", "entrypoint": "middlewares/guard.py:run"}]}
+            patch = {"write": {"manifest.json": json.dumps(manifest), "middlewares/guard.py": FINISH_GUARD}}
+            return ProposalResult(proposals=[ct.ExperimentProposal(
+                owner="worker", hypothesis="a finish guard catches the missing message", origin="scripted",
+                changes=({"target": "worker.harness", "kind": "workflow", "change": {"patch": patch}},))])
+
+    roles = iter([NoteResearcher, Control, Candidate, NoteResearcher, Control, Candidate])
+    made = []
+
+    def factory():
+        made.append(next(roles)(broken_first_draft=True))
+        return made[-1]
+
+    lines = []
+    first = bench.research(cfg, ".", out=lines.append, researcher=factory)
+    assert first["verdict"] == "inconclusive", lines
+    receipt = activity.objects.load(first["receipt"], ct.EvaluationReceipt)
+    assert any("pair-1/candidate paused (repair_runtime)" in r for r in receipt.reasons)
+    assert not any(line.startswith("outer") for line in lines)          # nothing measured on the outer tasks
+    candidate_root = arm_workspace(activity.root, "pair-1", "candidate", "c6")
+    state = json.loads((candidate_root / "rsi" / "arm.json").read_text())
+    assert [r["outcome"] for r in state["rounds"]][:2] == ["invalid", "infrastructure_failed"]
+    assert state["finished"] is False
+
+    # the repair: the worker is back, and the same frozen campaign runs again
+    FlakyWorker.down = False
+    lines.clear()
+    second = bench.research(cfg, ".", out=lines.append, researcher=factory)
+    control_again, candidate_again = made[4], made[5]
+    assert control_again.requests == []                                  # the finished arm is not run again
+    assert not [r for r in candidate_again.requests if r["step"] == "propose"]   # the open draft, not a new one
+    state = json.loads((candidate_root / "rsi" / "arm.json").read_text())
+    from ouroloop.research.loop import completed_round
+    completed = [r["outcome"] for r in state["rounds"] if completed_round(r)]
+    assert len(completed) == campaign.worker_round_limit and state["finished"] is True
+    checks = [e for e in ct.Events(candidate_root).of("draft_check") if e.get("ok")]
+    assert checks, "the resumed draft was checked by the worker that came back"
+    assert any(line.startswith("outer") for line in lines)
+    assert second["verdict"] != "inconclusive" or not any("paused" in r for r in
+                                                         activity.objects.load(second["receipt"],
+                                                                               ct.EvaluationReceipt).reasons)
+
+
+def test_rc6_10_arms_write_different_code_under_one_frozen_api_and_share_none_of_it(fake_upstream, tmp_path,
+                                                                                   monkeypatch):
+    """Both arms run under the one K: the same package API, the same component kinds and the same worker
+    settings. R0's arm writes an on_finish guard; R1's arm asks for a tool, a kind K does not allow, and for a
+    newer package API — both refused at the draft check, before anything is frozen or run. Neither arm's
+    package reaches the other's store."""
+    from test_harness_loop import NoteResearcher
+    from test_package_worker import FINISH_GUARD
+    from ouroloop.agent import harness_package as hp
+    from ouroloop.research.campaign import arm_workspace
+    from ouroloop.research.experiment import ProposalResult
+    settings_seen = []
+
+    def worker_for(settings):
+        settings_seen.append(settings)
+        return FlakyWorker() if settings else None
+    monkeypatch.setattr(FlakyWorker, "down", False)
+    monkeypatch.setattr(bench, "isolated_worker", worker_for)
+    cfg, activity, campaign = v06_campaign(fake_upstream, tmp_path, rounds=1, code=True)
+
+    def proposal(manifest_extra, files):
+        manifest = {**hp.empty_manifest(), **manifest_extra}
+        patch = {"write": {"manifest.json": json.dumps(manifest), **files}}
+        return ProposalResult(proposals=[ct.ExperimentProposal(
+            owner="worker", hypothesis="a component that closes the missed step", origin="scripted",
+            changes=({"target": "worker.harness", "kind": "workflow", "change": {"patch": patch}},))])
+
+    class Guard(NoteResearcher):
+        def summarize(self, *a, **kw):
+            return proposal({"hooks": [{"name": "guard", "site": "on_finish",
+                                        "entrypoint": "middlewares/guard.py:run"}]},
+                            {"middlewares/guard.py": FINISH_GUARD})
+
+    class Overreach(NoteResearcher):
+        def summarize(self, *a, **kw):
+            self.repairable = False
+            return proposal({"api_version": "harness_package.v2",
+                             "tools": [{"name": "send_anything", "entrypoint": "tools/send.py:run"}]},
+                            {"tools/send.py": "def run(ctx, args):\n    return 'sent'\n"})
+
+        def revise(self, prompt, patch, check_output):
+            self.requests.append({"step": "revise", "check_output": check_output})
+            return patch
+
+    roles = iter([NoteResearcher, Guard, Overreach])
+    made = []
+
+    def factory():
+        made.append(next(roles)(broken_first_draft=False))
+        return made[-1]
+
+    bench.research(cfg, ".", out=lambda _line: None, researcher=factory)
+    control_root, candidate_root = (arm_workspace(activity.root, "pair-1", a, "c6") for a in ("control", "candidate"))
+    # one frozen worker setting for the campaign, whichever workspace asked for it
+    assert settings_seen and all(s == settings_seen[0] for s in settings_seen)
+    # R1's arm: refused at the check, never frozen, never run
+    refused = list(ct.Events(candidate_root).of("draft_check"))
+    assert refused and not any(e["ok"] for e in refused)
+    assert "api_version" in " ".join(refused[0]["errors"])
+    candidate_state = json.loads((candidate_root / "rsi" / "arm.json").read_text())
+    assert candidate_state["rounds"][0]["outcome"] == "invalid"
+    # R0's arm: its guard was checked, gated and installed in its own workspace only
+    control_state = json.loads((control_root / "rsi" / "arm.json").read_text())
+    assert control_state["rounds"][0]["outcome"] == "installed"
+    control_package = P.bind_release(control_state["rounds"][0]["release_after"], profile="task",
+                                     services=P.Services(ct.Objects(control_root)), authorization="x").package
+    assert control_package.runs_code
+    assert not ct.Objects(candidate_root).has(control_package.ref)
+
+
+# ---------------------------------------------------------------------------- review fixes: arms that survive
+def _plan_like(activity, campaign, *, id, r1_propose):
+    """The same pair and W0 as `campaign`, a new id and another R1."""
+    from ouroloop.research.campaign import CampaignPlan
+    r1 = P.default_research_set(activity.objects, note_contract=True, propose=r1_propose)
+    plan = CampaignPlan(**{**{f: getattr(campaign, f) for f in campaign.__dataclass_fields__}, "id": id,
+                           "r_candidate_ref": r1})
+    return activity.objects.put(plan)
+
+
+def test_a_second_campaign_over_the_same_pair_starts_from_nothing_of_the_first(fake_upstream, tmp_path):
+    from test_harness_loop import NoteResearcher
+    cfg, activity, campaign = v06_campaign(fake_upstream, tmp_path)
+    bench.research(cfg, ".", out=lambda _line: None, researcher=lambda: NoteResearcher(broken_first_draft=False))
+    second = _plan_like(activity, campaign, id="c7", r1_propose="Propose the smallest package change.")
+    factory, made = researchers(lambda: NoteResearcher(broken_first_draft=False))
+    bench.research({**cfg, "rsi": {**cfg["rsi"], "research_plan_ref": second}}, ".", out=lambda _line: None,
+                   researcher=factory, campaign_ref=second)
+    # both of c7's arms ran their own rounds: nothing came from c6's finished arms
+    assert all(any(r["step"] == "propose" for r in m.requests) for m in made[1:])
+
+
+def test_a_crashed_arm_resumes_to_exactly_the_frozen_rounds_and_keeps_what_it_installed(fake_upstream, tmp_path):
+    from test_harness_loop import NoteResearcher
+    from ouroloop.research.campaign import arm_workspace
+    from ouroloop.research.loop import completed_round
+    cfg, activity, campaign = v06_campaign(fake_upstream, tmp_path, rounds=2)
+
+    class CrashesInRoundTwo(NoteResearcher):
+        def summarize(self, *a, **kw):
+            if sum(r["step"] == "propose" for r in self.requests) >= 1:
+                raise ConnectionResetError("the research provider dropped the connection")
+            return super().summarize(*a, **kw)
+
+    roles = iter([NoteResearcher, NoteResearcher, CrashesInRoundTwo])
+    with pytest.raises(ConnectionResetError):
+        bench.research(cfg, ".", out=lambda _line: None,
+                       researcher=lambda: next(roles)(broken_first_draft=False))
+    root = arm_workspace(activity.root, "pair-1", "candidate", "c6")
+    state = json.loads((root / "rsi" / "arm.json").read_text())
+    assert [r["outcome"] for r in state["rounds"]] == ["installed"] and not state["finished"]
+    bench.research(cfg, ".", out=lambda _line: None, researcher=lambda: NoteResearcher(broken_first_draft=False))
+    state = json.loads((root / "rsi" / "arm.json").read_text())
+    assert sum(1 for r in state["rounds"] if completed_round(r)) == campaign.worker_round_limit
+    from ouroloop.research.campaign import CampaignPair
+    w0 = activity.objects.load(campaign.campaign_pairs[0], CampaignPair).initial_w_ref
+    arm = [e for e in ct.Events(activity.root).of("campaign_arm") if e["arm"] == "candidate"][-1]
+    assert arm["installed"] and arm["w_star"] != w0                    # the install before the crash is its W*
+
+
+def test_a_finished_campaign_is_not_run_or_paid_for_again(fake_upstream, tmp_path):
+    from test_harness_loop import NoteResearcher
+    cfg, activity, campaign = v06_campaign(fake_upstream, tmp_path)
+    first = bench.research(cfg, ".", out=lambda _line: None,
+                           researcher=lambda: NoteResearcher(broken_first_draft=False))
+    rows = sum(1 for _ in open(activity.root / "bench" / rsi.DOMAIN / "results.jsonl"))
+    factory, made = researchers(lambda: NoteResearcher(broken_first_draft=False))
+    again = bench.research(cfg, ".", out=lambda _line: None, researcher=factory)
+    assert again["receipt"] == first["receipt"] and made == []
+    assert sum(1 for _ in open(activity.root / "bench" / rsi.DOMAIN / "results.jsonl")) == rows
+    receipt = activity.objects.load(first["receipt"], ct.EvaluationReceipt)
+    assert receipt.costs["common"] and receipt.costs["outer"]           # the whole comparison's cost is on it
+
+
+def test_rounds_lost_to_infrastructure_are_rerun_and_pause_the_run():
+    from ouroloop.research.loop import completed_round, pause_of
+    lost = {"outcome": "inconclusive", "reason": "4 pairs are incomplete: ['t1', 't2']"}
+    judged = {"outcome": "inconclusive", "reason": "the interval contains zero"}
+    assert not completed_round(lost) and completed_round(judged)
+    assert pause_of([{"outcome": "installed"}, lost, {"outcome": "stopped", "reason": "rounds_done"}],
+                    "rounds_done") == "infrastructure"
+    assert pause_of([judged, {"outcome": "stopped"}], "rounds_done") == ""
+    assert pause_of([lost], "budget_exhausted") == ""                   # a spent budget ends; it does not pause
+
+
+def test_a_campaign_takes_a_factory_so_arms_never_share_a_research_step(fake_upstream, tmp_path):
+    from test_harness_loop import NoteResearcher
+    cfg, activity, campaign = v06_campaign(fake_upstream, tmp_path)
+    with pytest.raises(ValueError, match="factory"):
+        bench.research(cfg, ".", out=lambda _line: None, researcher=NoteResearcher())

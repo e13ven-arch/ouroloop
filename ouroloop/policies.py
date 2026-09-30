@@ -26,7 +26,8 @@ from .evolve.contracts import ContractError, PolicyDescriptor, PolicySet, action
 MAX_PROMPT_CHARS = 20000
 PREFLIGHT_CHECKS = ("input_coverage", "label_availability", "duplicate_experiment")
 RETRIEVE_SORTS = ("recency", "recurrence")
-BUILTINS = ("default.v1", "finish_check.v1", "research_retrieve.v1", "research_preflight.v1")
+BUILTINS = ("default.v1", "finish_check.v1", "research_retrieve.v1", "research_preflight.v1",
+            "harness_package.v1")
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,16 @@ class TargetRegistration:
     site: str                                  # where in the host this policy takes effect, for Inspection
     fallback: str = "default"
     builtins: tuple[str, ...] = ()
+    # An optional target is opened only by a core that lists it. The v0.6 targets are optional so a v2 core and
+    # its complete policy sets stay complete without them (docs/modules/00_CONTRACTS.md §1).
+    optional: bool = False
+    # Other (input, output) schema pairs this target accepts. research.diagnose keeps its v2 requirement_list
+    # form for old R sets and takes the v0.6 per-task note form; the bound descriptor's own schemas say which
+    # path a round runs (docs/modules/04_RESEARCH_LOOP.md §1).
+    alternatives: tuple[tuple[str, str], ...] = ()
+
+    def accepts(self, input_schema: str, output_schema: str) -> bool:
+        return (input_schema, output_schema) in ((self.input_schema, self.output_schema), *self.alternatives)
 
 
 REGISTRY: dict[str, TargetRegistration] = {t.target: t for t in (
@@ -51,13 +62,20 @@ REGISTRY: dict[str, TargetRegistration] = {t.target: t for t in (
     TargetRegistration("worker.stop", "worker", "decision", ("rule", "model"), "stop.business.v1",
                        "action.stop.v1", "stop.on_finish", fallback="yes", builtins=("default.v1",)),
     TargetRegistration("research.diagnose", "research", "research_step", ("prompt",), "research.context.v1",
-                       "requirement_list.v1", "research.round.diagnose"),
+                       "requirement_list.v1", "research.round.diagnose",
+                       alternatives=(("failure_summary.v1", "failure_note.v1"),)),
     TargetRegistration("research.retrieve", "research", "config", ("rule",), "research.context.v1",
                        "research_retrieve.v1", "research.round.retrieve", builtins=("research_retrieve.v1",)),
     TargetRegistration("research.propose", "research", "research_step", ("prompt",), "research.context.v1",
                        "proposal_list.v1", "research.round.propose"),
     TargetRegistration("research.preflight", "research", "config", ("workflow",), "research.context.v1",
                        "research_preflight.v1", "research.round.admission", builtins=("research_preflight.v1",)),
+    # v0.6: the actor W pins, and the capability package the host mounts (docs/modules/01_POLICY_RUNTIME.md §1).
+    TargetRegistration("worker.actor", "worker", "generation", ("model",), "chat.messages.v1", "chat.turn.v1",
+                       "agent.provider", optional=True),
+    TargetRegistration("worker.harness", "worker", "config", ("workflow",), "research.context.v1",
+                       "harness_package.v1", "agent.harness_package", builtins=("harness_package.v1",),
+                       optional=True),
 )}
 
 
@@ -68,8 +86,15 @@ def resolve(target: str) -> TargetRegistration:
     return reg
 
 
-def targets_of(owner: str) -> tuple[str, ...]:
-    return tuple(t for t, reg in REGISTRY.items() if reg.owner == owner)
+def targets_of(owner: str, *, include_optional: bool = False) -> tuple[str, ...]:
+    """The targets of an owner. Optional targets only when asked: a core opens them by listing them."""
+    return tuple(t for t, reg in REGISTRY.items() if reg.owner == owner and (include_optional or not reg.optional))
+
+
+def core_targets(core: ct.CoreManifest, owner: str | None = None) -> tuple[str, ...]:
+    """The targets this core opens, for one owner or both. A core with no list opens the default targets."""
+    listed = tuple(core.targets or (*targets_of("worker"), *targets_of("research")))
+    return tuple(t for t in listed if owner is None or (t in REGISTRY and REGISTRY[t].owner == owner))
 
 
 # ---------------------------------------------------------------------------- configuration payloads
@@ -126,6 +151,11 @@ def parse_builtin(builtin: str, config: Any) -> dict:
         if len(set(checks)) != len(checks):
             raise ContractError("preflight checks are an ordered list without repeats")
         return {"checks": tuple(checks)}
+    if builtin == "harness_package.v1":
+        if set(config) != {"package_ref"}:
+            raise ContractError("harness_package.v1 takes package_ref only")
+        ct.check_refs([config["package_ref"]], kind="package", what="capability package")
+        return {"package_ref": config["package_ref"]}
     raise ContractError(f"unknown built-in {builtin!r}: {list(BUILTINS)}")
 
 
@@ -182,6 +212,7 @@ def validate_policy_set(policy_set: PolicySet, objects: ct.Objects, capabilities
     v = Validation()
     caps = capabilities or {}
     allowed_targets = set(caps.get("targets") or targets_of(policy_set.owner))
+    owned = set(targets_of(policy_set.owner, include_optional=True))
     seen: dict[str, PolicyDescriptor] = {}
     for ref in policy_set.policies:
         try:
@@ -205,13 +236,13 @@ def validate_policy_set(policy_set: PolicySet, objects: ct.Objects, capabilities
             v.errors.append(f"{p.target} binds as {reg.binding}, not {p.binding}")
         if p.kind not in reg.allowed_kinds:
             v.errors.append(f"{p.target} does not take a {p.kind} policy: {list(reg.allowed_kinds)}")
-        if p.input_schema != reg.input_schema or p.output_schema != reg.output_schema:
+        if not reg.accepts(p.input_schema, p.output_schema):
             v.errors.append(f"{p.target} reads {reg.input_schema} and writes {reg.output_schema}; the policy "
                             f"says {p.input_schema} / {p.output_schema}")
         if p.target not in allowed_targets:
             v.errors.append(f"{p.target} is not a target this core opens: {sorted(allowed_targets)}")
         v.errors.extend(_check_carrier(p, objects, reg))
-    missing = sorted(set(targets_of(policy_set.owner)) & allowed_targets - set(seen))
+    missing = sorted(owned & allowed_targets - set(seen))
     if missing:
         v.errors.append(f"the {policy_set.owner} set has no policy for {missing}: a release installs a complete "
                         f"set, not a diff")
@@ -228,6 +259,12 @@ def _check_carrier(p: PolicyDescriptor, objects: ct.Objects, reg: TargetRegistra
             if impl["builtin"] not in reg.builtins:
                 return [f"{p.target} does not take the built-in {impl['builtin']!r}: {list(reg.builtins)}"]
             parse_builtin(impl["builtin"], objects.get(impl["config_ref"]))
+        elif p.kind == "model" and p.binding == "generation":
+            identity = objects.load(impl["model_identity_ref"], ct.ModelIdentity)
+            if target_role(p.target) and identity.role != target_role(p.target):
+                return [f"{p.target} runs an {target_role(p.target)}, and the identity is a {identity.role}"]
+            if "artifact_ref" in impl and not objects.has(impl["artifact_ref"]):
+                return [f"{p.target}: the trained artifact {ct.short(impl['artifact_ref'])} is not readable"]
         elif p.kind == "model":
             spec = objects.get(impl["spec_ref"])
             unknown = sorted(set(spec) - {"point", "instructions", "criteria", "view_params", "input_schema",
@@ -244,13 +281,32 @@ def _check_carrier(p: PolicyDescriptor, objects: ct.Objects, reg: TargetRegistra
     return []
 
 
+def target_role(target: str) -> str:
+    """The model role a target runs: the actor generates, the controller decides. Empty for other targets."""
+    return {"worker.actor": "actor", "worker.stop": "controller"}.get(target, "")
+
+
 # ---------------------------------------------------------------------------- building policy sets
 def descriptor(objects: ct.Objects, target: str, kind: str, payload: Any, *, owner: str | None = None,
                evidence_refs: tuple = (), limits: dict | None = None, model_ref: str | None = None,
-               inference: dict | None = None) -> PolicyDescriptor:
-    """A descriptor with its configuration stored. `payload` is the prompt text, the built-in's config, or the
-    model's decision spec; `model_ref`/`inference` complete a model policy."""
+               inference: dict | None = None, schemas: tuple[str, str] | None = None) -> PolicyDescriptor:
+    """A descriptor with its configuration stored. `payload` is the prompt text, the built-in's config, the
+    model's decision spec, or — for a generation target — {"model_identity_ref"[, "artifact_ref"]};
+    `model_ref`/`inference` complete a decision model policy."""
     reg = resolve(target)
+    input_schema, output_schema = schemas or (reg.input_schema, reg.output_schema)
+    if not reg.accepts(input_schema, output_schema):
+        raise ContractError(f"{target} does not take the schemas {input_schema} / {output_schema}")
+    if kind == "model" and reg.binding == "generation":
+        payload = dict(payload or {})
+        unknown = sorted(set(payload) - {"model_identity_ref", "artifact_ref"})
+        if unknown or "model_identity_ref" not in payload:
+            raise ContractError(f"{target} takes model_identity_ref (and artifact_ref when trained), not {unknown}")
+        impl = {"kind": "model", **payload}
+        return PolicyDescriptor(owner=owner or reg.owner, target=target, binding=reg.binding,
+                                input_schema=reg.input_schema, output_schema=reg.output_schema,
+                                implementation=impl, fallback=reg.fallback, limits=dict(limits or {}),
+                                evidence_refs=tuple(evidence_refs))
     if kind == "prompt":
         impl = {"kind": "prompt", "artifact_ref": objects.put_json("change", parse_prompt(payload))}
     elif kind in ("rule", "workflow"):
@@ -268,7 +324,7 @@ def descriptor(objects: ct.Objects, target: str, kind: str, payload: Any, *, own
     else:
         raise ContractError(f"unknown carrier {kind!r}")
     return PolicyDescriptor(owner=owner or reg.owner, target=target, binding=reg.binding,
-                            input_schema=reg.input_schema, output_schema=reg.output_schema, implementation=impl,
+                            input_schema=input_schema, output_schema=output_schema, implementation=impl,
                             fallback=reg.fallback, limits=dict(limits or {}),
                             evidence_refs=tuple(evidence_refs))
 
@@ -400,6 +456,12 @@ class BoundRuntime:
     preflight: tuple = ()
     activity: Activity = field(default_factory=Activity)
     services: Any = None
+    # v0.6: the actor the release pins and the capability package it mounts. `actor` is the provider built from
+    # `actor_identity`; it stays None only where nothing runs the actor (a preflight build), and a caller that
+    # needs it refuses rather than using a provider of its own (docs/modules/01_POLICY_RUNTIME.md §1).
+    actor_identity: Any = None
+    actor: Any = None
+    package: Any = None
 
     def policies(self) -> dict:
         return {**self.worker, **self.research}
@@ -416,10 +478,16 @@ class BoundRuntime:
             text = self.prompts.get(target)
             if text:
                 parts.append(text)
+        block = self.package.prompt_block() if self.package is not None else ""
+        if block:
+            parts.append(block)
         final = "\n\n".join(p for p in parts if p)
-        return final, {"base_chars": len(base), "parts": [t for t in ("worker.system_prompt", "worker.finish")
-                                                          if self.prompts.get(t)],
-                       "hash": ct.digest({"prompt": final})[:16]}
+        used = [t for t in ("worker.system_prompt", "worker.finish") if self.prompts.get(t)]
+        out = {"base_chars": len(base), "parts": used + (["worker.harness"] if block else []),
+               "hash": ct.digest({"prompt": final})[:16]}
+        if self.package is not None:          # only when mounted: a v2 release keeps its prompt_hash
+            out["package_ref"] = self.package.ref
+        return final, out
 
 
 @dataclass
@@ -430,6 +498,9 @@ class Services:
     serving: Any = None
     capabilities: dict = field(default_factory=dict)
     probe_models: bool = True                 # ask a loaded model which model it is (PR-04)
+    # (ModelIdentity, provider config dict) -> ChatProvider. The host owns provider construction; binding only
+    # decides which identity runs (docs/modules/01_POLICY_RUNTIME.md §1).
+    provider_factory: Callable[[Any, dict], Any] | None = None
 
 
 class BindError(RuntimeError):
@@ -451,7 +522,7 @@ def bind_release(release_ref: str, *, profile: str, services: Services, authoriz
     bound = BoundRuntime(release_ref=release_ref, profile=profile, authorization=authorization, services=services)
     for owner, set_ref in (("worker", rel.worker_ref), ("research", rel.research_ref)):
         ps = objects.load(set_ref, PolicySet)
-        v = validate_policy_set(ps, objects, {**caps, "targets": caps.get("targets") or targets_of(owner)})
+        v = validate_policy_set(ps, objects, {**caps, "targets": caps.get("targets") or core_targets(core)})
         if not v.ok:
             raise BindError(f"{owner} policy set {ct.short(set_ref)}: {'; '.join(v.errors)}")
         (bound.worker if owner == "worker" else bound.research).update(v.policies)
@@ -477,6 +548,24 @@ def _bind_one(bound: BoundRuntime, target: str, p: PolicyDescriptor, services: S
         return
     if target == "worker.stop":
         bound.stop = _bind_stop(p, services)
+        return
+    if target == "worker.actor":
+        identity = objects.load(impl["model_identity_ref"], ct.ModelIdentity)
+        bound.actor_identity = identity
+        if services.provider_factory is not None:
+            config = dict(objects.get(identity.inference_ref))
+            try:
+                bound.actor = services.provider_factory(identity, config)
+            except Exception as e:  # noqa: BLE001 - a provider that cannot be built is a failed assembly
+                raise BindError(f"worker.actor: the provider could not be built: {type(e).__name__}: {e}") from None
+        return
+    if target == "worker.harness":
+        from .agent.harness_package import load_package
+        config = parse_builtin(impl["builtin"], objects.get(impl["config_ref"]))
+        try:
+            bound.package = load_package(objects, config["package_ref"])
+        except (KeyError, ContractError) as e:
+            raise BindError(f"worker.harness: {e}") from None
         return
     raise BindError(f"{target}: nothing binds a {p.kind} policy here")
 
@@ -548,20 +637,61 @@ PROPOSE = ("You propose one experiment that would close a named behaviour gap. C
            "State the hypothesis, the expected effect on full-task results, and what would make you abandon it.")
 
 
-def default_worker_set(objects: ct.Objects, *, system_prompt: str = "", finish_check: str = FINISH_CHECK) -> str:
+def default_worker_set(objects: ct.Objects, *, system_prompt: str = "", finish_check: str = FINISH_CHECK,
+                       actor_identity_ref: str | None = None, package_ref: str | None = None) -> str:
+    """W0. The v0.6 targets are included when their content is given: the actor's identity (from the configured
+    provider at bootstrap) and the capability package (empty at bootstrap)."""
     check = objects.put_json("change", {"text": finish_check})
-    return policy_set(objects, "worker", [
+    policies = [
         descriptor(objects, "worker.system_prompt", "prompt", {"text": system_prompt}),
         descriptor(objects, "worker.finish", "workflow", {"builtin": "finish_check.v1",
                                                           "instruction_ref": check}),
         descriptor(objects, "worker.stop", "rule", {"builtin": "default.v1"}),
-    ])
+    ]
+    if actor_identity_ref is not None:
+        policies.append(descriptor(objects, "worker.actor", "model", {"model_identity_ref": actor_identity_ref}))
+    if package_ref is not None:
+        policies.append(descriptor(objects, "worker.harness", "workflow", {"builtin": "harness_package.v1",
+                                                                           "package_ref": package_ref}))
+    return policy_set(objects, "worker", policies)
 
 
-def default_research_set(objects: ct.Objects, *, diagnose: str = DIAGNOSE, propose: str = PROPOSE,
-                         checks: tuple[str, ...] = PREFLIGHT_CHECKS) -> str:
+# The first version's R0 (docs/modules/04_RESEARCH_LOOP.md §1): research.diagnose writes one note per failed
+# attempt and research.propose reads the notes and the package. Different text, so a different R0 identity.
+DIAGNOSE_NOTE = (
+    "You read one failed attempt of the current agent version: the request, what the agent did turn by turn, the "
+    "tool errors, and the checks the grader reported as not met. Say why it failed and name one general mechanism "
+    "that would prevent this class of failure: a working note (memory), a skill, a check before finishing, a check "
+    "around a tool call, or a tool wrapper. Argue why the mechanism applies to a class of tasks, not only this one. "
+    "Never write this task's specific answers (names, e-mail addresses, ids, values).")
+PROPOSE_PACKAGE = (
+    "You read the notes on this round's failures, how many failures they cover, and the current capability "
+    "package. Propose at most one change to the package that addresses the most common general mechanism. Prefer, "
+    "in this order and only among the kinds the core allows: memory notes and skills; a check before finishing; "
+    "checks around tool calls; tool wrappers. Change or merge existing components before adding new ones, and "
+    "remove what the notes show is useless. State the hypothesis, the expected effect on full-task results, and "
+    "what would make you abandon it. Never write a specific task's answers into the package.")
+
+
+def prompts_of(objects: ct.Objects, set_ref: str) -> dict:
+    """target -> the prompt text each prompt policy of a policy set renders with, as bind_release reads it."""
+    out = {}
+    for ref in objects.load(set_ref, PolicySet).policies:
+        p = objects.load(ref, PolicyDescriptor)
+        if p.kind == "prompt":
+            out[p.target] = parse_prompt(objects.get(p.implementation["artifact_ref"]))["text"]
+    return out
+
+
+def default_research_set(objects: ct.Objects, *, diagnose: str | None = None, propose: str | None = None,
+                         checks: tuple[str, ...] = PREFLIGHT_CHECKS, note_contract: bool = False) -> str:
+    """R0. With `note_contract`, the first version's R0: research.diagnose takes one failure summary and writes a
+    failure note; otherwise the v2 R0 with its requirement list."""
+    diagnose = diagnose if diagnose is not None else (DIAGNOSE_NOTE if note_contract else DIAGNOSE)
+    propose = propose if propose is not None else (PROPOSE_PACKAGE if note_contract else PROPOSE)
+    schemas = ("failure_summary.v1", "failure_note.v1") if note_contract else None
     return policy_set(objects, "research", [
-        descriptor(objects, "research.diagnose", "prompt", {"text": diagnose}),
+        descriptor(objects, "research.diagnose", "prompt", {"text": diagnose}, schemas=schemas),
         descriptor(objects, "research.retrieve", "rule", {"builtin": "research_retrieve.v1", "max_items": 20,
                                                           "sort": "recency"}),
         descriptor(objects, "research.propose", "prompt", {"text": propose}),
@@ -685,12 +815,18 @@ def build_candidate(experiment, *, objects: ct.Objects, parent_release: str, own
     costs: dict = {}
     changed: list[PolicyDescriptor] = []
     errors: list[str] = []
+    parent_policies = {p.target: p for p in (objects.load(r, PolicyDescriptor)
+                                             for r in objects.load(parent_set, PolicySet).policies)}
     for change in proposal.changes:
         target, kind = change["target"], change["kind"]
         try:
             payload = objects.get(change["change_ref"]) if "change_ref" in change else change["change"]
+            # A replaced policy keeps its parent's contract: an R candidate that rewrites the diagnose prompt of a
+            # note-contract R stays on the per-task note path (docs/modules/04_RESEARCH_LOOP.md §1).
+            old = parent_policies.get(target)
+            schemas = (old.input_schema, old.output_schema) if old is not None else None
             changed.append(descriptor(objects, target, kind, dict(payload) if isinstance(payload, dict)
-                                      else payload, evidence_refs=proposal.evidence_refs))
+                                      else payload, evidence_refs=proposal.evidence_refs, schemas=schemas))
             artifacts[target] = change.get("change_ref")
         except (ct.ContractError, KeyError, TypeError, ValueError) as e:
             errors.append(f"{target}: {e}")

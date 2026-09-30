@@ -34,6 +34,7 @@ class ProposalResult:
     evidence_refs: tuple = ()
     requirements: tuple = ()
     dropped: tuple = ()                       # proposals beyond the round's candidate limit, in order
+    diagnosis: dict | None = None             # v0.6: the notes' coverage of this round's failures
 
     def __post_init__(self) -> None:
         if self.next_action not in NEXT_ACTIONS:
@@ -65,7 +66,7 @@ def normalize(proposal: ct.ExperimentProposal, objects: ct.Objects) -> ct.Experi
     return ct.ExperimentProposal(owner=proposal.owner, hypothesis=proposal.hypothesis,
                                  requirements=proposal.requirements, evidence_refs=proposal.evidence_refs,
                                  changes=tuple(changes), training=proposal.training, expected=proposal.expected,
-                                 abandon_if=proposal.abandon_if, notes=proposal.notes)
+                                 abandon_if=proposal.abandon_if, notes=proposal.notes, origin=proposal.origin)
 
 
 # ---------------------------------------------------------------------------- auxiliary checks
@@ -164,6 +165,17 @@ def core_checks(proposal: ct.ExperimentProposal, *, context, core: ct.CoreManife
             reasons.append(f"{target} is not a target this core opens")
         if "change_ref" in change and objects is not None and not objects.has(change["change_ref"]):
             reasons.append(f"{target}: the change artifact {ct.short(change['change_ref'])} is not readable")
+    methods = (core.capabilities or {}).get("methods")
+    if methods and proposal.owner == "worker":
+        # The activity's [improvement] allowed_methods, frozen into K (docs/modules/07_BENCH_REPORT.md §2).
+        for change in proposal.changes:
+            method = ("harness_edit" if change["target"] == "worker.harness" else
+                      "decision_train" if change.get("kind") == "model" else "policy_edit")
+            if method not in methods:
+                reasons.append(f"{change['target']}: a {method} change, and this activity allows only "
+                               f"{list(methods)}")
+        if proposal.training and "decision_train" not in methods:
+            reasons.append(f"a training entry, and this activity allows only {list(methods)}")
     for entry in proposal.training:
         if not core.capabilities.get("training", True):
             reasons.append("this core does not open training")
@@ -227,8 +239,14 @@ def freeze(proposal_ref: str, *, objects: ct.Objects, parent_release: str, exper
 
 
 # ---------------------------------------------------------------------------- the research step
+def note_contract(bound) -> bool:
+    """Whether the loaded R runs the first version's per-task diagnosis (failure_summary.v1 -> failure_note.v1)."""
+    p = bound.research.get("research.diagnose")
+    return p is not None and p.output_schema == "failure_note.v1"
+
+
 def propose_experiment(context, bound, owner: str = "worker", *, researcher, objects: ct.Objects,
-                       max_candidates: int = 1, experience=()) -> ProposalResult:
+                       max_candidates: int = 1, experience=(), diagnosis=None) -> ProposalResult:
     """inspect -> diagnose -> retrieve -> propose, through the loaded research policy.
 
     These are stages of one researcher, not four services. What the loaded R changes is the prompt or the
@@ -237,12 +255,37 @@ def propose_experiment(context, bound, owner: str = "worker", *, researcher, obj
     """
     diagnose_prompt = bound.prompts.get("research.diagnose", "")
     propose_prompt = bound.prompts.get("research.propose", "")
-    bound.activity.call("research.diagnose")
-    requirements = list(researcher.diagnose(context, diagnose_prompt) or ())
-    retrieved = retrieve(experience, bound.retrieval, targets=tuple(REGISTRY))
-    bound.activity.call("research.retrieve")
-    bound.activity.call("research.propose")
-    result = researcher.propose(context, propose_prompt, requirements, retrieved)
+    if owner == "research" and note_contract(bound):
+        # A research slot under the first version's R: no per-task notes (those diagnose task failures), one
+        # propose call over R's own prompts and the experience log's train-restricted projection.
+        if not hasattr(researcher, "propose_research"):
+            raise ct.ContractError("the research step has no research-slot proposal: a first-version R proposes "
+                                   "changes to itself through propose_research")
+        bound.activity.call("research.propose")
+        result = researcher.propose_research(context, propose_prompt, dict(bound.prompts), experience)
+        requirements = list(getattr(result, "requirements", ()) or ())
+    elif note_contract(bound):
+        # docs/modules/04_RESEARCH_LOOP.md §1: one note per selected train failure, then one summary call that
+        # returns the Requirements and at most one change.
+        if diagnosis is None:
+            raise ct.ContractError("the loaded R writes per-task notes and this round has no diagnosis input")
+        notes, coverage = diagnosis.run(researcher, diagnose_prompt)
+        for _ in notes:
+            bound.activity.call("research.diagnose")
+        retrieved = retrieve(experience, bound.retrieval, targets=tuple(REGISTRY))
+        bound.activity.call("research.retrieve")
+        bound.activity.call("research.propose")
+        result = researcher.summarize(context, propose_prompt, notes, coverage, retrieved,
+                                      package=diagnosis.package, allowed=tuple(diagnosis.components))
+        requirements = list(result.requirements)
+        result.diagnosis = coverage
+    else:
+        bound.activity.call("research.diagnose")
+        requirements = list(researcher.diagnose(context, diagnose_prompt) or ())
+        retrieved = retrieve(experience, bound.retrieval, targets=tuple(REGISTRY))
+        bound.activity.call("research.retrieve")
+        bound.activity.call("research.propose")
+        result = researcher.propose(context, propose_prompt, requirements, retrieved)
     if not isinstance(result, ProposalResult):
         raise ct.ContractError("a research step returns a ProposalResult")
     result.requirements = tuple(requirements)

@@ -29,7 +29,7 @@ def plan(objects, pairs, **kw):
     gate = kw.pop("gate", None) or GatePlan(min_groups=1, min_gain=0.05, bootstrap_replicates=200)
     control = kw.pop("r_control_ref", None) or objects.put(ct.PolicySet(owner="research", policies=()))
     candidate = kw.pop("r_candidate_ref", None) or objects.put(
-        ct.PolicySet(owner="research", policies=(), parent_ref=control))
+        ct.PolicySet(owner="research", policies=("policy:sha256:" + "c" * 64,), parent_ref=control))
     return CampaignPlan(id=kw.pop("id", "campaign-1"), core_ref=objects.put(ct.CoreManifest(domain="rsi")),
                         r_control_ref=control, r_candidate_ref=candidate,
                         campaign_pairs=tuple(objects.put(p) for p in pairs), arm_budget={"model_calls": 100},
@@ -191,18 +191,94 @@ def test_run_campaign_files_every_arm_and_its_outer_results(tmp_path):
     assert receipt.costs == {"control": {}, "candidate": {}}
 
 
+@pytest.mark.parametrize("stop", ["repair_runtime", "infrastructure_failures"])
+def test_rc6_11_a_paused_arm_is_not_a_finished_arm_and_nothing_is_compared(tmp_path, stop):
+    objects = ct.Objects(tmp_path)
+    campaign = plan(objects, [pair(objects, pair_id="pair-1"), pair(objects, pair_id="pair-2", group="group-2",
+                                                                    inner_dev=("f_dev2",), outer=("f_outer2",))])
+    ran = []
+
+    def run_arm(pair_obj, arm, r_ref, budget):
+        ran.append((pair_obj.pair_id, arm))
+        return outcome(arm, pair_obj.pair_id, stop=stop if arm == "candidate" else "rounds_done")
+
+    def evaluate_outer(pair_obj, sealed):
+        pytest.fail("a pair with a paused arm is not measured on the outer tasks")
+
+    events = ct.Events(tmp_path)
+    receipt = run_campaign(campaign, run_arm=run_arm, evaluate_outer=evaluate_outer, objects=objects,
+                           budget=Budgets(tmp_path).account("campaign", {"model_calls": 1000}), events=events)
+    # the other arm still ran (its rounds are kept for the resumed run), but no later pair and no outer run
+    assert ran == [("pair-1", "control"), ("pair-1", "candidate")]
+    assert receipt.verdict == "inconclusive"
+    assert any(f"pair-1/candidate paused ({stop})" in r for r in receipt.reasons)
+    assert any("resumes to the frozen round count" in r for r in receipt.reasons)
+    assert [e["paused"] for e in events.of("campaign_arm")] == [False, True]
+
+
+# ---------------------------------------------------------------------------- IT6-16: a false recursion
+def test_it6_16_an_r1_that_only_renames_r0_is_refused_before_anything_runs(tmp_path):
+    objects = ct.Objects(tmp_path)
+    r0 = P.default_research_set(objects, note_contract=True)
+    renamed = objects.put(ct.PolicySet(owner="research", policies=objects.load(r0, ct.PolicySet).policies,
+                                       parent_ref=r0))
+    assert renamed != r0
+    campaign = plan(objects, [pair(objects)], r_control_ref=r0, r_candidate_ref=renamed)
+    reasons = validate(campaign, objects=objects)
+    assert reasons and "only its manifest differs" in reasons[0]
+
+
+def test_it6_16_a_candidate_arm_that_sent_r0s_prompt_makes_the_comparison_invalid(tmp_path):
+    objects = ct.Objects(tmp_path)
+    r0 = P.default_research_set(objects, note_contract=True)
+    r1 = P.default_research_set(objects, note_contract=True, propose="R1: propose the smallest change.")
+    campaign = plan(objects, [pair(objects)], r_control_ref=r0, r_candidate_ref=r1)
+    prompts = {"control": P.prompts_of(objects, r0), "candidate": P.prompts_of(objects, r1)}
+    assert prompts["control"]["research.diagnose"] == prompts["candidate"]["research.diagnose"]
+
+    def arm_with(requests):
+        def run_arm(pair_obj, arm, r_ref, budget):
+            return outcome(arm, pair_obj.pair_id, requests=requests if arm == "candidate" else ())
+        return run_arm
+
+    def evaluate_outer(pair_obj, sealed):
+        return {"candidate": results({"t1": True}), "control": results({"t1": False})}
+
+    def run(requests, name):
+        # each run on its own book: a campaign's arm scopes are fixed once per book
+        return run_campaign(campaign, run_arm=arm_with(requests), evaluate_outer=evaluate_outer, objects=objects,
+                            budget=Budgets(tmp_path / name).account("campaign", {"model_calls": 1000}),
+                            prompts=prompts)
+
+    r0_propose = prompts["control"]["research.propose"] + "\n\nFORMAT"
+    r1_propose = prompts["candidate"]["research.propose"] + "\n\nFORMAT"
+    # the manifest said R1, the propose request carried R0's text: nothing about R1 was compared
+    lying = run(({"step": "propose", "system": r0_propose},), "a")
+    assert lying.verdict == "invalid"
+    assert "no propose/revise request carried R1's research.propose" in lying.reasons[0]
+    # the request carried R1's text: the comparison stands on its outer results
+    honest = run(({"step": "note", "system": prompts["candidate"]["research.diagnose"] + "\n\nNOTE"},
+                  {"step": "propose", "system": r1_propose}), "b")
+    assert honest.verdict == "accepted"
+    # a researcher that records no prompt cannot show it either way, and the receipt says so
+    silent = run(({"step": "propose"},), "c")
+    assert silent.verdict == "accepted" and any("not verified" in r for r in silent.reasons)
+
+
 # ---------------------------------------------------------------------------- RC-03 / RC-07 / RC-08
 def test_rc03_a_branch_cannot_read_the_other_branch_or_the_mainline(fake_upstream, tmp_path):
     from test_rsi_integration import campaign_pairs, prepared
     lines = []
     cfg, activity, w0_release, plan_ref = prepared(fake_upstream, tmp_path, out=lines.append)
     w0 = ct.SystemRelease.from_json(activity.objects.get(w0_release)).worker_ref
-    bench.research_slot(cfg, ".", pairs=campaign_pairs(activity, initial_w=w0),
-                        researcher=rsi.ResearchPolicyProposer(),
-                        arm_researcher=lambda: rsi.ScriptedResearcher(follow_prompt=True), out=lines.append,
-                        worker_rounds=1)
-    control = arm_workspace(activity.root, "pair-1", "control")
-    candidate = arm_workspace(activity.root, "pair-1", "candidate")
+    slot = bench.research_slot(cfg, ".", pairs=campaign_pairs(activity, initial_w=w0),
+                               researcher=rsi.ResearchPolicyProposer(),
+                               arm_researcher=lambda: rsi.ScriptedResearcher(follow_prompt=True), out=lines.append,
+                               worker_rounds=1)
+    from ouroloop.research.campaign import CampaignPlan
+    plan_id = activity.objects.load(slot["campaign"], CampaignPlan).id
+    control = arm_workspace(activity.root, "pair-1", "control", plan_id)
+    candidate = arm_workspace(activity.root, "pair-1", "candidate", plan_id)
     # the arms' evidence is separate, and neither holds the outer tasks' results
     for side in (control, candidate):
         attempts = [json.loads(line) for line in

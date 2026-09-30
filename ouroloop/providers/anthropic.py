@@ -18,7 +18,12 @@ def to_anthropic(messages: list[dict], provider: str = "anthropic") -> list[dict
     out = []
     for m in messages:
         if m["role"] == "user":
-            out.append({"role": "user", "content": m["content"]})
+            if out and out[-1]["role"] == "user" and isinstance(out[-1]["content"], list):
+                # A host message right after tool results (a package hook's feedback) joins that user turn, so
+                # the roles still alternate.
+                out[-1]["content"].append({"type": "text", "text": m["content"]})
+            else:
+                out.append({"role": "user", "content": m["content"]})
         elif m["role"] == "assistant":
             native = (m.get("native") or {}).get(provider)
             if native is not None:

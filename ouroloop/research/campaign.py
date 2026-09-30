@@ -108,6 +108,15 @@ def validate(plan: CampaignPlan, *, objects: ct.Objects, lineage=None) -> list[s
             continue
         if policy_set.owner != "research":
             reasons.append(f"the {owner} arm was given a {policy_set.owner} policy set")
+    try:
+        same = (set(objects.load(plan.r_control_ref, ct.PolicySet).policies)
+                == set(objects.load(plan.r_candidate_ref, ct.PolicySet).policies))
+    except (KeyError, ct.ContractError):
+        same = False
+    if same:
+        # IT6-16: a new manifest over R0's own policies would compare R0 with itself under another name.
+        reasons.append("the candidate R names exactly the control's policies: only its manifest differs, so there "
+                       "is no research method to compare")
     groups: dict[str, list[str]] = {}
     for ref in plan.campaign_pairs:
         try:
@@ -128,13 +137,14 @@ def validate(plan: CampaignPlan, *, objects: ct.Objects, lineage=None) -> list[s
     return reasons
 
 
-def arm_workspace(root: str | Path, pair_id: str, arm: str) -> Path:
-    """Each arm's own workspace: its own pointer, its own experience index, its own objects.
+def arm_workspace(root: str | Path, pair_id: str, arm: str, plan_id: str = "") -> Path:
+    """Each arm's own workspace: its own pointer, its own experience index, its own objects — per campaign, so a
+    later campaign over a pair of the same name starts from nothing of an earlier one's.
 
-    The separation is what keeps the arms independent; it is not a security boundary, and the docs say so. Once
-    policy code can be executed, this has to become real process and filesystem isolation.
+    The separation is what keeps the arms independent; it is not a security boundary, and the docs say so. Package
+    code itself runs only in the isolated worker.
     """
-    return Path(root) / "campaigns" / pair_id / arm
+    return Path(root) / "campaigns" / plan_id / pair_id / arm if plan_id else Path(root) / "campaigns" / pair_id / arm
 
 
 # ---------------------------------------------------------------------------- execution
@@ -150,11 +160,21 @@ class ArmOutcome:
     inner_evidence: tuple = ()
     research_requests: tuple = ()             # what the arm's R actually sent, so R0 and R1 are distinguishable
 
+    @property
+    def paused(self) -> str:
+        """Why the arm is suspended rather than finished, or "" (docs/modules/06_RESEARCH_CAMPAIGN.md §3)."""
+        return self.stop_reason if self.stop_reason in PAUSES else ""
+
     def to_json(self) -> dict:
         return {"arm": self.arm, "pair_id": self.pair_id, "w_star": self.w_star,
                 "rounds": [dict(r) for r in self.rounds], "installed": list(self.installed),
                 "stop_reason": self.stop_reason, "costs": dict(self.costs),
                 "research_requests": list(self.research_requests)}
+
+
+# An arm that stopped for one of these is paused, not finished: after the repair it resumes under the same frozen
+# conditions to the frozen round count, and until then no comparison is made with it.
+PAUSES = ("repair_runtime", "infrastructure_failures", "infrastructure")
 
 
 def select_w(outcome: ArmOutcome, pair: CampaignPair, rule: str = "last_installed") -> str:
@@ -167,12 +187,19 @@ def select_w(outcome: ArmOutcome, pair: CampaignPair, rule: str = "last_installe
 
 
 def run_campaign(plan: CampaignPlan, *, run_arm, evaluate_outer, objects: ct.Objects, budget,
-                 experiment_ref: str = "", lineage=None, events=None) -> ct.EvaluationReceipt:
+                 experiment_ref: str = "", lineage=None, events=None, prepare_pair=None,
+                 prompts: dict | None = None, changed: tuple = ()) -> ct.EvaluationReceipt:
     """Run every declared pair with both arms, then compare what they produced on the outer tasks.
 
     `run_arm(pair, arm, r_ref, workspace, budget) -> ArmOutcome` runs the ordinary worker loop in isolation, and
     `evaluate_outer(pair, {arm: w_star}) -> {arm: [TaskResult]}` is the evaluator's own run. Both belong to the
-    caller: this function fixes the order, the isolation, the budgets and the verdict.
+    caller: this function fixes the order, the isolation, the budgets and the verdict. With `prompts`
+    ({"control": {target: text}, "candidate": ...}), each prompt R1 changed must be what the candidate arm's
+    matching step actually sent, or the comparison is invalid (docs/modules/06_RESEARCH_CAMPAIGN.md §4);
+    `changed` names every target R1 changed, so a change no request digest can show is reported as unverified.
+
+    The outer comparison of each pair is charged to `<plan>:<pair>:outer` and the common inputs to
+    `<plan>:<pair>:common`; the receipt's costs include both when they cost anything.
     """
     reasons = validate(plan, objects=objects, lineage=lineage)
     if reasons:
@@ -181,22 +208,94 @@ def run_campaign(plan: CampaignPlan, *, run_arm, evaluate_outer, objects: ct.Obj
     pairs = [objects.load(ref, CampaignPair) for ref in plan.campaign_pairs]
     outer: dict[str, dict[str, list]] = {}
     arms_out: dict[str, list[ArmOutcome]] = {"control": [], "candidate": []}
+    extra: dict = {}
+
+    def spent(scope: str) -> dict:
+        used = budget.child(scope, {}).remaining().get("used") or {}
+        return {k: round(float(v), 6) for k, v in used.items() if isinstance(v, (int, float)) and v}
+
+    def total(name: str, used: dict) -> None:
+        for k, v in used.items():
+            extra.setdefault(name, {})[k] = round(extra.get(name, {}).get(k, 0) + v, 6)
     for pair in pairs:
         sealed = {}
+        # What both arms start from, prepared once and charged to the campaign rather than to whichever arm runs
+        # first: W0's measurement and, when the arms diagnose alike, the first round's notes (docs/modules/06 §2).
+        shared = prepare_pair(pair, budget.child(f"{plan.id}:{pair.pair_id}:common", {})) if prepare_pair else None
         for arm, r_ref in (("control", plan.r_control_ref), ("candidate", plan.r_candidate_ref)):
             # A fixed child budget per arm: what one arm does not spend is not handed to the other, because equal
             # spend is part of what makes the comparison a comparison (docs/modules/05_EXECUTION_BUDGET.md §2).
             child = budget.child(f"{plan.id}:{pair.pair_id}:{arm}", dict(plan.arm_budget))
-            outcome = run_arm(pair, arm, r_ref, child)
+            outcome = run_arm(pair, arm, r_ref, child, **({"shared": shared} if prepare_pair else {}))
             outcome.w_star = outcome.w_star or select_w(outcome, pair, plan.selection_rule)
             arms_out[arm].append(outcome)
             sealed[arm] = outcome.w_star
             if events is not None:
                 events.append("campaign_arm", campaign=plan.id, pair=pair.pair_id, arm=arm,
                               w_star=outcome.w_star, stop_reason=outcome.stop_reason,
-                              installed=list(outcome.installed))
+                              installed=list(outcome.installed), paused=bool(outcome.paused))
+        if prepare_pair:
+            total("common", spent(f"{plan.id}:{pair.pair_id}:common"))
+        paused = [f"{pair.pair_id}/{o.arm} paused ({o.paused})" for outs in arms_out.values() for o in outs
+                  if o.pair_id == pair.pair_id and o.paused]
+        if paused:
+            # Two arms that completed different numbers of rounds are not compared, and a suspended arm is not
+            # a loss: nothing is measured on the outer tasks, and running the campaign again resumes it.
+            return _receipt(plan, plan_ref, experiment_ref, objects, arms_out, outer, "inconclusive",
+                            [*paused, "repair the runtime and run the campaign again: each arm resumes to the "
+                                      "frozen round count under the same frozen conditions"],
+                            {"discovery": plan.discovery}, {}, extra)
         outer[pair.pair_id] = evaluate_outer(pair, sealed)
+        total("outer", spent(f"{plan.id}:{pair.pair_id}:outer"))
     verdict, notes, metrics, uncertainty = judge_research(plan, pairs, outer, arms_out)
+    if prompts is not None:
+        unused, unverified = unused_changes(prompts.get("control") or {}, prompts.get("candidate") or {}, arms_out)
+        notes = [*notes, *unverified]
+        if unused:
+            # A run that named R1 and sent another configuration compared nothing about R1: a protocol error.
+            verdict, notes = "invalid", [*unused, *notes]
+    for target in changed:
+        if target not in RESEARCH_STEPS:
+            notes = [*notes, f"R1 changes {target}, which no request digest can show: its use is not verified"]
+    return _receipt(plan, plan_ref, experiment_ref, objects, arms_out, outer, verdict, notes, metrics, uncertainty,
+                    extra)
+
+
+# The research steps that render each research prompt target, by the step names researchers record.
+RESEARCH_STEPS = {"research.diagnose": ("diagnose", "note"), "research.propose": ("propose", "revise")}
+
+
+def carries(request: dict, text: str) -> bool:
+    """Whether one recorded research request was rendered from this prompt text."""
+    system = request.get("system")
+    if isinstance(system, str):
+        return system == text or system.startswith(text + "\n\n")
+    return request.get("prompt_hash") == ct.digest({"system": text})[:16]
+
+
+def unused_changes(control: dict, candidate: dict, arms_out: dict) -> tuple[list[str], list[str]]:
+    """-> (problems, notes). For every prompt target R1 changed, the candidate arm's requests for that step must
+    carry R1's text (IT6-16). An arm that never reached the step shows nothing either way; requests that record
+    no prompt at all cannot show it, and are reported as unverified rather than passed."""
+    problems, notes = [], []
+    for target, steps in RESEARCH_STEPS.items():
+        new, old = candidate.get(target), control.get(target)
+        if not new or new == old:
+            continue
+        for outcome in arms_out.get("candidate", ()):
+            sent = [r for r in outcome.research_requests if r.get("step") in steps]
+            recorded = [r for r in sent if "system" in r or "prompt_hash" in r]
+            if sent and not recorded:
+                notes.append(f"{outcome.pair_id}/candidate: its {'/'.join(steps)} requests record no prompt, so "
+                             f"the use of R1's {target} is not verified")
+            elif recorded and not any(carries(r, new) for r in recorded):
+                problems.append(f"{outcome.pair_id}/candidate: no {'/'.join(steps)} request carried R1's {target}; "
+                                f"the arm ran another configuration than the plan names")
+    return problems, notes
+
+
+def _receipt(plan, plan_ref, experiment_ref, objects, arms_out, outer, verdict, notes, metrics,
+             uncertainty, extra=None) -> ct.EvaluationReceipt:
     results_ref = objects.put_json("change", {
         "campaign": plan_ref, "arms": {arm: [o.to_json() for o in outs] for arm, outs in arms_out.items()},
         "outer": {pid: {arm: [r.to_json() for r in rows] for arm, rows in by_arm.items()}
@@ -205,18 +304,24 @@ def run_campaign(plan: CampaignPlan, *, run_arm, evaluate_outer, objects: ct.Obj
                                 subject_ref=plan.r_candidate_ref, control_ref=plan.r_control_ref,
                                 plan_ref=plan_ref, results_ref=results_ref, verdict=verdict,
                                 reasons=tuple(notes), metrics=metrics, uncertainty=uncertainty,
-                                costs=_costs(arms_out))
+                                costs=_costs(arms_out, extra))
 
 
-def _costs(arms_out: dict) -> dict:
+def _costs(arms_out: dict, extra: dict | None = None) -> dict:
+    """What each arm used — its budget's `used`, or the plain numbers a caller recorded — plus the common inputs
+    and the outer comparison when they cost anything (the whole comparison's cost, docs/modules/06 §3)."""
     out = {}
     for arm, outcomes in arms_out.items():
         total: dict = {}
         for outcome in outcomes:
-            for key, value in (outcome.costs or {}).items():
+            costs = outcome.costs or {}
+            for key, value in (costs.get("used") if isinstance(costs.get("used"), dict) else costs).items():
                 if isinstance(value, (int, float)):
                     total[key] = round(total.get(key, 0) + value, 6)
         out[arm] = total
+    for name, used in (extra or {}).items():
+        if used:
+            out[name] = used
     return out
 
 

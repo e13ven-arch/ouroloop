@@ -131,6 +131,22 @@ class Agent:
                 "stop": {"point": self.guard.point, "max_pushbacks": self.guard.max_pushbacks}}
 
     def run(self, task: str) -> AgentResult:
+        try:
+            return self._run(task)
+        finally:
+            ender = getattr(self.tools, "end_session", None)
+            if callable(ender):
+                ender()                     # a mounted package's worker session ends with the episode
+
+    def _package_hooks(self):
+        """The mounted package's hook runner, when the package has hooks (docs/modules/01_POLICY_RUNTIME.md §1)."""
+        return getattr(self.tools, "hooks", None) if not isinstance(self.tools, Tools) else None
+
+    def _hook_view(self, hooks, turn: int) -> None:
+        """What a hook may read: the request, the step and the tool events so far. No scorer, no later turn."""
+        hooks.state = {"task": self._task[:4000], "turn": turn, "events": list(self._tool_events[-20:])}
+
+    def _run(self, task: str) -> AgentResult:
         self._task = task
         self.rt.session(self.session, self.session_meta, harness=self.harness())
         messages: list[dict] = [{"role": "user", "content": task}]
@@ -146,7 +162,21 @@ class Agent:
             self._emit("assistant", text=t.text, stop=t.stop, usage=t.usage, tier=tier,
                        tool_calls=[{"id": c.id, "name": c.name, "args": c.args} for c in t.tool_calls])
             text = t.text
+            hooks = self._package_hooks()
             if t.stop != "tool_use" or not t.tool_calls:
+                if hooks is not None and t.stop in ("end", "other") and turn < self.config.max_turns and \
+                        self.guard.pushbacks < self.guard.max_pushbacks:
+                    # on_finish of the package: a block or feedback is a bounded pushback, sharing the guard's
+                    # limit; the guard and the verifier still decide after it.
+                    self._hook_view(hooks, turn)
+                    action, notes = hooks.run_hooks("on_finish", {"final_message": text[:4000], "turn": turn})
+                    if action != "continue":
+                        self.guard.pushbacks += 1
+                        reason = " ".join(notes)
+                        messages.append({"role": "user", "content": f"{reason}\nKeep working on the task, or "
+                                                                    f"explain why it is already done."})
+                        self._emit("pushback", reason=reason[:300], source="package")
+                        continue
                 call = self._stop("on_finish", text, turn) if t.stop in ("end", "other") else None
                 if call is not None and not call.stop:
                     messages.append({"role": "user", "content": f"{call.reason}\nKeep working on the task, or "
@@ -156,14 +186,46 @@ class Agent:
                 stop = t.stop
                 break
             results = []
+            blocked, feedback = None, []
             for call in t.tool_calls:
+                if blocked is not None:
+                    # A before_tool hook stopped an earlier call of this turn: the rest are not executed, and what
+                    # already ran stays as it is — nothing is rolled back.
+                    results.append({"id": call.id, "name": call.name, "is_error": True,
+                                    "output": f"Not executed: an earlier call in this turn was stopped ({blocked})"})
+                    self._emit("tool", id=call.id, name=call.name, is_error=True, output="not executed",
+                               skipped=True)
+                    continue
+                if hooks is not None:
+                    self._hook_view(hooks, turn)
+                    action, notes = hooks.run_hooks("before_tool", {"tool": call.name, "args": call.args,
+                                                                    "turn": turn})
+                    if action != "continue":
+                        blocked = " ".join(notes)[:2000]
+                        results.append({"id": call.id, "name": call.name, "is_error": True,
+                                        "output": f"Stopped before execution: {blocked}"})
+                        self._emit("tool", id=call.id, name=call.name, is_error=True, output=blocked[:2000],
+                                   blocked=True)
+                        continue
+                runtime = getattr(self.tools, "runtime", None) if not isinstance(self.tools, Tools) else None
+                if runtime is not None:
+                    self._hook_view(runtime, turn)      # a package tool reads the same view a hook does
                 res = self._call(call)
                 results.append({"id": call.id, "name": call.name, "output": res.output, "is_error": res.is_error})
+                if hooks is not None:
+                    self._hook_view(hooks, turn)
+                    _, notes = hooks.run_hooks("after_tool", {"tool": call.name, "args": call.args,
+                                                              "result": res.output[:4000],
+                                                              "is_error": res.is_error, "turn": turn})
+                    feedback += notes
                 if call.name in ("read", "bash"):
                     self._items.append({"turn": turn, "key": self._key(call), "name": call.name,
                                         "ref": (len(messages), len(results) - 1), "output": res.output,
                                         "dropped": False, "decision": None, "labelled": False})
             messages.append({"role": "tool", "results": results})
+            if feedback:
+                # after_tool feedback is its own visible message; the tool results above are unchanged.
+                messages.append({"role": "user", "content": "\n".join(feedback)[:4000]})
             call = self._stop("per_turn", text, turn)
             if call.stop:
                 stop = call.reason
@@ -313,7 +375,8 @@ class Agent:
                                   "result_excerpt": "" if res.is_error else res.output[:limit],
                                   "error": res.output[:limit] if res.is_error else "",
                                   "truncated": len(res.output) > limit, "step": self._turn})
-        self._emit("tool", id=call.id, name=call.name, is_error=res.is_error, output=res.output[:2000])
+        extra = {"broker_calls": res.meta["broker_calls"]} if (res.meta or {}).get("broker_calls") else {}
+        self._emit("tool", id=call.id, name=call.name, is_error=res.is_error, output=res.output[:2000], **extra)
         return res
 
     def _mutates(self, call: ToolCall) -> bool:

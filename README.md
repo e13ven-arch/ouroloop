@@ -2,25 +2,19 @@
 
 English | [中文](README.zh-CN.md)
 
-A lightweight RSI framework built around learnable decision policies. It is designed to improve both how an agent performs tasks and how the system diagnoses failures, designs experiments and develops its next version.
+A lightweight RSI framework that discovers useful methods from task feedback, validates and consolidates them into runnable agent applications, and reuses validated improvements to its own improvement process.
 
-The core research direction is to learn small, reusable decision models from execution feedback. The v0.5 design gives prompts, rules, workflows and models a common policy interface, with training used when it adds value. Task and research policies will share evidence, evaluation and version management. A learned model must justify its added task-quality or cost benefit.
+The [v0.6 design](docs/DESIGN.md) connects capability discovery, validation, consolidation and recursive reuse. Users supply a task environment, goals, permissions, initial models and a budget. The first release evolves tools, middleware, skills and memory inside versioned harness packages, runs generated code through a fixed isolated API, validates task outcomes and regressions, and releases an app with the same actor. Improvement policies are also evaluated and reused through the existing research loop. The second release adds teacher-guided distillation and further training support; actor/controller separation and existing decision trainers remain supported. Tinker is a proposed training backend, not a prerequisite for the first release.
 
-AutomationBench Marketing is the first proving ground, evaluated against leading models and the same base agent before improvement. The complete v0.5 target also includes evaluating revised research policies and using them in subsequent improvement rounds. This recursive path is planned, not yet implemented.
+**Implemented:** decision policies and training infrastructure, the AutomationBench adapter, paired task evaluation, complete W/R releases, shared budgets and recovery, a task-improvement loop, and isolated research-policy comparison and reuse ([implementation snapshot](docs/history/V0_5_IMPLEMENTATION.md)). The first release's engineering path is now in place too: per-task diagnosis of train failures, versioned capability packages (memory, skills, hooks and tools) with a draft check before anything is frozen, package code run only in an isolated Docker worker, research campaigns on that loop with a check that an installed R1 is actually used, the `cycle` entry with its preset, and export of an installed version as a minimal app. All of it is validated offline with fixture worlds and scripted researchers; the Docker isolation test has not yet run on a machine with the worker image.
 
-**Status:** the decision and training infrastructure exists, and so does the AutomationBench run contract: task groups frozen before the first result, the official scorer over the world the agent's tools left, and the checks that say the runner measures what upstream measures (`ouroloop bench --phase smoke`). It has been verified against a real checkout (upstream `4a8e106`, package 1.0.6): all 25 development tasks pass the contract checks, and upstream's own rubric entry point, service gate and tool schemas agree with this adapter's.
+**Measured:** GLM-5.3 completed one Marketing development task on 2026-09-28. This is one real run, not a success-rate estimate or evidence of improvement. The first release's loop has not yet run with a real model, so there is no measured package-evolution or recursive-research gain. Actor distillation, its Tinker backend and teacher review belong to the second release. See the [journal](docs/JOURNAL.md).
 
-The improvement loop is now implemented end to end and verified against offline fixtures: typed policies over registered targets, a business completion view that carries the whole request and the tool results, complete W/R releases installed by compare-and-swap after preflight, feedback that only observed facts produce, training with no promotion side effect, paired full-task evaluation with a frozen gate, a research round, one shared budget book, a campaign that compares two research policies by what they produce, and seven benchmark phases with an offline report (`python -m pytest -q` → 553 passed; see [implementation status](docs/ROADMAP.md#5-实现状态2026-09-27)).
+AutomationBench Marketing remains the first proving ground. The first release compares the same actor (GLM-5.3) before and after harness-package evolution, retains an effective prompt/workflow baseline, and uses published leading-model results as a separately labelled reference. Local frontier runs remain optional future work, consistent with the latest benchmark plan. In the second release, h* is re-evolved on the Qwen3.5-9B student before distillation. Teacher-assisted collection scores are reported separately from deployment scores.
 
-It has **not** been run with a real model, so **there are no benchmark results here**: the fixtures show the path is real — the installed policy is the one that runs, labels come from observed facts, the pointer moves only through a receipt, a crash leaves something recoverable — and the fixtures' numbers are the fixtures'. C1 to C4 have not been run, and the research change in the fixture is proposed by a script and labelled `scripted`, which is not automatic discovery. See the [v0.5 design](docs/DESIGN.md) and [implementation roadmap](docs/ROADMAP.md).
+Decision labels still require observed evidence or human feedback; a final reward does not label every intermediate action. The planned teacher trajectories have a separate imitation-learning purpose and do not relax this rule for decision training. Jev and existing local decision trainers remain supported.
 
-An agent makes many small judgment calls: retry this command? keep this output in context? run this without asking? is the task done? ouroloop sends each of them to a calibrated decision model as a typed question (yes/no, a choice, or a score) and gets probabilities back in one forward pass. When the model is not confident, or its point is not switched on yet, the point takes its declared default: a fixed action, a rule, an LLM or a person. Every call, and what actually happened afterwards, goes into a local ledger.
-
-Outcomes with a justified action label can become supervised training examples. A final task reward alone does not label every intermediate decision. `ouroloop evolve` trains from labelled data; the separate research loop can propose decision-spec, recipe and harness-prompt candidates. Connecting research, business feedback, training and complete task evaluation is the next implementation step.
-
-The decision backend can be the Jev API or a small model you train yourself, such as TDE: start with Jev, and let your own model take over decision points one by one as data accumulates. Answers from Jev and from closed LLMs are never training labels: labels come from observed outcomes and from people.
-
-Small models are an empirical choice for recurring decisions with useful feedback. Clear rules and effective prompts remain valid alternatives; a small answer space does not imply an easy reasoning problem.
+Implementation starts with the [roadmap](docs/ROADMAP.md), [technology choices](docs/TECHNOLOGY.md), and [module specifications](docs/modules/README.md). The commands below describe existing functionality; second-release configuration (distillation, teachers, training) is marked as proposed in the design docs and refused by the readers.
 
 ## How the loop improves itself
 
@@ -28,11 +22,11 @@ Small models are an empirical choice for recurring decisions with useful feedbac
 
 <p align="center"><img src="docs/assets/architecture.gif" alt="ouroloop architecture: a loop whose top half runs every session and whose bottom half runs every round" width="100%"></p>
 
-The diagram illustrates the feedback-loop design, not a measured business result. The loop collects decisions and labels, diagnoses behaviour gaps, builds and evaluates candidates against full tasks, and installs the accepted version for later sessions — verified against offline fixtures, with no real model run yet.
+The diagram illustrates the existing decision-learning loop, not measured business improvement or the complete v0.6 architecture. The new workflow-distillation path is described in the design docs.
 
-An updated task policy changes the states encountered in later sessions; evidence from those sessions informs the next proposal. The complete design adds a second path: update a research policy, evaluate its ability to produce useful task improvements under the same budget, and use the accepted version for later research. Updating a prompt, rule or research tool can close this path without training a separate researcher model. Neither path guarantees continual improvement.
+The first-release plan connects bounded package code evolution to the existing automatic loop: R proposes package edits from feedback; fixed code enforces isolation, permissions, budgets, evaluation and release. Updated W runs subsequent tasks, while an accepted R update must be loaded by the next actual improvement call. Distillation follows in the second release. Real harness-evolution and recursive gains remain unproven.
 
-The existing takeover policy uses calibrated thresholds, labelled-session risk checks and runtime revocation. These controls depend on their feedback and statistical assumptions; they do not establish a 5% business-task failure bound. The planned benchmark profile will evaluate complete task outcomes under a separately fixed protocol while preserving the existing deployment profile.
+The existing takeover policy uses calibrated thresholds, labelled-session risk checks and runtime revocation. These controls depend on their feedback and statistical assumptions; they do not establish a 5% business-task failure bound. The benchmark profile evaluates complete task outcomes under a separately fixed protocol while preserving the existing deployment profile.
 
 `ouroloop research` is the legacy decision profile's own round, kept as it was; the business loop's rounds run through `ouroloop bench --phase improve` and `--phase research`.
 
@@ -134,6 +128,18 @@ ouroloop bench --config examples/automationbench/marketing.toml --phase smoke --
 ouroloop bench --config examples/automationbench/marketing.toml --phase smoke                 # and a few dev tasks
 ```
 
+The first release's automatic loop is one command over a config with an `[improvement]` preset and a budget
+([examples/automationbench/improvement.toml](examples/automationbench/improvement.toml)): it freezes the plans it is
+not given, runs the starting version's baseline, a worker segment, the planned research slot and one more segment
+that shows whether an installed R is used, and ends with the offline report. Interrupted, it resumes without paying
+again for what is on record. Package code runs only in the isolated worker image:
+
+```bash
+docker build -f docker/worker.Dockerfile -t ouroloop-worker:py3.12 .
+ouroloop bench --config examples/automationbench/improvement.toml --phase cycle
+ouroloop export --config examples/automationbench/improvement.toml --to exported-marketing
+```
+
 The smoke phase reports which upstream this is, freezes the train/dev/test task groups into
 `<workspace>/bench/<domain>/splits.json` before any result is looked at, checks this adapter against upstream's own
 rubric entry point, service gate and tool schemas, audits that nothing grading-related reaches the agent, and then
@@ -143,8 +149,9 @@ public task set is not an official leaderboard score — the leaderboard runs a 
 The boundaries are structural rather than a matter of care: the agent is handed the task prompt and the tool
 schemas while the assertions and the seeded state live in an object it never receives, and the score comes from
 the world the tools left, so a run that writes the wrong record and then reports success scores what it wrote.
-The later phases run the same loop: `baseline` measures a reasonable base version and the declared frontier models
-through this same driver, `collect` labels completion decisions offline, `improve` runs the worker loop with a fixed
+The later phases run the same loop: `baseline` measures a reasonable base version. It also supports explicit
+frontier arms, but the current plan uses published frontier references instead. `collect` labels completion
+decisions offline, `improve` runs the worker loop with a fixed
 research policy, `research` compares two research policies in isolated arms, `evaluate` runs one sealed final plan,
 and `report` recomputes everything from the records on disk. They run against frozen plans — objects in the
 workspace rather than settings in the config file — and a phase whose plan or model table is missing says so before
@@ -160,12 +167,13 @@ it calls a model.
 | `ouroloop/runtime.py` | ties decision points, backends, default answerers and the ledger together; fixes each session's release |
 | `ouroloop/release.py` | the release a session runs with: the legacy triple, and the complete W/R release with its permits, installs, recovery and revocations |
 | `ouroloop/policies.py` | the registered policy targets, what may be bound to each, assembly, session pinning and candidate building |
-| `ouroloop/agent/` | the minimal agent: loop, four tools, harness prompt, task suites |
+| `ouroloop/agent/` | the minimal agent: loop, four tools, harness prompt, task suites; capability packages (`harness_package.py`) and the isolated worker that runs their code (`worker.py`, `worker_runner.py`) |
+| `ouroloop/app.py` | the minimal app an exported release runs as |
 | `ouroloop/points/` | built-in points `retry`, `compact`, `tool_gate`, `stop`, `route`, and the deny list |
 | `ouroloop/chat.py` | a provider-neutral chat format |
 | `ouroloop/providers/` | Anthropic (official SDK) and OpenAI-compatible APIs |
 | `ouroloop/backends/` | decision backends: `mock`, `jev`, `tde`, `llm`, `http` |
-| `ouroloop/research/` | question conversion, the research agent interface and default, research rounds, what a researcher may read (`context.py`), what actually ran (`inspection.py`), proposals and admission (`experiment.py`), research-policy campaigns (`campaign.py`) |
+| `ouroloop/research/` | question conversion, the research agent interface and default, research rounds, what a researcher may read (`context.py`), what actually ran (`inspection.py`), proposals and admission (`experiment.py`), research-policy campaigns (`campaign.py`), per-task failure diagnosis (`diagnosis.py`), draft checks and revisions (`drafts.py`) |
 | `ouroloop/evolve/` | the shared contracts and object store (`contracts.py`), feedback builders, dataset building, data checks, trainers and their training jobs (worker, compute), calibration, the frozen promotion gate and its records, the paired task gate (`task_gate.py`), the execution state machine and budget book (`execution.py`), model registry, experience records |
 | `ouroloop/serve.py` | the HTTP decision service |
 | `ouroloop/benchmark.py` | the benchmark run contract: frozen task groups, run identity, one attempt's result |
@@ -175,19 +183,9 @@ it calls a model.
 
 ## Status
 
-The current implementation provides decision points, the ledger, supervised training jobs, trainer plugins, model storage and serving, calibration, version management, complete W/R releases, and both the task-improvement and research-improvement loops.
+The current implementation includes the v0.5 engineering loop, the first release's package-evolution loop (stages A–E of the [roadmap](docs/ROADMAP.md), validated offline with fixtures), and one real Marketing task run. The second release (teacher adaptation, distillation, training) is specified but not implemented. Historical test results and known limitations are preserved in the [implementation snapshot](docs/history/V0_5_IMPLEMENTATION.md); measured results remain in the [journal](docs/JOURNAL.md).
 
-Design v0.5 prioritizes AutomationBench Marketing. The adapter, the task-group splits and the full-task runner now
-exist; the contract checks pass against a real checkout, and the tests run against a miniature stand-in for it
-(`tests/fake_upstream`). The train-only completion probe is also implemented, but nothing has been run with a real model.
-Missing work includes useful training data from real runs, paired task evaluation and promotion, the integrated
-researcher with evidence-based experience, research-policy revision and reuse, and reproducible comparisons with leading models. **No
-AutomationBench performance has been measured in this repository.** Existing evidence remains in
-[docs/JOURNAL.md](docs/JOURNAL.md).
-
-Implementation handoff: [architecture review](docs/RSI_REVIEW.md), [module specifications and acceptance cases](docs/modules/README.md). Each module document ends with what was built, the command that verifies it and its known gaps. None of it is a benchmark gain.
-
-The design docs are in Chinese for now: [docs/DESIGN.md](docs/DESIGN.md) (the authoritative design, its invariants and the settled trade-offs), [docs/ROADMAP.md](docs/ROADMAP.md) (what is built, what is next, and the deferred items), [docs/RESEARCH_AGENT.md](docs/RESEARCH_AGENT.md) (the researcher: what it reads, the experiment it writes, its boundaries), [docs/DEMO.md](docs/DEMO.md) (the interactive demo and the video) and [docs/JOURNAL.md](docs/JOURNAL.md) (what changed, with the evidence).
+The design documents are currently in Chinese: [overall design](docs/DESIGN.md), [technology choices](docs/TECHNOLOGY.md), [roadmap](docs/ROADMAP.md), [module handoff and acceptance cases](docs/modules/README.md), [research protocol](docs/RESEARCH_AGENT.md), [design review](docs/RSI_REVIEW.md), and [demo and evidence](docs/DEMO.md).
 
 ## License
 

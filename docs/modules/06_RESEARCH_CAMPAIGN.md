@@ -1,86 +1,75 @@
-# M6：研究策略的比较、安装与递归回用
+# M6：改进方法比较与递归回用
 
-> 待实现，对应路线图 M7。新增 `research/campaign.py`，复用 worker round、task evaluator、预算与安装。不新建元训练平台。
+> 首版必需。目标：把更新后的改进方法实际用于后续改进，并独立检验它产生的任务结果。复用 `research/campaign.py` 和既有安装机制；不创建新元研究系统，不要求专用研究模型训练。
 
-## 1. 需要证明的对象
+## 1. 比较什么
 
-研究候选不是一条更好看的研究 prompt。它必须在相同起点和预算下，通过实际改进任务策略，产生可测的质量/成本效果。R 可以是诊断、检索、提案或辅助检查的声明式配置；不要求训练第二个模型。
+首条递归实现采用现有 R 策略路径：候选可更新 `research.diagnose` 的诊断提示、`research.retrieve` 的受限检索规则、`research.propose` 的提案方法和 `research.preflight` 的辅助检查流程。由真实失败证据选择变更，不规定必须更新某一段 prompt。
 
-工程证据是 `R0 自动提出 R1 → 固定比较 → 安装 R1 → R1 实际提出并评测 W2`。手工给定 R1 可验证接口，但不能标自动发现。C4 进一步要求独立比较支持研究收益；一条工程链和若干安装事件不能替代 C4。
+首版例：R0 遇到失败就新增相似工具；R1 先检查旧工具是否加载/调用，再选择修改描述、修中间件或合并组件。改变的是改进方法；不能以 R 自评“更合理”接受，必须看相同起点下实际产生的 W*。第二版再扩展训练选择。
 
-## 2. CampaignPlan 与数据权限
+首版不更新研究 provider 权重或自动接入供应商。actor、package API/隔离镜像/依赖、基础工具权限、包大小/工具/hook/测试资源上限、K 允许的组件种类、目标宿主与方法菜单共同冻结；两支可生成不同包代码，但不能多拿工具权限/先验数据/预算。第二版再冻结共同 teacher/trainer 目录。
 
-`CampaignPlan` 必填：`id, phase(research_dev|final), core_ref, r_control_ref, r_candidate_ref, campaign_pairs, arm_budget, worker_round_limit, worker_gate_plan_ref, research_gate_plan, retry_policy, selection_rule, finalization_ref?`。
+## 2. 冻结的比较计划
 
-每个 `CampaignPair` 包含 `pair_id, independence_group, initial_w_ref, initial_experience_ref, inner_train_groups, inner_dev_groups, outer_groups, split_ref, repeats, seed_schedule`。所有分组预先冻结；每支的 W/E 起点、基础研究和任务模型、允许训练规模、工具、总额度相同，只有 R 不同。重复相同起点/任务池只增加重复次数，不增加独立 campaign 数。
+输入复用 campaign plan：W0（含同一初始包）、R0/R1、E0、K、获准宿主/package API/镜像、train/内层 dev/外层 research_dev 家族、round/attempt/patience/collection-batch/构建限额、每轮笔记数与草稿修订上限和共同费用上界。每支资源上限相同，总支出仍由主活动预算根约束，外测/安装额度预留。第二版追加 source/recipe/训练身份，不为此另建 campaign。
 
-| 数据/资源 | 分支 worker | 分支 R | 外部 evaluator | 主线后续研究 |
-|---|---|---|---|---|
-| inner train | 当时任务/合法工具 | 轨迹与允许反馈 | 可读 | 在原全局边界内可读 |
-| inner dev | 当时任务/合法工具；无在线分数 | 已完成 dev 比较结果 | 可读 | 在原全局边界内可读 |
-| outer research_dev | 仅 evaluator 执行任务时提供合法输入 | 不可读，不参与内层选 W | oracle/结果 | 仅开发汇总及允许诊断；因此属于研究开发数据 |
-| outer final | 同上 | 不可读 | 锁定后评分 | 最终报告后不可再回流本实验调优 |
-| 另一 arm 新经验/active 指针 | 不可读 | 不可读 | 汇总权限 | 比较结束后可按数据边界归档 |
+两支只提出 worker 候选，禁用 research slots，避免递归创建第三层 campaign。每支 R 在整个分支内冻结。各自积累 source、teacher 数据、adapter 和经验，禁止交叉读取；共享只限起始 E0 中预声明且身份完全相同的内容。首版 W0 的测量在执行身份一致时作为 campaign 级共同输入；第一轮逐题笔记的任务选择在 campaign scope 按同一规则做一次，两支 diagnose 的完整笔记身份一致时笔记也只生成一次、计入 campaign 共同预留并记为共同输入，不一致时各支在同一组选中任务上、同一上限内各自生成；此后分支内产生的笔记不跨支（笔记身份与上限见 [M4 §1](04_RESEARCH_LOOP.md)）。模型 store 可共享存储介质，但访问范围和可变指针独立。
 
-先验证 W/E/训练数据的来源中没有 outer_groups；记录 R 的来源也不能含 final 任务或其衍生证据。任务曾进入历史经验就不能通过重新命名变成 held-out。全局 test 永不转成 inner train/dev；只有尚未被使用的外层集合才能支持独立最终结论。
+两支使用相同的 M4 结构化补采驱动；需要数据时在各自 train scope 自动采集再提案，不能让一支返回 collect 就提前判输。各支单独计补采与新 h 基线费用，总根不变。source validated 和仅准备完成的 baseline 都不算 W 晋升；只有 deployment gate 通过的候选才可成为分支 W*。换 h 必须走 M3 preparation，仍在共同许可集合内。
 
-首版可从现有 train/dev 的未使用家族中预留 research_dev；若历史 W/E 已见这些家族，应重建干净起点或仅标工程实验。100 个公开任务未必足以支持多个独立 campaign，数据不足时不以更多 seed 冒充独立性。可以先实现 M7，再同时锁定 C1～C4 最终协议；若 M6 的测试已揭晓，后续调优的 R 需要另一个干净外层池。
+首版两支不训练新模型，菜单为 policy_edit/harness_edit；分别计逐题笔记与汇总、草稿检查/修订、代码生成、构建/隔离运行和工具内部调用。第二版一支选 prompt、一支选蒸馏是合法差异，但共同方法集合/资源仍要先冻结，不能把该未来用例列作首版依赖。
 
-## 3. 执行算法
+## 3. 执行与裁决
 
 ```text
-validate(plan, policy lineage, disjoint groups, budget, frozen K)
-for each predeclared pair/repeat:
-    create isolated arm A(R0,W0,E0), arm B(R1,W0,E0)
-    for each arm in predeclared order:
-        reserve fixed child budget
-        run the existing worker loop, research slots disabled
-        choose W* using only inner dev and frozen selection_rule
-        seal W*, all inner evidence, usage and stop reason
-    evaluate both W* on the same outer task/repeat plan
-aggregate paired campaign outcomes
-fixed research gate -> EvaluationReceipt(profile=research, subject=R1)
+freeze campaign and reserve both branches plus outer verification
+for R in [R0, R1]:
+    start isolated scope with the same W0/E0
+    execute bounded worker rounds through M4/M5
+    keep the last W that passed the branch's inner gate (else W0)
+compare the two W* without teacher on untouched research_dev
+emit research EvaluationReceipt; install R1 only if accepted
 ```
 
-`selection_rule` 默认取该 arm 最后一个实际 installed 的 W；无接受候选则 W*=W0。所有晋升都须通过同一 inner task gate，不按 outer 分数倒选中间冠军。可以提前声明另一开发选择规则，但不能在看到 outer 后改。
+K 所需的隔离 worker 不可用时不启动分支；分支因 infrastructure_failed/repair_runtime 暂停时不视为正常完成，修复后以同一冻结条件续跑至冻结的轮数，无法续跑则 campaign 判 inconclusive，不以已完成轮数不同的两支比较。
 
-隔离 arm 使用独立工作目录/active/经验索引和 scope 授权，模型只接序列化 Context；只读 artifact 可共享。首版候选无可执行代码、无 shell/任意路径工具，因此不依赖“路径不同就安全”的假设。若未来开放策略代码，必须先实现真正进程和访问隔离，不能直接沿用此内存级信任边界。
+外层任务两支内层均未访问；R 不看外层逐任务答案。它们仍不是 final，最终泛化另测锁定版本。重复选择 R 会逐步使用 research_dev 的统计信息，不能把它当无限可重复的独立 test；报告候选次数和访问历史。
 
-外层任务评测费用按对称固定协议计入每支比较的总成本，并另外分列；研究改进成本含采集、研究请求、失败提案、训练、screen、dev、安装探针。生成 R1 自身的费用属于总体 RSI 活动成本，另列一次，不偷偷分配给某个 arm，也不能在成本回收结论里遗漏。
+冻结 gain/cost/patience 规则，不能临时挑一支历史最好 W。没有晋升用 W0，不删除失败支。协议错误判 invalid；环境/预算/配对不足判 inconclusive；有效但达不到门槛判 rejected。单支失败无法形成有效配对时不能让另一支自动获胜。
 
-## 4. 评价、裁决与声明
+报告无教师完整任务结果及总改进费用，不以提案数量、训练 loss 或 R 的评分替代。相同任务多种 seed 不增加独立家族；费用未知时不宣称成本效率改善。
 
-研究 gate 复用 M3 的 integrity、quality/economy 原则，但统计单位是 campaign independence_group：先汇总同一任务池的 repeats，再比较 R1/R0 产出的 W* 的 outer 完整通过率。不同 campaign 重用任务或共同数据导致相关时合并 independence_group，不能独立 bootstrap；样本不够则 exploratory/inconclusive。
+## 4. 安装后怎么证明实际回用
 
-quality：同额度下 outer 任务质量按预设开发门达到增益与回归门槛，可接受 R1 作开发版本；区间及独立组数照报，不推导显著性。economy：按预定 inner dev 质量阈值停止，到达时间/累计成本及最终 outer 非劣性共同判断。未达到阈值的 arm 记 `not_reached` 和全部支出；不能只比较达标者平均费用，或把它的成本写零。首版优先 quality 模式，避免为成本到达时间再建复杂搜索。
+M3 只更新主线 release 的 R，保持主线 W/K。campaign 内 W* 不随方法晋升成为生产冠军；要部署 W* 必须满足主线任务评测/授权。固定核心 K 不被分支实验改动。
 
-正式 C4 在 R0/R1、所有起点、任务池、预算、重复次数锁定后运行 final CampaignPlan；结果只报告、不挑 R。按预先指定的方向解释配对差值和区间，不成立就报告未证实。仅有一个 campaign 池的重复结果可以展示条件内稳定性，不能声称跨场景普遍研究能力提高。
+下一主线研究轮读取 active R1，`bind_release` 和现有 propose 流程将它用于实际步骤：诊断/提案要记录所用 prompt 内容摘要，检索/辅助预检要记录实际规则配置和执行结果。关联 context_ref、loaded R ref、步骤名、provider 请求摘要、proposal_ref 及后续 Experiment ref。不能只让 report 抄新 R 名称。
 
-已接受 R1 的安装走 M3，只更新 R。分支产生的 W* 是研究评测产物，不自动晋升主线；若要采用需主线 task plan 重新比较和安装。安装后下一 worker round 必须加载 R1，trace 完整穿过 diagnose/retrieve/propose/preflight 中实际修改的位置，W2 来源引用 R1。R1 不得修改固定 gate 或在 campaign 内更新自身。
+只更新一个目标时只要求对应步骤实际改变，其余绑定应保持一致。核心 admission 始终运行；R1 辅助流程不能关掉权限、标签、预算或 gate 检查。新回用记录进入 E，下一轮继续受原 schedule 限制。
 
-## 5. 用例与验证
+## 5. 机制与效果的验收
 
-| ID | 场景 | 预期 |
+工程 fixture 必须覆盖“提出 R1 → 两支实际产生 W* → 比较 → 安装 R1 → 后续改进调用真正加载 R1”，并覆盖拒绝和不确定分支。真实实验必须安排有界方法比较；通过才使用 R1，不通过保留 R0。不能为了展示 RSI 绕过 gate。
+
+scripted 成功只证明机制；实际模型提出候选证明自动提案；C4 成立还需要相同起点/预算的下游改进收益。三者分开标。W 的数据增长、版本 ref 变化、R1 被加载都不能单独支持 C4。首版不承诺递归收益或代际单调提高，但这条可执行且可验证的递归路径不能延期删除。
+
+以后可以用训练后的 actor 辅助工作流搜索等方式扩展递归；需要新的实际调用绑定和比较设计。本版不提前实现多种递归后端。
+
+## 6. 用例
+
+| ID | 条件 | 预期 |
 |---|---|---|
-| RC-01 | R1 只是在提案前检查 view 覆盖 | 分支确实执行该检查；可减少无效训练，效果由 W* outer 结果/总成本回答 |
-| RC-02 | 一支失败、无候选或预算耗尽 | 输出 W0/最后已安装 W 和全部费用；不能丢弃该 campaign |
-| RC-03 | R1 试读另一支结果、outer oracle 或主线 active | 能力接口拒绝，记录 invalid/权限事件；两支 E 独立 |
-| RC-04 | 初始模型训练来源含 outer family | 正式计划拒绝；不能靠 task 改名通过 |
-| RC-05 | 同一任务池重复 10 个 seeds | independence_group 仍为一个，不报告 10 个独立 campaigns |
-| RC-06 | 两支同额度，但 B 的重试/训练超预算 | M5 阻止；不能给 B 隐式追加额度 |
-| RC-07 | R1 被接受但安装失败；随后重试成功 | 首次主线 R0 不变，成功后下一轮才用 R1，主线 W 不变 |
-| RC-08 | 分支 W* 很好，主线已有另一 W | 分支不更新主线；采用必须另走主线任务比较 |
-| RC-09 | final 分数不支持 C4，但工程链跑通 | 报告工程完成、C4 未证实；不挑 seed 重写结论 |
-| RC-10 | R1 改动由人手写，循环正常运行 | 标 manual_seed；工程测试通过，自动递归发现主张不通过 |
+| RC6-01 | 一支读取另一支新轨迹/adapter | scope 拒绝，共同 E0 仍可用 |
+| RC6-02 | R1 选蒸馏，R0 选 prompt | 共用 M4/M5 构建评测安装；两支费用与外评共用总根 |
+| RC6-03 | 内层读取 research_dev/final 或开 research slot | 拒绝，无第三层 campaign |
+| RC6-04 | 一支没有通过 gate 的 W | 外测 W0；故障造成无有效配对则 inconclusive |
+| RC6-05 | R1 通过并安装 | 主线 W 不变，下一改进请求实际采用 R1 的变更目标 |
+| RC6-06 | 多 seed 同家族或 scripted R | 家族数/来源准确，不冒充真实自动发现或递归收益 |
+| RC6-07 | manifest 写 R1，运行仍沿用 R0 配置 | 回用验收失败，不能出 C4 结论 |
+| RC6-08 | R1 失败或 budget unknown | 不安装，保留 R0 和两支失败/费用，不强制涨分 |
+| RC6-09 | 一支先要求补采/验证源方法，另一支直接提候选 | 共用有界驱动和相同限额；数据/源验证不当作 W 晋升，也不误判该支无提案退出 |
+| RC6-10 | 两支生成不同能力包代码，一支请求更高 API/资源权限 | 共用固定 API/镜像和原预算根，越权被拒；包/经验不跨支共享，仅比较正式通过 gate 的 W* |
+| RC6-11 | R1 只改 propose；另一次 R1 改了 diagnose；另一次 R1 分支第 2 轮 worker 失联 | 第一种第一轮笔记在 campaign scope 生成一次并记为共同输入；第二种两支在同一组选中任务、同一上限内各自生成；第三种该支暂停并在修复后续跑至冻结轮数，否则 campaign inconclusive |
 
-离线夹具必须能区分 R0/R1 的真实请求/步骤，不能只按版本名字返回更高分。真实 C4 所需独立数据不足不阻碍交付框架，但阻碍效果结论。
-
-## 6. 实现状态（2026-09-27）
-
-已实现：`ouroloop/research/campaign.py`（`CampaignPair` 构造时拒绝内外层重叠、`CampaignPlan`、`validate` 的血缘与独立组检查、`arm_workspace`、`ArmOutcome`、`select_w`、`run_campaign`、`judge_research` 以 independence_group 为统计单位）、`ouroloop/bench.py` 的 `_run_campaign_arm`（每支独立工作区、独立 active.json 与经验、固定子预算、research slots 关闭）、`_evaluate_outer`（同一外层任务与重复由评测者运行）、`research` 阶段与 `research_slot`（R0 提出 R1 → 冻结 campaign → 比较 → 安装 R）。
-
-分支 W* 只经 `copy_closure` 回到评测者的对象库，主线 W 不变；`discovery` 字段区分 automatic/scripted/manual_seed 并进入 receipt。
-
-验收：`python -m pytest tests/test_campaign.py -q` → 13 passed，覆盖 RC-01～RC-10；完整链条见 `tests/test_rsi_integration.py::test_it03_*`。
-
-已知缺口：内层任务改进只跑到 `worker_round_limit`，没有经济模式（按达到质量阈值的时间/成本比较）；arm 隔离是目录与 scope 级，不是进程隔离，开放生成代码前必须升级；C4 的独立数据不足，fixture 的 1 个 independence group 只能出探索性结论。
+扩展 `test_campaign.py`、`test_rsi_integration.py`，不为蒸馏另写 runner。

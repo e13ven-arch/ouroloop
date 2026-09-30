@@ -54,6 +54,22 @@ sealed finalization plan — which are objects in the workspace, created through
 (`bench.freeze_task_plan`, `bench.seal`) and named under `[rsi]`. A phase whose plan, model table or price snapshot
 is missing says which piece is missing before it calls a model.
 
+## The first release's automatic loop
+
+`improvement.toml` is the complete, key-free config for the first release: GLM-5.3 as the pinned actor, the
+`marketing_harness_v1` preset, the package limits, the isolated worker and a USD budget. One command runs the
+whole loop and resumes it after an interruption:
+
+```bash
+docker build -f docker/worker.Dockerfile -t ouroloop-worker:py3.12 .     # once, from the repository root
+ouroloop bench --config examples/automationbench/improvement.toml --phase cycle
+```
+
+`cycle` freezes the plans `[rsi]` does not name, runs the starting version's baseline (train and dev), a worker
+segment, the planned research slot, and one more segment that shows whether an installed R is used, then writes the
+report. It never runs the final split. Without Docker, narrow `[harness_evolution] components` to
+`["memory", "skills"]`; with code components and no worker image, `freeze` and every paid phase refuse to start.
+
 ## Not established here
 
 The smoke phase makes no claim about capability, and neither does a phase that runs. Nothing here has been run with

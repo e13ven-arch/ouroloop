@@ -41,6 +41,9 @@ VALID_TERMINATIONS = TERMINATIONS[:4]
 V2_FIELDS = ("system_release_ref", "worker_ref", "research_ref", "experience_ref", "core_ref",
              "eval_plan_ref", "feedback_ref", "input_schema_refs", "data_lineage_ref", "budget_scope",
              "pricing_ref", "capability_ref")
+# v0.6 (docs/modules/07_BENCH_REPORT.md §2): left out of the payload while None, so every earlier manifest keeps
+# its 16-digit hash. Only these new fields follow the None rule; the existing ones keep their old serialisation.
+V06_FIELDS = ("mode", "actor_identity_ref", "target_harness_ref", "package_ref")
 
 
 def digest(obj: Any) -> str:
@@ -291,13 +294,17 @@ class RunManifest:
     budget_scope: str | None = None
     pricing_ref: str | None = None
     capability_ref: str | None = None
+    mode: str | None = None                   # v0.6: task_evaluation / collection / deployment
+    actor_identity_ref: str | None = None     # the ModelIdentity the actor actually ran
+    target_harness_ref: str | None = None
+    package_ref: str | None = None            # the capability package the run mounted
 
     def payload(self) -> dict:
         d = asdict(self)
         d["budget"] = asdict(self.budget)
         d["input_schema_refs"] = list(self.input_schema_refs)
         return {k: v for k, v in d.items()
-                if k != "notes" and not (k in V2_FIELDS and not v)}
+                if k != "notes" and not (k in V2_FIELDS and not v) and not (k in V06_FIELDS and v is None)}
 
     def v2(self) -> bool:
         """Whether this manifest carries the v2 identity. A run missing any of it is a v1 run, and saying so is
@@ -313,12 +320,17 @@ class RunManifest:
 
     @classmethod
     def from_json(cls, d: dict) -> "RunManifest":
+        """Unknown keys are refused, not dropped: a reader that silently dropped a field it does not know would
+        report a manifest as something it was not (docs/modules/00_CONTRACTS.md §1)."""
         d = dict(d)
         d.pop("hash", None)
         budget = d.pop("budget", None) or {}
+        unknown = sorted(set(d) - set(cls.__dataclass_fields__))
+        if unknown:
+            raise ValueError(f"RunManifest does not take {unknown}")
         if "input_schema_refs" in d:
             d["input_schema_refs"] = tuple(d["input_schema_refs"] or ())
-        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__}, budget=Budget(**budget))
+        return cls(**d, budget=Budget(**budget))
 
 
 # ---------------------------------------------------------------------------- one attempt
@@ -422,6 +434,39 @@ class Results:
         path = self.root / "runs" / f"{run.hash()}.json"
         write_json(path, run.to_json())
         return path
+
+    # The per-assertion outcome of an attempt is the grader's answer key, so it is kept beside the results rather
+    # than in them: results.jsonl never carries it, and the only reader hands out train detail by default
+    # (docs/modules/07_BENCH_REPORT.md §4). The raw record keeps every entry, excluded ones too, for audit.
+    def grading_path(self) -> Path:
+        return self.root / "grading.jsonl"
+
+    def put_grading(self, result: TaskResult, assertions) -> None:
+        if not result.attempt_id or not assertions:
+            return
+        rows = [{"type": a.get("type"), "params": a.get("params"), "passed": bool(a.get("passed")),
+                 "excluded": bool(a.get("excluded"))} for a in assertions]
+        _append_jsonl(self.grading_path(),
+                      redact({"ts": now(), "attempt_id": result.attempt_id, "task_id": result.task_id,
+                              "split": result.split, "run": result.run, "assertions": rows}))
+
+    def copy_grading(self, source: "Results", attempt_ids) -> int:
+        """Copy other workspaces' grading rows for these attempts, as recorded; rows already here are kept.
+        -> the rows copied. Used when a measurement made once is a common input of several branches."""
+        wanted = set(attempt_ids) - {row.get("attempt_id") for row in _read_jsonl(self.grading_path())}
+        rows = [row for row in _read_jsonl(source.grading_path()) if row.get("attempt_id") in wanted]
+        for row in rows:
+            _append_jsonl(self.grading_path(), row)
+        return len(rows)
+
+    def grading(self, attempt_id: str, *, splits: Iterable[str] = ("train",)) -> list[dict]:
+        """The recorded assertion outcomes of one attempt; empty when there are none or when its split is not
+        among `splits`. The split comes from the record, written from the frozen manifest at run time."""
+        allowed = set(splits)
+        for row in _read_jsonl(self.grading_path()):
+            if row.get("attempt_id") == attempt_id:
+                return list(row.get("assertions") or []) if row.get("split") in allowed else []
+        return []
 
 
 def summarise(results: list[TaskResult]) -> dict:

@@ -406,7 +406,7 @@ def cmd_bench(args) -> int:
           "improve": dict(rounds=args.rounds),
           "research": dict(campaign_ref=args.plan),
           "evaluate": dict(plan_ref=args.plan),
-          "report": {}}[args.phase]
+          "report": {}, "cycle": {}}[args.phase]
     try:
         report = run_phase(cfg, Path(args.config).resolve().parent, phase=args.phase,
                            **{k: v for k, v in kw.items() if v is not None})
@@ -434,6 +434,23 @@ def cmd_freeze(args) -> int:
 
 def replay_items(path: str | Path) -> list[dict]:
     return [json.loads(line) for line in Path(path).read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def cmd_export(args) -> int:
+    """Export the runnable subset of an installed release as a minimal app (docs/modules/03_EVALUATION_RELEASE.md
+    §4). The active release unless one is named."""
+    from .bench import open_activity
+    from .release import NotAuthorized, export_deployment
+    cfg = config.load(args.config)
+    try:
+        activity = open_activity(cfg, Path(args.config).resolve().parent, bootstrap=False, out=lambda _line: None)
+        release = args.release or activity.releases.active()["release_ref"]
+        manifest = export_deployment(activity.releases, release, Path(args.to))
+    except (NotAuthorized, ValueError) as e:
+        print(f"ouroloop export: {e}", file=sys.stderr)
+        return 2
+    print(f"exported   {release} -> {args.to} (manifest {manifest})")
+    return 0
 
 
 def cmd_replay(args) -> int:
@@ -586,6 +603,13 @@ def main(argv: list[str] | None = None) -> int:
     fz = sub.add_parser("freeze", help="freeze the plans in [freeze.*] (task plan, schedule, budget, final plan) "
                                        "into the workspace and print the [rsi] lines that name them")
     fz.set_defaults(fn=cmd_freeze)
+
+    ex = sub.add_parser("export", help="export an installed release as a minimal app: W, the package's run bundle "
+                                       "and the model binding; no research policy, data or tests")
+    ex.add_argument("--config", default="ouroloop.toml")
+    ex.add_argument("--release", default=None, help="an installed release ref (default: the active one)")
+    ex.add_argument("--to", required=True, help="the directory to write the app into")
+    ex.set_defaults(fn=cmd_export)
     fz.add_argument("--config", required=True, help="e.g. examples/automationbench/marketing.toml")
     r = sub.add_parser("research", help="research rounds on a configured workspace")
     r.set_defaults(fn=cmd_research)

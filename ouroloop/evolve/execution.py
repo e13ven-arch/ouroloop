@@ -729,6 +729,7 @@ class Schedule:
     patience: int = 2                         # rounds in a row that install nothing
     max_infrastructure_failures: int = 2      # in a row
     candidates_per_round: int = 1
+    collection_batches: int = 2               # v0.6: bounded collect batches per worker segment, never reset
 
     def stop(self, *, round_index: int, idle: int, infra_failures: int, proposals: bool,
              affordable: bool) -> str:

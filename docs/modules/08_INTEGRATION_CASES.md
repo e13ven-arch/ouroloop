@@ -1,89 +1,58 @@
-# 集成验收：从任务反馈到递归回用
+# 跨模块集成验收（v0.6）
 
-> 开发交付的验收规格，不是已通过的测试结果。以离线夹具证明工程属性，以真实冻结实验证明收益，两类记录分开保存。
+> 以下是待开发规格，不是通过结果。v0.5 历史见 [快照](../history/V0_5_IMPLEMENTATION.md)。首版验收诊断输入、能力包文本/代码演化、隔离/回归/发布与递归；第二版验收教学/训练固化，旧草案用例保留原义。真实实验与 fixture 分开。
 
-## 1. 公共夹具
+## 1. 核心闭环与必须覆盖的场景
 
-复用 `tests/test_automationbench.py` 的 fake upstream 结构；新增若干彼此独立、显式 family 的小业务任务：读取记录并更新、更新后发通知、无需变更的合法 no-op、重复发送产生回归。另有与训练任务不同的 dev/final 内容，包含任务尾部重要约束。fixture 有官方接口形状的 scorer、合法工具、可快照世界；隐藏断言只在 evaluator。任务数足以验证分组逻辑，不暗示具有真实统计功效。
+首版必做 IT6-08/10/11/13/16/21/22～28，其中 IT6-22 的技能/经验部分在阶段 A 验收、工具/中间件代码部分在阶段 B 验收（[ROADMAP §2](../ROADMAP.md)）；IT6-17/19 的 cycle/补采恢复以 harness_edit/task_feedback 覆盖，不要求蒸馏。IT6-01～07/09/15/18/20 的新增教学/训练场景归第二版，不删用例，也不因未运行它们判首版不完整。各模块教师/SFT/Tinker 用例同样按第二版归属；已有 decision/legacy 回归仍是首版兼容要求。
 
-脚本 worker/研究员根据实际输入、工具状态与步骤响应，而非看到 candidate 名字就给成功。训练器可用已有 fake backend 产出可加载、真正读取 stop 输入的有限决策器；其性能是夹具定义，不是训练研究结果。每个 fixture 报告必须标 `synthetic_contract_test`，正式报告拒绝混入。
+离线可重建世界使用“更新记录并通知”，同时包含漏通知和重复发送风险。scorer 读取真实状态；worker/teacher/研究 fixture 依据请求和观察行动，禁止按候选名字返回高分。fake trainer 只验证接线，不能证明真实学习。
 
-## 2. 集成场景
-
-### IT-01：不训练也能完成任务改进
-
-Given W0 在“更新后通知”任务漏通知，轨迹保留实际工具返回；R0 收到 train/dev 的 Requirement。
-
-When R0 提出 worker.finish prompt，完整构建、screen、dev 配对、gate、安装，随后在新 session 执行。
-
-Then 新 session 使用 W1 的实际 prompt；该任务完成，其他任务的回归被检查；数据、gate 和安装引用相连，train_jobs=0。它证明完整框架可优化流程，不预设小模型必胜。覆盖 PR-01、RL-05、ER-01、EX-03、BR-08。
-
-### IT-02：训练得到的决策器确实影响执行
-
-Given train 中“未完成/已完成”的决策快照，任务家族在 fit/validation 与外层 dev 间分离。
-
-When 构建版本化数据集、提交 fake train job、加载模型，完成同最终 prompt 的默认/模型完整任务配对并安装。
-
-Then no 标签对应的输入使 StopGuard 实际继续，yes 使其结束；数据中没有 oracle，模型与输入 schema 相符；训练、推理、额外工具和失败作业均计入费用。真实实验另以同样接口训练真实小模型，再决定 C3 是否成立。覆盖 DT-01～06、PR-02～04、ER-05。
-
-### IT-03：真正回用更新后的研究方法
-
-Given 研究日志暴露“输入缺字段仍反复训练”，R0 根据这些事实提出 research.preflight 的已注册检查配置。
-
-When R0/R1 在同 W/E/预算的隔离 campaigns 中改 W，经固定 research gate 接受 R1，安装并执行下一 worker round。
-
-Then R1 的检查真实运行，产生并评测 W2；R1 artifact、调用 trace、W2 来源相连。两支不能读对方新经验，分支 W* 不覆盖主线，只有 R 更新。fixture 记录 scripted 发现；正式自动递归验收必须由真实研究模型根据事实提出改动，并另报 C4。覆盖 PR-06、RL-07、RC-01～10。
-
-### IT-04：完整安装的崩溃恢复矩阵
-
-依次在 build 完成、accepted、preflight 后、pointer 提交前、pointer 提交后但 receipt 前注入崩溃。恢复后 artifact 不重复生成，未知外部调用不重复视为免费；active 始终是完整合法 release。CAS 冲突为 stale_parent，不自动混装。覆盖 CT-05、DT-08、ER-06～10、EX-02/05。
-
-### IT-05：阻止结果与权限污染
-
-依次尝试：dev probe、final 衍生摘要进训练、research 改 scorer、rule 执行 Python、读取另一 arm 的 E、把候选异常报成可无限重试的 infra。
-
-每次必须在拥有该边界的模块拒绝并记录原因；无模型训练/安装副作用，已有合法运行仍可继续。不是让 LLM 回答“我不会这么做”。覆盖 CT-03/04、DT-05/07、PR-07、ER-03、RC-03/04。
-
-### IT-06：严格总预算与未知收费
-
-两支研究各预留子预算，中途发生 provider 重试、训练失败、响应丢失；故意让剩余预算只够构建不够验证。
-
-断言预算按叶子实际操作汇总，父子不双计、不重置；unknown 留占用，不能启动不可完成验证的候选；最终报告包含无效支出。覆盖 EX-01～08、RC-06、BR-04。
-
-### IT-07：最终报告不能反向选冠军
-
-锁定 base、prompt_best、evolved、两家 frontier 和可选 C4，运行部分 final 后中断再恢复。让 evolved 在 fixture final 中退步。
-
-断言不改候选、不删合法失败、不按 final 选较早代；报告 C1/C3 未支持、其他主张各自状态。重新 report 数值一致，不触发网络调用。覆盖 BR-02～08、RC-09。
-
-## 3. 从工程验收到真实效果
-
-| 层次 | 完成条件 | 不能推出 |
+| ID | 场景/涉及模块 | 必须观察的结果 |
 |---|---|---|
-| 模块验收 | 相关用例和既有回归测试通过 | 业务收益 |
-| 工程闭环 | IT-01～07、跨重启/回滚，真实路径而非名字切分 | 真实模型能自动找到好策略 |
-| 自动递归实例 | 真实 R 从经验提出研究候选，比较/安装/实际回用 | 普遍、自加速或无限改进 |
-| 任务效果 | 冻结独立任务比较 C1/C2；C3 按需 | R 本身变强 |
-| 研究效果 | 独立 campaign 的 C4 支持 | 各业务域均有效 |
+| IT6-01 | 完整蒸馏，M0/M1/M8/M2/M3/M5/M7 | 有效 source → 自动适配 → reviewed 真实执行 → 合格 SFT → artifact → 无教师 gate → 安装 → 新 session 真正加载新 actor |
+| IT6-02 | 隐私与投影，M0/M1/M2/M8/M3 | 私有参考、被拒草稿、review 理由和 oracle 标记不进入学生输入/训练/部署；审计仍可追溯 |
+| IT6-03 | 分离决策，M1/M2/M3 | 同 actor 的 controller 开/关；实际 no/pushback 改变行为；误拒和额外费用也报告；标签非 teacher 自评 |
+| IT6-04 | 假接线，M1/M3 | actor ref 已变但调用旧 provider，或正式评测存在 teacher，必须验收失败 |
+| IT6-05 | 污染，M0/M2/M4/M7/M8 | dev/final 经摘要、前缀或材料生成输入流入 train 被拒，未发训练请求 |
+| IT6-06 | 无成功/过长/不支持，M2/M5/M7 | insufficient_data/invalid 明确，无 GPU 请求；可补数据时按限额补采，无进展/缺能力才停止该段，保留报告 |
+| IT6-07 | 中断和未知副作用，M5/M8/M2 | open/unknown 不清零，已确认产物复用，工具/optim step 不盲重放 |
+| IT6-08 | 并发晋升/崩溃，M3/M5 | 完整 release 原子生效，stale_parent 不覆盖，恢复以 pointer 事实为准 |
+| IT6-09 | 多轮 app 改进，M4/M5/M8 | W1 实际参与下一任务/采集，经验/预算衔接；不能单凭此称 R 已改进 |
+| IT6-10 | 方法更新，M4/M6/M3 | 同 W/E 起点隔离比较；外测各自 W*；只安装主线 R；下一改进调用实际采用 R1 |
+| IT6-11 | 最小 app，M3/M1 | 干净目录仅 runtime/model/tool 依赖即运行；无需 teacher/research/训练数据；托管依赖声明准确 |
+| IT6-13 | 旧用户兼容，M0/M1/M7 | v2 hash、legacy decision CLI、旧任务/研究路径及用例不回归 |
+| IT6-15 | 零人工优化方案启动，M4/M7/M8/M3 | 只有环境、目标、初始模型、权限/预算与默认 preset；自动提出源方法、真实执行验证，再生成参考/训练方案 |
+| IT6-16 | 递归伪阳性，M4/M6/M7 | 只改 manifest 或沿用 R0 请求被识别；R1 rejected/inconclusive 时不安装；不把 W 提升写成 C4 |
+| IT6-17 | cycle/预算/恢复，M4/M5/M6/M7 | 一次入口跨源搜索、蒸馏和研究 slot；一个总根；重启不重复收费；不隐式跑 final |
+| IT6-18 | 更换目标 h，M0/M1/M3/M4/M5/M8 | S0(h0) → 受限 B(h1) 新基线 → S1(h1)；以无环补充许可接续采集/训练；系统 gate 对 S0、学习比较对 B，CAS 仍指 S0；失败不改 active |
+| IT6-19 | 自动补采与恢复，M0/M4/M5/M7 | 缺标签或轨迹返回结构化 collect → 有界采集 → 新 context → 下一提案；途中重启不重花钱/重置额度；无进展终止该段 |
+| IT6-20 | 教学源与生产用途分开，M0/M3/M4/M5/M8 | train 验证即生成可用 source 并接蒸馏，零源生产 gate/安装调用；以后直接发布同一源必须另过 dev gate |
+| IT6-21 | worker 段无候选但有已计划 research slot，M4/M6/M7 | 有预算时仍进入研究比较；分支内部不会因此递归开 slot；取消/全局预算耗尽则结束活动 |
+| IT6-22 | 无人工优化方案、无 trainer/teacher，M0/M1/M4/M5/M7 | 从 train 失败自动生成包内工具/中间件代码及技能/经验；真实调用/阻止结束可查；同 actor gate/安装后继续下一包迭代，不只改 prompt |
+| IT6-23 | 候选越界与隔离，M0/M1/M5 | 包外路径/入口被拒；代码不能获得宿主仓库、工作区判分明细（grading.jsonl）、oracle、密钥或未授权基础工具；无合格 worker 时：K 允许代码或当前包运行含代码则 freeze/smoke 拒绝启动；活动中含代码草稿检查记 infrastructure_failed、当前版本运行预检记 repair_runtime，均暂停活动、不耗修订/失败额度；不 in-process exec，运行不含代码的包照常运行 |
+| IT6-24 | 包构建/工具/hook 中断，M1/M5/M7 | 确认的检查按输入复用；after_tool 失败保留原结果；未知复合工具副作用不重放，预算/轮次不重置 |
+| IT6-25 | 包发布/导出，M1/M3/M5 | 包字节/manifest/API/image 与评测一致；损坏或 stale_parent 不安装；干净 app 保留工具/hook/材料功能与隔离依赖，不含 tests/研究材料 |
+| IT6-26 | 固定 dev 比较与组件停用，M3/M4/M6 | 整体收益达标且退化不超冻结上限时可采用并记录退化；超上限则拒绝、保留当前版本；合并/停用也形成候选并经同一 gate；两支代码搜索共享 API/资源但不共享新包/经验 |
+| IT6-27 | 诊断输入，M0/M1/M3/M4/M5/M7 | 真实 train 失败 → 失败摘要与断言明细（type/params/passed）→ 逐题笔记（failure_note.v1）→ 汇总产生 Requirement 与至多一个 patch；笔记为 train 血缘、计费，每轮读取数不超 preset 上限并记录覆盖；评分器排除的断言不给、被破坏的初始成立断言照常给；dev/final 断言明细和轨迹零进入 R 上下文，即使已存于 grading.jsonl |
+| IT6-28 | 冻结前试跑修复，M0/M1/M4/M5/M7 | 草稿检查（fixture 或仅 train 构造的世界）失败 → R 只见截断去敏的检查输出（无任务结果/评分）修订，初稿之后最多 max_draft_repairs 次，每稿新包 ref、逐次记录计费；上限内通过才冻结进 Experiment，用尽则本轮无效提案结束并计入轮次；冻结后源码不变；重启/building 按输入摘要复用已确认检查 |
 
-后续实现 agent 应在各模块文件末尾补实际测试命令、结果和已知缺项，最后汇总到 ROADMAP/JOURNAL。文档里的 use case 不能直接打勾当通过，不能把历史的 382 项测试写成新架构已验证。
+IT6-14（此前草案“首版不得调用研究员”）撤销，不实现为当前要求；它来自已纠正的人工流水线范围。manual 入口仍可独立运行单次实验，不能据此宣布本版自动 RSI 验收完成。旧 ID 不复用成新语义。
 
-## 4. 实现状态（2026-09-27）
+## 2. 可选接入
 
-夹具：`tests/fake_upstream` 新增 `rsi` 域（读取并更新、更新后通知且要求写在请求末尾、合法 no-op、重复发送即回归，另有 dev 与 final 任务），`tests/rsi.py` 提供显式 family 与 split、脚本 worker（读请求、系统提示与工具结果）、`PhraseDecider`/`PhraseTrainer`、`ScriptedResearcher`、`ResearchPolicyProposer` 与 `collect` 辅助。marketing 域仍是两个任务，既有测试不受影响。
-
-验收：`python -m pytest tests/test_rsi_integration.py -q` → 10 passed。
-
-| 场景 | 状态 | 用例 |
+| ID | 条件 | 预期 |
 |---|---|---|
-| IT-01 不训练完成改进 | 通过 | `test_it01_*`、`test_the_installed_version_makes_the_failing_dev_task_pass` |
-| IT-02 训练得到的决策器影响执行 | 通过 | `test_it02_*` |
-| IT-03 真正回用更新后的研究方法 | 通过（scripted 发现） | `test_it03_*`、`tests/test_campaign.py::test_rc03_*`/`test_rc07_and_rc08_*` |
-| IT-04 完整安装的崩溃恢复 | 通过 | `test_it04_*`、`tests/test_task_gate.py::test_er06_*`/`test_er08_*` |
-| IT-05 阻止结果与权限污染 | 通过 | `test_it05_*`、`tests/test_evidence_training.py::test_dt05_*` |
-| IT-06 严格总预算与未知收费 | 通过 | `test_it06_*`、`tests/test_execution.py` |
-| IT-07 报告不能反向选冠军 | 通过 | `test_it07_*`、`tests/test_report.py::test_br07_*`/`test_br08_*` |
+| IT6-12 | 显式启用 Harbor，M7/M1/M5 | 原生 verifier 与结果映射一致；缺 review/snapshot 时禁相应模式；未选择时不要求其依赖 |
 
-全仓：`python -m pytest -q` → 553 passed, 1 deselected（既有测试全部保留通过；贪吃蛇相关 15 项已随场景包删除）。
+包内工具/中间件代码演化是首版核心；新增基础服务、宿主 API/依赖、其他 trainer 和研究权重训练按实际需求后接。actor/controller 分离与已有训练兼容保留，新增训练和 C3 效果验证归第二版。
 
-不能由此推出：夹具的数字是夹具定义的，脚本研究员的提案不是自动发现，也没有任何真实模型的业务成绩。IT-03 标 `scripted`；真实自动递归与 C1～C4 需要冻结的付费实验。
+## 3. 真实验证与效果目标
+
+首版 actor 固定为 GLM-5.3；首轮真实 h* 演化前先运行 GLM-5.3 的 train+dev 无教师基线，2026-09-30 在第一个任务中途中止、无完成尝试的启动不算基线。随后先以真实 train 失败经失败摘要/逐题笔记生成文本包（技能/经验），读取/注入事件可查并经 gate 裁决；再做真实 provider 的包内代码提案、冻结前草稿试跑修复、固定隔离 worker import/接口 smoke、工具/hook 实际执行、同 actor gate/安装/干净部署与下一包迭代。真实 Docker 隔离检查不能由 fake worker 冒充，本机 Docker daemon 可用是其前提；scripted R 只能证明流程接线。成本与功效预期见 [ROADMAP §4](../ROADMAP.md)：dev 25 族约 +20 个百分点才可能显著。第二版再增加适配/teacher/短 SFT/checkpoint/sampling smoke，模型与调用来源可查。
+
+首版用冻结家族/预算比较同 actor 起点、有效 prompt/workflow、演化包；完整固定 dev 比较保留本次对照版本成功的任务，按 M3 冻结门槛判断，不要求零退化或另建回归任务池。安排有界 R0/R1 方法比较，通过才安装/回用；拒绝逻辑同样验收。第二版再比较蒸馏 app/controller。领先模型默认引用公布数字，不混作本地成绩。
+
+工程完成、真实跑通、C1/C3/C4 有效分别记录。没有效果就报告未达效果目标，不能让 fixture 必涨掩盖真实失败；没有账户/预算时将真实验证标未完成。完整 RSI 路径属于首版实现与验收，不取消为未来事项。
+
+首版最小可复现实物：模型/运行核心身份、包源文件与 manifest/API/镜像/依赖、任务划分、失败摘要/逐题笔记与 patch 证据、草稿检查/修复记录、隔离检查、实际工具/hook/材料事件、冻结评测/回归、全部尝试/费用、安装/导出凭据、下一任务/包迭代和下一改进调用的真实装配。第二版另加教学/采集/数据/训练证据；单条成功轨迹或截图不能替代。

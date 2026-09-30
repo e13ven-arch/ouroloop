@@ -241,6 +241,44 @@ PROPOSAL_FORMAT = (
     "could close the gap. Do not fill in results, verdicts or thresholds.")
 
 
+NOTE_FORMAT = (
+    'Reply with JSON only: {"failure_class": "...", "root_cause": "...", "mechanism": "...", '
+    '"component": "memory|skills|on_finish|before_tool|after_tool|tools", "generality": "..."}. '
+    "component must be one of the allowed components.")
+PACKAGE_FORMAT = (
+    'Reply with JSON only: {"requirements": [{"id": "...", "context": "...", "expected_behavior": "...", '
+    '"observed_behavior": "...", "acceptance": "...", "recurrence": 1}], "next_action": '
+    '"none|collect|repair_runtime|stop", "reason": "...", "proposals": [{"hypothesis": "...", "requirements": '
+    '["..."], "changes": [{"target": "worker.harness", "kind": "workflow", "change": {"patch": {"write": '
+    '{"<path>": "<text>"}, "delete": ["<path>"]}}}], "expected": "...", "abandon_if": "..."}]}. '
+    "A package holds manifest.json, memory.md and skills/<name>.md (and code files only where allowed); the "
+    "manifest must list every skill and enable memory when memory.md is used. Other registered targets in "
+    "`targets` may be changed instead. Do not fill in results, verdicts or thresholds.")
+RESEARCH_FORMAT = (
+    "This call is a research slot: do not change the capability package. Read how the research policy's own "
+    "rounds went — the verdicts and aggregate figures of the experience log, the note coverage, the drafts that "
+    "failed their checks — and the current texts of its diagnose and propose prompts. Propose at most one change "
+    "to one of those prompts that would make the next rounds' notes or proposals better, as its complete new "
+    'text. Reply with JSON only: {"next_action": "none|stop", "reason": "...", "proposals": [{"hypothesis": '
+    '"...", "target": "research.diagnose|research.propose", "text": "<the complete new prompt>", "expected": '
+    '"...", "abandon_if": "..."}]}. Do not write task answers, task ids or scores into a prompt.')
+REVISE_FORMAT = (
+    'The draft package below failed its check. Reply with JSON only: {"patch": {"write": {"<path>": "<text>"}, '
+    '"delete": ["<path>"]}} — the corrected patch against the same parent package.')
+
+
+def _as_list(value) -> list:
+    """A model's field that should be a list: a single object is one item, anything else is none."""
+    return value if isinstance(value, list) else [value] if isinstance(value, dict) else []
+
+
+def _as_int(value, default: int = 1) -> int:
+    try:
+        return max(int(value), 1)
+    except (TypeError, ValueError):
+        return default
+
+
 class PolicyResearcher:
     """The researcher of the task profile: a fixed base model, prompts from the loaded research policy set.
 
@@ -292,10 +330,116 @@ class PolicyResearcher:
                                reason=str(data.get("reason", ""))[:500],
                                evidence_refs=tuple(context.evidence))
 
+    def _complete(self, step: str, system: str, text: str) -> str:
+        """One research request, labelled with its step where the completion interface can carry a label, so
+        the budget book says what notes, summaries and draft revisions each cost (docs/modules/07 §4)."""
+        label = getattr(self.llm, "label", None)
+        if callable(label):
+            with label(step):
+                return self.llm.complete(system, text)
+        return self.llm.complete(system, text)
+
     def _ask(self, prompt: str, context, fmt: str, step: str, extra: dict | None = None) -> str:
         state = context.prompt_state(self.max_state_chars)
         if extra:
             state += "\n" + json.dumps(extra, ensure_ascii=False, default=str)[:4000]
         system = f"{prompt}\n\n{fmt}" if prompt else fmt
         self.requests.append({"step": step, "system": system, "prompt_hash": _ct.digest({"system": system})[:16]})
-        return self.llm.complete(system, state)
+        return self._complete(step, system, state)
+
+    # ------------------------------------------------------------------ the first version's diagnosis
+    # docs/modules/04_RESEARCH_LOOP.md §1: one note per failed train attempt through the bound research.diagnose,
+    # then one summary call through research.propose over the notes, their coverage and the current package.
+    def note_request(self, summary: dict, prompt: str, *, allowed: tuple = ()) -> tuple[str, str]:
+        """The exact (system, user) text of one note request. Its digest is the note's identity, so everything
+        that can change the answer — the prompt, the allowed kinds, the summary — is inside it."""
+        system = f"{prompt}\n\n{NOTE_FORMAT}" if prompt else NOTE_FORMAT
+        user = json.dumps({"allowed_components": list(allowed), "failure": summary}, ensure_ascii=False,
+                          sort_keys=True, default=str)
+        return system, user
+
+    def note(self, system: str, user: str) -> dict:
+        self.requests.append({"step": "note", "system": system, "prompt_hash": _ct.digest({"system": system})[:16]})
+        return parse_json(self._complete("note", system, user))
+
+    def summarize(self, context, prompt: str, notes: list, coverage: dict, experience=(), *, package=None,
+                  allowed: tuple = ()) -> _ProposalResult:
+        """The summary call: Requirements plus at most one change. Its input is train-restricted by
+        construction — notes on train failures, the package, allowed kinds, the targets, the experience log's
+        verdicts and aggregate figures — and not the full context state, which lists per-task dev outcomes."""
+        from .diagnosis import experience_projection
+        # Every part is bounded at its source (note fields, package limits, ten experience rows), so the input is
+        # sent whole: slicing serialised JSON would silently drop the coverage, the allowed kinds or the package.
+        state = {"goal": context.goal, "coverage": coverage, "allowed_components": list(allowed),
+                 "package": package or {}, "targets": context.targets,
+                 "experience": experience_projection(list(experience)[:10]), "budget": context.budget,
+                 "notes": notes}
+        system = f"{prompt}\n\n{PACKAGE_FORMAT}" if prompt else PACKAGE_FORMAT
+        self.requests.append({"step": "propose", "system": system,
+                              "prompt_hash": _ct.digest({"system": system})[:16]})
+        text = json.dumps(state, ensure_ascii=False, default=str)
+        data = parse_json(self._complete("propose", system, text))
+        requirements = []
+        for item in _as_list(data.get("requirements")):
+            if isinstance(item, dict) and item.get("observed_behavior"):
+                requirements.append({k: str(item.get(k, ""))[:1000] for k in
+                                     ("id", "context", "expected_behavior", "observed_behavior", "acceptance")}
+                                    | {"recurrence": _as_int(item.get("recurrence")), "evidence_refs": []})
+        proposals = []
+        for item in _as_list(data.get("proposals"))[:self.max_proposals]:
+            if not isinstance(item, dict):
+                continue
+            try:
+                proposals.append(_ct.ExperimentProposal(
+                    owner="worker", hypothesis=str(item.get("hypothesis", ""))[:2000],
+                    requirements=tuple(str(r) for r in item.get("requirements") or ()),
+                    changes=tuple(item.get("changes") or ()), training=(),
+                    expected=str(item.get("expected", ""))[:1000],
+                    abandon_if=str(item["abandon_if"])[:500] if item.get("abandon_if") else None,
+                    origin="llm"))
+            except _ct.ContractError:
+                continue
+        action = data.get("next_action") if data.get("next_action") in ("collect", "repair_runtime", "stop",
+                                                                       "none") else "none"
+        result = _ProposalResult(proposals=proposals, next_action=action if not proposals else "none",
+                                 reason=str(data.get("reason", ""))[:500], evidence_refs=tuple(context.evidence))
+        result.requirements = tuple(requirements)
+        return result
+
+    def propose_research(self, context, prompt: str, current: dict, experience=(), *,
+                         allowed: tuple = ("research.diagnose", "research.propose")) -> _ProposalResult:
+        """A research slot's proposal (docs/modules/04_RESEARCH_LOOP.md §5): the current R proposes a change to
+        its own prompts from how its rounds went. The input is the experience log's fixed projection — verdicts,
+        reason kinds, aggregate figures — and R's own prompt texts; never a per-task dev outcome."""
+        from .diagnosis import experience_projection
+        state = {"goal": context.goal, "current_prompts": {t: current.get(t, "") for t in allowed},
+                 "experience": experience_projection(list(experience)[-20:]), "budget": context.budget}
+        system = f"{prompt}\n\n{RESEARCH_FORMAT}" if prompt else RESEARCH_FORMAT
+        self.requests.append({"step": "propose", "system": system,
+                              "prompt_hash": _ct.digest({"system": system})[:16]})
+        data = parse_json(self._complete("research_slot", system, json.dumps(state, ensure_ascii=False,
+                                                                              default=str)))
+        proposals = []
+        for item in [i for i in _as_list(data.get("proposals")) if isinstance(i, dict)][:1]:
+            target, text = item.get("target"), item.get("text")
+            if target not in allowed or not isinstance(text, str) or not text.strip() \
+                    or text.strip() == current.get(target, "").strip():
+                continue                     # an unchanged or unknown target is not a research candidate
+            proposals.append(_ct.ExperimentProposal(
+                owner="research", hypothesis=str(item.get("hypothesis", ""))[:2000],
+                changes=({"target": target, "kind": "prompt", "change": {"text": text[:8000]}},),
+                expected=str(item.get("expected", ""))[:1000], abandon_if=str(item.get("abandon_if", ""))[:1000],
+                origin="automatic"))
+        next_action = str(data.get("next_action") or ("none" if proposals else "stop"))
+        return _ProposalResult(proposals, next_action=next_action if next_action in ("none", "stop") else "stop",
+                               reason=str(data.get("reason", ""))[:500])
+
+    def revise(self, prompt: str, patch: dict, check_output: str) -> dict:
+        """One bounded revision of a draft package. It sees the patch and the check's own output only — never a
+        task result or a score (docs/modules/04_RESEARCH_LOOP.md §2)."""
+        system = f"{prompt}\n\n{REVISE_FORMAT}" if prompt else REVISE_FORMAT
+        self.requests.append({"step": "revise", "system": system,
+                              "prompt_hash": _ct.digest({"system": system})[:16]})
+        data = parse_json(self._complete("revise", system, json.dumps({"patch": patch, "check_output": check_output},
+                                                                ensure_ascii=False, default=str)))
+        return data.get("patch") if isinstance(data.get("patch"), dict) else {}
