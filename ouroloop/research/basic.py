@@ -333,6 +333,10 @@ class PolicyResearcher:
     def _complete(self, step: str, system: str, text: str) -> str:
         """One research request, labelled with its step where the completion interface can carry a label, so
         the budget book says what notes, summaries and draft revisions each cost (docs/modules/07 §4)."""
+        if self.requests and self.requests[-1].get("step") == step and "input_hash" not in self.requests[-1]:
+            # What the step was given, as a digest beside the prompt's: the round's record can then show R's input
+            # without keeping task text in it.
+            self.requests[-1]["input_hash"] = _ct.digest({"input": text})[:16]
         label = getattr(self.llm, "label", None)
         if callable(label):
             with label(step):

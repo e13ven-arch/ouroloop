@@ -177,8 +177,9 @@ def _harness_evidence(root: Path, objects: ct.Objects, events: list, entries: li
         "measurements": list(measurements.values()),
         "measurement_note": "a measurement after an install reruns only the previous failures: its row is that "
                             "subset, and the passes it did not rerun belong to the version that produced them",
-        "notes": [{k: d.get(k) for k in ("round", "scope", "noted", "failures", "reused", "included",
-                                         "not_included")} | {"invalid": len(d.get("invalid") or ())}
+        "notes": [{k: d.get(k) for k in ("round", "working_set", "measured", "passed", "noted", "failures",
+                                         "reused", "included", "not_included")}
+                  | {"invalid": len(d.get("invalid") or ())}
                   for d in diagnosis],
         "drafts": drafts, "research_cost": _research_cost(root), "gates": gates,
         "research_steps": [{k: e.get(k) for k in ("scope", "release", "research_ref", "context_ref")}
@@ -512,7 +513,7 @@ def render_markdown(report: dict) -> str:
             lines.append(f"- measured {ct.short(m['release'])}: {m['passed']}/{m['tasks']} passed — {m['scope']}")
         lines.append(f"- {harness['measurement_note']}")
         for n in harness["notes"]:
-            lines.append(f"- notes round {n['round']}: {n['noted']}/{n['failures']} failures of {n['scope']} "
+            lines.append(f"- notes round {n['round']}: {n['noted']}/{n['failures']} failures of {n['working_set']} "
                          f"({n['reused']} reused, {n['invalid']} invalid, {len(n['not_included'] or ())} not "
                          f"included)")
         d = harness["drafts"]

@@ -391,7 +391,8 @@ def v06_campaign(fake_upstream, tmp_path, *, r1_diagnose=None, r1_propose="Propo
         core2 = objects.put(ct.CoreManifest(**{**{f: getattr(core, f) for f in core.__dataclass_fields__},
                                                "capabilities": {**core.capabilities, "harness": harness}}))
         release = activity.releases.bootstrap(rel.worker_ref, rel.research_ref, core2, reason="code allowed",
-                                              activate=False)
+                                              activate=False, target_harness_ref=rel.target_harness_ref,
+                                              required_capabilities=rel.required_capabilities)
         from ouroloop.ledger import write_json
         write_json(activity.releases.active_path, {"release_ref": release, "revision": 2, "last_operation_id": None})
         cfg["rsi"]["task_plan_ref"] = bench.freeze_task_plan(objects, core_ref=core2, split_ref=activity.splits.hash(),
@@ -496,7 +497,7 @@ class FlakyWorker:
                 if FlakyWorker.down:
                     raise WorkerUnavailable("the worker could not start: the daemon is not running")
                 return super().start()
-        return _Flaky()
+        return _Flaky(for_tests=True)
 
 
 def test_rc6_11_an_arm_whose_worker_goes_away_pauses_and_resumes_to_the_frozen_rounds(fake_upstream, tmp_path,

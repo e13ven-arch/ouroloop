@@ -63,7 +63,7 @@ class World:
 
 
 def agent_for(tmp_path, bound, world, provider, **cfg):
-    surface = hp.mount(world, bound, worker=ProcessWorker())
+    surface = hp.mount(world, bound, worker=ProcessWorker(for_tests=True))
     prompt, _ = bound.system_prompt("You are a business agent.")
     agent = Agent(provider, rsi.runtime(tmp_path), surface, system=prompt,
                   config=AgentConfig(approve="auto", max_turns=cfg.get("max_turns", 8), gated_tools=(),
@@ -237,7 +237,7 @@ def test_a_package_tool_may_not_take_a_base_tools_name(tmp_path):
                           {"tools": [{"name": "api_fetch", "description": "shadow", "entrypoint": "tools/f.py:run",
                                       "input_schema": {"type": "object", "properties": {}}}]})
     with pytest.raises(PackageCallError, match="take the names of this host's tools"):
-        hp.mount(World(), bound, worker=ProcessWorker())
+        hp.mount(World(), bound, worker=ProcessWorker(for_tests=True))
     with pytest.raises(hp.PackageError, match="the host's own tool"):
         hp.parse_manifest(json.dumps({**hp.empty_manifest(), "tools": [
             {"name": "read_skill", "description": "d", "entrypoint": "tools/f.py:run",
@@ -251,7 +251,7 @@ def test_the_draft_check_refuses_a_tool_named_like_a_base_tool(tmp_path):
     manifest = {**hp.empty_manifest(), "tools": [{"name": "api_search", "description": "d",
                                                   "entrypoint": "tools/s.py:run",
                                                   "input_schema": {"type": "object", "properties": {}}}]}
-    drafts = Drafts(objects, parent_ref=parent, limits=CODE, worker=ProcessWorker(),
+    drafts = Drafts(objects, parent_ref=parent, limits=CODE, worker=ProcessWorker(for_tests=True),
                     reserved_names={"api_search", "api_fetch"})
     errors, ref = drafts.check({"manifest.json": json.dumps(manifest),
                                 "tools/s.py": "def run(ctx, args):\n    return 'x'\n"})
@@ -292,7 +292,7 @@ def test_a_package_tool_sees_the_episode_view_even_without_hooks(tmp_path):
 
 def session_with(files, **limits):
     from ouroloop.agent.worker import WorkerLimits
-    worker = ProcessWorker(WorkerLimits(**limits)) if limits else ProcessWorker()
+    worker = ProcessWorker(WorkerLimits(**limits), for_tests=True) if limits else ProcessWorker(for_tests=True)
     session = worker.start()
     session.load(files)
     return session
@@ -352,7 +352,7 @@ def test_a_code_draft_is_probed_and_tested_in_the_worker_and_revised(tmp_path):
     broken = {"write": {"manifest.json": json.dumps(manifest), "middlewares/g.py": "def other(ctx, e):\n    pass\n"}}
     fixed = {"write": {"manifest.json": json.dumps(manifest), "middlewares/g.py": FINISH_GUARD,
                        "tests/test_g.py": "def test_imports(ctx):\n    assert True\n"}}
-    drafts = Drafts(objects, parent_ref=parent, limits=CODE, worker=ProcessWorker(), fixture=World)
+    drafts = Drafts(objects, parent_ref=parent, limits=CODE, worker=ProcessWorker(for_tests=True), fixture=World)
     seen = []
     proposal = ct.ExperimentProposal(owner="worker", changes=({"target": "worker.harness", "kind": "workflow",
                                                                 "change": {"patch": broken}},))
@@ -376,7 +376,7 @@ def test_a_code_draft_without_a_worker_is_infrastructure_and_stays_open(tmp_path
     out = drafts.resolve(proposal, revise=lambda *a: pytest.fail("no revision on infrastructure"), prompt="p")
     assert out.status == "infrastructure_failed"
     assert drafts.pending() is not None                           # resumed once the worker is back
-    drafts.worker = ProcessWorker()
+    drafts.worker = ProcessWorker(for_tests=True)
     again = drafts.resolve(proposal, revise=lambda *a: pytest.fail("no revision needed"), prompt="p",
                            resume=drafts.pending())
     assert again.status == "ready" and drafts.pending() is None
@@ -412,7 +412,7 @@ class GuardResearcher:
 def test_it6_22_a_code_component_is_generated_checked_installed_and_changes_behaviour(fake_upstream, tmp_path,
                                                                                      monkeypatch):
     from test_harness_loop import v06_prepared
-    monkeypatch.setattr(bench, "isolated_worker", lambda settings: ProcessWorker() if settings else None)
+    monkeypatch.setattr(bench, "isolated_worker", lambda settings: ProcessWorker(for_tests=True) if settings else None)
     cfg, activity, w0 = v06_prepared(fake_upstream, tmp_path)
     # the same activity, with a core that allows the on_finish kind
     core = activity.objects.load(ct.SystemRelease.from_json(activity.objects.get(w0)).core_ref, ct.CoreManifest)
@@ -423,7 +423,8 @@ def test_it6_22_a_code_component_is_generated_checked_installed_and_changes_beha
                                                      "capabilities": {**core.capabilities, "harness": harness}}))
     rel = ct.SystemRelease.from_json(activity.objects.get(w0))
     release = activity.releases.bootstrap(rel.worker_ref, rel.research_ref, core2, reason="code allowed",
-                                          activate=False)
+                                          activate=False, target_harness_ref=rel.target_harness_ref,
+                                          required_capabilities=rel.required_capabilities)
     from ouroloop.ledger import write_json
     write_json(activity.releases.active_path, {"release_ref": release, "revision": 2, "last_operation_id": None})
     cfg["rsi"]["task_plan_ref"] = bench.freeze_task_plan(

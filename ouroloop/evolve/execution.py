@@ -432,9 +432,19 @@ class BudgetAccount:
         used = self.budgets.usage(self.scope_id, book)
         out = {dim: round(float(limit) - used.get(dim, 0.0), 6) for dim, limit in entry["limits"].items()}
         touched = self.budgets.touched(self.scope_id, book)
+        # What can still be spent here, whichever scope's limit binds: a phase's account usually has no limits
+        # of its own and spends from the activity's root, so its own `remaining` alone would show no cap at all.
+        effective = dict(out)
+        for name in self.budgets.ancestors(self.scope_id, book):
+            ancestor = self.budgets.scope(name, book)
+            spent = self.budgets.usage(name, book)
+            for dim, limit in ancestor["limits"].items():
+                left = round(float(limit) - spent.get(dim, 0.0), 6)
+                effective[dim] = min(effective.get(dim, left), left)
         return {"limits": dict(entry["limits"]),
                 "used": {k: round(v, 6) for k, v in used.items() if v or k in touched},
-                "remaining": out, "allocations": dict(entry.get("allocations") or {}),
+                "remaining": out, "effective_remaining": effective,
+                "allocations": dict(entry.get("allocations") or {}),
                 "unknown": sum(1 for r in book["reservations"].values()
                                if r["status"] == "unknown" and r["scope_id"] in
                                self.budgets.subtree(self.scope_id, book)),
@@ -659,6 +669,18 @@ class Pricing:
         if any(tokens and price is None for tokens, price in parts):
             return None
         return round(sum(tokens / 1000 * price for tokens, price in parts if tokens), 8)
+
+
+def call_bound_problem(pricing: Pricing, limits: dict, what: str = "the budget") -> str:
+    """Why not even one call fits these limits, or "": every call reserves its worst case first, so a limit
+    below one call's bound refuses every call, and that is found out here rather than mid-run."""
+    bound = pricing.bound()
+    for dim, limit in (limits or {}).items():
+        if dim in bound and float(bound[dim]) > float(limit) + 1e-9:
+            return (f"one call reserves up to {round(float(bound[dim]), 6)} {dim} and {what} allows {limit}: every "
+                    f"call would be refused (raise the limit, or lower [pricing] max_input_tokens/"
+                    f"max_output_tokens to what one request can really carry)")
+    return ""
 
 
 def check_pricing(pricing: Pricing, limits: dict) -> str:

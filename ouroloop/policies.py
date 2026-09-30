@@ -869,7 +869,8 @@ def build_candidate(experiment, *, objects: ct.Objects, parent_release: str, own
             release = ct.SystemRelease(
                 worker_ref=candidate if owner == "worker" else parent.worker_ref,
                 research_ref=candidate if owner == "research" else parent.research_ref,
-                core_ref=parent.core_ref, authorization_ref=parent.authorization_ref, parent_ref=parent_release)
+                core_ref=parent.core_ref, authorization_ref=parent.authorization_ref, parent_ref=parent_release,
+                target_harness_ref=parent.target_harness_ref, required_capabilities=parent.required_capabilities)
             bind_release(objects.put(release), profile="preflight", services=services)
         except BindError as e:
             return ct.BuildResult(status="invalid", artifacts=artifacts, errors=(str(e),), costs=costs)

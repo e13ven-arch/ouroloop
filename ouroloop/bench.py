@@ -430,7 +430,14 @@ class Improvement:
             if bound.actor is None:
                 raise _P.BindError(f"{_ct.short(release_ref)} pins an actor and no provider could be built for it")
             actor = bound.actor
-        run = RunManifest(candidate, role, split, model_identity(actor, {}),
+        release = self.objects.load(release_ref, _ct.SystemRelease)
+        pinned = bound.actor_identity is not None and not self.actor_override
+        # The first version's run fields (docs/modules/07_BENCH_REPORT.md §2): what kind of run this is, the host
+        # contract it ran on, and — for the pinned actor — its recorded configuration rather than an empty one.
+        # A v2 activity leaves all three unset, so its run identities do not move.
+        mode = ("collection" if split == "train" else "task_evaluation") if self.harness else None
+        config = self.objects.get(bound.actor_identity.inference_ref) if pinned else {}
+        run = RunManifest(candidate, role, split, model_identity(actor, config),
                           prompt_hash=digest(bound.system_prompt("")[1])[:16],
                           environment=self.rt_environment(), budget=self.attempt_budget,
                           data=self.splits.hash(), repeats=self.repeats,
@@ -439,9 +446,9 @@ class Improvement:
                           research_ref=self.objects.load(release_ref, _ct.SystemRelease).research_ref,
                           core_ref=self.core_ref, eval_plan_ref=plan_ref, budget_scope=self.scope_id,
                           input_schema_refs=(self.stop_view,),
-                          actor_identity_ref=(bound.actor_identity.ref() if bound.actor_identity is not None
-                                              and not self.actor_override else None),
-                          package_ref=bound.package.ref if bound.package is not None else None)
+                          actor_identity_ref=bound.actor_identity.ref() if pinned else None,
+                          package_ref=bound.package.ref if bound.package is not None else None,
+                          mode=mode, target_harness_ref=release.target_harness_ref)
         if self.results is not None:
             self.results.put_run(run)
         order = list(order)
@@ -506,7 +513,7 @@ class Improvement:
                              partitions=("train", "dev"), inspection=inspection,
                              results=_task_results_summary(evidence["results"], splits=self.splits),
                              feedback=evidence["feedback"].summary(), experience=experience,
-                             budget=self.budget.remaining() if self.budget else {},
+                             budget=_effective_budget(self.budget.remaining()) if self.budget else {},
                              targets={**{t: {"binding": r.binding, "kinds": list(r.allowed_kinds),
                                             "site": r.site}
                                          for t, r in _P.REGISTRY.items() if r.owner == self.owner
@@ -537,9 +544,11 @@ class Improvement:
                             candidate="current", role="base", resume=True) if tasks else []
         failed = [r.task_id for r in rows if not r.success]
         feedback = _feedback.build_feedback(self.rt, objects=self.objects, scope_id=self.scope_id)
+        pool = "this activity's whole train split" if set(tasks) >= set(self.splits.ids("train")) \
+            else f"a train pool of {len(tasks)} tasks"
         return {"release": release_ref, "results": list(rows), "train": list(rows), "dev": [],
-                "feedback": feedback, "failed": failed, "scope": "all train tasks" if previous is None else
-                "train tasks that failed in the latest measurement", "reused": False}
+                "feedback": feedback, "failed": failed, "scope": f"every task of {pool}" if previous is None else
+                "the train tasks that failed in the latest measurement", "reused": False}
 
     def _runs_like(self, a: str, b: str) -> bool:
         """Whether two releases execute a task identically: the same W and the same K. R takes no part in a run."""
@@ -609,6 +618,7 @@ class Improvement:
         from .research.drafts import Drafts
         limits = dg.DiagnosisLimits(**self.harness["diagnosis"])
         package = hp.Limits.from_json(self.harness["package"])
+        latest = {r.task_id: r for r in evidence.get("train") or () if r.validity == "valid"}
         if bound.package is None:
             raise _P.BindError("a first-version activity mounts a capability package, and this release has none")
         run_files, test_files = hp.files_of(self.objects, bound.package.ref)
@@ -619,13 +629,15 @@ class Improvement:
             limits=limits, cache=dg.NoteCache(Path(root), self.objects, shared=shared_notes), model=research_model,
             round_index=dg.diagnosis_count(experience, self.scope_id),
             components=package.components, package={**run_files, **test_files},
-            scope=evidence.get("scope") or "train failures of the latest measurement")
+            scope=evidence.get("scope") or "train failures of the latest measurement",
+            measured=len(latest), passed=sum(1 for r in latest.values() if r.success))
         drafts = Drafts(self.objects, parent_ref=bound.package.ref, limits=package,
                         literals=dg.train_literals(self.results) | self.train_state_literals(),
                         max_repairs=int(self.harness["max_draft_repairs"]), events=_ct.Events(root),
                         worker=self.worker, round_index=index, scope=self.scope_id,
                         allowed_literals=self.tool_vocabulary(), fixture=self.fixture_world,
-                        reserved_names=self.tool_vocabulary(names_only=True))
+                        reserved_names=self.tool_vocabulary(names_only=True),
+                        image=self.harness.get("image_id") or self.harness.get("image"))
         return diagnosis, drafts
 
     def fixture_world(self):
@@ -791,6 +803,13 @@ class Improvement:
                                        f"worker is available to run it")
                 out["worker"] = self.worker.describe()
         return out
+
+
+def _effective_budget(remaining: dict) -> dict:
+    """What a research step is told about money: what is left wherever the binding limit sits, and what it has
+    spent — not an empty `limits` of a phase account that spends from the activity's root."""
+    return {"remaining": remaining.get("effective_remaining") or remaining.get("remaining") or {},
+            "used": remaining.get("used") or {}}
 
 
 def _retry_of(attempt_id: str) -> int:
@@ -963,9 +982,35 @@ def harness_settings(cfg: dict) -> dict | None:
     repairs = int(table.get("max_draft_repairs", 3))
     if repairs < 0:
         raise ValueError("[harness_evolution] max_draft_repairs is a count of revisions after the first draft")
-    return {"package": limits.to_json(), "diagnosis": diagnosis.to_json(), "max_draft_repairs": repairs,
+    return {"package_api": hp.API_VERSION, "package": limits.to_json(), "diagnosis": diagnosis.to_json(),
+            "max_draft_repairs": repairs,
             "sandbox": table.get("sandbox"), "image": table.get("image"),
             "test_timeout_seconds": int(table.get("test_timeout_seconds", 30))}
+
+
+def _host_contract(objects: _ct.Objects, bench: "BenchConfig", rsi: "RsiConfig", harness: dict) -> dict:
+    """The first version pins the host it runs on (docs/modules/00_CONTRACTS.md §2): a TargetHarness describing
+    the current host's fixed semantics, and the capabilities a runtime needs to load the release."""
+    from .agent import harness_package as hp
+
+    def ref(payload: dict) -> str:
+        return objects.put_json("change", payload)
+    target = objects.put(_ct.TargetHarness(
+        runtime_ref=ref({"host": "ouroloop.agent.loop", "adapter": "ouroloop.adapters.automationbench",
+                         "domain": bench.domain}),
+        tool_schema_ref=ref({"toolset": bench.toolset, "host_tools": list(hp.HOST_TOOLS)}),
+        action_schema_ref=ref({"actions": "tool calls", "schema": "chat.turn.v1"}),
+        message_schema_ref=ref({"messages": "chat.messages.v1"}),
+        context_policy_ref=ref({"compaction": "points.compact", "memory_and_skill_index": "system prompt"}),
+        finish_protocol_ref=ref({"stop_view": rsi.stop_view, "hook_sites": list(hp.HOOK_SITES)}),
+        permission_ref=ref({"approve": "auto", "gated_tools": [], "package_broker": "base tools; hooks read-only"}),
+        limits_ref=ref({"max_steps": bench.budget.max_steps, "max_tool_calls": bench.budget.max_tool_calls,
+                        "max_seconds": bench.budget.max_seconds}),
+        extension_api_ref=hp.api_ref(objects)))
+    needs = ["generation", hp.API_VERSION]
+    if hp.Limits.from_json(harness["package"]).allows_code:
+        needs.append("isolated_worker")
+    return {"target_harness_ref": target, "required_capabilities": tuple(needs)}
 
 
 def actor_identity(objects: _ct.Objects, table: dict) -> str:
@@ -1016,10 +1061,15 @@ def open_activity(cfg: dict, base: str | Path = ".", *, out: Callable[[str], Non
                 raise ValueError("[harness_evolution] needs an [llm] table: W0 pins it as the actor")
             targets = (*_P.targets_of("worker"), "worker.actor", "worker.harness", *_P.targets_of("research"))
             if harness.get("sandbox") == "docker":
-                # K freezes the worker image by content id when there is one to freeze.
+                # K freezes the worker image by content id. With code components allowed and no image to freeze,
+                # nothing is bootstrapped: a K without the id would accept any image under the tag later.
                 from .agent.worker import DEFAULT_IMAGE, DockerWorker
-                harness = {**harness, "image": harness.get("image") or DEFAULT_IMAGE,
-                           "image_id": DockerWorker(harness.get("image") or DEFAULT_IMAGE).image_id()}
+                image = harness.get("image") or DEFAULT_IMAGE
+                harness = {**harness, "image": image, "image_id": DockerWorker(image).image_id()}
+                if harness["image_id"] is None and hp.Limits.from_json(harness["package"]).allows_code:
+                    raise ValueError(f"K allows code components and the worker image {image} is not available "
+                                     f"(is Docker running? build it with: docker build -f docker/worker.Dockerfile "
+                                     f"-t {image} .), so there is no image to freeze; nothing was bootstrapped")
             capabilities = {**capabilities, "training": False, "harness": harness}
             settings = improvement_settings(cfg)
             if settings is not None:
@@ -1033,7 +1083,9 @@ def open_activity(cfg: dict, base: str | Path = ".", *, out: Callable[[str], Non
             toolset=bench.toolset, targets=targets, capabilities=capabilities)
         release_ref = releases.bootstrap(_P.default_worker_set(objects, **worker_kw),
                                         _P.default_research_set(objects, note_contract=harness is not None),
-                                        core_ref, reason="initial version from the configuration")
+                                        core_ref, reason="initial version from the configuration",
+                                        **(_host_contract(objects, bench, rsi, harness) if harness is not None
+                                           else {}))
         if harness is not None:
             # The alias's observation time is kept out of the identity (it would change the ref) and recorded
             # here, where a report can find when the hosted model was seen (docs/modules/00_CONTRACTS.md §2).
@@ -1962,6 +2014,14 @@ def cycle(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pri
         write_json(state_path, state)
 
     schedule = Schedule(**activity.objects.get(activity.rsi.schedule_ref))
+    if schedule.research_slots:
+        from .evolve.execution import call_bound_problem
+        limits = activity.objects.get(activity.rsi.budget_ref) if activity.rsi.budget_ref else {}
+        share = float(settings["campaign"]["arm_share"])
+        problem = call_bound_problem(pricing_of(cfg), {k: float(v) * share for k, v in limits.items()},
+                                     f"a research-slot arm ({share:.0%} of the activity's budget)")
+        if problem:
+            raise ValueError(f"the cycle's research slot cannot run: {problem}")
     status = "done"
     if state["steps"].get("baseline"):
         out("cycle      the starting version's baseline is on record; not run again")
@@ -2291,7 +2351,9 @@ def startup_checks(activity: Activity, cfg: dict, *, phase: str, needs_model: bo
         problems.append("[bench.budget] needs a step, tool-call and time limit per attempt")
     limits = activity.objects.get(rsi_cfg.budget_ref) if rsi_cfg.budget_ref else {}
     if limits:
-        reason = check_pricing(pricing_of(cfg), limits)
+        from .evolve.execution import call_bound_problem
+        reason = check_pricing(pricing_of(cfg), limits) or call_bound_problem(pricing_of(cfg), limits,
+                                                                               "the activity's budget")
         if reason:
             problems.append(f"the declared budget cannot be enforced: {reason}")
     if rsi_cfg.task_plan_ref and activity.objects.has(rsi_cfg.task_plan_ref):

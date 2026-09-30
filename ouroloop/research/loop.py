@@ -200,8 +200,8 @@ def run_worker_round(round_context: RoundContext, budget) -> _ct.RoundResult:
     if proposal_result.diagnosis is not None:
         # What the notes covered, so the next round rotates to failures not yet read and a report cannot present
         # a partial diagnosis as a complete one (docs/modules/04_RESEARCH_LOOP.md §1).
-        _experience.append(root, {"kind": "diagnosis", "scope": ctx.scope_id, "release": before,
-                                  **proposal_result.diagnosis})
+        _experience.append(root, {**proposal_result.diagnosis, "kind": "diagnosis", "scope": ctx.scope_id,
+                                  "release": before})
     if not proposal_result.proposals:
         # The v0.6 driver records a collect request as needs_collection; a v2 round keeps its old outcome.
         collect = proposal_result.next_action == "collect" and ctx.diagnosis is not None
@@ -236,7 +236,8 @@ def _record_research_steps(ctx, root, before: str, sent_before: int, proposal_re
         "research_steps", scope=ctx.scope_id, release=before,
         research_ref=ctx.objects.load(before, _ct.SystemRelease).research_ref,
         context_ref=ctx.objects.put_json("change", ctx.context.to_json()),
-        steps=[{"step": r.get("step"), "prompt_hash": r.get("prompt_hash")} for r in sent if isinstance(r, dict)],
+        steps=[{"step": r.get("step"), "prompt_hash": r.get("prompt_hash"), "input_hash": r.get("input_hash")}
+               for r in sent if isinstance(r, dict)],
         prompts={t: _ct.digest({"text": text})[:16] for t, text in sorted(ctx.bound.prompts.items())
                  if t.startswith("research.")},
         proposals=[ctx.objects.put(p) for p in proposal_result.proposals])

@@ -80,8 +80,8 @@ def test_er6_14_a_code_package_ships_its_run_bundle_and_not_its_tests(tmp_path):
     # its code runs only in an isolated worker: a plain subprocess is refused unless a test says otherwise
     from ouroloop.agent.worker import ProcessWorker
     with pytest.raises(P.BindError, match="not an isolated one"):
-        app.agent_factory(rsi.runtime(tmp_path / "rt"), budget=None, provider=object(), worker=ProcessWorker())
-    assert app.agent_factory(rsi.runtime(tmp_path / "rt"), budget=None, provider=object(), worker=ProcessWorker(),
+        app.agent_factory(rsi.runtime(tmp_path / "rt"), budget=None, provider=object(), worker=ProcessWorker(for_tests=True))
+    assert app.agent_factory(rsi.runtime(tmp_path / "rt"), budget=None, provider=object(), worker=ProcessWorker(for_tests=True),
                              allow_unqualified_worker=True)
 
 

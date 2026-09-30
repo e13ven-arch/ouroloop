@@ -94,7 +94,8 @@ def v06_prepared(fake_upstream, tmp_path, *, max_draft_repairs=3):
     w0 = P.default_worker_set(objects, finish_check=rsi.W0_FINISH, actor_identity_ref=actor_ref,
                               package_ref=hp.empty_package(objects))
     release = activity.releases.bootstrap(w0, booted.research_ref, booted.core_ref, reason="W0 fixture",
-                                          activate=False)
+                                          activate=False, target_harness_ref=booted.target_harness_ref,
+                                          required_capabilities=booted.required_capabilities)
     write_json(activity.releases.active_path, {"release_ref": release, "revision": 1, "last_operation_id": None})
     plan_ref = bench.freeze_task_plan(objects, core_ref=booted.core_ref, split_ref=activity.splits.hash(),
                                       task_ids=tuple(rsi.DEV),
@@ -192,7 +193,8 @@ def test_br6_17_a_core_that_allows_code_cannot_start_without_a_worker(fake_upstr
                                                      "capabilities": {**core.capabilities, "harness": harness}}))
     rel = ct.SystemRelease.from_json(activity.objects.get(w0))
     release = activity.releases.bootstrap(rel.worker_ref, rel.research_ref, core2, reason="code allowed",
-                                          activate=False)
+                                          activate=False, target_harness_ref=rel.target_harness_ref,
+                                          required_capabilities=rel.required_capabilities)
     from ouroloop.ledger import write_json
     write_json(activity.releases.active_path, {"release_ref": release, "revision": 2, "last_operation_id": None})
     with pytest.raises(ValueError, match="no qualified isolated worker"):
@@ -456,3 +458,122 @@ def test_published_numbers_are_background_and_c2_says_so(fake_upstream, tmp_path
     assert data["external_references"][0]["incomplete"] == ["protocol_notes"]
     assert data["claims"]["C2"]["state"] == "inconclusive"
     assert data["claims"]["C2"]["evidence_kind"] == "external_reference"
+
+
+# ---------------------------------------------------------------------------- found by the first real link check
+def test_the_diagnosis_row_keeps_the_activity_scope_so_notes_rotate_across_rounds(fake_upstream, tmp_path):
+    from ouroloop.research import diagnosis as dg
+    cfg, activity, w0 = v06_prepared(fake_upstream, tmp_path)
+    bench.improve(cfg, ".", out=lambda _line: None, researcher=NoteResearcher())
+    rows = [e for e in xp.read(activity.root) if e.get("kind") == "diagnosis"]
+    assert rows and rows[0]["scope"] == "a" and rows[0]["working_set"].startswith("every task of")
+    # the readers that rotate notes and number rounds now find it
+    assert dg.diagnosis_count(xp.read(activity.root), "a") == len(rows)
+    assert dg.last_included(xp.read(activity.root), "a")
+    # and R is told how many train tasks the working set measured and how many passed
+    assert rows[0]["measured"] >= rows[0]["failures"] >= 1 and rows[0]["passed"] == rows[0]["measured"] - \
+        rows[0]["failures"]
+
+
+def test_the_working_set_label_says_when_it_is_a_subset_of_the_train_split(fake_upstream, tmp_path):
+    cfg, activity, w0 = v06_prepared(fake_upstream, tmp_path)
+    work = bench.improvement(activity)
+    work.train_tasks = (activity.splits.ids("train")[0],)
+    measured = work.measure(activity.releases.active()["release_ref"], None)
+    assert measured["scope"] == "every task of a train pool of 1 tasks"
+    work.train_tasks = tuple(activity.splits.ids("train"))
+    assert work.measure(activity.releases.active()["release_ref"], None)["scope"] == \
+        "every task of this activity's whole train split"
+
+
+def test_first_version_runs_record_their_mode_and_host_contract_and_v2_runs_do_not(fake_upstream, tmp_path):
+    from ouroloop.benchmark import Results
+    cfg, activity, w0 = v06_prepared(fake_upstream, tmp_path)
+    bench.improve(cfg, ".", out=lambda _line: None, researcher=NoteResearcher())
+    from ouroloop.report import _runs
+    runs = list(_runs(Results(activity.root, rsi.DOMAIN)).values())
+    booted = ct.SystemRelease.from_json(activity.objects.get(activity.release_ref))
+    assert runs and all(r.target_harness_ref for r in runs)
+    assert {r.mode for r in runs if r.split == "train"} == {"collection"}
+    assert {r.mode for r in runs if r.split != "train"} <= {"task_evaluation"}
+    for r in runs:
+        if r.actor_identity_ref:           # the pinned actor's recorded configuration, not an empty one
+            identity = activity.objects.load(r.actor_identity_ref, ct.ModelIdentity)
+            expected = {k: v for k, v in activity.objects.get(identity.inference_ref).items() if k != "type"}
+            assert r.model["config"] == expected and r.model["provider"]
+    rel = ct.SystemRelease.from_json(activity.objects.get(w0))
+    assert rel.target_harness_ref and "harness_package.v1" in rel.required_capabilities
+    assert activity.objects.load(rel.target_harness_ref, ct.TargetHarness).extension_api_ref
+
+
+def test_bootstrap_refuses_to_freeze_a_k_that_allows_code_without_the_worker_image(fake_upstream, tmp_path,
+                                                                                  monkeypatch):
+    import pytest
+    from ouroloop.agent.worker import DockerWorker
+    from ouroloop.benchmark import Results
+    monkeypatch.setattr(DockerWorker, "image_id", lambda self: None)
+    cfg = {"workspace": {"root": str(tmp_path / "ws")},
+           "bench": {"domain": rsi.DOMAIN, "upstream_path": fake_upstream, "families": dict(rsi.FAMILIES),
+                     "budget": {"max_steps": 8, "max_tool_calls": 12},
+                     "ratios": {"train": 0.5, "dev": 0.25, "test": 0.25}},
+           "llm": {"type": "rsi:BusinessWorker"}, "backends": {"mock": {"type": "mock"}}, "rsi": {"scope_id": "a"},
+           "harness_evolution": {"components": ["memory", "skills", "on_finish"], "sandbox": "docker"}}
+    rsi.splits(rsi.suite(fake_upstream)).freeze(Results(tmp_path / "ws", rsi.DOMAIN).manifest_path())
+    with pytest.raises(ValueError, match="no image to freeze; nothing was bootstrapped"):
+        bench.open_activity(cfg, ".", out=lambda _line: None)
+    assert not (tmp_path / "ws" / "rsi" / "active.json").exists()
+
+
+def test_package_code_is_never_mounted_on_a_worker_that_does_not_isolate_it(tmp_path):
+    import pytest
+    from ouroloop.agent.worker import ProcessWorker
+    from test_package_worker import FINISH_GUARD, World, bound_with
+    bound, _ = bound_with(tmp_path, {"middlewares/guard.py": FINISH_GUARD},
+                          {"hooks": [{"name": "guard", "site": "on_finish", "entrypoint": "middlewares/guard.py:run"}]})
+    with pytest.raises(hp.CapabilityError, match="no qualified isolated worker"):
+        hp.mount(World(), bound, worker=ProcessWorker())
+    assert hp.mount(World(), bound, worker=ProcessWorker(for_tests=True)) is not None
+
+
+def test_a_drafted_package_records_the_worker_image_k_froze(tmp_path):
+    from ouroloop.research.drafts import Drafts
+    objects = ct.Objects(tmp_path)
+    parent = hp.empty_package(objects)
+    drafts = Drafts(objects, parent_ref=parent, limits=hp.Limits(), image="sha256:" + "a" * 64)
+    manifest = {**hp.empty_manifest(), "skills": [{"name": "s", "path": "skills/s.md", "description": "d"}]}
+    errors, ref = drafts.check({"manifest.json": json.dumps(manifest), "skills/s.md": "Check every step."})
+    assert not errors
+    package = objects.load(ref, ct.HarnessPackage)
+    assert objects.get(package.dependency_set_ref) == {"dependency_set": "image", "image": "sha256:" + "a" * 64}
+
+
+def test_a_phase_account_reports_the_cap_it_actually_spends_under(tmp_path):
+    from ouroloop.evolve.execution import Budgets
+    root = Budgets(tmp_path).account("act", {"usd": 5.0})
+    phase = root.child("act:improve", {})
+    remaining = phase.remaining()
+    assert remaining["remaining"] == {} and remaining["effective_remaining"] == {"usd": 5.0}
+    assert bench._effective_budget(remaining)["remaining"] == {"usd": 5.0}
+
+
+def test_a_budget_that_cannot_fit_one_call_is_refused_before_anything_runs():
+    from ouroloop.evolve.execution import Pricing, call_bound_problem
+    pricing = Pricing(input_per_1k=0.0014, output_per_1k=0.0044, max_input_tokens=1_000_000,
+                      max_output_tokens=16384)
+    assert "every call would be refused" in call_bound_problem(pricing, {"usd": 0.75}, "an arm")
+    assert call_bound_problem(pricing, {"usd": 5.0}) == ""
+
+
+def test_each_research_request_records_a_digest_of_what_it_was_given():
+    from ouroloop.research.basic import PolicyResearcher
+
+    class Replies:
+        name = "fake"
+
+        def complete(self, system, prompt):
+            return json.dumps({"failure_class": "missed_step", "root_cause": "r", "mechanism": "m",
+                               "component": "skills", "generality": "g"})
+    researcher = PolicyResearcher(Replies())
+    system, user = researcher.note_request({"task_id": "t", "checks": []}, "P", allowed=("skills",))
+    researcher.note(system, user)
+    assert researcher.requests[-1]["input_hash"] == ct.digest({"input": user})[:16]

@@ -198,13 +198,16 @@ class Releases:
 
     # ------------------------------------------------------------------ authorisations
     def bootstrap(self, worker_ref: str, research_ref: str, core_ref: str, *, reason: str = "initial version",
-                  activate: bool = True) -> str:
+                  activate: bool = True, target_harness_ref: str | None = None,
+                  required_capabilities: tuple | None = None) -> str:
         """The first release, authorised by fixed configuration rather than by an evaluation. A baseline may not
         call this an improvement: nothing has been compared yet."""
         ct = self._ct
         auth = self.objects.put(ct.Authorization(kind="bootstrap", reason=reason))
         ref = self.objects.put(ct.SystemRelease(worker_ref=worker_ref, research_ref=research_ref,
-                                                core_ref=core_ref, authorization_ref=auth))
+                                                core_ref=core_ref, authorization_ref=auth,
+                                                target_harness_ref=target_harness_ref,
+                                                required_capabilities=required_capabilities))
         self.events.append("release_created", release=ref, authorization="bootstrap", reason=reason)
         if activate:
             write_json(self.dir / "defaults.json", {"release_ref": ref, "ts": now()})
@@ -251,7 +254,8 @@ class Releases:
         return ct.SystemRelease(worker_ref=set_ref if owner == "worker" else parent.worker_ref,
                                 research_ref=set_ref if owner == "research" else parent.research_ref,
                                 core_ref=parent.core_ref, authorization_ref=authorization_ref,
-                                parent_ref=parent_release)
+                                parent_ref=parent_release, target_harness_ref=parent.target_harness_ref,
+                                required_capabilities=parent.required_capabilities)
 
     def authorize(self, release_ref: str, *, profile: str, permit_ref: str | None = None,
                   plan_ref: str | None = None, scope_id: str | None = None) -> str:

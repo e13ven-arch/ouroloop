@@ -104,8 +104,10 @@ class ProcessWorker(Worker):
     """The runner as a plain subprocess. Not isolated: for protocol tests only (qualified = False)."""
     qualified = False
 
-    def __init__(self, limits: WorkerLimits | None = None):
+    def __init__(self, limits: WorkerLimits | None = None, *, for_tests: bool = False):
         self.limits = limits or WorkerLimits()
+        # Not isolated, so nothing runs package code in it unless a test says so by name (usable_worker).
+        self.for_tests = for_tests
 
     def command(self) -> list[str]:
         return [sys.executable, "-I", str(RUNNER)]
@@ -343,6 +345,9 @@ def check_package(worker: Worker, files: dict[str, str], manifest: dict, *, fixt
     output returned is capped and names failures, not tool outputs. WorkerUnavailable/WorkerCrashed propagate: they
     are infrastructure, not the draft's defect.
     """
+    from .harness_package import usable_worker
+    if not usable_worker(worker):
+        raise WorkerUnavailable("the draft holds code and the worker given does not isolate it")
     session = worker.start()
     try:
         session.load(files)

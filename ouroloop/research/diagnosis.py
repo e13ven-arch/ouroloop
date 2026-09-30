@@ -213,7 +213,9 @@ class Diagnosis:
     cache: NoteCache | None = None
     model: dict = field(default_factory=dict)
     round_index: int = 0
-    scope: str = "train failures of the latest measurement"
+    scope: str = "train failures of the latest measurement"     # the working set's description
+    measured: int = 0                  # train tasks in the working set
+    passed: int = 0                    # of those, passed
     components: tuple = ()            # the kinds K allows, injected into every note request
     package: dict = field(default_factory=dict)      # the current package's files, for the summary call
 
@@ -242,7 +244,8 @@ class Diagnosis:
             notes.append({"task_id": summary["task_id"], "note_ref": ref, **note})
         coverage = {"noted": len(notes), "failures": len(self.summaries), "reused": reused,
                     "invalid": invalid, "included": [s["task_id"] for s in selected],
-                    "not_included": [s["task_id"] for s in rest], "scope": self.scope, "round": self.round_index}
+                    "not_included": [s["task_id"] for s in rest], "working_set": self.scope,
+                    "measured": self.measured, "passed": self.passed, "round": self.round_index}
         return notes, coverage
 
 

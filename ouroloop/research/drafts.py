@@ -58,6 +58,7 @@ class Drafts:
     scope: str = ""
     fixture: object = None      # () -> a surface over a synthetic or train-only world, for package tests
     reserved_names: set = field(default_factory=set)       # the host's base tool names: not a package tool's
+    image: str | None = None    # the worker image K froze, recorded with every package built here
 
     # ------------------------------------------------------------------ restart (EX6-12)
     def pending(self) -> dict | None:
@@ -110,7 +111,7 @@ class Drafts:
                     closer()
             if errors:
                 return errors, None
-        return [], hp.build_package(self.objects, files, self.limits)
+        return [], hp.build_package(self.objects, files, self.limits, image=self.image)
 
     def resolve(self, proposal: ct.ExperimentProposal, *, revise, prompt: str, resume: dict | None = None) -> DraftOutcome:
         """Replace each package patch in the proposal with a checked package, revising within the bound. With

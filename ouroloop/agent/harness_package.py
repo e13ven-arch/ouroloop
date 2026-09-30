@@ -601,14 +601,21 @@ class PackageTools:
         return getattr(self.surface, attr)
 
 
+def usable_worker(worker) -> bool:
+    """A worker package code may run in: an isolating one, or a protocol-test worker a test named as such."""
+    return worker is not None and (bool(getattr(worker, "qualified", False)) or bool(getattr(worker, "for_tests",
+                                                                                              False)))
+
+
 def mount(surface, bound, *, worker=None, on_read=None, on_event=None):
     """The tool surface an agent gets for a bound release. A package that runs code needs the qualified worker;
     without one the assembly is refused before any task tool runs (never an in-process fallback)."""
     view = getattr(bound, "package", None) if bound is not None else None
     if view is None:
         return surface
-    if view.runs_code and worker is None:
-        raise CapabilityError(f"package {ct.short(view.ref)} runs code and no isolated worker is available")
+    if view.runs_code and not usable_worker(worker):
+        raise CapabilityError(f"package {ct.short(view.ref)} runs code and no qualified isolated worker is "
+                              f"available")
     if not (view.skills or view.runs_code):
         return surface
     runtime = PackageRuntime(surface, view, worker, on_event=on_event) if view.runs_code else None

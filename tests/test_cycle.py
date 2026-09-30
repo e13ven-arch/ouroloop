@@ -57,6 +57,8 @@ def gap_w0(cfg, tmp_path):
                               actor_identity_ref=actor.implementation["model_identity_ref"],
                               package_ref=hp.empty_package(objects))
     release = activity.releases.bootstrap(w0, booted.research_ref, booted.core_ref, reason="W0 with the gap",
+                                          target_harness_ref=booted.target_harness_ref,
+                                          required_capabilities=booted.required_capabilities,
                                           activate=False)
     write_json(activity.releases.active_path, {"release_ref": release, "revision": 1, "last_operation_id": None})
     return activity, booted
@@ -392,3 +394,14 @@ def test_reuse_is_verified_only_by_a_request_from_r1s_changed_prompt(fake_upstre
     events.append("research_steps", scope="cyc", research_ref=r1, steps=[{"step": "propose", "prompt_hash": "x"}],
                   context_ref="", prompts={"research.propose": ct.digest({"text": R1_PROPOSE})[:16]})
     assert bench._reuse_fact(activity, r1, r0, "segment-1")["state"] == "verified"
+
+
+def test_a_cycle_whose_research_arms_could_not_make_one_call_is_refused_up_front(fake_upstream, tmp_path,
+                                                                                  fixture_preset):
+    cfg = cycle_config(fake_upstream, tmp_path)
+    cfg["freeze"]["budget"] = {"usd": 5.0}
+    cfg["pricing"] = {"input_per_1k": 0.0014, "output_per_1k": 0.0044, "max_input_tokens": 1_000_000,
+                      "max_output_tokens": 16384, "source": "test"}
+    gap_w0(cfg, tmp_path)
+    with pytest.raises(ValueError, match="research slot cannot run: one call reserves up to"):
+        bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper())
