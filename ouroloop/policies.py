@@ -659,8 +659,10 @@ def default_worker_set(objects: ct.Objects, *, system_prompt: str = "", finish_c
 # The first version's R0 (docs/modules/04_RESEARCH_LOOP.md §1): research.diagnose writes one note per failed
 # attempt and research.propose reads the notes and the package. Different text, so a different R0 identity.
 DIAGNOSE_NOTE = (
-    "You read one failed attempt of the current agent version: the request, what the agent did turn by turn, the "
-    "tool errors, and the checks the grader reported as not met. Say why it failed and name one general mechanism "
+    "You read one failed attempt of the current agent version: the request, what the agent did turn by turn "
+    "(its last message at length: its own account of what it did and did not do), the tool errors, and every "
+    "scored "
+    "check with whether it passed. Say why it failed and name one general mechanism "
     "that would prevent this class of failure: a working note (memory), a skill, a check before finishing, a check "
     "around a tool call, or a tool wrapper. Argue why the mechanism applies to a class of tasks, not only this one. "
     "Never write this task's specific answers (names, e-mail addresses, ids, values).")

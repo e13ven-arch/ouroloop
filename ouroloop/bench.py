@@ -515,7 +515,10 @@ class Improvement:
                              feedback=evidence["feedback"].summary(), experience=experience,
                              budget=_effective_budget(self.budget.remaining()) if self.budget else {},
                              targets={**{t: {"binding": r.binding, "kinds": list(r.allowed_kinds),
-                                            "site": r.site}
+                                            "site": r.site,
+                                            # the instruction text W runs with at this target now, so a
+                                            # proposal changes or merges it rather than repeating it
+                                            **({"current": bound.prompts[t]} if bound.prompts.get(t) else {})}
                                          for t, r in _P.REGISTRY.items() if r.owner == self.owner
                                          and t in _P.core_targets(self.objects.load(self.core_ref,
                                                                                     _ct.CoreManifest))
@@ -803,6 +806,9 @@ class Improvement:
                                        f"worker is available to run it")
                 out["worker"] = self.worker.describe()
         return out
+
+
+from .research.experiment import frozen_signatures  # noqa: E402 - beside the loop that uses it
 
 
 def _effective_budget(remaining: dict) -> dict:
@@ -1324,7 +1330,6 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
     # The model that writes the notes is part of each note's identity (docs/modules/04_RESEARCH_LOOP.md §1).
     research_table = dict(cfg.get("research") or {}).get("llm") or cfg.get("llm") or {}
     research_model = {k: v for k, v in research_table.items() if not SECRET_KEY.match(k)}
-    history: list = []
     log: list = []
     seglog = RoundLog(Path(activity.root) / "rsi" / "segments" / f"{segment}.json",
                       {"segment": segment, "scope": activity.rsi.scope_id,
@@ -1366,7 +1371,9 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
                             context=context, researcher=researcher, bound=bound, core_ref=work.core_ref,
                             eval_template_ref=activity.rsi.task_plan_ref, handlers=work.handlers(),
                             experience_ref=experience_ref, experience=tuple(experience), owner="worker",
-                            schedule=schedule, history=tuple(history), root=activity.root,
+                            schedule=schedule,
+                            history=frozen_signatures(experience, activity.objects, parent=release_ref),
+                            root=activity.root,
                             diagnosis=diagnosis, drafts=drafts, round_index=index)
 
     from .research.loop import resume_unfinished
@@ -1605,7 +1612,6 @@ def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_
     done = log.done()
     schedule = Schedule(worker_rounds=max(plan.worker_round_limit - done, 0), research_slots=0,
                         patience=plan.worker_round_limit)
-    history: list = []
     measured: dict = {}
     if inner.harness and shared:
         # Both arms start from the one W0 measurement (docs/modules/06_RESEARCH_CAMPAIGN.md §2): its grading and
@@ -1638,7 +1644,8 @@ def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_
                             researcher=step, bound=bound, core_ref=core_ref,
                             eval_template_ref=activity.rsi.task_plan_ref or "", handlers=inner.handlers(),
                             experience_ref=experience_ref, experience=tuple(experience), owner="worker",
-                            schedule=schedule, history=tuple(history), root=root,
+                            schedule=schedule, history=frozen_signatures(experience, objects, parent=release_ref),
+                            root=root,
                             diagnosis=diagnosis, drafts=drafts, round_index=index)
 
     collector = None
@@ -2218,7 +2225,8 @@ def _reuse_fact(activity: Activity, r1: str, r0: str | None, segment: str) -> di
     changed = [t for t in RESEARCH_STEPS if new.get(t) and new.get(t) != old.get(t)]
     rows = []
     for e in _ct.Events(activity.root).of("research_steps"):
-        if e.get("research_ref") != r1 or e.get("scope") != activity.rsi.scope_id:
+        if e.get("research_ref") != r1 or e.get("scope") != activity.rsi.scope_id \
+                or e.get("stage", "propose") != "propose":
             continue
         steps = {s.get("step") for s in e.get("steps") or ()}
         if all((e.get("prompts") or {}).get(t) == _ct.digest({"text": new[t]})[:16]

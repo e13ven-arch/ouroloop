@@ -450,6 +450,12 @@ class BudgetAccount:
                                self.budgets.subtree(self.scope_id, book)),
                 "stopped": self.budgets.stopped(self.scope_id, book)}
 
+    def for_research(self) -> dict:
+        """What a research step is told about money, read now: what is left wherever the binding limit sits,
+        and what this account has spent."""
+        remaining = self.remaining()
+        return {"remaining": remaining.get("effective_remaining") or {}, "used": remaining.get("used") or {}}
+
     def affordable(self, bound: dict, *, allocation: str | None = None) -> bool:
         book = self.budgets._read()
         return not self.budgets.stopped(self.scope_id, book) and not self.budgets._exceeds(
@@ -697,6 +703,20 @@ def check_pricing(pricing: Pricing, limits: dict) -> str:
     return ""
 
 
+def _retryable(e: Exception) -> bool:
+    """Whether sending the same request again may succeed: the provider's own say when it has one, else a rate
+    limit, a server error, a dropped connection or a timeout. A request the provider refused as malformed is not
+    sent — and paid for — again."""
+    flag = getattr(e, "retryable", None)
+    if flag is not None:
+        return bool(flag)
+    status = getattr(e, "status_code", None)
+    if isinstance(status, int):
+        return status in (408, 409, 429) or status >= 500
+    return isinstance(e, (ConnectionError, TimeoutError)) or type(e).__name__ in ("APIConnectionError",
+                                                                                  "APITimeoutError")
+
+
 class MeteredProvider:
     """A chat provider whose every call is reserved before it happens and settled after.
 
@@ -711,6 +731,12 @@ class MeteredProvider:
         self.account = account
         self.pricing = pricing
         self.operation = operation
+        # A provider that retries by itself would send requests this meter never reserved: its retries become
+        # the meter's, each one reserved and settled, and only for errors that are worth sending again. The
+        # provider is not changed for good — it may be shared — its own retries are switched off per call.
+        inner = getattr(provider, "retries", None)
+        if isinstance(inner, int) and inner > 0:
+            max_retries = max(max_retries, inner)
         self.max_retries = max_retries
         self.allocation = allocation
         self.name = getattr(provider, "name", "metered")
@@ -722,15 +748,33 @@ class MeteredProvider:
         bound = self.pricing.bound()
         last: Exception | None = None
         for attempt in range(self.max_retries + 1):
-            reservation = self.account.reserve(f"{self.operation}#{self.calls}.{attempt}", bound,
-                                              allocation=self.allocation)
-            self.calls += 1
             try:
+                reservation = self.account.reserve(f"{self.operation}#{self.calls}.{attempt}", bound,
+                                                  allocation=self.allocation)
+            except BudgetError:
+                if last is not None:
+                    raise last          # a retry the budget cannot cover: the provider's failure is the outcome
+                raise
+            self.calls += 1
+            own = getattr(self.provider, "retries", None)
+            try:
+                if isinstance(own, int):
+                    self.provider.retries = 0
                 turn = self.provider.chat(system, messages, specs)
             except Exception as e:  # noqa: BLE001 - the call may well have been charged: unknown, not free
-                self.receipts.append(self.account.settle(reservation.id, None, "unknown"))
+                # Released only when the request is known never to have reached the model; otherwise unknown.
+                self.receipts.append(self.account.settle(
+                    reservation.id, None, "released" if getattr(e, "unbilled", False) else "unknown"))
                 last = e
+                if not _retryable(e):
+                    break                  # the same request would fail the same way: do not pay for it again
+                if attempt < self.max_retries:
+                    import time
+                    time.sleep(min(30.0, 2.0 ** attempt))
                 continue
+            finally:
+                if isinstance(own, int):
+                    self.provider.retries = own
             self.receipts.append(self.account.settle(reservation.id,
                                                      self.pricing.measure(turn.usage or {}), "settled"))
             return turn

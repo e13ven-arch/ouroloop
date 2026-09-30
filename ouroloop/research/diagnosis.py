@@ -2,7 +2,7 @@
 (docs/modules/04_RESEARCH_LOOP.md §1).
 
 A failure summary is a fixed projection of one failed train attempt: the request, what the agent did turn by turn,
-the tool errors, the host events (a skill read, a pushback) and the checks the grader reported as not met. Only train
+the tool errors, the host events (a skill read, a pushback) and every scored check with its outcome. Only train
 attempts are ever summarised; the grading detail comes from the results store's train-only reader, and assertions the
 grader excluded (declared unscored, or true at the start and still true at the end) are left out. A free assertion
 the agent broke is scored as a failure upstream, so it is shown like any other failed check.
@@ -37,8 +37,13 @@ class DiagnosisLimits:
 
 
 def clip(text, limit: int) -> str:
+    """The head and the tail of a long entry: what an agent concludes, or what a tool returned last, is at the end
+    as often as at the start, and a head-only cut hides it."""
     text = text if isinstance(text, str) else json.dumps(text, ensure_ascii=False, default=str)
-    return text if len(text) <= limit else text[:limit] + f" [... {len(text) - limit} characters cut]"
+    if len(text) <= limit:
+        return text
+    head = limit - limit // 2
+    return f"{text[:head]} [... {len(text) - limit} characters cut ...] {text[len(text) - limit // 2:]}"
 
 
 def read_transcript(transcripts: Path, session: str) -> list[dict]:
@@ -72,6 +77,12 @@ def failure_summary(result, transcript: list[dict], grading: list[dict], limits:
                 events.append({"turn": turn, "event": "read_skill", "found": not entry["error"]})
         elif kind == "pushback":
             events.append({"turn": len(turns), "event": "pushback", "reason": clip(e.get("reason") or "", n)})
+    # The agent's last message is its own account of what it did and did not do — the one message a diagnosis
+    # most needs whole — so it keeps up to the task text's limit rather than a single entry's.
+    for e in reversed(transcript):
+        if e.get("kind") == "assistant" and turns:
+            turns[-1]["text"] = clip(e.get("text") or "", limits.max_task_chars)
+            break
     # Every scored assertion with its outcome, so R sees what the agent did complete as well as what it missed.
     # Excluded ones (declared unscored, or true at the start and still true) never counted and are left out.
     checks = [{"type": a.get("type"), "params": a.get("params"), "passed": bool(a.get("passed"))}
@@ -144,7 +155,7 @@ def experience_projection(rows) -> list[dict]:
             reasons = " ".join(str(r) for r in row.get("reasons") or ())
             entry["reason_kinds"] = sorted({k for needle, k in REASON_KINDS if needle in reasons.lower()})
         if kind == "diagnosis":
-            entry.update({k: row.get(k) for k in ("noted", "failures", "reused")})
+            entry.update({k: row.get(k) for k in ("noted", "failures", "reused", "measured", "passed")})
         if kind == "collection":
             entry.update({k: row.get(k) for k in ("batch", "valid", "attempts")})
         out.append({k: v for k, v in entry.items() if v not in (None, "", [], {})})

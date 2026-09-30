@@ -182,7 +182,7 @@ def _harness_evidence(root: Path, objects: ct.Objects, events: list, entries: li
                   | {"invalid": len(d.get("invalid") or ())}
                   for d in diagnosis],
         "drafts": drafts, "research_cost": _research_cost(root), "gates": gates,
-        "research_steps": [{k: e.get(k) for k in ("scope", "release", "research_ref", "context_ref")}
+        "research_steps": [{k: e.get(k) for k in ("scope", "stage", "release", "research_ref", "context_ref")}
                            | {"requests": len(e.get("steps") or ())}
                            for e in events if e.get("event") == "research_steps"],
         "cycle": None if cycle is None else {"status": cycle.get("status"), "steps": cycle.get("steps")},

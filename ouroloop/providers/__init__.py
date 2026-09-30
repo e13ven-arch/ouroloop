@@ -19,7 +19,15 @@ class Provider(Protocol):
 
 
 class ProviderError(RuntimeError):
-    pass
+    """A failed provider call. `retryable` says whether sending the same request again may succeed (a dropped
+    connection, a timeout, a rate limit, a server error) — the caller that books each request decides whether to."""
+
+    def __init__(self, message: str = "", *, retryable: bool = False, unbilled: bool = False):
+        super().__init__(message)
+        self.retryable = retryable
+        # The request never reached the model: it could not be sent, or the provider turned it away before any
+        # work (rate limit, overload). A metered caller releases its reservation instead of keeping it as unknown.
+        self.unbilled = unbilled
 
 
 class MockProvider:

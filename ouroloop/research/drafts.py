@@ -60,6 +60,18 @@ class Drafts:
     reserved_names: set = field(default_factory=set)       # the host's base tool names: not a package tool's
     image: str | None = None    # the worker image K froze, recorded with every package built here
 
+    def _revise(self, revise, prompt: str, patch: dict, check_output: str):
+        """R's revision, shown the parent package the patch applies to when its revise step takes one."""
+        import inspect
+        try:
+            takes_parent = "parent" in inspect.signature(revise).parameters
+        except (TypeError, ValueError):
+            takes_parent = False
+        if not takes_parent:
+            return revise(prompt, patch, check_output)
+        run, tests = hp.files_of(self.objects, self.parent_ref)
+        return revise(prompt, patch, check_output, parent={**run, **tests})
+
     # ------------------------------------------------------------------ restart (EX6-12)
     def pending(self) -> dict | None:
         """The draft this scope started and never finished: its proposal, the last recorded revision and patch.
@@ -151,7 +163,8 @@ class Drafts:
                     patch = self.objects.get(last["patch"])["patch"] if last.get("patch") else patch
                     first = last["revision"] + 1
                     if first <= self.max_repairs and not last.get("infrastructure"):
-                        revised = revise(prompt, patch, clip("\n".join(last.get("errors") or []), MAX_CHECK_OUTPUT))
+                        revised = self._revise(revise, prompt, patch,
+                                               clip("\n".join(last.get("errors") or []), MAX_CHECK_OUTPUT))
                         patch = revised if isinstance(revised, dict) and revised else {"invalid": "no patch returned"}
                     elif last.get("infrastructure"):
                         first = last["revision"]          # the worker came back: check the same draft again
@@ -178,7 +191,7 @@ class Drafts:
                 if not errors:
                     break
                 if revision < self.max_repairs:
-                    revised = revise(prompt, patch, clip("\n".join(errors), MAX_CHECK_OUTPUT))
+                    revised = self._revise(revise, prompt, patch, clip("\n".join(errors), MAX_CHECK_OUTPUT))
                     # An empty or unreadable revision is a failed revision, never "apply nothing": applying
                     # nothing would freeze the parent itself as a candidate and pay a gate for a no-op.
                     patch = revised if isinstance(revised, dict) and revised else {"invalid": "no patch returned"}

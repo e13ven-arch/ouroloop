@@ -184,13 +184,19 @@ def run_worker_round(round_context: RoundContext, budget) -> _ct.RoundResult:
         if resume is not None:
             # A draft a restart interrupted: continue it rather than asking R for a new proposal (EX6-12).
             proposal = ctx.objects.load(resume["proposal_ref"], _ct.ExperimentProposal)
-            drafted = ctx.drafts.resolve(proposal, revise=ctx.researcher.revise,
-                                         prompt=ctx.bound.prompts.get("research.propose", ""), resume=resume)
+            sent_before = len(getattr(ctx.researcher, "requests", ()) or ())
+            try:
+                drafted = ctx.drafts.resolve(proposal, revise=ctx.researcher.revise,
+                                             prompt=ctx.bound.prompts.get("research.propose", ""), resume=resume)
+            finally:
+                _record_research_steps(ctx, root, before, sent_before, None, stage="revise")
             return _after_drafts(ctx, drafted, proposal, before, core, root, budget, requirements=())
         sent_before = len(getattr(ctx.researcher, "requests", ()) or ())
         proposal_result = propose_experiment(ctx.context, ctx.bound, ctx.owner, researcher=ctx.researcher,
                                             objects=ctx.objects, max_candidates=ctx.schedule.candidates_per_round,
-                                            experience=ctx.experience, diagnosis=ctx.diagnosis)
+                                            experience=ctx.experience, diagnosis=ctx.diagnosis,
+                                            live_budget=(lambda: budget.for_research()) if budget is not None
+                                            else None)
         _record_research_steps(ctx, root, before, sent_before, proposal_result)
     except BudgetError as e:
         _experience.append(root, {"kind": "round", "outcome": "budget_exhausted", "reason": str(e)[:300],
@@ -215,32 +221,42 @@ def run_worker_round(round_context: RoundContext, budget) -> _ct.RoundResult:
                                next_action=proposal_result.next_action)
     proposal = proposal_result.proposals[0]
     if ctx.drafts is not None and _has_patch(proposal, ctx.objects):
+        sent_before = len(getattr(ctx.researcher, "requests", ()) or ())
         try:
             drafted = ctx.drafts.resolve(proposal, revise=ctx.researcher.revise,
                                          prompt=ctx.bound.prompts.get("research.propose", ""))
         except BudgetError as e:
             return _ct.RoundResult(outcome="budget_exhausted", release_before=before, release_after=before,
                                    reason=str(e)[:300], next_action="stop")
+        finally:
+            _record_research_steps(ctx, root, before, sent_before, None, stage="revise")
         return _after_drafts(ctx, drafted, proposal, before, core, root, budget,
                              requirements=proposal_result.requirements)
     return _admit_and_run(ctx, proposal, before, core, root, budget, requirements=proposal_result.requirements)
 
 
-def _record_research_steps(ctx, root, before: str, sent_before: int, proposal_result) -> None:
+def _record_research_steps(ctx, root, before: str, sent_before: int, proposal_result, *,
+                           stage: str = "propose") -> None:
     """Which R this round loaded and what its steps actually sent (docs/modules/06_RESEARCH_CAMPAIGN.md §4): the
     loaded R, the context, each request's step and prompt digest, the bound prompts' digests and the proposals.
     It is how a later report shows that an installed R1 was used, rather than copying its name. An event, not an
     experience row: R never reads its own request log back."""
     sent = list(getattr(ctx.researcher, "requests", ()) or ())[sent_before:]
+    if stage != "propose" and not sent:
+        return                                   # no revision was asked for
     _ct.Events(root).append(
-        "research_steps", scope=ctx.scope_id, release=before,
+        "research_steps", scope=ctx.scope_id, release=before, stage=stage,
         research_ref=ctx.objects.load(before, _ct.SystemRelease).research_ref,
         context_ref=ctx.objects.put_json("change", ctx.context.to_json()),
         steps=[{"step": r.get("step"), "prompt_hash": r.get("prompt_hash"), "input_hash": r.get("input_hash")}
                for r in sent if isinstance(r, dict)],
         prompts={t: _ct.digest({"text": text})[:16] for t, text in sorted(ctx.bound.prompts.items())
                  if t.startswith("research.")},
-        proposals=[ctx.objects.put(p) for p in proposal_result.proposals])
+        proposals=[ctx.objects.put(p) for p in proposal_result.proposals] if proposal_result else [],
+        budget_seen=getattr(proposal_result, "budget_seen", None),
+        # What R returned as Requirements, whole: R's own output from train evidence, auditable afterwards.
+        requirements=[dict(r) if isinstance(r, dict) else {"id": str(r)}
+                      for r in (getattr(proposal_result, "requirements", ()) or ())] if proposal_result else [])
 
 
 def _after_drafts(ctx, drafted, proposal, before, core, root, budget, *, requirements) -> _ct.RoundResult:

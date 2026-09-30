@@ -245,6 +245,25 @@ NOTE_FORMAT = (
     'Reply with JSON only: {"failure_class": "...", "root_cause": "...", "mechanism": "...", '
     '"component": "memory|skills|on_finish|before_tool|after_tool|tools", "generality": "..."}. '
     "component must be one of the allowed components.")
+PACKAGE_API = (
+    "The package API (write only the kinds in allowed_components). manifest.json = {\"api_version\": "
+    "\"harness_package.v1\", \"memory\": {\"enabled\": true|false}, \"skills\": [{\"name\": \"<name>\", "
+    "\"path\": \"skills/<name>.md\", \"description\": \"<when to read it>\"}], \"hooks\": [{\"name\": "
+    "\"<name>\", \"site\": \"before_tool|after_tool|on_finish\", \"entrypoint\": "
+    "\"middlewares/<file>.py:<function>\"}], \"tools\": [{\"name\": \"<name>\", \"description\": \"...\", "
+    "\"input_schema\": {\"type\": \"object\", \"properties\": {...}}, \"entrypoint\": "
+    "\"tools/<file>.py:<function>\"}]}. memory.md is text the actor always sees; a skill's text is read on "
+    "demand with read_skill, listed by name and description. A hook is def f(ctx, event) returning "
+    "{\"action\": \"continue\"|\"block\"|\"feedback\", \"message\": \"...\"}. before_tool: event = {tool, "
+    "args, turn}; block or feedback both stop that call and the rest of the turn, with the message as the "
+    "result. after_tool: event = {tool, args, result, is_error, turn}; only continue or feedback, and feedback "
+    "is a note added after the tool results. on_finish: event = {final_message, turn}; block or feedback both "
+    "send the actor back to work with the message. A tool is def f(ctx, args) returning a string, and must not "
+    "take a base tool's name. During a task ctx.view = {task, turn, events}, each event {call_id, name, args, "
+    "result_excerpt, error, truncated, step}; ctx.call_tool(name, args) calls one of the episode's base tools "
+    "(read-only from a hook) and returns .output and .is_error. tests/*.py hold test_* functions taking ctx, run "
+    "against a train-only fixture world, where ctx.view is {\"fixture\": true}. Standard library only; no "
+    "network and no files outside the package.")
 PACKAGE_FORMAT = (
     'Reply with JSON only: {"requirements": [{"id": "...", "context": "...", "expected_behavior": "...", '
     '"observed_behavior": "...", "acceptance": "...", "recurrence": 1}], "next_action": '
@@ -252,8 +271,10 @@ PACKAGE_FORMAT = (
     '["..."], "changes": [{"target": "worker.harness", "kind": "workflow", "change": {"patch": {"write": '
     '{"<path>": "<text>"}, "delete": ["<path>"]}}}], "expected": "...", "abandon_if": "..."}]}. '
     "A package holds manifest.json, memory.md and skills/<name>.md (and code files only where allowed); the "
-    "manifest must list every skill and enable memory when memory.md is used. Other registered targets in "
-    "`targets` may be changed instead. Do not fill in results, verdicts or thresholds.")
+    "manifest must list every skill and enable memory when memory.md is used. `targets` shows each registered "
+    "target and, under `current`, the instruction text W runs with now: change or merge with it rather than "
+    "adding a component that repeats it; other targets may be changed instead of the package. Do not fill in "
+    "results, verdicts or thresholds. " + PACKAGE_API)
 RESEARCH_FORMAT = (
     "This call is a research slot: do not change the capability package. Read how the research policy's own "
     "rounds went — the verdicts and aggregate figures of the experience log, the note coverage, the drafts that "
@@ -264,7 +285,7 @@ RESEARCH_FORMAT = (
     '"...", "abandon_if": "..."}]}. Do not write task answers, task ids or scores into a prompt.')
 REVISE_FORMAT = (
     'The draft package below failed its check. Reply with JSON only: {"patch": {"write": {"<path>": "<text>"}, '
-    '"delete": ["<path>"]}} — the corrected patch against the same parent package.')
+    '"delete": ["<path>"]}} — the corrected patch against the parent package shown. ' + PACKAGE_API)
 
 
 def _as_list(value) -> list:
@@ -333,7 +354,7 @@ class PolicyResearcher:
     def _complete(self, step: str, system: str, text: str) -> str:
         """One research request, labelled with its step where the completion interface can carry a label, so
         the budget book says what notes, summaries and draft revisions each cost (docs/modules/07 §4)."""
-        if self.requests and self.requests[-1].get("step") == step and "input_hash" not in self.requests[-1]:
+        if self.requests and "input_hash" not in self.requests[-1]:
             # What the step was given, as a digest beside the prompt's: the round's record can then show R's input
             # without keeping task text in it.
             self.requests[-1]["input_hash"] = _ct.digest({"input": text})[:16]
@@ -376,6 +397,7 @@ class PolicyResearcher:
         # sent whole: slicing serialised JSON would silently drop the coverage, the allowed kinds or the package.
         state = {"goal": context.goal, "coverage": coverage, "allowed_components": list(allowed),
                  "package": package or {}, "targets": context.targets,
+                 # `experience` is what research.retrieve selected, in its order (newest first by default)
                  "experience": experience_projection(list(experience)[:10]), "budget": context.budget,
                  "notes": notes}
         system = f"{prompt}\n\n{PACKAGE_FORMAT}" if prompt else PACKAGE_FORMAT
@@ -438,12 +460,13 @@ class PolicyResearcher:
         return _ProposalResult(proposals, next_action=next_action if next_action in ("none", "stop") else "stop",
                                reason=str(data.get("reason", ""))[:500])
 
-    def revise(self, prompt: str, patch: dict, check_output: str) -> dict:
-        """One bounded revision of a draft package. It sees the patch and the check's own output only — never a
-        task result or a score (docs/modules/04_RESEARCH_LOOP.md §2)."""
+    def revise(self, prompt: str, patch: dict, check_output: str, parent: dict | None = None) -> dict:
+        """One bounded revision of a draft package. It sees the parent package, the patch and the check's own
+        output only — never a task result or a score (docs/modules/04_RESEARCH_LOOP.md §2)."""
         system = f"{prompt}\n\n{REVISE_FORMAT}" if prompt else REVISE_FORMAT
         self.requests.append({"step": "revise", "system": system,
                               "prompt_hash": _ct.digest({"system": system})[:16]})
-        data = parse_json(self._complete("revise", system, json.dumps({"patch": patch, "check_output": check_output},
-                                                                ensure_ascii=False, default=str)))
+        data = parse_json(self._complete("revise", system, json.dumps(
+            {"parent": parent or {}, "patch": patch, "check_output": check_output}, ensure_ascii=False,
+            default=str)))
         return data.get("patch") if isinstance(data.get("patch"), dict) else {}

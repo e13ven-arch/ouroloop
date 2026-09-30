@@ -150,7 +150,8 @@ def parse_manifest(text: str, files: dict[str, str]) -> dict:
 
 def _need(entry, required: set, what: str, optional: set = frozenset()) -> None:
     if not isinstance(entry, dict):
-        raise PackageError(f"a {what} entry is an object")
+        raise PackageError(f"a {what} entry is an object with the keys {sorted(required)}"
+                           + (f" and optionally {sorted(optional)}" if optional else ""))
     missing = sorted(required - set(entry))
     extra = sorted(set(entry) - required - set(optional) - {"enabled"})
     if missing or extra:

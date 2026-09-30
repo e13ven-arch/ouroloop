@@ -131,6 +131,30 @@ def _signature(proposal: ct.ExperimentProposal) -> str:
                       "training": sorted(ct.canonical(t).decode() for t in proposal.training)})
 
 
+def frozen_signatures(experience, objects: ct.Objects, parent: str | None = None) -> tuple:
+    """The signatures of the proposals this activity already ran on `parent`, from its experiment records: what
+    the duplicate_experiment check compares a new proposal with. An experiment that produced no valid
+    comparison — lost to infrastructure, or accepted and then not installed — is left out: running it again is
+    the retry the loop means to make, not a duplicate. The same change on another parent is a new question."""
+    from .loop import INFRASTRUCTURE_REASONS
+    out = []
+    for row in experience or ():
+        if row.get("kind") != "experiment" or (parent is not None and row.get("release_before") != parent):
+            continue
+        reasons = " ".join(str(r) for r in row.get("reasons") or ())
+        if row.get("installation") == "installation_failed" or row.get("build") not in (None, "ready", "invalid") \
+                or (row.get("verdict") in (None, "inconclusive")
+                    and (not row.get("verdict") or any(k in reasons for k in INFRASTRUCTURE_REASONS))):
+            continue
+        ref = row.get("proposal")
+        if ref and objects is not None and objects.has(ref):
+            try:
+                out.append(_signature(objects.load(ref, ct.ExperimentProposal)))
+            except ct.ContractError:
+                continue
+    return tuple(out)
+
+
 AUXILIARY = {"input_coverage": check_input_coverage, "label_availability": check_label_availability,
              "duplicate_experiment": check_duplicate_experiment}
 
@@ -220,6 +244,11 @@ def admit(proposal: ct.ExperimentProposal, *, context, core: ct.CoreManifest, ob
         out.reasons = [*out.reasons, *reasons]
         return out
     blocked = [c for c in out.checks if c["verdict"] == "block" and c["check"] != "core"]
+    if any(c["check"] == "duplicate_experiment" for c in blocked):
+        # Not missing evidence and not a runtime problem: the proposal itself is one this activity already ran.
+        out.status = "invalid"
+        out.reasons = [*out.reasons, *[c["detail"] for c in blocked]]
+        return out
     if blocked:
         out.status = "collect" if any("label" in c["detail"] or "reached the decision" in c["detail"]
                                       for c in blocked) else "repair_runtime"
@@ -246,7 +275,7 @@ def note_contract(bound) -> bool:
 
 
 def propose_experiment(context, bound, owner: str = "worker", *, researcher, objects: ct.Objects,
-                       max_candidates: int = 1, experience=(), diagnosis=None) -> ProposalResult:
+                       max_candidates: int = 1, experience=(), diagnosis=None, live_budget=None) -> ProposalResult:
     """inspect -> diagnose -> retrieve -> propose, through the loaded research policy.
 
     These are stages of one researcher, not four services. What the loaded R changes is the prompt or the
@@ -270,6 +299,10 @@ def propose_experiment(context, bound, owner: str = "worker", *, researcher, obj
         if diagnosis is None:
             raise ct.ContractError("the loaded R writes per-task notes and this round has no diagnosis input")
         notes, coverage = diagnosis.run(researcher, diagnose_prompt)
+        if live_budget is not None:
+            # The notes just spent money: the summary sees the budget as it is now, not as the round began.
+            from dataclasses import replace
+            context = replace(context, budget=live_budget())
         for _ in notes:
             bound.activity.call("research.diagnose")
         retrieved = retrieve(experience, bound.retrieval, targets=tuple(REGISTRY))
@@ -279,6 +312,7 @@ def propose_experiment(context, bound, owner: str = "worker", *, researcher, obj
                                       package=diagnosis.package, allowed=tuple(diagnosis.components))
         requirements = list(result.requirements)
         result.diagnosis = coverage
+        result.budget_seen = getattr(context, "budget", None)     # recorded with the round: what R was shown
     else:
         bound.activity.call("research.diagnose")
         requirements = list(researcher.diagnose(context, diagnose_prompt) or ())
