@@ -443,21 +443,62 @@ def test_it6_22_a_code_component_is_generated_checked_installed_and_changes_beha
 @pytest.mark.skipif(docker_worker() is None, reason="docker or the worker image is not available: isolation is "
                                                      "not shown by any other test")
 def test_it6_23_package_code_in_the_docker_worker_cannot_reach_the_host():
+    """What package code can see and do inside the qualified worker: no host file, no network, an environment of
+    exactly PATH and LANG (the host's is not forwarded and the base image's is dropped), not root, a read-only
+    root filesystem, and a small writable /tmp."""
     worker = docker_worker()
     session = worker.start()
     try:
         session.load({"tools/t.py": "import os, socket\n"
                                     "def run(ctx, args):\n"
-                                    "    out = []\n"
-                                    "    out.append(os.path.exists(args['path']))\n"
+                                    "    out = {'host_path': os.path.exists(args['path'])}\n"
                                     "    try:\n"
-                                    "        socket.create_connection(('1.1.1.1', 53), timeout=2); out.append('net')\n"
+                                    "        socket.create_connection(('1.1.1.1', 53), timeout=2); out['net'] = True\n"
                                     "    except OSError:\n"
-                                    "        out.append('no-net')\n"
-                                    "    out.append(sorted(k for k in os.environ if 'KEY' in k or 'TOKEN' in k))\n"
-                                    "    return str(out)\n"})
+                                    "        out['net'] = False\n"
+                                    "    out['env'] = sorted(os.environ)\n"
+                                    "    out['proc_env'] = sorted(k.split(b'=')[0].decode() for k in\n"
+                                    "                             open('/proc/self/environ', 'rb').read().split(b'\\0') if k)\n"
+                                    "    out['uid'] = os.getuid()\n"
+                                    "    try:\n"
+                                    "        open('/runner/x', 'w').write('x'); out['root_writable'] = True\n"
+                                    "    except OSError:\n"
+                                    "        out['root_writable'] = False\n"
+                                    "    open('/tmp/scratch', 'w').write('ok'); out['tmp'] = open('/tmp/scratch').read()\n"
+                                    "    return __import__('json').dumps(out)\n"})
         value = session.request({"op": "call_tool", "entry": "tools/t.py:run",
                                  "args": {"path": str(__import__('pathlib').Path.cwd())}, "view": {}})
-        assert value["output"] == "[False, 'no-net', []]"
+        seen = json.loads(value["output"])
+        assert seen == {"host_path": False, "net": False, "env": ["LANG", "PATH"], "proc_env": ["LANG", "PATH"],
+                        "uid": 65534, "root_writable": False, "tmp": "ok"}
     finally:
         session.close()
+
+
+@pytest.mark.skipif(docker_worker() is None, reason="docker or the worker image is not available")
+def test_a_hung_package_in_docker_is_its_defect_and_its_container_is_removed():
+    import subprocess
+    from ouroloop.agent.worker import WorkerLimits
+    worker = docker_worker()
+    worker.limits = WorkerLimits(request_seconds=3.0)
+    session = worker.start()
+    name = worker._names[id(session)]
+    session.load({"tools/t.py": "def run(ctx, args):\n    while True:\n        pass\n"})
+    with pytest.raises(PackageCallError, match="did not answer call_tool"):
+        session.request({"op": "call_tool", "entry": "tools/t.py:run", "args": {}, "view": {}})
+    left = subprocess.run(["docker", "ps", "-a", "--filter", f"name={name}", "--format", "{{.Names}}"],
+                          capture_output=True, text=True).stdout.strip()
+    assert left == ""                                           # the container itself is gone, not only its client
+
+
+@pytest.mark.skipif(docker_worker() is None, reason="docker or the worker image is not available")
+def test_the_qualified_worker_runs_the_image_k_froze_by_its_content_id():
+    from ouroloop import bench
+    image_id = docker_worker().image_id()
+    worker = bench.isolated_worker({"sandbox": "docker", "image": "ouroloop-worker:py3.12", "image_id": image_id,
+                                    "test_timeout_seconds": 7})
+    assert worker.pinned_id == image_id and image_id in worker.command("n")
+    assert worker.limits.request_seconds == 7.0
+    assert worker.healthy()
+    assert bench.isolated_worker({"sandbox": "docker", "image": "ouroloop-worker:py3.12",
+                                  "image_id": "sha256:" + "0" * 64}) is None      # another image: not this activity's

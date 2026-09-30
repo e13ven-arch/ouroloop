@@ -34,6 +34,7 @@ DEFAULT_IMAGE = "ouroloop-worker:py3.12"
 MAX_LINE = 1_000_000                      # one protocol line; anything longer is not a protocol message
 STDERR_TAIL = 4000                        # what is kept of the worker's stderr, for a failure message
 PACKAGE_OPS = ("probe", "call_tool", "hook", "test")       # the requests that run package code
+WORKER_ENV = ("PATH=/usr/local/bin:/usr/bin:/bin", "LANG=C.UTF-8")   # the whole environment package code sees
 
 
 class WorkerUnavailable(RuntimeError):
@@ -126,7 +127,10 @@ class DockerWorker(Worker):
         return ["docker", "run", "--rm", "-i", *(["--name", name] if name else []), "--network", "none",
                 "--read-only", "--tmpfs", "/tmp:rw,size=64m", "--user", "65534:65534", "--cap-drop", "ALL",
                 "--security-opt", "no-new-privileges", "--pids-limit", str(self.pids), "--memory", self.memory,
-                "--cpus", self.cpus, self.pinned_id or self.image, "python", "-I", "/runner/worker_runner.py"]
+                "--cpus", self.cpus, self.pinned_id or self.image,
+                # The runner starts with exactly this environment: nothing of the host (docker run forwards
+                # none) and nothing the base image declares either (its ENV would otherwise reach package code).
+                "env", "-i", *WORKER_ENV, "python", "-I", "/runner/worker_runner.py"]
 
     def start(self) -> "WorkerSession":
         import uuid
