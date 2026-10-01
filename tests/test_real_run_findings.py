@@ -327,3 +327,18 @@ def test_a_model_may_not_ask_for_more_output_than_its_reservation_prices(fake_up
                       "max_output_tokens": 16384, "source": "test"}
     problems = bench.startup_checks(activity, cfg, phase="improve")
     assert any("max_tokens 32768 is above [pricing] max_output_tokens 16384" in p for p in problems)
+
+
+def test_a_research_slot_proposal_from_the_real_researcher_is_a_valid_proposal():
+    """Found by the requirements audit: propose_research stamped origin "automatic", which is not an origin, so
+    every real research-slot proposal raised instead of reaching admission. Scripted researchers hid it."""
+    class Replies:
+        name = "fake"
+
+        def complete(self, system, prompt):
+            return json.dumps({"next_action": "none", "reason": "r", "proposals": [
+                {"hypothesis": "h", "target": "research.propose", "text": "A better propose prompt."}]})
+    context = type("C", (), {"goal": "g", "budget": {}})()
+    result = PolicyResearcher(Replies()).propose_research(context, "p", {"research.propose": "old"})
+    assert len(result.proposals) == 1 and result.proposals[0].origin == "llm"
+    assert result.proposals[0].owner == "research"

@@ -463,7 +463,7 @@ class PolicyResearcher:
                 owner="research", hypothesis=str(item.get("hypothesis", ""))[:2000],
                 changes=({"target": target, "kind": "prompt", "change": {"text": text[:8000]}},),
                 expected=str(item.get("expected", ""))[:1000], abandon_if=str(item.get("abandon_if", ""))[:1000],
-                origin="automatic"))
+                origin="llm"))           # a model proposed it; the entry point is the automatic loop
         next_action = str(data.get("next_action") or ("none" if proposals else "stop"))
         return _ProposalResult(proposals, next_action=next_action if next_action in ("none", "stop") else "stop",
                                reason=str(data.get("reason", ""))[:500])
