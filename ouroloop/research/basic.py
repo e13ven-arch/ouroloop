@@ -273,8 +273,11 @@ PACKAGE_FORMAT = (
     "A package holds manifest.json, memory.md and skills/<name>.md (and code files only where allowed); the "
     "manifest must list every skill and enable memory when memory.md is used. `targets` shows each registered "
     "target and, under `current`, the instruction text W runs with now: change or merge with it rather than "
-    "adding a component that repeats it; other targets may be changed instead of the package. Do not fill in "
-    "results, verdicts or thresholds. " + PACKAGE_API)
+    "adding a component that repeats it; other targets may be changed instead of the package. Each kind has its "
+    "own change shape: a package change is {\"target\": \"worker.harness\", \"kind\": \"workflow\", \"change\": "
+    "{\"patch\": {...}}}; a prompt change is {\"target\": \"<target>\", \"kind\": \"prompt\", \"change\": {\"text\": "
+    "\"<the complete new text>\"}} - the whole text W should run with, not a patch. Do not fill in results, "
+    "verdicts or thresholds. " + PACKAGE_API)
 RESEARCH_FORMAT = (
     "This call is a research slot: do not change the capability package. Read how the research policy's own "
     "rounds went — the verdicts and aggregate figures of the experience log, the note coverage, the drafts that "

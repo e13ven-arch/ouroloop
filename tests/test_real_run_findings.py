@@ -262,3 +262,12 @@ def test_a_revision_record_is_not_counted_as_a_round_that_used_r1(fake_upstream,
         assert bench._reuse_fact(activity, r1, booted.research_ref, "segment-1")["state"] == "not_completed"
     finally:
         bench.PRESETS.pop("rsi_harness_test", None)
+
+
+def test_r_is_told_the_change_shape_of_a_prompt_target_too():
+    """The gate run's proposal edited worker.finish in a package patch's shape and the build refused it: the
+    format had only ever shown the package change's shape."""
+    assert '"kind": "prompt", "change": {"text": "<the complete new text>"}' in PACKAGE_FORMAT
+    assert P.parse_prompt({"text": "Before finishing, check every deliverable."})["text"]
+    with pytest.raises(Exception):
+        P.parse_prompt({"patch": {"write": {"instruction": "x"}}})
