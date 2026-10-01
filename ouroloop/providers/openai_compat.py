@@ -8,7 +8,7 @@ import time
 import httpx
 
 from ..chat import ChatTurn, ToolCall, ToolSpec
-from . import ProviderError
+from . import ProviderAccountError, ProviderError, is_account_error
 
 _STOP = {"stop": "end", "tool_calls": "tool_use", "length": "max_tokens", "content_filter": "refusal"}
 _RETRY = {429, 500, 502, 503, 504, 529}
@@ -67,6 +67,11 @@ class OpenAICompatProvider:
             else:
                 if resp.status_code < 400:
                     return resp.json()
+                failure = ProviderError(f"HTTP {resp.status_code}: {resp.text[:300]}")
+                failure.status_code = resp.status_code
+                if is_account_error(failure):
+                    # No balance, no quota, a refused key: asking again cannot help.
+                    raise ProviderAccountError(f"HTTP {resp.status_code}: {resp.text[:300]}")
                 if resp.status_code not in _RETRY or attempt == self.retries:
                     raise ProviderError(f"HTTP {resp.status_code}: {resp.text[:300]}",
                                         retryable=resp.status_code in _RETRY,

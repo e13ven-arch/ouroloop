@@ -8,6 +8,21 @@
 
 ---
 
+## 2026-10-01 真实 gate 三次尝试，与首版需求审计
+
+- 做了什么：在 `linkcheck2` 工作区新开一个 scope（`linkcheck2-gate`，$6 上限），dev 计划取冻结顺序的前 5 个任务（5 个家族），其中 1 个做筛选，gate 门槛沿用 preset。跑生产的 `bench.improve` 一轮，不设停止点；复用已测得的 train 失败（`campaign_launch_checklist`）。
+- 第一次：R 看到了 W 当前的结束检查，没有再加重复的 skill，而是提议把它合并进 `worker.finish`。诊断也比上一次准：未走的那个分支上的交付物被当成“不适用”，应当无论走哪个分支都给请求者发一份状态总结。但 R 用了包补丁的形状写这个提示改动，构建判为 invalid。原因是格式只示范过包改动的形状，现已同时给出两种（`20a9ea8`）。2 次调用，$0.11。
+- 第二次：GLM-5.3 把汇总调用的 16384 个输出 token 大多用在推理上，JSON 在 proposal 之前被截断；`parse_json` 遇到残缺文本返回 {}，回退逻辑把“什么也没读到”变成了 collect。现在被截断的研究回复会被拒绝：本轮以 repair_runtime 暂停，并提示调大 max_tokens；读不出的回复记为 invalid 轮；任一模型的 max_tokens 超过 `[pricing] max_output_tokens` 时启动检查拒绝（`0e9cbe8`）。3 次调用，$0.07。
+- 第三次（研究模型 max_tokens 调到 32768）：
+  - R 的提案有效，依次经过准入、冻结、构建、筛选和比较。
+  - 从筛选的对照臂开始，智谱账号余额耗尽：每次调用都返回 HTTP 429，错误码 1113，“余额不足或无可用资源包,请充值”。
+  - 20 次 dev 尝试中 18 次无效，配对不全，判为 inconclusive，未安装。这些失败按基础设施处理，没有算作候选的失败；429 的预留被释放。本 scope 合计 $0.50，没有 unknown 结算。
+  - 修正：429 原先被当作限流重试 4 次，整轮比较又把每次尝试都耗掉。现在账号类错误（余额、配额、被拒的 key）单独识别，不重试；一出现就停止这一次尝试，本轮以 repair_runtime 暂停，实验保持打开，充值后重跑会从记录的状态继续，而不是判为 inconclusive。
+- 需求审计（5 个审计加 5 个复核，逐项对照 docs/modules/00–09 与 ROADMAP/DEMO）：首版 354 项中，186 项实现且有测试，23 项实现但无测试，136 项部分实现，7 项缺失；约 77 项属于第二版，按设计推迟。审计还发现一个真实缺陷：研究位提案的 origin 写成了 "automatic"，不在允许值内，真实 R 的每个研究位提案都会在准入前报错，此前只有脚本研究员能走通，已修正（`8954b9f`）。明细见 `history/V0_6_AUDIT_2026-10-01.md`。
+- 待用户：智谱账号需要充值后才能继续真实运行；计价口径（open.bigmodel.cn 的地址与 Z.AI 的美元标价）仍待确认。
+- 证据：703 passed, 1 deselected（Docker 运行时）。
+- commit：见本条之后的提交。
+
 ## 2026-10-01 真实失败路径：从失败任务到构建好的候选，修正它暴露的问题
 
 - 做了什么：在新的独立工作区（`linkcheck2`，$5 上限，按修正后的 bootstrap 建立：K 冻结 package_api 与镜像 id，release pin TargetHarness 与 required_capabilities），依次测 train 任务，直到出现一个失败，然后对它跑生产的 `run_worker_round`。screen handler 换成停止点，所以不跑 dev、不安装。

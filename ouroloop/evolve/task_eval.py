@@ -21,6 +21,7 @@ from ..benchmark import Budget, RunManifest, SplitManifest, TaskResult
 from ..benchmark import attempt_id as bench_attempt_id
 from ..benchmark import pair_key as bench_pair_key
 from .contracts import CandidateDefect
+from ..providers import is_account_error
 from .execution import BudgetError, normalize_usage
 
 # The agent's stop reason -> how the attempt ended. Anything else is a task outcome: the model stopped, refused,
@@ -166,6 +167,8 @@ def run_attempt(suite, task_id: str, make_agent: Callable, *, run: RunManifest, 
         # The candidate could not be assembled for a reason of its own (a package tool shadowing a base tool).
         return broken(f"candidate: {e}", "candidate_defect", "harness_error")
     except Exception as e:  # noqa: BLE001 - the episode or the agent could not be built: no evidence either way
+        if is_account_error(e):
+            raise
         return broken(f"harness: {type(e).__name__}: {e}", "infrastructure", "harness_error")
     try:
         res = agent.run(task.trigger)
@@ -176,6 +179,10 @@ def run_attempt(suite, task_id: str, make_agent: Callable, *, run: RunManifest, 
         # failure to be refilled either: the comparison it belonged to ends as inconclusive (budget_exhausted).
         return broken(f"budget: {e}", "budget_exhausted", "infrastructure")
     except Exception as e:  # noqa: BLE001 - a provider or harness failure is no evidence about the candidate
+        if is_account_error(e):
+            # The provider refuses the account (no balance, a revoked key): every further attempt would fail the
+            # same way, so the run stops here rather than recording each one as an infrastructure failure.
+            raise
         return broken(f"harness: {type(e).__name__}: {e}", "infrastructure", "harness_error")
     labelled = agent.probe.label() if agent.probe is not None else 0
     try:

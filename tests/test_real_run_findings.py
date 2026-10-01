@@ -342,3 +342,53 @@ def test_a_research_slot_proposal_from_the_real_researcher_is_a_valid_proposal()
     result = PolicyResearcher(Replies()).propose_research(context, "p", {"research.propose": "old"})
     assert len(result.proposals) == 1 and result.proposals[0].origin == "llm"
     assert result.proposals[0].owner == "research"
+
+
+# ---------------------------------------------------------------------------- the account ran out mid-gate
+def test_an_exhausted_account_is_an_account_error_not_a_retryable_rate_limit():
+    """The gate run's third attempt met Zhipu's HTTP 429 code 1113 ("余额不足或无可用资源包,请充值") on every call
+    from the screen onwards; it was retried as a rate limit and every attempt recorded as an infrastructure
+    failure, until the comparison ended inconclusive."""
+    from ouroloop.providers import ProviderAccountError, is_account_error
+    body = '{"error":{"code":"1113","message":"余额不足或无可用资源包,请充值。"}}'
+    client = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(429, text=body)))
+    provider = OpenAICompatProvider("glm-5.3", retries=4, client=client)
+    with pytest.raises(ProviderAccountError) as caught:
+        provider.chat("s", [{"role": "user", "content": "x"}], ())
+    assert not caught.value.retryable and caught.value.unbilled and is_account_error(caught.value)
+    assert not is_account_error(ProviderError("HTTP 429: slow down", retryable=True))
+
+
+def test_a_round_that_meets_an_account_error_pauses_and_the_experiment_resumes_after_the_repair(
+        fake_upstream, tmp_path, monkeypatch):
+    import rsi
+    from test_harness_loop import NoteResearcher, v06_prepared
+    from ouroloop import bench
+    from ouroloop.evolve.execution import unfinished
+    from ouroloop.providers import ProviderAccountError
+    cfg, activity, w0 = v06_prepared(fake_upstream, tmp_path)
+    state = {"broke": False}
+    real_chat = rsi.BusinessWorker.chat
+
+    def chat(self, system, messages, specs):
+        if state["broke"]:
+            raise ProviderAccountError('HTTP 429: {"error":{"code":"1113","message":"余额不足"}}')
+        return real_chat(self, system, messages, specs)
+    monkeypatch.setattr(rsi.BusinessWorker, "chat", chat)
+
+    class BreaksTheAccount(NoteResearcher):
+        def summarize(self, *a, **kw):
+            out = super().summarize(*a, **kw)
+            state["broke"] = True               # the gate's attempts are the next calls
+            return out
+    first = bench.improve(cfg, ".", out=lambda _line: None, researcher=BreaksTheAccount(broken_first_draft=False))
+    assert first["rounds"][0]["outcome"] == "infrastructure_failed"
+    assert first["rounds"][0]["next_action"] == "repair_runtime" and "refuses the account" in first["rounds"][0]["reason"]
+    open_experiments = unfinished(activity.root)
+    assert len(open_experiments) == 1                       # left open, not ended as inconclusive
+    # the repair (a top-up); the next run finishes that experiment from its recorded state
+    state["broke"] = False
+    second = bench.improve(cfg, ".", out=lambda _line: None, researcher=NoteResearcher(broken_first_draft=False))
+    assert second["rounds"][0]["experiment_id"] == open_experiments[0]["experiment_id"]
+    assert second["rounds"][0]["outcome"] in ("installed", "rejected", "inconclusive")
+    assert unfinished(activity.root) == []

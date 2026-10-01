@@ -30,6 +30,30 @@ class ProviderError(RuntimeError):
         self.unbilled = unbilled
 
 
+class ProviderAccountError(ProviderError):
+    """The provider refuses this account: no balance or quota left, or the key is not accepted. Nothing sent
+    again will succeed until a person acts, so it is never retried and never recorded as a task's failure."""
+
+    def __init__(self, message: str = ""):
+        super().__init__(message, retryable=False, unbilled=True)
+
+
+# What providers say when the account, not the request, is the problem (Zhipu's code 1113 is "余额不足或无可用资源包").
+_ACCOUNT_MARKERS = ("insufficient_quota", "insufficient balance", "credit balance", "billing", "quota exceeded",
+                    '"code":"1113"', '"code": "1113"', "余额不足", "资源包", "请充值", "欠费")
+
+
+def is_account_error(e: BaseException) -> bool:
+    """Whether a provider failure is about the account (balance, quota, key) rather than one request."""
+    if isinstance(e, ProviderAccountError):
+        return True
+    status = getattr(e, "status_code", None)
+    if status in (401, 402, 403):
+        return True
+    text = str(e).lower()
+    return any(marker.lower() in text for marker in _ACCOUNT_MARKERS)
+
+
 class ReplyTruncated(ProviderError):
     """The model stopped at its output limit: the reply is incomplete, and asking again with the same limit would
     stop at the same place. A configuration problem (the limit is too small for this model's replies), not a

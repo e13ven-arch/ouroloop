@@ -430,7 +430,20 @@ def run_worker_rounds(make_round, budget, *, schedule: Schedule | None = None, r
         if stop:
             results.append(_ct.RoundResult(outcome="stopped", reason=stop))
             return results
-        result = run_worker_round(make_round(index), budget)
+        try:
+            result = run_worker_round(make_round(index), budget)
+        except Exception as e:  # noqa: BLE001 - only an account refusal is handled here; anything else re-raises
+            from ..providers import is_account_error
+            if not is_account_error(e):
+                raise
+            # The provider refuses the account (no balance, no quota, a refused key). Nothing more can run until
+            # a person acts: the activity pauses, and an experiment it interrupted stays open, so the restart after
+            # the repair continues it from its recorded state (resume_unfinished) instead of starting over.
+            reason = f"the model provider refuses the account: {str(e)[:240]}"
+            results.append(_ct.RoundResult(outcome="infrastructure_failed", reason=reason,
+                                           next_action="repair_runtime"))
+            results.append(_ct.RoundResult(outcome="stopped", reason="repair_runtime", next_action="repair_runtime"))
+            return results
         results.append(result)
         if result.outcome == "budget_exhausted":
             results.append(_ct.RoundResult(outcome="stopped", reason="budget_exhausted"))
