@@ -179,6 +179,7 @@ def run_worker_round(round_context: RoundContext, budget) -> _ct.RoundResult:
     before = ctx.releases.active()["release_ref"]
     core = ctx.objects.load(ctx.core_ref, _ct.CoreManifest)
     from ..evolve.execution import BudgetError
+    from ..providers import ReplyTruncated
     resume = ctx.drafts.pending() if ctx.drafts is not None else None
     try:
         if resume is not None:
@@ -198,6 +199,13 @@ def run_worker_round(round_context: RoundContext, budget) -> _ct.RoundResult:
                                             live_budget=(lambda: budget.for_research()) if budget is not None
                                             else None)
         _record_research_steps(ctx, root, before, sent_before, proposal_result)
+    except ReplyTruncated as e:
+        # The research model's output limit is too small for its replies: every round would be cut the same way,
+        # so the activity pauses for the configuration to be fixed (docs/modules/00_CONTRACTS.md §3).
+        _experience.append(root, {"kind": "round", "outcome": "infrastructure_failed", "reason": str(e)[:300],
+                                  "scope": ctx.scope_id, "release": before})
+        return _ct.RoundResult(outcome="infrastructure_failed", release_before=before, release_after=before,
+                               reason=str(e)[:300], next_action="repair_runtime")
     except BudgetError as e:
         _experience.append(root, {"kind": "round", "outcome": "budget_exhausted", "reason": str(e)[:300],
                                   "scope": ctx.scope_id, "release": before})
@@ -209,9 +217,11 @@ def run_worker_round(round_context: RoundContext, budget) -> _ct.RoundResult:
         _experience.append(root, {**proposal_result.diagnosis, "kind": "diagnosis", "scope": ctx.scope_id,
                                   "release": before})
     if not proposal_result.proposals:
-        # The v0.6 driver records a collect request as needs_collection; a v2 round keeps its old outcome.
+        # The v0.6 driver records a collect request as needs_collection; a v2 round keeps its old outcome. A reply
+        # that could not be read is an invalid round: R decided nothing, and the next round asks again.
         collect = proposal_result.next_action == "collect" and ctx.diagnosis is not None
-        outcome = "needs_collection" if collect else "no_proposal"
+        outcome = ("invalid" if getattr(proposal_result, "unreadable", False) else
+                   "needs_collection" if collect else "no_proposal")
         _experience.append(root, {"kind": "round", "outcome": outcome,
                                   "next_action": proposal_result.next_action, "reason": proposal_result.reason,
                                   "scope": ctx.scope_id, "release": before})
@@ -228,6 +238,12 @@ def run_worker_round(round_context: RoundContext, budget) -> _ct.RoundResult:
         except BudgetError as e:
             return _ct.RoundResult(outcome="budget_exhausted", release_before=before, release_after=before,
                                    reason=str(e)[:300], next_action="stop")
+        except ReplyTruncated as e:
+            # A revision cut at the output limit: the open draft stays open and resumes once the limit is raised.
+            _experience.append(root, {"kind": "round", "outcome": "infrastructure_failed", "reason": str(e)[:300],
+                                      "scope": ctx.scope_id, "release": before})
+            return _ct.RoundResult(outcome="infrastructure_failed", release_before=before, release_after=before,
+                                   reason=str(e)[:300], next_action="repair_runtime")
         finally:
             _record_research_steps(ctx, root, before, sent_before, None, stage="revise")
         return _after_drafts(ctx, drafted, proposal, before, core, root, budget,

@@ -407,7 +407,8 @@ class PolicyResearcher:
         self.requests.append({"step": "propose", "system": system,
                               "prompt_hash": _ct.digest({"system": system})[:16]})
         text = json.dumps(state, ensure_ascii=False, default=str)
-        data = parse_json(self._complete("propose", system, text))
+        reply = self._complete("propose", system, text)
+        data = parse_json(reply)
         requirements = []
         for item in _as_list(data.get("requirements")):
             if isinstance(item, dict) and item.get("observed_behavior"):
@@ -433,6 +434,10 @@ class PolicyResearcher:
         result = _ProposalResult(proposals=proposals, next_action=action if not proposals else "none",
                                  reason=str(data.get("reason", ""))[:500], evidence_refs=tuple(context.evidence))
         result.requirements = tuple(requirements)
+        if not data and reply.strip():
+            # Not JSON R meant: no decision was read, so none is recorded — never "collect" by default.
+            result.unreadable = True
+            result.reason = "the research reply was not readable JSON"
         return result
 
     def propose_research(self, context, prompt: str, current: dict, experience=(), *,

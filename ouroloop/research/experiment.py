@@ -327,7 +327,7 @@ def propose_experiment(context, bound, owner: str = "worker", *, researcher, obj
         result.dropped = tuple(result.proposals[max_candidates:])
         result.proposals = result.proposals[:max_candidates]
     result.proposals = [normalize(p, objects) for p in result.proposals]
-    if not result.proposals and result.next_action == "none":
+    if not result.proposals and result.next_action == "none" and not getattr(result, "unreadable", False):
         result.next_action = "collect" if not requirements else "stop"
         result.reason = result.reason or "the research step proposed nothing"
     return result

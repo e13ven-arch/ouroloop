@@ -271,3 +271,59 @@ def test_r_is_told_the_change_shape_of_a_prompt_target_too():
     assert P.parse_prompt({"text": "Before finishing, check every deliverable."})["text"]
     with pytest.raises(Exception):
         P.parse_prompt({"patch": {"write": {"instruction": "x"}}})
+
+
+# ---------------------------------------------------------------------------- a reply cut at the output limit
+def test_a_research_reply_cut_at_the_output_limit_is_refused_not_read_as_a_decision():
+    """The gate run's summary call spent its 16384 output tokens mostly reasoning; its JSON was cut before the
+    proposal, read as nothing, and turned into "collect" by the fallback."""
+    from ouroloop.bench import _Completions
+    from ouroloop.providers import ReplyTruncated
+
+    class Cut:
+        name = "glm"
+
+        def chat(self, system, messages, specs=()):
+            return ChatTurn('{"requirements": [{"id": "r1", "observed_behavior": "x"}], "next_action": "coll',
+                            [], "max_tokens", usage={"completion_tokens": 16384})
+    with pytest.raises(ReplyTruncated, match="raise max_tokens"):
+        _Completions(Cut()).complete("s", "p")
+
+
+def test_an_unreadable_summary_reply_is_an_invalid_round_not_a_collect_request():
+    from ouroloop.research.experiment import propose_experiment
+
+    class Garbled:
+        name = "fake"
+
+        def complete(self, system, prompt):
+            return "I think we should merge the finish check {not json"
+    researcher = PolicyResearcher(Garbled())
+    context = type("C", (), {"goal": "g", "targets": {}, "budget": {}, "evidence": ()})()
+    result = researcher.summarize(context, "p", [], {})
+    assert getattr(result, "unreadable", False) and result.reason == "the research reply was not readable JSON"
+    objects = ct.Objects.__new__(ct.Objects)
+    bound = P.BoundRuntime(release_ref="", profile="task", authorization="x", services=P.Services(None))
+    bound.research["research.diagnose"] = type("D", (), {"output_schema": "failure_note.v1"})()
+    diagnosis = dg.Diagnosis(summaries=[], order=[], components=("skills",))
+    import dataclasses
+
+    @dataclasses.dataclass
+    class Ctx:
+        goal: str = "g"
+        targets: dict = dataclasses.field(default_factory=dict)
+        budget: dict = dataclasses.field(default_factory=dict)
+        evidence: tuple = ()
+    out = propose_experiment(Ctx(), bound, researcher=researcher, objects=objects, diagnosis=diagnosis)
+    assert out.next_action == "none" and out.proposals == []          # not turned into "collect"
+
+
+def test_a_model_may_not_ask_for_more_output_than_its_reservation_prices(fake_upstream, tmp_path):
+    from test_harness_loop import v06_prepared
+    from ouroloop import bench
+    cfg, activity, w0 = v06_prepared(fake_upstream, tmp_path)
+    cfg["llm"] = {**cfg["llm"], "max_tokens": 32768}
+    cfg["pricing"] = {"input_per_1k": 0.0014, "output_per_1k": 0.0044, "max_input_tokens": 100000,
+                      "max_output_tokens": 16384, "source": "test"}
+    problems = bench.startup_checks(activity, cfg, phase="improve")
+    assert any("max_tokens 32768 is above [pricing] max_output_tokens 16384" in p for p in problems)

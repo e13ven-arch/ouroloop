@@ -30,6 +30,15 @@ class ProviderError(RuntimeError):
         self.unbilled = unbilled
 
 
+class ReplyTruncated(ProviderError):
+    """The model stopped at its output limit: the reply is incomplete, and asking again with the same limit would
+    stop at the same place. A configuration problem (the limit is too small for this model's replies), not a
+    transient failure and not the model's answer."""
+
+    def __init__(self, message: str = ""):
+        super().__init__(message, retryable=False)
+
+
 class MockProvider:
     """Answers with a function of the prompt. For tests and the offline demo."""
 

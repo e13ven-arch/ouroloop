@@ -1434,7 +1434,15 @@ class _Completions:
         self.name = getattr(provider, "name", "llm")
 
     def complete(self, system: str, prompt: str) -> str:
+        from .providers import ReplyTruncated
         turn = self.provider.chat(system, [{"role": "user", "content": prompt}], ())
+        if turn.stop == "max_tokens":
+            # A cut reply read as a whole one turns half an answer into a decision (the gate run's summary was cut
+            # before its proposal and read as "collect"): it is refused instead.
+            raise ReplyTruncated(f"the research reply stopped at the model's output limit "
+                                 f"({(turn.usage or {}).get('completion_tokens') or (turn.usage or {}).get('output_tokens')} "
+                                 f"tokens): raise max_tokens for the research model ([research.llm] or [llm]) and "
+                                 f"[pricing] max_output_tokens with it")
         return turn.text or ""
 
     def label(self, step: str):
@@ -2357,6 +2365,15 @@ def startup_checks(activity: Activity, cfg: dict, *, phase: str, needs_model: bo
     budget = activity.bench.budget
     if not (budget.max_steps and budget.max_tool_calls and budget.max_seconds):
         problems.append("[bench.budget] needs a step, tool-call and time limit per attempt")
+    # A call may not ask for more output than its reservation bounds: a model whose max_tokens is above
+    # [pricing] max_output_tokens could spend past its reservation, found out only after the money is gone.
+    priced = pricing_of(cfg).max_output_tokens
+    for name, table in (("[llm]", cfg.get("llm") or {}),
+                        ("[research.llm]", dict(cfg.get("research") or {}).get("llm") or {})):
+        asked = table.get("max_tokens")
+        if priced is not None and asked is not None and int(asked) > int(priced):
+            problems.append(f"{name} max_tokens {asked} is above [pricing] max_output_tokens {priced}: a call's "
+                            f"reservation would not bound what it can spend")
     limits = activity.objects.get(rsi_cfg.budget_ref) if rsi_cfg.budget_ref else {}
     if limits:
         from .evolve.execution import call_bound_problem
