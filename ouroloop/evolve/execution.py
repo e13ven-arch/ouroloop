@@ -316,13 +316,19 @@ class Budgets:
         the answer to that is not to start it (EX-03).
         """
         if allocation is not None:
-            limits = (self.scope(scope_id, book).get("allocations") or {}).get(allocation) or {}
-            spent = self.usage(scope_id, book, allocation=allocation)
-            for dim, limit in limits.items():
-                total = spent.get(dim, 0.0) + float(bound.get(dim, 0.0))
-                if total > float(limit) + 1e-9:
-                    return {"scope_id": scope_id, "dimension": dim, "limit": limit, "would_be": round(total, 6),
-                            "allocation": allocation}
+            # The allocation sits on this scope or on an ancestor: an activity's root sets aside the final
+            # comparison's share, which the final spends from its own phase account.
+            for owner in (scope_id, *self.ancestors(scope_id, book)):
+                limits = (self.scope(owner, book).get("allocations") or {}).get(allocation)
+                if limits is None:
+                    continue
+                spent = self.usage(owner, book, allocation=allocation)
+                for dim, limit in limits.items():
+                    total = spent.get(dim, 0.0) + float(bound.get(dim, 0.0))
+                    if total > float(limit) + 1e-9:
+                        return {"scope_id": owner, "dimension": dim, "limit": limit, "would_be": round(total, 6),
+                                "allocation": allocation}
+                break
         for name in (scope_id, *self.ancestors(scope_id, book)):
             entry = self.scope(name, book)
             used = self.usage(name, book)
@@ -345,6 +351,33 @@ class Budgets:
                         return {"scope_id": name, "dimension": dim, "limit": limit,
                                 "would_be": round(used.get(dim, 0.0) + value, 6)}
         return {}
+
+    def headroom(self, scope_id: str, book: dict, *, allocation: str | None = None) -> dict:
+        """What one more reservation from this scope may still take, per limited dimension: the tightest of every
+        limit on the way to the root, less the unspent part of each allocation other than the one being spent, and
+        — when spending an allocation — what is left of it. The same arithmetic as `_exceeds`, so what is shown as
+        remaining is what a reservation is actually allowed."""
+        room: dict = {}
+        if allocation is not None:
+            for owner in (scope_id, *self.ancestors(scope_id, book)):
+                limits = (self.scope(owner, book).get("allocations") or {}).get(allocation)
+                if limits is None:
+                    continue
+                spent = self.usage(owner, book, allocation=allocation)
+                room = {dim: round(float(limit) - spent.get(dim, 0.0), 6) for dim, limit in limits.items()}
+                break
+        for name in (scope_id, *self.ancestors(scope_id, book)):
+            entry = self.scope(name, book)
+            used = self.usage(name, book)
+            for dim, limit in entry["limits"].items():
+                blocked = 0.0
+                for alloc, limits in (entry.get("allocations") or {}).items():
+                    if alloc == allocation or dim not in limits:
+                        continue
+                    blocked += max(float(limits[dim]) - self.usage(name, book, allocation=alloc).get(dim, 0.0), 0.0)
+                left = round(float(limit) - used.get(dim, 0.0) - blocked, 6)
+                room[dim] = min(room.get(dim, left), left)
+        return room
 
     def reserve(self, scope_id: str, operation_id: str, bound: dict, *, allocation: str | None = None):
         """Hold an upper bound before the call. Refused when it would break this scope or any ancestor."""
@@ -426,7 +459,7 @@ class BudgetAccount:
     def allocate(self, name: str, limits: dict) -> dict:
         return self.budgets.allocate(self.scope_id, name, limits)
 
-    def remaining(self) -> dict:
+    def remaining(self, *, allocation: str | None = None) -> dict:
         book = self.budgets._read()
         entry = self.budgets.scope(self.scope_id, book)
         used = self.budgets.usage(self.scope_id, book)
@@ -434,13 +467,8 @@ class BudgetAccount:
         touched = self.budgets.touched(self.scope_id, book)
         # What can still be spent here, whichever scope's limit binds: a phase's account usually has no limits
         # of its own and spends from the activity's root, so its own `remaining` alone would show no cap at all.
-        effective = dict(out)
-        for name in self.budgets.ancestors(self.scope_id, book):
-            ancestor = self.budgets.scope(name, book)
-            spent = self.budgets.usage(name, book)
-            for dim, limit in ancestor["limits"].items():
-                left = round(float(limit) - spent.get(dim, 0.0), 6)
-                effective[dim] = min(effective.get(dim, left), left)
+        # What another purpose has set aside (the final's share) is not spendable here and is not shown as such.
+        effective = self.budgets.headroom(self.scope_id, book, allocation=allocation)
         return {"limits": dict(entry["limits"]),
                 "used": {k: round(v, 6) for k, v in used.items() if v or k in touched},
                 "remaining": out, "effective_remaining": effective,

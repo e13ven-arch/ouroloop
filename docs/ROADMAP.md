@@ -59,19 +59,33 @@ A～E 属于首版，递归方法比较与实际回用仍为必做。第二版�
 括号内是落实该条的测试：标“新增”的随对应修复一起写；只改配置的条目不另配测试。
 
 1. **付费前必修。**
-   - 基线前：
+   - 基线前（2026-10-02 已完成，经对抗审查后修正，见 JOURNAL 同日条目）：
      - 基线的 train 尝试直接作为第一轮测量：一个活动里 W0 的 train 只测一次（新增 `test_cycle.py::test_the_baseline_train_is_the_first_measurement`）。
-     - 基线 attempt 身份由金样测试锁定；单独跑的基线与之后 cycle 里的基线互相复用，不重付（新增 `test_cycle.py::test_baseline_attempt_ids_are_stable`）。
-     - 测量不完整时不复用；补采先记账再运行。
+     - 单独跑的基线与之后 cycle 里的基线互相复用，不重付（`test_cycle.py::test_baseline_attempt_ids_are_stable`，在与默认值不同的 task plan 下验证）。
+     - 运行身份由运行时守卫锁定，没有采用字面量金样（运行身份含环境信息，换机器就会变）：`measurement_planned` 与 `collection_booked` 记下运行身份；用改过的代码补完被中断的测量或补采批时，身份不一致就拒绝续跑，不按新身份重付（`test_cycle.py::test_a_measurement_booked_under_another_run_is_not_finished_under_this_one`）。
+     - 测量不完整时不复用，按记账的任务补齐（`test_cycle.py::test_an_interrupted_measurement_is_finished_not_reused`、`test_a_limited_baseline_is_finished_by_the_first_round`）。
+     - 补采先记账再运行：中断的批次在重启时按原序号补完、只计一次额度，补完的结果照常判断是否有进展；重建测量时纳入同一版本的补采结果（`test_an_interrupted_collection_batch_is_finished_at_its_own_index`、`test_improve_finishes_an_interrupted_batch`）；补完时遇到账号错误按暂停处理（`test_an_account_refusal_while_finishing_a_batch_pauses`）。
      - 示例配置中，研究模型的 `max_tokens` 与 `[pricing] max_output_tokens` 提到 32768。
-     - 启动检查按 pin 的 actor 与 `[research.llm]` 核对输出上限，并确认 key 存在；`type = "manual"` 免检 key（新增 `test_bench_phase.py::test_startup_checks_the_pinned_models`）。
-     - 配置里有 `[freeze.budget]`、而 `[rsi]` 没有 budget_ref 时，付费阶段拒绝启动并提示先 freeze：以空限额建立的预算根，以后无法再用冻结的限额打开（新增 `test_bench_phase.py::test_a_paid_phase_refuses_an_unfrozen_budget`）。
+     - 启动检查按 pin 的 actor 与 `[research.llm]` 核对输出上限，并确认 key 存在；`type = "manual"` 免检 key（新增 `test_cycle.py::test_startup_checks_the_pinned_models`）。
+     - 付费阶段在计划未命名时拒绝启动，并提示先 freeze（新增 `test_cycle.py::test_a_paid_phase_refuses_an_unfrozen_budget`）。具体是：
+       - 配置里有 `[freeze.X]`，而 `[rsi]` 没有对应的 ref；
+       - 或者活动带 `[improvement]`，而 `[rsi]` 没有同时命名 task_plan、schedule、budget 三个 ref。
+       - 原因：以空限额建立的预算根，以后无法再用冻结的限额打开；不在冻结计划下跑的基线，也不能被 cycle 复用。
+       - 有 `[improvement]` 时，`ouroloop freeze` 也冻结 preset 的 task plan 与 schedule，与 cycle 自己冻结的是同一组对象（`test_cycle.py::test_baseline_attempt_ids_are_stable`）。
      - cycle 拒绝多于 preset 的 `research_slots`（新增 `test_cycle.py::test_more_research_slots_than_the_preset_are_refused`）。
      - cycle 加停止点 `--until`（新增 `test_cycle.py::test_cycle_stops_at_the_named_step`）：
        - 取值为 `baseline`、`segment-N`、`segment-N/round-K` 或 `slot-N`，与 `rsi/cycle.json` 的步名一致。
        - 停下时：该段不标 finished，不进入下一个付费步骤，cycle 以 stopped 结束（不是 paused）。
        - 再次运行时从下一步续跑，已完成的部分不重复记账，也不重新冻结任何计划。
-     - 预算根里划出一笔 `final` 分配：freeze 时对根调用 `BudgetBook.allocate`，final 按该分配预留；cycle 不能花这部分（新增 `test_cycle.py::test_cycle_cannot_spend_the_final_allocation`）。
+       - 停止点是优先级最低的停因：调度规则在同一时刻触发时，报调度规则自己的原因（`test_a_stop_point_does_not_hide_the_schedules_own_end`）。
+       - 停在请求补采的那一轮时，这批不付费；续跑时先补这一批，再进入下一轮（`test_a_collection_a_stop_point_left_unanswered_runs_before_the_next_round`）。
+       - 续跑保持 patience 与失败计数；被重跑的轮（暂停的、因基础设施失败的）不计入（`test_a_resumed_segment_keeps_its_patience_and_failure_counts`、`test_a_segment_paused_on_infrastructure_resumes_after_the_repair`）。
+       - 回用检查只读研究位之后那一段，在它非暂停地结束时计算；停止点、暂停或重启都保留待查（`test_the_reuse_check_is_read_from_the_segment_after_the_slot`、`test_a_paused_segment_after_an_install_keeps_the_reuse_check_pending`、`test_until_slot_stops_before_the_next_segment`）。
+     - 活动开始时冻结的计划记在 `rsi/cycle.json`；之后的 cycle 若会冻结出别的计划（preset 或 `[freeze.*]` 变了，或 `[rsi]` 换了 ref），就拒绝运行（`test_an_activity_does_not_freeze_its_plans_again`）。
+     - 预算根里划出一笔 `final` 分配（`[freeze.budget.final]`），final 按该分配预留，cycle 不能花这部分（`test_cycle.py::test_cycle_cannot_spend_the_final_allocation`、`test_paid_run_safety.py::test_the_final_spends_the_share_set_aside_for_it`）。
+       - 分配在 freeze、启动检查与打开预算根时都校验：必须限制根所限的维度、大于零、给其余部分留有余额，且放得下一次调用（`test_a_share_that_cannot_work_is_refused_before_a_root_is_opened`）。
+       - 分配在第一次打开根时设定；根打开后不能改、不能撤、也不能在花钱之后再加（`test_an_open_roots_allocations_do_not_change`）。
+       - 显示给 R 和人的有效剩余，与预留实际允许的一致，不含未花的 final 份额。
    - worker 段前：
      - 准入一律拒绝 R 提供的 `spec.backend`，以及不带训练条目的 `kind=model` 改动（新增 `test_research_round.py::test_a_proposal_cannot_name_a_backend`）。
      - 续跑按 [M5 §3](modules/05_EXECUTION_BUDGET.md) 的“续跑的冻结输入”处理（新增 `test_real_run_findings.py::test_resume_refuses_a_changed_frozen_plan`）：
@@ -94,7 +108,7 @@ A～E 属于首版，递归方法比较与实际回用仍为必做。第二版�
      - E0 交给两支。
      - 研究位的 system 提示保留 R 自己的 propose 文本（R 正是用它提出对自身的修改），由研究位格式声明：前文是 worker 轮的改包指令，本次调用改的是这些指令本身，以本格式为准。只改代码里的格式，不改 R0 文本：R0 已冻结进 release，活动内改它不会生效。
      - 研究位读不出的回复记 invalid，不记 no_proposal；没有研究收据时，报告的 C4 按 `cycle.json` 中研究位的结局写 detail（新增 `test_report.py::test_c4_says_how_a_slot_without_a_campaign_ended`）。
-     - 研究位安装 R1 之后，回用检查只在紧随其后的 worker 段非暂停地结束时计算；该段暂停、崩溃或停在停止点时，保留待查（新增 `test_cycle.py::test_a_paused_segment_after_an_install_keeps_the_reuse_check_pending`）。
+     - 研究位安装 R1 之后，回用检查只在紧随其后的 worker 段非暂停地结束时计算；该段暂停、崩溃或停在停止点时，保留待查。已随停止点在阶段 1 完成（`test_cycle.py::test_a_paused_segment_after_an_install_keeps_the_reuse_check_pending`）。
 2. **付费前彩排（生产路径，不付 API 费用）。**
    - 目的：经 CLI `ouroloop bench --phase cycle` 走一遍生产路径，不注入研究员，也不替换 `cycle_pairs`，R 由 Claude 作答。它证明接线与故障协议，不证明任何模型的效果。
    - 环境：

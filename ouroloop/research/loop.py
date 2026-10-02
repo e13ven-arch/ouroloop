@@ -402,15 +402,46 @@ def pause_of(rows: list, stop_reason: str) -> str:
     return ""
 
 
+def counters_of(rows) -> tuple[int, int]:
+    """The idle and infrastructure-failure counts a run of rounds had reached, from its recorded rows, so a run
+    resumed after a stop point or a crash applies patience and the failure limit as an uninterrupted run would.
+    A round that is run again — a paused one, or one lost to infrastructure (`completed_round`) — counts toward
+    neither: after the repair it has not happened yet."""
+    idle = infra = 0
+    for row in rows or ():
+        if not completed_round(row) or row.get("next_action") in ("collect", "repair_runtime") \
+                or row.get("outcome") in ("no_proposal", "needs_collection", "budget_exhausted"):
+            continue
+        idle = 0 if row.get("outcome") == "installed" else idle + 1
+        infra = infra + 1 if row.get("outcome") in ("inconclusive", "installation_failed", "infrastructure_failed") \
+            else 0
+    return idle, infra
+
+
+def unanswered_collections(rows, booked: int) -> int:
+    """Collection requests in a resumed run's record that no batch answered: a round that asked for more evidence
+    just before a stop point, whose batch was not paid for because no round would have read it then."""
+    asked = sum(1 for r in rows or () if r.get("next_action") == "collect" and r.get("outcome") not in ROUND_MARKERS)
+    return max(asked - booked, 0)
+
+
 def run_worker_rounds(make_round, budget, *, schedule: Schedule | None = None, root=None, collect=None,
-                      collected_before: int = 0, on_result=None) -> list:
+                      collected_before: int = 0, on_result=None, history=(), stop_after: int | None = None,
+                      resume_collections=None) -> list:
     """Rounds until one of the fixed stop rules fires (execution.Schedule).
 
     `make_round(index) -> RoundContext` is called per round, so each round sees the release, the experience and
     the results that the previous one left — which is the whole point of a loop whose versions persist.
+
+    Resuming a run: `history` is its recorded rounds, so patience and the failure limit continue from where it
+    stopped; `resume_collections()` finishes the batches it booked and never finished, and a collection request a
+    stop point left unanswered is answered before the next round. `stop_after` is a stop point (docs/ROADMAP.md §3):
+    after that many rounds the run stops with "stopped_at", the lowest of the stop reasons, so a schedule rule that
+    fires at the same moment is still the reason given.
     """
     schedule = schedule or Schedule()
-    idle, infra, batches = 0, 0, collected_before
+    idle, infra = counters_of(history)
+    batches = collected_before
 
     class _Results(list):
         # Every result is handed to `on_result` as it happens, so a caller that keeps its own record of completed
@@ -422,8 +453,52 @@ def run_worker_rounds(make_round, budget, *, schedule: Schedule | None = None, r
     results = _Results()
 
     def stop_now(index: int, proposals: bool = True) -> str:
-        return schedule.stop(round_index=index, idle=idle, infra_failures=infra, proposals=proposals,
-                             affordable=budget.affordable({}) if budget else True)
+        reason = schedule.stop(round_index=index, idle=idle, infra_failures=infra, proposals=proposals,
+                               affordable=budget.affordable({}) if budget else True)
+        if not reason and stop_after is not None and index >= stop_after:
+            reason = "stopped_at"
+        return reason
+
+    def refused(e: Exception) -> bool:
+        """An account refusal (no balance, no quota, a refused key) pauses the run; anything else is not handled
+        here. Nothing more can run until a person acts, and an experiment it interrupted stays open, so the
+        restart after the repair continues it from its recorded state (resume_unfinished)."""
+        from ..providers import is_account_error
+        if not is_account_error(e):
+            return False
+        reason = f"the model provider refuses the account: {str(e)[:240]}"
+        results.append(_ct.RoundResult(outcome="infrastructure_failed", reason=reason, next_action="repair_runtime"))
+        results.append(_ct.RoundResult(outcome="stopped", reason="repair_runtime", next_action="repair_runtime"))
+        return True
+
+    def collected(got: dict) -> bool:
+        """Record a batch's outcome; False ends the run (no new valid evidence)."""
+        results.append(_ct.RoundResult(outcome="collected" if got["progress"] else "collection_no_progress",
+                                       reason=got.get("reason", ""), next_action="collect",
+                                       action_ref=got.get("request_ref")))
+        if not got["progress"]:
+            results.append(_ct.RoundResult(outcome="stopped", reason="collection_no_progress"))
+        return bool(got["progress"])
+
+    try:
+        for got in (resume_collections() if resume_collections is not None else ()):
+            if not collected(got):
+                return results
+        if collect is not None and unanswered_collections(history, collected_before):
+            if batches >= schedule.collection_batches:
+                results.append(_ct.RoundResult(outcome="stopped", reason="collection_limit"))
+                return results
+            after = stop_now(0)
+            if after:
+                results.append(_ct.RoundResult(outcome="stopped", reason=after))
+                return results
+            batches += 1
+            if not collected(collect(None, batch=batches)):
+                return results
+    except Exception as e:  # noqa: BLE001 - only an account refusal is handled here; anything else re-raises
+        if refused(e):
+            return results
+        raise
 
     for index in range(schedule.worker_rounds):
         stop = stop_now(index)
@@ -433,17 +508,9 @@ def run_worker_rounds(make_round, budget, *, schedule: Schedule | None = None, r
         try:
             result = run_worker_round(make_round(index), budget)
         except Exception as e:  # noqa: BLE001 - only an account refusal is handled here; anything else re-raises
-            from ..providers import is_account_error
-            if not is_account_error(e):
-                raise
-            # The provider refuses the account (no balance, no quota, a refused key). Nothing more can run until
-            # a person acts: the activity pauses, and an experiment it interrupted stays open, so the restart after
-            # the repair continues it from its recorded state (resume_unfinished) instead of starting over.
-            reason = f"the model provider refuses the account: {str(e)[:240]}"
-            results.append(_ct.RoundResult(outcome="infrastructure_failed", reason=reason,
-                                           next_action="repair_runtime"))
-            results.append(_ct.RoundResult(outcome="stopped", reason="repair_runtime", next_action="repair_runtime"))
-            return results
+            if refused(e):
+                return results
+            raise
         results.append(result)
         if result.outcome == "budget_exhausted":
             results.append(_ct.RoundResult(outcome="stopped", reason="budget_exhausted"))
@@ -465,13 +532,14 @@ def run_worker_rounds(make_round, budget, *, schedule: Schedule | None = None, r
                 results.append(_ct.RoundResult(outcome="stopped", reason=after))
                 return results
             batches += 1
-            got = collect(result, batch=batches)
+            try:
+                got = collect(result, batch=batches)
+            except Exception as e:  # noqa: BLE001 - the booked batch is finished at the restart
+                if refused(e):
+                    return results
+                raise
             result.action_ref = got.get("request_ref")
-            results.append(_ct.RoundResult(outcome="collected" if got["progress"] else "collection_no_progress",
-                                           reason=got.get("reason", ""), next_action="collect",
-                                           action_ref=got.get("request_ref")))
-            if not got["progress"]:
-                results.append(_ct.RoundResult(outcome="stopped", reason="collection_no_progress"))
+            if not collected(got):
                 return results
             continue
         if result.outcome in ("no_proposal", "needs_collection"):

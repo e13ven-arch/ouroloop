@@ -94,7 +94,8 @@ cancel 停新付费请求并尽力取消后台作业；取消仍可能收费，�
   - `run_worker_round` 遇到研究回复截断或草稿基础设施失败时，返回 repair_runtime；
   - `run_worker_rounds` 捕获账号错误（含每轮测量中的账号错误）后，停在 repair_runtime；
   - cycle 的研究位在 R 提案准入返回 repair_runtime、或构建返回 infrastructure_failed 时，记 paused。
-- collect、续跑、基线、研究位的 R 提案、campaign 公共测量与外测，遇到账号错误、截断、其余 ProviderError 或额度耗尽时，以异常退出。
+- worker 轮循环里的补采，以及重启时续完中断的补采批，遇到账号错误时也暂停（2026-10-02，阶段 1）。
+- 续跑未完成的实验、基线、研究位的 R 提案、campaign 公共测量与外测，遇到账号错误、截断、其余 ProviderError 或额度耗尽时，仍以异常退出。
 - 续跑不读 `eval_template_ref` 与 `budget_scope`；筛选与评测的 control 取当前 active（`ouroloop/bench.py:748`、`:759`）。
 
 以上按 ROADMAP §3 首个真实活动协议在付费前补齐。

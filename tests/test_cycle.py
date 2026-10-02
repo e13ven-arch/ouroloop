@@ -321,9 +321,16 @@ def test_a_paused_research_slot_stops_the_cycle_before_the_next_segment(fake_ups
     assert result["steps"]["slot-0"]["outcome"] == "paused" and "segment-1" not in result["steps"]
 
 
+def frozen(cfg):
+    """The config with its [freeze.*] tables frozen and named under [rsi], as `ouroloop freeze` leaves it."""
+    refs = bench.freeze(cfg, ".", out=lambda _line: None)
+    return {**cfg, "rsi": {**cfg["rsi"], **refs}}
+
+
 def test_a_restarted_baseline_pays_only_for_what_is_missing(fake_upstream, tmp_path, fixture_preset):
     cfg = cycle_config(fake_upstream, tmp_path)
     gap_w0(cfg, tmp_path)
+    cfg = frozen(cfg)
     bench.baseline(cfg, ".", out=lambda _line: None)
     path = tmp_path / "ws" / "bench" / rsi.DOMAIN / "results.jsonl"
     rows = sum(1 for _ in open(path))
@@ -405,3 +412,456 @@ def test_a_cycle_whose_research_arms_could_not_make_one_call_is_refused_up_front
     gap_w0(cfg, tmp_path)
     with pytest.raises(ValueError, match="research slot cannot run: one call reserves up to"):
         bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper())
+
+
+# ---------------------------------------------------------------------------- before the first paid activity
+# docs/ROADMAP.md §3, the first paid activity's protocol, step 1 ("before the baseline").
+def rows_of(tmp_path):
+    from ouroloop.benchmark import Results
+    return list(Results(tmp_path / "ws", rsi.DOMAIN).all())
+
+
+def test_the_baseline_train_is_the_first_measurement(fake_upstream, tmp_path, fixture_preset):
+    cfg = cycle_config(fake_upstream, tmp_path)
+    activity, _ = gap_w0(cfg, tmp_path)
+    w0 = activity.releases.active()["release_ref"]
+    result = bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper(), until="segment-0")
+    assert result["status"] == "stopped" and result["steps"]["segment-0"]["stop_reason"] == "no_proposal"
+    train = [r for r in rows_of(tmp_path) if r.split == "train" and r.system_release_ref == w0]
+    # W0's train split was measured once: by the baseline, under the measurement's identity; round 0 read it
+    assert sorted(r.task_id for r in train) == sorted(rsi.TRAIN)
+    assert {bench._arm_of(r.attempt_id) for r in train} == {"measure"}
+    plans = [e for e in ct.Events(activity.root).of("measurement_planned") if e["release"] == w0]
+    assert plans and plans[0]["first"] and sorted(plans[0]["tasks"]) == sorted(rsi.TRAIN)
+
+
+def test_baseline_attempt_ids_are_stable(fake_upstream, tmp_path, fixture_preset):
+    """A baseline run on its own after `ouroloop freeze`, and the cycle's baseline after it, are one run, under a
+    task plan whose conditions differ from the defaults (so a baseline outside the frozen plan would not match)."""
+    fixture_preset["task_plan"]["per_attempt_budget"] = {"max_steps": 6}
+    cfg = cycle_config(fake_upstream, tmp_path)
+    gap_w0(cfg, tmp_path)
+    named = frozen(cfg)
+    assert {"task_plan_ref", "schedule_ref", "budget_ref"} <= set(named["rsi"])   # the preset's plans too
+    by_cycle = bench._cycle_config(cfg, ".", bench.improvement_settings(cfg), lambda _line: None)["rsi"]
+    assert {k: named["rsi"][k] for k in ("task_plan_ref", "schedule_ref", "budget_ref")} == \
+        {k: by_cycle[k] for k in ("task_plan_ref", "schedule_ref", "budget_ref")}
+    bench.baseline(named, ".", out=lambda _line: None)
+    before = [(r.attempt_id, r.run) for r in rows_of(tmp_path)]
+    assert all(bench._arm_of(a) == "measure" for a, _ in before if "/rsi.dev" not in a)
+    planned = [e for e in ct.Events(tmp_path / "ws").of("measurement_planned")]
+    assert {e["run"] for e in planned} == {run for a, run in before if "/rsi.dev" not in a}
+    assert not (tmp_path / "ws" / "rsi" / "cycle.json").exists()
+    lines = []
+    result = bench.cycle(cfg, ".", out=lines.append, researcher=Stopper(), until="baseline")
+    assert result["status"] == "stopped" and "segment-0" not in result["steps"]
+    assert not any("baseline is on record" in line for line in lines)      # the cycle ran its baseline
+    assert [(r.attempt_id, r.run) for r in rows_of(tmp_path)] == before      # and paid for none of it
+
+
+def test_an_interrupted_measurement_is_finished_not_reused(fake_upstream, tmp_path, fixture_preset):
+    cfg = cycle_config(fake_upstream, tmp_path)
+    activity, _ = gap_w0(cfg, tmp_path)
+    named = frozen(cfg)
+    work = bench.improvement(activity, template_ref=named["rsi"]["task_plan_ref"])
+    w0 = activity.releases.active()["release_ref"]
+    # the whole split was booked and a pause stopped it after two tasks
+    work.train_measurement(w0, rsi.TRAIN[:2], first=True, planned=rsi.TRAIN)
+    last = work.last_measurement(w0)
+    assert last["missing"] == rsi.TRAIN[2:]
+    measured = work.measure(w0, last)
+    assert not measured["reused"] and sorted(r.task_id for r in measured["train"]) == sorted(rsi.TRAIN)
+    measures = [r for r in rows_of(tmp_path) if bench._arm_of(r.attempt_id) == "measure"]
+    assert len(measures) == len(rsi.TRAIN)            # the two recorded attempts were not paid for again
+    assert work.last_measurement(w0)["missing"] == []
+
+
+def test_an_interrupted_collection_batch_is_finished_at_its_own_index(fake_upstream, tmp_path, fixture_preset,
+                                                                       monkeypatch):
+    cfg = cycle_config(fake_upstream, tmp_path)
+    activity, _ = gap_w0(cfg, tmp_path)
+    named = frozen(cfg)
+    work = bench.improvement(activity, template_ref=named["rsi"]["task_plan_ref"])
+    w0 = activity.releases.active()["release_ref"]
+    measured = work.measure(w0, None)
+
+    def crash(*a, **kw):
+        raise RuntimeError("the process died after the booking")
+    with monkeypatch.context() as m:
+        m.setattr(work, "_run_collection", crash)
+        with pytest.raises(RuntimeError):
+            work.collect_batch(measured, batch=1, root=activity.root)
+    # booked, so it counts toward the quota although it never ran
+    assert bench._collection_batches(activity.root, work.scope_id, None) == 1
+    assert len(work.finish_collections(activity.root, measured)) == 1
+    assert work.finish_collections(activity.root, measured) == []           # finished once
+    assert bench._collection_batches(activity.root, work.scope_id, None) == 1
+    collected = [r for r in rows_of(tmp_path) if bench._arm_of(r.attempt_id) == "collect"]
+    assert collected and {r.attempt for r in collected} == {1}              # at the index it was booked at
+    # a restart rebuilds the measurement with the batch's attempts in it
+    assert {r.attempt_id for r in collected} <= {r.attempt_id for r in work.last_measurement(w0)["train"]}
+
+
+def test_cycle_stops_at_the_named_step(fake_upstream, tmp_path, fixture_preset):
+    fixture_preset["schedule"].update(worker_rounds=2, patience=2)
+    cfg = cycle_config(fake_upstream, tmp_path)
+    activity, _ = gap_w0(cfg, tmp_path)
+    for bad in ("segment-3", "slot-1", "segment-0/round-2", "nope"):
+        with pytest.raises(ValueError, match="--until"):
+            bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper(), until=bad)
+    lines = []
+    first = bench.cycle(cfg, ".", out=lines.append, researcher=SkillAnyway(), until="segment-0/round-0")
+    assert first["status"] == "stopped" and first["ok"] is True
+    assert first["steps"]["segment-0"]["stop_reason"] == "stopped_at" and "slot-0" not in first["steps"]
+    assert any("stopped at segment-0/round-0" in line for line in lines)
+    segment = json.loads((tmp_path / "ws" / "rsi" / "segments" / "segment-0.json").read_text())
+    assert not segment.get("finished")                      # the stop point does not finish the segment
+    # running again continues with round 1 only, and stops before the research slot
+    worker = Stopper()
+    second = bench.run_phase(cfg, ".", phase="cycle", out=lambda _line: None, researcher=worker,
+                             until="segment-0")
+    assert second["status"] == "stopped" and "slot-0" not in second["steps"]
+    assert sum(1 for r in worker.requests if r["step"] == "propose") == 1
+    assert json.loads((tmp_path / "ws" / "rsi" / "segments" / "segment-0.json").read_text())["finished"]
+
+
+def test_a_resumed_segment_keeps_its_patience_and_failure_counts():
+    from ouroloop.research.loop import counters_of
+    assert counters_of([{"outcome": "rejected"}, {"outcome": "stopped", "reason": "rounds_done"}]) == (1, 0)
+    assert counters_of([{"outcome": "installed"}, {"outcome": "inconclusive"}]) == (1, 1)
+    # a paused round, or one lost to infrastructure, is run again after the repair and counts toward neither limit
+    assert counters_of([{"outcome": "rejected"},
+                        {"outcome": "infrastructure_failed", "next_action": "repair_runtime"}]) == (1, 0)
+    assert counters_of([{"outcome": "inconclusive", "reason": INFRA}] * 2
+                       + [{"outcome": "stopped", "reason": "infrastructure_failures"}]) == (0, 0)
+
+
+def test_more_research_slots_than_the_preset_are_refused(fake_upstream, tmp_path, fixture_preset):
+    cfg = cycle_config(fake_upstream, tmp_path)
+    cfg["freeze"]["schedule"] = {"research_slots": 2}
+    gap_w0(cfg, tmp_path)
+    with pytest.raises(ValueError, match="research_slots 2 is above the preset's 1"):
+        bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper())
+
+
+def test_a_paid_phase_refuses_an_unfrozen_budget(fake_upstream, tmp_path, fixture_preset):
+    cfg = cycle_config(fake_upstream, tmp_path)
+    gap_w0(cfg, tmp_path)
+    with pytest.raises(ValueError, match="names no budget_ref"):
+        bench.baseline(cfg, ".", out=lambda _line: None)
+    book = tmp_path / "ws" / "rsi" / "budget" / "book.json"
+    assert not book.exists() or "cyc" not in json.loads(book.read_text())["scopes"]   # no empty root was opened
+    bench.baseline(frozen(cfg), ".", out=lambda _line: None)
+
+
+def test_startup_checks_the_pinned_models(fake_upstream, tmp_path, fixture_preset, monkeypatch):
+    monkeypatch.delenv("OUROLOOP_TEST_UNSET_KEY", raising=False)
+    cfg = cycle_config(fake_upstream, tmp_path)
+    cfg["llm"] = {"type": "openai_compat", "model": "m", "api_key_env": "OUROLOOP_TEST_UNSET_KEY",
+                  "max_tokens": 20000}
+    cfg["pricing"] = {"input_per_1k": 0.001, "output_per_1k": 0.002, "max_input_tokens": 100000,
+                      "max_output_tokens": 16384, "source": "test"}
+    activity = bench.open_activity(cfg, ".", out=lambda _line: None)     # W0 pins this actor
+    # [llm] changed after the bootstrap: what is checked is what the release pins, and the research model
+    later = {**cfg, "llm": {"type": "rsi:BusinessWorker"},
+             "research": {"llm": {"type": "manual", "dir": str(tmp_path / "m"), "max_tokens": 32768}}}
+    problems = bench.startup_checks(activity, later, phase="baseline")
+    assert any(p.startswith("the actor the active release pins max_tokens 20000 is above") for p in problems)
+    assert any("the actor the active release pins reads its key from OUROLOOP_TEST_UNSET_KEY" in p
+               for p in problems)
+    assert any(p.startswith("[research.llm] max_tokens 32768 is above") for p in problems)
+    assert not any("[research.llm] reads its key" in p for p in problems)    # a manual model has no key
+    monkeypatch.setenv("OUROLOOP_TEST_UNSET_KEY", "set")
+    assert not any("reads its key" in p for p in bench.startup_checks(activity, later, phase="baseline"))
+
+
+def test_cycle_cannot_spend_the_final_allocation(fake_upstream, tmp_path, fixture_preset):
+    cfg = cycle_config(fake_upstream, tmp_path)
+    cfg["freeze"]["budget"] = {"model_calls": 100, "final": {"model_calls": 30}}
+    gap_w0(cfg, tmp_path)
+    named = frozen(cfg)
+    activity = bench.open_activity(named, ".", out=lambda _line: None)
+    assert bench.budget_allocations(activity.objects.get(named["rsi"]["budget_ref"])) == \
+        {"final": {"model_calls": 30.0}}
+    improving = bench.activity_budget(activity, named, "improve")
+    final = bench.activity_budget(activity, named, "final:x")
+    # a fresh root could hold 31 more calls: only the final's share refuses them
+    assert final.affordable({"model_calls": 30}, allocation="final")
+    assert not final.affordable({"model_calls": 31}, allocation="final")
+    assert improving.affordable({"model_calls": 70}) and not improving.affordable({"model_calls": 71})
+    # what the cycle is shown as left is what it may reserve, without the final's share
+    assert improving.remaining()["effective_remaining"]["model_calls"] == 70
+    assert final.remaining(allocation="final")["effective_remaining"]["model_calls"] == 30
+    improving.reserve("everything the cycle may spend", {"model_calls": 70})
+    assert improving.remaining()["effective_remaining"]["model_calls"] == 0
+    assert final.affordable({"model_calls": 30}, allocation="final")
+
+
+def test_a_share_that_cannot_work_is_refused_before_a_root_is_opened(fake_upstream, tmp_path, fixture_preset):
+    for share, message in (({"model_calls": 150}, "nothing is left"), ({"usd": 5}, "sets nothing aside"),
+                           ({"model_calls": 0}, "above zero")):
+        cfg = cycle_config(fake_upstream, tmp_path / message[:6].replace(" ", "_"))
+        cfg["freeze"]["budget"] = {"model_calls": 100, "final": share}
+        gap_w0(cfg, tmp_path / message[:6].replace(" ", "_"))
+        with pytest.raises(ValueError, match=message):
+            frozen(cfg)
+
+
+def test_an_open_roots_allocations_do_not_change(fake_upstream, tmp_path, fixture_preset):
+    from ouroloop.evolve.execution import BudgetError
+    cfg = cycle_config(fake_upstream, tmp_path)
+    cfg["freeze"]["budget"] = {"model_calls": 100, "final": {"model_calls": 30}}
+    gap_w0(cfg, tmp_path)
+    named = frozen(cfg)
+    activity = bench.open_activity(named, ".", out=lambda _line: None)
+    bench.activity_budget(activity, named, "improve").reserve("a call", {"model_calls": 1})
+    without = {**named, "rsi": {**named["rsi"],
+                                "budget_ref": activity.objects.put_json("budget", {"model_calls": 100.0})}}
+    with pytest.raises(BudgetError, match="do not change"):               # withdrawn from an open root
+        bench.activity_budget(activity, without, "final:x")
+    plain = cycle_config(fake_upstream, tmp_path / "late")
+    gap_w0(plain, tmp_path / "late")
+    plain_named = frozen(plain)
+    late_activity = bench.open_activity(plain_named, ".", out=lambda _line: None)
+    bench.activity_budget(late_activity, plain_named, "improve").reserve("a call", {"model_calls": 1})
+    late = {**plain_named, "rsi": {**plain_named["rsi"], "budget_ref": late_activity.objects.put_json(
+        "budget", {"model_calls": 4000.0, "tool_calls": 4000.0, "allocations": {"final": {"model_calls": 30.0}}})}}
+    with pytest.raises(BudgetError, match="already spent"):                # added after spending
+        bench.activity_budget(late_activity, late, "final:x")
+
+
+# ---------------------------------------------------------------------------- review fixes (stage 1)
+INFRA = "3 pairs are incomplete: ['t#0']"
+
+
+def scripted_rounds(seq):
+    it = iter(seq)
+
+    def run(ctx, budget):
+        outcome, reason = next(it)
+        return ct.RoundResult(outcome=outcome, reason=reason)
+    return run
+
+
+@pytest.mark.parametrize("schedule,seq", [
+    ({"worker_rounds": 3, "patience": 3, "max_infrastructure_failures": 2}, [("inconclusive", INFRA)] * 2),
+    ({"worker_rounds": 3, "patience": 2, "max_infrastructure_failures": 2},
+     [("rejected", "no gain"), ("inconclusive", INFRA)])])
+def test_a_segment_paused_on_infrastructure_resumes_after_the_repair(fake_upstream, tmp_path, fixture_preset,
+                                                                    monkeypatch, schedule, seq):
+    from ouroloop.research import loop as L
+    fixture_preset["schedule"].update(schedule)
+    cfg = cycle_config(fake_upstream, tmp_path)
+    gap_w0(cfg, tmp_path)
+    with monkeypatch.context() as m:
+        m.setattr(L, "run_worker_round", scripted_rounds(seq))
+        first = bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper())
+    assert first["status"] == "paused"
+    worker = Stopper()                               # the runtime is repaired
+    again = bench.cycle(cfg, ".", out=lambda _line: None, researcher=worker)
+    assert any(r["step"] == "propose" for r in worker.requests)          # a round ran
+    assert again["steps"]["segment-0"]["stop_reason"] == "no_proposal"
+
+
+def test_the_reuse_check_is_read_from_the_segment_after_the_slot(fake_upstream, tmp_path, fixture_preset,
+                                                                 monkeypatch):
+    cfg = cycle_config(fake_upstream, tmp_path)
+    gap_w0(cfg, tmp_path)
+    outer_on_the_gap(monkeypatch)
+    factory, _ = arms([Stopper, Stopper, SkillAnyway])
+    first = bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper(), slot_researcher=RProposer(),
+                        arm_researcher=factory, until="slot-0")
+    assert first["status"] == "stopped" and first["steps"]["slot-0"]["installed"]
+    assert first["steps"]["slot-0"].get("reuse") is None                     # pending, not written off
+    worker = Stopper()
+    second = bench.cycle(cfg, ".", out=lambda _line: None, researcher=worker, slot_researcher=RProposer(),
+                         arm_researcher=arms([])[0])
+    reuse = second["steps"]["slot-0"]["reuse"]
+    assert reuse["state"] == "verified" and reuse["segment"] == "segment-1"
+    assert any(r["step"] == "propose" and r["system"] == R1_PROPOSE for r in worker.requests)
+
+
+def test_a_paused_segment_after_an_install_keeps_the_reuse_check_pending(fake_upstream, tmp_path, fixture_preset,
+                                                                         monkeypatch):
+    cfg = cycle_config(fake_upstream, tmp_path)
+    gap_w0(cfg, tmp_path)
+    outer_on_the_gap(monkeypatch)
+    factory, _ = arms([Stopper, Stopper, SkillAnyway])
+    real_improve = bench.improve
+
+    def paused_after_the_slot(*a, segment=None, **kw):
+        out = real_improve(*a, segment=segment, **kw)
+        return {**out, "stop_reason": "repair_runtime"} if segment == "segment-1" else out
+    with monkeypatch.context() as m:
+        m.setattr(bench, "improve", paused_after_the_slot)
+        first = bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper(), slot_researcher=RProposer(),
+                            arm_researcher=factory)
+    assert first["status"] == "paused" and first["steps"]["slot-0"].get("reuse") is None
+    state = json.loads((tmp_path / "ws" / "rsi" / "cycle.json").read_text())
+    assert state["reuse_pending"]["segment"] == "segment-1"
+    again = bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper(), slot_researcher=RProposer(),
+                        arm_researcher=arms([])[0])
+    assert again["steps"]["slot-0"]["reuse"]["state"] == "verified"
+
+
+class Collector(Stopper):
+    """Asks for more evidence, once."""
+
+    def summarize(self, context, prompt, notes, coverage, experience=(), *, package=None, allowed=()):
+        self.requests.append({"step": "propose", "system": prompt})
+        return ProposalResult(next_action="collect", reason="the failures need another attempt each")
+
+
+def test_a_collection_a_stop_point_left_unanswered_runs_before_the_next_round(fake_upstream, tmp_path,
+                                                                              fixture_preset):
+    fixture_preset["schedule"].update(worker_rounds=2, patience=2)
+    cfg = cycle_config(fake_upstream, tmp_path)
+    gap_w0(cfg, tmp_path)
+    first = bench.cycle(cfg, ".", out=lambda _line: None, researcher=Collector(), until="segment-0/round-0")
+    assert first["status"] == "stopped"
+    assert not [r for r in rows_of(tmp_path) if bench._arm_of(r.attempt_id) == "collect"]   # not paid at the stop
+    worker = Stopper()
+    bench.cycle(cfg, ".", out=lambda _line: None, researcher=worker, until="segment-0")
+    assert [r for r in rows_of(tmp_path) if bench._arm_of(r.attempt_id) == "collect"]
+    rounds = json.loads((tmp_path / "ws" / "rsi" / "segments" / "segment-0.json").read_text())["rounds"]
+    assert [r["outcome"] for r in rounds].count("collected") == 1
+    assert sum(1 for r in worker.requests if r["step"] == "propose") == 1        # round 1 read the batch
+
+
+def test_a_measurement_booked_under_another_run_is_not_finished_under_this_one(fake_upstream, tmp_path,
+                                                                               fixture_preset):
+    from dataclasses import replace
+    cfg = cycle_config(fake_upstream, tmp_path)
+    activity, _ = gap_w0(cfg, tmp_path)
+    named = frozen(cfg)
+    work = bench.improvement(activity, template_ref=named["rsi"]["task_plan_ref"])
+    w0 = activity.releases.active()["release_ref"]
+    work.train_measurement(w0, rsi.TRAIN[:2], first=True, planned=rsi.TRAIN)
+    work.attempt_budget = replace(work.attempt_budget, max_steps=work.attempt_budget.max_steps + 1)  # new code
+    with pytest.raises(ValueError, match="booked under run"):
+        work.measure(w0, work.last_measurement(w0))
+    assert len([r for r in rows_of(tmp_path) if bench._arm_of(r.attempt_id) == "measure"]) == 2
+
+
+def test_an_activity_does_not_freeze_its_plans_again(fake_upstream, tmp_path, fixture_preset):
+    cfg = cycle_config(fake_upstream, tmp_path)
+    gap_w0(cfg, tmp_path)
+    bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper(), until="baseline")
+    fixture_preset["task_plan"]["gate"]["min_gain"] = 0.3          # the preset changed between two runs
+    with pytest.raises(ValueError, match="plans are not frozen again"):
+        bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper(), until="segment-0")
+
+
+def test_until_slot_stops_before_the_next_segment(fake_upstream, tmp_path, fixture_preset, monkeypatch):
+    cfg = cycle_config(fake_upstream, tmp_path)
+    activity, _ = gap_w0(cfg, tmp_path)
+    outer_on_the_gap(monkeypatch)
+
+    def rejected(cfg, base=".", **kw):
+        ref = activity.objects.put(ct.EvaluationReceipt(profile="research", verdict="rejected", reasons=()))
+        return {"receipt": ref, "verdict": "rejected", "installation": None, "release": ""}
+    monkeypatch.setattr(bench, "research", rejected)
+    result = bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper(), slot_researcher=RProposer(),
+                         until="slot-0")
+    assert result["status"] == "stopped" and result["steps"]["slot-0"]["verdict"] == "rejected"
+    assert "segment-1" not in result["steps"]
+
+
+def test_which_paid_phases_need_which_frozen_plans(fake_upstream, tmp_path, fixture_preset):
+    cfg = cycle_config(fake_upstream, tmp_path)
+    activity, _ = gap_w0(cfg, tmp_path)
+    plain = {k: v for k, v in cfg.items() if k != "improvement"}         # not an automatic activity
+    problems = bench.startup_checks(activity, plain, phase="baseline")
+    assert any("names no budget_ref" in p for p in problems)            # its own [freeze.budget]
+    assert not any("names no task_plan_ref" in p for p in problems)
+    bare = {k: v for k, v in cfg.items() if k != "freeze"}               # an automatic activity: all three
+    problems = bench.startup_checks(activity, bare, phase="baseline")
+    assert all(any(f"names no {t}_ref" in p for p in problems) for t in ("task_plan", "schedule", "budget"))
+
+
+def test_a_manual_model_is_not_checked_for_a_key(fake_upstream, tmp_path, fixture_preset, monkeypatch):
+    monkeypatch.delenv("OUROLOOP_TEST_UNSET_KEY", raising=False)
+    cfg = cycle_config(fake_upstream, tmp_path)
+    activity, _ = gap_w0(cfg, tmp_path)
+    later = {**cfg, "research": {"llm": {"type": "manual", "dir": str(tmp_path / "m"),
+                                         "api_key_env": "OUROLOOP_TEST_UNSET_KEY"}}}
+    assert not any("reads its key" in p for p in bench.startup_checks(activity, later, phase="baseline"))
+
+
+def test_a_limited_baseline_is_finished_by_the_first_round(fake_upstream, tmp_path, fixture_preset):
+    cfg = cycle_config(fake_upstream, tmp_path)
+    activity, _ = gap_w0(cfg, tmp_path)
+    named = frozen(cfg)
+    w0 = activity.releases.active()["release_ref"]
+    bench.baseline(named, ".", out=lambda _line: None, limit=1)
+    assert len([r for r in rows_of(tmp_path) if r.split == "train" and r.system_release_ref == w0]) == 1
+    bench.improve(named, ".", out=lambda _line: None, researcher=Stopper())
+    train = [r.task_id for r in rows_of(tmp_path) if r.split == "train" and r.system_release_ref == w0]
+    assert sorted(train) == sorted(rsi.TRAIN)                      # the rest once, the first not again
+
+
+def test_improve_finishes_an_interrupted_batch(fake_upstream, tmp_path, fixture_preset, monkeypatch):
+    cfg = cycle_config(fake_upstream, tmp_path)
+    activity, _ = gap_w0(cfg, tmp_path)
+    named = frozen(cfg)
+    work = bench.improvement(activity, template_ref=named["rsi"]["task_plan_ref"])
+    w0 = activity.releases.active()["release_ref"]
+    measured = work.measure(w0, None)
+
+    def crash(*a, **kw):
+        raise RuntimeError("died after the booking")
+    with monkeypatch.context() as m:
+        m.setattr(work, "_run_collection", crash)
+        with pytest.raises(RuntimeError):
+            work.collect_batch(measured, batch=1, root=activity.root)
+    bench.improve(named, ".", out=lambda _line: None, researcher=Stopper())
+    collected = [r for r in rows_of(tmp_path) if bench._arm_of(r.attempt_id) == "collect"]
+    assert collected and {r.attempt for r in collected} == {1}
+
+
+class Useless(Stopper):
+    """Proposes a skill that changes nothing the fixture checks."""
+
+    def summarize(self, context, prompt, notes, coverage, experience=(), *, package=None, allowed=()):
+        self.requests.append({"step": "propose", "system": prompt})
+        manifest = {**hp.empty_manifest(),
+                    "skills": [{"name": "be-polite", "path": "skills/be-polite.md", "description": "tone"}]}
+        patch = {"write": {"manifest.json": json.dumps(manifest), "skills/be-polite.md": "Be polite."}}
+        return ProposalResult(proposals=[ct.ExperimentProposal(
+            owner="worker", hypothesis="politeness", origin="scripted",
+            changes=({"target": "worker.harness", "kind": "workflow", "change": {"patch": patch}},))])
+
+
+def test_a_stop_point_does_not_hide_the_schedules_own_end(fake_upstream, tmp_path, fixture_preset):
+    fixture_preset["schedule"].update(worker_rounds=3, patience=1)
+    cfg = cycle_config(fake_upstream, tmp_path)
+    gap_w0(cfg, tmp_path)
+    first = bench.cycle(cfg, ".", out=lambda _line: None, researcher=Useless(), until="segment-0/round-0")
+    # patience fires after round 0, at the stop point: the segment ended by its own rule, and says so
+    assert first["status"] == "stopped" and first["steps"]["segment-0"]["stop_reason"] == "patience"
+    worker = Useless()
+    second = bench.cycle(cfg, ".", out=lambda _line: None, researcher=worker, until="segment-0")
+    assert [r for r in worker.requests if r["step"] == "propose"] == []
+    assert second["steps"]["segment-0"]["stop_reason"] == "patience"
+
+
+def test_an_account_refusal_while_finishing_a_batch_pauses(fake_upstream, tmp_path, fixture_preset, monkeypatch):
+    from ouroloop.providers import ProviderAccountError
+    cfg = cycle_config(fake_upstream, tmp_path)
+    activity, _ = gap_w0(cfg, tmp_path)
+    named = frozen(cfg)
+    work = bench.improvement(activity, template_ref=named["rsi"]["task_plan_ref"])
+    measured = work.measure(activity.releases.active()["release_ref"], None)
+
+    def crash(*a, **kw):
+        raise RuntimeError("died after the booking")
+    with monkeypatch.context() as m:
+        m.setattr(work, "_run_collection", crash)
+        with pytest.raises(RuntimeError):
+            work.collect_batch(measured, batch=1, root=activity.root)
+
+    def refused(self, *a, **kw):
+        raise ProviderAccountError("insufficient balance")
+    monkeypatch.setattr(bench.Improvement, "_run_collection", refused)
+    result = bench.improve(named, ".", out=lambda _line: None, researcher=Stopper())
+    assert result["stop_reason"] == "repair_runtime"          # paused, not an exception out of the phase

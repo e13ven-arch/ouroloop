@@ -73,6 +73,12 @@ segment, the planned research slot, and one more segment that shows whether an i
 report. It never runs the final split. Without Docker, narrow `[harness_evolution] components` to
 `["memory", "skills"]`; with code components and no worker image, `freeze` and every paid phase refuse to start.
 
+`--until` stops the cycle after a step and pays for nothing past it: `baseline`, `segment-N`, `segment-N/round-K` or
+`slot-N`. Running the cycle again (with a later stop point, or none) continues from there. The first paid activity
+uses these stops as its checkpoints (docs/ROADMAP.md §3). A phase run on its own (`--phase baseline`, say) first
+needs `ouroloop freeze --config ...` and the `[rsi]` lines it prints: it then runs under the same task plan, schedule
+and budget the cycle would, and the cycle reuses its attempts.
+
 ## Not established here
 
 The smoke phase makes no claim about capability, and neither does a phase that runs. A real model has run this loop only as

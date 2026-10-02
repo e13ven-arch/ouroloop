@@ -23,6 +23,7 @@ The phases run the loop the other modules define; this module owns the order and
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -273,7 +274,7 @@ def run_phase(cfg: dict, base: str | Path = ".", *, phase: str = "smoke", **kw) 
                "improve": {"out", "rounds", "researcher", "segment"},
                "research": {"out", "researcher", "campaign_ref", "r_candidate_ref"},
                "evaluate": {"out", "plan_ref", "resume"}, "report": {"out", "write"},
-               "cycle": {"out", "researcher", "slot_researcher", "arm_researcher"}}[phase]
+               "cycle": {"out", "researcher", "slot_researcher", "arm_researcher", "until"}}[phase]
     unknown = sorted(set(kw) - allowed)
     if unknown:
         raise TypeError(f"the {phase} phase does not take {unknown}; it takes {sorted(allowed)}")
@@ -292,7 +293,7 @@ from .evolve import contracts as _ct
 from .evolve import experience as _experience
 from .evolve import feedback as _feedback
 from .evolve.build import build_task_dataset as _build_task_dataset
-from .evolve.execution import Budgets, Schedule
+from .evolve.execution import BudgetError, Budgets, Schedule
 from .evolve.task_gate import GatePlan, TaskEvalPlan, evaluate_task
 from .evolve.task_gate import screen as _screen
 from .points import business_stop_point as _business_stop_point
@@ -381,6 +382,7 @@ class Improvement:
     worker: object = None                       # the qualified isolated worker for package code, or None
     actor_override: bool = False                # a frontier arm runs its own provider, as a separate comparison
     segment: str | None = None                  # the cycle's worker segment, whose collection quota is its own
+    allocation: str | None = None               # the root allocation the arm's calls spend ("final"), if any
     _plans: dict = _field(default_factory=dict)
     _experiment_ref: str = ""
 
@@ -401,21 +403,10 @@ class Improvement:
                             retry_policy={"max_infrastructure_retries": 1}, screen_ids=tuple(self.screen_ids),
                             gate_plan=self.gate.to_json(), installs=self.plan_installs)
 
-    def run_arm(self, arm: str, release_ref: str, order, *, plan_ref: str, split: str = "dev",
-                candidate: str = "candidate", role: str = "evolved", probe: bool = False,
-                permit: str | None = None, scope: str | None = None, retry_index: int = 0,
-                resume: bool = False, supersedes: dict | None = None) -> list:
-        """One arm's attempts. Each arm is assembled from its own release, with its own session, tool environment
-        and episode; nothing mutable is shared between the two sides (docs/modules/03_EVALUATION_RELEASE.md §2).
-
-        Every model call of the arm's agent goes through the activity's budget book when there is one
-        (MeteredProvider): reserved before the call, settled on its measured usage, and refused once a limit is
-        reached. With `resume`, attempts this same run already recorded are returned as they were rather than
-        paid for again: the attempt id is determined by the run, the task, the repeat, the arm and the retry, so
-        a restarted plan finds exactly the attempts it had finished (docs/modules/05_EXECUTION_BUDGET.md §4).
-        """
-        from .evolve.execution import MeteredProvider, Pricing
-        from .evolve.task_eval import make_agent_factory, run_tasks
+    def run_identity(self, release_ref: str, *, plan_ref: str, split: str, candidate: str, role: str,
+                     permit: str | None = None, scope: str | None = None) -> tuple:
+        """The run an arm's attempts are recorded under, and what it binds: (RunManifest, bound release, actor).
+        Its hash is the attempts' identity, so a run already on record can be found before anything is paid."""
         if permit is not None:
             self.releases.authorize(release_ref, profile="evaluation", plan_ref=plan_ref,
                                     scope_id=scope or self.scope_id)
@@ -442,13 +433,31 @@ class Improvement:
                           environment=self.rt_environment(), budget=self.attempt_budget,
                           data=self.splits.hash(), repeats=self.repeats,
                           system_release_ref=release_ref,
-                          worker_ref=self.objects.load(release_ref, _ct.SystemRelease).worker_ref,
-                          research_ref=self.objects.load(release_ref, _ct.SystemRelease).research_ref,
+                          worker_ref=release.worker_ref, research_ref=release.research_ref,
                           core_ref=self.core_ref, eval_plan_ref=plan_ref, budget_scope=self.scope_id,
                           input_schema_refs=(self.stop_view,),
                           actor_identity_ref=bound.actor_identity.ref() if pinned else None,
                           package_ref=bound.package.ref if bound.package is not None else None,
                           mode=mode, target_harness_ref=release.target_harness_ref)
+        return run, bound, actor
+
+    def run_arm(self, arm: str, release_ref: str, order, *, plan_ref: str, split: str = "dev",
+                candidate: str = "candidate", role: str = "evolved", probe: bool = False,
+                permit: str | None = None, scope: str | None = None, retry_index: int = 0,
+                resume: bool = False, supersedes: dict | None = None) -> list:
+        """One arm's attempts. Each arm is assembled from its own release, with its own session, tool environment
+        and episode; nothing mutable is shared between the two sides (docs/modules/03_EVALUATION_RELEASE.md §2).
+
+        Every model call of the arm's agent goes through the activity's budget book when there is one
+        (MeteredProvider): reserved before the call, settled on its measured usage, and refused once a limit is
+        reached. With `resume`, attempts this same run already recorded are returned as they were rather than
+        paid for again: the attempt id is determined by the run, the task, the repeat, the arm and the retry, so
+        a restarted plan finds exactly the attempts it had finished (docs/modules/05_EXECUTION_BUDGET.md §4).
+        """
+        from .evolve.execution import MeteredProvider, Pricing
+        from .evolve.task_eval import make_agent_factory, run_tasks
+        run, bound, actor = self.run_identity(release_ref, plan_ref=plan_ref, split=split, candidate=candidate,
+                                              role=role, permit=permit, scope=scope)
         if self.results is not None:
             self.results.put_run(run)
         order = list(order)
@@ -463,7 +472,8 @@ class Improvement:
         provider = actor
         if self.budget is not None:
             provider = MeteredProvider(actor, self.budget, self.pricing or Pricing(),
-                                       operation=f"{self.scope_id}:{arm}:{run.hash()}", max_retries=0)
+                                       operation=f"{self.scope_id}:{arm}:{run.hash()}", max_retries=0,
+                                       allocation=self.allocation)
         factory = make_agent_factory(self.rt, provider, budget=self.attempt_budget, bound=bound,
                                      objects=self.objects, stop_view=self.stop_view,
                                      meta={"arm": arm, "scope": self.scope_id}, worker=self.worker)
@@ -537,21 +547,60 @@ class Improvement:
         was paid for. A new release that runs tasks exactly as the measured one did — only R changed — is the same
         version for this purpose, and the measurement is reused (docs/modules/04_RESEARCH_LOOP.md §4).
         """
-        if previous is not None and (previous["release"] == release_ref
-                                     or self._runs_like(previous["release"], release_ref)):
+        complete = previous is None or not previous.get("missing")
+        if previous is not None and complete and (previous["release"] == release_ref
+                                                  or self._runs_like(previous["release"], release_ref)):
             return {**previous, "release": release_ref, "measured_release": previous.get("measured_release")
                     or previous["release"], "reused": True}
-        tasks = list(previous["failed"]) if previous is not None else list(self.train_tasks or
-                                                                            self.splits.ids("train"))
-        rows = self.run_arm("measure", release_ref, [(t, 0) for t in tasks], plan_ref="", split="train",
-                            candidate="current", role="base", resume=True) if tasks else []
+        if previous is not None and not complete and previous["release"] == release_ref:
+            # A measurement a pause or a crash cut short is finished, not taken for the whole: the tasks it planned
+            # are run again under resume, which keeps every recorded attempt and pays only for the missing ones.
+            self._same_run(previous, release_ref, "an interrupted measurement")
+            tasks, first = list(previous["planned"]), previous.get("first", False)
+        elif previous is not None:
+            tasks, first = list(previous["failed"]), False
+        else:
+            tasks, first = list(self.train_tasks or self.splits.ids("train")), True
+        rows = self.train_measurement(release_ref, tasks, first=first)
         failed = [r.task_id for r in rows if not r.success]
         feedback = _feedback.build_feedback(self.rt, objects=self.objects, scope_id=self.scope_id)
         pool = "this activity's whole train split" if set(tasks) >= set(self.splits.ids("train")) \
             else f"a train pool of {len(tasks)} tasks"
         return {"release": release_ref, "results": list(rows), "train": list(rows), "dev": [],
-                "feedback": feedback, "failed": failed, "scope": f"every task of {pool}" if previous is None else
-                "the train tasks that failed in the latest measurement", "reused": False}
+                "feedback": feedback, "failed": failed, "scope": f"every task of {pool}" if first else
+                "the train tasks that failed in the latest measurement", "reused": False,
+                "planned": tasks, "missing": [], "first": first}
+
+    def train_measurement(self, release_ref: str, tasks, *, first: bool = False, planned=None) -> list:
+        """A version's train attempts under the one run identity a measurement has (arm "measure", candidate
+        "current", no plan). The baseline's train run uses it too, so the first round finds the baseline's attempts
+        and pays for none of them again: W0's train split is measured once per activity.
+
+        The tasks are booked before anything runs (a `measurement_planned` event), so a measurement that a pause
+        or a crash cut short is known to be incomplete when the loop restarts (`last_measurement`). `planned` books
+        more than this call runs: a baseline limited to a few tasks is the start of the first measurement, not all
+        of it, and the first round runs the rest."""
+        tasks = list(tasks)
+        if not tasks:
+            return []
+        self.releases.events.append("measurement_planned", scope=self.scope_id, release=release_ref,
+                                    tasks=list(planned if planned is not None else tasks), first=first,
+                                    run=self._measure_run(release_ref))
+        return self.run_arm("measure", release_ref, [(t, 0) for t in tasks], plan_ref="", split="train",
+                            candidate="current", role="base", resume=True)
+
+    def _measure_run(self, release_ref: str) -> str:
+        """The run hash a train measurement (or a collection batch) of this release is recorded under now."""
+        return self.run_identity(release_ref, plan_ref="", split="train", candidate="current", role="base")[0].hash()
+
+    def _same_run(self, booked: dict, release_ref: str, what: str) -> None:
+        """Refuse to finish work booked under another run identity: its recorded attempts would not be found, and
+        every one of them would be paid for again under the new identity (docs/ROADMAP.md §3)."""
+        run = booked.get("run")
+        if run and run != self._measure_run(release_ref):
+            raise ValueError(f"{what} was booked under run {run} and this code records it under run "
+                             f"{self._measure_run(release_ref)}: its attempts would be paid for again. Finish it "
+                             f"with the code it started with, or start a new activity")
 
     def _runs_like(self, a: str, b: str) -> bool:
         """Whether two releases execute a task identically: the same W and the same K. R takes no part in a run."""
@@ -565,8 +614,12 @@ class Improvement:
     def collect_batch(self, measured: dict, *, batch: int, root, max_tasks: int = 10) -> dict:
         """One bounded task_feedback batch (docs/modules/04_RESEARCH_LOOP.md §4): plain train attempts of the
         current version on the latest failures (or, with none, the first train tasks), frozen as a
-        CollectionRequest before anything runs. New valid results join the measurement the next round reads;
-        none is no progress, which ends the segment rather than collecting in a loop."""
+        CollectionRequest and booked before anything runs. New valid results join the measurement the next round
+        reads; none is no progress, which ends the segment rather than collecting in a loop.
+
+        The booking (a `collection_booked` event: the request, its attempt index and tasks) is what a restart reads:
+        a batch a crash cut short is finished at its own index (`finish_collections`) rather than paid for again
+        under a new one, and it counts toward the segment's quota once, whether or not it finished."""
         release_ref = measured["release"]
         tasks = (list(measured.get("failed") or ()) or list(self.train_tasks or self.splits.ids("train")))[:max_tasks]
         request = _ct.CollectionRequest(
@@ -575,40 +628,96 @@ class Improvement:
                                                                 "tasks": tasks}),
             limits_ref=self.objects.put_json("change", {"max_tasks": max_tasks, "attempt": batch}))
         request_ref = self.objects.put(request)
-        before = {r.attempt_id for r in self.results.all()} if self.results is not None else set()
-        used = [r.attempt for r in self.results.all() if "/collect" in (r.attempt_id or "")
+        used = [r.attempt for r in self.results.all() if _arm_of(r.attempt_id) == "collect"
                 and r.system_release_ref == release_ref] if self.results is not None else []
-        attempt = max(used, default=0) + 1          # a fresh attempt index: a re-issued batch is not free data
+        booked = [int(e.get("attempt") or 0) for e in self.releases.events.of("collection_booked")
+                  if e.get("release") == release_ref]
+        attempt = max(used + booked, default=0) + 1     # a fresh attempt index: a re-issued batch is not free data
+        self.releases.events.append("collection_booked", scope=self.scope_id, segment=self.segment, batch=batch,
+                                    release=release_ref, request=request_ref, tasks=tasks, attempt=attempt,
+                                    run=self._measure_run(release_ref))
+        return self._run_collection(measured, root=root, batch=batch, request_ref=request_ref, tasks=tasks,
+                                    attempt=attempt)
+
+    def _run_collection(self, measured: dict, *, root, batch: int, request_ref: str, tasks, attempt: int) -> dict:
+        release_ref = measured["release"]
         rows = self.run_arm("collect", release_ref, [(t, attempt) for t in tasks], plan_ref="", split="train",
                             candidate="current", role="base", resume=True)
-        # Progress is what this batch actually ran: attempts returned from the resume path are not new evidence.
-        valid = [r for r in rows if r.validity == "valid" and r.attempt_id not in before]
-        measured["results"] = [*measured.get("results", ()), *rows]
-        measured["train"] = [*measured.get("train", ()), *rows]
+        # Progress is what this batch ran at its own attempt index, which no earlier batch used: attempts it
+        # recorded before a crash are this batch's evidence as much as the ones finished after the restart.
+        valid = [r for r in rows if r.validity == "valid" and r.attempt == attempt]
+        # A measurement rebuilt after a restart already holds the attempts recorded before the crash.
+        held = {r.attempt_id for r in measured.get("train", ())}
+        fresh = [r for r in rows if r.attempt_id not in held]
+        measured["results"] = [*measured.get("results", ()), *fresh]
+        measured["train"] = [*measured.get("train", ()), *fresh]
         _experience.append(root, {"kind": "collection", "request": request_ref, "batch": batch,
-                                  "scope": self.scope_id, "tasks": tasks, "valid": len(valid),
+                                  "scope": self.scope_id, "tasks": list(tasks), "valid": len(valid),
                                   "attempts": len(rows), **({"segment": self.segment} if self.segment else {})})
         return {"progress": bool(valid), "request_ref": request_ref,
                 "reason": f"{len(valid)} new valid train attempts" if valid else "no new valid evidence"}
 
+    def finish_collections(self, root, measured: dict | None = None) -> list[dict]:
+        """The batches this segment booked and never finished — a crash between the booking and the experience
+        record — each run again at its own attempt index under resume: what was recorded is kept, only the missing
+        attempts are paid for, and the batch is not counted a second time."""
+        finished = {e.get("request") for e in _experience.read(root) if e.get("kind") == "collection"
+                    and e.get("scope") == self.scope_id and e.get("segment") == self.segment}
+        out = []
+        for e in self.releases.events.of("collection_booked"):
+            if e.get("scope") != self.scope_id or e.get("segment") != self.segment or e.get("request") in finished:
+                continue
+            self._same_run(e, e["release"], f"collection batch {e.get('batch')}")
+            target = measured if measured is not None and measured.get("release") == e["release"] else \
+                {"release": e["release"], "results": [], "train": []}
+            out.append(self._run_collection(target, root=root, batch=int(e["batch"]), request_ref=e["request"],
+                                            tasks=e["tasks"], attempt=int(e["attempt"])))
+            finished.add(e.get("request"))
+        return out
+
     def last_measurement(self, release_ref: str) -> dict | None:
         """The measurement a restarted loop continues from, rebuilt from recorded results: the latest measured
-        release and its failed train tasks. A restart after an install then reruns only those failures, as an
-        uninterrupted loop would (RL6-20)."""
+        release, its attempts — the measurement's and the collection batches' of that release — and its failed
+        train tasks. A restart after an install then reruns only those failures, as an uninterrupted loop would
+        (RL6-20). A measurement whose booked tasks are not all on record comes back with what is `missing`, and
+        `measure` finishes it rather than reading part of the split as the whole."""
         if self.results is None:
             return None
         by_release: dict = {}
+        collected: dict = {}
         for r in self.results.all():
-            if "/measure" in (r.attempt_id or "") and r.system_release_ref:
+            if not r.system_release_ref:
+                continue
+            arm = _arm_of(r.attempt_id)
+            if arm == "measure":
                 by_release.setdefault(r.system_release_ref, []).append(r)
+            elif arm == "collect":
+                collected.setdefault(r.system_release_ref, []).append(r)
         if not by_release:
             return None
         latest = release_ref if release_ref in by_release else list(by_release)[-1]
-        rows = by_release[latest]
+        plan = self._measurement_plan(latest)
+        # Only the booked run's attempts are this measurement: a row of another run (older code, another plan)
+        # would make an incomplete measurement look complete.
+        rows = [r for r in by_release[latest] if not (plan and plan.get("run")) or r.run == plan["run"]]
+        seen = {r.task_id for r in rows}
+        planned = list(plan["tasks"]) if plan else sorted(seen)
+        missing = [t for t in planned if t not in seen]
+        extra = collected.get(latest, [])
         feedback = _feedback.build_feedback(self.rt, objects=self.objects, scope_id=self.scope_id)
-        return {"release": latest, "results": rows, "train": rows, "dev": [], "feedback": feedback,
-                "failed": [r.task_id for r in rows if not r.success], "reused": True,
-                "scope": "train tasks of the latest recorded measurement"}
+        return {"release": latest, "results": [*rows, *extra], "train": [*rows, *extra], "dev": [],
+                "feedback": feedback, "failed": [r.task_id for r in rows if not r.success] + missing,
+                "reused": True, "planned": planned, "missing": missing, "first": bool(plan and plan.get("first")),
+                "run": (plan or {}).get("run"), "scope": "train tasks of the latest recorded measurement"}
+
+    def _measurement_plan(self, release_ref: str) -> dict | None:
+        """The latest booked measurement of a release in this scope, or None for one recorded before measurements
+        were booked."""
+        plan = None
+        for e in self.releases.events.of("measurement_planned"):
+            if e.get("scope") == self.scope_id and e.get("release") == release_ref:
+                plan = e
+        return plan
 
     def round_inputs(self, index: int, evidence: dict, experience, bound, *, root, research_model: dict,
                      shared_notes=None):
@@ -816,6 +925,22 @@ def _effective_budget(remaining: dict) -> dict:
     spent — not an empty `limits` of a phase account that spends from the activity's root."""
     return {"remaining": remaining.get("effective_remaining") or remaining.get("remaining") or {},
             "used": remaining.get("used") or {}}
+
+
+def _collection_batches(root, scope_id: str, segment: str | None, *, any_segment: bool = False) -> int:
+    """How many collection batches count toward a quota: every batch booked, finished or not, so neither a crash nor
+    a restart gives a segment a batch back. Records from before batches were booked count as they were."""
+    def mine(e: dict) -> bool:
+        return e.get("scope") == scope_id and (any_segment or e.get("segment") == segment)
+    booked = {(e.get("segment"), e.get("request")) for e in _ct.Events(root).of("collection_booked") if mine(e)}
+    recorded = {(e.get("segment"), e.get("request")) for e in _experience.read(root)
+                if e.get("kind") == "collection" and mine(e)}
+    return len(booked | recorded)
+
+
+def _arm_of(attempt_id: str | None) -> str:
+    """The arm an attempt id names (benchmark.attempt_id: `<run>/<task>/r<repeat>/<arm>#<retry>`)."""
+    return (attempt_id or "").rpartition("#")[0].rpartition("/")[2]
 
 
 def _retry_of(attempt_id: str) -> int:
@@ -1112,6 +1237,47 @@ def open_activity(cfg: dict, base: str | Path = ".", *, out: Callable[[str], Non
                     release_ref, Budgets(root), bootstrapped)
 
 
+def budget_limits(frozen: dict | None) -> dict:
+    """The frozen budget's limits on the activity's root: every dimension except the allocations it sets aside."""
+    return {k: v for k, v in (frozen or {}).items() if k != "allocations"}
+
+
+def budget_allocations(frozen: dict | None) -> dict:
+    """What the frozen budget sets aside on the root, by name: {"final": {...}} keeps the final comparison's share
+    out of reach of every other phase (docs/ROADMAP.md §3)."""
+    return dict((frozen or {}).get("allocations") or {})
+
+
+def budget_problems(frozen: dict | None, pricing=None) -> list[str]:
+    """What is wrong with a frozen budget's allocations, found before a root is opened with it: a share must limit
+    a dimension the budget limits (otherwise it sets nothing aside), be above zero and leave the rest something to
+    spend; with prices, one call must fit both in the share and in what is left beside it."""
+    from .evolve.execution import call_bound_problem
+    limits, problems = budget_limits(frozen), []
+    set_aside: dict = {}
+    for name, share in budget_allocations(frozen).items():
+        for dim, value in share.items():
+            if dim not in limits:
+                problems.append(f"the {name} share limits {dim}, which the budget does not: it sets nothing aside")
+            elif not 0 < float(value):
+                problems.append(f"the {name} share of {dim} is {value}: a share is above zero")
+            set_aside[dim] = set_aside.get(dim, 0.0) + float(value)
+        if pricing is not None and getattr(pricing, "bounded", False):
+            problem = call_bound_problem(pricing, share, f"the {name} share")
+            if problem:
+                problems.append(problem)
+    rest = {dim: float(limit) - set_aside.get(dim, 0.0) for dim, limit in limits.items()}
+    for dim, left in rest.items():
+        if dim in set_aside and left <= 0:
+            problems.append(f"the shares set aside {set_aside[dim]} {dim} of a budget of {limits[dim]}: nothing is "
+                            f"left for anything else")
+    if set_aside and pricing is not None and getattr(pricing, "bounded", False):
+        problem = call_bound_problem(pricing, rest, "what is left beside the shares")
+        if problem:
+            problems.append(problem)
+    return problems
+
+
 def activity_budget(activity: Activity, cfg: dict, phase: str):
     """The phase's account: a child of the activity's one root, whose limits come from the frozen budget object.
 
@@ -1121,8 +1287,24 @@ def activity_budget(activity: Activity, cfg: dict, phase: str):
     measured and recorded, it is just not capped.
     """
     rsi_cfg = RsiConfig.load(cfg)
-    limits = activity.objects.get(rsi_cfg.budget_ref) if rsi_cfg.budget_ref else {}
-    root = activity.budgets.account(rsi_cfg.scope_id, limits)
+    frozen = activity.objects.get(rsi_cfg.budget_ref) if rsi_cfg.budget_ref else {}
+    problems = budget_problems(frozen)
+    if problems:            # refused before the root exists: a root cannot be reopened with other limits later
+        raise BudgetError(f"the frozen budget of {rsi_cfg.scope_id}: " + "; ".join(problems))
+    root = activity.budgets.account(rsi_cfg.scope_id, budget_limits(frozen))
+    # The allocations are part of the root's identity, like its limits: set once, before anything is spent, and
+    # never changed, added or withdrawn after.
+    wanted = {name: {k: float(v) for k, v in limits.items()} for name, limits in budget_allocations(frozen).items()}
+    state = root.remaining()
+    if state["allocations"] != wanted:
+        if state["allocations"]:
+            raise BudgetError(f"{rsi_cfg.scope_id} sets aside {state['allocations']}, and the frozen budget says "
+                              f"{wanted}: an open root's allocations do not change")
+        if state["used"]:
+            raise BudgetError(f"{rsi_cfg.scope_id} has spent without the allocations {sorted(wanted)}: they cannot "
+                              f"be added to a root that has already spent")
+        for name, limits in wanted.items():
+            root.allocate(name, limits)
     return root.child(f"{rsi_cfg.scope_id}:{phase}", {})
 
 
@@ -1225,6 +1407,10 @@ def baseline(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = 
     arms = [("base", "base", cfg["llm"])] + [(name, f"frontier_{name}", table["llm"])
                                              for name, table in sorted(frontier.items())]
     pinned = _pinned_actor(activity)
+    # A first-version baseline runs under the frozen task plan's conditions (repeats, per-attempt limits), so its
+    # train run has the same identity as the first round's measurement and is not paid for twice.
+    template_ref = activity.rsi.task_plan_ref if _harness_of(activity) and activity.rsi.task_plan_ref and \
+        activity.objects.has(activity.rsi.task_plan_ref) else None
     for candidate, role, llm in arms:
         own = candidate in frontier
         provider = None
@@ -1237,7 +1423,7 @@ def baseline(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = 
                 continue
         arm_pricing = pricing_of({"pricing": frontier[candidate].get("pricing")}) if candidate in frontier \
             else pricing_of(cfg)
-        work = improvement(activity, provider=provider, pricing=arm_pricing,
+        work = improvement(activity, template_ref=template_ref, provider=provider, pricing=arm_pricing,
                            budget=activity_budget(activity, cfg, f"baseline:{candidate}"))
         # A frontier arm runs its own model on purpose: a different comparison, never the pinned actor swapped.
         work.actor_override = own
@@ -1255,11 +1441,11 @@ def baseline(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = 
                                      "failures": {r.task_id: r.failure_class for r in rows if not r.success}}
         if work.harness and not own:
             # The first version's "before" is train and dev (docs/ROADMAP.md §2 stage A): the train split runs
-            # as its own run, never merged into the dev figures.
-            train = list(activity.splits.ids("train"))[:limit] if limit else list(activity.splits.ids("train"))
-            train_rows = work.run_arm(candidate, activity.release_ref, [(t, i) for t in train
-                                                                       for i in range(work.repeats)],
-                                      plan_ref="", split="train", candidate=candidate, role=role, resume=True)
+            # as its own run, never merged into the dev figures. It is the measurement the first worker round reads
+            # (Improvement.train_measurement), so W0's train split is paid for once per activity.
+            train = list(work.train_tasks or activity.splits.ids("train"))
+            train_rows = work.train_measurement(activity.release_ref, train[:limit] if limit else train,
+                                                first=True, planned=train)
             report["arms"][candidate]["train"] = summarise(train_rows)
             out(f"arm        {candidate} ({role}) train: {report['arms'][candidate]['train']['passed']}/"
                 f"{report['arms'][candidate]['train']['tasks']} passed")
@@ -1302,7 +1488,7 @@ def collect(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
 
 # ---------------------------------------------------------------------------- improve
 def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = print, rounds: int | None = None,
-            researcher=None, segment: str | None = None) -> dict:
+            researcher=None, segment: str | None = None, stop_after_round: int | None = None) -> dict:
     """The worker loop with a fixed R: collect, diagnose, propose, build, evaluate, install, repeat.
 
     Every round starts from what the previous one left — the installed release, the appended experience and the
@@ -1311,6 +1497,10 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
     With `segment` (the cycle's worker segments, docs/modules/07_BENCH_REPORT.md §1), the segment keeps its own
     record of completed rounds: calling it again resumes at the round it could not complete, a finished segment
     is not run again, and its collection batches are counted per segment across restarts.
+
+    `stop_after_round` (a cycle's stop point, docs/ROADMAP.md §3) stops the segment once that many rounds plus one
+    have completed, without finishing it: the next call continues with the following round, with patience and the
+    failure limit where they were, as if it had not stopped.
     """
     from .research.loop import RoundContext, run_worker_rounds
     activity = open_activity(cfg, base, out=out)
@@ -1337,7 +1527,8 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
     if seglog is not None and seglog.finished:
         out(f"segment    {segment} already finished ({seglog.state['stop_reason']}); not run again")
         return {"rounds": seglog.state["rounds"], "log": [], "budget": budget.remaining(), "segment": segment,
-                "release": activity.releases.active()["release_ref"], "stop_reason": seglog.state["stop_reason"]}
+                "release": activity.releases.active()["release_ref"], "stop_reason": seglog.state["stop_reason"],
+                "already_finished": True}
     if seglog is not None:
         seglog.watch(researcher)
     done = 0
@@ -1386,18 +1577,25 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
         # Only the rounds this segment has not completed; make_round numbers them after the completed ones.
         done = seglog.done()
         schedule = Schedule(**{**asdict(schedule), "worker_rounds": max(schedule.worker_rounds - done, 0)})
+    # The stop point counts the rounds this call may run, after the ones the segment has completed.
+    stop_after = max(stop_after_round + 1 - done, 0) if stop_after_round is not None else None
     collector = None
     if work.harness:
         def collector(result, *, batch: int) -> dict:
             return work.collect_batch(measured["last"], batch=batch, root=activity.root)
-    collected = sum(1 for e in _experience.read(activity.root) if e.get("kind") == "collection"
-                    and e.get("scope") == activity.rsi.scope_id
-                    and (segment is None or e.get("segment") == segment)) if work.harness else 0
-    results = resumed + run_worker_rounds(make_round, budget, schedule=schedule, root=activity.root,
-                                          collect=collector, collected_before=collected,
-                                          on_result=seglog.add if seglog is not None else None)
+    collected = _collection_batches(activity.root, activity.rsi.scope_id, segment, any_segment=segment is None) \
+        if work.harness else 0
+    results = resumed + run_worker_rounds(
+        make_round, budget, schedule=schedule, root=activity.root, collect=collector, collected_before=collected,
+        on_result=seglog.add if seglog is not None else None,
+        history=tuple(seglog.state["rounds"]) if seglog is not None else (), stop_after=stop_after,
+        # a batch booked before a crash is finished first, at its own attempt index, before any round runs
+        resume_collections=(lambda: work.finish_collections(activity.root, measured.get("last")))
+        if work.harness else None)
     stop_reason = next((r.reason for r in reversed(results) if r.outcome == "stopped"), "rounds_done")
-    if seglog is not None:
+    if stop_reason == "stopped_at":
+        pass                                # the stop point, not the segment's end: the segment is not finished
+    elif seglog is not None:
         seglog.end(stop_reason)
         stop_reason = seglog.state["stop_reason"]
     for result in results:
@@ -1660,10 +1858,11 @@ def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_
     if inner.harness:
         def collector(result, *, batch: int) -> dict:
             return inner.collect_batch(measured["last"], batch=batch, root=root)
-    collected = sum(1 for e in _experience.read(root) if e.get("kind") == "collection"
-                    and e.get("scope") == inner.scope_id) if inner.harness else 0
+    collected = _collection_batches(root, inner.scope_id, None, any_segment=True) if inner.harness else 0
     rounds = run_worker_rounds(make_round, arm_budget, schedule=schedule, root=root, collect=collector,
-                               collected_before=collected, on_result=log.add)
+                               collected_before=collected, on_result=log.add, history=tuple(log.state["rounds"]),
+                               resume_collections=(lambda: inner.finish_collections(root, measured.get("last")))
+                               if inner.harness else None)
     log.end(next((r.reason for r in reversed(rounds) if r.outcome == "stopped"), "rounds_done"))
     return _arm_outcome(outcome, log.state, objects, releases, start, activity, pair, arm_budget, out)
 
@@ -1936,6 +2135,10 @@ def evaluate(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = 
     write_json(state_path, {**state, "status": "running"})
     rows: dict = {}
     budget = activity_budget(activity, cfg, f"final:{plan.experiment_id}")
+    # The final spends the share the frozen budget set aside for it, when there is one, and nothing else.
+    rsi_cfg = RsiConfig.load(cfg)
+    final_share = "final" if "final" in budget_allocations(activity.objects.get(rsi_cfg.budget_ref)
+                                                          if rsi_cfg.budget_ref else {}) else None
     retries = int((plan.stop_rules or {}).get("max_infrastructure_retries", 0))
     # What is already on record, from the results themselves rather than the state file: a run that died inside an
     # arm recorded its attempts one by one, before the state file heard of any of them.
@@ -1959,6 +2162,7 @@ def evaluate(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = 
         # A comparison that names its own model (a frontier arm) runs that model, a separate comparison; every
         # other arm runs the actor its release pins.
         work.actor_override = bool(comparison.get("llm"))
+        work.allocation = final_share
         work.dev_tasks = tuple(plan.task_ids)
         order = [(t, i) for t in plan.task_ids for i in range(plan.repeats)]
         role = comparison.get("role", arm)
@@ -1998,7 +2202,7 @@ def report(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pr
 
 # ---------------------------------------------------------------------------- cycle (M7 §1)
 def cycle(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = print, researcher=None,
-          slot_researcher=None, arm_researcher=None) -> dict:
+          slot_researcher=None, arm_researcher=None, until: str | None = None) -> dict:
     """`bench --phase cycle`: the automatic loop, as calls to the existing phases in the frozen order.
 
     Plans the config does not name are frozen first, from [freeze.*] tables or the preset, so no ref has to be
@@ -2008,6 +2212,11 @@ def cycle(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pri
     isolated worker went away) stops the activity until the repair, and a spent budget ends it. The final split is
     never run from here. Every step is on record, so running the cycle again resumes where it stopped and pays
     for nothing already done.
+
+    `until` is a stop point (docs/ROADMAP.md §3, the first paid activity's protocol): `baseline`, `segment-N`,
+    `segment-N/round-K` or `slot-N`. The cycle stops after that step with status "stopped": nothing past it is
+    paid for, a segment stopped at a round is not finished, and an install's reuse check is left pending. Running
+    the cycle again, with a later stop point or none, continues from there.
     """
     from .research.campaign import PAUSES
     settings = improvement_settings(cfg)
@@ -2028,10 +2237,25 @@ def cycle(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pri
     def save() -> None:
         write_json(state_path, state)
 
+    # The plans an activity started under are the ones it finishes under: a run of the cycle that would freeze
+    # others (the preset or a [freeze.*] table changed, or [rsi] names other refs) is refused, not followed.
+    plans = {"task_plan_ref": activity.rsi.task_plan_ref, "schedule_ref": activity.rsi.schedule_ref,
+             "budget_ref": activity.rsi.budget_ref}
+    recorded = state.setdefault("plans", {}).get(activity.rsi.scope_id)
+    if recorded is None:
+        state["plans"][activity.rsi.scope_id] = plans
+        save()
+    elif recorded != plans:
+        changed = sorted(k for k in plans if plans[k] != recorded.get(k))
+        raise ValueError(f"this activity ({activity.rsi.scope_id}) runs under {recorded}, and the config now gives "
+                         f"other {changed}: an activity's plans are not frozen again (docs/ROADMAP.md §3). Name the "
+                         f"recorded refs under [rsi], or start a new activity (another scope_id or workspace)")
+
     schedule = Schedule(**activity.objects.get(activity.rsi.schedule_ref))
+    stop = _stop_point(until, schedule)
     if schedule.research_slots:
         from .evolve.execution import call_bound_problem
-        limits = activity.objects.get(activity.rsi.budget_ref) if activity.rsi.budget_ref else {}
+        limits = budget_limits(activity.objects.get(activity.rsi.budget_ref) if activity.rsi.budget_ref else {})
         share = float(settings["campaign"]["arm_share"])
         problem = call_bound_problem(pricing_of(cfg), {k: float(v) * share for k, v in limits.items()},
                                      f"a research-slot arm ({share:.0%} of the activity's budget)")
@@ -2045,12 +2269,26 @@ def cycle(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pri
         state["steps"]["baseline"] = {"release": activity.releases.active()["release_ref"], "ts": now()}
         save()
     for index in range(schedule.research_slots + 1):
+        if stop == ("baseline", None, None):
+            status = "stopped"
+            break
         segment = f"segment-{index}"
         out(f"cycle      worker {segment}")
-        result = improve(cfg, base, out=out, researcher=researcher, segment=segment)
-        state["steps"][segment] = {"stop_reason": result["stop_reason"], "release": result["release"]}
+        at_round = stop[2] if stop and stop[:2] == ("segment", index) else None
+        result = improve(cfg, base, out=out, researcher=researcher, segment=segment, stop_after_round=at_round)
+        if not (result.get("already_finished") and segment in state["steps"]):
+            # a segment finished in an earlier run keeps the record it was finished with
+            state["steps"][segment] = {"stop_reason": result["stop_reason"], "release": result["release"]}
+        if result["stop_reason"] == "stopped_at":
+            save()
+            status = "stopped"
+            break
         pending = state.get("reuse_pending")
-        if pending and not state["steps"].get(pending["slot"], {}).get("reuse"):
+        # The reuse of an installed R1 is read from the segment right after its slot, once that segment has ended
+        # without a pause: not from an earlier segment a restart walks past, and not from part of a segment.
+        due = (pending or {}).get("segment") or (pending and f"segment-{int(pending['slot'].rsplit('-', 1)[1]) + 1}")
+        if pending and segment == due and result["stop_reason"] not in PAUSES \
+                and not state["steps"].get(pending["slot"], {}).get("reuse"):
             state["steps"][pending["slot"]]["reuse"] = _reuse_fact(activity, pending["r1"], pending.get("r0"),
                                                                    segment)
             out(f"reuse      {state['steps'][pending['slot']]['reuse']['state']}: "
@@ -2068,6 +2306,9 @@ def cycle(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pri
             break
         if index == schedule.research_slots:
             break
+        if stop and stop[:2] == ("segment", index):
+            status = "stopped"
+            break
         slot = f"slot-{index}"
         outcome = _cycle_slot(cfg, base, activity, settings, slot, state, save, out=out,
                               researcher=slot_researcher, arm_researcher=arm_researcher)
@@ -2077,9 +2318,16 @@ def cycle(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pri
                 out(f"cycle      paused in research {slot}: repair the runtime and run the cycle again; the slot "
                     f"resumes and the next worker segment runs after it")
             break
-    for step in state["steps"].values():
-        if isinstance(step, dict) and step.get("reuse") is None and step.get("installed"):
-            step["reuse"] = {"state": "not_completed", "detail": "no worker segment ran after the install"}
+        if stop and stop[:2] == ("slot", index):
+            status = "stopped"
+            break
+    if status == "stopped":
+        out(f"cycle      stopped at {until}: nothing past it was paid for; run the cycle again (with a later stop "
+            f"point, or none) to continue from here")
+    elif status != "paused":                 # a paused cycle keeps the reuse check pending for after the repair
+        for step in state["steps"].values():
+            if isinstance(step, dict) and step.get("reuse") is None and step.get("installed"):
+                step["reuse"] = {"state": "not_completed", "detail": "no worker segment ran after the install"}
     state["status"] = status
     save()
     data = report(cfg, base, out=out)
@@ -2088,33 +2336,62 @@ def cycle(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pri
             "report": data.get("claims") if isinstance(data, dict) else None}
 
 
+def _stop_point(until: str | None, schedule: Schedule) -> tuple | None:
+    """A cycle stop point as (step, index, round): ("baseline", None, None), ("segment", N, K or None) or
+    ("slot", N, None). A step this schedule does not have is refused before anything runs."""
+    if until is None:
+        return None
+    m = re.fullmatch(r"baseline|segment-(\d+)(?:/round-(\d+))?|slot-(\d+)", until.strip())
+    if not m:
+        raise ValueError(f"--until {until!r}: baseline, segment-N, segment-N/round-K or slot-N")
+    if until.strip() == "baseline":
+        return ("baseline", None, None)
+    if m.group(1) is not None:
+        n = int(m.group(1))
+        if n > schedule.research_slots:
+            raise ValueError(f"--until {until!r}: this schedule has segments 0 to {schedule.research_slots}")
+        k = int(m.group(2)) if m.group(2) is not None else None
+        if k is not None and k >= schedule.worker_rounds:
+            raise ValueError(f"--until {until!r}: a segment has rounds 0 to {schedule.worker_rounds - 1}")
+        return ("segment", n, k)
+    n = int(m.group(3))
+    if n >= schedule.research_slots:
+        raise ValueError(f"--until {until!r}: this schedule has {schedule.research_slots} research slot(s)")
+    return ("slot", n, None)
+
+
+def _cycle_tables(cfg: dict, settings: dict) -> dict:
+    """The plans an automatic activity runs under, as [freeze.*] tables: the config's own where it has them, else
+    the preset's. `ouroloop freeze` and the cycle freeze the same tables, so a phase run on its own after the
+    freeze and the cycle afterwards run under the same plans and reuse each other's attempts."""
+    tables = dict(cfg.get("freeze") or {})
+    return {"task_plan": tables.get("task_plan") or settings["task_plan"],
+            "schedule": {**settings["schedule"], "candidates_per_round": settings["candidates_per_round"],
+                         "collection_batches": settings["collection_batches"], **(tables.get("schedule") or {})},
+            **({"budget": tables["budget"]} if "budget" in tables else {})}
+
+
 def _cycle_config(cfg: dict, base, settings: dict, out) -> dict:
     """The config with every plan the cycle needs named: what [rsi] names is used as it is; the rest is frozen
     from [freeze.*] when present, else from the preset. Freezing is content-addressed, so a restart freezes the
     same objects and gets the same refs. A missing budget is refused before anything is paid for."""
     rsi_table = dict(cfg.get("rsi") or {})
-    tables = dict(cfg.get("freeze") or {})
-    need: dict = {}
-    if not rsi_table.get("task_plan_ref"):
-        need["task_plan"] = tables.get("task_plan") or settings["task_plan"]
-    if not rsi_table.get("schedule_ref"):
-        need["schedule"] = {**settings["schedule"], "candidates_per_round": settings["candidates_per_round"],
-                            "collection_batches": settings["collection_batches"], **(tables.get("schedule") or {})}
-    if not rsi_table.get("budget_ref"):
-        if "budget" not in tables:
-            raise ValueError("the cycle pays for model calls and needs the activity's budget first: set [rsi] "
-                             "budget_ref or a [freeze.budget] table")
-        need["budget"] = tables["budget"]
+    tables = _cycle_tables(cfg, settings)
+    if not rsi_table.get("budget_ref") and "budget" not in tables:
+        raise ValueError("the cycle pays for model calls and needs the activity's budget first: set [rsi] "
+                         "budget_ref or a [freeze.budget] table")
+    need = {name: table for name, table in tables.items() if not rsi_table.get(f"{name}_ref")}
     if not need:
         return cfg
-    refs = freeze({**cfg, "freeze": need}, base, out=lambda _line: None)
+    refs = freeze({**cfg, "freeze": need}, base, out=lambda _line: None, with_preset=False)
     out("cycle      froze " + ", ".join(f"{k}={_ct.short(v)}" for k, v in refs.items()))
     return {**cfg, "rsi": {**rsi_table, **refs}}
 
 
 def _beyond_preset(settings: dict, schedule: dict | None, gate: dict | None) -> list[str]:
-    """What a schedule or gate would loosen beyond [improvement] and its preset: more candidates or collection
-    batches than the reader allows, a lower min_gain or a higher max_regression_rate than the preset's."""
+    """What a schedule or gate would loosen beyond [improvement] and its preset: more candidates, collection
+    batches or research slots than the reader allows, a lower min_gain or a higher max_regression_rate than the
+    preset's."""
     problems = []
     if schedule is not None:
         if int(schedule.get("candidates_per_round", 1)) != settings["candidates_per_round"]:
@@ -2123,6 +2400,11 @@ def _beyond_preset(settings: dict, schedule: dict | None, gate: dict | None) -> 
         if int(schedule.get("collection_batches", 0)) > settings["collection_batches"]:
             problems.append(f"collection_batches {schedule.get('collection_batches')} is above "
                             f"max_collection_batches {settings['collection_batches']}")
+        # A second slot would have the installed R1 propose R2: a path this version has neither tested nor planned
+        # (docs/DESIGN.md §7), so the preset's count is a ceiling.
+        slots = int(settings["schedule"].get("research_slots", 0))
+        if int(schedule.get("research_slots", 0)) > slots:
+            problems.append(f"research_slots {schedule.get('research_slots')} is above the preset's {slots}")
     if gate is not None:
         preset = settings["task_plan"]["gate"]
         if float(gate.get("min_gain", preset["min_gain"])) < float(preset["min_gain"]):
@@ -2157,7 +2439,7 @@ def _cycle_slot(cfg, base, activity: Activity, settings: dict, slot: str, state:
                         min_groups=max(1, min(template.gate().min_groups, inner_groups)),
                         max_regression_rate=template.gate().max_regression_rate)
         research_gate = GatePlan(min_gain=float(campaign["min_gain"]), min_groups=int(campaign["min_groups"]))
-        limits = activity.objects.get(activity.rsi.budget_ref) if activity.rsi.budget_ref else {}
+        limits = budget_limits(activity.objects.get(activity.rsi.budget_ref) if activity.rsi.budget_ref else {})
         arm_budget = {k: round(float(v) * float(campaign["arm_share"]), 6) for k, v in limits.items()}
         discovery = "automatic" if researcher is None else "scripted"
         researcher = researcher or _default_researcher(cfg, activity, budget=budget)
@@ -2194,7 +2476,8 @@ def _cycle_slot(cfg, base, activity: Activity, settings: dict, slot: str, state:
         save()
         return "paused"
     if installed:
-        state["reuse_pending"] = {"slot": slot, "r1": step["r1"], "r0": step.get("r0")}
+        state["reuse_pending"] = {"slot": slot, "r1": step["r1"], "r0": step.get("r0"),
+                                  "segment": f"segment-{int(slot.rsplit('-', 1)[1]) + 1}"}
     save()
     return "done"
 
@@ -2365,16 +2648,35 @@ def startup_checks(activity: Activity, cfg: dict, *, phase: str, needs_model: bo
     budget = activity.bench.budget
     if not (budget.max_steps and budget.max_tool_calls and budget.max_seconds):
         problems.append("[bench.budget] needs a step, tool-call and time limit per attempt")
-    # A call may not ask for more output than its reservation bounds: a model whose max_tokens is above
-    # [pricing] max_output_tokens could spend past its reservation, found out only after the money is gone.
-    priced = pricing_of(cfg).max_output_tokens
-    for name, table in (("[llm]", cfg.get("llm") or {}),
-                        ("[research.llm]", dict(cfg.get("research") or {}).get("llm") or {})):
-        asked = table.get("max_tokens")
-        if priced is not None and asked is not None and int(asked) > int(priced):
-            problems.append(f"{name} max_tokens {asked} is above [pricing] max_output_tokens {priced}: a call's "
-                            f"reservation would not bound what it can spend")
-    limits = activity.objects.get(rsi_cfg.budget_ref) if rsi_cfg.budget_ref else {}
+    # A plan the config freezes and [rsi] does not name yet: a phase run before `ouroloop freeze` would open the
+    # activity's budget root without its limits (a root cannot be reopened with other limits later) or measure
+    # under conditions other than the frozen plan's, so its attempts would not be reused (ROADMAP §3).
+    # An automatic activity ([improvement]) runs every phase under the cycle's plans, preset ones included.
+    named = {"task_plan": rsi_cfg.task_plan_ref, "schedule": rsi_cfg.schedule_ref, "budget": rsi_cfg.budget_ref}
+    required = set(cfg.get("freeze") or {}) & set(named)
+    if improvement_settings(cfg) is not None:
+        required |= set(named)
+    for table in sorted(required):
+        if not named[table]:
+            problems.append(f"[rsi] names no {table}_ref: run `ouroloop freeze --config ...` and add the [rsi] lines "
+                            f"it prints before a paid phase (`--phase cycle` freezes them itself)")
+    # The models a paid phase actually calls: the actor the active release pins (its recorded configuration, not
+    # whatever [llm] says now) and the research model. A call may not ask for more output than its reservation
+    # bounds — a max_tokens above [pricing] max_output_tokens could spend past it, found out only after the money
+    # is gone — and a key that is not set fails every call, so both are found here rather than in a paid run.
+    if needs_model:
+        priced = pricing_of(cfg).max_output_tokens
+        for name, table in _called_models(activity, cfg):
+            asked = table.get("max_tokens")
+            if priced is not None and asked is not None and int(asked) > int(priced):
+                problems.append(f"{name} max_tokens {asked} is above [pricing] max_output_tokens {priced}: a "
+                                f"call's reservation would not bound what it can spend")
+            key = table.get("api_key_env")
+            if table.get("type") == "openai_compat" and key and not os.environ.get(str(key)):
+                problems.append(f"{name} reads its key from {key}, which is not set")
+    frozen_budget = activity.objects.get(rsi_cfg.budget_ref) if rsi_cfg.budget_ref else {}
+    problems += [f"the frozen budget: {p}" for p in budget_problems(frozen_budget, pricing_of(cfg))]
+    limits = budget_limits(frozen_budget)
     if limits:
         from .evolve.execution import call_bound_problem
         reason = check_pricing(pricing_of(cfg), limits) or call_bound_problem(pricing_of(cfg), limits,
@@ -2411,6 +2713,18 @@ def startup_checks(activity: Activity, cfg: dict, *, phase: str, needs_model: bo
                         "first-version activity starts in a fresh workspace (or scope) so W0, R0 and K are "
                         "bootstrapped with it; it is not applied to an existing v2 activity")
     return problems
+
+
+def _called_models(activity: Activity, cfg: dict) -> list[tuple[str, dict]]:
+    """(name, provider table) of each model a paid phase calls: the pinned actor's recorded configuration (or
+    [llm] for a release that pins none), and the research model ([research.llm], else [llm])."""
+    pinned = _pinned_actor(activity)
+    actor = ("the actor the active release pins", activity.objects.get(pinned.inference_ref)) if pinned is not None \
+        else ("[llm]", dict(cfg.get("llm") or {}))
+    research_table = dict(cfg.get("research") or {}).get("llm")
+    research = ("[research.llm]", dict(research_table)) if research_table else \
+        ("[llm] as the research model", dict(cfg.get("llm") or {}))
+    return [actor, research]
 
 
 def config_harness_problems(cfg: dict) -> list[str]:
@@ -2504,7 +2818,8 @@ def _only(table: dict, allowed: set, what: str) -> dict:
     return dict(table)
 
 
-def freeze(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = print) -> dict:
+def freeze(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = print,
+           with_preset: bool = True) -> dict:
     """Freeze the `[freeze.*]` tables into workspace objects and print the `[rsi]` lines that name them.
 
     The tables are the input to this command, not the plan: once frozen, a plan is the content-addressed object,
@@ -2512,12 +2827,18 @@ def freeze(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pr
     with a different ref, which a phase then has to be told about. Freezing the same tables twice gives the same
     refs. The final plan is sealed as it is frozen; a different final plan under the same experiment id is
     refused (docs/modules/07_BENCH_REPORT.md §3).
+
+    With an [improvement] table, the task plan and the schedule the preset gives are frozen too, as the cycle
+    would freeze them, so the [rsi] lines printed here are every plan a paid phase of the activity runs under.
     """
     from .evolve.execution import LIMITS
     tables = dict(cfg.get("freeze") or {})
     unknown = sorted(set(tables) - FREEZE_TABLES)
     if unknown:
         raise ValueError(f"[freeze] has no tables {unknown}; it takes {sorted(FREEZE_TABLES)}")
+    settings = improvement_settings(cfg) if with_preset else None
+    if settings is not None:
+        tables = {**_cycle_tables(cfg, settings), **{k: v for k, v in tables.items() if k == "final"}}
     if not tables:
         raise ValueError("nothing to freeze: add [freeze.task_plan], [freeze.schedule], [freeze.budget] or "
                          "[freeze.final] to the config")
@@ -2544,8 +2865,17 @@ def freeze(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pr
         schedule = Schedule(**dict(tables["schedule"]))       # an unknown key is a TypeError here, on purpose
         refs["schedule_ref"] = activity.objects.put_json("schedule", asdict(schedule))
     if "budget" in tables:
-        limits = _only(tables["budget"], set(LIMITS), "budget")
-        refs["budget_ref"] = activity.objects.put_json("budget", {k: float(v) for k, v in limits.items()})
+        limits = _only(tables["budget"], set(LIMITS) | {"final"}, "budget")
+        frozen = {k: float(v) for k, v in limits.items() if k != "final"}
+        if limits.get("final"):
+            # The final comparison's share, set aside on the root: the cycle cannot spend it, and the final spends
+            # nothing else (docs/ROADMAP.md §3).
+            final = _only(dict(limits["final"]), set(LIMITS), "budget.final")
+            frozen["allocations"] = {"final": {k: float(v) for k, v in final.items()}}
+        problems = budget_problems(frozen, pricing_of(cfg))
+        if problems:
+            raise ValueError("freeze refused: " + "; ".join(problems))
+        refs["budget_ref"] = activity.objects.put_json("budget", frozen)
     if "final" in tables:
         t = _only(tables["final"], FINAL_KEYS, "final")
         plan = FinalizationPlan(

@@ -181,6 +181,16 @@ def test_br05_a_final_run_resumed_after_a_crash_runs_only_what_is_missing(fake_u
     del counter
 
 
+def test_the_final_spends_the_share_set_aside_for_it(fake_upstream, tmp_path):
+    cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
+    cfg["rsi"]["budget_ref"] = activity.objects.put_json(
+        "budget", {"model_calls": 1000.0, "allocations": {"final": {"model_calls": 200.0}}})
+    final_config(cfg, activity, release)
+    bench.evaluate(cfg, ".", out=lambda _l: None)
+    spent = [r for r in book(activity)["reservations"].values() if r["scope_id"].endswith(":final:final-resume")]
+    assert spent and all(r["allocation"] == "final" for r in spent)
+
+
 def test_a_completed_final_plan_run_again_pays_for_nothing(fake_upstream, tmp_path):
     cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
     final_config(cfg, activity, release)

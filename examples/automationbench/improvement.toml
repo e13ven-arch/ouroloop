@@ -55,8 +55,8 @@ type = "mock"
 [points]
 default_backend = "mock"        # the first version runs no decision model
 
-# The actor W0 pins, and the research model: GLM-5.3 on Z.AI's OpenAI-compatible endpoint. A hosted alias is
-# recorded as mutable with when it was seen, not as frozen weights (docs/modules/00_CONTRACTS.md §2).
+# The actor W0 pins: GLM-5.3 on Zhipu's OpenAI-compatible endpoint. A hosted alias is recorded as mutable with when
+# it was seen, not as frozen weights (docs/modules/00_CONTRACTS.md §2).
 [llm]
 type = "openai_compat"
 base_url = "https://open.bigmodel.cn/api/paas/v4"
@@ -65,14 +65,26 @@ model = "glm-5.3"
 max_tokens = 16384
 source = "frontier_llm"         # a hosted model's answers are never a training target
 
-# Every paid call is reserved and settled in USD at these prices. Check them before a run: a price that changed
-# is a different budget (Z.AI list prices for GLM-5.3, docs.z.ai/guides/overview/pricing, 2026-09-28).
+# The research model: the same model with room for its reasoning. At 16384 output tokens one real summary reply was
+# cut off and another came within 91 tokens of the limit (docs/JOURNAL.md, 2026-10-02).
+[research.llm]
+type = "openai_compat"
+base_url = "https://open.bigmodel.cn/api/paas/v4"
+api_key_env = "ZHIPUAI_API_KEY"
+model = "glm-5.3"
+max_tokens = 32768
+source = "frontier_llm"
+
+# Every paid call is reserved and settled in USD at these prices. These are Z.AI's list prices while the calls go
+# to open.bigmodel.cn: before the first paid activity, replace them with that platform's prices (with the exchange
+# rate and its date) and calibrate the book against the bill in a workspace of its own (docs/ROADMAP.md §3, step 3).
+# max_output_tokens bounds every reservation, so it is at least the largest max_tokens above.
 [pricing]
 input_per_1k = 0.0014
 cache_read_per_1k = 0.00026
 output_per_1k = 0.0044
 max_input_tokens = 1000000
-max_output_tokens = 16384
+max_output_tokens = 32768
 source = "Z.AI list price for GLM-5.3, docs.z.ai/guides/overview/pricing, 2026-09-28"
 
 # The automatic loop and its preset. The preset fixes the package limits, the note and draft limits, the gate's
@@ -105,6 +117,10 @@ order_seed = 1
 # task_plan_ref / schedule_ref / budget_ref are frozen by the cycle when they are not named here.
 
 # The whole activity's budget: every phase, the research slot's two arms and its outer comparison. Each arm gets
-# the preset's fixed share of it. A cycle without a budget is refused before anything is paid for.
+# the preset's fixed share of it. A cycle without a budget is refused before anything is paid for. The final
+# comparison's share is set aside on the same root: the cycle cannot spend it, and the final spends only it.
 [freeze.budget]
-usd = 120.0
+usd = 300.0
+
+[freeze.budget.final]
+usd = 50.0

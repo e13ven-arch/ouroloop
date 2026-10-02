@@ -406,7 +406,7 @@ def cmd_bench(args) -> int:
           "improve": dict(rounds=args.rounds),
           "research": dict(campaign_ref=args.plan),
           "evaluate": dict(plan_ref=args.plan),
-          "report": {}, "cycle": {}}[args.phase]
+          "report": {}, "cycle": dict(until=args.until)}[args.phase]
     try:
         report = run_phase(cfg, Path(args.config).resolve().parent, phase=args.phase,
                            **{k: v for k, v in kw.items() if v is not None})
@@ -600,6 +600,8 @@ def main(argv: list[str] | None = None) -> int:
     bn.add_argument("--rounds", type=int, help="improve: how many worker rounds (default: the frozen schedule)")
     bn.add_argument("--repeats", type=int, help="collect: attempts per training task")
     bn.add_argument("--plan", help="research/evaluate: the frozen plan to run, instead of the one in [rsi]")
+    bn.add_argument("--until", help="cycle: stop after this step and pay for nothing past it: baseline, segment-N, "
+                                    "segment-N/round-K or slot-N; running the cycle again continues from there")
     fz = sub.add_parser("freeze", help="freeze the plans in [freeze.*] (task plan, schedule, budget, final plan) "
                                        "into the workspace and print the [rsi] lines that name them")
     fz.set_defaults(fn=cmd_freeze)
