@@ -44,6 +44,39 @@ collect 可引用已有完整轨迹；dataset 身份固定选择规则/投影；
 
 Tinker optim_step 若状态不明，不能重复 apply。只有已确认训练 checkpoint、optimizer 状态及数据游标可恢复时继续；否则终止该候选或另建有明确预算的新训练，历史费用保留。Harbor 是否可 attach/resume 由能力声明决定，不能默认存在稳定恢复 API。
 
+首版的暂停与结束规则（2026-10-02）按故障在哪一层被处理来划分。
+
+**actor 单次尝试内**（基线、测量、补采、gate 两臂、公共测量与外测中的每次尝试）：
+- 账号类错误（余额、配额、被拒的 key）上抛，活动以 repair_runtime 暂停。
+- 其余 ProviderError，包括计费层重试用尽的：
+  - 记该次尝试 invalid（failure_class=infrastructure），按冻结的 retry_policy 补跑一次；仍缺则所属比较判 inconclusive，不暂停活动。
+  - 连续的基础设施失败轮由 `max_infrastructure_failures` 升级为暂停。
+- 尝试内的账本预算拒绝：记 budget_exhausted，所属比较判 inconclusive。
+
+**尝试之外的调用**（逐题笔记、汇总、修订、研究位提案，以及 collect、续跑、基线、研究位、公共测量与外测的编排步骤）：
+- 触发暂停的故障：账号类错误、研究回复在输出上限处被截断（ReplyTruncated）、计费层重试用尽后的 ProviderError。
+- 暂停时：
+  - 写入 paused 及原因，不以未捕获的异常退出；
+  - 已结算的费用保留，open 预留按上文处理；
+  - 不消耗轮次、修订次数或失败额度。
+- 排除问题后续跑：从记录的状态继续，不重付已确认完成的尝试。
+
+**账本预算（BudgetError）分两类：**
+- 额度耗尽：reserve 会超出某级上限，或 budget_breach 之后 scope 已停止。这不是故障，是有界结束：
+  - 子 scope（campaign 的某一支、外测预留）耗尽：只结束该子步骤，所属比较判 inconclusive，活动继续。
+  - 活动根耗尽：活动以 budget_exhausted 结束并出报告，不写 paused。
+  - 上面列出的编排步骤遇到额度耗尽时，同样按此记录，不以异常退出。
+- 配置不一致：scope 已以其他限额存在、scope 不存在、未知维度。按下文“续跑的冻结输入”暂停并写明原因；能在 freeze 时发现的，在 freeze 时拒绝启动。
+
+供应商账号的余额或配额耗尽属于账号类错误，充值后续跑即可，与账本预算耗尽不是一回事。
+
+**续跑的冻结输入（2026-10-02）：**
+- 续跑一个未完成的实验时，评测计划与预算 scope 只取 Experiment 冻结的 `eval_template_ref` 与 `budget_scope`。
+- 当前活动的计划或 scope 与之不一致时不续跑：实验保持打开并记录原因，活动暂停，由人决定关闭该实验还是恢复原计划。不得用新计划或新预算完成旧实验。
+- 筛选与评测的 control、permit 与候选 release，都建在冻结的 `parent_release` 上。
+- 安装仍按冻结的 `parent_release` 做 CAS；active 已移动时记 stale_parent，不暂停。
+- 首版活动内不重新冻结 task plan、schedule、预算或计价（[ROADMAP §3](../ROADMAP.md) 首个真实活动协议）。
+
 ## 4. episode 与副作用恢复
 
 采集记录草稿 → review → accepted → execution 各事实；写入采用已有原子对象与追加事件机制。不对失败的草稿执行任何工具。动作执行后、结果落盘前崩溃形成不确定副作用：优先查询环境真实状态，不能直接重发营销通知等操作。
@@ -55,6 +88,16 @@ cancel 停新付费请求并尽力取消后台作业；取消仍可能收费，�
 ## 5. 当前已知差距与用例
 
 当前已有逐调用预算、未知占用、活动预算根和实验续跑。待补：自动 wall time 计量、SDK 隐式重试覆盖、外部请求对账，以及教师/Tinker/Harbor 新边界。不能把这些设计写成当前严格保证。
+
+§3 中 2026-10-02 写定的规则大部分尚未实现。现状如下：
+- 暂停只在 worker 轮循环里写入：
+  - `run_worker_round` 遇到研究回复截断或草稿基础设施失败时，返回 repair_runtime；
+  - `run_worker_rounds` 捕获账号错误（含每轮测量中的账号错误）后，停在 repair_runtime；
+  - cycle 的研究位在 R 提案准入返回 repair_runtime、或构建返回 infrastructure_failed 时，记 paused。
+- collect、续跑、基线、研究位的 R 提案、campaign 公共测量与外测，遇到账号错误、截断、其余 ProviderError 或额度耗尽时，以异常退出。
+- 续跑不读 `eval_template_ref` 与 `budget_scope`；筛选与评测的 control 取当前 active（`ouroloop/bench.py:748`、`:759`）。
+
+以上按 ROADMAP §3 首个真实活动协议在付费前补齐。
 
 首版按 [ROADMAP §2](../ROADMAP.md) 阶段补：阶段 A 补文本草稿检查（结构/路径/manifest）与有界修订、笔记调用计量；阶段 B 把同一修复循环扩展到 isolated_probe/package_test，并补包 worker 生命周期/资源与 broker 内部工具调用计量。教师/Tinker 的新恢复路径归第二版，已有旧 job/serving 兼容不删除。
 

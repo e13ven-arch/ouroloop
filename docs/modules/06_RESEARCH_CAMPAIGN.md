@@ -4,7 +4,9 @@
 
 ## 1. 比较什么
 
-首条递归实现采用现有 R 策略路径：候选可更新 `research.diagnose` 的诊断提示、`research.retrieve` 的受限检索规则、`research.propose` 的提案方法和 `research.preflight` 的辅助检查流程。由真实失败证据选择变更，不规定必须更新某一段 prompt。
+首条递归实现采用现有 R 策略路径。注册的 R 目标有 `research.diagnose`、`research.retrieve`、`research.propose`、`research.preflight` 四项。
+
+首版研究位中，真实 R 只对 diagnose 或 propose 其中一段提出完整的新提示（`ouroloop/research/basic.py:443-469`）；改哪一段由经验投影决定，不预先指定。retrieve 与 preflight 保留注册，供 scripted 或手工路径做工程验证，首版不作为真实的自动候选，等真实结果显示需要时再开放（[DESIGN §7](../DESIGN.md)）。
 
 首版例：R0 遇到失败就新增相似工具；R1 先检查旧工具是否加载/调用，再选择修改描述、修中间件或合并组件。改变的是改进方法；不能以 R 自评“更合理”接受，必须看相同起点下实际产生的 W*。第二版再扩展训练选择。
 

@@ -8,6 +8,36 @@
 
 ---
 
+## 2026-10-02 复核、首个真实活动协议与付费前彩排
+
+- 做了什么：对 HEAD `9270a7d` 做 11 个范围的实现复核。每个范围一名审计员读规格、代码与测试，一名复核员找反证，最后由综合与批评各一轮收口，人工抽查高危项。另做了 RSI 定位与业务落地评估，以及三版迭代计划的评审。全程只读，没有调用模型。复核全文见 `history/V0_6_REVIEW_2026-10-02.md`。
+- 发现（复核后成立）：
+  - 高危 4 项：
+    - K 未冻结 methods 时，准入放行 R 提供的 `spec.backend`，构建预检经 `serving.py:42-44` 到 `config.py:77` import 任意对象。离线 PoC 已复现。
+    - 两支 W* 相同时，研究裁决仍可 accepted；`test_campaign.py:96-108` 把它断言成了预期。
+    - 外层比较按各支剩余的有效任务求均值，不配对（`campaign.py:341-348`）。
+    - 续跑不读 Experiment 冻结的 `eval_template_ref` 与 `budget_scope`（`research/loop.py:346-356` → `bench.py:748-762`）。
+  - 暂停只在 worker 轮循环里写入；collect、续跑、基线、研究位提案、公共测量与外测遇到账号错误或截断时，以异常退出。
+  - 示例研究模型的输出上限 16384 不够：上限 16384 时，账本中 `linkcheck2-gate` 的两次汇总调用一次输出 16384 被截断，另一次输出 16293（只差 91）；上限提到 32768 后，同等提示规模的一次输出 13332。
+  - 所有 improve/cycle/research 集成测试都注入脚本研究员；`cycle_pairs` 在测试中一律被替换；Docker 里的代码草稿检查链没有测试。
+  - R 的可演化面只有 `research.diagnose` 与 `research.propose` 两段提示。preset 只计划一个研究位；cycle 没有拒绝调高的 research_slots，调高后 R1→R2 可达，但未测试、未计划。
+  - 文档状态过时、行号过期；“20 次中 18 次无效”混用了口径（磁盘上 20 条 dev 记录中 19 条无效）。
+- 因此改了什么设计：
+  - ROADMAP §3 新增首个真实活动协议，内容包括：付费前必修清单（能落成测试的条目注明测试名）、付费前彩排、独立的计价校准、活动结构与预算（$300 根，其中 final 分配 $50）、gate 口径与免费 A/A、检查点 K1～K3 与止损、final 时机。
+  - 付费前彩排采纳用户的提议，由 Claude 充当 LLM：
+    - 通过 `[research.llm] type = "manual"` 读请求文件作答；
+    - actor 是对包内容作出反应的确定性假 actor，任务世界是以 marketing 域名导出的小型 fixture 上游；
+    - 经 CLI 走生产 cycle，按步骤注入截断、读不出、形状非法的回复；
+    - 由工作区名与本日志标注为 synthetic（报告本身不带标记），不计入证据。
+
+    它替代不了计价校准与真实运行。Claude 作答 actor 另在一个以 manual pin 的工作区里做。
+  - M5 §3 按故障所在的层写定暂停与结束规则：账本额度耗尽是有界结束，不是暂停。还写定了续跑的冻结输入。M4 §1 按步骤写定读不出的回复如何处理，截断则暂停。08 §3 写入彩排的验收与边界，M6、M7 和 RESEARCH_AGENT 同步。
+  - DESIGN §7 与 README 开头如实写明：首版 R 只改两段提示，属于有界、一阶的改进策略更新，对外表述为 bounded RSI 工程原型。
+  - 修正 README（中英）、DESIGN、DEMO、RSI_REVIEW、ROADMAP、examples README 与 M0 中过时的状态和行号；README 的任务数由 10（7+3）改为 29（21+8）。
+- 文档改动经三个视角（代码事实、跨文档一致性、协议可执行性）审查，每条发现再由一名复核员找反证：53 条中 47 条成立，均已修正。不采纳的一条修法：研究位的 system 提示不去掉 R 自己的 propose 文本，因为 R 正是用它提出对自身的修改；改由研究位格式声明以哪段为准。
+- 证据：703 passed, 1 deselected（未改代码）。
+- commit：见本条之后的提交。
+
 ## 2026-10-01 真实 gate 三次尝试，与首版需求审计
 
 - 做了什么：在 `linkcheck2` 工作区新开一个 scope（`linkcheck2-gate`，$6 上限），dev 计划取冻结顺序的前 5 个任务（5 个家族），其中 1 个做筛选，gate 门槛沿用 preset。跑生产的 `bench.improve` 一轮，不设停止点；复用已测得的 train 失败（`campaign_launch_checklist`）。

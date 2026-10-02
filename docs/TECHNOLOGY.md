@@ -77,7 +77,7 @@ DeepAgents 作为依赖调用，既不复制源码也不把现有 Agent 再包�
 | 组件执行与隔离 | 组件在 agent 进程内 importlib 加载；Harbor 容器分开任务环境与 verifier | tools/middlewares 代码只在 Docker worker 执行，经 broker 调业务工具；只含 skills/memory 的包由宿主装配 | 直连模式下世界状态在宿主进程内，所有分区的断言都在本地任务数据里，能读文件的生成代码就能读到 dev/test 答案 |
 | 失败诊断 | 每轮最多 10 个子 agent 逐题笔记，主 agent 汇总去重后改库 | 输入为 train/fit 失败摘要与断言明细，dev/final 不给明细和轨迹；复用现有 research provider 串行 map/reduce：每个纳入本轮的失败任务一次笔记调用（每轮读取笔记数有上限，久未纳入者优先，覆盖如实记录；须论证适用于一类任务，不写单题答案），再一次汇总调用产出至多一个 patch 或结构化 next_action；笔记为 train 血缘 artifact 并计费，每轮笔记数上限由 preset/K 固定 | 单控制面串行与单预算，不建子 agent 平台 |
 | 冒烟与修复 | 主 agent 改库后先做 import/加载/pytest 冒烟，再提交评测 | 草稿包在同一 operation 日志内做 package_check → isolated_probe → package_test；只含 skills/memory 的草稿只做结构/路径/manifest 检查；失败时只把检查输出回传 R，在 preset/K 固定次数内修订，用尽则本轮以无效提案结束；通过才冻结进 Experiment，冻结后源码不变 | 修复有界且逐次记录计费，冻结实验可复现 |
-| 组件优先级与挂点 | 学生库以中间件为主，工具只在 USPTO | memory/skills → on_finish 守卫 → before_tool/after_tool 守卫 → 包工具；除 context_guard 外的中间件都落到三个挂点：turn_budget 以 after_tool feedback 近似，空回合即完成请求（`ouroloop/agent/loop.py:149`）由 on_finish 处理（stop 为 end/other 时才经 on_finish，`loop.py:150`；因长度截断的空回合直接结束），bootstrap 指令由宿主注入的 memory/skills 承担 | 改上下文（context_guard 类）不支持，是有意取舍：TargetHarness 固定上下文算法 |
+| 组件优先级与挂点 | 学生库以中间件为主，工具只在 USPTO | memory/skills → on_finish 守卫 → before_tool/after_tool 守卫 → 包工具；除 context_guard 外的中间件都落到三个挂点：turn_budget 以 after_tool feedback 近似，空回合即完成请求（`ouroloop/agent/loop.py:166`）由 on_finish 处理（stop 为 end/other 时才经 on_finish，`loop.py:167`；因长度截断的空回合直接结束），bootstrap 指令由宿主注入的 memory/skills 承担 | 改上下文（context_guard 类）不支持，是有意取舍：TargetHarness 固定上下文算法 |
 
 开发时可按以下入口核对控制顺序、表示与恢复思路，不拷贝实现：
 

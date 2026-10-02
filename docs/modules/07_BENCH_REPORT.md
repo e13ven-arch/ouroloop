@@ -110,7 +110,7 @@ v3 最终计划区分 C2 的 `mode=published_reference`（默认）与 `paired_r
 
 报告必须保留无收益、拒绝、成本未知、训练失败、预算耗尽与未运行项。source 的 validated 单列为“教学来源验证通过”，不计 accepted/installed 数量；补采仅记数据进展。某个 worker 段结束不等于全活动失败，仍展示后续 research slot 的真实状态。
 
-C4 读取真实 campaign 结果，不预设 not_run。只有未执行才标 not_run；已运行但样本不足为 inconclusive；没有收益如实记录。完整 v0.6 验收要求递归路径和有界真实验证，单个 manual 蒸馏实验无需伪装覆盖 C4。历史 research 报告仍按既有结果读取。`report` 禁止触发模型请求、重新选择 checkpoint 或补跑 final。恢复 `evaluate/improve` 只补计划缺项，已完成结果不重花钱。
+C4 读取真实 campaign 结果，不预设 not_run。只有未执行才标 not_run；研究位在形成 campaign 之前结束时（研究位回复无效、R 没有提案、准入拒绝或构建失败），C4 仍标 not_run，detail 按 `rsi/cycle.json` 中该研究位的结局如实写出，不写成“没有 campaign 记录”（2026-10-02，见 [M4 §1](04_RESEARCH_LOOP.md)）；已运行但样本不足为 inconclusive；没有收益如实记录。完整 v0.6 验收要求递归路径和有界真实验证，单个 manual 蒸馏实验无需伪装覆盖 C4。历史 research 报告仍按既有结果读取。`report` 禁止触发模型请求、重新选择 checkpoint 或补跑 final。恢复 `evaluate/improve` 只补计划缺项，已完成结果不重花钱。
 
 ## 5. 用例
 

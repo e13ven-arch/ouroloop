@@ -1,6 +1,6 @@
 # v0.6 演示与证据交付
 
-> 首版展示：给出任务和资源，框架自动演化能力包代码/材料，验证并发布 app，更新/回用改进策略。教学适配和训练是第二版展示。首版链路已实现并经离线 fixture 验证（脚本研究员，不是真实自动发现），尚未用真实模型运行；以下不是成绩。
+> 首版展示：给出任务和资源，框架自动演化能力包代码/材料，验证并发布 app，更新/回用改进策略。教学适配和训练是第二版展示。首版链路已实现并经离线 fixture 验证（脚本研究员，不是真实自动发现）；真实模型跑到过一次 dev gate（2026-10-01，inconclusive，未安装）；以下不是成绩。
 
 ## 1. 让用户看到的过程
 
@@ -25,6 +25,6 @@
 
 ## 3. 实现状态
 
-现有 bench 七个 phase 与 freeze 保持；首版新增包演化/隔离 worker、cycle/preset/导出待开发，第二版新增教学/蒸馏/Tinker 待开发。实施须给可 freeze 的完整配置/精确命令，示意配置不能称已跑。
+现有 bench 七个 phase 与 freeze 保持；首版新增的包演化/隔离 worker、cycle/preset/导出已实现并经离线验证，第二版新增教学/蒸馏/Tinker 待开发。实施须给可 freeze 的完整配置/精确命令，示意配置不能称已跑。
 
-当前真实证据仅 GLM-5.3 一个 Marketing dev 任务成功，以及已有工程 fixture；没有真实蒸馏或递归收益。见 [JOURNAL](JOURNAL.md)、[验收](modules/08_INTEGRATION_CASES.md)与 [ROADMAP](ROADMAP.md)。
+当前真实证据为 GLM-5.3 一个 Marketing dev 任务成功，2026-10-01 一条从 train 失败到一次 dev gate 的真实链路（余额耗尽，inconclusive，未安装），以及已有工程 fixture；没有真实蒸馏或递归收益。见 [JOURNAL](JOURNAL.md)、[验收](modules/08_INTEGRATION_CASES.md)与 [ROADMAP](ROADMAP.md)。

@@ -1,6 +1,13 @@
 # 跨模块集成验收（v0.6）
 
-> 以下是待开发规格，不是通过结果。v0.5 历史见 [快照](../history/V0_5_IMPLEMENTATION.md)。首版验收诊断输入、能力包文本/代码演化、隔离/回归/发布与递归；第二版验收教学/训练固化，旧草案用例保留原义。真实实验与 fixture 分开。
+> 首版用例大多已有离线测试，离线通过只证明接线，不是真实结果。IT6-10/19/21/23/26 仍部分实现：
+> - IT6-21：活动取消入口不存在；
+> - IT6-26：合并/停用分支与逐题退化记录没有测试；
+> - IT6-23：Docker 中的代码草稿检查链没有测试；
+> - IT6-10：cycle 集成测试都注入脚本研究员；
+> - IT6-19：补采批中途崩溃没有测试。
+>
+> 明细见 `history/V0_6_AUDIT_2026-10-01.md` 与 `history/V0_6_REVIEW_2026-10-02.md`。标为第二版的用例仍是待开发规格。v0.5 历史见 [快照](../history/V0_5_IMPLEMENTATION.md)。首版验收诊断输入、能力包文本/代码演化、隔离/回归/发布与递归；第二版验收教学/训练固化，旧草案用例保留原义。真实实验与 fixture 分开。
 
 ## 1. 核心闭环与必须覆盖的场景
 
@@ -49,7 +56,25 @@ IT6-14（此前草案“首版不得调用研究员”）撤销，不实现为�
 
 ## 3. 真实验证与效果目标
 
-首版 actor 固定为 GLM-5.3；首轮真实 h* 演化前先运行 GLM-5.3 的 train+dev 无教师基线，2026-09-30 在第一个任务中途中止、无完成尝试的启动不算基线。随后先以真实 train 失败经失败摘要/逐题笔记生成文本包（技能/经验），读取/注入事件可查并经 gate 裁决；再做真实 provider 的包内代码提案、冻结前草稿试跑修复、固定隔离 worker import/接口 smoke、工具/hook 实际执行、同 actor gate/安装/干净部署与下一包迭代。真实 Docker 隔离检查不能由 fake worker 冒充，本机 Docker daemon 可用是其前提；scripted R 只能证明流程接线。成本与功效预期见 [ROADMAP §4](../ROADMAP.md)：dev 25 族约 +20 个百分点才可能显著。第二版再增加适配/teacher/短 SFT/checkpoint/sampling smoke，模型与调用来源可查。
+首版 actor 固定为 GLM-5.3；首轮真实 h* 演化前先运行 GLM-5.3 的 train+dev 无教师基线，2026-09-30 在第一个任务中途中止、无完成尝试的启动不算基线。随后先以真实 train 失败经失败摘要/逐题笔记生成文本包（技能/经验），读取/注入事件可查并经 gate 裁决；再做真实 provider 的包内代码提案、冻结前草稿试跑修复、固定隔离 worker import/接口 smoke、工具/hook 实际执行、同 actor gate/安装/干净部署与下一包迭代。真实 Docker 隔离检查不能由 fake worker 冒充，本机 Docker daemon 可用是其前提；scripted R 只能证明流程接线。
+
+付费前彩排（[ROADMAP §3](../ROADMAP.md) 首个真实活动协议，2026-10-02）介于离线测试与真实运行之间：
+- 做法：
+  - 经 CLI 走生产 cycle，不注入研究员，也不替换 `cycle_pairs`；
+  - R 由 manual provider 作答，即 Claude 读请求文件回复；
+  - actor 是对包内容作出反应的确定性假 actor；
+  - 任务世界是以 marketing 域名导出的小型 fixture 上游。
+- 验收：
+  - 至少一次走到 gate 裁决；
+  - 至少一份含 hook 或包工具的草稿在 Docker 中走完 package_check → isolated_probe → package_test，并在 gate 候选臂中被执行；
+  - 安装，且下一轮满足 K3a；
+  - 研究位走到裁决，accepted 时 R1 被加载；
+  - 按协议中的注入表，各步骤的截断、读不出、形状非法回复分别得到暂停、coverage.invalid、本轮 invalid、占用修订或研究位 invalid；
+  - 续跑不重复记账。
+  - 若假 actor 没能让 gate 接受，如实记为覆盖缺口：生产 CLI 路径上的安装与回用要到第一次真实运行才首次执行。
+- 边界：它证明生产路径与故障协议，不证明任何模型的效果。系统不会给这些记录打 synthetic 标记，synthetic 由独立工作区（名称带 rehearsal）与 JOURNAL 标注；该工作区的报告不计入真实跑通，也不计入 C1～C4。
+
+首个真实活动按该协议的检查点 K1～K3 与止损执行。“停止”指停在该检查点所在的步，不进入下一个付费步骤；任一检查点未过时记录原因，不以 fixture 或彩排结果补位。成本与功效预期见 [ROADMAP §4](../ROADMAP.md)：dev 25 族约 +20 个百分点才可能显著。第二版再增加适配/teacher/短 SFT/checkpoint/sampling smoke，模型与调用来源可查。
 
 首版用冻结家族/预算比较同 actor 起点、有效 prompt/workflow、演化包；完整固定 dev 比较保留本次对照版本成功的任务，按 M3 冻结门槛判断，不要求零退化或另建回归任务池。安排有界 R0/R1 方法比较，通过才安装/回用；拒绝逻辑同样验收。第二版再比较蒸馏 app/controller。领先模型默认引用公布数字，不混作本地成绩。
 

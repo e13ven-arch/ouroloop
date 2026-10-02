@@ -18,6 +18,32 @@ ResearchContext 由白名单投影得到：当前 W/R/K、包内文件与固定 
 
 输出沿用 ProposalResult，区分合法候选与结构化 next_action。无候选时 `collect` 是可继续的准备请求，只有 none/stop 或无法补齐的原因才结束当前 worker 段；repair_runtime 表示明确的工程能力缺口，不授权自动改代码。R 返回假设、证据、变更意图、预期和放弃条件；固定代码负责 refs、实验身份、权限、预算、评测和安装。`origin=manual/scripted/llm` 由调用入口写入，模型不能自报或改写。
 
+读不出的回复不是 R 的决定（2026-10-02）。“读不出”包括：空回复、拒答、非 JSON、缺少必需字段，或提案形状不合法（目标或 kind 不在注册范围内、change 形状不对）。按步骤处理：
+
+- 逐题笔记（`research.diagnose`）：
+  - 单条读不出时，记入 coverage.invalid（含 task_id 与原因），不缓存，跳过这一条，本轮继续，用其余笔记汇总。
+  - 全部笔记都读不出时，不调用汇总，本轮记 `outcome=invalid`。
+- 汇总（`research.propose`）：
+  - 读不出，或提案形状不合法，本轮记 `outcome=invalid`，计入轮次与失败上限，原因写明是哪一种。
+  - 不得回退成 collect 或 stop，也不得静默丢掉不合法的提案后再解释剩下的内容。
+- 修订：读不出的修订算一次失败的修订，占用一次 `max_draft_repairs`；用尽后按 §2 记 invalid。
+- 研究位：
+  - 读不出或提案不合法，记 invalid，不记 `no_proposal`。
+  - 报告的 C4 保持 not_run，detail 写“研究位回复无效”及原因，不写“R 没有提案”（[M7 §4](07_BENCH_REPORT.md)）。
+- 截断：回复在输出上限处被截断，任何一步都属于配置问题，按 [M5 §3](05_EXECUTION_BUDGET.md) 暂停活动；续跑时用改正后的配置重新询问同一步，不计 invalid。
+
+这些规则对由 manual provider 作答的回复同样适用。付费前彩排（[ROADMAP §3](../ROADMAP.md) 首个真实活动协议）逐步注入这些回复形态来验收。
+
+本段写定时大部分尚未实现，现状如下：
+- worker 汇总轮只有“非空且解析不出 JSON 对象”的回复记 invalid（`ouroloop/research/basic.py:437`）。
+- 截断只在 worker 轮暂停（`research/loop.py:202-208`）。
+- 空回复被读成 collect（`experiment.py:330-331`）。
+- 形状非法的提案被静默丢弃（`basic.py:430-431`）。
+- 全部笔记无效时仍调用汇总。
+- 研究位读不出的回复记为 no_proposal（`basic.py:467`），之后不再重问（`bench.py:2141`）。
+
+以上按首个真实活动协议在付费前补齐（`test_research_round.py::test_an_unreadable_reply_is_an_invalid_round`、`test_diagnosis.py::test_no_readable_note_makes_an_invalid_round`）。
+
 ## 2. 首版可执行的候选空间
 
 | 失败证据 | 候选/处理 | 必须具备的条件 |
@@ -146,7 +172,7 @@ else:
 append facts, failures, costs and actual loaded refs; obey the fixed schedule
 ```
 
-每轮 measure 区分诊断与正式评测：新包安装后，默认只重跑上一诊断工作集中失败的 train 任务，以定位剩余问题；未重跑的成功任务保留原版本历史，不视为新包已通过，更不能把不同版本结果拼成新包完整 train 分数。正式 dev gate 仍对当前已采用版本与候选执行完整固定 dev 配对比较，逐题结果及退化比例按 M3 判断；它只说明该 dev 范围的表现，不证明未重跑的具体 train 任务仍成功。完整且匹配的候选 gate dev 结果可用于下一轮 measure，但只进入 R 的上下文，并标明是促成安装的那次抽样（受选择影响偏乐观）；gate 每次都在自身 plan 内重跑对照臂（`ouroloop/bench.py:571-591`），从不复用它；也不能以 train 诊断子集代替。
+每轮 measure 区分诊断与正式评测：新包安装后，默认只重跑上一诊断工作集中失败的 train 任务，以定位剩余问题；未重跑的成功任务保留原版本历史，不视为新包已通过，更不能把不同版本结果拼成新包完整 train 分数。正式 dev gate 仍对当前已采用版本与候选执行完整固定 dev 配对比较，逐题结果及退化比例按 M3 判断；它只说明该 dev 范围的表现，不证明未重跑的具体 train 任务仍成功。完整且匹配的候选 gate dev 结果可用于下一轮 measure，但只进入 R 的上下文，并标明是促成安装的那次抽样（受选择影响偏乐观）；gate 每次都在自身 plan 内重跑对照臂（`ouroloop/bench.py:758-780`），从不复用它；也不能以 train 诊断子集代替。
 
 复用按实际任务执行身份检查，至少包含 W/package、实际模型与推理配置、宿主/隔离配置与工具权限、环境及评分版本、任务/attempt、冻结计划与运行限额；保留原 release/attempt/TaskResult refs，不重写身份或计作新的独立样本。托管模型标 mutable=true 时，复用限本活动内并在报告注明。上一轮未安装（rejected/invalid/infrastructure_failed/needs_collection/no_proposal 等）只是可能复用的条件：上述条件一致且结果已确认有效，才无需新增任务运行；缺项或条件变化时，按冻结计划/预算补必需尝试，无法补齐则报告证据不足或能力缺口。仅 R 改变且任务执行配置未变时可复用业务测量；R 调用产物（逐题笔记）只在 §1 的完整笔记身份一致时复用。补采产生的新合格 train 反馈仍按实际身份进入诊断上下文，不能因复用 measure 被丢弃。
 
