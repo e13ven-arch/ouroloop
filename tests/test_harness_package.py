@@ -115,6 +115,76 @@ def test_limits_bound_files_bytes_and_text_lengths():
         hp.check_shape(text_files(memory="x" * 100), hp.Limits(max_package_bytes=50))
 
 
+def tool_files(**entry) -> dict:
+    """A package with one tool, its entry overridden by `entry`."""
+    manifest = hp.empty_manifest()
+    manifest["tools"] = [{"name": "lookup_contact", "description": "find a contact by email",
+                          "input_schema": {"type": "object", "properties": {"email": {"type": "string"}}},
+                          "entrypoint": "tools/t.py:run", **entry}]
+    return {"manifest.json": json.dumps(manifest), "tools/t.py": "def run(ctx, args):\n    return ''\n"}
+
+
+CODE = hp.Limits(components=hp.KINDS)
+
+
+@pytest.mark.parametrize("name", ["crm.lookup", "lookup contact", "x" * 65, "查找联系人", "ok\n"])
+def test_a_tool_name_the_provider_refuses_fails_the_check(tmp_path, name):
+    """A name the model providers refuse is a 400 on every call of every attempt, which a run can only book as
+    infrastructure: the draft check refuses it as a structure error that goes back to R, before any worker."""
+    from ouroloop.research.drafts import Drafts
+    with pytest.raises(hp.PackageError, match="letters, digits"):
+        hp.check_shape(tool_files(name=name), CODE)
+    for fine in ("x" * 64, "Lookup-contact_2"):
+        hp.check_shape(tool_files(name=fine), CODE)
+    objects = ct.Objects(tmp_path)
+    drafts = Drafts(objects, parent_ref=hp.empty_package(objects), limits=CODE, worker=None)
+    errors, ref = drafts.check(tool_files(name=name))          # no WorkerUnavailable: refused before the worker
+    assert ref is None and "letters, digits" in errors[0]
+
+
+@pytest.mark.parametrize("schema,message", [
+    ({"type": "object", "properties": {"ids": {"type": "array"}}}, "gives no items"),
+    ({"type": "object", "properties": [{"name": "x"}]}, "object of schemas"),
+    ({"type": "object", "required": "email"}, "list of property names"),
+    ({"type": "object", "properties": {"x": {"type": "text"}}}, "type 'text'"),
+    ({"type": "object", "anyOf": [{"type": "object"}]}, "anyOf/oneOf/allOf"),
+    ({"type": "object", "properties": {"x": json.loads('{"type": "object", "properties": {"x": ' * 16
+                                                       + '{"type": "string"}' + '}}' * 16)}}, "nests deeper")])
+def test_a_tool_schema_the_provider_refuses_fails_the_check(schema, message):
+    with pytest.raises(hp.PackageError, match=message):
+        hp.check_shape(tool_files(input_schema=schema), CODE)
+    hp.check_shape(tool_files(input_schema={
+        "type": "object", "required": ["ids"],
+        "properties": {"ids": {"type": "array", "items": {"type": "string"}},
+                       "note": {"type": ["string", "null"]}, "mode": {"enum": ["a", "b"]}}}), CODE)
+    with pytest.raises(hp.PackageError, match="1024"):
+        hp.check_shape(tool_files(description="x" * 1025), CODE)
+
+
+def test_enabled_is_a_boolean_and_a_disabled_tool_is_not_offered(tmp_path):
+    from ouroloop.chat import ToolSpec
+    with pytest.raises(hp.PackageError, match="enabled is true or false"):
+        hp.check_shape(tool_files(enabled="false"), CODE)
+    manifest = json.loads(code_files()["manifest.json"])
+    manifest["hooks"][0]["enabled"] = "false"
+    with pytest.raises(hp.PackageError, match="enabled is true or false"):
+        hp.check_shape({**code_files(), "manifest.json": json.dumps(manifest)}, CODE)
+    with pytest.raises(hp.PackageError, match="memory is"):
+        hp.check_shape({**text_files(memory=NOTE), "manifest.json": json.dumps(
+            {**hp.empty_manifest(), "memory": {"enabled": "yes"}})}, CODE)
+    files = tool_files()
+    manifest = json.loads(files["manifest.json"])
+    manifest["tools"].append({**manifest["tools"][0], "name": "retired_tool", "enabled": False})
+    objects = ct.Objects(tmp_path)
+    ref = hp.build_package(objects, {**files, "manifest.json": json.dumps(manifest)}, CODE)
+
+    class Surface:
+        def specs(self):
+            return [ToolSpec("api_search", "search", {"type": "object"})]
+    offered = set(hp.PackageTools(Surface(), hp.load_package(objects, ref)).tools)
+    assert offered == {"lookup_contact"}
+
+
 # ---------------------------------------------------------------------------- the two worker predicates (PR6-14)
 def test_check_and_runtime_predicates_differ_on_tests_and_follow_inherited_code(tmp_path):
     objects = ct.Objects(tmp_path)

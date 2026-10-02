@@ -26,7 +26,13 @@ HOOK_SITES = ("before_tool", "after_tool", "on_finish")
 TEXT_KINDS = ("memory", "skills")
 CODE_KINDS = ("on_finish", "before_tool", "after_tool", "tools")
 KINDS = (*TEXT_KINDS, *CODE_KINDS)
-SKILL_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+SKILL_NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")        # matched with fullmatch: "$" lets a trailing newline in
+# What every provider this host speaks takes as a tool name (OpenAI-compatible endpoints, GLM among them, and
+# Anthropic): any other name is a 400 on every call, which a run can only book as infrastructure (M1 §1).
+TOOL_NAME = re.compile(r"[a-zA-Z0-9_-]{1,64}")
+JSON_TYPES = ("string", "number", "integer", "boolean", "object", "array", "null")
+MAX_TOOL_DESCRIPTION = 1024
+MAX_SCHEMA_DEPTH = 16
 PATTERNS = (
     ("manifest", re.compile(r"^manifest\.json$")),
     ("memory", re.compile(r"^memory\.md$")),
@@ -98,8 +104,8 @@ def parse_manifest(text: str, files: dict[str, str]) -> dict:
     outside the bundle are structure errors."""
     try:
         m = json.loads(text)
-    except json.JSONDecodeError as e:
-        raise PackageError(f"manifest.json is not JSON: {e}") from None
+    except (json.JSONDecodeError, RecursionError) as e:
+        raise PackageError(f"manifest.json is not JSON or nests too deep: {str(e)[:200]}") from None
     if not isinstance(m, dict):
         raise PackageError("manifest.json is an object")
     unknown = sorted(set(m) - {"api_version", "tools", "hooks", "skills", "memory"})
@@ -117,10 +123,16 @@ def parse_manifest(text: str, files: dict[str, str]) -> dict:
         _unique(tool["name"], names, "tool")
         if tool["name"] in HOST_TOOLS:
             raise PackageError(f"tool {tool['name']}: the name is the host's own tool")
+        if not TOOL_NAME.fullmatch(tool["name"]):
+            raise PackageError(f"tool name {tool['name']!r}: letters, digits, '_' and '-' only, at most 64 "
+                               f"characters; the model providers refuse any other tool name")
+        if len(tool["description"]) > MAX_TOOL_DESCRIPTION:
+            raise PackageError(f"tool {tool['name']}: a description of {len(tool['description'])} characters; "
+                               f"providers take at most {MAX_TOOL_DESCRIPTION}")
         _entrypoint(tool["entrypoint"], "tools/", files)
-        if not isinstance(tool["input_schema"], dict) or tool["input_schema"].get("type") != "object":
-            raise PackageError(f"tool {tool['name']}: input_schema is a JSON object schema")
-        out["tools"].append({k: tool[k] for k in ("name", "description", "input_schema", "entrypoint")})
+        _input_schema(tool["input_schema"], f"tool {tool['name']}")
+        out["tools"].append({**{k: tool[k] for k in ("name", "description", "input_schema", "entrypoint")},
+                             "enabled": tool.get("enabled", True)})
     for hook in m.get("hooks") or []:
         _need(hook, {"name", "site", "entrypoint"}, "hook")
         _unique(hook["name"], names, "hook")
@@ -131,7 +143,7 @@ def parse_manifest(text: str, files: dict[str, str]) -> dict:
                              "enabled": bool(hook.get("enabled", True))})
     for skill in m.get("skills") or []:
         _need(skill, {"name", "path"}, "skill", optional={"description", "enabled"})
-        if not SKILL_NAME.match(str(skill["name"])):
+        if not SKILL_NAME.fullmatch(str(skill["name"])):
             raise PackageError(f"skill name {skill['name']!r}: lowercase letters, digits, '-' and '_'")
         _unique(skill["name"], names, "skill")
         if skill["path"] not in files or classify(skill["path"]) != "skill":
@@ -140,7 +152,8 @@ def parse_manifest(text: str, files: dict[str, str]) -> dict:
                               "description": str(skill.get("description", ""))[:300],
                               "enabled": bool(skill.get("enabled", True))})
     memory = m.get("memory") or {}
-    if not isinstance(memory, dict) or sorted(set(memory) - {"enabled"}):
+    if not isinstance(memory, dict) or sorted(set(memory) - {"enabled"}) \
+            or not isinstance(memory.get("enabled", False), bool):
         raise PackageError("memory is {enabled: bool}")
     if memory.get("enabled") and "memory.md" not in files:
         raise PackageError("memory is enabled and there is no memory.md")
@@ -161,6 +174,8 @@ def _need(entry, required: set, what: str, optional: set = frozenset()) -> None:
             continue
         if not isinstance(entry[key], str):
             raise PackageError(f"a {what} entry's {key} is a string")
+    if "enabled" in entry and not isinstance(entry["enabled"], bool):
+        raise PackageError(f"a {what} entry's enabled is true or false")
 
 
 def _unique(name, seen: set, what: str) -> None:
@@ -175,6 +190,44 @@ def _entrypoint(entry: str, prefix: str, files: dict) -> None:
     module, _, func = str(entry).partition(":")
     if not module.startswith(prefix) or module not in files or not func.isidentifier():
         raise PackageError(f"entrypoint {entry!r}: <{prefix}file.py>:<function> inside the package")
+
+
+def _input_schema(schema, what: str) -> None:
+    """A tool's input schema in the shape the model providers take. Not a full JSON Schema validator: it refuses
+    the shapes providers are known to refuse, each named so R can fix it — an object at the top with no
+    anyOf/oneOf/allOf, JSON types only, properties that are schemas, a list of required names, items for every
+    array, and no deeper nesting than MAX_SCHEMA_DEPTH."""
+    if not isinstance(schema, dict) or schema.get("type") != "object":
+        raise PackageError(f"{what}: input_schema is a JSON object schema")
+    if set(schema) & {"anyOf", "oneOf", "allOf"}:
+        raise PackageError(f"{what}: input_schema has anyOf/oneOf/allOf at the top; providers take an object")
+
+    def walk(s, at: str, depth: int) -> None:
+        if not isinstance(s, dict):
+            raise PackageError(f"{what}: {at} is a schema object")
+        if depth > MAX_SCHEMA_DEPTH:
+            raise PackageError(f"{what}: input_schema nests deeper than {MAX_SCHEMA_DEPTH}")
+        kind = s.get("type")
+        kinds = kind if isinstance(kind, list) else [kind] if kind is not None else []
+        if (isinstance(kind, list) and not kind) or any(k not in JSON_TYPES for k in kinds):
+            raise PackageError(f"{what}: {at} type {kind!r} is one of {list(JSON_TYPES)} or a list of them")
+        if "array" in kinds and "items" not in s:
+            raise PackageError(f"{what}: {at} is an array and gives no items")
+        if "properties" in s and not isinstance(s["properties"], dict):
+            raise PackageError(f"{what}: {at}.properties is an object of schemas")
+        if "required" in s and not (isinstance(s["required"], list)
+                                    and all(isinstance(r, str) for r in s["required"])):
+            raise PackageError(f"{what}: {at}.required is a list of property names")
+        for name, sub in (s.get("properties") or {}).items():
+            walk(sub, f"{at}.properties.{name}", depth + 1)
+        if "items" in s:
+            walk(s["items"], f"{at}.items", depth + 1)
+        for key in ("anyOf", "oneOf", "allOf"):
+            for i, sub in enumerate(s.get(key) or []):
+                walk(sub, f"{at}.{key}[{i}]", depth + 1)
+        if isinstance(s.get("additionalProperties"), dict):
+            walk(s["additionalProperties"], f"{at}.additionalProperties", depth + 1)
+    walk(schema, "input_schema", 1)
 
 
 def kinds_of(manifest: dict, files: dict[str, str]) -> set[str]:
@@ -547,7 +600,9 @@ class PackageTools:
         self.on_read = on_read
         self.runtime = runtime
         self.reads: list[str] = []
-        self.tools = {t["name"]: t for t in view.manifest["tools"]}
+        # A disabled tool stays in the package (enabling it again is a candidate of its own) and is never offered;
+        # manifests stored before tools carried the flag read as enabled.
+        self.tools = {t["name"]: t for t in view.manifest["tools"] if t.get("enabled", True)}
         taken = sorted(set(self.tools) & ({s.name for s in surface.specs()} | {self.SPEC_NAME}))
         if taken:
             # A package tool that shadows a base tool would replace it silently, or send the provider two tools
