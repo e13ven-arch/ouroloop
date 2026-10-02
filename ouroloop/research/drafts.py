@@ -19,15 +19,46 @@ from .diagnosis import clip
 MAX_CHECK_OUTPUT = 2000
 
 
+def payload_of(change: dict, objects: ct.Objects | None):
+    """What a change carries, inline or already stored as a change object; None when it is neither or its stored
+    object cannot be read (admission's core checks refuse such a change). A proposal is normalised before its
+    checks, so both forms reach them."""
+    payload = change.get("change")
+    if payload is None and "change_ref" in change and objects is not None:
+        try:
+            payload = objects.get(change["change_ref"]) if objects.has(change["change_ref"]) else None
+        except (ct.ContractError, KeyError):
+            return None
+    return payload
+
+
 def patch_of(change: dict, objects: ct.Objects) -> dict | None:
-    """The package patch a change carries, inline or already stored as a change object; None for any other
-    change. A proposal is normalised before the draft check, so both forms reach it."""
+    """The package patch a change carries; None for any other change."""
     if change.get("target") != "worker.harness":
         return None
-    payload = change.get("change")
-    if payload is None and "change_ref" in change and objects.has(change["change_ref"]):
-        payload = objects.get(change["change_ref"])
+    payload = payload_of(change, objects)
     return payload.get("patch") if isinstance(payload, dict) and isinstance(payload.get("patch"), dict) else None
+
+
+PROMPT_TARGETS = ("worker.system_prompt", "worker.finish")
+
+
+def text_of(change: dict, objects: ct.Objects) -> str | None:
+    """The instruction text a change gives the actor outside the package: a prompt's text, or a finish check's
+    instruction. None for any other change. The decoded text, never its JSON: an escape such as "\\n" must not
+    hide a literal from the check."""
+    if change.get("target") not in PROMPT_TARGETS:
+        return None
+    payload = payload_of(change, objects)
+    if isinstance(payload, dict) and isinstance(payload.get("instruction_ref"), str):
+        try:
+            payload = objects.get(payload["instruction_ref"]) if objects.has(payload["instruction_ref"]) else None
+        except (ct.ContractError, KeyError):
+            return None
+    if isinstance(payload, str):
+        return payload
+    text = payload.get("text", payload.get("instruction")) if isinstance(payload, dict) else None
+    return text if isinstance(text, str) else None
 
 
 from ..agent.worker import WorkerCrashed, WorkerUnavailable, check_package  # noqa: E402
@@ -124,6 +155,18 @@ class Drafts:
             if errors:
                 return errors, None
         return [], hp.build_package(self.objects, files, self.limits, image=self.image)
+
+    def check_texts(self, proposal: ct.ExperimentProposal) -> list[str]:
+        """The literal check on the text a proposal gives W outside the package (worker.system_prompt,
+        worker.finish): it reaches the actor as directly as a package file, so a train literal in it is the same
+        structure error. A prompt change has no draft to revise; the caller makes the round invalid."""
+        errors = []
+        for change in proposal.changes:
+            text = text_of(change, self.objects)
+            hits = hp.literal_hits({"text": text}, self.literals, allowed=self.allowed_literals) if text else []
+            if hits:
+                errors.append(f"{change['target']}: {hp.describe_hits(hits, what='the text')}")
+        return errors
 
     def resolve(self, proposal: ct.ExperimentProposal, *, revise, prompt: str, resume: dict | None = None) -> DraftOutcome:
         """Replace each package patch in the proposal with a checked package, revising within the bound. With

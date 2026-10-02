@@ -361,7 +361,7 @@ def literal_hits(files: dict[str, str], literals: set[str], *, allowed: set[str]
     return hits
 
 
-def describe_hits(hits: list[str]) -> str:
+def describe_hits(hits: list[str], *, what: str = "the package") -> str:
     """The check output for literal hits: counts by kind, never the values, so the output returned to R carries
     no task data of its own (docs/modules/05_EXECUTION_BUDGET.md §1)."""
     counts: dict = {}
@@ -370,7 +370,7 @@ def describe_hits(hits: list[str]) -> str:
         counts[kind] = counts.get(kind, 0) + 1
     listed = ", ".join(f"{n} {k}{'es' if n > 1 and k.endswith('ss') else 's' if n > 1 else ''}"
                        for k, n in sorted(counts.items()))
-    return f"the package contains task-specific values from train tasks ({listed}); replace them with a general rule"
+    return f"{what} contains task-specific values from train tasks ({listed}); replace them with a general rule"
 
 
 # ---------------------------------------------------------------------------- storage

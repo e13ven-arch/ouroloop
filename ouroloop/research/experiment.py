@@ -168,6 +168,23 @@ def registered_builders() -> tuple[str, ...]:
     return tuple(sorted({builder.ref for builder in BUILDERS.values()}))
 
 
+def _model_change_reasons(change: dict, proposal: ct.ExperimentProposal, objects: ct.Objects | None) -> list[str]:
+    """A model is what a training entry builds; a proposal does not write one.
+
+    A `backend` in a model change is what serving builds the decider from, and a type serving does not know is
+    imported by name (config.build_backend), in the control plane, at the build's preflight. The trained path
+    writes the backend its trainer reported (bench.py `_train`) and never comes through here. Checked whether or
+    not K froze a method list: an activity without [improvement] has none."""
+    from .drafts import payload_of
+    target, out = change["target"], []
+    payload = payload_of(change, objects)
+    if isinstance(payload, dict) and "backend" in payload:
+        out.append(f"{target}: a proposal does not name a backend; a model is served as its training built it")
+    if not any(entry["point"] == target for entry in proposal.training):
+        out.append(f"{target}: a model change comes from a training entry for {target}, and this proposal has none")
+    return out
+
+
 def core_checks(proposal: ct.ExperimentProposal, *, context, core: ct.CoreManifest, objects: ct.Objects,
                 owner: str, budget=None, feedback_builders=None) -> list[str]:
     """What no research policy may change, reorder or remove. Every reason returned blocks the experiment."""
@@ -190,6 +207,8 @@ def core_checks(proposal: ct.ExperimentProposal, *, context, core: ct.CoreManife
             reasons.append(f"{target} is not a target this core opens")
         if "change_ref" in change and objects is not None and not objects.has(change["change_ref"]):
             reasons.append(f"{target}: the change artifact {ct.short(change['change_ref'])} is not readable")
+        if change["kind"] == "model":
+            reasons.extend(_model_change_reasons(change, proposal, objects))
     methods = (core.capabilities or {}).get("methods")
     if methods and proposal.owner == "worker":
         # The activity's [improvement] allowed_methods, frozen into K (docs/modules/07_BENCH_REPORT.md §2).

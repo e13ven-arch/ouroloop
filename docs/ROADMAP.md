@@ -87,7 +87,7 @@ A～E 属于首版，递归方法比较与实际回用仍为必做。第二版�
        - 分配在第一次打开根时设定；根打开后不能改、不能撤、也不能在花钱之后再加（`test_an_open_roots_allocations_do_not_change`）。
        - 显示给 R 和人的有效剩余，与预留实际允许的一致，不含未花的 final 份额。
    - worker 段前：
-     - 准入一律拒绝 R 提供的 `spec.backend`，以及不带训练条目的 `kind=model` 改动（新增 `test_research_round.py::test_a_proposal_cannot_name_a_backend`）。
+     - 准入一律拒绝 R 提供的 `spec.backend`，以及不带同一目标训练条目的 `kind=model` 改动（含 worker.actor 换模型身份），不依赖 K 是否冻结了 methods；构建对修复前已冻结的实验同样拒绝（新增 `test_research_round.py::test_a_proposal_cannot_name_a_backend`）。
      - 续跑按 [M5 §3](modules/05_EXECUTION_BUDGET.md) 的“续跑的冻结输入”处理（新增 `test_real_run_findings.py::test_resume_refuses_a_changed_frozen_plan`）：
        - 评测模板或预算 scope 与 Experiment 冻结的不一致：拒绝续跑并暂停。
        - 筛选与评测的 control、permit 与候选 release，都建在冻结的 parent_release 上。

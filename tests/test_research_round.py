@@ -323,3 +323,115 @@ def test_an_unreadable_reply_is_an_invalid_round(fake_upstream, tmp_path, reply,
 def test_a_decision_r_states_is_still_read_as_one(fake_upstream, tmp_path, decision, outcome):
     result, _, _ = improve_with(fake_upstream, tmp_path, json.dumps(decision), {"worker_rounds": 1, "patience": 1})
     assert result["rounds"][0]["outcome"] == outcome
+
+
+# ---------------------------------------------------------------------------- what a proposal may carry
+class Named:
+    """A backend a proposal names: constructing it is what an import in the control plane would do."""
+    built: list = []
+
+    def __init__(self, **spec):
+        Named.built.append(spec)
+
+
+def test_a_proposal_cannot_name_a_backend(fake_upstream, tmp_path):
+    """A model is what a training entry builds. A proposal that names a backend — imported by name in the control
+    plane at the build's preflight — or changes a model with no training entry for that target is refused at
+    admission, whether or not K froze a method list; an experiment frozen before that is refused at the build,
+    before anything is imported."""
+    from dataclasses import replace
+    cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
+    work = bench.improvement(activity, template_ref=plan_ref, provider=rsi.BusinessWorker())
+    context, _ = context_of(activity, work)
+    core = core_of(activity, work)
+    objects = activity.objects
+    assert not (core.capabilities or {}).get("methods")          # the shape the review found reachable
+    named = ct.ExperimentProposal(owner="worker", hypothesis="a decider of my own", changes=(
+        {"target": "worker.stop", "kind": "model",
+         "change": {"backend": {"type": "test_research_round:Named", "x": 1}}},))
+    bare = ct.ExperimentProposal(owner="worker", hypothesis="a model nobody trained", changes=(
+        {"target": "worker.stop", "kind": "model", "change": {"instructions": "stop when done"}},))
+    training = {"point": "worker.stop", "feedback_ref": "completion_snapshot@v1",
+                "data_selection_ref": ct.ref_for("change", {"a": 1}), "recipe_ref": ct.ref_for("change", {})}
+    actor = ct.ExperimentProposal(owner="worker", hypothesis="another actor", training=(training,), changes=(
+        {"target": "worker.actor", "kind": "model", "change": {"model_identity_ref": "model:x"}},))
+    with_methods = replace(core, capabilities={**(core.capabilities or {}),
+                                               "methods": ["harness_edit", "decision_train"]})
+    for k in (core, with_methods):
+        refused = admit(normalize(named, objects), context=context, core=k, objects=objects)
+        assert refused.status == "invalid" and any("does not name a backend" in r for r in refused.reasons)
+        untrained = admit(normalize(bare, objects), context=context, core=k, objects=objects)
+        assert untrained.status == "invalid" and any("from a training entry" in r for r in untrained.reasons)
+    other = admit(normalize(actor, objects), context=context, core=with_methods, objects=objects)
+    assert any("worker.actor: a model change comes from a training entry" in r for r in other.reasons)
+    experiment = freeze(objects.put(normalize(named, objects)), objects=objects, parent_release=release,
+                        experience_ref="", core_ref=work.core_ref, eval_template_ref=plan_ref, budget_scope="s")
+    built = P.build_candidate(experiment, objects=objects, parent_release=release, services=work.services())
+    assert built.status == "invalid" and any("does not name a backend" in e for e in built.errors)
+    assert Named.built == []                                      # nothing was imported
+
+
+class LeakyPrompt:
+    """Writes notes like NoteResearcher, and proposes the given changes whatever they say."""
+
+    def __init__(self, changes):
+        from test_harness_loop import NoteResearcher
+        self.inner, self.changes = NoteResearcher(), changes
+        self.requests = self.inner.requests
+
+    def note_request(self, *a, **kw):
+        return self.inner.note_request(*a, **kw)
+
+    def note(self, system, user):
+        return self.inner.note(system, user)
+
+    def summarize(self, context, prompt, notes, coverage, experience=(), *, package=None, allowed=()):
+        self.requests.append({"step": "propose"})
+        return ProposalResult(proposals=[ct.ExperimentProposal(owner="worker", hypothesis="say who to tell",
+                                                               changes=tuple(self.changes), origin="scripted")])
+
+    def revise(self, prompt, patch, check_output):
+        self.requests.append({"step": "revise"})
+        return patch
+
+
+LEAKED = "Sam Okafor"            # a record name from the train tasks' initial state: a literal the check knows
+
+
+@pytest.mark.parametrize("changes", [
+    [{"target": "worker.system_prompt", "kind": "prompt",
+      "change": {"text": f"Rules:\n{LEAKED} must hear about every update."}}],
+    [{"target": "worker.finish", "kind": "workflow",
+      "change": {"builtin": "finish_check.v1", "instruction": f"Before finishing, message {LEAKED}."}}],
+    [{"target": "worker.harness", "kind": "workflow", "change": {"patch": {"write": {
+        "manifest.json": json.dumps({"api_version": "harness_package.v1", "tools": [], "hooks": [], "skills": [],
+                                     "memory": {"enabled": True}}),
+        "memory.md": "Do every step the request asks for."}}}},
+     {"target": "worker.system_prompt", "kind": "prompt", "change": {"text": f"Always copy {LEAKED}."}}]],
+    ids=["system_prompt", "finish_instruction", "mixed_with_a_clean_package"])
+def test_a_prompt_change_gets_the_literal_check(fake_upstream, tmp_path, changes):
+    """A prompt reaches the actor as directly as a package file: a train literal in its text makes the round
+    invalid — no revision (a prompt has no draft), nothing frozen, no gate paid — and the record says how many
+    literals of which kind, never which."""
+    from test_harness_loop import v06_prepared
+    cfg, activity, w0 = v06_prepared(fake_upstream, tmp_path)
+    researcher = LeakyPrompt(changes)
+    result = bench.improve(cfg, ".", out=lambda _line: None, researcher=researcher)
+    assert result["rounds"][0]["outcome"] == "invalid", result["rounds"]
+    assert result["release"] == w0
+    assert not list((activity.root / "rsi" / "objects" / "experiment").glob("*.json"))
+    assert not [r for r in researcher.requests if r["step"] == "revise"]
+    assert not list(ct.Events(activity.root).of("draft_check"))       # refused before any package draft
+    row = [e for e in experience_mod.read(activity.root) if e.get("kind") == "round"][0]
+    assert row["outcome"] == "invalid" and "task-specific values" in row["checks"][0]["detail"]
+    assert LEAKED not in json.dumps({k: v for k, v in row.items() if k != "hypothesis"})
+
+
+def test_a_prompt_change_without_a_literal_is_not_refused(fake_upstream, tmp_path):
+    from test_harness_loop import v06_prepared
+    cfg, activity, _ = v06_prepared(fake_upstream, tmp_path)
+    researcher = LeakyPrompt([{"target": "worker.system_prompt", "kind": "prompt",
+                               "change": {"text": "Rules:\nTell the requester about every update."}}])
+    result = bench.improve(cfg, ".", out=lambda _line: None, researcher=researcher)
+    assert result["rounds"][0]["outcome"] != "invalid"
+    assert list((activity.root / "rsi" / "objects" / "experiment").glob("*.json"))

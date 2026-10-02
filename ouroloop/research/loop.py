@@ -230,6 +230,17 @@ def run_worker_round(round_context: RoundContext, budget) -> _ct.RoundResult:
                                reason=proposal_result.reason or next_action,
                                evidence_refs=tuple(proposal_result.evidence_refs), next_action=next_action)
     proposal = proposal_result.proposals[0]
+    refused = ctx.drafts.check_texts(proposal) if ctx.drafts is not None else []
+    if refused:
+        # A prompt change has no draft to revise: a train literal in its text makes the proposal invalid, before a
+        # package draft is checked or revised and before anything is frozen (docs/modules/04_RESEARCH_LOOP.md §1,
+        # docs/modules/00_CONTRACTS.md §3). A resumed draft needs no check: its proposal passed this one before the
+        # draft was opened, and revisions replace only the package patch.
+        check = {"check": "literal", "verdict": "block", "detail": "; ".join(refused), "evidence_refs": []}
+        _experience.append(root, {"kind": "round", "outcome": "invalid", "reasons": refused, "checks": [check],
+                                  "scope": ctx.scope_id, "release": before, "hypothesis": proposal.hypothesis})
+        return _ct.RoundResult(outcome="invalid", release_before=before, release_after=before,
+                               reason="; ".join(refused)[:300], evidence_refs=tuple(proposal_result.evidence_refs))
     if ctx.drafts is not None and _has_patch(proposal, ctx.objects):
         sent_before = len(getattr(ctx.researcher, "requests", ()) or ())
         try:
