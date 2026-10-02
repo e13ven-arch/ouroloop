@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..evolve import contracts as ct
+from ..evolve.execution import BudgetExhausted
 from ..evolve.task_gate import GatePlan, paired_bootstrap, per_task, regression_rate
 
 PHASES = ("research_dev", "final")
@@ -204,7 +205,10 @@ def run_campaign(plan: CampaignPlan, *, run_arm, evaluate_outer, objects: ct.Obj
     The outer comparison of each pair is charged to `<plan>:<pair>:outer` and the common inputs to
     `<plan>:<pair>:common`; the receipt's costs include both when they cost anything. With `plan.outer_budget`,
     each pair's outer scope holds that much before anything else runs, released only to the outer runs themselves
-    or, when a pair's outer comparison does not run, back to the activity. A paused campaign keeps its holds.
+    or, when a pair's outer comparison does not run, back to the activity. After the common inputs, each arm's
+    scope holds its whole share, released to that arm when it starts, so the arm that runs second is not left
+    short by what ran before it; when the root cannot hold both, neither arm runs and the verdict is inconclusive.
+    A paused campaign keeps its holds, and a restart finds them rather than holding or checking again.
 
     A pair whose two arms sealed the same W is not run on the outer tasks: it would measure one W twice and say
     nothing about R. The verdict is inconclusive, and no later pair is run (docs/modules/06 §3).
@@ -227,16 +231,22 @@ def run_campaign(plan: CampaignPlan, *, run_arm, evaluate_outer, objects: ct.Obj
             extra.setdefault(name, {})[k] = round(extra.get(name, {}).get(k, 0) + v, 6)
 
     holds: dict = {}
-    if plan.outer_budget:
-        for pair in pairs:
-            account = budget.child(f"{plan.id}:{pair.pair_id}:outer", dict(plan.outer_budget))
-            holds[pair.pair_id] = (account, account.hold(f"{plan.id}:{pair.pair_id}:outer:hold",
-                                                         dict(plan.outer_budget)))
 
-    def release(pair_id: str) -> None:
-        held = holds.pop(pair_id, None)
+    def hold(pair_id: str, what: str, limits: dict) -> None:
+        account = budget.child(f"{plan.id}:{pair_id}:{what}", dict(limits))
+        holds[(pair_id, what)] = (account, account.hold(f"{plan.id}:{pair_id}:{what}:hold", dict(limits)))
+
+    def release(pair_id: str, what: str) -> None:
+        held = holds.pop((pair_id, what), None)
         if held is not None:
             held[0].settle(held[1], None, "released")
+
+    def release_all() -> None:
+        for key in list(holds):
+            release(*key)
+    if plan.outer_budget:
+        for pair in pairs:
+            hold(pair.pair_id, "outer", plan.outer_budget)
     for pair in pairs:
         sealed = {}
         # What both arms start from, prepared once and charged to the campaign rather than to whichever arm runs
@@ -244,19 +254,23 @@ def run_campaign(plan: CampaignPlan, *, run_arm, evaluate_outer, objects: ct.Obj
         shared = prepare_pair(pair, budget.child(f"{plan.id}:{pair.pair_id}:common", {})) if prepare_pair else None
         if prepare_pair:
             total("common", spent(f"{plan.id}:{pair.pair_id}:common"))
-        short = _arms_not_covered(plan, pair, budget)
-        if short:
-            # Each arm is capped by its own share, but both draw on the activity's root: when the root cannot cover
-            # what both may still spend, the arm that runs second can be starved, and a comparison under unequal
-            # budgets says nothing about R (docs/modules/06_RESEARCH_CAMPAIGN.md §3). Nothing else is run.
-            for pair_id in list(holds):
-                release(pair_id)
-            return _receipt(plan, plan_ref, experiment_ref, objects, arms_out, outer, "inconclusive",
-                            [f"{pair.pair_id}: the activity cannot cover both arms' remaining shares {short}, so "
-                             f"the arms would not run under equal budgets"], {"discovery": plan.discovery}, {}, extra)
+        if plan.arm_budget:
+            # Each arm is capped by its own share, but both draw on the activity's root: held here, the share of
+            # the arm that runs second cannot be spent by the one before it, and a comparison under unequal budgets
+            # would say nothing about R (docs/modules/06_RESEARCH_CAMPAIGN.md §3). Found again on a restart.
+            try:
+                for arm in ("control", "candidate"):
+                    hold(pair.pair_id, arm, plan.arm_budget)
+            except BudgetExhausted as e:
+                release_all()
+                return _receipt(plan, plan_ref, experiment_ref, objects, arms_out, outer, "inconclusive",
+                                [f"{pair.pair_id}: the activity cannot set aside both arms' shares "
+                                 f"{dict(plan.arm_budget)} ({e}), so the arms would not run under equal budgets"],
+                                {"discovery": plan.discovery}, {}, extra)
         for arm, r_ref in (("control", plan.r_control_ref), ("candidate", plan.r_candidate_ref)):
             # A fixed child budget per arm: what one arm does not spend is not handed to the other, because equal
             # spend is part of what makes the comparison a comparison (docs/modules/05_EXECUTION_BUDGET.md §2).
+            release(pair.pair_id, arm)
             child = budget.child(f"{plan.id}:{pair.pair_id}:{arm}", dict(plan.arm_budget))
             outcome = run_arm(pair, arm, r_ref, child, **({"shared": shared} if prepare_pair else {}))
             outcome.w_star = outcome.w_star or select_w(outcome, pair, plan.selection_rule)
@@ -277,11 +291,10 @@ def run_campaign(plan: CampaignPlan, *, run_arm, evaluate_outer, objects: ct.Obj
                             {"discovery": plan.discovery}, {}, extra)
         if sealed["control"] == sealed["candidate"]:
             break
-        release(pair.pair_id)
+        release(pair.pair_id, "outer")
         outer[pair.pair_id] = evaluate_outer(pair, sealed)
         total("outer", spent(f"{plan.id}:{pair.pair_id}:outer", plan.outer_budget))
-    for pair_id in list(holds):
-        release(pair_id)                # what no outer comparison will run on goes back to the activity
+    release_all()                       # what no outer comparison will run on goes back to the activity
     verdict, notes, metrics, uncertainty = judge_research(plan, pairs, outer, arms_out)
     if prompts is not None:
         unused, unverified = unused_changes(prompts.get("control") or {}, prompts.get("candidate") or {}, arms_out)
@@ -294,19 +307,6 @@ def run_campaign(plan: CampaignPlan, *, run_arm, evaluate_outer, objects: ct.Obj
             notes = [*notes, f"R1 changes {target}, which no request digest can show: its use is not verified"]
     return _receipt(plan, plan_ref, experiment_ref, objects, arms_out, outer, verdict, notes, metrics, uncertainty,
                     extra)
-
-
-def _arms_not_covered(plan: CampaignPlan, pair: CampaignPair, budget) -> dict:
-    """What both arms of this pair may still spend under their shares, when the account cannot cover it — counting
-    every hold and every level up to the root — or {} when it can, or when the arms have no share."""
-    if not plan.arm_budget:
-        return {}
-    need: dict = {}
-    for arm in ("control", "candidate"):
-        left = budget.child(f"{plan.id}:{pair.pair_id}:{arm}", dict(plan.arm_budget)).remaining()["remaining"]
-        for k, v in left.items():
-            need[k] = round(need.get(k, 0) + max(float(v), 0.0), 6)
-    return {} if budget.affordable(need) else need
 
 
 # The research steps that render each research prompt target, by the step names researchers record.

@@ -25,7 +25,8 @@
 ## 3. 执行与裁决
 
 ```text
-freeze campaign; cap both branches equally; set aside the outer verification (one refill)
+freeze campaign; set aside the outer verification (one refill)
+prepare the common inputs; set aside both branches' equal shares
 for R in [R0, R1]:
     start isolated scope with the same W0/E0
     execute bounded worker rounds through M4/M5
@@ -45,7 +46,7 @@ K 所需的隔离 worker 不可用时不启动分支；分支因 infrastructure_
 - 两支 W* 是同一个 worker ref（通常是两支都没有安装）时不跑外测，判 inconclusive：同一个 W 测两遍，说明不了 R。有多个 pair 时，任一 pair 相同即判 inconclusive，后面的 pair 不再运行。
 - 两支在同一组外层任务上各跑一遍。基础设施失败的尝试按外测 TaskEvalPlan 冻结的 retry_policy 补跑一次，原尝试保留，补跑记 supersedes；任务失败、候选缺陷、评分器失败与额度耗尽不补跑。CampaignPlan.retry_policy 不读。
 - 裁决按任务配对：同一 pair 内，任务的每次重复在两支都有有效尝试才计入；缺任一即判 inconclusive，不按各支剩下的任务各自求均值。外测上两边都是封存的 W*，候选缺陷与评分器失败也只使配对不全；invalid 只留给协议错误。独立组仍是统计单位。
-- 两支等额：公共测量之后、两支开跑之前，活动根须仍能覆盖两支剩余的份额。覆盖不了时两支都不运行，外测份额退回，判 inconclusive：两支各以份额为上限，却都从根花钱，后跑的一支（R1）会被前面的花费饿死。
+- 两支等额：公共测量之后、两支开跑之前，两支的份额以不结算的预留占住，各支开跑时释放给自己。占不住时两支都不运行，外测份额退回，判 inconclusive：两支各以份额为上限，却都从根花钱，不预留时后跑的一支（R1）会被前面的花费饿死。重启找回这些预留，已跑过的支不再检查。
 - 外测额度冻结为 `outer_budget`：外测 scope 以它为上限，并在公共测量与两支开跑前以不结算的预留占住；外测开始时释放给外测尝试，外测不运行时退回活动；重启找回原预留，不重复占用。外测额度耗尽时，没跑成的尝试使配对不全，判 inconclusive。
 - 收据 metrics 记 `tasks`（配对的任务数）、`incomplete`（各 pair 缺的尝试，按失败类别计数）与 `identical_arms`。
 

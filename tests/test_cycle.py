@@ -1237,6 +1237,6 @@ def test_common_inputs_that_leave_the_arms_short_end_the_slot_inconclusive(fake_
     assert slot["verdict"] == "inconclusive" and len(made) == 1, slot              # the common inputs only
     activity = bench.open_activity(cfg, ".", out=lambda _line: None)
     receipt = activity.objects.load(slot["receipt"], ct.EvaluationReceipt)
-    assert "cannot cover both arms' remaining shares" in receipt.reasons[0] and "outer" not in receipt.costs
+    assert "cannot set aside both arms' shares" in receipt.reasons[0] and "outer" not in receipt.costs
     assert Budgets(tmp_path / "ws").open_reservations() == []
     assert not list(ct.Events(activity.root).of("campaign_arm"))

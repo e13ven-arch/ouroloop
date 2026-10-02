@@ -633,8 +633,9 @@ def test_a_spent_budget_ends_every_cycle_step_without_pausing(fake_upstream, tmp
     monkeypatch.setattr(bench, where, spent_on_entry)
     if where in ("_campaign_common", "_run_campaign_arm"):
         # The outer comparison's share was set aside before these steps ran, so spending the rest did not take
-        # it; both arms seal W0, the outer does not run, and the share goes back to the activity. The next segment
-        # finds the book spent again.
+        # it. Spent at the common inputs, the arms' shares cannot be set aside and neither arm runs; spent at an
+        # arm, both arms seal W0 and the outer does not run. Either way the share goes back to the activity, and
+        # the next segment finds the book spent again.
         real_improve = bench.improve
 
         def improve(*a, **kw):

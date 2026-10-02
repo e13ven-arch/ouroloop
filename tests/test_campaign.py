@@ -269,8 +269,49 @@ def test_an_arm_the_root_cannot_cover_leaves_the_comparison_inconclusive(tmp_pat
 
     receipt = run_campaign(campaign, run_arm=lambda *a, **k: pytest.fail("an arm ran"),
                            evaluate_outer=lambda *a: pytest.fail("the outer ran"), objects=objects, budget=top)
-    assert receipt.verdict == "inconclusive" and "cannot cover both arms' remaining shares" in receipt.reasons[0]
+    assert receipt.verdict == "inconclusive" and "cannot set aside both arms' shares" in receipt.reasons[0]
     assert book.open_reservations() == []
+
+
+def test_a_restart_holds_and_checks_nothing_again_for_arms_that_already_ran(tmp_path):
+    """Each arm's share is held once, when its pair's arms are about to start, and found again on a restart. A pair
+    whose arms finished is not checked again, so what later pairs spent cannot turn a campaign that resumes into a
+    final inconclusive (docs/modules/05_EXECUTION_BUDGET.md §2)."""
+    objects = ct.Objects(tmp_path)
+    pairs = [pair(objects), pair(objects, pair_id="pair-2", group="group-2", inner_dev=("f_dev2",),
+                                 outer=("f_outer2",))]
+    campaign = plan(objects, pairs, outer_budget={"model_calls": 20})       # each arm's share is 100
+    book = Budgets(tmp_path / "book")
+    top = book.account("campaign", {"model_calls": 300})
+    spends = {("pair-1", "control"): 30, ("pair-1", "candidate"): 30, ("pair-2", "control"): 60,
+              ("pair-2", "candidate"): 30}
+    finished, paused_once = set(), []
+
+    def run_arm(pair_obj, arm, r_ref, budget):
+        key = (pair_obj.pair_id, arm)
+        if key not in finished:
+            budget.settle(budget.reserve("work", {"model_calls": spends[key]}).id, {"model_calls": spends[key]})
+            spends[key] = 0                                # resumed, it spends nothing more
+            if key == ("pair-2", "candidate") and not paused_once:
+                paused_once.append(key)
+                return outcome(arm, pair_obj.pair_id, w_star=W[f"w_{arm}"], stop="repair_runtime")
+            finished.add(key)
+        return outcome(arm, pair_obj.pair_id, w_star=W[f"w_{arm}"])
+    outer_spent = set()
+
+    def evaluate_outer(pair_obj, sealed):
+        if pair_obj.pair_id not in outer_spent:          # resumed, the outer reuses what it ran
+            outer_spent.add(pair_obj.pair_id)
+            account = top.child(f"campaign-1:{pair_obj.pair_id}:outer", {"model_calls": 20})
+            account.settle(account.reserve("outer-attempts", {"model_calls": 20}).id, {"model_calls": 20})
+        return {"candidate": results({"t1": True}), "control": results({"t1": False})}
+    first = run_campaign(campaign, run_arm=run_arm, evaluate_outer=evaluate_outer, objects=objects, budget=top)
+    assert first.verdict == "inconclusive" and "pair-2/candidate paused" in first.reasons[0]
+    assert len(book.open_reservations()) == 1                                   # pair-2's outer share
+    resumed = run_campaign(campaign, run_arm=run_arm, evaluate_outer=evaluate_outer, objects=objects, budget=top)
+    assert resumed.verdict != "inconclusive" and book.open_reservations() == [], resumed.reasons
+    again = run_campaign(campaign, run_arm=run_arm, evaluate_outer=evaluate_outer, objects=objects, budget=top)
+    assert again.verdict == resumed.verdict and top.remaining()["used"]["model_calls"] == 190.0
 
 
 def test_identical_arms_stop_the_campaign_before_a_later_pair(tmp_path):
