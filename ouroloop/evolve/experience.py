@@ -37,7 +37,9 @@ def experiment_record(*, experiment_id: str, proposal_ref: str, owner: str, hypo
     regressed, what it cost, and what is still open. `verdict` and `installed` stay separate fields because they
     answer different questions, and a later reader that only had one of them would have to guess the other.
     """
-    metrics = dict(getattr(receipt, "metrics", None) or {})
+    # Everything the receipt measured except its per-task regression list: that names dev tasks, and it stays with
+    # the receipt, where a report reads it (docs/modules/00_CONTRACTS.md §4). The rate is kept.
+    metrics = {k: v for k, v in (getattr(receipt, "metrics", None) or {}).items() if k != "regressions"}
     return {"kind": "experiment", "experiment": experiment_id, "proposal": proposal_ref, "owner": owner,
             "hypothesis": hypothesis, "changes": [dict(c) for c in changes],
             "requirements": [str(r) for r in requirements], "targets": sorted(targets or

@@ -140,12 +140,18 @@ def per_task_cost(results: list[TaskResult]) -> tuple[dict[str, float], int]:
     return {t: sum(v) / len(v) for t, v in by_task.items()}, missing
 
 
+def regressed(subject: dict[str, float], control: dict[str, float]) -> list[str]:
+    """The tasks whose mean fell, sorted by id: the numerator of regression_rate, so the list a receipt shows and
+    the rate its verdict used cannot disagree."""
+    return sorted(t for t in set(subject) & set(control) if subject[t] < control[t] - 1e-9)
+
+
 def regression_rate(subject: dict[str, float], control: dict[str, float]) -> float:
     """The share of tasks whose mean fell. One definition, used by every verdict of this plan."""
-    shared = sorted(set(subject) & set(control))
+    shared = set(subject) & set(control)
     if not shared:
         return 0.0
-    return round(sum(subject[t] < control[t] - 1e-9 for t in shared) / len(shared), 6)
+    return round(len(regressed(subject, control)) / len(shared), 6)
 
 
 def paired_bootstrap(subject: dict[str, float], control: dict[str, float], families: dict[str, str], *,
@@ -234,7 +240,13 @@ def judge(plan: TaskEvalPlan, subject: list[TaskResult], control: list[TaskResul
                                                 / max(len(s_tasks), 1), 6) if s_tasks else None),
                "control_partial_credit": (round(sum(per_task(control, metric="partial_credit").values())
                                                 / max(len(c_tasks), 1), 6) if c_tasks else None),
-               "gain": quality["point"], "regression_rate": regressions, "tasks": len(s_tasks),
+               "gain": quality["point"], "regression_rate": regressions,
+               # Each task the rate counted, with both arms' means: a regression within the frozen limit stays on
+               # record, not only in a count (ER6-13). These are dev task ids, so the experience log leaves the
+               # key out and no step of R reads it (docs/modules/00_CONTRACTS.md §4).
+               "regressions": [{"task": t, "family": families.get(t, t), "control": round(c_tasks[t], 6),
+                                "subject": round(s_tasks[t], 6)} for t in regressed(s_tasks, c_tasks)],
+               "tasks": len(s_tasks),
                "groups": quality["groups"], "subject_cost_usd": round(sum(s_cost.values()), 6) or None,
                "control_cost_usd": round(sum(c_cost.values()), 6) or None,
                "cost_missing": {"subject": s_missing, "control": c_missing},

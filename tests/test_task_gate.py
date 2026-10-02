@@ -221,6 +221,47 @@ def test_evaluate_task_files_every_attempt_and_the_order(tmp_path):
     assert objects.get(receipt.plan_ref)["task_ids"] == ["t1", "t3", "t4"]
 
 
+def test_the_receipt_lists_each_regressed_task(tmp_path):
+    """ER6-13 / IT6-26: a regression within the frozen limit is accepted and kept on the receipt task by task, and
+    the same regressions past the limit reject. The list names dev tasks, so it stays with the receipt: neither the
+    experience log nor what R reads of it carries a task id (docs/modules/00_CONTRACTS.md §4)."""
+    from ouroloop.evolve.experience import experiment_record
+    from ouroloop.research.context import make_context
+    from ouroloop.research.diagnosis import experience_projection
+    objects = ct.Objects(tmp_path)
+    subject = {"t1": True, "t2": False, "t3": True, "t4": True, "t5": False}
+    control = {"t1": True, "t2": True, "t3": False, "t4": False, "t5": False}
+
+    def attempts(p, arm):
+        if arm == "control":
+            return rows(p, control, repeats=2)
+        both = rows(p, subject, repeats=2)          # t1 fails one of two repeats: its mean falls to 0.5
+        return [both[0], rows(p, {"t1": False}, repeats=2)[1], *both[2:]]
+
+    p = plan(tmp_path, repeats=2, gate=GatePlan(min_gain=0.05, min_groups=3, max_regression_rate=0.4,
+                                                bootstrap_replicates=400))
+    receipt = evaluate_task(p, run=lambda arm, order, retry=0, supersedes=None: attempts(p, arm), objects=objects,
+                            experiment_ref="experiment:sha256:" + "e" * 64, families=FAMILIES)
+    assert receipt.verdict == "accepted" and receipt.metrics["regression_rate"] == 0.4
+    assert receipt.metrics["regressions"] == [
+        {"task": "t1", "family": "f1", "control": 1.0, "subject": 0.5},
+        {"task": "t2", "family": "f1", "control": 1.0, "subject": 0.0}]
+    assert objects.load(objects.put(receipt), ct.EvaluationReceipt).metrics["regressions"][1]["task"] == "t2"
+    # the same attempts under a cap of 0.2: the gain still clears min_gain, and the regressions alone reject
+    strict = plan(tmp_path, repeats=2, gate=GatePlan(min_gain=0.05, min_groups=3, bootstrap_replicates=400))
+    verdict, reasons, metrics, _ = judge(strict, attempts(strict, "subject"), attempts(strict, "control"),
+                                         FAMILIES)
+    assert verdict == "rejected" and reasons == ["regression rate 0.4 above 0.2"]
+    assert metrics["regressions"] == receipt.metrics["regressions"]
+    # the experience log keeps the rate; R's projection and the v0.5 steps' raw rows name no task
+    record = experiment_record(experiment_id="e", proposal_ref="p", owner="worker", hypothesis="h",
+                               changes=[{"target": "worker.harness"}], receipt=receipt)
+    assert "regressions" not in record["metrics"] and record["metrics"]["regression_rate"] == 0.4
+    legacy = make_context("s", goal="g", release_ref="", objects=objects, experience=[record])
+    for text in (json.dumps(experience_projection([record])), legacy.prompt_state()):
+        assert '"t1"' not in text and '"t2"' not in text
+
+
 # ---------------------------------------------------------------------------- installing (ER-06 to ER-10)
 def workspace(tmp_path):
     objects = ct.Objects(tmp_path)

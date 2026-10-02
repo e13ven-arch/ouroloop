@@ -520,8 +520,11 @@ def render_markdown(report: dict) -> str:
         lines.append(f"- drafts: {d['checks']} checks, {d['refused']} refused, {d['infrastructure']} on "
                      f"infrastructure; finished {d['finished'] or 'none'}")
         for g in harness["gates"]:
+            # None: a receipt filed before the list was kept; []: a gate that saw no task fall
+            regressed = "not recorded" if g["regressions"] is None else ", ".join(
+                f"{r['task']} {r['control']}->{r['subject']}" for r in g["regressions"]) or "none"
             lines.append(f"- gate {g['verdict']}: gain {g['gain']} (min_gain {g['min_gain']}), regression rate "
-                         f"{g['regression_rate']} (max {g['max_regression_rate']})")
+                         f"{g['regression_rate']} (max {g['max_regression_rate']}); regressed: {regressed}")
         lines.append(f"- research cost by step: {json.dumps(harness['research_cost'], sort_keys=True)}")
         if harness["cycle"]:
             lines.append(f"- cycle: {harness['cycle']['status']}; steps {sorted(harness['cycle']['steps'] or {})}")

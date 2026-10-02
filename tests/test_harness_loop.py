@@ -442,8 +442,9 @@ def test_the_report_shows_the_package_what_the_actor_read_and_what_the_drafts_co
     assert harness["notes"][0]["noted"] >= 1
     gate = harness["gates"][0]
     assert gate["min_gain"] == 0.05 and gate["verdict"] in ("accepted", "rejected", "inconclusive")
+    assert gate["regressions"] == []                       # recorded, and nothing fell
     assert data["claims"]["C3"]["state"] == "not_run"
-    assert "## Capability package" in render_markdown(data)
+    assert "## Capability package" in render_markdown(data) and "regressed: none" in render_markdown(data)
 
 
 def test_published_numbers_are_background_and_c2_says_so(fake_upstream, tmp_path):
