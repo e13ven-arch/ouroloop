@@ -66,7 +66,19 @@ class OpenAICompatProvider:
                                         unbilled=isinstance(e, (httpx.ConnectError, httpx.ConnectTimeout))) from e
             else:
                 if resp.status_code < 400:
-                    return resp.json()
+                    try:
+                        data = resp.json()
+                    except ValueError:
+                        raise ProviderError(f"HTTP {resp.status_code} with a body that is not JSON: "
+                                            f"{resp.text[:200]}", retryable=True) from None
+                    if isinstance(data, dict) and data.get("choices"):
+                        return data
+                    # A gateway that answers 200 with an error in the body: read like the status it stands for.
+                    error = data.get("error") if isinstance(data, dict) else None
+                    failure = ProviderError(f"HTTP {resp.status_code} without choices: {json.dumps(error or data)[:300]}")
+                    if is_account_error(failure):
+                        raise ProviderAccountError(str(failure))
+                    raise failure
                 failure = ProviderError(f"HTTP {resp.status_code}: {resp.text[:300]}")
                 failure.status_code = resp.status_code
                 if is_account_error(failure):

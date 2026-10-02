@@ -200,12 +200,14 @@ def test_ex04_retries_are_bounded_and_each_one_is_charged(tmp_path):
     account = b.account("round", {"usd": 10.0, "model_calls": 10})
     pricing = Pricing(0.003, 0.015, 4000, 1000, source="snapshot")
     provider = MeteredProvider(Flaky(), account, pricing, max_retries=1)
-    with pytest.raises(ConnectionError):
-        provider.chat("s", [])
+    from ouroloop.providers import ProviderError
+    with pytest.raises(ProviderError, match="ConnectionError: provider unavailable") as failed:
+        provider.chat("s", [])            # whatever the provider raised leaves the meter as a ProviderError
+    assert failed.value.retryable and isinstance(failed.value.__cause__, ConnectionError)
     assert [r.status for r in provider.receipts] == ["unknown", "unknown"]
     assert account.remaining()["used"]["model_calls"] == 2.0      # both attempts are charged
     provider = MeteredProvider(Flaky(), account, pricing, max_retries=0)
-    with pytest.raises(ConnectionError):
+    with pytest.raises(ProviderError, match="ConnectionError"):
         provider.chat("s", [])
 
 

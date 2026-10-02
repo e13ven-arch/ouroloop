@@ -339,10 +339,10 @@ def test_ex6_12_an_interrupted_draft_resumes_its_revision_count(fake_upstream, t
 
 
 def _budget_errors():
-    from ouroloop.evolve.execution import BudgetError, BudgetExhausted
+    from ouroloop.evolve.execution import BudgetExhausted, BudgetMismatch
     return [(BudgetExhausted("model_calls exhausted"), "budget_exhausted", "budget_exhausted"),
             # a budget other than the frozen one is not a spent one: the activity pauses for a person (M5 §3)
-            (BudgetError("scope 'x' already exists with other limits: {}"), "infrastructure_failed",
+            (BudgetMismatch("scope 'x' already exists with other limits: {}"), "infrastructure_failed",
              "repair_runtime")]
 
 

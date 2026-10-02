@@ -44,10 +44,14 @@ _ACCOUNT_MARKERS = ("insufficient_quota", "insufficient balance", "credit balanc
 
 
 def is_account_error(e: BaseException) -> bool:
-    """Whether a provider failure is about the account (balance, quota, key) rather than one request."""
+    """Whether a provider failure is about the account (balance, quota, key) rather than one request. Only a model
+    provider's failure is read this way — a ProviderError, or an SDK error that carries an HTTP status: an internal
+    error whose text happens to say "billing" (a CRM record's billing address, say) is not a refused account."""
     if isinstance(e, ProviderAccountError):
         return True
     status = getattr(e, "status_code", None)
+    if not isinstance(e, ProviderError) and not isinstance(status, int):
+        return False
     if status in (401, 402, 403):
         return True
     text = str(e).lower()

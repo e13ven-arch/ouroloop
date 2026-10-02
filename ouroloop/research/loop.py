@@ -463,7 +463,7 @@ def halt_of(e: BaseException) -> tuple[str, str] | None:
     than the one the activity froze all pause it ("repair_runtime"): nothing more can run until a person acts, and
     the step resumes from its record afterwards. A failure inside a task attempt never reaches here: the attempt
     records it (evolve/task_eval.py), except an account refusal, which stops the attempts and is handled here."""
-    from ..evolve.execution import BudgetError, BudgetExhausted
+    from ..evolve.execution import BudgetExhausted, BudgetMismatch
     from ..providers import ProviderError, ReplyTruncated, is_account_error
     if isinstance(e, BudgetExhausted):
         return "budget_exhausted", f"the budget is spent: {str(e)[:240]}"
@@ -471,7 +471,7 @@ def halt_of(e: BaseException) -> tuple[str, str] | None:
         return "repair_runtime", f"the model provider refuses the account: {str(e)[:240]}"
     if isinstance(e, ReplyTruncated):
         return "repair_runtime", str(e)[:300]
-    if isinstance(e, BudgetError):
+    if isinstance(e, BudgetMismatch):
         return "repair_runtime", f"the budget is not the one this activity froze: {str(e)[:240]}"
     if isinstance(e, ProviderError) or isinstance(getattr(e, "status_code", None), int):
         return "repair_runtime", f"a model call failed after its retries: {type(e).__name__}: {str(e)[:220]}"

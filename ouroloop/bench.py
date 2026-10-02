@@ -293,7 +293,7 @@ from .evolve import contracts as _ct
 from .evolve import experience as _experience
 from .evolve import feedback as _feedback
 from .evolve.build import build_task_dataset as _build_task_dataset
-from .evolve.execution import BudgetError, Budgets, Schedule
+from .evolve.execution import BudgetError, BudgetMismatch, Budgets, Schedule
 from .evolve.task_gate import GatePlan, TaskEvalPlan, evaluate_task
 from .evolve.task_gate import screen as _screen
 from .points import business_stop_point as _business_stop_point
@@ -1298,7 +1298,7 @@ def activity_budget(activity: Activity, cfg: dict, phase: str):
     frozen = activity.objects.get(rsi_cfg.budget_ref) if rsi_cfg.budget_ref else {}
     problems = budget_problems(frozen)
     if problems:            # refused before the root exists: a root cannot be reopened with other limits later
-        raise BudgetError(f"the frozen budget of {rsi_cfg.scope_id}: " + "; ".join(problems))
+        raise BudgetMismatch(f"the frozen budget of {rsi_cfg.scope_id}: " + "; ".join(problems))
     root = activity.budgets.account(rsi_cfg.scope_id, budget_limits(frozen))
     # The allocations are part of the root's identity, like its limits: set once, before anything is spent, and
     # never changed, added or withdrawn after.
@@ -1306,10 +1306,10 @@ def activity_budget(activity: Activity, cfg: dict, phase: str):
     state = root.remaining()
     if state["allocations"] != wanted:
         if state["allocations"]:
-            raise BudgetError(f"{rsi_cfg.scope_id} sets aside {state['allocations']}, and the frozen budget says "
+            raise BudgetMismatch(f"{rsi_cfg.scope_id} sets aside {state['allocations']}, and the frozen budget says "
                               f"{wanted}: an open root's allocations do not change")
         if state["used"]:
-            raise BudgetError(f"{rsi_cfg.scope_id} has spent without the allocations {sorted(wanted)}: they cannot "
+            raise BudgetMismatch(f"{rsi_cfg.scope_id} has spent without the allocations {sorted(wanted)}: they cannot "
                               f"be added to a root that has already spent")
         for name, limits in wanted.items():
             root.allocate(name, limits)

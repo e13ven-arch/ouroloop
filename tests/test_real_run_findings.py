@@ -516,6 +516,21 @@ class _Overloaded:
                         usage={"input_tokens": 10, "output_tokens": 5})
 
 
+class _SdkDown:
+    """A research model whose SDK raises its own connection error — not a ProviderError, and without an HTTP
+    status — until the repair."""
+    name, model, retries, ok = "sdk", "r-2", 1, False
+
+    def __init__(self, **_):
+        pass
+
+    def chat(self, system, messages, specs=()):
+        if not _SdkDown.ok:
+            raise type("APIConnectionError", (Exception,), {})("Connection error.")
+        return ChatTurn(json.dumps({"next_action": "stop", "reason": "nothing to change"}), [], "end",
+                        usage={"input_tokens": 10, "output_tokens": 5})
+
+
 def _failing(base, method):
     class Failing(base):
         pass
@@ -526,7 +541,8 @@ def _failing(base, method):
     return Failing
 
 
-@pytest.mark.parametrize("where,step", [("metered", "segment-0"), ("note", "segment-0"), ("summary", "segment-0"),
+@pytest.mark.parametrize("where,step", [("metered", "segment-0"), ("sdk", "segment-0"), ("note", "segment-0"),
+                                        ("summary", "segment-0"),
                                         ("revise", "segment-0"), ("slot", "slot-0"), ("common", "slot-0"),
                                         ("arm", "slot-0")])
 def test_a_research_call_that_keeps_failing_pauses_the_activity(fake_upstream, tmp_path, fixture_preset,
@@ -545,6 +561,10 @@ def test_a_research_call_that_keeps_failing_pauses_the_activity(fake_upstream, t
     if where != "common":
         outer_on_the_gap(monkeypatch)        # the default pair keeps a failing family in the arms' train pool
     worker, slot, factory = Stopper(), RProposer(), arms([Stopper, Stopper, SkillAnyway])[0]
+    if where == "sdk":
+        cfg["research"] = {"llm": {"type": "test_real_run_findings:_SdkDown"}}
+        monkeypatch.setattr(_SdkDown, "ok", False)
+        worker = None
     if where == "metered":
         cfg["research"] = {"llm": {"type": "test_real_run_findings:_Overloaded"}}
         monkeypatch.setattr(_Overloaded, "ok", False)
@@ -576,6 +596,7 @@ def test_a_research_call_that_keeps_failing_pauses_the_activity(fake_upstream, t
         assert counters_of(rounds) == (0, 0)                    # the paused round is not counted
     # the repair: the same step is asked again, and the cycle goes on
     monkeypatch.setattr(_Overloaded, "ok", True)
+    monkeypatch.setattr(_SdkDown, "ok", True)
     again = bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper() if worker is not None else None,
                         slot_researcher=RProposer(), arm_researcher=arms([Stopper, Stopper, SkillAnyway])[0],
                         until="segment-0" if step == "segment-0" else None)
@@ -707,3 +728,34 @@ def test_resume_refuses_a_changed_frozen_plan(fake_upstream, tmp_path, monkeypat
                for e in ct.Events(activity.root).of("permit_issued") if e.get("plan") == receipt.plan_ref]
     assert permits and all(p.parent_release == experiment.parent_release for p in permits)
     assert result["stop_reason"] not in PAUSES and unfinished(activity.root) == []
+
+
+def test_only_a_model_providers_failure_is_read_as_a_refused_account():
+    """An internal error whose text happens to say "billing" or "quota" is not the provider refusing the account:
+    it is not paused on as one, and it is not classified at all — it re-raises."""
+    from ouroloop.evolve.execution import BudgetError, BudgetMismatch
+    from ouroloop.providers import is_account_error
+    from ouroloop.research.loop import halt_of
+    assert not is_account_error(KeyError("billing_address")) and halt_of(KeyError("billing_address")) is None
+    assert not is_account_error(ValueError("quota exceeded for the export"))
+    assert is_account_error(ProviderError("HTTP 429: quota exceeded"))
+    sdk = type("APIStatusError", (Exception,), {"status_code": 402})("payment required")
+    assert is_account_error(sdk)                                   # an SDK error with an HTTP status still counts
+    assert halt_of(BudgetMismatch("scope 'x' already exists with other limits"))[0] == "repair_runtime"
+    assert halt_of(BudgetError("no reservation res_1")) is None    # a misuse of the ledger is not a pause
+
+
+def test_a_gateway_that_answers_200_without_choices_is_a_provider_failure():
+    from ouroloop.providers import ProviderAccountError
+
+    def gateway(body: str):
+        return httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, text=body)))
+    with pytest.raises(ProviderError, match="not JSON") as failed:
+        OpenAICompatProvider("m", client=gateway("<html>busy</html>"), retries=0).chat("s", [], [])
+    assert failed.value.retryable
+    with pytest.raises(ProviderAccountError):
+        OpenAICompatProvider("m", client=gateway(json.dumps({"error": {"code": "1113", "message": "余额不足"}})),
+                             retries=0).chat("s", [], [])
+    with pytest.raises(ProviderError, match="without choices"):
+        OpenAICompatProvider("m", client=gateway(json.dumps({"error": {"message": "upstream reset"}})),
+                             retries=0).chat("s", [], [])

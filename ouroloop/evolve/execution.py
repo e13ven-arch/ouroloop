@@ -53,6 +53,13 @@ class BudgetError(RuntimeError):
     person has to look at (docs/modules/05_EXECUTION_BUDGET.md §3). A spent budget is the subclass below."""
 
 
+class BudgetMismatch(BudgetError):
+    """The budget asked for is not the one the activity froze: a scope reopened with other limits, a dimension or a
+    scope the book does not have, an allocation that does not fit. A person looks at it; the activity pauses
+    (docs/modules/05_EXECUTION_BUDGET.md §3). A BudgetError that is neither this nor BudgetExhausted is a misuse of
+    the ledger, and nothing handles it as a pause."""
+
+
 class BudgetExhausted(BudgetError):
     """The operation would exceed a limit of this scope or of one of its ancestors, or the scope stopped after a
     breach: the budget is spent. Not a fault: whatever runs on it ends, and nothing is to be repaired."""
@@ -221,7 +228,7 @@ class Budgets:
         limits = {k: v for k, v in (limits or {}).items() if v is not None}
         unknown = sorted(set(limits) - set(LIMITS))
         if unknown:
-            raise BudgetError(f"unknown budget dimensions {unknown}: {list(LIMITS)}")
+            raise BudgetMismatch(f"unknown budget dimensions {unknown}: {list(LIMITS)}")
         with locked(self.path):
             book = self._read()
             saved = book["scopes"].get(scope_id)
@@ -229,14 +236,14 @@ class Budgets:
                 book["scopes"][scope_id] = {"parent": parent, "limits": limits, "allocations": {}}
                 write_json(self.path, book)
             elif saved["limits"] != limits or saved.get("parent") != parent:
-                raise BudgetError(f"scope {scope_id!r} already exists with other limits: {saved['limits']}")
+                raise BudgetMismatch(f"scope {scope_id!r} already exists with other limits: {saved['limits']}")
         return BudgetAccount(self, scope_id)
 
     # -------------------------------------------------------------- reading
     def scope(self, scope_id: str, book: dict | None = None) -> dict:
         book = book or self._read()
         if scope_id not in book["scopes"]:
-            raise BudgetError(f"no budget scope {scope_id!r}")
+            raise BudgetMismatch(f"no budget scope {scope_id!r}")
         return book["scopes"][scope_id]
 
     def subtree(self, scope_id: str, book: dict) -> set:
@@ -310,7 +317,7 @@ class Budgets:
             scope.setdefault("allocations", {})[name] = limits
             over = self._exceeds(scope_id, book, {}, allocation=None, extra_allocation=name)
             if over:
-                raise BudgetError(f"allocation {name!r} does not fit in {scope_id!r}: {over}")
+                raise BudgetMismatch(f"allocation {name!r} does not fit in {scope_id!r}: {over}")
             write_json(self.path, book)
         return limits
 
@@ -780,6 +787,9 @@ class MeteredProvider:
         self.calls = 0
 
     def chat(self, system, messages, specs=()):
+        """One call, reserved before and settled after, retried while its failure is worth retrying. A failure
+        that outlasts the retries leaves as a ProviderError whatever the provider raised — an SDK's connection
+        error, a gateway's malformed reply — so whoever handles a model call's failure (M5 §3) sees one kind."""
         bound = self.pricing.bound()
         last: Exception | None = None
         for attempt in range(self.max_retries + 1):
@@ -788,7 +798,8 @@ class MeteredProvider:
                                                   allocation=self.allocation)
             except BudgetError:
                 if last is not None:
-                    raise last          # a retry the budget cannot cover: the provider's failure is the outcome
+                    # a retry the budget cannot cover: the provider's failure is the outcome
+                    raise _as_provider_error(last) from (None if isinstance(last, _provider_error()) else last)
                 raise
             self.calls += 1
             own = getattr(self.provider, "retries", None)
@@ -813,7 +824,25 @@ class MeteredProvider:
             self.receipts.append(self.account.settle(reservation.id,
                                                      self.pricing.measure(turn.usage or {}), "settled"))
             return turn
-        raise last
+        raise _as_provider_error(last) from (None if isinstance(last, _provider_error()) else last)
+
+
+def _provider_error():
+    from ..providers import ProviderError
+    return ProviderError
+
+
+def _as_provider_error(e: Exception) -> Exception:
+    """A model call's failure as a ProviderError, with what the meter knew of it: whether it was worth retrying,
+    whether it never reached the model, and the HTTP status by which an account refusal is told."""
+    if isinstance(e, _provider_error()):
+        return e
+    out = _provider_error()(f"{type(e).__name__}: {str(e)[:400]}", retryable=_retryable(e),
+                            unbilled=bool(getattr(e, "unbilled", False)))
+    status = getattr(e, "status_code", None)
+    if isinstance(status, int):
+        out.status_code = status
+    return out
 
 
 # ---------------------------------------------------------------------------- the top-level schedule
