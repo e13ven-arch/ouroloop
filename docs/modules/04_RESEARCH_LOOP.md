@@ -43,7 +43,12 @@ worker 轮的部分已在阶段 3 实现（2026-10-02）：
 - 汇总回复里的每个提案都校验，排在上限之后的不合法提案同样使本轮 invalid；上限之外的合法提案记为 dropped。
 - 截断在任何一步都按 M5 §3 暂停。
 
-研究位的部分属于 ROADMAP §3 的“研究位前”。研究位记 invalid 后不自动重问，这一步就此结束，cycle 照常进入下一段；重问要在下一段跑完之后，会让 R1 的回用检查读到安装前的段。
+研究位的部分已实现（2026-10-03）：
+- 研究位回复空、拒答、非 JSON、无提案也无合法 next_action，或带不合法的提案时，研究位 invalid，不记 no_proposal（`test_cycle.py::test_an_unreadable_slot_reply_is_an_invalid_slot`）；R 明确回复 stop 或 none 且没有提案时，仍记 no_proposal（`test_a_slot_decision_r_states_is_still_no_proposal`）。
+- 准入拒绝与构建失败分别记 stage=admission 与 stage=build（`test_a_slot_that_admission_or_the_build_refuses_says_which`）。
+- 研究位回复被截断时暂停，续跑时重问同一步，每次调用只记一次账（`test_a_slot_reply_cut_at_the_output_limit_pauses_and_is_asked_again`）。
+
+研究位记 invalid 后不自动重问，这一步就此结束，cycle 照常进入下一段；重问要在下一段跑完之后，会让 R1 的回用检查读到安装前的段。
 
 ## 2. 首版可执行的候选空间
 

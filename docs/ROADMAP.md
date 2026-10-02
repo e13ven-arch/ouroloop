@@ -24,11 +24,11 @@
 
 2026-10-02 复核（11 个范围逐一审计并对抗复核，结论见 JOURNAL 同日条目）发现 4 个高危缺陷：
 - 准入在 K 未冻结 methods 时放行 R 提供的 `spec.backend`，使控制面 import 任意对象（阶段 3 已修）；
-- 研究比较中两支 W* 相同时仍可判 accepted；
-- 外层比较不按任务配对；
+- 研究比较中两支 W* 相同时仍可判 accepted（研究位前已修）；
+- 外层比较不按任务配对（研究位前已修）；
 - 续跑不读 Experiment 冻结的评测模板与预算 scope（阶段 3 已修）。
 
-其余两项（研究裁决）属于 §3 的“研究位前”，在开研究位之前修。
+其余两项（研究裁决）已在 §3 的“研究位前”修完（2026-10-03）。
 
 另有以下问题：
 - 暂停只在 worker 轮循环里写入；collect、续跑、基线、研究位提案、campaign 公共测量与外测遇到账号错误或截断时以异常退出（阶段 3 已修：cycle 的每一步按同一规则暂停或结束）。
@@ -115,7 +115,7 @@ A～E 属于首版，递归方法比较与实际回用仍为必做。第二版�
        - 账号拒绝只从供应商的故障里读，内部错误的文本里带 "billing" 不算；预算不符单列为 `BudgetMismatch`，其余账本误用直接上抛（`test_only_a_model_providers_failure_is_read_as_a_refused_account`）。
        - 构建与续跑都按准入的同一规则检查 model 改动；训练条目只能指向核心开放的决策目标（`test_a_resumed_experiment_that_names_a_backend_is_not_evaluated`）。
        - 逐题笔记读不出时记下真实原因（`test_diagnosis.py::test_an_unreadable_note_records_why_it_could_not_be_read`）；已完成的段不被后续步骤的故障记成暂停（`test_cycle.py::test_a_finished_segment_is_not_recorded_as_paused_by_a_later_failure`）；campaign 臂的续跑有测试（`test_rsi_integration.py::test_a_campaign_arm_resumes_its_open_experiment_under_its_frozen_inputs_or_pauses`）。
-   - 研究位前（可以在 worker 段运行期间开发；落地后重跑彩排的研究位部分）：
+   - 研究位前（2026-10-03 已完成，经对抗审查后修正，见 JOURNAL 同日条目；彩排的研究位部分在此之后重跑）：
      - 研究裁决按任务配对；配对不全、或两支 W* 相同时，判 inconclusive；外测补跑一次，额度从预算根预留。规则见 [M6 §3](modules/06_RESEARCH_CAMPAIGN.md)：
        - 配对：同一 pair 内，外层任务的每次重复在两支都有有效尝试才计入；补跑后仍缺任一，判 inconclusive。
        - 两支 W* 是同一个 worker ref 时不跑外测，判 inconclusive。
@@ -136,6 +136,7 @@ A～E 属于首版，递归方法比较与实际回用仍为必做。第二版�
      - 任务世界：以 `marketing` 域名导出的 fixture 上游，满足 preset 的域锁（`bench.py:923-925`）。规模小：train 中固定失败的题不超过 5 道；dev 至少 5 个家族，满足 gate 的 min_groups。
      - actor：`[llm] type = "<模块>:<类>"` 的确定性假 actor，在 bootstrap 时被 pin 为 W0。它对包内容作出反应：包中出现某类规则（memory 或 skill 文本、on_finish hook 的回推）时，在指定的 dev 题上改做对，让 gate 增益可以达到 0.05；在 train 失败题上留下能被失败摘要捕捉、并指向该规则的线索。假 actor 的规格在阶段 3 开始时先写，再实现。
        - 缺口不止一类：segment-0 装包之后，仍要有缺口同时出现在开发家族冻结顺序的前一半（两支的内层 gate）与后一半（外层比较），两支才可能装包，外测才会运行。两支 W* 相同时研究位判 inconclusive、不跑外测；若如此，外测、补跑与 R1 装入后的回用如实记为覆盖缺口。
+     - 研究位部分的重跑从 `--until segment-0` 时复制的工作区开始：已记下研究位的工作区不再重问，同一 R1 的 campaign 有收据就不再运行，研究位前修复之前冻结的计划也没有外测与两支的预留。
      - 组件：允许代码组件（本机 Docker 可用），以便覆盖 Docker 中的草稿检查链。
      - 隔离：独立工作区与 scope，名称带 rehearsal。系统不会给这些记录打 synthetic 标记：收据仍记 discovery=automatic，提案仍记 origin=llm。synthetic 由工作区名与 JOURNAL 标注；该工作区的报告与 C1～C4 不得引用，也不与正式工作区合并。
      - 规模：用停止点分段推进；需要时只调低 `max_failure_notes`。
@@ -182,7 +183,7 @@ A～E 属于首版，递归方法比较与实际回用仍为必做。第二版�
      4. `--until segment-0`，检查 K3，并由人决定是否进入研究位；
      5. 去掉停止点，跑完。
    - 预算：活动根 $300，其中 `final` 分配 $50，cycle 可花 $250；每支按 0.15 份额约 $45；外测按 0.08 份额约 $24（外层约 13 题、两支，含一次补跑的上限），campaign 开始时自动预留；两支份额在公共测量之后预留。研究位开始时根须空出两支与外测共 38%（约 $114），由 cycle 的研究员作答时再加 R 一次调用的上界。先充值 ≥$150 等值，进入研究位前补足。
-   - 进入研究位前（segment-0 停下时）人工核对：根的有效剩余不少于“两支份额 + 外测份额 + 公共测量（当前 W 的 train 测量，约 $7～23）+ segment-1 首轮估算”；不够就不开研究位，直接跑 final。根覆盖不了外测份额与两支份额时，研究位不问 R，以 budget_exhausted 结束，活动随之结束；公共测量之后两支剩余份额不够时，研究位判 inconclusive。
+   - 进入研究位前（segment-0 停下时）人工核对：根的有效剩余不少于“两支份额 + 外测份额 + 公共测量（当前 W 的 train 测量，约 $7～23）+ segment-1 首轮估算”；不够就不开研究位，直接跑 final。根覆盖不了外测份额与两支份额时，研究位不问 R，以 budget_exhausted 结束，活动随之结束；公共测量之后两支份额占不住时，研究位判 inconclusive。
    - 活动内不重新冻结 task plan、schedule、预算或计价；首版 preset 不开 screen。
 5. **gate 口径。**
    - 沿用点估计门槛（min_gain 0.05，repeats=1）。worker gate 的 accepted 只是开发采纳，C1 只由 final 裁决。
