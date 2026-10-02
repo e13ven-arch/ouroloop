@@ -3,9 +3,11 @@ the three hook sites, and code drafts in the draft check.
 
 These tests use ProcessWorker, which runs the real runner and protocol in a subprocess but is NOT isolated
 (`qualified = False`): they show the host's semantics. Isolation itself is shown only by the Docker test at the
-end, which is skipped when docker or the worker image is not available — a skip, never a pass.
+end, which are skipped when docker or the worker image is not available — a skip, never a pass. CI builds the
+image and sets OUROLOOP_TEST_REQUIRE_DOCKER, and there a missing worker fails them instead.
 """
 import json
+import os
 
 import pytest
 
@@ -14,7 +16,8 @@ from ouroloop import bench, policies as P
 from ouroloop.agent import Agent, AgentConfig
 from ouroloop.agent import harness_package as hp
 from ouroloop.agent.tools import ToolResult
-from ouroloop.agent.worker import Broker, PackageCallError, ProcessWorker, WorkerCrashed, docker_worker
+from ouroloop.agent.worker import (DEFAULT_IMAGE, Broker, PackageCallError, ProcessWorker, WorkerCrashed,
+                                   docker_worker)
 from ouroloop.chat import ChatTurn, ToolCall, ToolSpec
 from ouroloop.evolve import contracts as ct
 
@@ -441,14 +444,24 @@ def test_it6_22_a_code_component_is_generated_checked_installed_and_changes_beha
 
 
 # ---------------------------------------------------------------------------- IT6-23: isolation (needs docker)
-@pytest.mark.skipif(docker_worker() is None, reason="docker or the worker image is not available: isolation is "
-                                                     "not shown by any other test")
-def test_it6_23_package_code_in_the_docker_worker_cannot_reach_the_host():
+@pytest.fixture
+def qualified():
+    """The Docker worker of DEFAULT_IMAGE. Isolation is not shown by any other test, so without docker or the image
+    these tests are skipped, never passed; where CI has built the image (OUROLOOP_TEST_REQUIRE_DOCKER, set by
+    .github/workflows/tests.yml) a missing worker fails them, so a broken build or a renamed tag is not a quiet skip."""
+    worker = docker_worker()
+    if worker is None:
+        if os.environ.get("OUROLOOP_TEST_REQUIRE_DOCKER"):
+            pytest.fail(f"OUROLOOP_TEST_REQUIRE_DOCKER is set and docker or the {DEFAULT_IMAGE} image is not available")
+        pytest.skip(f"docker or the {DEFAULT_IMAGE} image is not available")
+    return worker
+
+
+def test_it6_23_package_code_in_the_docker_worker_cannot_reach_the_host(qualified):
     """What package code can see and do inside the qualified worker: no host file, no network, an environment of
     exactly PATH and LANG (the host's is not forwarded and the base image's is dropped), not root, a read-only
     root filesystem, and a small writable /tmp."""
-    worker = docker_worker()
-    session = worker.start()
+    session = qualified.start()
     try:
         session.load({"tools/t.py": "import os, socket\n"
                                     "def run(ctx, args):\n"
@@ -476,11 +489,10 @@ def test_it6_23_package_code_in_the_docker_worker_cannot_reach_the_host():
         session.close()
 
 
-@pytest.mark.skipif(docker_worker() is None, reason="docker or the worker image is not available")
-def test_a_hung_package_in_docker_is_its_defect_and_its_container_is_removed():
+def test_a_hung_package_in_docker_is_its_defect_and_its_container_is_removed(qualified):
     import subprocess
     from ouroloop.agent.worker import WorkerLimits
-    worker = docker_worker()
+    worker = qualified
     worker.limits = WorkerLimits(request_seconds=3.0)
     session = worker.start()
     name = worker._names[id(session)]
@@ -492,14 +504,13 @@ def test_a_hung_package_in_docker_is_its_defect_and_its_container_is_removed():
     assert left == ""                                           # the container itself is gone, not only its client
 
 
-@pytest.mark.skipif(docker_worker() is None, reason="docker or the worker image is not available")
-def test_the_qualified_worker_runs_the_image_k_froze_by_its_content_id():
+def test_the_qualified_worker_runs_the_image_k_froze_by_its_content_id(qualified):
     from ouroloop import bench
-    image_id = docker_worker().image_id()
-    worker = bench.isolated_worker({"sandbox": "docker", "image": "ouroloop-worker:py3.12", "image_id": image_id,
+    image_id = qualified.image_id()
+    worker = bench.isolated_worker({"sandbox": "docker", "image": DEFAULT_IMAGE, "image_id": image_id,
                                     "test_timeout_seconds": 7})
     assert worker.pinned_id == image_id and image_id in worker.command("n")
     assert worker.limits.request_seconds == 7.0
     assert worker.healthy()
-    assert bench.isolated_worker({"sandbox": "docker", "image": "ouroloop-worker:py3.12",
+    assert bench.isolated_worker({"sandbox": "docker", "image": DEFAULT_IMAGE,
                                   "image_id": "sha256:" + "0" * 64}) is None      # another image: not this activity's
