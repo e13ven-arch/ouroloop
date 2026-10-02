@@ -161,6 +161,14 @@ def test_a_tool_schema_the_provider_refuses_fails_the_check(schema, message):
         hp.check_shape(tool_files(description="x" * 1025), CODE)
 
 
+def test_a_skill_name_with_a_trailing_newline_is_refused():
+    manifest = {**hp.empty_manifest(), "skills": [{"name": "ok\n", "path": "skills/ok.md"}]}
+    with pytest.raises(hp.PackageError, match="skill name"):
+        hp.check_shape({"manifest.json": json.dumps(manifest), "skills/ok.md": "Check."}, CODE)
+    manifest["skills"][0]["name"] = "ok"
+    hp.check_shape({"manifest.json": json.dumps(manifest), "skills/ok.md": "Check."}, CODE)
+
+
 def test_enabled_is_a_boolean_and_a_disabled_tool_is_not_offered(tmp_path):
     from ouroloop.chat import ToolSpec
     with pytest.raises(hp.PackageError, match="enabled is true or false"):

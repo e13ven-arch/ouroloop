@@ -168,7 +168,7 @@ def registered_builders() -> tuple[str, ...]:
     return tuple(sorted({builder.ref for builder in BUILDERS.values()}))
 
 
-def _model_change_reasons(change: dict, proposal: ct.ExperimentProposal, objects: ct.Objects | None) -> list[str]:
+def model_change_reasons(change: dict, proposal: ct.ExperimentProposal, objects: ct.Objects | None) -> list[str]:
     """A model is what a training entry builds; a proposal does not write one.
 
     A `backend` in a model change is what serving builds the decider from, and a type serving does not know is
@@ -208,7 +208,7 @@ def core_checks(proposal: ct.ExperimentProposal, *, context, core: ct.CoreManife
         if "change_ref" in change and objects is not None and not objects.has(change["change_ref"]):
             reasons.append(f"{target}: the change artifact {ct.short(change['change_ref'])} is not readable")
         if change["kind"] == "model":
-            reasons.extend(_model_change_reasons(change, proposal, objects))
+            reasons.extend(model_change_reasons(change, proposal, objects))
     methods = (core.capabilities or {}).get("methods")
     if methods and proposal.owner == "worker":
         # The activity's [improvement] allowed_methods, frozen into K (docs/modules/07_BENCH_REPORT.md §2).
@@ -223,6 +223,13 @@ def core_checks(proposal: ct.ExperimentProposal, *, context, core: ct.CoreManife
     for entry in proposal.training:
         if not core.capabilities.get("training", True):
             reasons.append("this core does not open training")
+        # A training entry builds a decision model for a registered decision target this core opens; the build
+        # installs what it trained there and nowhere else.
+        point = entry.get("point")
+        trainable = point in REGISTRY and REGISTRY[point].binding == "decision" and \
+            "model" in REGISTRY[point].allowed_kinds
+        if not trainable or (core.targets and point not in core.targets):
+            reasons.append(f"training {point}: not a decision target this core opens for a trained model")
         if entry["feedback_ref"] not in set(feedback_builders or ()):
             reasons.append(f"unknown feedback builder {entry['feedback_ref']!r}: "
                            f"{sorted(feedback_builders or ())}")

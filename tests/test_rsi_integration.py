@@ -730,3 +730,75 @@ def test_a_campaign_takes_a_factory_so_arms_never_share_a_research_step(fake_ups
     cfg, activity, campaign = v06_campaign(fake_upstream, tmp_path)
     with pytest.raises(ValueError, match="factory"):
         bench.research(cfg, ".", out=lambda _line: None, researcher=NoteResearcher())
+
+
+def test_a_campaign_arm_resumes_its_open_experiment_under_its_frozen_inputs_or_pauses(fake_upstream, tmp_path,
+                                                                                      monkeypatch):
+    """docs/modules/05_EXECUTION_BUDGET.md §3 for a campaign arm: an experiment its gate left open is resumed before
+    any new round; a resume that meets the refused account again pauses the arm and runs nothing behind it, and a
+    resume under another template (the per-attempt limits changed) is refused, with the reason on record."""
+    import json as _json
+    from test_harness_loop import NoteResearcher
+    from ouroloop.evolve.execution import unfinished
+    from ouroloop.providers import ProviderAccountError
+    from ouroloop.research.campaign import arm_workspace
+    from ouroloop.research.experiment import ProposalResult
+    cfg, activity, campaign = v06_campaign(fake_upstream, tmp_path, rounds=2)
+    state = {"broke": False}
+    real_chat = rsi.BusinessWorker.chat
+
+    def chat(self, system, messages, specs):
+        if state["broke"]:
+            raise ProviderAccountError('HTTP 429: {"error":{"code":"1113","message":"balance"}}')
+        return real_chat(self, system, messages, specs)
+    monkeypatch.setattr(rsi.BusinessWorker, "chat", chat)
+
+    class Control(NoteResearcher):
+        def summarize(self, *a, **kw):
+            self.requests.append({"step": "propose"})
+            return ProposalResult(next_action="stop", reason="nothing to change")
+
+    class BreaksTheAccount(NoteResearcher):
+        def summarize(self, *a, **kw):
+            out = super().summarize(*a, **kw)
+            state["broke"] = True                    # the gate's attempts are the next calls
+            return out
+    made = []
+
+    def factory_of(*roles):
+        roles = iter(roles)
+
+        def factory():
+            made.append(next(roles)(broken_first_draft=False))
+            return made[-1]
+        return factory
+    bench.research(cfg, ".", out=lambda _line: None, researcher=factory_of(NoteResearcher, Control, BreaksTheAccount))
+    root = arm_workspace(activity.root, "pair-1", "candidate", "c6")
+    [opened] = unfinished(root)
+
+    def arm():
+        return _json.loads((root / "rsi" / "arm.json").read_text())
+    assert not arm()["finished"]
+    # the account still refused: the open experiment is resumed and pauses the arm again; no new round behind it
+    bench.research(cfg, ".", out=lambda _line: None,
+                   researcher=factory_of(NoteResearcher, Control, NoteResearcher, NoteResearcher))
+    candidate = made[-1]
+    assert not [r for r in candidate.requests if r["step"] in ("note", "propose")]
+    assert unfinished(root) == [opened] and not arm()["finished"]
+    assert arm()["rounds"][-1]["outcome"] == "stopped" and arm()["rounds"][-1]["reason"] == "repair_runtime"
+    # the account topped up, the per-attempt limits changed meanwhile: the arm's template is another one now
+    state["broke"] = False
+    cfg["bench"]["budget"] = {**cfg["bench"]["budget"], "max_steps": cfg["bench"]["budget"]["max_steps"] + 1}
+
+    def attempts():                          # what the candidate arm has booked, on the activity's one book
+        book = _json.loads((activity.root / "rsi" / "budget" / "book.json").read_text())
+        return sum(1 for r in book["reservations"].values() if r["scope_id"].endswith(":candidate"))
+    paid = attempts()
+    assert paid > 0                          # the arm's gate did spend before the account was refused
+    bench.research(cfg, ".", out=lambda _line: None,
+                   researcher=factory_of(NoteResearcher, Control, NoteResearcher, NoteResearcher))
+    refused = list(ct.Events(root).of("resume_refused"))
+    assert refused and "eval_template_ref" in refused[-1]["reason"]
+    assert unfinished(root) == [opened] and arm()["rounds"][-1]["reason"] == "repair_runtime"
+    assert not [r for r in made[-1].requests if r["step"] == "propose"]
+    assert attempts() == paid                                                  # nothing paid

@@ -836,6 +836,10 @@ class Improvement:
         from .evolve.pipeline import train_artifact
         if self.trainer is None:
             raise ValueError("this activity has no trainer: a training proposal cannot be built")
+        if entry.get("point") != "worker.stop":
+            # The build installs what this trains at worker.stop; a training entry for another target is refused
+            # at admission, and refused here for one frozen before that rule.
+            raise _ct.ContractError(f"training {entry.get('point')}: this activity trains the worker.stop decision only")
         feedback = _feedback.build_feedback(self.rt, objects=self.objects,
                                            builder=entry.get("feedback_ref", "completion_snapshot.v1")
                                            .replace("@", "."), scope_id=self.scope_id)
@@ -1525,6 +1529,16 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
     if missing:
         raise ValueError("; ".join(missing) + "; freeze one with bench.freeze_task_plan")
     require(startup_checks(activity, cfg, phase="improve"), phase="improve")
+    seglog = RoundLog(Path(activity.root) / "rsi" / "segments" / f"{segment}.json",
+                      {"segment": segment, "scope": activity.rsi.scope_id,
+                       "schedule": activity.rsi.schedule_ref}) if segment else None
+    if seglog is not None and seglog.finished:
+        # Before the budget root or a model is touched: a finished segment is read back, never re-run, and a
+        # failure that belongs to a later step must not be recorded against it.
+        out(f"segment    {segment} already finished ({seglog.state['stop_reason']}); not run again")
+        return {"rounds": seglog.state["rounds"], "log": [], "budget": None, "segment": segment,
+                "release": activity.releases.active()["release_ref"], "stop_reason": seglog.state["stop_reason"],
+                "already_finished": True}
     provider = config_mod.build_provider(cfg["llm"])
     trainer = config_mod.build_trainer(cfg, activity.rt.serving) if cfg.get("trainer") else None
     work = improvement(activity, template_ref=activity.rsi.task_plan_ref, provider=provider, trainer=trainer)
@@ -1538,14 +1552,6 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
     research_table = dict(cfg.get("research") or {}).get("llm") or cfg.get("llm") or {}
     research_model = {k: v for k, v in research_table.items() if not SECRET_KEY.match(k)}
     log: list = []
-    seglog = RoundLog(Path(activity.root) / "rsi" / "segments" / f"{segment}.json",
-                      {"segment": segment, "scope": activity.rsi.scope_id,
-                       "schedule": activity.rsi.schedule_ref}) if segment else None
-    if seglog is not None and seglog.finished:
-        out(f"segment    {segment} already finished ({seglog.state['stop_reason']}); not run again")
-        return {"rounds": seglog.state["rounds"], "log": [], "budget": budget.remaining(), "segment": segment,
-                "release": activity.releases.active()["release_ref"], "stop_reason": seglog.state["stop_reason"],
-                "already_finished": True}
     if seglog is not None:
         seglog.watch(researcher)
     done = 0
@@ -2342,8 +2348,14 @@ def cycle(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pri
         if halt:
             status = halt
             break
-        if not (result.get("already_finished") and segment in state["steps"]):
-            # a segment finished in an earlier run keeps the record it was finished with
+        record = state["steps"].get(segment)
+        if result.get("already_finished") and record is not None:
+            # A segment finished in an earlier run keeps the release it was finished with (an install since has
+            # moved the pointer); its end is the segment log's, and no pause recorded against it stands.
+            record.pop("outcome", None)
+            record.pop("reason", None)
+            record["stop_reason"] = result["stop_reason"]
+        else:
             state["steps"][segment] = {"stop_reason": result["stop_reason"], "release": result["release"]}
         if result["stop_reason"] == "stopped_at":
             save()

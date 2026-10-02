@@ -246,7 +246,10 @@ class Diagnosis:
             else:
                 raw = researcher.note(system, user)
                 note = {k: str((raw or {}).get(k, ""))[:NOTE_CHARS] for k in NOTE_FIELDS}
-                problem = invalid_note(note, self.components)
+                # why the reply could not be read at all (refused, empty, not JSON), when the researcher says
+                asked = (getattr(researcher, "requests", None) or [{}])[-1]
+                unread = asked.get("unreadable") if isinstance(asked, dict) and asked.get("step") == "note" else ""
+                problem = unread or invalid_note(note, self.components)
                 if problem:
                     # Not cached: a formatting slip must not blank this failure's diagnosis for good.
                     invalid.append({"task_id": summary["task_id"], "problem": problem})

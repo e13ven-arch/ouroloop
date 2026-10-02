@@ -823,12 +823,14 @@ def build_candidate(experiment, *, objects: ct.Objects, parent_release: str, own
         target, kind = change["target"], change["kind"]
         try:
             payload = objects.get(change["change_ref"]) if "change_ref" in change else change["change"]
-            if kind == "model" and isinstance(payload, dict) and "backend" in payload:
-                # Admission refuses this (research/experiment.py core_checks); an experiment frozen before it did
-                # is refused here, before the preflight bind would import whatever the backend names.
-                errors.append(f"{target}: a proposal does not name a backend; a model is served as its training "
-                              f"built it")
-                continue
+            if kind == "model":
+                # Admission refuses these (research/experiment.py core_checks); an experiment frozen before it did
+                # is refused here by the same rule, before the preflight bind would import a backend it names.
+                from .research.experiment import model_change_reasons
+                refused = model_change_reasons(change, proposal, objects)
+                if refused:
+                    errors.extend(refused)
+                    continue
             # A replaced policy keeps its parent's contract: an R candidate that rewrites the diagnose prompt of a
             # note-contract R stays on the per-task note path (docs/modules/04_RESEARCH_LOOP.md §1).
             old = parent_policies.get(target)

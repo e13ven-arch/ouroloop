@@ -455,6 +455,8 @@ def test_the_report_shows_the_package_what_the_actor_read_and_what_the_drafts_co
     assert gate["regressions"] == []                       # recorded, and nothing fell
     assert data["claims"]["C3"]["state"] == "not_run"
     assert "## Capability package" in render_markdown(data) and "regressed: none" in render_markdown(data)
+    gate["regressions"] = [{"task": "rsi.dev_update_stage", "family": "f", "control": 1.0, "subject": 0.5}]
+    assert "regressed: rsi.dev_update_stage 1.0->0.5" in render_markdown(data)
 
 
 def test_published_numbers_are_background_and_c2_says_so(fake_upstream, tmp_path):

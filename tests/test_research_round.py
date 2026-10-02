@@ -301,7 +301,12 @@ def improve_with(fake_upstream, tmp_path, reply, schedule):
     (json.dumps({"next_action": "collect", "proposals": [{"hypothesis": "h",
                                                           "changes": [{"target": "worker.harness"}]}]}),
      "malformed"),
-    (json.dumps({"proposals": ["add a skill that checks the last step"]}), "malformed")])
+    (json.dumps({"proposals": ["add a skill that checks the last step"]}), "malformed"),
+    (json.dumps({"proposals": "add a skill that checks the last step", "next_action": "collect"}), "not a list"),
+    # a malformed proposal after a well-formed one is not dropped and the first read on
+    (json.dumps({"proposals": [{"hypothesis": "h", "changes": [{"target": "worker.system_prompt", "kind": "prompt",
+                                                                 "change": {"text": "Do every step."}}]},
+                               "and a second idea"]}), "malformed")])
 def test_an_unreadable_reply_is_an_invalid_round(fake_upstream, tmp_path, reply, why):
     """docs/modules/04_RESEARCH_LOOP.md §1: an empty, refused, non-JSON or malformed summary reply decides
     nothing. The round is invalid and counts toward patience; nothing R might have meant — a collection here —
@@ -369,6 +374,41 @@ def test_a_proposal_cannot_name_a_backend(fake_upstream, tmp_path):
     built = P.build_candidate(experiment, objects=objects, parent_release=release, services=work.services())
     assert built.status == "invalid" and any("does not name a backend" in e for e in built.errors)
     assert Named.built == []                                      # nothing was imported
+    # the same rule for a model change with no training, frozen before admission refused it
+    swap = ct.ExperimentProposal(owner="worker", hypothesis="a model nobody trained", changes=(
+        {"target": "worker.stop", "kind": "model", "change": {"instructions": "stop when done"}},))
+    frozen_swap = freeze(objects.put(normalize(swap, objects)), objects=objects, parent_release=release,
+                         experience_ref="", core_ref=work.core_ref, eval_template_ref=plan_ref, budget_scope="s")
+    swapped = P.build_candidate(frozen_swap, objects=objects, parent_release=release, services=work.services())
+    assert swapped.status == "invalid" and any("from a training entry" in e for e in swapped.errors)
+    # a training entry for a target that is not a trained decision is refused at admission
+    odd = ct.ExperimentProposal(owner="worker", hypothesis="train the prompt", training=(
+        {**training, "point": "worker.system_prompt"},))
+    assert any("not a decision target" in r for r in admit(odd, context=context, core=with_methods,
+                                                          objects=objects).reasons)
+
+
+def test_a_resumed_experiment_that_names_a_backend_is_not_evaluated(fake_upstream, tmp_path):
+    """Built before the rule, stopped at the screen: a resume does not build again, so the rule is checked on the
+    resume itself and the experiment ends invalid before anything binds the backend it names."""
+    from ouroloop.evolve.execution import Execution
+    from ouroloop.research.loop import resume_unfinished
+    cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
+    work = bench.improvement(activity, template_ref=plan_ref, provider=rsi.BusinessWorker())
+    objects = activity.objects
+    named = ct.ExperimentProposal(owner="worker", hypothesis="a decider of my own", changes=(
+        {"target": "worker.stop", "kind": "model",
+         "change": {"backend": {"type": "test_research_round:Named", "x": 2}}},))
+    experiment = freeze(objects.put(normalize(named, objects)), objects=objects, parent_release=release,
+                        experience_ref="", core_ref=work.core_ref, eval_template_ref=plan_ref, budget_scope="s")
+    execution = Execution(activity.root, experiment.id)
+    execution.advance("admitted", experiment=objects.put(experiment))
+    execution.advance("building")
+    execution.advance("screening")
+    Named.built.clear()
+    [result] = resume_unfinished(activity.root, objects, work.handlers(), None)
+    assert result.outcome == "invalid" and "does not name a backend" in result.reason
+    assert execution.state()["status"] == "invalid" and Named.built == []
 
 
 class LeakyPrompt:
@@ -425,6 +465,16 @@ def test_a_prompt_change_gets_the_literal_check(fake_upstream, tmp_path, changes
     row = [e for e in experience_mod.read(activity.root) if e.get("kind") == "round"][0]
     assert row["outcome"] == "invalid" and "task-specific values" in row["checks"][0]["detail"]
     assert LEAKED not in json.dumps({k: v for k, v in row.items() if k != "hypothesis"})
+
+
+def test_a_finish_instruction_stored_by_ref_gets_the_literal_check(fake_upstream, tmp_path):
+    from test_harness_loop import v06_prepared
+    cfg, activity, _ = v06_prepared(fake_upstream, tmp_path)
+    ref = activity.objects.put_json("change", {"text": f"Before finishing, message {LEAKED}."})
+    researcher = LeakyPrompt([{"target": "worker.finish", "kind": "workflow",
+                               "change": {"builtin": "finish_check.v1", "instruction_ref": ref}}])
+    result = bench.improve(cfg, ".", out=lambda _line: None, researcher=researcher)
+    assert result["rounds"][0]["outcome"] == "invalid", result["rounds"]
 
 
 def test_a_prompt_change_without_a_literal_is_not_refused(fake_upstream, tmp_path):

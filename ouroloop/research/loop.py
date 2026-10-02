@@ -385,6 +385,21 @@ def resume_unfinished(root, objects: _ct.Objects, handlers: dict, budget, *, act
         results.append(_ct.RoundResult(outcome="stopped", reason="repair_runtime", next_action="repair_runtime"))
         return results
     for entry, execution, experiment in resumable:
+        refused_model = _refused_model_changes(experiment, objects)
+        if refused_model:
+            # Frozen before admission refused it, and possibly built already: the build is not run again on a
+            # resume, so the rule is checked here, before the evaluation would bind what the change names.
+            reason = "; ".join(refused_model)[:300]
+            state = execution.state()["status"]
+            if state in ("admitted", "building", "screening", "evaluating", "evaluated"):
+                execution.advance("invalid", reason=reason)
+            elif state == "accepted":
+                execution.advance("cancelled", reason=reason)
+            if state != "installing":
+                results.append(_ct.RoundResult(outcome="invalid" if state != "accepted" else "cancelled",
+                                               experiment_id=experiment.id, release_before=experiment.parent_release,
+                                               release_after=experiment.parent_release, reason=reason))
+                continue
         try:
             outcome = execute_experiment(experiment, handlers, budget=budget, execution=execution,
                                          expected_parent=experiment.parent_release)
@@ -412,6 +427,17 @@ def resume_unfinished(root, objects: _ct.Objects, handlers: dict, budget, *, act
             release_after=installation.target_release if installation is not None else experiment.parent_release,
             receipt_ref=receipt.ref() if receipt else None, reason=f"resumed from {entry['status']}"))
     return results
+
+
+def _refused_model_changes(experiment, objects: _ct.Objects) -> list[str]:
+    """Why the frozen proposal's model changes would be refused at admission now (experiment.model_change_reasons)."""
+    from .experiment import model_change_reasons
+    try:
+        proposal = objects.load(experiment.proposal_ref, _ct.ExperimentProposal)
+    except (_ct.ContractError, KeyError):
+        return []
+    return [r for c in proposal.changes if c.get("kind") == "model"
+            for r in model_change_reasons(c, proposal, objects)]
 
 
 def _changed_inputs(experiment, *, eval_template_ref: str | None, budget_scope: str | None) -> list[str]:

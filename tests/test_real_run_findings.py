@@ -695,6 +695,8 @@ def test_resume_refuses_a_changed_frozen_plan(fake_upstream, tmp_path, monkeypat
         assert researcher.requests == []                            # no new round ran behind it
         assert len(list(Results(activity.root, rsi.DOMAIN).all())) == attempts   # nothing paid under the new plan
         assert unfinished(activity.root) == [open_experiment]       # the experiment stays open, as it was
+        refusals = [e for e in ct.Events(activity.root).of("resume_refused") if e["experiment"] == experiment.id]
+        assert refusals and field in refusals[-1]["reason"]          # and why it was not resumed is on record
 
     other = bench.freeze_task_plan(activity.objects, core_ref=experiment.core_ref, split_ref=activity.splits.hash(),
                                    task_ids=tuple(rsi.DEV), gate=GatePlan(min_gain=0.5, min_groups=1,
@@ -759,3 +761,32 @@ def test_a_gateway_that_answers_200_without_choices_is_a_provider_failure():
     with pytest.raises(ProviderError, match="without choices"):
         OpenAICompatProvider("m", client=gateway(json.dumps({"error": {"message": "upstream reset"}})),
                              retries=0).chat("s", [], [])
+
+
+def test_the_screen_compares_against_the_frozen_parent_after_the_pointer_moved(fake_upstream, tmp_path):
+    """A screen resumed after the pointer moved still runs its control arm on the version the experiment was frozen
+    on, not on whatever is active now (docs/modules/05_EXECUTION_BUDGET.md §3)."""
+    import rsi
+    from test_harness_loop import v06_prepared
+    from ouroloop import bench
+    from ouroloop.ledger import write_json
+    cfg, activity, w0 = v06_prepared(fake_upstream, tmp_path)
+    work = bench.improvement(activity, template_ref=cfg["rsi"]["task_plan_ref"])
+    work.screen_ids = (rsi.DEV[0],)
+    release = ct.SystemRelease.from_json(activity.objects.get(w0))
+    moved = activity.releases.bootstrap(release.worker_ref, release.research_ref, release.core_ref,
+                                        reason="another install meanwhile", activate=False)
+    write_json(activity.releases.active_path, {"release_ref": moved, "revision": 5, "last_operation_id": None})
+    proposal = activity.objects.put(ct.ExperimentProposal(owner="worker", hypothesis="h", changes=(
+        {"target": "worker.system_prompt", "kind": "prompt", "change": {"text": "Do every step."}},)))
+    work._begin(ct.Experiment(id="x1", proposal_ref=proposal, parent_release=w0,
+                              experience_ref=activity.objects.put_json("change", {"experience": []}),
+                              core_ref=release.core_ref, eval_template_ref=cfg["rsi"]["task_plan_ref"],
+                              budget_scope=work.scope_id))
+    ran = []
+    work.run_arm = lambda arm, release_ref, order, **kw: ran.append((arm, release_ref)) or []
+    try:
+        work._screen(release.worker_ref, None)
+    except Exception:  # noqa: BLE001 - empty arms; only which release each arm ran on is under test
+        pass
+    assert ("screen_control", w0) in ran and all(release_ref != moved for _arm, release_ref in ran)

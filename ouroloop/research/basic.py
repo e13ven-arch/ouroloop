@@ -410,8 +410,13 @@ class PolicyResearcher:
         return system, user
 
     def note(self, system: str, user: str) -> dict:
+        """One note. A reply that cannot be read gives no note, and why it could not (refused, empty, not JSON) is
+        kept on the request, where the diagnosis records it."""
         self.requests.append({"step": "note", "system": system, "prompt_hash": _ct.digest({"system": system})[:16]})
-        return self._read(self._complete("note", system, user))[0]
+        data, problem = self._read(self._complete("note", system, user))
+        if problem:
+            self.requests[-1]["unreadable"] = problem
+        return data
 
     def summarize(self, context, prompt: str, notes: list, coverage: dict, experience=(), *, package=None,
                   allowed: tuple = ()) -> _ProposalResult:
@@ -441,7 +446,7 @@ class PolicyResearcher:
         listed = data.get("proposals")
         if listed is not None and not isinstance(listed, (list, dict)):
             problem = problem or "the research reply's proposals is not a list of proposals"
-        for item in _as_list(listed)[:self.max_proposals]:
+        for item in _as_list(listed):        # every one is read: a malformed one past the cap is not dropped
             try:
                 if not isinstance(item, dict):
                     raise _ct.ContractError(f"a proposal is an object, not {type(item).__name__}")
@@ -459,7 +464,8 @@ class PolicyResearcher:
         if not problem and not proposals and action not in NEXT_ACTIONS:
             problem = (f"the research reply has no proposal and no next_action" if action is None else
                        f"the research reply's next_action {action!r} is not one of {list(NEXT_ACTIONS)}")
-        result = _ProposalResult(proposals=[] if problem else proposals,
+        proposals, dropped = proposals[:self.max_proposals], proposals[self.max_proposals:]
+        result = _ProposalResult(proposals=[] if problem else proposals, dropped=() if problem else tuple(dropped),
                                  next_action="none" if problem or proposals else action,
                                  reason=problem or str(data.get("reason", ""))[:500],
                                  evidence_refs=tuple(context.evidence), unreadable=bool(problem))

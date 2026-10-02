@@ -149,3 +149,32 @@ def test_no_readable_note_makes_an_invalid_round(fake_upstream, tmp_path):
     assert diagnosis[0]["noted"] == 0 and len(diagnosis[0]["invalid"]) == diagnosis[0]["failures"] == 2
     assert diagnosis[1]["noted"] == 2 and diagnosis[1]["reused"] == 0   # not cached: asked again
     assert counters_of(rounds[:1]) == (1, 0)     # a round toward patience, not an infrastructure failure
+
+
+@pytest.mark.parametrize("reply,why", [("", "was empty"), (None, "declined the request"),
+                                       ("a short note in prose", "not readable JSON"),
+                                       (json.dumps({"failure_class": "missed_step", "root_cause": "x"}),
+                                        "no failure class or mechanism")])
+def test_an_unreadable_note_records_why_it_could_not_be_read(fake_upstream, tmp_path, reply, why):
+    """A refused, empty or non-JSON note reply is recorded as that, not as a note with missing fields: whoever reads
+    the coverage, or the reason of a round in which no note could be read, sees what actually happened."""
+    from test_harness_loop import v06_prepared
+    from ouroloop import bench
+    from ouroloop.bench import _Completions
+    from ouroloop.chat import ChatTurn
+    from ouroloop.evolve import experience as xp
+    from ouroloop.research.basic import NOTE_FORMAT, PolicyResearcher
+    cfg, activity, _ = v06_prepared(fake_upstream, tmp_path)
+
+    class Notes:
+        name = model = "fake"
+        supports_history_edits = True
+
+        def chat(self, system, messages, tools):
+            if NOTE_FORMAT not in system:
+                return ChatTurn(json.dumps({"next_action": "stop", "reason": "nothing"}), [], "end")
+            return ChatTurn("", [], "refusal") if reply is None else ChatTurn(reply, [], "end")
+    result = bench.improve(cfg, ".", out=lambda _line: None, researcher=PolicyResearcher(_Completions(Notes())))
+    coverage = [r for r in xp.read(activity.root) if r.get("kind") == "diagnosis"][0]
+    assert coverage["invalid"] and all(why in i["problem"] for i in coverage["invalid"])
+    assert result["rounds"][0]["outcome"] == "invalid" and why in result["rounds"][0]["reason"]

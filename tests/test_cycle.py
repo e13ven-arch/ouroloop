@@ -883,3 +883,24 @@ def test_a_frozen_plan_keeps_its_attempt_limits_when_the_config_changes(fake_ups
     work = bench.improvement(later, template_ref=named["rsi"]["task_plan_ref"])
     assert (work.attempt_budget.max_steps, work.attempt_budget.max_tool_calls) == (8, 12)
     assert bench._attempt_budget(later).max_steps == 8          # what a campaign's arms and outer runs read
+
+
+def test_a_finished_segment_is_not_recorded_as_paused_by_a_later_failure(fake_upstream, tmp_path, fixture_preset,
+                                                                         monkeypatch):
+    """A finished segment is read back before the budget root or a model is touched, so a budget problem that
+    belongs to a later step is not recorded against it, and it keeps the end its segment log says."""
+    from ouroloop.evolve.execution import BudgetMismatch
+    cfg = cycle_config(fake_upstream, tmp_path)
+    gap_w0(cfg, tmp_path)
+    first = bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper(), until="segment-0")
+    assert first["steps"]["segment-0"]["stop_reason"] == "no_proposal"
+    real = bench.activity_budget
+
+    def mismatched(activity, cfg, phase):
+        if phase == "improve":
+            raise BudgetMismatch("scope 'cyc' already exists with other limits")
+        return real(activity, cfg, phase)
+    monkeypatch.setattr(bench, "activity_budget", mismatched)
+    again = bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper(), until="segment-0")
+    record = again["steps"]["segment-0"]
+    assert again["status"] == "stopped" and record["stop_reason"] == "no_proposal" and "outcome" not in record
