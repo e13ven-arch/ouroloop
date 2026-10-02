@@ -865,3 +865,21 @@ def test_an_account_refusal_while_finishing_a_batch_pauses(fake_upstream, tmp_pa
     monkeypatch.setattr(bench.Improvement, "_run_collection", refused)
     result = bench.improve(named, ".", out=lambda _line: None, researcher=Stopper())
     assert result["stop_reason"] == "repair_runtime"          # paused, not an exception out of the phase
+
+
+def test_a_frozen_plan_keeps_its_attempt_limits_when_the_config_changes(fake_upstream, tmp_path, fixture_preset):
+    """Every per-attempt limit is frozen with the task plan, so a change to [bench.budget] while an experiment is
+    open cannot finish its comparison under other limits (docs/modules/05_EXECUTION_BUDGET.md §3)."""
+    cfg = cycle_config(fake_upstream, tmp_path)
+    gap_w0(cfg, tmp_path)
+    named = frozen(cfg)
+    activity = bench.open_activity(named, ".", out=lambda _line: None)
+    from ouroloop.evolve.task_gate import TaskEvalPlan
+    plan = TaskEvalPlan.from_json(activity.objects.get(named["rsi"]["task_plan_ref"]))
+    assert plan.per_attempt_budget["max_steps"] == 8 and plan.per_attempt_budget["max_tool_calls"] == 12
+    assert "max_seconds" in plan.per_attempt_budget
+    changed = {**named, "bench": {**named["bench"], "budget": {"max_steps": 3, "max_tool_calls": 4}}}
+    later = bench.open_activity(changed, ".", out=lambda _line: None)
+    work = bench.improvement(later, template_ref=named["rsi"]["task_plan_ref"])
+    assert (work.attempt_budget.max_steps, work.attempt_budget.max_tool_calls) == (8, 12)
+    assert bench._attempt_budget(later).max_steps == 8          # what a campaign's arms and outer runs read

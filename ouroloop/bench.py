@@ -1328,6 +1328,17 @@ def freeze_task_plan(objects: _ct.Objects, *, core_ref: str, split_ref: str, tas
                                     per_attempt_budget=dict(per_attempt_budget or {})))
 
 
+def _attempt_budget(activity: Activity, template=None) -> Budget:
+    """The per-attempt limits a run uses: the frozen task plan's (`ouroloop freeze` writes them all), so a change to
+    [bench.budget] after the freeze changes no comparison of the activity; [bench.budget] only for a plan frozen
+    without them. The activity's own plan when none is given."""
+    if template is None and activity.rsi.task_plan_ref and activity.objects.has(activity.rsi.task_plan_ref):
+        template = TaskEvalPlan.from_json(activity.objects.get(activity.rsi.task_plan_ref))
+    if template is not None and template.per_attempt_budget:
+        return Budget(**{**asdict(activity.bench.budget), **template.per_attempt_budget})
+    return activity.bench.budget
+
+
 def improvement(activity: Activity, *, template_ref: str | None = None, provider=None, trainer=None,
                 scope_id: str | None = None, owner: str = "worker", installs: bool | None = None,
                 pricing=None, budget=None) -> Improvement:
@@ -1335,9 +1346,7 @@ def improvement(activity: Activity, *, template_ref: str | None = None, provider
     template = TaskEvalPlan.from_json(activity.objects.get(template_ref)) if template_ref else None
     gate = template.gate() if template and template.gate_plan else GatePlan()
     tasks = template.task_ids if template else tuple(activity.splits.ids("dev"))
-    attempt = activity.bench.budget
-    if template and template.per_attempt_budget:
-        attempt = Budget(**{**asdict(activity.bench.budget), **template.per_attempt_budget})
+    attempt = _attempt_budget(activity, template)
     return Improvement(
         rt=activity.rt, suite=activity.suite, splits=activity.splits, objects=activity.objects,
         releases=activity.releases, provider=provider, core_ref=_ct.SystemRelease.from_json(
@@ -1820,7 +1829,7 @@ def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_
                         order_seed=pair.seed_schedule[0] if pair.seed_schedule else 0,
                         budget=arm_budget, serving=rt.serving, results=Results(root, activity.bench.domain),
                         pricing=pricing,
-                        stop_view=activity.rsi.stop_view, attempt_budget=activity.bench.budget,
+                        stop_view=activity.rsi.stop_view, attempt_budget=_attempt_budget(activity),
                         probe_train=True, train_tasks=tuple(_tasks_of(activity, pair.inner_train_groups)),
                         harness=_harness_of(activity), worker=isolated_worker(_harness_of(activity)))
     # The arm's own template, frozen from what its gate reads — the inner dev families, the campaign's gate, its
@@ -1999,7 +2008,7 @@ def _campaign_common(activity: Activity, plan, pair, budget, *, provider, pricin
                          dev_tasks=tuple(_tasks_of(activity, pair.inner_dev_groups)),
                          scope_id=f"{plan.id}:{pair.pair_id}:common", budget=budget, serving=rt.serving,
                          results=Results(root, activity.bench.domain), pricing=pricing,
-                         stop_view=activity.rsi.stop_view, attempt_budget=activity.bench.budget,
+                         stop_view=activity.rsi.stop_view, attempt_budget=_attempt_budget(activity),
                          train_tasks=tuple(_tasks_of(activity, pair.inner_train_groups)),
                          harness=_harness_of(activity), worker=isolated_worker(_harness_of(activity)))
     measurement = common.measure(start, None)
@@ -2927,7 +2936,10 @@ def freeze(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pr
             task_ids=_task_ids(activity, t.get("tasks", "dev"), "task_plan"), gate=gate,
             repeats=int(t.get("repeats", 1)), order_seed=int(t.get("order_seed", 0)),
             screen_ids=tuple(t.get("screen") or ()), installs=bool(t.get("installs", True)),
-            per_attempt_budget=dict(t.get("per_attempt_budget") or {}))
+            # Every per-attempt limit is part of the plan: one not written here would be read from [bench.budget]
+            # at run time, and a change to it would finish an open comparison under other limits (M5 §3).
+            per_attempt_budget={**{k: v for k, v in asdict(activity.bench.budget).items() if v is not None},
+                                **dict(t.get("per_attempt_budget") or {})})
     if "schedule" in tables:
         schedule = Schedule(**dict(tables["schedule"]))       # an unknown key is a TypeError here, on purpose
         refs["schedule_ref"] = activity.objects.put_json("schedule", asdict(schedule))
