@@ -8,6 +8,37 @@
 
 ---
 
+## 2026-10-02 阶段 3：worker 段前必修
+
+- 做了什么：按 ROADMAP §3 第 1 步“worker 段前”逐项实现。
+  - gate 收据：`metrics.regressions` 列出每道退步的任务，报告展示这份列表；经验里不带它，R 看不到。
+  - 包工具：工具名须符合供应商的约束（`[a-zA-Z0-9_-]{1,64}`），输入 schema 须是对象类型且深度有界，`enabled` 必须是布尔值。供应商会拒收的工具在草稿检查里就失败。
+  - 读不出的回复：截断、拒答、空回复、非 JSON 与形状非法，都不当作 R 的决定。本轮记为 invalid，不执行补采，计入轮次与 patience，不计入基础设施失败上限。拒答单列为 `ReplyRefused`。
+  - 提案：
+    - 不能指定 model 的 backend；改 model 必须带同一目标的训练条目。
+    - 改提示的提案不能含 train 任务的字面量。
+  - 暂停与结束：cycle 的每一步都按同一规则暂停或结束，不再以 traceback 退出。暂停写进 cycle.json 和段日志，CLI 以非零退出码返回。
+  - 续跑：open 实验按冻结的 `eval_template_ref`、`budget_scope` 与 `parent_release` 完成；这些输入变了就记 `resume_refused` 并暂停。
+  - CI：构建 worker 镜像，Docker 隔离测试在 CI 里真跑，缺镜像就失败。
+- 对抗审查：三个视角加逐条复核，22 条发现中 17 条成立并已修正，5 条驳回。主要几条：
+  - 冻结的 task plan 原本不带单次尝试上限。冻结后改 `[bench.budget]`，open 实验就会在新上限下完成并安装。改为冻结时写入全部上限，之后只从计划读取。
+  - Anthropic SDK 的连接与超时错误在计费层重试用尽后原样抛出，halt_of 认不出，cycle 以 traceback 退出。改为计费层把供应商的任何异常包成 ProviderError。网关返回 200 却没有 choices 也算供应商故障。
+  - 账号拒绝原本按异常文本判断，内部错误里带 "billing" 字样也会被当成账号问题。改为只读供应商的故障。预算不符单列为 `BudgetMismatch`，账本误用直接上抛。
+  - 构建与续跑没有复查 model 规则，改为与准入共用同一检查。
+  - 笔记读不出时原因被丢失，改为记下真实原因。已完成的段会被后续步骤的故障改记为暂停，改为保持原样。
+  - 驳回的 5 条（复核员都做了复现，机制属实但不构成实质缺陷）：
+    - 只有 requirements 的汇总回复判为 invalid；
+    - 旧代码下暂停的 campaign 臂，升级后续跑被拒；
+    - 工具条目加了 `enabled` 键，相同文件的包 ref 因此改变；
+    - 续跑被拒后没有“关闭该实验”的入口；
+    - 连续两次 invalid 以 patience 结束，被认为与无安装的负结果无法区分（记录上其实能区分）。
+  - 其中第 2、3 条只影响旧代码留下的工作区；真实活动还没开始，没有这样的工作区。
+  - 审查中发现一个本阶段之前就有的缺陷：worker 段安装过包后，研究位在 `copy_closure` 处必然 KeyError（嵌在 TaskEvalPlan 里的 GatePlan 从未存储）。这一条已列入 ROADMAP §3“研究位前”。
+  - 每项修正都做了变异实验：撤掉修正，对应的测试就失败。
+- 证据：794 passed, 1 deselected。真实模型没有调用。
+- 事故：bc90a26 误提交了 `patch` 留下的两个 `.orig` 备份，已在 081ebc9 删除，`.gitignore` 也加了 `*.orig`/`*.rej`。
+- commit：`f5b10ce`、`f04e75e`、`a71dd47`、`adadfc2`、`bc90a26`、`bf7e9eb`、`f1d5669`、`081ebc9`、`9a39e2d`、`969c681`、`d7c35fb`，文档见本条之后的提交。
+
 ## 2026-10-02 阶段 1：基线前必修
 
 - 做了什么：按 ROADMAP §3 首个真实活动协议第 1 步“基线前”逐项实现。改动集中在 `bench.py`、`research/loop.py`、`evolve/execution.py` 与示例配置。

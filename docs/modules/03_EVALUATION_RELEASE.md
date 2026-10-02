@@ -49,7 +49,7 @@ deployment 沿用 permit → 候选隔离运行 → 配对 TaskResult → Evalua
 
 M4 的失败 train 子集重跑是诊断采集，不替代正式 dev gate。未重跑的 train 成绩保留原版本/attempt 身份，仅作为历史记录；不能与新包的子集结果拼成当前版本的完整 train 成绩，或宣称这些任务已通过当前版本回归。测量复用仅限 M4 §4 的实际任务执行身份与冻结计划条件匹配，保留原 TaskResult refs；新候选仍须完成同一冻结 dev 清单的配对评测，缺项沿用 inconclusive，不因诊断子集涨分跳过 gate。
 
-采用现有 GatePlan 和家族聚合方法。首版 quality 模式按完整配对结果判断：整体任务成功率增益达到 min_gain，且 regression_rate 不超过 max_regression_rate，再检查计划中已有的其他条件；regression_rate 沿用现有定义，即各任务有效重复的平均 success 比对照下降的任务数 / 全部配对任务数。它是本次观察到的退化比例，不是所有历史成功任务的失败比例。GatePlan 现有默认 max_regression_rate=0.2 只是工程默认，preset 明示并冻结实际值，不把它当成已经验证的最优值；后续根据实跑调整只作用于新活动。未超过冻结上限的退化如实报告，不一律拒绝。以下情形必须明确：候选协议错误为 invalid；样本/完整配对/预算不足为 inconclusive；达不到既定门槛为 rejected；符合冻结门槛才 accepted。deployment 的可选 screen 沿用现有规则：仅在显式冻结的 screen_ids 上发现对照成功、候选失败时提前筛掉候选；首版不为回归新增 screen，未被筛掉仍需完整 dev gate；source_validation 的独立终止路径不产生发布资格。
+采用现有 GatePlan 和家族聚合方法。首版 quality 模式按完整配对结果判断：整体任务成功率增益达到 min_gain，且 regression_rate 不超过 max_regression_rate，再检查计划中已有的其他条件；regression_rate 沿用现有定义，即各任务有效重复的平均 success 比对照下降的任务数 / 全部配对任务数。它是本次观察到的退化比例，不是所有历史成功任务的失败比例。收据的 `metrics.regressions` 逐题列出比例计入的任务（任务、家族、两臂有效重复的平均 success）；其中含 dev 任务 id，经验日志不保存该键，只保留比例和收据 ref，所以不会进入 R（M0 §4，2026-10-02）。GatePlan 现有默认 max_regression_rate=0.2 只是工程默认，preset 明示并冻结实际值，不把它当成已经验证的最优值；后续根据实跑调整只作用于新活动。未超过冻结上限的退化如实报告，不一律拒绝。以下情形必须明确：候选协议错误为 invalid；样本/完整配对/预算不足为 inconclusive；达不到既定门槛为 rejected；符合冻结门槛才 accepted。deployment 的可选 screen 沿用现有规则：仅在显式冻结的 screen_ids 上发现对照成功、候选失败时提前筛掉候选；首版不为回归新增 screen，未被筛掉仍需完整 dev gate；source_validation 的独立终止路径不产生发布资格。
 
 首个小规模实验可只报告方向和案例，不以训练 loss 或单任务成功降低正式发布门槛。演示用脚本 fixture 的 accepted 只证明控制路径，不能合并到真实成绩。
 

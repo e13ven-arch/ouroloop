@@ -89,16 +89,19 @@ cancel 停新付费请求并尽力取消后台作业；取消仍可能收费，�
 
 当前已有逐调用预算、未知占用、活动预算根和实验续跑。待补：自动 wall time 计量、SDK 隐式重试覆盖、外部请求对账，以及教师/Tinker/Harbor 新边界。不能把这些设计写成当前严格保证。
 
-§3 中 2026-10-02 写定的规则大部分尚未实现。现状如下：
-- 暂停只在 worker 轮循环里写入：
-  - `run_worker_round` 遇到研究回复截断或草稿基础设施失败时，返回 repair_runtime；
-  - `run_worker_rounds` 捕获账号错误（含每轮测量中的账号错误）后，停在 repair_runtime；
-  - cycle 的研究位在 R 提案准入返回 repair_runtime、或构建返回 infrastructure_failed 时，记 paused。
-- worker 轮循环里的补采，以及重启时续完中断的补采批，遇到账号错误时也暂停（2026-10-02，阶段 1）。
-- 续跑未完成的实验、基线、研究位的 R 提案、campaign 公共测量与外测，遇到账号错误、截断、其余 ProviderError 或额度耗尽时，仍以异常退出。
-- 续跑不读 `eval_template_ref` 与 `budget_scope`；筛选与评测的 control 取当前 active（`ouroloop/bench.py:748`、`:759`）。
+§3 中 2026-10-02 写定的规则，已在阶段 1 与阶段 3 实现（2026-10-02）：
+- 尝试之外的故障由 `research/loop.py` 的 `halt_of` 统一分类：
+  - worker 轮由 `run_worker_rounds` 落在 repair_runtime 或 budget_exhausted；
+  - 续跑未完成的实验时，由 `resume_unfinished` 按同一规则停下；
+  - cycle 的每一步（基线、段、研究位）把结局与原因写进 `rsi/cycle.json` 该步的 outcome/reason 以及活动的 status。
+- 账本区分额度耗尽（`BudgetExhausted`，有界结束）、预算不符（`BudgetMismatch`，暂停）与其他账本误用（直接上抛，不当作暂停）。
+- 计费层重试用尽后，供应商抛出的任何异常都以 ProviderError 离开计费层，带上是否可重试与 HTTP 状态，所以 SDK 自己的连接或超时错误同样按暂停处理。
+- 冻结的 task plan 带全部单次尝试上限；冻结后再改 `[bench.budget]` 不影响任何已冻结的比较。
+- 续跑比对 Experiment 冻结的 `eval_template_ref` 与 `budget_scope`：不一致就不续跑，记 `resume_refused` 事件并暂停。筛选与评测建在冻结的 parent 上。
 
-以上按 ROADMAP §3 首个真实活动协议在付费前补齐。
+尚未覆盖：
+- 单独运行的 `--phase baseline` 与 `--phase research`，遇到尝试之外的故障时仍以异常退出（单独运行的 `--phase improve` 已按规则停下）。
+- 尝试内的预算不符，仍按 budget_exhausted 记录。
 
 首版按 [ROADMAP §2](../ROADMAP.md) 阶段补：阶段 A 补文本草稿检查（结构/路径/manifest）与有界修订、笔记调用计量；阶段 B 把同一修复循环扩展到 isolated_probe/package_test，并补包 worker 生命周期/资源与 broker 内部工具调用计量。教师/Tinker 的新恢复路径归第二版，已有旧 job/serving 兼容不删除。
 

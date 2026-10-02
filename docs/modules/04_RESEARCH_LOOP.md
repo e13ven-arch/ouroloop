@@ -18,13 +18,13 @@ ResearchContext 由白名单投影得到：当前 W/R/K、包内文件与固定 
 
 输出沿用 ProposalResult，区分合法候选与结构化 next_action。无候选时 `collect` 是可继续的准备请求，只有 none/stop 或无法补齐的原因才结束当前 worker 段；repair_runtime 表示明确的工程能力缺口，不授权自动改代码。R 返回假设、证据、变更意图、预期和放弃条件；固定代码负责 refs、实验身份、权限、预算、评测和安装。`origin=manual/scripted/llm` 由调用入口写入，模型不能自报或改写。
 
-读不出的回复不是 R 的决定（2026-10-02）。“读不出”包括：空回复、拒答、非 JSON、缺少必需字段，或提案形状不合法（目标或 kind 不在注册范围内、change 形状不对）。按步骤处理：
+读不出的回复不是 R 的决定（2026-10-02）。“读不出”包括：空回复、拒答（供应商返回 `stop = "refusal"`；manual 回复写 `"stop": "refusal"`）、非 JSON、缺少必需字段，或提案形状不合法（目标或 kind 不在注册范围内、change 形状不对）。按步骤处理：
 
 - 逐题笔记（`research.diagnose`）：
   - 单条读不出时，记入 coverage.invalid（含 task_id 与原因），不缓存，跳过这一条，本轮继续，用其余笔记汇总。
   - 全部笔记都读不出时，不调用汇总，本轮记 `outcome=invalid`。
 - 汇总（`research.propose`）：
-  - 读不出，或提案形状不合法，本轮记 `outcome=invalid`，计入轮次与失败上限，原因写明是哪一种。
+  - 读不出，或提案形状不合法，本轮记 `outcome=invalid`，计入轮次与 patience（不计入基础设施失败上限），原因写明是哪一种。
   - 不得回退成 collect 或 stop，也不得静默丢掉不合法的提案后再解释剩下的内容。
 - 修订：读不出的修订算一次失败的修订，占用一次 `max_draft_repairs`；用尽后按 §2 记 invalid。
 - 研究位：
@@ -34,15 +34,13 @@ ResearchContext 由白名单投影得到：当前 W/R/K、包内文件与固定 
 
 这些规则对由 manual provider 作答的回复同样适用。付费前彩排（[ROADMAP §3](../ROADMAP.md) 首个真实活动协议）逐步注入这些回复形态来验收。
 
-本段写定时大部分尚未实现，现状如下：
-- worker 汇总轮只有“非空且解析不出 JSON 对象”的回复记 invalid（`ouroloop/research/basic.py:437`）。
-- 截断只在 worker 轮暂停（`research/loop.py:202-208`）。
-- 空回复被读成 collect（`experiment.py:330-331`）。
-- 形状非法的提案被静默丢弃（`basic.py:430-431`）。
-- 全部笔记无效时仍调用汇总。
-- 研究位读不出的回复记为 no_proposal（`basic.py:467`），之后不再重问（`bench.py:2141`）。
+worker 轮的部分已在阶段 3 实现（2026-10-02）：
+- 汇总回复空、拒答、非 JSON、无提案也无 next_action、或带形状不合法的提案时，本轮 invalid（`test_research_round.py::test_an_unreadable_reply_is_an_invalid_round`）。
+- 逐题笔记全部读不出时不调用汇总（`test_diagnosis.py::test_no_readable_note_makes_an_invalid_round`）；单条笔记读不出时，coverage.invalid 记下真实原因（拒答、空回复、非 JSON 或缺字段，`test_an_unreadable_note_records_why_it_could_not_be_read`）。
+- 汇总回复里的每个提案都校验，排在上限之后的不合法提案同样使本轮 invalid；上限之外的合法提案记为 dropped。
+- 截断在任何一步都按 M5 §3 暂停。
 
-以上按首个真实活动协议在付费前补齐（`test_research_round.py::test_an_unreadable_reply_is_an_invalid_round`、`test_diagnosis.py::test_no_readable_note_makes_an_invalid_round`）。
+研究位的部分尚未实现：研究位读不出的回复仍记为 no_proposal（`ouroloop/bench.py:2643`），属于 ROADMAP §3 的“研究位前”。研究位记 invalid 后不自动重问，这一步就此结束，cycle 照常进入下一段；重问要在下一段跑完之后，会让 R1 的回用检查读到安装前的段。
 
 ## 2. 首版可执行的候选空间
 

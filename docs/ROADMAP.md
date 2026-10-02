@@ -23,16 +23,18 @@
 实现状态（2026-10-01）：A～E 的工程链路已实现，离线测试 703 passed, 1 deselected（Docker 运行时 IT6-23 隔离测试一并通过）。真实模型已跑通两段：一个通过的 train 任务走到研究汇总；一个失败的 train 任务经逐题笔记、汇总提案、草稿检查与一次修订、准入、冻结实验和候选构建，在 gate 前停止。gate 已真实运行到底但未得出结论：比较途中智谱账号余额耗尽，磁盘上 20 条 dev 记录中 19 条无效（gate 收据计入的 19 条中 18 条无效，其中唯一有效的是复用的 1 条筛选候选臂记录），判为 inconclusive，未安装。安装、任务中运行的包、Docker 中的代码草稿检查与 R 递归尚未在真实模型下运行。2026-10-01 的需求审计：首版 354 项中 186 项实现并有测试，23 项实现无测试，136 项部分实现，7 项缺失（明细见 history/V0_6_AUDIT_2026-10-01.md）。E 的退出条件中“真实任务、包迭代与有界 C4”需冻结预算并由用户决定开始付费运行。明细见 [JOURNAL](JOURNAL.md)。
 
 2026-10-02 复核（11 个范围逐一审计并对抗复核，结论见 JOURNAL 同日条目）发现 4 个高危缺陷：
-- 准入在 K 未冻结 methods 时放行 R 提供的 `spec.backend`，使控制面 import 任意对象；
+- 准入在 K 未冻结 methods 时放行 R 提供的 `spec.backend`，使控制面 import 任意对象（阶段 3 已修）；
 - 研究比较中两支 W* 相同时仍可判 accepted；
 - 外层比较不按任务配对；
-- 续跑不读 Experiment 冻结的评测模板与预算 scope。
+- 续跑不读 Experiment 冻结的评测模板与预算 scope（阶段 3 已修）。
+
+其余两项（研究裁决）属于 §3 的“研究位前”，在开研究位之前修。
 
 另有以下问题：
-- 暂停只在 worker 轮循环里写入；collect、续跑、基线、研究位提案、campaign 公共测量与外测遇到账号错误或截断时以异常退出。
-- 示例研究模型的输出上限 16384 不够用。
+- 暂停只在 worker 轮循环里写入；collect、续跑、基线、研究位提案、campaign 公共测量与外测遇到账号错误或截断时以异常退出（阶段 3 已修：cycle 的每一步按同一规则暂停或结束）。
+- 示例研究模型的输出上限 16384 不够用（阶段 1 已改为 32768）。
 - 所有 improve/cycle/research 集成测试都注入脚本研究员。
-- IT6-10/19/21/23/26 仍部分实现：活动取消入口与逐题退化记录尚无代码。
+- IT6-10/19/21/23/26 仍部分实现：活动取消入口尚无代码（首个活动靠停止点人工停下）；逐题退化记录已在阶段 3 写入 gate 收据，IT6-26 的合并/停用分支仍没有测试。
 
 修复前不进入付费运行。修复与真实运行的顺序见 §3 的首个真实活动协议。
 
@@ -86,26 +88,37 @@ A～E 属于首版，递归方法比较与实际回用仍为必做。第二版�
        - 分配在 freeze、启动检查与打开预算根时都校验：必须限制根所限的维度、大于零、给其余部分留有余额，且放得下一次调用（`test_a_share_that_cannot_work_is_refused_before_a_root_is_opened`）。
        - 分配在第一次打开根时设定；根打开后不能改、不能撤、也不能在花钱之后再加（`test_an_open_roots_allocations_do_not_change`）。
        - 显示给 R 和人的有效剩余，与预留实际允许的一致，不含未花的 final 份额。
-   - worker 段前：
-     - 准入一律拒绝 R 提供的 `spec.backend`，以及不带同一目标训练条目的 `kind=model` 改动（含 worker.actor 换模型身份），不依赖 K 是否冻结了 methods；构建对修复前已冻结的实验同样拒绝（新增 `test_research_round.py::test_a_proposal_cannot_name_a_backend`）。
+   - worker 段前（2026-10-02 已完成，经对抗审查后修正，见 JOURNAL 同日条目）：
+     - 准入一律拒绝 R 提供的 `spec.backend`，以及不带同一目标训练条目的 `kind=model` 改动（含 worker.actor 换模型身份），不依赖 K 是否冻结了 methods；构建对修复前已冻结的实验同样拒绝（`test_research_round.py::test_a_proposal_cannot_name_a_backend`）。
      - 续跑按 [M5 §3](modules/05_EXECUTION_BUDGET.md) 的“续跑的冻结输入”处理（新增 `test_real_run_findings.py::test_resume_refuses_a_changed_frozen_plan`）：
        - 评测模板或预算 scope 与 Experiment 冻结的不一致：拒绝续跑并暂停。
        - 筛选与评测的 control、permit 与候选 release，都建在冻结的 parent_release 上。
        - 安装仍按冻结的 parent_release 做 CAS；active 已移动时记 stale_parent，不暂停。
+       - 续跑途中遇到暂停类或耗尽类故障，单独运行的 improve 与 campaign 臂也按同一规则停下，不以异常退出。
+       - campaign 臂冻结并记录自己的评测模板（原计划在研究位前，随本项完成）。
      - 暂停、结束与 invalid 按 M5 §3 和 [M4 §1](modules/04_RESEARCH_LOOP.md) 覆盖全部路径，新增：
        - `test_real_run_findings.py::test_every_cycle_step_pauses_on_an_account_error`
        - `test_real_run_findings.py::test_a_research_call_that_keeps_failing_pauses_the_activity`
        - `test_real_run_findings.py::test_a_spent_budget_ends_every_cycle_step_without_pausing`
-       - `test_research_round.py::test_an_unreadable_reply_is_an_invalid_round`
+       - `test_research_round.py::test_an_unreadable_reply_is_an_invalid_round`（worker 轮的汇总回复；研究位的回复见下面“研究位前”）
+       - 账本拒绝分两类：额度耗尽（`BudgetExhausted`）是有界结束；预算与冻结的不符是配置问题，暂停（`test_harness_loop.py::test_budget_exhaustion_in_the_note_map_stops_the_round_cleanly`）。
      - 逐题笔记全部读不出时，不调用汇总，本轮记 invalid（新增 `test_diagnosis.py::test_no_readable_note_makes_an_invalid_round`）。
      - prompt 改动也做 train 字面量检查（新增 `test_research_round.py::test_a_prompt_change_gets_the_literal_check`）。
      - gate 收据写入逐题退化清单（新增 `test_task_gate.py::test_the_receipt_lists_each_regressed_task`）。
-     - 包工具的 name/schema 按 provider 约束校验（新增 `test_harness_package.py::test_a_tool_name_the_provider_refuses_fails_the_check`）。
+     - 包工具的 name/schema 按 provider 约束校验（`test_harness_package.py::test_a_tool_name_the_provider_refuses_fails_the_check`、`test_a_tool_schema_the_provider_refuses_fails_the_check`）；`enabled` 只取布尔，停用的工具不暴露（`test_enabled_is_a_boolean_and_a_disabled_tool_is_not_offered`）。
+     - 另加：CI 构建 worker 镜像，并在 `OUROLOOP_TEST_REQUIRE_DOCKER` 下运行 3 个 Docker 隔离测试；缺镜像就失败，不再跳过（`.github/workflows/tests.yml`）。
+     - 对抗审查后补充：
+       - 冻结的 task plan 带全部单次尝试上限，`[bench.budget]` 冻结后再改，不影响任何已冻结的比较；研究位的两支与公共测量也从计划读上限（`test_cycle.py::test_a_frozen_plan_keeps_its_attempt_limits_when_the_config_changes`）。
+       - 计费层重试用尽后，任何供应商异常（含 Anthropic SDK 的连接或超时错误）都以 ProviderError 离开计费层，按暂停处理；网关返回 200 却没有 choices 也是供应商故障（`test_a_research_call_that_keeps_failing_pauses_the_activity` 的 sdk 用例、`test_a_gateway_that_answers_200_without_choices_is_a_provider_failure`）。
+       - 账号拒绝只从供应商的故障里读，内部错误的文本里带 "billing" 不算；预算不符单列为 `BudgetMismatch`，其余账本误用直接上抛（`test_only_a_model_providers_failure_is_read_as_a_refused_account`）。
+       - 构建与续跑都按准入的同一规则检查 model 改动；训练条目只能指向核心开放的决策目标（`test_a_resumed_experiment_that_names_a_backend_is_not_evaluated`）。
+       - 逐题笔记读不出时记下真实原因（`test_diagnosis.py::test_an_unreadable_note_records_why_it_could_not_be_read`）；已完成的段不被后续步骤的故障记成暂停（`test_cycle.py::test_a_finished_segment_is_not_recorded_as_paused_by_a_later_failure`）；campaign 臂的续跑有测试（`test_rsi_integration.py::test_a_campaign_arm_resumes_its_open_experiment_under_its_frozen_inputs_or_pauses`）。
    - 研究位前（可以在 worker 段运行期间开发；落地后重跑彩排的研究位部分）：
      - 研究裁决按任务配对；配对不全、或两支 W* 相同时，判 inconclusive；外测补跑一次，额度从预算根预留。新增 `test_campaign.py::test_identical_arms_are_inconclusive` 与 `test_campaign.py::test_outer_results_are_paired_by_task`。同时调整现有测试：
        - `test_rc02_an_arm_that_installed_nothing_returns_w0_with_its_costs` 的断言翻转为 inconclusive；
        - rc05、rc09、rc10 与 it6_16 中两支 W* 相同的测试改夹具，让两支不同，断言不变。
      - E0 交给两支。
+     - worker 段装过包之后，研究位的公共测量与两支复制 W 时以 KeyError 崩溃：嵌套记录的 `ref` 被 `refs_in` 当作对象引用，`copy_closure` 去复制一个不存在的对象（阶段 3 调研发现，见 JOURNAL）。修复后新增 `test_cycle.py::test_a_slot_after_a_worker_install_runs`。
      - 研究位的 system 提示保留 R 自己的 propose 文本（R 正是用它提出对自身的修改），由研究位格式声明：前文是 worker 轮的改包指令，本次调用改的是这些指令本身，以本格式为准。只改代码里的格式，不改 R0 文本：R0 已冻结进 release，活动内改它不会生效。
      - 研究位读不出的回复记 invalid，不记 no_proposal；没有研究收据时，报告的 C4 按 `cycle.json` 中研究位的结局写 detail（新增 `test_report.py::test_c4_says_how_a_slot_without_a_campaign_ended`）。
      - 研究位安装 R1 之后，回用检查只在紧随其后的 worker 段非暂停地结束时计算；该段暂停、崩溃或停在停止点时，保留待查。已随停止点在阶段 1 完成（`test_cycle.py::test_a_paused_segment_after_an_install_keeps_the_reuse_check_pending`）。
@@ -124,9 +137,9 @@ A～E 属于首版，递归方法比较与实际回用仍为必做。第二版�
      |---|---|---|
      | 任一步 | `stop = "max_tokens"` | 暂停；续跑时重问同一步，不计 invalid，不重复记账 |
      | 逐题笔记 | 空回复、非 JSON、缺字段 | 该条记入 coverage.invalid，本轮继续；全部读不出时本轮 invalid |
-     | 汇总 | 空回复、非 JSON、形状非法的提案 | 本轮 invalid，不回退成 collect 或 stop |
+     | 汇总 | 空回复、拒答（`stop = "refusal"`）、非 JSON、形状非法的提案 | 本轮 invalid，不回退成 collect 或 stop |
      | 修订 | 空回复或读不出 | 占用一次修订；用尽则本轮 invalid |
-     | 研究位 | 读不出或形状非法 | 研究位 invalid，不记 no_proposal |
+     | 研究位 | 读不出、拒答或形状非法 | 研究位 invalid，不记 no_proposal |
      | 任一步 | manual 判为非法的回复（例如带 tool_calls） | ProviderError，暂停；只验证逃逸路径，不代表真实供应商的行为 |
      | actor | 假 actor 调用未提供的工具 | 任务内的工具错误，尝试继续 |
 

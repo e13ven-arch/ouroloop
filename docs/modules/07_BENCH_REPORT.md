@@ -20,7 +20,7 @@ cycle 按 M4 的结构化结果推进，而非看到 proposals 为空就退出�
 
 第二版源方法以 purpose=source_validation 通过后提供教学来源，适配/蒸馏不先走生产 gate；直接发布则创建 deployment 实验。换宿主时先准备新 baseline，再建相应 plan。首版包候选直接走 deployment。所有准备/补采/实验消耗原轮次/费用，阶段切换不重置。
 
-无 worker 提案是该段结束原因，不自动取消活动中已冻结的 research slot；cycle 仍按固定 schedule 在有额度时执行方法比较及下一 worker 段。取消、全局预算耗尽或影响整个活动的能力故障才结束全活动；K 所需能力（如隔离 worker）运行中不可用时暂停活动（M0 §3），不进入 research slot，修复后以同一冻结条件续跑。M6 分支本来禁用 research slot，结束后将其最后正式通过 gate 的 W 返回外层。
+无 worker 提案是该段结束原因，不自动取消活动中已冻结的 research slot；cycle 仍按固定 schedule 在有额度时执行方法比较及下一 worker 段。取消、全局预算耗尽或影响整个活动的能力故障才结束全活动；K 所需能力（如隔离 worker）运行中不可用时暂停活动（M0 §3），不进入 research slot，修复后以同一冻结条件续跑。cycle 每一步的暂停或额度耗尽写入 `rsi/cycle.json` 该步的 outcome/reason 与活动的 status；暂停时退出码为 1，额度耗尽为 0（M5 §3，2026-10-02）。M6 分支本来禁用 research slot，结束后将其最后正式通过 gate 的 W 返回外层。
 
 `--phase research` 与 cycle 的 research slot 共用 M6，不能重复触发相同已完成操作。安装 R1 后 cycle 预留至少一次实际改进调用的额度/轮次验证回用；没有余量则记录回用未完成，不把 ref 更新当作完整验收。
 
@@ -98,7 +98,7 @@ Harbor 任务仍须固定 revision/family/split，费用/time/trace 可查；可
 
 首版主表为同 actor 起点、有效 prompt/workflow、演化能力包；补包代码/材料摘要、实际工具/hook/技能/经验使用、固定 dev 配对结果与观察到的退化和构建/隔离、草稿检查/修复及逐题笔记成本。训练指标归第二版，首版未运行 C3/蒸馏明确 not_run；包通过测试不当任务成功，包 hash 变化不当 C1/C4 提升。
 
-M4 的失败 train 子集重跑单列诊断覆盖，未重跑任务标明历史版本；不与新版本子集结果拼成完整 train 成绩，也不把 dev 回归写成所有 train 成功任务已复测；展示实际冻结的 min_gain/max_regression_rate 与 verdict，容忍范围内的退化也保留。复用测量引用原 TaskResult/版本/attempt 与匹配依据，不计作新增独立样本；正式主表和发布结论仍依据 M3 的冻结完整评测计划。
+M4 的失败 train 子集重跑单列诊断覆盖，未重跑任务标明历史版本；不与新版本子集结果拼成完整 train 成绩，也不把 dev 回归写成所有 train 成功任务已复测；展示实际冻结的 min_gain/max_regression_rate 与 verdict，容忍范围内的退化也保留：逐题列出退化任务及两臂均值，早于该清单的收据显示 not recorded。复用测量引用原 TaskResult/版本/attempt 与匹配依据，不计作新增独立样本；正式主表和发布结论仍依据 M3 的冻结完整评测计划。
 
 v3 冻结比较计划显式绑定本地 C1/C3（及可选同题 C2）的 control/candidate ref：C1 比学生起点与改进后的完整 W，包含工作流和模型变化；若单独主张训练收益，另固定其他 W 内容；C3 必须是同 actor、同提示下 controller 开/关。当前 `report.py` 把 evolved 与 prompt_best 用作 C3，新增 actor 训练后不能继续自动套用，否则会把 actor 训练收益误记为决策模型收益。v2 历史报告保持原映射，v3 缺 C3 配对则 not_run。
 
