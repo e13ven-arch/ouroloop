@@ -21,3 +21,7 @@ examples/*/workspace*/
 ws/
 
 .claude/worktrees/
+
+# patch(1) backups and rejects
+*.orig
+*.rej
