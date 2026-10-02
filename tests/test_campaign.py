@@ -192,46 +192,54 @@ def test_outer_results_are_paired_by_task(tmp_path):
 
 def test_the_outer_share_is_set_aside_before_the_common_inputs_and_the_arms(tmp_path):
     """docs/modules/05_EXECUTION_BUDGET.md §2: the outer comparison's share, one refill included, is held on the book
-    before the common inputs and the arms run, so steps that spend all they may still leave it; it is handed to
-    the outer runs and to nothing else, given back when they do not run, and held once across a restart."""
+    before the common inputs and the arms run, so they cannot spend it; it is handed to the outer runs and to
+    nothing else, given back when they do not run, and held once across a restart."""
     objects = ct.Objects(tmp_path)
     p = pair(objects)
-    campaign = plan(objects, [p], outer_budget={"model_calls": 20})
-    top = Budgets(tmp_path).account("campaign", {"model_calls": 100})
+    campaign = plan(objects, [p], outer_budget={"model_calls": 20})       # each arm's share is 100
     seen = []
 
-    def spend_all(name, budget):
+    def spend(name, budget, amount=None):
         room = budget.remaining()["effective_remaining"]["model_calls"]
         seen.append((name, room))
-        if room:
-            budget.settle(budget.reserve(f"{name}-work", {"model_calls": room}).id, {"model_calls": room})
-
-    def prepare_pair(pair_obj, budget):
-        spend_all("common", budget)
+        amount = room if amount is None else amount
+        if amount:
+            budget.settle(budget.reserve(f"{name}-work", {"model_calls": amount}).id, {"model_calls": amount})
 
     def run_arm(pair_obj, arm, r_ref, budget, shared=None):
-        spend_all(arm, budget)
+        spend(arm, budget)                                            # each arm spends all its share allows
         return outcome(arm, pair_obj.pair_id, w_star=W[f"w_{arm}"])
 
-    def evaluate_outer(pair_obj, sealed):
-        outer = top.child("campaign-1:pair-1:outer", {"model_calls": 20})
-        outer.settle(outer.reserve("outer-attempts", {"model_calls": 20}).id, {"model_calls": 20})
-        return {"candidate": results({"t1": True}), "control": results({"t1": False})}
-
-    receipt = run_campaign(campaign, run_arm=run_arm, evaluate_outer=evaluate_outer, objects=objects, budget=top,
-                           prepare_pair=prepare_pair)
-    assert seen == [("common", 80.0), ("control", 0.0), ("candidate", 0.0)]
+    def outer_runs(top):
+        def evaluate_outer(pair_obj, sealed):
+            outer = top.child("campaign-1:pair-1:outer", {"model_calls": 20})
+            outer.settle(outer.reserve("outer-attempts", {"model_calls": 20}).id, {"model_calls": 20})
+            return {"candidate": results({"t1": True}), "control": results({"t1": False})}
+        return evaluate_outer
+    top = Budgets(tmp_path / "a").account("campaign", {"model_calls": 240})
+    receipt = run_campaign(campaign, run_arm=run_arm, evaluate_outer=outer_runs(top), objects=objects, budget=top,
+                           prepare_pair=lambda pair_obj, budget: spend("common", budget, 20))
+    # the common inputs saw the root less the outer's share; each arm its whole share; the outer its own
+    assert seen == [("common", 220.0), ("control", 100.0), ("candidate", 100.0)]
     assert receipt.verdict == "accepted" and receipt.costs["outer"] == {"model_calls": 20.0}
+    # common inputs that spend all they may cannot take the outer's share, and leave the arms short instead
+    seen.clear()
+    book = Budgets(tmp_path / "b")
+    top = book.account("campaign", {"model_calls": 240})
+    receipt = run_campaign(campaign, run_arm=run_arm, evaluate_outer=lambda *a: pytest.fail("arms short"),
+                           objects=objects, budget=top, prepare_pair=lambda pair_obj, budget: spend("common", budget))
+    assert seen == [("common", 220.0)] and receipt.verdict == "inconclusive"
+    assert book.open_reservations() == [] and top.remaining()["effective_remaining"]["model_calls"] == 20.0
     # a pair whose outer comparison does not run gives its share back to the activity
     book = Budgets(tmp_path / "same")
-    same = book.account("campaign", {"model_calls": 100})
+    same = book.account("campaign", {"model_calls": 240})
     run_campaign(campaign, run_arm=lambda pair_obj, arm, r_ref, budget: outcome(arm, pair_obj.pair_id),
                  evaluate_outer=lambda *a: pytest.fail("not run"), objects=objects, budget=same)
-    assert book.open_reservations() == [] and same.remaining()["effective_remaining"]["model_calls"] == 100.0
+    assert book.open_reservations() == [] and same.remaining()["effective_remaining"]["model_calls"] == 240.0
     # a paused campaign keeps its hold until it resumes, and the resumed run does not hold the share twice
     book = Budgets(tmp_path / "paused")
-    top = book.account("campaign", {"model_calls": 100})
-    stops = iter(["repair_runtime", "rounds_done"])
+    top = book.account("campaign", {"model_calls": 240})
+    stops = iter(["repair_runtime", "rounds_done", "rounds_done"])
 
     def pausing(pair_obj, arm, r_ref, budget):
         return outcome(arm, pair_obj.pair_id, w_star=W[f"w_{arm}"],
@@ -239,10 +247,90 @@ def test_the_outer_share_is_set_aside_before_the_common_inputs_and_the_arms(tmp_
     paused = run_campaign(campaign, run_arm=pausing, evaluate_outer=lambda *a: pytest.fail("paused"),
                           objects=objects, budget=top)
     assert paused.verdict == "inconclusive" and len(book.open_reservations()) == 1
-    assert top.remaining()["effective_remaining"]["model_calls"] == 80.0
-    resumed = run_campaign(campaign, run_arm=pausing, evaluate_outer=evaluate_outer, objects=objects, budget=top)
+    assert top.remaining()["effective_remaining"]["model_calls"] == 220.0
+    resumed = run_campaign(campaign, run_arm=pausing, evaluate_outer=outer_runs(top), objects=objects, budget=top)
     assert resumed.verdict == "accepted" and book.open_reservations() == []
     assert top.remaining()["used"]["model_calls"] == 20.0         # the outer's own spend, nothing held twice
+    # a restart after the outer ran finds its hold already handed over, and takes nothing again
+    again = run_campaign(campaign, run_arm=pausing, evaluate_outer=lambda *a: {
+        "candidate": results({"t1": True}), "control": results({"t1": False})}, objects=objects, budget=top)
+    assert again.verdict == "accepted" and book.open_reservations() == []
+    assert top.remaining()["used"]["model_calls"] == 20.0
+
+
+def test_an_arm_the_root_cannot_cover_leaves_the_comparison_inconclusive(tmp_path):
+    """Each arm is capped by its share, but both draw on the root: when the root cannot cover what both may still
+    spend, the arm that runs second — always R1's — would be the one starved. Neither arm runs, the outer share goes
+    back, and the verdict is inconclusive for the budget (docs/modules/06_RESEARCH_CAMPAIGN.md §3)."""
+    objects = ct.Objects(tmp_path)
+    campaign = plan(objects, [pair(objects)], outer_budget={"model_calls": 20})       # each arm's share is 100
+    book = Budgets(tmp_path / "book")
+    top = book.account("campaign", {"model_calls": 219})                              # 20 + 2 x 100 - 1
+
+    receipt = run_campaign(campaign, run_arm=lambda *a, **k: pytest.fail("an arm ran"),
+                           evaluate_outer=lambda *a: pytest.fail("the outer ran"), objects=objects, budget=top)
+    assert receipt.verdict == "inconclusive" and "cannot cover both arms' remaining shares" in receipt.reasons[0]
+    assert book.open_reservations() == []
+
+
+def test_identical_arms_stop_the_campaign_before_a_later_pair(tmp_path):
+    """With several pairs, one whose arms sealed the same W already makes the verdict inconclusive: no later pair
+    is run, and no outer share stays held (docs/modules/06_RESEARCH_CAMPAIGN.md §3)."""
+    objects = ct.Objects(tmp_path)
+    pairs = [pair(objects), pair(objects, pair_id="pair-2", group="group-2", inner_dev=("f_dev2",),
+                                 outer=("f_outer2",))]
+    campaign = plan(objects, pairs, outer_budget={"model_calls": 20})
+    book = Budgets(tmp_path / "book")
+    ran = []
+
+    def run_arm(pair_obj, arm, r_ref, budget):
+        ran.append((pair_obj.pair_id, arm))
+        return outcome(arm, pair_obj.pair_id, stop="no_proposal")
+    receipt = run_campaign(campaign, run_arm=run_arm, evaluate_outer=lambda *a: pytest.fail("the outer ran"),
+                           objects=objects, budget=book.account("campaign", {"model_calls": 1000}))
+    assert ran == [("pair-1", "control"), ("pair-1", "candidate")]
+    assert receipt.verdict == "inconclusive" and receipt.metrics["identical_arms"] == ["pair-1"]
+    assert book.open_reservations() == []
+
+
+def test_a_task_missing_on_either_arm_leaves_the_pair_incomplete(tmp_path):
+    """Pairing holds on both sides: a task the control lost, or one an arm has no attempt for at all, is not
+    compared, and the pair is incomplete whichever arm lacks it."""
+    objects = ct.Objects(tmp_path)
+    p = pair(objects)
+    campaign = plan(objects, [p])
+    lost = results({"t1": False})
+    lost.append(TaskResult("t2", "family_t2", "dev", 0, "w", "run", "man", validity="invalid",
+                           invalid_reason="harness: connection reset", failure_class="infrastructure"))
+    cases = [(results({"t1": True, "t2": True}), lost, {"infrastructure": 1}, "t2/r0 (control infrastructure)"),
+             (results({"t1": True}), results({"t1": False, "t2": True}), {"absent": 1}, "t2/r0 (candidate absent)"),
+             (results({"t1": True, "t2": True}), results({"t1": False}), {"absent": 1}, "t2/r0 (control absent)")]
+    for candidate, control, classes, note in cases:
+        verdict, reasons, metrics, _ = judge_research(campaign, [p], {"pair-1": {"candidate": candidate,
+                                                                                  "control": control}},
+                                                      sealed_apart())
+        assert verdict == "inconclusive" and metrics["incomplete"] == {"pair-1": classes}, note
+        assert any(note in r for r in reasons) and metrics["tasks"] == 1
+
+
+def test_a_task_with_a_repeat_lost_is_not_counted_as_paired(tmp_path):
+    """With two repeats, a task counts only when both repeats are valid on both arms; one lost repeat leaves it
+    out of the reported tasks and gain, not just out of that repeat."""
+    objects = ct.Objects(tmp_path)
+    p = pair(objects)
+    campaign = plan(objects, [p])
+
+    def row(t, i, ok, **kw):
+        return TaskResult(t, f"family_{t}", "dev", i, "w", "run", "man", success=ok,
+                          partial_credit=1.0 if ok else 0.5, **kw)
+    candidate = [row("t1", 0, True), row("t1", 1, False, validity="invalid", invalid_reason="harness",
+                                         failure_class="infrastructure"),
+                 row("t2", 0, False), row("t2", 1, False)]
+    control = [row("t1", 0, False), row("t1", 1, False), row("t2", 0, True), row("t2", 1, True)]
+    verdict, _reasons, metrics, _ = judge_research(campaign, [p], {"pair-1": {"candidate": candidate,
+                                                                               "control": control}}, sealed_apart())
+    assert verdict == "inconclusive" and metrics["incomplete"] == {"pair-1": {"infrastructure": 1}}
+    assert metrics["tasks"] == 1 and metrics["gain"] == -1.0            # t2 only: t1 lost a repeat on one arm
 
 
 # ---------------------------------------------------------------------------- RC-06 / isolation

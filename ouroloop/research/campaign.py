@@ -242,6 +242,18 @@ def run_campaign(plan: CampaignPlan, *, run_arm, evaluate_outer, objects: ct.Obj
         # What both arms start from, prepared once and charged to the campaign rather than to whichever arm runs
         # first: W0's measurement and, when the arms diagnose alike, the first round's notes (docs/modules/06 §2).
         shared = prepare_pair(pair, budget.child(f"{plan.id}:{pair.pair_id}:common", {})) if prepare_pair else None
+        if prepare_pair:
+            total("common", spent(f"{plan.id}:{pair.pair_id}:common"))
+        short = _arms_not_covered(plan, pair, budget)
+        if short:
+            # Each arm is capped by its own share, but both draw on the activity's root: when the root cannot cover
+            # what both may still spend, the arm that runs second can be starved, and a comparison under unequal
+            # budgets says nothing about R (docs/modules/06_RESEARCH_CAMPAIGN.md §3). Nothing else is run.
+            for pair_id in list(holds):
+                release(pair_id)
+            return _receipt(plan, plan_ref, experiment_ref, objects, arms_out, outer, "inconclusive",
+                            [f"{pair.pair_id}: the activity cannot cover both arms' remaining shares {short}, so "
+                             f"the arms would not run under equal budgets"], {"discovery": plan.discovery}, {}, extra)
         for arm, r_ref in (("control", plan.r_control_ref), ("candidate", plan.r_candidate_ref)):
             # A fixed child budget per arm: what one arm does not spend is not handed to the other, because equal
             # spend is part of what makes the comparison a comparison (docs/modules/05_EXECUTION_BUDGET.md §2).
@@ -254,8 +266,6 @@ def run_campaign(plan: CampaignPlan, *, run_arm, evaluate_outer, objects: ct.Obj
                 events.append("campaign_arm", campaign=plan.id, pair=pair.pair_id, arm=arm,
                               w_star=outcome.w_star, stop_reason=outcome.stop_reason,
                               installed=list(outcome.installed), paused=bool(outcome.paused))
-        if prepare_pair:
-            total("common", spent(f"{plan.id}:{pair.pair_id}:common"))
         paused = [f"{pair.pair_id}/{o.arm} paused ({o.paused})" for outs in arms_out.values() for o in outs
                   if o.pair_id == pair.pair_id and o.paused]
         if paused:
@@ -284,6 +294,19 @@ def run_campaign(plan: CampaignPlan, *, run_arm, evaluate_outer, objects: ct.Obj
             notes = [*notes, f"R1 changes {target}, which no request digest can show: its use is not verified"]
     return _receipt(plan, plan_ref, experiment_ref, objects, arms_out, outer, verdict, notes, metrics, uncertainty,
                     extra)
+
+
+def _arms_not_covered(plan: CampaignPlan, pair: CampaignPair, budget) -> dict:
+    """What both arms of this pair may still spend under their shares, when the account cannot cover it — counting
+    every hold and every level up to the root — or {} when it can, or when the arms have no share."""
+    if not plan.arm_budget:
+        return {}
+    need: dict = {}
+    for arm in ("control", "candidate"):
+        left = budget.child(f"{plan.id}:{pair.pair_id}:{arm}", dict(plan.arm_budget)).remaining()["remaining"]
+        for k, v in left.items():
+            need[k] = round(need.get(k, 0) + max(float(v), 0.0), 6)
+    return {} if budget.affordable(need) else need
 
 
 # The research steps that render each research prompt target, by the step names researchers record.

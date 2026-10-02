@@ -349,6 +349,43 @@ def test_an_outer_attempt_lost_to_infrastructure_is_refilled_once(fake_upstream,
     assert {r.attempt_id for r in again["candidate"]} == {r.attempt_id for r in outer}
 
 
+def test_an_outer_attempt_lost_again_on_its_refill_leaves_the_comparison_inconclusive(fake_upstream, tmp_path,
+                                                                                       monkeypatch):
+    """The outer plan's frozen retry policy allows one refill: an attempt lost again on it is not run a third time,
+    and the pair is incomplete, so the comparison is inconclusive (docs/modules/06_RESEARCH_CAMPAIGN.md §3)."""
+    from ouroloop.evolve import task_eval
+    lines = []
+    cfg, activity, w0_release, plan_ref = prepared(fake_upstream, tmp_path, out=lines.append)
+    w0 = ct.SystemRelease.from_json(activity.objects.get(w0_release)).worker_ref
+    state = {"armed": False, "lost": 0, "task": None}
+    real_attempt, real_chat = task_eval.run_attempt, rsi.BusinessWorker.chat
+
+    def run_attempt(*a, **kw):
+        task = kw.get("task_id", a[1] if len(a) > 1 else None)
+        state["armed"] = kw.get("arm") == "outer_candidate" and state["lost"] < 2 and (
+            state["task"] in (None, task)) and kw.get("retry_index") == state["lost"]
+        if state["armed"]:
+            state["task"] = task
+        return real_attempt(*a, **kw)
+
+    def chat(self, system, messages, specs):
+        if state["armed"]:
+            state["armed"], state["lost"] = False, state["lost"] + 1
+            raise ConnectionResetError("connection reset by peer")
+        return real_chat(self, system, messages, specs)
+    monkeypatch.setattr(task_eval, "run_attempt", run_attempt)
+    monkeypatch.setattr(rsi.BusinessWorker, "chat", chat)
+    slot = bench.research_slot(cfg, ".", pairs=campaign_pairs(activity, initial_w=w0),
+                               researcher=rsi.ResearchPolicyProposer(),
+                               arm_researcher=lambda: rsi.ScriptedResearcher(follow_prompt=True), out=lines.append,
+                               worker_rounds=1)
+    assert state["lost"] == 2
+    outer = [r for r in bench.Results(activity.root, rsi.DOMAIN).all() if r.candidate == "candidate_w_star"]
+    assert not any(r.attempt_id.endswith("#2") for r in outer)
+    receipt = activity.objects.load(slot["receipt"], ct.EvaluationReceipt)
+    assert slot["verdict"] == "inconclusive" and receipt.metrics["incomplete"] == {"pair-1": {"infrastructure": 1}}
+
+
 def _prompt_of(objects, policy_set_ref: str, target: str) -> str:
     policies = P.validate_policy_set(objects.load(policy_set_ref, ct.PolicySet), objects).policies
     return objects.get(policies[target].implementation["artifact_ref"])["text"]

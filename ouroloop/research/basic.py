@@ -493,7 +493,7 @@ class PolicyResearcher:
         # rather than being skipped, so what is left is never read as R declining. The text is taken whole: K's
         # prompt length limit decides at the build, not a cut here.
         listed = data.get("proposals")
-        if listed is not None and not isinstance(listed, (list, dict)):
+        if listed is not None and not isinstance(listed, list):
             problem = problem or "the research reply's proposals is not a list of proposals"
         proposals = []
         for item in _as_list(listed):

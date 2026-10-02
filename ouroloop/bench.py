@@ -2568,11 +2568,17 @@ def _cycle_slot(cfg, base, activity: Activity, settings: dict, slot: str, state:
         limits = budget_limits(activity.objects.get(activity.rsi.budget_ref) if activity.rsi.budget_ref else {})
         arm_budget = {k: round(float(v) * float(campaign["arm_share"]), 6) for k, v in limits.items()}
         outer_budget = {k: round(float(v) * float(campaign["outer_share"]), 6) for k, v in limits.items()}
-        if not budget.affordable(outer_budget):
-            # docs/modules/05_EXECUTION_BUDGET.md §3: a slot that cannot hold its outer comparison does not open;
-            # R is not asked and nothing is frozen
+        # docs/modules/05_EXECUTION_BUDGET.md §3: a slot opens only when the root can cover its outer comparison's
+        # share and both arms' shares — and R's own call, when it is the cycle's metered researcher that asks —
+        # so neither R nor the common inputs are paid for a comparison that could not be made on equal terms
+        need = {k: round(float(outer_budget.get(k, 0)) + 2 * float(arm_budget.get(k, 0)), 6) for k in limits}
+        if researcher is None:
+            for k, v in pricing_of(cfg).bound().items():
+                need[k] = round(float(need.get(k, 0)) + float(v), 6)
+        if not budget.affordable(need):
             step.update(outcome="budget_exhausted",
-                        reason=f"the root cannot set aside the outer comparison's share {outer_budget}")
+                        reason=f"the root cannot cover the outer comparison's share {outer_budget} and both "
+                               f"arms' shares {arm_budget}" + (" and R's call" if researcher is None else ""))
             save()
             return "budget_exhausted"
         discovery = "automatic" if researcher is None else "scripted"

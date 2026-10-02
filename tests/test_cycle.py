@@ -440,10 +440,11 @@ R1_ITEM = {"hypothesis": "h", "target": "research.propose", "text": R1_PROPOSE}
      "is the current research.propose prompt"),
     (json.dumps({"proposals": ["name the last step"]}), "not an object"),
     (json.dumps({"proposals": "name the last step", "next_action": "none"}), "not a list"),
+    (json.dumps({"proposals": R1_ITEM, "next_action": "none"}), "not a list"),
     # a malformed proposal after a well-formed one is not dropped with the first read on
     (json.dumps({"proposals": [R1_ITEM, "and a second idea"]}), "not an object")],
     ids=["empty", "refused", "not_json", "no_next_action", "unknown_next_action", "no_text", "worker_target",
-         "unchanged_text", "not_an_object", "not_a_list", "malformed_after_a_good_one"])
+         "unchanged_text", "not_an_object", "not_a_list", "an_object_not_a_list", "malformed_after_a_good_one"])
 def test_an_unreadable_slot_reply_is_an_invalid_slot(fake_upstream, tmp_path, fixture_preset, monkeypatch, reply,
                                                      why):
     """docs/modules/04_RESEARCH_LOOP.md §1: an empty, refused, non-JSON or malformed research-slot reply decides
@@ -1179,21 +1180,63 @@ def test_rc6_01_both_arms_start_from_the_same_e0(fake_upstream, tmp_path, fixtur
         bench._seed_experience(sides["control"], e0[1:])
 
 
-def test_a_slot_whose_outer_share_the_root_cannot_hold_asks_r_nothing(fake_upstream, tmp_path, fixture_preset):
-    """docs/modules/05_EXECUTION_BUDGET.md §3: a slot opens only when the root can set aside its outer comparison's
-    share. When it cannot, R is not asked, no campaign is frozen, and the activity ends as budget_exhausted."""
+def _leave(tmp_path, model_calls):
+    """Spend the activity's root elsewhere, down to `model_calls` left."""
+    from ouroloop.evolve.execution import Budgets
+    budgets = Budgets(tmp_path / "ws")
+    left = budgets.headroom("cyc", budgets._read())["model_calls"]
+    budgets.settle(budgets.reserve("cyc", "spent elsewhere", {"model_calls": left - model_calls}).id,
+                   {"model_calls": left - model_calls})
+
+
+# The fixture's root is 4000 model calls: each arm's share is 600, the outer comparison's 320, so a slot needs
+# 1520, and one more for R's own call when the cycle's metered researcher asks it.
+@pytest.mark.parametrize("left,metered,opens", [(1519, False, False), (1520, True, False), (1520, False, True),
+                                                (1521, True, True)])
+def test_a_slot_whose_outer_share_the_root_cannot_hold_asks_r_nothing(fake_upstream, tmp_path, fixture_preset,
+                                                                      monkeypatch, left, metered, opens):
+    """docs/modules/05_EXECUTION_BUDGET.md §3: a slot opens only when the root can cover its outer comparison's share
+    and both arms' shares, and R's call when it is the cycle's metered researcher that asks. When it cannot, R is
+    not asked, no campaign is frozen, and the activity ends as budget_exhausted."""
+    cfg = cycle_config(fake_upstream, tmp_path)
+    gap_w0(cfg, tmp_path)
+    bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper(), until="segment-0")
+    _leave(tmp_path, left)
+    slot = RProposer()
+    if metered:
+        result = slot_cycle(cfg, monkeypatch, json.dumps({"proposals": [R1_ITEM]}), until="slot-0")
+        asked = _SlotModel.asked
+    else:
+        result = bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper(), slot_researcher=slot,
+                             until="slot-0")
+        asked = len(slot.requests)
+    step = result["steps"]["slot-0"]
+    if opens:
+        # R was asked (on the metered model, the campaign's own research calls follow it)
+        assert asked >= 1 and step.get("outcome") != "budget_exhausted" and step.get("campaign"), step
+        return
+    assert result["status"] == "budget_exhausted" and step["outcome"] == "budget_exhausted", step
+    assert "outer comparison's share" in step["reason"] and "campaign" not in step and asked == 0
+    assert "before a campaign ran" in result["report"]["C4"]["detail"]
+
+
+def test_common_inputs_that_leave_the_arms_short_end_the_slot_inconclusive(fake_upstream, tmp_path, fixture_preset,
+                                                                           monkeypatch):
+    """The slot opened with exactly enough for both arms and the outer comparison; the common measurement then
+    spends some of it, so the root can no longer cover both arms. Neither arm runs, the outer share goes back, and
+    the comparison is inconclusive for the budget rather than judged with R1's arm starved."""
     from ouroloop.evolve.execution import Budgets
     cfg = cycle_config(fake_upstream, tmp_path)
     gap_w0(cfg, tmp_path)
     bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper(), until="segment-0")
-    budgets = Budgets(tmp_path / "ws")
-    left = budgets.headroom("cyc", budgets._read())["model_calls"]
-    # spent elsewhere, down to 200 model calls: more than nothing, less than the outer share of 320
-    budgets.settle(budgets.reserve("cyc", "spent elsewhere", {"model_calls": left - 200}).id,
-                   {"model_calls": left - 200})
-    slot = RProposer()
-    result = bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper(), slot_researcher=slot)
-    step = result["steps"]["slot-0"]
-    assert result["status"] == "budget_exhausted" and step["outcome"] == "budget_exhausted", step
-    assert "outer comparison's share" in step["reason"] and "campaign" not in step and slot.requests == []
-    assert "before a campaign ran" in result["report"]["C4"]["detail"]
+    _leave(tmp_path, 1520)
+    factory, made = arms([Stopper, Stopper, SkillAnyway])
+    result = bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper(), slot_researcher=RProposer(),
+                         arm_researcher=factory, until="slot-0")
+    slot = result["steps"]["slot-0"]
+    assert slot["verdict"] == "inconclusive" and len(made) == 1, slot              # the common inputs only
+    activity = bench.open_activity(cfg, ".", out=lambda _line: None)
+    receipt = activity.objects.load(slot["receipt"], ct.EvaluationReceipt)
+    assert "cannot cover both arms' remaining shares" in receipt.reasons[0] and "outer" not in receipt.costs
+    assert Budgets(tmp_path / "ws").open_reservations() == []
+    assert not list(ct.Events(activity.root).of("campaign_arm"))
