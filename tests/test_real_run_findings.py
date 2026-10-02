@@ -624,3 +624,86 @@ def test_a_spent_budget_ends_every_cycle_step_without_pausing(fake_upstream, tmp
     assert not any(s.get("outcome") == "paused" or s.get("stop_reason") in PAUSES
                    for s in recorded["steps"].values() if isinstance(s, dict))
     assert any(line.startswith("wrote") for line in lines)               # the report of an ended activity
+
+
+def test_resume_refuses_a_changed_frozen_plan(fake_upstream, tmp_path, monkeypatch):
+    """An experiment is finished under the plan, the budget scope and the parent it was frozen with
+    (docs/modules/05_EXECUTION_BUDGET.md §3). A plan or scope changed while it was open pauses the activity and leaves
+    the experiment open; a moved pointer does not: the comparison still runs on the frozen parent, and the install
+    finds the pointer moved and records stale_parent."""
+    import rsi
+    from test_harness_loop import NoteResearcher, v06_prepared
+    from ouroloop import bench
+    from ouroloop.benchmark import Results
+    from ouroloop.evolve.execution import unfinished
+    from ouroloop.evolve.task_gate import GatePlan
+    from ouroloop.providers import ProviderAccountError
+    from ouroloop.research.campaign import PAUSES
+    cfg, activity, w0 = v06_prepared(fake_upstream, tmp_path)
+    state = {"broke": False}
+    real_chat = rsi.BusinessWorker.chat
+
+    def chat(self, system, messages, specs):
+        if state["broke"]:
+            raise ProviderAccountError('HTTP 429: {"error":{"code":"1113","message":"余额不足"}}')
+        return real_chat(self, system, messages, specs)
+    monkeypatch.setattr(rsi.BusinessWorker, "chat", chat)
+
+    class BreaksTheAccount(NoteResearcher):
+        def summarize(self, *a, **kw):
+            out = super().summarize(*a, **kw)
+            state["broke"] = True               # the gate's attempts are the next calls
+            return out
+    bench.improve(cfg, ".", out=lambda _line: None, researcher=BreaksTheAccount(broken_first_draft=False))
+    [open_experiment] = unfinished(activity.root)
+    experiment = activity.objects.load(open_experiment["experiment_ref"], ct.Experiment)
+    state["broke"] = False                      # the account is topped up; something else changed meanwhile
+    frozen = dict(cfg["rsi"])
+    attempts = len(list(Results(activity.root, rsi.DOMAIN).all()))
+
+    def refused(rsi_table: dict, field: str) -> None:
+        cfg["rsi"] = {**frozen, **rsi_table}
+        researcher = NoteResearcher(broken_first_draft=False)
+        result = bench.improve(cfg, ".", out=lambda _line: None, researcher=researcher, segment=field)
+        first = result["rounds"][0]
+        segment = json.loads((activity.root / "rsi" / "segments" / f"{field}.json").read_text())
+        assert segment["stop_reason"] == "repair_runtime" and not segment["finished"]   # a cycle's paused segment
+        assert first["experiment_id"] == experiment.id and first["outcome"] == "infrastructure_failed"
+        assert first["next_action"] == "repair_runtime" and field in first["reason"]
+        assert result["stop_reason"] in PAUSES                      # a pause, which a cycle treats as one
+        assert researcher.requests == []                            # no new round ran behind it
+        assert len(list(Results(activity.root, rsi.DOMAIN).all())) == attempts   # nothing paid under the new plan
+        assert unfinished(activity.root) == [open_experiment]       # the experiment stays open, as it was
+
+    other = bench.freeze_task_plan(activity.objects, core_ref=experiment.core_ref, split_ref=activity.splits.hash(),
+                                   task_ids=tuple(rsi.DEV), gate=GatePlan(min_gain=0.5, min_groups=1,
+                                                                          bootstrap_replicates=200))
+    refused({"task_plan_ref": other}, "eval_template_ref")
+    refused({"scope_id": "another"}, "budget_scope")
+    # The plan as it was, and the account refused again while the experiment resumes: a standalone improve pauses
+    # with the reason and leaves the experiment open, rather than leaving with the provider's exception.
+    cfg["rsi"] = frozen
+    state["broke"] = True
+    again = bench.improve(cfg, ".", out=lambda _line: None, researcher=NoteResearcher(broken_first_draft=False))
+    assert again["stop_reason"] == "repair_runtime" and again["rounds"][0]["experiment_id"] == experiment.id
+    assert "refuses the account" in again["rounds"][0]["reason"]
+    assert unfinished(activity.root) == [open_experiment]
+    state["broke"] = False
+    # The plan restored, and the pointer moved on meanwhile: the experiment resumes on the parent it was frozen on.
+    moved = activity.releases.bootstrap(ct.SystemRelease.from_json(activity.objects.get(w0)).worker_ref,
+                                        ct.SystemRelease.from_json(activity.objects.get(w0)).research_ref,
+                                        experiment.core_ref, reason="another install meanwhile", activate=False)
+    from ouroloop.ledger import write_json
+    write_json(activity.releases.active_path, {"release_ref": moved, "revision": 9, "last_operation_id": None})
+    cfg["rsi"] = frozen
+    result = bench.improve(cfg, ".", out=lambda _line: None, researcher=NoteResearcher(broken_first_draft=False))
+    first = result["rounds"][0]
+    assert first["experiment_id"] == experiment.id and first["outcome"] == "stale_parent"
+    receipt = activity.objects.load(first["receipt_ref"], ct.EvaluationReceipt)
+    plan = activity.objects.get(receipt.plan_ref)
+    assert plan["parent_release"] == experiment.parent_release != moved
+    assert receipt.control_ref == ct.SystemRelease.from_json(activity.objects.get(experiment.parent_release)).worker_ref
+    permits = [activity.objects.load(e["permit"], ct.EvaluationPermit)
+               for e in ct.Events(activity.root).of("permit_issued") if e.get("plan") == receipt.plan_ref]
+    assert permits and all(p.parent_release == experiment.parent_release for p in permits)
+    assert result["stop_reason"] not in PAUSES and unfinished(activity.root) == []

@@ -691,6 +691,13 @@ def test_a_crashed_arm_resumes_to_exactly_the_frozen_rounds_and_keeps_what_it_in
     w0 = activity.objects.load(campaign.campaign_pairs[0], CampaignPair).initial_w_ref
     arm = [e for e in ct.Events(activity.root).of("campaign_arm") if e["arm"] == "candidate"][-1]
     assert arm["installed"] and arm["w_star"] != w0                    # the install before the crash is its W*
+    # the arm's experiments name the plan they were compared under: the arm's own, not the activity's dev plan
+    pair = activity.objects.load(campaign.campaign_pairs[0], CampaignPair)
+    inner = [e.task_id for e in activity.splits.entries if e.family_id in set(pair.inner_dev_groups)]
+    arm_objects = ct.Objects(root)
+    frozen = [ct.Experiment.from_json(json.loads(f.read_text())) for f in (arm_objects.dir / "experiment").glob("*.json")]
+    assert frozen and all(x.eval_template_ref != cfg["rsi"].get("task_plan_ref") for x in frozen)
+    assert all(list(arm_objects.get(x.eval_template_ref)["task_ids"]) == inner for x in frozen)
 
 
 def test_a_finished_campaign_is_not_run_or_paid_for_again(fake_upstream, tmp_path):

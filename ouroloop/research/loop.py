@@ -345,15 +345,22 @@ def _has_patch(proposal, objects) -> bool:
     return any(patch_of(c, objects) is not None for c in proposal.changes)
 
 
-def resume_unfinished(root, objects: _ct.Objects, handlers: dict, budget, *, activity=None) -> list:
+def resume_unfinished(root, objects: _ct.Objects, handlers: dict, budget, *, activity=None,
+                      eval_template_ref: str | None = None, budget_scope: str | None = None) -> list:
     """Finish the experiments an interrupted run left mid-way, before any new round starts.
 
     Each continues from the state it recorded (execution.execute_experiment): nothing is re-proposed, rebuilt that
     was built, or re-run that was run. An experiment with no recorded experiment ref cannot be continued faithfully
     and is closed as cancelled, with the reason, rather than guessed at.
+
+    An experiment is finished under the evaluation template and the budget scope it was frozen with, or not at all
+    (docs/modules/05_EXECUTION_BUDGET.md §3, the frozen inputs of a resume). When the caller's differ, nothing is
+    resumed: each such experiment stays open with the reason on record, and the results end in a repair_runtime
+    stop, which the caller treats as a pause — a person closes the experiment or restores the plan. A frozen field
+    left empty (an experiment from before it was recorded) is not compared.
     """
     from ..evolve.execution import unfinished
-    results = []
+    results, resumable = [], []
     for entry in unfinished(root):
         execution = Execution(root, entry["experiment_id"])
         if not entry["experiment_ref"] or not objects.has(entry["experiment_ref"]):
@@ -362,9 +369,33 @@ def resume_unfinished(root, objects: _ct.Objects, handlers: dict, budget, *, act
             results.append(_ct.RoundResult(outcome="cancelled", experiment_id=entry["experiment_id"],
                                            reason="not resumable"))
             continue
-        experiment = objects.load(entry["experiment_ref"], _ct.Experiment)
-        outcome = execute_experiment(experiment, handlers, budget=budget, execution=execution,
-                                     expected_parent=experiment.parent_release)
+        resumable.append((entry, execution, objects.load(entry["experiment_ref"], _ct.Experiment)))
+    refused = [(experiment, changed) for _entry, _execution, experiment in resumable
+               if (changed := _changed_inputs(experiment, eval_template_ref=eval_template_ref,
+                                              budget_scope=budget_scope))]
+    for experiment, changed in refused:
+        reason = (f"not resumed: frozen with {'; '.join(changed)}; an experiment is not finished under another "
+                  f"plan or budget")
+        _ct.Events(root).append("resume_refused", experiment=experiment.id, reason=reason)
+        results.append(_ct.RoundResult(outcome="infrastructure_failed", experiment_id=experiment.id,
+                                       release_before=experiment.parent_release,
+                                       release_after=experiment.parent_release, reason=reason[:300],
+                                       next_action="repair_runtime"))
+    if refused:
+        results.append(_ct.RoundResult(outcome="stopped", reason="repair_runtime", next_action="repair_runtime"))
+        return results
+    for entry, execution, experiment in resumable:
+        try:
+            outcome = execute_experiment(experiment, handlers, budget=budget, execution=execution,
+                                         expected_parent=experiment.parent_release)
+        except Exception as e:  # noqa: BLE001 - a halt (halt_of) ends the resume; anything else re-raises
+            halt = halt_of(e)
+            if halt is None:
+                raise
+            # The experiment stays where its record left it, and the run it belongs to pauses or ends here: a
+            # standalone improve or a campaign arm, not only a cycle, stops without an exception (M5 §3).
+            results.extend(halt_rows(halt, experiment_id=experiment.id))
+            return results
         proposal = objects.load(experiment.proposal_ref, _ct.ExperimentProposal)
         receipt, installation = outcome.get("receipt"), outcome.get("installation")
         _experience.append(root, _experience.experiment_record(
@@ -381,6 +412,16 @@ def resume_unfinished(root, objects: _ct.Objects, handlers: dict, budget, *, act
             release_after=installation.target_release if installation is not None else experiment.parent_release,
             receipt_ref=receipt.ref() if receipt else None, reason=f"resumed from {entry['status']}"))
     return results
+
+
+def _changed_inputs(experiment, *, eval_template_ref: str | None, budget_scope: str | None) -> list[str]:
+    """The frozen inputs an experiment would be finished under that are not the ones it was frozen with."""
+    changed = []
+    for name, current in (("eval_template_ref", eval_template_ref), ("budget_scope", budget_scope)):
+        recorded = getattr(experiment, name)
+        if recorded and current is not None and current != recorded:
+            changed.append(f"{name} {recorded}, not {current}")
+    return changed
 
 
 # Round results that are markers rather than completed rounds, and the reasons that make an inconclusive round an
@@ -435,6 +476,17 @@ def halt_of(e: BaseException) -> tuple[str, str] | None:
     if isinstance(e, ProviderError) or isinstance(getattr(e, "status_code", None), int):
         return "repair_runtime", f"a model call failed after its retries: {type(e).__name__}: {str(e)[:220]}"
     return None
+
+
+def halt_rows(halt: tuple[str, str], *, experiment_id: str | None = None) -> list:
+    """The round results that record a halt: a spent budget ends the run; anything else pauses it with a round to
+    run again after the repair, which counts toward nothing (`counters_of`)."""
+    reason, why = halt
+    if reason == "budget_exhausted":
+        return [_ct.RoundResult(outcome="stopped", reason="budget_exhausted")]
+    return [_ct.RoundResult(outcome="infrastructure_failed", experiment_id=experiment_id, reason=why,
+                            next_action="repair_runtime"),
+            _ct.RoundResult(outcome="stopped", reason="repair_runtime", next_action="repair_runtime")]
 
 
 def counters_of(rows) -> tuple[int, int]:
@@ -501,12 +553,8 @@ def run_worker_rounds(make_round, budget, *, schedule: Schedule | None = None, r
         halt = halt_of(e)
         if halt is None:
             return False
-        reason, why = halt
-        if reason == "budget_exhausted":
-            results.append(_ct.RoundResult(outcome="stopped", reason="budget_exhausted"))
-            return True
-        results.append(_ct.RoundResult(outcome="infrastructure_failed", reason=why, next_action="repair_runtime"))
-        results.append(_ct.RoundResult(outcome="stopped", reason="repair_runtime", next_action="repair_runtime"))
+        for row in halt_rows(halt):
+            results.append(row)
         return True
 
     def collected(got: dict) -> bool:

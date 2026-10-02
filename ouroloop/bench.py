@@ -383,8 +383,10 @@ class Improvement:
     actor_override: bool = False                # a frontier arm runs its own provider, as a separate comparison
     segment: str | None = None                  # the cycle's worker segment, whose collection quota is its own
     allocation: str | None = None               # the root allocation the arm's calls spend ("final"), if any
+    template_ref: str = ""                      # the frozen evaluation template its experiments are held to
     _plans: dict = _field(default_factory=dict)
     _experiment_ref: str = ""
+    _parent_release: str = ""
 
     # -------------------------------------------------------------- pieces
     def services(self) -> _P.Services:
@@ -808,8 +810,14 @@ class Improvement:
                 "load_receipt": lambda ref: self.objects.load(ref, _ct.EvaluationReceipt)}
 
     def _begin(self, experiment) -> None:
-        """The receipt names the experiment it came from, also when a resumed experiment reuses its build."""
+        """The receipt names the experiment it came from, also when a resumed experiment reuses its build; and the
+        comparison is built on the parent it was frozen on, also when a resume finds the pointer moved
+        (docs/modules/05_EXECUTION_BUDGET.md §3). The install still compares that parent with the pointer."""
         self._experiment_ref = experiment.ref()
+        self._parent_release = experiment.parent_release
+
+    def _parent(self) -> str:
+        return self._parent_release or self.releases.active()["release_ref"]
 
     def _verify_bound(self) -> dict:
         """What a full comparison plus the install probe will cost at least, so a candidate that could not be
@@ -854,7 +862,7 @@ class Improvement:
     def _screen(self, candidate_ref: str, budget) -> tuple:
         if not self.screen_ids:
             return "pass", ["no screen in this plan"]
-        parent = self.releases.active()["release_ref"]
+        parent = self._parent()
         plan = self.plan(candidate_ref, self.objects.load(parent, _ct.SystemRelease).worker_ref, parent)
         plan_ref = self.objects.put(plan)
         permit = self.releases.permit(candidate_ref, parent, plan_ref, self.scope_id, self.core_ref)
@@ -865,7 +873,7 @@ class Improvement:
         return _screen(plan, subject, control)
 
     def _evaluate(self, candidate_ref: str, budget) -> _ct.EvaluationReceipt:
-        parent = self.releases.active()["release_ref"]
+        parent = self._parent()
         control_set = self.objects.load(parent, _ct.SystemRelease).worker_ref if self.owner == "worker" else \
             self.objects.load(parent, _ct.SystemRelease).research_ref
         plan = self.plan(candidate_ref, control_set, parent)
@@ -1341,7 +1349,7 @@ def improvement(activity: Activity, *, template_ref: str | None = None, provider
         budget=budget,
         results=activity.results, stop_view=activity.rsi.stop_view, attempt_budget=attempt,
         probe_train=True, train_tasks=tuple(activity.splits.ids("train")), owner=owner, pricing=pricing,
-        harness=_harness_of(activity), worker=isolated_worker(_harness_of(activity)),
+        harness=_harness_of(activity), worker=isolated_worker(_harness_of(activity)), template_ref=template_ref or "",
         plan_installs=template.installs if template and installs is None else (True if installs is None
                                                                                else installs))
 
@@ -1560,7 +1568,7 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
         log.append({"round": index, "release": release_ref, "feedback": evidence["feedback"].summary()})
         return RoundContext(releases=activity.releases, objects=activity.objects, scope_id=activity.rsi.scope_id,
                             context=context, researcher=researcher, bound=bound, core_ref=work.core_ref,
-                            eval_template_ref=activity.rsi.task_plan_ref, handlers=work.handlers(),
+                            eval_template_ref=work.template_ref, handlers=work.handlers(),
                             experience_ref=experience_ref, experience=tuple(experience), owner="worker",
                             schedule=schedule,
                             history=frozen_signatures(experience, activity.objects, parent=release_ref),
@@ -1568,7 +1576,11 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
                             diagnosis=diagnosis, drafts=drafts, round_index=index)
 
     from .research.loop import resume_unfinished
-    resumed = resume_unfinished(activity.root, activity.objects, work.handlers(), budget)
+    # An open experiment finishes under the template and the scope it was frozen with, or the segment pauses.
+    resumed = resume_unfinished(activity.root, activity.objects, work.handlers(), budget,
+                                eval_template_ref=work.template_ref, budget_scope=work.scope_id)
+    # a resume that paused (a refused plan, a halt) or ended (a spent budget) runs no new round behind it
+    halted = bool(resumed) and resumed[-1].outcome == "stopped"
     for result in resumed:
         out(f"resume     {result.experiment_id}: {result.outcome} ({result.reason})")
         if seglog is not None:
@@ -1585,13 +1597,13 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
             return work.collect_batch(measured["last"], batch=batch, root=activity.root)
     collected = _collection_batches(activity.root, activity.rsi.scope_id, segment, any_segment=segment is None) \
         if work.harness else 0
-    results = resumed + run_worker_rounds(
+    results = resumed + ([] if halted else run_worker_rounds(
         make_round, budget, schedule=schedule, root=activity.root, collect=collector, collected_before=collected,
         on_result=seglog.add if seglog is not None else None,
         history=tuple(seglog.state["rounds"]) if seglog is not None else (), stop_after=stop_after,
         # a batch booked before a crash is finished first, at its own attempt index, before any round runs
         resume_collections=(lambda: work.finish_collections(activity.root, measured.get("last")))
-        if work.harness else None)
+        if work.harness else None))
     stop_reason = next((r.reason for r in reversed(results) if r.outcome == "stopped"), "rounds_done")
     if stop_reason == "stopped_at":
         pass                                # the stop point, not the segment's end: the segment is not finished
@@ -1811,14 +1823,26 @@ def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_
                         stop_view=activity.rsi.stop_view, attempt_budget=activity.bench.budget,
                         probe_train=True, train_tasks=tuple(_tasks_of(activity, pair.inner_train_groups)),
                         harness=_harness_of(activity), worker=isolated_worker(_harness_of(activity)))
+    # The arm's own template, frozen from what its gate reads — the inner dev families, the campaign's gate, its
+    # repeats and seed — so its experiments name the plan they are compared under, not the activity's dev plan.
+    inner.template_ref = freeze_task_plan(
+        objects, core_ref=core_ref, split_ref=activity.splits.hash(), task_ids=inner.dev_tasks, gate=inner.gate,
+        repeats=inner.repeats, order_seed=inner.order_seed,
+        per_attempt_budget={"max_steps": inner.attempt_budget.max_steps,
+                            "max_tool_calls": inner.attempt_budget.max_tool_calls})
     step = researcher
     outcome = ArmOutcome(arm=arm, pair_id=pair.pair_id)
     if log.finished:
         return _arm_outcome(outcome, log.state, objects, releases, start, activity, pair, arm_budget, out)
     log.watch(step)
     # An experiment a crash left mid-way is finished first, from what it recorded, and counts as its round.
-    for result in resume_unfinished(root, objects, inner.handlers(), arm_budget):
+    resumed = resume_unfinished(root, objects, inner.handlers(), arm_budget, eval_template_ref=inner.template_ref,
+                                budget_scope=inner.scope_id)
+    for result in resumed:
         log.add(result)
+    if resumed and resumed[-1].outcome == "stopped":
+        log.end(resumed[-1].reason)            # a pause resumes after the repair; a spent budget ends the arm
+        return _arm_outcome(outcome, log.state, objects, releases, start, activity, pair, arm_budget, out)
     # Rounds that ended on infrastructure are rerun, not counted: the arms are compared at equal completed rounds.
     done = log.done()
     schedule = Schedule(worker_rounds=max(plan.worker_round_limit - done, 0), research_slots=0,
@@ -1853,7 +1877,7 @@ def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_
             shared_notes=shared.get("notes") if shared and index == 0 else None)
         return RoundContext(releases=releases, objects=objects, scope_id=inner.scope_id, context=context,
                             researcher=step, bound=bound, core_ref=core_ref,
-                            eval_template_ref=activity.rsi.task_plan_ref or "", handlers=inner.handlers(),
+                            eval_template_ref=inner.template_ref, handlers=inner.handlers(),
                             experience_ref=experience_ref, experience=tuple(experience), owner="worker",
                             schedule=schedule, history=frozen_signatures(experience, objects, parent=release_ref),
                             root=root,
@@ -2330,6 +2354,11 @@ def cycle(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pri
         save()
         if result["stop_reason"] in PAUSES:
             status = "paused"
+            # the same record a step the guard caught gets: what paused it, in the round that did
+            why = next((r.get("reason") for r in reversed(result.get("rounds") or [])
+                        if r.get("next_action") == "repair_runtime" and r.get("outcome") != "stopped"), "")
+            state["steps"][segment].update(outcome="paused", reason=why or result["stop_reason"])
+            save()
             out(f"cycle      paused in {segment} ({result['stop_reason']}): no further segment or research slot "
                 f"runs until the runtime is repaired; running the cycle again resumes here")
             break
