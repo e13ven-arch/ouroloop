@@ -1089,4 +1089,77 @@ def test_a_slot_after_a_worker_install_runs(fake_upstream, tmp_path, fixture_pre
     ran = list(ct.Events(activity.root).of("campaign_arm"))
     assert [e["arm"] for e in ran] == ["control", "candidate"]
     assert all(e["w_star"] == installed.worker_ref for e in ran)
+    # the pair's E0 holds the install's experiment, and both arms' logs begin with it
+    from ouroloop.evolve import experience as ex
+    from ouroloop.research.campaign import CampaignPair, CampaignPlan, arm_workspace
+    campaign = activity.objects.load(slot["campaign"], CampaignPlan)
+    pair = activity.objects.load(campaign.campaign_pairs[0], CampaignPair)
+    e0 = activity.objects.get(pair.initial_experience_ref)["experience"]
+    assert any(e["kind"] == "experiment" and e["installed"] for e in e0)
+    for side in ("control", "candidate"):
+        assert ex.read(arm_workspace(activity.root, pair.pair_id, side, campaign.id))[:len(e0)] == e0
     assert "outcome" not in steps["segment-1"] and steps["segment-1"]["stop_reason"] == "rounds_done"
+
+
+class Offline:
+    """The research model's completion interface, answered offline: a note for a note request, a stop for the
+    summary. It keeps every request, so a test reads what the model would have read."""
+
+    def __init__(self):
+        self.sent = []
+
+    def complete(self, system, text):
+        self.sent.append((system, text))
+        if "failure" in json.loads(text):
+            return json.dumps({"failure_class": "missed_step", "root_cause": "stopped early",
+                               "mechanism": "check on finish", "component": "skills",
+                               "generality": "multi-step requests"})
+        return json.dumps({"next_action": "stop", "reason": "nothing to change"})
+
+
+def test_rc6_01_both_arms_start_from_the_same_e0(fake_upstream, tmp_path, fixture_preset):
+    """docs/modules/06_RESEARCH_CAMPAIGN.md §2: both arms' experience logs begin with the pair's E0 as frozen, and
+    their R reads it under one snapshot ref. E0 is the mainline log without each experiment's raw gate reasons,
+    which can name development tasks; what R is shown of a mainline experiment — its outcome and aggregate
+    figures — stays."""
+    from ouroloop.evolve import experience as ex
+    from ouroloop.research.basic import PolicyResearcher
+    from ouroloop.research.campaign import CampaignPair, CampaignPlan, arm_workspace
+    cfg = cycle_config(fake_upstream, tmp_path)
+    activity, _ = gap_w0(cfg, tmp_path)
+    models = []
+
+    def arm():
+        models.append(Offline())               # the common inputs', then the control arm's, then the candidate's
+        return PolicyResearcher(models[-1])
+    # segment-0 runs one rejected experiment, gated on the whole development plan; the slot pairs by the preset
+    result = bench.cycle(cfg, ".", out=lambda _line: None, researcher=Useless(), slot_researcher=RProposer(),
+                         arm_researcher=arm, until="slot-0")
+    plan = activity.objects.load(result["steps"]["slot-0"]["campaign"], CampaignPlan)
+    pair = activity.objects.load(plan.campaign_pairs[0], CampaignPair)
+    e0 = activity.objects.get(pair.initial_experience_ref)["experience"]
+    gated = next(e for e in ex.read(activity.root) if e.get("kind") == "experiment")
+    assert gated["metrics"] and gated["verdict"] == "rejected" and gated["reasons"]
+    assert [e["kind"] for e in e0] == ["diagnosis", "experiment"]
+    assert e0[1] == {k: v for k, v in gated.items() if k != "reasons"}
+    sides = {side: arm_workspace(activity.root, pair.pair_id, side, plan.id) for side in ("control", "candidate")}
+    refs = set()
+    for (side, root), model in zip(sides.items(), models[1:]):
+        assert ex.read(root)[:len(e0)] == e0
+        first = next(ct.Events(root).of("research_steps"))
+        refs.add(ct.Objects(root).get(first["context_ref"])["experience_ref"])
+        system, text = next((s, t) for s, t in model.sent if "notes" in json.loads(t))
+        assert system.startswith(R1_PROPOSE) == (side == "candidate")
+        row = next(r for r in json.loads(text)["experience"] if r["kind"] == "experiment")
+        assert row["outcome"] == "rejected" and row["installed"] is False and "metrics" in row, side
+    assert refs == {f"experience:{ct.digest(e0)[:16]}"}
+    # nothing any arm's R was sent names an outer task
+    outer = {e.task_id for e in activity.splits.entries if e.family_id in pair.outer_groups}
+    assert outer and not [t for m in models for _, text in m.sent for t in outer if t in text]
+    # a restarted arm finds E0 already there; a log begun from another E0 is refused
+    log = sides["control"] / "experience.jsonl"
+    before = log.read_text()
+    bench._seed_experience(sides["control"], e0)
+    assert log.read_text() == before
+    with pytest.raises(ValueError, match="another E0"):
+        bench._seed_experience(sides["control"], e0[1:])

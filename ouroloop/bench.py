@@ -1808,8 +1808,8 @@ def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_
                       researcher, out=print, pricing=None, shared=None):
     """One arm's whole improvement loop, in its own workspace.
 
-    The arm gets the pair's W0, its own R, the shared core and nothing else: no mainline pointer, no other arm's
-    experience, no outer task. Its W* is whatever it actually installed (RC-02: an arm that installed nothing
+    The arm gets the pair's W0 and E0, its own R, the shared core and nothing else: no mainline pointer, no other
+    arm's experience, no outer task. Its W* is whatever it actually installed (RC-02: an arm that installed nothing
     still returns W0 and its full costs).
 
     An arm keeps its own record of the rounds it completed. A finished arm is not run again; a paused one
@@ -1849,6 +1849,7 @@ def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_
     outcome = ArmOutcome(arm=arm, pair_id=pair.pair_id)
     if log.finished:
         return _arm_outcome(outcome, log.state, objects, releases, start, activity, pair, arm_budget, out)
+    _seed_experience(root, _starting_experience(activity, pair))      # before a resumed experiment appends to it
     log.watch(step)
     # An experiment a crash left mid-way is finished first, from what it recorded, and counts as its round.
     resumed = resume_unfinished(root, objects, inner.handlers(), arm_budget, eval_template_ref=inner.template_ref,
@@ -2039,6 +2040,26 @@ def _campaign_common(activity: Activity, plan, pair, budget, *, provider, pricin
         f"{len(measurement['failed'])} failed; first-round notes "
         + ("written once for both arms" if shared["notes"] is not None else "written by each arm"))
     return shared
+
+
+def _starting_experience(activity: Activity, pair) -> list[dict]:
+    """The pair's E0, as the plan froze it (docs/modules/06_RESEARCH_CAMPAIGN.md §2)."""
+    return list(activity.objects.get(pair.initial_experience_ref)["experience"]) if pair.initial_experience_ref \
+        else []
+
+
+def _seed_experience(root, entries: list[dict]) -> None:
+    """E0 as the first lines of an arm's experience log, written once and exactly as frozen, so both arms read the
+    same rows under the same snapshot ref. The objects E0 refers to are not copied: nothing in an arm reads them.
+    A restarted arm finds its log already begun; a log that begins otherwise was begun from another E0 and is
+    refused rather than mixed."""
+    path = Path(root) / "experience.jsonl"
+    if path.exists():
+        if _experience.read(root)[:len(entries)] != entries:
+            raise ValueError(f"{path} does not begin with this pair's starting experience: the arm ran from "
+                             f"another E0")
+    elif entries:
+        _ct.durable_write(path, "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in entries).encode())
 
 
 def _copy_measurement(measurement: dict, source: Results, transcripts: Path, target: Results,
@@ -2586,7 +2607,11 @@ def cycle_pairs(activity: Activity, cfg: dict) -> list:
     half = len(dev_families) // 2
     train_families = list(dict.fromkeys(family[t] for t in activity.splits.ids("train")))
     active = _ct.SystemRelease.from_json(activity.objects.get(activity.releases.active()["release_ref"]))
-    entries, _ref = _experience.snapshot(activity.root)
+    # E0, both arms' starting experience: the mainline log as it stands, each experiment's raw gate reasons left
+    # out because they can name development tasks — the second half of which is now the outer pool. The aggregate
+    # figures stay (docs/modules/06_RESEARCH_CAMPAIGN.md §3).
+    entries = [{k: v for k, v in e.items() if k != "reasons"} if e.get("kind") == "experiment" else e
+               for e in _experience.read(activity.root)]
     return [CampaignPair(pair_id="pair-1", independence_group="group-1", initial_w_ref=active.worker_ref,
                          initial_experience_ref=activity.objects.put_json("change", {"experience": entries}),
                          inner_train_groups=tuple(train_families), inner_dev_groups=tuple(dev_families[:half]),
