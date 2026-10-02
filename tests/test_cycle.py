@@ -904,3 +904,34 @@ def test_a_finished_segment_is_not_recorded_as_paused_by_a_later_failure(fake_up
     again = bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper(), until="segment-0")
     record = again["steps"]["segment-0"]
     assert again["status"] == "stopped" and record["stop_reason"] == "no_proposal" and "outcome" not in record
+
+
+def test_a_slot_after_a_worker_install_runs(fake_upstream, tmp_path, fixture_preset):
+    """Once segment-0 has installed a package, what the slot copies into the campaign workspaces reaches that
+    install's receipt and its frozen plan, which embeds its gate plan whole and never stored it. The common inputs,
+    both arms and the receipt still run, and so does the next segment (docs/ROADMAP.md §3, before the slot)."""
+    from ouroloop.evolve.task_gate import GatePlan
+    cfg = cycle_config(fake_upstream, tmp_path)
+    activity, _ = gap_w0(cfg, tmp_path)
+    w0 = activity.releases.active()["release_ref"]
+    factory, made = arms([Stopper, Stopper, SkillAnyway])       # common inputs, control arm, candidate arm
+    result = bench.cycle(cfg, ".", out=lambda _line: None, researcher=SkillAnyway(), slot_researcher=RProposer(),
+                         arm_researcher=factory)
+    steps = result["steps"]
+    assert result["status"] == "done", steps
+    # segment-0 installed W1, authorised by a task receipt whose plan embeds its gate plan, own ref included
+    assert steps["segment-0"]["release"] != w0
+    installed = ct.SystemRelease.from_json(activity.objects.get(steps["segment-0"]["release"]))
+    authorization = activity.objects.load(installed.authorization_ref, ct.Authorization)
+    plan = activity.objects.get(activity.objects.load(authorization.ref, ct.EvaluationReceipt).plan_ref)
+    assert authorization.kind == "accepted" and not activity.objects.has(plan["gate_plan"]["ref"])
+    assert plan["gate_plan"]["ref"] == GatePlan.from_json(plan["gate_plan"]).ref()
+    # the slot ran from W1 to a receipt
+    slot = steps["slot-0"]
+    assert "outcome" not in slot and len(made) == 3
+    receipt = activity.objects.load(slot["receipt"], ct.EvaluationReceipt)
+    assert receipt.profile == "research" and receipt.verdict == slot["verdict"] and slot["installed"] is False
+    ran = list(ct.Events(activity.root).of("campaign_arm"))
+    assert [e["arm"] for e in ran] == ["control", "candidate"]
+    assert all(e["w_star"] == installed.worker_ref for e in ran)
+    assert "outcome" not in steps["segment-1"] and steps["segment-1"]["stop_reason"] == "rounds_done"

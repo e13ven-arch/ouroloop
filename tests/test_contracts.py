@@ -140,6 +140,22 @@ def test_objects_are_written_once_and_read_back(tmp_path):
         objects.get("change:sha256:" + "0" * 64)
 
 
+def test_an_embedded_records_own_ref_is_not_a_reference(tmp_path):
+    """A plan embeds its gate whole, own ref included, and never stores the gate: copying the plan's closure does
+    not go looking for it. A field named ref that points at another object is still followed."""
+    from ouroloop.evolve.task_gate import GatePlan, TaskEvalPlan
+    source, target = ct.Objects(tmp_path / "a"), ct.Objects(tmp_path / "b")
+    gate = GatePlan(min_groups=1)
+    plan_ref = source.put(TaskEvalPlan(task_ids=("t1",), gate_plan=gate.to_json()))
+    assert source.get(plan_ref)["gate_plan"]["ref"] == gate.ref() and not source.has(gate.ref())
+    assert gate.ref() not in ct.refs_in(source.get(plan_ref))
+    receipt_ref = source.put(ct.EvaluationReceipt(plan_ref=plan_ref))
+    authorization_ref = source.put(ct.Authorization(kind="accepted", ref=receipt_ref))
+    assert ct.copy_closure(source, target, [authorization_ref]) == {authorization_ref, receipt_ref, plan_ref}
+    assert target.load(plan_ref, TaskEvalPlan).gate().ref() == gate.ref()
+    assert ct.refs_in({"gate": {"ref": receipt_ref, "min_gain": 0.05}}) == {receipt_ref}
+
+
 def test_events_are_append_only(tmp_path):
     events = ct.Events(tmp_path)
     events.append("installed", release="release:sha256:" + "a" * 64)

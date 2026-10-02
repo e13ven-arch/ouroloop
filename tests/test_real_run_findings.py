@@ -490,12 +490,9 @@ def test_every_cycle_step_pauses_on_an_account_error(fake_upstream, tmp_path, fi
     state["broke"] = None
     cfg.pop("frontier", None) if where == "frontier" else None
     before = _attempt_ids(tmp_path)
-    # (after the resumed gate installs, the run stops before the slot: copying an installed W into a campaign
-    # workspace is a separate defect, docs/ROADMAP.md §3)
     again = bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper(), slot_researcher=RProposer(),
-                        arm_researcher=arms([Stopper, Stopper, SkillAnyway])[0],
-                        until="segment-0" if where == "resume" else None)
-    assert again["status"] == ("stopped" if where == "resume" else "done"), again["steps"]
+                        arm_researcher=arms([Stopper, Stopper, SkillAnyway])[0])
+    assert again["status"] == "done", again["steps"]
     assert again["steps"][step].get("outcome") != "paused"
     ids = _attempt_ids(tmp_path)
     assert len(ids) == len(set(ids)) and set(before) <= set(ids)      # what was paid for is not paid again

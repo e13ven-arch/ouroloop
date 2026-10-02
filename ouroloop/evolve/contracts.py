@@ -920,18 +920,40 @@ class Events:
 
 
 def refs_in(payload: Any) -> set[str]:
-    """Every content reference inside a payload, at any depth."""
+    """Every content reference inside a payload, at any depth.
+
+    A record embedded whole by its to_json() (a TaskEvalPlan's gate_plan) carries its own identity under "ref".
+    That names the embedded copy itself, not another object: it was never stored, and nothing needs it, because
+    the content is right there. So it is not a reference (docs/modules/00_CONTRACTS.md §1).
+    """
     out: set[str] = set()
     if isinstance(payload, str):
         if REF.fullmatch(payload):
             out.add(payload)
     elif isinstance(payload, dict):
-        for value in payload.values():
-            out |= refs_in(value)
+        own = _own_ref(payload)
+        for key, value in payload.items():
+            if key != "ref" or own is None:
+                out |= refs_in(value)
     elif isinstance(payload, (list, tuple)):
         for value in payload:
             out |= refs_in(value)
     return out
+
+
+def _own_ref(d: dict) -> str | None:
+    """The "ref" of a dict that is a record's to_json(), when it is that record's own identity: the digest of the
+    rest of the dict taken as Record.payload() takes it (no "ref", no volatile field, no None). Recognition only;
+    nothing is rewritten. A field named ref that points elsewhere (Authorization.ref) does not hash to the dict
+    that holds it, and stays a reference."""
+    ref = d.get("ref")
+    if not isinstance(ref, str) or not REF.fullmatch(ref):
+        return None
+    body = {k: v for k, v in d.items() if k != "ref" and k not in VOLATILE and v is not None}
+    try:
+        return ref if ref_for(parse_ref(ref)[0], body) == ref else None
+    except ContractError:
+        return None
 
 
 def copy_closure(source: Objects, target: Objects, refs) -> set[str]:
