@@ -63,6 +63,14 @@ class ReplyTruncated(ProviderError):
         super().__init__(message, retryable=False)
 
 
+class ReplyRefused(ProviderError):
+    """The model declined the request. Not an answer: a research step reads it as an unreadable reply, never as a
+    decision (docs/modules/04_RESEARCH_LOOP.md §1)."""
+
+    def __init__(self, message: str = ""):
+        super().__init__(message, retryable=False)
+
+
 class MockProvider:
     """Answers with a function of the prompt. For tests and the offline demo."""
 

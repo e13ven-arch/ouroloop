@@ -255,3 +255,71 @@ def test_the_experiment_is_frozen_by_the_framework_not_the_proposal(fake_upstrea
     assert experiment.parent_release == release and experiment.eval_template_ref == plan_ref
     fields = set(ct.ExperimentProposal.__dataclass_fields__)
     assert not fields & {"verdict", "accepted", "results", "gate_plan", "threshold"}
+
+
+# ---------------------------------------------------------------------------- unreadable replies (M4 §1)
+NOTE = {"failure_class": "missed_step", "root_cause": "stopped before the last step", "mechanism": "check every "
+        "step before finishing", "component": "skills", "generality": "multi-step requests"}
+
+
+class SummaryReplies:
+    """A research model that answers each note with a readable note and each summary with `reply` — a refusal
+    when it is None — through the production completion interface."""
+    name = "fake"
+    model = "fake"
+    supports_history_edits = True
+
+    def __init__(self, reply):
+        self.reply, self.asked = reply, []
+
+    def chat(self, system, messages, tools):
+        from ouroloop.chat import ChatTurn
+        from ouroloop.research.basic import NOTE_FORMAT
+        if NOTE_FORMAT in system:
+            self.asked.append("note")
+            return ChatTurn(json.dumps(NOTE), [], "end")
+        self.asked.append("summary")
+        return ChatTurn("", [], "refusal") if self.reply is None else ChatTurn(self.reply, [], "end")
+
+
+def improve_with(fake_upstream, tmp_path, reply, schedule):
+    from test_harness_loop import v06_prepared
+    from ouroloop.bench import _Completions
+    from ouroloop.research.basic import PolicyResearcher
+    cfg, activity, _ = v06_prepared(fake_upstream, tmp_path)
+    cfg["rsi"]["schedule_ref"] = activity.objects.put_json("change", {"candidates_per_round": 1, **schedule})
+    model = SummaryReplies(reply)
+    result = bench.improve(cfg, ".", out=lambda _line: None, researcher=PolicyResearcher(_Completions(model)))
+    return result, model, activity
+
+
+@pytest.mark.parametrize("reply,why", [
+    ("", "was empty"),
+    (None, "declined the request"),
+    ("I would add a skill that checks the last step.", "not readable JSON"),
+    (json.dumps({"reason": "the notes say enough", "requirements": []}), "no proposal and no next_action"),
+    (json.dumps({"next_action": "collect", "proposals": [{"hypothesis": "h",
+                                                          "changes": [{"target": "worker.harness"}]}]}),
+     "malformed"),
+    (json.dumps({"proposals": ["add a skill that checks the last step"]}), "malformed")])
+def test_an_unreadable_reply_is_an_invalid_round(fake_upstream, tmp_path, reply, why):
+    """docs/modules/04_RESEARCH_LOOP.md §1: an empty, refused, non-JSON or malformed summary reply decides
+    nothing. The round is invalid and counts toward patience; nothing R might have meant — a collection here —
+    is acted on, and the next round asks again."""
+    from ouroloop.benchmark import Results
+    result, model, activity = improve_with(fake_upstream, tmp_path, reply, {"worker_rounds": 3, "patience": 2})
+    rounds = [r for r in result["rounds"] if r["outcome"] != "stopped"]
+    assert [r["outcome"] for r in rounds] == ["invalid", "invalid"], result["rounds"]
+    assert all(why in r["reason"] and r["next_action"] == "none" for r in rounds)
+    assert model.asked.count("summary") == 2 and result["stop_reason"] == "patience"
+    assert not [r for r in Results(activity.root, rsi.DOMAIN).all() if "/collect" in (r.attempt_id or "")]
+    assert not [e for e in experience_mod.read(activity.root) if e.get("kind") == "experiment"]
+
+
+@pytest.mark.parametrize("decision,outcome", [({"next_action": "stop", "reason": "nothing general to fix"},
+                                               "no_proposal"),
+                                              ({"next_action": "collect", "reason": "one attempt is too few"},
+                                               "needs_collection")])
+def test_a_decision_r_states_is_still_read_as_one(fake_upstream, tmp_path, decision, outcome):
+    result, _, _ = improve_with(fake_upstream, tmp_path, json.dumps(decision), {"worker_rounds": 1, "patience": 1})
+    assert result["rounds"][0]["outcome"] == outcome

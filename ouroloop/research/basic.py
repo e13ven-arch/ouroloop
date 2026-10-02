@@ -226,7 +226,7 @@ class BasicResearcher:
 # the prompts of the research policy set that is actually loaded — so replacing R replaces the text of the real
 # request, and a version that only renamed itself makes identical requests and fails the acceptance.
 from ..evolve import contracts as _ct
-from .experiment import ProposalResult as _ProposalResult
+from .experiment import NEXT_ACTIONS, ProposalResult as _ProposalResult
 
 REQUIREMENT_FORMAT = (
     'Reply with JSON only: {"requirements": [{"id": "...", "context": "...", "expected_behavior": "...", '
@@ -358,16 +358,37 @@ class PolicyResearcher:
 
     def _complete(self, step: str, system: str, text: str) -> str:
         """One research request, labelled with its step where the completion interface can carry a label, so
-        the budget book says what notes, summaries and draft revisions each cost (docs/modules/07 §4)."""
+        the budget book says what notes, summaries and draft revisions each cost (docs/modules/07 §4). A refusal
+        comes back as no text, with the refusal kept on the request for `_read` to name."""
+        from ..providers import ReplyRefused
         if self.requests and "input_hash" not in self.requests[-1]:
             # What the step was given, as a digest beside the prompt's: the round's record can then show R's input
             # without keeping task text in it.
             self.requests[-1]["input_hash"] = _ct.digest({"input": text})[:16]
         label = getattr(self.llm, "label", None)
-        if callable(label):
-            with label(step):
-                return self.llm.complete(system, text)
-        return self.llm.complete(system, text)
+        try:
+            if callable(label):
+                with label(step):
+                    return self.llm.complete(system, text)
+            return self.llm.complete(system, text)
+        except ReplyRefused as e:
+            if self.requests:
+                self.requests[-1]["refused"] = str(e)[:200]
+            return ""
+
+    def _read(self, reply: str) -> tuple[dict, str]:
+        """The reply as the JSON object R meant, or why it cannot be read (docs/modules/04_RESEARCH_LOOP.md §1): an
+        empty reply, a refusal or text with no JSON object in it decides nothing, so it is never read as {} and
+        from there as a default decision."""
+        refused = (self.requests[-1] if self.requests else {}).get("refused")
+        if refused:
+            return {}, f"the research model declined the request: {refused}"
+        if not reply.strip():
+            return {}, "the research reply was empty"
+        data = parse_json(reply)
+        if not data and not re.search(r"\{\s*\}", reply):
+            return {}, "the research reply was not readable JSON"
+        return data, ""
 
     def _ask(self, prompt: str, context, fmt: str, step: str, extra: dict | None = None) -> str:
         state = context.prompt_state(self.max_state_chars)
@@ -390,7 +411,7 @@ class PolicyResearcher:
 
     def note(self, system: str, user: str) -> dict:
         self.requests.append({"step": "note", "system": system, "prompt_hash": _ct.digest({"system": system})[:16]})
-        return parse_json(self._complete("note", system, user))
+        return self._read(self._complete("note", system, user))[0]
 
     def summarize(self, context, prompt: str, notes: list, coverage: dict, experience=(), *, package=None,
                   allowed: tuple = ()) -> _ProposalResult:
@@ -409,8 +430,7 @@ class PolicyResearcher:
         self.requests.append({"step": "propose", "system": system,
                               "prompt_hash": _ct.digest({"system": system})[:16]})
         text = json.dumps(state, ensure_ascii=False, default=str)
-        reply = self._complete("propose", system, text)
-        data = parse_json(reply)
+        data, problem = self._read(self._complete("propose", system, text))
         requirements = []
         for item in _as_list(data.get("requirements")):
             if isinstance(item, dict) and item.get("observed_behavior"):
@@ -418,10 +438,13 @@ class PolicyResearcher:
                                      ("id", "context", "expected_behavior", "observed_behavior", "acceptance")}
                                     | {"recurrence": _as_int(item.get("recurrence")), "evidence_refs": []})
         proposals = []
-        for item in _as_list(data.get("proposals"))[:self.max_proposals]:
-            if not isinstance(item, dict):
-                continue
+        listed = data.get("proposals")
+        if listed is not None and not isinstance(listed, (list, dict)):
+            problem = problem or "the research reply's proposals is not a list of proposals"
+        for item in _as_list(listed)[:self.max_proposals]:
             try:
+                if not isinstance(item, dict):
+                    raise _ct.ContractError(f"a proposal is an object, not {type(item).__name__}")
                 proposals.append(_ct.ExperimentProposal(
                     owner="worker", hypothesis=str(item.get("hypothesis", ""))[:2000],
                     requirements=tuple(str(r) for r in item.get("requirements") or ()),
@@ -429,17 +452,18 @@ class PolicyResearcher:
                     expected=str(item.get("expected", ""))[:1000],
                     abandon_if=str(item["abandon_if"])[:500] if item.get("abandon_if") else None,
                     origin="llm"))
-            except _ct.ContractError:
-                continue
-        action = data.get("next_action") if data.get("next_action") in ("collect", "repair_runtime", "stop",
-                                                                       "none") else "none"
-        result = _ProposalResult(proposals=proposals, next_action=action if not proposals else "none",
-                                 reason=str(data.get("reason", ""))[:500], evidence_refs=tuple(context.evidence))
+            except _ct.ContractError as e:
+                # Never dropped and the rest read on: a reply with a malformed proposal is not R's decision.
+                problem = problem or f"a proposal in the research reply is malformed: {str(e)[:300]}"
+        action = data.get("next_action")
+        if not problem and not proposals and action not in NEXT_ACTIONS:
+            problem = (f"the research reply has no proposal and no next_action" if action is None else
+                       f"the research reply's next_action {action!r} is not one of {list(NEXT_ACTIONS)}")
+        result = _ProposalResult(proposals=[] if problem else proposals,
+                                 next_action="none" if problem or proposals else action,
+                                 reason=problem or str(data.get("reason", ""))[:500],
+                                 evidence_refs=tuple(context.evidence), unreadable=bool(problem))
         result.requirements = tuple(requirements)
-        if not data and reply.strip():
-            # Not JSON R meant: no decision was read, so none is recorded — never "collect" by default.
-            result.unreadable = True
-            result.reason = "the research reply was not readable JSON"
         return result
 
     def propose_research(self, context, prompt: str, current: dict, experience=(), *,

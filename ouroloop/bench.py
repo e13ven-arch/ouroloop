@@ -1632,8 +1632,13 @@ class _Completions:
         self.name = getattr(provider, "name", "llm")
 
     def complete(self, system: str, prompt: str) -> str:
-        from .providers import ReplyTruncated
+        from .providers import ReplyRefused, ReplyTruncated
         turn = self.provider.chat(system, [{"role": "user", "content": prompt}], ())
+        if turn.stop == "refusal":
+            # Declined, not answered: the research step reads it as an unreadable reply (M4 §1). The call is
+            # already settled on the book, so raising here changes nothing that was paid.
+            raise ReplyRefused("the research model declined the request" + (f": {turn.text[:200]}" if turn.text
+                                                                              else ""))
         if turn.stop == "max_tokens":
             # A cut reply read as a whole one turns half an answer into a decision (the gate run's summary was cut
             # before its proposal and read as "collect"): it is refused instead.

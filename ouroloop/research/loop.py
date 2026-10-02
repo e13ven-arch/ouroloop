@@ -218,17 +218,17 @@ def run_worker_round(round_context: RoundContext, budget) -> _ct.RoundResult:
                                   "release": before})
     if not proposal_result.proposals:
         # The v0.6 driver records a collect request as needs_collection; a v2 round keeps its old outcome. A reply
-        # that could not be read is an invalid round: R decided nothing, and the next round asks again.
-        collect = proposal_result.next_action == "collect" and ctx.diagnosis is not None
-        outcome = ("invalid" if getattr(proposal_result, "unreadable", False) else
-                   "needs_collection" if collect else "no_proposal")
-        _experience.append(root, {"kind": "round", "outcome": outcome,
-                                  "next_action": proposal_result.next_action, "reason": proposal_result.reason,
-                                  "scope": ctx.scope_id, "release": before})
+        # that could not be read (the summary's, or every note's) is an invalid round: R decided nothing, so
+        # nothing it might have meant — a collection, a stop — is acted on, and the next round asks again.
+        unreadable = getattr(proposal_result, "unreadable", False)
+        next_action = "none" if unreadable else proposal_result.next_action
+        collect = next_action == "collect" and ctx.diagnosis is not None
+        outcome = "invalid" if unreadable else "needs_collection" if collect else "no_proposal"
+        _experience.append(root, {"kind": "round", "outcome": outcome, "next_action": next_action,
+                                  "reason": proposal_result.reason, "scope": ctx.scope_id, "release": before})
         return _ct.RoundResult(outcome=outcome, release_before=before, release_after=before,
-                               reason=proposal_result.reason or proposal_result.next_action,
-                               evidence_refs=tuple(proposal_result.evidence_refs),
-                               next_action=proposal_result.next_action)
+                               reason=proposal_result.reason or next_action,
+                               evidence_refs=tuple(proposal_result.evidence_refs), next_action=next_action)
     proposal = proposal_result.proposals[0]
     if ctx.drafts is not None and _has_patch(proposal, ctx.objects):
         sent_before = len(getattr(ctx.researcher, "requests", ()) or ())

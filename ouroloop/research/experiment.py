@@ -35,6 +35,7 @@ class ProposalResult:
     requirements: tuple = ()
     dropped: tuple = ()                       # proposals beyond the round's candidate limit, in order
     diagnosis: dict | None = None             # v0.6: the notes' coverage of this round's failures
+    unreadable: bool = False                  # R's reply could not be read: no decision, `reason` says why
 
     def __post_init__(self) -> None:
         if self.next_action not in NEXT_ACTIONS:
@@ -299,6 +300,14 @@ def propose_experiment(context, bound, owner: str = "worker", *, researcher, obj
         if diagnosis is None:
             raise ct.ContractError("the loaded R writes per-task notes and this round has no diagnosis input")
         notes, coverage = diagnosis.run(researcher, diagnose_prompt)
+        if coverage["invalid"] and not notes:
+            # docs/modules/04_RESEARCH_LOOP.md §1: no note could be read, so there is nothing to summarise. Asking
+            # anyway would read a summary of nothing as R's decision (a stop or a collect that ends the segment);
+            # the round is invalid instead, and the next round asks for the notes again (none was cached).
+            problems = sorted({i["problem"] for i in coverage["invalid"]})
+            return ProposalResult(reason=f"no readable note: all {len(coverage['invalid'])} note replies were "
+                                         f"unreadable ({'; '.join(problems)}); the summary was not asked for"[:500],
+                                  unreadable=True, diagnosis=coverage)
         if live_budget is not None:
             # The notes just spent money: the summary sees the budget as it is now, not as the round began.
             from dataclasses import replace
@@ -327,7 +336,7 @@ def propose_experiment(context, bound, owner: str = "worker", *, researcher, obj
         result.dropped = tuple(result.proposals[max_candidates:])
         result.proposals = result.proposals[:max_candidates]
     result.proposals = [normalize(p, objects) for p in result.proposals]
-    if not result.proposals and result.next_action == "none" and not getattr(result, "unreadable", False):
+    if not result.proposals and result.next_action == "none" and not result.unreadable:
         result.next_action = "collect" if not requirements else "stop"
         result.reason = result.reason or "the research step proposed nothing"
     return result
