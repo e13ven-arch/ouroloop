@@ -7,6 +7,8 @@ worker is the fixture's BusinessWorker, which changes behaviour only when a skil
 """
 import json
 
+import pytest
+
 import rsi
 
 from ouroloop import bench, policies as P
@@ -336,16 +338,24 @@ def test_ex6_12_an_interrupted_draft_resumes_its_revision_count(fake_upstream, t
     assert [c["revision"] for c in checks] == [0, 1] and len({c["draft_id"] for c in checks}) == 1
 
 
-def test_budget_exhaustion_in_the_note_map_stops_the_round_cleanly(fake_upstream, tmp_path):
+def _budget_errors():
+    from ouroloop.evolve.execution import BudgetError, BudgetExhausted
+    return [(BudgetExhausted("model_calls exhausted"), "budget_exhausted", "budget_exhausted"),
+            # a budget other than the frozen one is not a spent one: the activity pauses for a person (M5 §3)
+            (BudgetError("scope 'x' already exists with other limits: {}"), "infrastructure_failed",
+             "repair_runtime")]
+
+
+@pytest.mark.parametrize("error,outcome,stop", _budget_errors())
+def test_budget_exhaustion_in_the_note_map_stops_the_round_cleanly(fake_upstream, tmp_path, error, outcome, stop):
     cfg, activity, w0 = v06_prepared(fake_upstream, tmp_path)
 
     class Broke(NoteResearcher):
         def note(self, system, user):
-            from ouroloop.evolve.execution import BudgetError
-            raise BudgetError("model_calls exhausted")
+            raise error
     result = bench.improve(cfg, ".", out=lambda _line: None, researcher=Broke())
-    assert [r["outcome"] for r in result["rounds"]][:2] == ["budget_exhausted", "stopped"]
-    assert result["rounds"][1]["reason"] == "budget_exhausted"
+    assert [r["outcome"] for r in result["rounds"]][:2] == [outcome, "stopped"]
+    assert result["rounds"][1]["reason"] == stop
 
 
 def test_the_summary_call_reads_no_dev_task_ids_or_scorer_text_from_the_experience():

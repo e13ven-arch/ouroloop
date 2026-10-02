@@ -178,7 +178,7 @@ def run_worker_round(round_context: RoundContext, budget) -> _ct.RoundResult:
     root = ctx.root or ctx.releases.root
     before = ctx.releases.active()["release_ref"]
     core = ctx.objects.load(ctx.core_ref, _ct.CoreManifest)
-    from ..evolve.execution import BudgetError
+    from ..evolve.execution import BudgetExhausted
     from ..providers import ReplyTruncated
     resume = ctx.drafts.pending() if ctx.drafts is not None else None
     try:
@@ -206,7 +206,7 @@ def run_worker_round(round_context: RoundContext, budget) -> _ct.RoundResult:
                                   "scope": ctx.scope_id, "release": before})
         return _ct.RoundResult(outcome="infrastructure_failed", release_before=before, release_after=before,
                                reason=str(e)[:300], next_action="repair_runtime")
-    except BudgetError as e:
+    except BudgetExhausted as e:
         _experience.append(root, {"kind": "round", "outcome": "budget_exhausted", "reason": str(e)[:300],
                                   "scope": ctx.scope_id, "release": before})
         return _ct.RoundResult(outcome="budget_exhausted", release_before=before, release_after=before,
@@ -246,7 +246,7 @@ def run_worker_round(round_context: RoundContext, budget) -> _ct.RoundResult:
         try:
             drafted = ctx.drafts.resolve(proposal, revise=ctx.researcher.revise,
                                          prompt=ctx.bound.prompts.get("research.propose", ""))
-        except BudgetError as e:
+        except BudgetExhausted as e:
             return _ct.RoundResult(outcome="budget_exhausted", release_before=before, release_after=before,
                                    reason=str(e)[:300], next_action="stop")
         except ReplyTruncated as e:
@@ -413,6 +413,30 @@ def pause_of(rows: list, stop_reason: str) -> str:
     return ""
 
 
+def halt_of(e: BaseException) -> tuple[str, str] | None:
+    """How a failure outside a task attempt ends the step it happened in (docs/modules/05_EXECUTION_BUDGET.md §3),
+    as (stop reason, why), or None for one that is not this rule's to handle, which re-raises.
+
+    A spent budget is a bounded end ("budget_exhausted"): nothing is to be repaired. A refused account, a research
+    reply cut at the output limit, a provider failure the meter's retries did not get past, and a budget other
+    than the one the activity froze all pause it ("repair_runtime"): nothing more can run until a person acts, and
+    the step resumes from its record afterwards. A failure inside a task attempt never reaches here: the attempt
+    records it (evolve/task_eval.py), except an account refusal, which stops the attempts and is handled here."""
+    from ..evolve.execution import BudgetError, BudgetExhausted
+    from ..providers import ProviderError, ReplyTruncated, is_account_error
+    if isinstance(e, BudgetExhausted):
+        return "budget_exhausted", f"the budget is spent: {str(e)[:240]}"
+    if is_account_error(e):
+        return "repair_runtime", f"the model provider refuses the account: {str(e)[:240]}"
+    if isinstance(e, ReplyTruncated):
+        return "repair_runtime", str(e)[:300]
+    if isinstance(e, BudgetError):
+        return "repair_runtime", f"the budget is not the one this activity froze: {str(e)[:240]}"
+    if isinstance(e, ProviderError) or isinstance(getattr(e, "status_code", None), int):
+        return "repair_runtime", f"a model call failed after its retries: {type(e).__name__}: {str(e)[:220]}"
+    return None
+
+
 def counters_of(rows) -> tuple[int, int]:
     """The idle and infrastructure-failure counts a run of rounds had reached, from its recorded rows, so a run
     resumed after a stop point or a crash applies patience and the failure limit as an uninterrupted run would.
@@ -470,15 +494,18 @@ def run_worker_rounds(make_round, budget, *, schedule: Schedule | None = None, r
             reason = "stopped_at"
         return reason
 
-    def refused(e: Exception) -> bool:
-        """An account refusal (no balance, no quota, a refused key) pauses the run; anything else is not handled
-        here. Nothing more can run until a person acts, and an experiment it interrupted stays open, so the
+    def halted(e: Exception) -> bool:
+        """A failure outside a task attempt (`halt_of`) ends the run on a spent budget or pauses it; anything else
+        is not handled here. A paused round is not counted, and an experiment it interrupted stays open, so the
         restart after the repair continues it from its recorded state (resume_unfinished)."""
-        from ..providers import is_account_error
-        if not is_account_error(e):
+        halt = halt_of(e)
+        if halt is None:
             return False
-        reason = f"the model provider refuses the account: {str(e)[:240]}"
-        results.append(_ct.RoundResult(outcome="infrastructure_failed", reason=reason, next_action="repair_runtime"))
+        reason, why = halt
+        if reason == "budget_exhausted":
+            results.append(_ct.RoundResult(outcome="stopped", reason="budget_exhausted"))
+            return True
+        results.append(_ct.RoundResult(outcome="infrastructure_failed", reason=why, next_action="repair_runtime"))
         results.append(_ct.RoundResult(outcome="stopped", reason="repair_runtime", next_action="repair_runtime"))
         return True
 
@@ -506,8 +533,8 @@ def run_worker_rounds(make_round, budget, *, schedule: Schedule | None = None, r
             batches += 1
             if not collected(collect(None, batch=batches)):
                 return results
-    except Exception as e:  # noqa: BLE001 - only an account refusal is handled here; anything else re-raises
-        if refused(e):
+    except Exception as e:  # noqa: BLE001 - a halt (halt_of) is handled here; anything else re-raises
+        if halted(e):
             return results
         raise
 
@@ -518,8 +545,8 @@ def run_worker_rounds(make_round, budget, *, schedule: Schedule | None = None, r
             return results
         try:
             result = run_worker_round(make_round(index), budget)
-        except Exception as e:  # noqa: BLE001 - only an account refusal is handled here; anything else re-raises
-            if refused(e):
+        except Exception as e:  # noqa: BLE001 - a halt (halt_of) is handled here; anything else re-raises
+            if halted(e):
                 return results
             raise
         results.append(result)
@@ -546,7 +573,7 @@ def run_worker_rounds(make_round, budget, *, schedule: Schedule | None = None, r
             try:
                 got = collect(result, batch=batches)
             except Exception as e:  # noqa: BLE001 - the booked batch is finished at the restart
-                if refused(e):
+                if halted(e):
                     return results
                 raise
             result.action_ref = got.get("request_ref")

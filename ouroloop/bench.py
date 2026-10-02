@@ -2266,21 +2266,49 @@ def cycle(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pri
                                      f"a research-slot arm ({share:.0%} of the activity's budget)")
         if problem:
             raise ValueError(f"the cycle's research slot cannot run: {problem}")
-    status = "done"
-    if state["steps"].get("baseline"):
+    def guarded(name: str, run) -> tuple:
+        """One step under the pause and end rules of docs/modules/05_EXECUTION_BUDGET.md §3 -> (its result, ""),
+        or (None, "paused" | "budget_exhausted") with the step's record saying why. A failure outside a task
+        attempt that pauses or ends the activity (research.loop.halt_of) is written into cycle.json rather than
+        leaving the cycle as an exception; running the cycle again resumes the step from what it recorded."""
+        from .research.loop import halt_of
+        try:
+            return run(), ""
+        except Exception as e:  # noqa: BLE001 - a halt is recorded here; anything else re-raises
+            halt = halt_of(e)
+            if halt is None:
+                raise
+        ended = "paused" if halt[0] == "repair_runtime" else halt[0]
+        # a segment's record keeps its own shape (stop_reason), which the reuse check and the report read
+        state["steps"].setdefault(name, {}).update(outcome=ended, reason=halt[1],
+                                                   **({"stop_reason": halt[0]} if name.startswith("segment") else {}))
+        save()
+        out(f"cycle      {name}: {ended} ({halt[1][:200]})")
+        return None, ended
+
+    status, halt = "done", ""
+    if state["steps"].get("baseline", {}).get("release"):
         out("cycle      the starting version's baseline is on record; not run again")
     else:
-        baseline(cfg, base, out=out)
-        state["steps"]["baseline"] = {"release": activity.releases.active()["release_ref"], "ts": now()}
-        save()
+        _report, halt = guarded("baseline", lambda: baseline(cfg, base, out=out))
+        if not halt:
+            state["steps"]["baseline"] = {"release": activity.releases.active()["release_ref"], "ts": now()}
+            save()
     for index in range(schedule.research_slots + 1):
+        if halt:
+            status = halt
+            break
         if stop == ("baseline", None, None):
             status = "stopped"
             break
         segment = f"segment-{index}"
         out(f"cycle      worker {segment}")
         at_round = stop[2] if stop and stop[:2] == ("segment", index) else None
-        result = improve(cfg, base, out=out, researcher=researcher, segment=segment, stop_after_round=at_round)
+        result, halt = guarded(segment, lambda: improve(cfg, base, out=out, researcher=researcher, segment=segment,
+                                                       stop_after_round=at_round))
+        if halt:
+            status = halt
+            break
         if not (result.get("already_finished") and segment in state["steps"]):
             # a segment finished in an earlier run keeps the record it was finished with
             state["steps"][segment] = {"stop_reason": result["stop_reason"], "release": result["release"]}
@@ -2315,8 +2343,9 @@ def cycle(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pri
             status = "stopped"
             break
         slot = f"slot-{index}"
-        outcome = _cycle_slot(cfg, base, activity, settings, slot, state, save, out=out,
-                              researcher=slot_researcher, arm_researcher=arm_researcher)
+        outcome, halt = guarded(slot, lambda: _cycle_slot(cfg, base, activity, settings, slot, state, save, out=out,
+                                                         researcher=slot_researcher, arm_researcher=arm_researcher))
+        outcome = halt or outcome
         if outcome in ("budget_exhausted", "paused"):
             status = outcome
             if outcome == "paused":
@@ -2428,6 +2457,10 @@ def _cycle_slot(cfg, base, activity: Activity, settings: dict, slot: str, state:
     if step.get("receipt") or step.get("outcome") in ("no_proposal", "invalid", "rejected", "failed"):
         out(f"cycle      research {slot} already on record ({step.get('verdict') or step.get('outcome')})")
         return "done"
+    if step.get("outcome") in ("paused", "budget_exhausted"):
+        # how an earlier run of the slot stopped, not its result: it continues from what it recorded
+        step.pop("outcome")
+        step.pop("reason", None)
     budget = activity_budget(activity, cfg, slot)
     if not budget.affordable({}):
         step["outcome"] = "budget_exhausted"

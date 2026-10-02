@@ -392,3 +392,235 @@ def test_a_round_that_meets_an_account_error_pauses_and_the_experiment_resumes_a
     assert second["rounds"][0]["experiment_id"] == open_experiments[0]["experiment_id"]
     assert second["rounds"][0]["outcome"] in ("installed", "rejected", "inconclusive")
     assert unfinished(activity.root) == []
+
+
+# ---------------------------------------------------------------------------- every step pauses or ends (M5 §3)
+from test_cycle import fixture_preset  # noqa: E402,F401 - the cycle tests' preset, as a fixture here too
+
+
+class _Refused:
+    """A frontier model whose account the provider refuses."""
+    name, model = "frontier", "frontier-1"
+
+    def chat(self, system, messages, specs=()):
+        from ouroloop.providers import ProviderAccountError
+        raise ProviderAccountError('HTTP 429: {"error":{"code":"1113","message":"余额不足"}}')
+
+
+def _broken_actor(monkeypatch, state):
+    """The fixture's actor, refused by its provider while `state["broke"]` is set."""
+    import rsi
+    from ouroloop.providers import ProviderAccountError
+    real = rsi.BusinessWorker.chat
+
+    def chat(self, system, messages, specs):
+        if state["broke"]:
+            raise ProviderAccountError('HTTP 429: {"error":{"code":"1113","message":"余额不足"}}')
+        return real(self, system, messages, specs)
+    monkeypatch.setattr(rsi.BusinessWorker, "chat", chat)
+
+
+def _breaks_on_entry(monkeypatch, module, name, state):
+    real = getattr(module, name)
+
+    def entered(*a, **kw):
+        if state["broke"] is not None:             # None: repaired
+            state["broke"] = True
+        return real(*a, **kw)
+    monkeypatch.setattr(module, name, entered)
+
+
+def _attempt_ids(tmp_path):
+    from test_cycle import rows_of
+    return [r.attempt_id for r in rows_of(tmp_path)]
+
+
+@pytest.mark.parametrize("where,step", [("baseline", "baseline"), ("frontier", "baseline"),
+                                        ("resume", "segment-0"), ("slot", "slot-0"), ("common", "slot-0"),
+                                        ("outer", "slot-0")])
+def test_every_cycle_step_pauses_on_an_account_error(fake_upstream, tmp_path, fixture_preset, monkeypatch, where,
+                                                     step):
+    """docs/modules/05_EXECUTION_BUDGET.md §3: an account refusal outside a task attempt pauses the activity with
+    its reason in cycle.json, never a traceback; after the repair the cycle resumes and pays for nothing twice."""
+    import json as _json
+    from test_cycle import RProposer, SkillAnyway, Stopper, arms, cycle_config, gap_w0, outer_on_the_gap
+    from ouroloop import bench
+    from ouroloop.providers import ProviderAccountError
+    cfg = cycle_config(fake_upstream, tmp_path)
+    gap_w0(cfg, tmp_path)
+    outer_on_the_gap(monkeypatch)
+    state = {"broke": False}
+    _broken_actor(monkeypatch, state)
+    slot = RProposer()
+    if where == "baseline":
+        _breaks_on_entry(monkeypatch, bench, "baseline", state)
+    elif where == "frontier":
+        cfg["frontier"] = {"a": {"llm": {"type": "test_real_run_findings:_Refused"}}}
+    elif where == "common":
+        _breaks_on_entry(monkeypatch, bench, "_campaign_common", state)
+    elif where == "outer":
+        _breaks_on_entry(monkeypatch, bench, "_evaluate_outer", state)
+    elif where == "slot":
+        class Refusing(RProposer):
+            def propose_research(self, *a, **kw):
+                if state["broke"] is not None:
+                    raise ProviderAccountError("insufficient balance")
+                return super().propose_research(*a, **kw)
+        slot = Refusing()
+    elif where == "resume":
+        # a gate the refusal interrupted leaves its experiment open; the next run meets it again while resuming
+        class BreaksTheAccount(SkillAnyway):
+            def summarize(self, *a, **kw):
+                out = super().summarize(*a, **kw)
+                state["broke"] = state["broke"] is not None or None
+                return out
+        first = bench.cycle(cfg, ".", out=lambda _line: None, researcher=BreaksTheAccount())
+        assert first["status"] == "paused"
+    factory, _ = arms([Stopper, Stopper, SkillAnyway])
+    result = bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper(), slot_researcher=slot,
+                         arm_researcher=factory)
+    assert result["status"] == "paused" and result["ok"] is False
+    recorded = _json.loads((tmp_path / "ws" / "rsi" / "cycle.json").read_text())
+    assert recorded["status"] == "paused"
+    assert recorded["steps"][step]["outcome"] == "paused"
+    assert "refuses the account" in recorded["steps"][step]["reason"]
+    later = {"baseline": "segment-0", "segment-0": "slot-0", "slot-0": "segment-1"}[step]
+    assert later not in recorded["steps"]                        # nothing past the paused step ran
+    # the repair: the account is topped up, the frontier model's too
+    state["broke"] = None
+    cfg.pop("frontier", None) if where == "frontier" else None
+    before = _attempt_ids(tmp_path)
+    # (after the resumed gate installs, the run stops before the slot: copying an installed W into a campaign
+    # workspace is a separate defect, docs/ROADMAP.md §3)
+    again = bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper(), slot_researcher=RProposer(),
+                        arm_researcher=arms([Stopper, Stopper, SkillAnyway])[0],
+                        until="segment-0" if where == "resume" else None)
+    assert again["status"] == ("stopped" if where == "resume" else "done"), again["steps"]
+    assert again["steps"][step].get("outcome") != "paused"
+    ids = _attempt_ids(tmp_path)
+    assert len(ids) == len(set(ids)) and set(before) <= set(ids)      # what was paid for is not paid again
+
+
+class _Overloaded:
+    """A research model that keeps answering HTTP 503, until `ok` is set (the repair). It retries once by itself,
+    which the meter takes over: each try is its own reservation."""
+    name, model, retries, ok = "overloaded", "r-1", 1, False
+
+    def __init__(self, **_):
+        pass
+
+    def chat(self, system, messages, specs=()):
+        if not _Overloaded.ok:
+            raise ProviderError("HTTP 503: overloaded", retryable=True)
+        return ChatTurn(json.dumps({"next_action": "stop", "reason": "nothing to change"}), [], "end",
+                        usage={"input_tokens": 10, "output_tokens": 5})
+
+
+def _failing(base, method):
+    class Failing(base):
+        pass
+
+    def fails(self, *a, **kw):
+        raise ProviderError("HTTP 503: overloaded", retryable=True)     # what the meter re-raises after its retries
+    setattr(Failing, method, fails)
+    return Failing
+
+
+@pytest.mark.parametrize("where,step", [("metered", "segment-0"), ("note", "segment-0"), ("summary", "segment-0"),
+                                        ("revise", "segment-0"), ("slot", "slot-0"), ("common", "slot-0"),
+                                        ("arm", "slot-0")])
+def test_a_research_call_that_keeps_failing_pauses_the_activity(fake_upstream, tmp_path, fixture_preset,
+                                                                monkeypatch, where, step):
+    """A research call the meter retried and that still failed is a provider failure, not R's decision and not a
+    crash: the activity pauses, the round is not counted, and after the repair the same step is asked again."""
+    import json as _json
+    import time
+    from test_cycle import RProposer, SkillAnyway, Stopper, arms, cycle_config, gap_w0, outer_on_the_gap
+    from test_harness_loop import NoteResearcher
+    from ouroloop import bench
+    from ouroloop.evolve.execution import Budgets
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
+    cfg = cycle_config(fake_upstream, tmp_path)
+    gap_w0(cfg, tmp_path)
+    if where != "common":
+        outer_on_the_gap(monkeypatch)        # the default pair keeps a failing family in the arms' train pool
+    worker, slot, factory = Stopper(), RProposer(), arms([Stopper, Stopper, SkillAnyway])[0]
+    if where == "metered":
+        cfg["research"] = {"llm": {"type": "test_real_run_findings:_Overloaded"}}
+        monkeypatch.setattr(_Overloaded, "ok", False)
+        worker = None                                        # the cycle's own researcher, on the activity's book
+    elif where in ("note", "summary"):
+        worker = _failing(Stopper, "note" if where == "note" else "summarize")()
+    elif where == "revise":
+        worker = _failing(NoteResearcher, "revise")()
+    elif where == "slot":
+        slot = _failing(RProposer, "propose_research")()
+    elif where == "common":
+        factory = arms([_failing(Stopper, "note"), Stopper, SkillAnyway])[0]
+    elif where == "arm":
+        factory = arms([Stopper, Stopper, _failing(SkillAnyway, "summarize")])[0]
+    result = bench.cycle(cfg, ".", out=lambda _line: None, researcher=worker, slot_researcher=slot,
+                         arm_researcher=factory)
+    assert result["status"] == "paused" and result["ok"] is False
+    recorded = _json.loads((tmp_path / "ws" / "rsi" / "cycle.json").read_text())
+    assert recorded["status"] == "paused"
+    record = recorded["steps"][step]
+    assert record.get("outcome") == "paused" or record.get("stop_reason") == "repair_runtime"
+    if where == "metered":
+        book = Budgets(tmp_path / "ws")._read()
+        tries = [r for r in book["reservations"].values() if ":research" in r["operation_id"]]
+        assert len(tries) == 2 and {r["status"] for r in tries} == {"unknown"}     # the meter's retry was used
+    if step == "segment-0":
+        rounds = _json.loads((tmp_path / "ws" / "rsi" / "segments" / "segment-0.json").read_text())["rounds"]
+        from ouroloop.research.loop import counters_of
+        assert counters_of(rounds) == (0, 0)                    # the paused round is not counted
+    # the repair: the same step is asked again, and the cycle goes on
+    monkeypatch.setattr(_Overloaded, "ok", True)
+    again = bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper() if worker is not None else None,
+                        slot_researcher=RProposer(), arm_researcher=arms([Stopper, Stopper, SkillAnyway])[0],
+                        until="segment-0" if step == "segment-0" else None)
+    assert again["status"] in ("stopped", "done") and again["steps"][step].get("outcome") != "paused"
+
+
+def _spend_the_rest(root, scope="cyc"):
+    """Book what is left of the activity's budget, as spending elsewhere in the activity would have."""
+    from ouroloop.evolve.execution import Budgets
+    budgets = Budgets(root)
+    budgets.account(scope, {"model_calls": 4000, "tool_calls": 4000})      # the root cycle_config freezes
+    left = budgets.headroom(scope, budgets._read())["model_calls"]
+    budgets.settle(budgets.reserve(scope, "spent elsewhere", {"model_calls": left}).id, {"model_calls": left})
+
+
+@pytest.mark.parametrize("where", ["baseline", "improve", "research_slot", "_campaign_common", "_run_campaign_arm",
+                                   "_evaluate_outer"])
+def test_a_spent_budget_ends_every_cycle_step_without_pausing(fake_upstream, tmp_path, fixture_preset, monkeypatch,
+                                                              where):
+    """docs/modules/05_EXECUTION_BUDGET.md §3: a spent budget is a bounded end, not a fault. Whichever step it runs
+    out in, the activity ends as budget_exhausted (exit 0, a report), nothing pauses, and no exception escapes."""
+    import json as _json
+    from test_cycle import RProposer, SkillAnyway, Stopper, arms, cycle_config, gap_w0, outer_on_the_gap
+    from ouroloop import bench
+    cfg = cycle_config(fake_upstream, tmp_path)
+    gap_w0(cfg, tmp_path)
+    if where != "_campaign_common":
+        outer_on_the_gap(monkeypatch)       # the default pair keeps a failing family in the arms' train pool
+    # the slot's own research step is the cycle's metered one, so its request meets the spent book
+    cfg["research"] = {"llm": {"type": "test_real_run_findings:_Overloaded"}}
+    monkeypatch.setattr(_Overloaded, "ok", True)
+    real = getattr(bench, where)
+
+    def spent_on_entry(*a, **kw):
+        _spend_the_rest(tmp_path / "ws")
+        return real(*a, **kw)
+    monkeypatch.setattr(bench, where, spent_on_entry)
+    slot = None if where == "research_slot" else RProposer()
+    lines = []
+    # every research call but the slot's proposal is the cycle's own, metered on the activity's book
+    result = bench.cycle(cfg, ".", out=lines.append, researcher=None, slot_researcher=slot, arm_researcher=None)
+    assert result["status"] == "budget_exhausted" and result["ok"] is True, result["steps"]
+    recorded = _json.loads((tmp_path / "ws" / "rsi" / "cycle.json").read_text())
+    assert recorded["status"] == "budget_exhausted"
+    from ouroloop.research.campaign import PAUSES
+    assert not any(s.get("outcome") == "paused" or s.get("stop_reason") in PAUSES
+                   for s in recorded["steps"].values() if isinstance(s, dict))
+    assert any(line.startswith("wrote") for line in lines)               # the report of an ended activity

@@ -48,7 +48,14 @@ class StateError(RuntimeError):
 
 
 class BudgetError(RuntimeError):
-    """The operation would exceed a limit of this scope or of one of its ancestors."""
+    """A budget the ledger cannot use as asked: a scope that does not exist or exists with other limits, an
+    unknown dimension, an allocation that does not fit. The budget is not the one the activity froze, which a
+    person has to look at (docs/modules/05_EXECUTION_BUDGET.md §3). A spent budget is the subclass below."""
+
+
+class BudgetExhausted(BudgetError):
+    """The operation would exceed a limit of this scope or of one of its ancestors, or the scope stopped after a
+    breach: the budget is spent. Not a fault: whatever runs on it ends, and nothing is to be repaired."""
 
 
 @dataclass
@@ -386,10 +393,10 @@ class Budgets:
             book = self._read()
             reason = self.stopped(scope_id, book)
             if reason:
-                raise BudgetError(f"no further paid operations in {scope_id!r}: {reason}")
+                raise BudgetExhausted(f"no further paid operations in {scope_id!r}: {reason}")
             over = self._exceeds(scope_id, book, bound, allocation=allocation)
             if over:
-                raise BudgetError(f"{operation_id} would exceed {over['dimension']} of {over['scope_id']}: "
+                raise BudgetExhausted(f"{operation_id} would exceed {over['dimension']} of {over['scope_id']}: "
                                   f"limit {over['limit']}, would be {over['would_be']}")
             rid = new_id("res")
             book["reservations"][rid] = {"id": rid, "scope_id": scope_id, "operation_id": operation_id,
