@@ -386,6 +386,32 @@ def test_a_malformed_research_slot_reply_proposes_nothing_instead_of_crashing():
     assert result.proposals == [] and result.next_action == "stop"
 
 
+def test_the_slot_keeps_rs_propose_text_and_its_format_governs():
+    """The slot's system prompt is R's own bound propose text, then the slot format, which says what that text is,
+    that this call changes it, and that the format governs where they differ (docs/modules/04_RESEARCH_LOOP.md §5)."""
+    from ouroloop.research.basic import RESEARCH_FORMAT, PolicyResearcher
+    from ouroloop.research.experiment import propose_experiment
+    sent = []
+
+    class Replies:
+        name = "fake"
+
+        def complete(self, system, prompt):
+            sent.append((system, json.loads(prompt)))
+            return json.dumps({"next_action": "stop", "reason": "nothing to change"})
+    prompts = {"research.diagnose": P.DIAGNOSE_NOTE, "research.propose": R1_PROPOSE}
+    bound = P.BoundRuntime(release_ref="", profile="task", authorization="x", services=P.Services(None))
+    bound.research["research.diagnose"] = type("D", (), {"output_schema": "failure_note.v1"})()
+    bound.prompts.update(prompts)
+    context = type("C", (), {"goal": "g", "budget": {}})()
+    propose_experiment(context, bound, "research", researcher=PolicyResearcher(Replies()), objects=None)
+    (system, user), = sent
+    assert system == f"{R1_PROPOSE}\n\n{RESEARCH_FORMAT}" and user["current_prompts"] == prompts
+    for declared in ("The text above is research.propose", "proposes a change to those instructions themselves",
+                     "this format governs"):
+        assert declared in RESEARCH_FORMAT
+
+
 def test_reuse_is_verified_only_by_a_request_from_r1s_changed_prompt(fake_upstream, tmp_path, fixture_preset):
     cfg = cycle_config(fake_upstream, tmp_path)
     activity, booted = gap_w0(cfg, tmp_path)

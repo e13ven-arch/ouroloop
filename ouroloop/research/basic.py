@@ -281,13 +281,16 @@ PACKAGE_FORMAT = (
     "\"<the complete new text>\"}} - the whole text W should run with, not a patch. Do not fill in results, "
     "verdicts or thresholds. " + PACKAGE_API)
 RESEARCH_FORMAT = (
-    "This call is a research slot: do not change the capability package. Read how the research policy's own "
-    "rounds went — the verdicts and aggregate figures of the experience log, the note coverage, the drafts that "
-    "failed their checks — and the current texts of its diagnose and propose prompts. Propose at most one change "
-    "to one of those prompts that would make the next rounds' notes or proposals better, as its complete new "
-    'text. Reply with JSON only: {"next_action": "none|stop", "reason": "...", "proposals": [{"hypothesis": '
-    '"...", "target": "research.diagnose|research.propose", "text": "<the complete new prompt>", "expected": '
-    '"...", "abandon_if": "..."}]}. Do not write task answers, task ids or scores into a prompt.')
+    "This call is a research slot. The text above is research.propose: this research policy's instructions for "
+    "worker rounds, where they change the capability package. This call proposes a change to those instructions "
+    "themselves - research.propose or research.diagnose, whose current texts are in the input - not to the "
+    "package. Where the text above and this format differ (what to read, what to change, what to reply), this "
+    "format governs. Read how the research policy's own rounds went: the verdicts and aggregate figures of the "
+    "experience log, the note coverage, the drafts that failed their checks. Propose at most one change to one of "
+    "the two prompts that would make the next rounds' notes or proposals better, as its complete new text. Reply "
+    'with JSON only: {"next_action": "none|stop", "reason": "...", "proposals": [{"hypothesis": "...", "target": '
+    '"research.diagnose|research.propose", "text": "<the complete new prompt>", "expected": "...", '
+    '"abandon_if": "..."}]}. Do not write task answers, task ids or scores into a prompt.')
 REVISE_FORMAT = (
     'The draft package below failed its check. Reply with JSON only: {"patch": {"write": {"<path>": "<text>"}, '
     '"delete": ["<path>"]}} — the corrected patch against the parent package shown. ' + PACKAGE_API)
