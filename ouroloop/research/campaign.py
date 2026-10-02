@@ -61,6 +61,9 @@ class CampaignPlan(ct.Record):
     r_candidate_ref: str = ""
     campaign_pairs: tuple[str, ...] = ()          # CampaignPair refs
     arm_budget: dict = field(default_factory=dict)
+    # Each pair's outer comparison, one infrastructure refill included: the outer scope's limit, and held on the
+    # book before the common inputs and the arms run, so they cannot spend it (docs/modules/05 §2). None: no hold.
+    outer_budget: dict | None = None
     worker_round_limit: int = 2
     worker_gate_plan_ref: str = ""
     research_gate_plan: dict = field(default_factory=dict)
@@ -199,7 +202,12 @@ def run_campaign(plan: CampaignPlan, *, run_arm, evaluate_outer, objects: ct.Obj
     `changed` names every target R1 changed, so a change no request digest can show is reported as unverified.
 
     The outer comparison of each pair is charged to `<plan>:<pair>:outer` and the common inputs to
-    `<plan>:<pair>:common`; the receipt's costs include both when they cost anything.
+    `<plan>:<pair>:common`; the receipt's costs include both when they cost anything. With `plan.outer_budget`,
+    each pair's outer scope holds that much before anything else runs, released only to the outer runs themselves
+    or, when a pair's outer comparison does not run, back to the activity. A paused campaign keeps its holds.
+
+    A pair whose two arms sealed the same W is not run on the outer tasks: it would measure one W twice and say
+    nothing about R. The verdict is inconclusive, and no later pair is run (docs/modules/06 §3).
     """
     reasons = validate(plan, objects=objects, lineage=lineage)
     if reasons:
@@ -210,13 +218,25 @@ def run_campaign(plan: CampaignPlan, *, run_arm, evaluate_outer, objects: ct.Obj
     arms_out: dict[str, list[ArmOutcome]] = {"control": [], "candidate": []}
     extra: dict = {}
 
-    def spent(scope: str) -> dict:
-        used = budget.child(scope, {}).remaining().get("used") or {}
+    def spent(scope: str, limits: dict | None = None) -> dict:
+        used = budget.child(scope, dict(limits or {})).remaining().get("used") or {}
         return {k: round(float(v), 6) for k, v in used.items() if isinstance(v, (int, float)) and v}
 
     def total(name: str, used: dict) -> None:
         for k, v in used.items():
             extra.setdefault(name, {})[k] = round(extra.get(name, {}).get(k, 0) + v, 6)
+
+    holds: dict = {}
+    if plan.outer_budget:
+        for pair in pairs:
+            account = budget.child(f"{plan.id}:{pair.pair_id}:outer", dict(plan.outer_budget))
+            holds[pair.pair_id] = (account, account.hold(f"{plan.id}:{pair.pair_id}:outer:hold",
+                                                         dict(plan.outer_budget)))
+
+    def release(pair_id: str) -> None:
+        held = holds.pop(pair_id, None)
+        if held is not None:
+            held[0].settle(held[1], None, "released")
     for pair in pairs:
         sealed = {}
         # What both arms start from, prepared once and charged to the campaign rather than to whichever arm runs
@@ -245,8 +265,13 @@ def run_campaign(plan: CampaignPlan, *, run_arm, evaluate_outer, objects: ct.Obj
                             [*paused, "repair the runtime and run the campaign again: each arm resumes to the "
                                       "frozen round count under the same frozen conditions"],
                             {"discovery": plan.discovery}, {}, extra)
+        if sealed["control"] == sealed["candidate"]:
+            break
+        release(pair.pair_id)
         outer[pair.pair_id] = evaluate_outer(pair, sealed)
-        total("outer", spent(f"{plan.id}:{pair.pair_id}:outer"))
+        total("outer", spent(f"{plan.id}:{pair.pair_id}:outer", plan.outer_budget))
+    for pair_id in list(holds):
+        release(pair_id)                # what no outer comparison will run on goes back to the activity
     verdict, notes, metrics, uncertainty = judge_research(plan, pairs, outer, arms_out)
     if prompts is not None:
         unused, unverified = unused_changes(prompts.get("control") or {}, prompts.get("candidate") or {}, arms_out)
@@ -326,33 +351,71 @@ def _costs(arms_out: dict, extra: dict | None = None) -> dict:
 
 
 def judge_research(plan: CampaignPlan, pairs, outer: dict, arms_out: dict) -> tuple[str, list[str], dict, dict]:
-    """The research verdict: the outer full-task quality of what each arm produced, by independence group.
+    """The research verdict: the outer full-task quality of what each arm produced, paired by task, by
+    independence group.
 
-    The unit is the independence group, not the pair and not the task: pairs over one task pool are correlated, so
-    they are merged before anything is resampled, and a plan with one group can only report an exploratory result.
+    Within a pair the two arms are compared on the same tasks: a task counts only when each of its repeats has a
+    valid attempt on both arms, and one that does not makes the comparison inconclusive, as an incomplete pair
+    does in the worker gate — the tasks left would be a selection. Two arms that sealed the same W compared nothing
+    about R: inconclusive too. The unit is the independence group, not the pair and not the task: pairs over one
+    task pool are correlated, so they are merged before anything is resampled, and a plan with one group can only
+    report an exploratory result.
     """
     gate = plan.gate()
+    by_id = {pair.pair_id: pair for pair in pairs}
     groups = {pair.pair_id: pair.independence_group for pair in pairs}
+    sealed: dict[str, dict[str, str]] = {}
+    for arm, outs in arms_out.items():
+        for o in outs:
+            pair = by_id.get(o.pair_id)
+            sealed.setdefault(o.pair_id, {})[arm] = o.w_star or (select_w(o, pair, plan.selection_rule)
+                                                                 if pair is not None else "")
+    identical = sorted(p for p, w in sealed.items() if len(w) == 2 and w["control"] == w["candidate"])
     per_group: dict[str, dict[str, list[float]]] = {}
     notes: list[str] = []
+    incomplete: dict[str, dict[str, int]] = {}
+    paired_tasks = 0
     for pair_id, by_arm in outer.items():
-        group = groups.get(pair_id, pair_id)
-        for arm in ("control", "candidate"):
-            tasks = per_task(by_arm.get(arm) or [])
-            if not tasks:
+        if pair_id in identical:
+            continue
+        rows = {arm: list(by_arm.get(arm) or []) for arm in ("control", "candidate")}
+        expected = {(r.task_id, r.attempt) for arm_rows in rows.values() for r in arm_rows}
+        missing: dict = {}
+        for arm, arm_rows in rows.items():
+            valid = {(r.task_id, r.attempt) for r in arm_rows if r.validity == "valid"}
+            if not valid:
                 notes.append(f"{pair_id}/{arm}: no valid outer attempt")
-            mean = sum(tasks.values()) / len(tasks) if tasks else None
-            if mean is not None:
-                per_group.setdefault(group, {}).setdefault(arm, []).append(mean)
+            last = {(r.task_id, r.attempt): r.failure_class or r.validity for r in arm_rows}
+            for key in sorted(expected - valid):
+                missing.setdefault(key, []).append(f"{arm} {last.get(key, 'absent')}")
+        if missing:
+            classes: dict[str, int] = {}
+            for why in missing.values():
+                for arm_why in why:
+                    kind = arm_why.split(" ", 1)[1]
+                    classes[kind] = classes.get(kind, 0) + 1
+            incomplete[pair_id] = classes
+            shown = [f"{t}/r{i} ({', '.join(why)})" for (t, i), why in list(missing.items())[:5]]
+            notes.append(f"{pair_id}: {len(missing)} outer tasks are not complete on both arms: {shown}"
+                         + (" ..." if len(missing) > 5 else ""))
+        candidate, control = per_task(rows["candidate"]), per_task(rows["control"])
+        shared = sorted(set(candidate) & set(control) - {t for t, _ in missing})
+        if not shared:
+            continue
+        paired_tasks += len(shared)
+        group = groups.get(pair_id, pair_id)
+        for arm, tasks in (("candidate", candidate), ("control", control)):
+            per_group.setdefault(group, {}).setdefault(arm, []).append(sum(tasks[t] for t in shared) / len(shared))
     subject = {g: sum(v["candidate"]) / len(v["candidate"]) for g, v in per_group.items() if v.get("candidate")}
     control = {g: sum(v["control"]) / len(v["control"]) for g, v in per_group.items() if v.get("control")}
     shared = sorted(set(subject) & set(control))
     stats = paired_bootstrap(subject, control, {g: g for g in shared}, seed=gate.bootstrap_seed,
                              replicates=gate.bootstrap_replicates, confidence=gate.confidence_level)
-    metrics = {"groups": len(shared), "pairs": len(outer),
+    metrics = {"groups": len(shared), "pairs": len(outer), "tasks": paired_tasks,
                "candidate_outer_pass_rate": round(sum(subject.values()) / len(subject), 6) if subject else None,
                "control_outer_pass_rate": round(sum(control.values()) / len(control), 6) if control else None,
                "gain": stats["point"], "regression_rate": regression_rate(subject, control),
+               "incomplete": incomplete, "identical_arms": identical,
                "not_reached": [f"{o.pair_id}/{arm}" for arm, outs in arms_out.items() for o in outs
                                if o.stop_reason and o.stop_reason != "rounds_done"],
                "installed": {arm: [len(o.installed) for o in outs] for arm, outs in arms_out.items()},
@@ -363,6 +426,15 @@ def judge_research(plan: CampaignPlan, pairs, outer: dict, arms_out: dict) -> tu
     if plan.discovery == "manual_seed":
         notes.append("the research change was written by hand: the engineering chain is exercised, automatic "
                      "discovery is not claimed")
+    if identical:
+        return "inconclusive", [*notes, f"{', '.join(identical)}: both arms sealed the same W "
+                                        f"{ct.short(sealed[identical[0]]['control'])}, so the outer tasks would "
+                                        f"measure one W twice and nothing about R was compared"], \
+            metrics, uncertainty
+    if incomplete:
+        return "inconclusive", [*notes, "the outer comparison is not complete on both arms: a task without a valid "
+                                        "attempt on each side is not compared, and the tasks left are a selection"], \
+            metrics, uncertainty
     if not shared:
         return "inconclusive", [*notes, "no independence group produced outer results on both arms"], metrics, \
             uncertainty

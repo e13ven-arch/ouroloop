@@ -631,10 +631,23 @@ def test_a_spent_budget_ends_every_cycle_step_without_pausing(fake_upstream, tmp
         _spend_the_rest(tmp_path / "ws")
         return real(*a, **kw)
     monkeypatch.setattr(bench, where, spent_on_entry)
+    if where in ("_campaign_common", "_run_campaign_arm"):
+        # The outer comparison's share was set aside before these steps ran, so spending the rest did not take
+        # it; both arms seal W0, the outer does not run, and the share goes back to the activity. The next segment
+        # finds the book spent again.
+        real_improve = bench.improve
+
+        def improve(*a, **kw):
+            if kw.get("segment") == "segment-1":
+                _spend_the_rest(tmp_path / "ws")
+            return real_improve(*a, **kw)
+        monkeypatch.setattr(bench, "improve", improve)
     slot = None if where == "research_slot" else RProposer()
     lines = []
-    # every research call but the slot's proposal is the cycle's own, metered on the activity's book
-    result = bench.cycle(cfg, ".", out=lines.append, researcher=None, slot_researcher=slot, arm_researcher=None)
+    # every research call but the slot's proposal is the cycle's own, metered on the activity's book; the outer
+    # comparison runs only when the arms sealed different W, so for it the candidate arm installs a skill
+    arm = arms([Stopper, Stopper, SkillAnyway])[0] if where == "_evaluate_outer" else None
+    result = bench.cycle(cfg, ".", out=lines.append, researcher=None, slot_researcher=slot, arm_researcher=arm)
     assert result["status"] == "budget_exhausted" and result["ok"] is True, result["steps"]
     recorded = _json.loads((tmp_path / "ws" / "rsi" / "cycle.json").read_text())
     assert recorded["status"] == "budget_exhausted"
@@ -642,6 +655,11 @@ def test_a_spent_budget_ends_every_cycle_step_without_pausing(fake_upstream, tmp
     assert not any(s.get("outcome") == "paused" or s.get("stop_reason") in PAUSES
                    for s in recorded["steps"].values() if isinstance(s, dict))
     assert any(line.startswith("wrote") for line in lines)               # the report of an ended activity
+    if where == "_evaluate_outer":
+        # the outer attempts met the spent book: an incomplete comparison, inconclusive, not a pause
+        assert recorded["steps"]["slot-0"]["verdict"] == "inconclusive"
+        assert "budget_exhausted" in json.dumps(
+            bench.open_activity(cfg, ".", out=lambda _l: None).objects.get(recorded["steps"]["slot-0"]["receipt"]))
 
 
 def test_resume_refuses_a_changed_frozen_plan(fake_upstream, tmp_path, monkeypatch):

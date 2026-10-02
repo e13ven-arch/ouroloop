@@ -470,6 +470,17 @@ class BudgetAccount:
     def settle(self, reservation_id: str, measured: dict | None = None, status: str = "settled") -> BudgetReceipt:
         return self.budgets.settle(reservation_id, measured, status)
 
+    def hold(self, operation_id: str, bound: dict) -> str:
+        """Set `bound` aside in this scope until it is released: a reservation no call settles, counted at its
+        bound on every scope up to the root, so nothing else in the activity can spend it meanwhile. One hold per
+        operation id: holding again returns the one on record, open or already released, so a restart neither
+        sets the amount aside twice nor takes back what was already handed to what it was held for."""
+        book = self.budgets._read()
+        for r in book["reservations"].values():
+            if r["scope_id"] == self.scope_id and r["operation_id"] == operation_id:
+                return r["id"]
+        return self.reserve(operation_id, bound).id
+
     def allocate(self, name: str, limits: dict) -> dict:
         return self.budgets.allocate(self.scope_id, name, limits)
 

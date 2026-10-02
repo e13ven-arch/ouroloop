@@ -160,6 +160,14 @@ def test_br6_09_it6_21_a_cycle_from_a_preset_runs_every_step_and_shows_r1_is_use
     # BR6-12 / IT6-21: the first segment ended without a candidate, and the planned research slot still ran
     assert steps["segment-0"]["stop_reason"] == "no_proposal"
     assert steps["slot-0"]["verdict"] == "accepted" and steps["slot-0"]["installed"] is True
+    # the outer comparison's share (8% of the frozen root) was frozen into the plan, held, then handed over
+    from ouroloop.evolve.execution import Budgets
+    from ouroloop.research.campaign import CampaignPlan
+    campaign = activity.objects.load(steps["slot-0"]["campaign"], CampaignPlan)
+    assert campaign.outer_budget == {"model_calls": 320.0, "tool_calls": 320.0}
+    holds = [r for r in Budgets(tmp_path / "ws")._read()["reservations"].values()
+             if r["operation_id"].endswith(":outer:hold")]
+    assert [h["status"] for h in holds] == ["released"]
     r1 = steps["slot-0"]["r1"]
     active = ct.SystemRelease.from_json(activity.objects.get(activity.releases.active()["release_ref"]))
     assert active.research_ref == r1
@@ -558,15 +566,18 @@ def test_reuse_is_verified_only_by_a_request_from_r1s_changed_prompt(fake_upstre
     assert bench._reuse_fact(activity, r1, r0, "segment-1")["state"] == "verified"
 
 
+@pytest.mark.parametrize("usd,share", [(5.0, "a research-slot arm"), (12.0, "a research slot's outer comparison")])
 def test_a_cycle_whose_research_arms_could_not_make_one_call_is_refused_up_front(fake_upstream, tmp_path,
-                                                                                  fixture_preset):
+                                                                                  fixture_preset, usd, share):
+    """One call reserves about $1.47 here: $5 leaves an arm's 15% short of it, $12 leaves the outer's 8% short."""
     cfg = cycle_config(fake_upstream, tmp_path)
-    cfg["freeze"]["budget"] = {"usd": 5.0}
+    cfg["freeze"]["budget"] = {"usd": usd}
     cfg["pricing"] = {"input_per_1k": 0.0014, "output_per_1k": 0.0044, "max_input_tokens": 1_000_000,
                       "max_output_tokens": 16384, "source": "test"}
     gap_w0(cfg, tmp_path)
-    with pytest.raises(ValueError, match="research slot cannot run: one call reserves up to"):
+    with pytest.raises(ValueError, match="research slot cannot run: one call reserves up to") as refused:
         bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper())
+    assert share in str(refused.value)
 
 
 # ---------------------------------------------------------------------------- before the first paid activity
@@ -1086,6 +1097,9 @@ def test_a_slot_after_a_worker_install_runs(fake_upstream, tmp_path, fixture_pre
     assert "outcome" not in slot and len(made) == 3
     receipt = activity.objects.load(slot["receipt"], ct.EvaluationReceipt)
     assert receipt.profile == "research" and receipt.verdict == slot["verdict"] and slot["installed"] is False
+    # W1 already closes the fixture's one gap, so both arms seal it: no outer run, and nothing about R compared
+    assert slot["verdict"] == "inconclusive" and receipt.metrics["identical_arms"] == ["pair-1"]
+    assert receipt.metrics["control_outer_pass_rate"] is None
     ran = list(ct.Events(activity.root).of("campaign_arm"))
     assert [e["arm"] for e in ran] == ["control", "candidate"]
     assert all(e["w_star"] == installed.worker_ref for e in ran)
@@ -1163,3 +1177,23 @@ def test_rc6_01_both_arms_start_from_the_same_e0(fake_upstream, tmp_path, fixtur
     assert log.read_text() == before
     with pytest.raises(ValueError, match="another E0"):
         bench._seed_experience(sides["control"], e0[1:])
+
+
+def test_a_slot_whose_outer_share_the_root_cannot_hold_asks_r_nothing(fake_upstream, tmp_path, fixture_preset):
+    """docs/modules/05_EXECUTION_BUDGET.md §3: a slot opens only when the root can set aside its outer comparison's
+    share. When it cannot, R is not asked, no campaign is frozen, and the activity ends as budget_exhausted."""
+    from ouroloop.evolve.execution import Budgets
+    cfg = cycle_config(fake_upstream, tmp_path)
+    gap_w0(cfg, tmp_path)
+    bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper(), until="segment-0")
+    budgets = Budgets(tmp_path / "ws")
+    left = budgets.headroom("cyc", budgets._read())["model_calls"]
+    # spent elsewhere, down to 200 model calls: more than nothing, less than the outer share of 320
+    budgets.settle(budgets.reserve("cyc", "spent elsewhere", {"model_calls": left - 200}).id,
+                   {"model_calls": left - 200})
+    slot = RProposer()
+    result = bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper(), slot_researcher=slot)
+    step = result["steps"]["slot-0"]
+    assert result["status"] == "budget_exhausted" and step["outcome"] == "budget_exhausted", step
+    assert "outer comparison's share" in step["reason"] and "campaign" not in step and slot.requests == []
+    assert "before a campaign ran" in result["report"]["C4"]["detail"]

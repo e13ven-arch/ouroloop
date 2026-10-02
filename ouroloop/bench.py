@@ -1025,7 +1025,10 @@ PRESETS = {
         # A research slot's comparison: each arm gets the same fixed share of the frozen activity budget, and
         # the frozen dev families are halved by their frozen order — the arms' inner gate reads the first half,
         # the outer comparison the second, which neither arm touches (the research_dev pool of M6 §1).
-        "campaign": {"worker_round_limit": 2, "arm_share": 0.15, "min_gain": 0.05, "min_groups": 1},
+        # The outer comparison's share (both W*, one infrastructure refill) is its limit, and is set aside before
+        # the common inputs and the arms run.
+        "campaign": {"worker_round_limit": 2, "arm_share": 0.15, "outer_share": 0.08, "min_gain": 0.05,
+                     "min_groups": 1},
     },
 }
 
@@ -1742,7 +1745,8 @@ def research(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = 
         # The outer runs are the evaluator's, and cost the same for both arms: a child scope of the campaign, so
         # they are counted in the comparison's total and reported apart from either arm (docs/modules/06 §3).
         return _evaluate_outer(activity, plan, pair, sealed, provider=provider, out=out, pricing=pricing,
-                               budget=budget.child(f"{plan.id}:{pair.pair_id}:outer", {}))
+                               budget=budget.child(f"{plan.id}:{pair.pair_id}:outer",
+                                                   dict(plan.outer_budget or {})))
 
     def run_arm(pair: CampaignPair, arm: str, r_ref: str, arm_budget, shared=None) -> object:
         return _run_campaign_arm(activity, plan, pair, arm, r_ref, arm_budget, provider=provider,
@@ -2078,7 +2082,13 @@ def _copy_measurement(measurement: dict, source: Results, transcripts: Path, tar
 
 def _evaluate_outer(activity: Activity, plan, pair, sealed: dict, *, provider, out=print, pricing=None,
                     budget=None) -> dict:
-    """The evaluator's own run: both sealed W* on the same outer tasks, with the same repeats and order."""
+    """The evaluator's own run: both sealed W* on the same outer tasks, with the same repeats and order.
+
+    An attempt lost to infrastructure is run once more under the outer plan's frozen retry policy, as the worker
+    gate does: the original stays on record and the refill names it (supersedes); a task failure, a candidate
+    defect, an evaluator failure or a spent budget is never re-run. Run again, it reuses every attempt on record,
+    refills included."""
+    from .evolve.task_gate import refill
     parent = activity.release_ref
     core_ref = _ct.SystemRelease.from_json(activity.objects.get(parent)).core_ref
     tasks = _tasks_of(activity, pair.outer_groups)
@@ -2088,13 +2098,18 @@ def _evaluate_outer(activity: Activity, plan, pair, sealed: dict, *, provider, o
     work.dev_tasks = tuple(tasks)
     rows = {}
     for arm, w_star in sealed.items():
-        plan_ref = activity.objects.put(work.plan(w_star, w_star, parent))
+        outer_plan = work.plan(w_star, w_star, parent)
+        plan_ref = activity.objects.put(outer_plan)
         permit = activity.releases.permit(w_star, parent, plan_ref, f"{plan.id}:{pair.pair_id}:outer", core_ref)
         release = activity.releases.candidate_release(parent, w_star, permit)
-        rows[arm] = work.run_arm(f"outer_{arm}", release, order, plan_ref=plan_ref, split=_split_of(activity,
-                                                                                                   tasks),
-                                candidate=f"{arm}_w_star", role="evolved", permit=permit,
-                                scope=f"{plan.id}:{pair.pair_id}:outer", resume=True)
+
+        def run(name, order_, retry=0, supersedes=None, _arm=arm, _release=release, _plan_ref=plan_ref,
+                _permit=permit):
+            return work.run_arm(name, _release, order_, plan_ref=_plan_ref, split=_split_of(activity, tasks),
+                                candidate=f"{_arm}_w_star", role="evolved", permit=_permit,
+                                scope=f"{plan.id}:{pair.pair_id}:outer", retry_index=retry, resume=True,
+                                supersedes=supersedes)
+        rows[arm] = refill(outer_plan, f"outer_{arm}", run(f"outer_{arm}", order), run)
         out(f"outer      {pair.pair_id}/{arm}: {summarise(rows[arm])['passed']}/"
             f"{summarise(rows[arm])['tasks']} passed")
     return rows
@@ -2321,9 +2336,11 @@ def cycle(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pri
     if schedule.research_slots:
         from .evolve.execution import call_bound_problem
         limits = budget_limits(activity.objects.get(activity.rsi.budget_ref) if activity.rsi.budget_ref else {})
-        share = float(settings["campaign"]["arm_share"])
+        share, outer = float(settings["campaign"]["arm_share"]), float(settings["campaign"]["outer_share"])
         problem = call_bound_problem(pricing_of(cfg), {k: float(v) * share for k, v in limits.items()},
-                                     f"a research-slot arm ({share:.0%} of the activity's budget)")
+                                     f"a research-slot arm ({share:.0%} of the activity's budget)") or \
+            call_bound_problem(pricing_of(cfg), {k: float(v) * outer for k, v in limits.items()},
+                               f"a research slot's outer comparison ({outer:.0%} of the activity's budget)")
         if problem:
             raise ValueError(f"the cycle's research slot cannot run: {problem}")
     def guarded(name: str, run) -> tuple:
@@ -2550,12 +2567,20 @@ def _cycle_slot(cfg, base, activity: Activity, settings: dict, slot: str, state:
         research_gate = GatePlan(min_gain=float(campaign["min_gain"]), min_groups=int(campaign["min_groups"]))
         limits = budget_limits(activity.objects.get(activity.rsi.budget_ref) if activity.rsi.budget_ref else {})
         arm_budget = {k: round(float(v) * float(campaign["arm_share"]), 6) for k, v in limits.items()}
+        outer_budget = {k: round(float(v) * float(campaign["outer_share"]), 6) for k, v in limits.items()}
+        if not budget.affordable(outer_budget):
+            # docs/modules/05_EXECUTION_BUDGET.md §3: a slot that cannot hold its outer comparison does not open;
+            # R is not asked and nothing is frozen
+            step.update(outcome="budget_exhausted",
+                        reason=f"the root cannot set aside the outer comparison's share {outer_budget}")
+            save()
+            return "budget_exhausted"
         discovery = "automatic" if researcher is None else "scripted"
         researcher = researcher or _default_researcher(cfg, activity, budget=budget)
         planned = research_slot(cfg, base, pairs=pairs, researcher=researcher, out=out,
                                 worker_rounds=int(campaign["worker_round_limit"]), gate=gate,
                                 research_gate=research_gate, arm_budget=arm_budget, discovery=discovery,
-                                run=False)
+                                outer_budget=outer_budget, run=False)
         if planned["outcome"] in ("repair_runtime", "infrastructure_failed"):
             step.update(outcome="paused", reason="; ".join(planned.get("reasons") or ()))
             save()
@@ -2650,7 +2675,8 @@ def _reuse_fact(activity: Activity, r1: str, r0: str | None, segment: str) -> di
 def research_slot(cfg: dict, base: str | Path = ".", *, pairs, researcher, arm_researcher=None,
                   out: Callable[[str], None] = print, worker_rounds: int = 1, gate: GatePlan | None = None,
                   arm_budget: dict | None = None, phase: str = "research_dev",
-                  discovery: str = "scripted", run: bool = True, research_gate: GatePlan | None = None) -> dict:
+                  discovery: str = "scripted", run: bool = True, research_gate: GatePlan | None = None,
+                  outer_budget: dict | None = None) -> dict:
     """One research slot: the current R proposes a change to R, the change is compared, and the winner is installed.
 
     The proposal goes through the same admission and the same build as a worker candidate — only the owner and
@@ -2715,6 +2741,7 @@ def research_slot(cfg: dict, base: str | Path = ".", *, pairs, researcher, arm_r
                         core_ref=work.core_ref, r_control_ref=r0, r_candidate_ref=build.candidate_ref,
                         campaign_pairs=tuple(activity.objects.put(p) for p in pairs),
                         arm_budget=dict(arm_budget or {"model_calls": 2000, "tool_calls": 2000}),
+                        outer_budget=dict(outer_budget) if outer_budget else None,
                         worker_round_limit=worker_rounds,
                         worker_gate_plan_ref=activity.objects.put(gate or GatePlan(min_groups=1, min_gain=0.01,
                                                                                   bootstrap_replicates=200)),

@@ -41,6 +41,12 @@ def outcome(arm, pair_id="pair-1", *, installed=(), w_star="", stop="rounds_done
                       costs=dict(costs or {}), research_requests=tuple(requests))
 
 
+def sealed_apart(pair_id="pair-1"):
+    """Both arms of one pair, each with its own W*: the comparison has something to compare."""
+    return {"control": [outcome("control", pair_id, w_star=W["w_control"])],
+            "candidate": [outcome("candidate", pair_id, w_star=W["w_candidate"])]}
+
+
 def results(task_success: dict, split="dev") -> list:
     return [TaskResult(t, f"family_{t}", split, 0, "w", "run", "man", success=bool(ok),
                        partial_credit=1.0 if ok else 0.5) for t, ok in task_success.items()]
@@ -64,8 +70,8 @@ def test_rc05_ten_seeds_on_one_pool_are_one_independence_group(tmp_path):
     pairs = [pair(objects, pair_id=f"pair-{i}", group="group-1", seeds=(i,)) for i in range(10)]
     campaign = plan(objects, pairs)
     outer = {p.pair_id: {"candidate": results({"t1": True}), "control": results({"t1": False})} for p in pairs}
-    arms = {"control": [outcome("control", p.pair_id) for p in pairs],
-            "candidate": [outcome("candidate", p.pair_id) for p in pairs]}
+    arms = {"control": [outcome("control", p.pair_id, w_star=W["w_control"]) for p in pairs],
+            "candidate": [outcome("candidate", p.pair_id, w_star=W["w_candidate"]) for p in pairs]}
     verdict, reasons, metrics, uncertainty = judge_research(campaign, pairs, outer, arms)
     assert metrics["groups"] == 1 and metrics["pairs"] == 10
     assert uncertainty["significant"] is False          # one group is never a significant comparison
@@ -104,8 +110,9 @@ def test_rc02_an_arm_that_installed_nothing_returns_w0_with_its_costs(tmp_path):
             "candidate": [outcome("candidate", stop="rounds_done", costs={"model_calls": 30})]}
     outer = {"pair-1": {"candidate": results({"t1": True}), "control": results({"t1": False})}}
     verdict, reasons, metrics, _ = judge_research(campaign, [p], outer, arms)
-    assert "pair-1/control" in metrics["not_reached"] and verdict == "accepted"
-    assert metrics["installed"] == {"control": [0], "candidate": [0]}
+    # both arms sealed W0: whatever the outer numbers say, nothing about R was compared
+    assert "pair-1/control" in metrics["not_reached"] and verdict == "inconclusive"
+    assert metrics["installed"] == {"control": [0], "candidate": [0]} and metrics["identical_arms"] == ["pair-1"]
 
 
 def test_an_arm_with_no_outer_result_is_inconclusive_rather_than_a_win(tmp_path):
@@ -113,9 +120,7 @@ def test_an_arm_with_no_outer_result_is_inconclusive_rather_than_a_win(tmp_path)
     p = pair(objects)
     campaign = plan(objects, [p])
     outer = {"pair-1": {"candidate": results({"t1": True}), "control": []}}
-    verdict, reasons, metrics, _ = judge_research(campaign, [p], outer,
-                                                 {"control": [outcome("control")],
-                                                  "candidate": [outcome("candidate")]})
+    verdict, reasons, metrics, _ = judge_research(campaign, [p], outer, sealed_apart())
     assert verdict == "inconclusive" and any("no valid outer attempt" in r for r in reasons)
 
 
@@ -125,9 +130,7 @@ def test_rc09_a_chain_that_ran_without_a_gain_is_reported_as_not_supported(tmp_p
     campaign = plan(objects, [p])
     outer = {"pair-1": {"candidate": results({"t1": False, "t2": True}),
                         "control": results({"t1": True, "t2": True})}}
-    verdict, reasons, metrics, uncertainty = judge_research(campaign, [p], outer,
-                                                           {"control": [outcome("control")],
-                                                            "candidate": [outcome("candidate")]})
+    verdict, reasons, metrics, uncertainty = judge_research(campaign, [p], outer, sealed_apart())
     assert verdict == "rejected" and metrics["gain"] < 0 and uncertainty["significant"] is False
 
 
@@ -136,11 +139,110 @@ def test_rc10_a_hand_written_candidate_is_labelled_manual(tmp_path):
     p = pair(objects)
     campaign = plan(objects, [p], discovery="manual_seed")
     outer = {"pair-1": {"candidate": results({"t1": True}), "control": results({"t1": False})}}
-    verdict, reasons, metrics, _ = judge_research(campaign, [p], outer,
-                                                 {"control": [outcome("control")],
-                                                  "candidate": [outcome("candidate")]})
+    verdict, reasons, metrics, _ = judge_research(campaign, [p], outer, sealed_apart())
     assert metrics["discovery"] == "manual_seed"
     assert any("written by hand" in r for r in reasons) and verdict == "accepted"
+
+
+def test_identical_arms_are_inconclusive(tmp_path):
+    """Two arms that sealed the same W compared nothing about R (docs/modules/06_RESEARCH_CAMPAIGN.md §3): the
+    outer tasks are not run, and outer numbers someone ran anyway do not change the verdict."""
+    objects = ct.Objects(tmp_path)
+    p = pair(objects)
+    campaign = plan(objects, [p])
+
+    def run_arm(pair_obj, arm, r_ref, budget):
+        return outcome(arm, pair_obj.pair_id, stop="no_proposal")          # installed nothing: W* is W0
+
+    def evaluate_outer(pair_obj, sealed):
+        pytest.fail("one W measured twice says nothing about R")
+
+    receipt = run_campaign(campaign, run_arm=run_arm, evaluate_outer=evaluate_outer, objects=objects,
+                           budget=Budgets(tmp_path).account("campaign", {"model_calls": 1000}))
+    assert receipt.verdict == "inconclusive" and receipt.metrics["identical_arms"] == ["pair-1"]
+    assert any("both arms sealed the same W" in r for r in receipt.reasons)
+    outer = {"pair-1": {"candidate": results({"t1": True}), "control": results({"t1": False})}}
+    same = {arm: [outcome(arm, w_star=W["w_control"])] for arm in ("control", "candidate")}
+    assert judge_research(campaign, [p], outer, same)[0] == "inconclusive"
+
+
+def test_outer_results_are_paired_by_task(tmp_path):
+    """The outer comparison is paired by task, as the worker gate is (docs/modules/06_RESEARCH_CAMPAIGN.md §3): a
+    task without a valid attempt on both arms makes it inconclusive, rather than each arm being averaged over what
+    it has left, and the receipt says which tasks and why."""
+    objects = ct.Objects(tmp_path)
+    p = pair(objects)
+    campaign = plan(objects, [p])
+    candidate = results({"t1": True})
+    candidate.append(TaskResult("t2", "family_t2", "dev", 0, "w", "run", "man", validity="invalid",
+                                invalid_reason="harness: connection reset", failure_class="infrastructure"))
+    control = results({"t1": False, "t2": True})
+    verdict, reasons, metrics, _ = judge_research(campaign, [p], {"pair-1": {"candidate": candidate,
+                                                                              "control": control}}, sealed_apart())
+    # unpaired, the candidate's 1.0 on t1 against the control's 0.5 over t1 and t2 would have been accepted
+    assert verdict == "inconclusive" and metrics["incomplete"] == {"pair-1": {"infrastructure": 1}}
+    assert any("t2/r0 (candidate infrastructure)" in r for r in reasons)
+    assert metrics["tasks"] == 1 and metrics["gain"] == 1.0          # what is reported is t1 on both arms
+    # complete on both arms, the same rows are compared task by task
+    complete = results({"t1": True, "t2": True})
+    verdict, _reasons, metrics, _ = judge_research(campaign, [p], {"pair-1": {"candidate": complete,
+                                                                               "control": control}}, sealed_apart())
+    assert verdict == "accepted" and metrics["gain"] == 0.5 and metrics["incomplete"] == {}
+
+
+def test_the_outer_share_is_set_aside_before_the_common_inputs_and_the_arms(tmp_path):
+    """docs/modules/05_EXECUTION_BUDGET.md §2: the outer comparison's share, one refill included, is held on the book
+    before the common inputs and the arms run, so steps that spend all they may still leave it; it is handed to
+    the outer runs and to nothing else, given back when they do not run, and held once across a restart."""
+    objects = ct.Objects(tmp_path)
+    p = pair(objects)
+    campaign = plan(objects, [p], outer_budget={"model_calls": 20})
+    top = Budgets(tmp_path).account("campaign", {"model_calls": 100})
+    seen = []
+
+    def spend_all(name, budget):
+        room = budget.remaining()["effective_remaining"]["model_calls"]
+        seen.append((name, room))
+        if room:
+            budget.settle(budget.reserve(f"{name}-work", {"model_calls": room}).id, {"model_calls": room})
+
+    def prepare_pair(pair_obj, budget):
+        spend_all("common", budget)
+
+    def run_arm(pair_obj, arm, r_ref, budget, shared=None):
+        spend_all(arm, budget)
+        return outcome(arm, pair_obj.pair_id, w_star=W[f"w_{arm}"])
+
+    def evaluate_outer(pair_obj, sealed):
+        outer = top.child("campaign-1:pair-1:outer", {"model_calls": 20})
+        outer.settle(outer.reserve("outer-attempts", {"model_calls": 20}).id, {"model_calls": 20})
+        return {"candidate": results({"t1": True}), "control": results({"t1": False})}
+
+    receipt = run_campaign(campaign, run_arm=run_arm, evaluate_outer=evaluate_outer, objects=objects, budget=top,
+                           prepare_pair=prepare_pair)
+    assert seen == [("common", 80.0), ("control", 0.0), ("candidate", 0.0)]
+    assert receipt.verdict == "accepted" and receipt.costs["outer"] == {"model_calls": 20.0}
+    # a pair whose outer comparison does not run gives its share back to the activity
+    book = Budgets(tmp_path / "same")
+    same = book.account("campaign", {"model_calls": 100})
+    run_campaign(campaign, run_arm=lambda pair_obj, arm, r_ref, budget: outcome(arm, pair_obj.pair_id),
+                 evaluate_outer=lambda *a: pytest.fail("not run"), objects=objects, budget=same)
+    assert book.open_reservations() == [] and same.remaining()["effective_remaining"]["model_calls"] == 100.0
+    # a paused campaign keeps its hold until it resumes, and the resumed run does not hold the share twice
+    book = Budgets(tmp_path / "paused")
+    top = book.account("campaign", {"model_calls": 100})
+    stops = iter(["repair_runtime", "rounds_done"])
+
+    def pausing(pair_obj, arm, r_ref, budget):
+        return outcome(arm, pair_obj.pair_id, w_star=W[f"w_{arm}"],
+                       stop=next(stops) if arm == "candidate" else "rounds_done")
+    paused = run_campaign(campaign, run_arm=pausing, evaluate_outer=lambda *a: pytest.fail("paused"),
+                          objects=objects, budget=top)
+    assert paused.verdict == "inconclusive" and len(book.open_reservations()) == 1
+    assert top.remaining()["effective_remaining"]["model_calls"] == 80.0
+    resumed = run_campaign(campaign, run_arm=pausing, evaluate_outer=evaluate_outer, objects=objects, budget=top)
+    assert resumed.verdict == "accepted" and book.open_reservations() == []
+    assert top.remaining()["used"]["model_calls"] == 20.0         # the outer's own spend, nothing held twice
 
 
 # ---------------------------------------------------------------------------- RC-06 / isolation
@@ -238,7 +340,8 @@ def test_it6_16_a_candidate_arm_that_sent_r0s_prompt_makes_the_comparison_invali
 
     def arm_with(requests):
         def run_arm(pair_obj, arm, r_ref, budget):
-            return outcome(arm, pair_obj.pair_id, requests=requests if arm == "candidate" else ())
+            return outcome(arm, pair_obj.pair_id, w_star=W[f"w_{arm}"],
+                           requests=requests if arm == "candidate" else ())
         return run_arm
 
     def evaluate_outer(pair_obj, sealed):

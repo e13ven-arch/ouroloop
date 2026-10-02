@@ -301,6 +301,54 @@ def test_it03_a_research_policy_is_proposed_compared_installed_and_then_used(fak
         assert w2 != w0 and ct.SystemRelease.from_json(objects.get(result["release"])).research_ref == r1
 
 
+def test_an_outer_attempt_lost_to_infrastructure_is_refilled_once(fake_upstream, tmp_path, monkeypatch):
+    """docs/modules/06_RESEARCH_CAMPAIGN.md §3: an outer attempt the infrastructure lost is run once more under the
+    outer plan's frozen retry policy, as the worker gate does: the original stays on record, the refill names it,
+    and a restart pays for neither again."""
+    from ouroloop.evolve import task_eval
+    from ouroloop.research.campaign import CampaignPlan
+    lines = []
+    cfg, activity, w0_release, plan_ref = prepared(fake_upstream, tmp_path, out=lines.append)
+    w0 = ct.SystemRelease.from_json(activity.objects.get(w0_release)).worker_ref
+    state = {"armed": False, "lost": 0}
+    real_attempt, real_chat = task_eval.run_attempt, rsi.BusinessWorker.chat
+
+    def run_attempt(*a, **kw):
+        state["armed"] = kw.get("arm") == "outer_candidate" and kw.get("retry_index") == 0 and not state["lost"]
+        return real_attempt(*a, **kw)
+
+    def chat(self, system, messages, specs):
+        if state["armed"]:
+            state["armed"], state["lost"] = False, state["lost"] + 1
+            raise ConnectionResetError("connection reset by peer")
+        return real_chat(self, system, messages, specs)
+    monkeypatch.setattr(task_eval, "run_attempt", run_attempt)
+    monkeypatch.setattr(rsi.BusinessWorker, "chat", chat)
+    as_the_campaign_saw_it = bench.open_activity(cfg, ".", out=lambda _line: None)    # before R1 is installed
+    slot = bench.research_slot(cfg, ".", pairs=campaign_pairs(activity, initial_w=w0),
+                               researcher=rsi.ResearchPolicyProposer(),
+                               arm_researcher=lambda: rsi.ScriptedResearcher(follow_prompt=True), out=lines.append,
+                               worker_rounds=1)
+    assert state["lost"] == 1
+    outer = [r for r in bench.Results(activity.root, rsi.DOMAIN).all() if r.candidate == "candidate_w_star"]
+    [lost] = [r for r in outer if r.validity == "invalid"]
+    assert lost.failure_class == "infrastructure"
+    [refilled] = [r for r in outer if r.supersedes]
+    assert refilled.supersedes == lost.attempt_id and refilled.attempt_id.endswith("#1")
+    assert refilled.validity == "valid"
+    # the refill completed the pair, so the comparison stands on every outer task
+    receipt = activity.objects.load(slot["receipt"], ct.EvaluationReceipt)
+    assert slot["verdict"] == "accepted" and receipt.metrics["incomplete"] == {}, receipt.reasons
+    # run again (a restart after the outer comparison): every attempt is on record, refill included
+    plan = activity.objects.load(slot["campaign"], CampaignPlan)
+    sealed = {e["arm"]: e["w_star"] for e in ct.Events(activity.root).of("campaign_arm")}
+    before = len(list(bench.Results(activity.root, rsi.DOMAIN).all()))
+    again = bench._evaluate_outer(as_the_campaign_saw_it, plan,
+                                  campaign_pairs(activity, initial_w=w0)[0], sealed, provider=rsi.BusinessWorker())
+    assert len(list(bench.Results(activity.root, rsi.DOMAIN).all())) == before
+    assert {r.attempt_id for r in again["candidate"]} == {r.attempt_id for r in outer}
+
+
 def _prompt_of(objects, policy_set_ref: str, target: str) -> str:
     policies = P.validate_policy_set(objects.load(policy_set_ref, ct.PolicySet), objects).policies
     return objects.get(policies[target].implementation["artifact_ref"])["text"]
