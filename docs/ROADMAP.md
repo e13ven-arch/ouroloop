@@ -34,6 +34,8 @@
 - 暂停只在 worker 轮循环里写入；collect、续跑、基线、研究位提案、campaign 公共测量与外测遇到账号错误或截断时以异常退出（阶段 3 已修：cycle 的每一步按同一规则暂停或结束）。
 - 示例研究模型的输出上限 16384 不够用（阶段 1 已改为 32768）。
 - 所有 improve/cycle/research 集成测试都注入脚本研究员。
+- 研究收据的结果对象记下两支工作区里的 release：各支最后一次安装的 release，以及没有安装的轮次记下的起始 release。它们不在 W* 的闭包里，没有复制回活动对象库。R1 装入后，凡是闭包经过该 R 安装 release 的 `copy_closure` 都以 KeyError 崩溃：第二个研究位，或在同一工作区里开研究位的后续活动。首个活动只有一个研究位（cycle 拒绝更多），不受影响。
+- M6 §3 要求报告 research_dev 的候选次数和访问历史，报告里还没有。
 - IT6-10/19/21/23/26 仍部分实现：活动取消入口尚无代码（首个活动靠停止点人工停下）；逐题退化记录已在阶段 3 写入 gate 收据，IT6-26 的合并/停用分支仍没有测试。
 
 修复前不进入付费运行。修复与真实运行的顺序见 §3 的首个真实活动协议。
@@ -114,13 +116,17 @@ A～E 属于首版，递归方法比较与实际回用仍为必做。第二版�
        - 构建与续跑都按准入的同一规则检查 model 改动；训练条目只能指向核心开放的决策目标（`test_a_resumed_experiment_that_names_a_backend_is_not_evaluated`）。
        - 逐题笔记读不出时记下真实原因（`test_diagnosis.py::test_an_unreadable_note_records_why_it_could_not_be_read`）；已完成的段不被后续步骤的故障记成暂停（`test_cycle.py::test_a_finished_segment_is_not_recorded_as_paused_by_a_later_failure`）；campaign 臂的续跑有测试（`test_rsi_integration.py::test_a_campaign_arm_resumes_its_open_experiment_under_its_frozen_inputs_or_pauses`）。
    - 研究位前（可以在 worker 段运行期间开发；落地后重跑彩排的研究位部分）：
-     - 研究裁决按任务配对；配对不全、或两支 W* 相同时，判 inconclusive；外测补跑一次，额度从预算根预留。新增 `test_campaign.py::test_identical_arms_are_inconclusive` 与 `test_campaign.py::test_outer_results_are_paired_by_task`。同时调整现有测试：
-       - `test_rc02_an_arm_that_installed_nothing_returns_w0_with_its_costs` 的断言翻转为 inconclusive；
-       - rc05、rc09、rc10 与 it6_16 中两支 W* 相同的测试改夹具，让两支不同，断言不变。
-     - E0 交给两支。
-     - worker 段装过包之后，研究位的公共测量与两支复制 W 时以 KeyError 崩溃：嵌套记录的 `ref` 被 `refs_in` 当作对象引用，`copy_closure` 去复制一个不存在的对象（阶段 3 调研发现，见 JOURNAL）。修复后新增 `test_cycle.py::test_a_slot_after_a_worker_install_runs`。
-     - 研究位的 system 提示保留 R 自己的 propose 文本（R 正是用它提出对自身的修改），由研究位格式声明：前文是 worker 轮的改包指令，本次调用改的是这些指令本身，以本格式为准。只改代码里的格式，不改 R0 文本：R0 已冻结进 release，活动内改它不会生效。
-     - 研究位读不出的回复记 invalid，不记 no_proposal；没有研究收据时，报告的 C4 按 `cycle.json` 中研究位的结局写 detail（新增 `test_report.py::test_c4_says_how_a_slot_without_a_campaign_ended`）。
+     - 研究裁决按任务配对；配对不全、或两支 W* 相同时，判 inconclusive；外测补跑一次，额度从预算根预留。规则见 [M6 §3](modules/06_RESEARCH_CAMPAIGN.md)：
+       - 配对：同一 pair 内，外层任务的每次重复在两支都有有效尝试才计入；补跑后仍缺任一，判 inconclusive。
+       - 两支 W* 是同一个 worker ref 时不跑外测，判 inconclusive。
+       - 补跑按外测计划冻结的 retry_policy，只补基础设施失败，至多一次。
+       - 预留：preset 的 `outer_share`（0.08）乘冻结限额，写入 campaign plan 的 `outer_budget`。它是外测 scope 的上限，并在公共测量与两支开跑前以不结算的预留占住。根挂不上这笔预留时，研究位不问 R，记 budget_exhausted。
+       - 新增 `test_campaign.py::test_identical_arms_are_inconclusive`、`test_campaign.py::test_outer_results_are_paired_by_task`、`test_campaign.py::test_the_outer_share_is_set_aside_before_the_common_inputs_and_the_arms`、`test_rsi_integration.py::test_an_outer_attempt_lost_to_infrastructure_is_refilled_once`、`test_cycle.py::test_a_slot_whose_outer_share_the_root_cannot_hold_asks_r_nothing`。
+       - 调整现有测试：`test_rc02_an_arm_that_installed_nothing_returns_w0_with_its_costs` 的断言翻转为 inconclusive；rc05、rc09、rc10、it6_16 与 `test_an_arm_with_no_outer_result_is_inconclusive_rather_than_a_win` 中两支 W* 相同的测试改夹具，让两支不同，断言不变；`test_real_run_findings.py::test_a_spent_budget_ends_every_cycle_step_without_pausing` 的 campaign 参数相应调整（两支 W* 相同时外测不运行，没花的外测预留退回活动）。
+     - E0 交给两支：研究位开始时主线经验冻结在配对里，两支的经验日志以它原样开头，第一轮读到同一个 experience_ref。实验记录去掉原始 gate 理由，因为理由可能写出开发题号；汇总指标保留。E0 引用的对象不复制进分支，分支里没有读取它们的步骤（新增 `test_cycle.py::test_rc6_01_both_arms_start_from_the_same_e0`）。
+     - worker 段装过包之后，研究位的公共测量与两支复制 W 时以 KeyError 崩溃：嵌套记录的 `ref` 被 `refs_in` 当作对象引用，`copy_closure` 去复制一个不存在的对象（阶段 3 调研发现，见 JOURNAL）。修法：整条嵌入的记录自带的 `ref` 等于其余字段的摘要，`refs_in` 不把它当作引用。不改任何对象的身份，修复前写下的工作区不用迁移。新增 `test_cycle.py::test_a_slot_after_a_worker_install_runs` 与 `test_contracts.py::test_an_embedded_records_own_ref_is_not_a_reference`；`test_real_run_findings.py::test_every_cycle_step_pauses_on_an_account_error` 去掉绕开它的停止点。
+     - 研究位的 system 提示保留 R 自己的 propose 文本（R 正是用它提出对自身的修改），由研究位格式声明：前文是 worker 轮的改包指令，本次调用改的是这些指令本身，以本格式为准。只改代码里的格式，不改 R0 文本：R0 已冻结进 release，活动内改它不会生效（新增 `test_cycle.py::test_the_slot_keeps_rs_propose_text_and_its_format_governs`）。
+     - 研究位读不出的回复记 invalid，不记 no_proposal；没有研究收据时，报告的 C4 按 `cycle.json` 中研究位的结局写 detail。规则见 [M4 §1](modules/04_RESEARCH_LOOP.md)：每个提案都校验；`cycle.json` 记 stage（reply、admission 或 build）；提案文本不截断，超过 K 的提示长度上限时构建失败。新增 `test_report.py::test_c4_says_how_a_slot_without_a_campaign_ended`、`test_cycle.py::test_an_unreadable_slot_reply_is_an_invalid_slot`、`test_a_slot_decision_r_states_is_still_no_proposal`、`test_a_slot_that_admission_or_the_build_refuses_says_which`、`test_a_slot_reply_cut_at_the_output_limit_pauses_and_is_asked_again`。
      - 研究位安装 R1 之后，回用检查只在紧随其后的 worker 段非暂停地结束时计算；该段暂停、崩溃或停在停止点时，保留待查。已随停止点在阶段 1 完成（`test_cycle.py::test_a_paused_segment_after_an_install_keeps_the_reuse_check_pending`）。
 2. **付费前彩排（生产路径，不付 API 费用）。**
    - 目的：经 CLI `ouroloop bench --phase cycle` 走一遍生产路径，不注入研究员，也不替换 `cycle_pairs`，R 由 Claude 作答。它证明接线与故障协议，不证明任何模型的效果。
@@ -128,6 +134,7 @@ A～E 属于首版，递归方法比较与实际回用仍为必做。第二版�
      - R：`[research.llm] type = "manual"`（`ouroloop/providers/manual.py`）。Claude 只依据请求文件作答，不使用仓库、评分器或任务答案这些带外知识。
      - 任务世界：以 `marketing` 域名导出的 fixture 上游，满足 preset 的域锁（`bench.py:923-925`）。规模小：train 中固定失败的题不超过 5 道；dev 至少 5 个家族，满足 gate 的 min_groups。
      - actor：`[llm] type = "<模块>:<类>"` 的确定性假 actor，在 bootstrap 时被 pin 为 W0。它对包内容作出反应：包中出现某类规则（memory 或 skill 文本、on_finish hook 的回推）时，在指定的 dev 题上改做对，让 gate 增益可以达到 0.05；在 train 失败题上留下能被失败摘要捕捉、并指向该规则的线索。假 actor 的规格在阶段 3 开始时先写，再实现。
+       - 缺口不止一类：segment-0 装包之后，仍要有缺口同时出现在开发家族冻结顺序的前一半（两支的内层 gate）与后一半（外层比较），两支才可能装包，外测才会运行。两支 W* 相同时研究位判 inconclusive、不跑外测；若如此，外测、补跑与 R1 装入后的回用如实记为覆盖缺口。
      - 组件：允许代码组件（本机 Docker 可用），以便覆盖 Docker 中的草稿检查链。
      - 隔离：独立工作区与 scope，名称带 rehearsal。系统不会给这些记录打 synthetic 标记：收据仍记 discovery=automatic，提案仍记 origin=llm。synthetic 由工作区名与 JOURNAL 标注；该工作区的报告与 C1～C4 不得引用，也不与正式工作区合并。
      - 规模：用停止点分段推进；需要时只调低 `max_failure_notes`。
@@ -142,6 +149,8 @@ A～E 属于首版，递归方法比较与实际回用仍为必做。第二版�
      | 研究位 | 读不出、拒答或形状非法 | 研究位 invalid，不记 no_proposal |
      | 任一步 | manual 判为非法的回复（例如带 tool_calls） | ProviderError，暂停；只验证逃逸路径，不代表真实供应商的行为 |
      | actor | 假 actor 调用未提供的工具 | 任务内的工具错误，尝试继续 |
+
+     研究位只有一次，记 invalid 后不重问。所以研究位“读不出”一行在另一个彩排工作区里注入（同样跑到 segment-0 再进研究位），主彩排工作区的研究位用来走到裁决。截断与 ProviderError 只让研究位暂停，续跑时重问，可以在主工作区注入。
 
    - 通过条件：
      - 至少一次走完笔记 → 汇总 → 草稿检查 → 准入 → 构建 → gate 裁决，accepted、rejected、inconclusive 都算。
@@ -171,8 +180,8 @@ A～E 属于首版，递归方法比较与实际回用仍为必做。第二版�
      3. `--until segment-0/round-0`，检查 K2；
      4. `--until segment-0`，检查 K3，并由人决定是否进入研究位；
      5. 去掉停止点，跑完。
-   - 预算：活动根 $300，其中 `final` 分配 $50，cycle 可花 $250；每支按 0.15 份额约 $45。先充值 ≥$150 等值，进入研究位前补足。
-   - 进入研究位前（segment-0 停下时）人工核对：根的有效剩余不少于“两支份额 + 外测补跑预留 + segment-1 首轮估算”；不够就不开研究位，直接跑 final。
+   - 预算：活动根 $300，其中 `final` 分配 $50，cycle 可花 $250；每支按 0.15 份额约 $45；外测按 0.08 份额约 $24（外层约 13 题、两支，含一次补跑的上限），研究位开始时自动预留。先充值 ≥$150 等值，进入研究位前补足。
+   - 进入研究位前（segment-0 停下时）人工核对：根的有效剩余不少于“两支份额 + 外测份额 + 公共测量（当前 W 的 train 测量，约 $7～23）+ segment-1 首轮估算”；不够就不开研究位，直接跑 final。根挂不上外测份额时，研究位不问 R，以 budget_exhausted 结束，活动随之结束。
    - 活动内不重新冻结 task plan、schedule、预算或计价；首版 preset 不开 screen。
 5. **gate 口径。**
    - 沿用点估计门槛（min_gain 0.05，repeats=1）。worker gate 的 accepted 只是开发采纳，C1 只由 final 裁决。

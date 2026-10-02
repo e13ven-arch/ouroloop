@@ -28,7 +28,10 @@ ResearchContext 由白名单投影得到：当前 W/R/K、包内文件与固定 
   - 不得回退成 collect 或 stop，也不得静默丢掉不合法的提案后再解释剩下的内容。
 - 修订：读不出的修订算一次失败的修订，占用一次 `max_draft_repairs`；用尽后按 §2 记 invalid。
 - 研究位：
-  - 读不出或提案不合法，记 invalid，不记 `no_proposal`。
+  - 读不出或提案不合法，记 invalid，不记 `no_proposal`。研究位的提案不合法指：proposals 不是列表、某项不是对象、目标不是 `research.diagnose` 或 `research.propose`、没有新文本，或文本与当前提示相同。每项都校验，排在后面的不合法提案同样使研究位 invalid；多出来的合法提案按上限记为 dropped。
+  - 没有提案时，next_action 须为 none 或 stop，缺失或取其他值算读不出。只有读得出、没有提案且 next_action 合法的回复，才记 `no_proposal`。
+  - 提案文本不截断：超过 K 的提示长度上限时构建失败，研究位记 invalid（stage=build）。
+  - `rsi/cycle.json` 中该步记 outcome、reason 与 stage：reply（R 的回复）、admission（准入拒绝）或 build（构建失败）。
   - 报告的 C4 保持 not_run，detail 写“研究位回复无效”及原因，不写“R 没有提案”（[M7 §4](07_BENCH_REPORT.md)）。
 - 截断：回复在输出上限处被截断，任何一步都属于配置问题，按 [M5 §3](05_EXECUTION_BUDGET.md) 暂停活动；续跑时用改正后的配置重新询问同一步，不计 invalid。
 
@@ -40,7 +43,7 @@ worker 轮的部分已在阶段 3 实现（2026-10-02）：
 - 汇总回复里的每个提案都校验，排在上限之后的不合法提案同样使本轮 invalid；上限之外的合法提案记为 dropped。
 - 截断在任何一步都按 M5 §3 暂停。
 
-研究位的部分尚未实现：研究位读不出的回复仍记为 no_proposal（`ouroloop/bench.py:2643`），属于 ROADMAP §3 的“研究位前”。研究位记 invalid 后不自动重问，这一步就此结束，cycle 照常进入下一段；重问要在下一段跑完之后，会让 R1 的回用检查读到安装前的段。
+研究位的部分属于 ROADMAP §3 的“研究位前”。研究位记 invalid 后不自动重问，这一步就此结束，cycle 照常进入下一段；重问要在下一段跑完之后，会让 R1 的回用检查读到安装前的段。
 
 ## 2. 首版可执行的候选空间
 
@@ -185,6 +188,8 @@ append facts, failures, costs and actual loaded refs; obey the fixed schedule
 Experience 记录 proposed/built/evaluated/validated/installed 的事实，引用 source、plan、dataset、模型身份、任务结果、成本、实际 R 和失败阶段。hypothesis 与事实分开；prompt 候选不能记 trained=true。后续 context 通过现有检索规则选择获准经验，不复制所有轨迹。
 
 安装 W1 后下一轮任务运行/采集 pin W1；旧 W0 轨迹按其身份保留。W 自己的业务能力更新不自动证明 R 改进。在固定 research slot 中，当前 R 根据实验产出提出注册 R 候选，由 [M6](06_RESEARCH_CAMPAIGN.md)比较；安装后下一次真实诊断/提案必须加载 R1。
+
+研究位的请求（`ouroloop/research/basic.py` 的 `RESEARCH_FORMAT` 与 `PolicyResearcher.propose_research`）：system 提示是 R 自己的 `research.propose` 文本，后接研究位格式。保留这段文本，因为 R 正是用它提出对自身的修改。格式声明：前文是 worker 轮的改包指令；本次调用改的是 `research.diagnose` 或 `research.propose` 本身，不改包；两者在读什么、改什么、回复什么上不一致时，以格式为准。输入是目标、预算、经验投影（最近 20 条）与两段提示的当前文本。格式是代码，不属于 R 的身份；R0 文本冻结在 release 中，不随代码改动。
 
 当前代码在 `run_worker_round` 把无 proposal 的 collect 请求折叠为 no_proposal，`run_worker_rounds` 随即停止。本版必须修改这两个分支，保留结构化 action 并先分派补采；仅在文档或日志里写 collect 不能通过验收。旧 v2 模式维持原行为；只有新 driver 启用该协议，并写入带 next_action/action_ref 新字段的 RoundResult。
 

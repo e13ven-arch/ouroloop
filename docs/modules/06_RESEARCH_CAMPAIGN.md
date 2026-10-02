@@ -6,7 +6,7 @@
 
 首条递归实现采用现有 R 策略路径。注册的 R 目标有 `research.diagnose`、`research.retrieve`、`research.propose`、`research.preflight` 四项。
 
-首版研究位中，真实 R 只对 diagnose 或 propose 其中一段提出完整的新提示（`ouroloop/research/basic.py:443-469`）；改哪一段由经验投影决定，不预先指定。retrieve 与 preflight 保留注册，供 scripted 或手工路径做工程验证，首版不作为真实的自动候选，等真实结果显示需要时再开放（[DESIGN §7](../DESIGN.md)）。
+首版研究位中，真实 R 只对 diagnose 或 propose 其中一段提出完整的新提示（`ouroloop/research/basic.py` 的 `PolicyResearcher.propose_research`）；改哪一段由经验投影决定，不预先指定。retrieve 与 preflight 保留注册，供 scripted 或手工路径做工程验证，首版不作为真实的自动候选，等真实结果显示需要时再开放（[DESIGN §7](../DESIGN.md)）。
 
 首版例：R0 遇到失败就新增相似工具；R1 先检查旧工具是否加载/调用，再选择修改描述、修中间件或合并组件。改变的是改进方法；不能以 R 自评“更合理”接受，必须看相同起点下实际产生的 W*。第二版再扩展训练选择。
 
@@ -14,9 +14,9 @@
 
 ## 2. 冻结的比较计划
 
-输入复用 campaign plan：W0（含同一初始包）、R0/R1、E0、K、获准宿主/package API/镜像、train/内层 dev/外层 research_dev 家族、round/attempt/patience/collection-batch/构建限额、每轮笔记数与草稿修订上限和共同费用上界。每支资源上限相同，总支出仍由主活动预算根约束，外测/安装额度预留。第二版追加 source/recipe/训练身份，不为此另建 campaign。
+输入复用 campaign plan：W0（含同一初始包）、R0/R1、E0、K、获准宿主/package API/镜像、train/内层 dev/外层 research_dev 家族、round/attempt/patience/collection-batch/构建限额、每轮笔记数与草稿修订上限和共同费用上界。每支资源上限相同，总支出仍由主活动预算根约束；外测额度（含一次补跑）冻结为 plan 的 `outer_budget`，既是外测的上限，也在公共测量与两支开跑前从根预留；安装额度预留。第二版追加 source/recipe/训练身份，不为此另建 campaign。
 
-两支只提出 worker 候选，禁用 research slots，避免递归创建第三层 campaign。每支 R 在整个分支内冻结。各自积累 source、teacher 数据、adapter 和经验，禁止交叉读取；共享只限起始 E0 中预声明且身份完全相同的内容。首版 W0 的测量在执行身份一致时作为 campaign 级共同输入；第一轮逐题笔记的任务选择在 campaign scope 按同一规则做一次，两支 diagnose 的完整笔记身份一致时笔记也只生成一次、计入 campaign 共同预留并记为共同输入，不一致时各支在同一组选中任务上、同一上限内各自生成；此后分支内产生的笔记不跨支（笔记身份与上限见 [M4 §1](04_RESEARCH_LOOP.md)）。模型 store 可共享存储介质，但访问范围和可变指针独立。
+两支只提出 worker 候选，禁用 research slots，避免递归创建第三层 campaign。每支 R 在整个分支内冻结。各自积累 source、teacher 数据、adapter 和经验，禁止交叉读取；共享只限起始 E0 中预声明且身份完全相同的内容：两支的经验日志以配对冻结的 E0 原样开头，第一轮读到同一个 experience_ref；E0 引用的对象不复制进分支。首版 W0 的测量在执行身份一致时作为 campaign 级共同输入；第一轮逐题笔记的任务选择在 campaign scope 按同一规则做一次，两支 diagnose 的完整笔记身份一致时笔记也只生成一次、计入 campaign 共同预留并记为共同输入，不一致时各支在同一组选中任务上、同一上限内各自生成；此后分支内产生的笔记不跨支（笔记身份与上限见 [M4 §1](04_RESEARCH_LOOP.md)）。模型 store 可共享存储介质，但访问范围和可变指针独立。
 
 两支使用相同的 M4 结构化补采驱动；需要数据时在各自 train scope 自动采集再提案，不能让一支返回 collect 就提前判输。各支单独计补采与新 h 基线费用，总根不变。source validated 和仅准备完成的 baseline 都不算 W 晋升；只有 deployment gate 通过的候选才可成为分支 W*。换 h 必须走 M3 preparation，仍在共同许可集合内。
 
@@ -25,20 +25,28 @@
 ## 3. 执行与裁决
 
 ```text
-freeze campaign and reserve both branches plus outer verification
+freeze campaign; cap both branches equally; set aside the outer verification (one refill)
 for R in [R0, R1]:
     start isolated scope with the same W0/E0
     execute bounded worker rounds through M4/M5
     keep the last W that passed the branch's inner gate (else W0)
-compare the two W* without teacher on untouched research_dev
+compare the two W* without teacher on untouched research_dev, paired by task
+    (both W* the same: no outer run, inconclusive)
 emit research EvaluationReceipt; install R1 only if accepted
 ```
 
 K 所需的隔离 worker 不可用时不启动分支；分支因 infrastructure_failed/repair_runtime 暂停时不视为正常完成，修复后以同一冻结条件续跑至冻结的轮数，无法续跑则 campaign 判 inconclusive，不以已完成轮数不同的两支比较。
 
-外层任务两支内层均未访问；R 不看外层逐任务答案。它们仍不是 final，最终泛化另测锁定版本。重复选择 R 会逐步使用 research_dev 的统计信息，不能把它当无限可重复的独立 test；报告候选次数和访问历史。
+外层任务两支内层均未访问；R 不看外层逐任务答案。按首版 preset 的配对规则，外层家族在研究位之前是主线开发家族：W0、R1 与 E0 中的汇总指标都来自覆盖它们的 gate。“未访问”指研究位开始之后，两支不运行它们，也不读取它们的逐题结果；E0 带入的汇总统计计入 research_dev 的使用。复制 R1 与 W 的身份闭包时，主线 gate 的计划与逐题结果会随来源链进入公共与候选支的对象库；这是身份引用，不是可读内容（[M0 §4](00_CONTRACTS.md)），分支里没有读取它们的步骤。它们仍不是 final，最终泛化另测锁定版本。重复选择 R 会逐步使用 research_dev 的统计信息，不能把它当无限可重复的独立 test；报告候选次数和访问历史。
 
 冻结 gain/cost/patience 规则，不能临时挑一支历史最好 W。没有晋升用 W0，不删除失败支。协议错误判 invalid；环境/预算/配对不足判 inconclusive；有效但达不到门槛判 rejected。单支失败无法形成有效配对时不能让另一支自动获胜。
+
+外层比较（2026-10-03）：
+- 两支 W* 是同一个 worker ref（通常是两支都没有安装）时不跑外测，判 inconclusive：同一个 W 测两遍，说明不了 R。有多个 pair 时，任一 pair 相同即判 inconclusive，后面的 pair 不再运行。
+- 两支在同一组外层任务上各跑一遍。基础设施失败的尝试按外测 TaskEvalPlan 冻结的 retry_policy 补跑一次，原尝试保留，补跑记 supersedes；任务失败、候选缺陷、评分器失败与额度耗尽不补跑。CampaignPlan.retry_policy 不读。
+- 裁决按任务配对：同一 pair 内，任务的每次重复在两支都有有效尝试才计入；缺任一即判 inconclusive，不按各支剩下的任务各自求均值。外测上两边都是封存的 W*，候选缺陷与评分器失败也只使配对不全；invalid 只留给协议错误。独立组仍是统计单位。
+- 外测额度冻结为 `outer_budget`：外测 scope 以它为上限，并在公共测量与两支开跑前以不结算的预留占住；外测开始时释放给外测尝试，外测不运行时退回活动；重启找回原预留，不重复占用。外测额度耗尽时，没跑成的尝试使配对不全，判 inconclusive。
+- 收据 metrics 记 `tasks`（配对的任务数）、`incomplete`（各 pair 缺的尝试，按失败类别计数）与 `identical_arms`。
 
 报告无教师完整任务结果及总改进费用，不以提案数量、训练 loss 或 R 的评分替代。相同任务多种 seed 不增加独立家族；费用未知时不宣称成本效率改善。
 
@@ -65,7 +73,7 @@ scripted 成功只证明机制；实际模型提出候选证明自动提案；C4
 | RC6-01 | 一支读取另一支新轨迹/adapter | scope 拒绝，共同 E0 仍可用 |
 | RC6-02 | R1 选蒸馏，R0 选 prompt | 共用 M4/M5 构建评测安装；两支费用与外评共用总根 |
 | RC6-03 | 内层读取 research_dev/final 或开 research slot | 拒绝，无第三层 campaign |
-| RC6-04 | 一支没有通过 gate 的 W | 外测 W0；故障造成无有效配对则 inconclusive |
+| RC6-04 | 一支没有通过 gate 的 W | 外测 W0；两支都没有（W* 同为 W0）时不跑外测，判 inconclusive；故障造成配对不全则 inconclusive |
 | RC6-05 | R1 通过并安装 | 主线 W 不变，下一改进请求实际采用 R1 的变更目标 |
 | RC6-06 | 多 seed 同家族或 scripted R | 家族数/来源准确，不冒充真实自动发现或递归收益 |
 | RC6-07 | manifest 写 R1，运行仍沿用 R0 配置 | 回用验收失败，不能出 C4 结论 |

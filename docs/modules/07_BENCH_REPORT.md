@@ -59,7 +59,7 @@ collect.mode 是单独 phase 默认输入；自动补采由 CollectionRequest.pu
 
 第二版显式加入 distill_actor/decision_train 后才读取 distillation.trainer=tinker、recipe=lora_sft_v1、collect.mode=reviewed 等未来参数，沿用 M2/M8 详细规格。首版与旧 CLI reader 遇到尚未支持的新方法明确拒绝，不伪造运行。
 
-以上为输入便利层，freeze 生成 K、W0/R0、schedule、配方目录等不可变对象后，以 refs 为权威。reader 只接受已实现枚举；未知 preset/算法/参数、能力不足、缺预算在付费前失败。preset 提供 bootstrap prompt、改进/适配模板、参数边界和默认配方，以及段 ID、补采限额和后续提案额度的默认 schedule；它不能替用户扩大工具权限或凭空提供模型账户。首版 harness preset 还固定允许的组件种类 components、max_draft_repairs（默认 3，初稿之后）、每轮 max_failure_notes（示例 30）、失败摘要的条目长度上限及现有 worker GatePlan 的 min_gain/max_regression_rate（沿用原字段，不新增回归配置层），freeze 写入 K 后 R 不能提高；草稿检查/修复与笔记调用逐次计入同一预算。首版 preset 还固定 research slot 的配对规则：当前 W 为两支共同起点，train 家族为内层训练池，开发计划的家族按冻结顺序对半分，前一半作两支内层 gate，后一半作两支都不接触的外层比较（本项目的 split 只有 train/dev/test，这一半即 M6 的 research_dev）；每支预算为冻结活动预算的固定比例（示例 15%）。开发家族少于 2 个时 research slot 拒绝启动。
+以上为输入便利层，freeze 生成 K、W0/R0、schedule、配方目录等不可变对象后，以 refs 为权威。reader 只接受已实现枚举；未知 preset/算法/参数、能力不足、缺预算在付费前失败。preset 提供 bootstrap prompt、改进/适配模板、参数边界和默认配方，以及段 ID、补采限额和后续提案额度的默认 schedule；它不能替用户扩大工具权限或凭空提供模型账户。首版 harness preset 还固定允许的组件种类 components、max_draft_repairs（默认 3，初稿之后）、每轮 max_failure_notes（示例 30）、失败摘要的条目长度上限及现有 worker GatePlan 的 min_gain/max_regression_rate（沿用原字段，不新增回归配置层），freeze 写入 K 后 R 不能提高；草稿检查/修复与笔记调用逐次计入同一预算。首版 preset 还固定 research slot 的配对规则：当前 W 为两支共同起点，train 家族为内层训练池，开发计划的家族按冻结顺序对半分，前一半作两支内层 gate，后一半作两支都不接触的外层比较（本项目的 split 只有 train/dev/test，这一半即 M6 的 research_dev）；每支预算为冻结活动预算的固定比例（示例 15%），外测额度也是固定比例（示例 8%，含一次补跑），在公共测量与两支开跑前预留；研究位开始时的主线经验冻结为两支共同的 E0（实验记录去掉原始 gate 理由）。开发家族少于 2 个时 research slot 拒绝启动。
 
 首版只要求 actor/R，二者可共用已配置供应商；模型、推理配置、计价和限额在 freeze 摘要列明。首版 actor 固定为 GLM-5.3（已配置并计价的 OpenAI 兼容接口）；第二版换 Qwen3.5-9B 学生时，h* 须在学生上重新演化并验证。第二版 teacher 配置显式指定或引用能力允许的 provider。任何路径都不能默默选择新收费供应商，正常循环不要求用户每轮写代码/方案/超参数。
 
@@ -110,7 +110,7 @@ v3 最终计划区分 C2 的 `mode=published_reference`（默认）与 `paired_r
 
 报告必须保留无收益、拒绝、成本未知、训练失败、预算耗尽与未运行项。source 的 validated 单列为“教学来源验证通过”，不计 accepted/installed 数量；补采仅记数据进展。某个 worker 段结束不等于全活动失败，仍展示后续 research slot 的真实状态。
 
-C4 读取真实 campaign 结果，不预设 not_run。只有未执行才标 not_run；研究位在形成 campaign 之前结束时（研究位回复无效、R 没有提案、准入拒绝或构建失败），C4 仍标 not_run，detail 按 `rsi/cycle.json` 中该研究位的结局如实写出，不写成“没有 campaign 记录”（2026-10-02，见 [M4 §1](04_RESEARCH_LOOP.md)）；已运行但样本不足为 inconclusive；没有收益如实记录。完整 v0.6 验收要求递归路径和有界真实验证，单个 manual 蒸馏实验无需伪装覆盖 C4。历史 research 报告仍按既有结果读取。`report` 禁止触发模型请求、重新选择 checkpoint 或补跑 final。恢复 `evaluate/improve` 只补计划缺项，已完成结果不重花钱。
+C4 读取真实 campaign 结果，不预设 not_run。只有未执行才标 not_run；研究位在形成 campaign 之前结束时（研究位回复无效、R 没有提案、准入拒绝或构建失败），C4 仍标 not_run，detail 按 `rsi/cycle.json` 中该研究位的结局如实写出，不写成“没有 campaign 记录”（2026-10-02，见 [M4 §1](04_RESEARCH_LOOP.md)）。`cycle.json` 中研究位在 campaign 之前的结局记 outcome、reason 与 stage（reply 指 R 的回复，admission 指准入，build 指构建），报告据此区分这四种；研究位暂停、预算耗尽（写明在 campaign 之前还是之中）、计划已冻结而尚无收据时，同样标 not_run 并写明。campaign 有收据时（含某一支暂停时登记的 inconclusive），C4 按收据读；已运行但样本不足为 inconclusive；没有收益如实记录。完整 v0.6 验收要求递归路径和有界真实验证，单个 manual 蒸馏实验无需伪装覆盖 C4。历史 research 报告仍按既有结果读取。`report` 禁止触发模型请求、重新选择 checkpoint 或补跑 final。恢复 `evaluate/improve` 只补计划缺项，已完成结果不重花钱。
 
 ## 5. 用例
 
