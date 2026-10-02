@@ -2540,8 +2540,9 @@ def _cycle_slot(cfg, base, activity: Activity, settings: dict, slot: str, state:
             save()
             return "paused"
         if planned["outcome"] != "planned":
+            # where the slot ended — R's reply, admission or the build — so the report can say which (M7 §4)
             step.update(outcome=planned["outcome"], reason="; ".join(planned.get("reasons") or ())
-                        or planned.get("reason", ""))
+                        or planned.get("reason", ""), stage=planned.get("stage"))
             save()
             out(f"cycle      research {slot}: {planned['outcome']}; the next worker segment runs as scheduled")
             return "done"
@@ -2659,15 +2660,21 @@ def research_slot(cfg: dict, base: str | Path = ".", *, pairs, researcher, arm_r
     bound = _P.bind_release(release_ref, profile="task", services=work.services(), authorization="installed")
     proposal_result = propose_experiment(context, bound, "research", researcher=researcher,
                                          objects=activity.objects, experience=experience)
+    if proposal_result.unreadable:
+        # docs/modules/04_RESEARCH_LOOP.md §1: R decided nothing, so this is not "no proposal". The slot is not
+        # asked again: the next worker segment runs, and the slot's record says why it ended.
+        out(f"slot       the research reply is invalid: {proposal_result.reason[:200]}")
+        return {"outcome": "invalid", "stage": "reply", "reason": proposal_result.reason, "release": release_ref}
     if not proposal_result.proposals:
         out(f"slot       no research proposal ({proposal_result.next_action}: {proposal_result.reason})")
-        return {"outcome": "no_proposal", "reason": proposal_result.reason, "release": release_ref}
+        return {"outcome": "no_proposal", "stage": "reply", "reason": proposal_result.reason, "release": release_ref}
     core = activity.objects.load(work.core_ref, _ct.CoreManifest)
     admission = admit(proposal_result.proposals[0], context=context, core=core, objects=activity.objects,
                       owner="research", checks=tuple(bound.preflight or ()))
     if not admission.ok:
         out(f"slot       {admission.status}: {'; '.join(admission.reasons)[:200]}")
-        return {"outcome": admission.status, "reasons": admission.reasons, "release": release_ref}
+        return {"outcome": admission.status, "stage": "admission", "reasons": admission.reasons,
+                "release": release_ref}
     experiment = freeze(admission.proposal_ref, objects=activity.objects, parent_release=release_ref,
                         experience_ref=experience_ref, core_ref=work.core_ref,
                         eval_template_ref=activity.rsi.task_plan_ref or "", budget_scope=activity.rsi.scope_id)
@@ -2676,7 +2683,7 @@ def research_slot(cfg: dict, base: str | Path = ".", *, pairs, researcher, arm_r
                               services=work.services())
     if build.status != "ready":
         out(f"slot       build {build.status}: {'; '.join(build.errors)[:200]}")
-        return {"outcome": build.status, "reasons": list(build.errors), "release": release_ref}
+        return {"outcome": build.status, "stage": "build", "reasons": list(build.errors), "release": release_ref}
     r0 = _ct.SystemRelease.from_json(activity.objects.get(release_ref)).research_ref
     out(f"slot       R1 {_ct.short(build.candidate_ref)} proposed by R0 {_ct.short(r0)}")
     plan = CampaignPlan(id=f"campaign-{_ct.digest({'r1': build.candidate_ref})[:10]}", phase=phase,

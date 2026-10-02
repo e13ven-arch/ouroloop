@@ -383,7 +383,136 @@ def test_a_malformed_research_slot_reply_proposes_nothing_instead_of_crashing():
             return json.dumps({"proposals": ["make it better", {"target": "research.propose", "text": ""}]})
     context = type("C", (), {"goal": "g", "budget": {}})()
     result = PolicyResearcher(Replies()).propose_research(context, "p", {"research.propose": "old"})
-    assert result.proposals == [] and result.next_action == "stop"
+    assert result.proposals == [] and result.unreadable and "malformed" in result.reason
+    assert result.next_action == "none"                     # not R's "stop": the reply decided nothing
+
+
+class _SlotModel:
+    """The research model behind the cycle's own slot researcher, metered on the activity's book: `reply` each
+    time it is asked, a refusal for None, a reply cut at the output limit for "cut"."""
+    name, model, reply, asked = "slot-model", "r-1", "", 0
+
+    def __init__(self, **_):
+        pass
+
+    def chat(self, system, messages, specs=()):
+        from ouroloop.chat import ChatTurn
+        _SlotModel.asked += 1
+        usage = {"input_tokens": 10, "output_tokens": 5}
+        if _SlotModel.reply is None:
+            return ChatTurn("", [], "refusal", usage=usage)
+        if _SlotModel.reply == "cut":
+            return ChatTurn('{"next_action": "none", "proposals": [{"hyp', [], "max_tokens", usage=usage)
+        return ChatTurn(_SlotModel.reply, [], "end", usage=usage)
+
+
+def slot_cycle(cfg, monkeypatch, reply=None, **kw):
+    """A cycle whose research slot asks the cycle's own researcher, on the fake model: the production path."""
+    if "slot_researcher" not in kw:
+        monkeypatch.setattr(_SlotModel, "reply", reply)
+        monkeypatch.setattr(_SlotModel, "asked", 0)
+        cfg["research"] = {"llm": {"type": "test_cycle:_SlotModel"}}
+    return bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper(), **kw)
+
+
+R1_ITEM = {"hypothesis": "h", "target": "research.propose", "text": R1_PROPOSE}
+
+
+@pytest.mark.parametrize("reply,why", [
+    ("", "was empty"),
+    (None, "declined the request"),
+    ("I would have the propose prompt name the last step.", "not readable JSON"),
+    (json.dumps({"reason": "the rounds went well"}), "no proposal and no next_action"),
+    (json.dumps({"next_action": "collect", "reason": "too few rounds"}), "is not one of"),
+    (json.dumps({"next_action": "none", "proposals": [{"hypothesis": "h", "target": "research.propose"}]}),
+     "no new prompt text"),
+    (json.dumps({"proposals": [{"hypothesis": "h", "target": "worker.harness", "text": "Add a skill."}]}),
+     "is not one of"),
+    (json.dumps({"proposals": [{"hypothesis": "h", "target": "research.propose", "text": P.PROPOSE_PACKAGE}]}),
+     "is the current research.propose prompt"),
+    (json.dumps({"proposals": ["name the last step"]}), "not an object"),
+    (json.dumps({"proposals": "name the last step", "next_action": "none"}), "not a list"),
+    # a malformed proposal after a well-formed one is not dropped with the first read on
+    (json.dumps({"proposals": [R1_ITEM, "and a second idea"]}), "not an object")],
+    ids=["empty", "refused", "not_json", "no_next_action", "unknown_next_action", "no_text", "worker_target",
+         "unchanged_text", "not_an_object", "not_a_list", "malformed_after_a_good_one"])
+def test_an_unreadable_slot_reply_is_an_invalid_slot(fake_upstream, tmp_path, fixture_preset, monkeypatch, reply,
+                                                     why):
+    """docs/modules/04_RESEARCH_LOOP.md §1: an empty, refused, non-JSON or malformed research-slot reply decides
+    nothing. The slot is invalid, not no_proposal; it is not asked again, the next worker segment runs, and the
+    report's C4 says the slot's reply was invalid rather than that R proposed nothing."""
+    cfg = cycle_config(fake_upstream, tmp_path)
+    gap_w0(cfg, tmp_path)
+    result = slot_cycle(cfg, monkeypatch, reply)
+    slot = result["steps"]["slot-0"]
+    assert result["status"] == "done" and slot["outcome"] == "invalid" and slot["stage"] == "reply", slot
+    assert why in slot["reason"] and "campaign" not in slot
+    assert "segment-1" in result["steps"] and _SlotModel.asked == 1
+    c4 = result["report"]["C4"]
+    assert c4["state"] == "not_run" and "reply was invalid" in c4["detail"] and why in c4["detail"]
+    assert "proposed no change" not in c4["detail"]
+    again = bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper())
+    assert again["steps"]["slot-0"] == slot and _SlotModel.asked == 1    # an invalid slot is not asked again
+
+
+@pytest.mark.parametrize("decision", [{"next_action": "stop", "reason": "the rounds went well"},
+                                      {"next_action": "none", "proposals": [], "reason": "nothing to change"}])
+def test_a_slot_decision_r_states_is_still_no_proposal(fake_upstream, tmp_path, fixture_preset, monkeypatch,
+                                                       decision):
+    cfg = cycle_config(fake_upstream, tmp_path)
+    gap_w0(cfg, tmp_path)
+    result = slot_cycle(cfg, monkeypatch, json.dumps(decision))
+    slot = result["steps"]["slot-0"]
+    assert slot["outcome"] == "no_proposal" and slot["stage"] == "reply" and slot["reason"] == decision["reason"]
+    assert "proposed no change" in result["report"]["C4"]["detail"]
+
+
+class _RefusedBySlotAdmission(RProposer):
+    """A slot step whose proposal changes W, which a research slot may not: admission refuses it."""
+
+    def propose_research(self, context, prompt, current, experience=(), *, allowed=()):
+        return ProposalResult(proposals=[ct.ExperimentProposal(
+            owner="research", hypothesis="h", origin="scripted",
+            changes=({"target": "worker.system_prompt", "kind": "prompt", "change": {"text": "x"}},))])
+
+
+@pytest.mark.parametrize("stage", ["admission", "build"])
+def test_a_slot_that_admission_or_the_build_refuses_says_which(fake_upstream, tmp_path, fixture_preset,
+                                                               monkeypatch, stage):
+    """The slot's record says where it ended, so C4 can say so; a proposed prompt is taken whole, and one longer
+    than K allows fails at the build rather than being cut into a text R did not write."""
+    cfg = cycle_config(fake_upstream, tmp_path)
+    gap_w0(cfg, tmp_path)
+    long_text = R1_PROPOSE + " Name it." * 3000
+    if stage == "admission":
+        result = slot_cycle(cfg, monkeypatch, slot_researcher=_RefusedBySlotAdmission())
+    else:
+        result = slot_cycle(cfg, monkeypatch, json.dumps({"proposals": [{**R1_ITEM, "text": long_text}]}))
+    slot = result["steps"]["slot-0"]
+    assert result["status"] == "done" and slot["stage"] == stage and "campaign" not in slot, slot
+    detail = result["report"]["C4"]["detail"]
+    assert ("admission refused" if stage == "admission" else "did not build") in detail
+    if stage == "build":
+        assert str(len(long_text)) in slot["reason"]
+
+
+def test_a_slot_reply_cut_at_the_output_limit_pauses_and_is_asked_again(fake_upstream, tmp_path, fixture_preset,
+                                                                        monkeypatch):
+    """docs/modules/04_RESEARCH_LOOP.md §1: a cut reply is a configuration problem, not R's answer: the slot pauses,
+    is not recorded invalid, and the same step is asked again once the cycle runs again, each call booked once."""
+    from ouroloop.evolve.execution import Budgets
+    cfg = cycle_config(fake_upstream, tmp_path)
+    gap_w0(cfg, tmp_path)
+    result = slot_cycle(cfg, monkeypatch, "cut")
+    assert result["status"] == "paused" and result["steps"]["slot-0"]["outcome"] == "paused"
+    assert "output limit" in result["steps"]["slot-0"]["reason"] and "segment-1" not in result["steps"]
+    monkeypatch.setattr(_SlotModel, "reply", json.dumps({"next_action": "stop", "reason": "the rounds went well"}))
+    again = bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper())
+    assert _SlotModel.asked == 2 and again["steps"]["slot-0"]["outcome"] == "no_proposal"
+    book = Budgets(tmp_path / "ws")._read()
+    calls = [r for r in book["reservations"].values()
+             if r["scope_id"].endswith(":slot-0") and ":research" in r["operation_id"]]
+    assert len(calls) == 2 and {r["status"] for r in calls} == {"settled"}      # the cut call, then the asked again
 
 
 def test_the_slot_keeps_rs_propose_text_and_its_format_governs():

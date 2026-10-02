@@ -392,7 +392,7 @@ def claim_states(report: dict) -> dict:
                                 "the decision model against the same prompt without it", plan)
     research = [r for r in receipts if r["profile"] == "research"]
     if not research:
-        out["C4"] = {"state": "not_run", "detail": "no research campaign on record"}
+        out["C4"] = {"state": "not_run", "detail": _slots_without_a_campaign(report)}
     else:
         last = research[-1]
         supported = last["verdict"] == "accepted" and last["uncertainty"].get("significant")
@@ -401,6 +401,36 @@ def claim_states(report: dict) -> dict:
                      "detail": f"{last['verdict']}: {'; '.join(last['reasons'])[:200]}",
                      "metrics": last["metrics"]}
     return out
+
+
+def _slots_without_a_campaign(report: dict) -> str:
+    """How each research slot ended when no research receipt is on record, from rsi/cycle.json
+    (docs/modules/07_BENCH_REPORT.md §4): a slot that ended before its campaign says how, not that there is none."""
+    steps = ((report.get("harness") or {}).get("cycle") or {}).get("steps") or {}
+    slots = sorted((name, step) for name, step in steps.items() if name.startswith("slot-") and isinstance(step, dict))
+    if not slots:
+        return "no research campaign on record"
+    out = []
+    for name, step in slots:
+        outcome, why = step.get("outcome"), step.get("reason") or "no reason recorded"
+        where = f"during campaign {ct.short(step['campaign'])}" if step.get("campaign") else "before a campaign ran"
+        if outcome == "no_proposal":
+            out.append(f"{name}: the research policy proposed no change to itself ({why})")
+        elif outcome == "invalid" and step.get("stage") == "reply":
+            out.append(f"{name}: the research slot's reply was invalid ({why})")
+        elif step.get("stage") == "admission":
+            out.append(f"{name}: admission refused the proposed R ({why})")
+        elif step.get("stage") == "build":
+            out.append(f"{name}: the proposed R did not build ({why})")
+        elif outcome == "budget_exhausted":
+            out.append(f"{name}: the budget was spent {where} ({why})")
+        elif outcome == "paused":
+            out.append(f"{name}: paused {where} ({why}); the slot resumes when the cycle runs again")
+        elif step.get("campaign"):
+            out.append(f"{name}: campaign {ct.short(step['campaign'])} is planned and has no receipt")
+        else:
+            out.append(f"{name}: ended {outcome or 'without an outcome'} before a campaign ({why})")
+    return "; ".join(out)[:600]
 
 
 def _pair_claim(subject, control, what: str, plan: dict | None = None) -> dict:

@@ -176,6 +176,42 @@ def test_a_research_receipt_that_is_not_significant_is_not_c4_support():
     assert claim_states(report)["C4"]["state"] == "supported"
 
 
+CAMPAIGN = "campaign:sha256:" + "e" * 64
+
+
+@pytest.mark.parametrize("step,says", [
+    ({"outcome": "no_proposal", "stage": "reply", "reason": "the rounds went well"},
+     "slot-0: the research policy proposed no change to itself (the rounds went well)"),
+    ({"outcome": "invalid", "stage": "reply", "reason": "the research reply was empty"},
+     "slot-0: the research slot's reply was invalid (the research reply was empty)"),
+    ({"outcome": "invalid", "stage": "admission", "reason": "research may not change worker.harness"},
+     "slot-0: admission refused the proposed R (research may not change worker.harness)"),
+    ({"outcome": "invalid", "stage": "build", "reason": "research.propose: empty text"},
+     "slot-0: the proposed R did not build (research.propose: empty text)"),
+    ({"outcome": "budget_exhausted", "reason": "the root cannot hold the outer share"},
+     "slot-0: the budget was spent before a campaign ran (the root cannot hold the outer share)"),
+    ({"outcome": "budget_exhausted", "reason": "the budget is spent", "campaign": CAMPAIGN},
+     f"slot-0: the budget was spent during campaign {ct.short(CAMPAIGN)} (the budget is spent)"),
+    ({"outcome": "paused", "reason": "the model provider refuses the account"},
+     "slot-0: paused before a campaign ran (the model provider refuses the account)"),
+    ({"outcome": "paused", "reason": "a model call failed", "campaign": CAMPAIGN},
+     f"slot-0: paused during campaign {ct.short(CAMPAIGN)} (a model call failed)"),
+    ({"campaign": CAMPAIGN, "r1": "policyset:sha256:" + "f" * 64, "experiment": "x1"},
+     f"slot-0: campaign {ct.short(CAMPAIGN)} is planned and has no receipt")],
+    ids=["no_proposal", "invalid_reply", "admission_refused", "build_failed", "budget_exhausted",
+         "budget_exhausted_in_campaign", "paused", "paused_in_campaign", "planned"])
+def test_c4_says_how_a_slot_without_a_campaign_ended(tmp_path, step, says):
+    """docs/modules/07_BENCH_REPORT.md §4: with no research receipt, C4 stays not_run and its detail says how the
+    slot ended, from rsi/cycle.json — not "no research campaign on record", and an invalid reply never reads as R
+    proposing nothing."""
+    from ouroloop.ledger import write_json
+    write_json(tmp_path / "rsi" / "cycle.json", {"status": "done", "steps": {
+        "baseline": {"release": "release:x"}, "segment-0": {"stop_reason": "no_proposal"}, "slot-0": step}})
+    c4 = build_report(tmp_path, rsi.DOMAIN)["claims"]["C4"]
+    assert c4["state"] == "not_run" and says in c4["detail"], c4
+    assert ("proposed no change" in c4["detail"]) == (step.get("outcome") == "no_proposal")
+
+
 def test_a_strict_dollar_plan_is_refused_when_the_price_cannot_be_bounded():
     assert check_pricing(Pricing(hidden_fallback=True), {"usd": 5.0})
     assert not check_pricing(Pricing(0.003, 0.015, 1000, 500, source="snapshot"), {"usd": 5.0})

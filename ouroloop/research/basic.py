@@ -486,22 +486,38 @@ class PolicyResearcher:
         system = f"{prompt}\n\n{RESEARCH_FORMAT}" if prompt else RESEARCH_FORMAT
         self.requests.append({"step": "propose", "system": system,
                               "prompt_hash": _ct.digest({"system": system})[:16]})
-        data = parse_json(self._complete("research_slot", system, json.dumps(state, ensure_ascii=False,
-                                                                              default=str)))
+        data, problem = self._read(self._complete("research_slot", system,
+                                                  json.dumps(state, ensure_ascii=False, default=str)))
+        # docs/modules/04_RESEARCH_LOOP.md §1: a reply that cannot be read, or a proposal that cannot be one,
+        # decides nothing. Every proposal is checked; one that is not a candidate makes the whole reply unreadable
+        # rather than being skipped, so what is left is never read as R declining. The text is taken whole: K's
+        # prompt length limit decides at the build, not a cut here.
+        listed = data.get("proposals")
+        if listed is not None and not isinstance(listed, (list, dict)):
+            problem = problem or "the research reply's proposals is not a list of proposals"
         proposals = []
-        for item in [i for i in _as_list(data.get("proposals")) if isinstance(i, dict)][:1]:
-            target, text = item.get("target"), item.get("text")
-            if target not in allowed or not isinstance(text, str) or not text.strip() \
-                    or text.strip() == current.get(target, "").strip():
-                continue                     # an unchanged or unknown target is not a research candidate
+        for item in _as_list(listed):
+            target, text = (item.get("target"), item.get("text")) if isinstance(item, dict) else (None, None)
+            why = (f"it is a {type(item).__name__}, not an object" if not isinstance(item, dict) else
+                   f"its target {target!r} is not one of {list(allowed)}" if target not in allowed else
+                   "it has no new prompt text" if not isinstance(text, str) or not text.strip() else
+                   f"its text is the current {target} prompt" if text.strip() == current.get(target, "").strip()
+                   else "")
+            if why:
+                problem = problem or f"a proposal in the research reply is malformed: {why}"
+                continue
             proposals.append(_ct.ExperimentProposal(
                 owner="research", hypothesis=str(item.get("hypothesis", ""))[:2000],
-                changes=({"target": target, "kind": "prompt", "change": {"text": text[:8000]}},),
+                changes=({"target": target, "kind": "prompt", "change": {"text": text}},),
                 expected=str(item.get("expected", ""))[:1000], abandon_if=str(item.get("abandon_if", ""))[:1000],
                 origin="llm"))           # a model proposed it; the entry point is the automatic loop
-        next_action = str(data.get("next_action") or ("none" if proposals else "stop"))
-        return _ProposalResult(proposals, next_action=next_action if next_action in ("none", "stop") else "stop",
-                               reason=str(data.get("reason", ""))[:500])
+        action = data.get("next_action")
+        if not problem and not proposals and action not in ("none", "stop"):
+            problem = ("the research reply has no proposal and no next_action" if action is None else
+                       f"the research reply's next_action {action!r} is not one of ['none', 'stop']")
+        # more than one proposal: propose_experiment keeps the first and records the rest as dropped
+        return _ProposalResult([] if problem else proposals, next_action="none" if problem or proposals else action,
+                               reason=problem or str(data.get("reason", ""))[:500], unreadable=bool(problem))
 
     def revise(self, prompt: str, patch: dict, check_output: str, parent: dict | None = None) -> dict:
         """One bounded revision of a draft package. It sees the parent package, the patch and the check's own
