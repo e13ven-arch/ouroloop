@@ -614,3 +614,13 @@ def test_the_package_api_says_how_a_test_reaches_package_code():
     revision (docs/REHEARSAL.md §13)."""
     from ouroloop.research.basic import PACKAGE_API
     assert "loaded by its path" in PACKAGE_API and "spec_from_file_location" in PACKAGE_API
+
+
+def test_the_package_api_says_what_a_hook_sees_is_cut_and_the_actor_had_the_whole_result():
+    """The first Claude activity (2026-10-03): R read the view's `truncated` and a summary's cut mark as cuts the
+    actor saw, and wrote a hook that told the actor so after every long result. The API says whose cuts they are."""
+    from ouroloop.agent.loop import HOOK_RESULT_CHARS
+    from ouroloop.research.basic import PACKAGE_API
+    assert f"result is at most the first {HOOK_RESULT_CHARS} characters" in PACKAGE_API
+    assert "truncated says only that this excerpt is shorter than the result" in PACKAGE_API
+    assert "The actor itself is always handed the whole result" in PACKAGE_API

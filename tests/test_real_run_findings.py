@@ -117,7 +117,9 @@ def test_the_summary_keeps_the_end_of_an_entry_and_the_agents_last_message_whole
                   {"kind": "assistant", "text": account, "tool_calls": []}]
     s = dg.failure_summary(Row(), transcript, [], dg.DiagnosisLimits(max_entry_chars=600))
     output = s["turns"][0]["results"][0]["output"]
-    assert output.startswith("head") and output.endswith("tail") and "characters cut" in output
+    assert output.startswith("head") and output.endswith("tail")
+    # the mark says whose cut it is: a mark that read like the agent's own made R hook against it (2026-10-03)
+    assert "characters left out of this summary; the agent had the whole text" in output
     assert s["turns"][-1]["text"] == account                     # the last message, whole under max_task_chars
     assert dg.clip("a" * 10, 20) == "a" * 10
 

@@ -38,12 +38,16 @@ class DiagnosisLimits:
 
 def clip(text, limit: int) -> str:
     """The head and the tail of a long entry: what an agent concludes, or what a tool returned last, is at the end
-    as often as at the start, and a head-only cut hides it."""
+    as often as at the start, and a head-only cut hides it.
+
+    The mark says whose cut it is. The agent had the whole text; a mark that read like a cut the agent saw made R
+    write a hook against tool outputs the agent never had cut (the first Claude activity, 2026-10-03)."""
     text = text if isinstance(text, str) else json.dumps(text, ensure_ascii=False, default=str)
     if len(text) <= limit:
         return text
     head = limit - limit // 2
-    return f"{text[:head]} [... {len(text) - limit} characters cut ...] {text[len(text) - limit // 2:]}"
+    return (f"{text[:head]} [... {len(text) - limit} characters left out of this summary; the agent had the whole "
+            f"text ...] {text[len(text) - limit // 2:]}")
 
 
 def read_transcript(transcripts: Path, session: str) -> list[dict]:

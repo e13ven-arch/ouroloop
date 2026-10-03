@@ -31,6 +31,9 @@ SYSTEM = ("You are a coding agent working in {workdir}. Use the tools to complet
 DROPPED = "[output removed to save context; run the command or read the file again if you need it]"
 
 
+# An after_tool hook is handed at most this much of a result; the actor itself is handed all of it.
+HOOK_RESULT_CHARS = 4000
+
 @dataclass
 class AgentConfig:
     max_turns: int = 30
@@ -215,7 +218,7 @@ class Agent:
                 if hooks is not None:
                     self._hook_view(hooks, turn)
                     _, notes = hooks.run_hooks("after_tool", {"tool": call.name, "args": call.args,
-                                                              "result": res.output[:4000],
+                                                              "result": res.output[:HOOK_RESULT_CHARS],
                                                               "is_error": res.is_error, "turn": turn})
                     feedback += notes
                 if call.name in ("read", "bash"):

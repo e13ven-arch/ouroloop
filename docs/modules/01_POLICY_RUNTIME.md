@@ -65,6 +65,8 @@ ctx.view -> 当前任务/已接受历史/真实工具结果的只读投影
 hook sites: before_tool, after_tool, on_finish
 ```
 
+hook 看到的结果都是截短的，actor 拿到的始终是完整结果。after_tool 的 `result` 至多是前 4000 字符（`agent/loop.py` 的 `HOOK_RESULT_CHARS`）；视图事件的 `result_excerpt` 是结果的前一段，`truncated` 只表示这段摘录比结果短。包 API 的说明照此写给 R：首个 Claude 活动里，R 把它和失败摘要的截断标记都读成了 actor 漏读，写出一个在每个长结果后提示“你没看到”的 hook，被 gate 拒绝。
+
 包工具是真正对 actor 暴露的 ToolSpec，名称/schema/描述由 manifest 固定；与基础工具或其他包工具重名拒绝。名称与 schema 在草稿检查时按 provider 的共同约束校验（M0 §2），不合约束是结构错误、回传 R，不留到 provider 返回 400 时记作基础设施故障；enabled=false 的工具不进入 ToolSpec。broker 只接 K 已授权的基础工具，不递归调用包工具，不创建新权限；每次内部调用走原权限/预算检查并记录真实事件，不能把多次调用藏成零成本的一次工具。generated code 不能直接持有 ToolSurface、provider、Runtime、对象库或评分器。
 
 before_tool 可在外部动作执行前 block 并返回可见纠正信息；after_tool 读取真实结果并提供 feedback，不撤销动作、不覆写结果；on_finish 可按当前可见业务状态要求继续检查，仍受原 pushback/turn cap 限制。hook 查询仅开放 K 声明的只读工具；缺少只读声明则不允许调用。continue 只交回固定执行流程，不授权任务成功；所有硬权限、预算和最终环境评分继续由核心决定。hook 顺序/启用列表在包 manifest 中冻结，每次事件记录包 ref、hook、输入摘要、输出及实际效果。
