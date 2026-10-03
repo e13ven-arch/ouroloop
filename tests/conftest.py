@@ -62,3 +62,23 @@ def loose_risk(monkeypatch):
     """Let a gate template take a risk of 0.2, looser than a real one may (docs/DESIGN.md, gate.LIMITS: 5%): a few
     hundred synthetic sessions then buy a threshold."""
     monkeypatch.setitem(gate.LIMITS, "risk", (0.0, 0.2))
+
+
+@pytest.fixture(scope="session")
+def fake_upstream():
+    """The path of the miniature AutomationBench in tests/fake_upstream, importable as `automationbench`.
+
+    A real checkout installed in the same environment must not win: anything already imported under that name is
+    dropped first, so the adapter's tests always run against the miniature.
+    """
+    import sys
+    root = str((Path(__file__).parent / "fake_upstream").resolve())
+    for name in [m for m in sys.modules if m == "automationbench" or m.startswith("automationbench.")]:
+        del sys.modules[name]
+    sys.path.insert(0, root)
+    try:
+        yield root
+    finally:
+        sys.path.remove(root)
+        for name in [m for m in sys.modules if m == "automationbench" or m.startswith("automationbench.")]:
+            del sys.modules[name]

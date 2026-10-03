@@ -30,14 +30,23 @@ class StopCall:
 
 class StopGuard:
     def __init__(self, rt, session: str, *, checker: Callable[[], tuple[bool, str]] | None = None,
-                 max_pushbacks: int = 2, max_turns: int | None = None, point: str = "stop"):
-        """checker() -> (passed, what to tell the agent when it failed)."""
+                 max_pushbacks: int = 2, max_turns: int | None = None, point: str = "stop", policy=None):
+        """checker() -> (passed, what to tell the agent when it failed).
+
+        `policy`: a bound worker.stop policy of the task/research profile (policies.StopDecider). With one, the
+        decision goes through runtime.propose instead of the champion pointer, and the guard's own limits stay
+        exactly where they were: the maximum pushbacks and the turn cap are hard edges, so a policy that keeps
+        saying "no" is overruled at the cap and the row records that it was overruled, not that it agreed
+        (docs/modules/01_POLICY_RUNTIME.md §3).
+        """
         self.rt, self.session, self.point = rt, session, point
         self.checker = checker
         self.max_pushbacks, self.max_turns = max_pushbacks, max_turns
+        self.policy = policy
         self.pushbacks = 0
+        self.overruled: list[dict] = []      # proposals the guard did not follow, with the reason
 
-    def __call__(self, phase: str, ctx: dict, turn: int) -> StopCall:
+    def __call__(self, phase: str, ctx: dict, turn: int, on_record=None) -> StopCall:
         capped = self.max_turns is not None and turn >= self.max_turns
         if phase == "per_turn" and capped:
             return StopCall(True, "max_turns")
@@ -53,7 +62,7 @@ class StopGuard:
                 return None if seen["passed"] else "no"
             return "yes" if seen["passed"] else "no"
 
-        decision, action = self._decide(phase, ctx, check)
+        decision, action = self._decide(phase, ctx, check, on_record)
         checked = seen.get("passed")
         if phase == "per_turn":
             done = action == "yes"
@@ -65,16 +74,35 @@ class StopGuard:
         else:
             return StopCall(True, "", decision, checked)
         if self.pushbacks >= self.max_pushbacks or capped:
+            # The guard's limit, not the policy's judgement: the session ends although "no" was proposed.
+            self._overrule(decision, "max_turns" if capped else "max_pushbacks")
             return StopCall(True, "", decision, checked)
         self.pushbacks += 1
         return StopCall(False, reason, decision, checked)
 
-    def _decide(self, phase: str, ctx: dict, veto) -> tuple[str | None, str | None]:
+    def _overrule(self, decision: str | None, reason: str) -> None:
+        """The guard ends the session although the policy or the checker asked for more work.
+
+        Recorded as an override rather than left implicit: otherwise the decision row would read as a "yes" the
+        policy agreed with, and a report would credit the policy with a stop it argued against
+        (docs/modules/01_POLICY_RUNTIME.md §3).
+        """
+        self.overruled.append({"decision": decision, "asked_for": "no", "executed": "yes", "reason": reason})
+        if decision is not None:
+            self.rt.ledger.append({"type": "override", "decision": decision, "session": self.session,
+                                   "asked_for": "no", "executed": "yes", "executor": "guard", "reason": reason})
+
+    def _decide(self, phase: str, ctx: dict, veto, on_record=None) -> tuple[str | None, str | None]:
         """-> (decision id, the action: the model's label when it acted, else the rule's or the phase's default)."""
         p = self.rt.points.get(self.point)
-        if p is None:           # no stop point: nothing is recorded, and the checker still decides
+        if p is None and self.policy is None:   # no stop point: nothing is recorded, the checker still decides
             return None, veto(None)
         ctx = {**ctx, "moment": MOMENTS[phase]}
+        if self.policy is not None:
+            asked = self.policy if self.policy.enabled(phase) else None
+            d = self.rt.propose(self.policy.point or p, ctx, policy=asked, session=self.session, phase=phase,
+                                veto=veto, on_record=on_record)
+            return d.id, d.action
         ask = self.rt.ask if p.policy.act else self.rt.record
         d = ask(p, ctx, session=self.session, phase=phase, veto=veto)
         return d.id, d.action

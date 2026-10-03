@@ -1,182 +1,277 @@
-# ouroloop 路线图（v0.4）
+# v0.6 实施路线图
 
-> 2026-09-27。目标与协议以 [DESIGN.md](DESIGN.md) 为准；本路线图把 AutomationBench 闭环拆为可执行工作项。
-> 当前仍处于设计阶段，以下 M1～M6 均未完成。本文的 `bench` 子命令、配置和新增文件是**拟实现接口**，不是已有用法。每项实现后才更新状态。
+> 2026-09-30 范围修订，代码基线 `b1cb7a7`。首版交付受限 harness 代码演化、应用发布与递归回用；第二版完善训练固化。仅调整相关规格，已有实现、旧 CLI 与历史证据保持原义。详细交接见 [模块目录](modules/README.md)。
 
-## 0. 当前基础与缺口
+## 1. 现有基础与缺口
 
-| 已有可复用实现 | 业务主线缺口 |
-|---|---|
-| 决策点、runtime、账本、默认回退 | 官方业务工具接入，任务组与 split 贯穿执行和数据 |
-| build/check、插件训练、worker、模型库与服务 | 可核验的业务动作反馈和可用的小决策模型 |
-| replay 评测、门、注册表与发布三元组 | 按完整任务结果评测、冻结完整 agent 版本 |
-| 独立研究候选循环、prompt suite、世代循环 | 将诊断、候选、可选训练、任务评测和新版本采集接通 |
-| 游戏与代码任务示例 | AutomationBench 的实测、领先模型比较、可复现报告 |
+已有 M0～M7：注册策略、真实业务观察、反馈/训练、完整任务配对评测、W/R 发布、单预算根和恢复、研究一轮及 R0/R1 campaign、七个 bench phase。代码基线 `b1cb7a7` 的离线测试为 554 passed, 1 deselected（[实现快照](history/V0_5_IMPLEMENTATION.md)与 JOURNAL 中的 553 为此前记录）。
 
-已有实现是工程起点，不代表 C1/C2/C3 已成立。历史游戏结果继续留在日志，不作为业务成绩。
+已有真实 GLM-5.3 在 `marketing.product_adoption` 一次 dev 运行：该任务共 14 条断言，其中 6 条初始即成立且结束时仍成立，被评分器排除、不计入分母；8 条计分断言全部通过（task_completed_correctly=1，partial 1.0）；15 turns、29 次工具调用、229 秒，第 15 轮请求的历史为 27,132 token；当时未配置价格，cost unknown。该任务保持 dev，不得重新标为未见 test。这只证明一次运行可用，没有证明训练或递归收益。[运行日志](JOURNAL.md)
 
-## 1. 完成目标与顺序
+代码基线 `b1cb7a7` 时首版待补的内容如下（阶段 A～E 的工程链路此后已实现，部分验收项仍缺，见 §2 末与 §3）：GLM-5.3 actor pin、能力包内容/manifest 身份、包内代码提案与构建、固定隔离 worker/工具 broker、工具与 hook 实际装配、技能/经验加载、回归/发布/导出，以及自动循环和 R campaign 的接线。R 诊断输入同属首版待补：当前 `task_results_summary` 只给逐题 success/partial/终止/失败类，不含断言明细和轨迹（`ouroloop/research/context.py:116-146`）；首版为每个失败的 train/fit 尝试提供失败摘要与断言明细；dev 只给汇总，final 不进入 R 上下文，dev/final 都不给断言明细和轨迹，这改变了 v0.5 研究员看不到任何断言明细的做法（`context.py:120` 的 docstring）；诊断经逐题笔记→汇总产出至多一个 patch 或结构化 next_action。M3 的 `run_tasks` 把逐条断言结果另存 `bench/<domain>/grading.jsonl`，不进 results.jsonl；M7 的结果存储按冻结 split 过滤读取，默认只返回 train。包草稿冻结前做草稿检查：含代码时 package_check → isolated_probe → package_test，只含 skills/memory 时只做结构/路径/manifest 检查；失败只把检查输出回传 R，在 preset 固定的次数内修订，通过后才冻结进 Experiment。第二版保留 generation 训练绑定、自动教学适配、review 前置、SFT/Tinker 及训练恢复设计。两版的新增能力和收益均未测得。
 
-首个阶段交付：Marketing 上可复现的完整闭环、领先模型本地比较、同底座前后比较，以及小决策模型有无增量价值的结论。分数、成本和不确定性都如实报告。
+## 2. 交付顺序
 
-```text
-M1 环境与协议 → M2 基线和失败诊断 → M3 有效干预与训练信号
-                                      ↓
-M6 最终比较与交付 ← M5 自动迭代 ← M4 小模型训练与完整任务评测
-```
+| 阶段 | 工作与模块 | 退出条件 |
+|---|---|---|
+| A 诊断输入与文本能力包 | M1 pin GLM-5.3 actor、宿主加载 skills/memory；M0 HarnessPackage/worker.harness 身份；M4 train/fit 失败摘要与断言明细、逐题笔记→汇总、harness_edit 文本组件；M4/M5 文本草稿检查（结构/路径/manifest）与有界修订；M3 另存判分明细 `grading.jsonl`、M7 按冻结 split 读取；M7 preset/K 先固定 max_failure_notes、失败摘要条目长度上限与 max_draft_repairs；首轮真实演化前运行 GLM-5.3 train+dev 基线 | 包路径、内容摘要和 manifest 可校验；无人工优化方案即可从真实 train 失败生成文本包，读取/注入事件可查，经 gate 裁决，下一轮沿用已采用包；dev/final 断言明细不进入 R；旧兼容通过；不需要 Docker、trainer 或 teacher |
+| B 代码组件与隔离 | M1 固定 package API、Docker worker/工具 broker、hook（先 on_finish）、包工具；M4 harness_edit 代码组件；M4/M5 把冻结前试跑修复扩展到 isolated_probe → package_test（同一 max_draft_repairs）、有界构建/恢复 | 无人工优化方案即可从真实 train 失败生成可执行 tools/middlewares 组件，经草稿检查与 gate 裁决，下一轮沿用已采用包；接口可校验；生成代码只在 worker 执行，不在控制面 import，无 in-process 回退；真实 hook/工具行为可查；不需要 trainer 或 teacher；本机 Docker daemon 可用是真实检查前提 |
+| C 验证与 app | M3 同模型固定 dev 配对 gate（含逐题退化记录）、preflight/CAS/导出 | 包被真正执行；有收益才采用；干净部署只需 runtime/包/模型服务/工具绑定 |
+| D 递归方法回用 | M4/M6 两支搜索能力包；M3 安装 R | 同 W/E 起点、相同代码 API/镜像/预算；下一改进调用实际加载 R1；失败保留原版本 |
+| E 用户入口与真实验证 | M7 harness preset/cycle/报告；完整示例 | 自动代码提案、真实任务、包迭代与有界 C4 留有记录；工程与收益结论分开 |
 
-框架随实验补齐，不先完成所有抽象再跑任务。下一步是 M1；小模型训练以前，先完成 M2/M3 的可改进性验证。
+实现状态（2026-10-01）：A～E 的工程链路已实现，离线测试 703 passed, 1 deselected（Docker 运行时 IT6-23 隔离测试一并通过）。真实模型已跑通两段：一个通过的 train 任务走到研究汇总；一个失败的 train 任务经逐题笔记、汇总提案、草稿检查与一次修订、准入、冻结实验和候选构建，在 gate 前停止。gate 已真实运行到底但未得出结论：比较途中智谱账号余额耗尽，磁盘上 20 条 dev 记录中 19 条无效（gate 收据计入的 19 条中 18 条无效，其中唯一有效的是复用的 1 条筛选候选臂记录），判为 inconclusive，未安装。安装、任务中运行的包、Docker 中的代码草稿检查与 R 递归尚未在真实模型下运行。2026-10-01 的需求审计：首版 354 项中 186 项实现并有测试，23 项实现无测试，136 项部分实现，7 项缺失（明细见 history/V0_6_AUDIT_2026-10-01.md）。E 的退出条件中“真实任务、包迭代与有界 C4”需冻结预算并由用户决定开始付费运行。明细见 [JOURNAL](JOURNAL.md)。
 
-## 2. 实施工作项
+2026-10-02 复核（11 个范围逐一审计并对抗复核，结论见 JOURNAL 同日条目）发现 4 个高危缺陷：
+- 准入在 K 未冻结 methods 时放行 R 提供的 `spec.backend`，使控制面 import 任意对象（阶段 3 已修）；
+- 研究比较中两支 W* 相同时仍可判 accepted（研究位前已修）；
+- 外层比较不按任务配对（研究位前已修）；
+- 续跑不读 Experiment 冻结的评测模板与预算 scope（阶段 3 已修）。
 
-### M1：接入 AutomationBench 与运行契约
+其余两项（研究裁决）已在 §3 的“研究位前”修完（2026-10-03）。
 
-**目的：** 能用同一驱动器运行目标模型和领先模型，拿到与官方语义一致的结果。
+另有以下问题：
+- 暂停只在 worker 轮循环里写入；collect、续跑、基线、研究位提案、campaign 公共测量与外测遇到账号错误或截断时以异常退出（阶段 3 已修：cycle 的每一步按同一规则暂停或结束）。
+- 示例研究模型的输出上限 16384 不够用（阶段 1 已改为 32768）。
+- 所有 improve/cycle/research 集成测试都注入脚本研究员。
+- 研究收据的结果对象记下两支工作区里的 release：各支最后一次安装的 release，以及没有安装的轮次记下的起始 release。它们不在 W* 的闭包里，没有复制回活动对象库。R1 装入后，凡是闭包经过该 R 安装 release 的 `copy_closure` 都以 KeyError 崩溃：第二个研究位，或在同一工作区里开研究位的后续活动。首个活动只有一个研究位（cycle 拒绝更多），不受影响。
+- M6 §3 要求报告 research_dev 的候选次数和访问历史，报告里还没有。
+- 第二次彩排发现：汇总请求只有笔记、包与 targets，没有失败摘要，也没有基础工具的名称与参数。R 要写包工具或 hook，所需的接口细节（端点、字段名、工具名、actor 消息里的标记）只能由笔记带过去，而 R0 的 diagnose 提示没有要求笔记带这些。真实运行中，代码组件的提案可能因此写不对。2026-10-03 决定：在汇总与修订请求里加入基础工具清单（方案 2），已实现（`1c44670`）。第三次彩排（REHEARSAL.md §13）表明，方案 2 加上“笔记写下本条失败过程里的接口细节”就够了。但 R0 的 diagnose 提示没有要求笔记写下这些细节（端点、方法、字段名、错误原文、actor 结束消息里可作判断依据的原话）。2026-10-03 决定加进 R0 的 diagnose 提示（新的 R0 身份；真实活动尚未开始，没有工作区受影响），已实现（`ef6e865`）。第四次彩排（REHEARSAL.md §15）显示两项合起来足以只凭请求写出有效的包工具与 hook。仍未检验的是端点从未被调用过的情形。
+- IT6-10/19/21/23/26 仍部分实现：活动取消入口尚无代码（首个活动靠停止点人工停下）；逐题退化记录已在阶段 3 写入 gate 收据，IT6-26 的合并/停用分支仍没有测试。
 
-**改动：**
+修复前不进入付费运行。修复与真实运行的顺序见 §3 的首个真实活动协议。
 
-- 新建 `ouroloop/benchmark.py`：任务 manifest、family/split、运行 manifest、TaskResult，固定版本和预算。
-- 新建 `ouroloop/adapters/automationbench.py`：初始化、工具发现与调用、结束评分、销毁隔离环境；评分入口与 agent 可见工具分开。
-- 复用 `agent/` 与 `providers/`，允许业务工具接口；保留旧文件/bash 场景。
-- 新建 `examples/automationbench/marketing.toml`、任务分组 manifest 与可选依赖说明。上游运行环境与核心依赖隔离，记录兼容 Python 和包版本。
-- 在首次模型运行前固定 train/dev/test 分组；先检查上游任务家族/变体信息，不能直接按轨迹随机拆分。
+A～E 属于首版，递归方法比较与实际回用仍为必做。第二版接 M8 教学适配/采集、M2 SFT、M1 sampling/teacher hook 及独立 controller 新训练验证，沿用已写规格；不把这些账户或依赖放入首版预检。按 [分版验收](modules/08_INTEGRATION_CASES.md)执行，未来用例不删除也不算首版缺项。真实试验需模型服务与冻结预算；不具备时真实验证标未完成。
 
-**验收：**
+补采请求经同一 driver 自动续跑（purpose=task_feedback）属首版，IT6-19/21 首版验收，覆盖补采恢复及 worker 段与活动的停止区别；更换 h 时创建 baseline release/新比较身份与 source_validation（只验证教学来源）属第二版，IT6-18/20 第二版验收。
 
-- 新增适配器契约检查：同一终态通过官方评分器与适配器得到相同 success/partial_credit；错误写入不能被文字总结变成成功。
-- 输入审计证明没有断言、参考答案或未来环境状态进入 agent；模拟操作不会调用真实 SaaS。
-- 少量预定开发任务完成真实模型运行，输出 TaskResult、工具轨迹、终止原因和完整 manifest；尚不宣称能力提升。
-- 验证快照或 reset+前缀重放是否可用，记录限制，供 M3 决定信号路径。
+新增 cycle 只是按固定 schedule 调用现有 handlers；不另造编排器。R 使用已有 provider/策略对象，逐题笔记与汇总串行调用同一 provider，不建子 agent 平台；M6 复用已有 campaign。scope 首版允许能力包目录内工具/中间件代码、技能/经验与注册 W/R 策略；框架源码、任务数据/评分、权限、预算、依赖锁/镜像和发布核心不可演化。固定 package API 的变化仍由工程开发接入，不让候选自行注册新的宿主入口。
 
-**拟实现入口：** `ouroloop bench --config examples/automationbench/marketing.toml --phase smoke`。
+## 3. 首条真实实验路径
 
-### M2：建立领先模型与目标 agent 基线
+首个业务后端采用 AutomationBench 直连。首版 actor 原定 GLM-5.3（已配置并计价的 OpenAI 兼容接口），2026-10-03 起先跑 Claude Opus 5.5（经订阅额度，见 §3 第 2a 步），冻结底座、权重身份和推理配置；R 可共用供应商。Docker 用于能力包代码隔离，不管理任务集群，也不要求接 Harbor；只含 skills/memory 的包由宿主装配，不启动 worker。现有决策 trainer 保持兼容，但首版实验不训练新模型。第二版生成训练首选 Tinker LoRA SFT，候选学生 Qwen3.5-9B；届时验证实际模型/SDK/费用，不提前构成首版依赖。换 Qwen3.5-9B 学生时，h* 需在学生上重新演化：[Harness-Zero](TECHNOLOGY.md#4-参考设计如何转为独立实现) 的 h* 是在学生上验证的（其 base+h* 为学生带 h* 的成绩），首版在 GLM-5.3 上演化的包不直接作为学生的 h*。
 
-**目的：** 明确起点、成本和真实失败；避免训练一个解决次要问题的模型。
+先测所 pin actor 的无教师起点（原定 GLM-5.3，2026-10-03 起为 Claude Opus 5.5，见 §3 第 2a 步）。真实基线尚未运行：2026-09-30 一次启动在第一个任务中途中止（4 次模型调用，无完成尝试）；train+dev 基线在首轮真实 h* 演化就绪时、演化开始前运行，既有单任务 dev 成绩不能作为 before。从 train/fit 失败摘要与断言明细经逐题笔记→汇总生成共享能力包；先交付 skills/memory 文本组件，再交付代码组件。代码草稿冻结前完成隔离接口 smoke（package_check → isolated_probe → package_test）及有界修复，再真实执行和 dev gate；Docker 隔离测试已在本机 daemon 上通过（2026-10-01），但 CI 尚未构建 worker 镜像，代码草稿在 Docker 中的检查链也还没有经过真实模型。诊断可聚焦失败 train 任务；候选采用前仍比较完整固定 dev 清单，不另建历史成功任务池或回归作业。至少观察一个工具封装或中间件改变真实执行；静态检查通过或文件变化不能作为 C1 证据。
 
-**改动：**
+任务家族和失败覆盖先统计，不预设一定涨分。首版按 purpose=task_feedback 的 CollectionRequest 补 plain train attempt；第二版训练缺口使用对应 purpose，同一 driver 不变。不能把 test 迁入 train，或通过代码编写读取 dev/final 答案。预留 gate/递归额度，计入 R/actor、逐题笔记、草稿检查/修复、代码构建/隔离运行、失败候选与全部评测。
 
-- 配置目标底座和至少两家供应商的领先模型；按 DESIGN §3.2 记录选择来源、准确 ID、effort 和 fallback。
-- 增加 `evals/automationbench/` 的结果 manifest、任务成本与失败切片报告；大体积原始记录可使用外部版本化存储并保留摘要和校验和。
-- 各模型在相同 train/dev 范围运行。冻结 test，最终评测前不查看它的运行结果。
-- 优化合理的基础 prompt，形成 base 与 prompt_best；这部分支出计入搜索预算。
-- 记录完整成功率、局部断言、工具用量、模型用量、延迟、无效尝试，诊断信息不足、错误目标、错误操作、过早结束等有证据的失败。
+在基础 app 链路可运行后，安排一次冻结的 R 方法比较及其下一轮回用检查。R1 无收益则保留 R0，报告 C4 未成立；不为展示递归而强制安装。以后可增加实验规模或新后端，但不能把这条核心能力永远留在设计里。
 
-**验收：**
+### 首个真实活动协议（2026-10-02）
 
-- 每项结果可追溯到一次具体运行，空值与缺失费用不会被当作零。
-- 输出一份有轨迹证据的失败诊断，选出**一个**优先干预点及其可见输入、动作集合、默认策略。
-- 如果基线尚不稳定，先修运行器；如果失败没有可学习的决策结构，记录并调整切入点。
+本节在代码修复之前写定首个付费活动的结构、顺序与止损。修复或运行若要偏离本节，先改本节再动手。成本与工期都是按 §4 单价的估算。
 
-**拟实现入口：** `ouroloop bench --config examples/automationbench/marketing.toml --phase baseline`。
+括号内是落实该条的测试：标“新增”的随对应修复一起写；只改配置的条目不另配测试。
 
-### M3：验证一次有效干预，构造训练反馈
+1. **付费前必修。**
+   - 基线前（2026-10-02 已完成，经对抗审查后修正，见 JOURNAL 同日条目）：
+     - 基线的 train 尝试直接作为第一轮测量：一个活动里 W0 的 train 只测一次（新增 `test_cycle.py::test_the_baseline_train_is_the_first_measurement`）。
+     - 单独跑的基线与之后 cycle 里的基线互相复用，不重付（`test_cycle.py::test_baseline_attempt_ids_are_stable`，在与默认值不同的 task plan 下验证）。
+     - 运行身份由运行时守卫锁定，没有采用字面量金样（运行身份含环境信息，换机器就会变）：`measurement_planned` 与 `collection_booked` 记下运行身份；用改过的代码补完被中断的测量或补采批时，身份不一致就拒绝续跑，不按新身份重付（`test_cycle.py::test_a_measurement_booked_under_another_run_is_not_finished_under_this_one`）。
+     - 测量不完整时不复用，按记账的任务补齐（`test_cycle.py::test_an_interrupted_measurement_is_finished_not_reused`、`test_a_limited_baseline_is_finished_by_the_first_round`）。
+     - 补采先记账再运行：中断的批次在重启时按原序号补完、只计一次额度，补完的结果照常判断是否有进展；重建测量时纳入同一版本的补采结果（`test_an_interrupted_collection_batch_is_finished_at_its_own_index`、`test_improve_finishes_an_interrupted_batch`）；补完时遇到账号错误按暂停处理（`test_an_account_refusal_while_finishing_a_batch_pauses`）。
+     - 示例配置中，研究模型的 `max_tokens` 与 `[pricing] max_output_tokens` 提到 32768。
+     - 启动检查按 pin 的 actor 与 `[research.llm]` 核对输出上限，并确认 key 存在；`type = "manual"` 免检 key（新增 `test_cycle.py::test_startup_checks_the_pinned_models`）。
+     - 付费阶段在计划未命名时拒绝启动，并提示先 freeze（新增 `test_cycle.py::test_a_paid_phase_refuses_an_unfrozen_budget`）。具体是：
+       - 配置里有 `[freeze.X]`，而 `[rsi]` 没有对应的 ref；
+       - 或者活动带 `[improvement]`，而 `[rsi]` 没有同时命名 task_plan、schedule、budget 三个 ref。
+       - 原因：以空限额建立的预算根，以后无法再用冻结的限额打开；不在冻结计划下跑的基线，也不能被 cycle 复用。
+       - 有 `[improvement]` 时，`ouroloop freeze` 也冻结 preset 的 task plan 与 schedule，与 cycle 自己冻结的是同一组对象（`test_cycle.py::test_baseline_attempt_ids_are_stable`）。
+     - cycle 拒绝多于 preset 的 `research_slots`（新增 `test_cycle.py::test_more_research_slots_than_the_preset_are_refused`）。
+     - cycle 加停止点 `--until`（新增 `test_cycle.py::test_cycle_stops_at_the_named_step`）：
+       - 取值为 `baseline`、`segment-N`、`segment-N/round-K` 或 `slot-N`，与 `rsi/cycle.json` 的步名一致。
+       - 停下时：该段不标 finished，不进入下一个付费步骤，cycle 以 stopped 结束（不是 paused）。
+       - 再次运行时从下一步续跑，已完成的部分不重复记账，也不重新冻结任何计划。
+       - 停止点是优先级最低的停因：调度规则在同一时刻触发时，报调度规则自己的原因（`test_a_stop_point_does_not_hide_the_schedules_own_end`）。
+       - 停在请求补采的那一轮时，这批不付费；续跑时先补这一批，再进入下一轮（`test_a_collection_a_stop_point_left_unanswered_runs_before_the_next_round`）。
+       - 续跑保持 patience 与失败计数；被重跑的轮（暂停的、因基础设施失败的）不计入（`test_a_resumed_segment_keeps_its_patience_and_failure_counts`、`test_a_segment_paused_on_infrastructure_resumes_after_the_repair`）。
+       - 回用检查只读研究位之后那一段，在它非暂停地结束时计算；停止点、暂停或重启都保留待查（`test_the_reuse_check_is_read_from_the_segment_after_the_slot`、`test_a_paused_segment_after_an_install_keeps_the_reuse_check_pending`、`test_until_slot_stops_before_the_next_segment`）。
+     - 活动开始时冻结的计划记在 `rsi/cycle.json`；之后的 cycle 若会冻结出别的计划（preset 或 `[freeze.*]` 变了，或 `[rsi]` 换了 ref），就拒绝运行（`test_an_activity_does_not_freeze_its_plans_again`）。
+     - 预算根里划出一笔 `final` 分配（`[freeze.budget.final]`），final 按该分配预留，cycle 不能花这部分（`test_cycle.py::test_cycle_cannot_spend_the_final_allocation`、`test_paid_run_safety.py::test_the_final_spends_the_share_set_aside_for_it`）。
+       - 分配在 freeze、启动检查与打开预算根时都校验：必须限制根所限的维度、大于零、给其余部分留有余额，且放得下一次调用（`test_a_share_that_cannot_work_is_refused_before_a_root_is_opened`）。
+       - 分配在第一次打开根时设定；根打开后不能改、不能撤、也不能在花钱之后再加（`test_an_open_roots_allocations_do_not_change`）。
+       - 显示给 R 和人的有效剩余，与预留实际允许的一致，不含未花的 final 份额。
+   - worker 段前（2026-10-02 已完成，经对抗审查后修正，见 JOURNAL 同日条目）：
+     - 准入一律拒绝 R 提供的 `spec.backend`，以及不带同一目标训练条目的 `kind=model` 改动（含 worker.actor 换模型身份），不依赖 K 是否冻结了 methods；构建对修复前已冻结的实验同样拒绝（`test_research_round.py::test_a_proposal_cannot_name_a_backend`）。
+     - 续跑按 [M5 §3](modules/05_EXECUTION_BUDGET.md) 的“续跑的冻结输入”处理（新增 `test_real_run_findings.py::test_resume_refuses_a_changed_frozen_plan`）：
+       - 评测模板或预算 scope 与 Experiment 冻结的不一致：拒绝续跑并暂停。
+       - 筛选与评测的 control、permit 与候选 release，都建在冻结的 parent_release 上。
+       - 安装仍按冻结的 parent_release 做 CAS；active 已移动时记 stale_parent，不暂停。
+       - 续跑途中遇到暂停类或耗尽类故障，单独运行的 improve 与 campaign 臂也按同一规则停下，不以异常退出。
+       - campaign 臂冻结并记录自己的评测模板（原计划在研究位前，随本项完成）。
+     - 暂停、结束与 invalid 按 M5 §3 和 [M4 §1](modules/04_RESEARCH_LOOP.md) 覆盖全部路径，新增：
+       - `test_real_run_findings.py::test_every_cycle_step_pauses_on_an_account_error`
+       - `test_real_run_findings.py::test_a_research_call_that_keeps_failing_pauses_the_activity`
+       - `test_real_run_findings.py::test_a_spent_budget_ends_every_cycle_step_without_pausing`
+       - `test_research_round.py::test_an_unreadable_reply_is_an_invalid_round`（worker 轮的汇总回复；研究位的回复见下面“研究位前”）
+       - 账本拒绝分两类：额度耗尽（`BudgetExhausted`）是有界结束；预算与冻结的不符是配置问题，暂停（`test_harness_loop.py::test_budget_exhaustion_in_the_note_map_stops_the_round_cleanly`）。
+     - 逐题笔记全部读不出时，不调用汇总，本轮记 invalid（新增 `test_diagnosis.py::test_no_readable_note_makes_an_invalid_round`）。
+     - prompt 改动也做 train 字面量检查（新增 `test_research_round.py::test_a_prompt_change_gets_the_literal_check`）。
+     - gate 收据写入逐题退化清单（新增 `test_task_gate.py::test_the_receipt_lists_each_regressed_task`）。
+     - 包工具的 name/schema 按 provider 约束校验（`test_harness_package.py::test_a_tool_name_the_provider_refuses_fails_the_check`、`test_a_tool_schema_the_provider_refuses_fails_the_check`）；`enabled` 只取布尔，停用的工具不暴露（`test_enabled_is_a_boolean_and_a_disabled_tool_is_not_offered`）。
+     - 另加：CI 构建 worker 镜像，并在 `OUROLOOP_TEST_REQUIRE_DOCKER` 下运行 3 个 Docker 隔离测试；缺镜像就失败，不再跳过（`.github/workflows/tests.yml`）。
+     - 对抗审查后补充：
+       - 冻结的 task plan 带全部单次尝试上限，`[bench.budget]` 冻结后再改，不影响任何已冻结的比较；研究位的两支与公共测量也从计划读上限（`test_cycle.py::test_a_frozen_plan_keeps_its_attempt_limits_when_the_config_changes`）。
+       - 计费层重试用尽后，任何供应商异常（含 Anthropic SDK 的连接或超时错误）都以 ProviderError 离开计费层，按暂停处理；网关返回 200 却没有 choices 也是供应商故障（`test_a_research_call_that_keeps_failing_pauses_the_activity` 的 sdk 用例、`test_a_gateway_that_answers_200_without_choices_is_a_provider_failure`）。
+       - 账号拒绝只从供应商的故障里读，内部错误的文本里带 "billing" 不算；预算不符单列为 `BudgetMismatch`，其余账本误用直接上抛（`test_only_a_model_providers_failure_is_read_as_a_refused_account`）。
+       - 构建与续跑都按准入的同一规则检查 model 改动；训练条目只能指向核心开放的决策目标（`test_a_resumed_experiment_that_names_a_backend_is_not_evaluated`）。
+       - 逐题笔记读不出时记下真实原因（`test_diagnosis.py::test_an_unreadable_note_records_why_it_could_not_be_read`）；已完成的段不被后续步骤的故障记成暂停（`test_cycle.py::test_a_finished_segment_is_not_recorded_as_paused_by_a_later_failure`）；campaign 臂的续跑有测试（`test_rsi_integration.py::test_a_campaign_arm_resumes_its_open_experiment_under_its_frozen_inputs_or_pauses`）。
+   - 研究位前（2026-10-03 已完成，经对抗审查后修正，见 JOURNAL 同日条目；彩排的研究位部分在此之后重跑）：
+     - 研究裁决按任务配对；配对不全、或两支 W* 相同时，判 inconclusive；外测补跑一次，额度从预算根预留。规则见 [M6 §3](modules/06_RESEARCH_CAMPAIGN.md)：
+       - 配对：同一 pair 内，外层任务的每次重复在两支都有有效尝试才计入；补跑后仍缺任一，判 inconclusive。
+       - 两支 W* 是同一个 worker ref 时不跑外测，判 inconclusive。
+       - 补跑按外测计划冻结的 retry_policy，只补基础设施失败，至多一次。
+       - 预留：preset 的 `outer_share`（0.08）乘冻结限额，写入 campaign plan 的 `outer_budget`。它是外测 scope 的上限，并在公共测量与两支开跑前以不结算的预留占住。
+       - 两支等额：研究位开始时，根须能覆盖外测份额与两支份额（由 cycle 自己的研究员作答时，再加 R 这一次调用），否则研究位不问 R，记 budget_exhausted。公共测量之后、两支开跑之前，两支的份额也以不结算的预留占住，各支开跑时释放给自己；占不住时两支都不运行，外测份额退回，判 inconclusive：否则后跑的一支（R1）会被前面的花费饿死，预算不等的比较说明不了 R。重启找回这些预留，已跑过的支不再检查。
+       - 新增 `test_campaign.py::test_identical_arms_are_inconclusive`、`test_identical_arms_stop_the_campaign_before_a_later_pair`、`test_outer_results_are_paired_by_task`、`test_a_task_missing_on_either_arm_leaves_the_pair_incomplete`、`test_a_task_with_a_repeat_lost_is_not_counted_as_paired`、`test_the_outer_share_is_set_aside_before_the_common_inputs_and_the_arms`、`test_an_arm_the_root_cannot_cover_leaves_the_comparison_inconclusive`、`test_a_restart_holds_and_checks_nothing_again_for_arms_that_already_ran`；`test_rsi_integration.py::test_an_outer_attempt_lost_to_infrastructure_is_refilled_once`、`test_an_outer_attempt_lost_again_on_its_refill_leaves_the_comparison_inconclusive`；`test_cycle.py::test_a_slot_whose_outer_share_the_root_cannot_hold_asks_r_nothing`、`test_common_inputs_that_leave_the_arms_short_end_the_slot_inconclusive`。
+       - 调整现有测试：`test_rc02_an_arm_that_installed_nothing_returns_w0_with_its_costs` 的断言翻转为 inconclusive；rc05、rc09、rc10、it6_16 与 `test_an_arm_with_no_outer_result_is_inconclusive_rather_than_a_win` 中两支 W* 相同的测试改夹具，让两支不同，断言不变；`test_real_run_findings.py::test_a_spent_budget_ends_every_cycle_step_without_pausing` 的 campaign 参数相应调整：在公共测量处花光时两支份额占不住、两支都不运行；在某一支处花光时两支 W* 相同、外测不运行；两种情况下外测预留都退回活动，下一段开始时再花光一次。
+     - E0 交给两支：研究位开始时主线经验冻结在配对里，两支的经验日志以它原样开头，第一轮读到同一个 experience_ref。实验记录去掉原始 gate 理由，因为理由可能写出开发题号；汇总指标保留。E0 引用的对象不复制进分支，分支里没有读取它们的步骤（新增 `test_cycle.py::test_rc6_01_both_arms_start_from_the_same_e0`）。
+     - worker 段装过包之后，研究位的公共测量与两支复制 W 时以 KeyError 崩溃：嵌套记录的 `ref` 被 `refs_in` 当作对象引用，`copy_closure` 去复制一个不存在的对象（阶段 3 调研发现，见 JOURNAL）。修法：整条嵌入的记录自带的 `ref` 等于其余字段的摘要，`refs_in` 不把它当作引用。不改任何对象的身份，修复前写下的工作区不用迁移。新增 `test_cycle.py::test_a_slot_after_a_worker_install_runs` 与 `test_contracts.py::test_an_embedded_records_own_ref_is_not_a_reference`；`test_real_run_findings.py::test_every_cycle_step_pauses_on_an_account_error` 去掉绕开它的停止点。
+     - 研究位的 system 提示保留 R 自己的 propose 文本（R 正是用它提出对自身的修改），由研究位格式声明：前文是 worker 轮的改包指令，本次调用改的是这些指令本身，以本格式为准。只改代码里的格式，不改 R0 文本：R0 已冻结进 release，活动内改它不会生效（新增 `test_cycle.py::test_the_slot_keeps_rs_propose_text_and_its_format_governs`）。
+     - 研究位读不出的回复记 invalid，不记 no_proposal；没有研究收据时，报告的 C4 按 `cycle.json` 中研究位的结局写 detail。规则见 [M4 §1](modules/04_RESEARCH_LOOP.md)：每个提案都校验；`cycle.json` 记 stage（reply、admission 或 build）；提案文本不截断，超过 K 的提示长度上限时构建失败。新增 `test_report.py::test_c4_says_how_a_slot_without_a_campaign_ended`、`test_cycle.py::test_an_unreadable_slot_reply_is_an_invalid_slot`、`test_a_slot_decision_r_states_is_still_no_proposal`、`test_a_slot_that_admission_or_the_build_refuses_says_which`、`test_a_slot_reply_cut_at_the_output_limit_pauses_and_is_asked_again`。
+     - 研究位安装 R1 之后，回用检查只在紧随其后的 worker 段非暂停地结束时计算；该段暂停、崩溃或停在停止点时，保留待查。已随停止点在阶段 1 完成（`test_cycle.py::test_a_paused_segment_after_an_install_keeps_the_reuse_check_pending`）。
+2. **付费前彩排（生产路径，不付 API 费用）。** 2026-10-03 已完成，结果与覆盖缺口见 [REHEARSAL.md §9](REHEARSAL.md)；补技能、包工具与补跑的第二次彩排见 §10，结果见 §11。
+   - 目的：经 CLI `ouroloop bench --phase cycle` 走一遍生产路径，不注入研究员，也不替换 `cycle_pairs`，R 由 Claude 作答。它证明接线与故障协议，不证明任何模型的效果。
+   - 环境：
+     - R：`[research.llm] type = "manual"`（`ouroloop/providers/manual.py`）。Claude 只依据请求文件作答，不使用仓库、评分器或任务答案这些带外知识。
+     - 任务世界：以 `marketing` 域名导出的 fixture 上游，满足 preset 的域锁（`bench.py:923-925`）。规模小：train 中固定失败的题不超过 5 道；dev 至少 5 个家族，满足 gate 的 min_groups。
+     - actor：`[llm] type = "<模块>:<类>"` 的确定性假 actor，在 bootstrap 时被 pin 为 W0。它对包内容作出反应：包中出现某类规则（memory 或 skill 文本、on_finish hook 的回推）时，在指定的 dev 题上改做对，让 gate 增益可以达到 0.05；在 train 失败题上留下能被失败摘要捕捉、并指向该规则的线索。假 actor 的规格在阶段 3 开始时先写，再实现：见 [REHEARSAL.md](REHEARSAL.md)。
+       - 缺口不止一类：segment-0 装包之后，仍要有缺口同时出现在开发家族冻结顺序的前一半（两支的内层 gate）与后一半（外层比较），两支才可能装包，外测才会运行。两支 W* 相同时研究位判 inconclusive、不跑外测；若如此，外测、补跑与 R1 装入后的回用如实记为覆盖缺口。
+     - 研究位部分的重跑从 `--until segment-0` 时复制的工作区开始：已记下研究位的工作区不再重问，同一 R1 的 campaign 有收据就不再运行，研究位前修复之前冻结的计划也没有外测与两支的预留。
+     - 组件：允许代码组件（本机 Docker 可用），以便覆盖 Docker 中的草稿检查链。
+     - 隔离：独立工作区与 scope，名称带 rehearsal。系统不会给这些记录打 synthetic 标记：收据仍记 discovery=automatic，提案仍记 origin=llm。synthetic 由工作区名与 JOURNAL 标注；该工作区的报告与 C1～C4 不得引用，也不与正式工作区合并。
+     - 规模：用停止点分段推进；需要时只调低 `max_failure_notes`。
+   - 故障注入：R 侧通过 manual 回复文件注入。“非 JSON”写在合法回复文件的 `text` 字段里；回复文件本身解析不了时，manual 会一直等待。
 
-**目的：** 先知道选择有机会改变结果，再把它变成学习问题。
+     | 步骤 | 注入 | 预期 |
+     |---|---|---|
+     | 任一步 | `stop = "max_tokens"` | 暂停；续跑时重问同一步，不计 invalid，不重复记账 |
+     | 逐题笔记 | 空回复、非 JSON、缺字段 | 该条记入 coverage.invalid，本轮继续；全部读不出时本轮 invalid |
+     | 汇总 | 空回复、拒答（`stop = "refusal"`）、非 JSON、形状非法的提案 | 本轮 invalid，不回退成 collect 或 stop |
+     | 修订 | 空回复或读不出 | 占用一次修订；用尽则本轮 invalid |
+     | 研究位 | 读不出、拒答或形状非法 | 研究位 invalid，不记 no_proposal |
+     | 任一步 | manual 判为非法的回复（例如带 tool_calls） | ProviderError，暂停；只验证逃逸路径，不代表真实供应商的行为 |
+     | actor | 假 actor 调用未提供的工具 | 任务内的工具错误，尝试继续 |
 
-**改动：**
+     研究位只有一次，记 invalid 后不重问。所以研究位“读不出”一行在另一个彩排工作区里注入（同样跑到 segment-0 再进研究位），主彩排工作区的研究位用来走到裁决。截断与 ProviderError 只让研究位暂停，续跑时重问，可以在主工作区注入。
 
-- 人或现有研究接口根据 M2 证据提出有限改动，先形成有效的 prompt/workflow 或决策干预。
-- 在适配器中实现一种反馈路径：局部环境核验，或少量分支的后续结果比较。
-- 扩 `ledger.py` 的关联元数据；反馈记录 point、decision、任务组、split、状态摘要、候选、后续策略、预算、重复数、证据与构造器版本。
-- 同一状态分支使用可验证的环境副本；不能克隆时验证前缀重放等价。所有分支仍归原任务组。
-- 标签不明确时留空；LLM 诊断不能伪装成 env 标签。确定性约束直接实现为规则。
+   - 通过条件：
+     - 至少一次走完笔记 → 汇总 → 草稿检查 → 准入 → 构建 → gate 裁决，accepted、rejected、inconclusive 都算。
+     - Docker 草稿检查链：
+       - 至少一份含 hook 或包工具的草稿，在 Docker 中走完 package_check → isolated_probe → package_test；结果为 ready，或经有界修订后为 invalid（基础设施失败不算）。
+       - gate 候选臂的 transcript 中出现该 hook 或工具的执行事件。
+       - 另注入一份首检失败的代码草稿，覆盖 Docker 内的修订回路。
+     - 安装，且下一轮满足 K3a。若假 actor 的设计没能让 gate 接受，如实记为覆盖缺口：生产 CLI 路径上的安装与回用，要到第一次真实运行才首次执行。
+     - 研究位走到裁决，accepted、rejected、inconclusive 都算；accepted 时，下一段核验 R1 被加载。
+     - 故障注入表逐行得到预期；每次暂停后续跑，都不重复记账。
+   - 产物：作答的请求与回复存档，作为回放 fixture 进入测试。
+   - Claude 作答 actor 的检查不在这个 cycle 里做，因为 actor 在 bootstrap 时已被 pin：
+     - 另开一个以 `[llm] type = "manual"` bootstrap 的工作区；
+     - 在真实 Marketing 上跑 `ouroloop bench --phase baseline --limit 1`，即 dev 与 train 各第一题；
+     - 用来检验 pin 路径上工具调用的往返；不用 test 题。
+   - 边界：彩排替代不了第 3 步的计价校准，也说明不了 GLM-5.3 的表现。
+2a. **Claude 运行（订阅额度，2026-10-03 决定）。** 先看本框架下 Claude 的任务得分；GLM-5.3 与第 3 步的计价校准延后，不删除。
+   - 模型：actor 与 R 都用 Claude Opus 5.5（`claude-opus-5-5`），effort 为 medium（省额度；要改须在 bootstrap 之前，因为 W0 会把它 pin 进推理配置）。经新的 `claude_code` provider 调用无头 Claude Code（`claude -p`），用用户的 Max 订阅登录；启动检查拒绝任何不是 Claude 订阅的登录。规格见 [M1 §1](modules/01_POLICY_RUNTIME.md)。
+   - 请求里有什么：每次调用在一个空目录里运行，关闭全部工具与本地定制（CLAUDE.md、记忆、技能、插件、hook、MCP、设置文件、附件），不保存会话，系统提示换成框架给的那段，CLI 自己的重试与换模型都关闭；调用不经任何交互会话转发。订阅登录下 CLI 仍会附上三样，关不掉：系统提示前一行 Agent SDK 身份、账号邮箱、当天日期。actor 的回复格式说明写明这些不属于任务。冒烟时核对模型实际看到的内容。
+   - 与原生 API 的差别，随结果写明：
+     - 工具调用经结构化输出（`--json-schema`）写在回复里，不是原生 tool use；
+     - 每次调用重发整段历史，上下文缓存命中多少由冒烟实测；
+     - 请求带有上面三样附加内容；
+     - 得分是“Claude Opus 5.5（effort medium）经 `claude -p`、JSON 工具调用”在本框架下的得分，不与原生 tool use 的公开成绩直接比较。
+   - 计价：订阅没有逐次账单。`[pricing]` 按 claude-opus-5-5 的 API 标价填写（输入 $4、输出 $20、缓存读 $0.20、缓存写 $8，每百万 token；CLI 写的是 1 小时缓存），作名义上界，`source` 注明；每次调用把 CLI 报告的 API 等价费用记进 usage（`cli_cost_usd`），用来核对账本。一次 CLI 调用最多发 5 次模型请求（输出触顶后 CLI 自行续写至多 3 次，加一次结构化输出重试），所以 `max_output_tokens` 至少是 `max_tokens` 的 5 倍，启动检查会核对。预算是名义美元，用来限住额度的消耗。
+   - 额度用完：CLI 报使用上限属账号类错误，活动暂停，额度恢复后同一命令续跑（[M5 §3](modules/05_EXECUTION_BUDGET.md)）。CLI 实际作答的模型不是所配模型时同样暂停。若账号开了 extra usage，CLI 在套餐额度用完后改用付费额度继续，不报错，名义预算就成了真钱：第 2 步之前由用户在 claude.ai 设置里确认 extra usage 已关闭。
+   - 顺序（每一步先看用量与稳定性，用户确认后再进下一步）：
+     1. 实现 provider 与离线测试（假 `claude` 程序），不耗额度。
+     2. 探针：经 provider 直接发两次调用，一次普通问答、一次带一个假工具的结构化回复。核对 CLI 的输出形状（`structured_output`、`num_turns`、`stop_reason`）、用量与缓存、`modelUsage` 里实际作答的模型、`cli_cost_usd` 与 `[pricing]` 是否相符、工作目录是否仍为空，以及模型看到的请求之外的内容。
+        - 2026-10-03 结果（`examples/automationbench/claude_probe.py`）：两次都成功，普通问答 `num_turns` 1、4.5 秒，结构化回复 `num_turns` 2、2.6 秒，正确调用了假工具；`modelUsage` 只有 claude-opus-5-5；工作目录仍为空；账本与 CLI 报价逐分相等（缓存写按 1 小时价 $8/M，已改进 `[pricing]`）。模型看到的请求之外的内容只有一段 userEmail 上下文（CLI 自带“不属于用户消息”的说明），没有看到日期。effort medium 下普通问答的 thinking 为 117 token。
+     3. 冒烟：复制 `claude.toml` 为 `claude-smoke.local.toml`，改 `[workspace] root` 与 `[rsi] scope_id`，`[freeze.budget]` 压到几美元；跑 `--phase smoke`（1 道 dev 题），看一道题的调用次数、token、缓存命中与耗时。
+        - 2026-10-03 结果（`marketing.social_engagement_response`）：
+          - 第一次：7/7 通过，12 轮、26 次工具调用、74 秒。暴露两个问题。
+            - 整段历史作一个文本块发送，前缀缓存对不上：写缓存 25.4 万 token、读 4.2 万，API 等价 $2.15。
+            - 最后一轮的完整回复因 CLI 多要了一次结构化输出而轮数变多，被误判为截断，最终消息丢失。
+          - 改为多块发送、结构化回复不按轮数判截断后重跑：7/7 通过，10 轮、24 次工具调用，正常结束且最终消息完整；写缓存 2.9 万、读 16.7 万、输出 5.1 千，API 等价 $0.37；账本与 CLI 报价逐分相等。
+          - 为验证缓存另发了 3 次小调用：第二次起缓存写入从 7 千降到 3 百。
+     4. 同一冒烟工作区：`ouroloop freeze` 后把打印的 `[rsi]` 行加进副本，跑 `--phase baseline --limit 2`（dev 与 train 各 2 题）。按实测校正 `[pricing]`，并按实测的每题名义费用和第 4 步的结构重定 `claude.toml` 的 `[freeze.budget]`：现在的 $300/$50 沿用 GLM 的估算，Claude 下研究位的两支与外测都不够。预算根一旦打开就不能改，所以这一步必须在活动工作区打开之前完成。
+        - 2026-10-03 结果：
+          - 冒烟副本的名义根须不小于一次调用的预留上界（$7.28），final 份额也是；改为 $20，其中 final $8。
+          - 4 题 5 分 16 秒，无报错、无暂停、无无效尝试。dev 1/2 通过（`social_engagement_response` 7/7；`lead_enrichment` 17/18），train 0/2（`contact_data_cleanup` 13/15，`campaign_launch_checklist` 4/5）。
+          - 失败都是任务判断：邮件正文措辞不合断言、用了旧的政策编号、判定不能上线而没发“ready”邮件。三题需要发的邮件都由模型正常调用 gmail 发出，与附加的账号邮箱无关。
+          - 每题 API 等价 $0.22～0.50（均值约 $0.40），48～100 秒；账本 `cost_usd` 与 CLI 报价逐题相等。
+          - 按均值 $0.40 估算（第 4 步的结构，研究位两支各最多 3 轮）：基线 77 题约 $31；每轮（dev gate 两支 50 题加 train 失败重跑，另有 R 调用）约 $35～40；完整活动约 $550，研究位每支约 $110，故根约 $800 时每支 15% 份额才够。只跑基线时 $300 足够，但根一旦打开不能再改。
+     5. 活动工作区：`--phase cycle --until baseline` 跑 train+dev 基线（77 题），得到得分。2026-10-03 用户决定按 $300/$50 的名义根跑：只跑基线足够，但这个根容不下研究位，完整活动要另开工作区（根约 $800），基线在那里重跑。
+        - 2026-10-03 结果（W0，`workspace-claude`，18:33～20:21，共 108 分钟）：
+          - train 22/52 通过（42.3%），平均 partial 0.827；dev 9/25（36.0%），平均 partial 0.830。
+          - 77 次尝试全部有效，没有暂停或基础设施失败。
+          - 670 次模型调用，账本名义 $32.35，与 CLI 报价相等。
+          - 失败多扣在最后的汇报上：train 失败断言里 gmail 占 65 条，其余为 google 15、slack 8、buffer 8、linkedin 7、hubspot 3。dev 也是如此：该发邮件时改发 Slack 或没发；新旧规则或追踪编号选错版本；数字、措辞不准。都是任务判断，不是 provider 的问题。
+          - 这个根还容得下 segment-0（3 轮约 $110）与 final（约 $37，用 final 份额），研究位放不下。
+     6. 同一工作区：`--phase cycle --until segment-0`，至多 3 轮。
+        - 2026-10-03～04 进行中：
+          - 第 1 轮：R 把失败摘要里的截断标记读成 actor 漏读，提出截断 hook，gate 拒绝（36%→40%，增益 0.04 未过 0.05）。截断标记与包 API 说明随后改正（`29fbc34`），第 3 轮起生效。
+          - 第 2 轮：改 `worker.finish` 的结束前核对清单，gate 接受（dev 36%→64%，置信区间 [+0.12, +0.44]，无退步）。装包后重跑 train 失败题，30 题中 13 题通过。
+          - 第 3 轮：`before_tool` 的写前核对 hook，gate 拒绝（W* 60% 对 60%，增益 0，退步 2 题）。segment-0 以 rounds_done 结束。
+          - W* = W0 + 第 2 轮的结束前核对清单（`release:22cda1b62b97`）。W0 在 dev 上测了三次，都是 36%；W* 测了两次，64% 与 60%。
+          - final 计划于 2026-10-04 冻结并先提交（`663f930`，`finalization:sha256:a407a850…`），随后运行。
+        - 2026-10-04 final 结果：test 23 题 × 2 次，W0 41.3%、W* 54.3%，配对差值 +0.130，95% 区间 [+0.022, +0.261]，C1 成立；6 题变好、1 题变差、16 题持平；每次尝试的成本 $0.437 对 $0.425。全程 349 次尝试、3,114 次模型调用、名义 $153.30。见 [RESULTS.md](RESULTS.md)。
+     7. final（对外数字）：segment-0 结束后在同一工作区跑，研究位不开（这个根放不下）。
+        - 在 `claude.toml` 写 `[freeze.final]`：experiment_id；release_refs 为 W0 与 segment-0 结束时的 W*；tasks 为 test（23 题）；repeats 2；统计计划同第 7 步。
+        - freeze 后先把计划 hash 提交到 git，再跑 `--phase evaluate --plan <final_plan_ref>`。
+        - 规模：约 92 次尝试、约 $41 名义，用 final 份额（$50）。inconclusive 也照实报告。
+     8. 版本：
+        - final 结果写进结果文档与 README 的结果一节，写明模型与 effort、`claude -p` 的 JSON 工具调用、Marketing 一个领域、n 与 repeats、费用；dev 的 gate 增益有选择偏差，只作过程记录，对外数字是 final 的 test 结果。
+        - 全套测试通过后，把 `m1-automationbench` 在本地合并进 main 并打版本标签（不推送，除非用户要求），之后继续在 `m1-automationbench` 开发。
+     9. 下一版：另开名义根约 $800 的工作区，按第 4～7 步跑完整活动（含研究位与 segment-1）：检验 R 改进自身（C4），并独立重测一次增益。
+3. **计价校准（独立于正式活动）。**
+   - 2026-10-03 起延后：先跑第 2a 步；GLM-5.3 恢复为 actor 时再做本步。
+   - 继续使用 open.bigmodel.cn。`[pricing]` 按该平台价目填写，注明汇率与日期；账本必须等于账单，否则预算上限没有意义。
+   - 充值后，在一个独立的校准工作区运行 `ouroloop bench --phase baseline --limit 5`：5 个 dev 加 5 个 train，共 10 次尝试，约 $1.4～4.5。
+   - 用账本对比平台账单：偏差 ≤10% 即通过；超限则修正 `[pricing]`，在新的校准工作区重测。
+   - 校准的尝试不复用，不计入正式活动的预算根。正式活动用最终的 `[pricing]` 开始，活动内不改计价（M5 §2）。
+4. **活动结构与冻结。**
+   - 结构：一个活动 = train+dev 基线 → segment-0（至多 3 轮；patience=2，连续两轮不安装即结束）→ 一个研究位 → segment-1（检查回用）。
+   - 启动顺序：
+     1. `ouroloop freeze --config …` 冻结 task plan、schedule 与预算，把输出的 `[rsi]` 行写进配置；
+     2. `--phase cycle --until baseline`，检查 K1；
+     3. `--until segment-0/round-0`，检查 K2；
+     4. `--until segment-0`，检查 K3，并由人决定是否进入研究位；
+     5. 去掉停止点，跑完。
+   - 预算：活动根 $300，其中 `final` 分配 $50，cycle 可花 $250；每支按 0.15 份额约 $45；外测按 0.08 份额约 $24（外层约 13 题、两支，含一次补跑的上限），campaign 开始时自动预留；两支份额在公共测量之后预留。研究位开始时根须空出两支与外测共 38%（约 $114），由 cycle 的研究员作答时再加 R 一次调用的上界。先充值 ≥$150 等值，进入研究位前补足。
+   - 进入研究位前（segment-0 停下时）人工核对：根的有效剩余不少于“两支份额 + 外测份额 + 公共测量（当前 W 的 train 测量，约 $7～23）+ segment-1 首轮估算”；不够就不开研究位，直接跑 final。根覆盖不了外测份额与两支份额时，研究位不问 R，以 budget_exhausted 结束，活动随之结束；公共测量之后两支份额占不住时，研究位判 inconclusive。
+   - 活动内不重新冻结 task plan、schedule、预算或计价；首版 preset 不开 screen。
+5. **gate 口径。**
+   - 沿用点估计门槛（min_gain 0.05，repeats=1）。worker gate 的 accepted 只是开发采纳，C1 只由 final 裁决。
+   - 基线 dev 与 round-0 gate 的对照臂，是同一个 W0 的两次测量，相当于免费的 A/A：结果不一致的家族 ≥4/25 时，下一个活动冻结 repeats=2。
+6. **检查点与止损。** “停止”指停在该检查点所在的步，不进入下一个付费步骤。
+   - K1（baseline 后）：有效尝试 ≥74/77；open 与 unknown 预留为 0；W0 的 dev 成功率在 15%～85% 之间。不满足就停止，不进入 worker 段。
+   - K2（segment-0/round-0 后）：
+     - 通过条件：提案通过准入；gate 经基础设施补跑一次后 25 对完整，裁决为 accepted 或 rejected（不是 invalid 或 inconclusive）；unknown 为 0。
+     - 不满足就不续跑 round 1。基础设施原因：离线修复后从 round 1 续跑。提案或准入原因：由人决定续跑，还是以负结果收尾。
+   - K3（首次安装后的下一轮）：
+     - K3a 装配，不过就停止：下一轮 RunManifest 的 package_ref 等于新包，会话的 harness 记录与包内容一致——
+       - memory 在 system 中；
+       - skills 有索引，且有 read_skill 工具；
+       - 包工具在 tools 中；
+       - hook 在 manifest 中启用；需要 worker 的包，至少有一条 worker 会话事件。
+     - K3b 使用，只记录、不止损：read_skill、hook、包工具的事件次数；为 0 时写入复盘。
+   - segment-0 正常结束（不是暂停）且没有任何安装：停止付费，不开研究位，不跑 final；离线复盘后以负结果收尾，或调整下一个活动。
+   - 连续两轮 invalid（round 0、round 1）：视为接线或提示故障，不按负结果处理；离线修好后用新 scope 重开活动。
+   - 同一天出现两次基础设施暂停：不续跑，先排除供应商的问题。
+7. **final。**
+   - 研究位结束（或决定不开）之后只跑一次，花 `final` 分配：W0 对 W*，23 族 × repeats 2，约 $13～41；计划 hash 先提交到 git。inconclusive 也算完成。
+   - 同预算的 prompt-only 或 GEPA 类对照臂，等出现含代码组件的安装后再决定是否加入。
 
-**验收：**
+## 4. 效果验收与最小比较
 
-- 展示干预前后完整任务结果的差异；事后最佳分支单独标为机会分析，不报成可部署成绩。
-- 训练输入仅来自决策时可见信息；train 标签证据可逐条追溯。
-- 整段失败不会自动把全部决策标错；test 任务及其变体不能进入数据生成。
-- 如果干预没有收益或信号不足，输出负结论，先修改假设；不以扩大模型或增加专家数量作为默认补救。
+保留 C1 同底座整体迭代收益、C2 领先模型位置、C3 独立决策贡献、C4 改进方法效果。首份报告包含起点、有效 prompt/workflow、演化能力包和有界 R0/R1 比较；新训练/蒸馏及 C3 效果验证归第二版，未运行明确 not_run。包的装配、实际行为、固定 dev 比较中的退化与总成本必须可查。首版沿用现有 GatePlan 的整体收益与退化比例门槛，不把任何单题退化一律判为拒绝；进一步的回归能力等真实运行暴露具体问题后再设计，不成为本轮开发依赖。
 
-**拟实现入口：** `ouroloop bench --config examples/automationbench/marketing.toml --phase collect`。
+C2 默认只引用官方榜单和上游公开结果，记录来源/日期/任务集/effort；不运行本地领先模型，不混成配对差。若将来需要同题结论，另行冻结范围和预算。
 
-### M4：训练一个小决策模型，并测完整任务
+工程测试证明机制，不保证模型涨分。真实 C1、C4 仍是待证明的效果目标：未提升就记未达目标，不用“完整 RSI 不再验收”回避。最终 final 在方案锁定后按冻结协议运行；用其结果继续优化后需新的独立任务支持泛化主张。
 
-**目的：** 验证 C3 所需的增量机会；局部准确率只用于诊断。
+功效与成本按 GLM-5.3 串行预期：单任务约 $0.14–0.45、约 4 分钟；train 52 + dev 25 基线约 $11–35、约 5 小时；每轮（dev gate 对照臂与候选臂各 25 题，gate 每次重跑对照臂，`ouroloop/bench.py:758-780`；另重跑 train 失败题）约 $10–40、约 5–6 小时；逐题笔记诊断每轮约 $1–2。Harness-Zero 的 h* 相对 base 增益为 SpreadsheetBench +8.0、AppWorld +21.4、USPTO +26.0 个百分点；dev 25 族时约 +20 个百分点才可能显著，SpreadsheetBench 量级在 25 族上测不出。gate 按现行规则装包：点估计 ≥ 冻结任务计划的 min_gain 且回归在容忍内即 accepted，显著性另记（`ouroloop/evolve/task_gate.py:253-269`）；GatePlan 默认 min_gain 为 0.05。preset 的 `task_plan.gate` 给出 0.05（`ouroloop/bench.py:887`），冻结任务计划（`[freeze.task_plan.gate]`）可以提高、不能低于它（`ouroloop/bench.py:2128`）；研究比较的分支没有冻结 worker gate 计划时回退 0.01（`ouroloop/bench.py:1842`、`:2316`），cycle 总是传入冻结计划，不会走到这个回退。C1 结论按“只能识别约 +20 个百分点的效应”预期；锁定后的 final（23 族）同样只看得出大效应。
 
-**改动：**
+## 5. 明确后置的功能
 
-- `evolve/build.py`、`checks.py`：业务任务按家族切分；train 内部验证/校准与外部 dev/test 明确分开；信号语义变更时不复用旧标签。
-- `evolve/pipeline.py`：复用 train/check/store/serve，训练前固定数据和配置；一个模型或适配器，不建立专家池。
-- 新建 `evolve/task_eval.py`：候选在隔离 runtime 完整运行任务，配对汇总任务结果和成本。
-- `policy.py`、`stop.py`：显式 benchmark 执行策略、默认回退与固定阈值；证明确实采用了模型动作，评分器不进入在线控制。
-- `gate.py`、`release.py`、`registry.py`：task profile 与原 decision profile 分开；完整候选身份冻结、开发证据裁决后才更新版本。
+Harbor 仅在需要其原生任务/沙箱时接入，DeepAgents 仅在 source 原语确实需要时接入。首版不做新决策点大全、新训练后端、专用研究权重训练、多 agent 研究群、市场、多租户、数据库/队列、框架全仓代码自修改或 RL/DPO 平台。受限能力包代码演化属于首版，不能以此条禁止其实现。
 
-**验收：**
-
-- 模型能加载、输出合法动作，实际行为与账本一致，服务失败走既定默认。
-- 使用同一最终 prompt/workflow，比较默认策略与小模型，报告完整任务通过率、差值区间和全部运行开销；若最佳无模型方案 prompt_best 与此不同，也保留它，判断训练方案是否值得替代已有方案。
-- 历史标签 replay 变好但完整任务变差的候选，不能凭局部指标晋升。
-- 训练费用、数据生成费用均被记录；无收益时保留 prompt_best，C3 标记未证实。
-- 对触及的执行、数据与版本边界运行必要回归检查，不改变旧 profile 的限制。
-
-### M5：把研究与训练接成多轮闭环
-
-**目的：** 让改进过程可重复执行，已有 pipeline 不再只是单轮作业。
-
-**改动：**
-
-- 新建 `research/experiment.py`、`context.py`；扩现有 `ResearchAgent.step`、`research/loop.py`，不新增一套平行研究协议。
-- `generations.py`：采集 → 研究提案 → 准入 → 可选训练 → 开发任务评测 → 选择 → 下一轮。
-- `plan.py`：task profile 按总预算、可执行性、标签可用性和重复实验记录准入，不误用旧局部风险门的样本数量要求。
-- `experience.py`：保存全部实验、版本、假设、动作路线、真实费用、结果与停止原因。
-- 保留 manual provider，先验证手动提案可执行，再接 LLM；LLM 提案不直接写冠军指针。
-
-**验收：**
-
-- 至少两个相连的改进轮次：后续采集记录了上一轮选定版本的身份；接受、拒绝、跳过均可被追溯。
-- 同一预算内可完整停止；无收益不会被强行晋升。重启复用已完成且身份一致的尝试；中断后状态不明的付费调用单独记录，重试支出计入预算。
-- prompt-only 轮次不调用训练器；无标签的训练提案被拒绝并说明缺口。
-- 研究员能看 train/dev 的失败，不能读 test 轨迹或断言。
-- 多轮运行成功是工程验收，不要求每轮或最终分数预定上涨。
-
-**拟实现入口：** `ouroloop bench --config examples/automationbench/marketing.toml --phase improve`。
-
-### M6：独立测试、领先模型比较与可复现交付
-
-**目的：** 给出 C1/C2/C3 的正式结论，展示改进过程和最终能力。
-
-**改动：**
-
-- 在查看 test 结果前冻结最终候选、所有对照、模型设置、预算、重复数、主要比较与非劣界限（若主张省钱）。
-- 同条件运行领先模型和 base/prompt_best/evolved；对照身份相同则复用。
-- 新建 `report.py`：成功数/任务数、区间、质量—成本图、开发迭代曲线、全量尝试状态、候选血缘与回放。
-- 更新已实现命令的使用说明，发布配置、依赖锁、manifest、改动、模型卡和证据索引。
-
-**验收：**
-
-- 所有预定比较完整报告；基础设施无效尝试按事先规则补齐，不能挑最佳种子或删除有效失败。
-- 公开自留测试与官方私有榜单分开。只在 Marketing 测试时，标题明确范围。
-- C1/C2/C3 分别标记“支持／未证实／退化或仍落后”；不因最终结果不好重新选版本。
-- 报告数字可从机器可读结果重算；所有费用列明实测、估算或缺失。
-- 另一位开发者可按配置运行同一协议；远程模型波动通过版本、时间和重复统计说明，不承诺字节级相同输出。
-- 真实模型调用、GPU 与完整复跑需要凭据和预算；离线回放只展示已有证据，不能冒充重新训练。
-
-**拟实现入口：**
-
-```bash
-# 拟实现接口；当前版本不能直接运行。
-ouroloop bench --config examples/automationbench/marketing.toml --phase evaluate
-ouroloop bench --config examples/automationbench/marketing.toml --phase report
-```
-
-## 3. 暂缓与扩展条件
-
-| 项目 | 条件 |
-|---|---|
-| 其余业务域 | Marketing 的运行、反馈与评测链条可复用；另固定任务划分，报告域内或跨域设置 |
-| 第二个决策点 | 第一个点有可测价值，且基线显示新的主要瓶颈 |
-| 第二个可训练专家 | 现有模型/规则不能经济地解决独立缺口，新增成本有预算 |
-| 直接用终局 reward 做 RL | 局部监督不足，且有足够可复位环境与 rollout 预算 |
-| 研究员自身决策训练 | 业务收益成立，积累足够真实实验结果并提出独立研究目标 |
-| 真实业务部署 | 另验证分布、权限、反馈时效、监控与回退；benchmark 不能替代 |
-| 游戏能力扩展、实时 UI、新云调度 | 不属于本版依赖；游戏仅保留 smoke 和回归用途 |
-
-## 4. 本次设计变更的边界
-
-训练、模型库与服务继续复用；原部署策略不删除。业务所需的 agent、prompt 和执行策略解除整体冻结，按 M1～M5 的具体需要改造。
-
-不再以游戏分数、必须改特征、逐代单调、训练研究员或大规模消融矩阵作为首个交付前提。记录完整系统的有效性，并保留一个判断小模型是否值得的必要对照。
-
-本轮只更新设计文件与状态说明，没有实现以上模块、运行 benchmark 或产生新模型。
+每个模块提交说明复用位置、新增文件/依赖的必要性、错误恢复语义和对应验证。保留包名、CLI、旧身份；不复制第三方代码。完整方法链与递归核心必须完成，外围 feature 按实际缺口逐步加。

@@ -1,0 +1,3 @@
+# The worker image needs the runner and nothing else: no workspace, no .env, no virtualenv reaches the build.
+*
+!ouroloop/agent/worker_runner.py

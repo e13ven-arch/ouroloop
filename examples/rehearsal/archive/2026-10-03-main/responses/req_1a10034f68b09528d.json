@@ -1,0 +1,4 @@
+{
+  "text": "{\"failure_class\": \"closing step skipped\",\n \"root_cause\": \"The agent did the main update the request asked for and then finished. The request ended with a closing step, a post in the Slack channel it named, and the agent's last message says it skipped that step because nothing in its instructions covers closing steps of this kind. The only failed check is the Slack message.\",\n \"mechanism\": \"A working note that tells the agent: when a request ends with a closing step that posts a message in a Slack channel, make that post, in the channel the request names and with the text it gives, before finishing.\",\n \"component\": \"memory\",\n \"generality\": \"Many requests end with a closing notification after the main update. The agent itself says it lacks an instruction for this kind of closing step, so a standing note applies to every request that ends with a channel post, not only this one.\"}\n",
+  "stop": "end"
+}

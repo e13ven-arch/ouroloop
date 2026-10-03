@@ -1,0 +1,148 @@
+# AutomationBench, Marketing domain.
+#
+#   ouroloop bench --config examples/automationbench/marketing.toml --phase smoke --checks-only
+#   ouroloop bench --config examples/automationbench/marketing.toml --phase smoke
+#   ouroloop bench --config examples/automationbench/marketing.toml --phase baseline
+#   ouroloop bench --config examples/automationbench/marketing.toml --phase collect
+#   ouroloop bench --config examples/automationbench/marketing.toml --phase improve
+#   ouroloop bench --config examples/automationbench/marketing.toml --phase research
+#   ouroloop bench --config examples/automationbench/marketing.toml --phase evaluate
+#   ouroloop bench --config examples/automationbench/marketing.toml --phase report
+#
+# The first form calls no model: it reports which upstream this is, freezes the task groups, checks that this
+# adapter scores what upstream scores, and audits what reaches the agent. The second also attempts a couple of
+# development tasks with [llm]. Paths are relative to this file. See README.md here for what to install.
+#
+# improve, research and evaluate run against frozen plans, which are objects in the workspace rather than settings
+# in this file: a plan a researcher could edit between rounds would not be a plan. Freeze the [freeze.*] tables
+# below with
+#
+#   ouroloop freeze --config examples/automationbench/marketing.toml
+#
+# which prints the [rsi] lines naming the frozen objects. Editing a [freeze.*] table afterwards changes nothing
+# already frozen; freezing it again makes a new object with a new ref. A phase whose ref is missing says so before
+# it calls a model, and an interrupted improve or evaluate continues from what it recorded.
+
+env_file = "../../.env"
+
+[workspace]
+root = "workspace-marketing"    # ledger/, sessions/, transcripts/, harness/, bench/marketing/
+
+[bench]
+domain = "marketing"
+# The upstream checkout. Or leave it out and set OUROLOOP_AUTOMATIONBENCH, or pip install it beside ouroloop.
+upstream_path = "~/workspace/AutomationBench"
+toolset = "api"                 # upstream's default toolset: api_search, api_fetch, base64_encode
+seed = 1                        # fixed before the first run: it decides the split, so changing it is a new experiment
+smoke_tasks = 2                 # how many development tasks the smoke phase attempts
+near_duplicate_threshold = 0.6  # report task pairs above this signature overlap as possible variants
+
+[bench.ratios]                  # intended proportions of task families; the frozen manifest records what they gave
+train = 0.5
+dev = 0.25
+test = 0.25
+
+[bench.budget]                  # the same limits for every version compared (docs/DESIGN.md §3.2)
+max_steps = 50                  # upstream's default --max-steps
+max_tool_calls = 200
+max_seconds = 900
+
+# [bench.families]              # task_id = family_id, for tasks that are variants of one workflow. Upstream ships
+# "marketing.a" = "marketing.f" # no variant field; on the public Marketing set no pair of tasks has a signature
+# "marketing.b" = "marketing.f" # overlap above 0.42, so one task is one family and this table stays empty.
+
+[backends.mock]
+type = "mock"
+
+[points]
+default_backend = "mock"        # M1 runs no decision model: every point is shadow and takes its default
+
+# The target base model, chosen and frozen when the experiment starts. Record the provider, the exact model id,
+# the reasoning effort and any fallback: changing one of them is a different experiment (docs/DESIGN.md §3.2).
+[llm]
+type = "anthropic"
+model = "claude-opus-5"
+
+# [llm]                         # or an OpenAI-compatible endpoint
+# type = "openai_compat"
+# base_url = "https://open.bigmodel.cn/api/paas/v4"
+# api_key_env = "ZHIPUAI_API_KEY"
+# model = "glm-5.3"
+# source = "frontier_llm"       # a hosted model's answers are never a training target
+# max_tokens = 8192
+
+# The improvement activity (docs/modules/07_BENCH_REPORT.md §2). Every reference here is a frozen object in the
+# workspace; a placeholder is refused rather than quietly ignored.
+[rsi]
+profile = "task"
+scope_id = "marketing-activity"
+stop_view = "stop.business.v1"   # the business completion view: the whole request and the tool results
+repeats = 1
+order_seed = 1
+# initial_release_ref = "release:sha256:..."   # W0/R0/K; without it the first phase bootstraps one and prints it
+# task_plan_ref = "plan:sha256:..."           # the development comparison: tasks, repeats, order, thresholds
+# schedule_ref = "change:sha256:..."          # worker_rounds, patience, candidates_per_round
+# budget_ref = "change:sha256:..."            # the activity's total: usd, model_calls, train_jobs, ...
+# research_plan_ref = "campaign:sha256:..."   # the R0/R1 comparison (phase research)
+# final_plan_ref = "finalization:sha256:..."  # the sealed final comparison (phase evaluate)
+
+# What a call may cost at most, with where the prices came from. A dollar budget needs all four numbers and a
+# provider that reports its fallbacks; without them the activity runs under call and token limits and the cost is
+# reported as unknown (docs/modules/05_EXECUTION_BUDGET.md §3).
+# [pricing]
+# input_per_1k = 0.003
+# output_per_1k = 0.015
+# cache_read_per_1k = 0.0003    # a call that used the cache without a cache rate declared has an unknown cost
+# cache_write_per_1k = 0.00375
+# max_input_tokens = 8000
+# max_output_tokens = 2000
+# declared_fallbacks = ["claude-opus-5"]
+# source = "vendor pricing page, 2026-09-27"
+
+# The inputs to `ouroloop freeze`. Thresholds are fixed here once, before the first candidate runs.
+# [freeze.task_plan]
+# tasks = "dev"                 # a split of the frozen manifest, or a list of task ids
+# repeats = 2
+# order_seed = 1
+# [freeze.task_plan.gate]
+# mode = "quality"
+# min_gain = 0.05
+# min_groups = 5
+# max_regression_rate = 0.1
+#
+# [freeze.schedule]
+# worker_rounds = 3
+# patience = 2
+#
+# [freeze.budget]               # the whole activity: every phase, the research, the campaign, the final run
+# model_calls = 5000
+# usd = 200
+#
+# [freeze.final]                # sealed as it is frozen; the final tasks are read only by `--phase evaluate`
+# experiment_id = "marketing-final-1"
+# claims = ["C1"]
+# tasks = "test"
+# repeats = 2
+# comparisons = [{claim = "C1", subject = "evolved", control = "base", role = "evolved"},
+#                {claim = "C1", subject = "base", control = "base", role = "base"}]
+# stop_rules = {max_infrastructure_retries = 1}
+# statistical_plan = {confidence = 0.95, bootstrap_replicates = 2000}
+
+# The leading models this experiment compares against (phase baseline). Two vendors is what a complete C2 needs;
+# one is published as an incomplete C2 and no weaker model is substituted (docs/DESIGN.md §3.2).
+# [frontier.a]
+# source = "https://zapier.com/benchmarks"
+# date = "2026-09-27"
+# fallback = "as the official configuration declares it"
+# [frontier.a.llm]
+# type = "openai_compat"
+# base_url = "https://api.openai.com/v1"
+# api_key_env = "OPENAI_API_KEY"
+# model = "gpt-6-astra"
+#
+# [frontier.b]
+# source = "https://zapier.com/benchmarks"
+# date = "2026-09-27"
+# [frontier.b.llm]
+# type = "anthropic"
+# model = "claude-opus-5-5"

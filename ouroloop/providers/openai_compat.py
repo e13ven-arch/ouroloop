@@ -8,7 +8,7 @@ import time
 import httpx
 
 from ..chat import ChatTurn, ToolCall, ToolSpec
-from . import ProviderError
+from . import ProviderAccountError, ProviderError, is_account_error
 
 _STOP = {"stop": "end", "tool_calls": "tool_use", "length": "max_tokens", "content_filter": "refusal"}
 _RETRY = {429, 500, 502, 503, 504, 529}
@@ -36,7 +36,7 @@ class OpenAICompatProvider:
     supports_history_edits = True
 
     def __init__(self, model: str, base_url: str = "http://localhost:11434/v1", api_key_env: str | None = None,
-                 source: str = "frontier_llm", max_tokens: int = 4096, timeout: float = 120.0,
+                 source: str = "frontier_llm", max_tokens: int = 4096, timeout: float = 600.0,
                  extra: dict | None = None, retries: int = 4, client: httpx.Client | None = None):
         self.model = model
         self.base_url = base_url.rstrip("/")
@@ -62,12 +62,32 @@ class OpenAICompatProvider:
                                         timeout=self.timeout)
             except httpx.TransportError as e:
                 if attempt == self.retries:
-                    raise ProviderError(f"{type(e).__name__}: {e}") from e
+                    raise ProviderError(f"{type(e).__name__}: {e}", retryable=True,
+                                        unbilled=isinstance(e, (httpx.ConnectError, httpx.ConnectTimeout))) from e
             else:
                 if resp.status_code < 400:
-                    return resp.json()
+                    try:
+                        data = resp.json()
+                    except ValueError:
+                        raise ProviderError(f"HTTP {resp.status_code} with a body that is not JSON: "
+                                            f"{resp.text[:200]}", retryable=True) from None
+                    if isinstance(data, dict) and data.get("choices"):
+                        return data
+                    # A gateway that answers 200 with an error in the body: read like the status it stands for.
+                    error = data.get("error") if isinstance(data, dict) else None
+                    failure = ProviderError(f"HTTP {resp.status_code} without choices: {json.dumps(error or data)[:300]}")
+                    if is_account_error(failure):
+                        raise ProviderAccountError(str(failure))
+                    raise failure
+                failure = ProviderError(f"HTTP {resp.status_code}: {resp.text[:300]}")
+                failure.status_code = resp.status_code
+                if is_account_error(failure):
+                    # No balance, no quota, a refused key: asking again cannot help.
+                    raise ProviderAccountError(f"HTTP {resp.status_code}: {resp.text[:300]}")
                 if resp.status_code not in _RETRY or attempt == self.retries:
-                    raise ProviderError(f"HTTP {resp.status_code}: {resp.text[:300]}")
+                    raise ProviderError(f"HTTP {resp.status_code}: {resp.text[:300]}",
+                                        retryable=resp.status_code in _RETRY,
+                                        unbilled=resp.status_code in (429, 503, 529))
             time.sleep(min(30.0, 2.0 ** attempt))
         raise AssertionError("unreachable")
 

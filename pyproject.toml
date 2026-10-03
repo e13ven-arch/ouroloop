@@ -33,6 +33,11 @@ Issues = "https://github.com/e13ven-arch/ouroloop/issues"
 
 [project.optional-dependencies]
 anthropic = ["anthropic>=1.7"]
+# What ouroloop's environment needs to run AutomationBench tasks. The benchmark itself is a checkout that
+# [bench] upstream_path points at (examples/automationbench/README.md); these are what importing its world, its
+# task loader and its tool registry needs. `verifiers` is optional and only widens what the contract check can
+# compare against upstream.
+automationbench = ["pydantic>=2", "datasets>=2", "openai>=1"]
 dev = ["pytest>=8"]
 
 [project.scripts]
@@ -48,6 +53,6 @@ include = ["ouroloop*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]          # the scenario packs in examples/
+pythonpath = ["."]          # tests import the package and the examples from the checkout
 markers = ["live: calls a real external API and needs its key"]
 addopts = "-m 'not live'"

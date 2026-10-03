@@ -48,6 +48,9 @@ def build_provider(spec: dict):
     if kind == "manual":
         from .providers.manual import ManualProvider
         return ManualProvider(**spec)
+    if kind == "claude_code":
+        from .providers.claude_code import ClaudeCodeProvider
+        return ClaudeCodeProvider(**spec)
     return import_object(kind)(**spec)
 
 

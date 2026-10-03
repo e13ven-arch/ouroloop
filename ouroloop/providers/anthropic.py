@@ -18,7 +18,12 @@ def to_anthropic(messages: list[dict], provider: str = "anthropic") -> list[dict
     out = []
     for m in messages:
         if m["role"] == "user":
-            out.append({"role": "user", "content": m["content"]})
+            if out and out[-1]["role"] == "user" and isinstance(out[-1]["content"], list):
+                # A host message right after tool results (a package hook's feedback) joins that user turn, so
+                # the roles still alternate.
+                out[-1]["content"].append({"type": "text", "text": m["content"]})
+            else:
+                out.append({"role": "user", "content": m["content"]})
         elif m["role"] == "assistant":
             native = (m.get("native") or {}).get(provider)
             if native is not None:
@@ -41,8 +46,9 @@ class AnthropicProvider:
     supports_history_edits = False     # edited history invalidates Claude's thinking blocks; keep it append-only
 
     def __init__(self, model: str = "claude-opus-5", max_tokens: int = 16000, effort: str | None = None,
-                 fallbacks: bool | None = None, client=None):
+                 fallbacks: bool | None = None, client=None, retries: int = 2):
         self.model = model
+        self.retries = retries        # the SDK's own retries; a metered caller sets 0 and books each request
         self.max_tokens = max_tokens
         self.effort = effort                  # "low" .. "max"; None keeps the API default ("high")
         self.fallbacks = model in _FALLBACK_MODELS if fallbacks is None else fallbacks
@@ -51,13 +57,16 @@ class AnthropicProvider:
     def _get(self):
         if self._client is None:
             import anthropic
-            self._client = anthropic.Anthropic()
+            self._client = anthropic.Anthropic(max_retries=self.retries)
         return self._client
 
     def _create(self, **kwargs):
         if self.effort:
             kwargs["output_config"] = {"effort": self.effort}
         client = self._get()
+        options = getattr(client, "with_options", None)
+        if callable(options):
+            client = options(max_retries=self.retries)       # read per call: a meter sets 0 and books each retry
         if self.fallbacks:
             # On a policy decline the API re-runs the request on its recommended fallback model.
             return client.beta.messages.create(betas=["server-side-fallback-2026-07-01"],

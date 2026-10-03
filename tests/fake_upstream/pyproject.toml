@@ -1,0 +1,4 @@
+# The version probe reads the checkout's pyproject, because upstream's own module carries no __version__.
+[project]
+name = "automation-bench"
+version = "0.0.0-fake"

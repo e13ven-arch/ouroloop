@@ -2,11 +2,550 @@
 
 倒序，最新在上。一条记录一次有意义的改动：做了什么、证据（真实运行或测试量到的数，带数字）、因此改了什么设计、commit id。日期取自 git log。
 
-证据只写量到过的：贪吃蛇（`examples/snake`）在一台 GPU 主机上的几次多代运行（下称 run4、run5、run6）、离线运行、决策集上的统计，以及先写失败测试再修的评审。没有证据的改动照实说"没有运行证据"。
+证据只写量到过的：贪吃蛇（当时的 `examples/snake`）在一台 GPU 主机上的几次多代运行（下称 run4、run5、run6）、离线运行、决策集上的统计，以及先写失败测试再修的评审。没有证据的改动照实说"没有运行证据"。
 
-哪些数字能复算，哪些不能：决策集上的统计从 `evals/replay_campaign/` 重算；M6 的真实验收从 `examples/workspace-m6/ledger/` 重算；离线演示的数字由读者自己用 `ouroloop demo snake --config examples/snake/offline.toml` 生成一个 `workspace-offline/` 重跑（屏幕上每个数都是账本里的 `metrics` 和 `generation` 事件）。run4、run5、run6 跑在一台 GPU 主机上，工作区没有发布，它们的数字在仓库里复算不出来。
+哪些数字能复算，哪些不能：决策集上的统计从 `evals/replay_campaign/` 重算；M6 的真实验收从 `examples/workspace-m6/ledger/` 重算。**贪吃蛇场景包与多代演示循环已于 2026-09-27 删除**（见当日第二条记录），因此所有贪吃蛇数字——离线演示与 run4～run6——现在都无法从本仓库复算；它们留在下面的历史条目里，作为当时改动的依据，不作为可复现结果。run4、run5、run6 本来也跑在一台未发布工作区的 GPU 主机上。
 
 ---
+
+## 2026-10-04 v0.1：final 上的同模型增益
+
+- 做了什么：按预先提交的计划（`663f930`）在 test 23 题上比较 W0 与 W*，每题 2 次，用 final 份额。
+- 结果：
+  - W0 通过率 41.3%、W* 54.3%，配对差值 +0.130，95% 区间 [+0.022, +0.261]：C1 成立。partial 从 0.844 升到 0.881。
+  - 逐题：6 题变好，1 题变差（vendor_management 2/2→1/2），16 题持平。每次尝试的成本 $0.437 对 $0.425，轮数 9.5 对 8.8。
+- 证据：final 92 次尝试、845 次模型调用、$39.64；全程（基线、segment-0、final）349 次尝试、3,114 次调用、名义 $153.30。见 `docs/RESULTS.md`。
+- 证据的边界：一个模型、一个领域、一个被接受的改动；test 只有 23 题，区间宽。递归研究（C4）没有运行，属于下一版。
+- 因此：写 `docs/RESULTS.md` 与两份 README 的结果一节；全套测试通过后合并进 main，打标签 v0.1.0，之后继续在 `m1-automationbench` 开发。
+- commit：见本条之后的提交。
+
+## 2026-10-04 segment-0：三轮演化，一次接受
+
+- 做了什么：在 `workspace-claude` 跑 `--phase cycle --until segment-0`。R0（Claude Opus 5.5）读 train 失败的摘要写逐题笔记，汇总出提案，在 dev 上与对照比较。
+- 结果：
+  - 第 1 轮：截断 hook，gate 拒绝（36%→40%，增益 0.04 未过 0.05）。R 把失败摘要里的截断标记 `[... N characters cut ...]` 读成了 actor 漏读，而那是给 R 的摘要按条目截的，actor 拿到的是全文；hook 看视图里的 `truncated`（摘录比结果短），在 170 处给出“你没看到”的假提示。
+  - 第 2 轮：把 `worker.finish` 的结束前检查改成五项核对清单（来源、截断、逐条指令对应工具调用、逐行处理、不留烂尾），gate 接受：dev 36%→64%，置信区间 [+0.12, +0.44]，无退步，成本基本不变。装包后重跑 30 道 train 失败题，13 道通过。
+  - 第 3 轮（改正后的摘要格式）：R 转向“采信了不该采信的指令”，提出写前核对的 `before_tool` hook，gate 拒绝（60% 对 60%，2 题退步）。
+  - W0 在 dev 上三次都是 36%，W* 两次是 64% 与 60%。
+- 因此改了什么设计：
+  - 摘要里的截断标记写明“是摘要截的，agent 有全文”；包 API 写明 hook 看到的结果是截短的，actor 拿到的是完整结果（`29fbc34`）。
+  - 第 2 轮 gate 之后停进程，用新代码重启，第 3 轮起生效：这一段的第 1、2 轮用的是旧的摘要格式。
+- 证据：segment-0 共 180 次尝试，无无效尝试；`bench/marketing/report.md`。
+- 证据的边界：dev 的增益是 gate 选出来的，有选择偏差；对外数字看 final（test 23 题，计划已于 `663f930` 预先提交）。
+- commit：`29fbc34`（截断说明）、`663f930`（final 计划），结果见本条之后的提交。
+
+## 2026-10-03 Claude Opus 5.5 的 train+dev 基线
+
+- 做了什么：在 `workspace-claude`（名义根 $300/$50）跑 `--phase cycle --until baseline`，即 W0 的 77 题；后台运行，108 分钟。
+- 结果：
+  - train 22/52（42.3%），平均 partial 0.827；dev 9/25（36.0%），平均 partial 0.830。77 次全部有效，无暂停。
+  - 失败集中在最后的汇报：train 失败断言里 gmail 占 65 条。dev 的失败有三类：该发邮件时改发 Slack 或没发；新旧规则或追踪编号选错版本；数字、措辞不准。
+  - 这些都是任务判断，train 与 dev 的失败形态相同，演化循环有东西可学。
+- 证据：670 次模型调用，账本名义 $32.35，等于 CLI 报价；`bench/marketing/report.md`。
+- 证据的边界：每题一次（repeats 1），dev 25 题；得分是“Claude Opus 5.5（effort medium）经 `claude -p`、JSON 工具调用”的，不与原生 tool use 的公开成绩直接比。
+- 下一步待用户决定：在同一工作区跑 segment-0（`--until segment-0`，3 轮约 $110 名义），之后可跑 final；研究位要另开 $800 的工作区。
+- commit：见本条之后的提交。
+
+## 2026-10-03 Claude 四题基线（`--limit 2`）
+
+- 做了什么：在冒烟副本 freeze 后跑 `--phase baseline --limit 2`。第一次 freeze 被拒：final 份额 $1 小于一次调用的预留上界 $7.28。名义根改为 $20（final $8）后通过。
+- 结果：
+  - 4 题 5 分 16 秒，无报错、无暂停；dev 1/2、train 0/2，partial 均在 0.8 以上。
+  - 失败都是任务判断（邮件正文措辞、用了旧的政策编号、判定不能上线），不是 provider 的问题；需要发的邮件都正常发出。
+  - 每题 API 等价 $0.22～0.50，均值约 $0.40；账本与 CLI 报价逐题相等。
+- 因此：完整活动的名义根约需 $800（研究位每支约 $110，份额 15%），只跑 77 题基线约 $31；待用户决定。
+- 证据：真实调用 4 题；本条 API 等价 $1.61。
+- commit：见本条之后的提交。
+
+## 2026-10-03 Claude 探针与一道题冒烟
+
+- 探针（2 次调用，用户同意后运行）：
+  - 普通问答与带假工具的结构化回复都成功，`modelUsage` 只有 claude-opus-5-5，工作目录仍为空。
+  - 账本与 CLI 报价逐分相等；CLI 写的是 1 小时缓存，`[pricing]` 的缓存写改为 $8/M。
+  - 模型看到的请求之外的内容只有 userEmail 一段，没有日期。
+- 冒烟（`marketing.social_engagement_response`，独立工作区）：
+  - 第一次 7/7 通过，但暴露两个问题：
+    - 整段历史作一个文本块，前缀缓存对不上，一道题写缓存 25.4 万 token，API 等价 $2.15；
+    - CLI 为结构化输出多要一次时轮数变多，被误判为截断，最终消息丢失。
+  - 改了什么：actor 回合改为一条多块用户消息，经 `stream-json` 发送；结构化回复只按输出量判截断。
+  - 先用 3 次小调用验证缓存：第二次起写入从 7 千降到 3 百。重跑同一道题：7/7 通过，10 轮，最终消息完整，写缓存 2.9 万、读 16.7 万，API 等价 $0.37。
+- 证据：874 passed, 1 deselected；本条消耗合计 API 等价约 $3（探针两次各约 $0.01，冒烟 $2.15 + $0.37，缓存验证约 $0.08）。
+- 下一步：在冒烟工作区 freeze 后跑 `--phase baseline --limit 2`（4 题），用实测重定预算，经用户确认。
+- commit：见本条之后的提交。
+
+## 2026-10-03 Claude 经订阅运行：claude_code provider
+
+- 决定（用户）：先看本框架下 Claude 的任务得分。actor 与 R 都用 Claude Opus 5.5（`claude-opus-5-5`），effort medium，走用户 Max 订阅登录下的无头 Claude Code，不用付费 API key；GLM-5.3 与计价校准（ROADMAP §3 第 3 步）延后，不删。手动作答（本会话充当模型）不用于跑分：本会话不盲（能读到仓库、评分器与自己以前的回答），也承担不了上万次 actor 调用。
+- 做了什么：新的 provider 类型 `claude_code`（规格见 M1 §1，步骤见 ROADMAP §3 第 2a 步）、启动检查、`examples/automationbench/claude.toml` 与探针脚本 `claude_probe.py`。
+  - 每次调用起一个 `claude -p`：不开工具，不加载本地定制与设置文件，不保存会话，在空目录运行；系统提示换成框架给的，CLI 自己的重试与换模型都关闭。
+  - R 的请求原样发送；actor 的回合把历史与工具写成 JSON，工具调用经 `--json-schema` 结构化输出。
+- 对抗审查（3 个方向，27 条经核实成立，3 条被驳回）发现并已修正：
+  - 订阅上限的真实措辞（“You've hit your session limit · resets …”）原先不被认作账号类错误，会把每次尝试记成基础设施失败、空耗预算；自称暂时的限流原先反被当成账号错误。
+  - 拒答与输出触顶的真实形状（`stop_reason`、`api_error`）没有读；输出触顶后 CLI 会自行续写至多 3 次，`result` 只剩最后一段，原先会被当成完整回复。因此一次 CLI 调用最多 5 次请求，`max_output_tokens` 须至少为 `max_tokens` 的 5 倍。
+  - CLI 自带重试默认 10 次，与计费层的重试叠加；拒答时默认换模型作答。
+  - 启动检查原先接受按次计费的登录；effort 原先由 CLI 设置决定，没有 pin 住。
+  - 调用并不全盲：订阅登录下 CLI 仍附上 Agent SDK 身份行、账号邮箱与当天日期，关不掉（在 CLI 2.1.288 本体中核实）。文档照实写明，actor 的格式说明写明它们不属于任务，探针核对模型实际看到什么。
+  - 计价改为 claude-opus-5-5 标价，待探针用 CLI 报价核对；$300/$50 预算沿用 GLM 估算、Claude 下研究位不够，改为冒烟实测后在活动工作区打开前重定。
+- 证据：874 passed, 1 deselected。离线测试用假 `claude` 程序；真实模型没有调用。
+- 待用户：在 claude.ai 设置中确认 extra usage 已关闭（开着时套餐额度用完 CLI 会改用付费额度继续，不报错）；同意后跑第 2a 步的探针。
+- commit：见本条之后的提交。
+
+## 2026-10-03 R0 笔记保留接口事实与第四次彩排
+
+- 做了什么：R0 的 diagnose 提示新增一句：汇总只看笔记，所以笔记逐字保留改动会用到的接口事实（调用的工具与端点、方法与字段名、错误原文、actor 结束消息里表明没有做完的原话），任务的名字、id 与取值仍不写。这是新的 R0（`ef6e865`；`test_diagnosis.py::test_r0s_note_prompt_asks_the_note_to_keep_the_interface_facts`）。然后经 CLI 做了一次到研究位为止的小彩排，作答只按各请求的系统提示，不再另加规定。
+- 结果（`docs/REHEARSAL.md` §15）：
+  - 笔记按提示带上了接口事实。
+  - 包工具与 hook 只凭汇总请求写出，首检通过，被接受并被使用。
+  - 研究位 accepted，外测 8/8 对 5/8。
+  - 独立核对：§14 的通过条件全部满足，没有一条回复用到请求之外的世界事实；研究位 R1 与以前的措辞相近等小出入照实记录。
+- 证据的边界：同前，答题人设计了世界；这次说明请求内容足够，不说明真实模型会这样写。
+- 证据：850 passed, 1 deselected。真实模型没有调用。
+- commit：`ba1e07b`（规格）、`ef6e865`（R0 提示），结果与存档见本条之后的提交。
+
+## 2026-10-03 基础工具清单与第三次彩排
+
+- 做了什么：
+  - 按方案 2，研究上下文带上宿主的基础工具（名称、描述、参数 schema）。汇总请求以 `tools` 字段列出，接受它的修订步骤也拿到同一份清单；包 API 写明 `ctx.call_tool` 能调用的就是这些工具（`1c44670`；`test_cycle.py::test_the_summary_request_lists_the_hosts_base_tools`、`test_harness_loop.py::test_a_revision_is_shown_the_hosts_base_tools`）。
+  - 然后经 CLI 做了一次到研究位为止的小彩排。作答逐条只用本条请求的内容：笔记写下本条失败过程里的接口细节，汇总只用汇总请求。
+- 结果（`docs/REHEARSAL.md` §13）：
+  - 包工具与 hook 都只凭请求写出，通过检查，被接受并被使用。研究位 accepted，外测 8/8 对 5/8。
+  - 独立核对确认 13 条回复都没有用到请求之外的世界事实。
+- 核对后补的：包 API 写明测试按文件路径加载、包根不在 sys.path 上；此前代码草稿的测试写法是答题人沿用前两次彩排的，请求里没有。
+- 待决定：R0 的 diagnose 提示是否要求笔记写下接口细节（ROADMAP §2）。这次笔记写下这些细节，是作答纪律要求的，真实模型不一定会写。
+- 证据：849 passed, 1 deselected。真实模型没有调用。
+- commit：`af3e010`（规格）、`1c44670`（工具清单），其余见本条之后的提交。
+
+## 2026-10-03 第二次彩排：技能、包工具与补跑
+
+- 做了什么：先写规格（`docs/REHEARSAL.md` §10），再把彩排世界升到 `0.0.0-rehearsal.2`，然后经 CLI 再跑一个活动。R 作答 21 次。
+  - 新增两类收尾：邮件列表只认读到的技能；通话备注只认包工具，因为端点要编码后的文本。
+  - actor 可由操作者写入 `infra_once` 文件，让指定题的下一次尝试以基础设施失败一次。
+  - 离线演练也随之更新，覆盖两次补跑。
+- 结果：见 `docs/REHEARSAL.md` §11。
+  - 装入了技能与包工具，下一轮都核到它们被提供与使用。
+  - 主线 gate 与外测各发生一次基础设施失败，各补跑一次，配对完整。
+  - 研究位 accepted，R1 装入，回用 verified。
+  - 第一次没有注入的故障情形里，除笔记空回复外都已注入并得到预期。
+- 偏差：segment-1 round 2 轮换到 D，不是注入计划设想的为 C 写 hook；修订用尽的注入改在形状检查上做，不在 Docker 中。
+- 证据的边界：同第一次，答题人设计了世界，只证明接线与故障协议。
+- 结果核对：独立核对员确认数字与结局都与记录吻合，但“作答只依据请求文件”不成立，事后核对发现三处例外：
+  - segment-0 round 1 的包工具代码，用了只在笔记请求里出现的端点、字段名与基础工具名；
+  - 候选支的 hook 按只在笔记请求里出现的字面串 `Not done:` 判断；
+  - 研究位的 R1 正文逐字复用了第一次彩排的回复。
+
+  前两处决定了工具与 hook 能否生效，所以“装入的工具与 hook 生效”只说明接线，不说明 R 能从请求里写出它们。另有 4 处措辞不准，已改。
+- 由此看到的设计问题：汇总请求没有失败摘要，也没有基础工具的名称与参数，写代码组件所需的接口细节只能由笔记带过去，而 R0 的 diagnose 提示没有要求。已记入 ROADMAP §2，真实运行前决定是否处理。
+- 证据：846 passed, 1 deselected。真实模型没有调用；占位计价下记账 $0.41。
+- commit：`52ab218`（规格）、`9fa9c76`（世界第二版），结果与存档见本条之后的提交。
+
+## 2026-10-03 付费前彩排
+
+- 做了什么：按 ROADMAP §3 第 2 步，先写规格（`docs/REHEARSAL.md`），再建 fixture 世界与假 actor，然后经 CLI 走生产 cycle，R 由 Claude 通过 manual provider 作答。
+  - 世界：`examples/rehearsal/upstream` 是 marketing 域的小型 AutomationBench，共 21 题。名称按 hash 落到指定划分，四类收尾步骤各有一道 train 题，在开发顺序的两半各有一道 dev 题。
+  - 假 actor：只在规则出现时做收尾步骤。跟进任务只认收尾检查（on_finish hook）的推回，于是覆盖 Docker 草稿检查链，也让 R 的方法比较可能出现真实差异。
+  - 离线检验（`tests/test_rehearsal_world.py`）：在独立进程里核对划分、每条规则只翻转本类的题，并用脚本研究员按预期走向跑完一遍 cycle。
+- 结果：见 `docs/REHEARSAL.md` §9。
+  - 主工作区：baseline → segment-0（装入 2 次，拒绝 1 次）→ 研究位 accepted，R1 装入 → segment-1 回用 verified。
+  - K1、K2、K3a 都满足；免费 A/A 一致。
+  - 故障注入表每行至少注入一种情形，结果都符合预期，分布在主工作区与故障工作区；没有注入的情形列入覆盖缺口。
+  - actor 检查：Claude 作为被 pin 的 manual actor，在真实上游上完成了工具调用的往返。
+- 证据的边界：
+  - 答题人设计了这个世界，知道假 actor 认什么。这次运行只证明接线与故障协议，不说明 R 或任何模型的能力。
+  - 作答依据请求文件，事后核对发现两处例外：主工作区研究位的回复引用了答题人自己先前写的放弃条件，这一条不在请求里；故障工作区研究位的回复复用了主工作区的正文，只用来检验形状。
+  - R1 由答题人在研究位里提出，来源是 segment-0 中 C 的笔记被拒这一经验；研究裁决 accepted，同样只是开发采纳。
+  - 这些工作区与报告不计入 C1～C4。
+- 覆盖缺口：没有装入技能；没有包工具；外测补跑没有发生；两支份额占不住的路径没有发生；故障表中笔记全部读不出、笔记空回复与缺字段、汇总空回复、修订读不出与用尽没有注入。这几项只有离线测试。
+- 找到并已修：
+  - 研究位的 R 看到的 budget 是空的；拒答原因重复；manual 截断消息出现 “None tokens”（`ffe3aff`）。
+  - 结果核对发现：研究裁决 accepted 而不显著时，收据一律写“区间含 0”，只有 1 个独立组时并不含 0；改为写明独立组不足。
+- 结果核对：一名独立核对员把 §9 的每条说法与工作区原始数据对照，数字与结局全部吻合；措辞上的 2 处错误与 5 处不准已改正。
+- 证据：844 passed, 1 deselected。真实模型没有调用；真实上游只在本地运行，没有读取任何 key。
+- 运行数据：主工作区 R 作答 22 次、故障工作区 9 次、actor 检查 5 个回合；主工作区占位计价下记账 $0.27。请求与回复存档于 `examples/rehearsal/archive/`，回放测试尚未写。
+- commit：`9b4810e`、`5a6c7cb`、`ffe3aff`，文档与存档见本条之后的提交。
+
+## 2026-10-03 研究位前必修
+
+- 做了什么：按 ROADMAP §3 第 1 步“研究位前”逐项实现。先由 5 名设计员各自复现问题、提出改法，对抗评审后合并，规格先写进文档（`80bbdca`），再写代码。
+  - 研究裁决：
+    - 按任务配对：外层任务的每次重复在两支都有有效尝试才计入，缺任一判 inconclusive。缺的尝试按失败类别记进 `metrics.incomplete`，配对的任务数记进 `metrics.tasks`。
+    - 两支 W* 相同：不跑外测，判 inconclusive（`metrics.identical_arms`）；有多个 pair 时，后面的 pair 不再运行。
+    - 外测补跑：基础设施失败的尝试按外测计划冻结的 retry_policy 补跑一次，原尝试保留，补跑记 supersedes。
+  - 预算：
+    - 外测份额（preset `outer_share` 0.08）冻结为 plan 的 `outer_budget`。它是外测 scope 的上限，并在公共测量与两支开跑前以不结算的预留占住（`BudgetAccount.hold`）。
+    - 两支份额在公共测量之后同样预留，各支开跑时释放给自己。
+    - 研究位开始时，根须能覆盖外测份额与两支份额（由 cycle 的研究员作答时，再加 R 一次调用），否则不问 R。
+  - E0：研究位开始时主线经验冻结在配对里，两支的经验日志以它原样开头。实验记录去掉原始 gate 理由，汇总指标保留。
+  - 闭包：`refs_in` 不再跟随嵌入记录自带的 ref（它等于其余字段的摘要），worker 段装过包后研究位不再 KeyError。不改任何对象的身份。
+  - 研究位格式：声明前文是 R 的 worker 轮改包指令，本次调用改的是指令本身，以格式为准。
+  - 读不出的研究位回复：
+    - 记 invalid（stage=reply），不记 no_proposal；准入拒绝与构建失败分别记 stage=admission 与 stage=build。
+    - 提案文本不再截到 8000 字符，超过 K 的提示长度上限时构建失败。
+    - 没有研究收据时，C4 的 detail 按 cycle.json 写明研究位怎样结束。
+- 对抗审查：4 个视角（正确性、预算与续跑、规格一致性、测试充分性）加逐条复核，14 条发现中 12 条成立，2 条驳回。修正后又对修正本身复查一轮，3 条发现中 2 条成立（其一是测试注释过时）。主要几条：
+  - 只预留外测、不预留两支时，根不够的情况下先跑的对照支会把根花到不剩，R1 那支被饿死，比较照样得出裁决，而且偏向否定 R1。改为两支份额也预留，占不住就判 inconclusive。
+  - 第一版改法是在两支开跑前检查一次根够不够。复查发现，有多个 pair 时，重启会对已跑完的支再查一次，可能把一个只是暂停的 campaign 记成最终的 inconclusive。改为预留，重启找回预留，不再检查。
+  - 研究位只检查外测份额放得下，R 自己的这次调用之后，预留可能就放不下了。现在检查时连两支份额与 R 的这次调用一起算。
+  - `proposals` 是单个对象时，研究位原先当作合法提案读，与规格不符。改为必须是列表。
+  - 另有 7 处测试缺口：对照支缺尝试、某支完全没有的任务、丢一次重复、两支相同后的下一个 pair、外测跑过后重启、补跑又丢、研究位入口的边界。都已补测试。
+  - 驳回的 2 条：一条是同一个 `proposals` 问题的另一视角的重复，另一条认为 ROADMAP §2 的状态未更新（本条随文档一并更新）。
+  - 每项修正都做了变异实验：撤掉修正，对应的测试就失败。审查列出的存活变异，补测试后都被抓住。
+- 调研中另记两个问题，见 ROADMAP §2：
+  - 研究收据引用两支工作区里的 release，R1 装入后再开研究位会在 copy_closure 处崩溃。首个活动只有一个研究位，不受影响。
+  - M6 §3 要求报告 research_dev 的访问历史，报告里还没有。
+- 对彩排的影响（ROADMAP §3 第 2 步已写入）：
+  - 假 actor 要在 segment-0 装包后，仍在两半开发家族上留有缺口，否则两支 W* 相同、外测不运行。
+  - 研究位读不出的注入另开一个彩排工作区做。
+  - 研究位部分的重跑从 `--until segment-0` 时复制的工作区开始。
+- 证据：840 passed, 1 deselected。真实模型没有调用。
+- commit：`80bbdca`、`35ab4ba`、`2966d73`、`1b5c5f6`、`9d586c2`、`55721d7`、`bef3215`、`e543852`，文档见本条之后的提交。
+
+## 2026-10-02 阶段 3：worker 段前必修
+
+- 做了什么：按 ROADMAP §3 第 1 步“worker 段前”逐项实现。
+  - gate 收据：`metrics.regressions` 列出每道退步的任务，报告展示这份列表；经验里不带它，R 看不到。
+  - 包工具：工具名须符合供应商的约束（`[a-zA-Z0-9_-]{1,64}`），输入 schema 须是对象类型且深度有界，`enabled` 必须是布尔值。供应商会拒收的工具在草稿检查里就失败。
+  - 读不出的回复：截断、拒答、空回复、非 JSON 与形状非法，都不当作 R 的决定。本轮记为 invalid，不执行补采，计入轮次与 patience，不计入基础设施失败上限。拒答单列为 `ReplyRefused`。
+  - 提案：
+    - 不能指定 model 的 backend；改 model 必须带同一目标的训练条目。
+    - 改提示的提案不能含 train 任务的字面量。
+  - 暂停与结束：cycle 的每一步都按同一规则暂停或结束，不再以 traceback 退出。暂停写进 cycle.json 和段日志，CLI 以非零退出码返回。
+  - 续跑：open 实验按冻结的 `eval_template_ref`、`budget_scope` 与 `parent_release` 完成；这些输入变了就记 `resume_refused` 并暂停。
+  - CI：构建 worker 镜像，Docker 隔离测试在 CI 里真跑，缺镜像就失败。
+- 对抗审查：三个视角加逐条复核，22 条发现中 17 条成立并已修正，5 条驳回。主要几条：
+  - 冻结的 task plan 原本不带单次尝试上限。冻结后改 `[bench.budget]`，open 实验就会在新上限下完成并安装。改为冻结时写入全部上限，之后只从计划读取。
+  - Anthropic SDK 的连接与超时错误在计费层重试用尽后原样抛出，halt_of 认不出，cycle 以 traceback 退出。改为计费层把供应商的任何异常包成 ProviderError。网关返回 200 却没有 choices 也算供应商故障。
+  - 账号拒绝原本按异常文本判断，内部错误里带 "billing" 字样也会被当成账号问题。改为只读供应商的故障。预算不符单列为 `BudgetMismatch`，账本误用直接上抛。
+  - 构建与续跑没有复查 model 规则，改为与准入共用同一检查。
+  - 笔记读不出时原因被丢失，改为记下真实原因。已完成的段会被后续步骤的故障改记为暂停，改为保持原样。
+  - 驳回的 5 条（复核员都做了复现，机制属实但不构成实质缺陷）：
+    - 只有 requirements 的汇总回复判为 invalid；
+    - 旧代码下暂停的 campaign 臂，升级后续跑被拒；
+    - 工具条目加了 `enabled` 键，相同文件的包 ref 因此改变；
+    - 续跑被拒后没有“关闭该实验”的入口；
+    - 连续两次 invalid 以 patience 结束，被认为与无安装的负结果无法区分（记录上其实能区分）。
+  - 其中第 2、3 条只影响旧代码留下的工作区；真实活动还没开始，没有这样的工作区。
+  - 审查中发现一个本阶段之前就有的缺陷：worker 段安装过包后，研究位在 `copy_closure` 处必然 KeyError（嵌在 TaskEvalPlan 里的 GatePlan 从未存储）。这一条已列入 ROADMAP §3“研究位前”。
+  - 每项修正都做了变异实验：撤掉修正，对应的测试就失败。
+- 证据：794 passed, 1 deselected。真实模型没有调用。
+- 事故：bc90a26 误提交了 `patch` 留下的两个 `.orig` 备份，已在 081ebc9 删除，`.gitignore` 也加了 `*.orig`/`*.rej`。
+- commit：`f5b10ce`、`f04e75e`、`a71dd47`、`adadfc2`、`bc90a26`、`bf7e9eb`、`f1d5669`、`081ebc9`、`9a39e2d`、`969c681`、`d7c35fb`，文档见本条之后的提交。
+
+## 2026-10-02 阶段 1：基线前必修
+
+- 做了什么：按 ROADMAP §3 首个真实活动协议第 1 步“基线前”逐项实现。改动集中在 `bench.py`、`research/loop.py`、`evolve/execution.py` 与示例配置。
+  - 基线与测量：
+    - 基线的 train 与首轮测量共用一个运行身份（arm `measure`，candidate `current`）；首版活动的基线在冻结的 task plan 下运行。一个活动里 W0 的 train 只付费一次。
+    - 测量先记账（`measurement_planned`，含任务清单与运行身份），重启时据此判断测量是否完整，不完整就按记账的任务补齐。
+  - 补采：
+    - 补采先记账（`collection_booked`）；中断的批次在重启时按原序号补完，只计一次额度。
+    - 重建测量时纳入同一版本的补采结果。
+  - 启动检查：
+    - 按 pin 的 actor 与研究模型核对输出上限和 key，manual 免检。
+    - 计划未命名时，付费阶段拒绝启动；有 `[improvement]` 时，`ouroloop freeze` 也冻结 preset 的 task plan 与 schedule。
+    - cycle 拒绝多于 preset 的研究位。
+  - 停止点：cycle 加 `--until`，可停在 `baseline`、`segment-N`、`segment-N/round-K` 或 `slot-N`。
+  - final 分配：`[freeze.budget.final]` 在根上划出 final 的份额。
+  - 示例配置：研究模型 32768 输出上限，预算 $300，其中 final $50。
+- 对抗审查：三个视角（正确性、兼容、规格）加逐条复核，22 条发现全部成立，已修正。主要几条：
+  - 我加的续跑计数，把“要重跑”的基础设施轮也算进失败额度。基础设施暂停后，即使修好也永远续跑不了（回归）。改为与 `completed_round` 同一口径。
+  - `--until slot-0` 之后再跑，回用检查被算到 segment-0 上并写死。这本是“研究位前”的一项，停止点使它成为常规路径，于是在本阶段完成：待查项记下它对应的段，只在那一段非暂停结束时计算。
+  - 停止点会遮住同时触发的 patience，或丢掉那一轮请求的补采。改为：停止点是优先级最低的停因，续跑时先补未执行的补采。
+  - 显示给 R 的剩余预算没有扣除 final 份额。改为与预留共用同一套计算（`headroom`）。
+  - 分配在 freeze、启动检查和打开根时都校验；根打开后，分配不能改、撤或补加。
+  - 活动内若会冻结出别的计划（例如 preset 改了），cycle 拒绝运行。
+  - 用改过的代码补完中断的测量或补采时，若运行身份变了就拒绝续跑。这条代替了原计划的字面量金样测试：运行身份含环境信息，换机器就会变。
+  - 有几条规则删掉后全量测试仍通过，已补测试。新测试中挑了 6 个关键改动做变异实验，每个都能被对应的测试抓住。
+- 证据：730 passed, 1 deselected。真实模型没有调用。
+- commit：见本条之后的提交。
+
+## 2026-10-02 复核、首个真实活动协议与付费前彩排
+
+- 做了什么：对 HEAD `9270a7d` 做 11 个范围的实现复核。每个范围一名审计员读规格、代码与测试，一名复核员找反证，最后由综合与批评各一轮收口，人工抽查高危项。另做了 RSI 定位与业务落地评估，以及三版迭代计划的评审。全程只读，没有调用模型。复核全文见 `history/V0_6_REVIEW_2026-10-02.md`。
+- 发现（复核后成立）：
+  - 高危 4 项：
+    - K 未冻结 methods 时，准入放行 R 提供的 `spec.backend`，构建预检经 `serving.py:42-44` 到 `config.py:77` import 任意对象。离线 PoC 已复现。
+    - 两支 W* 相同时，研究裁决仍可 accepted；`test_campaign.py:96-108` 把它断言成了预期。
+    - 外层比较按各支剩余的有效任务求均值，不配对（`campaign.py:341-348`）。
+    - 续跑不读 Experiment 冻结的 `eval_template_ref` 与 `budget_scope`（`research/loop.py:346-356` → `bench.py:748-762`）。
+  - 暂停只在 worker 轮循环里写入；collect、续跑、基线、研究位提案、公共测量与外测遇到账号错误或截断时，以异常退出。
+  - 示例研究模型的输出上限 16384 不够：上限 16384 时，账本中 `linkcheck2-gate` 的两次汇总调用一次输出 16384 被截断，另一次输出 16293（只差 91）；上限提到 32768 后，同等提示规模的一次输出 13332。
+  - 所有 improve/cycle/research 集成测试都注入脚本研究员；`cycle_pairs` 在测试中一律被替换；Docker 里的代码草稿检查链没有测试。
+  - R 的可演化面只有 `research.diagnose` 与 `research.propose` 两段提示。preset 只计划一个研究位；cycle 没有拒绝调高的 research_slots，调高后 R1→R2 可达，但未测试、未计划。
+  - 文档状态过时、行号过期；“20 次中 18 次无效”混用了口径（磁盘上 20 条 dev 记录中 19 条无效）。
+- 因此改了什么设计：
+  - ROADMAP §3 新增首个真实活动协议，内容包括：付费前必修清单（能落成测试的条目注明测试名）、付费前彩排、独立的计价校准、活动结构与预算（$300 根，其中 final 分配 $50）、gate 口径与免费 A/A、检查点 K1～K3 与止损、final 时机。
+  - 付费前彩排采纳用户的提议，由 Claude 充当 LLM：
+    - 通过 `[research.llm] type = "manual"` 读请求文件作答；
+    - actor 是对包内容作出反应的确定性假 actor，任务世界是以 marketing 域名导出的小型 fixture 上游；
+    - 经 CLI 走生产 cycle，按步骤注入截断、读不出、形状非法的回复；
+    - 由工作区名与本日志标注为 synthetic（报告本身不带标记），不计入证据。
+
+    它替代不了计价校准与真实运行。Claude 作答 actor 另在一个以 manual pin 的工作区里做。
+  - M5 §3 按故障所在的层写定暂停与结束规则：账本额度耗尽是有界结束，不是暂停。还写定了续跑的冻结输入。M4 §1 按步骤写定读不出的回复如何处理，截断则暂停。08 §3 写入彩排的验收与边界，M6、M7 和 RESEARCH_AGENT 同步。
+  - DESIGN §7 与 README 开头如实写明：首版 R 只改两段提示，属于有界、一阶的改进策略更新，对外表述为 bounded RSI 工程原型。
+  - 修正 README（中英）、DESIGN、DEMO、RSI_REVIEW、ROADMAP、examples README 与 M0 中过时的状态和行号；README 的任务数由 10（7+3）改为 29（21+8）。
+- 文档改动经三个视角（代码事实、跨文档一致性、协议可执行性）审查，每条发现再由一名复核员找反证：53 条中 47 条成立，均已修正。不采纳的一条修法：研究位的 system 提示不去掉 R 自己的 propose 文本，因为 R 正是用它提出对自身的修改；改由研究位格式声明以哪段为准。
+- 证据：703 passed, 1 deselected（未改代码）。
+- commit：见本条之后的提交。
+
+## 2026-10-01 真实 gate 三次尝试，与首版需求审计
+
+- 做了什么：在 `linkcheck2` 工作区新开一个 scope（`linkcheck2-gate`，$6 上限），dev 计划取冻结顺序的前 5 个任务（5 个家族），其中 1 个做筛选，gate 门槛沿用 preset。跑生产的 `bench.improve` 一轮，不设停止点；复用已测得的 train 失败（`campaign_launch_checklist`）。
+- 第一次：R 看到了 W 当前的结束检查，没有再加重复的 skill，而是提议把它合并进 `worker.finish`。诊断也比上一次准：未走的那个分支上的交付物被当成“不适用”，应当无论走哪个分支都给请求者发一份状态总结。但 R 用了包补丁的形状写这个提示改动，构建判为 invalid。原因是格式只示范过包改动的形状，现已同时给出两种（`20a9ea8`）。2 次调用，$0.11。
+- 第二次：GLM-5.3 把汇总调用的 16384 个输出 token 大多用在推理上，JSON 在 proposal 之前被截断；`parse_json` 遇到残缺文本返回 {}，回退逻辑把“什么也没读到”变成了 collect。现在被截断的研究回复会被拒绝：本轮以 repair_runtime 暂停，并提示调大 max_tokens；读不出的回复记为 invalid 轮；任一模型的 max_tokens 超过 `[pricing] max_output_tokens` 时启动检查拒绝（`0e9cbe8`）。3 次调用，$0.07。
+- 第三次（研究模型 max_tokens 调到 32768）：
+  - R 的提案有效，依次经过准入、冻结、构建、筛选和比较。
+  - 从筛选的对照臂开始，智谱账号余额耗尽：每次调用都返回 HTTP 429，错误码 1113，“余额不足或无可用资源包,请充值”。
+  - 20 次 dev 尝试中 18 次无效，配对不全，判为 inconclusive，未安装。这些失败按基础设施处理，没有算作候选的失败；429 的预留被释放。本 scope 合计 $0.50，没有 unknown 结算。
+  - 修正：429 原先被当作限流重试 4 次，整轮比较又把每次尝试都耗掉。现在账号类错误（余额、配额、被拒的 key）单独识别，不重试；一出现就停止这一次尝试，本轮以 repair_runtime 暂停，实验保持打开，充值后重跑会从记录的状态继续，而不是判为 inconclusive。
+- 需求审计（5 个审计加 5 个复核，逐项对照 docs/modules/00–09 与 ROADMAP/DEMO）：首版 354 项中，186 项实现且有测试，23 项实现但无测试，136 项部分实现，7 项缺失；约 77 项属于第二版，按设计推迟。审计还发现一个真实缺陷：研究位提案的 origin 写成了 "automatic"，不在允许值内，真实 R 的每个研究位提案都会在准入前报错，此前只有脚本研究员能走通，已修正（`8954b9f`）。明细见 `history/V0_6_AUDIT_2026-10-01.md`。
+- 待用户：智谱账号需要充值后才能继续真实运行；计价口径（open.bigmodel.cn 的地址与 Z.AI 的美元标价）仍待确认。
+- 证据：703 passed, 1 deselected（Docker 运行时）。
+- commit：见本条之后的提交。
+
+## 2026-10-01 真实失败路径：从失败任务到构建好的候选，修正它暴露的问题
+
+- 做了什么：在新的独立工作区（`linkcheck2`，$5 上限，按修正后的 bootstrap 建立：K 冻结 package_api 与镜像 id，release pin TargetHarness 与 required_capabilities），依次测 train 任务，直到出现一个失败，然后对它跑生产的 `run_worker_round`。screen handler 换成停止点，所以不跑 dev、不安装。
+- 真实运行：
+  - 第一个任务 `marketing.campaign_launch_checklist` 就失败了：partial 0.75，4 条计分断言中 `gmail_message_sent` 未过；28 次工具调用，217 秒，$0.128。
+  - 研究步骤：一次笔记调用 → 一次汇总调用，提出一个 skill（`finish_deliverable_audit`）。首稿被草稿检查拒绝（skill 条目写成了字符串），一次修订后通过。
+  - 之后准入 → 冻结 Experiment → 构建候选 W（只比 W0 多了新包）→ 在 screening 停止。
+  - 14 次调用，$0.210。包是纯文本，没有启动 Docker。
+- 独立核对（5 个审查按链路找反证，另加一个完整性审查）：
+  - 只凭记录重放 28 次工具调用，得到同样的 0.75。
+  - 运行记录带 mode=collection、宿主契约与 actor 配置；冻结的实验引用的是检查过的包；什么都没安装，也没有 dev 尝试。
+- R 的诊断质量（仅此一例）：笔记找对了失败的检查，机制具有一般性，不含任务答案。但根因写错：它说邮件被“无声漏掉”，实际上 agent 在最后一条消息里明确说明了不发的理由，而 R 看到的摘要只保留每条前 600 字符，恰好截掉了这段。R 也看不到 W0 已有的结束前复查指令，于是提出了与之重复的 skill。该任务本身也有矛盾：Legal 被撤销，但评分仍要求发一封含 “ready” 的邮件。
+- 发现并修正（再经 3 个审查找反证，又修正了其中发现的问题）：
+  - 供应商在计费层之下自行重试：GLM 客户端默认超时 120 秒、重试 4 次，Anthropic SDK 默认重试 2 次，这些请求都不入账。那次 236 秒的汇总调用按时长与缓存判断是两次请求、一次预留。
+    - 改为计费层接管重试：每次请求单独预留，只重试可重试的错误，并在调用期间临时关掉供应商自己的重试，不永久改动共享的供应商对象。
+    - 确认没有到达模型的失败（连接失败、429/503/529）释放预留，不再以最坏值记为 unknown。
+    - 默认超时改为 600 秒。
+  - 摘要改为保留每条的首尾，最后一条消息保留到任务文本的上限。
+  - R 在 targets 下看到 W 当前的指令文本，提示要求修改或合并而不是重复。
+  - 告诉 R 包 API：条目形状、各 hook 位置的事件字段与动作效果、ctx.view、ctx.call_tool、测试约定。拒绝信息写明需要的键；修订时给出父包。
+  - 重复提案检查原先从未生效（history 从未填充）。现在按同一父版本上已有结论的实验判重，判为 invalid 而不是 repair_runtime；因基础设施失败或未能安装的实验不算重复。
+  - 汇总调用读取笔记跑完之后的预算。
+  - 每轮记录 R 的完整 Requirements、修订请求，以及汇总时看到的预算。
+  - 复核中还发现我的一处回归：`retrieve()` 已按新到旧排序，我把 `[:10]` 改成 `[-10:]` 反而取到旧行，已改回，测试改为经过 `retrieve`。
+- 仍未在真实模型下运行：gate、安装、任务中运行的包、Docker 中的代码草稿检查（R 按 preset 优先写文本组件），以及 R 的递归。
+- 证据：696 passed, 1 deselected（Docker 运行时）。`linkcheck2` 中停在 screening 的实验已标为 cancelled，任何续跑都不会让它进入付费的 dev 比较。
+- 观察（未改）：评分器按子串判断 Slack 中的 “ready”，一条写着“NOT ready to launch”的消息也算通过；partial credit 在这里高估了正确性。
+- commit：见本条之后的提交。
+
+## 2026-10-01 真实链路检查：GLM-5.3 跑通一条，修正它暴露的问题
+
+- 做了什么：
+  - 提交阶段 A～E（`07af0a6`）。
+  - 启动 Docker Desktop，构建 worker 镜像；加了 `.dockerignore` 白名单，构建上下文只含 runner。IT6-23 首次在真实 daemon 上运行，发现包代码能看到基础镜像自带的环境变量（GPG_KEY 等，不来自宿主）。runner 改为经 `env -i` 启动，只给 PATH 与 LANG，`/proc/self/environ` 也只有这两个；另加两项只在 Docker 下运行的测试：挂住的包记为候选缺陷且容器被删除；按 K 冻结的镜像内容 id 运行（`142a3e1`）。
+  - 在独立工作区（`linkcheck`，$5 上限）用真实模型跑一条：一个 train 任务，再对其结果跑研究步骤，在准入和 gate 之前停止。驱动按 `run_worker_round` 的顺序调用同样的构件。
+- 真实运行：
+  - 任务 `marketing.contact_data_cleanup`，GLM-5.3 通过：10 条计分断言全过，另有 5 条被评分器排除。17 轮、42 次工具调用、250 秒。prompt 251,014 token（缓存命中 222,272），输出 22,645，$0.198。
+  - 研究步骤：没有失败，所以没有笔记调用。一次汇总调用返回 next_action=collect，理由是没有失败证据。
+  - 合计 18 次模型调用、$0.204，全部结算，没有 unknown。
+- 独立核对：5 个审查按链路逐项找反证。
+  - 评分来自官方 scorer：15 条断言的判定只凭记录即可复现；什么都不做的得分为 0/10，所以 1.0 不是空通过。
+  - 没有评分信息进入 agent。
+  - 计费逐次复算一致。
+  - R 的输入不含 dev/test 的任务 id 或评分器文本。
+- 发现并修正：
+  - 诊断记录的 scope 被工作集标签覆盖，笔记轮换实际从未生效。改为工作集单独成字段；R 另外拿到工作集的测量数与通过数。此前 R 把“0 个失败”读成了“还没测量”。
+  - 每次调用按最坏情况预留 $1.47，但没有与预算核对。$5 预算下每个研究分支只有 $0.75，每次调用都会被拒。现在启动检查与 cycle 会在付费前拒绝。
+  - R 看到的预算是阶段账户自身的空限额。现在给出按祖先范围计算的实际剩余。
+  - RunManifest 未写 mode 与 target_harness_ref。bootstrap 现在创建 TargetHarness 并写入 release 的 required_capabilities，首版的运行记录 mode（train 为 collection，其余为 task_evaluation）、宿主契约和固定 actor 的配置。这些字段进入运行 hash，所以在真实数据产生前修正。
+  - Docker 或镜像不可用时，K 会冻结一个空的镜像 id；允许代码组件时改为拒绝 bootstrap。
+  - 包代码只挂载到合格的 worker，测试 worker 须显式声明 `for_tests`，草稿检查同样检查。
+  - 由草稿生成的包记录镜像。
+  - 每次研究请求记录输入摘要。
+  - 测试：680 passed, 1 deselected（Docker 运行时，无跳过）。
+- 未跑到的环节：因为任务通过，以下都还没有在真实模型下运行：失败摘要、逐题笔记、带补丁的汇总、草稿检查（含 Docker 中的 probe/test）、准入与 gate、安装、任务中运行的包，以及 R 的递归。
+- 需要用户确认：配置用的是智谱开放平台 `open.bigmodel.cn` 的地址和 `ZHIPUAI_API_KEY`，而 `[pricing]` 引用的是 Z.AI 的美元标价。如果实际按国内平台计费，账上的美元数只是按 Z.AI 价换算的估计，不是账单。
+- 观察到的行为（未改）：没有失败时 R 返回 collect，驱动会补采：优先重跑最近的失败，没有失败就重跑前几个 train 任务。文档没有规定零失败时该做什么。
+- commit：见本条之后的提交。
+
+## 2026-09-30 首版阶段 B～E 实现：隔离 worker、导出、递归比较与 cycle
+
+- 做了什么：
+  - B 代码组件与隔离（`agent/worker.py`、`agent/worker_runner.py`、`docker/worker.Dockerfile`）：
+    - 包代码只在 worker 进程内执行，宿主经 stdin/stdout 协议通信。
+    - DockerWorker 是唯一合格的 worker：无网络、只读根目录、tmpfs、uid 65534、去掉全部 capability、有 CPU/内存/PID 上限，按 K 冻结的镜像内容 id 运行。ProcessWorker 只供协议测试。
+    - broker 只能调用本回合的基础工具，hook 的 broker 只读。
+    - 宿主在 before_tool、after_tool、on_finish 三处调用 hook。before_tool 的 block 停掉本回合其余调用；after_tool 的反馈作为单独一条消息；on_finish 的回推与 StopGuard 共用上限，最后一回合不回推。
+    - 包工具不得与基础工具或 read_skill 同名，草稿检查与挂载时都会拒绝。
+    - 草稿检查扩展为 isolated_probe → package_test，包测试只在由 train 构造的世界里运行。
+  - 故障归属：包代码抛异常、调 sys.exit、杀死或挂住 worker 时，如果新起的 worker 仍能正常应答，记为候选缺陷。只有新 worker 也不应答才算基础设施，并以 repair_runtime 暂停活动。worker 的 stderr 边读边丢弃，只留末尾；输出与单行长度都有上限；超时的容器会被删除。
+  - C 导出（`release.export_deployment`、`app.py`、`ouroloop export`）：
+    - 按白名单导出 W、actor 身份、包的运行部分和 K 的运行投影，不含 R、测试和证据。
+    - 先在临时目录构建，扫描凭据和本地路径后再移入目标目录。
+    - App 只在合格且镜像一致的 worker 上运行含代码的包。
+  - D 递归比较（`research/campaign.py`、`bench.research`）：
+    - 两支都跑首版循环，工作区按 campaign 分开。
+    - W0 的 train 测量在 campaign 级只做一次，判分明细与轨迹复制进各支。两支第一轮的笔记请求完全一致时，笔记在 campaign 级只写一次，作为共同输入。
+    - 各支逐轮记录已完成的轮次，崩溃后只补缺，崩溃前中断的实验先按记录续完。
+    - 暂停的一支（worker 失联，或末轮因基础设施失败）修复后续跑到冻结轮数；暂停期间 campaign 判 inconclusive，不做外测。
+    - 已出 receipt 的 campaign 不再重跑，接受后的安装只做一次。
+    - R1 改过的 prompt 必须出现在候选支的实际请求里，否则判 invalid；只改 manifest 的 R1 在付费前拒绝。receipt 的成本包含两支、共同输入和外测。
+    - 每轮记录加载的 R、context 和各步请求摘要（`research_steps` 事件）。研究请求按步骤（note/propose/revise/research_slot）分别记账。
+  - E 用户入口（`bench.cycle`、`[improvement]`、preset `marketing_harness_v1`、`examples/automationbench/improvement.toml`）：
+    - reader 只接受已实现的枚举，第二版方法按名拒绝。
+    - preset 的 harness 数值是上限，`[harness_evolution]` 只能收窄；镜像由 preset 固定。
+    - 允许的方法冻结进 K，准入时强制执行。
+    - cycle 先冻结缺少的计划（不得放宽 preset，[rsi] 已给的计划同样检查），然后：基线一次 → worker 段 → research slot → 下一个 worker 段（检查 R1 是否真的被用上）→ 离线报告。无提案不会吞掉 slot；暂停与预算耗尽按规则停止；重跑只补缺，基线也只补缺。
+    - 首版的 research slot 由当前 R 读取经验投影和自身的 prompt，提出 R 候选。
+    - 报告新增：包的组成；实际技能读取、hook、包工具与 worker 时长；每次测量的范围；笔记覆盖；草稿检查；按步骤的研究费用；gate 门槛；cycle 与回用状态；公开数字背景表。首版的 C3 与蒸馏标为 not_run。
+- 证据：
+  - `.venv/bin/python -m pytest -q` → 667 passed, 1 skipped, 1 deselected（阶段 A 结束时为 611）。跳过的是 IT6-23 Docker 隔离测试：本机 Docker daemon 未运行，镜像也未构建。
+  - 覆盖的首版用例（含阶段 A）：CT6-01/14、PR6-01/10/11/12、RL6-11/17/18/20/22/23/25/26、EX6-12、ER6-06/14/15、RC6-10/11、IT6-11/16/19/21/22/23/28、BR6-01/09/10/12/14/15/16/17。
+  - fixture 上的完整 cycle：冻结计划 → 基线 → 段 0 无提案 → slot 中 R1 被接受并安装 → 段 1 加载 R1、按 R1 的 propose 文本发出请求 → 报告。重跑 cycle 不新增任何尝试或研究请求。
+- 独立审查：B/C、D、E 三个审查共报 31 条（分别为 12、7、12 条，含低严重度项），复核后全部成立并已修正。需要 Docker 的三处（删除超时容器、docker 客户端环境、按镜像内容 id 运行）本机无法测试，其余都补了测试。最重要的几条：
+  - 包代码自行退出或挂住 worker 会被当作基础设施，活动永久暂停。
+  - worker 的 stderr 无人读取，输出多时会挂住。
+  - 超时的容器不会被删除。
+  - 两个 campaign 用同名配对时，后一个会复用前一个已完成的分支。
+  - 分支与段的进度只在结束时写盘，崩溃后会多跑轮次。
+  - 已完成的 campaign 重跑会再付一次外测费用，并在安装时失败。
+  - slot 的研究门槛组数取自 worker gate，示例配置下 R1 永远无法安装。
+  - slot 暂停后 cycle 仍继续下一段。
+- 设计补充（写入 M7 §2）：research slot 的配对规则（开发家族按冻结顺序对半，前一半为内层 gate，后一半为外层）与每支预算比例由 preset 固定；`test_timeout_seconds` 用作 worker 每个请求的时限。
+- 证据边界：全部为离线 fixture 与脚本研究员，只证明接线，不是收益。没有付费运行，没有真实模型的能力包演化或 C4 结果。Docker 隔离尚未在真实 daemon 上验证（构建命令：`docker build -f docker/worker.Dockerfile -t ouroloop-worker:py3.12 .`）。上一条记录中的未决问题（dev 回归被拒时的诊断信号）不因实现而改变。
+- commit：未提交。
+
+## 2026-09-30 首版阶段 A 实现：诊断输入与文本能力包
+
+- 做了什么：按 ROADMAP §2 阶段 A 实现，不含 Docker、trainer 或 teacher。
+  - 契约：既有记录加默认 None 的字段，旧 ref 与 v2 prompt_hash 不变；`from_json` 拒绝未知键与未知 schema_version；RunManifest 读取改为严格，新字段只在非 None 时写出。新记录 ModelIdentity、TargetHarness、HarnessPackage、CollectionRequest；新增 `generation` 绑定。
+  - 目标：`worker.actor`、`worker.harness` 为可选目标，只在 K 列出时要求；完整性按 K 的 `core.targets` 校验，旧 core 与旧工作集照常绑定。`research.diagnose` 同时接受旧的 requirement_list 与新的 failure_summary.v1 → failure_note.v1；R 候选沿用父策略的契约。
+  - 能力包（`agent/harness_package.py`）：固定目录形状与上限；运行判定与检查判定分开（tests 只影响检查）；K 不允许代码时任何 .py 都是结构错误；memory 未启用、清单外的技能文件、空 patch、与父包相同的 patch 均被拒绝；宿主把 memory 与技能索引放进系统提示，`read_skill` 作为宿主读取并记录。
+  - 判分明细：`run_tasks` 写入 `grading.jsonl`，结果存储按冻结划分读取，默认只给 train。
+  - 诊断（`research/diagnosis.py`）：只摘要 train 失败，含全部计分断言及其 passed，不含被排除的；逐题笔记的身份是渲染后的完整请求加模型配置；无效笔记不缓存；每轮读取数有上限，按全活动的诊断位置轮换；汇总调用只读笔记、覆盖、允许的种类、当前包，以及经验的固定投影（原因只保留枚举）。
+  - 草稿检查（`research/drafts.py`）：冻结前检查形状、种类和字面量（邮箱/标识符/记录名，来自 train 断言 params 与 train 初始状态，按整词匹配，检查解码后的 manifest，回传只报类别数量）；初稿之后有界修订；每份草稿都存下来；空修订计为失败；重启后按记录的修订序号续跑，不再调用 R 重新提案；worker 不可用时暂停活动，草稿保持打开。
+  - 驱动：v0.6 下每轮只测 train，改版后只重跑上次失败的任务，无安装则复用，重启时从记录重建；`collect` 记为 needs_collection 并指向 CollectionRequest，批次在重启后不重置，只有新执行的尝试算进展，没有后续轮次时不跑补采；预算耗尽时干净停止。
+  - bench：`[harness_evolution]` 在 bootstrap 时把限值冻结进 K，把配置的模型固定为 actor（观测时间记为事件），装空包，用写笔记的 R0；release 固定的 actor 不被 `[llm]` 覆盖，前沿臂显式覆盖；基线对首版活动同时跑 train；K 允许代码或当前包含代码而没有 worker 时，smoke/freeze/各阶段在付费前拒绝；既有 v2 工作区加这个表会被明确拒绝。
+- 证据：`.venv/bin/python -m pytest -q` → 611 passed, 1 deselected（原 554 条全部保留）。新增 `tests/test_harness_package.py`、`tests/test_diagnosis.py`、`tests/test_harness_loop.py`，覆盖 CT6-01/14、PR6-01/13/14、RL6-11/17–22/24–27、EX6-12、ER6-15、BR6-16/17、IT6-19/22（文本部分）/27/28。离线闭环用 fixture 世界与 scripted R：train 失败 → 笔记 → 汇总提文本包 → 首稿失败、修订通过 → gate 接受 → 安装 → 新会话挂载并读取技能，dev 通知任务由失败变通过。
+- 独立审查：三个角度（规格、正确性、泄漏）共报 37 条，34 条经复核成立，已全部修正并补测试。其中最重要的几条：文本 K 下多余的 middleware 文件会挂起活动；字面量检查把普通词当答案；汇总调用读到的原始经验行含 dev 任务 id 与评分器报错；最终评测的前沿臂实际跑的是固定 actor；v2 release 的 prompt_hash 被改变。
+- 证据边界：全部为离线 fixture，scripted R 只证明接线，不是真实收益；没有付费运行。（阶段 B～E 见上一条。）
+- commit：未提交。
+
+## 2026-09-30 对照 Harness-Zero 的 h* 产出流程补齐首版规格
+
+- 做了什么：逐环节对照 Harness-Zero 的学生 harness 演化 skill（`.agents/skills/student-harness-evolve/SKILL.md`，@ aa63a77）与论文，把差距写成首版规格。诊断输入：失败的 train/fit 尝试给出失败摘要与逐条断言明细，串行做“逐题笔记（research.diagnose）→ 一次汇总（research.propose）”，产出至多一个 patch 或 next_action；dev 只给汇总，final 不进入。判分明细分存 `bench/<domain>/grading.jsonl`，由 M3 写入、M7 按冻结 split 读取。冻结前草稿检查与有界修订（初稿之后最多 3 次，纯文本草稿只查结构/路径/manifest）。组件优先级为 memory/skills → on_finish → before/after_tool → 包工具；纯文本包不需要 Docker。每轮 measure 在执行身份匹配时复用上轮 gate 的 dev 结果（只进 R 上下文），只为诊断重跑失败的 train 任务，dev gate 仍完整执行。交付分段改为 A 诊断输入与文本包、B 代码组件与隔离。首版 actor 定为 GLM-5.3；第二版换 Qwen3.5-9B 学生时 h* 在学生上重新演化。版本机制改为在既有记录上加默认 None 的字段（`Record.payload()` 跳过 None，`from_json` 拒绝未知键），不做 v3 reader 分派；RunManifest 与 RoundResult 的例外写明。
+- 依据（读源码与论文得到）：Harness-Zero 每轮只评上一轮失败的 train 任务，不做回归；最多 10 个子 agent 逐题写笔记，主 agent 汇总、冒烟后才评测；组件在 agent 进程内 importlib 加载，任务环境在 Harbor 容器里；三个学生库共 12 个中间件、3 个 skill、3 个工具（工具只在 USPTO）。结果 base@h / base+h* / 蒸馏@h：SpreadsheetBench 31.0/39.0/44.0，AppWorld 26.8/48.2/58.9，USPTO 12.0/38.0/30.0。本项目现有研究上下文只给逐题 success/partial，不含断言和轨迹，且截到 12,000 字符（`research/context.py:50`、`:116-146`）。
+- 一致性修正：ROADMAP 的测试数改为 554 passed, 1 deselected；那次 GLM 运行改为“14 条断言中 8 条计分、全部通过，另 6 条初始即成立、不计分”。IT6-18/20 标为第二版。新增用例 CT6-14、PR6-13、RL6-17～20、EX6-12、ER6-15、BR6-15/16、IT6-27/28；IT6-27/28 列入首版必做。
+- 文档检查：本地链接/锚点、代码围栏与表格列数通过；159 个用例 ID 无重复；`git diff --check` 通过。用例是待实现规格，不是通过结果。
+- 真实运行：GLM-5.3 的 train+dev 基线启动后，在第一个任务中途按“先写好文档再执行”的决定中止：结算 4 次模型调用（不到 $0.02），没有完成的尝试，不算基线；中断那次调用的预留按设计以最坏值留在预算账上。为这次运行做的判分明细存储代码已撤回，改为上面的待实现规格；本机 Docker daemon 未运行。
+- 同日复核七项判断（用户确认并补充，随后逐条推敲、再经独立审查）：① 纯文本草稿也可修订，max_draft_repairs 指初稿之后最多 3 次；② 组件种类由 K 在 freeze 时固定（freeze/smoke 还核对当前包种类在 K 内、需要时确认 worker），运行中 worker 不可用按基础设施故障处理：重试后 infrastructure_failed，并以 repair_runtime 暂停活动，修复后以原草稿续跑。不中途收窄为文本菜单，也不结束 worker 段，否则同段前后与 M6 两支的条件或轮数会不一致；③ 上游评分器只排除“初始成立且结束时仍成立”或作者声明不计分的断言，被破坏的初始成立断言按失败计分，照常给 R（`automationbench/rubric/__init__.py` 的 free-assertion 分支）；④ 笔记上限改为每轮读取数（缓存加新生成），久未纳入的失败优先，覆盖按诊断工作集如实记录；⑤ tests/*.py 是代码：检查判定含 test bundle，运行判定不含，任务执行、安装与导出不因只有 tests 而要求 worker；⑥ 失败子集重跑只用于诊断，gate 每次重跑自身对照臂（`bench.py:571-591`），复用的 dev 结果只进 R 上下文并标明是被选中的抽样；每轮成本据此更正为约 $10–40、5–6 小时；⑦ 笔记身份为渲染后的完整请求摘要加模型配置；`research.diagnose` 改为逐题契约 failure_summary.v1 → failure_note.v1，旧 requirement_list.v1 路径保留，R0 形成新身份。另加：包文本字面量检查（防止把 train 断言中的具体值写进包）、草稿检查只在 fixture 或仅 train 构造的世界中运行、M6 第一轮笔记作为 campaign 级共同输入。
+- 未决（待真实被拒候选出现后再讨论，不写入设计规则）：候选因 dev 回归被拒时，R 只能看到 dev 汇总；此前通过的 train 任务不重跑，所以没有 train 侧回归证据。同一议题还包括：已安装版本在未重跑 train 任务上的回归同样看不到，诊断工作集只会缩小；只重跑失败题时，偶然失败的任务回到均值，会被误记为修复。拒绝的具体原因与表现、补跑 train 能否提供有效信号，以及 gate 只给汇总这一机制本身是否需要调整，都尚不清楚。
+- commit：未提交。
+
+## 2026-09-30 首版收敛：受限能力包代码演化，训练完善后置
+
+- 按本轮讨论调整交付边界：首版从任务失败自动生成/修改工具封装、中间件、技能和经验，验证后交付同 actor 的 h* 应用；第二版完善教师适配、蒸馏与新增训练。首版保留 R0/R1 比较、安装和下一真实改进调用回用，不把 RSI 核心交回人工。
+- 编辑集中在交付范围和对应契约：M0 HarnessPackage/worker.harness、M1 固定 API/Docker worker/broker、M4 包内 patch、M5 隔离检查/预算/恢复、M3 回归/发布/同字节导出、M6 相同资源代码搜索与 M7 无训练依赖的 preset/报告。评分、权限、预算、发布核心、宿主 API/依赖不在自动修改范围内。
+- 保留原训练/教学详细设计，仅标记第二版；保留旧 CLI、代码、历史证据与用例原义。同步设计入口、路线图、审查/演示与首/二版验收归属；新增 IT6-22～26 和相应模块边界用例。
+- 文档检查：22 份 Markdown 的本地链接/锚点、围栏/表格与配置示例通过；134 个当前用例 ID 无重复，git diff --check 通过。用例是待实现规格，不是通过结果。
+- 仅编辑相关文档，未改代码、未提交、未执行训练、模型付费调用或 benchmark；新包演化与真实递归收益仍待实现/验证。
+
+## 2026-09-28 设计审查修订：新 harness、自动补采与教学源验证
+
+- 根据定位对齐审查修复三处规格缺口，没有改变最小完整 RSI 的产品目标。只改文档，未改代码、未提交，未运行训练或 benchmark。
+- 更换目标 harness：M3 准备保留 W/R/K 的受限新基线 B；M0 明确 parent 与 execution_base_ref，采集/训练绑定 B，系统 gate/CAS 仍对原生产 parent。补齐运行许可、无环引用、兼容失败与恢复规则，不允许仅替换配置就沿用旧基线。
+- 自动补采：CollectionRequest 和 RoundResult 保留 needs_collection/next_action/action_ref，M4 的同一驱动在额度内采集、重建 context、继续提案；无进展/缺能力才停止当前 worker 段。M7 不吞掉后续获准 research slot；M6 两支共用该规则，重启不重置计数或重花钱。
+- 教学源与发布分开：Experiment 冻结 purpose，source_validation 的 train 验证通过以 validated 完成并可立即适配，不必跑生产 dev gate、没有安装权；直接发布另建 deployment 实验。复用原执行器、评分与预算，不增加第二调度器。
+- 同步总设计、路线图、研究协议、技术原则、模块接口/流程、审查和演示，新增跨模块 IT6-18～21 及相应边界用例。当前技术来源与领先模型默认仅引用公布数字的决定保持不变。
+- 文档检查：22 份 Markdown 的本地链接/锚点、表格、代码围栏及配置示例通过；118 个当前 v0.6 用例 ID 无重复，撤销的 IT6-14 不计入。`git diff --check` 通过；新增规格仍待实现，未运行代码测试。
+
+## 2026-09-28 定位修正：围绕最小完整 RSI 核心交付
+
+- 修正上一条范围决定：用户要求减少外围功能，而非把自动发现交给人或取消 RSI 验收。框架输入是任务环境/目标/权限/初始资源，输出是可运行 app 和可继续演化的工作区；不要求用户逐轮准备优化工作流与配方。
+- 主线改为自动发现 → 源方法真实验证 → 自动教学适配 → 学生在环 → 训练固化 → 无教师评测/发布 → 改进方法更新并实际回用。明确源 harness 可演化、目标 harness 在一次蒸馏内固定，首个模型/算法/后端不是框架定义。
+- 实现继续复用 M0～M7，仅新增 M8。研究员保留为已有 provider 上的有界逻辑职责；首版复用 R0/R1 campaign 验证方法及下一调用的真实绑定，不新增研究平台。actor/controller 分离能力保留，应用可按效果关闭 controller。
+- 更新总设计、技术选择、路线图、全部模块交接、演示/审查与中英文 README；撤销草案 IT6-14，增加零人工 source 启动、源方法实际执行、自动适配、递归伪阳性和 cycle 恢复用例。保留领先模型默认只引用公布数字的决定。
+- 证据边界：只有文档变更；没有代码实现、付费调用、训练或新增 benchmark 结果。真实 C1/C4 仍待验证，不以 fixture 代替；本次未提交。
+- 文档验证：22 份 Markdown 的本地链接/锚点、代码围栏、表格及 TOML/JSON 示例检查通过；95 个当前 v0.6 用例 ID 无重复，撤销的 IT6-14 不计入。`git diff --check` 通过；没有运行代码测试。
+
+## 2026-09-28 范围收紧：研究员退出首轮交付（已被上条定位修正取代）
+
+- 根据用户反馈：先完成一件可验证的事，暂停研究员新增开发。当前只做人工工作流/配方驱动的采集、actor 训练、无教师评测、发布；controller 之后单独决定，自动研究与递归比较不排期。
+- 改了什么：整体流程图和路线图只保留 A～C；M7 人工入口直接复用 admission/executor，不依赖 `run_worker_round` 或研究 provider。M4/M6 新设计与用例标为暂缓，已有代码/CLI/完整 release 保持兼容，R ref 原样继承；C4 为 not_run。
+- 验收边界：新增 IT6-14，要求缺少研究配置也能完成蒸馏全链，研究员构造/调用失败哨兵不被触发；研究、controller、Harbor 的后续用例与当前必做集合分开。
+- 文档检查：22 份文档的链接/锚点、表格、代码围栏和配置示例检查通过；77 个保留/新增用例 ID 无重复；`git diff --check` 通过。
+- 证据边界：只改文档，没有实现代码、训练或 benchmark 新结果；未提交。
+
+## 2026-09-28 v0.6 设计：完整工作流蒸馏、独立决策与 RSI 回用
+
+- 做了什么：修订整体设计、技术选型、路线图、研究协议、演示、审查和模块详细设计；保留 M0～M7，新增 M8 工作流蒸馏；新增 v0.5 实现快照，保留原测试和缺口记录。中英文 README 修正过时状态。
+- 关键决策：先冻结目标 harness，以教师执行前 PASS/REPLACE 采集学生真实轨迹，按环境成功筛选后做 actor SFT，再无教师评测与发布；独立 controller 在同 actor 上验证增益；研究策略更新继续复用现有 campaign。Tinker 为首个生成训练后端，Harbor/DeepAgents 按需要可选；不建设另一套平台或应用市场。
+- 开发交接：明确 schema 兼容、两类监督来源、模型实际绑定、token mask、模块所有权、错误/恢复/预算、部署白名单、实施顺序及新验收用例。保留最近“领先模型只引用公布数字”的决定，修正新 actor 路径下的 C3 对照映射。第三方只参考设计，不复制源码。
+- 文档检查：22 份 Markdown 的本地链接/锚点、表格列数、代码围栏通过；TOML/JSON 示例可解析；76 个新增验收用例 ID 无重复；`git diff --check` 通过。未运行代码测试。
+- 证据边界：本次仅文档与来源核对，没有代码实现、付费调用、训练或 benchmark 新结果；新用例均为待实现规格。已有真实单任务运行和历史工程验证不扩大为改进收益。
+- commit：本次尚未提交。
+
+## 2026-09-28 第一次真实模型运行：GLM-5.3 跑一个 Marketing dev 任务
+
+- 做了什么：领先模型改为引用公布数字，不在本地运行（DESIGN §3.2、ROADMAP M2、模块 07）。来源两个：官方榜单（私有集）与上游 README 的公开集结果（含 GLM 5.2 max 26.17%，六域合计）。本地用智谱 GLM-5.3（OpenAI 兼容接口，thinking 为默认开启），经我们的 W0（含 finish check、业务停止视图、计量）跑 dev 任务 `marketing.product_adoption`（14 个断言，长度居中）：`ouroloop bench --config examples/automationbench/marketing.local.toml --phase baseline --task marketing.product_adoption`。
+- 证据：通过（task_completed_correctly = 1，partial 1.0），15 轮、29 次工具调用、229 秒。prompt 共 225,196 tokens，其中缓存命中 197,568（88%）；输出 11,662，其中推理 6,441。
+- token 从哪来：第一轮 prompt 只有 1,210 tokens（系统提示、工具定义与任务），之后每次请求都带上全部历史，平均每轮增加约 1.85k，到第 15 轮是 27,132。增长主要来自 `api_search` 返回的端点目录（top_k 10～15，每次约 2.5k～4k tokens）和 base64 编码的邮件正文；另有两轮花在未连接的 Salesforce、HubSpot（401），两轮花在回读已发邮件核对。
+- 证据边界：一个任务、一次运行，不代表通过率。这次的 `cost_usd` 为空（运行时没有 `[pricing]`），费用由逐轮用量离线换算。
+- commit：见本条记录的 Git 历史。
+
+## 2026-09-28 付费运行前的补齐：计量、计费、续跑与计划冻结
+
+- 做了什么：`MeteredProvider` 接到所有阶段，agent 与研究员的每次模型调用先预留、按实测结算，额度用尽的尝试记为 `budget_exhausted`（不补跑，比较记 inconclusive）；一个活动只有一个预算根，各阶段、campaign 各支与外层评测都是其子额度。每次尝试按 `[pricing]` 计算 `cost_usd`，先用 `normalize_usage` 统一供应商的用量词汇，缓存读写单独计价，缺价则 unknown。`evaluate` 与 `improve` 中断后从记录续跑：尝试 id 由计划、臂、任务、重复与重试决定，已记录的尝试原样保留，构建已完成的不重训，安装重放自身 operation 最多提交一次。补跑在写入结果库时就带上 `supersedes`。新增 `ouroloop freeze`，从 `[freeze.task_plan]`、`[freeze.schedule]`、`[freeze.budget]`、`[freeze.final]` 冻结对象并打印 `[rsi]` 引用。
+- 更正：此前把 BR-05 记为已覆盖，实际 `evaluate` 恢复时会把全部尝试重跑一遍，只是不重复写状态文件；已按验收实现并在 07 文档里写明。
+- 补齐过程中发现并修正的四处：其一，`settle` 把预留时没有上界的维度当作上界 0，第一次调用的 token 用量就会被判越界并停止一切付费操作——计量一接上，第一条集成测试就停在这里；其二，campaign 原先另开一个预算根并拿到同样的额度，等于把活动预算翻倍；其三，OpenAI 兼容接口报 `prompt_tokens`/`completion_tokens`，按 `input_tokens` 读会把费用算成 0，而 0 正是未知费用绝不能变成的数；其四，补跑的 `supersedes` 原本在结果写入之后才在内存里补上，只追加的结果库和据此生成的报告永远看不到它。
+- 证据：`python -m pytest -q` → 553 passed, 1 deselected（新增 18 项在 `tests/test_paid_run_safety.py`）。模拟进程在最终评测第一臂中途死亡后再运行：8 个计划尝试各出现一次，崩溃前记录的全部保留；模拟在改进轮评测中途死亡后再运行：同一实验从 evaluating 续跑并安装，恰好一次安装事件。
+- 证据边界：仍没有真实模型运行；计量与计费由夹具供应商的固定用量验证。
+- commit：见本条记录的 Git 历史。
+
+## 2026-09-27 删除贪吃蛇场景包与多代演示循环
+
+- 做了什么：删除 `examples/snake/`（游戏、标签器、规则、场景、两份配置）、`tests/test_snake.py`（14 项）与 `ouroloop/generations.py`（场景包的多代循环）；`ouroloop demo` 只保留合成数据上的离线一轮，不再接场景包参数。`tests/test_counting.py` 去掉依赖 `generations._judged` 的那一项——同一处计数由它上面基于 `replay.summarize` 的用例覆盖；`tests/test_tde_compat.py` 原先从 `examples/snake/demo.toml` 读配方，改为内联一份同形状的小配方，并删掉只检查那两份示例配置的用例。
+- 为什么：v0.5 的主线是 AutomationBench 业务闭环，贪吃蛇只作 smoke；场景包删除后 `generations.py` 没有可运行的住户，留着就是死代码。保留的是业务循环用得到的东西：`ouroloop/demo.py` 的合成离线一轮（四个测试文件在用）、`evolve/monitor.py`、`trainers/signature.py`、旧 decision profile 的全部路径。
+- 证据：`python -m pytest -q` → 535 passed, 1 deselected（此前 550，减去 15 项贪吃蛇与世代计数用例）；套件耗时从约 90 秒降到约 55 秒。删除本身没有产生新的运行证据。
+- 因此改了文档：README（中英）、DEMO、ROADMAP、DESIGN、RESEARCH_AGENT、TRAINING_HOSTS、modules/README、modules/05、modules/07 里指向贪吃蛇或 `generations.py` 的说法改为业务循环入口；本文件头部说明贪吃蛇数字已无法复算。历史条目原样保留。
+- commit：见本条记录的 Git 历史。
+
+## 2026-09-27 M0～M7 实现：完整改进闭环与研究策略回用
+
+- 做了什么：按 v0.5 模块详细设计实现全部八个模块。新增 `evolve/contracts.py`（内容寻址身份、分区血缘、对象库与事件日志）、`policies.py`（七个注册目标、内置配置、装配、会话 pin、候选构建）、`research/inspection.py`、`research/context.py`、`evolve/feedback.py`、`evolve/task_gate.py`、`evolve/execution.py`、`research/experiment.py`、`research/campaign.py`、`report.py`；改造 `runtime.py`（`propose`：route `policy`，分别记录提议、执行与执行者）、`stop.py`（策略接线与 override 事件）、`agent/loop.py`（业务观察、工具事件、Observation/DecisionTrace）、`points/__init__.py`（`stop.business.v1` 视图）、`release.py`（完整 release、permit、preflight+CAS 安装、恢复、撤销）、`benchmark.py`（v2 字段不改旧 hash）、`evolve/build.py`、`evolve/pipeline.py`（`train_artifact` 无晋升副作用）、`research/loop.py`（`run_worker_round`）、`bench.py`（七个阶段、启动检查、`Improvement` 四个 handler、`research_slot`）、`cli.py`。
+- 证据：全仓 `python -m pytest -q` → 547 passed, 1 deselected（此前 399 项既有测试全部保留通过）。新增 147 项按验收 ID 组织：CT-01～06、PR-01～07、DT-01～08、ER-01～10、RL-01～08、EX-01～08、RC-01～10、BR-01～08、IT-01～07。夹具为 `tests/fake_upstream` 新增的 `rsi` 域（更新后通知的要求写在请求末尾、合法 no-op、重复发送即回归）与脚本 worker/研究员/trainer；脚本 worker 依据请求、系统提示与工具结果响应，不看候选名字。IT-01：W0 漏通知（partial 0.5）→ R0 提出 finish check → 配对 dev 评测 accepted → 安装 → 新 session 的提示里确有该指令，该 dev 任务通过且其他任务不回归，`train_jobs` 为 0。IT-02：脚本 trainer 产出的决策器在“通知仍缺”时提出 no，StopGuard 实际打回，随后任务完成。IT-03：R0 提出 R1，两支隔离 campaign 在同起点同额度下比较各自产出的 W*，外层任务（两支内层都没碰过的家族）候选支 1.0 对照支 0.0，安装 R1，下一轮的研究请求 prompt hash 确为 R1。
+- 实现中被测试推翻的四处：其一，只看训练池的一轮提不出缺口，于是每轮增加“当前版本在 dev 上的测量”，缺口必须来自将被评判的任务；其二，输入覆盖检查把从未出现的可选字段（本次没有截断，`truncation` 恒空）当成缺失而阻断训练提案，改为由 schema 声明 `required`；其三，verification 额度原先只挡别人不挡自己，改为双向限制，装不下验证的候选就不启动；其四，准入的反馈构造器默认空集合，会让所有训练提案因错误理由作废，改为取注册表。另修：经验记录的 `trained` 原本按“有 artifact”判断，prompt 候选会被写成训练过。
+- 证据边界：**没有任何真实模型的业务成绩。** 夹具的数字由夹具定义；IT-03 的研究改动由脚本提出并标 `scripted`，不是自动发现；C1～C4 全部未运行。仍待交付：分支比较 builder、经济模式 campaign、进程级隔离、自动补跑与 calibration 接线，以及冻结计划下的付费实验。
+- commit：2cc8f28, 2a255c0, 78eee0d, d10abb4, 4e1744a, 1f5015f, 550f60b, bf34d29
+
+## 2026-09-27 v0.5 架构审查与模块开发交接
+
+- 做了什么：对照 Raven 固定提交与当前源码审查 RSI 完整性，新增 RSI_REVIEW 和 modules 下的公共契约、七个实现模块及集成验收。明确代码所有权、依赖顺序、接口、状态、错误、预算、恢复和用例。
+- 发现的缺口：业务 stop 输入截断、历史数据的 session 分组与重渲染、prepare_model 的旧门副作用、完整 W/R 授权安装、嵌套预算和研究 campaign 的隔离/回用都需要具体实现。本次补齐设计，未修改这些代码。
+- 因此改了：首版只执行声明式策略；新 task/research profile 用完整 release 与单一 active；开发晋升与最终收益证明分开。家族签名测量保留，撤回“低重叠即可证明语义独立”的推断。
+- 证据边界：源码与文档审查，没有新增模型、训练或 benchmark 运行；工程用例是待验收规格。完整框架实现与真实 C1～C4 证据仍待交付。
+- commit：见本条记录的 Git 历史。
+
+## 2026-09-27 完整 RSI 设计：任务策略与研究策略共同演化（v0.5）
+
+- 做了什么：系统边界定义为任务策略 W、研究策略 R、经验 E 与实验内固定核心 K。任务和研究候选复用同一策略描述、评测、版本与安装机制；prompt、规则、workflow 与小模型都是载体。核心研究方向仍是从执行反馈中训练可复用决策策略，不扩建领域专家池。
+- 设计依据：审查了 [Raven 固定提交的 Curator 设计](https://github.com/EverMind-AI/Raven/blob/40a6b456dcd13f9c551a0f78dc1361e55b90e4e4/experimental/docs/design.md)和反馈迭代源码，吸收行为要求、实际装配检查、机制活动、失败/回归继承及验证后安装；参考 [DGM](https://sakana.ai/dgm/) 明确更新后的研究能力可以参与后续自改进，不把递归限定为训练研究员权重。外部能力比较仍以领先模型为参照。
+- 因此改了：DESIGN、RESEARCH_AGENT、ROADMAP、DEMO 及中英文 README 升至 v0.5。M5 先接固定 R 的任务改进；新增正式 M7，以相同起点、经验和预算的隔离 campaign 比较 R/R'，通过后回用于下一轮研究。C1～C3 继续报告任务层效果；新增 C4 报告研究质量或成本效果。工程回用链与收益证据分开验收。
+- 实现状态：保留 M1 的真实上游契约检查、固定 split，以及 M3 完成度探针和脚本干预的全部已有记录；修正设计中仍称这些未实现的状态。断言数量支持完成判断的研究假设，不证明真实模型失败原因；路线图将独立同可靠率的数学示意与实测分开，并修正示意数值。
+- 证据边界：本次仅更新设计文档，未修改运行代码、调用模型、训练或复跑 benchmark，未产生新成绩。新策略描述、实际装配快照、集成研究循环和 M7 均尚待实现；不将完整设计写成已实现 RSI 能力。以下历史条目保留原时点的说法，当前目标与状态以 v0.5 设计和路线图为准。
+
+## 2026-09-27 一个任务是被漏掉一项要求输掉的
+
+- 做了什么：在真实上游上核验 M1，按核验里量到的东西选定干预点，并实现 M3 的信号路径 1——`CompletionProbe`：每个 stop 决策处留一份世界快照，episode 结束后用官方 rubric 给每份快照打分，把"当时活干完了吗"写成 `env` 标签。评分只在运行结束后发生，官方评分器不做在线 checker。只在 train split 上挂；session 的 `held_out` 改成 `split != "train"`（dev 是裁判数据）。
+- 证据（真实 checkout：`zapier/AutomationBench` @ `4a8e106`、package 1.0.6、Python 3.12.14、`api` 工具集，装了 `verifiers` 和 `openai-agents`，所以每项比较都真做了）：25 个 dev 任务全部通过契约检查——官方 rubric 入口是 `['partial_credit', 'task_completed_correctly']`、权重 `[1.0, 0.0]`，服务订阅门与上游 `compute_allowed_services` 逐任务一致，工具 schema 的参数名与必填项和上游 `agents.function_schema` 一致，快照独立性在真实 pydantic world 上逐任务成立，与断言无关的写入不移动分数，0 处 leak。split 已冻结：train 52 / dev 25 / test 23。
+- 决定干预点的测量：dev 任务需要中位数 **12** 个计分断言（均值 14.1，最多 39）全部通过，没有任务靠什么都不做能通过（中位数另有 7 条断言初始就成立、被排除出分母）。`task_completed_correctly` 是合取，所以每项 90% 可靠只有约 31% 的任务通过率，95% 是 53%，98% 是 76%。**任务是被漏掉一项要求输掉的**，于是"活是不是真干完了"这个判断——当时状态可见、训练任务上可核验、`policy.ACTING` 本来就只放它执行——是有依据的第一个干预点，不是因为"二分类适合小模型"。
+- 离线验收（不花 API）：同一个脚本模型同一个任务，点不执行时失败在 partial 0.5 且这次漏掉被记成 stop 的 `no`；一个有把握的"没干完"把 agent 送回去，任务通过 1.0；答案低于阈值就走默认、什么都不变。快照代价在最大的真实 world 上是每份 1 ms、0.1 MB。
+- 因此改了：`ToolSurface.mutates` 由工具面回答"这次调用可能改了世界吗"——原先循环拿 write/edit/bash 这三个工作目录的工具名去问，业务工具面永远答不上来。这不是洁癖：`Budgeted` 包住 episode 却没透传它，改动计数一直是 0，探针于是把每个 stop 决策都按第一次停下时的状态打标签，一次真实采集的全部训练样本都会是错标签。现在探针构造时就拒绝答不出改动的工具面。家族判定也修了：只按工具与断言类型算签名时有 172 对任务重叠超过 0.8，读了两对之后发现那只是"读表格、发邮件提建议"同一个形状；把断言的期望值也算进签名后，100 个任务里任意两个的重叠都不超过 0.42——一任务一家族从此是有证据的结论。
+- 尚未做：没有真实模型运行，因此没有任何成绩；信号路径 2（有限分支比较）未实现；`prompt_best` 对照未做，而 DESIGN §1 要求小模型必须先比它更好。
+- commit：1e1b56f、（本条）
+
+## 2026-09-27 M1：先有运行契约，再有分数
+
+- 做了什么：`benchmark.py`（冻结的任务分组、运行 manifest、`TaskResult`、预算）、`adapters/automationbench.py`（延迟导入上游、`api` 工具集、官方评分、快照、契约检查与输入审计）、`evolve/task_eval.py`（一次尝试、有效性、预算）、`bench.py` 与 `ouroloop bench --phase smoke`、`examples/automationbench/marketing.toml`，以及 `tests/fake_upstream/`——上游的微缩替身，使 88 个新测试不需要真实上游。
+- 读源码确认的上游事实（`zapier/AutomationBench` @ `4a8e106`，2026-08-04）：默认工具集是 `api`，只有三个函数（`api_search`、`api_fetch`、`base64_encode`），都是 pydantic `WorldState` 上的普通同步函数，所以评分和工具都不需要 `verifiers`；`rubric.partial_credit` 和 `task_completed_correctly` 是 state dict 上的纯函数，后者读前者缓存的值，因此调用顺序是契约的一部分。公开 Marketing 是 100 个任务，`info` 只有 `zapier_tools` / `initial_state` / `assertions` 三个键，**没有 family 或 variant 字段**——所以默认一任务一家族，只保证同一任务的尝试、分支与重复不跨 split；`near_duplicates` 报工具与断言重叠高的任务对供人工声明。`automationbench.tools` 会连带导入整个 Zapier 工具注册表，其中一个模块在模块级 `from openai import OpenAI`，所以哪怕只用 `api` 工具集也必须装 `openai`。`tools/zapier/chatgpt/completions.py` 在有 `OPENAI_API_KEY` 时会真的调 OpenAI，没有 key 时返回固定串；公开 Marketing 的 100 个任务都没有 seed 或授予 chatgpt，上游的服务订阅门也会拒，episode 仍在工具运行期间隐藏这个变量，双重保险。
+- 证据：测试过程发现两个真实缺陷，都先写了会失败的测试。其一，`WorldState(**grading.initial_state)` 与评分时重建的初始世界共享嵌套结构，agent 改完 HubSpot 阶段后，"初始状态"里也变了，于是那条断言被判成"本来就成立"而被排除出分母，`partial_credit` 从 0.5 变回 0.0——上游 runner 自己 deep-copy 过初始状态，适配器没有；现在两份都是深拷贝。其二，leak 审计原先在 `json.dumps(payload)` 上做子串匹配，一条粘进 system prompt 的断言在那里是转义的（`\"type\"`），搜不到；现在遍历结构里的每个字符串和每个键。契约检查也因此发现自己的洞：`contract_check` 原来在 `task_ids` 为空时回退到全部任务，会去读 test 任务的初始状态得分，现在必须指名。
+- 因此改了：`ids()` 必须指名 split（空调用报错，不返回全部也不返回空）；冻结的 split 文件被改派时报错，工作区已有结果时连 `--replace-splits` 也拒绝；未测到的费用一路保持 `null`，汇总另报"缺在几次尝试上"；infrastructure 类终止不能是有效尝试；test split 的 session 带 `held_out`，已有的建数据路径取不到；M2～M6 的 phase 名报错并指向路线图，不悄悄做别的事。
+- 尚未做：没在真实 checkout 上跑过（适配器是按上游源码写的，`contract_check` 正是为此而写），没有真实模型运行，没有真实成绩，`zapier` / `limited_zapier` 工具集未接。
+- commit：a10572a
 
 ## 2026-09-27 主线更新：AutomationBench 业务闭环与领先模型比较（v0.4）
 

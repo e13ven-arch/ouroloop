@@ -1,0 +1,4 @@
+{
+  "text": "{\"failure_class\": \"closing step skipped\", \"root_cause\": \"the agent updated the stage and then stopp",
+  "stop": "max_tokens"
+}

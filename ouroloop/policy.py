@@ -14,7 +14,10 @@ from functools import lru_cache
 
 from .types import Answer
 
-ROUTES = ("act", "default", "shadow", "rule", "error")
+# "policy" is the task/research profile's equivalent of "act": a bound policy's own answer was executed
+# (runtime.propose). It is a separate name because the permission behind it is different — a release's
+# authorisation, not a gate record's calibration.
+ROUTES = ("act", "default", "shadow", "rule", "error", "policy")
 # The harness's built-in points (ouroloop.points). In v0.2 stop is the only one of them that may be switched on
 # (docs/ROADMAP.md §5: the others wait for their triggers); a point that a scenario pack or a contract user defines may
 # be.

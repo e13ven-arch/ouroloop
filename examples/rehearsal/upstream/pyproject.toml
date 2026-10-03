@@ -1,0 +1,4 @@
+# The version probe reads the checkout's pyproject. Frozen with the rehearsal: a change is a new run identity.
+[project]
+name = "automation-bench"
+version = "0.0.0-rehearsal.2"

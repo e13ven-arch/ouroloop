@@ -1,5 +1,5 @@
-"""Command line: ouroloop run | suite | decide | smoke | demo | research | plan | evolve | deploy | calibrate | gate |
-models | serve | host | hook | ledger."""
+"""Command line: ouroloop run | suite | bench | decide | smoke | demo | research | plan | evolve | deploy |
+calibrate | gate | models | serve | host | hook | ledger."""
 from __future__ import annotations
 
 import argparse
@@ -67,14 +67,6 @@ def _print_round(root, res) -> None:
 
 
 def cmd_demo(args) -> int:
-    if args.scenario:           # a scenario pack's multi-generation loop: examples/<scenario>/
-        from .generations import run as run_generations
-        path = Path(args.config or f"examples/{args.scenario}/demo.toml")
-        if not path.exists():
-            print(f"no {path}: run from the ouroloop checkout, or pass --config", file=sys.stderr)
-            return 2
-        run_generations(config.load(path), path.resolve().parent, generations=args.generations, root=args.dir)
-        return 0
     from .demo import run
     root, res = run(args.dir, judge=args.judge, seed=args.seed)
     _print_round(root, res)
@@ -398,8 +390,67 @@ def cmd_hook(args) -> int:
     return 0
 
 
+def cmd_bench(args) -> int:
+    """A benchmark phase on a configured domain. Exit 1 means a check failed, not that the agent scored badly.
+
+    Each phase takes only the arguments that mean something for it, so `--checks-only` cannot quietly turn an
+    improvement round into something else.
+    """
+    from .adapters.automationbench import UpstreamError
+    from .bench import run_phase
+    cfg = config.load(args.config)
+    kw = {"smoke": dict(tasks=args.task, limit=args.limit, run_agent=not args.checks_only,
+                        replace_splits=args.replace_splits),
+          "baseline": dict(tasks=args.task, limit=args.limit),
+          "collect": dict(tasks=args.task, repeats=args.repeats),
+          "improve": dict(rounds=args.rounds),
+          "research": dict(campaign_ref=args.plan),
+          "evaluate": dict(plan_ref=args.plan),
+          "report": {}, "cycle": dict(until=args.until)}[args.phase]
+    try:
+        report = run_phase(cfg, Path(args.config).resolve().parent, phase=args.phase,
+                           **{k: v for k, v in kw.items() if v is not None})
+    except (UpstreamError, NotImplementedError, ValueError, TypeError) as e:
+        print(f"ouroloop bench: {e}", file=sys.stderr)
+        return 2
+    if args.out:
+        Path(args.out).write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        print(f"report: {args.out}")
+    return 0 if report.get("ok", True) else 1
+
+
+def cmd_freeze(args) -> int:
+    """Freeze the [freeze.*] tables of a config into workspace objects, and print the [rsi] lines naming them."""
+    from .adapters.automationbench import UpstreamError
+    from .bench import freeze
+    cfg = config.load(args.config)
+    try:
+        freeze(cfg, Path(args.config).resolve().parent)
+    except (UpstreamError, ValueError, TypeError) as e:
+        print(f"ouroloop freeze: {e}", file=sys.stderr)
+        return 2
+    return 0
+
+
 def replay_items(path: str | Path) -> list[dict]:
     return [json.loads(line) for line in Path(path).read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def cmd_export(args) -> int:
+    """Export the runnable subset of an installed release as a minimal app (docs/modules/03_EVALUATION_RELEASE.md
+    §4). The active release unless one is named."""
+    from .bench import open_activity
+    from .release import NotAuthorized, export_deployment
+    cfg = config.load(args.config)
+    try:
+        activity = open_activity(cfg, Path(args.config).resolve().parent, bootstrap=False, out=lambda _line: None)
+        release = args.release or activity.releases.active()["release_ref"]
+        manifest = export_deployment(activity.releases, release, Path(args.to))
+    except (NotAuthorized, ValueError) as e:
+        print(f"ouroloop export: {e}", file=sys.stderr)
+        return 2
+    print(f"exported   {release} -> {args.to} (manifest {manifest})")
+    return 0
 
 
 def cmd_replay(args) -> int:
@@ -489,6 +540,7 @@ def cmd_ledger(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from .bench import PHASES
     config.load_dotenv(".env")
     p = argparse.ArgumentParser(prog="ouroloop")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -507,13 +559,9 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("--question", required=True)
     d.add_argument("--state", required=True)
     d.add_argument("--criteria", help="JSON: noul {true,false}, choice {label: description}, score [levels]")
-    m = sub.add_parser("demo", help="one offline research round on synthetic data; with a scenario pack's name, "
-                                    "its multi-generation loop")
+    m = sub.add_parser("demo", help="one offline research round on synthetic data")
     m.set_defaults(fn=cmd_demo)
-    m.add_argument("scenario", nargs="?", help="a scenario pack: reads examples/<scenario>/demo.toml")
-    m.add_argument("--config", help="the scenario's config (default examples/<scenario>/demo.toml)")
-    m.add_argument("--generations", type=int, help="how many generations to run (default: the config's)")
-    m.add_argument("--dir", help="the workspace (default: the config's)")
+    m.add_argument("--dir", help="the workspace (default: a temporary one)")
     m.add_argument("--judge", choices=["mock", "jev"], default="mock")
     m.add_argument("--seed", type=int, default=0)
     a = sub.add_parser("run", help="run the agent on a task in the current directory")
@@ -537,6 +585,34 @@ def main(argv: list[str] | None = None) -> int:
     su.add_argument("--repeats", type=int, default=1)
     su.add_argument("--cached", action="store_true", help="reuse recorded runs instead of running again")
     su.add_argument("--validate", action="store_true", help="check each task against its files and solution, no LLM")
+    bn = sub.add_parser("bench", help="AutomationBench: check the runner against upstream and run full tasks")
+    bn.set_defaults(fn=cmd_bench)
+    bn.add_argument("--config", required=True, help="e.g. examples/automationbench/marketing.toml")
+    bn.add_argument("--phase", choices=list(PHASES), default="smoke",
+                    help="smoke: versions, frozen splits, contract checks, input audit and a few dev attempts; "
+                         "then baseline, collect, improve, research, evaluate, report")
+    bn.add_argument("--task", action="append", help="only this task; repeatable (development tasks only)")
+    bn.add_argument("--limit", type=int, help="how many tasks to attempt (default: [bench] smoke_tasks)")
+    bn.add_argument("--checks-only", action="store_true", help="run the checks and call no model")
+    bn.add_argument("--replace-splits", action="store_true",
+                    help="freeze the task groups again; refused once the workspace holds results")
+    bn.add_argument("--out", help="write the phase report as JSON")
+    bn.add_argument("--rounds", type=int, help="improve: how many worker rounds (default: the frozen schedule)")
+    bn.add_argument("--repeats", type=int, help="collect: attempts per training task")
+    bn.add_argument("--plan", help="research/evaluate: the frozen plan to run, instead of the one in [rsi]")
+    bn.add_argument("--until", help="cycle: stop after this step and pay for nothing past it: baseline, segment-N, "
+                                    "segment-N/round-K or slot-N; running the cycle again continues from there")
+    fz = sub.add_parser("freeze", help="freeze the plans in [freeze.*] (task plan, schedule, budget, final plan) "
+                                       "into the workspace and print the [rsi] lines that name them")
+    fz.set_defaults(fn=cmd_freeze)
+
+    ex = sub.add_parser("export", help="export an installed release as a minimal app: W, the package's run bundle "
+                                       "and the model binding; no research policy, data or tests")
+    ex.add_argument("--config", default="ouroloop.toml")
+    ex.add_argument("--release", default=None, help="an installed release ref (default: the active one)")
+    ex.add_argument("--to", required=True, help="the directory to write the app into")
+    ex.set_defaults(fn=cmd_export)
+    fz.add_argument("--config", required=True, help="e.g. examples/automationbench/marketing.toml")
     r = sub.add_parser("research", help="research rounds on a configured workspace")
     r.set_defaults(fn=cmd_research)
     r.add_argument("--config", default="ouroloop.toml")

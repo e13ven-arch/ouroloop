@@ -1,0 +1,4 @@
+{
+  "text": "{\"next_action\": \"stop\", \"reason\": \"no train failure is left in the latest measurement, so there is nothing for a change to address\"}\n",
+  "stop": "end"
+}
