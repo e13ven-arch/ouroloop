@@ -470,7 +470,10 @@ def judge_research(plan: CampaignPlan, pairs, outer: dict, arms_out: dict) -> tu
     if metrics["regression_rate"] > gate.max_regression_rate:
         return "rejected", [*notes, f"regression rate {metrics['regression_rate']} above "
                                     f"{gate.max_regression_rate}"], metrics, uncertainty
-    return "accepted", [*notes, "development acceptance of the research policy"
-                                + ("" if uncertainty["significant"] else "; the interval still contains zero, so "
-                                                                        "C4 is not supported by this run")], \
-        metrics, uncertainty
+    # Why an acceptance is not significant, as the receipt's own interval shows it: an interval that still holds
+    # zero, or one that excludes it over fewer than three independence groups, which is no interval to rely on.
+    why = ("" if uncertainty["significant"] else
+           "; the interval still contains zero, so C4 is not supported by this run" if not stats.get("excludes_zero")
+           else f"; {len(shared)} independence group{'s' if len(shared) != 1 else ''}, fewer than the 3 a significant "
+                f"result needs, so C4 is not supported by this run")
+    return "accepted", [*notes, "development acceptance of the research policy" + why], metrics, uncertainty

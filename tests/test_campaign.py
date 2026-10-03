@@ -144,6 +144,28 @@ def test_rc10_a_hand_written_candidate_is_labelled_manual(tmp_path):
     assert any("written by hand" in r for r in reasons) and verdict == "accepted"
 
 
+def test_an_acceptance_says_why_it_is_not_significant(tmp_path):
+    """The receipt gives the reason its own interval shows: one independence group excludes zero only because a
+    single point does, which is fewer groups than a significant result needs; six groups with one gain hold zero."""
+    objects = ct.Objects(tmp_path)
+    one = pair(objects)
+    campaign = plan(objects, [one])
+    outer = {"pair-1": {"candidate": results({"t1": True}), "control": results({"t1": False})}}
+    verdict, reasons, _metrics, uncertainty = judge_research(campaign, [one], outer, sealed_apart())
+    assert verdict == "accepted" and uncertainty["outer"]["excludes_zero"] and not uncertainty["significant"]
+    assert "1 independence group, fewer than the 3" in reasons[-1] and "contains zero" not in reasons[-1]
+    pairs = [pair(objects, pair_id=f"pair-{i}", group=f"group-{i}", inner_dev=(f"f_dev{i}",), outer=(f"f_out{i}",))
+             for i in range(6)]
+    campaign = plan(objects, pairs)
+    outer = {p.pair_id: {"candidate": results({"t1": True}), "control": results({"t1": i > 0})}
+             for i, p in enumerate(pairs)}
+    arms = {"control": [outcome("control", p.pair_id, w_star=W["w_control"]) for p in pairs],
+            "candidate": [outcome("candidate", p.pair_id, w_star=W["w_candidate"]) for p in pairs]}
+    verdict, reasons, _metrics, uncertainty = judge_research(campaign, pairs, outer, arms)
+    assert verdict == "accepted" and not uncertainty["outer"]["excludes_zero"]
+    assert "the interval still contains zero" in reasons[-1]
+
+
 def test_identical_arms_are_inconclusive(tmp_path):
     """Two arms that sealed the same W compared nothing about R (docs/modules/06_RESEARCH_CAMPAIGN.md §3): the
     outer tasks are not run, and outer numbers someone ran anyway do not change the verdict."""
