@@ -385,7 +385,9 @@ class PolicyResearcher:
         from there as a default decision."""
         refused = (self.requests[-1] if self.requests else {}).get("refused")
         if refused:
-            return {}, f"the research model declined the request: {refused}"
+            # the refusal as the completion interface stated it, which already says it declined
+            return {}, refused if refused.startswith("the research model declined") else \
+                f"the research model declined the request: {refused}"
         if not reply.strip():
             return {}, "the research reply was empty"
         data = parse_json(reply)

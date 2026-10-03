@@ -1672,10 +1672,11 @@ class _Completions:
         if turn.stop == "max_tokens":
             # A cut reply read as a whole one turns half an answer into a decision (the gate run's summary was cut
             # before its proposal and read as "collect"): it is refused instead.
-            raise ReplyTruncated(f"the research reply stopped at the model's output limit "
-                                 f"({(turn.usage or {}).get('completion_tokens') or (turn.usage or {}).get('output_tokens')} "
-                                 f"tokens): raise max_tokens for the research model ([research.llm] or [llm]) and "
-                                 f"[pricing] max_output_tokens with it")
+            used = (turn.usage or {}).get("completion_tokens") or (turn.usage or {}).get("output_tokens")
+            raise ReplyTruncated("the research reply stopped at the model's output limit"
+                                 + (f" ({used} tokens)" if used else "")
+                                 + ": raise max_tokens for the research model ([research.llm] or [llm]) and "
+                                   "[pricing] max_output_tokens with it")
         return turn.text or ""
 
     def label(self, step: str):
@@ -2586,7 +2587,7 @@ def _cycle_slot(cfg, base, activity: Activity, settings: dict, slot: str, state:
         planned = research_slot(cfg, base, pairs=pairs, researcher=researcher, out=out,
                                 worker_rounds=int(campaign["worker_round_limit"]), gate=gate,
                                 research_gate=research_gate, arm_budget=arm_budget, discovery=discovery,
-                                outer_budget=outer_budget, run=False)
+                                outer_budget=outer_budget, budget=budget, run=False)
         if planned["outcome"] in ("repair_runtime", "infrastructure_failed"):
             step.update(outcome="paused", reason="; ".join(planned.get("reasons") or ()))
             save()
@@ -2682,7 +2683,7 @@ def research_slot(cfg: dict, base: str | Path = ".", *, pairs, researcher, arm_r
                   out: Callable[[str], None] = print, worker_rounds: int = 1, gate: GatePlan | None = None,
                   arm_budget: dict | None = None, phase: str = "research_dev",
                   discovery: str = "scripted", run: bool = True, research_gate: GatePlan | None = None,
-                  outer_budget: dict | None = None) -> dict:
+                  outer_budget: dict | None = None, budget=None) -> dict:
     """One research slot: the current R proposes a change to R, the change is compared, and the winner is installed.
 
     The proposal goes through the same admission and the same build as a worker candidate — only the owner and
@@ -2701,7 +2702,9 @@ def research_slot(cfg: dict, base: str | Path = ".", *, pairs, researcher, arm_r
     activity = open_activity(cfg, base, out=out)
     release_ref = activity.releases.active()["release_ref"]
     provider = config_mod.build_provider(cfg["llm"])
-    work = improvement(activity, template_ref=activity.rsi.task_plan_ref, provider=provider, owner="research")
+    # the budget the slot's R is shown: the slot's own account, whatever binds above it (M4 §5)
+    work = improvement(activity, template_ref=activity.rsi.task_plan_ref, provider=provider, owner="research",
+                       budget=budget)
     if work.harness:
         # A first-version slot reads how the rounds went, not a fresh run of the tasks: the latest recorded
         # measurement stands for the current version, and R's input is the experience log's projection.

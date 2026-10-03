@@ -398,7 +398,7 @@ def test_a_malformed_research_slot_reply_proposes_nothing_instead_of_crashing():
 class _SlotModel:
     """The research model behind the cycle's own slot researcher, metered on the activity's book: `reply` each
     time it is asked, a refusal for None, a reply cut at the output limit for "cut"."""
-    name, model, reply, asked = "slot-model", "r-1", "", 0
+    name, model, reply, asked, last = "slot-model", "r-1", "", 0, None
 
     def __init__(self, **_):
         pass
@@ -406,11 +406,12 @@ class _SlotModel:
     def chat(self, system, messages, specs=()):
         from ouroloop.chat import ChatTurn
         _SlotModel.asked += 1
+        _SlotModel.last = json.loads(messages[0]["content"])
         usage = {"input_tokens": 10, "output_tokens": 5}
         if _SlotModel.reply is None:
             return ChatTurn("", [], "refusal", usage=usage)
-        if _SlotModel.reply == "cut":
-            return ChatTurn('{"next_action": "none", "proposals": [{"hyp', [], "max_tokens", usage=usage)
+        if _SlotModel.reply == "cut":           # as the manual provider cuts one: no usage reported
+            return ChatTurn('{"next_action": "none", "proposals": [{"hyp', [], "max_tokens")
         return ChatTurn(_SlotModel.reply, [], "end", usage=usage)
 
 
@@ -455,7 +456,7 @@ def test_an_unreadable_slot_reply_is_an_invalid_slot(fake_upstream, tmp_path, fi
     result = slot_cycle(cfg, monkeypatch, reply)
     slot = result["steps"]["slot-0"]
     assert result["status"] == "done" and slot["outcome"] == "invalid" and slot["stage"] == "reply", slot
-    assert why in slot["reason"] and "campaign" not in slot
+    assert why in slot["reason"] and slot["reason"].count(why) == 1 and "campaign" not in slot
     assert "segment-1" in result["steps"] and _SlotModel.asked == 1
     c4 = result["report"]["C4"]
     assert c4["state"] == "not_run" and "reply was invalid" in c4["detail"] and why in c4["detail"]
@@ -474,6 +475,7 @@ def test_a_slot_decision_r_states_is_still_no_proposal(fake_upstream, tmp_path, 
     slot = result["steps"]["slot-0"]
     assert slot["outcome"] == "no_proposal" and slot["stage"] == "reply" and slot["reason"] == decision["reason"]
     assert "proposed no change" in result["report"]["C4"]["detail"]
+    assert _SlotModel.last["budget"]["remaining"]                  # the slot's R is shown what is left (M4 §5)
 
 
 class _RefusedBySlotAdmission(RProposer):
@@ -515,6 +517,7 @@ def test_a_slot_reply_cut_at_the_output_limit_pauses_and_is_asked_again(fake_ups
     result = slot_cycle(cfg, monkeypatch, "cut")
     assert result["status"] == "paused" and result["steps"]["slot-0"]["outcome"] == "paused"
     assert "output limit" in result["steps"]["slot-0"]["reason"] and "segment-1" not in result["steps"]
+    assert "None" not in result["steps"]["slot-0"]["reason"]        # no count is given when none was reported
     monkeypatch.setattr(_SlotModel, "reply", json.dumps({"next_action": "stop", "reason": "the rounds went well"}))
     again = bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper())
     assert _SlotModel.asked == 2 and again["steps"]["slot-0"]["outcome"] == "no_proposal"
