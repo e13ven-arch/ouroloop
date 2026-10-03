@@ -134,7 +134,7 @@ A～E 属于首版，递归方法比较与实际回用仍为必做。第二版�
    - 环境：
      - R：`[research.llm] type = "manual"`（`ouroloop/providers/manual.py`）。Claude 只依据请求文件作答，不使用仓库、评分器或任务答案这些带外知识。
      - 任务世界：以 `marketing` 域名导出的 fixture 上游，满足 preset 的域锁（`bench.py:923-925`）。规模小：train 中固定失败的题不超过 5 道；dev 至少 5 个家族，满足 gate 的 min_groups。
-     - actor：`[llm] type = "<模块>:<类>"` 的确定性假 actor，在 bootstrap 时被 pin 为 W0。它对包内容作出反应：包中出现某类规则（memory 或 skill 文本、on_finish hook 的回推）时，在指定的 dev 题上改做对，让 gate 增益可以达到 0.05；在 train 失败题上留下能被失败摘要捕捉、并指向该规则的线索。假 actor 的规格在阶段 3 开始时先写，再实现。
+     - actor：`[llm] type = "<模块>:<类>"` 的确定性假 actor，在 bootstrap 时被 pin 为 W0。它对包内容作出反应：包中出现某类规则（memory 或 skill 文本、on_finish hook 的回推）时，在指定的 dev 题上改做对，让 gate 增益可以达到 0.05；在 train 失败题上留下能被失败摘要捕捉、并指向该规则的线索。假 actor 的规格在阶段 3 开始时先写，再实现：见 [REHEARSAL.md](REHEARSAL.md)。
        - 缺口不止一类：segment-0 装包之后，仍要有缺口同时出现在开发家族冻结顺序的前一半（两支的内层 gate）与后一半（外层比较），两支才可能装包，外测才会运行。两支 W* 相同时研究位判 inconclusive、不跑外测；若如此，外测、补跑与 R1 装入后的回用如实记为覆盖缺口。
      - 研究位部分的重跑从 `--until segment-0` 时复制的工作区开始：已记下研究位的工作区不再重问，同一 R1 的 campaign 有收据就不再运行，研究位前修复之前冻结的计划也没有外测与两支的预留。
      - 组件：允许代码组件（本机 Docker 可用），以便覆盖 Docker 中的草稿检查链。
