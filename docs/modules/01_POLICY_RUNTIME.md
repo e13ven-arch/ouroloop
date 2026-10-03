@@ -41,10 +41,10 @@ controller 与 actor 共享当时合法 observation，默认不把 controller �
   - 设 `CLAUDE_CODE_MAX_RETRIES=0`（重试只在计费层，逐次入账；CLI 在首字节超时或连接失效时仍可能自行重发一次）、`CLAUDE_CODE_NO_MODEL_FALLBACK=1` 与 `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1`（不换模型作答）、`CLAUDE_CODE_DISABLE_ATTACHMENTS=1`（不按 @ 附加文件、不加每轮提醒）、`MAX_STRUCTURED_OUTPUT_RETRIES=1`、`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`。
 - 请求：
   - 只有一条用户消息、没有工具（R 的每一步）：提示原样作为这条消息，回复文本就是 `text`。
-  - 其余（actor）：提示是整段历史与所给工具的 JSON（其中的 `@` 写成 JSON 转义，CLI 不会把它读成要附加的文件），加一段回复格式说明，说明里写明请求之外附上的邮箱与日期不属于任务。`--json-schema` 约束回复为 `{"text", "tool_calls": [{"name", "args"}]}`，工具名限于所给工具。调用 id 由 provider 生成；有工具调用时 stop 为 `tool_use`，否则 `end`。
+  - 其余（actor）：一条由多个文本块组成的用户消息，经 `--input-format stream-json` 发送（输出因此是 `stream-json --verbose`，读最后一行 result）。第一块是回复格式说明与所给工具的 JSON，说明里写明请求之外附上的邮箱与日期不属于任务；其后每条历史一块 JSON，最后一条之后不再有块。下一回合原样重发前面的块、只在末尾追加，所以前文从缓存读取，不再整段写入（冒烟实测：整段作一块时一道题写缓存 25 万 token、读 4 万）。JSON 里的 `@` 写成转义，CLI 不会把它读成要附加的文件。`--json-schema` 约束回复为 `{"text", "tool_calls": [{"name", "args"}]}`，工具名限于所给工具。调用 id 由 provider 生成；有工具调用时 stop 为 `tool_use`，否则 `end`。
 - 用量：按 Anthropic 口径记 CLI 的 `usage`（`input_tokens`、`output_tokens`、`cache_read_input_tokens`、`cache_creation_input_tokens`），另记 `cli_cost_usd`（CLI 报告的 API 等价费用）。一次 CLI 调用内部的多次请求记的是总和。
 - 结局：
-  - 拒答（`stop_reason` 为 refusal）记 stop `refusal`；输出触顶（`api_error` 为 max_output_tokens，或 CLI 已自行续写：输出达到 `max_tokens`，或 `num_turns` 多于所需的 1 次、结构化回复 2 次）记 stop `max_tokens`。与 API provider 相同，由调用方处理：续写时 `result` 只剩最后一段，不能当完整回复。
+  - 拒答（`stop_reason` 为 refusal）记 stop `refusal`；输出触顶（`api_error` 为 max_output_tokens，或 CLI 已自行续写：输出达到 `max_tokens`，或普通问答的 `num_turns` 多于 1）记 stop `max_tokens`。结构化回复的轮数不作判断：回复没按格式时 CLI 会再要一次，轮数变多但回复完整。与 API provider 相同，由调用方处理：续写时 `result` 只剩最后一段，不能当完整回复。
   - 订阅上限（“You've hit your … limit”）、额度用尽、未登录或凭据失效、HTTP 401/403、找不到 `claude`、工作目录不空：`ProviderAccountError`，活动暂停（[M5 §3](05_EXECUTION_BUDGET.md)）。
   - 实际作答的模型（`modelUsage`）不是所配模型：`ProviderAccountError`，活动暂停；这次调用已经发生，预留记 unknown，不释放。
   - 自称暂时的限流或刷新冲突（“not your usage limit”“usually transient”）、过载、429、5xx、超时、回复不合格式：可重试的 `ProviderError`，其中限流、过载与 429 记为未计费；其余：不可重试的 `ProviderError`。

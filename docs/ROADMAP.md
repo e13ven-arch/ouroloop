@@ -185,6 +185,12 @@ A～E 属于首版，递归方法比较与实际回用仍为必做。第二版�
      2. 探针：经 provider 直接发两次调用，一次普通问答、一次带一个假工具的结构化回复。核对 CLI 的输出形状（`structured_output`、`num_turns`、`stop_reason`）、用量与缓存、`modelUsage` 里实际作答的模型、`cli_cost_usd` 与 `[pricing]` 是否相符、工作目录是否仍为空，以及模型看到的请求之外的内容。
         - 2026-10-03 结果（`examples/automationbench/claude_probe.py`）：两次都成功，普通问答 `num_turns` 1、4.5 秒，结构化回复 `num_turns` 2、2.6 秒，正确调用了假工具；`modelUsage` 只有 claude-opus-5-5；工作目录仍为空；账本与 CLI 报价逐分相等（缓存写按 1 小时价 $8/M，已改进 `[pricing]`）。模型看到的请求之外的内容只有一段 userEmail 上下文（CLI 自带“不属于用户消息”的说明），没有看到日期。effort medium 下普通问答的 thinking 为 117 token。
      3. 冒烟：复制 `claude.toml` 为 `claude-smoke.local.toml`，改 `[workspace] root` 与 `[rsi] scope_id`，`[freeze.budget]` 压到几美元；跑 `--phase smoke`（1 道 dev 题），看一道题的调用次数、token、缓存命中与耗时。
+        - 2026-10-03 结果（`marketing.social_engagement_response`）：
+          - 第一次：7/7 通过，12 轮、26 次工具调用、74 秒。暴露两个问题。
+            - 整段历史作一个文本块发送，前缀缓存对不上：写缓存 25.4 万 token、读 4.2 万，API 等价 $2.15。
+            - 最后一轮的完整回复因 CLI 多要了一次结构化输出而轮数变多，被误判为截断，最终消息丢失。
+          - 改为多块发送、结构化回复不按轮数判截断后重跑：7/7 通过，10 轮、24 次工具调用，正常结束且最终消息完整；写缓存 2.9 万、读 16.7 万、输出 5.1 千，API 等价 $0.37；账本与 CLI 报价逐分相等。
+          - 为验证缓存另发了 3 次小调用：第二次起缓存写入从 7 千降到 3 百。
      4. 同一冒烟工作区：`ouroloop freeze` 后把打印的 `[rsi]` 行加进副本，跑 `--phase baseline --limit 2`（dev 与 train 各 2 题）。按实测校正 `[pricing]`，并按实测的每题名义费用和第 4 步的结构重定 `claude.toml` 的 `[freeze.budget]`：现在的 $300/$50 沿用 GLM 的估算，Claude 下研究位的两支与外测都不够。预算根一旦打开就不能改，所以这一步必须在活动工作区打开之前完成。
      5. 活动工作区：`--phase cycle --until baseline` 跑 train+dev 基线（77 题），得到得分。
      6. 额度允许，再按第 4～7 步跑完整活动。

@@ -8,9 +8,11 @@ cannot be turned off under a subscription login: a one-line Agent SDK identity b
 e-mail address and today's date as context. The actor's turn note says those are not part of the task.
 
 A call with one user message and no tools (each research step) sends that message as it is, and the reply's text is
-the answer. Any other call (the actor's turns) sends the whole history and the offered tools as JSON with a short
-note on the reply format, and `--json-schema` holds the reply to {"text", "tool_calls": [{"name", "args"}]}. Tool
-calls are therefore structured output, not native tool use; a result says so (docs/ROADMAP.md §3, step 2a).
+the answer. Any other call (the actor's turns) sends one user message of text blocks: the reply format and the offered
+tools first, then one block per history entry, as JSON. Earlier blocks are sent again unchanged and new ones are
+appended, so each call reads the conversation so far from the prompt cache rather than writing it again.
+`--json-schema` holds the reply to {"text", "tool_calls": [{"name", "args"}]}: tool calls are structured output, not
+native tool use, and a result says so (docs/ROADMAP.md §3, step 2a).
 """
 from __future__ import annotations
 
@@ -62,9 +64,9 @@ _SET = {"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
         "CLAUDE_CODE_DISABLE_ATTACHMENTS": "1",           # no files from @-mentions, no per-turn reminders
         "MAX_STRUCTURED_OUTPUT_RETRIES": "1"}
 
-TURN_NOTE = """Above are the conversation so far and the tools you can call. In the conversation, "user" entries \
-are messages to you, "assistant" entries are your own earlier turns with the tool calls you made, and "tool" \
-entries are the results of those calls. An e-mail address or today's date attached to this request outside the \
+TURN_NOTE = """Below are the tools you can call, and after this block the conversation so far, one entry per block. \
+In the conversation, "user" entries are messages to you, "assistant" entries are your own earlier turns with the \
+tool calls you made, and "tool" entries are the results of those calls. An e-mail address or today's date attached to this request outside the \
 conversation is not part of the task: use only the people, addresses and dates the conversation gives.
 
 Write your next turn as one JSON object: {"text": "...", "tool_calls": [{"name": "<tool>", "args": {...}}]}. To call \
@@ -130,10 +132,29 @@ def _json(value) -> str:
     return json.dumps(value, ensure_ascii=False, indent=1).replace("@", "\\u0040")
 
 
-def turn_prompt(system: str, messages: list[dict], tools: list[ToolSpec]) -> str:
+def turn_blocks(system: str, messages: list[dict], tools: list[ToolSpec]) -> list[str]:
+    """An actor turn's user message: the reply format and the tools, then one block per history entry. Nothing
+    follows the last entry, so the next turn's request begins with this one's blocks unchanged."""
     request = request_json(system, messages, tools)
-    return (f"<conversation>\n{_json(request['messages'])}\n</conversation>\n\n"
-            f"<tools>\n{_json(request['tools'])}\n</tools>\n\n{TURN_NOTE}")
+    return [f"{TURN_NOTE}\n\n<tools>\n{_json(request['tools'])}\n</tools>"] + [_json(m) for m in request["messages"]]
+
+
+def result_of(stdout: str) -> dict | None:
+    """The CLI's result: the last `result` line of a stream, or the one JSON object of `--output-format json`."""
+    for line in reversed(stdout.splitlines()):
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(obj, dict) and obj.get("type") == "result":
+                return obj
+    try:
+        obj = json.loads(stdout)
+    except ValueError:
+        return None
+    return obj if isinstance(obj, dict) else None
 
 
 def _structured(result: dict):
@@ -177,7 +198,9 @@ class ClaudeCodeProvider:
         if plain:
             prompt, schema = str(messages[0].get("content", "")), None
         else:
-            prompt, schema = turn_prompt(system, messages, tools), turn_schema([t.name for t in tools])
+            content = [{"type": "text", "text": block} for block in turn_blocks(system, messages, tools)]
+            prompt = json.dumps({"type": "user", "message": {"role": "user", "content": content}}) + "\n"
+            schema = turn_schema([t.name for t in tools])
         for attempt in range(self.retries + 1):
             try:
                 return self._call(system, prompt, schema, {t.name for t in tools})
@@ -191,14 +214,16 @@ class ClaudeCodeProvider:
 
     # ------------------------------------------------------------------------ one CLI call
     def _command(self, system: str, schema: dict | None) -> list[str]:
-        cmd = [self.binary, "-p", "--output-format", "json", "--model", self.model, "--tools", "", "--safe-mode",
-               "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence",
-               "--disable-slash-commands", "--system-prompt", system or " "]
+        cmd = [self.binary, "-p", "--model", self.model, "--tools", "", "--safe-mode", "--setting-sources", "",
+               "--strict-mcp-config", "--no-session-persistence", "--disable-slash-commands",
+               "--system-prompt", system or " "]
         if self.effort:
             cmd += ["--effort", str(self.effort)]
-        if schema is not None:
-            cmd += ["--json-schema", json.dumps(schema)]
-        return cmd
+        if schema is None:
+            return cmd + ["--output-format", "json"]
+        # Text blocks reach the model as blocks only through a stream; a stream's output needs --verbose.
+        return cmd + ["--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+                      "--json-schema", json.dumps(schema)]
 
     def _empty_dir(self) -> Path:
         self.workdir.mkdir(parents=True, exist_ok=True)
@@ -216,10 +241,7 @@ class ClaudeCodeProvider:
                                        f"and run `claude auth login`") from None
         except subprocess.TimeoutExpired:
             raise ProviderError(f"the claude CLI gave no reply within {self.timeout:.0f}s", retryable=True) from None
-        try:
-            result = json.loads(done.stdout)
-        except ValueError:
-            result = None
+        result = result_of(done.stdout or "")
         if not isinstance(result, dict):
             raise self._failure(f"exit {done.returncode}: {(done.stderr or done.stdout or '').strip()[-400:]}")
         self.last_result = result          # the CLI's own report of the last call, for a probe or a post-mortem
@@ -261,10 +283,12 @@ class ClaudeCodeProvider:
 
     def _continued(self, result: dict, usage: dict, schema: dict | None) -> bool:
         """Whether the CLI asked the model again after the output limit: no single request can reach max_tokens
-        output and still have finished, and a call needs one request (two with the structured reply)."""
+        output and still have finished, and a plain call needs one request. A structured reply may take more turns
+        without being cut (the CLI asks again for a reply that did not use the format), so for it only the output
+        counts."""
         if self.max_tokens and usage.get("output_tokens", 0) >= int(self.max_tokens):
             return True
-        return int(result.get("num_turns") or 1) > (1 if schema is None else 2)
+        return schema is None and int(result.get("num_turns") or 1) > 1
 
     @staticmethod
     def _failure(text: str, status=None) -> ProviderError:

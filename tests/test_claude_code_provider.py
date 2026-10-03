@@ -144,20 +144,34 @@ def test_an_actor_turn_sends_the_history_and_the_tools_and_reads_the_tool_calls(
     ids = [c.id for c in turn.tool_calls]
     assert all(ids) and len(set(ids)) == 2
     (call,) = cli.calls()
-    sent = call["stdin"]
-    assert " @/" not in sent and "\\u0040/etc/hosts" in sent     # no text the CLI would read as a file to attach
-    history = json.loads(sent.split("<conversation>\n", 1)[1].split("\n</conversation>", 1)[0])
-    tools = json.loads(sent.split("<tools>\n", 1)[1].split("\n</tools>", 1)[0])
+    # one user message of text blocks: the format and the tools, then one block per history entry, nothing after
+    line = json.loads(call["stdin"])
+    assert line["type"] == "user" and line["message"]["role"] == "user"
+    blocks = [b["text"] for b in line["message"]["content"]]
+    assert all(b["type"] == "text" for b in line["message"]["content"])
     expected = request_json("SYSTEM", messages, TOOLS)
-    assert history == expected["messages"] and "native" not in json.dumps(history)
-    assert tools == expected["tools"] and sent.endswith(TURN_NOTE)
+    assert blocks[0].startswith(TURN_NOTE)
+    assert json.loads(blocks[0].split("<tools>\n", 1)[1].split("\n</tools>", 1)[0]) == expected["tools"]
+    assert [json.loads(b) for b in blocks[1:]] == expected["messages"] and "native" not in call["stdin"]
+    assert " @/" not in "".join(blocks) and "\\u0040/etc/hosts" in blocks[-1]   # nothing the CLI reads as a file
+    assert arg(call, "--input-format") == "stream-json" and arg(call, "--output-format") == "stream-json"
+    assert "--verbose" in call["argv"]
     schema = json.loads(arg(call, "--json-schema"))
     assert schema["properties"]["tool_calls"]["items"]["properties"]["name"]["enum"] == ["api_fetch", "api_search"]
     assert arg(call, "--system-prompt") == "SYSTEM"
+    # the next turn's request begins with this one's blocks, unchanged: the cache reads them
+    cli.reply(ok(structured={"text": "Done.", "tool_calls": []}))
+    later = messages + [{"role": "assistant", "text": "Next.", "tool_calls": turn.tool_calls},
+                        {"role": "tool", "results": [{"id": c.id, "name": c.name, "output": "ok", "is_error": False}
+                                                     for c in turn.tool_calls]}]
+    provider.chat("SYSTEM", later, TOOLS)
+    again = [b["text"] for b in json.loads(cli.calls()[1]["stdin"])["message"]["content"]]
+    assert again[:len(blocks)] == blocks and len(again) == len(blocks) + 2
 
 
 def test_a_turn_without_tool_calls_ends_and_a_json_result_text_is_read(cli, provider):
-    cli.reply(ok('Here it is: {"text": "Done: Ada is won.", "tool_calls": []}'))
+    cli.reply({"stdout": "\n".join([json.dumps({"type": "system", "subtype": "init"}),
+                                     json.dumps(ok('Here it is: {"text": "Done: Ada is won.", "tool_calls": []}'))])})
     turn = provider.chat("S", [{"role": "user", "content": "task"}], TOOLS)
     assert (turn.text, turn.tool_calls, turn.stop) == ("Done: Ada is won.", [], "end")
 
@@ -260,10 +274,12 @@ def test_a_reply_the_cli_continued_after_the_output_limit_is_a_cut_reply(cli, tm
         cli.reply(reply)
         with pytest.raises(ReplyTruncated):
             research.complete("S", "x")
-    cli.reply(ok(structured={"text": "t", "tool_calls": []}, num_turns=3))
+    cli.reply(ok(structured={"text": "t", "tool_calls": []}, usage={**USAGE, "output_tokens": 1200}))
     assert p.chat("S", [{"role": "user", "content": "x"}], TOOLS).stop == "max_tokens"
-    cli.reply(ok(structured={"text": "t", "tool_calls": []}, num_turns=2))      # the structured reply's own turn
-    assert p.chat("S", [{"role": "user", "content": "x"}], TOOLS).stop == "end"
+    # a structured reply takes more turns when the CLI asks again for the format: not a cut reply (smoke, 2026-10-03)
+    cli.reply(ok(structured={"text": "All done: 7 mentions handled.", "tool_calls": []}, num_turns=3))
+    turn = p.chat("S", [{"role": "user", "content": "x"}], TOOLS)
+    assert (turn.stop, turn.text) == ("end", "All done: 7 mentions handled.")
     cli.reply(ok("whole", num_turns=1, usage={**USAGE, "output_tokens": 999}))
     assert research.complete("S", "x") == "whole"
 
