@@ -209,7 +209,9 @@ A～E 属于首版，递归方法比较与实际回用仍为必做。第二版�
         - 2026-10-03～04 进行中：
           - 第 1 轮：R 把失败摘要里的截断标记读成 actor 漏读，提出截断 hook，gate 拒绝（36%→40%，增益 0.04 未过 0.05）。截断标记与包 API 说明随后改正（`29fbc34`），第 3 轮起生效。
           - 第 2 轮：改 `worker.finish` 的结束前核对清单，gate 接受（dev 36%→64%，置信区间 [+0.12, +0.44]，无退步）。装包后重跑 train 失败题，30 题中 13 题通过。
-          - 第 3 轮：`before_tool` 的写前核对 hook，gate 进行中。
+          - 第 3 轮：`before_tool` 的写前核对 hook，gate 拒绝（W* 60% 对 60%，增益 0，退步 2 题）。segment-0 以 rounds_done 结束。
+          - W* = W0 + 第 2 轮的结束前核对清单（`release:22cda1b62b97`）。W0 在 dev 上测了三次，都是 36%；W* 测了两次，64% 与 60%。
+          - final 计划于 2026-10-04 冻结并先提交（`663f930`，`finalization:sha256:a407a850…`），随后运行。
      7. final（对外数字）：segment-0 结束后在同一工作区跑，研究位不开（这个根放不下）。
         - 在 `claude.toml` 写 `[freeze.final]`：experiment_id；release_refs 为 W0 与 segment-0 结束时的 W*；tasks 为 test（23 题）；repeats 2；统计计划同第 7 步。
         - freeze 后先把计划 hash 提交到 git，再跑 `--phase evaluate --plan <final_plan_ref>`。
