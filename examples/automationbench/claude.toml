@@ -109,9 +109,10 @@ order_seed = 1
 # The whole activity's budget in notional dollars at [pricing]: every phase, the research slot's two arms and its
 # outer comparison, each arm with the preset's fixed share of it. A cycle without a budget is refused before anything
 # is paid for. The final comparison's share is set aside on the same root: the cycle cannot spend it, and the final
-# spends only it. 300 and 50 are GLM-5.3's estimates, placeholders only: at Claude's prices the research slot's arms
-# and outer comparison would not finish, so both are re-derived from the smoke runs' cost per task before this
-# workspace is opened (a root's limits are fixed once it opens).
+# spends only it. 300 and 50 are GLM-5.3's estimates, kept for the train+dev baseline alone (77 tasks, about $31 at
+# about $0.40 a task; decided 2026-10-03). At Claude's prices they would not let the research slot's arms and outer
+# comparison finish (about $800 would), and a root's limits are fixed once it opens: the full activity runs in a
+# workspace of its own, with its own baseline.
 [freeze.budget]
 usd = 300.0
 
