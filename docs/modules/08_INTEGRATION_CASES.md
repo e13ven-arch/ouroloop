@@ -56,7 +56,7 @@ IT6-14（此前草案“首版不得调用研究员”）撤销，不实现为�
 
 ## 3. 真实验证与效果目标
 
-首版 actor 固定为 GLM-5.3；首轮真实 h* 演化前先运行 GLM-5.3 的 train+dev 无教师基线，2026-09-30 在第一个任务中途中止、无完成尝试的启动不算基线。随后先以真实 train 失败经失败摘要/逐题笔记生成文本包（技能/经验），读取/注入事件可查并经 gate 裁决；再做真实 provider 的包内代码提案、冻结前草稿试跑修复、固定隔离 worker import/接口 smoke、工具/hook 实际执行、同 actor gate/安装/干净部署与下一包迭代。真实 Docker 隔离检查不能由 fake worker 冒充，本机 Docker daemon 可用是其前提；scripted R 只能证明流程接线。
+首版 actor 原定 GLM-5.3，2026-10-03 起先跑 Claude Opus 5.5（ROADMAP §3 第 2a 步）；首轮真实 h* 演化前先运行所 pin actor 的 train+dev 无教师基线，2026-09-30 在第一个任务中途中止、无完成尝试的启动不算基线。随后先以真实 train 失败经失败摘要/逐题笔记生成文本包（技能/经验），读取/注入事件可查并经 gate 裁决；再做真实 provider 的包内代码提案、冻结前草稿试跑修复、固定隔离 worker import/接口 smoke、工具/hook 实际执行、同 actor gate/安装/干净部署与下一包迭代。真实 Docker 隔离检查不能由 fake worker 冒充，本机 Docker daemon 可用是其前提；scripted R 只能证明流程接线。
 
 付费前彩排（[ROADMAP §3](../ROADMAP.md) 首个真实活动协议，2026-10-02）介于离线测试与真实运行之间：
 - 做法：

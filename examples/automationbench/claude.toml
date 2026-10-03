@@ -1,0 +1,119 @@
+# The automatic loop on AutomationBench Marketing with Claude Opus 5.5 as the actor and R, through headless Claude
+# Code on this machine's subscription login rather than a paid API key (docs/ROADMAP.md §3, step 2a; the provider is
+# docs/modules/01_POLICY_RUNTIME.md §1). Everything else is improvement.toml's: the same preset, schedule and limits.
+#
+#   ouroloop bench --config examples/automationbench/claude.toml --phase cycle --until baseline
+#   ouroloop bench --config examples/automationbench/claude.toml --phase cycle
+#
+# Smoke runs go first, in a copy with its own [workspace] root and [rsi] scope_id (claude-smoke.local.toml):
+# `--phase smoke` (one dev task), then `ouroloop freeze` and the [rsi] lines it prints, then `--phase baseline
+# --limit 2`. Those measurements set [pricing] and [freeze.budget] here before this workspace is ever opened.
+#
+# Before the first paid phase: `claude auth login`, and extra usage turned off in claude.ai's settings (with it on, the
+# CLI goes on with paid usage after the plan's limit and says nothing). The startup check refuses a login that is not
+# a Claude subscription. Each call runs `claude -p` with no tools, no local customization, no settings files and no
+# saved session, in an empty directory; the CLI still adds its Agent SDK identity line, the account's e-mail address
+# and today's date. Tool calls are structured JSON output, not native tool use, and a result says so.
+#
+# There is no key here and no env_file; the child process is given no ANTHROPIC_* variable either.
+
+[workspace]
+root = "workspace-claude"
+
+[bench]
+domain = "marketing"
+upstream_path = "~/workspace/AutomationBench"
+toolset = "api"
+seed = 1                        # fixed before the first run: it decides the split
+smoke_tasks = 1
+near_duplicate_threshold = 0.6
+
+[bench.ratios]
+train = 0.5
+dev = 0.25
+test = 0.25
+
+[bench.budget]                  # the same per-attempt limits for every version compared
+max_steps = 50
+max_tool_calls = 200
+max_seconds = 900
+
+[backends.mock]
+type = "mock"
+
+[points]
+default_backend = "mock"        # the first version runs no decision model
+
+# The actor W0 pins and the research model: Claude Opus 5.5 through headless Claude Code. The model name is the
+# full id, so a reply the CLI reports from any other model stops the run instead of counting as this one's.
+# effort is pinned with the actor at bootstrap: choose it before the first run in a workspace. medium keeps the
+# subscription's use down.
+[llm]
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "medium"
+max_tokens = 32000
+timeout = 600
+
+[research.llm]
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "medium"
+max_tokens = 32000
+timeout = 900
+
+# A subscription has no per-call bill, so these prices are a notional bound that turns the budget into a cap on how
+# much of the subscription an activity may use. They are claude-opus-5-5's API list prices, provisional until the
+# smoke runs compare the book with the API-equivalent cost the CLI reports for each call (usage `cli_cost_usd`);
+# cache_write_per_1k is the 5-minute rate, and becomes 0.008 if the CLI writes 1-hour entries. One CLI call can make
+# up to 5 model requests (the CLI continues a reply cut at the output limit up to 3 times, plus one structured-output
+# retry), so max_output_tokens is at least 5 times the largest max_tokens above (the startup check holds it).
+[pricing]
+input_per_1k = 0.004
+cache_read_per_1k = 0.0002
+cache_write_per_1k = 0.005
+output_per_1k = 0.02
+max_input_tokens = 1000000
+max_output_tokens = 163840
+source = "notional, not a bill: claude-opus-5-5 API list price ($4/$20 per M, cache read $0.20, 5m cache write $5), to be checked against the CLI's reported cost in the smoke runs (docs/ROADMAP.md §3, step 2a), 2026-10-03"
+
+# The automatic loop and its preset. The preset fixes the package limits, the note and draft limits, the gate's
+# min_gain/max_regression_rate, the schedule (3 worker rounds per segment, 1 research slot, patience 2) and the
+# research slot's pair rule; freeze writes them into K, after which R cannot raise any of them.
+[improvement]
+mode = "automatic"
+preset = "marketing_harness_v1"
+allowed_methods = ["policy_edit", "harness_edit"]
+max_candidates_per_round = 1
+max_collection_batches = 2      # per worker segment; a restart does not reset it
+
+# Narrowing the preset (never widening it). These are the preset's own values, written out so they are visible.
+[harness_evolution]
+package_api = "harness_package.v1"
+components = ["memory", "skills", "on_finish", "before_tool", "after_tool", "tools"]
+sandbox = "docker"
+max_files = 24
+max_package_bytes = 262144
+test_timeout_seconds = 30
+max_draft_repairs = 3           # revisions after the first draft, so at most 4 drafts
+max_failure_notes = 30          # notes one summary call reads, cached and new together
+
+[rsi]
+profile = "task"
+scope_id = "marketing-claude"
+stop_view = "stop.business.v1"
+repeats = 1
+order_seed = 1
+# task_plan_ref / schedule_ref / budget_ref are frozen by the cycle when they are not named here.
+
+# The whole activity's budget in notional dollars at [pricing]: every phase, the research slot's two arms and its
+# outer comparison, each arm with the preset's fixed share of it. A cycle without a budget is refused before anything
+# is paid for. The final comparison's share is set aside on the same root: the cycle cannot spend it, and the final
+# spends only it. 300 and 50 are GLM-5.3's estimates, placeholders only: at Claude's prices the research slot's arms
+# and outer comparison would not finish, so both are re-derived from the smoke runs' cost per task before this
+# workspace is opened (a root's limits are fixed once it opens).
+[freeze.budget]
+usd = 300.0
+
+[freeze.budget.final]
+usd = 50.0

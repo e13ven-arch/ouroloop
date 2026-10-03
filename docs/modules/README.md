@@ -25,7 +25,7 @@ M0 独占公共字段；M1 独占实际运行/provider 绑定；M2 独占建集/
 
 ## 开发顺序与完成条件
 
-1. 首版先做诊断输入与文本能力包：M1 pin GLM-5.3 actor；M0 HarnessPackage/worker.harness 身份；M1 宿主装配 skills/memory，纯文本包不启动隔离 worker；M4 train/fit 失败摘要与断言明细、逐题笔记→汇总、harness_edit 文本组件；M4/M5 文本草稿检查（结构/路径/manifest）与有界修订；M3 的 run_tasks 另存判分明细 `bench/<domain>/grading.jsonl`，M7 结果存储按冻结 split 读取；所需上限（max_failure_notes、失败摘要条目长度上限、max_draft_repairs）由 preset/K 先行固定。首轮真实演化前运行 GLM-5.3 的 train+dev 基线；补任务反馈后按有界 driver 继续，零人工优化方案即可起步，不需要 Docker、trainer 或 teacher。
+1. 首版先做诊断输入与文本能力包：M1 pin actor（原定 GLM-5.3，2026-10-03 起为 Claude Opus 5.5）；M0 HarnessPackage/worker.harness 身份；M1 宿主装配 skills/memory，纯文本包不启动隔离 worker；M4 train/fit 失败摘要与断言明细、逐题笔记→汇总、harness_edit 文本组件；M4/M5 文本草稿检查（结构/路径/manifest）与有界修订；M3 的 run_tasks 另存判分明细 `bench/<domain>/grading.jsonl`，M7 结果存储按冻结 split 读取；所需上限（max_failure_notes、失败摘要条目长度上限、max_draft_repairs）由 preset/K 先行固定。首轮真实演化前运行所 pin actor 的 train+dev 基线；补任务反馈后按有界 driver 继续，零人工优化方案即可起步，不需要 Docker、trainer 或 teacher。
 2. 首版再接代码组件与隔离：M1 固定 API/工具 broker/Docker 隔离 worker、hook（先 on_finish）与包工具；M4 harness_edit 代码组件；M4/M5 把冻结前草稿试跑修复扩展到 isolated_probe/package_test，次数由同一 preset 上限固定。生成代码只在 worker 执行、不在控制面 import，组件种类由 K 冻结，K 允许代码时 freeze/smoke 须确认 worker，运行中不可用按 M0 §3 记 infrastructure_failed/repair_runtime 并暂停活动，不收窄种类；保留旧绑定/身份。本机 Docker daemon 可用是真实检查前提。
 3. 首版 M3 同 actor gate、成功任务回归、完整安装/回退/导出；M7 给无 trainer/teacher 的 preset/cycle/报告。
 4. 首版 M4/M6 在共同 package API/资源下比较 R0/R1，验证安装后的实际改进请求；这条递归核心不能因训练后置而取消。

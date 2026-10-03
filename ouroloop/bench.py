@@ -2841,9 +2841,20 @@ def startup_checks(activity: Activity, cfg: dict, *, phase: str, needs_model: bo
             if priced is not None and asked is not None and int(asked) > int(priced):
                 problems.append(f"{name} max_tokens {asked} is above [pricing] max_output_tokens {priced}: a "
                                 f"call's reservation would not bound what it can spend")
+            elif table.get("type") == "claude_code" and priced is not None and asked is not None:
+                from .providers.claude_code import REQUESTS_PER_CALL
+                if int(asked) * REQUESTS_PER_CALL > int(priced):
+                    problems.append(f"{name} max_tokens {asked} times the {REQUESTS_PER_CALL} requests one claude "
+                                    f"CLI call can make is above [pricing] max_output_tokens {priced}: a call's "
+                                    f"reservation would not bound what it can spend")
             key = table.get("api_key_env")
             if table.get("type") == "openai_compat" and key and not os.environ.get(str(key)):
                 problems.append(f"{name} reads its key from {key}, which is not set")
+            if table.get("type") == "claude_code":
+                from .providers.claude_code import cli_problem
+                problem = cli_problem(table)
+                if problem:
+                    problems.append(f"{name}: {problem}")
     frozen_budget = activity.objects.get(rsi_cfg.budget_ref) if rsi_cfg.budget_ref else {}
     problems += [f"the frozen budget: {p}" for p in budget_problems(frozen_budget, pricing_of(cfg))]
     limits = budget_limits(frozen_budget)

@@ -779,6 +779,31 @@ def test_startup_checks_the_pinned_models(fake_upstream, tmp_path, fixture_prese
     assert not any("reads its key" in p for p in bench.startup_checks(activity, later, phase="baseline"))
 
 
+def test_startup_checks_that_a_claude_code_model_is_logged_in(fake_upstream, tmp_path, fixture_preset):
+    """A `claude_code` model has no key to look for: the check asks its CLI whether it is logged in (M1 §1)."""
+    import stat
+    import sys
+    from pathlib import Path
+    cli = tmp_path / "claude"
+    cli.write_text(f"#!{sys.executable}\nimport sys\nprint(open(sys.argv[0] + '.auth').read())\n")
+    cli.chmod(cli.stat().st_mode | stat.S_IEXEC)
+    Path(f"{cli}.auth").write_text('{"loggedIn": false}')
+    cfg = cycle_config(fake_upstream, tmp_path)
+    activity = bench.open_activity(cfg, ".", out=lambda _line: None)
+    research = {"type": "claude_code", "model": "claude-opus-5-5", "binary": str(cli), "effort": "medium",
+                "workdir": str(tmp_path / "empty"), "max_tokens": 8000}
+    later = {**cfg, "research": {"llm": research},
+             "pricing": {"input_per_1k": 0.004, "output_per_1k": 0.02, "max_input_tokens": 1000000,
+                         "max_output_tokens": 32768, "source": "test"}}
+    problems = bench.startup_checks(activity, later, phase="baseline")
+    assert any(p.startswith("[research.llm]: the claude CLI") and "not logged in" in p for p in problems)
+    # one CLI call can make 5 requests: 5 x 8000 output tokens is more than one reservation bounds
+    assert any(p.startswith("[research.llm] max_tokens 8000 times the 5 requests") for p in problems)
+    Path(f"{cli}.auth").write_text('{"loggedIn": true, "authMethod": "claude.ai", "apiProvider": "firstParty"}')
+    research["max_tokens"] = 6000
+    assert not any("claude" in p for p in bench.startup_checks(activity, later, phase="baseline"))
+
+
 def test_cycle_cannot_spend_the_final_allocation(fake_upstream, tmp_path, fixture_preset):
     cfg = cycle_config(fake_upstream, tmp_path)
     cfg["freeze"]["budget"] = {"model_calls": 100, "final": {"model_calls": 30}}

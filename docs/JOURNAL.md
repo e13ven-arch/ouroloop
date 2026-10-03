@@ -8,6 +8,23 @@
 
 ---
 
+## 2026-10-03 Claude 经订阅运行：claude_code provider
+
+- 决定（用户）：先看本框架下 Claude 的任务得分。actor 与 R 都用 Claude Opus 5.5（`claude-opus-5-5`），effort medium，走用户 Max 订阅登录下的无头 Claude Code，不用付费 API key；GLM-5.3 与计价校准（ROADMAP §3 第 3 步）延后，不删。手动作答（本会话充当模型）不用于跑分：本会话不盲（能读到仓库、评分器与自己以前的回答），也承担不了上万次 actor 调用。
+- 做了什么：新的 provider 类型 `claude_code`（规格见 M1 §1，步骤见 ROADMAP §3 第 2a 步）、启动检查、`examples/automationbench/claude.toml` 与探针脚本 `claude_probe.py`。
+  - 每次调用起一个 `claude -p`：不开工具，不加载本地定制与设置文件，不保存会话，在空目录运行；系统提示换成框架给的，CLI 自己的重试与换模型都关闭。
+  - R 的请求原样发送；actor 的回合把历史与工具写成 JSON，工具调用经 `--json-schema` 结构化输出。
+- 对抗审查（3 个方向，27 条经核实成立，3 条被驳回）发现并已修正：
+  - 订阅上限的真实措辞（“You've hit your session limit · resets …”）原先不被认作账号类错误，会把每次尝试记成基础设施失败、空耗预算；自称暂时的限流原先反被当成账号错误。
+  - 拒答与输出触顶的真实形状（`stop_reason`、`api_error`）没有读；输出触顶后 CLI 会自行续写至多 3 次，`result` 只剩最后一段，原先会被当成完整回复。因此一次 CLI 调用最多 5 次请求，`max_output_tokens` 须至少为 `max_tokens` 的 5 倍。
+  - CLI 自带重试默认 10 次，与计费层的重试叠加；拒答时默认换模型作答。
+  - 启动检查原先接受按次计费的登录；effort 原先由 CLI 设置决定，没有 pin 住。
+  - 调用并不全盲：订阅登录下 CLI 仍附上 Agent SDK 身份行、账号邮箱与当天日期，关不掉（在 CLI 2.1.288 本体中核实）。文档照实写明，actor 的格式说明写明它们不属于任务，探针核对模型实际看到什么。
+  - 计价改为 claude-opus-5-5 标价，待探针用 CLI 报价核对；$300/$50 预算沿用 GLM 估算、Claude 下研究位不够，改为冒烟实测后在活动工作区打开前重定。
+- 证据：874 passed, 1 deselected。离线测试用假 `claude` 程序；真实模型没有调用。
+- 待用户：在 claude.ai 设置中确认 extra usage 已关闭（开着时套餐额度用完 CLI 会改用付费额度继续，不报错）；同意后跑第 2a 步的探针。
+- commit：见本条之后的提交。
+
 ## 2026-10-03 R0 笔记保留接口事实与第四次彩排
 
 - 做了什么：R0 的 diagnose 提示新增一句：汇总只看笔记，所以笔记逐字保留改动会用到的接口事实（调用的工具与端点、方法与字段名、错误原文、actor 结束消息里表明没有做完的原话），任务的名字、id 与取值仍不写。这是新的 R0（`ef6e865`；`test_diagnosis.py::test_r0s_note_prompt_asks_the_note_to_keep_the_interface_facts`）。然后经 CLI 做了一次到研究位为止的小彩排，作答只按各请求的系统提示，不再另加规定。

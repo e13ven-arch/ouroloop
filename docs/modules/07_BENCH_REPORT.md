@@ -7,7 +7,7 @@
 | 既有 phase | v0.6 行为 |
 |---|---|
 | smoke | 首版检查 provider/工具/评分、包 API/计量，以及当前包组件种类在 K 内；K 的 components 含代码种类或当前包运行含代码时检查隔离 worker，不可用则不能以该配置启动；第二版启用方法才检查 review/训练 |
-| baseline | 起点 actor（第二版为学生）及已选 prompt/workflow 的无教师基线；首版为 GLM-5.3 的 train+dev 基线，在首轮真实演化前运行；不默认跑领先模型 |
+| baseline | 起点 actor（第二版为学生）及已选 prompt/workflow 的无教师基线；首版为所 pin actor 的 train+dev 基线（原定 GLM-5.3，2026-10-03 起为 Claude Opus 5.5，见 ROADMAP §3 第 2a 步），在首轮真实演化前运行；不默认跑领先模型 |
 | collect | plain 保持原行为；reviewed 调 M8，仅 train，须有已冻结合法 plan |
 | improve | 首版 M4 run_worker_round 读取 train 失败摘要、逐题笔记后汇总诊断，生成包内 patch/策略候选，经冻结前草稿检查进入唯一 executor；第二版准备教学/训练 |
 | research | 用 M6 做有界 R0/R1 比较，条件满足才安装 R1 |
@@ -61,7 +61,7 @@ collect.mode 是单独 phase 默认输入；自动补采由 CollectionRequest.pu
 
 以上为输入便利层，freeze 生成 K、W0/R0、schedule、配方目录等不可变对象后，以 refs 为权威。reader 只接受已实现枚举；未知 preset/算法/参数、能力不足、缺预算在付费前失败。preset 提供 bootstrap prompt、改进/适配模板、参数边界和默认配方，以及段 ID、补采限额和后续提案额度的默认 schedule；它不能替用户扩大工具权限或凭空提供模型账户。首版 harness preset 还固定允许的组件种类 components、max_draft_repairs（默认 3，初稿之后）、每轮 max_failure_notes（示例 30）、失败摘要的条目长度上限及现有 worker GatePlan 的 min_gain/max_regression_rate（沿用原字段，不新增回归配置层），freeze 写入 K 后 R 不能提高；草稿检查/修复与笔记调用逐次计入同一预算。首版 preset 还固定 research slot 的配对规则：当前 W 为两支共同起点，train 家族为内层训练池，开发计划的家族按冻结顺序对半分，前一半作两支内层 gate，后一半作两支都不接触的外层比较（本项目的 split 只有 train/dev/test，这一半即 M6 的 research_dev）；每支预算为冻结活动预算的固定比例（示例 15%），外测额度也是固定比例（示例 8%，含一次补跑），在公共测量与两支开跑前预留；研究位开始时的主线经验冻结为两支共同的 E0（实验记录去掉原始 gate 理由）。开发家族少于 2 个时 research slot 拒绝启动。
 
-首版只要求 actor/R，二者可共用已配置供应商；模型、推理配置、计价和限额在 freeze 摘要列明。首版 actor 固定为 GLM-5.3（已配置并计价的 OpenAI 兼容接口）；第二版换 Qwen3.5-9B 学生时，h* 须在学生上重新演化并验证。第二版 teacher 配置显式指定或引用能力允许的 provider。任何路径都不能默默选择新收费供应商，正常循环不要求用户每轮写代码/方案/超参数。
+首版只要求 actor/R，二者可共用已配置供应商；模型、推理配置、计价和限额在 freeze 摘要列明。首版 actor 原定 GLM-5.3（已配置并计价的 OpenAI 兼容接口），2026-10-03 起先跑 Claude Opus 5.5（订阅额度，计价为名义值，见 ROADMAP §3 第 2a 步）；第二版换 Qwen3.5-9B 学生时，h* 须在学生上重新演化并验证。第二版 teacher 配置显式指定或引用能力允许的 provider。任何路径都不能默默选择新收费供应商，正常循环不要求用户每轮写代码/方案/超参数。
 
 宿主 harness 选择来自 K 目录，默认使用当前 h；能力包代码候选在该宿主的固定扩展 API 内生成，不需要每个包 hash 预先进入目录。不得由 CLI 直接在控制面 import 候选入口。只有换宿主才准备 B；报告保留 parent、实际 package/有效工具 schema/hook 和 candidate，发生宿主切换时另外列新基线。
 

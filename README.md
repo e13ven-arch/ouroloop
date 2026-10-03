@@ -10,7 +10,7 @@ The [v0.6 design](docs/DESIGN.md) connects capability discovery, validation, con
 
 **Measured:** GLM-5.3 completed one Marketing development task on 2026-09-28. On 2026-10-01 two real runs followed: one took a failed train task through failure notes, a summary proposal, a draft check with one revision, admission and a frozen experiment to a built candidate, and stopped before the gate on purpose; another, whose draft passed its check without revision, went through screening to one dev gate. The provider account ran out of balance during that comparison (19 of 20 dev attempts invalid), so the gate was inconclusive and nothing was installed. These are real runs, not success-rate estimates or evidence of improvement: there is no measured package-evolution or recursive-research gain. Actor distillation, its Tinker backend and teacher review belong to the second release. See the [journal](docs/JOURNAL.md).
 
-AutomationBench Marketing remains the first proving ground. The first release compares the same actor (GLM-5.3) before and after harness-package evolution, retains an effective prompt/workflow baseline, and uses published leading-model results as a separately labelled reference. Local frontier runs remain optional future work, consistent with the latest benchmark plan. In the second release, h* is re-evolved on the Qwen3.5-9B student before distillation. Teacher-assisted collection scores are reported separately from deployment scores.
+AutomationBench Marketing remains the first proving ground. The first release compares the same pinned actor before and after harness-package evolution (planned as GLM-5.3; from 2026-10-03 Claude Opus 5.5 runs first, docs/ROADMAP.md §3 step 2a), retains an effective prompt/workflow baseline, and uses published leading-model results as a separately labelled reference. Local frontier runs remain optional future work, consistent with the latest benchmark plan. In the second release, h* is re-evolved on the Qwen3.5-9B student before distillation. Teacher-assisted collection scores are reported separately from deployment scores.
 
 Decision labels still require observed evidence or human feedback; a final reward does not label every intermediate action. The planned teacher trajectories have a separate imitation-learning purpose and do not relax this rule for decision training. Jev and existing local decision trainers remain supported.
 
@@ -72,6 +72,7 @@ ouroloop run "..." --llm anthropic --verify "pytest -q" --small-model claude-hai
 The research agent and `ouroloop run` work with any model:
 
 - Claude through the official SDK: `[llm] type = "anthropic"` (default `claude-opus-5`, with prompt caching).
+- Claude through headless Claude Code on a subscription login: `type = "claude_code"` (`claude -p` with no tools, in an empty directory; tool calls as structured JSON output). See docs/modules/01_POLICY_RUNTIME.md §1.
 - Anything with an OpenAI-compatible API: `type = "openai_compat"` (Zhipu GLM, OpenRouter, DeepSeek, vLLM, Ollama and others), with retries on rate limits and server errors. Provider-specific request fields go in `[llm.extra]`, for example GLM's reasoning effort. See [examples/zhipu.toml](examples/zhipu.toml).
 - A config's `env_file` points at a `.env` relative to the config, so keys are found from any directory.
 
@@ -171,7 +172,7 @@ it calls a model.
 | `ouroloop/app.py` | the minimal app an exported release runs as |
 | `ouroloop/points/` | built-in points `retry`, `compact`, `tool_gate`, `stop`, `route`, and the deny list |
 | `ouroloop/chat.py` | a provider-neutral chat format |
-| `ouroloop/providers/` | Anthropic (official SDK) and OpenAI-compatible APIs |
+| `ouroloop/providers/` | Anthropic (official SDK), OpenAI-compatible APIs, headless Claude Code, and `manual` (requests and replies as files) |
 | `ouroloop/backends/` | decision backends: `mock`, `jev`, `tde`, `llm`, `http` |
 | `ouroloop/research/` | question conversion, the research agent interface and default, research rounds, what a researcher may read (`context.py`), what actually ran (`inspection.py`), proposals and admission (`experiment.py`), research-policy campaigns (`campaign.py`), per-task failure diagnosis (`diagnosis.py`), draft checks and revisions (`drafts.py`) |
 | `ouroloop/evolve/` | the shared contracts and object store (`contracts.py`), feedback builders, dataset building, data checks, trainers and their training jobs (worker, compute), calibration, the frozen promotion gate and its records, the paired task gate (`task_gate.py`), the execution state machine and budget book (`execution.py`), model registry, experience records |

@@ -18,11 +18,40 @@ v3 session 同时 pin release.target_harness_ref；装配检查它与 K 许可�
 
 新增 actor registration；扩展 `bind_release`、`_bind_one`、`Services` 和 `SessionBinder`，不要在 bench 临时给 Agent 塞一个不同的 provider。v3 的配置 `[llm]` 仅用于 bootstrap 构造 actor；已有 actor 的 release 不允许被本地同名参数悄悄覆盖。显式覆盖需新 release/比较身份。
 
-运行时接口目标：BoundRuntime.actor -> ChatProvider；现有 ChatProvider.chat 接口保留。首版 pin 现有 provider 与推理配置，actor 固定为 GLM-5.3（已配置并计价的 OpenAI 兼容接口），不要求训练服务。第二版 Tinker provider 属于本模块，负责官方 renderer/采样/action schema 解析；未训练底座与 adapter 共用序列化。
+运行时接口目标：BoundRuntime.actor -> ChatProvider；现有 ChatProvider.chat 接口保留。首版 pin 现有 provider 与推理配置，actor 原定 GLM-5.3（已配置并计价的 OpenAI 兼容接口）；2026-10-03 起先跑 Claude Opus 5.5，经下面的 `claude_code` provider（ROADMAP §3 第 2a 步）。不要求训练服务。第二版 Tinker provider 属于本模块，负责官方 renderer/采样/action schema 解析；未训练底座与 adapter 共用序列化。
 
 controller 与 actor 共享当时合法 observation，默认不把 controller 当成需要 actor 自发调用的工具。on_finish hook 保证调用位置；其输出和真正执行动作分别写 DecisionTrace。独立模型的价值由同 actor 完整任务评测决定。
 
 源方法运行同样通过 bind_release 装配；包、system_prompt 与 finish 的候选内容必须在实际工具/hook/actor 输入中生效。旧 finish_check.v1 是提示正文，不能据此填“中间件已执行”。包外 module/未知宿主 API 在预检拒绝；包内入口由固定隔离 worker 解析。第二版 source_validation 与 reviewed collection/task evaluation 分开记录，源验证无 teacher。
+
+### `claude_code` provider
+
+`[llm] type = "claude_code"`（`ouroloop/providers/claude_code.py`）：每次 `chat` 起一次无头 Claude Code，用本机 `claude` 的订阅登录。模型看到的是这一次的请求，外加 CLI 在订阅登录下关不掉的三样：系统提示前一行 Agent SDK 身份、账号邮箱、当天日期。
+
+- 配置：
+  - `model`：必填，如 `claude-opus-5-5`；用完整 id，作答模型的核对才生效。
+  - `effort`：启动检查要求必须写（low、medium、high、xhigh、max），每次都传 `--effort`，不让 CLI 的设置决定它；W0 把它 pin 进推理配置。
+  - `max_tokens`：一次模型请求的输出上限，经 `CLAUDE_CODE_MAX_OUTPUT_TOKENS` 传给 CLI。一次 CLI 调用最多发 5 次请求（输出触顶后 CLI 自行续写至多 3 次，关不掉；加一次结构化输出重试），启动检查要求 5 × `max_tokens` 不超过 `[pricing] max_output_tokens`。
+  - `timeout`：每次调用的秒数，默认 600。
+  - `binary`：默认 `claude`，从 PATH 找。`workdir`：默认系统临时目录下的 `ouroloop-claude-code`，必须为空。二者都写进 W0 的 actor 配置：写成 `/Users/`、`/home/`、`/private/` 下的绝对路径，release 导出会被拒。
+  - `retries`：默认 2；计费层接管时置 0，由计费层逐次入账。
+- 调用：`claude -p --output-format json --model M --effort E --tools "" --safe-mode --setting-sources "" --strict-mcp-config --no-session-persistence --disable-slash-commands --system-prompt S`，提示从 stdin 读入，工作目录不空则拒绝调用。
+- 子进程环境：
+  - 去掉全部 `ANTHROPIC_*`、`CLAUDE_CODE_*`、`CLAUDECODE*` 与 `MAX_THINKING_TOKENS`：环境里的 key 用不上，上层 Claude Code 会话传下的变量也不继承（`claude setup-token` 的 `CLAUDE_CODE_OAUTH_TOKEN` 因此不可用，须用 `claude auth login` 的本机登录）。
+  - 设 `CLAUDE_CODE_MAX_RETRIES=0`（重试只在计费层，逐次入账；CLI 在首字节超时或连接失效时仍可能自行重发一次）、`CLAUDE_CODE_NO_MODEL_FALLBACK=1` 与 `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1`（不换模型作答）、`CLAUDE_CODE_DISABLE_ATTACHMENTS=1`（不按 @ 附加文件、不加每轮提醒）、`MAX_STRUCTURED_OUTPUT_RETRIES=1`、`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`。
+- 请求：
+  - 只有一条用户消息、没有工具（R 的每一步）：提示原样作为这条消息，回复文本就是 `text`。
+  - 其余（actor）：提示是整段历史与所给工具的 JSON（其中的 `@` 写成 JSON 转义，CLI 不会把它读成要附加的文件），加一段回复格式说明，说明里写明请求之外附上的邮箱与日期不属于任务。`--json-schema` 约束回复为 `{"text", "tool_calls": [{"name", "args"}]}`，工具名限于所给工具。调用 id 由 provider 生成；有工具调用时 stop 为 `tool_use`，否则 `end`。
+- 用量：按 Anthropic 口径记 CLI 的 `usage`（`input_tokens`、`output_tokens`、`cache_read_input_tokens`、`cache_creation_input_tokens`），另记 `cli_cost_usd`（CLI 报告的 API 等价费用）。一次 CLI 调用内部的多次请求记的是总和。
+- 结局：
+  - 拒答（`stop_reason` 为 refusal）记 stop `refusal`；输出触顶（`api_error` 为 max_output_tokens，或 CLI 已自行续写：输出达到 `max_tokens`，或 `num_turns` 多于所需的 1 次、结构化回复 2 次）记 stop `max_tokens`。与 API provider 相同，由调用方处理：续写时 `result` 只剩最后一段，不能当完整回复。
+  - 订阅上限（“You've hit your … limit”）、额度用尽、未登录或凭据失效、HTTP 401/403、找不到 `claude`、工作目录不空：`ProviderAccountError`，活动暂停（[M5 §3](05_EXECUTION_BUDGET.md)）。
+  - 实际作答的模型（`modelUsage`）不是所配模型：`ProviderAccountError`，活动暂停；这次调用已经发生，预留记 unknown，不释放。
+  - 自称暂时的限流或刷新冲突（“not your usage limit”“usually transient”）、过载、429、5xx、超时、回复不合格式：可重试的 `ProviderError`，其中限流、过载与 429 记为未计费；其余：不可重试的 `ProviderError`。
+- `supports_history_edits = True`：历史每次整段重发，没有需要原样回放的 thinking 块。
+- 启动检查：`effort` 已写；`claude` 在 PATH 上；`claude auth status`（在空工作目录里运行）显示已登录，`authMethod` 为 `claude.ai`、`apiProvider` 为 `firstParty`、没有 `apiKeySource`。按次计费的 Console 登录或设置里的 key 都被拒绝。
+- 与原生 API 的差别：工具调用经结构化输出，不是原生 tool use；历史整段重发，缓存命中多少由冒烟实测；请求带有上面三样附加内容。
+- 账号若开了 extra usage，套餐额度用完后 CLI 改用付费额度继续，不报错：运行前由用户确认已关闭（ROADMAP §3 第 2a 步）。
 
 ### 首版能力包 API 与执行边界
 

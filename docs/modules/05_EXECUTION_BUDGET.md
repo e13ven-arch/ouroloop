@@ -47,7 +47,7 @@ Tinker optim_step 若状态不明，不能重复 apply。只有已确认训练 c
 首版的暂停与结束规则（2026-10-02）按故障在哪一层被处理来划分。
 
 **actor 单次尝试内**（基线、测量、补采、gate 两臂、公共测量与外测中的每次尝试）：
-- 账号类错误（余额、配额、被拒的 key）上抛，活动以 repair_runtime 暂停。
+- 账号类错误（余额、配额、被拒的 key，订阅的使用上限）上抛，活动以 repair_runtime 暂停。
 - 其余 ProviderError，包括计费层重试用尽的：
   - 记该次尝试 invalid（failure_class=infrastructure），按冻结的 retry_policy 补跑一次；仍缺则所属比较判 inconclusive，不暂停活动。
   - 连续的基础设施失败轮由 `max_infrastructure_failures` 升级为暂停。
@@ -69,7 +69,7 @@ Tinker optim_step 若状态不明，不能重复 apply。只有已确认训练 c
   - 上面列出的编排步骤遇到额度耗尽时，同样按此记录，不以异常退出。
 - 配置不一致：scope 已以其他限额存在、scope 不存在、未知维度。按下文“续跑的冻结输入”暂停并写明原因；能在 freeze 时发现的，在 freeze 时拒绝启动。
 
-供应商账号的余额或配额耗尽属于账号类错误，充值后续跑即可，与账本预算耗尽不是一回事。
+供应商账号的余额或配额耗尽属于账号类错误，充值（订阅则等额度恢复）后续跑即可，与账本预算耗尽不是一回事。订阅没有逐次账单，`[pricing]` 按 API 标价作名义上界，预算的美元数是名义值；账号开了 extra usage 时，套餐额度用完后 CLI 改用付费额度继续，不报错，名义预算就成了真钱，所以运行前要确认已关闭（ROADMAP §3 第 2a 步）。
 
 **续跑的冻结输入（2026-10-02）：**
 - 续跑一个未完成的实验时，评测计划与预算 scope 只取 Experiment 冻结的 `eval_template_ref` 与 `budget_scope`。

@@ -49,9 +49,9 @@ A～E 属于首版，递归方法比较与实际回用仍为必做。第二版�
 
 ## 3. 首条真实实验路径
 
-首个业务后端采用 AutomationBench 直连。首版 actor 固定为 GLM-5.3（已配置并计价的 OpenAI 兼容接口），冻结底座、权重身份和推理配置；R 可共用供应商。Docker 用于能力包代码隔离，不管理任务集群，也不要求接 Harbor；只含 skills/memory 的包由宿主装配，不启动 worker。现有决策 trainer 保持兼容，但首版实验不训练新模型。第二版生成训练首选 Tinker LoRA SFT，候选学生 Qwen3.5-9B；届时验证实际模型/SDK/费用，不提前构成首版依赖。换 Qwen3.5-9B 学生时，h* 需在学生上重新演化：[Harness-Zero](TECHNOLOGY.md#4-参考设计如何转为独立实现) 的 h* 是在学生上验证的（其 base+h* 为学生带 h* 的成绩），首版在 GLM-5.3 上演化的包不直接作为学生的 h*。
+首个业务后端采用 AutomationBench 直连。首版 actor 原定 GLM-5.3（已配置并计价的 OpenAI 兼容接口），2026-10-03 起先跑 Claude Opus 5.5（经订阅额度，见 §3 第 2a 步），冻结底座、权重身份和推理配置；R 可共用供应商。Docker 用于能力包代码隔离，不管理任务集群，也不要求接 Harbor；只含 skills/memory 的包由宿主装配，不启动 worker。现有决策 trainer 保持兼容，但首版实验不训练新模型。第二版生成训练首选 Tinker LoRA SFT，候选学生 Qwen3.5-9B；届时验证实际模型/SDK/费用，不提前构成首版依赖。换 Qwen3.5-9B 学生时，h* 需在学生上重新演化：[Harness-Zero](TECHNOLOGY.md#4-参考设计如何转为独立实现) 的 h* 是在学生上验证的（其 base+h* 为学生带 h* 的成绩），首版在 GLM-5.3 上演化的包不直接作为学生的 h*。
 
-先测 GLM-5.3 的无教师起点。真实基线尚未运行：2026-09-30 一次启动在第一个任务中途中止（4 次模型调用，无完成尝试）；train+dev 基线在首轮真实 h* 演化就绪时、演化开始前运行，既有单任务 dev 成绩不能作为 before。从 train/fit 失败摘要与断言明细经逐题笔记→汇总生成共享能力包；先交付 skills/memory 文本组件，再交付代码组件。代码草稿冻结前完成隔离接口 smoke（package_check → isolated_probe → package_test）及有界修复，再真实执行和 dev gate；Docker 隔离测试已在本机 daemon 上通过（2026-10-01），但 CI 尚未构建 worker 镜像，代码草稿在 Docker 中的检查链也还没有经过真实模型。诊断可聚焦失败 train 任务；候选采用前仍比较完整固定 dev 清单，不另建历史成功任务池或回归作业。至少观察一个工具封装或中间件改变真实执行；静态检查通过或文件变化不能作为 C1 证据。
+先测所 pin actor 的无教师起点（原定 GLM-5.3，2026-10-03 起为 Claude Opus 5.5，见 §3 第 2a 步）。真实基线尚未运行：2026-09-30 一次启动在第一个任务中途中止（4 次模型调用，无完成尝试）；train+dev 基线在首轮真实 h* 演化就绪时、演化开始前运行，既有单任务 dev 成绩不能作为 before。从 train/fit 失败摘要与断言明细经逐题笔记→汇总生成共享能力包；先交付 skills/memory 文本组件，再交付代码组件。代码草稿冻结前完成隔离接口 smoke（package_check → isolated_probe → package_test）及有界修复，再真实执行和 dev gate；Docker 隔离测试已在本机 daemon 上通过（2026-10-01），但 CI 尚未构建 worker 镜像，代码草稿在 Docker 中的检查链也还没有经过真实模型。诊断可聚焦失败 train 任务；候选采用前仍比较完整固定 dev 清单，不另建历史成功任务池或回归作业。至少观察一个工具封装或中间件改变真实执行；静态检查通过或文件变化不能作为 C1 证据。
 
 任务家族和失败覆盖先统计，不预设一定涨分。首版按 purpose=task_feedback 的 CollectionRequest 补 plain train attempt；第二版训练缺口使用对应 purpose，同一 driver 不变。不能把 test 迁入 train，或通过代码编写读取 dev/final 答案。预留 gate/递归额度，计入 R/actor、逐题笔记、草稿检查/修复、代码构建/隔离运行、失败候选与全部评测。
 
@@ -170,7 +170,25 @@ A～E 属于首版，递归方法比较与实际回用仍为必做。第二版�
      - 在真实 Marketing 上跑 `ouroloop bench --phase baseline --limit 1`，即 dev 与 train 各第一题；
      - 用来检验 pin 路径上工具调用的往返；不用 test 题。
    - 边界：彩排替代不了第 3 步的计价校准，也说明不了 GLM-5.3 的表现。
+2a. **Claude 运行（订阅额度，2026-10-03 决定）。** 先看本框架下 Claude 的任务得分；GLM-5.3 与第 3 步的计价校准延后，不删除。
+   - 模型：actor 与 R 都用 Claude Opus 5.5（`claude-opus-5-5`），effort 为 medium（省额度；要改须在 bootstrap 之前，因为 W0 会把它 pin 进推理配置）。经新的 `claude_code` provider 调用无头 Claude Code（`claude -p`），用用户的 Max 订阅登录；启动检查拒绝任何不是 Claude 订阅的登录。规格见 [M1 §1](modules/01_POLICY_RUNTIME.md)。
+   - 请求里有什么：每次调用在一个空目录里运行，关闭全部工具与本地定制（CLAUDE.md、记忆、技能、插件、hook、MCP、设置文件、附件），不保存会话，系统提示换成框架给的那段，CLI 自己的重试与换模型都关闭；调用不经任何交互会话转发。订阅登录下 CLI 仍会附上三样，关不掉：系统提示前一行 Agent SDK 身份、账号邮箱、当天日期。actor 的回复格式说明写明这些不属于任务。冒烟时核对模型实际看到的内容。
+   - 与原生 API 的差别，随结果写明：
+     - 工具调用经结构化输出（`--json-schema`）写在回复里，不是原生 tool use；
+     - 每次调用重发整段历史，上下文缓存命中多少由冒烟实测；
+     - 请求带有上面三样附加内容；
+     - 得分是“Claude Opus 5.5（effort medium）经 `claude -p`、JSON 工具调用”在本框架下的得分，不与原生 tool use 的公开成绩直接比较。
+   - 计价：订阅没有逐次账单。`[pricing]` 暂按 claude-opus-5-5 的 API 标价填写（输入 $4、输出 $20、缓存读 $0.20、5 分钟缓存写 $5，每百万 token），作名义上界，`source` 注明；每次调用把 CLI 报告的 API 等价费用记进 usage（`cli_cost_usd`），冒烟时用它校正 `[pricing]`。一次 CLI 调用最多发 5 次模型请求（输出触顶后 CLI 自行续写至多 3 次，加一次结构化输出重试），所以 `max_output_tokens` 至少是 `max_tokens` 的 5 倍，启动检查会核对。预算是名义美元，用来限住额度的消耗。
+   - 额度用完：CLI 报使用上限属账号类错误，活动暂停，额度恢复后同一命令续跑（[M5 §3](modules/05_EXECUTION_BUDGET.md)）。CLI 实际作答的模型不是所配模型时同样暂停。若账号开了 extra usage，CLI 在套餐额度用完后改用付费额度继续，不报错，名义预算就成了真钱：第 2 步之前由用户在 claude.ai 设置里确认 extra usage 已关闭。
+   - 顺序（每一步先看用量与稳定性，用户确认后再进下一步）：
+     1. 实现 provider 与离线测试（假 `claude` 程序），不耗额度。
+     2. 探针：经 provider 直接发两次调用，一次普通问答、一次带一个假工具的结构化回复。核对 CLI 的输出形状（`structured_output`、`num_turns`、`stop_reason`）、用量与缓存、`modelUsage` 里实际作答的模型、`cli_cost_usd` 与 `[pricing]` 是否相符、工作目录是否仍为空，以及模型看到的请求之外的内容。
+     3. 冒烟：复制 `claude.toml` 为 `claude-smoke.local.toml`，改 `[workspace] root` 与 `[rsi] scope_id`，`[freeze.budget]` 压到几美元；跑 `--phase smoke`（1 道 dev 题），看一道题的调用次数、token、缓存命中与耗时。
+     4. 同一冒烟工作区：`ouroloop freeze` 后把打印的 `[rsi]` 行加进副本，跑 `--phase baseline --limit 2`（dev 与 train 各 2 题）。按实测校正 `[pricing]`，并按实测的每题名义费用和第 4 步的结构重定 `claude.toml` 的 `[freeze.budget]`：现在的 $300/$50 沿用 GLM 的估算，Claude 下研究位的两支与外测都不够。预算根一旦打开就不能改，所以这一步必须在活动工作区打开之前完成。
+     5. 活动工作区：`--phase cycle --until baseline` 跑 train+dev 基线（77 题），得到得分。
+     6. 额度允许，再按第 4～7 步跑完整活动。
 3. **计价校准（独立于正式活动）。**
+   - 2026-10-03 起延后：先跑第 2a 步；GLM-5.3 恢复为 actor 时再做本步。
    - 继续使用 open.bigmodel.cn。`[pricing]` 按该平台价目填写，注明汇率与日期；账本必须等于账单，否则预算上限没有意义。
    - 充值后，在一个独立的校准工作区运行 `ouroloop bench --phase baseline --limit 5`：5 个 dev 加 5 个 train，共 10 次尝试，约 $1.4～4.5。
    - 用账本对比平台账单：偏差 ≤10% 即通过；超限则修正 `[pricing]`，在新的校准工作区重测。

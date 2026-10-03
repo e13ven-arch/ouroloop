@@ -10,7 +10,7 @@
 
 **已有实测：** 2026-09-28，GLM-5.3 完成一个 Marketing dev 任务。2026-10-01 又有两次真实运行：一次把失败的 train 任务经逐题笔记、汇总提案、草稿检查与一次修订、准入、冻结实验走到构建候选，在 gate 前有意停止；另一次的草稿首检即通过，经筛选走到一次 dev gate。那次比较途中供应商账号余额耗尽（20 次 dev 尝试中 19 次无效），gate 判为 inconclusive，没有安装。这些是真实运行，不是通过率，也不是改进证据：能力包演化与递归研究都还没有实测收益；actor 蒸馏、Tinker 接入与教师审阅属于第二版。详见 [日志](docs/JOURNAL.md)。
 
-AutomationBench Marketing 仍是首个证明场：首版比较同一 actor（GLM-5.3）在能力包演化前后及有效的 prompt/workflow；第二版换 Qwen3.5-9B 学生时 h* 在学生上重新演化后再蒸馏；并以领先模型公布数字作单独的外部能力参照；沿用最近的决定，默认不在本地运行领先模型。教师辅助采集分数与无教师部署成绩分开报告。
+AutomationBench Marketing 仍是首个证明场：首版比较同一个所 pin 的 actor 在能力包演化前后（原定 GLM-5.3，2026-10-03 起先跑 Claude Opus 5.5，见 docs/ROADMAP.md §3 第 2a 步）及有效的 prompt/workflow；第二版换 Qwen3.5-9B 学生时 h* 在学生上重新演化后再蒸馏；并以领先模型公布数字作单独的外部能力参照；沿用最近的决定，默认不在本地运行领先模型。教师辅助采集分数与无教师部署成绩分开报告。
 
 决策标签仍需环境事实或人工反馈；最终任务得分不能直接当作所有中间动作的标签。新增教师轨迹进入独立的模仿学习通道，不放开决策真值限制。现有 Jev 和本地决策 trainer 保留。
 
@@ -78,6 +78,7 @@ OUROLOOP_TOKEN=... ouroloop serve --config host.toml --host 0.0.0.0 --port 8765
 
 模型接入：研究 agent 和 `ouroloop run` 可以接任何模型。
 - Claude 走官方 SDK：`[llm] type = "anthropic"`，默认 `claude-opus-5`，在 `.env` 里写 `ANTHROPIC_API_KEY`。
+- Claude 也可以走无头 Claude Code，用订阅登录：`type = "claude_code"`（`claude -p`，不开工具，在空目录里运行，工具调用写成结构化 JSON），见 docs/modules/01_POLICY_RUNTIME.md §1。
 - 其他模型走 OpenAI 兼容接口：`type = "openai_compat"`，智谱、OpenRouter、DeepSeek、vLLM、Ollama 等都行。遇到限流和 5xx 会自动重试。模型特有的请求字段写在 `[llm.extra]` 里，比如 GLM 的思考强度。
 - 智谱的完整配置见 [examples/zhipu.toml](examples/zhipu.toml)。
 - 配置里的 `env_file` 指定另一个 `.env`，路径相对于配置文件，在别的目录运行时也能读到 key。
@@ -146,7 +147,7 @@ agent 拿到的是任务 prompt 和工具 schema，断言与初始状态在它�
 | `ouroloop/report.py` | 离线报告：身份与范围、任务效果、成本、改进与 RSI 证据、C1～C4 状态 |
 | `ouroloop/adapters/` | AutomationBench（任务、业务工具、官方评分器）；Claude Code hooks 适配器（可选的数据来源） |
 | `ouroloop/backends/` | `mock`、`jev`、`tde`、`llm` 四种决策后端 |
-| `ouroloop/providers/` | LLM 接入：Anthropic（官方 SDK）、OpenAI 兼容接口 |
+| `ouroloop/providers/` | LLM 接入：Anthropic（官方 SDK）、OpenAI 兼容接口、无头 Claude Code、`manual`（请求与回复是文件） |
 | `ouroloop/research/` | 问题转换、研究 agent 接口和默认实现、一轮研究流程，研究员可读什么（`context.py`）、实际跑了什么（`inspection.py`）、提案与准入（`experiment.py`）、研究策略 campaign（`campaign.py`）、train 失败的逐题诊断（`diagnosis.py`）、草稿检查与修订（`drafts.py`） |
 | `ouroloop/evolve/` | 公共契约与对象库（`contracts.py`）、反馈构造器、建数据、数据检查、训练（签名小模型 / 本机 TDE / 远程 TDE）、校准、冻结的晋升门和门记录、配对任务门（`task_gate.py`）、执行状态机与预算账（`execution.py`）、模型注册表、经验记录 |
 
