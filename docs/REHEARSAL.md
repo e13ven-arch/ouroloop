@@ -132,3 +132,49 @@
 - 第一道 dev 题通过评分契约检查；
 - actor 对同一输入输出相同；
 - 用脚本研究员按第 4 节的走向跑一遍 cycle，核对 segment-0 装入、研究位两支 W* 不同、外测运行。这只是离线演练，不替代经 CLI 的彩排。
+
+## 9. 结果（2026-10-03）
+
+三个工作区都经 CLI 运行，都没有注入研究员。答题人按请求文件作答，请求与回复按 id 成对存档在 `examples/rehearsal/archive/`；actor 检查用的是真实上游的题目文本，不入库。
+
+- **主工作区**（`workspace-rehearsal`，scope `rehearsal`），R 作答 22 次：
+  - baseline：19 次尝试全部有效；open 与 unknown 预留为 0；W0 dev 4/12。K1 通过。
+  - segment-0：
+    - round 0 先注入截断：暂停，续跑时重问同一步，两次调用各记一次账。然后装入 A 的 memory，gate 12 对完整，增益 2/12，无退步。K2 通过。
+    - round 1 并入 B 的规则：装入。round 2 并入 C 的规则：gate 拒绝（增益 0）。
+    - K3a：每次装入后下一轮都用新包测量，T_A、T_B 随之通过。
+    - 免费 A/A：基线 dev 与 round 0 的对照臂都是 4/12，结果一致。
+  - 研究位：
+    - R0 从经验里读到 C 的笔记被拒，提出 R1：“同一失败的笔记或技能已被拒且无增益时，改提收尾检查”。
+    - 公共测量后笔记共享；外测与两支份额都预留后又释放。
+    - 对照支（R0）：round 0 为 C 写技能，被拒；round 1 装入 D 的 memory。
+    - 候选支（R1）：round 0 为 C 写 on_finish hook。首稿在 Docker 的 isolated_probe 失败；第一次修订注入空回复，占用一次修订；第二次修订通过。装入后训练题全部通过，round 1 回复 stop。
+    - 外测：两支 W* 不同，6 题配对完整，候选 6/6 对照 5/6，裁决 accepted，R1 装入。
+  - segment-1（R1）：
+    - round 0 装入 D 的 memory；回用检查 verified：3 轮加载 R1，发出 5 个请求。
+    - round 1 的汇总注入非 JSON：本轮 invalid。
+    - round 2 的汇总注入 manual 非法回复：ProviderError，暂停，留下一笔 unknown 预留。续跑后改提 hook，装入，dev 12/12，以 rounds_done 结束。
+  - 报告：C1 inconclusive（开发记录，不是正式比较）；C4 inconclusive（accepted，但区间含 0）。K3b：on_finish 18 次 continue、4 次 block，worker 会话 18 次，技能读取 0，包工具 0。
+- **故障工作区**（`workspace-rehearsal-faults`，`max_failure_notes = 2`），R 作答 9 次：
+  - 两条笔记中一条注入非 JSON：记入 coverage.invalid（含原因），本轮照常汇总，并装入。
+  - 汇总拒答：本轮 invalid。汇总带不合法提案（没有 changes）：本轮 invalid。
+  - 研究位的 `proposals` 写成单个对象：研究位 invalid（stage=reply）；C4 写明研究位回复无效。再次运行不重问。
+- **actor 检查**（`workspace-actor-manual`，真实 Marketing 上游，`--phase baseline --limit 1`）：
+  - Claude 作为被 pin 的 manual actor，作答 5 个回合，含并行的工具调用与读表。
+  - dev 与 train 各一次尝试，都有效。按设计没有做完，都以 task_outcome 失败。
+  - 运行身份记的是 manual actor。
+- **通过条件**：
+  - 笔记 → 汇总 → 草稿检查 → 准入 → 构建 → gate 裁决：多次走通。
+  - Docker 草稿检查链：含 hook 的草稿走完检查链，结果 ready；首检失败的代码草稿覆盖了修订回路；gate 候选臂的 transcript 中有 hook 执行事件。
+  - 安装且下一轮满足 K3a；研究位走到裁决（accepted），下一段核验 R1 被加载。
+  - 故障注入表逐行得到预期；每次暂停后续跑，都没有重复记账。
+- **覆盖缺口**：
+  - 没有装入技能：技能索引与 `read_skill` 只在对照支被拒的那次 gate 里出现过。
+  - 没有包工具。
+  - 外测没有基础设施失败，补跑没有在 CLI 路径上发生。
+  - 两支份额占不住的路径没有发生。
+  - 这几项都只有离线测试。
+- **找到并已修**（`ffe3aff`）：
+  - 研究位的 R 看到的 budget 是 `{}`；
+  - 拒答的原因把“declined the request”写了两遍；
+  - manual 回复被截断时，消息写成“(None tokens)”。

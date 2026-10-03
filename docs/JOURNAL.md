@@ -8,6 +8,27 @@
 
 ---
 
+## 2026-10-03 付费前彩排
+
+- 做了什么：按 ROADMAP §3 第 2 步，先写规格（`docs/REHEARSAL.md`），再建 fixture 世界与假 actor，然后经 CLI 走生产 cycle，R 由 Claude 通过 manual provider 作答。
+  - 世界：`examples/rehearsal/upstream` 是 marketing 域的小型 AutomationBench，共 21 题。名称按 hash 落到指定划分，四类收尾步骤各有一道 train 题，在开发顺序的两半各有一道 dev 题。
+  - 假 actor：只在规则出现时做收尾步骤。跟进任务只认收尾检查（on_finish hook）的推回，于是覆盖 Docker 草稿检查链，也让 R 的方法比较可能出现真实差异。
+  - 离线检验（`tests/test_rehearsal_world.py`）：在独立进程里核对划分、每条规则只翻转本类的题，并用脚本研究员按预期走向跑完一遍 cycle。
+- 结果：见 `docs/REHEARSAL.md` §9。
+  - 主工作区：baseline → segment-0（装入 2 次，拒绝 1 次）→ 研究位 accepted，R1 装入 → segment-1 回用 verified。
+  - K1、K2、K3a 都满足；免费 A/A 一致。
+  - 故障注入表逐行得到预期，分布在主工作区与故障工作区。
+  - actor 检查：Claude 作为被 pin 的 manual actor，在真实上游上完成了工具调用的往返。
+- 证据的边界：
+  - 答题人设计了这个世界，知道假 actor 认什么。作答只依据请求文件，但这次运行只证明接线与故障协议，不说明 R 或任何模型的能力。
+  - R1 由答题人在研究位里提出，来源是 segment-0 中 C 的笔记被拒这一经验；研究裁决 accepted，同样只是开发采纳。
+  - 这些工作区与报告不计入 C1～C4。
+- 覆盖缺口：没有装入技能；没有包工具；外测补跑没有发生；两支份额占不住的路径没有发生。这几项只有离线测试。
+- 找到并已修：研究位的 R 看到的 budget 是空的；拒答原因重复；manual 截断消息出现 “None tokens”（`ffe3aff`）。
+- 证据：844 passed, 1 deselected。真实模型没有调用；真实上游只在本地运行，没有读取任何 key。
+- 运行数据：主工作区 R 作答 22 次、故障工作区 9 次、actor 检查 5 个回合；主工作区占位计价下记账 $0.27。请求与回复存档于 `examples/rehearsal/archive/`，回放测试尚未写。
+- commit：`9b4810e`、`5a6c7cb`、`ffe3aff`，文档与存档见本条之后的提交。
+
 ## 2026-10-03 研究位前必修
 
 - 做了什么：按 ROADMAP §3 第 1 步“研究位前”逐项实现。先由 5 名设计员各自复现问题、提出改法，对抗评审后合并，规格先写进文档（`80bbdca`），再写代码。
