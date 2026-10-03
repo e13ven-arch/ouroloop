@@ -8,6 +8,18 @@
 
 ---
 
+## 2026-10-03 Claude Opus 5.5 的 train+dev 基线
+
+- 做了什么：在 `workspace-claude`（名义根 $300/$50）跑 `--phase cycle --until baseline`，即 W0 的 77 题；后台运行，108 分钟。
+- 结果：
+  - train 22/52（42.3%），平均 partial 0.827；dev 9/25（36.0%），平均 partial 0.830。77 次全部有效，无暂停。
+  - 失败集中在最后的汇报：train 失败断言里 gmail 占 65 条。dev 的失败有三类：该发邮件时改发 Slack 或没发；新旧规则或追踪编号选错版本；数字、措辞不准。
+  - 这些都是任务判断，train 与 dev 的失败形态相同，演化循环有东西可学。
+- 证据：670 次模型调用，账本名义 $32.35，等于 CLI 报价；`bench/marketing/report.md`。
+- 证据的边界：每题一次（repeats 1），dev 25 题；得分是“Claude Opus 5.5（effort medium）经 `claude -p`、JSON 工具调用”的，不与原生 tool use 的公开成绩直接比。
+- 下一步待用户决定：在同一工作区跑 segment-0（`--until segment-0`，3 轮约 $110 名义），之后可跑 final；研究位要另开 $800 的工作区。
+- commit：见本条之后的提交。
+
 ## 2026-10-03 Claude 四题基线（`--limit 2`）
 
 - 做了什么：在冒烟副本 freeze 后跑 `--phase baseline --limit 2`。第一次 freeze 被拒：final 份额 $1 小于一次调用的预留上界 $7.28。名义根改为 $20（final $8）后通过。
