@@ -665,7 +665,10 @@ DIAGNOSE_NOTE = (
     "check with whether it passed. Say why it failed and name one general mechanism "
     "that would prevent this class of failure: a working note (memory), a skill, a check before finishing, a check "
     "around a tool call, or a tool wrapper. Argue why the mechanism applies to a class of tasks, not only this one. "
-    "Never write this task's specific answers (names, e-mail addresses, ids, values).")
+    "The step that turns notes into a change sees only the notes, so keep in yours, word for word, the interface "
+    "facts a change would need: the tools and endpoints the agent called with their methods and field names, the "
+    "error text a call returned, and the words of the agent's last message that show what it did not do. These "
+    "are not answers; never write this task's specific answers (names, e-mail addresses, ids, values).")
 PROPOSE_PACKAGE = (
     "You read the notes on this round's failures, how many failures they cover, and the current capability "
     "package. Propose at most one change to the package that addresses the most common general mechanism. Prefer, "

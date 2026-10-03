@@ -178,3 +178,15 @@ def test_an_unreadable_note_records_why_it_could_not_be_read(fake_upstream, tmp_
     coverage = [r for r in xp.read(activity.root) if r.get("kind") == "diagnosis"][0]
     assert coverage["invalid"] and all(why in i["problem"] for i in coverage["invalid"])
     assert result["rounds"][0]["outcome"] == "invalid" and why in result["rounds"][0]["reason"]
+
+
+def test_r0s_note_prompt_asks_the_note_to_keep_the_interface_facts():
+    """docs/modules/04_RESEARCH_LOOP.md §1: the summary sees only the notes, so R0's note prompt asks each note to
+    keep, word for word, what a change would need — tools, endpoints, methods, field names, error text, the agent's
+    own words — while task answers stay out. The request a note is written from carries that prompt."""
+    from ouroloop import policies as P
+    from ouroloop.research.basic import PolicyResearcher
+    assert "word for word, the interface facts" in P.DIAGNOSE_NOTE
+    assert "never write this task's specific answers" in P.DIAGNOSE_NOTE
+    system, _user = PolicyResearcher(None).note_request({"task_id": "t"}, P.DIAGNOSE_NOTE, allowed=("memory",))
+    assert system.startswith(P.DIAGNOSE_NOTE)
