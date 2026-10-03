@@ -90,18 +90,23 @@ class Drafts:
     fixture: object = None      # () -> a surface over a synthetic or train-only world, for package tests
     reserved_names: set = field(default_factory=set)       # the host's base tool names: not a package tool's
     image: str | None = None    # the worker image K froze, recorded with every package built here
+    tools: list = field(default_factory=list)              # the host's base tools, shown to R with a revision
 
     def _revise(self, revise, prompt: str, patch: dict, check_output: str):
-        """R's revision, shown the parent package the patch applies to when its revise step takes one."""
+        """R's revision, shown the parent package the patch applies to and the host's base tools, when its
+        revise step takes them."""
         import inspect
         try:
-            takes_parent = "parent" in inspect.signature(revise).parameters
+            takes = set(inspect.signature(revise).parameters)
         except (TypeError, ValueError):
-            takes_parent = False
-        if not takes_parent:
-            return revise(prompt, patch, check_output)
-        run, tests = hp.files_of(self.objects, self.parent_ref)
-        return revise(prompt, patch, check_output, parent={**run, **tests})
+            takes = set()
+        extra = {}
+        if "parent" in takes:
+            run, tests = hp.files_of(self.objects, self.parent_ref)
+            extra["parent"] = {**run, **tests}
+        if "tools" in takes:
+            extra["tools"] = list(self.tools)
+        return revise(prompt, patch, check_output, **extra)
 
     # ------------------------------------------------------------------ restart (EX6-12)
     def pending(self) -> dict | None:

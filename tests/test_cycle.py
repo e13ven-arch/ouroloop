@@ -427,6 +427,40 @@ def slot_cycle(cfg, monkeypatch, reply=None, **kw):
 R1_ITEM = {"hypothesis": "h", "target": "research.propose", "text": R1_PROPOSE}
 
 
+class _NoteModel:
+    """The research model behind the cycle's own worker researcher: a note for a note request, a stop for the
+    summary, keeping what each summary request carried."""
+    name, model, summaries = "note-model", "r-2", []
+
+    def __init__(self, **_):
+        pass
+
+    def chat(self, system, messages, specs=()):
+        from ouroloop.chat import ChatTurn
+        sent = json.loads(messages[0]["content"])
+        if "failure" in sent:
+            reply = {"failure_class": "missed_step", "root_cause": "stopped early", "mechanism": "check on finish",
+                     "component": "skills", "generality": "multi-step requests"}
+        else:
+            _NoteModel.summaries.append(sent)
+            reply = {"next_action": "stop", "reason": "nothing to change"}
+        return ChatTurn(json.dumps(reply), [], "end", usage={"input_tokens": 10, "output_tokens": 5})
+
+
+def test_the_summary_request_lists_the_hosts_base_tools(fake_upstream, tmp_path, fixture_preset, monkeypatch):
+    """docs/modules/04_RESEARCH_LOOP.md §1: the summary sees no failure transcript, so it is shown the base tools a
+    package tool or hook can call, with their parameters — the names and arguments code components need."""
+    monkeypatch.setattr(_NoteModel, "summaries", [])
+    cfg = cycle_config(fake_upstream, tmp_path)
+    gap_w0(cfg, tmp_path)
+    cfg["research"] = {"llm": {"type": "test_cycle:_NoteModel"}}
+    bench.cycle(cfg, ".", out=lambda _line: None, until="segment-0/round-0")
+    tools = _NoteModel.summaries[0]["tools"]
+    assert [t["name"] for t in tools] == ["api_search", "api_fetch", "base64_encode"]
+    fetch = next(t for t in tools if t["name"] == "api_fetch")
+    assert {"method", "url", "body"} <= set(fetch["parameters"]["properties"]) and fetch["description"]
+
+
 @pytest.mark.parametrize("reply,why", [
     ("", "was empty"),
     (None, "declined the request"),

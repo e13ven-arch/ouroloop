@@ -526,6 +526,7 @@ class Improvement:
                              results=_task_results_summary(evidence["results"], splits=self.splits),
                              feedback=evidence["feedback"].summary(), experience=experience,
                              budget=_effective_budget(self.budget.remaining()) if self.budget else {},
+                             tools=self.base_tools() if self.harness else (),
                              targets={**{t: {"binding": r.binding, "kinds": list(r.allowed_kinds),
                                             "site": r.site,
                                             # the instruction text W runs with at this target now, so a
@@ -751,7 +752,7 @@ class Improvement:
                         worker=self.worker, round_index=index, scope=self.scope_id,
                         allowed_literals=self.tool_vocabulary(), fixture=self.fixture_world,
                         reserved_names=self.tool_vocabulary(names_only=True),
-                        image=self.harness.get("image_id") or self.harness.get("image"))
+                        image=self.harness.get("image_id") or self.harness.get("image"), tools=self.base_tools())
         return diagnosis, drafts
 
     def fixture_world(self):
@@ -771,6 +772,19 @@ class Improvement:
             except Exception:  # noqa: BLE001 - a task without a readable initial state adds nothing
                 continue
         return out
+
+    def base_tools(self) -> list[dict]:
+        """The host's base tools as R is shown them when it writes or revises a package: name, description and
+        parameter schema. They are what a package tool or hook can call through ctx.call_tool, and the summary
+        sees no failure transcript to learn them from (docs/modules/04_RESEARCH_LOOP.md §1)."""
+        try:
+            episode = self.suite.episode(next(iter(self.train_tasks or self.splits.ids("train"))))
+            tools = [{"name": s.name, "description": s.description, "parameters": dict(s.schema or {})}
+                     for s in episode.specs()]
+            episode.close()
+            return tools
+        except Exception:  # noqa: BLE001 - without an episode there is no list to show
+            return []
 
     def tool_vocabulary(self, *, names_only: bool = False) -> set:
         """Names of the business tools and their parameters: the host's vocabulary, never a task's answer. With

@@ -262,8 +262,9 @@ PACKAGE_API = (
     "take a base tool's name. A tool's name is letters, digits, '_' and '-' (at most 64); its input_schema is a "
     "JSON object schema whose properties are schemas and whose arrays give items; \"enabled\": false keeps an "
     "entry unused. During a task ctx.view = {task, turn, events}, each event {call_id, name, args, "
-    "result_excerpt, error, truncated, step}; ctx.call_tool(name, args) calls one of the episode's base tools "
-    "(read-only from a hook) and returns .output and .is_error. tests/*.py hold test_* functions taking ctx, run "
+    "result_excerpt, error, truncated, step}; ctx.call_tool(name, args) calls one of the episode's base tools, "
+    "which `tools` in the input lists with their parameters (read-only from a hook), and returns .output and "
+    ".is_error. tests/*.py hold test_* functions taking ctx, run "
     "against a train-only fixture world, where ctx.view is {\"fixture\": true}. Standard library only; no "
     "network and no files outside the package.")
 PACKAGE_FORMAT = (
@@ -433,6 +434,8 @@ class PolicyResearcher:
         # sent whole: slicing serialised JSON would silently drop the coverage, the allowed kinds or the package.
         state = {"goal": context.goal, "coverage": coverage, "allowed_components": list(allowed),
                  "package": package or {}, "targets": context.targets,
+                 # the host's base tools: what a package tool or hook can call (M4 §1)
+                 "tools": list(getattr(context, "tools", ()) or ()),
                  # `experience` is what research.retrieve selected, in its order (newest first by default)
                  "experience": experience_projection(list(experience)[:10]), "budget": context.budget,
                  "notes": notes}
@@ -521,13 +524,15 @@ class PolicyResearcher:
         return _ProposalResult([] if problem else proposals, next_action="none" if problem or proposals else action,
                                reason=problem or str(data.get("reason", ""))[:500], unreadable=bool(problem))
 
-    def revise(self, prompt: str, patch: dict, check_output: str, parent: dict | None = None) -> dict:
+    def revise(self, prompt: str, patch: dict, check_output: str, parent: dict | None = None,
+               tools=()) -> dict:
         """One bounded revision of a draft package. It sees the parent package, the patch and the check's own
         output only — never a task result or a score (docs/modules/04_RESEARCH_LOOP.md §2)."""
         system = f"{prompt}\n\n{REVISE_FORMAT}" if prompt else REVISE_FORMAT
         self.requests.append({"step": "revise", "system": system,
                               "prompt_hash": _ct.digest({"system": system})[:16]})
         data = parse_json(self._complete("revise", system, json.dumps(
-            {"parent": parent or {}, "patch": patch, "check_output": check_output}, ensure_ascii=False,
+            {"parent": parent or {}, "patch": patch, "check_output": check_output, "tools": list(tools)},
+            ensure_ascii=False,
             default=str)))
         return data.get("patch") if isinstance(data.get("patch"), dict) else {}

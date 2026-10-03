@@ -590,3 +590,19 @@ def test_each_research_request_records_a_digest_of_what_it_was_given():
     system, user = researcher.note_request({"task_id": "t", "checks": []}, "P", allowed=("skills",))
     researcher.note(system, user)
     assert researcher.requests[-1]["input_hash"] == ct.digest({"input": user})[:16]
+
+
+def test_a_revision_is_shown_the_hosts_base_tools(fake_upstream, tmp_path):
+    """docs/modules/04_RESEARCH_LOOP.md §1-§2: a revision is shown the base tools package code can call, with their
+    parameters, as the summary is: a tool or hook draft that called the wrong one could not be fixed otherwise."""
+    cfg, activity, w0 = v06_prepared(fake_upstream, tmp_path)
+    shown = []
+
+    class Revises(NoteResearcher):
+        def revise(self, prompt, patch, check_output, parent=None, tools=()):
+            shown.append(list(tools))
+            return super().revise(prompt, patch, check_output)
+    bench.improve(cfg, ".", out=lambda _line: None, researcher=Revises())
+    assert shown and [t["name"] for t in shown[0]] == ["api_search", "api_fetch", "base64_encode"]
+    fetch = next(t for t in shown[0] if t["name"] == "api_fetch")
+    assert {"method", "url", "body"} <= set(fetch["parameters"]["properties"]) and fetch["description"]

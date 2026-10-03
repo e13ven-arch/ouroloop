@@ -38,6 +38,7 @@ class ResearchContext:
     evidence: tuple = ()                                 # the evidence ids this context is built from
     targets: dict = field(default_factory=dict)          # target -> what may be bound there
     notes: tuple = ()
+    tools: tuple = ()           # the host's base tools {name, description, parameters}: what package code can call
 
     def to_json(self) -> dict:
         return {"scope_id": self.scope_id, "goal": self.goal, "partitions": list(self.partitions),
@@ -45,7 +46,8 @@ class ResearchContext:
                 "inspection": self.inspection, "results": self.results,
                 "requirements": [dict(r) for r in self.requirements], "activity": self.activity,
                 "feedback": self.feedback, "experience": list(self.experience), "budget": self.budget,
-                "evidence": list(self.evidence), "targets": self.targets, "notes": list(self.notes)}
+                "evidence": list(self.evidence), "targets": self.targets, "notes": list(self.notes),
+                **({"tools": [dict(t) for t in self.tools]} if self.tools else {})}
 
     def prompt_state(self, max_chars: int = 12000) -> str:
         """The context as the text a research step is given, cut to a bound with the cut recorded."""
@@ -76,7 +78,7 @@ def make_context(scope_id: str, *, goal: str, release_ref: str, experience_ref: 
                  evidence_refs=(), objects: ct.Objects, partitions: tuple[str, ...] = ("train", "dev"),
                  inspection: Inspection | dict | None = None, results: dict | None = None,
                  requirements=(), feedback: dict | None = None, experience=(), budget: dict | None = None,
-                 targets: dict | None = None, notes=()) -> ResearchContext:
+                 targets: dict | None = None, notes=(), tools=()) -> ResearchContext:
     """Build the context for one research step, refusing anything outside the boundary.
 
     The refusal is the useful part: a step that was handed a final-split result and then told not to look at it
@@ -97,7 +99,7 @@ def make_context(scope_id: str, *, goal: str, release_ref: str, experience_ref: 
         requirements=tuple(_scrub(dict(r)) for r in requirements), activity=activity,
         feedback=_scrub(feedback or {}), experience=tuple(_scrub(dict(e)) for e in experience),
         budget=dict(budget or {}), evidence=tuple(evidence_refs), targets=dict(targets or {}),
-        notes=tuple(notes))
+        notes=tuple(notes), tools=tuple(dict(t) for t in tools))
 
 
 def _scrub(obj):
