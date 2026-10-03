@@ -212,6 +212,7 @@ A～E 属于首版，递归方法比较与实际回用仍为必做。第二版�
           - 第 3 轮：`before_tool` 的写前核对 hook，gate 拒绝（W* 60% 对 60%，增益 0，退步 2 题）。segment-0 以 rounds_done 结束。
           - W* = W0 + 第 2 轮的结束前核对清单（`release:22cda1b62b97`）。W0 在 dev 上测了三次，都是 36%；W* 测了两次，64% 与 60%。
           - final 计划于 2026-10-04 冻结并先提交（`663f930`，`finalization:sha256:a407a850…`），随后运行。
+        - 2026-10-04 final 结果：test 23 题 × 2 次，W0 41.3%、W* 54.3%，配对差值 +0.130，95% 区间 [+0.022, +0.261]，C1 成立；6 题变好、1 题变差、16 题持平；每次尝试的成本 $0.437 对 $0.425。全程 349 次尝试、3,114 次模型调用、名义 $153.30。见 [RESULTS.md](RESULTS.md)。
      7. final（对外数字）：segment-0 结束后在同一工作区跑，研究位不开（这个根放不下）。
         - 在 `claude.toml` 写 `[freeze.final]`：experiment_id；release_refs 为 W0 与 segment-0 结束时的 W*；tasks 为 test（23 题）；repeats 2；统计计划同第 7 步。
         - freeze 后先把计划 hash 提交到 git，再跑 `--phase evaluate --plan <final_plan_ref>`。
