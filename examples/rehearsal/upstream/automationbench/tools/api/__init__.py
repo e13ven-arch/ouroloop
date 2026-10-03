@@ -18,6 +18,11 @@ ENDPOINTS = [
      "service": "hubspot", "description": "Create a follow-up task for a HubSpot contact."},
     {"id": "hubspot.assignOwner", "method": "PATCH", "url": "https://api.hubapi.com/crm/v3/objects/contacts/owner",
      "service": "hubspot", "description": "Set the owner of a HubSpot contact."},
+    {"id": "hubspot.addListMember", "method": "POST", "url": "https://api.hubapi.com/crm/v3/lists/members",
+     "service": "hubspot", "description": "Add a HubSpot contact to a mailing list."},
+    {"id": "hubspot.addNote", "method": "POST", "url": "https://api.hubapi.com/crm/v3/objects/contacts/notes",
+     "service": "hubspot",
+     "description": "Add a note to a HubSpot contact. The body is {id, note_b64}: the note text, base64url-encoded."},
 ]
 
 
@@ -67,6 +72,22 @@ def api_fetch(world: WorldState, method: str, url: str, params: Optional[str] = 
     if endpoint["id"] == "slack.postMessage":
         world.slack.rows("messages").append({"channel": payload.get("channel"), "text": payload.get("text", "")})
         return json.dumps({"ok": True, "ts": str(len(world.slack.rows("messages")))})
+    if endpoint["id"] == "hubspot.addListMember":
+        if _contact(world, payload.get("contact_id")) is None:
+            return json.dumps({"error": {"code": 404, "message": "no such contact"}})
+        world.hubspot.rows("list_members").append({"contact_id": payload.get("contact_id"),
+                                                   "list": payload.get("list")})
+        return json.dumps({"ok": True, "members": len(world.hubspot.rows("list_members"))})
+    if endpoint["id"] == "hubspot.addNote":
+        if _contact(world, payload.get("id")) is None:
+            return json.dumps({"error": {"code": 404, "message": "no such contact"}})
+        try:
+            text = base64.urlsafe_b64decode(str(payload["note_b64"]).encode()).decode()
+        except (KeyError, ValueError):
+            return json.dumps({"error": {"code": 400, "message": "note_b64 is required: the note text, "
+                                                                "base64url-encoded"}})
+        world.hubspot.rows("notes").append({"contact_id": payload.get("id"), "text": text})
+        return json.dumps({"ok": True, "notes": len(world.hubspot.rows("notes"))})
     if endpoint["id"] == "hubspot.createTask":
         if _contact(world, payload.get("contact_id")) is None:
             return json.dumps({"error": {"code": 404, "message": "no such contact"}})

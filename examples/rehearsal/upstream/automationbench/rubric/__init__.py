@@ -23,6 +23,12 @@ def _check(world, a: dict) -> bool:
     if kind == "hubspot_task_exists":
         return any(t.get("contact_id") == a["contact_id"] and t.get("title") == a["title"]
                    for t in getattr(world.hubspot, "tasks", []))
+    if kind == "hubspot_list_member":
+        return any(m.get("contact_id") == a["contact_id"] and m.get("list") == a["list"]
+                   for m in getattr(world.hubspot, "list_members", []))
+    if kind == "hubspot_note_exists":
+        return any(n.get("contact_id") == a["contact_id"] and n.get("text") == a["text"]
+                   for n in getattr(world.hubspot, "notes", []))
     if kind == "hubspot_contact_owner":
         return _contact(world, a["contact_id"]).get("owner") == a["owner"]
     raise ValueError(f"Unknown assertion type: {kind}")

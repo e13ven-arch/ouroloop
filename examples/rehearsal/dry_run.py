@@ -1,4 +1,4 @@
-"""An offline dry run of the rehearsal's expected path (docs/REHEARSAL.md §4, §8), printed as JSON.
+"""An offline dry run of the rehearsal's expected path (docs/REHEARSAL.md §4, §8, §10), printed as JSON.
 
 It runs `bench.cycle` on the rehearsal world with scripted researchers that answer the way §4 expects R to:
 under R0's preference order, a working note or a skill first, and a check before finishing only once a note for
@@ -24,13 +24,31 @@ from ouroloop.evolve import contracts as ct
 from ouroloop.research.experiment import ProposalResult
 
 HERE = Path(__file__).resolve().parent
-KIND = {"marketing.reh_000": "A", "marketing.reh_001": "B", "marketing.reh_002": "C", "marketing.reh_004": "D"}
+KIND = {"marketing.reh_000": "A", "marketing.reh_001": "B", "marketing.reh_002": "C", "marketing.reh_004": "D",
+        "marketing.reh_010": "E", "marketing.reh_011": "F"}
+FAULT = "upgraded to the team plan"         # a plain task of the second development half (§10.3)
 RULES = {
     "A": "When a request ends by asking you to post a message in a Slack channel, make that post before finishing.",
     "B": "When a request ends by asking you to tag the contact, add that tag before finishing.",
     "C": "When a request ends by asking you to log a follow-up task, create that task before finishing.",
     "D": "When a request ends by naming a new owner for the contact, assign that owner before finishing.",
+    "E": "When a request ends by asking you to add the contact to a mailing list, add them to that list.",
 }
+NOTE_TOOL = (
+    "import base64\nimport json\n\n\n"
+    "def add_contact_note(ctx, args):\n"
+    "    body = {'id': args['contact_id'], 'note_b64': base64.urlsafe_b64encode(args['text'].encode()).decode()}\n"
+    "    result = ctx.call_tool('api_fetch', {'method': 'POST', 'body': json.dumps(body),\n"
+    "                                         'url': 'https://api.hubapi.com/crm/v3/objects/contacts/notes'})\n"
+    "    return result.output\n")
+NOTE_TOOL_TEST = (
+    "import importlib.util, os\n"
+    "def test_the_tool_answers_with_text(ctx):\n"
+    "    path = os.path.join(os.path.dirname(__file__), '..', 'tools', 'notes.py')\n"
+    "    spec = importlib.util.spec_from_file_location('notes', path)\n"
+    "    module = importlib.util.module_from_spec(spec)\n"
+    "    spec.loader.exec_module(module)\n"
+    "    assert isinstance(module.add_contact_note(ctx, {'contact_id': 'nobody', 'text': 'a note'}), str)\n")
 R1_SENTENCE = (" When a working note or a skill for a failure was already tried and rejected, propose a check "
                "before finishing (an on_finish hook) for that failure instead.")
 R1_PROPOSE = P.PROPOSE_PACKAGE + R1_SENTENCE
@@ -58,9 +76,10 @@ class Scripted:
     """The worker rounds' research step, scripted to §4. It keeps the requests it was rendered from, as the real
     researcher does, so the campaign can check that the candidate arm ran R1's text."""
 
-    def __init__(self, *, broken_hook_first: bool = False):
+    def __init__(self, *, broken_hook_first: bool = False, faults: Path | None = None, arm_on: tuple = ()):
         self.requests = []
         self.broken_hook_first = broken_hook_first
+        self.faults, self.arm_on, self.summaries = faults, arm_on, 0
 
     def note_request(self, summary, prompt, *, allowed=()):
         return prompt, json.dumps({"allowed_components": list(allowed), "failure": summary}, sort_keys=True)
@@ -75,13 +94,19 @@ class Scripted:
 
     def summarize(self, context, prompt, notes, coverage, experience=(), *, package=None, allowed=()):
         self.requests.append({"step": "propose", "system": prompt})
+        if self.summaries in self.arm_on:
+            # the operator arms the fault before this answer (§10.3): the next attempt on that task fails once
+            self.faults.mkdir(parents=True, exist_ok=True)
+            (self.faults / "infra_once").write_text(FAULT)
+        self.summaries += 1
         kinds = [KIND[t] for t in coverage.get("included") or () if t in KIND]
         if not kinds:
             return ProposalResult(next_action="stop", reason="no failure left to diagnose")
         kind = kinds[0]
         tried = [e for e in experience if e.get("kind") == "experiment" and f"[{kind}]" in str(e.get("hypothesis"))
                  and e.get("verdict") == "rejected"]
-        how = ("hook" if R1_SENTENCE in prompt and tried else "skill" if tried or kind == "B" else "memory")
+        how = ("tool" if kind == "F" else "skill" if kind == "E" else
+               "hook" if R1_SENTENCE in prompt and tried else "skill" if tried else "memory")
         patch = self._patch(dict(package or {}), kind, how)
         return ProposalResult(proposals=[ct.ExperimentProposal(
             owner="worker", hypothesis=f"[{kind}] a {how} for the closing step the failure skipped",
@@ -95,6 +120,15 @@ class Scripted:
         if how == "memory":
             manifest["memory"] = {"enabled": True}
             write["memory.md"] = (files.get("memory.md", "").rstrip() + "\n" + RULES[kind]).strip() + "\n"
+        elif how == "tool":
+            manifest["tools"] = [*manifest.get("tools", []), {
+                "name": "add_contact_note", "description": "Add a note to a contact from its plain text: it is "
+                "encoded and posted for you.", "entrypoint": "tools/notes.py:add_contact_note",
+                "input_schema": {"type": "object", "properties": {"contact_id": {"type": "string"},
+                                                                  "text": {"type": "string"}},
+                                 "required": ["contact_id", "text"]}}]
+            write["tools/notes.py"] = NOTE_TOOL
+            write["tests/test_notes.py"] = NOTE_TOOL_TEST
         elif how == "skill":
             name = f"closing-{kind.lower()}"
             manifest["skills"] = [*manifest.get("skills", []),
@@ -137,16 +171,20 @@ def main(workdir: Path) -> dict:
     cfg["bench"]["upstream_path"] = str(HERE / "upstream")
     cfg["research"]["llm"]["dir"] = str(workdir / "manual")
     cfg["rsi"]["scope_id"] = "rehearsal-dry-run"
+    cfg["llm"]["fault_dir"] = str(workdir / "actor-faults")      # before freezing: bootstrap pins the actor's table
     lines = []
     refs = bench.freeze(cfg, str(workdir), out=lines.append)
     cfg = {**cfg, "rsi": {**cfg["rsi"], **refs}}
+    faults = Path(cfg["llm"]["fault_dir"])
     made = []
 
     def arm():
-        made.append(Scripted(broken_hook_first=len(made) == 2))      # the candidate's first hook fails its check
+        # the candidate's first hook fails its check; its second answer (a stop) comes with the fault armed for
+        # the outer comparison that follows
+        made.append(Scripted(broken_hook_first=len(made) == 2, faults=faults, arm_on=(1,) if len(made) == 2 else ()))
         return made[-1]
-    result = bench.cycle(cfg, str(workdir), out=lines.append, researcher=Scripted(), slot_researcher=SlotProposer(),
-                         arm_researcher=arm)
+    result = bench.cycle(cfg, str(workdir), out=lines.append, researcher=Scripted(faults=faults, arm_on=(0,)),
+                         slot_researcher=SlotProposer(), arm_researcher=arm)
     activity = bench.open_activity(cfg, str(workdir), out=lambda _l: None)
     events = ct.Events(activity.root)
     receipt = result["steps"].get("slot-0", {}).get("receipt")
@@ -163,6 +201,13 @@ def main(workdir: Path) -> dict:
             "revisions": sum(1 for m in made for r in m.requests if r["step"] == "revise"),
             "hook_events": sum(1 for p in Path(activity.root).rglob("transcripts/*.jsonl")
                                for line in p.read_text().splitlines() if '"kind": "hook"' in line),
+            "tool_events": sum(1 for p in Path(activity.root).rglob("transcripts/*.jsonl")
+                               for line in p.read_text().splitlines() if '"kind": "package_tool"' in line),
+            "skill_reads": sum(1 for p in Path(activity.root).rglob("transcripts/*.jsonl")
+                               for line in p.read_text().splitlines() if '"name": "read_skill"' in line
+                               and '"kind": "assistant"' in line),
+            "refills": [{"arm": r.attempt_id.split("/")[-1], "task": r.task_id, "valid": r.validity == "valid"}
+                        for r in bench.Results(activity.root, activity.bench.domain).all() if r.supersedes],
             "tail": lines[-12:]}
 
 

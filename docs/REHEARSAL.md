@@ -12,7 +12,7 @@
 
 ## 2. 任务世界
 
-位置：`examples/rehearsal/upstream/`。目录结构照 `tests/fake_upstream` 的 AutomationBench 形状，只有 marketing 域。冻结后不再改动：改了就是上游漂移，启动检查会拒绝。
+位置：`examples/rehearsal/upstream/`。本节是第一次彩排时的世界；第二次彩排增补了两类收尾并调整了行序，见 §10.1。目录结构照 `tests/fake_upstream` 的 AutomationBench 形状，只有 marketing 域。冻结后不再改动：改了就是上游漂移，启动检查会拒绝。
 
 服务与端点（都在 `api_fetch` 后面）：
 

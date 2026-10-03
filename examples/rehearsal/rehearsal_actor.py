@@ -1,41 +1,56 @@
 """The rehearsal's deterministic fake actor (docs/REHEARSAL.md §3).
 
 It reads the request, moves the contact to the stage asked for, and does the request's closing step only when
-something it was given says to: a rule in its instructions or in a skill it read, for three kinds of closing step,
-and for the fourth (a follow-up task) only a check that sends it back before it finishes — an on_finish hook's
-push-back. When it skips a closing step, its final message says which, so the failure summary carries the clue
-to R. It never raises, and its output depends only on what it is called with.
+something it was given says to: a rule in its instructions or in a skill it read, for three kinds of closing step;
+for a follow-up task only a check that sends it back before it finishes — an on_finish hook's push-back; for a
+mailing list only a skill it read; for a call note only a package tool that adds one (§10). When it skips a closing
+step, its final message says which, so the failure summary carries the clue to R. Its output depends only on what
+it is called with — except the one fault an operator arms (`fault_dir`, §10.2), which makes one attempt fail.
 """
 from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 
 from ouroloop.chat import ChatTurn, ToolCall
+from ouroloop.providers import ProviderError
 
 KEEP_WORKING = "Keep working on the task, or explain why it is already done."
 SKILLS_HEADER = "Skills you can read with the read_skill tool before you act:"
 BASE_TOOLS = {"api_search", "api_fetch", "base64_encode", "read_skill"}
 
 CONTACTS = "https://api.hubapi.com/crm/v3/objects/contacts"
+EVERYWHERE, PUSHBACK, SKILL = ("system", "skill", "pushback"), ("pushback",), ("skill",)
 CLOSING = {
     # kind: (how the request states it, endpoint, body, what it is, the rule that makes the actor do it,
-    #        whether the rule counts in its instructions and skills or only in a push-back)
+    #        where the rule counts: the system prompt, a skill it read, a push-back before finishing)
     "A": (re.compile(r'Then post "([^"]+)" in #([\w-]+)\.'), ("POST", "https://slack.com/api/chat.postMessage"),
           lambda m, cid: {"channel": m.group(2), "text": m.group(1)},
           "posting the update in the Slack channel it names",
           re.compile(r"(post|message)[^.\n]{0,80}\b(slack|channel)\b|\b(slack|channel)\b[^.\n]{0,80}(post|message)",
-                     re.I), True),
+                     re.I), EVERYWHERE),
     "B": (re.compile(r"Then tag the contact ([\w-]+)\."), ("POST", f"{CONTACTS}/tags"),
           lambda m, cid: {"id": cid, "tag": m.group(1)}, "tagging the contact",
-          re.compile(r"\btag(s|ging|ged)?\b", re.I), True),
+          re.compile(r"\btag(s|ging|ged)?\b", re.I), EVERYWHERE),
     "C": (re.compile(r'Then log a follow-up task titled "([^"]+)" for the contact\.'),
           ("POST", "https://api.hubapi.com/crm/v3/objects/tasks"),
           lambda m, cid: {"contact_id": cid, "title": m.group(1)}, "logging the follow-up task",
-          re.compile(r"follow[- ]?up tasks?", re.I), False),
+          re.compile(r"follow[- ]?up tasks?", re.I), PUSHBACK),
     "D": (re.compile(r"Then make (.+?) the contact's owner\."), ("PATCH", f"{CONTACTS}/owner"),
           lambda m, cid: {"id": cid, "owner": m.group(1)}, "assigning the contact's owner",
-          re.compile(r"\bowners?\b", re.I), True),
+          re.compile(r"\bowners?\b", re.I), EVERYWHERE),
+    "E": (re.compile(r"Then add the contact to the ([\w-]+) mailing list\."),
+          ("POST", "https://api.hubapi.com/crm/v3/lists/members"),
+          lambda m, cid: {"contact_id": cid, "list": m.group(1)}, "adding the contact to the mailing list",
+          re.compile(r"mailing lists?", re.I), SKILL),
+}
+NOTE = re.compile(r'Then add the call note "([^"]+)" to the contact\.')
+NOTES = f"{CONTACTS}/notes"
+WHY_NOT = {
+    "E": "I follow list sign-ups only from a skill that describes them, and none does",
+    "F": "the notes endpoint wants the note encoded, and none of my tools adds a note to a contact from its plain "
+         "text (contact_id, text)",
 }
 
 
@@ -45,17 +60,30 @@ class RehearsalActor:
     name = "rehearsal-actor"
     supports_history_edits = True
 
-    def __init__(self, model: str = "rehearsal-actor-1", **_config):
+    def __init__(self, model: str = "rehearsal-actor-1", fault_dir: str | None = None, **_config):
         self.model = model
+        self.fault_dir = Path(fault_dir) if fault_dir else None
 
     def chat(self, system, messages, tools) -> ChatTurn:
+        self._fault(messages)
         try:
-            return self._turn(system or "", list(messages or ()), {t.name for t in tools or ()})
+            return self._turn(system or "", list(messages or ()), {t.name: t for t in tools or ()})
         except Exception as e:  # noqa: BLE001 - a fake actor that raised would be an infrastructure failure
             return self._say(system, messages, f"I could not work out the request ({type(e).__name__}).")
 
+    def _fault(self, messages) -> None:
+        """The armed fault (§10.2): at an attempt's first turn, a request holding the text in `infra_once` fails
+        once, as a dropped connection would, and the file is used up."""
+        armed = self.fault_dir / "infra_once" if self.fault_dir else None
+        if not armed or len(messages or ()) != 1 or not armed.exists():
+            return
+        if armed.read_text().strip() in str(messages[0].get("content", "")):
+            armed.unlink()
+            raise ProviderError("connection reset by peer (a fault the rehearsal's operator armed)", retryable=True,
+                                unbilled=True)
+
     # ------------------------------------------------------------------------ one turn
-    def _turn(self, system: str, messages: list, offered: set) -> ChatTurn:
+    def _turn(self, system: str, messages: list, offered: dict) -> ChatTurn:
         request = str(messages[0].get("content", "")) if messages else ""
         contact = re.search(r"\(contact (\w+)\)", request)
         stage = re.search(r"Move them to the ([\w-]+) stage", request)
@@ -80,23 +108,45 @@ class RehearsalActor:
         if CONTACTS not in urls:
             return self._call(system, messages, turn, [("api_fetch", {
                 "method": "PATCH", "url": CONTACTS, "body": json.dumps({"id": cid, "stage": stage})})])
-        kind, match = next(((k, c[0].search(request)) for k, c in CLOSING.items() if c[0].search(request)),
-                           (None, None))
         name = request.split(" (contact")[0].removeprefix("Look the contact up first. ")
         done = f"Done: {name} is in the {stage} stage"
+        note = NOTE.search(request)
+        if note:
+            return self._note(system, messages, turn, offered, names, urls, cid, note.group(1), done)
+        kind, match = next(((k, c[0].search(request)) for k, c in CLOSING.items() if c[0].search(request)),
+                           (None, None))
         if kind is None:
             return self._say(system, messages, done + ".")
-        _pattern, (method, url), body, what, rule, in_text = CLOSING[kind]
+        _pattern, (method, url), body, what, rule, where = CLOSING[kind]
         if url in urls:
             return self._say(system, messages, f"{done}, and I finished the closing step, {what}.")
         pushbacks = [str(m.get("content", "")) for m in messages[1:]
                      if m.get("role") == "user" and str(m.get("content", "")).endswith(KEEP_WORKING)]
-        texts = pushbacks + ([system, *bodies] if in_text else [])
+        texts = ((pushbacks if "pushback" in where else []) + ([system] if "system" in where else [])
+                 + (bodies if "skill" in where else []))
         if any(rule.search(t) for t in texts):
             return self._call(system, messages, turn, [("api_fetch", {
                 "method": method, "url": url, "body": json.dumps(body(match, cid))})])
+        why = WHY_NOT.get(kind, "nothing in my instructions covers closing steps of this kind")
         return self._say(system, messages, f"{done}. Not done: the closing step at the end of the request, {what}; "
-                                           f"nothing in my instructions covers closing steps of this kind.")
+                                           f"{why}.")
+
+    def _note(self, system, messages, turn, offered, names, urls, cid, text, done) -> ChatTurn:
+        """A call note: through a package tool that takes the contact and the plain text, or not at all — the
+        endpoint wants the note encoded, which the actor does not do; it tries once with plain text."""
+        what = "adding the call note"
+        tool = next((t for n, t in offered.items() if n not in BASE_TOOLS
+                     and re.search(r"\bnotes?\b", f"{n.replace('_', ' ')} {t.description}", re.I)
+                     and {"contact_id", "text"} <= set(((t.schema or {}).get("properties") or {}))), None)
+        if tool is not None:
+            if tool.name in names:
+                return self._say(system, messages, f"{done}, and I finished the closing step, {what}.")
+            return self._call(system, messages, turn, [(tool.name, {"contact_id": cid, "text": text})])
+        if NOTES not in urls:
+            return self._call(system, messages, turn, [("api_fetch", {
+                "method": "POST", "url": NOTES, "body": json.dumps({"id": cid, "note": text})})])
+        return self._say(system, messages, f"{done}. Not done: the closing step at the end of the request, {what}; "
+                                           f"{WHY_NOT['F']}.")
 
     @staticmethod
     def _skills(system: str) -> list[str]:

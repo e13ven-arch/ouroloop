@@ -7,8 +7,10 @@ is, and one process can import only one of them. `tests/test_rehearsal_world.py`
 """
 from __future__ import annotations
 
+import base64
 import json
 import sys
+import tempfile
 from pathlib import Path
 
 from ouroloop import policies as P
@@ -25,10 +27,24 @@ RULES = {
     "B": "When a request ends by asking you to tag the contact, add that tag before finishing.",
     "C": "When a request ends by asking you to log a follow-up task, create that task before finishing.",
     "D": "When a request ends by naming a new owner for the contact, assign that owner before finishing.",
+    "E": "When a request ends by asking you to add the contact to a mailing list, add them to that list.",
+    "F": "When a request ends by asking for a call note, encode the note with base64_encode and post it.",
 }
+NOTE_TOOL = ToolSpec("add_contact_note", "Add a note to a contact from its plain text.",
+                     {"type": "object", "properties": {"contact_id": {"type": "string"}, "text": {"type": "string"}},
+                      "required": ["contact_id", "text"]})
 
 
-def attempt(suite, task_id: str, *, memory: str = "", skills: dict | None = None, hook=None) -> dict:
+def note_tool(episode, args: dict) -> tuple[str, bool]:
+    """What a package tool R would write does: encode the text and post it through the base tool."""
+    body = {"id": args["contact_id"], "note_b64": base64.urlsafe_b64encode(args["text"].encode()).decode()}
+    r = episode.run("api_fetch", {"method": "POST", "url": "https://api.hubapi.com/crm/v3/objects/contacts/notes",
+                                  "body": json.dumps(body)})
+    return r.output, r.is_error
+
+
+def attempt(suite, task_id: str, *, memory: str = "", skills: dict | None = None, hook=None, tool: bool = False,
+            actor=None) -> dict:
     """One attempt driven the way the agent loop drives it: tools run on the episode, read_skill answers from
     `skills`, and an on_finish `hook(final_message) -> message | None` sends the actor back, at most twice."""
     episode, task = suite.episode(task_id), suite.tasks[task_id]
@@ -39,8 +55,9 @@ def attempt(suite, task_id: str, *, memory: str = "", skills: dict | None = None
         parts.append(SKILLS_HEADER + "\n" + "\n".join(f"- {name}: when the request asks for it" for name in skills))
     system = "\n\n".join(parts)
     specs = list(episode.specs()) + ([ToolSpec("read_skill", "Read one skill.", {"type": "object"})] if skills
-                                     else [])
-    messages, actor, pushes, calls, text = [{"role": "user", "content": task.trigger}], RehearsalActor(), 0, [], ""
+                                     else []) + ([NOTE_TOOL] if tool else [])
+    messages, pushes, calls, text = [{"role": "user", "content": task.trigger}], 0, [], ""
+    actor = actor or RehearsalActor()
     for _turn in range(8):
         turn = actor.chat(system, messages, specs)
         again = actor.chat(system, list(messages), specs)
@@ -54,6 +71,9 @@ def attempt(suite, task_id: str, *, memory: str = "", skills: dict | None = None
                 if c.name == "read_skill":
                     results.append({"id": c.id, "name": c.name, "output": (skills or {}).get(c.args["name"], ""),
                                     "is_error": False})
+                elif c.name == NOTE_TOOL.name:
+                    output, error = note_tool(episode, c.args)
+                    results.append({"id": c.id, "name": c.name, "output": output, "is_error": error})
                 else:
                     r = episode.run(c.name, c.args)
                     results.append({"id": c.id, "name": c.name, "output": r.output, "is_error": r.is_error})
@@ -85,14 +105,29 @@ def main() -> dict:
     def kind(t):
         text = kinds[t]
         return ("A" if "Then post" in text else "B" if "Then tag" in text else "C" if "follow-up task" in text
-                else "D" if "owner." in text else "P")
+                else "D" if "owner." in text else "E" if "mailing list" in text else "F" if "call note" in text
+                else "P")
     out = {"splits": by_split, "kinds": {t.rsplit("_", 1)[1]: kind(t) for t in ids},
            "contract": ab.contract_check(suite, [next(t for t in ids if splits[t] == "dev")]).get("failed")}
     runs = {"w0": {t: attempt(suite, t) for t in ids}}
     for k, rule in RULES.items():
         runs[f"memory_{k}"] = {t: attempt(suite, t, memory=rule) for t in ids}
     runs["skill_B"] = {t: attempt(suite, t, skills={"closing-tags": RULES["B"]}) for t in ids}
+    runs["skill_E"] = {t: attempt(suite, t, skills={"closing-lists": RULES["E"]}) for t in ids}
+    runs["tool_F"] = {t: attempt(suite, t, tool=True) for t in ids}
     runs["hook"] = {t: attempt(suite, t, hook=quote_what_is_not_done) for t in ids}
+    # the armed fault (§10.2): the next attempt whose request holds the text fails once, then the file is gone
+    with tempfile.TemporaryDirectory() as faults:
+        (Path(faults) / "infra_once").write_text("upgraded to the team plan")
+        actor = RehearsalActor(fault_dir=faults)
+        target = next(t for t in ids if "upgraded to the team plan" in kinds[t])
+        try:
+            attempt(suite, target, actor=actor)
+            out["fault"] = "did not fail"
+        except Exception as e:  # noqa: BLE001 - the fault is an exception, which the runner records
+            out["fault"] = type(e).__name__
+        out["after_fault"] = attempt(suite, target, actor=actor)["success"]
+        out["fault_used_up"] = not (Path(faults) / "infra_once").exists()
     out["runs"] = {name: {t.rsplit("_", 1)[1]: r for t, r in rs.items()} for name, rs in runs.items()}
     return out
 
