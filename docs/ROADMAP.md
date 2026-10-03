@@ -205,7 +205,19 @@ A～E 属于首版，递归方法比较与实际回用仍为必做。第二版�
           - 670 次模型调用，账本名义 $32.35，与 CLI 报价相等。
           - 失败多扣在最后的汇报上：train 失败断言里 gmail 占 65 条，其余为 google 15、slack 8、buffer 8、linkedin 7、hubspot 3。dev 也是如此：该发邮件时改发 Slack 或没发；新旧规则或追踪编号选错版本；数字、措辞不准。都是任务判断，不是 provider 的问题。
           - 这个根还容得下 segment-0（3 轮约 $110）与 final（约 $37，用 final 份额），研究位放不下。
-     6. 额度允许，再按第 4～7 步跑完整活动。
+     6. 同一工作区：`--phase cycle --until segment-0`，至多 3 轮。
+        - 2026-10-03～04 进行中：
+          - 第 1 轮：R 把失败摘要里的截断标记读成 actor 漏读，提出截断 hook，gate 拒绝（36%→40%，增益 0.04 未过 0.05）。截断标记与包 API 说明随后改正（`29fbc34`），第 3 轮起生效。
+          - 第 2 轮：改 `worker.finish` 的结束前核对清单，gate 接受（dev 36%→64%，置信区间 [+0.12, +0.44]，无退步）。装包后重跑 train 失败题，30 题中 13 题通过。
+          - 第 3 轮：`before_tool` 的写前核对 hook，gate 进行中。
+     7. final（对外数字）：segment-0 结束后在同一工作区跑，研究位不开（这个根放不下）。
+        - 在 `claude.toml` 写 `[freeze.final]`：experiment_id；release_refs 为 W0 与 segment-0 结束时的 W*；tasks 为 test（23 题）；repeats 2；统计计划同第 7 步。
+        - freeze 后先把计划 hash 提交到 git，再跑 `--phase evaluate --plan <final_plan_ref>`。
+        - 规模：约 92 次尝试、约 $41 名义，用 final 份额（$50）。inconclusive 也照实报告。
+     8. 版本：
+        - final 结果写进结果文档与 README 的结果一节，写明模型与 effort、`claude -p` 的 JSON 工具调用、Marketing 一个领域、n 与 repeats、费用；dev 的 gate 增益有选择偏差，只作过程记录，对外数字是 final 的 test 结果。
+        - 全套测试通过后，把 `m1-automationbench` 在本地合并进 main 并打版本标签（不推送，除非用户要求），之后继续在 `m1-automationbench` 开发。
+     9. 下一版：另开名义根约 $800 的工作区，按第 4～7 步跑完整活动（含研究位与 segment-1）：检验 R 改进自身（C4），并独立重测一次增益。
 3. **计价校准（独立于正式活动）。**
    - 2026-10-03 起延后：先跑第 2a 步；GLM-5.3 恢复为 actor 时再做本步。
    - 继续使用 open.bigmodel.cn。`[pricing]` 按该平台价目填写，注明汇率与日期；账本必须等于账单，否则预算上限没有意义。
