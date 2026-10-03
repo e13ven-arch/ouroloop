@@ -246,6 +246,13 @@
 
 工作区 `workspace-rehearsal2`（scope `rehearsal-2`），经 CLI 运行，没有注入研究员。R 作答 21 次，请求与回复存档在 `examples/rehearsal/archive/2026-10-03-second/`。
 
+作答依据请求文件，有三处例外（事后核对发现），其中前两处决定了工具与 hook 能否生效：
+- segment-0 round 1 的汇总回复写了包工具，用到了备注端点的 URL、字段名 `id` 与 `note_b64`、基础工具名 `api_fetch` 及其 `method/url/body` 参数。汇总请求里都没有这些（请求里的笔记只说经基础 API 工具发到备注端点、要 base64url 编码），它们只出现在同一轮的笔记请求里。
+- 候选支 round 0 的汇总回复写了 on_finish hook，按字面串 `Not done:` 判断，并把其后的原话推回。汇总请求里的笔记只转述了 actor 的结束消息，没有这个字面串；它只出现在笔记请求里 actor 的原话中。外测 8/8 对 4/8 与 accepted 裁决都建立在这个 hook 上。
+- 研究位的回复逐字复用了第一次彩排的 R1 正文，其中“(an on_finish hook)”不在该请求里。
+
+由此看到的设计问题：汇总请求只有笔记、包与 targets，没有失败摘要，也没有基础工具的名称与参数。真实 R 要写包工具或 hook，所需的接口细节只能由笔记带过去，而 R0 的 diagnose 提示没有要求笔记带这些。已记入 ROADMAP §2。
+
 - **baseline**：25 次尝试全部有效；open 与 unknown 预留为 0；W0 dev 4/16。K1 通过。
 - **segment-0**：
   - round 0：
@@ -257,8 +264,8 @@
     - 这一轮的测量中，actor 读了 6 次技能：装入技能后的 K3a。
   - round 2：为 C 写 memory，gate 拒绝。这一轮的测量中，actor 拿到并调用了 `add_contact_note`：装入包工具后的 K3a。
 - **研究位**：
-  - 请求带出了预算（`ffe3aff` 的修正生效）。
-  - R0 依据请求里的经验（技能与工具被接受，C 的笔记被拒、增益 0）提出 R1，正文同第一次。
+  - 请求带出了剩余预算（remaining $249.80；研究位自身尚无用量，used 为空），`ffe3aff` 的修正生效。
+  - R0 的理由依据请求里的经验（技能与工具被接受，C 的笔记被拒、增益 0）；R1 正文逐字复用第一次彩排的回复（见上方例外）。
 - **两支**：
   - 对照支（R0）：round 0 为 C 写技能，被拒；round 1 的汇总注入空回复，本轮 invalid（汇总空回复）。没有装入，W* 是起点。
   - 候选支（R1）：round 0 为 C 写 on_finish hook，装入；round 1 没有失败，回复 stop。作答前再次写入 `infra_once`。
@@ -266,16 +273,16 @@
   - 对照 W* 在 065 上的 `outer_control#0` 记为基础设施失败，`outer_control#1` 补跑有效，supersedes 指向原尝试。
   - 8 题配对完整，候选 8/8 对照 4/8，裁决 accepted，R1 装入。
 - **segment-1（R1）**：
-  - round 0：笔记缺 `mechanism`，读不出。本轮只有这一条，因此 invalid，不调用汇总（笔记缺字段，以及笔记全部读不出）。
+  - round 0：笔记缺 `mechanism`（也缺 `generality`），读不出。本轮只有这一条，因此 invalid，不调用汇总（笔记缺字段，以及笔记全部读不出）。
   - round 1：装入 B 的 memory。
   - round 2：
-    - 轮换到 T_D，不是 §10.3 预计的 C。按 R1 先写笔记，所以首稿的失败是形状检查（技能文件没有列入 manifest），不在 Docker 中；Docker 中的修订回路已在第一次彩排覆盖。
+    - 轮换到 T_D，不是 §10.3 注入计划设想的为 C 写 hook。按 R1 先写笔记，所以首稿的失败是形状检查（技能文件没有列入 manifest），不在 Docker 中；Docker 中的修订回路已在第一次彩排覆盖。
     - 第一次修订注入非 JSON，占用一次修订；后两次仍交失败的补丁。修订用尽，本轮 invalid。
-  - 以 rounds_done 结束；回用检查 verified：2 轮加载 R1，计 4 个请求。
+  - 以 rounds_done 结束。回用检查 verified：计入 2 轮（round 1、2 的汇总由 R1 的正文生成），4 个请求。round 0 只有笔记、没有汇总；round 2 的 3 次修订记为 revise 阶段，都不计入。segment-1 实际在 R1 下向 R 发了 8 个请求。
 - **报告**：
   - C1 inconclusive；C4 inconclusive，detail 按修正后的措辞写明“1 个独立组，不足 3 个”。
-  - 行为：技能读取 143 次；on_finish 4 次 block、8 次 continue；包工具调用 13 次；worker 会话 20 次。
-- **账本**：settled $0.41；released 5 笔（3 笔外测与两支的预留，2 笔注入的基础设施失败，均为 unbilled）；没有 unknown。
+  - 行为（报告按主工作区的 186 次会话统计，含主线与外测，不含两支内部的 63 次会话）：技能读取 143 次；on_finish 4 次 block、8 次 continue（都在外测候选臂）；包工具调用 13 次；worker 会话 20 次。
+- **账本**：settled $0.41；released 5 笔：3 笔外测与两支的份额预留，2 笔注入的基础设施失败（unbilled，没有用量）；没有 unknown。
 - **覆盖**：
   - 第一次的三处缺口都已覆盖：技能、包工具、补跑（主线 gate 与外测各一次）。
   - 故障表第一次没有注入的情形，这次覆盖了：笔记缺字段、笔记全部读不出、汇总空回复、修订读不出、修订用尽。
