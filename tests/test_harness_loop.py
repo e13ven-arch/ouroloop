@@ -606,3 +606,11 @@ def test_a_revision_is_shown_the_hosts_base_tools(fake_upstream, tmp_path):
     assert shown and [t["name"] for t in shown[0]] == ["api_search", "api_fetch", "base64_encode"]
     fetch = next(t for t in shown[0] if t["name"] == "api_fetch")
     assert {"method", "url", "body"} <= set(fetch["parameters"]["properties"]) and fetch["description"]
+
+
+def test_the_package_api_says_how_a_test_reaches_package_code():
+    """The runner loads each test file by its path from a directory not on sys.path (worker_runner.run_tests), so
+    the API R writes from says so: a test that imported the package would fail its first check and cost a
+    revision (docs/REHEARSAL.md §13)."""
+    from ouroloop.research.basic import PACKAGE_API
+    assert "loaded by its path" in PACKAGE_API and "spec_from_file_location" in PACKAGE_API

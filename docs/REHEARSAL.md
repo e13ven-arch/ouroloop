@@ -303,3 +303,28 @@
   - segment-0 中为 F 写的包工具通过检查链，被 gate 接受，并在下一轮被调用。
   - 候选支为 C 写的 on_finish hook 被接受，外测运行。
   - 核对员确认每条回复都只用了本条请求里的内容。若仍有例外，如实记录，并说明方案 2 还缺什么。
+
+## 13. 第三次彩排的结果（2026-10-03）
+
+工作区 `workspace-rehearsal3`（scope `rehearsal-3`），经 CLI 运行到 `--until slot-0`。R 作答 13 次，存档在 `examples/rehearsal/archive/2026-10-03-third/`。
+
+- 汇总请求带有 `tools`（`api_search`、`api_fetch`、`base64_encode` 及其参数）。
+- segment-0：
+  - round 0 装入 E 的技能。
+  - round 1 装入 F 的包工具，下一轮的测量中它被调用。
+    - 笔记从本条失败过程里写下了端点（POST 与 URL）、被拒的请求体、400 错误原文（`note_b64`，base64url）与 actor 要的接口 `(contact_id, text)`。
+    - 汇总只凭笔记与 `tools` 写出工具：先用 `base64_encode` 编码，再用 `api_fetch` 发出 `{id, note_b64}`。
+  - round 2 为 C 写 memory，gate 拒绝。
+- 研究位：R1 只用请求里的词（“a check before finishing”“final message”），没有出现请求之外的字符串。
+- 两支：
+  - 对照支（R0）：C 的技能被拒，A 的 memory 装入。
+  - 候选支（R1）：凭共享笔记里引用的 actor 原话（`Not done:`）与系统提示里的 on_finish 接口写出 hook，装入；round 1 没有失败，回复 stop。
+- 外测：候选 8/8、对照 5/8，裁决 accepted，R1 装入。
+- 独立核对：13 条回复都没有用到本条请求之外的世界事实（URL、字段名、工具名、参数、标记、错误原文）；§11 的三处问题都没有再出现。余下的问题：
+  - 两份代码草稿的测试按文件路径加载包代码，这一点包 API 没有写，写法沿用了前两次彩排。已在包 API 里补上：测试按路径加载，包根不在 sys.path 上（`test_harness_loop.py::test_the_package_api_says_how_a_test_reaches_package_code`）。
+  - 研究位的 R1 是前两次正文的改写，不是逐字复用，但子句顺序与部分措辞相同。
+  - 六条汇总的 abandon_if 用了请求里没有的“gate”一词，无关接口。
+- 结论：
+  - 方案 2 加上“笔记写下本条失败过程里的接口细节”，足以只凭请求写出有效的包工具与 hook。
+  - 但笔记写下这些细节，是因为这次的作答纪律要求；R0 的 diagnose 提示并没有要求。真实模型若只转述（例如“端点要编码后的备注”），汇总就拿不到 URL、字段名或 `Not done:` 这样的标记。见 ROADMAP §2。
+  - 这次只覆盖了容易的情形：actor 自己的失败调用正好打到了正确的端点，错误原文也给出了字段名。若一类收尾的端点从未被调用过，工具只能在运行时经 `api_search` 去找，这条路径没有被检验。

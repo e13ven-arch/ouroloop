@@ -265,8 +265,10 @@ PACKAGE_API = (
     "result_excerpt, error, truncated, step}; ctx.call_tool(name, args) calls one of the episode's base tools, "
     "which `tools` in the input lists with their parameters (read-only from a hook), and returns .output and "
     ".is_error. tests/*.py hold test_* functions taking ctx, run "
-    "against a train-only fixture world, where ctx.view is {\"fixture\": true}. Standard library only; no "
-    "network and no files outside the package.")
+    "against a train-only fixture world, where ctx.view is {\"fixture\": true}. A test file is loaded by its path "
+    "and the package root is not on sys.path, so a test reaches package code with "
+    "importlib.util.spec_from_file_location(os.path.join(os.path.dirname(__file__), '..', '<path>')), not an "
+    "import. Standard library only; no network and no files outside the package.")
 PACKAGE_FORMAT = (
     'Reply with JSON only: {"requirements": [{"id": "...", "context": "...", "expected_behavior": "...", '
     '"observed_behavior": "...", "acceptance": "...", "recurrence": 1}], "next_action": '
