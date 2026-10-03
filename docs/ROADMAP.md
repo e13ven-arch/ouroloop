@@ -178,11 +178,12 @@ A～E 属于首版，递归方法比较与实际回用仍为必做。第二版�
      - 每次调用重发整段历史，上下文缓存命中多少由冒烟实测；
      - 请求带有上面三样附加内容；
      - 得分是“Claude Opus 5.5（effort medium）经 `claude -p`、JSON 工具调用”在本框架下的得分，不与原生 tool use 的公开成绩直接比较。
-   - 计价：订阅没有逐次账单。`[pricing]` 暂按 claude-opus-5-5 的 API 标价填写（输入 $4、输出 $20、缓存读 $0.20、5 分钟缓存写 $5，每百万 token），作名义上界，`source` 注明；每次调用把 CLI 报告的 API 等价费用记进 usage（`cli_cost_usd`），冒烟时用它校正 `[pricing]`。一次 CLI 调用最多发 5 次模型请求（输出触顶后 CLI 自行续写至多 3 次，加一次结构化输出重试），所以 `max_output_tokens` 至少是 `max_tokens` 的 5 倍，启动检查会核对。预算是名义美元，用来限住额度的消耗。
+   - 计价：订阅没有逐次账单。`[pricing]` 按 claude-opus-5-5 的 API 标价填写（输入 $4、输出 $20、缓存读 $0.20、缓存写 $8，每百万 token；CLI 写的是 1 小时缓存），作名义上界，`source` 注明；每次调用把 CLI 报告的 API 等价费用记进 usage（`cli_cost_usd`），用来核对账本。一次 CLI 调用最多发 5 次模型请求（输出触顶后 CLI 自行续写至多 3 次，加一次结构化输出重试），所以 `max_output_tokens` 至少是 `max_tokens` 的 5 倍，启动检查会核对。预算是名义美元，用来限住额度的消耗。
    - 额度用完：CLI 报使用上限属账号类错误，活动暂停，额度恢复后同一命令续跑（[M5 §3](modules/05_EXECUTION_BUDGET.md)）。CLI 实际作答的模型不是所配模型时同样暂停。若账号开了 extra usage，CLI 在套餐额度用完后改用付费额度继续，不报错，名义预算就成了真钱：第 2 步之前由用户在 claude.ai 设置里确认 extra usage 已关闭。
    - 顺序（每一步先看用量与稳定性，用户确认后再进下一步）：
      1. 实现 provider 与离线测试（假 `claude` 程序），不耗额度。
      2. 探针：经 provider 直接发两次调用，一次普通问答、一次带一个假工具的结构化回复。核对 CLI 的输出形状（`structured_output`、`num_turns`、`stop_reason`）、用量与缓存、`modelUsage` 里实际作答的模型、`cli_cost_usd` 与 `[pricing]` 是否相符、工作目录是否仍为空，以及模型看到的请求之外的内容。
+        - 2026-10-03 结果（`examples/automationbench/claude_probe.py`）：两次都成功，普通问答 `num_turns` 1、4.5 秒，结构化回复 `num_turns` 2、2.6 秒，正确调用了假工具；`modelUsage` 只有 claude-opus-5-5；工作目录仍为空；账本与 CLI 报价逐分相等（缓存写按 1 小时价 $8/M，已改进 `[pricing]`）。模型看到的请求之外的内容只有一段 userEmail 上下文（CLI 自带“不属于用户消息”的说明），没有看到日期。effort medium 下普通问答的 thinking 为 117 token。
      3. 冒烟：复制 `claude.toml` 为 `claude-smoke.local.toml`，改 `[workspace] root` 与 `[rsi] scope_id`，`[freeze.budget]` 压到几美元；跑 `--phase smoke`（1 道 dev 题），看一道题的调用次数、token、缓存命中与耗时。
      4. 同一冒烟工作区：`ouroloop freeze` 后把打印的 `[rsi]` 行加进副本，跑 `--phase baseline --limit 2`（dev 与 train 各 2 题）。按实测校正 `[pricing]`，并按实测的每题名义费用和第 4 步的结构重定 `claude.toml` 的 `[freeze.budget]`：现在的 $300/$50 沿用 GLM 的估算，Claude 下研究位的两支与外测都不够。预算根一旦打开就不能改，所以这一步必须在活动工作区打开之前完成。
      5. 活动工作区：`--phase cycle --until baseline` 跑 train+dev 基线（77 题），得到得分。

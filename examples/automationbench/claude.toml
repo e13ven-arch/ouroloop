@@ -63,19 +63,19 @@ max_tokens = 32000
 timeout = 900
 
 # A subscription has no per-call bill, so these prices are a notional bound that turns the budget into a cap on how
-# much of the subscription an activity may use. They are claude-opus-5-5's API list prices, provisional until the
-# smoke runs compare the book with the API-equivalent cost the CLI reports for each call (usage `cli_cost_usd`);
-# cache_write_per_1k is the 5-minute rate, and becomes 0.008 if the CLI writes 1-hour entries. One CLI call can make
+# much of the subscription an activity may use. They are claude-opus-5-5's API list prices; the probe of 2026-10-03
+# (ROADMAP §3 step 2a.2) matched the book to the API-equivalent cost the CLI reports for each call (usage
+# `cli_cost_usd`) to the cent, cache writes at the 1-hour rate the CLI uses ($8 per M). One CLI call can make
 # up to 5 model requests (the CLI continues a reply cut at the output limit up to 3 times, plus one structured-output
 # retry), so max_output_tokens is at least 5 times the largest max_tokens above (the startup check holds it).
 [pricing]
 input_per_1k = 0.004
 cache_read_per_1k = 0.0002
-cache_write_per_1k = 0.005
+cache_write_per_1k = 0.008
 output_per_1k = 0.02
 max_input_tokens = 1000000
 max_output_tokens = 163840
-source = "notional, not a bill: claude-opus-5-5 API list price ($4/$20 per M, cache read $0.20, 5m cache write $5), to be checked against the CLI's reported cost in the smoke runs (docs/ROADMAP.md §3, step 2a), 2026-10-03"
+source = "notional, not a bill: claude-opus-5-5 API list price ($4/$20 per M, cache read $0.20, 1h cache write $8), equal to the CLI's reported cost in the probe (docs/ROADMAP.md §3, step 2a), 2026-10-03"
 
 # The automatic loop and its preset. The preset fixes the package limits, the note and draft limits, the gate's
 # min_gain/max_regression_rate, the schedule (3 worker rounds per segment, 1 research slot, patience 2) and the

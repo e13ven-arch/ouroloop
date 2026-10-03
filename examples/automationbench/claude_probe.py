@@ -36,8 +36,10 @@ def report(name: str, turn, provider, pricing: Pricing) -> dict:
             "tool_calls": [{"name": c.name, "args": c.args} for c in turn.tool_calls],
             "usage": usage, "book_usd": pricing.cost(normalize_usage(usage)), "cli_cost_usd": usage.get("cli_cost_usd"),
             "num_turns": raw.get("num_turns"), "stop_reason": raw.get("stop_reason"), "subtype": raw.get("subtype"),
-            "models": sorted(raw.get("modelUsage") or {}), "has_structured_output": "structured_output" in raw,
-            "result_keys": sorted(raw), "workdir_empty": not any(provider.workdir.iterdir())}
+            "models": sorted(raw.get("modelUsage") or {}), "model_usage": raw.get("modelUsage"),
+            "cli_usage": raw.get("usage"), "has_structured_output": "structured_output" in raw,
+            "terminal_reason": raw.get("terminal_reason"), "duration_ms": raw.get("duration_ms"),
+            "workdir_empty": not any(provider.workdir.iterdir())}
 
 
 def main() -> list:
