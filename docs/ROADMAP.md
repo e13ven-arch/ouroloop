@@ -129,7 +129,7 @@ A～E 属于首版，递归方法比较与实际回用仍为必做。第二版�
      - 研究位的 system 提示保留 R 自己的 propose 文本（R 正是用它提出对自身的修改），由研究位格式声明：前文是 worker 轮的改包指令，本次调用改的是这些指令本身，以本格式为准。只改代码里的格式，不改 R0 文本：R0 已冻结进 release，活动内改它不会生效（新增 `test_cycle.py::test_the_slot_keeps_rs_propose_text_and_its_format_governs`）。
      - 研究位读不出的回复记 invalid，不记 no_proposal；没有研究收据时，报告的 C4 按 `cycle.json` 中研究位的结局写 detail。规则见 [M4 §1](modules/04_RESEARCH_LOOP.md)：每个提案都校验；`cycle.json` 记 stage（reply、admission 或 build）；提案文本不截断，超过 K 的提示长度上限时构建失败。新增 `test_report.py::test_c4_says_how_a_slot_without_a_campaign_ended`、`test_cycle.py::test_an_unreadable_slot_reply_is_an_invalid_slot`、`test_a_slot_decision_r_states_is_still_no_proposal`、`test_a_slot_that_admission_or_the_build_refuses_says_which`、`test_a_slot_reply_cut_at_the_output_limit_pauses_and_is_asked_again`。
      - 研究位安装 R1 之后，回用检查只在紧随其后的 worker 段非暂停地结束时计算；该段暂停、崩溃或停在停止点时，保留待查。已随停止点在阶段 1 完成（`test_cycle.py::test_a_paused_segment_after_an_install_keeps_the_reuse_check_pending`）。
-2. **付费前彩排（生产路径，不付 API 费用）。** 2026-10-03 已完成，结果与覆盖缺口见 [REHEARSAL.md §9](REHEARSAL.md)。
+2. **付费前彩排（生产路径，不付 API 费用）。** 2026-10-03 已完成，结果与覆盖缺口见 [REHEARSAL.md §9](REHEARSAL.md)；补技能、包工具与补跑的第二次彩排见 §10。
    - 目的：经 CLI `ouroloop bench --phase cycle` 走一遍生产路径，不注入研究员，也不替换 `cycle_pairs`，R 由 Claude 作答。它证明接线与故障协议，不证明任何模型的效果。
    - 环境：
      - R：`[research.llm] type = "manual"`（`ouroloop/providers/manual.py`）。Claude 只依据请求文件作答，不使用仓库、评分器或任务答案这些带外知识。

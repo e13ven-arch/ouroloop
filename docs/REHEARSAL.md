@@ -184,3 +184,60 @@
   - 拒答的原因把“declined the request”写了两遍（`ffe3aff`）；
   - manual 回复被截断时，消息写成“(None tokens)”（`ffe3aff`）；
   - 研究裁决 accepted 而不显著时，收据一律写“区间含 0”；只有 1 个独立组时区间并不含 0，现在写明独立组不足 3 个（`test_campaign.py::test_an_acceptance_says_why_it_is_not_significant`）。
+
+## 10. 第二次彩排（规格，2026-10-03）
+
+目的：补上第一次的三处覆盖缺口——装入技能、装入并执行包工具、在 CLI 路径上发生补跑，并顺带注入故障表里第一次没有注入的情形。世界、actor 与配置都在第一次的基础上增补；上游版本改为 `0.0.0-rehearsal.2`，第一次彩排对应提交 `5a6c7cb` 的上游。
+
+### 10.1 世界增补
+
+新增两类收尾，各有一道 train 题，在开发顺序的两半各有一道 dev 题：
+
+| 类 | 收尾 | 端点 | 断言 | train | dev 前一半 | dev 后一半 |
+|---|---|---|---|---|---|---|
+| E | 把联系人加入邮件列表 | `POST https://api.hubapi.com/crm/v3/lists/members` `{"contact_id","list"}` | `hubspot_list_member` | 010 | 071 | 076 |
+| F | 给联系人加一条通话备注 | `POST https://api.hubapi.com/crm/v3/objects/contacts/notes` `{"id","note_b64"}`，备注须 base64url 编码；给明文时返回 400 | `hubspot_note_exists` | 011 | 072 | 080 |
+
+行序：
+- train 依次为 T_E、T_F、T_C、T_A、T_B、T_D，再接 3 道 P 题。
+- dev 前一半依次为 I_A、I_B、I_C、I_D、I_E、I_F、P、P；后一半依次为 O_A～O_F、P、P。
+
+由此 train 失败 6 题（超出第 2 节“不超过 5”的规模，这次需要多两类），dev 16 题，W0 在 dev 上 4/16。主线 gate 修好一类的增益是 2/16，内层 gate 与外测是 1/8。
+
+### 10.2 actor 增补
+
+- **E 只认技能。** 规则 `mailing lists?` 只在读到的技能正文里识别，memory、W 的提示与推回都不算。跳过时的线索：`...adding the contact to the mailing list; I follow list sign-ups only from a skill that describes them, and none does.`
+- **F 只认包工具。** 若 tools 里有一个包工具，其名字或描述含 `note`、输入 schema 有 `contact_id` 与 `text` 两个属性，就以这两个参数调用它。否则先用明文调一次备注端点，得到 400，再结束。线索：`...adding the call note; the notes endpoint wants the note encoded, and none of my tools adds a note to a contact from its plain text (contact_id, text).`
+- **补跑注入。**
+  - `[llm]` 可带 `fault_dir`。目录里有 `infra_once` 文件时，actor 在一次尝试的第一轮读出文件中的文字；请求含这段文字，就删掉文件，并以 `ProviderError(retryable=True, unbilled=True)` 失败一次。
+  - 这一次尝试记为基础设施失败。补跑时文件已不在，尝试照常进行。
+  - 文件由操作者（答题人）在需要的时刻写入，属于故障注入。
+
+### 10.3 运行
+
+- 配置 `examples/rehearsal/rehearsal2.toml`：
+  - 工作区 `workspace-rehearsal2`，scope `rehearsal-2`；
+  - `fault_dir = "workspace-rehearsal2/actor-faults"`；
+  - 其余同第一次，仍是 `max_failure_notes = 1`。
+- 预期走向（不是验收条件）：
+  - segment-0：round 0 看到 T_E，round 1 看到 T_F，round 2 看到 T_C。
+  - 研究位：R0 按经验提出 R1。
+  - 两支都从 W_EF 出发，先看到 T_C，再看到 T_A。
+  - segment-1：在 R1 下进行。
+- 注入计划：
+  - segment-0 round 0 的汇总作答前，写入 `infra_once`，内容是 dev 后一半一道 P 题的文字。gate 的候选臂在这道题上失败一次，按 retry_policy 补跑。
+  - 两支最后一次作答前，再写一次。外测在这道题上失败一次并补跑。
+  - 对照支 round 1 的汇总注入空回复，本轮 invalid（汇总空回复）。
+  - segment-1 round 0 的笔记缺 `mechanism`：笔记读不出，本轮只有这一条，因此本轮 invalid，不调用汇总（笔记缺字段，以及笔记全部读不出）。
+  - segment-1 round 2 写 hook 时，首稿在 Docker 中失败，修订依次交非 JSON、仍失败的补丁、仍失败的补丁。修订用尽，本轮 invalid（修订读不出，修订用尽）。
+- 通过条件：
+  - 技能：装入技能的下一轮，系统提示有技能索引、tools 有 `read_skill`，transcript 中有 `read_skill` 调用。
+  - 包工具：
+    - 含包工具的草稿在 Docker 中走完检查链，结果为 ready；
+    - gate 候选臂的 transcript 中有 `package_tool` 事件，且有经 broker 的基础工具调用；
+    - 装入后下一轮的 tools 中有这个包工具。
+  - 补跑：
+    - 主线 gate 与外测各有一次基础设施失败的尝试，各被补跑一次；
+    - 补跑记 supersedes，原尝试保留；
+    - 配对完整，裁决不因此变成 inconclusive。
+  - 上面列出的故障情形逐项得到预期。
