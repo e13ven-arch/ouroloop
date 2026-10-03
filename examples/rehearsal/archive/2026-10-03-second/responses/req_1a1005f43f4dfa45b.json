@@ -1,0 +1,4 @@
+{
+  "text": "{\"failure_class\": \"closing step skipped\",\n \"root_cause\": \"The agent made the main update and finished. The request ended with a closing step, logging a follow-up task for the contact, and the agent's last message says nothing in its instructions covers closing steps of this kind. The only failed check is the follow-up task.\",\n \"mechanism\": \"A working note that tells the agent: when a request ends by asking to log a follow-up task for the contact, create that task with the title the request gives before finishing.\",\n \"component\": \"memory\",\n \"generality\": \"Every request that ends with a follow-up task hits the same gap: the agent stops after the main update when its instructions do not name the closing step.\"}\n",
+  "stop": "end"
+}

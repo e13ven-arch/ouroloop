@@ -241,3 +241,42 @@
     - 补跑记 supersedes，原尝试保留；
     - 配对完整，裁决不因此变成 inconclusive。
   - 上面列出的故障情形逐项得到预期。
+
+## 11. 第二次彩排的结果（2026-10-03）
+
+工作区 `workspace-rehearsal2`（scope `rehearsal-2`），经 CLI 运行，没有注入研究员。R 作答 21 次，请求与回复存档在 `examples/rehearsal/archive/2026-10-03-second/`。
+
+- **baseline**：25 次尝试全部有效；open 与 unknown 预留为 0；W0 dev 4/16。K1 通过。
+- **segment-0**：
+  - round 0：
+    - 汇总作答前写入 `infra_once`（目标是 dev 后一半的 P 题 065）。
+    - 装入 E 的技能。gate 候选臂在 065 上的 `subject#0` 记为基础设施失败，`subject#1` 补跑有效，supersedes 指向原尝试，配对完整。
+  - round 1：
+    - 装入 F 的包工具 `add_contact_note`：用标准库编码明文，经 broker 调用 `api_fetch`，带包测试；草稿在 Docker 中走完检查链。
+    - gate 候选臂的 transcript 里有 2 个 `package_tool` 事件，各带一次 `api_fetch` broker 调用，另有 2 个 worker 会话。
+    - 这一轮的测量中，actor 读了 6 次技能：装入技能后的 K3a。
+  - round 2：为 C 写 memory，gate 拒绝。这一轮的测量中，actor 拿到并调用了 `add_contact_note`：装入包工具后的 K3a。
+- **研究位**：
+  - 请求带出了预算（`ffe3aff` 的修正生效）。
+  - R0 依据请求里的经验（技能与工具被接受，C 的笔记被拒、增益 0）提出 R1，正文同第一次。
+- **两支**：
+  - 对照支（R0）：round 0 为 C 写技能，被拒；round 1 的汇总注入空回复，本轮 invalid（汇总空回复）。没有装入，W* 是起点。
+  - 候选支（R1）：round 0 为 C 写 on_finish hook，装入；round 1 没有失败，回复 stop。作答前再次写入 `infra_once`。
+- **外测**：
+  - 对照 W* 在 065 上的 `outer_control#0` 记为基础设施失败，`outer_control#1` 补跑有效，supersedes 指向原尝试。
+  - 8 题配对完整，候选 8/8 对照 4/8，裁决 accepted，R1 装入。
+- **segment-1（R1）**：
+  - round 0：笔记缺 `mechanism`，读不出。本轮只有这一条，因此 invalid，不调用汇总（笔记缺字段，以及笔记全部读不出）。
+  - round 1：装入 B 的 memory。
+  - round 2：
+    - 轮换到 T_D，不是 §10.3 预计的 C。按 R1 先写笔记，所以首稿的失败是形状检查（技能文件没有列入 manifest），不在 Docker 中；Docker 中的修订回路已在第一次彩排覆盖。
+    - 第一次修订注入非 JSON，占用一次修订；后两次仍交失败的补丁。修订用尽，本轮 invalid。
+  - 以 rounds_done 结束；回用检查 verified：2 轮加载 R1，计 4 个请求。
+- **报告**：
+  - C1 inconclusive；C4 inconclusive，detail 按修正后的措辞写明“1 个独立组，不足 3 个”。
+  - 行为：技能读取 143 次；on_finish 4 次 block、8 次 continue；包工具调用 13 次；worker 会话 20 次。
+- **账本**：settled $0.41；released 5 笔（3 笔外测与两支的预留，2 笔注入的基础设施失败，均为 unbilled）；没有 unknown。
+- **覆盖**：
+  - 第一次的三处缺口都已覆盖：技能、包工具、补跑（主线 gate 与外测各一次）。
+  - 故障表第一次没有注入的情形，这次覆盖了：笔记缺字段、笔记全部读不出、汇总空回复、修订读不出、修订用尽。
+  - 仍只有离线测试：笔记空回复（与其他读不出的笔记同一路径）；两支份额占不住。
