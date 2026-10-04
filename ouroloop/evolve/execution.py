@@ -839,26 +839,29 @@ class MeteredProvider:
         for attempt in range(self.max_retries + 1):
             reservation = self._reserve(f"{self.operation}#{call}.{attempt}", bound, last)
             try:
-                turn = self.provider.chat(system, messages, specs)
-            except Exception as e:  # noqa: BLE001 - the call may well have been charged: unknown, not free
-                # Released only when the request is known never to have reached the model; otherwise unknown.
-                self.receipts.append(self.account.settle(
-                    reservation.id, None, "released" if getattr(e, "unbilled", False) else "unknown"))
-                last = e
-                if not _retryable(e):
-                    break                  # the same request would fail the same way: do not pay for it again
-                if attempt < self.max_retries:
-                    import time
-                    time.sleep(min(30.0, 2.0 ** attempt))
-                continue
+                try:
+                    turn = self.provider.chat(system, messages, specs)
+                except Exception as e:  # noqa: BLE001 - the call may well have been charged: unknown, not free
+                    # Released only when the request is known never to have reached the model; otherwise unknown.
+                    self.receipts.append(self.account.settle(
+                        reservation.id, None, "released" if getattr(e, "unbilled", False) else "unknown"))
+                    last = e
+                    if not _retryable(e):
+                        break                  # the same request would fail the same way: do not pay for it again
+                    if attempt < self.max_retries:
+                        import time
+                        time.sleep(min(30.0, 2.0 ** attempt))
+                    continue
+                self.receipts.append(self.account.settle(reservation.id,
+                                                         self.pricing.measure(turn.usage or {}), "settled"))
             finally:
+                # Settled first, then counted out: a waiter woken here must find the reservation released, or it
+                # would be refused with nothing in flight and read that as the budget's end.
                 with self._settled:
                     self._in_flight -= 1
                     if self._in_flight == 0 and isinstance(self._own, int):
                         self.provider.retries = self._own      # restored once no call is in flight
                     self._settled.notify_all()
-            self.receipts.append(self.account.settle(reservation.id,
-                                                     self.pricing.measure(turn.usage or {}), "settled"))
             return turn
         raise _as_provider_error(last) from (None if isinstance(last, _provider_error()) else last)
 
