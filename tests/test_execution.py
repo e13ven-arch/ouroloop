@@ -328,3 +328,40 @@ def test_concurrent_calls_through_one_meter_each_get_their_own_reservation(tmp_p
     assert account.remaining()["used"]["model_calls"] == 24.0
     assert set(inner.seen) == {0}            # the provider never retried on its own during a metered call
     assert inner.retries == 3                # and has its own setting back once nothing is in flight
+
+
+def test_a_reservation_refused_for_headroom_waits_for_a_call_in_flight_rather_than_failing(tmp_path):
+    """Under [bench] concurrency the bounds of the calls in flight hold the headroom (v0.2's first final, 2026-10-04:
+    at $21 spent of a $50 share, four $7.28 bounds did not fit and 51 attempts were recorded as budget_exhausted in
+    78 seconds). A refused reservation waits for one of them to settle; only with nothing in flight is the budget
+    spent."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    release = threading.Event()
+
+    class Slow:
+        name, model = "slow", "m-1"
+
+        def chat(self, system, messages, specs=()):
+            release.wait(5)
+            return ChatTurn("done", [], "end", usage={"input_tokens": 1000, "output_tokens": 100})
+
+    pricing = Pricing(0.003, 0.015, 4000, 1000, source="snapshot")    # one call's bound: 4000/1k*0.003 + 1*0.015 = 0.027
+    b = book(tmp_path)
+    account = b.account("round", {"usd": 0.04, "model_calls": 10})     # room for one bound, not two
+    provider = MeteredProvider(Slow(), account, pricing, max_retries=0)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(provider.chat, "s", [])
+        second = pool.submit(provider.chat, "s", [])
+        import time
+        time.sleep(0.3)
+        assert not second.done()                   # waiting for the first to settle, not refused
+        release.set()
+        first.result(5)
+        second.result(5)                           # the first settled at $0.0045, so the second's bound now fits
+    assert [r.status for r in provider.receipts] == ["settled", "settled"]
+    # with nothing in flight, a refusal is the budget's last word
+    tight = MeteredProvider(Slow(), b.account("tight", {"usd": 0.01, "model_calls": 10}), pricing, max_retries=0)
+    with pytest.raises(BudgetError):
+        tight.chat("s", [])

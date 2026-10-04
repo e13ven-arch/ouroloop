@@ -797,10 +797,36 @@ class MeteredProvider:
         self.name = getattr(provider, "name", "metered")
         self.model = getattr(provider, "model", "")
         self._lock = threading.Lock()      # concurrent attempts share one meter: ids and in-flight count
+        self._settled = threading.Condition(self._lock)      # a call in flight has settled: headroom may be back
         self._in_flight = 0
         self._own = None                   # the provider's own retries, read while no metered call is in flight
         self.receipts: list[BudgetReceipt] = []
         self.calls = 0
+
+    def _reserve(self, reservation_id: str, bound: dict, last: Exception | None):
+        """One call's reservation. Refused while other calls of this meter are in flight, it waits for one of them
+        to settle and asks again: their bounds hold the headroom, and the budget is not spent until they are. It
+        is exhausted only when a reservation is refused with nothing in flight — then every further call of the
+        scope is, as before."""
+        while True:
+            with self._settled:
+                try:
+                    reservation = self.account.reserve(reservation_id, bound, allocation=self.allocation)
+                except BudgetError:
+                    if self._in_flight > 0:
+                        self._settled.wait(timeout=60.0)
+                        continue
+                    if last is not None:
+                        # a retry the budget cannot cover: the provider's failure is the outcome
+                        raise _as_provider_error(last) from (None if isinstance(last, _provider_error()) else last)
+                    raise
+                # reserved and counted in one step, so a refusal elsewhere sees this call as in flight
+                if self._in_flight == 0:
+                    self._own = getattr(self.provider, "retries", None)     # in flight, the provider's is 0
+                self._in_flight += 1
+                if isinstance(self._own, int):
+                    self.provider.retries = 0
+                return reservation
 
     def chat(self, system, messages, specs=()):
         """One call, reserved before and settled after, retried while its failure is worth retrying. A failure
@@ -811,20 +837,7 @@ class MeteredProvider:
         with self._lock:
             call, self.calls = self.calls, self.calls + 1      # one id per call, whatever thread makes it
         for attempt in range(self.max_retries + 1):
-            try:
-                reservation = self.account.reserve(f"{self.operation}#{call}.{attempt}", bound,
-                                                  allocation=self.allocation)
-            except BudgetError:
-                if last is not None:
-                    # a retry the budget cannot cover: the provider's failure is the outcome
-                    raise _as_provider_error(last) from (None if isinstance(last, _provider_error()) else last)
-                raise
-            with self._lock:
-                if self._in_flight == 0:
-                    self._own = getattr(self.provider, "retries", None)     # in flight, the provider's is 0
-                self._in_flight += 1
-                if isinstance(self._own, int):
-                    self.provider.retries = 0
+            reservation = self._reserve(f"{self.operation}#{call}.{attempt}", bound, last)
             try:
                 turn = self.provider.chat(system, messages, specs)
             except Exception as e:  # noqa: BLE001 - the call may well have been charged: unknown, not free
@@ -839,10 +852,11 @@ class MeteredProvider:
                     time.sleep(min(30.0, 2.0 ** attempt))
                 continue
             finally:
-                with self._lock:
+                with self._settled:
                     self._in_flight -= 1
                     if self._in_flight == 0 and isinstance(self._own, int):
                         self.provider.retries = self._own      # restored once no call is in flight
+                    self._settled.notify_all()
             self.receipts.append(self.account.settle(reservation.id,
                                                      self.pricing.measure(turn.usage or {}), "settled"))
             return turn
