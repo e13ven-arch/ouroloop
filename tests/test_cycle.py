@@ -873,10 +873,12 @@ def scripted_rounds(seq):
     return run
 
 
+# A round lost to infrastructure is run again in its slot (M4 §2, 2026-10-05), so a segment pauses on infrastructure
+# when the consecutive losses reach max_infrastructure_failures — after a completed round or from the start.
 @pytest.mark.parametrize("schedule,seq", [
     ({"worker_rounds": 3, "patience": 3, "max_infrastructure_failures": 2}, [("inconclusive", INFRA)] * 2),
     ({"worker_rounds": 3, "patience": 2, "max_infrastructure_failures": 2},
-     [("rejected", "no gain"), ("inconclusive", INFRA)])])
+     [("rejected", "no gain"), ("inconclusive", INFRA), ("inconclusive", INFRA)])])
 def test_a_segment_paused_on_infrastructure_resumes_after_the_repair(fake_upstream, tmp_path, fixture_preset,
                                                                     monkeypatch, schedule, seq):
     from ouroloop.research import loop as L
@@ -891,6 +893,33 @@ def test_a_segment_paused_on_infrastructure_resumes_after_the_repair(fake_upstre
     again = bench.cycle(cfg, ".", out=lambda _line: None, researcher=worker)
     assert any(r["step"] == "propose" for r in worker.requests)          # a round ran
     assert again["steps"]["segment-0"]["stop_reason"] == "no_proposal"
+
+
+def test_a_round_lost_to_infrastructure_is_rerun_in_its_slot_and_the_failure_limit_still_stops(monkeypatch):
+    """M4 §2 / M6 RC6-17 (2026-10-05): in a live run, a round `infrastructure_round` recognises — a screen whose
+    attempts were all lost, a gate's integrity loss — is run again in the same slot: it takes none of
+    schedule.worker_rounds and adds nothing to idle, so two rounds of schedule still give two completed rounds after
+    a loss; consecutive losses count toward max_infrastructure_failures, which ends the run as before."""
+    from ouroloop.evolve.execution import Schedule
+    from ouroloop.research import loop as L
+    from ouroloop.research.loop import completed_round
+    slots = []
+    monkeypatch.setattr(L, "run_worker_round", scripted_rounds([
+        ("inconclusive", "infrastructure: no candidate had a valid screen reading, the screen attempts were lost"),
+        ("installed", ""), ("rejected", "no gain")]))
+    results = L.run_worker_rounds(lambda index: slots.append(index), None,
+                                  schedule=Schedule(worker_rounds=2, patience=1, max_infrastructure_failures=2))
+    assert [r.outcome for r in results] == ["inconclusive", "installed", "rejected", "stopped"]
+    assert slots == [0, 0, 1] and results[-1].reason == "rounds_done"
+    rows = [{"outcome": r.outcome, "reason": r.reason} for r in results]
+    assert sum(1 for r in rows if completed_round(r)) == 2      # what an arm's RoundLog.done() counts
+    # patience 1 did not fire on the loss: it added nothing to idle; the rejected round after the install did
+    # consecutive losses stop at the limit, whatever the schedule's rounds
+    monkeypatch.setattr(L, "run_worker_round", scripted_rounds([("inconclusive", INFRA)] * 9))
+    lost = L.run_worker_rounds(lambda index: None, None,
+                               schedule=Schedule(worker_rounds=5, patience=5, max_infrastructure_failures=3))
+    assert [r.outcome for r in lost] == ["inconclusive"] * 3 + ["stopped"]
+    assert lost[-1].reason == "infrastructure_failures"
 
 
 def test_the_reuse_check_is_read_from_the_segment_after_the_slot(fake_upstream, tmp_path, fixture_preset,
@@ -1432,8 +1461,15 @@ def test_the_v3_preset_freezes_a_k_with_the_agent_kind_the_effort_ceiling_and_th
     assert v3["budget"] == five and v3["harness"]["package_api"] == "harness_package.v2"
     assert v3["harness"]["components"][0] == "agent" and set(v3["harness"]["components"]) == set(hp.KINDS)
     assert v3["harness"]["max_effort"] == "high" and v3["domain"] == "marketing"
-    same = lambda h: {k: v for k, v in h.items() if k not in ("package_api", "components", "max_effort")}  # noqa: E731
+    same = lambda h: {k: v for k, v in h.items()  # noqa: E731
+                      if k not in ("package_api", "components", "max_effort", "research_session", "screen")}
     assert same(v3["harness"]) == same(v1["harness"])
+    # v0.3 step 3 (M4 §1, §2; M7 §2): the coding session's caps, the screen's numbers and k live on the v3 preset
+    # only; the v1 preset has no session and runs one candidate a round as its cores froze it
+    assert v3["harness"]["research_session"] == {"max_turns": 40, "max_edits": 24, "max_trajectory_bytes": 65536,
+                                                 "max_trajectory_bytes_total": 524288}
+    assert v3["harness"]["screen"] == {"passing_sample": 5, "min_net_flips": 1} and v3["max_candidates_per_round"] == 3
+    assert "research_session" not in v1["harness"] and "max_candidates_per_round" not in v1
     assert v3["schedule"] == v1["schedule"]
     # v0.3 step 2 (M3 §2.1, M6 §2, M5 §2): the v3 preset's gate statistics, slot rules and concurrency; the v1
     # preset's tables are the ones its cores froze and are not revisited
@@ -1677,3 +1713,46 @@ def test_a_control_arm_cut_short_is_topped_up_on_restart_and_nothing_is_paid_twi
     assert receipt.verdict == "accepted" and receipt.metrics["control_readings"] == 1
     assert sorted(receipt.metrics["control_attempt_refs"]) == sorted(r.attempt_id for r in control)
     assert activity.objects.get(receipt.results_ref)["control_pooled"] is True and not unfinished(activity.root)
+
+
+# ---------------------------------------------------------------------------- v0.3 (M6 §2, RC6-16): the ledger in E0
+def test_e0_strips_dev_task_ids_from_ledger_rows(fake_upstream, tmp_path, fixture_preset):
+    """RC6-16 / M6 §2 (v0.3): the ledger rows enter both arms' E0 with the gate stage's per-task lists reduced to
+    counts — the first half of dev is what the arms optimise on and the second half the outer pool — while the
+    train task ids of the screen stage stay, as the experiment rows' raw gate reasons are left out."""
+    from ouroloop.evolve import experience as xp
+    cfg = cycle_config(fake_upstream, tmp_path)
+    activity, _ = gap_w0(cfg, tmp_path)
+    xp.append(activity.root, xp.ledger_row("screened", "cyc/r0/m1", scope="cyc", round=0,
+                                           tasks=["rsi.notify_after_update"], net_flips=1, outcome="selected"))
+    xp.append(activity.root, xp.ledger_row("gated", "cyc/r0/m1", scope="cyc", round=0, verdict="accepted",
+                                           receipt="receipt:sha256:" + "b" * 64, fixed=["rsi.dev_notify_after_update"],
+                                           regressed=[], still_failing=["rsi.dev_policy_hold"], installed=True))
+    xp.append(activity.root, {"kind": "experiment", "experiment": "x1", "verdict": "rejected",
+                              "reasons": ["rsi.dev_policy_hold regressed"], "metrics": {"gain": 0.0}})
+    named = frozen(cfg)
+    pair = bench.cycle_pairs(bench.open_activity(named, ".", out=lambda _line: None), named)[0]
+    e0 = activity.objects.get(pair.initial_experience_ref)["experience"]
+    gated = next(e for e in e0 if e.get("kind") == "ledger" and e.get("stage") == "gated")
+    assert (gated["fixed"], gated["regressed"], gated["still_failing"]) == (1, 0, 1)
+    screened = next(e for e in e0 if e.get("kind") == "ledger" and e.get("stage") == "screened")
+    assert screened["tasks"] == ["rsi.notify_after_update"]
+    assert "reasons" not in next(e for e in e0 if e.get("kind") == "experiment")
+    assert "rsi.dev" not in json.dumps(e0)
+    # and the folded rows an arm reads say the same with counts
+    assert xp.ledger_rows(e0)[0]["gate"]["fixed"] == 1
+
+
+def test_a_resumed_run_counts_rounds_lost_to_infrastructure_as_the_live_loop_does():
+    """M4 §2 (2026-10-05, third recheck): live, a round lost to infrastructure is run again in its slot and counts
+    toward the failure limit; a run resumed from its rows after a crash or a stop point starts from the same count,
+    so it cannot pay for one more lost round than an uninterrupted run. A pause starts the count again (the restart
+    follows the repair); a stop point does not."""
+    from ouroloop.research.loop import counters_of
+    lost = {"outcome": "inconclusive", "reason": "infrastructure: no candidate had a valid screen reading"}
+    assert counters_of([{"outcome": "rejected"}, lost, lost]) == (1, 2)
+    assert counters_of([lost, {"outcome": "stopped", "reason": "stopped_at"}, lost]) == (0, 2)
+    assert counters_of([lost, {"outcome": "stopped", "reason": "repair_runtime"}, lost]) == (0, 1)
+    assert counters_of([lost, {"outcome": "installed"}]) == (0, 0)
+    halt = {"outcome": "infrastructure_failed", "reason": "worker gone", "next_action": "repair_runtime"}
+    assert counters_of([halt, {"outcome": "stopped", "reason": "repair_runtime"}]) == (0, 0)

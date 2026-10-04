@@ -239,3 +239,76 @@ class TestModelIdentity:
                                                           "extra": {"reasoning_effort": "max"}})
         assert identity["config"]["max_tokens"] == 8192
         assert identity["config"]["extra"] == {"reasoning_effort": "max"}
+
+
+# ---------------------------------------------------------------------------- v0.3 (BR6-21): k per round
+def test_max_candidates_per_round_up_to_the_preset_is_accepted(fake_upstream):
+    """BR6-21 / M7 §2 (v0.3): under the v3 preset `[improvement] max_candidates_per_round` takes 1..3 and defaults
+    to the preset's 3; 4 is refused before anything is paid; the v1 preset still runs one candidate a round, and a
+    frozen schedule may run fewer than the config allows, never more (`_beyond_preset`)."""
+    base = config(fake_upstream, improvement={"mode": "automatic", "preset": "automationbench_harness_v3"})
+    assert bench.improvement_settings(base)["candidates_per_round"] == 3
+    for k in (1, 2, 3):
+        cfg = {**base, "improvement": {**base["improvement"], "max_candidates_per_round": k}}
+        assert bench.improvement_settings(cfg)["candidates_per_round"] == k
+    with pytest.raises(ValueError, match=r"max_candidates_per_round = 4: this preset runs 1 to 3"):
+        bench.improvement_settings({**base, "improvement": {**base["improvement"], "max_candidates_per_round": 4}})
+    with pytest.raises(ValueError, match="one candidate per round"):
+        bench.improvement_settings({**base, "improvement": {"mode": "automatic", "preset": "marketing_harness_v1",
+                                                            "max_candidates_per_round": 2}})
+    settings = bench.improvement_settings({**base, "improvement": {**base["improvement"], "max_candidates_per_round": 2}})
+    assert bench._beyond_preset(settings, {**settings["schedule"], "candidates_per_round": 1}, None) == []
+    assert any("candidates_per_round 3 is above max_candidates_per_round 2" in p
+               for p in bench._beyond_preset(settings, {**settings["schedule"], "candidates_per_round": 3}, None))
+    # the session's caps and the screen's numbers are the preset's ceilings: lowered, never raised
+    lowered = bench._preset_harness({"harness_evolution": {"research_session": {"max_turns": 20},
+                                                           "screen": {"passing_sample": 3}}},
+                                    bench.PRESETS["automationbench_harness_v3"]["harness"])
+    assert lowered["research_session"]["max_turns"] == 20 and lowered["research_session"]["max_edits"] == 24
+    assert lowered["screen"] == {"passing_sample": 3, "min_net_flips": 1}
+    with pytest.raises(ValueError, match="max_turns = 50 is above the preset's 40"):
+        bench._preset_harness({"harness_evolution": {"research_session": {"max_turns": 50}}},
+                              bench.PRESETS["automationbench_harness_v3"]["harness"])
+    with pytest.raises(ValueError, match="has no research_session"):
+        bench._preset_harness({"harness_evolution": {"research_session": {"max_turns": 10}}},
+                              bench.PRESETS["marketing_harness_v1"]["harness"])
+
+
+def test_nested_harness_tables_tighten_per_key_and_are_validated_without_a_preset(fake_upstream):
+    """M7 §2 / M4 §1–§2 (2026-10-05 review): `screen.min_net_flips` is a floor — lowering it loosens the screen and is
+    refused, raising it is allowed — the other numbers are caps; every number has a least value (research_session.*
+    ≥ 1, passing_sample ≥ 0); a non-table, an unknown key or a non-integer is a named config error under a preset and
+    without one (one helper); an empty table header asks for the session with the default caps."""
+    v3 = bench.PRESETS["automationbench_harness_v3"]["harness"]
+    with pytest.raises(ValueError, match="min_net_flips = 0 is below the preset's 1: a floor may be raised"):
+        bench._preset_harness({"harness_evolution": {"screen": {"min_net_flips": 0}}}, v3)
+    raised = bench._preset_harness({"harness_evolution": {"screen": {"min_net_flips": 2}}}, v3)
+    assert raised["screen"] == {"passing_sample": 5, "min_net_flips": 2}
+    with pytest.raises(ValueError, match="max_turns = 0 is below the least value 1"):
+        bench._preset_harness({"harness_evolution": {"research_session": {"max_turns": 0}}}, v3)
+    with pytest.raises(ValueError, match="passing_sample = -1 is below the least value 0"):
+        bench._preset_harness({"harness_evolution": {"screen": {"passing_sample": -1}}}, v3)
+    with pytest.raises(ValueError, match=r"research_session is a table \(\[.*max_turns.*\]\), not int"):
+        bench._preset_harness({"harness_evolution": {"research_session": 3}}, v3)
+    with pytest.raises(ValueError, match=r"\[harness_evolution.screen\] does not take \['flips'\]"):
+        bench._preset_harness({"harness_evolution": {"screen": {"flips": 1}}}, v3)
+    with pytest.raises(ValueError, match="max_edits = 2.5 is not an integer"):
+        bench._preset_harness({"harness_evolution": {"research_session": {"max_edits": 2.5}}}, v3)
+    with pytest.raises(ValueError, match="max_edits = True is not an integer"):
+        bench._preset_harness({"harness_evolution": {"research_session": {"max_edits": True}}}, v3)
+    # without a preset: the same helper, the design's defaults for the keys not written, presence not truthiness
+    base = {"harness_evolution": {"package_api": "harness_package.v2", "components": ["agent", "memory", "skills"],
+                                  "research_session": {}, "screen": {"min_net_flips": 2}}}
+    frozen = bench.harness_settings(base)
+    assert frozen["research_session"] == {"max_turns": 40, "max_edits": 24, "max_trajectory_bytes": 65536,
+                                          "max_trajectory_bytes_total": 524288}
+    assert frozen["screen"] == {"passing_sample": 5, "min_net_flips": 2}
+    with pytest.raises(ValueError, match="max_turns = 0 is below the least value 1"):
+        bench.harness_settings({"harness_evolution": {**base["harness_evolution"], "research_session": {"max_turns": 0}}})
+    with pytest.raises(ValueError, match="screen is a table"):
+        bench.harness_settings({"harness_evolution": {**base["harness_evolution"], "screen": [1]}})
+    with pytest.raises(ValueError, match="belong to package_api harness_package.v2"):
+        bench.harness_settings({"harness_evolution": {"components": ["memory"], "research_session": {}}})
+    # an empty header under the v3 preset keeps the preset's caps
+    empty = bench._preset_harness({"harness_evolution": {"research_session": {}}}, v3)
+    assert empty["research_session"] == v3["research_session"]

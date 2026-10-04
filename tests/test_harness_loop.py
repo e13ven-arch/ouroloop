@@ -672,3 +672,49 @@ def test_the_smoke_phase_runs_under_the_active_releases_k_when_the_workspace_has
     fresh = {**lowered, "workspace": {"root": str(tmp_path / "fresh")}}
     assert bench.smoke_max_effort(fresh, ".") == "low"                      # no release yet: the table's
     assert bench.smoke_max_effort({"workspace": {"root": str(tmp_path / "plain")}}, ".") is None
+
+
+# ---------------------------------------------------------------------------- v0.3 (IT6-32): k candidates and the train-side screen
+def test_it6_32_three_candidates_are_screened_on_their_own_failing_train_tasks_and_only_the_best_pays_the_dev_gate(
+        fake_upstream, tmp_path, monkeypatch):
+    """IT6-32: `max_candidates_per_round` 3 under the v3 preset; one session declares three candidates, each with its
+    six-field declaration; each admitted candidate is screened on the failed train tasks its notes came from plus the
+    fixed passing sample of `screen.passing_sample`, reading nothing of dev; the best net flips at or above
+    `screen.min_net_flips` pays the one dev gate — a tie to the lower mean cost, whatever the declaration order — and
+    the others end `not_selected` (cleared the floor, lost the pick) or `screened_out` (below it) with their screen
+    result; the screens' attempts are booked per candidate on the activity's book."""
+    from test_research_round import skill_candidate
+    from test_research_session import MEMORY, memory_candidate, prepared_v3
+    from ouroloop.evolve.execution import Budgets
+    cfg, activity, w0 = prepared_v3(fake_upstream, tmp_path, monkeypatch, k=3)
+    # the skill is declared before the memory: if the tie went to declaration order, the skill would pay the gate
+    step = rsi.SessionScript(lambda inputs: [
+        memory_candidate(inputs, name="useless", text="Be concise.\n", mechanism="a shorter final message"),
+        skill_candidate(inputs, name="skilled"),
+        memory_candidate(inputs, name="good", text=MEMORY)])
+    result = bench.improve(cfg, ".", out=lambda _line: None, researcher=step)
+    assert [r["outcome"] for r in result["rounds"]][0] == "installed", result["rounds"]
+    rows = {r["candidate"].rpartition("/")[2]: r for r in xp.ledger_rows(xp.read(activity.root))}
+    assert set(rows) == {"useless", "good", "skilled"}
+    for r in rows.values():
+        d = r["declaration"]
+        assert set(d) >= {"mechanism", "site", "carrier", "predicted_affected", "trigger_condition", "notes"}
+        assert set(d["predicted_affected"]) <= set(rsi.TRAIN) and d["notes"]
+    screens = list(ct.Events(activity.root).of("train_screen"))
+    assert len(screens) == 3 and all(set(s["tasks"]) <= set(rsi.TRAIN) for s in screens)
+    assert {rows[n]["screen"]["net_flips"] for n in ("good", "skilled")} == {2} and rows["useless"]["screen"]["net_flips"] == 0
+    # a tie on net flips goes to the lower mean cost, not to the earlier declaration: the skill is read with one more
+    # model call per task, so the memory declared after it is cheaper and pays the gate; the skill cleared the floor
+    # and is `not_selected`, the useless memory below the floor is `screened_out` (M4 §2 taxonomy)
+    assert rows["skilled"]["screen"]["outcome"] == "not_selected" and rows["good"]["screen"]["outcome"] == "selected"
+    assert [r["candidate"].rpartition("/")[2] for r in xp.ledger_rows(xp.read(activity.root))] == [
+        "useless", "skilled", "good"]
+    assert rows["good"]["screen"]["cost_per_attempt"] < rows["skilled"]["screen"]["cost_per_attempt"]
+    assert rows["good"]["outcome"] == "installed" and rows["skilled"]["outcome"] == "not_selected"
+    assert rows["useless"]["outcome"] == "screened_out"
+    assert len(list(ct.Objects(activity.root).dir.joinpath("receipt").glob("*.json"))) == 1
+    book = Budgets(tmp_path / "ws")._read()
+    screen_ops = {r["operation_id"].split(":")[1] for r in book["reservations"].values()
+                  if ":train_screen:" in r["operation_id"]}
+    assert screen_ops == {"train_screen"}
+    assert sum(1 for r in book["reservations"].values() if ":train_screen:" in r["operation_id"]) >= 3 * 5

@@ -550,3 +550,59 @@ def test_an_arms_rate_limit_count_survives_an_account_error(fake_upstream, tmp_p
         work.run_arm("probe", release, [(t, 0) for t in rsi.DEV], plan_ref="", split="dev")
     events = [e for e in ct.Events(activity.root).of("rate_limited") if e["arm"] == "probe"]
     assert len(events) == 1 and events[0]["count"] == 1 and events[0]["scope"] == "it"
+
+
+# ---------------------------------------------------------------------------- v0.3 (M5 §2): the coding session's calls
+class SessionModel(rsi.BusinessWorker):
+    """A research model that plays one coding session with tool calls: writes a memory file, then finishes. Every
+    turn is one chat call through the production completion interface, so each is metered."""
+    turns = 0
+
+    def chat(self, system, messages, specs):
+        from ouroloop.chat import ChatTurn, ToolCall
+        from ouroloop.research.basic import NOTE_FORMAT
+        if NOTE_FORMAT in system:
+            return ChatTurn(json.dumps({"failure_class": "missed_step", "root_cause": "stopped early",
+                                        "mechanism": "check every step", "component": "memory",
+                                        "generality": "multi-step requests"}), [], "end",
+                            usage={"input_tokens": 10, "output_tokens": 5})
+        type(self).turns += 1
+        inputs = json.loads(messages[0]["content"])
+        notes = inputs["notes"]
+        if type(self).turns % 3 == 1:
+            manifest = json.dumps({**hp.empty_manifest(), "memory": {"enabled": True}})
+            return ChatTurn("", [ToolCall("w1", "write_file", {"path": "candidates/m/manifest.json", "text": manifest}),
+                                 ToolCall("w2", "write_file", {"path": "candidates/m/memory.md",
+                                                              "text": f"Before you finish, {rsi.FINISH_CHECK_MARK}.\n"})],
+                            "tool_use", usage={"input_tokens": 10, "output_tokens": 5})
+        if type(self).turns % 3 == 2:
+            return ChatTurn("", [ToolCall("l1", "list_files", {"path": "candidates/m"})], "tool_use",
+                            usage={"input_tokens": 10, "output_tokens": 5})
+        return ChatTurn("", [ToolCall("f1", "finish", {"candidates": [{
+            "dir": "m", "mechanism": "check every step before finishing", "site": "memory.md", "carrier": "memory",
+            "predicted_affected": sorted({n["task_id"] for n in notes}), "trigger_condition": "always",
+            "notes": [n["note_ref"] for n in notes]}]})], "tool_use", usage={"input_tokens": 10, "output_tokens": 5})
+
+
+def test_every_turn_of_the_research_session_is_metered_on_the_research_scope(fake_upstream, tmp_path, monkeypatch):
+    """M5 §2 (v0.3 R 作为编码会话的研究调用): every model call of the session is reserved and settled on the activity
+    book under the research operation, labelled `session`, beside the notes' `note` calls; the file tools and the
+    trajectory reads cost nothing on the book but are counted in the session's record."""
+    from test_research_session import prepared_v3
+    from ouroloop.agent import harness_package as hp  # noqa: F401 - SessionModel reads it at call time
+    import test_paid_run_safety
+    test_paid_run_safety.hp = hp
+    SessionModel.turns = 0
+    cfg, activity, w0 = prepared_v3(fake_upstream, tmp_path, monkeypatch)
+    cfg["research"] = {"llm": {"type": "test_paid_run_safety:SessionModel"}}
+    result = bench.improve(cfg, ".", out=lambda _l: None)
+    assert [r["outcome"] for r in result["rounds"]][0] == "installed", result["rounds"]
+    reservations = [r for r in book(activity)["reservations"].values() if ":research" in r["operation_id"]]
+    sessions = [r for r in reservations if ":research:session#" in r["operation_id"]]
+    notes = [r for r in reservations if ":research:note#" in r["operation_id"]]
+    assert len(sessions) == 3 and all(r["status"] == "settled" for r in sessions) and SessionModel.turns == 3
+    assert len(notes) >= 1 and all(r["status"] == "settled" for r in notes)
+    assert not [r for r in book(activity)["reservations"].values() if "work" in r["operation_id"]]
+    session = list(ct.Events(activity.root).of("research_session"))[0]
+    assert session["turns"] == 3 and session["edits"] == 2 and [c["tool"] for c in session["calls"]] == [
+        "write_file", "write_file", "list_files", "finish"]

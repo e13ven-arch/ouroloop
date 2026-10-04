@@ -323,6 +323,7 @@ from .evolve import feedback as _feedback
 from .evolve.build import build_task_dataset as _build_task_dataset
 from .evolve.execution import BudgetError, BudgetMismatch, Budgets, Schedule
 from .evolve.task_gate import GatePlan, TaskEvalPlan, evaluate_task
+from .evolve.task_gate import refill as _refill
 from .evolve.task_gate import screen as _screen
 from .evolve.task_gate import shortfall as _shortfall
 from .points import business_stop_point as _business_stop_point
@@ -461,8 +462,7 @@ class Improvement:
         wanted = set(tasks if tasks is not None else plan.task_ids)
         split = _split_of_tasks(self.splits, plan.task_ids)
         expected = self.run_identity(parent_release, plan_ref="", split=split, candidate="control", role="base")[0]
-        labels = ("candidate", "role", "eval_plan_ref", "budget_scope", "notes", "system_release_ref",
-                  "research_ref", "experience_ref", "mode")
+        labels = RUN_LABELS
         same = {k: v for k, v in expected.payload().items() if k not in labels}
         conditions = plan.conditions()
         runs: set[str] = set()
@@ -677,8 +677,32 @@ class Improvement:
         self.releases.events.append("measurement_planned", scope=self.scope_id, release=release_ref,
                                     tasks=list(planned if planned is not None else tasks), first=first,
                                     run=self._measure_run(release_ref))
-        return self.run_arm("measure", release_ref, [(t, 0) for t in tasks], plan_ref="", split="train",
-                            candidate="current", role="base", resume=True)
+        # v0.3 step 3 (M4 §2 复用, RL6-33): the train-side screen's readings of a candidate that was then installed
+        # are this version's valid train readings under the measurement's execution identity; they are returned as
+        # recorded and not run again. An unistalled candidate's screen rows match no installed release's identity.
+        reused = self.screen_readings(release_ref, tasks)
+        done = {r.task_id for r in reused}
+        rows = self.run_arm("measure", release_ref, [(t, 0) for t in tasks if t not in done], plan_ref="",
+                            split="train", candidate="current", role="base", resume=True) if set(tasks) - done else []
+        return [*reused, *rows]
+
+    def screen_readings(self, release_ref: str, tasks) -> list:
+        """The valid train-side screen attempts (arm `train_screen`, M4 §2) on `tasks` whose run identity is this
+        release's measurement identity less the labels that name an arm (the same comparison `control_pool` makes):
+        the same W, model identity, per-attempt limits, split and host contract — a candidate's screen reading of a
+        task is the installed version's reading of it once that candidate is the installed version."""
+        if self.results is None:
+            return []
+        wanted = set(tasks)
+        expected = self.run_identity(release_ref, plan_ref="", split="train", candidate="current", role="base")[0]
+        same = {k: v for k, v in expected.payload().items() if k not in RUN_LABELS}
+        runs = {h for h, run in self.results.runs().items()
+                if {k: v for k, v in run.payload().items() if k not in RUN_LABELS} == same}
+        out: dict = {}
+        for r in self.results.all():
+            if r.run in runs and r.validity == "valid" and r.task_id in wanted and _arm_of(r.attempt_id) == "train_screen":
+                out[r.task_id] = r                      # the latest valid reading of each task
+        return list(out.values())
 
     def _measure_run(self, release_ref: str) -> str:
         """The run hash a train measurement (or a collection batch) of this release is recorded under now."""
@@ -793,6 +817,9 @@ class Improvement:
         rows = [r for r in by_release[latest] if not (plan and plan.get("run")) or r.run == plan["run"]]
         seen = {r.task_id for r in rows}
         planned = list(plan["tasks"]) if plan else sorted(seen)
+        # v0.3 step 3 (RL6-33): a planned task the installed candidate's screen already read is on record too
+        reused = [r for r in self.screen_readings(latest, [t for t in planned if t not in seen])]
+        rows, seen = [*rows, *reused], seen | {r.task_id for r in reused}
         missing = [t for t in planned if t not in seen]
         extra = collected.get(latest, [])
         feedback = _feedback.build_feedback(self.rt, objects=self.objects, scope_id=self.scope_id)
@@ -812,10 +839,12 @@ class Improvement:
 
     def round_inputs(self, index: int, evidence: dict, experience, bound, *, root, research_model: dict,
                      shared_notes=None):
-        """The first version's per-round inputs: the diagnosis of the train failures and the draft check. Both
-        read their limits from K, and both are None for a v2 activity (docs/modules/04_RESEARCH_LOOP.md §1–2)."""
+        """The first version's per-round inputs: the diagnosis of the train failures, the draft check and — under a
+        core whose K carries `research_session` (package API v2, v0.3 step 3) — the coding session's inputs. All read
+        their limits from K; all three are None for a v2 activity (docs/modules/04_RESEARCH_LOOP.md §1–2), the third
+        None under a v1 core, which keeps the summary-call round."""
         if not self.harness:
-            return None, None
+            return None, None, None
         from .agent import harness_package as hp
         from .research import diagnosis as dg
         from .research.drafts import Drafts
@@ -841,7 +870,92 @@ class Improvement:
                         allowed_literals=self.tool_vocabulary(), fixture=self.fixture_world,
                         reserved_names=self.tool_vocabulary(names_only=True),
                         image=self.harness.get("image_id") or self.harness.get("image"), tools=self.base_tools())
-        return diagnosis, drafts
+        session = self.session_inputs(evidence, bound, run_files=run_files, test_files=test_files) \
+            if self.harness.get("research_session") else None
+        return diagnosis, drafts, session
+
+    def session_inputs(self, evidence: dict, bound, *, run_files: dict, test_files: dict):
+        """What R's coding session needs this round (research.session.SessionInputs, M4 §1 R 的输入, §2 筛选): K's
+        caps and screen numbers, the isolated worker, the current package and W's prompt texts, the dev failure-type
+        histogram over the installed W's pooled dev readings, the read-only trajectory reader over this workspace's
+        results and transcripts, the train split in its frozen order, the round's fixed passing sample drawn from the
+        latest measurement with the plan's order_seed, that measurement's per-task outcomes (the screen's "before"),
+        and the two callables that build a candidate W and run its screen arm."""
+        from .agent import harness_package as hp
+        from .research.session import ScreenSettings, SessionInputs, SessionLimits, TrajectoryReader
+        limits = SessionLimits.from_json(self.harness["research_session"])
+        screen = ScreenSettings.from_json(self.harness.get("screen"))
+        from .research.session import passing_sample
+        order = list(self.splits.ids("train"))
+        latest = {r.task_id: r for r in evidence.get("train") or () if r.validity == "valid"}
+        parent = self.releases.active()["release_ref"]
+        return SessionInputs(
+            limits=limits, screen=screen, k=int(getattr(self, "candidates_per_round", 1) or 1), worker=self.worker,
+            package_files={**run_files, **test_files},
+            prompt_texts={t: bound.prompts[t] for t in ("worker.system_prompt", "worker.finish") if bound.prompts.get(t)},
+            histogram=self.dev_histogram(parent),
+            trajectories=TrajectoryReader(self.results, Path(self.rt.root) / "transcripts", limits),
+            train_tasks=tuple(order), train_order=tuple(order),
+            sample=tuple(passing_sample(latest.values(), order=order, size=screen.passing_sample, seed=self.order_seed)),
+            before={t: bool(r.success) for t, r in latest.items()},
+            build=self.screen_build, screen_arm=self.train_screen,
+            affordable=(lambda n: self.budget.affordable({"model_calls": n, "tool_calls": n})) if self.budget else None,
+            base_tools=self.base_tools(), api_version=self.harness.get("package_api") or hp.AGENT_API_VERSION,
+            max_package_bytes=hp.Limits.from_json(self.harness["package"]).max_package_bytes)
+
+    def dev_histogram(self, parent_release: str) -> dict:
+        """The dev failure-type histogram (M4 §1 R 的输入): over the installed W's pooled dev readings under the
+        activity's plan, failed scored assertions counted by type — the fixed projection that is R's only
+        assertion-level view of dev. Nothing else of dev reaches the session."""
+        from .research.session import dev_failure_histogram
+        plan = self.plan("", "", parent_release)
+        pool = self.control_pool(parent_release, plan=plan) if plan.pooled and self.results is not None else \
+            [r for r in (self.results.all() if self.results is not None else ())
+             if r.split == "dev" and r.validity == "valid" and r.system_release_ref == parent_release
+             and r.task_id in set(plan.task_ids) and _arm_of(r.attempt_id) not in SCREEN_ARMS]
+        return dev_failure_histogram(self.results, pool)
+
+    def screen_build(self, proposal, experiment_id: str) -> str:
+        """The candidate W of an admitted proposal, built for its train-side screen before any Experiment exists
+        (M5 §1: the screen is a round-level sub-operation; only the chosen candidate is frozen into an Experiment).
+        `experiment_id` is the id the candidate's Experiment gets if it is chosen: the set's provenance names it, so
+        the W the screen read and the W the gate reads are one content-addressed candidate, and an install's later
+        measurement finds the screen's readings under its own identity (screen_readings). The parent is the pointer —
+        the release the session's inputs and the Experiment are built on — never the parent a previous gate left in
+        `_parent_release`."""
+        parent = self.releases.active()["release_ref"]
+        stand_in = _ct.Experiment(id=experiment_id, proposal_ref=self.objects.put(proposal), parent_release=parent,
+                                  experience_ref="", core_ref=self.core_ref, eval_template_ref=self.template_ref,
+                                  budget_scope=self.scope_id)
+        build = _P.build_candidate(stand_in, objects=self.objects, parent_release=parent, owner=self.owner,
+                                   services=self.services(), train=self._train, budget=self.budget)
+        if build.status != "ready":
+            raise _ct.ContractError("; ".join(build.errors)[:300])
+        return build.candidate_ref
+
+    def train_screen(self, candidate_ref: str, tasks) -> list:
+        """One candidate's train-side screen (M4 §2): its arm on the given train tasks, one attempt each, under a
+        permit and a plan of its own (`train_screen` arm), so the attempts carry an identity that an install can
+        later read as this version's train readings (screen_readings) and that never enters a dev pool. Attempts lost
+        to infrastructure are refilled once under the plan's retry policy, as a gate arm's are (task_gate.refill); the
+        parent is the pointer, as for screen_build."""
+        parent = self.releases.active()["release_ref"]
+        tasks = list(tasks)
+        plan = TaskEvalPlan(candidate_ref=candidate_ref,
+                            control_ref=self.objects.load(parent, _ct.SystemRelease).worker_ref, parent_release=parent,
+                            core_ref=self.core_ref, split_ref=self.splits.hash(), task_ids=tuple(tasks), repeats=1,
+                            order_seed=self.order_seed, per_attempt_budget=self.attempt_budget.limits(),
+                            retry_policy={"max_infrastructure_retries": 1}, gate_plan=self.gate.to_json(),
+                            installs=False)
+        plan_ref = self.objects.put(plan)
+        permit = self.releases.permit(candidate_ref, parent, plan_ref, self.scope_id, self.core_ref)
+        arm_release = self.releases.candidate_release(parent, candidate_ref, permit)
+
+        def run(arm, order, retry=0, supersedes=None):
+            return self.run_arm(arm, arm_release, order, plan_ref=plan_ref, permit=permit, split="train",
+                                candidate="candidate", role="evolved", retry_index=retry, resume=True,
+                                supersedes=supersedes)
+        return _refill(plan, "train_screen", list(run("train_screen", [(t, 0) for t in tasks])), run)
 
     def fixture_world(self):
         """The world package tests run against: a fresh episode of the first train task, never dev or final
@@ -907,6 +1021,9 @@ class Improvement:
 
     # -------------------------------------------------------------- handlers
     def handlers(self) -> dict:
+        # A new round starts from the pointer, not from the parent the previous experiment was frozen on: the carried
+        # values are cleared before `verify_bound` reads them, and `_begin` sets them again for the experiment that runs.
+        self._parent_release, self._experiment_ref = "", ""
         return {"begin": self._begin, "build": self._build, "screen": self._screen, "evaluate": self._evaluate,
                 "install": self._install, "verify_bound": self._verify_bound(),
                 "load_receipt": lambda ref: self.objects.load(ref, _ct.EvaluationReceipt)}
@@ -1080,8 +1197,13 @@ def _arm_of(attempt_id: str | None) -> str:
 
 
 # The screen's arms (Improvement._screen): the predeclared screen tasks only, at attempt 0 — not a reading of the
-# plan, so never part of a pooled control (M3 §2.1(a), v0.3).
-SCREEN_ARMS = ("screen_subject", "screen_control")
+# plan, so never part of a pooled control (M3 §2.1(a), v0.3). The train-side screen's arm (`train_screen`, M4 §2)
+# runs on train and never meets a dev pool.
+SCREEN_ARMS = ("screen_subject", "screen_control", "train_screen")
+# The run-manifest fields that name an arm rather than an execution identity (M3 §2.1(a)): two runs equal in every
+# other field ran the same W under the same model, limits, split and host contract.
+RUN_LABELS = ("candidate", "role", "eval_plan_ref", "budget_scope", "notes", "system_release_ref",
+              "research_ref", "experience_ref", "mode")
 
 
 def _research_meter(researcher):
@@ -1158,7 +1280,12 @@ class Activity:
 # ---------------------------------------------------------------------------- the first version's harness table
 HARNESS_KEYS = {"package_api", "components", "sandbox", "image", "max_files", "max_package_bytes",
                 "max_memory_chars", "max_skill_chars", "max_skills", "test_timeout_seconds", "max_draft_repairs",
-                "max_failure_notes", "max_entry_chars", "max_effort"}
+                "max_failure_notes", "max_entry_chars", "max_effort", "research_session", "screen"}
+# v0.3 step 3 (M4 §1, §2; M7 §2): the two nested harness tables — R's coding session's caps and the train-side
+# screen's numbers — and the keys each takes. research_session.* and screen.passing_sample are caps the config may
+# only lower; screen.min_net_flips is a floor it may only raise (HARNESS_TABLE_FLOORS: lowering it loosens the screen).
+HARNESS_TABLES = {"research_session": ("max_turns", "max_edits", "max_trajectory_bytes", "max_trajectory_bytes_total"),
+                  "screen": ("passing_sample", "min_net_flips")}
 # The reasoning-effort tiers, lowest first (the `claude_code` provider's names). K's `max_effort` is the ceiling the
 # gateway caps a package's requested effort to (docs/modules/00_CONTRACTS.md §2, v0.3): a request above it is sent
 # at the ceiling, never refused, with the requested value on the record. Like every harness key it narrows only.
@@ -1205,7 +1332,16 @@ PRESETS["automationbench_harness_v3"] = {
     **json.loads(json.dumps(PRESETS["marketing_harness_v1"])),
     "harness": {**PRESETS["marketing_harness_v1"]["harness"], "package_api": "harness_package.v2",
                 "components": ["agent", "memory", "skills", "on_finish", "before_tool", "after_tool", "tools"],
-                "max_effort": "high"},
+                "max_effort": "high",
+                # v0.3 step 3 (M4 §1 R 作为有界编码会话, §2 train 侧筛选; 2026-10-05): R's coding session — one per round,
+                # 40 model calls finish included, 24 edits across every candidate and revision, 65536 bytes per
+                # read_trajectory and 524288 per session — and the screen's fixed passing sample of 5 train tasks
+                # with net flips of at least 1 to pay the dev gate. Frozen into K; R cannot raise them.
+                "research_session": {"max_turns": 40, "max_edits": 24, "max_trajectory_bytes": 65536,
+                                     "max_trajectory_bytes_total": 524288},
+                "screen": {"passing_sample": 5, "min_net_flips": 1}},
+    # v0.3 step 3 (M4 §2): up to three candidates a round, from one session; [improvement] may set 1..3.
+    "max_candidates_per_round": 3,
     "budget": {"max_steps": 50, "max_model_calls": 200, "max_tool_calls": 200, "max_seconds": 900.0,
                "max_tokens": 400000},
     # v0.3 step 2 (M3 §2.1, M5 §2, M6 §2; 2026-10-04): the gate's statistics — a pooled control, one confirmation
@@ -1275,10 +1411,15 @@ def improvement_settings(cfg: dict) -> dict | None:
     domain = dict(cfg.get("bench") or {}).get("domain", "marketing")
     if domain != preset["domain"]:
         raise ValueError(f"[improvement] preset {name!r} is for the {preset['domain']} domain, not {domain!r}")
-    candidates = int(table.get("max_candidates_per_round", 1))
+    # v0.3 step 3 (M4 §2): k candidates a round, the preset's value by default and its ceiling (3 under the v3
+    # preset; the v1 preset has none, so 1 as before); fewer is allowed, more is refused before anything is paid.
+    ceiling = int(preset.get("max_candidates_per_round", 1))
+    candidates = int(table.get("max_candidates_per_round", ceiling))
     batches = int(table.get("max_collection_batches", 2))
-    if candidates != 1:
-        raise ValueError("[improvement] max_candidates_per_round: this version runs one candidate per round")
+    if not 1 <= candidates <= ceiling:
+        raise ValueError(f"[improvement] max_candidates_per_round = {candidates}: "
+                         + ("this preset runs one candidate per round (it has no coding session)" if ceiling == 1
+                            else f"this preset runs 1 to {ceiling} candidates per round"))
     if not 0 <= batches <= 2:
         raise ValueError("[improvement] max_collection_batches: at most 2 per worker segment in this preset")
     return {"mode": mode, "preset": name, "allowed_methods": methods, "candidates_per_round": candidates,
@@ -1304,6 +1445,12 @@ def _preset_harness(cfg: dict, preset: dict) -> dict:
             if value != preset.get(key):
                 raise ValueError(f"[harness_evolution] {key} {value!r}: the preset fixes {preset.get(key)!r}")
             out[key] = value
+        elif key in HARNESS_TABLES:
+            # v0.3 step 3: a nested table (research_session, screen) tightens its numbers one by one and exists only
+            # where the preset has it (a v1 preset has no session to cap)
+            if not isinstance(preset.get(key), dict):
+                raise ValueError(f"[harness_evolution] {key}: the preset has no {key} (no coding session under it)")
+            out[key] = _harness_table(key, value, preset[key])
         elif key == "max_effort":
             ceiling = preset.get(key, DEFAULT_MAX_EFFORT)
             if value not in EFFORTS:
@@ -1317,6 +1464,47 @@ def _preset_harness(cfg: dict, preset: dict) -> dict:
                              f"may be lowered here, not raised")
         else:
             out[key] = int(value)
+    return out
+
+
+# The direction each nested harness number tightens in (M4 §1, §2; M7 §2, 2026-10-05): a cap is lowered, a floor is
+# raised; and the least value any of them may take, with or without a preset.
+HARNESS_TABLE_FLOORS = {("screen", "min_net_flips")}
+HARNESS_TABLE_LEAST = {("research_session", "max_turns"): 1, ("research_session", "max_edits"): 1,
+                       ("research_session", "max_trajectory_bytes"): 1,
+                       ("research_session", "max_trajectory_bytes_total"): 1,
+                       ("screen", "passing_sample"): 0, ("screen", "min_net_flips"): 0}
+
+
+def _harness_table(key: str, value, preset_table: dict | None) -> dict:
+    """One nested [harness_evolution.<key>] table, validated the same way under a preset and without one: it is a
+    table of known integer keys; each value is at least its least value; under a preset a cap (every research_session
+    number, screen.passing_sample) may only be lowered and a floor (screen.min_net_flips) only raised, and the keys
+    not written keep the preset's values; without a preset the keys not written keep the design's defaults (an empty
+    table asks for the session with the default caps)."""
+    from .research.session import ScreenSettings, SessionLimits
+    if not isinstance(value, dict):
+        raise ValueError(f"[harness_evolution] {key} is a table ({list(HARNESS_TABLES[key])}), not "
+                         f"{type(value).__name__}")
+    unknown = sorted(set(value) - set(HARNESS_TABLES[key]))
+    if unknown:
+        raise ValueError(f"[harness_evolution.{key}] does not take {unknown}; it takes {list(HARNESS_TABLES[key])}")
+    defaults = {"research_session": SessionLimits, "screen": ScreenSettings}[key]().to_json()
+    out = dict(preset_table if preset_table is not None else defaults)
+    for sub, v in value.items():
+        if isinstance(v, bool) or not isinstance(v, int):
+            raise ValueError(f"[harness_evolution.{key}] {sub} = {v!r} is not an integer")
+        least = HARNESS_TABLE_LEAST[(key, sub)]
+        if v < least:
+            raise ValueError(f"[harness_evolution.{key}] {sub} = {v} is below the least value {least}")
+        if preset_table is not None:
+            if (key, sub) in HARNESS_TABLE_FLOORS and v < int(preset_table[sub]):
+                raise ValueError(f"[harness_evolution.{key}] {sub} = {v} is below the preset's {preset_table[sub]}: a "
+                                 f"floor may be raised here, not lowered")
+            if (key, sub) not in HARNESS_TABLE_FLOORS and v > int(preset_table[sub]):
+                raise ValueError(f"[harness_evolution.{key}] {sub} = {v} is above the preset's {preset_table[sub]}: a "
+                                 f"limit may be lowered here, not raised")
+        out[sub] = int(v)
     return out
 
 
@@ -1355,10 +1543,23 @@ def harness_settings(cfg: dict) -> dict | None:
     repairs = int(table.get("max_draft_repairs", 3))
     if repairs < 0:
         raise ValueError("[harness_evolution] max_draft_repairs is a count of revisions after the first draft")
-    return {"package_api": package_api, "package": limits.to_json(), "diagnosis": diagnosis.to_json(),
-            "max_draft_repairs": repairs, "max_effort": max_effort,
-            "sandbox": table.get("sandbox"), "image": table.get("image"),
-            "test_timeout_seconds": int(table.get("test_timeout_seconds", 30))}
+    out = {"package_api": package_api, "package": limits.to_json(), "diagnosis": diagnosis.to_json(),
+           "max_draft_repairs": repairs, "max_effort": max_effort,
+           "sandbox": table.get("sandbox"), "image": table.get("image"),
+           "test_timeout_seconds": int(table.get("test_timeout_seconds", 30))}
+    # v0.3 step 3 (M4 §1, §2): the coding session's caps and the screen's numbers travel into K under a core whose
+    # package API is v2 — the session replaces the summary call there (research.session). A v1 core carries
+    # neither and keeps today's R path, so its K and the v0.1/v0.2 workspaces are untouched.
+    asked = [k for k in ("research_session", "screen") if k in table]       # presence, not truthiness: {} asks too
+    if asked and package_api != hp.AGENT_API_VERSION:
+        raise ValueError(f"[harness_evolution] research_session/screen belong to package_api {hp.AGENT_API_VERSION}: "
+                         f"a {package_api} core runs the summary-call research step")
+    if asked:
+        for key in ("research_session", "screen"):
+            value = table.get(key, {})
+            # under a preset the table is already the preset's narrowed one (a dict); without one it is the config's
+            out[key] = _harness_table(key, value, None) if improvement_cfg is None else _harness_table(key, {}, value)
+    return out
 
 
 def _host_contract(objects: _ct.Objects, bench: "BenchConfig", rsi: "RsiConfig", harness: dict) -> dict:
@@ -1868,8 +2069,8 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
                                experience_ref=experience_ref)
         bound = _P.bind_release(release_ref, profile="task", services=work.services(),
                                 authorization="installed")
-        diagnosis, drafts = work.round_inputs(index, evidence, experience, bound, root=activity.root,
-                                              research_model=research_model)
+        diagnosis, drafts, session = work.round_inputs(index, evidence, experience, bound, root=activity.root,
+                                                       research_model=research_model)
         log.append({"round": index, "release": release_ref, "feedback": evidence["feedback"].summary()})
         return RoundContext(releases=activity.releases, objects=activity.objects, scope_id=activity.rsi.scope_id,
                             context=context, researcher=researcher, bound=bound, core_ref=work.core_ref,
@@ -1878,7 +2079,7 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
                             schedule=schedule,
                             history=frozen_signatures(experience, activity.objects, parent=release_ref),
                             root=activity.root,
-                            diagnosis=diagnosis, drafts=drafts, round_index=index)
+                            diagnosis=diagnosis, drafts=drafts, round_index=index, session=session)
 
     from .research.loop import resume_unfinished
     # An open experiment finishes under the template and the scope it was frozen with, or the segment pauses.
@@ -1951,8 +2152,13 @@ class _Completions:
         self.name = getattr(provider, "name", "llm")
 
     def complete(self, system: str, prompt: str) -> str:
+        return self.turn(system, [{"role": "user", "content": prompt}], ()).text or ""
+
+    def turn(self, system: str, messages: list, tools=()):
+        """One chat turn with tools, as R's coding session needs it (v0.3): the provider's ChatTurn, a refusal as
+        ReplyRefused and a reply cut at the output limit as ReplyTruncated, exactly as `complete` reads them."""
         from .providers import ReplyRefused, ReplyTruncated
-        turn = self.provider.chat(system, [{"role": "user", "content": prompt}], ())
+        turn = self.provider.chat(system, list(messages), list(tools or ()))
         if turn.stop == "refusal":
             # Declined, not answered: the research step reads it as an unreadable reply (M4 §1). The call is
             # already settled on the book, so raising here changes nothing that was paid.
@@ -1966,7 +2172,7 @@ class _Completions:
                                  + (f" ({used} tokens)" if used else "")
                                  + ": raise max_tokens for the research model ([research.llm] or [llm]) and "
                                    "[pricing] max_output_tokens with it")
-        return turn.text or ""
+        return turn
 
     def label(self, step: str):
         """While a research step runs, a metered provider books its calls as `<operation>:<step>`."""
@@ -2151,7 +2357,7 @@ def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_
         # M6 §2 (v0.3): the start W's dev readings are a common input, copied into this arm's record as recorded, so
         # the arm's pooled control starts as the other arm's does — the common readings plus, later, its own; the
         # other arm's readings are never here. Rows already on record (a restarted arm) are not written twice.
-        _copy_readings(shared["dev"], shared["dev_runs"], inner.results)
+        _copy_readings(shared["dev"], shared["dev_runs"], inner.results, source=shared["results"])
     log.watch(step)
     # An experiment a crash left mid-way is finished first, from what it recorded, and counts as its round.
     resumed = resume_unfinished(root, objects, inner.handlers(), arm_budget, eval_template_ref=inner.template_ref,
@@ -2164,7 +2370,8 @@ def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_
     # Rounds that ended on infrastructure are rerun, not counted: the arms are compared at equal completed rounds.
     done = log.done()
     schedule = Schedule(worker_rounds=max(plan.worker_round_limit - done, 0), research_slots=0,
-                        patience=plan.worker_round_limit)
+                        patience=plan.worker_round_limit,
+                        candidates_per_round=int(getattr(plan, "candidates_per_round", 1) or 1))
     measured: dict = {}
     if inner.harness and shared:
         # Both arms start from the one W0 measurement (docs/modules/06_RESEARCH_CAMPAIGN.md §2): its grading and
@@ -2172,7 +2379,20 @@ def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_
         # release because that release runs the same W0. A restarted arm continues from its own measurements.
         _copy_measurement(shared["measurement"], shared["results"], shared["transcripts"], inner.results,
                           Path(rt.root) / "transcripts")
+        # the common release the copied rows name, so the arm reads them as a measurement of its own start (the same
+        # W and K: Improvement._runs_like) rather than paying for the failures again
+        _ct.copy_closure(shared["objects"], objects, [shared["measurement"]["release"]])
         own = inner.last_measurement(releases.active()["release_ref"])
+        if own is not None and own["release"] != start and inner._runs_like(own["release"], start):
+            # The copied rows name the common release; the arm's own collection batches ran on `start` (the release
+            # its measurement stood for) and last_measurement filed them under that release, not the common one.
+            # They join the measurement here, or a restart would lose evidence paid for before the pause. A batch
+            # finished after the restart (finish_collections) skips these rows: _run_collection holds what the
+            # measurement already has.
+            held = {r.attempt_id for r in own["train"]}
+            mine = [r for r in inner.results.all() if _arm_of(r.attempt_id) == "collect"
+                    and r.system_release_ref == start and r.attempt_id not in held]
+            own = {**own, "release": start, "results": [*own["results"], *mine], "train": [*own["train"], *mine]}
         measured["last"] = own if own is not None else {**shared["measurement"], "release": start}
     research_model = (shared or {}).get("research_model", {})
 
@@ -2190,7 +2410,7 @@ def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_
                                experience_ref=experience_ref)
         bound = _P.bind_release(release_ref, profile="task", services=inner.services(),
                                 authorization="installed")
-        diagnosis, drafts = inner.round_inputs(
+        diagnosis, drafts, session = inner.round_inputs(
             index, evidence, experience, bound, root=root, research_model=research_model,
             shared_notes=shared.get("notes") if shared and index == 0 else None)
         return RoundContext(releases=releases, objects=objects, scope_id=inner.scope_id, context=context,
@@ -2199,7 +2419,7 @@ def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_
                             experience_ref=experience_ref, experience=tuple(experience), owner="worker",
                             schedule=schedule, history=frozen_signatures(experience, objects, parent=release_ref),
                             root=root,
-                            diagnosis=diagnosis, drafts=drafts, round_index=index)
+                            diagnosis=diagnosis, drafts=drafts, round_index=index, session=session)
 
     collector = None
     if inner.harness:
@@ -2328,7 +2548,7 @@ def _campaign_common(activity: Activity, plan, pair, budget, *, provider, pricin
                          control_pooling=pooling, confirmation_repeats=confirmations)
     measurement = common.measure(start, None)
     shared: dict = {"measurement": measurement, "results": common.results, "transcripts": Path(rt.root) / "transcripts",
-                    "research_model": research_model, "notes": None, "dev": [], "dev_runs": {}}
+                    "research_model": research_model, "notes": None, "dev": [], "dev_runs": {}, "objects": objects}
     if pooling == "pooled" and common.dev_tasks:
         # M6 §2 (v0.3): under a pooled control, the start W's one reading of the inner dev tasks is a common input
         # too — taken here, charged to the common scope, and copied into both arms — so both inner gates start
@@ -2341,7 +2561,7 @@ def _campaign_common(activity: Activity, plan, pair, budget, *, provider, pricin
         shared["dev_runs"] = {h: run for h, run in common.results.runs().items()
                               if h in {r.run for r in shared["dev"]}}
     bound = _P.bind_release(start, profile="task", services=common.services(), authorization="installed")
-    diagnosis, _ = common.round_inputs(0, measurement, (), bound, root=root, research_model=research_model)
+    diagnosis, _, _ = common.round_inputs(0, measurement, (), bound, root=root, research_model=research_model)
     selected, _rest = dg.select_failures(diagnosis.summaries, order=diagnosis.order, last_included={},
                                          cap=diagnosis.limits.max_notes)
     prompts = {arm: _P.prompts_of(objects, r_ref).get("research.diagnose")
@@ -2381,11 +2601,12 @@ def _seed_experience(root, entries: list[dict]) -> None:
         _ct.durable_write(path, "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in entries).encode())
 
 
-def _copy_readings(rows: list, runs: dict, target: Results) -> int:
-    """Common dev readings and their run manifests, copied into one arm's record as recorded (M6 §2, v0.3): the
-    rows keep their attempt ids, run hashes and release, so the arm's pool rule (Improvement.control_pool) reads
-    them as what they are — readings of the same W under the same conditions. Rows already there are kept.
-    -> the rows written."""
+def _copy_readings(rows: list, runs: dict, target: Results, *, source: Results | None = None) -> int:
+    """Common readings and their run manifests, copied into one arm's record as recorded (M6 §2, v0.3): the rows
+    keep their attempt ids, run hashes and release, so the arm's pool rule (Improvement.control_pool) reads them as
+    what they are — readings of the same W under the same conditions — and, with `source`, their grading rows too,
+    so the arm's dev failure-type histogram (M4 §1) has the types the common readings carry. Rows already there
+    are kept. -> the rows written."""
     present = {r.attempt_id for r in target.all() if r.attempt_id}
     for run in runs.values():
         target.put_run(run)
@@ -2394,15 +2615,20 @@ def _copy_readings(rows: list, runs: dict, target: Results) -> int:
         if r.attempt_id and r.attempt_id not in present:
             target.append(r)
             written += 1
+    if source is not None:
+        target.copy_grading(source, [r.attempt_id for r in rows if r.attempt_id])
     return written
 
 
 def _copy_measurement(measurement: dict, source: Results, transcripts: Path, target: Results,
                       target_transcripts: Path) -> None:
-    """A common measurement's grading rows and transcripts, copied into one branch's workspace as recorded."""
+    """A common measurement's TaskResult rows, run manifests, grading rows and transcripts, copied into one branch's
+    workspace as recorded: the arm's trajectory reader (M4 §1, v0.3) resolves a W0 train attempt by its row in the
+    arm's own store, and the grading is what its failure summaries read."""
     import shutil
     rows = measurement.get("train") or ()
-    target.copy_grading(source, [r.attempt_id for r in rows])
+    runs = {h: run for h, run in source.runs().items() if h in {r.run for r in rows}}
+    _copy_readings(list(rows), runs, target, source=source)
     target_transcripts.mkdir(parents=True, exist_ok=True)
     for r in rows:
         src = Path(transcripts) / f"{r.evidence}.jsonl"
@@ -2858,9 +3084,11 @@ def _beyond_preset(settings: dict, schedule: dict | None, gate: dict | None,
         if int(plan.get("confirmation_repeats") or 0) < wanted:
             problems.append(f"confirmation_repeats {plan.get('confirmation_repeats')} is below the preset's {wanted}")
     if schedule is not None:
-        if int(schedule.get("candidates_per_round", 1)) != settings["candidates_per_round"]:
-            problems.append(f"candidates_per_round {schedule.get('candidates_per_round')}: this version runs "
-                            f"{settings['candidates_per_round']}")
+        # v0.3 step 3 (M4 §2): k is a ceiling — a frozen schedule may run fewer candidates a round than
+        # [improvement] allows, never more.
+        if int(schedule.get("candidates_per_round", 1)) > settings["candidates_per_round"]:
+            problems.append(f"candidates_per_round {schedule.get('candidates_per_round')} is above "
+                            f"max_candidates_per_round {settings['candidates_per_round']}")
         if int(schedule.get("collection_batches", 0)) > settings["collection_batches"]:
             problems.append(f"collection_batches {schedule.get('collection_batches')} is above "
                             f"max_collection_batches {settings['collection_batches']}")
@@ -2964,10 +3192,14 @@ def _cycle_slot(cfg, base, activity: Activity, settings: dict, slot: str, state:
             return "budget_exhausted"
         discovery = "automatic" if researcher is None else "scripted"
         researcher = researcher or _default_researcher(cfg, activity, budget=budget)
+        # k for the arms is the mainline's frozen schedule's (M4 §2): the same k in every round of the activity
+        frozen_schedule = activity.objects.get(activity.rsi.schedule_ref) if activity.rsi.schedule_ref else {}
         planned = research_slot(cfg, base, pairs=pairs, researcher=researcher, out=out,
                                 worker_rounds=int(campaign["worker_round_limit"]), gate=gate,
                                 research_gate=research_gate, arm_budget=arm_budget, discovery=discovery,
-                                outer_budget=outer_budget, budget=budget, run=False)
+                                outer_budget=outer_budget, budget=budget, run=False,
+                                candidates_per_round=int(frozen_schedule.get("candidates_per_round")
+                                                         or settings["candidates_per_round"]))
         if planned["outcome"] in ("repair_runtime", "infrastructure_failed"):
             step.update(outcome="paused", reason="; ".join(planned.get("reasons") or ()))
             save()
@@ -3053,8 +3285,9 @@ def cycle_pairs(activity: Activity, cfg: dict) -> list:
     # E0, both arms' starting experience: the mainline log as it stands, each experiment's raw gate reasons left
     # out because they can name development tasks — the second half of which is now the outer pool. The aggregate
     # figures stay (docs/modules/06_RESEARCH_CAMPAIGN.md §3).
-    entries = [{k: v for k, v in e.items() if k != "reasons"} if e.get("kind") == "experiment" else e
-               for e in _experience.read(activity.root)]
+    entries = [{k: v for k, v in e.items() if k != "reasons"} if e.get("kind") == "experiment"
+               # v0.3 step 3 (M6 §2): a ledger row's per-task gate lists name dev tasks; the arms read counts
+               else _experience.strip_dev_task_ids(e) for e in _experience.read(activity.root)]
     return [CampaignPair(pair_id="pair-1", independence_group="group-1", initial_w_ref=active.worker_ref,
                          initial_experience_ref=activity.objects.put_json("change", {"experience": entries}),
                          inner_train_groups=tuple(train_families), inner_dev_groups=tuple(dev_families[:half]),
@@ -3094,7 +3327,7 @@ def research_slot(cfg: dict, base: str | Path = ".", *, pairs, researcher, arm_r
                   out: Callable[[str], None] = print, worker_rounds: int = 1, gate: GatePlan | None = None,
                   arm_budget: dict | None = None, phase: str = "research_dev",
                   discovery: str = "scripted", run: bool = True, research_gate: GatePlan | None = None,
-                  outer_budget: dict | None = None, budget=None) -> dict:
+                  outer_budget: dict | None = None, budget=None, candidates_per_round: int = 1) -> dict:
     """One research slot: the current R proposes a change to R, the change is compared, and the winner is installed.
 
     The proposal goes through the same admission and the same build as a worker candidate — only the owner and
@@ -3162,7 +3395,7 @@ def research_slot(cfg: dict, base: str | Path = ".", *, pairs, researcher, arm_r
                         campaign_pairs=tuple(activity.objects.put(p) for p in pairs),
                         arm_budget=dict(arm_budget or {"model_calls": 2000, "tool_calls": 2000}),
                         outer_budget=dict(outer_budget) if outer_budget else None,
-                        worker_round_limit=worker_rounds,
+                        worker_round_limit=worker_rounds, candidates_per_round=int(candidates_per_round or 1),
                         worker_gate_plan_ref=activity.objects.put(gate or GatePlan(min_groups=1, min_gain=0.01,
                                                                                   bootstrap_replicates=200)),
                         research_gate_plan=(research_gate or gate or GatePlan(min_groups=1, min_gain=0.05,

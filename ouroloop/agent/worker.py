@@ -25,6 +25,11 @@ through a handler the host supplies — the gateway and broker live in the host,
 raises at run time is AgentRunError, infrastructure rather than a defect (the draft smoke catches deterministic
 crashes before any paid run, M0 §3); a handler that finds a hard limit reached raises LimitHit, and the session
 ends there with the dimension named (termination `budget`, M5 §2).
+
+v0.3 step 3 (M4 §1 R 作为有界编码会话): a worker session also holds R's coding session's file tree (`work`), the
+`/work` of the docs — the current package's copy, the round's inputs and the candidate directories R writes — so
+that R's file edits never touch a host file. The model loop, the caps and `read_trajectory` are the host's
+(research/session.py); the worker only keeps and hands back the files.
 """
 from __future__ import annotations
 
@@ -401,6 +406,16 @@ class WorkerSession:
             message = {**message, "deadline": self.limits.request_seconds}
         return self.serve(message, handlers={"base_call": self.base_call_handler(broker, self.limits.max_base_calls)},
                           deadline=self.limits.request_seconds)
+
+    def work(self, action: str, **fields) -> dict:
+        """One action on R's coding session's file tree in this worker (worker_runner.py `work`, M4 §1 v0.3): ->
+        {"ok": True, "value": ...} or {"ok": False, "error": ...}. A refused action is the session tool's error and
+        is handed to R as the tool result; no package code runs in it, so a worker that dies here is infrastructure
+        (WorkerCrashed), as for any op outside PACKAGE_OPS."""
+        answer = self.request({"op": "work", "action": action, **fields})
+        if not isinstance(answer, dict) or "ok" not in answer:
+            raise WorkerCrashed(f"the worker answered the work action {action!r} outside its protocol")
+        return answer
 
     def load(self, files: dict[str, str]) -> dict:
         """Load the package files and read the runner's identity back. -> {runner_sha256, ops}. A runner that is not

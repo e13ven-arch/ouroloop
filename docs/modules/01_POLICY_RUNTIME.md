@@ -79,6 +79,8 @@ controller 与 actor 共享当时合法 observation，默认不把 controller �
 
 **hook 作为约定**。`before_tool`/`after_tool`/`on_finish` 三个挂点、它们的语义（下节“首版能力包 API 与执行边界”）与截断规则，v0.3 起是默认 agent 遵守的约定，不是宿主契约：默认 agent 在它的循环里照今天的顺序调 manifest 里启用的 hook；复制了默认 agent 的候选继承这套约定，改掉它的候选不再有 hook，manifest 里的 hooks 条目仍要通过草稿检查，但 Inspection 会记 `hook_runs=0`。v1 的 `tools` 条目同理：默认 agent 把它们作为 ToolSpec 暴露给模型、在同一 worker 里执行；带自己 agent 的包里它们是普通模块。理由：hook 的价值在 v0.1/v0.2 的结果里（on_finish 对账 hook 被接受一次、拒绝两次），保留它让已装的 W* 原样运行；但它只是循环的一种写法，不该再是循环唯一能变的地方。
 
+（v0.3，2026-10-05，第 3 步）worker 协议多一个 `work` 操作（`agent/worker_runner.py`）：R 编码会话的 `/work` 树——`package/`（当前包，只读）、`inputs/`（本轮输入，只读）、`candidates/<dir>/`（R 写）——放在 worker 里，宿主驱动模型循环并把 R 的每次文件调用转成 `work` 的 `init/list/read/write/edit/delete/export`；写只允许 `candidates/<dir>/<file>`，第一次写新 `<dir>` 时以包的副本建目录；这个操作不运行任何包代码，所以它的失败是 worker 的（WorkerCrashed），不在 `PACKAGE_OPS` 里；`read_trajectory` 由宿主答（worker 没有 transcripts）。会话用的是 K 的隔离 worker（与草稿检查同一个），没有 worker 时本轮 infrastructure_failed、活动暂停（M0 §3）。规格在 M4 §1（v0.3）。测试：`test_package_worker.py::test_the_work_tree_seeds_a_candidate_from_the_package_and_writes_under_candidates_only`、`test_a_work_action_is_never_a_package_error_and_runs_no_code`。
+
 包拿不到什么由三层保证：ctx 上只有五个名字（M0 §2）；worker 镜像与挂载里没有评分器、provider、凭据、对象库、结果存储、transcripts、冻结划分、账本与宿主仓库（下文隔离条目；`test_it6_23_package_code_in_the_docker_worker_cannot_reach_the_host` 已覆盖今天的清单，v0.3 加 transcripts 与 `rsi/cycle.json`）；网关日志与 broker 事件由宿主写，worker 没有写入口。默认 agent 在进程内运行时同样只经 ctx，不持有 Runtime、Objects、评分器句柄：它是 K 的代码，但照包的规矩写，否则 PR7-07 的等价不成立。
 
 ### 首版能力包 API 与执行边界

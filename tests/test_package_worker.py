@@ -1694,3 +1694,242 @@ def test_the_default_agent_runs_a_v1_package_through_run_in_the_qualified_worker
     # the same package through the draft check in the image: the default agent is smoked there too
     from ouroloop.agent.worker import check_package
     assert check_package(qualified, files, {**hp.empty_manifest(), **manifest}, fixture=World()) == []
+
+
+# ---------------------------------------------------------------------------- v0.3 step 3: the session's /work tree
+def work_session(package=None, inputs=None):
+    session = ProcessWorker(for_tests=True).start()
+    session.load({})
+    answer = session.work("init", package=package or {"manifest.json": "{}", "memory.md": "old\n",
+                                                      "skills/a.md": "A\n"},
+                          inputs=inputs or {"notes.json": "[]"})
+    assert answer == {"ok": True, "value": {"ok": True}}
+    return session
+
+
+def test_the_work_tree_seeds_a_candidate_from_the_package_and_writes_under_candidates_only():
+    """M4 §1 (v0.3), worker_runner `work`: `init` lays out package/, inputs/ and candidates/; the first write under
+    candidates/<dir>/ seeds <dir> with the package's files; list/read see the whole tree; write/edit/delete refuse
+    package/, inputs/, the tree's root, a traversal and a bare directory; `export` hands back one candidate's files;
+    an unknown action or dir is the tool's error, never a worker failure."""
+    session = work_session()
+    try:
+        assert session.work("list")["value"] == ["inputs/notes.json", "package/manifest.json", "package/memory.md",
+                                                 "package/skills/a.md"]
+        assert session.work("read", path="package/memory.md")["value"] == "old\n"
+        written = session.work("write", path="candidates/c1/memory.md", text="new\n")
+        assert written["ok"] and written["value"]["seeded"] is True and written["value"]["written"] == 4
+        assert session.work("export", dir="c1")["value"] == {"manifest.json": "{}", "memory.md": "new\n",
+                                                            "skills/a.md": "A\n"}
+        again = session.work("write", path="candidates/c1/skills/b.md", text="B\n")
+        assert again["value"]["seeded"] is False
+        edited = session.work("edit", path="candidates/c1/skills/a.md", old="A", new="AA")
+        assert edited["ok"] and session.work("read", path="candidates/c1/skills/a.md")["value"] == "AA\n"
+        twice = session.work("edit", path="candidates/c1/skills/a.md", old="A", new="x")
+        assert not twice["ok"] and "occurs 2 times" in twice["error"]
+        assert session.work("delete", path="candidates/c1/memory.md")["ok"]
+        assert session.work("list", path="candidates/c1")["value"] == ["manifest.json", "skills/a.md", "skills/b.md"]
+        for bad in ("package/memory.md", "inputs/notes.json", "memory.md", "candidates/c1", "candidates/../x",
+                    "/etc/passwd", "candidates/c 1/x.md", "candidates/c1/../../x"):
+            answer = session.work("write", path=bad, text="x")
+            assert not answer["ok"], bad
+        assert session.work("read", path="package/memory.md")["value"] == "old\n"      # untouched
+        assert not session.work("read", path="candidates/none/x.md")["ok"]
+        assert not session.work("export", dir="none")["ok"] and not session.work("export", dir="../c1")["ok"]
+        assert "unknown work action" in session.work("squash")["error"]
+        assert not session.work("edit", path="candidates/c1/skills/a.md", old="", new="x")["ok"]
+        assert not session.work("write", path="candidates/c1/skills/a.md", text=None)["ok"]
+        # a second init starts a fresh tree: nothing of the first remains
+        session.work("init", package={"manifest.json": "{}"}, inputs={})
+        assert session.work("list")["value"] == ["package/manifest.json"]
+    finally:
+        session.close()
+
+
+def test_a_work_action_is_never_a_package_error_and_runs_no_code():
+    """M1 §1: the tree op runs no package code — a Python file written to a candidate is text to it — so a failure
+    in it is the worker's (WorkerCrashed), not a CandidateDefect, and `work` is not among PACKAGE_OPS."""
+    from ouroloop.agent.worker import PACKAGE_OPS, WorkerCrashed
+    assert "work" not in PACKAGE_OPS
+    session = work_session()
+    try:
+        code = "import os\nos.system('echo pwned')\nraise SystemExit(3)\n"
+        assert session.work("write", path="candidates/c1/tools/t.py", text=code)["ok"]
+        assert session.work("read", path="candidates/c1/tools/t.py")["value"] == code
+        assert session.proc.poll() is None                                   # the worker is alive: nothing ran
+        session.proc.kill()
+        session.proc.wait(timeout=5)
+        with pytest.raises(WorkerCrashed):
+            session.work("list")
+    finally:
+        session.close(force=True)
+
+
+def test_a_filesystem_failure_inside_a_work_action_is_the_tools_error_and_the_worker_lives():
+    """M4 §1 (2026-10-05 review): a write onto a directory, a write whose parent segment is a file, and a text that
+    cannot be encoded each come back as the tool's `ok: false` — never as a kind "package" error that would end the
+    round as a candidate defect — and the worker answers the next action."""
+    session = work_session()
+    try:
+        assert session.work("write", path="candidates/c1/skills/b.md", text="B")["ok"]       # seeds c1 (skills/a.md)
+        onto_dir = session.work("write", path="candidates/c1/skills", text="x")
+        assert not onto_dir["ok"] and "is a directory" in onto_dir["error"]
+        under_file = session.work("write", path="candidates/c1/memory.md/x.md", text="x")
+        assert not under_file["ok"] and "is a file, not a directory" in under_file["error"]
+        edited_under_file = session.work("edit", path="candidates/c1/memory.md/x.md", old="a", new="b")
+        assert not edited_under_file["ok"]
+        bad_text = session.work("write", path="candidates/c1/bad.md", text="\ud800")
+        assert not bad_text["ok"] and bad_text["error"].startswith("UnicodeEncodeError")
+        assert session.proc.poll() is None
+        assert session.work("read", path="candidates/c1/memory.md")["value"] == "old\n"
+        assert "bad.md" not in session.work("list", path="candidates/c1")["value"]
+    finally:
+        session.close()
+
+
+def test_the_work_tree_refuses_a_write_past_ks_byte_caps_and_every_answer_fits_a_protocol_line():
+    """M4 §1 (2026-10-05 review, rechecked): `init` carries K's max_package_bytes as the candidate directory's cap and
+    a per-file cap; a write or edit that would cross either is refused before the disk is touched. The protocol line
+    is a separate bound, measured escaped: with byte caps far above it, a write whose directory would take more than
+    LINE_BUDGET characters once json.dumps escapes it (an emoji is 12, a control character 6) is refused too, so the
+    export of every legal candidate fits one line; and an answer that would not fit is never sent."""
+    from ouroloop.agent.worker import MAX_LINE
+    from ouroloop.agent.worker_runner import LINE_BUDGET
+    session = ProcessWorker(for_tests=True).start()
+    session.load({})
+    assert session.work("init", package={"manifest.json": "{}"}, inputs={}, max_bytes=100, max_file_bytes=60)["ok"]
+    try:
+        big = session.work("write", path="candidates/c1/a.md", text="x" * 61)
+        assert not big["ok"] and "a file of a candidate may hold at most 60 bytes" in big["error"]
+        assert session.work("write", path="candidates/c1/a.md", text="x" * 50)["ok"]
+        assert session.work("write", path="candidates/c1/b.md", text="y" * 40)["ok"]       # 2 + 50 + 40 = 92
+        over = session.work("write", path="candidates/c1/c.md", text="z" * 20)             # 112 > 100
+        assert not over["ok"] and "may hold at most 100 bytes in all" in over["error"]
+        grown = session.work("edit", path="candidates/c1/b.md", old="y" * 40, new="y" * 55)   # 2 + 50 + 55 = 107
+        assert not grown["ok"] and "in all" in grown["error"]
+        assert session.proc.poll() is None
+        # byte caps of 10 MB: only the escaped line bounds what follows
+        assert session.work("init", package={"manifest.json": "{}"}, inputs={}, max_bytes=10_000_000,
+                            max_file_bytes=10_000_000)["ok"]
+        emoji = session.work("write", path="candidates/c1/e.md", text="\U0001F600" * 80_000)   # 320 KB, 960k escaped
+        assert not emoji["ok"] and "on the protocol line once escaped" in emoji["error"]
+        controls = session.work("write", path="candidates/c1/c.md", text="\x01" * 160_000)    # 160 KB, 960k escaped
+        assert not controls["ok"] and "on the protocol line once escaped" in controls["error"]
+        assert session.work("write", path="candidates/c1/e.md", text="\U0001F600" * 60_000)["ok"]   # 720k escaped
+        more = session.work("write", path="candidates/c1/f.md", text="\x02" * 40_000)          # + 240k: over
+        assert not more["ok"] and session.proc.poll() is None
+        exported = session.work("export", dir="c1")
+        assert exported["ok"] and exported["value"]["e.md"] == "\U0001F600" * 60_000
+        assert len(json.dumps({"op": "result", "value": exported})) < LINE_BUDGET < MAX_LINE
+        page = session.work("read", path="candidates/c1/e.md")
+        assert page["ok"] and len(json.dumps({"op": "result", "value": page})) < LINE_BUDGET
+        # a package seeded past the line (the host's own files, never refused at init): the write that seeds it is
+        # refused, and the export that would not fit answers the protocol's refusal instead of an oversized line
+        assert session.work("init", package={"manifest.json": "{}", "memory.md": "\U0001F600" * 100_000}, inputs={},
+                            max_bytes=10_000_000, max_file_bytes=10_000_000)["ok"]
+        assert not session.work("write", path="candidates/c2/x.md", text="x")["ok"]
+        refused = session.work("export", dir="c2")
+        assert refused == {"ok": False, "error": "the answer would exceed the protocol line; read it in pieces"}
+        assert session.proc.poll() is None and session.work("list", path="package")["ok"]
+    finally:
+        session.close()
+
+
+def test_read_file_pages_a_long_non_ascii_inputs_file_within_the_protocol_line():
+    """M4 §1 (2026-10-05 recheck): `read` answers at most READ_CHARS characters from `offset`, halved while the page
+    would not fit the line escaped, and says how many characters follow and where to read next; a 200k-character
+    non-ASCII inputs file (inputs/ledger.json grows without bound) is read whole in pages, every answer one line."""
+    from ouroloop.agent.worker_runner import LINE_BUDGET, READ_CHARS
+    text = ("\u00e9" * 100_000) + ("\U0001F600" * 60_000) + ("\x03" * 40_000)
+    session = work_session(inputs={"ledger.json": text})
+    try:
+        pages, offset = [], 0
+        while True:
+            answer = session.work("read", path="inputs/ledger.json", offset=offset)
+            assert answer["ok"] and len(json.dumps({"op": "result", "value": answer})) < LINE_BUDGET
+            body, _, tail = answer["value"].partition("\n[... ")
+            assert len(body) <= READ_CHARS
+            pages.append(body)
+            offset += len(body)
+            if not tail:
+                break
+            assert tail.startswith(f"{len(text) - offset} characters follow; read again with offset {offset}]")
+        assert "".join(pages) == text and len(pages) >= 3
+        first = session.work("read", path="inputs/ledger.json", limit=10)["value"]
+        assert first.startswith("\u00e9" * 10 + "\n[... ") and session.work("read", path="inputs/ledger.json",
+                                                                         offset=len(text) - 2)["value"] == "\x03\x03"
+        assert not session.work("read", path="inputs/ledger.json", offset="abc")["ok"]
+    finally:
+        session.close()
+
+
+def test_a_work_path_is_bounded_and_strict_utf8_and_every_failure_is_the_tools():
+    """M4 §1 (2026-10-05 recheck): a path of more than 32 segments or 1024 characters is refused before the disk is
+    touched (a 1500-level path used to recurse in os.makedirs and go out as kind "package"); a path that is not
+    strict UTF-8 — the lone surrogates of surrogateescape — is refused, so no raw-byte filename reaches list/export;
+    any other Exception inside a work action (an AttributeError of a malformed request) is the tool's error too; the
+    worker answers the next action."""
+    session = work_session()
+    try:
+        malformed = session.work("init", package=["not", "a", "mapping"], inputs={})
+        assert not malformed["ok"] and malformed["error"].startswith("AttributeError")
+        assert session.work("init", package={"manifest.json": "{}", "memory.md": "old\n"}, inputs={})["ok"]
+        deep = session.work("write", path="candidates/c1/" + "/".join(["a"] * 1500) + "/x.md", text="x")
+        assert not deep["ok"] and "at most 32 segments" in deep["error"]
+        long = session.work("write", path="candidates/c1/" + "a" * 1100 + ".md", text="x")
+        assert not long["ok"] and "1024 characters" in long["error"]
+        raw = session.work("write", path="candidates/c1/\udc80x.md", text="x")
+        assert not raw["ok"] and "not strict UTF-8" in raw["error"]
+        assert not session.work("read", path="package/\udcffy.md")["ok"]
+        assert session.proc.poll() is None
+        listed = session.work("list")["value"]
+        assert all(name.encode("utf-8") for name in listed) and not any("\udc80" in n for n in listed)
+        assert session.work("write", path="candidates/c1/" + "/".join(["a"] * 29) + "/x.md", text="x")["ok"]
+    finally:
+        session.close()
+
+
+def test_an_accepted_candidate_directory_exports_whole_at_the_line_budget_boundary():
+    """M4 §1 (2026-10-05, second recheck): a write reserves the reply's fixed wrapper, so a directory accepted at
+    exactly LINE_BUDGET − EXPORT_WRAPPER escaped characters (paths measured against the realpath'd candidate
+    directory) still exports as one line within the budget, and one character more is refused."""
+    from ouroloop.agent.worker_runner import EXPORT_WRAPPER, LINE_BUDGET
+    session = ProcessWorker(for_tests=True).start()
+    session.load({})
+    try:
+        assert session.work("init", package={"manifest.json": "{}"}, inputs={}, max_bytes=10_000_000,
+                            max_file_bytes=10_000_000)["ok"]
+        held = len(json.dumps("manifest.json")) + len(json.dumps("{}")) + 4
+        n = LINE_BUDGET - EXPORT_WRAPPER - held - (len(json.dumps("big.md")) + 2 + 4)
+        assert session.work("write", path="candidates/c1/big.md", text="x" * n)["ok"]
+        exported = session.work("export", dir="c1")
+        assert exported["ok"] and len(exported["value"]["big.md"]) == n
+        assert len(json.dumps({"op": "result", "value": exported})) <= LINE_BUDGET
+        over = session.work("write", path="candidates/c1/big.md", text="x" * (n + 1))
+        assert not over["ok"] and f"at most {LINE_BUDGET - EXPORT_WRAPPER})" in over["error"]
+    finally:
+        session.close()
+
+
+def test_ws_prompt_files_are_outside_the_package_byte_cap_inside_the_line_and_cleared_by_writing_them_empty():
+    """M4 §1 (2026-10-05, second recheck): worker/system_prompt.md and worker/finish.md are W's prompt texts, not
+    package files — they count toward neither K byte cap (harness_package.check_shape never sees them) but do count
+    toward the protocol line; deleting one is refused, a prompt is cleared by writing it empty."""
+    session = ProcessWorker(for_tests=True).start()
+    session.load({})
+    try:
+        assert session.work("init", package={"manifest.json": "{}", "worker/system_prompt.md": "P" * 900,
+                                             "worker/finish.md": "F" * 50}, inputs={}, max_bytes=1000)["ok"]
+        assert session.work("write", path="candidates/c1/memory.md", text="m" * 500)["ok"]      # 2 + 500 counted
+        assert session.work("write", path="candidates/c1/worker/system_prompt.md", text="Q" * 1200)["ok"]
+        over = session.work("write", path="candidates/c1/skills/a.md", text="s" * 600)       # 2 + 500 + 600
+        assert not over["ok"] and "at most 1000 bytes in all" in over["error"]
+        escaped = session.work("write", path="candidates/c1/worker/finish.md", text="\U0001F600" * 80_000)
+        assert not escaped["ok"] and "on the protocol line once escaped" in escaped["error"]
+        refused = session.work("delete", path="candidates/c1/worker/finish.md")
+        assert not refused["ok"] and "to clear a prompt, write it empty" in refused["error"]
+        assert session.work("write", path="candidates/c1/worker/finish.md", text="")["ok"]
+        assert session.work("export", dir="c1")["value"]["worker/finish.md"] == ""
+        assert session.work("delete", path="candidates/c1/memory.md")["ok"]                   # a package file may go
+    finally:
+        session.close()

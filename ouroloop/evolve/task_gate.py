@@ -539,6 +539,29 @@ def refill(plan: TaskEvalPlan, arm: str, rows: list, run) -> list:
     return refill_attempts(rows, run, arm, int((plan.retry_policy or {}).get("max_infrastructure_retries", 0)))
 
 
+def receipt_differences(receipt: ct.EvaluationReceipt, objects: ct.Objects) -> dict[str, list[str]]:
+    """The gate's three per-task classes read off a receipt's own results object (M4 §5 引擎自有的实验台账, v0.3),
+    nothing recomputed from fresh data: `fixed` — the candidate's mean success on the task is above the (pooled)
+    control's; `regressed` — below it by more than the plan's `regression_drop` (the tasks `regression_rate`
+    counted, M3 §2.1(d)); `still_failing` — both arms' means are 0. The candidate's rows are the subject reading and
+    its confirmation readings together, as `judge` read them. Dev task ids: the ledger keeps them; R's projection
+    and an arm's E0 see counts."""
+    from ..benchmark import TaskResult
+    results = objects.get(receipt.results_ref)
+    attempts = results.get("attempts") or {}
+    candidate = [TaskResult.from_json(r) for arm, rows in attempts.items() for r in rows
+                 if arm == "subject" or arm.startswith("confirm")]
+    control = [TaskResult.from_json(r) for r in attempts.get("control") or ()]
+    s_tasks, c_tasks = per_task(candidate), per_task(control)
+    plan = TaskEvalPlan.from_json(objects.get(receipt.plan_ref)) if receipt.plan_ref and objects.has(receipt.plan_ref) \
+        else None
+    drop = plan.gate().regression_drop if plan is not None and plan.gate_plan else None
+    shared = sorted(set(s_tasks) & set(c_tasks))
+    return {"fixed": [t for t in shared if s_tasks[t] > c_tasks[t] + 1e-9],
+            "regressed": regressed(s_tasks, c_tasks, drop),
+            "still_failing": [t for t in shared if s_tasks[t] < 1e-9 and c_tasks[t] < 1e-9]}
+
+
 def confirmation_arm(index: int) -> str:
     """The arm name of the index-th confirmation reading (M3 §2.1(b), v0.3): `confirm`, `confirm1`, ... — its own
     arm, so its attempt ids are never the first reading's and a resume finds exactly the reading it had started."""

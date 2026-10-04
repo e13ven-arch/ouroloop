@@ -296,3 +296,91 @@ def test_a_failing_note_is_raised_after_the_answered_notes_are_cached(tmp_path):
         notes, coverage = diagnosis(root, 4).run(again, "diagnose")
         assert sorted(again.asked) == missing and coverage["noted"] == 4 and coverage["reused"] == 4 - len(missing)
         assert [n["task_id"] for n in notes] == list("abcd") and len(cached(root)) == 4
+
+
+# ---------------------------------------------------------------------------- v0.3: R's new inputs (M4 §1 R 的输入)
+def test_read_trajectory_is_train_only_read_only_and_byte_capped(fake_upstream, tmp_path):
+    """RL6-36: the session's trajectory tool returns a byte range of a train attempt's host-written record, caps each
+    read at `max_trajectory_bytes` and the session at `max_trajectory_bytes_total`, refuses a dev attempt as
+    AccessDenied (the call still recorded), and never writes: the transcript on disk is unchanged."""
+    from ouroloop.research.session import SessionLimits, TrajectoryReader
+    run(fake_upstream, tmp_path, [rsi.TRAIN[1]], "train")
+    results, _, _ = run(fake_upstream, tmp_path, [rsi.DEV[0]], "dev")
+    rows = {r.split: r for r in results.all()}
+    path = tmp_path / "transcripts" / f"{rows['train'].evidence}.jsonl"
+    before = path.read_bytes()
+    reader = TrajectoryReader(results, tmp_path / "transcripts", SessionLimits(max_trajectory_bytes=200,
+                                                                               max_trajectory_bytes_total=300))
+    text, bad = reader.read(rows["train"].attempt_id, 0, 10_000)
+    assert not bad and text.startswith(before[:50].decode()) and reader.total == 200 and "bytes follow" in text
+    denied, bad = reader.read(rows["dev"].attempt_id)
+    assert bad and denied.startswith("AccessDenied") and reader.calls[-1] == {"ref": rows["dev"].attempt_id,
+                                                                              "offset": 0, "bytes": 0,
+                                                                              "denied": "not a valid train attempt"}
+    refused, bad = reader.read(rows["train"].attempt_id, 200, 200)
+    assert bad and "cumulative cap of 300" in refused and reader.total == 200
+    tail, bad = reader.read(rows["train"].attempt_id, 200, 100)
+    assert not bad and reader.total == 300
+    assert (reader.read("not-a-ref")[1], reader.read(rows["train"].attempt_id, "x", 1)[1]) == (True, True)
+    assert path.read_bytes() == before
+    assert reader.listing([rows["train"].attempt_id, rows["dev"].attempt_id, "none"]) == [
+        {"attempt_ref": rows["train"].attempt_id, "task_id": rows["train"].task_id, "bytes": len(before)}]
+
+
+def test_the_dev_histogram_has_assertion_types_and_counts_only(fake_upstream, tmp_path):
+    """RL6-37 / M4 §1: over the installed W's dev readings, the histogram counts failed scored assertions by type —
+    excluded and passed assertions not counted — with the readings' and tasks' counts; it carries no params, no task
+    ids and no per-task rows, and a test attempt in the same store is never read."""
+    from ouroloop.research.session import dev_failure_histogram
+    gap = rsi.BusinessWorker(ignore_finish_check=True)            # the fixture's gap: the notification is skipped
+    results, dev_rows, _ = run(fake_upstream, tmp_path, rsi.DEV, "dev", worker=gap)
+    run(fake_upstream, tmp_path, rsi.FINAL, "test", worker=gap)
+    histogram = dev_failure_histogram(results, [r for r in results.all() if r.split == "dev"])
+    assert set(histogram) == {"split", "types", "readings", "tasks", "attempts"}
+    assert histogram["split"] == "dev" and histogram["readings"] == 1 and histogram["tasks"] == len(rsi.DEV)
+    failed = [r for r in dev_rows if not r.success]
+    assert failed and sum(histogram["types"].values()) >= len(failed)
+    assert all(isinstance(k, str) and isinstance(v, int) for k, v in histogram["types"].items())
+    assert "rsi." not in json.dumps(histogram) and "params" not in json.dumps(histogram)
+    # a pool of test rows gives nothing: the projection reads the split it is asked for and refuses the rest
+    final = dev_failure_histogram(results, [r for r in results.all() if r.split == "test"])
+    assert final["types"] == {} and final["readings"] == 0
+
+
+def test_the_ledger_projection_shows_dev_results_as_three_counts_only():
+    """RL6-37 / M4 §1 台账投影: R's view of the ledger keeps each candidate's declaration, declaration ref, screen
+    (train task ids allowed), verdict and the gate's three classes as counts; the dev task ids of the gate stage
+    appear nowhere in it, and an arm's E0 gets the same counts in place of the lists."""
+    from ouroloop.evolve import experience as xp
+    rows = [xp.ledger_row("declared", "c1", scope="a", round=0, dir="d", declaration={
+                "mechanism": "Check every step", "mechanism_normalized": "check every step", "site": "memory.md",
+                "carrier": "memory", "predicted_affected": ["rsi.notify_after_update"], "trigger_condition": "always",
+                "differs_from": [], "notes": ["note:x"]}, declaration_ref="declaration:sha256:" + "1" * 64,
+                diff={"added": ["memory.md"], "modified": [], "deleted": [], "bytes": 3}, status="declared"),
+            xp.ledger_row("drafted", "c1", drafts=[{"revision": 0, "package_ref": "package:x", "ok": True}],
+                          package_ref="package:x", status="ready"),
+            xp.ledger_row("admitted", "c1", status="admitted", reasons=[]),
+            xp.ledger_row("screened", "c1", tasks=["rsi.notify_after_update", "rsi.update_stage"],
+                          failing=["rsi.notify_after_update"], sample=["rsi.update_stage"],
+                          before={"rsi.notify_after_update": False, "rsi.update_stage": True},
+                          after={"rsi.notify_after_update": True, "rsi.update_stage": True}, net_flips=1,
+                          cost_per_attempt=0.4, thin_screen=True, outcome="selected"),
+            xp.ledger_row("gated", "c1", verdict="accepted", receipt="receipt:sha256:" + "2" * 64,
+                          reading_kind="confirmed", gain=0.33, control_readings=2, cost_per_attempt={"subject": 0.4},
+                          fixed=["rsi.dev_notify_after_update"], regressed=["rsi.dev_policy_hold"],
+                          still_failing=["rsi.dev_update_stage"], installed=True)]
+    folded = xp.ledger_rows(rows)
+    assert len(folded) == 1 and folded[0]["outcome"] == "installed" and folded[0]["gate"]["fixed"] == ["rsi.dev_notify_after_update"]
+    shown = xp.ledger_projection(folded)[0]
+    assert shown["gate"] == {"verdict": "accepted", "reading_kind": "confirmed", "gain": 0.33, "control_readings": 2,
+                             "cost_per_attempt": {"subject": 0.4}, "fixed": 1, "regressed": 1, "still_failing": 1}
+    assert shown["screen"]["tasks"] == ["rsi.notify_after_update", "rsi.update_stage"] and shown["screen"]["thin_screen"]
+    assert shown["declaration_ref"] == "declaration:sha256:" + "1" * 64 and shown["drafts"] == {"checked": 1, "passed": True}
+    assert "rsi.dev" not in json.dumps(shown)
+    stripped = xp.strip_dev_task_ids(rows[-1])
+    assert (stripped["fixed"], stripped["regressed"], stripped["still_failing"]) == (1, 1, 1)
+    # an arm reads the projection of its E0, where the lists are counts already
+    assert xp.ledger_projection(xp.ledger_rows([*rows[:-1], stripped]))[0]["gate"]["fixed"] == 1
+    assert xp.strip_dev_task_ids(rows[0]) is rows[0]
+    with pytest.raises(ValueError, match="ledger stage"):
+        xp.ledger_row("judged", "c1")

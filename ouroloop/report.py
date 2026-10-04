@@ -192,11 +192,37 @@ def _harness_evidence(root: Path, objects: ct.Objects, events: list, entries: li
         "research_steps": [{k: e.get(k) for k in ("scope", "stage", "release", "research_ref", "context_ref")}
                            | {"requests": len(e.get("steps") or ())}
                            for e in events if e.get("event") == "research_steps"],
+        # v0.3 step 3 (M4 §5, M7 §4): the engine's ledger, per candidate — the declaration, how the drafts and the
+        # admission went, the screen (train task ids, net flips, thin_screen), the gate's receipt ref and its three
+        # per-task classes as counts; dev task ids stay in the receipt. And how often admission refused a repeat.
+        "ledger": _ledger_report(entries),
+        "sessions": [{k: e.get(k) for k in ("scope", "round", "turns", "edits", "trajectory_reads",
+                                             "trajectory_bytes", "finishes", "ended")}
+                     for e in events if e.get("event") == "research_session"],
         "cycle": None if cycle is None else {"status": cycle.get("status"), "steps": cycle.get("steps")},
         "reuse": reuse,
         "not_run": {"C3": "the first version trains no decision model: C3 belongs to the second version",
                     "distillation": "the first version trains no model: distillation belongs to the second version"},
     }
+
+
+def _ledger_report(entries: list) -> dict:
+    """The ledger as the report lists it (M7 §4 实验台账): one row per candidate from the train-restricted
+    projection (experience.ledger_projection — dev task ids never, the gate's classes as counts), the carriers'
+    distribution, and the admissions `repeated_mechanism` refused."""
+    from .evolve.experience import ledger_projection, ledger_rows
+    rows = ledger_rows(entries)
+    carriers: dict = {}
+    for r in rows:
+        carrier = (r.get("declaration") or {}).get("carrier") or "unknown"
+        carriers[carrier] = carriers.get(carrier, 0) + 1
+    repeated = sum(1 for r in rows if any("repeated_mechanism" in str(x) for x in (r.get("admission") or {}).get("reasons") or ()))
+    outcomes: dict = {}
+    for r in rows:
+        outcomes[r["outcome"]] = outcomes.get(r["outcome"], 0) + 1
+    return {"candidates": ledger_projection(rows), "carriers": carriers, "outcomes": outcomes,
+            "repeated_mechanism_refusals": repeated,
+            "note": "dev task ids stay in the receipts; the gate's fixed/regressed/still_failing are counts here"}
 
 
 def _package_of(objects: ct.Objects, release_ref: str) -> dict | None:
@@ -641,6 +667,24 @@ def render_markdown(report: dict) -> str:
             lines.append(f"- gate {g['verdict']}: gain {g['gain']} (min_gain {g['min_gain']}), regression rate "
                          f"{g['regression_rate']} (max {g['max_regression_rate']}); regressed: {regressed}")
         lines.append(f"- research cost by step: {json.dumps(harness['research_cost'], sort_keys=True)}")
+        ledger = harness.get("ledger") or {}
+        if ledger.get("candidates"):
+            lines.append(f"- ledger: {len(ledger['candidates'])} candidates, carriers "
+                         f"{json.dumps(ledger['carriers'], sort_keys=True)}, outcomes "
+                         f"{json.dumps(ledger['outcomes'], sort_keys=True)}, repeated_mechanism refusals "
+                         f"{ledger['repeated_mechanism_refusals']}")
+            for c in ledger["candidates"]:
+                d, s, g = c.get("declaration") or {}, c.get("screen") or {}, c.get("gate") or {}
+                lines.append(f"  - {c['candidate']}: {d.get('carrier')} at {d.get('site')} — {d.get('mechanism')}; "
+                             f"screen net flips {s.get('net_flips')}{' (thin)' if s.get('thin_screen') else ''}; "
+                             f"{c['outcome']}" + (f"; gate gain {g.get('gain')}, fixed {g.get('fixed')}, regressed "
+                                                  f"{g.get('regressed')}, still failing {g.get('still_failing')}"
+                                                  if g else ""))
+        for s in harness.get("sessions") or ():
+            lines.append(f"- session round {s['round']}: {s['turns']} turns, {s['edits']} edits, "
+                         f"{s['trajectory_reads']} trajectory reads ({s['trajectory_bytes']} bytes), "
+                         f"{s['finishes']} finish{'es' if s['finishes'] != 1 else ''}"
+                         + (f"; ended: {s['ended']}" if s.get("ended") else ""))
         if harness["cycle"]:
             lines.append(f"- cycle: {harness['cycle']['status']}; steps {sorted(harness['cycle']['steps'] or {})}")
         for r in harness["reuse"]:

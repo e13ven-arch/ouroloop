@@ -55,7 +55,7 @@ test = 0.25
 mode = "automatic"                   # manual/scripted 另有明确入口
 preset = "automationbench_harness_v3"
 allowed_methods = ["policy_edit", "harness_edit"]
-max_candidates_per_round = 3         # （v0.3）每轮至多 3 个候选；reader 今天拒绝 ≠1（bench.py:1083-1086），改为 1..preset 上限
+max_candidates_per_round = 3         # （v0.3）每轮至多 3 个候选；reader 放行 1..preset、缺省取 preset（2026-10-05 已实现，test_bench_phase.py::test_max_candidates_per_round_up_to_the_preset_is_accepted）
 max_collection_batches = 2           # 每个预先分配的 worker 段上限，重启不重置
 
 [harness_evolution]
@@ -87,9 +87,9 @@ v3 preset 固定、且 `[freeze.*]` 只能收紧的其余数值（（v0.3，2026
 | `campaign.min_headroom_tasks` | 6 | M6 §2（v0.3）：起点 W 在内层 dev 合并对照里从未通过的任务少于它时不开位，记 `no_headroom` |
 | `task_plan.control_pooling` | `"pooled"` | M3 §2.1(a)（v0.3）：对照臂是已安装 W 在同一计划与模型身份下的全部有效读数合并，不足的题由对照臂补齐；缺省（旧计划）读作 `fresh` |
 | `concurrency` | 8 | M5 §2（v0.3）：v3 preset 下 `[bench] concurrency` 的缺省；机器设置，不进计划身份，`--concurrency N` 只覆盖本次运行 |
-| `research_session.max_turns` / `max_edits` | 40 / 24（第 3 步的设计值，尚未进 preset） | M4 §1（v0.3）：R 编码会话（一轮一个，修订继续同一会话）的模型调用次数（含 `finish`）与 `write_file`/`edit_file` 次数上限 |
-| `research_session.max_trajectory_bytes` / `max_trajectory_bytes_total` | 65536 / 524288（第 3 步的设计值，尚未进 preset） | M4 §1（v0.3）：R 只读的原始 train 轨迹工具单次与累计的字节上限 |
-| `max_candidates_per_round` / `screen.passing_sample` / `screen.min_net_flips` | 3 / 5 / 1（第 3 步的设计值，尚未进 preset） | M4 §2、§5（v0.3）；M7 只在 reader 里放行 `max_candidates_per_round` 1..3 |
+| `research_session.max_turns` / `max_edits` | 40 / 24（2026-10-05 已进 preset，`[harness_evolution.research_session]` 只能调低，且 ≥ 1） | M4 §1（v0.3）：R 编码会话（一轮一个，修订继续同一会话）的模型调用次数（含 `finish`）与 `write_file`/`edit_file`/`delete_file` 次数上限 |
+| `research_session.max_trajectory_bytes` / `max_trajectory_bytes_total` | 65536 / 524288（2026-10-05 已进 preset） | M4 §1（v0.3）：R 只读的原始 train 轨迹工具单次与累计的字节上限 |
+| `max_candidates_per_round` / `screen.passing_sample` / `screen.min_net_flips` | 3 / 5 / 1（2026-10-05 已进 preset：`PRESETS["automationbench_harness_v3"]["max_candidates_per_round"]` 与 `harness.screen`） | M4 §2、§5（v0.3）；reader 放行 `max_candidates_per_round` 1..3、缺省 3；`[harness_evolution.screen]` 的 `passing_sample` 只能调低（≥ 0），`min_net_flips` 是下限、只能调高（调低放宽筛选，拒绝）；v1 preset 没有这几项，仍是一轮一个候选 |
 | `[freeze.final] repeats` | 3（定值，2026-10-04 定） | M3 §2.2（v0.3）：原 2；配置值，不在 PRESETS 里 |
 | `[freeze.final] comparisons` 的 `role = "matched_cost"` 项（可选） | `best_of = max(2, round(成本比))` | M3 §2.2（v0.3）：只在发表结果时加一支 best-of-k 的 W0 臂（oracle 语义），k 由 W* 与 W0 每次尝试成本之比算出，与 W* 并列报告，不进入 C1 的裁决 |
 | `schedule` | `{worker_rounds = 3, research_slots = 1, patience = 2, max_infrastructure_failures = 2}` | 不变 |
@@ -163,7 +163,7 @@ v3 最终计划区分 C2 的 `mode=published_reference`（默认）与 `paired_r
 （v0.3，2026-10-04）报告新增以下内容，都是离线从账本、收据与对象库读出，`report` 仍不发模型请求：
 - **每次有效尝试的成本**：每臂（W0、W*、gate 两臂、研究位两支，以及运行了的 best-of-k 臂）给 `cost_per_attempt`（与收据同名，M5 §2（v0.3））、每次尝试的模型调用数与 act/aux 分开的 token（网关日志按角色记，M0 §2（v0.3））；gate 行写出成本项的裁决（β0 + β1·gain 的上限、候选实际值、是否因此拒绝，M3 §2.1(e)（v0.3））。原因：v0.2 的 W* 每次尝试 $0.452→$0.570，gate 里没有一项能看见。
 - **gate 行**：除现有 gain/min_gain/退步清单外，写出合并对照的读数数量与来源（哪几次测量，M3 §2.1(a)（v0.3））、确认测量的读数与合并估计（收据 `kind = "confirmed"`；确认失败的同样是 `confirmed`、verdict rejected、`first_reading` 保留，M3 §2.1(b)（v0.3））。退步按幅度制清单列出（均值下降超过 0.5 的任务及两臂均值，M3 §2.1(d)（v0.3））；早于该规则的收据照原样显示旧比例并标 `rule=strict`。
-- **实验台账**（M4 §5（v0.3）的引擎自有台账，在 E 里）：每个候选的声明（mechanism、site、carrier、predicted_affected train 任务数、trigger_condition、differs_from）；筛选结果（净翻转、`screened_out`/`thin_screen`）；gate 收据 ref；gate 后逐题 fixed/regressed/still_failing（从收据的逐题差值读出）；准入因 `repeated_mechanism` 拒绝的次数。报告按候选列出；dev 任务 id 不出现在台账的 R 投影里，报告正文也只给计数。
+- **实验台账**（M4 §5（v0.3）的引擎自有台账，在 E 里）：每个候选的声明（mechanism、site、carrier、predicted_affected train 任务数、trigger_condition、differs_from）；筛选结果（净翻转、筛选结局 `selected`/`not_selected`/`screened_out`/`invalid`/`lost`、`lost_to`、`thin_screen`）；gate 收据 ref；gate 后逐题 fixed/regressed/still_failing（从收据的逐题差值读出）；准入因 `repeated_mechanism` 拒绝的次数。报告按候选列出；dev 任务 id 不出现在台账的 R 投影里，报告正文也只给计数。（实现，2026-10-05）`report._harness_evidence` 的 `ledger`（`candidates` 为 `experience.ledger_projection` 的行、`carriers`、`outcomes`、`repeated_mechanism_refusals`）与 `sessions`（每轮 `research_session` 事件的回合、编辑、轨迹读取次数与字节、`finish` 次数、结束原因）；markdown 的能力包一节逐候选一行。
 - **余量**：每个研究位的 `headroom`（起点 W 从未通过的内层任务数、preset 阈值、是否因此拒绝开位，M6 §2（v0.3））；每段开始时同样给 W 在 dev 上从未通过的任务数，作为“还有多少可改”的记录。C4 的 not_run 原因因此多两种：`no_slot_pool`（dev 合并清单少于 50 题，研究位不开，只含 Marketing 的活动如此）与 `no_headroom`（余量不足、未问 R），与下文 `cycle.json` 的四种结局并列写出。
 - **best-of-k 臂**（可选，M3 §2.2（v0.3））：只在发表结果时运行；运行时 final 表里与 W0、W* 并列：k = max(2, round(W* 与 W0 的 `cost_per_attempt` 之比))、oracle 语义（k 次里任一通过即通过）、每题成本、通过率与配对差值的区间（W* 对 best-of-k、W* 对 W0 分别给）；不进入 C1 的裁决。未运行时 final 表该臂写 not_run。原因是演化花的钱是额外的搜索预算，匹配成本的 test-time scaling 对照是这类主张被问到的第一个问题（SURVEY §5 #10）。
 - **按领域分列**：任务效果表与 final 表按领域再分一层，合并行在上；Marketing 的 test 行标 `spent`，不进入主张区间（§2 “多领域活动与划分”）；每领域给划分计数与分层计数。
@@ -203,7 +203,7 @@ C4 读取真实 campaign 结果，不预设 not_run。只有未执行才标 not_
 扩展 `test_bench_phase.py`、`test_benchmark.py`、`test_report.py`；Harbor 使用 fake trial 默认测试，真实环境 smoke 单列。
 
 （v0.3，2026-10-04）验收命令与测试。命令：`ouroloop freeze --config <v3 配置>` 打印每个领域的划分计数与分层计数；`ouroloop bench --config <v3 配置> --phase smoke --checks-only` 确认每个领域可装载与 agent 组件可导入；`--phase report` 输出 §4 的新字段。测试（都是新增）：
-- `test_benchmark.py::test_a_stratified_split_balances_assertion_mix_and_tool_family`（BR6-19）、`test_a_stratified_split_reads_no_result`（BR6-19）、`test_a_frozen_hash_split_is_kept_when_the_rule_changes`（BR6-18 的 Marketing 分支）、`test_grading_of_a_pooled_split_still_returns_train_only`（合并清单下 §4 第一段的边界）；
-- `test_bench_phase.py::test_a_domains_list_freezes_one_split_per_domain_and_pools_them`（BR6-18）、`test_a_single_domain_is_a_list_of_one`（BR6-22）、`test_max_candidates_per_round_up_to_the_presets_three`（BR6-21）、`test_concurrency_defaults_to_eight_and_is_not_in_the_plan`（BR6-24）、`test_the_v3_preset_checks_every_listed_domain_loads`（§2 领域锁的改动）、`test_an_old_config_reads_under_the_new_reader`（BR6-22）；
-- `test_report.py::test_each_arm_shows_its_cost_per_attempt`、`test_a_gate_line_states_pooled_readings_and_the_confirmation`、`test_the_ledger_is_listed_per_candidate_without_dev_task_ids`、`test_a_slot_shows_its_headroom_or_no_slot_pool`、`test_the_final_table_lists_the_best_of_k_arm_only_when_it_ran`、`test_marketing_test_rows_are_marked_spent_and_kept_out_of_the_claim`、`test_task_effect_is_broken_down_per_domain`、`test_an_old_receipt_shows_the_strict_rule_and_no_cost_term`（BR6-22/23）。
+- （第 5 步，待实现）`test_benchmark.py::test_a_stratified_split_balances_assertion_mix_and_tool_family`（BR6-19）、`test_a_stratified_split_reads_no_result`（BR6-19）、`test_a_frozen_hash_split_is_kept_when_the_rule_changes`（BR6-18 的 Marketing 分支）、`test_grading_of_a_pooled_split_still_returns_train_only`（合并清单下 §4 第一段的边界）；
+- `test_bench_phase.py::test_max_candidates_per_round_up_to_the_preset_is_accepted`（BR6-21；已实现 2026-10-05）与 `test_nested_harness_tables_tighten_per_key_and_are_validated_without_a_preset`（已实现 2026-10-05：`research_session` 四项与 `screen.passing_sample` 只能调低，`screen.min_net_flips` 是下限、只能调高）；`test_paid_run_safety.py::test_concurrency_is_a_machine_setting_the_frozen_plan_does_not_carry`（BR6-24；已实现 2026-10-04，原拟名 `test_concurrency_defaults_to_eight_and_is_not_in_the_plan` 未采用）；（第 5 步，待实现）`test_bench_phase.py::test_a_domains_list_freezes_one_split_per_domain_and_pools_them`（BR6-18）、`test_a_single_domain_is_a_list_of_one`（BR6-22）、`test_the_v3_preset_checks_every_listed_domain_loads`（§2 领域锁的改动）、`test_an_old_config_reads_under_the_new_reader`（BR6-22）；
+- `test_report.py::test_each_arm_shows_its_cost_per_attempt`（已实现，第 2 步）、`test_the_ledger_is_listed_per_candidate_without_dev_task_ids`（已实现 2026-10-05）；研究位结局在报告里的写法由既有 `test_c4_says_how_a_slot_without_a_campaign_ended` 覆盖（`no_slot_pool`/`no_headroom` 两行，第 2 步）。**待实现**（2026-10-05 核对，尚无同名测试）：`test_a_gate_line_states_pooled_readings_and_the_confirmation`（gate 行的合并读数数与确认测量）、`test_a_slot_shows_its_headroom_or_no_slot_pool`（headroom 数字在报告里）、`test_an_old_receipt_shows_the_strict_rule_and_no_cost_term`（BR6-22）；随第 5 步的多域报告：`test_the_final_table_lists_the_best_of_k_arm_only_when_it_ran`、`test_marketing_test_rows_are_marked_spent_and_kept_out_of_the_claim`、`test_task_effect_is_broken_down_per_domain`（BR6-23）。
 限流重试与用量暂停的 provider 行为由 M1 的 `test_claude_code_provider.py` 覆盖，M7 只验证报告里的计数（BR6-24）。

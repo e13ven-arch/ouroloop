@@ -67,7 +67,8 @@ def normalize(proposal: ct.ExperimentProposal, objects: ct.Objects) -> ct.Experi
     return ct.ExperimentProposal(owner=proposal.owner, hypothesis=proposal.hypothesis,
                                  requirements=proposal.requirements, evidence_refs=proposal.evidence_refs,
                                  changes=tuple(changes), training=proposal.training, expected=proposal.expected,
-                                 abandon_if=proposal.abandon_if, notes=proposal.notes, origin=proposal.origin)
+                                 abandon_if=proposal.abandon_if, notes=proposal.notes, origin=proposal.origin,
+                                 declaration_ref=proposal.declaration_ref)
 
 
 # ---------------------------------------------------------------------------- auxiliary checks
@@ -160,6 +161,52 @@ AUXILIARY = {"input_coverage": check_input_coverage, "label_availability": check
              "duplicate_experiment": check_duplicate_experiment}
 
 
+# ---------------------------------------------------------------------------- the declaration's fixed checks (v0.3)
+def declaration_reasons(declaration: dict | None, *, ledger=(), train_tasks=None) -> list[str]:
+    """Why a candidate's declaration is refused at admission (docs/modules/04_RESEARCH_LOOP.md §5 准入
+    repeated_mechanism, docs/modules/00_CONTRACTS.md §3 CT7-08), or []. Fixed code beside the core checks, not an
+    auxiliary a research policy could reorder out of its preflight list.
+
+    `repeated_mechanism`: the activity's ledger (experience.ledger_rows) has a candidate on the same normalised
+    (mechanism, site) whose outcome was rejected or screened_out, and this declaration's `differs_from` does not
+    cite that row with a non-empty statement that is not the earlier mechanism's own words. The code does not judge
+    whether the stated difference holds — the screen and the gate do — only that it was written down and recorded.
+    A dev or test task id in `predicted_affected` is refused: the declaration is train-lineage.
+    """
+    if not declaration:
+        return []
+    reasons = []
+    if train_tasks is not None:
+        outside = sorted(set(declaration.get("predicted_affected") or ()) - set(train_tasks))
+        if outside:
+            reasons.append(f"predicted_affected names tasks outside the train split: {outside[:5]}")
+    key = (declaration.get("mechanism_normalized") or normalize_mechanism(declaration.get("mechanism")),
+           declaration.get("site"))
+    cited = {}
+    for d in declaration.get("differs_from") or ():
+        if isinstance(d, dict):
+            cited[d.get("ref")] = str(d.get("how") or "").strip()
+    for row in ledger or ():
+        d = row.get("declaration") or {}
+        same = (d.get("mechanism_normalized") or normalize_mechanism(d.get("mechanism")), d.get("site")) == key
+        if not same or row.get("outcome") not in REPEAT_OUTCOMES:
+            continue
+        how = cited.get(row.get("declaration_ref"))
+        if not how or normalize_mechanism(how) == key[0]:
+            reasons.append(f"repeated_mechanism: {key[0]!r} at {key[1]!r} was {row.get('outcome')} as candidate "
+                           f"{row.get('candidate')} ({row.get('declaration_ref')}); differs_from must cite that "
+                           f"row and say how this candidate differs")
+    return reasons
+
+
+def normalize_mechanism(text) -> str:
+    """The form of a mechanism the ledger and the admission compare: lower case, whitespace folded."""
+    return " ".join(str(text or "").lower().split())
+
+
+from ..evolve.experience import REPEAT_OUTCOMES  # noqa: E402 - the outcomes that make a mechanism a repeat
+
+
 # ---------------------------------------------------------------------------- core admission
 def registered_builders() -> tuple[str, ...]:
     """The feedback builders this installation has. Trusted code, so the default is what is registered rather than
@@ -246,12 +293,16 @@ def core_checks(proposal: ct.ExperimentProposal, *, context, core: ct.CoreManife
 
 def admit(proposal: ct.ExperimentProposal, *, context, core: ct.CoreManifest, objects: ct.Objects,
           owner: str = "worker", checks: tuple[str, ...] = (), history=(), budget=None,
-          feedback_builders=None) -> Admission:
+          feedback_builders=None, declaration: dict | None = None, ledger=(), train_tasks=None) -> Admission:
     """The auxiliary checks in the order the research policy asked for, then the core checks always.
 
     An auxiliary `block` sends the round to collect or repair rather than spending the experiment's budget; a
     core failure makes the proposal invalid. The difference matters: "we do not have the evidence yet" and "this
     proposal is not allowed" are different answers, and only the second is the researcher's mistake.
+
+    v0.3 (M4 §5): with a `declaration`, the fixed declaration checks run beside the core ones — a repeated
+    (mechanism, site) without `differs_from` against the `ledger` rows, a dev or test id in predicted_affected
+    against `train_tasks` — and block the same way; they are not in the auxiliary list a research policy configures.
     """
     out = Admission()
     for name in checks or ():
@@ -266,6 +317,13 @@ def admit(proposal: ct.ExperimentProposal, *, context, core: ct.CoreManifest, ob
     out.checks.append({"check": "core", "verdict": "block" if reasons else "pass",
                        "detail": "; ".join(reasons) or "owner, targets, schemas, evidence and budget are in order",
                        "evidence_refs": []})
+    if declaration is not None:
+        declared = declaration_reasons(declaration, ledger=ledger, train_tasks=train_tasks)
+        out.checks.append({"check": "declaration", "verdict": "block" if declared else "pass",
+                           "detail": "; ".join(declared) or "the declaration names train tasks and no refused "
+                                                             "mechanism without a stated difference",
+                           "evidence_refs": []})
+        reasons = [*reasons, *declared]
     if reasons:
         out.status = "invalid"
         out.reasons = [*out.reasons, *reasons]

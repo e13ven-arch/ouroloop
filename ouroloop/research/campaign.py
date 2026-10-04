@@ -66,6 +66,10 @@ class CampaignPlan(ct.Record):
     # book before the common inputs and the arms run, so they cannot spend it (docs/modules/05 §2). None: no hold.
     outer_budget: dict | None = None
     worker_round_limit: int = 2
+    # v0.3 step 3 (M4 §2): how many candidates a round each arm's session may declare — the mainline schedule's
+    # `candidates_per_round`, frozen here so both arms get the same k (bench.research_slot writes the int). None,
+    # absent from the payload, reads as 1: a plan frozen before the field keeps its ref (Record.payload drops None).
+    candidates_per_round: int | None = None
     worker_gate_plan_ref: str = ""
     research_gate_plan: dict = field(default_factory=dict)
     retry_policy: dict = field(default_factory=dict)
@@ -310,7 +314,9 @@ def run_campaign(plan: CampaignPlan, *, run_arm, evaluate_outer, objects: ct.Obj
 
 
 # The research steps that render each research prompt target, by the step names researchers record.
-RESEARCH_STEPS = {"research.diagnose": ("diagnose", "note"), "research.propose": ("propose", "revise")}
+# The request steps each research prompt drives: a request of one of them, rendered from the prompt, is what shows the
+# prompt was used. `session` (v0.3) is a turn of R's coding session, which runs under research.propose's text.
+RESEARCH_STEPS = {"research.diagnose": ("diagnose", "note"), "research.propose": ("propose", "revise", "session")}
 
 
 def carries(request: dict, text: str) -> bool:

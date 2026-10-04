@@ -349,11 +349,33 @@ class PolicyResearcher:
     evidence id is an invalid proposal rather than a fact (RL-04).
     """
 
+    origin = "llm"                          # what this researcher's candidates are: a model proposed them (M0 §3)
+
     def __init__(self, llm, *, max_proposals: int = 1, max_state_chars: int = 12000):
-        self.llm = llm                      # .complete(system, prompt) -> text
+        self.llm = llm                      # .complete(system, prompt) -> text; .turn(system, messages, tools) -> ChatTurn
         self.max_proposals = max_proposals
         self.max_state_chars = max_state_chars
         self.requests: list[dict] = []      # what was actually sent, so a test can see which R ran
+
+    def session_turn(self, system: str, messages: list, tools: list):
+        """One model call of R's coding session (docs/modules/04_RESEARCH_LOOP.md §1 R 作为有界编码会话, v0.3): the
+        research model under `research.propose`'s text plus the session format, with the session's tools, metered
+        and labelled `session` like every research call. Each turn is a request on record (step "session", the
+        prompt digest, the digest of the latest user message), so the reuse check reads which R's text drove the
+        session (M6 §4). The completion interface answers with a ChatTurn; one without `turn` cannot run a session."""
+        turn = getattr(self.llm, "turn", None)
+        if turn is None:
+            raise _ct.ContractError("the research completion interface has no tool-calling turn: a coding session "
+                                    "needs the chat provider, not a plain completion")
+        latest = next((m for m in reversed(messages) if m.get("role") == "user"), {})
+        request = {"step": "session", "system": system, "prompt_hash": _ct.digest({"system": system})[:16],
+                   "input_hash": _ct.digest({"input": str(latest.get("content", ""))})[:16]}
+        self.requests.append(request)
+        label = getattr(self.llm, "label", None)
+        if callable(label):
+            with label("session"):
+                return turn(system, messages, tools)
+        return turn(system, messages, tools)
 
     def diagnose(self, context, prompt: str) -> list[dict]:
         text = self._ask(prompt, context, REQUIREMENT_FORMAT, "diagnose")

@@ -30,6 +30,15 @@ The answer to `load` names the runner: {"runner_sha256": <sha256 of this file's 
 compares it with its own copy of this file and refuses a worker image built from another (M1 §1 默认 agent 即种子包:
 the host and the image carry the same bytes, and different bytes are a startup error), since an older image lacks
 ops and flags the host relies on and would fail in ways that look like the package's.
+
+v0.3 step 3 (M4 §1 R 作为有界编码会话): {"op": "work", "action": ...} is R's coding session's file tree, `/work` of the
+docs, held in this worker so that nothing R writes is a file of the host: "init" lays out `package/` (the current
+package, read-only afterwards), `inputs/` (the round's inputs, read-only) and an empty `candidates/`; "list", "read"
+read anywhere under the tree; "write", "edit", "delete" change files under `candidates/<dir>/` only, and the first
+change under a new `<dir>` seeds it with the package's files (a candidate starts as the current package); "export"
+returns one candidate's files. No code runs in this op, so a failure in it is the worker's, never the package's. The
+model loop that drives these ops, the turn and edit caps, and `read_trajectory` run on the host (research/session.py):
+the trajectories are host records the worker never holds.
 """
 import asyncio
 import hashlib
@@ -37,6 +46,7 @@ import importlib.util
 import inspect
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -44,7 +54,23 @@ import traceback
 
 ROOT = None
 MODULES = {}
-OPS = ("load", "probe", "call_tool", "hook", "test", "run", "smoke")
+OPS = ("load", "probe", "call_tool", "hook", "test", "run", "smoke", "work")
+WORK = {"root": None, "max_bytes": 262144, "max_file_bytes": 262144}   # the coding session's /work tree
+WORK_ACTIONS = ("init", "list", "read", "write", "edit", "delete", "export")
+WORK_DIR_NAME = "[A-Za-z0-9_-]{1,32}"  # a candidate directory's name under candidates/
+# The protocol line a work answer may take, measured as it goes out (json.dumps escapes to ASCII: a control character
+# is \u00XX, a non-ASCII one \uXXXX, one outside the basic plane a pair — up to 12 characters for one), safely under
+# the host's MAX_LINE (agent/worker.py, 1_000_000) so the envelope always fits.
+LINE_BUDGET = 900_000
+LINE_OVERHEAD = 4                      # per file of an export: the ": " and ", " around its path and text
+# The reply around an export's files, reserved by every write: '{"op": "result", "value": {"ok": true, "value": {}}}'
+EXPORT_WRAPPER = len(json.dumps({"op": "result", "value": {"ok": True, "value": {}}}))
+# W's prompt texts as a candidate directory holds them (research/session.py PROMPT_FILES): not package files, so not
+# counted toward K's package byte caps (harness_package.check_shape never sees them), but on the protocol line; and
+# never deleted — a prompt is cleared by writing it empty.
+PROMPT_FILES = ("worker/system_prompt.md", "worker/finish.md")
+READ_CHARS = 131072                    # characters one read answers at most; the rest is read with offset
+MAX_PATH_PARTS, MAX_PATH_CHARS = 32, 1024
 
 
 def runner_sha256() -> str:
@@ -370,6 +396,222 @@ def plain(value, limit: int = 20000):
     return value
 
 
+# ---------------------------------------------------------------------------- the coding session's /work tree
+class WorkError(Exception):
+    """A file operation of R's session that the tree refuses: a path outside it, a write outside candidates/, a
+    read of a file that is not there. Answered to the host as the tool's error (the session hands it to R as the
+    tool result and counts the turn), never as a worker failure."""
+
+
+def _work_root() -> str:
+    if WORK["root"] is None:
+        raise WorkError("the work tree is not initialised")
+    return WORK["root"]
+
+
+def _work_path(path, *, write: bool = False) -> str:
+    """The absolute path of a tree path. Relative POSIX paths only, inside the tree, strict UTF-8, at most
+    MAX_PATH_PARTS segments and MAX_PATH_CHARS characters; a write stays under candidates/<dir>/ and names a file:
+    not the directory itself, not a path whose parent segment is a file.
+
+    Strict UTF-8 because a lone surrogate (the \\udc80-\\udcff of surrogateescape) would make a raw-byte filename
+    whose list/export key then breaks the host's ledger rows and canonical JSON; the bounds because a path of
+    thousands of segments recurses in os.makedirs (M4 §1, 2026-10-05)."""
+    root = _work_root()
+    if not isinstance(path, str) or not path or path.startswith("/") or "\\" in path or "\x00" in path:
+        raise WorkError(f"{path!r}: a relative POSIX path inside the work tree"[:300])
+    try:
+        path.encode("utf-8")
+    except UnicodeEncodeError:
+        raise WorkError("the path is not strict UTF-8 (it holds a lone surrogate)") from None
+    parts = path.split("/")
+    if len(parts) > MAX_PATH_PARTS or len(path) > MAX_PATH_CHARS:
+        raise WorkError(f"a path of {len(parts)} segments and {len(path)} characters: at most {MAX_PATH_PARTS} "
+                        f"segments and {MAX_PATH_CHARS} characters")
+    if any(p in ("", ".", "..") for p in parts):
+        raise WorkError(f"{path!r}: no '.', '..' or empty segments")
+    full = os.path.realpath(os.path.join(root, path))
+    if not (full == os.path.realpath(root) or full.startswith(os.path.realpath(root) + os.sep)):
+        raise WorkError(f"{path!r}: outside the work tree")
+    if write:
+        if len(parts) < 3 or parts[0] != "candidates" or not re.fullmatch(WORK_DIR_NAME, parts[1]):
+            raise WorkError(f"{path!r}: a session writes under candidates/<dir>/<file> only, where <dir> matches "
+                            f"{WORK_DIR_NAME}; package/ and inputs/ are read-only")
+        if os.path.isdir(full):
+            raise WorkError(f"{path!r} is a directory, not a file")
+        parent = os.path.dirname(full)
+        while len(parent) > len(os.path.join(root, "candidates", parts[1])):
+            if os.path.isfile(parent):
+                raise WorkError(f"{path!r}: {os.path.relpath(parent, root)} is a file, not a directory")
+            parent = os.path.dirname(parent)
+    return full
+
+
+def _line_size(rel: str, text: str) -> int:
+    """What one file of an export takes on the protocol line: its path and text as json.dumps escapes them."""
+    return len(json.dumps(rel)) + len(json.dumps(text)) + LINE_OVERHEAD
+
+
+def _within_caps(full: str, text: str, dir_name: str) -> None:
+    """A write or edit that would put the file over the per-file cap, the candidate directory over K's package byte
+    cap, or the directory's export over the protocol line (LINE_BUDGET less the reply's fixed wrapper, measured
+    escaped: disk bytes are not line characters — a control character is six of them, an emoji twelve) is refused
+    before anything touches the disk, so an export of a legal candidate always fits one line. W's prompt files are
+    not package files: they count toward the line, not toward K's byte caps."""
+    base = os.path.realpath(os.path.join(_work_root(), "candidates", dir_name))
+    rel = os.path.relpath(full, base).replace(os.sep, "/")
+    new_size = 0 if rel in PROMPT_FILES else len(text.encode("utf-8"))
+    if new_size > WORK["max_file_bytes"]:
+        raise WorkError(f"{new_size} bytes: a file of a candidate may hold at most {WORK['max_file_bytes']} bytes")
+    total, line = new_size, _line_size(rel, text)
+    for dirpath, _dirs, files in os.walk(base):
+        for f in files:
+            path = os.path.join(dirpath, f)
+            if os.path.realpath(path) != os.path.realpath(full):
+                other = os.path.relpath(path, base).replace(os.sep, "/")
+                total += 0 if other in PROMPT_FILES else os.path.getsize(path)
+                line += _line_size(other, _read_text(path))
+    if total > WORK["max_bytes"]:
+        raise WorkError(f"{total} bytes: candidates/{dir_name} may hold at most {WORK['max_bytes']} bytes in all "
+                        f"(K's max_package_bytes)")
+    if line > LINE_BUDGET - EXPORT_WRAPPER:
+        raise WorkError(f"candidates/{dir_name} would take {line} characters on the protocol line once escaped "
+                        f"(at most {LINE_BUDGET - EXPORT_WRAPPER}): control and non-ASCII characters count six to "
+                        f"twelve each")
+
+
+def _seed_candidate(name: str) -> bool:
+    """candidates/<name>/ as a copy of package/ when it does not exist yet. -> whether it was seeded now."""
+    root = _work_root()
+    target = os.path.join(root, "candidates", name)
+    if os.path.isdir(target):
+        return False
+    for dirpath, _dirs, files in os.walk(os.path.join(root, "package")):
+        rel = os.path.relpath(dirpath, os.path.join(root, "package"))
+        os.makedirs(os.path.join(target, rel) if rel != "." else target, exist_ok=True)
+        for f in files:
+            src = os.path.join(dirpath, f)
+            dst = os.path.join(target, rel, f) if rel != "." else os.path.join(target, f)
+            with open(src, "rb") as a, open(dst, "wb") as b:
+                b.write(a.read())
+    return True
+
+
+def _write_tree(base: str, files: dict) -> None:
+    for path, text in (files or {}).items():
+        if not isinstance(path, str) or not isinstance(text, str):
+            raise WorkError("files are a mapping of path to text")
+        full = os.path.join(base, path)
+        if not os.path.realpath(full).startswith(os.path.realpath(base) + os.sep):
+            raise WorkError(f"{path}: outside its directory")
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        _write_text(full, text)
+
+
+def _read_text(full: str) -> str:
+    # newline="" both ways: a CRLF file round-trips as it is, so a file R never touched is never a changed file
+    with open(full, "r", encoding="utf-8", newline="") as h:
+        return h.read()
+
+
+def _write_text(full: str, text: str) -> None:
+    with open(full, "w", encoding="utf-8", newline="") as f:
+        f.write(text)
+
+
+def _files_under(base: str) -> dict:
+    out = {}
+    for dirpath, _dirs, files in os.walk(base):
+        for f in files:
+            full = os.path.join(dirpath, f)
+            out[os.path.relpath(full, base).replace(os.sep, "/")] = _read_text(full)
+    return dict(sorted(out.items()))
+
+
+def work(req: dict):
+    """One action on the session's tree. -> the action's value, or raises WorkError (the tool's error)."""
+    action = req.get("action")
+    if action == "init":
+        WORK["root"] = tempfile.mkdtemp(prefix="work-")
+        WORK["max_bytes"] = int(req.get("max_bytes") or 262144)
+        WORK["max_file_bytes"] = int(req.get("max_file_bytes") or WORK["max_bytes"])
+        for name in ("package", "inputs", "candidates"):
+            os.makedirs(os.path.join(WORK["root"], name), exist_ok=True)
+        _write_tree(os.path.join(WORK["root"], "package"), req.get("package") or {})
+        _write_tree(os.path.join(WORK["root"], "inputs"), req.get("inputs") or {})
+        return {"ok": True}
+    if action == "list":
+        full = _work_path(req.get("path") or ".") if (req.get("path") or ".") != "." else _work_root()
+        if not os.path.isdir(full):
+            raise WorkError(f"{req.get('path')!r}: no such directory")
+        return sorted(os.path.relpath(os.path.join(dp, f), full).replace(os.sep, "/")
+                      for dp, _d, fs in os.walk(full) for f in fs)
+    if action == "read":
+        # One page of at most READ_CHARS characters from `offset`, halved until it fits the protocol line escaped;
+        # what follows is named, so a file of any size (inputs/ledger.json grows with the activity) is read in pages.
+        full = _work_path(req.get("path"))
+        if not os.path.isfile(full):
+            raise WorkError(f"{req.get('path')!r}: no such file")
+        try:
+            offset = max(int(req.get("offset") or 0), 0)
+            limit = READ_CHARS if req.get("limit") is None else min(max(int(req["limit"]), 0), READ_CHARS)
+        except (TypeError, ValueError, OverflowError):
+            raise WorkError("offset and limit are integers (characters)") from None
+        text = _read_text(full)
+        page = text[offset:offset + limit]
+        while page and len(json.dumps(page)) > LINE_BUDGET - 200:
+            page = page[:len(page) // 2]
+        rest = len(text) - offset - len(page)
+        return page + (f"\n[... {rest} characters follow; read again with offset {offset + len(page)}]"
+                       if rest > 0 else "")
+    if action in ("write", "edit", "delete"):
+        path = req.get("path")
+        # the directory is seeded first (a candidate starts as the package), then the path is checked against what
+        # is now there — a write onto a directory or under a file is refused before anything is written
+        parts = path.split("/") if isinstance(path, str) else []
+        seeded = False
+        if len(parts) >= 3 and parts[0] == "candidates" and re.fullmatch(WORK_DIR_NAME, parts[1]):
+            seeded = _seed_candidate(parts[1])
+        full = _work_path(path, write=True)
+        dir_name = parts[1]
+        if action == "write":
+            text = req.get("text")
+            if not isinstance(text, str):
+                raise WorkError("write_file takes the file's whole text")
+            _within_caps(full, text, dir_name)
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            _write_text(full, text)
+            return {"written": len(text.encode("utf-8")), "seeded": seeded}
+        if action == "edit":
+            old, new = req.get("old"), req.get("new")
+            if not isinstance(old, str) or not old or not isinstance(new, str):
+                raise WorkError("edit_file takes the exact text to replace (non-empty) and its replacement")
+            if not os.path.isfile(full):
+                raise WorkError(f"{path!r}: no such file to edit; write_file creates one")
+            text = _read_text(full)
+            if text.count(old) != 1:
+                raise WorkError(f"{path!r}: the text to replace occurs {text.count(old)} times, not once")
+            edited = text.replace(old, new, 1)
+            _within_caps(full, edited, dir_name)
+            _write_text(full, edited)
+            return {"edited": True, "seeded": seeded}
+        if not os.path.isfile(full):
+            raise WorkError(f"{path!r}: no such file to delete")
+        if "/".join(parts[2:]) in PROMPT_FILES:
+            raise WorkError(f"{path!r} is W's prompt text: to clear a prompt, write it empty")
+        os.remove(full)
+        return {"deleted": True, "seeded": seeded}
+    if action == "export":
+        name = req.get("dir")
+        if not isinstance(name, str) or not re.fullmatch(WORK_DIR_NAME, name):
+            raise WorkError(f"{name!r}: not a candidate directory name")
+        base = os.path.join(_work_root(), "candidates", name)
+        if not os.path.isdir(base):
+            raise WorkError(f"candidates/{name}: no such candidate directory")
+        return _files_under(base)
+    raise WorkError(f"unknown work action {action!r}: one of {list(WORK_ACTIONS)}")
+
+
 def run_tests() -> dict:
     """Run every test_* function of tests/*.py with a context bound to the host's fixture broker."""
     outcome = {"passed": [], "failed": []}
@@ -427,6 +669,25 @@ def main() -> None:
             elif op == "smoke":
                 ctx = SmokeContext(req.get("roles"), req.get("deadline"), req.get("view") or {})
                 send({"op": "result", "value": run_agent(agent_entry(req["entry"]), ctx, req.get("task", ""))})
+            elif op == "work":
+                # The session's file tree: a refused action — and an OS or encoding failure under it — is the tool's
+                # error, answered as a value the host hands to R; no package code runs here, so nothing in it is
+                # kind "package" (that would be read as the candidate's defect and end the round).
+                # Every Exception is the tool's (a RecursionError of a deep path included); SystemExit and
+                # KeyboardInterrupt are not Exceptions and fall through. The answer is serialized once and measured
+                # as it goes out: one over the line budget is never sent (M4 §1, 2026-10-05).
+                try:
+                    answer = {"ok": True, "value": work(req)}
+                except WorkError as e:
+                    answer = {"ok": False, "error": str(e)[:300]}
+                except Exception as e:  # noqa: BLE001 - see above: the tool's error, never kind "package"
+                    answer = {"ok": False, "error": f"{type(e).__name__}: {str(e)[:260]}"}
+                line = json.dumps({"op": "result", "value": answer})
+                if len(line) > LINE_BUDGET:
+                    line = json.dumps({"op": "result", "value": {
+                        "ok": False, "error": "the answer would exceed the protocol line; read it in pieces"}})
+                _STDOUT.write(line + "\n")
+                _STDOUT.flush()
             else:
                 send({"op": "error", "kind": "protocol", "message": f"unknown op {op!r}"})
         except ProtocolError as e:         # the host's answer, not the package's code: never kind "package"

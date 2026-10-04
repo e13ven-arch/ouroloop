@@ -174,6 +174,9 @@ SCHEMAS: dict[str, dict] = {
     "failure_note.v1": {"kind": "output",
                         "fields": ["task_id", "failure_class", "root_cause", "mechanism", "component",
                                    "generality"]},
+    # v0.3 step 3 (docs/modules/04_RESEARCH_LOOP.md §1 R 作为有界编码会话): what R's coding session hands back
+    # with `finish` — up to k candidate directories, each with its declaration, or a next_action.
+    "candidate_declaration.v1": {"kind": "output", "fields": ["candidates", "next_action", "reason"]},
 }
 
 
@@ -483,12 +486,20 @@ class ExperimentProposal(Record):
     # v0.6: which entry point produced the proposal, written by that entry point and never by the model
     # (docs/modules/00_CONTRACTS.md §3). None on proposals made before it existed.
     origin: str | None = None
+    # v0.3 step 3 (docs/modules/00_CONTRACTS.md §3): R's declaration of the candidate — {mechanism, site, carrier,
+    # predicted_affected, trigger_condition, differs_from?} — stored by the round's entry point before admission;
+    # the engine ledger reads it by this ref. None on every proposal made before it existed and on every proposal
+    # of the summary-call path, so their refs do not move (CT7-07). Not part of the candidate's signature: the
+    # same change under another declaration is the same candidate (CT7-08).
+    declaration_ref: str | None = None
 
     def __post_init__(self) -> None:
         if self.owner not in OWNERS:
             raise ContractError(f"owner {self.owner!r}: one of {list(OWNERS)}")
         if self.origin is not None and self.origin not in ORIGINS:
             raise ContractError(f"origin {self.origin!r}: one of {list(ORIGINS)}")
+        if self.declaration_ref is not None:
+            check_refs([self.declaration_ref], kind="declaration", what="declaration")
         self.changes = tuple(_change(c) for c in self.changes)
         self.training = tuple(_training(t) for t in self.training)
         if not self.changes and not self.training:

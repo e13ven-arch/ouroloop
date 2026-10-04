@@ -372,3 +372,50 @@ def test_each_arm_shows_its_cost_per_attempt(fake_upstream, tmp_path):
     assert report["run_cost"][unpriced.hash()]["rate_limited"] == 0
     assert report["improvement_cost"]["rate_limited"] == {"attempts": 12, "research": 4}
     assert "rate-limit refusals absorbed as unbilled retries" in render_markdown(report)
+
+
+# ---------------------------------------------------------------------------- v0.3 (M7 §4, BR6-23): the ledger in the report
+def test_the_ledger_is_listed_per_candidate_without_dev_task_ids(fake_upstream, tmp_path):
+    """M7 §4 / BR6-23: the report's capability-package section lists the engine ledger per candidate — declaration,
+    screen result, verdict, the gate's three classes as counts — with the carriers' distribution and how many
+    admissions `repeated_mechanism` refused; the dev task ids of the gate stage are in no report field and not in
+    the markdown; the session records are listed too."""
+    from ouroloop.evolve import experience as xp
+    cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
+    root = activity.root
+    xp.append(root, {"kind": "diagnosis", "scope": "it", "round": 0, "noted": 1, "failures": 1, "reused": 0,
+                     "invalid": [], "included": ["rsi.notify_after_update"], "not_included": [],
+                     "working_set": "all", "measured": 5, "passed": 3})
+    declaration = {"mechanism": "check every step", "mechanism_normalized": "check every step", "site": "memory.md",
+                   "carrier": "memory", "predicted_affected": ["rsi.notify_after_update"],
+                   "trigger_condition": "always", "differs_from": [], "notes": []}
+    for stage, fields in (("declared", {"declaration": declaration, "status": "declared", "dir": "m1",
+                                        "declaration_ref": "declaration:sha256:" + "a" * 64}),
+                          ("screened", {"tasks": ["rsi.notify_after_update"], "net_flips": 1, "thin_screen": True,
+                                        "outcome": "selected"}),
+                          ("gated", {"verdict": "accepted", "receipt": "receipt:sha256:" + "b" * 64,
+                                     "reading_kind": "confirmed", "gain": 0.2, "control_readings": 3,
+                                     "fixed": ["rsi.dev_notify_after_update"], "regressed": [],
+                                     "still_failing": ["rsi.dev_policy_hold"], "installed": True})):
+        xp.append(root, xp.ledger_row(stage, "it/r0/m1", scope="it", round=0, **fields))
+    xp.append(root, xp.ledger_row("declared", "it/r1/m2", scope="it", round=1, dir="m2", status="declared",
+                                  declaration={**declaration, "carrier": "hook", "site": "on_finish"}))
+    xp.append(root, xp.ledger_row("admitted", "it/r1/m2", scope="it", round=1, status="invalid",
+                                  reasons=["repeated_mechanism: 'check every step' at 'on_finish' was rejected"]))
+    ct.Events(root).append("research_session", scope="it", round=0, turns=5, edits=2, trajectory_reads=1,
+                           trajectory_bytes=1200, finishes=1, ended="")
+    report = build_report(root, rsi.DOMAIN)
+    ledger = report["harness"]["ledger"]
+    assert ledger["carriers"] == {"memory": 1, "hook": 1} and ledger["repeated_mechanism_refusals"] == 1
+    assert ledger["outcomes"] == {"installed": 1, "invalid": 1}
+    first = ledger["candidates"][0]
+    assert first["gate"] == {"verdict": "accepted", "reading_kind": "confirmed", "gain": 0.2, "control_readings": 3,
+                             "cost_per_attempt": None, "fixed": 1, "regressed": 0, "still_failing": 1}
+    assert first["screen"]["tasks"] == ["rsi.notify_after_update"]
+    assert "rsi.dev" not in json.dumps(ledger)
+    assert report["harness"]["sessions"] == [{"scope": "it", "round": 0, "turns": 5, "edits": 2, "trajectory_reads": 1,
+                                              "trajectory_bytes": 1200, "finishes": 1, "ended": ""}]
+    markdown = render_markdown(report)
+    assert "- ledger: 2 candidates" in markdown and "it/r0/m1: memory at memory.md" in markdown
+    assert "fixed 1, regressed 0, still failing 1" in markdown and "rsi.dev" not in markdown
+    assert "- session round 0: 5 turns, 2 edits, 1 trajectory reads (1200 bytes), 1 finish" in markdown
