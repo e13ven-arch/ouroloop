@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib
 import json
 import random
+import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
@@ -38,6 +39,8 @@ class Pin:
     calibration: dict
     error: str = ""         # why the champion's backend could not be built
 
+
+_SESSIONS = threading.Lock()
 
 class Runtime:
     def __init__(self, root: str | Path, backends: dict[str, Backend], default_backend: str,
@@ -128,8 +131,9 @@ class Runtime:
         first ask, and one opened again keeps what it was fixed at. `harness` describes the prompt, tools and StopGuard
         settings of an ouroloop harness. Before a new session is fixed, the post-act monitor checks the champion it
         would run (evolve.monitor.watch): one revoked then leaves the session its defaults."""
-        known = session in self._pins or self.sessions.path(session, ".release.json").exists()
-        pin = self._pin(session) if known else self._open(session, harness)
+        with _SESSIONS:         # concurrent attempts open sessions together; the pin and the monitor's check are one step
+            known = session in self._pins or self.sessions.path(session, ".release.json").exists()
+            pin = self._pin(session) if known else self._open(session, harness)
         self.ledger.append({**(meta or {}), "type": "session", "session": session, "release": pin.release.to_json(),
                             "champion": pin.version})
         return pin.release

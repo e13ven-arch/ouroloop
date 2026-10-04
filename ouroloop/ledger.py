@@ -57,10 +57,14 @@ def new_id(prefix: str) -> str:
     return f"{prefix}_{int(time.time() * 1000):x}{uuid.uuid4().hex[:6]}"
 
 
+_APPEND = threading.Lock()     # concurrent attempts append from several threads; a line is written whole
+
+
 def _append_jsonl(path: Path, obj: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+    line = json.dumps(obj, ensure_ascii=False) + "\n"
+    with _APPEND, open(path, "a", encoding="utf-8") as f:
+        f.write(line)
 
 
 def _read_jsonl(path: Path) -> Iterator[dict]:

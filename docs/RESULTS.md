@@ -1,5 +1,71 @@
 # Results
 
+## Summary
+
+Two complete activities so far, each with its own automatically evolved version W\* measured against the same starting version W0 on the held-out test split (23 tasks × 2 runs), under a plan sealed and committed before the test tasks were run.
+
+| Activity | W0 on test | W\* on test | Paired difference, 95% interval | Verdict |
+|---|---|---|---|---|
+| v0.1 (segment-0 only) | 41.3% | 54.3% | **+13.0** [+2.2, +26.1] | C1 supported |
+| v0.2 (full activity with the research slot) | 47.8% | 52.2% | **+4.3** [−10.9, +19.6] | C1 inconclusive |
+| Both, per task averaged over the two activities (computed after the fact, not a sealed plan) | 44.6% | 53.3% | +8.7 [−2.2, +20.7] | — |
+
+What this says: in both activities the loop found changes from training failures alone that raised the held-out score, by +13 points once and by +4 points once; only the first was large enough for 23 test tasks to call significant. The recursive part, R improving its own research prompts (C4), has not been shown: in v0.2's research slot neither R0 nor the R1 it proposed added anything to W\*, so there was nothing to compare.
+
+## v0.2: the full activity (2026-10-04)
+
+The same model, prompt, preset and limits as v0.1, in a workspace of its own with a budget large enough for the research slot. Config: [`examples/automationbench/claude-full.toml`](../examples/automationbench/claude-full.toml); the final: [`claude-full-final.toml`](../examples/automationbench/claude-full-final.toml).
+
+| Version | Test pass rate (23 tasks × 2 runs) | Partial credit | Cost per attempt | Steps per attempt |
+|---|---|---|---|---|
+| W0 | 47.8% | 0.866 | $0.452 | 9.8 |
+| W\* | **52.2%** | **0.880** | $0.570 | 9.9 |
+
+- **Paired difference:** +0.043, bootstrap over task families, 2000 replicates, 95% interval [−0.109, +0.196]: *inconclusive*.
+- **Per task:** 4 improved, 2 got worse, 17 unchanged.
+- **The same W0 scored 41.3% in v0.1's final and 47.8% here.** Two runs of 46 attempts each differ by 6 points with nothing changed, which is the noise floor these finals have.
+
+### What the loop did
+
+| Step | Outcome |
+|---|---|
+| Baseline | train 25/52 (48%), dev 9/25 (36%, the same as v0.1's W0) |
+| segment-0, round 1 | **Accepted:** a pre-write protocol (sources, directives, per-row dispositions, literal values, loop closing), dev 48% → 80% |
+| segment-0, rounds 2–3 | Rejected: a longer pre-send audit (76% vs 76%); a code hook comparing each outgoing message with the sheets read (−8 points, 3 regressions) |
+| Research slot | R0 read its own experiment log and proposed R1: say what each rejection rules out, prefer narrow triggers, never re-propose a refuted mechanism with more items. Two arms from the same W\*, two rounds each on 12 inner dev tasks: R0 rejected twice (0, −8); R1 rejected twice (0, 0), its proposals at a different site as instructed (a note attached to each sheet read). Both arms sealed the same W\*: **inconclusive**, no outer comparison |
+| segment-1, round 1 | **Accepted:** an on_finish hook that fires once per task and makes the actor audit inputs against actions, dev 68% → 84%, no regressions |
+| segment-1, rounds 2–3 | Rejected (−8 with 3 regressions; −4) |
+
+W\* is therefore W0 plus the pre-write protocol and the end-of-task audit hook.
+
+**Dev against test.** The gates read W\* at 80–84% on dev and W0 at 36%; on test the same versions scored 52% and 48%. Gate numbers select the winner and are read on 25 tasks, half of them at a time inside the slot; they are process figures, not the claim.
+
+**The research slot.** It ran as designed and compared nothing: with W\* already at 67–80% on the inner dev half, two rounds of 12 tasks did not let either research policy add a change. One task is 8 points on 12, so the inner gate cannot see the small effects that remained. Testing C4 needs more attempts per gate than this activity's budget gave it.
+
+### Two defects the run exposed, both fixed before the release
+
+- **Concurrency.** Attempts of one arm now run four at a time (`[bench] concurrency`, added mid-run and used from the research arms on): 88 s → 27 s of wall time per attempt, the same cost per attempt, no invalid attempts. Research steps stay serial.
+- **Reservation headroom.** The first final stopped short: its $50 share held the actual spend ($23 by then) but not the four $7.28 reservation bounds concurrent calls hold at once, and 51 attempts were recorded as `budget_exhausted` in 78 seconds. A refused reservation now waits for a call in flight to settle; only with nothing in flight is a budget spent. A root's limits are fixed once it opens, so the same sealed comparison was run again as `final-2` in a copy of the workspace's object store with a $120 share. The first final's attempts (W\* 38 valid, 10/19 tasks; W0 2 valid) stay on record there. The test tasks had been read once by then; the plan did not change.
+
+### Cost and time
+
+Notional API-equivalent dollars at list prices; the book matched the CLI's reported cost per call.
+
+| Phase | Cost |
+|---|---|
+| Baseline, segment-0, research slot, segment-1 (5,255 calls) | $303 |
+| final-1, stopped short | $23 |
+| final-2 (910 calls) | $47 |
+| **Total** | **$373** |
+
+The cycle ran from 04:41 to 14:48 with one restart; the finals took about 25 and 45 minutes.
+
+### What v0.2 adds to v0.1
+
+- The gain is real but smaller than v0.1's and not significant on its own; across the two activities the per-task average is +8.7 points with an interval that just reaches zero.
+- The same recipe found a different pair of changes, which is what a search is expected to do; both times the accepted changes were end-of-task or pre-write checks, which is where the baseline's failures were.
+- C4 is untested, not refuted. The next version needs a research slot whose inner gates can resolve small effects: more attempts per gate, which with concurrency is now affordable in time.
+
 ## v0.1: Claude Opus 5.5 on AutomationBench Marketing (2026-10-04)
 
 The framework's automatic loop found one change from training failures. On held-out test tasks, that change raised the same model's pass rate from **41.3% to 54.3%**:

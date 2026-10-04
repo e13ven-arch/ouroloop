@@ -1,0 +1,129 @@
+# v0.2: the full first-version activity with Claude Opus 5.5 (docs/ROADMAP.md §3, step 2a.9). The same model, preset
+# and limits as claude.toml (v0.1), in a workspace of its own, with a root large enough for the research slot: the
+# baseline, segment-0, the slot where R0 and the R1 it proposes each run a worker segment from the same start and are
+# compared on dev's outer half, segment-1 (which shows whether an installed R1 is used), then a sealed final.
+#
+#   ouroloop bench --config examples/automationbench/claude-full.toml --phase cycle
+#
+# Before the first paid phase: `claude auth login`, and extra usage turned off in claude.ai's settings. When the
+# subscription's limit is reached the run pauses; the same command resumes it once the limit resets.
+
+[workspace]
+root = "workspace-claude-full"
+
+[bench]
+concurrency = 4                 # attempts of one arm at a time; a setting of the machine, not of the plan (M5 §2)
+domain = "marketing"
+upstream_path = "~/workspace/AutomationBench"
+toolset = "api"
+seed = 1                        # fixed before the first run: it decides the split
+smoke_tasks = 1
+near_duplicate_threshold = 0.6
+
+[bench.ratios]
+train = 0.5
+dev = 0.25
+test = 0.25
+
+[bench.budget]                  # the same per-attempt limits for every version compared
+max_steps = 50
+max_tool_calls = 200
+max_seconds = 900
+
+[backends.mock]
+type = "mock"
+
+[points]
+default_backend = "mock"        # the first version runs no decision model
+
+# The actor W0 pins and the research model: Claude Opus 5.5 through headless Claude Code. The model name is the
+# full id, so a reply the CLI reports from any other model stops the run instead of counting as this one's.
+# effort is pinned with the actor at bootstrap: choose it before the first run in a workspace. medium keeps the
+# subscription's use down.
+[llm]
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "medium"
+max_tokens = 32000
+timeout = 600
+
+[research.llm]
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "medium"
+max_tokens = 32000
+timeout = 900
+
+# A subscription has no per-call bill, so these prices are a notional bound that turns the budget into a cap on how
+# much of the subscription an activity may use. They are claude-opus-5-5's API list prices; the probe of 2026-10-03
+# (ROADMAP §3 step 2a.2) matched the book to the API-equivalent cost the CLI reports for each call (usage
+# `cli_cost_usd`) to the cent, cache writes at the 1-hour rate the CLI uses ($8 per M). One CLI call can make
+# up to 5 model requests (the CLI continues a reply cut at the output limit up to 3 times, plus one structured-output
+# retry), so max_output_tokens is at least 5 times the largest max_tokens above (the startup check holds it).
+[pricing]
+input_per_1k = 0.004
+cache_read_per_1k = 0.0002
+cache_write_per_1k = 0.008
+output_per_1k = 0.02
+max_input_tokens = 1000000
+max_output_tokens = 163840
+source = "notional, not a bill: claude-opus-5-5 API list price ($4/$20 per M, cache read $0.20, 1h cache write $8), equal to the CLI's reported cost in the probe (docs/ROADMAP.md §3, step 2a), 2026-10-03"
+
+# The automatic loop and its preset. The preset fixes the package limits, the note and draft limits, the gate's
+# min_gain/max_regression_rate, the schedule (3 worker rounds per segment, 1 research slot, patience 2) and the
+# research slot's pair rule; freeze writes them into K, after which R cannot raise any of them.
+[improvement]
+mode = "automatic"
+preset = "marketing_harness_v1"
+allowed_methods = ["policy_edit", "harness_edit"]
+max_candidates_per_round = 1
+max_collection_batches = 2      # per worker segment; a restart does not reset it
+
+# Narrowing the preset (never widening it). These are the preset's own values, written out so they are visible.
+[harness_evolution]
+package_api = "harness_package.v1"
+components = ["memory", "skills", "on_finish", "before_tool", "after_tool", "tools"]
+sandbox = "docker"
+max_files = 24
+max_package_bytes = 262144
+test_timeout_seconds = 30
+max_draft_repairs = 3           # revisions after the first draft, so at most 4 drafts
+max_failure_notes = 30          # notes one summary call reads, cached and new together
+
+[rsi]
+profile = "task"
+scope_id = "marketing-claude-full"
+stop_view = "stop.business.v1"
+repeats = 1
+order_seed = 1
+# The plans the cycle froze in workspace-claude-full on 2026-10-04 (the final phase runs under them too).
+task_plan_ref = "plan:sha256:f5cec1db5ce8972fae9af2c7aa82ddaf4e6c83f42361040b5a400b136484b010"
+schedule_ref = "schedule:sha256:b3f4c4be6ce5bb859d7e468632e8589f042f4127d769eb983732085fa449e584"
+budget_ref = "budget:sha256:1baa7c574246f4aadf64d5834c50e46b3352519f8069fb7dccbf467bd9c13c97"
+# [freeze.final] below, sealed on 2026-10-04 after the cycle ended and before any test task was run.
+final_plan_ref = "finalization:sha256:dc0c326152df0f72bc34fea975463e97af0a4852c811c2440f478141ed418f64"
+
+# The whole activity's budget in notional dollars at [pricing]: every phase, the research slot's two arms (15% of the
+# root each) and its outer comparison (8%), set aside when the slot starts; the final's share is set aside on the
+# same root. 900 is sized from v0.1's measured costs (docs/RESULTS.md): about $32 for the baseline, $35-40 a worker
+# round, so an arm's three rounds fit its $135 share, and the slot's 38% is free when it starts.
+[freeze.budget]
+usd = 900.0
+
+[freeze.budget.final]
+usd = 50.0
+
+# The final comparison (docs/ROADMAP.md §3, step 2a.9), sealed before the test tasks are read: W0, the starting
+# version, against W*, the version the cycle left installed (segment-0's pre-write protocol and segment-1's
+# end-of-task audit hook), on the 23 test tasks, twice each. Its plan hash is committed before `--phase evaluate`
+# runs; the result is reported whatever it is.
+[freeze.final]
+experiment_id = "claude-opus-5-5-full-final-1"
+claims = ["C1"]
+tasks = "test"
+repeats = 2
+comparisons = [{claim = "C1", subject = "evolved", control = "base", role = "evolved"},
+               {claim = "C1", subject = "base", control = "base", role = "base"}]
+release_refs = {evolved = "release:sha256:6cd37b8e49a449572ea43b4de0a1803584bf022fa0d49e2ade97a2414907c098", base = "release:sha256:95967846f10e9d31975104408af309365484b3609b21c429216c5f3a89f4e95c"}
+stop_rules = {max_infrastructure_retries = 1}
+statistical_plan = {confidence = 0.95, bootstrap_replicates = 2000, bootstrap_seed = 1}

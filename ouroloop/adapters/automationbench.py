@@ -189,9 +189,25 @@ def _runner_fns() -> tuple[Callable, Callable, str]:
 
 
 @contextmanager
+def hide_live_keys() -> Iterator[None]:
+    """Hide the keys that would turn a simulated action into a live API call, for a whole run of episodes.
+
+    Entered once, on the main thread, around concurrent attempts (task_eval.run_tasks): a per-call pop and restore
+    from several threads would race with every other reader of os.environ (the claude CLI's child environment,
+    the worker's), and a KeyError there would turn a paid call into an infrastructure failure. With the keys gone
+    for the whole pool, the per-call guard below has nothing to pop.
+    """
+    saved = {k: os.environ.pop(k) for k in LIVE_KEYS if k in os.environ}
+    try:
+        yield
+    finally:
+        os.environ.update(saved)
+
+
+@contextmanager
 def _no_live_keys() -> Iterator[None]:
-    """Hide the keys that would turn a simulated action into a live API call, for the duration of one tool call.
-    The episode is single-threaded; a process that runs episodes in threads would need the guard elsewhere."""
+    """The same guard for the duration of one tool call, for a single-threaded episode. Under concurrency the keys
+    are already hidden by hide_live_keys and this is a no-op; it must never be the only guard in a threaded run."""
     saved = {k: os.environ.pop(k) for k in LIVE_KEYS if k in os.environ}
     try:
         yield

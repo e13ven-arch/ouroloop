@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+import threading
+
 from ..ledger import locked, new_id, now, write_json
 from . import contracts as ct
 
@@ -794,8 +796,37 @@ class MeteredProvider:
         self.allocation = allocation
         self.name = getattr(provider, "name", "metered")
         self.model = getattr(provider, "model", "")
+        self._lock = threading.Lock()      # concurrent attempts share one meter: ids and in-flight count
+        self._settled = threading.Condition(self._lock)      # a call in flight has settled: headroom may be back
+        self._in_flight = 0
+        self._own = None                   # the provider's own retries, read while no metered call is in flight
         self.receipts: list[BudgetReceipt] = []
         self.calls = 0
+
+    def _reserve(self, reservation_id: str, bound: dict, last: Exception | None):
+        """One call's reservation. Refused while other calls of this meter are in flight, it waits for one of them
+        to settle and asks again: their bounds hold the headroom, and the budget is not spent until they are. It
+        is exhausted only when a reservation is refused with nothing in flight — then every further call of the
+        scope is, as before."""
+        while True:
+            with self._settled:
+                try:
+                    reservation = self.account.reserve(reservation_id, bound, allocation=self.allocation)
+                except BudgetError:
+                    if self._in_flight > 0:
+                        self._settled.wait(timeout=60.0)
+                        continue
+                    if last is not None:
+                        # a retry the budget cannot cover: the provider's failure is the outcome
+                        raise _as_provider_error(last) from (None if isinstance(last, _provider_error()) else last)
+                    raise
+                # reserved and counted in one step, so a refusal elsewhere sees this call as in flight
+                if self._in_flight == 0:
+                    self._own = getattr(self.provider, "retries", None)     # in flight, the provider's is 0
+                self._in_flight += 1
+                if isinstance(self._own, int):
+                    self.provider.retries = 0
+                return reservation
 
     def chat(self, system, messages, specs=()):
         """One call, reserved before and settled after, retried while its failure is worth retrying. A failure
@@ -803,37 +834,34 @@ class MeteredProvider:
         error, a gateway's malformed reply — so whoever handles a model call's failure (M5 §3) sees one kind."""
         bound = self.pricing.bound()
         last: Exception | None = None
+        with self._lock:
+            call, self.calls = self.calls, self.calls + 1      # one id per call, whatever thread makes it
         for attempt in range(self.max_retries + 1):
+            reservation = self._reserve(f"{self.operation}#{call}.{attempt}", bound, last)
             try:
-                reservation = self.account.reserve(f"{self.operation}#{self.calls}.{attempt}", bound,
-                                                  allocation=self.allocation)
-            except BudgetError:
-                if last is not None:
-                    # a retry the budget cannot cover: the provider's failure is the outcome
-                    raise _as_provider_error(last) from (None if isinstance(last, _provider_error()) else last)
-                raise
-            self.calls += 1
-            own = getattr(self.provider, "retries", None)
-            try:
-                if isinstance(own, int):
-                    self.provider.retries = 0
-                turn = self.provider.chat(system, messages, specs)
-            except Exception as e:  # noqa: BLE001 - the call may well have been charged: unknown, not free
-                # Released only when the request is known never to have reached the model; otherwise unknown.
-                self.receipts.append(self.account.settle(
-                    reservation.id, None, "released" if getattr(e, "unbilled", False) else "unknown"))
-                last = e
-                if not _retryable(e):
-                    break                  # the same request would fail the same way: do not pay for it again
-                if attempt < self.max_retries:
-                    import time
-                    time.sleep(min(30.0, 2.0 ** attempt))
-                continue
+                try:
+                    turn = self.provider.chat(system, messages, specs)
+                except Exception as e:  # noqa: BLE001 - the call may well have been charged: unknown, not free
+                    # Released only when the request is known never to have reached the model; otherwise unknown.
+                    self.receipts.append(self.account.settle(
+                        reservation.id, None, "released" if getattr(e, "unbilled", False) else "unknown"))
+                    last = e
+                    if not _retryable(e):
+                        break                  # the same request would fail the same way: do not pay for it again
+                    if attempt < self.max_retries:
+                        import time
+                        time.sleep(min(30.0, 2.0 ** attempt))
+                    continue
+                self.receipts.append(self.account.settle(reservation.id,
+                                                         self.pricing.measure(turn.usage or {}), "settled"))
             finally:
-                if isinstance(own, int):
-                    self.provider.retries = own
-            self.receipts.append(self.account.settle(reservation.id,
-                                                     self.pricing.measure(turn.usage or {}), "settled"))
+                # Settled first, then counted out: a waiter woken here must find the reservation released, or it
+                # would be refused with nothing in flight and read that as the budget's end.
+                with self._settled:
+                    self._in_flight -= 1
+                    if self._in_flight == 0 and isinstance(self._own, int):
+                        self.provider.retries = self._own      # restored once no call is in flight
+                    self._settled.notify_all()
             return turn
         raise _as_provider_error(last) from (None if isinstance(last, _provider_error()) else last)
 
