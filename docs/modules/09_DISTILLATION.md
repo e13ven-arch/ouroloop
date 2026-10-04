@@ -78,7 +78,7 @@ M8 提供 PASS/REPLACE 比例、格式失败、替换动作实际执行率、轨
 | DS6-03 | 教师 PASS 但任务失败；教师理由说成功 | 环境判失败，轨迹不进首版 actor SFT |
 | DS6-04 | 教师返回旧 proposal_ref、缺参数或非法 action | 修复在冻结次数内；未修复则终止，未执行草稿 |
 | DS6-05 | 教师私有标记、学生被拒草稿、oracle 含标记 | 学生历史/SFT/部署都无泄漏，私有审计仍可追踪 |
-| DS6-06 | 全 PASS 与多次 REPLACE 的成功 episode | 两者合格 assistant 动作均可训练，来源可统计 |
+| DS6-06 | 全 PASS 与多次 REPLACE 的成功 episode | 两者合格 assistant 动作均可训练，来源可统计（v0.3，2026-10-04 起按 M2 §2 第 5 步改为：只有教师 PASS 的 act 响应是训练目标，REPLACE 的替换响应留在学生历史、只计入 PASS/REPLACE 分布） |
 | DS6-07 | 到预算上限或教师故障 | 明确 incomplete/failed，支出保留，无假成功 |
 | DS6-08 | 模型安装后下一次 reviewed collect | plan pin 新 W，原轨迹不被改写为新模型产出 |
 | DS6-09 | 已验证 source 自动适配到不同目标工具面 | 生成可核对的动作映射；仅目标动作执行，缺失能力 unsupported |

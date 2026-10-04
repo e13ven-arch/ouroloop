@@ -1,6 +1,8 @@
 # v0.6 实施路线图
 
 > 2026-09-30 范围修订，代码基线 `b1cb7a7`。首版交付受限 harness 代码演化、应用发布与递归回用；第二版完善训练固化。仅调整相关规格，已有实现、旧 CLI 与历史证据保持原义。详细交接见 [模块目录](modules/README.md)。
+>
+> 2026-10-04：v0.1、v0.2 两个活动已完成并合并进 main（结果见 [RESULTS.md](RESULTS.md)，记录在 §3 第 2a 步）。同日决定 v0.3 的方向：首版交付物改为“可演化的 agent 程序 + 最小运行壳 + 所 pin 的模型”，设计版本 DESIGN v0.7；步骤、费用、风险与不变项见 §3 末“v0.3（2026-10-04 决定）”，功效预期见 §4。§1～§3 的历史条目不改。
 
 ## 1. 现有基础与缺口
 
@@ -242,6 +244,7 @@ A～E 属于首版，递归方法比较与实际回用仍为必做。第二版�
           - gate 功效：25 题 × 1 次的配对差值 sd 0.06～0.076，`min_gain` 0.05 不足 1 sd；W0 自身 5 次读数做 A/A，20 组里 4 组会被“接受”；12 题内层 gate 空候选通过率约 1/3；严格小于的退步规则在 A/A 里 20% 触发，加重复反而降低通过率；23 题 final 对 +5～8 点效应无论重复多少次都不显著。
           - 搜索：13 个候选全是文字提醒，无工具、无技能；R 的笔记里 26 条建议 before_tool、4 条建议技能；同一批笔记被反复复用；R1 仍重提 R0 的机制；研究调用只占花费 3.2%。
           - 业界对照见 [SURVEY_RSI_FRAMEWORKS.md](SURVEY_RSI_FRAMEWORKS.md)：增益量级在同类留出结果的 +2～+30 区间内，dev→test 收缩是普遍现象；测量纪律领先（预注册、账本、退步容忍）；落后在搜索宽度（单候选、无档案、无确认复测）、提案者上下文（只有失败摘要）、gate 无成本项。
+          - 这两份分析引出的决定是 v0.3，见本节末“v0.3（2026-10-04 决定）”；第 3～7 步是首个活动的协议，保持原文。
 3. **计价校准（独立于正式活动）。**
    - 2026-10-03 起延后：先跑第 2a 步；GLM-5.3 恢复为 actor 时再做本步。
    - 继续使用 open.bigmodel.cn。`[pricing]` 按该平台价目填写，注明汇率与日期；账本必须等于账单，否则预算上限没有意义。
@@ -281,6 +284,50 @@ A～E 属于首版，递归方法比较与实际回用仍为必做。第二版�
    - 研究位结束（或决定不开）之后只跑一次，花 `final` 分配：W0 对 W*，23 族 × repeats 2，约 $13～41；计划 hash 先提交到 git。inconclusive 也算完成。
    - 同预算的 prompt-only 或 GEPA 类对照臂，等出现含代码组件的安装后再决定是否加入。
 
+### v0.3（2026-10-04 决定）
+
+接在第 2a.9 步的 v0.2 记录与两份分析之后。设计写成 DESIGN v0.7，模块规格各自标“（v0.3，2026-10-04）”。本节是顺序、费用与止损；规则本身在模块文档里。
+
+**决定了什么。** 首版交付物从“固定 agent 循环 + 能力包”改为“可演化的 agent 程序 + 最小运行壳 + 所 pin 的模型”。agent 程序就是包：它可以改循环本身（规划/执行结构、上下文管理、重试、结束协议）、工具封装与编排、提示、记忆、技能、hook、判断前的证据表、发送前的二次核对、K 上限内的按题 effort（超出上限的请求由网关截顶、记下请求值，不拒绝）、关键决策的多次采样。K 固定的是：模型身份与推理配置上限、计量的模型网关、工具 broker（每个真实工具调用都经它）、权限、评分器、划分、gate、预算根、每次尝试的五个硬限额（`max_steps` = act 调用 50、`max_model_calls` 200、`max_tool_calls` 200、`max_seconds` 900、`max_tokens` = 含 thinking 的输出 token 400000；触顶的尝试以 termination `budget`、`limit=<维度>` 结束）、由宿主从网关与 broker 调用写出的事件/轨迹记录（包写不了）、R 的代码与研究位。比较口径改称“同模型”，C1～C4 含义不变（[M0 §2](modules/00_CONTRACTS.md)（v0.3）、[M1 §1](modules/01_POLICY_RUNTIME.md)（v0.3））。原因：v0.1/v0.2 装上的两个改动都是文字提醒；剩下的失败集中在判断与没读到的状态，只有循环层的机制（核对回合、证据表、用工具取事实、以算力换准确）够得着；Harness-Zero 固定循环是因为它的学生要训练，而训练已移到第二版；综述里报告较大留出增益的框架（StarHarness 在 AutomationBench Finance +29、AutoSaddler +9～10）都改循环与工具（[SURVEY §4、§6](SURVEY_RSI_FRAMEWORKS.md)）。
+
+**步骤（按序；每步先看结果，用户确认后进下一步）。**
+
+0. **本设计（本次提交）。** DESIGN v0.7 与 M0～M7 的 v0.3 规则；不动代码与测试；v0.1/v0.2 的记录与结果保持。费用 0。
+1. **M0/M1：agent 组件、网关、默认 agent、彩排。** manifest `harness_package.v2` 加 `agent` 组件（`agent/<file>.py:run`，`run(ctx, task)`，ctx 只有 model/tool/skills/limits/view）；网关与 broker 进宿主，网关把 effort 截顶在 K 的 `max_effort`（记下请求值，不拒绝）、按 act/aux 记角色；宿主今天不问任何决策点：一次尝试在 agent 返回或某个硬限额时结束，tool_gate 留在 broker 作权限（K），今天 `agent/loop.py` 里 stop/retry/compact/route 的决策都在默认 agent 内部；今天的宿主循环移植成 `agent/default_agent.py` 作种子包，v1 包因此等于带默认 agent 的 v2 包（没有代码的包由默认 agent 在进程内运行）；轨迹记录（每次模型调用 {call_id, role, effort, messages, tools, response, usage}，每次工具调用 broker 事件）由宿主写；彩排用假 actor 更新到新边界（REHEARSAL.md 另记）。退出：离线测试通过；v0.1/v0.2 的工作区与配置在新代码下可读；彩排走到 gate 裁决。费用 0（彩排不付 API 费）。
+2. **M3/M5：统计与速度。** 合并对照（已安装 W 在同一冻结计划与模型身份下的全部有效读数合并，没有时仍新测一次，M3 §2.1(a)（v0.3））；安装前确认复测，是唯一的抗噪规则（第一次读数清过 min_gain 0.05 与退步规则 → 同一计划下再测一次候选臂 → 合并候选读数对合并对照仍清过 min_gain 且确认读数本身 ≥0 才安装；收据种类只有 `full` 与 `confirmed`，确认失败的是 `confirmed`、verdict rejected、保留 `first_reading`，M3 §2.1(b)（v0.3））；`min_gain` 仍是 0.05；幅度制退步规则（一题均值下降 ≥0.5，`regression_drop` 0.5，M3 §2.1(d)（v0.3））；成本项 β0 0.10、β1 2.0，收据与报告同用 `cost_per_attempt`（M3 §2.1(e)（v0.3）、M5 §2（v0.3））；任何 gate 计划 `min_tasks` 25（M3 §2.1(f)（v0.3））；final repeats 2→4（实测费用容得下时）；匹配成本的 best-of-k W0 臂可选，只在发表结果时跑（M3 §2.2（v0.3））；五个单次尝试硬限额取 M0 的名字与数值，termination `budget`、`limit=<维度>`，`step_limit` 只见于旧记录；并发默认 8，429/529 作未计费的重试；笔记并发写（[M5 §2](modules/05_EXECUTION_BUDGET.md)（v0.3）、[M7 §1](modules/07_BENCH_REPORT.md)）。数字来自第 2a.9 步的分析（25×1 配对差值 sd 0.06～0.076、A/A 通过 4/20、12 题内层 gate 空候选通过约 1/3、严格退步规则在 A/A 触发、赢家诅咒 5～10 点、W0 test 41.3 对 47.8）。退出：A/A 回放（W0 的 5 次 dev 读数，两两作候选对合并对照再加一次确认）在新规则下 20 组里的接受数写进记录，预期 ≤1 组，多于 1 组就回到 M3 §2.1 改规则再实现；离线测试通过。费用 0。
+3. **M4：R 作为编码会话、台账、k 候选、筛选、输入。** R 是一轮一个的有界编码会话，在 worker 里以文件工具改包目录（`research_session.max_turns` 40、`max_edits` 24，一轮内含修订合计；修订继续同一会话；工具只有文件工具、`read_trajectory` 与 `finish`，没有 shell），产出至多 k=3 个候选目录，草稿检查（形状 → 隔离导入/接口 smoke → 测试）、有界修订、冻结、准入不变；k 由 preset `max_candidates_per_round` 定（`bench.py:1083-1086` 今天拒绝 ≠1，改掉），每个候选声明 mechanism、site、carrier、predicted_affected、trigger_condition、differs_from，固定代码对照 diff 核对；dev gate 前先做 train 侧筛选（重跑候选笔记来源的失败 train 题加 `screen.passing_sample` 5 个固定的通过 train 题，净翻转 ≥ `screen.min_net_flips` 1 的最好候选付 dev gate，否则本轮 `screened_out`；样本太少标 `thin_screen`；筛选不读 dev）；引擎自有的简单台账在 E 里（每个候选的声明、筛选结果、gate 收据 ref，以及从收据逐题差值读出的 fixed/regressed/still_failing）；准入拒绝 (mechanism, site) 与已拒候选相同而 `differs_from` 不说明差别的候选（`repeated_mechanism`）；R 的输入是原始 train 轨迹（只读、`read_trajectory` 单次 65536 字节、累计 524288）、dev 失败类型直方图（只有枚举类型与计数；无参数、无任务 id；test 永不）与台账投影；研究位：内层 gate 仍是 dev 合并清单的前一半、外层是后一半，每一半 ≥25 题，所以 dev ≥ 2 × min_tasks（50 题）才开位，不够记 `no_slot_pool`、C4 not_run（只含 Marketing 的活动如此）；`worker_round_limit` 2→3；开位前余量检查（起点 W 从未通过的内层任务少于 `campaign.min_headroom_tasks` 6 时拒绝，记 `no_headroom`）；裁决只看下游 W*（[M4 §1、§2、§5](modules/04_RESEARCH_LOOP.md)（v0.3）、[M6 §2～3](modules/06_RESEARCH_CAMPAIGN.md)（v0.3））。退出：彩排在新 R 路径上走到安装与回用检查；离线测试通过。费用 0。
+4. **天花板实验（约 $10～20 名义）。** 手写一个 agent 包（全文读取工具、判断前的证据表、发送前核对、effort 到上限），只跑 W* 仍失败的 4 道 dev 题与 train 失败题，不跑 test。它回答的是 v0.3 的重点放在搜索还是训练准备：手写包修掉大半，说明循环层机制够得着，v0.3 的搜索值得做；修不掉，说明剩余失败是模型能力，重点转到第二版的训练准备。结果只作决策记录，不进任何主张；包不安装。
+5. **多领域活动（根 $1,500 名义，并发 8 时 1～2 天）。** `[bench] domains` 列出新领域（sales、support、hr、finance、operations，各 100 题）与 Marketing；新领域按计分断言构成与工具族分层划分为 train/dev/test 三个分区（示例比例 0.55/0.25/0.20）；Marketing 划分原样、其 test 对新主张已耗尽（读过三次：v0.1 final、final-1、final-2），只给 train/dev 用与报告单列（[M7 §2](modules/07_BENCH_REPORT.md)）。结构同第 4 步：基线 → segment-0 → 研究位 → segment-1 → 封存的 final；研究位的内层 gate 是合并 dev 的前一半、外层是后一半（各约 62 题，≥25），余量检查在开位前；final 在新领域的 test 上，W0 对 W*，repeats 4，计划 hash 先提交；匹配成本的 best-of-k W0 臂可选，发表结果时另加（M3 §2.2（v0.3））。估算（按 v0.2 每次尝试 $0.45～0.57；5 个新领域按 0.55/0.25/0.20 约 train 275、dev 125、test 100 题）：基线 train + dev 约 400 题约 $200；每轮一个候选臂 125 题约 $60，加筛选约 $5、确认测量约 $60（只对第一次读数过门槛的）、k 个候选的编码会话与笔记约 $5～10，两段六轮约 $500；研究位两支各约 $220（三轮、内层约 62 题、含确认测量，份额按主线轮实测费用重估，M6 §2（v0.3）），外测约 $50；final 两臂 × 100 题 × 4 次约 $400（repeats 2 时约 $200）。合计约 $1,400～1,600，根按 $1,500 名义开，repeats 4 只在实测费用容得下时保留，否则 final 用 2 并写明；预算根开之前按本步实测的每题费用重算（第 2a.4 步的做法）。墙上时间：8 路并发时每次尝试约 12～15 秒；多域合并 dev 的 gate 一臂约 30 分钟，一轮约 45～60 分钟（单域 25 题时约 10～15 分钟）；全程约 14 小时的尝试加限流暂停，1～2 天。预算根按估算上界加一份预留上界开，开了不能改（M5 §2）。止损沿用第 6 步的 K1～K3；另加：第 4 步结论为“模型能力”时，本步只跑基线与 final，不开研究位。
+6. **v0.3.0。** 全套测试通过，`m1-automationbench` 本地合并进 main 并打标签（不推送，除非用户要求），之后继续在 `m1-automationbench` 开发。final 结果写进 RESULTS.md 与 README：模型与 effort、`claude -p` 的 JSON 工具调用、领域列表、n 与 repeats、两臂（发表时加跑 best-of-k 臂则三臂）、`cost_per_attempt`、Marketing test 的 `spent` 标注。
+
+**已知风险。**
+- 目标劫持面变大：包能改循环，就能学会在 on_finish 里短路核对、在证据表里编造。对策是评分器与 provider 对包不可达、事件/轨迹由宿主写、包拿不到 objects/results 句柄（M0 §2（v0.3））；gate 证据只读宿主记录。
+- 以算力换准确：按题 effort 与多次采样会抬成本。对策是 gate 的成本项；发表结果时加跑匹配成本的 best-of-k 臂（M3 §2.2（v0.3）），W* 不优于它时 C1 的解释写明“增益可由算力解释”。
+- R 作为编码会话花更多研究调用：今天研究调用占花费 3.2%，翻几倍也可承受；上限由 preset 的轮数与编辑次数固定。
+- harness 与模型共适应：在 Opus 上演化出的循环未必迁到 9B 学生；第二版学生的 W0 是更简单的种子，h* 在学生上重新演化（[M2 §1～3](modules/02_EVIDENCE_TRAINING.md)（v0.3））。
+- 多领域的分层划分不能按成绩调：划分在基线前冻结，只用任务定义的静态特征。
+
+**不变的部分（须说明）。** train/dev/test 的信息分离在固定代码里（判分明细按冻结 split 过滤，dev 只给枚举直方图，test 不进 R）；final 封存、计划 hash 先提交；预算账本与预留（M5 §2，含并发下的预留上界）；R0 对 R1 由下游 W* 裁决（M6 §3）；Docker 隔离与工具 broker（M1 §1）；`claude_code` provider 与计量（M1 §1、第 2a 步）。
+
+**第二版的训练兼容（计划，不实现）。** v0.3 实现的只有网关记录里的 `role` 字段。其余是第二版计划：训练投影只读网关日志里 role=act 且教师 PASS 的调用；教师在网关对 act 调用介入（PASS/REPLACE，回复到包之前），对包透明；aux 调用计采集限额但不进训练数据；顺序为 演化 → 冻结 release → 在该 release 上采集/训练 → 换学生 → 在学生上重新演化（[M2 §1～3](modules/02_EVIDENCE_TRAINING.md)（v0.3））。
+
+**推迟到第二版（v0.3 只留一段说明，无字段表、无测试）。**
+- 把决策点（stop/retry/compact/route/tool_gate）移到网关/broker 边界供 C3 使用；v0.3 的宿主不问任何决策点，tool_gate 留在 broker 作权限（K）。
+- 网关处的教师、从网关日志出发的训练投影、演化→冻结→训练→换学生→再演化的 schedule 与共适应说明（上段）。
+- 组件归因与弃用规则。
+
+**考虑过、不做（v0.3）。**
+- 候选臂的序贯早停拒绝（`early_rejection`、`rejected_early`、`stopped_early`、min_pairs/net_deficit）：只省候选臂的钱，多一套规则与收据。
+- 台账的逐题 TRUE FIX / TRUE REGRESSION / STOCHASTIC 标签、`ledger.min_control_readings/stable_fail/stable_pass` 与预测命中/落空计分板：台账只记声明、筛选、收据 ref 与收据读出的 fixed/regressed/still_failing。
+- 成功透镜摘要（`success_digest`）。
+- `require_code_candidate`（及 `require_code_change_per_segment`）：不强制每段改代码。
+- 台账数字作研究位的次要指标（`metrics.ledger.*`）：裁决只看下游 W*。
+- 收据的 `null_acceptance`、`noise_sd`、`acceptance_rule`/`two_stage`/`stage1_min_gain` 与 `min_gain` 0.12 预设：`min_gain` 保持 0.05，确认复测是唯一的抗噪规则。
+- `research_dev` 分区与 `no_outer_pool`：外层仍是合并 dev 的后一半，dev <50 题记 `no_slot_pool`。
+- 部分得分作为新列项：它已在报告里，不另说。
+- best-of-k 臂“成本比 <1.5 时不需要”的规则：臂本身可选，只在发表时跑。
+- 提案者的组件种类优先顺序作为规则。
+
 ## 4. 效果验收与最小比较
 
 保留 C1 同底座整体迭代收益、C2 领先模型位置、C3 独立决策贡献、C4 改进方法效果。首份报告包含起点、有效 prompt/workflow、演化能力包和有界 R0/R1 比较；新训练/蒸馏及 C3 效果验证归第二版，未运行明确 not_run。包的装配、实际行为、固定 dev 比较中的退化与总成本必须可查。首版沿用现有 GatePlan 的整体收益与退化比例门槛，不把任何单题退化一律判为拒绝；进一步的回归能力等真实运行暴露具体问题后再设计，不成为本轮开发依赖。
@@ -289,7 +336,17 @@ C2 默认只引用官方榜单和上游公开结果，记录来源/日期/任务
 
 工程测试证明机制，不保证模型涨分。真实 C1、C4 仍是待证明的效果目标：未提升就记未达目标，不用“完整 RSI 不再验收”回避。最终 final 在方案锁定后按冻结协议运行；用其结果继续优化后需新的独立任务支持泛化主张。
 
-功效与成本按 GLM-5.3 串行预期：单任务约 $0.14–0.45、约 4 分钟；train 52 + dev 25 基线约 $11–35、约 5 小时；每轮（dev gate 对照臂与候选臂各 25 题，gate 每次重跑对照臂，`ouroloop/bench.py:758-780`；另重跑 train 失败题）约 $10–40、约 5–6 小时；逐题笔记诊断每轮约 $1–2。Harness-Zero 的 h* 相对 base 增益为 SpreadsheetBench +8.0、AppWorld +21.4、USPTO +26.0 个百分点；dev 25 族时约 +20 个百分点才可能显著，SpreadsheetBench 量级在 25 族上测不出。gate 按现行规则装包：点估计 ≥ 冻结任务计划的 min_gain 且回归在容忍内即 accepted，显著性另记（`ouroloop/evolve/task_gate.py:253-269`）；GatePlan 默认 min_gain 为 0.05。preset 的 `task_plan.gate` 给出 0.05（`ouroloop/bench.py:887`），冻结任务计划（`[freeze.task_plan.gate]`）可以提高、不能低于它（`ouroloop/bench.py:2128`）；研究比较的分支没有冻结 worker gate 计划时回退 0.01（`ouroloop/bench.py:1842`、`:2316`），cycle 总是传入冻结计划，不会走到这个回退。C1 结论按“只能识别约 +20 个百分点的效应”预期；锁定后的 final（23 族）同样只看得出大效应。
+功效与成本按 GLM-5.3 串行预期：单任务约 $0.14–0.45、约 4 分钟；train 52 + dev 25 基线约 $11–35、约 5 小时；每轮（dev gate 对照臂与候选臂各 25 题，gate 每次重跑对照臂，`ouroloop/bench.py:910`；v0.3 起对照改为合并读数，M3 §2.1(a)（v0.3）；另重跑 train 失败题）约 $10–40、约 5–6 小时；逐题笔记诊断每轮约 $1–2。Harness-Zero 的 h* 相对 base 增益为 SpreadsheetBench +8.0、AppWorld +21.4、USPTO +26.0 个百分点；dev 25 族时约 +20 个百分点才可能显著，SpreadsheetBench 量级在 25 族上测不出。gate 按现行规则装包：点估计 ≥ 冻结任务计划的 min_gain 且回归在容忍内即 accepted，显著性另记（`ouroloop/evolve/task_gate.py:253-269`）；GatePlan 默认 min_gain 为 0.05。preset 的 `task_plan.gate` 给出 0.05（`ouroloop/bench.py:1041`），冻结任务计划（`[freeze.task_plan.gate]`）可以提高、不能低于它（`ouroloop/bench.py:2552`）；研究比较的分支没有冻结 worker gate 计划时回退 0.01（`ouroloop/bench.py:2141`、`:2774`），cycle 总是传入冻结计划，不会走到这个回退。C1 结论按“只能识别约 +20 个百分点的效应”预期；锁定后的 final（23 族）同样只看得出大效应。以上是 v0.1/v0.2 的口径，实测见 §3 第 2a 步。
+
+（v0.3，2026-10-04）功效按 v0.1/v0.2 的实测重算，单位是通过率的百分点：
+- 噪声底：25 题 × 1 次的配对差值 sd 0.06～0.076，即每题配对差值的 sd 约 0.30～0.38；同一 W0 两次 23 题 × 2 次的 final 相差 6 点。
+- 单领域（Marketing）：dev 25 × 1 的最小可检出效应（双侧 95%，功效 80%）约 20 点；test 23 × 2 约 15 点；+5～8 点的效应无论重复多少次都不显著（第 2a.9 步）。这是 v0.1 的 +13 显著、v0.2 的 +4 不显著的原因，不是两次活动找到的改动差了三倍。
+- 多领域（§3 “v0.3” 第 5 步）：100 题 × 2 次时配对均值的 sd ≈ 0.34/√2/√100 ≈ 0.024，最小可检出效应约 7 点；100 题 × 4 次约 5 点。v0.3 的 C1 结论按“能识别约 7 点的效应”预期；主张区间只用新领域的 test，Marketing 的 test 单列为 `spent`。
+- gate：`min_gain` 仍是 0.05（25 × 1 时约 1 个净任务，不足 1 sd）；抗噪靠安装前的确认复测（合并候选读数仍过门槛且确认读数 ≥0）；合并对照；幅度制退步与成本项（β0 0.10、β1 2.0）（M3 §2.1(a)(b)(d)(e)（v0.3））。dev 上的增益仍有选择偏差（赢家诅咒 5～10 点），只作过程记录，对外数字是 final。
+- 匹配成本的对照臂（可选，发表结果时跑，M3 §2.2（v0.3））：W0、W* 之外加 best-of-k W0（oracle 语义，k = max(2, round(W* 与 W0 的 `cost_per_attempt` 之比))）。W* 对 best-of-k 的差值是“演化找到的方法比同样多算力的多次采样强多少”，W* 对 W0 的差值仍是 C1；两个区间都报，W* 不优于 best-of-k 时 C1 的解释写明“增益可由算力解释”。
+- 研究位：内层 gate 是合并 dev 的前一半（≥25 题，dev ≥50 才开位）、合并对照、开位前余量检查；两支的差异先要在内层 gate 上分得出（25 题时最小可检出效应约 20 点，多域约 62 题时约 12 点），否则 C4 仍是“未测出”而不是“否定”。
+
+规则以 [M3 §2.1～2.2](modules/03_EVALUATION_RELEASE.md)（v0.3）与 [M6 §2～3](modules/06_RESEARCH_CAMPAIGN.md)（v0.3）为准，报告字段见 [M7 §4](modules/07_BENCH_REPORT.md)。
 
 ## 5. 明确后置的功能
 

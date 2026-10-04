@@ -4,6 +4,8 @@
 
 首版发布对象是现成 actor 加演化能力包；正式 gate/安装/导出不依赖教学来源验证或训练。source_validation 与蒸馏相关流程保留为第二版用途。
 
+v0.3 起（2026-10-04，DESIGN v0.7）发布对象改为**可演化的 agent 程序 + 最小运行壳 + pin 的模型**：能力包含 `agent` 组件（M0 §2（v0.3）：manifest `api_version = "harness_package.v2"`，入口 `agent/<file>.py:run(ctx, task)`，宿主经 `ctx.model`/`ctx.tool` 代它调用 pin 的模型与 broker），可以改循环本身、工具封装、提示、记忆、技能、hook、判断前的证据表、发送前的复核、K 上限内的 effort 与关键决策的多采样。比较主张的措辞由“同 actor”改为“同模型”（业界用法），C1～C4 含义不变。原因：v0.1/v0.2 装入的两处改动都是文字提醒；剩下的失败集中在判断与未读状态，只有循环层机制（复核、证据表、以工具取事实、用算力换准确）够得到；而业界报告更大留出增益的框架都在改循环与工具（[SURVEY_RSI_FRAMEWORKS.md](../SURVEY_RSI_FRAMEWORKS.md) §4、§6）。本模块随之改的是 gate 的统计与 final 的结构（§2.1、§2.2）、preflight 校验的范围（§3）与导出的内容（§4）；不变的是：train/dev/test 的信息分离由固定代码执行、final 先封存并提交再运行、带预留的预算账本、R0 对 R1 由下游 W* 裁决、Docker 隔离与 broker、`claude_code` provider。
+
 ## 1. 冻结比较
 
 M0 的 eval template 先固定任务家族、control、工具/harness、重复次数、执行顺序、预算、容忍回归、质量/成本门槛及不确定性方法。构建后只填实际 candidate ref；不因成绩不好临时增重复、换任务或改成功定义。
@@ -23,7 +25,14 @@ actor 蒸馏的主要对照是同底座未训练 actor 和已选 prompt/workflow
 
 正式 task evaluation 启动时必须证实 reviewer 为空、教学材料不可访问、actor/provider 身份匹配 W、controller 开关与 plan 一致。收集 observed inspection，检查实际调用，不能仅比 manifest。TargetHarness 不同的配置可以做系统级比较，但不能作“仅训练带来的收益”的同条件证据。
 
-首版包候选沿用 parent 的 actor 与宿主扩展契约，control/candidate 分别 pin 确切 package ref/有效工具 schema/hook 顺序；二者均在相同运行配置中执行：运行含代码（M0 §2 运行判定）时为同一固定隔离配置，只含 skills/memory 的包由宿主装配。接口与候选自写测试通过只允许开始真实评测，不签发 accepted。dev gate 始终比较完整的冻结 dev 清单，control 是当前已采用版本，candidate 是本轮候选；其中对照版本本次成功的任务也参与比较，不因 train 诊断工作集缩小而移除。首版回归范围就是该 dev 清单，不自动收集历轮 train 成功任务，也不新增回归任务库或另一轮评测；评分器/条件不由包代码定义。只增大预算、换模型或偷偷卸载故障组件的运行，不能归为同模型 harness 收益。
+首版包候选沿用 parent 的 actor 与宿主扩展契约，control/candidate 分别 pin 确切 package ref/有效工具 schema/hook 顺序；二者均在相同运行配置中执行：运行含代码（M0 §2 运行判定）时为同一固定隔离配置，只含 skills/memory 的包由宿主装配（v0.3：带 `agent` 入口的包运行代码；v1 包由默认 agent 在进程内运行，M0 §2（v0.3））。接口与候选自写测试通过只允许开始真实评测，不签发 accepted。dev gate 始终比较完整的冻结 dev 清单，control 是当前已采用版本，candidate 是本轮候选；其中对照版本本次成功的任务也参与比较，不因 train 诊断工作集缩小而移除。首版回归范围就是该 dev 清单，不自动收集历轮 train 成功任务，也不新增回归任务库或另一轮评测；评分器/条件不由包代码定义。只增大预算、换模型或偷偷卸载故障组件的运行，不能归为同模型 harness 收益。
+
+**同模型比较的条件（v0.3，2026-10-04）。** 包可以改循环之后，“相同运行配置”指两臂共用的是 K 而不是循环：
+- 两臂 pin 的 package ref 覆盖 `agent` 代码（M0 §2（v0.3）：包身份含 agent 代码），都经同一运行壳运行（M1 §1（v0.3）：episode → worker 会话 → `agent.run`，网关与 broker 在宿主）；模型身份、推理配置上限（含 `max_effort`）、网关、broker、权限、评分器、split、gate、预算根、单次尝试硬上限（M5 §2（v0.3）：act 调用、模型调用、工具调用、秒、token）对两臂相同，由冻结计划带着。原因：这些是“同模型”主张的全部内容；少任一项，差异就可能来自条件而不是包。
+- 候选在 K 上限内提高 effort 或多采样是合法的包内容，不是违规；它的代价由 §2.1(e) 的成本项显现（公布结果时另跑 §2.2 的同成本对照臂），不由 gate 禁止。原因：用算力换准确正是循环层机制的一种，禁止它等于把可变面收回到文字；但不计成本地接受它，会把“更贵”错当“更好”。
+- 两臂的事件与轨迹记录由宿主从网关与 broker 调用写出（M0 §2（v0.3）），包不能写；gate 读的实际工具/hook 事件与模型调用计数来自这些记录。原因：可改循环的候选也能学会伪造“已复核”的事件；证据必须出自包够不到的层。
+- 候选崩溃或 agent 在运行中抛出按基础设施处理并按 retry_policy 补跑一次（如今日），硬上限触顶的尝试是有效的失败（termination `budget`），不补跑（M1 §1（v0.3））。原因：补跑只修环境，不修候选。
+- gate 的统计规则（合并对照、确认复测、退步幅度、成本项、最少题数）在 §2.1（v0.3），final 的结构在 §2.2（v0.3）；其他模块引用的写法是“M3 §2.1(x)（v0.3）”，早先写作“M3 §1（v0.3）(x)”或“M3 §2（v0.3）(x)”的引用指同一条款。
 
 ### 更换目标 harness 的准备与基线
 
@@ -39,6 +48,8 @@ actor 蒸馏的主要对照是同底座未训练 actor 和已选 prompt/workflow
 
 换 h 的实验可只改 harness，也可后续蒸馏；h-only 候选以明确 execution_base_ref 表示真实变化，不要求伪造 prompt 改动。若原 parent 已被另一安装替换，本实验保持旧输入，安装返回 stale_parent，不能偷偷继承新 W/R。若新 h 超出 K，需要另行授权活动，不让 R 修改 K。没有选新 h 时 execution base 就是 parent，不增加准备或额外基线开销。
 
+第二版换学生时的 harness–模型共同适应是一项成本（M2 §3a（v0.3）：在 Opus 上演化出的循环未必迁移到 9B 学生，学生的 W0 是更简单的种子）；本节的 B 基线就是把它测出来的地方，不是回避它的地方。
+
 ## 2. 评测流程与结果
 
 deployment 沿用 permit → 候选隔离运行 → 配对 TaskResult → EvaluationReceipt；source_validation 在同一运行/评分层输出源验证 artifact，不能进入安装分支。配对键仍为 `(plan_ref, task_id, repeat_index)`；attempt retry 不增加独立样本，补跑保存 supersedes。任务世界每次按同一输入复建；容器或服务故障没有有效得分时不要强行记成任务失败。
@@ -53,11 +64,75 @@ M4 的失败 train 子集重跑是诊断采集，不替代正式 dev gate。未�
 
 首个小规模实验可只报告方向和案例，不以训练 loss 或单任务成功降低正式发布门槛。演示用脚本 fixture 的 accepted 只证明控制路径，不能合并到真实成绩。
 
+### 2.1 gate 统计（v0.3，2026-10-04）
+
+依据是 2026-10-04 的离线分析（[ROADMAP §3](../ROADMAP.md) 第 2a.9 步）：25 题 × 1 次的配对差值 sd 为 0.06～0.076，`min_gain` 0.05 不足 1 个 sd；W0 自身的 5 次读数做 A/A，20 组里 4 组会被接受；12 题的内层 gate 空候选通过率约 1/3；“严格小于即退步”的规则在 A/A 里 20% 触发；gate 的赢家诅咒 5～10 点；同一个 W0 两次 final 41.3% 与 47.8%。以下规则按此改 `judge`（`ouroloop/evolve/task_gate.py:221-300`）的输入与判定，上段的 invalid/inconclusive/rejected/accepted 分类不变。新增字段都进 GatePlan/TaskEvalPlan 的 JSON 并随计划冻结，所以旧收据按旧计划读，不被重判；preset 的值是起点，`[freeze.task_plan.gate]` 只能加严（`bench.py:2552` 的方向检查沿用）。
+
+**(a) 合并对照（pooled control）。** 对照臂是**已安装 W 在同一冻结计划（任务清单、重复数、单次尝试上限、顺序种子）与同一模型身份下的全部有效读数的合并**，每题取全部有效重复的平均；没有任何读数时仍取一次新读数。
+- TaskEvalPlan 新增 `control_pooling: str = "fresh"`，v0.3 preset 为 `"pooled"`；`"fresh"` 是今日行为（每个 gate 重跑对照臂，`bench.py:910`）。
+- 读数的归属由固定代码按 (release_ref 的 W 身份, template 的条件摘要) 判定，与 M4 §4 测量复用的 `_runs_like` 同一口径：只改 R 的 release 视为同一 W。研究位两支各自可见的读数范围由 M6 §2（v0.3）定：公共输入加该支自己的读数，另一支的永不可见。
+- 配对：候选每题每次重复仍须有效（配对键不变）；对照每题至少有 `repeats` 次有效读数（合并后），否则该题缺项，按 inconclusive 规则处理。bootstrap 仍按家族重采样，每题用两臂的平均。
+- 收据 `metrics.control_readings`（合并的读数数）与 `metrics.control_attempt_refs`（读数的 TaskResult refs），让复核者能重算。
+- 原因：对照每轮重测是 v0.1/v0.2 每轮一半的花费，而 W0 在 dev 的三次读数都是 36%；合并后对照的 sd 随读数数下降，候选的噪声才是剩下的主项。对照臂不再被重测的代价是“对照漂移”看不到；它由 (b) 的确认复测和 §2.2 的 final 兜住，不在 gate 里补。
+- 测试：新增 `test_task_gate.py::test_the_control_arm_pools_every_valid_reading_of_the_installed_version`、`test_a_fresh_control_reading_is_taken_only_when_none_exists`、`test_a_pooled_control_counts_only_readings_under_the_same_plan_conditions_and_model`。
+
+**(b) 装入前确认复测（confirmation re-run）。** 一条规则：第一阶段清过 `min_gain`（0.05）与 (d) 的退步规则的候选，按同一计划再测一次候选臂（对照臂仍是合并读数）；候选的全部读数合并后对合并对照仍清过 `min_gain`，**且复测这一次单独 ≥ 0**，才 accepted。第一阶段没清过的候选不复测，直接 rejected。
+- TaskEvalPlan 新增 `confirmation_repeats: int = 0`，v0.3 preset 为 1（再读一次）。
+- 状态：evaluating → evaluated（临时）→ confirming → evaluated（M5 §1（v0.3））；只有最后的 evaluated 产生能安装的收据。
+- 收据：EvaluationReceipt 新增 `kind: str = "full"`，取值只有 `"full"`（完整配对、单次读数）与 `"confirmed"`（经本条确认）；确认未通过的收据同样是 `kind="confirmed"`、verdict rejected。`metrics.readings = 2`，`metrics.first_reading = {gain, verdict}` 保留第一次的数字，`metrics.confirmation_gain` 是复测单独的点估计，`metrics.gain` 是合并后的点估计。安装授权只认 verdict accepted 且 `kind` 符合计划：`confirmation_repeats > 0` 的计划只认 `"confirmed"`。
+- 复测的尝试计入候选所在实验的费用；验证预留（`bench.py:842` 的 `_verify_bound`）按候选臂 × (1 + confirmation_repeats) 计，对照臂只在没有合并读数时计入（M5 §2（v0.3））。
+- 原因：赢家诅咒来自“挑了最大值还按它报数”；复测是最便宜的去偏，每个接受的候选多付一次读数（约 $11，25 题 × $0.45），比接受一个空候选再在 final 上发现它便宜。它是 v0.3 唯一的去噪规则，门槛本身不动（(c)）。
+- 测试：新增 `test_task_gate.py::test_an_accepted_first_reading_is_confirmed_before_it_installs`、`test_a_confirmation_whose_pooled_gain_falls_below_min_gain_rejects`、`test_a_confirmation_reading_below_zero_rejects_even_when_the_pool_clears_min_gain`、`test_a_rejected_first_reading_is_not_confirmed`、`test_a_failed_confirmation_keeps_kind_confirmed_and_the_first_reading`。
+
+**(c) 门槛不变：`min_gain` 0.05，仍是比例。** 多领域合并 dev（M7 §2（v0.3））时 `min_gain` 不按题数换算，仍是成功率增益 0.05；题数增多带来的是更小的 sd，不是更高的门槛。v0.3 考虑过按噪声定门槛（把 preset 提到 0.12、两阶段规则、在收据上写空候选的通过概率），不做：(b) 的确认复测已是唯一的去噪规则，再提门槛会让 25 题 gate 几乎不接受任何候选。
+
+**(d) 退步按幅度判。** 一题计入 `regression_rate` 的分子，须其有效重复的平均 success 比合并对照**下降 ≥ `regression_drop`**（repeats 1 时即对照 1.0 → 候选 0.0）。
+- GatePlan 新增 `regression_drop: float = 0.5`。`max_regression_rate` 含义不变，分子换成上面的定义；`metrics.regressions` 仍逐题列出计入的任务。
+- 原因：“严格下降即退步”在 A/A 里 20% 触发，且重复数越多越容易触发（任一重复失手就算），与“更多重复更可靠”相悖；幅度门槛让退步指“这题确实不会了”。
+- 测试：新增 `test_task_gate.py::test_a_regression_is_a_drop_of_at_least_the_plans_magnitude`；现有 `test_regression_rate_counts_tasks_whose_mean_fell` 改为按 `regression_drop` 断言。
+
+**(e) 成本项。** 候选每次有效尝试的平均成本最多超出合并对照的 β0 + β1·gain：`cost_subject ≤ cost_control × (1 + cost_beta0 + cost_beta1 × gain)`，gain 为成功率增益的点估计（分数）。
+- GatePlan 新增 `cost_beta0: float = 0.10`、`cost_beta1: float = 2.0`（+10%，再加每 1 个百分点增益 2%）。现有 `max_runtime_cost_ratio`（固定比值）保留，两者都设时都检查。
+- 收据 `metrics.cost_per_attempt = {"subject": ..., "control": ..., "allowed": ...}`；超出时 reasons 记 `cost per attempt X above the allowed Y (β0 β1 gain)`，verdict rejected。成本缺失按现有 `missing_cost_policy`：`refuse` 时 inconclusive，`report_unknown` 时不检查成本项并在 reasons 记明。
+- 原因：v0.2 的 W* 每次尝试 $0.452 → $0.570（+26%），gate 里没有任何条款看见它；可改循环后“多复核几次”的候选更会如此，成本项让“更贵但没更好”被拒，“更贵且更好”按比例放行。
+- 测试：新增 `test_task_gate.py::test_a_candidate_whose_cost_outgrows_its_gain_is_rejected_with_the_cost_reason`、`test_unknown_cost_follows_the_missing_cost_policy_in_the_cost_term`。
+
+**(f) 任何 gate 不少于 25 题。** GatePlan 新增 `min_tasks: int = 25`；freeze 时任务数少于它的 gate 计划拒绝冻结（与 `min_groups` 并列），主线 gate 与研究位的内层 gate 都受此约束。研究位的内层 gate 仍用 dev 的前一半、外层验证用后一半（如今日），所以研究位只在 dev ≥ 2 × `min_tasks`（50 题）时开；只有 Marketing（25 题 dev）的活动不开研究位，研究位记 `no_slot_pool`，C4 不运行（M6 §2（v0.3））。原因：12 题时一题是 8 个点、空候选通过率约 1/3，裁决不出任何 R 的差别。测试：新增 `test_paid_run_safety.py::test_a_gate_plan_under_min_tasks_is_refused_at_freeze`。
+
+**(g) 没有序贯提前拒绝，也没有提前接受。** 候选臂每次都跑完整配对。v0.3 考虑过序贯提前拒绝（候选臂净落后到一定数目即停止，省下明显差的候选的钱），不做：省下的钱有限，却给状态机、收据与预留各加一条路径。提前接受则会把赢家诅咒再放大一次，同样不做。
+
+**(h) 收据的裁决顺序。** integrity（invalid/inconclusive，`task_gate.py:195-219`）→ protected requirements → 增益 ≥ `min_gain` → 退步比例 → 成本项 → 其他已有条件 → 确认复测（合并增益 ≥ `min_gain` 且复测单独 ≥ 0）→ accepted。每个未通过的条款都写进 reasons，不止写第一条。
+
+### 2.2 final 与同成本对照臂（v0.3，2026-10-04）
+
+final 的协议不变：计划（FinalizationPlan，`bench.py:2160-2185`）先封存并提交，再运行；结果只报告，不选版本；inconclusive 也算完成。v0.3 改两处：
+
+- **重复 2 → 4**，预算容得下时（`[freeze.final] repeats = 4`；实测费用容不下时写明用了 2）。原因：23 题 × 2 次对 +5～8 点的效应无论如何不显著，× 4 把配对均值的 sd 再压一半；更多的任务（M7 §2（v0.3）多领域）比更多重复更有效，两者都做。
+- **可选的同成本 best-of-k W0 臂**（[arXiv 2607.12227](https://arxiv.org/abs/2607.12227) 的批评：演化花费是额外的搜索算力，部署时的匹配算力对照应当在场）。它在**公布结果时**运行，不是每次 final 的必备部分：封存前由固定代码从合并对照与 W* 的每次尝试平均成本算出 `k = max(2, round(cost_W* / cost_W0))`，写进 FinalizationPlan.comparisons 的一项 `{"claim": "C1", "role": "matched_cost", "release_ref": <W0>, "best_of": k}`；W0 对每题跑 k 次独立尝试（各自重建世界），**任一通过即记通过**——这是 oracle 选择，是 W0 在同成本下测试时算力的**上界**，不是可部署策略，报告里与 W* 并列并写明这一点。它从不进入 C1 的裁决：C1 仍是 W* 对 W0（同 effort、同配置）的配对差；同成本臂回答的是“这笔增益有多少只是算力”，W* 不高于 best-of-k 上界时报告如实写“增益不超过同成本的测试时算力上界”。计划含该臂时，final 份额按三臂定（M5 §2（v0.3））。
+- Marketing 的 test 已被读过三次（v0.1 final、final-1、final-2），对新主张宣布为已耗尽（M7 §2（v0.3）：Marketing 的 split 原样冻结，新领域的 split 按计分断言种类与工具家族分层）；新领域的 final 才能支撑新主张，Marketing 的 test 只用于与历史数字对照。
+- 测试：新增 `test_paid_run_safety.py::test_the_final_runs_the_matched_cost_arm_when_it_is_sealed_in_the_plan`、`test_report.py::test_the_matched_cost_arm_is_reported_beside_w_star_and_not_as_the_claim`。
+
+### 2.3 field 清单（v0.3，2026-10-04）
+
+| 对象 | 新增字段 | 默认 | v0.3 preset | 条款 |
+|---|---|---|---|---|
+| GatePlan | `min_gain`（既有，不变） | 0.05 | 0.05 | (c) |
+| GatePlan | `regression_drop` | 0.5 | 0.5 | (d) |
+| GatePlan | `cost_beta0` / `cost_beta1` | 0.10 / 2.0 | 0.10 / 2.0 | (e) |
+| GatePlan | `min_tasks` | 25 | 25 | (f) |
+| TaskEvalPlan | `control_pooling` | `"fresh"` | `"pooled"` | (a) |
+| TaskEvalPlan | `confirmation_repeats` | 0 | 1 | (b) |
+| EvaluationReceipt | `kind`（`"full"` / `"confirmed"`） | `"full"` | — | (b) |
+| EvaluationReceipt.metrics | `control_readings`、`control_attempt_refs`、`readings`、`first_reading`、`confirmation_gain`、`cost_per_attempt` | — | — | (a)(b)(e) |
+| FinalizationPlan.comparisons | 可选 `role = "matched_cost"`、`best_of` | — | 公布结果时加入，k 由成本算出 | §2.2 |
+
 ## 3. 发布、恢复与回退
 
 保持完整 `SystemRelease`，安装同时 pin W/R/K。训练器不触碰 active；M3 根据 accepted receipt 做 artifact/服务装载、schema、权限和依赖 preflight，再 CAS 更新 expected_parent。模型、prompt、controller 校准与 runtime config 不可分别移动冠军指针。
 
 首版 preflight 还校验包字节/manifest/API（运行含代码时另校验 image）与被评测内容相同，测试与正式运行均使用规定的运行方式；包文件损坏、运行含代码的包 worker 不可用、schema 不兼容不能回退旧包后安装。停用/删除组件同样是新的评测候选；回退恢复完整旧 release，不只替换个别 .py 文件。
+
+v0.3 的 preflight 另校验（v0.3，2026-10-04）：manifest 的 `api_version` 是 `harness_package.v2` 或 v1（v1 包由随框架交付的默认 agent 运行，M0 §2（v0.3）），`agent` 入口可解析且与草稿检查通过的字节相同，manifest 声明的 `ctx.model` 角色集合在 K 允许的 `{"act", "aux"}` 内；收据的 `kind` 符合计划（§2.1(b)）。原因：agent 代码是新的可执行面，评测时跑的与安装的必须是同一份字节；一个角色没声明就能调的 aux 调用，会让成本项多算，也会让第二版从网关记录出发的训练投影（M2 §1a：只读 role act 的记录）漏掉或多算。
 
 安装过程中崩溃，按原 installation operation 与 active pointer 事实恢复；同一 accepted artifact 可重试安装，不能自动换新模型。stale_parent 不覆盖其他已安装版本；另起评测或明确结束。旧 session 继续其 pin，新 session 读取新 release。
 
@@ -67,11 +142,13 @@ M6 的 research receipt 沿用同一 preflight/CAS，只变主线 R；分支 W* 
 
 ## 4. 业务流程 app 的最小导出
 
-新增窄函数 `export_deployment(installed_release_ref, destination) -> DeploymentManifest`，归 `release.py`；CLI 接线由 M7 在本版交付。首版只支持已安装且未撤销的 release。导出是选择运行所需内容，不能递归复制整个 release 对象闭包。
+新增窄函数 `export_deployment(installed_release_ref, destination) -> DeploymentManifest`，归 `release.py`（`release.py:471`）；CLI 接线由 M7 在本版交付。首版只支持已安装且未撤销的 release。导出是选择运行所需内容，不能递归复制整个 release 对象闭包。
 
 白名单包括：W 的运行策略、release pin 的 TargetHarness、所需模型与 inference 配置、runtime/依赖版本、工具绑定 schema、运行权限与预算、可公开验证的发布凭据摘要。`required_core_ref` 指一个固定的运行核心投影（权限/limits/合法目标），保留源 K 身份摘要，不包含 oracle、任务答案或研究访问权限。发布凭据只提供验证所需结果，不导出原始受限评测记录。
 
 首版额外导出 HarnessPackage 的运行 bundle/manifest、启用组件、package API、运行含代码时的隔离镜像 digest、broker 的业务工具绑定与资源要求；评测和部署挂载相同运行字节。候选 tests/失败轨迹/研究笔记分开保存，不进入运行 bundle。不能只导出 prompt 而漏掉真正产生效果的工具/中间件；有生成代码的 app 仍使用隔离 worker，不因已接受就改为控制面 import。容器镜像属于声明的依赖，不把构建集群或训练环境装入 app。
+
+v0.3 的 app 是三件东西（v0.3，2026-10-04）：**agent 包**（运行 bundle 含 `agent/` 代码、manifest、启用组件、package API 版本）、**运行壳**（宿主运行时的投影：网关与 broker 的绑定、权限、单次尝试硬上限、默认 agent 的字节以运行 v1 包、隔离镜像 digest）、**模型服务描述**（模型身份、推理配置上限含 `max_effort`、provider 类型与服务绑定；凭据由使用环境注入）。DeploymentManifest 新增 `agent_entrypoint`、`runner_shell_ref`、`model_service` 三个键。网关日志、轨迹记录、实验台账（M4 §5（v0.3）的引擎自有台账）、合并对照的读数都不导出：它们是研究工作区的材料，不是运行所需。原因：部署端复现的是“同一程序在同一上限下调同一模型”，三件缺一不可；多一件就把研究材料带进生产。
 
 排除 R、teacher、TeachingReference、训练数据、私有原草稿/理由、验证答案、云密钥、本地绝对路径和训练恢复凭据。外部依赖清单区分文件权重与托管模型服务；服务凭据由使用环境注入。artifact 下载后校验字节摘要；不可导出服务模型仍可输出服务绑定，但明确不能离线运行。
 
@@ -97,5 +174,13 @@ M6 的 research receipt 沿用同一 preflight/CAS，只变主线 R；分支 W* 
 | ER6-14 | 导出包含运行包代码但无 tests/研究材料，或包字节被改写 | 前者以评测时同字节/同隔离配置运行；后者 preflight 拒绝，不暗换代码或运行模式 |
 | ER6-15 | train 与 dev 尝试各完成一次 | 两者逐条断言结果都写入 grading.jsonl；results.jsonl 行与旧结果读取不变 |
 | ER6-16 | 新包只重跑失败 train 子集，旧包有其他 train 成功记录 | 两版本结果分别保留身份与覆盖范围；不拼成新包全量 train 成绩，正式 dev gate 仍完整执行 |
+| ER6-17（v0.3） | 已安装 W 在同计划下有两次有效读数，第三个 gate 开始 | 对照臂不重跑，合并两次读数；收据列出 `control_readings=2` 与读数 refs；只改 R 的 release 视为同一 W |
+| ER6-18（v0.3） | 候选第一次读数 +0.08，确认复测 −0.02，合并 +0.03；另一候选第一次 +0.12，复测 −0.01，合并 +0.055 | 两者都不装入：前者合并未清过 0.05，后者复测单独 < 0；收据都是 `kind=confirmed`、verdict rejected，`first_reading` 保留第一次的数字；第一次 +0.04 的候选不复测，直接 rejected；第一次 +0.08、复测 +0.04、合并 +0.06 的候选 accepted |
+| ER6-19（v0.3） | 对照 1.0 的题候选两次重复各 1/2；另一题 1.0 → 0.0 | 前者不计退步（降 0.5 以下），后者计入；`metrics.regressions` 只列后者 |
+| ER6-20（v0.3） | 候选 +0.12，每次尝试成本 $0.60 对合并对照 $0.45 | 允许上限 0.45 × (1 + 0.10 + 2.0 × 0.12) = $0.603，通过；成本 $0.62 时 rejected，reasons 记成本条款 |
+| ER6-22（v0.3） | 活动的 dev 只有 25 题（Marketing）；另一活动的 gate 计划只有 12 题 | 前者不开研究位，记 `no_slot_pool`，C4 不运行，主线 gate 照常；后者 freeze 拒绝（`min_tasks` 25） |
+| ER6-23（v0.3） | 公布结果时的 final：W* 每次尝试 $0.57，W0 $0.45 | k = max(2, round(1.27)) = 2，best-of-2 W0 臂封存进计划，与 W0、W* 并列报告，写明 oracle 上界；C1 仍只比 W* 对 W0 |
+| ER6-24（v0.3） | 导出 v2 包的 app | 导出物含 agent 代码、运行壳投影与模型服务描述；网关日志、账本、合并对照读数不在其中；干净目录可运行一题 |
+| ER6-25（v0.3） | 安装时 manifest 声明的 `ctx.model` 角色含 K 之外的名字，或 agent 字节与草稿检查通过的不同 | preflight 拒绝，active 不动 |
 
-复用 `test_task_gate.py`、`test_gate_bypass.py`、`test_integrations.py`；故障注入沿用既有 release 测试风格。
+复用 `test_task_gate.py`、`test_gate_bypass.py`、`test_integrations.py`、`test_export.py`、`test_paid_run_safety.py`；故障注入沿用既有 release 测试风格。§2.1～2.2 与 §4 标“新增”的测试随 v0.3 第 2 步（统计）与第 1 步（agent 组件、导出）一起写。

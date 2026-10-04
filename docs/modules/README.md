@@ -1,42 +1,80 @@
-# 模块详细设计与开发交接（v0.6）
+# 模块详细设计与开发交接（v0.7）
 
-> 代码基线 `b1cb7a7`，2026-09-30 修订交付边界。首版交付能力包代码演化/发布/递归；第二版完善训练，保留其详细规格。M0～M7 既有实现不重写。历史状态见 [快照](../history/V0_5_IMPLEMENTATION.md)。首版 `*6-` 用例大多已按阶段 A～E 实现为离线测试（覆盖清单见 [JOURNAL](../JOURNAL.md)；仍部分实现的用例见 [集成验收](08_INTEGRATION_CASES.md) 头部），标为第二版的用例仍是待实现规格；离线通过只证明接线，不是真实收益。
+> 2026-10-04 修订（v0.3）：首版交付物改为“可演化的 agent 程序 + 最小运行壳 + 所 pin 的模型”（[总设计](../DESIGN.md)页首与 §1、§3、§5）。随之：M0 多出包 API v2 与轨迹记录格式，M1 多出网关与运行壳，M4 多出实验账目与编码会话，M3/M5 的 gate 统计重写。本页只改所有权与开发顺序；各模块的规则在各自文件里，新规则标“（v0.3，2026-10-04）”。
+> 代码基线 `b1cb7a7`，2026-09-30 修订交付边界。首版交付能力包代码演化/发布/递归；第二版完善训练，保留其详细规格。M0～M7 既有实现不重写。历史状态见 [快照](../history/V0_5_IMPLEMENTATION.md)。首版 `*6-` 用例大多已按阶段 A～E 实现为离线测试（覆盖清单见 [JOURNAL](../JOURNAL.md)；仍部分实现的用例见 [集成验收](08_INTEGRATION_CASES.md) 头部），标为第二版的用例仍是待实现规格；离线通过只证明接线，不是真实收益。v0.1/v0.2 的真实结果见 [RESULTS](../RESULTS.md)。
 
-先读 [总设计](../DESIGN.md)、[技术选型](../TECHNOLOGY.md)和 [实施顺序](../ROADMAP.md)。核心交付是自动发现有效方法、验证、固化、发布，并让改进方法的更新实际参与下一轮。源 harness 可以演化；单次蒸馏的目标 harness 冻结。人工流程可调试，不能替代核心自动路径。
+先读 [总设计](../DESIGN.md)、[技术选型](../TECHNOLOGY.md)和 [实施顺序](../ROADMAP.md)。核心交付是自动发现有效方法、验证、固化、发布，并让改进方法的更新实际参与下一轮。源 harness（运行壳 + agent 包）可以演化；单次蒸馏的目标 harness 冻结。人工流程可调试，不能替代核心自动路径。
 
 ## 模块所有权
 
-代码路径相对 `ouroloop/`。拟增文件可合并进现有小文件，不得另建同职责系统。
+代码路径相对 `ouroloop/`。拟增文件可合并进现有小文件，不得另建同职责系统。标 v0.3 的列是 2026-10-04 的新归属。
 
 | 模块 | 设计目标 | 复用/改造位置 | 允许新增核心位置 |
 |---|---|---|---|
-| M0 [公共契约](00_CONTRACTS.md) | 身份、源/目标方法、两类模型、权限、v2/v3 兼容 | `evolve/contracts.py` | 无新类型中心 |
-| M1 [运行时](01_POLICY_RUNTIME.md) | 首版包代码/API/broker/hook/材料装配；第二版教师/sampling | policies.py、agent/loop.py、runtime.py、stop.py、providers/ | 首版 agent/harness_package.py；第二版 providers/tinker.py |
-| M2 [证据与训练](02_EVIDENCE_TRAINING.md) | 既有反馈/训练兼容；第二版模仿/事实监督、SFT/artifact | evolve/build.py、evolve/pipeline.py、evolve/feedback.py、research/context.py、trainers/store/jobs | 第二版 trainers/tinker.py；按需 evolve/trajectories.py |
-| M3 [评测与发布](03_EVALUATION_RELEASE.md) | 源验证、无教师 gate、完整 release、最小 app 导出 | `evolve/task_eval.py`、`evolve/task_gate.py`、`release.py` | 不新增发布服务 |
-| M4 [自动改进](04_RESEARCH_LOOP.md) | 从反馈产生候选、选择固化方法、记经验 | `research/agent.py`、`basic.py`、`context.py`（首版失败摘要/诊断输入）、`experiment.py`、`loop.py`、`evolve/experience.py` | 无新研究平台 |
-| M5 [执行预算](05_EXECUTION_BUDGET.md) | 唯一状态机、全活动预算及恢复 | `evolve/execution.py`、jobs | 无第二编排器 |
-| M6 [递归比较](06_RESEARCH_CAMPAIGN.md) | 相同起点比较改进方法、验证 R1 实际回用 | `research/campaign.py` | 无新 campaign 系统 |
-| M7 [任务与报告](07_BENCH_REPORT.md) | 配置/preset、cycle 入口、后端、证据报告 | `bench.py`、`benchmark.py`、`report.py`、`cli.py`、`adapters/automationbench.py` | 按需 `adapters/harbor.py` |
-| M8 [工作流蒸馏](09_DISTILLATION.md) | 第二版：自动教学适配、teacher、学生在环采集 | 调用 M1/M2/M5 | 第二版 distill/teacher.py、distill/collect.py |
+| M0 [公共契约](00_CONTRACTS.md) | 身份、源/目标方法、两类模型、权限、v2/v3 兼容；v0.3：包 API v2（manifest `api_version "harness_package.v2"`、`agent` 组件、`ctx` 面、模型 role 列表）、轨迹记录格式（每次模型调用 `{call_id, role, effort, messages, tools, response, usage}`，每次工具调用的 broker 事件）、单次尝试五项硬限额的名字与值（`max_steps` 50、`max_model_calls` 200、`max_tool_calls` 200、`max_seconds` 900、`max_tokens` 400000 输出 token 含 thinking） | `evolve/contracts.py`、`agent/harness_package.py`（manifest 校验） | 无新类型中心 |
+| M1 [运行时](01_POLICY_RUNTIME.md) | 首版包代码/API/broker/hook/材料装配；v0.3：**模型网关**（计量、pin 模型、effort 按 K 的 `max_effort` 截顶并记请求值、role 记录）、**运行壳**（episode → worker 会话 → `agent.run`；宿主不问任何决策点：compact/route/retry 在 agent 程序里，tool_gate 留在 broker 作为权限，stop = agent 返回或硬限额）、**默认 agent**（今天 `agent/loop.py` 的循环移植成种子包；带 `agent` 条目的包在 worker 里跑代码，v1 包在进程内由默认 agent 运行）；第二版：决策点移到网关/broker 边界给 C3、教师在网关介入 | policies.py、agent/loop.py（循环移入默认 agent）、agent/worker.py、agent/worker_runner.py、runtime.py、stop.py、providers/（`claude_code` 不变） | 首版 `agent/harness_package.py`、v0.3 `agent/gateway.py`、`agent/runner.py`、`agent/default_agent.py`（随框架交付的包，不是宿主代码）；第二版 providers/tinker.py |
+| M2 [证据与训练](02_EVIDENCE_TRAINING.md) | 既有反馈/训练兼容；第二版模仿/事实监督、SFT/artifact；v0.3 实现的只有网关记录里的 `role` 字段；其余（训练投影只读 `role="act"` 且教师 PASS 的调用、`aux` 计限额不进数据、schedule 演化 → 冻结 → 采集/训练 → 换学生 → 重演化、共适应注）是第二版计划 | evolve/build.py、evolve/pipeline.py、evolve/feedback.py、research/context.py、trainers/store/jobs | 第二版 trainers/tinker.py 与 evolve/trajectories.py（网关日志投影） |
+| M3 [评测与发布](03_EVALUATION_RELEASE.md) | 源验证、无教师 gate、完整 release、最小 app 导出；v0.3：**gate 统计**（M3 §2.1：合并对照；安装前确认复测——首读清过 `min_gain` 0.05 与退步规则 → 候选再测一次 → 合并读数仍清过且确认读数 ≥ 0 才安装，收据种类只有 `full`/`confirmed`；幅度退步 `regression_drop` 0.5；成本项 `cost_beta0` 0.10/`cost_beta1` 2.0 按 `cost_per_attempt`；任何 gate `min_tasks` 25）、final 计划（M3 §2.2：repeats 4 在实测费用容得下时；等成本 best-of-k W0 臂可选，发表结果时另跑、与 W* 并列、不进 C1）、导出 = agent 包 + 运行壳 + 模型服务描述 | `evolve/task_eval.py`、`evolve/task_gate.py`、`release.py` | 不新增发布服务 |
+| M4 [自动改进](04_RESEARCH_LOOP.md) | 从反馈产生候选、选择固化方法、记经验；v0.3：R 作为每轮一个有界编码会话（`research_session.max_turns` 40、`max_edits` 24，修订续写同一会话；文件工具 + `read_trajectory` + `finish`，无 shell）、每轮至多 `max_candidates_per_round` 3 个候选与声明（mechanism/site/carrier/predicted_affected/trigger_condition/differs_from，对照 diff 核对）、train 侧筛（`screen.passing_sample` 5、`screen.min_net_flips` 1；`screened_out`/`thin_screen`）、**简单实验账目**（引擎写：候选声明、筛结果、gate 收据 ref、从收据逐题差值读出的 fixed/regressed/still_failing）、准入对 `(mechanism, site)` 去重（`repeated_mechanism`）、R 的新输入（`read_trajectory` 只读 train、`max_trajectory_bytes` 65536/`max_trajectory_bytes_total` 524288；dev 失败类型直方图；账目投影）；第二版：组件归因与删除规则 | `research/agent.py`、`basic.py`、`context.py`、`diagnosis.py`、`drafts.py`、`experiment.py`、`loop.py`、`evolve/experience.py`（账目） | 按需 `research/session.py`（编码会话驱动）；无新研究平台 |
+| M5 [执行预算](05_EXECUTION_BUDGET.md) | 唯一状态机、全活动预算及恢复；v0.3：五项硬限额按 M0 的名字与值在宿主执行（终止 `budget` + `limit`；`step_limit` 只在旧记录里）、aux 调用计量、合并对照的读数登记（同计划、同模型身份的有效读数）、确认复测的调度与份额、一臂内并发默认 8（429/529 作不计费的重试，不暂停、不记 invalid）、笔记按冻结顺序并发写 | `evolve/execution.py`、jobs、bench.py（attempt runner） | 无第二编排器 |
+| M6 [递归比较](06_RESEARCH_CAMPAIGN.md) | 相同起点比较改进方法、验证 R1 实际回用；v0.3：内层 gate 用 dev 前一半、外层用后一半（如今天），都用合并对照；dev ≥ 2 × `min_tasks`（50）才开位，只含 Marketing 的活动 `no_slot_pool`、C4 not_run；`campaign.worker_round_limit` 3；开位前剩余空间检查（`campaign.min_headroom_tasks` 6） | `research/campaign.py` | 无新 campaign 系统 |
+| M7 [任务与报告](07_BENCH_REPORT.md) | 配置/preset、cycle 入口、后端、证据报告；v0.3：`[bench] domains` 列表、按域划分并合并、新域按断言组合 × 工具族分层为 train/dev/test、Marketing 划分原样冻结且 test 标 `spent`、报告新字段（每臂 `cost_per_attempt`、账目、剩余空间、按领域分列、研究调用占比；best-of-k 臂在跑了时并列）、`max_candidates_per_round` 3 | `bench.py`、`benchmark.py`、`report.py`、`cli.py`、`adapters/automationbench.py` | 按需 `adapters/harbor.py` |
+| M8 [工作流蒸馏](09_DISTILLATION.md) | 第二版：自动教学适配、teacher（在网关上介入 `role="act"`）、学生在环采集 | 调用 M1/M2/M5 | 第二版 distill/teacher.py、distill/collect.py |
 | [集成验收](08_INTEGRATION_CASES.md) | 自动闭环、独立部署、递归和故障场景 | 现有 tests 与离线 fixture | 少量集成 fixture，无新生产模块 |
 
-M0 独占公共字段；M1 独占实际运行/provider 绑定；M2 独占建集/训练；M3 独占安装；M4 选择候选但不直接发布；M5 独占状态/预算；M6 复用 M4/M5 做分支；M7 独占 CLI/config/RunManifest；M8 不复制 Agent 循环或训练器。
+M0 独占公共字段与记录格式；M1 独占实际运行/provider 绑定、网关与 broker（包只经 `ctx` 到达它们）；M2 独占建集/训练；M3 独占安装与 gate 裁决规则；M4 选择候选但不直接发布，账目由引擎从声明、筛结果与 gate 收据写，R 与包都写不了；M5 独占状态/预算/读数登记；M6 复用 M4/M5 做分支；M7 独占 CLI/config/RunManifest；M8 不复制 Agent 循环或训练器。轨迹记录只由 M1 的网关与 broker 写，任何模块都不接受包写入的记录作为证据。
 
 ## 开发顺序与完成条件
 
-1. 首版先做诊断输入与文本能力包：M1 pin actor（原定 GLM-5.3，2026-10-03 起为 Claude Opus 5.5）；M0 HarnessPackage/worker.harness 身份；M1 宿主装配 skills/memory，纯文本包不启动隔离 worker；M4 train/fit 失败摘要与断言明细、逐题笔记→汇总、harness_edit 文本组件；M4/M5 文本草稿检查（结构/路径/manifest）与有界修订；M3 的 run_tasks 另存判分明细 `bench/<domain>/grading.jsonl`，M7 结果存储按冻结 split 读取；所需上限（max_failure_notes、失败摘要条目长度上限、max_draft_repairs）由 preset/K 先行固定。首轮真实演化前运行所 pin actor 的 train+dev 基线；补任务反馈后按有界 driver 继续，零人工优化方案即可起步，不需要 Docker、trainer 或 teacher。
-2. 首版再接代码组件与隔离：M1 固定 API/工具 broker/Docker 隔离 worker、hook（先 on_finish）与包工具；M4 harness_edit 代码组件；M4/M5 把冻结前草稿试跑修复扩展到 isolated_probe/package_test，次数由同一 preset 上限固定。生成代码只在 worker 执行、不在控制面 import，组件种类由 K 冻结，K 允许代码时 freeze/smoke 须确认 worker，运行中不可用按 M0 §3 记 infrastructure_failed/repair_runtime 并暂停活动，不收窄种类；保留旧绑定/身份。本机 Docker daemon 可用是真实检查前提。
-3. 首版 M3 同 actor gate、成功任务回归、完整安装/回退/导出；M7 给无 trainer/teacher 的 preset/cycle/报告。
-4. 首版 M4/M6 在共同 package API/资源下比较 R0/R1，验证安装后的实际改进请求；这条递归核心不能因训练后置而取消。
-5. 第二版再接 M8 教学源验证/适配/采集、M2 SFT/Tinker、M1 教师/sampling 及 actor/controller 新训练验证。保留既有规格/用例，按分版验收执行。
+v0.1/v0.2 按下列 1～4 步交付，离线与真实运行记录保留（[ROADMAP §3](../ROADMAP.md)）。v0.3 的顺序在其后。
 
-前四步构成首版最小完整 RSI，第五步是第二版模型固化。函数签名可适配既有风格，包的真实执行、故障、预算与递归边界不得缩水。公共字段/运行接口分别以 M0/M1 为权威，避免多个模块另定义一套 package schema。
+1. 首版先做诊断输入与文本能力包：M1 pin actor（原定 GLM-5.3，2026-10-03 起为 Claude Opus 5.5）；M0 HarnessPackage/worker.harness 身份；M1 宿主装配 skills/memory，纯文本包不启动隔离 worker；M4 train/fit 失败摘要与断言明细、逐题笔记→汇总、harness_edit 文本组件；M4/M5 文本草稿检查（结构/路径/manifest）与有界修订；M3 的 run_tasks 另存判分明细 `bench/<domain>/grading.jsonl`，M7 结果存储按冻结 split 读取；所需上限（max_failure_notes、失败摘要条目长度上限、max_draft_repairs）由 preset/K 先行固定。首轮真实演化前运行所 pin actor 的 train+dev 基线；补任务反馈后按有界 driver 继续，零人工优化方案即可起步，不需要 Docker、trainer 或 teacher。（已完成）
+2. 首版再接代码组件与隔离：M1 固定 API/工具 broker/Docker 隔离 worker、hook（先 on_finish）与包工具；M4 harness_edit 代码组件；M4/M5 把冻结前草稿试跑修复扩展到 isolated_probe/package_test，次数由同一 preset 上限固定。生成代码只在 worker 执行、不在控制面 import，组件种类由 K 冻结，K 允许代码时 freeze/smoke 须确认 worker，运行中不可用按 M0 §3 记 infrastructure_failed/repair_runtime 并暂停活动，不收窄种类；保留旧绑定/身份。本机 Docker daemon 可用是真实检查前提。（已完成）
+3. 首版 M3 同模型 gate、成功任务回归、完整安装/回退/导出；M7 给无 trainer/teacher 的 preset/cycle/报告。（已完成，v0.1 密封 final +13.0）
+4. 首版 M4/M6 在共同 package API/资源下比较 R0/R1，验证安装后的实际改进请求；这条递归核心不能因训练后置而取消。（接线完成；v0.2 研究位 inconclusive，C4 无证据）
+
+**v0.3 顺序（2026-10-04）。** 每步的完成条件写在后面；测试名以各模块用例节的名字为准，这里只引用它们，所属模块写在括号里；只改 preset 的条目不另配测试。
+
+0. **设计（本次提交）。** DESIGN v0.7、本页、M0～M7 的 v0.3 规则、ROADMAP 的 v0.3 步骤互相可解析。完成条件：所有 § 引用与文件路径解析得通；每条新规则带原因与“（v0.3，2026-10-04）”标记；“考虑过、不做”与“推迟到第二版”两份清单在 DESIGN §9 与 ROADMAP 的 v0.3 节各有一份。
+1. **M0/M1：agent 组件、网关、默认 agent、彩排更新。** 完成条件：
+   - manifest `api_version "harness_package.v2"` 接受一个 `agent` 条目；v1 manifest 照常通过检查并以默认 agent 运行；agent 代码进包身份并使包“运行代码”（M0：`test_harness_package.py::test_a_v1_manifest_reads_as_v2_with_the_default_agent`、`test_an_agent_entry_outside_agent_or_without_run_is_a_shape_error`、`test_the_agent_code_is_part_of_the_package_identity_and_makes_it_run_code`）。
+   - `ctx` 只暴露 `model/tool/skills/limits/view`；包代码里拿不到评分器、provider、凭据、对象库与记录（M1：`test_package_worker.py::test_pr7_09_package_code_cannot_reach_the_records_or_a_sixth_name_on_ctx`、`test_pr7_12_the_agents_own_notes_are_not_the_record`）。
+   - `ctx.model` 经网关、宿主写日志；`ctx.tool` 经 broker 与 tool_gate（M1：`test_pr7_02_ctx_model_goes_through_the_gateway_and_the_host_writes_the_log`、`test_pr7_03_ctx_tool_goes_through_the_broker_and_the_tool_gate`）。
+   - manifest 未声明的 role 是草稿检查错误；`effort` 高于 K 的 `max_effort` 按上限截顶发出、从不拒绝，请求值记入网关记录（M1 PR7-04；M5：`test_paid_run_safety.py::test_the_gateway_caps_effort_at_k_and_records_the_requested_value`）。
+   - 五项硬限额按 M0 §2 的名字与值（`max_steps` 50、`max_model_calls` 200、`max_tool_calls` 200、`max_seconds` 900、`max_tokens` 400000 输出 token 含 thinking）；任一项触顶 = 终止 `budget` 并以 `limit` 命名维度，`step_limit` 只在旧记录里（M1：`test_pr7_05_each_hard_limit_ends_the_attempt_as_budget_and_names_itself`；M5：`test_paid_run_safety.py::test_a_token_limit_ends_the_attempt_as_budget_not_infrastructure`、`test_an_aux_call_is_metered_and_counted_against_the_attempt_by_role`）。
+   - 默认 agent 在进程内与在 worker 内产生逐条相同的网关日志与 broker 事件，并照常运行 v1 的 hooks/tools/skills/memory（M1：`test_agent.py::test_pr7_07_the_default_agent_runs_the_same_in_process_and_in_the_worker`、`test_pr7_08_the_default_agent_honours_v1_hooks_tools_skills_and_memory`）。
+   - 失败语义：worker 崩溃/运行时异常 = infrastructure；草稿检查期间异常 = draft 失败并回传 R（M1：`test_pr7_06_a_crash_in_run_is_infrastructure_and_in_the_draft_check_a_draft_failure`）。
+   - 彩排的假 actor 改为假 agent 包 + 假模型，经网关答复（M1：`test_rehearsal_world.py::test_the_fake_actor_answers_through_the_gateway`；[REHEARSAL](../REHEARSAL.md)），`--phase cycle` 的生产路径在 v2 下走通一次。
+2. **M3/M5：统计与速度。** 完成条件：
+   - 对照臂为同计划、同模型身份下已安装 W 的全部有效读数的合并；没有读数时新测（M3：`test_task_gate.py::test_the_control_arm_pools_every_valid_reading_of_the_installed_version`、`test_a_fresh_control_reading_is_taken_only_when_none_exists`；M0：`test_a_control_reading_joins_the_pool_only_under_the_same_comparison_identity`）。
+   - 首读清过 `min_gain` 0.05 与退步规则的候选确认复测一次；候选合并读数对合并对照仍清过 `min_gain` 且确认读数单独 ≥ 0 才安装；收据种类只有 `full`/`confirmed`，确认不过的收据 `kind="confirmed"`、rejected、保留 `first_reading`（M3：`test_an_accepted_first_reading_is_confirmed_before_it_installs`、`test_a_confirmation_whose_pooled_gain_falls_below_min_gain_rejects`、`test_a_rejected_first_reading_is_not_confirmed`）。
+   - 退步按幅度 `regression_drop` 0.5（M3：`test_a_regression_is_a_drop_of_at_least_the_plans_magnitude`）。
+   - 成本项 `cost_beta0` 0.10、`cost_beta1` 2.0 按 `cost_per_attempt` 算，失败写进理由（M3：`test_a_candidate_whose_cost_outgrows_its_gain_is_rejected_with_the_cost_reason`）。
+   - 任何 gate 的任务数低于 `min_tasks` 25 时 freeze 拒绝（M3：`test_paid_run_safety.py::test_a_gate_plan_under_min_tasks_is_refused_at_freeze`）。
+   - 一臂内并发默认 8，是机器设置、不进冻结计划；供应商 429/529 是不计费、可重试并计数的调用，不是暂停、不记 invalid；笔记并发写、按冻结顺序进汇总；final 份额容不下并发在飞的上界时 freeze 拒绝（M5：`test_paid_run_safety.py::test_concurrency_is_a_machine_setting_the_frozen_plan_does_not_carry`、`test_claude_code_provider.py::test_a_rate_limit_refusal_is_unbilled_retryable_and_counted`、`test_diagnosis.py::test_notes_written_concurrently_enter_the_summary_in_the_frozen_order`、`test_paid_run_safety.py::test_a_final_share_that_cannot_hold_the_concurrent_bounds_is_refused_at_freeze`）。
+   - 退出条件：A/A 回放（W0 的 5 次 dev 读数）在新规则下 20 组里预期通过 ≤ 1 组；多于 1 组就回到 M3 §2.1 改规则再实现（与 ROADMAP v0.3 第 2 步同一口径）。
+3. **M4/M6：R 作为编码会话、账目、k 候选、筛、输入、研究位。** 完成条件：
+   - 每轮一个编码会话在 worker 内对包目录工作，修订续写同一会话；超出 `research_session.max_turns` 40 / `max_edits` 24 即结束（M4：`test_research_session.py::test_a_session_stops_at_its_turn_and_edit_caps`；M5：`test_paid_run_safety.py::test_every_turn_of_the_research_session_is_metered_on_the_research_scope`）。
+   - `max_candidates_per_round` 3；`bench.py:1083-1086` 的 ≠1 拒绝改为 ≤ preset 上限；每个候选带声明，与 diff 不符或点名 dev 任务的候选在准入被拒（M4：`test_bench_phase.py::test_max_candidates_per_round_up_to_the_preset_is_accepted`、`test_research_round.py::test_a_round_declares_up_to_k_candidates_and_drops_a_repeated_mechanism_site`；M0：`test_research_round.py::test_a_declaration_naming_a_dev_task_is_refused_at_admission`）。
+   - 筛只跑候选笔记来源的失败 train 题加 `screen.passing_sample` 5 道通过题，净翻转 ≥ `screen.min_net_flips` 1 的最优者付 gate，否则 `screened_out`；从不读 dev（M4：`test_research_round.py::test_the_screen_reruns_the_notes_tasks_and_a_fixed_passing_sample_from_train_only`）。
+   - 账目由引擎写：每候选的声明、筛结果、gate 收据 ref，与从收据逐题差值读出的 fixed/regressed/still_failing；R 与包都写不了（测试名以 M4 §6 为准）。
+   - 准入拒绝 `(mechanism, site)` 与已拒候选相同且无 `differs_from` 的候选（M4：`test_research_round.py::test_admission_refuses_a_rejected_mechanism_at_the_same_site_without_differs_from`）。
+   - `read_trajectory` 只读、只能读 train、单次 ≤ `research_session.max_trajectory_bytes` 65536、累计 ≤ `max_trajectory_bytes_total` 524288（M4：`test_diagnosis.py::test_read_trajectory_is_train_only_read_only_and_byte_capped`）；dev 直方图只有枚举类型与计数。
+   - v1 包的一轮仍以默认 agent 运行（M4：`test_research_round.py::test_a_v1_package_round_still_runs_with_the_default_agent`）。
+   - 研究位：内层 gate 为 dev 前一半、外层后一半，dev < 50 题不开位（`no_slot_pool`，C4 not_run 并写明原因）；`campaign.worker_round_limit` 3；开位前剩余空间检查 `campaign.min_headroom_tasks` 6；安装 R1 后的下一段真的在 R1 的 propose 文本下开会话（M6：`test_cycle.py::test_a_slot_without_headroom_asks_r_nothing`、`test_campaign.py::test_worker_round_limit_three_compares_at_equal_completed_rounds`、`test_rsi_integration.py::test_the_segment_after_an_install_runs_its_session_under_r1s_propose_text`）。
+   - 退出条件：彩排在新 R 路径上走到安装与回用检查。
+4. **上限实验（人工 agent 包）。** 手写一个 agent 包（全读工具、判断前证据表、发送前核验、effort 到上限），跑 W* 仍失败的 4 道 dev 题与 train 失败题，约 $10～20。完成条件：结果写进 ROADMAP，决定 v0.3 的重心是搜索还是训练准备；这不是 C1 证据，也不安装。
+5. **多领域活动。** `[bench] domains` 多域、按域划分合并、新域按计分断言组合 × 工具族分层为 train/dev/test；Marketing 划分原样、test 标 `spent`；final 密封在新域的 test 上，repeats 4 只在实测费用容得下时保留；名义预算约 $1,500（研究位两支各约 $220、外测约 $50），并发 8 下 1～2 天；多域合并 dev（约 125 题）一次 gate 约 45～60 分钟，单域 25 题约 10～15 分钟。发表结果时另跑等成本 best-of-k 的 W0 臂与 W* 并列（M3 §2.2（v0.3））。完成条件：Marketing 的 test 不进入新主张；报告按领域分列并给每臂 `cost_per_attempt`（M7：`test_bench_phase.py::test_a_domains_list_freezes_one_split_per_domain_and_pools_them`、`test_benchmark.py::test_a_stratified_split_balances_assertion_mix_and_tool_family`；报告测试名以 M7 §5 为准）。
+6. **v0.3.0。** 全套测试通过，合并进 main，继续在 `m1-automationbench` 开发。
+
+**推迟到第二版**（各在所属模块只留一段）：决策点（stop/retry/compact/route）移到网关/broker 边界给 C3 挂点（M1）；教师在网关介入、训练投影读网关日志、演化 → 冻结 → 训练 → 换学生 → 重演化的 schedule 与共适应注（M2）；组件归因与删除规则（M4，DESIGN §7）。**考虑过、不做（v0.3）**的完整清单见 [DESIGN §9](../DESIGN.md)。
+
+第 1～4 步构成 v0.1/v0.2 的最小完整 RSI；v0.3 的 1～3 步是把可变面扩到 agent 程序并让 gate 分得清小效应，4～5 步是真实验证。第二版再接 M8 教学源验证/适配/采集、M2 SFT/Tinker、M1 教师在网关介入及 actor/controller 新训练验证，保留既有规格/用例，按分版验收执行。函数签名可适配既有风格，包的真实执行、故障、预算与递归边界不得缩水。公共字段/运行接口分别以 M0/M1 为权威，避免多个模块另定义一套 package schema。
 
 ## 兼容与控制规模
 
-保留旧 CLI、decision profile、旧 hash、v0.5 用例及完整 release。v3 generation 不复用旧 `.decide()` 路径；旧 run 按旧规则解释。未实现配置启动时拒绝，不走伪 fallback。
+保留旧 CLI、decision profile、旧 hash、v0.5 用例及完整 release。v3 generation 不复用旧 `.decide()` 路径；旧 run 按旧规则解释。未实现配置启动时拒绝，不走伪 fallback。v1 包经默认 agent 运行，v0.1/v0.2 的工作区与 release 不迁移；它们的 W* 若要在 v0.3 下作对照，以 v1 manifest 原样装载。
 
-包内工具/中间件代码生成属于首版；Harbor/DeepAgents、新决策点、新训练算法、全仓代码演化、通用插件平台和市场服务不属于首版核心。默认单控制面加固定隔离 worker（只由含代码的草稿检查与运行含代码的包使用）、串行实验、一套重试；新增宿主 API/依赖仍按工程接入，不让候选自己扩权。
+包内 agent 程序/工具/中间件代码生成属于首版；Harbor/DeepAgents、新决策点、新训练算法、全仓代码演化、通用插件平台和市场服务不属于首版核心。默认单控制面加固定隔离 worker（含代码的草稿检查、运行含代码的包、R 的编码会话都在其中）、有界并发的尝试、串行的研究步骤、一套重试；新增宿主 API/依赖仍按工程接入，不让候选自己扩权。
 
 每个模块交付须含实现、对应行为测试、准确示例和状态更新。工程 fixture 不写成真实收益；真实结果无提升不伪造成功，效果目标与工程完成状态分别报告。

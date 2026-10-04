@@ -1,24 +1,26 @@
 # M1：执行模型、决策模型与运行时
 
 > 首版目标：发布哪个能力包就实际运行哪个包，actor 身份固定，生成代码隔离执行。改造 `policies.py`、`agent/loop.py`、`runtime.py`、`stop.py` 与 `providers/`；保留旧注册目标/legacy。执行前教师审阅与 Tinker sampling 是第二版规格，本文件保留其详细设计。
+>
+> v0.3（2026-10-04，DESIGN v0.7）：宿主从“跑固定循环的 agent”变成“运行壳”（runner shell，DESIGN §1）：一次尝试 = 一个 worker 会话里跑包的 `agent.run`，模型只经宿主网关、工具只经宿主 broker，宿主不再向模型问任何决策（完成由两条硬规则定，`tool_gate` 作为 K 的权限留在 broker，其余决策点都在 agent 程序里），今天 `agent/loop.py` 的循环移植为 K 自带的默认 agent（种子包）。`claude_code` provider 一节不变。M0 §2“包 API v2”定义 ctx 的形状，本文定义宿主怎样提供它。
 
 ## 1. 目标与装配
 
 | target | binding / 输出 | 装配位置 |
 |---|---|---|
-| `worker.actor`（新增） | generation / `ChatTurn` | Agent 使用的 ChatProvider，身份来自 session pin 的 W |
-| `worker.harness`（新增） | config / `harness_package.v1` | 包的工具、hook、技能与经验；代码只在固定隔离 worker 中装配 |
-| `worker.system_prompt` | config / prompt | 合并后的系统提示，继续使用现有规则 |
-| `worker.finish` | config / 内置工作流配置 | 完成请求处理 |
-| `worker.stop` | decision / yes、no、abstain | StopGuard 的 on_finish 路径 |
-| `research.diagnose/propose` | research_step / prompt | 既有研究 provider 实际加载被 pin 的 R 配置；首版 diagnose 改为逐题契约 failure_summary.v1 → failure_note.v1，propose 读笔记集合产出 Requirement 与至多一个 patch/next_action（[M4 §1](04_RESEARCH_LOOP.md)） |
+| `worker.actor`（新增） | generation / `ChatTurn` | Agent 使用的 ChatProvider，身份来自 session pin 的 W。（v0.3）agent 程序经网关 `ctx.model` 到达它，不直接持有 |
+| `worker.harness`（新增） | config / `harness_package.v1`；（v0.3）或 `harness_package.v2` | 包的工具、hook、技能与经验；代码只在固定隔离 worker 中装配。（v0.3）v2 包还可带 agent 程序，它就是循环 |
+| `worker.system_prompt` | config / prompt | 合并后的系统提示，继续使用现有规则。（v0.3）默认 agent 照今天的规则合并它；带自己 agent 的包经 `ctx.view.policies.system_prompt` 读到正文，用不用是循环的事，Inspection 记是否读过 |
+| `worker.finish` | config / 内置工作流配置 | 完成请求处理。（v0.3）同上，经 `ctx.view.policies.finish` 读 |
+| `worker.stop` | decision / yes、no、abstain | StopGuard 的 on_finish 路径。（v0.3）默认 agent 里保留其规则路径（finish_check 回推与 verify_command）；决策模型 controller 在 v0.3 没有挂点，见下文“宿主不问决策” |
+| `research.diagnose/propose` | research_step / prompt | 既有研究 provider 实际加载被 pin 的 R 配置；首版 diagnose 改为逐题契约 failure_summary.v1 → failure_note.v1，propose 读笔记集合产出 Requirement 与至多一个 patch/next_action（[M4 §1](04_RESEARCH_LOOP.md)）。（v0.3）propose 改为有界编码会话、一轮至多 `max_candidates_per_round` 个候选，M4 §1（v0.3） |
 | `research.retrieve/preflight` | config / rule 或 workflow | 既有受限检索与辅助检查；不可替代核心 admission |
 
 v3 session 同时 pin release.target_harness_ref；装配检查它与 K 许可、plan 和 provider 能力一致。新的 harness preparation baseline 只能按 M3 签发的任务/mode scope 执行，不进入 active/champion；M1 为它检查 actor renderer、工具/消息表示、controller observation 和完成协议兼容，缺能力显式拒绝，不静默关闭 controller。B 的后续采集使用 M3 针对确切 B/DistillationPlan 签发的补充 v3 permit，作为显式装配参数。扩展现有 authorize 的严格校验分支，不能因为它不同于 B 创建时的 baseline permit 就误拒，也不能接受不匹配的 release/harness/scope/mode；旧 v2 行为不变。source 运行读取 source release 的契约；学生读 student release 的契约，不能由 agent_factory 临时换掉。
 
 新增 actor registration；扩展 `bind_release`、`_bind_one`、`Services` 和 `SessionBinder`，不要在 bench 临时给 Agent 塞一个不同的 provider。v3 的配置 `[llm]` 仅用于 bootstrap 构造 actor；已有 actor 的 release 不允许被本地同名参数悄悄覆盖。显式覆盖需新 release/比较身份。
 
-运行时接口目标：BoundRuntime.actor -> ChatProvider；现有 ChatProvider.chat 接口保留。首版 pin 现有 provider 与推理配置，actor 原定 GLM-5.3（已配置并计价的 OpenAI 兼容接口）；2026-10-03 起先跑 Claude Opus 5.5，经下面的 `claude_code` provider（ROADMAP §3 第 2a 步）。不要求训练服务。第二版 Tinker provider 属于本模块，负责官方 renderer/采样/action schema 解析；未训练底座与 adapter 共用序列化。
+运行时接口目标：BoundRuntime.actor -> ChatProvider；现有 ChatProvider.chat 接口保留。首版 pin 现有 provider 与推理配置，actor 原定 GLM-5.3（已配置并计价的 OpenAI 兼容接口）；2026-10-03 起先跑 Claude Opus 5.5，经下面的 `claude_code` provider（ROADMAP §3 第 2a 步）。不要求训练服务。第二版 Tinker provider 属于本模块，负责官方 renderer/采样/action schema 解析；未训练底座与 adapter 共用序列化。（v0.3）网关是 `BoundRuntime.actor` 外面的一层，不是新 provider：它接 ctx.model 的请求、校验角色、把 effort 压到 K 的上限、调 `actor.chat`、记日志、扣上限；provider 的接口与 `claude_code` 的全部行为不变。
 
 controller 与 actor 共享当时合法 observation，默认不把 controller 当成需要 actor 自发调用的工具。on_finish hook 保证调用位置；其输出和真正执行动作分别写 DecisionTrace。独立模型的价值由同 actor 完整任务评测决定。
 
@@ -53,14 +55,38 @@ controller 与 actor 共享当时合法 observation，默认不把 controller �
 - 与原生 API 的差别：工具调用经结构化输出，不是原生 tool use；历史整段重发，缓存命中多少由冒烟实测；请求带有上面三样附加内容。
 - 账号若开了 extra usage，套餐额度用完后 CLI 改用付费额度继续，不报错：运行前由用户确认已关闭（ROADMAP §3 第 2a 步）。
 
+### 宿主作为运行壳（v0.3，2026-10-04）
+
+一次尝试的流程：M3 的 `run_attempt`（`evolve/task_eval.py:78`）建 episode 与 Budgeted 工具面（同今天）→ 装配 W：pin 的 actor、包、硬上限 → 包带 `agent` 条目时起 Docker worker 会话并 `load` 运行 bundle，没有时取 K 的默认 agent → 宿主向 worker 发 `{"op": "run", "entry", "task", "view", "limits"}`，worker 内 `run(ctx, task)` 开始 → 运行中 worker 以 `{"op": "model_call", id, role, effort, messages, tools}` 与既有 `{"op": "base_call", id, name, args}`（`agent/worker_runner.py:8-11`）向宿主要模型与工具，宿主以 `model_result`/`base_result` 答复，每条答复附 `limits` 快照 → `run` 返回字符串即 `{"op": "result", "value"}`，宿主记 `finish` 事件、结束会话、评分（同今天 `episode.score()`）。协议仍是一行一个 JSON、有界消息；今天 `request_seconds` 限一条请求，v0.3 的 `run` 请求贯穿整次尝试，它的时限就是 `max_seconds`，内层每条 `model_call`/`base_call` 的时限沿用 provider 的 `timeout` 与 `WorkerLimits.request_seconds`。
+
+**网关**（`ctx.model`）。宿主收到 `model_call`：角色不在 manifest `roles` 里 → 答 `is_error` 并把这次记作协议错误（草稿 smoke 本应先抓到它，M0 §3）；`effort` 高于 K 的 `max_effort` → **压到 `max_effort`**，不拒绝、不报错，记录里 `effort` 写实际用的档、`requested_effort` 写包请求的（缺省 None，调用用 W0 pin 的默认档）；然后按角色扣 `max_steps`（act）与 `max_model_calls`，调 `BoundRuntime.actor.chat(system, messages, tools)`，计量（M5 §2 的预留与入账，与今天逐次相同），写 `gateway_call.v1`（M0 §2），扣 `max_tokens`，把 `{text, tool_calls}` 还给包。`messages` 的 system 由包自己放在 messages 里（第一条 `role=system`），宿主不注入也不改写：今天 `_route`/`_compact`（`agent/loop.py:160-161`）对 messages 的处理属于默认 agent，不属于网关。网关不缓存、不合并、不重排消息；它看到什么就调什么、记什么。`aux` 调用照常计量、扣上限、记日志。（第二版的教师在这一层介入，见 §2 的“第二版”一段。）
+
+**broker**（`ctx.tool`）。与今天完全相同（`agent/worker.py:269-281`）：只接 K 授权的基础工具，tool_gate（`agent/loop.py:397-405` 的规则否决与决策点）移到这里，每次调用过原权限/预算检查、写 `broker_event.v1`、扣 `max_tool_calls`，输出按 `max_output_chars` 截断。包的工具封装不再是宿主暴露给模型的 ToolSpec（那是默认 agent 对 v1 `tools` 条目的做法），而是 agent 程序自己在 `ctx.tool` 外包一层代码；broker 看不到封装，只看到基础调用——所以“一个复合工具藏多次调用”不可能：每次基础调用都是一条 broker 事件、一次计数。
+
+**宿主不问决策**。今天 `agent/loop.py` 顶部列的五个决策点，v0.3 的宿主一个都不问模型：`stop` 由完成协议取代——agent 返回即完成，硬上限到即终止，宿主不再问“任务真的完成了吗”；`compact`、`route` 作用于传给 ctx.model 的 messages，`retry`（失败 bash 的自动重跑，`loop.py:420`）作用于 agent 自己发出的工具调用，三者都在 agent 程序里（默认 agent 保留今天的 compaction、单层 route 与重跑；带自己 agent 的包随意），网关与 broker 不做；`tool_gate` 留在 broker，是 K 的权限与规则否决（`agent/loop.py:397-405` 的规则部分），不是向模型要的决策。决策模型 controller（`worker.stop` 的 decision binding，C3）在 v0.3 没有挂点：ctx 没有决策入口（M0 §2 ctx 只有五个名字），加一个是宿主 API 的变化，要经工程契约；C3 本来就 not_run，其含义不变。默认 agent 作为 K 的代码运行在宿主进程里时，技术上仍可以照今天的路径调 `rt.ask("stop")`，但为了让“默认 agent 复制进包”与“默认 agent 在宿主里”行为一致（下文 PR7-07），默认 agent 的 v0.3 版只保留 StopGuard 的**规则**路径（finish_check 回推、verify_command、pushback 上限），不调决策模型；旧 v2 release（没有包或 v1 包且运行时仍是 v1 循环的工作区）不受影响。
+
+第二版：把决策点（stop/retry/compact/route/tool_gate）挪到网关/broker 边界，让 controller 在 C3 有输入与真值时在那里挂上、由宿主问它；v0.3 不做，这一段是计划不是规格。
+
+**硬上限**（M0 §2 的五个维度）由宿主在网关与 broker 计数，到任一上限：宿主不再答复 worker 的请求，取消在飞的 worker 请求（已发出的模型调用照常入账，它的响应记进日志、不交给包），结束会话；尝试的 termination 为 `budget`，`limit` 字段写 `act_calls/model_calls/tool_calls/seconds/tokens` 之一，最终消息为空串；环境照常评分（与今天 `surface.exhausted` → `budget` 一致，`task_eval.py:193`）。旧值 `step_limit` 只出现在旧记录里。理由：让 agent 在上限前“优雅收尾”需要宿主给它余量，余量就是第六个上限；`ctx.limits` 已经把剩余量给了它，收不收尾是它的事。
+
+**失败语义**。worker 崩溃（`WorkerCrashed`）或 `run` 在运行时抛出（worker 答 `{"op": "error", "kind": "package"}`）→ 尝试无效、failure_class `infrastructure`、termination `harness_error`，按 M5 §3 的唯一重试策略补跑一次（Leon 2026-10-04 的决定；今天包代码抛出记 `candidate_defect`，`task_eval.py:176-177`，v0.3 起这条只保留给装配期——包装不上、工具重名、manifest 与 bundle 不符仍是 `candidate_defect`，`task_eval.py:166-168`）；草稿检查期间抛出（import、接口 smoke、tests）→ 草稿失败，回传 R、占一次修订（M0 §3）；硬上限 → termination `budget`；供应商账号错误 → 照今天上抛暂停。确定性的崩溃由草稿 smoke 在付费前抓住，这是把运行时抛出记作基础设施的前提（M0 §3）。agent 返回的不是字符串（None、dict）→ 协议错误，等同抛出。
+
+**默认 agent 即种子包**。今天的循环（`agent/loop.py:150-239`：compaction、单层 route、`provider.chat`、工具执行、三个 hook 挂点、StopGuard 的规则路径、pushback 上限、`HOOK_RESULT_CHARS` 截断）移植为 `agent/default_agent.py`，只用 ctx 的五个名字写成，随 K 发布（宿主代码与 worker 镜像各带一份同字节的副本，字节不同是启动检查错误）。它有两个用途：没有 `agent` 条目的包（全部 v1 包，含 v0.1/v0.2 的 W*）由宿主在进程内以它运行，经同一网关与 broker，行为与 v1 宿主相同；R 要改循环时，第一步把它复制进包的 `agent/` 再改，于是每个带 agent 的候选都有一份可 diff 的祖先。两种放置必须等价：同一道 fixture 任务、同一假 actor，进程内运行与 Docker 内运行产生逐条相同的网关日志与 broker 事件（PR7-07）。
+
+**hook 作为约定**。`before_tool`/`after_tool`/`on_finish` 三个挂点、它们的语义（下节“首版能力包 API 与执行边界”）与截断规则，v0.3 起是默认 agent 遵守的约定，不是宿主契约：默认 agent 在它的循环里照今天的顺序调 manifest 里启用的 hook；复制了默认 agent 的候选继承这套约定，改掉它的候选不再有 hook，manifest 里的 hooks 条目仍要通过草稿检查，但 Inspection 会记 `hook_runs=0`。v1 的 `tools` 条目同理：默认 agent 把它们作为 ToolSpec 暴露给模型、在同一 worker 里执行；带自己 agent 的包里它们是普通模块。理由：hook 的价值在 v0.1/v0.2 的结果里（on_finish 对账 hook 被接受一次、拒绝两次），保留它让已装的 W* 原样运行；但它只是循环的一种写法，不该再是循环唯一能变的地方。
+
+包拿不到什么由三层保证：ctx 上只有五个名字（M0 §2）；worker 镜像与挂载里没有评分器、provider、凭据、对象库、结果存储、transcripts、冻结划分、账本与宿主仓库（下文隔离条目；`test_it6_23_package_code_in_the_docker_worker_cannot_reach_the_host` 已覆盖今天的清单，v0.3 加 transcripts 与 `rsi/cycle.json`）；网关日志与 broker 事件由宿主写，worker 没有写入口。默认 agent 在进程内运行时同样只经 ctx，不持有 Runtime、Objects、评分器句柄：它是 K 的代码，但照包的规矩写，否则 PR7-07 的等价不成立。
+
 ### 首版能力包 API 与执行边界
 
-拟增一个窄适配文件 `agent/harness_package.py`，负责 manifest 装配、固定 worker 协议和 tool/hook adapter；构建/调度仍由 M5 持有。不得为每个包生成另一份 Agent 循环或动态扩展注册表。
+（v0.3，2026-10-04：本节是 v1 API——包工具与 hook——的规格；v0.3 起它由默认 agent 实现与遵守，成为“约定”，宿主契约只剩上节的网关、broker、硬上限与完成协议。文字保留，供默认 agent 与 v1 包对照；其中“宿主”“核心”在 v0.3 读作“默认 agent 与网关/broker”。）
+
+拟增一个窄适配文件 `agent/harness_package.py`，负责 manifest 装配、固定 worker 协议和 tool/hook adapter；构建/调度仍由 M5 持有。不得为每个包生成另一份 Agent 循环或动态扩展注册表。（v0.3）“不得为每个包生成另一份 Agent 循环”改为：宿主不生成循环；循环由包带来或由默认 agent 提供，宿主只运行。
 
 ```text
 package tool: async run(ctx, args) -> ToolResult
 package hook: async run(ctx, event) -> {action: continue|block|feedback, message?}
-ctx.call_tool(base_name, args) -> ToolResult       # 仅由宿主 broker 执行
+ctx.call_tool(base_name, args) -> ToolResult       # 仅由宿主 broker 执行；（v0.3）即 ctx.tool 的 v1 名字，两名并存
 ctx.view -> 当前任务/已接受历史/真实工具结果的只读投影
 hook sites: before_tool, after_tool, on_finish
 ```
@@ -75,17 +101,17 @@ before_tool 的 block/feedback 都阻止该外层动作并把信息返回 actor�
 
 顺序为：合法 actor turn → 原结构/权限检查 → before_tool → 真实基础/包工具执行 → 原始结果落盘 → after_tool；完成请求先经过 on_finish，再交原 StopGuard/硬完成协议。hook 作用于 actor 可见的外层工具调用；broker 内部调用仍逐次执行硬权限/预算检查并记账，不再次触发包 hook，避免查询/复合工具递归进入自身。after_tool 仅接受 continue/feedback，不能 block 已完成动作。包错误明确记录，不能移除包后用旧行为继续拿成绩或重发动作；hook 状态从合法历史投影读取。
 
-挂点覆盖：首版只开放上述三个 site。对照 Harness-Zero 学生库的中间件（[TECHNOLOGY §4](../TECHNOLOGY.md)），除 context_guard 外均可落到 before_tool/after_tool/on_finish：输出/提交/答案/完整性守卫、重试循环守卫与失败恢复提示按其作用对象选 site；turn_budget 以 after_tool feedback 近似，核心 turn cap 不变；Agent 循环中不带工具调用的回合就是完成请求（`agent/loop.py:166`），空回合守卫因此由 on_finish 处理（仅 stop 为 end/other 时经 on_finish，`loop.py:167`；因长度截断的空回合直接结束）；bootstrap 指令由宿主注入的 memory/skills 承担。改写上下文的组件（context_guard 类）按设计不支持：TargetHarness 固定上下文算法（§3），这是有意取舍，不为此新增挂点。组件优先级为 memory/skills → on_finish 守卫 → before_tool/after_tool 守卫 → 包工具，候选选择见 [M4 §2](04_RESEARCH_LOOP.md)。
+挂点覆盖：首版只开放上述三个 site。对照 Harness-Zero 学生库的中间件（[TECHNOLOGY §4](../TECHNOLOGY.md)），除 context_guard 外均可落到 before_tool/after_tool/on_finish：输出/提交/答案/完整性守卫、重试循环守卫与失败恢复提示按其作用对象选 site；turn_budget 以 after_tool feedback 近似，核心 turn cap 不变；Agent 循环中不带工具调用的回合就是完成请求（`agent/loop.py:166`），空回合守卫因此由 on_finish 处理（仅 stop 为 end/other 时经 on_finish，`loop.py:167`；因长度截断的空回合直接结束）；bootstrap 指令由宿主注入的 memory/skills 承担。改写上下文的组件（context_guard 类）按设计不支持：TargetHarness 固定上下文算法（§3），这是有意取舍，不为此新增挂点。组件优先级为 memory/skills → on_finish 守卫 → before_tool/after_tool 守卫 → 包工具，候选选择见 [M4 §2](04_RESEARCH_LOOP.md)。（v0.3，2026-10-04）这段取舍被推翻：context_guard 类的组件、planner/executor 结构、判断前的证据表、发送前的第二遍核对、按题在 `max_effort` 内选 effort、关键决策的多采样，都在 agent 程序里写，不需要新挂点——这正是把循环放进包的理由（M0 开头）。组件优先级不再作为规则（M4 §2（v0.3）），R 按自己的诊断选载体；宿主不要求候选含代码，也不按载体种类区别对待草稿。
 
-首个隔离实现使用固定镜像 digest 的 Docker worker，以 stdin/stdout 的有界消息协议连接宿主 broker；日志走独立输出。非特权运行、无网络/daemon socket/宿主仓库/工作区（bench/<domain>/ 下的 results.jsonl、grading.jsonl，以及 rsi/objects 对象库）挂载，包只读挂载，临时目录与 CPU/内存/PID/时间/输出限额由 K 固定。依赖来自预构建镜像，候选不安装 pip 包。控制面不 import 包，包括 import smoke 与包测试也在 worker 内；AST/lint 只筛明显错误，不充当隔离。只有运行含代码（M0 §2 运行判定）的包在任务执行时要求 Docker worker，含代码的草稿（检查判定，含 test bundle）在草稿检查时要求 worker；只含 skills/memory 的包由宿主按下段装配，不启动隔离 worker。worker 缺失或能力不足时按 M0 §3 处理：K 允许代码或当前包运行含代码时 freeze/smoke 拒绝启动；活动中草稿检查记 infrastructure_failed、当前版本运行预检记 repair_runtime，二者都暂停活动；均不回退 in-process exec，运行不含代码的包照常运行。首版据此先交付文本组件，再交付代码组件与隔离（[ROADMAP §2](../ROADMAP.md) 阶段 A/B）。
+首个隔离实现使用固定镜像 digest 的 Docker worker，以 stdin/stdout 的有界消息协议连接宿主 broker；日志走独立输出。非特权运行、无网络/daemon socket/宿主仓库/工作区（bench/<domain>/ 下的 results.jsonl、grading.jsonl，以及 rsi/objects 对象库）挂载，包只读挂载，临时目录与 CPU/内存/PID/时间/输出限额由 K 固定。（v0.3）不挂载的清单加上 `transcripts/`（网关日志与 broker 事件所在）与 `rsi/cycle.json`。依赖来自预构建镜像，候选不安装 pip 包。控制面不 import 包，包括 import smoke 与包测试也在 worker 内；AST/lint 只筛明显错误，不充当隔离。只有运行含代码（M0 §2 运行判定）的包在任务执行时要求 Docker worker，含代码的草稿（检查判定，含 test bundle）在草稿检查时要求 worker；只含 skills/memory 的包由宿主按下段装配，不启动隔离 worker。（v0.3）带 `agent` 条目的包两种判定都为真。worker 缺失或能力不足时按 M0 §3 处理：K 允许代码或当前包运行含代码时 freeze/smoke 拒绝启动；活动中草稿检查记 infrastructure_failed、当前版本运行预检记 repair_runtime，二者都暂停活动；均不回退 in-process exec，运行不含代码的包照常运行。首版据此先交付文本组件，再交付代码组件与隔离（[ROADMAP §2](../ROADMAP.md) 阶段 A/B）。
 
 预检读取完整包身份，包括继承的代码/manifest 条目与 test bundle，不能把“本次只改文本”当作纯文本包：草稿检查用检查判定（含 test bundle），任务执行、当前版本预检、安装与导出用运行判定（不含 test bundle）。组件种类由 K 冻结，不因运行中缺少 worker 而收窄；草稿检查时 worker 不可用按 M0 §3 的基础设施故障处理。若当前已采用版本运行需要 worker 而不可用，则在任务运行前报告 repair_runtime 并暂停活动（M0 §3），active 保持原值，不通过卸载代码或换包继续取分。
 
-技能采用一个固定索引加受限 read_skill 宿主入口，经验材料按 manifest/长度上限投影进 actor 输入；记录实际注入/读取的 ref。首版不建向量库或开放任意文件读取。生成/删除材料属于下一轮新包版本，业务 session 不改 immutable bundle。材料只用 train/fit 轨迹形成通用规则，不保存 dev/final 答案，部署不导出原任务日志。
+技能采用一个固定索引加受限 read_skill 宿主入口，经验材料按 manifest/长度上限投影进 actor 输入；记录实际注入/读取的 ref。首版不建向量库或开放任意文件读取。生成/删除材料属于下一轮新包版本，业务 session 不改 immutable bundle。材料只用 train/fit 轨迹形成通用规则，不保存 dev/final 答案，部署不导出原任务日志。（v0.3）`read_skill` 工具与 memory 注入是默认 agent 对 `ctx.skills` 的用法；带自己 agent 的包直接读 `ctx.skills`，每次 `read` 仍由宿主记 `skill_read` 事件，长度上限不变。
 
 ## 2. 执行前审阅钩子
 
-本节归第二版。首版 package middleware 是部署时能力，TurnReviewer 是采集时教师，两者不能混为一种 hook；首版没有教师也必须完成包演化/发布与 RSI 验收。
+本节归第二版。首版 package middleware 是部署时能力，TurnReviewer 是采集时教师，两者不能混为一种 hook；首版没有教师也必须完成包演化/发布与 RSI 验收。第二版（v0.3，2026-10-04 记）：教师的位置从“Agent 循环里 provider 返回之后、追加历史之前”改为**网关**——对 `role=act` 的每次 ctx.model 调用，PASS/REPLACE 在响应交给包之前完成，结果以 `review_ref` 记在同一条网关记录里，包与它的循环对此不可见；`aux` 不经 reviewer、不进数据。下面的步骤与规则因此读作网关内的顺序，文字保留。v0.3 实现的只有网关记录里的 `role` 字段，其余是第二版计划（M2）。
 
 拟新增窄接口 `TurnReviewer.review(observation, proposal, step_key, budget) -> ReviewRecord`，由 M8 提供实现。它仅存在于 `mode=reviewed_collection` 的 agent 构造参数，不写进生产 W。`mode=deployment/task_evaluation` 如配置 reviewer，启动即拒绝。
 
@@ -103,17 +129,17 @@ before_tool 的 block/feedback 都阻止该外层动作并把信息返回 actor�
 
 ## 3. 完成、回退与上下文
 
-模型请求 finish 不等于环境任务成功。StopGuard 的 no 可以把可见检查信息返回 actor；yes 仍服从显式 verifier、硬权限和预算。检查器错误、预算耗尽、turn cap、pushback cap 用明确 termination reason 记录；不能因循环结束生成成功轨迹。最终 success 只来自环境 verifier。
+模型请求 finish 不等于环境任务成功。StopGuard 的 no 可以把可见检查信息返回 actor；yes 仍服从显式 verifier、硬权限和预算。检查器错误、预算耗尽、turn cap、pushback cap 用明确 termination reason 记录；不能因循环结束生成成功轨迹。最终 success 只来自环境 verifier。（v0.3，2026-10-04）宿主的完成协议只剩两条：`run` 返回即完成（termination `finished`，stop 为包返回时网关最后一次 act 调用的 stop），硬上限到即终止（termination `budget`，`limit` 写明维度）。StopGuard 的回推、turn cap、pushback cap 是默认 agent 内部的事，它们的触发以 `pushback` 事件记在 transcripts 里（同今天 `loop.py:181`），但不再是 termination reason；`verify_command` 的检查器错误同理记事件。
 
 策略不适用、abstain 或已声明的暂时服务错误走冻结 fallback；模型 artifact 错误、schema 不兼容和无法装载属于候选缺陷，不允许回退到旧 actor 再把成绩归新模型。正式 actor 是否允许供应商故障回退由 plan 固定，若发生必须单独报告，不混称纯模型收益。
 
-沿用 `stop.business.v1` 的完整请求、消息/工具事件与剩余额度；保留明确 truncation。TargetHarness 固定上下文裁剪方法，训练投影复现当时实际 actor 输入。不得训练完整无限历史、部署却临时截断。若新增 compact 规则，更改 harness/context 身份并重新验证，第一轮不同时改多种上下文机制。
+沿用 `stop.business.v1` 的完整请求、消息/工具事件与剩余额度；保留明确 truncation。TargetHarness 固定上下文裁剪方法，训练投影复现当时实际 actor 输入。不得训练完整无限历史、部署却临时截断。若新增 compact 规则，更改 harness/context 身份并重新验证，第一轮不同时改多种上下文机制。（v0.3，2026-10-04）上述三句改为：上下文裁剪属于 agent 程序，TargetHarness 不再固定它（M0 §2）；训练投影复现“当时实际 actor 输入”的方法是读网关日志的 `messages`，包怎么裁剪都在里面；“部署却临时截断”不可能发生，因为部署跑的是同一份包；一个候选同时改多种上下文机制不再被禁止，但它仍是一个候选、过一次 gate、在台账里一条声明（M0 §3 的 `declaration_ref`），其 `mechanism` 要写明改了哪几种。
 
 ## 4. Inspection 与故障
 
-扩展 describe/Inspection：首版记录 actor 身份、package/API ref（含代码时另记 worker image ref）、有效工具 schema、hook 顺序/触发/效果、技能/经验实际读取、工具 broker 调用/资源、fallback/termination；第二版增加 teacher/checkpoint/renderer 字段。没有观察时 observed=false，不能填 0 冒充一次零调用运行。
+扩展 describe/Inspection：首版记录 actor 身份、package/API ref（含代码时另记 worker image ref）、有效工具 schema、hook 顺序/触发/效果、技能/经验实际读取、工具 broker 调用/资源、fallback/termination；第二版增加 teacher/checkpoint/renderer 字段。没有观察时 observed=false，不能填 0 冒充一次零调用运行。（v0.3，2026-10-04）另记：agent 入口（`default` 或包内 entrypoint）与放置（宿主进程/Docker）、manifest 声明的角色、按角色的模型调用数与输出 token 数、每次调用的 effort 分布、`trajectory_ref`、`limit`（终止维度）、`policies_read`（agent 是否读过 `ctx.view.policies` 的 system_prompt/finish）、`hook_runs` 与 `skill_reads`（0 表示读到了但没发生，observed=false 表示没有观察）。有效工具 schema 一项在带自己 agent 的包上记的是 agent 传给 ctx.model 的 `tools` 清单的去重集合（从网关日志派生），不再由 manifest 派生。这些都从网关日志与 broker 事件派生，不从包的自述读。
 
-装配失败发生在任务工具运行前。预算阻断不变成 no/yes 标签。teacher 超时或非法替换由 M8 决定重试/终止，M1 不执行被拒动作；生产 actor 故障按 M5 既定失败分类处理。
+装配失败发生在任务工具运行前。预算阻断不变成 no/yes 标签。teacher 超时或非法替换由 M8 决定重试/终止，M1 不执行被拒动作；生产 actor 故障按 M5 既定失败分类处理。（v0.3）硬上限终止不是故障，不进任何失败类；`run` 运行时抛出按 §1“失败语义”记 infrastructure。
 
 ## 5. 用例
 
@@ -134,7 +160,20 @@ before_tool 的 block/feedback 都阻止该外层动作并把信息返回 actor�
 | PR6-13 | 无可用隔离 worker 时分别处理只含 skills/memory 的包、运行 bundle 含代码的包、只有 test bundle 含 tests/*.py 的包 | 第一类正常运行，注入/读取事件可查；第二类不装配运行，按 M0 §3 拒绝启动或暂停活动；第三类可运行（test bundle 不挂载），但其草稿检查需要 worker；均不 in-process 执行 |
 | PR6-14 | patch 只修改 memory/skills，但完整草稿继承父包 tools/hooks 或 Python 文件 | 仍按含代码包预检，需要合格隔离 worker，不能按文本 patch 绕过 |
 | PR6-15 | 当前已采用包运行需要 worker，而 worker 不可用 | 任务运行前报告 repair_runtime 并暂停活动，不再调度后续段与 research slot；worker 恢复后续跑；active 不变，不删除代码、换旧包或 in-process 执行 |
+| PR7-01（v0.3） | 带 `agent` 条目的包运行一次尝试 | 宿主起 worker 会话、`load` 运行 bundle、发 `run`；`run` 返回的字符串是最终消息；会话随尝试结束 |
+| PR7-02（v0.3） | agent 调 `ctx.model`，含一次 `role="aux"` | 每次经网关到 pin 的 actor；宿主写 `gateway_call.v1`，`role`、`effort`、`messages`、`tools`、`response`、`usage` 齐全；aux 条目计入 `max_model_calls`，不计 `max_steps` |
+| PR7-03（v0.3） | agent 调 `ctx.tool`，一次是 K 未授权的工具，一次是规则否决的工具 | 前者 `is_error`、无事件外的副作用；后者 tool_gate 记 veto；授权调用各一条 `broker_event.v1`，计入 `max_tool_calls` |
+| PR7-04（v0.3） | `effort` 高于 `max_effort`；manifest 未声明 `aux` 却以 aux 调用 | 前者按 `max_effort` 调用、照常入账，记录里 `effort` 是上限、`requested_effort` 是请求值；后者网关拒绝、不调模型、不入账，草稿接口 smoke 对同一包先报草稿失败 |
+| PR7-05（v0.3） | 五个硬上限各自先到 | termination `budget`，`limit` 写对应维度；在飞的模型调用入账并记日志，响应不交给包；最终消息为空；环境照常评分 |
+| PR7-06（v0.3） | `run` 运行时抛出；`run` 返回 None；worker 被包的代码杀死；同一代码在草稿 smoke 里抛出 | 前三者 failure_class `infrastructure`、termination `harness_error`、补跑一次；第四者是草稿失败、回传 R、占一次修订 |
+| PR7-07（v0.3） | 同一 fixture 任务、同一假 actor（REHEARSAL §3），默认 agent 分别在宿主进程内与复制进包后在 Docker 内运行 | 两份网关日志与 broker 事件逐条相同（时间与 id 除外）；宿主与镜像里的 `default_agent.py` 字节不同时启动检查拒绝 |
+| PR7-08（v0.3） | v1 包（含 before_tool/after_tool/on_finish hook、包工具、skills、memory）在 v2 宿主下由默认 agent 运行 | PR6-10/11/12 的全部预期不变；hook、包工具、read_skill、memory 注入的事件可查，与 v0.2 的 W* 在 v1 宿主下的 transcripts 形状一致 |
+| PR7-09（v0.3） | 包代码尝试 import 评分器/provider、打开 transcripts、results.jsonl、grading.jsonl、`rsi/objects`、`rsi/cycle.json`，或访问网络 | Docker 内全部失败（IT6-23 的清单扩展）；ctx 上没有第六个名字，`getattr` 任何其他属性是 AttributeError |
+| PR7-10（v0.3） | 带自己 agent 的包改掉 hook 约定、不读 `ctx.view.policies`，但 manifest 仍有启用的 hook 与 W 仍有 `worker.finish` 文本 | 草稿检查通过（manifest 合法）；Inspection 记 `hook_runs=0`、`policies_read` 为空；gate 照常比较，不因“文本没被读”而拒绝或放行 |
+| PR7-11（v0.3） | 一次尝试后读 Inspection | 含 agent 入口与放置、角色、按角色的调用数与 token、effort 分布、`trajectory_ref`、`limit`；没有观察的项 observed=false，不填 0 |
+| PR7-12（v0.3） | agent 自己写“已核对全部收件人”的笔记并放进最终消息 | 记录里只有网关日志与 broker 事件；R 的轨迹工具、训练投影、gate 收据都不读该笔记作为事实 |
+| PR7-13（v0.3） | 旧 v2 release（无包、或 v1 包）在 v1 循环的工作区继续运行 | 行为与 v0.2 相同：决策点仍在循环里，`step_limit` 等旧 termination 继续出现；不迁移旧工作区 |
 
-PR6-02～05 的教师路径归第二版；首版重点覆盖旧兼容、包实际执行及上述边界，PR6-01 的未训练 provider pin 仍需验证。PR6-13 属阶段 A，不需要 Docker。
+PR6-02～05 的教师路径归第二版；首版重点覆盖旧兼容、包实际执行及上述边界，PR6-01 的未训练 provider pin 仍需验证。PR6-13 属阶段 A，不需要 Docker。（v0.3）PR7-01～06、09、10、12 需要 Docker（在 `OUROLOOP_TEST_REQUIRE_DOCKER` 下运行，缺镜像即失败，同 2026-10-02 的 CI 规则）；PR7-07 的进程内一半、PR7-08、PR7-11、PR7-13 不需要。彩排（[REHEARSAL.md](../REHEARSAL.md)）随之更新：假 actor 改为经网关作答（它是 `[llm] type` 指向的 provider，网关调它与调 `claude_code` 走同一路径），彩排世界加一道给草稿接口 smoke 用的 fixture 任务。
 
-验证落点：`test_agent.py`、`test_policy_runtime.py`、`test_policies.py`，扩展 provider renderer 往返测试。M1 不实现 teacher 提示策略或 SFT 数据导出。
+验证落点：`test_agent.py`、`test_policy_runtime.py`、`test_policies.py`，扩展 provider renderer 往返测试。M1 不实现 teacher 提示策略或 SFT 数据导出。（v0.3）PR7 用例的测试：`test_package_worker.py::test_pr7_01_the_runner_hands_the_episode_to_agent_run_in_the_worker`（新增）、`test_package_worker.py::test_pr7_02_ctx_model_goes_through_the_gateway_and_the_host_writes_the_log`（新增）、`test_package_worker.py::test_pr7_03_ctx_tool_goes_through_the_broker_and_the_tool_gate`（新增）、`test_package_worker.py::test_pr7_04_effort_above_the_cap_is_clamped_and_an_undeclared_role_is_refused`（新增）、`test_package_worker.py::test_pr7_05_each_hard_limit_ends_the_attempt_as_budget_and_names_itself`（新增）、`test_package_worker.py::test_pr7_06_a_crash_in_run_is_infrastructure_and_in_the_draft_check_a_draft_failure`（新增）、`test_agent.py::test_pr7_07_the_default_agent_runs_the_same_in_process_and_in_the_worker`（新增）、`test_agent.py::test_pr7_07_a_seed_agent_that_differs_between_host_and_image_fails_the_startup_check`（新增）、`test_agent.py::test_pr7_08_the_default_agent_honours_v1_hooks_tools_skills_and_memory`（新增）、`test_package_worker.py::test_pr7_09_package_code_cannot_reach_the_records_or_a_sixth_name_on_ctx`（新增）、`test_package_worker.py::test_pr7_10_an_agent_that_drops_the_hook_convention_is_legal_and_inspection_says_so`（新增）、`test_policy_runtime.py::test_pr7_11_inspection_records_the_agent_entrypoint_roles_and_call_counts`（新增）、`test_package_worker.py::test_pr7_12_the_agents_own_notes_are_not_the_record`（新增）、`test_loop.py::test_pr7_13_an_old_release_keeps_the_v1_loop_and_its_terminations`（新增）、`test_rehearsal_world.py::test_the_fake_actor_answers_through_the_gateway`（新增）。
