@@ -247,8 +247,11 @@ class Drafts:
                 return DraftOutcome("invalid", drafts=drafts,
                                     reason=f"the draft still failed its check after {self.max_repairs} revisions: "
                                            f"{drafts[-1]['errors'][:2]}")
+            # The built-in is the draft's own package API, v1 or v2 by its manifest (M0 §2, v0.3): a release that
+            # pins a v2 package must say so, and binding checks the two against each other.
             changes.append({"target": "worker.harness", "kind": "workflow",
-                            "change": {"builtin": "harness_package.v1", "package_ref": package_ref}})
+                            "change": {"builtin": hp.load_package(self.objects, package_ref).api_version,
+                                       "package_ref": package_ref}})
         frozen = ct.ExperimentProposal(owner=proposal.owner, hypothesis=proposal.hypothesis,
                                        requirements=proposal.requirements, evidence_refs=proposal.evidence_refs,
                                        changes=tuple(changes), training=proposal.training,

@@ -574,6 +574,11 @@ def _bind_one(bound: BoundRuntime, target: str, p: PolicyDescriptor, services: S
             bound.package = load_package(objects, config["package_ref"])
         except (KeyError, ContractError) as e:
             raise BindError(f"worker.harness: {e}") from None
+        if impl["builtin"] != bound.package.api_version:
+            # The built-in is the package API the manifest targets (M0 §2, v0.3): a v2 package declared as v1 would
+            # let a release hide the agent capability it needs, so the two are checked against each other here.
+            raise BindError(f"worker.harness: the policy binds {impl['builtin']} and the package's manifest targets "
+                            f"{bound.package.api_version}: the built-in is the package's own API")
         return
     raise BindError(f"{target}: nothing binds a {p.kind} policy here")
 
@@ -645,6 +650,20 @@ PROPOSE = ("You propose one experiment that would close a named behaviour gap. C
            "State the hypothesis, the expected effect on full-task results, and what would make you abandon it.")
 
 
+def package_builtin(objects: ct.Objects, package_ref: str) -> str:
+    """The worker.harness built-in for a stored package: the package API its manifest targets, `harness_package.v1`
+    or `harness_package.v2` (M0 §2, v0.3). Read from the package, never assumed: a v2 package bound as v1 would hide
+    the capability its release needs."""
+    from .agent.harness_package import load_package
+    return load_package(objects, package_ref).api_version
+
+
+def harness_descriptor(objects: ct.Objects, package_ref: str) -> PolicyDescriptor:
+    """The worker.harness policy pinning `package_ref`, under the built-in of the package's own API."""
+    return descriptor(objects, "worker.harness", "workflow", {"builtin": package_builtin(objects, package_ref),
+                                                              "package_ref": package_ref})
+
+
 def default_worker_set(objects: ct.Objects, *, system_prompt: str = "", finish_check: str = FINISH_CHECK,
                        actor_identity_ref: str | None = None, package_ref: str | None = None) -> str:
     """W0. The v0.6 targets are included when their content is given: the actor's identity (from the configured
@@ -659,8 +678,7 @@ def default_worker_set(objects: ct.Objects, *, system_prompt: str = "", finish_c
     if actor_identity_ref is not None:
         policies.append(descriptor(objects, "worker.actor", "model", {"model_identity_ref": actor_identity_ref}))
     if package_ref is not None:
-        policies.append(descriptor(objects, "worker.harness", "workflow", {"builtin": "harness_package.v1",
-                                                                           "package_ref": package_ref}))
+        policies.append(harness_descriptor(objects, package_ref))
     return policy_set(objects, "worker", policies)
 
 
@@ -886,12 +904,15 @@ def build_candidate(experiment, *, objects: ct.Objects, parent_release: str, own
     if services is not None:
         # An artifact that cannot be assembled is caught here rather than during the comparison, where it would
         # cost a full dev run to discover.
+        from .release import required_capabilities_of
         try:
+            worker_ref = candidate if owner == "worker" else parent.worker_ref
             release = ct.SystemRelease(
-                worker_ref=candidate if owner == "worker" else parent.worker_ref,
+                worker_ref=worker_ref,
                 research_ref=candidate if owner == "research" else parent.research_ref,
                 core_ref=parent.core_ref, authorization_ref=parent.authorization_ref, parent_ref=parent_release,
-                target_harness_ref=parent.target_harness_ref, required_capabilities=parent.required_capabilities)
+                target_harness_ref=parent.target_harness_ref,
+                required_capabilities=required_capabilities_of(objects, parent.required_capabilities, worker_ref))
             bind_release(objects.put(release), profile="preflight", services=services)
         except BindError as e:
             return ct.BuildResult(status="invalid", artifacts=artifacts, errors=(str(e),), costs=costs)

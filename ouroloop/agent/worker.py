@@ -14,6 +14,11 @@ Failure kinds are kept apart: the package's own errors (an exception, an illegal
 defect; a worker that dies, times out or breaks the protocol is infrastructure — unless a fresh worker then answers
 normally, in which case it was the package's code that killed or hung it, and that is the candidate's defect too.
 
+The worker's runner is this host's: every session's first `load` answers with the sha256 of the worker_runner.py it
+runs, compared with the host's copy (RUNNER), and an image built from another runner is refused as StaleWorker with
+the command that rebuilds it — at startup (bench.harness_checks, App) and at every load, so a stale image never serves
+a run whose failures would look like the package's.
+
 v0.3 (M1 §1 宿主作为运行壳): one `run` request spans a whole attempt. The worker runs the package's agent and calls
 back for the model (model_call), skills (skill_read) and tools (base_call); WorkerSession.serve answers each
 through a handler the host supplies — the gateway and broker live in the host, never in the worker. An agent that
@@ -23,6 +28,7 @@ ends there with the dimension named (termination `budget`, M5 §2).
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import queue
@@ -35,9 +41,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..evolve import contracts as ct
+from .default_agent import DEFAULT_ENTRY, DEFAULT_PATH, seed_files
 
 RUNNER = Path(__file__).with_name("worker_runner.py")
 DEFAULT_IMAGE = "ouroloop-worker:py3.12"
+REBUILD = f"rebuild the image: docker build -f docker/worker.Dockerfile -t {DEFAULT_IMAGE} ."
 MAX_LINE = 1_000_000                      # one protocol line of the v1 ops; anything longer is not a protocol message
 MAX_MODEL_LINE = 8_000_000                # a model_call carries the agent's whole history; the reader allows this much
 STDERR_TAIL = 4000                        # what is kept of the worker's stderr, for a failure message
@@ -50,6 +58,30 @@ WORKER_ENV = ("PATH=/usr/local/bin:/usr/bin:/bin", "LANG=C.UTF-8")   # the whole
 
 class WorkerUnavailable(RuntimeError):
     """No qualified worker: an infrastructure condition, never a reason to run package code in-process."""
+
+
+class StaleWorker(WorkerUnavailable):
+    """The worker runs another worker_runner.py than this host's (an image built before the runner changed): its
+    ops and flags are not the host's, so a run in it would fail in ways that look like the package's. Found at the
+    first `load` of every session and at startup, and the operator rebuilds the image (M1 §1 默认 agent 即种子包:
+    the host and the image carry the same bytes; different bytes are a startup error)."""
+
+
+def runner_digest() -> str:
+    """sha256 of the host's worker_runner.py: what a worker's `load` answer must name."""
+    return hashlib.sha256(RUNNER.read_bytes()).hexdigest()
+
+
+def stale_runner(identity) -> str | None:
+    """Why a worker's `load` answer is not this host's runner, or None when it is: a runner that does not name
+    itself is older than the check, a different digest is other bytes."""
+    digest = identity.get("runner_sha256") if isinstance(identity, dict) else None
+    host = runner_digest()
+    if digest == host:
+        return None
+    seen = f"runs worker_runner.py {digest[:12]}" if isinstance(digest, str) else "runs a worker_runner.py that does not name itself"
+    return (f"the worker {seen}, and this host's is {host[:12]}: the image was built from another runner; "
+            f"{REBUILD}")
 
 
 class WorkerCrashed(RuntimeError):
@@ -113,17 +145,24 @@ class Worker:
             session.proc.kill()
 
     def healthy(self) -> bool:
-        """Whether a fresh session loads nothing and answers: a failure that this passes was the package's."""
+        """Whether a fresh session loads nothing (as this host's runner) and answers: a failure that this passes
+        was the package's."""
+        return self.runner_problem() is None
+
+    def runner_problem(self) -> str | None:
+        """Why a fresh session of this worker cannot serve this host, or None: it does not start, dies or breaks the
+        protocol on an empty load, or runs another worker_runner.py than the host's (StaleWorker, with the rebuild
+        command). Read at startup (bench.harness_checks, App) so a stale image refuses before anything is paid."""
         try:
             session = self.start()
-        except WorkerUnavailable:
-            return False
+        except WorkerUnavailable as e:
+            return str(e)
         try:
-            session.request({"op": "load", "files": {}})
+            session.load({})
             session.request({"op": "probe", "entries": []})
-            return True
-        except (WorkerCrashed, PackageCallError):
-            return False
+            return None
+        except (WorkerCrashed, PackageCallError, WorkerUnavailable) as e:
+            return str(e)
         finally:
             session.close(force=True)
 
@@ -287,6 +326,10 @@ class WorkerSession:
                 output, is_error = f"more than {max_calls} tool calls in one request", True
             elif not isinstance(name, str) or not isinstance(args, dict):
                 output, is_error = "call_tool takes a tool name and an object of arguments", True
+            elif reply.get("read_only") and isinstance(broker, Broker):
+                # The agent's hooks ask for a read-only broker (M1 §1): honoured here too, so the smoke refuses
+                # what an attempt's broker would refuse, and a hook that writes is found in the draft check.
+                output, is_error = broker(name, args, read_only=True)
             else:
                 output, is_error = broker(name, args)
             return {"op": "base_result", "id": reply.get("id"), "output": str(output)[:self.limits.max_output_chars],
@@ -359,8 +402,16 @@ class WorkerSession:
         return self.serve(message, handlers={"base_call": self.base_call_handler(broker, self.limits.max_base_calls)},
                           deadline=self.limits.request_seconds)
 
-    def load(self, files: dict[str, str]) -> None:
-        self.request({"op": "load", "files": files})
+    def load(self, files: dict[str, str]) -> dict:
+        """Load the package files and read the runner's identity back. -> {runner_sha256, ops}. A runner that is not
+        this host's worker_runner.py ends the session as StaleWorker before any package code runs: whichever path
+        reached here (an attempt, a draft check, a health probe), a stale image never serves."""
+        identity = self.request({"op": "load", "files": files})
+        problem = stale_runner(identity)
+        if problem:
+            self.close(force=True)
+            raise StaleWorker(problem)
+        return identity
 
     def close(self, force: bool = False) -> None:
         """End the session. A worker still running after its stdin closes — or any, with `force` — is killed
@@ -399,12 +450,15 @@ class Broker:
     read_only: bool = False
     calls: list = field(default_factory=list)
 
-    def __call__(self, name: str, args: dict) -> tuple[str, bool]:
+    def __call__(self, name: str, args: dict, *, read_only: bool | None = None) -> tuple[str, bool]:
+        """One call; `read_only` overrides the broker's own flag for this call alone (a hook's call through a
+        broker the host built for the whole request)."""
+        read_only = self.read_only if read_only is None else read_only
         base = {s.name for s in self.surface.specs()}
         if name not in base:
             self.calls.append({"tool": name, "refused": "not a base tool"})
             return f"{name!r} is not an authorised base tool: {sorted(base)}", True
-        if self.read_only and self.surface.mutates(name, args):
+        if read_only and self.surface.mutates(name, args):
             self.calls.append({"tool": name, "refused": "writes"})
             return "a hook may only make read-only calls, and this call may change the world", True
         res = self.surface.run(name, args)
@@ -413,36 +467,68 @@ class Broker:
 
 
 # ---------------------------------------------------------------------------- draft checks (M5 §1)
+def component_view(manifest: dict) -> dict:
+    """The manifest's enabled hooks and tools as ctx.view["package"] carries them: what the default agent runs
+    (M1 §1 hook 作为约定), the same projection in an attempt (runner.attempt_view) and in the smoke."""
+    return {"hooks": [dict(h) for h in manifest.get("hooks") or () if h.get("enabled", True)],
+            "tools": [dict(t) for t in manifest.get("tools") or () if t.get("enabled", True)]}
+
+
+def smoke_view(manifest: dict, fixture, task: str, max_output_chars: int) -> dict:
+    """ctx.view for the smoke, in the attempt view's shape: the fixture's base tools, the draft's enabled components
+    (skills by name, no memory — the smoke reads no skill), no policies, no system prompt. The default agent reads
+    its hooks, tools and base tools from here, so the smoke runs the draft's code as an attempt would."""
+    base = [{"name": s.name, "description": s.description, "schema": s.schema} for s in fixture.specs()] \
+        if fixture is not None else []
+    pkg = {"api_version": manifest.get("api_version"), **component_view(manifest),
+           "skills": [{"name": s["name"], "description": s.get("description", "")}
+                      for s in manifest.get("skills") or () if s.get("enabled", True)],
+           "memory": False}
+    return {"task": task, "system": "", "base_tools": base, "package": pkg, "policies": {}, "events": [],
+            "max_output_chars": max_output_chars}
+
+
 def check_package(worker: Worker, files: dict[str, str], manifest: dict, *, fixture=None,
                   max_chars: int = 2000) -> list[str]:
     """isolated_probe, agent_smoke and package_test inside the worker. -> check errors (empty when all pass).
 
-    The probe imports every entrypoint the manifest names; with an `agent` entry (M0 §2) the smoke then runs the
-    agent against the canned model of the runner's SmokeContext, with the fixture broker for its tools — the one
-    place a deterministic crash or an undeclared role is found before a paid run, which is what lets a run-time
-    crash count as infrastructure (M0 §3, M1 §1); the tests run each tests/*.py test_* function with a context whose
-    broker is bound to `fixture` — a synthetic or train-only world, never a dev or final task. The output returned
-    is capped and names failures, not tool outputs. WorkerUnavailable/WorkerCrashed propagate: they are
-    infrastructure, not the draft's defect.
+    The probe imports every entrypoint the manifest names. Every package that runs code (M0 §2 运行判定: a tool,
+    hook or agent entry, or Python in the run bundle) is then smoked: its own agent through its `agent` entry, a
+    package without one through the default agent — added to the loaded files as the host adds it at run time
+    (runner.PackageAgent) — against the runner's SmokeContext, whose model calls each offered tool once and then
+    ends, with the fixture broker for the tools and a view carrying the fixture's base tools and the draft's
+    components. So an undeclared role, a deterministic crash in `run`, a hook that raises or answers outside its
+    protocol and a package tool that does are all found here, as the draft's failure, before a paid run — which is
+    what lets a run-time crash count as infrastructure (M0 §3, M1 §1 失败语义). The tests run each tests/*.py test_*
+    function with a context whose broker is bound to `fixture` — a synthetic or train-only world, never a dev or
+    final task. The output returned is capped and names failures, not tool outputs. WorkerUnavailable/WorkerCrashed
+    propagate: they are infrastructure, not the draft's defect.
     """
-    from .harness_package import usable_worker
+    from .harness_package import needs_worker_at_runtime, usable_worker
     if not usable_worker(worker):
         raise WorkerUnavailable("the draft holds code and the worker given does not isolate it")
     session = worker.start()
     try:
-        session.load(files)
         agent = manifest.get("agent") if isinstance(manifest.get("agent"), dict) else {}
         agent_entry = agent.get("entrypoint") if isinstance(agent.get("entrypoint"), str) else None
+        run_files = {p: t for p, t in files.items() if not p.startswith("tests/")}
+        loaded = dict(files)
+        if not agent_entry and needs_worker_at_runtime(run_files, manifest):
+            loaded[DEFAULT_PATH] = seed_files()[DEFAULT_PATH].decode("utf-8")
+        session.load(loaded)
         entries = [t["entrypoint"] for t in manifest.get("tools") or ()] + \
                   [h["entrypoint"] for h in manifest.get("hooks") or ()] + ([agent_entry] if agent_entry else [])
         try:
             session.request({"op": "probe", "entries": entries})
         except PackageCallError as e:
             return [f"isolated_probe: {e}"[:max_chars]]
-        if agent_entry:
+        if agent_entry or needs_worker_at_runtime(run_files, manifest):
+            entry = agent_entry or DEFAULT_ENTRY
+            roles = list(agent.get("roles") or ()) if agent_entry else ["act"]
             try:
-                session.request({"op": "smoke", "entry": agent_entry, "roles": list(agent.get("roles") or ()),
-                                 "task": "smoke"}, broker=Broker(fixture, read_only=False) if fixture else None)
+                session.request({"op": "smoke", "entry": entry, "roles": roles, "task": "smoke",
+                                 "view": smoke_view(manifest, fixture, "smoke", session.limits.max_output_chars)},
+                                broker=Broker(fixture, read_only=False) if fixture else None)
             except PackageCallError as e:
                 return [f"agent_smoke: {e}"[:max_chars]]
         if not any(p.startswith("tests/") for p in files):

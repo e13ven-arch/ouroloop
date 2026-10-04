@@ -64,6 +64,10 @@ class World:
     def mutates(self, name, args):
         return name == "api_fetch" and str(args.get("method", "GET")).upper() != "GET"
 
+    @property
+    def tool_calls(self):
+        return len(self.calls)          # what Budgeted reads of an episode, so the World can sit under one
+
 
 def agent_for(tmp_path, bound, world, provider, **cfg):
     surface = hp.mount(world, bound, worker=ProcessWorker(for_tests=True))
@@ -734,7 +738,7 @@ def test_the_smoke_runs_the_agent_against_a_canned_model_and_the_fixture_broker(
     smoke_agent = ("def run(ctx, task):\n    turn = ctx.model([{'role': 'user', 'content': task}], role='act')\n"
                    "    out = ctx.tool('api_search', {'q': task})\n    assert ctx.skills.read('any') is None\n"
                    "    counts = [ctx.limits[k] for k in ('act_calls', 'model_calls', 'tool_calls', 'tokens')]\n"
-                   "    assert counts == [4, 9, 9, 19999], counts\n"
+                   "    assert counts == [4, 9, 39, 19999], counts\n"
                    "    assert type(ctx.limits['seconds']) is int and 0 < ctx.limits['seconds'] <= 30\n"
                    "    return turn.text + '/' + str(turn.stop) + '/' + out.output\n")
     from ouroloop.agent.worker import check_package
@@ -796,11 +800,871 @@ def test_an_undeclared_role_or_a_crash_in_the_smoke_is_a_draft_problem():
         session.close()
 
 
-def test_a_manifest_without_an_agent_entry_is_checked_as_before():
-    """check_package reads `agent` defensively: v1 manifests (no entry) run probe and tests only, unchanged."""
+def test_the_smokes_canned_model_calls_each_offered_tool_once_with_the_smallest_arguments_then_ends():
+    """worker_runner.SmokeContext (M0 §3): the first model call that offers tools is answered with one tool_use turn
+    calling each offered tool — a placeholder for each required property of its schema, {} without one — and every
+    later call with the end turn, so an agent's own tool path runs once against the fixture before any paid call."""
+    from ouroloop.agent.worker_runner import minimal_args
+    assert minimal_args({"type": "object", "properties": {"q": {"type": "string"}}}) == {}
+    assert minimal_args({"type": "object", "required": ["q", "n", "on", "k"],
+                         "properties": {"q": {"type": "string"}, "n": {"type": "integer"}, "on": {"type": "boolean"},
+                                        "k": {"type": "string", "enum": ["a", "b"]}}}) == \
+        {"q": "smoke", "n": 0, "on": False, "k": "a"}
+    assert minimal_args(None) == {} and minimal_args({"required": ["x"]}) == {"x": "smoke"}
+    touring = ("def run(ctx, task):\n"
+               "    tools = [{'name': 'api_search', 'schema': {'type': 'object', 'required': ['q'],"
+               " 'properties': {'q': {'type': 'string'}}}}, {'name': 'api_fetch', 'schema': {'type': 'object'}}]\n"
+               "    first = ctx.model([{'role': 'user', 'content': task}], tools=tools)\n"
+               "    for c in first.tool_calls:\n        ctx.tool(c['name'], c['args'])\n"
+               "    second = ctx.model([{'role': 'user', 'content': task}], tools=tools)\n"
+               "    return repr([first.stop, [(c['name'], c['args']) for c in first.tool_calls], second.stop,"
+               " second.tool_calls])\n")
+    session = session_with({"agent/main.py": touring})
+    try:
+        world = World()
+        value = session.request({"op": "smoke", "entry": "agent/main.py:run", "roles": ["act"], "task": "t"},
+                                broker=Broker(world))
+        assert value == repr(["tool_use", [("api_search", {"q": "smoke"}), ("api_fetch", {})], "end", []])
+        assert world.calls == [("api_search", {"q": "smoke"}), ("api_fetch", {})]
+    finally:
+        session.close()
+
+
+def test_a_code_package_without_an_agent_entry_is_smoked_through_the_default_agent():
+    """check_package (M0 §3, M1 §1 失败语义): every package that runs code is smoked — a v1 package through the
+    default agent, added to the loaded files as the host adds it at run time — against a view carrying the fixture's
+    base tools and the package's components, so its hooks and package tools each execute once: a sound package
+    passes; a before_tool hook that raises, or answers outside its protocol, fails the smoke as the draft's failure
+    (a revision, never infrastructure); a package tool that never stops calling the broker is stopped by the smoke's
+    tool_calls limit; a text-only package and a tests-only one are not smoked."""
     from ouroloop.agent.worker import check_package
-    files = {"middlewares/g.py": FINISH_GUARD, "tests/test_g.py": "def test_ok(ctx):\n    assert True\n"}
-    manifest = {**hp.empty_manifest(), "hooks": [{"name": "g", "site": "on_finish",
-                                                  "entrypoint": "middlewares/g.py:run"}]}
-    assert check_package(ProcessWorker(for_tests=True), files, manifest, fixture=World()) == []
-    assert check_package(ProcessWorker(for_tests=True), files, {**manifest, "agent": None}, fixture=World()) == []
+    hooks = {"hooks": [{"name": "g", "site": "on_finish", "entrypoint": "middlewares/g.py:run"},
+                       {"name": "b", "site": "before_tool", "entrypoint": "middlewares/b.py:run"},
+                       {"name": "a", "site": "after_tool", "entrypoint": "middlewares/a.py:run"}]}
+    sound = {"middlewares/g.py": FINISH_GUARD,
+             "middlewares/b.py": "def run(ctx, event):\n    r = ctx.call_tool('api_search', {'q': 'look'})\n"
+                                 "    return {'action': 'continue'} if not r.is_error else {'action': 'block'}\n",
+             "middlewares/a.py": "def run(ctx, event):\n    assert 'result' in event\n    return {'action': 'continue'}\n",
+             "tests/test_g.py": "def test_ok(ctx):\n    assert True\n"}
+    manifest = {**hp.empty_manifest(), **hooks}
+    world = World()
+    assert check_package(ProcessWorker(for_tests=True), sound, manifest, fixture=world) == []
+    # the smoke called each of the fixture's tools once, and the before_tool hook's read ran before each
+    assert [n for n, _ in world.calls] == ["api_search", "api_search", "api_search", "api_fetch"]
+    raising = {**sound, "middlewares/b.py": "def run(ctx, event):\n    raise ValueError('broken check')\n"}
+    assert check_package(ProcessWorker(for_tests=True), raising, manifest, fixture=World()) == \
+        ["agent_smoke: ValueError: broken check"]
+    illegal = {**sound, "middlewares/b.py": "def run(ctx, event):\n    return {'action': 'maybe'}\n"}
+    (problem,) = check_package(ProcessWorker(for_tests=True), illegal, manifest, fixture=World())
+    assert problem.startswith("agent_smoke: ValueError: hook b at before_tool answered {'action': 'maybe'}")
+    writing = {**sound, "middlewares/b.py": "def run(ctx, event):\n"
+                                           "    r = ctx.call_tool('api_fetch', {'url': 'u', 'method': 'POST'})\n"
+                                           "    return {'action': 'block', 'message': r.output[:60]}\n"}
+    world = World()
+    assert check_package(ProcessWorker(for_tests=True), writing, manifest, fixture=world) == []
+    assert world.calls == []                       # a hook's broker is read-only in the smoke as in an attempt
+    looping_tool = {"tools/t.py": "def run(ctx, args):\n    while True:\n        ctx.call_tool('api_search', {})\n"}
+    tool_manifest = {**hp.empty_manifest(), "tools": [{"name": "forever", "description": "d", "entrypoint": "tools/t.py:run",
+                                                       "input_schema": {"type": "object", "properties": {}}}]}
+    assert check_package(ProcessWorker(for_tests=True), looping_tool, tool_manifest, fixture=World()) == \
+        ["agent_smoke: the agent did not finish within the smoke's limits (tool_calls)"]
+    bad_tool = {"tools/t.py": "def run(ctx, args):\n    return 7\n"}
+    assert check_package(ProcessWorker(for_tests=True), bad_tool, tool_manifest, fixture=World()) == \
+        ["agent_smoke: TypeError: tool forever answered int, not a tool result"]
+    tests_only = {"tests/test_g.py": "def test_ok(ctx):\n    assert True\n"}
+    assert check_package(ProcessWorker(for_tests=True), tests_only, hp.empty_manifest(), fixture=World()) == []
+    assert check_package(ProcessWorker(for_tests=True), sound, {**manifest, "agent": None}, fixture=World()) == []
+
+
+# ---------------------------------------------------------------------------- v0.3: the runner shell (M1 §1 宿主作为运行壳, IT6-29/30/43, PR7)
+from types import SimpleNamespace  # noqa: E402
+
+from ouroloop.agent.gateway import Gateway  # noqa: E402
+from ouroloop.agent.runner import PackageAgent  # noqa: E402
+from ouroloop.agent.worker import LimitHit  # noqa: E402
+from ouroloop.benchmark import Budget  # noqa: E402
+from ouroloop.evolve.task_eval import Budgeted, make_agent_factory, run_attempt  # noqa: E402
+
+FOUR = ("tool", "assistant", "pushback", "hook")
+NOTIFY_TASK = "Move Dana Reyes to opportunity stage, then post to #ops with the phrase deal moved."
+
+
+def shell_agent(tmp_path, bound, world, provider, *, budget=None, worker=None, placement=None, max_effort="high"):
+    """The runner shell over the World: what task_eval builds for a release whose K was frozen under v0.3."""
+    budget = budget or Budget(max_steps=8, max_tool_calls=12)
+    surface = Budgeted(world, budget)
+    make = make_agent_factory(rsi.runtime(tmp_path), provider, budget=budget, bound=bound,
+                              worker=worker or ProcessWorker(for_tests=True), max_effort=max_effort)
+    agent = make(surface, SimpleNamespace(task_id="t1"), "You are a business agent.")
+    assert isinstance(agent, PackageAgent)
+    if placement is not None:
+        agent.placement = placement
+    return agent
+
+
+def kinds(events, only=FOUR):
+    return [e["kind"] for e in events if e["kind"] in only]
+
+
+def trace(events):
+    """The (kind, name) sequence of a run as both loops record it: every model turn with its stop, every hook with
+    its answer, every pushback, and every tool call by name. The two loops differ in two shapes and nowhere else: the
+    v1 loop writes a blocked or skipped call as a `tool` event flagged blocked/skipped, the default agent as a
+    `tool_blocked`/`tool_skipped` mark; and a package tool is one `tool` event in the v1 loop carrying its base calls,
+    while under the shell the broker records the base calls themselves and the outer call is a `package_tool` mark —
+    so a package tool's event is projected to the base calls it made, the sequence the broker saw in both."""
+    out = []
+    for e in events:
+        kind = e["kind"]
+        if kind == "tool":
+            if e.get("blocked"):
+                out.append(("tool_blocked", e["name"]))
+            elif e.get("skipped"):
+                out.append(("tool_skipped", e["name"]))
+            elif e.get("broker_calls") is not None:
+                out += [("tool", c["tool"]) for c in e["broker_calls"]]
+            else:
+                out.append(("tool", e["name"]))
+        elif kind in ("tool_blocked", "tool_skipped"):
+            out.append((kind, e["tool"]))
+        elif kind == "hook":
+            out.append(("hook", e["hook"], e["action"]))
+        elif kind == "assistant":
+            out.append(("assistant", e["stop"]))
+        elif kind == "pushback":
+            out.append(("pushback",))
+    return out
+
+
+def v2_bound(tmp_path, agent_code, roles=("act",), **manifest_extra):
+    manifest = {"api_version": hp.AGENT_API_VERSION,
+                "agent": {"entrypoint": "agent/main.py:run", "roles": list(roles)}, **manifest_extra}
+    return bound_with(tmp_path, {"agent/main.py": agent_code}, manifest)
+
+
+class Scripted:
+    """A provider with the three-argument chat of the fixtures: the gateway must never hand it a keyword."""
+    name, model = "scripted", "s"
+
+    def __init__(self, turns, usage=None):
+        self.turns, self.usage, self.n, self.seen = list(turns), usage or {}, 0, []
+
+    def chat(self, system, messages, specs):
+        self.seen.append((system, [dict(m) for m in messages], [s.name for s in specs]))
+        turn = self.turns[min(self.n, len(self.turns) - 1)]
+        self.n += 1
+        return ChatTurn(turn.text, turn.tool_calls, turn.stop, usage=dict(self.usage))
+
+
+class EffortAware(Scripted):
+    """A provider whose chat takes `effort`, as the claude_code provider's does."""
+
+    def __init__(self, turns, effort="medium"):
+        super().__init__(turns)
+        self.effort, self.efforts = effort, []
+
+    def chat(self, system, messages, specs, effort=None):
+        self.efforts.append(effort)
+        return super().chat(system, messages, specs)
+
+
+BLOCKER = ("def run(ctx, event):\n    if event['tool'] == 'api_fetch':\n"
+           "        return {'action': 'block', 'message': 'read the record first'}\n    return {'action': 'continue'}\n")
+
+
+def test_it6_29_a_v1_package_under_the_default_agent_makes_the_same_calls_as_the_host_loop(tmp_path):
+    """IT6-29 / PR7-08 (M1 §1 默认 agent 即种子包): on the same World with the same scripted actor, the default agent
+    under the runner shell issues the tool-call sequence of agent.loop.Agent, the same final message and turn count,
+    and the same (kind, name) sequence of model turns, tool calls, hook answers, blocks, skips and pushbacks — a plain
+    task, a package whose on_finish hook pushes back once, a package with a tool whose base call goes through the
+    broker, and a package whose before_tool hook blocks a call and so skips the rest of the turn."""
+    cases = {
+        "plain": ({}, {}, rsi.BusinessWorker, NOTIFY_TASK),
+        "on_finish": ({"middlewares/guard.py": FINISH_GUARD},
+                      {"hooks": [{"name": "guard", "site": "on_finish", "entrypoint": "middlewares/guard.py:run"}]},
+                      rsi.BusinessWorker, NOTIFY_TASK),
+        "tool": ({"tools/paged.py": "def run(ctx, args):\n    r = ctx.call_tool('api_search', {'q': args.get('q', '')})\n"
+                                    "    return 'paged: ' + r.output\n"},
+                 {"tools": [{"name": "paged_search", "description": "search every page",
+                             "input_schema": {"type": "object", "properties": {"q": {"type": "string"}}},
+                             "entrypoint": "tools/paged.py:run"}]},
+                 lambda: Scripted([ChatTurn("", [ToolCall("c1", "paged_search", {"q": "x"})], "tool_use"),
+                                   ChatTurn("done", [], "end")]), "find x"),
+        "before_tool": ({"middlewares/b.py": BLOCKER},
+                        {"hooks": [{"name": "b", "site": "before_tool", "entrypoint": "middlewares/b.py:run"}]},
+                        lambda: Scripted([ChatTurn("", [ToolCall("a", "api_search", {"q": "r"}),
+                                                        ToolCall("b", "api_fetch", {"url": "u", "method": "POST"}),
+                                                        ToolCall("c", "api_search", {"q": "after"})], "tool_use"),
+                                          ChatTurn("stop", [], "end")]), "do it"),
+    }
+    for name, (files, manifest, provider, task) in cases.items():
+        old_world, new_world = World(), World()
+        bound, _ = bound_with(tmp_path / name / "old", files, manifest)
+        old = agent_for(tmp_path / name / "old", bound, old_world, provider())
+        old_result = old.run(task)
+        bound, _ = bound_with(tmp_path / name / "new", files, manifest)
+        new = shell_agent(tmp_path / name / "new", bound, new_world, provider())
+        new_result = new.run(task)
+        assert new_world.calls == old_world.calls, name
+        assert new_result.text == old_result.text and new_result.turns == old_result.turns, name
+        old_events, new_events = transcript(tmp_path / name / "old", old), transcript(tmp_path / name / "new", new)
+        assert trace(new_events) == trace(old_events), (name, trace(new_events), trace(old_events))
+        if name != "before_tool":           # a block is the one event the two loops write under different kinds
+            assert kinds(new_events) == kinds(old_events), name
+        if name == "on_finish":
+            assert new_world.calls == [("api_fetch", {"method": "PATCH", "url": rsi.HUBSPOT,
+                                                      "body": '{"id": "c1", "stage": "opportunity"}'}),
+                                       ("api_fetch", {"method": "POST", "url": rsi.SLACK,
+                                                      "body": '{"channel": "C1", "text": "deal moved for the contact"}'})]
+            pushes = [e for e in new_events if e["kind"] == "pushback"]
+            assert len(pushes) == 1 and pushes[0]["source"] == "package"
+            assert [e["action"] for e in new_events if e["kind"] == "hook"] == ["block", "continue"]
+        if name == "tool":
+            assert trace(new_events) == [("assistant", "tool_use"), ("tool", "api_search"), ("assistant", "end")]
+            assert [e["tool"] for e in new_events if e["kind"] == "package_tool"] == ["paged_search"]
+        if name == "before_tool":
+            assert new_world.calls == [("api_search", {"q": "r"})]       # the prefix ran, the block and the rest not
+            assert trace(new_events) == [("assistant", "tool_use"), ("hook", "b", "continue"), ("tool", "api_search"),
+                                         ("hook", "b", "block"), ("tool_blocked", "api_fetch"),
+                                         ("tool_skipped", "api_search"), ("assistant", "end")]
+            assert [e["source"] for e in new_events if e["kind"] in ("tool_blocked", "tool_skipped")] == ["package"] * 2
+        # the default agent of a package with code ran in the worker; the host wrote the session's cost
+        assert (new.placement == "worker") == bool(files)
+        assert bool([e for e in new_events if e["kind"] == "worker_session"]) == bool(files)
+
+
+def test_it6_29_an_agent_component_runs_in_the_worker_and_every_model_and_tool_call_goes_through_the_host(tmp_path):
+    """IT6-29 / PR7-02 / PR7-03 / PR7-12 (M0 §2 轨迹记录, gateway_call.v1 / broker_event.v1): a v2 package's agent runs
+    in the worker; one ctx.model and one ctx.tool give exactly one `gateway_call` and one `broker_event`, host-written,
+    each naming the attempt and the gateway line the pinned model's identity; the `assistant` event carries role,
+    effort and the host's call id; the gateway's `tools` are names with schema digests and the full specs are one
+    `tool_specs` line written once; the view's base tools are `base_tools`; what the package reports through
+    ctx.mark under a host kind's name lands as a labelled `package_mark`; and the gateway's prefix/tail is the
+    agent's own history, reconstructible."""
+    agent = ("def run(ctx, task):\n"
+             "    assert 'tools' not in ctx.view and [t['name'] for t in ctx.view['base_tools']] == ['api_search', 'api_fetch']\n"
+             "    turn = ctx.model([{'role': 'system', 'content': ctx.view['system']}, {'role': 'user', 'content': task}],"
+             " tools=[{'name': 'api_search', 'description': 's', 'schema': {'type': 'object'}}])\n"
+             "    out = ctx.tool('api_search', {'q': turn.text})\n"
+             "    ctx.mark('gateway_call', forged=True)\n"
+             "    return 'final ' + out.output + ' ' + str(ctx.limits['act_calls'])\n")
+    bound, _ = v2_bound(tmp_path, agent)
+    world = World()
+    provider = Scripted([ChatTurn("hello", [], "end")], usage={"input_tokens": 10, "output_tokens": 3})
+    shell = shell_agent(tmp_path, bound, world, provider)
+    shell.session_meta["attempt_id"] = "run/t1/0"                    # what run_attempt sets before run()
+    result = shell.run("do x")
+    assert shell.placement == "worker"
+    assert result.text == "final api_search ok 7" and result.turns == 1 and result.stop == "end"
+    events = transcript(tmp_path, shell)
+    gateway = [e for e in events if e["kind"] == "gateway_call"]
+    broker = [e for e in events if e["kind"] == "broker_event"]
+    assert len(gateway) == 1 and len(broker) == 1 and world.calls == [("api_search", {"q": "hello"})]
+    (assistant,) = [e for e in events if e["kind"] == "assistant"]
+    assert assistant["role"] == "act" and assistant["effort"] is None and assistant["requested_effort"] is None
+    assert assistant["call_id"].startswith(shell.session + ":") and assistant["call_id"] == gateway[0]["call_id"]
+    assert assistant["usage"] == {"input_tokens": 10, "output_tokens": 3} and assistant["seq"] == 1
+    assert gateway[0]["attempt_id"] == "run/t1/0" and broker[0]["attempt_id"] == "run/t1/0"
+    assert gateway[0]["model_identity_ref"] is None                 # this fixture release pins no actor
+    assert gateway[0]["messages_prefix"] == 0
+    (spec,) = gateway[0]["tools"]
+    assert spec["name"] == "api_search" and len(spec["schema_digest"]) == 16
+    (specs,) = [e for e in events if e["kind"] == "tool_specs"]
+    assert specs["attempt_id"] == "run/t1/0" and specs["specs"] == [{"name": "api_search", "description": "s",
+                                                                      "schema": {"type": "object"}}]
+    assert gateway[0]["messages_tail"] == [{"role": "system", "content": provider.seen[0][0]},
+                                           {"role": "user", "content": "do x"}]
+    assert gateway[0]["response"] == {"text": "hello", "tool_calls": [], "stop": "end"}
+    assert broker[0]["after_call_id"] == gateway[0]["call_id"] and broker[0]["tool"] == "api_search"
+    assert broker[0]["gate"] == {"decision": "run"} and broker[0]["output_chars"] == len("api_search ok")
+    (forged,) = [e for e in events if e["kind"] == "package_mark"]
+    assert forged["mark"] == "gateway_call" and forged["source"] == "package" and forged["forged"] is True
+    assert "native" not in json.dumps(events)
+    assert [e["kind"] for e in events if e["kind"] in ("tool", "skill_read")] == ["tool"]
+
+
+def test_the_gateway_names_the_pinned_models_identity_and_writes_the_tool_specs_once_per_change(tmp_path):
+    """M0 §2 gateway_call.v1: `model_identity_ref` is the bound release's actor identity (its content ref), and the
+    tool list's full specs are written as `tool_specs` on the first call and again only when the list changes."""
+    from ouroloop.agent.gateway import Gateway
+    agent = ("def run(ctx, task):\n    a = [{'name': 'api_search', 'schema': {'type': 'object'}}]\n"
+             "    b = a + [{'name': 'api_fetch', 'schema': {'type': 'object'}}]\n"
+             "    for tools in (a, a, b, a):\n        ctx.model([{'role': 'user', 'content': task}], tools=tools)\n"
+             "    return 'done'\n")
+    bound, objects = v2_bound(tmp_path, agent)
+    identity = ct.ModelIdentity(role="actor", provider="scripted", base_model="s", inference_ref=objects.put_json("change", {}))
+    bound.actor_identity = identity
+    shell = shell_agent(tmp_path, bound, World(), Scripted([ChatTurn("x", [], "end")]), budget=Budget(max_steps=8, max_tool_calls=4))
+    assert shell.run("t").text == "done"
+    events = transcript(tmp_path, shell)
+    assert {e["model_identity_ref"] for e in events if e["kind"] == "gateway_call"} == {identity.ref()}
+    specs = [[s["name"] for s in e["specs"]] for e in events if e["kind"] == "tool_specs"]
+    assert specs == [["api_search"], ["api_search", "api_fetch"], ["api_search"]]
+    digests = [[t["schema_digest"] for t in e["tools"]] for e in events if e["kind"] == "gateway_call"]
+    assert digests[0] == digests[1] == digests[3] and len(digests[2]) == 2
+    assert isinstance(shell.gateway, Gateway) and shell.gateway.model_identity_ref == identity.ref()
+
+
+def test_it6_30_the_host_asks_no_decision_point_the_gateway_records_what_the_agent_sent_and_stop_is_return_or_a_hard_limit(tmp_path):
+    """IT6-30 (M1 §1 网关 / 宿主不问决策): the gateway neither compacts nor rewrites the messages — an appending
+    agent's second call is recorded as the prefix it shares with the first plus its tail, and the two lines rebuild
+    the full history exactly as sent; the host asks no decision point (no decision ids, no decision or observation
+    record, no stop question); and the attempt ends in two ways only: the agent's return is termination `finished`
+    with the last act call's stop, and a hard limit is `budget` naming its dimension."""
+    agent = ("def run(ctx, task):\n"
+             "    messages = [{'role': 'user', 'content': task}]\n"
+             "    first = ctx.model(messages)\n"
+             "    messages.append({'role': 'assistant', 'text': first.text, 'tool_calls': []})\n"
+             "    messages.append({'role': 'user', 'content': 'and then?'})\n"
+             "    return ctx.model(messages).text\n")
+    bound, _ = v2_bound(tmp_path, agent)
+    shell = shell_agent(tmp_path, bound, World(), Scripted([ChatTurn("one", [], "end"), ChatTurn("two", [], "end")]))
+    result = shell.run("q")
+    assert (result.text, result.stop, result.limit) == ("two", "end", None)
+    events = transcript(tmp_path, shell)
+    gateway = [e for e in events if e["kind"] == "gateway_call"]
+    assert [g["messages_prefix"] for g in gateway] == [0, 1]
+    full = gateway[0]["messages_tail"][:gateway[1]["messages_prefix"]] + gateway[1]["messages_tail"]
+    assert full == [{"role": "user", "content": "q"}, {"role": "assistant", "text": "one", "tool_calls": []},
+                    {"role": "user", "content": "and then?"}]
+    assert shell.decision_ids() == [] and shell.harness()["stop"] == {"point": "return_or_limit", "max_pushbacks": 2}
+    assert not [e for e in events if e["kind"] in ("decision", "observation", "stop")]
+    assert events[-1]["kind"] == "end" and events[-1]["stop"] == "end" and "limit" not in events[-1]
+    # the same agent under one act call: the second call is refused before the model, the attempt is `budget`
+    bound, _ = v2_bound(tmp_path / "limit", agent)
+    provider = Scripted([ChatTurn("one", [], "end"), ChatTurn("two", [], "end")])
+    shell = shell_agent(tmp_path / "limit", bound, World(), provider, budget=Budget(max_steps=1, max_tool_calls=4))
+    result = shell.run("q")
+    assert (result.text, result.stop, result.limit) == ("", "act_calls", "act_calls") and provider.n == 1
+    assert transcript(tmp_path / "limit", shell)[-1]["limit"] == "act_calls"
+
+
+def test_effort_above_max_effort_is_capped_on_the_record_and_the_request_is_kept(tmp_path):
+    """PR7-04 (M0 §2): `effort="max"` under K's max_effort "high" is sent at "high" and recorded as effort "high",
+    requested_effort "max"; a call with no request runs at the provider's own tier; a provider whose chat has no
+    `effort` parameter is never handed one."""
+    agent = ("def run(ctx, task):\n    a = ctx.model([{'role': 'user', 'content': task}], effort='max')\n"
+             "    b = ctx.model([{'role': 'user', 'content': task}])\n    return a.text + b.text\n")
+    bound, _ = v2_bound(tmp_path, agent)
+    provider = EffortAware([ChatTurn("a", [], "end"), ChatTurn("b", [], "end")], effort="medium")
+    shell = shell_agent(tmp_path, bound, World(), provider, max_effort="high")
+    assert shell.run("t").text == "ab" and provider.efforts == ["high", None]
+    assistants = [e for e in transcript(tmp_path, shell) if e["kind"] == "assistant"]
+    assert [(e["effort"], e["requested_effort"]) for e in assistants] == [("high", "max"), ("medium", None)]
+    gateway = [e for e in transcript(tmp_path, shell) if e["kind"] == "gateway_call"]
+    assert [(e["effort"], e["requested_effort"]) for e in gateway] == [("high", "max"), ("medium", None)]
+    # the three-argument fixture provider: no keyword, the request still on the record
+    bound, _ = v2_bound(tmp_path / "plain", agent)
+    plain = Scripted([ChatTurn("a", [], "end"), ChatTurn("b", [], "end")])
+    shell = shell_agent(tmp_path / "plain", bound, World(), plain, max_effort="high")
+    assert shell.run("t").text == "ab"
+    assistants = [e for e in transcript(tmp_path / "plain", shell) if e["kind"] == "assistant"]
+    assert [(e["effort"], e["requested_effort"]) for e in assistants] == [("high", "max"), (None, None)]
+
+
+def test_an_undeclared_role_is_refused_by_the_gateway_without_a_model_call_and_recorded(tmp_path):
+    """PR7-04 (M1 §1 网关): a role the manifest does not declare is answered as an error the agent may catch, the
+    model is not called, and the host records the refusal as a protocol event."""
+    agent = ("def run(ctx, task):\n    try:\n        ctx.model([{'role': 'user', 'content': task}], role='aux')\n"
+             "    except RuntimeError as e:\n        return 'refused: ' + str(e)\n    return 'unreachable'\n")
+    bound, _ = v2_bound(tmp_path, agent, roles=("act",))
+    provider = Scripted([ChatTurn("never", [], "end")])
+    shell = shell_agent(tmp_path, bound, World(), provider)
+    result = shell.run("t")
+    assert result.text.startswith("refused: role 'aux' is not declared") and provider.n == 0
+    events = transcript(tmp_path, shell)
+    assert [e["kind"] for e in events if e["kind"] in ("protocol", "assistant", "gateway_call")] == ["protocol"]
+
+
+class Capturing(ProcessWorker):
+    """ProcessWorker that keeps the sessions it started, so a test can see the worker is gone."""
+
+    def __init__(self):
+        super().__init__(for_tests=True)
+        self.sessions = []
+
+    def start(self):
+        session = super().start()
+        self.sessions.append(session)
+        return session
+
+
+def test_each_hard_limit_ends_the_attempt_as_budget_and_names_itself_and_the_worker_is_gone(tmp_path):
+    """PR7-05 / EX6-16 (M0 §2 单次尝试硬上限, M5 §2): an agent looping on ctx.model under max_steps 2 ends with
+    limit act_calls (the third act call is refused before the model is called), one looping on aux calls under
+    max_model_calls 3 with limit model_calls, one whose replies cross max_tokens with limit tokens; the final
+    message is empty, the worker session is closed, and the TaskResult of such an attempt is a valid `budget`."""
+    looping = "def run(ctx, task):\n    while True:\n        ctx.model([{'role': 'user', 'content': task}])\n"
+    aux = ("def run(ctx, task):\n    ctx.model([{'role': 'user', 'content': task}])\n"
+           "    while True:\n        ctx.model([{'role': 'user', 'content': task}], role='aux')\n")
+    cases = [("act", looping, ("act",), Budget(max_steps=2, max_tool_calls=12), {}, "act_calls", 2),
+             ("model", aux, ("act", "aux"), Budget(max_steps=50, max_tool_calls=12, max_model_calls=3), {},
+              "model_calls", 3),
+             ("tokens", looping, ("act",), Budget(max_steps=50, max_tool_calls=12, max_tokens=150),
+              {"output_tokens": 100}, "tokens", 2)]
+    for name, code, roles, budget, usage, limit, calls in cases:
+        bound, _ = v2_bound(tmp_path / name, code, roles=roles)
+        provider = Scripted([ChatTurn("x", [], "end")], usage=usage)
+        worker = Capturing()
+        shell = shell_agent(tmp_path / name, bound, World(), provider, budget=budget, worker=worker)
+        result = shell.run("t")
+        assert (result.text, result.limit, result.stop) == ("", limit, limit), name
+        assert provider.n == calls, (name, provider.n)              # the refused call never reached the model
+        assert all(s.proc.poll() is not None for s in worker.sessions), name
+        events = transcript(tmp_path / name, shell)
+        assert events[-2]["kind"] == "worker_session"                 # the session closed before the attempt's end
+        assert events[-1] == {**events[-1], "kind": "end", "stop": limit, "limit": limit}
+        assert len([e for e in events if e["kind"] == "gateway_call"]) == calls
+
+
+def test_it6_43_a_crash_at_run_time_is_infrastructure_a_crash_in_the_draft_check_is_a_draft_failure_and_a_hard_limit_is_budget(fake_upstream, tmp_path):
+    """IT6-43 / PR7-06 (M1 §1 失败语义): through run_attempt, an agent that loops ends as termination `budget` with
+    `limit` act_calls — a valid attempt, scored, never `step_limit` — and an agent that raises in `run` is an invalid
+    attempt of failure_class infrastructure, not candidate_defect; the same crashing code in the draft check is an
+    `agent_smoke` problem of the draft (a revision, PackageCallError's CandidateDefect kind), and the three never
+    stand in for one another."""
+    from ouroloop.agent.worker import AgentRunError, check_package
+    suite, splits = rsi.suite(fake_upstream), rsi.splits(rsi.suite(fake_upstream))
+    looping = "def run(ctx, task):\n    while True:\n        ctx.model([{'role': 'user', 'content': task}])\n"
+    crashing = "def run(ctx, task):\n    raise KeyError('nope')\n"
+    for name, code in (("loop", looping), ("crash", crashing)):
+        bound, objects = v2_bound(tmp_path / name, code)
+        manifest = rsi.run_manifest("c", "evolved", "train", budget=Budget(max_steps=2, max_tool_calls=12),
+                                    data=splits.hash())
+        factory = make_agent_factory(rsi.runtime(tmp_path / name), Scripted([ChatTurn("x", [], "end")]),
+                                     budget=manifest.budget, bound=bound, worker=ProcessWorker(for_tests=True),
+                                     max_effort="high")
+        attempt = run_attempt(suite, "rsi.update_stage", factory, run=manifest, splits=splits)
+        try:
+            r = attempt.result
+            if name == "loop":
+                assert (r.validity, r.termination, r.limit, r.stop) == ("valid", "budget", "act_calls", "act_calls")
+                assert r.steps == 2 and r.success is False and r.failure_class == "task_outcome"
+            else:
+                assert (r.validity, r.termination, r.failure_class) == ("invalid", "harness_error", "infrastructure")
+                assert "KeyError" in r.invalid_reason and r.limit is None
+        finally:
+            if attempt.episode is not None:
+                attempt.episode.close()
+    # the same crash in the draft check: the draft's failure, charged to the draft, never infrastructure
+    assert check_package(ProcessWorker(for_tests=True), {"agent/main.py": crashing}, AGENT_MANIFEST,
+                         fixture=World()) == ["agent_smoke: KeyError: 'nope'"]
+    assert issubclass(PackageCallError, ct.CandidateDefect) and not issubclass(AgentRunError, ct.CandidateDefect)
+    assert not issubclass(LimitHit, (ct.CandidateDefect, AgentRunError, WorkerCrashed))
+
+
+def test_the_tool_calls_and_seconds_limits_end_the_attempt_through_the_shell_and_the_refusal_is_on_record(tmp_path):
+    """PR7-05 (M0 §2 单次尝试硬上限, M5 §2) for the two limits the surface counts: an agent looping on ctx.tool under
+    max_tool_calls 3 ends with limit tool_calls after the surface refuses the fourth call — recorded as a broker event
+    whose gate says refused for budget, not run — and an agent that outlives max_seconds ends with limit seconds,
+    whether the gateway finds the clock past the limit or the host's deadline ends the worker; the world keeps what
+    ran before."""
+    import time
+    tools = "def run(ctx, task):\n    while True:\n        ctx.tool('api_search', {'q': 'again'})\n"
+    bound, _ = v2_bound(tmp_path / "tools", tools)
+    world = World()
+    shell = shell_agent(tmp_path / "tools", bound, world, Scripted([ChatTurn("x", [], "end")]),
+                        budget=Budget(max_steps=8, max_tool_calls=3))
+    result = shell.run("t")
+    assert (result.text, result.limit, result.stop) == ("", "tool_calls", "tool_calls")
+    assert world.calls == [("api_search", {"q": "again"})] * 3           # the fourth never reached the world
+    events = transcript(tmp_path / "tools", shell)
+    broker = [e for e in events if e["kind"] == "broker_event"]
+    assert [b["gate"]["decision"] for b in broker] == ["run"] * 3 + ["refused"]
+    assert broker[-1]["gate"] == {"decision": "refused", "reason": "budget", "limit": "tool_calls"} and broker[-1]["is_error"]
+    assert events[-1]["limit"] == "tool_calls"
+    slow = ("import time\ndef run(ctx, task):\n    ctx.tool('api_search', {'q': 'first'})\n    time.sleep(2.5)\n"
+            "    ctx.model([{'role': 'user', 'content': task}])\n    return 'late'\n")
+    bound, _ = v2_bound(tmp_path / "seconds", slow)
+    world, provider = World(), Scripted([ChatTurn("x", [], "end")])
+    shell = shell_agent(tmp_path / "seconds", bound, world, provider,
+                        budget=Budget(max_steps=8, max_tool_calls=12, max_seconds=1.0))
+    t0 = time.monotonic()
+    result = shell.run("t")
+    assert (result.text, result.limit, result.stop) == ("", "seconds", "seconds")
+    assert provider.n == 0 and world.calls == [("api_search", {"q": "first"})] and time.monotonic() - t0 < 10
+    assert transcript(tmp_path / "seconds", shell)[-1]["limit"] == "seconds"
+
+
+def test_effort_reaches_the_provider_through_the_meter_and_the_metered_call_is_booked(tmp_path):
+    """PR7-04 (M0 §2 / M5 §2): in the bench the gateway's provider is a MeteredProvider; the per-call `effort` passes
+    through it to the provider that takes it, already capped at K's max_effort, and every call the gateway makes is
+    one reserved and settled metered call."""
+    from ouroloop.evolve.execution import Budgets, MeteredProvider, Pricing
+    agent = ("def run(ctx, task):\n    a = ctx.model([{'role': 'user', 'content': task}], effort='max')\n"
+             "    b = ctx.model([{'role': 'user', 'content': task}], effort='low')\n"
+             "    c = ctx.model([{'role': 'user', 'content': task}])\n    return a.text + b.text + c.text\n")
+    bound, _ = v2_bound(tmp_path, agent)
+    inner = EffortAware([ChatTurn("a", [], "end"), ChatTurn("b", [], "end"), ChatTurn("c", [], "end")], effort="medium")
+    account = Budgets(tmp_path / "budgets").account("run", {"usd": 10.0, "model_calls": 10})
+    metered = MeteredProvider(inner, account, Pricing(0.003, 0.015, 4000, 1000, source="snapshot"), max_retries=0)
+    shell = shell_agent(tmp_path, bound, World(), metered, max_effort="high")
+    assert shell.run("t").text == "abc"
+    assert inner.efforts == ["high", "low", None] and metered.calls == 3
+    assert [r.status for r in metered.receipts] == ["settled"] * 3
+    assert account.remaining()["used"]["model_calls"] == 3.0
+    gateway = [e for e in transcript(tmp_path, shell) if e["kind"] == "gateway_call"]
+    assert [(e["effort"], e["requested_effort"]) for e in gateway] == [("high", "max"), ("low", "low"), ("medium", None)]
+
+
+def test_the_v02_w_star_shape_runs_under_the_default_agent_in_the_worker(tmp_path):
+    """PR7-08 / IT6-29 (M0 §1: a v1 package is a v2 package with the default agent): memory.md plus an on_finish
+    middleware, a v1 manifest, runs in the worker with the default agent added to the loaded bundle; the hook's
+    block is a pushback, the message the request asked for is sent, and the package's ref is what it was."""
+    files = {"memory.md": "Check the whole request before finishing.", "middlewares/guard.py": FINISH_GUARD}
+    manifest = {"memory": {"enabled": True},
+                "hooks": [{"name": "guard", "site": "on_finish", "entrypoint": "middlewares/guard.py:run"}]}
+    bound, objects = bound_with(tmp_path, files, manifest)
+    assert bound.package.api_version == "harness_package.v1" and bound.package.agent is None
+    ref_before = bound.package.ref
+    world = World()
+    shell = shell_agent(tmp_path, bound, world, rsi.BusinessWorker())
+    assert shell.placement == "worker" and shell.entry == "agent/default_agent.py:run"
+    result = shell.run(NOTIFY_TASK)
+    assert [a.get("url") for _, a in world.calls] == [rsi.HUBSPOT, rsi.SLACK]
+    assert result.text.startswith("Done") and result.turns == 4       # update, finish (pushed back), post, finish
+    events = transcript(tmp_path, shell)
+    assert [e["action"] for e in events if e["kind"] == "hook"] == ["block", "continue"]
+    assert [e["source"] for e in events if e["kind"] == "pushback"] == ["package"]
+    assert "Check the whole request" in [e for e in events if e["kind"] == "gateway_call"][0]["messages_tail"][0]["content"]
+    assert bound.package.ref == ref_before and "agent/default_agent.py" not in bound.package.run_files
+    assert bound.activity.to_json()["executed"]["worker.harness"] == {"hook:guard": 2}
+
+
+def test_a_text_only_v1_package_runs_in_process_and_its_records_match_the_worker_placement(tmp_path):
+    """PR7-07 (M1 §1 默认 agent 即种子包): a package of memory and a skill runs the default agent in the host process
+    over the same gateway and broker; forced into the worker, the same package produces the same record kinds in the
+    same order (ids, times and the worker's own session cost aside), and the skill read is a host-written event."""
+    files = {"memory.md": "notes", "skills/check.md": rsi.FINISH_CHECK_MARK + " before you finish."}
+    manifest = {"memory": {"enabled": True}, "skills": [{"name": "check", "path": "skills/check.md",
+                                                         "description": "the finish check"}]}
+    runs = {}
+    for placement in ("host", "worker"):
+        bound, _ = bound_with(tmp_path / placement, files, manifest)
+        world = World()
+        shell = shell_agent(tmp_path / placement, bound, world, rsi.BusinessWorker(), placement=placement)
+        if placement == "host":
+            assert shell.placement == "host"            # the package's own choice: no code, no worker
+        result = shell.run(NOTIFY_TASK)
+        assert [a.get("url") for _, a in world.calls] == [rsi.HUBSPOT, rsi.SLACK], placement
+        runs[placement] = (result, [e for e in transcript(tmp_path / placement, shell)
+                                    if e["kind"] != "worker_session"])
+    host, worker = runs["host"], runs["worker"]
+    assert host[0].text == worker[0].text and host[0].turns == worker[0].turns == 4
+    assert [e["kind"] for e in host[1]] == [e["kind"] for e in worker[1]]
+    reads = [e for e in host[1] if e["kind"] == "skill_read"]
+    assert reads == [{**reads[0], "name": "check", "found": True}]
+    tools = [e for e in host[1] if e["kind"] == "tool"]
+    assert tools[0]["name"] == "read_skill" and tools[0]["output"].startswith(rsi.FINISH_CHECK_MARK)
+    assert [e["kind"] for e in host[1]].count("worker_session") == 0
+    assert any(e["kind"] == "worker_session" for e in transcript(tmp_path / "worker", shell))
+
+
+def test_a_hooks_broker_calls_are_read_only_under_the_default_agent(tmp_path):
+    """PR6-12 under the runner shell (M1 §1 broker): a before_tool hook that tries to write through its ctx is refused
+    by the broker, the refusal is on the host's record, and the world is unchanged by it."""
+    hook = ("def run(ctx, event):\n    r = ctx.call_tool('api_fetch', {'url': 'u', 'method': 'POST'})\n"
+            "    return {'action': 'feedback', 'message': 'hook saw: ' + r.output[:40]}\n")
+    bound, _ = bound_with(tmp_path, {"middlewares/w.py": hook},
+                          {"hooks": [{"name": "w", "site": "before_tool", "entrypoint": "middlewares/w.py:run"}]})
+    world = World()
+    provider = Scripted([ChatTurn("", [ToolCall("a", "api_search", {"q": "r"})], "tool_use"), ChatTurn("done", [], "end")])
+    shell = shell_agent(tmp_path, bound, world, provider)
+    assert shell.run("look").text == "done" and world.calls == []        # the hook blocked the call; its write never ran
+    events = transcript(tmp_path, shell)
+    (hook_event,) = [e for e in events if e["kind"] == "hook"]
+    assert hook_event["action"] == "feedback" and hook_event["broker_calls"] == [{"tool": "api_fetch", "is_error": True}]
+    (refused,) = [e for e in events if e["kind"] == "broker_event"]
+    assert refused["gate"] == {"decision": "refused", "reason": "writes"} and refused["is_error"]
+    assert provider.seen[1][1][-1]["results"][0]["output"].startswith("Stopped before execution: hook saw: a hook may only")
+
+
+def test_the_gateway_pre_checks_the_act_limit_before_calling_the_provider():
+    """M5 §2: the limit is checked before the call, so the refused call costs nothing; the snapshot counts down."""
+    calls = []
+
+    class P:
+        name, model = "p", "p"
+
+        def chat(self, system, messages, specs):
+            calls.append(messages)
+            return ChatTurn("ok", [], "end", usage={"output_tokens": 5})
+    records = []
+    gw = Gateway(P(), roles=("act",), max_effort="high", budget=Budget(max_steps=1, max_tool_calls=3, max_tokens=50),
+                 record=lambda kind, data: records.append(kind))
+    snapshot = gw.limits()
+    assert snapshot.pop("seconds") in (899, 900)                      # whole seconds left, floored
+    assert snapshot == {"act_calls": 1, "model_calls": None, "tool_calls": None, "tokens": 50}
+    reply = gw.model([{"role": "user", "content": "x"}], [], "act")
+    assert reply["limits"]["act_calls"] == 0 and reply["limits"]["tokens"] == 45 and len(calls) == 1
+    with pytest.raises(LimitHit) as info:
+        gw.model([{"role": "user", "content": "x"}], [], "act")
+    assert info.value.limit == "act_calls" and len(calls) == 1
+    assert records == ["assistant", "tool_specs", "gateway_call"]      # the tool list once, with its first call
+
+
+def test_a_v2_package_binds_under_the_v2_builtin_and_its_release_names_the_capability(tmp_path):
+    """M0 §1 (v0.3): the worker.harness built-in is the package's own API, so default_worker_set and the draft
+    check choose v1/v2 from the manifest; a candidate release pinning a v2 package names `harness_package.v2` in
+    required_capabilities, and a v2 package declared as v1 is refused at binding."""
+    from ouroloop.release import Releases, required_capabilities_of
+    objects = ct.Objects(tmp_path)
+    v1 = hp.build_package(objects, {"manifest.json": json.dumps(hp.empty_manifest())}, CODE)
+    v2 = package(objects, {"agent/main.py": AGENT}, {"api_version": hp.AGENT_API_VERSION,
+                                                       "agent": {"entrypoint": "agent/main.py:run", "roles": ["act"]}})
+    assert P.package_builtin(objects, v1) == "harness_package.v1" and P.package_builtin(objects, v2) == "harness_package.v2"
+    w1 = P.default_worker_set(objects, finish_check=rsi.W0_FINISH, package_ref=v1)
+    w2 = P.default_worker_set(objects, finish_check=rsi.W0_FINISH, package_ref=v2)
+    assert required_capabilities_of(objects, ("generation", "harness_package.v1"), w1) == ("generation", "harness_package.v1")
+    assert required_capabilities_of(objects, ("generation", "harness_package.v1"), w2) == \
+        ("generation", "harness_package.v1", "harness_package.v2")
+    assert required_capabilities_of(objects, None, w2) is None                 # a v2 release declares none
+    targets = (*P.targets_of("worker"), "worker.harness", *P.targets_of("research"))
+    releases, rel, objects = rsi.workspace(tmp_path, worker_ref=w1, targets=targets)
+    parent = ct.SystemRelease.from_json(objects.get(rel))
+    booted = releases.bootstrap(w1, parent.research_ref, parent.core_ref, activate=False,
+                                required_capabilities=("generation", "harness_package.v1"))
+    candidate = releases.candidate_release(booted, w2, permit_ref=objects.put_json("change", {"permit": 1}))
+    assert "harness_package.v2" in ct.SystemRelease.from_json(objects.get(candidate)).required_capabilities
+    assert isinstance(releases, Releases)
+    mislabelled = P.policy_set(objects, "worker", [
+        *(objects.load(r, ct.PolicyDescriptor) for r in objects.load(w1, ct.PolicySet).policies
+          if objects.load(r, ct.PolicyDescriptor).target != "worker.harness"),
+        P.descriptor(objects, "worker.harness", "workflow", {"builtin": "harness_package.v1", "package_ref": v2})])
+    bad = releases.bootstrap(mislabelled, parent.research_ref, parent.core_ref, activate=False)
+    with pytest.raises(P.BindError, match="the built-in is the package's own API"):
+        P.bind_release(bad, profile="task", services=P.Services(objects))
+
+
+# ---------------------------------------------------------------------------- v0.3 slice C review: the host's checks on what it is handed
+def test_a_malformed_model_call_is_answered_as_an_error_the_agent_may_catch_and_never_raised_on_the_host(tmp_path):
+    """gateway.malformed (M1 §1 网关, as base_call_handler already does for a tool call): a model call whose tools or
+    messages are not the protocol's shapes — a tool given as a bare string, a message that is not an object, a tool
+    entry without results — is answered {is_error, error, limits} and recorded as a protocol event; the model is not
+    called, the attempt is not infrastructure, and the agent goes on."""
+    agent = ("def run(ctx, task):\n    seen = []\n"
+             "    for messages, tools in (([{'role': 'user', 'content': task}], ['api_search']),"
+             " (['hello'], []), ([{'role': 'tool'}], []),"
+             " ([{'role': 'assistant', 'text': '', 'tool_calls': [{'name': 'x', 'args': 'no'}]}], []),"
+             " ([{'role': 'user', 'content': task}], [{'name': 'api_search', 'schema': 'no'}])):\n"
+             "        try:\n            ctx.model(messages, tools=tools)\n            seen.append('called')\n"
+             "        except RuntimeError as e:\n            seen.append(str(e)[:40])\n"
+             "    return ' | '.join(seen) + ' | ' + ctx.model([{'role': 'user', 'content': task}]).text\n")
+    bound, _ = v2_bound(tmp_path, agent)
+    provider = Scripted([ChatTurn("fine", [], "end")])
+    shell = shell_agent(tmp_path, bound, World(), provider)
+    result = shell.run("t")
+    assert result.text.endswith(" | fine") and "called" not in result.text and provider.n == 1
+    assert result.text.count("malformed model call: ") == 5
+    events = transcript(tmp_path, shell)
+    protocol = [e for e in events if e["kind"] == "protocol"]
+    assert len(protocol) == 5 and all(e["error"].startswith("malformed model call: ") for e in protocol)
+    assert protocol[0]["error"] == "malformed model call: tools[0] is an object with a string name, not str"
+    assert len([e for e in events if e["kind"] == "gateway_call"]) == 1
+    # in-process the same call is the same error, raised in the agent's hands as ModelCallError
+    from ouroloop.agent.gateway import Gateway, HostContext, ModelCallError
+    gw = Gateway(provider, roles=("act",), max_effort="high", budget=Budget(), record=lambda k, d: None)
+    assert gw.model([{"role": "user", "content": "x"}], ["api_search"])["is_error"]
+    assert gw.model(None, [])["is_error"] and gw.model([{"content": "no role"}], [])["is_error"]
+    assert gw.model([{"role": "assistant", "tool_calls": "nope"}], [])["is_error"]
+    assert gw.model([{"role": "tool", "results": [1]}], [])["is_error"]
+    ctx = HostContext(gw, broker=None, skills=None, marks=None, view={})
+    with pytest.raises(ModelCallError, match="malformed model call"):
+        ctx.model([{"role": "user", "content": "x"}], ["api_search"])
+
+
+def test_a_mark_cannot_set_the_records_own_fields(tmp_path):
+    """gateway.Marks (M0 §2 记录由宿主写): a package's mark data is stripped of `kind`, `ts`, `source` and `mark`
+    before it is written — a forged `kind` or `ts` would otherwise overwrite the host's in the line, since _emit
+    spreads the data last — so a hook mark with a forged time and label lands as a `hook` line with the host's time
+    and `source: "package"`, a mark of an unknown kind carrying `mark` keeps the kind it asked for, and a `kind` in
+    the data (reachable through the protocol, not the API) never reaches the record."""
+    agent = ("def run(ctx, task):\n"
+             "    ctx.mark('hook', hook='h', site='on_finish', action='continue', ts='1999', source='host')\n"
+             "    ctx.mark('note', mark='assistant', ts=0, text='mine')\n"
+             "    ctx.mark('pushback', reason='r', source='host')\n    return 'ok'\n")
+    bound, _ = v2_bound(tmp_path, agent)
+    shell = shell_agent(tmp_path, bound, World(), Scripted([ChatTurn("x", [], "end")]))
+    assert shell.run("t").text == "ok"
+    events = transcript(tmp_path, shell)
+    assert [e["kind"] for e in events] == ["task", "hook", "package_mark", "pushback", "worker_session", "end"]
+    assert [e["source"] for e in events if e["kind"] in ("hook", "package_mark", "pushback")] == ["package"] * 3
+    (hook,) = [e for e in events if e["kind"] == "hook"]
+    assert hook == {**hook, "hook": "h", "site": "on_finish", "action": "continue", "source": "package"}
+    assert hook["ts"] != "1999" and hook["ts"].endswith("Z")
+    (note,) = [e for e in events if e["kind"] == "package_mark"]
+    assert note["mark"] == "note" and note["text"] == "mine" and note["source"] == "package" and note["ts"] != 0
+    assert "forged" not in json.dumps(events) and json.dumps(events).count('"kind": "gateway_call"') == 0
+    from ouroloop.agent.gateway import Marks
+    records = []
+    Marks(lambda k, d: records.append((k, d))).mark("package_tool", {"tool": "t", "kind": "assistant", "mark": "x"})
+    assert records == [("package_tool", {"tool": "t", "source": "package"})]
+
+
+def test_the_worker_is_handed_only_the_events_after_a_tool_call_and_its_view_stays_whole(tmp_path):
+    """gateway.AttemptBroker.handler / worker_runner AgentContext._ask: a base_result carries the limits and the one
+    view key a tool call changes, `events`, which the worker merges into its view in place; the task, the base tools
+    and the package stay as `run` gave them, and a reference the agent keeps is current."""
+    agent = ("def run(ctx, task):\n    view = ctx.view\n    before = sorted(view)\n"
+             "    ctx.tool('api_search', {'q': 'a'})\n    ctx.tool('api_search', {'q': 'b'})\n"
+             "    return repr([before == sorted(ctx.view), view is ctx.view, [e['args'] for e in view['events']],"
+             " view['task'], [t['name'] for t in view['base_tools']], ctx.view['max_output_chars']])\n")
+    bound, _ = v2_bound(tmp_path, agent)
+    from ouroloop.agent.worker import WorkerLimits
+    worker = ProcessWorker(WorkerLimits(max_output_chars=777), for_tests=True)
+    shell = shell_agent(tmp_path, bound, World(), Scripted([ChatTurn("x", [], "end")]), worker=worker)
+    assert shell.run("the task").text == repr([True, True, [{"q": "a"}, {"q": "b"}], "the task",
+                                                ["api_search", "api_fetch"], 777])
+    # on the host side the base_result answer itself carries events only
+    from ouroloop.agent.gateway import AttemptBroker, Gateway
+    gw = Gateway(Scripted([]), roles=("act",), max_effort="high", budget=Budget(), record=lambda k, d: None)
+    view = {"task": "t", "base_tools": [], "events": []}
+    broker = AttemptBroker(World(), record=lambda k, d: None, gateway=gw, view=view)
+    session = ProcessWorker(for_tests=True).start()
+    try:
+        answer = broker.handler(session)({"op": "base_call", "id": "b1", "name": "api_search", "args": {"q": "x"}})
+    finally:
+        session.close(force=True)
+    assert set(answer) == {"op", "id", "output", "is_error", "limits", "view"} and set(answer["view"]) == {"events"}
+    assert answer["view"]["events"][0]["name"] == "api_search"
+
+
+def test_a_package_tools_output_is_clipped_at_ks_max_output_chars(tmp_path):
+    """default_agent._execute (M1 §1 broker): a package tool's output has the same bound as a base tool's —
+    WorkerLimits.max_output_chars, handed to the agent in ctx.view — not a constant of the agent's."""
+    from ouroloop.agent.worker import WorkerLimits
+    tool = "def run(ctx, args):\n    return 'y' * 5000\n"
+    manifest = {"tools": [{"name": "long", "description": "d", "entrypoint": "tools/l.py:run",
+                           "input_schema": {"type": "object", "properties": {}}}]}
+    provider = Scripted([ChatTurn("", [ToolCall("c1", "long", {})], "tool_use"), ChatTurn("done", [], "end")])
+    bound, _ = bound_with(tmp_path, {"tools/l.py": tool}, manifest)
+    worker = ProcessWorker(WorkerLimits(max_output_chars=120), for_tests=True)
+    shell = shell_agent(tmp_path, bound, World(), provider, worker=worker)
+    assert shell.run("t").text == "done"
+    (result_turn,) = [m for m in provider.seen[1][1] if m.get("role") == "tool"]
+    assert result_turn["results"][0]["output"] == "y" * 120
+    (mark,) = [e for e in transcript(tmp_path, shell) if e["kind"] == "package_tool"]
+    assert mark["tool"] == "long" and len(mark["output"]) == 120
+
+
+def test_the_failure_summary_reads_a_blocked_turn_from_the_gateway_log_and_not_the_hooks_own_reads(tmp_path):
+    """research.diagnosis.failure_summary (M4 §1) under the runner shell: a turn's results are what the model saw,
+    read from the gateway log — the executed call's output, the blocked call's "Stopped before execution", the
+    skipped call's "Not executed" — while the before_tool hook's own read through the broker is a `tool` event the
+    model never saw and is not attributed to it; the hook's answer and the block are events labelled the package's
+    report; and the error list names the blocked and skipped calls."""
+    from ouroloop.research import diagnosis as dg
+    hook = ("def run(ctx, event):\n    ctx.call_tool('api_search', {'q': 'hook-read'})\n"
+            "    if event['tool'] == 'api_fetch':\n        return {'action': 'block', 'message': 'read the record first'}\n"
+            "    return {'action': 'continue'}\n")
+    bound, _ = bound_with(tmp_path, {"middlewares/b.py": hook},
+                          {"hooks": [{"name": "b", "site": "before_tool", "entrypoint": "middlewares/b.py:run"}]})
+    provider = Scripted([ChatTurn("", [ToolCall("a", "api_search", {"q": "r"}),
+                                       ToolCall("b", "api_fetch", {"url": "u", "method": "POST"}),
+                                       ToolCall("c", "api_search", {"q": "after"})], "tool_use"),
+                         ChatTurn("I stopped.", [], "end")])
+    world = World()
+    shell = shell_agent(tmp_path, bound, world, provider)
+    assert shell.run("do it").text == "I stopped."
+    events = transcript(tmp_path, shell)
+    assert [e["name"] for e in events if e["kind"] == "tool"] == ["api_search", "api_search", "api_search"]  # 2 hook reads + 1
+
+    class Row:
+        task_id = family_id = "t1"
+        split, success, validity, termination, partial_credit, evidence, attempt_id = \
+            "train", False, "valid", "finished", 0.0, "", "a/t1"
+    s = dg.failure_summary(Row(), events, [], dg.DiagnosisLimits())
+    assert len(s["turns"]) == 2 and [a["tool"] for a in s["turns"][0]["actions"]] == ["api_search", "api_fetch", "api_search"]
+    results = s["turns"][0]["results"]
+    assert [(r["tool"], r["error"]) for r in results] == [("api_search", False), ("api_fetch", True), ("api_search", True)]
+    assert results[0]["output"] == "api_search ok"
+    assert results[1]["output"] == "Stopped before execution: read the record first"
+    assert results[2]["output"].startswith("Not executed: an earlier call in this turn was stopped")
+    assert "hook-read" not in json.dumps(s) and "results" not in s["turns"][1]
+    assert [(e["turn"], e["tool"]) for e in s["tool_errors"]] == [(1, "api_fetch"), (1, "api_search")]
+    assert [(e["event"], e.get("action") or e.get("tool")) for e in s["events"]] == \
+        [("hook", "continue"), ("hook", "block"), ("tool_blocked", "api_fetch"), ("tool_skipped", "api_search")]
+    assert all(e["source"] == "package" for e in s["events"])
+    assert s["turns"][1]["text"] == "I stopped."
+    # an older transcript without gateway records keeps the tool-event path
+    old = [e for e in events if e["kind"] not in ("gateway_call", "tool_specs")]
+    assert len(dg.failure_summary(Row(), old, [], dg.DiagnosisLimits())["turns"][0]["results"]) == 3
+
+
+def test_a_worker_running_another_runner_is_refused_at_load_and_named_at_startup(tmp_path, monkeypatch):
+    """worker.StaleWorker (M1 §1 默认 agent 即种子包: the host and the image carry the same runner bytes): a worker
+    whose runner is other bytes than this host's worker_runner.py is refused at its first `load` with the command
+    that rebuilds the image, is not healthy, and is named by bench.worker_problems / config_harness_problems /
+    harness_checks before anything is paid; this host's own runner passes and names itself and its ops."""
+    import sys
+    from ouroloop.agent.worker import RUNNER, StaleWorker, WorkerUnavailable, runner_digest
+    other = tmp_path / "worker_runner.py"
+    other.write_text(RUNNER.read_text() + "\n# built from another runner\n")
+
+    class Other(ProcessWorker):
+        qualified = True                      # as a Docker image built from an older runner would say
+
+        def command(self):
+            return [sys.executable, "-I", str(other)]
+
+        def describe(self):
+            return {**super().describe(), "image": "ouroloop-worker:stale"}
+    worker = Other(for_tests=True)
+    session = worker.start()
+    with pytest.raises(StaleWorker, match="rebuild the image: docker build -f docker/worker.Dockerfile -t ouroloop-worker:py3.12 .") as info:
+        session.load({})
+    assert session.proc.poll() is not None and issubclass(StaleWorker, WorkerUnavailable)
+    assert runner_digest()[:12] in str(info.value) and "another runner" in str(info.value)
+    assert worker.healthy() is False and "rebuild the image" in worker.runner_problem()
+    assert bench.worker_problems(worker) == [f"the isolated worker ouroloop-worker:stale cannot serve this host: {worker.runner_problem()}"]
+    # a run and a draft check in it are refused the same way, before any package code runs
+    bound, _ = v2_bound(tmp_path, AGENT)
+    with pytest.raises(StaleWorker):
+        shell_agent(tmp_path, bound, World(), Scripted([ChatTurn("x", [], "end")]), worker=worker).run("t")
+    from ouroloop.agent.worker import check_package
+    with pytest.raises(StaleWorker):
+        check_package(worker, {"agent/main.py": AGENT}, AGENT_MANIFEST, fixture=World())
+    # startup: the config check and the activity check both name it when K allows code
+    monkeypatch.setattr(bench, "isolated_worker", lambda settings: worker if settings else None)
+    cfg = {"harness_evolution": {"components": ["memory", "skills", "on_finish"], "sandbox": "docker"}}
+    (problem,) = bench.config_harness_problems(cfg)
+    assert "cannot serve this host" in problem and "rebuild the image" in problem
+    assert bench.config_harness_problems({"harness_evolution": {"components": ["memory", "skills"], "sandbox": "docker"}}) == []
+    # this host's runner names itself, and the host accepts it
+    fine = ProcessWorker(for_tests=True)
+    assert fine.healthy() and fine.runner_problem() is None
+    session = fine.start()
+    try:
+        identity = session.load({})
+        assert identity["runner_sha256"] == runner_digest() and "run" in identity["ops"] and "smoke" in identity["ops"]
+    finally:
+        session.close()
+
+
+def test_the_default_agent_runs_a_v1_package_through_run_in_the_qualified_worker(qualified, tmp_path):
+    """IT6-29 / PR7-01 / PR7-08 in the real image (docker/worker.Dockerfile): a v1 package with an on_finish hook runs
+    under the runner shell in the Docker worker — the default agent added to its loaded bundle, one `run` for the
+    attempt, every model call through the gateway and every tool call through the broker — and does what it does in
+    the ProcessWorker tests: the hook's block is a pushback, the message the request asked for is sent, the worker
+    session's cost is on record, and the image's runner is this host's."""
+    files = {"memory.md": "Check the whole request before finishing.", "middlewares/guard.py": FINISH_GUARD}
+    manifest = {"memory": {"enabled": True},
+                "hooks": [{"name": "guard", "site": "on_finish", "entrypoint": "middlewares/guard.py:run"}]}
+    bound, _ = bound_with(tmp_path, files, manifest)
+    assert qualified.runner_problem() is None
+    world = World()
+    shell = shell_agent(tmp_path, bound, world, rsi.BusinessWorker(), worker=qualified)
+    assert shell.placement == "worker" and shell.entry == "agent/default_agent.py:run"
+    result = shell.run(NOTIFY_TASK)
+    assert [a.get("url") for _, a in world.calls] == [rsi.HUBSPOT, rsi.SLACK]
+    assert result.text.startswith("Done") and result.turns == 4 and result.limit is None
+    events = transcript(tmp_path, shell)
+    assert [e["action"] for e in events if e["kind"] == "hook"] == ["block", "continue"]
+    assert [e["source"] for e in events if e["kind"] == "pushback"] == ["package"]
+    (session,) = [e for e in events if e["kind"] == "worker_session"]
+    assert session["worker"] == "DockerWorker" and session["requests"] >= 6
+    assert len([e for e in events if e["kind"] == "gateway_call"]) == 4
+    assert len([e for e in events if e["kind"] == "broker_event"]) == 2
+    # the same package through the draft check in the image: the default agent is smoked there too
+    from ouroloop.agent.worker import check_package
+    assert check_package(qualified, files, {**hp.empty_manifest(), **manifest}, fixture=World()) == []

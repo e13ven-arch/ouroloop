@@ -251,7 +251,8 @@ def _attempt(cfg: dict, base: str | Path, bench: BenchConfig, suite: ab.Suite, m
 
     rows = run_tasks(suite, chosen, make_agent_factory(rt, provider, budget=bench.budget,
                                                        meta={"agent": model.get("model") or provider.name,
-                                                             "bench": bench.domain}),
+                                                             "bench": bench.domain},
+                                                       max_effort=smoke_max_effort(cfg, base)),
                      run=run, splits=manifest, results=results, repeats=bench.repeats, on_result=show,
                      concurrency=bench.concurrency)
     total = summarise(rows)
@@ -259,6 +260,20 @@ def _attempt(cfg: dict, base: str | Path, bench: BenchConfig, suite: ab.Suite, m
         f"invalid={total['invalid']}, cost={'unmeasured' if total['cost_usd'] is None else total['cost_usd']} "
         f"(missing on {total['cost_missing']} attempts), usage={total['usage']}")
     return {"attempts": [r.to_json() for r in rows], "summary": total, "run": run.to_json()}
+
+
+def smoke_max_effort(cfg: dict, base: str | Path) -> str | None:
+    """Which loop the smoke's attempts run (docs/modules/01_POLICY_RUNTIME.md §1): the active release's K fixes
+    `max_effort` when the workspace has one — the smoke then runs under the runner shell as the activity's attempts
+    do, and under the same ceiling — else the configured first-version table's; None (the v1 loop) when neither
+    sets one. A smoke binds no release, so this is read from the workspace directly, not from a bound runtime."""
+    from .agent.runner import release_max_effort
+    root = config_mod.workspace_root(cfg, base)
+    release_ref = Releases(root, _ct.Objects(root)).active().get("release_ref")
+    if release_ref:
+        return release_max_effort(_ct.Objects(root), release_ref)
+    settings = harness_settings(cfg)
+    return settings["max_effort"] if settings else None
 
 
 def run_phase(cfg: dict, base: str | Path = ".", *, phase: str = "smoke", **kw) -> dict:
@@ -1019,8 +1034,7 @@ HARNESS_KEYS = {"package_api", "components", "sandbox", "image", "max_files", "m
 # The reasoning-effort tiers, lowest first (the `claude_code` provider's names). K's `max_effort` is the ceiling the
 # gateway caps a package's requested effort to (docs/modules/00_CONTRACTS.md §2, v0.3): a request above it is sent
 # at the ceiling, never refused, with the requested value on the record. Like every harness key it narrows only.
-EFFORTS = ("low", "medium", "high", "xhigh", "max")
-DEFAULT_MAX_EFFORT = "high"
+from .agent.gateway import DEFAULT_MAX_EFFORT, EFFORTS  # noqa: E402 - the gateway caps by the same order
 
 
 # ---------------------------------------------------------------------------- [improvement] and its presets
@@ -2961,7 +2975,27 @@ def startup_checks(activity: Activity, cfg: dict, *, phase: str, needs_model: bo
         problems.append("[harness_evolution] is set, and the active release was bootstrapped without it: a "
                         "first-version activity starts in a fresh workspace (or scope) so W0, R0 and K are "
                         "bootstrapped with it; it is not applied to an existing v2 activity")
+    problems += effort_problems(activity, core)
     return problems
+
+
+def effort_problems(activity: Activity, core: _ct.CoreManifest) -> list[str]:
+    """The pinned actor's default effort against K's `max_effort` (docs/modules/00_CONTRACTS.md §2, v0.3): the gateway
+    caps every call at `max_effort` and never refuses, so a pinned default above it would run at the cap on every
+    call and the inference configuration W0 records would be one no call was made at. Found before anything is
+    paid; a K without the v0.3 harness capabilities fixes no ceiling and is not checked."""
+    harness = (core.capabilities or {}).get("harness")
+    pinned = _pinned_actor(activity)
+    if not isinstance(harness, dict) or pinned is None:
+        return []
+    ceiling = harness.get("max_effort")
+    if ceiling is None:
+        return []          # a K frozen before v0.3: its workspace runs the v1 loop, and no gateway caps anything
+    effort = (activity.objects.get(pinned.inference_ref) or {}).get("effort")
+    if effort in EFFORTS and ceiling in EFFORTS and EFFORTS.index(effort) > EFFORTS.index(ceiling):
+        return [f"the actor the active release pins has effort {effort!r}, above K's max_effort {ceiling!r}: the "
+                f"gateway caps every call at max_effort, so the pinned default would never run as configured"]
+    return []
 
 
 def _called_models(activity: Activity, cfg: dict) -> list[tuple[str, dict]]:
@@ -2984,11 +3018,24 @@ def config_harness_problems(cfg: dict) -> list[str]:
     if settings is None:
         return []
     limits = hp.Limits.from_json(settings["package"])
-    if limits.allows_code and isolated_worker(settings) is None:
+    worker = isolated_worker(settings)
+    if limits.allows_code and worker is None:
         return [f"[harness_evolution] allows code components "
                 f"{[k for k in limits.components if k in hp.CODE_KINDS]} and no qualified isolated worker is "
                 f"available"]
-    return []
+    return worker_problems(worker) if limits.allows_code else []
+
+
+def worker_problems(worker) -> list[str]:
+    """The qualified worker's runner against this host's (docs/modules/01_POLICY_RUNTIME.md §1 默认 agent 即种子包):
+    an image built from another worker_runner.py would fail a run in ways that look like the package's, so a
+    startup check names it, with the command that rebuilds the image, before anything is paid. One session is
+    started for the check; a worker that cannot start or answer is named the same way."""
+    if worker is None:
+        return []
+    problem = worker.runner_problem()
+    return [f"the isolated worker {worker.describe().get('image') or worker.describe().get('kind')} cannot serve "
+            f"this host: {problem}"] if problem else []
 
 
 def isolated_worker(settings: dict | None):
@@ -3012,7 +3059,8 @@ def isolated_worker(settings: dict | None):
 def harness_checks(activity: Activity, bound) -> list[str]:
     """What a first-version activity must satisfy before it pays for anything (docs/modules/00_CONTRACTS.md §3,
     BR6-17): the current package's component kinds are within K, and a worker is there whenever K allows code or
-    the current package runs code. The fallback to a text-only preset holds only for a package without code."""
+    the current package runs code — one whose image runs this host's worker_runner.py (worker_problems). The
+    fallback to a text-only preset holds only for a package without code."""
     from .agent import harness_package as hp
     core = activity.objects.load(_ct.SystemRelease.from_json(activity.objects.get(activity.release_ref)).core_ref,
                                  _ct.CoreManifest)
@@ -3035,6 +3083,8 @@ def harness_checks(activity: Activity, bound) -> list[str]:
                         f"provide the worker")
     if bound.package.runs_code and worker is None:
         problems.append("the active package runs code and no qualified isolated worker is available")
+    if limits.allows_code or bound.package.runs_code:
+        problems += worker_problems(worker)        # the image's runner is this host's, or the operator rebuilds it
     return problems
 
 

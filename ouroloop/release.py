@@ -171,6 +171,35 @@ def resolve_profile(root: str | Path, profile: str | None) -> str:
     return profile
 
 
+def package_api_of(objects, worker_ref: str) -> str | None:
+    """The package API the worker set's pinned package targets (its manifest's api_version), None when the set pins
+    no package."""
+    from .agent.harness_package import load_package
+    from .evolve import contracts as ct
+    for ref in objects.load(worker_ref, ct.PolicySet).policies:
+        p = objects.load(ref, ct.PolicyDescriptor)
+        if p.target == "worker.harness":
+            return load_package(objects, objects.get(p.implementation["config_ref"])["package_ref"]).api_version
+    return None
+
+
+def required_capabilities_of(objects, parent: tuple | None, worker_ref: str) -> tuple | None:
+    """The capabilities a release with this worker set needs (docs/modules/00_CONTRACTS.md §1, v0.3): the parent's,
+    plus `harness_package.v2` when the pinned package's manifest targets v2 — a runtime that serves v1 only must
+    refuse such a release rather than run its package under the old loop. Nothing is taken away: what the parent
+    needed (its K's package API, the isolated worker) the child needs too. None stays None: a v2 release declares
+    no capabilities and keeps its ref."""
+    if parent is None:
+        return None
+    from .agent.harness_package import AGENT_API_VERSION
+    # The parent's order is kept and the new capability appended: a release's required_capabilities are part of its
+    # identity, and re-sorting what the parent declared would give an unchanged release another ref.
+    caps = list(parent)
+    if package_api_of(objects, worker_ref) == AGENT_API_VERSION and AGENT_API_VERSION not in caps:
+        caps.append(AGENT_API_VERSION)
+    return tuple(caps)
+
+
 class Releases:
     """The complete-version store: releases, the active pointer, authorisations, installs and revocations."""
 
@@ -247,15 +276,20 @@ class Releases:
         return ref
 
     def _swap(self, parent_release: str, set_ref: str, authorization_ref: str):
-        """The parent release with the owner of `set_ref` replaced, the other side carried over exactly."""
+        """The parent release with the owner of `set_ref` replaced, the other side carried over exactly. The
+        capabilities are recomputed for the worker set that results: a release pinning a v2 package names
+        `harness_package.v2` (M0 §1, v0.3), whatever its parent needed."""
         ct = self._ct
         parent = self.objects.load(parent_release, ct.SystemRelease)
         owner = self.objects.load(set_ref, ct.PolicySet).owner
-        return ct.SystemRelease(worker_ref=set_ref if owner == "worker" else parent.worker_ref,
+        worker_ref = set_ref if owner == "worker" else parent.worker_ref
+        return ct.SystemRelease(worker_ref=worker_ref,
                                 research_ref=set_ref if owner == "research" else parent.research_ref,
                                 core_ref=parent.core_ref, authorization_ref=authorization_ref,
                                 parent_ref=parent_release, target_harness_ref=parent.target_harness_ref,
-                                required_capabilities=parent.required_capabilities)
+                                required_capabilities=required_capabilities_of(self.objects,
+                                                                               parent.required_capabilities,
+                                                                               worker_ref))
 
     def authorize(self, release_ref: str, *, profile: str, permit_ref: str | None = None,
                   plan_ref: str | None = None, scope_id: str | None = None) -> str:
@@ -539,6 +573,9 @@ def _export_into(objects, releases, rel, release_ref: str, destination: Path) ->
     required_core = out.put_json("change", {"core": ct.short(rel.core_ref), "domain": core.domain,
                                              "toolset": core.toolset, "targets": worker_targets,
                                              "package_limits": harness.get("package"),
+                                             # K's effort ceiling travels with the app: the deployed runner shell
+                                             # caps a package's requests at it as the activity's did (M0 §2, v0.3)
+                                             "max_effort": harness.get("max_effort"),
                                              "worker": {"image": harness.get("image"),
                                                         "image_id": harness.get("image_id")}
                                              if harness.get("sandbox") else None})

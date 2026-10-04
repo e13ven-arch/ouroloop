@@ -193,7 +193,10 @@ class ClaudeCodeProvider:
     def complete(self, system: str, prompt: str) -> str:
         return self.chat(system, [{"role": "user", "content": prompt}], []).text
 
-    def chat(self, system: str, messages: list[dict], tools: list[ToolSpec]) -> ChatTurn:
+    def chat(self, system: str, messages: list[dict], tools: list[ToolSpec], effort: str | None = None) -> ChatTurn:
+        """One turn. `effort` is this call's reasoning tier, passed to the CLI as --effort when given; None keeps the
+        provider's own (the tier W0 pinned). The gateway (agent/gateway.py) sets it per call for an agent program
+        that asks for one, already capped at K's `max_effort` (docs/modules/00_CONTRACTS.md §2)."""
         plain = not tools and len(messages) == 1 and messages[0].get("role") == "user"
         if plain:
             prompt, schema = str(messages[0].get("content", "")), None
@@ -203,7 +206,7 @@ class ClaudeCodeProvider:
             schema = turn_schema([t.name for t in tools])
         for attempt in range(self.retries + 1):
             try:
-                return self._call(system, prompt, schema, {t.name for t in tools})
+                return self._call(system, prompt, schema, {t.name for t in tools}, effort=effort)
             except ProviderAccountError:
                 raise
             except ProviderError as e:
@@ -213,12 +216,12 @@ class ClaudeCodeProvider:
         raise AssertionError("unreachable")
 
     # ------------------------------------------------------------------------ one CLI call
-    def _command(self, system: str, schema: dict | None) -> list[str]:
+    def _command(self, system: str, schema: dict | None, effort: str | None = None) -> list[str]:
         cmd = [self.binary, "-p", "--model", self.model, "--tools", "", "--safe-mode", "--setting-sources", "",
                "--strict-mcp-config", "--no-session-persistence", "--disable-slash-commands",
                "--system-prompt", system or " "]
-        if self.effort:
-            cmd += ["--effort", str(self.effort)]
+        if effort or self.effort:
+            cmd += ["--effort", str(effort or self.effort)]
         if schema is None:
             return cmd + ["--output-format", "json"]
         # Text blocks reach the model as blocks only through a stream; a stream's output needs --verbose.
@@ -232,9 +235,9 @@ class ClaudeCodeProvider:
                                        f"it would read what is there")
         return self.workdir
 
-    def _call(self, system: str, prompt: str, schema: dict | None, offered: set) -> ChatTurn:
+    def _call(self, system: str, prompt: str, schema: dict | None, offered: set, effort: str | None = None) -> ChatTurn:
         try:
-            done = subprocess.run(self._command(system, schema), input=prompt, capture_output=True, text=True,
+            done = subprocess.run(self._command(system, schema, effort), input=prompt, capture_output=True, text=True,
                                   timeout=self.timeout, cwd=self._empty_dir(), env=child_env(self.max_tokens))
         except FileNotFoundError as e:
             raise ProviderAccountError(f"the claude CLI {self.binary!r} was not found ({e}): install Claude Code "

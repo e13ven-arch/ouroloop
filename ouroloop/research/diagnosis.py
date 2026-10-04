@@ -55,13 +55,53 @@ def read_transcript(transcripts: Path, session: str) -> list[dict]:
     return list(_read_jsonl(path)) if session and path.exists() else []
 
 
+PACKAGE_MARKS = ("hook", "package_tool", "tool_blocked", "tool_skipped")   # what a package reports of its own loop
+
+
+def gateway_results(transcript: list[dict]) -> dict:
+    """call_id -> the tool results the model saw for that call's tool calls, read from the gateway log (M0 §2
+    gateway_call.v1). Each call's messages are rebuilt from its prefix count and tail; the results of call i are the
+    `role: tool` entries a later call added beyond call i's history, matched to call i's tool calls by id. Under the
+    runner shell this is the only place the model-visible results are: a call a before_tool hook blocked, the rest
+    of that turn, and a package tool's outer call reach the broker never, so no `tool` event says what the model
+    was told; and a hook's own reads reach the broker but the model never sees them."""
+    histories, previous = [], []
+    for e in transcript:
+        if e.get("kind") != "gateway_call":
+            continue
+        messages = previous[:int(e.get("messages_prefix") or 0)] + list(e.get("messages_tail") or ())
+        histories.append((e, messages))
+        previous = messages
+    out = {}
+    for i, (e, messages) in enumerate(histories):
+        wanted = [c.get("id") for c in (e.get("response") or {}).get("tool_calls") or () if isinstance(c, dict)]
+        found: dict = {}
+        for _, later in histories[i + 1:]:
+            for m in later[len(messages):]:
+                if isinstance(m, dict) and m.get("role") == "tool":
+                    for r in m.get("results") or ():
+                        if isinstance(r, dict) and r.get("id") in wanted and r["id"] not in found:
+                            found[r["id"]] = r
+            if len(found) == len(wanted):
+                break
+        out[e.get("call_id")] = [found[w] for w in wanted if w in found]
+    return out
+
+
 def failure_summary(result, transcript: list[dict], grading: list[dict], limits: DiagnosisLimits) -> dict:
     """failure_summary.v1 of one failed train attempt. Raises if handed anything but a train attempt: this
-    projection is where the train-only rule is enforced, not a courtesy of the caller."""
+    projection is where the train-only rule is enforced, not a courtesy of the caller.
+
+    A turn's results are what the model saw. A transcript with `gateway_call` records (the runner shell, v0.3) gives
+    them from the gateway log (gateway_results) and lists the package's marks — a hook's answer, a package tool's run,
+    a blocked or skipped call — as events labelled the package's self-report, never as results; its `tool` events
+    are the broker's base calls, hook reads among them, and are not read. An older transcript without gateway
+    records keeps the `tool`-event path: there every `tool` event is a result the v1 loop handed the model."""
     if result.split not in TRAIN:
         raise ct.ContractError(f"{result.task_id} is a {result.split} attempt: only train attempts are summarised")
     n = limits.max_entry_chars
     turns, errors, events, task_text = [], [], [], ""
+    gateway = gateway_results(transcript)
     for e in transcript:
         kind = e.get("kind")
         if kind == "task":
@@ -70,7 +110,15 @@ def failure_summary(result, transcript: list[dict], grading: list[dict], limits:
             turns.append({"turn": len(turns) + 1, "text": clip(e.get("text") or "", n),
                           "actions": [{"tool": c.get("name"), "args": clip(c.get("args") or {}, n)}
                                       for c in e.get("tool_calls") or ()]})
-        elif kind == "tool":
+            if gateway:
+                turn = len(turns)
+                for r in gateway.get(e.get("call_id")) or ():
+                    entry = {"tool": r.get("name"), "error": bool(r.get("is_error")),
+                             "output": clip(r.get("output") or "", n)}
+                    turns[-1].setdefault("results", []).append(entry)
+                    if entry["error"]:
+                        errors.append({"turn": turn, "tool": entry["tool"], "error": entry["output"]})
+        elif kind == "tool" and not gateway:
             turn = len(turns)
             entry = {"tool": e.get("name"), "error": bool(e.get("is_error")), "output": clip(e.get("output") or "", n)}
             if turns:
@@ -79,6 +127,14 @@ def failure_summary(result, transcript: list[dict], grading: list[dict], limits:
                 errors.append({"turn": turn, "tool": entry["tool"], "error": entry["output"]})
             if e.get("name") == "read_skill":
                 events.append({"turn": turn, "event": "read_skill", "found": not entry["error"]})
+        elif kind == "skill_read" and gateway:
+            events.append({"turn": len(turns), "event": "read_skill", "found": bool(e.get("found"))})
+        elif kind in PACKAGE_MARKS and gateway:
+            # The package's own account of its loop (M0 §2): shown as what it said, apart from the host's record.
+            event = {"turn": len(turns), "event": kind, "source": "package"}
+            event.update({k: clip(e[k], n) if isinstance(e.get(k), str) else e[k]
+                          for k in ("hook", "site", "action", "tool", "is_error", "reason") if k in e})
+            events.append(event)
         elif kind == "pushback":
             events.append({"turn": len(turns), "event": "pushback", "reason": clip(e.get("reason") or "", n)})
     # The agent's last message is its own account of what it did and did not do — the one message a diagnosis

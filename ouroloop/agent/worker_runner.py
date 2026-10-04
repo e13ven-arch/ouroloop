@@ -14,15 +14,25 @@ v0.3 (M1 §1 宿主作为运行壳): {"op": "run", "entry", "task", "roles", "vi
 agent, `run(ctx, task) -> str`, for the whole attempt. While it runs the worker asks the host for the model with
 {"op": "model_call", "id", "role", "effort", "messages", "tools"} (answered by {"op": "model_result", "id", "text",
 "tool_calls", "stop"} or {"op": "model_result", "id", "is_error": true, "error"}), for a skill with {"op":
-"skill_read", "id", "name"} (answered by {"op": "skill_result", "id", "text"}), and for tools with base_call as
-before. Every answer may carry "limits" (the attempt's remaining hard limits) and "view" (a fresh projection), and
-the ctx shows the latest. Ids are monotonic per kind (b/m/k) for the worker's life; an answer with another op or id
-is a protocol error, reported as {"op": "error", "kind": "protocol"} and not catchable by package code. {"op":
-"smoke", "entry", "roles", "task", "deadline"} runs the same agent against a worker-local ctx whose model answers one
-canned end turn (M0 §3): the draft check's way of finding a deterministic crash or an undeclared role before any paid
-call. The smoke has small hard limits of its own (SMOKE_LIMITS), so an agent that never returns is found too.
+"skill_read", "id", "name"} (answered by {"op": "skill_result", "id", "text"}), for tools with base_call as
+before (an optional "read_only": true asks the broker to refuse a writing call), and reports its own loop's events
+with {"op": "mark", "id", "kind", "data"} (answered by {"op": "mark_result", "id"}). Every answer may carry
+"limits" (the attempt's remaining hard limits) and "view" (the keys of the projection that changed, merged into
+the ctx's view in place), and the ctx shows the latest. Ids are monotonic per kind (b/m/k/n) for the worker's life; an
+answer with another op or id is a protocol error, reported as {"op": "error", "kind": "protocol"} and not catchable by
+package code. {"op": "smoke", "entry", "roles", "task", "deadline", "view"} runs the same agent against a worker-local
+ctx whose model answers one tool_use turn calling each tool the agent offers it, then end turns (M0 §3): the draft
+check's way of finding a deterministic crash, an undeclared role, or a hook or package tool that raises or answers
+outside its protocol, before any paid call. The smoke has small hard limits of its own (SMOKE_LIMITS), so an agent
+that never returns is found too.
+
+The answer to `load` names the runner: {"runner_sha256": <sha256 of this file's bytes>, "ops": [...]}. The host
+compares it with its own copy of this file and refuses a worker image built from another (M1 §1 默认 agent 即种子包:
+the host and the image carry the same bytes, and different bytes are a startup error), since an older image lacks
+ops and flags the host relies on and would fail in ways that look like the package's.
 """
 import asyncio
+import hashlib
 import importlib.util
 import inspect
 import json
@@ -34,6 +44,13 @@ import traceback
 
 ROOT = None
 MODULES = {}
+OPS = ("load", "probe", "call_tool", "hook", "test", "run", "smoke")
+
+
+def runner_sha256() -> str:
+    """The digest of this file as it runs: what the host checks its own worker_runner.py against."""
+    with open(__file__, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
 # The protocol gets its own descriptor, and fd 1 is pointed at stderr: neither print() nor os.write(1, ...) in
 # package code can corrupt it.
 _STDOUT = os.fdopen(os.dup(1), "w", encoding="utf-8")
@@ -161,7 +178,8 @@ class AgentContext:
         if isinstance(reply.get("limits"), dict):
             self.limits = dict(reply["limits"])
         if isinstance(reply.get("view"), dict):
-            self.view.clear()
+            # The keys that changed (the broker's `events` after a tool call), merged in place: the host does not
+            # resend the whole projection on every answer, and a reference the agent keeps stays current.
             self.view.update(reply["view"])
         return reply
 
@@ -174,9 +192,22 @@ class AgentContext:
                  for c in reply.get("tool_calls") or () if isinstance(c, dict)]
         return ModelReply(str(reply.get("text", "")), calls, reply.get("stop"))
 
-    def tool(self, name: str, args: dict | None = None) -> Result:
-        reply = self._ask("b", {"op": "base_call", "name": name, "args": args or {}}, "base_result")
+    def tool(self, name: str, args: dict | None = None, *, read_only: bool = False) -> Result:
+        """A base tool through the host's broker. `read_only` asks the broker to refuse a call that may change the
+        world (M1 §1: a hook's broker is read-only); the default agent sets it for its hooks' calls, and the flag
+        travels only when set, so the protocol line of an ordinary call is what it was."""
+        request = {"op": "base_call", "name": name, "args": args or {}}
+        if read_only:
+            request["read_only"] = True
+        reply = self._ask("b", request, "base_result")
         return Result(str(reply.get("output", "")), bool(reply.get("is_error")))
+
+    def mark(self, kind: str, **data) -> None:
+        """Report an event of the agent's own loop (a pushback, a hook's answer, a package tool's run) to the host,
+        which records it labelled `source: "package"` (M0 §2: the records are host-written; what a package reports
+        about itself is kept apart and is never gate evidence). Fire-and-forget: the answer carries only the
+        limits and the view."""
+        self._ask("n", {"op": "mark", "kind": str(kind), "data": dict(data)}, "mark_result")
 
     def _read_skill(self, name: str):
         return self._ask("k", {"op": "skill_read", "name": name}, "skill_result").get("text")
@@ -185,23 +216,50 @@ class AgentContext:
 SMOKE_TURN = {"text": "ok", "tool_calls": [], "stop": "end"}
 SMOKE_TURN_TOKENS = 1                   # what the one-word canned answer costs the smoke's token count
 # The smoke's hard limits (M0 §2 names the five dimensions; the values are the smoke's own, small because the canned
-# model ends every turn, so an agent that needs more than this is looping). Seconds is the request's deadline.
-SMOKE_LIMITS = {"act_calls": 5, "model_calls": 10, "tool_calls": 10, "tokens": 20000}
+# model ends every turn after the one tool_use turn, so an agent that needs more than this is looping). Seconds is
+# the request's deadline. tool_calls covers the one call per offered tool of the tool_use turn, hook reads included.
+SMOKE_LIMITS = {"act_calls": 5, "model_calls": 10, "tool_calls": 40, "tokens": 20000}
 SMOKE_SECONDS = 30
+# Placeholder values for a tool schema's required properties, by JSON type, so the smoke's one call of each tool is
+# a well-formed call: what it does with the placeholder is the fixture's business, an error result is a result.
+PLACEHOLDERS = {"string": "smoke", "integer": 0, "number": 0, "boolean": False, "array": [], "object": {}, "null": None}
+
+
+def minimal_args(schema) -> dict:
+    """The smallest arguments a tool's schema accepts: a placeholder for each required property, {} otherwise."""
+    if not isinstance(schema, dict):
+        return {}
+    properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+    out = {}
+    for name in schema.get("required") or ():
+        spec = properties.get(name) if isinstance(properties.get(name), dict) else {}
+        kind = spec.get("type")
+        kind = kind[0] if isinstance(kind, list) and kind else kind
+        if isinstance(spec.get("enum"), list) and spec["enum"]:
+            out[name] = spec["enum"][0]
+        else:
+            out[name] = PLACEHOLDERS.get(kind, "smoke")
+    return out
 
 
 class SmokeContext(AgentContext):
-    """The draft check's ctx (M0 §3): model answers one canned end turn without leaving the worker, and refuses a
-    role the manifest does not declare — the structural error the smoke exists to find before a paid run; tool
-    goes to the host as in the test op (the fixture broker); skills are empty. Limits are the remaining counts of
-    SMOKE_LIMITS, integers as M0 §2 defines ctx.limits, so an agent that reads them to pace itself runs here as it
-    would under the host; each model or tool call is checked against them first and takes one off, and a call past
-    a count is the end of the run (SmokeLimit), not something the agent can catch."""
+    """The draft check's ctx (M0 §3): model answers without leaving the worker — the first call that offers tools
+    gets one tool_use turn calling each offered tool once with the smallest arguments its schema allows, every other
+    call the canned end turn — so the agent's own tool path (the default agent's before_tool/after_tool/on_finish
+    hooks and package tools, M1 §1) runs once against the fixture, and a hook or tool that raises or answers outside
+    its protocol is found here as the draft's failure, not later as infrastructure; it refuses a role the manifest
+    does not declare — the structural error the smoke exists to find before a paid run; tool goes to the host as in
+    the test op (the fixture broker); skills are empty; mark records nothing. The view is what the host gave (the
+    fixture's base tools and the draft's components, in the attempt view's shape) marked `smoke: True`. Limits are
+    the remaining counts of SMOKE_LIMITS, integers as M0 §2 defines ctx.limits, so an agent that reads them to pace
+    itself runs here as it would under the host; each model or tool call is checked against them first and takes one
+    off, and a call past a count is the end of the run (SmokeLimit), not something the agent can catch."""
 
-    def __init__(self, roles, seconds: float | None = None):
+    def __init__(self, roles, seconds: float | None = None, view: dict | None = None):
         self._end = time.monotonic() + (seconds if seconds and seconds > 0 else SMOKE_SECONDS)
-        super().__init__({"smoke": True}, {**SMOKE_LIMITS, "seconds": self._seconds_left()}, {})
+        super().__init__({**(view or {}), "smoke": True}, {**SMOKE_LIMITS, "seconds": self._seconds_left()}, {})
         self.roles = tuple(roles or ())
+        self._toured = False                 # the one tool_use turn has been answered
 
     def _seconds_left(self) -> int:
         return max(0, int(self._end - time.monotonic()))
@@ -223,11 +281,20 @@ class SmokeContext(AgentContext):
         if role not in self.roles:
             raise ModelCallError(f"role {role!r} is not declared in the manifest's roles {list(self.roles)}")
         self._charge(**({"act_calls": 1} if role == "act" else {}), model_calls=1, tokens=SMOKE_TURN_TOKENS)
+        offered = [t for t in (tools or ()) if isinstance(t, dict) and isinstance(t.get("name"), str)]
+        if offered and not self._toured:
+            self._toured = True
+            calls = [{"id": f"smoke{i + 1}", "name": t["name"],
+                      "args": minimal_args(t.get("schema", t.get("input_schema")))} for i, t in enumerate(offered)]
+            return ModelReply("", calls, "tool_use")
         return ModelReply(SMOKE_TURN["text"], list(SMOKE_TURN["tool_calls"]), SMOKE_TURN["stop"])
 
-    def tool(self, name: str, args: dict | None = None) -> Result:
+    def tool(self, name: str, args: dict | None = None, *, read_only: bool = False) -> Result:
         self._charge(tool_calls=1)
-        return super().tool(name, args)
+        return super().tool(name, args, read_only=read_only)
+
+    def mark(self, kind: str, **data) -> None:
+        return None                    # the smoke writes no record: nothing it sees is evidence
 
     def _read_skill(self, name: str):
         return None
@@ -341,7 +408,7 @@ def main() -> None:
         try:
             if op == "load":
                 load(req["files"])
-                send({"op": "result", "value": "loaded"})
+                send({"op": "result", "value": {"runner_sha256": runner_sha256(), "ops": list(OPS)}})
             elif op == "probe":
                 for spec in req.get("entries") or ():
                     entry(spec)
@@ -358,7 +425,7 @@ def main() -> None:
                 ctx = AgentContext(req.get("view") or {}, req.get("limits") or {}, req.get("skills") or {})
                 send({"op": "result", "value": run_agent(agent_entry(req["entry"]), ctx, req.get("task", ""))})
             elif op == "smoke":
-                ctx = SmokeContext(req.get("roles"), req.get("deadline"))
+                ctx = SmokeContext(req.get("roles"), req.get("deadline"), req.get("view") or {})
                 send({"op": "result", "value": run_agent(agent_entry(req["entry"]), ctx, req.get("task", ""))})
             else:
                 send({"op": "error", "kind": "protocol", "message": f"unknown op {op!r}"})

@@ -828,10 +828,12 @@ class MeteredProvider:
                     self.provider.retries = 0
                 return reservation
 
-    def chat(self, system, messages, specs=()):
+    def chat(self, system, messages, specs=(), **kwargs):
         """One call, reserved before and settled after, retried while its failure is worth retrying. A failure
         that outlasts the retries leaves as a ProviderError whatever the provider raised — an SDK's connection
-        error, a gateway's malformed reply — so whoever handles a model call's failure (M5 §3) sees one kind."""
+        error, a gateway's malformed reply — so whoever handles a model call's failure (M5 §3) sees one kind.
+        Keyword arguments (the gateway's per-call `effort`) pass through to the provider untouched: the meter
+        books a call, it does not shape it."""
         bound = self.pricing.bound()
         last: Exception | None = None
         with self._lock:
@@ -840,7 +842,7 @@ class MeteredProvider:
             reservation = self._reserve(f"{self.operation}#{call}.{attempt}", bound, last)
             try:
                 try:
-                    turn = self.provider.chat(system, messages, specs)
+                    turn = self.provider.chat(system, messages, specs, **kwargs)
                 except Exception as e:  # noqa: BLE001 - the call may well have been charged: unknown, not free
                     # Released only when the request is known never to have reached the model; otherwise unknown.
                     self.receipts.append(self.account.settle(

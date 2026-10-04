@@ -624,3 +624,51 @@ def test_the_package_api_says_what_a_hook_sees_is_cut_and_the_actor_had_the_whol
     assert f"result is at most the first {HOOK_RESULT_CHARS} characters" in PACKAGE_API
     assert "truncated says only that this excerpt is shorter than the result" in PACKAGE_API
     assert "The actor itself is always handed the whole result" in PACKAGE_API
+
+
+def test_startup_refuses_a_pinned_actor_effort_above_k_max_effort(fake_upstream, tmp_path):
+    """docs/modules/00_CONTRACTS.md §2 (v0.3), bench.effort_problems: the gateway caps every call at K's `max_effort`
+    and never refuses, so an actor pinned at a default above the ceiling would never run as its inference
+    configuration says; startup names it before anything is paid, and a default at or below the ceiling passes."""
+    from ouroloop.ledger import write_json
+    cfg, activity, w0 = v06_prepared(fake_upstream, tmp_path)
+    objects = activity.objects
+    booted = ct.SystemRelease.from_json(objects.get(w0))
+    core = objects.load(booted.core_ref, ct.CoreManifest)
+    assert core.capabilities["harness"]["max_effort"] == "high"             # the preset's ceiling
+    seen = {}
+    for effort in ("max", "high", "medium"):
+        identity = bench.actor_identity(objects, {"type": "claude_code", "model": "claude-opus-5-5", "effort": effort})
+        w = P.default_worker_set(objects, finish_check=rsi.W0_FINISH, actor_identity_ref=identity,
+                                 package_ref=hp.empty_package(objects))
+        release = activity.releases.bootstrap(w, booted.research_ref, booted.core_ref, reason=f"effort {effort}",
+                                              activate=False, target_harness_ref=booted.target_harness_ref,
+                                              required_capabilities=booted.required_capabilities)
+        write_json(activity.releases.active_path, {"release_ref": release, "revision": 2, "last_operation_id": None})
+        reopened = bench.open_activity(cfg, ".", out=lambda _line: None)
+        seen[effort] = bench.effort_problems(reopened, core)
+        if effort == "max":
+            problems = bench.startup_checks(reopened, cfg, phase="baseline", needs_model=False)
+            assert any("has effort 'max', above K's max_effort 'high'" in p for p in problems), problems
+            # a K frozen before v0.3 fixes no ceiling: its workspace runs the v1 loop, nothing caps the pinned
+            # default, and the check does not invent one from the gateway's default
+            older = ct.CoreManifest(**{**{f: getattr(core, f) for f in core.__dataclass_fields__},
+                                       "capabilities": {**core.capabilities, "harness": {
+                                           k: v for k, v in core.capabilities["harness"].items() if k != "max_effort"}}})
+            assert bench.effort_problems(reopened, older) == []
+    assert len(seen["max"]) == 1 and "above K's max_effort 'high'" in seen["max"][0]
+    assert seen["high"] == [] and seen["medium"] == []
+
+
+def test_the_smoke_phase_runs_under_the_active_releases_k_when_the_workspace_has_one(fake_upstream, tmp_path):
+    """bench.smoke_max_effort (docs/modules/01_POLICY_RUNTIME.md §1): the smoke's attempts run the loop the active
+    release's K fixes — its `max_effort` when the workspace has a release, whatever the config's table says — and
+    only a workspace without one takes the loop from the configured first-version table; with neither, the v1
+    loop."""
+    cfg, activity, w0 = v06_prepared(fake_upstream, tmp_path)
+    assert bench.smoke_max_effort(cfg, ".") == "high"                       # K's ceiling, the preset's
+    lowered = {**cfg, "harness_evolution": {**cfg["harness_evolution"], "max_effort": "low"}}
+    assert bench.smoke_max_effort(lowered, ".") == "high"                   # K, not the table, while a release is active
+    fresh = {**lowered, "workspace": {"root": str(tmp_path / "fresh")}}
+    assert bench.smoke_max_effort(fresh, ".") == "low"                      # no release yet: the table's
+    assert bench.smoke_max_effort({"workspace": {"root": str(tmp_path / "plain")}}, ".") is None

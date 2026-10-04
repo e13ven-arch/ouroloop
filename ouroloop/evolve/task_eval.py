@@ -7,6 +7,12 @@ One attempt is: a fresh episode, a fresh agent over that episode's business tool
 official score of the world the tools left. The agent never learns its score, and the scorer is not consulted
 during the run — an official scorer used as an online checker would quietly correct the agent's mistakes
 (docs/DESIGN.md §5.2).
+
+v0.3 (docs/modules/01_POLICY_RUNTIME.md §1 宿主作为运行壳): under a K frozen with `max_effort`, the agent is the
+runner shell (agent.runner.PackageAgent) — the package's own agent program in the isolated worker, or the default
+agent — with every model call through the host's gateway and every tool call through its broker; a hard limit ends
+the attempt as termination `budget` with the dimension in `limit`, and a crash of the agent at run time is
+infrastructure. An older K keeps the v1 loop (agent.loop.Agent) and its records (PR7-13).
 """
 from __future__ import annotations
 
@@ -17,6 +23,7 @@ from typing import Callable
 
 from ..agent import Agent, AgentConfig
 from ..agent.harness_package import mount
+from ..agent.runner import PackageAgent, k_max_effort
 from ..agent.tools import ToolResult
 from ..benchmark import Budget, RunManifest, SplitManifest, TaskResult
 from ..benchmark import attempt_id as bench_attempt_id
@@ -25,8 +32,10 @@ from .contracts import CandidateDefect
 from ..providers import is_account_error
 from .execution import BudgetError, normalize_usage
 
-# The agent's stop reason -> how the attempt ended. Anything else is a task outcome: the model stopped, refused,
-# or ran out of output, and that is evidence about the agent.
+# The v1 loop's stop reason -> how the attempt ended. Anything else is a task outcome: the model stopped, refused,
+# or ran out of output, and that is evidence about the agent. Only the v1 loop (agent.loop.Agent, an older K) still
+# writes `step_limit`; under the runner shell the same end is termination `budget` with `limit` = act_calls, and
+# `step_limit` appears in old records only (docs/modules/00_CONTRACTS.md §2, v0.3).
 STOPS = {"max_turns": "step_limit"}
 
 
@@ -51,6 +60,7 @@ class Budgeted:
         self.budget = budget
         self.started = time.monotonic()
         self.exhausted = ""
+        self.limit = ""                   # the dimension of the first refusal (tool_calls or seconds), for `limit`
 
     def specs(self):
         return self.episode.specs()
@@ -66,10 +76,11 @@ class Budgeted:
         return self.episode.mutates(name, args)
 
     def run(self, name: str, args: dict) -> ToolResult:
-        over = self.budget.exceeded(tool_calls=self.episode.tool_calls + 1,
-                                    seconds=time.monotonic() - self.started)
+        calls, seconds = self.episode.tool_calls + 1, time.monotonic() - self.started
+        over = self.budget.exceeded(tool_calls=calls, seconds=seconds)
         if over:
             self.exhausted = self.exhausted or over
+            self.limit = self.limit or self.budget.limit_hit(tool_calls=calls, seconds=seconds) or "tool_calls"
             return ToolResult(f"This run's budget is exhausted ({over}). Stop and report what you have done.",
                               True)
         return self.episode.run(name, args)
@@ -120,7 +131,9 @@ def run_attempt(suite, task_id: str, make_agent: Callable, *, run: RunManifest, 
     costs: list = []                  # per call: USD, or None when that call cannot be priced
 
     def on_event(kind: str, data: dict) -> None:
-        raw = data.get("usage") or {}
+        # Usage is read from the `assistant` event alone: under the runner shell the `gateway_call` line carries the
+        # same usage again, and counting both would book every call twice.
+        raw = (data.get("usage") or {}) if kind == "assistant" else {}
         for key, value in raw.items():
             if isinstance(value, (int, float)):
                 usage[key] = usage.get(key, 0) + value
@@ -190,13 +203,16 @@ def run_attempt(suite, task_id: str, make_agent: Callable, *, run: RunManifest, 
         score = episode.score()
     except Exception as e:  # noqa: BLE001 - the official scorer failed: this evaluation stops, K is not ours to fix
         return broken(f"scorer: {type(e).__name__}: {e}", "evaluator", "infrastructure")
-    termination = "budget" if surface.exhausted else STOPS.get(res.stop, "finished")
+    # A hard limit ends the attempt as `budget` and names its dimension: the runner shell's LimitHit (res.limit), or
+    # the surface's refusal of a tool call (either loop). The v1 loop's turn cap stays `step_limit` (PR7-13).
+    limit = getattr(res, "limit", None) or (surface.limit if surface.exhausted else None)
+    termination = "budget" if limit or surface.exhausted else STOPS.get(res.stop, "finished")
     return Attempt(TaskResult(task_id, family, split, attempt, run.candidate, run.hash(), splits.hash(),
                               contract=task.contract, success=score.success,
                               partial_credit=round(score.partial_credit, 6),
                               assertions_passed=score.passed, assertions_scored=score.scored,
                               usage=dict(usage), cost_usd=cost(), elapsed=round(time.monotonic() - t0, 2),
-                              steps=res.turns,
+                              steps=res.turns, limit=limit if termination == "budget" else None,
                               tool_calls=episode.tool_calls, termination=termination, stop=res.stop,
                               evidence=res.session, decisions=agent.decision_ids(), labelled=labelled,
                               failure_class="" if score.success else "task_outcome",
@@ -316,7 +332,8 @@ def _say(line: str) -> None:
 
 
 def make_agent_factory(rt, provider, *, budget: Budget, tiers: dict | None = None, meta: dict | None = None,
-                       bound=None, objects=None, stop_view: str | None = None, worker=None):
+                       bound=None, objects=None, stop_view: str | None = None, worker=None,
+                       max_effort: str | None = None):
     """-> make_agent(surface, task, system): an agent over a benchmark episode's business tools.
 
     Tool approval is off: there is nobody to ask in a benchmark run, and a declined call would be recorded as
@@ -324,10 +341,16 @@ def make_agent_factory(rt, provider, *, budget: Budget, tiers: dict | None = Non
     which this surface does not have.
 
     `bound` is a release assembled by policies.bind_release. With one, its worker prompt policies compose the
-    system prompt, its worker.stop policy answers at stop/on_finish, and each decision's observation and trace
-    are stored in `objects`. Without one, nothing changes: the harness runs as it did.
+    system prompt. Which loop runs is K's (docs/modules/01_POLICY_RUNTIME.md §1, v0.3): a release whose core fixes
+    `max_effort` — frozen under v0.3 — runs under the runner shell (agent.runner.PackageAgent: the package's own
+    agent in the isolated worker, or the default agent, every model call through the gateway and every tool call
+    through the broker, no decision point asked); `max_effort` given here says the same without reading K. An older
+    K, and a run with no release at all, keep the v1 loop (agent.loop.Agent): its worker.stop policy answers at
+    stop/on_finish, each decision's observation and trace are stored in `objects`, and its records keep their old
+    shapes (PR7-13). Without a release nothing changes: the harness runs as it did.
     """
     view = stop_view or ("stop.business.v1" if bound is not None else "stop.file.v2")
+    shell = max_effort if max_effort is not None else k_max_effort(bound)
 
     def make(surface, task, system: str):
         prompt = system
@@ -335,6 +358,10 @@ def make_agent_factory(rt, provider, *, budget: Budget, tiers: dict | None = Non
             prompt, parts = bound.system_prompt(system)
             if "worker.harness" in parts["parts"]:
                 bound.activity.call("worker.harness")       # the package's text reached the actor's prompt
+        if shell is not None:
+            return PackageAgent(provider, rt, surface, bound=bound, system=prompt, budget=budget, max_effort=shell,
+                                worker=worker, session_meta={**(meta or {}), "task": task.task_id})
+        if bound is not None:
             # The capability package: skills are read through the host's read_skill, and a package that runs
             # code needs the isolated worker, refused here otherwise (docs/modules/01_POLICY_RUNTIME.md §1).
             surface = mount(surface, bound, worker=worker, on_read=lambda name, found: bound.activity.execute(

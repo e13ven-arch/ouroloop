@@ -78,11 +78,26 @@ def test_er6_14_a_code_package_ships_its_run_bundle_and_not_its_tests(tmp_path):
     bound = app.bind()
     assert bound.package.runs_code and bound.package.test_files == {}
     # its code runs only in an isolated worker: a plain subprocess is refused unless a test says otherwise
-    from ouroloop.agent.worker import ProcessWorker
+    from ouroloop.agent.worker import RUNNER, ProcessWorker
     with pytest.raises(P.BindError, match="not an isolated one"):
         app.agent_factory(rsi.runtime(tmp_path / "rt"), budget=None, provider=object(), worker=ProcessWorker(for_tests=True))
     assert app.agent_factory(rsi.runtime(tmp_path / "rt"), budget=None, provider=object(), worker=ProcessWorker(for_tests=True),
                              allow_unqualified_worker=True)
+    # and only in one whose runner is this host's: an image built from another worker_runner.py is refused with the
+    # command that rebuilds it (M1 §1 默认 agent 即种子包), while one running the host's runner serves
+    import sys
+    other = tmp_path / "worker_runner.py"
+    other.write_text(RUNNER.read_text() + "\n# built from another runner\n")
+
+    class Isolated(ProcessWorker):
+        qualified = True
+
+    class Stale(Isolated):
+        def command(self):
+            return [sys.executable, "-I", str(other)]
+    with pytest.raises(P.BindError, match="cannot serve this host: .* rebuild the image: docker build"):
+        app.agent_factory(rsi.runtime(tmp_path / "rt"), budget=None, provider=object(), worker=Stale(for_tests=True))
+    assert app.agent_factory(rsi.runtime(tmp_path / "rt"), budget=None, provider=object(), worker=Isolated(for_tests=True))
 
 
 def test_er6_06_a_local_path_in_a_prompt_refuses_the_export(tmp_path):
