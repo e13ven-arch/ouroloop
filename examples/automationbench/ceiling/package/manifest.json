@@ -1,0 +1,19 @@
+{
+ "api_version": "harness_package.v2",
+ "agent": {
+  "entrypoint": "agent/ceiling_agent.py:run",
+  "roles": ["act", "aux"]
+ },
+ "memory": {
+  "enabled": true
+ },
+ "skills": [],
+ "hooks": [
+  {
+   "name": "finish_audit",
+   "site": "on_finish",
+   "entrypoint": "middlewares/finish_audit.py:finish_audit"
+  }
+ ],
+ "tools": []
+}

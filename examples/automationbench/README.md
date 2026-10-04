@@ -98,3 +98,11 @@ through the production `judge` with the rest pooled as the control, the v0.1/v0.
 reading ≥ 0) accepted 4 of the 20 dev pairs, the same four as the old rule, so the rule went back to M3 §2.1(b); its
 second version (the confirmation reading alone clears min_gain too) accepts 0/20 on dev and 0/12 on test, and that
 is the number the step's record keeps.
+
+## The ceiling experiment (v0.3 step 4)
+
+`ceiling_run.py` with `claude-ceiling.toml` runs v0.2's W\* and a hand-written agent package (W\*'s components plus
+full-text reading, an evidence table before the first write, a check before finishing, effort at K's cap) on the 13
+dev and train tasks W\* still fails, frozen in `ceiling/tasks.json`, under the v3 runner shell. A decision record for
+docs/ROADMAP.md §3 v0.3 step 4, never a claim; how to run it, what it costs and the decision rule are in
+[ceiling/README.md](ceiling/README.md).

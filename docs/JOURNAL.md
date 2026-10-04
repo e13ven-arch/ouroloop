@@ -8,6 +8,77 @@
 
 ---
 
+## 2026-10-05 v0.3 第 4 步：天花板实验的准备
+
+- 做了什么：按 ROADMAP v0.3 第 4 步，把天花板实验准备到可以运行为止。全程离线，没有调用任何模型，没有读 `.env`，未提交。
+  - 任务集：从 v0.2 的记录读出，冻结为 `examples/automationbench/ceiling/tasks.json`，带来源（工作区、release、run hash、attempt id、读法）。读法用 `Results.all/runs/grading`、`Releases.active`、`Objects`、`rsi/cycle.json` 与 `rsi/events.jsonl`。
+    - W* = `release:6cd37b8e49a4`：active.json 与 cycle.json 的 segment-1 一致，`install-cb19d2b77cb2` 装入。
+    - W* 的 dev 读数三次：84%（装入它的候选臂）、76%、76%（segment-1 第 2、3 轮的对照臂）。
+    - dev 取三次里至少两次失败的 6 题：三次都失败的 4 题，即文档的“4 道”，记 `persistent`；后两次失败的 2 题。
+    - train 取 W* 唯一一次 train 测量（11 题；安装后只重跑上一版失败的题）中失败的 7 题。
+    - 每题的失败断言类型按名字分为 missing_write、forbidden_write、content、count；文件里不放断言参数。
+  - 手写包 `examples/automationbench/ceiling/package/`：manifest v2，roles act/aux。W* 的 `memory.md`、`middlewares/finish_audit.py` 与其测试逐字节带上，另加 `agent/ceiling_agent.py` 与 7 个包内测试。`ceiling_agent.py` 是默认 agent 的循环，加四个机制：
+    - (a) 全文读取：`read_full` 一次至多 20 个只读 GET，全文分页，每页 ≤ `max_output_chars`，后一页从本次尝试的缓存读；结果被截断、有下一页或只有 id/摘要时，附读取提示。
+    - (b) 第一次写之前用一次 aux 调用做证据表，写操作对着表重发。
+    - (c) W* 的 hook 之后，用一次 aux 调用逐条核对本次实际执行的写与发送；有缺口时送回，至多两次。
+    - (d) 每次调用请求 effort high。
+    - 另外，W* 的包逐字节复制到 `wstar_package/`。
+  - runner `examples/automationbench/ceiling_run.py` 与配置 `claude-ceiling.toml`：
+    - 配置：v3 preset，`claude_code` 的 actor 钉在 effort high，两臂同用；根 $150 名义、硬停（初稿 $30，后改 $60，评审后定 $150，见本条末）；并发 8；每题每臂 2 次。
+    - 复用的现有路径：`bench._cycle_config` 冻结计划与根，`open_activity`、`startup_checks`，`Drafts.check`（与 R 的候选同一检查），`build_candidate`；每臂每划分一个不安装的 TaskEvalPlan，加 permit、候选 release、`run_arm` 与 `task_gate.refill`，与 train 侧筛选同一路径。
+    - 任务只从冻结文件读：核对划分 hash，dev 题在 dev，train 题在 train，不许有 test。
+    - 重复之间交替两臂的先后，免得同一臂总在最后跑。硬停在中途时，有的题两臂读数不全，结论为 incomplete。
+    - 输出：逐题逐臂的成败、失败断言类型、每次尝试的成本与判定规则的数字，写 `<ws>/ceiling/result.json` 与 `result.md` 并打印。
+    - `--checks-only` 不调模型、不开根、不跑尝试。
+  - 判定规则在运行前写进 ROADMAP 第 4 步与 ceiling/README：
+    - F 全部读到且 |R| ≥ 4 时，|X| > |R|/2 且 |X| > |B| 判“搜索”，否则判“训练准备”。
+    - |R| < 4 判 inconclusive；有题没读到判 incomplete。
+- 证据：
+  - 草稿检查：两个包在 Docker worker（`ouroloop-worker:py3.12`，镜像 `9ace6dbc112a`）里离线通过，用的是 v3 preset 的包上限、Marketing train 初始状态与 v0.2 train 判分的字面量（2,761 个）、第一道 train 题作 fixture。手写包 6 个文件约 41 KB；W* 包 4 个文件，重算的 bundle ref 等于 v0.2 记录的。检查过程中改了两处：
+    - 第一版草稿被字面量检查拒绝：7 个四位以上的数字常量（20000、4000 等）恰好出现在 train 题的初始状态里。改写成乘式后通过。
+    - aux 调用被拒时，代理本来会自己吞掉错误；改为不捕获。现在 manifest 去掉 `aux` 时，smoke 报未声明的角色，机制不会悄悄关掉而让手写包读成 W*。
+  - 离线重放 W* 在这 13 题上 25 次尝试的 576 次工具调用（不调模型，只量输出长度）：最长 7,689 字符，宿主的 20,000 截断一次也没有触发。所以在这个世界里，(a) 能起作用的只有 `read_full` 与分页/摘要提示。
+  - 新增 `tests/test_ceiling.py`，9 个测试：
+    - 两个包在 ProcessWorker 与 Docker worker 里通过草稿检查；去掉 aux 角色时 smoke 失败。
+    - 判定规则的各分支。
+    - `--checks-only` 不调模型。
+    - 脚本化模型下两臂各跑 2 题 × 2 次并写出表；同一命令续跑不再付费。
+    - 任务表含 test 题或划分不符时拒绝。
+    - 冻结文件与 W* 包的 bundle ref 可复算。
+    - 根太小时硬停，结论为 incomplete。
+  - 全套：`1095 passed, 1 deselected`（3 分 45 秒，含 Docker 的测试；上一条 1086，本条加 9 个）。
+- 因此改了什么：
+  - 任务数与文档不同：文档写“4 道 dev 题”，按多数读数或最近读数实为 6 道，另加 7 道 train，共 13 题、52 次尝试。
+  - 费用估算约 $40（$34～47）。依据是 v0.2 的 W* 在这 13 题上每次 $0.50（medium），加 effort high 与手写包的 aux 调用。这高于 ROADMAP 原写的 $10～20，也高于初稿 $30 的根：每次调用预留 $7.28，根里可花约 $22.7，多半停在第二轮重复，结论为 incomplete。协调者随后把根改为 $60，评审后定为 $150（见本条末），并把 worker 镜像按 Dockerfile 干净重建（Docker Hub 放开；`ouroloop-worker:py3.12` = `c7005dd5c421`，runner 摘要 `a79b6f9d…` 与宿主一致；旧的叠层镜像留作 `ouroloop-worker:overlay-step3`）。
+- 证据的边界：
+  - 只证明接线与记账，不证明任何机制有效：脚本化模型的行为是夹具定的。
+  - 没有对真实配置跑 `--checks-only`：它会 bootstrap `workspace-claude-ceiling`、把当时的镜像 id 冻进 K，并执行 `claude auth status`，留给运行前。镜像已由协调者按 Dockerfile 重建（`c7005dd5c421`），两个包在它上面的草稿检查也已离线通过。
+  - W* 从未跑过的 41 道 train 题，不知道它在上面是否也失败。
+- 评审（协调者，各评审在各自的副本里；真实工作树未动）：任务选择、W*、划分 hash、`wstar_package` 的 bundle ref、两臂条件相同，都复算无误。确认 6 处问题，均已离线修正（未调用模型，未读 `.env`，未提交）：
+  1. 根与限流（两条）：
+     - 问题：每次调用预留 $7.2768，等待预留发生在尝试的 900 秒之内，所以同时在飞的调用数 = floor((根 − 已花 − unknown 数 × bound) / bound)。$60 时最后几条线（W* 的第 2 轮重复总在最后）只有 2～3 个槽位：被 seconds 截断的尝试会记成 W* 失败，偏向“搜索”；一次 Ctrl-C（每个被杀的 `claude` 子进程按 $7.28 记 unknown）就可能让结论成为 incomplete。
+     - 修正：根定为 $150 名义（钱的护栏是关掉 extra usage 的订阅，预计花费仍约 $40）。`claude-ceiling.toml`、ceiling/README、ROADMAP 第 4 步按这条规则重写根的说明。
+     - runner 运行前的提示改为拿估算与“根 − bound × (1 + 并发)”比较（`ceiling_run.py` 的 `run`）。
+     - 改正 docstring 里“硬停时两臂重复数相同”的错误说法（`ceiling_run.py:23-31`）。
+     - result.json/result.md 每臂列出被硬上限截断的尝试（按维度，`limits`）。
+  2. （高）(b) 把只读的 POST 当成写：Google Ads `googleAds:search`、HubSpot `…/search`、Notion `/v1/search`。13 题里有 4 题会在读到数据之前就建证据表。
+     - 修正：加 `READ_POST = re.compile(r"[/:](search|searchStream|query|find)$")`，`_is_write` 对这些路径返回 False。规则锚在路径末尾，`:findOrCreate…` 仍算写。核对的写清单与证据表的触发随之不含搜索（`ceiling_agent.py` `_is_write`、`CHECK_PROMPT`）。
+     - 包内测试 `test_a_search_or_query_post_is_a_read_and_the_first_real_write_waits_for_the_table`：GET 文档 → POST `googleAds:search` 与 `contacts/search` 照常执行 → `campaigns:mutate` 被压住建表；核对的写清单里只有 mutate。
+  3. (a) `_page_key` 把 `{"next": {"after": null}}`（HubSpot 每次列表/搜索都带）当成有下一页，正好在 event_registration_sync 决定建不建记录时给出假的“还有下一页”。
+     - 修正：嵌套的标记只在含非空值时算（`_nonempty`）。
+     - 包内测试 `test_an_empty_next_page_is_no_page_signal`：空的 HubSpot 搜索不再给提示，`{"after": "abc"}` 与 `has_more: true` 仍给。
+  4. 基础设施失败的题对会永远未读：
+     - 修正：runner 计划的 `max_infrastructure_retries` 1 → 3（`INFRASTRUCTURE_RETRIES`）。
+     - 运行前定下包自己崩溃怎么算。查 `task_eval.run_attempt`：运行壳下 agent 程序在运行时抛错，worker 答 kind "package"，变成 `AgentRunError`，记为 invalid、failure_class infrastructure、invalid_reason `harness: AgentRunError: …`，照常补跑；装配失败记 `candidate_defect`。
+     - 规则：每个（题、臂、重复）按最后一行读。最后一行因本臂的包崩溃而无效，算该臂失败一次（`package_crash`、`final_rows`、`tabulate`）；只有环境失败（provider、worker、预算）留作未读。写进 ROADMAP 第 4 步与 ceiling/README 的规则。
+     - 测试 `test_a_crash_of_the_arms_own_package_is_a_failed_attempt_and_an_environment_failure_leaves_the_pair_unread`：覆盖包崩溃 4 次仍崩、provider 失败后补跑通过、worker 崩溃 4 次未读、`candidate_defect`、seconds 截断的列表。
+  5. ROADMAP 第 4 步的 inconclusive 一行加上“F 全部读到且”，并写明判定顺序：先 incomplete。
+  6. 本段。
+  - 证据：两个包在重建的镜像 `c7005dd5c421` 上重跑草稿检查，离线通过（手写包 6 个文件 44,927 字节，包内测试 9 个）。`--checks-only` 不调模型的测试仍在，并加上“$30 的测试根不出提示”。runner 测试核对每条线的计划 `max_infrastructure_retries` 为 3；硬停测试核对提示按 1 + 并发份预留比较。全套（前台）`1096 passed, 1 deselected`（3 分 49 秒；上次 1095，加 1 个）。
+- commit：未提交。
+
+---
+
 ## 2026-10-05 v0.3 第 3 步三复核：4 条
 
 - 做了什么：协调者在各自的仓库副本里第三次验证（真实工作树与快照逐字节相同）：上一条的 18 处修正成立，每处撤回都让其测试失败；`run_worker_rounds` 改为 `while True` 后，对抗序列（丢失与采集交替、只丢失、只采集、50 轮混合）都停下，付费会话数有界；副本全套同为 1083。另确认 4 处，由协调者直接改：(1)/(3) 同一问题——Anthropic provider 的回复自带原生内容并在下一轮原样回放，若其正文里写出的 JSON 调用被读作调用，紧随的 tool_result 无对应的 tool_use，API 以 400 拒绝、活动暂停为 repair_runtime；改为有原生内容的回复不读正文调用、回以提示语（`research/session.py::_calls_of`），纯文本 provider（manual）照旧；(2) 续跑的 `loop.counters_of` 未把丢给基础设施的轮次计入连续失败数，续跑后可多付一轮；改为与运行中一致：计入失败数、不计 idle，暂停记号归零；`test_campaign.py` 的 RC6-17 例期望由 (1, 0) 改为 (1, 1)；(4) 包自己的异常文本含孤立代理字符时，草稿检查的错误写事件会 UnicodeEncodeError 终止本轮；`Drafts.check` 统一把错误转成反斜杠转义的严格 UTF-8（会话路径与 v2 路径都经此）。
