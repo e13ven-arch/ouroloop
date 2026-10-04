@@ -243,16 +243,43 @@ PROPOSAL_FORMAT = (
 
 NOTE_FORMAT = (
     'Reply with JSON only: {"failure_class": "...", "root_cause": "...", "mechanism": "...", '
-    '"component": "memory|skills|on_finish|before_tool|after_tool|tools", "generality": "..."}. '
+    '"component": "memory|skills|on_finish|before_tool|after_tool|tools|agent", "generality": "..."}. '
     "component must be one of the allowed components.")
+# What R is told about the package API (docs/modules/00_CONTRACTS.md §2 包 API v2, M1 §1 首版能力包 API, v0.3): the
+# manifest of both versions, the optional `agent` entry, the ctx surface as the host provides it, the default agent
+# a package without an entry runs under (so the v1 rules below keep their meaning), and the test rules. Every claim
+# here is one the gateway, the broker or the default agent enforces; a sentence that promised more would cost R a
+# revision when the draft check or the gateway refused it.
 PACKAGE_API = (
     "The package API (write only the kinds in allowed_components). manifest.json = {\"api_version\": "
-    "\"harness_package.v1\", \"memory\": {\"enabled\": true|false}, \"skills\": [{\"name\": \"<name>\", "
-    "\"path\": \"skills/<name>.md\", \"description\": \"<when to read it>\"}], \"hooks\": [{\"name\": "
+    "\"harness_package.v1\" or \"harness_package.v2\", \"memory\": {\"enabled\": true|false}, \"skills\": [{\"name\": "
+    "\"<name>\", \"path\": \"skills/<name>.md\", \"description\": \"<when to read it>\"}], \"hooks\": [{\"name\": "
     "\"<name>\", \"site\": \"before_tool|after_tool|on_finish\", \"entrypoint\": "
     "\"middlewares/<file>.py:<function>\"}], \"tools\": [{\"name\": \"<name>\", \"description\": \"...\", "
     "\"input_schema\": {\"type\": \"object\", \"properties\": {...}}, \"entrypoint\": "
-    "\"tools/<file>.py:<function>\"}]}. memory.md is text the actor always sees; a skill's text is read on "
+    "\"tools/<file>.py:<function>\"}], and under v2 at most one optional \"agent\": {\"entrypoint\": "
+    "\"agent/<file>.py:run\", \"roles\": [\"act\"] or [\"act\", \"aux\"]}}. "
+    "A package without an agent entry runs under the default agent, the host's own loop shipped as "
+    "agent/default_agent.py (the task under the composed system prompt; one act model call a turn offering the "
+    "base tools, the enabled package tools and read_skill; the three hook sites; at most 2 on_finish pushbacks), "
+    "exactly as before, so memory, skills, hooks and tools keep the meaning below. An agent entry replaces that "
+    "loop with yours: def run(ctx, task) -> str, the string being the final message, and returning is finishing; "
+    "whether hooks and package tools are called is then your code's business. ctx has five names and one "
+    "self-report. ctx.model(messages, tools=(), role=\"act\", effort=None) -> .text, .tool_calls [{id, name, args}], "
+    ".stop; messages are [{\"role\": \"system\"|\"user\"|\"assistant\"|\"tool\", ...}] as the default agent sends "
+    "them (a first system message is the system prompt; an assistant entry has text and tool_calls; a tool entry "
+    "has results [{id, name, output, is_error}]), tools are [{name, description, schema}], and the calls the model "
+    "returns are yours to execute; role must be one the manifest's roles declare, else the call is refused as an "
+    "error you may catch; effort is low|medium|high|xhigh|max or None (the pinned default), and a request above "
+    "K's max_effort is sent at max_effort, never refused. ctx.tool(name, args, read_only=False) -> .output, "
+    ".is_error: one base tool (ctx.view[\"base_tools\"] lists them with their schemas) through the host's broker. "
+    "ctx.skills.index is [{name, description}], ctx.skills.read(name) -> the text or None, ctx.skills.memory the "
+    "memory text. ctx.limits is the remaining act_calls, model_calls, tool_calls, seconds and tokens (None = no "
+    "such limit); a call past one ends the attempt, scored as the world stands. ctx.view = {task, system, "
+    "base_tools, package, policies, events, max_output_chars}. ctx.mark(kind, **data) records a note labelled as "
+    "the package's own report; nothing reads it as evidence. Nothing else is reachable from the package: no "
+    "scorer, provider, store, record or file outside it. "
+    "memory.md is text the actor always sees; a skill's text is read on "
     "demand with read_skill, listed by name and description. A hook is def f(ctx, event) returning "
     "{\"action\": \"continue\"|\"block\"|\"feedback\", \"message\": \"...\"}. before_tool: event = {tool, "
     "args, turn}; block or feedback both stop that call and the rest of the turn, with the message as the "
@@ -262,8 +289,8 @@ PACKAGE_API = (
     "send the actor back to work with the message. A tool is def f(ctx, args) returning a string, and must not "
     "take a base tool's name. A tool's name is letters, digits, '_' and '-' (at most 64); its input_schema is a "
     "JSON object schema whose properties are schemas and whose arrays give items; \"enabled\": false keeps an "
-    "entry unused. During a task ctx.view = {task, turn, events}, each event {call_id, name, args, "
-    "result_excerpt, error, truncated, step}: result_excerpt is the first part of the result and truncated "
+    "entry unused. A hook's or tool's ctx.view is the agent's view above with turn added; each event in events is "
+    "{call_id, name, args, result_excerpt, error, truncated, step}: result_excerpt is the first part of the result and truncated "
     "says only that this excerpt is shorter than the result. The actor itself is always handed the whole "
     "result: nothing in a hook's input means the actor saw a cut. ctx.call_tool(name, args) calls one of the episode's base tools, "
     "which `tools` in the input lists with their parameters (read-only from a hook), and returns .output and "

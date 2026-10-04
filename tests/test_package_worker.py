@@ -1473,6 +1473,30 @@ def test_a_malformed_model_call_is_answered_as_an_error_the_agent_may_catch_and_
         ctx.model([{"role": "user", "content": "x"}], ["api_search"])
 
 
+def test_pr7_09_ctx_has_the_five_names_and_mark_and_nothing_else():
+    """PR7-09 (M0 §2 包 API v2: ctx 的五个名字加 ctx.mark): both contexts a package can be handed — HostContext in the
+    host process, AgentContext in the worker — expose model, tool, skills, limits, view and mark and no other public
+    name. HostContext slots them and keeps the host objects in closures, so any other attribute is an AttributeError
+    to read and to set, and the gateway, broker, provider or surface behind it are not reachable through it."""
+    from ouroloop.agent.gateway import AttemptBroker, HostContext, Marks, SkillReader
+    from ouroloop.agent.worker_runner import AgentContext
+    six = {"model", "tool", "skills", "limits", "view", "mark"}
+    assert set(HostContext.__slots__) == six
+    worker_ctx = AgentContext({"task": "t"}, {"act_calls": 1}, {})       # built without a pipe: nothing is asked
+    assert {n for n in dir(worker_ctx) if not n.startswith("_")} == six
+    quiet = lambda kind, data: None  # noqa: E731
+    gw = Gateway(Scripted([ChatTurn("x", [], "end")]), roles=("act",), max_effort="high", budget=Budget(), record=quiet)
+    broker = AttemptBroker(Budgeted(World(), Budget()), record=quiet, gateway=gw)
+    ctx = HostContext(gw, broker, SkillReader(None, record=quiet), Marks(quiet), {"task": "t"})
+    assert {n for n in dir(ctx) if not n.startswith("_")} == six
+    for name in ("gateway", "broker", "provider", "rt", "surface", "episode", "objects", "record"):
+        with pytest.raises(AttributeError):
+            getattr(ctx, name)
+    with pytest.raises(AttributeError):
+        ctx.extra = 1
+    assert ctx.model([{"role": "user", "content": "hi"}], role="act").text == "x" and ctx.limits["act_calls"] == 49
+
+
 def test_a_mark_cannot_set_the_records_own_fields(tmp_path):
     """gateway.Marks (M0 §2 记录由宿主写): a package's mark data is stripped of `kind`, `ts`, `source` and `mark`
     before it is written — a forged `kind` or `ts` would otherwise overwrite the host's in the line, since _emit
@@ -1487,7 +1511,9 @@ def test_a_mark_cannot_set_the_records_own_fields(tmp_path):
     shell = shell_agent(tmp_path, bound, World(), Scripted([ChatTurn("x", [], "end")]))
     assert shell.run("t").text == "ok"
     events = transcript(tmp_path, shell)
-    assert [e["kind"] for e in events] == ["task", "hook", "package_mark", "pushback", "worker_session", "end"]
+    # `agent` is the host's line naming the entry and its placement (M1 §4), written before the package's first mark
+    assert [e["kind"] for e in events] == ["task", "agent", "hook", "package_mark", "pushback", "worker_session", "end"]
+    assert events[1] == {**events[1], "entry": "agent/main.py:run", "placement": "worker", "roles": ["act"]}
     assert [e["source"] for e in events if e["kind"] in ("hook", "package_mark", "pushback")] == ["package"] * 3
     (hook,) = [e for e in events if e["kind"] == "hook"]
     assert hook == {**hook, "hook": "h", "site": "on_finish", "action": "continue", "source": "package"}

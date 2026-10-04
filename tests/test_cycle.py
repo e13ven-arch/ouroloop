@@ -1412,3 +1412,51 @@ def test_max_effort_is_frozen_into_k_with_a_default_of_high_and_narrows_only(fak
         bench.harness_settings({"harness_evolution": {"package_api": "harness_package.v9"}})
     with pytest.raises(ValueError, match="one of"):
         bench.harness_settings({"harness_evolution": {"max_effort": "ultra"}})
+
+
+def test_the_v3_preset_freezes_a_k_with_the_agent_kind_the_effort_ceiling_and_the_five_limits(fake_upstream, tmp_path,
+                                                                                               monkeypatch):
+    """docs/modules/07_BENCH_REPORT.md §2 and M0 §2 (v0.3): `automationbench_harness_v3` is its own preset — the v1
+    preset's numbers under package API v2 with the `agent` kind, `max_effort` high, and the five per-attempt hard
+    limits at the design's values as [bench.budget]'s defaults — so a config that writes no budget bootstraps a K
+    whose harness allows agents and whose TargetHarness and frozen task plan carry all five; [bench.budget] may lower
+    one under it and is refused when it raises one; the v1 preset is untouched and supplies no budget."""
+    from ouroloop.agent.worker import ProcessWorker
+    from ouroloop.evolve.task_gate import TaskEvalPlan
+    five = {"max_steps": 50, "max_model_calls": 200, "max_tool_calls": 200, "max_seconds": 900.0, "max_tokens": 400000}
+    v1, v3 = bench.PRESETS["marketing_harness_v1"], bench.PRESETS["automationbench_harness_v3"]
+    assert v1["harness"]["package_api"] == "harness_package.v1" and "agent" not in v1["harness"]["components"]
+    assert "budget" not in v1 and bench.preset_budget({"improvement": {"preset": "marketing_harness_v1"}}) == {}
+    assert v3["budget"] == five and v3["harness"]["package_api"] == "harness_package.v2"
+    assert v3["harness"]["components"][0] == "agent" and set(v3["harness"]["components"]) == set(hp.KINDS)
+    assert v3["harness"]["max_effort"] == "high" and v3["domain"] == "marketing"
+    same = lambda h: {k: v for k, v in h.items() if k not in ("package_api", "components", "max_effort")}  # noqa: E731
+    assert same(v3["harness"]) == same(v1["harness"])
+    assert {k: v3[k] for k in ("schedule", "task_plan", "campaign")} == {k: v1[k] for k in ("schedule", "task_plan", "campaign")}
+    preset = json.loads(json.dumps(v3))
+    preset["domain"] = rsi.DOMAIN
+    preset["harness"]["sandbox"] = None                 # no image to freeze here; the worker is the test's
+    preset["task_plan"]["gate"].update(min_groups=1, bootstrap_replicates=200)
+    monkeypatch.setitem(bench.PRESETS, "v3_test", preset)
+    monkeypatch.setattr(bench, "isolated_worker", lambda settings: ProcessWorker(for_tests=True) if settings else None)
+    cfg = cycle_config(fake_upstream, tmp_path)
+    del cfg["bench"]["budget"]                          # the preset's five, not the config's
+    cfg["improvement"]["preset"] = "v3_test"
+    assert bench.BenchConfig.load(cfg).budget.limits() == five
+    activity, _ = gap_w0(cfg, tmp_path)
+    harness = bench._harness_of(activity)
+    assert harness["package_api"] == "harness_package.v2" and harness["max_effort"] == "high"
+    assert harness["package"]["components"][0] == "agent" and hp.Limits.from_json(harness["package"]).allows_code
+    release = ct.SystemRelease.from_json(activity.objects.get(activity.release_ref))
+    target = activity.objects.load(release.target_harness_ref, ct.TargetHarness)
+    assert activity.objects.get(target.limits_ref) == five
+    assert "harness_package.v2" in release.required_capabilities and "isolated_worker" in release.required_capabilities
+    named = frozen(cfg)
+    plan = TaskEvalPlan.from_json(activity.objects.get(named["rsi"]["task_plan_ref"]))
+    assert {k: plan.per_attempt_budget[k] for k in bench.HARD_LIMITS} == five
+    assert bench.startup_checks(bench.open_activity(named, ".", out=lambda _line: None), named, phase="baseline",
+                                needs_model=False) == []
+    lowered = bench.BenchConfig.load({**cfg, "bench": {**cfg["bench"], "budget": {"max_steps": 8, "max_tokens": 4000}}})
+    assert (lowered.budget.max_steps, lowered.budget.max_tokens, lowered.budget.max_model_calls) == (8, 4000, 200)
+    with pytest.raises(ValueError, match=r"\['max_tokens'\] above the preset's \[400000\].*not raised"):
+        bench.BenchConfig.load({**cfg, "bench": {**cfg["bench"], "budget": {"max_tokens": 500000}}})

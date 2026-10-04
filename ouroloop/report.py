@@ -118,13 +118,15 @@ def _harness_evidence(root: Path, objects: ct.Objects, events: list, entries: li
         if info is not None:
             packages[release] = info
     behaviour = {"sessions": 0, "skill_reads": {}, "hooks": {}, "package_tools": {}, "worker_sessions": 0,
-                 "worker_seconds": 0.0}
+                 "worker_seconds": 0.0, "gateway": gateway_summary(())}
     transcripts = root / "transcripts"
     for attempt in attempts:
         if not attempt.evidence or attempt.system_release_ref not in packages:
             continue
         behaviour["sessions"] += 1
-        for row in _read_jsonl(transcripts / f"{attempt.evidence}.jsonl"):
+        rows = list(_read_jsonl(transcripts / f"{attempt.evidence}.jsonl"))
+        _tally_gateway(rows, behaviour["gateway"])
+        for row in rows:
             kind = row.get("kind")
             if kind == "assistant":
                 for call in row.get("tool_calls") or ():
@@ -193,8 +195,10 @@ def _harness_evidence(root: Path, objects: ct.Objects, events: list, entries: li
 
 
 def _package_of(objects: ct.Objects, release_ref: str) -> dict | None:
-    """The package a release mounts, as a summary: its kinds and names, never its text."""
+    """The package a release mounts, as a summary: its kinds and names, never its text. `agent` is the entry that
+    runs it (M1 §4): the manifest's own, or the default agent's for a package without one (every v1 package)."""
     from .agent import harness_package as hp
+    from .agent.default_agent import DEFAULT_ENTRY
     from .policies import parse_builtin
     try:
         release = ct.SystemRelease.from_json(objects.get(release_ref))
@@ -205,7 +209,11 @@ def _package_of(objects: ct.Objects, release_ref: str) -> dict | None:
             config = parse_builtin(p.implementation["builtin"], objects.get(p.implementation["config_ref"]))
             run, tests = hp.files_of(objects, config["package_ref"])
             manifest = hp.parse_manifest(run["manifest.json"], {**run, **tests})
+            agent = manifest.get("agent") if isinstance(manifest.get("agent"), dict) else {}
             return {"package_ref": config["package_ref"], "files": len(run), "test_files": len(tests),
+                    "api_version": manifest.get("api_version") or hp.API_VERSIONS[0],
+                    "agent": agent.get("entrypoint") or DEFAULT_ENTRY,
+                    "roles": list(agent.get("roles") or ["act"]),
                     "skills": [s["name"] for s in manifest["skills"]],
                     "hooks": [{"name": h["name"], "site": h["site"]} for h in manifest["hooks"]],
                     "tools": [t["name"] for t in manifest["tools"]],
@@ -214,6 +222,52 @@ def _package_of(objects: ct.Objects, release_ref: str) -> dict | None:
     except (KeyError, ct.ContractError, ValueError, TypeError):
         return None
     return None
+
+
+# ---------------------------------------------------------------------------- what the runner shell's records say
+def gateway_summary(transcripts) -> dict:
+    """What the host-written records of the runner shell say about how the attempts ran (docs/modules/01_POLICY_RUNTIME.md
+    §4 Inspection, v0.3), tallied over `transcripts` (each a list of transcript rows): how many attempts ran under the
+    shell (`attempts`: a transcript with a `gateway_call` line), which agent entry ran where (`entries`, `placements`:
+    the `agent` record the runner writes — the entry, and `worker` or `host`), the model calls and output tokens by
+    role (`by_role`, the `assistant` events' `role`, tallied as Gateway.by_role tallies them), the efforts the calls
+    were made at (`efforts`) and how many requests the gateway capped at K's `max_effort` (`effort_caps`: a
+    `requested_effort` on record other than the `effort` used), and which hard limit ended an attempt (`limits_hit`,
+    the `end` event's `limit`, by dimension). Read from the records alone, never from a package's own account (M0 §2
+    记录由宿主写). An attempt under the v1 loop adds nothing: it wrote none of these lines, and a zero for it would read
+    as a shell attempt that made no call (observed=false, not 0)."""
+    out = {"attempts": 0, "entries": {}, "placements": {}, "by_role": {}, "efforts": {}, "effort_caps": 0,
+           "limits_hit": {}}
+    for rows in transcripts:
+        _tally_gateway(list(rows), out)
+    return out
+
+
+def _tally_gateway(rows: list, into: dict) -> None:
+    from .evolve.execution import normalize_usage
+    if not any(r.get("kind") == "gateway_call" for r in rows):
+        return
+    into["attempts"] += 1
+    for r in rows:
+        kind = r.get("kind")
+        if kind == "agent":
+            _bump(into["entries"], r.get("entry"))
+            _bump(into["placements"], r.get("placement"))
+        elif kind == "assistant" and r.get("role"):
+            tally = into["by_role"].setdefault(str(r["role"]), {"calls": 0, "tokens": 0})
+            tally["calls"] += 1
+            usage = r.get("usage") or {}
+            tally["tokens"] += int(normalize_usage(usage)["output_tokens"]) if usage else 0
+            _bump(into["efforts"], r.get("effort"))
+            if r.get("requested_effort") is not None and r.get("requested_effort") != r.get("effort"):
+                into["effort_caps"] += 1
+        elif kind == "end" and r.get("limit"):
+            _bump(into["limits_hit"], r.get("limit"))
+
+
+def _bump(counts: dict, key) -> None:
+    key = str(key)
+    counts[key] = counts.get(key, 0) + 1
 
 
 def _research_cost(root: Path) -> dict:
@@ -534,11 +588,19 @@ def render_markdown(report: dict) -> str:
             lines.append(f"- {ct.short(release)}: package {ct.short(pkg['package_ref'])}, {pkg['files']} files, "
                          f"kinds {pkg['kinds'] or 'none'}, skills {pkg['skills'] or 'none'}, hooks "
                          f"{[h['site'] for h in pkg['hooks']] or 'none'}, tools {pkg['tools'] or 'none'}, "
-                         f"memory {'on' if pkg['memory'] else 'off'}")
+                         f"memory {'on' if pkg['memory'] else 'off'}"
+                         + (f", agent {pkg['agent']} roles {pkg['roles']}" if pkg.get("agent") else ""))
         b = harness["behaviour"]
         lines += [f"- behaviour over {b['sessions']} sessions: skill reads {b['skill_reads'] or 'none'}; hooks "
                   f"{b['hooks'] or 'none'}; package tools {b['package_tools'] or 'none'}; worker "
                   f"{b['worker_sessions']} sessions, {b['worker_seconds']} s"]
+        g = b.get("gateway") or {}
+        if g.get("attempts"):
+            # The runner shell's own facts (M1 §4), from the host's records: which program ran where, what it asked
+            # the model as whom, what the gateway capped, and which hard limit ended an attempt.
+            lines.append(f"- runner shell over {g['attempts']} attempts: agent {g['entries']} placed {g['placements']}; "
+                         f"model calls by role {g['by_role']}; efforts {g['efforts']}, {g['effort_caps']} requests "
+                         f"capped at K's max_effort; limits hit {g['limits_hit'] or 'none'}")
         for m in harness["measurements"]:
             lines.append(f"- measured {ct.short(m['release'])}: {m['passed']}/{m['tasks']} passed — {m['scope']}")
         lines.append(f"- {harness['measurement_note']}")

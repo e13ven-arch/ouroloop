@@ -76,6 +76,26 @@ def test_each_rule_flips_its_own_kind_and_c_only_answers_a_check_before_finishin
     assert runs["hook"]["002"]["pushes"] == 1 and runs["hook"]["006"]["pushes"] == 0
 
 
+def test_the_fake_actor_answers_through_the_gateway(world):
+    """M1 §1 宿主作为运行壳 and §5 (the rehearsal under the shell, v0.3): every attempt of the world runs the default agent
+    over the host's gateway and broker — one host-written `gateway_call` per model turn (the tool specs once), a
+    `broker_event` per base call, the skill read as a `skill_read`, and the hook's answer, the pushback and the
+    package tool's run as the package's marks — so the fixture actor is reached as `[llm] type` reaches it and the
+    numbers above are the shell's; no attempt of the world hits a hard limit."""
+    runs = world["runs"]
+    hook = runs["hook"]["002"]["kinds"]
+    assert hook.count("gateway_call") == hook.count("assistant") == 4 and hook.count("tool_specs") == 1
+    assert hook.count("broker_event") == 2 and hook.count("hook") == 2 and hook.count("pushback") == 1
+    skill = runs["skill_B"]["001"]["kinds"]
+    assert skill.count("skill_read") == 1 and skill.index("skill_read") < skill.index("broker_event")
+    tool = runs["tool_F"]["011"]["kinds"]
+    assert tool.count("package_tool") == 1 and tool.count("broker_event") == 2       # the tool's base call is one
+    assert runs["tool_F"]["011"]["calls"] == ["api_fetch", "add_contact_note"]
+    plain = runs["w0"]["003"]["kinds"]
+    assert not {"hook", "pushback", "package_tool", "skill_read"} & set(plain) and "gateway_call" in plain
+    assert {r["limit"] for rs in runs.values() for r in rs.values()} == {None}
+
+
 def test_an_armed_fault_fails_one_attempt_and_is_used_up(world):
     """§10.2: the operator's fault fails the next attempt on its task once; the retry runs as usual."""
     assert world["fault"] == "ProviderError" and world["after_fault"] and world["fault_used_up"]

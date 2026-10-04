@@ -133,6 +133,33 @@ def test_r_is_told_the_package_api_and_a_refusal_names_what_was_expected():
         hp.parse_manifest(json.dumps({**hp.empty_manifest(), "skills": ["finish_audit"]}), {})
 
 
+def test_r_is_told_the_v2_api_the_ctx_surface_and_that_a_v1_package_runs_under_the_default_agent():
+    """docs/modules/00_CONTRACTS.md §2 (包 API v2, v0.3): the text R writes from names both manifest versions and the
+    optional `agent` entry with its roles, says a package without one runs under the default agent exactly as
+    before, describes the five ctx names in the shapes the gateway and broker enforce (role must be declared, effort
+    capped at K's max_effort and never refused, the model's calls are the agent's to execute, a limit ends the
+    attempt), the view's keys, and that ctx.mark is self-report only — and still carries the v1 rules."""
+    from ouroloop.agent.gateway import EFFORTS
+    for fragment in ('"api_version": "harness_package.v1" or "harness_package.v2"',
+                     '"agent": {"entrypoint": "agent/<file>.py:run", "roles": ["act"] or ["act", "aux"]}',
+                     "A package without an agent entry runs under the default agent",
+                     "def run(ctx, task) -> str", "returning is finishing",
+                     'ctx.model(messages, tools=(), role="act", effort=None) -> .text, .tool_calls [{id, name, args}], .stop',
+                     "role must be one the manifest's roles declare, else the call is refused as an error you may catch",
+                     "a request above K's max_effort is sent at max_effort, never refused",
+                     "the calls the model returns are yours to execute",
+                     "ctx.tool(name, args, read_only=False) -> .output, .is_error",
+                     "ctx.skills.index", "ctx.skills.read(name)", "ctx.skills.memory",
+                     "ctx.limits is the remaining act_calls, model_calls, tool_calls, seconds and tokens",
+                     "ctx.view = {task, system, base_tools, package, policies, events, max_output_chars}",
+                     "ctx.mark(kind, **data) records a note labelled as the package's own report; nothing reads it as evidence",
+                     "|".join(EFFORTS)):
+        assert fragment in PACKAGE_API, fragment
+    assert PACKAGE_API.count('"agent"') == 1                      # one entry, said once
+    from ouroloop.research.basic import NOTE_FORMAT
+    assert "memory|skills|on_finish|before_tool|after_tool|tools|agent" in NOTE_FORMAT
+
+
 def test_r_sees_the_instruction_text_w_runs_with_so_it_does_not_repeat_it(fake_upstream, tmp_path):
     from test_harness_loop import v06_prepared
     from ouroloop import bench

@@ -133,6 +133,8 @@
 - actor 对同一输入输出相同；
 - 用脚本研究员按第 4 节的走向跑一遍 cycle，核对 segment-0 装入、研究位两支 W* 不同、外测运行。这只是离线演练，不替代经 CLI 的彩排。
 
+（v0.3，2026-10-04）`examples/rehearsal/check_world.py` 的每次尝试走运行壳的宿主对象（[M1 §1](modules/01_POLICY_RUNTIME.md)）：假 actor 在 `Gateway` 后面（它是 `[llm] type` 指向的 provider，网关调它与调 `claude_code` 走同一路径），episode 在 `AttemptBroker` 后面，包的 memory/skills 在 `SkillReader` 后面，默认 agent 以种子包的同一份字节从一个按 worker 布局摆好的 bundle 加载、经 `HostContext` 运行。hook 与包工具两类变体不再手写在检查脚本里，用的是 `dry_run.py` 装入的同一份源码（`HOOK`、`NOTE_TOOL`），所以离线检验核对的就是干跑装入的东西。每次尝试记下的记录种类随结果输出，`test_rehearsal_world.py::test_the_fake_actor_answers_through_the_gateway` 核对形状（每回合一条 `gateway_call`、每次基础调用一条 `broker_event`、技能读取与 hook/回推/包工具的自述）；§10 的全部数字在新壳下原样复现。`dry_run.py` 在 v3 的 K 下（`marketing_harness_v1` preset 带 `max_effort`，新冻结的 K 走运行壳）跑通到 gate 裁决与 R1 装入。
+
 ## 9. 结果（2026-10-03）
 
 三个工作区都经 CLI 运行，都没有注入研究员。请求与回复按 id 成对存档在 `examples/rehearsal/archive/`；actor 检查用的是真实上游的题目文本，不入库。

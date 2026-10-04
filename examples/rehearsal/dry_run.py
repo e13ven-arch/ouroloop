@@ -41,6 +41,13 @@ NOTE_TOOL = (
     "    result = ctx.call_tool('api_fetch', {'method': 'POST', 'body': json.dumps(body),\n"
     "                                         'url': 'https://api.hubapi.com/crm/v3/objects/contacts/notes'})\n"
     "    return result.output\n")
+# The manifest entry of that tool, as the scripted R writes it; check_world.py installs the same entry and code,
+# so the offline check exercises exactly what the dry run installs.
+NOTE_TOOL_ENTRY = {
+    "name": "add_contact_note", "description": "Add a note to a contact from its plain text: it is encoded and "
+    "posted for you.", "entrypoint": "tools/notes.py:add_contact_note",
+    "input_schema": {"type": "object", "properties": {"contact_id": {"type": "string"}, "text": {"type": "string"}},
+                     "required": ["contact_id", "text"]}}
 NOTE_TOOL_TEST = (
     "import importlib.util, os\n"
     "def test_the_tool_answers_with_text(ctx):\n"
@@ -121,12 +128,7 @@ class Scripted:
             manifest["memory"] = {"enabled": True}
             write["memory.md"] = (files.get("memory.md", "").rstrip() + "\n" + RULES[kind]).strip() + "\n"
         elif how == "tool":
-            manifest["tools"] = [*manifest.get("tools", []), {
-                "name": "add_contact_note", "description": "Add a note to a contact from its plain text: it is "
-                "encoded and posted for you.", "entrypoint": "tools/notes.py:add_contact_note",
-                "input_schema": {"type": "object", "properties": {"contact_id": {"type": "string"},
-                                                                  "text": {"type": "string"}},
-                                 "required": ["contact_id", "text"]}}]
+            manifest["tools"] = [*manifest.get("tools", []), dict(NOTE_TOOL_ENTRY)]
             write["tools/notes.py"] = NOTE_TOOL
             write["tests/test_notes.py"] = NOTE_TOOL_TEST
         elif how == "skill":

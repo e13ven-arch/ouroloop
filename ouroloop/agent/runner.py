@@ -115,6 +115,10 @@ class PackageAgent:
     def run(self, task: str) -> AgentResult:
         self.rt.session(self.session, self.session_meta, harness=self.harness())
         self._emit("task", text=task)
+        # Where the loop ran, host-written (M1 §4): the agent entry, its placement (the isolated worker or this
+        # process) and the roles it may call the model as. The session's harness goes to the ledger as a hash only,
+        # and the gateway log alone does not say which program sent the calls; the report reads this line.
+        self._emit("agent", entry=self.entry, placement=self.placement, roles=list(self.roles))
         limits = getattr(self.worker, "limits", None)
         max_output_chars = getattr(limits, "max_output_chars", 20000)
         view = attempt_view(task, self.system, self.surface, self.bound, self.package, max_output_chars)

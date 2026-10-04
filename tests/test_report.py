@@ -285,3 +285,67 @@ def test_a_final_comparison_that_goes_the_other_way_is_not_supported(fake_upstre
     record(results, candidate="base", role="base", split="test", tasks=list(rsi.FINAL), success=True)
     claims = build_report(activity.root, rsi.DOMAIN)["claims"]
     assert claims["C1"]["state"] == "not_supported" and claims["C1"]["interval"]["high"] < 0
+
+
+# ---------------------------------------------------------------------------- v0.3: what the runner shell's records say
+def test_pr7_11_the_report_reads_the_agent_entry_placement_roles_effort_caps_and_limits_from_the_gateway_log():
+    """docs/modules/01_POLICY_RUNTIME.md §4 (Inspection, v0.3), report.gateway_summary: from the host-written lines of
+    two shell attempts — the runner's `agent` record, the `assistant` events with role/effort/requested_effort and
+    usage, the `end` event's `limit` — the capability-package section tallies the entry and its placement, the model
+    calls and output tokens by role (as Gateway.by_role does), the efforts used, how many requests the gateway capped
+    at K's max_effort, and which hard limit ended an attempt; an attempt under the v1 loop (no gateway line) adds
+    nothing, and nothing is read from a package's own mark."""
+    from ouroloop.report import gateway_summary
+    worker = [
+        {"kind": "task", "text": "t"},
+        {"kind": "agent", "entry": "agent/main.py:run", "placement": "worker", "roles": ["act", "aux"]},
+        {"kind": "assistant", "role": "aux", "effort": "high", "requested_effort": "max",
+         "usage": {"input_tokens": 10, "output_tokens": 7}, "tool_calls": [], "stop": "end"},
+        {"kind": "gateway_call", "call_id": "c1", "role": "aux"},
+        {"kind": "assistant", "role": "act", "effort": "medium", "requested_effort": None,
+         "usage": {"prompt_tokens": 3, "completion_tokens": 5}, "tool_calls": [], "stop": "end"},
+        {"kind": "gateway_call", "call_id": "c2", "role": "act"},
+        {"kind": "package_mark", "mark": "assistant", "role": "act", "source": "package"},   # not a model call
+        {"kind": "end", "stop": "act_calls", "turns": 1, "limit": "act_calls"},
+    ]
+    host = [
+        {"kind": "task", "text": "t"},
+        {"kind": "agent", "entry": "agent/default_agent.py:run", "placement": "host", "roles": ["act"]},
+        {"kind": "assistant", "role": "act", "effort": "medium", "requested_effort": None,
+         "usage": {"output_tokens": 2}, "tool_calls": [], "stop": "end"},
+        {"kind": "gateway_call", "call_id": "c3", "role": "act"},
+        {"kind": "end", "stop": "end", "turns": 1},
+    ]
+    old_loop = [{"kind": "task", "text": "t"}, {"kind": "assistant", "text": "x", "tool_calls": []},
+                {"kind": "end", "stop": "end", "turns": 1}]
+    summary = gateway_summary([worker, host, old_loop])
+    assert summary == {"attempts": 2,
+                       "entries": {"agent/main.py:run": 1, "agent/default_agent.py:run": 1},
+                       "placements": {"worker": 1, "host": 1},
+                       "by_role": {"aux": {"calls": 1, "tokens": 7}, "act": {"calls": 2, "tokens": 7}},
+                       "efforts": {"high": 1, "medium": 2}, "effort_caps": 1, "limits_hit": {"act_calls": 1}}
+    assert gateway_summary([old_loop]) == gateway_summary([])        # observed nothing: no zeros posing as calls
+    assert gateway_summary([])["attempts"] == 0
+    # the markdown line carries the same facts, and a report without shell attempts has no such line
+    harness = {"packages": {"release:sha256:" + "a" * 64: {
+        "package_ref": "package:sha256:" + "b" * 64, "files": 2, "test_files": 0, "kinds": ["agent"],
+        "skills": [], "hooks": [], "tools": [], "memory": False, "agent": "agent/main.py:run", "roles": ["act", "aux"]}},
+        "behaviour": {"sessions": 2, "skill_reads": {}, "hooks": {}, "package_tools": {}, "worker_sessions": 1,
+                      "worker_seconds": 1.5, "gateway": summary},
+        "measurements": [], "measurement_note": "n", "notes": [], "drafts": {"checks": 0, "refused": 0,
+                                                                            "infrastructure": 0, "finished": {}},
+        "gates": [], "research_cost": {}, "cycle": None, "reuse": [], "not_run": {}}
+    report = {"protocol": "p", "identity": {"domain": "d", "attempts": 2, "runs": 1, "splits": None, "releases": [],
+                                            "missing": []},
+              "task_effect": {"arms": {}}, "run_cost": {}, "improvement_evidence": {"experiments": [],
+                                                                                   "installations": []},
+              "rsi_evidence": {"research_receipts": [], "discovery": None, "installed_releases": []}, "claims": {},
+              "harness": harness, "improvement_cost": {}}
+    text = render_markdown(report)
+    assert "agent agent/main.py:run roles ['act', 'aux']" in text
+    assert ("runner shell over 2 attempts: agent {'agent/main.py:run': 1, 'agent/default_agent.py:run': 1} placed "
+            "{'worker': 1, 'host': 1}; model calls by role {'aux': {'calls': 1, 'tokens': 7}, 'act': {'calls': 2, "
+            "'tokens': 7}}; efforts {'high': 1, 'medium': 2}, 1 requests capped at K's max_effort; limits hit "
+            "{'act_calls': 1}") in text
+    harness["behaviour"]["gateway"] = gateway_summary([])
+    assert "runner shell" not in render_markdown(report)

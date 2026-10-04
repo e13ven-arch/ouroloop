@@ -76,7 +76,15 @@ class BenchConfig:
         unknown = sorted(set(table) - BENCH_KEYS)
         if unknown:
             raise ValueError(f"[bench] does not take {unknown}; it takes {sorted(BENCH_KEYS)}")
-        budget = Budget(**dict(table.pop("budget", None) or {}))
+        # [bench.budget] over the preset's per-attempt limits (preset_budget): a preset that carries them is the
+        # ceiling, as its harness numbers are — a value here may lower one, never raise one.
+        defaults, given = preset_budget(cfg), dict(table.pop("budget", None) or {})
+        raised = sorted(k for k, v in given.items()
+                        if k in defaults and v is not None and float(v) > float(defaults[k]))
+        if raised:
+            raise ValueError(f"[bench.budget] {raised} above the preset's {[defaults[k] for k in raised]}: a "
+                             f"per-attempt limit may be lowered under a preset, not raised")
+        budget = Budget(**{**defaults, **given})
         toolset = table.get("toolset", ab.TOOLSET)
         if toolset != ab.TOOLSET:
             raise ValueError(f"[bench] toolset = {toolset!r}: only {ab.TOOLSET!r} is wired up (upstream's own "
@@ -1068,6 +1076,30 @@ PRESETS = {
                      "min_groups": 1},
     },
 }
+# The v0.3 preset (docs/modules/07_BENCH_REPORT.md §2, M0 §2, v0.3, 2026-10-04): the v1 preset under package API v2 —
+# the `agent` component kind, so a candidate may change the loop itself — with K's effort ceiling and the five
+# per-attempt hard limits at the design's values as [bench.budget]'s defaults (preset_budget). Its own entry, not a
+# change to the v1 one: the v1 numbers are frozen into the v0.1/v0.2 cores and are not revisited. Still one domain
+# (Marketing) until step 5 of the v0.3 order widens [bench] to a domain list.
+PRESETS["automationbench_harness_v3"] = {
+    **json.loads(json.dumps(PRESETS["marketing_harness_v1"])),
+    "harness": {**PRESETS["marketing_harness_v1"]["harness"], "package_api": "harness_package.v2",
+                "components": ["agent", "memory", "skills", "on_finish", "before_tool", "after_tool", "tools"],
+                "max_effort": "high"},
+    "budget": {"max_steps": 50, "max_model_calls": 200, "max_tool_calls": 200, "max_seconds": 900.0,
+               "max_tokens": 400000},
+}
+
+
+def preset_budget(cfg: dict) -> dict:
+    """The per-attempt hard limits the [improvement] preset fixes, as [bench.budget]'s defaults (M0 §2 "单次尝试硬上限",
+    v0.3): the v3 preset carries all five, so a config under it freezes them without writing them. {} under a preset
+    without a `budget` table (the v1 preset, whose cores froze what [bench.budget] alone said), without [improvement],
+    and for an unknown preset — improvement_settings names that one. Like the harness numbers they are ceilings:
+    BenchConfig.load lets [bench.budget] lower one and refuses to raise one."""
+    name = dict(cfg.get("improvement") or {}).get("preset")
+    preset = PRESETS.get(name) if isinstance(name, str) else None
+    return dict((preset or {}).get("budget") or {})
 
 
 def improvement_settings(cfg: dict) -> dict | None:

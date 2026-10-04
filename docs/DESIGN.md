@@ -65,15 +65,16 @@ actor 与 controller 按输出职责分离，不声称决策不需要推理，�
 **包 API v2（M0，v0.3，2026-10-04）。** manifest 的 `api_version` 为 `"harness_package.v2"`（今天的宿主只接 `harness_package.v1`，`agent/harness_package.py:24`、`:114`），新增 `agent` 组件：入口 `agent/<file>.py:run`，`run(ctx, task) -> 最终消息文本`。`ctx` 只暴露这几样，原因是包拿到的每一项都是可被候选学去取分的面：
 
 - `ctx.model(messages, tools=(), role="act"|"aux", effort=None) -> {text, tool_calls}`：宿主网关调用所 pin 的模型；`effort` 高于 K 的 `max_effort` 时按上限截顶发出、从不拒绝，请求值记入网关记录；`role` 默认 `"act"`；manifest 未声明的 role 是草稿检查错误（角色列表是训练投影的依据，见下文“第二版训练兼容”，不能运行时才出现）。
-- `ctx.tool(name, args) -> {output, is_error}`：经 broker 执行 K 授权的基础工具与包工具，每次都过原权限/预算检查并记事件。
-- `ctx.skills`（只读）、`ctx.limits`（剩余 act 调用、模型调用、工具调用、秒数、输出 token）、`ctx.view`（与今天相同的只读投影）。
+- `ctx.tool(name, args, read_only=False) -> {output, is_error}`：经 broker 执行 K 授权的基础工具，每次都过原权限/预算检查并记事件；包工具是 agent 自己的代码，broker 只见它发出的基础调用。
+- `ctx.skills`（只读）、`ctx.limits`（剩余 act 调用、模型调用、工具调用、秒数、输出 token）、`ctx.view`（与今天相同的只读投影，另带宿主合成的 `system`、`base_tools`、`package`、`max_output_chars`）。
+- 另有 `ctx.mark(kind, **data)`（实现，2026-10-04）：包对自己循环的自述，宿主标 `source: "package"` 写入，不是证据（M0 §2“包的自述”）。
 - 包永远拿不到评分器、provider、凭据、对象库或结果句柄。
 
-v1 的包种类（memory/skills/hooks/tools）仍然有效：随框架交付的**默认 agent**（`agent/default_agent.py`，把今天 `agent/loop.py` 的宿主循环移植成包，即种子包）运行它们，所以 v1 包就是带默认 agent 的 v2 包，旧包不迁移也能跑。带 `agent` 条目的包在隔离 worker 里运行它的代码；没有 `agent` 条目的 v1 包（含 v0.1/v0.2 的 W*）由宿主在进程内以默认 agent 运行，经同一网关与 broker（M1 §1）。包身份覆盖 agent 代码：改循环即新 W/package 身份，不伪装同配置比较。
+v1 的包种类（memory/skills/hooks/tools）仍然有效：随框架交付的**默认 agent**（`agent/default_agent.py`，把今天 `agent/loop.py` 的宿主循环移植成包，即种子包）运行它们，所以 v1 包就是带默认 agent 的 v2 包，旧包不迁移也能跑。带 `agent` 条目的包在隔离 worker 里运行它的代码；没有 `agent` 条目的 v1 包由默认 agent 运行——只含文本的（含 v0.1/v0.2 的 W*）在宿主进程内，含 tools/hooks 代码的整个默认 agent 在 worker 里，宿主加载时把它的字节随包发入——经同一网关与 broker（M1 §1“放置”）。包身份覆盖 agent 代码：改循环即新 W/package 身份，不伪装同配置比较。
 
-**轨迹记录（网关日志，M0 §2，v0.3，2026-10-04）。** 每次模型调用一条 `{call_id, role, effort, messages, tools, response, usage}`，每次工具调用一条 broker 事件；两者都由宿主写，包不能写也不能改。训练投影与 R 读的是这份记录，不读包自己的笔记。原因：它是 gate 证据与训练数据的唯一来源，由包写就等于让候选给自己写成绩单（[SURVEY](SURVEY_RSI_FRAMEWORKS.md) §5 第 3 条）。
+**轨迹记录（网关日志，M0 §2，v0.3，2026-10-04）。** 每次模型调用一条 `{call_id, role, effort, messages, tools, response, usage}`（实现：messages 以对上一条的前缀计数加尾段记录，tools 记名字与 schema 摘要、全部 spec 在变化时另记一条 `tool_specs`），每次工具调用一条 broker 事件；两者都由宿主写，包不能写也不能改。训练投影与 R 读的是这份记录，不读包自己的笔记。原因：它是 gate 证据与训练数据的唯一来源，由包写就等于让候选给自己写成绩单（[SURVEY](SURVEY_RSI_FRAMEWORKS.md) §5 第 3 条）。
 
-**宿主作为运行壳（M1，v0.3，2026-10-04）。** episode → worker 会话（Docker，如今天）→ `agent.run`；网关与 broker 在宿主。宿主不问任何决策点：今天 `agent/loop.py` 里的 compact（`:452`）、route（`:263`）、retry（`:420`）随循环一起进了 agent 程序（默认 agent 保留今天的做法，带自己 agent 的包随意）；tool_gate（`:402`）留在 broker，作为 K 的权限规则而不是决策；stop（`:276`）不再是向模型提问——一次尝试何时结束只有两种：agent 返回，或某个硬限额结束它。`claude_code` provider 与计量不变（M1 §1）。网关记录每次调用的 `role`（act/aux）与 effort（请求值与截顶值）。
+**宿主作为运行壳（M1，v0.3，2026-10-04）。** episode → worker 会话（Docker，如今天）→ `agent.run`；网关与 broker 在宿主（`agent/runner.py` 的 `PackageAgent`，`agent/gateway.py` 的 `Gateway`/`AttemptBroker`）。宿主不问任何决策点：v1 循环 `agent/loop.py` 里的 compact、route、retry 随循环一起进了 agent 程序（默认 agent `agent/default_agent.py`：compaction 保留为规则 `_compact`，route 只剩一个模型，bash 重跑没有模型可问、不保留；带自己 agent 的包随意）；tool_gate 留在 broker（`AttemptBroker.call` 的拒绝表否决），作为 K 的权限规则而不是决策；stop 不再是向模型提问——一次尝试何时结束只有两种：agent 返回，或某个硬限额结束它（`PackageAgent.run`：返回或 `LimitHit`）。`claude_code` provider 与计量不变（M1 §1）。网关记录每次调用的 `role`（act/aux）与 effort（请求值与截顶值）。只有 K 冻结了 `max_effort` 的 release 走运行壳；旧 K 的工作区继续 v1 循环，不迁移。
 
 **五项硬限额（M0 §2，K，冻结进 task plan，v0.3，2026-10-04）。** `max_steps` 即 act 调用 50、`max_model_calls` 200、`max_tool_calls` 200、`max_seconds` 900、`max_tokens` 400000（本次尝试全部模型调用的输出 token 合计，含 thinking；是每次尝试的上限，不是 `[llm] max_tokens`）。触及任一项 = 终止原因 `budget`，`limit` 字段写明维度；旧值 `step_limit` 只出现在旧记录里。失败语义：worker 崩溃或 agent 运行时抛异常 = 基础设施故障（如今天，M0 §3）；草稿检查期间抛异常 = 草稿失败，回传 R 修订。hook 的三个 site（before_tool/after_tool/on_finish）保留为默认 agent 遵守的约定，不再是宿主强制的挂点；候选 agent 可以不设 hook，也可以设更多，K 只看网关与 broker 的事件。
 

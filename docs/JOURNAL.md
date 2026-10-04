@@ -8,6 +8,18 @@
 
 ---
 
+## 2026-10-04 v0.3 第 1 步：agent 程序与运行壳
+
+- 做了什么：按 DESIGN v0.7 与 M0/M1 的 v0.3 规则，分四个切片把宿主从“跑固定循环的 agent”改成运行壳。A/B（`16bbbf4`）：包 API v2——manifest `harness_package.v2` 加一个 `agent` 条目（`agent/<file>.py:run`、声明的 roles），agent 代码进包身份并使包“运行代码”；五项单次尝试硬上限（`max_steps`、`max_model_calls`、`max_tool_calls`、`max_seconds`、`max_tokens`）进 Budget、冻结计划与 TargetHarness，新冻结缺一项拒绝、旧计划原样读；K 冻结 `max_effort`（preset high，配置只能调低）；worker 协议加 `run`/`smoke`、模型回调、贯穿整次尝试的 `serve`、`LimitHit`。C（`c44d75f`）：网关 `ctx.model`（角色核对、effort 截顶记请求值、先扣上限再调模型、宿主写 `assistant` 加 `gateway_call`——messages 以前缀+尾段、tools 以名字+摘要、`tool_specs` 在变化时一条）、broker `ctx.tool`（拒绝表、基础工具与只读检查、`broker_event`）、`ctx.skills`/`ctx.limits`/`ctx.view`/`ctx.mark`；今天的循环移植成 `agent/default_agent.py`（种子包，只用标准库与 ctx），v1 包由它运行——含代码的整个在 worker 里（加载时随包发入同一份字节），只含文本的在宿主进程内；每个含代码的草稿经 smoke（罐装模型一回合 tool_use）；worker 的 `load` 答 runner 摘要，与宿主不同即 `StaleWorker`、启动检查点名；只有 K 带 `max_effort` 的 release 走新壳，旧工作区继续 v1 循环。D（本条）：彩排的离线检验 `check_world.py` 改为每次尝试走网关、broker、默认 agent（hook 与包工具用干跑装入的同一份源码）；新 preset `automationbench_harness_v3`（v1 的数值 + API v2 + `agent` 种类 + `max_effort` high + 五项上限作 `[bench.budget]` 缺省，只能调低）；R 的包 API 文本改写为 v2（manifest、`agent` 条目、ctx 的形状、默认 agent 的兜底、`ctx.mark` 只是自述）；报告的能力包一节从宿主记录读出 agent 入口与放置（runner 新写的 `agent` 事件）、按角色的调用数与 token、effort 截顶次数、触顶维度；M0 §2、M1 §1/§4/§5、README、DESIGN §5、ROADMAP、REHEARSAL §8 对齐实现，过期的 `agent/loop.py` 行号改为按符号指向 `default_agent.py`/`gateway.py`/`runner.py`。
+- 结果：
+  - 彩排世界在新壳下原样复现 §10 的全部数字：W0 只过 9 道 P 题；A/B/D 的规则各翻转本类 3 题，C/E/F 的规则一题不翻；B 的技能、E 的技能、F 的包工具各翻本类 3 题；收尾检查 hook 翻 A～D 共 12 题；armed fault 记 `ProviderError`、重试通过、文件用尽；没有一次尝试触顶。每回合一条 `gateway_call`（hook 变体的 002 题 4 回合、2 条 `broker_event`、2 次 hook 答复、1 次回推），工具清单只写一次 `tool_specs`。
+  - Docker 干跑（`dry_run.py`，v3 的 K）在新壳下走到 segment-0 装入、两支 W* 不同、外测 accepted、R1 装入与回用 verified，hook/package_tool/read_skill 事件都在，两次补跑有效。
+  - 与设计的出入已写进文档：ctx 是五个名字加 `mark`（不是严格五个）；默认 agent 的字节不进镜像，随包在 `load` 时发入，等价由构造保证，镜像校验落在 runner 摘要；默认 agent 不保留 bash 重跑（业务工具面没有 bash，也没有模型可问）；`gateway_call` 不带 `cost_usd`，费用照旧按 `assistant` 的 usage 入账；smoke 覆盖每个含代码的草稿，不只带 `agent` 条目的；网关对形状不对的调用答错误、记 `protocol`，不抛到宿主。
+- 因此改了什么设计：M1 §1 增“放置”“分派”“草稿 smoke”三段与 runner 校验的做法；M0 §2 的记录块按实现重写（前缀/尾段还原规则、`tool_specs`、`agent`/`end`/`protocol` 行、“包的自述”）；M1 §4 的 Inspection 条目落在报告而不在 `research/inspection.py`；`trajectory_ref`、`policies_read`、effort 逐次分布、PR7-10 的专门用例留第 2 步；v3 preset 暂只 Marketing，多域在第 5 步。
+- 证据：946 passed, 1 deselected（含 Docker 的 IT6-23、PR7-01/08 真实镜像与彩排干跑）；`check_world.py` 的 JSON 由 `test_rehearsal_world.py` 六个测试核对。没有真实模型调用，费用 0。
+- 证据的边界：全是离线与 fixture；运行壳下还没有跑过真实模型的一道题（ROADMAP 第 1 步退出条件里“真实模型下 `--phase smoke` 一题、网关日志对账到 `cli_cost_usd`”在 08 §3 另列，付费前做）。
+- commit：`16bbbf4`、`c44d75f`，切片 D 见本条之后的提交。
+
 ## 2026-10-04 v0.2：完整活动，含研究位
 
 - 做了什么：在 `workspace-claude-full`（名义根 $900）跑完整 cycle：基线、segment-0、研究位、segment-1；中途加入一臂内并发（`[bench] concurrency = 4`，`run_tasks` 线程池，共享状态加锁，审查 7 条全修）；final 两次。
