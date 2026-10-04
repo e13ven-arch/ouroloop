@@ -16,7 +16,7 @@
   - Docker 干跑（`dry_run.py`，v3 的 K）在新壳下走到 segment-0 装入、两支 W* 不同、外测 accepted、R1 装入与回用 verified，hook/package_tool/read_skill 事件都在，两次补跑有效。
   - 与设计的出入已写进文档：ctx 是五个名字加 `mark`（不是严格五个）；默认 agent 的字节不进镜像，随包在 `load` 时发入，等价由构造保证，镜像校验落在 runner 摘要；默认 agent 不保留 bash 重跑（业务工具面没有 bash，也没有模型可问）；`gateway_call` 不带 `cost_usd`，费用照旧按 `assistant` 的 usage 入账；smoke 覆盖每个含代码的草稿，不只带 `agent` 条目的；网关对形状不对的调用答错误、记 `protocol`，不抛到宿主。
 - 因此改了什么设计：M1 §1 增“放置”“分派”“草稿 smoke”三段与 runner 校验的做法；M0 §2 的记录块按实现重写（前缀/尾段还原规则、`tool_specs`、`agent`/`end`/`protocol` 行、“包的自述”）；M1 §4 的 Inspection 条目落在报告而不在 `research/inspection.py`；`trajectory_ref`、`policies_read`、effort 逐次分布、PR7-10 的专门用例留第 2 步；v3 preset 暂只 Marketing，多域在第 5 步。
-- 证据：946 passed, 1 deselected（含 Docker 的 IT6-23、PR7-01/08 真实镜像与彩排干跑）；`check_world.py` 的 JSON 由 `test_rehearsal_world.py` 六个测试核对。没有真实模型调用，费用 0。
+- 证据：946 passed, 1 deselected（含 Docker 的 IT6-23、PR7-01/08 真实镜像与彩排干跑）；`check_world.py` 的 JSON 由 `test_rehearsal_world.py` 六个测试核对。没有真实模型调用，费用 0。 真实出口检查：v3 preset 下 1 道 dev 题经运行壳跑通，7/7，记录形状与 M0 §2 一致，API 等价 $0.41。
 - 证据的边界：全是离线与 fixture；运行壳下还没有跑过真实模型的一道题（ROADMAP 第 1 步退出条件里“真实模型下 `--phase smoke` 一题、网关日志对账到 `cli_cost_usd`”在 08 §3 另列，付费前做）。
 - commit：`16bbbf4`、`c44d75f`，切片 D 见本条之后的提交。
 
