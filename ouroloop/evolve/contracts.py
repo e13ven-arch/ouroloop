@@ -840,8 +840,10 @@ TYPES = {c.TYPE: c for c in (ArtifactRef, EvidenceRef, PolicyDescriptor, PolicyS
 def durable_write(path: Path, data: bytes) -> None:
     """Write through a temporary file in the same directory, fsync it, rename, then fsync the directory: a
     reader sees the whole file or no file, and a crash after the rename cannot lose it."""
+    import threading
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    # one temporary per writer: two threads storing the same object must not share a half-written file
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     with open(tmp, "wb") as f:
         f.write(data)
         f.flush()

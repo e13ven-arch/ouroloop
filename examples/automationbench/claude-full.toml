@@ -12,6 +12,7 @@
 root = "workspace-claude-full"
 
 [bench]
+concurrency = 4                 # attempts of one arm at a time; a setting of the machine, not of the plan (M5 §2)
 domain = "marketing"
 upstream_path = "~/workspace/AutomationBench"
 toolset = "api"

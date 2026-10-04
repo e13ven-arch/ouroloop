@@ -41,7 +41,7 @@ IMPLEMENTED = PHASES
 # frontier configurations), and a missing piece is named rather than quietly skipped (BR-01).
 NOT_YET: dict[str, str] = {}
 BENCH_KEYS = {"domain", "upstream_path", "toolset", "seed", "ratios", "budget", "families", "smoke_tasks",
-              "near_duplicate_threshold", "repeats"}
+              "near_duplicate_threshold", "repeats", "concurrency"}
 # A key whose value is the secret itself, rather than the name of the variable that holds it (api_key_env is a
 # name and belongs in the manifest). redact() reads a value's shape and a bare key has none, so the key decides.
 SECRET_KEY = re.compile(r"(?i)(api[_-]?key|token|secret|passw(or)?d|credential)$")
@@ -67,6 +67,7 @@ class BenchConfig:
     smoke_tasks: int = 2
     near_duplicate_threshold: float = 0.6
     repeats: int = 1
+    concurrency: int = 1            # attempts run at a time; a setting of the machine, not of any frozen plan
 
     @classmethod
     def load(cls, cfg: dict, base: str | Path = ".") -> "BenchConfig":
@@ -250,7 +251,8 @@ def _attempt(cfg: dict, base: str | Path, bench: BenchConfig, suite: ab.Suite, m
     rows = run_tasks(suite, chosen, make_agent_factory(rt, provider, budget=bench.budget,
                                                        meta={"agent": model.get("model") or provider.name,
                                                              "bench": bench.domain}),
-                     run=run, splits=manifest, results=results, repeats=bench.repeats, on_result=show)
+                     run=run, splits=manifest, results=results, repeats=bench.repeats, on_result=show,
+                     concurrency=bench.concurrency)
     total = summarise(rows)
     out(f"summary    {total['passed']}/{total['tasks']} tasks passed, partial={total['partial_credit']}, "
         f"invalid={total['invalid']}, cost={'unmeasured' if total['cost_usd'] is None else total['cost_usd']} "
@@ -384,6 +386,7 @@ class Improvement:
     segment: str | None = None                  # the cycle's worker segment, whose collection quota is its own
     allocation: str | None = None               # the root allocation the arm's calls spend ("final"), if any
     template_ref: str = ""                      # the frozen evaluation template its experiments are held to
+    concurrency: int = 1                        # attempts of one arm run at a time ([bench] concurrency)
     _plans: dict = _field(default_factory=dict)
     _experiment_ref: str = ""
     _parent_release: str = ""
@@ -482,7 +485,7 @@ class Improvement:
         return reused + run_tasks(self.suite, [t for t, _ in order], factory, run=run, splits=self.splits,
                                   results=self.results, probe=probe, arm=arm, plan_ref=plan_ref,
                                   release_ref=release_ref, order=order, retry_index=retry_index,
-                                  pricing=self.pricing, supersedes=supersedes)
+                                  pricing=self.pricing, supersedes=supersedes, concurrency=self.concurrency)
 
     def rt_environment(self) -> dict:
         return {"upstream": self.suite.versions.get("commit", ""), "package": self.suite.versions.get("package", ""),
@@ -1380,6 +1383,7 @@ def improvement(activity: Activity, *, template_ref: str | None = None, provider
         results=activity.results, stop_view=activity.rsi.stop_view, attempt_budget=attempt,
         probe_train=True, train_tasks=tuple(activity.splits.ids("train")), owner=owner, pricing=pricing,
         harness=_harness_of(activity), worker=isolated_worker(_harness_of(activity)), template_ref=template_ref or "",
+        concurrency=activity.bench.concurrency,
         plan_installs=template.installs if template and installs is None else (True if installs is None
                                                                                else installs))
 
@@ -1853,7 +1857,7 @@ def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_
                         scope_id=f"{plan.id}:{pair.pair_id}:{arm}", repeats=pair.repeats,
                         order_seed=pair.seed_schedule[0] if pair.seed_schedule else 0,
                         budget=arm_budget, serving=rt.serving, results=Results(root, activity.bench.domain),
-                        pricing=pricing,
+                        pricing=pricing, concurrency=activity.bench.concurrency,
                         stop_view=activity.rsi.stop_view, attempt_budget=_attempt_budget(activity),
                         probe_train=True, train_tasks=tuple(_tasks_of(activity, pair.inner_train_groups)),
                         harness=_harness_of(activity), worker=isolated_worker(_harness_of(activity)))
@@ -2034,6 +2038,7 @@ def _campaign_common(activity: Activity, plan, pair, budget, *, provider, pricin
                          dev_tasks=tuple(_tasks_of(activity, pair.inner_dev_groups)),
                          scope_id=f"{plan.id}:{pair.pair_id}:common", budget=budget, serving=rt.serving,
                          results=Results(root, activity.bench.domain), pricing=pricing,
+                         concurrency=activity.bench.concurrency,
                          stop_view=activity.rsi.stop_view, attempt_budget=_attempt_budget(activity),
                          train_tasks=tuple(_tasks_of(activity, pair.inner_train_groups)),
                          harness=_harness_of(activity), worker=isolated_worker(_harness_of(activity)))
@@ -2818,6 +2823,10 @@ def startup_checks(activity: Activity, cfg: dict, *, phase: str, needs_model: bo
     budget = activity.bench.budget
     if not (budget.max_steps and budget.max_tool_calls and budget.max_seconds):
         problems.append("[bench.budget] needs a step, tool-call and time limit per attempt")
+    if not isinstance(activity.bench.concurrency, int) or isinstance(activity.bench.concurrency, bool) \
+            or activity.bench.concurrency < 1:
+        problems.append(f"[bench] concurrency must be a whole number of attempts, at least 1, not "
+                        f"{activity.bench.concurrency!r}")
     # A plan the config freezes and [rsi] does not name yet: a phase run before `ouroloop freeze` would open the
     # activity's budget root without its limits (a root cannot be reopened with other limits later) or measure
     # under conditions other than the frozen plan's, so its attempts would not be reused (ROADMAP §3).

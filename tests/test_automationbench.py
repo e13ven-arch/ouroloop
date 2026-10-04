@@ -604,3 +604,97 @@ class TestTaskSignature:
                            {HOLD: g, "marketing.other": same_shape}, suite.versions)
         overlap = dict(((a, b), j) for a, b, j in ab.near_duplicates(widened, 0.0))
         assert overlap and max(overlap.values()) < 0.8
+
+
+class TestConcurrency:
+    def test_concurrent_attempts_are_all_recorded_in_the_plans_order(self, tmp_path, suite, splits):
+        """[bench] concurrency (M5 §2): several attempts at a time, each with its own episode and session; the
+        results, the grading rows and the caller's callback are recorded for every one, and the returned list
+        follows the plan's order rather than the finishing order."""
+        import threading
+        import time
+        in_flight, peak, lock = [0], [0], threading.Lock()
+
+        def script(messages):
+            with lock:
+                in_flight[0] += 1
+                peak[0] = max(peak[0], in_flight[0])
+            time.sleep(0.05)
+            with lock:
+                in_flight[0] -= 1
+            return ChatTurn("Done.", [], "end")
+
+        run = RunManifest("base", "base", "dev", {"model": "scripted"}, data=splits.hash(), repeats=3)
+        results = Results(tmp_path / "ws", "marketing")
+        seen = []
+        order = [(t, i) for i in range(3) for t in (LEAD, HOLD)]
+        rows = run_tasks(suite, [LEAD, HOLD], factory(runtime(tmp_path), ScriptedChat(script)), run=run,
+                         splits=splits, results=results, order=order, on_result=seen.append, concurrency=4)
+        assert [(r.task_id, r.attempt) for r in rows] == order
+        assert len(results.of_run(run.hash())) == 6 and len(seen) == 6
+        assert len({r.attempt_id for r in rows}) == 6 and len({r.evidence for r in rows}) == 6
+        assert peak[0] > 1                                  # they did overlap
+        transcripts = list((tmp_path / "ws" / "transcripts").glob("*.jsonl"))
+        assert len(transcripts) == 6
+        for path in transcripts:
+            for line in path.read_text().splitlines():
+                json.loads(line)                            # every appended line is whole
+
+    def test_the_live_keys_are_hidden_once_for_the_whole_pool(self, tmp_path, suite, splits, monkeypatch):
+        """A per-call pop and restore of os.environ from several threads would race with every other reader
+        (the claude CLI's child environment): under concurrency the keys are hidden before the pool starts and
+        restored after it ends."""
+        import os
+        monkeypatch.setenv("OPENAI_API_KEY", "live-key-that-must-not-leak")
+        seen = []
+
+        def script(messages):
+            seen.append("OPENAI_API_KEY" in os.environ)
+            return ChatTurn("Done.", [], "end")
+
+        run = RunManifest("base", "base", "dev", {"model": "scripted"}, data=splits.hash(), repeats=2)
+        run_tasks(suite, [LEAD, HOLD], factory(runtime(tmp_path), ScriptedChat(script)), run=run, splits=splits,
+                  results=Results(tmp_path / "ws", "marketing"), repeats=2, concurrency=3)
+        assert seen and not any(seen)                              # hidden during every attempt
+        assert os.environ["OPENAI_API_KEY"] == "live-key-that-must-not-leak"     # and back afterwards
+
+    def test_concurrency_one_is_the_serial_loop(self, tmp_path, suite, splits):
+        run = RunManifest("base", "base", "dev", {"model": "scripted"}, data=splits.hash(), repeats=2)
+        results = Results(tmp_path / "ws", "marketing")
+        rows = run_tasks(suite, [LEAD], factory(runtime(tmp_path), solve([])), run=run, splits=splits,
+                         results=results, repeats=2, concurrency=1)
+        assert [r.attempt for r in rows] == [0, 1] and len(results.of_run(run.hash())) == 2
+
+    def test_an_interrupt_lets_running_attempts_finish_and_starts_no_more(self, tmp_path, suite, splits):
+        """Stopped mid-run: what is in flight is recorded, so the book and the results agree; the rest never
+        starts."""
+        import threading
+        import time
+        started, lock, stop = [], threading.Lock(), threading.Event()
+
+        def script(messages):
+            with lock:
+                started.append(1)
+                first = len(started) == 1
+            if first:
+                stop.set()                                  # the first call asks the main thread to interrupt
+                time.sleep(0.2)
+            return ChatTurn("Done.", [], "end")
+
+        run = RunManifest("base", "base", "dev", {"model": "scripted"}, data=splits.hash(), repeats=6)
+        results = Results(tmp_path / "ws", "marketing")
+        order = [(LEAD, i) for i in range(6)]
+        main = threading.main_thread()
+
+        def interrupt():
+            stop.wait(5)
+            import _thread
+            _thread.interrupt_main()
+
+        threading.Thread(target=interrupt, daemon=True).start()
+        with pytest.raises(KeyboardInterrupt):
+            run_tasks(suite, [LEAD], factory(runtime(tmp_path), ScriptedChat(script)), run=run, splits=splits,
+                      results=results, order=order, concurrency=2)
+        recorded = results.of_run(run.hash())
+        assert 1 <= len(recorded) < 6                       # the running ones were kept, the rest never started
+        assert main is threading.main_thread()

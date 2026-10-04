@@ -33,6 +33,7 @@ cycle 按 M4 的结构化结果推进，而非看到 proposals 为空就退出�
 ```toml
 [bench]
 execution_backend = "automationbench" # 缺省保持直连；可选 harbor
+concurrency = 4                      # 一臂内同时跑的尝试数；机器的设置，不进冻结计划（M5 §2）
 
 [improvement]
 mode = "automatic"                   # manual/scripted 另有明确入口

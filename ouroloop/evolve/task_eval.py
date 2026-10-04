@@ -11,6 +11,7 @@ during the run — an official scorer used as an online checker would quietly co
 from __future__ import annotations
 
 import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from typing import Callable
 
@@ -207,22 +208,31 @@ def run_tasks(suite, task_ids: list[str], make_agent: Callable, *, run: RunManif
               results=None, repeats: int = 1, system: str | None = None, probe: bool = False,
               on_result: Callable[[TaskResult], None] | None = None, arm: str = "subject", plan_ref: str = "",
               release_ref: str | None = None, order: list[tuple[str, int]] | None = None,
-              retry_index: int = 0, pricing=None, supersedes: dict | None = None) -> list[TaskResult]:
-    """Every attempt of a run, in a fixed order, each one recorded as it finishes.
+              retry_index: int = 0, pricing=None, supersedes: dict | None = None,
+              concurrency: int = 1) -> list[TaskResult]:
+    """Every attempt of a run, each one recorded as it finishes; the list comes back in the plan's order.
 
     Results are appended as they come so an interrupted run keeps the attempts it paid for; nothing here reruns
     an invalid attempt, because how many to rerun and under which rule belongs to the run's protocol, not to the
     loop that executes it. `order` runs a given (task, repeat) sequence instead of the default nesting, which is
     how a plan's seeded order alternates two arms.
+
+    `concurrency` attempts run at a time (docs/modules/05_EXECUTION_BUDGET.md §2). Each has its own episode,
+    agent and session; what they share (the meter, the bound release, the stores) is written under locks. The
+    recording itself — results, grading, the caller's `on_result` — stays on this thread, in completion order.
+    It is a setting of the machine, not of the plan: an attempt's limits and its reservation are the same at any
+    concurrency. Interrupted, the attempts already running finish and are recorded; the rest never start.
     """
-    out = []
-    for task_id, i in (order if order is not None else [(t, i) for t in task_ids for i in range(repeats)]):
-        attempt = run_attempt(suite, task_id, make_agent, run=run, splits=splits, attempt=i, system=system,
-                              probe=probe, arm=arm, plan_ref=plan_ref, release_ref=release_ref,
-                              retry_index=retry_index, pricing=pricing,
-                              supersedes=(supersedes or {}).get((task_id, i), ""))
+    pairs = list(order if order is not None else [(t, i) for t in task_ids for i in range(repeats)])
+
+    def attempt_of(task_id, i):
+        return run_attempt(suite, task_id, make_agent, run=run, splits=splits, attempt=i, system=system,
+                           probe=probe, arm=arm, plan_ref=plan_ref, release_ref=release_ref,
+                           retry_index=retry_index, pricing=pricing,
+                           supersedes=(supersedes or {}).get((task_id, i), ""))
+
+    def record(task_id, i, attempt) -> TaskResult:
         try:
-            out.append(attempt.result)
             if results is not None:
                 results.append(attempt.result)
                 if attempt.score is not None and hasattr(results, "put_grading"):
@@ -239,7 +249,70 @@ def run_tasks(suite, task_ids: list[str], make_agent: Callable, *, run: RunManif
                         results.append(TaskResult.broken(
                             task_id, splits.family_of(task_id), splits.split_of(task_id), i, run, splits.hash(),
                             f"cleanup: {type(e).__name__}: {e}", failure_class="infrastructure"))
-    return out
+        return attempt.result
+
+    if int(concurrency or 1) <= 1:
+        return [record(task_id, i, attempt_of(task_id, i)) for task_id, i in pairs]
+    from ..adapters.automationbench import hide_live_keys
+    done: dict[int, TaskResult] = {}
+    executor = ThreadPoolExecutor(max_workers=int(concurrency), thread_name_prefix="attempt")
+    with hide_live_keys():
+        pending = {executor.submit(attempt_of, t, i): n for n, (t, i) in enumerate(pairs)}
+        try:
+            while pending:
+                finished, _ = wait(list(pending), return_when=FIRST_COMPLETED)
+                for future in finished:
+                    n = pending.pop(future)
+                    done[n] = record(pairs[n][0], pairs[n][1], future.result())
+        except BaseException as stop:
+            # Stopped (an interrupt, an account error from one attempt): nothing not yet running starts. What is
+            # running finishes and is recorded, so the book and the results agree on what was paid for — except an
+            # attempt the interrupt's signal itself reached (its model call died under it): that is no evidence and
+            # is left unrecorded, so a resume runs the pair again.
+            for future in list(pending):
+                if future.cancel():
+                    pending.pop(future)
+            interrupted = isinstance(stop, KeyboardInterrupt)
+            if pending:
+                _say(f"stopped ({type(stop).__name__}): {len(pending)} attempt(s) still running, each recorded when "
+                     f"it finishes (at most {run.budget.max_seconds}s); interrupt again to stop waiting, and a resume "
+                     f"runs them again")
+            current = None
+            try:
+                for future in list(pending):
+                    current = n = pending.pop(future)
+                    try:
+                        attempt = future.result()
+                    except Exception:  # noqa: BLE001 - the attempt's own failure: the first failure is the one reported
+                        continue
+                    if interrupted and attempt.result.termination == "harness_error":
+                        _close(attempt)
+                        continue
+                    try:
+                        done[n] = record(pairs[n][0], pairs[n][1], attempt)
+                    except Exception as e:  # noqa: BLE001 - a paid attempt that could not be recorded is named, not lost silently
+                        _say(f"attempt {pairs[n]} finished but could not be recorded: {type(e).__name__}: {e}")
+            except KeyboardInterrupt:
+                still = [pairs[m] for m in pending.values()] + ([pairs[current]] if current is not None else [])
+                _say(f"interrupted again: {len(still)} running attempt(s) not waited for: {still}; the process ends "
+                     f"when they finish, and a resume runs them again")
+            raise
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+    return [done[n] for n in range(len(pairs))]
+
+
+def _close(attempt) -> None:
+    if attempt.episode is not None:
+        try:
+            attempt.episode.close()
+        except Exception:  # noqa: BLE001 - process-local state; nothing outside to tear down
+            pass
+
+
+def _say(line: str) -> None:
+    import sys
+    print(line, file=sys.stderr, flush=True)
 
 
 def make_agent_factory(rt, provider, *, budget: Budget, tiers: dict | None = None, meta: dict | None = None,

@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+import threading
+
 from ..ledger import locked, new_id, now, write_json
 from . import contracts as ct
 
@@ -794,6 +796,9 @@ class MeteredProvider:
         self.allocation = allocation
         self.name = getattr(provider, "name", "metered")
         self.model = getattr(provider, "model", "")
+        self._lock = threading.Lock()      # concurrent attempts share one meter: ids and in-flight count
+        self._in_flight = 0
+        self._own = None                   # the provider's own retries, read while no metered call is in flight
         self.receipts: list[BudgetReceipt] = []
         self.calls = 0
 
@@ -803,20 +808,24 @@ class MeteredProvider:
         error, a gateway's malformed reply — so whoever handles a model call's failure (M5 §3) sees one kind."""
         bound = self.pricing.bound()
         last: Exception | None = None
+        with self._lock:
+            call, self.calls = self.calls, self.calls + 1      # one id per call, whatever thread makes it
         for attempt in range(self.max_retries + 1):
             try:
-                reservation = self.account.reserve(f"{self.operation}#{self.calls}.{attempt}", bound,
+                reservation = self.account.reserve(f"{self.operation}#{call}.{attempt}", bound,
                                                   allocation=self.allocation)
             except BudgetError:
                 if last is not None:
                     # a retry the budget cannot cover: the provider's failure is the outcome
                     raise _as_provider_error(last) from (None if isinstance(last, _provider_error()) else last)
                 raise
-            self.calls += 1
-            own = getattr(self.provider, "retries", None)
-            try:
-                if isinstance(own, int):
+            with self._lock:
+                if self._in_flight == 0:
+                    self._own = getattr(self.provider, "retries", None)     # in flight, the provider's is 0
+                self._in_flight += 1
+                if isinstance(self._own, int):
                     self.provider.retries = 0
+            try:
                 turn = self.provider.chat(system, messages, specs)
             except Exception as e:  # noqa: BLE001 - the call may well have been charged: unknown, not free
                 # Released only when the request is known never to have reached the model; otherwise unknown.
@@ -830,8 +839,10 @@ class MeteredProvider:
                     time.sleep(min(30.0, 2.0 ** attempt))
                 continue
             finally:
-                if isinstance(own, int):
-                    self.provider.retries = own
+                with self._lock:
+                    self._in_flight -= 1
+                    if self._in_flight == 0 and isinstance(self._own, int):
+                        self.provider.retries = self._own      # restored once no call is in flight
             self.receipts.append(self.account.settle(reservation.id,
                                                      self.pricing.measure(turn.usage or {}), "settled"))
             return turn

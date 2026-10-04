@@ -294,3 +294,37 @@ def test_ex06_a_research_arm_that_proposes_a_research_change_is_refused(tmp_path
     assert set(json.loads((tmp_path / "rsi" / "budget" / "book.json").read_text())["scopes"]) == {
         "campaign", "campaign:pair-1:candidate"}
     assert arm.remaining()["limits"] == {"model_calls": 50.0}
+
+
+def test_concurrent_calls_through_one_meter_each_get_their_own_reservation(tmp_path):
+    """[bench] concurrency (M5 §2): the attempts of one arm share one meter. Every call still gets an id of its
+    own and settles once, and the provider's own retries stay off while any call is in flight."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    class Slow:
+        name, model = "slow", "m-1"
+        retries = 3
+
+        def __init__(self):
+            self.seen = []
+            self.lock = threading.Lock()
+
+        def chat(self, system, messages, specs=()):
+            import time
+            with self.lock:
+                self.seen.append(self.retries)
+            time.sleep(0.02)
+            return ChatTurn("done", [], "end", usage={"input_tokens": 100, "output_tokens": 10})
+
+    b = book(tmp_path)
+    account = b.account("round", {"usd": 10.0, "model_calls": 100})
+    inner = Slow()
+    provider = MeteredProvider(inner, account, Pricing(0.003, 0.015, 4000, 1000, source="snapshot"), max_retries=0)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(lambda _i: provider.chat("s", []), range(24)))
+    ids = [r.reservation_id for r in provider.receipts]
+    assert len(ids) == 24 and len(set(ids)) == 24 and all(r.status == "settled" for r in provider.receipts)
+    assert account.remaining()["used"]["model_calls"] == 24.0
+    assert set(inner.seen) == {0}            # the provider never retried on its own during a metered call
+    assert inner.retries == 3                # and has its own setting back once nothing is in flight

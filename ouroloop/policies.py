@@ -16,6 +16,7 @@ Two rules shape the whole file:
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -360,25 +361,29 @@ class Activity:
     executed: dict = field(default_factory=dict)
     fallbacks: dict = field(default_factory=dict)
     overrides: dict = field(default_factory=dict)
+    # one bound release serves every concurrent attempt of an arm; its counts are kept whole
+    _lock: object = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def call(self, target: str) -> None:
-        self.calls[target] = self.calls.get(target, 0) + 1
+        with self._lock:
+            self.calls[target] = self.calls.get(target, 0) + 1
+
+    def _count(self, table: dict, target: str, key: str) -> None:
+        with self._lock:
+            table.setdefault(target, {})
+            table[target][key] = table[target].get(key, 0) + 1
 
     def propose(self, target: str, action: str | None) -> None:
-        self.proposed.setdefault(target, {})
-        self.proposed[target][str(action)] = self.proposed[target].get(str(action), 0) + 1
+        self._count(self.proposed, target, str(action))
 
     def execute(self, target: str, action: str | None) -> None:
-        self.executed.setdefault(target, {})
-        self.executed[target][str(action)] = self.executed[target].get(str(action), 0) + 1
+        self._count(self.executed, target, str(action))
 
     def fallback(self, target: str, reason: str) -> None:
-        self.fallbacks.setdefault(target, {})
-        self.fallbacks[target][reason] = self.fallbacks[target].get(reason, 0) + 1
+        self._count(self.fallbacks, target, reason)
 
     def override(self, target: str, reason: str) -> None:
-        self.overrides.setdefault(target, {})
-        self.overrides[target][reason] = self.overrides[target].get(reason, 0) + 1
+        self._count(self.overrides, target, reason)
 
     def observed(self, target: str) -> bool:
         return target in self.calls

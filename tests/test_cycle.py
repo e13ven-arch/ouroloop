@@ -1302,3 +1302,24 @@ def test_common_inputs_that_leave_the_arms_short_end_the_slot_inconclusive(fake_
     assert "cannot set aside both arms' shares" in receipt.reasons[0] and "outer" not in receipt.costs
     assert Budgets(tmp_path / "ws").open_reservations() == []
     assert not list(ct.Events(activity.root).of("campaign_arm"))
+
+
+def test_bench_concurrency_is_a_whole_number_of_attempts(fake_upstream, tmp_path, fixture_preset):
+    """[bench] concurrency is a setting of the machine (M5 §2): it is accepted, it reaches the arm runner, and a
+    value that is not a count is refused before anything is paid for."""
+    cfg = cycle_config(fake_upstream, tmp_path)
+    cfg["bench"]["concurrency"] = 4
+    activity = bench.open_activity(cfg, ".", out=lambda _line: None)
+    assert activity.bench.concurrency == 4
+    assert bench.improvement(activity).concurrency == 4
+    assert not any("concurrency" in p for p in bench.startup_checks(activity, cfg, phase="baseline"))
+    # every Improvement the bench builds carries it: the activity's, a campaign arm's, the common inputs'
+    import ast
+    import inspect
+    calls = [node for node in ast.walk(ast.parse(inspect.getsource(bench)))
+             if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "Improvement"]
+    assert len(calls) >= 3 and all(any(k.arg == "concurrency" for k in c.keywords) for c in calls)
+    cfg["bench"]["concurrency"] = 0
+    bad = bench.open_activity(cfg, ".", out=lambda _line: None)
+    assert any(p.startswith("[bench] concurrency must be a whole number") for p in
+               bench.startup_checks(bad, cfg, phase="baseline"))
