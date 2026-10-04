@@ -96,7 +96,12 @@ scope_id = "marketing-claude-full"
 stop_view = "stop.business.v1"
 repeats = 1
 order_seed = 1
-# task_plan_ref / schedule_ref / budget_ref are frozen by the cycle when they are not named here.
+# The plans the cycle froze in workspace-claude-full on 2026-10-04 (the final phase runs under them too).
+task_plan_ref = "plan:sha256:f5cec1db5ce8972fae9af2c7aa82ddaf4e6c83f42361040b5a400b136484b010"
+schedule_ref = "schedule:sha256:b3f4c4be6ce5bb859d7e468632e8589f042f4127d769eb983732085fa449e584"
+budget_ref = "budget:sha256:1baa7c574246f4aadf64d5834c50e46b3352519f8069fb7dccbf467bd9c13c97"
+# [freeze.final] below, sealed on 2026-10-04 after the cycle ended and before any test task was run.
+final_plan_ref = "finalization:sha256:dc0c326152df0f72bc34fea975463e97af0a4852c811c2440f478141ed418f64"
 
 # The whole activity's budget in notional dollars at [pricing]: every phase, the research slot's two arms (15% of the
 # root each) and its outer comparison (8%), set aside when the slot starts; the final's share is set aside on the
@@ -107,3 +112,18 @@ usd = 900.0
 
 [freeze.budget.final]
 usd = 50.0
+
+# The final comparison (docs/ROADMAP.md §3, step 2a.9), sealed before the test tasks are read: W0, the starting
+# version, against W*, the version the cycle left installed (segment-0's pre-write protocol and segment-1's
+# end-of-task audit hook), on the 23 test tasks, twice each. Its plan hash is committed before `--phase evaluate`
+# runs; the result is reported whatever it is.
+[freeze.final]
+experiment_id = "claude-opus-5-5-full-final-1"
+claims = ["C1"]
+tasks = "test"
+repeats = 2
+comparisons = [{claim = "C1", subject = "evolved", control = "base", role = "evolved"},
+               {claim = "C1", subject = "base", control = "base", role = "base"}]
+release_refs = {evolved = "release:sha256:6cd37b8e49a449572ea43b4de0a1803584bf022fa0d49e2ade97a2414907c098", base = "release:sha256:95967846f10e9d31975104408af309365484b3609b21c429216c5f3a89f4e95c"}
+stop_rules = {max_infrastructure_retries = 1}
+statistical_plan = {confidence = 0.95, bootstrap_replicates = 2000, bootstrap_seed = 1}
