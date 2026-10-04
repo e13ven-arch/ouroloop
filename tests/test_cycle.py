@@ -1154,7 +1154,9 @@ def test_a_slot_after_a_worker_install_runs(fake_upstream, tmp_path, fixture_pre
     installed = ct.SystemRelease.from_json(activity.objects.get(steps["segment-0"]["release"]))
     authorization = activity.objects.load(installed.authorization_ref, ct.Authorization)
     plan = activity.objects.get(activity.objects.load(authorization.ref, ct.EvaluationReceipt).plan_ref)
-    assert authorization.kind == "accepted" and not activity.objects.has(plan["gate_plan"]["ref"])
+    # the plan embeds the gate plan whole (the slot's inner gate, which carries the same clauses since v0.3, is the
+    # one gate plan object the workspace stores: the mainline receipt's plan never needed one)
+    assert authorization.kind == "accepted"
     assert plan["gate_plan"]["ref"] == GatePlan.from_json(plan["gate_plan"]).ref()
     # the slot ran from W1 to a receipt
     slot = steps["slot-0"]
@@ -1432,11 +1434,20 @@ def test_the_v3_preset_freezes_a_k_with_the_agent_kind_the_effort_ceiling_and_th
     assert v3["harness"]["max_effort"] == "high" and v3["domain"] == "marketing"
     same = lambda h: {k: v for k, v in h.items() if k not in ("package_api", "components", "max_effort")}  # noqa: E731
     assert same(v3["harness"]) == same(v1["harness"])
-    assert {k: v3[k] for k in ("schedule", "task_plan", "campaign")} == {k: v1[k] for k in ("schedule", "task_plan", "campaign")}
+    assert v3["schedule"] == v1["schedule"]
+    # v0.3 step 2 (M3 §2.1, M6 §2, M5 §2): the v3 preset's gate statistics, slot rules and concurrency; the v1
+    # preset's tables are the ones its cores froze and are not revisited
+    assert v3["task_plan"] == {**v1["task_plan"], "control_pooling": "pooled", "confirmation_repeats": 1,
+                               "gate": {**v1["task_plan"]["gate"], "regression_drop": 0.5, "cost_beta0": 0.10,
+                                        "cost_beta1": 2.0, "min_tasks": 25}}
+    assert v3["campaign"] == {**v1["campaign"], "worker_round_limit": 3, "min_headroom_tasks": 6}
+    assert v3["concurrency"] == 8 and "concurrency" not in v1
+    assert "control_pooling" not in v1["task_plan"] and "regression_drop" not in v1["task_plan"]["gate"]
     preset = json.loads(json.dumps(v3))
     preset["domain"] = rsi.DOMAIN
     preset["harness"]["sandbox"] = None                 # no image to freeze here; the worker is the test's
-    preset["task_plan"]["gate"].update(min_groups=1, bootstrap_replicates=200)
+    # the fixture's dev split has three tasks: the least count is the fixture's, the other clauses the preset's
+    preset["task_plan"]["gate"].update(min_groups=1, bootstrap_replicates=200, min_tasks=len(rsi.DEV))
     monkeypatch.setitem(bench.PRESETS, "v3_test", preset)
     monkeypatch.setattr(bench, "isolated_worker", lambda settings: ProcessWorker(for_tests=True) if settings else None)
     cfg = cycle_config(fake_upstream, tmp_path)
@@ -1460,3 +1471,209 @@ def test_the_v3_preset_freezes_a_k_with_the_agent_kind_the_effort_ceiling_and_th
     assert (lowered.budget.max_steps, lowered.budget.max_tokens, lowered.budget.max_model_calls) == (8, 4000, 200)
     with pytest.raises(ValueError, match=r"\['max_tokens'\] above the preset's \[400000\].*not raised"):
         bench.BenchConfig.load({**cfg, "bench": {**cfg["bench"], "budget": {"max_tokens": 500000}}})
+
+
+# ---------------------------------------------------------------------------- v0.3 (M6 §2): the slot's pools, headroom, pooled arms
+def test_a_dev_split_under_twice_min_tasks_opens_no_slot(fake_upstream, tmp_path, fixture_preset):
+    """M6 §2 (v0.3), RC6-15, ER6-22: the inner gate is the first half of dev and the outer pool the second, each no
+    smaller than the gate's min_tasks; a dev split too small for that — the fixture's three families under
+    min_tasks 2, as Marketing's 25 tasks under 25 — opens no slot: R is not asked, nothing is held or frozen, the
+    slot records `no_slot_pool`, the next segment runs and the report's C4 is not_run with the reason."""
+    fixture_preset["task_plan"]["gate"]["min_tasks"] = 2
+    cfg = cycle_config(fake_upstream, tmp_path)
+    gap_w0(cfg, tmp_path)
+    slot = RProposer()
+    result = bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper(), slot_researcher=slot)
+    step = result["steps"]["slot-0"]
+    assert step["outcome"] == "no_slot_pool"
+    assert "the inner half has 1 task, fewer than min_tasks 2" in step["reason"] and "dev 3 < 2 × 2" in step["reason"]
+    assert "outer half" not in step["reason"]                      # only the inequality that failed is stated
+    assert slot.requests == [] and "campaign" not in step and "headroom" not in step
+    assert result["status"] == "done" and result["steps"]["segment-1"]["stop_reason"] == "no_proposal"
+    assert result["report"]["C4"]["state"] == "not_run" and "too small for two gates" in result["report"]["C4"]["detail"]
+    named = frozen(cfg)                       # the cycle's own plans, frozen again to the same refs
+    activity = bench.open_activity(named, ".", out=lambda _line: None)
+    pair = bench.cycle_pairs(activity, named)[0]
+    families = list(dict.fromkeys(activity.splits.family_of(t) for t in rsi.DEV))
+    assert pair.inner_dev_groups == (families[0],) and pair.outer_groups == tuple(families[1:])
+    # on record: a second run of the cycle does not ask R either
+    again = bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper(), slot_researcher=slot)
+    assert again["steps"]["slot-0"]["outcome"] == "no_slot_pool" and slot.requests == []
+
+
+@pytest.mark.parametrize("least,opens", [(2, False), (1, True)])
+def test_a_slot_without_headroom_asks_r_nothing(fake_upstream, tmp_path, fixture_preset, monkeypatch, least, opens):
+    """M6 §2 (v0.3), RC6-12, IT6-40: before R is asked the slot counts the inner dev tasks the start W never passed
+    in its pooled readings; fewer than `campaign.min_headroom_tasks` and the slot records `no_headroom` — not a
+    budget end, not an invalid round — and the next segment runs. The fixture's W0 never passes one inner task."""
+    fixture_preset["campaign"]["min_headroom_tasks"] = least
+    cfg = cycle_config(fake_upstream, tmp_path)
+    gap_w0(cfg, tmp_path)
+    outer_on_the_gap(monkeypatch)
+    slot = RProposer()
+    factory, made = arms([Stopper, Stopper, SkillAnyway])
+    result = bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper(), slot_researcher=slot,
+                         arm_researcher=factory)
+    step = result["steps"]["slot-0"]
+    assert step["headroom"] == 1 and result["status"] == "done" and "segment-1" in result["steps"]
+    if opens:
+        assert len(slot.requests) == 1 and step.get("campaign") and step["verdict"] == "accepted"
+        return
+    assert step["outcome"] == "no_headroom" and "never passed 1 of the 1 inner dev tasks" in step["reason"]
+    assert slot.requests == [] and made == [] and "campaign" not in step
+    assert result["report"]["C4"]["state"] == "not_run" and "headroom" in result["report"]["C4"]["detail"]
+
+
+def test_the_headroom_check_runs_before_the_budget_check(fake_upstream, tmp_path, fixture_preset, monkeypatch):
+    """M6 §2 (v0.3, after review): the slot's checks run pools → headroom → budget, the budget last — a root with
+    nothing left and a W without headroom give `no_headroom`, not `budget_exhausted`, and the slot is on record
+    as such; a dev split too small is `no_slot_pool` before either, with the same empty root."""
+    fixture_preset["campaign"]["min_headroom_tasks"] = 2
+    cfg = cycle_config(fake_upstream, tmp_path)
+    gap_w0(cfg, tmp_path)
+    outer_on_the_gap(monkeypatch)
+    bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper(), until="segment-0")
+    _leave(tmp_path, 0)                                    # nothing left: the budget check alone would end the slot
+    result = bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper(), slot_researcher=RProposer())
+    assert result["steps"]["slot-0"]["outcome"] == "no_headroom" and result["steps"]["slot-0"]["headroom"] == 1
+    assert "segment-1" in result["steps"]                   # the activity went on; the empty root ends it there
+    fixture_preset["task_plan"]["gate"]["min_tasks"] = 2
+    other = cycle_config(fake_upstream, tmp_path / "other")
+    gap_w0(other, tmp_path / "other")
+    bench.cycle(other, ".", out=lambda _line: None, researcher=Stopper(), until="segment-0")
+    _leave(tmp_path / "other", 0)
+    result = bench.cycle(other, ".", out=lambda _line: None, researcher=Stopper(), slot_researcher=RProposer())
+    assert result["steps"]["slot-0"]["outcome"] == "no_slot_pool" and "headroom" not in result["steps"]["slot-0"]
+
+
+def test_a_frozen_plan_may_not_drop_the_presets_pooling_or_confirmation(fake_upstream, tmp_path, fixture_preset):
+    """M3 §2.1(a)(b) (v0.3, after review): under a preset whose task plan pools the control and confirms once, a
+    [freeze.task_plan] table that leaves the two fields out, or sets fresh / 0, loosens the gate and the cycle
+    refuses it before anything runs; the preset's own values pass, and tightening is not possible here (there is
+    nothing stricter than pooled and one confirmation)."""
+    fixture_preset["task_plan"].update(control_pooling="pooled", confirmation_repeats=1)
+    settings = bench.improvement_settings(cycle_config(fake_upstream, tmp_path))
+    gate = dict(fixture_preset["task_plan"]["gate"])
+    assert bench._beyond_preset(settings, None, gate, {"control_pooling": "pooled", "confirmation_repeats": 1}) == []
+    for plan in ({}, {"control_pooling": "fresh", "confirmation_repeats": 0}):
+        problems = bench._beyond_preset(settings, None, gate, plan)
+        assert any(p.startswith("control_pooling") and "looser than the preset's pooled" in p for p in problems)
+        assert any(p.startswith("confirmation_repeats") and "below the preset's 1" in p for p in problems)
+    cfg = cycle_config(fake_upstream, tmp_path)
+    cfg["freeze"]["task_plan"] = {"tasks": "dev", "gate": gate}            # the fields left out
+    gap_w0(cfg, tmp_path)
+    with pytest.raises(ValueError, match="beyond the preset.*control_pooling None is looser"):
+        bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper())
+
+
+def pooled_slot(fake_upstream, tmp_path, fixture_preset, monkeypatch):
+    """A cycle whose template pools its control and confirms once, through the research slot with the gap as the
+    arms' inner task: common inputs, the control arm (nothing proposed), the candidate arm (the skill)."""
+    from ouroloop.research.campaign import CampaignPair, CampaignPlan, arm_workspace
+    fixture_preset["task_plan"].update(control_pooling="pooled", confirmation_repeats=1)
+    cfg = cycle_config(fake_upstream, tmp_path)
+    activity, _ = gap_w0(cfg, tmp_path)
+    outer_on_the_gap(monkeypatch)
+    factory, made = arms([Stopper, Stopper, SkillAnyway])
+    result = bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper(), slot_researcher=RProposer(),
+                         arm_researcher=factory)
+    steps = result["steps"]
+    assert result["status"] == "done" and steps["slot-0"]["verdict"] == "accepted", steps
+    plan = activity.objects.load(steps["slot-0"]["campaign"], CampaignPlan)
+    pair = activity.objects.load(plan.campaign_pairs[0], CampaignPair)
+    roots = {side: arm_workspace(activity.root, pair.pair_id, side, plan.id) for side in ("common", "control",
+                                                                                           "candidate")}
+    return activity, plan, roots
+
+
+def test_an_arm_pools_only_the_common_readings_and_its_own(fake_upstream, tmp_path, fixture_preset, monkeypatch):
+    """M6 §2 (v0.3), RC6-13: under a pooled template the common step reads the start W once on the inner dev tasks
+    and both arms get that reading as recorded; neither arm runs a control arm of its own, the candidate arm's gate
+    pools the one common reading, and the control arm's record never holds the candidate arm's readings."""
+    from ouroloop.benchmark import Results
+    activity, plan, roots = pooled_slot(fake_upstream, tmp_path, fixture_preset, monkeypatch)
+    common = [r for r in Results(roots["common"], rsi.DOMAIN).all() if r.split == "dev"]
+    assert len(common) == 1 and bench._arm_of(common[0].attempt_id) == "dev_baseline" and not common[0].success
+    rows = {side: list(Results(roots[side], rsi.DOMAIN).all()) for side in ("control", "candidate")}
+    for side, arm_rows in rows.items():
+        assert {r.attempt_id for r in arm_rows if r.split == "dev" and bench._arm_of(r.attempt_id) == "dev_baseline"} \
+            == {common[0].attempt_id}, side
+        assert not [r for r in arm_rows if bench._arm_of(r.attempt_id) == "control"], side
+        assert (roots[side] / "bench" / rsi.DOMAIN / "runs" / f"{common[0].run}.json").exists()
+    assert not [r for r in rows["control"] if bench._arm_of(r.attempt_id) in ("subject", "confirm")]
+    assert {bench._arm_of(r.attempt_id) for r in rows["candidate"]} >= {"subject", "confirm"}
+    objects = ct.Objects(roots["candidate"])
+    receipt = objects.load(next(ct.Events(roots["candidate"]).of("evaluation_completed"))["receipt"],
+                           ct.EvaluationReceipt)
+    assert receipt.metrics["control_readings"] == 1 and receipt.metrics["control_attempt_refs"] == [common[0].attempt_id]
+    assert objects.get(receipt.results_ref)["control_pooled"] is True
+    from ouroloop.evolve.task_gate import TaskEvalPlan
+    template = TaskEvalPlan.from_json(objects.get(receipt.plan_ref))
+    assert template.pooled and template.confirmations == 1 and template.gate().min_groups == 1
+
+
+def test_an_inner_gate_confirms_before_it_installs(fake_upstream, tmp_path, fixture_preset, monkeypatch):
+    """M6 §2 (v0.3), RC6-13: the candidate arm's inner gate reads the skill once, then again, and installs on a
+    `confirmed` receipt whose first reading and confirmation gain are both on it; the arm's state record went through
+    `confirming`; the outer comparison then finds two different W* and R1 is installed."""
+    from ouroloop.evolve.execution import Execution
+    activity, plan, roots = pooled_slot(fake_upstream, tmp_path, fixture_preset, monkeypatch)
+    objects = ct.Objects(roots["candidate"])
+    events = list(ct.Events(roots["candidate"]).of("evaluation_completed"))
+    receipt = objects.load(events[-1]["receipt"], ct.EvaluationReceipt)
+    assert receipt.verdict == "accepted" and receipt.kind == "confirmed" and events[-1]["reading_kind"] == "confirmed"
+    assert receipt.metrics["readings"] == 2 and receipt.metrics["first_reading"]["verdict"] == "accepted"
+    assert receipt.metrics["confirmation_gain"] == receipt.metrics["gain"] == receipt.metrics["first_reading"]["gain"]
+    states = [e["status"] for e in Execution(roots["candidate"], json.loads(
+        (roots["candidate"] / "rsi" / "arm.json").read_text())["rounds"][0]["experiment"]).state()["history"]]
+    assert states == ["admitted", "building", "screening", "evaluating", "evaluated", "confirming", "evaluated",
+                      "accepted", "installing", "installed"]
+    arm_events = [e for e in ct.Events(activity.root).of("campaign_arm")]
+    assert len({e["w_star"] for e in arm_events}) == 2
+    assert ct.SystemRelease.from_json(activity.objects.get(activity.releases.active()["release_ref"])).research_ref \
+        == plan.r_candidate_ref
+
+
+class Died(BaseException):
+    """The process dying mid-arm: not an exception any handler is allowed to swallow."""
+
+
+def test_a_control_arm_cut_short_is_topped_up_on_restart_and_nothing_is_paid_twice(fake_upstream, tmp_path,
+                                                                                   fixture_preset, monkeypatch):
+    """M3 §2.1(a) (v0.3, after review): under a pooled plan with nothing pooled yet (a first-version activity reads
+    train only before its first gate), the process dies after the control arm recorded one task. The restart finds
+    that reading in the pool, reads only the two pairs still short, and the gate is conclusive — one control attempt
+    per task, the one recorded before the crash kept, none paid twice, the candidate installed."""
+    from ouroloop.evolve import task_eval
+    from ouroloop.evolve.execution import unfinished
+    from ouroloop.benchmark import Results
+    fixture_preset["task_plan"].update(control_pooling="pooled", confirmation_repeats=0)
+    cfg = cycle_config(fake_upstream, tmp_path)
+    activity, _ = gap_w0(cfg, tmp_path)
+    named = frozen(cfg)
+    original = task_eval.run_attempt
+    state = {"control": 0}
+
+    def dying(*args, **kw):
+        if kw.get("arm") == "control":
+            state["control"] += 1
+            if state["control"] == 2:
+                raise Died("the process died in the control arm")
+        return original(*args, **kw)
+    monkeypatch.setattr(task_eval, "run_attempt", dying)
+    with pytest.raises(Died):
+        bench.improve(named, ".", out=lambda _line: None, researcher=SkillAnyway())
+    results = Results(activity.root, rsi.DOMAIN)
+    recorded = [r for r in results.all() if bench._arm_of(r.attempt_id) == "control"]
+    assert len(recorded) == 1 and unfinished(activity.root)[0]["status"] == "evaluating"
+    monkeypatch.setattr(task_eval, "run_attempt", original)
+    result = bench.improve(named, ".", out=lambda _line: None, researcher=SkillAnyway())
+    assert result["rounds"][0]["outcome"] == "installed" and "resumed from evaluating" in result["rounds"][0]["reason"]
+    control = [r for r in results.all() if bench._arm_of(r.attempt_id) == "control"]
+    assert sorted(r.task_id for r in control) == sorted(rsi.DEV)            # one per task, the first one kept
+    assert len({r.attempt_id for r in control}) == 3 and recorded[0].attempt_id in {r.attempt_id for r in control}
+    receipt = activity.objects.load(list(ct.Events(activity.root).of("evaluation_completed"))[-1]["receipt"],
+                                    ct.EvaluationReceipt)
+    assert receipt.verdict == "accepted" and receipt.metrics["control_readings"] == 1
+    assert sorted(receipt.metrics["control_attempt_refs"]) == sorted(r.attempt_id for r in control)
+    assert activity.objects.get(receipt.results_ref)["control_pooled"] is True and not unfinished(activity.root)

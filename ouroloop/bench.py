@@ -85,6 +85,8 @@ class BenchConfig:
             raise ValueError(f"[bench.budget] {raised} above the preset's {[defaults[k] for k in raised]}: a "
                              f"per-attempt limit may be lowered under a preset, not raised")
         budget = Budget(**{**defaults, **given})
+        # The preset's default for the attempts in flight (preset_concurrency); the table's own value stands.
+        table.setdefault("concurrency", preset_concurrency(cfg))
         toolset = table.get("toolset", ab.TOOLSET)
         if toolset != ab.TOOLSET:
             raise ValueError(f"[bench] toolset = {toolset!r}: only {ab.TOOLSET!r} is wired up (upstream's own "
@@ -322,6 +324,7 @@ from .evolve.build import build_task_dataset as _build_task_dataset
 from .evolve.execution import BudgetError, BudgetMismatch, Budgets, Schedule
 from .evolve.task_gate import GatePlan, TaskEvalPlan, evaluate_task
 from .evolve.task_gate import screen as _screen
+from .evolve.task_gate import shortfall as _shortfall
 from .points import business_stop_point as _business_stop_point
 from .release import Releases
 from .research.context import make_context as _make_context
@@ -411,6 +414,10 @@ class Improvement:
     allocation: str | None = None               # the root allocation the arm's calls spend ("final"), if any
     template_ref: str = ""                      # the frozen evaluation template its experiments are held to
     concurrency: int = 1                        # attempts of one arm run at a time ([bench] concurrency)
+    # v0.3 (M3 §2.1(a)(b)): the frozen template's control pooling and confirmation count, carried into every plan
+    # this activity freezes for a candidate; None (a template frozen without them) is a fresh control, no confirmation.
+    control_pooling: str | None = None
+    confirmation_repeats: int | None = None
     _plans: dict = _field(default_factory=dict)
     _experiment_ref: str = ""
     _parent_release: str = ""
@@ -429,7 +436,51 @@ class Improvement:
                             repeats=self.repeats, order_seed=self.order_seed,
                             per_attempt_budget=self.attempt_budget.limits(),
                             retry_policy={"max_infrastructure_retries": 1}, screen_ids=tuple(self.screen_ids),
-                            gate_plan=self.gate.to_json(), installs=self.plan_installs)
+                            gate_plan=self.gate.to_json(), installs=self.plan_installs,
+                            control_pooling=self.control_pooling, confirmation_repeats=self.confirmation_repeats)
+
+    def control_pool(self, parent_release: str, *, plan: TaskEvalPlan | None = None, tasks=None) -> list:
+        """Every valid reading of the installed W under this comparison's conditions and model identity, pooled
+        (docs/modules/03_EVALUATION_RELEASE.md §2.1(a), v0.3): the baseline's dev run, every earlier gate's control
+        arm, and the candidate and confirmation arms of a gate whose candidate is this W now.
+
+        A reading belongs when its run manifest is this control arm's manifest less what names an arm — the
+        candidate/role labels, the plan ref, the budget scope, the release and R (R takes no part in a run, so a
+        release that only changed R is the same W, as `_runs_like` reads it) — so the model identity, the package,
+        the per-attempt limits, the repeats, the split and the host contract are all equal; and when its own plan,
+        if it ran under one, froze the same conditions as this plan (`TaskEvalPlan.conditions`): the same tasks,
+        repeats, seed and limits. The baseline's run has no plan and ran under the frozen template's conditions
+        (bench.baseline). Only the plan's tasks (or `tasks`) on the plan's split count, and only valid attempts;
+        the screen arms (`screen_subject`/`screen_control`: the screen tasks only, attempt 0, not a reading of the
+        plan) never count. The pool is the control's starting point: what it is short of, the gate's control arm
+        reads (task_gate.shortfall), so an empty pool is simply the whole plan short.
+        """
+        plan = plan or self.plan("", "", parent_release)
+        if self.results is None or not plan.pooled:
+            return []
+        wanted = set(tasks if tasks is not None else plan.task_ids)
+        split = _split_of_tasks(self.splits, plan.task_ids)
+        expected = self.run_identity(parent_release, plan_ref="", split=split, candidate="control", role="base")[0]
+        labels = ("candidate", "role", "eval_plan_ref", "budget_scope", "notes", "system_release_ref",
+                  "research_ref", "experience_ref", "mode")
+        same = {k: v for k, v in expected.payload().items() if k not in labels}
+        conditions = plan.conditions()
+        runs: set[str] = set()
+        for run_hash, run in self.results.runs().items():
+            if {k: v for k, v in run.payload().items() if k not in labels} != same:
+                continue
+            if run.eval_plan_ref:
+                if not self.objects.has(run.eval_plan_ref):
+                    continue
+                try:
+                    other = TaskEvalPlan.from_json(self.objects.get(run.eval_plan_ref))
+                except _ct.ContractError:
+                    continue
+                if other.conditions() != conditions:
+                    continue
+            runs.add(run_hash)
+        return [r for r in self.results.all() if r.run in runs and r.validity == "valid" and r.split == split
+                and r.task_id in wanted and _arm_of(r.attempt_id) not in SCREEN_ARMS]
 
     def run_identity(self, release_ref: str, *, plan_ref: str, split: str, candidate: str, role: str,
                      permit: str | None = None, scope: str | None = None) -> tuple:
@@ -505,10 +556,21 @@ class Improvement:
         factory = make_agent_factory(self.rt, provider, budget=self.attempt_budget, bound=bound,
                                      objects=self.objects, stop_view=self.stop_view,
                                      meta={"arm": arm, "scope": self.scope_id}, worker=self.worker)
-        return reused + run_tasks(self.suite, [t for t, _ in order], factory, run=run, splits=self.splits,
-                                  results=self.results, probe=probe, arm=arm, plan_ref=plan_ref,
-                                  release_ref=release_ref, order=order, retry_index=retry_index,
-                                  pricing=self.pricing, supersedes=supersedes, concurrency=self.concurrency)
+        try:
+            rows = run_tasks(self.suite, [t for t, _ in order], factory, run=run, splits=self.splits,
+                             results=self.results, probe=probe, arm=arm, plan_ref=plan_ref,
+                             release_ref=release_ref, order=order, retry_index=retry_index,
+                             pricing=self.pricing, supersedes=supersedes, concurrency=self.concurrency)
+        finally:
+            refused = getattr(provider, "rate_limited", 0)
+            if refused:
+                # M5 §2 (v0.3): the provider's rate-limit refusals (429/529/overloaded) this arm absorbed as unbilled
+                # retries — not pauses, not invalid attempts — on record per arm, written whether the arm finished
+                # or an interrupt or an account error ended it, so a report can list them and a person can decide
+                # to lower the concurrency; nothing lowers it on its own.
+                self.releases.events.append("rate_limited", scope=self.scope_id, arm=arm, run=run.hash(),
+                                            count=refused)
+        return reused + rows
 
     def rt_environment(self) -> dict:
         return {"upstream": self.suite.versions.get("commit", ""), "package": self.suite.versions.get("package", ""),
@@ -768,7 +830,7 @@ class Improvement:
                                            transcripts=Path(self.rt.root) / "transcripts", limits=limits),
             order=list(self.splits.ids("train")), history=dg.last_included(experience, self.scope_id),
             limits=limits, cache=dg.NoteCache(Path(root), self.objects, shared=shared_notes), model=research_model,
-            round_index=dg.diagnosis_count(experience, self.scope_id),
+            round_index=dg.diagnosis_count(experience, self.scope_id), concurrency=self.concurrency,
             components=package.components, package={**run_files, **test_files},
             scope=evidence.get("scope") or "train failures of the latest measurement",
             measured=len(latest), passed=sum(1 for r in latest.values() if r.success))
@@ -861,8 +923,18 @@ class Improvement:
 
     def _verify_bound(self) -> dict:
         """What a full comparison plus the install probe will cost at least, so a candidate that could not be
-        verified is never started (EX-03)."""
-        attempts = len(self.dev_tasks) * self.repeats * 2
+        verified is never started (EX-03).
+
+        v0.3 (M5 §2 验证预留): the candidate arm × (1 + confirmation_repeats) — the confirmation reading is a
+        verification step and belongs in the bound — plus the control pairs the pooled readings are short of
+        (task_gate.shortfall, the same count evaluate_task reads; the whole control arm under a plan that does
+        not pool)."""
+        readings = 1 + int(self.confirmation_repeats or 0)
+        parent = self._parent()
+        plan = self.plan("", "", parent)
+        control = len(_shortfall(plan, self.control_pool(parent, plan=plan))) if plan.pooled else \
+            len(self.dev_tasks) * self.repeats
+        attempts = len(self.dev_tasks) * self.repeats * readings + control
         return {"model_calls": attempts, "tool_calls": attempts}
 
     def _build(self, experiment, budget) -> _ct.BuildResult:
@@ -916,7 +988,13 @@ class Improvement:
         control = self.run_arm("screen_control", parent, order, plan_ref=plan_ref)
         return _screen(plan, subject, control)
 
-    def _evaluate(self, candidate_ref: str, budget) -> _ct.EvaluationReceipt:
+    def _evaluate(self, candidate_ref: str, budget, confirming=None) -> _ct.EvaluationReceipt:
+        """The gate: the candidate arm under the frozen plan against the control — under a pooled plan the installed
+        W's pooled readings (control_pool) topped up by a control reading of exactly the pairs they are short of,
+        a fresh reading of the parent otherwise — and, under a plan that confirms, the confirmation reading of the
+        candidate arm. The top-up and the confirmation each run under their own run identity (the control's, and
+        candidate "confirmation" / arm `confirm`), so a resume finds exactly the attempts it had recorded and never
+        mistakes the first reading's for them (M5 §3, the frozen inputs)."""
         parent = self._parent()
         control_set = self.objects.load(parent, _ct.SystemRelease).worker_ref if self.owner == "worker" else \
             self.objects.load(parent, _ct.SystemRelease).research_ref
@@ -925,19 +1003,25 @@ class Improvement:
         permit = self.releases.permit(candidate_ref, parent, plan_ref, self.scope_id, self.core_ref)
         arm_release = self.releases.candidate_release(parent, candidate_ref, permit)
         self._plans[candidate_ref] = (plan_ref, arm_release)
+        pool = self.control_pool(parent, plan=plan) if plan.pooled else []
 
         def run(arm, order, retry=0, supersedes=None):
             if arm == "subject":
                 return self.run_arm(arm, arm_release, order, plan_ref=plan_ref, permit=permit,
                                     retry_index=retry, resume=True, supersedes=supersedes)
+            if arm.startswith("confirm"):
+                return self.run_arm(arm, arm_release, order, plan_ref=plan_ref, permit=permit,
+                                    candidate=arm.replace("confirm", "confirmation", 1), retry_index=retry,
+                                    resume=True, supersedes=supersedes)
             return self.run_arm(arm, parent, order, plan_ref=plan_ref, candidate="control", role="base",
                                 retry_index=retry, resume=True, supersedes=supersedes)
 
         receipt = evaluate_task(plan, run=run, objects=self.objects, experiment_ref=self._experiment_ref,
-                                families=self.families())
+                                families=self.families(), control_pool=pool, confirming=confirming)
         ref = self.objects.put(receipt)
         self.releases.register_receipt(ref, plan=plan_ref, subject=candidate_ref, verdict=receipt.verdict,
-                                      scope=self.scope_id)
+                                      scope=self.scope_id, reading_kind=receipt.reading_kind,
+                                      control_readings=receipt.metrics.get("control_readings"))
         return receipt
 
     def _install(self, receipt, expected_parent):
@@ -993,6 +1077,42 @@ def _collection_batches(root, scope_id: str, segment: str | None, *, any_segment
 def _arm_of(attempt_id: str | None) -> str:
     """The arm an attempt id names (benchmark.attempt_id: `<run>/<task>/r<repeat>/<arm>#<retry>`)."""
     return (attempt_id or "").rpartition("#")[0].rpartition("/")[2]
+
+
+# The screen's arms (Improvement._screen): the predeclared screen tasks only, at attempt 0 — not a reading of the
+# plan, so never part of a pooled control (M3 §2.1(a), v0.3).
+SCREEN_ARMS = ("screen_subject", "screen_control")
+
+
+def _research_meter(researcher):
+    """The metered provider behind a research step (bench._default_researcher: PolicyResearcher over _Completions
+    over MeteredProvider), or None for a scripted researcher that meters nothing."""
+    provider = getattr(getattr(researcher, "llm", None), "provider", None)
+    return provider if hasattr(provider, "rate_limited") else None
+
+
+def _rate_limit_recorder(researcher, events: _ct.Events, *, scope: str, first_round: int, on_result=None):
+    """-> an `on_result` for run_worker_rounds that, after each completed round, writes the research meter's
+    rate-limit refusals of that round as a `rate_limited` event (arm `research`, the round's index, the count),
+    only when there were any (M5 §2, v0.3), then hands the result on to `on_result`. The meter's count is
+    cumulative; the event carries this round's share of it."""
+    from .research.loop import ROUND_MARKERS
+    meter = _research_meter(researcher)
+    seen = {"count": 0, "round": first_round}
+
+    def record(result) -> None:
+        try:
+            if meter is not None and result.outcome not in ROUND_MARKERS:
+                total = int(getattr(meter, "rate_limited", 0) or 0)
+                if total > seen["count"]:
+                    events.append("rate_limited", scope=scope, arm="research", round=seen["round"],
+                                  count=total - seen["count"])
+                    seen["count"] = total
+                seen["round"] += 1
+        finally:
+            if on_result is not None:
+                on_result(result)
+    return record
 
 
 def _retry_of(attempt_id: str) -> int:
@@ -1088,7 +1208,30 @@ PRESETS["automationbench_harness_v3"] = {
                 "max_effort": "high"},
     "budget": {"max_steps": 50, "max_model_calls": 200, "max_tool_calls": 200, "max_seconds": 900.0,
                "max_tokens": 400000},
+    # v0.3 step 2 (M3 §2.1, M5 §2, M6 §2; 2026-10-04): the gate's statistics — a pooled control, one confirmation
+    # reading before an install, a regression as a drop of 0.5, the cost term β0 0.10 / β1 2.0, no gate under 25
+    # tasks — eight attempts in flight, three rounds per research arm and the headroom check before a slot asks R.
+    # [freeze.task_plan.gate] may tighten any of these and loosen none (_beyond_preset).
+    "task_plan": {"tasks": "dev", "repeats": 1, "order_seed": 0, "control_pooling": "pooled",
+                  "confirmation_repeats": 1,
+                  "gate": {"mode": "quality", "min_gain": 0.05, "min_groups": 5, "max_regression_rate": 0.1,
+                           "regression_drop": 0.5, "cost_beta0": 0.10, "cost_beta1": 2.0, "min_tasks": 25}},
+    # arm_share 0.15 is the v1 placeholder: M6 §2 (v0.3) re-estimates it from the mainline rounds' measured cost ×
+    # worker_round_limit plus the confirmation reading, and the re-estimated value is written here before the
+    # step-5 root opens (ROADMAP v0.3 step 5), not in this step.
+    "campaign": {"worker_round_limit": 3, "arm_share": 0.15, "outer_share": 0.08, "min_gain": 0.05,
+                 "min_groups": 1, "min_headroom_tasks": 6},
+    "concurrency": 8,
 }
+
+
+def preset_concurrency(cfg: dict) -> int:
+    """[bench] concurrency's default under the [improvement] preset (M5 §2, v0.3): 8 under the v3 preset, 1 under
+    the v1 preset and without a preset. A setting of the machine, never part of a frozen plan; the config may set
+    any count, and `--concurrency` on the command line overrides it for one run."""
+    name = dict(cfg.get("improvement") or {}).get("preset")
+    preset = PRESETS.get(name) if isinstance(name, str) else None
+    return int((preset or {}).get("concurrency") or 1)
 
 
 def preset_budget(cfg: dict) -> dict:
@@ -1411,14 +1554,24 @@ def activity_budget(activity: Activity, cfg: dict, phase: str):
 
 def freeze_task_plan(objects: _ct.Objects, *, core_ref: str, split_ref: str, task_ids, gate: GatePlan,
                      repeats: int = 1, order_seed: int = 0, screen_ids=(), installs: bool = True,
-                     per_attempt_budget: dict | None = None) -> str:
+                     per_attempt_budget: dict | None = None, control_pooling: str | None = None,
+                     confirmation_repeats: int | None = None) -> str:
     """The development plan template: tasks, repeats, order, thresholds and statistics, frozen before the first
-    candidate runs. A candidate's own artifact ref is filled in later; the thresholds are not touched again."""
+    candidate runs. A candidate's own artifact ref is filled in later; the thresholds are not touched again.
+
+    A gate plan with `min_tasks` refuses to freeze over fewer tasks (M3 §2.1(f), v0.3) — here, so the mainline gate
+    and a research slot's inner gate meet the same rule: twelve tasks let a third of empty candidates through, and
+    no number read off such a gate tells two research policies apart."""
+    task_ids = tuple(task_ids)
+    if gate.min_tasks is not None and len(task_ids) < int(gate.min_tasks):
+        raise ValueError(f"freeze refused: the gate plan runs {len(task_ids)} tasks, fewer than its min_tasks "
+                         f"{gate.min_tasks} (M3 §2.1(f))")
     return objects.put(TaskEvalPlan(candidate_ref="", control_ref="", parent_release="", core_ref=core_ref,
-                                    split_ref=split_ref, task_ids=tuple(task_ids), repeats=repeats,
+                                    split_ref=split_ref, task_ids=task_ids, repeats=repeats,
                                     order_seed=order_seed, screen_ids=tuple(screen_ids),
                                     gate_plan=gate.to_json(), installs=installs,
-                                    per_attempt_budget=dict(per_attempt_budget or {})))
+                                    per_attempt_budget=dict(per_attempt_budget or {}),
+                                    control_pooling=control_pooling, confirmation_repeats=confirmation_repeats))
 
 
 def _frozen_plan(activity: Activity, ref: str | None = None) -> TaskEvalPlan | None:
@@ -1462,8 +1615,17 @@ def improvement(activity: Activity, *, template_ref: str | None = None, provider
         probe_train=True, train_tasks=tuple(activity.splits.ids("train")), owner=owner, pricing=pricing,
         harness=_harness_of(activity), worker=isolated_worker(_harness_of(activity)), template_ref=template_ref or "",
         concurrency=activity.bench.concurrency,
+        control_pooling=template.control_pooling if template else None,
+        confirmation_repeats=template.confirmation_repeats if template else None,
         plan_installs=template.installs if template and installs is None else (True if installs is None
                                                                                else installs))
+
+
+def _pooling_of(activity: Activity) -> tuple[str | None, int | None]:
+    """The activity's frozen template's (control_pooling, confirmation_repeats), for the comparisons that are built
+    beside it — a research slot's inner gates (M6 §2, v0.3) — or (None, None) without a frozen template."""
+    template = _frozen_plan(activity)
+    return (template.control_pooling, template.confirmation_repeats) if template is not None else (None, None)
 
 
 def require(problems: list, *, phase: str) -> None:
@@ -1742,7 +1904,9 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
         if work.harness else 0
     results = resumed + ([] if halted else run_worker_rounds(
         make_round, budget, schedule=schedule, root=activity.root, collect=collector, collected_before=collected,
-        on_result=seglog.add if seglog is not None else None,
+        # the research meter's rate-limit refusals, per round (M5 §2, v0.3), then the segment's own record
+        on_result=_rate_limit_recorder(researcher, activity.releases.events, scope=activity.rsi.scope_id,
+                                       first_round=done, on_result=seglog.add if seglog is not None else None),
         history=tuple(seglog.state["rounds"]) if seglog is not None else (), stop_after=stop_after,
         # a batch booked before a crash is finished first, at its own attempt index, before any round runs
         resume_collections=(lambda: work.finish_collections(activity.root, measured.get("last")))
@@ -1958,6 +2122,7 @@ def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_
     config_mod.register_builtin_points(rt)
     start = releases.bootstrap(pair.initial_w_ref, r_ref, core_ref,
                                reason=f"campaign {plan.id} {pair.pair_id} arm {arm}")
+    pooling, confirmations = _pooling_of(activity)
     inner = Improvement(rt=rt, suite=activity.suite, splits=activity.splits, objects=objects, releases=releases,
                         provider=provider, core_ref=core_ref, gate=_gate_of(activity, plan),
                         dev_tasks=tuple(_tasks_of(activity, pair.inner_dev_groups)),
@@ -1967,18 +2132,26 @@ def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_
                         pricing=pricing, concurrency=activity.bench.concurrency,
                         stop_view=activity.rsi.stop_view, attempt_budget=_attempt_budget(activity),
                         probe_train=True, train_tasks=tuple(_tasks_of(activity, pair.inner_train_groups)),
-                        harness=_harness_of(activity), worker=isolated_worker(_harness_of(activity)))
+                        harness=_harness_of(activity), worker=isolated_worker(_harness_of(activity)),
+                        control_pooling=pooling, confirmation_repeats=confirmations)
     # The arm's own template, frozen from what its gate reads — the inner dev families, the campaign's gate, its
-    # repeats and seed — so its experiments name the plan they are compared under, not the activity's dev plan.
+    # repeats and seed, the activity's pooling and confirmation (M6 §2, v0.3) — so its experiments name the plan
+    # they are compared under, not the activity's dev plan.
     inner.template_ref = freeze_task_plan(
         objects, core_ref=core_ref, split_ref=activity.splits.hash(), task_ids=inner.dev_tasks, gate=inner.gate,
         repeats=inner.repeats, order_seed=inner.order_seed,
-        per_attempt_budget=inner.attempt_budget.limits())
+        per_attempt_budget=inner.attempt_budget.limits(), control_pooling=pooling,
+        confirmation_repeats=confirmations)
     step = researcher
     outcome = ArmOutcome(arm=arm, pair_id=pair.pair_id)
     if log.finished:
         return _arm_outcome(outcome, log.state, objects, releases, start, activity, pair, arm_budget, out)
     _seed_experience(root, _starting_experience(activity, pair))      # before a resumed experiment appends to it
+    if shared and shared.get("dev"):
+        # M6 §2 (v0.3): the start W's dev readings are a common input, copied into this arm's record as recorded, so
+        # the arm's pooled control starts as the other arm's does — the common readings plus, later, its own; the
+        # other arm's readings are never here. Rows already on record (a restarted arm) are not written twice.
+        _copy_readings(shared["dev"], shared["dev_runs"], inner.results)
     log.watch(step)
     # An experiment a crash left mid-way is finished first, from what it recorded, and counts as its round.
     resumed = resume_unfinished(root, objects, inner.handlers(), arm_budget, eval_template_ref=inner.template_ref,
@@ -2034,7 +2207,10 @@ def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_
             return inner.collect_batch(measured["last"], batch=batch, root=root)
     collected = _collection_batches(root, inner.scope_id, None, any_segment=True) if inner.harness else 0
     rounds = run_worker_rounds(make_round, arm_budget, schedule=schedule, root=root, collect=collector,
-                               collected_before=collected, on_result=log.add, history=tuple(log.state["rounds"]),
+                               collected_before=collected,
+                               on_result=_rate_limit_recorder(step, _ct.Events(root), scope=inner.scope_id,
+                                                              first_round=done, on_result=log.add),
+                               history=tuple(log.state["rounds"]),
                                resume_collections=(lambda: inner.finish_collections(root, measured.get("last")))
                                if inner.harness else None)
     log.end(next((r.reason for r in reversed(rounds) if r.outcome == "stopped"), "rounds_done"))
@@ -2139,6 +2315,7 @@ def _campaign_common(activity: Activity, plan, pair, budget, *, provider, pricin
     config_mod.register_builtin_points(rt)
     start = releases.bootstrap(pair.initial_w_ref, plan.r_control_ref, core_ref,
                                reason=f"campaign {plan.id} {pair.pair_id} common inputs")
+    pooling, confirmations = _pooling_of(activity)
     common = Improvement(rt=rt, suite=activity.suite, splits=activity.splits, objects=objects, releases=releases,
                          provider=provider, core_ref=core_ref, gate=_gate_of(activity, plan),
                          dev_tasks=tuple(_tasks_of(activity, pair.inner_dev_groups)),
@@ -2147,10 +2324,22 @@ def _campaign_common(activity: Activity, plan, pair, budget, *, provider, pricin
                          concurrency=activity.bench.concurrency,
                          stop_view=activity.rsi.stop_view, attempt_budget=_attempt_budget(activity),
                          train_tasks=tuple(_tasks_of(activity, pair.inner_train_groups)),
-                         harness=_harness_of(activity), worker=isolated_worker(_harness_of(activity)))
+                         harness=_harness_of(activity), worker=isolated_worker(_harness_of(activity)),
+                         control_pooling=pooling, confirmation_repeats=confirmations)
     measurement = common.measure(start, None)
     shared: dict = {"measurement": measurement, "results": common.results, "transcripts": Path(rt.root) / "transcripts",
-                    "research_model": research_model, "notes": None}
+                    "research_model": research_model, "notes": None, "dev": [], "dev_runs": {}}
+    if pooling == "pooled" and common.dev_tasks:
+        # M6 §2 (v0.3): under a pooled control, the start W's one reading of the inner dev tasks is a common input
+        # too — taken here, charged to the common scope, and copied into both arms — so both inner gates start
+        # from the same pooled control and neither pays for a control arm the other already has. Under a fresh
+        # control (an older plan) each arm's gate reads its own control, as before.
+        order = [(t, i) for t in common.dev_tasks for i in range(common.repeats)]
+        shared["dev"] = common.run_arm("dev_baseline", start, order, plan_ref="",
+                                       split=_split_of_tasks(activity.splits, common.dev_tasks),
+                                       candidate="current", role="base", resume=True)
+        shared["dev_runs"] = {h: run for h, run in common.results.runs().items()
+                              if h in {r.run for r in shared["dev"]}}
     bound = _P.bind_release(start, profile="task", services=common.services(), authorization="installed")
     diagnosis, _ = common.round_inputs(0, measurement, (), bound, root=root, research_model=research_model)
     selected, _rest = dg.select_failures(diagnosis.summaries, order=diagnosis.order, last_included={},
@@ -2190,6 +2379,22 @@ def _seed_experience(root, entries: list[dict]) -> None:
                              f"another E0")
     elif entries:
         _ct.durable_write(path, "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in entries).encode())
+
+
+def _copy_readings(rows: list, runs: dict, target: Results) -> int:
+    """Common dev readings and their run manifests, copied into one arm's record as recorded (M6 §2, v0.3): the
+    rows keep their attempt ids, run hashes and release, so the arm's pool rule (Improvement.control_pool) reads
+    them as what they are — readings of the same W under the same conditions. Rows already there are kept.
+    -> the rows written."""
+    present = {r.attempt_id for r in target.all() if r.attempt_id}
+    for run in runs.values():
+        target.put_run(run)
+    written = 0
+    for r in rows:
+        if r.attempt_id and r.attempt_id not in present:
+            target.append(r)
+            written += 1
+    return written
 
 
 def _copy_measurement(measurement: dict, source: Results, transcripts: Path, target: Results,
@@ -2432,8 +2637,9 @@ def cycle(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pri
     cfg = _cycle_config(cfg, base, settings, out)
     activity = open_activity(cfg, base, out=out)
     # Plans named in [rsi] are checked as much as the ones frozen here: none may loosen the preset.
+    frozen_plan = activity.objects.get(activity.rsi.task_plan_ref)
     problems = _beyond_preset(settings, activity.objects.get(activity.rsi.schedule_ref),
-                              TaskEvalPlan.from_json(activity.objects.get(activity.rsi.task_plan_ref)).gate_plan)
+                              TaskEvalPlan.from_json(frozen_plan).gate_plan, frozen_plan)
     if problems:
         raise ValueError("the cycle's plans go beyond the preset: " + "; ".join(problems))
     require(startup_checks(activity, cfg, phase="improve"), phase="cycle")
@@ -2636,11 +2842,21 @@ def _cycle_config(cfg: dict, base, settings: dict, out) -> dict:
     return {**cfg, "rsi": {**rsi_table, **refs}}
 
 
-def _beyond_preset(settings: dict, schedule: dict | None, gate: dict | None) -> list[str]:
-    """What a schedule or gate would loosen beyond [improvement] and its preset: more candidates, collection
-    batches or research slots than the reader allows, a lower min_gain or a higher max_regression_rate than the
-    preset's."""
+def _beyond_preset(settings: dict, schedule: dict | None, gate: dict | None,
+                   plan: dict | None = None) -> list[str]:
+    """What a schedule, gate or task plan would loosen beyond [improvement] and its preset: more candidates,
+    collection batches or research slots than the reader allows, a lower min_gain or a higher max_regression_rate
+    than the preset's, a looser v0.3 clause, or — `plan`, the frozen TaskEvalPlan's JSON (M3 §2.1(a)(b), v0.3) — a
+    control not pooled or fewer confirmation readings than the preset's task plan sets, which leaving the field out
+    of a [freeze.task_plan] table also does."""
     problems = []
+    if plan is not None:
+        preset_plan = settings["task_plan"]
+        if preset_plan.get("control_pooling") == "pooled" and plan.get("control_pooling") != "pooled":
+            problems.append(f"control_pooling {plan.get('control_pooling')} is looser than the preset's pooled")
+        wanted = int(preset_plan.get("confirmation_repeats") or 0)
+        if int(plan.get("confirmation_repeats") or 0) < wanted:
+            problems.append(f"confirmation_repeats {plan.get('confirmation_repeats')} is below the preset's {wanted}")
     if schedule is not None:
         if int(schedule.get("candidates_per_round", 1)) != settings["candidates_per_round"]:
             problems.append(f"candidates_per_round {schedule.get('candidates_per_round')}: this version runs "
@@ -2660,6 +2876,15 @@ def _beyond_preset(settings: dict, schedule: dict | None, gate: dict | None) -> 
         if float(gate.get("max_regression_rate", preset["max_regression_rate"])) > float(preset["max_regression_rate"]):
             problems.append(f"max_regression_rate {gate.get('max_regression_rate')} is above the preset's "
                             f"{preset['max_regression_rate']}")
+        # v0.3 (M3 §2.1): the gate's new clauses tighten only — a larger drop before a task counts as regressed, a
+        # larger cost allowance or a smaller least task count would each let more through than the preset does.
+        for key, looser in (("regression_drop", lambda v, p: v > p), ("cost_beta0", lambda v, p: v > p),
+                            ("cost_beta1", lambda v, p: v > p), ("min_tasks", lambda v, p: v < p)):
+            if preset.get(key) is None:
+                continue
+            value = gate.get(key)
+            if value is None or looser(float(value), float(preset[key])):
+                problems.append(f"{key} {value} is looser than the preset's {preset[key]}")
     return problems
 
 
@@ -2668,28 +2893,58 @@ def _cycle_slot(cfg, base, activity: Activity, settings: dict, slot: str, state:
     """One planned research slot, recorded step by step: the frozen campaign plan before any arm runs, then the
     receipt. A restart resumes the same plan (its arms resume too), and a slot with a receipt is not run again."""
     step = state["steps"].setdefault(slot, {})
-    if step.get("receipt") or step.get("outcome") in ("no_proposal", "invalid", "rejected", "failed"):
+    if step.get("receipt") or step.get("outcome") in ("no_proposal", "invalid", "rejected", "failed",
+                                                      "no_slot_pool", "no_headroom"):
         out(f"cycle      research {slot} already on record ({step.get('verdict') or step.get('outcome')})")
         return "done"
     if step.get("outcome") in ("paused", "budget_exhausted"):
         # how an earlier run of the slot stopped, not its result: it continues from what it recorded
         step.pop("outcome")
         step.pop("reason", None)
+    campaign = settings["campaign"]
+    if not step.get("campaign"):
+        pairs = cycle_pairs(activity, cfg)
+        template = TaskEvalPlan.from_json(activity.objects.get(activity.rsi.task_plan_ref))
+        # docs/modules/06_RESEARCH_CAMPAIGN.md §2 (v0.3), in this order, before R is asked, before any share is
+        # held and before the budget is even looked at: the slot's pools (each half of dev no smaller than the
+        # gate's min_tasks), then the headroom, then the budget. Each is the slot's own outcome, not a budget end
+        # and not an invalid round; the next worker segment runs as scheduled and the report's C4 says why.
+        halves = {"inner": _tasks_of(activity, pairs[0].inner_dev_groups),
+                  "outer": _tasks_of(activity, pairs[0].outer_groups)}
+        least = template.gate().min_tasks
+        short = {half: len(tasks) for half, tasks in halves.items() if least is not None and len(tasks) < least}
+        if short:
+            # the inequality that failed, per half; the dev-wide one only when it holds too
+            failed = ", ".join(f"the {half} half has {n} task{'s' if n != 1 else ''}, fewer than min_tasks {least}"
+                               for half, n in short.items())
+            whole = f"; dev {len(template.task_ids)} < 2 × {least}" if len(template.task_ids) < 2 * least else ""
+            step.update(outcome="no_slot_pool",
+                        reason=f"the research slot needs two gates of at least min_tasks {least} tasks: {failed}{whole}")
+            save()
+            out(f"cycle      research {slot}: no_slot_pool ({step['reason']}); the next worker segment runs")
+            return "done"
+        headroom = slot_headroom(activity, cfg, halves["inner"])
+        step["headroom"] = headroom
+        least_headroom = int(campaign.get("min_headroom_tasks") or 0)
+        if least_headroom and headroom < least_headroom:
+            step.update(outcome="no_headroom",
+                        reason=f"the start W never passed {headroom} of the {len(halves['inner'])} inner dev tasks "
+                               f"in its pooled readings, fewer than min_headroom_tasks {least_headroom}")
+            save()
+            out(f"cycle      research {slot}: no_headroom ({step['reason']}); the next worker segment runs")
+            return "done"
     budget = activity_budget(activity, cfg, slot)
     if not budget.affordable({}):
         step["outcome"] = "budget_exhausted"
         save()
         return "budget_exhausted"
     if not step.get("campaign"):
-        pairs = cycle_pairs(activity, cfg)
-        campaign = settings["campaign"]
-        template = TaskEvalPlan.from_json(activity.objects.get(activity.rsi.task_plan_ref))
         inner_groups = len(pairs[0].inner_dev_groups)
-        # The arms' inner gate is the mainline gate on fewer families; the research verdict is over independence
-        # groups, and the preset's pair rule makes one, so its min_groups comes from the preset (exploratory).
-        gate = GatePlan(min_gain=float(template.gate().min_gain),
-                        min_groups=max(1, min(template.gate().min_groups, inner_groups)),
-                        max_regression_rate=template.gate().max_regression_rate)
+        # The arms' inner gate is the mainline gate on fewer families — its every clause (min_gain, the regression
+        # rule, the cost term, min_tasks: M6 §2, v0.3) — while the research verdict is over independence groups,
+        # and the preset's pair rule makes one, so its min_groups comes from the preset (exploratory).
+        gate = GatePlan(**{**{k: v for k, v in template.gate().to_json().items() if k != "ref"},
+                           "min_groups": max(1, min(template.gate().min_groups, inner_groups))})
         research_gate = GatePlan(min_gain=float(campaign["min_gain"]), min_groups=int(campaign["min_groups"]))
         limits = budget_limits(activity.objects.get(activity.rsi.budget_ref) if activity.rsi.budget_ref else {})
         arm_budget = {k: round(float(v) * float(campaign["arm_share"]), 6) for k, v in limits.items()}
@@ -2747,6 +3002,37 @@ def _cycle_slot(cfg, base, activity: Activity, settings: dict, slot: str, state:
                                   "segment": f"segment-{int(slot.rsplit('-', 1)[1]) + 1}"}
     save()
     return "done"
+
+
+def slot_headroom(activity: Activity, cfg: dict, inner_tasks) -> int:
+    """How many of the inner dev tasks the start W never passed in its pooled readings (M6 §2 余量检查, v0.3): what a
+    research slot's candidates could still fix. Read from the activity's results through the same pool rule as a
+    gate's control (Improvement.control_pool), so the number is the one the arms' inner gates would start from; a
+    task with no reading at all counts as never passed — no evidence is not evidence of a pass. The W is the
+    active release's."""
+    parent = activity.releases.active()["release_ref"]
+    work = improvement(activity, template_ref=activity.rsi.task_plan_ref, provider=_pinned_provider(activity, cfg))
+    inner = list(inner_tasks)
+    if not inner:
+        return 0
+    template = work.plan("", "", parent)
+    if not template.pooled:
+        # a template that takes fresh controls still has readings of the start W (the baseline's dev run, the
+        # gates' control arms): the same pool rule reads them, for the headroom only
+        template = TaskEvalPlan.from_json({**{k: v for k, v in template.to_json().items() if k != "ref"},
+                                           "control_pooling": "pooled"})
+    rows = work.control_pool(parent, plan=template, tasks=inner)
+    passed = {r.task_id for r in rows if r.success}
+    return sum(1 for t in inner if t not in passed)
+
+
+def _pinned_provider(activity: Activity, cfg: dict):
+    """The configured model's provider, for an Improvement that only reads records: the release pins its own actor
+    and a read never calls it, so a provider that cannot be built is no provider rather than a refusal."""
+    try:
+        return config_mod.build_provider(cfg["llm"]) if "llm" in cfg else None
+    except Exception:  # noqa: BLE001 - nothing here is paid for; the startup checks name a model that cannot run
+        return None
 
 
 def cycle_pairs(activity: Activity, cfg: dict) -> list:
@@ -3122,7 +3408,8 @@ def harness_checks(activity: Activity, bound) -> list[str]:
 
 # ---------------------------------------------------------------------------- freezing plans
 FREEZE_TABLES = {"task_plan", "schedule", "budget", "final"}
-TASK_PLAN_KEYS = {"tasks", "repeats", "order_seed", "screen", "installs", "per_attempt_budget", "gate"}
+TASK_PLAN_KEYS = {"tasks", "repeats", "order_seed", "screen", "installs", "per_attempt_budget", "gate",
+                  "control_pooling", "confirmation_repeats"}
 FINAL_KEYS = {"experiment_id", "claims", "comparisons", "release_refs", "tasks", "repeats", "statistical_plan",
               "stop_rules", "research_campaign_plan_ref"}
 
@@ -3205,7 +3492,11 @@ def freeze(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pr
             # Every per-attempt limit is part of the plan: one not written here would be read from [bench.budget]
             # at run time, and a change to it would finish an open comparison under other limits (M5 §3).
             per_attempt_budget={**{k: v for k, v in asdict(activity.bench.budget).items() if v is not None},
-                                **dict(t.get("per_attempt_budget") or {})})
+                                **dict(t.get("per_attempt_budget") or {})},
+            # v0.3 (M3 §2.1(a)(b)): left out of the table, both stay None — a fresh control, no confirmation — and
+            # the plan's ref is the one the same table froze before these fields existed.
+            control_pooling=t.get("control_pooling"),
+            confirmation_repeats=None if t.get("confirmation_repeats") is None else int(t["confirmation_repeats"]))
     if "schedule" in tables:
         schedule = Schedule(**dict(tables["schedule"]))       # an unknown key is a TypeError here, on purpose
         refs["schedule_ref"] = activity.objects.put_json("schedule", asdict(schedule))

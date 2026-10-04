@@ -536,9 +536,17 @@ class Experiment(Record):
         check_refs([self.core_ref], kind="core", what="core manifest")
 
 
+RECEIPT_KINDS = ("full", "confirmed")
+
+
 @dataclass
 class EvaluationReceipt(Record):
-    """What a fixed evaluator concluded. Only this, from a completed evaluation, can authorise an install."""
+    """What a fixed evaluator concluded. Only this, from a completed evaluation, can authorise an install.
+
+    `kind` (M3 §2.1(b), v0.3): "full" — one complete paired reading — or "confirmed" — a first reading that
+    cleared the gate and was then read again, whether the confirmation then passed or not. None is how a receipt
+    written before the field reads: "full", and its ref unchanged (`Record.payload` leaves None out). A plan with
+    `confirmation_repeats` installs only a "confirmed" receipt (release.Releases.install)."""
     TYPE = "receipt"
     experiment_ref: str = ""
     profile: str = "task"
@@ -551,6 +559,7 @@ class EvaluationReceipt(Record):
     metrics: dict = field(default_factory=dict)
     uncertainty: dict = field(default_factory=dict)
     costs: dict = field(default_factory=dict)
+    kind: str | None = None
     schema_version: int = SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -558,6 +567,12 @@ class EvaluationReceipt(Record):
             raise ContractError(f"profile {self.profile!r}: one of {list(PROFILES)}")
         if self.verdict not in VERDICTS:
             raise ContractError(f"verdict {self.verdict!r}: one of {list(VERDICTS)}")
+        if self.kind is not None and self.kind not in RECEIPT_KINDS:
+            raise ContractError(f"receipt kind {self.kind!r}: one of {list(RECEIPT_KINDS)}")
+
+    @property
+    def reading_kind(self) -> str:
+        return self.kind or "full"
 
 
 @dataclass

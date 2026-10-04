@@ -11,7 +11,7 @@
 | smoke | 首版检查 provider/工具/评分、包 API/计量，以及当前包组件种类在 K 内；K 的 components 含代码种类或当前包运行含代码时检查隔离 worker，不可用则不能以该配置启动；第二版启用方法才检查 review/训练。（v0.3，2026-10-04）另检查 `agent` 组件的入口能在 worker 里导入并经网关完成一次假调用（M0 §2（v0.3）：`run(ctx, task)`，ctx 只有 model/tool/skills/limits/view），以及 `[bench] domains` 列出的每个领域都能被上游装载 |
 | baseline | 起点 actor（第二版为学生）及已选 prompt/workflow 的无教师基线；首版为所 pin actor 的 train+dev 基线（原定 GLM-5.3，2026-10-03 起为 Claude Opus 5.5，见 ROADMAP §3 第 2a 步），在首轮真实演化前运行；不默认跑领先模型。（v0.3，2026-10-04）多领域时是各领域 train+dev 合并清单上的一次测量，它同时是 W0 的第一条合并对照读数（M3 §2.1(a)（v0.3）：对照臂是同一冻结计划与模型身份下已安装 W 的全部有效读数的合并） |
 | collect | plain 保持原行为；reviewed 调 M8，仅 train，须有已冻结合法 plan |
-| improve | 首版 M4 run_worker_round 读取 train 失败摘要、逐题笔记后汇总诊断，生成包内 patch/策略候选，经冻结前草稿检查进入唯一 executor；第二版准备教学/训练。（v0.3，2026-10-04）一轮是 R 的一个编码会话（修订继续同一会话），产出至多 `max_candidates_per_round`（preset 3）个候选，先做 train 侧筛选，只有最好的一个付 dev gate；第一次读数清过 min_gain 0.05 与退步规则的候选，再按同一计划做一次确认测量，合并候选读数对合并对照仍清过 min_gain 且确认读数本身 ≥ 0 才安装（M4 §2（v0.3）筛选、M3 §2.1(b)（v0.3）确认）；M7 不另写循环，只把 k 个候选、筛选与确认当作同一轮的子操作记账 |
+| improve | 首版 M4 run_worker_round 读取 train 失败摘要、逐题笔记后汇总诊断，生成包内 patch/策略候选，经冻结前草稿检查进入唯一 executor；第二版准备教学/训练。（v0.3，2026-10-04）一轮是 R 的一个编码会话（修订继续同一会话），产出至多 `max_candidates_per_round`（preset 3）个候选，先做 train 侧筛选，只有最好的一个付 dev gate；第一次读数清过 min_gain 0.05 与退步规则的候选，再按同一计划做一次确认测量，确认读数单独对合并对照也清过 min_gain 才安装（M4 §2（v0.3）筛选、M3 §2.1(b)（v0.3）确认，规则第二版 2026-10-04）；M7 不另写循环，只把 k 个候选、筛选与确认当作同一轮的子操作记账 |
 | research | 用 M6 做有界 R0/R1 比较，条件满足才安装 R1。（v0.3，2026-10-04）研究位只在 dev 合并清单 ≥ 2 × `task_plan.gate.min_tasks`（50 题）时开位：前一半作两支内层 gate、后一半作外层比较，每一半不少于 25 题；不够时研究位记 `no_slot_pool`，C4 not_run——只含 Marketing 的活动（dev 25 题）因此不开位。开位前再做余量检查：起点 W 从未通过的内层任务少于 preset 的 `campaign.min_headroom_tasks` 时拒绝开位，记 `no_headroom`（M6 §2（v0.3））；原因是 v0.2 的研究位里 W* 在内层已到 67～80%，两支都无处可改，比较了个空 |
 | evaluate | 方案锁定后的无教师 final，禁止据此继续选择或采集训练数据。（v0.3，2026-10-04）final 计划可选加一支匹配成本的 best-of-k W0 臂，只在发表结果时运行，与 W* 并列报告、不进 C1（M3 §2.2（v0.3）） |
 | report | 纯离线读取，区分源验证/采集/dev/final、脚本/真实、应用/研究收益和费用。（v0.3，2026-10-04）增加 §4 列出的字段：每次有效尝试成本（`cost_per_attempt`）、实验台账、余量、best-of-k 臂（若运行）、按领域分列 |
@@ -29,8 +29,8 @@ cycle 按 M4 的结构化结果推进，而非看到 proposals 为空就退出�
 人工模式仍将完整 proposal 直接接 admission/M5 executor，不伪装自动研究。自动/人工入口不能同时控制同一活动；origin 由入口赋值。scripted 模式仅用于旧兼容和 fixture，示例必须标明。`report` 不补模型请求，`evaluate` 只在用户锁定的 final 计划下运行。
 
 （v0.3，2026-10-04）cycle 一轮的顺序与墙上时间目标：
-- 顺序：逐题笔记（并发写，上限仍是 `max_failure_notes`）→ R 的一个编码会话产出至多 k 个候选（M4 §1（v0.3）：一轮一个会话，修订继续同一会话；R 在 worker 里以文件工具改包目录，`research_session.max_turns` 轮、`max_edits` 次编辑以内，工具只有文件工具、`read_trajectory` 与 `finish`，没有 shell）→ 每个候选的草稿检查与声明核对 → train 侧筛选（重跑该候选笔记来源的失败 train 题，加 `screen.passing_sample` 个固定的通过 train 题）→ 只有筛选最好的候选进 dev gate → 第一次读数清过 min_gain 与退步规则的候选再做一次同计划的确认测量 → 合并候选读数对合并对照仍清过 min_gain 且确认读数本身 ≥ 0 才安装（M3 §2.1(b)（v0.3））。筛选与确认都是同一轮的子操作，计入同一预算与轮次，不是新的 phase。
-- 并发：`[bench] concurrency` 默认由 1 改为 8（`ouroloop/bench.py:70`，改动点），受订阅的速率限制约束：provider 把限流/过载/429 当未计费的可重试故障（M1 §1，`ouroloop/providers/claude_code.py:48-49`），用量上限仍让活动暂停（M5 §3）。并发不进任何冻结计划的身份，每次尝试的限额与每次调用的预留不变（M5 §2）。
+- 顺序：逐题笔记（并发写，上限仍是 `max_failure_notes`）→ R 的一个编码会话产出至多 k 个候选（M4 §1（v0.3）：一轮一个会话，修订继续同一会话；R 在 worker 里以文件工具改包目录，`research_session.max_turns` 轮、`max_edits` 次编辑以内，工具只有文件工具、`read_trajectory` 与 `finish`，没有 shell）→ 每个候选的草稿检查与声明核对 → train 侧筛选（重跑该候选笔记来源的失败 train 题，加 `screen.passing_sample` 个固定的通过 train 题）→ 只有筛选最好的候选进 dev gate → 第一次读数清过 min_gain 与退步规则的候选再做一次同计划的确认测量 → 确认读数单独对合并对照也清过 min_gain 才安装（M3 §2.1(b)（v0.3），规则第二版 2026-10-04）。筛选与确认都是同一轮的子操作，计入同一预算与轮次，不是新的 phase。
+- 并发：`[bench] concurrency` 在 v3 preset 下默认 8（`bench.preset_concurrency`；没有 preset 的配置与 v1 preset 仍是 1，写了就按写的；`ouroloop bench --concurrency N` 只覆盖本次运行。实现 2026-10-04，测试 `test_paid_run_safety.py::test_concurrency_is_a_machine_setting_the_frozen_plan_does_not_carry`，取代原拟的 `test_bench_phase.py::test_concurrency_defaults_to_eight_and_is_not_in_the_plan`），受订阅的速率限制约束：provider 把限流/过载/429 当未计费的可重试故障（M1 §1，`ouroloop/providers/claude_code.py:48-49`），用量上限仍让活动暂停（M5 §3）。并发不进任何冻结计划的身份，每次尝试的限额与每次调用的预留不变（M5 §2）。
 - 目标：按 v0.2 实测（4 路并发时每次尝试墙上 27 秒；8 路约 12～15 秒，受限流时更长），单域 25 题 × 1 次的 gate 一臂约 5 分钟，加筛选（约 10 题）、确认测量（再 25 题）与笔记/编码会话，一轮约 10～15 分钟；多域合并 dev（§2 “多领域活动与划分”，约 125 题）时一臂约 30 分钟，一轮约 45～60 分钟。目标是衡量实现是否达到预期的数字，不是冻结计划的一部分：慢了不改计划，只改并发或 provider。
 
 ## 2. 用户配置、默认配方与冻结
@@ -79,16 +79,18 @@ v3 preset 固定、且 `[freeze.*]` 只能收紧的其余数值（（v0.3，2026
 |---|---|---|
 | `task_plan.tasks` / `repeats` | `dev` / 1 | 不变；dev 为各领域 dev 的合并清单（本节“多领域活动与划分”） |
 | `task_plan.gate.min_gain` | 0.05（不变） | M3 §2.1(c)（v0.3）：门槛仍是 0.05（25 题 × 1 次约 1 个净任务，不足配对差值的 1 个 sd 0.06～0.076）；抗噪不靠提高门槛，靠安装前的确认测量（下） |
-| `task_plan.gate.regression_drop` | 0.5 | M3 §2.1(d)（v0.3）：退步规则改为幅度制，一题的均值下降 ≥0.5（1 次重复时 1.0→0.0）才计退步；原“严格小于”在 A/A 里 20% 触发 |
+| `task_plan.gate.regression_drop` | 0.5 | M3 §2.1(d)（v0.3）：退步规则改为幅度制，一题的均值下降超过 0.5（1 次重复时 1.0→0.0；2 次时 1.0→0.5 不计）才计退步；原“严格小于”在 A/A 里 20% 触发 |
 | `task_plan.gate.cost_beta0` / `cost_beta1` | 0.10 / 2.0 | M3 §2.1(e)（v0.3）：候选每次有效尝试的平均成本至多高出合并对照 β0 + β1·gain（+10%，每点通过率增益再 +2%），不满足记为拒绝理由；收据 `metrics.cost_per_attempt` |
 | `task_plan.gate.min_tasks` | 25 | M3 §2.1(f)（v0.3）：任何 gate 计划的任务数少于它就拒绝冻结；研究位沿用对半分，前一半作两支内层 gate、后一半作外层比较，每一半都要 ≥25 题，所以 dev 合并清单 ≥50 题才开位，否则记 `no_slot_pool`（M6 §2（v0.3））；v0.2 的 12 题内层 gate 空候选通过率约 1/3 |
-| `task_plan.confirmation_repeats` | 1 | M3 §2.1(b)（v0.3）：第一次读数清过 min_gain 与退步规则的候选，按同一计划再测一次候选臂（对照仍是合并读数）；合并候选读数对合并对照仍清过 min_gain 且确认读数本身 ≥0 才安装。收据种类只有 `full` 与 `confirmed`：确认失败也是 `kind = "confirmed"`、verdict rejected、保留 `first_reading` |
+| `task_plan.confirmation_repeats` | 1 | M3 §2.1(b)（v0.3）：第一次读数清过 min_gain 与退步规则的候选，按同一计划再测一次候选臂（对照仍是合并读数）；确认读数单独对合并对照也清过 min_gain 才安装（规则第二版，2026-10-04；第一版的 ≥0 在回放里接受 4/20）。收据种类只有 `full` 与 `confirmed`：确认失败也是 `kind = "confirmed"`、verdict rejected、保留 `first_reading` |
 | `campaign.worker_round_limit` | 3 | M6 §2（v0.3）：原 2 |
 | `campaign.min_headroom_tasks` | 6 | M6 §2（v0.3）：起点 W 在内层 dev 合并对照里从未通过的任务少于它时不开位，记 `no_headroom` |
-| `research_session.max_turns` / `max_edits` | 40 / 24 | M4 §1（v0.3）：R 编码会话（一轮一个，修订继续同一会话）的模型调用次数（含 `finish`）与 `write_file`/`edit_file` 次数上限 |
-| `research_session.max_trajectory_bytes` / `max_trajectory_bytes_total` | 65536 / 524288 | M4 §1（v0.3）：R 只读的原始 train 轨迹工具单次与累计的字节上限 |
-| `max_candidates_per_round` / `screen.passing_sample` / `screen.min_net_flips` | 3 / 5 / 1 | M4 §2、§5（v0.3）；M7 只在 reader 里放行 `max_candidates_per_round` 1..3 |
-| `[freeze.final] repeats` | 4（实测费用容不下时 2，并写明） | M3 §2.2（v0.3）：原 2 |
+| `task_plan.control_pooling` | `"pooled"` | M3 §2.1(a)（v0.3）：对照臂是已安装 W 在同一计划与模型身份下的全部有效读数合并，不足的题由对照臂补齐；缺省（旧计划）读作 `fresh` |
+| `concurrency` | 8 | M5 §2（v0.3）：v3 preset 下 `[bench] concurrency` 的缺省；机器设置，不进计划身份，`--concurrency N` 只覆盖本次运行 |
+| `research_session.max_turns` / `max_edits` | 40 / 24（第 3 步的设计值，尚未进 preset） | M4 §1（v0.3）：R 编码会话（一轮一个，修订继续同一会话）的模型调用次数（含 `finish`）与 `write_file`/`edit_file` 次数上限 |
+| `research_session.max_trajectory_bytes` / `max_trajectory_bytes_total` | 65536 / 524288（第 3 步的设计值，尚未进 preset） | M4 §1（v0.3）：R 只读的原始 train 轨迹工具单次与累计的字节上限 |
+| `max_candidates_per_round` / `screen.passing_sample` / `screen.min_net_flips` | 3 / 5 / 1（第 3 步的设计值，尚未进 preset） | M4 §2、§5（v0.3）；M7 只在 reader 里放行 `max_candidates_per_round` 1..3 |
+| `[freeze.final] repeats` | 3（定值，2026-10-04 定） | M3 §2.2（v0.3）：原 2；配置值，不在 PRESETS 里 |
 | `[freeze.final] comparisons` 的 `role = "matched_cost"` 项（可选） | `best_of = max(2, round(成本比))` | M3 §2.2（v0.3）：只在发表结果时加一支 best-of-k 的 W0 臂（oracle 语义），k 由 W* 与 W0 每次尝试成本之比算出，与 W* 并列报告，不进入 C1 的裁决 |
 | `schedule` | `{worker_rounds = 3, research_slots = 1, patience = 2, max_infrastructure_failures = 2}` | 不变 |
 
@@ -160,7 +162,7 @@ v3 最终计划区分 C2 的 `mode=published_reference`（默认）与 `paired_r
 
 （v0.3，2026-10-04）报告新增以下内容，都是离线从账本、收据与对象库读出，`report` 仍不发模型请求：
 - **每次有效尝试的成本**：每臂（W0、W*、gate 两臂、研究位两支，以及运行了的 best-of-k 臂）给 `cost_per_attempt`（与收据同名，M5 §2（v0.3））、每次尝试的模型调用数与 act/aux 分开的 token（网关日志按角色记，M0 §2（v0.3））；gate 行写出成本项的裁决（β0 + β1·gain 的上限、候选实际值、是否因此拒绝，M3 §2.1(e)（v0.3））。原因：v0.2 的 W* 每次尝试 $0.452→$0.570，gate 里没有一项能看见。
-- **gate 行**：除现有 gain/min_gain/退步清单外，写出合并对照的读数数量与来源（哪几次测量，M3 §2.1(a)（v0.3））、确认测量的读数与合并估计（收据 `kind = "confirmed"`；确认失败的同样是 `confirmed`、verdict rejected、`first_reading` 保留，M3 §2.1(b)（v0.3））。退步按幅度制清单列出（均值下降 ≥0.5 的任务及两臂均值，M3 §2.1(d)（v0.3））；早于该规则的收据照原样显示旧比例并标 `rule=strict`。
+- **gate 行**：除现有 gain/min_gain/退步清单外，写出合并对照的读数数量与来源（哪几次测量，M3 §2.1(a)（v0.3））、确认测量的读数与合并估计（收据 `kind = "confirmed"`；确认失败的同样是 `confirmed`、verdict rejected、`first_reading` 保留，M3 §2.1(b)（v0.3））。退步按幅度制清单列出（均值下降超过 0.5 的任务及两臂均值，M3 §2.1(d)（v0.3））；早于该规则的收据照原样显示旧比例并标 `rule=strict`。
 - **实验台账**（M4 §5（v0.3）的引擎自有台账，在 E 里）：每个候选的声明（mechanism、site、carrier、predicted_affected train 任务数、trigger_condition、differs_from）；筛选结果（净翻转、`screened_out`/`thin_screen`）；gate 收据 ref；gate 后逐题 fixed/regressed/still_failing（从收据的逐题差值读出）；准入因 `repeated_mechanism` 拒绝的次数。报告按候选列出；dev 任务 id 不出现在台账的 R 投影里，报告正文也只给计数。
 - **余量**：每个研究位的 `headroom`（起点 W 从未通过的内层任务数、preset 阈值、是否因此拒绝开位，M6 §2（v0.3））；每段开始时同样给 W 在 dev 上从未通过的任务数，作为“还有多少可改”的记录。C4 的 not_run 原因因此多两种：`no_slot_pool`（dev 合并清单少于 50 题，研究位不开，只含 Marketing 的活动如此）与 `no_headroom`（余量不足、未问 R），与下文 `cycle.json` 的四种结局并列写出。
 - **best-of-k 臂**（可选，M3 §2.2（v0.3））：只在发表结果时运行；运行时 final 表里与 W0、W* 并列：k = max(2, round(W* 与 W0 的 `cost_per_attempt` 之比))、oracle 语义（k 次里任一通过即通过）、每题成本、通过率与配对差值的区间（W* 对 best-of-k、W* 对 W0 分别给）；不进入 C1 的裁决。未运行时 final 表该臂写 not_run。原因是演化花的钱是额外的搜索预算，匹配成本的 test-time scaling 对照是这类主张被问到的第一个问题（SURVEY §5 #10）。
@@ -196,7 +198,7 @@ C4 读取真实 campaign 结果，不预设 not_run。只有未执行才标 not_
 | BR6-21 | `[improvement] max_candidates_per_round = 3`，preset 上限 3；另一次设 4（v0.3，2026-10-04） | 3 被接受，一轮至多 3 个候选、只有筛选最好的一个付 dev gate；4 在付费前拒绝 |
 | BR6-22 | 旧配置（`claude.toml`、`claude-full.toml`）在 v0.3 代码下读取（v0.3，2026-10-04） | 单值 `domain`、preset `marketing_harness_v1`、`harness_package.v1` 与冻结的 `[rsi]` ref 原样可读；报告按旧规则显示旧收据（`rule=strict`、无成本项） |
 | BR6-23 | 离线 report 面对 v0.3 的收据与台账（v0.3，2026-10-04） | 每臂有 `cost_per_attempt`；gate 行有合并对照读数数、确认测量与成本项裁决；台账按候选列出（声明、筛选、fixed/regressed/still_failing）且不含 dev 任务 id；研究位有 headroom，只含 Marketing 的活动的研究位记 `no_slot_pool`、C4 not_run 写明；final 表的 best-of-k 臂运行了才列出，否则 not_run；按领域分列 |
-| BR6-24 | `[bench] concurrency` 省略；另一次 provider 连续回 429（v0.3，2026-10-04） | 默认 8，不进计划身份；429 作未计费重试，报告的速度一节记下重试数；用量上限仍暂停活动 |
+| BR6-24 | `[bench] concurrency` 省略；另一次 provider 连续回 429（v0.3，2026-10-04） | v3 preset 下默认 8（没有 preset 仍 1），不进计划身份；429 作未计费重试，报告的速度一节记下重试数；用量上限仍暂停活动 |
 
 扩展 `test_bench_phase.py`、`test_benchmark.py`、`test_report.py`；Harbor 使用 fake trial 默认测试，真实环境 smoke 单列。
 

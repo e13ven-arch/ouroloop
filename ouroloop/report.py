@@ -75,11 +75,16 @@ def build_report(root: str | Path, domain: str, *, protocol: str = "ouroloop.ben
         },
         "task_effect": {"arms": arms},
         "run_cost": {run: {"cost_usd": a["summary"]["cost_usd"], "cost_missing": a["summary"]["cost_missing"],
+                           # M5 §2 (v0.3): the same number the gate receipt judges, per run; and the provider's
+                           # rate-limit refusals the run absorbed as unbilled retries (bench.Improvement.run_arm)
+                           "cost_per_attempt": a["summary"].get("cost_per_attempt"),
+                           "rate_limited": sum(int(e.get("count") or 0) for e in events
+                                               if e.get("event") == "rate_limited" and e.get("run") == run),
                            "usage": a["summary"]["usage"], "elapsed": a["summary"]["elapsed"],
                            "tool_calls": a["summary"]["tool_calls"],
                            "terminations": a["summary"]["terminations"]}
                      for run, a in arms.items()},
-        "improvement_cost": _improvement_cost(root, entries),
+        "improvement_cost": _improvement_cost(root, entries, events),
         "improvement_evidence": {
             "experiments": [e for e in entries if e.get("kind") == "experiment"],
             "rounds": [e for e in entries if e.get("kind") == "round"],
@@ -368,12 +373,22 @@ def _missing(arms: dict, manifest) -> list:
     return missing
 
 
-def _improvement_cost(root: Path, entries: list) -> dict:
+def _rate_limited(events: list) -> dict:
+    """The provider's rate-limit refusals absorbed as unbilled retries (M5 §2, v0.3), summed from the `rate_limited`
+    events: the task attempts' (every arm) and the research steps' (arm `research`) apart."""
+    out = {"attempts": 0, "research": 0}
+    for e in events:
+        if e.get("event") == "rate_limited":
+            out["research" if e.get("arm") == "research" else "attempts"] += int(e.get("count") or 0)
+    return out
+
+
+def _improvement_cost(root: Path, entries: list, events: list = ()) -> dict:
     """What the improving cost, by scope, from the budget book. Unknown stays unknown; nothing is amortised here
     because the assumption behind an amortisation belongs to whoever publishes it."""
     path = Path(root) / "rsi" / "budget" / "book.json"
     if not path.exists():
-        return {"scopes": {}, "note": "no budget book in this workspace"}
+        return {"scopes": {}, "note": "no budget book in this workspace", "rate_limited": _rate_limited(events)}
     book = json.loads(path.read_text(encoding="utf-8"))
     per_scope: dict = {}
     for reservation in book.get("reservations", {}).values():
@@ -388,6 +403,7 @@ def _improvement_cost(root: Path, entries: list) -> dict:
     return {"scopes": per_scope, "experiments": sum(1 for e in entries if e.get("kind") == "experiment"),
             "failed_experiments": sum(1 for e in entries if e.get("kind") == "experiment"
                                       and e.get("verdict") in ("rejected", "invalid", "inconclusive")),
+            "rate_limited": _rate_limited(events),
             "note": "settled measurements only; unknown reservations are counted, not priced"}
 
 
@@ -470,6 +486,13 @@ def _slots_without_a_campaign(report: dict) -> str:
         where = f"during campaign {ct.short(step['campaign'])}" if step.get("campaign") else "before a campaign ran"
         if outcome == "no_proposal":
             out.append(f"{name}: the research policy proposed no change to itself ({why})")
+        elif outcome == "no_slot_pool":
+            # M6 §2 (v0.3): the dev split holds no two gates of min_tasks tasks; R was not asked
+            out.append(f"{name}: not opened, the dev split is too small for two gates of min_tasks ({why})")
+        elif outcome == "no_headroom":
+            # M6 §2 (v0.3): the start W left too few inner tasks unsolved for a candidate to show a gain
+            out.append(f"{name}: not opened for want of headroom ({why}); never-passed inner tasks: "
+                       f"{step.get('headroom')}")
         elif outcome == "invalid" and step.get("stage") == "reply":
             out.append(f"{name}: the research slot's reply was invalid ({why})")
         elif step.get("stage") == "admission":
@@ -634,6 +657,8 @@ def render_markdown(report: dict) -> str:
               f"- {report['improvement_cost'].get('experiments', 0)} experiments, "
               f"{report['improvement_cost'].get('failed_experiments', 0)} without an accepted verdict",
               f"- scopes: {json.dumps(report['improvement_cost'].get('scopes', {}), sort_keys=True)}",
+              f"- rate-limit refusals absorbed as unbilled retries: "
+              f"{json.dumps(report['improvement_cost'].get('rate_limited', {}), sort_keys=True)}",
               f"- {report['improvement_cost'].get('note', '')}"]
     return "\n".join(lines)
 

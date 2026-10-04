@@ -391,7 +391,7 @@ def resume_unfinished(root, objects: _ct.Objects, handlers: dict, budget, *, act
             # resume, so the rule is checked here, before the evaluation would bind what the change names.
             reason = "; ".join(refused_model)[:300]
             state = execution.state()["status"]
-            if state in ("admitted", "building", "screening", "evaluating", "evaluated"):
+            if state in ("admitted", "building", "screening", "evaluating", "evaluated", "confirming"):
                 execution.advance("invalid", reason=reason)
             elif state == "accepted":
                 execution.advance("cancelled", reason=reason)

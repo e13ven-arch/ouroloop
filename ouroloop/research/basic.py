@@ -392,15 +392,18 @@ class PolicyResearcher:
                                reason=str(data.get("reason", ""))[:500],
                                evidence_refs=tuple(context.evidence))
 
-    def _complete(self, step: str, system: str, text: str) -> str:
+    def _complete(self, step: str, system: str, text: str, request: dict | None = None) -> str:
         """One research request, labelled with its step where the completion interface can carry a label, so
         the budget book says what notes, summaries and draft revisions each cost (docs/modules/07 §4). A refusal
-        comes back as no text, with the refusal kept on the request for `_read` to name."""
+        comes back as no text, with the refusal kept on the request for `_read` to name. `request` is the record
+        this call belongs to; without it, the last one made — which notes written concurrently (M5 §2, v0.3)
+        cannot rely on, so `note_with_record` passes its own."""
         from ..providers import ReplyRefused
-        if self.requests and "input_hash" not in self.requests[-1]:
+        request = request if request is not None else (self.requests[-1] if self.requests else None)
+        if request is not None and "input_hash" not in request:
             # What the step was given, as a digest beside the prompt's: the round's record can then show R's input
             # without keeping task text in it.
-            self.requests[-1]["input_hash"] = _ct.digest({"input": text})[:16]
+            request["input_hash"] = _ct.digest({"input": text})[:16]
         label = getattr(self.llm, "label", None)
         try:
             if callable(label):
@@ -408,15 +411,16 @@ class PolicyResearcher:
                     return self.llm.complete(system, text)
             return self.llm.complete(system, text)
         except ReplyRefused as e:
-            if self.requests:
-                self.requests[-1]["refused"] = str(e)[:200]
+            if request is not None:
+                request["refused"] = str(e)[:200]
             return ""
 
-    def _read(self, reply: str) -> tuple[dict, str]:
+    def _read(self, reply: str, request: dict | None = None) -> tuple[dict, str]:
         """The reply as the JSON object R meant, or why it cannot be read (docs/modules/04_RESEARCH_LOOP.md §1): an
         empty reply, a refusal or text with no JSON object in it decides nothing, so it is never read as {} and
         from there as a default decision."""
-        refused = (self.requests[-1] if self.requests else {}).get("refused")
+        request = request if request is not None else (self.requests[-1] if self.requests else {})
+        refused = request.get("refused")
         if refused:
             # the refusal as the completion interface stated it, which already says it declined
             return {}, refused if refused.startswith("the research model declined") else \
@@ -450,11 +454,18 @@ class PolicyResearcher:
     def note(self, system: str, user: str) -> dict:
         """One note. A reply that cannot be read gives no note, and why it could not (refused, empty, not JSON) is
         kept on the request, where the diagnosis records it."""
-        self.requests.append({"step": "note", "system": system, "prompt_hash": _ct.digest({"system": system})[:16]})
-        data, problem = self._read(self._complete("note", system, user))
+        return self.note_with_record(system, user)[0]
+
+    def note_with_record(self, system: str, user: str) -> tuple[dict, str]:
+        """One note and why it could not be read ("" when it could). The request record is this call's own, so
+        notes asked for concurrently (M5 §2, v0.3) each keep their own refusal or unreadable reason, whatever
+        order the answers arrive in."""
+        request = {"step": "note", "system": system, "prompt_hash": _ct.digest({"system": system})[:16]}
+        self.requests.append(request)
+        data, problem = self._read(self._complete("note", system, user, request), request)
         if problem:
-            self.requests[-1]["unreadable"] = problem
-        return data
+            request["unreadable"] = problem
+        return data, problem
 
     def summarize(self, context, prompt: str, notes: list, coverage: dict, experience=(), *, package=None,
                   allowed: tuple = ()) -> _ProposalResult:

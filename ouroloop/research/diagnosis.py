@@ -289,38 +289,115 @@ class Diagnosis:
     passed: int = 0                    # of those, passed
     components: tuple = ()            # the kinds K allows, injected into every note request
     package: dict = field(default_factory=dict)      # the current package's files, for the summary call
+    # v0.3 (M5 §2 逐题笔记并发): notes not in the cache are asked for this many at a time. The notes' identities,
+    # their cache rule and their order in the summary do not depend on it; 1 is the serial path.
+    concurrency: int = 1
 
     def run(self, researcher, prompt: str) -> tuple[list[dict], dict]:
         """-> (notes, coverage). One research.diagnose request per selected failure; a cached note is reused only
-        on its full identity. Coverage says how many of the working set's failures the notes cover."""
+        on its full identity. Coverage says how many of the working set's failures the notes cover.
+
+        The notes the cache does not have are asked for `concurrency` at a time (M5 §2, v0.3). Each answer is read,
+        checked and cached on this thread the moment it arrives — serially in the frozen order, concurrently in
+        completion order — and the summary is then assembled in the frozen selection order, so it lists the notes
+        as the coverage rule ordered them, not as the model happened to answer, and its digest is the same at any
+        concurrency. A note that fails (a cut reply, a provider or budget error) or an interrupt is raised only
+        after every answer that did arrive has been cached: what was paid for is kept, and a restart asks only for
+        the rest. Why a note could not be read comes from the researcher's own record of that request
+        (`note_with_record`) where it has one; the older `note` reads the last request made, which only the serial
+        path can trust."""
         selected, rest = select_failures(self.summaries, order=self.order, last_included=self.history,
                                          cap=self.limits.max_notes)
+        requests = [researcher.note_request(s, prompt, allowed=tuple(self.components)) for s in selected]
+        identities = [note_identity(system, user, self.model) for system, user in requests]
+        cached = [self.cache.get(identity) if self.cache is not None else None for identity in identities]
+        written: dict[int, tuple] = {}            # position -> (note ref, note), cached as each answer arrived
+        unusable: dict[int, str] = {}             # position -> why the answer could not be read
+
+        def settle(i: int, raw, unread: str) -> None:
+            note = {k: str((raw or {}).get(k, ""))[:NOTE_CHARS] for k in NOTE_FIELDS}
+            problem = unread or invalid_note(note, self.components)
+            if problem:
+                # Not cached: a formatting slip must not blank this failure's diagnosis for good.
+                unusable[i] = problem
+                return
+            ref = self.cache.put(identities[i], note, selected[i]) if self.cache is not None else None
+            written[i] = (ref, note)
+        self._ask(researcher, [(i, requests[i]) for i, ref in enumerate(cached) if ref is None], settle)
         notes, reused, invalid = [], 0, []
-        for summary in selected:
-            system, user = researcher.note_request(summary, prompt, allowed=tuple(self.components))
-            identity = note_identity(system, user, self.model)
-            ref = self.cache.get(identity) if self.cache is not None else None
-            if ref is not None:
+        for i, summary in enumerate(selected):
+            if cached[i] is not None:
                 reused += 1
-                note = self.cache.objects.get(ref)["note"]
-            else:
-                raw = researcher.note(system, user)
-                note = {k: str((raw or {}).get(k, ""))[:NOTE_CHARS] for k in NOTE_FIELDS}
-                # why the reply could not be read at all (refused, empty, not JSON), when the researcher says
-                asked = (getattr(researcher, "requests", None) or [{}])[-1]
-                unread = asked.get("unreadable") if isinstance(asked, dict) and asked.get("step") == "note" else ""
-                problem = unread or invalid_note(note, self.components)
-                if problem:
-                    # Not cached: a formatting slip must not blank this failure's diagnosis for good.
-                    invalid.append({"task_id": summary["task_id"], "problem": problem})
-                    continue
-                ref = self.cache.put(identity, note, summary) if self.cache is not None else None
-            notes.append({"task_id": summary["task_id"], "note_ref": ref, **note})
+                notes.append({"task_id": summary["task_id"], "note_ref": cached[i],
+                              **self.cache.objects.get(cached[i])["note"]})
+            elif i in written:
+                ref, note = written[i]
+                notes.append({"task_id": summary["task_id"], "note_ref": ref, **note})
+            elif i in unusable:
+                invalid.append({"task_id": summary["task_id"], "problem": unusable[i]})
         coverage = {"noted": len(notes), "failures": len(self.summaries), "reused": reused,
                     "invalid": invalid, "included": [s["task_id"] for s in selected],
                     "not_included": [s["task_id"] for s in rest], "working_set": self.scope,
                     "measured": self.measured, "passed": self.passed, "round": self.round_index}
         return notes, coverage
+
+    def _ask(self, researcher, items: list, settle) -> None:
+        """Ask for the notes in `items` ([(position, (system, user))]) and hand each answer to `settle(position,
+        raw, why it could not be read or "")` as it arrives: one at a time in the given order, or `concurrency` at
+        a time in completion order. A researcher with `note_with_record` answers both at once; one with only `note`
+        is asked serially and the reason read off its last request, as before.
+
+        One note's failure (ReplyTruncated, ProviderError, BudgetExhausted) does not lose the others: concurrently,
+        every other answer is still settled and the first failure raised afterwards; serially, the earlier answers
+        are already settled when the failure raises. An interrupt settles whatever has answered, cancels what has
+        not started, and re-raises."""
+        with_record = getattr(researcher, "note_with_record", None)
+        if with_record is None:
+            for i, (system, user) in items:
+                raw = researcher.note(system, user)
+                last = (getattr(researcher, "requests", None) or [{}])[-1]
+                unread = last.get("unreadable") if isinstance(last, dict) and last.get("step") == "note" else ""
+                settle(i, raw, unread or "")
+            return
+        workers = max(int(self.concurrency or 1), 1)
+        if workers <= 1 or len(items) <= 1:
+            for i, (system, user) in items:
+                raw, unread = with_record(system, user)        # raises here: the earlier notes are settled
+                settle(i, raw, unread)
+            return
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        pool = ThreadPoolExecutor(max_workers=min(workers, len(items)), thread_name_prefix="note")
+        futures = {pool.submit(with_record, system, user): i for i, (system, user) in items}
+        settled: set = set()
+        failed: Exception | None = None
+
+        def settle_done(future, i) -> None:
+            if i in settled:
+                return
+            settled.add(i)
+            raw, unread = future.result()
+            settle(i, raw, unread)
+        try:
+            for future in as_completed(futures):
+                try:
+                    settle_done(future, futures[future])
+                except Exception as e:  # noqa: BLE001 - one note's failure; the others are still settled below
+                    failed = failed or e
+        except BaseException:
+            # an interrupt while waiting: what has answered is kept, what has not started never starts
+            for future, i in futures.items():
+                if future.done() and not future.cancelled():
+                    try:
+                        settle_done(future, i)
+                    except Exception:  # noqa: BLE001 - a failed note among the answered: nothing to keep
+                        pass
+                else:
+                    future.cancel()
+            pool.shutdown(wait=False, cancel_futures=True)
+            raise
+        pool.shutdown(wait=True)
+        if failed is not None:
+            raise failed
 
 
 def train_literals(store) -> set:

@@ -351,3 +351,202 @@ def test_an_attempt_keeps_its_cache_counts_so_its_cost_can_be_recomputed(fake_up
          "output_tokens": row.usage["completion_tokens"], "cache_read_tokens": row.usage["cache_read_tokens"],
          "cache_write_tokens": 0})
     assert row.cost_usd == pytest.approx(recomputed)
+
+
+# ---------------------------------------------------------------------------- v0.3 (M3 §2.1(f), M5 §2): gate size, speed
+def test_a_gate_plan_under_min_tasks_is_refused_at_freeze(fake_upstream, tmp_path):
+    """M3 §2.1(f) (v0.3), ER6-22: a gate plan over fewer tasks than its `min_tasks` is refused at freeze — the
+    mainline's through `ouroloop freeze`, a slot's inner gate through the same `freeze_task_plan` — while a gate
+    without the field freezes as it always did, to the same ref, with none of the new keys in its payload."""
+    import rsi
+    from ouroloop.evolve.task_gate import GatePlan
+    cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
+    cfg["freeze"] = {"task_plan": {"tasks": "dev", "gate": {"min_gain": 0.05, "min_groups": 1, "min_tasks": 25}}}
+    with pytest.raises(ValueError, match=r"runs 3 tasks, fewer than its min_tasks 25"):
+        bench.freeze(cfg, ".", out=lambda _l: None)
+    cfg["freeze"]["task_plan"]["gate"]["min_tasks"] = 3
+    frozen = activity.objects.get(bench.freeze(cfg, ".", out=lambda _l: None)["task_plan_ref"])
+    assert frozen["gate_plan"]["min_tasks"] == 3 and "control_pooling" not in frozen
+    core = ct.SystemRelease.from_json(activity.objects.get(release)).core_ref
+    with pytest.raises(ValueError, match="fewer than its min_tasks 3"):
+        bench.freeze_task_plan(activity.objects, core_ref=core, split_ref=activity.splits.hash(),
+                               task_ids=tuple(rsi.DEV[:2]), gate=GatePlan(min_groups=1, min_tasks=3))
+    # the plan `prepared` froze carries none of the v0.3 fields, so freezing the same tables again finds it
+    again = bench.freeze_task_plan(activity.objects, core_ref=core, split_ref=activity.splits.hash(),
+                                   task_ids=tuple(rsi.DEV),
+                                   gate=GatePlan(min_gain=0.05, min_groups=1, bootstrap_replicates=200))
+    assert again == plan_ref
+    payload = activity.objects.get(plan_ref)
+    assert not {"control_pooling", "confirmation_repeats"} & set(payload)
+    assert not {"regression_drop", "cost_beta0", "cost_beta1", "min_tasks"} & set(payload["gate_plan"])
+    with pytest.raises(ct.ContractError, match="min_tasks"):
+        GatePlan(min_tasks=0)
+
+
+def test_concurrency_is_a_machine_setting_the_frozen_plan_does_not_carry(fake_upstream, tmp_path, monkeypatch):
+    """M5 §2 (v0.3), BR6-24: [bench] concurrency changes no frozen ref; it defaults to 8 under the v3 preset and 1
+    otherwise, the config's own value stands, and `ouroloop bench --concurrency N` overrides it for one run without
+    touching the config file."""
+    import rsi
+    cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
+    cfg["freeze"] = {"task_plan": {"tasks": "dev", "gate": {"min_gain": 0.05, "min_groups": 1}},
+                     "budget": {"model_calls": 500}}
+    refs = {n: bench.freeze({**cfg, "bench": {**cfg["bench"], "concurrency": n}}, ".", out=lambda _l: None)
+            for n in (1, 8)}
+    assert refs[1] == refs[8]
+    assert bench.BenchConfig.load(cfg).concurrency == 1
+    v3 = {"bench": {"domain": "marketing"}, "improvement": {"preset": "automationbench_harness_v3"}}
+    assert bench.preset_concurrency(v3) == 8 and bench.BenchConfig.load(v3).concurrency == 8
+    assert bench.BenchConfig.load({**v3, "bench": {"domain": "marketing", "concurrency": 2}}).concurrency == 2
+    assert bench.preset_concurrency({"improvement": {"preset": "marketing_harness_v1"}}) == 1
+    seen = {}
+    monkeypatch.setattr(bench, "run_phase", lambda cfg, base, **kw: seen.update(cfg=cfg) or {"ok": True})
+    path = tmp_path / "bench.toml"
+    path.write_text(f'[workspace]\nroot = "{activity.root}"\n\n[bench]\ndomain = "{rsi.DOMAIN}"\n'
+                    f'upstream_path = "{fake_upstream}"\n', encoding="utf-8")
+    assert cli.main(["bench", "--config", str(path), "--phase", "report", "--concurrency", "3"]) == 0
+    assert seen["cfg"]["bench"]["concurrency"] == 3
+    assert cli.main(["bench", "--config", str(path), "--phase", "report"]) == 0
+    assert "concurrency" not in seen["cfg"]["bench"]
+    assert "concurrency" not in path.read_text().split("[bench]", 1)[1]      # the file itself is untouched
+
+
+class InFlight(rsi.BusinessWorker):
+    """The scripted worker, counting how many attempts have a model call in flight at once across every caller."""
+    lock = __import__("threading").Lock()
+    running = 0
+    peak = 0
+
+    def chat(self, system, messages, specs):
+        import time
+        with InFlight.lock:
+            InFlight.running += 1
+            InFlight.peak = max(InFlight.peak, InFlight.running)
+        try:
+            time.sleep(0.03)
+            return super().chat(system, messages, specs)
+        finally:
+            with InFlight.lock:
+                InFlight.running -= 1
+
+
+def test_the_in_flight_cap_is_shared_by_the_arms_and_screens_of_one_gate(fake_upstream, tmp_path):
+    """M5 §2 (v0.3) 并发的范围: the attempts in flight are capped per process, by one semaphore every `run_tasks`
+    of the process draws on — a candidate arm and its control top-up, k screens — so two callers running at once,
+    each asking for 2, cannot between them have 4 attempts in flight: the worker sees at most 2 model calls at a
+    time. A new size replaces the pool for the attempts that start after it."""
+    import threading
+    from ouroloop import policies as P
+    from ouroloop.evolve import task_eval
+    from ouroloop.evolve.task_eval import make_agent_factory, run_tasks
+    InFlight.running, InFlight.peak = 0, 0
+    suite = rsi.suite(fake_upstream)
+    splits = rsi.splits(suite)
+    failures: list = []
+
+    def caller(name: str) -> None:
+        try:
+            root = tmp_path / name
+            releases, rel, objects = rsi.workspace(root, split_ref=splits.hash())
+            bound = P.bind_release(rel, profile="task", services=P.Services(objects), authorization="bootstrap")
+            manifest = rsi.run_manifest(name, "base", "dev", data=splits.hash(), system_release_ref=rel)
+            factory = make_agent_factory(rsi.runtime(root), InFlight(), budget=manifest.budget, bound=bound,
+                                         objects=objects)
+            rows = run_tasks(suite, list(rsi.DEV), factory, run=manifest, splits=splits,
+                             results=Results(root, rsi.DOMAIN), release_ref=rel, arm=name, concurrency=2)
+            assert len(rows) == len(rsi.DEV) and all(r.validity == "valid" for r in rows)
+        except BaseException as e:  # noqa: BLE001 - reported on the main thread
+            failures.append(e)
+    threads = [threading.Thread(target=caller, args=(arm,)) for arm in ("subject", "control")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not failures, failures
+    assert InFlight.peak == 2                       # two callers × concurrency 2, never 4 in flight
+    cap = task_eval.in_flight_cap(2)
+    assert task_eval.in_flight_cap(2) is cap
+    assert task_eval.in_flight_cap(3) is not cap and task_eval.in_flight_cap(3) is task_eval.in_flight_cap(3)
+    task_eval.in_flight_cap(1)                       # back to the serial default for the other tests
+
+
+class RateLimitedResearch(rsi.BusinessWorker):
+    """The research model: its first call is turned away with a 429 (unbilled, retryable), then it answers; it asks
+    for one retry of its own, which the meter takes over."""
+    retries = 1
+    refused = 0
+
+    def chat(self, system, messages, specs):
+        from ouroloop.providers import ProviderError
+        if type(self).refused == 0:
+            type(self).refused += 1
+            raise ProviderError("API Error: 429 rate_limit_error", retryable=True, unbilled=True)
+        return super().chat(system, messages, specs)
+
+
+class AccountAfterLimit(rsi.BusinessWorker):
+    """A 429 on the first call, then the account is refused: the run ends on the account error."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.seen = 0
+
+    def chat(self, system, messages, specs):
+        from ouroloop.providers import ProviderAccountError, ProviderError
+        self.seen += 1
+        if self.seen == 1:
+            raise ProviderError("API Error: 429 rate_limit_error", retryable=True, unbilled=True)
+        raise ProviderAccountError("You've hit your usage limit")
+
+
+def test_freeze_refuses_two_confirmations_an_economy_confirmation_and_a_vacuous_regression_drop(fake_upstream,
+                                                                                                tmp_path):
+    """M3 §2.1(b)(d) (v0.3, after review), through `ouroloop freeze`: a [freeze.task_plan] table asking for two
+    confirmation readings, a confirmation under an economy gate, or a regression_drop of 1.0 is refused before
+    anything is frozen."""
+    cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
+    gate = {"min_gain": 0.05, "min_groups": 1}
+    for table, match in (({"tasks": "dev", "confirmation_repeats": 2, "gate": gate}, "0 or 1"),
+                         ({"tasks": "dev", "confirmation_repeats": 1,
+                           "gate": {"mode": "economy", "max_runtime_cost_ratio": 0.9, "min_groups": 1}},
+                          "economy gate"),
+                         ({"tasks": "dev", "gate": {**gate, "regression_drop": 1.0}}, r"strictly inside \(0, 1\)")):
+        cfg["freeze"] = {"task_plan": table}
+        with pytest.raises((ValueError, ct.ContractError), match=match):
+            bench.freeze(cfg, ".", out=lambda _l: None)
+    cfg["freeze"] = {"task_plan": {"tasks": "dev", "confirmation_repeats": 1, "control_pooling": "pooled",
+                                   "gate": {**gate, "regression_drop": 0.5}}}
+    frozen = activity.objects.get(bench.freeze(cfg, ".", out=lambda _l: None)["task_plan_ref"])
+    assert frozen["confirmation_repeats"] == 1 and frozen["gate_plan"]["regression_drop"] == 0.5
+
+
+def test_the_research_meters_rate_limit_refusals_are_recorded_per_round(fake_upstream, tmp_path, monkeypatch):
+    """M5 §2 (v0.3, after review): the research model's 429s are absorbed by its meter like an arm's — and recorded:
+    after the round, a `rate_limited` event with arm `research`, the round's index and that round's count; a round
+    with none writes nothing."""
+    import time
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
+    RateLimitedResearch.refused = 0
+    cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
+    cfg["research"] = {"llm": {"type": "test_paid_run_safety:RateLimitedResearch"}}
+    bench.improve(cfg, ".", out=lambda _l: None)
+    events = list(ct.Events(activity.root).of("rate_limited"))
+    research = [e for e in events if e["arm"] == "research"]
+    assert [(e["round"], e["count"], e["scope"]) for e in research] == [(0, 1, "it")]
+    assert RateLimitedResearch.refused == 1
+    # the refusal was released on the book, not booked
+    released = [r for r in book(activity)["reservations"].values() if r["status"] == "released"]
+    assert len(released) == 1 and ":research" in released[0]["operation_id"]
+
+
+def test_an_arms_rate_limit_count_survives_an_account_error(fake_upstream, tmp_path):
+    """M5 §2 (v0.3, after review): the arm's `rate_limited` event is written in a `finally`, so a 429 absorbed before
+    an account error ended the arm is still on record."""
+    from ouroloop.providers import ProviderAccountError
+    cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
+    work = bench.improvement(activity, template_ref=plan_ref, provider=AccountAfterLimit(),
+                             budget=bench.activity_budget(activity, cfg, "probe"))
+    with pytest.raises(ProviderAccountError):
+        work.run_arm("probe", release, [(t, 0) for t in rsi.DEV], plan_ref="", split="dev")
+    events = [e for e in ct.Events(activity.root).of("rate_limited") if e["arm"] == "probe"]
+    assert len(events) == 1 and events[0]["count"] == 1 and events[0]["scope"] == "it"

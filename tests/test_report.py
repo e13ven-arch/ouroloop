@@ -349,3 +349,26 @@ def test_pr7_11_the_report_reads_the_agent_entry_placement_roles_effort_caps_and
             "{'act_calls': 1}") in text
     harness["behaviour"]["gateway"] = gateway_summary([])
     assert "runner shell" not in render_markdown(report)
+
+
+def test_each_arm_shows_its_cost_per_attempt(fake_upstream, tmp_path):
+    """M7 §4, M5 §2 (v0.3): the report's run_cost gives each run its `cost_per_attempt` — the mean of the priced
+    valid attempts, None when none was priced, the unpriced ones counted — and its rate-limit refusals summed from
+    the `rate_limited` events of that run alone; the improvement cost sums them for the attempts and for the
+    research steps apart."""
+    cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
+    priced = record(activity.results, candidate="base", role="base", cost=0.5)
+    unpriced = record(activity.results, candidate="evolved", role="evolved", cost=None)
+    events = ct.Events(activity.root)
+    events.append("rate_limited", scope="it", arm="dev_baseline", run=priced.hash(), count=3)
+    events.append("rate_limited", scope="it", arm="control", run=priced.hash(), count=2)
+    events.append("rate_limited", scope="it", arm="subject", run="0" * 16, count=7)        # another run's
+    events.append("rate_limited", scope="it", arm="research", round=0, count=4)
+    report = build_report(activity.root, rsi.DOMAIN)
+    assert report["run_cost"][priced.hash()]["cost_per_attempt"] == 0.5
+    assert report["run_cost"][priced.hash()]["rate_limited"] == 5
+    assert report["run_cost"][unpriced.hash()]["cost_per_attempt"] is None
+    assert report["run_cost"][unpriced.hash()]["cost_missing"] == 2
+    assert report["run_cost"][unpriced.hash()]["rate_limited"] == 0
+    assert report["improvement_cost"]["rate_limited"] == {"attempts": 12, "research": 4}
+    assert "rate-limit refusals absorbed as unbilled retries" in render_markdown(report)

@@ -340,3 +340,23 @@ def test_the_startup_check_asks_for_an_effort_and_a_subscription_login(cli, tmp_
     assert "not on PATH" in cli_problem({**table, "binary": str(tmp_path / "nowhere")})
     assert cli.calls() == []                         # asking about the login is not a model call
     assert os.access(cli.binary, os.X_OK)
+
+
+def test_a_rate_limit_refusal_is_unbilled_retryable_and_counted(cli, provider, tmp_path, monkeypatch):
+    """M5 §2 (v0.3), EX6-18: a 429/529 from the CLI is a retryable, unbilled refusal; the meter releases its
+    reservation, sends the request again, counts the refusal in `rate_limited`, and books only the call that
+    answered. Nothing pauses and no attempt is invalid."""
+    import time
+    from ouroloop.evolve.execution import Budgets, MeteredProvider, Pricing
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
+    account = Budgets(tmp_path / "book").account("arm", {"model_calls": 10})
+    metered = MeteredProvider(provider, account, Pricing(), operation="arm", max_retries=2)
+    cli.reply(err("API Error: 429 rate_limit_error"), err("API Error: 529 Overloaded"), ok("fine"))
+    assert metered.chat("S", [{"role": "user", "content": "x"}], ()).text == "fine"
+    assert metered.rate_limited == 2 and len(cli.calls()) == 3
+    assert [r.status for r in metered.receipts] == ["released", "released", "settled"]
+    assert account.remaining()["used"]["model_calls"] == 1
+    # a server error is retried too, but it is not a rate-limit refusal and is not counted as one
+    cli.reply(err("API Error: 500 Internal server error"), ok("fine"))
+    metered.chat("S", [{"role": "user", "content": "y"}], ())
+    assert metered.rate_limited == 2 and metered.receipts[-2].status == "unknown"

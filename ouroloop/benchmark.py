@@ -466,6 +466,19 @@ class Results:
     def of_run(self, run: str) -> list[TaskResult]:
         return [r for r in self.all() if r.run == run]
 
+    def runs(self) -> dict[str, RunManifest]:
+        """hash -> the run manifests recorded beside the results (`put_run`). A manifest this reader cannot parse
+        is left out rather than read as something it is not."""
+        out: dict[str, RunManifest] = {}
+        directory = self.root / "runs"
+        for path in sorted(directory.glob("*.json")) if directory.exists() else ():
+            try:
+                run = RunManifest.from_json(json.loads(path.read_text(encoding="utf-8")))
+            except (ValueError, TypeError):
+                continue
+            out[run.hash()] = run
+        return out
+
     def manifest_path(self) -> Path:
         return self.root / "splits.json"
 
@@ -538,6 +551,8 @@ def summarise(results: list[TaskResult]) -> dict:
         "usage": {k: sum(r.usage.get(k, 0) for r in valid)
                   for k in sorted({k for r in valid for k in r.usage})},
         "cost_usd": round(sum(costed), 4) if costed else None,
+        # M5 §2 (v0.3): the mean cost of one valid attempt, under the one name the gate receipt and the report use.
+        "cost_per_attempt": round(sum(costed) / len(costed), 6) if costed else None,
         "cost_missing": len(valid) - len(costed),
         "elapsed": round(sum(r.elapsed for r in valid), 1),
         "tool_calls": sum(r.tool_calls for r in valid),

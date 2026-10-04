@@ -190,3 +190,109 @@ def test_r0s_note_prompt_asks_the_note_to_keep_the_interface_facts():
     assert "never write this task's specific answers" in P.DIAGNOSE_NOTE
     system, _user = PolicyResearcher(None).note_request({"task_id": "t"}, P.DIAGNOSE_NOTE, allowed=("memory",))
     assert system.startswith(P.DIAGNOSE_NOTE)
+
+
+def test_notes_written_concurrently_enter_the_summary_in_the_frozen_order(tmp_path):
+    """M5 §2 (v0.3) 逐题笔记并发, EX6-19: notes asked for four at a time come back in another order than they were
+    sent, and the summary still lists them in the frozen coverage order — the same notes, refs and coverage a
+    serial run gives — each cached once; and a note that could not be read is charged to its own request, not to
+    whichever request finished last."""
+    import threading
+    import time
+    from pathlib import Path
+    from ouroloop.research.basic import NOTE_FORMAT, PolicyResearcher
+    delays = {"a": 0.06, "b": 0.0, "c": 0.03, "d": 0.01}
+
+    class SlowNotes:
+        def __init__(self):
+            self.requests, self.order, self.lock = [], [], threading.Lock()
+
+        def note_request(self, summary, prompt, *, allowed=()):
+            return prompt, json.dumps({"failure": summary}, sort_keys=True)
+
+        def note_with_record(self, system, user):
+            task = json.loads(user)["failure"]["task_id"]
+            time.sleep(delays[task])
+            with self.lock:
+                self.order.append(task)
+                self.requests.append({"step": "note", "system": system})
+            return {"failure_class": "missed_step", "root_cause": "r", "mechanism": f"m {task}",
+                    "component": "skills", "generality": "g"}, ""
+    summaries = [{"task_id": t, "checks": [], "turns": []} for t in "abcd"]
+
+    def diagnosis(root, concurrency):
+        return dg.Diagnosis(summaries=summaries, order=list("abcd"), cache=dg.NoteCache(Path(root), ct.Objects(root)),
+                            model={"model": "m"}, components=("skills",), concurrency=concurrency)
+    fast = SlowNotes()
+    notes, coverage = diagnosis(tmp_path / "c", 4).run(fast, "diagnose")
+    assert [n["task_id"] for n in notes] == list("abcd") and fast.order == list("bdca")
+    slow = SlowNotes()
+    serial_notes, serial_coverage = diagnosis(tmp_path / "s", 1).run(slow, "diagnose")
+    assert notes == serial_notes and coverage == serial_coverage and slow.order == list("abcd")
+    assert coverage["noted"] == 4 and coverage["included"] == list("abcd")
+    again = SlowNotes()
+    _, reused = diagnosis(tmp_path / "c", 4).run(again, "diagnose")
+    assert reused["reused"] == 4 and again.order == []
+    assert len(list(dg._read_jsonl(Path(tmp_path / "c") / "rsi" / "notes.jsonl"))) == 4
+
+    class Model:
+        """The research model: an empty reply for task b, a note for the others, each after its own delay."""
+        name = "fake"
+
+        def complete(self, system, text):
+            task = json.loads(text)["failure"]["task_id"]
+            time.sleep(delays[task])
+            if task == "b":
+                return ""
+            return json.dumps({"failure_class": "missed_step", "root_cause": "r", "mechanism": f"m {task}",
+                               "component": "skills", "generality": "g"})
+    researcher = PolicyResearcher(Model())
+    notes, coverage = diagnosis(tmp_path / "u", 4).run(researcher, "diagnose")
+    assert [n["task_id"] for n in notes] == list("acd")
+    assert coverage["invalid"] == [{"task_id": "b", "problem": "the research reply was empty"}]
+    assert [r.get("unreadable") for r in researcher.requests if NOTE_FORMAT in r["system"]].count(
+        "the research reply was empty") == 1
+
+
+def test_a_failing_note_is_raised_after_the_answered_notes_are_cached(tmp_path):
+    """M5 §2 (v0.3, after review): one note's provider error does not lose the others. Concurrently, the three
+    answers that arrived are cached before the error is raised; serially, the two answered before it are; either way
+    a restart asks only for what is not on disk."""
+    import time
+    from pathlib import Path
+    from ouroloop.providers import ProviderError
+
+    class Notes:
+        def __init__(self, failing: str | None):
+            self.failing, self.asked, self.requests = failing, [], []
+
+        def note_request(self, summary, prompt, *, allowed=()):
+            return prompt, json.dumps({"failure": summary}, sort_keys=True)
+
+        def note_with_record(self, system, user):
+            task = json.loads(user)["failure"]["task_id"]
+            self.asked.append(task)
+            time.sleep({"a": 0.0, "b": 0.01, "c": 0.02, "d": 0.03}[task])
+            if task == self.failing:
+                raise ProviderError("API Error: 500 Internal server error", retryable=True)
+            return {"failure_class": "missed_step", "root_cause": "r", "mechanism": f"m {task}",
+                    "component": "skills", "generality": "g"}, ""
+    summaries = [{"task_id": t, "checks": [], "turns": []} for t in "abcd"]
+
+    def diagnosis(root, concurrency):
+        return dg.Diagnosis(summaries=summaries, order=list("abcd"), cache=dg.NoteCache(Path(root), ct.Objects(root)),
+                            model={"model": "m"}, components=("skills",), concurrency=concurrency)
+
+    def cached(root):
+        return [row["identity"] for row in dg._read_jsonl(Path(root) / "rsi" / "notes.jsonl")]
+    with pytest.raises(ProviderError):
+        diagnosis(tmp_path / "c", 4).run(Notes("c"), "diagnose")
+    assert len(cached(tmp_path / "c")) == 3
+    with pytest.raises(ProviderError):
+        diagnosis(tmp_path / "s", 1).run(Notes("c"), "diagnose")
+    assert len(cached(tmp_path / "s")) == 2
+    for root, missing in ((tmp_path / "c", ["c"]), (tmp_path / "s", ["c", "d"])):
+        again = Notes(None)
+        notes, coverage = diagnosis(root, 4).run(again, "diagnose")
+        assert sorted(again.asked) == missing and coverage["noted"] == 4 and coverage["reused"] == 4 - len(missing)
+        assert [n["task_id"] for n in notes] == list("abcd") and len(cached(root)) == 4

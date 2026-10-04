@@ -85,3 +85,16 @@ The smoke phase makes no claim about capability, and neither does a phase that r
 far as one inconclusive dev gate (docs/JOURNAL.md, 2026-10-01): there are no baselines, no frontier measurements and
 no C1 to C4 results in this repository. Local
 public-task scores are also not official leaderboard scores: the leaderboard runs a private task set.
+
+## The A/A replay (v0.3 step 2)
+
+`aa_replay.py` replays the v0.3 gate rule (M3 §2.1: pooled control, confirmation reading, regression as a drop of
+0.5, min_gain 0.05) over the readings of the same W0 kept in three workspaces — dev: three in `workspace-claude`
+(the baseline and two gate control arms) and two in `workspace-claude-full`; test: the two repeats of v0.1's final
+in `workspace-claude` and the two of final-2 in `workspace-claude-full-final` (final-1's W0 arm in
+`workspace-claude-full` was cut short by its share and is not a complete reading) — every directional pair judged
+through the production `judge` with the rest pooled as the control, the v0.1/v0.2 rule beside it. No model is called. Its number is the step's exit condition
+(docs/ROADMAP.md §3, v0.3 step 2). On 2026-10-04 the first version of the confirmation clause (the confirmation
+reading ≥ 0) accepted 4 of the 20 dev pairs, the same four as the old rule, so the rule went back to M3 §2.1(b); its
+second version (the confirmation reading alone clears min_gain too) accepts 0/20 on dev and 0/12 on test, and that
+is the number the step's record keeps.

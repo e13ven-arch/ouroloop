@@ -16,6 +16,7 @@ infrastructure. An older K keeps the v1 loop (agent.loop.Agent) and its records 
 """
 from __future__ import annotations
 
+import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
@@ -220,6 +221,29 @@ def run_attempt(suite, task_id: str, make_agent: Callable, *, run: RunManifest, 
                    episode, score)
 
 
+_CAP_LOCK = threading.Lock()
+_CAP: dict = {"size": None, "semaphore": None}
+
+
+def in_flight_cap(concurrency: int) -> threading.BoundedSemaphore:
+    """The process's one cap on attempts in flight (docs/modules/05_EXECUTION_BUDGET.md §2 并发的范围, v0.3).
+
+    `[bench] concurrency` bounds the attempts running at once in this process, not per arm or per call of
+    `run_tasks`: a gate's candidate arm and its fresh control reading, the screens of k candidates, and a
+    confirmation reading all draw on this one semaphore, so two callers in one process cannot between them run
+    twice the setting. The pool is created here, on first use, at the size asked for; a different size later (a
+    lower one on a resume) replaces it for the attempts that start afterwards, and the attempts already holding the
+    old one finish under it. A research slot's two arms run one after the other in this process, each in its own
+    workspace (campaign.run_campaign), and their `run_tasks` calls draw on this same cap; no two `run_tasks` calls
+    overlap today, so the cap and the setting coincide.
+    """
+    with _CAP_LOCK:
+        size = max(int(concurrency or 1), 1)
+        if _CAP["semaphore"] is None or _CAP["size"] != size:
+            _CAP["size"], _CAP["semaphore"] = size, threading.BoundedSemaphore(size)
+        return _CAP["semaphore"]
+
+
 def run_tasks(suite, task_ids: list[str], make_agent: Callable, *, run: RunManifest, splits: SplitManifest,
               results=None, repeats: int = 1, system: str | None = None, probe: bool = False,
               on_result: Callable[[TaskResult], None] | None = None, arm: str = "subject", plan_ref: str = "",
@@ -237,15 +261,23 @@ def run_tasks(suite, task_ids: list[str], make_agent: Callable, *, run: RunManif
     agent and session; what they share (the meter, the bound release, the stores) is written under locks. The
     recording itself — results, grading, the caller's `on_result` — stays on this thread, in completion order.
     It is a setting of the machine, not of the plan: an attempt's limits and its reservation are the same at any
-    concurrency. Interrupted, the attempts already running finish and are recorded; the rest never start.
+    concurrency. Interrupted, the attempts already running finish and are recorded; the rest never start. The
+    cap is the process's (in_flight_cap), shared by every arm and screen of a gate, not this call's alone.
     """
     pairs = list(order if order is not None else [(t, i) for t in task_ids for i in range(repeats)])
+    cap = in_flight_cap(concurrency) if int(concurrency or 1) > 1 else None
 
     def attempt_of(task_id, i):
-        return run_attempt(suite, task_id, make_agent, run=run, splits=splits, attempt=i, system=system,
-                           probe=probe, arm=arm, plan_ref=plan_ref, release_ref=release_ref,
-                           retry_index=retry_index, pricing=pricing,
-                           supersedes=(supersedes or {}).get((task_id, i), ""))
+        if cap is None:
+            return run_attempt(suite, task_id, make_agent, run=run, splits=splits, attempt=i, system=system,
+                               probe=probe, arm=arm, plan_ref=plan_ref, release_ref=release_ref,
+                               retry_index=retry_index, pricing=pricing,
+                               supersedes=(supersedes or {}).get((task_id, i), ""))
+        with cap:
+            return run_attempt(suite, task_id, make_agent, run=run, splits=splits, attempt=i, system=system,
+                               probe=probe, arm=arm, plan_ref=plan_ref, release_ref=release_ref,
+                               retry_index=retry_index, pricing=pricing,
+                               supersedes=(supersedes or {}).get((task_id, i), ""))
 
     def record(task_id, i, attempt) -> TaskResult:
         try:

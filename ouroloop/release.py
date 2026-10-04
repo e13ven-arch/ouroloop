@@ -344,6 +344,13 @@ class Releases:
             raise NotAuthorized(f"the receipt's verdict is {receipt.verdict}, not accepted")
         if not self.registered_receipt(receipt_ref):
             raise NotAuthorized("this receipt was not registered by a completed evaluation")
+        # M3 §2.1(b) (v0.3): a plan that confirms before it installs authorises only a confirmed receipt. The plan
+        # is read as the frozen object it is, so a receipt cannot be installed under another plan's rule.
+        if receipt.profile == "task" and receipt.plan_ref and self.objects.has(receipt.plan_ref):
+            plan = self.objects.get(receipt.plan_ref)
+            if int(plan.get("confirmation_repeats") or 0) > 0 and receipt.reading_kind != "confirmed":
+                raise NotAuthorized(f"the plan confirms a candidate before it installs and this receipt is a "
+                                    f"{receipt.reading_kind} reading, not a confirmed one")
         if expected_parent is not None:
             parent_of_plan = self.objects.load(receipt.subject_ref, ct.PolicySet).parent_ref
             parent_sets = self.objects.load(expected_parent, ct.SystemRelease)
