@@ -19,7 +19,8 @@ from ouroloop.report import build_report, render_markdown
 def config(fake_upstream, tmp_path, **extra):
     cfg = {"workspace": {"root": str(tmp_path / "ws")},
            "bench": {"domain": rsi.DOMAIN, "upstream_path": fake_upstream, "families": dict(rsi.FAMILIES),
-                     "budget": {"max_steps": 8, "max_tool_calls": 12},
+                     # all five hard limits: a new freeze is refused without them (M0 §2, v0.3)
+                     "budget": {"max_steps": 8, "max_tool_calls": 12, "max_model_calls": 20, "max_tokens": 4000},
                      "ratios": {"train": 0.5, "dev": 0.25, "test": 0.25}},
            "llm": {"type": "rsi:BusinessWorker"},
            "backends": {"mock": {"type": "mock"}},

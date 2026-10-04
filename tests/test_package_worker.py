@@ -21,7 +21,7 @@ from ouroloop.agent.worker import (DEFAULT_IMAGE, Broker, PackageCallError, Proc
 from ouroloop.chat import ChatTurn, ToolCall, ToolSpec
 from ouroloop.evolve import contracts as ct
 
-CODE = hp.Limits(components=hp.KINDS)
+CODE = hp.Limits(components=hp.KINDS, package_api=hp.API_VERSION)    # every kind, so the newest API (M0 §2)
 FINISH_GUARD = '''
 def run(ctx, event):
     sent = any('slack.com' in str(e.get('args', {}).get('url', '')) for e in ctx.view.get('events', []))
@@ -514,3 +514,293 @@ def test_the_qualified_worker_runs_the_image_k_froze_by_its_content_id(qualified
     assert worker.healthy()
     assert bench.isolated_worker({"sandbox": "docker", "image": DEFAULT_IMAGE,
                                   "image_id": "sha256:" + "0" * 64}) is None      # another image: not this activity's
+
+
+# ---------------------------------------------------------------------------- v0.3: the run protocol (M1 §1 宿主作为运行壳, IT6-29/43)
+AGENT = '''
+def run(ctx, task):
+    turn = ctx.model([{"role": "user", "content": task}], tools=[{"name": "api_search"}], role="act")
+    call = turn.tool_calls[0]
+    out = ctx.tool(call["name"], call["args"])
+    return "final: " + turn.text + " / " + out.output + " / stop=" + str(turn.stop)
+'''
+
+
+class StubHost:
+    """A host for the protocol tests, no Gateway yet: records every callback op in order and answers model_call
+    with the canned turn given (or an error), base_call through the session's own handler on a World."""
+
+    def __init__(self, session, turn=None, error=None, extra=None, world=None):
+        self.seen, self.turn, self.error, self.extra = [], turn, error, extra or {}
+        self.world = world or World()
+        self._base = session.base_call_handler(Broker(self.world))
+
+    def model_call(self, reply):
+        self.seen.append(reply)
+        if self.error:
+            return {"op": "model_result", "id": reply["id"], "is_error": True, "error": self.error, **self.extra}
+        turn = self.turn or {"text": "ok", "tool_calls": [{"id": "c1", "name": "api_search", "args": {"q": "x"}}],
+                             "stop": "tool_use"}
+        return {"op": "model_result", "id": reply["id"], **turn, **self.extra}
+
+    def base_call(self, reply):
+        self.seen.append(reply)
+        return self._base(reply)
+
+    def skill_read(self, reply):
+        self.seen.append(reply)
+        return {"op": "skill_result", "id": reply["id"], "text": "the skill" if reply["name"] == "known" else None}
+
+    @property
+    def handlers(self):
+        return {"model_call": self.model_call, "base_call": self.base_call, "skill_read": self.skill_read}
+
+
+def run_message(entry="agent/main.py:run", task="do x", **extra):
+    return {"op": "run", "entry": entry, "task": task, "roles": ["act"], "view": {"task": task}, "limits": {},
+            "skills": {"index": [], "memory": None}, **extra}
+
+
+def test_an_agent_run_returns_its_string_and_the_host_saw_one_model_call_then_one_base_call():
+    """M1 §1: the worker asks the host for the model and the tool over the one pipe, in the agent's order; the
+    agent's return value is the result (IT6-29 protocol part, no gateway yet)."""
+    session = session_with({"agent/main.py": AGENT})
+    try:
+        host = StubHost(session)
+        value = session.serve(run_message(), handlers=host.handlers, deadline=10.0)
+        assert value == "final: ok / api_search ok / stop=tool_use"
+        assert [m["op"] for m in host.seen] == ["model_call", "base_call"]
+        assert host.seen[0]["id"] == "m1" and host.seen[0]["role"] == "act" and host.seen[0]["effort"] is None
+        assert host.seen[0]["messages"] == [{"role": "user", "content": "do x"}]
+        assert host.seen[0]["tools"] == [{"name": "api_search"}]
+        assert host.seen[1]["id"] == "b1" and host.world.calls == [("api_search", {"q": "x"})]
+    finally:
+        session.close()
+
+
+def test_a_gateway_error_is_raised_inside_the_agent_and_the_agent_may_report_it():
+    """M0 §2: a model_result with is_error is a RuntimeError in the agent's hands, not the end of the run."""
+    agent = ("def run(ctx, task):\n    try:\n        ctx.model([], role='aux')\n"
+             "    except RuntimeError as e:\n        return 'refused: ' + str(e)\n    return 'unreachable'\n")
+    session = session_with({"agent/main.py": agent})
+    try:
+        host = StubHost(session, error="role 'aux' is not declared")
+        assert session.serve(run_message(), handlers=host.handlers,
+                             deadline=10.0) == "refused: role 'aux' is not declared"
+    finally:
+        session.close()
+
+
+def test_limits_and_view_follow_the_hosts_answers_and_skills_are_read_through_the_host():
+    """M0 §2: ctx.limits is the latest snapshot the host attached, ctx.view is refreshed in place by an answer
+    carrying one, ctx.skills.read goes to the host (None for a missing skill); ids are monotonic per kind."""
+    agent = ("def run(ctx, task):\n    view = ctx.view\n    before = dict(ctx.limits)\n"
+             "    ctx.model([], role='act')\n    ctx.model([], role='act')\n"
+             "    return repr([before, ctx.limits, view.get('events'), ctx.skills.read('known'),"
+             " ctx.skills.read('missing'), ctx.skills.index, ctx.skills.memory])\n")
+    session = session_with({"agent/main.py": agent})
+    try:
+        host = StubHost(session, turn={"text": "", "tool_calls": [], "stop": "end"},
+                        extra={"limits": {"act_calls": 48}, "view": {"task": "do x", "events": ["e1"]}})
+        value = session.serve(run_message(limits={"act_calls": 50}, skills={"index": [{"name": "known",
+                                                                                         "description": "d"}],
+                                                                              "memory": "remember"}),
+                              handlers=host.handlers, deadline=10.0)
+        assert value == repr([{"act_calls": 50}, {"act_calls": 48}, ["e1"], "the skill", None,
+                              [{"name": "known", "description": "d"}], "remember"])
+        assert [m["id"] for m in host.seen] == ["m1", "m2", "k1", "k2"]
+    finally:
+        session.close()
+
+
+def test_an_agent_that_raises_at_run_time_is_infrastructure_not_a_candidate_defect():
+    """M1 §1 失败语义 / IT6-43: a run-time exception is AgentRunError, which is not a CandidateDefect; so is a
+    return value that is not a string."""
+    from ouroloop.agent.worker import AgentRunError
+    assert not issubclass(AgentRunError, ct.CandidateDefect)
+    session = session_with({"agent/a.py": "def run(ctx, task):\n    raise ValueError('boom')\n",
+                            "agent/b.py": "def run(ctx, task):\n    return None\n"})
+    try:
+        with pytest.raises(AgentRunError, match="boom"):
+            session.serve(run_message("agent/a.py:run"), handlers=StubHost(session).handlers, deadline=10.0)
+        with pytest.raises(AgentRunError, match="returned NoneType, not a string"):
+            session.serve(run_message("agent/b.py:run"), handlers=StubHost(session).handlers, deadline=10.0)
+    finally:
+        session.close()
+
+
+def test_the_agent_entrypoint_must_be_a_function_named_run():
+    """M0 §2: the agent's entrypoint names a callable `run`; another name is the package's error, before import."""
+    from ouroloop.agent.worker import AgentRunError
+    session = session_with({"agent/a.py": "def main(ctx, task):\n    return 'x'\n"})
+    try:
+        with pytest.raises(AgentRunError, match="must be a function named run"):
+            session.serve(run_message("agent/a.py:main"), handlers=StubHost(session).handlers, deadline=10.0)
+    finally:
+        session.close()
+
+
+def test_a_handler_that_hits_a_hard_limit_ends_serve_with_limit_hit_and_the_worker_is_gone():
+    """M5 §2: a hard limit found by the host's handler ends the attempt there: LimitHit names the dimension and the
+    session is closed by force, so nothing of the run goes on."""
+    from ouroloop.agent.worker import LimitHit
+    session = session_with({"agent/main.py": AGENT})
+    host = StubHost(session)
+
+    def over(reply):
+        raise LimitHit("act_calls")
+    with pytest.raises(LimitHit) as info:
+        session.serve(run_message(), handlers={**host.handlers, "model_call": over}, deadline=10.0)
+    assert info.value.limit == "act_calls" and "act_calls" in str(info.value)
+    assert session.proc.poll() is not None
+    assert not issubclass(LimitHit, ct.CandidateDefect)
+
+
+def test_a_handler_that_fails_on_the_host_ends_the_session_and_its_error_is_raised_as_it_is():
+    """serve(): a handler's own exception (a gateway or broker fault) is the host's error, re-raised unchanged; the
+    worker, blocked inside its exchange for an answer that never comes, is closed with it, so the session is not
+    left in a state no later request could use."""
+    session = session_with({"agent/main.py": AGENT})
+    host = StubHost(session)
+
+    def broken(reply):
+        raise RuntimeError("the gateway is down")
+    with pytest.raises(RuntimeError, match="the gateway is down"):
+        session.serve(run_message(), handlers={**host.handlers, "model_call": broken}, deadline=10.0)
+    assert session.proc.poll() is not None
+
+
+def test_a_reply_out_of_order_is_a_protocol_error_not_the_packages():
+    """worker_runner exchange(): an answer with another id is a protocol error that `except Exception` in the agent
+    does not catch; the host sees the worker breaking the protocol (infrastructure for a run), not the package
+    raising."""
+    agent = ("def run(ctx, task):\n    try:\n        ctx.model([], role='act')\n"
+             "    except Exception as e:\n        return 'swallowed ' + type(e).__name__\n    return 'x'\n")
+    session = session_with({"agent/main.py": agent})
+    host = StubHost(session)
+
+    def wrong_id(reply):
+        return {**host.model_call(reply), "id": "m999"}
+    with pytest.raises(WorkerCrashed, match="out of order"):
+        session.serve(run_message(), handlers={**host.handlers, "model_call": wrong_id}, deadline=10.0)
+
+
+def test_a_callback_the_host_has_no_handler_for_is_a_protocol_failure():
+    """serve(): a callback op outside `handlers` is the worker speaking outside the protocol the host offered."""
+    session = session_with({"agent/main.py": AGENT})
+    with pytest.raises(WorkerCrashed, match="answered 'model_call'"):
+        session.serve(run_message(), handlers={"base_call": session.base_call_handler()}, deadline=10.0)
+
+
+def test_an_eight_megabyte_model_call_passes_the_reader_and_a_v1_line_is_still_bounded():
+    """worker.py MAX_MODEL_LINE: a model_call carrying a full history of 7.5 MB reaches the host; every other op
+    keeps the MAX_LINE bound, so a 1.5 MB base_call still ends the session as oversized."""
+    from ouroloop.agent.worker import MAX_LINE, MAX_MODEL_LINE
+    assert MAX_LINE < 1_500_000 < 7_500_000 < MAX_MODEL_LINE
+    big = ("def run(ctx, task):\n    turn = ctx.model([{'role': 'user', 'content': 'x' * 7_500_000}], role='act')\n"
+           "    return 'got ' + turn.text\n")
+    session = session_with({"agent/main.py": big}, request_seconds=60.0)
+    try:
+        host = StubHost(session, turn={"text": "ok", "tool_calls": [], "stop": "end"})
+        assert session.serve(run_message(), handlers=host.handlers, deadline=60.0) == "got ok"
+        assert len(host.seen[0]["messages"][0]["content"]) == 7_500_000
+    finally:
+        session.close()
+    wide = "def run(ctx, task):\n    return ctx.tool('api_search', {'q': 'y' * 1_500_000}).output\n"
+    session = session_with({"agent/main.py": wide})
+    with pytest.raises(WorkerCrashed, match="longer than 1000000"):
+        session.serve(run_message(), handlers=StubHost(session).handlers, deadline=30.0)
+
+
+def test_the_deadline_ends_a_hung_run_as_a_worker_crash_never_a_defect():
+    """M1 §1 失败语义: `run` is not a bounded op, so a run the host's deadline ends is infrastructure (the limits
+    are the host's to enforce), and the hung worker is gone."""
+    session = session_with({"agent/main.py": "def run(ctx, task):\n    while True:\n        pass\n"})
+    with pytest.raises(WorkerCrashed, match="did not answer run within 1.0s"):
+        session.serve(run_message(), handlers=StubHost(session).handlers, deadline=1.0)
+    assert session.proc.poll() is not None
+    from ouroloop.agent.worker import PACKAGE_OPS
+    assert "run" not in PACKAGE_OPS and "smoke" in PACKAGE_OPS
+
+
+AGENT_MANIFEST = {**hp.empty_manifest(hp.AGENT_API_VERSION),
+                  "agent": {"entrypoint": "agent/main.py:run", "roles": ["act"]}}
+
+
+def test_the_smoke_runs_the_agent_against_a_canned_model_and_the_fixture_broker():
+    """M0 §3 / check_package: with an `agent` entry the draft check smokes the agent — the canned end turn, tools
+    through the fixture broker — and a clean agent gives no problems. Its ctx.limits are the remaining counts M0 §2
+    defines, integers taken down by each call, with seconds the request's deadline."""
+    smoke_agent = ("def run(ctx, task):\n    turn = ctx.model([{'role': 'user', 'content': task}], role='act')\n"
+                   "    out = ctx.tool('api_search', {'q': task})\n    assert ctx.skills.read('any') is None\n"
+                   "    counts = [ctx.limits[k] for k in ('act_calls', 'model_calls', 'tool_calls', 'tokens')]\n"
+                   "    assert counts == [4, 9, 9, 19999], counts\n"
+                   "    assert type(ctx.limits['seconds']) is int and 0 < ctx.limits['seconds'] <= 30\n"
+                   "    return turn.text + '/' + str(turn.stop) + '/' + out.output\n")
+    from ouroloop.agent.worker import check_package
+    world = World()
+    problems = check_package(ProcessWorker(for_tests=True), {"agent/main.py": smoke_agent}, AGENT_MANIFEST,
+                             fixture=world)
+    assert problems == [] and world.calls == [("api_search", {"q": "smoke"})]
+    session = session_with({"agent/main.py": smoke_agent})
+    try:
+        assert session.request({"op": "smoke", "entry": "agent/main.py:run", "roles": ["act"], "task": "t"},
+                               broker=Broker(World())) == "ok/end/api_search ok"
+    finally:
+        session.close()
+
+
+def test_an_agent_that_loops_on_the_model_is_stopped_by_the_smokes_act_calls_limit():
+    """M0 §2 / check_package: the smoke's limits are small integers, so an agent that never returns is found before
+    any paid run — the sixth act call is refused, `except Exception` in the agent does not swallow the refusal, and
+    the problem names the dimension; an agent that paces itself by ctx.limits finishes within them."""
+    from ouroloop.agent.worker import check_package
+    looping = "def run(ctx, task):\n    while True:\n        ctx.model([], role='act')\n"
+    swallowing = ("def run(ctx, task):\n    try:\n        while True:\n            ctx.model([], role='act')\n"
+                  "    except Exception as e:\n        return 'swallowed ' + type(e).__name__\n")
+    stopped = "agent_smoke: the agent did not finish within the smoke's limits (act_calls)"
+    for agent in (looping, swallowing):
+        assert check_package(ProcessWorker(for_tests=True), {"agent/main.py": agent}, AGENT_MANIFEST,
+                             fixture=World()) == [stopped]
+    tools = "def run(ctx, task):\n    while True:\n        ctx.tool('api_search', {})\n"
+    assert check_package(ProcessWorker(for_tests=True), {"agent/main.py": tools}, AGENT_MANIFEST,
+                         fixture=World()) == ["agent_smoke: the agent did not finish within the smoke's limits "
+                                              "(tool_calls)"]
+    paced = ("def run(ctx, task):\n    n = 0\n    while ctx.limits['act_calls'] > 0:\n"
+             "        ctx.model([], role='act')\n        n += 1\n    return str(n)\n")
+    assert check_package(ProcessWorker(for_tests=True), {"agent/main.py": paced}, AGENT_MANIFEST,
+                         fixture=World()) == []
+    session = session_with({"agent/main.py": paced})
+    try:
+        assert session.request({"op": "smoke", "entry": "agent/main.py:run", "roles": ["act"], "task": "t"}) == "5"
+    finally:
+        session.close()
+
+
+def test_an_undeclared_role_or_a_crash_in_the_smoke_is_a_draft_problem():
+    """M0 §2/§3, IT6-43: a role the manifest does not declare and an exception in run are both caught by the smoke
+    as `agent_smoke` problems of the draft — a defect, charged to the draft, never infrastructure."""
+    from ouroloop.agent.worker import check_package
+    aux = "def run(ctx, task):\n    return ctx.model([], role='aux').text\n"
+    manifest = AGENT_MANIFEST
+    problems = check_package(ProcessWorker(for_tests=True), {"agent/main.py": aux}, manifest, fixture=World())
+    assert len(problems) == 1 and problems[0].startswith("agent_smoke: ") and "'aux' is not declared" in problems[0]
+    crash = "def run(ctx, task):\n    raise KeyError('nope')\n"
+    problems = check_package(ProcessWorker(for_tests=True), {"agent/main.py": crash}, manifest, fixture=World())
+    assert problems == ["agent_smoke: KeyError: 'nope'"]
+    session = session_with({"agent/main.py": aux})
+    try:
+        with pytest.raises(PackageCallError, match="not declared"):
+            session.request({"op": "smoke", "entry": "agent/main.py:run", "roles": ["act"], "task": "t"})
+    finally:
+        session.close()
+
+
+def test_a_manifest_without_an_agent_entry_is_checked_as_before():
+    """check_package reads `agent` defensively: v1 manifests (no entry) run probe and tests only, unchanged."""
+    from ouroloop.agent.worker import check_package
+    files = {"middlewares/g.py": FINISH_GUARD, "tests/test_g.py": "def test_ok(ctx):\n    assert True\n"}
+    manifest = {**hp.empty_manifest(), "hooks": [{"name": "g", "site": "on_finish",
+                                                  "entrypoint": "middlewares/g.py:run"}]}
+    assert check_package(ProcessWorker(for_tests=True), files, manifest, fixture=World()) == []
+    assert check_package(ProcessWorker(for_tests=True), files, {**manifest, "agent": None}, fixture=World()) == []

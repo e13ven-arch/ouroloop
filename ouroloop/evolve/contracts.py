@@ -165,6 +165,8 @@ SCHEMAS: dict[str, dict] = {
     "chat.messages.v1": {"kind": "input", "fields": ["system", "messages", "tools"], "required": ["messages"]},
     "chat.turn.v1": {"kind": "output", "fields": ["text", "tool_calls", "stop"]},
     "harness_package.v1": {"kind": "output", "fields": ["package_ref"]},
+    # v0.3: the same config shape for a package with an agent component (docs/modules/00_CONTRACTS.md §2).
+    "harness_package.v2": {"kind": "output", "fields": ["package_ref"]},
     "failure_summary.v1": {"kind": "input",
                            "fields": ["task_id", "family_id", "task_text", "termination", "partial_credit",
                                       "turns", "tool_errors", "events", "checks"],

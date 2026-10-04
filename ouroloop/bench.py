@@ -31,7 +31,8 @@ from typing import Callable
 
 from . import config as config_mod
 from .adapters import automationbench as ab
-from .benchmark import Budget, Results, RunManifest, SplitManifest, assign_splits, digest, summarise
+from .benchmark import (HARD_LIMITS, V03_BUDGET_FIELDS, Budget, Results, RunManifest, SplitManifest, assign_splits,
+                        digest, summarise)
 from .ledger import now, redact, write_json
 
 # The seven phases, and `cycle`: the thin automatic entry that calls them in the frozen order (M7 §1).
@@ -403,8 +404,7 @@ class Improvement:
         return TaskEvalPlan(candidate_ref=candidate_ref, control_ref=control_ref, parent_release=parent_release,
                             core_ref=self.core_ref, split_ref=self.splits.hash(), task_ids=tuple(self.dev_tasks),
                             repeats=self.repeats, order_seed=self.order_seed,
-                            per_attempt_budget={"max_steps": self.attempt_budget.max_steps,
-                                                "max_tool_calls": self.attempt_budget.max_tool_calls},
+                            per_attempt_budget=self.attempt_budget.limits(),
                             retry_policy={"max_infrastructure_retries": 1}, screen_ids=tuple(self.screen_ids),
                             gate_plan=self.gate.to_json(), installs=self.plan_installs)
 
@@ -1015,7 +1015,12 @@ class Activity:
 # ---------------------------------------------------------------------------- the first version's harness table
 HARNESS_KEYS = {"package_api", "components", "sandbox", "image", "max_files", "max_package_bytes",
                 "max_memory_chars", "max_skill_chars", "max_skills", "test_timeout_seconds", "max_draft_repairs",
-                "max_failure_notes", "max_entry_chars"}
+                "max_failure_notes", "max_entry_chars", "max_effort"}
+# The reasoning-effort tiers, lowest first (the `claude_code` provider's names). K's `max_effort` is the ceiling the
+# gateway caps a package's requested effort to (docs/modules/00_CONTRACTS.md §2, v0.3): a request above it is sent
+# at the ceiling, never refused, with the requested value on the record. Like every harness key it narrows only.
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+DEFAULT_MAX_EFFORT = "high"
 
 
 # ---------------------------------------------------------------------------- [improvement] and its presets
@@ -1033,7 +1038,8 @@ PRESETS = {
                     "components": ["memory", "skills", "on_finish", "before_tool", "after_tool", "tools"],
                     "sandbox": "docker", "image": "ouroloop-worker:py3.12", "max_files": 24, "max_package_bytes": 262144, "max_memory_chars": 8000,
                     "max_skill_chars": 8000, "max_skills": 12, "test_timeout_seconds": 30,
-                    "max_draft_repairs": 3, "max_failure_notes": 30, "max_entry_chars": 600},
+                    "max_draft_repairs": 3, "max_failure_notes": 30, "max_entry_chars": 600,
+                    "max_effort": DEFAULT_MAX_EFFORT},
         # One worker segment, one research slot, one more worker segment that shows the installed R is used.
         "schedule": {"worker_rounds": 3, "research_slots": 1, "patience": 2, "max_infrastructure_failures": 2},
         # The existing worker gate's own fields; no second regression layer.
@@ -1109,6 +1115,14 @@ def _preset_harness(cfg: dict, preset: dict) -> dict:
             if value != preset.get(key):
                 raise ValueError(f"[harness_evolution] {key} {value!r}: the preset fixes {preset.get(key)!r}")
             out[key] = value
+        elif key == "max_effort":
+            ceiling = preset.get(key, DEFAULT_MAX_EFFORT)
+            if value not in EFFORTS:
+                raise ValueError(f"[harness_evolution] max_effort {value!r}: one of {list(EFFORTS)}")
+            if EFFORTS.index(value) > EFFORTS.index(ceiling):
+                raise ValueError(f"[harness_evolution] max_effort = {value} is above the preset's {ceiling}: a "
+                                 f"limit may be lowered here, not raised")
+            out[key] = value
         elif int(value) > int(preset[key]):
             raise ValueError(f"[harness_evolution] {key} = {value} is above the preset's {preset[key]}: a limit "
                              f"may be lowered here, not raised")
@@ -1133,20 +1147,27 @@ def harness_settings(cfg: dict) -> dict | None:
     unknown = sorted(set(table) - HARNESS_KEYS)
     if unknown:
         raise ValueError(f"[harness_evolution] does not take {unknown}; it takes {sorted(HARNESS_KEYS)}")
-    if table.get("package_api", hp.API_VERSION) != hp.API_VERSION:
-        raise ValueError(f"[harness_evolution] package_api {table['package_api']!r}: this host serves "
-                         f"{hp.API_VERSION}")
-    limits = hp.Limits(components=tuple(table.get("components") or hp.TEXT_KINDS),
-                       **{k: int(table[k]) for k in ("max_files", "max_package_bytes", "max_memory_chars",
-                                                     "max_skill_chars", "max_skills") if k in table})
+    # The package API K freezes is the one its candidates write to; a core frozen to v1 keeps taking v1 manifests
+    # on a host that serves v2, and takes no v2 manifest (hp.Limits.package_api, which also fixes the default).
+    try:
+        limits = hp.Limits(components=tuple(table.get("components") or hp.TEXT_KINDS),
+                           package_api=table.get("package_api"),
+                           **{k: int(table[k]) for k in ("max_files", "max_package_bytes", "max_memory_chars",
+                                                         "max_skill_chars", "max_skills") if k in table})
+    except hp.PackageError as e:
+        raise ValueError(f"[harness_evolution] {e}") from None
+    package_api = limits.package_api
+    max_effort = table.get("max_effort", DEFAULT_MAX_EFFORT)
+    if max_effort not in EFFORTS:
+        raise ValueError(f"[harness_evolution] max_effort {max_effort!r}: one of {list(EFFORTS)}")
     diagnosis = DiagnosisLimits(**{k2: int(table[k1]) for k1, k2 in (("max_failure_notes", "max_notes"),
                                                                      ("max_entry_chars", "max_entry_chars"))
                                    if k1 in table})
     repairs = int(table.get("max_draft_repairs", 3))
     if repairs < 0:
         raise ValueError("[harness_evolution] max_draft_repairs is a count of revisions after the first draft")
-    return {"package_api": hp.API_VERSION, "package": limits.to_json(), "diagnosis": diagnosis.to_json(),
-            "max_draft_repairs": repairs,
+    return {"package_api": package_api, "package": limits.to_json(), "diagnosis": diagnosis.to_json(),
+            "max_draft_repairs": repairs, "max_effort": max_effort,
             "sandbox": table.get("sandbox"), "image": table.get("image"),
             "test_timeout_seconds": int(table.get("test_timeout_seconds", 30))}
 
@@ -1167,10 +1188,11 @@ def _host_contract(objects: _ct.Objects, bench: "BenchConfig", rsi: "RsiConfig",
         context_policy_ref=ref({"compaction": "points.compact", "memory_and_skill_index": "system prompt"}),
         finish_protocol_ref=ref({"stop_view": rsi.stop_view, "hook_sites": list(hp.HOOK_SITES)}),
         permission_ref=ref({"approve": "auto", "gated_tools": [], "package_broker": "base tools; hooks read-only"}),
-        limits_ref=ref({"max_steps": bench.budget.max_steps, "max_tool_calls": bench.budget.max_tool_calls,
-                        "max_seconds": bench.budget.max_seconds}),
-        extension_api_ref=hp.api_ref(objects)))
-    needs = ["generation", hp.API_VERSION]
+        # The five hard limits of one attempt (M0 §2), None where the config sets none: a limit a core fixed is a
+        # fact of the host contract, and so is a limit it did not fix.
+        limits_ref=ref({k: getattr(bench.budget, k) for k in HARD_LIMITS}),
+        extension_api_ref=hp.api_ref(objects, harness["package_api"])))
+    needs = ["generation", harness["package_api"]]
     if hp.Limits.from_json(harness["package"]).allows_code:
         needs.append("isolated_worker")
     return {"target_harness_ref": target, "required_capabilities": tuple(needs)}
@@ -1254,6 +1276,7 @@ def open_activity(cfg: dict, base: str | Path = ".", *, out: Callable[[str], Non
             # here, where a report can find when the hosted model was seen (docs/modules/00_CONTRACTS.md §2).
             _ct.Events(root).append("model_observed", identity=worker_kw["actor_identity_ref"], observed_at=now())
             out(f"harness    K froze components={harness['package']['components']} "
+                f"package_api={harness['package_api']} max_effort={harness['max_effort']} "
                 f"max_draft_repairs={harness['max_draft_repairs']} "
                 f"max_failure_notes={harness['diagnosis']['max_notes']} "
                 f"max_entry_chars={harness['diagnosis']['max_entry_chars']} "
@@ -1352,12 +1375,21 @@ def freeze_task_plan(objects: _ct.Objects, *, core_ref: str, split_ref: str, tas
                                     per_attempt_budget=dict(per_attempt_budget or {})))
 
 
+def _frozen_plan(activity: Activity, ref: str | None = None) -> TaskEvalPlan | None:
+    """The frozen task plan `ref` names — the activity's own [rsi] task_plan_ref when none is given — or None when
+    there is no such frozen object yet."""
+    ref = ref or activity.rsi.task_plan_ref
+    if ref and activity.objects.has(ref):
+        return TaskEvalPlan.from_json(activity.objects.get(ref))
+    return None
+
+
 def _attempt_budget(activity: Activity, template=None) -> Budget:
     """The per-attempt limits a run uses: the frozen task plan's (`ouroloop freeze` writes them all), so a change to
     [bench.budget] after the freeze changes no comparison of the activity; [bench.budget] only for a plan frozen
     without them. The activity's own plan when none is given."""
-    if template is None and activity.rsi.task_plan_ref and activity.objects.has(activity.rsi.task_plan_ref):
-        template = TaskEvalPlan.from_json(activity.objects.get(activity.rsi.task_plan_ref))
+    if template is None:
+        template = _frozen_plan(activity)
     if template is not None and template.per_attempt_budget:
         return Budget(**{**asdict(activity.bench.budget), **template.per_attempt_budget})
     return activity.bench.budget
@@ -1401,6 +1433,35 @@ FRONTIER_KEYS = {"llm", "effort", "fallback", "source", "date", "note", "pricing
 def _harness_of(activity: Activity) -> dict | None:
     rel = _ct.SystemRelease.from_json(activity.objects.get(activity.release_ref))
     return (activity.objects.load(rel.core_ref, _ct.CoreManifest).capabilities or {}).get("harness")
+
+
+def _five_limits(activity: Activity, plan: TaskEvalPlan | None) -> bool:
+    """Whether a phase of this activity runs under the five-limit rule (docs/modules/00_CONTRACTS.md §2, v0.3).
+    A plan frozen before the two v0.3 dimensions existed carries neither key (nor any, before M5 §3 put the limits
+    in the plan): it keeps its identity and runs with what it has, so reading it refuses nothing and says nothing
+    (CT7-06). A plan that carries them was frozen under the rule. Without a plan the rule is K's: a core frozen
+    under v0.3 fixes `max_effort`, and every attempt under it is limited in all five dimensions; a K from before
+    has only the three."""
+    if plan is not None:
+        return set(V03_BUDGET_FIELDS) <= set(plan.per_attempt_budget or {})
+    harness = _harness_of(activity)
+    return bool(harness and "max_effort" in harness)
+
+
+def limit_problems(budget: Budget, five: bool = True) -> list[str]:
+    """Which hard limits an attempt would run without (docs/modules/00_CONTRACTS.md §2 "单次尝试硬上限", v0.3). All
+    five for every new freeze and for every phase of an activity whose K is v0.3, whatever components the core
+    allows: an agent of its own decides how many model calls and output tokens a step takes, so there only a step
+    limit is no limit — and a core that allows no agent today is frozen with the same five, so the comparison
+    identity does not change when it does ("新冻结的计划五项齐全，缺一项拒绝冻结"). `five=False` is for what was frozen
+    before the two dimensions existed, an old plan or an old K, which keeps the three it had and is refused nothing
+    at startup. Named before anything is paid, and a freeze without them is refused rather than frozen short."""
+    needed = ["max_steps", "max_tool_calls", "max_seconds"] + (list(V03_BUDGET_FIELDS) if five else [])
+    missing = [k for k in needed if not getattr(budget, k)]
+    if not missing:
+        return []
+    return [f"[bench.budget] needs {', '.join(missing)} per attempt"
+            + (" (every new plan freezes all five hard limits)" if set(missing) & set(V03_BUDGET_FIELDS) else "")]
 
 
 def _pinned_actor(activity: Activity):
@@ -1866,8 +1927,7 @@ def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_
     inner.template_ref = freeze_task_plan(
         objects, core_ref=core_ref, split_ref=activity.splits.hash(), task_ids=inner.dev_tasks, gate=inner.gate,
         repeats=inner.repeats, order_seed=inner.order_seed,
-        per_attempt_budget={"max_steps": inner.attempt_budget.max_steps,
-                            "max_tool_calls": inner.attempt_budget.max_tool_calls})
+        per_attempt_budget=inner.attempt_budget.limits())
     step = researcher
     outcome = ArmOutcome(arm=arm, pair_id=pair.pair_id)
     if log.finished:
@@ -2820,9 +2880,8 @@ def startup_checks(activity: Activity, cfg: dict, *, phase: str, needs_model: bo
     problems += [f"scorer contract: {line}" for line in checks["failed"]]
     if needs_model and "llm" not in cfg:
         problems.append(f"the {phase} phase needs an [llm] table: it runs real attempts")
-    budget = activity.bench.budget
-    if not (budget.max_steps and budget.max_tool_calls and budget.max_seconds):
-        problems.append("[bench.budget] needs a step, tool-call and time limit per attempt")
+    plan = _frozen_plan(activity, rsi_cfg.task_plan_ref)
+    problems += limit_problems(_attempt_budget(activity, plan), _five_limits(activity, plan))
     if not isinstance(activity.bench.concurrency, int) or isinstance(activity.bench.concurrency, bool) \
             or activity.bench.concurrency < 1:
         problems.append(f"[bench] concurrency must be a whole number of attempts, at least 1, not "
@@ -3045,6 +3104,17 @@ def freeze(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pr
     if "task_plan" in tables:
         t = _only(tables["task_plan"], TASK_PLAN_KEYS, "task_plan")
         gate = GatePlan(**dict(t.get("gate") or {}))
+        # A new plan carries all five hard limits, and one missing is refused here, not frozen short (M0 §2, v0.3
+        # "缺一项拒绝冻结"): an old plan without the two dimensions keeps its identity and is read as frozen, but
+        # nothing new is frozen without them. An unknown limit name is refused by name, before Budget sees it.
+        overrides = dict(t.get("per_attempt_budget") or {})
+        unknown = sorted(set(overrides) - set(Budget.__dataclass_fields__))
+        if unknown:
+            raise ValueError(f"freeze refused: [freeze.task_plan] per_attempt_budget does not take {unknown}; it "
+                             f"takes {sorted(Budget.__dataclass_fields__)}")
+        problems = limit_problems(Budget(**{**asdict(activity.bench.budget), **overrides}))
+        if problems:
+            raise ValueError("freeze refused: " + "; ".join(problems))
         refs["task_plan_ref"] = freeze_task_plan(
             activity.objects, core_ref=core_ref, split_ref=activity.splits.hash(),
             task_ids=_task_ids(activity, t.get("tasks", "dev"), "task_plan"), gate=gate,

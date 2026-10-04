@@ -291,6 +291,10 @@ def test_freeze_refuses_what_it_cannot_freeze_faithfully(fake_upstream, tmp_path
     cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
     for tables, match in (({"task_plan": {"tasks": ["no.such.task"]}}, "does not have"),
                           ({"task_plan": {"threshold": 0.1}}, "does not take"),
+                          # an unknown per-attempt limit is refused by name, not as Budget's TypeError
+                          ({"task_plan": {"per_attempt_budget": {"max_turns": 3}}},
+                           r"freeze refused: \[freeze.task_plan\] per_attempt_budget does not take \['max_turns'\]; "
+                           r"it takes \['max_model_calls', 'max_seconds'"),
                           ({"budget": {"dollars": 5}}, "does not take"),
                           ({"plans": {}}, "has no tables"),
                           ({"task_plan": {"gate": {"min_gain": 0.0}}}, "above zero")):

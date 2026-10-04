@@ -34,7 +34,8 @@ def fixture_preset(monkeypatch):
 def cycle_config(fake_upstream, tmp_path, **improvement):
     return {"workspace": {"root": str(tmp_path / "ws")},
             "bench": {"domain": rsi.DOMAIN, "upstream_path": fake_upstream, "families": dict(rsi.FAMILIES),
-                      "budget": {"max_steps": 8, "max_tool_calls": 12},
+                      # all five hard limits: a new freeze is refused without them (M0 §2, v0.3)
+                      "budget": {"max_steps": 8, "max_tool_calls": 12, "max_model_calls": 20, "max_tokens": 4000},
                       "ratios": {"train": 0.5, "dev": 0.25, "test": 0.25}},
             "llm": {"type": "rsi:BusinessWorker"},
             "backends": {"mock": {"type": "mock"}},
@@ -1323,3 +1324,91 @@ def test_bench_concurrency_is_a_whole_number_of_attempts(fake_upstream, tmp_path
     bad = bench.open_activity(cfg, ".", out=lambda _line: None)
     assert any(p.startswith("[bench] concurrency must be a whole number") for p in
                bench.startup_checks(bad, cfg, phase="baseline"))
+
+
+# ---------------------------------------------------------------------------- v0.3: the five hard limits, max_effort
+def test_the_frozen_plan_and_the_host_contract_carry_the_five_hard_limits(fake_upstream, tmp_path, fixture_preset):
+    """docs/modules/00_CONTRACTS.md §2 (单次尝试硬上限): the task plan freezes every dimension the config sets, the
+    TargetHarness lists all five, an arm's plan carries the same; limit_problems asks for all five by default and
+    for the three a plan or K from before v0.3 had when told so."""
+    from ouroloop.benchmark import Budget
+    from ouroloop.evolve.task_gate import TaskEvalPlan
+    cfg = cycle_config(fake_upstream, tmp_path)
+    cfg["bench"]["budget"].update(max_model_calls=20, max_tokens=4000)
+    gap_w0(cfg, tmp_path)
+    named = frozen(cfg)
+    activity = bench.open_activity(named, ".", out=lambda _line: None)
+    plan = TaskEvalPlan.from_json(activity.objects.get(named["rsi"]["task_plan_ref"]))
+    assert {k: plan.per_attempt_budget[k] for k in bench.HARD_LIMITS} == {
+        "max_steps": 8, "max_model_calls": 20, "max_tool_calls": 12, "max_seconds": 900.0, "max_tokens": 4000}
+    work = bench.improvement(activity, template_ref=named["rsi"]["task_plan_ref"])
+    assert (work.attempt_budget.max_model_calls, work.attempt_budget.max_tokens) == (20, 4000)
+    assert set(work.plan("a", "b", "c").per_attempt_budget) == set(bench.HARD_LIMITS)
+    release = ct.SystemRelease.from_json(activity.objects.get(activity.release_ref))
+    limits = activity.objects.get(activity.objects.load(release.target_harness_ref, ct.TargetHarness).limits_ref)
+    assert limits == {"max_steps": 8, "max_model_calls": 20, "max_tool_calls": 12, "max_seconds": 900.0,
+                      "max_tokens": 4000}
+    assert bench.startup_checks(activity, named, phase="baseline", needs_model=False) == []
+    short = Budget(max_steps=8, max_tool_calls=12)
+    assert bench.limit_problems(short) == ["[bench.budget] needs max_model_calls, max_tokens per attempt (every new "
+                                           "plan freezes all five hard limits)"]
+    assert bench.limit_problems(short, five=False) == []
+    assert bench.limit_problems(Budget(max_steps=8, max_tool_calls=12, max_model_calls=1, max_tokens=1)) == []
+    assert bench.limit_problems(Budget(max_steps=0, max_tool_calls=12), five=False) == ["[bench.budget] needs "
+                                                                                       "max_steps per attempt"]
+
+
+def test_a_new_freeze_needs_all_five_limits_and_an_old_plan_is_read_with_its_three(fake_upstream, tmp_path,
+                                                                                   fixture_preset):
+    """docs/modules/00_CONTRACTS.md §2 (v0.3) "新冻结的计划五项齐全，缺一项拒绝冻结", CT7-06: a config without the two v0.3
+    dimensions is refused a freeze whatever components K allows — the rule is K's, so the comparison identity does
+    not change when agents are allowed later — and a v0.3 K without a plan asks for them at startup; a plan frozen
+    before the two existed is read as it was frozen, the host runs it without them, and startup says nothing."""
+    from ouroloop.evolve.task_gate import GatePlan
+    cfg = cycle_config(fake_upstream, tmp_path)
+    for key in bench.V03_BUDGET_FIELDS:
+        del cfg["bench"]["budget"][key]
+    activity, booted = gap_w0(cfg, tmp_path)
+    assert "agent" not in bench._harness_of(activity)["package"]["components"]
+    with pytest.raises(ValueError, match="freeze refused: .*needs max_model_calls, max_tokens per attempt"):
+        bench.freeze(cfg, ".", out=lambda _line: None)
+    missing = "[bench.budget] needs max_model_calls, max_tokens per attempt (every new plan freezes all five hard limits)"
+    assert [p for p in bench.startup_checks(activity, cfg, phase="baseline", needs_model=False)
+            if p.startswith("[bench.budget]")] == [missing]
+    # the plan as `ouroloop freeze` wrote it before v0.3: the three limits, and nothing more
+    old_ref = bench.freeze_task_plan(activity.objects, core_ref=booted.core_ref, split_ref=activity.splits.hash(),
+                                     task_ids=tuple(rsi.DEV),
+                                     gate=GatePlan(min_gain=0.05, min_groups=1, bootstrap_replicates=200),
+                                     per_attempt_budget={"max_steps": 8, "max_tool_calls": 12, "max_seconds": 900.0})
+    named = {**cfg, "rsi": {**cfg["rsi"], "task_plan_ref": old_ref}}
+    later = bench.open_activity(named, ".", out=lambda _line: None)
+    assert bench._attempt_budget(later).max_tokens is None and bench._attempt_budget(later).max_steps == 8
+    assert [p for p in bench.startup_checks(later, named, phase="baseline", needs_model=False)
+            if p.startswith("[bench.budget]")] == []
+
+
+def test_max_effort_is_frozen_into_k_with_a_default_of_high_and_narrows_only(fake_upstream, tmp_path,
+                                                                             fixture_preset):
+    """docs/modules/00_CONTRACTS.md §2 (v0.3): K's `max_effort` is the ceiling the gateway caps a package's requested
+    effort to; [harness_evolution] may lower it and never raise it, and names package API v2 to allow agents."""
+    base = cycle_config(fake_upstream, tmp_path)
+    assert bench.harness_settings(base)["max_effort"] == "high"
+    assert bench.harness_settings({**base, "harness_evolution": {"max_effort": "medium"}})["max_effort"] == "medium"
+    for table, message in (({"max_effort": "max"}, "above the preset"), ({"max_effort": "turbo"}, "one of"),
+                           ({"package_api": "harness_package.v2"}, "preset fixes")):
+        with pytest.raises(ValueError, match=message):
+            bench.harness_settings({**base, "harness_evolution": table})
+    activity, _booted = gap_w0(base, tmp_path)
+    frozen_k = bench._harness_of(activity)
+    assert frozen_k["max_effort"] == "high" and frozen_k["package_api"] == "harness_package.v1"
+    assert hp.Limits.from_json(frozen_k["package"]).package_api == "harness_package.v1"
+    # the table alone, without a preset: v1 and high unless named, v2 by name, unknown versions refused
+    plain = bench.harness_settings({"harness_evolution": {"components": ["memory"]}})
+    assert plain["max_effort"] == "high" and plain["package_api"] == "harness_package.v1"
+    v2 = bench.harness_settings({"harness_evolution": {"components": ["memory", "agent"],
+                                                       "package_api": "harness_package.v2", "max_effort": "low"}})
+    assert v2["package"]["package_api"] == "harness_package.v2" and v2["max_effort"] == "low"
+    with pytest.raises(ValueError, match="this host serves"):
+        bench.harness_settings({"harness_evolution": {"package_api": "harness_package.v9"}})
+    with pytest.raises(ValueError, match="one of"):
+        bench.harness_settings({"harness_evolution": {"max_effort": "ultra"}})

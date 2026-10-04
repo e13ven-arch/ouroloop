@@ -28,7 +28,10 @@ MAX_PROMPT_CHARS = 20000
 PREFLIGHT_CHECKS = ("input_coverage", "label_availability", "duplicate_experiment")
 RETRIEVE_SORTS = ("recency", "recurrence")
 BUILTINS = ("default.v1", "finish_check.v1", "research_retrieve.v1", "research_preflight.v1",
-            "harness_package.v1")
+            "harness_package.v1", "harness_package.v2")
+# worker.harness's built-in is the package API the pinned package's manifest targets (M0 §2, v0.3): v1 for a package
+# the default agent runs, v2 for one with an agent of its own. Both take package_ref only.
+PACKAGE_BUILTINS = ("harness_package.v1", "harness_package.v2")
 
 
 @dataclass(frozen=True)
@@ -75,7 +78,7 @@ REGISTRY: dict[str, TargetRegistration] = {t.target: t for t in (
     TargetRegistration("worker.actor", "worker", "generation", ("model",), "chat.messages.v1", "chat.turn.v1",
                        "agent.provider", optional=True),
     TargetRegistration("worker.harness", "worker", "config", ("workflow",), "research.context.v1",
-                       "harness_package.v1", "agent.harness_package", builtins=("harness_package.v1",),
+                       "harness_package.v1", "agent.harness_package", builtins=PACKAGE_BUILTINS,
                        optional=True),
 )}
 
@@ -152,9 +155,9 @@ def parse_builtin(builtin: str, config: Any) -> dict:
         if len(set(checks)) != len(checks):
             raise ContractError("preflight checks are an ordered list without repeats")
         return {"checks": tuple(checks)}
-    if builtin == "harness_package.v1":
+    if builtin in PACKAGE_BUILTINS:
         if set(config) != {"package_ref"}:
-            raise ContractError("harness_package.v1 takes package_ref only")
+            raise ContractError(f"{builtin} takes package_ref only")
         ct.check_refs([config["package_ref"]], kind="package", what="capability package")
         return {"package_ref": config["package_ref"]}
     raise ContractError(f"unknown built-in {builtin!r}: {list(BUILTINS)}")

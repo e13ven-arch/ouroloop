@@ -359,3 +359,95 @@ def test_ordinary_words_are_not_literals_and_hits_match_whole_tokens():
     assert name not in escaped["manifest.json"]                             # escaped in the raw file
     assert hp.literal_hits(escaped, {name}) == [name]                       # found in the decoded text
     assert "jane" not in hp.describe_hits(["jane.doe@acme.com"])            # the output names kinds, not values
+
+
+# ---------------------------------------------------------------------------- package API v2: the agent component
+AGENT = "def run(ctx, task):\n    return 'done'\n"
+V2 = hp.Limits(components=hp.KINDS, package_api="harness_package.v2")
+
+
+def agent_files(entry: str = "agent/loop.py:run", roles=("act",), **extra) -> dict:
+    """A v2 package with one agent, its entry overridden by the arguments."""
+    manifest = hp.empty_manifest("harness_package.v2")
+    manifest["agent"] = {"entrypoint": entry, "roles": list(roles), **extra}
+    return {"manifest.json": json.dumps(manifest), "agent/loop.py": AGENT}
+
+
+def test_a_v2_manifest_with_an_agent_entry_parses_and_the_package_runs_in_the_worker(tmp_path):
+    """docs/modules/00_CONTRACTS.md §2 (包 API v2): the entry is parsed with its roles, `agent` is a component kind,
+    and both worker predicates hold for a package with a loop of its own."""
+    files = agent_files(roles=("aux", "act"))
+    manifest = hp.check_shape(files, V2)
+    assert manifest["api_version"] == "harness_package.v2"
+    assert manifest["agent"] == {"entrypoint": "agent/loop.py:run", "roles": ["act", "aux"]}
+    assert "agent" in hp.kinds_of(manifest, files)
+    assert hp.needs_worker_for_checks(files, manifest) and hp.needs_worker_at_runtime(files, manifest)
+    objects = ct.Objects(tmp_path)
+    view = hp.load_package(objects, hp.build_package(objects, files, V2))
+    assert view.api_version == "harness_package.v2" and view.roles == ("act", "aux") and view.runs_code
+    assert view.agent["entrypoint"] == "agent/loop.py:run"
+    assert objects.get(objects.load(view.ref, ct.HarnessPackage).package_api_ref)["package_api"] == "harness_package.v2"
+
+
+def test_a_v1_package_parses_unchanged_and_its_api_ref_differs_from_a_v2_one(tmp_path):
+    """docs/modules/00_CONTRACTS.md §2: a v1 package is a v2 package the default agent runs — it is stored as before,
+    with no agent key — and `package_api_ref` records the package's own version, so the two are different packages."""
+    objects = ct.Objects(tmp_path)
+    v1 = hp.build_package(objects, text_files(memory=NOTE), hp.Limits())
+    view = hp.load_package(objects, v1)
+    assert view.api_version == "harness_package.v1" and view.agent is None and view.roles == ("act",)
+    assert "agent" not in view.manifest and not view.runs_code
+    assert hp.load_package(objects, hp.empty_package(objects)).manifest["api_version"] == "harness_package.v1"
+    files = text_files(memory=NOTE)
+    files["manifest.json"] = json.dumps({**json.loads(files["manifest.json"]), "api_version": "harness_package.v2"})
+    v2 = hp.build_package(objects, files, hp.Limits(package_api="harness_package.v2"))
+    p1, p2 = objects.load(v1, ct.HarnessPackage), objects.load(v2, ct.HarnessPackage)
+    assert v1 != v2 and p1.package_api_ref != p2.package_api_ref and p1.bundle_ref != p2.bundle_ref
+    assert objects.get(p1.package_api_ref)["package_api"] == "harness_package.v1"
+    assert objects.get(p2.package_api_ref)["package_api"] == "harness_package.v2"
+    assert not hp.load_package(objects, v2).runs_code                 # a v2 package without an agent: default agent
+
+
+@pytest.mark.parametrize("files, message", [
+    (agent_files(entry="agent/loop.py:main"), "named run"),
+    (agent_files(entry="tools/loop.py:run"), "inside the package"),
+    (agent_files(entry="agent/missing.py:run"), "inside the package"),
+    (agent_files(roles=("act", "judge")), "unknown"),
+    (agent_files(roles=()), "non-empty"),
+    (agent_files(roles=("act", "act")), "twice"),
+    (agent_files(effort="max"), "it has \\['effort', 'entrypoint', 'roles'\\]"),
+    ({**agent_files(), "manifest.json": json.dumps({**hp.empty_manifest("harness_package.v2"),
+                                                     "agent": [{"entrypoint": "agent/loop.py:run", "roles": ["act"]},
+                                                               {"entrypoint": "agent/loop.py:run", "roles": ["act"]}]})},
+     "exactly one agent"),
+    ({**agent_files(), "manifest.json": json.dumps(hp.empty_manifest("harness_package.v2"))}, "no agent entry"),
+    ({**agent_files(), "manifest.json": json.dumps({**json.loads(agent_files()["manifest.json"]),
+                                                     "api_version": "harness_package.v1"})}, "needs harness_package.v2"),
+    ({**agent_files(), "manifest.json": json.dumps({**json.loads(agent_files()["manifest.json"]),
+                                                     "api_version": "harness_package.v9"})}, "this host serves"),
+])
+def test_a_malformed_agent_entry_is_a_structure_error(files, message):
+    """docs/modules/00_CONTRACTS.md §2 (包 API v2): one entry, `agent/<file>.py:run`, known roles, no stray agent file,
+    and an agent only under v2; each refused with the rule it broke, as check output R can act on."""
+    with pytest.raises(hp.PackageError, match=message):
+        hp.check_shape(files, V2)
+
+
+def test_an_agent_under_a_core_that_does_not_allow_it_is_refused_by_the_rule_it_breaks():
+    """docs/modules/00_CONTRACTS.md §2: a text-only core refuses the code, a code core without the `agent` kind
+    refuses the kind, a core frozen to v1 refuses the manifest's API, and a core cannot allow agents under v1."""
+    with pytest.raises(hp.PackageError, match="code files"):
+        hp.check_shape(agent_files(), hp.Limits(package_api="harness_package.v2"))
+    with pytest.raises(hp.PackageError, match="component kinds \\['agent'\\]"):
+        hp.check_shape(agent_files(), hp.Limits(components=(*hp.TEXT_KINDS, "tools"), package_api="harness_package.v2"))
+    # a stray agent/*.py under such a core is refused as the kind it is, not told to name an entrypoint
+    with pytest.raises(hp.PackageError, match="component kinds \\['agent'\\]"):
+        hp.check_shape({"manifest.json": json.dumps(hp.empty_manifest("harness_package.v2")), "agent/loop.py": AGENT},
+                       hp.Limits(components=(*hp.TEXT_KINDS, "tools"), package_api="harness_package.v2"))
+    with pytest.raises(hp.PackageError, match="this core allows \\['harness_package.v1'\\]"):
+        hp.check_shape(agent_files(), hp.Limits(components=(*hp.TEXT_KINDS, "tools")))
+    with pytest.raises(hp.PackageError, match="needs package_api harness_package.v2"):
+        hp.Limits(components=hp.KINDS, package_api="harness_package.v1")
+    assert hp.Limits(components=hp.KINDS).package_api == "harness_package.v2"   # unnamed: the oldest API with agents
+    assert hp.Limits.from_json({"components": ["memory"]}).package_api == "harness_package.v1"   # an older K
+    assert hp.Limits.from_json(V2.to_json()) == V2 and V2.to_json()["package_api"] == "harness_package.v2"

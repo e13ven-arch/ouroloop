@@ -236,23 +236,55 @@ def pair_key(plan_ref: str, task_id: str, repeat_index: int) -> str:
 
 
 # ---------------------------------------------------------------------------- budget
+# The five hard limits of one attempt (docs/modules/00_CONTRACTS.md §2 "单次尝试硬上限", M5 §2), Budget field →
+# the dimension name a `budget` termination records in TaskResult.limit. `max_steps` keeps its name: a step is one
+# `act` model call, as it always was. Two are new in v0.3 and default to None (no limit), so a plan frozen before
+# them reads exactly as it was frozen (adding a limit to an old plan would change its identity).
+HARD_LIMITS = {"max_steps": "act_calls", "max_model_calls": "model_calls", "max_tool_calls": "tool_calls",
+               "max_seconds": "seconds", "max_tokens": "tokens"}
+LIMIT_DIMENSIONS = tuple(HARD_LIMITS.values())
+V03_BUDGET_FIELDS = ("max_model_calls", "max_tokens")
+
+
 @dataclass(frozen=True)
 class Budget:
     """Per-attempt limits. `max_usd` is a limit, not a measurement: an attempt whose cost cannot be measured is
-    not stopped by it, and its result says the cost is unknown."""
+    not stopped by it, and its result says the cost is unknown. `max_model_calls` counts every model call, act and
+    aux together; `max_tokens` is the attempt's output tokens over all of them, thinking included — not the
+    `[llm] max_tokens` of one reply. None on either means no such limit."""
     max_steps: int = 50
     max_tool_calls: int = 200
     max_seconds: float = 900.0
     max_usd: float | None = None
+    max_model_calls: int | None = None
+    max_tokens: int | None = None
+
+    def limits(self) -> dict:
+        """The hard limits that are set, by field name: what a frozen plan and a TargetHarness carry."""
+        return {k: getattr(self, k) for k in HARD_LIMITS if getattr(self, k) is not None}
+
+    def limit_hit(self, *, steps: int = 0, model_calls: int = 0, tool_calls: int = 0, seconds: float = 0.0,
+                  tokens: int = 0) -> str | None:
+        """The dimension of the first hard limit these counts exceed, in HARD_LIMITS order, or None."""
+        counts = {"max_steps": steps, "max_model_calls": model_calls, "max_tool_calls": tool_calls,
+                  "max_seconds": seconds, "max_tokens": tokens}
+        for key, cap in self.limits().items():
+            if counts[key] > cap:
+                return HARD_LIMITS[key]
+        return None
 
     def exceeded(self, *, steps: int = 0, tool_calls: int = 0, seconds: float = 0.0,
-                 usd: float | None = None) -> str:
+                 usd: float | None = None, model_calls: int = 0, tokens: int = 0) -> str:
         if steps > self.max_steps:
             return f"steps {steps} > {self.max_steps}"
+        if self.max_model_calls is not None and model_calls > self.max_model_calls:
+            return f"model calls {model_calls} > {self.max_model_calls}"
         if tool_calls > self.max_tool_calls:
             return f"tool calls {tool_calls} > {self.max_tool_calls}"
         if seconds > self.max_seconds:
             return f"seconds {seconds:.0f} > {self.max_seconds:.0f}"
+        if self.max_tokens is not None and tokens > self.max_tokens:
+            return f"tokens {tokens} > {self.max_tokens}"
         if self.max_usd is not None and usd is not None and usd > self.max_usd:
             return f"cost {usd:.4f} > {self.max_usd:.4f}"
         return ""
@@ -301,7 +333,9 @@ class RunManifest:
 
     def payload(self) -> dict:
         d = asdict(self)
-        d["budget"] = asdict(self.budget)
+        # A v0.3 budget field that is unset is left out, so a run recorded before the field existed keeps the hash
+        # its attempts are found under; set, it is part of what the run was limited by.
+        d["budget"] = {k: v for k, v in asdict(self.budget).items() if not (k in V03_BUDGET_FIELDS and v is None)}
         d["input_schema_refs"] = list(self.input_schema_refs)
         return {k: v for k, v in d.items()
                 if k != "notes" and not (k in V2_FIELDS and not v) and not (k in V06_FIELDS and v is None)}
@@ -362,6 +396,9 @@ class TaskResult:
     tool_calls: int = 0
     termination: str = "finished"
     stop: str = ""                            # the harness's own stop reason, as evidence behind `termination`
+    # v0.3: which hard limit ended a `budget` termination (one of LIMIT_DIMENSIONS); None on every other
+    # termination and on every record written before the field existed, where `step_limit` says the same thing.
+    limit: str | None = None
     validity: str = "valid"
     invalid_reason: str = ""
     evidence: str = ""                        # the session id; its transcript is transcripts/<session>.jsonl
@@ -388,6 +425,9 @@ class TaskResult:
         if self.validity == "valid" and self.termination not in VALID_TERMINATIONS:
             raise ValueError(f"termination {self.termination!r} is an infrastructure failure, not a task outcome: "
                              f"the attempt is invalid")
+        if self.limit is not None and (self.termination != "budget" or self.limit not in LIMIT_DIMENSIONS):
+            raise ValueError(f"limit {self.limit!r}: one of {list(LIMIT_DIMENSIONS)}, and only on a budget "
+                             f"termination (this one is {self.termination!r})")
         if self.success and self.partial_credit < 1.0:
             raise ValueError("task_completed_correctly is 1.0 only when every scored assertion passed")
 

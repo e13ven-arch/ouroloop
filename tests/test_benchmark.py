@@ -196,3 +196,40 @@ class TestBudget:
         assert "seconds 11" in b.exceeded(seconds=11)
         assert "cost" in b.exceeded(usd=2.0)
         assert not b.exceeded(usd=None)        # a cost nobody measured stops nothing
+
+
+class TestHardLimits:
+    def test_the_v03_dimensions_round_trip_and_none_means_no_limit(self):
+        """docs/modules/00_CONTRACTS.md §2 (单次尝试硬上限), M5 §2: max_model_calls and max_tokens are limits when set and
+        nothing when None, so a plan frozen before them reads as frozen, and a run's hash does not change."""
+        from dataclasses import asdict
+        b = Budget(max_steps=2, max_tool_calls=3, max_seconds=10, max_model_calls=5, max_tokens=100)
+        assert Budget(**json.loads(json.dumps(asdict(b)))) == b
+        assert b.limits() == {"max_steps": 2, "max_model_calls": 5, "max_tool_calls": 3, "max_seconds": 10,
+                              "max_tokens": 100}
+        assert not b.exceeded(model_calls=5, tokens=100) and b.limit_hit(model_calls=5, tokens=100) is None
+        assert "model calls 6" in b.exceeded(model_calls=6) and "tokens 101" in b.exceeded(tokens=101)
+        assert b.limit_hit(model_calls=6) == "model_calls" and b.limit_hit(tokens=101) == "tokens"
+        assert b.limit_hit(steps=3, tokens=101) == "act_calls" and b.limit_hit(seconds=11) == "seconds"
+        old = Budget(max_steps=2)
+        assert old.max_model_calls is None and old.max_tokens is None
+        assert not old.exceeded(model_calls=10 ** 6, tokens=10 ** 9) and old.limit_hit(tokens=10 ** 9) is None
+        assert set(old.limits()) == {"max_steps", "max_tool_calls", "max_seconds"}
+        unset = RunManifest("base", "base", "dev", {"model": "x"}, budget=old)
+        assert not set(unset.payload()["budget"]) & {"max_model_calls", "max_tokens"}
+        assert RunManifest.from_json(unset.to_json()).hash() == unset.hash()
+        limited = RunManifest("base", "base", "dev", {"model": "x"}, budget=b)
+        assert limited.payload()["budget"]["max_tokens"] == 100 and limited.hash() != unset.hash()
+
+    def test_a_result_records_which_limit_ended_it_and_an_old_record_without_it_loads(self):
+        """docs/modules/01_POLICY_RUNTIME.md §1 (硬上限): `limit` names the dimension of a budget termination, is one of
+        the five, and is None on every other termination and on a record written before the field."""
+        run = RunManifest("base", "base", "dev", {"model": "x"})
+        r = TaskResult("t", "f", "dev", 0, "base", run.hash(), "m", termination="budget", limit="tokens")
+        assert TaskResult.from_json(json.loads(json.dumps(r.to_json()))).limit == "tokens"
+        assert TaskResult.from_json({k: v for k, v in r.to_json().items() if k != "limit"}).limit is None
+        assert TaskResult("t", "f", "dev", 0, "base", run.hash(), "m").limit is None
+        with pytest.raises(ValueError, match="only on a budget"):
+            TaskResult("t", "f", "dev", 0, "base", run.hash(), "m", termination="finished", limit="tokens")
+        with pytest.raises(ValueError, match="one of"):
+            TaskResult("t", "f", "dev", 0, "base", run.hash(), "m", termination="budget", limit="steps")

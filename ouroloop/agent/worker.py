@@ -13,6 +13,13 @@ no isolation, reports `qualified = False`, and is for tests of the protocol only
 Failure kinds are kept apart: the package's own errors (an exception, an illegal hook answer) are a candidate
 defect; a worker that dies, times out or breaks the protocol is infrastructure — unless a fresh worker then answers
 normally, in which case it was the package's code that killed or hung it, and that is the candidate's defect too.
+
+v0.3 (M1 §1 宿主作为运行壳): one `run` request spans a whole attempt. The worker runs the package's agent and calls
+back for the model (model_call), skills (skill_read) and tools (base_call); WorkerSession.serve answers each
+through a handler the host supplies — the gateway and broker live in the host, never in the worker. An agent that
+raises at run time is AgentRunError, infrastructure rather than a defect (the draft smoke catches deterministic
+crashes before any paid run, M0 §3); a handler that finds a hard limit reached raises LimitHit, and the session
+ends there with the dimension named (termination `budget`, M5 §2).
 """
 from __future__ import annotations
 
@@ -31,9 +38,13 @@ from ..evolve import contracts as ct
 
 RUNNER = Path(__file__).with_name("worker_runner.py")
 DEFAULT_IMAGE = "ouroloop-worker:py3.12"
-MAX_LINE = 1_000_000                      # one protocol line; anything longer is not a protocol message
+MAX_LINE = 1_000_000                      # one protocol line of the v1 ops; anything longer is not a protocol message
+MAX_MODEL_LINE = 8_000_000                # a model_call carries the agent's whole history; the reader allows this much
 STDERR_TAIL = 4000                        # what is kept of the worker's stderr, for a failure message
-PACKAGE_OPS = ("probe", "call_tool", "hook", "test")       # the requests that run package code
+# The requests that run package code in a bounded way, so a hang or death in them with a healthy fresh worker is
+# the package's defect. `run` is not here: an attempt-long run is ended by the host's limits, and whatever ends it
+# early is infrastructure (M1 §1 失败语义), never reclassified.
+PACKAGE_OPS = ("probe", "call_tool", "hook", "test", "smoke")
 WORKER_ENV = ("PATH=/usr/local/bin:/usr/bin:/bin", "LANG=C.UTF-8")   # the whole environment package code sees
 
 
@@ -46,7 +57,24 @@ class WorkerCrashed(RuntimeError):
 
 
 class PackageCallError(ct.CandidateDefect):
-    """The package's code raised, or a hook answered outside its protocol: the candidate's defect."""
+    """The package's code raised, or a hook answered outside its protocol: the candidate's defect. Only for the
+    bounded ops (call_tool, hook, probe, test, smoke)."""
+
+
+class AgentRunError(RuntimeError):
+    """The package's agent raised during a `run` (or returned something other than a string). Infrastructure, not a
+    CandidateDefect: the attempt is invalid and refilled once (M1 §1 失败语义), because a deterministic crash is the
+    draft smoke's to catch and what is left at run time is the world's — a model answer, a tool failure."""
+
+
+class LimitHit(RuntimeError):
+    """A hard limit of the attempt was reached while a `run` was being served (M5 §2): the handler raises it, serve
+    ends the worker session and re-raises it, and the attempt ends as termination `budget` with `limit` naming the
+    dimension (act_calls, model_calls, tool_calls, seconds, tokens). Neither a defect nor infrastructure."""
+
+    def __init__(self, limit: str, message: str | None = None):
+        super().__init__(message or f"the attempt reached its hard limit on {limit}")
+        self.limit = limit
 
 
 @dataclass(frozen=True)
@@ -201,13 +229,15 @@ class WorkerSession:
         self._drain.start()
 
     def _read(self) -> None:
+        # The reader does not know which op is in flight, so it allows the larger model_call bound; serve() holds
+        # every other op to MAX_LINE once it has parsed the line.
         while True:
-            line = self.proc.stdout.readline(MAX_LINE)
+            line = self.proc.stdout.readline(MAX_MODEL_LINE)
             if not line:
                 break
-            if len(line) >= MAX_LINE and not line.endswith("\n"):
+            if len(line) >= MAX_MODEL_LINE and not line.endswith("\n"):
                 while True:                   # an oversized line: skip the rest of it, report it as such
-                    rest = self.proc.stdout.readline(MAX_LINE)
+                    rest = self.proc.stdout.readline(MAX_MODEL_LINE)
                     if not rest or rest.endswith("\n"):
                         break
                 self._lines.put('{"op": "oversized"}')
@@ -241,50 +271,93 @@ class WorkerSession:
         except (BrokenPipeError, OSError, ValueError) as e:
             raise WorkerCrashed(f"the worker is gone: {e}") from None
 
-    def request(self, message: dict, broker=None) -> object:
-        """Send one request and serve its broker calls until the result. -> the result value."""
-        if message.get("op") in ("call_tool", "hook"):
-            message = {**message, "limit": self.limits.max_output_chars}
+    def base_call_handler(self, broker=None, max_calls: int | None = None):
+        """The handler for the worker's base_call: the broker's answer as a base_result, bounded. Without a broker
+        every call is answered as an error; past `max_calls` (the request's bound; None for no bound beyond the
+        broker's own, as in a run, where the broker counts against the attempt's limits) likewise. A malformed call
+        is the package's and is answered as an error, never raised on the host."""
+        calls = [0]
+
+        def handle(reply: dict) -> dict:
+            calls[0] += 1
+            name, args = reply.get("name"), reply.get("args") or {}
+            if broker is None:
+                output, is_error = "no tool calls are available here", True
+            elif max_calls is not None and calls[0] > max_calls:
+                output, is_error = f"more than {max_calls} tool calls in one request", True
+            elif not isinstance(name, str) or not isinstance(args, dict):
+                output, is_error = "call_tool takes a tool name and an object of arguments", True
+            else:
+                output, is_error = broker(name, args)
+            return {"op": "base_result", "id": reply.get("id"), "output": str(output)[:self.limits.max_output_chars],
+                    "is_error": bool(is_error)}
+        return handle
+
+    def serve(self, message: dict, *, handlers: dict, deadline: float) -> object:
+        """Send one request and answer the worker's callbacks until its result. -> the result value.
+
+        `handlers` maps a callback op (base_call, model_call, skill_read) to handler(reply) -> the dict to send
+        back; a handler that raises LimitHit ends the session at once (the attempt is over, nothing the worker
+        could still say matters) and LimitHit propagates with its dimension; any other exception of a handler ends
+        the session too and propagates as it is. `deadline` is seconds from now for the
+        whole exchange: a request's request_seconds, or the attempt's max_seconds for a run. The worker's error of
+        kind "package" is AgentRunError for a run and PackageCallError for the bounded ops (M1 §1 失败语义); a
+        callback with no handler, a protocol-kind error, a line past the op's bound, the deadline or an exit are
+        _failed (infrastructure, or the package's when a fresh worker is healthy and the op is a bounded one).
+        """
         self._send(message)
-        deadline = time.monotonic() + self.limits.request_seconds
-        calls = 0
+        op_sent = message.get("op")
+        end = time.monotonic() + deadline
         while True:
-            remaining = deadline - time.monotonic()
+            remaining = end - time.monotonic()
             if remaining <= 0:
-                raise self._failed(message, f"did not answer {message.get('op')} within "
-                                            f"{self.limits.request_seconds}s")
+                raise self._failed(message, f"did not answer {op_sent} within {deadline}s")
             try:
                 line = self._lines.get(timeout=remaining)
             except queue.Empty:
                 continue
             if line is None:
-                raise self._failed(message, f"exited during {message.get('op')}")
+                raise self._failed(message, f"exited during {op_sent}")
             try:
                 reply = json.loads(line)
             except json.JSONDecodeError:
                 raise self._failed(message, f"broke the protocol: {line[:120]!r}") from None
             op = reply.get("op")
             if op == "oversized":
-                raise self._failed(message, f"sent a line longer than {MAX_LINE} characters")
-            if op == "base_call":
-                calls += 1
-                name, args = reply.get("name"), reply.get("args") or {}
-                if broker is None or calls > self.limits.max_base_calls:
-                    output, is_error = ("no tool calls are available here" if broker is None
-                                        else f"more than {self.limits.max_base_calls} tool calls in one request"), True
-                elif not isinstance(name, str) or not isinstance(args, dict):
-                    # The package's malformed call: answered as an error, never raised on the host.
-                    output, is_error = "call_tool takes a tool name and an object of arguments", True
-                else:
-                    output, is_error = broker(name, args)
-                self._send({"op": "base_result", "id": reply.get("id"),
-                            "output": str(output)[:self.limits.max_output_chars], "is_error": bool(is_error)})
+                raise self._failed(message, f"sent a line longer than {MAX_MODEL_LINE} characters")
+            if op != "model_call" and len(line) > MAX_LINE:
+                raise self._failed(message, f"sent a {op} line longer than {MAX_LINE} characters")
+            if op in handlers:
+                try:
+                    answer = handlers[op](reply)
+                except LimitHit:
+                    self.close(force=True)        # the attempt is over: nothing the worker could still say matters
+                    raise
+                except Exception:
+                    # The host's own handler failed (a gateway or broker fault), so this is the caller's error, not
+                    # the worker's; but the worker is blocked inside exchange() for an answer that never comes and
+                    # the session has no consistent state to go on with, so it is closed before the error leaves.
+                    self.close(force=True)
+                    raise
+                self._send(answer)
                 continue
             if op == "result":
                 return reply.get("value")
             if op == "error" and reply.get("kind") == "package":
-                raise PackageCallError(reply.get("message", "the package raised"))
+                text = reply.get("message", "the package raised")
+                raise AgentRunError(text) if op_sent == "run" else PackageCallError(text)
             raise self._failed(message, f"answered {op!r}: {str(reply.get('message', ''))[:200]}")
+
+    def request(self, message: dict, broker=None) -> object:
+        """Send one bounded request (a v1 op or smoke) and serve its broker calls until the result, within
+        request_seconds. -> the result value."""
+        if message.get("op") in ("call_tool", "hook"):
+            message = {**message, "limit": self.limits.max_output_chars}
+        elif message.get("op") == "smoke":
+            # The smoke's own seconds limit is this request's deadline, so ctx.limits["seconds"] says what is left.
+            message = {**message, "deadline": self.limits.request_seconds}
+        return self.serve(message, handlers={"base_call": self.base_call_handler(broker, self.limits.max_base_calls)},
+                          deadline=self.limits.request_seconds)
 
     def load(self, files: dict[str, str]) -> None:
         self.request({"op": "load", "files": files})
@@ -309,6 +382,10 @@ class WorkerSession:
             try:
                 self.proc.stdin.close()
             except OSError:
+                pass
+            try:                              # reaped before returning: a caller's poll() then says it is gone
+                self.proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
                 pass
 
 
@@ -338,12 +415,15 @@ class Broker:
 # ---------------------------------------------------------------------------- draft checks (M5 §1)
 def check_package(worker: Worker, files: dict[str, str], manifest: dict, *, fixture=None,
                   max_chars: int = 2000) -> list[str]:
-    """isolated_probe and package_test inside the worker. -> check errors (empty when both pass).
+    """isolated_probe, agent_smoke and package_test inside the worker. -> check errors (empty when all pass).
 
-    The probe imports every entrypoint the manifest names; the tests run each tests/*.py test_* function with a
-    context whose broker is bound to `fixture` — a synthetic or train-only world, never a dev or final task. The
-    output returned is capped and names failures, not tool outputs. WorkerUnavailable/WorkerCrashed propagate: they
-    are infrastructure, not the draft's defect.
+    The probe imports every entrypoint the manifest names; with an `agent` entry (M0 §2) the smoke then runs the
+    agent against the canned model of the runner's SmokeContext, with the fixture broker for its tools — the one
+    place a deterministic crash or an undeclared role is found before a paid run, which is what lets a run-time
+    crash count as infrastructure (M0 §3, M1 §1); the tests run each tests/*.py test_* function with a context whose
+    broker is bound to `fixture` — a synthetic or train-only world, never a dev or final task. The output returned
+    is capped and names failures, not tool outputs. WorkerUnavailable/WorkerCrashed propagate: they are
+    infrastructure, not the draft's defect.
     """
     from .harness_package import usable_worker
     if not usable_worker(worker):
@@ -351,12 +431,20 @@ def check_package(worker: Worker, files: dict[str, str], manifest: dict, *, fixt
     session = worker.start()
     try:
         session.load(files)
+        agent = manifest.get("agent") if isinstance(manifest.get("agent"), dict) else {}
+        agent_entry = agent.get("entrypoint") if isinstance(agent.get("entrypoint"), str) else None
         entries = [t["entrypoint"] for t in manifest.get("tools") or ()] + \
-                  [h["entrypoint"] for h in manifest.get("hooks") or ()]
+                  [h["entrypoint"] for h in manifest.get("hooks") or ()] + ([agent_entry] if agent_entry else [])
         try:
             session.request({"op": "probe", "entries": entries})
         except PackageCallError as e:
             return [f"isolated_probe: {e}"[:max_chars]]
+        if agent_entry:
+            try:
+                session.request({"op": "smoke", "entry": agent_entry, "roles": list(agent.get("roles") or ()),
+                                 "task": "smoke"}, broker=Broker(fixture, read_only=False) if fixture else None)
+            except PackageCallError as e:
+                return [f"agent_smoke: {e}"[:max_chars]]
         if not any(p.startswith("tests/") for p in files):
             return []
         try:
