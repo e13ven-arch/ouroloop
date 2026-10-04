@@ -47,9 +47,9 @@ split_rule = "stratified"            # （v0.3）没有冻结划分的领域按�
 concurrency = 8                      # 一臂内同时跑的尝试数；机器的设置，不进冻结计划（M5 §2）；（v0.3）默认 8，受订阅限流约束
 
 [bench.ratios]                       # （v0.3）新领域仍是 train/dev/test 三个分区；研究位的内外层来自合并 dev 的对半分（M6 §2）；Marketing 的冻结划分（52/25/23）原样沿用
-train = 0.55
+train = 0.5                          # （v0.3，2026-10-04 定）：多给 train 无用（每轮最多读 30 条笔记），多给 test 直接换来更窄的 final 区间
 dev = 0.25
-test = 0.20
+test = 0.25
 
 [improvement]
 mode = "automatic"                   # manual/scripted 另有明确入口
