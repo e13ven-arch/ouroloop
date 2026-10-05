@@ -8,6 +8,14 @@
 
 ---
 
+## 2026-10-05 v0.3 第 5 步：第 2 阶段之前给 R 的会话说明加一句
+
+- 做了什么：试点里 R 在 k = 3 下只交了 1 个候选、一次轨迹也没读（只看笔记）。`research/session.py::SESSION_FORMAT` 加一句：除非说得出少做的理由，做满 k 个针对不同失败原因的候选（筛选只留 train 上最好的那个，多一个候选代价小）；写一个候选之前至少用 read_trajectory 读一次它针对的失败尝试（笔记是摘要，轨迹是 agent 实际看到与做的）。这是框架改动，在本活动任何一轮 R 运行之前做的；R0 的 policy 对象与冻结的计划不变，`research_session` 事件的 `prompt_hash` 记下新文本。没有动 gate、final、test 或任何计划。
+- 证据：相关测试 284 passed；效果看第 2 阶段的会话记录（候选数、轨迹读取次数）。
+- commit：见 git log。
+
+---
+
 ## 2026-10-05 v0.3 第 5 步第 1 阶段：五领域基线
 
 - 做了什么：`ouroloop freeze --config examples/automationbench/claude-v3.toml`（五个领域：Marketing 沿用 v0.2 划分 52/25/23、test 标 spent；sales、support、hr、finance 分层 50/25/25；根 $1,500、final 份额 $390；K 的 effort 上限 medium；一段 6 轮、研究位延后），把打印的 `[rsi]` 引用写进配置（commit `4d9b345`）；在终端面板里跑 `--phase cycle --until baseline`，8 路并发，没有做 16 路试跑。
