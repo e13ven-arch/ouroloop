@@ -8,6 +8,15 @@
 
 ---
 
+## 2026-10-05 v0.3 第 5 步第 1 阶段：五领域基线
+
+- 做了什么：`ouroloop freeze --config examples/automationbench/claude-v3.toml`（五个领域：Marketing 沿用 v0.2 划分 52/25/23、test 标 spent；sales、support、hr、finance 分层 50/25/25；根 $1,500、final 份额 $390；K 的 effort 上限 medium；一段 6 轮、研究位延后），把打印的 `[rsi]` 引用写进配置（commit `4d9b345`）；在终端面板里跑 `--phase cycle --until baseline`，8 路并发，没有做 16 路试跑。
+- 证据：377 次尝试全部有效、全部正常结束，名义 $175.97，每次 $0.466。W0 train 41.3%（104/252）、dev 40.8%（51/125）；按领域 train / dev：marketing 48.1 / 28.0，sales 34.0 / 48.0，support 46.0 / 36.0，hr 24.0 / 60.0，finance 54.0 / 32.0。3 笔调用结算为 unknown（尝试本身都由计量器重试后有效完成），共占 $21.83。
+- 读法：W0 在合并 dev 上 40.8%，余量大；每域 25 道 dev 的差别是噪声。单价略高于估计、unknown 比率约高一倍，第 2 + 3 阶段与根的余额刚好相当，第 3 阶段按第 2 阶段的实花再定。
+- commit：见 git log。
+
+---
+
 ## 2026-10-05 v0.3 第 5 步第 0 阶段：试点
 
 - 做了什么：`claude-v3-pilot.toml`（operations + Marketing，分层各 6/13/81，合并 train 12、dev 26；k = 3、research_slots 0、K 的 effort 上限 medium、根 $130）跑 `--phase cycle --until segment-0/round-0`，在终端面板里跑（不受后台 30 分钟时限）。之前一次被 `--checks-only` 误启动，SIGINT 后干净停下（预留全部结算，$11.95），续跑接上。
