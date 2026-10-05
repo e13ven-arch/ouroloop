@@ -7,3 +7,7 @@ tasks, one of them an inverse task whose correct action is to leave the world al
 
 Where a test needs to know that the adapter matches the real upstream rather than this one, that is what
 `adapters.automationbench.contract_check` is for, and it runs against whatever checkout is configured.
+
+Besides `marketing`, the `rsi` domain is the integration fixture of docs/modules/08_INTEGRATION_CASES.md §1, and
+`sales` and `support` (twelve tasks each, six strata of assertion kinds × tool family) are the multi-domain fixture
+of docs/modules/07_BENCH_REPORT.md §2 (v0.3 step 5).

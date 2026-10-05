@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .benchmark import Results, RunManifest, SplitManifest, summarise
+from .benchmark import Results, RunManifest, SplitManifest, summarise, task_domain
 from .evolve.task_gate import per_task
 from .evolve import contracts as ct
 from .evolve import experience as experience_mod
@@ -40,6 +40,11 @@ def build_report(root: str | Path, domain: str, *, protocol: str = "ouroloop.ben
     by_run: dict[str, list] = {}
     for attempt in attempts:
         by_run.setdefault(attempt.run, []).append(attempt)
+    # v0.3 step 5 (M7 §4 按领域分列): an activity over several domains reports each arm per domain as well, and the
+    # domains whose test is spent are named so no claim reads them. A one-domain report is what it always was.
+    domains = manifest.domains() if manifest is not None else []
+    spent = manifest.spent() if manifest is not None else set()
+    several = len(domains) > 1
     arms = {}
     for run_hash, rows in sorted(by_run.items()):
         run = runs.get(run_hash)
@@ -57,6 +62,8 @@ def build_report(root: str | Path, domain: str, *, protocol: str = "ouroloop.ben
                         for r in rows if r.validity == "invalid"],
             "refills": [r.attempt_id for r in rows if r.supersedes],
         }
+        if several:
+            arms[run_hash]["per_domain"] = _per_domain(rows, spent)
     receipts = _receipts(objects, events)
     finalization = _finalization(root, objects)
     installs = [e for e in events if e.get("event") in ("installed", "installation_failed", "stale_parent",
@@ -68,6 +75,9 @@ def build_report(root: str | Path, domain: str, *, protocol: str = "ouroloop.ben
             "domain": domain,
             "splits": None if manifest is None else {"hash": manifest.hash(), "counts": manifest.counts(),
                                                      "rule": manifest.family_rule, "upstream": manifest.upstream},
+            # each domain's frozen split (hash, rule, counts, strata) and whether its test is spent (M7 §4)
+            "domains": [{**d, "spent": d["domain"] in spent} for d in domains] if several else [],
+            "spent": sorted(spent),
             "runs": len(by_run), "attempts": len(attempts),
             "releases": sorted({a["release"] for a in arms.values() if a["release"]}),
             "missing": _missing(arms, manifest),
@@ -82,7 +92,9 @@ def build_report(root: str | Path, domain: str, *, protocol: str = "ouroloop.ben
                                                if e.get("event") == "rate_limited" and e.get("run") == run),
                            "usage": a["summary"]["usage"], "elapsed": a["summary"]["elapsed"],
                            "tool_calls": a["summary"]["tool_calls"],
-                           "terminations": a["summary"]["terminations"]}
+                           "terminations": a["summary"]["terminations"],
+                           **({"per_domain": {d: v["cost_per_attempt"] for d, v in a["per_domain"].items()}}
+                              if "per_domain" in a else {})}
                      for run, a in arms.items()},
         "improvement_cost": _improvement_cost(root, entries, events),
         "improvement_evidence": {
@@ -97,8 +109,57 @@ def build_report(root: str | Path, domain: str, *, protocol: str = "ouroloop.ben
         "external_references": _external_references(root, domain),
         "claims": {},
     }
+    if several:
+        report["final_by_domain"] = _final_by_domain(arms, spent, finalization)
     report["claims"] = claim_states(report)
     return report
+
+
+def _per_domain(rows: list, spent: set) -> dict:
+    """One run's attempts per domain (M7 §4 按领域分列): tasks, passes, the pass rate and cost per valid attempt, in
+    the order the domains first appear; a test row of a spent domain says so (it is never part of a claim)."""
+    by: dict[str, list] = {}
+    for r in rows:
+        by.setdefault(task_domain(r.task_id), []).append(r)
+    out = {}
+    for d, part in by.items():
+        s = summarise(part)
+        out[d] = {"tasks": s["tasks"], "passed": s["passed"], "pass_rate": s["pass_rate"],
+                  "attempts": s["attempts"], "invalid": s["invalid"], "cost_per_attempt": s.get("cost_per_attempt"),
+                  **({"spent": True} if d in spent and part[0].split == "test" else {})}
+    return out
+
+
+def _final_by_domain(arms: dict, spent: set, finalization: dict | None) -> dict:
+    """The final table per domain (M7 §4): each role's pass rate per domain over its final-split runs, and the
+    evolved-minus-base difference per domain; a spent domain's rows are marked `spent` and left out of the claim
+    rows, which pool only the domains a new claim may read. The matched-cost best-of-k arm (M3 §2.2, optional) is
+    listed when a run of it is on record and `not_run` otherwise."""
+    final = [a for a in arms.values() if a.get("final")]
+    roles: dict[str, list] = {}
+    for a in final:
+        roles.setdefault(a["role"], []).append(a)
+    table: dict[str, dict] = {}
+    for role, runs in roles.items():
+        merged = _merge(runs)
+        for task, value in merged.items():
+            row = table.setdefault(task_domain(task), {"spent": task_domain(task) in spent, "roles": {}})
+            row["roles"].setdefault(role, []).append(value)
+    for row in table.values():
+        row["roles"] = {role: {"tasks": len(v), "pass_rate": round(sum(v) / len(v), 4)} for role, v in row["roles"].items()}
+        base, evolved = row["roles"].get("base"), row["roles"].get("evolved")
+        if base and evolved:
+            row["difference"] = round(evolved["pass_rate"] - base["pass_rate"], 4)
+    claim = {}
+    for role, runs in roles.items():
+        merged = {t: v for t, v in _merge(runs).items() if task_domain(t) not in spent}
+        if merged:
+            claim[role] = {"tasks": len(merged), "pass_rate": round(sum(merged.values()) / len(merged), 4)}
+    if claim.get("base") and claim.get("evolved"):
+        claim["difference"] = round(claim["evolved"]["pass_rate"] - claim["base"]["pass_rate"], 4)
+    return {"domains": table, "claim": claim, "spent": sorted(spent),
+            "best_of_k": "ran" if "matched_cost" in roles else "not_run",
+            "plan": (finalization or {}).get("plan")}
 
 
 # ---------------------------------------------------------------------------- the first version's evidence
@@ -175,10 +236,20 @@ def _harness_evidence(root: Path, objects: ct.Objects, events: list, entries: li
                       "max_regression_rate": gate.get("max_regression_rate"),
                       "gain": (r.get("metrics") or {}).get("gain"),
                       "regression_rate": (r.get("metrics") or {}).get("regression_rate"),
-                      "regressions": (r.get("metrics") or {}).get("regressions")})
+                      "regressions": (r.get("metrics") or {}).get("regressions"),
+                      # v0.3 step 5: a multi-domain gate's gain per domain (means and counts; no task id)
+                      **({"per_domain": r["metrics"]["per_domain"]} if (r.get("metrics") or {}).get("per_domain")
+                         else {})})
     cycle = json.loads(cycle_path.read_text(encoding="utf-8")) if cycle_path.exists() else None
     reuse = [{"slot": name, **step["reuse"]} for name, step in ((cycle or {}).get("steps") or {}).items()
              if isinstance(step, dict) and step.get("reuse")]
+    # M7 §4 余量 (v0.3): each research slot's headroom — the inner dev tasks the start W never passed — and, over
+    # several domains, the same count per domain and how the halves split across domains (counts, never task ids)
+    headroom = [{"slot": name, "headroom": step.get("headroom"), "outcome": step.get("outcome"),
+                 **({"by_domain": step["headroom_by_domain"]} if "headroom_by_domain" in step else {}),
+                 **({"halves_by_domain": step["halves_by_domain"]} if "halves_by_domain" in step else {})}
+                for name, step in sorted(((cycle or {}).get("steps") or {}).items())
+                if name.startswith("slot-") and isinstance(step, dict) and step.get("headroom") is not None]
     return {
         "packages": packages, "behaviour": behaviour,
         "measurements": list(measurements.values()),
@@ -198,9 +269,13 @@ def _harness_evidence(root: Path, objects: ct.Objects, events: list, entries: li
         "ledger": _ledger_report(entries),
         "sessions": [{k: e.get(k) for k in ("scope", "round", "turns", "edits", "trajectory_reads",
                                              "trajectory_bytes", "finishes", "ended")}
+                     | ({"transcript_ref": e["transcript_ref"]} if e.get("transcript_ref") else {})
                      for e in events if e.get("event") == "research_session"],
-        "cycle": None if cycle is None else {"status": cycle.get("status"), "steps": cycle.get("steps")},
+        "cycle": None if cycle is None else {"status": cycle.get("status"), "steps": cycle.get("steps"),
+                                             **({"research_deferred": cycle["research_deferred"]}
+                                                if cycle.get("research_deferred") else {})},
         "reuse": reuse,
+        "headroom": headroom,
         "not_run": {"C3": "the first version trains no decision model: C3 belongs to the second version",
                     "distillation": "the first version trains no model: distillation belongs to the second version"},
     }
@@ -210,7 +285,7 @@ def _ledger_report(entries: list) -> dict:
     """The ledger as the report lists it (M7 §4 实验台账): one row per candidate from the train-restricted
     projection (experience.ledger_projection — dev task ids never, the gate's classes as counts), the carriers'
     distribution, and the admissions `repeated_mechanism` refused."""
-    from .evolve.experience import ledger_projection, ledger_rows
+    from .evolve.experience import DEV_TASK_LISTS, ledger_projection, ledger_rows
     rows = ledger_rows(entries)
     carriers: dict = {}
     for r in rows:
@@ -220,8 +295,18 @@ def _ledger_report(entries: list) -> dict:
     outcomes: dict = {}
     for r in rows:
         outcomes[r["outcome"]] = outcomes.get(r["outcome"], 0) + 1
+    # v0.3 step 5 (M7 §4, IT6-36): the gate's three per-task classes counted per domain, over every candidate the
+    # activity's own ledger holds with its task lists (an arm's E0 holds counts only and adds nothing here)
+    by_domain: dict = {}
+    for r in rows:
+        for cls in DEV_TASK_LISTS:
+            value = (r.get("gate") or {}).get(cls)
+            for task in value if isinstance(value, list) else ():
+                d = by_domain.setdefault(task_domain(task), {k: 0 for k in DEV_TASK_LISTS})
+                d[cls] += 1
     return {"candidates": ledger_projection(rows), "carriers": carriers, "outcomes": outcomes,
             "repeated_mechanism_refusals": repeated,
+            **({"by_domain": by_domain} if len(by_domain) > 1 else {}),
             "note": "dev task ids stay in the receipts; the gate's fixed/regressed/still_failing are counts here"}
 
 
@@ -459,18 +544,21 @@ def claim_states(report: dict) -> dict:
     arms = report["task_effect"]["arms"]
     receipts = report["improvement_evidence"]["receipts"]
     plan = (report.get("identity") or {}).get("finalization")
+    # M7 §2 (v0.3 step 5): a spent domain's test is never in a claim's interval, whatever runs are on record
+    spent = set((report.get("identity") or {}).get("spent") or ())
     by_role = {}
     for arm in arms.values():
         by_role.setdefault(arm["role"], []).append(arm)
     out = {}
-    out["C1"] = _pair_claim(by_role.get("evolved"), by_role.get("base"), "iteration over the same base", plan)
+    out["C1"] = _pair_claim(by_role.get("evolved"), by_role.get("base"), "iteration over the same base", plan,
+                            spent=spent)
     frontier = [a for role, rows in by_role.items() if role.startswith("frontier") for a in rows]
     if not frontier or not by_role.get("evolved"):
         out["C2"] = {"state": "not_run", "detail": "no frontier comparison on record"}
     else:
         complete = len({a["role"] for a in frontier}) >= 2
-        out["C2"] = {**_pair_claim(by_role.get("evolved"), frontier, "position against leading models", plan),
-                     "complete": complete}
+        out["C2"] = {**_pair_claim(by_role.get("evolved"), frontier, "position against leading models", plan,
+                                   spent=spent), "complete": complete}
         if not complete:
             out["C2"]["state"] = "inconclusive"
             out["C2"]["detail"] += "; fewer than two vendors, so C2 is incomplete"
@@ -485,7 +573,7 @@ def claim_states(report: dict) -> dict:
         out["C3"] = {"state": "not_run", "detail": report["harness"]["not_run"]["C3"]}
     else:
         out["C3"] = _pair_claim(by_role.get("evolved"), by_role.get("prompt_best"),
-                                "the decision model against the same prompt without it", plan)
+                                "the decision model against the same prompt without it", plan, spent=spent)
     research = [r for r in receipts if r["profile"] == "research"]
     if not research:
         out["C4"] = {"state": "not_run", "detail": _slots_without_a_campaign(report)}
@@ -502,10 +590,13 @@ def claim_states(report: dict) -> dict:
 def _slots_without_a_campaign(report: dict) -> str:
     """How each research slot ended when no research receipt is on record, from rsi/cycle.json
     (docs/modules/07_BENCH_REPORT.md §4): a slot that ended before its campaign says how, not that there is none."""
-    steps = ((report.get("harness") or {}).get("cycle") or {}).get("steps") or {}
+    cycle = (report.get("harness") or {}).get("cycle") or {}
+    steps = cycle.get("steps") or {}
     slots = sorted((name, step) for name, step in steps.items() if name.startswith("slot-") and isinstance(step, dict))
     if not slots:
-        return "no research campaign on record"
+        # v0.3 step 5: a schedule that runs fewer slots than the preset plans says so (bench.cycle)
+        deferred = cycle.get("research_deferred")
+        return f"research slot {deferred['reason']}" if deferred else "no research campaign on record"
     out = []
     for name, step in slots:
         outcome, why = step.get("outcome"), step.get("reason") or "no reason recorded"
@@ -536,8 +627,9 @@ def _slots_without_a_campaign(report: dict) -> str:
     return "; ".join(out)[:600]
 
 
-def _pair_claim(subject, control, what: str, plan: dict | None = None) -> dict:
-    """One claim's state. With final-split runs on both sides and a sealed plan, the paired interval decides."""
+def _pair_claim(subject, control, what: str, plan: dict | None = None, *, spent=frozenset()) -> dict:
+    """One claim's state. With final-split runs on both sides and a sealed plan, the paired interval decides; the
+    tasks of spent domains (M7 §2) are not in it."""
     if not subject or not control:
         return {"state": "not_run", "detail": f"{what}: both sides are not on record"}
     s, c = _rate(subject), _rate(control)
@@ -545,7 +637,7 @@ def _pair_claim(subject, control, what: str, plan: dict | None = None) -> dict:
         return {"state": "inconclusive", "detail": f"{what}: no valid attempts on one side"}
     final = [a for a in subject if a.get("final")], [a for a in control if a.get("final")]
     if plan and all(final):
-        interval = _final_interval(final[0], final[1], plan)
+        interval = _final_interval(final[0], final[1], plan, spent=spent)
         if interval["low"] is None:
             return {"state": "inconclusive", "detail": f"{what}: the final interval could not be computed",
                     "interval": interval}
@@ -561,6 +653,11 @@ def _pair_claim(subject, control, what: str, plan: dict | None = None) -> dict:
         return {"state": "inconclusive",
                 "detail": f"{what}: paired difference {interval['point']}, interval "
                           f"[{interval['low']}, {interval['high']}] contains zero", "interval": interval}
+    # Before a final exists: the dev readings only (stage 0/1 review, 2026-10-05) — a train-side screen or a train
+    # measurement of a W is not a development reading, and averaging them in would compare different task sets.
+    s, c = _rate([a for a in subject if a.get("split") == "dev"]), _rate([a for a in control if a.get("split") == "dev"])
+    if s is None or c is None:
+        return {"state": "inconclusive", "detail": f"{what}: no valid dev attempts on one side"}
     if s > c:
         return {"state": "inconclusive",
                 "detail": f"{what}: {s} against {c} on development records; a formal claim needs the sealed "
@@ -568,12 +665,13 @@ def _pair_claim(subject, control, what: str, plan: dict | None = None) -> dict:
     return {"state": "not_supported", "detail": f"{what}: {s} against {c}"}
 
 
-def _final_interval(subject: list, control: list, plan: dict) -> dict:
-    """The paired difference over the final tasks, resampled over families, with the plan's own parameters."""
+def _final_interval(subject: list, control: list, plan: dict, *, spent=frozenset()) -> dict:
+    """The paired difference over the final tasks, resampled over families, with the plan's own parameters. A spent
+    domain's tasks are left out (M7 §2): they are reported apart, never pooled into a claim's interval."""
     from .evolve.task_gate import paired_bootstrap
     stats = dict(plan.get("statistical_plan") or {})
-    s_tasks = _merge(subject)
-    c_tasks = _merge(control)
+    s_tasks = {t: v for t, v in _merge(subject).items() if task_domain(t) not in spent}
+    c_tasks = {t: v for t, v in _merge(control).items() if task_domain(t) not in spent}
     families = {task: family for arm in (*subject, *control) for task, family in (arm.get("families") or {}).items()}
     return paired_bootstrap(s_tasks, c_tasks, families, seed=int(stats.get("bootstrap_seed", 0)),
                             replicates=int(stats.get("bootstrap_replicates", 2000)),
@@ -611,6 +709,32 @@ def render_markdown(report: dict) -> str:
         s = arm["summary"]
         lines.append(f"| `{run[:8]}` | {arm['candidate']} | {arm['role']} | {arm['split']} | {s['tasks']} | "
                      f"{s['passed']} | {s['pass_rate']} | {s['partial_credit']} | {s['invalid']} |")
+    if identity.get("domains"):
+        # v0.3 step 5 (M7 §4 按领域分列): the pooled rows above, each domain's below; a spent test is marked
+        lines += ["", "### By domain", "", "| domain | split | rule | train | dev | test |", "|---|---|---|---|---|---|"]
+        for d in identity["domains"]:
+            c = d.get("counts") or {}
+            lines.append(f"| {d['domain']} | `{d.get('hash')}` | {d.get('split_rule') or 'hash'} | "
+                         f"{(c.get('train') or {}).get('tasks')} | {(c.get('dev') or {}).get('tasks')} | "
+                         f"{(c.get('test') or {}).get('tasks')}{' (spent)' if d.get('spent') else ''} |")
+        lines += ["", "| run | role | split | domain | tasks | passed | pass rate | cost/attempt |",
+                  "|---|---|---|---|---|---|---|---|"]
+        for run, arm in report["task_effect"]["arms"].items():
+            for d, v in (arm.get("per_domain") or {}).items():
+                lines.append(f"| `{run[:8]}` | {arm['role']} | {arm['split']} | {d}{' (spent)' if v.get('spent') else ''}"
+                             f" | {v['tasks']} | {v['passed']} | {v['pass_rate']} | {v['cost_per_attempt']} |")
+    final = report.get("final_by_domain")
+    if final and final.get("domains"):
+        lines += ["", "### Final by domain", "", "| domain | base | evolved | difference |", "|---|---|---|---|"]
+        for d, row in final["domains"].items():
+            roles = row["roles"]
+            lines.append(f"| {d}{' (spent: not in the claim)' if row['spent'] else ''} | "
+                         f"{(roles.get('base') or {}).get('pass_rate')} | {(roles.get('evolved') or {}).get('pass_rate')} | "
+                         f"{row.get('difference')} |")
+        claim = final.get("claim") or {}
+        lines.append(f"| claim (domains not spent) | {(claim.get('base') or {}).get('pass_rate')} | "
+                     f"{(claim.get('evolved') or {}).get('pass_rate')} | {claim.get('difference')} |")
+        lines.append(f"- matched-cost best-of-k arm: {final['best_of_k']}")
     lines += ["", "## Run cost", "", "| run | usd | missing | usage | tool calls |", "|---|---|---|---|---|"]
     for run, cost in report["run_cost"].items():
         lines.append(f"| `{run[:8]}` | {'unknown' if cost['cost_usd'] is None else cost['cost_usd']} | "
@@ -666,6 +790,9 @@ def render_markdown(report: dict) -> str:
                 f"{r['task']} {r['control']}->{r['subject']}" for r in g["regressions"]) or "none"
             lines.append(f"- gate {g['verdict']}: gain {g['gain']} (min_gain {g['min_gain']}), regression rate "
                          f"{g['regression_rate']} (max {g['max_regression_rate']}); regressed: {regressed}")
+            if g.get("per_domain"):
+                lines.append("  - by domain: " + "; ".join(f"{d} {v['subject']} vs {v['control']} ({v['gain']:+}, "
+                                                            f"{v['tasks']} tasks)" for d, v in g["per_domain"].items()))
         lines.append(f"- research cost by step: {json.dumps(harness['research_cost'], sort_keys=True)}")
         ledger = harness.get("ledger") or {}
         if ledger.get("candidates"):
@@ -685,6 +812,14 @@ def render_markdown(report: dict) -> str:
                          f"{s['trajectory_reads']} trajectory reads ({s['trajectory_bytes']} bytes), "
                          f"{s['finishes']} finish{'es' if s['finishes'] != 1 else ''}"
                          + (f"; ended: {s['ended']}" if s.get("ended") else ""))
+        if ledger.get("by_domain"):
+            lines.append(f"- ledger by domain (fixed/regressed/still failing): "
+                         f"{json.dumps(ledger['by_domain'], sort_keys=True)}")
+        for h in harness.get("headroom") or ():
+            lines.append(f"- headroom {h['slot']}: {h['headroom']} inner tasks never passed"
+                         + (f"; by domain {json.dumps(h['by_domain'], sort_keys=True)}" if "by_domain" in h else "")
+                         + (f"; halves {json.dumps(h['halves_by_domain'], sort_keys=True)}"
+                            if h.get("halves_by_domain") else "") + (f" ({h['outcome']})" if h.get("outcome") else ""))
         if harness["cycle"]:
             lines.append(f"- cycle: {harness['cycle']['status']}; steps {sorted(harness['cycle']['steps'] or {})}")
         for r in harness["reuse"]:

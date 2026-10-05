@@ -1318,12 +1318,16 @@ def test_common_inputs_that_leave_the_arms_short_end_the_slot_inconclusive(fake_
                                                                            monkeypatch):
     """The slot opened with exactly enough for both arms and the outer comparison; the common measurement then
     spends some of it, so the root can no longer cover both arms. Neither arm runs, the outer share goes back, and
-    the comparison is inconclusive for the budget rather than judged with R1's arm starved."""
+    the comparison is inconclusive for the budget rather than judged with R1's arm starved. (2026-10-05: the open
+    check now counts the common inputs' estimate and the common inputs reuse the mainline's readings, so this is
+    reached only when the estimate falls short of what they spend — here nothing is reusable and the estimate says 0.)"""
     from ouroloop.evolve.execution import Budgets
     cfg = cycle_config(fake_upstream, tmp_path)
     gap_w0(cfg, tmp_path)
     bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper(), until="segment-0")
     _leave(tmp_path, 1520)
+    monkeypatch.setattr(bench, "_mainline_readings", lambda *a, **k: ([], []))
+    monkeypatch.setattr(bench, "common_inputs_estimate", lambda *a, **k: {})
     factory, made = arms([Stopper, Stopper, SkillAnyway])
     result = bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper(), slot_researcher=RProposer(),
                          arm_researcher=factory, until="slot-0")
@@ -1460,7 +1464,8 @@ def test_the_v3_preset_freezes_a_k_with_the_agent_kind_the_effort_ceiling_and_th
     assert "budget" not in v1 and bench.preset_budget({"improvement": {"preset": "marketing_harness_v1"}}) == {}
     assert v3["budget"] == five and v3["harness"]["package_api"] == "harness_package.v2"
     assert v3["harness"]["components"][0] == "agent" and set(v3["harness"]["components"]) == set(hp.KINDS)
-    assert v3["harness"]["max_effort"] == "high" and v3["domain"] == "marketing"
+    # v0.3 step 5 (M7 §2): the v3 preset has no domain lock — every listed domain must load — the v1 one keeps it
+    assert v3["harness"]["max_effort"] == "high" and v3["domain"] is None and v1["domain"] == "marketing"
     same = lambda h: {k: v for k, v in h.items()  # noqa: E731
                       if k not in ("package_api", "components", "max_effort", "research_session", "screen")}
     assert same(v3["harness"]) == same(v1["harness"])
@@ -1476,7 +1481,9 @@ def test_the_v3_preset_freezes_a_k_with_the_agent_kind_the_effort_ceiling_and_th
     assert v3["task_plan"] == {**v1["task_plan"], "control_pooling": "pooled", "confirmation_repeats": 1,
                                "gate": {**v1["task_plan"]["gate"], "regression_drop": 0.5, "cost_beta0": 0.10,
                                         "cost_beta1": 2.0, "min_tasks": 25}}
-    assert v3["campaign"] == {**v1["campaign"], "worker_round_limit": 3, "min_headroom_tasks": 6}
+    # the arm and outer shares re-estimated for step 5's $2,800 root (M6 §2, 2026-10-05), v1's 0.15 / 0.08 kept
+    assert v3["campaign"] == {**v1["campaign"], "worker_round_limit": 3, "min_headroom_tasks": 6,
+                              "arm_share": 0.16, "outer_share": 0.06}
     assert v3["concurrency"] == 8 and "concurrency" not in v1
     assert "control_pooling" not in v1["task_plan"] and "regression_drop" not in v1["task_plan"]["gate"]
     preset = json.loads(json.dumps(v3))
@@ -1623,16 +1630,19 @@ def pooled_slot(fake_upstream, tmp_path, fixture_preset, monkeypatch):
 
 
 def test_an_arm_pools_only_the_common_readings_and_its_own(fake_upstream, tmp_path, fixture_preset, monkeypatch):
-    """M6 §2 (v0.3), RC6-13: under a pooled template the common step reads the start W once on the inner dev tasks
-    and both arms get that reading as recorded; neither arm runs a control arm of its own, the candidate arm's gate
-    pools the one common reading, and the control arm's record never holds the candidate arm's readings."""
+    """M6 §2 (v0.3), RC6-13: under a pooled template the start W's one reading of the inner dev tasks is a common
+    input and both arms get that reading as recorded; neither arm runs a control arm of its own, the candidate arm's
+    gate pools the one common reading, and the control arm's record never holds the candidate arm's readings.
+    (2026-10-05 review: the reading is the mainline baseline's own dev reading of the start W, reused as recorded —
+    arm `base` — rather than a second `dev_baseline` reading paid for in the common scope.)"""
     from ouroloop.benchmark import Results
     activity, plan, roots = pooled_slot(fake_upstream, tmp_path, fixture_preset, monkeypatch)
     common = [r for r in Results(roots["common"], rsi.DOMAIN).all() if r.split == "dev"]
-    assert len(common) == 1 and bench._arm_of(common[0].attempt_id) == "dev_baseline" and not common[0].success
+    assert len(common) == 1 and bench._arm_of(common[0].attempt_id) == "base" and not common[0].success
+    assert common[0].attempt_id in {r.attempt_id for r in Results(activity.root, rsi.DOMAIN).all()}   # the mainline's
     rows = {side: list(Results(roots[side], rsi.DOMAIN).all()) for side in ("control", "candidate")}
     for side, arm_rows in rows.items():
-        assert {r.attempt_id for r in arm_rows if r.split == "dev" and bench._arm_of(r.attempt_id) == "dev_baseline"} \
+        assert {r.attempt_id for r in arm_rows if r.split == "dev" and bench._arm_of(r.attempt_id) in ("base", "dev_baseline")} \
             == {common[0].attempt_id}, side
         assert not [r for r in arm_rows if bench._arm_of(r.attempt_id) == "control"], side
         assert (roots[side] / "bench" / rsi.DOMAIN / "runs" / f"{common[0].run}.json").exists()
@@ -1756,3 +1766,142 @@ def test_a_resumed_run_counts_rounds_lost_to_infrastructure_as_the_live_loop_doe
     assert counters_of([lost, {"outcome": "installed"}]) == (0, 0)
     halt = {"outcome": "infrastructure_failed", "reason": "worker gone", "next_action": "repair_runtime"}
     assert counters_of([halt, {"outcome": "stopped", "reason": "repair_runtime"}]) == (0, 0)
+
+
+# ---------------------------------------------------------------------------- v0.3 step 5 (M6 §2): halving a pooled dev
+def test_the_slot_halves_a_pooled_dev_inside_each_domain():
+    """M6 §2 (v0.3 step 5): over one domain the slot cuts dev's frozen order at len // 2, as v0.1/v0.2 did; over
+    several it cuts each domain's dev in its frozen order, the odd family going to the outer half on even list
+    positions and to the inner on odd ones, so both halves span every domain and stay within a family of each other
+    — five domains of 25 give 62 and 63, each domain 12 or 13 in each half, where cutting the pooled order would put
+    the first two domains wholly inside and the last two wholly outside."""
+    one = [f"rsi.t{i}" for i in range(7)]
+    assert bench.halve_dev(one, {f: "rsi" for f in one}) == (one[:3], one[3:])
+    names = ["marketing", "sales", "support", "hr", "finance"]
+    fams = [f"{d}.t{i}" for d in names for i in range(25)]
+    inner, outer = bench.halve_dev(fams, {f: f.split(".")[0] for f in fams})
+    assert (len(inner), len(outer)) == (62, 63) and sorted(inner + outer) == sorted(fams)
+    count = lambda half, d: sum(f.startswith(d + ".") for f in half)  # noqa: E731
+    assert [count(inner, d) for d in names] == [12, 13, 12, 13, 12]
+    assert [count(outer, d) for d in names] == [13, 12, 13, 12, 13]
+    assert inner[:12] == fams[:12] and outer[:13] == fams[12:25]            # each domain in its frozen order
+    pooled_cut = fams[:62]
+    assert {f.split(".")[0] for f in pooled_cut} == {"marketing", "sales", "support"}   # what the halving avoids
+
+
+# ---------------------------------------------------------------------------- 2026-10-05 review (M6 §2): the slot's money
+def test_a_slot_whose_common_inputs_the_root_cannot_hold_asks_r_nothing(fake_upstream, tmp_path, fixture_preset,
+                                                                       monkeypatch):
+    """Review finding 1 (M6 §2): the open check counts the common inputs. With exactly enough left for both arms'
+    shares and the outer comparison's (1520 model calls) and a start W the mainline holds no reusable reading of,
+    the common inputs' estimate does not fit beside them: R is not asked, nothing is frozen, and the reason names the
+    estimate — before the fix the slot opened, paid the common inputs and then could not set aside both arms."""
+    cfg = cycle_config(fake_upstream, tmp_path)
+    gap_w0(cfg, tmp_path)
+    bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper(), until="segment-0")
+    _leave(tmp_path, 1520)
+    monkeypatch.setattr(bench, "_mainline_readings", lambda *a, **k: ([], []))
+    slot = RProposer()
+    result = bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper(), slot_researcher=slot, until="slot-0")
+    step = result["steps"]["slot-0"]
+    assert result["status"] == "budget_exhausted" and step["outcome"] == "budget_exhausted", step
+    assert "the common inputs' estimate" in step["reason"] and "campaign" not in step and slot.requests == []
+    # all five train tasks and the one inner dev task, at W0's measured calls per attempt
+    cfg = bench._cycle_config(cfg, ".", bench.improvement_settings(cfg), lambda _line: None)
+    activity = bench.open_activity(cfg, ".", out=lambda _line: None)
+    pair = bench.cycle_pairs(activity, cfg)[0]
+    estimate = bench.common_inputs_estimate(activity, cfg, pair, {"model_calls": 1})
+    assert estimate["model_calls"] > 0 and str(estimate["model_calls"]) in step["reason"]
+
+
+def test_the_slot_reuses_the_mainline_readings_of_the_start_w(fake_upstream, tmp_path, fixture_preset, monkeypatch):
+    """Review findings 1 and 5 (M6 §2): the common inputs are the mainline's readings of the start W where they
+    exist — W0's train measurement and its plan-less dev reading here — copied in as recorded, so the common scope
+    pays for nothing; both arms still start from a measurement of every train task. Before the fix the common
+    workspace measured W0 again on every train task and the inner dev task."""
+    from ouroloop.benchmark import Results
+    from ouroloop.research.campaign import CampaignPair
+    activity, plan, roots = pooled_slot(fake_upstream, tmp_path, fixture_preset, monkeypatch)
+    train = bench._tasks_of(activity, activity.objects.load(plan.campaign_pairs[0], CampaignPair).inner_train_groups)
+    common = [e for e in ct.Events(activity.root).of("campaign_common")][-1]
+    assert common["reused_train"] == common["measured"] == len(train) and common["reused_dev"] == 1
+    book = json.loads((activity.root / "rsi" / "budget" / "book.json").read_text())
+    assert not [r for r in book["reservations"].values() if r["scope_id"].endswith(":common")]
+    mainline = {r.attempt_id for r in Results(activity.root, rsi.DOMAIN).all()}
+    for side in ("common", "control", "candidate"):
+        reused = [r for r in Results(roots[side], rsi.DOMAIN).all() if r.split == "train"
+                  and r.attempt_id in mainline]
+        assert {r.task_id for r in reused} == set(train), side            # the mainline's rows, as recorded
+
+
+def test_an_installed_start_w_reuses_its_own_readings_and_measures_the_rest(fake_upstream, tmp_path, fixture_preset,
+                                                                            monkeypatch):
+    """Review finding 1 (M6 §2), the installed-W case: after segment-0 installs a W and remeasures the train tasks
+    W0 failed under it, the slot's common inputs reuse those readings of W* and measure only the train tasks W* has
+    none of; W0's readings are not W*'s and are not reused."""
+    fixture_preset["schedule"].update(worker_rounds=2)
+    cfg = cycle_config(fake_upstream, tmp_path)
+    activity, _ = gap_w0(cfg, tmp_path)
+    w0 = activity.releases.active()["release_ref"]
+    bench.cycle(cfg, ".", out=lambda _line: None, researcher=SkillAnyway(), until="segment-0")
+    cfg = bench._cycle_config(cfg, ".", bench.improvement_settings(cfg), lambda _line: None)
+    activity = bench.open_activity(cfg, ".", out=lambda _line: None)
+    w_star = activity.releases.active()["release_ref"]
+    assert w_star != w0
+    pair = bench.cycle_pairs(activity, cfg)[0]
+    train = bench._tasks_of(activity, pair.inner_train_groups)
+    reused, _dev = bench._mainline_readings(activity, None, train, ())
+    assert reused and len(reused) < len(train)
+    assert all(not bench.improvement(activity)._runs_like(r.system_release_ref, w0) for r in reused)
+    estimate = bench.common_inputs_estimate(activity, cfg, pair, {"model_calls": 1})
+    assert estimate["model_calls"] > 0                          # the train tasks W* has no reading of
+
+
+# ---------------------------------------------------------------------------- stage 0/1 review (2026-10-05): casualties refilled
+def test_an_infrastructure_casualty_in_the_baseline_is_refilled_once_and_the_pooled_reading_is_complete(
+        fake_upstream, tmp_path, fixture_preset, monkeypatch):
+    """Stage 0/1 review, item 3 (M5 §3): an attempt of W0's baseline lost to infrastructure — a 429 the provider's
+    retries did not absorb in the 16-way trial, say — and recorded before any refill is not a permanent hole: the
+    cycle's baseline finds it, runs it again once (retry 1, written with the attempt it supersedes), and W0's pooled
+    dev reading then covers every dev task. Before the fix `resume` handed the casualty back as the reading."""
+    from ouroloop.benchmark import Results
+    from ouroloop.evolve import task_eval
+    from ouroloop.evolve.task_gate import shortfall
+    fixture_preset["task_plan"].update(control_pooling="pooled", confirmation_repeats=1)
+    cfg = cycle_config(fake_upstream, tmp_path)
+    gap_w0(cfg, tmp_path)
+    cfg = bench._cycle_config(cfg, ".", bench.improvement_settings(cfg), lambda _line: None)
+    original, broke = task_eval.run_attempt, []
+
+    def flaky(*args, **kw):
+        if not broke and kw["run"].split == "dev" and kw.get("retry_index", 0) == 0:
+            broke.append(args[1])
+            row = task_eval.TaskResult.broken(
+                args[1], args[1], "dev", kw.get("attempt", 0), kw["run"], kw["splits"].hash(),
+                "rate limited: the provider's retries were used up", failure_class="infrastructure",
+                attempt_id=task_eval.bench_attempt_id(kw["run"].hash(), args[1], kw.get("attempt", 0),
+                                                      kw.get("arm", "subject"), 0),
+                pair_key=task_eval.bench_pair_key(kw.get("plan_ref", ""), args[1], kw.get("attempt", 0)))
+            return task_eval.Attempt(row, None)
+        return original(*args, **kw)
+    # the trial: the casualty is recorded and the run stops before any refill
+    monkeypatch.setattr(task_eval, "run_attempt", flaky)
+    monkeypatch.setattr(bench, "_refill_attempts", lambda rows, run, arm, limit: rows)
+    bench.baseline(cfg, ".", out=lambda _line: None)
+    monkeypatch.undo()
+    fixture_preset["task_plan"].update(control_pooling="pooled", confirmation_repeats=1)
+    monkeypatch.setitem(bench.PRESETS, "rsi_harness_test", fixture_preset)
+    casualty = [r for r in Results(tmp_path / "ws", rsi.DOMAIN).all() if r.failure_class == "infrastructure"]
+    assert len(casualty) == 1 and casualty[0].task_id == broke[0]
+    # the cycle's baseline: the casualty run again once, nothing else paid twice
+    bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper(), until="baseline")
+    rows = list(Results(tmp_path / "ws", rsi.DOMAIN).all())
+    refills = [r for r in rows if r.supersedes]
+    assert len(refills) == 1 and refills[0].supersedes == casualty[0].attempt_id and refills[0].validity == "valid"
+    assert refills[0].attempt_id.endswith("#1")
+    activity = bench.open_activity(cfg, ".", out=lambda _line: None)
+    work = bench.improvement(activity, template_ref=activity.rsi.task_plan_ref)
+    release = activity.releases.active()["release_ref"]
+    plan = work.plan("", "", release)
+    pool = work.control_pool(release, plan=plan)
+    assert {r.task_id for r in pool} == set(rsi.DEV) and shortfall(plan, pool) == []

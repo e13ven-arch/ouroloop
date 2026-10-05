@@ -106,3 +106,20 @@ full-text reading, an evidence table before the first write, a check before fini
 dev and train tasks W\* still fails, frozen in `ceiling/tasks.json`, under the v3 runner shell. A decision record for
 docs/ROADMAP.md §3 v0.3 step 4, never a claim; how to run it, what it costs and the decision rule are in
 [ceiling/README.md](ceiling/README.md).
+
+## The multi-domain activity (v0.3 step 5)
+
+`claude-v3.toml` lists Marketing — its v0.2 split pinned by hash (`[bench.frozen_splits]`), its test `spent` — and
+sales, support, hr and finance, each split 0.5/0.25/0.25 by its tasks' scored-assertion kinds × tool family
+(`split_rule = "stratified"`). Each domain's split is frozen under `bench/<domain>/`; the activity runs on their
+pooled train/dev/test, and its results live under the pooled name (`bench/marketing+sales+support+hr+finance/`). The
+final reads the new domains' test only. The file's header has the order of the steps before the root opens, the
+16-way concurrency trial and the recomputed estimate (root $2,800, final share $420; docs/ROADMAP.md §3 v0.3 step 5).
+
+`claude-v3-pilot.toml` runs first: W0's baseline and one real worker round — R's coding session, the train screen and
+the dev gate — on a small operations + Marketing subset, about $40 nominal, so the new R path has run with the real
+model before the activity's root opens:
+
+```text
+ouroloop bench --config examples/automationbench/claude-v3-pilot.toml --phase cycle --until segment-0/round-0
+```

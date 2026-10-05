@@ -360,3 +360,95 @@ def test_a_rate_limit_refusal_is_unbilled_retryable_and_counted(cli, provider, t
     cli.reply(err("API Error: 500 Internal server error"), ok("fine"))
     metered.chat("S", [{"role": "user", "content": "y"}], ())
     assert metered.rate_limited == 2 and metered.receipts[-2].status == "unknown"
+
+
+# ---------------------------------------------------------------------------- stage 0/1 review (2026-10-05): the child's session
+PARENT = """
+import json, sys, threading
+from ouroloop.providers.claude_code import ClaudeCodeProvider
+p = ClaudeCodeProvider({model!r}, binary={binary!r}, workdir={workdir!r}, retries=0, timeout=60)
+out, done = {{}}, threading.Event()
+
+def call():
+    try:
+        out["text"] = p.complete("S", "hello")
+    except BaseException as e:
+        out["error"] = f"{{type(e).__name__}}: {{e}}"
+    finally:
+        done.set()
+threading.Thread(target=call).start()
+try:
+    while not done.wait(0.05):
+        pass
+except KeyboardInterrupt:
+    print("interrupted", flush=True)          # as task_eval.run_tasks: what is in flight finishes
+    done.wait(30)
+print(json.dumps(out), flush=True)
+"""
+
+
+def test_a_terminal_interrupt_reaches_the_parent_and_not_the_claude_child(cli, tmp_path):
+    """Stage 0/1 review, item 5: the `claude` child runs in a session of its own, so a Ctrl-C — SIGINT to the
+    foreground process group, the parent's — reaches only the parent; the call in flight finishes and its reply
+    comes back (and is settled by the meter), where before the child died under the same signal and its call was
+    left `unknown` at the full bound."""
+    import signal
+    import subprocess
+    import time
+    cli.reply({"stdout": ok("finished anyway"), "sleep": 2})
+    script = tmp_path / "parent.py"
+    script.write_text(PARENT.format(model=MODEL, binary=str(cli.binary), workdir=str(tmp_path / "empty")))
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])}
+    parent = subprocess.Popen([sys.executable, str(script)], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              text=True, env=env, start_new_session=True)
+    try:
+        for _ in range(200):                              # wait until the child has started and is sleeping
+            if cli.calls():
+                break
+            time.sleep(0.05)
+        assert cli.calls(), parent.stderr.read() if parent.poll() is not None else "the child never started"
+        os.killpg(parent.pid, signal.SIGINT)             # what a terminal's Ctrl-C does
+        out, err = parent.communicate(timeout=30)
+    finally:
+        if parent.poll() is None:
+            parent.kill()
+    assert "interrupted" in out, err
+    assert json.loads(out.strip().splitlines()[-1]) == {"text": "finished anyway"}, err
+
+
+def test_a_timeout_kills_the_child_and_what_it_started(tmp_path):
+    """Stage 0/1 review, item 5: with the child in its own session the timeout no longer relies on a shared signal:
+    the provider kills the child's whole process group — the `claude` program and anything it started — and the call
+    is the retryable failure it always was."""
+    import time
+    binary = tmp_path / "claude"
+    binary.write_text(f"""#!{sys.executable}
+import os, subprocess, sys, time
+from pathlib import Path
+here = Path(__file__).resolve().parent
+child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+(here / "pids").write_text(f"{{os.getpid()}} {{child.pid}}")
+time.sleep(60)
+""")
+    binary.chmod(binary.stat().st_mode | stat.S_IEXEC)
+    provider = ClaudeCodeProvider(MODEL, binary=str(binary), workdir=str(tmp_path / "empty"), retries=0, timeout=1.5,
+                                  sleep=lambda _s: None)
+    with pytest.raises(ProviderError, match="no reply within") as e:
+        provider.chat("S", [{"role": "user", "content": "x"}], ())
+    assert e.value.retryable
+    pids = [int(p) for p in (tmp_path / "pids").read_text().split()]
+
+    def alive(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        # an exited child not yet reaped by its parent is a zombie, not a running program
+        import subprocess
+        state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+        return bool(state) and not state.startswith("Z")
+    for _ in range(50):
+        if not any(alive(p) for p in pids):
+            break
+        time.sleep(0.1)
+    assert not any(alive(p) for p in pids), pids

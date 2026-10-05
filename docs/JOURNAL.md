@@ -8,6 +8,50 @@
 
 ---
 
+## 2026-10-05 v0.3 第 5 步：分阶段运行与评审修正
+
+- 用户决定（同日，多领域的实现之后）：第 5 步分阶段运行，每段结束停下来分析，不一次跑完约 $2,000、16 小时；K 的 `max_effort` 降到 medium（W0 的 pin 也是 medium），候选不能用更高的 effort 换增益，C1 读的是 harness 而不是算力；研究位（C4）推迟到工作区的拷贝里用自己的根跑。全程离线：没有调用模型、没有付费阶段、没有读 `.env`，未提交。
+- 运行手册（写进 ROADMAP 第 5 步，含每段的命令、费用、时间与继续/停止规则）：第 0 阶段试点（k = 3，约 $52）→ 第 1 阶段基线（`--until baseline`，约 $170，根在这里打开，头 50 次是 16 路试跑）→ 第 2 阶段前三轮（`--until segment-0/round-2`，约 $400；没有安装就停、不跑 final）→ 第 3 阶段第 4～6 轮（`--until segment-0/round-5`，可选，约 $400）→ 第 4 阶段封存的 final（100 题 × 3，约 $285）→ 第 5 阶段研究位（可选，另一个工作区）。
+- 配置：`claude-v3.toml` 的 `[freeze.schedule]` 为一个 segment 6 轮、`research_slots = 0`、patience 2（`_beyond_preset` 只拒绝更多的研究位，不查轮数；preset 不用改），`max_effort = "medium"`，`[estimate] cost_per_attempt = {base = 0.45, evolved = 0.50}`，根 $1,500，final 份额 $370；`claude-v3-pilot.toml` 改为 k = 3（评审第 6 条：会话费用才能按比例推到活动），根 $130。cycle 在 schedule 少于 preset 的研究位时记 `research_deferred`，报告的 C4 为 not_run、理由“deferred to a separate workspace”。
+- 费用重算（effort medium）：W0 每次 $0.45，候选与 W* 每次 $0.50；基线 $169.65；一轮 $90.5（R $10 + 筛选 $18 + gate $62.5），确认 $62.5、安装后重跑 $65.5；六轮 $799；final $285；合计约 $1,254。卡住的预留按实测率约每 2,250 次调用一个（v0.1/v0.2 与天花板实验约 9,900 次调用留下 4 个）：final 之前约 16,400 次调用 → 8 个，final 约 5,160 次 → 3 个。final 份额 $285 + 8 路 $58.21 + 3 个 $21.83 = $365.04 → $370；根 $968.65 + 8 路 + 8 个卡住（各 $58.21）+ $370 = $1,455.07 → $1,500。
+- 评审修正（每条先写一个修正前会失败的测试）：
+  1. 研究位开位的钱检查加上公共输入的估算（`bench.common_inputs_estimate`）；公共输入复用主线对起点 W 的有效读数（`bench._mainline_readings`、`Improvement.prior_readings`），W0 时 train 与内层 dev 全部复用、公共工作区一次也不付费，已装的 W 复用它已有的 train 读数；为让执行身份相同，研究位的 release 带上主线的宿主契约（`bench._campaign_host`）；两支在没有自己的测量时从公共测量原样起步。测试 `test_cycle.py::test_a_slot_whose_common_inputs_the_root_cannot_hold_asks_r_nothing`、`test_the_slot_reuses_the_mainline_readings_of_the_start_w`、`test_an_installed_start_w_reuses_its_own_readings_and_measures_the_rest`。改写的旧测试：`test_an_arm_pools_only_the_common_readings_and_its_own`（公共 dev 读数现在是主线基线的 `base` 读数）、`test_common_inputs_that_leave_the_arms_short_end_the_slot_inconclusive` 与 `test_real_run_findings.py::test_every_cycle_step_pauses_on_an_account_error[common-slot-0]`（关掉复用，保住这一步里要付费的调用）。
+  2. `final_estimate` 按执行身份（W 与 K）找读数，W* 在 gate 里的读数（记在候选 release 上）也算；份额余额放不下“预期 + 在飞预留”时 `--phase evaluate` 在付费前拒绝。测试 `test_paid_run_safety.py::test_the_final_estimate_reads_w_stars_gate_readings_by_execution_identity`、`test_a_final_the_share_cannot_hold_is_refused_before_the_first_attempt`。
+  3. `ouroloop freeze` 封存 final 计划前打印并检查估算（读数优先，否则 `[estimate]`；预期 + 并发 × 上界 + 2 个卡住的上界须放进份额，否则不封存）。测试 `test_a_final_plan_the_share_cannot_hold_is_not_sealed`。
+  4. `Improvement._verify_bound` 加美元项（尝试数 × 父版本实测每次成本 × (1 + β0)），筛选按同价并入第一次筛选前的检查；付不起的 gate 不开始。测试 `test_the_verification_bound_prices_the_gate_and_a_gate_it_cannot_pay_for_never_starts`。
+  5. 省钱的复用：由第 1 条覆盖。6. 试点的 k：见上。
+  7. `test_task_gate.py::test_a_receipt_over_several_domains_carries_per_domain_means`（真实收据）；IT6-36 报告测试的 docstring 改为它实际检查的内容；`per_domain` 只对 `领域.题名` 形式的 id 生效（夹具里 `t1` 这类 id 原来会被当成五个领域）。
+  8. `test_bench_phase.py::test_a_domain_list_changed_after_bootstrap_is_refused_at_startup`。
+  另加 `test_a_schedule_without_the_presets_research_slot_reports_c4_deferred`。
+- 证据：全套离线测试（前台）1122 passed、1 deselected（live 标记），约 4 分钟（本日上一条为 1112；新增 10 个测试）；两份配置的读取、preset 校验、schedule 与 `_beyond_preset`、预算与 final 份额检查、停止点都离线核对过。
+- 第 0/1 阶段评审（2026-10-05，隔离副本里经真实 CLI 路径、真实上游、Docker 镜像与账本的脚本化假模型运行；第 0 阶段的路径没有拒绝或崩溃，美元上界、effort 截顶、k = 3、停止点、续跑与暂停都核过）确认的五条，均已修正、各有测试：(1) R 的会话整段存为一个对象（`CodingSession.transcript()`：回复文本、工具调用与参数、每个工具的输出或拒绝原因，逐项截断、严格 UTF-8），`research_session` 事件记 `transcript_ref`，被拒调用的行带错误文本（`test_research_session.py::test_the_sessions_turns_are_stored_with_refusals_and_the_event_names_them`、`test_a_transcript_item_is_cut_and_strict_utf8`）；(2) final 之前的主张只读 dev 读数，不再把筛选与 train 测量平均进去（`test_report.py::test_a_claim_before_the_final_reads_the_dev_readings_only`）；(3) W0 读数里因基础设施失败的尝试按 M5 §3 补跑一次（train 测量与基线 dev 臂，`refill_attempts`，读数取每个配对最新的一条），16 路试跑的 429 伤亡不再是永久的洞（`test_cycle.py::test_an_infrastructure_casualty_in_the_baseline_is_refilled_once_and_the_pooled_reading_is_complete`）；(4) final 份额 $370 → $390（W* 每次可到 $0.607），根仍 $1,500；(5) `claude` 子进程各在自己的 session 里（`start_new_session`），终端 Ctrl-C 只到父进程、在飞的调用跑完并结算，超时与父进程等待被打断时杀子进程的进程组，解释器退出时杀仍在跑的子进程（`test_claude_code_provider.py::test_a_terminal_interrupt_reaches_the_parent_and_not_the_claude_child`、`test_a_timeout_kills_the_child_and_what_it_started`）；运行手册加了第 1～3 阶段的操作规则。修正后全套离线测试（前台）1128 passed、1 deselected（live），新增 6 个测试。
+- 未做 / 留下：第 5 阶段（研究位在拷贝里跑）的路径离线没有走过——新 `scope_id` 下 cycle 跳过已完成的基线与 segment-0 再开研究位，要在第 4 阶段之后核对；preset 的 `arm_share`/`outer_share` 仍是按 $2,800 根算的 0.16/0.06，第 5 阶段开根前按它的根重算（注释给了 $346 与 $142 的美元数）。
+- commit：未提交。
+
+---
+
+## 2026-10-05 v0.3 第 5 步：多领域的实现
+
+- 做了什么：按用户在天花板结论之后的决定（第 5 步照完整设计跑，含研究位），把多领域活动实现到“可以运行”为止。全程离线：没有调用任何模型、没有付费阶段、没有读 `.env`，未提交。
+  - 领域列表：`[bench] domains`、`split_rule`、`spent`、`[bench.frozen_splits]`（`bench._domain_keys`）；单值 `domain` 读作一个元素的列表，旧配置的路径、manifest 与 hash 不变（`claude.toml`、`claude-full.toml` 照原样读）。每个领域的划分冻结在 `bench/<domain>/`；多领域时合并成一份 `family_rule = "pooled"` 的 manifest（`benchmark.pool_manifests`），记下每个领域的 hash、规则、计数、分层计数与 spent 领域，冻结在合并名（`a+b+...`）下；合并 suite 拒绝没有领域前缀或撞名的任务 id（`ab.pool_suites`）。结果与判分明细存在合并名下的一个目录，不按领域分目录（M7 §2 原文写按领域存放；一个读数是跨领域的一个 RunManifest，拆目录要给每个读者加路由，按领域读只需按 task id 前缀过滤），M7 §2 已改写。
+  - 分层划分：层键 = 计分断言的种类集合 × 工具族（`ab.stratum`）。种类用天花板实验的读法（`_not_`/`count`/`contains`/其余），取集合而不是类型多重集：真实上游每领域 100 题有 56～98 种多重集，按多重集分层每层一题。工具族：订阅了办公服务（gmail、drive、sheets、calendar、slack）以外的业务应用为 `app`，否则 `office`。分配（`benchmark.stratified_splits`）用一条“落后最多者先得”的序列定各层名额，整域计数正好是比例，层内按原哈希点填；只读任务定义，不读结果、不给状态评分。manifest 的 `split_rule`/`strata` 为 None 时不进哈希，旧 manifest 的 hash 不变；已冻结的划分在规则改变后照原样保留（只打印说明）；`frozen_splits` 钉住的领域按哈希规则划分并核对 hash。
+  - 启动检查与 preset：v3 preset 去掉 Marketing 锁（`domain` 为 None），每次打开活动都经 `bench.load_domains`，装不上的领域点名拒绝；`startup_checks` 另核对各领域划分的 hash 与合并划分所记的一致、核心 `split_ref` 等于合并 hash，并对每个领域一道 dev 题做评分器契约检查；`ouroloop freeze` 打印每个领域的 hash、计数与分层计数。
+  - 研究位：合并 dev 在每个领域内对半分（`bench.halve_dev`，奇数题的领域交替把多出的一题给外层/内层），两半都覆盖每个领域；按合并顺序直接切，前两个领域会整个落在内层。研究位记下 `headroom_by_domain` 与 `halves_by_domain`（计数，不记题号）。
+  - final：`tasks = "test"` 只解析为非 spent 领域的 test，显式列出 spent 领域 test 题的计划拒绝冻结，`--phase evaluate` 对这样的计划在付费前拒绝；`bench.final_share_problem` 在冻结预算时拒绝放不下 `concurrency` × 单次上界的 final 份额，并打印 `bench.final_estimate` 的预期花费与建议份额；`--phase evaluate` 在第一次尝试前打印每臂“还要跑的尝试数 × 该臂 release 的实测每次成本（dev 读数）”、合计、在飞预留与份额余额（只打印）。
+  - 报告：多领域时 `identity.domains`/`spent`、每 run 的 `per_domain`（通过率、`cost_per_attempt`）、`final_by_domain`（spent 领域单列、主张行只合并非 spent 领域、best-of-k 未跑写 not_run）、C1～C3 的区间去掉 spent 领域的题；gate 收据在多领域时多一项 `metrics.per_domain`（按领域两臂均值与差值，不进经验日志）；台账 `by_domain`、研究位 `headroom`。单领域报告不变。
+  - preset：`arm_share` 0.15 → 0.16、`outer_share` 0.08 → 0.06（按 $2,800 的根重估，算式在 `bench.PRESETS` 与 M6 §2）。
+  - 配置：`examples/automationbench/claude-v3.toml`（五个领域；Opus 5.5 经 claude_code，actor effort medium、K 的 max_effort high；research.llm 同 claude-full；并发 8；根 $2,800、final 份额 $420）与 `examples/automationbench/claude-v3-pilot.toml`（试点，见下）。测试夹具的假上游多了 `sales`、`support` 两个领域（各 12 题、六层）与两种断言类型。
+- 证据（离线）：
+  - 真实上游（`4a8e106`）六个领域各 100 题。seed 1：Marketing 复现 `aa7ff7ec189c0cbb`（52/25/23）；sales/support/hr/finance 各 50/25/25（8、4、7、10 层），合并 train 252、dev 125、test 123（主张可读 100），合并 hash `5e68b39fca26a675`，同一配置在新目录里得到同一 hash；研究位内层 62、外层 63，每个领域在两半各 12 或 13 题。两份配置的读取、preset 校验、预算与 final 份额检查、划分都离线跑过。
+  - 新增 16 个测试（M7 §5 的八个、IT6-36 的两个、M5 的两个、报告的三个、研究位对半分一个），全套离线测试 1112 通过（前台运行，约 4 分钟；HEAD `a469dd8` 时 1096）。改动的旧测试只有一个：`test_cycle.py::test_the_v3_preset_freezes_…` 里 v3 preset 的 `domain` 与两个份额。
+- 费用重算：按实测单价（W0 medium $0.45、候选与 W* $0.69 即天花板实验 W* 在 high 下的 $0.685、单次上界 $7.2768）中央估计花费约 $2,628（基线 $170、主线六轮 $1,080、研究位 $1,036、final $342），根 $2,800、final 份额 $420；文档的 $1,800 只够低情形（约 $1,590 花费），中央情形差约 $1,000；高情形（包每次 $1.06）约 $4,400。原估算漏了安装后的 train 重跑（每次约 $90）、研究位公共输入（$217）、k = 3 的筛选（约 $25 而不是 $5）与在飞预留。根由用户在开根前确认（ROADMAP 第 5 步）。
+- 试点：`claude-v3-pilot.toml`，operations + Marketing 的分层小子集（train 12、dev 26；gate 的 `min_tasks` 25 不调低，dev < 50 所以不开研究位，`research_slots = 0`），k = 1、`max_effort` medium、并发 4、根 $120；`--phase cycle --until segment-0/round-0` 跑基线与一轮真实 R 会话、筛选与 gate，约 $40 名义。它补第 3 步“新 R 路径未经真实模型”的出口，量到的每轮会话费用替换估算里的 $10。
+- 16 路并发试跑写成手动一步（现有的 `--phase baseline --limit 25 --concurrency 16`，即基线头 50 次尝试），不加新参数。
+- 未做 / 留下：试点与活动都没跑；IT6-37（best-of-k 臂本身，发表时）、IT6-41（导出）仍待实现；M7 §5 里第 2 步留下的三个报告测试（`test_a_gate_line_states_pooled_readings_and_the_confirmation` 等）不在本步。
+- commit：未提交。
+
+---
+
 ## 2026-10-05 v0.3 第 4 步：天花板实验的结果
 
 - 做了什么：按 `882fed5` 冻结的设计跑天花板实验（`ceiling_run.py`，`claude-ceiling.toml`，Opus 5.5 经 claude_code、effort high、并发 8、根 $150 硬停）。第一段约 30 分钟后被会话的后台时限截断（31/52 次尝试已落盘，账本留 1 笔 open 预留），同一命令续跑补完其余 21 次，未重复付费。

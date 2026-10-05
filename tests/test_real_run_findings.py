@@ -487,6 +487,9 @@ def test_every_cycle_step_pauses_on_an_account_error(fake_upstream, tmp_path, fi
         cfg["frontier"] = {"a": {"llm": {"type": "test_real_run_findings:_Refused"}}}
     elif where == "common":
         _breaks_on_entry(monkeypatch, bench, "_campaign_common", state)
+        # 2026-10-05 review: the common inputs reuse the mainline's readings of the start W, which under this
+        # fixture's W0 cover every task the step would read; without them the step makes its paid calls again
+        monkeypatch.setattr(bench, "_mainline_readings", lambda *a, **k: ([], []))
     elif where == "outer":
         _breaks_on_entry(monkeypatch, bench, "_evaluate_outer", state)
     elif where == "slot":

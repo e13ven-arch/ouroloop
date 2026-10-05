@@ -368,7 +368,7 @@ class CodingSession:
         self.calls.append(record)
         if call.name in EDIT_TOOLS:
             if self.edits >= self.limits.max_edits:
-                record["ok"] = False
+                record.update(ok=False, error=f"the session's {self.limits.max_edits} edits are used up")
                 raise SessionEnded(f"the session reached its {self.limits.max_edits} edits without finishing")
             self.edits += 1
             action = {"write_file": "write", "edit_file": "edit", "delete_file": "delete"}[call.name]
@@ -382,28 +382,37 @@ class CodingSession:
                 name = args["path"].split("/")[1] if args["path"].count("/") >= 2 else None
                 if name and name not in self.dirs:
                     self.dirs.append(name)
-            record["ok"] = not bad
-            return (json.dumps(value) if not isinstance(value, str) else value), bad
+            out = json.dumps(value) if not isinstance(value, str) else value
+            return out, self._done(record, out, bad)
         if call.name == "list_files":
             value, bad = self.work.do("list", path=args.get("path") or ".")
-            record["ok"] = not bad
-            return (json.dumps(value) if not bad else value), bad
+            out = json.dumps(value) if not bad else value
+            return out, self._done(record, out, bad)
         if call.name == "read_file":
             value, bad = self.work.do("read", path=args.get("path"), offset=args.get("offset"),
                                       limit=args.get("limit"))
-            record["ok"] = not bad
-            return str(value), bad
+            return str(value), self._done(record, str(value), bad)
         if call.name == "read_trajectory":
             if self.trajectories is None:
-                record["ok"] = False
-                return "AccessDenied: this session has no trajectory reader", True
+                return self._refused(record, "AccessDenied: this session has no trajectory reader")
             text, bad = self.trajectories.read(args.get("attempt_ref"), args.get("offset", 0), args.get("limit"))
             # the bytes are the reader's count of record bytes handed over (not the decoded text's length)
-            record.update(ok=not bad, ref=args.get("attempt_ref"),
+            record.update(ref=args.get("attempt_ref"),
                           bytes=self.trajectories.calls[-1]["bytes"] if self.trajectories.calls else 0)
-            return text, bad
-        record["ok"] = False
-        return f"unknown tool {call.name!r}", True
+            return text, self._done(record, text, bad)
+        return self._refused(record, f"unknown tool {call.name!r}")
+
+    @staticmethod
+    def _done(record: dict, output, bad: bool) -> bool:
+        """A performed call's row: ok, and — when the tool refused it — the error text R was answered with
+        (2026-10-05 review: a refused write's reason was R's only, and lost with the session)."""
+        record["ok"] = not bad
+        if bad:
+            record["error"] = _cut(_safe(str(output)), ROW_ERROR_CHARS)
+        return bad
+
+    def _refused(self, record: dict, why: str) -> tuple[str, bool]:
+        return why, self._done(record, why, True)
 
     def _declaration(self, args: dict) -> str:
         """Read `finish`'s arguments as candidate_declaration.v1, or say what is wrong with them. A readable
@@ -472,6 +481,31 @@ class CodingSession:
                                   "reason": str(args.get("reason") or "")[:500]})
         return ""
 
+    def transcript(self) -> dict:
+        """The whole session as R and the tools saw it (2026-10-05 review, stage 0's go rule reads it): every message
+        in order — the inputs and any later user message, R's reply text with its tool calls and their arguments,
+        each tool result with its output or error text — each string cut to TRANSCRIPT_ITEM_CHARS and every string
+        strict-UTF-8 safe, so the host can store it whole as one object. The provider's native content is left out:
+        it repeats the text and the calls."""
+        items = []
+        for m in self.messages:
+            role = m.get("role")
+            if role == "assistant":
+                items.append({"role": "assistant", "text": _cut(_safe(m.get("text") or ""), TRANSCRIPT_ITEM_CHARS),
+                              "tool_calls": [{"id": _safe(c.id), "name": _safe(c.name),
+                                              "args": _cut_strings(_safe(c.args), TRANSCRIPT_ITEM_CHARS)}
+                                             for c in m.get("tool_calls") or ()]})
+            elif role == "tool":
+                items.append({"role": "tool", "results": [
+                    {"id": _safe(r.get("id")), "name": _safe(r.get("name")), "is_error": bool(r.get("is_error")),
+                     "output": _cut(_safe(str(r.get("output", ""))), TRANSCRIPT_ITEM_CHARS)}
+                    for r in m.get("results") or ()]})
+            else:
+                items.append({"role": _safe(str(role)),
+                              "text": _cut(_safe(str(m.get("content", ""))), TRANSCRIPT_ITEM_CHARS)})
+        return {"schema": "research_session_transcript.v1", "turns": self.turns, "ended": _safe(self.ended),
+                "messages": items}
+
     def record(self) -> dict:
         """The host's record of the session (M4 §1: every tool call, the turns and edits, the trajectory reads)."""
         return {"turns": self.turns, "edits": self.edits, "calls": list(self.calls),
@@ -516,6 +550,27 @@ def _strict_utf8(value) -> bool:
         return True
     except UnicodeEncodeError:
         return False
+
+
+# How much of each item a session's stored transcript and a refused call's row keep (2026-10-05 review): enough to
+# read what R wrote and what the tool answered, bounded so a 40-turn session with whole files in its arguments stays a
+# record and not a copy of the package.
+TRANSCRIPT_ITEM_CHARS = 8000
+ROW_ERROR_CHARS = 500
+
+
+def _cut(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[:limit] + f"... [{len(text) - limit} more characters]"
+
+
+def _cut_strings(value, limit: int):
+    if isinstance(value, str):
+        return _cut(value, limit)
+    if isinstance(value, dict):
+        return {k: _cut_strings(v, limit) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_cut_strings(v, limit) for v in value]
+    return value
 
 
 def _safe(value):
@@ -1046,6 +1101,10 @@ def run_session_round(ctx, budget) -> ct.RoundResult:
             verify = dict((ctx.handlers or {}).get("verify_bound") or {})
             need = {"model_calls": attempts + int(verify.get("model_calls") or 0),
                     "tool_calls": attempts + int(verify.get("tool_calls") or 0)}
+            if verify.get("usd") is not None:
+                # v0.3 step 5 (M5 §2, 2026-10-05): the gate's bound in dollars, and the screens at the same per-attempt
+                # price, when the parent W's cost is on record
+                need["usd"] = round(float(verify["usd"]) + attempts * float(verify.get("usd_per_attempt") or 0.0), 6)
             if budget is not None and not budget.affordable(need):
                 raise BudgetExhausted(f"the round's {len(admitted)} screens ({attempts} attempts) and the gate's "
                                       f"verification bound {verify} do not fit the budget")
@@ -1095,9 +1154,12 @@ def run_session_round(ctx, budget) -> ct.RoundResult:
             if wsession is not None:
                 wsession.close(force=True)
             if session is not None:
+                # 2026-10-05 review: the turns themselves — R's replies, the calls with their arguments, every tool
+                # answer and refusal — stored as one object the event names, not only the per-call rows
+                transcript_ref = ctx.objects.put_json("transcript", session.transcript())
                 events.append("research_session", scope=ctx.scope_id, release=before, round=ctx.round_index,
                               research_ref=release.research_ref, prompt_hash=ct.digest({"system": system})[:16],
-                              **session.record())
+                              transcript_ref=transcript_ref, **session.record())
             record = ProposalResult(proposals=list(proposals_made))
             record.budget_seen = budget_seen
             _record_research_steps(ctx, root, before, sent_before, record)

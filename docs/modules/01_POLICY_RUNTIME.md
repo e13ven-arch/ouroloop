@@ -30,6 +30,9 @@ controller 与 actor 共享当时合法 observation，默认不把 controller �
 
 `[llm] type = "claude_code"`（`ouroloop/providers/claude_code.py`）：每次 `chat` 起一次无头 Claude Code，用本机 `claude` 的订阅登录。模型看到的是这一次的请求，外加 CLI 在订阅登录下关不掉的三样：系统提示前一行 Agent SDK 身份、账号邮箱、当天日期。
 
+（v0.3，2026-10-05，第 0/1 阶段评审）每次调用的 `claude` 子进程在自己的 session 里起（`start_new_session`，`claude_code.run_child`）：终端的 Ctrl-C 发给前台进程组，子进程不在其中，所以只到父进程，父进程的中断处理（`task_eval.run_tasks`：在飞的尝试跑完并记录）让在飞的调用正常结束并结算，不再整批死在同一个信号下、以完整上界记成 unknown。父进程不再等的子进程由它自己杀：超时杀子进程的整个进程组（连同它起的进程），等它的线程被中断时（并发 1，尝试跑在主线程）同样，解释器退出时杀仍在跑的子进程。测试 `test_claude_code_provider.py::test_a_terminal_interrupt_reaches_the_parent_and_not_the_claude_child`、`test_a_timeout_kills_the_child_and_what_it_started`。
+
+
 - 配置：
   - `model`：必填，如 `claude-opus-5-5`；用完整 id，作答模型的核对才生效。
   - `effort`：启动检查要求必须写（low、medium、high、xhigh、max），每次都传 `--effort`，不让 CLI 的设置决定它；W0 把它 pin 进推理配置。

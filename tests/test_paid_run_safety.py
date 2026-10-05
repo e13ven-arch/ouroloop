@@ -1,6 +1,7 @@
 """What has to hold before a paid run (the first group after M0-M7): every model call on the book, a cost per
 attempt, a restart that pays only for what is missing, and plans frozen from the command line."""
 import json
+import re
 
 import pytest
 import rsi
@@ -606,3 +607,181 @@ def test_every_turn_of_the_research_session_is_metered_on_the_research_scope(fak
     session = list(ct.Events(activity.root).of("research_session"))[0]
     assert session["turns"] == 3 and session["edits"] == 2 and [c["tool"] for c in session["calls"]] == [
         "write_file", "write_file", "list_files", "finish"]
+
+
+# ---------------------------------------------------------------------------- v0.3 step 5 (M5 §2): the final's share
+BOUND = 8 * 0.003 + 2 * 0.015          # one call's reservation under PRICING: 8000 in + 2000 out, $0.054
+
+
+def test_a_final_share_that_cannot_hold_the_concurrent_bounds_is_refused_at_freeze(fake_upstream, tmp_path):
+    """EX6-20 / M5 §2 “final 份额的定法” (v0.3): every call in flight holds one call's bound, so a final share must hold
+    `concurrency` of them beside its spend — v0.2's first final ($50, 4 x $7.28 in flight) recorded 51 attempts as
+    budget_exhausted. A [freeze.budget] whose final share is smaller than concurrency x bound is refused before any
+    root opens, and the refusal prints what the final would spend at the costs on record and the share that would
+    hold it; the same share at a concurrency it can hold is frozen."""
+    cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
+    cfg["pricing"] = dict(PRICING)
+    cfg["bench"]["concurrency"] = 8
+    cfg["freeze"] = {"budget": {"usd": 20, "final": {"usd": 0.3}}}          # one bound fits, eight do not
+    lines = []
+    with pytest.raises(ValueError, match=r"the final share cannot hold the concurrent reservations: usd 0\.3 < "
+                                         r"concurrency 8 x one call's bound 0\.054 = 0\.432; suggested final share: "
+                                         r"the final's expected spend \(unknown"):
+        bench.freeze(cfg, ".", out=lines.append)
+    assert any(line.startswith("estimate   expected spend unknown + 8 in-flight reservations") for line in lines)
+    # with W0's dev readings priced and a final plan in the same freeze: the expected spend and a suggested share
+    work = bench.improvement(activity, template_ref=plan_ref, provider=rsi.BusinessWorker(),
+                             pricing=bench.pricing_of(cfg))
+    rows = work.run_arm("dev_baseline", release, [(t, 0) for t in rsi.DEV], plan_ref="", split="dev")
+    cpa = sum(r.cost_usd for r in rows) / len(rows)
+    cfg["freeze"]["final"] = {"experiment_id": "share", "claims": ["C1"], "tasks": "test", "repeats": 2,
+                              "comparisons": [{"claim": "C1", "subject": "evolved", "control": "base", "role": "evolved"},
+                                              {"claim": "C1", "subject": "base", "control": "base", "role": "base"}],
+                              "release_refs": {"evolved": release, "base": release}}
+    expected = 2 * len(rsi.FINAL) * 2 * cpa                          # two arms, each its attempts x its cost
+    lines = []
+    with pytest.raises(ValueError, match=r"suggested final share at least \$(\d+\.\d\d)") as refused:
+        bench.freeze(cfg, ".", out=lines.append)
+    suggested = float(re.search(r"at least \$(\d+\.\d\d)", str(refused.value)).group(1))
+    assert suggested == round(expected + 8 * BOUND, 2)
+    assert any(f"{len(rsi.FINAL) * 2} attempts to run" in line and "dev readings" in line for line in lines)
+    assert not (activity.root / "rsi" / "finalization" / "share.json").exists()     # nothing was sealed
+    # three in flight fit the same share beside the plan's spend and two stuck reservations: frozen and sealed
+    cfg["bench"]["concurrency"] = 3
+    refs = bench.freeze(cfg, ".", out=lambda _l: None)
+    assert activity.objects.get(refs["budget_ref"])["allocations"] == {"final": {"usd": 0.3}}   # 5 x 0.054 fits, 6 do not
+    assert bench.final_share_problem(activity.objects.get(refs["budget_ref"]), bench.pricing_of(cfg), 6) != ""
+
+
+def test_the_final_prints_its_expected_spend_from_the_pooled_readings_before_running(fake_upstream, tmp_path):
+    """M5 §2 (v0.3): before `--phase evaluate` pays for anything it prints, per arm, the attempts still to run times
+    the arm release's measured cost per valid attempt (its pooled dev readings), the total, and the in-flight
+    reservations beside it; printed, never refused. Run again after it completed, nothing is left to run."""
+    cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
+    cfg["pricing"] = dict(PRICING)
+    work = bench.improvement(activity, template_ref=plan_ref, provider=rsi.BusinessWorker(),
+                             pricing=bench.pricing_of(cfg))
+    rows = work.run_arm("dev_baseline", release, [(t, 0) for t in rsi.DEV], plan_ref="", split="dev")
+    cpa = round(sum(r.cost_usd for r in rows) / len(rows), 6)
+    final_config(cfg, activity, release)
+    lines = []
+    result = bench.evaluate(cfg, ".", out=lines.append)
+    estimates = [i for i, line in enumerate(lines) if line.startswith("estimate")]
+    first_arm = next(i for i, line in enumerate(lines) if line.startswith("arm "))
+    assert estimates and max(estimates) < first_arm                # printed before the first attempt ran
+    estimate = result["estimate"]
+    planned = len(rsi.FINAL) * 2
+    assert [(a["arm"], a["attempts"], a["cost_per_attempt"]) for a in estimate["arms"]] == \
+           [("evolved", planned, cpa), ("base", planned, cpa)]
+    assert estimate["expected"] == pytest.approx(2 * planned * cpa, abs=1e-6)
+    assert estimate["reservations"] == round(BOUND, 4)            # this fixture runs one attempt at a time
+    assert any(line.startswith(f"estimate   expected spend ${estimate['expected']:.2f} + 1 in-flight") for line in lines)
+    again = []
+    rerun = bench.evaluate(cfg, ".", out=again.append)
+    assert [a["attempts"] for a in rerun["estimate"]["arms"]] == [0, 0] and rerun["estimate"]["expected"] == 0
+    assert any(f"(0 attempts" not in line and f"({planned} on record)" in line for line in again)
+
+
+# ---------------------------------------------------------------------------- 2026-10-05 review: the final's money, the gate's
+def _final_share_budget(activity, share: float) -> str:
+    return activity.objects.put_json("budget", {"model_calls": 4000.0, "tool_calls": 4000.0, "usd": 10.0,
+                                                "allocations": {"final": {"usd": share}}})
+
+
+def test_the_final_estimate_reads_w_stars_gate_readings_by_execution_identity(fake_upstream, tmp_path):
+    """Review finding 2: a W*'s gate readings were made under its candidate release, another ref than the release
+    that installed it; the final's estimate finds them by what the releases execute (the same W and K), as
+    `Improvement._runs_like` does — before the fix it matched the release ref only and found no cost at all."""
+    cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
+    cfg["pricing"] = dict(PRICING)
+    work = bench.improvement(activity, template_ref=plan_ref, provider=rsi.BusinessWorker(),
+                             pricing=bench.pricing_of(cfg))
+    rows = work.run_arm("subject", release, [(t, 0) for t in rsi.DEV], plan_ref="", split="dev")
+    cpa = round(sum(r.cost_usd for r in rows) / len(rows), 6)
+    w = ct.SystemRelease.from_json(activity.objects.get(release))
+    installed = activity.releases.bootstrap(w.worker_ref, w.research_ref, w.core_ref, reason="the same W, installed",
+                                            activate=False)
+    assert installed != release
+    estimate = bench.final_estimate(activity, task_ids=rsi.FINAL, repeats=3, arms={"evolved": installed})
+    assert estimate["arms"][0]["cost_per_attempt"] == cpa and estimate["arms"][0]["readings"] == len(rows)
+    assert estimate["expected"] == pytest.approx(len(rsi.FINAL) * 3 * cpa, abs=1e-6)
+    assert work.measured_cost_per_attempt(installed) == cpa
+    other = activity.releases.bootstrap(rsi.w1(activity.objects), w.research_ref, w.core_ref, reason="another W",
+                                        activate=False)
+    assert bench.final_estimate(activity, task_ids=rsi.FINAL, repeats=3, arms={"x": other})["expected"] is None
+
+
+def test_a_final_the_share_cannot_hold_is_refused_before_the_first_attempt(fake_upstream, tmp_path):
+    """Review finding 2: when what is left of the final's share cannot hold the expected spend beside the in-flight
+    reservations, `--phase evaluate` refuses before anything is paid — no test attempt is on record — instead of
+    printing the shortfall and starting a final whose lanes would run dry (v0.2's final-1)."""
+    cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
+    cfg["pricing"] = dict(PRICING)
+    cfg["estimate"] = {"cost_per_attempt": 0.0001}               # what the plan was sealed with: it fit then
+    cfg["rsi"]["budget_ref"] = _final_share_budget(activity, 0.17)
+    final_config(cfg, activity, release)
+    work = bench.improvement(activity, template_ref=plan_ref, provider=rsi.BusinessWorker(),
+                             pricing=bench.pricing_of(cfg))
+    work.run_arm("dev_baseline", release, [(t, 0) for t in rsi.DEV], plan_ref="", split="dev")
+    root = bench.activity_budget(activity, cfg, "elsewhere")
+    spent = root.reserve("spent elsewhere", {"usd": 0.11}, allocation="final")
+    root.settle(spent.id, {"usd": 0.11})                       # $0.06 left: under expected + one $0.054 bound
+    lines = []
+    with pytest.raises(ValueError, match="do not fit the \\$0.06 left to the final; nothing was run"):
+        bench.evaluate(cfg, ".", out=lines.append)
+    assert not [r for r in Results(activity.root, rsi.DOMAIN).all() if r.split == "test"]
+    assert any(line.startswith("estimate   expected spend") and "SHORT" in line for line in lines)
+
+
+def test_a_final_plan_the_share_cannot_hold_is_not_sealed(fake_upstream, tmp_path):
+    """Review finding 3: before a final plan is sealed, its expected spend — attempts × each arm's cost per attempt
+    from its readings, else the config's [estimate] — plus `concurrency` in-flight and two stuck reservations must fit
+    the final share; otherwise the freeze is refused and nothing is sealed. With no reading and no [estimate] the
+    share cannot be checked, and that is refused too. Measured readings take precedence over the estimate."""
+    cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
+    cfg["pricing"] = dict(PRICING)
+    cfg["rsi"]["budget_ref"] = _final_share_budget(activity, 0.2)      # holds 3 bounds ($0.162) and $0.038 of spend
+    sealed = activity.root / "rsi" / "finalization" / "final-resume.json"
+    with pytest.raises(ValueError, match="cannot be checked: no priced reading"):
+        final_config(cfg, activity, release)
+    cfg["estimate"] = {"cost_per_attempt": {"evolved": 0.05, "base": 0.05}}      # 8 attempts x $0.05 = $0.40
+    lines = []
+    cfg["freeze"] = {}
+    with pytest.raises(ValueError, match=r"the final share \$0.20 cannot hold the plan: expected \$0.40"):
+        final_config(cfg, activity, release)
+    assert not sealed.exists()
+    cfg["estimate"] = {"cost_per_attempt": 0.002}                                   # $0.02: fits
+    final_config(cfg, activity, release)
+    assert sealed.exists()
+    # readings of the arms' W, once there are some, replace the config's planning number
+    work = bench.improvement(activity, template_ref=plan_ref, provider=rsi.BusinessWorker(),
+                             pricing=bench.pricing_of(cfg))
+    work.run_arm("dev_baseline", release, [(t, 0) for t in rsi.DEV], plan_ref="", split="dev")
+    plan = bench.FinalizationPlan.from_json(activity.objects.get(cfg["rsi"]["final_plan_ref"]))
+    activity = bench.open_activity(cfg, ".", out=lambda _l: None)
+    assert bench.final_plan_problem(activity, {**cfg, "estimate": {"cost_per_attempt": 5.0}}, plan,
+                                    activity.objects.get(cfg["rsi"]["budget_ref"]), lines.append) == ""
+    assert any("dev readings" in line for line in lines)
+
+
+def test_the_verification_bound_prices_the_gate_and_a_gate_it_cannot_pay_for_never_starts(fake_upstream, tmp_path,
+                                                                                         monkeypatch):
+    """Review finding 4 (M5 §2 验证预留): the bound a candidate's verification must fit is in dollars too — the
+    attempts at the parent W's measured cost per attempt, raised by the gate's β0 — and a dollar budget that cannot
+    hold it refuses the experiment before its first attempt; before the fix the gate started and ran out half way."""
+    from ouroloop.evolve.task_gate import GatePlan
+    cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path,
+                                             gate=GatePlan(min_gain=0.05, min_groups=1, bootstrap_replicates=200,
+                                                           cost_beta0=0.10, cost_beta1=2.0))
+    cfg["pricing"] = dict(PRICING)
+    work = bench.improvement(activity, template_ref=plan_ref, provider=rsi.BusinessWorker(),
+                             pricing=bench.pricing_of(cfg))
+    assert "usd" not in work._verify_bound()                    # nothing priced on record yet: calls only
+    monkeypatch.setattr(bench.Improvement, "measured_cost_per_attempt", lambda self, release_ref: 1.0)
+    bound = work._verify_bound()
+    assert bound["usd"] == pytest.approx(bound["model_calls"] * 1.0 * 1.10) and bound["usd_per_attempt"] == 1.1
+    cfg["rsi"]["budget_ref"] = activity.objects.put_json("budget", {"model_calls": 4000.0, "tool_calls": 4000.0,
+                                                                    "usd": 1.0})
+    result = bench.improve(cfg, ".", out=lambda _l: None, researcher=rsi.ScriptedResearcher())
+    assert result["rounds"][0]["outcome"] == "inconclusive"
+    assert not [r for r in Results(activity.root, rsi.DOMAIN).all() if r.pair_key]      # no gate attempt ran

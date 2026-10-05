@@ -439,6 +439,69 @@ def task_signature(suite: Suite, task_id: str) -> set[str]:
     return sig
 
 
+# v0.3 step 5 (docs/modules/07_BENCH_REPORT.md §2 “新领域的划分分层”): the two static features a new domain's split
+# is stratified on. Both are read from the task definition — the assertion list and the services the task's world
+# is subscribed to — never from a result or a score.
+#
+# The kinds are the failure kinds the v0.2 analysis and the ceiling experiment read failures by
+# (examples/automationbench/ceiling/tasks.json, rule.failure_kinds), applied to a type name: '_not_' ->
+# forbidden_write, 'count' -> count, 'contains' -> content, else missing_write. A task's composition is the set of
+# kinds among its scored assertions, not the exact multiset of types: upstream's 100 tasks of a domain have 56 to 98
+# distinct type multisets, so strata of exact multisets would hold one task each and balance nothing.
+ASSERTION_KINDS = ("missing_write", "forbidden_write", "content", "count")
+# The tool family: whether the task's world is subscribed to a business application beyond the office services
+# every domain shares (mail, drive, sheets, calendar, chat) — Salesforce, HubSpot, a help desk, an accounting book.
+OFFICE_SERVICES = ("gmail", "google_drive", "google_sheets", "google_calendar", "slack")
+
+
+def assertion_kind(type_name) -> str:
+    """The failure kind of an assertion type, by its name (ASSERTION_KINDS)."""
+    name = str(type_name or "")
+    if "_not_" in name:
+        return "forbidden_write"
+    if "count" in name:
+        return "count"
+    if "contains" in name:
+        return "content"
+    return "missing_write"
+
+
+def stratum(suite: Suite, task_id: str) -> str:
+    """A task's stratum for the stratified split: `<kinds>|<tool family>`, e.g.
+    `content+forbidden_write+missing_write|app`. The kinds are those of the assertions the task scores (an
+    assertion its definition marks unscored or excluded is left out; the scorer's own free-assertion exclusion is
+    not computed — that would mean scoring a state); the family is `app` when the world is subscribed to any
+    service outside OFFICE_SERVICES, else `office`."""
+    g = suite.grading(task_id)
+    kinds = sorted({assertion_kind(a.get("type")) for a in g.assertions
+                    if a.get("scored") is not False and a.get("excluded") is not True})
+    family = "app" if set(g.allowed_services) - set(OFFICE_SERVICES) else "office"
+    return f"{'+'.join(kinds) or 'none'}|{family}"
+
+
+def pool_suites(name: str, suites: list[Suite]) -> Suite:
+    """Several domains' suites as one (M7 §2): the tasks and their grading side by side, each task under its own
+    upstream name, which carries its domain. Two tasks with one name, or a task whose name does not carry its
+    domain, are refused rather than merged. The versions are the first suite's; every suite came from the same
+    checkout, which is checked."""
+    tasks: dict[str, BenchTask] = {}
+    grading: dict[str, Grading] = {}
+    for s in suites:
+        stray = [t for t in s.ids() if not t.startswith(f"{s.domain}.")]
+        if stray:
+            raise UpstreamError(f"upstream domain {s.domain} names tasks {stray[:3]} without the domain prefix, so "
+                                f"pooled task ids could collide")
+        both = sorted(set(s.tasks) & set(tasks))
+        if both:
+            raise UpstreamError(f"upstream domains share the task ids {both[:3]}")
+        if s.versions.get("commit") != suites[0].versions.get("commit") or \
+                s.versions.get("path") != suites[0].versions.get("path"):
+            raise UpstreamError(f"domain {s.domain} was loaded from another checkout than {suites[0].domain}")
+        tasks.update(s.tasks)
+        grading.update({t: s.grading(t) for t in s.ids()})
+    return Suite(name, tasks, grading, suites[0].versions)
+
+
 def near_duplicates(suite: Suite, threshold: float = 0.8) -> list[tuple[str, str, float]]:
     """Task pairs whose signatures overlap enough to be worth reading as possible variants of one workflow,
     highest overlap first.

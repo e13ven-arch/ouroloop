@@ -116,7 +116,7 @@ final 的协议不变：计划（`bench.FinalizationPlan`）先封存并提交�
 
 - **重复 2 → 3**（`[freeze.final] repeats = 3`，定值，2026-10-04 定）。原因：区间宽度由题间异质性和同题随机性两部分组成，100 题以上前者占主导，重复只压后者——100 题 × 2 次半宽约 ±6.0，× 4 约 ±5.5，费用翻倍只窄不到 10%；取 3 是在费用与第三次读数能暴露“2 次恰好相同”的假确定性之间的折中。更多的任务（M7 §2（v0.3）多领域）比更多重复有效得多，题数优先。
 - **可选的同成本 best-of-k W0 臂**（[arXiv 2607.12227](https://arxiv.org/abs/2607.12227) 的批评：演化花费是额外的搜索算力，部署时的匹配算力对照应当在场）。它在**公布结果时**运行，不是每次 final 的必备部分：封存前由固定代码从合并对照与 W* 的每次尝试平均成本算出 `k = max(2, round(cost_W* / cost_W0))`，写进 FinalizationPlan.comparisons 的一项 `{"claim": "C1", "role": "matched_cost", "release_ref": <W0>, "best_of": k}`；W0 对每题跑 k 次独立尝试（各自重建世界），**任一通过即记通过**——这是 oracle 选择，是 W0 在同成本下测试时算力的**上界**，不是可部署策略，报告里与 W* 并列并写明这一点。它从不进入 C1 的裁决：C1 仍是 W* 对 W0（同 effort、同配置）的配对差；同成本臂回答的是“这笔增益有多少只是算力”，W* 不高于 best-of-k 上界时报告如实写“增益不超过同成本的测试时算力上界”。计划含该臂时，final 份额按三臂定（M5 §2（v0.3））。
-- Marketing 的 test 已被读过三次（v0.1 final、final-1、final-2），对新主张宣布为已耗尽（M7 §2（v0.3）：Marketing 的 split 原样冻结，新领域的 split 按计分断言种类与工具家族分层）；新领域的 final 才能支撑新主张，Marketing 的 test 只用于与历史数字对照。
+- Marketing 的 test 已被读过三次（v0.1 final、final-1、final-2），对新主张宣布为已耗尽（M7 §2（v0.3）：Marketing 的 split 原样冻结，新领域的 split 按计分断言种类与工具家族分层）；新领域的 final 才能支撑新主张，Marketing 的 test 只用于与历史数字对照。（v0.3，2026-10-05 实现）`[bench] spent` 记在合并划分里，`[freeze.final] tasks = "test"` 只解析为新领域的 test，显式列出 spent 领域的 test 题拒绝冻结，`--phase evaluate` 对含这些题的计划在付费前拒绝，报告的主张区间不含它们（M7 §2、§4）。
 - 测试（可选，发表时，待实现）：`test_paid_run_safety.py::test_the_final_runs_the_matched_cost_arm_when_it_is_sealed_in_the_plan`、`test_report.py::test_the_matched_cost_arm_is_reported_beside_w_star_and_not_as_the_claim`。
 
 ### 2.3 field 清单（v0.3，2026-10-04）

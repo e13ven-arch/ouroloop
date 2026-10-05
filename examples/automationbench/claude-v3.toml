@@ -1,0 +1,192 @@
+# v0.3 step 5: the multi-domain activity (docs/ROADMAP.md §3 v0.3 step 5; docs/modules/07_BENCH_REPORT.md §2).
+# Marketing — its v0.2 split, pinned by hash; its test spent — beside four new domains, each split 0.5/0.25/0.25 by
+# its tasks' scored-assertion kinds x tool family (read from the task definitions, no result): train 252, dev 125,
+# test 100 (the new domains' only, and the only test a claim reads). Offline checks of this file pass; nothing in it
+# has been run (2026-10-05).
+#
+# Run in STAGES, stopping after each for analysis (the user's decision, 2026-10-05; the runbook with each stage's
+# go/no-go rule is ROADMAP v0.3 step 5). The schedule below is one segment of 6 worker rounds and no research slot:
+#   stage 0  the pilot, claude-v3-pilot.toml (about $50): one real round of R's session at k = 3, screen and gate.
+#   stage 1  `ouroloop bench --config examples/automationbench/claude-v3.toml --phase cycle --until baseline`
+#            (the root opens here; the 16-way concurrency trial below is its first 50 attempts)       ~$170, ~1.5 h
+#   stage 2  `... --phase cycle --until segment-0/round-2` (rounds 1-3; nothing installed -> stop)  ~$400, 3-4 h
+#   stage 3  `... --phase cycle --until segment-0/round-5` (rounds 4-6, optional; patience 2)       ~$400, 3-4 h
+#   stage 4  [freeze.final] below with W*, `ouroloop freeze`, commit the plan hash, `--phase evaluate` ~$285, ~2.5 h
+#   stage 5  (optional, later) the research slot (C4) in a copy of the workspace with a root of its own; here C4
+#            is not_run, "deferred to a separate workspace".
+# Before stage 1: `claude auth login` (Max subscription, extra usage off); the worker image rebuilt from
+# docker/worker.Dockerfile; `ouroloop freeze --config examples/automationbench/claude-v3.toml` prints each domain's
+# split hash, counts and strata and the [rsi] lines to add (task_plan_ref, schedule_ref, budget_ref). The 16-way
+# trial is a manual step with the existing flags: `ouroloop bench --config ... --phase baseline --limit 25
+# --concurrency 16` runs the baseline's first 50 attempts (25 dev + 25 train); if their rate-limit refusals
+# (`--phase report`: run_cost[<run>].rate_limited) are above 50, keep 8, else pass `--concurrency 16` to stage 1's
+# cycle (stages 2-4 at 8: the shares and the reservations below are sized for 8 lanes).
+#
+# K's effort ceiling is lowered to medium, W0's pin (the user's decision, 2026-10-05): a candidate cannot buy a gain
+# with more effort, so C1 reads the harness, not compute; the cost per attempt stays near W0's.
+#
+# The estimate (2026-10-05; ROADMAP step 5 has the same table): W0 $0.45 an attempt (v0.2's W0 at medium: $0.409 on
+# train+dev, $0.452 on test); a candidate or W* $0.50 (medium, a loop package's few extra calls; v0.2's W* at medium
+# was $0.565); one call reserves 1M in x $4/M + 163,840 out x $20/M = $7.2768.
+#     stage 1  baseline (252 train + 125 dev) x $0.45                                                $170
+#     a round  R's notes and session at k = 3 $10 + train screen ~36 x $0.50 $18 + dev gate 125 x $0.50 $62.5
+#              = $90.5; + a confirmation 125 x $0.50 $62.5 when the first reading clears min_gain; + after an
+#              install, the previous version's train failures rerun, ~131 x $0.50 $65.5
+#     rounds   6 x $90.5 $543 + 2 confirmations $125 + 2 installs $131 = $799 (stages 2 and 3, ~$400 each)
+#     stage 4  100 tasks x 3 x ($0.45 + $0.50)                                                       $285
+#     spend    $968.65 before the final + $285 = $1,254
+#   Reservations: 8 lanes in flight $58.21, and settlements that never come back keep theirs — v0.1/v0.2 and the
+#   ceiling run left 4 in ~9,900 calls, about 1 in 2,250. At ~8.6 calls an attempt (v0.2's baseline) stages 1-3 make
+#   ~16,400 calls (1,855 attempts and ~420 R calls): 8 stuck, $58.21; the final ~5,160 calls: 3 stuck, $21.83.
+#   The final share is $390 (stage 0/1 review): $285 + 8 lanes $58.21 + 3 stuck $21.83 = $365.04 is the expected
+#   case; $390 also holds a dearer W*: 390 - 58.21 (8 lanes) - 14.55 (2 stuck) = $317.24 over 300 attempts of each
+#   arm is $1.057 for W0 + W*, so W* up to $0.607 beside W0's $0.45 — above v0.2's measured W* ($0.565) and the
+#   gate's own cost allowance at a gain of 0.10 ($0.45 x (1 + 0.10 + 2.0 x 0.10) = $0.585). freeze checks the plan's
+#   estimate + 8 lanes + 2 stuck against it before the plan is sealed; evaluate checks again before paying.
+#   The root = $968.65 + 8 lanes $58.21 + 8 stuck $58.21 + the final share $390 = $1,475.07, so $1,500 (a root cannot
+#   change once it opens). After stage 1, recompute stages 2-4 from the measured cost per attempt.
+#   Run stages 1-3 in a plain terminal with no session time limit and stop only with --until; after any interrupt,
+#   count the `open` and `unknown` reservations in workspace-claude-v3/rsi/budget/book.json before the next stage
+#   (each holds $7.2768 of the root until it is settled).
+#   [estimate] below is what freeze uses for an arm without priced readings (never a limit).
+
+[workspace]
+root = "workspace-claude-v3"
+
+[bench]
+domains = ["marketing", "sales", "support", "hr", "finance"]   # upstream also has operations, unused (2026-10-04)
+split_rule = "stratified"       # a domain without a frozen split: scored-assertion kinds x tool family, then hashed
+spent = ["marketing"]           # read three times (v0.1 final, final-1, final-2): no new claim reads its test
+upstream_path = "~/workspace/AutomationBench"
+toolset = "api"
+seed = 1                        # Marketing's v0.2 seed; the new domains' within-stratum order
+concurrency = 8                 # attempts in flight; a machine setting, not part of any plan (M5 §2)
+smoke_tasks = 1
+near_duplicate_threshold = 0.6
+
+[bench.frozen_splits]           # split by the hash rule and checked against this hash, whatever split_rule says
+marketing = "aa7ff7ec189c0cbb"  # workspace-claude-full's split (52/25/23, seed 1); reproduced offline 2026-10-05
+
+[bench.ratios]
+train = 0.5
+dev = 0.25
+test = 0.25
+
+[bench.budget]                  # the v3 preset's five hard limits of one attempt (M0 §2), written out
+max_steps = 50
+max_tool_calls = 200
+max_seconds = 900
+max_model_calls = 200
+max_tokens = 400000
+
+[backends.mock]
+type = "mock"
+
+[points]
+default_backend = "mock"        # the first version runs no decision model
+
+# The actor W0 pins: Claude Opus 5.5 through headless Claude Code, at effort medium — W0's default tier
+# (docs/modules/00_CONTRACTS.md §2, v0.3). K's max_effort is lowered to medium too ([harness_evolution] below), so the
+# gateway caps any higher request of a package at medium. Pinned at bootstrap: it cannot change in this workspace.
+[llm]
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "medium"
+max_tokens = 32000
+timeout = 600
+
+# R: notes, the coding session (up to 40 turns a round) and the research slot's R step.
+[research.llm]
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "medium"
+max_tokens = 32000
+timeout = 900
+
+# The notional prices of v0.1/v0.2 (claude-full.toml): claude-opus-5-5's API list prices, equal to the CLI's
+# reported cost per call in the 2026-10-03 probe. max_output_tokens is 5 x max_tokens and more (the CLI may make up
+# to 5 requests a call), which fixes the reservation bound at $7.2768.
+[pricing]
+input_per_1k = 0.004
+cache_read_per_1k = 0.0002
+cache_write_per_1k = 0.008
+output_per_1k = 0.02
+max_input_tokens = 1000000
+max_output_tokens = 163840
+source = "notional, not a bill: claude-opus-5-5 API list price ($4/$20 per M, cache read $0.20, 1h cache write $8), equal to the CLI's reported cost in the probe (docs/ROADMAP.md §3, step 2a), 2026-10-03"
+
+# The v3 preset: package API v2 (an agent component), max_effort high (lowered to medium below), the five limits,
+# k = 3 candidates a round from one coding session, the train screen, the gate statistics (pooled control, a
+# confirmation reading, a regression as a drop over 0.5, the cost term, no gate under 25 tasks). freeze writes them
+# into K; R cannot raise any of them. The preset's slot numbers (headroom 6, three rounds an arm, the shares) are not
+# used here: this workspace runs no slot.
+[improvement]
+mode = "automatic"
+preset = "automationbench_harness_v3"
+allowed_methods = ["policy_edit", "harness_edit"]
+max_candidates_per_round = 3
+max_collection_batches = 2      # per worker segment; a restart does not reset it
+
+[harness_evolution]             # the preset's own values, written out (a value here may narrow, never widen)
+package_api = "harness_package.v2"
+components = ["agent", "memory", "skills", "on_finish", "before_tool", "after_tool", "tools"]
+sandbox = "docker"
+max_files = 24
+max_package_bytes = 262144
+test_timeout_seconds = 30
+max_draft_repairs = 3           # revisions after the first draft, so at most 4 drafts
+max_failure_notes = 30          # notes one round reads, cached and new together
+max_effort = "medium"           # lowered from the preset's high (tighten-only, frozen into K): C1 reads the harness
+
+[harness_evolution.research_session]
+max_turns = 40
+max_edits = 24
+max_trajectory_bytes = 65536
+max_trajectory_bytes_total = 524288
+
+[harness_evolution.screen]
+passing_sample = 5
+min_net_flips = 1
+
+[rsi]
+profile = "task"
+scope_id = "five-domains-claude-v3"
+stop_view = "stop.business.v1"
+repeats = 1
+order_seed = 1
+# task_plan_ref / schedule_ref / budget_ref: add the lines `ouroloop freeze` prints (before stage 1).
+
+# One segment of the preset's six rounds and no research slot (stage 5 runs it in a copy of the workspace). Fewer
+# slots than the preset plans is allowed (bench._beyond_preset refuses only more); the cycle records the slot as
+# deferred and the report's C4 says so. patience 2: two rounds without an install end the segment.
+[freeze.schedule]
+worker_rounds = 6
+research_slots = 0
+patience = 2
+
+# The whole activity's budget in notional dollars at [pricing], recomputed above: $1,500, a hard stop fixed when the
+# root opens (stage 1). The final's share is set aside on the same root from the start — the cycle cannot spend it,
+# the final spends only it.
+[freeze.budget]
+usd = 1500.0
+
+[freeze.budget.final]
+usd = 390.0
+
+# Planning numbers for the final's estimate where an arm has no priced reading yet (bench.estimate_settings).
+[estimate]
+cost_per_attempt = {base = 0.45, evolved = 0.50}
+
+# The final comparison, filled in after the cycle and sealed before any test task is read (M3 §2.2, v0.3): W0
+# against W* on the new domains' test ("test" leaves Marketing's spent test out; a list naming it is refused),
+# repeats 3. Its plan hash is committed before `--phase evaluate` runs; the result is reported whatever it is.
+# [freeze.final]
+# experiment_id = "claude-opus-5-5-v3-final"
+# claims = ["C1"]
+# tasks = "test"
+# repeats = 3
+# comparisons = [{claim = "C1", subject = "evolved", control = "base", role = "evolved"},
+#                {claim = "C1", subject = "base", control = "base", role = "base"}]
+# release_refs = {evolved = "<W*: rsi/active.json after the cycle>", base = "<W0: the bootstrapped release>"}
+# stop_rules = {max_infrastructure_retries = 1}
+# statistical_plan = {confidence = 0.95, bootstrap_replicates = 2000, bootstrap_seed = 1}

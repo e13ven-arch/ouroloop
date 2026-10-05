@@ -312,3 +312,257 @@ def test_nested_harness_tables_tighten_per_key_and_are_validated_without_a_prese
     # an empty header under the v3 preset keeps the preset's caps
     empty = bench._preset_harness({"harness_evolution": {"research_session": {}}}, v3)
     assert empty["research_session"] == v3["research_session"]
+
+
+# ---------------------------------------------------------------------------- v0.3 step 5 (M7 §2): a domain list
+FIVE = {"max_steps": 8, "max_tool_calls": 12, "max_model_calls": 20, "max_tokens": 4000}
+
+
+def marketing_hash(fake_upstream, tmp_path) -> str:
+    """The fake Marketing's hash-rule split under seed 1, as v0.1/v0.2 froze Marketing's: what a step-5 config pins."""
+    suite = ab.load_suite("marketing", fake_upstream)
+    loaded = bench.BenchConfig.load({"bench": {"domain": "marketing", "upstream_path": fake_upstream, "seed": 1,
+                                               "ratios": {"train": 0.5, "dev": 0.25, "test": 0.25}}})
+    return bench.freeze_splits(suite, loaded, tmp_path / "pin" / "splits.json")[0].hash()
+
+
+def domains_config(fake_upstream, tmp_path, **bench_table):
+    """Marketing (pinned to its hash-rule split, its test spent) beside the fixture's two new domains, stratified."""
+    table = {"domains": ["marketing", "sales", "support"], "upstream_path": fake_upstream, "seed": 1,
+             "split_rule": "stratified", "frozen_splits": {"marketing": marketing_hash(fake_upstream, tmp_path)},
+             "spent": ["marketing"], "budget": dict(FIVE), "ratios": {"train": 0.5, "dev": 0.25, "test": 0.25},
+             **bench_table}
+    return {"workspace": {"root": str(tmp_path / "ws")}, "bench": table, "backends": {"mock": {"type": "mock"}},
+            "llm": {"type": "rsi:BusinessWorker"}, "rsi": {"scope_id": "md", "repeats": 1},
+            "pricing": {"input_per_1k": 0.003, "output_per_1k": 0.015, "max_input_tokens": 8000,
+                        "max_output_tokens": 2000, "source": "fixture prices"}}
+
+
+def test_a_domains_list_freezes_one_split_per_domain_and_pools_them(fake_upstream, tmp_path):
+    """BR6-18: each listed domain is frozen on its own under bench/<domain>/ — the pinned one by the hash rule, the
+    others stratified — and the activity's train/dev/test are the same-named splits pooled in list order, each
+    domain in its own frozen order, under the pooled name; the pooled split records every domain's hash and the
+    spent ones, so a domain resplit or un-spent is a different split and is refused in the same workspace."""
+    cfg = domains_config(fake_upstream, tmp_path)
+    loaded = bench.BenchConfig.load(cfg)
+    assert loaded.domains == ("marketing", "sales", "support") and loaded.domain == "marketing+sales+support"
+    root = tmp_path / "ws"
+    lines = []
+    suite, pooled, drift = bench.load_domains(loaded, root, out=lines.append)
+    assert drift == [] and len(suite) == 2 + 12 + 12
+    own = {d: SplitManifest.load(Results(root, d).manifest_path()) for d in loaded.domains}
+    assert own["marketing"].split_rule is None and own["marketing"].hash() == loaded.frozen_splits["marketing"]
+    assert own["sales"].split_rule == own["support"].split_rule == "stratified"
+    assert SplitManifest.load(Results(root, loaded.domain).manifest_path()).hash() == pooled.hash()
+    assert pooled.family_rule == "pooled" and pooled.spent() == {"marketing"}
+    assert [d["hash"] for d in pooled.domains()] == [own[d].hash() for d in loaded.domains]
+    for split in ("train", "dev", "test"):
+        assert pooled.ids(split) == [t for d in loaded.domains for t in own[d].ids(split)]
+    assert all(t.split(".")[0] in loaded.domains for t in pooled.ids("train", "dev", "test"))
+    assert pooled.claim_ids("test") == own["sales"].ids("test") + own["support"].ids("test")
+    # the same config in a fresh workspace freezes the same pooled split; un-spending Marketing is another split
+    assert bench.load_domains(loaded, tmp_path / "again")[1].hash() == pooled.hash()
+    unspent = bench.BenchConfig.load({**cfg, "bench": {**cfg["bench"], "spent": []}})
+    with pytest.raises(Exception, match="already freezes another split"):
+        bench.load_domains(unspent, root)
+    # domain names and lists that cannot be pooled are refused before anything is loaded
+    with pytest.raises(ValueError, match="listed twice"):
+        bench.BenchConfig.load({"bench": {"domains": ["sales", "sales"]}})
+    with pytest.raises(ValueError, match="spent names"):
+        bench.BenchConfig.load({"bench": {"domains": ["sales", "support"], "spent": ["marketing"]}})
+    with pytest.raises(ValueError, match="covers every listed domain"):
+        bench.BenchConfig.load({"bench": {"domains": ["sales", "support"], "spent": ["sales", "support"]}})
+    with pytest.raises(ValueError, match="frozen_splits"):
+        bench.BenchConfig.load({"bench": {"domains": ["sales"], "frozen_splits": {"marketing": "a" * 16}}})
+
+
+def test_a_single_domain_is_a_list_of_one(fake_upstream, tmp_path):
+    """BR6-22: `domain = "x"` and `domains = ["x"]` are the same config — the domain's own name, its own split under
+    bench/x/ (no pooled manifest), the hash rule, nothing spent — and a `domain` that disagrees with `domains` is
+    refused rather than one of them quietly winning."""
+    single = bench.BenchConfig.load(config(fake_upstream))
+    listed = bench.BenchConfig.load(config(fake_upstream, bench={"domains": ["marketing"]}))
+    del_domain = config(fake_upstream, bench={"domains": ["marketing"]})
+    del del_domain["bench"]["domain"]
+    only_list = bench.BenchConfig.load(del_domain)
+    for loaded in (single, listed, only_list):
+        assert (loaded.domain, loaded.domains, loaded.split_rule, loaded.spent) == \
+               ("marketing", ("marketing",), "hash", ())
+    a = bench.load_domains(single, tmp_path / "a")[1]
+    b = bench.load_domains(only_list, tmp_path / "b")[1]
+    assert a.hash() == b.hash() and a.family_rule == "task_name" and a.domains()[0]["domain"] == "marketing"
+    assert sorted(p.name for p in (tmp_path / "a" / "bench").iterdir()) == ["marketing"]
+    assert bench.pooled_name(("marketing",)) == "marketing"
+    with pytest.raises(ValueError, match="give one of them"):
+        bench.BenchConfig.load(config(fake_upstream, bench={"domains": ["sales"]}))
+    with pytest.raises(ValueError, match="leaves no test for a new claim"):
+        bench.BenchConfig.load(config(fake_upstream, bench={"spent": ["marketing"]}))
+
+
+def test_the_v3_preset_checks_every_listed_domain_loads(fake_upstream, tmp_path, monkeypatch):
+    """M7 §2 (the preset's domain lock): the v3 preset no longer locks Marketing — any domain list is a valid config —
+    and its rule is that every listed domain loads from the checkout: the smoke (and every phase, through the same
+    loader) refuses a domain upstream cannot load, by name, before anything is paid; with all of them loadable each
+    domain's split hash is printed and recorded. The v1 preset keeps its Marketing lock."""
+    from ouroloop.agent.worker import ProcessWorker
+    monkeypatch.setattr(bench, "isolated_worker", lambda settings: ProcessWorker(for_tests=True) if settings else None)
+    v3 = {"mode": "automatic", "preset": "automationbench_harness_v3"}
+    cfg = config(fake_upstream, improvement=v3)
+    cfg["bench"] = {**cfg["bench"], "domains": ["sales", "support", "nosuch"]}
+    del cfg["bench"]["domain"]
+    assert bench.improvement_settings(cfg)["preset"] == "automationbench_harness_v3"
+    with pytest.raises(ab.UpstreamError, match="lists 'nosuch', which the upstream checkout cannot load"):
+        bench.smoke(cfg, tmp_path, run_agent=False, out=lambda _l: None)
+    cfg["bench"]["domains"] = ["sales", "support"]
+    printed = []
+    report = bench.smoke(cfg, tmp_path, run_agent=False, out=printed.append)
+    recorded = {d["domain"]: d["hash"] for d in report["splits"]["domains"]}
+    assert set(recorded) == {"sales", "support"}
+    for domain, split in recorded.items():
+        assert SplitManifest.load(Results(tmp_path / "ws", domain).manifest_path()).hash() == split
+        assert any(line.startswith(f"domain     {domain} split={split}") for line in printed)
+    # one dev task of each domain had its scorer contract checked, and none leaked
+    assert {t.split(".")[0] for t in report["contract"]["checked"]} == {"sales", "support"}
+    assert report["contract"]["failed"] == [] and report["audit"]["leaks"] == []
+    v1 = config(fake_upstream, improvement={"mode": "automatic", "preset": "marketing_harness_v1"})
+    v1["bench"] = {**v1["bench"], "domains": ["marketing", "sales"]}
+    del v1["bench"]["domain"]
+    with pytest.raises(ValueError, match="is for the marketing domain"):
+        bench.improvement_settings(v1)
+
+
+def test_an_old_config_reads_under_the_new_reader(fake_upstream, tmp_path):
+    """BR6-22: the v0.1/v0.2 configs as committed — a single `domain`, preset `marketing_harness_v1`, package API v1,
+    the frozen [rsi] refs — read as they did: one domain, the hash rule, nothing spent, the same reader output; a
+    split manifest written before the new optional fields loads and hashes as it was written."""
+    import tomllib
+    from pathlib import Path
+    examples = Path(__file__).resolve().parents[1] / "examples" / "automationbench"
+    for name, scope in (("claude.toml", "marketing-claude"), ("claude-full.toml", "marketing-claude-full")):
+        cfg = tomllib.loads((examples / name).read_text())
+        loaded = bench.BenchConfig.load(cfg, examples)
+        assert (loaded.domain, loaded.domains, loaded.split_rule, loaded.frozen_splits, loaded.spent) == \
+               ("marketing", ("marketing",), "hash", {}, ())
+        settings = bench.improvement_settings(cfg)
+        assert settings["preset"] == "marketing_harness_v1" and settings["harness"]["package_api"] == "harness_package.v1"
+        assert bench.harness_settings(cfg)["package_api"] == "harness_package.v1"
+        rsi_cfg = bench.RsiConfig.load(cfg)
+        assert rsi_cfg.scope_id == scope and rsi_cfg.task_plan_ref == cfg["rsi"]["task_plan_ref"]
+        assert rsi_cfg.final_plan_ref == cfg["rsi"]["final_plan_ref"]
+    # an old-style manifest on disk (no split_rule, no strata keys) keeps its hash under the new reader
+    suite = ab.load_suite("marketing", fake_upstream)
+    fresh, _ = bench.freeze_splits(suite, bench.BenchConfig.load(config(fake_upstream)), tmp_path / "s.json")
+    written = json.loads((tmp_path / "s.json").read_text())
+    assert "split_rule" not in written and "strata" not in written
+    assert SplitManifest.from_json(written).hash() == written["hash"] == fresh.hash()
+
+
+class Idle:
+    """An agent that answers at once and does nothing: every task with something to do is failed, at a measured cost,
+    so a slot's start W has headroom on every inner task."""
+    name = "scripted"
+    model = "scripted-1"
+
+    def chat(self, system, messages, specs):
+        return ChatTurn("Nothing to do here.", [], "end", usage={"input_tokens": 100, "output_tokens": 20})
+
+
+def run_domains_cycle(fake_upstream, tmp_path, monkeypatch, *, lines=None, schedule=None):
+    """A whole cycle over Marketing + the two fixture domains under a v3-shaped test preset (no domain lock, the v1
+    package kinds so no worker is needed, gates of at least 3 tasks) with an idle agent: baseline, a segment, the
+    research slot — which the headroom check closes (99 tasks wanted), so the slot records its headroom per domain —
+    and a second segment."""
+    import rsi  # noqa: F401 - the scripted worker the config names
+    from test_cycle import Stopper
+    preset = json.loads(json.dumps(bench.PRESETS["marketing_harness_v1"]))
+    preset["domain"] = None
+    preset["harness"].update(components=["memory", "skills"], sandbox=None)
+    preset["task_plan"]["gate"].update(min_groups=1, bootstrap_replicates=200, min_tasks=3)
+    preset["schedule"].update(worker_rounds=1)
+    preset["campaign"].update(worker_round_limit=1, min_groups=1, min_headroom_tasks=99)
+    monkeypatch.setitem(bench.PRESETS, "domains_test", preset)
+    cfg = domains_config(fake_upstream, tmp_path)
+    cfg["improvement"] = {"mode": "automatic", "preset": "domains_test"}
+    cfg["freeze"] = {"budget": {"model_calls": 4000, "tool_calls": 4000}, **({"schedule": schedule} if schedule else {})}
+    cfg["llm"] = {"type": "test_bench_phase:Idle"}
+    result = bench.cycle(cfg, ".", out=(lines.append if lines is not None else lambda _l: None), researcher=Stopper())
+    return cfg, result
+
+
+def test_it6_36_domains_are_split_per_domain_pooled_and_stratified_while_marketings_split_is_frozen_and_its_test_is_spent(
+        fake_upstream, tmp_path, monkeypatch):
+    """IT6-36: an activity over Marketing and new domains runs on the pooled split — Marketing's frozen by the hash
+    rule, the new ones stratified, every result under the pooled name with its domain in the task id — the research
+    slot halves the pooled dev inside each domain, so both halves span the domains, and records its headroom per
+    domain; a final of the new claim reads the new domains' test only — "test" leaves Marketing's out and a list
+    naming it is refused. Under the v3 preset the attempts in flight default to 8."""
+    cfg, result = run_domains_cycle(fake_upstream, tmp_path, monkeypatch)
+    root = tmp_path / "ws"
+    pooled = SplitManifest.load(Results(root, "marketing+sales+support").manifest_path())
+    assert [d["split_rule"] for d in pooled.domains()] == ["hash", "stratified", "stratified"]
+    assert pooled.domains()[0]["hash"] == cfg["bench"]["frozen_splits"]["marketing"]
+    rows = list(Results(root, "marketing+sales+support").all())
+    assert rows and {r.task_id.split(".")[0] for r in rows} == {"marketing", "sales", "support"}
+    assert not (root / "bench" / "sales" / "results.jsonl").exists()        # one pooled store, per-domain splits
+    assert not any(r.split == "test" for r in rows)
+    slot = result["steps"]["slot-0"]
+    assert slot["outcome"] == "no_headroom"
+    halves = slot["halves_by_domain"]
+    assert set(halves["inner"]) == set(halves["outer"]) == {"sales", "support"}      # Marketing has no dev task
+    assert sum(halves["inner"].values()) == sum(halves["outer"].values()) == 3
+    # the idle start W never passed any inner task: every one is headroom, counted per domain
+    assert slot["headroom_by_domain"] == halves["inner"] and slot["headroom"] == 3
+    # the final of a new claim
+    named = cfg                         # the cycle's plans are content-addressed: freezing again names the same
+    final = {"experiment_id": "md-final", "claims": ["C1"], "repeats": 3, "tasks": "test",
+             "comparisons": [{"claim": "C1", "subject": "evolved", "control": "base", "role": "evolved"},
+                             {"claim": "C1", "subject": "base", "control": "base", "role": "base"}]}
+    refs = bench.freeze({**named, "freeze": {"final": final}}, ".", out=lambda _l: None)
+    activity = bench.open_activity(named, ".", out=lambda _l: None)
+    plan = bench.FinalizationPlan.from_json(activity.objects.get(refs["final_plan_ref"]))
+    assert list(plan.task_ids) == pooled.claim_ids("test") and plan.repeats == 3
+    assert not any(t.startswith("marketing.") for t in plan.task_ids)
+    spent_task = next(t for t in pooled.ids("test") if t.startswith("marketing."))
+    with pytest.raises(ValueError, match="spent domains"):
+        bench.freeze({**named, "freeze": {"final": {**final, "experiment_id": "md-final-2",
+                                                    "tasks": [spent_task, *pooled.claim_ids("test")]}}},
+                     ".", out=lambda _l: None)
+    v3 = {**cfg, "improvement": {"mode": "automatic", "preset": "automationbench_harness_v3"}}
+    assert bench.BenchConfig.load(v3).concurrency == 8
+
+
+# ---------------------------------------------------------------------------- 2026-10-05 review and the staged runbook
+def test_a_domain_list_changed_after_bootstrap_is_refused_at_startup(fake_upstream, tmp_path):
+    """Review finding 8 (M7 §2): the activity's core pins the pooled split it was bootstrapped on. The same workspace
+    opened with another domain list (here the same domains in another order: another pooled split) fails the startup
+    checks before anything is paid; and a domain's split replaced on disk is refused when the activity opens, since
+    the pooled split it was frozen into says otherwise."""
+    cfg = domains_config(fake_upstream, tmp_path)
+    cfg["bench"] = {**cfg["bench"], "domains": ["sales", "support"], "spent": [], "frozen_splits": {}}
+    first = bench.open_activity(cfg, ".", out=lambda _l: None)
+    assert not [p for p in bench.domain_problems(first)]
+    swapped = {**cfg, "bench": {**cfg["bench"], "domains": ["support", "sales"]}}
+    activity = bench.open_activity(swapped, ".", out=lambda _l: None)
+    problems = bench.startup_checks(activity, swapped, phase="baseline", needs_model=False)
+    assert any("the core pins split" in p and first.splits.hash() in p for p in problems), problems
+    # a domain resplit under the same list: the pooled split on disk refuses it
+    loaded = bench.BenchConfig.load({**cfg, "bench": {**cfg["bench"], "seed": 2}})
+    bench.freeze_splits(ab.load_suite("sales", fake_upstream), loaded,
+                        Results(tmp_path / "ws", "sales").manifest_path(), replace_existing=True)
+    with pytest.raises(Exception, match="already freezes another split"):
+        bench.open_activity(cfg, ".", out=lambda _l: None)
+
+
+def test_a_schedule_without_the_presets_research_slot_reports_c4_deferred(fake_upstream, tmp_path, monkeypatch):
+    """The staged runbook (ROADMAP v0.3 step 5): one segment of the preset's rounds and no research slot, frozen as a
+    schedule that runs fewer slots than the preset plans (`_beyond_preset` refuses only more). The cycle runs the
+    baseline and the one segment, the slot never comes, and the report's C4 is not_run with the reason "deferred to
+    a separate workspace" rather than "no research campaign on record"."""
+    cfg, result = run_domains_cycle(fake_upstream, tmp_path, monkeypatch,
+                                    schedule={"worker_rounds": 2, "research_slots": 0, "patience": 2})
+    assert result["status"] == "done" and sorted(result["steps"]) == ["baseline", "segment-0"]
+    c4 = result["report"]["C4"]
+    assert c4["state"] == "not_run" and "deferred to a separate workspace" in c4["detail"]
+    assert "research_slots 0 where the preset plans 1" in c4["detail"]
+    settings = bench.improvement_settings(cfg)
+    assert bench._beyond_preset(settings, {**settings["schedule"], "worker_rounds": 6, "research_slots": 0}, None) == []

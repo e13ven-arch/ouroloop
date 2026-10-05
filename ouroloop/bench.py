@@ -31,8 +31,8 @@ from typing import Callable
 
 from . import config as config_mod
 from .adapters import automationbench as ab
-from .benchmark import (HARD_LIMITS, V03_BUDGET_FIELDS, Budget, Results, RunManifest, SplitManifest, assign_splits,
-                        digest, summarise)
+from .benchmark import (HARD_LIMITS, SPLIT_RULES, V03_BUDGET_FIELDS, Budget, Results, RunManifest, SplitManifest,
+                        assign_splits, digest, pool_manifests, stratified_splits, summarise, task_domain)
 from .ledger import now, redact, write_json
 
 # The seven phases, and `cycle`: the thin automatic entry that calls them in the frozen order (M7 §1).
@@ -42,7 +42,10 @@ IMPLEMENTED = PHASES
 # frontier configurations), and a missing piece is named rather than quietly skipped (BR-01).
 NOT_YET: dict[str, str] = {}
 BENCH_KEYS = {"domain", "upstream_path", "toolset", "seed", "ratios", "budget", "families", "smoke_tasks",
-              "near_duplicate_threshold", "repeats", "concurrency"}
+              "near_duplicate_threshold", "repeats", "concurrency",
+              # v0.3 step 5 (docs/modules/07_BENCH_REPORT.md §2): the domain list, how a domain without a frozen
+              # split is split, the domains whose split is pinned to a hash, and the domains whose test is spent
+              "domains", "split_rule", "frozen_splits", "spent"}
 # A key whose value is the secret itself, rather than the name of the variable that holds it (api_key_env is a
 # name and belongs in the manifest). redact() reads a value's shape and a bare key has none, so the key decides.
 SECRET_KEY = re.compile(r"(?i)(api[_-]?key|token|secret|passw(or)?d|credential)$")
@@ -69,6 +72,17 @@ class BenchConfig:
     near_duplicate_threshold: float = 0.6
     repeats: int = 1
     concurrency: int = 1            # attempts run at a time; a setting of the machine, not of any frozen plan
+    # v0.3 step 5 (M7 §2): the domains, in pooled order. `domain` is derived from them: the one domain's name, or
+    # the pooled name `a+b+...` — the directory the activity's results, runs and pooled split live under.
+    domains: tuple[str, ...] = ()
+    split_rule: str = "hash"        # for a domain with no frozen split; a frozen one is kept whatever this says
+    frozen_splits: dict[str, str] = field(default_factory=dict)    # domain -> the hash its hash-rule split must have
+    spent: tuple[str, ...] = ()     # domains whose test is spent: a new claim's final never reads it
+
+    def __post_init__(self) -> None:
+        self.domains = tuple(self.domains) or (self.domain,)
+        self.domain = pooled_name(self.domains)
+        self.spent = tuple(self.spent)
 
     @classmethod
     def load(cls, cfg: dict, base: str | Path = ".") -> "BenchConfig":
@@ -76,6 +90,7 @@ class BenchConfig:
         unknown = sorted(set(table) - BENCH_KEYS)
         if unknown:
             raise ValueError(f"[bench] does not take {unknown}; it takes {sorted(BENCH_KEYS)}")
+        table.update(_domain_keys(table))
         # [bench.budget] over the preset's per-attempt limits (preset_budget): a preset that carries them is the
         # ceiling, as its harness numbers are — a value here may lower one, never raise one.
         defaults, given = preset_budget(cfg), dict(table.pop("budget", None) or {})
@@ -103,25 +118,161 @@ class BenchConfig:
                 "runner": versions.get("runner", ""), "tool_schemas": "ouroloop"}
 
 
+def pooled_name(domains) -> str:
+    """The name an activity's domains go by: the one domain's own (v0.1/v0.2 configs keep every path and hash they
+    had), or the list joined by `+` in pooled order — a different list or order is a different pooled split."""
+    domains = tuple(domains)
+    return domains[0] if len(domains) == 1 else "+".join(domains)
+
+
+def _domain_keys(table: dict) -> dict:
+    """[bench]'s v0.3 step-5 keys, checked (M7 §2): `domains` is a list and `domain` one name, the same thing when
+    both are given; a single `domain` reads as a list of one. -> the BenchConfig fields they set."""
+    single, listed = table.pop("domain", None), table.pop("domains", None)
+    if listed is not None:
+        if isinstance(listed, str) or not isinstance(listed, (list, tuple)) or not listed or \
+                not all(isinstance(d, str) and d and "+" not in d and "/" not in d for d in listed):
+            raise ValueError(f"[bench] domains = {listed!r}: a non-empty list of upstream domain names")
+        if len(set(listed)) != len(listed):
+            raise ValueError(f"[bench] domains = {list(listed)}: a domain is listed twice")
+        if single is not None and [single] != list(listed):
+            raise ValueError(f"[bench] domain = {single!r} and domains = {list(listed)}: give one of them (a single "
+                             f"domain is a list of one)")
+    domains = tuple(listed) if listed is not None else (single or "marketing",)
+    rule = table.pop("split_rule", "hash")
+    if rule not in SPLIT_RULES:
+        raise ValueError(f"[bench] split_rule = {rule!r}: one of {list(SPLIT_RULES)}")
+    frozen = dict(table.pop("frozen_splits", None) or {})
+    stray = sorted(set(frozen) - set(domains))
+    if stray:
+        raise ValueError(f"[bench.frozen_splits] names {stray}, which [bench] domains does not list")
+    bad = sorted(d for d, h in frozen.items() if not (isinstance(h, str) and re.fullmatch(r"[0-9a-f]{16}", h)))
+    if bad:
+        raise ValueError(f"[bench.frozen_splits] {bad}: the 16-hex-digit hash of the frozen split manifest")
+    spent = table.pop("spent", None) or ()
+    if isinstance(spent, str) or not all(isinstance(d, str) for d in spent):
+        raise ValueError(f"[bench] spent = {spent!r}: a list of domain names")
+    stray = sorted(set(spent) - set(domains))
+    if stray:
+        raise ValueError(f"[bench] spent names {stray}, which [bench] domains does not list")
+    if spent and len(domains) < 2:
+        raise ValueError("[bench] spent: a single domain whose test is spent leaves no test for a new claim; list "
+                         "it beside the new domains (M7 §2)")
+    if spent and set(spent) == set(domains):
+        raise ValueError(f"[bench] spent = {list(spent)} covers every listed domain: a new claim needs a new domain's "
+                         f"test")
+    return {"domains": domains, "split_rule": rule, "frozen_splits": frozen, "spent": tuple(spent)}
+
+
 # ---------------------------------------------------------------------------- splits
 def freeze_splits(suite: ab.Suite, cfg: BenchConfig, path: str | Path, *,
-                  replace_existing: bool = False) -> tuple[SplitManifest, list[str]]:
-    """The frozen task groups of this domain, and what upstream now says that they do not.
+                  replace_existing: bool = False, out: Callable[[str], None] | None = None
+                  ) -> tuple[SplitManifest, list[str]]:
+    """The frozen task groups of this domain (`suite.domain`), and what upstream now says that they do not.
 
     A manifest already on disk is the one that is used, whatever the config now asks for: the groups are fixed
-    before the first result is looked at, so a changed ratio or seed is a new experiment (docs/DESIGN.md §3.1).
+    before the first result is looked at, so a changed ratio, seed or split rule is a new experiment
+    (docs/DESIGN.md §3.1) — a changed rule is noted, never applied (M7 §2: `split_rule` has no effect on a frozen
+    manifest). A new manifest follows the domain's rule: the hash rule for a domain [bench.frozen_splits] pins (and
+    it must reproduce the pinned hash), else [bench] split_rule — "hash" (v0.1/v0.2) or "stratified" over the
+    adapter's static strata (`ab.stratum`: assertion kinds × tool family, from the task definitions alone).
     """
     path = Path(path)
-    fams, rule = ab.families(suite, cfg.families)
+    domain = suite.domain
+    # [bench.families] over several domains names tasks of each; a domain is grouped by its own tasks' entries
+    declared = cfg.families if len(cfg.domains) < 2 else \
+        {t: f for t, f in cfg.families.items() if task_domain(t) == domain}
+    fams, rule = ab.families(suite, declared)
     entries = suite.entries(fams)
+    pinned = cfg.frozen_splits.get(domain)
+    wanted = "hash" if pinned else cfg.split_rule
     if path.exists() and not replace_existing:
         frozen = SplitManifest.load(path)
+        if pinned and frozen.hash() != pinned:
+            raise ValueError(f"{path} freezes split {frozen.hash()}, and [bench.frozen_splits] pins {domain} to "
+                             f"{pinned}: the frozen split is kept as it is, so this workspace is not the pinned one")
+        if out is not None and (frozen.split_rule or "hash") != wanted:
+            out(f"NOTE       {domain}: the frozen split was made under the {frozen.split_rule or 'hash'} rule and is "
+                f"kept; [bench] asks for {wanted}, which only a new workspace would use")
         return frozen, frozen.drift(entries)
-    splits = assign_splits(fams.values(), cfg.ratios, cfg.seed)
-    manifest = SplitManifest(cfg.domain, cfg.environment(suite.versions), rule, entries, splits, cfg.ratios,
-                             cfg.seed)
+    strata = None
+    if wanted == "stratified":
+        members: dict[str, list[str]] = {}
+        for tid in suite.ids():
+            members.setdefault(fams[tid], []).append(ab.stratum(suite, tid))
+        # a declared family of several tasks is one unit: its stratum is the set of its tasks' strata
+        splits, strata = stratified_splits({f: ";".join(sorted(set(k))) for f, k in members.items()}, cfg.ratios,
+                                           cfg.seed)
+    else:
+        splits = assign_splits(fams.values(), cfg.ratios, cfg.seed)
+    manifest = SplitManifest(domain, cfg.environment(suite.versions), rule, entries, splits, cfg.ratios,
+                             cfg.seed, split_rule="stratified" if strata is not None else None, strata=strata)
+    if pinned and manifest.hash() != pinned:
+        raise ValueError(f"the hash rule splits {domain} into {manifest.hash()} here, and [bench.frozen_splits] pins "
+                         f"{pinned}: upstream or this environment (commit, package, python) changed since it was "
+                         f"frozen. Copy the frozen manifest from the workspace that froze it into {path}, or pin the "
+                         f"new hash in a new activity")
     manifest.freeze(path, replace_existing=replace_existing)
     return manifest, []
+
+
+def load_domains(bench: BenchConfig, root, *, replace_existing: bool = False,
+                 out: Callable[[str], None] | None = None) -> tuple[ab.Suite, SplitManifest, list[str]]:
+    """Every listed domain loaded from the upstream checkout and its split frozen, and the activity's suite and
+    split (M7 §2): for one domain, that domain's own, as before; for several, the suites side by side and the
+    domains' frozen manifests pooled in list order (`pool_manifests`), the pooled manifest frozen beside the
+    activity's results under the pooled name. -> (suite, manifest, drift). A domain upstream cannot load is
+    refused by name."""
+    def load(domain: str) -> ab.Suite:
+        try:
+            return ab.load_suite(domain, bench.upstream_path)
+        except ab.UpstreamError:
+            raise
+        except Exception as e:  # noqa: BLE001 - upstream's loader refuses an unknown domain with a ValueError
+            raise ab.UpstreamError(f"[bench] domains lists {domain!r}, which the upstream checkout cannot load: "
+                                   f"{type(e).__name__}: {e}"[:400]) from e
+    if len(bench.domains) == 1:
+        suite = load(bench.domain)
+        manifest, drift = freeze_splits(suite, bench, Results(root, bench.domain).manifest_path(),
+                                        replace_existing=replace_existing, out=out)
+        return suite, manifest, drift
+    stray = sorted(t for t in bench.families if task_domain(t) not in bench.domains)
+    if stray:
+        raise ValueError(f"[bench.families] names tasks of no listed domain: {stray[:5]}")
+    suites = [load(d) for d in bench.domains]
+    pooled_suite = ab.pool_suites(bench.domain, suites)
+    manifests, drift = [], []
+    for suite in suites:
+        manifest, found = freeze_splits(suite, bench, Results(root, suite.domain).manifest_path(),
+                                        replace_existing=replace_existing, out=out)
+        manifests.append(manifest)
+        drift += found
+    pooled = pool_manifests(bench.domain, manifests, ratios=bench.ratios, seed=bench.seed, spent=bench.spent)
+    pooled.freeze(Results(root, bench.domain).manifest_path(), replace_existing=replace_existing)
+    return pooled_suite, pooled, drift
+
+
+def domain_lines(manifest: SplitManifest, *, strata: bool = True) -> list[str]:
+    """What `ouroloop freeze`/the smoke print per domain (M7 §5): its split hash and rule, its counts, and — with
+    `strata` — each stratum's counts."""
+    out = []
+    spent = manifest.spent()
+    for d in manifest.domains():
+        counts = "  ".join(f"{s} {c['tasks']}" for s, c in (d.get("counts") or {}).items())
+        out.append(f"domain     {d['domain']} split={d['hash']} rule={d.get('split_rule') or 'hash'} "
+                   f"seed={d.get('seed')} {counts}" + ("  test: spent" if d["domain"] in spent else ""))
+        for key, c in sorted((d.get("strata") or {}).items()) if strata else ():
+            out.append(f"           stratum {key}: " + "  ".join(f"{s} {n}" for s, n in c.items()))
+    return out
+
+
+def _one_dev_task_per_domain(manifest: SplitManifest) -> list[str]:
+    """The first dev task of each domain in pooled order: what the scorer-contract checks read when an activity
+    spans several domains, so each domain's scorer is checked without any model call."""
+    first: dict[str, str] = {}
+    for t in manifest.ids("dev"):
+        first.setdefault(task_domain(t), t)
+    return list(first.values())
 
 
 # ---------------------------------------------------------------------------- the smoke phase
@@ -141,20 +292,22 @@ def smoke(cfg: dict, base: str | Path = ".", *, tasks: list[str] | None = None, 
     for note in versions.get("notes", []):
         out(f"note       {note}")
 
-    suite = ab.load_suite(bench.domain, bench.upstream_path)
-    out(f"tasks      {len(suite)} in domain {bench.domain}")
-
     root = config_mod.workspace_root(cfg, base)
     results = Results(root, bench.domain)
     if replace_splits and results.path.exists():
         raise ValueError(f"{results.path} already holds results of the frozen split: reassigning the groups now "
                          f"would rescore attempts that were made under the old ones. Start a new workspace.")
-    manifest, drift = freeze_splits(suite, bench, results.manifest_path(), replace_existing=replace_splits)
+    # v0.3 step 5 (M7 §1 smoke): every listed domain is loaded from the checkout, and refused by name if it is not
+    suite, manifest, drift = load_domains(bench, root, replace_existing=replace_splits, out=out)
+    out(f"tasks      {len(suite)} in domain{'s' if len(bench.domains) > 1 else ''} {', '.join(bench.domains)}")
     counts = manifest.counts()
     out(f"splits     {results.manifest_path()} hash={manifest.hash()} rule={manifest.family_rule} "
         f"seed={manifest.seed}")
     out("           " + "  ".join(f"{s}: {c['tasks']} tasks / {c['families']} families"
                                   for s, c in counts.items()))
+    if len(bench.domains) > 1 or manifest.split_rule == "stratified":
+        for line in domain_lines(manifest):
+            out(line)
     for line in drift:
         out(f"DRIFT      {line}")
 
@@ -180,8 +333,12 @@ def smoke(cfg: dict, base: str | Path = ".", *, tasks: list[str] | None = None, 
     if not chosen:
         out(f"NOTE       no development task to check: {len(dev)} of {len(suite)} tasks are in dev. The per-task "
             f"checks and the input audit need one.")
+    # Several domains: the contract checks and the input audit read one dev task of every domain (they call no
+    # model), while the attempts stay the ones chosen above.
+    checked = list(chosen) + ([t for t in _one_dev_task_per_domain(manifest) if t not in chosen]
+                              if len(bench.domains) > 1 and chosen else [])
 
-    checks = ab.contract_check(suite, chosen)
+    checks = ab.contract_check(suite, checked)
     out(f"contract   rubric={checks['rubric'].get('funcs') or 'not importable'} "
         f"weights={checks['rubric'].get('weights')}")
     for note in checks["notes"]:
@@ -196,7 +353,7 @@ def smoke(cfg: dict, base: str | Path = ".", *, tasks: list[str] | None = None, 
         out(f"FAILED     {line}")
 
     audit = {"leaks": [], "overlaps": []}
-    for tid in chosen:
+    for tid in checked:
         ep = suite.episode(tid)
         try:
             found = ab.audit_inputs(suite.tasks[tid], suite.grading(tid), ab.agent_payload(suite.tasks[tid], ep))
@@ -204,7 +361,7 @@ def smoke(cfg: dict, base: str | Path = ".", *, tasks: list[str] | None = None, 
             ep.close()
         audit["leaks"] += found["leaks"]
         audit["overlaps"] += found["overlaps"]
-    out(f"audit      {len(chosen)} tasks: {len(audit['leaks'])} leaks, {len(audit['overlaps'])} prompt/assertion "
+    out(f"audit      {len(checked)} tasks: {len(audit['leaks'])} leaks, {len(audit['overlaps'])} prompt/assertion "
         f"overlaps for review")
     for line in audit["leaks"]:
         out(f"LEAK       {line}")
@@ -212,7 +369,9 @@ def smoke(cfg: dict, base: str | Path = ".", *, tasks: list[str] | None = None, 
         out(f"           {line}")
 
     report = {"upstream": versions, "tasks": len(suite), "splits": {"hash": manifest.hash(), "counts": counts,
-                                                                   "drift": drift, "rule": manifest.family_rule},
+                                                                   "drift": drift, "rule": manifest.family_rule,
+                                                                   "domains": manifest.domains(),
+                                                                   "spent": sorted(manifest.spent())},
               "near_duplicates": dups[:20], "contract": checks, "audit": audit, "attempts": [], "summary": {},
               # Nothing checked is not the same as nothing wrong.
               "ok": bool(chosen) and not checks["failed"] and not audit["leaks"] and not drift}
@@ -324,6 +483,7 @@ from .evolve.build import build_task_dataset as _build_task_dataset
 from .evolve.execution import BudgetError, BudgetMismatch, Budgets, Schedule
 from .evolve.task_gate import GatePlan, TaskEvalPlan, evaluate_task
 from .evolve.task_gate import refill as _refill
+from .evolve.task_gate import refill_attempts as _refill_attempts
 from .evolve.task_gate import screen as _screen
 from .evolve.task_gate import shortfall as _shortfall
 from .points import business_stop_point as _business_stop_point
@@ -680,11 +840,26 @@ class Improvement:
         # v0.3 step 3 (M4 §2 复用, RL6-33): the train-side screen's readings of a candidate that was then installed
         # are this version's valid train readings under the measurement's execution identity; they are returned as
         # recorded and not run again. An unistalled candidate's screen rows match no installed release's identity.
-        reused = self.screen_readings(release_ref, tasks)
+        # v0.3 step 5 (M6 §2, 2026-10-05): so are measurement readings of the same W recorded under another run —
+        # a research slot's common inputs reuse the mainline's readings of the start W, copied in as recorded.
+        reused = self.prior_readings(release_ref, tasks)
         done = {r.task_id for r in reused}
-        rows = self.run_arm("measure", release_ref, [(t, 0) for t in tasks if t not in done], plan_ref="",
-                            split="train", candidate="current", role="base", resume=True) if set(tasks) - done else []
+
+        def run(arm, order, retry=0, supersedes=None):
+            return self.run_arm(arm, release_ref, order, plan_ref="", split="train", candidate="current",
+                                role="base", retry_index=retry, resume=True, supersedes=supersedes)
+        order = [(t, 0) for t in tasks if t not in done]
+        # Stage 0/1 review (M5 §3): an attempt lost to infrastructure — a 429 the provider's retries did not absorb,
+        # a worker that went away — is refilled under the measurement's retry policy, written with what it
+        # supersedes; resume alone would hand the recorded casualty back as the task's reading forever.
+        rows = latest_attempts(_refill_attempts(run("measure", order), run, "measure", self.retries())) \
+            if order else []
         return [*reused, *rows]
+
+    def retries(self) -> int:
+        """How many times an attempt lost to infrastructure is run again: the comparison plan's frozen retry
+        policy (one), the same rule a gate arm's attempts follow (task_gate.refill)."""
+        return int((self.plan("", "", "").retry_policy or {}).get("max_infrastructure_retries", 0))
 
     def screen_readings(self, release_ref: str, tasks) -> list:
         """The valid train-side screen attempts (arm `train_screen`, M4 §2) on `tasks` whose run identity is this
@@ -703,6 +878,49 @@ class Improvement:
             if r.run in runs and r.validity == "valid" and r.task_id in wanted and _arm_of(r.attempt_id) == "train_screen":
                 out[r.task_id] = r                      # the latest valid reading of each task
         return list(out.values())
+
+    def prior_readings(self, release_ref: str, tasks) -> list:
+        """The valid train readings of this W a measurement need not pay for again: the screen readings above, and —
+        v0.3 step 5 (M6 §2, 2026-10-05) — train measurement readings (arm `measure`) recorded under another run whose
+        identity is this measurement's less the labels (another budget scope, another release of the same W and K):
+        the mainline's readings of a research slot's start W, copied into the slot's common workspace as recorded.
+        The measurement's own run is left to `run_arm`'s resume, so what a restarted measurement returns does not
+        change. The latest valid reading of each task."""
+        if self.results is None:
+            return []
+        wanted = set(tasks)
+        expected = self.run_identity(release_ref, plan_ref="", split="train", candidate="current", role="base")[0]
+        same = {k: v for k, v in expected.payload().items() if k not in RUN_LABELS}
+        own = expected.hash()
+        runs = {h for h, run in self.results.runs().items()
+                if {k: v for k, v in run.payload().items() if k not in RUN_LABELS} == same}
+        out: dict = {}
+        for r in self.results.all():
+            if r.run not in runs or r.validity != "valid" or r.task_id not in wanted:
+                continue
+            arm = _arm_of(r.attempt_id)
+            if arm == "train_screen" or (arm == "measure" and r.run != own):
+                out[r.task_id] = r                      # the latest valid reading of each task
+        return list(out.values())
+
+    def measured_cost_per_attempt(self, release_ref: str) -> float | None:
+        """The mean cost of one valid attempt of this W on record (M5 §2, v0.3): every valid, priced reading of a
+        release that runs tasks as this one does (the same W and K, `_runs_like`) — the gate's candidate and
+        confirmation readings of a W count for it once it is installed under another release ref. None when there
+        is none: an unknown cost is never 0."""
+        if self.results is None:
+            return None
+        like: dict = {}
+        costs = []
+        for r in self.results.all():
+            if r.validity != "valid" or r.cost_usd is None or not r.system_release_ref:
+                continue
+            ref = r.system_release_ref
+            if ref not in like:
+                like[ref] = ref == release_ref or self._runs_like(ref, release_ref)
+            if like[ref]:
+                costs.append(float(r.cost_usd))
+        return round(sum(costs) / len(costs), 6) if costs else None
 
     def _measure_run(self, release_ref: str) -> str:
         """The run hash a train measurement (or a collection batch) of this release is recorded under now."""
@@ -814,7 +1032,7 @@ class Improvement:
         plan = self._measurement_plan(latest)
         # Only the booked run's attempts are this measurement: a row of another run (older code, another plan)
         # would make an incomplete measurement look complete.
-        rows = [r for r in by_release[latest] if not (plan and plan.get("run")) or r.run == plan["run"]]
+        rows = latest_attempts([r for r in by_release[latest] if not (plan and plan.get("run")) or r.run == plan["run"]])
         seen = {r.task_id for r in rows}
         planned = list(plan["tasks"]) if plan else sorted(seen)
         # v0.3 step 3 (RL6-33): a planned task the installed candidate's screen already read is on record too
@@ -1052,7 +1270,16 @@ class Improvement:
         control = len(_shortfall(plan, self.control_pool(parent, plan=plan))) if plan.pooled else \
             len(self.dev_tasks) * self.repeats
         attempts = len(self.dev_tasks) * self.repeats * readings + control
-        return {"model_calls": attempts, "tool_calls": attempts}
+        bound = {"model_calls": attempts, "tool_calls": attempts}
+        # v0.3 step 5 (M5 §2 验证预留, 2026-10-05 review): in dollars too, when the parent W has priced readings —
+        # the attempts at its measured cost per attempt, raised by the gate's cost allowance β0 (a candidate may cost
+        # that much more before the cost term judges it) — so a gate the budget cannot pay for is refused before it
+        # starts rather than cut off half way. `usd_per_attempt` lets the round's screen be priced the same way.
+        cpa = self.measured_cost_per_attempt(parent)
+        if cpa is not None:
+            per = cpa * (1 + float(plan.gate().cost_beta0 or 0.0))
+            bound.update(usd=round(attempts * per, 6), usd_per_attempt=round(per, 6))
+        return bound
 
     def _build(self, experiment, budget) -> _ct.BuildResult:
         self._experiment_ref = experiment.ref()      # the receipt names the experiment it came from
@@ -1237,6 +1464,15 @@ def _rate_limit_recorder(researcher, events: _ct.Events, *, scope: str, first_ro
     return record
 
 
+def latest_attempts(rows) -> list:
+    """One row per (task, repeat): the last one recorded — a refill after the infrastructure casualty it supersedes —
+    in first-seen order. A measurement's reading is that; the casualty stays on record in the results file."""
+    out: dict = {}
+    for r in rows:
+        out[(r.task_id, r.attempt)] = r
+    return list(out.values())
+
+
 def _retry_of(attempt_id: str) -> int:
     """The retry index an attempt id carries (benchmark.attempt_id: `...#<retry>`)."""
     _, _, retry = attempt_id.rpartition("#")
@@ -1326,10 +1562,13 @@ PRESETS = {
 # The v0.3 preset (docs/modules/07_BENCH_REPORT.md §2, M0 §2, v0.3, 2026-10-04): the v1 preset under package API v2 —
 # the `agent` component kind, so a candidate may change the loop itself — with K's effort ceiling and the five
 # per-attempt hard limits at the design's values as [bench.budget]'s defaults (preset_budget). Its own entry, not a
-# change to the v1 one: the v1 numbers are frozen into the v0.1/v0.2 cores and are not revisited. Still one domain
-# (Marketing) until step 5 of the v0.3 order widens [bench] to a domain list.
+# change to the v1 one: the v1 numbers are frozen into the v0.1/v0.2 cores and are not revisited. Since v0.3 step 5
+# it takes a [bench] domain list (no Marketing lock).
 PRESETS["automationbench_harness_v3"] = {
     **json.loads(json.dumps(PRESETS["marketing_harness_v1"])),
+    # v0.3 step 5 (M7 §2 “preset 的领域锁”): no domain lock — [bench] domains may list any upstream domains, and the
+    # rule is that every one of them loads from the checkout (bench.load_domains, at every open of the activity).
+    "domain": None,
     "harness": {**PRESETS["marketing_harness_v1"]["harness"], "package_api": "harness_package.v2",
                 "components": ["agent", "memory", "skills", "on_finish", "before_tool", "after_tool", "tools"],
                 "max_effort": "high",
@@ -1352,10 +1591,18 @@ PRESETS["automationbench_harness_v3"] = {
                   "confirmation_repeats": 1,
                   "gate": {"mode": "quality", "min_gain": 0.05, "min_groups": 5, "max_regression_rate": 0.1,
                            "regression_drop": 0.5, "cost_beta0": 0.10, "cost_beta1": 2.0, "min_tasks": 25}},
-    # arm_share 0.15 is the v1 placeholder: M6 §2 (v0.3) re-estimates it from the mainline rounds' measured cost ×
-    # worker_round_limit plus the confirmation reading, and the re-estimated value is written here before the
-    # step-5 root opens (ROADMAP v0.3 step 5), not in this step.
-    "campaign": {"worker_round_limit": 3, "arm_share": 0.15, "outer_share": 0.08, "min_gain": 0.05,
+    # arm_share / outer_share re-estimated for step 5 (M6 §2, v0.3; 2026-10-05), replacing v1's 0.15 / 0.08. A share is
+    # a fraction of the frozen root. These were derived for the first step-5 plan's single $2,800 root (candidates at
+    # effort high, $0.69 an attempt): M6 §2's arm share = a mainline round ($10 R + ~36 x $0.69 screen $25 + 125 x
+    # $0.69 gate $86.25 = $121.25) x worker_round_limit 3 + one confirmation $86.25 = $450 -> 450 / 2800 = 0.16; the
+    # outer comparison 2 x 63 x $0.69 = $86.9 + 10% refill + 8 lanes and 2 stuck reservations ($72.8) = $168 ->
+    # 0.06. The staged plan the user chose (2026-10-05, ROADMAP v0.3 step 5) runs no slot in that workspace and
+    # defers it to a copy with a root of its own (stage 5); at K's effort medium the same formula gives an arm
+    # $90.5 x 3 + $62.5 = $334, below what an arm can spend on its 62-task inner gate (3 x ($10 + $18 + $31) + a
+    # confirmation $31 + an install's rerun $65.5 = $273.5, plus $72.8 of reservations = $346), and the outer
+    # comparison 2 x 63 x $0.50 + 10% + $72.8 = $142; so before stage 5's root opens these fractions are re-derived
+    # for that root from $346 and $142 (a $1,000 root: 0.35 and 0.15).
+    "campaign": {"worker_round_limit": 3, "arm_share": 0.16, "outer_share": 0.06, "min_gain": 0.05,
                  "min_groups": 1, "min_headroom_tasks": 6},
     "concurrency": 8,
 }
@@ -1408,9 +1655,15 @@ def improvement_settings(cfg: dict) -> dict | None:
     if unknown:
         raise ValueError(f"[improvement] allowed_methods {unknown}: one of {list(METHODS)}")
     preset = PRESETS[name]
-    domain = dict(cfg.get("bench") or {}).get("domain", "marketing")
-    if domain != preset["domain"]:
-        raise ValueError(f"[improvement] preset {name!r} is for the {preset['domain']} domain, not {domain!r}")
+    table_bench = dict(cfg.get("bench") or {})
+    listed = table_bench.get("domains") or [table_bench.get("domain", "marketing")]
+    listed = [listed] if isinstance(listed, str) else list(listed)
+    # The v1 preset is locked to Marketing (its numbers are frozen into the v0.1/v0.2 cores). The v3 preset has no
+    # domain lock (docs/modules/07_BENCH_REPORT.md §2, v0.3 step 5): its rule is that every listed domain loads from
+    # the upstream checkout, which bench.load_domains checks wherever an activity opens (smoke, freeze, every phase).
+    if preset.get("domain") is not None and listed != [preset["domain"]]:
+        raise ValueError(f"[improvement] preset {name!r} is for the {preset['domain']} domain, not "
+                         f"{listed[0] if len(listed) == 1 else listed!r}")
     # v0.3 step 3 (M4 §2): k candidates a round, the preset's value by default and its ceiling (3 under the v3
     # preset; the v1 preset has none, so 1 as before); fewer is allowed, more is refused before anything is paid.
     ceiling = int(preset.get("max_candidates_per_round", 1))
@@ -1599,7 +1852,7 @@ def actor_identity(objects: _ct.Objects, table: dict) -> str:
 
 
 def open_activity(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = print,
-                  bootstrap: bool = True) -> Activity:
+                  bootstrap: bool = True, strata: bool = False) -> Activity:
     """Load the environment, freeze the splits if they are not frozen, and find or create the initial release.
 
     Creating it is a bootstrap authorisation, not an improvement: nothing has been compared at that point, and a
@@ -1609,10 +1862,14 @@ def open_activity(cfg: dict, base: str | Path = ".", *, out: Callable[[str], Non
     bench = BenchConfig.load(cfg, base)
     rsi = RsiConfig.load(cfg)
     versions = ab.require(bench.upstream_path)
-    suite = ab.load_suite(bench.domain, bench.upstream_path)
     root = config_mod.workspace_root(cfg, base)
     results = Results(root, bench.domain)
-    manifest, drift = freeze_splits(suite, bench, results.manifest_path())
+    # v0.3 step 5 (M7 §2): every listed domain loads and has its own frozen split; several are pooled into one
+    suite, manifest, drift = load_domains(bench, root, out=out)
+    if len(bench.domains) > 1:
+        # each domain's split hash and counts; `ouroloop freeze` asks for the strata too (M7 §5)
+        for line in domain_lines(manifest, strata=strata):
+            out(line)
     rt = config_mod.build_runtime(cfg, base)
     config_mod.register_builtin_points(rt)
     objects = _ct.Objects(root)
@@ -1721,6 +1978,162 @@ def budget_problems(frozen: dict | None, pricing=None) -> list[str]:
         if problem:
             problems.append(problem)
     return problems
+
+
+def final_share_problem(frozen: dict | None, pricing, concurrency: int) -> str:
+    """Why the frozen final share cannot hold `concurrency` reservations of one call's bound at once, or ""
+    (docs/modules/05_EXECUTION_BUDGET.md §2 “final 份额的定法”, v0.3): every call in flight holds its worst case until
+    it settles, so a share of less than concurrency × bound refuses calls while there is money left — v0.2's first
+    final ($50 share, 4 × $7.28 in flight) recorded 51 attempts as budget_exhausted in 78 seconds. Checked where a
+    budget is frozen, before any root opens with it; only with a bound the prices make derivable."""
+    share = budget_allocations(frozen).get("final")
+    if not share or pricing is None or not getattr(pricing, "bounded", False):
+        return ""
+    n = max(int(concurrency or 1), 1)
+    bound = pricing.bound()
+    short = {dim: (float(value), round(n * float(bound[dim]), 6)) for dim, value in share.items()
+             if dim in bound and n * float(bound[dim]) > float(value) + 1e-9}
+    if not short:
+        return ""
+    return ("the final share cannot hold the concurrent reservations: " + "; ".join(
+        f"{dim} {have} < concurrency {n} x one call's bound {round(float(bound[dim]), 6)} = {need}"
+        for dim, (have, need) in short.items()))
+
+
+def _execution_of(objects, release_ref: str | None):
+    """What a release executes a task with — its W and its K (`Improvement._runs_like`): R takes no part in a run,
+    and a gate's candidate release and the release that installs it are two refs of one execution. None for a ref
+    this store does not hold."""
+    try:
+        release = objects.load(release_ref, _ct.SystemRelease)
+    except (KeyError, TypeError, _ct.ContractError):
+        return None
+    return (release.worker_ref, release.core_ref)
+
+
+def final_estimate(activity: Activity, *, task_ids, repeats: int, arms: dict, plan_ref: str | None = None,
+                   pricing=None, concurrency: int = 1, fallback=None) -> dict:
+    """What a final is expected to spend, from what is on record (M5 §2 “final 份额的定法”, v0.3): for each arm, the
+    attempts still to run (tasks × repeats less the plan's valid attempts already on record) times the arm's
+    measured cost per valid attempt — over the readings of every release that executes as the arm's release does
+    (the same W and K: a W*'s gate readings were made under its candidate release, which is another ref than the
+    release that installed it; 2026-10-05 review), its dev readings (baseline, control, candidate and confirmation
+    arms) when it has any, else all of its priced readings — and `concurrency` reservations of one call's bound,
+    which the share must hold beside the spend. Without a priced reading the arm's cost is `fallback` (a number, or
+    {arm: number} — the config's [estimate] cost_per_attempt) when given, else unknown; never 0."""
+    rows = list(activity.results.all()) if activity.results is not None else []
+    planned = len(tuple(task_ids)) * int(repeats)
+    out, total, unknown = [], 0.0, []
+    executions: dict = {}
+
+    def execution(ref):
+        if ref not in executions:
+            executions[ref] = _execution_of(activity.objects, ref)
+        return executions[ref]
+    for arm, release in arms.items():
+        target = execution(release)
+        readings = [r for r in rows if r.validity == "valid" and r.cost_usd is not None and r.system_release_ref
+                    and (r.system_release_ref == release or (target is not None
+                                                             and execution(r.system_release_ref) == target))]
+        pool = [r for r in readings if r.split == "dev"] or readings
+        cpa = round(sum(r.cost_usd for r in pool) / len(pool), 6) if pool else None
+        source = ("dev" if pool[0].split == "dev" else "all") if pool else None
+        if cpa is None and fallback is not None:
+            given = fallback.get(arm) if isinstance(fallback, dict) else fallback
+            if given is not None:
+                cpa, source = round(float(given), 6), "config"
+        done = {r.pair_key for r in rows if plan_ref and r.candidate == arm and r.validity == "valid"
+                and str(r.pair_key).startswith(f"{plan_ref}/")}
+        todo = max(planned - len(done), 0)
+        expected = None if cpa is None else round(todo * cpa, 6)
+        if expected is None:
+            unknown.append(arm)
+        else:
+            total += expected
+        out.append({"arm": arm, "release": release, "attempts": todo, "done": len(done), "readings": len(pool),
+                    "readings_split": source or "none", "cost_per_attempt": cpa, "expected": expected})
+    bound = pricing.bound().get("usd") if pricing is not None and getattr(pricing, "bounded", False) else None
+    reservations = None if bound is None else round(max(int(concurrency or 1), 1) * float(bound), 4)
+    expected = None if unknown else round(total, 6)
+    return {"arms": out, "expected": expected, "unknown": unknown, "concurrency": max(int(concurrency or 1), 1),
+            "bound": None if bound is None else round(float(bound), 4), "reservations": reservations,
+            "suggested_share": None if expected is None or reservations is None else round(expected + reservations, 2)}
+
+
+# Settlements that never come back (a killed `claude` child, an answer that never arrived) keep their reservation:
+# v0.1/v0.2 and the ceiling run left 4 in ~9,900 calls, about 1 in 2,250 (2026-10-05 review). A final's share holds
+# this many beside its lanes; the root is sized with the same rate (ROADMAP v0.3 step 5).
+STUCK_BOUNDS = 2
+ESTIMATE_KEYS = {"cost_per_attempt"}
+
+
+def estimate_settings(cfg: dict):
+    """The config's `[estimate] cost_per_attempt` (a number, or {arm: number}): the cost per attempt a final's
+    estimate uses for an arm with no priced reading yet (M5 §2, 2026-10-05 review). None when absent. A planning
+    number, never a limit and never part of a plan."""
+    table = dict(cfg.get("estimate") or {})
+    unknown = sorted(set(table) - ESTIMATE_KEYS)
+    if unknown:
+        raise ValueError(f"[estimate] does not take {unknown}; it takes {sorted(ESTIMATE_KEYS)}")
+    value = table.get("cost_per_attempt")
+    if value is None:
+        return None
+    numbers = value.values() if isinstance(value, dict) else [value]
+    if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 for v in numbers):
+        raise ValueError(f"[estimate] cost_per_attempt = {value!r}: a positive number of dollars, or one per arm")
+    return dict(value) if isinstance(value, dict) else float(value)
+
+
+def final_plan_problem(activity: Activity, cfg: dict, plan: "FinalizationPlan", frozen_budget: dict | None,
+                       out: Callable[[str], None]) -> str:
+    """Why the final share cannot hold this final plan, or "" (M5 §2 “final 份额的定法”; 2026-10-05 review: the share
+    failed silently once W* cost more than the share was sized for). Before the plan is sealed the estimate is
+    printed — attempts × each arm's measured cost per attempt from its pooled readings, else the config's
+    [estimate] — and checked: the expected spend plus `concurrency` in-flight bounds plus STUCK_BOUNDS stuck ones
+    must fit the share's dollars. Only for a share in dollars under prices that give a bound."""
+    share = budget_allocations(frozen_budget).get("final") or {}
+    pricing = pricing_of(cfg)
+    if share.get("usd") is None or not getattr(pricing, "bounded", False):
+        return ""
+    estimate = final_estimate(activity, task_ids=plan.task_ids, repeats=plan.repeats,
+                              arms={c["subject"]: plan.release_refs.get(c["subject"]) or activity.release_ref
+                                    for c in plan.comparisons if not c.get("llm")},
+                              pricing=pricing, concurrency=activity.bench.concurrency,
+                              fallback=estimate_settings(cfg))
+    for line in estimate_lines(estimate, float(share["usd"])):
+        out(line)
+    if estimate["expected"] is None:
+        return (f"the final share cannot be checked: no priced reading of {estimate['unknown']} and no [estimate] "
+                f"cost_per_attempt for them")
+    need = estimate["expected"] + estimate["reservations"] + STUCK_BOUNDS * estimate["bound"]
+    if need > float(share["usd"]) + 1e-9:
+        return (f"the final share ${float(share['usd']):.2f} cannot hold the plan: expected ${estimate['expected']:.2f} + "
+                f"{estimate['concurrency']} in-flight and {STUCK_BOUNDS} stuck reservations of "
+                f"${estimate['bound']:.4f} = ${need:.2f}")
+    return ""
+
+
+def estimate_lines(estimate: dict, share_left: float | None = None) -> list[str]:
+    """The printed form of final_estimate: one line per arm and the total against the share."""
+    lines = []
+    for a in estimate["arms"]:
+        cost = "unknown (no costed reading of this release)" if a["cost_per_attempt"] is None else \
+            (f"${a['cost_per_attempt']:.4f} from the config's [estimate] = ${a['expected']:.2f}"
+             if a["readings_split"] == "config" else
+             f"${a['cost_per_attempt']:.4f} from {a['readings']} {a['readings_split']} readings = ${a['expected']:.2f}")
+        lines.append(f"estimate   {a['arm']} ({_ct.short(a['release']) if a['release'] else '?'}): {a['attempts']} "
+                     f"attempts to run ({a['done']} on record) x {cost}")
+    total = "unknown" if estimate["expected"] is None else f"${estimate['expected']:.2f}"
+    held = "" if estimate["reservations"] is None else \
+        f" + {estimate['concurrency']} in-flight reservations x ${estimate['bound']:.4f} = ${estimate['reservations']:.2f}"
+    tail = ""
+    if share_left is not None and estimate["expected"] is not None and estimate["reservations"] is not None:
+        need = estimate["expected"] + estimate["reservations"]
+        tail = (f"; the share has ${share_left:.2f} left: " +
+                ("holds it" if share_left + 1e-9 >= need else f"SHORT by ${need - share_left:.2f} (lanes will wait "
+                                                              f"for reservations; lower --concurrency)"))
+    lines.append(f"estimate   expected spend {total}{held}{tail}")
+    return lines
 
 
 def activity_budget(activity: Activity, cfg: dict, phase: str):
@@ -1942,8 +2355,12 @@ def baseline(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = 
         order = [(t, i) for t in dev for i in range(work.repeats)]
         # Attempts already on record for this run are kept, not paid again: a restarted baseline (a cycle that
         # stopped half way through it) runs only what is missing.
-        rows = work.run_arm(candidate, activity.release_ref, order, plan_ref="", candidate=candidate, role=role,
-                            resume=True)
+        def run(arm, pairs, retry=0, supersedes=None, _work=work, _candidate=candidate, _role=role):
+            return _work.run_arm(arm, activity.release_ref, pairs, plan_ref="", candidate=_candidate, role=_role,
+                                 retry_index=retry, resume=True, supersedes=supersedes)
+        # Stage 0/1 review (M5 §3): attempts lost to infrastructure are refilled once, also on a restart that finds
+        # them recorded — the 16-way trial's 429 casualties would otherwise be holes in W0's pooled dev reading
+        rows = latest_attempts(_refill_attempts(run(candidate, order), run, candidate, work.retries()))
         summary = summarise(rows)
         # The label is what actually ran: the pinned actor, unless the arm names its own model.
         label = model_identity(provider, llm) if (own or pinned is None) else \
@@ -2304,6 +2721,95 @@ def _install_research(activity: Activity, plan, recorded: dict, out) -> dict | N
     return {k: v for k, v in vars(installation).items() if isinstance(v, (str, int, float, bool, type(None)))}
 
 
+def _campaign_host(activity: Activity, objects: _ct.Objects, worker_ref: str) -> dict:
+    """The host contract a research slot's releases carry (M6 §2; 2026-10-05 review): the mainline release's target
+    harness and required capabilities, copied into the slot's store, so a campaign release runs — and is recorded —
+    on the same host as the mainline. Its runs then have the mainline's execution identity, and the mainline's
+    readings of the start W can be reused as the slot's common inputs instead of being paid for again. A mainline
+    release without a host contract (a v2 activity) gives none."""
+    from .release import required_capabilities_of
+    active = _ct.SystemRelease.from_json(activity.objects.get(activity.releases.active()["release_ref"]))
+    if not active.target_harness_ref:
+        return {}
+    _ct.copy_closure(activity.objects, objects, [active.target_harness_ref])
+    return {"target_harness_ref": active.target_harness_ref,
+            "required_capabilities": required_capabilities_of(objects, active.required_capabilities, worker_ref)}
+
+
+def _mainline_readings(activity: Activity, provider, train_tasks, inner_tasks) -> tuple[list, list]:
+    """The mainline's valid readings of a research slot's start W that its common inputs reuse (M6 §2; 2026-10-05
+    review) -> (train rows, inner dev rows). Train: the start W's measurement and screen readings under the
+    measurement's execution identity (the labels aside), the latest of each task — every train task when the start
+    W is W0 (the baseline measured them all), the reruns and screens when it is an installed W. Dev: the start W's
+    readings of the inner tasks from runs without a plan (the baseline's dev run), the only ones an arm's inner gate
+    may pool: a gate's readings were made under its own plan's task list (M3 §2.1(a) conditions)."""
+    start = activity.releases.active()["release_ref"]
+    if activity.results is None:
+        return [], []
+    work = improvement(activity, template_ref=activity.rsi.task_plan_ref, provider=provider)
+
+    def runs_like(split: str, *, planless: bool) -> set:
+        expected = work.run_identity(start, plan_ref="", split=split, candidate="current", role="base")[0]
+        same = {k: v for k, v in expected.payload().items() if k not in RUN_LABELS}
+        return {h for h, run in activity.results.runs().items() if not (planless and run.eval_plan_ref)
+                and {k: v for k, v in run.payload().items() if k not in RUN_LABELS} == same}
+    rows = list(activity.results.all())
+    train: dict = {}
+    if train_tasks:
+        # a screen reading ran under its own plan: for a train measurement only the execution identity matters
+        runs, wanted = runs_like("train", planless=False), set(train_tasks)
+        for r in rows:
+            if r.run in runs and r.validity == "valid" and r.task_id in wanted \
+                    and _arm_of(r.attempt_id) in ("measure", "train_screen"):
+                train[r.task_id] = r                    # the latest valid reading of each task
+    dev = []
+    if inner_tasks:
+        runs, wanted = runs_like(_split_of_tasks(activity.splits, inner_tasks), planless=True), set(inner_tasks)
+        dev = [r for r in rows if r.run in runs and r.validity == "valid" and r.task_id in wanted
+               and _arm_of(r.attempt_id) not in SCREEN_ARMS]
+    return list(train.values()), dev
+
+
+def _attempt_means(rows) -> dict:
+    """The mean of one valid attempt in each budget dimension it can be read in — dollars, act calls (as model
+    calls), tool calls, input and output tokens — over these rows; a dimension no row measured is left out."""
+    from .evolve.execution import normalize_usage
+    valid = [r for r in rows if r.validity == "valid"]
+    if not valid:
+        return {}
+    out = {"model_calls": sum(r.steps for r in valid) / len(valid),
+           "tool_calls": sum(r.tool_calls for r in valid) / len(valid)}
+    priced = [r.cost_usd for r in valid if r.cost_usd is not None]
+    if priced:
+        out["usd"] = sum(priced) / len(priced)
+    usage = [normalize_usage(r.usage) for r in valid if r.usage]
+    if usage:
+        out["input_tokens"] = sum(u["input_tokens"] + u["cache_read_tokens"] + u["cache_write_tokens"]
+                                  for u in usage) / len(usage)
+        out["output_tokens"] = sum(u["output_tokens"] for u in usage) / len(usage)
+    return out
+
+
+def common_inputs_estimate(activity: Activity, cfg: dict, pair, limits: dict) -> dict:
+    """What a research slot's common inputs will cost at least (M6 §2; 2026-10-05 review): the start W's train tasks
+    and inner dev tasks the mainline has no reusable reading of (`_mainline_readings`), times the start W's measured
+    mean per attempt (the activity's, when the start W has none), in each dimension the root limits. The slot opens
+    only when the root covers this beside the arms' and the outer comparison's shares."""
+    train = _tasks_of(activity, pair.inner_train_groups)
+    inner = _tasks_of(activity, pair.inner_dev_groups)
+    try:
+        reused_train, reused_dev = _mainline_readings(activity, _pinned_provider(activity, cfg), train, inner)
+    except Exception:  # noqa: BLE001 - an estimate that cannot read the records assumes nothing is reused
+        reused_train, reused_dev = [], []
+    missing = (len(set(train) - {r.task_id for r in reused_train})
+               + (len(set(inner) - {r.task_id for r in reused_dev}) if _pooling_of(activity)[0] == "pooled" else 0))
+    start = activity.releases.active()["release_ref"]
+    rows = [r for r in (activity.results.all() if activity.results is not None else ())
+            if r.system_release_ref == start] or list(activity.results.all() if activity.results is not None else ())
+    means = _attempt_means(rows)
+    return {k: round(missing * float(means[k]), 6) for k in limits if k in means and missing}
+
+
 def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_budget, *, provider,
                       researcher, out=print, pricing=None, shared=None):
     """One arm's whole improvement loop, in its own workspace.
@@ -2327,7 +2833,8 @@ def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_
     rt = config_mod.build_runtime({"workspace": {"root": str(root)}, "backends": {"mock": {"type": "mock"}}}, ".")
     config_mod.register_builtin_points(rt)
     start = releases.bootstrap(pair.initial_w_ref, r_ref, core_ref,
-                               reason=f"campaign {plan.id} {pair.pair_id} arm {arm}")
+                               reason=f"campaign {plan.id} {pair.pair_id} arm {arm}",
+                               **_campaign_host(activity, objects, pair.initial_w_ref))
     pooling, confirmations = _pooling_of(activity)
     inner = Improvement(rt=rt, suite=activity.suite, splits=activity.splits, objects=objects, releases=releases,
                         provider=provider, core_ref=core_ref, gate=_gate_of(activity, plan),
@@ -2382,8 +2889,20 @@ def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_
         # the common release the copied rows name, so the arm reads them as a measurement of its own start (the same
         # W and K: Improvement._runs_like) rather than paying for the failures again
         _ct.copy_closure(shared["objects"], objects, [shared["measurement"]["release"]])
-        own = inner.last_measurement(releases.active()["release_ref"])
-        if own is not None and own["release"] != start and inner._runs_like(own["release"], start):
+        own = None
+        if not any(e.get("scope") == inner.scope_id for e in releases.events.of("measurement_planned")):
+            # The arm has measured nothing of its own yet: it starts from the common measurement as it was made,
+            # whose rows may name several releases of the start W (the mainline's readings it reused, 2026-10-05),
+            # plus the collection batches the arm itself ran on `start` before a pause.
+            held = {r.attempt_id for r in shared["measurement"]["train"]}
+            mine = [r for r in inner.results.all() if _arm_of(r.attempt_id) == "collect"
+                    and r.system_release_ref == start and r.attempt_id not in held]
+            common = shared["measurement"]
+            own = {**common, "release": start, "results": [*common["results"], *mine],
+                   "train": [*common["train"], *mine], "missing": [],
+                   "feedback": _feedback.build_feedback(inner.rt, objects=inner.objects, scope_id=inner.scope_id)}
+        elif (own := inner.last_measurement(releases.active()["release_ref"])) is not None \
+                and own["release"] != start and inner._runs_like(own["release"], start):
             # The copied rows name the common release; the arm's own collection batches ran on `start` (the release
             # its measurement stood for) and last_measurement filed them under that release, not the common one.
             # They join the measurement here, or a restart would lose evidence paid for before the pause. A batch
@@ -2534,7 +3053,8 @@ def _campaign_common(activity: Activity, plan, pair, budget, *, provider, pricin
     rt = config_mod.build_runtime({"workspace": {"root": str(root)}, "backends": {"mock": {"type": "mock"}}}, ".")
     config_mod.register_builtin_points(rt)
     start = releases.bootstrap(pair.initial_w_ref, plan.r_control_ref, core_ref,
-                               reason=f"campaign {plan.id} {pair.pair_id} common inputs")
+                               reason=f"campaign {plan.id} {pair.pair_id} common inputs",
+                               **_campaign_host(activity, objects, pair.initial_w_ref))
     pooling, confirmations = _pooling_of(activity)
     common = Improvement(rt=rt, suite=activity.suite, splits=activity.splits, objects=objects, releases=releases,
                          provider=provider, core_ref=core_ref, gate=_gate_of(activity, plan),
@@ -2546,6 +3066,17 @@ def _campaign_common(activity: Activity, plan, pair, budget, *, provider, pricin
                          train_tasks=tuple(_tasks_of(activity, pair.inner_train_groups)),
                          harness=_harness_of(activity), worker=isolated_worker(_harness_of(activity)),
                          control_pooling=pooling, confirmation_repeats=confirmations)
+    # 2026-10-05 review (M6 §2): the mainline's valid readings of the start W are common inputs already paid for —
+    # copied in as recorded (rows, run manifests, grading, transcripts and the releases they name), so the
+    # measurement below runs only the train tasks they do not cover (Improvement.prior_readings), and the inner
+    # dev reading only the tasks the baseline's dev run did not read. Under W0 that is nothing at all.
+    reused_train, reused_dev = _mainline_readings(activity, provider, common.train_tasks,
+                                                  common.dev_tasks if pooling == "pooled" else ())
+    if reused_train or reused_dev:
+        _ct.copy_closure(activity.objects, objects,
+                         sorted({r.system_release_ref for r in [*reused_train, *reused_dev] if r.system_release_ref}))
+        _copy_measurement({"train": [*reused_train, *reused_dev]}, activity.results,
+                          Path(activity.rt.root) / "transcripts", common.results, Path(rt.root) / "transcripts")
     measurement = common.measure(start, None)
     shared: dict = {"measurement": measurement, "results": common.results, "transcripts": Path(rt.root) / "transcripts",
                     "research_model": research_model, "notes": None, "dev": [], "dev_runs": {}, "objects": objects}
@@ -2553,11 +3084,14 @@ def _campaign_common(activity: Activity, plan, pair, budget, *, provider, pricin
         # M6 §2 (v0.3): under a pooled control, the start W's one reading of the inner dev tasks is a common input
         # too — taken here, charged to the common scope, and copied into both arms — so both inner gates start
         # from the same pooled control and neither pays for a control arm the other already has. Under a fresh
-        # control (an older plan) each arm's gate reads its own control, as before.
-        order = [(t, i) for t in common.dev_tasks for i in range(common.repeats)]
-        shared["dev"] = common.run_arm("dev_baseline", start, order, plan_ref="",
-                                       split=_split_of_tasks(activity.splits, common.dev_tasks),
-                                       candidate="current", role="base", resume=True)
+        # control (an older plan) each arm's gate reads its own control, as before. The mainline's plan-less dev
+        # readings of the start W stand for the tasks they cover (2026-10-05 review).
+        read = {r.task_id for r in reused_dev}
+        order = [(t, i) for t in common.dev_tasks if t not in read for i in range(common.repeats)]
+        fresh = common.run_arm("dev_baseline", start, order, plan_ref="",
+                               split=_split_of_tasks(activity.splits, common.dev_tasks),
+                               candidate="current", role="base", resume=True) if order else []
+        shared["dev"] = [*reused_dev, *fresh]
         shared["dev_runs"] = {h: run for h, run in common.results.runs().items()
                               if h in {r.run for r in shared["dev"]}}
     bound = _P.bind_release(start, profile="task", services=common.services(), authorization="installed")
@@ -2574,8 +3108,10 @@ def _campaign_common(activity: Activity, plan, pair, budget, *, provider, pricin
         shared["notes"] = diagnosis.cache
     _ct.Events(activity.root).append("campaign_common", pair=pair.pair_id, release=start,
                                    measured=len(measurement["train"]), failed=len(measurement["failed"]),
+                                   reused_train=len(reused_train), reused_dev=len(reused_dev),
                                    selected=[s["task_id"] for s in selected], notes_shared=shared["notes"] is not None)
-    out(f"common     {pair.pair_id}: W0 measured on {len(measurement['train'])} train tasks, "
+    out(f"common     {pair.pair_id}: W0 measured on {len(measurement['train'])} train tasks "
+        f"({len(reused_train)} train and {len(reused_dev)} dev readings reused from the mainline), "
         f"{len(measurement['failed'])} failed; first-round notes "
         + ("written once for both arms" if shared["notes"] is not None else "written by each arm"))
     return shared
@@ -2759,6 +3295,12 @@ def evaluate(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = 
     if not ref or not activity.objects.has(ref):
         raise ValueError("[rsi] final_plan_ref must name a sealed FinalizationPlan (bench.seal)")
     plan = FinalizationPlan.from_json(activity.objects.get(ref))
+    spent = sorted(t for t in plan.task_ids if task_domain(t) in activity.splits.spent()
+                   and t in {e.task_id for e in activity.splits.entries} and activity.splits.split_of(t) == "test")
+    if spent:
+        # M7 §2: a spent domain's test is never read by a new claim's final, however the plan came to name it
+        raise ValueError(f"{plan.experiment_id} names {len(spent)} test tasks of spent domains "
+                         f"{sorted(activity.splits.spent())} ({spent[:3]}): nothing is run")
     require(startup_checks(activity, cfg, phase="evaluate"), phase="evaluate")
     state_path = Path(activity.root) / "rsi" / "finalization" / f"{plan.experiment_id}.json"
     if not state_path.exists():
@@ -2769,13 +3311,31 @@ def evaluate(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = 
     done = {a["attempt_id"] for a in state["attempts"]}
     out(f"final      {plan.experiment_id} claims={list(plan.claims)} tasks={len(plan.task_ids)} "
         f"repeats={plan.repeats} status={state['status']}")
-    write_json(state_path, {**state, "status": "running"})
     rows: dict = {}
     budget = activity_budget(activity, cfg, f"final:{plan.experiment_id}")
     # The final spends the share the frozen budget set aside for it, when there is one, and nothing else.
     rsi_cfg = RsiConfig.load(cfg)
     final_share = "final" if "final" in budget_allocations(activity.objects.get(rsi_cfg.budget_ref)
                                                           if rsi_cfg.budget_ref else {}) else None
+    # M5 §2 (v0.3): before anything is paid, what the final is expected to spend at the costs on record — attempts
+    # still to run times each arm's measured cost per attempt — and whether what is left of the share holds it
+    # beside the in-flight reservations. 2026-10-05 review: when it does not, the final is refused here, before the
+    # first attempt — a final whose lanes run out of reservations half way is not cheaper, it is void (final-1).
+    estimate = final_estimate(activity, task_ids=plan.task_ids, repeats=plan.repeats,
+                              arms={c["subject"]: plan.release_refs.get(c["subject"]) or activity.release_ref
+                                    for c in plan.comparisons if not c.get("llm")},
+                              plan_ref=ref, pricing=pricing_of(cfg), concurrency=activity.bench.concurrency,
+                              fallback=estimate_settings(cfg))
+    left = budget.remaining(allocation=final_share).get("effective_remaining", {}).get("usd")
+    for line in estimate_lines(estimate, left):
+        out(line)
+    if left is not None and estimate["expected"] is not None and estimate["reservations"] is not None \
+            and estimate["expected"] + estimate["reservations"] > float(left) + 1e-9:
+        raise ValueError(f"{plan.experiment_id}: the expected spend ${estimate['expected']:.2f} and "
+                         f"{estimate['concurrency']} in-flight reservations (${estimate['reservations']:.2f}) do not "
+                         f"fit the ${float(left):.2f} left to the final; nothing was run. Lower --concurrency, or "
+                         f"seal a plan the share holds")
+    write_json(state_path, {**state, "status": "running"})
     retries = int((plan.stop_rules or {}).get("max_infrastructure_retries", 0))
     # What is already on record, from the results themselves rather than the state file: a run that died inside an
     # arm recorded its attempts one by one, before the state file heard of any of them.
@@ -2819,7 +3379,7 @@ def evaluate(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = 
         out(f"arm        {arm}: {rows[arm]['summary']['passed']}/{rows[arm]['summary']['tasks']} passed, "
             f"partial={rows[arm]['summary']['partial_credit']}")
     write_json(state_path, {**state, "status": "completed"})
-    return {"plan": ref, "claims": list(plan.claims), "arms": rows,
+    return {"plan": ref, "claims": list(plan.claims), "arms": rows, "estimate": estimate,
             "note": "final results are reported, never used to choose a version"}
 
 
@@ -2891,6 +3451,16 @@ def cycle(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pri
 
     schedule = Schedule(**activity.objects.get(activity.rsi.schedule_ref))
     stop = _stop_point(until, schedule)
+    planned_slots = int(settings["schedule"].get("research_slots", 0) or 0)
+    if schedule.research_slots < planned_slots and not state.get("research_deferred"):
+        # v0.3 step 5 (ROADMAP, staged runbook, 2026-10-05): a frozen schedule may run fewer research slots than the
+        # preset plans (_beyond_preset refuses only more). Said on the record, so the report's C4 reads "deferred to
+        # a separate workspace" rather than a slot that silently never came.
+        state["research_deferred"] = {
+            "preset": planned_slots, "schedule": schedule.research_slots,
+            "reason": f"deferred to a separate workspace: this activity's frozen schedule runs research_slots "
+                      f"{schedule.research_slots} where the preset plans {planned_slots}"}
+        save()
     if schedule.research_slots:
         from .evolve.execution import call_bound_problem
         limits = budget_limits(activity.objects.get(activity.rsi.budget_ref) if activity.rsi.budget_ref else {})
@@ -3151,8 +3721,15 @@ def _cycle_slot(cfg, base, activity: Activity, settings: dict, slot: str, state:
             save()
             out(f"cycle      research {slot}: no_slot_pool ({step['reason']}); the next worker segment runs")
             return "done"
-        headroom = slot_headroom(activity, cfg, halves["inner"])
+        unsolved = never_passed(activity, cfg, halves["inner"])
+        headroom = len(unsolved)
         step["headroom"] = headroom
+        if len(activity.bench.domains) > 1:
+            # v0.3 step 5 (M7 §4, IT6-36): the same count per domain, and how the halves split across domains;
+            # counts only, never the task ids
+            never = per_domain_counts(unsolved)
+            step["headroom_by_domain"] = {d: never.get(d, 0) for d in per_domain_counts(halves["inner"])}
+            step["halves_by_domain"] = {half: per_domain_counts(tasks) for half, tasks in halves.items()}
         least_headroom = int(campaign.get("min_headroom_tasks") or 0)
         if least_headroom and headroom < least_headroom:
             step.update(outcome="no_headroom",
@@ -3184,12 +3761,20 @@ def _cycle_slot(cfg, base, activity: Activity, settings: dict, slot: str, state:
         if researcher is None:
             for k, v in pricing_of(cfg).bound().items():
                 need[k] = round(float(need.get(k, 0)) + float(v), 6)
+        # 2026-10-05 review (M6 §2): the common inputs too — the start W's train tasks and inner dev tasks the
+        # mainline has no reusable reading of, at the start W's measured mean per attempt — or the slot could open,
+        # pay them, and then be unable to set aside both arms (an inconclusive comparison paid for)
+        common = common_inputs_estimate(activity, cfg, pairs[0], limits)
+        for k, v in common.items():
+            need[k] = round(float(need.get(k, 0)) + float(v), 6)
         if not budget.affordable(need):
             step.update(outcome="budget_exhausted",
                         reason=f"the root cannot cover the outer comparison's share {outer_budget} and both "
-                               f"arms' shares {arm_budget}" + (" and R's call" if researcher is None else ""))
+                               f"arms' shares {arm_budget}" + (" and R's call" if researcher is None else "")
+                               + (f" and the common inputs' estimate {common}" if common else ""))
             save()
             return "budget_exhausted"
+        step["common_estimate"] = common
         discovery = "automatic" if researcher is None else "scripted"
         researcher = researcher or _default_researcher(cfg, activity, budget=budget)
         # k for the arms is the mainline's frozen schedule's (M4 §2): the same k in every round of the activity
@@ -3242,11 +3827,17 @@ def slot_headroom(activity: Activity, cfg: dict, inner_tasks) -> int:
     gate's control (Improvement.control_pool), so the number is the one the arms' inner gates would start from; a
     task with no reading at all counts as never passed — no evidence is not evidence of a pass. The W is the
     active release's."""
+    return len(never_passed(activity, cfg, inner_tasks))
+
+
+def never_passed(activity: Activity, cfg: dict, inner_tasks) -> list[str]:
+    """The inner dev tasks the start W never passed in its pooled readings, in the order given (slot_headroom's
+    count; per domain in the slot's record and the report, v0.3 step 5)."""
     parent = activity.releases.active()["release_ref"]
     work = improvement(activity, template_ref=activity.rsi.task_plan_ref, provider=_pinned_provider(activity, cfg))
     inner = list(inner_tasks)
     if not inner:
-        return 0
+        return []
     template = work.plan("", "", parent)
     if not template.pooled:
         # a template that takes fresh controls still has readings of the start W (the baseline's dev run, the
@@ -3255,7 +3846,15 @@ def slot_headroom(activity: Activity, cfg: dict, inner_tasks) -> int:
                                            "control_pooling": "pooled"})
     rows = work.control_pool(parent, plan=template, tasks=inner)
     passed = {r.task_id for r in rows if r.success}
-    return sum(1 for t in inner if t not in passed)
+    return [t for t in inner if t not in passed]
+
+
+def per_domain_counts(task_ids) -> dict[str, int]:
+    """Tasks counted by their domain, in first-seen order: how a per-domain number is recorded without task ids."""
+    out: dict[str, int] = {}
+    for t in task_ids:
+        out[task_domain(t)] = out.get(task_domain(t), 0) + 1
+    return out
 
 
 def _pinned_provider(activity: Activity, cfg: dict):
@@ -3279,7 +3878,7 @@ def cycle_pairs(activity: Activity, cfg: dict) -> list:
     if len(dev_families) < 2:
         raise ValueError("a research slot needs at least two development families: one for the arms' inner gate "
                          "and one for the outer comparison")
-    half = len(dev_families) // 2
+    inner, outer = halve_dev(dev_families, {f: task_domain(t) for t, f in family.items()})
     train_families = list(dict.fromkeys(family[t] for t in activity.splits.ids("train")))
     active = _ct.SystemRelease.from_json(activity.objects.get(activity.releases.active()["release_ref"]))
     # E0, both arms' starting experience: the mainline log as it stands, each experiment's raw gate reasons left
@@ -3290,9 +3889,31 @@ def cycle_pairs(activity: Activity, cfg: dict) -> list:
                else _experience.strip_dev_task_ids(e) for e in _experience.read(activity.root)]
     return [CampaignPair(pair_id="pair-1", independence_group="group-1", initial_w_ref=active.worker_ref,
                          initial_experience_ref=activity.objects.put_json("change", {"experience": entries}),
-                         inner_train_groups=tuple(train_families), inner_dev_groups=tuple(dev_families[:half]),
-                         outer_groups=tuple(dev_families[half:]), split_ref=activity.splits.hash(), repeats=1,
+                         inner_train_groups=tuple(train_families), inner_dev_groups=tuple(inner),
+                         outer_groups=tuple(outer), split_ref=activity.splits.hash(), repeats=1,
                          seed_schedule=(0,))]
+
+
+def halve_dev(dev_families: list, domain_of: dict) -> tuple[list, list]:
+    """The research slot's two halves of the frozen dev families (M6 §2): the first half the arms' inner gate, the
+    second the outer comparison. One domain: the frozen order cut at len // 2, as v0.1/v0.2 cut it. Several domains
+    (v0.3 step 5): each domain's dev families cut in their frozen order — its first part to the inner half, the rest
+    to the outer — so both halves span every domain rather than the first domains landing wholly inside and the last
+    wholly outside; a domain with an odd count gives its extra family to the outer half on even positions in the
+    list and to the inner half on odd ones, so the halves stay within a family of each other. Each half keeps the
+    pooled order."""
+    by_domain: dict[str, list] = {}
+    for f in dev_families:
+        by_domain.setdefault(domain_of.get(f, ""), []).append(f)
+    if len(by_domain) < 2:
+        half = len(dev_families) // 2
+        return list(dev_families[:half]), list(dev_families[half:])
+    inner, outer = [], []
+    for i, fams in enumerate(by_domain.values()):
+        cut = len(fams) // 2 if i % 2 == 0 else (len(fams) + 1) // 2
+        inner += fams[:cut]
+        outer += fams[cut:]
+    return inner, outer
 
 
 def _reuse_fact(activity: Activity, r1: str, r0: str | None, segment: str) -> dict:
@@ -3441,8 +4062,11 @@ def startup_checks(activity: Activity, cfg: dict, *, phase: str, needs_model: bo
     rsi_cfg = RsiConfig.load(cfg)
     if activity.drift:
         problems.append(f"upstream drifted from the frozen manifest: {activity.drift[:3]}")
-    checks = ab.contract_check(activity.suite, list(activity.splits.ids("dev"))[:1])
+    several = len(activity.bench.domains) > 1
+    checks = ab.contract_check(activity.suite, _one_dev_task_per_domain(activity.splits) if several
+                               else list(activity.splits.ids("dev"))[:1])
     problems += [f"scorer contract: {line}" for line in checks["failed"]]
+    problems += domain_problems(activity)
     if needs_model and "llm" not in cfg:
         problems.append(f"the {phase} phase needs an [llm] table: it runs real attempts")
     plan = _frozen_plan(activity, rsi_cfg.task_plan_ref)
@@ -3527,6 +4151,37 @@ def startup_checks(activity: Activity, cfg: dict, *, phase: str, needs_model: bo
                         "first-version activity starts in a fresh workspace (or scope) so W0, R0 and K are "
                         "bootstrapped with it; it is not applied to an existing v2 activity")
     problems += effort_problems(activity, core)
+    return problems
+
+
+def domain_problems(activity: Activity) -> list[str]:
+    """The listed domains against what the activity froze (M7 §2, v0.3 step 5): each domain's split on disk is the one
+    the pooled split recorded by hash, the core pins the activity's split, and every domain's split hash is on
+    record. Loading itself was checked when the activity opened (load_domains refuses a domain upstream cannot
+    load). A one-domain activity is its own domain's split, as in v0.1/v0.2, and has nothing more to check here."""
+    problems = []
+    if len(activity.bench.domains) < 2:
+        return problems
+    recorded = {d["domain"]: d.get("hash") for d in activity.splits.domains()}
+    if list(recorded) != list(activity.bench.domains):
+        problems.append(f"the activity's split covers {list(recorded)}, and [bench] lists {list(activity.bench.domains)}")
+    for domain in activity.bench.domains:
+        path = Results(activity.root, domain).manifest_path()
+        if not path.exists():
+            problems.append(f"{domain}: no frozen split at {path}")
+            continue
+        own = SplitManifest.load(path).hash()
+        if own != recorded.get(domain):
+            problems.append(f"{domain}: the split frozen at {path} is {own}, and the pooled split recorded "
+                            f"{recorded.get(domain)}")
+    try:
+        core = activity.objects.load(_ct.SystemRelease.from_json(activity.objects.get(activity.release_ref)).core_ref,
+                                     _ct.CoreManifest)
+    except Exception:  # noqa: BLE001 - a release that does not assemble is reported by the caller
+        return problems
+    if core.split_ref and core.split_ref != activity.splits.hash():
+        problems.append(f"the core pins split {core.split_ref} and the activity's split is {activity.splits.hash()}: "
+                        f"the domain list or a domain's split changed after the activity began")
     return problems
 
 
@@ -3650,8 +4305,11 @@ FINAL_KEYS = {"experiment_id", "claims", "comparisons", "release_refs", "tasks",
 def _task_ids(activity: Activity, spec, what: str) -> tuple:
     """A split name ("dev", "test") resolved against the frozen manifest, or an explicit list checked against it.
     The plan stores the ids themselves, so a later change to the manifest cannot change what a plan ran."""
+    # v0.3 step 5 (M7 §2, M3 §2.2): a final never reads a spent domain's test — "test" resolves to the claim's
+    # tasks (the new domains' test), and a list naming a spent domain's task is refused
+    spent = activity.splits.spent() if what == "final" else set()
     if isinstance(spec, str):
-        ids = tuple(activity.splits.ids(spec))
+        ids = tuple(activity.splits.claim_ids(spec) if spent else activity.splits.ids(spec))
         if not ids:
             raise ValueError(f"[freeze.{what}] tasks = {spec!r}: the frozen manifest has no such tasks")
         return ids
@@ -3659,7 +4317,34 @@ def _task_ids(activity: Activity, spec, what: str) -> tuple:
     missing = sorted(set(spec) - known)
     if missing:
         raise ValueError(f"[freeze.{what}] names tasks the frozen manifest does not have: {missing[:5]}")
+    stale = sorted(t for t in spec if task_domain(t) in spent and activity.splits.split_of(t) == "test")
+    if stale:
+        raise ValueError(f"[freeze.{what}] names test tasks of spent domains {sorted(spent)}: {stale[:5]}; their test "
+                         f"was read before and supports no new claim (M7 §2)")
     return tuple(spec)
+
+
+def _final_estimate_at_freeze(activity: Activity, table: dict | None, cfg: dict) -> dict:
+    """final_estimate for the final plan a freeze knows of: the [freeze.final] table being frozen, else the plan
+    [rsi] names. With neither, no arm is known yet: the spend is unknown and only the reservations are given."""
+    if table:
+        task_ids = _task_ids(activity, table.get("tasks", "test"), "final")
+        repeats = int(table.get("repeats", 1))
+        refs = dict(table.get("release_refs") or {})
+        arms = {c["subject"]: refs.get(c["subject"]) or activity.release_ref
+                for c in table.get("comparisons") or () if not c.get("llm")}
+        plan_ref = None
+    elif activity.rsi.final_plan_ref and activity.objects.has(activity.rsi.final_plan_ref):
+        plan = FinalizationPlan.from_json(activity.objects.get(activity.rsi.final_plan_ref))
+        task_ids, repeats, plan_ref = plan.task_ids, plan.repeats, activity.rsi.final_plan_ref
+        arms = {c["subject"]: plan.release_refs.get(c["subject"]) or activity.release_ref
+                for c in plan.comparisons if not c.get("llm")}
+    else:
+        return final_estimate(activity, task_ids=(), repeats=0, arms={}, pricing=pricing_of(cfg),
+                              concurrency=activity.bench.concurrency) | {"expected": None, "suggested_share": None}
+    return final_estimate(activity, task_ids=task_ids, repeats=repeats, arms=arms, plan_ref=plan_ref,
+                          pricing=pricing_of(cfg), concurrency=activity.bench.concurrency,
+                          fallback=estimate_settings(cfg))
 
 
 def _only(table: dict, allowed: set, what: str) -> dict:
@@ -3696,7 +4381,7 @@ def freeze(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pr
     problems = config_harness_problems(cfg)
     if problems:
         raise ValueError("freeze refused: " + "; ".join(problems))
-    activity = open_activity(cfg, base, out=out)
+    activity = open_activity(cfg, base, out=out, strata=True)
     bound = _P.bind_release(activity.release_ref, profile="preflight", services=_P.Services(activity.objects))
     problems = harness_checks(activity, bound)
     if problems:
@@ -3744,6 +4429,18 @@ def freeze(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pr
         problems = budget_problems(frozen, pricing_of(cfg))
         if problems:
             raise ValueError("freeze refused: " + "; ".join(problems))
+        # M5 §2 (v0.3): the final share holds the configured concurrency's reservations, or nothing is frozen; the
+        # refusal says what the final is expected to spend at the costs on record and what share would do
+        problem = final_share_problem(frozen, pricing_of(cfg), activity.bench.concurrency)
+        if problem:
+            estimate = _final_estimate_at_freeze(activity, tables.get("final"), cfg)
+            for line in estimate_lines(estimate):
+                out(line)
+            suggestion = (f"suggested final share at least ${estimate['suggested_share']:.2f} (expected spend plus "
+                          f"the reservations)" if estimate.get("suggested_share") is not None else
+                          f"suggested final share: the final's expected spend (unknown until its releases have "
+                          f"costed readings) plus {activity.bench.concurrency} x one call's bound")
+            raise ValueError(f"freeze refused: {problem}; {suggestion}")
         refs["budget_ref"] = activity.objects.put_json("budget", frozen)
     if "final" in tables:
         t = _only(tables["final"], FINAL_KEYS, "final")
@@ -3757,6 +4454,17 @@ def freeze(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pr
             research_campaign_plan_ref=t.get("research_campaign_plan_ref"))
         if not plan.experiment_id:
             raise ValueError("[freeze.final] needs an experiment_id: it is what a resumed run finds its state by")
+        # 2026-10-05 review (M5 §2): before it is sealed, the plan's expected spend against the final share — the
+        # budget frozen in this call, else the one [rsi] names. A plan already sealed is not checked again.
+        state_path = Path(activity.root) / "rsi" / "finalization" / f"{plan.experiment_id}.json"
+        sealed = state_path.exists() and json.loads(state_path.read_text(encoding="utf-8")).get("plan") == plan.ref()
+        if not sealed:
+            budget_object = activity.objects.get(refs["budget_ref"]) if refs.get("budget_ref") else \
+                (activity.objects.get(activity.rsi.budget_ref) if activity.rsi.budget_ref and
+                 activity.objects.has(activity.rsi.budget_ref) else {})
+            problem = final_plan_problem(activity, cfg, plan, budget_object, out)
+            if problem:
+                raise ValueError(f"freeze refused: {problem}; the plan was not sealed")
         refs["final_plan_ref"] = seal(plan, activity.root, activity.objects)["plan"]
     out("frozen     name these under [rsi]:")
     out("[rsi]")

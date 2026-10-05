@@ -27,7 +27,7 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass, field
 
-from ..benchmark import TaskResult, pair_key
+from ..benchmark import TaskResult, pair_key, task_domain
 from . import contracts as ct
 
 MODES = ("quality", "economy")
@@ -204,6 +204,26 @@ def per_task(results: list[TaskResult], *, metric: str = "success") -> dict[str,
 def pass_rate(results: list[TaskResult]) -> float | None:
     tasks = per_task(results)
     return round(sum(tasks.values()) / len(tasks), 6) if tasks else None
+
+
+def per_domain(subject: dict[str, float], control: dict[str, float]) -> dict:
+    """The paired comparison per domain (v0.3 step 5, M7 §4 按领域分列): over the tasks both arms have, by the
+    domain their id carries — the task count, each arm's mean and the difference. Empty when the tasks are of one
+    domain, so a single-domain receipt is what it always was. Means only: no task id is in it."""
+    shared = sorted(set(subject) & set(control))
+    if any("." not in t for t in shared):
+        return {}                           # an id that names no upstream domain (`domain.task`): nothing to split
+    by: dict[str, list[str]] = {}
+    for t in shared:
+        by.setdefault(task_domain(t), []).append(t)
+    if len(by) < 2:
+        return {}
+    out = {}
+    for domain, tasks in by.items():
+        s = sum(subject[t] for t in tasks) / len(tasks)
+        c = sum(control[t] for t in tasks) / len(tasks)
+        out[domain] = {"tasks": len(tasks), "subject": round(s, 6), "control": round(c, 6), "gain": round(s - c, 6)}
+    return out
 
 
 def per_task_cost(results: list[TaskResult]) -> tuple[dict[str, float], int]:
@@ -402,6 +422,9 @@ def judge(plan: TaskEvalPlan, subject: list[TaskResult], control: list[TaskResul
                "control_readings": len({r.run for r in control if r.validity == "valid"}),
                "control_attempt_refs": sorted(r.attempt_id for r in control if r.validity == "valid" and r.attempt_id),
                "readings": 1 + plan.confirmations if confirmation is not None else 1}
+    split_by_domain = per_domain(s_tasks, c_tasks)
+    if split_by_domain:
+        metrics["per_domain"] = split_by_domain
     confirmation_gain = None
     if confirmation is not None:
         confirmation_gain = paired_point(per_task(confirmation), c_tasks)

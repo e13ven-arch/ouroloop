@@ -782,3 +782,39 @@ def test_a_plan_takes_one_confirmation_reading_and_none_under_an_economy_gate(tm
     receipt, _, _ = confirmed(tmp_path, first, first, control)
     assert receipt.metrics["readings"] == 2 == 1 + TaskEvalPlan.from_json(
         ct.Objects(tmp_path).get(receipt.plan_ref)).confirmations
+
+
+# ---------------------------------------------------------------------------- v0.3 step 5 (M7 §4): a gate over several domains
+def test_a_receipt_over_several_domains_carries_per_domain_means(tmp_path):
+    """Review finding 7 (M7 §4 按领域分列): a gate whose tasks span two upstream domains files a receipt whose
+    `metrics.per_domain` gives, per domain, the task count, each arm's mean and the difference — means only, no task
+    id — from the same per-task means the gain is computed from; the experience log keeps it out (R reads the overall
+    gain and the failure-type histogram). Task ids that name no domain (`domain.task`) give no breakdown."""
+    from ouroloop.evolve.experience import experiment_record
+    tasks = ("sales.a", "sales.b", "support.a", "support.b", "support.c")
+    families = {t: t for t in tasks}
+    p = TaskEvalPlan(candidate_ref="policyset:sha256:" + "a" * 64, control_ref="policyset:sha256:" + "b" * 64,
+                     parent_release="release:sha256:" + "c" * 64, core_ref="core:sha256:" + "d" * 64,
+                     split_ref="split-1", task_ids=tasks, repeats=1,
+                     gate_plan=GatePlan(mode="quality", min_gain=0.05, min_groups=3, bootstrap_replicates=200).to_json())
+    outcomes = {"subject": {"sales.a": True, "sales.b": True, "support.a": True, "support.b": False, "support.c": False},
+                "control": {"sales.a": False, "sales.b": False, "support.a": True, "support.b": False, "support.c": False}}
+
+    def run(arm, order, retry=0, supersedes=None):
+        return [TaskResult(t, t, "dev", i, arm, f"run-{arm}", "manifest-1", success=outcomes[arm][t],
+                           partial_credit=1.0 if outcomes[arm][t] else 0.5, cost_usd=0.5,
+                           attempt_id=f"run-{arm}/{t}/r{i}/{arm}#0", pair_key=pair_key(p.ref(), t, i))
+                for t, i in order]
+    objects = ct.Objects(tmp_path)
+    receipt = evaluate_task(p, run=run, objects=objects, experiment_ref="experiment:sha256:" + "e" * 64,
+                            families=families)
+    split = receipt.metrics["per_domain"]
+    assert split == {"sales": {"tasks": 2, "subject": 1.0, "control": 0.0, "gain": 1.0},
+                     "support": {"tasks": 3, "subject": round(1 / 3, 6), "control": round(1 / 3, 6), "gain": 0.0}}
+    assert receipt.metrics["gain"] == pytest.approx(0.4)
+    assert not any(t in json.dumps(split) for t in tasks)
+    assert "per_domain" not in experiment_record(experiment_id="x", proposal_ref="p", owner="worker", hypothesis="h",
+                                                 changes=(), receipt=receipt)["metrics"]
+    single = judge(plan(tmp_path), rows(plan(tmp_path), {"t1": True, "t3": True, "t4": False}),
+                   rows(plan(tmp_path), {"t1": False, "t3": False, "t4": False}), FAMILIES)[2]
+    assert "per_domain" not in single

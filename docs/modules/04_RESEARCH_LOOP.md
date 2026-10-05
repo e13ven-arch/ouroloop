@@ -105,6 +105,8 @@ worker 轮的部分已在阶段 3 实现（2026-10-02）：
 
 研究位记 invalid 后不自动重问，这一步就此结束，cycle 照常进入下一段；重问要在下一段跑完之后，会让 R1 的回用检查读到安装前的段。
 
+（v0.3，2026-10-05，第 0/1 阶段评审）会话的记录：除每次调用一行（回合、工具、路径、ok）之外，整段会话存为一个对象（`CodingSession.transcript()`，`transcript:sha256:…`）：按顺序的每条消息——输入与之后的用户消息、R 的回复文本与它的工具调用及参数、每个工具的结果或拒绝原因——每项截到 8,000 字符、全部严格 UTF-8 可编码；`research_session` 事件记 `transcript_ref`，报告的会话行列出它；被拒调用的那一行也带错误文本（截到 500 字符）。原因：被拒的写入、读取错误与 R 的回复原来只在会话的内存里，会话一结束就没了；第 0 阶段的继续/停止规则要读它。测试 `test_research_session.py::test_the_sessions_turns_are_stored_with_refusals_and_the_event_names_them`、`test_a_transcript_item_is_cut_and_strict_utf8`。
+
 ## 2. 首版可执行的候选空间
 
 | 失败证据 | 候选/处理 | 必须具备的条件 |

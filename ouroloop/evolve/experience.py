@@ -38,8 +38,11 @@ def experiment_record(*, experiment_id: str, proposal_ref: str, owner: str, hypo
     answer different questions, and a later reader that only had one of them would have to guess the other.
     """
     # Everything the receipt measured except its per-task regression list: that names dev tasks, and it stays with
-    # the receipt, where a report reads it (docs/modules/00_CONTRACTS.md §4). The rate is kept.
-    metrics = {k: v for k, v in (getattr(receipt, "metrics", None) or {}).items() if k != "regressions"}
+    # the receipt, where a report reads it (docs/modules/00_CONTRACTS.md §4). The rate is kept. The per-domain
+    # breakdown of a multi-domain gate (v0.3 step 5) stays with the receipt too: the report lists it, and R's view
+    # of dev stays the overall gain and the failure-type histogram.
+    metrics = {k: v for k, v in (getattr(receipt, "metrics", None) or {}).items()
+               if k not in ("regressions", "per_domain")}
     return {"kind": "experiment", "experiment": experiment_id, "proposal": proposal_ref, "owner": owner,
             "hypothesis": hypothesis, "changes": [dict(c) for c in changes],
             "requirements": [str(r) for r in requirements], "targets": sorted(targets or

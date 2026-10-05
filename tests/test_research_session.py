@@ -642,3 +642,57 @@ def test_a_draft_check_error_is_strict_utf8(tmp_path):
     errors, ref = drafts.check({})
     assert errors == ["hook failed: RuntimeError: bad \\udc80"] and ref is None
     errors[0].encode("utf-8")
+
+
+# ---------------------------------------------------------------------------- stage 0/1 review (2026-10-05): the transcript
+class RefusedFirst(rsi.SessionScript):
+    """The scripted session with one refused write before its candidate: outside the candidate directories."""
+
+    def _enqueue(self, candidates):
+        self._queue.append([ToolCall("x0", "write_file", {"path": "ledger.json", "text": "{\"mine\": true}"})])
+        super()._enqueue(candidates)
+
+
+def test_the_sessions_turns_are_stored_with_refusals_and_the_event_names_them(fake_upstream, tmp_path, monkeypatch):
+    """Stage 0/1 review, item 1: the host keeps the session itself, not only its per-call rows — every message in
+    order, R's reply text, each tool call with its arguments, each tool answer with its output or error text — as one
+    content-addressed object that the round's `research_session` event names (`transcript_ref`); a refused call's
+    row carries the error text too. Stage 0's go rule reads this. Here a refused write (outside the candidate
+    directories) and the candidate's successful writes are both in it, the refusal with the worker's reason."""
+    cfg, activity, w0 = prepared_v3(fake_upstream, tmp_path, monkeypatch)
+    step = RefusedFirst(lambda inputs: [memory_candidate(inputs)])
+    bench.improve(cfg, ".", out=lambda _line: None, researcher=step)
+    event = list(ct.Events(activity.root).of("research_session"))[-1]
+    assert event["transcript_ref"].startswith("transcript:sha256:")
+    transcript = activity.objects.get(event["transcript_ref"])
+    roles = [m["role"] for m in transcript["messages"]]
+    assert roles[0] == "user" and "assistant" in roles and "tool" in roles
+    calls = [c for m in transcript["messages"] if m["role"] == "assistant" for c in m["tool_calls"]]
+    results = [r for m in transcript["messages"] if m["role"] == "tool" for r in m["results"]]
+    refused = next(r for r in results if r["id"] == "x0")
+    assert refused["is_error"] and refused["output"]
+    assert next(c for c in calls if c["id"] == "x0")["args"]["path"] == "ledger.json"
+    good = [r for r in results if r["name"] == "write_file" and not r["is_error"]]
+    assert good and any(c["name"] == "write_file" and c["args"]["path"].startswith("candidates/m1/") for c in calls)
+    assert any(c["name"] == "finish" for c in calls)
+    row = next(c for c in event["calls"] if c.get("path") == "ledger.json")
+    assert row["ok"] is False and row["error"] == refused["output"][:500]
+    report = bench.report(cfg, ".", out=lambda _line: None, write=False)
+    assert report["harness"]["sessions"][-1]["transcript_ref"] == event["transcript_ref"]
+
+
+def test_a_transcript_item_is_cut_and_strict_utf8():
+    """The transcript's strings are cut per item and hold no lone surrogate, so it is stored whatever R wrote."""
+    session, tree = tree_with()
+    try:
+        long = "x" * 20000
+        turns = Turns([[write("candidates/c1/memory.md", long + "\ud800", 0)], [finish(declared())]])
+        s = CodingSession(turn=turns, work=tree, limits=SessionLimits(), k=3, system="s", inputs={"k": 3},
+                          note_refs=["note:a"])
+        s.start()
+        t = s.transcript()
+        json.dumps(t, ensure_ascii=False).encode("utf-8")              # strict UTF-8: no exception
+        arg = t["messages"][1]["tool_calls"][0]["args"]["text"]
+        assert len(arg) < 9000 and "more characters" in arg
+    finally:
+        session.close()
