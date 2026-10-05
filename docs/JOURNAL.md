@@ -8,6 +8,16 @@
 
 ---
 
+## 2026-10-05 v0.3 第 5 步第 2 阶段：两轮被拒，笔记只来自两个领域
+
+- 做了什么：`--phase cycle --until segment-0/round-2`，终端面板里跑；中途订阅会话限额（`ProviderAccountError`）暂停，9 笔调用不计费释放，限额重置后同一命令续跑，gate 从 evaluating 接着跑完。
+- 证据：第 1 轮 rulesmem（memory）dev +3.2（marketing +24、sales −16，退步 10 题），第 2 轮 writemem（memory）+2.4（marketing +16、sales −8，退步 6 题），都低于 min_gain 0.05；patience 2 停在第 2 轮，没有安装。名义 $170.30，累计 $346.27。R 用满了 k = 3、读了轨迹（第 1 轮 4 次 83 KB，第 2 轮 2 次 60 KB），说明上一条的说明改动起了作用。
+- 原因：笔记的失败题按合并后的冻结顺序取前 30 道、逐轮轮转；合并顺序 marketing 在前、sales 其次，所以第 1 轮笔记是 marketing 27 + sales 3、第 2 轮是 sales 30，support/hr/finance 一道没进笔记。候选因此偏向这两个领域。单领域活动里这个顺序无害，多领域时它决定了 R 看到哪些领域。
+- 读法：按事先的规则本阶段是“停”。缺陷在框架（多领域的笔记选择），修好之前的结果不说明 RSI 在五个领域上能不能提升。
+- commit：见 git log。
+
+---
+
 ## 2026-10-05 v0.3 第 5 步：第 2 阶段之前给 R 的会话说明加一句
 
 - 做了什么：试点里 R 在 k = 3 下只交了 1 个候选、一次轨迹也没读（只看笔记）。`research/session.py::SESSION_FORMAT` 加一句：除非说得出少做的理由，做满 k 个针对不同失败原因的候选（筛选只留 train 上最好的那个，多一个候选代价小）；写一个候选之前至少用 read_trajectory 读一次它针对的失败尝试（笔记是摘要，轨迹是 agent 实际看到与做的）。这是框架改动，在本活动任何一轮 R 运行之前做的；R0 的 policy 对象与冻结的计划不变，`research_session` 事件的 `prompt_hash` 记下新文本。没有动 gate、final、test 或任何计划。
