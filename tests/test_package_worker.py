@@ -1933,3 +1933,15 @@ def test_ws_prompt_files_are_outside_the_package_byte_cap_inside_the_line_and_cl
         assert session.work("delete", path="candidates/c1/memory.md")["ok"]                   # a package file may go
     finally:
         session.close()
+
+
+def test_a_listing_or_read_with_a_trailing_slash_names_the_same_directory():
+    """M4 §1 (2026-10-05, after the stage-0 pilot): R asked `list_files("package/")` and lost a turn to a refusal;
+    a trailing slash on a read or a listing names the same directory, while a write still names a file."""
+    session = work_session()
+    try:
+        assert session.work("list", path="package/")["value"] == session.work("list", path="package")["value"]
+        refused = session.work("write", path="candidates/c1/", text="x")
+        assert not refused["ok"]
+    finally:
+        session.close()

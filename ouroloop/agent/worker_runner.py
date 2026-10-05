@@ -424,6 +424,10 @@ def _work_path(path, *, write: bool = False) -> str:
         path.encode("utf-8")
     except UnicodeEncodeError:
         raise WorkError("the path is not strict UTF-8 (it holds a lone surrogate)") from None
+    if not write and path.endswith("/") and path.strip("/"):
+        # a directory named with a trailing slash ("package/") on a read or a listing is the same directory; the
+        # 2026-10-05 pilot's R lost a turn to this refusal. A write names a file, so it keeps the strict form.
+        path = path.rstrip("/")
     parts = path.split("/")
     if len(parts) > MAX_PATH_PARTS or len(path) > MAX_PATH_CHARS:
         raise WorkError(f"a path of {len(parts)} segments and {len(path)} characters: at most {MAX_PATH_PARTS} "
