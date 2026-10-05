@@ -458,7 +458,7 @@ def run_phase(cfg: dict, base: str | Path = ".", *, phase: str = "smoke", **kw) 
     runner = {"baseline": baseline, "collect": collect, "improve": improve, "research": research,
               "evaluate": evaluate, "report": report, "cycle": cycle}[phase]
     allowed = {"baseline": {"out", "limit", "tasks"}, "collect": {"out", "repeats", "tasks"},
-               "improve": {"out", "rounds", "researcher", "segment"},
+               "improve": {"out", "rounds", "researcher", "segment", "reason"},
                "research": {"out", "researcher", "campaign_ref", "r_candidate_ref"},
                "evaluate": {"out", "plan_ref", "resume"}, "report": {"out", "write"},
                "cycle": {"out", "researcher", "slot_researcher", "arm_researcher", "until"}}[phase]
@@ -2417,7 +2417,8 @@ def collect(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
 
 # ---------------------------------------------------------------------------- improve
 def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = print, rounds: int | None = None,
-            researcher=None, segment: str | None = None, stop_after_round: int | None = None) -> dict:
+            researcher=None, segment: str | None = None, stop_after_round: int | None = None,
+            reason: str | None = None) -> dict:
     """The worker loop with a fixed R: collect, diagnose, propose, build, evaluate, install, repeat.
 
     Every round starts from what the previous one left — the installed release, the appended experience and the
@@ -2430,6 +2431,11 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
     `stop_after_round` (a cycle's stop point, docs/ROADMAP.md §3) stops the segment once that many rounds plus one
     have completed, without finishing it: the next call continues with the following round, with patience and the
     failure limit where they were, as if it had not stopped.
+
+    `rounds` with `reason` on a cycle activity whose last worker segment has ended (docs/modules/07_BENCH_REPORT.md
+    §1, 2026-10-06) is an explicit extension beyond the frozen schedule: it is recorded (`schedule_extended`), the
+    segment's log is reopened, and `rounds` more rounds run under the same plans, root and K with the round and
+    diagnosis indices continuing; patience and the failure limit count afresh within the extension.
     """
     from .research.loop import RoundContext, run_worker_rounds
     activity = open_activity(cfg, base, out=out)
@@ -2437,9 +2443,24 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
     if missing:
         raise ValueError("; ".join(missing) + "; freeze one with bench.freeze_task_plan")
     require(startup_checks(activity, cfg, phase="improve"), phase="improve")
+    extension = None
+    if segment is None and activity.rsi.schedule_ref:
+        segment, extension = _extension_of(activity, None if rounds is None else int(rounds), reason)
     seglog = RoundLog(Path(activity.root) / "rsi" / "segments" / f"{segment}.json",
                       {"segment": segment, "scope": activity.rsi.scope_id,
                        "schedule": activity.rsi.schedule_ref}) if segment else None
+    if extension == "new":
+        frozen = Schedule(**activity.objects.get(activity.rsi.schedule_ref))
+        record = seglog.extend(int(rounds), str(reason), by="user")
+        activity.releases.events.append(
+            "schedule_extended", scope=activity.rsi.scope_id, segment=segment, by="user", reason=str(reason),
+            rounds=int(rounds), at_round=record["at_round"], frozen_worker_rounds=frozen.worker_rounds,
+            frozen_patience=frozen.patience,
+            extended_total=sum(int(e["rounds"]) for e in seglog.state.get("extensions") or ()))
+        out(f"extend     {segment}: {rounds} more round(s) from round {record['at_round']}, beyond the frozen schedule "
+            f"(worker_rounds {frozen.worker_rounds}, patience {frozen.patience}); reason: {reason}")
+    elif extension == "open":
+        out(f"extend     {segment}: continuing the extension begun at round {seglog.open_extension()['at_round']}")
     if seglog is not None and seglog.finished:
         # Before the budget root or a model is touched: a finished segment is read back, never re-run, and a
         # failure that belongs to a later step must not be recorded against it.
@@ -2508,10 +2529,19 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
         out(f"resume     {result.experiment_id}: {result.outcome} ({result.reason})")
         if seglog is not None:
             seglog.add(result)             # the interrupted round of this segment, finished
+    history: tuple = tuple(seglog.state["rounds"]) if seglog is not None else ()
     if seglog is not None:
         # Only the rounds this segment has not completed; make_round numbers them after the completed ones.
         done = seglog.done()
         schedule = Schedule(**{**asdict(schedule), "worker_rounds": max(schedule.worker_rounds - done, 0)})
+        ext = seglog.open_extension()
+        if ext is not None:
+            # An extension runs its own rounds, numbered after the segment's; patience and the failure limit count
+            # only its own rounds (the segment's idle rounds would stop it before its first round).
+            history = tuple(seglog.state["rounds"][ext["history_start"]:])
+            from .research.loop import completed_round
+            own = sum(1 for r in history if completed_round(r))
+            schedule = Schedule(**{**asdict(schedule), "worker_rounds": max(int(ext["rounds"]) - own, 0)})
     # The stop point counts the rounds this call may run, after the ones the segment has completed.
     stop_after = max(stop_after_round + 1 - done, 0) if stop_after_round is not None else None
     collector = None
@@ -2525,7 +2555,7 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
         # the research meter's rate-limit refusals, per round (M5 §2, v0.3), then the segment's own record
         on_result=_rate_limit_recorder(researcher, activity.releases.events, scope=activity.rsi.scope_id,
                                        first_round=done, on_result=seglog.add if seglog is not None else None),
-        history=tuple(seglog.state["rounds"]) if seglog is not None else (), stop_after=stop_after,
+        history=history, stop_after=stop_after,
         # a batch booked before a crash is finished first, at its own attempt index, before any round runs
         resume_collections=(lambda: work.finish_collections(activity.root, measured.get("last")))
         if work.harness else None))
@@ -2535,6 +2565,8 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
     elif seglog is not None:
         seglog.end(stop_reason)
         stop_reason = seglog.state["stop_reason"]
+        if extension is not None:
+            _record_extension(activity, segment, seglog)
     for result in results:
         out(f"round      {result.outcome}"
             + (f" experiment={result.experiment_id}" if result.experiment_id else "")
@@ -2543,7 +2575,62 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
             + (f" ({result.reason})" if result.reason else ""))
     return {"rounds": [vars(r) for r in results], "log": log, "budget": budget.remaining(),
             "release": activity.releases.active()["release_ref"], "stop_reason": stop_reason,
-            **({"segment": segment} if segment else {})}
+            **({"segment": segment} if segment else {}),
+            **({"extension": seglog.state["extensions"][-1]} if extension is not None else {})}
+
+
+def _extension_of(activity: Activity, rounds: int | None, reason: str | None) -> tuple:
+    """The worker segment an explicit extension continues and whether it is new or resumed (M7 §1, 2026-10-06), or
+    (None, None) for an activity the cycle never ran (`rounds` then keeps its older meaning). Refused: a cycle that is
+    paused (resume it with the cycle first), a last segment that has not ended (continue it with the cycle), a new
+    extension without a reason, and a resumed one asked for another number of rounds."""
+    path = Path(activity.root) / "rsi" / "cycle.json"
+    if not path.exists():
+        return None, None
+    state = json.loads(path.read_text(encoding="utf-8"))
+    segments = sorted((int(name.split("-", 1)[1]), name) for name in (state.get("steps") or {})
+                      if re.fullmatch(r"segment-\d+", name))
+    if not segments:
+        return None, None
+    if rounds is None:
+        # A cycle activity runs its worker rounds in segments: an improve without --rounds would run the frozen
+        # schedule from round 0 outside the segment's log, unrecorded (2026-10-06 review).
+        raise ValueError(f"this activity runs its worker rounds in cycle segments ({segments[-1][1]}): continue it "
+                         f"with --phase cycle, or extend it with --phase improve --rounds N --reason ...")
+    if rounds < 1:
+        raise ValueError(f"--rounds {rounds}: an extension runs at least one round")
+    if state.get("status") == "paused":
+        raise ValueError("the activity is paused: resume it with --phase cycle before extending it")
+    segment = segments[-1][1]
+    log = RoundLog(Path(activity.root) / "rsi" / "segments" / f"{segment}.json",
+                   {"segment": segment, "scope": activity.rsi.scope_id, "schedule": activity.rsi.schedule_ref})
+    ext = log.open_extension()
+    if ext is not None:
+        if int(ext["rounds"]) != rounds:
+            raise ValueError(f"{segment} has an extension of {ext['rounds']} round(s) from round {ext['at_round']} "
+                             f"still open: finish it with --rounds {ext['rounds']}")
+        return segment, "open"
+    if not log.finished:
+        raise ValueError(f"{segment} has not ended: continue it with --phase cycle; --rounds extends a segment the "
+                         f"frozen schedule has ended")
+    if not (reason or "").strip():
+        raise ValueError("--reason is required: rounds beyond the frozen schedule are a recorded decision")
+    return segment, "new"
+
+
+def _record_extension(activity: Activity, segment: str, seglog: "RoundLog") -> None:
+    """The cycle's record of a segment an extension continued: its end is the extension's, and its extensions are
+    listed, so the cycle reads the segment as ended (not run again) and the report sees the deviation."""
+    path = Path(activity.root) / "rsi" / "cycle.json"
+    if not path.exists():
+        return
+    state = json.loads(path.read_text(encoding="utf-8"))
+    step = state.setdefault("steps", {}).setdefault(segment, {})
+    step["stop_reason"] = seglog.state.get("stop_reason")
+    step["release"] = activity.releases.active()["release_ref"]
+    step["extensions"] = [{k: e.get(k) for k in ("rounds", "at_round", "reason", "by", "ts", "stop_reason",
+                                                 "finished")} for e in seglog.state.get("extensions") or ()]
+    write_json(path, state)
 
 
 def _default_researcher(cfg: dict, activity: Activity, *, budget=None):
@@ -3000,7 +3087,27 @@ class RoundLog:
         pause = pause_of(self.state["rounds"], stop_reason)
         self.state["stop_reason"] = pause or stop_reason
         self.state["finished"] = not pause
+        ext = self.open_extension()
+        if ext is not None and not pause:
+            ext.update(finished=True, stop_reason=self.state["stop_reason"])
         self._save()
+
+    # -------------------------------------------------------------- explicit extensions (M7 §1, 2026-10-06)
+    def open_extension(self) -> dict | None:
+        """The extension in progress, if the last one has not finished."""
+        exts = self.state.get("extensions") or []
+        return exts[-1] if exts and not exts[-1].get("finished") else None
+
+    def extend(self, rounds: int, reason: str, *, by: str) -> dict:
+        """Reopen an ended run for `rounds` more rounds, recorded: from which round (the completed rounds so far),
+        where its own rounds start in the log, why, by whom, and the end it reopens."""
+        record = {"rounds": int(rounds), "at_round": self.done(), "history_start": len(self.state["rounds"]),
+                  "reason": reason, "by": by, "ts": now(), "after": self.state.get("stop_reason"), "finished": False}
+        self.state.setdefault("extensions", []).append(record)
+        self.state.pop("stop_reason", None)
+        self.state["finished"] = False
+        self._save()
+        return record
 
     def _save(self) -> None:
         if self._step is not None:

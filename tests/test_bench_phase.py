@@ -566,3 +566,104 @@ def test_a_schedule_without_the_presets_research_slot_reports_c4_deferred(fake_u
     assert "research_slots 0 where the preset plans 1" in c4["detail"]
     settings = bench.improvement_settings(cfg)
     assert bench._beyond_preset(settings, {**settings["schedule"], "worker_rounds": 6, "research_slots": 0}, None) == []
+
+
+# ---------------------------------------------------------------------------- 2026-10-06: continuing past a patience stop
+def test_an_extension_after_a_patience_stop_runs_the_next_round_and_is_recorded(fake_upstream, tmp_path, monkeypatch):
+    """M7 §1 (2026-10-06): a cycle whose one segment ended by patience (worker_rounds 6, patience 2, two rejected
+    rounds) is continued in the same workspace by `--phase improve --rounds 1 --reason ...`: a `schedule_extended`
+    event records the deviation, the segment's log is reopened, and round 2 runs — numbered after the segment's two,
+    its notes stratified by domain (1 per domain under a cap of 3, each domain's next failure), its gate on the
+    pooled control already read (no control arm paid) — under the same plans and root; patience
+    counts afresh inside the extension, which ends after its one round. The report lists the extension, the cycle
+    reads the segment as ended and runs nothing more, and an extension without a reason is refused."""
+    import rsi  # noqa: F401
+    from ouroloop.evolve import contracts as ct
+    from ouroloop.evolve import experience as xp
+    from test_cycle import SkillAnyway
+
+    class FreshSkill(SkillAnyway):
+        """A different skill text each round, so each round's candidate reaches the gate."""
+        n = 0
+
+        def summarize(self, *a, **kw):
+            FreshSkill.n += 1
+            out = super().summarize(*a, **kw)
+            for p in out.proposals:
+                patch = p.changes[0]["change"]["patch"]["write"]
+                key = next(k for k in patch if k.startswith("skills/"))
+                patch[key] += f" (version {FreshSkill.n})"
+            return out
+    preset = json.loads(json.dumps(bench.PRESETS["marketing_harness_v1"]))
+    preset["domain"] = None
+    preset["harness"].update(components=["memory", "skills"], sandbox=None, max_failure_notes=3)
+    preset["task_plan"].update(control_pooling="pooled", confirmation_repeats=1)
+    preset["task_plan"]["gate"].update(min_groups=1, bootstrap_replicates=200, min_tasks=3)
+    preset["schedule"].update(worker_rounds=6, research_slots=0, patience=2)
+    monkeypatch.setitem(bench.PRESETS, "extend_test", preset)
+    cfg = domains_config(fake_upstream, tmp_path)
+    cfg.update(improvement={"mode": "automatic", "preset": "extend_test"}, llm={"type": "test_bench_phase:Idle"},
+               freeze={"budget": {"model_calls": 4000, "tool_calls": 4000}})
+    first = bench.cycle(cfg, ".", out=lambda _l: None, researcher=FreshSkill())
+    assert first["steps"]["segment-0"]["stop_reason"] == "patience", first["steps"]
+    named = bench._cycle_config(cfg, ".", bench.improvement_settings(cfg), lambda _l: None)
+    root = tmp_path / "ws"
+    rows_before = {r.attempt_id for r in Results(root, "marketing+sales+support").all()}
+    with pytest.raises(ValueError, match="--reason is required"):
+        bench.run_phase(named, ".", phase="improve", rounds=1, researcher=FreshSkill(), out=lambda _l: None)
+    lines = []
+    result = bench.run_phase(named, ".", phase="improve", rounds=1, researcher=FreshSkill(), out=lines.append,
+                             reason="notes stratified by domain (2026-10-06); one more round")
+    assert result["extension"]["at_round"] == 2 and result["extension"]["finished"] is True
+    assert result["stop_reason"] == "rounds_done"
+    assert [r["outcome"] for r in result["rounds"] if r["outcome"] != "stopped"] == ["rejected"]
+    events = [e for e in ct.Events(root).of("schedule_extended")]
+    assert len(events) == 1 and {k: events[0][k] for k in ("segment", "rounds", "at_round", "frozen_worker_rounds",
+                                                          "frozen_patience", "extended_total", "by")} == \
+        {"segment": "segment-0", "rounds": 1, "at_round": 2, "frozen_worker_rounds": 6, "frozen_patience": 2,
+         "extended_total": 1, "by": "user"}
+    assert any(line.startswith("extend     segment-0: 1 more round(s) from round 2") for line in lines)
+    # round 2's notes: one per domain, each domain's failure not noted in rounds 0 and 1 where it has one
+    diagnoses = [e for e in xp.read(root) if e.get("kind") == "diagnosis"]
+    assert [d["round"] for d in diagnoses] == [0, 1, 2]
+    domains = lambda d: sorted(t.split(".")[0] for t in d["included"])  # noqa: E731
+    assert all(domains(d) == ["marketing", "sales", "support"] for d in diagnoses)
+    earlier = set(diagnoses[0]["included"]) | set(diagnoses[1]["included"])
+    assert {t for t in diagnoses[2]["included"] if not t.startswith("marketing.")}.isdisjoint(earlier)
+    assert diagnoses[2]["by_domain"]["sales"] == {"failures": 6, "included": 1}
+    experiments = [e for e in xp.read(root) if e.get("kind") == "experiment"]
+    assert len(experiments) == 3 and experiments[-1]["verdict"] == "rejected"           # round 2's own gate
+    # the gate read the pooled control: nothing paid for a control arm, the round's new attempts are the candidate's
+    new = [r for r in Results(root, "marketing+sales+support").all() if r.attempt_id not in rows_before]
+    assert new and not [r for r in new if bench._arm_of(r.attempt_id) == "control"]
+    # the record: the segment's log, the cycle's step, the report
+    state = json.loads((root / "rsi" / "cycle.json").read_text())
+    assert state["steps"]["segment-0"]["stop_reason"] == "rounds_done"
+    assert state["steps"]["segment-0"]["extensions"][0]["at_round"] == 2
+    report = bench.report(named, ".", out=lambda _l: None, write=False)
+    assert report["harness"]["extensions"][0]["reason"].startswith("notes stratified")
+    assert "- schedule extended: segment-0 by 1 round(s) from round 2" in bench_markdown(report)
+    again = bench.cycle(named, ".", out=lambda _l: None, researcher=FreshSkill())
+    assert again["status"] == "done" and len([e for e in xp.read(root) if e.get("kind") == "diagnosis"]) == 3
+
+
+def bench_markdown(report):
+    from ouroloop.report import render_markdown
+    return render_markdown(report)
+
+
+def test_an_improve_without_rounds_on_a_cycle_activity_is_refused(fake_upstream, tmp_path, monkeypatch):
+    """M7 §1 (2026-10-06 review): on an activity the cycle has run, `--phase improve` without --rounds would run the
+    frozen schedule from round 0 outside the segment's log; it is refused, naming the two legal ways on."""
+    from ouroloop import bench as b
+    import json as _json
+    from pathlib import Path as _Path
+    calls = {}
+
+    class Act:
+        root = str(tmp_path)
+
+    (tmp_path / "rsi").mkdir()
+    (tmp_path / "rsi" / "cycle.json").write_text(_json.dumps({"status": "done", "steps": {"segment-0": {}}}))
+    with pytest.raises(ValueError, match="continue it with --phase cycle"):
+        b._extension_of(Act(), None, "a reason")

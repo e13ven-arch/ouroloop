@@ -166,11 +166,49 @@ def failure_summaries(results, *, store, transcripts: Path, limits: DiagnosisLim
 
 def select_failures(summaries: list[dict], *, order: list[str], last_included: dict, cap: int) -> tuple:
     """-> (selected, not selected). Least recently included first — a failure never included comes first — and
-    ties in the frozen task order, so the tail of a long failure list is not starved round after round."""
+    ties in the frozen task order, so the tail of a long failure list is not starved round after round.
+
+    v0.3 step 5 (M4 §1, 2026-10-06): when the failures span several upstream domains (`domain.task` ids), the same
+    ranking is applied within each domain and the domains take turns, one failure each, in the order their tasks
+    first appear in the frozen order, until the cap — 30 over five domains is six each, a domain short of failures
+    leaving its turns to the others. The rotation across rounds then runs within each domain, so successive rounds
+    cover every domain's failures; ranked over the pooled order instead, the first domains in it took every note
+    (stage 2: marketing 27 + sales 3, then sales 30). One domain, or ids without one, select exactly as before."""
     position = {t: i for i, t in enumerate(order)}
-    ranked = sorted(summaries, key=lambda s: (last_included.get(s["task_id"], -1),
-                                              position.get(s["task_id"], len(position)), s["task_id"]))
-    return ranked[:max(cap, 0)], ranked[max(cap, 0):]
+
+    def key(s):
+        return last_included.get(s["task_id"], -1), position.get(s["task_id"], len(position)), s["task_id"]
+    ranked = sorted(summaries, key=key)
+    by_domain = domains_of([s["task_id"] for s in summaries])
+    if not by_domain:
+        return ranked[:max(cap, 0)], ranked[max(cap, 0):]
+    first = {}
+    for t in order:
+        first.setdefault(_domain(t), position[t])
+    queues = {d: [s for s in ranked if _domain(s["task_id"]) == d] for d in
+              sorted(by_domain, key=lambda d: (first.get(d, len(position)), d))}
+    interleaved = []
+    while any(queues.values()):
+        for d in list(queues):
+            if queues[d]:
+                interleaved.append(queues[d].pop(0))
+    return interleaved[:max(cap, 0)], interleaved[max(cap, 0):]
+
+
+def _domain(task_id: str) -> str:
+    return str(task_id).split(".", 1)[0]
+
+
+def domains_of(task_ids) -> dict:
+    """domain -> how many of these tasks are of it, when they span several upstream domains (`domain.task` ids);
+    {} for one domain or for ids that name none (fixture ids, older activities), which select as before."""
+    ids = list(task_ids)
+    if not ids or any("." not in str(t) for t in ids):
+        return {}
+    out: dict = {}
+    for t in ids:
+        out[_domain(t)] = out.get(_domain(t), 0) + 1
+    return out if len(out) > 1 else {}
 
 
 def last_included(experience, scope: str | None = None) -> dict:
@@ -339,6 +377,13 @@ class Diagnosis:
                     "invalid": invalid, "included": [s["task_id"] for s in selected],
                     "not_included": [s["task_id"] for s in rest], "working_set": self.scope,
                     "measured": self.measured, "passed": self.passed, "round": self.round_index}
+        failures = domains_of([s["task_id"] for s in self.summaries])
+        if failures:
+            # v0.3 step 5 (2026-10-06): how each domain's failures were covered; one-domain coverage is unchanged
+            included = {}
+            for s in selected:
+                included[_domain(s["task_id"])] = included.get(_domain(s["task_id"]), 0) + 1
+            coverage["by_domain"] = {d: {"failures": n, "included": included.get(d, 0)} for d, n in failures.items()}
         return notes, coverage
 
     def _ask(self, researcher, items: list, settle) -> None:

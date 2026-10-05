@@ -266,7 +266,7 @@ def _harness_evidence(root: Path, objects: ct.Objects, events: list, entries: li
         # v0.3 step 3 (M4 §5, M7 §4): the engine's ledger, per candidate — the declaration, how the drafts and the
         # admission went, the screen (train task ids, net flips, thin_screen), the gate's receipt ref and its three
         # per-task classes as counts; dev task ids stay in the receipt. And how often admission refused a repeat.
-        "ledger": _ledger_report(entries),
+        "ledger": _ledger_report(entries, objects),
         "sessions": [{k: e.get(k) for k in ("scope", "round", "turns", "edits", "trajectory_reads",
                                              "trajectory_bytes", "finishes", "ended")}
                      | ({"transcript_ref": e["transcript_ref"]} if e.get("transcript_ref") else {})
@@ -276,12 +276,16 @@ def _harness_evidence(root: Path, objects: ct.Objects, events: list, entries: li
                                                 if cycle.get("research_deferred") else {})},
         "reuse": reuse,
         "headroom": headroom,
+        # M7 §1 (2026-10-06): rounds run beyond the frozen schedule, each a recorded decision with its reason
+        "extensions": [{k: e.get(k) for k in ("ts", "segment", "by", "reason", "rounds", "at_round",
+                                              "frozen_worker_rounds", "frozen_patience", "extended_total")}
+                       for e in events if e.get("event") == "schedule_extended"],
         "not_run": {"C3": "the first version trains no decision model: C3 belongs to the second version",
                     "distillation": "the first version trains no model: distillation belongs to the second version"},
     }
 
 
-def _ledger_report(entries: list) -> dict:
+def _ledger_report(entries: list, objects=None) -> dict:
     """The ledger as the report lists it (M7 §4 实验台账): one row per candidate from the train-restricted
     projection (experience.ledger_projection — dev task ids never, the gate's classes as counts), the carriers'
     distribution, and the admissions `repeated_mechanism` refused."""
@@ -304,7 +308,7 @@ def _ledger_report(entries: list) -> dict:
             for task in value if isinstance(value, list) else ():
                 d = by_domain.setdefault(task_domain(task), {k: 0 for k in DEV_TASK_LISTS})
                 d[cls] += 1
-    return {"candidates": ledger_projection(rows), "carriers": carriers, "outcomes": outcomes,
+    return {"candidates": ledger_projection(rows, objects), "carriers": carriers, "outcomes": outcomes,
             "repeated_mechanism_refusals": repeated,
             **({"by_domain": by_domain} if len(by_domain) > 1 else {}),
             "note": "dev task ids stay in the receipts; the gate's fixed/regressed/still_failing are counts here"}
@@ -822,6 +826,10 @@ def render_markdown(report: dict) -> str:
                             if h.get("halves_by_domain") else "") + (f" ({h['outcome']})" if h.get("outcome") else ""))
         if harness["cycle"]:
             lines.append(f"- cycle: {harness['cycle']['status']}; steps {sorted(harness['cycle']['steps'] or {})}")
+        for x in harness.get("extensions") or ():
+            lines.append(f"- schedule extended: {x['segment']} by {x['rounds']} round(s) from round {x['at_round']} "
+                         f"(frozen worker_rounds {x['frozen_worker_rounds']}, patience {x['frozen_patience']}; "
+                         f"{x['extended_total']} added in all) by {x['by']}: {x['reason']}")
         for r in harness["reuse"]:
             lines.append(f"- reuse after {r['slot']}: {r['state']} — {r['detail']}")
         for name, why in harness["not_run"].items():

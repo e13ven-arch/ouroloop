@@ -413,7 +413,7 @@ def cmd_bench(args) -> int:
                         replace_splits=args.replace_splits),
           "baseline": dict(tasks=args.task, limit=args.limit),
           "collect": dict(tasks=args.task, repeats=args.repeats),
-          "improve": dict(rounds=args.rounds),
+          "improve": dict(rounds=args.rounds, reason=args.reason),
           "research": dict(campaign_ref=args.plan),
           "evaluate": dict(plan_ref=args.plan),
           "report": {}, "cycle": dict(until=args.until)}[args.phase]
@@ -610,7 +610,11 @@ def main(argv: list[str] | None = None) -> int:
     bn.add_argument("--concurrency", type=int,
                     help="attempts in flight at once for this run, over [bench] concurrency; a machine setting that "
                          "enters no frozen plan (M5 §2)")
-    bn.add_argument("--rounds", type=int, help="improve: how many worker rounds (default: the frozen schedule)")
+    bn.add_argument("--rounds", type=int, help="improve: how many worker rounds (default: the frozen schedule); "
+                                               "on a cycle activity whose last segment has ended, that many more "
+                                               "rounds, recorded as an extension beyond the frozen schedule")
+    bn.add_argument("--reason", help="improve --rounds on an ended segment: why the frozen schedule is extended "
+                                     "(required; recorded with the extension)")
     bn.add_argument("--repeats", type=int, help="collect: attempts per training task")
     bn.add_argument("--plan", help="research/evaluate: the frozen plan to run, instead of the one in [rsi]")
     bn.add_argument("--until", help="cycle: stop after this step and pay for nothing past it: baseline, segment-N, "

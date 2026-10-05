@@ -8,6 +8,22 @@
 
 ---
 
+## 2026-10-06 v0.3 第 5 步：笔记按领域分层与续跑
+
+- 做了什么（离线：没有调用模型、没有付费阶段、没有读 `.env`，未提交；工作区 `workspace-claude-v3` 只读，只经下面的代码路径）：
+  - 笔记选择按领域分层（`research/diagnosis.select_failures`）：失败跨几个领域时（`领域.题名`），每个领域内按原规则排（从未纳入的在前、再按最近一次纳入从久到新、同序按冻结顺序），领域按其题在冻结顺序里首次出现的先后轮流各取一题，取满上限；某领域不够时由其余领域补。单领域（或 id 不带领域）时与以前逐字相同，旧工作区的笔记身份、覆盖与摘要不变。覆盖记录多领域时另有 `by_domain`（每领域失败数与纳入数）。研究位公共输入的第一轮笔记用同一规则。
+  - R 读到每个领域的 gate 结果（`experience.gate_by_domain`、`ledger_projection(rows, objects)`）：投影的 gate 项多出 `by_domain`——每领域 fixed/regressed/still_failing 的题数与两臂 dev 均值及差值（收据的 `metrics.per_domain`）；两支 E0 去题号时先把计数留下；只有计数与均值，没有 dev 任务 id。报告的台账同样带它。
+  - 冻结 schedule 之外的显式续跑：`--phase improve --rounds N --reason "…"`（CLI 新增 `--reason`）对 cycle 活动里已结束的最后一个 worker 段起作用：记 `schedule_extended` 事件，`RoundLog.extend` 重开段的轮次记录（记下从第几轮起、为什么、谁、重开前的结束原因），在同一计划、同一根、同一 K 下跑 N 轮，轮次与诊断序号接着；patience 与基础设施失败上限只数这次续跑的轮（带上之前的空转，一轮也跑不了），预算、暂停照常；中断后同一命令续同一次续跑；结束后段与 `rsi/cycle.json` 记续跑的结束原因与 `extensions`，cycle 之后仍把该段当已结束；报告列出每次续跑。段未结束、活动暂停、缺理由、续一个未完的续跑却换了轮数，都拒绝。
+- 证据：
+  - 对本工作区的离线核对（只读）：W0 的 148 道 train 失败为 marketing 27、sales 33、support 27、hr 38、finance 23；按新规则第 2 轮的 30 条笔记各域 6 条（12 条是 marketing、sales 最久以前纳入的，按身份复用缓存）。前两轮在 R 的台账投影里现在是：rulesmem marketing +24（修 6、坏 0）、hr +8、finance +4、support −4、sales −16（修 2、坏 6）；writemem marketing +16、finance +4、hr 0、support 0、sales −8；投影里没有任何 dev 任务 id。
+  - 新增测试：`test_diagnosis.py::test_notes_over_five_domains_are_stratified_and_rotate_within_each_domain`、`test_a_single_domain_selects_notes_exactly_as_before`、`test_research_round.py::test_the_ledger_projection_shows_each_domains_gate_outcome_without_dev_task_ids`、`test_bench_phase.py::test_an_extension_after_a_patience_stop_runs_the_next_round_and_is_recorded`（夹具：三个领域、两轮被拒后 patience 停下，续跑 1 轮跑第 2 轮，笔记每域 1 条且是各域没读过的，gate 读合并对照、没付对照臂，事件、段记录、cycle.json 与报告都有这次续跑，之后的 cycle 不再跑这个段）。全套离线测试（前台）1139 passed、1 deselected（live）。
+  - 续跑一轮的费用（第 2 阶段实测）：笔记与会话每轮约 $5.35、筛选约 $18、gate 候选臂 125 × $0.495 ≈ $62，约 $85；加确认约 $147；装上后的下一轮另有约 $66 的 train 重测。根里可用约 $684（扣 final 份额、已花、3 笔 unknown 与 8 路在飞）。
+- 每轮的命令：`.venv/bin/ouroloop bench --config examples/automationbench/claude-v3.toml --phase improve --rounds 1 --reason "2026-10-06: R's notes are now stratified by domain (stage 2 noted only marketing and sales); continue segment-0 after its patience stop, one round at a time (user decision)"`。
+- 读法：续跑是对冻结 schedule 的公开偏离，理由是框架缺陷（不是看了结果再调），记录随活动走；final 仍按第 4 阶段的规则，只在有安装时跑。
+- commit：未提交。
+
+---
+
 ## 2026-10-05 v0.3 第 5 步第 2 阶段：两轮被拒，笔记只来自两个领域
 
 - 做了什么：`--phase cycle --until segment-0/round-2`，终端面板里跑；中途订阅会话限额（`ProviderAccountError`）暂停，9 笔调用不计费释放，限额重置后同一命令续跑，gate 从 evaluating 接着跑完。

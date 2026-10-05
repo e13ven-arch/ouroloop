@@ -892,7 +892,7 @@ def run_session_round(ctx, budget) -> ct.RoundResult:
     state = {"goal": ctx.context.goal, "k": k, "limits": inputs.limits.to_json(), "coverage": coverage,
              "notes": notes, "allowed_components": list(ctx.diagnosis.components),
              "package_files": sorted(package_dir), "tools": list(inputs.base_tools),
-             "dev_failure_histogram": inputs.histogram, "ledger": xp.ledger_projection(rows),
+             "dev_failure_histogram": inputs.histogram, "ledger": xp.ledger_projection(rows, ctx.objects),
              "experience": experience_projection(list(retrieved)[:10]), "trajectories": trajectories,
              "budget": budget_seen}
     inputs_files = {"notes.json": json.dumps(notes, ensure_ascii=False, indent=1, default=str),

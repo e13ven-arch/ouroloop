@@ -151,15 +151,45 @@ def ledger_rows(entries, scope: str | None = None) -> list[dict]:
         elif stage == "gated":
             entry["gate"] = {k: row.get(k) for k in ("verdict", "receipt", "reading_kind", "gain", "control_readings",
                                                      "cost_per_attempt", *DEV_TASK_LISTS)}
+            if row.get("by_domain"):
+                entry["gate"]["by_domain"] = row["by_domain"]      # an arm's E0: the counts stand for the lists
             entry["outcome"] = "installed" if row.get("installed") else str(row.get("verdict") or "pending")
     return list(out.values())
 
 
-def ledger_projection(rows: list[dict]) -> list[dict]:
+def gate_by_domain(gate: dict, per_domain: dict | None = None) -> dict:
+    """A gate's outcome per upstream domain (M4 §1 台账投影, v0.3 step 5, 2026-10-06): the fixed / regressed /
+    still_failing counts per domain — from the per-task lists the activity's ledger keeps (their ids' `domain.`
+    prefix), or the counts an arm's E0 carries in `by_domain` — and, from the receipt's `metrics.per_domain`, each
+    domain's two dev means and their difference. Counts and means only, never a task id; {} for a gate over one
+    domain, or over ids that name none."""
+    out: dict = {}
+    stored = gate.get("by_domain")
+    if isinstance(stored, dict):
+        out = {d: dict(v) for d, v in stored.items()}
+    else:
+        for cls in DEV_TASK_LISTS:
+            value = gate.get(cls)
+            if not isinstance(value, list):
+                continue
+            for task in value:
+                if "." not in str(task):
+                    return {}
+                counts = out.setdefault(str(task).split(".", 1)[0], {k: 0 for k in DEV_TASK_LISTS})
+                counts[cls] += 1
+    for d, m in (per_domain or {}).items():
+        if isinstance(m, dict):
+            row = out.setdefault(d, {k: 0 for k in DEV_TASK_LISTS})
+            row.update({k: m.get(k) for k in ("subject", "control", "gain") if k in m})
+    return out if len(out) > 1 else {}
+
+
+def ledger_projection(rows: list[dict], objects=None) -> list[dict]:
     """What R reads of the ledger (M4 §1 台账投影, train-restricted): every candidate's declaration, how its drafts
     and admission went, its screen result with the train task ids and net flips, its verdict, and the gate's three
     per-task classes as counts only — dev task ids never appear, test never does. The declaration ref is shown so a
-    later candidate can cite the row it `differs_from`."""
+    later candidate can cite the row it `differs_from`. Over several domains (2026-10-06) the gate also shows each
+    domain's counts and dev means (`gate_by_domain`), the means read off the receipt when `objects` holds it."""
     out = []
     for e in rows:
         d = e.get("declaration") or {}
@@ -184,6 +214,13 @@ def ledger_projection(rows: list[dict]) -> list[dict]:
                                                       "cost_per_attempt")},
                              # a list of dev task ids in the activity's own ledger; already a count in an arm's E0
                              **{k: _count(g.get(k)) for k in DEV_TASK_LISTS}}
+            per_domain = None
+            receipt = g.get("receipt")
+            if objects is not None and receipt and objects.has(receipt):
+                per_domain = (objects.get(receipt).get("metrics") or {}).get("per_domain")
+            split = gate_by_domain(g, per_domain)
+            if split:
+                entry["gate"]["by_domain"] = split
         out.append(entry)
     return out
 
@@ -198,7 +235,9 @@ def strip_dev_task_ids(row: dict) -> dict:
     returned as they are."""
     if row.get("kind") != "ledger" or row.get("stage") != "gated":
         return row
-    return {**row, **{k: len(row.get(k) or ()) for k in DEV_TASK_LISTS if k in row}}
+    split = gate_by_domain(row)
+    return {**row, **{k: len(row.get(k) or ()) for k in DEV_TASK_LISTS if k in row},
+            **({"by_domain": split} if split else {})}
 
 
 def snapshot(root: str | Path) -> tuple[list[dict], str]:

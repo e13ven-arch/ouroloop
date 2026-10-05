@@ -1623,3 +1623,35 @@ def test_a_candidate_with_no_failing_task_is_not_screened(fake_upstream, tmp_pat
     m1 = ledger_of(activity)["m1"]
     assert m1["outcome"] == "invalid" and m1["screen"]["failing"] == [] and "no failing train task" in m1["reason"]
     assert not [r for r in activity.results.all() if "/train_screen" in r.attempt_id]
+
+
+# ---------------------------------------------------------------------------- v0.3 step 5 (2026-10-06): R sees each domain
+def test_the_ledger_projection_shows_each_domains_gate_outcome_without_dev_task_ids(tmp_path):
+    """M4 §1 台账投影 (2026-10-06): over several domains the gate R reads in its ledger shows, per domain, the fixed /
+    regressed / still_failing counts and the two dev means with their difference (the receipt's metrics.per_domain)
+    — "helped marketing, hurt sales" — and no dev task id; an arm's E0, whose lists became counts, shows the same
+    counts; a gate over one domain shows none."""
+    objects = ct.Objects(tmp_path)
+    per_domain = {"marketing": {"tasks": 2, "subject": 1.0, "control": 0.0, "gain": 1.0},
+                  "sales": {"tasks": 2, "subject": 0.0, "control": 1.0, "gain": -1.0}}
+    receipt = objects.put_json("receipt", {"metrics": {"gain": 0.0, "per_domain": per_domain}})
+    dev = {"fixed": ["marketing.dev_a", "marketing.dev_b"], "regressed": ["sales.dev_c", "sales.dev_d"],
+           "still_failing": ["sales.dev_e"]}
+    rows = [xp.ledger_row("declared", "s/d2/m1", scope="s", round=2, dir="m1", status="declared",
+                          declaration={"mechanism": "check", "site": "memory.md", "carrier": "memory"}),
+            xp.ledger_row("gated", "s/d2/m1", scope="s", round=2, verdict="rejected", receipt=receipt, gain=0.0, **dev)]
+    shown = xp.ledger_projection(xp.ledger_rows(rows), objects)[0]["gate"]
+    assert shown["by_domain"] == {
+        "marketing": {"fixed": 2, "regressed": 0, "still_failing": 0, "subject": 1.0, "control": 0.0, "gain": 1.0},
+        "sales": {"fixed": 0, "regressed": 2, "still_failing": 1, "subject": 0.0, "control": 1.0, "gain": -1.0}}
+    assert (shown["fixed"], shown["regressed"], shown["still_failing"]) == (2, 2, 1)
+    text = json.dumps(xp.ledger_projection(xp.ledger_rows(rows), objects))
+    assert not any(t in text for ids in dev.values() for t in ids)
+    # an arm's E0: the per-task lists became counts, and the per-domain counts survive the stripping
+    stripped = [rows[0], xp.strip_dev_task_ids(rows[1])]
+    assert not any(t in json.dumps(stripped) for ids in dev.values() for t in ids)
+    e0 = xp.ledger_projection(xp.ledger_rows(stripped))[0]["gate"]["by_domain"]
+    assert e0["marketing"]["fixed"] == 2 and e0["sales"]["regressed"] == 2 and "gain" not in e0["sales"]
+    one = [rows[0], xp.ledger_row("gated", "s/d2/m1", scope="s", round=2, verdict="rejected",
+                                  fixed=["rsi.dev_update_stage"], regressed=[], still_failing=[])]
+    assert "by_domain" not in xp.ledger_projection(xp.ledger_rows(one))[0]["gate"]
