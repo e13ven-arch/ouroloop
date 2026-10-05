@@ -398,6 +398,12 @@ def cmd_bench(args) -> int:
     """
     from .adapters.automationbench import UpstreamError
     from .bench import run_phase
+    if getattr(args, "checks_only", False) and args.phase != "smoke":
+        # A flag a phase does not read must not be taken as a promise: `--checks-only` on a paid phase would run
+        # that phase for real (2026-10-05: a pilot cycle started paying under it).
+        print(f"ouroloop bench: --checks-only is a smoke option; --phase {args.phase} would ignore it and run "
+              f"for real. Run `--phase smoke --checks-only` for the startup checks.", file=sys.stderr)
+        return 2
     cfg = config.load(args.config)
     if getattr(args, "concurrency", None) is not None:
         # M5 §2 (v0.3): the attempts in flight for this run only. A setting of the machine — it enters no frozen

@@ -785,3 +785,16 @@ def test_the_verification_bound_prices_the_gate_and_a_gate_it_cannot_pay_for_nev
     result = bench.improve(cfg, ".", out=lambda _l: None, researcher=rsi.ScriptedResearcher())
     assert result["rounds"][0]["outcome"] == "inconclusive"
     assert not [r for r in Results(activity.root, rsi.DOMAIN).all() if r.pair_key]      # no gate attempt ran
+
+
+@pytest.mark.parametrize("phase", ["baseline", "collect", "improve", "research", "evaluate", "cycle"])
+def test_checks_only_on_a_paid_phase_is_refused_before_anything_runs(phase, tmp_path, monkeypatch, capsys):
+    """2026-10-05: `--phase cycle --checks-only` ran a pilot cycle for real, because only smoke reads the flag. A
+    flag a phase would ignore is refused before the config is even read, so nothing is opened or paid."""
+    from ouroloop import cli
+    import ouroloop.bench as bench_mod
+    called = []
+    monkeypatch.setattr(bench_mod, "run_phase", lambda *a, **k: called.append(1) or {})
+    code = cli.main(["bench", "--config", str(tmp_path / "missing.toml"), "--phase", phase, "--checks-only"])
+    assert code == 2 and not called
+    assert "--checks-only is a smoke option" in capsys.readouterr().err
