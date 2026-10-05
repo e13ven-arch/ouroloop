@@ -8,6 +8,15 @@
 
 ---
 
+## 2026-10-05 v0.3 第 4 步：天花板实验的结果
+
+- 做了什么：按 `882fed5` 冻结的设计跑天花板实验（`ceiling_run.py`，`claude-ceiling.toml`，Opus 5.5 经 claude_code、effort high、并发 8、根 $150 硬停）。第一段约 30 分钟后被会话的后台时限截断（31/52 次尝试已落盘，账本留 1 笔 open 预留），同一命令续跑补完其余 21 次，未重复付费。
+- 证据（`workspace-claude-ceiling/ceiling/result.json`）：52 次全部有效，无硬限额截断、无包崩溃、无未读；名义 $45.28（W* $17.82 / 26 次，$0.69 每次；手写包 $27.46 / 26 次，$1.06 每次）。逐题：R = 8（W* 本次两次都失败），X = 1（`featured_snippet` 0/2 → 1/2），B = 2（`voice_of_customer` 1/2 → 0/2，`google_ads_pause_low_ctr` 1/2 → 0/2），E = 5；两臂通过率都是 6/26 = 23.1%。v0.2 三次读数都失败的 4 道 dev 题（`ad_performance_review`、`event_registration_sync`、`industry_event_tracking`、`seo_competitor_gap`）两臂都 0/2。手写包的机制确实触发：27 份记录里 aux 调用 53 次。
+- 结论（按事先写定的规则）：training——循环层机制修不掉 W* 剩下的失败，重心转向第二版的训练准备。边界：一个手写包、每臂每题 2 次、13 题；只说明 Marketing 在 RSI 之后的残余，不说明新领域从 W0 起步的可达增益。ROADMAP 第 4 步的止损写的是“结论为模型能力时，第 5 步只跑基线与 final”，这与发布目标（RSI 在留出 test 上带来多少提升）冲突，交用户决定。
+- commit：见 git log。
+
+---
+
 ## 2026-10-05 v0.3 第 4 步：天花板实验的准备
 
 - 做了什么：按 ROADMAP v0.3 第 4 步，把天花板实验准备到可以运行为止。全程离线，没有调用任何模型，没有读 `.env`，未提交。
