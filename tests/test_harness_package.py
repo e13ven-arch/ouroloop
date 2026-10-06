@@ -1,6 +1,7 @@
 """v0.6 first-version contracts and the capability package (docs/modules/00_CONTRACTS.md §1–2,
 docs/modules/01_POLICY_RUNTIME.md §1): CT6-01, CT6-14, PR6-13 (text part), PR6-14, and the package shape."""
 import json
+from pathlib import Path
 from dataclasses import fields
 
 import pytest
@@ -358,7 +359,115 @@ def test_ordinary_words_are_not_literals_and_hits_match_whole_tokens():
         "skills/x.md": "general rule"}
     assert name not in escaped["manifest.json"]                             # escaped in the raw file
     assert hp.literal_hits(escaped, {name}) == [name]                       # found in the decoded text
-    assert "jane" not in hp.describe_hits(["jane.doe@acme.com"])            # the output names kinds, not values
+    found = hp.literal_findings(escaped, {name})
+    assert found == [{"file": "manifest.json", "line": None, "literal": name, "kind": "record name"}]
+
+
+# ---------------------------------------------------------------------------- v0.4: the literal check's precision
+def test_the_check_output_names_the_file_the_line_and_the_literal():
+    """V0_4_PLAN §1.5, M0 §3 (v0.4): a finding is located — file, line, the literal and its kind — so R revises
+    the line it wrote; v0.3 gave counts by kind and 14 of R's 25 turns went to blind revisions. The literal is train
+    data R already reads; the output only goes back to R."""
+    files = {"manifest.json": json.dumps(hp.empty_manifest()), "memory.md": "First line.\nWrite to Dana Reyes.\n",
+             "skills/L2024.md": "x"}
+    found = hp.literal_findings(files, {"Dana Reyes", "L2024"})
+    assert {"file": "memory.md", "line": 2, "literal": "Dana Reyes", "kind": "record name"} in found
+    assert {"file": "skills/L2024.md", "line": 0, "literal": "L2024", "kind": "identifier"} in found
+    text = hp.describe_hits(found)
+    assert "memory.md:2: 'Dana Reyes' (record name)" in text and "skills/L2024.md:0" in text
+
+
+def test_matching_is_case_sensitive_except_for_an_e_mail_address():
+    """V0_4_PLAN §1.5: 'not sent' in a hook's regex is not the sheet value 'Not Sent' (the finishgate refusals of
+    v0.3); an e-mail address is the same address in any case, so it is still found."""
+    hook = {"middlewares/gate.py": 'DEFER = re.compile(r"(not sent|did not send)")\n'}
+    assert hp.literal_hits(hook, {"Not Sent"}) == []
+    assert hp.literal_hits({"memory.md": "Status Not Sent means wait."}, {"Not Sent"}) == ["Not Sent"]
+    assert hp.literal_hits({"memory.md": "write to Dana.Reyes@Example.com"}, {"dana.reyes@example.com"}) == \
+        ["dana.reyes@example.com"]
+
+
+def test_only_a_value_of_one_train_task_is_forbidden():
+    """V0_4_PLAN §1.5: the index keeps each literal's train tasks; a value of two or more tasks is the domain's
+    vocabulary, a pure number a constant as often as a value ('3000' of `[:3000]`), a field name or a column header
+    the schema — none is forbidden; a value of exactly one task still is."""
+    index: dict = {}
+    hp.add_literals(index, "t1", {"rows": [{"cells": {"Rule ID": "R-17", "Rule": "Legal Hold"}}],
+                                  "headers": ["Rule ID", "Exclusion Rule"], "limit": "3000", "owner": "Dana Reyes"})
+    hp.add_literals(index, "t2", {"note": "Legal Hold", "limit": "3000"})
+    headers = hp.header_names({"rows": [{"cells": {"Rule ID": "R-17"}}], "headers": ["Rule ID", "Exclusion Rule"]})
+    assert headers >= {"Rule ID", "Exclusion Rule", "cells", "rows"}
+    forbidden = hp.forbidden_literals(index)
+    assert "Legal Hold" not in forbidden                     # in two tasks
+    assert "3000" not in forbidden                           # a pure number
+    assert {"R-17", "Dana Reyes"} <= forbidden               # one task's values
+    package = {"memory.md": "Rule ID and Exclusion Rule columns; Legal Hold rows; cut at 3000; Dana Reyes."}
+    assert hp.literal_hits(package, forbidden, allowed=headers) == ["Dana Reyes"]
+    assert hp.forbidden_literals({"Dana Reyes"}) == {"Dana Reyes"}       # a v0.3 set is forbidden whole
+
+
+def test_a_single_task_amount_the_grader_checks_stays_forbidden(tmp_path):
+    """V0_4_PLAN §1.5 (review 2026-10-06): the number exemption covers constants, not answers — a number that is a
+    train assertion's value in one task ('13,650', a finance amount) stays forbidden, in the index rule and through
+    Drafts; a number only in one task's state or in code ('3000' of `[:3000]`) is exempt, and an amount shared by
+    two tasks is vocabulary like any shared value."""
+    from ouroloop.research.drafts import Drafts
+    index: dict = {}
+    hp.add_literals(index, "fin.a", [{"type": "sheet_cell_equals", "value": "13,650"}, {"total": "13,162.5"}])
+    answers = set(index)                                        # the assertion params' literals, before the states
+    hp.add_literals(index, "fin.a", {"limit": "3000", "rows": [{"cells": {"Amount": "13,650"}}]})
+    hp.add_literals(index, "fin.b", {"total": "13,162.5"})
+    forbidden = hp.forbidden_literals(index, answers=answers)
+    assert "13,650" in forbidden                                 # one task's checked amount
+    assert "3000" not in forbidden                               # a number of one task's state, not an answer
+    assert "13,162.5" not in forbidden                           # in two tasks
+    assert "13,650" not in hp.forbidden_literals(index)          # without the answers, the exemption let it through
+    objects = ct.Objects(tmp_path)
+    drafts = Drafts(objects, parent_ref=hp.empty_package(objects), limits=hp.Limits(), literals=index,
+                    answers=answers)
+    errors, ref = drafts.check(text_files(memory="When the books close, the total is 13,650; cut text at 3000."))
+    assert ref is None and "memory.md:1: '13,650'" in errors[0]
+    assert drafts.check(text_files(memory="Cut long text at 3000 characters."))[0] == []
+
+
+def test_drafts_built_from_an_index_refuse_only_single_task_values(tmp_path):
+    """V0_4_PLAN §1.5, through the draft check itself (research.drafts.Drafts): an index refuses a planted value of
+    one task with its location, and passes the shared value, the number and the header the v0.3 set refused."""
+    from ouroloop.research.drafts import Drafts
+    objects = ct.Objects(tmp_path)
+    index = {"Legal Hold": {"t1", "t2"}, "3000": {"t1"}, "Dana Reyes": {"t1"}, "Exclusion Rule": {"t3"}}
+    drafts = Drafts(objects, parent_ref=hp.empty_package(objects), limits=hp.Limits(), literals=index,
+                    allowed_literals={"Exclusion Rule"})
+    clean = text_files(memory="Legal Hold rows are kept; cut at 3000; the Exclusion Rule column decides.")
+    assert drafts.check(clean)[0] == []
+    errors, ref = drafts.check(text_files(memory="Legal Hold rows.\nAsk Dana Reyes first."))
+    assert ref is None and "memory.md:2: 'Dana Reyes'" in errors[0]
+    old = Drafts(objects, parent_ref=hp.empty_package(objects), limits=hp.Limits(), literals=set(index))
+    assert old.check(clean)[0]                                # the v0.3 form refuses them
+
+
+def test_the_twenty_recorded_v03_draft_checks_replay_to_no_false_refusal():
+    """V0_4_PLAN §1.5's regression (examples/automationbench/literal_replay.py, read-only over workspace-claude-v3):
+    the v0.3 rule reproduces the 14 refusals the activity recorded among its 20 draft checks; the v0.4 rule refuses
+    none of them; a value of exactly one train task, planted in its own case into the first refused draft, is still
+    refused. Needs the v0.3 workspace and the upstream checkout, which are not in the repository. Run as its own
+    process: the upstream package is imported from the real checkout there, never the test fixture's copy."""
+    import subprocess
+    import sys
+    script = Path(__file__).resolve().parent.parent / "examples" / "automationbench" / "literal_replay.py"
+    workspace = script.parent / "workspace-claude-v3"
+    if not (workspace / "rsi" / "events.jsonl").exists() or not Path("~/workspace/AutomationBench").expanduser().exists():
+        pytest.skip("workspace-claude-v3 or the upstream checkout is not here")
+    done = subprocess.run([sys.executable, str(script), "--json"], capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0, done.stderr[-2000:]
+    out = json.loads(done.stdout.strip().splitlines()[-1])
+    assert out["checks"] == 20 and out["recorded_refusals"] == 14
+    assert out["old_rule_refusals"] == 14 and out["old_rule_reproduces_record"]
+    assert out["new_rule_refusals"] == 0
+    assert out["planted"]["refused"] and out["planted"]["tasks"] == 1
+    # review 2026-10-06: a numeric answer of one train task, planted the same way, is refused too
+    assert out["planted_amount"]["refused"] and out["planted_amount"]["assertion_value"]
+    assert out["planted_amount"]["tasks"] == 1 and out["numbers"]["forbidden"] == out["numbers"]["of_one_task"] > 0
 
 
 # ---------------------------------------------------------------------------- package API v2: the agent component

@@ -107,6 +107,16 @@ worker 轮的部分已在阶段 3 实现（2026-10-02）：
 
 （v0.3，2026-10-05，第 0/1 阶段评审）会话的记录：除每次调用一行（回合、工具、路径、ok）之外，整段会话存为一个对象（`CodingSession.transcript()`，`transcript:sha256:…`）：按顺序的每条消息——输入与之后的用户消息、R 的回复文本与它的工具调用及参数、每个工具的结果或拒绝原因——每项截到 8,000 字符、全部严格 UTF-8 可编码；`research_session` 事件记 `transcript_ref`，报告的会话行列出它；被拒调用的那一行也带错误文本（截到 500 字符）。原因：被拒的写入、读取错误与 R 的回复原来只在会话的内存里，会话一结束就没了；第 0 阶段的继续/停止规则要读它。测试 `test_research_session.py::test_the_sessions_turns_are_stored_with_refusals_and_the_event_names_them`、`test_a_transcript_item_is_cut_and_strict_utf8`。
 
+### R 的输入与准入（v0.4，2026-10-06）
+
+[V0_4_PLAN §1.2～§1.4、§1.7](../design/V0_4_PLAN.md)。新增或改动：
+
+- **`inputs/api_errors.json`（`research/api_errors.py`）。** 固定代码从本活动最近一次 train 测量的有效尝试（失败与通过）的宿主轨迹投影：按端点（`METHOD host/path`，路径段含数字——版本号除外——或只在一道题里出现时写 `{id}`；非 `api_fetch` 的工具按名字）计调用数、涉及题数、错误响应数与按“状态码 + 归一化信息”（数字、引号内的值、邮箱、路径都替换）的分类、紧跟错误的同端点重试、响应表明还有下一页而之后没再调该端点的次数、空结果，以及调用落在失败尝试里的次数。没有任务 id、没有参数值；dev 与 test 永不进入。原因：StarHarness 在 AutomationBench Finance 的留出增益来自工具与接口修复，v0.3 的 9 个候选没有一个改工具。
+- **轨迹清单列出通过的尝试。** `trajectories.json` 每项带 `outcome`：本轮纳入诊断的失败尝试，加至多 6 个通过的 train 尝试（含“不得做”断言——类型名含 `_not_`——的题优先，再按冻结顺序）。`read_trajectory` 仍只接受 train 尝试。
+- **准入的读取检查。** K 的 `research_session.min_failing_reads`、`min_passing_reads`（v3 preset 都是 1；缺省 0 即不查，旧 K 不变）：每个候选须在本会话里读过（宿主读取记录：字节 > 0、未被拒）至少这么多条其 `predicted_affected` 中题目的失败轨迹，本会话须读过至少这么多条通过轨迹（清单里没有通过尝试时不要求）。不满足是准入 invalid，理由写明缺哪一样（`research.experiment.declaration_reasons` 的 `reads`）。（评审 2026-10-06）同一检查先在第一次 `finish` 时做（`CodingSession._ungrounded`）：缺读数是该次 `finish` 的错误，R 补读后再 `finish`；修订的 `finish` 不查；准入是兜底。安装之后，清单、接口错误表与 v0.4 的样本和“before”用的 train 读数补上这次测量没重跑的题（`bench.Improvement.carried_train_readings`：同一 K 下 `measure` 臂的最近有效读数），测量本身不变。原因：Meta-Harness 的消融（分数 34.6、摘要 34.9、原始轨迹 50.0）；v0.3 的 R 一条通过轨迹都没读。
+- **笔记的方向。** 笔记可带 `direction`：`omission` | `over_action` | `other`（其他写法归 `other`，不写则缺省）；覆盖记录 `by_direction` 给各方向的笔记数（有笔记写了方向时才有）。会话核心新 bootstrap 的 R0 的 `research.diagnose` 文本（`policies.DIAGNOSE_SESSION`）要求它；`NOTE_FORMAT` 不变，所以旧 R0 的笔记身份不变。
+- **R0 的方法说明。** 会话核心新 bootstrap 的 R0 的 `research.propose` 是 `policies.PROPOSE_SESSION`：先看 api_errors 并优先修接口、读失败与通过的轨迹、按方向修（over_action 靠克制）、k 个候选各一个原因并写明何时不作用、优先有条件的改动、不写任务答案。`SESSION_FORMAT` 只留协议（工作树、输入、工具、上限、声明、准入规则），“做 k 个、先读轨迹”的方法句移到 propose 文本里。旧 R0（v0.3 工作区）的会话因此只剩它自己的文本加协议。
+
 ## 2. 首版可执行的候选空间
 
 | 失败证据 | 候选/处理 | 必须具备的条件 |
@@ -150,6 +160,10 @@ worker 轮的部分已在阶段 3 实现（2026-10-02）：
 新增包内 Python 是首版支持的候选，不限于选择已有组件。R 返回路径明确的增改删 patch、manifest 变更、证据与假设；固定代码在对象库的新包副本应用/冻结，禁止修改工作区仓库或当前 active 的文件。包内入口经 M0 结构准入和 M1 隔离装配后可执行；草稿要求新增宿主 API、基础工具权限或依赖时，草稿检查按结构/接口错误失败，检查输出回传 R 并占用一次修订；确属工程能力缺口时 next_action=repair_runtime，属于后续工程接入。候选自写测试只能辅助接口/机制检查，最终效果由固定任务 verifier/gate 决定。
 
 失败 train 工作集用于定位机制；候选采用前仍评测完整固定 dev 清单，不从 dev 移除本次对照版本成功的任务。沿用 M3 的冻结门槛决定采用与否；首版不另外维护历史成功任务池或设计回归修复流程，已有评测无法解决的具体问题在实跑后再判断。未装配/未调用的工具先修可发现性或删除重复项，不通过继续加组件掩盖问题。停用/删除也生成新包候选并走 gate；只记录组件使用与整体效果，不为首版建设全面自动消融搜索。
+
+### 筛选（v0.4，2026-10-06）
+
+[V0_4_PLAN §1.6](../design/V0_4_PLAN.md)。K 的筛选表有 `max_sample_regressions` 时（v3 preset 新冻结的 K）：通过样本每轮重抽，种子为 (`order_seed`, 本 scope 的诊断序号)，从最近一次测量通过的 train 题里抽 `passing_sample`（preset 6）道，含“不得做”断言的题优先（`session.passing_sample_v4`）；资格为修复数（失败集里转通过的题）≥ `min_fixes`（1）、样本退步数（样本里转失败的题）≤ `max_sample_regressions`（1）、净翻转 ≥ `min_net_flips`（preset 降为 0；失败集只能转通过、样本只能转失败，所以净翻转 = 修复 − 样本退步），再按净翻转、成本、声明顺序排（`session.pick_best`）。筛选行与台账多记 `fixes`、`sample_regressions`。没有该键的 K 照 v0.3：固定样本、净翻转 ≥ `min_net_flips`。原因：v0.3 七次筛选的样本都是同 5 题、没有 hr；rulesmem 在样本上 0 退步、到 dev 上退步 10 题。
 
 ## 3. 工作流发现与教学材料的衔接
 

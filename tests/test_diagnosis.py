@@ -324,7 +324,8 @@ def test_read_trajectory_is_train_only_read_only_and_byte_capped(fake_upstream, 
     assert (reader.read("not-a-ref")[1], reader.read(rows["train"].attempt_id, "x", 1)[1]) == (True, True)
     assert path.read_bytes() == before
     assert reader.listing([rows["train"].attempt_id, rows["dev"].attempt_id, "none"]) == [
-        {"attempt_ref": rows["train"].attempt_id, "task_id": rows["train"].task_id, "bytes": len(before)}]
+        {"attempt_ref": rows["train"].attempt_id, "task_id": rows["train"].task_id, "bytes": len(before),
+         "outcome": "passing" if rows["train"].success else "failing"}]
 
 
 def test_the_dev_histogram_has_assertion_types_and_counts_only(fake_upstream, tmp_path):
@@ -461,3 +462,107 @@ def test_a_single_domain_selects_notes_exactly_as_before():
     assert dg.select_failures(plain, order=list("abcd"), last_included={"a": 0}, cap=2) == \
         before(plain, list("abcd"), {"a": 0}, 2)
     assert dg.domains_of([s["task_id"] for s in summaries]) == {} and dg.domains_of(list("ab")) == {}
+
+
+# ---------------------------------------------------------------------------- v0.4: the interface table and the direction
+def _transcript(tmp_path, session: str, calls: list) -> None:
+    """A host-written transcript under the runner shell: a broker event (the call's args) and a tool event (what came
+    back) per call, matched by id."""
+    lines = []
+    for i, (tool, args, output, error) in enumerate(calls):
+        eid = f"{session}:b{i}"
+        lines.append({"kind": "broker_event", "event_id": eid, "tool": tool, "args": args})
+        lines.append({"kind": "tool", "id": eid, "name": tool, "is_error": error, "output": output})
+    (tmp_path / "transcripts").mkdir(exist_ok=True)
+    (tmp_path / "transcripts" / f"{session}.jsonl").write_text("\n".join(json.dumps(x) for x in lines) + "\n")
+
+
+def test_the_interface_table_counts_where_the_agent_fights_the_api_from_train_attempts_only(tmp_path):
+    """V0_4_PLAN §1.2 (research/api_errors.py): per endpoint — `METHOD host/path`, a segment with a digit or seen in
+    one task's calls an `{id}` — the calls, the tasks, the error responses by kind (code and message with numbers,
+    quoted values and e-mail addresses replaced), a retry right after an error, a next page left unread, an empty
+    result; no task id and no argument value in the table; a dev attempt is never read."""
+    from ouroloop.benchmark import TaskResult
+    from ouroloop.research.api_errors import api_error_table
+    no_account = json.dumps({"error": {"code": 401, "message": "No quickbooks account is connected (id 7781)"}})
+    _transcript(tmp_path, "s1", [
+        ("api_fetch", {"method": "GET", "url": "https://books.example.com/v3/company/42/query", "params": "{}"},
+         no_account, True),
+        ("api_fetch", {"method": "GET", "url": "https://books.example.com/v3/company/42/query"}, no_account, True),
+        ("api_fetch", {"method": "GET", "url": "https://crm.example.com/contacts"},
+         json.dumps({"results": [{"name": "Jane Roe"}], "has_more": True}), False),
+        ("api_search", {"query": "contacts Jane Roe"}, json.dumps({"results": []}), False)])
+    _transcript(tmp_path, "s2", [
+        ("api_fetch", {"method": "GET", "url": "https://books.example.com/v3/company/77/query"},
+         json.dumps({"error": {"code": 404, "message": "No row 'Acme Ltd' for jane@acme.com"}}), True),
+        ("api_fetch", {"method": "get", "url": "https://crm.example.com/contacts"},
+         json.dumps({"results": [], "total": 0}), False)])
+    _transcript(tmp_path, "s3", [("api_fetch", {"method": "GET", "url": "https://books.example.com/v3/x"}, "{}", False)])
+    rows = [TaskResult("d.a", "a", "train", 0, "W0", "r", "m", success=False, evidence="s1"),
+            TaskResult("d.b", "b", "train", 0, "W0", "r", "m", success=True, partial_credit=1.0, evidence="s2"),
+            TaskResult("d.c", "c", "dev", 0, "W0", "r", "m", success=False, evidence="s3")]
+    table = api_error_table(rows, tmp_path / "transcripts")
+    assert (table["split"], table["attempts"], table["tasks"], table["failed_attempts"]) == ("train", 2, 2, 1)
+    by = {e["endpoint"]: e for e in table["endpoints"]}
+    query = by["GET books.example.com/v3/company/{id}/query"]
+    assert (query["calls"], query["tasks"], query["errors"], query["retries"], query["calls_in_failed_attempts"]) == \
+        (3, 2, 3, 1, 2)
+    assert query["error_kinds"] == {"401 No quickbooks account is connected (id #)": 2,
+                                    "404 No row '…' for <email>": 1}
+    contacts = by["GET crm.example.com/contacts"]
+    assert (contacts["unread_pages"], contacts["empty_results"], contacts["tasks"]) == (1, 1, 2)
+    assert by["api_search"]["empty_results"] == 1
+    text = json.dumps(table)
+    assert "d.a" not in text and "Jane Roe" not in text and "jane@acme.com" not in text and "Acme" not in text
+    assert "books.example.com/v3/x" not in text                      # the dev attempt was not read
+
+
+def test_a_note_s_direction_is_read_normalised_and_counted_in_the_coverage(fake_upstream, tmp_path):
+    """V0_4_PLAN §1.4 (M4 §1 v0.4): a note may say which way the agent went wrong — omission, over_action or other,
+    any spelling of the three, anything else "other" — and the coverage counts them; a note that says nothing has no
+    direction key (an older R0's notes are what they were), and a coverage with no stated direction has no counts.
+    The session's R0 asks for it; the v1 R0 and NOTE_FORMAT do not change."""
+    from ouroloop.research.basic import NOTE_FORMAT
+    from ouroloop.research.diagnosis import direction_counts, note_direction
+    assert [note_direction(v) for v in ("Omission", "over-action", "over action", "OVER_ACTION", "both", "", None)] == \
+        ["omission", "over_action", "over_action", "over_action", "other", "", ""]
+    assert direction_counts([{"direction": "omission"}, {"direction": "over_action"}, {"direction": "omission"},
+                             {}]) == {"omission": 2, "over_action": 1, "other": 0, "unstated": 1}
+    assert direction_counts([{}, {"failure_class": "x"}]) == {}
+    assert '"direction"' in P.DIAGNOSE_SESSION and "over_action" in P.DIAGNOSE_SESSION
+    assert "direction" not in P.DIAGNOSE_NOTE and "direction" not in NOTE_FORMAT
+    from ouroloop.research import diagnosis as dg
+    results, rows, _ = run(fake_upstream, tmp_path, [rsi.TRAIN[1], rsi.TRAIN[2]], "train",
+                           worker=rsi.BusinessWorker(ignore_finish_check=True))
+    failed = [r for r in rows if not r.success]
+    directions = iter(["Over-Action", ""])
+
+    class Noter:
+        requests: list = []
+
+        def note_request(self, summary, prompt, *, allowed=()):
+            return prompt, json.dumps({"failure": summary["task_id"]})
+
+        def note(self, system, user):
+            return {"failure_class": "x", "root_cause": "y", "mechanism": "z", "component": "memory",
+                    "generality": "g", "direction": next(directions)}
+    summaries = dg.failure_summaries(rows, store=results, transcripts=tmp_path / "transcripts",
+                                     limits=dg.DiagnosisLimits())
+    assert len(summaries) == len(failed) == 2
+    diagnosis = dg.Diagnosis(summaries=summaries, order=list(rsi.TRAIN), components=("memory",),
+                             cache=dg.NoteCache(tmp_path, ct.Objects(tmp_path)))
+    notes, coverage = diagnosis.run(Noter(), P.DIAGNOSE_SESSION)
+    assert len(notes) == 2 and [n.get("direction") for n in notes] == ["over_action", None]
+    assert coverage["by_direction"] == {"omission": 0, "over_action": 1, "other": 0, "unstated": 1}
+
+
+def test_a_url_urlsplit_refuses_is_counted_under_its_tool(tmp_path):
+    """V0_4_PLAN §1.2 (review 2026-10-06): a call whose URL urlsplit refuses — a bracketed placeholder host the agent
+    copied from the catalogue — neither breaks the table nor invents an endpoint: it is counted under its tool."""
+    from ouroloop.benchmark import TaskResult
+    from ouroloop.research.api_errors import api_error_table
+    _transcript(tmp_path, "s1", [
+        ("api_fetch", {"method": "GET", "url": "https://[your-domain].zendesk.com/api/v2/tickets"},
+         json.dumps({"error": {"code": 404, "message": "No handler"}}), True)])
+    table = api_error_table([TaskResult("d.a", "a", "train", 0, "W0", "r", "m", evidence="s1")], tmp_path / "transcripts")
+    assert [(e["endpoint"], e["calls"], e["errors"]) for e in table["endpoints"]] == [("api_fetch", 1, 1)]

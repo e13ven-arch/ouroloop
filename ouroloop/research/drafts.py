@@ -80,17 +80,25 @@ class Drafts:
     objects: ct.Objects
     parent_ref: str
     limits: hp.Limits
-    literals: set = field(default_factory=set)
+    literals: set = field(default_factory=set)     # forbidden literals, or (v0.4) literal -> its train tasks
     max_repairs: int = 3
     events: ct.Events | None = None
     worker: object = None
     round_index: int = 0
-    allowed_literals: set = field(default_factory=set)     # tool-schema vocabulary, never a task's answer
+    allowed_literals: set = field(default_factory=set)     # tool-schema vocabulary and (v0.4) train header names
     scope: str = ""
     fixture: object = None      # () -> a surface over a synthetic or train-only world, for package tests
     reserved_names: set = field(default_factory=set)       # the host's base tool names: not a package tool's
     image: str | None = None    # the worker image K froze, recorded with every package built here
     tools: list = field(default_factory=list)              # the host's base tools, shown to R with a revision
+    answers: set = field(default_factory=set)              # (v0.4) the train assertion params' literals
+
+    def forbidden(self) -> set:
+        """The literals no draft may contain (v0.4, docs/design/V0_4_PLAN.md §1.5): from an index (literal -> the train
+        tasks it occurs in) only the values of one task, less pure numbers that are no train assertion's value
+        (`answers`); a plain set is forbidden whole, as in v0.3. The schema words and the tool vocabulary are
+        `allowed_literals`."""
+        return hp.forbidden_literals(self.literals, answers=self.answers)
 
     def _revise(self, revise, prompt: str, patch: dict, check_output: str):
         """R's revision, shown the parent package the patch applies to and the host's base tools, when its
@@ -150,7 +158,7 @@ class Drafts:
         taken = sorted({t["name"] for t in manifest["tools"]} & set(self.reserved_names))
         if taken:
             return [f"package tools {taken} take the names of the host's base tools; choose other names"], None
-        hits = hp.literal_hits(files, self.literals, allowed=self.allowed_literals)
+        hits = hp.literal_findings(files, self.forbidden(), allowed=self.allowed_literals)
         if hits:
             return [hp.describe_hits(hits)], None
         if hp.needs_worker_for_checks(files, manifest):
@@ -176,7 +184,8 @@ class Drafts:
         errors = []
         for change in proposal.changes:
             text = text_of(change, self.objects)
-            hits = hp.literal_hits({"text": text}, self.literals, allowed=self.allowed_literals) if text else []
+            hits = hp.literal_findings({change['target']: text}, self.forbidden(), allowed=self.allowed_literals) \
+                if text else []
             if hits:
                 errors.append(f"{change['target']}: {hp.describe_hits(hits, what='the text')}")
         return errors

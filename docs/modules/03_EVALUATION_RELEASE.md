@@ -119,6 +119,8 @@ final 的协议不变：计划（`bench.FinalizationPlan`）先封存并提交�
 - Marketing 的 test 已被读过三次（v0.1 final、final-1、final-2），对新主张宣布为已耗尽（M7 §2（v0.3）：Marketing 的 split 原样冻结，新领域的 split 按计分断言种类与工具家族分层）；新领域的 final 才能支撑新主张，Marketing 的 test 只用于与历史数字对照。（v0.3，2026-10-05 实现）`[bench] spent` 记在合并划分里，`[freeze.final] tasks = "test"` 只解析为新领域的 test，显式列出 spent 领域的 test 题拒绝冻结，`--phase evaluate` 对含这些题的计划在付费前拒绝，报告的主张区间不含它们（M7 §2、§4）。
 - 测试（可选，发表时，待实现）：`test_paid_run_safety.py::test_the_final_runs_the_matched_cost_arm_when_it_is_sealed_in_the_plan`、`test_report.py::test_the_matched_cost_arm_is_reported_beside_w_star_and_not_as_the_claim`。
 
+（v0.4，2026-10-06，[V0_4_PLAN §1.6、§1.8](../design/V0_4_PLAN.md)）(a) 的合并池在基线时就有三次读数：`[bench] control_readings = 3` 让基线无条件（在任何 gate 之前）读 W0 的 dev 三次，第一次的运行身份不变，另外两次是同一执行身份下 `notes` 标签不同的新运行，合并规则照旧把它们都算进来（收据的 `control_readings` 为 3）。原因：v0.3 三次 gate 共用一次读数，噪声约 ±3.9 题/125；三次读数把空候选的误收从 1.0～1.6% 降到 0.2～0.4%。缺省 1，旧配置不变。§2.2 的同成本参照另加一个不付费的版本：报告从 final 自己的 W0 重复（每题 n 次中 c 次通过）算 W0 的 pass@k（k = 1..n，无偏估计 1 − C(n−c, k)/C(n, k) 的题均值，oracle 上界），与 W\* 的通过率和两臂每次成本之比并列，标为“等成本参照”（`report.final_reference`）；它不进 C1 的裁决。
+
 ### 2.3 field 清单（v0.3，2026-10-04）
 
 | 对象 | 新增字段 | 缺省（字段不写，v0.3，2026-10-04 实现） | v0.3 preset | 条款 |

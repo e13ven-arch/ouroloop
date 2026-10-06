@@ -111,8 +111,56 @@ def build_report(root: str | Path, domain: str, *, protocol: str = "ouroloop.ben
     }
     if several:
         report["final_by_domain"] = _final_by_domain(arms, spent, finalization)
+    reference = final_reference(arms, attempts, spent)
+    if reference is not None:
+        report["final_reference"] = reference
     report["claims"] = claim_states(report)
     return report
+
+
+def pass_at_k(n: int, c: int, k: int) -> float:
+    """The unbiased pass@k of one task with c passes in n attempts: 1 − C(n−c, k) / C(n, k) (k ≤ n)."""
+    from math import comb
+    return 1.0 - comb(n - c, k) / comb(n, k) if n - c >= k else 1.0
+
+
+def final_reference(arms: dict, attempts: list, spent=frozenset()) -> dict | None:
+    """The equal-compute reference beside W* (docs/design/V0_4_PLAN.md §1.8; M3 §2.2 v0.4): W0's oracle pass@k from
+    the final's own W0 repeats — per task n valid attempts and c passes, the unbiased 1 − C(n−c, k)/C(n, k), averaged
+    over the tasks, for k = 1 .. the least n — next to W*'s pass rate on the same tasks and the two arms' cost per
+    attempt. It is an upper bound for "let W0 try k times and keep the best" at k times W0's cost, costs nothing extra
+    (the final already runs W0 that many times), and is not part of C1's verdict. None without a final W0 arm. A
+    spent domain's tasks are left out, as in the claim."""
+    final_runs = {run: a for run, a in arms.items() if a.get("final")}
+    by_role: dict[str, dict[str, list]] = {}
+    for r in attempts:
+        arm = final_runs.get(r.run)
+        if arm is None or r.validity != "valid" or task_domain(r.task_id) in spent:
+            continue
+        by_role.setdefault(arm["role"], {}).setdefault(r.task_id, []).append(bool(r.success))
+    base = by_role.get("base")
+    if not base:
+        return None
+    k_max = min(len(v) for v in base.values())
+    out = {"label": "equal-compute reference: W0's oracle pass@k over its own final repeats (an upper bound for "
+                    "best-of-k W0 at k times W0's cost; not part of C1's verdict)",
+           "tasks": len(base), "repeats": k_max,
+           "base_pass_at_k": {str(k): round(sum(pass_at_k(len(v), sum(v), k) for v in base.values()) / len(base), 4)
+                              for k in range(1, k_max + 1)}}
+    evolved = by_role.get("evolved")
+    if evolved:
+        shared = sorted(set(evolved) & set(base))
+        out["evolved_pass_rate"] = round(sum(sum(evolved[t]) / len(evolved[t]) for t in shared) / len(shared), 4) \
+            if shared else None
+        costs = {role: [a["summary"].get("cost_per_attempt") for a in final_runs.values() if a["role"] == role]
+                 for role in ("base", "evolved")}
+        b = [c for c in costs["base"] if c is not None]
+        e = [c for c in costs["evolved"] if c is not None]
+        if b and e and sum(b) > 0:
+            ratio = (sum(e) / len(e)) / (sum(b) / len(b))
+            out["cost_ratio"] = round(ratio, 4)
+            out["k_at_equal_cost"] = max(1, round(ratio))
+    return out
 
 
 def _per_domain(rows: list, spent: set) -> dict:
@@ -739,6 +787,14 @@ def render_markdown(report: dict) -> str:
         lines.append(f"| claim (domains not spent) | {(claim.get('base') or {}).get('pass_rate')} | "
                      f"{(claim.get('evolved') or {}).get('pass_rate')} | {claim.get('difference')} |")
         lines.append(f"- matched-cost best-of-k arm: {final['best_of_k']}")
+    reference = report.get("final_reference")
+    if reference:
+        # v0.4 (V0_4_PLAN §1.8): beside W*, labelled, never the claim
+        lines += ["", "### Equal-compute reference", "", f"- {reference['label']}",
+                  f"- W0 pass@k over {reference['tasks']} tasks × {reference['repeats']}: "
+                  + ", ".join(f"pass@{k} {v}" for k, v in reference["base_pass_at_k"].items()),
+                  f"- W* pass rate: {reference.get('evolved_pass_rate')}; cost per attempt W*/W0: "
+                  f"{reference.get('cost_ratio')} (k at equal cost {reference.get('k_at_equal_cost')})"]
     lines += ["", "## Run cost", "", "| run | usd | missing | usage | tool calls |", "|---|---|---|---|---|"]
     for run, cost in report["run_cost"].items():
         lines.append(f"| `{run[:8]}` | {'unknown' if cost['cost_usd'] is None else cost['cost_usd']} | "

@@ -43,16 +43,26 @@ from .experiment import NEXT_ACTIONS, normalize_mechanism
 class SessionLimits:
     """The session's caps, frozen into K from the preset (research_session.*); R cannot raise them. `max_turns`
     counts model calls, `finish` included; `max_edits` counts write_file/edit_file/delete_file across every candidate
-    directory and every revision of the round; the trajectory bytes are per call and per session."""
+    directory and every revision of the round; the trajectory bytes are per call and per session.
+
+    v0.4 (docs/design/V0_4_PLAN.md §1.3): two floors admission checks against the host's read records —
+    `min_failing_reads` failed trajectories among a candidate's predicted_affected tasks, `min_passing_reads` passing
+    trajectories in the session. 0 is no check: a K frozen before them (v0.3) has neither key and keeps v0.3's
+    admission, and to_json leaves a 0 out so its caps read as they did."""
     max_turns: int = 40
     max_edits: int = 24
     max_trajectory_bytes: int = 65536
     max_trajectory_bytes_total: int = 524288
+    min_failing_reads: int = 0
+    min_passing_reads: int = 0
 
     def to_json(self) -> dict:
-        return {"max_turns": self.max_turns, "max_edits": self.max_edits,
-                "max_trajectory_bytes": self.max_trajectory_bytes,
-                "max_trajectory_bytes_total": self.max_trajectory_bytes_total}
+        out = {"max_turns": self.max_turns, "max_edits": self.max_edits,
+               "max_trajectory_bytes": self.max_trajectory_bytes,
+               "max_trajectory_bytes_total": self.max_trajectory_bytes_total}
+        out.update({k: v for k, v in (("min_failing_reads", self.min_failing_reads),
+                                      ("min_passing_reads", self.min_passing_reads)) if v})
+        return out
 
     @classmethod
     def from_json(cls, d: dict | None) -> "SessionLimits":
@@ -61,13 +71,30 @@ class SessionLimits:
 
 @dataclass(frozen=True)
 class ScreenSettings:
-    """The train-side screen's two numbers (M4 §2 train 侧筛选): how many passing train tasks join every candidate's
-    screen, and the least net flips that pay the dev gate."""
+    """The train-side screen's numbers (M4 §2 train 侧筛选): how many passing train tasks join every candidate's
+    screen, and the least net flips that pay the dev gate.
+
+    v0.4 (docs/design/V0_4_PLAN.md §1.6, M4 §2 v0.4): `max_sample_regressions` (a cap) and `min_fixes` (a floor). With
+    the cap set, the screen is v0.4's — the passing sample redrawn every round with must-not tasks first
+    (passing_sample_v4), and a candidate eligible only with at least `min_fixes` fixes and at most
+    `max_sample_regressions` regressions on the sample — so the harm a broad change does on passing tasks is seen
+    before the gate is paid. A K frozen before them has neither key: the fixed sample and net flips alone, as in v0.3."""
     passing_sample: int = 5
     min_net_flips: int = 1
+    min_fixes: int = 0
+    max_sample_regressions: int | None = None
+
+    @property
+    def v04(self) -> bool:
+        return self.max_sample_regressions is not None
 
     def to_json(self) -> dict:
-        return {"passing_sample": self.passing_sample, "min_net_flips": self.min_net_flips}
+        out = {"passing_sample": self.passing_sample, "min_net_flips": self.min_net_flips}
+        if self.min_fixes:
+            out["min_fixes"] = self.min_fixes
+        if self.max_sample_regressions is not None:
+            out["max_sample_regressions"] = self.max_sample_regressions
+        return out
 
     @classmethod
     def from_json(cls, d: dict | None) -> "ScreenSettings":
@@ -84,6 +111,7 @@ PROMPT_FILES = {"worker/system_prompt.md": ("system_prompt", "worker.system_prom
                 "worker/finish.md": ("finish", "worker.finish")}
 MAX_MECHANISM_WORDS = 12
 THIN_SCREEN_TASKS = 3                   # fewer note-derived failing tasks than this: `thin_screen`
+PASSING_LISTED = 6                      # v0.4: passing train attempts inputs/trajectories.json lists at most
 DECLARATION_FIELDS = ("dir", "mechanism", "site", "carrier", "predicted_affected", "trigger_condition", "notes")
 NUDGE = ("Reply with tool calls: list_files, read_file, write_file, edit_file, delete_file, read_trajectory, or "
          "finish with your declaration. Text alone does nothing.")
@@ -106,9 +134,9 @@ TOOLS = (
                                                "new": {"type": "string"}}, "required": ["path", "old", "new"]}),
     ToolSpec("delete_file", "Delete a file under candidates/<dir>/ (remove a skill, a hook, a tool). Counts as one "
              "edit.", {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}),
-    ToolSpec("read_trajectory", "Read a byte range of the host-written record of one failed train attempt (every "
-             "model call with its messages, tools, response and usage; every tool call the broker saw). Train "
-             "attempts only; inputs/trajectories.json lists the refs and sizes.",
+    ToolSpec("read_trajectory", "Read a byte range of the host-written record of one train attempt, failed or "
+             "passing (every model call with its messages, tools, response and usage; every tool call the broker "
+             "saw). Train attempts only; inputs/trajectories.json lists the refs, sizes and outcomes.",
              {"type": "object", "properties": {"attempt_ref": {"type": "string"}, "offset": {"type": "integer"},
                                                "limit": {"type": "integer"}}, "required": ["attempt_ref"]}),
     ToolSpec("finish", "End the session with your declaration: {\"candidates\": [{\"dir\", \"mechanism\", \"site\", "
@@ -125,7 +153,9 @@ SESSION_FORMAT = (
     "current package (read-only), inputs/ this round's inputs (read-only: notes.json, coverage.json, histogram.json "
     "— failed-assertion types with counts over the installed version's dev readings, nothing else of dev —, "
     "ledger.json — every earlier candidate's declaration, screen result and verdict —, tools.json — the host's base "
-    "tools —, experience.json, trajectories.json — the failed train attempts you may read with read_trajectory —, "
+    "tools —, experience.json, trajectories.json — the train attempts you may read with read_trajectory, failed and "
+    "passing, each with its outcome —, api_errors.json — per endpoint and tool over the train attempts: calls, "
+    "error responses by kind, retries after an error, next pages left unread, empty results —, "
     "package_api.md). You make up to {k} candidates: the first write under candidates/<dir>/ creates <dir> as a copy "
     "of the package; change, add or delete its files; W's instruction texts are candidates/<dir>/worker/"
     "system_prompt.md and worker/finish.md, so a prompt change is a change to those files. Each candidate must change "
@@ -135,11 +165,7 @@ SESSION_FORMAT = (
     "{max_trajectory_bytes_total} in all; reaching a limit before finish ends the session and the round. "
     "read_file answers at most 131072 characters a call; read a longer file in pages with offset. "
     "A candidate is screened on the train tasks that currently fail among its notes' tasks and predicted_affected, "
-    "plus a fixed sample of passing train tasks: name what it should fix. "
-    "Use the round: unless you can say why fewer, make {k} candidates that attack different causes of the failures "
-    "(the screen keeps only the best on train, so an extra candidate costs little and a different one may be the one "
-    "that works), and before writing a candidate read with read_trajectory at least one failed attempt it targets — "
-    "the notes are summaries, the trajectory shows what the agent actually saw and did. "
+    "plus a sample of passing train tasks: name what it should fix. "
     "End with finish and one declaration per candidates/<dir> (a dir declared twice in one finish is refused): "
     "mechanism (at most 12 words, what the change does), carrier "
     "(memory|skill|prompt|hook|tool|agent), site (hook: before_tool|after_tool|on_finish; tool: the tool's name; "
@@ -152,6 +178,23 @@ SESSION_FORMAT = (
     "fails its draft check comes back to you here with the check output: edit and finish again. Checks are run by "
     "fixed code, not by you; there is no shell. Never write a task's specific answers (names, e-mails, ids, values) "
     "into a candidate. ")
+# v0.4 (docs/design/V0_4_PLAN.md §1.3; M4 §1 v0.4): the admission rule a K with read floors adds to the protocol. The
+# method (why read, which ones) is research.propose's text; this is only what admission checks.
+SESSION_READS = (
+    "Admission refuses a candidate unless this session read with read_trajectory (bytes returned) at least "
+    "{min_failing_reads} failed attempt(s) of tasks in its predicted_affected and, when trajectories.json lists a "
+    "passing attempt, at least {min_passing_reads} passing attempt(s); the refusal names what is missing. ")
+
+
+def session_format(k: int, limits: "SessionLimits") -> str:
+    """The session's protocol text for this round: SESSION_FORMAT with K's caps, and the admission's read rule when
+    K sets read floors (SESSION_READS)."""
+    caps = limits.to_json()
+    text = SESSION_FORMAT.format(k=k, **caps)
+    if limits.min_failing_reads or limits.min_passing_reads:
+        text += SESSION_READS.format(min_failing_reads=limits.min_failing_reads,
+                                     min_passing_reads=limits.min_passing_reads)
+    return text
 
 
 # ---------------------------------------------------------------------------- the worker-side tree, driven here
@@ -200,14 +243,51 @@ class TrajectoryReader:
         self.total = 0
         self.calls: list[dict] = []
 
-    def listing(self, attempt_ids) -> list[dict]:
-        """What inputs/trajectories.json lists: the readable train attempts among `attempt_ids` with their sizes."""
+    def listing(self, attempt_ids, passing=(), must_not=()) -> list[dict]:
+        """What inputs/trajectories.json lists: the readable train attempts among `attempt_ids` (the round's failures,
+        in the results' order) with their sizes, then (v0.4, docs/design/V0_4_PLAN.md §1.3) up to PASSING_LISTED of the
+        `passing` attempts in the order given — the caller puts tasks with must-not checks first. Each entry says its
+        outcome; a task in `must_not` is marked so."""
         out = []
-        for r in self.results.all() if self.results is not None else ():
-            if r.attempt_id in set(attempt_ids) and r.split in TRAIN and r.validity == "valid" and r.evidence:
-                path = self.transcripts / f"{r.evidence}.jsonl"
-                out.append({"attempt_ref": r.attempt_id, "task_id": r.task_id,
-                            "bytes": path.stat().st_size if path.exists() else 0})
+        rows = list(self.results.all()) if self.results is not None else []
+
+        def entry(r) -> dict:
+            path = self.transcripts / f"{r.evidence}.jsonl"
+            return {"attempt_ref": r.attempt_id, "task_id": r.task_id,
+                    "bytes": path.stat().st_size if path.exists() else 0,
+                    "outcome": "passing" if r.success else "failing",
+                    **({"must_not": True} if r.task_id in set(must_not) else {})}
+
+        def readable(r) -> bool:
+            return r.split in TRAIN and r.validity == "valid" and bool(r.evidence)
+        wanted = set(attempt_ids)
+        for r in rows:
+            if r.attempt_id in wanted and readable(r):
+                out.append(entry(r))
+        by_id = {r.attempt_id: r for r in rows}
+        listed = 0
+        for ref in passing:
+            r = by_id.get(ref)
+            if listed >= PASSING_LISTED or r is None or ref in wanted or not readable(r) or not r.success:
+                continue
+            out.append(entry(r))
+            listed += 1
+        return out
+
+    def read_tasks(self) -> dict:
+        """(v0.4, V0_4_PLAN §1.3) What the session actually read, from the host's record of its calls: the train
+        attempts read with bytes returned and no refusal, as the task of each, split by the attempt's outcome —
+        {"failing": [task, ...], "passing": [task, ...]}, one entry per attempt. Admission's read floors are checked
+        against this, never against what R declares it read."""
+        rows = {r.attempt_id: r for r in self.results.all()} if self.results is not None else {}
+        seen, out = set(), {"failing": [], "passing": []}
+        for call in self.calls:
+            ref = call.get("ref")
+            if call.get("denied") or not call.get("bytes") or ref in seen or ref not in rows:
+                continue
+            seen.add(ref)
+            r = rows[ref]
+            out["passing" if r.success else "failing"].append(r.task_id)
         return out
 
     def read(self, attempt_ref, offset=0, limit=None) -> tuple[str, bool]:
@@ -481,9 +561,33 @@ class CodingSession:
                         "notes": list(c["notes"])})
         if problems:
             return "the declaration is not readable: " + "; ".join(problems)[:1500]
+        ungrounded = self._ungrounded(out)
+        if ungrounded:
+            return ungrounded
         self.declarations.append({"candidates": out, "next_action": action if action in NEXT_ACTIONS else None,
                                   "reason": str(args.get("reason") or "")[:500]})
         return ""
+
+    def _ungrounded(self, candidates: list) -> str:
+        """(v0.4, docs/design/V0_4_PLAN.md §1.3; review 2026-10-06) The read floors checked at the first `finish`, so a
+        candidate the session's reads do not ground is the finish call's error — R reads and finishes again within its
+        caps — rather than a refusal at admission after the session is gone. Only the first finish: a revision changes
+        files, never the declaration, and the reads only grow. Admission checks the same record as the backstop.
+        "" when K sets no floor, there is no reader, or every candidate is grounded."""
+        if self.declarations or self.trajectories is None or not candidates or \
+                not (self.limits.min_failing_reads or self.limits.min_passing_reads):
+            return ""
+        from .experiment import grounding_reasons
+        reads = {**self.trajectories.read_tasks(), "min_failing": self.limits.min_failing_reads,
+                 "min_passing": self.limits.min_passing_reads,
+                 "passing_listed": any(e.get("outcome") == "passing"
+                                       for e in (self.inputs or {}).get("trajectories") or () if isinstance(e, dict))}
+        missing = [f"candidates/{c['dir']}: {'; '.join(why)}" for c in candidates
+                   for why in [grounding_reasons(c, reads)] if why]
+        if not missing:
+            return ""
+        return ("finish refused, the declaration is not grounded in what this session read (read_trajectory, then "
+                "finish again): " + " | ".join(missing))[:1500]
 
     def transcript(self) -> dict:
         """The whole session as R and the tools saw it (2026-10-05 review, stage 0's go rule reads it): every message
@@ -706,20 +810,60 @@ def passing_sample(rows, *, order, size: int, seed: int) -> list[str]:
     return sorted(passed[:max(int(size), 0)], key=lambda t: order.index(t) if t in order else len(order))
 
 
+def passing_sample_v4(rows, *, order, size: int, seed: int, round_ordinal: int, must_not=()) -> list[str]:
+    """The round's passing sample under the v0.4 screen (docs/design/V0_4_PLAN.md §1.6, M4 §2 v0.4): `size` train tasks
+    the latest measurement passed, drawn afresh every round — the generator is seeded by the plan's order_seed and the
+    scope's diagnosis ordinal, so a rerun of the round draws the same tasks and the next round other ones — taking the
+    tasks with must-not checks (`must_not`) first, then the rest; listed in the frozen split order. v0.3 drew one
+    sample per activity, the same five tasks in all seven screens, and none held a must-not check of HR, where the
+    candidates' harm was."""
+    passed = [t for t in order if any(r.task_id == t and r.validity == "valid" and r.success for r in rows)]
+    rng = random.Random(f"passing-sample:{int(seed)}:{int(round_ordinal)}")
+    first = [t for t in passed if t in set(must_not)]
+    rest = [t for t in passed if t not in set(must_not)]
+    rng.shuffle(first)
+    rng.shuffle(rest)
+    chosen = (first + rest)[:max(int(size), 0)]
+    return sorted(chosen, key=lambda t: order.index(t) if t in order else len(order))
+
+
+def screen_counts(entry: dict) -> tuple[int, int]:
+    """-> (fixes, sample regressions) of one screen (V0_4_PLAN §1.6): failing-set tasks that turned to pass, and sample
+    tasks that turned to fail. The failing set only fails before and the sample only passes, so net flips = fixes −
+    sample regressions."""
+    before, after = entry.get("before") or {}, entry.get("after") or {}
+    fixes = sum(1 for t in entry.get("failing") or () if after.get(t) is True and not before.get(t))
+    regressions = sum(1 for t in entry.get("sample") or () if before.get(t) and after.get(t) is False)
+    return fixes, regressions
+
+
+def eligible(entry: dict, screen: ScreenSettings) -> bool:
+    """Whether a screened candidate may pay the dev gate: a reading, net flips at or above `min_net_flips`, and under
+    the v0.4 screen at least `min_fixes` fixes and at most `max_sample_regressions` regressions on the passing sample."""
+    if entry.get("net_flips") is None or entry["net_flips"] < screen.min_net_flips:
+        return False
+    fixes, regressions = (entry["fixes"], entry["sample_regressions"]) if "fixes" in entry else screen_counts(entry)
+    return fixes >= screen.min_fixes and (screen.max_sample_regressions is None
+                                          or regressions <= screen.max_sample_regressions)
+
+
 def net_flips(before: dict, after: dict) -> int:
     """Transitions to pass minus transitions to fail over the tasks read on both sides."""
     shared = set(before) & set(after)
     return sum(1 for t in shared if after[t] and not before[t]) - sum(1 for t in shared if before[t] and not after[t])
 
 
-def pick_best(screened: list[dict], min_net_flips: int) -> dict | None:
-    """The one candidate that pays the dev gate: the highest net flips at or above `min_net_flips`, ties to the lower
-    mean cost (an unknown cost sorts after a known one), then to declaration order."""
-    eligible = [s for s in screened if s.get("net_flips") is not None and s["net_flips"] >= min_net_flips]
-    if not eligible:
+def pick_best(screened: list[dict], min_net_flips: int | ScreenSettings) -> dict | None:
+    """The one candidate that pays the dev gate: among the eligible (`eligible`: net flips at or above min_net_flips,
+    and under the v0.4 screen ≥ min_fixes fixes and ≤ max_sample_regressions sample regressions) the highest net
+    flips, ties to the lower mean cost (an unknown cost sorts after a known one), then to declaration order. A bare
+    number is the v0.3 call: net flips alone."""
+    screen = min_net_flips if isinstance(min_net_flips, ScreenSettings) else ScreenSettings(min_net_flips=min_net_flips)
+    ok = [s for s in screened if eligible(s, screen)]
+    if not ok:
         return None
-    return sorted(eligible, key=lambda s: (-s["net_flips"], s.get("cost_per_attempt") is None,
-                                           s.get("cost_per_attempt") or 0.0, s["order"]))[0]
+    return sorted(ok, key=lambda s: (-s["net_flips"], s.get("cost_per_attempt") is None,
+                                     s.get("cost_per_attempt") or 0.0, s["order"]))[0]
 
 
 def check_output_text(dir_name: str, errors: list[str]) -> str:
@@ -781,6 +925,7 @@ def _read_screen(entry: dict, rows_after, before: dict) -> bool:
         entry["after"] = {r.task_id: bool(r.success) for r in valid}
         entry["before"] = {t: bool(before[t]) for t in entry["tasks"] if t in before}
         entry["net_flips"] = net_flips(entry["before"], entry["after"])
+        entry["fixes"], entry["sample_regressions"] = screen_counts(entry)
         entry["cost_per_attempt"] = _mean_cost(rows_after)
     else:
         lost = [r for r in invalid if r.task_id in set(entry["failing"])]
@@ -884,7 +1029,8 @@ def run_session_round(ctx, budget) -> ct.RoundResult:
     rows = xp.ledger_rows(ctx.experience)
     note_tasks = {n["note_ref"]: n["task_id"] for n in notes if n.get("note_ref")}
     attempt_refs = [s.get("attempt_id") for s in ctx.diagnosis.summaries if s.get("task_id") in coverage["included"]]
-    trajectories = inputs.trajectories.listing(attempt_refs) if inputs.trajectories is not None else []
+    trajectories = inputs.trajectories.listing(attempt_refs, passing=inputs.passing_attempts,
+                                               must_not=inputs.must_not) if inputs.trajectories is not None else []
     budget_seen = budget.for_research() if budget is not None and hasattr(budget, "for_research") else \
         getattr(ctx.context, "budget", None)
     package_dir = {**inputs.package_files, **{path: inputs.prompt_texts[target] for path, (_s, target) in
@@ -894,7 +1040,7 @@ def run_session_round(ctx, budget) -> ct.RoundResult:
              "package_files": sorted(package_dir), "tools": list(inputs.base_tools),
              "dev_failure_histogram": inputs.histogram, "ledger": xp.ledger_projection(rows, ctx.objects),
              "experience": experience_projection(list(retrieved)[:10]), "trajectories": trajectories,
-             "budget": budget_seen}
+             "api_errors": inputs.api_errors, "budget": budget_seen}
     inputs_files = {"notes.json": json.dumps(notes, ensure_ascii=False, indent=1, default=str),
                     "coverage.json": json.dumps(coverage, ensure_ascii=False, indent=1, default=str),
                     "histogram.json": json.dumps(inputs.histogram, ensure_ascii=False, indent=1),
@@ -902,9 +1048,10 @@ def run_session_round(ctx, budget) -> ct.RoundResult:
                     "tools.json": json.dumps(state["tools"], ensure_ascii=False, indent=1, default=str),
                     "experience.json": json.dumps(state["experience"], ensure_ascii=False, indent=1, default=str),
                     "trajectories.json": json.dumps(trajectories, ensure_ascii=False, indent=1),
+                    # v0.4 (V0_4_PLAN §1.2): where the agent fights the API, from the train trajectories only
+                    "api_errors.json": json.dumps(inputs.api_errors, ensure_ascii=False, indent=1),
                     "package_api.md": PACKAGE_API}
-    system = (f"{propose_prompt}\n\n" if propose_prompt else "") + SESSION_FORMAT.format(
-        k=k, **inputs.limits.to_json()) + PACKAGE_API
+    system = (f"{propose_prompt}\n\n" if propose_prompt else "") + session_format(k, inputs.limits) + PACKAGE_API
 
     # ------------------------------------------------------------------ the session in the worker
     worker = inputs.worker
@@ -919,7 +1066,8 @@ def run_session_round(ctx, budget) -> ct.RoundResult:
         s["recorded"] = True
         ledger("screened", s["candidate"], **{key: s.get(key) for key in (
             "tasks", "failing", "sample", "before", "after", "net_flips", "cost_per_attempt", "thin_screen", "outcome",
-            "reason", "lost_to", "experiment_id", "proposal_ref")})
+            "reason", "lost_to", "experiment_id", "proposal_ref")},
+               **{key: s[key] for key in ("fixes", "sample_regressions") if key in s})
     try:
         try:
             if worker is None or not hp.usable_worker(worker):
@@ -1065,7 +1213,7 @@ def run_session_round(ctx, budget) -> ct.RoundResult:
                 proposal = normalize(proposal, objects)
                 proposals_made.append(proposal)
                 admission = _admit(ctx, proposal, core, budget, declaration=decl, ledger=round_rows,
-                                   train_tasks=inputs.train_tasks)
+                                   train_tasks=inputs.train_tasks, reads=grounding_inputs(inputs, trajectories))
                 ledger("admitted", cid, status=admission.status, reasons=admission.reasons,
                        proposal_ref=admission.proposal_ref)
                 if admission.ok:
@@ -1133,6 +1281,7 @@ def run_session_round(ctx, budget) -> ct.RoundResult:
                         spent = _read_screen(entry, rows_after, inputs.before)
                 events.append("train_screen", scope=ctx.scope_id, round=ctx.round_index, ordinal=ordinal,
                               candidate=cand["id"], tasks=tasks, net_flips=entry["net_flips"],
+                              **{key: entry[key] for key in ("fixes", "sample_regressions") if key in entry},
                               cost_per_attempt=entry["cost_per_attempt"], thin_screen=entry["thin_screen"],
                               attempts=entry.get("attempts") or [],
                               **({"lost_to": entry["lost_to"]} if entry.get("lost_to") else {}),
@@ -1141,13 +1290,13 @@ def run_session_round(ctx, budget) -> ct.RoundResult:
                 screened.append(entry)
                 if spent:
                     raise BudgetExhausted(f"the screen of {cand['id']} ran out of budget: {entry['reason']}")
-            best = pick_best(screened, inputs.screen.min_net_flips)
+            best = pick_best(screened, inputs.screen)
             for s in screened:
                 if s["net_flips"] is None:
                     s["outcome"] = "lost" if s.get("lost") else "invalid"
                 elif best is not None and s is best:
                     s["outcome"] = "selected"
-                elif s["net_flips"] >= inputs.screen.min_net_flips:
+                elif eligible(s, inputs.screen):
                     s["outcome"] = "not_selected"
                 else:
                     s["outcome"] = "screened_out"
@@ -1185,6 +1334,13 @@ def run_session_round(ctx, budget) -> ct.RoundResult:
                 return ended("inconclusive", ("infrastructure: no candidate had a valid screen reading, the screen "
                                               "attempts were lost (refill included): " + why)[:300])
             return ended("invalid", ("no candidate had a valid screen reading: " + why)[:300], "none")
+        if inputs.screen.v04:
+            # V0_4_PLAN §1.6: the rule and each candidate's fixes and sample regressions, so the record says why
+            return ended("screened_out", (f"no candidate was eligible (≥{inputs.screen.min_fixes} fixes, "
+                                          f"≤{inputs.screen.max_sample_regressions} sample regressions, net flips "
+                                          f"≥{inputs.screen.min_net_flips}): " + "; ".join(
+                f"{s['candidate'].rpartition('/')[2]} fixes {s.get('fixes')} sample regressions "
+                f"{s.get('sample_regressions')}" for s in screened))[:300], "none")
         return ended("screened_out", "no candidate reached the screen's min_net_flips "
                                      f"{inputs.screen.min_net_flips}: " + "; ".join(
                          f"{s['candidate'].rpartition('/')[2]} {s['net_flips']}" for s in screened)[:250], "none")
@@ -1193,6 +1349,18 @@ def run_session_round(ctx, budget) -> ct.RoundResult:
                                experiment_id=chosen["experiment_id"])
     ledger("gated", chosen["id"], **gate_ledger_fields(result.outcome, result.receipt_ref, objects))
     return result
+
+
+def grounding_inputs(inputs: "SessionInputs", listed) -> dict | None:
+    """What admission's read floors are checked against (V0_4_PLAN §1.3, M4 §1 v0.4), or None when K sets none: the
+    session's reads by outcome (TrajectoryReader.read_tasks), the floors, and whether a passing attempt was listed at
+    all (with none listed the passing floor cannot be met and is not asked)."""
+    limits = inputs.limits
+    if not (limits.min_failing_reads or limits.min_passing_reads) or inputs.trajectories is None:
+        return None
+    return {**inputs.trajectories.read_tasks(), "min_failing": limits.min_failing_reads,
+            "min_passing": limits.min_passing_reads,
+            "passing_listed": any(e.get("outcome") == "passing" for e in listed or ())}
 
 
 @dataclass
@@ -1219,3 +1387,8 @@ class SessionInputs:
     base_tools: list = field(default_factory=list)
     api_version: str = hp.AGENT_API_VERSION
     max_package_bytes: int = 262144         # K's cap on a candidate directory and on each of its files (the tree)
+    # v0.4 (docs/design/V0_4_PLAN.md §1.2, §1.3): the passing train attempts of the latest measurement, tasks with
+    # must-not checks first, for the trajectory listing; those tasks; and the interface error table (api_errors.py)
+    passing_attempts: tuple = ()
+    must_not: tuple = ()
+    api_errors: dict = field(default_factory=dict)

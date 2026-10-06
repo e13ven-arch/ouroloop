@@ -1,5 +1,6 @@
 """The `ouroloop bench` phases: the config, the frozen split, and what the smoke phase establishes."""
 import json
+from pathlib import Path
 
 import pytest
 
@@ -265,7 +266,7 @@ def test_max_candidates_per_round_up_to_the_preset_is_accepted(fake_upstream):
                                                            "screen": {"passing_sample": 3}}},
                                     bench.PRESETS["automationbench_harness_v3"]["harness"])
     assert lowered["research_session"]["max_turns"] == 20 and lowered["research_session"]["max_edits"] == 24
-    assert lowered["screen"] == {"passing_sample": 3, "min_net_flips": 1}
+    assert lowered["screen"] == {"passing_sample": 3, "min_net_flips": 0, "min_fixes": 1, "max_sample_regressions": 1}
     with pytest.raises(ValueError, match="max_turns = 50 is above the preset's 40"):
         bench._preset_harness({"harness_evolution": {"research_session": {"max_turns": 50}}},
                               bench.PRESETS["automationbench_harness_v3"]["harness"])
@@ -280,10 +281,16 @@ def test_nested_harness_tables_tighten_per_key_and_are_validated_without_a_prese
     ≥ 1, passing_sample ≥ 0); a non-table, an unknown key or a non-integer is a named config error under a preset and
     without one (one helper); an empty table header asks for the session with the default caps."""
     v3 = bench.PRESETS["automationbench_harness_v3"]["harness"]
-    with pytest.raises(ValueError, match="min_net_flips = 0 is below the preset's 1: a floor may be raised"):
-        bench._preset_harness({"harness_evolution": {"screen": {"min_net_flips": 0}}}, v3)
+    # v0.4 (V0_4_PLAN §1.6): the preset's min_net_flips is 0 and its new floor min_fixes 1, its new cap
+    # max_sample_regressions 1; the session's read floors are floors too
+    with pytest.raises(ValueError, match="min_fixes = 0 is below the preset's 1: a floor may be raised"):
+        bench._preset_harness({"harness_evolution": {"screen": {"min_fixes": 0}}}, v3)
+    with pytest.raises(ValueError, match="min_passing_reads = 0 is below the preset's 1: a floor may be raised"):
+        bench._preset_harness({"harness_evolution": {"research_session": {"min_passing_reads": 0}}}, v3)
+    with pytest.raises(ValueError, match="max_sample_regressions = 2 is above the preset's 1"):
+        bench._preset_harness({"harness_evolution": {"screen": {"max_sample_regressions": 2}}}, v3)
     raised = bench._preset_harness({"harness_evolution": {"screen": {"min_net_flips": 2}}}, v3)
-    assert raised["screen"] == {"passing_sample": 5, "min_net_flips": 2}
+    assert raised["screen"] == {"passing_sample": 6, "min_net_flips": 2, "min_fixes": 1, "max_sample_regressions": 1}
     with pytest.raises(ValueError, match="max_turns = 0 is below the least value 1"):
         bench._preset_harness({"harness_evolution": {"research_session": {"max_turns": 0}}}, v3)
     with pytest.raises(ValueError, match="passing_sample = -1 is below the least value 0"):
@@ -667,3 +674,96 @@ def test_an_improve_without_rounds_on_a_cycle_activity_is_refused(fake_upstream,
     (tmp_path / "rsi" / "cycle.json").write_text(_json.dumps({"status": "done", "steps": {"segment-0": {}}}))
     with pytest.raises(ValueError, match="continue it with --phase cycle"):
         b._extension_of(Act(), None, "a reason")
+
+
+# ---------------------------------------------------------------------------- v0.4 (docs/design/V0_4_PLAN.md §1.1)
+def test_a_pinned_split_is_reproduced_under_whichever_rule_made_it_and_a_wrong_pin_is_still_refused(fake_upstream,
+                                                                                                  tmp_path):
+    """V0_4_PLAN §1.1, M7 §2 (v0.4): a domain [bench.frozen_splits] pins is split under the rule that reproduces the
+    pin — the config's split_rule first, then the other — so a stratified split (the v3 workspace's finance and
+    support) can be pinned as Marketing's hash-rule split always could; no rule reproducing it is refused as before."""
+    suite = ab.load_suite("sales", fake_upstream)
+    table = {"domains": ["sales"], "upstream_path": fake_upstream, "seed": 1,
+             "ratios": {"train": 0.5, "dev": 0.25, "test": 0.25}}
+    stratified, _ = bench.freeze_splits(suite, bench.BenchConfig.load({"bench": {**table, "split_rule": "stratified"}}),
+                                        tmp_path / "a.json")
+    hashed, _ = bench.freeze_splits(suite, bench.BenchConfig.load({"bench": {**table, "split_rule": "hash"}}),
+                                    tmp_path / "b.json")
+    assert stratified.hash() != hashed.hash() and stratified.split_rule == "stratified"
+    for rule in ("stratified", "hash"):
+        for pin, want in ((stratified, "stratified"), (hashed, None)):
+            cfg = bench.BenchConfig.load({"bench": {**table, "split_rule": rule, "frozen_splits": {"sales": pin.hash()}}})
+            got, _ = bench.freeze_splits(suite, cfg, tmp_path / f"{rule}-{pin.hash()}.json")
+            assert got.hash() == pin.hash() and got.split_rule == want, (rule, want)
+    wrong = bench.BenchConfig.load({"bench": {**table, "split_rule": "stratified",
+                                              "frozen_splits": {"sales": "0123456789abcdef"}}})
+    with pytest.raises(ValueError, match="neither split rule reproduces sales's pin"):
+        bench.freeze_splits(suite, wrong, tmp_path / "wrong.json")
+
+
+V04_CONFIGS = {"claude-v4-finance.toml": ("finance", "4fd91eaf9fb8daf5", "finance-claude-v4"),
+               "claude-v4-support.toml": ("support", "3da11232f5d5ff38", "support-claude-v4")}
+
+
+def test_the_v04_configs_are_single_domain_activities_on_the_v3_workspaces_frozen_splits():
+    """V0_4_PLAN §1.1, §1.6, §3: each v0.4 config is one domain with its own workspace, the stratified rule and seed 1,
+    pinned to the hash workspace-claude-v3 froze for it (so its test is the same never-read 25 tasks); the v3 preset
+    with K's effort at medium, k = 3, v0.4's screen and read floors; one segment of 3 rounds, patience 2, no slot;
+    three W0 dev readings; the root $450 with a $160 final share; the measured unit costs as the estimate."""
+    import tomllib
+    examples = Path(__file__).resolve().parents[1] / "examples" / "automationbench"
+    for name, (domain, pin, scope) in V04_CONFIGS.items():
+        cfg = tomllib.loads((examples / name).read_text())
+        loaded = bench.BenchConfig.load(cfg, examples)
+        assert (loaded.domains, loaded.split_rule, loaded.seed, loaded.frozen_splits, loaded.control_readings) == \
+            ((domain,), "stratified", 1, {domain: pin}, 3)
+        assert loaded.ratios == {"train": 0.5, "dev": 0.25, "test": 0.25} and cfg["workspace"]["root"].endswith(domain)
+        settings = bench.improvement_settings(cfg)
+        assert settings["preset"] == "automationbench_harness_v3" and settings["candidates_per_round"] == 3
+        harness = bench.harness_settings(cfg)
+        assert harness["max_effort"] == "medium" and harness["package_api"] == "harness_package.v2"
+        assert harness["screen"] == {"passing_sample": 6, "min_net_flips": 0, "min_fixes": 1,
+                                     "max_sample_regressions": 1}
+        assert harness["research_session"]["min_failing_reads"] == harness["research_session"]["min_passing_reads"] == 1
+        assert cfg["freeze"]["schedule"] == {"worker_rounds": 3, "research_slots": 0, "patience": 2}
+        assert cfg["freeze"]["budget"]["usd"] == 450.0 and cfg["freeze"]["budget"]["final"]["usd"] == 160.0
+        assert cfg["estimate"]["cost_per_attempt"] == {"base": 0.466, "evolved": 0.49}
+        assert bench.RsiConfig.load(cfg).scope_id == scope
+        assert cfg["llm"] == tomllib.loads((examples / "claude-v3.toml").read_text())["llm"]
+        assert cfg["pricing"] == tomllib.loads((examples / "claude-v3.toml").read_text())["pricing"]
+
+
+def test_the_v04_configs_reproduce_the_v3_workspaces_finance_and_support_splits_offline(tmp_path):
+    """V0_4_PLAN §1.1: under each v0.4 config the upstream checkout splits its domain into exactly the manifest
+    workspace-claude-v3 froze (the pinned hash, the same 25 test tasks), offline — no model, nothing written but a
+    temporary manifest. Run as its own process (the upstream package from the real checkout, never the fixture's) and
+    skipped without the checkout."""
+    import subprocess
+    import sys
+    if not Path("~/workspace/AutomationBench").expanduser().exists():
+        pytest.skip("the upstream checkout is not here")
+    examples = Path(__file__).resolve().parents[1] / "examples" / "automationbench"
+    code = (
+        "import json, sys, tomllib\n"
+        "from pathlib import Path\n"
+        "from ouroloop import bench\n"
+        "from ouroloop.adapters import automationbench as ab\n"
+        "from ouroloop.benchmark import SplitManifest\n"
+        "examples, out = Path(sys.argv[1]), Path(sys.argv[2])\n"
+        "result = {}\n"
+        "for name in sys.argv[3:]:\n"
+        "    cfg = bench.BenchConfig.load(tomllib.loads((examples / name).read_text()), examples)\n"
+        "    domain = cfg.domains[0]\n"
+        "    m, _ = bench.freeze_splits(ab.load_suite(domain, cfg.upstream_path), cfg, out / f'{domain}.json')\n"
+        "    v3 = examples / 'workspace-claude-v3' / 'bench' / domain / 'splits.json'\n"
+        "    result[domain] = {'hash': m.hash(), 'test': m.ids('test'),\n"
+        "                      'v3_test': SplitManifest.load(v3).ids('test') if v3.exists() else None}\n"
+        "print(json.dumps(result))\n")
+    done = subprocess.run([sys.executable, "-c", code, str(examples), str(tmp_path), *V04_CONFIGS],
+                          capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0, done.stderr[-2000:]
+    got = json.loads(done.stdout.strip().splitlines()[-1])
+    for name, (domain, pin, _scope) in V04_CONFIGS.items():
+        assert got[domain]["hash"] == pin and len(got[domain]["test"]) == 25
+        if got[domain]["v3_test"] is not None:
+            assert got[domain]["test"] == got[domain]["v3_test"]

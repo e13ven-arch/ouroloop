@@ -417,11 +417,16 @@ class SessionScript:
     declaration cites what the round really gave it. Each candidate's files go out in one turn of write_file calls
     and the last turn is `finish`. `repair(message, inputs) -> [candidate]` answers a check output in the same
     session: its candidates' files are written and `finish` is called again. The script reads only what the
-    session hands it and never looks up a workspace."""
+    session hands it and never looks up a workspace.
+
+    v0.4 (docs/design/V0_4_PLAN.md §1.3): with `read` (the default) the session's first turn reads, with
+    read_trajectory, one listed failed attempt among each candidate's predicted tasks and the first listed passing
+    attempt — what admission's read floors ask of a candidate under the v3 preset. `read=False` plays a session that
+    reads nothing."""
     origin = "scripted"
 
-    def __init__(self, plan, *, repair=None, note=None):
-        self.plan, self.repair, self._note = plan, repair, note
+    def __init__(self, plan, *, repair=None, note=None, read: bool = True):
+        self.plan, self.repair, self._note, self.read = plan, repair, note, read
         self.requests: list = []
         self.seen: list = []
         self.inputs: dict | None = None
@@ -454,6 +459,23 @@ class SessionScript:
             declared.append({"dir": c["dir"], **d})
         return ToolCall("f1", "finish", {"candidates": declared})
 
+    def _reads(self, candidates: list) -> list:
+        """One read_trajectory per candidate of a listed failed attempt among its predicted tasks (the notes' tasks
+        when it names none), and one of the first listed passing attempt."""
+        listed = list((self.inputs or {}).get("trajectories") or ())
+        notes = [n["task_id"] for n in (self.inputs or {}).get("notes") or ()]
+        refs = []
+        for c in candidates:
+            predicted = set(c["declaration"].get("predicted_affected") or notes)
+            hit = next((e["attempt_ref"] for e in listed if e.get("outcome") != "passing"
+                        and e.get("task_id") in predicted), None)
+            if hit and hit not in refs:
+                refs.append(hit)
+        passing = next((e["attempt_ref"] for e in listed if e.get("outcome") == "passing"), None)
+        if passing:
+            refs.append(passing)
+        return [ToolCall(f"r{i}", "read_trajectory", {"attempt_ref": ref, "limit": 4096}) for i, ref in enumerate(refs)]
+
     def _enqueue(self, candidates: list) -> None:
         if not candidates:
             # nothing to propose: the session ends with a next_action, as the summary call answered `stop`
@@ -472,7 +494,11 @@ class SessionScript:
             # a new session: its first message is the round's inputs and nothing else (one session per round)
             self.inputs = json.loads(messages[0]["content"])
             self._queue = []
-            self._enqueue(self.plan(self.inputs))
+            candidates = self.plan(self.inputs)
+            reads = self._reads(candidates) if self.read and candidates else []
+            if reads:
+                self._queue.append(reads)
+            self._enqueue(candidates)
         elif last.get("role") == "user" and "failed its draft check" in str(last.get("content", "")):
             self._queue = []
             fixed = self.repair(str(last["content"]), self.inputs) if self.repair is not None else []

@@ -137,6 +137,10 @@ v3 RunManifest 增加 mode、actual actor identity、source/target harness refs�
 
 最小 app 导出由 M3 实现，M7 为现有 release/CLI 增加一个窄入口（命令拼写由实现随帮助文档一起冻结），输入已安装 release 和目标目录，输出 DeploymentManifest。开发示例须提供精确导出/装载命令；不要只给设计 API 便称用户可用。（v0.3，2026-10-04）导出的 app = agent 包 + 运行壳（网关、broker、权限、硬限额）+ 模型服务描述（M3 §4（v0.3））；R、评分器、任务数据与凭据照旧不随 app 导出。
 
+### 单领域活动与 v0.4 的配置（v0.4，2026-10-06）
+
+[V0_4_PLAN §1.1、§1.6](../design/V0_4_PLAN.md)：每个新领域一个单领域活动（`claude-v4-finance.toml`、`claude-v4-support.toml`）。`[bench.frozen_splits]` 钉住的领域现在按能重现所钉 hash 的那条规则重算——先配置的 `split_rule`，再另一条——所以分层规则的划分也钉得住；两份 v0.4 配置以分层规则、seed 1 重现 v3 工作区冻结的 finance `4fd91eaf9fb8daf5`、support `3da11232f5d5ff38`，test 仍是从未读过的那 25 道。Marketing 的 hash 规则钉子不变。`[bench] control_readings`（缺省 1）是基线读 W0 dev 的次数（M3 §2.1（v0.4））。v3 preset 的筛选表加 `min_fixes`（下限，1）与 `max_sample_regressions`（上限，1），`passing_sample` 6、`min_net_flips` 0；会话表加 `min_failing_reads`、`min_passing_reads`（下限，都是 1）：新冻结的 K 带上它们，旧 K 没有这些键，照 v0.3 运行。报告加 `final_reference`（M3 §2.2（v0.4））。
+
 ## 3. 任务执行后端
 
 抽出当前 AutomationBench 调用处实际需要的窄边界：
@@ -184,6 +188,8 @@ v3 最终计划区分 C2 的 `mode=published_reference`（默认）与 `paired_r
 （v0.3，2026-10-05，第 0/1 阶段评审）final 之前的主张（没有封存计划或没有 final 读数时 `_pair_claim` 的退路）只比两种角色的 dev 读数：W 的 train 侧筛选与 train 测量也是 `evolved`/`base` 角色，但是另一组题，原来被平均进去；有 final 时的区间路径不变。测试 `test_report.py::test_a_claim_before_the_final_reads_the_dev_readings_only`。
 
 C4 读取真实 campaign 结果，不预设 not_run。只有未执行才标 not_run；研究位在形成 campaign 之前结束时（研究位回复无效、R 没有提案、准入拒绝或构建失败），C4 仍标 not_run，detail 按 `rsi/cycle.json` 中该研究位的结局如实写出，不写成“没有 campaign 记录”（2026-10-02，见 [M4 §1](04_RESEARCH_LOOP.md)）。`cycle.json` 中研究位在 campaign 之前的结局记 outcome、reason 与 stage（reply 指 R 的回复，admission 指准入，build 指构建），报告据此区分这四种；研究位暂停、预算耗尽（写明在 campaign 之前还是之中）、计划已冻结而尚无收据时，同样标 not_run 并写明。campaign 有收据时（含某一支暂停时登记的 inconclusive），C4 按收据读；已运行但样本不足为 inconclusive；没有收益如实记录。完整 v0.6 验收要求递归路径和有界真实验证，单个 manual 蒸馏实验无需伪装覆盖 C4。历史 research 报告仍按既有结果读取。`report` 禁止触发模型请求、重新选择 checkpoint 或补跑 final。恢复 `evaluate/improve` 只补计划缺项，已完成结果不重花钱。
+
+（v0.4，2026-10-06，[V0_4_PLAN §1.8](../design/V0_4_PLAN.md)）报告加 `final_reference`：有 final 的 W0 臂时，从它自己的重复算 W0 的 pass@k（k = 1..n，每题 n 次中 c 次通过，1 − C(n−c, k)/C(n, k) 的题均值），并列 W* 的通过率、两臂每次成本之比与等成本的 k，标为“等成本参照”；Markdown 报告有同名一节。它不花钱、不进任何主张的裁决（M3 §2.2（v0.4））。v0.4 的筛选行与台账另记 `fixes`、`sample_regressions`（M4 §2（v0.4）），R 的台账投影里也有。
 
 ## 5. 用例
 

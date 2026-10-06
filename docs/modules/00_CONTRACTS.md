@@ -166,6 +166,8 @@ ActorTraining    = {method: distill_actor, target: worker.actor,
 
 `Experiment` 继续冻结 proposal、parent release、experience、K、eval template 和 budget；增加的 purpose/execution base 不允许运行中改写。续跑也只按这些冻结值完成，评测模板或预算 scope 不一致则不续跑并暂停（M5 §3）。source_validation 使用 train 验证模板，deployment 使用生产 gate 模板；不把 collect/train/evaluate 分成三个可以各自安装的候选。`build_candidate` 输出 ready/invalid/infrastructure_failed；内部 `TrainingBuild` 保持 ready/failed/cancelled，外部未知请求保存在操作记录，由 M5 映射为待核对或 inconclusive，不能伪造 ready。
 
+（v0.4，2026-10-06，[V0_4_PLAN §1.5](../design/V0_4_PLAN.md)）字面量检查改为按题的索引：每个 train 字面量记下出现它的 train 题（断言 params 与初始状态各自按题），只出现在一道题里的值禁止进包；在 ≥2 道题里出现的值、纯数字（但不含 train 断言 params 里只属于一道题的数字：那是判分器查的答案，评审 2026-10-06）、作为字典键或 `headers`/`columns` 列表成员出现的串（字段名与表头）不禁止。匹配区分大小写（邮箱不分）。检查输出写出文件、行号与字面量：它是 train 数据，R 在失败摘要与轨迹里本就读得到，输出只回给 R、不进包。原因：v0.3 的 20 份草稿被误拒 14 份，全是普通词或常量。
+
 ## 4. 数据、权限与授权
 
 沿用 partition：train/dev/research_dev/final。用户语境的 test 对应冻结 test 任务及 `final` 证据权限，不新增第二套同义 enum。（v0.3，2026-10-04）不新设分区：研究位的内层 gate 用 dev 的前一半、外层比较用后一半（M6 §2（v0.3）），都是 dev 分区的任务；`research_dev` 仍只是代码里既有的枚举值，v0.3 不给它新的任务池。派生证据继承最严格来源。配置超参数本身不是训练样本，但若文件包含 dev 任务事实，其教学材料权限仍是 dev，不能用于 train 采集。

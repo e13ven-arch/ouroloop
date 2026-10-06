@@ -263,6 +263,30 @@ def experience_projection(rows) -> list[dict]:
 # ---------------------------------------------------------------------------- notes and their identity
 NOTE_FIELDS = ("failure_class", "root_cause", "mechanism", "component", "generality")
 NOTE_CHARS = 800
+# v0.4 (docs/design/V0_4_PLAN.md §1.4, M4 §1 v0.4): which way the agent went wrong. An omission (a read, a write or a
+# step left out) and an over-action (a write, a send or a change the task, the data or a policy said not to make) are
+# fixed in opposite directions — more evidence against restraint — and v0.3's R fixed both by "do more".
+DIRECTIONS = ("omission", "over_action", "other")
+
+
+def note_direction(value) -> str:
+    """A note's `direction` as one of DIRECTIONS: the three words in any case, with a space or a hyphen for the
+    underscore; any other stated value is "other"; nothing stated is "" (a note asked by an R0 that does not ask)."""
+    text = "_".join(str(value or "").strip().lower().replace("-", " ").split())
+    if not text:
+        return ""
+    return text if text in DIRECTIONS else "other"
+
+
+def direction_counts(notes) -> dict:
+    """How many of the round's notes went each way (DIRECTIONS, plus `unstated`), or {} when no note states one —
+    an R0 that does not ask for directions keeps the coverage it had."""
+    stated = [n.get("direction") for n in notes or () if n.get("direction")]
+    if not stated:
+        return {}
+    out = {d: sum(1 for s in stated if s == d) for d in DIRECTIONS}
+    out["unstated"] = len(list(notes)) - len(stated)
+    return out
 
 
 def invalid_note(note: dict, components) -> str:
@@ -354,6 +378,9 @@ class Diagnosis:
 
         def settle(i: int, raw, unread: str) -> None:
             note = {k: str((raw or {}).get(k, ""))[:NOTE_CHARS] for k in NOTE_FIELDS}
+            direction = note_direction((raw or {}).get("direction") if isinstance(raw, dict) else None)
+            if direction:
+                note["direction"] = direction          # only when stated: an older R0's notes are what they were
             problem = unread or invalid_note(note, self.components)
             if problem:
                 # Not cached: a formatting slip must not blank this failure's diagnosis for good.
@@ -377,6 +404,10 @@ class Diagnosis:
                     "invalid": invalid, "included": [s["task_id"] for s in selected],
                     "not_included": [s["task_id"] for s in rest], "working_set": self.scope,
                     "measured": self.measured, "passed": self.passed, "round": self.round_index}
+        by_direction = direction_counts(notes)
+        if by_direction:
+            # v0.4 (V0_4_PLAN §1.4): how many notes are omissions and how many over-actions
+            coverage["by_direction"] = by_direction
         failures = domains_of([s["task_id"] for s in self.summaries])
         if failures:
             # v0.3 step 5 (2026-10-06): how each domain's failures were covered; one-domain coverage is unchanged
@@ -443,6 +474,22 @@ class Diagnosis:
         pool.shutdown(wait=True)
         if failed is not None:
             raise failed
+
+
+def train_literal_index(store) -> tuple[dict, set]:
+    """(v0.4, docs/design/V0_4_PLAN.md §1.5) The draft check's literals by task: literal -> the train tasks whose
+    assertion params hold it, read from the grading store's raw record, and the header names (field and column
+    names) those params carry. The draft check forbids only a value of one task (harness_package.forbidden_literals)
+    and never a header name."""
+    from ..agent.harness_package import add_literals, header_names
+    index: dict = {}
+    headers: set = set()
+    for row in _read_jsonl(store.grading_path()):
+        if row.get("split") in TRAIN:
+            params = [a.get("params") for a in row.get("assertions") or ()]
+            add_literals(index, row.get("task_id") or "", params)
+            headers |= header_names(params)
+    return index, headers
 
 
 def train_literals(store) -> set:

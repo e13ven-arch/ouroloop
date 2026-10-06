@@ -141,6 +141,8 @@ def ledger_rows(entries, scope: str | None = None) -> list[dict]:
             entry["screen"] = {k: row.get(k) for k in ("tasks", "failing", "sample", "before", "after", "net_flips",
                                                        "cost_per_attempt", "thin_screen", "outcome", "reason",
                                                        "lost_to")}
+            # v0.4 (docs/design/V0_4_PLAN.md §1.6): the screen's fixes and sample regressions, where recorded
+            entry["screen"].update({k: row[k] for k in ("fixes", "sample_regressions") if k in row})
             for k in ("experiment_id", "proposal_ref"):
                 if row.get(k):
                     entry[k] = row[k]
@@ -208,6 +210,8 @@ def ledger_projection(rows: list[dict], objects=None) -> list[dict]:
             s = e["screen"]
             entry["screen"] = {k: s.get(k) for k in ("tasks", "net_flips", "cost_per_attempt", "thin_screen",
                                                      "outcome", "lost_to") if k != "lost_to" or s.get(k)}
+            # v0.4 (V0_4_PLAN §1.6): train counts R can read its screen by — fixes, and the harm on passing tasks
+            entry["screen"].update({k: s[k] for k in ("fixes", "sample_regressions") if k in s})
         if e.get("gate"):
             g = e["gate"]
             entry["gate"] = {**{k: g.get(k) for k in ("verdict", "reading_kind", "gain", "control_readings",

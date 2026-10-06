@@ -215,10 +215,15 @@ def v3_preset_for_the_world() -> dict:
     tasks and 6 closing kinds, so the gate's least task count is 8 (two halves of 8 for the slot), the headroom
     check asks for 2 never-passed inner tasks (W_EF leaves A–D), and the screen takes the preset's numbers. The
     real preset's 25/6 are Marketing's; the dry run checks the world's arithmetic under the v0.3 rules, not the
-    numbers of a paid activity."""
+    numbers of a paid activity. v0.4 (docs/design/V0_4_PLAN.md §1.3, §1.6) gave the preset read floors and its own
+    screen; the world's arithmetic was fixed under v0.3's, so its session and screen tables are v0.3's here — the K a
+    workspace frozen before v0.4 has, which the code still runs."""
     preset = json.loads(json.dumps(bench.PRESETS["automationbench_harness_v3"]))
     preset["task_plan"]["gate"]["min_tasks"] = 8
     preset["campaign"]["min_headroom_tasks"] = 2
+    preset["harness"]["research_session"] = {"max_turns": 40, "max_edits": 24, "max_trajectory_bytes": 65536,
+                                             "max_trajectory_bytes_total": 524288}
+    preset["harness"]["screen"] = {"passing_sample": 5, "min_net_flips": 1}
     return preset
 
 

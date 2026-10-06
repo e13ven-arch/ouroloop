@@ -395,7 +395,7 @@ A～E 属于首版，递归方法比较与实际回用仍为必做。第二版�
 
 ### v0.4 方向（2026-10-06）
 
-v0.3 的五领域活动三轮都没有安装（第 5 步；[诊断](history/DIAGNOSIS_FIVE_DOMAIN_2026-10-06.md)）。下一版的方向是把搜索按领域分片并加路由，设计在 v0.3.0 合并之后于 `m1-automationbench` 上写进 `docs/design/`；顺序、费用、止损与规则都以那里为准，本节只作指针。
+v0.3 的五领域活动三轮都没有安装（第 5 步；[诊断](history/DIAGNOSIS_FIVE_DOMAIN_2026-10-06.md)）。下一版的方向是把搜索按领域分片并加路由，设计在 v0.3.0 合并之后于 `m1-automationbench` 上写进 `docs/design/`；顺序、费用、止损与规则都以那里为准，本节只作指针。（2026-10-06 更新：用户批准的是更简单的方案——每个新领域一个单领域活动，不写路由；见下一节“v0.4（2026-10-06 决定）”与 [design/V0_4_PLAN.md](design/V0_4_PLAN.md)。分片与路由的设计稿和冻结孪生方案都已标为被取代。本节下面的风险、不变项与推迟项仍是 v0.3 的记录。）
 
 **已知风险。**
 - 目标劫持面变大：包能改循环，就能学会在 on_finish 里短路核对、在证据表里编造。对策是评分器与 provider 对包不可达、事件/轨迹由宿主写、包拿不到 objects/results 句柄（M0 §2（v0.3））；gate 证据只读宿主记录。
@@ -424,6 +424,28 @@ v0.3 的五领域活动三轮都没有安装（第 5 步；[诊断](history/DIAG
 - 部分得分作为新列项：它已在报告里，不另说。
 - best-of-k 臂“成本比 <1.5 时不需要”的规则：臂本身可选，只在发表时跑。
 - 提案者的组件种类优先顺序作为规则。
+
+### v0.4（2026-10-06 决定）
+
+规则在 [design/V0_4_PLAN.md](design/V0_4_PLAN.md)；本节是顺序、费用与止损。v0.4 回到 v0.1 的形状——每个新领域一个单领域活动——并修掉诊断找到的五个框架缺陷（R 的输入与旧提示、字面量误拒、看不见伤害的筛选、只有一次读数的对照），final 并列等成本参照。
+
+**步骤（按序；每步先看结果，用户确认后进下一步）。**
+
+0. **文档（$0）。** V0_4_PLAN、本节、JOURNAL 条目；两份被取代的设计稿顶端加一行说明；受影响的模块文档（M0 §3、M3 §2.1–2.2、M4 §1–2、M5 §1、M7 §2、§4）各加一段“（v0.4，2026-10-06）”。
+1. **代码与测试（$0，离线）。** V0_4_PLAN §1 的八项，每项有测试（去掉改动测试就失败）；字面量检查回放 `workspace-claude-v3` 的 20 次草稿检查（只读），14 次误拒归 0、单题的值照旧被拒；两份配置 `claude-v4-finance.toml`、`claude-v4-support.toml` 的划分 hash 与 v3 工作区冻结的相同（finance `4fd91eaf9fb8daf5`、support `3da11232f5d5ff38`）。退出：全套离线测试在前台通过。
+2. **finance 活动（约 $250，可选，用户决定开始）。** `examples/automationbench/claude-v4-finance.toml`，工作区 `workspace-claude-v4-finance`（新根 $450，其中 final 份额 $160）。付费前：`claude auth login`；按 `docker/worker.Dockerfile` 重建 worker 镜像；`ouroloop freeze --config examples/automationbench/claude-v4-finance.toml` 打印划分 hash（须为 `4fd91eaf9fb8daf5`）与要加的 `[rsi]` 三行。
+   - **2a 基线**（`--phase cycle --until baseline`，约 $58）：W0 的 train 50 + dev 25 × 3 次读数（`[bench] control_readings = 3`，无条件，在任何 gate 之前）。
+   - **2b 3 轮**（`--phase cycle`，约 $120；一次确认加 $12、一次安装加 $11）：一段 3 轮、patience 2、k = 3。每轮之后读过程检查（免费）：字面量误拒为 0；每个候选都有准入认可的轨迹读取（失败的在其 `predicted_affected` 里，加一条通过的）；3 轮里至少一个工具或 hook 候选到达筛选。不成立就停下离线修，不付下一轮。
+   - **2c 封存 final**（只在有确认的安装时，约 $72）：`[freeze.final]` 填 W\* 的 release，`ouroloop freeze` 封存并提交计划 hash，`--phase evaluate`：finance 的 25 道 test × 3 次，W0 对 W\*；报告并列 W0 的 pass@k（k = 1～3）作等成本参照。
+3. **support 活动（约 $250，同样的形状）。** `claude-v4-support.toml`，划分 hash 须为 `3da11232f5d5ff38`。
+4. **读法（预注册）。**
+   - 某领域有确认的安装 → 该领域封存 final，结果照报。
+   - 3 轮没有安装 → 该领域停止，如实报告“R 以 k = 3、接口优先的方法在 3 轮内没有在该领域得到确认的安装”；不续跑同一条管线。
+   - 某领域的 final 显著（95% 区间下界 > 0）→ 加 sales 与 hr，各自一个单领域活动，同样的配置形状。
+   - 不做：不重判 v0.3 的三张收据；不在边缘读数后追加读数或重复；不给 R dev 题号或 dev 轨迹；不读 Marketing 已 spent 的 test。
+5. **v0.4.0。** 有结果（含负结果）后写 RESULTS 与 README，合并进 main。
+
+**功效（如实写）。** 单领域 gate 读 25 道 dev：`min_gain` 0.05 约 1.25 题，单次读数噪声约 ±7～9 个点；抗噪靠三次对照读数的合并池与确认复测（复测单独也须清过 `min_gain`）。final 25 × 3 次时最小可检出效应约 15 个点（§4 的口径）；StarHarness 在 Finance 上报的 +29.3 若有一半留下来就看得出，+5～8 个点看不出。
 
 ## 4. 效果验收与最小比较
 
