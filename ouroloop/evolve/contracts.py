@@ -165,6 +165,8 @@ SCHEMAS: dict[str, dict] = {
     "chat.messages.v1": {"kind": "input", "fields": ["system", "messages", "tools"], "required": ["messages"]},
     "chat.turn.v1": {"kind": "output", "fields": ["text", "tool_calls", "stop"]},
     "harness_package.v1": {"kind": "output", "fields": ["package_ref"]},
+    # v0.3: the same config shape for a package with an agent component (docs/modules/00_CONTRACTS.md §2).
+    "harness_package.v2": {"kind": "output", "fields": ["package_ref"]},
     "failure_summary.v1": {"kind": "input",
                            "fields": ["task_id", "family_id", "task_text", "termination", "partial_credit",
                                       "turns", "tool_errors", "events", "checks"],
@@ -172,6 +174,9 @@ SCHEMAS: dict[str, dict] = {
     "failure_note.v1": {"kind": "output",
                         "fields": ["task_id", "failure_class", "root_cause", "mechanism", "component",
                                    "generality"]},
+    # v0.3 step 3 (docs/modules/04_RESEARCH_LOOP.md §1 R 作为有界编码会话): what R's coding session hands back
+    # with `finish` — up to k candidate directories, each with its declaration, or a next_action.
+    "candidate_declaration.v1": {"kind": "output", "fields": ["candidates", "next_action", "reason"]},
 }
 
 
@@ -481,12 +486,20 @@ class ExperimentProposal(Record):
     # v0.6: which entry point produced the proposal, written by that entry point and never by the model
     # (docs/modules/00_CONTRACTS.md §3). None on proposals made before it existed.
     origin: str | None = None
+    # v0.3 step 3 (docs/modules/00_CONTRACTS.md §3): R's declaration of the candidate — {mechanism, site, carrier,
+    # predicted_affected, trigger_condition, differs_from?} — stored by the round's entry point before admission;
+    # the engine ledger reads it by this ref. None on every proposal made before it existed and on every proposal
+    # of the summary-call path, so their refs do not move (CT7-07). Not part of the candidate's signature: the
+    # same change under another declaration is the same candidate (CT7-08).
+    declaration_ref: str | None = None
 
     def __post_init__(self) -> None:
         if self.owner not in OWNERS:
             raise ContractError(f"owner {self.owner!r}: one of {list(OWNERS)}")
         if self.origin is not None and self.origin not in ORIGINS:
             raise ContractError(f"origin {self.origin!r}: one of {list(ORIGINS)}")
+        if self.declaration_ref is not None:
+            check_refs([self.declaration_ref], kind="declaration", what="declaration")
         self.changes = tuple(_change(c) for c in self.changes)
         self.training = tuple(_training(t) for t in self.training)
         if not self.changes and not self.training:
@@ -534,9 +547,17 @@ class Experiment(Record):
         check_refs([self.core_ref], kind="core", what="core manifest")
 
 
+RECEIPT_KINDS = ("full", "confirmed")
+
+
 @dataclass
 class EvaluationReceipt(Record):
-    """What a fixed evaluator concluded. Only this, from a completed evaluation, can authorise an install."""
+    """What a fixed evaluator concluded. Only this, from a completed evaluation, can authorise an install.
+
+    `kind` (M3 §2.1(b), v0.3): "full" — one complete paired reading — or "confirmed" — a first reading that
+    cleared the gate and was then read again, whether the confirmation then passed or not. None is how a receipt
+    written before the field reads: "full", and its ref unchanged (`Record.payload` leaves None out). A plan with
+    `confirmation_repeats` installs only a "confirmed" receipt (release.Releases.install)."""
     TYPE = "receipt"
     experiment_ref: str = ""
     profile: str = "task"
@@ -549,6 +570,7 @@ class EvaluationReceipt(Record):
     metrics: dict = field(default_factory=dict)
     uncertainty: dict = field(default_factory=dict)
     costs: dict = field(default_factory=dict)
+    kind: str | None = None
     schema_version: int = SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -556,6 +578,12 @@ class EvaluationReceipt(Record):
             raise ContractError(f"profile {self.profile!r}: one of {list(PROFILES)}")
         if self.verdict not in VERDICTS:
             raise ContractError(f"verdict {self.verdict!r}: one of {list(VERDICTS)}")
+        if self.kind is not None and self.kind not in RECEIPT_KINDS:
+            raise ContractError(f"receipt kind {self.kind!r}: one of {list(RECEIPT_KINDS)}")
+
+    @property
+    def reading_kind(self) -> str:
+        return self.kind or "full"
 
 
 @dataclass

@@ -196,3 +196,163 @@ class TestBudget:
         assert "seconds 11" in b.exceeded(seconds=11)
         assert "cost" in b.exceeded(usd=2.0)
         assert not b.exceeded(usd=None)        # a cost nobody measured stops nothing
+
+
+class TestHardLimits:
+    def test_the_v03_dimensions_round_trip_and_none_means_no_limit(self):
+        """docs/modules/00_CONTRACTS.md §2 (单次尝试硬上限), M5 §2: max_model_calls and max_tokens are limits when set and
+        nothing when None, so a plan frozen before them reads as frozen, and a run's hash does not change."""
+        from dataclasses import asdict
+        b = Budget(max_steps=2, max_tool_calls=3, max_seconds=10, max_model_calls=5, max_tokens=100)
+        assert Budget(**json.loads(json.dumps(asdict(b)))) == b
+        assert b.limits() == {"max_steps": 2, "max_model_calls": 5, "max_tool_calls": 3, "max_seconds": 10,
+                              "max_tokens": 100}
+        assert not b.exceeded(model_calls=5, tokens=100) and b.limit_hit(model_calls=5, tokens=100) is None
+        assert "model calls 6" in b.exceeded(model_calls=6) and "tokens 101" in b.exceeded(tokens=101)
+        assert b.limit_hit(model_calls=6) == "model_calls" and b.limit_hit(tokens=101) == "tokens"
+        assert b.limit_hit(steps=3, tokens=101) == "act_calls" and b.limit_hit(seconds=11) == "seconds"
+        old = Budget(max_steps=2)
+        assert old.max_model_calls is None and old.max_tokens is None
+        assert not old.exceeded(model_calls=10 ** 6, tokens=10 ** 9) and old.limit_hit(tokens=10 ** 9) is None
+        assert set(old.limits()) == {"max_steps", "max_tool_calls", "max_seconds"}
+        unset = RunManifest("base", "base", "dev", {"model": "x"}, budget=old)
+        assert not set(unset.payload()["budget"]) & {"max_model_calls", "max_tokens"}
+        assert RunManifest.from_json(unset.to_json()).hash() == unset.hash()
+        limited = RunManifest("base", "base", "dev", {"model": "x"}, budget=b)
+        assert limited.payload()["budget"]["max_tokens"] == 100 and limited.hash() != unset.hash()
+
+    def test_a_result_records_which_limit_ended_it_and_an_old_record_without_it_loads(self):
+        """docs/modules/01_POLICY_RUNTIME.md §1 (硬上限): `limit` names the dimension of a budget termination, is one of
+        the five, and is None on every other termination and on a record written before the field."""
+        run = RunManifest("base", "base", "dev", {"model": "x"})
+        r = TaskResult("t", "f", "dev", 0, "base", run.hash(), "m", termination="budget", limit="tokens")
+        assert TaskResult.from_json(json.loads(json.dumps(r.to_json()))).limit == "tokens"
+        assert TaskResult.from_json({k: v for k, v in r.to_json().items() if k != "limit"}).limit is None
+        assert TaskResult("t", "f", "dev", 0, "base", run.hash(), "m").limit is None
+        with pytest.raises(ValueError, match="only on a budget"):
+            TaskResult("t", "f", "dev", 0, "base", run.hash(), "m", termination="finished", limit="tokens")
+        with pytest.raises(ValueError, match="one of"):
+            TaskResult("t", "f", "dev", 0, "base", run.hash(), "m", termination="budget", limit="steps")
+
+
+# ---------------------------------------------------------------------------- v0.3 step 5 (M7 §2): several domains
+def _domain_config(fake_upstream, **bench_table):
+    from ouroloop import bench
+    table = {"upstream_path": fake_upstream, "seed": 1, "ratios": {"train": 0.5, "dev": 0.25, "test": 0.25},
+             **bench_table}
+    return bench.BenchConfig.load({"bench": table})
+
+
+def test_a_stratified_split_balances_assertion_mix_and_tool_family(tmp_path, fake_upstream):
+    """BR6-19: the stratified rule gives the whole domain exactly the ratios' counts and each stratum its share to
+    within the rounding of one sequence, where the hash rule only gets the intended proportions on average; a
+    domain's strata are its scored-assertion kinds × its tool family, and the manifest records each stratum's
+    counts; the same seed gives the same split, another seed another one."""
+    from ouroloop import bench
+    from ouroloop.adapters import automationbench as ab
+    from ouroloop.benchmark import stratified_splits
+    ratios = {"train": 0.5, "dev": 0.25, "test": 0.25}
+    # Marketing's real stratum sizes (41/32/15/12 over 100 tasks): exact totals, every stratum within 2 of its share
+    sizes = {"a|office": 41, "b|office": 32, "c|app": 15, "d|app": 12}
+    strata = {f"{k}#{i}": k for k, n in sizes.items() for i in range(n)}
+    splits, per = stratified_splits(strata, ratios, seed=1)
+    counts = {s: sum(1 for v in splits.values() if v == s) for s in ("train", "dev", "test")}
+    assert counts == {"train": 50, "dev": 25, "test": 25}
+    for key, n in sizes.items():
+        assert sum(per[key].values()) == n
+        assert all(abs(per[key][s] - n * r) < 2 for s, r in ratios.items()), (key, per[key])
+    hashed = assign_splits(list(strata), ratios, seed=1)
+    assert {s: sum(1 for v in hashed.values() if v == s) for s in ratios} != counts   # what stratifying fixes
+    # deterministic, and the listed order does not matter
+    assert stratified_splits(dict(reversed(list(strata.items()))), ratios, seed=1)[0] == splits
+    assert stratified_splits(strata, ratios, seed=2)[0] != splits
+    # through the adapter: the fake `sales` domain's six strata of two tasks, the kinds of the assertions it scores
+    # and whether its world has a business application beyond the office services
+    suite = ab.load_suite("sales", fake_upstream)
+    cfg = _domain_config(fake_upstream, domain="sales", split_rule="stratified")
+    m, drift = bench.freeze_splits(suite, cfg, tmp_path / "sales.json")
+    assert drift == [] and m.split_rule == "stratified" and m.family_rule == "task_name"
+    assert set(m.strata) == {"missing_write|app", "content+missing_write|app", "forbidden_write+missing_write|app",
+                             "count+missing_write|app", "content|office", "content+forbidden_write|office"}
+    assert all(sum(c.values()) == 2 for c in m.strata.values())
+    assert {s: c["tasks"] for s, c in m.counts().items()} == {"train": 6, "dev": 3, "test": 3}
+    assert ab.stratum(suite, "sales.notify_quiet_0") == "content+forbidden_write|office"
+    assert SplitManifest.load(tmp_path / "sales.json").hash() == m.hash()          # strata are in the identity
+    again, _ = bench.freeze_splits(suite, cfg, tmp_path / "again.json")
+    assert again.hash() == m.hash()
+
+
+def test_a_stratified_split_reads_no_result(tmp_path, fake_upstream, monkeypatch):
+    """BR6-19: the stratified split is made from the task definitions alone — no TaskResult, no grading row, no
+    score: a workspace full of results and one with none freeze the same manifest, and a reader of results or a
+    scorer that would raise if touched is never touched."""
+    from automationbench import rubric
+    from ouroloop import bench
+    from ouroloop.adapters import automationbench as ab
+    cfg = _domain_config(fake_upstream, domain="support", split_rule="stratified")
+    clean, _ = bench.freeze_splits(ab.load_suite("support", fake_upstream), cfg, tmp_path / "clean" / "splits.json")
+    busy = Results(tmp_path / "busy", "support")
+    busy.path.parent.mkdir(parents=True, exist_ok=True)
+    busy.path.write_text(json.dumps({"task_id": "support.update_0", "success": True}) + "\n")
+    busy.grading_path().write_text(json.dumps({"attempt_id": "x", "split": "train", "assertions": []}) + "\n")
+
+    def touched(*_a, **_k):
+        raise AssertionError("the split read a result or scored a state")
+    for target, name in ((Results, "all"), (Results, "grading"), (Results, "of_run"), (ab.Episode, "score"),
+                         (rubric, "partial_credit"), (rubric, "task_completed_correctly")):
+        monkeypatch.setattr(target, name, touched)
+    frozen, _ = bench.freeze_splits(ab.load_suite("support", fake_upstream), cfg, busy.manifest_path())
+    assert frozen.hash() == clean.hash() and frozen.splits == clean.splits and frozen.strata == clean.strata
+
+
+def test_a_frozen_hash_split_is_kept_when_the_rule_changes(tmp_path, fake_upstream):
+    """BR6-18, the Marketing branch: a split frozen under the hash rule stays as it is when the config later asks
+    for the stratified rule (noted, not applied: a changed rule is a new workspace), its hash is v0.1/v0.2's — the
+    new optional fields stay out of a hash-rule manifest — and a domain pinned by [bench.frozen_splits] is split by
+    the hash rule whatever split_rule says and must reproduce the pinned hash, here and in a fresh workspace."""
+    from ouroloop import bench
+    from ouroloop.adapters import automationbench as ab
+    suite = ab.load_suite("marketing", fake_upstream)
+    path = tmp_path / "ws" / "splits.json"
+    old, _ = bench.freeze_splits(suite, _domain_config(fake_upstream, domain="marketing"), path)
+    assert old.split_rule is None and old.strata is None
+    assert "split_rule" not in json.loads(path.read_text()) and "strata" not in json.loads(path.read_text())
+    fams = {t: t for t in suite.ids()}
+    by_hand = SplitManifest("marketing", old.upstream, "task_name", suite.entries(fams),
+                            assign_splits(fams.values(), old.ratios, 1), old.ratios, 1)
+    assert by_hand.hash() == old.hash()                  # the v0.1/v0.2 manifest, field for field
+    lines = []
+    kept, drift = bench.freeze_splits(suite, _domain_config(fake_upstream, domain="marketing",
+                                                            split_rule="stratified"), path, out=lines.append)
+    assert kept.hash() == old.hash() and drift == []
+    assert any("kept" in line and "stratified" in line for line in lines)
+    # pinned: the hash rule, the pinned hash, in a workspace that has never seen it
+    pinned = _domain_config(fake_upstream, domains=["marketing", "sales"], split_rule="stratified",
+                            frozen_splits={"marketing": old.hash()})
+    fresh, _ = bench.freeze_splits(suite, pinned, tmp_path / "fresh" / "splits.json")
+    assert fresh.hash() == old.hash() and fresh.split_rule is None
+    wrong = _domain_config(fake_upstream, domains=["marketing", "sales"], frozen_splits={"marketing": "0" * 16})
+    with pytest.raises(ValueError, match="pins"):
+        bench.freeze_splits(suite, wrong, tmp_path / "other" / "splits.json")
+    with pytest.raises(ValueError, match="pins marketing"):
+        bench.freeze_splits(suite, wrong, path)          # on disk and pinned to another hash: not this workspace
+
+
+def test_grading_of_a_pooled_split_still_returns_train_only(tmp_path, fake_upstream):
+    """M7 §4 first paragraph under a pooled split: the grading reader hands out train rows only, whichever domain
+    the attempt is of; a dev or test row of any domain comes back empty unless its split is named."""
+    from ouroloop import bench
+    cfg = _domain_config(fake_upstream, domains=["sales", "support"], split_rule="stratified")
+    suite, pooled, _ = bench.load_domains(cfg, tmp_path)
+    assert pooled.family_rule == "pooled" and pooled.domain == "sales+support"
+    results = Results(tmp_path, cfg.domain)
+    seen = {}
+    for task in [*pooled.ids("train"), *pooled.ids("dev"), *pooled.ids("test")]:
+        r = TaskResult(task, task, pooled.split_of(task), 0, "W0", "run", pooled.hash(), attempt_id=f"run/{task}/r0#0")
+        results.put_grading(r, [{"type": "slack_message_contains", "params": {"text": "x"}, "passed": False}])
+        seen[(task.split(".")[0], r.split)] = r.attempt_id
+    assert {d for d, _s in seen} == {"sales", "support"} and {s for _d, s in seen} == {"train", "dev", "test"}
+    for (domain, split), attempt in seen.items():
+        rows = results.grading(attempt)
+        assert bool(rows) == (split == "train"), (domain, split)
+        assert results.grading(attempt, splits=(split,))           # named, it is there

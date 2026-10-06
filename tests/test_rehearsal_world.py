@@ -76,16 +76,39 @@ def test_each_rule_flips_its_own_kind_and_c_only_answers_a_check_before_finishin
     assert runs["hook"]["002"]["pushes"] == 1 and runs["hook"]["006"]["pushes"] == 0
 
 
+def test_the_fake_actor_answers_through_the_gateway(world):
+    """M1 §1 宿主作为运行壳 and §5 (the rehearsal under the shell, v0.3): every attempt of the world runs the default agent
+    over the host's gateway and broker — one host-written `gateway_call` per model turn (the tool specs once), a
+    `broker_event` per base call, the skill read as a `skill_read`, and the hook's answer, the pushback and the
+    package tool's run as the package's marks — so the fixture actor is reached as `[llm] type` reaches it and the
+    numbers above are the shell's; no attempt of the world hits a hard limit."""
+    runs = world["runs"]
+    hook = runs["hook"]["002"]["kinds"]
+    assert hook.count("gateway_call") == hook.count("assistant") == 4 and hook.count("tool_specs") == 1
+    assert hook.count("broker_event") == 2 and hook.count("hook") == 2 and hook.count("pushback") == 1
+    skill = runs["skill_B"]["001"]["kinds"]
+    assert skill.count("skill_read") == 1 and skill.index("skill_read") < skill.index("broker_event")
+    tool = runs["tool_F"]["011"]["kinds"]
+    assert tool.count("package_tool") == 1 and tool.count("broker_event") == 2       # the tool's base call is one
+    assert runs["tool_F"]["011"]["calls"] == ["api_fetch", "add_contact_note"]
+    plain = runs["w0"]["003"]["kinds"]
+    assert not {"hook", "pushback", "package_tool", "skill_read"} & set(plain) and "gateway_call" in plain
+    assert {r["limit"] for rs in runs.values() for r in rs.values()} == {None}
+
+
 def test_an_armed_fault_fails_one_attempt_and_is_used_up(world):
     """§10.2: the operator's fault fails the next attempt on its task once; the retry runs as usual."""
     assert world["fault"] == "ProviderError" and world["after_fault"] and world["fault_used_up"]
 
 
 def test_the_expected_path_runs_end_to_end_offline(tmp_path):
-    """§4 and §10 with scripted researchers through bench.cycle: segment-0 installs a skill and a package tool, the
-    arms seal different W, the outer comparison runs and accepts R1, the segment after it is shown to use R1, and
-    an armed fault is refilled once in a gate and once in the outer comparison. A dry run of the world's
-    arithmetic, not the rehearsal."""
+    """§4, §8 and §10 with scripted researchers through bench.cycle, on the v0.3 R path (M4 §1: one coding session
+    a round in the worker, the screen, the ledger; the v3 preset sized to the world, §8): segment-0 installs the
+    package tool (the skill's gate is refused by the cost term — a skill read is a model call more — and the memory
+    for C is screened out), the arms seal different W, the outer comparison runs and accepts R1, the segment after
+    it runs its sessions under R1 and installs three memories, an armed fault is refilled once in a gate and once in
+    the outer comparison, and the Docker revision loop runs once. A dry run of the world's arithmetic, not the
+    rehearsal."""
     if docker_worker() is None:
         if os.environ.get("OUROLOOP_TEST_REQUIRE_DOCKER"):
             pytest.fail(f"OUROLOOP_TEST_REQUIRE_DOCKER is set and docker or the {DEFAULT_IMAGE} image is missing")
@@ -103,3 +126,12 @@ def test_the_expected_path_runs_end_to_end_offline(tmp_path):
     assert out["tool_events"] > 0 and out["skill_reads"] > 0
     assert sorted(r["arm"] for r in out["refills"]) == ["outer_control#1", "subject#1"]
     assert all(r["valid"] for r in out["refills"])
+    # v0.3 step 3: one session and one screen per mainline round (three in each segment); the mainline ledger folds
+    # to one entry per candidate across both segments (M4 §5: ids are numbered by the scope's diagnosis ordinal, so
+    # segment-1's candidates do not overwrite segment-0's): E's skill rejected by the cost term, F's tool installed,
+    # C's memory screened out, then the three memories installed under R1, each screened on its own failing train
+    # task plus the sample
+    assert out["sessions"] == 6 and out["screens"] == 6
+    assert [c["candidate"] for c in out["ledger"]] == [f"rehearsal-dry-run/d{i}/c1" for i in range(6)]
+    assert [(c["outcome"], c["carrier"]) for c in out["ledger"]] == [
+        ("rejected", "skill"), ("installed", "tool"), ("screened_out", "memory")] + [("installed", "memory")] * 3

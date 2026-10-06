@@ -165,6 +165,10 @@ class RoundContext:
     diagnosis: object = None
     drafts: object = None
     round_index: int = 0
+    # v0.3 step 3 (docs/modules/04_RESEARCH_LOOP.md §1 R 作为有界编码会话): the coding session's inputs
+    # (research.session.SessionInputs) under a core whose package API is v2; None keeps today's summary-call path
+    # (the v1 preset and every workspace frozen before this step).
+    session: object = None
 
 
 def run_worker_round(round_context: RoundContext, budget) -> _ct.RoundResult:
@@ -173,8 +177,15 @@ def run_worker_round(round_context: RoundContext, budget) -> _ct.RoundResult:
     The outcome is the execution's own terminal state, never a gate verdict standing in for it: `accepted` and
     `installed` are different facts, and a round that accepted a candidate it then failed to install has to say
     so (docs/modules/00_CONTRACTS.md §3).
+
+    With `session` inputs the round is R's coding session (research.session.run_session_round): k candidates with
+    declarations, the draft chain per candidate, the train-side screen, one dev gate. Without them it is the
+    summary-call round below, unchanged.
     """
     ctx = round_context
+    if ctx.session is not None:
+        from .session import run_session_round
+        return run_session_round(ctx, budget)
     root = ctx.root or ctx.releases.root
     before = ctx.releases.active()["release_ref"]
     core = ctx.objects.load(ctx.core_ref, _ct.CoreManifest)
@@ -302,9 +313,7 @@ def _after_drafts(ctx, drafted, proposal, before, core, root, budget, *, require
 
 
 def _admit_and_run(ctx, proposal, before, core, root, budget, *, requirements) -> _ct.RoundResult:
-    admission = admit(proposal, context=ctx.context, core=core, objects=ctx.objects, owner=ctx.owner,
-                      checks=tuple(ctx.bound.preflight or ()), history=ctx.history, budget=budget,
-                      feedback_builders=ctx.feedback_builders)
+    admission = _admit(ctx, proposal, core, budget)
     if not admission.ok:
         _experience.append(root, {"kind": "round", "outcome": admission.status, "reasons": admission.reasons,
                                   "checks": admission.checks, "scope": ctx.scope_id, "release": before,
@@ -312,10 +321,27 @@ def _admit_and_run(ctx, proposal, before, core, root, budget, *, requirements) -
         return _ct.RoundResult(outcome=admission.status, release_before=before, release_after=before,
                                reason="; ".join(admission.reasons)[:300],
                                next_action="collect" if admission.status == "collect" else None)
+    return _execute_admitted(ctx, admission, proposal, before, root, budget, requirements=requirements)
+
+
+def _admit(ctx, proposal, core, budget, **declared):
+    """Admission under this round's fixed inputs: the research policy's preflight list, the activity's frozen
+    signatures, the budget, and — for a declared candidate of the coding session (`declaration`, `ledger`,
+    `train_tasks`) — the declaration's fixed checks (M4 §5)."""
+    return admit(proposal, context=ctx.context, core=core, objects=ctx.objects, owner=ctx.owner,
+                 checks=tuple(ctx.bound.preflight or ()), history=ctx.history, budget=budget,
+                 feedback_builders=ctx.feedback_builders, **declared)
+
+
+def _execute_admitted(ctx, admission, proposal, before, root, budget, *, requirements,
+                      experiment_id: str | None = None) -> _ct.RoundResult:
+    """Freeze the admitted proposal into an Experiment, run it through M5 and write the experiment record.
+    `experiment_id` is the id the coding-session round fixed for the candidate at its screen (bench.screen_build),
+    so the screened W and the gated W are one; otherwise the round context's, or a fresh one."""
     experiment = freeze(admission.proposal_ref, objects=ctx.objects, parent_release=before,
                         experience_ref=ctx.experience_ref, core_ref=ctx.core_ref,
                         eval_template_ref=ctx.eval_template_ref, budget_scope=ctx.scope_id,
-                        experiment_id=ctx.experiment_id)
+                        experiment_id=experiment_id or ctx.experiment_id)
     ctx.objects.put(experiment)
     execution = Execution(root, experiment.id)
     outcome = execute_experiment(experiment, ctx.handlers, budget=budget, execution=execution,
@@ -360,6 +386,7 @@ def resume_unfinished(root, objects: _ct.Objects, handlers: dict, budget, *, act
     left empty (an experiment from before it was recorded) is not compared.
     """
     from ..evolve.execution import unfinished
+    _fill_gated_rows(root, objects)
     results, resumable = [], []
     for entry in unfinished(root):
         execution = Execution(root, entry["experiment_id"])
@@ -391,7 +418,7 @@ def resume_unfinished(root, objects: _ct.Objects, handlers: dict, budget, *, act
             # resume, so the rule is checked here, before the evaluation would bind what the change names.
             reason = "; ".join(refused_model)[:300]
             state = execution.state()["status"]
-            if state in ("admitted", "building", "screening", "evaluating", "evaluated"):
+            if state in ("admitted", "building", "screening", "evaluating", "evaluated", "confirming"):
                 execution.advance("invalid", reason=reason)
             elif state == "accepted":
                 execution.advance("cancelled", reason=reason)
@@ -421,12 +448,43 @@ def resume_unfinished(root, objects: _ct.Objects, handlers: dict, budget, *, act
                            and installation.status == "installed" else experiment.parent_release),
             trained=bool(proposal.training), evidence_refs=proposal.evidence_refs,
             notes=f"resumed from {entry['status']}: {'->'.join(outcome['states'])}"))
+        if proposal.declaration_ref is not None and outcome["states"]:
+            # A coding-session candidate (M4 §5, v0.3): the gate finished here gets its `gated` ledger row through
+            # the same helper the round uses, so an interrupted round does not leave the ledger without its verdict.
+            from .session import gate_ledger_fields, ledger_candidate_of
+            found = ledger_candidate_of(_experience.read(root), experiment.proposal_ref, experiment.id)
+            if found is not None:
+                _experience.append(root, _experience.ledger_row(
+                    "gated", found["candidate"], **{k: found.get(k) for k in ("scope", "round", "ordinal", "release",
+                                                                              "research_ref")},
+                    **gate_ledger_fields(outcome["states"][-1], receipt.ref() if receipt else None, objects)))
         results.append(_ct.RoundResult(
             outcome=outcome["states"][-1] if outcome["states"] else entry["status"], experiment_id=experiment.id,
             release_before=experiment.parent_release,
             release_after=installation.target_release if installation is not None else experiment.parent_release,
             receipt_ref=receipt.ref() if receipt else None, reason=f"resumed from {entry['status']}"))
     return results
+
+
+def _fill_gated_rows(root, objects: _ct.Objects) -> None:
+    """The `gated` ledger rows a crash left out (M4 §5, 2026-10-05): a coding-session candidate whose screen selected
+    it, whose experiment reached a terminal state, and whose round died before writing the gated row. The row is
+    written from that terminal state and the receipt it recorded, through the helper the round uses, so the ledger
+    holds every verdict that was paid for; an experiment still open is finished by the loop below and gets its row
+    there."""
+    from ..evolve.execution import TERMINAL
+    from .session import gate_ledger_fields
+    for entry in _experience.ledger_rows(_experience.read(root)):
+        if not entry.get("experiment_id") or entry.get("gate") or (entry.get("screen") or {}).get("outcome") != "selected":
+            continue
+        state = Execution(root, entry["experiment_id"]).state()
+        if state["status"] not in TERMINAL:
+            continue
+        receipt = next((h.get("receipt") for h in reversed(state["history"]) if h.get("receipt")), None)
+        _experience.append(root, _experience.ledger_row(
+            "gated", entry["candidate"], **{k: entry.get(k) for k in ("scope", "round", "ordinal", "release",
+                                                                      "research_ref")},
+            **gate_ledger_fields(state["status"], receipt, objects)))
 
 
 def _refused_model_changes(experiment, objects: _ct.Objects) -> list[str]:
@@ -518,10 +576,19 @@ def halt_rows(halt: tuple[str, str], *, experiment_id: str | None = None) -> lis
 def counters_of(rows) -> tuple[int, int]:
     """The idle and infrastructure-failure counts a run of rounds had reached, from its recorded rows, so a run
     resumed after a stop point or a crash applies patience and the failure limit as an uninterrupted run would.
-    A round that is run again — a paused one, or one lost to infrastructure (`completed_round`) — counts toward
-    neither: after the repair it has not happened yet."""
+    A paused round counts toward neither: after the repair it has not happened yet, and the pause itself (a stop
+    marker other than a stop point) starts the failure count again, as the restart follows the repair. A round
+    lost to infrastructure is counted as the live loop counts it: toward the failure limit, not toward idle (it
+    is run again in its slot), so a resumed run cannot pay for one more lost round than an uninterrupted one."""
     idle = infra = 0
     for row in rows or ():
+        if row.get("outcome") == "stopped" and row.get("reason") != "stopped_at":
+            infra = 0
+            continue
+        if row.get("next_action") != "repair_runtime" and row.get("outcome") not in ROUND_MARKERS \
+                and infrastructure_round(row):
+            infra += 1
+            continue
         if not completed_round(row) or row.get("next_action") in ("collect", "repair_runtime") \
                 or row.get("outcome") in ("no_proposal", "needs_collection", "budget_exhausted"):
             continue
@@ -612,7 +679,8 @@ def run_worker_rounds(make_round, budget, *, schedule: Schedule | None = None, r
             return results
         raise
 
-    for index in range(schedule.worker_rounds):
+    index = 0
+    while True:
         stop = stop_now(index)
         if stop:
             results.append(_ct.RoundResult(outcome="stopped", reason=stop))
@@ -653,15 +721,23 @@ def run_worker_rounds(make_round, budget, *, schedule: Schedule | None = None, r
             result.action_ref = got.get("request_ref")
             if not collected(got):
                 return results
+            index += 1
             continue
         if result.outcome in ("no_proposal", "needs_collection"):
             results.append(_ct.RoundResult(outcome="stopped", reason=result.outcome))
             return results
+        if infrastructure_round({"outcome": result.outcome, "reason": result.reason}):
+            # A round lost to infrastructure — a gate's integrity loss, a screen whose attempts were all lost — is
+            # run again in the same slot (M4 §2, M6 RC6-17): it is not a completed round, so it takes none of
+            # schedule.worker_rounds and adds nothing to idle; the consecutive count rises, and its limit
+            # (max_infrastructure_failures) still ends the run, so a lasting fault cannot loop.
+            infra += 1
+            continue
         idle = 0 if result.outcome == "installed" else idle + 1
         infra = infra + 1 if result.outcome in ("inconclusive", "installation_failed", "infrastructure_failed") \
             else 0
-        stop = stop_now(index + 1)
+        index += 1
+        stop = stop_now(index)
         if stop:
             results.append(_ct.RoundResult(outcome="stopped", reason=stop))
             return results
-    return results

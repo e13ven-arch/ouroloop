@@ -16,6 +16,11 @@ def _check(world, a: dict) -> bool:
     if kind == "hubspot_contact_stage":
         return any(c.get("id") == a["contact_id"] and c.get("stage") == a["stage"]
                    for c in getattr(world.hubspot, "contacts", []))
+    # the two kinds the multi-domain fixture adds (v0.3 step 5): something that must not be written, and a count
+    if kind == "slack_message_not_contains":
+        return not any(a["text"] in m.get("text", "") for m in getattr(world.slack, "messages", []))
+    if kind == "hubspot_stage_count":
+        return sum(c.get("stage") == a["stage"] for c in getattr(world.hubspot, "contacts", [])) == a["count"]
     raise ValueError(f"Unknown assertion type: {kind}")
 
 

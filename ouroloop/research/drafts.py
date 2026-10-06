@@ -116,7 +116,9 @@ class Drafts:
             return None
         started, finished, checks = {}, set(), {}
         for e in self.events.all():
-            if e.get("scope") != self.scope:
+            if e.get("scope") != self.scope or e.get("session"):
+                # A coding session's draft (v0.3) is not resumed: the session that would revise it is gone with the
+                # interrupted round, and the restart opens a new session (M4 §1 "续跑时重开会话").
                 continue
             if e.get("event") == "draft_started":
                 started[e["draft_id"]] = e
@@ -132,7 +134,13 @@ class Drafts:
                 "checks": checks.get(draft_id, [])}
 
     def check(self, files: dict) -> tuple[list[str], str | None]:
-        """-> (errors, package ref). Raises WorkerUnavailable when the checks need a worker there is not."""
+        """-> (errors, package ref). Raises WorkerUnavailable when the checks need a worker there is not. The errors
+        are strict UTF-8 (a lone surrogate in a package's own exception text is backslash-escaped), since they go into
+        the draft events and back to R, and a record that does not encode would end the round."""
+        errors, ref = self._check(files)
+        return [str(e).encode("utf-8", "backslashreplace").decode("utf-8") for e in errors], ref
+
+    def _check(self, files: dict) -> tuple[list[str], str | None]:
         try:
             manifest = hp.check_shape(files, self.limits)
         except hp.PackageError as e:
@@ -247,13 +255,17 @@ class Drafts:
                 return DraftOutcome("invalid", drafts=drafts,
                                     reason=f"the draft still failed its check after {self.max_repairs} revisions: "
                                            f"{drafts[-1]['errors'][:2]}")
+            # The built-in is the draft's own package API, v1 or v2 by its manifest (M0 §2, v0.3): a release that
+            # pins a v2 package must say so, and binding checks the two against each other.
             changes.append({"target": "worker.harness", "kind": "workflow",
-                            "change": {"builtin": "harness_package.v1", "package_ref": package_ref}})
+                            "change": {"builtin": hp.load_package(self.objects, package_ref).api_version,
+                                       "package_ref": package_ref}})
         frozen = ct.ExperimentProposal(owner=proposal.owner, hypothesis=proposal.hypothesis,
                                        requirements=proposal.requirements, evidence_refs=proposal.evidence_refs,
                                        changes=tuple(changes), training=proposal.training,
                                        expected=proposal.expected, abandon_if=proposal.abandon_if,
-                                       notes=proposal.notes, origin=proposal.origin)
+                                       notes=proposal.notes, origin=proposal.origin,
+                                       declaration_ref=proposal.declaration_ref)
         return DraftOutcome("ready", proposal=frozen,
                             package_ref=next((d["package_ref"] for d in reversed(drafts) if d["ok"]), None),
                             drafts=drafts)

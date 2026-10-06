@@ -10,6 +10,7 @@ import pytest
 import rsi
 
 from ouroloop import bench, policies as P
+from ouroloop.chat import ChatTurn
 from ouroloop.evolve import contracts as ct
 from ouroloop.evolve.execution import Budgets, Schedule
 from ouroloop.evolve.task_gate import GatePlan
@@ -19,7 +20,8 @@ from ouroloop.report import build_report, render_markdown
 def config(fake_upstream, tmp_path, **extra):
     cfg = {"workspace": {"root": str(tmp_path / "ws")},
            "bench": {"domain": rsi.DOMAIN, "upstream_path": fake_upstream, "families": dict(rsi.FAMILIES),
-                     "budget": {"max_steps": 8, "max_tool_calls": 12},
+                     # all five hard limits: a new freeze is refused without them (M0 §2, v0.3)
+                     "budget": {"max_steps": 8, "max_tool_calls": 12, "max_model_calls": 20, "max_tokens": 4000},
                      "ratios": {"train": 0.5, "dev": 0.25, "test": 0.25}},
            "llm": {"type": "rsi:BusinessWorker"},
            "backends": {"mock": {"type": "mock"}},
@@ -545,8 +547,13 @@ def test_rc6_11_an_r1_that_changes_only_propose_shares_the_first_rounds_notes(fa
         assert diagnosis[0]["included"] == event["selected"]
         shared = [json.loads(line) for line in (root / "rsi" / "notes.jsonl").read_text().splitlines()]
         assert shared and all(row.get("shared") for row in shared)
-        # the arm measured nothing of its own for round one: the common measurement stood for W0
-        assert not any("/measure" in (r.attempt_id or "") for r in bench.Results(root, rsi.DOMAIN).all())
+        # the arm measured nothing of its own for round one: the common measurement stood for W0 — its rows are in
+        # the arm's store as copies (the same attempt ids, v0.3 step 3: the arm's trajectory reader resolves them),
+        # and no measure attempt beyond them was paid for
+        common_ids = {r.attempt_id for r in bench.Results(arm_workspace(activity.root, "pair-1", "common", "c6"),
+                                                         rsi.DOMAIN).all() if "/measure" in (r.attempt_id or "")}
+        measured = {r.attempt_id for r in bench.Results(root, rsi.DOMAIN).all() if "/measure" in (r.attempt_id or "")}
+        assert measured and measured <= common_ids
     assert receipt["verdict"] in ("accepted", "rejected", "inconclusive")
 
 
@@ -887,3 +894,138 @@ def test_a_campaign_arm_resumes_its_open_experiment_under_its_frozen_inputs_or_p
     assert unfinished(root) == [opened] and arm()["rounds"][-1]["reason"] == "repair_runtime"
     assert not [r for r in made[-1].requests if r["step"] == "propose"]
     assert attempts() == paid                                                  # nothing paid
+
+
+# ---------------------------------------------------------------------------- v0.3 (M6 §4): reuse under the coding session
+class Forgetful(rsi.BusinessWorker):
+    """The fixture actor, except that a request that only asks for a notification is finished without it unless
+    something reminds it (the finish-check mark in its prompt or a skill): W0 then fails the notify-only family too,
+    and the same memory that closes the update-then-notify gap closes this one."""
+
+    def chat(self, system, messages, specs):
+        task = next((m["content"] for m in messages if m.get("role") == "user"), "")
+        want = rsi._needs(task)
+        read = [r.get("output", "") for m in messages if m.get("role") == "tool" for r in m.get("results") or ()]
+        reminded = rsi.FINISH_CHECK_MARK in (system or "") or any(rsi.FINISH_CHECK_MARK in str(r) for r in read)
+        if want["notify"] and not want["update"] and not want["hold"] and not reminded:
+            return ChatTurn("Done.", [], "end", usage={"input_tokens": 100, "output_tokens": 20})
+        return super().chat(system, messages, specs)
+
+
+def test_the_segment_after_an_install_runs_its_session_under_r1s_propose_text(fake_upstream, tmp_path, monkeypatch):
+    """M6 §4 (v0.3): under a v2 core the propose text is the coding session's system prompt, so the reuse of an
+    installed R1 is shown by the research_steps record of the segment after the slot — its `session` requests
+    rendered from R1's text and R1 as the loaded R — and by nothing R writes itself. The arms of the slot run their
+    own sessions too, each under its own R's text."""
+    import sys
+    from test_cycle import R1_PROPOSE, RProposer, arms, outer_on_the_gap
+    from test_research_session import memory_candidate, prepared_v3
+    from ouroloop.research.session import SESSION_FORMAT
+    # The fixture's gap families are this pair's outer pool and inner dev pool; an arm's screen needs a failing train
+    # task (M4 §2, 2026-10-05: the passing sample alone is no reading), so the actor here also forgets the
+    # notification of a notify-only request unless reminded — the inner train pool's rsi.notify_once fails for W0
+    # and the memory fixes it. The production screen floor (1) stands.
+    monkeypatch.setitem(sys.modules, "forgetful_actor", type("M", (), {"Forgetful": Forgetful}))
+    cfg, activity, w0 = prepared_v3(fake_upstream, tmp_path, monkeypatch, min_tasks=1,
+                                    llm={"type": "forgetful_actor:Forgetful"})
+    outer_on_the_gap(monkeypatch)
+    worker = rsi.SessionScript(lambda inputs: [])                    # nothing to propose in either segment
+    factory, made = arms([lambda: rsi.SessionScript(lambda inputs: []),            # common inputs
+                          lambda: rsi.SessionScript(lambda inputs: []),            # the control arm
+                          lambda: rsi.SessionScript(lambda inputs: [memory_candidate(inputs)])])   # the candidate arm
+    lines = []
+    result = bench.cycle(cfg, ".", out=lines.append, researcher=worker, slot_researcher=RProposer(),
+                         arm_researcher=factory)
+    steps = result["steps"]
+    assert result["status"] == "done", lines[-12:]
+    # B6/B7 (M4 §1 in an arm, 2026-10-05): the common W0 train measurement's rows, run manifests and transcripts are
+    # in the arm's own store, so the arm's round lists the W0 train failures and its trajectory reader resolves them;
+    # the arm's dev histogram has types because the common dev readings came with their grading; and k reached the
+    # arm from the mainline's frozen schedule
+    from ouroloop.research.campaign import CampaignPlan, arm_workspace
+    from ouroloop.research.session import SessionLimits, TrajectoryReader
+    arm_root = arm_workspace(activity.root, "pair-1", "candidate",
+                             activity.objects.load(steps["slot-0"]["campaign"], CampaignPlan).id)
+    arm_results = bench.Results(arm_root, rsi.DOMAIN)
+    copied = [r for r in arm_results.all() if "/measure" in r.attempt_id]
+    assert copied and all(r.split == "train" and r.validity == "valid" for r in copied)
+    reader = TrajectoryReader(arm_results, arm_root / "transcripts", SessionLimits())
+    text, bad = reader.read(copied[0].attempt_id)
+    assert not bad and "gateway_call" in text and reader.listing([copied[0].attempt_id])[0]["bytes"] > 0
+    arm_inputs = made[2].inputs
+    listed = arm_inputs["trajectories"]
+    assert listed and {t["task_id"] for t in listed} <= {r.task_id for r in copied if not r.success}
+    assert all(t["bytes"] > 0 and reader.read(t["attempt_ref"])[1] is False for t in listed)
+    assert sum(arm_inputs["dev_failure_histogram"]["types"].values()) >= 1
+    assert arm_inputs["k"] == 3
+    assert activity.objects.load(steps["slot-0"]["campaign"], CampaignPlan).candidates_per_round == 3
+    assert steps["segment-0"]["stop_reason"] == "no_proposal"
+    assert steps["slot-0"]["verdict"] == "accepted" and steps["slot-0"]["installed"] is True, steps["slot-0"]
+    r1 = steps["slot-0"]["r1"]
+    assert steps["slot-0"]["reuse"]["state"] == "verified" and steps["slot-0"]["reuse"]["segment"] == "segment-1"
+    # the segment after the install opened its session under R1's propose text (plus the session format)
+    sessions = [r for r in worker.requests if r["step"] == "session"]
+    assert sessions and sessions[-1]["system"].startswith(R1_PROPOSE) and SESSION_FORMAT[:30] in sessions[-1]["system"]
+    assert not sessions[0]["system"].startswith(R1_PROPOSE)                           # segment-0 ran under R0
+    recorded = [e for e in ct.Events(activity.root).of("research_steps") if e["research_ref"] == r1
+                and e["scope"] == activity.rsi.scope_id]
+    assert recorded and {s["step"] for s in recorded[-1]["steps"]} >= {"session"}
+    assert recorded[-1]["prompts"]["research.propose"] == ct.digest({"text": R1_PROPOSE})[:16]
+    # the arms: the candidate arm's session ran under R1's text and installed; the control's under R0's did not
+    control, candidate = made[1], made[2]
+    assert any(r["step"] == "session" and r["system"].startswith(R1_PROPOSE) for r in candidate.requests)
+    assert not any(r["system"].startswith(R1_PROPOSE) for r in control.requests if r["step"] == "session")
+    arm_events = {e["arm"]: e for e in ct.Events(activity.root).of("campaign_arm")}
+    assert len(arm_events["candidate"]["installed"]) == 1 and arm_events["control"]["installed"] == []
+    assert len({e["w_star"] for e in arm_events.values()}) == 2
+
+
+def test_a_restarted_arm_keeps_the_collection_batch_it_paid_for_before_the_crash(fake_upstream, tmp_path, monkeypatch):
+    """M6 §2 (2026-10-05 recheck): an arm's measurement stands for its start release by the copied common rows,
+    which name the common release; its own collection batch runs on the start release. A restart rebuilds the
+    measurement from the record — the batch's rows, filed under the start release, join it, so the round after the
+    restart reads the evidence paid for before the crash, once (a batch finished after the restart adds only what
+    the rebuilt measurement does not hold)."""
+    from test_cycle import RProposer, outer_on_the_gap
+    from test_research_session import prepared_v3
+    from ouroloop.chat import ToolCall
+
+    class Died(BaseException):
+        pass
+    state = {"collect": True, "die": True}
+
+    class Collecting(rsi.SessionScript):
+        """Round 0 of the first arm to run asks for a collection batch; every other round stops."""
+
+        def _enqueue(self, candidates):
+            if not candidates and state["collect"]:
+                state["collect"] = False
+                self._queue.append([ToolCall("f1", "finish", {"next_action": "collect", "reason": "too few attempts"})])
+                return
+            super()._enqueue(candidates)
+    seen = []
+    real = bench.Improvement.round_inputs
+
+    def spy(self, index, evidence, *a, **kw):
+        if self.scope_id.endswith((":control", ":candidate")):
+            seen.append((self.scope_id, index, sorted(r.attempt_id for r in evidence.get("train") or ())))
+            if index == 1 and state["die"]:
+                state["die"] = False
+                raise Died("a crash in round 1 of the arm")
+        return real(self, index, evidence, *a, **kw)
+    monkeypatch.setattr(bench.Improvement, "round_inputs", spy)
+    cfg, activity, w0 = prepared_v3(fake_upstream, tmp_path, monkeypatch, min_tasks=1)
+    bench.PRESETS["v3_test"]["campaign"]["worker_round_limit"] = 2
+    outer_on_the_gap(monkeypatch)
+    run = lambda: bench.cycle(cfg, ".", out=lambda _l: None, researcher=rsi.SessionScript(lambda i: []),  # noqa: E731
+                              slot_researcher=RProposer(), arm_researcher=lambda: Collecting(lambda inputs: []))
+    with pytest.raises(Died):
+        run()
+    crashed = seen[-1]
+    before = [a for a in crashed[2] if "/collect#" in a]
+    assert before, "the batch ran before the crash"
+    count = len(seen)
+    run()
+    resumed = next(s for s in seen[count:] if s[0] == crashed[0] and s[1] == 1)
+    after = [a for a in resumed[2] if "/collect#" in a]
+    assert after == before and len(resumed[2]) == len(set(resumed[2]))       # kept, and once

@@ -145,7 +145,59 @@ def _rsi_tasks() -> list[dict]:
     ]
 
 
-DOMAINS = {"marketing": _tasks, "rsi": _rsi_tasks}
+# ---------------------------------------------------------------------------- two more domains (v0.3 step 5)
+# The multi-domain fixture of docs/modules/07_BENCH_REPORT.md §2: `sales` and `support`, twelve tasks each, the rsi
+# shapes over the same contacts and #ops channel, so the scripted worker of tests/rsi.py acts on them as it does on
+# rsi. Their task names carry the domain, and the six variants are six strata of assertion kinds × tool family, two
+# tasks each: missing_write|app, content+missing_write|app, forbidden_write+missing_write|app,
+# count+missing_write|app, content|office and content+forbidden_write|office (a world with Slack alone).
+_PHRASES = {"sales": "deal moved", "support": "case logged"}
+_NAMES = ["Dana Reyes", "Sam Okafor", "Lea Fontaine", "Kai Mercer"]
+
+
+def _slack_only() -> dict:
+    return {"meta": {"schema_version": "0.1.0"}, "slack": {"channels": [{"id": "C1", "name": "ops"}], "messages": []}}
+
+
+def _domain_tasks(domain: str, base: int) -> list[dict]:
+    phrase = _PHRASES[domain]
+    rows = []
+    for i in range(12):
+        c = OPS[i % 4]
+        name, cid = c["name"], c["id"]
+        variant = ("update", "update_notify", "update_quiet", "tally", "notify", "notify_quiet")[i % 6]
+        stage = {"type": "hubspot_contact_stage", "contact_id": cid, "stage": "opportunity"}
+        quiet = {"type": "slack_message_not_contains", "text": "internal"}
+        said = {"type": "slack_message_contains", "text": phrase}
+        if variant == "update":
+            request, assertions, tools = f"{name} asked for pricing. {FILLER}Move the contact to the opportunity stage.", \
+                [stage], ["hubspot_update_contact"]
+        elif variant == "update_notify":
+            request = (f"{name} replied. {FILLER}Move the contact to the opportunity stage, and once that is done post "
+                       f"a message in #ops containing the phrase {phrase}.")
+            assertions, tools = [stage, said], ["hubspot_update_contact", "slack_send_channel_message"]
+        elif variant == "update_quiet":
+            request = f"{name} booked a call. {FILLER}Move the contact to the opportunity stage."
+            assertions, tools = [stage, quiet], ["hubspot_update_contact", "slack_send_channel_message"]
+        elif variant == "tally":
+            request = f"{name} signed. {FILLER}Move the contact to the opportunity stage, and no other contact."
+            assertions, tools = [stage, {"type": "hubspot_stage_count", "stage": "opportunity", "count": 1}], \
+                ["hubspot_update_contact"]
+        elif variant == "notify":
+            request = f"{FILLER}Post a message in #ops containing the phrase {phrase}."
+            assertions, tools = [said], ["slack_send_channel_message"]
+        else:
+            request = f"{FILLER}Post a message in #ops containing the phrase {phrase}."
+            assertions, tools = [said, quiet], ["slack_send_channel_message"]
+        task = _rsi_task(base + i, f"{domain}.{variant}_{i // 6}", request, assertions, tools=tools)
+        if variant.startswith("notify"):
+            task["info"]["initial_state"] = _slack_only()
+        rows.append(task)
+    return rows
+
+
+DOMAINS = {"marketing": _tasks, "rsi": _rsi_tasks, "sales": lambda: _domain_tasks("sales", 5001),
+           "support": lambda: _domain_tasks("support", 6001)}
 
 
 def get_domain_dataset(domain: str) -> list[dict]:

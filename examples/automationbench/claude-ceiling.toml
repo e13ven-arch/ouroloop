@@ -1,0 +1,117 @@
+# v0.3 step 4: the ceiling experiment (docs/ROADMAP.md §3 v0.3 step 4; examples/automationbench/ceiling/README.md).
+# Two arms on the frozen task list ceiling/tasks.json — v0.2's W* package as installed, and the hand-written ceiling
+# package (W*'s components plus full-text reading, an evidence table before the first write, a check before
+# finishing, effort at K's cap) — under the v3 runner shell, the same actor and effort, 2 attempts per task and arm.
+# A decision record only: nothing is installed, nothing enters a claim, test is never run.
+#
+#   .venv/bin/python examples/automationbench/ceiling_run.py --config examples/automationbench/claude-ceiling.toml --checks-only
+#   .venv/bin/python examples/automationbench/ceiling_run.py --config examples/automationbench/claude-ceiling.toml
+#
+# Before the first real run: `claude auth login`, and extra usage turned off in claude.ai's settings. A subscription
+# limit pauses the run (ProviderAccountError); the same command resumes it and pays for no recorded attempt again.
+
+[workspace]
+root = "workspace-claude-ceiling"
+
+[bench]
+domain = "marketing"
+upstream_path = "~/workspace/AutomationBench"
+toolset = "api"
+seed = 1                        # v0.2's seed: the same split, so the frozen task ids are the same tasks
+concurrency = 8                 # attempts of one arm at a time; the budget root's reservations may hold fewer
+smoke_tasks = 1
+near_duplicate_threshold = 0.6
+
+[bench.ratios]
+train = 0.5
+dev = 0.25
+test = 0.25
+
+[bench.budget]                  # the five hard limits of one attempt, the v3 preset's values (M0 §2)
+max_steps = 50
+max_tool_calls = 200
+max_seconds = 900
+max_model_calls = 200
+max_tokens = 400000
+
+[backends.mock]
+type = "mock"
+
+[points]
+default_backend = "mock"        # no decision model
+
+# The actor W0 pins, for both arms. effort is "high", K's max_effort under the v3 preset: the W* arm's default agent
+# asks for no effort and runs at this pin; the ceiling agent asks for "high" on every call. Same effort in both arms,
+# so the difference between them is the loop's. v0.2's W* ran at "medium"; that is why the run reads W* again rather
+# than comparing with v0.2's readings.
+[llm]
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "high"
+max_tokens = 32000
+timeout = 600
+
+# Not called by the ceiling run (no research step); the startup checks read it as they do for every paid phase.
+[research.llm]
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "medium"
+max_tokens = 32000
+timeout = 900
+
+# The notional prices of v0.1/v0.2 (claude-full.toml): claude-opus-5-5 API list prices, equal to the CLI's reported
+# cost per call in the 2026-10-03 probe. One call reserves its worst case (1M input, 5 x 32000 output) before it is made.
+[pricing]
+input_per_1k = 0.004
+cache_read_per_1k = 0.0002
+cache_write_per_1k = 0.008
+output_per_1k = 0.02
+max_input_tokens = 1000000
+max_output_tokens = 163840
+source = "notional, not a bill: claude-opus-5-5 API list price ($4/$20 per M, cache read $0.20, 1h cache write $8), equal to the CLI's reported cost in the probe (docs/ROADMAP.md §3, step 2a), 2026-10-03"
+
+# The v3 preset: package API v2 (an agent component), K's max_effort "high", the five hard limits. Its plans are
+# frozen by the runner as the cycle would freeze them; no gate runs and nothing is installed.
+[improvement]
+mode = "automatic"
+preset = "automationbench_harness_v3"
+allowed_methods = ["policy_edit", "harness_edit"]
+max_candidates_per_round = 1
+
+[harness_evolution]             # the preset's own values, written out
+package_api = "harness_package.v2"
+components = ["memory", "skills", "on_finish", "before_tool", "after_tool", "tools", "agent"]
+sandbox = "docker"
+max_files = 24
+max_package_bytes = 262144
+test_timeout_seconds = 30
+
+[rsi]
+profile = "task"
+scope_id = "marketing-claude-ceiling"
+stop_view = "stop.business.v1"
+repeats = 1
+order_seed = 1
+# task_plan_ref / schedule_ref / budget_ref are frozen by the runner when they are not named here.
+
+# The root: $150 nominal with a hard stop, fixed once it opens. The expected spend is about $40 for the 52 attempts
+# ($34-47); the root is sized for the reservations, not the spend. Every call reserves its worst case first,
+# bound = 1M input x $4/M + 163840 output x $20/M = $7.2768, and an unknown settlement (a killed `claude` child, a
+# call whose answer never came) keeps its bound, so the calls that can be in flight at once are
+#     slots = floor((root - spent - unknown x bound) / bound)
+# and a call waiting for a slot waits inside its attempt's 900 s. At $60 the last lanes (W*'s repeat 1 always runs
+# last) would have 2-3 slots for 8 attempts: attempts cut by the seconds limit would count as W* failures, a bias
+# toward "search", and one Ctrl-C could leave the run `incomplete`. At $150 the run keeps all 8 slots to the end
+# with room for several unknowns (it needs 150 - 7.28 x 9 = $84.5 > $40). The money guard is the subscription with
+# extra usage turned off, not this root (2026-10-05, review of the step-4 preparation).
+[freeze.budget]
+usd = 150.0
+
+[ceiling]
+tasks = "ceiling/tasks.json"    # frozen 2026-10-05 from v0.2's records; read, never chosen, by the runner
+attempts = 2                    # per task and arm
+packages = {wstar = "ceiling/wstar_package", ceiling = "ceiling/package"}
+# Nominal $ per attempt, for the printed estimate only (not a limit): v0.2's W* cost $0.50 an attempt on these 13
+# tasks at effort medium (25 attempts); effort high adds output tokens, the ceiling adds two or three aux calls and
+# more reads.
+estimate = {wstar = 0.65, ceiling = 0.90}

@@ -1,5 +1,14 @@
 """Offline checks of the rehearsal's world and fake actor (docs/REHEARSAL.md §8), printed as JSON.
 
+Every attempt runs through the runner shell's host objects (docs/modules/01_POLICY_RUNTIME.md §1 宿主作为运行壳, v0.3):
+the fixture actor behind a Gateway, the episode behind an AttemptBroker, the package's text behind a SkillReader, the
+package's marks behind Marks, and the default agent — the seed package's own bytes — loaded from a bundle laid out
+as the worker lays it out (the package's hooks and tools beside `agent/default_agent.py`), over a HostContext. So the
+check exercises the path the production cycle runs the fixture actor through: the actor is reached as `[llm] type`
+reaches it, every model turn is a host-written `gateway_call`, every base call a `broker_event`, and a hook's answer,
+a pushback and a package tool's run are the package's marks. The hook and the tool are the dry run's own
+(dry_run.HOOK, dry_run.NOTE_TOOL): what the scripted R installs there is what the actor answers to here.
+
 Run in its own process: the rehearsal upstream is a top-level `automationbench` package, as the test fixture's
 is, and one process can import only one of them. `tests/test_rehearsal_world.py` runs it and reads the JSON.
 
@@ -7,7 +16,7 @@ is, and one process can import only one of them. `tests/test_rehearsal_world.py`
 """
 from __future__ import annotations
 
-import base64
+import importlib.util
 import json
 import sys
 import tempfile
@@ -15,13 +24,21 @@ from pathlib import Path
 
 from ouroloop import policies as P
 from ouroloop.adapters import automationbench as ab
-from ouroloop.benchmark import assign_splits
-from ouroloop.chat import ToolSpec
+from ouroloop.agent import harness_package as hp
+from ouroloop.agent.default_agent import DEFAULT_PATH, seed_files
+from ouroloop.agent.gateway import (DEFAULT_MAX_EFFORT, AttemptBroker, Gateway, HostContext, HostFault, Marks,
+                                    SkillReader)
+from ouroloop.agent.runner import attempt_view
+from ouroloop.agent.worker import LimitHit
+from ouroloop.benchmark import Budget, assign_splits
+from ouroloop.evolve.task_eval import Budgeted
 
-from rehearsal_actor import KEEP_WORKING, SKILLS_HEADER, RehearsalActor
+from dry_run import HOOK, NOTE_TOOL, NOTE_TOOL_ENTRY
+from rehearsal_actor import RehearsalActor
 
 UPSTREAM = Path(__file__).resolve().parent / "upstream"
-MEMORY = "Working notes for this kind of task:\n"
+# The five hard limits of rehearsal.toml's [bench.budget] (M0 §2): what the shell counts an attempt against here.
+BUDGET = Budget(max_steps=8, max_tool_calls=12, max_seconds=60, max_model_calls=20, max_tokens=4000)
 RULES = {
     "A": "When a request ends by asking you to post a message in a Slack channel, make that post before finishing.",
     "B": "When a request ends by asking you to tag the contact, add that tag before finishing.",
@@ -30,69 +47,101 @@ RULES = {
     "E": "When a request ends by asking you to add the contact to a mailing list, add them to that list.",
     "F": "When a request ends by asking for a call note, encode the note with base64_encode and post it.",
 }
-NOTE_TOOL = ToolSpec("add_contact_note", "Add a note to a contact from its plain text.",
-                     {"type": "object", "properties": {"contact_id": {"type": "string"}, "text": {"type": "string"}},
-                      "required": ["contact_id", "text"]})
+HOOK_ENTRY = {"name": "closing_check", "site": "on_finish", "entrypoint": "middlewares/closing_check.py:check"}
+_BUNDLES: dict = {}        # files -> the TemporaryDirectory holding that bundle, kept for the process's lifetime
 
 
-def note_tool(episode, args: dict) -> tuple[str, bool]:
-    """What a package tool R would write does: encode the text and post it through the base tool."""
-    body = {"id": args["contact_id"], "note_b64": base64.urlsafe_b64encode(args["text"].encode()).decode()}
-    r = episode.run("api_fetch", {"method": "POST", "url": "https://api.hubapi.com/crm/v3/objects/contacts/notes",
-                                  "body": json.dumps(body)})
-    return r.output, r.is_error
+class Twice:
+    """The actor called twice per turn with the same input, as the old hand-rolled loop called it: a fake actor whose
+    answer depended on anything but its input would make the rehearsal's numbers irreproducible, and the check
+    would not know. The gateway sees a provider with the three-argument chat; it hands it no keyword."""
+    name = "rehearsal-actor"
 
+    def __init__(self, actor):
+        self.actor, self.model = actor, actor.model
 
-def attempt(suite, task_id: str, *, memory: str = "", skills: dict | None = None, hook=None, tool: bool = False,
-            actor=None) -> dict:
-    """One attempt driven the way the agent loop drives it: tools run on the episode, read_skill answers from
-    `skills`, and an on_finish `hook(final_message) -> message | None` sends the actor back, at most twice."""
-    episode, task = suite.episode(task_id), suite.tasks[task_id]
-    parts = [task.system, P.FINISH_CHECK]
-    if memory:
-        parts.append(MEMORY + memory)
-    if skills:
-        parts.append(SKILLS_HEADER + "\n" + "\n".join(f"- {name}: when the request asks for it" for name in skills))
-    system = "\n\n".join(parts)
-    specs = list(episode.specs()) + ([ToolSpec("read_skill", "Read one skill.", {"type": "object"})] if skills
-                                     else []) + ([NOTE_TOOL] if tool else [])
-    messages, pushes, calls, text = [{"role": "user", "content": task.trigger}], 0, [], ""
-    actor = actor or RehearsalActor()
-    for _turn in range(8):
-        turn = actor.chat(system, messages, specs)
-        again = actor.chat(system, list(messages), specs)
+    def chat(self, system, messages, tools):
+        turn = self.actor.chat(system, messages, tools)
+        again = self.actor.chat(system, list(messages), tools)
         assert (turn.text, [(c.name, c.args) for c in turn.tool_calls]) == \
             (again.text, [(c.name, c.args) for c in again.tool_calls]), "the actor is not deterministic"
-        messages.append({"role": "assistant", "text": turn.text, "tool_calls": turn.tool_calls})
-        if turn.stop == "tool_use":
-            results = []
-            for c in turn.tool_calls:
-                calls.append(c.name)
-                if c.name == "read_skill":
-                    results.append({"id": c.id, "name": c.name, "output": (skills or {}).get(c.args["name"], ""),
-                                    "is_error": False})
-                elif c.name == NOTE_TOOL.name:
-                    output, error = note_tool(episode, c.args)
-                    results.append({"id": c.id, "name": c.name, "output": output, "is_error": error})
-                else:
-                    r = episode.run(c.name, c.args)
-                    results.append({"id": c.id, "name": c.name, "output": r.output, "is_error": r.is_error})
-            messages.append({"role": "tool", "results": results})
-            continue
-        text = turn.text
-        message = hook(text) if hook and pushes < 2 else None
-        if message:
-            pushes += 1
-            messages.append({"role": "user", "content": f"{message}\n{KEEP_WORKING}"})
-            continue
-        break
+        return turn
+
+
+def package(*, memory: str = "", skills: dict | None = None, hook: bool = False, tool: bool = False) -> hp.PackageView:
+    """The capability package of one variant, as R's would be stored and the host reads it: a v1 manifest with the
+    memory, the skills, the dry run's on_finish hook and the dry run's note tool, parsed by the host's own reader so
+    a malformed entry fails here as it would fail a draft check."""
+    manifest, files = hp.empty_manifest(), {}
+    if memory:
+        manifest["memory"] = {"enabled": True}
+        files["memory.md"] = memory
+    for name, text in (skills or {}).items():
+        manifest["skills"].append({"name": name, "path": f"skills/{name}.md", "description": "when the request asks for it"})
+        files[f"skills/{name}.md"] = text
+    if hook:
+        manifest["hooks"].append(dict(HOOK_ENTRY))
+        files["middlewares/closing_check.py"] = HOOK
+    if tool:
+        manifest["tools"].append(dict(NOTE_TOOL_ENTRY))
+        files["tools/notes.py"] = NOTE_TOOL
+    files["manifest.json"] = json.dumps(manifest)
+    return hp.PackageView("package:rehearsal", hp.parse_manifest(files["manifest.json"], files), files)
+
+
+def default_agent(run_files: dict):
+    """`run` of the default agent, loaded from a bundle holding the package's files and the seed agent's bytes — the
+    layout the worker loads (runner.PackageAgent._run_in_worker), so a hook or tool entrypoint resolves beside the
+    agent exactly as it does there. One bundle per distinct package; the module is loaded by path, not imported."""
+    key = tuple(sorted(run_files.items()))
+    if key not in _BUNDLES:
+        directory = tempfile.TemporaryDirectory(prefix="rehearsal-bundle-")
+        root = Path(directory.name)
+        for path, text in {**run_files, DEFAULT_PATH: seed_files()[DEFAULT_PATH].decode("utf-8")}.items():
+            (root / path).parent.mkdir(parents=True, exist_ok=True)
+            (root / path).write_text(text, encoding="utf-8")
+        spec = importlib.util.spec_from_file_location(f"rehearsal_default_agent_{len(_BUNDLES)}", root / DEFAULT_PATH)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _BUNDLES[key] = (directory, module.run)
+    return _BUNDLES[key][1]
+
+
+def attempt(suite, task_id: str, *, memory: str = "", skills: dict | None = None, hook: bool = False,
+            tool: bool = False, actor=None) -> dict:
+    """One attempt under the shell: the system prompt composed as policies.BoundRuntime.system_prompt composes it
+    (the task's own, W0's finish check, the package's memory and skill index), the five names over the host's
+    gateway, broker, skills and marks, and the default agent run over them. The attempt ends as the shell ends it:
+    `run` returns the final message, or a hard limit ends it with an empty one (LimitHit -> `limit`); the actor's own
+    failure — the armed fault (§10.2) — leaves as itself, as the attempt runner would record it as infrastructure.
+    `calls` are the tool calls the actor asked for, in order, read from the host's `assistant` records; `pushes` the
+    package's `pushback` marks; `kinds` every record kind in order, for the shape checks."""
+    episode, task = suite.episode(task_id), suite.tasks[task_id]
+    pkg = package(memory=memory, skills=skills, hook=hook, tool=tool)
+    system = "\n\n".join(p for p in (task.system, P.FINISH_CHECK, pkg.prompt_block()) if p)
+    surface = Budgeted(episode, BUDGET)
+    records: list[dict] = []
+
+    def record(kind: str, data: dict) -> None:
+        records.append({"kind": kind, **data})
+    gateway = Gateway(Twice(actor or RehearsalActor()), roles=pkg.roles, max_effort=DEFAULT_MAX_EFFORT, budget=BUDGET,
+                      record=record, surface=surface)
+    view = attempt_view(task.trigger, system, surface, None, pkg)
+    broker = AttemptBroker(surface, record=record, gateway=gateway, view=view)
+    ctx = HostContext(gateway, broker, SkillReader(pkg, record=record), Marks(record), view)
+    text, limit = "", None
+    try:
+        text = default_agent(pkg.run_files)(ctx, task.trigger)
+    except HostFault as fault:
+        if isinstance(fault.error, LimitHit):
+            limit = fault.error.limit
+        else:
+            raise fault.error from None
     score = episode.score()
-    return {"success": bool(score.success), "text": text, "calls": calls, "pushes": pushes}
-
-
-def quote_what_is_not_done(final: str):
-    """The kind of on_finish hook R would write: send the actor back with what its own message says is not done."""
-    return f"Before finishing, do this: {final.split('Not done:', 1)[1].strip()}" if "Not done:" in final else None
+    return {"success": bool(score.success), "text": text, "limit": limit,
+            "calls": [c["name"] for r in records if r["kind"] == "assistant" for c in r["tool_calls"]],
+            "pushes": sum(1 for r in records if r["kind"] == "pushback"),
+            "kinds": [r["kind"] for r in records]}
 
 
 def main() -> dict:
@@ -115,7 +164,7 @@ def main() -> dict:
     runs["skill_B"] = {t: attempt(suite, t, skills={"closing-tags": RULES["B"]}) for t in ids}
     runs["skill_E"] = {t: attempt(suite, t, skills={"closing-lists": RULES["E"]}) for t in ids}
     runs["tool_F"] = {t: attempt(suite, t, tool=True) for t in ids}
-    runs["hook"] = {t: attempt(suite, t, hook=quote_what_is_not_done) for t in ids}
+    runs["hook"] = {t: attempt(suite, t, hook=True) for t in ids}
     # the armed fault (§10.2): the next attempt whose request holds the text fails once, then the file is gone
     with tempfile.TemporaryDirectory() as faults:
         (Path(faults) / "infra_once").write_text("upgraded to the team plan")

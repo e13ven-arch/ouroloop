@@ -624,3 +624,97 @@ def test_the_package_api_says_what_a_hook_sees_is_cut_and_the_actor_had_the_whol
     assert f"result is at most the first {HOOK_RESULT_CHARS} characters" in PACKAGE_API
     assert "truncated says only that this excerpt is shorter than the result" in PACKAGE_API
     assert "The actor itself is always handed the whole result" in PACKAGE_API
+
+
+def test_startup_refuses_a_pinned_actor_effort_above_k_max_effort(fake_upstream, tmp_path):
+    """docs/modules/00_CONTRACTS.md §2 (v0.3), bench.effort_problems: the gateway caps every call at K's `max_effort`
+    and never refuses, so an actor pinned at a default above the ceiling would never run as its inference
+    configuration says; startup names it before anything is paid, and a default at or below the ceiling passes."""
+    from ouroloop.ledger import write_json
+    cfg, activity, w0 = v06_prepared(fake_upstream, tmp_path)
+    objects = activity.objects
+    booted = ct.SystemRelease.from_json(objects.get(w0))
+    core = objects.load(booted.core_ref, ct.CoreManifest)
+    assert core.capabilities["harness"]["max_effort"] == "high"             # the preset's ceiling
+    seen = {}
+    for effort in ("max", "high", "medium"):
+        identity = bench.actor_identity(objects, {"type": "claude_code", "model": "claude-opus-5-5", "effort": effort})
+        w = P.default_worker_set(objects, finish_check=rsi.W0_FINISH, actor_identity_ref=identity,
+                                 package_ref=hp.empty_package(objects))
+        release = activity.releases.bootstrap(w, booted.research_ref, booted.core_ref, reason=f"effort {effort}",
+                                              activate=False, target_harness_ref=booted.target_harness_ref,
+                                              required_capabilities=booted.required_capabilities)
+        write_json(activity.releases.active_path, {"release_ref": release, "revision": 2, "last_operation_id": None})
+        reopened = bench.open_activity(cfg, ".", out=lambda _line: None)
+        seen[effort] = bench.effort_problems(reopened, core)
+        if effort == "max":
+            problems = bench.startup_checks(reopened, cfg, phase="baseline", needs_model=False)
+            assert any("has effort 'max', above K's max_effort 'high'" in p for p in problems), problems
+            # a K frozen before v0.3 fixes no ceiling: its workspace runs the v1 loop, nothing caps the pinned
+            # default, and the check does not invent one from the gateway's default
+            older = ct.CoreManifest(**{**{f: getattr(core, f) for f in core.__dataclass_fields__},
+                                       "capabilities": {**core.capabilities, "harness": {
+                                           k: v for k, v in core.capabilities["harness"].items() if k != "max_effort"}}})
+            assert bench.effort_problems(reopened, older) == []
+    assert len(seen["max"]) == 1 and "above K's max_effort 'high'" in seen["max"][0]
+    assert seen["high"] == [] and seen["medium"] == []
+
+
+def test_the_smoke_phase_runs_under_the_active_releases_k_when_the_workspace_has_one(fake_upstream, tmp_path):
+    """bench.smoke_max_effort (docs/modules/01_POLICY_RUNTIME.md §1): the smoke's attempts run the loop the active
+    release's K fixes — its `max_effort` when the workspace has a release, whatever the config's table says — and
+    only a workspace without one takes the loop from the configured first-version table; with neither, the v1
+    loop."""
+    cfg, activity, w0 = v06_prepared(fake_upstream, tmp_path)
+    assert bench.smoke_max_effort(cfg, ".") == "high"                       # K's ceiling, the preset's
+    lowered = {**cfg, "harness_evolution": {**cfg["harness_evolution"], "max_effort": "low"}}
+    assert bench.smoke_max_effort(lowered, ".") == "high"                   # K, not the table, while a release is active
+    fresh = {**lowered, "workspace": {"root": str(tmp_path / "fresh")}}
+    assert bench.smoke_max_effort(fresh, ".") == "low"                      # no release yet: the table's
+    assert bench.smoke_max_effort({"workspace": {"root": str(tmp_path / "plain")}}, ".") is None
+
+
+# ---------------------------------------------------------------------------- v0.3 (IT6-32): k candidates and the train-side screen
+def test_it6_32_three_candidates_are_screened_on_their_own_failing_train_tasks_and_only_the_best_pays_the_dev_gate(
+        fake_upstream, tmp_path, monkeypatch):
+    """IT6-32: `max_candidates_per_round` 3 under the v3 preset; one session declares three candidates, each with its
+    six-field declaration; each admitted candidate is screened on the failed train tasks its notes came from plus the
+    fixed passing sample of `screen.passing_sample`, reading nothing of dev; the best net flips at or above
+    `screen.min_net_flips` pays the one dev gate — a tie to the lower mean cost, whatever the declaration order — and
+    the others end `not_selected` (cleared the floor, lost the pick) or `screened_out` (below it) with their screen
+    result; the screens' attempts are booked per candidate on the activity's book."""
+    from test_research_round import skill_candidate
+    from test_research_session import MEMORY, memory_candidate, prepared_v3
+    from ouroloop.evolve.execution import Budgets
+    cfg, activity, w0 = prepared_v3(fake_upstream, tmp_path, monkeypatch, k=3)
+    # the skill is declared before the memory: if the tie went to declaration order, the skill would pay the gate
+    step = rsi.SessionScript(lambda inputs: [
+        memory_candidate(inputs, name="useless", text="Be concise.\n", mechanism="a shorter final message"),
+        skill_candidate(inputs, name="skilled"),
+        memory_candidate(inputs, name="good", text=MEMORY)])
+    result = bench.improve(cfg, ".", out=lambda _line: None, researcher=step)
+    assert [r["outcome"] for r in result["rounds"]][0] == "installed", result["rounds"]
+    rows = {r["candidate"].rpartition("/")[2]: r for r in xp.ledger_rows(xp.read(activity.root))}
+    assert set(rows) == {"useless", "good", "skilled"}
+    for r in rows.values():
+        d = r["declaration"]
+        assert set(d) >= {"mechanism", "site", "carrier", "predicted_affected", "trigger_condition", "notes"}
+        assert set(d["predicted_affected"]) <= set(rsi.TRAIN) and d["notes"]
+    screens = list(ct.Events(activity.root).of("train_screen"))
+    assert len(screens) == 3 and all(set(s["tasks"]) <= set(rsi.TRAIN) for s in screens)
+    assert {rows[n]["screen"]["net_flips"] for n in ("good", "skilled")} == {2} and rows["useless"]["screen"]["net_flips"] == 0
+    # a tie on net flips goes to the lower mean cost, not to the earlier declaration: the skill is read with one more
+    # model call per task, so the memory declared after it is cheaper and pays the gate; the skill cleared the floor
+    # and is `not_selected`, the useless memory below the floor is `screened_out` (M4 §2 taxonomy)
+    assert rows["skilled"]["screen"]["outcome"] == "not_selected" and rows["good"]["screen"]["outcome"] == "selected"
+    assert [r["candidate"].rpartition("/")[2] for r in xp.ledger_rows(xp.read(activity.root))] == [
+        "useless", "skilled", "good"]
+    assert rows["good"]["screen"]["cost_per_attempt"] < rows["skilled"]["screen"]["cost_per_attempt"]
+    assert rows["good"]["outcome"] == "installed" and rows["skilled"]["outcome"] == "not_selected"
+    assert rows["useless"]["outcome"] == "screened_out"
+    assert len(list(ct.Objects(activity.root).dir.joinpath("receipt").glob("*.json"))) == 1
+    book = Budgets(tmp_path / "ws")._read()
+    screen_ops = {r["operation_id"].split(":")[1] for r in book["reservations"].values()
+                  if ":train_screen:" in r["operation_id"]}
+    assert screen_ops == {"train_screen"}
+    assert sum(1 for r in book["reservations"].values() if ":train_screen:" in r["operation_id"]) >= 3 * 5

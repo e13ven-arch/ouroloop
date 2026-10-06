@@ -243,16 +243,43 @@ PROPOSAL_FORMAT = (
 
 NOTE_FORMAT = (
     'Reply with JSON only: {"failure_class": "...", "root_cause": "...", "mechanism": "...", '
-    '"component": "memory|skills|on_finish|before_tool|after_tool|tools", "generality": "..."}. '
+    '"component": "memory|skills|on_finish|before_tool|after_tool|tools|agent", "generality": "..."}. '
     "component must be one of the allowed components.")
+# What R is told about the package API (docs/modules/00_CONTRACTS.md §2 包 API v2, M1 §1 首版能力包 API, v0.3): the
+# manifest of both versions, the optional `agent` entry, the ctx surface as the host provides it, the default agent
+# a package without an entry runs under (so the v1 rules below keep their meaning), and the test rules. Every claim
+# here is one the gateway, the broker or the default agent enforces; a sentence that promised more would cost R a
+# revision when the draft check or the gateway refused it.
 PACKAGE_API = (
     "The package API (write only the kinds in allowed_components). manifest.json = {\"api_version\": "
-    "\"harness_package.v1\", \"memory\": {\"enabled\": true|false}, \"skills\": [{\"name\": \"<name>\", "
-    "\"path\": \"skills/<name>.md\", \"description\": \"<when to read it>\"}], \"hooks\": [{\"name\": "
+    "\"harness_package.v1\" or \"harness_package.v2\", \"memory\": {\"enabled\": true|false}, \"skills\": [{\"name\": "
+    "\"<name>\", \"path\": \"skills/<name>.md\", \"description\": \"<when to read it>\"}], \"hooks\": [{\"name\": "
     "\"<name>\", \"site\": \"before_tool|after_tool|on_finish\", \"entrypoint\": "
     "\"middlewares/<file>.py:<function>\"}], \"tools\": [{\"name\": \"<name>\", \"description\": \"...\", "
     "\"input_schema\": {\"type\": \"object\", \"properties\": {...}}, \"entrypoint\": "
-    "\"tools/<file>.py:<function>\"}]}. memory.md is text the actor always sees; a skill's text is read on "
+    "\"tools/<file>.py:<function>\"}], and under v2 at most one optional \"agent\": {\"entrypoint\": "
+    "\"agent/<file>.py:run\", \"roles\": [\"act\"] or [\"act\", \"aux\"]}}. "
+    "A package without an agent entry runs under the default agent, the host's own loop shipped as "
+    "agent/default_agent.py (the task under the composed system prompt; one act model call a turn offering the "
+    "base tools, the enabled package tools and read_skill; the three hook sites; at most 2 on_finish pushbacks), "
+    "exactly as before, so memory, skills, hooks and tools keep the meaning below. An agent entry replaces that "
+    "loop with yours: def run(ctx, task) -> str, the string being the final message, and returning is finishing; "
+    "whether hooks and package tools are called is then your code's business. ctx has five names and one "
+    "self-report. ctx.model(messages, tools=(), role=\"act\", effort=None) -> .text, .tool_calls [{id, name, args}], "
+    ".stop; messages are [{\"role\": \"system\"|\"user\"|\"assistant\"|\"tool\", ...}] as the default agent sends "
+    "them (a first system message is the system prompt; an assistant entry has text and tool_calls; a tool entry "
+    "has results [{id, name, output, is_error}]), tools are [{name, description, schema}], and the calls the model "
+    "returns are yours to execute; role must be one the manifest's roles declare, else the call is refused as an "
+    "error you may catch; effort is low|medium|high|xhigh|max or None (the pinned default), and a request above "
+    "K's max_effort is sent at max_effort, never refused. ctx.tool(name, args, read_only=False) -> .output, "
+    ".is_error: one base tool (ctx.view[\"base_tools\"] lists them with their schemas) through the host's broker. "
+    "ctx.skills.index is [{name, description}], ctx.skills.read(name) -> the text or None, ctx.skills.memory the "
+    "memory text. ctx.limits is the remaining act_calls, model_calls, tool_calls, seconds and tokens (None = no "
+    "such limit); a call past one ends the attempt, scored as the world stands. ctx.view = {task, system, "
+    "base_tools, package, policies, events, max_output_chars}. ctx.mark(kind, **data) records a note labelled as "
+    "the package's own report; nothing reads it as evidence. Nothing else is reachable from the package: no "
+    "scorer, provider, store, record or file outside it. "
+    "memory.md is text the actor always sees; a skill's text is read on "
     "demand with read_skill, listed by name and description. A hook is def f(ctx, event) returning "
     "{\"action\": \"continue\"|\"block\"|\"feedback\", \"message\": \"...\"}. before_tool: event = {tool, "
     "args, turn}; block or feedback both stop that call and the rest of the turn, with the message as the "
@@ -262,8 +289,8 @@ PACKAGE_API = (
     "send the actor back to work with the message. A tool is def f(ctx, args) returning a string, and must not "
     "take a base tool's name. A tool's name is letters, digits, '_' and '-' (at most 64); its input_schema is a "
     "JSON object schema whose properties are schemas and whose arrays give items; \"enabled\": false keeps an "
-    "entry unused. During a task ctx.view = {task, turn, events}, each event {call_id, name, args, "
-    "result_excerpt, error, truncated, step}: result_excerpt is the first part of the result and truncated "
+    "entry unused. A hook's or tool's ctx.view is the agent's view above with turn added; each event in events is "
+    "{call_id, name, args, result_excerpt, error, truncated, step}: result_excerpt is the first part of the result and truncated "
     "says only that this excerpt is shorter than the result. The actor itself is always handed the whole "
     "result: nothing in a hook's input means the actor saw a cut. ctx.call_tool(name, args) calls one of the episode's base tools, "
     "which `tools` in the input lists with their parameters (read-only from a hook), and returns .output and "
@@ -322,11 +349,33 @@ class PolicyResearcher:
     evidence id is an invalid proposal rather than a fact (RL-04).
     """
 
+    origin = "llm"                          # what this researcher's candidates are: a model proposed them (M0 §3)
+
     def __init__(self, llm, *, max_proposals: int = 1, max_state_chars: int = 12000):
-        self.llm = llm                      # .complete(system, prompt) -> text
+        self.llm = llm                      # .complete(system, prompt) -> text; .turn(system, messages, tools) -> ChatTurn
         self.max_proposals = max_proposals
         self.max_state_chars = max_state_chars
         self.requests: list[dict] = []      # what was actually sent, so a test can see which R ran
+
+    def session_turn(self, system: str, messages: list, tools: list):
+        """One model call of R's coding session (docs/modules/04_RESEARCH_LOOP.md §1 R 作为有界编码会话, v0.3): the
+        research model under `research.propose`'s text plus the session format, with the session's tools, metered
+        and labelled `session` like every research call. Each turn is a request on record (step "session", the
+        prompt digest, the digest of the latest user message), so the reuse check reads which R's text drove the
+        session (M6 §4). The completion interface answers with a ChatTurn; one without `turn` cannot run a session."""
+        turn = getattr(self.llm, "turn", None)
+        if turn is None:
+            raise _ct.ContractError("the research completion interface has no tool-calling turn: a coding session "
+                                    "needs the chat provider, not a plain completion")
+        latest = next((m for m in reversed(messages) if m.get("role") == "user"), {})
+        request = {"step": "session", "system": system, "prompt_hash": _ct.digest({"system": system})[:16],
+                   "input_hash": _ct.digest({"input": str(latest.get("content", ""))})[:16]}
+        self.requests.append(request)
+        label = getattr(self.llm, "label", None)
+        if callable(label):
+            with label("session"):
+                return turn(system, messages, tools)
+        return turn(system, messages, tools)
 
     def diagnose(self, context, prompt: str) -> list[dict]:
         text = self._ask(prompt, context, REQUIREMENT_FORMAT, "diagnose")
@@ -365,15 +414,18 @@ class PolicyResearcher:
                                reason=str(data.get("reason", ""))[:500],
                                evidence_refs=tuple(context.evidence))
 
-    def _complete(self, step: str, system: str, text: str) -> str:
+    def _complete(self, step: str, system: str, text: str, request: dict | None = None) -> str:
         """One research request, labelled with its step where the completion interface can carry a label, so
         the budget book says what notes, summaries and draft revisions each cost (docs/modules/07 §4). A refusal
-        comes back as no text, with the refusal kept on the request for `_read` to name."""
+        comes back as no text, with the refusal kept on the request for `_read` to name. `request` is the record
+        this call belongs to; without it, the last one made — which notes written concurrently (M5 §2, v0.3)
+        cannot rely on, so `note_with_record` passes its own."""
         from ..providers import ReplyRefused
-        if self.requests and "input_hash" not in self.requests[-1]:
+        request = request if request is not None else (self.requests[-1] if self.requests else None)
+        if request is not None and "input_hash" not in request:
             # What the step was given, as a digest beside the prompt's: the round's record can then show R's input
             # without keeping task text in it.
-            self.requests[-1]["input_hash"] = _ct.digest({"input": text})[:16]
+            request["input_hash"] = _ct.digest({"input": text})[:16]
         label = getattr(self.llm, "label", None)
         try:
             if callable(label):
@@ -381,15 +433,16 @@ class PolicyResearcher:
                     return self.llm.complete(system, text)
             return self.llm.complete(system, text)
         except ReplyRefused as e:
-            if self.requests:
-                self.requests[-1]["refused"] = str(e)[:200]
+            if request is not None:
+                request["refused"] = str(e)[:200]
             return ""
 
-    def _read(self, reply: str) -> tuple[dict, str]:
+    def _read(self, reply: str, request: dict | None = None) -> tuple[dict, str]:
         """The reply as the JSON object R meant, or why it cannot be read (docs/modules/04_RESEARCH_LOOP.md §1): an
         empty reply, a refusal or text with no JSON object in it decides nothing, so it is never read as {} and
         from there as a default decision."""
-        refused = (self.requests[-1] if self.requests else {}).get("refused")
+        request = request if request is not None else (self.requests[-1] if self.requests else {})
+        refused = request.get("refused")
         if refused:
             # the refusal as the completion interface stated it, which already says it declined
             return {}, refused if refused.startswith("the research model declined") else \
@@ -423,11 +476,18 @@ class PolicyResearcher:
     def note(self, system: str, user: str) -> dict:
         """One note. A reply that cannot be read gives no note, and why it could not (refused, empty, not JSON) is
         kept on the request, where the diagnosis records it."""
-        self.requests.append({"step": "note", "system": system, "prompt_hash": _ct.digest({"system": system})[:16]})
-        data, problem = self._read(self._complete("note", system, user))
+        return self.note_with_record(system, user)[0]
+
+    def note_with_record(self, system: str, user: str) -> tuple[dict, str]:
+        """One note and why it could not be read ("" when it could). The request record is this call's own, so
+        notes asked for concurrently (M5 §2, v0.3) each keep their own refusal or unreadable reason, whatever
+        order the answers arrive in."""
+        request = {"step": "note", "system": system, "prompt_hash": _ct.digest({"system": system})[:16]}
+        self.requests.append(request)
+        data, problem = self._read(self._complete("note", system, user, request), request)
         if problem:
-            self.requests[-1]["unreadable"] = problem
-        return data
+            request["unreadable"] = problem
+        return data, problem
 
     def summarize(self, context, prompt: str, notes: list, coverage: dict, experience=(), *, package=None,
                   allowed: tuple = ()) -> _ProposalResult:

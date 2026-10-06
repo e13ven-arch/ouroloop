@@ -31,7 +31,8 @@ from typing import Callable
 
 from . import config as config_mod
 from .adapters import automationbench as ab
-from .benchmark import Budget, Results, RunManifest, SplitManifest, assign_splits, digest, summarise
+from .benchmark import (HARD_LIMITS, SPLIT_RULES, V03_BUDGET_FIELDS, Budget, Results, RunManifest, SplitManifest,
+                        assign_splits, digest, pool_manifests, stratified_splits, summarise, task_domain)
 from .ledger import now, redact, write_json
 
 # The seven phases, and `cycle`: the thin automatic entry that calls them in the frozen order (M7 §1).
@@ -41,7 +42,10 @@ IMPLEMENTED = PHASES
 # frontier configurations), and a missing piece is named rather than quietly skipped (BR-01).
 NOT_YET: dict[str, str] = {}
 BENCH_KEYS = {"domain", "upstream_path", "toolset", "seed", "ratios", "budget", "families", "smoke_tasks",
-              "near_duplicate_threshold", "repeats", "concurrency"}
+              "near_duplicate_threshold", "repeats", "concurrency",
+              # v0.3 step 5 (docs/modules/07_BENCH_REPORT.md §2): the domain list, how a domain without a frozen
+              # split is split, the domains whose split is pinned to a hash, and the domains whose test is spent
+              "domains", "split_rule", "frozen_splits", "spent"}
 # A key whose value is the secret itself, rather than the name of the variable that holds it (api_key_env is a
 # name and belongs in the manifest). redact() reads a value's shape and a bare key has none, so the key decides.
 SECRET_KEY = re.compile(r"(?i)(api[_-]?key|token|secret|passw(or)?d|credential)$")
@@ -68,6 +72,17 @@ class BenchConfig:
     near_duplicate_threshold: float = 0.6
     repeats: int = 1
     concurrency: int = 1            # attempts run at a time; a setting of the machine, not of any frozen plan
+    # v0.3 step 5 (M7 §2): the domains, in pooled order. `domain` is derived from them: the one domain's name, or
+    # the pooled name `a+b+...` — the directory the activity's results, runs and pooled split live under.
+    domains: tuple[str, ...] = ()
+    split_rule: str = "hash"        # for a domain with no frozen split; a frozen one is kept whatever this says
+    frozen_splits: dict[str, str] = field(default_factory=dict)    # domain -> the hash its hash-rule split must have
+    spent: tuple[str, ...] = ()     # domains whose test is spent: a new claim's final never reads it
+
+    def __post_init__(self) -> None:
+        self.domains = tuple(self.domains) or (self.domain,)
+        self.domain = pooled_name(self.domains)
+        self.spent = tuple(self.spent)
 
     @classmethod
     def load(cls, cfg: dict, base: str | Path = ".") -> "BenchConfig":
@@ -75,7 +90,18 @@ class BenchConfig:
         unknown = sorted(set(table) - BENCH_KEYS)
         if unknown:
             raise ValueError(f"[bench] does not take {unknown}; it takes {sorted(BENCH_KEYS)}")
-        budget = Budget(**dict(table.pop("budget", None) or {}))
+        table.update(_domain_keys(table))
+        # [bench.budget] over the preset's per-attempt limits (preset_budget): a preset that carries them is the
+        # ceiling, as its harness numbers are — a value here may lower one, never raise one.
+        defaults, given = preset_budget(cfg), dict(table.pop("budget", None) or {})
+        raised = sorted(k for k, v in given.items()
+                        if k in defaults and v is not None and float(v) > float(defaults[k]))
+        if raised:
+            raise ValueError(f"[bench.budget] {raised} above the preset's {[defaults[k] for k in raised]}: a "
+                             f"per-attempt limit may be lowered under a preset, not raised")
+        budget = Budget(**{**defaults, **given})
+        # The preset's default for the attempts in flight (preset_concurrency); the table's own value stands.
+        table.setdefault("concurrency", preset_concurrency(cfg))
         toolset = table.get("toolset", ab.TOOLSET)
         if toolset != ab.TOOLSET:
             raise ValueError(f"[bench] toolset = {toolset!r}: only {ab.TOOLSET!r} is wired up (upstream's own "
@@ -92,25 +118,161 @@ class BenchConfig:
                 "runner": versions.get("runner", ""), "tool_schemas": "ouroloop"}
 
 
+def pooled_name(domains) -> str:
+    """The name an activity's domains go by: the one domain's own (v0.1/v0.2 configs keep every path and hash they
+    had), or the list joined by `+` in pooled order — a different list or order is a different pooled split."""
+    domains = tuple(domains)
+    return domains[0] if len(domains) == 1 else "+".join(domains)
+
+
+def _domain_keys(table: dict) -> dict:
+    """[bench]'s v0.3 step-5 keys, checked (M7 §2): `domains` is a list and `domain` one name, the same thing when
+    both are given; a single `domain` reads as a list of one. -> the BenchConfig fields they set."""
+    single, listed = table.pop("domain", None), table.pop("domains", None)
+    if listed is not None:
+        if isinstance(listed, str) or not isinstance(listed, (list, tuple)) or not listed or \
+                not all(isinstance(d, str) and d and "+" not in d and "/" not in d for d in listed):
+            raise ValueError(f"[bench] domains = {listed!r}: a non-empty list of upstream domain names")
+        if len(set(listed)) != len(listed):
+            raise ValueError(f"[bench] domains = {list(listed)}: a domain is listed twice")
+        if single is not None and [single] != list(listed):
+            raise ValueError(f"[bench] domain = {single!r} and domains = {list(listed)}: give one of them (a single "
+                             f"domain is a list of one)")
+    domains = tuple(listed) if listed is not None else (single or "marketing",)
+    rule = table.pop("split_rule", "hash")
+    if rule not in SPLIT_RULES:
+        raise ValueError(f"[bench] split_rule = {rule!r}: one of {list(SPLIT_RULES)}")
+    frozen = dict(table.pop("frozen_splits", None) or {})
+    stray = sorted(set(frozen) - set(domains))
+    if stray:
+        raise ValueError(f"[bench.frozen_splits] names {stray}, which [bench] domains does not list")
+    bad = sorted(d for d, h in frozen.items() if not (isinstance(h, str) and re.fullmatch(r"[0-9a-f]{16}", h)))
+    if bad:
+        raise ValueError(f"[bench.frozen_splits] {bad}: the 16-hex-digit hash of the frozen split manifest")
+    spent = table.pop("spent", None) or ()
+    if isinstance(spent, str) or not all(isinstance(d, str) for d in spent):
+        raise ValueError(f"[bench] spent = {spent!r}: a list of domain names")
+    stray = sorted(set(spent) - set(domains))
+    if stray:
+        raise ValueError(f"[bench] spent names {stray}, which [bench] domains does not list")
+    if spent and len(domains) < 2:
+        raise ValueError("[bench] spent: a single domain whose test is spent leaves no test for a new claim; list "
+                         "it beside the new domains (M7 §2)")
+    if spent and set(spent) == set(domains):
+        raise ValueError(f"[bench] spent = {list(spent)} covers every listed domain: a new claim needs a new domain's "
+                         f"test")
+    return {"domains": domains, "split_rule": rule, "frozen_splits": frozen, "spent": tuple(spent)}
+
+
 # ---------------------------------------------------------------------------- splits
 def freeze_splits(suite: ab.Suite, cfg: BenchConfig, path: str | Path, *,
-                  replace_existing: bool = False) -> tuple[SplitManifest, list[str]]:
-    """The frozen task groups of this domain, and what upstream now says that they do not.
+                  replace_existing: bool = False, out: Callable[[str], None] | None = None
+                  ) -> tuple[SplitManifest, list[str]]:
+    """The frozen task groups of this domain (`suite.domain`), and what upstream now says that they do not.
 
     A manifest already on disk is the one that is used, whatever the config now asks for: the groups are fixed
-    before the first result is looked at, so a changed ratio or seed is a new experiment (docs/DESIGN.md §3.1).
+    before the first result is looked at, so a changed ratio, seed or split rule is a new experiment
+    (docs/DESIGN.md §3.1) — a changed rule is noted, never applied (M7 §2: `split_rule` has no effect on a frozen
+    manifest). A new manifest follows the domain's rule: the hash rule for a domain [bench.frozen_splits] pins (and
+    it must reproduce the pinned hash), else [bench] split_rule — "hash" (v0.1/v0.2) or "stratified" over the
+    adapter's static strata (`ab.stratum`: assertion kinds × tool family, from the task definitions alone).
     """
     path = Path(path)
-    fams, rule = ab.families(suite, cfg.families)
+    domain = suite.domain
+    # [bench.families] over several domains names tasks of each; a domain is grouped by its own tasks' entries
+    declared = cfg.families if len(cfg.domains) < 2 else \
+        {t: f for t, f in cfg.families.items() if task_domain(t) == domain}
+    fams, rule = ab.families(suite, declared)
     entries = suite.entries(fams)
+    pinned = cfg.frozen_splits.get(domain)
+    wanted = "hash" if pinned else cfg.split_rule
     if path.exists() and not replace_existing:
         frozen = SplitManifest.load(path)
+        if pinned and frozen.hash() != pinned:
+            raise ValueError(f"{path} freezes split {frozen.hash()}, and [bench.frozen_splits] pins {domain} to "
+                             f"{pinned}: the frozen split is kept as it is, so this workspace is not the pinned one")
+        if out is not None and (frozen.split_rule or "hash") != wanted:
+            out(f"NOTE       {domain}: the frozen split was made under the {frozen.split_rule or 'hash'} rule and is "
+                f"kept; [bench] asks for {wanted}, which only a new workspace would use")
         return frozen, frozen.drift(entries)
-    splits = assign_splits(fams.values(), cfg.ratios, cfg.seed)
-    manifest = SplitManifest(cfg.domain, cfg.environment(suite.versions), rule, entries, splits, cfg.ratios,
-                             cfg.seed)
+    strata = None
+    if wanted == "stratified":
+        members: dict[str, list[str]] = {}
+        for tid in suite.ids():
+            members.setdefault(fams[tid], []).append(ab.stratum(suite, tid))
+        # a declared family of several tasks is one unit: its stratum is the set of its tasks' strata
+        splits, strata = stratified_splits({f: ";".join(sorted(set(k))) for f, k in members.items()}, cfg.ratios,
+                                           cfg.seed)
+    else:
+        splits = assign_splits(fams.values(), cfg.ratios, cfg.seed)
+    manifest = SplitManifest(domain, cfg.environment(suite.versions), rule, entries, splits, cfg.ratios,
+                             cfg.seed, split_rule="stratified" if strata is not None else None, strata=strata)
+    if pinned and manifest.hash() != pinned:
+        raise ValueError(f"the hash rule splits {domain} into {manifest.hash()} here, and [bench.frozen_splits] pins "
+                         f"{pinned}: upstream or this environment (commit, package, python) changed since it was "
+                         f"frozen. Copy the frozen manifest from the workspace that froze it into {path}, or pin the "
+                         f"new hash in a new activity")
     manifest.freeze(path, replace_existing=replace_existing)
     return manifest, []
+
+
+def load_domains(bench: BenchConfig, root, *, replace_existing: bool = False,
+                 out: Callable[[str], None] | None = None) -> tuple[ab.Suite, SplitManifest, list[str]]:
+    """Every listed domain loaded from the upstream checkout and its split frozen, and the activity's suite and
+    split (M7 §2): for one domain, that domain's own, as before; for several, the suites side by side and the
+    domains' frozen manifests pooled in list order (`pool_manifests`), the pooled manifest frozen beside the
+    activity's results under the pooled name. -> (suite, manifest, drift). A domain upstream cannot load is
+    refused by name."""
+    def load(domain: str) -> ab.Suite:
+        try:
+            return ab.load_suite(domain, bench.upstream_path)
+        except ab.UpstreamError:
+            raise
+        except Exception as e:  # noqa: BLE001 - upstream's loader refuses an unknown domain with a ValueError
+            raise ab.UpstreamError(f"[bench] domains lists {domain!r}, which the upstream checkout cannot load: "
+                                   f"{type(e).__name__}: {e}"[:400]) from e
+    if len(bench.domains) == 1:
+        suite = load(bench.domain)
+        manifest, drift = freeze_splits(suite, bench, Results(root, bench.domain).manifest_path(),
+                                        replace_existing=replace_existing, out=out)
+        return suite, manifest, drift
+    stray = sorted(t for t in bench.families if task_domain(t) not in bench.domains)
+    if stray:
+        raise ValueError(f"[bench.families] names tasks of no listed domain: {stray[:5]}")
+    suites = [load(d) for d in bench.domains]
+    pooled_suite = ab.pool_suites(bench.domain, suites)
+    manifests, drift = [], []
+    for suite in suites:
+        manifest, found = freeze_splits(suite, bench, Results(root, suite.domain).manifest_path(),
+                                        replace_existing=replace_existing, out=out)
+        manifests.append(manifest)
+        drift += found
+    pooled = pool_manifests(bench.domain, manifests, ratios=bench.ratios, seed=bench.seed, spent=bench.spent)
+    pooled.freeze(Results(root, bench.domain).manifest_path(), replace_existing=replace_existing)
+    return pooled_suite, pooled, drift
+
+
+def domain_lines(manifest: SplitManifest, *, strata: bool = True) -> list[str]:
+    """What `ouroloop freeze`/the smoke print per domain (M7 §5): its split hash and rule, its counts, and — with
+    `strata` — each stratum's counts."""
+    out = []
+    spent = manifest.spent()
+    for d in manifest.domains():
+        counts = "  ".join(f"{s} {c['tasks']}" for s, c in (d.get("counts") or {}).items())
+        out.append(f"domain     {d['domain']} split={d['hash']} rule={d.get('split_rule') or 'hash'} "
+                   f"seed={d.get('seed')} {counts}" + ("  test: spent" if d["domain"] in spent else ""))
+        for key, c in sorted((d.get("strata") or {}).items()) if strata else ():
+            out.append(f"           stratum {key}: " + "  ".join(f"{s} {n}" for s, n in c.items()))
+    return out
+
+
+def _one_dev_task_per_domain(manifest: SplitManifest) -> list[str]:
+    """The first dev task of each domain in pooled order: what the scorer-contract checks read when an activity
+    spans several domains, so each domain's scorer is checked without any model call."""
+    first: dict[str, str] = {}
+    for t in manifest.ids("dev"):
+        first.setdefault(task_domain(t), t)
+    return list(first.values())
 
 
 # ---------------------------------------------------------------------------- the smoke phase
@@ -130,20 +292,22 @@ def smoke(cfg: dict, base: str | Path = ".", *, tasks: list[str] | None = None, 
     for note in versions.get("notes", []):
         out(f"note       {note}")
 
-    suite = ab.load_suite(bench.domain, bench.upstream_path)
-    out(f"tasks      {len(suite)} in domain {bench.domain}")
-
     root = config_mod.workspace_root(cfg, base)
     results = Results(root, bench.domain)
     if replace_splits and results.path.exists():
         raise ValueError(f"{results.path} already holds results of the frozen split: reassigning the groups now "
                          f"would rescore attempts that were made under the old ones. Start a new workspace.")
-    manifest, drift = freeze_splits(suite, bench, results.manifest_path(), replace_existing=replace_splits)
+    # v0.3 step 5 (M7 §1 smoke): every listed domain is loaded from the checkout, and refused by name if it is not
+    suite, manifest, drift = load_domains(bench, root, replace_existing=replace_splits, out=out)
+    out(f"tasks      {len(suite)} in domain{'s' if len(bench.domains) > 1 else ''} {', '.join(bench.domains)}")
     counts = manifest.counts()
     out(f"splits     {results.manifest_path()} hash={manifest.hash()} rule={manifest.family_rule} "
         f"seed={manifest.seed}")
     out("           " + "  ".join(f"{s}: {c['tasks']} tasks / {c['families']} families"
                                   for s, c in counts.items()))
+    if len(bench.domains) > 1 or manifest.split_rule == "stratified":
+        for line in domain_lines(manifest):
+            out(line)
     for line in drift:
         out(f"DRIFT      {line}")
 
@@ -169,8 +333,12 @@ def smoke(cfg: dict, base: str | Path = ".", *, tasks: list[str] | None = None, 
     if not chosen:
         out(f"NOTE       no development task to check: {len(dev)} of {len(suite)} tasks are in dev. The per-task "
             f"checks and the input audit need one.")
+    # Several domains: the contract checks and the input audit read one dev task of every domain (they call no
+    # model), while the attempts stay the ones chosen above.
+    checked = list(chosen) + ([t for t in _one_dev_task_per_domain(manifest) if t not in chosen]
+                              if len(bench.domains) > 1 and chosen else [])
 
-    checks = ab.contract_check(suite, chosen)
+    checks = ab.contract_check(suite, checked)
     out(f"contract   rubric={checks['rubric'].get('funcs') or 'not importable'} "
         f"weights={checks['rubric'].get('weights')}")
     for note in checks["notes"]:
@@ -185,7 +353,7 @@ def smoke(cfg: dict, base: str | Path = ".", *, tasks: list[str] | None = None, 
         out(f"FAILED     {line}")
 
     audit = {"leaks": [], "overlaps": []}
-    for tid in chosen:
+    for tid in checked:
         ep = suite.episode(tid)
         try:
             found = ab.audit_inputs(suite.tasks[tid], suite.grading(tid), ab.agent_payload(suite.tasks[tid], ep))
@@ -193,7 +361,7 @@ def smoke(cfg: dict, base: str | Path = ".", *, tasks: list[str] | None = None, 
             ep.close()
         audit["leaks"] += found["leaks"]
         audit["overlaps"] += found["overlaps"]
-    out(f"audit      {len(chosen)} tasks: {len(audit['leaks'])} leaks, {len(audit['overlaps'])} prompt/assertion "
+    out(f"audit      {len(checked)} tasks: {len(audit['leaks'])} leaks, {len(audit['overlaps'])} prompt/assertion "
         f"overlaps for review")
     for line in audit["leaks"]:
         out(f"LEAK       {line}")
@@ -201,7 +369,9 @@ def smoke(cfg: dict, base: str | Path = ".", *, tasks: list[str] | None = None, 
         out(f"           {line}")
 
     report = {"upstream": versions, "tasks": len(suite), "splits": {"hash": manifest.hash(), "counts": counts,
-                                                                   "drift": drift, "rule": manifest.family_rule},
+                                                                   "drift": drift, "rule": manifest.family_rule,
+                                                                   "domains": manifest.domains(),
+                                                                   "spent": sorted(manifest.spent())},
               "near_duplicates": dups[:20], "contract": checks, "audit": audit, "attempts": [], "summary": {},
               # Nothing checked is not the same as nothing wrong.
               "ok": bool(chosen) and not checks["failed"] and not audit["leaks"] and not drift}
@@ -250,7 +420,8 @@ def _attempt(cfg: dict, base: str | Path, bench: BenchConfig, suite: ab.Suite, m
 
     rows = run_tasks(suite, chosen, make_agent_factory(rt, provider, budget=bench.budget,
                                                        meta={"agent": model.get("model") or provider.name,
-                                                             "bench": bench.domain}),
+                                                             "bench": bench.domain},
+                                                       max_effort=smoke_max_effort(cfg, base)),
                      run=run, splits=manifest, results=results, repeats=bench.repeats, on_result=show,
                      concurrency=bench.concurrency)
     total = summarise(rows)
@@ -258,6 +429,20 @@ def _attempt(cfg: dict, base: str | Path, bench: BenchConfig, suite: ab.Suite, m
         f"invalid={total['invalid']}, cost={'unmeasured' if total['cost_usd'] is None else total['cost_usd']} "
         f"(missing on {total['cost_missing']} attempts), usage={total['usage']}")
     return {"attempts": [r.to_json() for r in rows], "summary": total, "run": run.to_json()}
+
+
+def smoke_max_effort(cfg: dict, base: str | Path) -> str | None:
+    """Which loop the smoke's attempts run (docs/modules/01_POLICY_RUNTIME.md §1): the active release's K fixes
+    `max_effort` when the workspace has one — the smoke then runs under the runner shell as the activity's attempts
+    do, and under the same ceiling — else the configured first-version table's; None (the v1 loop) when neither
+    sets one. A smoke binds no release, so this is read from the workspace directly, not from a bound runtime."""
+    from .agent.runner import release_max_effort
+    root = config_mod.workspace_root(cfg, base)
+    release_ref = Releases(root, _ct.Objects(root)).active().get("release_ref")
+    if release_ref:
+        return release_max_effort(_ct.Objects(root), release_ref)
+    settings = harness_settings(cfg)
+    return settings["max_effort"] if settings else None
 
 
 def run_phase(cfg: dict, base: str | Path = ".", *, phase: str = "smoke", **kw) -> dict:
@@ -273,7 +458,7 @@ def run_phase(cfg: dict, base: str | Path = ".", *, phase: str = "smoke", **kw) 
     runner = {"baseline": baseline, "collect": collect, "improve": improve, "research": research,
               "evaluate": evaluate, "report": report, "cycle": cycle}[phase]
     allowed = {"baseline": {"out", "limit", "tasks"}, "collect": {"out", "repeats", "tasks"},
-               "improve": {"out", "rounds", "researcher", "segment"},
+               "improve": {"out", "rounds", "researcher", "segment", "reason"},
                "research": {"out", "researcher", "campaign_ref", "r_candidate_ref"},
                "evaluate": {"out", "plan_ref", "resume"}, "report": {"out", "write"},
                "cycle": {"out", "researcher", "slot_researcher", "arm_researcher", "until"}}[phase]
@@ -297,7 +482,10 @@ from .evolve import feedback as _feedback
 from .evolve.build import build_task_dataset as _build_task_dataset
 from .evolve.execution import BudgetError, BudgetMismatch, Budgets, Schedule
 from .evolve.task_gate import GatePlan, TaskEvalPlan, evaluate_task
+from .evolve.task_gate import refill as _refill
+from .evolve.task_gate import refill_attempts as _refill_attempts
 from .evolve.task_gate import screen as _screen
+from .evolve.task_gate import shortfall as _shortfall
 from .points import business_stop_point as _business_stop_point
 from .release import Releases
 from .research.context import make_context as _make_context
@@ -387,6 +575,10 @@ class Improvement:
     allocation: str | None = None               # the root allocation the arm's calls spend ("final"), if any
     template_ref: str = ""                      # the frozen evaluation template its experiments are held to
     concurrency: int = 1                        # attempts of one arm run at a time ([bench] concurrency)
+    # v0.3 (M3 §2.1(a)(b)): the frozen template's control pooling and confirmation count, carried into every plan
+    # this activity freezes for a candidate; None (a template frozen without them) is a fresh control, no confirmation.
+    control_pooling: str | None = None
+    confirmation_repeats: int | None = None
     _plans: dict = _field(default_factory=dict)
     _experiment_ref: str = ""
     _parent_release: str = ""
@@ -403,10 +595,52 @@ class Improvement:
         return TaskEvalPlan(candidate_ref=candidate_ref, control_ref=control_ref, parent_release=parent_release,
                             core_ref=self.core_ref, split_ref=self.splits.hash(), task_ids=tuple(self.dev_tasks),
                             repeats=self.repeats, order_seed=self.order_seed,
-                            per_attempt_budget={"max_steps": self.attempt_budget.max_steps,
-                                                "max_tool_calls": self.attempt_budget.max_tool_calls},
+                            per_attempt_budget=self.attempt_budget.limits(),
                             retry_policy={"max_infrastructure_retries": 1}, screen_ids=tuple(self.screen_ids),
-                            gate_plan=self.gate.to_json(), installs=self.plan_installs)
+                            gate_plan=self.gate.to_json(), installs=self.plan_installs,
+                            control_pooling=self.control_pooling, confirmation_repeats=self.confirmation_repeats)
+
+    def control_pool(self, parent_release: str, *, plan: TaskEvalPlan | None = None, tasks=None) -> list:
+        """Every valid reading of the installed W under this comparison's conditions and model identity, pooled
+        (docs/modules/03_EVALUATION_RELEASE.md §2.1(a), v0.3): the baseline's dev run, every earlier gate's control
+        arm, and the candidate and confirmation arms of a gate whose candidate is this W now.
+
+        A reading belongs when its run manifest is this control arm's manifest less what names an arm — the
+        candidate/role labels, the plan ref, the budget scope, the release and R (R takes no part in a run, so a
+        release that only changed R is the same W, as `_runs_like` reads it) — so the model identity, the package,
+        the per-attempt limits, the repeats, the split and the host contract are all equal; and when its own plan,
+        if it ran under one, froze the same conditions as this plan (`TaskEvalPlan.conditions`): the same tasks,
+        repeats, seed and limits. The baseline's run has no plan and ran under the frozen template's conditions
+        (bench.baseline). Only the plan's tasks (or `tasks`) on the plan's split count, and only valid attempts;
+        the screen arms (`screen_subject`/`screen_control`: the screen tasks only, attempt 0, not a reading of the
+        plan) never count. The pool is the control's starting point: what it is short of, the gate's control arm
+        reads (task_gate.shortfall), so an empty pool is simply the whole plan short.
+        """
+        plan = plan or self.plan("", "", parent_release)
+        if self.results is None or not plan.pooled:
+            return []
+        wanted = set(tasks if tasks is not None else plan.task_ids)
+        split = _split_of_tasks(self.splits, plan.task_ids)
+        expected = self.run_identity(parent_release, plan_ref="", split=split, candidate="control", role="base")[0]
+        labels = RUN_LABELS
+        same = {k: v for k, v in expected.payload().items() if k not in labels}
+        conditions = plan.conditions()
+        runs: set[str] = set()
+        for run_hash, run in self.results.runs().items():
+            if {k: v for k, v in run.payload().items() if k not in labels} != same:
+                continue
+            if run.eval_plan_ref:
+                if not self.objects.has(run.eval_plan_ref):
+                    continue
+                try:
+                    other = TaskEvalPlan.from_json(self.objects.get(run.eval_plan_ref))
+                except _ct.ContractError:
+                    continue
+                if other.conditions() != conditions:
+                    continue
+            runs.add(run_hash)
+        return [r for r in self.results.all() if r.run in runs and r.validity == "valid" and r.split == split
+                and r.task_id in wanted and _arm_of(r.attempt_id) not in SCREEN_ARMS]
 
     def run_identity(self, release_ref: str, *, plan_ref: str, split: str, candidate: str, role: str,
                      permit: str | None = None, scope: str | None = None) -> tuple:
@@ -482,10 +716,21 @@ class Improvement:
         factory = make_agent_factory(self.rt, provider, budget=self.attempt_budget, bound=bound,
                                      objects=self.objects, stop_view=self.stop_view,
                                      meta={"arm": arm, "scope": self.scope_id}, worker=self.worker)
-        return reused + run_tasks(self.suite, [t for t, _ in order], factory, run=run, splits=self.splits,
-                                  results=self.results, probe=probe, arm=arm, plan_ref=plan_ref,
-                                  release_ref=release_ref, order=order, retry_index=retry_index,
-                                  pricing=self.pricing, supersedes=supersedes, concurrency=self.concurrency)
+        try:
+            rows = run_tasks(self.suite, [t for t, _ in order], factory, run=run, splits=self.splits,
+                             results=self.results, probe=probe, arm=arm, plan_ref=plan_ref,
+                             release_ref=release_ref, order=order, retry_index=retry_index,
+                             pricing=self.pricing, supersedes=supersedes, concurrency=self.concurrency)
+        finally:
+            refused = getattr(provider, "rate_limited", 0)
+            if refused:
+                # M5 §2 (v0.3): the provider's rate-limit refusals (429/529/overloaded) this arm absorbed as unbilled
+                # retries — not pauses, not invalid attempts — on record per arm, written whether the arm finished
+                # or an interrupt or an account error ended it, so a report can list them and a person can decide
+                # to lower the concurrency; nothing lowers it on its own.
+                self.releases.events.append("rate_limited", scope=self.scope_id, arm=arm, run=run.hash(),
+                                            count=refused)
+        return reused + rows
 
     def rt_environment(self) -> dict:
         return {"upstream": self.suite.versions.get("commit", ""), "package": self.suite.versions.get("package", ""),
@@ -592,8 +837,90 @@ class Improvement:
         self.releases.events.append("measurement_planned", scope=self.scope_id, release=release_ref,
                                     tasks=list(planned if planned is not None else tasks), first=first,
                                     run=self._measure_run(release_ref))
-        return self.run_arm("measure", release_ref, [(t, 0) for t in tasks], plan_ref="", split="train",
-                            candidate="current", role="base", resume=True)
+        # v0.3 step 3 (M4 §2 复用, RL6-33): the train-side screen's readings of a candidate that was then installed
+        # are this version's valid train readings under the measurement's execution identity; they are returned as
+        # recorded and not run again. An unistalled candidate's screen rows match no installed release's identity.
+        # v0.3 step 5 (M6 §2, 2026-10-05): so are measurement readings of the same W recorded under another run —
+        # a research slot's common inputs reuse the mainline's readings of the start W, copied in as recorded.
+        reused = self.prior_readings(release_ref, tasks)
+        done = {r.task_id for r in reused}
+
+        def run(arm, order, retry=0, supersedes=None):
+            return self.run_arm(arm, release_ref, order, plan_ref="", split="train", candidate="current",
+                                role="base", retry_index=retry, resume=True, supersedes=supersedes)
+        order = [(t, 0) for t in tasks if t not in done]
+        # Stage 0/1 review (M5 §3): an attempt lost to infrastructure — a 429 the provider's retries did not absorb,
+        # a worker that went away — is refilled under the measurement's retry policy, written with what it
+        # supersedes; resume alone would hand the recorded casualty back as the task's reading forever.
+        rows = latest_attempts(_refill_attempts(run("measure", order), run, "measure", self.retries())) \
+            if order else []
+        return [*reused, *rows]
+
+    def retries(self) -> int:
+        """How many times an attempt lost to infrastructure is run again: the comparison plan's frozen retry
+        policy (one), the same rule a gate arm's attempts follow (task_gate.refill)."""
+        return int((self.plan("", "", "").retry_policy or {}).get("max_infrastructure_retries", 0))
+
+    def screen_readings(self, release_ref: str, tasks) -> list:
+        """The valid train-side screen attempts (arm `train_screen`, M4 §2) on `tasks` whose run identity is this
+        release's measurement identity less the labels that name an arm (the same comparison `control_pool` makes):
+        the same W, model identity, per-attempt limits, split and host contract — a candidate's screen reading of a
+        task is the installed version's reading of it once that candidate is the installed version."""
+        if self.results is None:
+            return []
+        wanted = set(tasks)
+        expected = self.run_identity(release_ref, plan_ref="", split="train", candidate="current", role="base")[0]
+        same = {k: v for k, v in expected.payload().items() if k not in RUN_LABELS}
+        runs = {h for h, run in self.results.runs().items()
+                if {k: v for k, v in run.payload().items() if k not in RUN_LABELS} == same}
+        out: dict = {}
+        for r in self.results.all():
+            if r.run in runs and r.validity == "valid" and r.task_id in wanted and _arm_of(r.attempt_id) == "train_screen":
+                out[r.task_id] = r                      # the latest valid reading of each task
+        return list(out.values())
+
+    def prior_readings(self, release_ref: str, tasks) -> list:
+        """The valid train readings of this W a measurement need not pay for again: the screen readings above, and —
+        v0.3 step 5 (M6 §2, 2026-10-05) — train measurement readings (arm `measure`) recorded under another run whose
+        identity is this measurement's less the labels (another budget scope, another release of the same W and K):
+        the mainline's readings of a research slot's start W, copied into the slot's common workspace as recorded.
+        The measurement's own run is left to `run_arm`'s resume, so what a restarted measurement returns does not
+        change. The latest valid reading of each task."""
+        if self.results is None:
+            return []
+        wanted = set(tasks)
+        expected = self.run_identity(release_ref, plan_ref="", split="train", candidate="current", role="base")[0]
+        same = {k: v for k, v in expected.payload().items() if k not in RUN_LABELS}
+        own = expected.hash()
+        runs = {h for h, run in self.results.runs().items()
+                if {k: v for k, v in run.payload().items() if k not in RUN_LABELS} == same}
+        out: dict = {}
+        for r in self.results.all():
+            if r.run not in runs or r.validity != "valid" or r.task_id not in wanted:
+                continue
+            arm = _arm_of(r.attempt_id)
+            if arm == "train_screen" or (arm == "measure" and r.run != own):
+                out[r.task_id] = r                      # the latest valid reading of each task
+        return list(out.values())
+
+    def measured_cost_per_attempt(self, release_ref: str) -> float | None:
+        """The mean cost of one valid attempt of this W on record (M5 §2, v0.3): every valid, priced reading of a
+        release that runs tasks as this one does (the same W and K, `_runs_like`) — the gate's candidate and
+        confirmation readings of a W count for it once it is installed under another release ref. None when there
+        is none: an unknown cost is never 0."""
+        if self.results is None:
+            return None
+        like: dict = {}
+        costs = []
+        for r in self.results.all():
+            if r.validity != "valid" or r.cost_usd is None or not r.system_release_ref:
+                continue
+            ref = r.system_release_ref
+            if ref not in like:
+                like[ref] = ref == release_ref or self._runs_like(ref, release_ref)
+            if like[ref]:
+                costs.append(float(r.cost_usd))
+        return round(sum(costs) / len(costs), 6) if costs else None
 
     def _measure_run(self, release_ref: str) -> str:
         """The run hash a train measurement (or a collection batch) of this release is recorded under now."""
@@ -705,9 +1032,12 @@ class Improvement:
         plan = self._measurement_plan(latest)
         # Only the booked run's attempts are this measurement: a row of another run (older code, another plan)
         # would make an incomplete measurement look complete.
-        rows = [r for r in by_release[latest] if not (plan and plan.get("run")) or r.run == plan["run"]]
+        rows = latest_attempts([r for r in by_release[latest] if not (plan and plan.get("run")) or r.run == plan["run"]])
         seen = {r.task_id for r in rows}
         planned = list(plan["tasks"]) if plan else sorted(seen)
+        # v0.3 step 3 (RL6-33): a planned task the installed candidate's screen already read is on record too
+        reused = [r for r in self.screen_readings(latest, [t for t in planned if t not in seen])]
+        rows, seen = [*rows, *reused], seen | {r.task_id for r in reused}
         missing = [t for t in planned if t not in seen]
         extra = collected.get(latest, [])
         feedback = _feedback.build_feedback(self.rt, objects=self.objects, scope_id=self.scope_id)
@@ -727,10 +1057,12 @@ class Improvement:
 
     def round_inputs(self, index: int, evidence: dict, experience, bound, *, root, research_model: dict,
                      shared_notes=None):
-        """The first version's per-round inputs: the diagnosis of the train failures and the draft check. Both
-        read their limits from K, and both are None for a v2 activity (docs/modules/04_RESEARCH_LOOP.md §1–2)."""
+        """The first version's per-round inputs: the diagnosis of the train failures, the draft check and — under a
+        core whose K carries `research_session` (package API v2, v0.3 step 3) — the coding session's inputs. All read
+        their limits from K; all three are None for a v2 activity (docs/modules/04_RESEARCH_LOOP.md §1–2), the third
+        None under a v1 core, which keeps the summary-call round."""
         if not self.harness:
-            return None, None
+            return None, None, None
         from .agent import harness_package as hp
         from .research import diagnosis as dg
         from .research.drafts import Drafts
@@ -745,7 +1077,7 @@ class Improvement:
                                            transcripts=Path(self.rt.root) / "transcripts", limits=limits),
             order=list(self.splits.ids("train")), history=dg.last_included(experience, self.scope_id),
             limits=limits, cache=dg.NoteCache(Path(root), self.objects, shared=shared_notes), model=research_model,
-            round_index=dg.diagnosis_count(experience, self.scope_id),
+            round_index=dg.diagnosis_count(experience, self.scope_id), concurrency=self.concurrency,
             components=package.components, package={**run_files, **test_files},
             scope=evidence.get("scope") or "train failures of the latest measurement",
             measured=len(latest), passed=sum(1 for r in latest.values() if r.success))
@@ -756,7 +1088,92 @@ class Improvement:
                         allowed_literals=self.tool_vocabulary(), fixture=self.fixture_world,
                         reserved_names=self.tool_vocabulary(names_only=True),
                         image=self.harness.get("image_id") or self.harness.get("image"), tools=self.base_tools())
-        return diagnosis, drafts
+        session = self.session_inputs(evidence, bound, run_files=run_files, test_files=test_files) \
+            if self.harness.get("research_session") else None
+        return diagnosis, drafts, session
+
+    def session_inputs(self, evidence: dict, bound, *, run_files: dict, test_files: dict):
+        """What R's coding session needs this round (research.session.SessionInputs, M4 §1 R 的输入, §2 筛选): K's
+        caps and screen numbers, the isolated worker, the current package and W's prompt texts, the dev failure-type
+        histogram over the installed W's pooled dev readings, the read-only trajectory reader over this workspace's
+        results and transcripts, the train split in its frozen order, the round's fixed passing sample drawn from the
+        latest measurement with the plan's order_seed, that measurement's per-task outcomes (the screen's "before"),
+        and the two callables that build a candidate W and run its screen arm."""
+        from .agent import harness_package as hp
+        from .research.session import ScreenSettings, SessionInputs, SessionLimits, TrajectoryReader
+        limits = SessionLimits.from_json(self.harness["research_session"])
+        screen = ScreenSettings.from_json(self.harness.get("screen"))
+        from .research.session import passing_sample
+        order = list(self.splits.ids("train"))
+        latest = {r.task_id: r for r in evidence.get("train") or () if r.validity == "valid"}
+        parent = self.releases.active()["release_ref"]
+        return SessionInputs(
+            limits=limits, screen=screen, k=int(getattr(self, "candidates_per_round", 1) or 1), worker=self.worker,
+            package_files={**run_files, **test_files},
+            prompt_texts={t: bound.prompts[t] for t in ("worker.system_prompt", "worker.finish") if bound.prompts.get(t)},
+            histogram=self.dev_histogram(parent),
+            trajectories=TrajectoryReader(self.results, Path(self.rt.root) / "transcripts", limits),
+            train_tasks=tuple(order), train_order=tuple(order),
+            sample=tuple(passing_sample(latest.values(), order=order, size=screen.passing_sample, seed=self.order_seed)),
+            before={t: bool(r.success) for t, r in latest.items()},
+            build=self.screen_build, screen_arm=self.train_screen,
+            affordable=(lambda n: self.budget.affordable({"model_calls": n, "tool_calls": n})) if self.budget else None,
+            base_tools=self.base_tools(), api_version=self.harness.get("package_api") or hp.AGENT_API_VERSION,
+            max_package_bytes=hp.Limits.from_json(self.harness["package"]).max_package_bytes)
+
+    def dev_histogram(self, parent_release: str) -> dict:
+        """The dev failure-type histogram (M4 §1 R 的输入): over the installed W's pooled dev readings under the
+        activity's plan, failed scored assertions counted by type — the fixed projection that is R's only
+        assertion-level view of dev. Nothing else of dev reaches the session."""
+        from .research.session import dev_failure_histogram
+        plan = self.plan("", "", parent_release)
+        pool = self.control_pool(parent_release, plan=plan) if plan.pooled and self.results is not None else \
+            [r for r in (self.results.all() if self.results is not None else ())
+             if r.split == "dev" and r.validity == "valid" and r.system_release_ref == parent_release
+             and r.task_id in set(plan.task_ids) and _arm_of(r.attempt_id) not in SCREEN_ARMS]
+        return dev_failure_histogram(self.results, pool)
+
+    def screen_build(self, proposal, experiment_id: str) -> str:
+        """The candidate W of an admitted proposal, built for its train-side screen before any Experiment exists
+        (M5 §1: the screen is a round-level sub-operation; only the chosen candidate is frozen into an Experiment).
+        `experiment_id` is the id the candidate's Experiment gets if it is chosen: the set's provenance names it, so
+        the W the screen read and the W the gate reads are one content-addressed candidate, and an install's later
+        measurement finds the screen's readings under its own identity (screen_readings). The parent is the pointer —
+        the release the session's inputs and the Experiment are built on — never the parent a previous gate left in
+        `_parent_release`."""
+        parent = self.releases.active()["release_ref"]
+        stand_in = _ct.Experiment(id=experiment_id, proposal_ref=self.objects.put(proposal), parent_release=parent,
+                                  experience_ref="", core_ref=self.core_ref, eval_template_ref=self.template_ref,
+                                  budget_scope=self.scope_id)
+        build = _P.build_candidate(stand_in, objects=self.objects, parent_release=parent, owner=self.owner,
+                                   services=self.services(), train=self._train, budget=self.budget)
+        if build.status != "ready":
+            raise _ct.ContractError("; ".join(build.errors)[:300])
+        return build.candidate_ref
+
+    def train_screen(self, candidate_ref: str, tasks) -> list:
+        """One candidate's train-side screen (M4 §2): its arm on the given train tasks, one attempt each, under a
+        permit and a plan of its own (`train_screen` arm), so the attempts carry an identity that an install can
+        later read as this version's train readings (screen_readings) and that never enters a dev pool. Attempts lost
+        to infrastructure are refilled once under the plan's retry policy, as a gate arm's are (task_gate.refill); the
+        parent is the pointer, as for screen_build."""
+        parent = self.releases.active()["release_ref"]
+        tasks = list(tasks)
+        plan = TaskEvalPlan(candidate_ref=candidate_ref,
+                            control_ref=self.objects.load(parent, _ct.SystemRelease).worker_ref, parent_release=parent,
+                            core_ref=self.core_ref, split_ref=self.splits.hash(), task_ids=tuple(tasks), repeats=1,
+                            order_seed=self.order_seed, per_attempt_budget=self.attempt_budget.limits(),
+                            retry_policy={"max_infrastructure_retries": 1}, gate_plan=self.gate.to_json(),
+                            installs=False)
+        plan_ref = self.objects.put(plan)
+        permit = self.releases.permit(candidate_ref, parent, plan_ref, self.scope_id, self.core_ref)
+        arm_release = self.releases.candidate_release(parent, candidate_ref, permit)
+
+        def run(arm, order, retry=0, supersedes=None):
+            return self.run_arm(arm, arm_release, order, plan_ref=plan_ref, permit=permit, split="train",
+                                candidate="candidate", role="evolved", retry_index=retry, resume=True,
+                                supersedes=supersedes)
+        return _refill(plan, "train_screen", list(run("train_screen", [(t, 0) for t in tasks])), run)
 
     def fixture_world(self):
         """The world package tests run against: a fresh episode of the first train task, never dev or final
@@ -822,6 +1239,9 @@ class Improvement:
 
     # -------------------------------------------------------------- handlers
     def handlers(self) -> dict:
+        # A new round starts from the pointer, not from the parent the previous experiment was frozen on: the carried
+        # values are cleared before `verify_bound` reads them, and `_begin` sets them again for the experiment that runs.
+        self._parent_release, self._experiment_ref = "", ""
         return {"begin": self._begin, "build": self._build, "screen": self._screen, "evaluate": self._evaluate,
                 "install": self._install, "verify_bound": self._verify_bound(),
                 "load_receipt": lambda ref: self.objects.load(ref, _ct.EvaluationReceipt)}
@@ -838,9 +1258,28 @@ class Improvement:
 
     def _verify_bound(self) -> dict:
         """What a full comparison plus the install probe will cost at least, so a candidate that could not be
-        verified is never started (EX-03)."""
-        attempts = len(self.dev_tasks) * self.repeats * 2
-        return {"model_calls": attempts, "tool_calls": attempts}
+        verified is never started (EX-03).
+
+        v0.3 (M5 §2 验证预留): the candidate arm × (1 + confirmation_repeats) — the confirmation reading is a
+        verification step and belongs in the bound — plus the control pairs the pooled readings are short of
+        (task_gate.shortfall, the same count evaluate_task reads; the whole control arm under a plan that does
+        not pool)."""
+        readings = 1 + int(self.confirmation_repeats or 0)
+        parent = self._parent()
+        plan = self.plan("", "", parent)
+        control = len(_shortfall(plan, self.control_pool(parent, plan=plan))) if plan.pooled else \
+            len(self.dev_tasks) * self.repeats
+        attempts = len(self.dev_tasks) * self.repeats * readings + control
+        bound = {"model_calls": attempts, "tool_calls": attempts}
+        # v0.3 step 5 (M5 §2 验证预留, 2026-10-05 review): in dollars too, when the parent W has priced readings —
+        # the attempts at its measured cost per attempt, raised by the gate's cost allowance β0 (a candidate may cost
+        # that much more before the cost term judges it) — so a gate the budget cannot pay for is refused before it
+        # starts rather than cut off half way. `usd_per_attempt` lets the round's screen be priced the same way.
+        cpa = self.measured_cost_per_attempt(parent)
+        if cpa is not None:
+            per = cpa * (1 + float(plan.gate().cost_beta0 or 0.0))
+            bound.update(usd=round(attempts * per, 6), usd_per_attempt=round(per, 6))
+        return bound
 
     def _build(self, experiment, budget) -> _ct.BuildResult:
         self._experiment_ref = experiment.ref()      # the receipt names the experiment it came from
@@ -893,7 +1332,13 @@ class Improvement:
         control = self.run_arm("screen_control", parent, order, plan_ref=plan_ref)
         return _screen(plan, subject, control)
 
-    def _evaluate(self, candidate_ref: str, budget) -> _ct.EvaluationReceipt:
+    def _evaluate(self, candidate_ref: str, budget, confirming=None) -> _ct.EvaluationReceipt:
+        """The gate: the candidate arm under the frozen plan against the control — under a pooled plan the installed
+        W's pooled readings (control_pool) topped up by a control reading of exactly the pairs they are short of,
+        a fresh reading of the parent otherwise — and, under a plan that confirms, the confirmation reading of the
+        candidate arm. The top-up and the confirmation each run under their own run identity (the control's, and
+        candidate "confirmation" / arm `confirm`), so a resume finds exactly the attempts it had recorded and never
+        mistakes the first reading's for them (M5 §3, the frozen inputs)."""
         parent = self._parent()
         control_set = self.objects.load(parent, _ct.SystemRelease).worker_ref if self.owner == "worker" else \
             self.objects.load(parent, _ct.SystemRelease).research_ref
@@ -902,19 +1347,25 @@ class Improvement:
         permit = self.releases.permit(candidate_ref, parent, plan_ref, self.scope_id, self.core_ref)
         arm_release = self.releases.candidate_release(parent, candidate_ref, permit)
         self._plans[candidate_ref] = (plan_ref, arm_release)
+        pool = self.control_pool(parent, plan=plan) if plan.pooled else []
 
         def run(arm, order, retry=0, supersedes=None):
             if arm == "subject":
                 return self.run_arm(arm, arm_release, order, plan_ref=plan_ref, permit=permit,
                                     retry_index=retry, resume=True, supersedes=supersedes)
+            if arm.startswith("confirm"):
+                return self.run_arm(arm, arm_release, order, plan_ref=plan_ref, permit=permit,
+                                    candidate=arm.replace("confirm", "confirmation", 1), retry_index=retry,
+                                    resume=True, supersedes=supersedes)
             return self.run_arm(arm, parent, order, plan_ref=plan_ref, candidate="control", role="base",
                                 retry_index=retry, resume=True, supersedes=supersedes)
 
         receipt = evaluate_task(plan, run=run, objects=self.objects, experiment_ref=self._experiment_ref,
-                                families=self.families())
+                                families=self.families(), control_pool=pool, confirming=confirming)
         ref = self.objects.put(receipt)
         self.releases.register_receipt(ref, plan=plan_ref, subject=candidate_ref, verdict=receipt.verdict,
-                                      scope=self.scope_id)
+                                      scope=self.scope_id, reading_kind=receipt.reading_kind,
+                                      control_readings=receipt.metrics.get("control_readings"))
         return receipt
 
     def _install(self, receipt, expected_parent):
@@ -972,6 +1423,56 @@ def _arm_of(attempt_id: str | None) -> str:
     return (attempt_id or "").rpartition("#")[0].rpartition("/")[2]
 
 
+# The screen's arms (Improvement._screen): the predeclared screen tasks only, at attempt 0 — not a reading of the
+# plan, so never part of a pooled control (M3 §2.1(a), v0.3). The train-side screen's arm (`train_screen`, M4 §2)
+# runs on train and never meets a dev pool.
+SCREEN_ARMS = ("screen_subject", "screen_control", "train_screen")
+# The run-manifest fields that name an arm rather than an execution identity (M3 §2.1(a)): two runs equal in every
+# other field ran the same W under the same model, limits, split and host contract.
+RUN_LABELS = ("candidate", "role", "eval_plan_ref", "budget_scope", "notes", "system_release_ref",
+              "research_ref", "experience_ref", "mode")
+
+
+def _research_meter(researcher):
+    """The metered provider behind a research step (bench._default_researcher: PolicyResearcher over _Completions
+    over MeteredProvider), or None for a scripted researcher that meters nothing."""
+    provider = getattr(getattr(researcher, "llm", None), "provider", None)
+    return provider if hasattr(provider, "rate_limited") else None
+
+
+def _rate_limit_recorder(researcher, events: _ct.Events, *, scope: str, first_round: int, on_result=None):
+    """-> an `on_result` for run_worker_rounds that, after each completed round, writes the research meter's
+    rate-limit refusals of that round as a `rate_limited` event (arm `research`, the round's index, the count),
+    only when there were any (M5 §2, v0.3), then hands the result on to `on_result`. The meter's count is
+    cumulative; the event carries this round's share of it."""
+    from .research.loop import ROUND_MARKERS
+    meter = _research_meter(researcher)
+    seen = {"count": 0, "round": first_round}
+
+    def record(result) -> None:
+        try:
+            if meter is not None and result.outcome not in ROUND_MARKERS:
+                total = int(getattr(meter, "rate_limited", 0) or 0)
+                if total > seen["count"]:
+                    events.append("rate_limited", scope=scope, arm="research", round=seen["round"],
+                                  count=total - seen["count"])
+                    seen["count"] = total
+                seen["round"] += 1
+        finally:
+            if on_result is not None:
+                on_result(result)
+    return record
+
+
+def latest_attempts(rows) -> list:
+    """One row per (task, repeat): the last one recorded — a refill after the infrastructure casualty it supersedes —
+    in first-seen order. A measurement's reading is that; the casualty stays on record in the results file."""
+    out: dict = {}
+    for r in rows:
+        out[(r.task_id, r.attempt)] = r
+    return list(out.values())
+
+
 def _retry_of(attempt_id: str) -> int:
     """The retry index an attempt id carries (benchmark.attempt_id: `...#<retry>`)."""
     _, _, retry = attempt_id.rpartition("#")
@@ -1015,7 +1516,16 @@ class Activity:
 # ---------------------------------------------------------------------------- the first version's harness table
 HARNESS_KEYS = {"package_api", "components", "sandbox", "image", "max_files", "max_package_bytes",
                 "max_memory_chars", "max_skill_chars", "max_skills", "test_timeout_seconds", "max_draft_repairs",
-                "max_failure_notes", "max_entry_chars"}
+                "max_failure_notes", "max_entry_chars", "max_effort", "research_session", "screen"}
+# v0.3 step 3 (M4 §1, §2; M7 §2): the two nested harness tables — R's coding session's caps and the train-side
+# screen's numbers — and the keys each takes. research_session.* and screen.passing_sample are caps the config may
+# only lower; screen.min_net_flips is a floor it may only raise (HARNESS_TABLE_FLOORS: lowering it loosens the screen).
+HARNESS_TABLES = {"research_session": ("max_turns", "max_edits", "max_trajectory_bytes", "max_trajectory_bytes_total"),
+                  "screen": ("passing_sample", "min_net_flips")}
+# The reasoning-effort tiers, lowest first (the `claude_code` provider's names). K's `max_effort` is the ceiling the
+# gateway caps a package's requested effort to (docs/modules/00_CONTRACTS.md §2, v0.3): a request above it is sent
+# at the ceiling, never refused, with the requested value on the record. Like every harness key it narrows only.
+from .agent.gateway import DEFAULT_MAX_EFFORT, EFFORTS  # noqa: E402 - the gateway caps by the same order
 
 
 # ---------------------------------------------------------------------------- [improvement] and its presets
@@ -1033,7 +1543,8 @@ PRESETS = {
                     "components": ["memory", "skills", "on_finish", "before_tool", "after_tool", "tools"],
                     "sandbox": "docker", "image": "ouroloop-worker:py3.12", "max_files": 24, "max_package_bytes": 262144, "max_memory_chars": 8000,
                     "max_skill_chars": 8000, "max_skills": 12, "test_timeout_seconds": 30,
-                    "max_draft_repairs": 3, "max_failure_notes": 30, "max_entry_chars": 600},
+                    "max_draft_repairs": 3, "max_failure_notes": 30, "max_entry_chars": 600,
+                    "max_effort": DEFAULT_MAX_EFFORT},
         # One worker segment, one research slot, one more worker segment that shows the installed R is used.
         "schedule": {"worker_rounds": 3, "research_slots": 1, "patience": 2, "max_infrastructure_failures": 2},
         # The existing worker gate's own fields; no second regression layer.
@@ -1048,6 +1559,73 @@ PRESETS = {
                      "min_groups": 1},
     },
 }
+# The v0.3 preset (docs/modules/07_BENCH_REPORT.md §2, M0 §2, v0.3, 2026-10-04): the v1 preset under package API v2 —
+# the `agent` component kind, so a candidate may change the loop itself — with K's effort ceiling and the five
+# per-attempt hard limits at the design's values as [bench.budget]'s defaults (preset_budget). Its own entry, not a
+# change to the v1 one: the v1 numbers are frozen into the v0.1/v0.2 cores and are not revisited. Since v0.3 step 5
+# it takes a [bench] domain list (no Marketing lock).
+PRESETS["automationbench_harness_v3"] = {
+    **json.loads(json.dumps(PRESETS["marketing_harness_v1"])),
+    # v0.3 step 5 (M7 §2 “preset 的领域锁”): no domain lock — [bench] domains may list any upstream domains, and the
+    # rule is that every one of them loads from the checkout (bench.load_domains, at every open of the activity).
+    "domain": None,
+    "harness": {**PRESETS["marketing_harness_v1"]["harness"], "package_api": "harness_package.v2",
+                "components": ["agent", "memory", "skills", "on_finish", "before_tool", "after_tool", "tools"],
+                "max_effort": "high",
+                # v0.3 step 3 (M4 §1 R 作为有界编码会话, §2 train 侧筛选; 2026-10-05): R's coding session — one per round,
+                # 40 model calls finish included, 24 edits across every candidate and revision, 65536 bytes per
+                # read_trajectory and 524288 per session — and the screen's fixed passing sample of 5 train tasks
+                # with net flips of at least 1 to pay the dev gate. Frozen into K; R cannot raise them.
+                "research_session": {"max_turns": 40, "max_edits": 24, "max_trajectory_bytes": 65536,
+                                     "max_trajectory_bytes_total": 524288},
+                "screen": {"passing_sample": 5, "min_net_flips": 1}},
+    # v0.3 step 3 (M4 §2): up to three candidates a round, from one session; [improvement] may set 1..3.
+    "max_candidates_per_round": 3,
+    "budget": {"max_steps": 50, "max_model_calls": 200, "max_tool_calls": 200, "max_seconds": 900.0,
+               "max_tokens": 400000},
+    # v0.3 step 2 (M3 §2.1, M5 §2, M6 §2; 2026-10-04): the gate's statistics — a pooled control, one confirmation
+    # reading before an install, a regression as a drop of 0.5, the cost term β0 0.10 / β1 2.0, no gate under 25
+    # tasks — eight attempts in flight, three rounds per research arm and the headroom check before a slot asks R.
+    # [freeze.task_plan.gate] may tighten any of these and loosen none (_beyond_preset).
+    "task_plan": {"tasks": "dev", "repeats": 1, "order_seed": 0, "control_pooling": "pooled",
+                  "confirmation_repeats": 1,
+                  "gate": {"mode": "quality", "min_gain": 0.05, "min_groups": 5, "max_regression_rate": 0.1,
+                           "regression_drop": 0.5, "cost_beta0": 0.10, "cost_beta1": 2.0, "min_tasks": 25}},
+    # arm_share / outer_share re-estimated for step 5 (M6 §2, v0.3; 2026-10-05), replacing v1's 0.15 / 0.08. A share is
+    # a fraction of the frozen root. These were derived for the first step-5 plan's single $2,800 root (candidates at
+    # effort high, $0.69 an attempt): M6 §2's arm share = a mainline round ($10 R + ~36 x $0.69 screen $25 + 125 x
+    # $0.69 gate $86.25 = $121.25) x worker_round_limit 3 + one confirmation $86.25 = $450 -> 450 / 2800 = 0.16; the
+    # outer comparison 2 x 63 x $0.69 = $86.9 + 10% refill + 8 lanes and 2 stuck reservations ($72.8) = $168 ->
+    # 0.06. The staged plan the user chose (2026-10-05, ROADMAP v0.3 step 5) runs no slot in that workspace and
+    # defers it to a copy with a root of its own (stage 5); at K's effort medium the same formula gives an arm
+    # $90.5 x 3 + $62.5 = $334, below what an arm can spend on its 62-task inner gate (3 x ($10 + $18 + $31) + a
+    # confirmation $31 + an install's rerun $65.5 = $273.5, plus $72.8 of reservations = $346), and the outer
+    # comparison 2 x 63 x $0.50 + 10% + $72.8 = $142; so before stage 5's root opens these fractions are re-derived
+    # for that root from $346 and $142 (a $1,000 root: 0.35 and 0.15).
+    "campaign": {"worker_round_limit": 3, "arm_share": 0.16, "outer_share": 0.06, "min_gain": 0.05,
+                 "min_groups": 1, "min_headroom_tasks": 6},
+    "concurrency": 8,
+}
+
+
+def preset_concurrency(cfg: dict) -> int:
+    """[bench] concurrency's default under the [improvement] preset (M5 §2, v0.3): 8 under the v3 preset, 1 under
+    the v1 preset and without a preset. A setting of the machine, never part of a frozen plan; the config may set
+    any count, and `--concurrency` on the command line overrides it for one run."""
+    name = dict(cfg.get("improvement") or {}).get("preset")
+    preset = PRESETS.get(name) if isinstance(name, str) else None
+    return int((preset or {}).get("concurrency") or 1)
+
+
+def preset_budget(cfg: dict) -> dict:
+    """The per-attempt hard limits the [improvement] preset fixes, as [bench.budget]'s defaults (M0 §2 "单次尝试硬上限",
+    v0.3): the v3 preset carries all five, so a config under it freezes them without writing them. {} under a preset
+    without a `budget` table (the v1 preset, whose cores froze what [bench.budget] alone said), without [improvement],
+    and for an unknown preset — improvement_settings names that one. Like the harness numbers they are ceilings:
+    BenchConfig.load lets [bench.budget] lower one and refuses to raise one."""
+    name = dict(cfg.get("improvement") or {}).get("preset")
+    preset = PRESETS.get(name) if isinstance(name, str) else None
+    return dict((preset or {}).get("budget") or {})
 
 
 def improvement_settings(cfg: dict) -> dict | None:
@@ -1077,13 +1655,24 @@ def improvement_settings(cfg: dict) -> dict | None:
     if unknown:
         raise ValueError(f"[improvement] allowed_methods {unknown}: one of {list(METHODS)}")
     preset = PRESETS[name]
-    domain = dict(cfg.get("bench") or {}).get("domain", "marketing")
-    if domain != preset["domain"]:
-        raise ValueError(f"[improvement] preset {name!r} is for the {preset['domain']} domain, not {domain!r}")
-    candidates = int(table.get("max_candidates_per_round", 1))
+    table_bench = dict(cfg.get("bench") or {})
+    listed = table_bench.get("domains") or [table_bench.get("domain", "marketing")]
+    listed = [listed] if isinstance(listed, str) else list(listed)
+    # The v1 preset is locked to Marketing (its numbers are frozen into the v0.1/v0.2 cores). The v3 preset has no
+    # domain lock (docs/modules/07_BENCH_REPORT.md §2, v0.3 step 5): its rule is that every listed domain loads from
+    # the upstream checkout, which bench.load_domains checks wherever an activity opens (smoke, freeze, every phase).
+    if preset.get("domain") is not None and listed != [preset["domain"]]:
+        raise ValueError(f"[improvement] preset {name!r} is for the {preset['domain']} domain, not "
+                         f"{listed[0] if len(listed) == 1 else listed!r}")
+    # v0.3 step 3 (M4 §2): k candidates a round, the preset's value by default and its ceiling (3 under the v3
+    # preset; the v1 preset has none, so 1 as before); fewer is allowed, more is refused before anything is paid.
+    ceiling = int(preset.get("max_candidates_per_round", 1))
+    candidates = int(table.get("max_candidates_per_round", ceiling))
     batches = int(table.get("max_collection_batches", 2))
-    if candidates != 1:
-        raise ValueError("[improvement] max_candidates_per_round: this version runs one candidate per round")
+    if not 1 <= candidates <= ceiling:
+        raise ValueError(f"[improvement] max_candidates_per_round = {candidates}: "
+                         + ("this preset runs one candidate per round (it has no coding session)" if ceiling == 1
+                            else f"this preset runs 1 to {ceiling} candidates per round"))
     if not 0 <= batches <= 2:
         raise ValueError("[improvement] max_collection_batches: at most 2 per worker segment in this preset")
     return {"mode": mode, "preset": name, "allowed_methods": methods, "candidates_per_round": candidates,
@@ -1109,11 +1698,66 @@ def _preset_harness(cfg: dict, preset: dict) -> dict:
             if value != preset.get(key):
                 raise ValueError(f"[harness_evolution] {key} {value!r}: the preset fixes {preset.get(key)!r}")
             out[key] = value
+        elif key in HARNESS_TABLES:
+            # v0.3 step 3: a nested table (research_session, screen) tightens its numbers one by one and exists only
+            # where the preset has it (a v1 preset has no session to cap)
+            if not isinstance(preset.get(key), dict):
+                raise ValueError(f"[harness_evolution] {key}: the preset has no {key} (no coding session under it)")
+            out[key] = _harness_table(key, value, preset[key])
+        elif key == "max_effort":
+            ceiling = preset.get(key, DEFAULT_MAX_EFFORT)
+            if value not in EFFORTS:
+                raise ValueError(f"[harness_evolution] max_effort {value!r}: one of {list(EFFORTS)}")
+            if EFFORTS.index(value) > EFFORTS.index(ceiling):
+                raise ValueError(f"[harness_evolution] max_effort = {value} is above the preset's {ceiling}: a "
+                                 f"limit may be lowered here, not raised")
+            out[key] = value
         elif int(value) > int(preset[key]):
             raise ValueError(f"[harness_evolution] {key} = {value} is above the preset's {preset[key]}: a limit "
                              f"may be lowered here, not raised")
         else:
             out[key] = int(value)
+    return out
+
+
+# The direction each nested harness number tightens in (M4 §1, §2; M7 §2, 2026-10-05): a cap is lowered, a floor is
+# raised; and the least value any of them may take, with or without a preset.
+HARNESS_TABLE_FLOORS = {("screen", "min_net_flips")}
+HARNESS_TABLE_LEAST = {("research_session", "max_turns"): 1, ("research_session", "max_edits"): 1,
+                       ("research_session", "max_trajectory_bytes"): 1,
+                       ("research_session", "max_trajectory_bytes_total"): 1,
+                       ("screen", "passing_sample"): 0, ("screen", "min_net_flips"): 0}
+
+
+def _harness_table(key: str, value, preset_table: dict | None) -> dict:
+    """One nested [harness_evolution.<key>] table, validated the same way under a preset and without one: it is a
+    table of known integer keys; each value is at least its least value; under a preset a cap (every research_session
+    number, screen.passing_sample) may only be lowered and a floor (screen.min_net_flips) only raised, and the keys
+    not written keep the preset's values; without a preset the keys not written keep the design's defaults (an empty
+    table asks for the session with the default caps)."""
+    from .research.session import ScreenSettings, SessionLimits
+    if not isinstance(value, dict):
+        raise ValueError(f"[harness_evolution] {key} is a table ({list(HARNESS_TABLES[key])}), not "
+                         f"{type(value).__name__}")
+    unknown = sorted(set(value) - set(HARNESS_TABLES[key]))
+    if unknown:
+        raise ValueError(f"[harness_evolution.{key}] does not take {unknown}; it takes {list(HARNESS_TABLES[key])}")
+    defaults = {"research_session": SessionLimits, "screen": ScreenSettings}[key]().to_json()
+    out = dict(preset_table if preset_table is not None else defaults)
+    for sub, v in value.items():
+        if isinstance(v, bool) or not isinstance(v, int):
+            raise ValueError(f"[harness_evolution.{key}] {sub} = {v!r} is not an integer")
+        least = HARNESS_TABLE_LEAST[(key, sub)]
+        if v < least:
+            raise ValueError(f"[harness_evolution.{key}] {sub} = {v} is below the least value {least}")
+        if preset_table is not None:
+            if (key, sub) in HARNESS_TABLE_FLOORS and v < int(preset_table[sub]):
+                raise ValueError(f"[harness_evolution.{key}] {sub} = {v} is below the preset's {preset_table[sub]}: a "
+                                 f"floor may be raised here, not lowered")
+            if (key, sub) not in HARNESS_TABLE_FLOORS and v > int(preset_table[sub]):
+                raise ValueError(f"[harness_evolution.{key}] {sub} = {v} is above the preset's {preset_table[sub]}: a "
+                                 f"limit may be lowered here, not raised")
+        out[sub] = int(v)
     return out
 
 
@@ -1133,22 +1777,42 @@ def harness_settings(cfg: dict) -> dict | None:
     unknown = sorted(set(table) - HARNESS_KEYS)
     if unknown:
         raise ValueError(f"[harness_evolution] does not take {unknown}; it takes {sorted(HARNESS_KEYS)}")
-    if table.get("package_api", hp.API_VERSION) != hp.API_VERSION:
-        raise ValueError(f"[harness_evolution] package_api {table['package_api']!r}: this host serves "
-                         f"{hp.API_VERSION}")
-    limits = hp.Limits(components=tuple(table.get("components") or hp.TEXT_KINDS),
-                       **{k: int(table[k]) for k in ("max_files", "max_package_bytes", "max_memory_chars",
-                                                     "max_skill_chars", "max_skills") if k in table})
+    # The package API K freezes is the one its candidates write to; a core frozen to v1 keeps taking v1 manifests
+    # on a host that serves v2, and takes no v2 manifest (hp.Limits.package_api, which also fixes the default).
+    try:
+        limits = hp.Limits(components=tuple(table.get("components") or hp.TEXT_KINDS),
+                           package_api=table.get("package_api"),
+                           **{k: int(table[k]) for k in ("max_files", "max_package_bytes", "max_memory_chars",
+                                                         "max_skill_chars", "max_skills") if k in table})
+    except hp.PackageError as e:
+        raise ValueError(f"[harness_evolution] {e}") from None
+    package_api = limits.package_api
+    max_effort = table.get("max_effort", DEFAULT_MAX_EFFORT)
+    if max_effort not in EFFORTS:
+        raise ValueError(f"[harness_evolution] max_effort {max_effort!r}: one of {list(EFFORTS)}")
     diagnosis = DiagnosisLimits(**{k2: int(table[k1]) for k1, k2 in (("max_failure_notes", "max_notes"),
                                                                      ("max_entry_chars", "max_entry_chars"))
                                    if k1 in table})
     repairs = int(table.get("max_draft_repairs", 3))
     if repairs < 0:
         raise ValueError("[harness_evolution] max_draft_repairs is a count of revisions after the first draft")
-    return {"package_api": hp.API_VERSION, "package": limits.to_json(), "diagnosis": diagnosis.to_json(),
-            "max_draft_repairs": repairs,
-            "sandbox": table.get("sandbox"), "image": table.get("image"),
-            "test_timeout_seconds": int(table.get("test_timeout_seconds", 30))}
+    out = {"package_api": package_api, "package": limits.to_json(), "diagnosis": diagnosis.to_json(),
+           "max_draft_repairs": repairs, "max_effort": max_effort,
+           "sandbox": table.get("sandbox"), "image": table.get("image"),
+           "test_timeout_seconds": int(table.get("test_timeout_seconds", 30))}
+    # v0.3 step 3 (M4 §1, §2): the coding session's caps and the screen's numbers travel into K under a core whose
+    # package API is v2 — the session replaces the summary call there (research.session). A v1 core carries
+    # neither and keeps today's R path, so its K and the v0.1/v0.2 workspaces are untouched.
+    asked = [k for k in ("research_session", "screen") if k in table]       # presence, not truthiness: {} asks too
+    if asked and package_api != hp.AGENT_API_VERSION:
+        raise ValueError(f"[harness_evolution] research_session/screen belong to package_api {hp.AGENT_API_VERSION}: "
+                         f"a {package_api} core runs the summary-call research step")
+    if asked:
+        for key in ("research_session", "screen"):
+            value = table.get(key, {})
+            # under a preset the table is already the preset's narrowed one (a dict); without one it is the config's
+            out[key] = _harness_table(key, value, None) if improvement_cfg is None else _harness_table(key, {}, value)
+    return out
 
 
 def _host_contract(objects: _ct.Objects, bench: "BenchConfig", rsi: "RsiConfig", harness: dict) -> dict:
@@ -1167,10 +1831,11 @@ def _host_contract(objects: _ct.Objects, bench: "BenchConfig", rsi: "RsiConfig",
         context_policy_ref=ref({"compaction": "points.compact", "memory_and_skill_index": "system prompt"}),
         finish_protocol_ref=ref({"stop_view": rsi.stop_view, "hook_sites": list(hp.HOOK_SITES)}),
         permission_ref=ref({"approve": "auto", "gated_tools": [], "package_broker": "base tools; hooks read-only"}),
-        limits_ref=ref({"max_steps": bench.budget.max_steps, "max_tool_calls": bench.budget.max_tool_calls,
-                        "max_seconds": bench.budget.max_seconds}),
-        extension_api_ref=hp.api_ref(objects)))
-    needs = ["generation", hp.API_VERSION]
+        # The five hard limits of one attempt (M0 §2), None where the config sets none: a limit a core fixed is a
+        # fact of the host contract, and so is a limit it did not fix.
+        limits_ref=ref({k: getattr(bench.budget, k) for k in HARD_LIMITS}),
+        extension_api_ref=hp.api_ref(objects, harness["package_api"])))
+    needs = ["generation", harness["package_api"]]
     if hp.Limits.from_json(harness["package"]).allows_code:
         needs.append("isolated_worker")
     return {"target_harness_ref": target, "required_capabilities": tuple(needs)}
@@ -1187,7 +1852,7 @@ def actor_identity(objects: _ct.Objects, table: dict) -> str:
 
 
 def open_activity(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = print,
-                  bootstrap: bool = True) -> Activity:
+                  bootstrap: bool = True, strata: bool = False) -> Activity:
     """Load the environment, freeze the splits if they are not frozen, and find or create the initial release.
 
     Creating it is a bootstrap authorisation, not an improvement: nothing has been compared at that point, and a
@@ -1197,10 +1862,14 @@ def open_activity(cfg: dict, base: str | Path = ".", *, out: Callable[[str], Non
     bench = BenchConfig.load(cfg, base)
     rsi = RsiConfig.load(cfg)
     versions = ab.require(bench.upstream_path)
-    suite = ab.load_suite(bench.domain, bench.upstream_path)
     root = config_mod.workspace_root(cfg, base)
     results = Results(root, bench.domain)
-    manifest, drift = freeze_splits(suite, bench, results.manifest_path())
+    # v0.3 step 5 (M7 §2): every listed domain loads and has its own frozen split; several are pooled into one
+    suite, manifest, drift = load_domains(bench, root, out=out)
+    if len(bench.domains) > 1:
+        # each domain's split hash and counts; `ouroloop freeze` asks for the strata too (M7 §5)
+        for line in domain_lines(manifest, strata=strata):
+            out(line)
     rt = config_mod.build_runtime(cfg, base)
     config_mod.register_builtin_points(rt)
     objects = _ct.Objects(root)
@@ -1254,6 +1923,7 @@ def open_activity(cfg: dict, base: str | Path = ".", *, out: Callable[[str], Non
             # here, where a report can find when the hosted model was seen (docs/modules/00_CONTRACTS.md §2).
             _ct.Events(root).append("model_observed", identity=worker_kw["actor_identity_ref"], observed_at=now())
             out(f"harness    K froze components={harness['package']['components']} "
+                f"package_api={harness['package_api']} max_effort={harness['max_effort']} "
                 f"max_draft_repairs={harness['max_draft_repairs']} "
                 f"max_failure_notes={harness['diagnosis']['max_notes']} "
                 f"max_entry_chars={harness['diagnosis']['max_entry_chars']} "
@@ -1310,6 +1980,162 @@ def budget_problems(frozen: dict | None, pricing=None) -> list[str]:
     return problems
 
 
+def final_share_problem(frozen: dict | None, pricing, concurrency: int) -> str:
+    """Why the frozen final share cannot hold `concurrency` reservations of one call's bound at once, or ""
+    (docs/modules/05_EXECUTION_BUDGET.md §2 “final 份额的定法”, v0.3): every call in flight holds its worst case until
+    it settles, so a share of less than concurrency × bound refuses calls while there is money left — v0.2's first
+    final ($50 share, 4 × $7.28 in flight) recorded 51 attempts as budget_exhausted in 78 seconds. Checked where a
+    budget is frozen, before any root opens with it; only with a bound the prices make derivable."""
+    share = budget_allocations(frozen).get("final")
+    if not share or pricing is None or not getattr(pricing, "bounded", False):
+        return ""
+    n = max(int(concurrency or 1), 1)
+    bound = pricing.bound()
+    short = {dim: (float(value), round(n * float(bound[dim]), 6)) for dim, value in share.items()
+             if dim in bound and n * float(bound[dim]) > float(value) + 1e-9}
+    if not short:
+        return ""
+    return ("the final share cannot hold the concurrent reservations: " + "; ".join(
+        f"{dim} {have} < concurrency {n} x one call's bound {round(float(bound[dim]), 6)} = {need}"
+        for dim, (have, need) in short.items()))
+
+
+def _execution_of(objects, release_ref: str | None):
+    """What a release executes a task with — its W and its K (`Improvement._runs_like`): R takes no part in a run,
+    and a gate's candidate release and the release that installs it are two refs of one execution. None for a ref
+    this store does not hold."""
+    try:
+        release = objects.load(release_ref, _ct.SystemRelease)
+    except (KeyError, TypeError, _ct.ContractError):
+        return None
+    return (release.worker_ref, release.core_ref)
+
+
+def final_estimate(activity: Activity, *, task_ids, repeats: int, arms: dict, plan_ref: str | None = None,
+                   pricing=None, concurrency: int = 1, fallback=None) -> dict:
+    """What a final is expected to spend, from what is on record (M5 §2 “final 份额的定法”, v0.3): for each arm, the
+    attempts still to run (tasks × repeats less the plan's valid attempts already on record) times the arm's
+    measured cost per valid attempt — over the readings of every release that executes as the arm's release does
+    (the same W and K: a W*'s gate readings were made under its candidate release, which is another ref than the
+    release that installed it; 2026-10-05 review), its dev readings (baseline, control, candidate and confirmation
+    arms) when it has any, else all of its priced readings — and `concurrency` reservations of one call's bound,
+    which the share must hold beside the spend. Without a priced reading the arm's cost is `fallback` (a number, or
+    {arm: number} — the config's [estimate] cost_per_attempt) when given, else unknown; never 0."""
+    rows = list(activity.results.all()) if activity.results is not None else []
+    planned = len(tuple(task_ids)) * int(repeats)
+    out, total, unknown = [], 0.0, []
+    executions: dict = {}
+
+    def execution(ref):
+        if ref not in executions:
+            executions[ref] = _execution_of(activity.objects, ref)
+        return executions[ref]
+    for arm, release in arms.items():
+        target = execution(release)
+        readings = [r for r in rows if r.validity == "valid" and r.cost_usd is not None and r.system_release_ref
+                    and (r.system_release_ref == release or (target is not None
+                                                             and execution(r.system_release_ref) == target))]
+        pool = [r for r in readings if r.split == "dev"] or readings
+        cpa = round(sum(r.cost_usd for r in pool) / len(pool), 6) if pool else None
+        source = ("dev" if pool[0].split == "dev" else "all") if pool else None
+        if cpa is None and fallback is not None:
+            given = fallback.get(arm) if isinstance(fallback, dict) else fallback
+            if given is not None:
+                cpa, source = round(float(given), 6), "config"
+        done = {r.pair_key for r in rows if plan_ref and r.candidate == arm and r.validity == "valid"
+                and str(r.pair_key).startswith(f"{plan_ref}/")}
+        todo = max(planned - len(done), 0)
+        expected = None if cpa is None else round(todo * cpa, 6)
+        if expected is None:
+            unknown.append(arm)
+        else:
+            total += expected
+        out.append({"arm": arm, "release": release, "attempts": todo, "done": len(done), "readings": len(pool),
+                    "readings_split": source or "none", "cost_per_attempt": cpa, "expected": expected})
+    bound = pricing.bound().get("usd") if pricing is not None and getattr(pricing, "bounded", False) else None
+    reservations = None if bound is None else round(max(int(concurrency or 1), 1) * float(bound), 4)
+    expected = None if unknown else round(total, 6)
+    return {"arms": out, "expected": expected, "unknown": unknown, "concurrency": max(int(concurrency or 1), 1),
+            "bound": None if bound is None else round(float(bound), 4), "reservations": reservations,
+            "suggested_share": None if expected is None or reservations is None else round(expected + reservations, 2)}
+
+
+# Settlements that never come back (a killed `claude` child, an answer that never arrived) keep their reservation:
+# v0.1/v0.2 and the ceiling run left 4 in ~9,900 calls, about 1 in 2,250 (2026-10-05 review). A final's share holds
+# this many beside its lanes; the root is sized with the same rate (ROADMAP v0.3 step 5).
+STUCK_BOUNDS = 2
+ESTIMATE_KEYS = {"cost_per_attempt"}
+
+
+def estimate_settings(cfg: dict):
+    """The config's `[estimate] cost_per_attempt` (a number, or {arm: number}): the cost per attempt a final's
+    estimate uses for an arm with no priced reading yet (M5 §2, 2026-10-05 review). None when absent. A planning
+    number, never a limit and never part of a plan."""
+    table = dict(cfg.get("estimate") or {})
+    unknown = sorted(set(table) - ESTIMATE_KEYS)
+    if unknown:
+        raise ValueError(f"[estimate] does not take {unknown}; it takes {sorted(ESTIMATE_KEYS)}")
+    value = table.get("cost_per_attempt")
+    if value is None:
+        return None
+    numbers = value.values() if isinstance(value, dict) else [value]
+    if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 for v in numbers):
+        raise ValueError(f"[estimate] cost_per_attempt = {value!r}: a positive number of dollars, or one per arm")
+    return dict(value) if isinstance(value, dict) else float(value)
+
+
+def final_plan_problem(activity: Activity, cfg: dict, plan: "FinalizationPlan", frozen_budget: dict | None,
+                       out: Callable[[str], None]) -> str:
+    """Why the final share cannot hold this final plan, or "" (M5 §2 “final 份额的定法”; 2026-10-05 review: the share
+    failed silently once W* cost more than the share was sized for). Before the plan is sealed the estimate is
+    printed — attempts × each arm's measured cost per attempt from its pooled readings, else the config's
+    [estimate] — and checked: the expected spend plus `concurrency` in-flight bounds plus STUCK_BOUNDS stuck ones
+    must fit the share's dollars. Only for a share in dollars under prices that give a bound."""
+    share = budget_allocations(frozen_budget).get("final") or {}
+    pricing = pricing_of(cfg)
+    if share.get("usd") is None or not getattr(pricing, "bounded", False):
+        return ""
+    estimate = final_estimate(activity, task_ids=plan.task_ids, repeats=plan.repeats,
+                              arms={c["subject"]: plan.release_refs.get(c["subject"]) or activity.release_ref
+                                    for c in plan.comparisons if not c.get("llm")},
+                              pricing=pricing, concurrency=activity.bench.concurrency,
+                              fallback=estimate_settings(cfg))
+    for line in estimate_lines(estimate, float(share["usd"])):
+        out(line)
+    if estimate["expected"] is None:
+        return (f"the final share cannot be checked: no priced reading of {estimate['unknown']} and no [estimate] "
+                f"cost_per_attempt for them")
+    need = estimate["expected"] + estimate["reservations"] + STUCK_BOUNDS * estimate["bound"]
+    if need > float(share["usd"]) + 1e-9:
+        return (f"the final share ${float(share['usd']):.2f} cannot hold the plan: expected ${estimate['expected']:.2f} + "
+                f"{estimate['concurrency']} in-flight and {STUCK_BOUNDS} stuck reservations of "
+                f"${estimate['bound']:.4f} = ${need:.2f}")
+    return ""
+
+
+def estimate_lines(estimate: dict, share_left: float | None = None) -> list[str]:
+    """The printed form of final_estimate: one line per arm and the total against the share."""
+    lines = []
+    for a in estimate["arms"]:
+        cost = "unknown (no costed reading of this release)" if a["cost_per_attempt"] is None else \
+            (f"${a['cost_per_attempt']:.4f} from the config's [estimate] = ${a['expected']:.2f}"
+             if a["readings_split"] == "config" else
+             f"${a['cost_per_attempt']:.4f} from {a['readings']} {a['readings_split']} readings = ${a['expected']:.2f}")
+        lines.append(f"estimate   {a['arm']} ({_ct.short(a['release']) if a['release'] else '?'}): {a['attempts']} "
+                     f"attempts to run ({a['done']} on record) x {cost}")
+    total = "unknown" if estimate["expected"] is None else f"${estimate['expected']:.2f}"
+    held = "" if estimate["reservations"] is None else \
+        f" + {estimate['concurrency']} in-flight reservations x ${estimate['bound']:.4f} = ${estimate['reservations']:.2f}"
+    tail = ""
+    if share_left is not None and estimate["expected"] is not None and estimate["reservations"] is not None:
+        need = estimate["expected"] + estimate["reservations"]
+        tail = (f"; the share has ${share_left:.2f} left: " +
+                ("holds it" if share_left + 1e-9 >= need else f"SHORT by ${need - share_left:.2f} (lanes will wait "
+                                                              f"for reservations; lower --concurrency)"))
+    lines.append(f"estimate   expected spend {total}{held}{tail}")
+    return lines
+
+
 def activity_budget(activity: Activity, cfg: dict, phase: str):
     """The phase's account: a child of the activity's one root, whose limits come from the frozen budget object.
 
@@ -1342,22 +2168,41 @@ def activity_budget(activity: Activity, cfg: dict, phase: str):
 
 def freeze_task_plan(objects: _ct.Objects, *, core_ref: str, split_ref: str, task_ids, gate: GatePlan,
                      repeats: int = 1, order_seed: int = 0, screen_ids=(), installs: bool = True,
-                     per_attempt_budget: dict | None = None) -> str:
+                     per_attempt_budget: dict | None = None, control_pooling: str | None = None,
+                     confirmation_repeats: int | None = None) -> str:
     """The development plan template: tasks, repeats, order, thresholds and statistics, frozen before the first
-    candidate runs. A candidate's own artifact ref is filled in later; the thresholds are not touched again."""
+    candidate runs. A candidate's own artifact ref is filled in later; the thresholds are not touched again.
+
+    A gate plan with `min_tasks` refuses to freeze over fewer tasks (M3 §2.1(f), v0.3) — here, so the mainline gate
+    and a research slot's inner gate meet the same rule: twelve tasks let a third of empty candidates through, and
+    no number read off such a gate tells two research policies apart."""
+    task_ids = tuple(task_ids)
+    if gate.min_tasks is not None and len(task_ids) < int(gate.min_tasks):
+        raise ValueError(f"freeze refused: the gate plan runs {len(task_ids)} tasks, fewer than its min_tasks "
+                         f"{gate.min_tasks} (M3 §2.1(f))")
     return objects.put(TaskEvalPlan(candidate_ref="", control_ref="", parent_release="", core_ref=core_ref,
-                                    split_ref=split_ref, task_ids=tuple(task_ids), repeats=repeats,
+                                    split_ref=split_ref, task_ids=task_ids, repeats=repeats,
                                     order_seed=order_seed, screen_ids=tuple(screen_ids),
                                     gate_plan=gate.to_json(), installs=installs,
-                                    per_attempt_budget=dict(per_attempt_budget or {})))
+                                    per_attempt_budget=dict(per_attempt_budget or {}),
+                                    control_pooling=control_pooling, confirmation_repeats=confirmation_repeats))
+
+
+def _frozen_plan(activity: Activity, ref: str | None = None) -> TaskEvalPlan | None:
+    """The frozen task plan `ref` names — the activity's own [rsi] task_plan_ref when none is given — or None when
+    there is no such frozen object yet."""
+    ref = ref or activity.rsi.task_plan_ref
+    if ref and activity.objects.has(ref):
+        return TaskEvalPlan.from_json(activity.objects.get(ref))
+    return None
 
 
 def _attempt_budget(activity: Activity, template=None) -> Budget:
     """The per-attempt limits a run uses: the frozen task plan's (`ouroloop freeze` writes them all), so a change to
     [bench.budget] after the freeze changes no comparison of the activity; [bench.budget] only for a plan frozen
     without them. The activity's own plan when none is given."""
-    if template is None and activity.rsi.task_plan_ref and activity.objects.has(activity.rsi.task_plan_ref):
-        template = TaskEvalPlan.from_json(activity.objects.get(activity.rsi.task_plan_ref))
+    if template is None:
+        template = _frozen_plan(activity)
     if template is not None and template.per_attempt_budget:
         return Budget(**{**asdict(activity.bench.budget), **template.per_attempt_budget})
     return activity.bench.budget
@@ -1384,8 +2229,17 @@ def improvement(activity: Activity, *, template_ref: str | None = None, provider
         probe_train=True, train_tasks=tuple(activity.splits.ids("train")), owner=owner, pricing=pricing,
         harness=_harness_of(activity), worker=isolated_worker(_harness_of(activity)), template_ref=template_ref or "",
         concurrency=activity.bench.concurrency,
+        control_pooling=template.control_pooling if template else None,
+        confirmation_repeats=template.confirmation_repeats if template else None,
         plan_installs=template.installs if template and installs is None else (True if installs is None
                                                                                else installs))
+
+
+def _pooling_of(activity: Activity) -> tuple[str | None, int | None]:
+    """The activity's frozen template's (control_pooling, confirmation_repeats), for the comparisons that are built
+    beside it — a research slot's inner gates (M6 §2, v0.3) — or (None, None) without a frozen template."""
+    template = _frozen_plan(activity)
+    return (template.control_pooling, template.confirmation_repeats) if template is not None else (None, None)
 
 
 def require(problems: list, *, phase: str) -> None:
@@ -1401,6 +2255,35 @@ FRONTIER_KEYS = {"llm", "effort", "fallback", "source", "date", "note", "pricing
 def _harness_of(activity: Activity) -> dict | None:
     rel = _ct.SystemRelease.from_json(activity.objects.get(activity.release_ref))
     return (activity.objects.load(rel.core_ref, _ct.CoreManifest).capabilities or {}).get("harness")
+
+
+def _five_limits(activity: Activity, plan: TaskEvalPlan | None) -> bool:
+    """Whether a phase of this activity runs under the five-limit rule (docs/modules/00_CONTRACTS.md §2, v0.3).
+    A plan frozen before the two v0.3 dimensions existed carries neither key (nor any, before M5 §3 put the limits
+    in the plan): it keeps its identity and runs with what it has, so reading it refuses nothing and says nothing
+    (CT7-06). A plan that carries them was frozen under the rule. Without a plan the rule is K's: a core frozen
+    under v0.3 fixes `max_effort`, and every attempt under it is limited in all five dimensions; a K from before
+    has only the three."""
+    if plan is not None:
+        return set(V03_BUDGET_FIELDS) <= set(plan.per_attempt_budget or {})
+    harness = _harness_of(activity)
+    return bool(harness and "max_effort" in harness)
+
+
+def limit_problems(budget: Budget, five: bool = True) -> list[str]:
+    """Which hard limits an attempt would run without (docs/modules/00_CONTRACTS.md §2 "单次尝试硬上限", v0.3). All
+    five for every new freeze and for every phase of an activity whose K is v0.3, whatever components the core
+    allows: an agent of its own decides how many model calls and output tokens a step takes, so there only a step
+    limit is no limit — and a core that allows no agent today is frozen with the same five, so the comparison
+    identity does not change when it does ("新冻结的计划五项齐全，缺一项拒绝冻结"). `five=False` is for what was frozen
+    before the two dimensions existed, an old plan or an old K, which keeps the three it had and is refused nothing
+    at startup. Named before anything is paid, and a freeze without them is refused rather than frozen short."""
+    needed = ["max_steps", "max_tool_calls", "max_seconds"] + (list(V03_BUDGET_FIELDS) if five else [])
+    missing = [k for k in needed if not getattr(budget, k)]
+    if not missing:
+        return []
+    return [f"[bench.budget] needs {', '.join(missing)} per attempt"
+            + (" (every new plan freezes all five hard limits)" if set(missing) & set(V03_BUDGET_FIELDS) else "")]
 
 
 def _pinned_actor(activity: Activity):
@@ -1472,8 +2355,12 @@ def baseline(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = 
         order = [(t, i) for t in dev for i in range(work.repeats)]
         # Attempts already on record for this run are kept, not paid again: a restarted baseline (a cycle that
         # stopped half way through it) runs only what is missing.
-        rows = work.run_arm(candidate, activity.release_ref, order, plan_ref="", candidate=candidate, role=role,
-                            resume=True)
+        def run(arm, pairs, retry=0, supersedes=None, _work=work, _candidate=candidate, _role=role):
+            return _work.run_arm(arm, activity.release_ref, pairs, plan_ref="", candidate=_candidate, role=_role,
+                                 retry_index=retry, resume=True, supersedes=supersedes)
+        # Stage 0/1 review (M5 §3): attempts lost to infrastructure are refilled once, also on a restart that finds
+        # them recorded — the 16-way trial's 429 casualties would otherwise be holes in W0's pooled dev reading
+        rows = latest_attempts(_refill_attempts(run(candidate, order), run, candidate, work.retries()))
         summary = summarise(rows)
         # The label is what actually ran: the pinned actor, unless the arm names its own model.
         label = model_identity(provider, llm) if (own or pinned is None) else \
@@ -1530,7 +2417,8 @@ def collect(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
 
 # ---------------------------------------------------------------------------- improve
 def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = print, rounds: int | None = None,
-            researcher=None, segment: str | None = None, stop_after_round: int | None = None) -> dict:
+            researcher=None, segment: str | None = None, stop_after_round: int | None = None,
+            reason: str | None = None) -> dict:
     """The worker loop with a fixed R: collect, diagnose, propose, build, evaluate, install, repeat.
 
     Every round starts from what the previous one left — the installed release, the appended experience and the
@@ -1543,6 +2431,11 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
     `stop_after_round` (a cycle's stop point, docs/ROADMAP.md §3) stops the segment once that many rounds plus one
     have completed, without finishing it: the next call continues with the following round, with patience and the
     failure limit where they were, as if it had not stopped.
+
+    `rounds` with `reason` on a cycle activity whose last worker segment has ended (docs/modules/07_BENCH_REPORT.md
+    §1, 2026-10-06) is an explicit extension beyond the frozen schedule: it is recorded (`schedule_extended`), the
+    segment's log is reopened, and `rounds` more rounds run under the same plans, root and K with the round and
+    diagnosis indices continuing; patience and the failure limit count afresh within the extension.
     """
     from .research.loop import RoundContext, run_worker_rounds
     activity = open_activity(cfg, base, out=out)
@@ -1550,9 +2443,24 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
     if missing:
         raise ValueError("; ".join(missing) + "; freeze one with bench.freeze_task_plan")
     require(startup_checks(activity, cfg, phase="improve"), phase="improve")
+    extension = None
+    if segment is None and activity.rsi.schedule_ref:
+        segment, extension = _extension_of(activity, None if rounds is None else int(rounds), reason)
     seglog = RoundLog(Path(activity.root) / "rsi" / "segments" / f"{segment}.json",
                       {"segment": segment, "scope": activity.rsi.scope_id,
                        "schedule": activity.rsi.schedule_ref}) if segment else None
+    if extension == "new":
+        frozen = Schedule(**activity.objects.get(activity.rsi.schedule_ref))
+        record = seglog.extend(int(rounds), str(reason), by="user")
+        activity.releases.events.append(
+            "schedule_extended", scope=activity.rsi.scope_id, segment=segment, by="user", reason=str(reason),
+            rounds=int(rounds), at_round=record["at_round"], frozen_worker_rounds=frozen.worker_rounds,
+            frozen_patience=frozen.patience,
+            extended_total=sum(int(e["rounds"]) for e in seglog.state.get("extensions") or ()))
+        out(f"extend     {segment}: {rounds} more round(s) from round {record['at_round']}, beyond the frozen schedule "
+            f"(worker_rounds {frozen.worker_rounds}, patience {frozen.patience}); reason: {reason}")
+    elif extension == "open":
+        out(f"extend     {segment}: continuing the extension begun at round {seglog.open_extension()['at_round']}")
     if seglog is not None and seglog.finished:
         # Before the budget root or a model is touched: a finished segment is read back, never re-run, and a
         # failure that belongs to a later step must not be recorded against it.
@@ -1599,8 +2507,8 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
                                experience_ref=experience_ref)
         bound = _P.bind_release(release_ref, profile="task", services=work.services(),
                                 authorization="installed")
-        diagnosis, drafts = work.round_inputs(index, evidence, experience, bound, root=activity.root,
-                                              research_model=research_model)
+        diagnosis, drafts, session = work.round_inputs(index, evidence, experience, bound, root=activity.root,
+                                                       research_model=research_model)
         log.append({"round": index, "release": release_ref, "feedback": evidence["feedback"].summary()})
         return RoundContext(releases=activity.releases, objects=activity.objects, scope_id=activity.rsi.scope_id,
                             context=context, researcher=researcher, bound=bound, core_ref=work.core_ref,
@@ -1609,7 +2517,7 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
                             schedule=schedule,
                             history=frozen_signatures(experience, activity.objects, parent=release_ref),
                             root=activity.root,
-                            diagnosis=diagnosis, drafts=drafts, round_index=index)
+                            diagnosis=diagnosis, drafts=drafts, round_index=index, session=session)
 
     from .research.loop import resume_unfinished
     # An open experiment finishes under the template and the scope it was frozen with, or the segment pauses.
@@ -1621,10 +2529,19 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
         out(f"resume     {result.experiment_id}: {result.outcome} ({result.reason})")
         if seglog is not None:
             seglog.add(result)             # the interrupted round of this segment, finished
+    history: tuple = tuple(seglog.state["rounds"]) if seglog is not None else ()
     if seglog is not None:
         # Only the rounds this segment has not completed; make_round numbers them after the completed ones.
         done = seglog.done()
         schedule = Schedule(**{**asdict(schedule), "worker_rounds": max(schedule.worker_rounds - done, 0)})
+        ext = seglog.open_extension()
+        if ext is not None:
+            # An extension runs its own rounds, numbered after the segment's; patience and the failure limit count
+            # only its own rounds (the segment's idle rounds would stop it before its first round).
+            history = tuple(seglog.state["rounds"][ext["history_start"]:])
+            from .research.loop import completed_round
+            own = sum(1 for r in history if completed_round(r))
+            schedule = Schedule(**{**asdict(schedule), "worker_rounds": max(int(ext["rounds"]) - own, 0)})
     # The stop point counts the rounds this call may run, after the ones the segment has completed.
     stop_after = max(stop_after_round + 1 - done, 0) if stop_after_round is not None else None
     collector = None
@@ -1635,8 +2552,10 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
         if work.harness else 0
     results = resumed + ([] if halted else run_worker_rounds(
         make_round, budget, schedule=schedule, root=activity.root, collect=collector, collected_before=collected,
-        on_result=seglog.add if seglog is not None else None,
-        history=tuple(seglog.state["rounds"]) if seglog is not None else (), stop_after=stop_after,
+        # the research meter's rate-limit refusals, per round (M5 §2, v0.3), then the segment's own record
+        on_result=_rate_limit_recorder(researcher, activity.releases.events, scope=activity.rsi.scope_id,
+                                       first_round=done, on_result=seglog.add if seglog is not None else None),
+        history=history, stop_after=stop_after,
         # a batch booked before a crash is finished first, at its own attempt index, before any round runs
         resume_collections=(lambda: work.finish_collections(activity.root, measured.get("last")))
         if work.harness else None))
@@ -1646,6 +2565,8 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
     elif seglog is not None:
         seglog.end(stop_reason)
         stop_reason = seglog.state["stop_reason"]
+        if extension is not None:
+            _record_extension(activity, segment, seglog)
     for result in results:
         out(f"round      {result.outcome}"
             + (f" experiment={result.experiment_id}" if result.experiment_id else "")
@@ -1654,7 +2575,62 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
             + (f" ({result.reason})" if result.reason else ""))
     return {"rounds": [vars(r) for r in results], "log": log, "budget": budget.remaining(),
             "release": activity.releases.active()["release_ref"], "stop_reason": stop_reason,
-            **({"segment": segment} if segment else {})}
+            **({"segment": segment} if segment else {}),
+            **({"extension": seglog.state["extensions"][-1]} if extension is not None else {})}
+
+
+def _extension_of(activity: Activity, rounds: int | None, reason: str | None) -> tuple:
+    """The worker segment an explicit extension continues and whether it is new or resumed (M7 §1, 2026-10-06), or
+    (None, None) for an activity the cycle never ran (`rounds` then keeps its older meaning). Refused: a cycle that is
+    paused (resume it with the cycle first), a last segment that has not ended (continue it with the cycle), a new
+    extension without a reason, and a resumed one asked for another number of rounds."""
+    path = Path(activity.root) / "rsi" / "cycle.json"
+    if not path.exists():
+        return None, None
+    state = json.loads(path.read_text(encoding="utf-8"))
+    segments = sorted((int(name.split("-", 1)[1]), name) for name in (state.get("steps") or {})
+                      if re.fullmatch(r"segment-\d+", name))
+    if not segments:
+        return None, None
+    if rounds is None:
+        # A cycle activity runs its worker rounds in segments: an improve without --rounds would run the frozen
+        # schedule from round 0 outside the segment's log, unrecorded (2026-10-06 review).
+        raise ValueError(f"this activity runs its worker rounds in cycle segments ({segments[-1][1]}): continue it "
+                         f"with --phase cycle, or extend it with --phase improve --rounds N --reason ...")
+    if rounds < 1:
+        raise ValueError(f"--rounds {rounds}: an extension runs at least one round")
+    if state.get("status") == "paused":
+        raise ValueError("the activity is paused: resume it with --phase cycle before extending it")
+    segment = segments[-1][1]
+    log = RoundLog(Path(activity.root) / "rsi" / "segments" / f"{segment}.json",
+                   {"segment": segment, "scope": activity.rsi.scope_id, "schedule": activity.rsi.schedule_ref})
+    ext = log.open_extension()
+    if ext is not None:
+        if int(ext["rounds"]) != rounds:
+            raise ValueError(f"{segment} has an extension of {ext['rounds']} round(s) from round {ext['at_round']} "
+                             f"still open: finish it with --rounds {ext['rounds']}")
+        return segment, "open"
+    if not log.finished:
+        raise ValueError(f"{segment} has not ended: continue it with --phase cycle; --rounds extends a segment the "
+                         f"frozen schedule has ended")
+    if not (reason or "").strip():
+        raise ValueError("--reason is required: rounds beyond the frozen schedule are a recorded decision")
+    return segment, "new"
+
+
+def _record_extension(activity: Activity, segment: str, seglog: "RoundLog") -> None:
+    """The cycle's record of a segment an extension continued: its end is the extension's, and its extensions are
+    listed, so the cycle reads the segment as ended (not run again) and the report sees the deviation."""
+    path = Path(activity.root) / "rsi" / "cycle.json"
+    if not path.exists():
+        return
+    state = json.loads(path.read_text(encoding="utf-8"))
+    step = state.setdefault("steps", {}).setdefault(segment, {})
+    step["stop_reason"] = seglog.state.get("stop_reason")
+    step["release"] = activity.releases.active()["release_ref"]
+    step["extensions"] = [{k: e.get(k) for k in ("rounds", "at_round", "reason", "by", "ts", "stop_reason",
+                                                 "finished")} for e in seglog.state.get("extensions") or ()]
+    write_json(path, state)
 
 
 def _default_researcher(cfg: dict, activity: Activity, *, budget=None):
@@ -1680,8 +2656,13 @@ class _Completions:
         self.name = getattr(provider, "name", "llm")
 
     def complete(self, system: str, prompt: str) -> str:
+        return self.turn(system, [{"role": "user", "content": prompt}], ()).text or ""
+
+    def turn(self, system: str, messages: list, tools=()):
+        """One chat turn with tools, as R's coding session needs it (v0.3): the provider's ChatTurn, a refusal as
+        ReplyRefused and a reply cut at the output limit as ReplyTruncated, exactly as `complete` reads them."""
         from .providers import ReplyRefused, ReplyTruncated
-        turn = self.provider.chat(system, [{"role": "user", "content": prompt}], ())
+        turn = self.provider.chat(system, list(messages), list(tools or ()))
         if turn.stop == "refusal":
             # Declined, not answered: the research step reads it as an unreadable reply (M4 §1). The call is
             # already settled on the book, so raising here changes nothing that was paid.
@@ -1695,7 +2676,7 @@ class _Completions:
                                  + (f" ({used} tokens)" if used else "")
                                  + ": raise max_tokens for the research model ([research.llm] or [llm]) and "
                                    "[pricing] max_output_tokens with it")
-        return turn.text or ""
+        return turn
 
     def label(self, step: str):
         """While a research step runs, a metered provider books its calls as `<operation>:<step>`."""
@@ -1827,6 +2808,95 @@ def _install_research(activity: Activity, plan, recorded: dict, out) -> dict | N
     return {k: v for k, v in vars(installation).items() if isinstance(v, (str, int, float, bool, type(None)))}
 
 
+def _campaign_host(activity: Activity, objects: _ct.Objects, worker_ref: str) -> dict:
+    """The host contract a research slot's releases carry (M6 §2; 2026-10-05 review): the mainline release's target
+    harness and required capabilities, copied into the slot's store, so a campaign release runs — and is recorded —
+    on the same host as the mainline. Its runs then have the mainline's execution identity, and the mainline's
+    readings of the start W can be reused as the slot's common inputs instead of being paid for again. A mainline
+    release without a host contract (a v2 activity) gives none."""
+    from .release import required_capabilities_of
+    active = _ct.SystemRelease.from_json(activity.objects.get(activity.releases.active()["release_ref"]))
+    if not active.target_harness_ref:
+        return {}
+    _ct.copy_closure(activity.objects, objects, [active.target_harness_ref])
+    return {"target_harness_ref": active.target_harness_ref,
+            "required_capabilities": required_capabilities_of(objects, active.required_capabilities, worker_ref)}
+
+
+def _mainline_readings(activity: Activity, provider, train_tasks, inner_tasks) -> tuple[list, list]:
+    """The mainline's valid readings of a research slot's start W that its common inputs reuse (M6 §2; 2026-10-05
+    review) -> (train rows, inner dev rows). Train: the start W's measurement and screen readings under the
+    measurement's execution identity (the labels aside), the latest of each task — every train task when the start
+    W is W0 (the baseline measured them all), the reruns and screens when it is an installed W. Dev: the start W's
+    readings of the inner tasks from runs without a plan (the baseline's dev run), the only ones an arm's inner gate
+    may pool: a gate's readings were made under its own plan's task list (M3 §2.1(a) conditions)."""
+    start = activity.releases.active()["release_ref"]
+    if activity.results is None:
+        return [], []
+    work = improvement(activity, template_ref=activity.rsi.task_plan_ref, provider=provider)
+
+    def runs_like(split: str, *, planless: bool) -> set:
+        expected = work.run_identity(start, plan_ref="", split=split, candidate="current", role="base")[0]
+        same = {k: v for k, v in expected.payload().items() if k not in RUN_LABELS}
+        return {h for h, run in activity.results.runs().items() if not (planless and run.eval_plan_ref)
+                and {k: v for k, v in run.payload().items() if k not in RUN_LABELS} == same}
+    rows = list(activity.results.all())
+    train: dict = {}
+    if train_tasks:
+        # a screen reading ran under its own plan: for a train measurement only the execution identity matters
+        runs, wanted = runs_like("train", planless=False), set(train_tasks)
+        for r in rows:
+            if r.run in runs and r.validity == "valid" and r.task_id in wanted \
+                    and _arm_of(r.attempt_id) in ("measure", "train_screen"):
+                train[r.task_id] = r                    # the latest valid reading of each task
+    dev = []
+    if inner_tasks:
+        runs, wanted = runs_like(_split_of_tasks(activity.splits, inner_tasks), planless=True), set(inner_tasks)
+        dev = [r for r in rows if r.run in runs and r.validity == "valid" and r.task_id in wanted
+               and _arm_of(r.attempt_id) not in SCREEN_ARMS]
+    return list(train.values()), dev
+
+
+def _attempt_means(rows) -> dict:
+    """The mean of one valid attempt in each budget dimension it can be read in — dollars, act calls (as model
+    calls), tool calls, input and output tokens — over these rows; a dimension no row measured is left out."""
+    from .evolve.execution import normalize_usage
+    valid = [r for r in rows if r.validity == "valid"]
+    if not valid:
+        return {}
+    out = {"model_calls": sum(r.steps for r in valid) / len(valid),
+           "tool_calls": sum(r.tool_calls for r in valid) / len(valid)}
+    priced = [r.cost_usd for r in valid if r.cost_usd is not None]
+    if priced:
+        out["usd"] = sum(priced) / len(priced)
+    usage = [normalize_usage(r.usage) for r in valid if r.usage]
+    if usage:
+        out["input_tokens"] = sum(u["input_tokens"] + u["cache_read_tokens"] + u["cache_write_tokens"]
+                                  for u in usage) / len(usage)
+        out["output_tokens"] = sum(u["output_tokens"] for u in usage) / len(usage)
+    return out
+
+
+def common_inputs_estimate(activity: Activity, cfg: dict, pair, limits: dict) -> dict:
+    """What a research slot's common inputs will cost at least (M6 §2; 2026-10-05 review): the start W's train tasks
+    and inner dev tasks the mainline has no reusable reading of (`_mainline_readings`), times the start W's measured
+    mean per attempt (the activity's, when the start W has none), in each dimension the root limits. The slot opens
+    only when the root covers this beside the arms' and the outer comparison's shares."""
+    train = _tasks_of(activity, pair.inner_train_groups)
+    inner = _tasks_of(activity, pair.inner_dev_groups)
+    try:
+        reused_train, reused_dev = _mainline_readings(activity, _pinned_provider(activity, cfg), train, inner)
+    except Exception:  # noqa: BLE001 - an estimate that cannot read the records assumes nothing is reused
+        reused_train, reused_dev = [], []
+    missing = (len(set(train) - {r.task_id for r in reused_train})
+               + (len(set(inner) - {r.task_id for r in reused_dev}) if _pooling_of(activity)[0] == "pooled" else 0))
+    start = activity.releases.active()["release_ref"]
+    rows = [r for r in (activity.results.all() if activity.results is not None else ())
+            if r.system_release_ref == start] or list(activity.results.all() if activity.results is not None else ())
+    means = _attempt_means(rows)
+    return {k: round(missing * float(means[k]), 6) for k in limits if k in means and missing}
+
+
 def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_budget, *, provider,
                       researcher, out=print, pricing=None, shared=None):
     """One arm's whole improvement loop, in its own workspace.
@@ -1850,7 +2920,9 @@ def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_
     rt = config_mod.build_runtime({"workspace": {"root": str(root)}, "backends": {"mock": {"type": "mock"}}}, ".")
     config_mod.register_builtin_points(rt)
     start = releases.bootstrap(pair.initial_w_ref, r_ref, core_ref,
-                               reason=f"campaign {plan.id} {pair.pair_id} arm {arm}")
+                               reason=f"campaign {plan.id} {pair.pair_id} arm {arm}",
+                               **_campaign_host(activity, objects, pair.initial_w_ref))
+    pooling, confirmations = _pooling_of(activity)
     inner = Improvement(rt=rt, suite=activity.suite, splits=activity.splits, objects=objects, releases=releases,
                         provider=provider, core_ref=core_ref, gate=_gate_of(activity, plan),
                         dev_tasks=tuple(_tasks_of(activity, pair.inner_dev_groups)),
@@ -1860,19 +2932,26 @@ def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_
                         pricing=pricing, concurrency=activity.bench.concurrency,
                         stop_view=activity.rsi.stop_view, attempt_budget=_attempt_budget(activity),
                         probe_train=True, train_tasks=tuple(_tasks_of(activity, pair.inner_train_groups)),
-                        harness=_harness_of(activity), worker=isolated_worker(_harness_of(activity)))
+                        harness=_harness_of(activity), worker=isolated_worker(_harness_of(activity)),
+                        control_pooling=pooling, confirmation_repeats=confirmations)
     # The arm's own template, frozen from what its gate reads — the inner dev families, the campaign's gate, its
-    # repeats and seed — so its experiments name the plan they are compared under, not the activity's dev plan.
+    # repeats and seed, the activity's pooling and confirmation (M6 §2, v0.3) — so its experiments name the plan
+    # they are compared under, not the activity's dev plan.
     inner.template_ref = freeze_task_plan(
         objects, core_ref=core_ref, split_ref=activity.splits.hash(), task_ids=inner.dev_tasks, gate=inner.gate,
         repeats=inner.repeats, order_seed=inner.order_seed,
-        per_attempt_budget={"max_steps": inner.attempt_budget.max_steps,
-                            "max_tool_calls": inner.attempt_budget.max_tool_calls})
+        per_attempt_budget=inner.attempt_budget.limits(), control_pooling=pooling,
+        confirmation_repeats=confirmations)
     step = researcher
     outcome = ArmOutcome(arm=arm, pair_id=pair.pair_id)
     if log.finished:
         return _arm_outcome(outcome, log.state, objects, releases, start, activity, pair, arm_budget, out)
     _seed_experience(root, _starting_experience(activity, pair))      # before a resumed experiment appends to it
+    if shared and shared.get("dev"):
+        # M6 §2 (v0.3): the start W's dev readings are a common input, copied into this arm's record as recorded, so
+        # the arm's pooled control starts as the other arm's does — the common readings plus, later, its own; the
+        # other arm's readings are never here. Rows already on record (a restarted arm) are not written twice.
+        _copy_readings(shared["dev"], shared["dev_runs"], inner.results, source=shared["results"])
     log.watch(step)
     # An experiment a crash left mid-way is finished first, from what it recorded, and counts as its round.
     resumed = resume_unfinished(root, objects, inner.handlers(), arm_budget, eval_template_ref=inner.template_ref,
@@ -1885,7 +2964,8 @@ def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_
     # Rounds that ended on infrastructure are rerun, not counted: the arms are compared at equal completed rounds.
     done = log.done()
     schedule = Schedule(worker_rounds=max(plan.worker_round_limit - done, 0), research_slots=0,
-                        patience=plan.worker_round_limit)
+                        patience=plan.worker_round_limit,
+                        candidates_per_round=int(getattr(plan, "candidates_per_round", 1) or 1))
     measured: dict = {}
     if inner.harness and shared:
         # Both arms start from the one W0 measurement (docs/modules/06_RESEARCH_CAMPAIGN.md §2): its grading and
@@ -1893,7 +2973,32 @@ def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_
         # release because that release runs the same W0. A restarted arm continues from its own measurements.
         _copy_measurement(shared["measurement"], shared["results"], shared["transcripts"], inner.results,
                           Path(rt.root) / "transcripts")
-        own = inner.last_measurement(releases.active()["release_ref"])
+        # the common release the copied rows name, so the arm reads them as a measurement of its own start (the same
+        # W and K: Improvement._runs_like) rather than paying for the failures again
+        _ct.copy_closure(shared["objects"], objects, [shared["measurement"]["release"]])
+        own = None
+        if not any(e.get("scope") == inner.scope_id for e in releases.events.of("measurement_planned")):
+            # The arm has measured nothing of its own yet: it starts from the common measurement as it was made,
+            # whose rows may name several releases of the start W (the mainline's readings it reused, 2026-10-05),
+            # plus the collection batches the arm itself ran on `start` before a pause.
+            held = {r.attempt_id for r in shared["measurement"]["train"]}
+            mine = [r for r in inner.results.all() if _arm_of(r.attempt_id) == "collect"
+                    and r.system_release_ref == start and r.attempt_id not in held]
+            common = shared["measurement"]
+            own = {**common, "release": start, "results": [*common["results"], *mine],
+                   "train": [*common["train"], *mine], "missing": [],
+                   "feedback": _feedback.build_feedback(inner.rt, objects=inner.objects, scope_id=inner.scope_id)}
+        elif (own := inner.last_measurement(releases.active()["release_ref"])) is not None \
+                and own["release"] != start and inner._runs_like(own["release"], start):
+            # The copied rows name the common release; the arm's own collection batches ran on `start` (the release
+            # its measurement stood for) and last_measurement filed them under that release, not the common one.
+            # They join the measurement here, or a restart would lose evidence paid for before the pause. A batch
+            # finished after the restart (finish_collections) skips these rows: _run_collection holds what the
+            # measurement already has.
+            held = {r.attempt_id for r in own["train"]}
+            mine = [r for r in inner.results.all() if _arm_of(r.attempt_id) == "collect"
+                    and r.system_release_ref == start and r.attempt_id not in held]
+            own = {**own, "release": start, "results": [*own["results"], *mine], "train": [*own["train"], *mine]}
         measured["last"] = own if own is not None else {**shared["measurement"], "release": start}
     research_model = (shared or {}).get("research_model", {})
 
@@ -1911,7 +3016,7 @@ def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_
                                experience_ref=experience_ref)
         bound = _P.bind_release(release_ref, profile="task", services=inner.services(),
                                 authorization="installed")
-        diagnosis, drafts = inner.round_inputs(
+        diagnosis, drafts, session = inner.round_inputs(
             index, evidence, experience, bound, root=root, research_model=research_model,
             shared_notes=shared.get("notes") if shared and index == 0 else None)
         return RoundContext(releases=releases, objects=objects, scope_id=inner.scope_id, context=context,
@@ -1920,7 +3025,7 @@ def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_
                             experience_ref=experience_ref, experience=tuple(experience), owner="worker",
                             schedule=schedule, history=frozen_signatures(experience, objects, parent=release_ref),
                             root=root,
-                            diagnosis=diagnosis, drafts=drafts, round_index=index)
+                            diagnosis=diagnosis, drafts=drafts, round_index=index, session=session)
 
     collector = None
     if inner.harness:
@@ -1928,7 +3033,10 @@ def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_
             return inner.collect_batch(measured["last"], batch=batch, root=root)
     collected = _collection_batches(root, inner.scope_id, None, any_segment=True) if inner.harness else 0
     rounds = run_worker_rounds(make_round, arm_budget, schedule=schedule, root=root, collect=collector,
-                               collected_before=collected, on_result=log.add, history=tuple(log.state["rounds"]),
+                               collected_before=collected,
+                               on_result=_rate_limit_recorder(step, _ct.Events(root), scope=inner.scope_id,
+                                                              first_round=done, on_result=log.add),
+                               history=tuple(log.state["rounds"]),
                                resume_collections=(lambda: inner.finish_collections(root, measured.get("last")))
                                if inner.harness else None)
     log.end(next((r.reason for r in reversed(rounds) if r.outcome == "stopped"), "rounds_done"))
@@ -1979,7 +3087,27 @@ class RoundLog:
         pause = pause_of(self.state["rounds"], stop_reason)
         self.state["stop_reason"] = pause or stop_reason
         self.state["finished"] = not pause
+        ext = self.open_extension()
+        if ext is not None and not pause:
+            ext.update(finished=True, stop_reason=self.state["stop_reason"])
         self._save()
+
+    # -------------------------------------------------------------- explicit extensions (M7 §1, 2026-10-06)
+    def open_extension(self) -> dict | None:
+        """The extension in progress, if the last one has not finished."""
+        exts = self.state.get("extensions") or []
+        return exts[-1] if exts and not exts[-1].get("finished") else None
+
+    def extend(self, rounds: int, reason: str, *, by: str) -> dict:
+        """Reopen an ended run for `rounds` more rounds, recorded: from which round (the completed rounds so far),
+        where its own rounds start in the log, why, by whom, and the end it reopens."""
+        record = {"rounds": int(rounds), "at_round": self.done(), "history_start": len(self.state["rounds"]),
+                  "reason": reason, "by": by, "ts": now(), "after": self.state.get("stop_reason"), "finished": False}
+        self.state.setdefault("extensions", []).append(record)
+        self.state.pop("stop_reason", None)
+        self.state["finished"] = False
+        self._save()
+        return record
 
     def _save(self) -> None:
         if self._step is not None:
@@ -2032,7 +3160,9 @@ def _campaign_common(activity: Activity, plan, pair, budget, *, provider, pricin
     rt = config_mod.build_runtime({"workspace": {"root": str(root)}, "backends": {"mock": {"type": "mock"}}}, ".")
     config_mod.register_builtin_points(rt)
     start = releases.bootstrap(pair.initial_w_ref, plan.r_control_ref, core_ref,
-                               reason=f"campaign {plan.id} {pair.pair_id} common inputs")
+                               reason=f"campaign {plan.id} {pair.pair_id} common inputs",
+                               **_campaign_host(activity, objects, pair.initial_w_ref))
+    pooling, confirmations = _pooling_of(activity)
     common = Improvement(rt=rt, suite=activity.suite, splits=activity.splits, objects=objects, releases=releases,
                          provider=provider, core_ref=core_ref, gate=_gate_of(activity, plan),
                          dev_tasks=tuple(_tasks_of(activity, pair.inner_dev_groups)),
@@ -2041,12 +3171,38 @@ def _campaign_common(activity: Activity, plan, pair, budget, *, provider, pricin
                          concurrency=activity.bench.concurrency,
                          stop_view=activity.rsi.stop_view, attempt_budget=_attempt_budget(activity),
                          train_tasks=tuple(_tasks_of(activity, pair.inner_train_groups)),
-                         harness=_harness_of(activity), worker=isolated_worker(_harness_of(activity)))
+                         harness=_harness_of(activity), worker=isolated_worker(_harness_of(activity)),
+                         control_pooling=pooling, confirmation_repeats=confirmations)
+    # 2026-10-05 review (M6 §2): the mainline's valid readings of the start W are common inputs already paid for —
+    # copied in as recorded (rows, run manifests, grading, transcripts and the releases they name), so the
+    # measurement below runs only the train tasks they do not cover (Improvement.prior_readings), and the inner
+    # dev reading only the tasks the baseline's dev run did not read. Under W0 that is nothing at all.
+    reused_train, reused_dev = _mainline_readings(activity, provider, common.train_tasks,
+                                                  common.dev_tasks if pooling == "pooled" else ())
+    if reused_train or reused_dev:
+        _ct.copy_closure(activity.objects, objects,
+                         sorted({r.system_release_ref for r in [*reused_train, *reused_dev] if r.system_release_ref}))
+        _copy_measurement({"train": [*reused_train, *reused_dev]}, activity.results,
+                          Path(activity.rt.root) / "transcripts", common.results, Path(rt.root) / "transcripts")
     measurement = common.measure(start, None)
     shared: dict = {"measurement": measurement, "results": common.results, "transcripts": Path(rt.root) / "transcripts",
-                    "research_model": research_model, "notes": None}
+                    "research_model": research_model, "notes": None, "dev": [], "dev_runs": {}, "objects": objects}
+    if pooling == "pooled" and common.dev_tasks:
+        # M6 §2 (v0.3): under a pooled control, the start W's one reading of the inner dev tasks is a common input
+        # too — taken here, charged to the common scope, and copied into both arms — so both inner gates start
+        # from the same pooled control and neither pays for a control arm the other already has. Under a fresh
+        # control (an older plan) each arm's gate reads its own control, as before. The mainline's plan-less dev
+        # readings of the start W stand for the tasks they cover (2026-10-05 review).
+        read = {r.task_id for r in reused_dev}
+        order = [(t, i) for t in common.dev_tasks if t not in read for i in range(common.repeats)]
+        fresh = common.run_arm("dev_baseline", start, order, plan_ref="",
+                               split=_split_of_tasks(activity.splits, common.dev_tasks),
+                               candidate="current", role="base", resume=True) if order else []
+        shared["dev"] = [*reused_dev, *fresh]
+        shared["dev_runs"] = {h: run for h, run in common.results.runs().items()
+                              if h in {r.run for r in shared["dev"]}}
     bound = _P.bind_release(start, profile="task", services=common.services(), authorization="installed")
-    diagnosis, _ = common.round_inputs(0, measurement, (), bound, root=root, research_model=research_model)
+    diagnosis, _, _ = common.round_inputs(0, measurement, (), bound, root=root, research_model=research_model)
     selected, _rest = dg.select_failures(diagnosis.summaries, order=diagnosis.order, last_included={},
                                          cap=diagnosis.limits.max_notes)
     prompts = {arm: _P.prompts_of(objects, r_ref).get("research.diagnose")
@@ -2059,8 +3215,10 @@ def _campaign_common(activity: Activity, plan, pair, budget, *, provider, pricin
         shared["notes"] = diagnosis.cache
     _ct.Events(activity.root).append("campaign_common", pair=pair.pair_id, release=start,
                                    measured=len(measurement["train"]), failed=len(measurement["failed"]),
+                                   reused_train=len(reused_train), reused_dev=len(reused_dev),
                                    selected=[s["task_id"] for s in selected], notes_shared=shared["notes"] is not None)
-    out(f"common     {pair.pair_id}: W0 measured on {len(measurement['train'])} train tasks, "
+    out(f"common     {pair.pair_id}: W0 measured on {len(measurement['train'])} train tasks "
+        f"({len(reused_train)} train and {len(reused_dev)} dev readings reused from the mainline), "
         f"{len(measurement['failed'])} failed; first-round notes "
         + ("written once for both arms" if shared["notes"] is not None else "written by each arm"))
     return shared
@@ -2086,12 +3244,34 @@ def _seed_experience(root, entries: list[dict]) -> None:
         _ct.durable_write(path, "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in entries).encode())
 
 
+def _copy_readings(rows: list, runs: dict, target: Results, *, source: Results | None = None) -> int:
+    """Common readings and their run manifests, copied into one arm's record as recorded (M6 §2, v0.3): the rows
+    keep their attempt ids, run hashes and release, so the arm's pool rule (Improvement.control_pool) reads them as
+    what they are — readings of the same W under the same conditions — and, with `source`, their grading rows too,
+    so the arm's dev failure-type histogram (M4 §1) has the types the common readings carry. Rows already there
+    are kept. -> the rows written."""
+    present = {r.attempt_id for r in target.all() if r.attempt_id}
+    for run in runs.values():
+        target.put_run(run)
+    written = 0
+    for r in rows:
+        if r.attempt_id and r.attempt_id not in present:
+            target.append(r)
+            written += 1
+    if source is not None:
+        target.copy_grading(source, [r.attempt_id for r in rows if r.attempt_id])
+    return written
+
+
 def _copy_measurement(measurement: dict, source: Results, transcripts: Path, target: Results,
                       target_transcripts: Path) -> None:
-    """A common measurement's grading rows and transcripts, copied into one branch's workspace as recorded."""
+    """A common measurement's TaskResult rows, run manifests, grading rows and transcripts, copied into one branch's
+    workspace as recorded: the arm's trajectory reader (M4 §1, v0.3) resolves a W0 train attempt by its row in the
+    arm's own store, and the grading is what its failure summaries read."""
     import shutil
     rows = measurement.get("train") or ()
-    target.copy_grading(source, [r.attempt_id for r in rows])
+    runs = {h: run for h, run in source.runs().items() if h in {r.run for r in rows}}
+    _copy_readings(list(rows), runs, target, source=source)
     target_transcripts.mkdir(parents=True, exist_ok=True)
     for r in rows:
         src = Path(transcripts) / f"{r.evidence}.jsonl"
@@ -2222,6 +3402,12 @@ def evaluate(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = 
     if not ref or not activity.objects.has(ref):
         raise ValueError("[rsi] final_plan_ref must name a sealed FinalizationPlan (bench.seal)")
     plan = FinalizationPlan.from_json(activity.objects.get(ref))
+    spent = sorted(t for t in plan.task_ids if task_domain(t) in activity.splits.spent()
+                   and t in {e.task_id for e in activity.splits.entries} and activity.splits.split_of(t) == "test")
+    if spent:
+        # M7 §2: a spent domain's test is never read by a new claim's final, however the plan came to name it
+        raise ValueError(f"{plan.experiment_id} names {len(spent)} test tasks of spent domains "
+                         f"{sorted(activity.splits.spent())} ({spent[:3]}): nothing is run")
     require(startup_checks(activity, cfg, phase="evaluate"), phase="evaluate")
     state_path = Path(activity.root) / "rsi" / "finalization" / f"{plan.experiment_id}.json"
     if not state_path.exists():
@@ -2232,13 +3418,31 @@ def evaluate(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = 
     done = {a["attempt_id"] for a in state["attempts"]}
     out(f"final      {plan.experiment_id} claims={list(plan.claims)} tasks={len(plan.task_ids)} "
         f"repeats={plan.repeats} status={state['status']}")
-    write_json(state_path, {**state, "status": "running"})
     rows: dict = {}
     budget = activity_budget(activity, cfg, f"final:{plan.experiment_id}")
     # The final spends the share the frozen budget set aside for it, when there is one, and nothing else.
     rsi_cfg = RsiConfig.load(cfg)
     final_share = "final" if "final" in budget_allocations(activity.objects.get(rsi_cfg.budget_ref)
                                                           if rsi_cfg.budget_ref else {}) else None
+    # M5 §2 (v0.3): before anything is paid, what the final is expected to spend at the costs on record — attempts
+    # still to run times each arm's measured cost per attempt — and whether what is left of the share holds it
+    # beside the in-flight reservations. 2026-10-05 review: when it does not, the final is refused here, before the
+    # first attempt — a final whose lanes run out of reservations half way is not cheaper, it is void (final-1).
+    estimate = final_estimate(activity, task_ids=plan.task_ids, repeats=plan.repeats,
+                              arms={c["subject"]: plan.release_refs.get(c["subject"]) or activity.release_ref
+                                    for c in plan.comparisons if not c.get("llm")},
+                              plan_ref=ref, pricing=pricing_of(cfg), concurrency=activity.bench.concurrency,
+                              fallback=estimate_settings(cfg))
+    left = budget.remaining(allocation=final_share).get("effective_remaining", {}).get("usd")
+    for line in estimate_lines(estimate, left):
+        out(line)
+    if left is not None and estimate["expected"] is not None and estimate["reservations"] is not None \
+            and estimate["expected"] + estimate["reservations"] > float(left) + 1e-9:
+        raise ValueError(f"{plan.experiment_id}: the expected spend ${estimate['expected']:.2f} and "
+                         f"{estimate['concurrency']} in-flight reservations (${estimate['reservations']:.2f}) do not "
+                         f"fit the ${float(left):.2f} left to the final; nothing was run. Lower --concurrency, or "
+                         f"seal a plan the share holds")
+    write_json(state_path, {**state, "status": "running"})
     retries = int((plan.stop_rules or {}).get("max_infrastructure_retries", 0))
     # What is already on record, from the results themselves rather than the state file: a run that died inside an
     # arm recorded its attempts one by one, before the state file heard of any of them.
@@ -2282,7 +3486,7 @@ def evaluate(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = 
         out(f"arm        {arm}: {rows[arm]['summary']['passed']}/{rows[arm]['summary']['tasks']} passed, "
             f"partial={rows[arm]['summary']['partial_credit']}")
     write_json(state_path, {**state, "status": "completed"})
-    return {"plan": ref, "claims": list(plan.claims), "arms": rows,
+    return {"plan": ref, "claims": list(plan.claims), "arms": rows, "estimate": estimate,
             "note": "final results are reported, never used to choose a version"}
 
 
@@ -2326,8 +3530,9 @@ def cycle(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pri
     cfg = _cycle_config(cfg, base, settings, out)
     activity = open_activity(cfg, base, out=out)
     # Plans named in [rsi] are checked as much as the ones frozen here: none may loosen the preset.
+    frozen_plan = activity.objects.get(activity.rsi.task_plan_ref)
     problems = _beyond_preset(settings, activity.objects.get(activity.rsi.schedule_ref),
-                              TaskEvalPlan.from_json(activity.objects.get(activity.rsi.task_plan_ref)).gate_plan)
+                              TaskEvalPlan.from_json(frozen_plan).gate_plan, frozen_plan)
     if problems:
         raise ValueError("the cycle's plans go beyond the preset: " + "; ".join(problems))
     require(startup_checks(activity, cfg, phase="improve"), phase="cycle")
@@ -2353,6 +3558,16 @@ def cycle(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pri
 
     schedule = Schedule(**activity.objects.get(activity.rsi.schedule_ref))
     stop = _stop_point(until, schedule)
+    planned_slots = int(settings["schedule"].get("research_slots", 0) or 0)
+    if schedule.research_slots < planned_slots and not state.get("research_deferred"):
+        # v0.3 step 5 (ROADMAP, staged runbook, 2026-10-05): a frozen schedule may run fewer research slots than the
+        # preset plans (_beyond_preset refuses only more). Said on the record, so the report's C4 reads "deferred to
+        # a separate workspace" rather than a slot that silently never came.
+        state["research_deferred"] = {
+            "preset": planned_slots, "schedule": schedule.research_slots,
+            "reason": f"deferred to a separate workspace: this activity's frozen schedule runs research_slots "
+                      f"{schedule.research_slots} where the preset plans {planned_slots}"}
+        save()
     if schedule.research_slots:
         from .evolve.execution import call_bound_problem
         limits = budget_limits(activity.objects.get(activity.rsi.budget_ref) if activity.rsi.budget_ref else {})
@@ -2530,15 +3745,27 @@ def _cycle_config(cfg: dict, base, settings: dict, out) -> dict:
     return {**cfg, "rsi": {**rsi_table, **refs}}
 
 
-def _beyond_preset(settings: dict, schedule: dict | None, gate: dict | None) -> list[str]:
-    """What a schedule or gate would loosen beyond [improvement] and its preset: more candidates, collection
-    batches or research slots than the reader allows, a lower min_gain or a higher max_regression_rate than the
-    preset's."""
+def _beyond_preset(settings: dict, schedule: dict | None, gate: dict | None,
+                   plan: dict | None = None) -> list[str]:
+    """What a schedule, gate or task plan would loosen beyond [improvement] and its preset: more candidates,
+    collection batches or research slots than the reader allows, a lower min_gain or a higher max_regression_rate
+    than the preset's, a looser v0.3 clause, or — `plan`, the frozen TaskEvalPlan's JSON (M3 §2.1(a)(b), v0.3) — a
+    control not pooled or fewer confirmation readings than the preset's task plan sets, which leaving the field out
+    of a [freeze.task_plan] table also does."""
     problems = []
+    if plan is not None:
+        preset_plan = settings["task_plan"]
+        if preset_plan.get("control_pooling") == "pooled" and plan.get("control_pooling") != "pooled":
+            problems.append(f"control_pooling {plan.get('control_pooling')} is looser than the preset's pooled")
+        wanted = int(preset_plan.get("confirmation_repeats") or 0)
+        if int(plan.get("confirmation_repeats") or 0) < wanted:
+            problems.append(f"confirmation_repeats {plan.get('confirmation_repeats')} is below the preset's {wanted}")
     if schedule is not None:
-        if int(schedule.get("candidates_per_round", 1)) != settings["candidates_per_round"]:
-            problems.append(f"candidates_per_round {schedule.get('candidates_per_round')}: this version runs "
-                            f"{settings['candidates_per_round']}")
+        # v0.3 step 3 (M4 §2): k is a ceiling — a frozen schedule may run fewer candidates a round than
+        # [improvement] allows, never more.
+        if int(schedule.get("candidates_per_round", 1)) > settings["candidates_per_round"]:
+            problems.append(f"candidates_per_round {schedule.get('candidates_per_round')} is above "
+                            f"max_candidates_per_round {settings['candidates_per_round']}")
         if int(schedule.get("collection_batches", 0)) > settings["collection_batches"]:
             problems.append(f"collection_batches {schedule.get('collection_batches')} is above "
                             f"max_collection_batches {settings['collection_batches']}")
@@ -2554,6 +3781,15 @@ def _beyond_preset(settings: dict, schedule: dict | None, gate: dict | None) -> 
         if float(gate.get("max_regression_rate", preset["max_regression_rate"])) > float(preset["max_regression_rate"]):
             problems.append(f"max_regression_rate {gate.get('max_regression_rate')} is above the preset's "
                             f"{preset['max_regression_rate']}")
+        # v0.3 (M3 §2.1): the gate's new clauses tighten only — a larger drop before a task counts as regressed, a
+        # larger cost allowance or a smaller least task count would each let more through than the preset does.
+        for key, looser in (("regression_drop", lambda v, p: v > p), ("cost_beta0", lambda v, p: v > p),
+                            ("cost_beta1", lambda v, p: v > p), ("min_tasks", lambda v, p: v < p)):
+            if preset.get(key) is None:
+                continue
+            value = gate.get(key)
+            if value is None or looser(float(value), float(preset[key])):
+                problems.append(f"{key} {value} is looser than the preset's {preset[key]}")
     return problems
 
 
@@ -2562,28 +3798,65 @@ def _cycle_slot(cfg, base, activity: Activity, settings: dict, slot: str, state:
     """One planned research slot, recorded step by step: the frozen campaign plan before any arm runs, then the
     receipt. A restart resumes the same plan (its arms resume too), and a slot with a receipt is not run again."""
     step = state["steps"].setdefault(slot, {})
-    if step.get("receipt") or step.get("outcome") in ("no_proposal", "invalid", "rejected", "failed"):
+    if step.get("receipt") or step.get("outcome") in ("no_proposal", "invalid", "rejected", "failed",
+                                                      "no_slot_pool", "no_headroom"):
         out(f"cycle      research {slot} already on record ({step.get('verdict') or step.get('outcome')})")
         return "done"
     if step.get("outcome") in ("paused", "budget_exhausted"):
         # how an earlier run of the slot stopped, not its result: it continues from what it recorded
         step.pop("outcome")
         step.pop("reason", None)
+    campaign = settings["campaign"]
+    if not step.get("campaign"):
+        pairs = cycle_pairs(activity, cfg)
+        template = TaskEvalPlan.from_json(activity.objects.get(activity.rsi.task_plan_ref))
+        # docs/modules/06_RESEARCH_CAMPAIGN.md §2 (v0.3), in this order, before R is asked, before any share is
+        # held and before the budget is even looked at: the slot's pools (each half of dev no smaller than the
+        # gate's min_tasks), then the headroom, then the budget. Each is the slot's own outcome, not a budget end
+        # and not an invalid round; the next worker segment runs as scheduled and the report's C4 says why.
+        halves = {"inner": _tasks_of(activity, pairs[0].inner_dev_groups),
+                  "outer": _tasks_of(activity, pairs[0].outer_groups)}
+        least = template.gate().min_tasks
+        short = {half: len(tasks) for half, tasks in halves.items() if least is not None and len(tasks) < least}
+        if short:
+            # the inequality that failed, per half; the dev-wide one only when it holds too
+            failed = ", ".join(f"the {half} half has {n} task{'s' if n != 1 else ''}, fewer than min_tasks {least}"
+                               for half, n in short.items())
+            whole = f"; dev {len(template.task_ids)} < 2 × {least}" if len(template.task_ids) < 2 * least else ""
+            step.update(outcome="no_slot_pool",
+                        reason=f"the research slot needs two gates of at least min_tasks {least} tasks: {failed}{whole}")
+            save()
+            out(f"cycle      research {slot}: no_slot_pool ({step['reason']}); the next worker segment runs")
+            return "done"
+        unsolved = never_passed(activity, cfg, halves["inner"])
+        headroom = len(unsolved)
+        step["headroom"] = headroom
+        if len(activity.bench.domains) > 1:
+            # v0.3 step 5 (M7 §4, IT6-36): the same count per domain, and how the halves split across domains;
+            # counts only, never the task ids
+            never = per_domain_counts(unsolved)
+            step["headroom_by_domain"] = {d: never.get(d, 0) for d in per_domain_counts(halves["inner"])}
+            step["halves_by_domain"] = {half: per_domain_counts(tasks) for half, tasks in halves.items()}
+        least_headroom = int(campaign.get("min_headroom_tasks") or 0)
+        if least_headroom and headroom < least_headroom:
+            step.update(outcome="no_headroom",
+                        reason=f"the start W never passed {headroom} of the {len(halves['inner'])} inner dev tasks "
+                               f"in its pooled readings, fewer than min_headroom_tasks {least_headroom}")
+            save()
+            out(f"cycle      research {slot}: no_headroom ({step['reason']}); the next worker segment runs")
+            return "done"
     budget = activity_budget(activity, cfg, slot)
     if not budget.affordable({}):
         step["outcome"] = "budget_exhausted"
         save()
         return "budget_exhausted"
     if not step.get("campaign"):
-        pairs = cycle_pairs(activity, cfg)
-        campaign = settings["campaign"]
-        template = TaskEvalPlan.from_json(activity.objects.get(activity.rsi.task_plan_ref))
         inner_groups = len(pairs[0].inner_dev_groups)
-        # The arms' inner gate is the mainline gate on fewer families; the research verdict is over independence
-        # groups, and the preset's pair rule makes one, so its min_groups comes from the preset (exploratory).
-        gate = GatePlan(min_gain=float(template.gate().min_gain),
-                        min_groups=max(1, min(template.gate().min_groups, inner_groups)),
-                        max_regression_rate=template.gate().max_regression_rate)
+        # The arms' inner gate is the mainline gate on fewer families — its every clause (min_gain, the regression
+        # rule, the cost term, min_tasks: M6 §2, v0.3) — while the research verdict is over independence groups,
+        # and the preset's pair rule makes one, so its min_groups comes from the preset (exploratory).
+        gate = GatePlan(**{**{k: v for k, v in template.gate().to_json().items() if k != "ref"},
+                           "min_groups": max(1, min(template.gate().min_groups, inner_groups))})
         research_gate = GatePlan(min_gain=float(campaign["min_gain"]), min_groups=int(campaign["min_groups"]))
         limits = budget_limits(activity.objects.get(activity.rsi.budget_ref) if activity.rsi.budget_ref else {})
         arm_budget = {k: round(float(v) * float(campaign["arm_share"]), 6) for k, v in limits.items()}
@@ -2595,18 +3868,30 @@ def _cycle_slot(cfg, base, activity: Activity, settings: dict, slot: str, state:
         if researcher is None:
             for k, v in pricing_of(cfg).bound().items():
                 need[k] = round(float(need.get(k, 0)) + float(v), 6)
+        # 2026-10-05 review (M6 §2): the common inputs too — the start W's train tasks and inner dev tasks the
+        # mainline has no reusable reading of, at the start W's measured mean per attempt — or the slot could open,
+        # pay them, and then be unable to set aside both arms (an inconclusive comparison paid for)
+        common = common_inputs_estimate(activity, cfg, pairs[0], limits)
+        for k, v in common.items():
+            need[k] = round(float(need.get(k, 0)) + float(v), 6)
         if not budget.affordable(need):
             step.update(outcome="budget_exhausted",
                         reason=f"the root cannot cover the outer comparison's share {outer_budget} and both "
-                               f"arms' shares {arm_budget}" + (" and R's call" if researcher is None else ""))
+                               f"arms' shares {arm_budget}" + (" and R's call" if researcher is None else "")
+                               + (f" and the common inputs' estimate {common}" if common else ""))
             save()
             return "budget_exhausted"
+        step["common_estimate"] = common
         discovery = "automatic" if researcher is None else "scripted"
         researcher = researcher or _default_researcher(cfg, activity, budget=budget)
+        # k for the arms is the mainline's frozen schedule's (M4 §2): the same k in every round of the activity
+        frozen_schedule = activity.objects.get(activity.rsi.schedule_ref) if activity.rsi.schedule_ref else {}
         planned = research_slot(cfg, base, pairs=pairs, researcher=researcher, out=out,
                                 worker_rounds=int(campaign["worker_round_limit"]), gate=gate,
                                 research_gate=research_gate, arm_budget=arm_budget, discovery=discovery,
-                                outer_budget=outer_budget, budget=budget, run=False)
+                                outer_budget=outer_budget, budget=budget, run=False,
+                                candidates_per_round=int(frozen_schedule.get("candidates_per_round")
+                                                         or settings["candidates_per_round"]))
         if planned["outcome"] in ("repair_runtime", "infrastructure_failed"):
             step.update(outcome="paused", reason="; ".join(planned.get("reasons") or ()))
             save()
@@ -2643,6 +3928,51 @@ def _cycle_slot(cfg, base, activity: Activity, settings: dict, slot: str, state:
     return "done"
 
 
+def slot_headroom(activity: Activity, cfg: dict, inner_tasks) -> int:
+    """How many of the inner dev tasks the start W never passed in its pooled readings (M6 §2 余量检查, v0.3): what a
+    research slot's candidates could still fix. Read from the activity's results through the same pool rule as a
+    gate's control (Improvement.control_pool), so the number is the one the arms' inner gates would start from; a
+    task with no reading at all counts as never passed — no evidence is not evidence of a pass. The W is the
+    active release's."""
+    return len(never_passed(activity, cfg, inner_tasks))
+
+
+def never_passed(activity: Activity, cfg: dict, inner_tasks) -> list[str]:
+    """The inner dev tasks the start W never passed in its pooled readings, in the order given (slot_headroom's
+    count; per domain in the slot's record and the report, v0.3 step 5)."""
+    parent = activity.releases.active()["release_ref"]
+    work = improvement(activity, template_ref=activity.rsi.task_plan_ref, provider=_pinned_provider(activity, cfg))
+    inner = list(inner_tasks)
+    if not inner:
+        return []
+    template = work.plan("", "", parent)
+    if not template.pooled:
+        # a template that takes fresh controls still has readings of the start W (the baseline's dev run, the
+        # gates' control arms): the same pool rule reads them, for the headroom only
+        template = TaskEvalPlan.from_json({**{k: v for k, v in template.to_json().items() if k != "ref"},
+                                           "control_pooling": "pooled"})
+    rows = work.control_pool(parent, plan=template, tasks=inner)
+    passed = {r.task_id for r in rows if r.success}
+    return [t for t in inner if t not in passed]
+
+
+def per_domain_counts(task_ids) -> dict[str, int]:
+    """Tasks counted by their domain, in first-seen order: how a per-domain number is recorded without task ids."""
+    out: dict[str, int] = {}
+    for t in task_ids:
+        out[task_domain(t)] = out.get(task_domain(t), 0) + 1
+    return out
+
+
+def _pinned_provider(activity: Activity, cfg: dict):
+    """The configured model's provider, for an Improvement that only reads records: the release pins its own actor
+    and a read never calls it, so a provider that cannot be built is no provider rather than a refusal."""
+    try:
+        return config_mod.build_provider(cfg["llm"]) if "llm" in cfg else None
+    except Exception:  # noqa: BLE001 - nothing here is paid for; the startup checks name a model that cannot run
+        return None
+
+
 def cycle_pairs(activity: Activity, cfg: dict) -> list:
     """The research slot's one pair, fixed from frozen objects (the preset's campaign rule): the current W as the
     common start, the train families as the inner training pool, and the development plan's families halved by
@@ -2655,19 +3985,42 @@ def cycle_pairs(activity: Activity, cfg: dict) -> list:
     if len(dev_families) < 2:
         raise ValueError("a research slot needs at least two development families: one for the arms' inner gate "
                          "and one for the outer comparison")
-    half = len(dev_families) // 2
+    inner, outer = halve_dev(dev_families, {f: task_domain(t) for t, f in family.items()})
     train_families = list(dict.fromkeys(family[t] for t in activity.splits.ids("train")))
     active = _ct.SystemRelease.from_json(activity.objects.get(activity.releases.active()["release_ref"]))
     # E0, both arms' starting experience: the mainline log as it stands, each experiment's raw gate reasons left
     # out because they can name development tasks — the second half of which is now the outer pool. The aggregate
     # figures stay (docs/modules/06_RESEARCH_CAMPAIGN.md §3).
-    entries = [{k: v for k, v in e.items() if k != "reasons"} if e.get("kind") == "experiment" else e
-               for e in _experience.read(activity.root)]
+    entries = [{k: v for k, v in e.items() if k != "reasons"} if e.get("kind") == "experiment"
+               # v0.3 step 3 (M6 §2): a ledger row's per-task gate lists name dev tasks; the arms read counts
+               else _experience.strip_dev_task_ids(e) for e in _experience.read(activity.root)]
     return [CampaignPair(pair_id="pair-1", independence_group="group-1", initial_w_ref=active.worker_ref,
                          initial_experience_ref=activity.objects.put_json("change", {"experience": entries}),
-                         inner_train_groups=tuple(train_families), inner_dev_groups=tuple(dev_families[:half]),
-                         outer_groups=tuple(dev_families[half:]), split_ref=activity.splits.hash(), repeats=1,
+                         inner_train_groups=tuple(train_families), inner_dev_groups=tuple(inner),
+                         outer_groups=tuple(outer), split_ref=activity.splits.hash(), repeats=1,
                          seed_schedule=(0,))]
+
+
+def halve_dev(dev_families: list, domain_of: dict) -> tuple[list, list]:
+    """The research slot's two halves of the frozen dev families (M6 §2): the first half the arms' inner gate, the
+    second the outer comparison. One domain: the frozen order cut at len // 2, as v0.1/v0.2 cut it. Several domains
+    (v0.3 step 5): each domain's dev families cut in their frozen order — its first part to the inner half, the rest
+    to the outer — so both halves span every domain rather than the first domains landing wholly inside and the last
+    wholly outside; a domain with an odd count gives its extra family to the outer half on even positions in the
+    list and to the inner half on odd ones, so the halves stay within a family of each other. Each half keeps the
+    pooled order."""
+    by_domain: dict[str, list] = {}
+    for f in dev_families:
+        by_domain.setdefault(domain_of.get(f, ""), []).append(f)
+    if len(by_domain) < 2:
+        half = len(dev_families) // 2
+        return list(dev_families[:half]), list(dev_families[half:])
+    inner, outer = [], []
+    for i, fams in enumerate(by_domain.values()):
+        cut = len(fams) // 2 if i % 2 == 0 else (len(fams) + 1) // 2
+        inner += fams[:cut]
+        outer += fams[cut:]
+    return inner, outer
 
 
 def _reuse_fact(activity: Activity, r1: str, r0: str | None, segment: str) -> dict:
@@ -2702,7 +4055,7 @@ def research_slot(cfg: dict, base: str | Path = ".", *, pairs, researcher, arm_r
                   out: Callable[[str], None] = print, worker_rounds: int = 1, gate: GatePlan | None = None,
                   arm_budget: dict | None = None, phase: str = "research_dev",
                   discovery: str = "scripted", run: bool = True, research_gate: GatePlan | None = None,
-                  outer_budget: dict | None = None, budget=None) -> dict:
+                  outer_budget: dict | None = None, budget=None, candidates_per_round: int = 1) -> dict:
     """One research slot: the current R proposes a change to R, the change is compared, and the winner is installed.
 
     The proposal goes through the same admission and the same build as a worker candidate — only the owner and
@@ -2770,7 +4123,7 @@ def research_slot(cfg: dict, base: str | Path = ".", *, pairs, researcher, arm_r
                         campaign_pairs=tuple(activity.objects.put(p) for p in pairs),
                         arm_budget=dict(arm_budget or {"model_calls": 2000, "tool_calls": 2000}),
                         outer_budget=dict(outer_budget) if outer_budget else None,
-                        worker_round_limit=worker_rounds,
+                        worker_round_limit=worker_rounds, candidates_per_round=int(candidates_per_round or 1),
                         worker_gate_plan_ref=activity.objects.put(gate or GatePlan(min_groups=1, min_gain=0.01,
                                                                                   bootstrap_replicates=200)),
                         research_gate_plan=(research_gate or gate or GatePlan(min_groups=1, min_gain=0.05,
@@ -2816,13 +4169,15 @@ def startup_checks(activity: Activity, cfg: dict, *, phase: str, needs_model: bo
     rsi_cfg = RsiConfig.load(cfg)
     if activity.drift:
         problems.append(f"upstream drifted from the frozen manifest: {activity.drift[:3]}")
-    checks = ab.contract_check(activity.suite, list(activity.splits.ids("dev"))[:1])
+    several = len(activity.bench.domains) > 1
+    checks = ab.contract_check(activity.suite, _one_dev_task_per_domain(activity.splits) if several
+                               else list(activity.splits.ids("dev"))[:1])
     problems += [f"scorer contract: {line}" for line in checks["failed"]]
+    problems += domain_problems(activity)
     if needs_model and "llm" not in cfg:
         problems.append(f"the {phase} phase needs an [llm] table: it runs real attempts")
-    budget = activity.bench.budget
-    if not (budget.max_steps and budget.max_tool_calls and budget.max_seconds):
-        problems.append("[bench.budget] needs a step, tool-call and time limit per attempt")
+    plan = _frozen_plan(activity, rsi_cfg.task_plan_ref)
+    problems += limit_problems(_attempt_budget(activity, plan), _five_limits(activity, plan))
     if not isinstance(activity.bench.concurrency, int) or isinstance(activity.bench.concurrency, bool) \
             or activity.bench.concurrency < 1:
         problems.append(f"[bench] concurrency must be a whole number of attempts, at least 1, not "
@@ -2902,7 +4257,58 @@ def startup_checks(activity: Activity, cfg: dict, *, phase: str, needs_model: bo
         problems.append("[harness_evolution] is set, and the active release was bootstrapped without it: a "
                         "first-version activity starts in a fresh workspace (or scope) so W0, R0 and K are "
                         "bootstrapped with it; it is not applied to an existing v2 activity")
+    problems += effort_problems(activity, core)
     return problems
+
+
+def domain_problems(activity: Activity) -> list[str]:
+    """The listed domains against what the activity froze (M7 §2, v0.3 step 5): each domain's split on disk is the one
+    the pooled split recorded by hash, the core pins the activity's split, and every domain's split hash is on
+    record. Loading itself was checked when the activity opened (load_domains refuses a domain upstream cannot
+    load). A one-domain activity is its own domain's split, as in v0.1/v0.2, and has nothing more to check here."""
+    problems = []
+    if len(activity.bench.domains) < 2:
+        return problems
+    recorded = {d["domain"]: d.get("hash") for d in activity.splits.domains()}
+    if list(recorded) != list(activity.bench.domains):
+        problems.append(f"the activity's split covers {list(recorded)}, and [bench] lists {list(activity.bench.domains)}")
+    for domain in activity.bench.domains:
+        path = Results(activity.root, domain).manifest_path()
+        if not path.exists():
+            problems.append(f"{domain}: no frozen split at {path}")
+            continue
+        own = SplitManifest.load(path).hash()
+        if own != recorded.get(domain):
+            problems.append(f"{domain}: the split frozen at {path} is {own}, and the pooled split recorded "
+                            f"{recorded.get(domain)}")
+    try:
+        core = activity.objects.load(_ct.SystemRelease.from_json(activity.objects.get(activity.release_ref)).core_ref,
+                                     _ct.CoreManifest)
+    except Exception:  # noqa: BLE001 - a release that does not assemble is reported by the caller
+        return problems
+    if core.split_ref and core.split_ref != activity.splits.hash():
+        problems.append(f"the core pins split {core.split_ref} and the activity's split is {activity.splits.hash()}: "
+                        f"the domain list or a domain's split changed after the activity began")
+    return problems
+
+
+def effort_problems(activity: Activity, core: _ct.CoreManifest) -> list[str]:
+    """The pinned actor's default effort against K's `max_effort` (docs/modules/00_CONTRACTS.md §2, v0.3): the gateway
+    caps every call at `max_effort` and never refuses, so a pinned default above it would run at the cap on every
+    call and the inference configuration W0 records would be one no call was made at. Found before anything is
+    paid; a K without the v0.3 harness capabilities fixes no ceiling and is not checked."""
+    harness = (core.capabilities or {}).get("harness")
+    pinned = _pinned_actor(activity)
+    if not isinstance(harness, dict) or pinned is None:
+        return []
+    ceiling = harness.get("max_effort")
+    if ceiling is None:
+        return []          # a K frozen before v0.3: its workspace runs the v1 loop, and no gateway caps anything
+    effort = (activity.objects.get(pinned.inference_ref) or {}).get("effort")
+    if effort in EFFORTS and ceiling in EFFORTS and EFFORTS.index(effort) > EFFORTS.index(ceiling):
+        return [f"the actor the active release pins has effort {effort!r}, above K's max_effort {ceiling!r}: the "
+                f"gateway caps every call at max_effort, so the pinned default would never run as configured"]
+    return []
 
 
 def _called_models(activity: Activity, cfg: dict) -> list[tuple[str, dict]]:
@@ -2925,11 +4331,24 @@ def config_harness_problems(cfg: dict) -> list[str]:
     if settings is None:
         return []
     limits = hp.Limits.from_json(settings["package"])
-    if limits.allows_code and isolated_worker(settings) is None:
+    worker = isolated_worker(settings)
+    if limits.allows_code and worker is None:
         return [f"[harness_evolution] allows code components "
                 f"{[k for k in limits.components if k in hp.CODE_KINDS]} and no qualified isolated worker is "
                 f"available"]
-    return []
+    return worker_problems(worker) if limits.allows_code else []
+
+
+def worker_problems(worker) -> list[str]:
+    """The qualified worker's runner against this host's (docs/modules/01_POLICY_RUNTIME.md §1 默认 agent 即种子包):
+    an image built from another worker_runner.py would fail a run in ways that look like the package's, so a
+    startup check names it, with the command that rebuilds the image, before anything is paid. One session is
+    started for the check; a worker that cannot start or answer is named the same way."""
+    if worker is None:
+        return []
+    problem = worker.runner_problem()
+    return [f"the isolated worker {worker.describe().get('image') or worker.describe().get('kind')} cannot serve "
+            f"this host: {problem}"] if problem else []
 
 
 def isolated_worker(settings: dict | None):
@@ -2953,7 +4372,8 @@ def isolated_worker(settings: dict | None):
 def harness_checks(activity: Activity, bound) -> list[str]:
     """What a first-version activity must satisfy before it pays for anything (docs/modules/00_CONTRACTS.md §3,
     BR6-17): the current package's component kinds are within K, and a worker is there whenever K allows code or
-    the current package runs code. The fallback to a text-only preset holds only for a package without code."""
+    the current package runs code — one whose image runs this host's worker_runner.py (worker_problems). The
+    fallback to a text-only preset holds only for a package without code."""
     from .agent import harness_package as hp
     core = activity.objects.load(_ct.SystemRelease.from_json(activity.objects.get(activity.release_ref)).core_ref,
                                  _ct.CoreManifest)
@@ -2976,12 +4396,15 @@ def harness_checks(activity: Activity, bound) -> list[str]:
                         f"provide the worker")
     if bound.package.runs_code and worker is None:
         problems.append("the active package runs code and no qualified isolated worker is available")
+    if limits.allows_code or bound.package.runs_code:
+        problems += worker_problems(worker)        # the image's runner is this host's, or the operator rebuilds it
     return problems
 
 
 # ---------------------------------------------------------------------------- freezing plans
 FREEZE_TABLES = {"task_plan", "schedule", "budget", "final"}
-TASK_PLAN_KEYS = {"tasks", "repeats", "order_seed", "screen", "installs", "per_attempt_budget", "gate"}
+TASK_PLAN_KEYS = {"tasks", "repeats", "order_seed", "screen", "installs", "per_attempt_budget", "gate",
+                  "control_pooling", "confirmation_repeats"}
 FINAL_KEYS = {"experiment_id", "claims", "comparisons", "release_refs", "tasks", "repeats", "statistical_plan",
               "stop_rules", "research_campaign_plan_ref"}
 
@@ -2989,8 +4412,11 @@ FINAL_KEYS = {"experiment_id", "claims", "comparisons", "release_refs", "tasks",
 def _task_ids(activity: Activity, spec, what: str) -> tuple:
     """A split name ("dev", "test") resolved against the frozen manifest, or an explicit list checked against it.
     The plan stores the ids themselves, so a later change to the manifest cannot change what a plan ran."""
+    # v0.3 step 5 (M7 §2, M3 §2.2): a final never reads a spent domain's test — "test" resolves to the claim's
+    # tasks (the new domains' test), and a list naming a spent domain's task is refused
+    spent = activity.splits.spent() if what == "final" else set()
     if isinstance(spec, str):
-        ids = tuple(activity.splits.ids(spec))
+        ids = tuple(activity.splits.claim_ids(spec) if spent else activity.splits.ids(spec))
         if not ids:
             raise ValueError(f"[freeze.{what}] tasks = {spec!r}: the frozen manifest has no such tasks")
         return ids
@@ -2998,7 +4424,34 @@ def _task_ids(activity: Activity, spec, what: str) -> tuple:
     missing = sorted(set(spec) - known)
     if missing:
         raise ValueError(f"[freeze.{what}] names tasks the frozen manifest does not have: {missing[:5]}")
+    stale = sorted(t for t in spec if task_domain(t) in spent and activity.splits.split_of(t) == "test")
+    if stale:
+        raise ValueError(f"[freeze.{what}] names test tasks of spent domains {sorted(spent)}: {stale[:5]}; their test "
+                         f"was read before and supports no new claim (M7 §2)")
     return tuple(spec)
+
+
+def _final_estimate_at_freeze(activity: Activity, table: dict | None, cfg: dict) -> dict:
+    """final_estimate for the final plan a freeze knows of: the [freeze.final] table being frozen, else the plan
+    [rsi] names. With neither, no arm is known yet: the spend is unknown and only the reservations are given."""
+    if table:
+        task_ids = _task_ids(activity, table.get("tasks", "test"), "final")
+        repeats = int(table.get("repeats", 1))
+        refs = dict(table.get("release_refs") or {})
+        arms = {c["subject"]: refs.get(c["subject"]) or activity.release_ref
+                for c in table.get("comparisons") or () if not c.get("llm")}
+        plan_ref = None
+    elif activity.rsi.final_plan_ref and activity.objects.has(activity.rsi.final_plan_ref):
+        plan = FinalizationPlan.from_json(activity.objects.get(activity.rsi.final_plan_ref))
+        task_ids, repeats, plan_ref = plan.task_ids, plan.repeats, activity.rsi.final_plan_ref
+        arms = {c["subject"]: plan.release_refs.get(c["subject"]) or activity.release_ref
+                for c in plan.comparisons if not c.get("llm")}
+    else:
+        return final_estimate(activity, task_ids=(), repeats=0, arms={}, pricing=pricing_of(cfg),
+                              concurrency=activity.bench.concurrency) | {"expected": None, "suggested_share": None}
+    return final_estimate(activity, task_ids=task_ids, repeats=repeats, arms=arms, plan_ref=plan_ref,
+                          pricing=pricing_of(cfg), concurrency=activity.bench.concurrency,
+                          fallback=estimate_settings(cfg))
 
 
 def _only(table: dict, allowed: set, what: str) -> dict:
@@ -3035,7 +4488,7 @@ def freeze(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pr
     problems = config_harness_problems(cfg)
     if problems:
         raise ValueError("freeze refused: " + "; ".join(problems))
-    activity = open_activity(cfg, base, out=out)
+    activity = open_activity(cfg, base, out=out, strata=True)
     bound = _P.bind_release(activity.release_ref, profile="preflight", services=_P.Services(activity.objects))
     problems = harness_checks(activity, bound)
     if problems:
@@ -3045,6 +4498,17 @@ def freeze(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pr
     if "task_plan" in tables:
         t = _only(tables["task_plan"], TASK_PLAN_KEYS, "task_plan")
         gate = GatePlan(**dict(t.get("gate") or {}))
+        # A new plan carries all five hard limits, and one missing is refused here, not frozen short (M0 §2, v0.3
+        # "缺一项拒绝冻结"): an old plan without the two dimensions keeps its identity and is read as frozen, but
+        # nothing new is frozen without them. An unknown limit name is refused by name, before Budget sees it.
+        overrides = dict(t.get("per_attempt_budget") or {})
+        unknown = sorted(set(overrides) - set(Budget.__dataclass_fields__))
+        if unknown:
+            raise ValueError(f"freeze refused: [freeze.task_plan] per_attempt_budget does not take {unknown}; it "
+                             f"takes {sorted(Budget.__dataclass_fields__)}")
+        problems = limit_problems(Budget(**{**asdict(activity.bench.budget), **overrides}))
+        if problems:
+            raise ValueError("freeze refused: " + "; ".join(problems))
         refs["task_plan_ref"] = freeze_task_plan(
             activity.objects, core_ref=core_ref, split_ref=activity.splits.hash(),
             task_ids=_task_ids(activity, t.get("tasks", "dev"), "task_plan"), gate=gate,
@@ -3053,7 +4517,11 @@ def freeze(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pr
             # Every per-attempt limit is part of the plan: one not written here would be read from [bench.budget]
             # at run time, and a change to it would finish an open comparison under other limits (M5 §3).
             per_attempt_budget={**{k: v for k, v in asdict(activity.bench.budget).items() if v is not None},
-                                **dict(t.get("per_attempt_budget") or {})})
+                                **dict(t.get("per_attempt_budget") or {})},
+            # v0.3 (M3 §2.1(a)(b)): left out of the table, both stay None — a fresh control, no confirmation — and
+            # the plan's ref is the one the same table froze before these fields existed.
+            control_pooling=t.get("control_pooling"),
+            confirmation_repeats=None if t.get("confirmation_repeats") is None else int(t["confirmation_repeats"]))
     if "schedule" in tables:
         schedule = Schedule(**dict(tables["schedule"]))       # an unknown key is a TypeError here, on purpose
         refs["schedule_ref"] = activity.objects.put_json("schedule", asdict(schedule))
@@ -3068,6 +4536,18 @@ def freeze(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pr
         problems = budget_problems(frozen, pricing_of(cfg))
         if problems:
             raise ValueError("freeze refused: " + "; ".join(problems))
+        # M5 §2 (v0.3): the final share holds the configured concurrency's reservations, or nothing is frozen; the
+        # refusal says what the final is expected to spend at the costs on record and what share would do
+        problem = final_share_problem(frozen, pricing_of(cfg), activity.bench.concurrency)
+        if problem:
+            estimate = _final_estimate_at_freeze(activity, tables.get("final"), cfg)
+            for line in estimate_lines(estimate):
+                out(line)
+            suggestion = (f"suggested final share at least ${estimate['suggested_share']:.2f} (expected spend plus "
+                          f"the reservations)" if estimate.get("suggested_share") is not None else
+                          f"suggested final share: the final's expected spend (unknown until its releases have "
+                          f"costed readings) plus {activity.bench.concurrency} x one call's bound")
+            raise ValueError(f"freeze refused: {problem}; {suggestion}")
         refs["budget_ref"] = activity.objects.put_json("budget", frozen)
     if "final" in tables:
         t = _only(tables["final"], FINAL_KEYS, "final")
@@ -3081,6 +4561,17 @@ def freeze(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pr
             research_campaign_plan_ref=t.get("research_campaign_plan_ref"))
         if not plan.experiment_id:
             raise ValueError("[freeze.final] needs an experiment_id: it is what a resumed run finds its state by")
+        # 2026-10-05 review (M5 §2): before it is sealed, the plan's expected spend against the final share — the
+        # budget frozen in this call, else the one [rsi] names. A plan already sealed is not checked again.
+        state_path = Path(activity.root) / "rsi" / "finalization" / f"{plan.experiment_id}.json"
+        sealed = state_path.exists() and json.loads(state_path.read_text(encoding="utf-8")).get("plan") == plan.ref()
+        if not sealed:
+            budget_object = activity.objects.get(refs["budget_ref"]) if refs.get("budget_ref") else \
+                (activity.objects.get(activity.rsi.budget_ref) if activity.rsi.budget_ref and
+                 activity.objects.has(activity.rsi.budget_ref) else {})
+            problem = final_plan_problem(activity, cfg, plan, budget_object, out)
+            if problem:
+                raise ValueError(f"freeze refused: {problem}; the plan was not sealed")
         refs["final_plan_ref"] = seal(plan, activity.root, activity.objects)["plan"]
     out("frozen     name these under [rsi]:")
     out("[rsi]")

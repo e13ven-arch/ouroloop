@@ -509,7 +509,7 @@ def test_it6_16_a_candidate_arm_that_sent_r0s_prompt_makes_the_comparison_invali
     # the manifest said R1, the propose request carried R0's text: nothing about R1 was compared
     lying = run(({"step": "propose", "system": r0_propose},), "a")
     assert lying.verdict == "invalid"
-    assert "no propose/revise request carried R1's research.propose" in lying.reasons[0]
+    assert "no propose/revise/session request carried R1's research.propose" in lying.reasons[0]
     # the request carried R1's text: the comparison stands on its outer results
     honest = run(({"step": "note", "system": prompts["candidate"]["research.diagnose"] + "\n\nNOTE"},
                   {"step": "propose", "system": r1_propose}), "b")
@@ -562,3 +562,79 @@ def test_rc07_and_rc08_a_branch_w_never_updates_the_mainline(fake_upstream, tmp_
     arms = [e for e in ct.Events(activity.root).of("campaign_arm")]
     branch_w = {e["w_star"] for e in arms} - {w0}
     assert branch_w and branch_w.isdisjoint({after.worker_ref})
+
+
+# ---------------------------------------------------------------------------- v0.3 (M6 §2–§3): the ledger and the round limit
+def test_the_verdict_never_reads_the_ledger(tmp_path):
+    """RC6-14 / M6 §3 (v0.3): a pair whose E0 carries ledger rows — one arm with two installed candidates on
+    record, the other with none — is judged on the outer paired difference alone: the receipt's metrics carry no
+    ledger figure and a zero outer difference is not accepted because the ledger favours an arm."""
+    from ouroloop.evolve import experience as xp
+    objects = ct.Objects(tmp_path)
+    rows = [xp.ledger_row("gated", "c1", verdict="accepted", installed=True, fixed=2, regressed=0, still_failing=0),
+            xp.ledger_row("gated", "c2", verdict="accepted", installed=True, fixed=1, regressed=0, still_failing=0)]
+    p = CampaignPair(pair_id="pair-1", independence_group="group-1", initial_w_ref=W["w0"],
+                     initial_experience_ref=objects.put_json("change", {"experience": rows}),
+                     inner_train_groups=("f_train",), inner_dev_groups=("f_dev",), outer_groups=("f_outer",),
+                     split_ref="split-1", repeats=1, seed_schedule=(0,))
+    campaign = plan(objects, [p])
+    outer = {"pair-1": {"candidate": results({"t1": True, "t2": False}), "control": results({"t1": True, "t2": False})}}
+    arms = {"control": [outcome("control", w_star=W["w_control"])],
+            "candidate": [outcome("candidate", w_star=W["w_candidate"], installed=("x1", "x2"))]}
+    verdict, reasons, metrics, _ = judge_research(campaign, [p], outer, arms)
+    assert verdict in ("rejected", "inconclusive") and metrics.get("gain", 0) == 0
+    assert not any("ledger" in k for k in metrics) and not any("ledger" in r for r in reasons)
+
+
+def test_worker_round_limit_three_compares_at_equal_completed_rounds():
+    """RC6-17 / M6 §2 (v0.3): the v3 preset gives each arm three rounds (the v1 preset keeps two); an arm's record
+    counts completed rounds only — a round lost to infrastructure is run again, not counted — so a resumed arm
+    runs exactly the rounds the limit leaves and the two arms are compared at equal completed rounds."""
+    from ouroloop.research.loop import completed_round, counters_of
+    assert bench.PRESETS["automationbench_harness_v3"]["campaign"]["worker_round_limit"] == 3
+    assert bench.PRESETS["marketing_harness_v1"]["campaign"]["worker_round_limit"] == 2
+    recorded = [{"outcome": "installed"}, {"outcome": "infrastructure_failed", "reason": "worker gone"},
+                {"outcome": "stopped", "reason": "repair_runtime"}, {"outcome": "rejected"},
+                {"outcome": "inconclusive", "reason": "3 pairs are incomplete"}]
+    done = sum(1 for r in recorded if completed_round(r))
+    assert done == 2 and 3 - done == 1                 # one round left under the v3 limit; the lost ones rerun
+    # patience from the completed rounds only; the failure count as the live loop has it: the pause reset it, the
+    # last round lost to infrastructure counts toward the limit (and is run again in its slot)
+    assert counters_of(recorded) == (1, 1)
+    # the arm's schedule leaves exactly the rounds the limit minus the completed ones gives (bench._campaign_arm)
+    from ouroloop.evolve.execution import Schedule
+    assert Schedule(worker_rounds=max(3 - done, 0), research_slots=0, patience=3).worker_rounds == 1
+
+
+# ---------------------------------------------------------------------------- recheck of 2026-10-05: stored plans keep their refs
+# A campaign plan as a workspace frozen before step 3 stored it (examples/rehearsal/workspace-rehearsal4, objects/
+# campaign/ff0bf9ee….json): no `candidates_per_round` key.
+STORED_CAMPAIGN = {
+    "arm_budget": {"usd": 45.0},
+    "campaign_pairs": ["campaignpair:sha256:a759dca7d03049b30479f917a4bbac9f5ebf2abcac90d932f535f8ad682fc5aa"],
+    "core_ref": "core:sha256:2c9246441e666bf8381b24c76a53da1170c3d6eab419cffc31968bf213195f79",
+    "discovery": "automatic", "id": "campaign-1d51402729", "outer_budget": {"usd": 24.0}, "phase": "research_dev",
+    "r_candidate_ref": "policyset:sha256:f75936e8f92a4fdee6b040477a4da53d17967334fd1adad99e257d1c754ba6a7",
+    "r_control_ref": "policyset:sha256:267595f5624703729dcdc04062a043e32e916139e436100dfc7572cfe2061c48",
+    "research_gate_plan": {"bootstrap_replicates": 2000, "bootstrap_seed": 0, "confidence_level": 0.95,
+                           "max_quality_loss": 0.02, "max_regression_rate": 0.2, "max_runtime_cost_ratio": None,
+                           "min_gain": 0.05, "min_groups": 1, "missing_cost_policy": "refuse", "mode": "quality",
+                           "protected_requirements": [],
+                           "ref": "gateplan:sha256:afee687452147f3eb406fe0e00e403f9384103c1589e6e295b18aea9fed5af65",
+                           "schema_version": 2},
+    "retry_policy": {}, "schema_version": 2, "selection_rule": "last_installed",
+    "worker_gate_plan_ref": "gateplan:sha256:c401acb4dd19f0cb0b29b46cb75c67bce0ee14c4878eeb3b56181ee8e741fc22",
+    "worker_round_limit": 2}
+
+
+def test_a_campaign_plan_stored_before_candidates_per_round_keeps_its_ref(tmp_path):
+    """M6 (2026-10-05 recheck): `candidates_per_round` is None unless a plan was frozen with it — None is absent from
+    the payload, so a plan stored before step 3 reads back to the same ref (it read as k = 1 then and does now),
+    while a plan frozen now carries the int and so its own identity."""
+    stored = ct.ref_for("campaign", STORED_CAMPAIGN)
+    assert stored == "campaign:sha256:ff0bf9eeda6faa5e6910a700c56a1ef84ddbf6de07be91537c6ecf0c6a771653"
+    plan = CampaignPlan.from_json(STORED_CAMPAIGN)
+    assert plan.candidates_per_round is None and ct.Objects(tmp_path).put(plan) == stored
+    assert int(plan.candidates_per_round or 1) == 1
+    fresh = CampaignPlan.from_json({**STORED_CAMPAIGN, "candidates_per_round": 3})
+    assert fresh.ref() != stored and fresh.payload()["candidates_per_round"] == 3

@@ -403,3 +403,84 @@ class ResearchPolicyProposer:
             changes=({"target": self.target, "kind": "prompt", "change": {"text": text}},),
             expected="the worker candidates this policy proposes close the gap the requirement names")
         return ProposalResult([proposal], next_action="none", evidence_refs=tuple(context.evidence[:1]))
+
+
+# ---------------------------------------------------------------------------- a scripted coding session (v0.3)
+class SessionScript:
+    """A research step for the coding-session round (docs/modules/04_RESEARCH_LOOP.md §1, v0.3): notes as the
+    scripted note researchers write them, and the session played by tool calls from a plan.
+
+    `plan(inputs) -> [candidate]` reads the session's first message (the round's inputs as JSON: notes, coverage,
+    package_files, ledger, histogram, k, limits) and returns the candidates to make, each
+    {"dir", "files": {path: text}, "declaration": {mechanism, site, carrier, trigger_condition, differs_from?}} —
+    `notes` and `predicted_affected` are filled from the inputs' notes when the candidate leaves them out, so the
+    declaration cites what the round really gave it. Each candidate's files go out in one turn of write_file calls
+    and the last turn is `finish`. `repair(message, inputs) -> [candidate]` answers a check output in the same
+    session: its candidates' files are written and `finish` is called again. The script reads only what the
+    session hands it and never looks up a workspace."""
+    origin = "scripted"
+
+    def __init__(self, plan, *, repair=None, note=None):
+        self.plan, self.repair, self._note = plan, repair, note
+        self.requests: list = []
+        self.seen: list = []
+        self.inputs: dict | None = None
+        self._queue: list = []
+
+    def note_request(self, summary, prompt, *, allowed=()):
+        return prompt, json.dumps({"allowed": list(allowed), "failure": summary}, sort_keys=True)
+
+    def note(self, system, user):
+        failure = json.loads(user)["failure"]
+        self.requests.append({"step": "note", "task": failure["task_id"]})
+        self.seen.append(user)
+        if self._note is not None:
+            return self._note(failure)
+        missed = any("slack" in json.dumps(c).lower() or "message" in json.dumps(c).lower()
+                     for c in failure["checks"] if not c["passed"])
+        return {"failure_class": "missed_step" if missed else "other",
+                "root_cause": "finished after the update without doing the rest of the request",
+                "mechanism": "re-read the request and check every step before finishing",
+                "component": "memory", "generality": "any multi-step request can end early"}
+
+    def _declare(self, candidates: list) -> ToolCall:
+        notes = [n for n in (self.inputs or {}).get("notes") or ()]
+        declared = []
+        for c in candidates:
+            d = dict(c["declaration"])
+            d.setdefault("notes", [n["note_ref"] for n in notes])
+            d.setdefault("predicted_affected", sorted({n["task_id"] for n in notes}))
+            d.setdefault("trigger_condition", "always")
+            declared.append({"dir": c["dir"], **d})
+        return ToolCall("f1", "finish", {"candidates": declared})
+
+    def _enqueue(self, candidates: list) -> None:
+        if not candidates:
+            # nothing to propose: the session ends with a next_action, as the summary call answered `stop`
+            self._queue.append([ToolCall("f1", "finish", {"next_action": "stop", "reason": "nothing to change"})])
+            return
+        for c in candidates:
+            self._queue.append([ToolCall(f"w{i}", "write_file", {"path": f"candidates/{c['dir']}/{path}", "text": text})
+                                for i, (path, text) in enumerate(sorted(c["files"].items()))])
+        self._queue.append([self._declare(candidates)])
+
+    def session_turn(self, system, messages, tools):
+        self.requests.append({"step": "session", "system": system, "prompt_hash": ct.digest({"system": system})[:16]})
+        last = messages[-1]
+        self.seen.append(json.dumps(last, default=str))
+        if len(messages) == 1:
+            # a new session: its first message is the round's inputs and nothing else (one session per round)
+            self.inputs = json.loads(messages[0]["content"])
+            self._queue = []
+            self._enqueue(self.plan(self.inputs))
+        elif last.get("role") == "user" and "failed its draft check" in str(last.get("content", "")):
+            self._queue = []
+            fixed = self.repair(str(last["content"]), self.inputs) if self.repair is not None else []
+            if fixed:
+                self._enqueue(fixed)
+            else:
+                return ChatTurn("I cannot fix this.", [], "end")
+        if not self._queue:
+            return ChatTurn("done", [], "end")
+        calls = self._queue.pop(0)
+        return ChatTurn("", calls, "tool_use")

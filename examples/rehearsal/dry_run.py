@@ -41,6 +41,13 @@ NOTE_TOOL = (
     "    result = ctx.call_tool('api_fetch', {'method': 'POST', 'body': json.dumps(body),\n"
     "                                         'url': 'https://api.hubapi.com/crm/v3/objects/contacts/notes'})\n"
     "    return result.output\n")
+# The manifest entry of that tool, as the scripted R writes it; check_world.py installs the same entry and code,
+# so the offline check exercises exactly what the dry run installs.
+NOTE_TOOL_ENTRY = {
+    "name": "add_contact_note", "description": "Add a note to a contact from its plain text: it is encoded and "
+    "posted for you.", "entrypoint": "tools/notes.py:add_contact_note",
+    "input_schema": {"type": "object", "properties": {"contact_id": {"type": "string"}, "text": {"type": "string"}},
+                     "required": ["contact_id", "text"]}}
 NOTE_TOOL_TEST = (
     "import importlib.util, os\n"
     "def test_the_tool_answers_with_text(ctx):\n"
@@ -73,13 +80,23 @@ HOOK_TEST = (
 
 
 class Scripted:
-    """The worker rounds' research step, scripted to §4. It keeps the requests it was rendered from, as the real
-    researcher does, so the campaign can check that the candidate arm ran R1's text."""
+    """The worker rounds' research step, scripted to §4 — under the v0.3 R path (docs/modules/04_RESEARCH_LOOP.md §1,
+    R 作为有界编码会话): notes as before, and the proposal as a coding session played by tool calls. It reads the
+    session's first message (the round's inputs: notes, coverage, ledger projection, experience) and, under R0's
+    preference order, writes a working note or a skill for the first failing kind — a tool for F, a skill for E — or,
+    when the ledger shows that kind's note or skill rejected or screened out and the loaded propose text carries
+    R1's sentence, an on_finish check; then it declares the one candidate and finishes. A check output comes back
+    into the same session and is answered by rewriting the hook without its bad import. It keeps the requests it
+    was rendered from, as the real researcher does, so the campaign can check that the candidate arm ran R1's text."""
+    origin = "scripted"
 
     def __init__(self, *, broken_hook_first: bool = False, faults: Path | None = None, arm_on: tuple = ()):
         self.requests = []
         self.broken_hook_first = broken_hook_first
-        self.faults, self.arm_on, self.summaries = faults, arm_on, 0
+        self.faults, self.arm_on, self.sessions = faults, arm_on, 0
+        self.repairs = 0
+        self._queue: list = []
+        self._inputs: dict = {}
 
     def note_request(self, summary, prompt, *, allowed=()):
         return prompt, json.dumps({"allowed_components": list(allowed), "failure": summary}, sort_keys=True)
@@ -92,41 +109,75 @@ class Scripted:
                 "mechanism": "do the closing step a request ends with before finishing", "component": "memory",
                 "generality": "any request that ends with a closing step"}
 
-    def summarize(self, context, prompt, notes, coverage, experience=(), *, package=None, allowed=()):
-        self.requests.append({"step": "propose", "system": prompt})
-        if self.summaries in self.arm_on:
-            # the operator arms the fault before this answer (§10.3): the next attempt on that task fails once
-            self.faults.mkdir(parents=True, exist_ok=True)
-            (self.faults / "infra_once").write_text(FAULT)
-        self.summaries += 1
-        kinds = [KIND[t] for t in coverage.get("included") or () if t in KIND]
-        if not kinds:
-            return ProposalResult(next_action="stop", reason="no failure left to diagnose")
-        kind = kinds[0]
-        tried = [e for e in experience if e.get("kind") == "experiment" and f"[{kind}]" in str(e.get("hypothesis"))
-                 and e.get("verdict") == "rejected"]
-        how = ("tool" if kind == "F" else "skill" if kind == "E" else
-               "hook" if R1_SENTENCE in prompt and tried else "skill" if tried else "memory")
-        patch = self._patch(dict(package or {}), kind, how)
-        return ProposalResult(proposals=[ct.ExperimentProposal(
-            owner="worker", hypothesis=f"[{kind}] a {how} for the closing step the failure skipped",
-            changes=({"target": "worker.harness", "kind": "workflow", "change": {"patch": patch}},),
-            expected="the tasks with this closing step pass", abandon_if="the gate shows no gain",
-            origin="scripted")])
+    # ------------------------------------------------------------------ the session
+    def session_turn(self, system, messages, tools):
+        from ouroloop.chat import ChatTurn, ToolCall
+        self.requests.append({"step": "session", "system": system})
+        last = messages[-1]
+        if len(messages) == 1:
+            if self.sessions in self.arm_on:
+                # the operator arms the fault before this answer (§10.3): the next attempt on that task fails once
+                self.faults.mkdir(parents=True, exist_ok=True)
+                (self.faults / "infra_once").write_text(FAULT)
+            self.sessions += 1
+            self._inputs = json.loads(messages[0]["content"])
+            # as a real R would: read the current package's manifest and memory before changing them
+            reads = [ToolCall("r1", "read_file", {"path": "package/manifest.json"})]
+            if "memory.md" in (self._inputs.get("package_files") or ()):
+                reads.append(ToolCall("r2", "read_file", {"path": "package/memory.md"}))
+            self._queue = [reads, None]            # None: the plan is made once the reads have answered
+        elif self._queue and self._queue[0] is None and last.get("role") == "tool":
+            results = {r["id"]: r["output"] for r in last["results"]}
+            self._inputs["manifest"] = json.loads(results["r1"])
+            self._inputs["memory"] = results.get("r2", "")
+            self._queue = self._plan(self._inputs, system)
+        elif last.get("role") == "user" and "failed its draft check" in str(last.get("content", "")):
+            self.repairs += 1
+            self._queue = [[ToolCall("w1", "write_file", {"path": "candidates/c1/middlewares/closing_check.py",
+                                                         "text": HOOK})],
+                           [self._finish(self._inputs, "C", "hook")]]
+        if not self._queue:
+            return ChatTurn("nothing more to do", [], "end")
+        return ChatTurn("", self._queue.pop(0), "tool_use")
 
-    def _patch(self, files: dict, kind: str, how: str) -> dict:
-        manifest = json.loads(files.get("manifest.json") or json.dumps(hp.empty_manifest()))
+    def _plan(self, inputs: dict, system: str) -> list:
+        from ouroloop.chat import ToolCall
+        kinds = [KIND[t] for t in inputs["coverage"].get("included") or () if t in KIND]
+        if not kinds:
+            return [[ToolCall("f1", "finish", {"next_action": "stop", "reason": "no failure left to diagnose"})]]
+        kind = kinds[0]
+        tried = any(f"[{kind}]" in str(row.get("declaration", {}).get("mechanism", ""))
+                    and row.get("outcome") in ("rejected", "screened_out") for row in inputs.get("ledger") or ()) \
+            or any(e.get("kind") == "experiment" and f"[{kind}]" in str(e.get("hypothesis")) and e.get("outcome") == "rejected"
+                   for e in inputs.get("experience") or ())
+        how = ("tool" if kind == "F" else "skill" if kind == "E" else
+               "hook" if R1_SENTENCE in system and tried else "skill" if tried else "memory")
+        files = self._files(kind, how)
+        writes = [ToolCall(f"w{i}", "write_file", {"path": f"candidates/c1/{path}", "text": text})
+                  for i, (path, text) in enumerate(sorted(files.items()))]
+        return [writes, [self._finish(inputs, kind, how)]]
+
+    def _finish(self, inputs: dict, kind: str, how: str):
+        from ouroloop.chat import ToolCall
+        notes = inputs.get("notes") or ()
+        site = {"memory": "memory.md", "skill": f"skills/closing-{kind.lower()}.md", "tool": NOTE_TOOL_ENTRY["name"],
+                "hook": "on_finish"}[how]
+        carrier = {"memory": "memory", "skill": "skill", "tool": "tool", "hook": "hook"}[how]
+        return ToolCall("f1", "finish", {"candidates": [{
+            "dir": "c1", "mechanism": f"[{kind}] closing step by {how}", "site": site, "carrier": carrier,
+            "predicted_affected": sorted({n["task_id"] for n in notes}), "trigger_condition": "always",
+            "notes": [n["note_ref"] for n in notes]}]})
+
+    def _files(self, kind: str, how: str) -> dict:
+        """The candidate's files over the current package: the manifest and memory it read from package/ with the
+        one component added, as R's session writes whole files."""
+        manifest = dict(self._inputs.get("manifest") or hp.empty_manifest())
         write = {}
         if how == "memory":
             manifest["memory"] = {"enabled": True}
-            write["memory.md"] = (files.get("memory.md", "").rstrip() + "\n" + RULES[kind]).strip() + "\n"
+            write["memory.md"] = (self._inputs.get("memory", "").rstrip() + "\n" + RULES[kind]).strip() + "\n"
         elif how == "tool":
-            manifest["tools"] = [*manifest.get("tools", []), {
-                "name": "add_contact_note", "description": "Add a note to a contact from its plain text: it is "
-                "encoded and posted for you.", "entrypoint": "tools/notes.py:add_contact_note",
-                "input_schema": {"type": "object", "properties": {"contact_id": {"type": "string"},
-                                                                  "text": {"type": "string"}},
-                                 "required": ["contact_id", "text"]}}]
+            manifest["tools"] = [*manifest.get("tools", []), dict(NOTE_TOOL_ENTRY)]
             write["tools/notes.py"] = NOTE_TOOL
             write["tests/test_notes.py"] = NOTE_TOOL_TEST
         elif how == "skill":
@@ -142,13 +193,7 @@ class Scripted:
             write["middlewares/closing_check.py"] = ("import requests\n" if broken else "") + HOOK
             write["tests/test_closing_check.py"] = HOOK_TEST
         write["manifest.json"] = json.dumps(manifest)
-        return {"write": write}
-
-    def revise(self, prompt, patch, check_output):
-        self.requests.append({"step": "revise", "system": prompt})
-        write = dict(patch["write"])
-        write["middlewares/closing_check.py"] = write["middlewares/closing_check.py"].replace("import requests\n", "")
-        return {"write": write}
+        return write
 
 
 class SlotProposer:
@@ -165,6 +210,18 @@ class SlotProposer:
             origin="scripted")])
 
 
+def v3_preset_for_the_world() -> dict:
+    """The v3 preset (M7 §2) sized to the rehearsal world (docs/REHEARSAL.md §8, v0.3 step 3): the world has 16 dev
+    tasks and 6 closing kinds, so the gate's least task count is 8 (two halves of 8 for the slot), the headroom
+    check asks for 2 never-passed inner tasks (W_EF leaves A–D), and the screen takes the preset's numbers. The
+    real preset's 25/6 are Marketing's; the dry run checks the world's arithmetic under the v0.3 rules, not the
+    numbers of a paid activity."""
+    preset = json.loads(json.dumps(bench.PRESETS["automationbench_harness_v3"]))
+    preset["task_plan"]["gate"]["min_tasks"] = 8
+    preset["campaign"]["min_headroom_tasks"] = 2
+    return preset
+
+
 def main(workdir: Path) -> dict:
     cfg = tomllib.loads((HERE / "rehearsal.toml").read_text())
     cfg["workspace"]["root"] = str(workdir / "ws")
@@ -172,6 +229,11 @@ def main(workdir: Path) -> dict:
     cfg["research"]["llm"]["dir"] = str(workdir / "manual")
     cfg["rsi"]["scope_id"] = "rehearsal-dry-run"
     cfg["llm"]["fault_dir"] = str(workdir / "actor-faults")      # before freezing: bootstrap pins the actor's table
+    # v0.3 step 3: the dry run walks the new R path — the coding session, k candidates, the screen, the ledger —
+    # which only a package-API-v2 core runs; attempts stay serial so the world's arithmetic reads as in §10.
+    bench.PRESETS["rehearsal_v3"] = v3_preset_for_the_world()
+    cfg["improvement"]["preset"] = "rehearsal_v3"
+    cfg["bench"]["concurrency"] = 1
     lines = []
     refs = bench.freeze(cfg, str(workdir), out=lines.append)
     cfg = {**cfg, "rsi": {**cfg["rsi"], **refs}}
@@ -198,7 +260,12 @@ def main(workdir: Path) -> dict:
             "research": {"verdict": research.verdict, "metrics": {k: research.metrics.get(k) for k in (
                 "gain", "tasks", "incomplete", "identical_arms", "candidate_outer_pass_rate",
                 "control_outer_pass_rate")}, "reasons": list(research.reasons)} if research else None,
-            "revisions": sum(1 for m in made for r in m.requests if r["step"] == "revise"),
+            "revisions": sum(m.repairs for m in made),
+            "sessions": len(list(events.of("research_session"))),
+            "ledger": [{k: row.get(k) for k in ("candidate", "outcome", "carrier")}
+                       for row in __import__("ouroloop.evolve.experience", fromlist=["x"]).ledger_rows(
+                           __import__("ouroloop.evolve.experience", fromlist=["x"]).read(activity.root))],
+            "screens": len(list(events.of("train_screen"))),
             "hook_events": sum(1 for p in Path(activity.root).rglob("transcripts/*.jsonl")
                                for line in p.read_text().splitlines() if '"kind": "hook"' in line),
             "tool_events": sum(1 for p in Path(activity.root).rglob("transcripts/*.jsonl")

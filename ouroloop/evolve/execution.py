@@ -25,20 +25,23 @@ from ..ledger import locked, new_id, now, write_json
 from . import contracts as ct
 
 # ---------------------------------------------------------------------------- states
-STATES = ("drafted", "admitted", "building", "screening", "evaluating", "evaluated", "accepted", "installing",
-          "installed", "rejected", "inconclusive", "invalid", "screened_out", "installation_failed",
+STATES = ("drafted", "admitted", "building", "screening", "evaluating", "evaluated", "confirming", "accepted",
+          "installing", "installed", "rejected", "inconclusive", "invalid", "screened_out", "installation_failed",
           "stale_parent", "cancelled")
 TERMINAL = frozenset({"installed", "rejected", "inconclusive", "invalid", "screened_out", "installation_failed",
                       "stale_parent", "cancelled"})
 # Where each state may go. `screening` is skippable when the frozen plan has no screen, but no necessary
-# preflight is skippable, and nothing walks back out of a terminal state.
+# preflight is skippable, and nothing walks back out of a terminal state. `confirming` (M5 §1, v0.3) sits between
+# a provisional `evaluated` — the first reading's verdict, written with its numbers and no receipt — and the final
+# `evaluated` that carries the receipt: the candidate arm is read again there, under the same frozen plan.
 NEXT: dict[str, frozenset] = {
     "drafted": frozenset({"admitted", "invalid", "cancelled"}),
     "admitted": frozenset({"building", "invalid", "inconclusive", "cancelled"}),
     "building": frozenset({"screening", "evaluating", "invalid", "inconclusive", "cancelled"}),
     "screening": frozenset({"evaluating", "screened_out", "invalid", "inconclusive", "cancelled"}),
     "evaluating": frozenset({"evaluated", "invalid", "inconclusive", "cancelled"}),
-    "evaluated": frozenset({"accepted", "rejected", "inconclusive", "invalid"}),
+    "evaluated": frozenset({"accepted", "rejected", "inconclusive", "invalid", "confirming"}),
+    "confirming": frozenset({"evaluated", "invalid", "inconclusive", "cancelled"}),
     "accepted": frozenset({"installing", "cancelled"}),
     "installing": frozenset({"installed", "installation_failed", "stale_parent"}),
     "installation_failed": frozenset({"installing"}),      # the same accepted artifact may be installed again
@@ -550,6 +553,12 @@ def execute_experiment(experiment, handlers: dict, *, budget: BudgetAccount, exe
     again, an evaluation reruns only the attempts it had not finished (the evaluate handler resumes by attempt
     id), an accepted receipt goes straight to installing, and an install replays its own operation, which commits
     at most once. Nothing is redecided: not the candidate, the plan, the seed or the thresholds.
+
+    v0.3 (M5 §1): an evaluate handler that takes `confirming` is handed a callback; it calls it when a first
+    reading cleared the gate and the plan asks for a confirmation reading. The callback writes the provisional
+    `evaluated` event (verdict and gain, no receipt — nothing installable exists yet) and enters `confirming`. A
+    restart in `confirming`, or at the provisional `evaluated`, runs the evaluate handler again: it finds the
+    first reading's attempts on record and pays only for the confirmation's missing ones (EX6-14).
     """
     state = execution.state()
     status, history = state["status"], state["history"]
@@ -571,6 +580,8 @@ def execute_experiment(experiment, handlers: dict, *, budget: BudgetAccount, exe
     receipt = None
     if status in ("evaluated", "accepted", "installing", "installation_failed") and recorded("receipt"):
         receipt = handlers["load_receipt"](recorded("receipt"))
+    # The states a resume enters the evaluation at: mid-reading, mid-confirmation, or at the provisional verdict.
+    mid_evaluation = ("evaluating", "confirming", "evaluated")
     if receipt is None:
         if status == "drafted":
             step("admitted", experiment=experiment.ref())
@@ -594,16 +605,28 @@ def execute_experiment(experiment, handlers: dict, *, budget: BudgetAccount, exe
                  reason="; ".join(build.errors)[:300])
             return out
         screen = handlers.get("screen")
-        if screen is not None and status not in ("evaluating",):
+        if screen is not None and status not in mid_evaluation:
             step("screening")
             verdict, reasons = screen(build.candidate_ref, budget)
             if verdict != "pass":
                 step("screened_out" if verdict == "screened_out" else "invalid", reason="; ".join(reasons)[:300])
                 return out
-        if status != "evaluating" or out["states"]:
+        if status not in mid_evaluation or out["states"]:
             step("evaluating")
+
+        def confirming(first: dict) -> None:
+            """The first reading cleared the gate: say so provisionally, then confirm (M5 §1, v0.3). On a resume
+            that is already past these events nothing is written twice."""
+            current = execution.state()["status"]
+            if current == "evaluating":
+                step("evaluated", provisional=True, verdict=first.get("verdict"), gain=first.get("gain"))
+                current = "evaluated"
+            if current == "evaluated":
+                step("confirming")
         op = execution.operation("evaluate", (build.candidate_ref,))
-        receipt = handlers["evaluate"](build.candidate_ref, budget)
+        evaluate = handlers["evaluate"]
+        receipt = evaluate(build.candidate_ref, budget, confirming=confirming) if _takes(evaluate, "confirming") \
+            else evaluate(build.candidate_ref, budget)
         execution.finish(op, "done", output_refs=(receipt.ref(),))
         step("evaluated", receipt=receipt.ref(), verdict=receipt.verdict)
         if receipt.verdict != "accepted":
@@ -628,6 +651,17 @@ def execute_experiment(experiment, handlers: dict, *, budget: BudgetAccount, exe
     out["installation"] = installation
     step(installation.status, reason=installation.reason or "", release=installation.target_release)
     return out
+
+
+def _takes(handler, name: str) -> bool:
+    """Whether a handler accepts the keyword `name`: an older handler (a fixture's two-argument evaluate) is called
+    as it always was."""
+    import inspect
+    try:
+        parameters = inspect.signature(handler).parameters
+    except (TypeError, ValueError):
+        return False
+    return name in parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values())
 
 
 def unfinished(root: str | Path) -> list[dict]:
@@ -785,7 +819,8 @@ class MeteredProvider:
         self.provider = provider
         self.account = account
         self.pricing = pricing
-        self.operation = operation
+        self._operation = operation
+        self._labels = threading.local()   # a step's label on this thread's calls (see `operation`)
         # A provider that retries by itself would send requests this meter never reserved: its retries become
         # the meter's, each one reserved and settled, and only for errors that are worth sending again. The
         # provider is not changed for good — it may be shared — its own retries are switched off per call.
@@ -802,6 +837,23 @@ class MeteredProvider:
         self._own = None                   # the provider's own retries, read while no metered call is in flight
         self.receipts: list[BudgetReceipt] = []
         self.calls = 0
+        # M5 §2 (v0.3): the provider's rate-limit refusals (429/529/overloaded, `unbilled`) this meter absorbed as
+        # retries — never charged, never a pause; counted so a run's record can list them.
+        self.rate_limited = 0
+
+    @property
+    def operation(self) -> str:
+        """The operation the next call is booked under. A research step's label (bench._Completions.label) is set
+        on the thread that runs the step, so notes written concurrently (M5 §2, v0.3) each carry their own label
+        and never one another's; the base operation is the meter's."""
+        return getattr(self._labels, "operation", None) or self._operation
+
+    @operation.setter
+    def operation(self, value: str) -> None:
+        if value == self._operation:
+            self._labels.operation = None          # the label restored: this thread books under the base again
+        else:
+            self._labels.operation = value
 
     def _reserve(self, reservation_id: str, bound: dict, last: Exception | None):
         """One call's reservation. Refused while other calls of this meter are in flight, it waits for one of them
@@ -828,10 +880,12 @@ class MeteredProvider:
                     self.provider.retries = 0
                 return reservation
 
-    def chat(self, system, messages, specs=()):
+    def chat(self, system, messages, specs=(), **kwargs):
         """One call, reserved before and settled after, retried while its failure is worth retrying. A failure
         that outlasts the retries leaves as a ProviderError whatever the provider raised — an SDK's connection
-        error, a gateway's malformed reply — so whoever handles a model call's failure (M5 §3) sees one kind."""
+        error, a gateway's malformed reply — so whoever handles a model call's failure (M5 §3) sees one kind.
+        Keyword arguments (the gateway's per-call `effort`) pass through to the provider untouched: the meter
+        books a call, it does not shape it."""
         bound = self.pricing.bound()
         last: Exception | None = None
         with self._lock:
@@ -840,12 +894,16 @@ class MeteredProvider:
             reservation = self._reserve(f"{self.operation}#{call}.{attempt}", bound, last)
             try:
                 try:
-                    turn = self.provider.chat(system, messages, specs)
+                    turn = self.provider.chat(system, messages, specs, **kwargs)
                 except Exception as e:  # noqa: BLE001 - the call may well have been charged: unknown, not free
                     # Released only when the request is known never to have reached the model; otherwise unknown.
-                    self.receipts.append(self.account.settle(
-                        reservation.id, None, "released" if getattr(e, "unbilled", False) else "unknown"))
+                    unbilled = bool(getattr(e, "unbilled", False))
+                    self.receipts.append(self.account.settle(reservation.id, None,
+                                                             "released" if unbilled else "unknown"))
                     last = e
+                    if unbilled and _retryable(e):
+                        with self._lock:
+                            self.rate_limited += 1
                     if not _retryable(e):
                         break                  # the same request would fail the same way: do not pay for it again
                     if attempt < self.max_retries:

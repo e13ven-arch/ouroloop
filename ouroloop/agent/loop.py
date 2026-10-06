@@ -58,6 +58,9 @@ class AgentResult:
     stop: str
     session: str
     verified: bool | None = None
+    # v0.3 (agent/runner.py): the hard limit that ended the attempt (act_calls, model_calls, tool_calls, seconds,
+    # tokens), None when the agent finished. This loop never sets it: its turn cap is its `stop`.
+    limit: str | None = None
 
 
 def describe(call: ToolCall) -> str:

@@ -98,9 +98,72 @@ def assign_splits(families: Iterable[str], ratios: dict[str, float], seed: int =
             edges.append((acc, name))
     out = {}
     for fam in dict.fromkeys(families):       # deduplicated, order irrelevant
-        x = int(hashlib.sha256(f"{seed}:{fam}".encode()).hexdigest()[:16], 16) / float(1 << 64)
+        x = _hash_point(fam, seed)
         out[fam] = next(name for edge, name in edges if x < edge or edge == edges[-1][0])
     return out
+
+
+def _hash_point(family: str, seed: int) -> float:
+    """Where the hash rule puts a family on [0, 1): the one number both split rules order families by."""
+    return int(hashlib.sha256(f"{seed}:{family}".encode()).hexdigest()[:16], 16) / float(1 << 64)
+
+
+# v0.3 step 5 (docs/modules/07_BENCH_REPORT.md §2 “多领域活动与划分”): the two split rules a domain is frozen under.
+# "hash" is v0.1/v0.2's assign_splits; "stratified" balances each stratum of static task features across the
+# splits. A manifest records the rule it was frozen under; a frozen manifest is kept whatever the config says later.
+SPLIT_RULES = ("hash", "stratified")
+# The family rule of a pooled manifest: several domains' frozen manifests side by side (pool_manifests).
+POOLED_RULE = "pooled"
+
+
+def stratified_splits(strata: dict[str, str], ratios: dict[str, float],
+                      seed: int = 0) -> tuple[dict[str, str], dict[str, dict[str, int]]]:
+    """family_id -> split under the stratified rule, and each stratum's split counts (what the manifest records).
+
+    `strata` maps each family to its stratum, a key made from the task definition only (the adapter's
+    `stratum`: the scored-assertion kinds and the tool family) — no result, no score, nothing a model did; the
+    split is frozen before any run (M7 §2). Families are ordered by stratum and, inside a stratum, by the point the
+    hash rule gives them under `seed`; one largest-deficit sequence over that order decides how many of each
+    stratum's families each split gets, so the whole domain's counts are the ratios' (50/25/25 of 100 at
+    0.5/0.25/0.25) and each stratum's are within one or two of its share. Inside a stratum the families then fill
+    the splits in SPLITS order by their hash point — the hash rule's order, with the edges at counts rather than at
+    fixed fractions. Deterministic under the seed; the order families are listed in does not matter."""
+    if set(ratios) - set(SPLITS) or not ratios:
+        raise ValueError(f"split ratios name {sorted(SPLITS)}, not {sorted(ratios)}")
+    total = sum(ratios.values())
+    if total <= 0 or any(v < 0 for v in ratios.values()):
+        raise ValueError(f"split ratios must be non-negative and sum above zero: {ratios}")
+    names = [s for s in SPLITS if ratios.get(s)]
+    share = {s: ratios[s] / total for s in names}
+    order = sorted(dict.fromkeys(strata), key=lambda f: (strata[f], _hash_point(f, seed), f))
+    sequence, counts = [], {s: 0 for s in names}
+    for i in range(len(order)):
+        # the split furthest behind its share after i+1 families; a tie goes to the earlier split in SPLITS
+        pick = max(names, key=lambda s: ((i + 1) * share[s] - counts[s], -SPLITS.index(s)))
+        counts[pick] += 1
+        sequence.append(pick)
+    out: dict[str, str] = {}
+    per: dict[str, dict[str, int]] = {}
+    start = 0
+    for key in dict.fromkeys(strata[f] for f in order):
+        members = [f for f in order if strata[f] == key]
+        slots = sequence[start:start + len(members)]
+        start += len(members)
+        quota = {s: slots.count(s) for s in names}
+        per[key] = {s: quota.get(s, 0) for s in SPLITS}
+        i = 0
+        for s in names:
+            for fam in members[i:i + quota[s]]:
+                out[fam] = s
+            i += quota[s]
+    return out, per
+
+
+def task_domain(task_id: str) -> str:
+    """The upstream domain a task belongs to: the prefix of its upstream name (`sales.lead_routing` -> `sales`).
+    Pooling refuses a domain whose task ids do not carry it (pool_manifests, adapters.automationbench.pool_suites),
+    so this is exact for a pooled split."""
+    return str(task_id).split(".", 1)[0]
 
 
 @dataclass
@@ -119,11 +182,18 @@ class SplitManifest:
     seed: int = 0
     created: str = ""
     schema: str = SPLIT_SCHEMA
+    # v0.3 step 5 (M7 §2): the rule a new domain was split under and each stratum's counts. Left out of the hashed
+    # payload while None, so every manifest frozen before them — Marketing's v0.1/v0.2 split among them — keeps its
+    # hash; a stratified manifest carries both.
+    split_rule: str | None = None
+    strata: dict | None = None
 
     def __post_init__(self) -> None:
         bad = {s for s in self.splits.values()} - set(SPLITS)
         if bad:
             raise ValueError(f"unknown splits {sorted(bad)}")
+        if self.split_rule is not None and self.split_rule not in SPLIT_RULES:
+            raise ValueError(f"split rule {self.split_rule!r}: one of {list(SPLIT_RULES)}")
         missing = sorted({e.family_id for e in self.entries} - set(self.splits))
         if missing:
             raise ValueError(f"families with no split: {missing[:5]}")
@@ -133,9 +203,14 @@ class SplitManifest:
 
     # -------------------------------------------------------------- identity
     def payload(self) -> dict:
-        return {"schema": self.schema, "domain": self.domain, "upstream": self.upstream,
-                "family_rule": self.family_rule, "entries": [e.to_json() for e in self.entries],
-                "splits": self.splits, "ratios": self.ratios, "seed": self.seed}
+        out = {"schema": self.schema, "domain": self.domain, "upstream": self.upstream,
+               "family_rule": self.family_rule, "entries": [e.to_json() for e in self.entries],
+               "splits": self.splits, "ratios": self.ratios, "seed": self.seed}
+        if self.split_rule is not None:
+            out["split_rule"] = self.split_rule
+        if self.strata is not None:
+            out["strata"] = self.strata
+        return out
 
     def hash(self) -> str:
         """The identity of the data a result refers to. `created` is deliberately left out: freezing the same
@@ -150,10 +225,33 @@ class SplitManifest:
         if d.get("schema") != SPLIT_SCHEMA:
             raise ValueError(f"split manifest schema {d.get('schema')!r}, not {SPLIT_SCHEMA!r}")
         m = cls(d["domain"], d["upstream"], d["family_rule"], [TaskEntry.from_json(e) for e in d["entries"]],
-                d["splits"], d.get("ratios", {}), d.get("seed", 0), d.get("created", ""))
+                d["splits"], d.get("ratios", {}), d.get("seed", 0), d.get("created", ""),
+                split_rule=d.get("split_rule"), strata=d.get("strata"))
         if d.get("hash") and d["hash"] != m.hash():
             raise ValueError(f"split manifest {d['hash']} does not hash to its contents ({m.hash()})")
         return m
+
+    # -------------------------------------------------------------- several domains (v0.3 step 5, M7 §2)
+    def domains(self) -> list[dict]:
+        """The domains this manifest covers, in pooled order: a pooled manifest's own record of each domain's
+        frozen split (hash, rule, counts, strata), or this one domain's."""
+        pooled = (self.upstream or {}).get("domains") if self.family_rule == POOLED_RULE else None
+        if pooled:
+            return [dict(d) for d in pooled]
+        return [{"domain": self.domain, "hash": self.hash(), "family_rule": self.family_rule,
+                 "split_rule": self.split_rule or "hash", "seed": self.seed, "ratios": dict(self.ratios),
+                 "counts": self.counts(), **({"strata": self.strata} if self.strata is not None else {})}]
+
+    def spent(self) -> set[str]:
+        """The domains whose test is spent (M7 §2): never read by the final of a new claim, reported apart. Only a
+        pooled manifest records them; it is part of what the pooled split hashes to, so it cannot be dropped later
+        without a new split."""
+        return set((self.upstream or {}).get("spent") or ()) if self.family_rule == POOLED_RULE else set()
+
+    def claim_ids(self, *splits: str) -> list[str]:
+        """ids(*splits) less the tasks of spent domains: what a new claim's final may read."""
+        spent = self.spent()
+        return [t for t in self.ids(*splits) if task_domain(t) not in spent]
 
     # -------------------------------------------------------------- reading
     def family_of(self, task_id: str) -> str:
@@ -218,6 +316,40 @@ class SplitManifest:
         return cls.from_json(json.loads(Path(path).read_text(encoding="utf-8")))
 
 
+def pool_manifests(name: str, manifests: list[SplitManifest], *, ratios: dict[str, float], seed: int = 0,
+                   spent=()) -> SplitManifest:
+    """One activity's split over several domains (docs/modules/07_BENCH_REPORT.md §2, v0.3 step 5): each domain's
+    frozen manifest as it is, their entries concatenated in list order (each domain in its own frozen order), their
+    family assignments side by side, so the activity's train/dev/test are the domains' same-named splits pooled.
+
+    The pooled manifest's `upstream` records each domain's own split — hash, rules, seed, counts, strata — and the
+    domains whose test is spent, so the pooled hash (what the core's split_ref and every run's `data` name) pins
+    all of them: a domain resplit, reordered or un-spent is a different pooled split. A task id must carry its
+    domain (`task_domain`) and a family belongs to one domain; anything else is refused, never merged."""
+    if len(manifests) < 2:
+        raise ValueError("a pooled split covers at least two domains; one domain is its own manifest")
+    names = [m.domain for m in manifests]
+    if len(set(names)) != len(names):
+        raise ValueError(f"domains listed twice: {names}")
+    unknown = sorted(set(spent) - set(names))
+    if unknown:
+        raise ValueError(f"spent domains {unknown} are not among the pooled domains {names}")
+    entries: list[TaskEntry] = []
+    splits: dict[str, str] = {}
+    for m in manifests:
+        stray = [e.task_id for e in m.entries if task_domain(e.task_id) != m.domain]
+        if stray:
+            raise ValueError(f"domain {m.domain}: task ids {stray[:3]} do not carry the domain, so pooling could not "
+                             f"tell its tasks from another domain's")
+        both = sorted(set(m.splits) & set(splits))
+        if both:
+            raise ValueError(f"families {both[:3]} are in two domains' splits")
+        splits.update(m.splits)
+        entries += m.entries
+    upstream = {"domains": [m.domains()[0] for m in manifests], "spent": sorted(set(spent))}
+    return SplitManifest(name, upstream, POOLED_RULE, entries, splits, dict(ratios), seed)
+
+
 # ---------------------------------------------------------------------------- attempt identity
 # A run is not an attempt (docs/modules/00_CONTRACTS.md §2): one run holds every task, repeat and refill. The
 # attempt key is what an arm's attempt is identified by, the attempt id adds the retry that produced it, and the
@@ -236,23 +368,55 @@ def pair_key(plan_ref: str, task_id: str, repeat_index: int) -> str:
 
 
 # ---------------------------------------------------------------------------- budget
+# The five hard limits of one attempt (docs/modules/00_CONTRACTS.md §2 "单次尝试硬上限", M5 §2), Budget field →
+# the dimension name a `budget` termination records in TaskResult.limit. `max_steps` keeps its name: a step is one
+# `act` model call, as it always was. Two are new in v0.3 and default to None (no limit), so a plan frozen before
+# them reads exactly as it was frozen (adding a limit to an old plan would change its identity).
+HARD_LIMITS = {"max_steps": "act_calls", "max_model_calls": "model_calls", "max_tool_calls": "tool_calls",
+               "max_seconds": "seconds", "max_tokens": "tokens"}
+LIMIT_DIMENSIONS = tuple(HARD_LIMITS.values())
+V03_BUDGET_FIELDS = ("max_model_calls", "max_tokens")
+
+
 @dataclass(frozen=True)
 class Budget:
     """Per-attempt limits. `max_usd` is a limit, not a measurement: an attempt whose cost cannot be measured is
-    not stopped by it, and its result says the cost is unknown."""
+    not stopped by it, and its result says the cost is unknown. `max_model_calls` counts every model call, act and
+    aux together; `max_tokens` is the attempt's output tokens over all of them, thinking included — not the
+    `[llm] max_tokens` of one reply. None on either means no such limit."""
     max_steps: int = 50
     max_tool_calls: int = 200
     max_seconds: float = 900.0
     max_usd: float | None = None
+    max_model_calls: int | None = None
+    max_tokens: int | None = None
+
+    def limits(self) -> dict:
+        """The hard limits that are set, by field name: what a frozen plan and a TargetHarness carry."""
+        return {k: getattr(self, k) for k in HARD_LIMITS if getattr(self, k) is not None}
+
+    def limit_hit(self, *, steps: int = 0, model_calls: int = 0, tool_calls: int = 0, seconds: float = 0.0,
+                  tokens: int = 0) -> str | None:
+        """The dimension of the first hard limit these counts exceed, in HARD_LIMITS order, or None."""
+        counts = {"max_steps": steps, "max_model_calls": model_calls, "max_tool_calls": tool_calls,
+                  "max_seconds": seconds, "max_tokens": tokens}
+        for key, cap in self.limits().items():
+            if counts[key] > cap:
+                return HARD_LIMITS[key]
+        return None
 
     def exceeded(self, *, steps: int = 0, tool_calls: int = 0, seconds: float = 0.0,
-                 usd: float | None = None) -> str:
+                 usd: float | None = None, model_calls: int = 0, tokens: int = 0) -> str:
         if steps > self.max_steps:
             return f"steps {steps} > {self.max_steps}"
+        if self.max_model_calls is not None and model_calls > self.max_model_calls:
+            return f"model calls {model_calls} > {self.max_model_calls}"
         if tool_calls > self.max_tool_calls:
             return f"tool calls {tool_calls} > {self.max_tool_calls}"
         if seconds > self.max_seconds:
             return f"seconds {seconds:.0f} > {self.max_seconds:.0f}"
+        if self.max_tokens is not None and tokens > self.max_tokens:
+            return f"tokens {tokens} > {self.max_tokens}"
         if self.max_usd is not None and usd is not None and usd > self.max_usd:
             return f"cost {usd:.4f} > {self.max_usd:.4f}"
         return ""
@@ -301,7 +465,9 @@ class RunManifest:
 
     def payload(self) -> dict:
         d = asdict(self)
-        d["budget"] = asdict(self.budget)
+        # A v0.3 budget field that is unset is left out, so a run recorded before the field existed keeps the hash
+        # its attempts are found under; set, it is part of what the run was limited by.
+        d["budget"] = {k: v for k, v in asdict(self.budget).items() if not (k in V03_BUDGET_FIELDS and v is None)}
         d["input_schema_refs"] = list(self.input_schema_refs)
         return {k: v for k, v in d.items()
                 if k != "notes" and not (k in V2_FIELDS and not v) and not (k in V06_FIELDS and v is None)}
@@ -362,6 +528,9 @@ class TaskResult:
     tool_calls: int = 0
     termination: str = "finished"
     stop: str = ""                            # the harness's own stop reason, as evidence behind `termination`
+    # v0.3: which hard limit ended a `budget` termination (one of LIMIT_DIMENSIONS); None on every other
+    # termination and on every record written before the field existed, where `step_limit` says the same thing.
+    limit: str | None = None
     validity: str = "valid"
     invalid_reason: str = ""
     evidence: str = ""                        # the session id; its transcript is transcripts/<session>.jsonl
@@ -388,6 +557,9 @@ class TaskResult:
         if self.validity == "valid" and self.termination not in VALID_TERMINATIONS:
             raise ValueError(f"termination {self.termination!r} is an infrastructure failure, not a task outcome: "
                              f"the attempt is invalid")
+        if self.limit is not None and (self.termination != "budget" or self.limit not in LIMIT_DIMENSIONS):
+            raise ValueError(f"limit {self.limit!r}: one of {list(LIMIT_DIMENSIONS)}, and only on a budget "
+                             f"termination (this one is {self.termination!r})")
         if self.success and self.partial_credit < 1.0:
             raise ValueError("task_completed_correctly is 1.0 only when every scored assertion passed")
 
@@ -425,6 +597,19 @@ class Results:
 
     def of_run(self, run: str) -> list[TaskResult]:
         return [r for r in self.all() if r.run == run]
+
+    def runs(self) -> dict[str, RunManifest]:
+        """hash -> the run manifests recorded beside the results (`put_run`). A manifest this reader cannot parse
+        is left out rather than read as something it is not."""
+        out: dict[str, RunManifest] = {}
+        directory = self.root / "runs"
+        for path in sorted(directory.glob("*.json")) if directory.exists() else ():
+            try:
+                run = RunManifest.from_json(json.loads(path.read_text(encoding="utf-8")))
+            except (ValueError, TypeError):
+                continue
+            out[run.hash()] = run
+        return out
 
     def manifest_path(self) -> Path:
         return self.root / "splits.json"
@@ -498,6 +683,8 @@ def summarise(results: list[TaskResult]) -> dict:
         "usage": {k: sum(r.usage.get(k, 0) for r in valid)
                   for k in sorted({k for r in valid for k in r.usage})},
         "cost_usd": round(sum(costed), 4) if costed else None,
+        # M5 §2 (v0.3): the mean cost of one valid attempt, under the one name the gate receipt and the report use.
+        "cost_per_attempt": round(sum(costed) / len(costed), 6) if costed else None,
         "cost_missing": len(valid) - len(costed),
         "elapsed": round(sum(r.elapsed for r in valid), 1),
         "tool_calls": sum(r.tool_calls for r in valid),

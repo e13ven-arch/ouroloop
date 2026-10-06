@@ -190,3 +190,274 @@ def test_r0s_note_prompt_asks_the_note_to_keep_the_interface_facts():
     assert "never write this task's specific answers" in P.DIAGNOSE_NOTE
     system, _user = PolicyResearcher(None).note_request({"task_id": "t"}, P.DIAGNOSE_NOTE, allowed=("memory",))
     assert system.startswith(P.DIAGNOSE_NOTE)
+
+
+def test_notes_written_concurrently_enter_the_summary_in_the_frozen_order(tmp_path):
+    """M5 §2 (v0.3) 逐题笔记并发, EX6-19: notes asked for four at a time come back in another order than they were
+    sent, and the summary still lists them in the frozen coverage order — the same notes, refs and coverage a
+    serial run gives — each cached once; and a note that could not be read is charged to its own request, not to
+    whichever request finished last."""
+    import threading
+    import time
+    from pathlib import Path
+    from ouroloop.research.basic import NOTE_FORMAT, PolicyResearcher
+    delays = {"a": 0.06, "b": 0.0, "c": 0.03, "d": 0.01}
+
+    class SlowNotes:
+        def __init__(self):
+            self.requests, self.order, self.lock = [], [], threading.Lock()
+
+        def note_request(self, summary, prompt, *, allowed=()):
+            return prompt, json.dumps({"failure": summary}, sort_keys=True)
+
+        def note_with_record(self, system, user):
+            task = json.loads(user)["failure"]["task_id"]
+            time.sleep(delays[task])
+            with self.lock:
+                self.order.append(task)
+                self.requests.append({"step": "note", "system": system})
+            return {"failure_class": "missed_step", "root_cause": "r", "mechanism": f"m {task}",
+                    "component": "skills", "generality": "g"}, ""
+    summaries = [{"task_id": t, "checks": [], "turns": []} for t in "abcd"]
+
+    def diagnosis(root, concurrency):
+        return dg.Diagnosis(summaries=summaries, order=list("abcd"), cache=dg.NoteCache(Path(root), ct.Objects(root)),
+                            model={"model": "m"}, components=("skills",), concurrency=concurrency)
+    fast = SlowNotes()
+    notes, coverage = diagnosis(tmp_path / "c", 4).run(fast, "diagnose")
+    assert [n["task_id"] for n in notes] == list("abcd") and fast.order == list("bdca")
+    slow = SlowNotes()
+    serial_notes, serial_coverage = diagnosis(tmp_path / "s", 1).run(slow, "diagnose")
+    assert notes == serial_notes and coverage == serial_coverage and slow.order == list("abcd")
+    assert coverage["noted"] == 4 and coverage["included"] == list("abcd")
+    again = SlowNotes()
+    _, reused = diagnosis(tmp_path / "c", 4).run(again, "diagnose")
+    assert reused["reused"] == 4 and again.order == []
+    assert len(list(dg._read_jsonl(Path(tmp_path / "c") / "rsi" / "notes.jsonl"))) == 4
+
+    class Model:
+        """The research model: an empty reply for task b, a note for the others, each after its own delay."""
+        name = "fake"
+
+        def complete(self, system, text):
+            task = json.loads(text)["failure"]["task_id"]
+            time.sleep(delays[task])
+            if task == "b":
+                return ""
+            return json.dumps({"failure_class": "missed_step", "root_cause": "r", "mechanism": f"m {task}",
+                               "component": "skills", "generality": "g"})
+    researcher = PolicyResearcher(Model())
+    notes, coverage = diagnosis(tmp_path / "u", 4).run(researcher, "diagnose")
+    assert [n["task_id"] for n in notes] == list("acd")
+    assert coverage["invalid"] == [{"task_id": "b", "problem": "the research reply was empty"}]
+    assert [r.get("unreadable") for r in researcher.requests if NOTE_FORMAT in r["system"]].count(
+        "the research reply was empty") == 1
+
+
+def test_a_failing_note_is_raised_after_the_answered_notes_are_cached(tmp_path):
+    """M5 §2 (v0.3, after review): one note's provider error does not lose the others. Concurrently, the three
+    answers that arrived are cached before the error is raised; serially, the two answered before it are; either way
+    a restart asks only for what is not on disk."""
+    import time
+    from pathlib import Path
+    from ouroloop.providers import ProviderError
+
+    class Notes:
+        def __init__(self, failing: str | None):
+            self.failing, self.asked, self.requests = failing, [], []
+
+        def note_request(self, summary, prompt, *, allowed=()):
+            return prompt, json.dumps({"failure": summary}, sort_keys=True)
+
+        def note_with_record(self, system, user):
+            task = json.loads(user)["failure"]["task_id"]
+            self.asked.append(task)
+            time.sleep({"a": 0.0, "b": 0.01, "c": 0.02, "d": 0.03}[task])
+            if task == self.failing:
+                raise ProviderError("API Error: 500 Internal server error", retryable=True)
+            return {"failure_class": "missed_step", "root_cause": "r", "mechanism": f"m {task}",
+                    "component": "skills", "generality": "g"}, ""
+    summaries = [{"task_id": t, "checks": [], "turns": []} for t in "abcd"]
+
+    def diagnosis(root, concurrency):
+        return dg.Diagnosis(summaries=summaries, order=list("abcd"), cache=dg.NoteCache(Path(root), ct.Objects(root)),
+                            model={"model": "m"}, components=("skills",), concurrency=concurrency)
+
+    def cached(root):
+        return [row["identity"] for row in dg._read_jsonl(Path(root) / "rsi" / "notes.jsonl")]
+    with pytest.raises(ProviderError):
+        diagnosis(tmp_path / "c", 4).run(Notes("c"), "diagnose")
+    assert len(cached(tmp_path / "c")) == 3
+    with pytest.raises(ProviderError):
+        diagnosis(tmp_path / "s", 1).run(Notes("c"), "diagnose")
+    assert len(cached(tmp_path / "s")) == 2
+    for root, missing in ((tmp_path / "c", ["c"]), (tmp_path / "s", ["c", "d"])):
+        again = Notes(None)
+        notes, coverage = diagnosis(root, 4).run(again, "diagnose")
+        assert sorted(again.asked) == missing and coverage["noted"] == 4 and coverage["reused"] == 4 - len(missing)
+        assert [n["task_id"] for n in notes] == list("abcd") and len(cached(root)) == 4
+
+
+# ---------------------------------------------------------------------------- v0.3: R's new inputs (M4 §1 R 的输入)
+def test_read_trajectory_is_train_only_read_only_and_byte_capped(fake_upstream, tmp_path):
+    """RL6-36: the session's trajectory tool returns a byte range of a train attempt's host-written record, caps each
+    read at `max_trajectory_bytes` and the session at `max_trajectory_bytes_total`, refuses a dev attempt as
+    AccessDenied (the call still recorded), and never writes: the transcript on disk is unchanged."""
+    from ouroloop.research.session import SessionLimits, TrajectoryReader
+    run(fake_upstream, tmp_path, [rsi.TRAIN[1]], "train")
+    results, _, _ = run(fake_upstream, tmp_path, [rsi.DEV[0]], "dev")
+    rows = {r.split: r for r in results.all()}
+    path = tmp_path / "transcripts" / f"{rows['train'].evidence}.jsonl"
+    before = path.read_bytes()
+    reader = TrajectoryReader(results, tmp_path / "transcripts", SessionLimits(max_trajectory_bytes=200,
+                                                                               max_trajectory_bytes_total=300))
+    text, bad = reader.read(rows["train"].attempt_id, 0, 10_000)
+    assert not bad and text.startswith(before[:50].decode()) and reader.total == 200 and "bytes follow" in text
+    denied, bad = reader.read(rows["dev"].attempt_id)
+    assert bad and denied.startswith("AccessDenied") and reader.calls[-1] == {"ref": rows["dev"].attempt_id,
+                                                                              "offset": 0, "bytes": 0,
+                                                                              "denied": "not a valid train attempt"}
+    refused, bad = reader.read(rows["train"].attempt_id, 200, 200)
+    assert bad and "cumulative cap of 300" in refused and reader.total == 200
+    tail, bad = reader.read(rows["train"].attempt_id, 200, 100)
+    assert not bad and reader.total == 300
+    assert (reader.read("not-a-ref")[1], reader.read(rows["train"].attempt_id, "x", 1)[1]) == (True, True)
+    assert path.read_bytes() == before
+    assert reader.listing([rows["train"].attempt_id, rows["dev"].attempt_id, "none"]) == [
+        {"attempt_ref": rows["train"].attempt_id, "task_id": rows["train"].task_id, "bytes": len(before)}]
+
+
+def test_the_dev_histogram_has_assertion_types_and_counts_only(fake_upstream, tmp_path):
+    """RL6-37 / M4 §1: over the installed W's dev readings, the histogram counts failed scored assertions by type —
+    excluded and passed assertions not counted — with the readings' and tasks' counts; it carries no params, no task
+    ids and no per-task rows, and a test attempt in the same store is never read."""
+    from ouroloop.research.session import dev_failure_histogram
+    gap = rsi.BusinessWorker(ignore_finish_check=True)            # the fixture's gap: the notification is skipped
+    results, dev_rows, _ = run(fake_upstream, tmp_path, rsi.DEV, "dev", worker=gap)
+    run(fake_upstream, tmp_path, rsi.FINAL, "test", worker=gap)
+    histogram = dev_failure_histogram(results, [r for r in results.all() if r.split == "dev"])
+    assert set(histogram) == {"split", "types", "readings", "tasks", "attempts"}
+    assert histogram["split"] == "dev" and histogram["readings"] == 1 and histogram["tasks"] == len(rsi.DEV)
+    failed = [r for r in dev_rows if not r.success]
+    assert failed and sum(histogram["types"].values()) >= len(failed)
+    assert all(isinstance(k, str) and isinstance(v, int) for k, v in histogram["types"].items())
+    assert "rsi." not in json.dumps(histogram) and "params" not in json.dumps(histogram)
+    # a pool of test rows gives nothing: the projection reads the split it is asked for and refuses the rest
+    final = dev_failure_histogram(results, [r for r in results.all() if r.split == "test"])
+    assert final["types"] == {} and final["readings"] == 0
+
+
+def test_the_ledger_projection_shows_dev_results_as_three_counts_only():
+    """RL6-37 / M4 §1 台账投影: R's view of the ledger keeps each candidate's declaration, declaration ref, screen
+    (train task ids allowed), verdict and the gate's three classes as counts; the dev task ids of the gate stage
+    appear nowhere in it, and an arm's E0 gets the same counts in place of the lists."""
+    from ouroloop.evolve import experience as xp
+    rows = [xp.ledger_row("declared", "c1", scope="a", round=0, dir="d", declaration={
+                "mechanism": "Check every step", "mechanism_normalized": "check every step", "site": "memory.md",
+                "carrier": "memory", "predicted_affected": ["rsi.notify_after_update"], "trigger_condition": "always",
+                "differs_from": [], "notes": ["note:x"]}, declaration_ref="declaration:sha256:" + "1" * 64,
+                diff={"added": ["memory.md"], "modified": [], "deleted": [], "bytes": 3}, status="declared"),
+            xp.ledger_row("drafted", "c1", drafts=[{"revision": 0, "package_ref": "package:x", "ok": True}],
+                          package_ref="package:x", status="ready"),
+            xp.ledger_row("admitted", "c1", status="admitted", reasons=[]),
+            xp.ledger_row("screened", "c1", tasks=["rsi.notify_after_update", "rsi.update_stage"],
+                          failing=["rsi.notify_after_update"], sample=["rsi.update_stage"],
+                          before={"rsi.notify_after_update": False, "rsi.update_stage": True},
+                          after={"rsi.notify_after_update": True, "rsi.update_stage": True}, net_flips=1,
+                          cost_per_attempt=0.4, thin_screen=True, outcome="selected"),
+            xp.ledger_row("gated", "c1", verdict="accepted", receipt="receipt:sha256:" + "2" * 64,
+                          reading_kind="confirmed", gain=0.33, control_readings=2, cost_per_attempt={"subject": 0.4},
+                          fixed=["rsi.dev_notify_after_update"], regressed=["rsi.dev_policy_hold"],
+                          still_failing=["rsi.dev_update_stage"], installed=True)]
+    folded = xp.ledger_rows(rows)
+    assert len(folded) == 1 and folded[0]["outcome"] == "installed" and folded[0]["gate"]["fixed"] == ["rsi.dev_notify_after_update"]
+    shown = xp.ledger_projection(folded)[0]
+    assert shown["gate"] == {"verdict": "accepted", "reading_kind": "confirmed", "gain": 0.33, "control_readings": 2,
+                             "cost_per_attempt": {"subject": 0.4}, "fixed": 1, "regressed": 1, "still_failing": 1}
+    assert shown["screen"]["tasks"] == ["rsi.notify_after_update", "rsi.update_stage"] and shown["screen"]["thin_screen"]
+    assert shown["declaration_ref"] == "declaration:sha256:" + "1" * 64 and shown["drafts"] == {"checked": 1, "passed": True}
+    assert "rsi.dev" not in json.dumps(shown)
+    stripped = xp.strip_dev_task_ids(rows[-1])
+    assert (stripped["fixed"], stripped["regressed"], stripped["still_failing"]) == (1, 1, 1)
+    # an arm reads the projection of its E0, where the lists are counts already
+    assert xp.ledger_projection(xp.ledger_rows([*rows[:-1], stripped]))[0]["gate"]["fixed"] == 1
+    assert xp.strip_dev_task_ids(rows[0]) is rows[0]
+    with pytest.raises(ValueError, match="ledger stage"):
+        xp.ledger_row("judged", "c1")
+
+
+# ---------------------------------------------------------------------------- v0.3 step 5 (2026-10-06): notes by domain
+FIVE = {"marketing": 27, "sales": 33, "support": 27, "hr": 38, "finance": 23}       # stage 2's W0 train failures
+
+
+def _five(counts=FIVE):
+    order = [f"{d}.t{i:02d}" for d, n in counts.items() for i in range(n)]       # the pooled frozen order
+    return [{"task_id": t, "checks": [], "turns": []} for t in order], order
+
+
+def test_notes_over_five_domains_are_stratified_and_rotate_within_each_domain(tmp_path):
+    """M4 §1 (2026-10-06): failures over several domains are selected by domain in turn — 30 over five domains is six
+    each, each domain's in its frozen order — where the pooled order gave marketing 27 + sales 3; the next round
+    takes each domain's failures not yet noted, and a domain short of failures leaves its turns to the others. The
+    coverage counts each domain's failures and inclusions; cached notes are reused by identity."""
+    import collections
+    from pathlib import Path
+    summaries, order = _five()
+    first, rest = dg.select_failures(summaries, order=order, last_included={}, cap=30)
+    assert collections.Counter(s["task_id"].split(".")[0] for s in first) == {d: 6 for d in FIVE}
+    assert [s["task_id"] for s in first[:5]] == ["marketing.t00", "sales.t00", "support.t00", "hr.t00", "finance.t00"]
+    assert [s["task_id"] for s in first if s["task_id"].startswith("hr.")] == [f"hr.t{i:02d}" for i in range(6)]
+    assert len(first) + len(rest) == len(summaries)
+    history = {s["task_id"]: 0 for s in first}
+    second, _ = dg.select_failures(summaries, order=order, last_included=history, cap=30)
+    assert collections.Counter(s["task_id"].split(".")[0] for s in second) == {d: 6 for d in FIVE}
+    assert not {s["task_id"] for s in second} & set(history)                     # every note new this round
+    # a domain with two failures: its turns go to the others
+    short, short_order = _five({**FIVE, "finance": 2})
+    picked, _ = dg.select_failures(short, order=short_order, last_included={}, cap=30)
+    counts = collections.Counter(s["task_id"].split(".")[0] for s in picked)
+    assert len(picked) == 30 and counts["finance"] == 2 and sorted(counts.values()) == [2, 7, 7, 7, 7]
+
+    class Notes:
+        def __init__(self):
+            self.asked = []
+
+        def note_request(self, summary, prompt, *, allowed=()):
+            return prompt, json.dumps({"failure": summary["task_id"]})
+
+        def note_with_record(self, system, user):
+            self.asked.append(json.loads(user)["failure"])
+            return {"failure_class": "missed_step", "root_cause": "r", "mechanism": "m", "component": "skills",
+                    "generality": "g"}, ""
+
+    def run(history):
+        return dg.Diagnosis(summaries=summaries, order=order, history=history, model={"model": "m"},
+                            cache=dg.NoteCache(Path(tmp_path), ct.Objects(tmp_path)), components=("skills",),
+                            limits=dg.DiagnosisLimits(max_notes=30)).run(asker, "diagnose")
+    asker = Notes()
+    _, coverage = run({})
+    assert coverage["by_domain"] == {d: {"failures": n, "included": 6} for d, n in FIVE.items()}
+    asker = Notes()
+    _, again = run({})
+    assert again["reused"] == 30 and asker.asked == []                          # by identity, nothing asked twice
+
+
+def test_a_single_domain_selects_notes_exactly_as_before():
+    """M4 §1 (2026-10-06): one domain — or ids that name none — selects exactly as the rule always did (least
+    recently included first, ties in the frozen order), and its coverage has no per-domain counts, so an older
+    workspace's note identities, coverage records and summary digests are what they were."""
+    summaries = [{"task_id": f"marketing.t{i:02d}"} for i in range(40)]
+    order = [s["task_id"] for s in reversed(summaries)]
+    history = {"marketing.t39": 0, "marketing.t10": 1}
+
+    def before(summaries, order, last_included, cap):       # the rule as it stood before 2026-10-06
+        position = {t: i for i, t in enumerate(order)}
+        ranked = sorted(summaries, key=lambda s: (last_included.get(s["task_id"], -1),
+                                                  position.get(s["task_id"], len(position)), s["task_id"]))
+        return ranked[:cap], ranked[cap:]
+    assert dg.select_failures(summaries, order=order, last_included=history, cap=30) == \
+        before(summaries, order, history, 30)
+    plain = [{"task_id": t} for t in "dcba"]
+    assert dg.select_failures(plain, order=list("abcd"), last_included={"a": 0}, cap=2) == \
+        before(plain, list("abcd"), {"a": 0}, 2)
+    assert dg.domains_of([s["task_id"] for s in summaries]) == {} and dg.domains_of(list("ab")) == {}

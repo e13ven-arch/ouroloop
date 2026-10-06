@@ -6,7 +6,7 @@ import pytest
 import rsi
 
 from ouroloop import bench
-from ouroloop.benchmark import Results, RunManifest, TaskResult, summarise
+from ouroloop.benchmark import Results, RunManifest, SplitManifest, TaskResult, summarise
 from ouroloop.evolve import contracts as ct
 from ouroloop.evolve.execution import Pricing, check_pricing
 from ouroloop.report import build_report, claim_states, render_markdown, write_report
@@ -285,3 +285,304 @@ def test_a_final_comparison_that_goes_the_other_way_is_not_supported(fake_upstre
     record(results, candidate="base", role="base", split="test", tasks=list(rsi.FINAL), success=True)
     claims = build_report(activity.root, rsi.DOMAIN)["claims"]
     assert claims["C1"]["state"] == "not_supported" and claims["C1"]["interval"]["high"] < 0
+
+
+# ---------------------------------------------------------------------------- v0.3: what the runner shell's records say
+def test_pr7_11_the_report_reads_the_agent_entry_placement_roles_effort_caps_and_limits_from_the_gateway_log():
+    """docs/modules/01_POLICY_RUNTIME.md §4 (Inspection, v0.3), report.gateway_summary: from the host-written lines of
+    two shell attempts — the runner's `agent` record, the `assistant` events with role/effort/requested_effort and
+    usage, the `end` event's `limit` — the capability-package section tallies the entry and its placement, the model
+    calls and output tokens by role (as Gateway.by_role does), the efforts used, how many requests the gateway capped
+    at K's max_effort, and which hard limit ended an attempt; an attempt under the v1 loop (no gateway line) adds
+    nothing, and nothing is read from a package's own mark."""
+    from ouroloop.report import gateway_summary
+    worker = [
+        {"kind": "task", "text": "t"},
+        {"kind": "agent", "entry": "agent/main.py:run", "placement": "worker", "roles": ["act", "aux"]},
+        {"kind": "assistant", "role": "aux", "effort": "high", "requested_effort": "max",
+         "usage": {"input_tokens": 10, "output_tokens": 7}, "tool_calls": [], "stop": "end"},
+        {"kind": "gateway_call", "call_id": "c1", "role": "aux"},
+        {"kind": "assistant", "role": "act", "effort": "medium", "requested_effort": None,
+         "usage": {"prompt_tokens": 3, "completion_tokens": 5}, "tool_calls": [], "stop": "end"},
+        {"kind": "gateway_call", "call_id": "c2", "role": "act"},
+        {"kind": "package_mark", "mark": "assistant", "role": "act", "source": "package"},   # not a model call
+        {"kind": "end", "stop": "act_calls", "turns": 1, "limit": "act_calls"},
+    ]
+    host = [
+        {"kind": "task", "text": "t"},
+        {"kind": "agent", "entry": "agent/default_agent.py:run", "placement": "host", "roles": ["act"]},
+        {"kind": "assistant", "role": "act", "effort": "medium", "requested_effort": None,
+         "usage": {"output_tokens": 2}, "tool_calls": [], "stop": "end"},
+        {"kind": "gateway_call", "call_id": "c3", "role": "act"},
+        {"kind": "end", "stop": "end", "turns": 1},
+    ]
+    old_loop = [{"kind": "task", "text": "t"}, {"kind": "assistant", "text": "x", "tool_calls": []},
+                {"kind": "end", "stop": "end", "turns": 1}]
+    summary = gateway_summary([worker, host, old_loop])
+    assert summary == {"attempts": 2,
+                       "entries": {"agent/main.py:run": 1, "agent/default_agent.py:run": 1},
+                       "placements": {"worker": 1, "host": 1},
+                       "by_role": {"aux": {"calls": 1, "tokens": 7}, "act": {"calls": 2, "tokens": 7}},
+                       "efforts": {"high": 1, "medium": 2}, "effort_caps": 1, "limits_hit": {"act_calls": 1}}
+    assert gateway_summary([old_loop]) == gateway_summary([])        # observed nothing: no zeros posing as calls
+    assert gateway_summary([])["attempts"] == 0
+    # the markdown line carries the same facts, and a report without shell attempts has no such line
+    harness = {"packages": {"release:sha256:" + "a" * 64: {
+        "package_ref": "package:sha256:" + "b" * 64, "files": 2, "test_files": 0, "kinds": ["agent"],
+        "skills": [], "hooks": [], "tools": [], "memory": False, "agent": "agent/main.py:run", "roles": ["act", "aux"]}},
+        "behaviour": {"sessions": 2, "skill_reads": {}, "hooks": {}, "package_tools": {}, "worker_sessions": 1,
+                      "worker_seconds": 1.5, "gateway": summary},
+        "measurements": [], "measurement_note": "n", "notes": [], "drafts": {"checks": 0, "refused": 0,
+                                                                            "infrastructure": 0, "finished": {}},
+        "gates": [], "research_cost": {}, "cycle": None, "reuse": [], "not_run": {}}
+    report = {"protocol": "p", "identity": {"domain": "d", "attempts": 2, "runs": 1, "splits": None, "releases": [],
+                                            "missing": []},
+              "task_effect": {"arms": {}}, "run_cost": {}, "improvement_evidence": {"experiments": [],
+                                                                                   "installations": []},
+              "rsi_evidence": {"research_receipts": [], "discovery": None, "installed_releases": []}, "claims": {},
+              "harness": harness, "improvement_cost": {}}
+    text = render_markdown(report)
+    assert "agent agent/main.py:run roles ['act', 'aux']" in text
+    assert ("runner shell over 2 attempts: agent {'agent/main.py:run': 1, 'agent/default_agent.py:run': 1} placed "
+            "{'worker': 1, 'host': 1}; model calls by role {'aux': {'calls': 1, 'tokens': 7}, 'act': {'calls': 2, "
+            "'tokens': 7}}; efforts {'high': 1, 'medium': 2}, 1 requests capped at K's max_effort; limits hit "
+            "{'act_calls': 1}") in text
+    harness["behaviour"]["gateway"] = gateway_summary([])
+    assert "runner shell" not in render_markdown(report)
+
+
+def test_each_arm_shows_its_cost_per_attempt(fake_upstream, tmp_path):
+    """M7 §4, M5 §2 (v0.3): the report's run_cost gives each run its `cost_per_attempt` — the mean of the priced
+    valid attempts, None when none was priced, the unpriced ones counted — and its rate-limit refusals summed from
+    the `rate_limited` events of that run alone; the improvement cost sums them for the attempts and for the
+    research steps apart."""
+    cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
+    priced = record(activity.results, candidate="base", role="base", cost=0.5)
+    unpriced = record(activity.results, candidate="evolved", role="evolved", cost=None)
+    events = ct.Events(activity.root)
+    events.append("rate_limited", scope="it", arm="dev_baseline", run=priced.hash(), count=3)
+    events.append("rate_limited", scope="it", arm="control", run=priced.hash(), count=2)
+    events.append("rate_limited", scope="it", arm="subject", run="0" * 16, count=7)        # another run's
+    events.append("rate_limited", scope="it", arm="research", round=0, count=4)
+    report = build_report(activity.root, rsi.DOMAIN)
+    assert report["run_cost"][priced.hash()]["cost_per_attempt"] == 0.5
+    assert report["run_cost"][priced.hash()]["rate_limited"] == 5
+    assert report["run_cost"][unpriced.hash()]["cost_per_attempt"] is None
+    assert report["run_cost"][unpriced.hash()]["cost_missing"] == 2
+    assert report["run_cost"][unpriced.hash()]["rate_limited"] == 0
+    assert report["improvement_cost"]["rate_limited"] == {"attempts": 12, "research": 4}
+    assert "rate-limit refusals absorbed as unbilled retries" in render_markdown(report)
+
+
+# ---------------------------------------------------------------------------- v0.3 (M7 §4, BR6-23): the ledger in the report
+def test_the_ledger_is_listed_per_candidate_without_dev_task_ids(fake_upstream, tmp_path):
+    """M7 §4 / BR6-23: the report's capability-package section lists the engine ledger per candidate — declaration,
+    screen result, verdict, the gate's three classes as counts — with the carriers' distribution and how many
+    admissions `repeated_mechanism` refused; the dev task ids of the gate stage are in no report field and not in
+    the markdown; the session records are listed too."""
+    from ouroloop.evolve import experience as xp
+    cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
+    root = activity.root
+    xp.append(root, {"kind": "diagnosis", "scope": "it", "round": 0, "noted": 1, "failures": 1, "reused": 0,
+                     "invalid": [], "included": ["rsi.notify_after_update"], "not_included": [],
+                     "working_set": "all", "measured": 5, "passed": 3})
+    declaration = {"mechanism": "check every step", "mechanism_normalized": "check every step", "site": "memory.md",
+                   "carrier": "memory", "predicted_affected": ["rsi.notify_after_update"],
+                   "trigger_condition": "always", "differs_from": [], "notes": []}
+    for stage, fields in (("declared", {"declaration": declaration, "status": "declared", "dir": "m1",
+                                        "declaration_ref": "declaration:sha256:" + "a" * 64}),
+                          ("screened", {"tasks": ["rsi.notify_after_update"], "net_flips": 1, "thin_screen": True,
+                                        "outcome": "selected"}),
+                          ("gated", {"verdict": "accepted", "receipt": "receipt:sha256:" + "b" * 64,
+                                     "reading_kind": "confirmed", "gain": 0.2, "control_readings": 3,
+                                     "fixed": ["rsi.dev_notify_after_update"], "regressed": [],
+                                     "still_failing": ["rsi.dev_policy_hold"], "installed": True})):
+        xp.append(root, xp.ledger_row(stage, "it/r0/m1", scope="it", round=0, **fields))
+    xp.append(root, xp.ledger_row("declared", "it/r1/m2", scope="it", round=1, dir="m2", status="declared",
+                                  declaration={**declaration, "carrier": "hook", "site": "on_finish"}))
+    xp.append(root, xp.ledger_row("admitted", "it/r1/m2", scope="it", round=1, status="invalid",
+                                  reasons=["repeated_mechanism: 'check every step' at 'on_finish' was rejected"]))
+    ct.Events(root).append("research_session", scope="it", round=0, turns=5, edits=2, trajectory_reads=1,
+                           trajectory_bytes=1200, finishes=1, ended="")
+    report = build_report(root, rsi.DOMAIN)
+    ledger = report["harness"]["ledger"]
+    assert ledger["carriers"] == {"memory": 1, "hook": 1} and ledger["repeated_mechanism_refusals"] == 1
+    assert ledger["outcomes"] == {"installed": 1, "invalid": 1}
+    first = ledger["candidates"][0]
+    assert first["gate"] == {"verdict": "accepted", "reading_kind": "confirmed", "gain": 0.2, "control_readings": 3,
+                             "cost_per_attempt": None, "fixed": 1, "regressed": 0, "still_failing": 1}
+    assert first["screen"]["tasks"] == ["rsi.notify_after_update"]
+    assert "rsi.dev" not in json.dumps(ledger)
+    assert report["harness"]["sessions"] == [{"scope": "it", "round": 0, "turns": 5, "edits": 2, "trajectory_reads": 1,
+                                              "trajectory_bytes": 1200, "finishes": 1, "ended": ""}]
+    markdown = render_markdown(report)
+    assert "- ledger: 2 candidates" in markdown and "it/r0/m1: memory at memory.md" in markdown
+    assert "fixed 1, regressed 0, still failing 1" in markdown and "rsi.dev" not in markdown
+    assert "- session round 0: 5 turns, 2 edits, 1 trajectory reads (1200 bytes), 1 finish" in markdown
+
+
+# ---------------------------------------------------------------------------- v0.3 step 5 (M7 §4, BR6-20/23): per domain
+POOLED = "marketing+sales+support"
+
+
+def pooled_workspace(fake_upstream, tmp_path):
+    """The pooled split of tests/test_bench_phase.py's domain config (Marketing pinned and spent, sales and support
+    stratified) frozen in a workspace, with nothing run yet. -> (root, pooled manifest)."""
+    from test_bench_phase import domains_config
+    loaded = bench.BenchConfig.load(domains_config(fake_upstream, tmp_path))
+    _suite, pooled, _ = bench.load_domains(loaded, tmp_path / "ws")
+    return tmp_path / "ws", pooled
+
+
+def record_final(results: Results, pooled, *, role, passes) -> RunManifest:
+    """One final-split run of `role` over every test task of the pooled split, a task passing when `passes(task)`."""
+    run = rsi.run_manifest(role, role, "test", data=pooled.hash())
+    results.put_run(run)
+    for task in pooled.ids("test"):
+        results.append(TaskResult(task, task, "test", 0, role, run.hash(), pooled.hash(), success=passes(task),
+                                  partial_credit=1.0 if passes(task) else 0.0, cost_usd=0.4 if role == "base" else 0.6,
+                                  pair_key=f"plan/{task}/r0"))
+    return run
+
+
+def seal_final(root, pooled) -> None:
+    objects = ct.Objects(root)
+    plan = bench.FinalizationPlan(experiment_id="md", claims=("C1",), task_ids=tuple(pooled.ids("test")),
+                                  comparisons=({"claim": "C1", "subject": "evolved", "control": "base"},),
+                                  statistical_plan={"bootstrap_replicates": 200, "bootstrap_seed": 1})
+    bench.seal(plan, root, objects)
+
+
+def test_task_effect_is_broken_down_per_domain(fake_upstream, tmp_path):
+    """BR6-23 (按领域分列): every run of a pooled activity carries its pass rate, passes and cost per attempt per
+    domain beside the pooled row; the identity lists each domain's split — hash, rule, counts, strata — and the
+    markdown has the per-domain table. A one-domain report has none of it, as before."""
+    root, pooled = pooled_workspace(fake_upstream, tmp_path)
+    results = Results(root, POOLED)
+    run = rsi.run_manifest("base", "base", "dev", data=pooled.hash())
+    results.put_run(run)
+    for task in pooled.ids("dev"):
+        ok = task.startswith("sales.")
+        results.append(TaskResult(task, task, "dev", 0, "base", run.hash(), pooled.hash(), success=ok,
+                                  partial_credit=1.0 if ok else 0.5, cost_usd=0.3 if ok else 0.5))
+    report = build_report(root, POOLED)
+    arm = report["task_effect"]["arms"][run.hash()]
+    assert set(arm["per_domain"]) == {"sales", "support"}
+    assert arm["per_domain"]["sales"]["pass_rate"] == 1.0 and arm["per_domain"]["support"]["pass_rate"] == 0.0
+    assert arm["per_domain"]["sales"]["cost_per_attempt"] == 0.3 and arm["per_domain"]["support"]["cost_per_attempt"] == 0.5
+    assert report["run_cost"][run.hash()]["per_domain"] == {"sales": 0.3, "support": 0.5}
+    assert arm["summary"]["tasks"] == sum(v["tasks"] for v in arm["per_domain"].values())
+    domains = report["identity"]["domains"]
+    assert [d["domain"] for d in domains] == ["marketing", "sales", "support"]
+    assert [d["spent"] for d in domains] == [True, False, False] and domains[1]["strata"]
+    markdown = render_markdown(report)
+    assert "### By domain" in markdown and "| sales |" in markdown and "(spent)" in markdown
+    # one domain: nothing per domain
+    cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path / "one")
+    record(activity.results, candidate="base", role="base", cost=0.5)
+    single = build_report(activity.root, rsi.DOMAIN)
+    assert single["identity"]["domains"] == [] and "final_by_domain" not in single
+    assert all("per_domain" not in a for a in single["task_effect"]["arms"].values())
+
+
+def test_marketing_test_rows_are_marked_spent_and_kept_out_of_the_claim(fake_upstream, tmp_path):
+    """BR6-20: when a final's runs hold test rows of a spent domain, the final table marks that domain `spent`, the
+    claim row pools only the domains a new claim may read, and C1's interval is computed over those tasks alone —
+    here Marketing's test task would flip the sign of the claim if it were counted."""
+    root, pooled = pooled_workspace(fake_upstream, tmp_path)
+    results = Results(root, POOLED)
+    marketing = [t for t in pooled.ids("test") if t.startswith("marketing.")]
+    assert marketing                                        # the fixture's Marketing has a test task under seed 1
+    # evolved wins every new-domain task and loses Marketing's
+    record_final(results, pooled, role="base", passes=lambda t: t.startswith("marketing."))
+    record_final(results, pooled, role="evolved", passes=lambda t: not t.startswith("marketing."))
+    seal_final(root, pooled)
+    report = build_report(root, POOLED)
+    final = report["final_by_domain"]
+    assert final["domains"]["marketing"]["spent"] is True and final["domains"]["sales"]["spent"] is False
+    assert final["domains"]["marketing"]["difference"] == -1.0
+    claim_tasks = len(pooled.claim_ids("test"))
+    assert final["claim"]["evolved"] == {"tasks": claim_tasks, "pass_rate": 1.0}
+    assert final["claim"]["base"] == {"tasks": claim_tasks, "pass_rate": 0.0}
+    c1 = report["claims"]["C1"]
+    assert c1["interval"]["tasks"] == claim_tasks and c1["interval"]["point"] == 1.0
+    assert "spent: not in the claim" in render_markdown(report)
+
+
+def test_the_final_table_lists_the_best_of_k_arm_only_when_it_ran(fake_upstream, tmp_path):
+    """BR6-23 / M3 §2.2: the optional matched-cost best-of-k W0 arm is listed in the final table only when a run of
+    it is on record (role `matched_cost`); otherwise the table says not_run, and it never enters the claim row."""
+    root, pooled = pooled_workspace(fake_upstream, tmp_path)
+    results = Results(root, POOLED)
+    record_final(results, pooled, role="base", passes=lambda t: False)
+    record_final(results, pooled, role="evolved", passes=lambda t: True)
+    seal_final(root, pooled)
+    report = build_report(root, POOLED)
+    assert report["final_by_domain"]["best_of_k"] == "not_run"
+    assert "matched-cost best-of-k arm: not_run" in render_markdown(report)
+    record_final(results, pooled, role="matched_cost", passes=lambda t: True)
+    report = build_report(root, POOLED)
+    assert report["final_by_domain"]["best_of_k"] == "ran"
+    assert "matched_cost" in report["final_by_domain"]["domains"]["sales"]["roles"]
+    assert set(report["final_by_domain"]["claim"]) >= {"base", "evolved"}
+    assert report["claims"]["C1"]["interval"]["point"] == 1.0        # evolved against base, never the k arm
+
+
+def test_it6_36_the_report_lists_cost_per_attempt_the_ledger_and_headroom_per_domain(fake_upstream, tmp_path,
+                                                                                      monkeypatch):
+    """IT6-36: after a cycle over Marketing and the two fixture domains, the report gives every run its cost per
+    attempt per domain beside the pooled one, the research slot's headroom per domain and how its halves split, and
+    the ledger's fixed/regressed/still-failing per domain — counts, no dev task id. The helper a gate receipt's
+    `metrics.per_domain` is made with is checked at the end; the receipt itself is
+    test_task_gate.py::test_a_receipt_over_several_domains_carries_per_domain_means (2026-10-05 review)."""
+    from ouroloop.evolve import experience as xp
+    from ouroloop.evolve.task_gate import per_domain
+    from test_bench_phase import run_domains_cycle
+    cfg, result = run_domains_cycle(fake_upstream, tmp_path, monkeypatch)
+    root = tmp_path / "ws"
+    dev = SplitManifest.load(Results(root, POOLED).manifest_path()).ids("dev")
+    sales, support = [t for t in dev if t.startswith("sales.")], [t for t in dev if t.startswith("support.")]
+    xp.append(root, xp.ledger_row("declared", "md/r0/m1", scope="md", round=0, dir="m1", status="declared",
+                                  declaration={"mechanism": "check", "site": "memory.md", "carrier": "memory"}))
+    xp.append(root, xp.ledger_row("gated", "md/r0/m1", scope="md", round=0, verdict="rejected",
+                                  receipt="receipt:sha256:" + "e" * 64, gain=0.0, fixed=sales[:1],
+                                  regressed=support[:1], still_failing=sales[1:] + support[1:]))
+    report = build_report(root, POOLED)
+    runs = report["task_effect"]["arms"]
+    assert runs and all(set(a["per_domain"]) <= {"marketing", "sales", "support"} for a in runs.values())
+    priced = [r for r in report["run_cost"].values() if r.get("per_domain")]
+    assert priced and all(v is not None and v > 0 for r in priced for v in r["per_domain"].values())
+    headroom = report["harness"]["headroom"]
+    assert headroom[0]["slot"] == "slot-0" and headroom[0]["outcome"] == "no_headroom"
+    assert set(headroom[0]["by_domain"]) == {"sales", "support"}
+    assert sum(headroom[0]["by_domain"].values()) == headroom[0]["headroom"]
+    assert set(headroom[0]["halves_by_domain"]["inner"]) == {"sales", "support"}
+    by_domain = report["harness"]["ledger"]["by_domain"]
+    assert by_domain["sales"]["fixed"] == 1 and by_domain["support"]["regressed"] == 1
+    assert sum(d["still_failing"] for d in by_domain.values()) == len(sales) + len(support) - 2
+    assert not any(t in json.dumps(report["harness"]["ledger"]) for t in dev)
+    markdown = render_markdown(report)
+    assert "- headroom slot-0:" in markdown and "ledger by domain" in markdown
+    assert not any(t in markdown for t in dev)
+    # a gate receipt over several domains carries the paired means per domain; over one domain it carries nothing
+    split = per_domain({"sales.a": 1.0, "sales.b": 0.0, "support.a": 1.0}, {"sales.a": 0.0, "sales.b": 0.0,
+                                                                         "support.a": 1.0})
+    assert split == {"sales": {"tasks": 2, "subject": 0.5, "control": 0.0, "gain": 0.5},
+                     "support": {"tasks": 1, "subject": 1.0, "control": 1.0, "gain": 0.0}}
+    assert per_domain({"rsi.a": 1.0}, {"rsi.a": 0.0}) == {}
+
+
+def test_a_claim_before_the_final_reads_the_dev_readings_only(fake_upstream, tmp_path):
+    """Stage 0/1 review, item 2: before a final exists a claim compares the dev readings of the two roles only — a
+    W's train-side screen or train measurement (role `evolved` or `base` too) is another task set and is not
+    averaged in. Here the evolved dev reading equals the base one; its perfect train screen used to lift it above."""
+    cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
+    record(activity.results, candidate="base", role="base", split="dev", success=False, partial=0.5)
+    record(activity.results, candidate="candidate", role="evolved", split="dev", success=False, partial=0.5)
+    record(activity.results, candidate="screened", role="evolved", split="train", tasks=["rsi.update_stage"])
+    c1 = build_report(activity.root, rsi.DOMAIN)["claims"]["C1"]
+    assert c1["state"] == "not_supported" and c1["detail"].endswith("0.0 against 0.0"), c1
+    # a dev reading that is higher is still only a development record
+    record(activity.results, candidate="better", role="evolved", split="dev")
+    c1 = build_report(activity.root, rsi.DOMAIN)["claims"]["C1"]
+    assert c1["state"] == "inconclusive" and "on development records" in c1["detail"]

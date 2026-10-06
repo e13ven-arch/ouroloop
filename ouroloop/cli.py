@@ -398,12 +398,22 @@ def cmd_bench(args) -> int:
     """
     from .adapters.automationbench import UpstreamError
     from .bench import run_phase
+    if getattr(args, "checks_only", False) and args.phase != "smoke":
+        # A flag a phase does not read must not be taken as a promise: `--checks-only` on a paid phase would run
+        # that phase for real (2026-10-05: a pilot cycle started paying under it).
+        print(f"ouroloop bench: --checks-only is a smoke option; --phase {args.phase} would ignore it and run "
+              f"for real. Run `--phase smoke --checks-only` for the startup checks.", file=sys.stderr)
+        return 2
     cfg = config.load(args.config)
+    if getattr(args, "concurrency", None) is not None:
+        # M5 §2 (v0.3): the attempts in flight for this run only. A setting of the machine — it enters no frozen
+        # plan's identity, so lowering it on a resume changes nothing about the comparison being finished.
+        cfg = {**cfg, "bench": {**dict(cfg.get("bench") or {}), "concurrency": int(args.concurrency)}}
     kw = {"smoke": dict(tasks=args.task, limit=args.limit, run_agent=not args.checks_only,
                         replace_splits=args.replace_splits),
           "baseline": dict(tasks=args.task, limit=args.limit),
           "collect": dict(tasks=args.task, repeats=args.repeats),
-          "improve": dict(rounds=args.rounds),
+          "improve": dict(rounds=args.rounds, reason=args.reason),
           "research": dict(campaign_ref=args.plan),
           "evaluate": dict(plan_ref=args.plan),
           "report": {}, "cycle": dict(until=args.until)}[args.phase]
@@ -597,7 +607,14 @@ def main(argv: list[str] | None = None) -> int:
     bn.add_argument("--replace-splits", action="store_true",
                     help="freeze the task groups again; refused once the workspace holds results")
     bn.add_argument("--out", help="write the phase report as JSON")
-    bn.add_argument("--rounds", type=int, help="improve: how many worker rounds (default: the frozen schedule)")
+    bn.add_argument("--concurrency", type=int,
+                    help="attempts in flight at once for this run, over [bench] concurrency; a machine setting that "
+                         "enters no frozen plan (M5 §2)")
+    bn.add_argument("--rounds", type=int, help="improve: how many worker rounds (default: the frozen schedule); "
+                                               "on a cycle activity whose last segment has ended, that many more "
+                                               "rounds, recorded as an extension beyond the frozen schedule")
+    bn.add_argument("--reason", help="improve --rounds on an ended segment: why the frozen schedule is extended "
+                                     "(required; recorded with the extension)")
     bn.add_argument("--repeats", type=int, help="collect: attempts per training task")
     bn.add_argument("--plan", help="research/evaluate: the frozen plan to run, instead of the one in [rsi]")
     bn.add_argument("--until", help="cycle: stop after this step and pay for nothing past it: baseline, segment-N, "

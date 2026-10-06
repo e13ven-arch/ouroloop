@@ -50,10 +50,19 @@ class App:
             if pinned.get("image_id") and worker.image_id() != pinned["image_id"]:
                 raise P.BindError(f"the worker runs image {worker.image_id()}, and this app was validated with "
                                   f"{pinned['image_id']}")
+            # The image's runner must be this host's worker_runner.py (docs/modules/01_POLICY_RUNTIME.md §1 默认
+            # agent 即种子包): an image built from another would fail the package's runs as if they were its own.
+            problem = worker.runner_problem()
+            if problem:
+                raise P.BindError(f"the isolated worker cannot serve this host: {problem}")
         actor = bound.actor if bound.actor_identity is not None else provider
         if actor is None:
             raise P.BindError("the export pins no actor and none was given")
-        return make_agent_factory(rt, actor, budget=budget, bound=bound, objects=self.objects, worker=worker)
+        # The export carries K's `max_effort` instead of K itself: with one, the app runs under the runner shell
+        # (gateway, broker, default agent) as the activity did; an app exported from an older K keeps the v1 loop.
+        core = self.objects.get(self.manifest.required_core_ref) if self.manifest.required_core_ref else {}
+        return make_agent_factory(rt, actor, budget=budget, bound=bound, objects=self.objects, worker=worker,
+                                  max_effort=(core or {}).get("max_effort"))
 
     def describe(self) -> dict:
         return {"release": ct.short(self.manifest.source_release_ref), "package": self.manifest.package_ref,

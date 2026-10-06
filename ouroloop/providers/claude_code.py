@@ -16,12 +16,15 @@ native tool use, and a result says so (docs/ROADMAP.md §3, step 2a).
 """
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -171,6 +174,62 @@ def _structured(result: dict):
         return None
 
 
+# ---------------------------------------------------------------------------- the `claude` children
+# Each call's `claude` child runs in a session of its own (stage 0/1 review, 2026-10-05): a terminal's Ctrl-C goes to
+# the foreground process group, and the child is no longer in it, so it reaches only this process — whose interrupt
+# handling (task_eval.run_tasks) lets the attempts in flight finish and their calls settle, instead of every child
+# dying under the same signal and leaving its call `unknown` at the full reservation bound. What the parent no longer
+# waits for it kills itself: a call past its timeout (the child's whole process group), a wait the parent's own
+# thread was interrupted in (concurrency 1: the attempt runs on the main thread), and, at interpreter exit, any child
+# still running.
+_CHILDREN: set = set()
+_CHILDREN_LOCK = threading.Lock()
+
+
+def _kill_group(proc: subprocess.Popen) -> None:
+    """The child and anything it started (its own process group, start_new_session)."""
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (AttributeError, ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+
+@atexit.register
+def _kill_abandoned() -> None:
+    with _CHILDREN_LOCK:
+        live = list(_CHILDREN)
+    for proc in live:
+        if proc.poll() is None:
+            _kill_group(proc)
+
+
+def run_child(cmd: list, *, input: str, timeout: float, cwd, env) -> subprocess.CompletedProcess:
+    """subprocess.run(cmd, input=..., capture_output=True, text=True, timeout=...) with the child in a session of its
+    own, killed with its process group on a timeout or when the waiting thread is interrupted."""
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            cwd=cwd, env=env, start_new_session=True)
+    with _CHILDREN_LOCK:
+        _CHILDREN.add(proc)
+    try:
+        try:
+            out, err = proc.communicate(input=input, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill_group(proc)
+            proc.communicate()
+            raise
+        except BaseException:
+            _kill_group(proc)
+            proc.wait()
+            raise
+        return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+    finally:
+        with _CHILDREN_LOCK:
+            _CHILDREN.discard(proc)
+
+
 class ClaudeCodeProvider:
     name = "claude_code"
     source = "frontier_llm"            # a closed model's answers are never training targets
@@ -193,7 +252,10 @@ class ClaudeCodeProvider:
     def complete(self, system: str, prompt: str) -> str:
         return self.chat(system, [{"role": "user", "content": prompt}], []).text
 
-    def chat(self, system: str, messages: list[dict], tools: list[ToolSpec]) -> ChatTurn:
+    def chat(self, system: str, messages: list[dict], tools: list[ToolSpec], effort: str | None = None) -> ChatTurn:
+        """One turn. `effort` is this call's reasoning tier, passed to the CLI as --effort when given; None keeps the
+        provider's own (the tier W0 pinned). The gateway (agent/gateway.py) sets it per call for an agent program
+        that asks for one, already capped at K's `max_effort` (docs/modules/00_CONTRACTS.md §2)."""
         plain = not tools and len(messages) == 1 and messages[0].get("role") == "user"
         if plain:
             prompt, schema = str(messages[0].get("content", "")), None
@@ -203,7 +265,7 @@ class ClaudeCodeProvider:
             schema = turn_schema([t.name for t in tools])
         for attempt in range(self.retries + 1):
             try:
-                return self._call(system, prompt, schema, {t.name for t in tools})
+                return self._call(system, prompt, schema, {t.name for t in tools}, effort=effort)
             except ProviderAccountError:
                 raise
             except ProviderError as e:
@@ -213,12 +275,12 @@ class ClaudeCodeProvider:
         raise AssertionError("unreachable")
 
     # ------------------------------------------------------------------------ one CLI call
-    def _command(self, system: str, schema: dict | None) -> list[str]:
+    def _command(self, system: str, schema: dict | None, effort: str | None = None) -> list[str]:
         cmd = [self.binary, "-p", "--model", self.model, "--tools", "", "--safe-mode", "--setting-sources", "",
                "--strict-mcp-config", "--no-session-persistence", "--disable-slash-commands",
                "--system-prompt", system or " "]
-        if self.effort:
-            cmd += ["--effort", str(self.effort)]
+        if effort or self.effort:
+            cmd += ["--effort", str(effort or self.effort)]
         if schema is None:
             return cmd + ["--output-format", "json"]
         # Text blocks reach the model as blocks only through a stream; a stream's output needs --verbose.
@@ -232,10 +294,10 @@ class ClaudeCodeProvider:
                                        f"it would read what is there")
         return self.workdir
 
-    def _call(self, system: str, prompt: str, schema: dict | None, offered: set) -> ChatTurn:
+    def _call(self, system: str, prompt: str, schema: dict | None, offered: set, effort: str | None = None) -> ChatTurn:
         try:
-            done = subprocess.run(self._command(system, schema), input=prompt, capture_output=True, text=True,
-                                  timeout=self.timeout, cwd=self._empty_dir(), env=child_env(self.max_tokens))
+            done = run_child(self._command(system, schema, effort), input=prompt, timeout=self.timeout,
+                             cwd=self._empty_dir(), env=child_env(self.max_tokens))
         except FileNotFoundError as e:
             raise ProviderAccountError(f"the claude CLI {self.binary!r} was not found ({e}): install Claude Code "
                                        f"and run `claude auth login`") from None

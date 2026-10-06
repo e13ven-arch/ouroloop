@@ -46,6 +46,8 @@ test = 0.25
 max_steps = 50                  # upstream's default --max-steps
 max_tool_calls = 200
 max_seconds = 900
+max_model_calls = 200           # all five hard limits, M0 §2 (docs/modules/00_CONTRACTS.md): act and aux
+max_tokens = 400000             # calls together, and the attempt's output tokens, thinking included
 
 # [bench.families]              # task_id = family_id, for tasks that are variants of one workflow. Upstream ships
 # "marketing.a" = "marketing.f" # no variant field; on the public Marketing set no pair of tasks has a signature
