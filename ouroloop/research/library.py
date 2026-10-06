@@ -63,8 +63,7 @@ class LibrarySettings:
     retire_min_shown: int = 3
     min_other_tasks: int = 2          # train tasks beyond its sources an entry's `when` must retrieve
     max_per_distill: int = 2
-    abort_d: float = 0.0              # the snapshot is not gated when D <= abort_d ...
-    abort_b: int = 3                  # ... or B >= abort_b (V0_5_PLAN §3)
+    abort_d: float = 0.0              # the snapshot is not gated when D <= abort_d (V0_5_PLAN §3; B is reported only)
 
     def to_json(self) -> dict:
         return {f.name: getattr(self, f.name) for f in fields(self)}
@@ -525,6 +524,9 @@ def parse_distilled(text: str, *, max_entries: int = 2) -> list[dict]:
             data = json.loads(raw[start:end + 1]) if start >= 0 and end > start else {}
         except ValueError:
             return []
+    if isinstance(data, dict) and "entries" not in data and isinstance(data.get("body"), str):
+        # one bare entry, as the MERGE prompt asks for (2026-10-07 review: a merge reply was always discarded)
+        return [data][:max_entries]
     items = data.get("entries") if isinstance(data, dict) else data if isinstance(data, list) else []
     return [e for e in items if isinstance(e, dict)][:max_entries] if isinstance(items, list) else []
 
@@ -582,6 +584,16 @@ def stream_readout(readings: dict, order: list) -> dict:
     return {"tasks": len(rows), "D": round(d, 4), "B": b, "windows": windows,
             "first_half": mean(first), "second_half": mean(second),
             "halves_difference": None if not first or not second else round(mean(second) - mean(first), 4)}
+
+
+def snapshot_abort(readout: dict, settings: LibrarySettings, *, empty: bool = False) -> str | None:
+    """Why the stream's snapshot is not offered to the gate, or None (V0_5_PLAN §1.4, 2026-10-07): D <= abort_d, or an
+    empty library. B is a process number only — the snapshot round's own screen, gate and confirmation catch harm."""
+    if readout["D"] <= settings.abort_d:
+        return f"D {readout['D']} <= {settings.abort_d}"
+    if empty:
+        return "the library is empty"
+    return None
 
 
 def bootstrap_halves(readings: dict, order: list, *, replicates: int = 2000, seed: int = 1) -> float | None:

@@ -13,14 +13,19 @@
 #   2b  `... --phase cycle` (one segment of 3 rounds, patience 2; after each round read the free process checks:
 #       0 false literal refusals, every candidate grounded by its reads, a tool or hook candidate reaching the screen
 #       within the 3 rounds — if one fails, stop and fix offline)                                            ~$120
-#   2c  only with a confirmed install: [freeze.final] below with W*, `ouroloop freeze`, commit the plan hash,
-#       `--phase evaluate`: support's 25 test tasks x 3, W0 against W*, W0's pass@k beside it               ~$72
+#   2c  only with a confirmed install, in this order (the v0.4 arm of support's two-arm test, V0_5_PLAN §3):
+#       (1) fill [freeze.final] below with W* (rsi/active.json) and W0; (2) `ouroloop freeze --config ...` seals the
+#       plan and prints its hash; (3) commit that hash (and the v0.5 arm's, sealed the same way) before EITHER arm's
+#       final runs; (4) `--phase evaluate`: support's 25 test tasks x 3, W0 against W*, W0's pass@k beside it   ~$72
+#       With no install there is no final for this arm: H1 then pairs the v0.5 final's W* against that final's own
+#       W0 arm (this arm's W* is W0), computed by examples/automationbench/support_h1.py.
 # Before 2a: `claude auth login` (Max subscription, extra usage off); the worker image rebuilt from
 # docker/worker.Dockerfile; `ouroloop freeze --config examples/automationbench/claude-v4-support.toml` prints the split
 # hash (must be 3da11232f5d5ff38) and the [rsi] lines to add (task_plan_ref, schedule_ref, budget_ref).
 #
 # Pre-registered reading (V0_4_PLAN §3): a confirmed install -> the sealed final; no install in 3 rounds -> stop and
 # report it; a significant final (interval above 0) -> sales and hr next, each a single-domain activity like this one.
+# As the v0.4 arm of support's two-arm test (V0_5_PLAN §3, 2026-10-07): H1 pairs this arm's final with the v0.5 arm's.
 #
 # The estimate (2026-10-06) from v0.3's measured unit costs: W0 $0.466 an attempt (the five-domain baseline, 377
 # attempts), a candidate $0.49 (the v0.3 gates' candidate arms); one call reserves 1M in x $4/M + 163,840 out x $20/M =
@@ -39,8 +44,11 @@
 #   The final share $160: the expected $71.70 + 8 lanes $58.21 + 2 stuck $14.55 = $144.46, and room for a dearer W*:
 #   160 - 58.21 - 14.55 = $87.24 over 75 attempts of each arm = $1.163 for W0 + W*, so W* up to $0.697 beside W0's
 #   $0.466 — above the gate's own cost allowance at a gain of 0.10 ($0.466 x (1 + 0.10 + 2.0 x 0.10) = $0.606).
-#   The root = $203.40 + 8 lanes $58.21 + 2 stuck $14.55 + the final share $160 = $436.16, so $450 (a root cannot
-#   change once it opens). After 2a, recompute 2b-2c from the measured cost per attempt.
+#   The root this arm needs = $203.40 + 8 lanes $58.21 + 2 stuck $14.55 + the final share $160 = $436.16 ($450 before
+#   2026-10-07). The root is $600 (the v0.5 review's decision, 2026-10-07): equal to the v0.5 arm's, so support's two
+#   arms run at EQUAL CAPS and the SAME SCHEDULE (3 rounds, patience 2). This arm's expected spend is unchanged and it
+#   will not use the rest; the report states each arm's actual spend beside H1. A root cannot change once it opens.
+#   After 2a, recompute 2b-2c from the measured cost per attempt.
 #   [estimate] below is what freeze uses for an arm without priced readings (never a limit).
 
 [workspace]
@@ -158,10 +166,10 @@ worker_rounds = 3
 research_slots = 0
 patience = 2
 
-# The activity's budget in notional dollars at [pricing], computed above: $450, a hard stop fixed when the root opens
-# (2a). The final's share is set aside on the same root from the start.
+# The activity's budget in notional dollars at [pricing]: $600, equal to the v0.5 arm's (computed above; equal caps),
+# a hard stop fixed when the root opens (2a). The final's share is set aside on the same root from the start.
 [freeze.budget]
-usd = 450.0
+usd = 600.0
 
 [freeze.budget.final]
 usd = 160.0

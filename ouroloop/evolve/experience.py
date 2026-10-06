@@ -121,6 +121,8 @@ def ledger_rows(entries, scope: str | None = None) -> list[dict]:
         if stage == "declared":
             entry.update({k: row.get(k) for k in ("scope", "round", "ordinal", "release", "research_ref", "dir",
                                                   "declaration", "declaration_ref", "diff", "carrier")})
+            if row.get("fixed_code"):
+                entry["fixed_code"] = True      # v0.5: a candidate fixed code declared (research.fixed)
             if row.get("status") in ("dropped", "declaration_mismatch", "invalid"):
                 entry["outcome"] = row["status"]
                 entry["reason"] = row.get("reason")

@@ -114,6 +114,9 @@ def test_the_learn_phase_runs_antithetic_twins_on_train_fits_the_table_and_gates
     for r in activity.results.all():
         if r.split == "dev":
             assert M.propensity_problems(work.transcript_of(r)) == []
+    # the report reads the host's own check of the method contract over every attempt with a method
+    writes = bench.report(cfg, ".", out=lambda _line: None, write=False)["v05"]["m_tool_writes"]
+    assert writes["attempts"] > 0 and writes["executed"] == 0
 
 
 def test_an_interrupted_refit_round_is_finished_on_the_next_learn_without_another_reading(fake_upstream, tmp_path,
@@ -278,6 +281,11 @@ def test_a_failed_first_encounter_is_retried_with_its_failed_checks_and_a_librar
     first = next(r for r in activity.results.all() if r.attempt_id == failed["rsi.notify_after_update"]["attempt"])
     assert "A previous attempt at this very task" in json.dumps(work.transcript_of(retry))     # the note reached it
     assert "A previous attempt at this very task" not in json.dumps(work.transcript_of(first))
+    # the retry is not credited (2026-10-07 review): entries are credited for first encounters only
+    shown_first = sum(len(r["shown"]) for r in state["readings"].values())
+    shown_retry = sum(len(e.get("entries") or ()) for r in retries for e in work.transcript_of(r)
+                      if e.get("kind") == "library_retrieval")
+    assert shown_retry > 0 and sum(e["stats"]["n_shown"] for e in state["entries"].values()) == shown_first
     # D = 0 (the first encounters match W0's own train readings): the snapshot is not gated, nothing is paid for it
     assert result["readout"]["D"] == 0 and result["snapshot"]["outcome"] == "not_gated"
     assert "library" not in ledger_of(activity)
@@ -311,6 +319,258 @@ def test_an_interrupted_stream_continues_where_it_stopped_and_refuses_another_w(
     path.write_text(json.dumps(state))
     with pytest.raises(ValueError, match="not continued over another W"):
         bench.library_track(cfg, ".", out=lambda _line: None, distiller=Distiller())
+
+
+def test_the_stream_records_an_entrys_near_duplicate_train_tasks_among_its_sources(fake_upstream, tmp_path, monkeypatch):
+    """The leave-one-out wiring (2026-10-07 review): an entry's sources are its source task and that task's train
+    near-duplicates, so retrieval leaves the entry out for all of them — not its own task alone, and never nothing."""
+    cfg, activity, w0 = prepared_v5(fake_upstream, tmp_path, monkeypatch, library={**LIB, "sibling_sim": 0.6})
+    bench.baseline(cfg, ".", out=lambda _line: None)
+    bench.library_track(cfg, ".", out=lambda _line: None, distiller=Distiller())
+    state = json.loads((activity.root / "rsi" / "library_stream.json").read_text())
+    texts = {t: rsi.suite(fake_upstream).tasks[t].trigger for t in rsi.TRAIN}
+    seen_wide = False
+    for e in state["entries"].values():
+        source = e["provenance"][0]["task"]
+        expected = {L.task_hash(texts[t]) for t in L.near_duplicates(source, texts, 0.6)}
+        assert set(e["source_hashes"]) == expected and L.task_hash(texts[source]) in expected
+        seen_wide = seen_wide or len(expected) >= 3
+    assert seen_wide                         # rsi.update_stage's sources include both notify tasks (cosine >= 0.6)
+    for task, reading in state["readings"].items():
+        for entry_id in reading["shown"]:
+            assert L.task_hash(texts[task]) not in state["entries"][entry_id]["source_hashes"]
+
+
+def test_the_snapshot_is_held_back_by_d_alone_and_b_is_only_reported():
+    """2026-10-07 review: the B >= 3 clause is gone; a stream with D > 0 is gated whatever B is."""
+    settings = L.LibrarySettings()
+    assert L.snapshot_abort({"D": 1.0, "B": 5}, settings) is None
+    assert L.snapshot_abort({"D": 0.0, "B": 0}, settings) == "D 0.0 <= 0.0"
+    assert L.snapshot_abort({"D": 2.0, "B": 0}, settings, empty=True) == "the library is empty"
+    assert "abort_b" not in settings.to_json()
+
+
+def test_a_fixed_round_keeps_its_ordinal_and_experiment_id_until_it_ends():
+    from ouroloop.research.fixed import fixed_experiment_id, next_ordinal, round_ended
+    declared = lambda o, op: {"kind": "ledger", "stage": "declared", "fixed_code": True, "ordinal": o,  # noqa: E731
+                              "candidate": f"s/f{o}/{op}"}
+    ended = lambda o: {"kind": "round", "fixed_code": True, "ordinal": o, "outcome": "rejected"}  # noqa: E731
+    rows = [declared(0, "library"), ended(0), declared(1, "refit")]
+    assert round_ended(rows, 0)["outcome"] == "rejected" and round_ended(rows, 1) is None
+    assert next_ordinal(rows, "refit") == 1                     # the unfinished refit round is resumed
+    assert next_ordinal(rows, "library") == 2 == next_ordinal(rows)   # a new library round takes a new ordinal
+    assert next_ordinal([]) == 0
+    a, b = fixed_experiment_id("s/f1/refit"), fixed_experiment_id("s/f1/refit")
+    assert a == b and a.startswith("x_") and a != fixed_experiment_id("s/f2/refit")
+
+
+def test_a_merge_reply_of_one_bare_entry_is_read():
+    """2026-10-07 review: the MERGE prompt asks for one object; parse_distilled read only {"entries": [...]}."""
+    bare = {"shelf": "s", "kind": "workflow", "title": "t", "when": "w", "body": "b", "avoid": ""}
+    assert L.parse_distilled(json.dumps(bare), max_entries=1) == [bare]
+    assert L.parse_distilled(json.dumps({"entries": [bare]}), max_entries=1) == [bare]
+    assert L.parse_distilled(json.dumps({"title": "no body"}), max_entries=1) == []
+
+
+def counts_of(activity):
+    from collections import Counter
+    return Counter(bench._arm_of(r.attempt_id) for r in activity.results.all())
+
+
+def test_a_distillation_failure_pauses_the_stream_and_its_resume_pays_no_distillation_twice(fake_upstream, tmp_path,
+                                                                                           monkeypatch):
+    from ouroloop.providers import ReplyTruncated
+    cfg0, act0, _ = prepared_v5(fake_upstream, tmp_path / "ref", monkeypatch, library=LIB)
+    bench.baseline(cfg0, ".", out=lambda _line: None)
+    ref = Distiller()
+    bench.library_track(cfg0, ".", out=lambda _line: None, distiller=ref)
+    cfg, act, _ = prepared_v5(fake_upstream, tmp_path / "cut", monkeypatch, library=LIB)
+    bench.baseline(cfg, ".", out=lambda _line: None)
+
+    class Flaky(Distiller):
+        def __call__(self, system, user):
+            if len(self.calls) == 2:
+                self.calls.append((system, "failed"))
+                raise ReplyTruncated("the research reply stopped at the model's output limit")
+            return super().__call__(system, user)
+    first, second = Flaky(), Distiller()
+    paused = bench.library_track(cfg, ".", out=lambda _line: None, distiller=first)
+    assert paused["status"] == "paused" and "ReplyTruncated" in paused["reason"]
+    bench.library_track(cfg, ".", out=lambda _line: None, distiller=second)
+    # every successful call is paid once: the failed one is the only call made twice
+    assert len(first.calls) + len(second.calls) == len(ref.calls) + 1
+    assert counts_of(act) == counts_of(act0)                                    # no attempt paid twice either
+
+
+def test_an_interruption_after_the_pre_attempt_distillation_does_not_pay_it_again(fake_upstream, tmp_path,
+                                                                                  monkeypatch):
+    cfg0, act0, _ = prepared_v5(fake_upstream, tmp_path / "ref", monkeypatch, library=LIB)
+    bench.baseline(cfg0, ".", out=lambda _line: None)
+    ref = Distiller()
+    bench.library_track(cfg0, ".", out=lambda _line: None, distiller=ref)
+    order = json.loads((act0.root / "rsi" / "library_stream.json").read_text())["order"]
+    failing = {"rsi.notify_after_update", "rsi.notify_after_update_variant"}            # W0's train failures
+    at = next(i for i, t in enumerate(order) if i >= 1 and t not in failing)            # a task W0 passed: distilled
+    cfg, act, _ = prepared_v5(fake_upstream, tmp_path / "cut", monkeypatch, library=LIB)
+    bench.baseline(cfg, ".", out=lambda _line: None)
+    restore = interrupt_arm(monkeypatch, lambda arm: arm == "library_first", after=at)
+    first = Distiller()
+    with pytest.raises(KeyboardInterrupt):
+        bench.library_track(cfg, ".", out=lambda _line: None, distiller=first)
+    restore()
+    state = json.loads((act.root / "rsi" / "library_stream.json").read_text())
+    assert state["pre_distilled"] == state["order"][state["cursor"]]            # the checkpoint before the attempt
+    second = Distiller()
+    bench.library_track(cfg, ".", out=lambda _line: None, distiller=second)
+    assert len(first.calls) + len(second.calls) == len(ref.calls)
+    assert counts_of(act) == counts_of(act0)
+
+
+def interrupt_arm(monkeypatch, when, *, after: int = 0):
+    """Stop a phase by hand inside an arm: at the (after+1)-th arm `when` picks, half its attempts run, then
+    KeyboardInterrupt. -> a callable that restores run_arm."""
+    real = bench.Improvement.run_arm
+    seen = {"n": 0}
+
+    def run_arm(self, arm, release_ref, order, **kw):
+        if when(arm):
+            seen["n"] += 1
+            if seen["n"] == after + 1:
+                order = list(order)
+                real(self, arm, release_ref, order[:max(1, len(order) // 2)], **kw)
+                raise KeyboardInterrupt(f"stopped during {arm}")
+        return real(self, arm, release_ref, order, **kw)
+    monkeypatch.setattr(bench.Improvement, "run_arm", run_arm)
+    return lambda: monkeypatch.setattr(bench.Improvement, "run_arm", real)
+
+
+def fixed_rows(activity, operator):
+    from collections import Counter
+    rows = xp.read(activity.root)
+    stages = Counter(e["stage"] for e in rows if e.get("kind") == "ledger" and e["candidate"].endswith(f"/{operator}"))
+    ends = [e for e in rows if e.get("kind") == "round" and e.get("fixed_code")]
+    experiments = [e for e in rows if e.get("kind") == "experiment"]
+    return stages, ends, experiments
+
+
+@pytest.mark.parametrize("arm", ["train_screen", "subject", "confirm"])
+def test_an_interrupted_snapshot_round_resumes_where_it_stopped_and_pays_nothing_twice(fake_upstream, tmp_path,
+                                                                                      monkeypatch, arm):
+    """2026-10-07 review: stopped by hand during the snapshot round's screen, its gate's first reading or its
+    confirmation, the phase run again finishes the same round — the same ordinal, candidate and experiment id — with
+    the attempts an uninterrupted run makes, one ledger row a stage, one round row, one experiment record, and the
+    stream's records written once."""
+    cfg0, act0, _ = prepared_v5(fake_upstream, tmp_path / "ref", monkeypatch, library=LIB)
+    bench.baseline(cfg0, ".", out=lambda _line: None)
+    ref = bench.library_track(cfg0, ".", out=lambda _line: None, distiller=Distiller())
+    cfg, act, _ = prepared_v5(fake_upstream, tmp_path / "cut", monkeypatch, library=LIB)
+    bench.baseline(cfg, ".", out=lambda _line: None)
+    restore = interrupt_arm(monkeypatch, lambda a: a == arm)
+    with pytest.raises(KeyboardInterrupt):
+        bench.library_track(cfg, ".", out=lambda _line: None, distiller=Distiller())
+    restore()
+    assert json.loads((act.root / "rsi" / "library_stream.json").read_text())["status"] == "snapshot"
+    again = Distiller()
+    result = bench.library_track(cfg, ".", out=lambda _line: None, distiller=again)
+    assert again.calls == []                                                    # the stream is not distilled again
+    assert result["snapshot"]["outcome"] == ref["snapshot"]["outcome"] == "installed"
+    assert counts_of(act) == counts_of(act0)                                    # nothing paid twice
+    stages, ends, experiments = fixed_rows(act, "library")
+    assert stages == fixed_rows(act0, "library")[0] == {"declared": 1, "drafted": 1, "admitted": 1, "screened": 1,
+                                                         "gated": 1}
+    assert len(ends) == 1 and ends[0]["outcome"] == "installed" and len(experiments) == 1
+    kinds = [e.get("kind") for e in xp.read(act.root)]
+    assert kinds.count("library_stream") == 1 and kinds.count("library_snapshot") == 1
+    assert kinds.count("library_entry") == [e.get("kind") for e in xp.read(act0.root)].count("library_entry")
+    assert experiments[0]["experiment"] == ends[0]["experiment_id"]
+    assert experiments[0]["experiment"].startswith("x_")
+    # a gate stopped mid-way continues from the experiment it froze (not a second freeze of the proposal)
+    assert experiments[0]["notes"].startswith("states:" if arm == "train_screen" else "resumed:")
+
+
+def test_a_snapshot_round_that_ended_answers_with_its_recorded_outcome(fake_upstream, tmp_path, monkeypatch):
+    """2026-10-07 review: stopped after the snapshot round wrote its round row but before the stream saved `done`,
+    the phase run again reads the ended round back — no stage, round row or attempt is written twice."""
+    cfg, act, _ = prepared_v5(fake_upstream, tmp_path, monkeypatch, library=LIB)
+    bench.baseline(cfg, ".", out=lambda _line: None)
+    first = bench.library_track(cfg, ".", out=lambda _line: None, distiller=Distiller())
+    assert first["snapshot"]["outcome"] == "installed"
+    path = act.root / "rsi" / "library_stream.json"
+    state = json.loads(path.read_text())
+    state.pop("snapshot")
+    state["status"] = "snapshot"
+    path.write_text(json.dumps(state))
+    paid, rows = counts_of(act), len(xp.read(act.root))
+    again = bench.library_track(cfg, ".", out=lambda _line: None, distiller=Distiller())
+    assert again["snapshot"]["outcome"] == "installed"
+    assert counts_of(act) == paid and len(xp.read(act.root)) == rows
+    stages, ends, experiments = fixed_rows(act, "library")
+    assert stages["gated"] == 1 and len(ends) == 1 and len(experiments) == 1
+
+
+def test_r_still_gets_its_three_rounds_when_a_fixed_rounds_gate_is_open(fake_upstream, tmp_path, monkeypatch):
+    """2026-10-07 review: a fixed round's experiment never counts as one of R's rounds — R's segment leaves it open
+    for its phase, runs its own three rounds, and the phase finishes the fixed round afterwards."""
+    from test_research_session import memory_candidate
+    cfg, act, _ = prepared_v5(fake_upstream, tmp_path, monkeypatch, rounds=3, library=LIB)
+    bench.baseline(cfg, ".", out=lambda _line: None)
+    restore = interrupt_arm(monkeypatch, lambda a: a == "subject")
+    with pytest.raises(KeyboardInterrupt):
+        bench.library_track(cfg, ".", out=lambda _line: None, distiller=Distiller())
+    restore()
+    calls = {"n": 0}
+
+    def plan(inputs):
+        calls["n"] += 1
+        return [memory_candidate(inputs, name=f"m{calls['n']}", text="Be careful.\n",
+                                 mechanism=f"note number {calls['n']} for careful work")]
+    result = bench.improve(cfg, ".", out=lambda _line: None, researcher=rsi.SessionScript(plan))
+    rounds = [r for r in result["rounds"] if r["outcome"] != "stopped"]
+    from ouroloop.research.fixed import fixed_experiment_id
+    fixed_id = fixed_experiment_id(f"{act.rsi.scope_id}/f0/library")
+    assert len(rounds) == 3 and calls["n"] == 3
+    assert all(r.get("experiment_id") != fixed_id for r in result["rounds"])
+    finished = bench.library_track(cfg, ".", out=lambda _line: None, distiller=Distiller())
+    assert finished["snapshot"]["outcome"] in ("installed", "rejected", "stale_parent")
+    stages, ends, _ = fixed_rows(act, "library")
+    assert stages["gated"] == 1 and len(ends) == 1
+
+
+def test_an_interrupted_refit_gate_is_finished_by_the_next_learn(fake_upstream, tmp_path, monkeypatch):
+    cfg, activity, w0 = prepared_v5(fake_upstream, tmp_path, monkeypatch, methods=LEARN)
+    install_w(activity, audit_files("silent"))
+    bench.baseline(cfg, ".", out=lambda _line: None)
+    restore = interrupt_arm(monkeypatch, lambda a: a == "subject")
+    with pytest.raises(KeyboardInterrupt):
+        bench.learn(cfg, ".", out=lambda _line: None)
+    restore()
+    twins = counts_of(activity)
+    result = bench.learn(cfg, ".", out=lambda _line: None)
+    assert result["resumed"] and result["stage"] == "learn0" and result["refit"]["outcome"] == "installed"
+    after = counts_of(activity)
+    assert after["learn_A"] == twins["learn_A"] and after["learn_B"] == twins["learn_B"]   # no new reading
+    stages, ends, experiments = fixed_rows(activity, "refit")
+    assert stages == {"declared": 1, "drafted": 1, "admitted": 1, "screened": 1, "gated": 1}
+    assert len(ends) == 1 and len(experiments) == 1
+    assert len([e for e in xp.read(activity.root) if e.get("kind") == "method_fit"]) == 1
+
+
+def test_learn_and_a_fixed_round_refuse_before_paying_what_the_budget_cannot_hold(fake_upstream, tmp_path,
+                                                                                  monkeypatch):
+    cfg, activity, w0 = prepared_v5(fake_upstream, tmp_path, monkeypatch, methods=LEARN, library=LIB)
+    install_w(activity, audit_files("silent"))
+    bench.baseline(cfg, ".", out=lambda _line: None)
+    before = counts_of(activity)
+    monkeypatch.setattr(bench.Improvement, "_verify_bound", lambda self: {"model_calls": 10 ** 9,
+                                                                          "tool_calls": 10 ** 9})
+    result = bench.learn(cfg, ".", out=lambda _line: None)
+    assert result == {**result, "learned": False, "reason": "budget_exhausted"}
+    assert counts_of(activity) == before                                        # not one twin attempt
+    out = bench.library_track(cfg, ".", out=lambda _line: None, distiller=Distiller())
+    assert out["snapshot"]["outcome"] == "budget_exhausted"
+    assert counts_of(activity)["train_screen"] == 0                            # the snapshot's screen never ran
+    _stages, ends, _ = fixed_rows(activity, "library")
+    assert len(ends) == 1 and ends[0]["outcome"] == "budget_exhausted"
 
 
 def test_the_library_phase_refuses_a_k_without_the_library(fake_upstream, tmp_path, monkeypatch):

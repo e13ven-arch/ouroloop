@@ -128,6 +128,34 @@ def test_a_v5_ks_attempts_carry_the_methods_view_and_a_v4_ks_do_not(fake_upstrea
     assert agent4.methods is None and agent4.extra_system == ""
 
 
+GOLDEN_V04_SYSTEM = ("You are a business agent.\n\nReport what you did when you are finished.\n\nWorking notes for this kind "
+                     "of task:\nRead the request twice before you act.\n\nSkills you can read with the read_skill tool "
+                     "before you act:\n- check: a checklist")
+GOLDEN_V04_DIGEST = "5628d435145a5b8876a13b9dab2069f17c64908739bdbde4a1f21587884e57de"
+
+
+def test_a_v04_attempts_first_system_prompt_is_the_same_bytes_as_before_v05(tmp_path):
+    """2026-10-07 review: a v0.4 attempt — a library-less package, no methods view — sends the model exactly the system
+    prompt the pre-v0.5 code sent (the digest was taken from the code at 0b9b475 on this fixture)."""
+    import hashlib
+    from ouroloop.chat import ChatTurn
+    from test_package_worker import Scripted, World, bound_with, shell_agent
+    bound, _ = bound_with(tmp_path, {"memory.md": "Read the request twice before you act.\n",
+                                     "skills/check.md": "Check every step.\n"},
+                          {"memory": {"enabled": True}, "skills": [{"name": "check", "path": "skills/check.md",
+                                                                    "description": "a checklist"}]})
+    provider = Scripted([ChatTurn("done", [], "end")])
+    agent = shell_agent(tmp_path, bound, World(), provider)
+    assert agent.methods is None and agent.extra_system == ""
+    agent.run("Move Dana Reyes to opportunity stage.")
+    system = provider.seen[0][0]
+    assert system == GOLDEN_V04_SYSTEM
+    assert hashlib.sha256(system.encode("utf-8")).hexdigest() == GOLDEN_V04_DIGEST
+    events = [json.loads(line) for line in (tmp_path / "transcripts" / f"{agent.session}.jsonl").read_text()
+              .splitlines()]
+    assert not [e for e in events if e["kind"] in ("library_retrieval", "method_decision")]
+
+
 def test_a_config_cannot_set_the_preset_only_tables():
     base = {"improvement": {"mode": "automatic", "preset": "automationbench_harness_v5"}}
     with pytest.raises(ValueError, match="the preset fixes"):
@@ -175,16 +203,32 @@ def test_the_two_support_arms_share_the_split_the_root_the_limits_and_differ_onl
     examples = Path(__file__).resolve().parents[1] / "examples" / "automationbench"
     v4 = tomllib.loads((examples / "claude-v4-support.toml").read_text())
     v5 = tomllib.loads((examples / "claude-v5-support.toml").read_text())
-    differ = {k for k in set(v4) | set(v5) if v4.get(k) != v5.get(k)}
+
+    def comparable(cfg):
+        """What the two arms must share: everything but the plan refs `ouroloop freeze` adds to [rsi] and the
+        [freeze.final] each arm fills in after its rounds — those legitimately differ (2026-10-07 review)."""
+        out = dict(cfg)
+        out["rsi"] = {k: v for k, v in (cfg.get("rsi") or {}).items() if not k.endswith("_ref")}
+        out["freeze"] = {k: v for k, v in (cfg.get("freeze") or {}).items() if k != "final"}
+        return out
+    frozen = {**v5, "rsi": {**v5["rsi"], "task_plan_ref": "change:x", "schedule_ref": "change:y",
+                            "budget_ref": "change:z", "final_plan_ref": "finalization:w"},
+              "freeze": {**v5["freeze"], "final": {"experiment_id": "v5-final", "repeats": 3}}}
+    assert comparable(frozen) == comparable(v5)            # filled-in refs and a filled final do not break parity
+    c4, c5 = comparable(v4), comparable(v5)
+    differ = {k for k in set(c4) | set(c5) if c4.get(k) != c5.get(k)}
     assert differ == {"workspace", "rsi", "improvement", "estimate"}
     assert v5["workspace"]["root"] == "workspace-claude-v5-support"
-    assert {k: v for k, v in v5["rsi"].items() if k != "scope_id"} == {k: v for k, v in v4["rsi"].items()
+    assert {k: v for k, v in c5["rsi"].items() if k != "scope_id"} == {k: v for k, v in c4["rsi"].items()
                                                                        if k != "scope_id"}
     assert v5["rsi"]["scope_id"] == "support-claude-v5"
     assert {k: v for k, v in v5["improvement"].items() if k != "preset"} == \
         {k: v for k, v in v4["improvement"].items() if k != "preset"}
     assert v5["improvement"]["preset"] == "automationbench_harness_v5"
-    assert v5["freeze"] == v4["freeze"] and v5["freeze"]["budget"]["usd"] == 450.0
+    # equal caps (2026-10-07 review): both roots $600, both final shares $160, the same schedule
+    assert c5["freeze"] == c4["freeze"] and v5["freeze"]["budget"]["usd"] == 600.0
+    assert v5["freeze"]["budget"]["final"]["usd"] == 160.0
+    assert v5["freeze"]["schedule"] == {"worker_rounds": 3, "research_slots": 0, "patience": 2}
     loaded = bench.BenchConfig.load(v5, examples)
     assert loaded.frozen_splits == {"support": "3da11232f5d5ff38"} and loaded.domains == ("support",)
     k4, k5 = bench.harness_settings(v4), bench.harness_settings(v5)

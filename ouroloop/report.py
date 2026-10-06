@@ -111,7 +111,7 @@ def build_report(root: str | Path, domain: str, *, protocol: str = "ouroloop.ben
     }
     if several:
         report["final_by_domain"] = _final_by_domain(arms, spent, finalization)
-    v05 = v05_evidence(root, entries, attempts)
+    v05 = v05_evidence(root, entries, attempts, runs=runs, objects=objects)
     if v05:
         # v0.5 (docs/design/V0_5_PLAN.md §3): only an activity that ran the method or library machinery has the key,
         # so an earlier activity's report is what it was
@@ -123,7 +123,38 @@ def build_report(root: str | Path, domain: str, *, protocol: str = "ouroloop.ben
     return report
 
 
-def v05_evidence(root: Path, entries: list, attempts: list) -> dict:
+WRITE_METHODS = ("POST", "PUT", "PATCH", "DELETE")
+
+
+def m_tool_writes(transcript: list) -> dict:
+    """What a method's runs asked the broker for, from the host's own record (2026-10-07 review): for every
+    `package_tool` mark of an `m_` tool, the broker events of its run — the last N before the mark, N its calls that
+    reached the broker — and among them the writes that ran (`executed`, which must be 0: a method reads only) and
+    the writes the broker refused (`refused`). The read-only rule is enforced inside the worker by the default agent;
+    this is the host's check of it."""
+    out = {"calls": 0, "executed": 0, "refused": 0}
+    events: list = []
+    for e in transcript:
+        if e.get("kind") == "broker_event":
+            events.append(e)
+            continue
+        if e.get("kind") != "package_tool" or not str(e.get("tool") or "").startswith("m_"):
+            continue
+        n = sum(1 for c in e.get("broker_calls") or () if c.get("refused") != "call cap")
+        window = events[-n:] if n else []
+        out["calls"] += len(window)
+        for b in window:
+            method = str((b.get("args") or {}).get("method") or "GET").upper()
+            if b.get("tool") != "api_fetch" or method not in WRITE_METHODS:
+                continue
+            if (b.get("gate") or {}).get("decision") == "run":
+                out["executed"] += 1
+            else:
+                out["refused"] += 1
+    return out
+
+
+def v05_evidence(root: Path, entries: list, attempts: list, runs: dict | None = None, objects=None) -> dict:
     """The v0.5 process evidence (docs/design/V0_5_PLAN.md §3), read off the records only: the learn readings and
     their fitted cells, the refit and library rounds' outcomes, the experience library's stream readout (D, B, the
     learning curve, the credit's rank correlation) and its entries, the playbook's kept and dropped lessons, and per
@@ -167,7 +198,31 @@ def v05_evidence(root: Path, entries: list, attempts: list) -> dict:
                 arm[key][0] += 1
                 arm[key][1] += int(bool(a.success))
         arm["non_greedy_decisions"] += len(non_greedy)
-    if not (fits or streams or snapshots or playbooks or fixed or any(
+    # the host's check of the method contract: writes inside an m_ tool's run, over every valid attempt of a run
+    # whose package has an m_ tool (2026-10-07 review)
+    writes = {"calls": 0, "executed": 0, "refused": 0, "attempts": 0}
+    with_methods: dict = {}
+    for a in attempts:
+        if a.validity != "valid":
+            continue
+        run = (runs or {}).get(a.run)
+        package_ref = getattr(run, "package_ref", None)
+        if not package_ref or objects is None:
+            continue
+        if package_ref not in with_methods:
+            try:
+                manifest = objects.get(objects.load(package_ref, ct.HarnessPackage).manifest_ref)
+                with_methods[package_ref] = any(str(t.get("name") or "").startswith("m_")
+                                                for t in manifest.get("tools") or ())
+            except (KeyError, ct.ContractError):
+                with_methods[package_ref] = False
+        if not with_methods[package_ref]:
+            continue
+        counts = m_tool_writes(read_transcript(transcripts, a.evidence))
+        writes["attempts"] += 1
+        for k in ("calls", "executed", "refused"):
+            writes[k] += counts[k]
+    if not (fits or streams or snapshots or playbooks or fixed or writes["attempts"] or any(
             v["method_acted"][0] or v["library_shown"][0] for v in finals.values())):
         return {}
     by_status: dict = {}
@@ -187,6 +242,7 @@ def v05_evidence(root: Path, entries: list, attempts: list) -> dict:
         "playbook": {"sessions": len(playbooks), "kept_lines": len((playbooks[-1].get("text") or "").splitlines())
                      if playbooks else 0, "dropped_citations": sum(len(p.get("dropped") or ()) for p in playbooks)},
         "final_paths": finals,
+        "m_tool_writes": writes,
     }
 
 
@@ -1011,6 +1067,10 @@ def _v05_lines(v05: dict) -> list:
     if pb.get("sessions"):
         lines.append(f"- playbook: {pb['kept_lines']} lessons kept, {pb['dropped_citations']} citations dropped over "
                      f"{pb['sessions']} sessions")
+    w = v05.get("m_tool_writes") or {}
+    if w.get("attempts"):
+        lines.append(f"- methods' broker calls on the host's record: {w['calls']} in {w['attempts']} attempts; writes "
+                     f"executed {w['executed']} (must be 0), refused {w['refused']}")
     for run, arm in (v05.get("final_paths") or {}).items():
         def rate(pair):
             return f"{pair[1]}/{pair[0]}" if pair[0] else "-"

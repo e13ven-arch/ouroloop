@@ -367,16 +367,24 @@ def transcript_of(tmp_path, agent):
 
 
 def test_an_m_tool_gets_a_read_only_broker_and_a_post_is_refused(tmp_path):
+    from ouroloop.report import m_tool_writes
     turns = [ChatTurn("", [ToolCall("c1", "m_writer", {"method": "POST"})], "tool_use"), ChatTurn("done", [], "end")]
     agent, world = shell(tmp_path / "v5", writer_files(), turns, {"prefix": "m_", "max_calls": 25})
     agent.run("Write the record.")
     assert not any(world.mutates(n, a) for n, a in world.calls)               # the write never reached the world
-    marks = [e for e in transcript_of(tmp_path / "v5", agent) if e["kind"] == "package_tool"]
+    events = transcript_of(tmp_path / "v5", agent)
+    marks = [e for e in events if e["kind"] == "package_tool"]
     assert marks and "may only make read-only calls" in marks[0]["output"]
+    # the host's own record says what the worker asked for, and the report's check reads it
+    assert [b["read_only"] for b in events if b["kind"] == "broker_event"] == [True]
+    assert m_tool_writes(events) == {"calls": 1, "executed": 0, "refused": 1}
     # the same package under a K without methods: the tool writes, as a v0.4 package tool always could
     agent, world = shell(tmp_path / "v4", writer_files(), turns, None)
     agent.run("Write the record.")
     assert any(world.mutates(n, a) for n, a in world.calls)
+    events = transcript_of(tmp_path / "v4", agent)
+    assert [b["read_only"] for b in events if b["kind"] == "broker_event"] == [False]
+    assert m_tool_writes(events) == {"calls": 1, "executed": 1, "refused": 0}
 
 
 def test_an_m_tool_past_its_call_cap_gets_an_error_not_a_call(tmp_path):

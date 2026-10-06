@@ -365,6 +365,9 @@ class AttemptBroker:
                                      "tool": name, "args": args, "output_chars": len(output),
                                      "output_digest": hashlib.sha256(output.encode("utf-8")).hexdigest()[:16],
                                      "is_error": bool(is_error), "gate": gate,
+                                     # v0.5 (2026-10-07 review): whether the caller asked for a read-only call (a
+                                     # hook, a method), so the host's record shows what the worker asked for
+                                     "read_only": bool(read_only),
                                      "elapsed": round(time.monotonic() - t0, 3)})
         self.events.append({"call_id": event_id, "name": name, "args": args,
                             "result_excerpt": "" if is_error else output[:EVENT_CHARS],

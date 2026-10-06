@@ -2888,7 +2888,9 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
     from .research.loop import resume_unfinished
     # An open experiment finishes under the template and the scope it was frozen with, or the segment pauses.
     resumed = resume_unfinished(activity.root, activity.objects, work.handlers(), budget,
-                                eval_template_ref=work.template_ref, budget_scope=work.scope_id)
+                                eval_template_ref=work.template_ref, budget_scope=work.scope_id,
+                                # v0.5: a fixed round's experiment is its phase's, never one of R's rounds
+                                skip_fixed=True)
     # a resume that paused (a refused plan, a halt) or ended (a spent budget) runs no new round behind it
     halted = bool(resumed) and resumed[-1].outcome == "stopped"
     for result in resumed:
@@ -2962,9 +2964,10 @@ def _phase_work(cfg: dict, base, phase: str, out):
     return activity, work, budget
 
 
-def _fixed_context(activity: Activity, work, *, research_model: dict | None = None):
+def _fixed_context(activity: Activity, work, *, research_model: dict | None = None, ordinal: int | None = None):
     """The RoundContext of a fixed-code round (research.fixed): this round's measurement (reused when nothing was
-    installed since), the experience, the bound release, the draft check and the screen inputs. -> (ctx, evidence)."""
+    installed since), the experience, the bound release, the draft check and the screen inputs; `ordinal` the fixed
+    round's, when the caller resumes one. -> (ctx, evidence)."""
     from .research.fixed import next_ordinal
     from .research.loop import RoundContext
     release_ref = activity.releases.active()["release_ref"]
@@ -2973,7 +2976,7 @@ def _fixed_context(activity: Activity, work, *, research_model: dict | None = No
     context = work.context(goal="improve the full-task pass rate on the development tasks", release_ref=release_ref,
                            evidence=evidence, experience=experience, experience_ref=experience_ref)
     bound = _P.bind_release(release_ref, profile="task", services=work.services(), authorization="installed")
-    index = next_ordinal(experience)
+    index = ordinal if ordinal is not None else next_ordinal(experience)
     diagnosis, drafts, session = work.round_inputs(index, evidence, experience, bound, root=activity.root,
                                                    research_model=research_model or {})
     ctx = RoundContext(releases=activity.releases, objects=activity.objects, scope_id=activity.rsi.scope_id,
@@ -3027,20 +3030,41 @@ def learn(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pri
     if not tasks:
         out("learn      no recorded train attempt fires a method's trigger: nothing to learn")
         return {"learned": False, "reason": "no trigger fires on train"}
+    from .research.fixed import round_ended
     experience = _experience.read(activity.root)
     fits = [e for e in experience if e.get("kind") == "method_fit" and e.get("scope") == scope]
-    if fits and fits[-1].get("changed") and fits[-1].get("release") == release_ref and not any(
-            e.get("kind") == "ledger" and e.get("fixed_code") and e.get("stage") == "declared"
-            and fits[-1]["stage"] in str((e.get("declaration") or {}).get("mechanism") or "") for e in experience):
-        # the last reading moved the table and its refit round never started (an interrupted phase): finish that
-        # round rather than pay for another reading
+    if fits and fits[-1].get("changed"):
         last = fits[-1]
-        out(f"learn      {last['stage']}'s refit round was not run: running it now")
-        return _refit_round(activity, work, budget, files, decls, last["table"], last["stage"], last.get("moved") or (),
-                            {t: list(decls) for t in last.get("tasks") or ()}, settings, out,
-                            {"learned": True, "stage": last["stage"], "resumed": True})
+        ordinal = _refit_ordinal(experience, last["stage"])
+        started = ordinal is not None
+        if (started and round_ended(experience, ordinal) is None) or (not started and last.get("release") == release_ref):
+            # the last reading moved the table and its refit round has not ended (an interrupted phase): finish that
+            # round — under its own ordinal when it had started — rather than pay for another reading
+            fit_bound = _P.bind_release(last["release"], profile="task", services=work.services(),
+                                        authorization="installed")
+            fit_run, fit_tests = hp.files_of(activity.objects, fit_bound.package.ref)
+            fit_files = {**fit_run, **fit_tests}
+            out(f"learn      {last['stage']}'s refit round has not ended: finishing it")
+            return _refit_round(activity, work, budget, fit_files,
+                                {n: d for n, d in M.methods_of(fit_files).items() if d.get("enabled", True)},
+                                last["table"], last["stage"], last.get("moved") or (),
+                                {t: list(decls) for t in last.get("tasks") or ()}, settings, out,
+                                {"learned": True, "stage": last["stage"], "resumed": True}, ordinal=ordinal)
     stage = f"learn{len(fits)}"
     salt = M.learn_salt(work.order_seed, stage)
+    # 2026-10-07 review: before the first twin attempt, the twins, the refit round's screen at its largest (the
+    # triggered tasks and the passing sample) and the gate's verification bound must fit, or nothing is paid
+    verify = dict(work.handlers().get("verify_bound") or {})
+    sample = int(((work.harness or {}).get("screen") or {}).get("passing_sample") or 0)
+    attempts = 2 * len(tasks) + len(tasks) + sample
+    need = {"model_calls": attempts + int(verify.get("model_calls") or 0),
+            "tool_calls": attempts + int(verify.get("tool_calls") or 0)}
+    if verify.get("usd") is not None:
+        need["usd"] = round(float(verify["usd"]) + attempts * float(verify.get("usd_per_attempt") or 0.0), 6)
+    if not budget.affordable(need):
+        out(f"learn      {stage}: the twins ({2 * len(tasks)} attempts), a refit screen and the gate's bound "
+            f"{verify} do not fit the budget: nothing is paid (budget_exhausted)")
+        return {"learned": False, "reason": "budget_exhausted", "stage": stage, "need": need}
     out(f"learn      {stage}: {len(tasks)} train tasks where a trigger fires, twins A and B (salt {salt})")
     readings: dict = {}
     for twin in ("A", "B"):
@@ -3075,24 +3099,37 @@ def learn(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pri
     return _refit_round(activity, work, budget, files, decls, table, stage, moved, fired, settings, out, result)
 
 
+REFIT_MECHANISM = "refit method table from paired train rewards {stage}"
+
+
+def _refit_ordinal(experience, stage: str) -> int | None:
+    """The ordinal of the fixed round that declared learn reading `stage`'s refit candidate, or None."""
+    wanted = REFIT_MECHANISM.format(stage=stage)
+    return next((int(e.get("ordinal") or 0) for e in experience if e.get("kind") == "ledger" and e.get("fixed_code")
+                 and e.get("stage") == "declared"
+                 and str((e.get("declaration") or {}).get("mechanism") or "") == wanted), None)
+
+
 def _refit_round(activity: Activity, work, budget, files: dict, decls: dict, table: dict, stage: str, moved, fired: dict,
-                 settings, out, result: dict) -> dict:
+                 settings, out, result: dict, *, ordinal: int | None = None) -> dict:
     """The refit candidate of a learn reading in its own fixed round (V0_5_PLAN §1.3): only the table changes (and
     the enabled flag of a method every cell of which is silent and the actor hardly calls); its screen reads the
     triggered train tasks of the moved methods that fail now, plus the round's passing sample; gate, confirmation and
-    install as for any candidate."""
+    install as for any candidate. `ordinal` resumes the round an interruption left (research.fixed)."""
     from .research import methods as M
     from .research.fixed import fixed_candidate, next_ordinal, run_fixed_round
     rates = M.call_rates([(r, work.transcript_of(r)) for r in work.latest_train().values()], list(decls))
     refit, disabled = M.refit_files(files, table, call_rates=rates, settings=settings)
     methods_moved = {k.split("|", 1)[0] for k in moved}
     failing = [t for t in activity.splits.ids("train") if set(fired.get(t) or ()) & methods_moved]
-    ctx, _ = _fixed_context(activity, work)
+    if ordinal is None:
+        ordinal = next_ordinal(_experience.read(activity.root))
+    ctx, _ = _fixed_context(activity, work, ordinal=ordinal)
     candidate = fixed_candidate(operator="refit", files=refit, site="after_tool", carrier="hook", failing=failing,
-                                mechanism=f"refit method table from paired train rewards {stage}",
+                                mechanism=REFIT_MECHANISM.format(stage=stage),
                                 trigger_condition="the cells the learn reading moved: " + ", ".join(moved)[:400],
                                 notes=f"disabled {disabled}" if disabled else "")
-    round_result = run_fixed_round(ctx, budget, [candidate], ordinal=next_ordinal(_experience.read(activity.root)))
+    round_result = run_fixed_round(ctx, budget, [candidate], ordinal=ordinal)
     out(f"refit      {round_result.outcome}" + (f" ({round_result.reason})" if round_result.reason else ""))
     return {**result, "refit": {"outcome": round_result.outcome, "release": activity.releases.active()["release_ref"],
                                 "disabled": disabled}}
@@ -3108,11 +3145,14 @@ def library_track(cfg: dict, base: str | Path = ".", *, out: Callable[[str], Non
     host with the task's own entries left out — and once more with the failed checks as a note when that failed;
     every new success is distilled (one call of the fixed prompt, at most `max_per_distill` entries), each entry
     checked (schema, the literal check with one placeholder pass, at least `min_other_tasks` train tasks reached
-    beyond its sources), merged into a near-duplicate or added; every entry shown in an attempt is credited
-    r − b(t); entries that harm or do not pay are retired. The stream's state is saved after every task, so an
-    interrupted phase continues where it stopped. At its end D and B are read (V0_5_PLAN §3): with D <= abort_d or
-    B >= abort_b the snapshot is not gated; otherwise the library is compiled into W_base's package and offered in a
-    fixed round — screen with leave-one-out retrieval, gate, confirmation, install — like any candidate."""
+    beyond its sources), merged into a near-duplicate or added; every entry shown in a first encounter is credited
+    r − b(t) (the retry carries a note, so it is a source of distillation and never of credit); entries that harm or
+    do not pay are retired. The stream's state is saved after every task and after the distillation before a task's
+    first encounter, so an interrupted phase continues where it stopped and pays for nothing twice; a research-model
+    failure during distillation pauses it there. At its end D and B are read (V0_5_PLAN §3): with D <= abort_d the
+    snapshot is not gated (B is a process number); otherwise the library is compiled into W_base's package and
+    offered in a fixed round — screen with leave-one-out retrieval, gate, confirmation, install — like any candidate,
+    resumed as it stood when the phase is run again."""
     import random
     from .agent import harness_package as hp
     from .research import library as lib
@@ -3225,114 +3265,136 @@ def library_track(cfg: dict, base: str | Path = ".", *, out: Callable[[str], Non
         return None, ("budget_exhausted" if any(r.failure_class == "budget_exhausted" for r in rows) else "lost")
 
     from .evolve.execution import BudgetExhausted
-    try:
-        for i in range(int(state["cursor"]), len(stream)):
-            task = stream[i]
-            mine = [r for r in work.train_rows() if r.task_id == task and r.system_release_ref == state["base_release"]
-                    and _arm_of(r.attempt_id) == "measure"]
-            had_success = next((r for r in reversed(mine) if r.success), None)
-            had_failure = next((r for r in reversed(mine) if not r.success), None)
-            if had_success is not None:
-                distill(task, had_success, had_failure, "contrast" if had_failure is not None else "success", i)
-            first, why = attempt(task, "library_first")
-            if first is None and why == "budget_exhausted":
-                raise BudgetExhausted(f"the first encounter of stream position {i} could not run")
-            reading = {"n": i, "control": b.get(task), "lib": None, "retry": None, "shown": []}
-            if first is not None:
-                credit(first, task)
-                reading.update(lib=int(bool(first.success)), shown=shown_in(first), attempt=first.attempt_id)
-                if first.success and had_success is None:
-                    distill(task, first, had_failure, "contrast" if had_failure is not None else "success", i)
-                elif not first.success and settings.retry:
-                    note = lib.retry_note(activity.results.grading(first.attempt_id))
-                    second, why = attempt(task, "library_retry", {task: note}) if note else (None, "no failed check")
-                    if second is None and why == "budget_exhausted":
-                        raise BudgetExhausted(f"the retry of stream position {i} could not run")
-                    if second is not None:
-                        credit(second, task)
-                        reading.update(retry=int(bool(second.success)), retry_attempt=second.attempt_id)
-                        if second.success:
-                            distill(task, second, first, "reflexion", i)
-            for e in active():
-                why_retired = lib.retire_reason(e, settings)
-                if why_retired:
-                    e["status"], e["retired"] = "retired", why_retired
-            state["readings"][task] = reading
-            if i + 1 == len(stream) // 2:
-                state["utility_at_half"] = {e["entry_id"]: lib.utility(e) for e in active()}
-            state["cursor"] = i + 1
-            state["entries"] = {e["entry_id"]: e for e in entries}
+    from .providers import ProviderError
+    scope = activity.rsi.scope_id
+    if state["status"] == "streaming":
+        try:
+            for i in range(int(state["cursor"]), len(stream)):
+                task = stream[i]
+                mine = [r for r in work.train_rows() if r.task_id == task
+                        and r.system_release_ref == state["base_release"] and _arm_of(r.attempt_id) == "measure"]
+                had_success = next((r for r in reversed(mine) if r.success), None)
+                had_failure = next((r for r in reversed(mine) if not r.success), None)
+                if had_success is not None and state.get("pre_distilled") != task:
+                    distill(task, had_success, had_failure, "contrast" if had_failure is not None else "success", i)
+                    # a checkpoint (2026-10-07 review): a resume skips the distillation it already paid for
+                    state["pre_distilled"] = task
+                    state["entries"] = {e["entry_id"]: e for e in entries}
+                    save()
+                first, why = attempt(task, "library_first")
+                if first is None and why == "budget_exhausted":
+                    raise BudgetExhausted(f"the first encounter of stream position {i} could not run")
+                reading = {"n": i, "control": b.get(task), "lib": None, "retry": None, "shown": []}
+                if first is not None:
+                    credit(first, task)
+                    reading.update(lib=int(bool(first.success)), shown=shown_in(first), attempt=first.attempt_id)
+                    if first.success and had_success is None:
+                        distill(task, first, had_failure, "contrast" if had_failure is not None else "success", i)
+                    elif not first.success and settings.retry:
+                        note = lib.retry_note(activity.results.grading(first.attempt_id))
+                        second, why = attempt(task, "library_retry", {task: note}) if note else (None, "no check")
+                        if second is None and why == "budget_exhausted":
+                            raise BudgetExhausted(f"the retry of stream position {i} could not run")
+                        if second is not None:
+                            # not credited (2026-10-07 review): the retry carries its failed checks as a note, so
+                            # its outcome is not the entries' alone; it is a source of reflexion distillation only
+                            reading.update(retry=int(bool(second.success)), retry_attempt=second.attempt_id)
+                            if second.success:
+                                distill(task, second, first, "reflexion", i)
+                for e in active():
+                    why_retired = lib.retire_reason(e, settings)
+                    if why_retired:
+                        e["status"], e["retired"] = "retired", why_retired
+                state["readings"][task] = reading
+                if i + 1 == len(stream) // 2:
+                    state["utility_at_half"] = {e["entry_id"]: lib.utility(e) for e in active()}
+                state["cursor"], state["pre_distilled"] = i + 1, None
+                state["entries"] = {e["entry_id"]: e for e in entries}
+                save()
+                out(f"library    n={i + 1}/{len(stream)} first={reading['lib']} retry={reading['retry']} "
+                    f"control={reading['control']} active={len(active())} shown={len(reading['shown'])}")
+        except BudgetExhausted as e:
+            # the state file holds the last checkpoint: nothing of this task is credited or written twice on a resume
+            out(f"library    stopped: {e}")
+            return {"status": "budget_exhausted", "cursor": state["cursor"]}
+        except ProviderError as e:
+            # a distillation or merge call the research model failed: the stream pauses at its last checkpoint
+            out(f"library    paused: the research model failed ({type(e).__name__}: {str(e)[:200]}); run the phase "
+                f"again to continue from n={state['cursor']}")
+            return {"status": "paused", "cursor": state["cursor"], "reason": f"{type(e).__name__}: {str(e)[:200]}"}
+        readout = lib.stream_readout(state["readings"], stream)
+        readout["p_second_half_better"] = lib.bootstrap_halves(state["readings"], stream)
+        half = len(stream) // 2
+        later: dict = {}
+        for t in stream[half:]:
+            r = state["readings"].get(t) or {}
+            if r.get("lib") is None or r.get("control") is None:
+                continue
+            for entry_id in r.get("shown") or ():
+                later.setdefault(entry_id, []).append(r["lib"] - r["control"])
+        at_half = state.get("utility_at_half") or {}
+        paired = [(at_half[k], sum(v) / len(v)) for k, v in sorted(later.items()) if k in at_half]
+        readout["credit_rank_correlation"] = lib.rank_correlation([a for a, _ in paired], [b_ for _, b_ in paired])
+        readout["entries"] = {"active": len(active()),
+                              "retired": sum(1 for e in entries if e.get("status") == "retired"),
+                              "merged": sum(1 for e in entries if e.get("status") == "merged"),
+                              "dropped_at_check": len(state["dropped"]), "distill_calls": state["distill_calls"]}
+        readout["shown_per_attempt"] = round(sum(len((state["readings"][t] or {}).get("shown") or ())
+                                                 for t in state["readings"]) / max(len(state["readings"]), 1), 3)
+        state["readout"] = readout
+        experience = _experience.read(activity.root)
+        if not any(e.get("kind") == "library_stream" and e.get("scope") == scope and e.get("order_hash") == order_hash
+                   and e.get("base_release") == state["base_release"] for e in experience):
+            # the stream's record, written once (a resume after it finds it and does not write it again)
+            for e in entries:
+                # the entry's own kind (workflow, insight, api_note) travels as `entry_kind`: the row's `kind` is
+                # the record's
+                _experience.append(activity.root, {**{k: e.get(k) for k in (
+                    "entry_id", "shelf", "title", "when", "body", "avoid", "origin", "born_at_n", "status", "stats",
+                    "retired", "merged_into", "source_hashes", "provenance")},
+                    "kind": "library_entry", "entry_kind": e.get("kind"), "scope": scope})
+            _experience.append(activity.root, {"kind": "library_stream", "scope": scope,
+                                               "base_release": state["base_release"], "order_hash": order_hash,
+                                               "distill_prompt": state["distill_prompt"], "readout": readout,
+                                               "readings": state["readings"]})
+        out(f"library    stream done: D={readout['D']} B={readout['B']} halves {readout['first_half']} -> "
+            f"{readout['second_half']} (P {readout['p_second_half_better']}) active={readout['entries']['active']}")
+        snapshot = lib.with_library(base_files, active(), settings, max_chars=limits.max_skill_chars,
+                                    max_skills=limits.max_skills)
+        # 2026-10-07 review: D alone decides; B is a process number (harm is the snapshot round's screen's, gate's
+        # and confirmation's to catch)
+        abort = lib.snapshot_abort(readout, settings, empty=snapshot == base_files)
+        if abort:
+            state.update(status="done", snapshot={"outcome": "not_gated", "why": abort})
             save()
-            out(f"library    n={i + 1}/{len(stream)} first={reading['lib']} retry={reading['retry']} "
-                f"control={reading['control']} active={len(active())} shown={len(reading['shown'])}")
-    except BudgetExhausted as e:
-        state["entries"] = {x["entry_id"]: x for x in entries}
+            _experience.append(activity.root, {"kind": "library_snapshot", "scope": scope, "outcome": "not_gated",
+                                               "why": abort, "readout": readout})
+            out(f"library    the snapshot is not gated: {abort}")
+            return {"status": "done", "readout": readout, "snapshot": state["snapshot"]}
+        state.update(status="snapshot", snapshot_ordinal=next_ordinal(experience, "library"))
         save()
-        out(f"library    stopped: {e}")
-        return {"status": "budget_exhausted", "cursor": state["cursor"]}
-    readout = lib.stream_readout(state["readings"], stream)
-    readout["p_second_half_better"] = lib.bootstrap_halves(state["readings"], stream)
-    half = len(stream) // 2
-    later: dict = {}
-    for t in stream[half:]:
-        r = state["readings"].get(t) or {}
-        if r.get("lib") is None or r.get("control") is None:
-            continue
-        for entry_id in r.get("shown") or ():
-            later.setdefault(entry_id, []).append(r["lib"] - r["control"])
-    at_half = state.get("utility_at_half") or {}
-    paired = [(at_half[k], sum(v) / len(v)) for k, v in sorted(later.items()) if k in at_half]
-    readout["credit_rank_correlation"] = lib.rank_correlation([a for a, _ in paired], [b_ for _, b_ in paired])
-    readout["entries"] = {"active": len(active()), "retired": sum(1 for e in entries if e.get("status") == "retired"),
-                          "merged": sum(1 for e in entries if e.get("status") == "merged"),
-                          "dropped_at_check": len(state["dropped"]), "distill_calls": state["distill_calls"]}
-    readout["shown_per_attempt"] = round(sum(len((state["readings"][t] or {}).get("shown") or ())
-                                             for t in state["readings"]) / max(len(state["readings"]), 1), 3)
-    state["readout"] = readout
-    for e in entries:
-        # the entry's own kind (workflow, insight, api_note) travels as `entry_kind`: the row's `kind` is the record's
-        _experience.append(activity.root, {**{k: e.get(k) for k in ("entry_id", "shelf", "title", "when", "body",
-                                                                    "avoid", "origin", "born_at_n", "status", "stats",
-                                                                    "retired", "merged_into", "source_hashes",
-                                                                    "provenance")},
-                                           "kind": "library_entry", "entry_kind": e.get("kind"),
-                                           "scope": activity.rsi.scope_id})
-    _experience.append(activity.root, {"kind": "library_stream", "scope": activity.rsi.scope_id,
-                                       "base_release": state["base_release"], "order_hash": order_hash,
-                                       "distill_prompt": state["distill_prompt"], "readout": readout,
-                                       "readings": state["readings"]})
-    out(f"library    stream done: D={readout['D']} B={readout['B']} halves {readout['first_half']} -> "
-        f"{readout['second_half']} (P {readout['p_second_half_better']}) active={readout['entries']['active']}")
+    # the snapshot round, resumed as an interruption left it: the same ordinal, so the same candidate, experiment id,
+    # screen attempts and gate (research.fixed)
+    readout = state["readout"]
+    ordinal = int(state["snapshot_ordinal"])
     snapshot = lib.with_library(base_files, active(), settings, max_chars=limits.max_skill_chars,
                                 max_skills=limits.max_skills)
-    abort = None
-    if readout["D"] <= settings.abort_d or readout["B"] >= settings.abort_b:
-        abort = f"D {readout['D']} <= {settings.abort_d} or B {readout['B']} >= {settings.abort_b}"
-    elif snapshot == base_files:
-        abort = "the library is empty"
-    if abort:
-        state.update(status="done", snapshot={"outcome": "not_gated", "why": abort})
-        save()
-        _experience.append(activity.root, {"kind": "library_snapshot", "scope": activity.rsi.scope_id,
-                                           "outcome": "not_gated", "why": abort, "readout": readout})
-        out(f"library    the snapshot is not gated: {abort}")
-        return {"status": "done", "readout": readout, "snapshot": state["snapshot"]}
-    state["status"] = "snapshot"
-    save()
-    ctx, _ = _fixed_context(activity, work)
+    ctx, _ = _fixed_context(activity, work, ordinal=ordinal)
     failing = [t for t, ok in ctx.session.before.items() if not ok]
     candidate = fixed_candidate(operator="library", files=snapshot, site="skills/library/", carrier="skill",
                                 failing=failing, mechanism="experience library snapshot from verified train successes",
                                 trigger_condition="retrieved by task similarity at the start of every attempt",
                                 notes=f"{len(active())} entries")
-    ordinal = next_ordinal(_experience.read(activity.root))
     result = run_fixed_round(ctx, budget, [candidate], ordinal=ordinal)
     state.update(status="done", snapshot={"outcome": result.outcome, "reason": result.reason,
                                           "release": activity.releases.active()["release_ref"]})
     save()
-    _experience.append(activity.root, {"kind": "library_snapshot", "scope": activity.rsi.scope_id,
-                                       "outcome": result.outcome, "reason": result.reason, "entries": len(active()),
-                                       "release_after": activity.releases.active()["release_ref"]})
+    if not any(e.get("kind") == "library_snapshot" and e.get("ordinal") == ordinal
+               for e in _experience.read(activity.root)):
+        _experience.append(activity.root, {"kind": "library_snapshot", "scope": scope, "ordinal": ordinal,
+                                           "outcome": result.outcome, "reason": result.reason,
+                                           "entries": len(active()),
+                                           "release_after": activity.releases.active()["release_ref"]})
     out(f"library    snapshot round: {result.outcome}" + (f" ({result.reason})" if result.reason else ""))
     return {"status": "done", "readout": readout, "snapshot": state["snapshot"]}
 
