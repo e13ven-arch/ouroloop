@@ -116,6 +116,27 @@ def test_the_learn_phase_runs_antithetic_twins_on_train_fits_the_table_and_gates
             assert M.propensity_problems(work.transcript_of(r)) == []
 
 
+def test_an_interrupted_refit_round_is_finished_on_the_next_learn_without_another_reading(fake_upstream, tmp_path,
+                                                                                          monkeypatch):
+    from ouroloop.research import fixed
+    cfg, activity, w0 = prepared_v5(fake_upstream, tmp_path, monkeypatch, methods=LEARN)
+    install_w(activity, audit_files("silent"))
+    bench.baseline(cfg, ".", out=lambda _line: None)
+    real = fixed.run_fixed_round
+
+    def dies(*a, **kw):
+        raise KeyboardInterrupt("stopped by hand")
+    monkeypatch.setattr(fixed, "run_fixed_round", dies)
+    with pytest.raises(KeyboardInterrupt):
+        bench.learn(cfg, ".", out=lambda _line: None)
+    twins = len([r for r in activity.results.all() if bench._arm_of(r.attempt_id).startswith("learn_")])
+    monkeypatch.setattr(fixed, "run_fixed_round", real)
+    result = bench.learn(cfg, ".", out=lambda _line: None)
+    assert result["resumed"] and result["stage"] == "learn0" and result["refit"]["outcome"] == "installed"
+    assert len([r for r in activity.results.all() if bench._arm_of(r.attempt_id).startswith("learn_")]) == twins
+    assert len([e for e in xp.read(activity.root) if e.get("kind") == "method_fit"]) == 1
+
+
 def test_the_learn_phase_refuses_a_k_without_methods_and_a_dev_run_refuses_an_explore_table(fake_upstream, tmp_path,
                                                                                             monkeypatch):
     from test_research_session import prepared_v3

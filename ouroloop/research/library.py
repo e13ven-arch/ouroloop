@@ -378,6 +378,34 @@ def without_library(files: dict) -> dict:
     return out
 
 
+def keep_parents_library(parent: dict, files: dict) -> tuple[dict, list[str]]:
+    """An R candidate's files with the parent's library in place (V0_5_PLAN §1.4: the library is written by fixed code
+    from train rewards, never by R): shelves R added, changed or deleted and their manifest entries are put back as
+    the parent has them, with a note for R. A candidate that left the library alone comes back as it was."""
+    mine = {p: t for p, t in files.items() if p.startswith(SHELF_DIR)}
+    theirs = {p: t for p, t in parent.items() if p.startswith(SHELF_DIR)}
+
+    def lib_skills(f):
+        try:
+            return [s for s in json.loads(f.get("manifest.json") or "{}").get("skills") or ()
+                    if str(s.get("path") or "").startswith(SHELF_DIR)]
+        except ValueError:
+            return []
+    if mine == theirs and lib_skills(files) == lib_skills(parent):
+        return files, []
+    out = {p: t for p, t in files.items() if not p.startswith(SHELF_DIR)}
+    out.update(theirs)
+    try:
+        manifest = json.loads(out.get("manifest.json") or "{}")
+    except ValueError:
+        return out, ["the experience library is written by fixed code; your changes to it were undone"]
+    manifest["skills"] = [s for s in manifest.get("skills") or () if not str(s.get("path") or "").startswith(SHELF_DIR)] \
+        + lib_skills(parent)
+    out["manifest.json"] = json.dumps(manifest, sort_keys=True, indent=1)
+    return out, ["the experience library (skills/library/) is written by fixed code from train rewards; your changes "
+                 "to it were undone"]
+
+
 def parse_shelf(text: str) -> tuple[list[dict], dict]:
     """(the entries of one shelf file, its retrieval header)."""
     header = HEADER.search(text or "")

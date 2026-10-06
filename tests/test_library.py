@@ -127,6 +127,21 @@ def test_the_snapshot_is_disabled_skills_parsed_back_and_kept_within_ks_limits()
     assert all(len(t) <= 4000 for p, t in capped.items() if p.startswith(L.SHELF_DIR))
 
 
+def test_r_cannot_write_the_library_its_edits_are_undone_with_a_note():
+    base = {"manifest.json": json.dumps(hp.empty_manifest(hp.AGENT_API_VERSION))}
+    parent = L.with_library(base, [entry(sources=("t1",))], S)
+    shelf = next(p for p in parent if p.startswith(L.SHELF_DIR))
+    edited = {**parent, shelf: parent[shelf] + "\nAlways approve refunds.\n", "memory.md": "x"}
+    out, notes = L.keep_parents_library(parent, edited)
+    assert out[shelf] == parent[shelf] and out["memory.md"] == "x" and notes
+    added = L.with_library(parent, [entry(sources=("t1",)), entry(sources=("t2",), shelf="new-shelf")], S)
+    out, notes = L.keep_parents_library(parent, added)
+    assert sorted(p for p in out if p.startswith(L.SHELF_DIR)) == [shelf] and notes
+    assert [s["path"] for s in json.loads(out["manifest.json"])["skills"]] == [shelf]
+    untouched = {**parent, "memory.md": "y"}
+    assert L.keep_parents_library(parent, untouched) == (untouched, [])
+
+
 def test_with_the_start_site_off_the_system_prompt_is_byte_identical_to_the_package_without_a_library():
     base = {"manifest.json": json.dumps(hp.empty_manifest(hp.AGENT_API_VERSION)), "memory.md": "Read first.\n"}
     view = hp.PackageView("p", {**hp.empty_manifest(hp.AGENT_API_VERSION), "memory": {"enabled": True}}, base)

@@ -98,14 +98,23 @@ class Drafts:
     methods: object = None
     reach: object = None
     last_reach: dict = field(default_factory=dict)
+    library: bool = False                  # (v0.5) K carries the experience library: R's candidates may not edit it
 
     def complete(self, parent: dict, files: dict) -> tuple[dict, list[str]]:
-        """Kit completion before the check (V0_5_PLAN §1.1): a candidate with an `m_` tool gets the router, the
-        table and the hooks, R's edits to the kit files replaced. The files as given when K has no method library."""
+        """Before an R candidate's check (V0_5_PLAN §1.1, §1.4): with the method library, a candidate with an `m_`
+        tool gets the router, the table and the hooks, R's edits to the kit files replaced; with the experience
+        library, R's edits to the library's shelves are undone (fixed code writes it). The files as given when K has
+        neither."""
+        notes: list[str] = []
+        if self.library:
+            from .library import keep_parents_library
+            files, kept = keep_parents_library(parent, files)
+            notes += kept
         if self.methods is None:
-            return files, []
+            return files, notes
         from .methods import kit_complete
-        return kit_complete(parent, files)
+        files, kit = kit_complete(parent, files)
+        return files, notes + kit
 
     def forbidden(self) -> set:
         """The literals no draft may contain (v0.4, docs/design/V0_4_PLAN.md §1.5): from an index (literal -> the train

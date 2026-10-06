@@ -104,6 +104,30 @@ def test_the_v5_preset_freezes_the_method_and_library_tables_into_k_and_bootstra
     assert {k: v for k, v in v5.items() if k != "harness"} == {k: v for k, v in v3.items() if k != "harness"}
 
 
+def test_a_v5_ks_attempts_carry_the_methods_view_and_a_v4_ks_do_not(fake_upstream, tmp_path, monkeypatch):
+    from ouroloop.agent.runner import k_methods
+    from ouroloop.evolve.task_eval import make_agent_factory
+    from test_research_session import prepared_v3
+    cfg, activity, w0 = prepared_v5(fake_upstream, tmp_path / "v5", monkeypatch)
+    work = bench.improvement(bench.open_activity(cfg, ".", out=lambda _l: None), template_ref=cfg["rsi"]["task_plan_ref"])
+    bound = P.bind_release(w0, profile="task", services=work.services(), authorization="installed")
+    assert k_methods(bound) == {"prefix": "m_", "max_calls": 25}
+    from types import SimpleNamespace
+    from ouroloop.benchmark import Budget
+    from test_methods import World
+    agent = make_agent_factory(activity.rt, None, budget=Budget(max_steps=2), bound=bound, worker=ProcessWorker(
+        for_tests=True))(World(), SimpleNamespace(task_id="t"), "")
+    assert agent.methods == {"prefix": "m_", "max_calls": 25}
+    cfg4, activity4, w4 = prepared_v3(fake_upstream, tmp_path / "v4", monkeypatch)
+    work4 = bench.improvement(bench.open_activity(cfg4, ".", out=lambda _l: None),
+                              template_ref=cfg4["rsi"]["task_plan_ref"])
+    bound4 = P.bind_release(w4, profile="task", services=work4.services(), authorization="installed")
+    assert k_methods(bound4) is None
+    agent4 = make_agent_factory(activity4.rt, None, budget=Budget(max_steps=2), bound=bound4,
+                                worker=ProcessWorker(for_tests=True))(World(), SimpleNamespace(task_id="t"), "")
+    assert agent4.methods is None and agent4.extra_system == ""
+
+
 def test_a_config_cannot_set_the_preset_only_tables():
     base = {"improvement": {"mode": "automatic", "preset": "automationbench_harness_v5"}}
     with pytest.raises(ValueError, match="the preset fixes"):
@@ -247,7 +271,7 @@ def test_the_session_inputs_carry_the_method_library_inputs_from_train_only(fake
     experience = xp.read(activity.root)
     bound = P.bind_release(w0, profile="task", services=work.services(), authorization="installed")
     _, drafts, session = work.round_inputs(0, evidence, experience, bound, root=activity.root, research_model={})
-    assert drafts.methods is not None and callable(drafts.reach)
+    assert drafts.methods is not None and callable(drafts.reach) and drafts.library is True
     assert session.methods is not None
     names = set(session.extra_inputs)
     assert {"methods.json", "uncovered.json", "method_research.json", "playbook.md",

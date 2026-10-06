@@ -5,8 +5,6 @@ inputs and the playbook's citations — offline, with the reference methods as r
 import importlib.util
 import json
 
-import pytest
-
 from ouroloop.agent import harness_package as hp
 from ouroloop.agent.tools import ToolResult
 from ouroloop.agent.worker import ProcessWorker
@@ -265,6 +263,27 @@ def test_the_kit_check_refuses_a_table_or_declaration_outside_the_contract():
     assert any("not the kit's router" in e for e in M.kit_check({**files, M.ROUTER_PATH: "x = 1\n"}))
 
 
+def test_the_literal_check_covers_method_code_and_the_kit_check_runs_in_the_draft_chain(tmp_path):
+    """V0_5_PLAN §1.1: a method module, its METHODS literal and its tests are package files like any other — a value
+    of one train task in them is refused — and under a methods K the kit check runs before the worker."""
+    from ouroloop.evolve import contracts as ct
+    from ouroloop.research.drafts import Drafts
+    objects = ct.Objects(tmp_path)
+    parent = hp.empty_package(objects)
+    files, _ = M.kit_complete({}, M.reference_files(["m_row_ledger"]))
+    leaky = {**files, "tools/m_tables.py": files["tools/m_tables.py"].replace(
+        'NOTE_KEYS = ("note",', 'NOTE_KEYS = ("INV-ZETA-0077", "note",')}
+    drafts = Drafts(objects, parent_ref=parent, limits=V2, literals={"INV-ZETA-0077": {"t1"}},
+                    worker=ProcessWorker(for_tests=True), methods=M.MethodSettings())
+    errors, ref = drafts.check(leaky)
+    assert ref is None and "INV-ZETA-0077" in errors[0] and "tools/m_tables.py" in errors[0]
+    explore = {**files, M.TABLE_PATH: M.render_table({**M.table_of(files), "mode": "explore", "salt": "s"})}
+    errors, ref = drafts.check(explore)
+    assert ref is None and errors[0].startswith("kit_check:")
+    errors, ref = drafts.check(files)
+    assert errors == [] and ref
+
+
 def test_the_router_is_the_kits_bytes_and_the_table_is_parsed_not_imported(tmp_path):
     files, _ = M.kit_complete({}, M.reference_files(["m_row_ledger"]))
     poisoned = {**files, M.TABLE_PATH: "import os\nos.environ['TOUCHED'] = '1'\nTABLE = {'mode': 'greedy', "
@@ -520,6 +539,7 @@ def test_the_explore_twins_flip_every_gate_between_a_and_b_with_exact_propensiti
     assert all(a + b == 1 for a, b in zip(bits_a, bits_b))                  # foldover: each task on once, off once
     assert 10 < sum(bits_a) < 30
     assert [M.assign("s", t, "m_row_ledger", "table_read", "A") for t in tasks] == bits_a   # the host mirrors it
+    assert [M.assign("s", t, "m_row_ledger", "table_read", "B") for t in tasks] == bits_b
     other = [router.assign("s", t, "m_doc_search", "doc_miss", "A") for t in tasks]
     assert other != bits_a                                                  # decisions are independent
     variants = ["a", "b", "c"]
@@ -587,6 +607,9 @@ def test_a_split_needs_five_tasks_on_each_side():
     few = [obs(f"lo{i}", up=False, noise=0) for i in range(4)] + [obs(f"hi{i}", up=True, noise=3) for i in range(6)]
     table, _ = M.fit_table(few, DECLS, None)
     assert "m_x" not in table["splits"]
+    same = [obs(f"lo{i}", up=True, noise=0) for i in range(6)] + [obs(f"hi{i}", up=True, noise=3) for i in range(6)]
+    table, _ = M.fit_table(same, DECLS, None)
+    assert "m_x" not in table["splits"]                  # both sides would act alike: no split is kept
 
 
 def test_other_domains_and_pre_install_counts_enter_at_half_weight():

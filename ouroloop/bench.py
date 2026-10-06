@@ -1133,6 +1133,8 @@ class Improvement:
         if methods is not None:
             # v0.5 (V0_5_PLAN §1.1): the kit completion, the kit check and the reach check join the draft chain
             drafts.methods, drafts.reach = methods, self.reach_fn()
+        # v0.5 (V0_5_PLAN §1.4): the experience library is fixed code's; an R candidate's edits to it are undone
+        drafts.library = self.library_settings() is not None
         session = self.session_inputs(evidence, bound, run_files=run_files, test_files=test_files,
                                       round_ordinal=diagnosis.round_index) \
             if self.harness.get("research_session") else None
@@ -3006,7 +3008,6 @@ def learn(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pri
     refuses an explore table off train)."""
     from .agent import harness_package as hp
     from .research import methods as M
-    from .research.fixed import fixed_candidate, next_ordinal, run_fixed_round
     activity, work, budget = _phase_work(cfg, base, "learn", out)
     settings = work.method_settings()
     if settings is None:
@@ -3026,7 +3027,18 @@ def learn(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pri
     if not tasks:
         out("learn      no recorded train attempt fires a method's trigger: nothing to learn")
         return {"learned": False, "reason": "no trigger fires on train"}
-    fits = [e for e in _experience.read(activity.root) if e.get("kind") == "method_fit" and e.get("scope") == scope]
+    experience = _experience.read(activity.root)
+    fits = [e for e in experience if e.get("kind") == "method_fit" and e.get("scope") == scope]
+    if fits and fits[-1].get("changed") and fits[-1].get("release") == release_ref and not any(
+            e.get("kind") == "ledger" and e.get("fixed_code") and e.get("stage") == "declared"
+            and fits[-1]["stage"] in str((e.get("declaration") or {}).get("mechanism") or "") for e in experience):
+        # the last reading moved the table and its refit round never started (an interrupted phase): finish that
+        # round rather than pay for another reading
+        last = fits[-1]
+        out(f"learn      {last['stage']}'s refit round was not run: running it now")
+        return _refit_round(activity, work, budget, files, decls, last["table"], last["stage"], last.get("moved") or (),
+                            {t: list(decls) for t in last.get("tasks") or ()}, settings, out,
+                            {"learned": True, "stage": last["stage"], "resumed": True})
     stage = f"learn{len(fits)}"
     salt = M.learn_salt(work.order_seed, stage)
     out(f"learn      {stage}: {len(tasks)} train tasks where a trigger fires, twins A and B (salt {salt})")
@@ -3060,17 +3072,27 @@ def learn(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pri
               "changed": changed, "moved": moved}
     if not changed:
         return result
+    return _refit_round(activity, work, budget, files, decls, table, stage, moved, fired, settings, out, result)
+
+
+def _refit_round(activity: Activity, work, budget, files: dict, decls: dict, table: dict, stage: str, moved, fired: dict,
+                 settings, out, result: dict) -> dict:
+    """The refit candidate of a learn reading in its own fixed round (V0_5_PLAN §1.3): only the table changes (and
+    the enabled flag of a method every cell of which is silent and the actor hardly calls); its screen reads the
+    triggered train tasks of the moved methods that fail now, plus the round's passing sample; gate, confirmation and
+    install as for any candidate."""
+    from .research import methods as M
+    from .research.fixed import fixed_candidate, next_ordinal, run_fixed_round
     rates = M.call_rates([(r, work.transcript_of(r)) for r in work.latest_train().values()], list(decls))
     refit, disabled = M.refit_files(files, table, call_rates=rates, settings=settings)
     methods_moved = {k.split("|", 1)[0] for k in moved}
-    failing = [t for t in tasks if set(fired.get(t) or ()) & methods_moved]
+    failing = [t for t in activity.splits.ids("train") if set(fired.get(t) or ()) & methods_moved]
     ctx, _ = _fixed_context(activity, work)
     candidate = fixed_candidate(operator="refit", files=refit, site="after_tool", carrier="hook", failing=failing,
                                 mechanism=f"refit method table from paired train rewards {stage}",
                                 trigger_condition="the cells the learn reading moved: " + ", ".join(moved)[:400],
                                 notes=f"disabled {disabled}" if disabled else "")
-    ordinal = next_ordinal(_experience.read(activity.root))
-    round_result = run_fixed_round(ctx, budget, [candidate], ordinal=ordinal)
+    round_result = run_fixed_round(ctx, budget, [candidate], ordinal=next_ordinal(_experience.read(activity.root)))
     out(f"refit      {round_result.outcome}" + (f" ({round_result.reason})" if round_result.reason else ""))
     return {**result, "refit": {"outcome": round_result.outcome, "release": activity.releases.active()["release_ref"],
                                 "disabled": disabled}}
