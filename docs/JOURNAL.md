@@ -8,6 +8,15 @@
 
 ---
 
+## 2026-10-07 v0.4 finance 封存 final 与事后分析
+
+- 做了什么：按 `68c9efd` 封存的计划跑 `--phase evaluate`：finance 的 25 道 test × 3 次，W\*（W0 + source_memory）对 W0。事后分析写在 [history/FINANCE_V04_ANALYSIS_2026-10-07.md](history/FINANCE_V04_ANALYSIS_2026-10-07.md)。
+- 证据：W\* 47/75 = 62.7%（部分得分 0.915）对 W0 41/75 = 54.7%（0.843），配对差 +8.0 个点，95% 区间 [−4.0, +22.7]，按事先的规则判“不确定”。逐题：修好 subscription_billing 0→3、wave_freelance_invoice 0→3、monthend_journal_entries 1→3，弄坏 wave_expense_categorization 3→1。每次尝试成本 $0.482 → $0.378（−22%，配对区间不含 0，唯一显著的结果）。W0 的 pass@1/2/3 = 0.547/0.613/0.64，W\* 一次 0.627。dev → test：+11.3 → +8.0（比 v0.1、v0.2 的转移都好）。finance 活动合计 $209.73。
+- 读法：机制在轨迹里照字面发生，增益来自 memory 里约 15 条规则中的 2～3 条（在 Gmail/Slack 按主题搜指令、给每个人发显式邮件）；成本下降来自端点搜索减半。25 题的事先功效约 0.20，单领域 final 难以显著；“final 显著才加 sales、hr”的规则在这个效应量下几乎不会触发，需另定（跨活动合并的事先登记）。
+- commit：见 git log。
+
+---
+
 ## 2026-10-06 v0.4 finance 第 3 轮被拒；封存 final 计划
 
 - 第 3 轮：R 5 回合、读轨迹 4 次、2 个候选（policy_routes、send_scope，各修 2、样本退 0）；进 gate 的候选 dev 10/25（40%）对 W1 的 46%，−6 个点，vendor_insurance_verification 又退步（第 2 轮的候选也弄坏过它），成本项不过；拒。cycle 三轮结束：一次安装（source_memory）。累计 $145.24。
