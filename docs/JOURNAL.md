@@ -8,6 +8,15 @@
 
 ---
 
+## 2026-10-06 v0.4 finance 第 1 轮：装上
+
+- 做了什么：`--phase cycle --until segment-0/round-0`，v0.4 的 R（接口错误表、失败与通过轨迹、方向、精确字面量检查、新筛选）。
+- 证据：R 4 回合、读轨迹 4 次、3 个候选：send_review（发送前核对 hook，修 3、样本退步 2，不合格）、finish_deferral（结束时追问 hook，修 2、退 1）、source_memory（memory：列全表格与来源、按数据推日期、按政策分支逐条处理；修 9、退 1、净 +8，选中）。gate（对照 3 次 W0 读数）：dev 34.7% → 46.0%，合并 +11.3 个点（第一读数 +9.3、确认读数 +13.3），退步 1 题（xero_po_matching），每次尝试 $0.37 对 W0 的 $0.44（更便宜）；kind confirmed，接受并安装。区间仍含 0（25 题），dev 数字是过程数字，不是主张。累计 $99.88（本轮约 $42）。
+- 读法：v0.4 在一个新领域上第一次装上改动；筛选的“修 9、退 1”和 gate 的方向一致。
+- commit：见 git log。
+
+---
+
 ## 2026-10-06 v0.4 finance 第 2a 步：基线
 
 - 做了什么：`claude-v4-finance.toml` 冻结（根 $450、final 份额 $160；划分 `4fd91eaf9fb8daf5` 与 v3 相同，test 仍未读），终端面板里跑 `--phase cycle --until baseline`。
