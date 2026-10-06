@@ -8,6 +8,22 @@
 
 ---
 
+## 2026-10-06 v0.3.0 发版
+
+- 做了什么：按 ROADMAP v0.3 第 6 步发版。只改文档与版本号：`docs/RESULTS.md` 加 “v0.3 (2026-10-06)” 一节（在 v0.2 之前）、总表加 v0.3 一行（五领域：无 final，原因是没有安装），v0.1/v0.2 的行不变；两份 README 的结果段加 v0.3、能力清单加 “v0.3 新增”；ROADMAP 第 5 步写状态并指向诊断、第 6 步写状态、加 “v0.4 方向” 指针（设计写进 `docs/design/`）；`pyproject.toml` 的 version 0.1.0 → 0.3.0（`ouroloop/__init__.py` 的 `__version__` 是代码、进 `code_version()` 的哈希，未改）。没有调用模型、没有付费阶段、没有读 `.env`。
+- 版本内容（框架）：agent 程序与运行壳（包 API v2、五项单次尝试硬限额、K 的 effort 上限）；gate 统计与速度（合并对照按题补齐、确认复测须单独清过 min_gain——A/A 回放 dev 0/20、test 0/12——、幅度制退步、成本项、min_tasks、并发）；R 作为有界编码会话（k 个带声明的候选、引擎台账、train 侧筛选、原始轨迹、dev 失败类型直方图）；多领域活动（每领域分层划分、Marketing 划分钉住且 test 已 spent、按领域的报告、final 份额检查）；分阶段运行；笔记按领域分层与有记录的续跑。
+- 结果（全部是 Claude 订阅上的名义 API 等价美元，Opus 5.5 经 claude_code）：
+  - 天花板实验（第 4 步）：判 training——手写包在 W* 仍失败的 8 道 Marketing 题里修 1、破 2，两臂都是 6/26；$45.28。
+  - 试点（第 0 阶段，operations + Marketing，train 12 / dev 26）：新 R 路径在真实模型下走通，memory 清单经确认的 gate 42.3% → 69.2% 后安装；$47.11。过程数字，不是主张。
+  - 五领域活动（`claude-v3.toml`）：基线 W0 train 41.3%（104/252）、dev 40.8%（51/125），$175.97；三轮都被拒：+3.2、+2.4、+0.8（125 道 dev；marketing +24、+16、+12 个点，四个主张领域净 −2、−1、−2 题）；第 2 轮后 patience 停、续跑一轮（有记录）。没有安装，按事先的规则不跑 final，新领域的 test 未读。五领域累计 $424.61；三项实验合计 $517.00。
+  - 诊断（[history/DIAGNOSIS_FIVE_DOMAIN_2026-10-06.md](history/DIAGNOSIS_FIVE_DOMAIN_2026-10-06.md)）：一个共用的包跨异质领域，帮 marketing 的改动在该克制的领域有害；只有一次对照读数的噪声（125 题上约 ±3.9 题）；筛选看不到伤害；R 沿用旧的“一轮一个改动”提示，字面量检查因普通词误拒 20 份草稿中的 14 份。下一版把搜索按领域分片并加路由（合并之后在分支上设计）。
+  - 主数字不变：v0.1 +13.0 [+2.2, +26.1]（C1 成立）、v0.2 +4.3 [−10.9, +19.6]、两活动按题平均 +8.7。
+- 证据：全套离线测试（前台）`1140 passed, 1 deselected`（4 分 7 秒）。
+- 合并：`m1-automationbench` 本地合并进 main（由协调者合并），不推送；之后继续在 `m1-automationbench` 开发。
+- commit：见本条之后的提交；版本 v0.3.0。
+
+---
+
 ## 2026-10-06 v0.3 第 5 步：三轮只在 Marketing 涨的诊断
 
 - 做了什么：不花钱，五路并行分析（候选与载体、退步机制、筛选的预测力、R 的过程、gate 统计与叠加）加综合，全文在 [history/DIAGNOSIS_FIVE_DOMAIN_2026-10-06.md](history/DIAGNOSIS_FIVE_DOMAIN_2026-10-06.md)。只读 train/dev 记录，没碰 test。
