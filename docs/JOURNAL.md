@@ -8,6 +8,15 @@
 
 ---
 
+## 2026-10-06 v0.4 finance 第 2 轮：被拒
+
+- 做了什么：`--phase cycle --until segment-0/round-1`，在第 1 轮装上的 W1（source_memory）之上。
+- 证据：R 4 回合、读轨迹 4 次、3 个候选：deliverable_scope（修 5、样本退 0）、policy_branches_finish（修 3、退 0）、empty_search_hint（0）。deliverable_scope 进 gate：dev 9/25（36%），对照是 W1 在第 1 轮 gate 里的两次读数 11、12（46%），增益 −10 个点，退步 2 题（monday_project_billing、vendor_insurance_verification——后者是第 1 轮修好的），成本项也不过；拒。累计 $126.51（本轮约 $27）。
+- 读法：两件事分不开——候选可能真的有害，也可能 W1 的对照偏高：安装后对照沿用了它通过 gate 时的读数，其中第一次读数正是因为过线才被选中的（赢家诅咒，评审早先指出过）。要分开，需要给 W1 取两次不以过线为条件的新读数。
+- commit：见 git log。
+
+---
+
 ## 2026-10-06 v0.4 finance 第 1 轮：装上
 
 - 做了什么：`--phase cycle --until segment-0/round-0`，v0.4 的 R（接口错误表、失败与通过轨迹、方向、精确字面量检查、新筛选）。
