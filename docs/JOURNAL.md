@@ -8,6 +8,14 @@
 
 ---
 
+## 2026-10-06 v0.4 finance 第 3 轮被拒；封存 final 计划
+
+- 第 3 轮：R 5 回合、读轨迹 4 次、2 个候选（policy_routes、send_scope，各修 2、样本退 0）；进 gate 的候选 dev 10/25（40%）对 W1 的 46%，−6 个点，vendor_insurance_verification 又退步（第 2 轮的候选也弄坏过它），成本项不过；拒。cycle 三轮结束：一次安装（source_memory）。累计 $145.24。
+- 封存：`[freeze.final]` 写入 W\*（`release:sha256:2c64a06c…`）与 W0（`release:sha256:5739b283…`），finance 的 25 道 test × 3 次；`ouroloop freeze` 估计 $61.10（W\* $0.373、W0 $0.441 一次），份额 $160 容得下；`final_plan_ref = finalization:sha256:2af18001…`。本条与配置一起提交之后才跑 `--phase evaluate`。
+- commit：见 git log。
+
+---
+
 ## 2026-10-06 v0.4 finance 第 2 轮：被拒
 
 - 做了什么：`--phase cycle --until segment-0/round-1`，在第 1 轮装上的 W1（source_memory）之上。

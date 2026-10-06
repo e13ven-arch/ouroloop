@@ -153,6 +153,7 @@ order_seed = 1
 task_plan_ref = "plan:sha256:dd2740ace01025deb6653a167f91abe0709574b35a0d97b24c76cfc4ccacf291"
 schedule_ref = "schedule:sha256:15aa3cf6d5f8c41ff66b114762100a3fd08e5f85e3909bdd1cacda079534ec98"
 budget_ref = "budget:sha256:307aff700f07365011123ac33052bee3207f2ea640be486b08b59b8cf4e1a8d5"
+final_plan_ref = "finalization:sha256:2af180011c1295f5120136009db72d07ee03733295342e5b9eb992621780735f"
 
 # One segment of 3 worker rounds and no research slot. Fewer rounds and slots than the preset plans is allowed
 # (bench._beyond_preset refuses only more); the cycle records the slot as deferred. patience 2.
@@ -176,13 +177,14 @@ cost_per_attempt = {base = 0.466, evolved = 0.49}
 # The final comparison, filled in after the cycle and sealed before any test task is read (M3 §2.2): W0 against W* on
 # finance's 25 test tasks, repeats 3. The report puts W0's pass@k (k = 1..3) beside W* as the equal-compute reference
 # (V0_4_PLAN §1.8). Its plan hash is committed before `--phase evaluate` runs; the result is reported whatever it is.
-# [freeze.final]
-# experiment_id = "claude-opus-5-5-v4-finance-final"
-# claims = ["C1"]
-# tasks = "test"
-# repeats = 3
-# comparisons = [{claim = "C1", subject = "evolved", control = "base", role = "evolved"},
-#                {claim = "C1", subject = "base", control = "base", role = "base"}]
-# release_refs = {evolved = "<W*: rsi/active.json after the cycle>", base = "<W0: the bootstrapped release>"}
-# stop_rules = {max_infrastructure_retries = 1}
-# statistical_plan = {confidence = 0.95, bootstrap_replicates = 2000, bootstrap_seed = 1}
+# 2026-10-06: filled after the cycle (rounds 1-3: round 1 installed source_memory; rounds 2 and 3 rejected).
+[freeze.final]
+experiment_id = "claude-opus-5-5-v4-finance-final"
+claims = ["C1"]
+tasks = "test"
+repeats = 3
+comparisons = [{claim = "C1", subject = "evolved", control = "base", role = "evolved"},
+               {claim = "C1", subject = "base", control = "base", role = "base"}]
+release_refs = {evolved = "release:sha256:2c64a06c07da5a994e0a962e9aee667b2599ae1f6ffc654c6b59387decac669e", base = "release:sha256:5739b28311b38095c9775488363442e08a78130cd88a2b7de625a9b57960e2cc"}
+stop_rules = {max_infrastructure_retries = 1}
+statistical_plan = {confidence = 0.95, bootstrap_replicates = 2000, bootstrap_seed = 1}
