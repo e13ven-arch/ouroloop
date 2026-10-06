@@ -158,6 +158,9 @@ stop_view = "stop.business.v1"
 repeats = 1
 order_seed = 1
 # task_plan_ref / schedule_ref / budget_ref: add the lines `ouroloop freeze` prints (before 2a).
+task_plan_ref = "plan:sha256:c978e0a11ca732b918d83275d45bf20d8e68d345d761519e1ad335af452ea098"
+schedule_ref = "schedule:sha256:15aa3cf6d5f8c41ff66b114762100a3fd08e5f85e3909bdd1cacda079534ec98"
+budget_ref = "budget:sha256:b4c638b714efb357e6a2db861d312bf197842690ef05292f5261870d9b4e1ae6"
 
 # One segment of 3 worker rounds and no research slot. Fewer rounds and slots than the preset plans is allowed
 # (bench._beyond_preset refuses only more); the cycle records the slot as deferred. patience 2.

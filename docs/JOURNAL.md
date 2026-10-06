@@ -8,6 +8,13 @@
 
 ---
 
+## 2026-10-07 support 两臂对照：冻结
+
+- 做了什么：v0.5 合并进 `m1-automationbench`（`7e7732e`，全套 `-m "not live"` 1245 passed）；`ouroloop freeze` 冻结 support 的两臂：v0.4 臂（`claude-v4-support.toml`，plan `c978e0a1…`）与 v0.5 臂（`claude-v5-support.toml`，plan `98874475…`），同一 schedule `15aa3cf6…`、同一 budget `b4c638b7…`（根 $600、final 份额 $160），两个工作区的划分都是 `3da11232f5d5ff38`，test 未读。预先登记的判定照 V0_5_PLAN §3 与两份配置的注释，本条提交之后才付第一笔钱。
+- commit：见 git log。
+
+---
+
 ## 2026-10-07 v0.5 评审：14 项修正
 
 - 做了什么：协调者在隔离副本里用脚本化的 v0.5 臂跑了一遍全流程，核了有效性、公平性与旧工作区的身份，确认 14 项；全部按其决定改了（离线，在隔离工作树；没有调用模型、没有付费阶段、没有读 `.env` 与任何 test 结果）。对照表在 V0_5_PLAN §7 的“2026-10-07 评审的 14 项”。
