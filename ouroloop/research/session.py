@@ -147,6 +147,14 @@ TOOLS = (
                                                "next_action": {"type": "string"}, "reason": {"type": "string"}}}),
 )
 EDIT_TOOLS = ("write_file", "edit_file", "delete_file")
+# v0.5 (V0_5_PLAN §1.1): under a K with the method library, `finish` may carry R's playbook; the tool list is otherwise
+# the same, so a v0.4 session's tools (and its prompt record) are unchanged.
+FINISH_V5 = ToolSpec(
+    "finish", TOOLS[-1].description + " It may also carry \"playbook\": lessons about your own research, one per "
+    "line, each ending [<candidate id>: <field> <value>] as the ledger states it; uncited or mismatched lines are "
+    "dropped.",
+    {"type": "object", "properties": {**TOOLS[-1].schema["properties"], "playbook": {"type": "string"}}})
+TOOLS_V5 = (*TOOLS[:-1], FINISH_V5)
 
 SESSION_FORMAT = (
     "This call is one turn of a coding session over the current capability package. The tree: package/ holds the "
@@ -186,14 +194,30 @@ SESSION_READS = (
     "passing attempt, at least {min_passing_reads} passing attempt(s); the refusal names what is missing. ")
 
 
-def session_format(k: int, limits: "SessionLimits") -> str:
+# v0.5 (docs/design/V0_5_PLAN.md §1.1, §1.4): the inputs and the checks a K with the method library adds to the
+# protocol. The method (when to write a method) is research.propose's text (policies.METHODS_PARAGRAPH).
+SESSION_METHODS = (
+    "Method library inputs (train only): inputs/methods.json — each installed method's calls, errors, output length, "
+    "the cells where it fired with their action and fitted posterior, and failing train attempts where it acted —, "
+    "inputs/uncovered.json — the failing train attempts clustered by failed-assertion class and behaviour, each "
+    "cluster marked covered by a method or not —, inputs/method_research.json — your own earlier method candidates "
+    "by move and how they fared —, inputs/method_kit/ — the kit's README, the router (read-only reference), the table "
+    "stub, the _mlib.py template and a test template —, inputs/playbook.md — your playbook so far — and, when the "
+    "package holds an experience library, inputs/library.json — its entries, shelves, credit and retirements. A "
+    "candidate with an m_ tool gets the router, the table and the router's hooks from fixed code before its check, "
+    "then the kit check and the reach check. ")
+
+
+def session_format(k: int, limits: "SessionLimits", *, methods: bool = False) -> str:
     """The session's protocol text for this round: SESSION_FORMAT with K's caps, and the admission's read rule when
-    K sets read floors (SESSION_READS)."""
+    K sets read floors (SESSION_READS); under a K with the method library, its inputs and checks (SESSION_METHODS)."""
     caps = limits.to_json()
     text = SESSION_FORMAT.format(k=k, **caps)
     if limits.min_failing_reads or limits.min_passing_reads:
         text += SESSION_READS.format(min_failing_reads=limits.min_failing_reads,
                                      min_passing_reads=limits.min_passing_reads)
+    if methods:
+        text += SESSION_METHODS
     return text
 
 
@@ -349,8 +373,9 @@ class CodingSession:
     `finish`; `revise` appends a check output and runs to the next. Both count against the same caps."""
 
     def __init__(self, *, turn, work: WorkTree, limits: SessionLimits, k: int, system: str, inputs: dict,
-                 trajectories: TrajectoryReader | None = None, note_refs=(), provider: str = "llm"):
+                 trajectories: TrajectoryReader | None = None, note_refs=(), provider: str = "llm", tools=TOOLS):
         self.turn, self.work, self.limits, self.k = turn, work, limits, max(int(k), 1)
+        self.tools = tuple(tools)
         # the name a reply's native content is kept under, as agent/loop.py keys it ({provider.name: content}): the
         # provider replays its own content on the next turn (providers/anthropic.to_anthropic reads it by name)
         self.provider = provider
@@ -382,7 +407,7 @@ class CodingSession:
                 return self._end(f"the session used its {self.limits.max_turns} model calls without finishing")
             self.turns += 1
             try:
-                reply = self.turn(self.system, self.messages, list(TOOLS))
+                reply = self.turn(self.system, self.messages, list(self.tools))
             except ReplyRefused as e:
                 return self._end(f"the research model declined the session: {str(e)[:200]}")
             calls = _calls_of(reply)
@@ -564,8 +589,11 @@ class CodingSession:
         ungrounded = self._ungrounded(out)
         if ungrounded:
             return ungrounded
-        self.declarations.append({"candidates": out, "next_action": action if action in NEXT_ACTIONS else None,
-                                  "reason": str(args.get("reason") or "")[:500]})
+        declaration = {"candidates": out, "next_action": action if action in NEXT_ACTIONS else None,
+                       "reason": str(args.get("reason") or "")[:500]}
+        if FINISH_V5 in self.tools and isinstance(args.get("playbook"), str):
+            declaration["playbook"] = args["playbook"][:8000]      # checked against the ledger by the round
+        self.declarations.append(declaration)
         return ""
 
     def _ungrounded(self, candidates: list) -> str:
@@ -1051,7 +1079,15 @@ def run_session_round(ctx, budget) -> ct.RoundResult:
                     # v0.4 (V0_4_PLAN §1.2): where the agent fights the API, from the train trajectories only
                     "api_errors.json": json.dumps(inputs.api_errors, ensure_ascii=False, indent=1),
                     "package_api.md": PACKAGE_API}
-    system = (f"{propose_prompt}\n\n" if propose_prompt else "") + session_format(k, inputs.limits) + PACKAGE_API
+    methods_on = inputs.methods is not None
+    if methods_on:
+        # v0.5 (V0_5_PLAN §1.1, §1.4): the method library's inputs, train only, built by fixed code
+        inputs_files.update({name: text for name, text in inputs.extra_inputs.items()})
+    system = (f"{propose_prompt}\n\n" if propose_prompt else "") + \
+        session_format(k, inputs.limits, methods=methods_on) + PACKAGE_API
+    if methods_on and inputs.playbook:
+        system += ("\n\nYour research playbook (lessons from your own earlier sessions, each verified against the "
+                   "ledger):\n" + inputs.playbook)
 
     # ------------------------------------------------------------------ the session in the worker
     worker = inputs.worker
@@ -1079,10 +1115,18 @@ def run_session_round(ctx, budget) -> ct.RoundResult:
             session = CodingSession(turn=ctx.researcher.session_turn, work=tree, limits=inputs.limits, k=k,
                                     system=system, inputs=state, trajectories=inputs.trajectories,
                                     note_refs=list(note_tasks),
-                                    provider=getattr(getattr(ctx.researcher, "llm", None), "name", None) or "llm")
+                                    provider=getattr(getattr(ctx.researcher, "llm", None), "name", None) or "llm",
+                                    tools=TOOLS_V5 if methods_on else TOOLS)
             result = session.start()
             if result.unreadable:
                 return ended("invalid", f"the coding session decided nothing: {result.unreadable}", "none")
+            if methods_on and isinstance(result.declaration.get("playbook"), str):
+                # V0_5_PLAN §1.1: R's playbook, each lesson's citation checked against the ledger by fixed code
+                from .methods import playbook_check
+                cited = {e["candidate"]: e for e in xp.ledger_projection(rows, ctx.objects)}
+                kept, dropped = playbook_check(result.declaration["playbook"], cited)
+                _experience.append(root, {"kind": "method_playbook", **tag, "text": kept, "dropped": dropped,
+                                          "hash": ct.digest({"playbook": kept})[:16]})
             if not result.candidates:
                 action = result.next_action or "none"
                 collect = action == "collect"
@@ -1133,6 +1177,8 @@ def run_session_round(ctx, budget) -> ct.RoundResult:
             for cand in kept:
                 decl, cid = cand["decl"], cand["id"]
                 package_files, prompts = split_candidate(cand["files"])
+                # v0.5: the method kit, by fixed code, before the check (the files as R wrote them under a v0.4 K)
+                package_files, kit_notes = ctx.drafts.complete(parent_pkg, package_files)
                 patch = patch_of_diff(parent_pkg, package_files)
                 draft_id = new_id("d")
                 events.append("draft_started", scope=ctx.scope_id, draft_id=draft_id, round=ctx.round_index,
@@ -1142,11 +1188,14 @@ def run_session_round(ctx, budget) -> ct.RoundResult:
                 while patch is not None:
                     draft_ref = objects.put_json("bundle", {"files": {
                         p: objects.put_json("file", {"text": package_files[p]}) for p in sorted(package_files)}})
-                    errors, package_ref = ctx.drafts.check(package_files)
+                    errors, package_ref = ctx.drafts.check(package_files, declaration=decl)
+                    methods_record = {"kit": kit_notes, "reach": _reach_counts(ctx.drafts.last_reach)} \
+                        if methods_on else {}
                     events.append("draft_check", scope=ctx.scope_id, draft_id=draft_id, round=ctx.round_index,
                                   revision=revision, draft=draft_ref, package=package_ref,
                                   patch=objects.put_json("change", {"patch": patch}), ok=not errors,
-                                  infrastructure=False, errors=[e[:300] for e in errors], session=True, candidate=cid)
+                                  infrastructure=False, errors=[e[:300] for e in errors], session=True, candidate=cid,
+                                  **methods_record)
                     drafts.append({"revision": revision, "draft_ref": draft_ref, "package_ref": package_ref,
                                    "ok": not errors, "errors": errors})
                     if not errors:
@@ -1156,7 +1205,7 @@ def run_session_round(ctx, budget) -> ct.RoundResult:
                                                      f"revisions: {errors[:2]}")
                         break
                     revision += 1
-                    revised = session.revise(check_output_text(decl["dir"], errors))
+                    revised = session.revise(check_output_text(decl["dir"], [*kit_notes, *errors]))
                     if revised.unreadable:
                         status, reason = "invalid", f"the revision was not made: {revised.unreadable}"
                         break
@@ -1181,6 +1230,7 @@ def run_session_round(ctx, budget) -> ct.RoundResult:
                         status, reason = "invalid", f"declaration_mismatch after the revision: {mismatch}"
                         break
                     package_files, prompts = split_candidate(cand["files"])
+                    package_files, kit_notes = ctx.drafts.complete(parent_pkg, package_files)
                     patch = patch_of_diff(parent_pkg, package_files)
                     if patch is None:
                         package_ref = None
@@ -1351,6 +1401,13 @@ def run_session_round(ctx, budget) -> ct.RoundResult:
     return result
 
 
+def _reach_counts(report: dict) -> dict:
+    """What the draft_check event keeps of a reach check: per method the tasks it fired on and, per claimed task,
+    the counts (V0_5_PLAN §1.1) — the same counts R is shown, nothing more."""
+    return {name: {"fired_tasks": len(r.get("fired_tasks") or ()), "reached": r.get("reached"),
+                   "claimed": r.get("claimed") or {}} for name, r in (report or {}).items()}
+
+
 def grounding_inputs(inputs: "SessionInputs", listed) -> dict | None:
     """What admission's read floors are checked against (V0_4_PLAN §1.3, M4 §1 v0.4), or None when K sets none: the
     session's reads by outcome (TrajectoryReader.read_tasks), the floors, and whether a passing attempt was listed at
@@ -1392,3 +1449,9 @@ class SessionInputs:
     passing_attempts: tuple = ()
     must_not: tuple = ()
     api_errors: dict = field(default_factory=dict)
+    # v0.5 (docs/design/V0_5_PLAN.md §1.1, §1.4): under a K with the method library, the extra input files of the
+    # session (methods.json, uncovered.json, method_research.json, method_kit/, playbook.md, library.json) and the
+    # playbook the last session kept; `methods` is that K's settings, None for a v0.4 K.
+    methods: object = None
+    extra_inputs: dict = field(default_factory=dict)
+    playbook: str = ""

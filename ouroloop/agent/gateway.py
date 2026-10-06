@@ -46,7 +46,10 @@ VIEW_EVENTS = 20                      # the broker events a hook or package tool
 # What a package may report about its own loop, labelled: a pushback, a hook's answer, a package tool's run, and a
 # model call the agent stopped before execution (tool_blocked) or never reached (tool_skipped) — the broker saw no
 # call for those, so without the mark the record would show nothing where the model saw a result.
-MARK_KINDS = ("pushback", "hook", "package_tool", "tool_blocked", "tool_skipped")
+# v0.5 (docs/design/V0_5_PLAN.md §1.3): `method_decision`, the router's decision at a method's first firing — the
+# method, its trigger kind, the cell, the action, the variant and the exact propensity — which the learner and the
+# frozen-table receipt read. Only a package with the method kit marks it.
+MARK_KINDS = ("pushback", "hook", "package_tool", "tool_blocked", "tool_skipped", "method_decision")
 RESERVED_KEYS = ("kind", "ts", "source", "mark")     # the record's own fields: package data may not set them
 
 

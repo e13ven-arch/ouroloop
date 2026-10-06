@@ -98,20 +98,41 @@ def _call(fn, *args):
     return value
 
 
+class _Refused:
+    """A call the context refused without sending it (a method past its call cap): a tool result in shape."""
+
+    def __init__(self, output: str):
+        self.output, self.is_error = output, True
+
+    def __getitem__(self, key):
+        return {"output": self.output, "is_error": self.is_error}[key]
+
+
 class _PackageContext:
     """What a v1 hook or package tool holds (M1 §1 首版能力包 API): `view`, the attempt's projection with this
     turn added, and `call_tool`, the broker through ctx.tool — read-only for a hook, since a hook may only look.
-    The calls it made are kept for the host's record of the hook or tool."""
+    The calls it made are kept for the host's record of the hook or tool.
 
-    def __init__(self, ctx, turn: int, read_only: bool):
+    v0.5 (docs/design/V0_5_PLAN.md §1.1): a method — a package tool named with the view's method prefix, present only
+    under a K with methods — holds a read-only context too, with `max_calls` base calls a run; a call past the cap is
+    answered as an error and never sent. `mark` reports a method decision (the router, a hook) to the host's record,
+    labelled the package's own; without a methods K nothing calls it."""
+
+    def __init__(self, ctx, turn: int, read_only: bool, max_calls=None):
         self.view = {**ctx.view, "turn": turn}
-        self._ctx, self._read_only = ctx, read_only
+        self._ctx, self._read_only, self._max_calls = ctx, read_only, max_calls
         self.calls = []
 
     def call_tool(self, name: str, args=None):
+        if self._max_calls is not None and len(self.calls) >= self._max_calls:
+            self.calls.append({"tool": name, "refused": "call cap"})
+            return _Refused(f"refused: a method makes at most {self._max_calls} base calls per run")
         res = self._ctx.tool(name, dict(args or {}), read_only=self._read_only)
         self.calls.append({"tool": name, "is_error": bool(res.is_error)})
         return res
+
+    def mark(self, kind: str, **data):
+        self._ctx.mark(kind, **data)
 
 
 def _plain(value, what: str):
@@ -251,7 +272,12 @@ def _execute(ctx, bundle, tools, skills, call, turn):
     through the broker."""
     name, args = call["name"], call["args"]
     if name in tools:
-        tctx = _PackageContext(ctx, turn, read_only=False)
+        methods = ctx.view.get("methods") if isinstance(ctx.view.get("methods"), dict) else None
+        if methods and name.startswith(str(methods.get("prefix") or "m_")):
+            # v0.5: a method reads only, and makes at most the K's base calls a run
+            tctx = _PackageContext(ctx, turn, read_only=True, max_calls=int(methods.get("max_calls") or 25))
+        else:
+            tctx = _PackageContext(ctx, turn, read_only=False)
         output, is_error = _plain(_call(bundle.entry(tools[name]["entrypoint"]), tctx, args), name)
         output = str(output)[:int(ctx.view.get("max_output_chars") or MAX_TOOL_OUTPUT)]
         ctx.mark("package_tool", tool=name, is_error=is_error, output=output[:2000], broker_calls=tctx.calls)
