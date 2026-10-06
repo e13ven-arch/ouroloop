@@ -435,6 +435,7 @@ v0.3 的五领域活动三轮都没有安装（第 5 步；[诊断](history/DIAG
 1. **代码与测试（$0，离线）。** V0_4_PLAN §1 的八项，每项有测试（去掉改动测试就失败）；字面量检查回放 `workspace-claude-v3` 的 20 次草稿检查（只读），14 次误拒归 0、单题的值照旧被拒；两份配置 `claude-v4-finance.toml`、`claude-v4-support.toml` 的划分 hash 与 v3 工作区冻结的相同（finance `4fd91eaf9fb8daf5`、support `3da11232f5d5ff38`）。退出：全套离线测试在前台通过。
 2. **finance 活动（约 $250，可选，用户决定开始）。** `examples/automationbench/claude-v4-finance.toml`，工作区 `workspace-claude-v4-finance`（新根 $450，其中 final 份额 $160）。付费前：`claude auth login`；按 `docker/worker.Dockerfile` 重建 worker 镜像；`ouroloop freeze --config examples/automationbench/claude-v4-finance.toml` 打印划分 hash（须为 `4fd91eaf9fb8daf5`）与要加的 `[rsi]` 三行。
    - **2a 基线**（`--phase cycle --until baseline`，约 $58）：W0 的 train 50 + dev 25 × 3 次读数（`[bench] control_readings = 3`，无条件，在任何 gate 之前）。
+     - **finance 2a 已运行（2026-10-06）：继续。** 125 次尝试全部有效，名义 $57.92（dev 每次 $0.43～0.45，train $0.50），2 笔限流调用不计费释放，没有卡住的预留。W0：train 25/50（50%）；dev 三次读数 9、8、9 道（36%、32%、36%）。逐题看，25 道 dev 里 16 道三次都失败、8 道三次都通过、只有 1 道不稳（2/3）——finance 的重跑噪声远小于五领域的估计（不一致率约 12%），对照几乎不抖，gate 能看清 +2～3 题的真实变化；16 道稳定失败的题就是余量。
    - **2b 3 轮**（`--phase cycle`，约 $120；一次确认加 $12、一次安装加 $11）：一段 3 轮、patience 2、k = 3。每轮之后读过程检查（免费）：字面量误拒为 0；每个候选都有准入认可的轨迹读取（失败的在其 `predicted_affected` 里，加一条通过的）；3 轮里至少一个工具或 hook 候选到达筛选。不成立就停下离线修，不付下一轮。
    - **2c 封存 final**（只在有确认的安装时，约 $72）：`[freeze.final]` 填 W\* 的 release，`ouroloop freeze` 封存并提交计划 hash，`--phase evaluate`：finance 的 25 道 test × 3 次，W0 对 W\*；报告并列 W0 的 pass@k（k = 1～3）作等成本参照。
 3. **support 活动（约 $250，同样的形状）。** `claude-v4-support.toml`，划分 hash 须为 `3da11232f5d5ff38`。
