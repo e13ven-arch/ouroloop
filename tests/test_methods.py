@@ -443,6 +443,20 @@ def test_the_router_blocks_a_body_once_and_lets_the_unchanged_resend_through(tmp
     assert injected and "found:" in injected[0]["message"]
 
 
+def test_a_hook_context_has_mark_only_under_a_methods_k(tmp_path):
+    hook = "def run(ctx, event):\n    return {'action': 'feedback', 'message': 'mark:' + str(hasattr(ctx, 'mark'))}\n"
+    files = {"manifest.json": json.dumps({**hp.empty_manifest(hp.AGENT_API_VERSION), "hooks": [
+        {"name": "probe", "site": "after_tool", "entrypoint": "middlewares/probe.py:run"}]}),
+        "middlewares/probe.py": hook}
+    turns = [ChatTurn("", [ToolCall("c1", "api_search", {"query": "x"})], "tool_use"), ChatTurn("done", [], "end")]
+    seen = {}
+    for name, methods in (("v4", None), ("v5", {"prefix": "m_", "max_calls": 25})):
+        agent, _ = shell(tmp_path / name, files, turns, methods)
+        agent.run("Search.")
+        seen[name] = next(e["message"] for e in transcript_of(tmp_path / name, agent) if e["kind"] == "hook")
+    assert seen == {"v4": "mark:False", "v5": "mark:True"}
+
+
 def test_a_package_without_m_tools_runs_and_records_as_before(tmp_path):
     """V0_5_PLAN §6: under a K with methods, a package without a method gets nothing new — no decision, no router,
     and the same calls as without the methods view."""

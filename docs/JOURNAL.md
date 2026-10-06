@@ -22,7 +22,7 @@
   - 在迷你 `rsi` 领域上走通两条付费路径的离线版：一个只在 finish 时出手的 pushback 方法，在 learn 读数里每题恰好一开一关（倾向值 0.5），按足迹类记功 k = 2、m = 0，格从 silent 转为 pushback，重拟候选过筛选（修 2）、gate、确认并装上；经验库的流 D = 2、B = 0，后半段配对效应 0.67 对前半段 0（自助 P = 0.97），快照过筛选、gate、确认并装上，dev 上检索的留一排除数为 0。
   - 一条只在一道 train 题里出现的标识符写进条目时被占位替换；对库没有效果的条目让 D = 0，快照按中止规则不付 gate；失败的首遇带着失败断言的附注重试一次（附注只出现在重试的提示里）；中断的流和中断的重拟轮都从停下处继续，不重复付费。
   - 突变检查：24 处关键改动在隔离副本里逐一回退或打坏，对应测试都失败；共享工作树前后一致。
-  - 测试：新增 62 个（`test_methods.py` 32、`test_library.py` 12、`test_v05.py` 9、`test_v05_phases.py` 9），旧测试一个未改；默认离线套件 `1 failed, 1219 passed, 4 skipped, 3 deselected`（2 分 48 秒）；全套离线（含慢测试）`1 failed, 1221 passed, 4 skipped, 1 deselected`（4 分 11 秒）。那 1 个失败是隔离工作树里没有被 .gitignore 掉的示例工作区（`test_aa_replay` 读 v0.1/v0.2 的记录），本版之前的基线同样失败（`1 failed, 1157 passed`）。
+  - 测试：新增 63 个（`test_methods.py` 33、`test_library.py` 12、`test_v05.py` 9、`test_v05_phases.py` 9），旧测试一个未改；默认离线套件 `1 failed, 1219 passed, 4 skipped, 3 deselected`（2 分 48 秒，最后一个测试加入之前）；全套离线（含慢测试，最终）`1 failed, 1222 passed, 4 skipped, 1 deselected`（4 分 30 秒）。那 1 个失败是隔离工作树里没有被 .gitignore 掉的示例工作区（`test_aa_replay` 读 v0.1/v0.2 的记录），本版之前的基线同样失败（`1 failed, 1157 passed`）。
 - 身份：已有工作区（v1、v3、v4-finance、v4-support）的 K、W0、R0、划分与运行身份不变；v0.4 配置在本版代码下的 K 表、R0、会话工具与系统文字不变（测试钉住）。新 bootstrap 在 v5 preset 下得到新 K（多 `methods`、`library` 两表）与新 R0（`PROPOSE_SESSION_V5`）。worker 镜像不需要重建（`worker_runner.py` 未改）。
 - commit：见 git log。
 

@@ -115,13 +115,16 @@ class _PackageContext:
 
     v0.5 (docs/design/V0_5_PLAN.md §1.1): a method — a package tool named with the view's method prefix, present only
     under a K with methods — holds a read-only context too, with `max_calls` base calls a run; a call past the cap is
-    answered as an error and never sent. `mark` reports a method decision (the router, a hook) to the host's record,
-    labelled the package's own; without a methods K nothing calls it."""
+    answered as an error and never sent. Under such a K a context also has `mark`, which reports a method decision
+    (the router) to the host's record, labelled the package's own; without one it has no `mark`, as before."""
 
     def __init__(self, ctx, turn: int, read_only: bool, max_calls=None):
         self.view = {**ctx.view, "turn": turn}
         self._ctx, self._read_only, self._max_calls = ctx, read_only, max_calls
         self.calls = []
+        if isinstance(ctx.view.get("methods"), dict):
+            # only under a K with methods: a v0.4 package's hooks and tools hold exactly view and call_tool, as before
+            self.mark = self._mark
 
     def call_tool(self, name: str, args=None):
         if self._max_calls is not None and len(self.calls) >= self._max_calls:
@@ -131,7 +134,7 @@ class _PackageContext:
         self.calls.append({"tool": name, "is_error": bool(res.is_error)})
         return res
 
-    def mark(self, kind: str, **data):
+    def _mark(self, kind: str, **data):
         self._ctx.mark(kind, **data)
 
 
