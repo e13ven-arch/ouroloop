@@ -8,6 +8,27 @@
 
 ---
 
+## 2026-10-07 v0.5 评审：14 项修正
+
+- 做了什么：协调者在隔离副本里用脚本化的 v0.5 臂跑了一遍全流程，核了有效性、公平性与旧工作区的身份，确认 14 项；全部按其决定改了（离线，在隔离工作树；没有调用模型、没有付费阶段、没有读 `.env` 与任何 test 结果）。对照表在 V0_5_PLAN §7 的“2026-10-07 评审的 14 项”。
+- 决定（V0_5_PLAN §1.3、§1.4、§3、§5）：
+  - 两臂的根都升到 $600，final 份额 $160，同一日程：比的是“同上限、同日程下各自做到哪里”，不是等花费，两臂实花并列报告。v0.5 臂的算式：final 之前 $355.85 + 8 路在途 $58.21 + 卡住 $21.83 + final 份额 $160 = $595.89；v0.4 臂约 $203 加预留，用不完。learn 与固定轮在第一次付费尝试之前核预算，放不下就 budget_exhausted、一分不花。
+  - 经验库的中止规则只看 D ≤ 0；B 只报告（伤害由快照轮的筛选、gate、确认挡）。
+  - 固定代码的轮次可续跑：没结束的轮沿用序号，实验 id 由候选 id 推出，已写的阶段不再写、已付的尝试不再付，gate 从 Execution 的记录继续；它的实验不算 R 的轮次（R 的段续跑时跳过来源 `fixed` 的实验）；learn 重跑时收尾没**结束**的重拟轮。
+  - 带附注的重试不记功；流在首遇前的提炼之后多存一次检查点；研究模型的错误（含截断、拒答）是暂停，不是崩溃。
+  - H1 在一臂没装东西时：v0.5 臂的 final 总是跑（没装东西时 W\* = W0）；v0.4 臂没有 final 时，H1 用 v0.5 那份 final 里自己的 W0 臂作对照。final 的顺序写死：两份计划先封存、哈希随 JOURNAL 提交，然后才各自 evaluate，最后 `examples/automationbench/support_h1.py`（对题自助 2000 次、种子 1）算 H1 并列两臂实花。
+  - 记录：每条 `broker_event` 带 `read_only`，报告的 v0.5 段数 `m_` 工具的写调用（发出、执行、被拒）；合并回复是单个条目对象时照读；流把近似重复的 train 题记进条目的来源。
+- 证据（离线）：
+  - 续跑：在快照轮的筛选、gate 首读、确认三处各打断一次，重跑后各臂的尝试数与不打断的参照逐臂相等，台账每阶段一行、一条终结 round 行、一条实验记录，流的记录只写一次；gate 被打断时实验记录写的是“resumed”（续的是已冻结的实验）。快照轮写完 round 行、流还没存 `done` 时重跑，什么也不写、不付。快照轮的 gate 开着时 R 的段照样跑满 3 轮，之后快照轮收尾。重拟轮的 gate 被打断，下一次 learn 收尾它、不再买读数。
+  - 预算：根放不下孪生 + 重拟筛选 + 核验预留时，learn 与固定轮都在第一次尝试前拒绝，尝试数为 0。
+  - v0.4 的身份：一次 v0.4 尝试的第一条系统提示，与 0b9b475 的代码在同一夹具上逐字节相同（金样摘要 `5628d435…`）。
+  - 突变检查：评审的修正在隔离副本里另做 22 处；首轮 2 处存活（“已结束就答回记录”、“gate 续跑用已冻结的实验”），各加一条断言后 22 处全被抓到；共享工作树前后一致。
+  - 测试：新增 16 个函数（18 个用例：`test_v05_phases.py` 11 个函数、`test_v05.py` 1、`test_support_h1.py` 4），改 5 个（只读工具的 `read_only` 与写调用计数、重试不记功、learn 报告里 v5 臂写 0 次、两臂一致性略去 `[rsi]` 的引用与 `[freeze.final]` 并钉 $600/$160/日程、`test_bench_phase.py` 的根按配置）。默认离线套件 `1 failed, 1238 passed, 4 skipped, 3 deselected`（2 分 50 秒；失败的是 `test_aa_replay`，它要读示例工作区的录下读数，隔离工作树里没有，与本改动无关）。
+- 身份：已有工作区的 K、W0、R0、划分与运行身份不变；`broker_event` 多的 `read_only` 只在转录里，不进任何身份；台账折叠后的条目对固定候选多 `fixed_code`。
+- commit：见 git log。
+
+---
+
 ## 2026-10-07 v0.4 finance 封存 final 与事后分析
 
 - 做了什么：按 `68c9efd` 封存的计划跑 `--phase evaluate`：finance 的 25 道 test × 3 次，W\*（W0 + source_memory）对 W0。事后分析写在 [history/FINANCE_V04_ANALYSIS_2026-10-07.md](history/FINANCE_V04_ANALYSIS_2026-10-07.md)。
@@ -30,6 +51,26 @@
 - 做了什么：`--phase cycle --until segment-0/round-1`，在第 1 轮装上的 W1（source_memory）之上。
 - 证据：R 4 回合、读轨迹 4 次、3 个候选：deliverable_scope（修 5、样本退 0）、policy_branches_finish（修 3、退 0）、empty_search_hint（0）。deliverable_scope 进 gate：dev 9/25（36%），对照是 W1 在第 1 轮 gate 里的两次读数 11、12（46%），增益 −10 个点，退步 2 题（monday_project_billing、vendor_insurance_verification——后者是第 1 轮修好的），成本项也不过；拒。累计 $126.51（本轮约 $27）。
 - 读法：两件事分不开——候选可能真的有害，也可能 W1 的对照偏高：安装后对照沿用了它通过 gate 时的读数，其中第一次读数正是因为过线才被选中的（赢家诅咒，评审早先指出过）。要分开，需要给 W1 取两次不以过线为条件的新读数。
+- commit：见 git log。
+
+---
+
+## 2026-10-06 v0.5 方案：方法库 + 经验库，贪心环不动
+
+- 做了什么：写 [design/V0_5_PLAN.md](design/V0_5_PLAN.md)、ROADMAP “v0.5（2026-10-06 决定）”与本条；三份设计稿（方法库、进化搜索、agent 内 RL）顶端标为输入。然后实现与测试（离线，在隔离工作树；没有调用模型、没有付费阶段、没有读 `.env`、没有读任何 test 结果、没有碰 `workspace-claude-v4-finance`）。
+- 决定：v0.5 = v0.4 的单领域贪心环（骨干，不改）+ 方法库 + 经验库，新行为只在 preset `automationbench_harness_v5` 冻结的 K 下出现。依据：方法库的 158 道失败 train 题里 140 道带方法可修的模式（117 道确认；核对 50、分析 40、搜索 38、版本 12、统计 6），而宽泛的核对伤人（send_review 修 3 坏 2），所以适用处由 train 配对奖励学（方法库仿真：finance 全开 −1.2、学到的开关 +2.8～+7.4 / 100 道新题）；进化搜索的统一仿真里只有经验库赢过贪心（$300：finance +0.17 ± .07、support +0.26、sales +0.23 题/25），也只有它随 train 题数上升（L+G .71 → .95，G .71 → .63）。agent 内 RL 只留“收住伤害”（方法表的 silent 格）；档案 + 合并、B-Race、算子老虎机、完整 agent RL 记为“考虑过、不做”。
+- 为等预算与单领域实测，对草稿的改动：快照只在 n = 50 过一次 gate；对照取基线的 W0 train 读数；learn 读数只跑重放触发过的 train 题（≤ 24 道）；重拟候选走自己的固定轮；参考方法（扇出搜索、行台账、政策版本、发送前与写后核对）只作夹具与消融，不给 R、不进 W0；S1 finance 与 S1-L 不跑。
+- 真实检验（预注册，V0_5_PLAN §3）：support 上两臂等预算（同一划分 `3da11232f5d5ff38`、根 $450、final 份额 $160、同样的限额）：v0.4 臂 `claude-v4-support.toml`，v0.5 臂 `claude-v5-support.toml`；各自封存 final（25 道 test × 3，W0 对 W\*）。H1：按题配对的 W\*_v5 − W\*_v4 区间下界 > 0；功效约 30%，预期多半“不确定”。经验库的学习曲线（首遇配对效应对见过的 train 题数）作过程证据。
+- 实现（离线；对照表在 V0_5_PLAN §7）：
+  - 方法库：`research/methods.py`（kit 补齐与 kit 检查、触达检查、孪生与拟合、重拟、R 的输入、剧本核对）、`research/method_kit/`（路由、表、`_mlib` 模板、触达 harness、测试模板、参考方法）、默认 agent 的只读与调用上限（view 带 `methods` 时）、`method_decision` 标记、`--phase learn` 与重拟的固定轮（`research/fixed.py`）、dev/test 拒绝探索表。
+  - 经验库：`research/library.py`（条目、检查、留一检索、记功退役、快照、读数）、`start` 位点的宿主检索与重试附注（`agent/runner.py`）、`--phase library`（流、快照轮、中止规则）、R 不能改库。
+  - 报告的 v0.5 段（只在有 v0.5 记录时出现）；`claude-v5-support.toml`。
+- 证据（离线）：
+  - 在迷你 `rsi` 领域上走通两条付费路径的离线版：一个只在 finish 时出手的 pushback 方法，在 learn 读数里每题恰好一开一关（倾向值 0.5），按足迹类记功 k = 2、m = 0，格从 silent 转为 pushback，重拟候选过筛选（修 2）、gate、确认并装上；经验库的流 D = 2、B = 0，后半段配对效应 0.67 对前半段 0（自助 P = 0.97），快照过筛选、gate、确认并装上，dev 上检索的留一排除数为 0。
+  - 一条只在一道 train 题里出现的标识符写进条目时被占位替换；对库没有效果的条目让 D = 0，快照按中止规则不付 gate；失败的首遇带着失败断言的附注重试一次（附注只出现在重试的提示里）；中断的流和中断的重拟轮都从停下处继续，不重复付费。
+  - 突变检查：24 处关键改动在隔离副本里逐一回退或打坏，对应测试都失败；共享工作树前后一致。
+  - 测试：新增 63 个（`test_methods.py` 33、`test_library.py` 12、`test_v05.py` 9、`test_v05_phases.py` 9），旧测试一个未改；默认离线套件 `1 failed, 1219 passed, 4 skipped, 3 deselected`（2 分 48 秒，最后一个测试加入之前）；全套离线（含慢测试，最终）`1 failed, 1222 passed, 4 skipped, 1 deselected`（4 分 30 秒）。那 1 个失败是隔离工作树里没有被 .gitignore 掉的示例工作区（`test_aa_replay` 读 v0.1/v0.2 的记录），本版之前的基线同样失败（`1 failed, 1157 passed`）。
+- 身份：已有工作区（v1、v3、v4-finance、v4-support）的 K、W0、R0、划分与运行身份不变；v0.4 配置在本版代码下的 K 表、R0、会话工具与系统文字不变（测试钉住）。新 bootstrap 在 v5 preset 下得到新 K（多 `methods`、`library` 两表）与新 R0（`PROPOSE_SESSION_V5`）。worker 镜像不需要重建（`worker_runner.py` 未改）。
 - commit：见 git log。
 
 ---

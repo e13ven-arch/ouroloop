@@ -24,7 +24,7 @@ from typing import Callable
 
 from ..agent import Agent, AgentConfig
 from ..agent.harness_package import mount
-from ..agent.runner import PackageAgent, k_max_effort
+from ..agent.runner import PackageAgent, k_max_effort, k_methods
 from ..agent.tools import ToolResult
 from ..benchmark import Budget, RunManifest, SplitManifest, TaskResult
 from ..benchmark import attempt_id as bench_attempt_id
@@ -365,7 +365,8 @@ def _say(line: str) -> None:
 
 def make_agent_factory(rt, provider, *, budget: Budget, tiers: dict | None = None, meta: dict | None = None,
                        bound=None, objects=None, stop_view: str | None = None, worker=None,
-                       max_effort: str | None = None):
+                       max_effort: str | None = None, methods: dict | None = None,
+                       extra_system: dict | None = None):
     """-> make_agent(surface, task, system): an agent over a benchmark episode's business tools.
 
     Tool approval is off: there is nobody to ask in a benchmark run, and a declined call would be recorded as
@@ -383,6 +384,9 @@ def make_agent_factory(rt, provider, *, budget: Budget, tiers: dict | None = Non
     """
     view = stop_view or ("stop.business.v1" if bound is not None else "stop.file.v2")
     shell = max_effort if max_effort is not None else k_max_effort(bound)
+    # v0.5 (docs/design/V0_5_PLAN.md §1.1, §1.4): K's methods for the view, and per task the text a library stream's
+    # retry adds to the system prompt; a v0.4 K has neither and composes as before
+    method_view = methods if methods is not None else (k_methods(bound) if shell is not None else None)
 
     def make(surface, task, system: str):
         prompt = system
@@ -392,7 +396,9 @@ def make_agent_factory(rt, provider, *, budget: Budget, tiers: dict | None = Non
                 bound.activity.call("worker.harness")       # the package's text reached the actor's prompt
         if shell is not None:
             return PackageAgent(provider, rt, surface, bound=bound, system=prompt, budget=budget, max_effort=shell,
-                                worker=worker, session_meta={**(meta or {}), "task": task.task_id})
+                                worker=worker, session_meta={**(meta or {}), "task": task.task_id},
+                                methods=method_view,
+                                extra_system=str((extra_system or {}).get(getattr(task, "task_id", None)) or ""))
         if bound is not None:
             # The capability package: skills are read through the host's read_skill, and a package that runs
             # code needs the isolated worker, refused here otherwise (docs/modules/01_POLICY_RUNTIME.md §1).

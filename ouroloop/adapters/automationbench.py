@@ -479,6 +479,14 @@ def stratum(suite: Suite, task_id: str) -> str:
     return f"{'+'.join(kinds) or 'none'}|{family}"
 
 
+def assertion_class(type_name) -> str:
+    """v0.5 (docs/design/V0_5_PLAN.md §1.3): the footprint class of an assertion type — body_contains, not_contains,
+    value, exists or categorical — by its name, the classes a method declares it moves and the learner credits it
+    by (research.methods.assertion_class)."""
+    from ..research.methods import assertion_class as _footprint
+    return _footprint(type_name)
+
+
 def has_must_not(suite: Suite, task_id: str) -> bool:
     """Whether a task scores a must-not check — a `forbidden_write` assertion (a type name with `_not_`) that its
     definition does not mark unscored or excluded (docs/design/V0_4_PLAN.md §1.3, §1.6): the tasks where restraint is

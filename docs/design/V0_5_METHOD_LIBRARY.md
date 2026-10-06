@@ -1,5 +1,7 @@
 # v0.5 方法库：R 发明方法，train 奖励学会何处用（2026-10-06）
 
+> **（2026-10-06 定稿说明）本文是 v0.5 的输入，保留作依据；v0.5 的规则以 [V0_5_PLAN.md](V0_5_PLAN.md) 为准**：采纳方法库（§2、§4）与适用性学习（§3），learn 读数只跑重放触发过的 train 题、重拟候选走自己的固定轮、参考方法只作夹具与消融、S1 finance 不跑（V0_5_PLAN §1–§2）。两者不一致处以 V0_5_PLAN 为准。
+>
 > 设计稿，待批准。用户方向（2026-10-06）：agent 可以学会“在某些任务上用某种分析方法、统计方法或搜索方法能更好地完成任务”，这也是 RSI 的能力，要仔细设计。连同此前的方向：不训练权重的 RL（选项加上从 train 奖励学出的策略，在 dev/test 上冻结）；R 发明选项，RL 学它们在哪里适用；agent 见过的题越多就越好。
 > 先文档后执行：本文只写设计。实现与任何付费阶段都排在 v0.4 finance 活动（三轮加封存 final）结束并提交之后；在那之前 `ouroloop/` 下的代码一行不动。本文与同时撰写的 [V0_5_AGENT_RL.md](V0_5_AGENT_RL.md)（agent 内 RL）、[V0_5_EVOLVING_SEARCH.md](V0_5_EVOLVING_SEARCH.md)（框架层进化搜索）之间的接口写在 §5，三份文档对齐之后才写代码。
 > 依据：158 道失败 train 题的逐题证据（§1；来自 v3 五领域基线、v4-finance W0、Marketing 全量工作区的 train 读数；dev 只用汇总，test 一行没读）；v0.4 finance 第 1 轮的台账（send_review、finish_deferral、source_memory）；[V0_4_PLAN](V0_4_PLAN.md)；[五领域诊断](../history/DIAGNOSIS_FIVE_DOMAIN_2026-10-06.md)；[RSI_PLAN §1](RSI_PLAN_2026-10-06.md) 的业界对照。

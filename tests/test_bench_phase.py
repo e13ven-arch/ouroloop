@@ -726,7 +726,9 @@ def test_the_v04_configs_are_single_domain_activities_on_the_v3_workspaces_froze
                                      "max_sample_regressions": 1}
         assert harness["research_session"]["min_failing_reads"] == harness["research_session"]["min_passing_reads"] == 1
         assert cfg["freeze"]["schedule"] == {"worker_rounds": 3, "research_slots": 0, "patience": 2}
-        assert cfg["freeze"]["budget"]["usd"] == 450.0 and cfg["freeze"]["budget"]["final"]["usd"] == 160.0
+        # support's root was raised to $600 on 2026-10-07 (the v0.5 review): equal caps with the v0.5 arm
+        root = {"claude-v4-finance.toml": 450.0, "claude-v4-support.toml": 600.0}[name]
+        assert cfg["freeze"]["budget"]["usd"] == root and cfg["freeze"]["budget"]["final"]["usd"] == 160.0
         assert cfg["estimate"]["cost_per_attempt"] == {"base": 0.466, "evolved": 0.49}
         assert bench.RsiConfig.load(cfg).scope_id == scope
         assert cfg["llm"] == tomllib.loads((examples / "claude-v3.toml").read_text())["llm"]

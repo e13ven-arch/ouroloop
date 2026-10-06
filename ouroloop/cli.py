@@ -416,7 +416,9 @@ def cmd_bench(args) -> int:
           "improve": dict(rounds=args.rounds, reason=args.reason),
           "research": dict(campaign_ref=args.plan),
           "evaluate": dict(plan_ref=args.plan),
-          "report": {}, "cycle": dict(until=args.until)}[args.phase]
+          "report": {}, "cycle": dict(until=args.until),
+          # v0.5 (docs/design/V0_5_PLAN.md §3): train-only phases of a v5 activity
+          "library": {}, "learn": {}}[args.phase]
     try:
         report = run_phase(cfg, Path(args.config).resolve().parent, phase=args.phase,
                            **{k: v for k, v in kw.items() if v is not None})

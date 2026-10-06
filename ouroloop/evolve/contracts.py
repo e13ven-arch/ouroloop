@@ -39,7 +39,9 @@ BINDINGS = ("decision", "config", "research_step", "generation")
 KNOWN_SCHEMA_VERSIONS = (SCHEMA_VERSION,)
 COLLECTION_PURPOSES = ("task_feedback", "decision_feedback", "actor_imitation")
 MODEL_ROLES = ("actor", "controller")
-ORIGINS = ("manual", "scripted", "llm")
+# v0.5 (docs/design/V0_5_PLAN.md §1.3, §1.4): "fixed" — a candidate the framework's fixed code declares (an experience
+# library snapshot, a refit method table), not R's and not a person's.
+ORIGINS = ("manual", "scripted", "llm", "fixed")
 # Every partition an evidence record can belong to, from the most freely readable to the one a result may only
 # be read out of once (docs/DESIGN.md §3.1). The order is the strictness order combine() uses.
 PARTITIONS = ("train", "dev", "research_dev", "final")

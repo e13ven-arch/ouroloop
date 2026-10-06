@@ -111,11 +111,139 @@ def build_report(root: str | Path, domain: str, *, protocol: str = "ouroloop.ben
     }
     if several:
         report["final_by_domain"] = _final_by_domain(arms, spent, finalization)
+    v05 = v05_evidence(root, entries, attempts, runs=runs, objects=objects)
+    if v05:
+        # v0.5 (docs/design/V0_5_PLAN.md §3): only an activity that ran the method or library machinery has the key,
+        # so an earlier activity's report is what it was
+        report["v05"] = v05
     reference = final_reference(arms, attempts, spent)
     if reference is not None:
         report["final_reference"] = reference
     report["claims"] = claim_states(report)
     return report
+
+
+WRITE_METHODS = ("POST", "PUT", "PATCH", "DELETE")
+
+
+def m_tool_writes(transcript: list) -> dict:
+    """What a method's runs asked the broker for, from the host's own record (2026-10-07 review): for every
+    `package_tool` mark of an `m_` tool, the broker events of its run — the last N before the mark, N its calls that
+    reached the broker — and among them the writes that ran (`executed`, which must be 0: a method reads only) and
+    the writes the broker refused (`refused`). The read-only rule is enforced inside the worker by the default agent;
+    this is the host's check of it."""
+    out = {"calls": 0, "executed": 0, "refused": 0}
+    events: list = []
+    for e in transcript:
+        if e.get("kind") == "broker_event":
+            events.append(e)
+            continue
+        if e.get("kind") != "package_tool" or not str(e.get("tool") or "").startswith("m_"):
+            continue
+        n = sum(1 for c in e.get("broker_calls") or () if c.get("refused") != "call cap")
+        window = events[-n:] if n else []
+        out["calls"] += len(window)
+        for b in window:
+            method = str((b.get("args") or {}).get("method") or "GET").upper()
+            if b.get("tool") != "api_fetch" or method not in WRITE_METHODS:
+                continue
+            if (b.get("gate") or {}).get("decision") == "run":
+                out["executed"] += 1
+            else:
+                out["refused"] += 1
+    return out
+
+
+def v05_evidence(root: Path, entries: list, attempts: list, runs: dict | None = None, objects=None) -> dict:
+    """The v0.5 process evidence (docs/design/V0_5_PLAN.md §3), read off the records only: the learn readings and
+    their fitted cells, the refit and library rounds' outcomes, the experience library's stream readout (D, B, the
+    learning curve, the credit's rank correlation) and its entries, the playbook's kept and dropped lessons, and per
+    final arm how many attempts a method acted in or library entries were shown in — with their pass rates apart, so
+    a gain can be split by whether the claimed path was taken. {} when the activity ran none of it."""
+    from .research.diagnosis import read_transcript
+    fits = [e for e in entries if e.get("kind") == "method_fit"]
+    streams = [e for e in entries if e.get("kind") == "library_stream"]
+    snapshots = [e for e in entries if e.get("kind") == "library_snapshot"]
+    playbooks = [e for e in entries if e.get("kind") == "method_playbook"]
+    lib_rows: dict = {}
+    for e in entries:
+        if e.get("kind") == "library_entry" and e.get("entry_id"):
+            lib_rows[e["entry_id"]] = e
+    fixed = {}
+    for e in entries:
+        if e.get("kind") == "ledger" and e.get("fixed_code"):
+            row = fixed.setdefault(e["candidate"], {"candidate": e["candidate"]})
+            if e.get("stage") == "screened":
+                row["screen"] = {k: e.get(k) for k in ("fixes", "sample_regressions", "net_flips", "outcome")}
+            elif e.get("stage") == "gated":
+                row["gate"] = {k: e.get(k) for k in ("verdict", "gain", "installed")}
+            elif e.get("stage") == "drafted":
+                row["drafted"] = e.get("status")
+    finals: dict = {}
+    transcripts = Path(root) / "transcripts"
+    for a in attempts:
+        if a.split != "test" or a.validity != "valid":
+            continue
+        events = read_transcript(transcripts, a.evidence)
+        acted = any(e.get("kind") == "method_decision" and e.get("action") != "silent" for e in events)
+        shown = any(e.get("kind") == "library_retrieval" and e.get("entries") for e in events)
+        non_greedy = [e for e in events if e.get("kind") == "method_decision"
+                      and (float(e.get("propensity", 1.0) or 0) != 1.0 or e.get("mode") not in (None, "greedy"))]
+        arm = finals.setdefault(a.run, {"attempts": 0, "method_acted": [0, 0], "no_method": [0, 0],
+                                        "library_shown": [0, 0], "no_library": [0, 0], "non_greedy_decisions": 0})
+        arm["attempts"] += 1
+        for key, hit in (("method_acted", acted), ("no_method", not acted), ("library_shown", shown),
+                         ("no_library", not shown)):
+            if hit:
+                arm[key][0] += 1
+                arm[key][1] += int(bool(a.success))
+        arm["non_greedy_decisions"] += len(non_greedy)
+    # the host's check of the method contract: writes inside an m_ tool's run, over every valid attempt of a run
+    # whose package has an m_ tool (2026-10-07 review)
+    writes = {"calls": 0, "executed": 0, "refused": 0, "attempts": 0}
+    with_methods: dict = {}
+    for a in attempts:
+        if a.validity != "valid":
+            continue
+        run = (runs or {}).get(a.run)
+        package_ref = getattr(run, "package_ref", None)
+        if not package_ref or objects is None:
+            continue
+        if package_ref not in with_methods:
+            try:
+                manifest = objects.get(objects.load(package_ref, ct.HarnessPackage).manifest_ref)
+                with_methods[package_ref] = any(str(t.get("name") or "").startswith("m_")
+                                                for t in manifest.get("tools") or ())
+            except (KeyError, ct.ContractError):
+                with_methods[package_ref] = False
+        if not with_methods[package_ref]:
+            continue
+        counts = m_tool_writes(read_transcript(transcripts, a.evidence))
+        writes["attempts"] += 1
+        for k in ("calls", "executed", "refused"):
+            writes[k] += counts[k]
+    if not (fits or streams or snapshots or playbooks or fixed or writes["attempts"] or any(
+            v["method_acted"][0] or v["library_shown"][0] for v in finals.values())):
+        return {}
+    by_status: dict = {}
+    for row in lib_rows.values():
+        key = f"{row.get('status')}:{row.get('origin')}"
+        by_status[key] = by_status.get(key, 0) + 1
+    return {
+        "learn": [{k: f.get(k) for k in ("stage", "release", "pairs", "observations", "changed", "moved")}
+                  | {"tasks": len(f.get("tasks") or ()),
+                     "cells": {c: {k: v.get(k) for k in ("n", "k", "m", "fixes", "regressions", "must_not",
+                                                         "p_helps", "interval90", "action", "why")}
+                               for c, v in (f.get("cells") or {}).items()}} for f in fits],
+        "fixed_rounds": list(fixed.values()),
+        "library": {"readout": streams[-1].get("readout") if streams else None,
+                    "entries": by_status, "snapshots": [{k: s.get(k) for k in ("outcome", "why", "reason", "entries")}
+                                                         for s in snapshots]},
+        "playbook": {"sessions": len(playbooks), "kept_lines": len((playbooks[-1].get("text") or "").splitlines())
+                     if playbooks else 0, "dropped_citations": sum(len(p.get("dropped") or ()) for p in playbooks)},
+        "final_paths": finals,
+        "m_tool_writes": writes,
+    }
 
 
 def pass_at_k(n: int, c: int, k: int) -> float:
@@ -890,6 +1018,8 @@ def render_markdown(report: dict) -> str:
             lines.append(f"- reuse after {r['slot']}: {r['state']} — {r['detail']}")
         for name, why in harness["not_run"].items():
             lines.append(f"- {name}: not_run — {why}")
+    if report.get("v05"):
+        lines += ["", "## v0.5 process evidence (train only, not a claim)", ""] + _v05_lines(report["v05"])
     if report.get("external_references"):
         lines += ["", "## Published results (background, not a local comparison)", "",
                   "| model | effort | score | metric | task set | source | retrieved |", "|---|---|---|---|---|---|---|"]
@@ -904,6 +1034,50 @@ def render_markdown(report: dict) -> str:
               f"{json.dumps(report['improvement_cost'].get('rate_limited', {}), sort_keys=True)}",
               f"- {report['improvement_cost'].get('note', '')}"]
     return "\n".join(lines)
+
+
+def _v05_lines(v05: dict) -> list:
+    lines = []
+    for f in v05.get("learn") or ():
+        lines.append(f"- learn {f['stage']}: {f['tasks']} train tasks, {f['pairs']} twin pairs, {f['observations']} "
+                     f"paired decisions; " + (f"moved {f['moved']}" if f.get("changed") else "the table stayed"))
+        for cell, c in (f.get("cells") or {}).items():
+            lines.append(f"  - {cell}: n {c.get('n')}, footprint up {c.get('k')} / down {c.get('m')}, fixes "
+                         f"{c.get('fixes')}, regressions {c.get('regressions')}, must-not {c.get('must_not')}, "
+                         f"P(helps) {c.get('p_helps')} {c.get('interval90')} -> {c.get('action')} ({c.get('why')})")
+    for r in v05.get("fixed_rounds") or ():
+        lines.append(f"- fixed round {r['candidate']}: drafted {r.get('drafted')}, screen {r.get('screen')}, gate "
+                     f"{r.get('gate')}")
+    lib = v05.get("library") or {}
+    readout = lib.get("readout")
+    if readout:
+        lines.append(f"- library stream: D {readout['D']} on {readout['tasks']} tasks, B {readout['B']}; halves "
+                     f"{readout.get('first_half')} -> {readout.get('second_half')} (P second half better "
+                     f"{readout.get('p_second_half_better')}); credit rank correlation "
+                     f"{readout.get('credit_rank_correlation')}; entries {json.dumps(readout.get('entries'))}; shown "
+                     f"per attempt {readout.get('shown_per_attempt')}")
+        lines.append("  - learning curve (paired effect per window of 10): " + ", ".join(
+            f"{w['from']}-{w['to']}: {w['effect']:+.2f} (n {w['n']})" for w in readout.get("windows") or ()))
+    if lib.get("entries"):
+        lines.append(f"- library entries by status and origin: {json.dumps(lib['entries'], sort_keys=True)}")
+    for s in lib.get("snapshots") or ():
+        lines.append(f"- library snapshot: {s.get('outcome')}" + (f" ({s.get('why') or s.get('reason')})"
+                                                                   if s.get("why") or s.get("reason") else ""))
+    pb = v05.get("playbook") or {}
+    if pb.get("sessions"):
+        lines.append(f"- playbook: {pb['kept_lines']} lessons kept, {pb['dropped_citations']} citations dropped over "
+                     f"{pb['sessions']} sessions")
+    w = v05.get("m_tool_writes") or {}
+    if w.get("attempts"):
+        lines.append(f"- methods' broker calls on the host's record: {w['calls']} in {w['attempts']} attempts; writes "
+                     f"executed {w['executed']} (must be 0), refused {w['refused']}")
+    for run, arm in (v05.get("final_paths") or {}).items():
+        def rate(pair):
+            return f"{pair[1]}/{pair[0]}" if pair[0] else "-"
+        lines.append(f"- final run {run}: method acted {rate(arm['method_acted'])} passed, no method "
+                     f"{rate(arm['no_method'])}; library shown {rate(arm['library_shown'])}, not shown "
+                     f"{rate(arm['no_library'])}; non-greedy decisions {arm['non_greedy_decisions']} (must be 0)")
+    return lines
 
 
 def write_report(root: str | Path, domain: str, report: dict) -> dict:

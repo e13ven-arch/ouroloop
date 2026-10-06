@@ -738,6 +738,29 @@ PROPOSE_SESSION = (
     "candidate: a rule must hold for the domain, not for one task.")
 
 
+# v0.5 (docs/design/V0_5_PLAN.md §1.1; V0_5_METHOD_LIBRARY.md §4.2): R0's method text under a K with the method
+# library — PROPOSE_SESSION and the methods paragraph. The families it names (search, table analysis, date or
+# threshold, policy version, pre-send check) are a human prior written into R0 and booked as such in the autonomy
+# accounting; no method, pattern or example is given. A K without the methods table bootstraps PROPOSE_SESSION.
+METHODS_PARAGRAPH = (
+    "(6) Methods. When the actor did the same search, table analysis, date or threshold choice, policy-version choice "
+    "or pre-send check by hand and got it wrong in two or more failing train tasks, you may write a method: a "
+    "read-only package tool named m_<name>, built from inputs/method_kit/. A method returns evidence with provenance "
+    "and an `unclassified` part; it never writes and never decides. Declare its trigger (a pure function of the tool "
+    "event and the view), its `on` action, its footprint, at most one context feature and at most four variants in "
+    "the module's METHODS literal, and test it on synthetic data. Do not edit middlewares/m_router.py or "
+    "middlewares/m_table.py: the router is fixed and the table is fitted from train rewards. inputs/methods.json and "
+    "inputs/uncovered.json show where your methods fired, were used, helped or hurt; refine, narrow or retire them "
+    "from it, and inputs/method_research.json shows how your own earlier method candidates fared. A new or changed "
+    "method must fire, in a replay of the recorded train attempts, on at least two train tasks and on one of the "
+    "failing tasks you predict, and run there without error; the check output gives you counts. Judgment failures "
+    "(what a policy allows, what not to do) belong in memory or skills, not in a method. (7) Your playbook: finish may "
+    "carry `playbook`, lessons about your own research, one per line, each ending with a citation of the ledger "
+    "[<candidate id>: <field> <value>]; the host keeps only the lessons whose citation matches the ledger and shows "
+    "them to your next session.")
+PROPOSE_SESSION_V5 = PROPOSE_SESSION + " " + METHODS_PARAGRAPH
+
+
 def prompts_of(objects: ct.Objects, set_ref: str) -> dict:
     """target -> the prompt text each prompt policy of a policy set renders with, as bind_release reads it."""
     out = {}
@@ -750,12 +773,13 @@ def prompts_of(objects: ct.Objects, set_ref: str) -> dict:
 
 def default_research_set(objects: ct.Objects, *, diagnose: str | None = None, propose: str | None = None,
                          checks: tuple[str, ...] = PREFLIGHT_CHECKS, note_contract: bool = False,
-                         session: bool = False) -> str:
+                         session: bool = False, methods: bool = False) -> str:
     """R0. With `note_contract`, the first version's R0: research.diagnose takes one failure summary and writes a
     failure note; otherwise the v2 R0 with its requirement list. With `session` too (v0.4: K carries the coding
-    session), the note asks for the failure's direction and research.propose is the session's method text."""
+    session), the note asks for the failure's direction and research.propose is the session's method text; with
+    `methods` (v0.5: K carries the method library) that text has the methods paragraph."""
     if note_contract and session:
-        default_diagnose, default_propose = DIAGNOSE_SESSION, PROPOSE_SESSION
+        default_diagnose, default_propose = DIAGNOSE_SESSION, (PROPOSE_SESSION_V5 if methods else PROPOSE_SESSION)
     elif note_contract:
         default_diagnose, default_propose = DIAGNOSE_NOTE, PROPOSE_PACKAGE
     else:

@@ -372,7 +372,8 @@ def _has_patch(proposal, objects) -> bool:
 
 
 def resume_unfinished(root, objects: _ct.Objects, handlers: dict, budget, *, activity=None,
-                      eval_template_ref: str | None = None, budget_scope: str | None = None) -> list:
+                      eval_template_ref: str | None = None, budget_scope: str | None = None,
+                      skip_fixed: bool = False) -> list:
     """Finish the experiments an interrupted run left mid-way, before any new round starts.
 
     Each continues from the state it recorded (execution.execute_experiment): nothing is re-proposed, rebuilt that
@@ -384,12 +385,24 @@ def resume_unfinished(root, objects: _ct.Objects, handlers: dict, budget, *, act
     resumed: each such experiment stays open with the reason on record, and the results end in a repair_runtime
     stop, which the caller treats as a pause — a person closes the experiment or restores the plan. A frozen field
     left empty (an experiment from before it was recorded) is not compared.
+
+    v0.5 (2026-10-07 review): with `skip_fixed` (R's segments), an experiment whose proposal fixed code declared (a
+    library snapshot, a refit table: origin `fixed`) is left as it is — its own phase finishes it, and it is never
+    counted as one of R's rounds.
     """
     from ..evolve.execution import unfinished
     _fill_gated_rows(root, objects)
     results, resumable = [], []
     for entry in unfinished(root):
         execution = Execution(root, entry["experiment_id"])
+        if skip_fixed and entry["experiment_ref"] and objects.has(entry["experiment_ref"]):
+            try:
+                experiment = objects.load(entry["experiment_ref"], _ct.Experiment)
+                origin = objects.load(experiment.proposal_ref, _ct.ExperimentProposal).origin
+            except (_ct.ContractError, KeyError):
+                origin = None
+            if origin == "fixed":
+                continue
         if not entry["experiment_ref"] or not objects.has(entry["experiment_ref"]):
             execution.advance("cancelled", reason="cannot resume: the experiment it was admitted with is not on "
                                                   "record")
@@ -484,6 +497,7 @@ def _fill_gated_rows(root, objects: _ct.Objects) -> None:
         _experience.append(root, _experience.ledger_row(
             "gated", entry["candidate"], **{k: entry.get(k) for k in ("scope", "round", "ordinal", "release",
                                                                       "research_ref")},
+            **({"fixed_code": True} if entry.get("fixed_code") else {}),
             **gate_ledger_fields(state["status"], receipt, objects)))
 
 
