@@ -54,5 +54,8 @@ include = ["ouroloop*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]          # tests import the package and the examples from the checkout
-markers = ["live: calls a real external API and needs its key"]
-addopts = "-m 'not live'"
+markers = [
+    "live: calls a real external API and needs its key",
+    "slow: end-to-end in Docker or against the real upstream checkout (about 90 s); run with -m 'not live' before a paid run or a merge",
+]
+addopts = "-m 'not live and not slow'"

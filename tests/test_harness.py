@@ -80,6 +80,7 @@ def scripted(rt, *turns):
 
 
 # ---------------------------------------------------------------- tasks
+@pytest.mark.slow
 def test_starter_tasks_fail_as_given_and_pass_with_their_solution():
     tasks = load_suite(ROOT / "evals" / "tasks")
     assert len(tasks) == 29 and sum(t.held_out for t in tasks) == 8

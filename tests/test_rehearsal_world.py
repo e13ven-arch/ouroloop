@@ -101,6 +101,7 @@ def test_an_armed_fault_fails_one_attempt_and_is_used_up(world):
     assert world["fault"] == "ProviderError" and world["after_fault"] and world["fault_used_up"]
 
 
+@pytest.mark.slow
 def test_the_expected_path_runs_end_to_end_offline(tmp_path):
     """§4, §8 and §10 with scripted researchers through bench.cycle, on the v0.3 R path (M4 §1: one coding session
     a round in the worker, the screen, the ledger; the v3 preset sized to the world, §8): segment-0 installs the
