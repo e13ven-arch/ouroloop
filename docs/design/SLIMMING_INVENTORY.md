@@ -53,7 +53,7 @@
 
 **需要用户拍板的两件事（2026-10-07 按用户反馈改写）。** 两件都只改定位，不动任何已报告的数字。
 
-> **用户已确认（2026-10-07）：** 同意下面的 (a)、(b)，以及冠军指针一族（§0.1 E）按过时删、v2 重写。决策模型在 jev 还是 ouroloop 训练（§0.2 第 12 项）、是否加老师标签路径（第 10 项）留到 v2 设计时定。执行时机不变：support 两份 final 评完、H1 算完之后。
+> **用户已确认（2026-10-07）：** 同意下面的 (a)、(b)，以及冠军指针一族（§0.1 E）按过时删、v2 重写。训练归属已定（同日）：蒸馏和 Jev 类决策模型的训练是 ouroloop 框架的一部分，所以 `[decision-jobs]` 保留，§0.2 第 12 项按“在 ouroloop 训练”走（先修 C 里的漂移，补 Qwen decider 插件）；数据管线、试验设计与训练管线另写设计文档 `V2_TRAINING_PIPELINE.md`，老师标签路径（第 10 项）在那里定。执行时机不变：support 两份 final 评完、H1 算完之后。
 - **(a) C4（R0/R1 递归）：保留能力，换实现。**
   - 删活动内研究位的编排（≈ 1,500 行）。它在单领域活动里结构上开不了：要求内外两个 gate 各至少 `min_tasks` 题（bench.py:4636-4650），单领域 dev 只有 25 题，一开位就是 `no_slot_pool`；v3/v4/v5 的配置全写 `research_slots = 0`。唯一一次运行（v0.2）两臂封存了同一个 W\*，外层比较没跑。
   - 抽出 `research/recursion.py`（≈ 200 行）：`judge_research`（campaign.py:382-485）、`carries/unused_changes`（:322-348）、`CampaignPair` 的不重叠检查、`discovery` 标签。不抽 `basic.propose_research`：它只服务 v0.1/v0.2 的 note-contract R（experiment.py:396-402），会话 R 没有这条路径。
