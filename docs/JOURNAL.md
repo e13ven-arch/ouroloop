@@ -8,6 +8,17 @@
 
 ---
 
+## 2026-10-08 support v0.5 臂 3b：经验库流与快照轮
+
+- 做了什么：`ouroloop bench --config examples/automationbench/claude-v5-support.toml --phase library`（2026-10-07 开始，2026-10-08 跑完），之后 `--phase report`（不付费）。
+- 证据（train 流，每题一次读数，不是主张）：50 道 train 题，D = 3.0（修好 4、弄坏 1，按配对效应计），B = 1；前后两半 0.00 → 0.12（后半更好的自助概率 0.8895）；每 10 题窗口 +0.00、+0.00、+0.10、+0.20、+0.00；记功的秩相关 0.2；条目 active 7、retired 35、在检查处丢弃 45，提炼调用 45 次，每次尝试平均展示 1.24 条。
+- 证据（快照轮，dev 25 题，配对 gate）：筛选 fixes 2、样本退步 1、net flips 1，入选；gate 首读 +0.24，确认读数单独 +0.08（≥ min_gain 0.05），合并 +0.16，dev 区间 [+0.047, +0.287]（25 族，2000 次重抽），退步率 0；通过率 0.52 对合并对照（3 次读数）0.36；每次尝试成本 $0.407 对 $0.435（−6.6%，区间不含 0）。装上 release `9f07d95032b4`（6 个 library-* skill）。`m_tool_writes` 0。
+- 预注册读法（V0_5_PLAN §3）：经验库在 train 上有效（D ≥ +2）成立；学习曲线（后半 − 前半 > 0 且 P ≥ 0.8）成立；记功有信息（秩相关 > 0）成立。三项都是过程证据，噪声大（每题一次读数）；dev 增益在 gate 里被用来选择，首读到确认从 +0.24 落到 +0.08，真实效应大概率低于 +0.16，只有 test final 能定。
+- 花费：library 阶段 $81.86（另有 1 个未知预留，按规则计数不计价）；v0.5 臂累计 $138.83，根 $600、final 份额 $160。
+- 下一步：3c（v0.5 臂 R 的 3 轮，带方法库）与 v0.4 臂的 3 轮；每阶段停下分析。
+
+---
+
 ## 2026-10-08 support 两臂基线；瘦身清单与 v2 训练链设计
 
 - 做了什么（2026-10-07/08）：support 两臂各跑完基线（`--phase cycle --until baseline`）；v0.5 臂的 3b 经验库轨道（`--phase library`）2026-10-07 开始，仍在跑。写瘦身清单 [design/SLIMMING_INVENTORY.md](design/SLIMMING_INVENTORY.md)（按用户反馈改过两版）与 v2 训练链设计 [design/V2_TRAINING_PIPELINE.md](design/V2_TRAINING_PIPELINE.md)；ROADMAP 加“瘦身（2026-10-07 决定）”“v2 训练链（2026-10-08 决定）”两节，v0.5 一节记下两臂基线；按 V2 §7 同步 DESIGN、TECHNOLOGY、M0（00）、M2（02）、M8（09）与瘦身清单（改名 `[train]`/`[train-jobs]`），复核后再给 M3、M4、08、modules/README、TRAINING_HOSTS 与 V0_4/V0_5 两份计划里的旧写法加注。两份设计稿只读代码、文档与 train/dev 记录：没改代码、没调模型、没读 `.env` 与任何 test 结果（重放原型曾在内存里解析过 test 题的任务定义、未输出，V2 §2.6 第 1 条）。
