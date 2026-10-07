@@ -1,8 +1,8 @@
 # V2 训练链设计：数据管线、试验设计、训练管线
 
-> **状态：** 已定稿（2026-10-08：用户按 §7 默认值全部确认）。**日期：** 2026-10-08。
+> **状态：** 已定稿（2026-10-08：用户按 §7 默认值全部确认；§7 第 9 项是核价后新增的，待用户决定）。**日期：** 2026-10-08。
 >
-> **历史：** 2026-10-07 草案（待用户审），提交于 `b58f5cc`。2026-10-08 用户答"按默认"，§7 八项全部按默认值定下（见 §7 的"决定"列）。正文只把 extra 名按 §7 第 7 项改为 `[train]`/`[train-jobs]`（原 `[decision]`/`[decision-jobs]`），并在 §7 标出本轮已同步的文档。同日复核后另补：§2.5 的代码位置与时机、§3.3 的 extra 归属、§5 v2.2 的测试编号、§7 的同步清单。
+> **历史：** 2026-10-07 草案（待用户审），提交于 `b58f5cc`。2026-10-08 用户答"按默认"，§7 八项全部按默认值定下（见 §7 的"决定"列）。正文只把 extra 名按 §7 第 7 项改为 `[train]`/`[train-jobs]`（原 `[decision]`/`[decision-jobs]`），并在 §7 标出本轮已同步的文档。同日复核后另补：§2.5 的代码位置与时机、§3.3 的 extra 归属、§5 v2.2 的测试编号、§7 的同步清单。同日又按 Tinker/RunPod 核价（官方价目与文档，2026-10-08 核对）更正 §0.3、§3.1、§3.3、§3.5、§3.7、§4.2、§4.6、§5 v2.1、§6 和 §7 第 6 项，各处标"（2026-10-08 按 Tinker/RunPod 核价更正）"；§7 另补核价时没能确认的事项和新的待决第 9 项（学生思考档位）。
 >
 > **用户决定（2026-10-07）：** "训练与蒸馏是框架的一部分；要有数据管线、试验设计、训练管线。" 交付物是一条开发者用自己选的 teacher、actor、student 和训练后端就能端到端跑通的链。Claude 只用来验收这条链是否完整、能不能跑通。
 >
@@ -47,7 +47,7 @@
 
 | 项 | 上一版 | 更正 | 依据 |
 |---|---|---|---|
-| 学生上下文 | chars/4 估出 11k/18k/30k；`max_seq` 65536 | 用 Qwen3 tokenizer 实测（中位/p90/最大）：v4-finance train 14.5k/22.0k/34.7k，v4-support 16.9k/25.6k/32.4k，约 3.1–3.25 字符/token；`max_seq` 定为 32768，被排除的 Opus 轨迹 0.7% | `scope/tok2.py` |
+| 学生上下文 | chars/4 估出 11k/18k/30k；`max_seq` 65536 | 用 Qwen3 tokenizer 实测（中位/p90/最大）：v4-finance train 14.5k/22.0k/34.7k，v4-support 16.9k/25.6k/32.4k，约 3.1–3.25 字符/token；`max_seq` 定为 32768。它排除 X1 训练集 S1′ 的 4.8%（sales 17 条里排掉 3 条），不是原写的 0.7%（2026-10-08 按 Tinker/RunPod 核价更正） | `scope/tok2.py` |
 | 决策视图上限 | 12,000 字符 | Qwen decider（`max_ctx` 4096）放约 10.5k 字符；TDE（≤900 token）放 ≤2,900 字符；或者按目标 tokenizer 截断 | `stats/tok.py`；jev `ops/decider_lora_train.py:24` |
 | 配置形状 | `[trainer.actor]`、`[student]` | `build_trainer` 直接从 `cfg["trainer"]` 取 `type`（config.py:124-138），表一嵌套就报 KeyError。改为 `[train.actor]`、`[train.decision]`；学生就是 `[llm]` | §3.7 |
 | actor 的 `module:Class` | 声称"配置即可" | 插件契约的 serving 端只返回决策 Backend（trainers/__init__.py:1-40）。§3.3 补上 actor 产物契约 | — |
@@ -61,7 +61,8 @@
 | 写门上限 | 14%/20%（SLIMMING §0.2） | 只因 must-not 失败的比例：train 37/456 = 8.1%，dev 116/725 = 16.0%。旧数是 49/345、108/543，两组分母的样本范围本身就不同 | `data/analyze.py` |
 | dev gate 功效 | sd 0.34，+10 时功效 0.86 | 单次 dev 读数逐题差的 sd 中位 0.44（27 组比较，范围 0.28–0.59）。按 gate 全部条件模拟，P(接受)：真实效应 0 时 0.3–6%，+10 时 0.47–0.95 | `stats/sd2.py`、`sim.py` |
 | C5 的 MDE | 9.5 点 | 只在采样解码下成立；近确定解码时是 12–14 点。计划要冻结一个大于 0 的温度 | `stats/sim2.py` |
-| C3 | 在学生上测，G 可以是 judge，非劣界 −3 | judge 的成本项过不了：每次尝试 $0.06–0.25，学生只要 $0.01–0.02。−3 点的界也窄于区间半宽（6–7 点）。改为：G 是 decider 或规则门，主终点是违反率之比，C3 作为 final 里的测量臂（§4.3） | `stats/sim3.py` |
+| C3 | 在学生上测，G 可以是 judge，非劣界 −3 | judge 的成本项过不了：每次尝试 $0.06–0.25，学生在 Tinker 上约 $0.025–0.08，自托管 vLLM 约 $0.003–0.017（估；见下一行，2026-10-08 按 Tinker/RunPod 核价更正）。−3 点的界也窄于区间半宽（6–7 点）。改为：G 是 decider 或规则门，主终点是违反率之比，C3 作为 final 里的测量臂（§4.3） | `stats/sim3.py` |
+| 学生单价 | 每次尝试 $0.01–0.02 | 9B、关思考，按 repo 实测的 Opus 轨迹负载（约 9 次调用；没有前缀缓存时累计 85–105k token，有缓存时新内容 13–19k；输出 3.4–4.2k）：Tinker 约 $0.025–0.08（缓存命中 / 不命中），RunPod 自托管 vLLM 约 $0.003–0.017（估）。所以评测时的大批量学生推理放自托管 vLLM（§3.5）。单价：Tinker models.json（现行价 2026-07-17 起生效，2026-10-08 核对），Qwen3.5-9B 每百万 token 训练 $1.463、生成 $1.995、prefill $0.66、缓存命中 $0.132；RunPod H100 SXM community $2.69/h、secure $3.49/h（代码默认 secure；价格页 2026-09-27 更新，2026-10-08 核对）（2026-10-08 按 Tinker/RunPod 核价更正） | Tinker models.json；RunPod 价格页 |
 | 采集产出 | 接受率 40–60% | AutomationBench 上没有依据。Opus+W0 在 train 上的通过率只有 41%；学生最多 5 次替换，估 20–45%（§4.6） | `stats/base_train.py` |
 | 臂 F 的数据 | 约 300 条老师轨迹 | 202/331 条含 `[REDACTED]`，中位在轨迹 20% 处就开始出现；多个包混在一起，与 DT6-13 冲突。改为只用 W0 包的轨迹，并按重放回填（§2.1） | `stats/redact2.py` |
 | 缺一个臂 | 没有 S+W\* | 补上 C5′：S_d+W0 对 S+W\*。HZ 里学生带 h\* 是 41.7，蒸馏后 44.3 | — |
@@ -72,7 +73,7 @@
 
 **交付物。** teacher、judge、actor（包括学生）和 trainer 都是配置项。
 - provider 由 `config.build_provider` 构造（config.py:39-54），支持 anthropic、openai_compat、claude_code 和 `module:Class`。瘦身第一批会删掉 manual。
-- trainer 按角色由 `[train.<role>]` 指定，取值是插件名或 `module:Class`。
+- trainer 按角色由 `[train.<role>]` 指定，取值是插件名或 `module:Class`。插件名也可以是模块路径，自托管训练走这条（§3.3；2026-10-08 按 Tinker/RunPod 核价更正）。
 
 | 线 | 产物 | 绑定位置 | 首个用例 |
 |---|---|---|---|
@@ -225,7 +226,7 @@
 ```
 DataPlan（冻结：来源工作区及 digest、FamilySplit、来源选择、打标器版本、renderer、每题上限）
  → project → label → build(decision | sft) → check → manifest(sha256)
- → train_artifact(role)：先预留预算 → 提交 TrainJob → 续跑时 attach，不重复付费
+ → train_artifact(role)：先预留预算 → 提交 TrainJob → 续跑时 attach，不重复付费（GPU 作业只部分成立，见 §6）
  → 产物（store ref / adapter + manifest）→ 按 role 探针
  → [只对决策模型] 阈值：折外分数 + env 标签
  → PolicyDescriptor（worker.actor | worker.decide.<point>）→ build_candidate
@@ -245,7 +246,7 @@ DataPlan（冻结：来源工作区及 digest、FamilySplit、来源选择、打
 - **作业层**（契约 `TrainJob`/`TrainResult`/`Trainer` 与 `train_artifact` 在 `[train]`，`JobTrainer` 与云、主机作业层在 `[train-jobs]`，SLIMMING §0.1 A、C）：
   - `TrainJob`/`TrainResult`/`Trainer`（evolve/train.py:59-77）；
   - `JobTrainer`（:84 起），可在本地、ssh、RunPod/Vast 上运行，有价格上限、截止时间和取消；
-  - `train_artifact` 先预留预算，续跑时 attach（evolve/pipeline.py:361-422）。
+  - `train_artifact` 先预留预算，续跑时 attach（evolve/pipeline.py:361-422）。但 attach 只在 trainer 有 `attach` 时才调（:389-390），`JobTrainer` 没有：重启后清理残留实例和作业、整轮重跑（train.py:108-111），所以对 GPU 作业"续跑不重复付费"只部分成立，见 §6（2026-10-08 按 Tinker/RunPod 核价更正）。
 - **`train_artifact` 按 role 分派**：
   - 决策探针按决策点取问题。现在问题写死为 stop（pipeline.py:442、serving.py:22）。
   - actor 用生成探针。
@@ -255,9 +256,22 @@ DataPlan（冻结：来源工作区及 digest、FamilySplit、来源选择、打
 | 端 | 契约 |
 |---|---|
 | 训练端 | `train()` 写出 adapter 和 `manifest.json`：`{base, tokenizer, renderer, sha256, max_seq}` |
-| serving 端 | `provider(run, ref, options) -> dict`，返回一张 `build_provider` 能构造的表：Tinker 采样，或 `openai_compat`（`base_url`，加上与 ref 同名的服务模型名） |
-| 自托管 | 文档写明唯一一步手工操作：`vllm serve <base> --enable-lora --lora-modules <ref>=<dir>` |
-| 生成探针 | 核对服务名等于 ref；做一次 tool-call 往返（包括 `_unparsed`）；核对上下文长度 ≥ `max_seq` |
+| serving 端 | `provider(run, ref, options) -> dict`，返回一张 `build_provider` 能构造的表：`openai_compat`（`base_url`，加上与 ref 同名的服务模型名；评测默认，指向自托管 vLLM），或 Tinker 采样（只作冒烟或兜底）（2026-10-08 按 Tinker/RunPod 核价更正） |
+| 自托管 | 文档写明唯一一步手工操作：在 RunPod 上起 vLLM，默认服务合并后的完整权重，命令见表下（2026-10-08 按 Tinker/RunPod 核价更正） |
+| 生成探针 | 核对服务名等于 ref；做一次 tool-call 往返（包括 `_unparsed`）；核对上下文长度 ≥ `max_seq`；用 Tinker 训练时的 renderer 和 vLLM 的 HF chat template 各渲染同一条轨迹，逐 token 比对，不一致就不过，否则学生评测时看到的提示格式与训练时不同（2026-10-08 按 Tinker/RunPod 核价更正） |
+
+自托管 vLLM 的启动参数（2026-10-08 按 Tinker/RunPod 核价更正）：
+
+```
+# 默认：服务合并后的完整权重，不用管 LoRA 参数
+vllm serve <merged_dir> --served-model-name <ref> --max-model-len <≥ max_seq> \
+  --enable-auto-tool-choice --tool-call-parser qwen3_coder --reasoning-parser qwen3 --language-model-only
+# 备选：以 LoRA 方式服务 adapter（--max-lora-rank 默认 16，必须给 32）
+vllm serve <base> --enable-lora --lora-modules <ref>=<dir> --max-lora-rank 32 --max-model-len <≥ max_seq> \
+  --enable-auto-tool-choice --tool-call-parser qwen3_coder --reasoning-parser qwen3 --language-model-only
+```
+
+- vLLM 的 Qwen3.5 recipe 只给了 35B 和 397B 的命令，9B 沿用同样的参数是推断；Qwen3.5 能否以 LoRA 方式服务、前缀缓存是否可靠，都没有确认（§7）。
 
 **插件。**
 
@@ -266,9 +280,10 @@ DataPlan（冻结：来源工作区及 digest、FamilySplit、来源选择、打
 | `signature` | decision | 现有 | 纯标准库，离线测试用 |
 | `mock_sft` | actor | v2.0 | 离线，写出符合契约的假 adapter |
 | `tde` | decision | v2.1 | 修漂移：`ARCHITECTURE` 补 `topology`/`max_total`（trainers/tde.py:40），`max_state_tokens` 对齐（:32），pin `tde==0.1.x`。在 CPU 或经 `[train-jobs]` 租的 CUDA 上训。截断到 1,024 token 对链路验收可以接受，记进 `truncated` |
-| `tinker_lora` | actor | v2.1 | validate → forward_backward → optim_step → val loss → save_state → 采样 ref（TECHNOLOGY §2）。默认配方沿用 HZ：rank 32、α 32、2 epochs、lr 2e-4、batch 8、seed 42；`max_seq` 32768 |
+| `tinker_lora` | actor | v2.1 | validate → forward_backward → optim_step → val loss → save_state → 采样 ref（TECHNOLOGY §2）。默认配方见 §3.7 的配方表：只做 LoRA；HZ 的 α 32 在 Tinker 上设不了，lr 改为扫描（2026-10-08 按 Tinker/RunPod 核价更正） |
 | `decider_lora` | decision | 轨道 B | 移植 jev 的 `ops/decider_lora_train.py`（112 行）和 `scripts/export_decider.py`（64 行）。加上：按 val 选 checkpoint；保留软标签，或者记明已 argmax；CUDA 检查；`version = ref` |
-| `module:Class` | 任意 | — | 开发者自带，例如 TRL 或自有集群，遵守上面的契约 |
+| 插件模块路径（如 `mypkg.sft`） | 任意 | — | 自托管训练（TRL、PEFT，跑在 RunPod 或自有集群上）走这条：`JobTrainer` 按模块路径加载插件（trainers/__init__.py:50-54），作为作业运行，有云上生命周期（cloud.py）、价格上限和截止时间；遵守上面的契约（2026-10-08 按 Tinker/RunPod 核价更正） |
+| `module:Class` | 任意 | — | 在控制平面进程里直接构造（config.py:131-132），没有作业、没有云上生命周期，也没有价格上限；只用于测试和 demo（TRAINING_HOSTS），不用于自托管 GPU 训练（2026-10-08 按 Tinker/RunPod 核价更正） |
 
 ### 3.4 阈值与温度
 
@@ -285,7 +300,7 @@ DataPlan（冻结：来源工作区及 digest、FamilySplit、来源选择、打
 | 决策模型 ref | 沿用 `stores/`（dir、hf）。新增 hub ref `hf:<repo>@<rev>[:<subfolder>]`，因为现在的 `JOB_ID` 正则不收带点的名字（stores/__init__.py:36、hf.py:59-63） |
 | actor ref | 下载 adapter，sha256 写进 `ModelIdentity.artifact_digest`，同时填 `adapter_ref`、`tokenizer_ref`、`renderer_ref`（evolve/contracts.py:693-721，这几个字段从没被填过）。release 只钉 digest |
 | 决策模型 serving | 用一个 `/v1/systemone` 后端，复用 backends/jev.py。key 改为可选（:40-42 现在 key 为空就报错）；以 `--name <ref>` 启动，让身份探针对得上。tde-serve、decider serve、TypeSafe 共用这一个后端 |
-| 学生 serving | openai_compat（vLLM/SGLang/Ollama）或 tinker 采样 provider。runner shell 至今只跑过 claude_code，所以 v2.1 必须先过能力探针 |
+| 学生 serving | openai_compat（vLLM/SGLang/Ollama）或 tinker 采样 provider。评测时大批量的学生推理走 RunPod 上自托管的 vLLM（合并权重）；Tinker 采样和它的 OpenAI/Anthropic 兼容接口（beta，官方说明只供低流量测试）只作冒烟或兜底（2026-10-08 按 Tinker/RunPod 核价更正）。runner shell 至今只跑过 claude_code，所以 v2.1 必须先过能力探针 |
 | judge（轨道 B 的运行时绑定） | 任意 chat provider。`backends/llm.py` 只给独热答案（:47-50），要改为解析结构化概率 |
 
 ### 3.6 绑定、导出与 RSI 接口
@@ -304,7 +319,7 @@ DataPlan（冻结：来源工作区及 digest、FamilySplit、来源选择、打
 ```toml
 [llm]                        # 活动的 actor。学生臂就是把这里换成学生
 type = "openai_compat"
-base_url = "http://127.0.0.1:8000/v1"
+base_url = "http://127.0.0.1:8000/v1"   # 评测时指向 RunPod 上的 vLLM（合并权重，§3.3）
 model = "<actor ref>"        # 服务名 = 产物 ref，生成探针会核对
 
 [teacher]                    # 只给宿主（K）用：v2.2 起在采集时审阅 act 调用
@@ -318,8 +333,8 @@ model = "claude-opus-5-5"
 samples = 1
 
 [train.actor]
-trainer = "tinker_lora"      # 或 mock_sft / module:Class
-recipe = { base = "Qwen/Qwen3.5-9B", rank = 32, alpha = 32, epochs = 2, lr = 2e-4, batch = 8, max_seq = 32768, seed = 42 }
+trainer = "tinker_lora"      # 或 mock_sft；自托管 GPU 训练写插件模块路径，由 JobTrainer 运行，不用 module:Class（§3.3）
+recipe = { base = "Qwen/Qwen3.5-9B", rank = 32, epochs = 2, lr = [2e-4, 5e-4, 1e-3], batch = 8, warmup = 0.05, max_seq = 32768, seed = 42 }   # 见下方配方表；α 在 Tinker 上设不了
 
 [train.decision]             # 取代旧的 [trainer]；旧表按 [train.decision] 读，以保持兼容
 trainer = "tde"              # 或 signature / decider_lora / module:Class
@@ -338,7 +353,21 @@ per_task_cap = 4
 
 - `teacher` 和 `judge` 只属于宿主；包能调用的 role 仍然只有 `act`/`aux`。
 - 审阅调用不计入学生的五项硬限额，计入采集预算和费用。
-- 学生训练和评测都关掉 thinking，因为 claude_code 不返回思考内容，训练目标只取可见回合。
+- 学生训练和评测都关掉 thinking，因为 claude_code 不返回思考内容，训练目标只取可见回合。是否改为 low/medium 是 §7 第 9 项，待定（2026-10-08 按 Tinker/RunPod 核价更正）。
+- 训练放 Tinker LoRA（参考实现）；评测时的大批量学生推理放 RunPod 上自托管的 vLLM，合并权重后经 `openai_compat` 接回；Tinker 采样及其 OpenAI/Anthropic 兼容 beta 接口只作冒烟或兜底。自托管训练不走 `module:Class`，而是由 `JobTrainer` 运行的插件模块（§3.3）（2026-10-08 按 Tinker/RunPod 核价更正）。
+
+**学生训练配方（`tinker_lora` 默认）**（2026-10-08 按 Tinker/RunPod 核价更正）
+
+| 项 | 取值 | 依据 |
+|---|---|---|
+| 方式 | 只做 LoRA；不做全参，也不做 QLoRA。全参只在轨道 B 上 LoRA 明显欠拟合时再考虑 | "LoRA Without Regret"（2025-09-29）：所有层（含 MLP）都加 LoRA、容量够时，SFT 与全参持平；只加在注意力层上明显更差。它测的是指令和推理数据集，多轮 agent SFT 没有直接验证过。Unsloth 的说明："not recommended to do QLoRA (4-bit) training on the Qwen3.5 models" |
+| rank / α | r32，所有层（含 MLP）。α 在 Tinker 上设不了，以导出的 `adapter_config.json` 为准（HZ 在 Tinker 上报告的是 α 32）。线性注意力层的投影有没有被覆盖，看导出的 `target_modules` | 9B 在 r32 下约 87M 个 LoRA 参数（含 lm_head 约 95M）；X1 每个 epoch 参与训练的 assistant token 约 0.4M，轨道 B 约 1–2.2M |
+| 学习率 | 扫 {2e-4, 5e-4, 1e-3}，按 val NLL 选；在 Tinker 上约多花 $10 | cookbook 的 `get_lr` 公式算出 4.7e-4，HZ 的 2e-4 可能偏低 |
+| batch / epoch / 调度 | batch 8，2 个 epoch，5% warmup 后线性衰减；seed 42 | batch、epoch、seed 沿用 HZ |
+| loss | 只在 assistant 回合上算 | — |
+| 超长样本 | 超过 `max_seq` 的丢掉，不截断 | §3.2 |
+| `max_seq` | 32768，排除 S1′ 的 4.8%（sales 17 条里排掉 3 条），不是 0.7%。Tinker 上可提到 65536（9B 是 64K 上下文），只多约 $0.5；提了之后 vLLM 的 `--max-model-len` 跟着调 | S1′ 的 token 计数 |
+| 导出 | `train_unembed=False`；或者合并成完整权重再交给 vLLM（评测默认，§3.3） | — |
 
 ### 3.8 复用与新写（行数）
 
@@ -401,14 +430,29 @@ per_task_cap = 4
 | 题 | 各域 train 的 val+cal 族，约 60–75 题（finance、sales、hr、marketing；support 的 final 跑完后加入），每臂 1 次 |
 | 免费读数 | 在 S0 的记录上跑 `replay_effect` 和 `replay_skip`，得到学生上写门的上限（被救回的失败 ÷ 尝试数） |
 | 链路收据 | 记录 → 投影 → 打标 → 建集 → 检查 → 训练 → 探针 → 阈值 → shadow/act 绑定 → build_candidate → 导出 → App.bind 跑 1 题，每个环节都有 ref；全程不碰 dev/test |
-| 费用 | Claude $0（加 judge 标签时 ≤ $35）；GPU 和 Tinker < $80 |
+| 费用 | Claude $0（加 judge 标签时 ≤ $35）；GPU 和 Tinker < $80（按核价，Tinker 上的训练、扫学习率、推理加开思考的 S0 臂合计约 $20–45，明细见 §4.6；2026-10-08 按 Tinker/RunPod 核价更正） |
+
+**底座的外部证据与 K1 的"更大底座"**（2026-10-08 按 Tinker/RunPod 核价更正）
+
+唯一的外部来源是 Artificial Analysis 的 AutomationBench-AA（2026-10-08 保存的页面 JSON）。AA 报的是"不违反护栏前提下完成目标的比例"，用的是它自己的 harness，不是我们的 W0；换算系数 0.6 是粗估。
+
+| 模型 | AA 分数 | 换算成我们的完整成功率（粗估） |
+|---|---|---|
+| Claude Opus 5.5（max） | 69.5% | 我方 Opus+W0 实测约 41%，由此取系数约 0.6 |
+| Qwen3.8-27B：xhigh / medium / low / 关思考 | 48.2 / 40.3 / 30.1 / 12.4% | 约 29 / 24 / 18 / 7% |
+| Qwen3.5-9B（开思考） | 1.0% | 约 0–1% |
+
+- **9B 保留为第一期链路验收的默认底座。** 第一期不设效果指标，S0 弱不判第一期失败，只是 X1 的读数参考价值低。按上表，K1 在 9B 上很可能触发。
+- **K1 的"更大底座"写成 Qwen3.8-27B。** 思考档位在 X1 计划冻结前定（§7 第 9 项）：关思考约 7%，正好卡在 K1 边上。
+- **可选的冻结前 S0 小探针：** 15–20 道 train 题，跑 Qwen3.8-27B 的 low、medium 和关思考，约 $10–20。9B 的开、关思考本来就在 X1 里跑，不重复。
+- **不考虑的尺寸：** 14B 砍掉（Qwen3.5 没有 14B；Qwen3-14B 不在 Tinker 上，BFCL 多轮 34.8，还低于 Qwen3-8B 的 41.8）。4B 不当 actor，只作 decider 候选。
 
 **预注册读法（计划 hash 在第一次学生运行前提交）。**
 
 | 读数 | 规则 | 动作 |
 |---|---|---|
 | 链路 | 收据每个环节都有 ref | 记"链路通过"；否则列出断点，轨道 A 不结束 |
-| K1 | S0 < 5% | 换更大的底座重测一次；仍 < 5%，C5 记 not_run |
+| K1 | S0 < 5% | 换更大的底座 Qwen3.8-27B（思考档位在冻结前定）重测一次；仍 < 5%，C5 记 not_run（2026-10-08 按 Tinker/RunPod 核价更正） |
 | K1b | S0 ≥ 同一批题上 Opus+W0 的读数 − 5 点 | C5 没有空间，记 not_run。这里跨了 K 身份（`code_version` 变了），只作门槛 |
 | S_F − S0 | 报点估计和按题聚类的 95% 区间（n≈75 时 MDE 约 11–15 点） | 只作方向。区间上界 < 0 时记"teacher_rollouts 有害"（与 HZ 的 12→12、12→3 一致），轨道 B 不用它作主数据 |
 | 写门上限 | `replay_skip` 上限 ≥ 3 点 | C3 列入轨道 B；< 3 点时 C3 记 not_run（K5） |
@@ -464,7 +508,7 @@ Claude 走订阅，金额是按牌价折算的名义费用。GPU 和 Tinker 是�
 | 阶段 | 内容 | Claude 名义 | 真实 |
 |---|---|---|---|
 | v2.0 | 离线 | $0 | $0 |
-| v2.1 + X1 | judge 给 v4-finance train 约 500 次写打标（$15–25）；Claude 作 actor，带写门 shadow/act 跑 10 次（约 $5）；X1 只有学生推理；Tinker SFT 约 3–6M token | ≈ $20–35 | ≤ $80 |
+| v2.1 + X1 | judge 给 v4-finance train 约 500 次写打标（$15–25）；Claude 作 actor，带写门 shadow/act 跑 10 次（约 $5）；X1 只有学生推理；Tinker SFT：S1′ 里放得进 32768 的 99 条 × 2 个 epoch 约 3.3–3.7M token，训一次约 $5，扫 3 个学习率 $15–16；按 §4.2 只取 fit 族时约 2.3–2.6M（约 $3.6）。学生推理 150–300 次：Tinker $4–23，RunPod vLLM 约 $2–6（估）。另有 RunPod 冒烟约 $1–2（§5 v2.1）、可选的 27B S0 小探针约 $10–20（§4.2）（2026-10-08 按 Tinker/RunPod 核价更正） | ≈ $20–35 | ≤ $80 |
 | v2.2 | 审阅采集 smoke 10–20 次（每次约等于步数 × $0.05） | ≈ $10–20 | ≤ $10 |
 | **轨道 A 合计** | | **≈ $30–55** | **≤ $90** |
 | 轨道 B：采集 | 试点 100 次 $50–75；按试点的步数和产出重算后再采，上限 1,200 次，约 $600–900 | ≈ $0.65–1.0k | — |
@@ -543,8 +587,9 @@ python -m ouroloop.train label <x1-plan> --labelers replay_effect,replay_skip
   1. 能力探针。
   2. 回填 S1′。
   3. 用 `tinker_lora` 训出 S_F。
-  4. 以 Tinker 采样或 vLLM（openai_compat）接回，过生成探针。
+  4. 合并权重后以 RunPod 上的 vLLM（openai_compat）接回，过生成探针（含 renderer 与 chat template 的 token 比对）；Tinker 采样只作冒烟或兜底（2026-10-08 按 Tinker/RunPod 核价更正）。
   5. 在 W0 下经 runner shell 跑 X1。
+- **RunPod 第一次付费前**（2026-10-08 按 Tinker/RunPod 核价更正）：用一张 H100 跑约 20 分钟（约 $1–2），一个训练任务加 30 次尝试的推理测试。这也是 `cloud.py` 第一次对真实 API 运行。
 - **验收**：smoke 收据每个环节都有 ref；全程不碰 dev/test；X1 按 §4.2 的读法写进收据。
 
 ### v2.2 审阅采集链路（Claude ≤ $20）
@@ -582,7 +627,7 @@ python -m ouroloop.train label <x1-plan> --labelers replay_effect,replay_skip
 | # | 停止条件（预注册） | 动作 |
 |---|---|---|
 | K0 | v2.0 的离线套件或投影复现没通过 | 不进任何付费步骤 |
-| K1 | X1：S0 < 5% | 换更大的底座重测一次；仍 < 5%，C5 记 not_run，只交付链路 |
+| K1 | X1：S0 < 5% | 换更大的底座 Qwen3.8-27B（思考档位在 X1 冻结前定）重测一次；仍 < 5%，C5 记 not_run，只交付链路。按外部证据，9B 上很可能触发（§4.2）（2026-10-08 按 Tinker/RunPod 核价更正） |
 | K1b | X1：S0 ≥ Opus+W0 − 5 点 | 没有空间，C5 记 not_run |
 | K2 | 试点 100 次：成功 < 20%，或被接受的 < 25 条，或 REPLACE 超过 act 步的 50%，或超过 40% 的尝试打满替换上限 | 停止采集，报告产出率；调 K 或学生后重新冻结 |
 | K3 | val 族上（每臂 2 次读数）S1 − S0 的点估计 < +5 点，或畸形 tool call 增多 | 不付 dev gate。它对真实 +10 的误停率是 8–17% |
@@ -602,12 +647,13 @@ python -m ouroloop.train label <x1-plan> --labelers replay_effect,replay_skip
 | 同模型审阅出过两次反例（ceiling 修好 1 道、弄坏 2 道；send_review 弄坏 2/6） | judge 只作离线标签和 shadow 参照；G 是 decider 或规则门 |
 | 被拦后 agent 换个方式重试同一个有害写 | 报告拦截后的重试率；结论以现场读数为准 |
 | 订阅限流（429/529） | 按现行规则不计费重试；采集墙钟时间按限流估算 |
-| Tinker 不可用或涨价 | 能力探针在提交前就会失败；回退到 `module:Class` 必须在配置里显式声明，不静默换后端 |
+| Tinker 不可用或涨价 | 能力探针在提交前就会失败；回退到由 `JobTrainer` 运行的自托管插件模块（如 RunPod 上）必须在配置里显式声明，不静默换后端（2026-10-08 按 Tinker/RunPod 核价更正） |
+| 已知缺口：GPU 作业续跑会重复付费。`JobTrainer` 没有 `attach()`，重启后清理残留实例和作业、整轮重跑（train.py:108-111、:378、:456）；丢掉的 GPU 时间要再付一次，也不能从 checkpoint 续训 | 随 v2.1 的 `[train-jobs]` 漂移修复（SLIMMING §0.1 C）一起修（2026-10-08 按 Tinker/RunPod 核价更正） |
 | test 被提前用掉 | 如果 sales/hr 的 test 先被 v1 活动读了，C5 的 test 池降为 finance+support 50 题（+10 时功效 0.50–0.84），加上 operations 81 题 |
 
-## 7 未决问题与决定（2026-10-08 已全部定下）
+## 7 未决问题与决定（2026-10-08：前八项已定下，第 9 项待定）
 
-用户 2026-10-08 答"按默认"：下表八项全部按默认值定下。
+用户 2026-10-08 答"按默认"：下表前八项全部按默认值定下。第 9 项是同日按 Tinker/RunPod 核价后新增的，待用户决定。
 
 | # | 问题 | 默认 | 影响 | 决定 |
 |---|---|---|---|---|
@@ -616,9 +662,18 @@ python -m ouroloop.train label <x1-plan> --labelers replay_effect,replay_skip
 | 3 | SFT 目标 | `accepted`（PASS + REPLACE 的动作部分，同 HZ）；`pass_only` 作只看 dev 的消融 | 要改 M2 §2 第 5 步、DT6-01/10/12、09 的 DS6-06 | 按默认，2026-10-08 |
 | 4 | 采集用的 harness | W0 加 K（W\* 文本），同 HZ | 要改 M2 §3a 第 2–3 步和 DT6-14 | 按默认，2026-10-08 |
 | 5 | 跨域合并 | 5 个域合训一个学生，并报 LODO | HZ 是按域分别训练的 | 按默认，2026-10-08 |
-| 6 | 学生底座和训练后端 | Qwen3.5-9B 加 Tinker 作参考实现；自托管走 `module:Class` | v2 不维护第二套生成训练栈 | 按默认，2026-10-08 |
+| 6 | 学生底座和训练后端 | Qwen3.5-9B 加 Tinker LoRA 作参考实现；9B 是第一期链路验收的默认底座，K1 的"更大底座"是 Qwen3.8-27B（§4.2）。自托管训练不走 `module:Class`（它在控制平面进程里直接构造，没有作业、云上生命周期和价格上限），而是由 `JobTrainer` 运行的插件模块（写模块路径）。评测时大批量的学生推理走 RunPod 上自托管的 vLLM（合并权重，经 `openai_compat`）；Tinker 采样及其 OpenAI/Anthropic 兼容 beta 接口只作冒烟或兜底（2026-10-08 按 Tinker/RunPod 核价更正） | v2 不维护第二套生成训练栈 | 按默认，2026-10-08；自托管的接法和推理位置同日按核价更正 |
 | 7 | 命名与搬家 | 在瘦身第一批之前定下来：子包叫 `ouroloop/train/`，extra 叫 `[train]`/`[train-jobs]`，入口是 `python -m ouroloop.train`。代码只搬一次 | 要改 SLIMMING §2.3、§3 第一批的命名 | 按默认，2026-10-08 |
 | 8 | `contact_human` | 本基准上不作效果主张；真实标签来自 v2.5 的部署审批 | — | 按默认，2026-10-08 |
+| 9 | 学生的思考档位（关，还是 low/medium） | 关（现行 §3.7） | 关：claude_code 给的老师轨迹没有思考内容，训练目标只有可见回合，训练与评测一致；但 27B 关思考按 AA 换算只有约 7%（估），卡在 K1 边上。low/medium：27B 约 18% / 24%（估），K1、K1b 大概率不触发，但训练目标里没有思考，训练与评测的格式不一致。要在 X1 计划冻结前定，可先看 §4.2 的 S0 小探针（2026-10-08 按 Tinker/RunPod 核价更正） | 待用户决定 |
+
+**核价时没能确认的事项**（只是待核实，不是决定；2026-10-08 按 Tinker/RunPod 核价更正）：
+
+| 方面 | 没能确认 |
+|---|---|
+| Tinker | 新用户有没有免费额度；限流数值和训练耗时；训练费是否也算权重为 0 的 token（按算进去估，只算 assistant token 时训练费约为 1/4）；多轮推理时前缀缓存的实际命中率；OpenAI 兼容接口是否支持 `tools`；Qwen3.8-27B 能否用 `reasoning_effort` 设档位 |
+| RunPod 和 vLLM | 吞吐、耗时和推理费用都是估算；Qwen3.5 在 vLLM 里的前缀缓存是实验功能；vLLM 能否以 LoRA 方式服务 Qwen3.5 的 adapter（线性注意力层、lm_head）；9B 沿用 35B/397B recipe 的启动参数是推断；RunPod 没有 spot 实例；jev 那次的 RunPod 花费没有发票 |
+| 模型能力 | AA 是唯一来源，换算系数 0.6 是粗估；没有 9B 关思考时的 AutomationBench 数据；K2 Horizon 7B（AA 20.9%，不在 Tinker 上）的许可证没核实；27B 的费用都是粗估 |
 
 **需要同步改的文档**（2026-10-08 定稿时同步。标"本轮已同步"的是这一轮改的文档；代码一律不改，等 support 两份 final 评完、H1 算完再动：注释随瘦身第一批，其余随 v2.0）：
 - **DESIGN**（本轮已同步）：不变量 6（ledger.py:19 引用它）、§4 的 controller 行、§8 的 C3 行（改为在学生上测）。
@@ -642,6 +697,7 @@ python -m ouroloop.train label <x1-plan> --labelers replay_effect,replay_skip
 - **代码注释**（本轮不改）：providers/__init__.py:4、claude_code.py:235、anthropic.py:45、openai_compat.py:44、backends/llm.py:1-3、runtime.py:372、ledger.py:19-20 这 7 处注释随瘦身第一批；默认值随 v2.0 的血缘改动（§3.8 第一行），因为 ledger.py:143、:152 只收 SOURCES 里的来源（§2.5）。现在改任何 .py 都会改 `code_version`，从而改动正在跑的活动的 K。
 - **ROADMAP**（本轮已同步）：v2 一节指向本稿。
 - **复核后另补**（2026-10-08）：M3（03）§1 共适应注、M4（04）§3 材料准备、集成验收（08）IT6-01/38、modules/README 的 M2/M8 两行、TRAINING_HOSTS 页首、V0_4_PLAN 与 V0_5_METHOD_LIBRARY §7.4 里 sales/hr 的 test 计划，各加注；README 与代码随瘦身第一批。
+- **核价更正待同步**（2026-10-08，本轮只登记、不改）：TECHNOLOGY :13、:42（自托管写成 `module:Class`；vLLM 命令只有 LoRA 参数）、:32（排除比例 0.7%）；TRAINING_HOSTS :3；02 :87、:92（HZ 配方 α 32、lr 2e-4；`module:Class`）、:100；ROADMAP :511；DESIGN :90、:213。
 
 **考虑过、不做：**
 
