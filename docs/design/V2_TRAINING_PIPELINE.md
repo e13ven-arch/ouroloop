@@ -1,6 +1,8 @@
 # V2 训练链设计：数据管线、试验设计、训练管线
 
-> **状态：** 草案（待用户审）。**日期：** 2026-10-07。
+> **状态：** 已定稿（2026-10-08：用户按 §7 默认值全部确认）。**日期：** 2026-10-08。
+>
+> **历史：** 2026-10-07 草案（待用户审），提交于 `b58f5cc`。2026-10-08 用户答"按默认"，§7 八项全部按默认值定下（见 §7 的"决定"列）。正文只把 extra 名按 §7 第 7 项改为 `[train]`/`[train-jobs]`（原 `[decision]`/`[decision-jobs]`），并在 §7 标出本轮已同步的文档。同日复核后另补：§2.5 的代码位置与时机、§3.3 的 extra 归属、§5 v2.2 的测试编号、§7 的同步清单。
 >
 > **用户决定（2026-10-07）：** "训练与蒸馏是框架的一部分；要有数据管线、试验设计、训练管线。" 交付物是一条开发者用自己选的 teacher、actor、student 和训练后端就能端到端跑通的链。Claude 只用来验收这条链是否完整、能不能跑通。
 >
@@ -184,10 +186,12 @@
   - env 与 model 冲突时以 env 为准，记为 `conflicted`。
   - 没有 env 标签可用来定阈值的模型，状态为 `uncalibrated`，只能以 shadow 模式绑定。
 - **要改的位置**：
-  - ledger.py:20-23（`SOURCE_WEIGHTS`/`EVAL_ONLY` 从闸门改为血缘）；
+  - ledger.py:19-23（:19-20 的注释；:21-23 的 `SOURCE_WEIGHTS`/`EVAL_ONLY` 从闸门改为血缘）；
   - evolve/contracts.py:671、:682-684；
   - evolve/feedback.py:83-84（跳过逻辑）、:21、:91、:146（标签集和 kind 改为从 builder 取）；
-  - providers/__init__.py:4、claude_code.py:235、anthropic.py:45 的注释与默认值。
+  - providers/__init__.py:4、claude_code.py:235、anthropic.py:45、openai_compat.py:44 的注释与默认值；backends/llm.py:1-3、runtime.py:372（`_default` 的 docstring，随 `[train]` 搬）的注释；
+  - providers/manual.py:87、research/loop.py:99 也引用不变量 6，随瘦身第一批整删，不用改。
+  - 时机：注释随瘦身第一批改；闸门与默认值随 v2.0（§3.8 第一行），因为 ledger.py:143、:152 只收 `SOURCES` 里的来源。
 
 ### 2.6 划分与防泄漏（全部由固定代码执行）
 
@@ -237,7 +241,7 @@ DataPlan（冻结：来源工作区及 digest、FamilySplit、来源选择、打
 
 ### 3.3 作业、插件与产物契约
 
-- **作业层**复用 `[decision-jobs]`：
+- **作业层**（契约 `TrainJob`/`TrainResult`/`Trainer` 与 `train_artifact` 在 `[train]`，`JobTrainer` 与云、主机作业层在 `[train-jobs]`，SLIMMING §0.1 A、C）：
   - `TrainJob`/`TrainResult`/`Trainer`（evolve/train.py:59-77）；
   - `JobTrainer`（:84 起），可在本地、ssh、RunPod/Vast 上运行，有价格上限、截止时间和取消；
   - `train_artifact` 先预留预算，续跑时 attach（evolve/pipeline.py:361-422）。
@@ -260,7 +264,7 @@ DataPlan（冻结：来源工作区及 digest、FamilySplit、来源选择、打
 |---|---|---|---|
 | `signature` | decision | 现有 | 纯标准库，离线测试用 |
 | `mock_sft` | actor | v2.0 | 离线，写出符合契约的假 adapter |
-| `tde` | decision | v2.1 | 修漂移：`ARCHITECTURE` 补 `topology`/`max_total`（trainers/tde.py:40），`max_state_tokens` 对齐（:32），pin `tde==0.1.x`。在 CPU 或经 `[decision-jobs]` 租的 CUDA 上训。截断到 1,024 token 对链路验收可以接受，记进 `truncated` |
+| `tde` | decision | v2.1 | 修漂移：`ARCHITECTURE` 补 `topology`/`max_total`（trainers/tde.py:40），`max_state_tokens` 对齐（:32），pin `tde==0.1.x`。在 CPU 或经 `[train-jobs]` 租的 CUDA 上训。截断到 1,024 token 对链路验收可以接受，记进 `truncated` |
 | `tinker_lora` | actor | v2.1 | validate → forward_backward → optim_step → val loss → save_state → 采样 ref（TECHNOLOGY §2）。默认配方沿用 HZ：rank 32、α 32、2 epochs、lr 2e-4、batch 8、seed 42；`max_seq` 32768 |
 | `decider_lora` | decision | 轨道 B | 移植 jev 的 `ops/decider_lora_train.py`（112 行）和 `scripts/export_decider.py`（64 行）。加上：按 val 选 checkpoint；保留软标签，或者记明已 argmax；CUDA 检查；`version = ref` |
 | `module:Class` | 任意 | — | 开发者自带，例如 TRL 或自有集群，遵守上面的契约 |
@@ -347,7 +351,7 @@ per_task_cap = 4
 | 两个 builder 与检查 | evolve/build.py:34-52、:115-127；evolve/checks.py | 见 §3.2 | 450–650 | | | |
 | `write_gate` 挂点 | agent/gateway.py:340-380；runtime.py:299-366；policy.py:45-56 | shadow/act、fail-open、决策行字段 | 200–280 | | | |
 | 通用 target | policies.py:66、:294-333、:542-616；bench.py:1580-1588 | `worker.decide.<point>` | 120–180 | | | judge 绑定和回退链 150–200 |
-| 训练入口与探针 | evolve/pipeline.py:340-454；evolve/train.py:59-77、:84 起；`[decision-jobs]` | role 分派、按决策点探针、生成探针、actor 契约 | 150–220 | 60–100 | | |
+| 训练入口与探针 | evolve/pipeline.py:340-454；evolve/train.py:59-77、:84 起；`[train-jobs]` | role 分派、按决策点探针、生成探针、actor 契约 | 150–220 | 60–100 | | |
 | trainer 插件 | trainers/__init__.py、signature.py、tde.py | `mock_sft`；`tde` 修漂移；`tinker_lora`；`decider_lora` | 60–80 | 320–490 | | 200–300 |
 | renderer | — | 学生 chat template、tool-call 编码、loss mask | | 150–250 | | |
 | 阈值与评估 | evolve/calibrate.py:15；policy.py:107-135 | `fit_hold_threshold`；召回、误拦、AUROC，按族聚类的 bootstrap | 120–180 | | | ECE、coverage@risk 100–150 |
@@ -358,7 +362,7 @@ per_task_cap = 4
 | **合计** | | | **2.2–3.2k** | **1.0–1.6k** | **0.5–0.8k** | **0.75–1.1k** |
 
 - 测试：v2.0 约 1.2k 行，v2.1–v2.2 约 0.8k 行。
-- 另外从 `[decision]` 搬约 2.4k 行，复用 `[decision-jobs]` 约 2.0k 行。
+- 另外沿用瘦身第一批搬进 `[train]` 的约 2.4k 行，复用 `[train-jobs]` 约 2.0k 行（同一子包，代码只搬一次）。
 - jev 一侧保留模型代码、tde-serve 和 releases。ouroloop 不 import jev 的内部函数，只 pin `tde` 版本。
 
 ## 4 试验设计
@@ -530,7 +534,7 @@ python -m ouroloop.train label <x1-plan> --labelers replay_effect,replay_skip
 
 - **决策链**：
   1. Claude 作 judge，给 v4-finance train 的写打标。
-  2. 用 `tde` 训（CPU，或经 `[decision-jobs]` 租的 CUDA）。
+  2. 用 `tde` 训（CPU，或经 `[train-jobs]` 租的 CUDA）。
   3. 以 `--name <ref>` 启动 tde-serve。
   4. 绑定 `worker.decide.write_gate`，在 10 道 finance train 题上先跑 shadow 再跑 act。
   5. 导出，用 App.bind 跑 1 题。
@@ -548,7 +552,7 @@ python -m ouroloop.train label <x1-plan> --labelers replay_effect,replay_skip
 
 **验收：** 在 finance train 上用 Claude 作老师审阅 10–20 次学生尝试，建出 `reviewed_student` 集并训一次；轨道 A 结束。
 
-**测试**按 §7 改写后的 DT6-01、DT6-09–14、DS6-01–11，在 fake_upstream 上用脚本化的学生和老师断言：
+**测试**按 §7 改写后的 DT6-01、DT6-09–14、DS6-02–08（DS6-01、DS6-09–11 是适配用例，v2 不做），在 fake_upstream 上用脚本化的学生和老师断言：
 - REPLACE 后包拿到的是替换响应，proposal 只存在于 ReviewRecord；
 - 老师 ERROR 时 episode 记 incomplete；
 - aux 调用不进 SFT；
@@ -600,40 +604,43 @@ python -m ouroloop.train label <x1-plan> --labelers replay_effect,replay_skip
 | Tinker 不可用或涨价 | 能力探针在提交前就会失败；回退到 `module:Class` 必须在配置里显式声明，不静默换后端 |
 | test 被提前用掉 | 如果 sales/hr 的 test 先被 v1 活动读了，C5 的 test 池降为 finance+support 50 题（+10 时功效 0.50–0.84），加上 operations 81 题 |
 
-## 7 未决问题（请用户定）
+## 7 未决问题与决定（2026-10-08 已全部定下）
 
-| # | 问题 | 默认 | 影响 |
-|---|---|---|---|
-| 1 | 轨道 B 开不开、什么时候开 | X1 读完后再定；老师写在计划文件里 | 预算 $0.8–1.3k 名义；发布要的"留出集上的可测增益"只有轨道 B 能给 |
-| 2 | test 复用规则 | sales、hr 的 test 留给 v2，v1 活动在这两个域不跑 final。finance（读过 1 次）、support（final 后读过 2 次）可以复用，条件是：构建学生的任何产物都没读过之前 final 的逐题记录（由结果库按 split 过滤，代码强制），报告里披露读取次数。marketing 读过 3 次，已用尽。operations 整域留出 | C5 的 test 池 |
-| 3 | SFT 目标 | `accepted`（PASS + REPLACE 的动作部分，同 HZ）；`pass_only` 作只看 dev 的消融 | 要改 M2 §2 第 5 步、DT6-01/10/12、09 的 DS6-06 |
-| 4 | 采集用的 harness | W0 加 K（W\* 文本），同 HZ | 要改 M2 §3a 第 2–3 步和 DT6-14 |
-| 5 | 跨域合并 | 5 个域合训一个学生，并报 LODO | HZ 是按域分别训练的 |
-| 6 | 学生底座和训练后端 | Qwen3.5-9B 加 Tinker 作参考实现；自托管走 `module:Class` | v2 不维护第二套生成训练栈 |
-| 7 | 命名与搬家 | 在瘦身第一批之前定下来：子包叫 `ouroloop/train/`，extra 叫 `[train]`/`[train-jobs]`，入口是 `python -m ouroloop.train`。代码只搬一次 | 要改 SLIMMING §2.3、§3 第一批的命名 |
-| 8 | `contact_human` | 本基准上不作效果主张；真实标签来自 v2.5 的部署审批 | — |
+用户 2026-10-08 答"按默认"：下表八项全部按默认值定下。
 
-**需要同步改的文档：**
-- **DESIGN**：不变量 6（ledger.py:20 引用它）、§4 的 controller 行、§8 的 C3 行（改为在学生上测）。
-- **00_CONTRACTS**：约 :179 处"不能通过改 source 绕过 EVAL_ONLY"那段，改为血缘加选择。
-- **02**：
-  - :14 的旧规则；
+| # | 问题 | 默认 | 影响 | 决定 |
+|---|---|---|---|---|
+| 1 | 轨道 B 开不开、什么时候开 | X1 读完后再定；老师写在计划文件里 | 预算 $0.8–1.3k 名义；发布要的"留出集上的可测增益"只有轨道 B 能给 | 按默认，2026-10-08 |
+| 2 | test 复用规则 | sales、hr 的 test 留给 v2，v1 活动在这两个域不跑 final。finance（读过 1 次）、support（final 后读过 2 次）可以复用，条件是：构建学生的任何产物都没读过之前 final 的逐题记录（由结果库按 split 过滤，代码强制），报告里披露读取次数。marketing 读过 3 次，已用尽。operations 整域留出 | C5 的 test 池 | 按默认，2026-10-08 |
+| 3 | SFT 目标 | `accepted`（PASS + REPLACE 的动作部分，同 HZ）；`pass_only` 作只看 dev 的消融 | 要改 M2 §2 第 5 步、DT6-01/10/12、09 的 DS6-06 | 按默认，2026-10-08 |
+| 4 | 采集用的 harness | W0 加 K（W\* 文本），同 HZ | 要改 M2 §3a 第 2–3 步和 DT6-14 | 按默认，2026-10-08 |
+| 5 | 跨域合并 | 5 个域合训一个学生，并报 LODO | HZ 是按域分别训练的 | 按默认，2026-10-08 |
+| 6 | 学生底座和训练后端 | Qwen3.5-9B 加 Tinker 作参考实现；自托管走 `module:Class` | v2 不维护第二套生成训练栈 | 按默认，2026-10-08 |
+| 7 | 命名与搬家 | 在瘦身第一批之前定下来：子包叫 `ouroloop/train/`，extra 叫 `[train]`/`[train-jobs]`，入口是 `python -m ouroloop.train`。代码只搬一次 | 要改 SLIMMING §2.3、§3 第一批的命名 | 按默认，2026-10-08 |
+| 8 | `contact_human` | 本基准上不作效果主张；真实标签来自 v2.5 的部署审批 | — | 按默认，2026-10-08 |
+
+**需要同步改的文档**（2026-10-08 定稿时同步。标"本轮已同步"的是这一轮改的文档；代码一律不改，等 support 两份 final 评完、H1 算完再动：注释随瘦身第一批，其余随 v2.0）：
+- **DESIGN**（本轮已同步）：不变量 6（ledger.py:19 引用它）、§4 的 controller 行、§8 的 C3 行（改为在学生上测）。
+- **00_CONTRACTS**（本轮已同步）：约 :181 处"不能通过改 source 绕过 EVAL_ONLY"那段，改为血缘加选择。
+- **02**（本轮已同步）：
+  - :16 的旧规则；
   - §1a；
   - §2 第 5 步；
   - §3a；
   - DT6-01/07/10/12/13/14；
   - 写进 `[train.<role>]` 和 actor 产物契约。
-- **09**：DS6-06。
-- **TECHNOLOGY**：:32（底座与上下文长度改为 32k）、:61。
-- **SLIMMING_INVENTORY**：
-  - §0.1 第 5 点改为已决定；
-  - §0.2 的 14%/20% 改为 8.1%/16.0%，并注明两组分母不同；
-  - 309/148 改为投影器的计数；
-  - :167 那一条按本稿重写；
-  - 第 10、12 项标为已决定；
-  - 按第 7 项改第一批的命名。
-- **代码注释**：providers 里 "never training targets" 的注释和默认值。
-- **ROADMAP**：v2 一节指向本稿。
+- **09**（本轮已同步）：DS6-06；复核后另补 §1 的注（不做 `adapt_workflow`，DS6-01、DS6-09～11 不适用）。
+- **TECHNOLOGY**（本轮已同步）：:32（底座与上下文长度改为 32k）、:61；复核后另补 :16（教师与适配一行）。
+- **SLIMMING_INVENTORY**（本轮已同步）：
+  - §0.1 第 5 点改为已决定（本轮）；
+  - §0.2 的 14%/20% 改为 8.1%/16.0%，并注明两组分母不同（草案 `b58f5cc` 已改）；
+  - 309/148 改为投影器的计数（同上）；
+  - :167 那一条按本稿重写（同上）；
+  - 第 10、12 项标为已决定（本轮）；
+  - 按第 7 项改第一批的命名（本轮；全文的 `[decision]`/`[decision-jobs]` 一并改为 `[train]`/`[train-jobs]`）。
+- **代码注释**（本轮不改）：providers/__init__.py:4、claude_code.py:235、anthropic.py:45、openai_compat.py:44、backends/llm.py:1-3、runtime.py:372、ledger.py:19-20 这 7 处注释随瘦身第一批；默认值随 v2.0 的血缘改动（§3.8 第一行），因为 ledger.py:143、:152 只收 SOURCES 里的来源（§2.5）。现在改任何 .py 都会改 `code_version`，从而改动正在跑的活动的 K。
+- **ROADMAP**（本轮已同步）：v2 一节指向本稿。
+- **复核后另补**（2026-10-08）：M3（03）§1 共适应注、M4（04）§3 材料准备、集成验收（08）IT6-01/38、modules/README 的 M2/M8 两行、TRAINING_HOSTS 页首、V0_4_PLAN 与 V0_5_METHOD_LIBRARY §7.4 里 sales/hr 的 test 计划，各加注；README 与代码随瘦身第一批。
 
 **考虑过、不做：**
 

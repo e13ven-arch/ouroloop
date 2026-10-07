@@ -8,6 +8,36 @@
 
 ---
 
+## 2026-10-08 support 两臂基线；瘦身清单与 v2 训练链设计
+
+- 做了什么（2026-10-07/08）：support 两臂各跑完基线（`--phase cycle --until baseline`）；v0.5 臂的 3b 经验库轨道（`--phase library`）2026-10-07 开始，仍在跑。写瘦身清单 [design/SLIMMING_INVENTORY.md](design/SLIMMING_INVENTORY.md)（按用户反馈改过两版）与 v2 训练链设计 [design/V2_TRAINING_PIPELINE.md](design/V2_TRAINING_PIPELINE.md)；ROADMAP 加“瘦身（2026-10-07 决定）”“v2 训练链（2026-10-08 决定）”两节，v0.5 一节记下两臂基线；按 V2 §7 同步 DESIGN、TECHNOLOGY、M0（00）、M2（02）、M8（09）与瘦身清单（改名 `[train]`/`[train-jobs]`），复核后再给 M3、M4、08、modules/README、TRAINING_HOSTS 与 V0_4/V0_5 两份计划里的旧写法加注。两份设计稿只读代码、文档与 train/dev 记录：没改代码、没调模型、没读 `.env` 与任何 test 结果（重放原型曾在内存里解析过 test 题的任务定义、未输出，V2 §2.6 第 1 条）。
+- 证据（基线，名义美元）：
+  - v0.4 臂（`claude-v4-support.toml`）：W0 train 18/50（36%）；dev 三次读数 8、9、9（32%、36%、36%），合计 26/75（34.7%）；$56.19。
+  - v0.5 臂（`claude-v5-support.toml`）：W0 train 19/50（38%）；dev 三次读数 10、9、8（40%、36%、32%），合计 27/75（36.0%）；$56.97。
+  - 读法：两臂起点相同（dev 差 1 次通过、train 差 1 题）。
+- 瘦身清单（`198799a`、`ce50c8d`、`7065a99`、`03f68b3`）：逐模块列用途、在 v0.4/v0.5 路径上是否执行、贡献与删/简化/可选/待定/保留，分三批（第一批死代码、遗留路径与决策栈隔离；第二批没产生过证据的机制；第三批 v0.5 两库按 support 的结果定）。第一版建议整删遗留决策栈（约 10.7k 行）；用户看过后说训练链与决策模型要保留，改为只删确已过时的部分（约 5.1k 行），可复用部分约 4.4k 行收进可选子包、移出热路径，约 0.7k 行原位保留；从 runner shell 到决策点与训练数据的桥登记为 v2 前置。框架约 35.3k 行，瘦身后主包约 17.8k～22.1k 行。
+- 用户的决定（2026-10-07）：
+  - (a) C4 保留 R 递归，改为跨活动比较（R1 臂 = R0 加前一个活动的 playbook，联合 final）；删活动内研究位的编排。
+  - (b) Jev、TDE 与本地决策 trainer 收进可选子包、移出热路径；撤回的只有“v1 Agent 循环的决策点与冠军发布继续可用”。
+  - 冠军指针一族（已被 Releases 与 task_gate 取代）按过时删，v2 按 Releases 重写。
+  - 训练与蒸馏是 ouroloop 框架的一部分（不放在 jev 仓库），GPU 作业设施保留；数据管线、试验设计与训练管线另写设计。
+  - 老师输出的许可与条款不在范围内：交付的是开发者用自己可插拔的 teacher/judge/actor/student/trainer 跑通的链，Claude 只验收链路；清单里的条款说明随之删去（`b58f5cc`）。
+  - 每一批都等 support 两份 final 评完、H1 算完之后才合入。
+- v2 训练链设计（`b58f5cc` 提交时为草案，用户按默认确认后定稿）：两条轨道。A 是交付的链：v2.0 离线（$0）；v2.1 接真模型并跑首个试验 X1（train 的 val+cal 族上 S0 对 S_F，只读方向；Claude 名义 ≤ $35，真实 ≤ $80）；v2.2 老师审阅的采集链路（≤ $20）。B 是效果主张 C5、C3（另有 C5′、C3b、C6），在自己冻结的计划下跑，名义约 $0.8–1.3k。数据来自宿主记录加离线重放标签，按族划分，防泄漏规则由固定代码执行；训练产物作为 W 的组件走同一个 `task_gate`；读法与止损 K0～K7 预注册。同一提交把清单里的写门上限更正为 train 8.1%、dev 16.0%（只因 must-not 失败的比例；旧数 14%/20% 的两组分母不同）。
+- 用户的决定（2026-10-08，“按默认”，即 V2 §7 的全部默认）：
+  1. 轨道 B 在 X1 读完后再定开不开；老师写在计划文件里。
+  2. test 复用：sales、hr 的 test 留给 v2（v1 活动在这两域不跑 final）；finance（读过 1 次）、support（final 后读过 2 次）有条件复用（构建学生的任何产物都没读过之前 final 的逐题记录，由结果库按 split 过滤、代码强制；报告披露读取次数）；marketing（读过 3 次）已用尽；operations 整域留出（LODO）。
+  3. SFT 目标 `accepted`（PASS + REPLACE 的动作部分，同 HZ）；`pass_only` 只作只看 dev 的消融。
+  4. 采集时学生用 W0，老师带 K（各域 W\* 的 memory 与 skills 原文，固定模板渲染）审阅，同 HZ。
+  5. 五个域（finance、hr、marketing、sales、support）合训一个学生，operations 留出报 LODO。
+  6. 底座 Qwen3.5-9B，训练后端 Tinker 作参考实现；自托管走 `module:Class`。
+  7. 子包 `ouroloop/train/`，extra `[train]` 与 `[train-jobs]`，入口 `python -m ouroloop.train`；瘦身第一批按此命名，代码只搬一次（取代清单原来的 `ouroloop[decision]`、`ouroloop[decision-jobs]`）。
+  8. `contact_human` 在本基准上不作效果主张；真实标签来自 v2.5 的部署审批。
+- 顺序：support 两份 final 与 H1 → 瘦身第一批 → v2 代码。代码改动现在一律不做，因为主检出正跑着 support，任何 `.py` 改动都会改 `code_version`，从而改两臂冻结的 K；V2 §7 列出的 providers 里 “never training targets” 的注释随瘦身第一批改，闸门改血缘与默认值随 v2.0。
+- commit：`198799a`、`ce50c8d`、`7065a99`、`03f68b3`（瘦身清单）、`b58f5cc`（V2 设计稿）；本条与 ROADMAP 的两节见本条之后的提交。
+
+---
+
 ## 2026-10-07 support 两臂对照：冻结
 
 - 做了什么：v0.5 合并进 `m1-automationbench`（`7e7732e`，全套 `-m "not live"` 1245 passed）；`ouroloop freeze` 冻结 support 的两臂：v0.4 臂（`claude-v4-support.toml`，plan `c978e0a1…`）与 v0.5 臂（`claude-v5-support.toml`，plan `98874475…`），同一 schedule `15aa3cf6…`、同一 budget `b4c638b7…`（根 $600、final 份额 $160），两个工作区的划分都是 `3da11232f5d5ff38`，test 未读。预先登记的判定照 V0_5_PLAN §3 与两份配置的注释，本条提交之后才付第一笔钱。

@@ -48,7 +48,7 @@ v2 的完整目标集合按原注册清单校验，不因新增 worker.actor/wor
 | `GenerationArtifact` | `model_identity_ref, dataset_ref, recipe_ref, trainer_ref, checkpoint_ref, sampling_ref, recovery_ref?, export_ref?, probe_ref`；recovery/采样/便携权重引用不同，不能混用 |
 | `DeploymentManifest` | `source_release_ref, worker_ref, target_harness_ref, runtime_ref, required_core_ref, model_refs, tool_bindings_schema_ref, validation_ref, external_dependencies`；白名单导出，不复制全量对象闭包。（v0.3）app = agent 包 + 运行壳 + 模型服务描述：`worker_ref` 所含的包（含 agent 代码）、`runtime_ref` 的运行壳、`external_dependencies.model_service` 的 provider/模型身份；不带 R、评分器、任务数据、网关日志 |
 
-`HarnessPackage`、`CollectionRequest`（首版仅 task_feedback/plain）、`ModelIdentity`（未训练 actor 的 provider/底座身份）与 `TargetHarness`（只描述当前宿主）是首版新增公共记录。TeachingReference、DistillationPlan、ReviewRecord、reviewed Trajectory/SFTDataManifest 与 GenerationArtifact 属于第二版；首版 bootstrap actor 只需真实 provider 身份，不创建训练产物。DeploymentManifest 两版共用。
+`HarnessPackage`、`CollectionRequest`（首版仅 task_feedback/plain）、`ModelIdentity`（未训练 actor 的 provider/底座身份）与 `TargetHarness`（只描述当前宿主）是首版新增公共记录。TeachingReference、DistillationPlan、ReviewRecord、reviewed Trajectory/SFTDataManifest 与 GenerationArtifact 属于第二版；首版 bootstrap actor 只需真实 provider 身份，不创建训练产物。DeploymentManifest 两版共用。（v2，2026-10-08，[V2_TRAINING_PIPELINE](../design/V2_TRAINING_PIPELINE.md) §2.3、§7）v2 不做 `adapt_workflow`，`TeachingReference` 的 `mapping_ref`/`adaptation_ref` 不用：教师的私有参考是 K（各域 W\* 的 memory 与 skills 原文，固定模板渲染），以 ref 冻结进 DistillationPlan（M2 §3a 第 2 步）；`TrajectoryRecord`/`TrajectoryStep` 不建成单独的存储类型，episode 是投影器按 `attempt_id` 关联网关日志得出的内存视图；ReviewRecord 的字段以 V2 §2.3 为准（verdict 多一个 ERROR）。
 
 SourceWorkflow 指第二版教学来源，源 h* 的完整身份是 source release 中的 W/package 加宿主 TargetHarness；source_harness_ref 引同一宿主类型，不新增另一套 runtime schema。源和学生的宿主契约可相同，W/package 可不同。源包代码在 K 许可的扩展 API 内演化；目标宿主与学生非训练 W 在一次蒸馏内固定。source_validation 只用冻结 train/fit，输出 passed/failed/inconclusive/invalid artifact，不授予安装权；guide 与教学材料内容血缘独立校验。
 
@@ -162,6 +162,8 @@ ActorTraining    = {method: distill_actor, target: worker.actor,
                     distillation_plan_ref, data_selection_ref, recipe_ref}
 ```
 
+（v2，2026-10-08，V2 §3.6）`DecisionTraining.target` 推广为 `worker.decide.<point>`，首个是 `worker.decide.write_gate`；`worker.stop` 迁为 `worker.decide.stop`，身份由瘦身金标测试守住。
+
 以下训练操作用于第二版：data_selection_ref 是冻结选择规则，实际 dataset_ref 由 build 追加产物事件，不在采集前假造。仅复用 plan/学生版本/划分/投影完全匹配的采集；新增 v3 路径每实验最多一个训练条目。旧 API 多条训练兼容保留。首版包变化和 prompt/workflow 变化可组合但须先冻结，同模型比较保持 actor 身份和推理参数不变。（v0.3）“推理参数不变”指 pin 的默认档与 K 的 `max_effort` 不变；包在上限内按调用选择 effort 属于 W 的变化，不是模型身份的变化。第二版的演化/训练时间表见 §2 末“第二版”一段。
 
 `Experiment` 继续冻结 proposal、parent release、experience、K、eval template 和 budget；增加的 purpose/execution base 不允许运行中改写。续跑也只按这些冻结值完成，评测模板或预算 scope 不一致则不续跑并暂停（M5 §3）。source_validation 使用 train 验证模板，deployment 使用生产 gate 模板；不把 collect/train/evaluate 分成三个可以各自安装的候选。`build_candidate` 输出 ready/invalid/infrastructure_failed；内部 `TrainingBuild` 保持 ready/failed/cancelled，外部未知请求保存在操作记录，由 M5 映射为待核对或 inconclusive，不能伪造 ready。
@@ -176,7 +178,14 @@ ActorTraining    = {method: distill_actor, target: worker.actor,
 
 首版 train/fit 任务的断言级失败明细（每条断言 type/params/passed；评分器排除的断言不给，即作者声明不计分、或初始即成立且结束时仍成立的断言；初始成立但被破坏的断言按失败计分，照常作为失败明细给 R）对 R 可见；dev 只给汇总，final 不进入 R 上下文，dev/final 都不给断言明细和轨迹。这是本版变化：v0.5 研究上下文的 task_results_summary 只给逐题 success/partial/终止/失败类，不含断言明细（docstring `research/context.py:120`）也不含轨迹（`:116-146`）。放开 train 明细定位“漏了哪一步”最直接，不涉及 dev/test；泛化由 dev gate 把关，包内材料仍只写通用规则。判分明细与任务结果分开存：每次尝试的逐条断言结果（type/params/passed/excluded）写入 `bench/<domain>/grading.jsonl`，不进入 results.jsonl；写入点在 M3 的 run_tasks（`evolve/task_eval.py`）追加结果之后，读取接口由 M7 的结果存储（`benchmark.py`）提供，按冻结 split 过滤，默认只返回 train，非 train 返回空；dev/final 明细即使存在于 grading.jsonl 也不进入 R 上下文；投影只影响 R 的输入，原始判分记录（含 excluded 条目）完整保留，供审计与复现。（v0.3，2026-10-04）网关日志与 broker 事件（§2）按同一规则读：R 的原始轨迹工具（M4 §1（v0.3））经结果存储的 split 过滤只返回 train 尝试的条目，dev/final 的条目即使在同一 transcripts 目录里也不返回；dev 给 R 的只有固定代码投影的失败**类型**直方图（枚举类型与计数，M4 §1（v0.3）：无 params、无任务 id），test 什么都不给。网关日志里的 `messages` 含任务正文与工具结果，它的分区就是该尝试的 split，不因 release ref 可追溯到 dev 收据而改变。
 
-反馈与模仿数据是两种类型：`FeedbackRecord.source=env/human` 不变；教师输出只进入 ReviewRecord 与 `purpose=actor_imitation` 的轨迹，不能通过改 source 绕过既有 EVAL_ONLY 限制。环境最终成功是轨迹筛选条件，不证明各步最优或教师理由真实。
+反馈与模仿数据是两种类型。（v2，2026-10-08，用户按 [V2_TRAINING_PIPELINE](../design/V2_TRAINING_PIPELINE.md) §7 默认值确认；规则见其 §0.1 第 3 点、§2.5）`source` 改为普通的数据血缘，不再按来源设闸门，取代原句“`FeedbackRecord.source=env/human` 不变……不能通过改 source 绕过既有 EVAL_ONLY 限制”：
+
+- **血缘文法**：`env:<labeler>@<ver>`、`human:<channel>`、`model:<identity_ref>`；由打标器或网关按调用身份写入，调用方不能自报或改写（把教师 REPLACE 改记成 env 仍按 CT6-04 拒绝）。教师输出进 ReviewRecord、`purpose=actor_imitation` 的轨迹，以及 `teacher_review@1` 从 REPLACE 打出的 `write_gate` 标签（V2 §2.4），血缘都是 `model:<teacher_ref>`。
+- **选择写在数据计划里**，冻结后不改：`sources_fit` 默认 env 与 model（可改为只用 env），`sources_threshold` 只用 env，`sources_eval` 只用 env 与 human。env 与 model 冲突时以 env 为准、记 `conflicted`；没有 env 标签可定阈值的模型记 `uncalibrated`，只能 shadow 绑定。
+- **只保留两条正确性规则**：(1) 评测、阈值、gate 用的真值只来自 `env:*` 或 `human:*`；(2) 评分信息（断言、grading、重放结果）永不进 actor、teacher、judge 的输入，也不进 SFT 输入与决策视图。
+- **代码改动的时机**：注释（providers/__init__.py:4、claude_code.py:235、anthropic.py:45、openai_compat.py:44、backends/llm.py:1-3、runtime.py:372、ledger.py:19-20）随瘦身第一批改；`ledger.py:21-23` 的 `SOURCE_WEIGHTS`/`EVAL_ONLY`、`evolve/contracts.py:671`、`:682-684`、`evolve/feedback.py:83-84` 与 providers 的 `source` 默认值从闸门改为血缘是 v2.0 的代码（V2 §3.8 第一行），在瘦身第一批之后合入；此前代码仍按旧闸门执行。
+
+环境最终成功是轨迹筛选条件，不证明各步最优或教师理由真实。
 
 隔离执行复用现有 EvaluationPermit，以显式 scope 限定允许的 release、任务及 mode；v3 permit 字段和外部许可校验规则须一起接入，v2 不自动获得额外权限；本版扩展其受限 baseline/source_validation/reviewed_collection 用途，不让准备版本冒充 installed。候选生产评测仍走正式许可链；accepted deployment/research receipt 才能授权安装，source 验证或 baseline 完成不授予安装权。初次创建受限 release 时保持 plan → permit → evaluation release 的单向引用，避免哈希循环。已存在的准备版本 B 用于后续采集时，先冻结以 B 为 student 的 DistillationPlan，再签发含 subject_release_ref=B 的补充 permit；M1 验证该外部许可的确切 release/plan/scope/mode，不修改 B 的内容或冒充 installed。补充 permit 仅为已存在 release 授予本次执行权，不授予安装权；安装 release 引 accepted receipt，W/R 内容与被评测候选一致。正式 verdict 仅 accepted/rejected/inconclusive/invalid；采集 PASS 不是 release accepted。
 

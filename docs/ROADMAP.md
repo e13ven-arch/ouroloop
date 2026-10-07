@@ -43,7 +43,7 @@
 
 修复前不进入付费运行。修复与真实运行的顺序见 §3 的首个真实活动协议。
 
-A～E 属于首版，递归方法比较与实际回用仍为必做。第二版接 M8 教学适配/采集、M2 SFT、M1 sampling/teacher hook 及独立 controller 新训练验证，沿用已写规格；不把这些账户或依赖放入首版预检。按 [分版验收](modules/08_INTEGRATION_CASES.md)执行，未来用例不删除也不算首版缺项。真实试验需模型服务与冻结预算；不具备时真实验证标未完成。
+A～E 属于首版，递归方法比较与实际回用仍为必做。第二版接 M8 教学适配/采集、M2 SFT、M1 sampling/teacher hook 及独立 controller 新训练验证，沿用已写规格；不把这些账户或依赖放入首版预检。按 [分版验收](modules/08_INTEGRATION_CASES.md)执行，未来用例不删除也不算首版缺项。真实试验需模型服务与冻结预算；不具备时真实验证标未完成。（2026-10-08：第二版的范围、轨道、里程碑与顺序改以 [design/V2_TRAINING_PIPELINE.md](design/V2_TRAINING_PIPELINE.md) 与 §3 “v2 训练链（2026-10-08 决定）”为准。）
 
 补采请求经同一 driver 自动续跑（purpose=task_feedback）属首版，IT6-19/21 首版验收，覆盖补采恢复及 worker 段与活动的停止区别；更换 h 时创建 baseline release/新比较身份与 source_validation（只验证教学来源）属第二版，IT6-18/20 第二版验收。
 
@@ -406,7 +406,7 @@ v0.3 的五领域活动三轮都没有安装（第 5 步；[诊断](history/DIAG
 
 **不变的部分（须说明）。** train/dev/test 的信息分离在固定代码里（判分明细按冻结 split 过滤，dev 只给枚举直方图，test 不进 R）；final 封存、计划 hash 先提交；预算账本与预留（M5 §2，含并发下的预留上界）；R0 对 R1 由下游 W* 裁决（M6 §3）；Docker 隔离与工具 broker（M1 §1）；`claude_code` provider 与计量（M1 §1、第 2a 步）。
 
-**第二版的训练兼容（计划，不实现）。** v0.3 实现的只有网关记录里的 `role` 字段。其余是第二版计划：训练投影只读网关日志里 role=act 且教师 PASS 的调用；教师在网关对 act 调用介入（PASS/REPLACE，回复到包之前），对包透明；aux 调用计采集限额但不进训练数据；顺序为 演化 → 冻结 release → 在该 release 上采集/训练 → 换学生 → 在学生上重新演化（[M2 §1～3](modules/02_EVIDENCE_TRAINING.md)（v0.3））。
+**第二版的训练兼容（计划，不实现）。** v0.3 实现的只有网关记录里的 `role` 字段。其余是第二版计划：训练投影只读网关日志里 role=act 且教师 PASS 的调用；教师在网关对 act 调用介入（PASS/REPLACE，回复到包之前），对包透明；aux 调用计采集限额但不进训练数据；顺序为 演化 → 冻结 release → 在该 release 上采集/训练 → 换学生 → 在学生上重新演化（[M2 §1～3](modules/02_EVIDENCE_TRAINING.md)（v0.3））。（2026-10-08：训练目标改为 `accepted`，学生在 W0 下、教师带 K 审阅，重新演化推到 v2.5，见下文“v2 训练链”一节。）
 
 **推迟到第二版（v0.3 只留一段说明，无字段表、无测试）。**
 - 把决策点（stop/retry/compact/route/tool_gate）移到网关/broker 边界供 C3 使用；v0.3 的宿主不问任何决策点，tool_gate 留在 broker 作权限（K）。
@@ -442,7 +442,7 @@ v0.3 的五领域活动三轮都没有安装（第 5 步；[诊断](history/DIAG
 4. **读法（预注册）。**
    - 某领域有确认的安装 → 该领域封存 final，结果照报。
    - 3 轮没有安装 → 该领域停止，如实报告“R 以 k = 3、接口优先的方法在 3 轮内没有在该领域得到确认的安装”；不续跑同一条管线。
-   - 某领域的 final 显著（95% 区间下界 > 0）→ 加 sales 与 hr，各自一个单领域活动，同样的配置形状。
+   - 某领域的 final 显著（95% 区间下界 > 0）→ 加 sales 与 hr，各自一个单领域活动，同样的配置形状。（2026-10-08，V2 §7 第 2 项：sales、hr 的 test 留给 v2；在这两域开 v1 活动时不跑 final，只报 dev 读数，或不开。）
    - 不做：不重判 v0.3 的三张收据；不在边缘读数后追加读数或重复；不给 R dev 题号或 dev 轨迹；不读 Marketing 已 spent 的 test。
 5. **v0.4.0。** 有结果（含负结果）后写 RESULTS 与 README，合并进 main。
 
@@ -466,9 +466,51 @@ v0.3 的五领域活动三轮都没有安装（第 5 步；[诊断](history/DIAG
      - 3c R 的轮次（`--phase cycle`：3 轮、patience 2，带方法）；
      - 3d 有方法装上时 `--phase learn`（只跑重放触发过的 train 题的对偶孪生，拟合，表变了就走重拟轮；钱不够就拒绝、一分不花；≤ $55）；
      - 3e final 总是跑（没装上东西时 W\* = W0）。
+   - **两臂基线已运行（2026-10-07）：起点相同。** v0.4 臂 W0 train 18/50，dev 三次读数 8、9、9（26/75），名义 $56.19；v0.5 臂 W0 train 19/50，dev 10、9、8（27/75），$56.97。v0.5 臂的 3b 于 2026-10-07 开始，进行中。
    - **final 的顺序：** v0.4 臂若有确认的安装，先填 `[freeze.final]`、`ouroloop freeze` 封存并打印哈希；v0.5 臂同样；两份哈希（或 v0.4 臂没有 final 的说明）随 JOURNAL 提交；然后才各自 `--phase evaluate`；最后 `examples/automationbench/support_h1.py` 算 H1。每步之后读免费的过程检查：字面量误拒为 0；每个候选都有准入认可的轨迹读取；方法候选都过了触达底线；报告 `m_tool_writes` 里执行了的写为 0；检索的留一审计为 0（显示给题 t 的条目出处里没有 t 或其近似重复题）。不成立就停下离线修。
 4. **读法（预注册，V0_5_PLAN §3）。** H1：两份 final 按题配对（自助 2000 次、种子 1），W\*_v5 − W\*_v4 的 95% 区间下界 > 0 才算 v0.5 胜出；v0.4 臂没有 final 时（没装上东西，W\* = W0）用 v0.5 那份 final 自己的 W0 臂作对照；预期多半“不确定”（功效约 30%），照报。C1 每臂各报。经验库的 D、B（只报告）、学习曲线、记功秩相关，方法的过程数字与学习器的格，都是过程证据。不做：追加读数或重复；按 dev 挑快照；给 R dev 题号或 dev 轨迹。
 5. **v0.5.0。** 有结果（含负结果）后写 RESULTS 与 README，合并进 main。
+
+### 瘦身（2026-10-07 决定）
+
+清单、逐模块判定与分批在 [design/SLIMMING_INVENTORY.md](design/SLIMMING_INVENTORY.md)；本节是顺序与前提。原则：提升效果、提升结果可信度、保护资金，三者占一样就留；已存记录引用的字段、字面量与 preset 数值一律不删，只让逻辑失效；先迁测试，后删代码；旧版本靠 tag。不改任何已报告的数字；验收全部离线（金标测试、记录重渲染、`--checks-only`），不付费。框架现约 35.3k 行，瘦身后主包约 17.8k～22.1k 行（看第三批两库删或留）。
+
+**用户的决定（2026-10-07）。**
+- (a) C4：保留 R 递归，换实现。删活动内研究位的编排（v3/v4/v5 的配置都写 `research_slots = 0`，单领域 dev 25 题开不了位）；判定代码抽成 `research/recursion.py`；C4 改为跨活动比较：R1 臂 = R0 加前一个活动产出、经台账核对的 playbook，同一划分、根与日程，W0、W\*\_R0、W\*\_R1 联合 final；新接线随下一个新领域活动做。v0.4 对 v0.5 不是 R0 对 R1，H1 仍叫“框架 v0.5 对 v0.4”。（2026-10-08：按 V2 §7 第 2 项，本基准已无可供 v1 联合 final 的新 test：marketing 已用尽，sales、hr 留给 v2，operations 留作 LODO。跨活动 C4 要么在 finance/support 按有条件复用规则跑并披露读取次数（会占用 C5 的 test 池），要么记 not_run；由用户定。）
+- (b) Jev、TDE 与本地决策 trainer 不撤回：可复用部分（约 4.4k 行）收进可选子包、移出每次尝试的热路径，约 0.7k 行原位保留、热路径不执行；撤回的只有“v1 Agent 循环的决策点与冠军发布继续可用”。从 runner shell 到决策点与训练数据的桥登记为 v2 前置（清单 §0.2）。
+- 冠军指针一族（gate、registry、replay、monitor、plan 等，已被 Releases 与 `task_gate` 取代）按过时删，tag 上仍可读；monitor、replay 的概念在 v2 按 Releases 重写。
+- 训练与蒸馏是 ouroloop 框架的一部分（不放在 jev 仓库），GPU 作业设施保留。
+- 子包命名按 v2 的决定（下一节第 7 项）：`ouroloop/train/`，extra `[train]`、`[train-jobs]`，入口 `python -m ouroloop.train`；取代清单原来的 `ouroloop[decision]`、`ouroloop[decision-jobs]`，代码只搬一次。
+
+**步骤（按序；每批一个分支 `slim/1～3`，单独合并、可单独 revert）。** support 两臂在主检出里用当前代码付费运行，任何 `.py` 改动都会改 `code_version`、从而改 K，所以每一批都等两份 final 评完、H1 算完之后才合入；在那之前只在隔离 worktree 里准备。
+
+0. **准备。** 在 `7f65947`（finance final）打 tag `v0.4.0`，H1 算完后打 `v0.5.0`；先加金标测试并通过：v3/v5 preset 的 K 表、finance 与两份 support 冻结计划的 ref 与哈希、v4/v5 配置的 RunManifest 负载与 attempt id、W0/R0 的 ref、finance 的 report.json 重渲染逐字节相同；`test_aa_replay` 加 skip-if-absent。
+1. **第一批：死代码、遗留路径与决策栈隔离（删约 5.5k 行框架代码，移入子包约 4.4k 行）。** 先单独一个提交做热路径解耦（行为不变，加边界测试：bench 路径跑完后不 import 子包）；删旧入口（旧 CLI、demo、serve、suite、ceiling 跑法、rehearsal 与 ManualProvider）；可复用的决策/训练栈移进 `ouroloop/train/`；删冠军指针一族与 v1 Agent 循环（同一提交把 `tests/rsi.py` 迁到 v3 的 K）；顺带删 frontier 臂、task_gate 的经济模式、无调用者的函数与 v0.3 兼容。providers 里 “never training targets” 的注释（默认值随 v2.0）随这一批改（V2 §7）。验收：金标、全量（含子包与 jobs）与边界测试通过；副本里用 v4 配置跑 `--checks-only` 与假上游上的一次尝试，transcript、results 与 `session` 行逐字节不变。
+2. **第二批：没产生过证据的机制（约 3.3k 行）。** 研究位编排（抽出 recursion）、多领域合并、采集批与段延长、旧轮次路径（先把夹具迁到 v3 preset 与 `SessionScript`）、context 与 inspection 的简化、api_errors、final 预算检查合一，最后单独一个提交去掉 bench 的版本史注释。验收：finance 报告重渲染只在 C2/C3/C4 的说明上有差异；support 两个工作区能载入、能续跑（`--checks-only`）。
+3. **第三批：v0.5 两库（0～4.3k 行）。** 完全照 V0_5_PLAN §3 的预注册读法决定，不追加读数：H1 成立两库都留，否定两库都删，不确定时各看自己的过程读数，留下的作 preset 开关。playbook 路径无论如何保留（跨活动 C4 的 R1 来源）。tag `v0.5.0` 上 support 两个工作区仍能重渲染、复算 H1。
+
+### v2 训练链（2026-10-08 决定）
+
+规则在 [design/V2_TRAINING_PIPELINE.md](design/V2_TRAINING_PIPELINE.md)（下称 V2）；本节是轨道、里程碑、顺序与用户定下的默认。§2、§3 里关于第二版的旧写法以本节与 V2 为准；M2、M8（09）、DESIGN 等文档与代码注释的同步清单在 V2 §7。交付物是一条链：teacher、judge、actor（含学生）与 trainer 都是配置项，开发者换成自己的模型就能端到端跑通；Claude 只用来验收链路完整、能跑通，老师输出的许可与条款不在范围内（2026-10-07 决定）。链：宿主记录 → 投影 → 离线重放打标 → 决策集或 SFT 集 → 检查 → 作业 → 产物 → 阈值 → serving → 作为 W 的组件绑定 → 同一个 `task_gate` → Release → 导出。两条线：actor 蒸馏（垂域学生）与决策模型（第一个决策点 `write_gate`）。正确性规则只有两条：评测、阈值与 gate 的真值只来自 `env:*` 或 `human:*`；评分信息永不进 actor、teacher、judge 与 SFT 的输入。
+
+**轨道 A：链路（交付物）。**
+- **v2.0 离线跑通（$0）。** 在 v4-finance 的 train 记录与 `tests/fake_upstream` 上，用脚本化 provider 加 `signature`、`mock_sft` 两个 trainer 走完整条链（新写或修改约 2.2–3.2k 行）。K0：离线套件或投影复现不过，不进任何付费步骤。
+- **v2.1 接真模型，跑首个试验 X1（Claude 名义 ≤ $35，真实 ≤ $80）。** 决策链：Claude 作 judge 给写打标 → `tde` → 写门先 shadow 后 act → 导出。actor 链：`tinker_lora` 训出 S_F → 接回 → 在 W0 下经 runner shell 跑。X1：在 train 的 val+cal 族上比 S0（Qwen3.5-9B + W0）与 S_F（用 W0 包的老师成功轨迹做 LoRA SFT），同时离线读出学生上写门的上限；只读方向、不作主张，读法（K1、K1b、写门上限）在第一次学生运行前提交。
+- **v2.2 审阅采集链路（Claude ≤ $20）。** 网关的 role → provider 映射、只作用于 act 调用的审阅钩子、ReviewRecord；在 finance train 上审阅 10–20 次学生尝试，建 `reviewed_student` 集并训一次。smoke 收据齐全、X1 读完，轨道 A 结束（合计名义约 $30–55，真实 ≤ $90）。
+
+**轨道 B：效果主张（v2.3–v2.4）。** 在自己冻结的计划下跑（冻结 FamilySplit、学生与老师身份、K 的 ref、配方、采样温度、预算根、预注册读法与 ≥ 3 次 S0 对照读数）。主张 C5（S_d+W0 对 S+W0，test 100 题 × 3）、C5-LODO（operations 81 题 × 3）与 C3（写门在学生上的增量，final 里的测量臂），三者 Holm 校正；C5′（训练对直接给学生 W\*）为次要主张；C3b（小 decider 对 judge）与 C6（成本）只报告。止损 K2～K7 见 V2 §6。名义约 $0.8–1.3k，真实 ≤ $0.33k。X1 读完后由用户决定开不开；发布要的“留出集上的可测增益”只有轨道 B 能给。
+
+**顺序。** support 两份 final 评完、H1 算完 → 瘦身第一批合入 → v2 代码合入（v2.0 可先在隔离 worktree 开发）→ v2.1 → v2.2 → 用户决定轨道 B。轨道 B 与 support 两臂共用一个账户，排在两份 final 之后。v2.5 以后：运行时 stop 与 `ctx.finish`、在学生上重新演化、R 提训练条目、部署日志回流、`contact_human`、DPO/KTO 与 RL。
+
+**用户的决定（2026-10-08，“按默认”，即 V2 §7 的全部默认）。**
+1. 轨道 B：X1 读完后再定开不开；老师写在计划文件里。
+2. test 复用：sales、hr 的 test 留给 v2（v1 活动在这两域不跑 final）；finance（读过 1 次）、support（final 后读过 2 次）有条件复用：构建学生的任何产物都没读过之前 final 的逐题记录（由结果库按 split 过滤、代码强制），报告披露读取次数；marketing（读过 3 次）已用尽；operations 整域留出（LODO）。
+3. SFT 目标：`accepted`（PASS + REPLACE 的动作部分，同 HZ）；`pass_only` 只作只看 dev 的消融。
+4. 采集 harness：学生用 W0，老师带 K（各域 W\* 的 memory 与 skills 原文，固定模板渲染）审阅，同 HZ。
+5. 跨域：五个域（finance、hr、marketing、sales、support）合训一个学生，operations 留出报 LODO。
+6. 底座 Qwen3.5-9B，训练后端 Tinker 作参考实现；自托管走 `module:Class`。
+7. 命名：子包 `ouroloop/train/`，extra `[train]` 与 `[train-jobs]`，入口 `python -m ouroloop.train`；瘦身第一批按此命名，代码只搬一次（取代瘦身清单原来的 `ouroloop[decision]`、`ouroloop[decision-jobs]`）。
+8. `contact_human`：本基准上不作效果主张；真实标签来自 v2.5 的部署审批。
 
 ## 4. 效果验收与最小比较
 

@@ -1,6 +1,6 @@
 # 技术选型与实现原则（v0.6）
 
-> 2026-09-30 修订首/二版边界。本文决定新设计如何落地，具体字段见 [M0](modules/00_CONTRACTS.md)。外部项目是设计来源；不是 benchmark 比较对象。当前依赖以 `pyproject.toml` 为准，以下新增依赖均未接入。
+> 2026-10-08：按 V2 训练链决定（[V2_TRAINING_PIPELINE](design/V2_TRAINING_PIPELINE.md) §7，用户“按默认”）改了 §1 的两行训练与教师一行、§2 的底座、上下文、教师与后端、§4 表中教师私有指导一行；§4 末段注明 C4 换实现（2026-10-07）。2026-09-30 修订首/二版边界。本文决定新设计如何落地，具体字段见 [M0](modules/00_CONTRACTS.md)。外部项目是设计来源；不是 benchmark 比较对象。当前依赖以 `pyproject.toml` 为准，以下新增依赖均未接入。
 
 ## 1. 选型与责任边界
 
@@ -10,10 +10,10 @@
 | 能力包代码演化 | 内容寻址 bundle/manifest + 固定 package API + Docker 隔离 worker/工具 broker | 包内生成工具/中间件代码，复用原工具权限与评测；不在控制面 import 候选；只含 skills/memory 的包由宿主装配，不启动 worker | 首版必需，先文本组件后代码组件，M0/M1/M4/M5 |
 | 业务任务 | 现有 AutomationBench adapter | 保持上游评分语义、任务划分、直接模拟环境 | 必需 |
 | 沙箱任务/并行 rollout | 可选 Harbor adapter | 复用原生任务、环境和 trial；不自行再造容器调度 | 明确的 Harbor 任务接入时 |
-| actor 生成训练 | 首选 Tinker 托管 LoRA SFT | 复用 GPU 调度、checkpoint 和 sampling；训练能力不绑定供应商 | 第二版；启用后检查账户 |
-| controller 训练 | 现有 trainer/TDE 作业与 serving | 保持有限动作、校准、弃权协议及 actor/controller 分离 | 首版兼容已有能力；新增验证第二版 |
+| actor 生成训练 | Tinker 托管 LoRA SFT 作参考实现（`tinker_lora`）；自托管走 `module:Class` trainer | 复用 GPU 调度、checkpoint 和 sampling；训练能力不绑定供应商：trainer 由 `[train.actor]` 指定，遵守 actor 产物契约（V2 §3.3） | 第二版；启用后检查账户 |
+| controller 训练 | 现有 trainer/TDE 作业与 serving，随瘦身第一批收进可选子包 `ouroloop/train/`（extra `[train]`、`[train-jobs]`，入口 `python -m ouroloop.train`） | 保持有限动作、校准、弃权协议及 actor/controller 分离；训练与 GPU 作业属于框架，不归 jev 仓库，ouroloop 只 pin `tde` 版本；撤回的只有 v1 Agent 循环的决策点与冠军发布（2026-10-07） | 首版兼容已有能力，移出热路径；新增验证第二版 |
 | 工作流发现与 R 更新 | 现有 research 流程/provider/campaign | 从反馈提出注册候选，验证后回用；不增加研究服务 | 必需 |
-| 教师与适配 | 现有 provider + 受限参考读取 | M4 发现源方法，M8 映射目标动作/逐步审阅 | 第二版；DeepAgents 按实需再评估 |
+| 教师与适配 | 现有 provider + 受限参考读取 | M8 逐步审阅；教师私有指导 K 为各域 W\* 的 memory 与 skills 原文（固定模板），不做目标动作映射（2026-10-08，V2 §7 第 4 项；原为“M4 发现源方法，M8 映射目标动作/逐步审阅”） | 第二版；DeepAgents 按实需再评估 |
 | 编排/版本/预算 | 现有 `evolve/execution.py`、contracts、release、store | 全部候选复用同一构建—评测—安装流程 | 必需 |
 | 存储 | 内容寻址 JSON、JSONL、模型文件/远端 immutable ref | 本地单控制器可审计、易恢复；无新数据库/消息队列 | 必需 |
 
@@ -29,7 +29,7 @@ Tinker 来自 Thinking Machines Lab。SDK 与 cookbook 可读可用，但训练�
 
 本节保留为第二版设计。首版代码演化/评测/发布/递归不要求 Tinker 账号、teacher 或 GPU trainer；缺训练服务不阻止首版运行。未来选用 Tinker 时才执行以下接入检查。
 
-首个候选底座为 `Qwen3.5-9B`，官方当前列为支持模型；这是工程起点而非性能保证。实施时通过服务实际返回值确认模型 ID、LoRA 能力、上下文和 renderer，再冻结计划。不得仅按字符串相近切换到另一个底座。教师可用现有 GLM-5.3 或其他已授权强模型，身份与学生分开。
+学生底座定为 `Qwen3.5-9B`（2026-10-08，V2 §7 第 6 项），官方当前列为支持模型；这是工程起点而非性能保证。实施时通过服务实际返回值确认模型 ID、LoRA 能力、上下文和 renderer，再冻结计划。不得仅按字符串相近切换到另一个底座。上下文 `max_seq` 定为 32768：用 Qwen3 tokenizer 实测，v4-finance train 的轨迹中位/p90/最大为 14.5k/22.0k/34.7k token，v4-support 为 16.9k/25.6k/32.4k，约 3.1–3.25 字符/token；超长样本排除并计数、不截断，被排除的 Opus 轨迹约 0.7%；生成探针核对服务的上下文长度 ≥ `max_seq`。学生训练和评测都关掉 thinking。教师是配置项（`[teacher]`：任意 provider 或 `module:Class`），由开发者自选、写在计划文件里，身份与学生分开；链路验收用 Claude（V2 §1、§3.7）。
 
 训练路径：建立 LoRA training client → renderer 构造 token/loss mask → `forward_backward` → `optim_step` → 保存可恢复训练状态 → 保存用于 sampling 的权重引用。这些是官方 SDK 的职责边界，不在本项目实现 GPU 集群管理或优化器内核。采样 provider 同时支持未训练底座和候选 adapter，用同一工具消息格式进行 before/after 比较。
 
@@ -37,9 +37,9 @@ Tinker 来自 Thinking Machines Lab。SDK 与 cookbook 可读可用，但训练�
 
 原有 `.decide()` 装载探针仅适用于决策模型。actor 探针检查生成、工具调用解析和模型身份，不进行分类校准；服务 ref 无法查询、格式不能复现或模型不可用时拒绝发布。托管 checkpoint ref 与下载后的 artifact digest 分别记录，不能把可变别名视为冻结权重。
 
-依赖放可选 extra/训练 worker，保持核心安装轻量。当前核心 Python >=3.11；若所锁 SDK 需要更高版本，在独立训练环境声明，不无故提高所有用户门槛。首次实现锁定实测 SDK/renderer 版本及模型 ID，记录到 job manifest；本文不捏造已验证版本号。
+依赖放可选 extra（`[train]`、`[train-jobs]`）/训练 worker，保持核心安装轻量。当前核心 Python >=3.11；若所锁 SDK 需要更高版本，在独立训练环境声明，不无故提高所有用户门槛。首次实现锁定实测 SDK/renderer 版本及模型 ID，记录到 job manifest；本文不捏造已验证版本号。
 
-HF Transformers/PEFT 本地 SFT 是后续替代后端，只有托管限制或本地部署需求成立才接入；不在首轮并行维护两套生成训练栈。不能因 Tinker 未开通而伪造训练成功或静默换后端。
+Tinker 是参考实现，不是唯一后端（2026-10-08）：自托管（如 HF Transformers/PEFT、TRL 或自有集群）由开发者以 `module:Class` trainer 接入（`[train.actor] trainer = "module:Class"`），遵守 actor 产物契约：训练端写出 adapter 和 `manifest.json`（base、tokenizer、renderer、sha256、max_seq），serving 端返回一张 `build_provider` 能构造的表（Tinker 采样或 `openai_compat`），自托管服务唯一的手工一步是 `vllm serve <base> --enable-lora --lora-modules <ref>=<dir>`（V2 §3.3）。v2 不维护第二套生成训练栈。不能因 Tinker 未开通而伪造训练成功或静默换后端；回退到 `module:Class` 必须在配置里显式声明。
 
 ## 3. Harbor 与 DeepAgents 接入准则
 
@@ -58,7 +58,7 @@ DeepAgents 作为依赖调用，既不复制源码也不把现有 Agent 再包�
 | 参考逻辑 | ouroloop 落点 | 本项目必须补齐的边界 |
 |---|---|---|
 | 分析失败、演化源 harness、执行验证，再适配到目标 h | M4/M1/M3；第二版 M8 | 首版允许包内工具/中间件代码及技能/经验，固定核心不变；实际执行与回归验证 |
-| 源工作流、教师私有指导、固定目标 harness 分开 | M0、M8 | 类型化身份、数据分区与许可材料 |
+| 源工作流、教师私有指导、固定目标 harness 分开 | M0、M8 | 类型化身份与数据分区；教师私有指导 K 就是各域 W\* 的 memory 与 skills 原文，用固定模板渲染（没有 W\* 的域为空），不做自动适配；学生在 W0 下行动；评分信息永不进教师输入（2026-10-08，V2 §4.1、§7 第 4 项） |
 | 学生提议，教师 PASS/REPLACE，接受后执行 | M1、M8 | reviewer 插入真实执行前；多工具调用在执行前整组校验/接受 |
 | 原提议、review、接受轨迹分开保存 | M0、M8 | 审计流不进入学生训练或部署 |
 | 成功轨迹的 assistant SFT 与 mask | M2 | 按任务家族划分，保留 exclusion，区分模仿与真值标签 |
@@ -87,7 +87,7 @@ DeepAgents 作为依赖调用，既不复制源码也不把现有 Agent 再包�
 
 该方法没有提供通用“训练完自动生成最小 harness”的编译器；目标 harness 由实现者提供，在一次蒸馏内固定，源 harness 仍可演化。不要把论文结果、任务范围或短代码量视作本项目已具备同等效果。依赖承担的执行和训练工作也是完整系统的一部分。
 
-项目内可直接复用的实现：`policies.py` 的注册/装配、`agent/loop.py` 的工具执行、`evolve/pipeline.py` 的纯 artifact 构建边界、`evolve/execution.py` 的状态机与共享预算、`release.py` 的 preflight/CAS。`research/loop.py` 和 `research/campaign.py` 继续承担自动改进及方法比较，接入新的构建方法；避免平行 registry、release、scheduler 或研究引擎。
+项目内可直接复用的实现：`policies.py` 的注册/装配、`agent/loop.py` 的工具执行、`evolve/pipeline.py` 的纯 artifact 构建边界、`evolve/execution.py` 的状态机与共享预算、`release.py` 的 preflight/CAS。`research/loop.py` 和 `research/campaign.py` 继续承担自动改进及方法比较，接入新的构建方法（2026-10-07：`campaign.py` 的活动内研究位编排随瘦身第二批删除，方法比较改为跨活动 C4，判定代码抽到 `research/recursion.py`，见 DESIGN §7）；避免平行 registry、release、scheduler 或研究引擎。
 
 ## 5. 防止实现膨胀的审查标准
 

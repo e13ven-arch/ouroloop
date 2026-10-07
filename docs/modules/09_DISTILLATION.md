@@ -4,6 +4,8 @@
 
 ## 1. 从可执行源方法到教师参考
 
+（v2，2026-10-08，[V2_TRAINING_PIPELINE](../design/V2_TRAINING_PIPELINE.md) §7 第 4 项与“考虑过、不做”）v2 不做 `adapt_workflow`：教师的私有参考就是 K，即各域 W\* 的 memory 与 skills 原文，用固定模板渲染（没有 W\* 的域为空），以 ref 冻结进 DistillationPlan；学生在 W0 下行动。本节适配规格保留作记录，不在 v2 实现；DS6-01、DS6-09～11 随之不适用。
+
 M4 负责提出和执行验证源工作流；本模块负责把已验证方法适配到学生的目标动作空间，然后组织学生在环采集。SourceWorkflow 引用确切源 release/harness、train 方法说明及实际验证结果；不要求人写优化工作流或教学提示。手工导入只作为可选入口，仍受同一验证约束。`purpose=source_validation` 的 passed 结果即可作为输入，不要求 source 已做生产 dev gate 或已安装；无发布资格不会阻断合规教学适配。第二版的源 h* 在学生 actor（Qwen3.5-9B）上演化并验证（[DESIGN](../DESIGN.md) §2、[ROADMAP](../ROADMAP.md) §3）；首版在 GLM-5.3 上演化的包不直接作为学生的 source。
 
 拟新增窄函数 `adapt_workflow(source_ref, target_harness_ref, adaptation_spec, services, budget, operation) -> reference_ref 或 unsupported/invalid`，放 `distill/teacher.py`。它不是通用代码编译器。适配前固定来源、目标、模板、provider、允许输入和修复次数，逐次生成调用纳入 M5：
@@ -78,7 +80,7 @@ M8 提供 PASS/REPLACE 比例、格式失败、替换动作实际执行率、轨
 | DS6-03 | 教师 PASS 但任务失败；教师理由说成功 | 环境判失败，轨迹不进首版 actor SFT |
 | DS6-04 | 教师返回旧 proposal_ref、缺参数或非法 action | 修复在冻结次数内；未修复则终止，未执行草稿 |
 | DS6-05 | 教师私有标记、学生被拒草稿、oracle 含标记 | 学生历史/SFT/部署都无泄漏，私有审计仍可追踪 |
-| DS6-06 | 全 PASS 与多次 REPLACE 的成功 episode | 两者合格 assistant 动作均可训练，来源可统计（v0.3，2026-10-04 起按 M2 §2 第 5 步改为：只有教师 PASS 的 act 响应是训练目标，REPLACE 的替换响应留在学生历史、只计入 PASS/REPLACE 分布） |
+| DS6-06 | 全 PASS 与多次 REPLACE 的成功 episode | 两者合格 assistant 动作均可训练，来源可统计（v0.3，2026-10-04 曾按 M2 §2 第 5 步改为只训 PASS；v2，2026-10-08 用户决定改回：训练目标为 `accepted`，即 PASS 的 act 响应加 REPLACE 替换响应的动作部分，同 HZ，rationale 不进目标，每个目标记 verdict 以便分开统计；`pass_only` 只作只看 dev 的消融，见 M2 §2 第 5 步、[V2_TRAINING_PIPELINE](../design/V2_TRAINING_PIPELINE.md) §7 第 3 项） |
 | DS6-07 | 到预算上限或教师故障 | 明确 incomplete/failed，支出保留，无假成功 |
 | DS6-08 | 模型安装后下一次 reviewed collect | plan pin 新 W，原轨迹不被改写为新模型产出 |
 | DS6-09 | 已验证 source 自动适配到不同目标工具面 | 生成可核对的动作映射；仅目标动作执行，缺失能力 unsupported |

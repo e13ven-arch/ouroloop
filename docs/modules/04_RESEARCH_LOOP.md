@@ -179,6 +179,8 @@ source validation 的任务清单、尝试次数和成功/回归要求在运行�
 
 适配调用属于活动预算下的准备 operation，输入先冻结，结果按身份复用；失败保留费用，不开始训练。source 验证、适配与蒸馏实验形成 ref 依赖，不用虚构未来 artifact，也不新建一套计划状态机。最终蒸馏 build 可复用完整匹配的 reviewed collection，或调用 M8/M2 采集训练。
 
+（v2，2026-10-08，[V2_TRAINING_PIPELINE](../design/V2_TRAINING_PIPELINE.md) §1、§3.6、§7）v2 不做 `adapt_workflow`：教师读 K，即各域 W\* 的 memory 与 skills 原文（M8 §1 注）。训练条目只由 K 的排程或 CLI（`python -m ouroloop.train`）产生；`LATER_METHODS` 继续对 R 拒绝训练方法，R 提训练条目到 v2.5。上两段保留作记录。
+
 dev 汇总可以提示“完成检查不充分”，但包含 dev 任务事实的上下文不能生成 train guide。选择意图仅投影注册目标、通用失败类别和已有合规 source ref；参考编写重新加载 train/fit 内容，记录实际输入 parents。若无法证明该投影不含任务事实，拒绝训练材料准入，回到 train 诊断。不是把同一对话改名为 train。
 
 ## 4. 一轮逻辑与准入
