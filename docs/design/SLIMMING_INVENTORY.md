@@ -52,6 +52,8 @@
 **对资金安全：全部保留。** 预算根与份额、预留、按 attempt id 续跑、测量复用、五项硬限额、`_verify_bound` 都留下。final 的三处预算检查合并成一处，取最严的规则。
 
 **需要用户拍板的两件事（2026-10-07 按用户反馈改写）。** 两件都只改定位，不动任何已报告的数字。
+
+> **用户已确认（2026-10-07）：** 同意下面的 (a)、(b)，以及冠军指针一族（§0.1 E）按过时删、v2 重写。决策模型在 jev 还是 ouroloop 训练（§0.2 第 12 项）、是否加老师标签路径（第 10 项）留到 v2 设计时定。执行时机不变：support 两份 final 评完、H1 算完之后。
 - **(a) C4（R0/R1 递归）：保留能力，换实现。**
   - 删活动内研究位的编排（≈ 1,500 行）。它在单领域活动里结构上开不了：要求内外两个 gate 各至少 `min_tasks` 题（bench.py:4636-4650），单领域 dev 只有 25 题，一开位就是 `no_slot_pool`；v3/v4/v5 的配置全写 `research_slots = 0`。唯一一次运行（v0.2）两臂封存了同一个 W\*，外层比较没跑。
   - 抽出 `research/recursion.py`（≈ 200 行）：`judge_research`（campaign.py:382-485）、`carries/unused_changes`（:322-348）、`CampaignPair` 的不重叠检查、`discovery` 标签。不抽 `basic.propose_research`：它只服务 v0.1/v0.2 的 note-contract R（experiment.py:396-402），会话 R 没有这条路径。
