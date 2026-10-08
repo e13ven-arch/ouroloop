@@ -1,4 +1,4 @@
-"""Cloud GPU workers (evolve/cloud.py): a RunPod or Vast.ai instance per training job, against fakes of both APIs
+"""Cloud GPU workers (ouroloop/train/jobs/cloud.py): a RunPod or Vast.ai instance per training job, against fakes of both APIs
 (httpx.MockTransport) and a stand-in for ssh and rsync. Nothing reaches a provider, a host or docker."""
 import json
 import re
@@ -11,9 +11,9 @@ import pytest
 from jobs_fixtures import (COMMIT, GPU_RP, GPU_VAST, HF_TOKEN, PREFIX, RUNPOD_KEY, STORE, VAST_KEY, RunPodApi, Ssh,
                            VastApi, a_job, dataset, keys, options)  # noqa: F401 - keys is a fixture
 from ouroloop.train import config as train_config
-from ouroloop.evolve import cloud
+from ouroloop.train.jobs import cloud
 from ouroloop.train.train import train_artifact
-from ouroloop.evolve.train import JobTrainer
+from ouroloop.train.jobs.trainer import JobTrainer
 from ouroloop.train.train import TrainError
 from ouroloop.workspace import Workspace
 

@@ -1,4 +1,4 @@
-"""The training job path (docs/DESIGN.md §2.2, pipeline 2): JobTrainer -> Compute -> python -m ouroloop.worker -> the
+"""The training job path (docs/DESIGN.md §2.2, pipeline 2): JobTrainer -> Compute -> python -m ouroloop.train.jobs.worker -> the
 tde plugin -> TDE, on this machine against a stub TDE checkout, and over a stand-in for ssh; model refs served
 in-process; Hugging Face through a stand-in package. Nothing trains, nothing leaves this machine. Hosts and the
 signature plugin end to end: test_hosts.py."""
@@ -23,10 +23,10 @@ from jobs_fixtures import FAKE_HF, dataset
 from ouroloop.train import config as train_config
 from ouroloop.train.backends import TdeBackend
 from ouroloop.train.backends.http import HttpBackend
-from ouroloop.evolve import compute as compute_module
-from ouroloop.evolve.compute import SEP, Compute
+from ouroloop.train.jobs import compute as compute_module
+from ouroloop.train.jobs.compute import SEP, Compute
 from ouroloop.train.train import check_change, full_recipe, train_artifact
-from ouroloop.evolve.train import CHECKOUT, JobTrainer
+from ouroloop.train.jobs.trainer import CHECKOUT, JobTrainer
 from ouroloop.train.train import DEFAULT_RECIPE, TrainError, TrainJob
 from ouroloop.release import code_version
 from ouroloop.train.serving import Serving
@@ -167,7 +167,7 @@ def left(tmp_path, jobs, name, tag) -> Path:
     spec = tmp_path / "left" / name / "spec.json"
     spec.parent.mkdir()
     spec.write_text(json.dumps({"workspace": tag}))
-    subprocess.run([sys.executable, "-c", "import sys; from ouroloop.evolve.compute import Compute; "
+    subprocess.run([sys.executable, "-c", "import sys; from ouroloop.train.jobs.compute import Compute; "
                     "Compute(None, sys.argv[1]).launch(sys.argv[2], sys.argv[3:-1], sys.argv[-1])",
                     str(jobs), name, str(spec), str(sleeper)], check=True, cwd=CHECKOUT)
     return jobs / name
@@ -442,7 +442,7 @@ def test_over_ssh_status_reads_may_fail_and_no_spec_value_reaches_a_shell(tmp_pa
     assert result.model_id == host.job and result.job["host"] == "user@gpu" and host.polls == 4
     ssh = [a[-1] for a in host.commands if a[0] == "ssh"]
     launch = next(c for c in ssh if "setsid" in c)
-    assert f"jobs/{host.job} " in launch and "setsid nohup sh -c" in launch and "-m ouroloop.worker spec.json" in launch
+    assert f"jobs/{host.job} " in launch and "setsid nohup sh -c" in launch and "-m ouroloop.train.jobs.worker spec.json" in launch
     assert '"$HOME"/.ouroloop/venv/bin/python' in launch        # the worker host init installed there
     assert launch.split(" > /dev/null")[0].endswith(f" {host.job}")    # the job id marks its processes
     for a in host.commands:                             # a dead peer is noticed in about a minute

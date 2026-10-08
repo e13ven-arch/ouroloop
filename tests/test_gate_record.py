@@ -21,7 +21,7 @@ from ouroloop.evolve.pipeline import (default_errors, evolve_model, prepare_mode
                                      research_context)
 from ouroloop.evolve.registry import Registry
 from ouroloop.evolve.replay import EVALUATORS, EvalResult, labelled
-from ouroloop.evolve.train import JobTrainer
+from ouroloop.train.jobs.trainer import JobTrainer
 from ouroloop.train.train import TrainError, TrainResult
 from ouroloop.ledger import CalibrationStore, PromotionConflict, SpecStore
 from ouroloop.points import retry_point, stop_point

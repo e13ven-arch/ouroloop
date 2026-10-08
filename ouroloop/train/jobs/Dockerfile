@@ -2,8 +2,8 @@
 # A training host as an image (docs/TRAINING_HOSTS.md): the same bootstrap.sh as `python -m ouroloop.train host init`,
 # run at build time, and an sshd that the control plane reaches like any host. Build from the ouroloop checkout:
 #
-#   docker build -f docker/worker/Dockerfile -t ouroloop-worker .                   # ouroloop alone
-#   docker build -f docker/worker/Dockerfile --build-arg TRAINERS="tde" \
+#   docker build -f ouroloop/train/jobs/Dockerfile -t ouroloop-worker .             # ouroloop alone
+#   docker build -f ouroloop/train/jobs/Dockerfile --build-arg TRAINERS="tde" \
 #       --build-context sources=../plugin-sources -t ouroloop-worker .              # with plugins
 #
 # TRAINERS names the plugins to install (none by default: a host lacking one gets it by host init before its first
@@ -17,7 +17,7 @@
 #   docker run -d --gpus all -p 2222:22 -e PUBLIC_KEY="$(cat ~/.ssh/id_ed25519.pub)" ouroloop-worker
 #
 # and set [trainer] host = "root@<box>" with ssh_opts = "-p 2222 ...". [trainer.cloud] (RunPod, Vast.ai) runs it per
-# job with the same start script, ouroloop/hosts/start.sh. No secret is in the image: the key, the token and the ssh
+# job with the same start script, ouroloop/train/jobs/hosts/start.sh. No secret is in the image: the key, the token and the ssh
 # host keys arrive when the container starts. A host whose ouroloop differs from the control plane's is initialized again by
 # the trainer, over ssh, before its first job.
 
@@ -48,11 +48,11 @@ RUN --mount=type=bind,from=sources,target=/opt/ouroloop/sources \
         for pair in $SOURCES; do if [ "${pair%%=*}" = "$name" ]; then src="${pair#*=}"; fi; done; \
         args="$args $name${src:+=$src}"; \
     done; \
-    python3 -m ouroloop.hosts pack /opt/ouroloop/init $args; \
+    python3 -m ouroloop.train.jobs.hosts pack /opt/ouroloop/init $args; \
     sh /opt/ouroloop/init/bootstrap.sh /opt/ouroloop/init; \
     rm -rf /opt/ouroloop/init /root/.cache/pip
 
-COPY ouroloop/hosts/start.sh /usr/local/bin/ouroloop-start
+COPY ouroloop/train/jobs/hosts/start.sh /usr/local/bin/ouroloop-start
 RUN chmod +x /usr/local/bin/ouroloop-start
 EXPOSE 22
 CMD ["/usr/local/bin/ouroloop-start"]

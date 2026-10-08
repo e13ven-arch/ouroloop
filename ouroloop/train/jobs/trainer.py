@@ -1,14 +1,9 @@
-"""Trainers turn a built dataset into a new decision model (docs/DESIGN.md §2.2, pipeline 2).
-
-    JobTrainer          a trainer plugin (ouroloop.trainers: tde, signature, ...) as a job (ouroloop/worker.py) on
-                        this machine or on a training host over ssh (compute.py); the model it yields is a ref in
-                        the model store (ouroloop/stores): the job id, or <repo>@<commit> on Hugging Face
-    SignatureTrainer    the signature model trained in this process, for tests and demos (trainers/signature.py)
-
-Any trainer plugs in through the Trainer protocol below: train(job) -> TrainResult, and supports_weights; a plugin
-gets all of the job path for a few functions. A trainer only trains: its model is asked through serving
-(serving.py), by the backend spec on its result. The training data never holds ouroloop's calibration or test
-sessions (build.py).
+"""JobTrainer (docs/DESIGN.md §2.2, pipeline 2): a trainer plugin (ouroloop/train/trainers: tde, signature, ...) as a
+job (worker.py) on this machine, on a training host over ssh (compute.py, hosts/) or on a cloud instance (cloud.py);
+the model it yields is a ref in the model store (ouroloop/train/stores): the job id, or <repo>@<commit> on Hugging
+Face. It implements the Trainer protocol (ouroloop/train/train.py): a plugin gets all of the job path for a few
+functions. A trainer only trains: its model is asked through serving (ouroloop/train/serving.py), by the backend spec on
+its result. The training data never holds ouroloop's calibration or test sessions (ouroloop/train/dataset.py).
 """
 from __future__ import annotations
 
@@ -24,18 +19,18 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 
-from ..ledger import new_id
-from ..train.train import DEFAULT_RECIPE, PATH_KEYS, TrainError, TrainJob, TrainResult
+from ...ledger import new_id
+from ..train import DEFAULT_RECIPE, PATH_KEYS, TrainError, TrainJob, TrainResult
 
 
 # ---------------------------------------------------------------------- a plugin as a job
-CHECKOUT = Path(__file__).resolve().parents[2]      # this ouroloop checkout, whose HEAD each job records
+CHECKOUT = Path(__file__).resolve().parents[3]      # this ouroloop checkout, whose HEAD each job records
 
 
 class JobTrainer:
-    """A trainer plugin (ouroloop.trainers) as a job on this machine or on one host over ssh: the same job either
+    """A trainer plugin (ouroloop/train/trainers) as a job on this machine or on one host over ssh: the same job either
     way, in a new directory <jobs_root>/<job id>/ on that machine with three files, spec.json, train.jsonl and
-    val.jsonl, run by the worker installed there (python -m ouroloop.worker). `host`:
+    val.jsonl, run by the worker installed there (python -m ouroloop.train.jobs.worker). `host`:
 
         None        this machine, under this Python, which imports what this process imports; no host.json
         "local"     this machine, under ~/.ouroloop/venv (`python -m ouroloop.train host init local`)
@@ -75,10 +70,10 @@ class JobTrainer:
                  jobs_root: str = "~/.ouroloop/jobs", store=None, serving=None, deadline_s: float = 28800,
                  poll_s: float = 30, ssh_opts: str = "-o BatchMode=yes", publish_s: float = 900,
                  cloud: dict | None = None, api=None, runner=None, sleep=time.sleep):
-        from ..hosts import PYTHON
-        from ..train.serving import Serving
-        from ..train.stores import make
-        from ..train.trainers import load
+        from .hosts import PYTHON
+        from ..serving import Serving
+        from ..stores import make
+        from ..trainers import load
         from .compute import Compute
         self.name, self.plugin, self.options = plugin, load(plugin), dict(options or {})
         self.supports_weights = bool(getattr(self.plugin, "SUPPORTS_WEIGHTS", False))
@@ -156,8 +151,8 @@ class JobTrainer:
     def _job(self, job: TrainJob, job_id: str, parent: str | None, workspace: str,
              check_only: bool) -> tuple[dict, dict]:
         """The job on the host that self.compute reaches, prepared: launch, wait, its result."""
-        from ..release import code_version
-        from ..worker import git_state
+        from ...release import code_version
+        from .worker import git_state
         spec = {"job": job_id, "version": job.version, "parent": parent, "trainer": self.name,
                 "options": self.options, "recipe": job.recipe, "host": self.host, "jobs_root": self.jobs_root,
                 "deadline_s": self.deadline_s, "publish_s": self.publish_s, "store": self.store.table,
@@ -194,7 +189,7 @@ class JobTrainer:
         exception (so the instance is stopped), and the instance ends its own container after OUROLOOP_TTL_S
         (start.sh): the boot, a host init and the job's deadline, with a margin. Only kill -9 of this process and a
         provider that keeps a stopped container billing outlast both; the next job of the workspace stops those."""
-        from ..hosts import INIT_TIMEOUT_S
+        from .hosts import INIT_TIMEOUT_S
         from . import cloud as clouds
         from .compute import Compute
         name, provider, opts = self.cloud["provider"], self.provider, self.cloud
@@ -353,7 +348,7 @@ class JobTrainer:
         """A host that is not ready for the job is prepared (host init) first; one that cannot be is a TrainError."""
         if self.host is None:
             return
-        from ..hosts import HostError, ensure
+        from .hosts import HostError, ensure
         try:
             ensure(self.host, {self.name: self.options}, self.ssh_opts, self.store, self.runner,
                    say=lambda m: print(f"trainer: {m}", file=sys.stderr))

@@ -26,7 +26,7 @@ REQUIREMENTS: list[str] = []          # TDE brings torch, transformers and the r
 SUPPORTS_WEIGHTS = False
 NEEDS_PARENT = True
 # TDE's recipe keys and their defaults, for an 8 GB GPU: 1024-token states need batch 2 x accumulation 16 plus
-# checkpointing. The framework's own (min_weight, focus, seed, init_from) come on top (evolve/train.py).
+# checkpointing. The framework's own (min_weight, focus, seed, init_from) come on top (train.py).
 RECIPE = {
     "epochs": 3.0, "max_steps": None, "lr_backbone": 2e-5, "lr_head": 1e-4, "batch_size": 2, "grad_accum": 16,
     "max_state_tokens": 1024, "gradient_checkpointing": True, "w_rps": 1.0, "w_perm": 0.3,
@@ -146,7 +146,7 @@ def _host_path(path: str | None, what: str) -> str | None:
 
 def _prepare(spec: dict, job_dir: str) -> tuple[str, str | None]:
     """-> (the TDE config's path, the parent run)."""
-    from ...worker import parent_run
+    from ..jobs.worker import parent_run
     recipe = spec["recipe"]
     parent = parent_run(spec, job_dir)
     cfg = tde_config(recipe, os.path.join(job_dir, "run"), parent, spec["version"])
@@ -162,7 +162,7 @@ def validate(spec: dict, job_dir: str) -> dict:
 
 
 def train(spec: dict, job_dir: str, deadline: float) -> str:
-    from ...worker import run
+    from ..jobs.worker import run
     cfg_path = os.path.join(job_dir, "tde", "config.yaml")
     if not os.path.exists(cfg_path):
         cfg_path, _ = _prepare(spec, job_dir)
@@ -177,7 +177,7 @@ def version() -> str | None:
     import importlib.util
     from pathlib import Path
 
-    from ...worker import git_state
+    from ..jobs.worker import git_state
     try:
         installed = importlib.metadata.version("tde")
     except importlib.metadata.PackageNotFoundError:

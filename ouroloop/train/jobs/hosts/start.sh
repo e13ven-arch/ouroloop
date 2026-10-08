@@ -1,6 +1,6 @@
 #!/bin/sh
 # A training host's startup script (docs/TRAINING_HOSTS.md): the worker image's command, and what a cloud instance runs
-# when it starts on any image (evolve/cloud.py: RunPod as the container's command, Vast.ai as its onstart). It holds
+# when it starts on any image (ouroloop/train/jobs/cloud.py: RunPod as the container's command, Vast.ai as its onstart). It holds
 # no value: everything arrives in the container's environment.
 #
 #   PUBLIC_KEY      authorized for root's ssh
@@ -65,7 +65,7 @@ if [ -n "${HF_TOKEN:-}" ]; then
 fi
 
 if [ -x "$ouro/venv/bin/python" ] && [ -f "$ouro/plan.json" ]; then
-    if "$ouro/venv/bin/python" -m ouroloop.hosts record "$ouro/plan.json" > "$ouro/host.json.tmp"; then
+    if "$ouro/venv/bin/python" -m ouroloop.train.jobs.hosts record "$ouro/plan.json" > "$ouro/host.json.tmp"; then
         mv "$ouro/host.json.tmp" "$ouro/host.json"
     else
         say "could not record host.json; the trainer will run host init"

@@ -10,7 +10,7 @@ import httpx
 import pytest
 
 from ouroloop.train.dataset import DatasetBuild
-from ouroloop.evolve.compute import SEP
+from ouroloop.train.jobs.compute import SEP
 from ouroloop.train.train import DEFAULT_RECIPE, TrainJob
 from ouroloop.release import code_version
 

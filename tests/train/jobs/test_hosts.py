@@ -1,6 +1,7 @@
-"""Training hosts (hosts/, bootstrap.sh) and trainer plugins through the real job path, on this machine: host init and
-check against target "local" in a temporary home, pip stood in for (OUROLOOP_TEST_PIP), so nothing is downloaded;
-the signature plugin from spec.json through `python -m ouroloop.worker` to a trained artifact that serving loads."""
+"""Training hosts (ouroloop/train/jobs/hosts/, bootstrap.sh) and trainer plugins through the real job path, on this
+machine: host init and check against target "local" in a temporary home, pip stood in for (OUROLOOP_TEST_PIP), so
+nothing is downloaded; the signature plugin from spec.json through `python -m ouroloop.train.jobs.worker` to a trained
+artifact that serving loads."""
 import json
 import os
 import subprocess
@@ -12,9 +13,9 @@ import pytest
 from jobs_fixtures import QUESTION, dataset
 from ouroloop.train import config as train_config
 from ouroloop.train.train import train_artifact
-from ouroloop.evolve.train import CHECKOUT, JobTrainer
+from ouroloop.train.jobs.trainer import CHECKOUT, JobTrainer
 from ouroloop.train.train import DEFAULT_RECIPE, TrainError, TrainJob
-from ouroloop.hosts import MANIFEST, read, stale
+from ouroloop.train.jobs.hosts import MANIFEST, read, stale
 from ouroloop.release import code_version
 from ouroloop.train.stores import kind
 from ouroloop.train.cli import main
@@ -173,7 +174,7 @@ def test_a_host_that_cannot_be_initialized_fails_the_build_before_anything_is_us
 
 
 def test_bootstrap_says_what_is_missing_when_it_cannot_install_it(home, tmp_path):
-    from ouroloop.hosts import plan
+    from ouroloop.train.jobs.hosts import plan
     d = plan({}, tmp_path / "init")
     assert sorted(p.name for p in d.iterdir()) == ["bootstrap.sh", "ouroloop.tar.gz", "plan.json", "requirements.txt"]
     bare = tmp_path / "bin"                         # a PATH with a shell and no Python, rsync or git
@@ -186,7 +187,7 @@ def test_bootstrap_says_what_is_missing_when_it_cannot_install_it(home, tmp_path
 
 
 def test_a_local_source_is_sent_and_a_change_to_it_is_a_reason_to_init_again(home, tmp_path):
-    from ouroloop.hosts import fingerprint, plan, source_id
+    from ouroloop.train.jobs.hosts import fingerprint, plan, source_id
     src = tmp_path / "src"
     (src / "pkg").mkdir(parents=True)
     (src / "pkg" / "__init__.py").write_text("x = 1\n")
@@ -226,7 +227,7 @@ def test_a_broken_venv_or_a_failed_plugin_check_is_not_ready(home, tmp_path):
 
 
 def test_a_plugin_check_is_given_its_options_and_a_failing_one_is_recorded(monkeypatch):
-    from ouroloop import hosts
+    from ouroloop.train.jobs import hosts
     from ouroloop.train.trainers import signature
     seen = []
 
@@ -248,7 +249,8 @@ def test_a_stray_file_in_the_package_is_neither_hashed_nor_sent(tmp_path, monkey
     import tarfile
     import tomllib
 
-    from ouroloop import hosts, release
+    from ouroloop.train.jobs import hosts
+    from ouroloop import release
     copy = tmp_path / "checkout"
     shutil.copytree(CHECKOUT / "ouroloop", copy / "ouroloop", ignore=shutil.ignore_patterns("__pycache__"))
     shutil.copy(CHECKOUT / "pyproject.toml", copy / "pyproject.toml")
@@ -263,7 +265,7 @@ def test_a_stray_file_in_the_package_is_neither_hashed_nor_sent(tmp_path, monkey
     with tarfile.open(hosts.pack_ouroloop(tmp_path)) as t:
         sent = {n.split("/", 1)[1] for n in t.getnames()}
     assert sent == {"pyproject.toml"} | {p.relative_to(copy).as_posix() for p in release.package_files()}
-    assert "ouroloop/hosts/start.sh" in sent and not any(n.endswith((".DS_Store", ".swp", ".yaml")) for n in sent)
+    assert "ouroloop/train/jobs/hosts/start.sh" in sent and not any(n.endswith((".DS_Store", ".swp", ".yaml")) for n in sent)
     # pyproject's package-data is PACKAGE_DATA: what pip installs besides the modules
     with open(CHECKOUT / "pyproject.toml", "rb") as f:
         data = tomllib.load(f)["tool"]["setuptools"]["package-data"]
@@ -273,7 +275,7 @@ def test_a_stray_file_in_the_package_is_neither_hashed_nor_sent(tmp_path, monkey
 
 def test_init_over_ssh_sends_one_tar_so_a_host_without_rsync_can_be_prepared(home, tmp_path):
     """user@box: the bundle goes through ssh's stdin, and bootstrap.sh (which installs rsync) runs from it."""
-    from ouroloop.hosts import init
+    from ouroloop.train.jobs.hosts import init
     calls = []
 
     def ssh_here(args, input=None, timeout=None):       # "ssh" to this machine: the command runs in a shell here
@@ -291,7 +293,7 @@ def test_init_over_ssh_sends_one_tar_so_a_host_without_rsync_can_be_prepared(hom
 def _bootstrap_tree(tmp_path, home):
     """A bootstrap plan and a PATH holding only what the script may use: its shell tools, a root `id`, an `apt-get`
     that logs and has no python3.12, and a stub python3 the caller then writes."""
-    from ouroloop.hosts import plan
+    from ouroloop.train.jobs.hosts import plan
     d = plan({}, tmp_path / "init")
     bare = tmp_path / "bin"
     bare.mkdir()
@@ -367,7 +369,7 @@ def test_the_worker_refuses_a_job_made_by_another_ouroloop(tmp_path):
     d.mkdir()
     (d / "spec.json").write_text(json.dumps({"job": d.name, "trainer": "signature", "host": "u@gpu",
                                              "ouroloop": {"code": "0" * 16, "git": None}}))
-    out = subprocess.run([sys.executable, "-m", "ouroloop.worker", "spec.json", d.name], cwd=d, capture_output=True,
+    out = subprocess.run([sys.executable, "-m", "ouroloop.train.jobs.worker", "spec.json", d.name], cwd=d, capture_output=True,
                          text=True, env={**os.environ, "PYTHONPATH": str(CHECKOUT)})
     assert out.returncode == 3 and "run `python -m ouroloop.train host init u@gpu`" in out.stdout
     assert not (d / "result.json").exists()
@@ -397,7 +399,7 @@ def test_a_dir_store_takes_the_jobs_run_directory_and_copies_it_to_its_root_once
         d.mkdir(parents=True)
         (d / "spec.json").write_text(json.dumps({"job": job, "trainer": "elsewhere.trainer", "store": store,
                                                  "deadline_s": 60, "ouroloop": {"code": code_version(), "git": None}}))
-        out = subprocess.run([sys.executable, "-m", "ouroloop.worker", "spec.json", job], cwd=d, capture_output=True,
+        out = subprocess.run([sys.executable, "-m", "ouroloop.train.jobs.worker", "spec.json", job], cwd=d, capture_output=True,
                              text=True, env=env)
         assert out.returncode == code, out.stdout + out.stderr
         assert (d / "result.json").exists() == (code == 0)
@@ -419,7 +421,7 @@ def test_a_plugin_has_the_contract(name):
 
 
 def test_the_signature_plugin_through_the_job_path_to_a_trained_artifact(tmp_path):
-    """spec.json -> python -m ouroloop.worker -> run -> result.json -> the backend by its ref -> the load probe, and
+    """spec.json -> python -m ouroloop.train.jobs.worker -> run -> result.json -> the backend by its ref -> the load probe, and
     the model answers as its ref with what it learned (its key function: test_hosts:says)."""
     jobs = tmp_path / "jobs"
     cfg = {"store": {"type": "dir", "root": str(jobs)},

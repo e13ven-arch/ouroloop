@@ -49,13 +49,14 @@ include = ["ouroloop*"]
 [tool.setuptools.package-data]
 # host init sends bootstrap.sh; images and cloud instances start with start.sh. Keep release.PACKAGE_DATA the same:
 # code_version hashes, and host init sends, the modules and these files only.
-"ouroloop.hosts" = ["bootstrap.sh", "start.sh"]
+"ouroloop.train.jobs.hosts" = ["bootstrap.sh", "start.sh"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # tests import the package and the examples from the checkout, and the shared test modules by name wherever they
-# live: tests/train/ holds the training stack's tests and their fixtures (decision_fixtures)
-pythonpath = [".", "tests", "tests/train"]
+# live: tests/train/ holds the training stack's tests and their fixtures (decision_fixtures, train_fixtures),
+# tests/train/jobs/ the job layer's (jobs_fixtures)
+pythonpath = [".", "tests", "tests/train", "tests/train/jobs"]
 markers = [
     "live: calls a real external API and needs its key",
     "slow: end-to-end in Docker or against the real upstream checkout (about 90 s); run with -m 'not live' before a paid run or a merge",

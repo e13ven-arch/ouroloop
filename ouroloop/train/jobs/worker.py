@@ -1,6 +1,6 @@
 """A training job (docs/DESIGN.md §2.2, pipeline 2), run the same way on this machine and on a training host:
 
-    <python> -m ouroloop.worker spec.json <job id>         in the job's directory, <jobs_root>/<job id>/
+    <python> -m ouroloop.train.jobs.worker spec.json <job id>    in the job's directory, <jobs_root>/<job id>/
 
 (the job id only marks the process, for Compute). The directory holds spec.json, train.jsonl and val.jsonl: the data
 contract every trainer reads (train/dataset.py). The worker is installed on the host (`python -m ouroloop.train host
@@ -52,7 +52,7 @@ def git_state(path) -> dict | None:
 
 def store(spec: dict, job_dir: str):
     """The model store of the job: spec.store, or a "dir" store in the jobs' directory."""
-    from .train.stores import make
+    from ..stores import make
     return make(spec.get("store") or {"type": "dir", "root": os.path.dirname(os.path.abspath(job_dir))})
 
 
@@ -136,8 +136,8 @@ def main(path: str) -> int:
     job_dir = os.path.dirname(os.path.abspath(path))
     with open(path, encoding="utf-8") as f:
         spec = json.load(f)
-    from .release import code_version
-    from .train.trainers import load, version
+    from ...release import code_version
+    from ..trainers import load, version
     mine, want = code_version(), (spec.get("ouroloop") or {}).get("code")
     fix = f"run `python -m ouroloop.train host init {spec.get('host') or 'local'}` from the control plane"
     if mine != want:
@@ -185,5 +185,5 @@ def _result(job_dir: str, result: dict) -> None:
 
 
 if __name__ == "__main__":
-    from ouroloop import worker         # the module plugins import (its Failed), not this __main__ copy of it
+    from ouroloop.train.jobs import worker  # the module plugins import (its Failed), not this __main__ copy of it
     sys.exit(worker.main(sys.argv[1]))

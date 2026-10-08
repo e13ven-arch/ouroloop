@@ -8,7 +8,7 @@ interface:
     running(tag) -> [id]                    the instances named `tag` or <tag>-..., not terminated: a workspace's,
                                             or with <tag>-<job>, one job's
 
-`placed[id]` holds what the card records of an instance: its GPU and its price per hour. The trainer (train.py) runs
+`placed[id]` holds what the card records of an instance: its GPU and its price per hour. The trainer (trainer.py) runs
 the job's lifecycle: boot() waits for ready() and a real ssh answer, and the instance is always stopped.
 
 The API keys come from the environment only (RUNPOD_API_KEY, VAST_API_KEY), are read when a request is made, and go
@@ -26,7 +26,7 @@ from pathlib import Path
 
 import httpx
 
-START = Path(__file__).resolve().parents[1] / "hosts" / "start.sh"
+START = Path(__file__).resolve().parent / "hosts" / "start.sh"
 TIMEOUT_S = 30.0                # one API request
 RETRIES = 4                     # tries of a request that met a 429, a 5xx or a broken connection
 BACKOFF_S = 5.0                 # the wait before a retry when the provider does not say (Vast.ai never does)

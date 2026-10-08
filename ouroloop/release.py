@@ -15,7 +15,7 @@ from .ledger import file_key, locked, now, write_json
 PACKAGE = Path(__file__).resolve().parent
 # The package's files besides its modules that pip installs: pyproject.toml's [tool.setuptools.package-data], which
 # must say the same.
-PACKAGE_DATA = ("hosts/bootstrap.sh", "hosts/start.sh")
+PACKAGE_DATA = ("train/jobs/hosts/bootstrap.sh", "train/jobs/hosts/start.sh")
 
 
 @dataclass(frozen=True)

@@ -3,7 +3,7 @@
 #
 #     sh bootstrap.sh <dir>
 #
-# <dir> is what `python -m ouroloop.train host init` sends (or `python -m ouroloop.hosts pack` writes):
+# <dir> is what `python -m ouroloop.train host init` sends (or `python -m ouroloop.train.jobs.hosts pack` writes):
 # ouroloop.tar.gz, the control plane's own code; the plugins' local sources, <name>.tar.gz; requirements.txt, all of
 # them and the plugins' requirements; plan.json. It installs what is missing of rsync, git, ps and a Python >= 3.11
 # with venv (as root, or with sudo if it is there and needs no password), makes ~/.ouroloop/venv, installs everything
@@ -117,6 +117,6 @@ else
 fi
 
 cp plan.json "$OURO/plan.json"
-"$VENV/bin/python" -m ouroloop.hosts record "$OURO/plan.json" > "$OURO/host.json.tmp"
+"$VENV/bin/python" -m ouroloop.train.jobs.hosts record "$OURO/plan.json" > "$OURO/host.json.tmp"
 mv "$OURO/host.json.tmp" "$OURO/host.json"
 cat "$OURO/host.json"

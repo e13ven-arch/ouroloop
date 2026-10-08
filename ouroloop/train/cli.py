@@ -82,7 +82,7 @@ def cmd_host(args) -> int:
     """`host init|check <target>`: prepare a training host for this ouroloop and the trainer plugins, or say what
     keeps it from running their jobs (docs/TRAINING_HOSTS.md). Plugins and their options come from --trainer and the
     config's [trainer] and [trainers.<name>] tables."""
-    from ..hosts import HostError, init, read, stale
+    from .jobs.hosts import HostError, init, read, stale
     from .stores import kind
     cfg = config.load(args.config) if args.config else {}
     options, table = plugin_options(cfg), cfg.get("trainer") or {}

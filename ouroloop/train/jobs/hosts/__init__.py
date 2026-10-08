@@ -28,7 +28,7 @@ VENV = "~/.ouroloop/venv"
 PYTHON = "~/.ouroloop/venv/bin/python"
 MANIFEST = "~/.ouroloop/host.json"
 BOOTSTRAP = Path(__file__).with_name("bootstrap.sh")
-PACKAGE = Path(__file__).resolve().parents[1]
+PACKAGE = Path(__file__).resolve().parents[3]       # ouroloop/
 CHECKOUT = PACKAGE.parent                   # the ouroloop checkout, when the package is not an installed copy
 SDIST = ("pyproject.toml", "README.md", "LICENSE")
 SKIP = {".git", "__pycache__", ".venv", ".pytest_cache", "node_modules"}
@@ -59,11 +59,11 @@ def manifest(plan: dict | None = None) -> dict:
     (plan.json) with its version, source and check."""
     import platform
 
-    from .. import __version__
-    from ..ledger import now
-    from ..release import code_version
-    from ..train.stores import kind, types
-    from ..train.trainers import load, version
+    from .... import __version__
+    from ....ledger import now
+    from ....release import code_version
+    from ...stores import kind, types
+    from ...trainers import load, version
     plan = plan or {}
     plugins = {}
     for name, info in (plan.get("plugins") or {}).items():
@@ -118,8 +118,8 @@ def _tar(path: Path, prefix: str, root: Path, names: list[str]) -> Path:
 def pack_ouroloop(out: Path) -> Path:
     """This ouroloop as an sdist: pyproject.toml, README.md, LICENSE and the package's files that pip installs,
     exactly the files code_version hashes (release.package_files), so the host runs this code."""
-    from .. import __version__
-    from ..release import package_files
+    from .... import __version__
+    from ....release import package_files
     if not (CHECKOUT / "pyproject.toml").exists():
         raise HostError(f"{PACKAGE} is an installed copy: run host init from an ouroloop checkout")
     names = [n for n in SDIST if (CHECKOUT / n).exists()]
@@ -151,7 +151,7 @@ def plan(trainers: dict, out: str | Path, store=None) -> Path:
     """Write what init sends into `out`: the ouroloop sdist, each local plugin source as <name>.tar.gz,
     requirements.txt (those, and the requirements of the plugins and of `store`, a store or its class), plan.json
     and bootstrap.sh."""
-    from ..train.trainers import load
+    from ...trainers import load
     from ..worker import git_state
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
@@ -177,7 +177,7 @@ def plan(trainers: dict, out: str | Path, store=None) -> Path:
 
 # ---------------------------------------------------------------------- from the control plane
 def _remote(target: str, ssh_opts: str, runner):
-    from ..evolve.compute import Remote
+    from ..compute import Remote
     return Remote(target, ssh_opts, runner)
 
 
@@ -217,7 +217,7 @@ def read(target: str, ssh_opts: str = "-o BatchMode=yes", runner=None) -> dict |
 def stale(m: dict | None, trainers: dict, store=None) -> list[str]:
     """Why a host with manifest `m` cannot run this ouroloop's jobs of `trainers` ({name: options}) that publish to
     `store` (a store or its class); none if it can."""
-    from ..release import code_version
+    from ....release import code_version
     if not m:
         return [f"no {MANIFEST}"]
     why, mine = [], code_version()
@@ -259,7 +259,7 @@ def init(target: str, trainers: dict, ssh_opts: str = "-o BatchMode=yes", store=
             import base64
             import io
 
-            from ..ledger import new_id
+            from ....ledger import new_id
             remote, name = _remote(target, ssh_opts, runner), new_id("init")
             where = f'"$HOME"/.ouroloop/incoming/{name}'
             bundle = io.BytesIO()           # one tar through ssh: the host may have no rsync yet (bootstrap adds it)

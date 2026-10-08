@@ -1,5 +1,5 @@
-"""python -m ouroloop.hosts record <plan.json>                this host's manifest, as JSON (bootstrap.sh, start.sh)
-python -m ouroloop.hosts pack <dir> <name>[=<source>] ...   write what host init sends into <dir> (the worker image
+"""python -m ouroloop.train.jobs.hosts record <plan.json>                this host's manifest, as JSON (bootstrap.sh, start.sh)
+python -m ouroloop.train.jobs.hosts pack <dir> <name>[=<source>] ...   write what host init sends into <dir> (the worker image
                                                              builds from it; standard library only)"""
 from __future__ import annotations
 

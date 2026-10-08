@@ -308,7 +308,7 @@ def test_a_champion_of_another_plugin_is_no_parent(tmp_path):
     """After [trainer] type changes, the champion is another kind of model: the new plugin's first job starts from
     [recipe] init_from (or the plugin's own), not from it. A champion of the same trainer is the parent."""
     from ouroloop.evolve.pipeline import dry_run_model, parent_ref
-    from ouroloop.evolve.train import JobTrainer
+    from ouroloop.train.jobs.trainer import JobTrainer
     rt = workspace(tmp_path)
     assert evolve_model(rt, OracleTrainer("R1", 0.7, knows=SOME))["gate"] == "accepted"
 

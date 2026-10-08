@@ -88,7 +88,7 @@ def build_trainer(cfg: dict, serving=None):
     kind = spec.pop("type")
     if ":" in kind:
         return import_object(kind)(**spec)
-    from ..evolve.train import JobTrainer
+    from .jobs.trainer import JobTrainer
     for key in ("transport", "hf_prefix"):
         spec.pop(key, None)
     options = spec.pop("options", None)

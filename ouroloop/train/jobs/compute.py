@@ -1,7 +1,7 @@
 """Where training jobs run (docs/DESIGN.md §2.2, pipeline 2): this machine, or one host over ssh, the same way. A job
 is a new directory <jobs_root>/<job id>/ holding exactly the files it was given, and one detached process group:
 
-    nohup sh -c '<python> -m ouroloop.worker spec.json "$0" > log 2>&1; echo $? > exit' <job id>
+    nohup sh -c '<python> -m ouroloop.train.jobs.worker spec.json "$0" > log 2>&1; echo $? > exit' <job id>
 
 whose leader's pid is in `pid`; the leader and the worker both carry the job id as their last argument, so a pid that
 now belongs to another process, or to another job, is never taken for this one. The shell line holds only paths a
@@ -22,9 +22,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..train.stores import JOB_ID
+from ..stores import JOB_ID
 
-MARK = "ouroloop.worker spec.json"  # what a job's processes run, followed by the job id as their last argument
+MARK = "ouroloop.train.jobs.worker spec.json"  # what a job's processes run, followed by the job id as their last argument
 TAIL = 40                           # log lines a finished job reports
 SEP = "----ouroloop-log----"
 SSH_TIMEOUT_S = 120                 # the longest one ssh command may take (a status read, a launch, a cancel)

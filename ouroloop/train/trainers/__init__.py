@@ -1,7 +1,7 @@
 """Trainer plugins: what turns a job's data into a model, and loads that model again by its ref.
 
 ouroloop trains decision models of any kind; a plugin is one kind. The framework does the rest the same way for all:
-it builds the data, runs the job on a host (evolve/compute.py, ouroloop/worker.py), publishes the run to the model
+it builds the data, runs the job on a host (jobs/compute.py, jobs/worker.py), publishes the run to the model
 store (stores/: a ref, a job id or <repo>@<commit>), gates, calibrates, deploys and serves the model by its
 ref (serving.py). A plugin is a module with:
 
@@ -14,7 +14,7 @@ ref (serving.py). A plugin is a module with:
     NEEDS_PARENT     optional, default False: it trains from a parent model; a job without one is refused before
                      it starts. The parent is the champion when this plugin trained it, else init_from
     RECIPE           optional: its trainer's recipe keys and their defaults ({} or absent: none), on top of the
-                     framework's (evolve/train.py: min_weight, focus, seed, init_from); research candidates may
+                     framework's (train.py: min_weight, focus, seed, init_from); research candidates may
                      change them, and any other key is refused
     PATH_KEYS        optional: those of its RECIPE keys that name files on the host, which only a person sets
 
@@ -23,7 +23,7 @@ ref (serving.py). A plugin is a module with:
     train(spec, job_dir, deadline) -> the run directory, job_dir/run, which the worker publishes to the store;
                      reads job_dir/train.jsonl and val.jsonl (the examples dataset.py describes) and maps
                      spec["recipe"] to its trainer, starting from worker.parent_run(spec, job_dir); runs any process
-                     through ouroloop.worker.run, which stops it at `deadline`
+                     through ouroloop.train.jobs.worker.run, which stops it at `deadline`
     version() -> str | None             optional: what it trains with, recorded in result.json and host.json
     check(options) -> dict              optional: run by host init after installing, with the plugin's options, e.g.
                      whether a GPU is usable; "ok": False (with "why") keeps the host from being taken as ready

@@ -30,7 +30,7 @@ REQUIRED = ("ouroloop.train", "ouroloop.points")
 # (step 5): off the path as well.
 DECISION_STACK = ("ouroloop.runtime", "ouroloop.evolve.gate", "ouroloop.evolve.registry", "ouroloop.evolve.replay",
                   "ouroloop.evolve.monitor", "ouroloop.evolve.plan", "ouroloop.evolve.build", "ouroloop.evolve.calibrate",
-                  "ouroloop.evolve.train", "ouroloop.evolve.pipeline", "ouroloop.agent.loop", "ouroloop.research.loop",
+                  "ouroloop.evolve.pipeline", "ouroloop.agent.loop", "ouroloop.research.loop",
                   "ouroloop.research.agent", "ouroloop.research.basic")
 
 # Per preset: the smoke's checks (`--phase smoke --checks-only`), the smoke's one attempt, then the baseline phase

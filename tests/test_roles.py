@@ -17,7 +17,7 @@ from ouroloop.evolve.gate import freeze_template, records
 from ouroloop.evolve.pipeline import deploy, deploy_version, evolve_model, parent_ref
 from ouroloop.train.train import full_recipe
 from ouroloop.evolve.plan import decide
-from ouroloop.evolve.train import JobTrainer
+from ouroloop.train.jobs.trainer import JobTrainer
 from ouroloop.train.train import TrainError
 from ouroloop.evolve.registry import Registry
 from ouroloop.ledger import Ledger, PromotionConflict
@@ -270,8 +270,8 @@ STORE = ObjectStore
 
 def test_a_new_store_is_a_new_module_only(tmp_path, monkeypatch, keys):
     from ouroloop.train import stores
-    from ouroloop.evolve import cloud as clouds
-    from ouroloop.hosts import manifest, plan, stale
+    from ouroloop.train.jobs import cloud as clouds
+    from ouroloop.train.jobs.hosts import manifest, plan, stale
     from jobs_fixtures import Ssh, VastApi, a_job, options
     (tmp_path / "more").mkdir()
     (tmp_path / "more" / "objects.py").write_text(OBJECTS)
