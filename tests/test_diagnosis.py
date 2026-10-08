@@ -16,8 +16,8 @@ def run(fake_upstream, tmp_path, tasks, split, *, worker=None):
     bound = P.bind_release(rel, profile="task", services=P.Services(objects), authorization="bootstrap")
     manifest = rsi.run_manifest("base", "base", split, data=splits.hash(), system_release_ref=rel)
     results = Results(tmp_path, rsi.DOMAIN)
-    factory = make_agent_factory(rsi.runtime(tmp_path), worker or rsi.BusinessWorker(), budget=manifest.budget,
-                                 bound=bound, objects=objects)
+    factory = make_agent_factory(rsi.ws(tmp_path), worker or rsi.BusinessWorker(), budget=manifest.budget,
+                                 bound=bound)
     rows = run_tasks(suite, tasks, factory, run=manifest, splits=splits, results=results, release_ref=rel)
     return results, rows, objects
 

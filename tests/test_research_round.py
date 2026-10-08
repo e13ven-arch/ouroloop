@@ -8,6 +8,7 @@ import json
 
 import pytest
 import rsi
+from train_fixtures import PhraseTrainer
 
 from ouroloop import bench, policies as P
 from ouroloop.evolve import contracts as ct
@@ -41,7 +42,7 @@ def test_rl01_a_training_proposal_without_the_input_or_the_labels_does_not_spend
                                                                                             tmp_path):
     cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path, train=True)
     work = bench.improvement(activity, template_ref=plan_ref, provider=rsi.BusinessWorker(),
-                             trainer=rsi.PhraseTrainer())
+                             trainer=PhraseTrainer())
     context, evidence = context_of(activity, work)
     trained = rsi.ScriptedResearcher(carrier="train", min_labels=0)
     result = propose_experiment(context, P.bind_release(activity.releases.active()["release_ref"], profile="task",
@@ -64,7 +65,7 @@ def test_rl01_a_training_proposal_without_the_input_or_the_labels_does_not_spend
 def test_a_training_proposal_with_one_label_class_is_not_a_training_experiment(fake_upstream, tmp_path):
     cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path, train=True)
     work = bench.improvement(activity, template_ref=plan_ref, provider=rsi.BusinessWorker(),
-                             trainer=rsi.PhraseTrainer())
+                             trainer=PhraseTrainer())
     context, _ = context_of(activity, work)
     proposal = ct.ExperimentProposal(owner="worker", hypothesis="train it",
                                      training=({"point": "worker.stop", "feedback_ref": "completion_snapshot@v1",
@@ -205,17 +206,13 @@ def test_rl02_experience_holds_the_improvement_and_the_regression_together(fake_
         release_before=release, release_after=release, tags=("worker.finish",),
         targets=("worker.finish",), open_questions=["the notify_once task regressed"])
     experience_mod.append(activity.root, record)
-    experience_mod.append(activity.root, experience_mod.summary_record(
-        summary_ref=activity.objects.put_json("change", {"text": "fixes the omission, breaks repeat sending"}),
-        source_refs=["experience:x1"], producer_policy_ref="policy:sha256:" + "d" * 64,
-        applicable_to={"targets": ["worker.finish"]}, status="regression",
-        counterexamples=["rsi.notify_once"]))
     entries = experience_mod.read(activity.root)
-    assert experience_mod.requirement_status(entries, "req:rsi.dev_notify_after_update") == "regressed"
-    # both facts are retrievable by the next round, and the retrieval can only narrow
+    # the gain and the regression are one record, retrievable by the next round, and the retrieval can only narrow
     found = retrieve(entries, {"targets": ("worker.finish",), "max_items": 10, "sort": "recency"})
     assert found and found[0]["targets"] == ["worker.finish"]
-    assert retrieve(entries, {"statuses": ("regression",), "max_items": 10}) != []
+    assert found[0]["metrics"]["gain"] == 0.2 and found[0]["regression_rate"] == 0.25
+    assert found[0]["requirements"] == ["req:rsi.dev_notify_after_update"] and not found[0]["installed"]
+    assert retrieve(entries, {"statuses": ("regression",), "max_items": 10}) == []    # no entry carries a status
     assert len(retrieve(entries, {"max_items": 1})) == 1
 
 
@@ -1183,20 +1180,22 @@ def test_pick_best_pins_every_key():
     """M4 §2 (2026-10-05): the pick is the highest net flips at or above the floor whatever the list order; a tie
     goes to the lower mean cost, an unknown cost after a known one, and equal cost to declaration order; below the
     floor nothing is eligible."""
-    from ouroloop.research.session import pick_best
+    from ouroloop.research.session import ScreenSettings, pick_best
+    one, none = ScreenSettings(min_net_flips=1), ScreenSettings(min_net_flips=0)
     rows = [{"candidate": "a", "order": 0, "net_flips": 1, "cost_per_attempt": 0.1},
             {"candidate": "b", "order": 1, "net_flips": 3, "cost_per_attempt": 0.9},
             {"candidate": "c", "order": 2, "net_flips": 3, "cost_per_attempt": 0.2}]
-    assert pick_best(rows, 1)["candidate"] == "c" and pick_best(list(reversed(rows)), 1)["candidate"] == "c"
+    assert pick_best(rows, one)["candidate"] == "c" and pick_best(list(reversed(rows)), one)["candidate"] == "c"
     tie = [{"candidate": "x", "order": 0, "net_flips": 2, "cost_per_attempt": None},
            {"candidate": "y", "order": 1, "net_flips": 2, "cost_per_attempt": 0.5}]
-    assert pick_best(tie, 1)["candidate"] == "y"                    # known cost before unknown
+    assert pick_best(tie, one)["candidate"] == "y"                    # known cost before unknown
     equal = [{"candidate": "p", "order": 1, "net_flips": 2, "cost_per_attempt": 0.5},
              {"candidate": "q", "order": 0, "net_flips": 2, "cost_per_attempt": 0.5}]
-    assert pick_best(equal, 1)["candidate"] == "q"                  # equal: declaration order
-    assert pick_best([{"candidate": "z", "order": 0, "net_flips": 0, "cost_per_attempt": 0.1}], 1) is None
-    assert pick_best([{"candidate": "n", "order": 0, "net_flips": None, "cost_per_attempt": None}], 0) is None
-    assert pick_best([{"candidate": "z", "order": 0, "net_flips": 0, "cost_per_attempt": 0.1}], 0)["candidate"] == "z"
+    assert pick_best(equal, one)["candidate"] == "q"                  # equal: declaration order
+    assert pick_best([{"candidate": "z", "order": 0, "net_flips": 0, "cost_per_attempt": 0.1}], one) is None
+    assert pick_best([{"candidate": "n", "order": 0, "net_flips": None, "cost_per_attempt": None}], none) is None
+    zero = [{"candidate": "z", "order": 0, "net_flips": 0, "cost_per_attempt": 0.1}]
+    assert pick_best(zero, none)["candidate"] == "z"
 
 
 def test_declaration_reasons_require_a_real_difference_against_the_cited_row():
@@ -1472,7 +1471,7 @@ def test_the_proposal_ref_is_read_from_the_admitted_row():
 # ---------------------------------------------------------------------------- second recheck of 2026-10-05
 def test_the_round_keys_native_content_by_the_research_providers_name(fake_upstream, tmp_path, monkeypatch):
     """M4 §1 (2026-10-05, second recheck): the round names the session's provider by the research completion
-    interface's `name` (as agent/loop.py keys native content), so a session run through the Anthropic provider
+    interface's `name` (as the v1 agent/loop.py keyed native content), so a session run through the Anthropic provider
     replays the first reply's blocks on its second call and the round installs; with the bare list it raised."""
     from types import SimpleNamespace
     from test_research_session import FakeAnthropic, anthropic_response
@@ -1679,35 +1678,32 @@ def test_the_ledger_projection_shows_each_domains_gate_outcome_without_dev_task_
 # ---------------------------------------------------------------------------- v0.4 (docs/design/V0_4_PLAN.md)
 from ouroloop.benchmark import TaskResult  # noqa: E402
 from ouroloop.research.experiment import grounding_reasons  # noqa: E402
-from ouroloop.research.session import (ScreenSettings, eligible, passing_sample, passing_sample_v4,  # noqa: E402
-                                       pick_best)
+from ouroloop.research.session import ScreenSettings, eligible, passing_sample, pick_best  # noqa: E402
 
 
 def _passed(tasks):
     return [TaskResult(t, t, "train", 0, "W0", "r", "m", success=True, partial_credit=1.0) for t in tasks]
 
 
-def test_the_v04_passing_sample_is_redrawn_each_round_with_must_not_tasks_first():
+def test_the_passing_sample_is_redrawn_each_round_with_must_not_tasks_first():
     """V0_4_PLAN §1.6 (a): six of the passing train tasks, drawn afresh each round from (order_seed, the round's
     ordinal) — the same round draws the same tasks, another round others — tasks with must-not checks taken first,
-    listed in the frozen order; v0.3's draw (one sample per activity) is unchanged."""
+    listed in the frozen order."""
     order = [f"t{i:02d}" for i in range(20)]
     rows = _passed(order[:16])
     must_not = ("t03", "t11", "t15")
-    draws = [passing_sample_v4(rows, order=order, size=6, seed=1, round_ordinal=r, must_not=must_not) for r in range(4)]
+    draws = [passing_sample(rows, order=order, size=6, seed=1, round_ordinal=r, must_not=must_not) for r in range(4)]
     assert all(len(d) == 6 and set(must_not) <= set(d) and d == sorted(d) for d in draws)
     assert len({tuple(d) for d in draws}) > 1                                   # redrawn per round
-    assert passing_sample_v4(rows, order=order, size=6, seed=1, round_ordinal=2, must_not=must_not) == draws[2]
-    assert set(passing_sample_v4(rows, order=order, size=2, seed=1, round_ordinal=0, must_not=must_not)) <= set(must_not)
-    assert not set(passing_sample_v4(rows, order=order, size=6, seed=1, round_ordinal=0)) - set(order[:16])
-    fixed = [passing_sample(rows, order=order, size=5, seed=1) for _ in range(2)]
-    assert fixed[0] == fixed[1] and len(fixed[0]) == 5                           # v0.3: one sample, every round
+    assert passing_sample(rows, order=order, size=6, seed=1, round_ordinal=2, must_not=must_not) == draws[2]
+    assert set(passing_sample(rows, order=order, size=2, seed=1, round_ordinal=0, must_not=must_not)) <= set(must_not)
+    assert not set(passing_sample(rows, order=order, size=6, seed=1, round_ordinal=0)) - set(order[:16])
 
 
-def test_a_v04_screen_needs_a_fix_and_at_most_one_sample_regression_then_ranks_by_net_flips():
+def test_the_screen_needs_a_fix_and_at_most_one_sample_regression_then_ranks_by_net_flips():
     """V0_4_PLAN §1.6 (b): eligible with ≥ min_fixes fixes and ≤ max_sample_regressions regressions on the passing
-    sample (net flips = fixes − regressions, floor 0), then the highest net flips; under a v0.3 K net flips alone, as
-    before — so a broad change that fixes three and breaks two passes v0.3's screen and not v0.4's."""
+    sample (net flips = fixes − regressions, floor 0), then the highest net flips — so a broad change that fixes
+    three and breaks two is not eligible; without the cap, sample regressions count only through net flips."""
     def screened(name, order, fixes, regressions, cost=0.5):
         failing, sample = [f"f{i}" for i in range(3)], [f"s{i}" for i in range(6)]
         before = {**{t: False for t in failing}, **{t: True for t in sample}}
@@ -1721,10 +1717,9 @@ def test_a_v04_screen_needs_a_fix_and_at_most_one_sample_regression_then_ranks_b
     one_each = screened("even", 3, 1, 1)
     assert eligible(one_each, v04) and one_each["net_flips"] == 0
     assert pick_best([one_each, narrow], v04)["candidate"] == "narrow"           # ranked by net flips
-    v03 = ScreenSettings(passing_sample=5, min_net_flips=1)
-    assert pick_best([broad, narrow, quiet], v03)["candidate"] == "broad"        # v0.3: net flips alone
-    assert pick_best([broad, narrow, quiet], 1) == pick_best([broad, narrow, quiet], v03)
-    assert not v03.v04 and v04.v04 and v03.to_json() == {"passing_sample": 5, "min_net_flips": 1}
+    uncapped = ScreenSettings(passing_sample=6, min_net_flips=0, min_fixes=1)
+    assert [eligible(s, uncapped) for s in (broad, narrow, quiet)] == [True, True, False]
+    assert pick_best([broad, narrow, quiet], uncapped)["candidate"] == "broad"   # a tie on net flips: declaration order
 
 
 def test_grounding_needs_a_failed_read_among_the_predicted_tasks_and_one_passing_read():
@@ -1737,6 +1732,25 @@ def test_grounding_needs_a_failed_read_among_the_predicted_tasks_and_one_passing
     assert len(missing) == 2 and "failed trajectory" in missing[0] and "['a', 'b']" in missing[0]
     assert "passing trajectory" in missing[1]
     assert grounding_reasons(decl, {"failing": ["a"], "passing": [], **{**floors, "passing_listed": False}}) == []
+
+
+def test_admission_reads_the_floors_against_the_hosts_read_record():
+    """V0_4_PLAN §1.3 (review 2026-10-06): what admission's backstop checks (grounding_inputs) is the host's record
+    of the session's reads with K's floors, and whether a passing attempt was listed; a floor of 0 is met by no read
+    (P1 step 6: no separate path for it), and without a reader there is nothing to check."""
+    from types import SimpleNamespace
+    from ouroloop.research.session import SessionLimits, grounding_inputs
+    reader = SimpleNamespace(read_tasks=lambda: {"failing": ["a"], "passing": []})
+    floors = SessionLimits(min_failing_reads=1, min_passing_reads=1)
+    reads = grounding_inputs(SimpleNamespace(limits=floors, trajectories=reader), [{"outcome": "passing"}])
+    assert reads == {"failing": ["a"], "passing": [], "min_failing": 1, "min_passing": 1, "passing_listed": True}
+    assert declaration_reasons({"predicted_affected": ["a"]}, reads=reads)[0].startswith("ungrounded: the session "
+                                                                                        "read 0 passing")
+    assert len(declaration_reasons({"predicted_affected": ["b"]}, reads=reads)) == 2
+    none = grounding_inputs(SimpleNamespace(limits=SessionLimits(), trajectories=reader), [{"outcome": "passing"}])
+    assert none["min_failing"] == none["min_passing"] == 0
+    assert declaration_reasons({"predicted_affected": ["b"]}, reads=none) == []
+    assert grounding_inputs(SimpleNamespace(limits=floors, trajectories=None), []) is None
 
 
 def test_an_ungrounded_finish_is_refused_in_the_session_and_admission_is_the_backstop(fake_upstream, tmp_path,

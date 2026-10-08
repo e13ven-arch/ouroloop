@@ -32,7 +32,7 @@ def test_it6_11_the_export_runs_a_task_from_a_clean_directory(fake_upstream, tmp
     deps = app.describe()["dependencies"]
     assert deps["model_service"]["provider"] == "rsi:BusinessWorker" and deps["model_service"]["offline"] is False
     suite = rsi.suite(fake_upstream)
-    make = app.agent_factory(rsi.runtime(tmp_path / "run"), budget=rsi.run_manifest("app", "app", "dev").budget)
+    make = app.agent_factory(rsi.ws(tmp_path / "run"), budget=rsi.run_manifest("app", "app", "dev").budget)
     task = suite.tasks["rsi.dev_notify_after_update"]
     episode = suite.episode(task.task_id)
     agent = make(episode, task, task.system)
@@ -80,8 +80,8 @@ def test_er6_14_a_code_package_ships_its_run_bundle_and_not_its_tests(tmp_path):
     # its code runs only in an isolated worker: a plain subprocess is refused unless a test says otherwise
     from ouroloop.agent.worker import RUNNER, ProcessWorker
     with pytest.raises(P.BindError, match="not an isolated one"):
-        app.agent_factory(rsi.runtime(tmp_path / "rt"), budget=None, provider=object(), worker=ProcessWorker(for_tests=True))
-    assert app.agent_factory(rsi.runtime(tmp_path / "rt"), budget=None, provider=object(), worker=ProcessWorker(for_tests=True),
+        app.agent_factory(rsi.ws(tmp_path / "rt"), budget=None, provider=object(), worker=ProcessWorker(for_tests=True))
+    assert app.agent_factory(rsi.ws(tmp_path / "rt"), budget=None, provider=object(), worker=ProcessWorker(for_tests=True),
                              allow_unqualified_worker=True)
     # and only in one whose runner is this host's: an image built from another worker_runner.py is refused with the
     # command that rebuilds it (M1 §1 默认 agent 即种子包), while one running the host's runner serves
@@ -96,8 +96,8 @@ def test_er6_14_a_code_package_ships_its_run_bundle_and_not_its_tests(tmp_path):
         def command(self):
             return [sys.executable, "-I", str(other)]
     with pytest.raises(P.BindError, match="cannot serve this host: .* rebuild the image: docker build"):
-        app.agent_factory(rsi.runtime(tmp_path / "rt"), budget=None, provider=object(), worker=Stale(for_tests=True))
-    assert app.agent_factory(rsi.runtime(tmp_path / "rt"), budget=None, provider=object(), worker=Isolated(for_tests=True))
+        app.agent_factory(rsi.ws(tmp_path / "rt"), budget=None, provider=object(), worker=Stale(for_tests=True))
+    assert app.agent_factory(rsi.ws(tmp_path / "rt"), budget=None, provider=object(), worker=Isolated(for_tests=True))
 
 
 def test_er6_06_a_local_path_in_a_prompt_refuses_the_export(tmp_path):

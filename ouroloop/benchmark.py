@@ -432,7 +432,7 @@ class RunManifest:
     because it is part of what was configured.
     """
     candidate: str                            # the version being run: "base", "prompt_best", a registry version
-    role: str                                 # base / prompt_best / evolved / frontier_a / frontier_b
+    role: str                                 # base / prompt_best / evolved (frontier_a/_b: v0.4 records)
     split: str                                # which split this run read
     model: dict                               # provider, model, effort, sampling, fallback
     prompt_hash: str = ""

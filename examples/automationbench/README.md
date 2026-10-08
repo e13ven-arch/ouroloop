@@ -19,7 +19,9 @@ Into the environment ouroloop runs in:
 | `openai` | importing `automationbench.tools` at all: the package eagerly imports the Zapier tool registry, and one of those modules imports the OpenAI client at module level. No call is made to it. |
 | `verifiers` | optional. Upstream's `runner` and `create_rubric` live behind it. Without it the adapter uses its own copies of `strip_none_values` and `compute_allowed_services` and says so; with it, `--phase smoke` checks those copies and the rubric entry point against upstream's. |
 
-`ouroloop bench --phase smoke --checks-only` calls no model and prints exactly what is missing.
+`ouroloop bench --phase smoke --checks-only` calls no model and prints exactly what is missing. For a first
+activity, start from `quickstart.toml`: a new workspace (`workspace-quickstart`) with nothing frozen yet, so it
+touches no existing record (the root README's quick start).
 
 ## What the smoke phase establishes
 
@@ -48,7 +50,8 @@ reported as zero.
 
 ## The later phases
 
-`baseline`, `collect`, `improve`, `research`, `evaluate` and `report` are implemented and wired to the same driver.
+`baseline`, `improve`, `research`, `evaluate` and `report` are implemented and wired to the same driver (the
+separate `collect` phase was removed in slimming batch 1; it is on tag `archive-2026-10-08`).
 Three of them run against frozen plans rather than config settings — a development task plan, a campaign plan and a
 sealed finalization plan — which are objects in the workspace named under `[rsi]`. The task plan and the final plan (with the schedule and
 the budget) are frozen by `ouroloop freeze --config ...` from the config's `[freeze.*]` tables, which prints the

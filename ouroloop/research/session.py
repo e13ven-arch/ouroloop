@@ -47,8 +47,8 @@ class SessionLimits:
 
     v0.4 (docs/design/V0_4_PLAN.md §1.3): two floors admission checks against the host's read records —
     `min_failing_reads` failed trajectories among a candidate's predicted_affected tasks, `min_passing_reads` passing
-    trajectories in the session. 0 is no check: a K frozen before them (v0.3) has neither key and keeps v0.3's
-    admission, and to_json leaves a 0 out so its caps read as they did."""
+    trajectories in the session. A floor of 0 asks for no read (the session's text then states no read rule), and
+    to_json leaves a 0 out."""
     max_turns: int = 40
     max_edits: int = 24
     max_trajectory_bytes: int = 65536
@@ -74,19 +74,15 @@ class ScreenSettings:
     """The train-side screen's numbers (M4 §2 train 侧筛选): how many passing train tasks join every candidate's
     screen, and the least net flips that pay the dev gate.
 
-    v0.4 (docs/design/V0_4_PLAN.md §1.6, M4 §2 v0.4): `max_sample_regressions` (a cap) and `min_fixes` (a floor). With
-    the cap set, the screen is v0.4's — the passing sample redrawn every round with must-not tasks first
-    (passing_sample_v4), and a candidate eligible only with at least `min_fixes` fixes and at most
-    `max_sample_regressions` regressions on the sample — so the harm a broad change does on passing tasks is seen
-    before the gate is paid. A K frozen before them has neither key: the fixed sample and net flips alone, as in v0.3."""
+    v0.4 (docs/design/V0_4_PLAN.md §1.6, M4 §2 v0.4): the passing sample is redrawn every round with must-not tasks
+    first (passing_sample), and a candidate is eligible only with at least `min_fixes` fixes (a floor) and at most
+    `max_sample_regressions` regressions on the sample (a cap; None: no cap) — so the harm a broad change does on
+    passing tasks is seen before the gate is paid. (v0.3's one fixed sample and net flips alone are at tag v0.3.0;
+    P1 step 6.)"""
     passing_sample: int = 5
     min_net_flips: int = 1
     min_fixes: int = 0
     max_sample_regressions: int | None = None
-
-    @property
-    def v04(self) -> bool:
-        return self.max_sample_regressions is not None
 
     def to_json(self) -> dict:
         out = {"passing_sample": self.passing_sample, "min_net_flips": self.min_net_flips}
@@ -376,7 +372,7 @@ class CodingSession:
                  trajectories: TrajectoryReader | None = None, note_refs=(), provider: str = "llm", tools=TOOLS):
         self.turn, self.work, self.limits, self.k = turn, work, limits, max(int(k), 1)
         self.tools = tuple(tools)
-        # the name a reply's native content is kept under, as agent/loop.py keys it ({provider.name: content}): the
+        # the name a reply's native content is kept under, as the v1 agent/loop.py keyed it ({provider.name: content}): the
         # provider replays its own content on the next turn (providers/anthropic.to_anthropic reads it by name)
         self.provider = provider
         self.system, self.inputs, self.trajectories = system, inputs, trajectories
@@ -601,9 +597,8 @@ class CodingSession:
         candidate the session's reads do not ground is the finish call's error — R reads and finishes again within its
         caps — rather than a refusal at admission after the session is gone. Only the first finish: a revision changes
         files, never the declaration, and the reads only grow. Admission checks the same record as the backstop.
-        "" when K sets no floor, there is no reader, or every candidate is grounded."""
-        if self.declarations or self.trajectories is None or not candidates or \
-                not (self.limits.min_failing_reads or self.limits.min_passing_reads):
+        "" when there is no reader or every candidate is grounded (a floor of 0 is met by no read)."""
+        if self.declarations or self.trajectories is None or not candidates:
             return ""
         from .experiment import grounding_reasons
         reads = {**self.trajectories.read_tasks(), "min_failing": self.limits.min_failing_reads,
@@ -652,11 +647,11 @@ class CodingSession:
 
 def _calls_of(reply) -> list[ToolCall]:
     """The tool calls of a reply: the provider's own, else one written as JSON in the text ({"tool", "args"} or
-    {"tool_calls": [...]}) for a provider that answers in text only (the manual provider's hand-written replies).
+    {"tool_calls": [...]}) for a provider that answers in text only.
     A provider whose replies carry their own content (`native`: the Anthropic API) has native tool use, so its
     text is never read as a call: the replayed content would hold no tool_use for the tool_result that followed,
     which the API refuses — such a reply gets the session's nudge instead."""
-    # Every provider answers with ToolCall objects (anthropic, openai_compat, claude_code, manual); nothing else is
+    # Every provider answers with ToolCall objects (anthropic, openai_compat, claude_code); nothing else is
     # read as a structured call.
     calls = [c for c in getattr(reply, "tool_calls", None) or () if isinstance(c, ToolCall)]
     if calls or getattr(reply, "native", None) is not None:
@@ -829,17 +824,8 @@ def dev_failure_histogram(results, pool, *, split: str = "dev") -> dict:
             "attempts": attempts}
 
 
-def passing_sample(rows, *, order, size: int, seed: int) -> list[str]:
-    """The round's fixed passing sample (M4 §2): the train tasks the latest measurement passed, in the frozen split
-    order, drawn with the plan's order_seed; the same list for every candidate of the round."""
-    passed = [t for t in order if any(r.task_id == t and r.validity == "valid" and r.success for r in rows)]
-    rng = random.Random(seed)
-    rng.shuffle(passed)
-    return sorted(passed[:max(int(size), 0)], key=lambda t: order.index(t) if t in order else len(order))
-
-
-def passing_sample_v4(rows, *, order, size: int, seed: int, round_ordinal: int, must_not=()) -> list[str]:
-    """The round's passing sample under the v0.4 screen (docs/design/V0_4_PLAN.md §1.6, M4 §2 v0.4): `size` train tasks
+def passing_sample(rows, *, order, size: int, seed: int, round_ordinal: int, must_not=()) -> list[str]:
+    """The round's passing sample (docs/design/V0_4_PLAN.md §1.6, M4 §2 v0.4): `size` train tasks
     the latest measurement passed, drawn afresh every round — the generator is seeded by the plan's order_seed and the
     scope's diagnosis ordinal, so a rerun of the round draws the same tasks and the next round other ones — taking the
     tasks with must-not checks (`must_not`) first, then the rest; listed in the frozen split order. v0.3 drew one
@@ -866,8 +852,8 @@ def screen_counts(entry: dict) -> tuple[int, int]:
 
 
 def eligible(entry: dict, screen: ScreenSettings) -> bool:
-    """Whether a screened candidate may pay the dev gate: a reading, net flips at or above `min_net_flips`, and under
-    the v0.4 screen at least `min_fixes` fixes and at most `max_sample_regressions` regressions on the passing sample."""
+    """Whether a screened candidate may pay the dev gate: a reading, net flips at or above `min_net_flips`, at least
+    `min_fixes` fixes and, with the cap set, at most `max_sample_regressions` regressions on the passing sample."""
     if entry.get("net_flips") is None or entry["net_flips"] < screen.min_net_flips:
         return False
     fixes, regressions = (entry["fixes"], entry["sample_regressions"]) if "fixes" in entry else screen_counts(entry)
@@ -881,12 +867,10 @@ def net_flips(before: dict, after: dict) -> int:
     return sum(1 for t in shared if after[t] and not before[t]) - sum(1 for t in shared if before[t] and not after[t])
 
 
-def pick_best(screened: list[dict], min_net_flips: int | ScreenSettings) -> dict | None:
+def pick_best(screened: list[dict], screen: ScreenSettings) -> dict | None:
     """The one candidate that pays the dev gate: among the eligible (`eligible`: net flips at or above min_net_flips,
-    and under the v0.4 screen ≥ min_fixes fixes and ≤ max_sample_regressions sample regressions) the highest net
-    flips, ties to the lower mean cost (an unknown cost sorts after a known one), then to declaration order. A bare
-    number is the v0.3 call: net flips alone."""
-    screen = min_net_flips if isinstance(min_net_flips, ScreenSettings) else ScreenSettings(min_net_flips=min_net_flips)
+    ≥ min_fixes fixes and ≤ max_sample_regressions sample regressions) the highest net flips, ties to the lower mean
+    cost (an unknown cost sorts after a known one), then to declaration order."""
     ok = [s for s in screened if eligible(s, screen)]
     if not ok:
         return None
@@ -1384,16 +1368,13 @@ def run_session_round(ctx, budget) -> ct.RoundResult:
                 return ended("inconclusive", ("infrastructure: no candidate had a valid screen reading, the screen "
                                               "attempts were lost (refill included): " + why)[:300])
             return ended("invalid", ("no candidate had a valid screen reading: " + why)[:300], "none")
-        if inputs.screen.v04:
-            # V0_4_PLAN §1.6: the rule and each candidate's fixes and sample regressions, so the record says why
-            return ended("screened_out", (f"no candidate was eligible (≥{inputs.screen.min_fixes} fixes, "
-                                          f"≤{inputs.screen.max_sample_regressions} sample regressions, net flips "
-                                          f"≥{inputs.screen.min_net_flips}): " + "; ".join(
-                f"{s['candidate'].rpartition('/')[2]} fixes {s.get('fixes')} sample regressions "
-                f"{s.get('sample_regressions')}" for s in screened))[:300], "none")
-        return ended("screened_out", "no candidate reached the screen's min_net_flips "
-                                     f"{inputs.screen.min_net_flips}: " + "; ".join(
-                         f"{s['candidate'].rpartition('/')[2]} {s['net_flips']}" for s in screened)[:250], "none")
+        # V0_4_PLAN §1.6: the rule and each candidate's fixes and sample regressions, so the record says why
+        cap = inputs.screen.max_sample_regressions
+        return ended("screened_out", (f"no candidate was eligible (≥{inputs.screen.min_fixes} fixes, "
+                                      f"{'any' if cap is None else f'≤{cap}'} sample regressions, net flips "
+                                      f"≥{inputs.screen.min_net_flips}): " + "; ".join(
+            f"{s['candidate'].rpartition('/')[2]} fixes {s.get('fixes')} sample regressions "
+            f"{s.get('sample_regressions')}" for s in screened))[:300], "none")
     chosen = next(c for c in admitted if c["id"] == best["candidate"])
     result = _execute_admitted(ctx, chosen["admission"], chosen["proposal"], before, root, budget, requirements=(),
                                experiment_id=chosen["experiment_id"])
@@ -1409,11 +1390,11 @@ def _reach_counts(report: dict) -> dict:
 
 
 def grounding_inputs(inputs: "SessionInputs", listed) -> dict | None:
-    """What admission's read floors are checked against (V0_4_PLAN §1.3, M4 §1 v0.4), or None when K sets none: the
-    session's reads by outcome (TrajectoryReader.read_tasks), the floors, and whether a passing attempt was listed at
-    all (with none listed the passing floor cannot be met and is not asked)."""
+    """What admission's read floors are checked against (V0_4_PLAN §1.3, M4 §1 v0.4), or None without a reader: the
+    session's reads by outcome (TrajectoryReader.read_tasks), the floors (0: no read asked), and whether a passing
+    attempt was listed at all (with none listed the passing floor cannot be met and is not asked)."""
     limits = inputs.limits
-    if not (limits.min_failing_reads or limits.min_passing_reads) or inputs.trajectories is None:
+    if inputs.trajectories is None:
         return None
     return {**inputs.trajectories.read_tasks(), "min_failing": limits.min_failing_reads,
             "min_passing": limits.min_passing_reads,

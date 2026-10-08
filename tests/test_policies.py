@@ -1,12 +1,13 @@
 """M1 acceptance (docs/modules/01_POLICY_RUNTIME.md §5) for the parts that need no agent run, plus the release
 authorisation of CT-05 / CT-06."""
 import pytest
+import rsi
 
 from ouroloop import policies as P
 from ouroloop.evolve import contracts as ct
-from ouroloop.points import business_stop_view
-from ouroloop.release import NotAuthorized, Releases, resolve_profile
-from ouroloop.types import Answer, Request
+from ouroloop.train.views import business_stop_view
+from ouroloop.release import NotAuthorized, Releases
+from ouroloop.train.types import Answer, Request
 
 
 class ScriptedBackend:
@@ -106,7 +107,7 @@ def test_a_worker_set_refuses_a_research_policy(tmp_path):
 # ---------------------------------------------------------------------------- binding
 def test_the_prompt_is_composed_in_a_fixed_order_and_hashed(tmp_path):
     objects = ct.Objects(tmp_path)
-    releases, rel = P.bootstrap_workspace(tmp_path, objects=objects)
+    releases, rel = rsi.bootstrap_workspace(tmp_path, objects=objects)
     bound = P.bind_release(rel, profile="task", services=P.Services(objects))
     final, record = bound.system_prompt("BASE PROMPT")
     assert final.startswith("BASE PROMPT") and P.FINISH_CHECK in final
@@ -121,7 +122,7 @@ def test_a_model_policy_proposes_and_abstains_below_its_threshold(tmp_path):
     services = P.Services(objects, serving=Serving(backend))
     w = P.replace_policies(objects, P.default_worker_set(objects),
                            [model_policy(objects, threshold=0.8, source="calibration:v1")])
-    releases, rel = P.bootstrap_workspace(tmp_path, objects=objects, worker_ref=w)
+    releases, rel = rsi.bootstrap_workspace(tmp_path, objects=objects, worker_ref=w)
     bound = P.bind_release(rel, profile="task", services=services)
     action, why = bound.stop.propose({"task_text": "requirements", "final_message": "done", "tool_events": []})
     assert action == "abstain" and "below" in why
@@ -133,7 +134,7 @@ def test_pr04_a_model_that_answers_as_another_model_fails_preflight(tmp_path):
     objects = ct.Objects(tmp_path)
     services = P.Services(objects, serving=Serving(ScriptedBackend(model="m-2")))
     w = P.replace_policies(objects, P.default_worker_set(objects), [model_policy(objects, model_id="m-1")])
-    releases, rel = P.bootstrap_workspace(tmp_path, objects=objects, worker_ref=w)
+    releases, rel = rsi.bootstrap_workspace(tmp_path, objects=objects, worker_ref=w)
     with pytest.raises(P.BindError, match="answers as"):
         P.bind_release(rel, profile="task", services=services)
 
@@ -142,7 +143,7 @@ def test_a_model_that_cannot_load_is_never_swapped_for_the_default(tmp_path):
     objects = ct.Objects(tmp_path)
     services = P.Services(objects, serving=Serving(ScriptedBackend()))
     w = P.replace_policies(objects, P.default_worker_set(objects), [model_policy(objects, model_ref="missing")])
-    releases, rel = P.bootstrap_workspace(tmp_path, objects=objects, worker_ref=w)
+    releases, rel = rsi.bootstrap_workspace(tmp_path, objects=objects, worker_ref=w)
     with pytest.raises(P.BindError, match="could not be loaded"):
         P.bind_release(rel, profile="task", services=services)
 
@@ -153,9 +154,9 @@ def test_a_serving_failure_at_ask_time_is_a_declared_fallback(tmp_path):
             raise TimeoutError("model server timed out")
 
     objects = ct.Objects(tmp_path)
-    services = P.Services(objects, serving=Serving(Broken()), probe_models=False)
+    services = P.Services(objects, serving=Serving(Broken()))     # the identity probe fails: reported as unknown
     w = P.replace_policies(objects, P.default_worker_set(objects), [model_policy(objects)])
-    releases, rel = P.bootstrap_workspace(tmp_path, objects=objects, worker_ref=w)
+    releases, rel = rsi.bootstrap_workspace(tmp_path, objects=objects, worker_ref=w)
     bound = P.bind_release(rel, profile="task", services=services)
     action, why = bound.stop.propose({"task_text": "t", "tool_events": []})
     assert action == "abstain" and "unavailable" in why
@@ -189,21 +190,10 @@ def test_the_business_view_refuses_unknown_parameters():
         business_stop_view({"task_text": "x"}, {"include_rubric": True})
 
 
-# ---------------------------------------------------------------------------- CT-05 / CT-06
-def test_ct05_a_workspace_with_both_pointers_needs_an_explicit_profile(tmp_path):
-    objects = ct.Objects(tmp_path)
-    P.bootstrap_workspace(tmp_path, objects=objects)
-    (tmp_path / "models").mkdir()
-    (tmp_path / "models" / "champion.json").write_text('{"version": "m_0001", "history": []}', encoding="utf-8")
-    with pytest.raises(ValueError, match="name the profile"):
-        resolve_profile(tmp_path, None)
-    assert resolve_profile(tmp_path, "task") == "task"
-    assert resolve_profile(tmp_path, "legacy") == "legacy"
-
-
+# ---------------------------------------------------------------------------- CT-06 (CT-05, a legacy champion beside a release, went with the champion pointer)
 def test_ct06_a_permit_evaluates_but_never_installs_or_opens_a_session(tmp_path):
     objects = ct.Objects(tmp_path)
-    releases, parent = P.bootstrap_workspace(tmp_path, objects=objects)
+    releases, parent = rsi.bootstrap_workspace(tmp_path, objects=objects)
     candidate = P.replace_policies(objects, objects.load(parent, ct.SystemRelease).worker_ref,
                                    [P.descriptor(objects, "worker.system_prompt", "prompt", {"text": "check all"})])
     plan_ref = objects.put_json("change", {"plan": "dev-1"})

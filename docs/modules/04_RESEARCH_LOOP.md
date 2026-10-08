@@ -1,7 +1,8 @@
 # M4：自动发现、实验选择与经验循环
 
-> 首版必需：从任务反馈自动演化能力包代码/材料，并改进和回用 R。复用 `research/agent.py`、`basic.py`、`context.py`、`experiment.py`、`loop.py`、`evolve/experience.py`；第二版再接 actor 蒸馏/controller 新训练，不新增研究服务或调度器。
+> 首版必需：从任务反馈自动演化能力包代码/材料，并改进和回用 R。复用 `research/agent.py`、`basic.py`、`context.py`、`experiment.py`、`loop.py`、`evolve/experience.py`（2026-10-08 瘦身第一批：`research/agent.py`、`ask.py`、`basic.BasicResearcher` 与 `loop.py` 里的旧决策研究轮已删）；第二版再接 actor 蒸馏/controller 新训练，不新增研究服务或调度器。
 > v0.3（2026-10-04，[DESIGN](../DESIGN.md) v0.7）：R 的汇总步从“一次 JSON 回复给一个 patch”改为 worker 内对包目录的一次有界编码会话（每轮一次，修订续写同一会话），每轮至多 k 个带声明的候选，先过 train 侧筛选再付 dev gate；引擎自有的简单台账进入 E，准入拒绝重复的 (mechanism, site)；R 的输入增加原始 train 轨迹（只读、限字节）、dev 失败类型直方图与台账投影。失败摘要、逐题笔记、草稿检查、冻结与准入不变。考虑过、不做（v0.3）：成功侧摘要、每段至少一个代码候选、逐题 TRUE FIX/TRUE REGRESSION/STOCHASTIC 标签与预测记分（各在所属小节写明原因）；组件归因与淘汰推迟到第二版（§5）。依据：v0.1/v0.2 装入的两个改动都是文字提醒，13 个候选无一改工具或代码，R 的笔记里 26 条建议 before_tool（[ROADMAP §3](../ROADMAP.md) 第 2a 步第 9 项）；业界报出更大留出增益的框架都改 loop 与工具，且提案者读原始轨迹（[SURVEY §4](../SURVEY_RSI_FRAMEWORKS.md) 第 2、3、5、6、7 项）。本文新增或修改的规则逐条标“（v0.3，2026-10-04）”。
+> 2026-10-08（瘦身第一批，分支 `slim/1`，[PLAN](../PLAN.md) P1 第 6 步）：v0.3 的筛选与准入兼容代码已删，tag `archive-2026-10-08` 上可读。包括 v0.3 的固定通过样本（`passing_sample_v4` 改名为 `passing_sample`）、`ScreenSettings.v04` 开关、`pick_best` 的 int 路径、`_ungrounded` 与 `grounding_inputs` 里 floors=0 的短路（下限为 0 时不读也算满足），以及 `session_inputs` 的 v0.3 分支。所以 v0.3 的 K（`workspace-claude-v3`）只能在 tag `v0.3.0` 上续跑；下文 §2 里 v0.3 筛选的条文是历史写法。
 > v0.5（2026-10-07 合入；2026-10-08 现状，[V0_5_PLAN](../design/V0_5_PLAN.md)）：经验库与 R 的研究剧本见 §5 末“经验库与 R 的研究剧本”；§2 末加了写工具与统一 effort 的注。方法库（`research/methods.py`、`research/method_kit/`）按瘦身第三批拟删（用户可否决），本文不另写它的规则，以 V0_5_PLAN §1.1–§1.3 为准。
 
 ## 1. 输入、输出与启动

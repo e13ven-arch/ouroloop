@@ -408,11 +408,25 @@ class StopDecider:
                  default: str = "yes"):
         self.descriptor = descriptor
         self.ref = descriptor.ref()
-        self.point = point
+        self._point = point
         self.backend = backend
         self.inference = inference or {}
         self.default = default
         self.actions = actions_of(descriptor.output_schema)
+
+    @property
+    def point(self):
+        """The decision point the policy's view is rendered at: the one given, else the business stop point, built
+        when something first asks for it. Only a host that asks worker.stop (StopGuard) does; the runner shell does
+        not, so binding a rule policy constructs no DecisionPoint and imports none of the training stack."""
+        if self._point is None:
+            from .train.views import business_stop_point
+            self._point = business_stop_point()
+        return self._point
+
+    @point.setter
+    def point(self, point) -> None:
+        self._point = point
 
     @property
     def kind(self) -> str:
@@ -429,7 +443,7 @@ class StopDecider:
         answer, and abstains on a tie, an unknown class or a confidence below its threshold."""
         if self.kind != "model" or self.backend is None:
             return self.default, "default"
-        from .types import Request
+        from .train.types import Request
         view, truncated = self.point.render(observation)
         q = self.point.question(observation)
         try:
@@ -502,11 +516,11 @@ class BoundRuntime:
 class Services:
     """What binding needs from the host. Nothing here is reachable from a policy's configuration."""
     objects: ct.Objects
-    runtime: Any = None
+    # serving.Serving, or a function that builds it: only a model policy is loaded through it (_bind_stop), so a
+    # release of rule policies never constructs one.
     serving: Any = None
     capabilities: dict = field(default_factory=dict)
-    probe_models: bool = True                 # ask a loaded model which model it is (PR-04)
-    # (ModelIdentity, provider config dict) -> ChatProvider. The host owns provider construction; binding only
+    # (ModelIdentity, provider config dict) -> a chat provider. The host owns provider construction; binding only
     # decides which identity runs (docs/modules/01_POLICY_RUNTIME.md §1).
     provider_factory: Callable[[Any, dict], Any] | None = None
 
@@ -590,25 +604,26 @@ def _bind_stop(p: PolicyDescriptor, services: Services) -> StopDecider:
     registration names, or a later comparison between a default arm and a model arm would be comparing two
     different records of the same moment.
     """
-    from .decision import Spec
-    from .points import business_stop_point
     reg = resolve(p.target)
-    point = business_stop_point()
     if p.kind == "rule":
-        return StopDecider(p, point=point, default=reg.fallback)
+        return StopDecider(p, default=reg.fallback)        # the business stop point, built if a loop asks for it
+    from .train.decision import Spec
+    from .train.views import business_stop_point
+    point = business_stop_point()
     spec = services.objects.get(p.implementation["spec_ref"])
     inference = parse_inference(services.objects.get(p.implementation["inference_ref"]),
                                actions_of(p.output_schema))
     point.spec = Spec(spec.get("instructions") or point.spec.instructions,
                       spec.get("criteria") or point.spec.criteria, dict(spec.get("view_params") or {}))
     backend_spec = spec.get("backend") or {"type": "model", "model": p.implementation["model_ref"]}
-    if services.serving is None:
+    serving = services.serving() if callable(services.serving) else services.serving
+    if serving is None:
         raise BindError(f"{p.target} is a model policy and there is no serving to load it with")
     try:
-        backend = services.serving.backend(backend_spec)
+        backend = serving.backend(backend_spec)
     except Exception as e:  # noqa: BLE001 - reported as a failed assembly, never as a fallback to the default
         raise BindError(f"{p.target}: the model could not be loaded: {type(e).__name__}: {e}") from None
-    if services.probe_models and inference.get("model_id"):
+    if inference.get("model_id"):              # a loaded model is asked which model it is (PR-04)
         reported = _identity(backend)
         if reported and reported != inference["model_id"]:
             raise BindError(f"{p.target}: the configuration says model {inference['model_id']!r} and serving "
@@ -617,7 +632,7 @@ def _bind_stop(p: PolicyDescriptor, services: Services) -> StopDecider:
 
 
 def _identity(backend) -> str:
-    from .serving import PROBE
+    from .train.serving import PROBE
     try:
         return backend.decide([PROBE])[0].model
     except Exception:  # noqa: BLE001 - an identity that cannot be read is reported as unknown, not as a match
@@ -813,85 +828,6 @@ def default_core(objects: ct.Objects, *, domain: str = "marketing", split_ref: s
         retry_policy=dict(retry_policy or {"max_infrastructure_retries": 1}), code_version=code_version()))
 
 
-def bootstrap_workspace(root, *, objects: ct.Objects | None = None, worker_ref: str | None = None,
-                        research_ref: str | None = None, core_ref: str | None = None, **core_kw):
-    """A workspace with W0, R0, K and a bootstrap release installed. -> (Releases, release ref)."""
-    from .release import Releases
-    objects = objects or ct.Objects(root)
-    releases = Releases(root, objects)
-    worker_ref = worker_ref or default_worker_set(objects)
-    research_ref = research_ref or default_research_set(objects)
-    core_ref = core_ref or default_core(objects, **core_kw)
-    return releases, releases.bootstrap(worker_ref, research_ref, core_ref)
-
-
-class SessionBinder:
-    """Which release each session runs (docs/modules/01_POLICY_RUNTIME.md §4).
-
-    A new session reads the active pointer once; a session already open keeps the release it opened with, so an
-    install reaches only the sessions that start after it. Before each step the revocation list is checked, and a
-    session whose release was revoked continues on the defaults release — the fixed safe version — rather than
-    hot-swapping to whatever is active now.
-    """
-
-    def __init__(self, releases, services: Services, *, profile: str = "task"):
-        self.releases = releases
-        self.services = services
-        self.profile = profile
-        self._pins: dict[str, BoundRuntime] = {}
-        self._reasons: dict[str, str] = {}
-
-    def open(self, session: str) -> BoundRuntime:
-        if session not in self._pins:
-            ref = self.releases.active()["release_ref"]
-            if ref is None:
-                raise BindError("nothing is installed: bootstrap a release before opening a session")
-            kind = self.releases.authorize(ref, profile=self.profile)
-            self._pins[session] = bind_release(ref, profile=self.profile, services=self.services,
-                                               authorization=kind)
-        return self._pins[session]
-
-    def current(self, session: str) -> BoundRuntime:
-        """The session's release, or the fixed safe version when it has been revoked since the session opened.
-
-        The defaults release if there is one that still stands, otherwise the registered defaults themselves
-        (fixed_defaults). Either way the session does not hot-swap to whatever is active now: that version was
-        never the one this session was pinned to, and mid-session swapping is how two halves of one run end up
-        attributed to one version.
-        """
-        bound = self.open(session)
-        if not self.releases.revoked(bound.release_ref):
-            return bound
-        self._reasons[session] = f"{ct.short(bound.release_ref)} revoked"
-        fallback = self.releases.defaults()
-        if fallback is None or self.releases.revoked(fallback):
-            self._pins[session] = fixed_defaults(self.services, profile=self.profile)
-        else:
-            self._pins[session] = bind_release(fallback, profile=self.profile, services=self.services,
-                                               authorization="defaults_after_revocation")
-        return self._pins[session]
-
-    def reason(self, session: str) -> str:
-        """Why this session is no longer on the release it opened with."""
-        return self._reasons.get(session, "")
-
-
-def fixed_defaults(services: Services, *, profile: str = "task") -> BoundRuntime:
-    """The registered default at every target: no extra prompt, no model, the fallback action.
-
-    This is what a session runs when its release is revoked and no installed ancestor stands. It is deliberately
-    not a release and is never written to the pointer: a pointer may only name a version that was evaluated and
-    installed (docs/modules/03_EVALUATION_RELEASE.md §4).
-    """
-    default = descriptor(services.objects, "worker.stop", "rule", {"builtin": "default.v1"})
-    from .points import business_stop_point
-    return BoundRuntime(release_ref="", profile=profile, authorization="fixed_defaults",
-                        worker={"worker.stop": default},
-                        stop=StopDecider(default, point=business_stop_point(),
-                                         default=resolve("worker.stop").fallback),
-                        services=services)
-
-
 # ---------------------------------------------------------------------------- a proposal as a candidate version
 def build_candidate(experiment, *, objects: ct.Objects, parent_release: str, owner: str = "worker",
                     services: Services | None = None, train=None, budget=None) -> ct.BuildResult:
@@ -902,7 +838,7 @@ def build_candidate(experiment, *, objects: ct.Objects, parent_release: str, own
     never an empty candidate that later reads as "the default did fine" (docs/modules/00_CONTRACTS.md §3).
 
     `train(entry, budget) -> {"model_ref", "spec", "inference", "artifacts", "costs"}` is the caller's training
-    step (pipeline.train_artifact over a built dataset). It is called only for the proposal's training entries,
+    step (train/train.py's train_artifact over a built dataset). It is called only for the proposal's training entries,
     and a training failure is a failed build, not a silent prompt-only candidate.
     """
     proposal = objects.load(experiment.proposal_ref, ct.ExperimentProposal)

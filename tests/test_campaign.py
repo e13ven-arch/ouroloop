@@ -251,13 +251,13 @@ def test_the_outer_share_is_set_aside_before_the_common_inputs_and_the_arms(tmp_
     receipt = run_campaign(campaign, run_arm=run_arm, evaluate_outer=lambda *a: pytest.fail("arms short"),
                            objects=objects, budget=top, prepare_pair=lambda pair_obj, budget: spend("common", budget))
     assert seen == [("common", 220.0)] and receipt.verdict == "inconclusive"
-    assert book.open_reservations() == [] and top.remaining()["effective_remaining"]["model_calls"] == 20.0
+    assert rsi.open_reservations(book) == [] and top.remaining()["effective_remaining"]["model_calls"] == 20.0
     # a pair whose outer comparison does not run gives its share back to the activity
     book = Budgets(tmp_path / "same")
     same = book.account("campaign", {"model_calls": 240})
     run_campaign(campaign, run_arm=lambda pair_obj, arm, r_ref, budget: outcome(arm, pair_obj.pair_id),
                  evaluate_outer=lambda *a: pytest.fail("not run"), objects=objects, budget=same)
-    assert book.open_reservations() == [] and same.remaining()["effective_remaining"]["model_calls"] == 240.0
+    assert rsi.open_reservations(book) == [] and same.remaining()["effective_remaining"]["model_calls"] == 240.0
     # a paused campaign keeps its hold until it resumes, and the resumed run does not hold the share twice
     book = Budgets(tmp_path / "paused")
     top = book.account("campaign", {"model_calls": 240})
@@ -268,15 +268,15 @@ def test_the_outer_share_is_set_aside_before_the_common_inputs_and_the_arms(tmp_
                        stop=next(stops) if arm == "candidate" else "rounds_done")
     paused = run_campaign(campaign, run_arm=pausing, evaluate_outer=lambda *a: pytest.fail("paused"),
                           objects=objects, budget=top)
-    assert paused.verdict == "inconclusive" and len(book.open_reservations()) == 1
+    assert paused.verdict == "inconclusive" and len(rsi.open_reservations(book)) == 1
     assert top.remaining()["effective_remaining"]["model_calls"] == 220.0
     resumed = run_campaign(campaign, run_arm=pausing, evaluate_outer=outer_runs(top), objects=objects, budget=top)
-    assert resumed.verdict == "accepted" and book.open_reservations() == []
+    assert resumed.verdict == "accepted" and rsi.open_reservations(book) == []
     assert top.remaining()["used"]["model_calls"] == 20.0         # the outer's own spend, nothing held twice
     # a restart after the outer ran finds its hold already handed over, and takes nothing again
     again = run_campaign(campaign, run_arm=pausing, evaluate_outer=lambda *a: {
         "candidate": results({"t1": True}), "control": results({"t1": False})}, objects=objects, budget=top)
-    assert again.verdict == "accepted" and book.open_reservations() == []
+    assert again.verdict == "accepted" and rsi.open_reservations(book) == []
     assert top.remaining()["used"]["model_calls"] == 20.0
 
 
@@ -292,7 +292,7 @@ def test_an_arm_the_root_cannot_cover_leaves_the_comparison_inconclusive(tmp_pat
     receipt = run_campaign(campaign, run_arm=lambda *a, **k: pytest.fail("an arm ran"),
                            evaluate_outer=lambda *a: pytest.fail("the outer ran"), objects=objects, budget=top)
     assert receipt.verdict == "inconclusive" and "cannot set aside both arms' shares" in receipt.reasons[0]
-    assert book.open_reservations() == []
+    assert rsi.open_reservations(book) == []
 
 
 def test_a_restart_holds_and_checks_nothing_again_for_arms_that_already_ran(tmp_path):
@@ -329,9 +329,9 @@ def test_a_restart_holds_and_checks_nothing_again_for_arms_that_already_ran(tmp_
         return {"candidate": results({"t1": True}), "control": results({"t1": False})}
     first = run_campaign(campaign, run_arm=run_arm, evaluate_outer=evaluate_outer, objects=objects, budget=top)
     assert first.verdict == "inconclusive" and "pair-2/candidate paused" in first.reasons[0]
-    assert len(book.open_reservations()) == 1                                   # pair-2's outer share
+    assert len(rsi.open_reservations(book)) == 1                                   # pair-2's outer share
     resumed = run_campaign(campaign, run_arm=run_arm, evaluate_outer=evaluate_outer, objects=objects, budget=top)
-    assert resumed.verdict != "inconclusive" and book.open_reservations() == [], resumed.reasons
+    assert resumed.verdict != "inconclusive" and rsi.open_reservations(book) == [], resumed.reasons
     again = run_campaign(campaign, run_arm=run_arm, evaluate_outer=evaluate_outer, objects=objects, budget=top)
     assert again.verdict == resumed.verdict and top.remaining()["used"]["model_calls"] == 190.0
 
@@ -353,7 +353,7 @@ def test_identical_arms_stop_the_campaign_before_a_later_pair(tmp_path):
                            objects=objects, budget=book.account("campaign", {"model_calls": 1000}))
     assert ran == [("pair-1", "control"), ("pair-1", "candidate")]
     assert receipt.verdict == "inconclusive" and receipt.metrics["identical_arms"] == ["pair-1"]
-    assert book.open_reservations() == []
+    assert rsi.open_reservations(book) == []
 
 
 def test_a_task_missing_on_either_arm_leaves_the_pair_incomplete(tmp_path):

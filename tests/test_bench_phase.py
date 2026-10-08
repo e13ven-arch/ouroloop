@@ -136,6 +136,13 @@ class TestSmoke:
 
 
 class TestPhases:
+    @pytest.fixture(autouse=True)
+    def _in_tmp_path(self, tmp_path, monkeypatch):
+        """run_phase's default base is "." and config()'s root "ws": run from tmp_path, so the refused phases that
+        open the activity first write their bootstrap there, never into the directory pytest was started from
+        (the main checkout's ws/ holds run records, docs/PLAN.md rule 12)."""
+        monkeypatch.chdir(tmp_path)
+
     def test_br01_a_phase_whose_requirements_are_missing_is_refused_before_a_model_is_called(self, fake_upstream):
         """BR-01: the refusal names the missing piece, and the smoke entry keeps working."""
         with pytest.raises(ValueError, match=r"\[llm\] table"):
@@ -733,6 +740,34 @@ def test_the_v04_configs_are_single_domain_activities_on_the_v3_workspaces_froze
         assert bench.RsiConfig.load(cfg).scope_id == scope
         assert cfg["llm"] == tomllib.loads((examples / "claude-v3.toml").read_text())["llm"]
         assert cfg["pricing"] == tomllib.loads((examples / "claude-v3.toml").read_text())["pricing"]
+
+
+def test_the_quickstart_config_is_the_v04_finance_activity_in_a_new_workspace_with_nothing_frozen():
+    """README's quick start (docs/PLAN.md P1 docs): quickstart.toml reads exactly as claude-v4-finance.toml does — the
+    same split pin, preset, harness table, limits, actor, R and prices — but its workspace root is one no other config
+    names, so running it touches no existing record; it names no frozen plan and has no [freeze.final], so a new
+    `ouroloop freeze` makes its plans and no final can read finance's test from it."""
+    import tomllib
+    examples = Path(__file__).resolve().parents[1] / "examples" / "automationbench"
+    quick = tomllib.loads((examples / "quickstart.toml").read_text())
+    v4 = tomllib.loads((examples / "claude-v4-finance.toml").read_text())
+    assert quick["workspace"]["root"] == "workspace-quickstart"
+    others = {tomllib.loads(p.read_text()).get("workspace", {}).get("root")
+              for p in examples.glob("*.toml") if p.name != "quickstart.toml"}
+    assert quick["workspace"]["root"] not in others
+    rsi = bench.RsiConfig.load(quick)
+    assert rsi.scope_id == "finance-quickstart" and rsi.scope_id != bench.RsiConfig.load(v4).scope_id
+    assert not any(getattr(rsi, k) for k in ("task_plan_ref", "schedule_ref", "budget_ref", "final_plan_ref"))
+    assert "final" not in quick["freeze"]
+    assert bench.BenchConfig.load(quick, examples) == bench.BenchConfig.load(v4, examples)
+    assert bench.improvement_settings(quick) == bench.improvement_settings(v4)
+    assert bench.harness_settings(quick) == bench.harness_settings(v4)
+    for table in ("llm", "research", "estimate"):
+        assert quick[table] == v4[table], table
+    assert {k: v for k, v in quick["pricing"].items() if k != "source"} == \
+        {k: v for k, v in v4["pricing"].items() if k != "source"}
+    assert quick["freeze"]["schedule"] == v4["freeze"]["schedule"]
+    assert quick["freeze"]["budget"] == v4["freeze"]["budget"]
 
 
 def test_the_v04_configs_reproduce_the_v3_workspaces_finance_and_support_splits_offline(tmp_path):

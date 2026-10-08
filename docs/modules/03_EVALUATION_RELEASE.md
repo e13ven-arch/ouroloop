@@ -1,6 +1,11 @@
 # M3：无教师评测、完整发布与部署投影
 
 > 目标：验证部署时真正保留的能力，并让评测通过的完整版本实际生效。复用 `evolve/task_eval.py`、`evolve/task_gate.py`、`release.py`；不新建模型晋升平台。
+>
+> 2026-10-08（瘦身第一批，分支 `slim/1`，[PLAN](../PLAN.md) P1 第 5、6 步）：以下逻辑已删，tag `archive-2026-10-08` 上可读。
+> - task_gate 的 economy 模式、protected requirements、`max_runtime_cost_ratio` 与 `_ratio`、v1 的 dev `screen()`，以及 bench 的 screen 处理器与 `[freeze.task_plan] screen` 键。`judge` 只剩质量裁决，`judge`/`evaluate_task` 不再收 `protected`。计划字段（`mode`、`max_quality_loss`、`max_runtime_cost_ratio`、`protected_requirements`、`screen_ids`）照旧留着、取冻结值；一个设了 economy、成本比或 protected 的 gate 现在直接拒绝，不再悄悄忽略（54 份冻结计划里没有一份设过）。下文 §2 的 economy 与 protected 条文、(h) 裁决顺序里的 protected 一步，都按此读。
+> - 冠军指针一族（决策模型的冻结 gate、模型注册与回滚、上线监控）随 `test_gate_bypass.py`、`test_gate_record.py` 一起删。`Releases.rollback` 现在只退到一个好的祖先，没有可退的祖先时先拒绝、什么都不撤销。
+> - 本地 frontier 臂删了，C2 只引用公开结果（M7 §4）。
 
 首版发布对象是现成 actor 加演化能力包；正式 gate/安装/导出不依赖教学来源验证或训练。source_validation 与蒸馏相关流程保留为第二版用途。
 
@@ -194,4 +199,4 @@ v0.3 的 app 是三件东西（v0.3，2026-10-04）：**agent 包**（运行 bun
 | ER6-24（v0.3） | 导出 v2 包的 app | 导出物含 agent 代码、运行壳投影与模型服务描述；网关日志、账本、合并对照读数不在其中；干净目录可运行一题 |
 | ER6-25（v0.3） | 安装时 manifest 声明的 `ctx.model` 角色含 K 之外的名字，或 agent 字节与草稿检查通过的不同 | preflight 拒绝，active 不动 |
 
-复用 `test_task_gate.py`、`test_gate_bypass.py`、`test_integrations.py`、`test_export.py`、`test_paid_run_safety.py`；故障注入沿用既有 release 测试风格。§2.1～2.2 与 §4 标“新增”的测试随 v0.3 第 2 步（统计）与第 1 步（agent 组件、导出）一起写。
+复用 `test_task_gate.py`、`test_gate_bypass.py`（2026-10-08 随冠军指针一族删除）、`tests/train/test_integrations.py`、`test_export.py`、`test_paid_run_safety.py`；故障注入沿用既有 release 测试风格。§2.1～2.2 与 §4 标“新增”的测试随 v0.3 第 2 步（统计）与第 1 步（agent 组件、导出）一起写。

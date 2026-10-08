@@ -4,6 +4,8 @@
 >
 > v0.3（2026-10-04 决定，DESIGN v0.7，[ROADMAP §3 “v0.3”](../ROADMAP.md)）：交付物从“固定 agent 循环 + 能力包”改为“可演化的 agent 程序 + 最小运行壳 + 所 pin 的模型”，比较口径改称“同模型”（M0 §2（v0.3）：manifest `harness_package.v2` 增加 `agent` 组件，默认 agent 是今天的宿主循环移植成包）。M7 相应变化：`[bench]` 接受领域列表并按领域分别划分、合并使用；Marketing 的 test 已读过三次，对新主张声明为已耗尽；报告增加每次有效尝试成本（`cost_per_attempt`）、实验台账、余量、按领域分列，匹配成本的 best-of-k 对照臂只在发表结果时运行并并列报告（可选）；并发默认 8，每轮墙上时间单域 25 题 gate 约 10～15 分钟、多域合并 dev（约 125 题）约 45～60 分钟；配置示例换到 v0.3 的 preset。v0.1/v0.2 的配置、结果与 2026-10-03/04 的记录保持原义，不删除。本文标“（v0.3，2026-10-04）”的条目是新增或改动的规则，其余不变。
 >
+> 2026-10-08（瘦身第一批，分支 `slim/1`，[PLAN](../PLAN.md) P1）：命令行只剩 `ouroloop bench`、`freeze`、`export`；`decide`、`smoke --jev`、`host` 移到 `python -m ouroloop.train`，其余旧命令在 tag `archive-2026-10-08` 上。`--phase collect` 与本地 frontier 臂已删：baseline 只跑起点一臂；final 里每一臂都跑它的 release 钉住的 actor；带自己 `llm` 或 `pricing` 的比较、以及 `[frontier]` 表，都会被拒绝。C2 要么是公开引用（不确定），要么是 `not_run`。下文 §1 表的 collect 一行、§4 的 frontier 与 `paired_run` 都按此读。研究位、多领域与采集批随第二批删。
+>
 > v0.5（2026-10-07 合入；2026-10-08 现状，[V0_5_PLAN](../design/V0_5_PLAN.md)）：phase 多了 `library` 与 `learn`（`bench.PHASES`，`bench.py:41`），preset 多了 `automationbench_harness_v5`（v0.4 时的 v3 preset 加 `methods`、`library` 两张表，只由 preset 设），报告多 v0.5 一段；见 §1 表末两行与 §2 的“v0.5 的两个阶段与 preset”。support 两臂对照 2026-10-08 由用户停止：按瘦身第三批的规则，`library` 保留、经验库降为 preset 开关，`learn` 与方法库拟删（用户可否决）。
 
 ## 1. 阶段与端到端入口
@@ -12,7 +14,7 @@
 |---|---|
 | smoke | 首版检查 provider/工具/评分、包 API/计量，以及当前包组件种类在 K 内；K 的 components 含代码种类或当前包运行含代码时检查隔离 worker，不可用则不能以该配置启动；第二版启用方法才检查 review/训练。（v0.3，2026-10-04）另检查 `agent` 组件的入口能在 worker 里导入并经网关完成一次假调用（M0 §2（v0.3）：`run(ctx, task)`，ctx 只有 model/tool/skills/limits/view），以及 `[bench] domains` 列出的每个领域都能被上游装载 |
 | baseline | 起点 actor（第二版为学生）及已选 prompt/workflow 的无教师基线；首版为所 pin actor 的 train+dev 基线（原定 GLM-5.3，2026-10-03 起为 Claude Opus 5.5，见 ROADMAP §3 第 2a 步），在首轮真实演化前运行；不默认跑领先模型。（v0.3，2026-10-04）多领域时是各领域 train+dev 合并清单上的一次测量，它同时是 W0 的第一条合并对照读数（M3 §2.1(a)（v0.3）：对照臂是同一冻结计划与模型身份下已安装 W 的全部有效读数的合并） |
-| collect | plain 保持原行为；reviewed 调 M8，仅 train，须有已冻结合法 plan |
+| collect | plain 保持原行为；reviewed 调 M8，仅 train，须有已冻结合法 plan（2026-10-08 瘦身第一批：这个单独的 phase 已删；R 回答 collect 时的采集批随第二批删） |
 | improve | 首版 M4 run_worker_round 读取 train 失败摘要、逐题笔记后汇总诊断，生成包内 patch/策略候选，经冻结前草稿检查进入唯一 executor；第二版准备教学/训练。（v0.3，2026-10-04）一轮是 R 的一个编码会话（修订继续同一会话），产出至多 `max_candidates_per_round`（preset 3）个候选，先做 train 侧筛选，只有最好的一个付 dev gate；第一次读数清过 min_gain 0.05 与退步规则的候选，再按同一计划做一次确认测量，确认读数单独对合并对照也清过 min_gain 才安装（M4 §2（v0.3）筛选、M3 §2.1(b)（v0.3）确认，规则第二版 2026-10-04）；M7 不另写循环，只把 k 个候选、筛选与确认当作同一轮的子操作记账 |
 | research | 用 M6 做有界 R0/R1 比较，条件满足才安装 R1。（v0.3，2026-10-04）研究位只在 dev 合并清单 ≥ 2 × `task_plan.gate.min_tasks`（50 题）时开位：前一半作两支内层 gate、后一半作外层比较，每一半不少于 25 题；不够时研究位记 `no_slot_pool`，C4 not_run——只含 Marketing 的活动（dev 25 题）因此不开位。开位前再做余量检查：起点 W 从未通过的内层任务少于 preset 的 `campaign.min_headroom_tasks` 时拒绝开位，记 `no_headroom`（M6 §2（v0.3））；原因是 v0.2 的研究位里 W* 在内层已到 67～80%，两支都无处可改，比较了个空 |
 | evaluate | 方案锁定后的无教师 final，禁止据此继续选择或采集训练数据。（v0.3，2026-10-04）final 计划可选加一支匹配成本的 best-of-k W0 臂，只在发表结果时运行，与 W* 并列报告、不进 C1（M3 §2.2（v0.3）） |

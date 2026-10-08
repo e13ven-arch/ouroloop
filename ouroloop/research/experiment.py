@@ -233,7 +233,7 @@ from ..evolve.experience import REPEAT_OUTCOMES  # noqa: E402 - the outcomes tha
 def registered_builders() -> tuple[str, ...]:
     """The feedback builders this installation has. Trusted code, so the default is what is registered rather than
     nothing: an empty default would make every training proposal invalid for the wrong reason."""
-    from ..evolve.feedback import BUILDERS
+    from ..train.feedback import BUILDERS
     return tuple(sorted({builder.ref for builder in BUILDERS.values()}))
 
 
@@ -241,7 +241,7 @@ def model_change_reasons(change: dict, proposal: ct.ExperimentProposal, objects:
     """A model is what a training entry builds; a proposal does not write one.
 
     A `backend` in a model change is what serving builds the decider from, and a type serving does not know is
-    imported by name (config.build_backend), in the control plane, at the build's preflight. The trained path
+    imported by name (train/config.py's build_backend), in the control plane, at the build's preflight. The trained path
     writes the backend its trainer reported (bench.py `_train`) and never comes through here. Checked whether or
     not K froze a method list: an activity without [improvement] has none."""
     from .drafts import payload_of
@@ -258,7 +258,9 @@ def core_checks(proposal: ct.ExperimentProposal, *, context, core: ct.CoreManife
                 owner: str, budget=None, feedback_builders=None) -> list[str]:
     """What no research policy may change, reorder or remove. Every reason returned blocks the experiment."""
     reasons = []
-    feedback_builders = registered_builders() if feedback_builders is None else feedback_builders
+    if feedback_builders is None and proposal.training:
+        # only a training entry names a builder: a proposal without one never loads the training stack (ouroloop/train)
+        feedback_builders = registered_builders()
     if proposal.owner != owner:
         reasons.append(f"this round produces {owner} candidates; the proposal says {proposal.owner}")
     for change in proposal.changes:

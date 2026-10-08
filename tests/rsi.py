@@ -10,15 +10,12 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
 
 from ouroloop.adapters import automationbench as ab
-from ouroloop.backends import KeywordBackend
 from ouroloop.benchmark import Budget, RunManifest, SplitManifest, digest
 from ouroloop.chat import ChatTurn, ToolCall
 from ouroloop.evolve import contracts as ct
-from ouroloop.points import builtin_points
-from ouroloop.runtime import Runtime
+from ouroloop.workspace import Workspace
 
 DOMAIN = "rsi"
 SLACK = "https://slack.com/api/chat.postMessage"
@@ -52,22 +49,42 @@ def splits(s: ab.Suite) -> SplitManifest:
     return SplitManifest(DOMAIN, s.versions, rule, s.entries(fams), dict(SPLITS))
 
 
-def runtime(root) -> Runtime:
-    rt = Runtime(root, {"mock": KeywordBackend()}, "mock", seed=0)
-    for p in builtin_points():
-        rt.register(p)
-    return rt
+def ws(root) -> Workspace:
+    """What an attempt records its session in: the thin workspace the runner shell needs (bench.attempt_workspace)."""
+    return Workspace(root)
+
+
+def harness_table() -> dict:
+    """The harness table of a v3-style K: the automationbench_harness_v3 preset's, with no sandbox (the tests that
+    need the isolated worker build their own). K fixes `max_effort`, as every K frozen since v0.3 does."""
+    from ouroloop import bench
+    table = bench.harness_settings({"improvement": {"mode": "automatic", "preset": "automationbench_harness_v3"}})
+    return {**table, "sandbox": None, "image": None}
+
+
+def bootstrap_workspace(root, *, objects: ct.Objects | None = None, worker_ref: str | None = None,
+                        research_ref: str | None = None, core_ref: str | None = None, **core_kw):
+    """A workspace with W0, R0, K and a bootstrap release installed (formerly policies.bootstrap_workspace, which only
+    tests called). -> (Releases, release ref)."""
+    from ouroloop import policies as P
+    from ouroloop.release import Releases
+    objects = objects or ct.Objects(root)
+    releases = Releases(root, objects)
+    worker_ref = worker_ref or P.default_worker_set(objects)
+    research_ref = research_ref or P.default_research_set(objects)
+    core_ref = core_ref or P.default_core(objects, **core_kw)
+    return releases, releases.bootstrap(worker_ref, research_ref, core_ref)
 
 
 def workspace(root, split_ref: str = "", worker_ref: str | None = None, research_ref: str | None = None,
               **core_kw):
-    """A workspace with W0, R0, K and a bootstrap release installed. -> (Releases, release ref, Objects)."""
-    from ouroloop import policies as P
+    """A workspace with W0, R0, a v3-style K and a bootstrap release installed. -> (Releases, release ref, Objects)."""
     objects = ct.Objects(root)
-    releases, rel = P.bootstrap_workspace(root, objects=objects, worker_ref=worker_ref,
+    capabilities = {"training": False, "harness": harness_table(), **core_kw.pop("capabilities", {})}
+    releases, rel = bootstrap_workspace(root, objects=objects, worker_ref=worker_ref,
                                           research_ref=research_ref, domain=DOMAIN, split_ref=split_ref,
                                           adapter="ouroloop.adapters.automationbench", scorer="rubric.v1",
-                                          toolset=ab.TOOLSET, **core_kw)
+                                          toolset=ab.TOOLSET, capabilities=capabilities, **core_kw)
     return releases, rel, objects
 
 
@@ -77,6 +94,14 @@ def run_manifest(candidate: str, role: str, split: str, *, budget: Budget | None
                        prompt_hash=digest({"system": candidate})[:16],
                        environment={"upstream": "fake", "toolset": ab.TOOLSET},
                        budget=budget or Budget(max_steps=8, max_tool_calls=12), data=data, **v2)
+
+
+def open_reservations(book, scope_id: str | None = None) -> list[dict]:
+    """The book's reservations still open or unknown, in `scope_id`'s subtree (all scopes without one): what the
+    money-safety tests check is left behind. A read of the book for the tests; nothing in the framework asks it."""
+    data = book._read()
+    scopes = book.subtree(scope_id, data) if scope_id else set(data["scopes"])
+    return [r for r in data["reservations"].values() if r["status"] in ("open", "unknown") and r["scope_id"] in scopes]
 
 
 W0_FINISH = "Report what you did when you are finished."
@@ -182,76 +207,16 @@ class BusinessWorker:
                         "end", usage=usage)
 
 
-# ---------------------------------------------------------------------------- a fixture decision model
-class PhraseDecider:
-    """A decision backend that reads the view: the task is complete when the phrase the request asked for appears
-    in a tool result, and the record has been updated if the request asked for that.
-
-    A fixture, not a training result. Its quality is defined here, so a test that shows the model changing what
-    the agent does shows the wiring; whether a real small model can learn this is what a real experiment answers.
-    """
-    name = "phrase"
-
-    def __init__(self, model: str = "trained-1", confidence: float = 0.9):
-        self.model, self.confidence = model, confidence
-        self.views: list[str] = []
-
-    def decide(self, requests):
-        from ouroloop.types import Answer
-        out = []
-        for r in requests:
-            self.views.append(r.state)
-            head, _, tail = r.state.partition("tool calls and what they returned")
-            phrase = re.search(r"phrase ([a-z ]+?)(?:,|\.|$)", head)
-            needs_update = "opportunity stage" in head and "change nothing" not in head
-            done = (phrase is None or phrase.group(1).strip() in tail) and (
-                not needs_update or "PATCH" in tail)
-            p = self.confidence if done else 1 - self.confidence
-            out.append(Answer({"yes": p, "no": 1 - p}, self.model))
-        return out
-
-
-class PhraseTrainer:
-    """Trains nothing and says so: it reads the dataset the framework built (so a missing file is still an error)
-    and returns a PhraseDecider as the artifact."""
-    supports_weights = True
-    name = "phrase"
-
-    def __init__(self, model: str = "trained-1", fail: bool = False, confidence: float = 0.9):
-        self.model, self.fail, self.confidence = model, fail, confidence
-        self.jobs: list = []
-        self.attached: list = []
-
-    def train(self, job):
-        from ouroloop.evolve.train import TrainError, TrainResult
-        if self.fail:
-            raise TrainError("CUDA out of memory")
-        rows = sum(1 for _ in open(Path(job.data_dir) / "train.jsonl", encoding="utf-8"))
-        self.jobs.append({"version": job.version, "rows": rows, "recipe": dict(job.recipe)})
-        return TrainResult(self.model, {"type": "rsi:PhraseDecider", "model": self.model,
-                                       "confidence": self.confidence},
-                           {"id": f"job-{job.version}", "host": "local", "result": {"rows": rows}})
-
-
-class UnknownJobTrainer(PhraseTrainer):
-    """A trainer whose remote job state cannot be read: `attach` returns nothing, and nothing is resubmitted."""
-
-    def attach(self, job_id):
-        self.attached.append(job_id)
-        return None
-
-
 def collect(root, suite, splits, *, worker_ref=None, provider=None, tasks=(), probe=True, serving=None,
-            releases=None, objects=None, rt=None, split="train", repeats=1, candidate="W0", role="base",
-            arm="subject", plan_ref="", stop_view=None):
-    """Run some tasks with a bound release and return everything a later step needs.
+            releases=None, objects=None, split="train", repeats=1, candidate="W0", role="base",
+            arm="subject", plan_ref=""):
+    """Run some tasks with a bound release under the runner shell and return everything a later step needs.
 
-    With `probe`, the completion probe labels each stop decision from the state it was made on, which is what the
-    train split is for; the runner refuses it anywhere else.
-    """
+    `probe` attaches the completion probe, which the runner refuses anywhere but the train split; the runner shell
+    asks no stop point, so it labels nothing (the stop decisions the training tests build from are played by
+    tests/train/stop_fixtures.py)."""
     from ouroloop import policies as P
     from ouroloop.evolve.task_eval import make_agent_factory, run_tasks
-    rt = rt or runtime(root)
     objects = objects or ct.Objects(root)
     if releases is None:
         releases, release, objects = workspace(root, split_ref=splits.hash(), worker_ref=worker_ref)
@@ -262,12 +227,11 @@ def collect(root, suite, splits, *, worker_ref=None, provider=None, tasks=(), pr
                             worker_ref=objects.load(release, ct.SystemRelease).worker_ref,
                             research_ref=objects.load(release, ct.SystemRelease).research_ref,
                             core_ref=objects.load(release, ct.SystemRelease).core_ref)
-    factory = make_agent_factory(rt, provider or BusinessWorker(), budget=manifest.budget, bound=bound,
-                                objects=objects, stop_view=stop_view)
+    factory = make_agent_factory(ws(root), provider or BusinessWorker(), budget=manifest.budget, bound=bound)
     results = run_tasks(suite, list(tasks or TRAIN), factory, run=manifest, splits=splits, probe=probe,
                         repeats=repeats, arm=arm, plan_ref=plan_ref, release_ref=release)
-    return {"rt": rt, "objects": objects, "bound": bound, "results": results, "releases": releases,
-            "release": release, "run": manifest}
+    return {"objects": objects, "bound": bound, "results": results, "releases": releases, "release": release,
+            "run": manifest}
 
 
 # ---------------------------------------------------------------------------- a scripted research step

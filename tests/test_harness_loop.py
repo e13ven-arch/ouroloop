@@ -405,38 +405,6 @@ def test_the_first_version_baseline_runs_train_and_dev_with_the_pinned_actor(fak
     assert base["summary"]["tasks"] == len(rsi.DEV) and base["train"]["tasks"] == len(rsi.TRAIN)
 
 
-class FrontierProbe:
-    """A frontier arm's own model: it counts its calls and answers like the fixture worker."""
-    name = "frontier-probe"
-    model = "frontier-x"
-    calls = 0
-
-    def chat(self, system, messages, specs):
-        FrontierProbe.calls += 1
-        return rsi.BusinessWorker().chat(system, messages, specs)
-
-
-def test_a_final_comparison_with_its_own_model_runs_that_model_not_the_pinned_actor(fake_upstream, tmp_path):
-    cfg, activity, w0 = v06_prepared(fake_upstream, tmp_path)
-    FrontierProbe.calls = 0
-    plan = bench.FinalizationPlan(
-        experiment_id="final-frontier", core_ref=activity.objects.load(w0, ct.SystemRelease).core_ref,
-        split_ref=activity.splits.hash(), claims=("C1", "C2"),
-        comparisons=({"claim": "C1", "subject": "base", "control": "base", "role": "base"},
-                     {"claim": "C2", "subject": "frontier_a", "control": "base", "role": "frontier_a",
-                      "llm": {"type": "test_harness_loop:FrontierProbe"}}),
-        release_refs={"base": w0, "frontier_a": w0}, task_ids=tuple(rsi.FINAL), repeats=1,
-        statistical_plan={"confidence": 0.95, "bootstrap_replicates": 100, "bootstrap_seed": 1})
-    sealed = bench.seal(plan, activity.root, activity.objects)
-    cfg["rsi"]["final_plan_ref"] = sealed["plan"]
-    bench.evaluate(cfg, ".", out=lambda _line: None, plan_ref=sealed["plan"])
-    assert FrontierProbe.calls > 0
-    runs = [json.loads(p.read_text()) for p in (activity.results.root / "runs").glob("*.json")]
-    frontier = [m for m in runs if m.get("candidate") == "frontier_a"]
-    assert frontier and all(m["model"]["provider"] == "frontier-probe" and not m.get("actor_identity_ref")
-                            for m in frontier)
-
-
 def test_the_report_shows_the_package_what_the_actor_read_and_what_the_drafts_cost(fake_upstream, tmp_path):
     """docs/modules/07_BENCH_REPORT.md §4: the package of each release, the skill reads the transcripts show, the
     draft checks, the note coverage, the gate's frozen thresholds; C3 is not_run in the first version."""
@@ -537,15 +505,19 @@ def test_bootstrap_refuses_to_freeze_a_k_that_allows_code_without_the_worker_ima
     assert not (tmp_path / "ws" / "rsi" / "active.json").exists()
 
 
-def test_package_code_is_never_mounted_on_a_worker_that_does_not_isolate_it(tmp_path):
+def test_package_code_never_runs_on_a_worker_that_does_not_isolate_it(tmp_path):
     import pytest
     from ouroloop.agent.worker import ProcessWorker
     from test_package_worker import FINISH_GUARD, World, bound_with
     bound, _ = bound_with(tmp_path, {"middlewares/guard.py": FINISH_GUARD},
                           {"hooks": [{"name": "guard", "site": "on_finish", "entrypoint": "middlewares/guard.py:run"}]})
+    from ouroloop.agent.runner import PackageAgent
+    from ouroloop.benchmark import Budget
     with pytest.raises(hp.CapabilityError, match="no qualified isolated worker"):
-        hp.mount(World(), bound, worker=ProcessWorker())
-    assert hp.mount(World(), bound, worker=ProcessWorker(for_tests=True)) is not None
+        PackageAgent(None, None, World(), bound=bound, budget=Budget(max_steps=1), worker=ProcessWorker())
+    shell = PackageAgent(None, None, World(), bound=bound, budget=Budget(max_steps=1),
+                         worker=ProcessWorker(for_tests=True))
+    assert shell.placement == "worker"
 
 
 def test_a_drafted_package_records_the_worker_image_k_froze(tmp_path):
@@ -619,7 +591,7 @@ def test_the_package_api_says_how_a_test_reaches_package_code():
 def test_the_package_api_says_what_a_hook_sees_is_cut_and_the_actor_had_the_whole_result():
     """The first Claude activity (2026-10-03): R read the view's `truncated` and a summary's cut mark as cuts the
     actor saw, and wrote a hook that told the actor so after every long result. The API says whose cuts they are."""
-    from ouroloop.agent.loop import HOOK_RESULT_CHARS
+    from ouroloop.agent.default_agent import HOOK_RESULT_CHARS
     from ouroloop.research.basic import PACKAGE_API
     assert f"result is at most the first {HOOK_RESULT_CHARS} characters" in PACKAGE_API
     assert "truncated says only that this excerpt is shorter than the result" in PACKAGE_API
@@ -650,8 +622,8 @@ def test_startup_refuses_a_pinned_actor_effort_above_k_max_effort(fake_upstream,
         if effort == "max":
             problems = bench.startup_checks(reopened, cfg, phase="baseline", needs_model=False)
             assert any("has effort 'max', above K's max_effort 'high'" in p for p in problems), problems
-            # a K frozen before v0.3 fixes no ceiling: its workspace runs the v1 loop, nothing caps the pinned
-            # default, and the check does not invent one from the gateway's default
+            # a K frozen before v0.3 fixes no ceiling: nothing caps the pinned default, and the check does not
+            # invent one from the gateway's default
             older = ct.CoreManifest(**{**{f: getattr(core, f) for f in core.__dataclass_fields__},
                                        "capabilities": {**core.capabilities, "harness": {
                                            k: v for k, v in core.capabilities["harness"].items() if k != "max_effort"}}})
@@ -663,15 +635,15 @@ def test_startup_refuses_a_pinned_actor_effort_above_k_max_effort(fake_upstream,
 def test_the_smoke_phase_runs_under_the_active_releases_k_when_the_workspace_has_one(fake_upstream, tmp_path):
     """bench.smoke_max_effort (docs/modules/01_POLICY_RUNTIME.md §1): the smoke's attempts run the loop the active
     release's K fixes — its `max_effort` when the workspace has a release, whatever the config's table says — and
-    only a workspace without one takes the loop from the configured first-version table; with neither, the v1
-    loop."""
+    only a workspace without one takes the ceiling from the configured first-version table; with neither, the
+    gateway's default."""
     cfg, activity, w0 = v06_prepared(fake_upstream, tmp_path)
     assert bench.smoke_max_effort(cfg, ".") == "high"                       # K's ceiling, the preset's
     lowered = {**cfg, "harness_evolution": {**cfg["harness_evolution"], "max_effort": "low"}}
     assert bench.smoke_max_effort(lowered, ".") == "high"                   # K, not the table, while a release is active
     fresh = {**lowered, "workspace": {"root": str(tmp_path / "fresh")}}
     assert bench.smoke_max_effort(fresh, ".") == "low"                      # no release yet: the table's
-    assert bench.smoke_max_effort({"workspace": {"root": str(tmp_path / "plain")}}, ".") is None
+    assert bench.smoke_max_effort({"workspace": {"root": str(tmp_path / "plain")}}, ".") == bench.DEFAULT_MAX_EFFORT
 
 
 # ---------------------------------------------------------------------------- v0.3 (IT6-32): k candidates and the train-side screen

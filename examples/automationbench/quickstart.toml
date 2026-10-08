@@ -1,0 +1,130 @@
+# Quick start: a new single-domain activity on finance, in its own workspace (README "Quick start"). It is
+# claude-v4-finance.toml with a new workspace root and scope id, no frozen plan refs and no final, so running it touches
+# no existing run record: everything it writes goes under examples/automationbench/workspace-quickstart/ (git-ignored).
+#
+# Run in stages and stop after each one (docs/PLAN.md rule 5). Costs are nominal API-equivalent dollars on the Claude
+# subscription; the first step calls no model.
+#   1  `ouroloop bench --config examples/automationbench/quickstart.toml --phase smoke --checks-only`
+#      upstream identity, the frozen split (must print hash 4fd91eaf9fb8daf5), scorer contract, input audit      $0
+#   2  `... --phase smoke`: one dev attempt end to end through the runner shell                                 ~$0.5
+#   3  `ouroloop freeze --config examples/automationbench/quickstart.toml`: freezes the task plan, the schedule and
+#      the budget into the workspace and prints the [rsi] lines (task_plan_ref, schedule_ref, budget_ref); add them
+#      to [rsi] below                                                                                             $0
+#   4  `... --phase cycle --until baseline`: W0 on train 50 + dev 25 x 3 readings                               ~$58
+#   5  `... --phase cycle --until segment-0/round-0`, then round-1, round-2: R's rounds, one at a time       ~$40 each
+#
+# No [freeze.final] here, on purpose. A sealed final reads finance's test split, which v0.4's final has read once
+# (docs/PLAN.md §0.1); a final belongs to a planned activity whose plan hash is committed before its first test
+# attempt (PLAN rule 6), not to a quick start. Paid steps need the subscription login (`claude auth login`) and, for
+# code candidates, the worker image (`docker build -f docker/worker.Dockerfile -t ouroloop-worker:py3.12 .`).
+#
+# The split, the preset, the limits and the prices are claude-v4-finance.toml's (its header explains each number):
+# the stratified rule pinned to the hash workspace-claude-v3 froze for finance, so W0's baseline here reads the same
+# 50 train and 25 dev tasks as v0.4's.
+
+[workspace]
+root = "workspace-quickstart"
+
+[bench]
+domains = ["finance"]
+split_rule = "stratified"
+upstream_path = "~/workspace/AutomationBench"
+toolset = "api"
+seed = 1
+concurrency = 8                 # attempts in flight; a machine setting, not part of any plan
+smoke_tasks = 1
+near_duplicate_threshold = 0.6
+control_readings = 3
+
+[bench.frozen_splits]
+finance = "4fd91eaf9fb8daf5"
+
+[bench.ratios]
+train = 0.5
+dev = 0.25
+test = 0.25
+
+[bench.budget]                  # the v3 preset's five hard limits of one attempt (M0 §2)
+max_steps = 50
+max_tool_calls = 200
+max_seconds = 900
+max_model_calls = 200
+max_tokens = 400000
+
+# The actor W0 pins and R: Claude Opus 5.5 through headless Claude Code, at effort medium (one level for every arm,
+# docs/PLAN.md rule 10). Pinned at bootstrap: it cannot change in this workspace.
+[llm]
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "medium"
+max_tokens = 32000
+timeout = 600
+
+[research.llm]
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "medium"
+max_tokens = 32000
+timeout = 900
+
+[pricing]
+input_per_1k = 0.004
+cache_read_per_1k = 0.0002
+cache_write_per_1k = 0.008
+output_per_1k = 0.02
+max_input_tokens = 1000000
+max_output_tokens = 163840
+source = "notional, not a bill: claude-opus-5-5 API list price ($4/$20 per M, cache read $0.20, 1h cache write $8), as claude-v4-finance.toml"
+
+[improvement]
+mode = "automatic"
+preset = "automationbench_harness_v3"
+allowed_methods = ["policy_edit", "harness_edit"]
+max_candidates_per_round = 3
+max_collection_batches = 2
+
+[harness_evolution]             # the preset's own values (a value here may narrow, never widen)
+package_api = "harness_package.v2"
+components = ["agent", "memory", "skills", "on_finish", "before_tool", "after_tool", "tools"]
+sandbox = "docker"
+max_files = 24
+max_package_bytes = 262144
+test_timeout_seconds = 30
+max_draft_repairs = 3
+max_failure_notes = 30
+max_effort = "medium"           # lowered from the preset's high (tighten-only, frozen into K)
+
+[harness_evolution.research_session]
+max_turns = 40
+max_edits = 24
+max_trajectory_bytes = 65536
+max_trajectory_bytes_total = 524288
+min_failing_reads = 1
+min_passing_reads = 1
+
+[harness_evolution.screen]
+passing_sample = 6
+min_net_flips = 0
+min_fixes = 1
+max_sample_regressions = 1
+
+[rsi]
+profile = "task"
+scope_id = "finance-quickstart"
+repeats = 1
+order_seed = 1
+# task_plan_ref / schedule_ref / budget_ref: add the lines `ouroloop freeze` prints (step 3).
+
+[freeze.schedule]               # one segment of 3 worker rounds, patience 2, no research slot
+worker_rounds = 3
+research_slots = 0
+patience = 2
+
+[freeze.budget]                 # the activity's hard stop in notional dollars, fixed when the root opens (step 4)
+usd = 450.0
+
+[freeze.budget.final]           # set aside from the start, as in claude-v4-finance.toml; unused without a final
+usd = 160.0
+
+[estimate]
+cost_per_attempt = {base = 0.466, evolved = 0.49}

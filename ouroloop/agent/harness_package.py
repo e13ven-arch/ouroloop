@@ -1,4 +1,4 @@
-"""M0/M1: the capability package — what a candidate may change in the harness, and how the host mounts it
+"""M0/M1: the capability package — what a candidate may change in the harness, and what the host needs to run it
 (docs/modules/00_CONTRACTS.md §2, docs/modules/01_POLICY_RUNTIME.md §1).
 
 A package is a small directory of fixed shape: `manifest.json`, `skills/**.md`, `memory.md`, and — from the second
@@ -705,10 +705,11 @@ def load_package(objects: ct.Objects, package_ref: str) -> PackageView:
     return PackageView(package_ref, manifest, run, tests)
 
 
-# ---------------------------------------------------------------------------- the host side of a mounted package
+# ---------------------------------------------------------------------------- the host side of a package
+# The runner shell (agent/runner.py) runs a package: its default agent or its own agent program, in the isolated worker
+# when it holds code. The v1 loop's mount of a package as a tool surface (PackageTools, PackageRuntime, mount) went
+# with that loop in P1 step 5 (tag archive-2026-10-08).
 HOST_TOOLS = ("read_skill",)          # tools the host adds; a package tool may not take their names
-HOOK_ACTIONS = {"before_tool": ("continue", "block", "feedback"), "after_tool": ("continue", "feedback"),
-                "on_finish": ("continue", "block", "feedback")}
 
 
 class CapabilityError(RuntimeError):
@@ -716,175 +717,7 @@ class CapabilityError(RuntimeError):
     never run in-process (docs/modules/00_CONTRACTS.md §3)."""
 
 
-class PackageRuntime:
-    """One episode's view of a mounted package: its worker session (started on first use, closed at the end),
-    the broker over the episode's base tools, and what every tool and hook call did."""
-
-    def __init__(self, surface, view: PackageView, worker=None, on_event=None):
-        self.surface, self.package, self.worker, self.on_event = surface, view, worker, on_event
-        self._session = None
-        self.state: dict = {}                       # the episode view the agent keeps current
-
-    def session(self):
-        if self._session is None:
-            if self.worker is None:
-                raise CapabilityError(f"package {ct.short(self.package.ref)} runs code and no isolated worker is "
-                                      f"available")
-            import time
-            self._started, self._requests = time.monotonic(), 0
-            self._session = self.worker.start()
-            self._session.load({**self.package.run_files})          # the run bundle only: tests never run here
-        self._requests = getattr(self, "_requests", 0) + 1
-        return self._session
-
-    def end(self) -> None:
-        if self._session is not None:
-            import time
-            self._session.close()
-            self._session = None
-            # Worker time is part of what a candidate costs (docs/modules/05_EXECUTION_BUDGET.md §2).
-            self.emit("worker_session", seconds=round(time.monotonic() - self._started, 3),
-                      requests=self._requests - 1, worker=self.worker.describe().get("kind"))
-
-    def emit(self, kind: str, **data) -> None:
-        if self.on_event is not None:
-            self.on_event(kind, data)
-
-    # -------------------------------------------------------------- tools
-    def call_tool(self, tool: dict, args: dict):
-        from .tools import ToolResult
-        from .worker import Broker
-        broker = Broker(self.surface, read_only=False)
-        session = self.session()
-        value = session.request({"op": "call_tool", "entry": tool["entrypoint"], "args": args,
-                                 "view": self.state}, broker=broker)
-        if not isinstance(value, dict) or "output" not in value:
-            from .worker import PackageCallError
-            raise PackageCallError(f"tool {tool['name']} answered {type(value).__name__}, not a tool result")
-        self.emit("package_tool", tool=tool["name"], broker_calls=broker.calls)
-        # Clipped here too, whatever the worker sent: a package tool's output has the same bound as a base tool's.
-        output = str(value["output"])[:session.limits.max_output_chars]
-        return ToolResult(output, bool(value.get("is_error")), meta={"broker_calls": broker.calls})
-
-    # -------------------------------------------------------------- hooks
-    def hooks(self, site: str) -> list[dict]:
-        return [h for h in self.package.manifest["hooks"] if h["site"] == site and h.get("enabled", True)]
-
-    def run_hooks(self, site: str, event: dict) -> tuple[str, list[str]]:
-        """-> (action, messages). The hooks at `site` in manifest order; the first block or feedback of a
-        before_tool/on_finish hook ends the chain. An answer outside the site's protocol is the package's defect,
-        never read as continue (docs/modules/01_POLICY_RUNTIME.md §1)."""
-        from .worker import Broker, PackageCallError
-        messages: list[str] = []
-        for hook in self.hooks(site):
-            broker = Broker(self.surface, read_only=True)
-            value = self.session().request({"op": "hook", "entry": hook["entrypoint"], "event": event,
-                                            "view": self.state}, broker=broker)
-            if not isinstance(value, dict) or value.get("action") not in HOOK_ACTIONS[site] or \
-                    sorted(set(value) - {"action", "message"}):
-                raise PackageCallError(f"hook {hook['name']} at {site} answered {str(value)[:120]}: an action "
-                                       f"of {list(HOOK_ACTIONS[site])} with an optional message")
-            action, message = value["action"], str(value.get("message") or "")[:2000]
-            self.emit("hook", hook=hook["name"], site=site, action=action, message=message[:300],
-                      broker_calls=broker.calls)
-            if action == "continue":
-                continue
-            messages.append(message or f"{hook['name']} asks you to check before going on")
-            if site != "after_tool":
-                return action, messages
-        return ("feedback" if messages else "continue"), messages
-
-
-class PackageTools:
-    """The episode's tool surface plus what the mounted package adds: the host's `read_skill` when the package
-    lists skills, and the package's own tools (run in the worker) when it has any.
-
-    read_skill is a host read of the package's own text: it never reaches the business world, is not a business
-    tool call, and cannot read anything but an enabled skill of this package. Every read is reported through
-    `on_read`, so the run records which skill text the actor actually saw (docs/modules/01_POLICY_RUNTIME.md §1).
-    """
-
-    SPEC_NAME = "read_skill"
-
-    def __init__(self, surface, view: PackageView, on_read=None, runtime: PackageRuntime | None = None):
-        self.surface = surface
-        self.view = view
-        self.on_read = on_read
-        self.runtime = runtime
-        self.reads: list[str] = []
-        # A disabled tool stays in the package (enabling it again is a candidate of its own) and is never offered;
-        # manifests stored before tools carried the flag read as enabled.
-        self.tools = {t["name"]: t for t in view.manifest["tools"] if t.get("enabled", True)}
-        taken = sorted(set(self.tools) & ({s.name for s in surface.specs()} | {self.SPEC_NAME}))
-        if taken:
-            # A package tool that shadows a base tool would replace it silently, or send the provider two tools
-            # of one name: the candidate's defect, refused before the episode starts (M1 §1).
-            from .worker import PackageCallError
-            raise PackageCallError(f"package tools {taken} take the names of this host's tools")
-
-    @property
-    def hooks(self) -> PackageRuntime | None:
-        return self.runtime if self.runtime is not None and self.view.manifest["hooks"] else None
-
-    def end_session(self) -> None:
-        if self.runtime is not None:
-            self.runtime.end()
-
-    def specs(self):
-        from ..chat import ToolSpec
-        specs = [*self.surface.specs()]
-        for tool in self.tools.values():
-            specs.append(ToolSpec(tool["name"], tool["description"], tool["input_schema"]))
-        if self.view.skills:
-            names = [s["name"] for s in self.view.skills]
-            specs.append(ToolSpec(self.SPEC_NAME, "Read one of the skills listed in your instructions. Returns its "
-                                  "text.", {"type": "object", "properties": {"name": {"type": "string", "enum": names}},
-                                            "required": ["name"], "additionalProperties": False}))
-        return specs
-
-    def run(self, name: str, args: dict):
-        from .tools import ToolResult
-        if name in self.tools and self.runtime is not None:
-            return self.runtime.call_tool(self.tools[name], args or {})
-        if name != self.SPEC_NAME or not self.view.skills:
-            return self.surface.run(name, args)
-        skill = str((args or {}).get("name", ""))
-        text = self.view.skill_text(skill)
-        self.reads.append(skill)
-        if self.on_read is not None:
-            self.on_read(skill, text is not None)
-        if text is None:
-            return ToolResult(f"no skill named {skill!r}; the skills are "
-                              f"{[s['name'] for s in self.view.skills]}", True)
-        return ToolResult(text)
-
-    def mutates(self, name: str, args: dict) -> bool:
-        if name == self.SPEC_NAME:
-            return False
-        if name in self.tools:
-            return True            # a composite tool may write through the broker: counted as a change
-        return self.surface.mutates(name, args)
-
-    def __getattr__(self, attr):
-        return getattr(self.surface, attr)
-
-
 def usable_worker(worker) -> bool:
     """A worker package code may run in: an isolating one, or a protocol-test worker a test named as such."""
     return worker is not None and (bool(getattr(worker, "qualified", False)) or bool(getattr(worker, "for_tests",
                                                                                               False)))
-
-
-def mount(surface, bound, *, worker=None, on_read=None, on_event=None):
-    """The tool surface an agent gets for a bound release. A package that runs code needs the qualified worker;
-    without one the assembly is refused before any task tool runs (never an in-process fallback)."""
-    view = getattr(bound, "package", None) if bound is not None else None
-    if view is None:
-        return surface
-    if view.runs_code and not usable_worker(worker):
-        raise CapabilityError(f"package {ct.short(view.ref)} runs code and no qualified isolated worker is "
-                              f"available")
-    if not (view.skills or view.runs_code):
-        return surface
-    runtime = PackageRuntime(surface, view, worker, on_event=on_event) if view.runs_code else None
-    return PackageTools(surface, view, on_read=on_read, runtime=runtime)

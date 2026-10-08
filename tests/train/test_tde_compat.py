@@ -1,0 +1,234 @@
+"""Checks against the real TDE repository (skipped when it is not next to this one; set TDE_REPO to point at it).
+They prove the training path produces what TDE accepts, without training anything. And the in-process TDE backend on
+the GPU host (ouroloop installed into the TDE venv), with TDE stood in for. The training job itself: test_jobs.py."""
+import ast
+import contextlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+import sys
+import types
+from collections import OrderedDict
+from pathlib import Path
+
+import pytest
+
+from ouroloop.train import config as train_config
+from ouroloop.train.backends import TdeBackend
+from ouroloop.train.dataset import to_example
+from ouroloop.train.decision import Choice, Noul, Score
+from ouroloop.train import train
+from ouroloop.train.runtime import Runtime
+from ouroloop.train.trainers import tde
+from ouroloop.train.trainers.tde import prepare_job, tde_config
+from ouroloop.train.types import Question, Request
+
+REPO = Path(os.environ.get("TDE_REPO", Path(__file__).resolve().parents[3] / "jev"))
+needs_tde = pytest.mark.skipif(not (REPO / "tde" / "schema.py").exists(), reason="TDE repository not found")
+has_tde = importlib.util.find_spec("tde") is not None
+DEFAULT_RECIPE = {**train.DEFAULT_RECIPE, **tde.RECIPE}        # the recipe of a tde trainer
+RECIPE_KEYS = set(DEFAULT_RECIPE)
+# A recipe of the shape a scenario's config carries: one epoch over a sample of a few thousand rows. It is inline
+# because what this test checks is that such a recipe still maps onto TDE's own TrainConfig fields, not that any
+# particular example config exists.
+SMALL_RECIPE = {"epochs": 1.0, "train_limit": 5000, "batch_size": 16, "grad_accum": 2,
+                "max_state_tokens": 256, "gradient_checkpointing": False, "min_weight": 1.0}
+
+
+def all_primitives(root: Path) -> Path:
+    """Labelled decisions of a noul, a choice and a score point, written as the training files every trainer plugin
+    reads (train/dataset.py's example format): two thirds of the sessions to train.jsonl, the rest to val.jsonl. ->
+    the data directory."""
+    rt = Runtime(root / "ws", seed=0)
+    retry = rt.register(Noul("retry", "Rerunning this failed command unchanged will succeed",
+                             {"true": "a transient failure", "false": "a failure that needs a change"},
+                             phases={"after_failure": "no"}))
+    route = rt.register(Choice("route", "Which model tier is enough?", {"small": "a quick edit", "large": "a redesign"}))
+    effort = rt.register(Score("effort", "How much work is left?", ["none", "some", "a lot"]))
+    for s in range(30):
+        session = f"s{s:03d}"
+        rt.outcome(rt.record(retry, f"pip install failed: connection reset ({s})", session=session).id,
+                   "yes" if s % 2 else "no")
+        rt.outcome(rt.record(route, f"task {s}", session=session).id, "small" if s % 3 else "large")
+        rt.outcome(rt.record(effort, f"task {s}", session=session).id, str(s % 3))
+    data = root / "data"
+    data.mkdir()
+    points = {"retry": retry, "route": route, "effort": effort}
+    files = {"train": [], "val": []}
+    for row, target, weight in rt.ledger.training_rows():
+        split = "val" if int(row.decision["session"][1:]) % 3 == 0 else "train"
+        files[split].append(to_example(rt, points[row.decision["point"]], row, target, weight, split))
+    for split, rows in files.items():
+        (data / f"{split}.jsonl").write_text("".join(json.dumps(e) + "\n" for e in rows))
+    return data
+
+
+@needs_tde
+def test_built_examples_pass_tdes_own_validation(tmp_path):
+    spec = importlib.util.spec_from_file_location("tde_schema", REPO / "tde" / "schema.py")
+    schema = importlib.util.module_from_spec(spec)
+    sys.modules["tde_schema"] = schema          # dataclasses resolve annotations through sys.modules
+    spec.loader.exec_module(schema)
+    data = all_primitives(tmp_path)
+    # what TDE reads: the job's files as the plugin prepares them (val -> TDE's "calibration", which it selects on)
+    prepare_job(str(data), json.dumps(tde_config(DEFAULT_RECIPE, "run", None, "m_0001")))
+    seen = set()
+    for name, split in (("train", "train"), ("calibration", "calibration")):
+        rows = [json.loads(line) for line in (data / "tde" / f"{name}.jsonl").read_text().splitlines()]
+        assert rows and {e["split"] for e in rows} == {split}
+        for e in rows:
+            schema.DecisionExample.from_dict(e).validate()
+            seen.add(e["primitive"])
+    assert seen == {"noul", "choice", "score"}
+
+
+@needs_tde
+def test_generated_config_only_uses_real_trainconfig_fields():
+    tree = ast.parse((REPO / "tde" / "train.py").read_text(encoding="utf-8"))
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "TrainConfig")
+    fields = {s.target.id for s in cls.body if isinstance(s, ast.AnnAssign)}
+    inherited = {"backbone", "readout", "marker", "pool", "branch_layers", "branch_through_backbone", "finetune"}
+    for recipe in ({**DEFAULT_RECIPE, "max_steps": 10}, {**DEFAULT_RECIPE, **SMALL_RECIPE}):
+        cfg = tde_config(recipe, "runs/x", "runs/parent", "m_0001")
+        assert set(cfg) | {"data_dir"} | inherited <= fields
+
+
+# ---------------------------------------------------------------- the local TDE path on the GPU host
+@pytest.mark.skipif(has_tde, reason="tde is importable here")
+def test_without_tde_the_local_path_fails_at_once_and_says_why(tmp_path):
+    (tmp_path / "m_0001_x" / "run").mkdir(parents=True)
+    serving = train_config.build_serving({"store": {"type": "dir", "root": str(tmp_path)}})
+    for build in (lambda: TdeBackend("runs/m_0001"), lambda: train_config.build_backend({"type": "tde", "run": "r"}),
+                  lambda: train_config.build_backend({"type": "model", "model": "m_0001_x"}, serving),
+                  lambda: train_config.build_backend({"type": "model", "model": "m_0001_x", "trainer": "tde"}, serving)):
+        with pytest.raises(ImportError, match="host init local --trainer tde"):
+            build()
+
+
+def test_the_tde_backend_keeps_two_runs_loaded_and_lets_go_of_them_for_training(monkeypatch):
+    loads = []
+
+    class Decider:
+        @classmethod
+        def from_run(cls, run, device=None):
+            loads.append(run)
+            return cls()
+
+        def decide_batch(self, state, questions):
+            return {k: {"probabilities": {"yes": 0.7, "no": 0.3}} for k in questions}
+
+    tde, inference = types.ModuleType("tde"), types.ModuleType("tde.inference")
+    tde.__spec__, inference.Decider = importlib.machinery.ModuleSpec("tde", None), Decider
+    monkeypatch.setitem(sys.modules, "tde", tde)
+    monkeypatch.setitem(sys.modules, "tde.inference", inference)
+    monkeypatch.setattr(TdeBackend, "_loaded", OrderedDict())
+    a, b, c = (TdeBackend(f"~/runs/{x}", model=f"tde:m_000{x}") for x in "abc")
+    q = Request("board", Question("noul", "ok?"))
+    for backend in (a, b, a, c, a, b):
+        assert backend.decide([q])[0].model == backend.model
+    assert [Path(r).name for r in loads] == ["a", "b", "c", "b"]     # c let b go, a (just used) stayed
+    assert all(r == os.path.expanduser(f"~/runs/{Path(r).name}") for r in loads)
+    TdeBackend.release()                                             # a training job takes the GPU
+    a.decide([q])
+    assert Path(loads[-1]).name == "a" and len(TdeBackend._loaded) == 1
+    b.decide([q])
+    a.close()                                                        # a revoked model: its memory, not only its name
+    assert [Path(k[0]).name for k in TdeBackend._loaded] == ["b"]
+    a.close()
+
+
+class Tensor:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def to(self, device):
+        return self
+
+    def float(self):
+        return self
+
+    def cpu(self):
+        return self
+
+    def tolist(self):
+        return self.rows
+
+
+def fake_tde(monkeypatch, forward):
+    """Stand-ins for torch and the tde modules _decide_many uses; `forward(examples)` gives the logits."""
+    torch = types.SimpleNamespace(no_grad=contextlib.nullcontext, autocast=lambda **kw: contextlib.nullcontext(),
+                                  bfloat16="bf16", Tensor=Tensor)
+
+    def to_example(state, q, qid):
+        names = ["yes", "no"] if q["type"] == "noul" else list(q["criteria"])
+        return types.SimpleNamespace(state=state, k=len(names), primitive=q["type"],
+                                     candidates=[types.SimpleNamespace(name=n) for n in names])
+
+    modules = {"torch": torch, "tde": types.ModuleType("tde"),
+               "tde.inference": types.SimpleNamespace(_question_to_example=to_example),
+               "tde.model.encoding": types.SimpleNamespace(collate=lambda encoded, pad, mode: {"x": Tensor(encoded)})}
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+
+    class Model:
+        mode, calls = "joint", []
+
+        def __call__(self, batch):
+            self.calls.append(len(batch["x"].rows))
+            return {"logits": Tensor(forward(batch["x"].rows))}
+    return Model()
+
+
+def test_many_requests_are_batched_across_states_as_decide_batch_would(monkeypatch):
+    import math
+    model = fake_tde(monkeypatch, lambda examples: [[math.log(len(e.state)), 0.0, -9.0] for e in examples])
+    decider = types.SimpleNamespace(model=model, device=types.SimpleNamespace(type="cpu"), temperature=None,
+                                    dtok=types.SimpleNamespace(encode=lambda e, mode: e, pad_id=0))
+    monkeypatch.setattr(TdeBackend, "_many", True)
+    backend = TdeBackend("runs/m_0001", decider=decider)
+    choice = Question("choice", "which?", {"a": "", "b": "", "c": ""})
+    out = backend.decide([Request("x" * (i % 3 + 1), choice) for i in range(100)])
+    assert model.calls == [64, 36]                                     # two forward passes, not a hundred
+    assert out[1].probs == pytest.approx({"a": 2 / 3.0001234, "b": 1 / 3.0001234, "c": math.exp(-9) / 3.0001234},
+                                         rel=1e-3)
+    decider.temperature = types.SimpleNamespace(temperature=lambda primitive, k: 2.0)
+    assert backend.decide([Request("xx", choice)] * 2)[0].probs["a"] == pytest.approx(
+        math.sqrt(2) / (math.sqrt(2) + 1 + math.exp(-4.5)))
+    del decider.dtok.pad_id                                            # a tde whose internals differ
+    decider.decide_batch = lambda state, qs: {k: {"probabilities": {"a": 1, "b": 1, "c": 2}} for k in qs}
+    assert backend.decide([Request("x", choice)] * 2)[0].probs == {"a": 0.25, "b": 0.25, "c": 0.5}
+    assert TdeBackend._many is False                                   # from then on, state by state
+
+
+@needs_tde
+def test_the_batched_path_mirrors_tdes_own_decide_batch():
+    inference = (REPO / "tde" / "inference.py").read_text(encoding="utf-8")
+    for used in ("def _question_to_example(state: str, q: dict, qid: str", "from tde.model.encoding import collate",
+                 "collate([self.dtok.encode(e, mode) for e in chunk], self.dtok.pad_id, mode)",
+                 'self.model(batch)["logits"].float().cpu()', "self.temperature.apply(z, e.primitive)",
+                 "self.dtok, self.model, self.cfg, self.device, self.temperature"):
+        assert used in inference, used
+    temperature = (REPO / "tde" / "calibration" / "temperature.py").read_text(encoding="utf-8")
+    assert "def temperature(self, primitive: str, k: int)" in temperature
+    assert "z = logits / self.temperature(primitive, len(logits))" in temperature
+
+
+def test_a_tilde_in_a_run_path_is_the_training_machines_home(tmp_path):
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "train.jsonl").write_text(json.dumps({"id": 1}) + "\n")
+    cfg = tde_config(DEFAULT_RECIPE, "~/tde/ouroloop_jobs/m_0001/run", "~/tde/runs/base", "m_0001")
+    written = json.loads(Path(prepare_job(str(data), json.dumps(cfg))).read_text())
+    assert written["out_dir"] == os.path.expanduser("~/tde/ouroloop_jobs/m_0001/run")      # not a directory named ~
+    assert written["init_from"] == os.path.expanduser("~/tde/runs/base")
+    assert (data / "tde" / "calibration.jsonl").read_text() == ""      # no val split: TDE has nothing to select on
+    (data / "val.jsonl").write_text(json.dumps({"id": 2, "split": "val"}) + "\n")
+    prepare_job(str(data), json.dumps(cfg))
+    assert json.loads((data / "tde" / "calibration.jsonl").read_text()) == {"id": 2, "split": "calibration"}
+
+
+def test_a_small_recipe_stays_within_the_trainers_keys_and_is_cheap():
+    assert set(SMALL_RECIPE) <= RECIPE_KEYS
+    cfg = tde_config({**DEFAULT_RECIPE, **SMALL_RECIPE}, "run", None, "m_0001")
+    assert cfg["epochs"] == 1.0 and 1000 <= cfg["train_limit"] <= 10000 and not cfg["gradient_checkpointing"]

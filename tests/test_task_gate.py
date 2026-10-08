@@ -3,12 +3,13 @@ version with its failure and recovery paths."""
 import json
 
 import pytest
+import rsi
 
 from ouroloop import policies as P
 from ouroloop.benchmark import TaskResult, pair_key
 from ouroloop.evolve import contracts as ct
-from ouroloop.evolve.task_gate import (GatePlan, TaskEvalPlan, evaluate_task, judge, paired_bootstrap,
-                                       per_task, regression_rate, screen)
+from ouroloop.evolve.task_gate import (GatePlan, TaskEvalPlan, evaluate_task, judge, paired_bootstrap, per_task,
+                                       regression_rate)
 from ouroloop.release import NotAuthorized, Releases, Stale
 
 FAMILIES = {"t1": "f1", "t2": "f1", "t3": "f2", "t4": "f3", "t5": "f4"}
@@ -65,22 +66,13 @@ def test_regression_rate_counts_tasks_whose_mean_fell():
 
 
 # ---------------------------------------------------------------------------- ER-01 / ER-04 / ER-05
-def test_er01_a_candidate_that_passes_the_screen_and_loses_on_dev_is_rejected(tmp_path):
-    p = plan(tmp_path, screen_ids=("t1", "t3"))
-    screened = screen(p, rows(p, {"t1": True, "t3": True}), rows(p, {"t1": False, "t3": False}))
-    assert screened[0] == "pass"
+def test_er01_a_candidate_that_loses_on_dev_is_rejected(tmp_path):
+    p = plan(tmp_path)
     verdict, reasons, metrics, uncertainty = judge(
         p, rows(p, {"t1": True, "t2": False, "t3": False, "t4": False, "t5": False}),
         rows(p, {"t1": True, "t2": True, "t3": True, "t4": False, "t5": False}), FAMILIES)
     assert verdict == "rejected" and metrics["regression_rate"] > 0
     assert any("regression rate" in r or "min_gain" in r for r in reasons)
-
-
-def test_a_screen_never_removes_a_candidate_for_not_having_triggered(tmp_path):
-    p = plan(tmp_path, screen_ids=("t1",))
-    same = {"t1": False}
-    verdict, reasons = screen(p, rows(p, same), rows(p, same))
-    assert verdict == "pass" and "no defect" in reasons[0]
 
 
 def test_er04_a_small_gain_can_be_accepted_without_being_significant(tmp_path):
@@ -92,46 +84,24 @@ def test_er04_a_small_gain_can_be_accepted_without_being_significant(tmp_path):
     assert uncertainty["significant"] is False and "not a significant improvement" in reasons[0]
 
 
-def test_er05_an_economy_verdict_on_unknown_cost_is_inconclusive(tmp_path):
-    gate = GatePlan(mode="economy", max_quality_loss=0.05, max_runtime_cost_ratio=0.8, min_groups=3,
-                    bootstrap_replicates=400)
-    p = plan(tmp_path, gate=gate)
-    same = {"t1": True, "t2": True, "t3": True, "t4": False, "t5": False}
-    verdict, reasons, metrics, _ = judge(p, rows(p, same), rows(p, same, cost=0.1), FAMILIES)
-    assert verdict == "inconclusive" and "unknown cost is not zero" in reasons[-1]
-    assert metrics["cost_missing"]["subject"] == 5
-    # measured on both arms but the quality interval is too wide to call non-inferior
-    worse = {"t1": False, "t2": False, "t3": True, "t4": False, "t5": False}
-    verdict, reasons, _, _ = judge(p, rows(p, worse, cost=0.01), rows(p, same, cost=0.1), FAMILIES)
-    assert verdict == "rejected" and any("below control" in r for r in reasons)
-
-
-def test_er05_economy_accepts_only_a_supported_cost_reduction(tmp_path):
-    gate = GatePlan(mode="economy", max_quality_loss=0.05, max_runtime_cost_ratio=0.8, min_groups=3,
-                    bootstrap_replicates=400)
-    p = plan(tmp_path, gate=gate)
-    same = {"t1": True, "t2": True, "t3": True, "t4": True, "t5": True}
-    verdict, reasons, metrics, unc = judge(p, rows(p, same, cost=0.05), rows(p, same, cost=0.10), FAMILIES)
-    assert verdict == "accepted" and metrics["subject_cost_usd"] < metrics["control_cost_usd"]
-    assert unc["cost"]["high"] < 0
-    equal = judge(p, rows(p, same, cost=0.10), rows(p, same, cost=0.10), FAMILIES)
-    assert equal[0] == "inconclusive" and "does not support a reduction" in equal[1][-1]
-
-
 def test_a_quality_gate_may_not_have_a_min_gain_of_zero():
     with pytest.raises(ct.ContractError, match="above zero"):
         GatePlan(mode="quality", min_gain=0.0)
-    with pytest.raises(ct.ContractError, match="measurable cost"):
-        GatePlan(mode="economy")
 
 
-def test_protected_requirements_block_acceptance(tmp_path):
-    p = plan(tmp_path, gate=GatePlan(min_gain=0.05, min_groups=3, bootstrap_replicates=200,
-                                     protected_requirements=("req-1",)))
-    better = {"t1": True, "t2": True, "t3": True, "t4": True, "t5": True}
-    verdict, reasons, _, _ = judge(p, rows(p, better), rows(p, {t: False for t in TASKS}), FAMILIES,
-                                   protected={"req-1": False})
-    assert verdict == "rejected" and "protected requirements regressed" in reasons[-1]
+def test_a_gate_that_sets_a_removed_clause_is_refused_and_the_kept_fields_keep_the_plan_ref():
+    """P1 step 6: the economy mode, the runtime cost ratio and protected requirements are judged by nothing, so a
+    gate setting one is refused rather than frozen and silently ignored; their fields stay at the values every plan
+    was frozen with, so a plan's ref does not move."""
+    for kw, match in (({"mode": "economy", "max_runtime_cost_ratio": 0.8}, "economy is at tag v0.4.0"),
+                      ({"max_runtime_cost_ratio": 0.8}, "not judged any more"),
+                      ({"protected_requirements": ("req-1",)}, "not judged any more")):
+        with pytest.raises(ct.ContractError, match=match):
+            GatePlan(**kw)
+    fields = GatePlan().to_json()
+    assert fields["mode"] == "quality" and fields["max_runtime_cost_ratio"] is None
+    assert fields["protected_requirements"] == [] and fields["max_quality_loss"] == 0.02
+    assert GatePlan.from_json(fields).ref() == GatePlan().ref()
 
 
 # ---------------------------------------------------------------------------- ER-02 / integrity
@@ -265,7 +235,7 @@ def test_the_receipt_lists_each_regressed_task(tmp_path):
 # ---------------------------------------------------------------------------- installing (ER-06 to ER-10)
 def workspace(tmp_path):
     objects = ct.Objects(tmp_path)
-    releases, parent = P.bootstrap_workspace(tmp_path, objects=objects)
+    releases, parent = rsi.bootstrap_workspace(tmp_path, objects=objects)
     return objects, releases, parent
 
 
@@ -389,6 +359,38 @@ def test_a_revoked_ancestor_is_skipped_by_the_rollback(tmp_path):
     assert releases.rollback("rolling back two") == parent
     assert json.loads((tmp_path / "rsi" / "active.json").read_text())["release_ref"] == parent
     assert two.status == "installed"
+
+
+def test_a_rollback_with_no_good_ancestor_is_refused_and_changes_nothing(tmp_path):
+    """The pointer may only name a release that was evaluated and installed before: with no authorised ancestor that
+    stands (here the bootstrap release has none), the rollback is refused before anything is revoked."""
+    objects, releases, parent = workspace(tmp_path)
+    with pytest.raises(NotAuthorized, match="no authorised ancestor"):
+        releases.rollback("nothing to fall back to")
+    assert releases.active()["release_ref"] == parent and releases.revoked(parent) is False
+    one = releases.install(accepted_receipt(objects, releases, parent, text="one"), parent, "op-a")
+    releases.revoke(parent, "the bootstrap is bad too")
+    with pytest.raises(NotAuthorized, match="no authorised ancestor"):
+        releases.rollback("its only ancestor is revoked")
+    assert releases.active()["release_ref"] == one.target_release        # the pointer stays where it was
+    assert one.target_release not in releases.revoked()                     # and nothing more was revoked
+
+
+def test_the_revocation_list_round_trips_and_revoking_twice_writes_nothing(tmp_path):
+    """release.Revoked and revoke, kept as the revocation primitive a v2 serving of trained models rebuilds on
+    (docs/design/SLIMMING_INVENTORY.md §0.1 D); their reader went with the v1 runtime in P1 step 5."""
+    from ouroloop.release import Revoked, revoke
+    path = tmp_path / "harness" / "revoked.json"
+    listed = Revoked(path)
+    assert listed.ids() == frozenset() and listed.hit("m_0001") is None
+    assert revoke(tmp_path, "m_0001", "model-a", "broke a task") is True
+    assert listed.ids() == {"m_0001", "model-a"}                          # re-read: the file changed
+    assert listed.hit(None, "model-b", "model-a") == "model-a"
+    before = path.read_bytes()
+    assert revoke(tmp_path, "m_0001", None, "again") is False and path.read_bytes() == before
+    assert revoke(tmp_path, None, "model-b", "a second model") is True
+    assert Revoked(path).ids() == {"m_0001", "model-a", "model-b"}
+    assert [e["reason"] for e in json.loads(path.read_text())["revoked"]] == ["broke a task", "a second model"]
 
 
 # ---------------------------------------------------------------------------- v0.3 (M3 §2.1): the gate's statistics
@@ -762,18 +764,13 @@ def test_a_confirming_experiment_passes_through_confirming_and_a_restart_finishe
     assert ex.state()["history"][5]["receipt"] == receipt.ref() and len(calls) == 2
 
 
-def test_a_plan_takes_one_confirmation_reading_and_none_under_an_economy_gate(tmp_path):
+def test_a_plan_takes_one_confirmation_reading(tmp_path):
     """M3 §2.1(b) (v0.3, after review): `confirmation_repeats` is 0 or 1 — the rule is two readings each clearing
-    the gate, a third reading would only be paid for; an economy gate takes no confirmation at all (the clause lives
-    in the quality verdict); `regression_drop` is strictly inside (0, 1), since at 1.0 "more than" never fires. The
-    receipt's `readings` is 1 + confirmation_repeats."""
+    the gate, a third reading would only be paid for; `regression_drop` is strictly inside (0, 1), since at 1.0
+    "more than" never fires. The receipt's `readings` is 1 + confirmation_repeats."""
     with pytest.raises(ct.ContractError, match=r"0 or 1 — one confirmation reading \(M3 §2.1\(b\)\)"):
         plan(tmp_path, confirmation_repeats=2)
-    economy = GatePlan(mode="economy", max_quality_loss=0.05, max_runtime_cost_ratio=0.8, min_groups=3,
-                       bootstrap_replicates=200)
-    with pytest.raises(ct.ContractError, match="confirmation_repeats with an economy gate"):
-        plan(tmp_path, gate=economy, confirmation_repeats=1)
-    assert plan(tmp_path, gate=economy, confirmation_repeats=0).confirmations == 0
+    assert plan(tmp_path, confirmation_repeats=0).confirmations == 0
     with pytest.raises(ct.ContractError, match=r"strictly inside \(0, 1\)"):
         GatePlan(regression_drop=1.0)
     assert GatePlan(regression_drop=0.99).regression_drop == 0.99

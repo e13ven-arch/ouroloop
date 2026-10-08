@@ -1,5 +1,5 @@
-"""The default agent: today's host loop (agent/loop.py, its business path) as an agent program, the seed package of
-v0.3 (docs/DESIGN.md §5 "默认 agent", docs/modules/01_POLICY_RUNTIME.md §1 "默认 agent 即种子包").
+"""The default agent: the v1 host loop (agent/loop.py at tag archive-2026-10-08, its business path) as an agent
+program, the seed package of v0.3 (docs/DESIGN.md §5 "默认 agent", docs/modules/01_POLICY_RUNTIME.md §1 "默认 agent 即种子包").
 
 Standard library only, no ouroloop import, on purpose: the same bytes run in two places and must behave the same
 (PR7-07). The host ships this file as `agent/default_agent.py` of the loaded bundle when a v1 package with code runs

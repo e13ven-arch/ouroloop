@@ -33,25 +33,49 @@ Test splits read so far: marketing 3 times, finance once, support, sales and HR 
 
 - **Released:** tag `v0.4.0`, the finance final; earlier tags `v0.1.0` to `v0.3.0`.
 - **Implemented, not released:** v0.5's method library and experience library, merged into `m1-automationbench` (`7e7732e`). Under the batch-3 rule agreed before the run, the experience library stays as the memory base behind a preset switch, because both of its process readings held (train D ≥ +2; learning curve P ≥ 0.8). The method library's readings were never taken, so the rule cuts it. That cut is a proposal the user may veto.
-- **Next** ([docs/PLAN.md](docs/PLAN.md)): slimming in three batches. Memory work, open source first: no existing cross-task memory fits as it is, so the experience library stays the base and borrows designs from ACE and ReMe. R0 changes so that R also proposes tools and loop patches; K already allows writable package tools and agent-program edits, but R has never proposed a tool, while StarHarness reports +26.1 on finance (on a different metric) from such patches. New single-domain activities with sealed finals: any domain may run one under conditional reuse, with its read count disclosed. Phase 1 of the v2 training chain: Tinker LoRA for training, self-hosted vLLM on RunPod for evaluation inference, accepted on chain receipts only.
-- **Legacy code:** the pre-benchmark decision stack (Jev and TDE backends, local trainers, GPU jobs, decision points, and commands such as `run`, `demo`, `suite`, `research`, `evolve` and `serve`) is still in the tree, off the benchmark path, until slimming batch 1 moves its reusable part into the optional subpackage `ouroloop/train/` (extras `[train]`, `[train-jobs]`) and deletes the rest.
+- **Slimming batch 1 (done on branch `slim/1`, 2026-10-08):** the dead code and legacy paths are gone, and every attempt runs under the runner shell. The typed decision contracts (compatible with Jev and TDE), the decision records and the controller training chain are kept in the optional subpackage `ouroloop/train/` (extras `[train]` and `[train-jobs]`, entry point `python -m ouroloop.train`), off the benchmark path. The v1 agent loop's decision points and champion releases are removed (read them at tag `archive-2026-10-08`). Hash identity with the existing workspaces was not kept: no existing activity resumes at HEAD, and old workspaces are re-rendered or resumed at their tags. HEAD still reads their train/dev records.
+- **Next** ([docs/PLAN.md](docs/PLAN.md)):
+  - Slimming batches 2 and 3.
+  - Memory work, open source first. No existing cross-task memory fits as it is, so the experience library stays the base and borrows designs from ACE and ReMe.
+  - R0 changes so that R also proposes tools and loop patches. K already allows writable package tools and agent-program edits, but R has never proposed a tool, while StarHarness reports +26.1 on finance (on a different metric) from such patches.
+  - New single-domain activities with sealed finals. Any domain may run one under conditional reuse, with its read count disclosed.
+  - Phase 1 of the v2 training chain: Tinker LoRA for training and self-hosted vLLM on RunPod for evaluation inference, accepted on chain receipts only.
 
 ## Quick start
 
-Python 3.11 or newer, on macOS or Linux (on Windows, use WSL).
+You need Python 3.11 or newer, on macOS or Linux (on Windows, use WSL).
 
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
-pip install -e ".[dev,automationbench]"
+pip install -e ".[dev,automationbench]"        # add ,train,train-jobs for the training stack
 pytest -q                                      # offline: no network, no model; live and slow tests excluded
 OUROLOOP_TEST_REQUIRE_DOCKER=1 pytest -q -m "not live"   # the full run: adds the Docker worker (image below) and the upstream checkout
 ```
 
+Then run a first activity with [examples/automationbench/quickstart.toml](examples/automationbench/quickstart.toml). It is the v0.4 finance activity in a new workspace, `examples/automationbench/workspace-quickstart/`, with nothing frozen yet, so it touches no existing record. It needs the benchmark checkout (next section). The first command calls no model:
+
+```bash
+ouroloop bench --config examples/automationbench/quickstart.toml --phase smoke --checks-only   # $0: splits, scorer contract, input audit
+ouroloop bench --config examples/automationbench/quickstart.toml --phase smoke                 # one dev attempt, ~$0.5 nominal
+ouroloop freeze --config examples/automationbench/quickstart.toml                              # prints the [rsi] lines to add to the file
+ouroloop bench --config examples/automationbench/quickstart.toml --phase cycle --until baseline   # W0 on train and dev, ~$58 nominal
+```
+
+The config's header lists the stages that follow and what each costs. The file has no `[freeze.final]` on purpose: a final reads finance's test split, which v0.4's final has already read once.
+
 ## Run on AutomationBench
 
-AutomationBench simulates business workflows across 47 SaaS tools and scores the world state the agent's tools leave behind. The agent receives the task prompt and the tool schemas; the assertions and the seeded state stay in an object it never receives. ouroloop imports the benchmark lazily: clone it and point `[bench] upstream_path` at the checkout ([examples/automationbench/README.md](examples/automationbench/README.md) lists what to install). A local score on the public task set is not a leaderboard score.
+AutomationBench simulates business workflows across 47 SaaS tools. It scores the world state that the agent's tools leave behind. The agent receives the task prompt and the tool schemas; the assertions and the seeded state stay in an object it never receives.
 
-**Model.** The actor (`[llm]`) and R (`[research.llm]`) use `type = "claude_code"`. Each call is a fresh headless `claude -p` on this machine's Claude subscription login (`claude auth login`), with no tools and no local customization, in an empty directory. Tool calls come back as structured JSON output, not native tool use. The startup check refuses a login that is not a subscription and a table without `effort`. The measured configs pin `claude-opus-5-5` at effort medium, one level for every arm. The `openai_compat` and `anthropic` providers also exist; no reported result uses them.
+ouroloop imports the benchmark lazily. Clone it and point `[bench] upstream_path` at the checkout; [examples/automationbench/README.md](examples/automationbench/README.md) lists what to install. A local score on the public task set is not a leaderboard score.
+
+**Model.** The actor (`[llm]`) and R (`[research.llm]`) use `type = "claude_code"`.
+- Each call is a fresh headless `claude -p` on this machine's Claude subscription login (`claude auth login`), in an empty directory, with no tools and no local customization.
+- Tool calls come back as structured JSON output, not native tool use.
+- The startup check refuses a login that is not a subscription, and a table without `effort`.
+- The measured configs pin `claude-opus-5-5` at effort medium, one level for every arm.
+
+The `openai_compat` and `anthropic` providers also exist; no reported result uses them.
 
 **Package code** runs only in the isolated worker image:
 
@@ -59,37 +83,45 @@ AutomationBench simulates business workflows across 47 SaaS tools and scores the
 docker build -f docker/worker.Dockerfile -t ouroloop-worker:py3.12 .
 ```
 
-**An activity** runs in stages, and you stop after each one to read it:
+**Commands.** An activity runs in stages, and you stop after each one to read it.
 
-```bash
-ouroloop bench --config <cfg> --phase smoke --checks-only    # upstream identity, frozen splits, contract and input audit; no model call
-ouroloop freeze --config <cfg>                               # freezes the task plan, schedule and budget; prints the [rsi] lines to add
-ouroloop bench --config <cfg> --phase cycle --until baseline # W0 on train and dev
-ouroloop bench --config <cfg> --phase library                # v5 preset only: the experience library's stream and snapshot round
-ouroloop bench --config <cfg> --phase cycle                  # R's rounds: notes, coding session, screen, dev gate, confirmation
-# only after a confirmed install: fill [freeze.final] with W*, freeze again and commit the plan hash, then
-ouroloop bench --config <cfg> --phase evaluate               # the sealed final on the test split
-ouroloop bench --config <cfg> --phase report                 # recomputes everything from the records on disk; no model call
-ouroloop export --config <cfg> --to exported-app             # an installed release as a minimal app
-```
+| Command | What it does |
+|---|---|
+| `ouroloop bench --config <cfg> --phase smoke --checks-only` | upstream identity, frozen splits, scorer contract and input audit; no model call |
+| `ouroloop bench --config <cfg> --phase smoke` | the same checks, then one dev attempt end to end |
+| `ouroloop freeze --config <cfg>` | freezes the task plan, schedule and budget (and the final plan, from `[freeze.final]`); prints the `[rsi]` lines to add |
+| `ouroloop bench --config <cfg> --phase cycle --until baseline` | W0 on train and dev |
+| `ouroloop bench --config <cfg> --phase library` | v5 preset only: the experience library's stream and snapshot round |
+| `ouroloop bench --config <cfg> --phase cycle --until segment-0/round-K` | R's rounds, one at a time: notes, coding session, screen, dev gate, confirmation |
+| `ouroloop bench --config <cfg> --phase evaluate` | the sealed final on the test split; only after a confirmed install, with W\* in `[freeze.final]`, frozen and its plan hash committed |
+| `ouroloop bench --config <cfg> --phase report` | recomputes everything from the records on disk; no model call |
+| `ouroloop export --config <cfg> --to exported-app` | an installed release as a minimal app |
+| `python -m ouroloop.train decide \| smoke --jev \| host init \| host check` | the optional training stack: one decision from a backend, a backend smoke, a training host ([docs/TRAINING_HOSTS.md](docs/TRAINING_HOSTS.md)) |
 
-An interrupted `cycle` or `library` run continues where it stopped and pays nothing twice. Every paid phase stops at the activity's budget root, in notional dollars. The phases `baseline`, `improve`, `collect`, `research` and `learn` also exist at HEAD. The slimming plan removes the in-activity research slot and, unless the user vetoes, the method library's `learn`.
+An interrupted `cycle` or `library` run continues where it stopped and pays nothing twice. Every paid phase stops at the activity's budget root, in notional dollars. The phases `baseline`, `improve`, `research` and `learn` also exist at HEAD. Slimming batch 2 removes the in-activity research slot, and batch 3 removes the method library's `learn` unless the user vetoes it.
 
-**Configs.** The measured configs are `examples/automationbench/claude-v4-finance.toml` (v0.4's final) and `claude-v4-support.toml` and `claude-v5-support.toml` (the two support arms). Each header lists its stages and their costs. Their `[workspace]` roots hold local, git-ignored run records, and their `[rsi]` refs name plans frozen there. For a new activity, copy one and give it a new `[workspace] root` and `[rsi] scope_id`. Replace the `[rsi]` plan refs with the lines your `freeze` prints, and leave out `[freeze.final]` until there is a W\*.
+**Configs.**
+- `quickstart.toml` is the template for a new activity.
+- The measured configs are `examples/automationbench/claude-v4-finance.toml` (v0.4's final) and `claude-v4-support.toml` and `claude-v5-support.toml` (the two support arms). Each header lists its stages and their costs.
+- Their `[workspace]` roots hold local, git-ignored run records, and their `[rsi]` refs name plans frozen there. Those workspaces were run on earlier code: re-render or resume them at their tags (`v0.4.0`, `archive-2026-10-08`), not at HEAD.
 
-## Code layout (the benchmark path)
+For another domain, copy `quickstart.toml`. Change `[bench] domains` and the `[bench.frozen_splits]` pin: use the hash `workspace-claude-v3` froze for that domain, or remove the pin for a fresh split. Give the copy a new `[workspace] root` and `[rsi] scope_id`, and leave out `[freeze.final]` until there is a W\*.
+
+## Code layout
 
 | Path | What it holds |
 |---|---|
-| `ouroloop/bench.py` | the phases of `ouroloop bench`, presets, startup checks, freezing and the cycle |
+| `ouroloop/cli.py`, `ouroloop/bench.py` | the `ouroloop bench`, `freeze` and `export` commands; the phases, presets, startup checks, freezing and the cycle |
 | `ouroloop/adapters/automationbench.py` | tasks, business tools, the official scorer |
-| `ouroloop/agent/` | the runner shell (`runner.py`, `gateway.py`), the default agent program, capability packages (`harness_package.py`) and the isolated worker (`worker.py`, `worker_runner.py`) |
+| `ouroloop/agent/` | the runner shell (`runner.py`, `gateway.py`, the deny list in `deny.py`), the default agent program, capability packages (`harness_package.py`) and the isolated worker (`worker.py`, `worker_runner.py`) |
 | `ouroloop/research/` | R: failure diagnosis, the coding session (`session.py`), draft checks, the experience library (`library.py`), the method library (`methods.py`, `method_kit/`) |
-| `ouroloop/evolve/` | contracts and the object store (`contracts.py`), the paired task gate (`task_gate.py`), execution and the budget book (`execution.py`); the legacy trainers and promotion gate live here too |
-| `ouroloop/release.py`, `ouroloop/policies.py` | W/R releases, installs and recovery; registered policy targets |
+| `ouroloop/evolve/` | contracts and the object store (`contracts.py`), the paired task gate (`task_gate.py`), execution and the budget book (`execution.py`), attempts (`task_eval.py`), the experiment ledger (`experience.py`) |
+| `ouroloop/release.py`, `ouroloop/policies.py`, `ouroloop/workspace.py` | W/R releases, installs, recovery and export; registered policy targets; the session record each attempt writes |
 | `ouroloop/report.py` | the offline report: identity, task effect, costs, C1–C4 states |
-| `ouroloop/providers/` | `claude_code`, `openai_compat`, `anthropic` and `manual` |
+| `ouroloop/providers/` | `claude_code`, `openai_compat`, `anthropic` |
 | `ouroloop/app.py` | the minimal app an exported release runs as |
+| `ouroloop/train/` (extra `[train]`) | the training and decision stack, off the benchmark path: decision contracts, labels and datasets, `train_artifact`, backends (Jev, TDE, LLM), model stores and serving, trainer plugins, StopGuard, `python -m ouroloop.train` |
+| `ouroloop/train/jobs/` (extra `[train-jobs]`) | training jobs on this machine, on a host over ssh, or on a RunPod or Vast.ai instance; host setup scripts and the training-host image |
 
 ## Documents
 
@@ -100,7 +132,7 @@ The design documents are in Chinese.
 - [docs/DESIGN.md](docs/DESIGN.md), [docs/ROADMAP.md](docs/ROADMAP.md) and [docs/modules/](docs/modules/README.md): the design, the activity history and the module rules.
 - [docs/design/](docs/design/): the slimming inventory, the open-source components plan, the v2 training pipeline, and the v0.4 and v0.5 plans.
 
-Every file deleted in the 2026-10-08 cleanup is still readable at tag `archive-2026-10-08`.
+Every file deleted on 2026-10-08, in the cleanup and in slimming batch 1, is still readable at tag `archive-2026-10-08`.
 
 ## License
 

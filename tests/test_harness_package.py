@@ -171,7 +171,6 @@ def test_a_skill_name_with_a_trailing_newline_is_refused():
 
 
 def test_enabled_is_a_boolean_and_a_disabled_tool_is_not_offered(tmp_path):
-    from ouroloop.chat import ToolSpec
     with pytest.raises(hp.PackageError, match="enabled is true or false"):
         hp.check_shape(tool_files(enabled="false"), CODE)
     manifest = json.loads(code_files()["manifest.json"])
@@ -187,10 +186,9 @@ def test_enabled_is_a_boolean_and_a_disabled_tool_is_not_offered(tmp_path):
     objects = ct.Objects(tmp_path)
     ref = hp.build_package(objects, {**files, "manifest.json": json.dumps(manifest)}, CODE)
 
-    class Surface:
-        def specs(self):
-            return [ToolSpec("api_search", "search", {"type": "object"})]
-    offered = set(hp.PackageTools(Surface(), hp.load_package(objects, ref)).tools)
+    from ouroloop.agent.worker import component_view
+    # what the runner shell's view hands the default agent to offer (runner.attempt_view)
+    offered = {t["name"] for t in component_view(hp.load_package(objects, ref).manifest)["tools"]}
     assert offered == {"lookup_contact"}
 
 
@@ -262,48 +260,54 @@ def test_the_package_text_reaches_the_prompt_and_is_recorded(tmp_path):
 
 
 def test_read_skill_is_a_host_read_and_is_recorded(tmp_path):
+    """ctx.skills on the host (agent.gateway.SkillReader): a read answers from the package's own text, never from the
+    business world, and every read is on the record with whether it was found."""
+    from ouroloop.agent.gateway import SkillReader
     releases, rel, objects, package = v06_workspace(tmp_path, text_files(skill=NOTE))
+    bound = P.bind_release(rel, profile="task", services=P.Services(objects))
+    reads, records = [], []
+    skills = SkillReader(bound.package, record=lambda kind, data: records.append((kind, data)),
+                         on_read=lambda n, found: reads.append((n, found)))
+    assert skills.index == [{"name": SKILL, "description": "check before finishing"}]
+    assert skills.read(SKILL) == NOTE and skills.read("other") is None
+    assert reads == [(SKILL, True), ("other", False)]
+    assert [(kind, data.get("name"), data.get("found", not data.get("is_error"))) for kind, data in records] == [
+        ("skill_read", SKILL, True), ("tool", "read_skill", True), ("skill_read", "other", False),
+        ("tool", "read_skill", False)]
+
+
+def test_a_package_that_runs_code_is_refused_without_a_worker(tmp_path):
+    from ouroloop.agent.runner import PackageAgent
+    from ouroloop.benchmark import Budget
+    limits = hp.Limits(components=hp.KINDS)
+    releases, rel, objects, package = v06_workspace(tmp_path, code_files(), limits)
     bound = P.bind_release(rel, profile="task", services=P.Services(objects))
 
     class Business:
         def specs(self):
             return []
 
-        def run(self, name, args):
-            raise AssertionError("read_skill must not reach the business world")
-
-        def mutates(self, name, args):
-            return True
-
-    reads = []
-    surface = hp.mount(Business(), bound, on_read=lambda n, found: reads.append((n, found)))
-    assert [s.name for s in surface.specs()] == ["read_skill"]
-    assert surface.run("read_skill", {"name": SKILL}).output == NOTE
-    assert surface.run("read_skill", {"name": "other"}).is_error
-    assert reads == [(SKILL, True), ("other", False)] and not surface.mutates("read_skill", {})
-
-
-def test_a_package_that_runs_code_is_refused_without_a_worker(tmp_path):
-    limits = hp.Limits(components=hp.KINDS)
-    releases, rel, objects, package = v06_workspace(tmp_path, code_files(), limits)
-    bound = P.bind_release(rel, profile="task", services=P.Services(objects))
-    with pytest.raises(hp.CapabilityError, match="runs code"):
-        hp.mount(object(), bound)
+    with pytest.raises(hp.CapabilityError, match="runs code and no qualified isolated worker"):
+        PackageAgent(None, None, Business(), bound=bound, budget=Budget(max_steps=1))
 
 
 def test_the_scripted_worker_follows_a_skill_it_reads(tmp_path):
-    """IT6-22 (text part) in miniature: the same request, and a package skill changes what gets done."""
-    from ouroloop.agent import Agent, AgentConfig
+    """IT6-22 (text part) in miniature: the same request, and a package skill changes what gets done — under the
+    runner shell, the default agent offering read_skill beside the base tools."""
+    from types import SimpleNamespace
+    from ouroloop.benchmark import Budget
+    from ouroloop.evolve.task_eval import Budgeted, make_agent_factory
     from tests import rsi
     releases, rel, objects, package = v06_workspace(tmp_path, text_files(skill=rsi.FINISH_CHECK_MARK))
     bound = P.bind_release(rel, profile="task", services=P.Services(objects))
-    worker = rsi.BusinessWorker()
-    prompt, _ = bound.system_prompt("You are a business agent.")
     calls = []
 
     class World:
+        tool_calls = 0
+
         def specs(self):
-            return []
+            from ouroloop.chat import ToolSpec
+            return [ToolSpec("api_fetch", "fetch", {"type": "object", "properties": {}})]
 
         def run(self, name, args):
             from ouroloop.agent.tools import ToolResult
@@ -313,8 +317,9 @@ def test_the_scripted_worker_follows_a_skill_it_reads(tmp_path):
         def mutates(self, name, args):
             return True
 
-    agent = Agent(worker, rsi.runtime(tmp_path), hp.mount(World(), bound), system=prompt,
-                  config=AgentConfig(approve="auto", max_turns=6, gated_tools=()))
+    budget = Budget(max_steps=6, max_tool_calls=12)
+    make = make_agent_factory(rsi.ws(tmp_path), rsi.BusinessWorker(), budget=budget, bound=bound, max_effort="high")
+    agent = make(Budgeted(World(), budget), SimpleNamespace(task_id="t1"), "You are a business agent.")
     agent.run("Move Dana Reyes to opportunity stage, then post to #ops with the phrase deal moved.")
     assert calls == [rsi.HUBSPOT, rsi.SLACK]
 
@@ -450,16 +455,25 @@ def test_the_twenty_recorded_v03_draft_checks_replay_to_no_false_refusal():
     """V0_4_PLAN §1.5's regression (examples/automationbench/literal_replay.py, read-only over workspace-claude-v3):
     the v0.3 rule reproduces the 14 refusals the activity recorded among its 20 draft checks; the v0.4 rule refuses
     none of them; a value of exactly one train task, planted in its own case into the first refused draft, is still
-    refused. Needs the v0.3 workspace and the upstream checkout, which are not in the repository. Run as its own
-    process: the upstream package is imported from the real checkout there, never the test fixture's copy."""
+    refused. Needs the v0.3 workspace (under OUROLOOP_RECORDS_ROOT, as tests/test_record_compat.py finds it) and the
+    upstream checkout, which are not in the repository; the workspace is only read. Run as its own process, on this
+    checkout's code: the upstream package is imported from the real checkout there, never the test fixture's copy."""
+    import os
     import subprocess
     import sys
-    script = Path(__file__).resolve().parent.parent / "examples" / "automationbench" / "literal_replay.py"
-    workspace = script.parent / "workspace-claude-v3"
+    from test_record_compat import RECORDS, ReadOnly
+    repo = Path(__file__).resolve().parent.parent
+    script = repo / "examples" / "automationbench" / "literal_replay.py"
+    workspace = RECORDS / "workspace-claude-v3"
     if not (workspace / "rsi" / "events.jsonl").exists() or not Path("~/workspace/AutomationBench").expanduser().exists():
-        pytest.skip("workspace-claude-v3 or the upstream checkout is not here")
-    done = subprocess.run([sys.executable, str(script), "--json"], capture_output=True, text=True, timeout=300)
+        pytest.skip(f"workspace-claude-v3 is not under {RECORDS}, or the upstream checkout is not here")
+    guard = ReadOnly(workspace)
+    guard.read(workspace / "rsi" / "events.jsonl")
+    done = subprocess.run([sys.executable, str(script), "--workspace", str(workspace), "--json"],
+                          capture_output=True, text=True, timeout=300,
+                          env={**os.environ, "PYTHONPATH": str(repo)})
     assert done.returncode == 0, done.stderr[-2000:]
+    guard.check()
     out = json.loads(done.stdout.strip().splitlines()[-1])
     assert out["checks"] == 20 and out["recorded_refusals"] == 14
     assert out["old_rule_refusals"] == 14 and out["old_rule_reproduces_record"]

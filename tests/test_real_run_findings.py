@@ -427,15 +427,6 @@ def test_a_round_that_meets_an_account_error_pauses_and_the_experiment_resumes_a
 from test_cycle import fixture_preset  # noqa: E402,F401 - the cycle tests' preset, as a fixture here too
 
 
-class _Refused:
-    """A frontier model whose account the provider refuses."""
-    name, model = "frontier", "frontier-1"
-
-    def chat(self, system, messages, specs=()):
-        from ouroloop.providers import ProviderAccountError
-        raise ProviderAccountError('HTTP 429: {"error":{"code":"1113","message":"余额不足"}}')
-
-
 def _broken_actor(monkeypatch, state):
     """The fixture's actor, refused by its provider while `state["broke"]` is set."""
     import rsi
@@ -464,9 +455,8 @@ def _attempt_ids(tmp_path):
     return [r.attempt_id for r in rows_of(tmp_path)]
 
 
-@pytest.mark.parametrize("where,step", [("baseline", "baseline"), ("frontier", "baseline"),
-                                        ("resume", "segment-0"), ("slot", "slot-0"), ("common", "slot-0"),
-                                        ("outer", "slot-0")])
+@pytest.mark.parametrize("where,step", [("baseline", "baseline"), ("resume", "segment-0"), ("slot", "slot-0"),
+                                        ("common", "slot-0"), ("outer", "slot-0")])
 def test_every_cycle_step_pauses_on_an_account_error(fake_upstream, tmp_path, fixture_preset, monkeypatch, where,
                                                      step):
     """docs/modules/05_EXECUTION_BUDGET.md §3: an account refusal outside a task attempt pauses the activity with
@@ -483,8 +473,6 @@ def test_every_cycle_step_pauses_on_an_account_error(fake_upstream, tmp_path, fi
     slot = RProposer()
     if where == "baseline":
         _breaks_on_entry(monkeypatch, bench, "baseline", state)
-    elif where == "frontier":
-        cfg["frontier"] = {"a": {"llm": {"type": "test_real_run_findings:_Refused"}}}
     elif where == "common":
         _breaks_on_entry(monkeypatch, bench, "_campaign_common", state)
         # 2026-10-05 review: the common inputs reuse the mainline's readings of the start W, which under this
@@ -518,9 +506,8 @@ def test_every_cycle_step_pauses_on_an_account_error(fake_upstream, tmp_path, fi
     assert "refuses the account" in recorded["steps"][step]["reason"]
     later = {"baseline": "segment-0", "segment-0": "slot-0", "slot-0": "segment-1"}[step]
     assert later not in recorded["steps"]                        # nothing past the paused step ran
-    # the repair: the account is topped up, the frontier model's too
+    # the repair: the account is topped up
     state["broke"] = None
-    cfg.pop("frontier", None) if where == "frontier" else None
     before = _attempt_ids(tmp_path)
     again = bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper(), slot_researcher=RProposer(),
                         arm_researcher=arms([Stopper, Stopper, SkillAnyway])[0])
@@ -809,32 +796,3 @@ def test_a_gateway_that_answers_200_without_choices_is_a_provider_failure():
     with pytest.raises(ProviderError, match="without choices"):
         OpenAICompatProvider("m", client=gateway(json.dumps({"error": {"message": "upstream reset"}})),
                              retries=0).chat("s", [], [])
-
-
-def test_the_screen_compares_against_the_frozen_parent_after_the_pointer_moved(fake_upstream, tmp_path):
-    """A screen resumed after the pointer moved still runs its control arm on the version the experiment was frozen
-    on, not on whatever is active now (docs/modules/05_EXECUTION_BUDGET.md §3)."""
-    import rsi
-    from test_harness_loop import v06_prepared
-    from ouroloop import bench
-    from ouroloop.ledger import write_json
-    cfg, activity, w0 = v06_prepared(fake_upstream, tmp_path)
-    work = bench.improvement(activity, template_ref=cfg["rsi"]["task_plan_ref"])
-    work.screen_ids = (rsi.DEV[0],)
-    release = ct.SystemRelease.from_json(activity.objects.get(w0))
-    moved = activity.releases.bootstrap(release.worker_ref, release.research_ref, release.core_ref,
-                                        reason="another install meanwhile", activate=False)
-    write_json(activity.releases.active_path, {"release_ref": moved, "revision": 5, "last_operation_id": None})
-    proposal = activity.objects.put(ct.ExperimentProposal(owner="worker", hypothesis="h", changes=(
-        {"target": "worker.system_prompt", "kind": "prompt", "change": {"text": "Do every step."}},)))
-    work._begin(ct.Experiment(id="x1", proposal_ref=proposal, parent_release=w0,
-                              experience_ref=activity.objects.put_json("change", {"experience": []}),
-                              core_ref=release.core_ref, eval_template_ref=cfg["rsi"]["task_plan_ref"],
-                              budget_scope=work.scope_id))
-    ran = []
-    work.run_arm = lambda arm, release_ref, order, **kw: ran.append((arm, release_ref)) or []
-    try:
-        work._screen(release.worker_ref, None)
-    except Exception:  # noqa: BLE001 - empty arms; only which release each arm ran on is under test
-        pass
-    assert ("screen_control", w0) in ran and all(release_ref != moved for _arm, release_ref in ran)

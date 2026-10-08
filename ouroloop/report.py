@@ -655,10 +655,6 @@ def _missing(arms: dict, manifest) -> list:
     for role in ("base", "evolved"):
         if role not in roles:
             missing.append(f"no {role} run on record")
-    if not any(r.startswith("frontier") for r in roles):
-        missing.append("no frontier run on record: C2 cannot be complete")
-    elif len([r for r in roles if r.startswith("frontier")]) < 2:
-        missing.append("only one frontier vendor on record: C2 is incomplete")
     if any(not a["v2"] for a in arms.values()):
         missing.append("some runs predate the v2 manifest and carry no release identity")
     return missing
@@ -732,21 +728,15 @@ def claim_states(report: dict) -> dict:
     out = {}
     out["C1"] = _pair_claim(by_role.get("evolved"), by_role.get("base"), "iteration over the same base", plan,
                             spent=spent)
-    frontier = [a for role, rows in by_role.items() if role.startswith("frontier") for a in rows]
-    if not frontier or not by_role.get("evolved"):
-        out["C2"] = {"state": "not_run", "detail": "no frontier comparison on record"}
-    else:
-        complete = len({a["role"] for a in frontier}) >= 2
-        out["C2"] = {**_pair_claim(by_role.get("evolved"), frontier, "position against leading models", plan,
-                                   spent=spent), "complete": complete}
-        if not complete:
-            out["C2"]["state"] = "inconclusive"
-            out["C2"]["detail"] += "; fewer than two vendors, so C2 is incomplete"
-    if not frontier and report.get("external_references"):
-        # Published numbers only: background, not a same-task comparison (docs/modules/07_BENCH_REPORT.md §4).
+    # C2 cites published results and runs no frontier model locally (2026-09-28; the local frontier arm is at tag
+    # v0.4.0). Published numbers are background, not a same-task comparison (docs/modules/07_BENCH_REPORT.md §4).
+    if report.get("external_references"):
         out["C2"] = {"state": "inconclusive", "evidence_kind": "external_reference",
                      "detail": f"{len(report['external_references'])} published results cited; no local run on "
                                f"the same tasks, so no position is claimed"}
+    else:
+        out["C2"] = {"state": "not_run", "detail": "no frontier model runs locally and no published result is cited "
+                                                   "(bench/<domain>/external_references.json)"}
     if report.get("harness"):
         # The first version trains no decision model; the evolved/prompt_best mapping would misname a package
         # or prompt change as a decision-model contribution.

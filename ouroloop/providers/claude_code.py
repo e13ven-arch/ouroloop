@@ -31,7 +31,6 @@ from pathlib import Path
 
 from ..chat import ChatTurn, ToolCall, ToolSpec
 from . import ProviderAccountError, ProviderError
-from .manual import request_json
 
 USAGE_KEYS = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
 # The most model requests one CLI call can make: the request, up to 3 continuations the CLI makes on its own after a
@@ -135,6 +134,19 @@ def _json(value) -> str:
     return json.dumps(value, ensure_ascii=False, indent=1).replace("@", "\\u0040")
 
 
+def request_json(system: str, messages: list[dict], tools: list[ToolSpec]) -> dict:
+    """The request as JSON: history entries as chat.py defines them, tool calls as objects, no provider's native
+    content."""
+    history = []
+    for m in messages:
+        m = {k: v for k, v in m.items() if k != "native"}
+        if m.get("tool_calls"):
+            m["tool_calls"] = [{"id": c.id, "name": c.name, "args": c.args} for c in m["tool_calls"]]
+        history.append(m)
+    return {"system": system, "messages": history,
+            "tools": [{"name": t.name, "description": t.description, "schema": t.schema} for t in tools]}
+
+
 def turn_blocks(system: str, messages: list[dict], tools: list[ToolSpec]) -> list[str]:
     """An actor turn's user message: the reply format and the tools, then one block per history entry. Nothing
     follows the last entry, so the next turn's request begins with this one's blocks unchanged."""
@@ -232,7 +244,7 @@ def run_child(cmd: list, *, input: str, timeout: float, cwd, env) -> subprocess.
 
 class ClaudeCodeProvider:
     name = "claude_code"
-    source = "frontier_llm"            # a closed model's answers are never training targets
+    source = "frontier_llm"            # lineage (DESIGN §8, invariant 6); eval-only in the ledger until v2.0
     supports_history_edits = True      # the whole history is sent again each call; nothing is replayed verbatim
 
     def __init__(self, model: str, effort: str | None = None, max_tokens: int | None = None,

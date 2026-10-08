@@ -56,6 +56,25 @@ def test_every_agent_call_is_reserved_and_settled_on_the_activity_book(fake_upst
     assert used["model_calls"] == len(reservations) and used["usd"] > 0
 
 
+def test_every_agent_call_of_a_v3_round_is_reserved_and_settled_on_the_activity_book(fake_upstream, tmp_path,
+                                                                                    monkeypatch):
+    """The test above on the path new activities run (the v3 preset: a measurement, R's session, the train screen,
+    the dev gate and its confirmation), so it does not go with `prepared`'s preset-less K when batch 2 moves it."""
+    from test_research_session import MEMORY, memory_candidate, prepared_v3
+    cfg, activity, w0 = prepared_v3(fake_upstream, tmp_path, monkeypatch)
+    step = rsi.SessionScript(lambda inputs: [memory_candidate(inputs, name="good", text=MEMORY)])
+    result = bench.improve(cfg, ".", out=lambda _l: None, researcher=step)
+    assert [r["outcome"] for r in result["rounds"]] == ["installed", "stopped"]
+    reservations = list(book(activity)["reservations"].values())
+    assert reservations and all(r["status"] == "settled" for r in reservations)
+    operations = {r["operation_id"].split(":")[1] for r in reservations}
+    assert {"measure", "train_screen", "subject", "control", "confirm"} <= operations
+    scopes = book(activity)["scopes"]
+    (root,) = [name for name, entry in scopes.items() if entry["parent"] is None]
+    used = activity.budgets.account(root, scopes[root]["limits"]).remaining()["used"]
+    assert used["model_calls"] == len(reservations) and used["usd"] > 0
+
+
 def test_one_activity_has_one_budget_root(fake_upstream, tmp_path):
     from test_rsi_integration import campaign_pairs
     cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
@@ -451,8 +470,7 @@ def test_the_in_flight_cap_is_shared_by_the_arms_and_screens_of_one_gate(fake_up
             releases, rel, objects = rsi.workspace(root, split_ref=splits.hash())
             bound = P.bind_release(rel, profile="task", services=P.Services(objects), authorization="bootstrap")
             manifest = rsi.run_manifest(name, "base", "dev", data=splits.hash(), system_release_ref=rel)
-            factory = make_agent_factory(rsi.runtime(root), InFlight(), budget=manifest.budget, bound=bound,
-                                         objects=objects)
+            factory = make_agent_factory(rsi.ws(root), InFlight(), budget=manifest.budget, bound=bound)
             rows = run_tasks(suite, list(rsi.DEV), factory, run=manifest, splits=splits,
                              results=Results(root, rsi.DOMAIN), release_ref=rel, arm=name, concurrency=2)
             assert len(rows) == len(rsi.DEV) and all(r.validity == "valid" for r in rows)
@@ -500,17 +518,18 @@ class AccountAfterLimit(rsi.BusinessWorker):
         raise ProviderAccountError("You've hit your usage limit")
 
 
-def test_freeze_refuses_two_confirmations_an_economy_confirmation_and_a_vacuous_regression_drop(fake_upstream,
-                                                                                                tmp_path):
+def test_freeze_refuses_two_confirmations_an_economy_gate_and_a_vacuous_regression_drop(fake_upstream, tmp_path):
     """M3 §2.1(b)(d) (v0.3, after review), through `ouroloop freeze`: a [freeze.task_plan] table asking for two
-    confirmation readings, a confirmation under an economy gate, or a regression_drop of 1.0 is refused before
-    anything is frozen."""
+    confirmation readings, an economy gate or screen tasks (both removed in P1 step 6), or a regression_drop of 1.0
+    is refused before anything is frozen."""
     cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
     gate = {"min_gain": 0.05, "min_groups": 1}
     for table, match in (({"tasks": "dev", "confirmation_repeats": 2, "gate": gate}, "0 or 1"),
                          ({"tasks": "dev", "confirmation_repeats": 1,
                            "gate": {"mode": "economy", "max_runtime_cost_ratio": 0.9, "min_groups": 1}},
-                          "economy gate"),
+                          "economy is at tag v0.4.0"),
+                         ({"tasks": "dev", "screen": ["rsi.dev_update_stage"], "gate": gate},
+                          r"does not take \['screen'\]"),
                          ({"tasks": "dev", "gate": {**gate, "regression_drop": 1.0}}, r"strictly inside \(0, 1\)")):
         cfg["freeze"] = {"task_plan": table}
         with pytest.raises((ValueError, ct.ContractError), match=match):
@@ -789,7 +808,7 @@ def test_the_verification_bound_prices_the_gate_and_a_gate_it_cannot_pay_for_nev
     assert not [r for r in Results(activity.root, rsi.DOMAIN).all() if r.pair_key]      # no gate attempt ran
 
 
-@pytest.mark.parametrize("phase", ["baseline", "collect", "improve", "research", "evaluate", "cycle"])
+@pytest.mark.parametrize("phase", ["baseline", "improve", "research", "evaluate", "cycle"])
 def test_checks_only_on_a_paid_phase_is_refused_before_anything_runs(phase, tmp_path, monkeypatch, capsys):
     """2026-10-05: `--phase cycle --checks-only` ran a pilot cycle for real, because only smoke reads the flag. A
     flag a phase would ignore is refused before the config is even read, so nothing is opened or paid."""

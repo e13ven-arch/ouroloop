@@ -486,7 +486,7 @@ def anthropic_response(text="", calls=()):
 
 
 def test_a_reply_s_native_content_is_kept_under_the_provider_name_and_replayed_on_the_next_turn():
-    """M4 §1 (2026-10-05, second recheck): the session keeps a reply's native content as agent/loop.py does —
+    """M4 §1 (2026-10-05, second recheck): the session keeps a reply's native content as the v1 agent/loop.py did —
     {provider name: content} — so the Anthropic provider replays it on the session's next call (a bare list made
     to_anthropic's `.get(provider)` raise on the second call); a reply with a call that is not strict UTF-8 keeps no
     native content, and the next request is rebuilt from the escaped text and calls, every message encodable."""
@@ -550,7 +550,7 @@ def test_a_surrogate_in_a_tool_name_or_the_reply_text_is_escaped_in_every_record
 def test_a_written_tool_calls_field_that_is_not_a_list_is_no_call(text):
     """M4 §1 (2026-10-05, second recheck): `tool_calls` written in the text is read only when it is a list; anything
     else is no call, answered with the session's nudge, never a TypeError. A structured tool call that is not a
-    ToolCall (no provider makes one: anthropic, openai_compat, claude_code and manual all answer with ToolCall) is
+    ToolCall (no provider makes one: anthropic, openai_compat and claude_code all answer with ToolCall) is
     no call either."""
     from ouroloop.research.session import NUDGE
     session, tree = tree_with()

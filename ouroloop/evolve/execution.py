@@ -17,7 +17,6 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
 
 import threading
 
@@ -30,10 +29,12 @@ STATES = ("drafted", "admitted", "building", "screening", "evaluating", "evaluat
           "stale_parent", "cancelled")
 TERMINAL = frozenset({"installed", "rejected", "inconclusive", "invalid", "screened_out", "installation_failed",
                       "stale_parent", "cancelled"})
-# Where each state may go. `screening` is skippable when the frozen plan has no screen, but no necessary
-# preflight is skippable, and nothing walks back out of a terminal state. `confirming` (M5 §1, v0.3) sits between
-# a provisional `evaluated` — the first reading's verdict, written with its numbers and no receipt — and the final
-# `evaluated` that carries the receipt: the candidate arm is read again there, under the same frozen plan.
+# Where each state may go. No necessary preflight is skippable, and nothing walks back out of a terminal state.
+# `screening` and `screened_out` were the v1 dev screen's (removed in P1 step 6): no step enters them now; they stay
+# so an older experiment log still reads, and one left in `screening` resumes at `evaluating`. `confirming` (M5 §1,
+# v0.3) sits between a provisional `evaluated` — the first reading's verdict, written with its numbers and no
+# receipt — and the final `evaluated` that carries the receipt: the candidate arm is read again there, under the
+# same frozen plan.
 NEXT: dict[str, frozenset] = {
     "drafted": frozenset({"admitted", "invalid", "cancelled"}),
     "admitted": frozenset({"building", "invalid", "inconclusive", "cancelled"}),
@@ -451,13 +452,6 @@ class Budgets:
             self.events.append("budget_breach", scope=r["scope_id"], reservation=reservation_id, breach=breach)
         return receipt
 
-    def open_reservations(self, scope_id: str | None = None) -> list[dict]:
-        book = self._read()
-        scopes = self.subtree(scope_id, book) if scope_id else set(book["scopes"])
-        return [r for r in book["reservations"].values()
-                if r["status"] in ("open", "unknown") and r["scope_id"] in scopes]
-
-
 @dataclass
 class BudgetAccount:
     """One scope's handle on the shared book."""
@@ -521,27 +515,10 @@ class BudgetAccount:
             allocation=allocation)
 
 
-def spend(account: BudgetAccount, operation_id: str, bound: dict, call: Callable[[], Any], *,
-          measure: Callable[[Any], dict] | None = None, allocation: str | None = None):
-    """Reserve, call, settle. -> (result, receipt).
-
-    A call that raises before it can be measured settles as unknown rather than free: the provider may well have
-    charged for it, and only a request id or a job id can say otherwise.
-    """
-    reservation = account.reserve(operation_id, bound, allocation=allocation)
-    try:
-        result = call()
-    except BaseException:
-        account.settle(reservation.id, None, "unknown")
-        raise
-    receipt = account.settle(reservation.id, (measure or (lambda _r: {}))(result), "settled")
-    return result, receipt
-
-
 # ---------------------------------------------------------------------------- the experiment loop
 def execute_experiment(experiment, handlers: dict, *, budget: BudgetAccount, execution: Execution,
                        expected_parent: str | None = None) -> dict:
-    """Build, screen, evaluate and install one experiment, recording every step's state and operation.
+    """Build, evaluate and install one experiment, recording every step's state and operation.
 
     The handlers belong to the owning modules (build to M1/M2, evaluate to M3 or M6, install to M3); this loop
     only decides the order, what the budget must allow before a step starts, and which state each result means.
@@ -604,13 +581,6 @@ def execute_experiment(experiment, handlers: dict, *, budget: BudgetAccount, exe
             step("invalid" if build.status == "invalid" else "inconclusive",
                  reason="; ".join(build.errors)[:300])
             return out
-        screen = handlers.get("screen")
-        if screen is not None and status not in mid_evaluation:
-            step("screening")
-            verdict, reasons = screen(build.candidate_ref, budget)
-            if verdict != "pass":
-                step("screened_out" if verdict == "screened_out" else "invalid", reason="; ".join(reasons)[:300])
-                return out
         if status not in mid_evaluation or out["states"]:
             step("evaluating")
 
@@ -625,8 +595,7 @@ def execute_experiment(experiment, handlers: dict, *, budget: BudgetAccount, exe
                 step("confirming")
         op = execution.operation("evaluate", (build.candidate_ref,))
         evaluate = handlers["evaluate"]
-        receipt = evaluate(build.candidate_ref, budget, confirming=confirming) if _takes(evaluate, "confirming") \
-            else evaluate(build.candidate_ref, budget)
+        receipt = evaluate(build.candidate_ref, budget, confirming=confirming)
         execution.finish(op, "done", output_refs=(receipt.ref(),))
         step("evaluated", receipt=receipt.ref(), verdict=receipt.verdict)
         if receipt.verdict != "accepted":
@@ -651,17 +620,6 @@ def execute_experiment(experiment, handlers: dict, *, budget: BudgetAccount, exe
     out["installation"] = installation
     step(installation.status, reason=installation.reason or "", release=installation.target_release)
     return out
-
-
-def _takes(handler, name: str) -> bool:
-    """Whether a handler accepts the keyword `name`: an older handler (a fixture's two-argument evaluate) is called
-    as it always was."""
-    import inspect
-    try:
-        parameters = inspect.signature(handler).parameters
-    except (TypeError, ValueError):
-        return False
-    return name in parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values())
 
 
 def unfinished(root: str | Path) -> list[dict]:

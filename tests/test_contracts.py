@@ -6,7 +6,6 @@ import pytest
 from ouroloop import policies as P
 from ouroloop.benchmark import RunManifest, TaskResult
 from ouroloop.evolve import contracts as ct
-from ouroloop.research.agent import Candidate
 
 
 def prompt_policy(objects, text):
@@ -47,9 +46,11 @@ def test_ct01_a_ref_must_hash_to_its_contents(tmp_path):
 
 
 def test_ct01_volatile_fields_do_not_change_identity():
-    a = ct.Requirement(id="r1", context="c", expected_behavior="e", observed_behavior="o", notes="first look")
-    b = ct.Requirement(id="r1", context="c", expected_behavior="e", observed_behavior="o", notes="rewritten")
-    assert a.ref() == b.ref()
+    change = ({"target": "worker.system_prompt", "kind": "prompt", "change": {"text": "Do every step."}},)
+    a = ct.ExperimentProposal(owner="worker", hypothesis="h", changes=change, notes="first look")
+    b = ct.ExperimentProposal(owner="worker", hypothesis="h", changes=change, notes="rewritten")
+    other = ct.ExperimentProposal(owner="worker", hypothesis="other", changes=change, notes="first look")
+    assert a.ref() == b.ref() != other.ref()
 
 
 # ---------------------------------------------------------------------------- CT-02
@@ -71,13 +72,11 @@ def test_ct02_old_records_keep_their_hash_and_cannot_pose_as_v2():
     assert v2.v2() and v2.hash() != run.hash()
 
 
-def test_ct02_old_task_results_and_candidates_still_read():
+def test_ct02_old_task_results_still_read():
     old = {"task_id": "t1", "family_id": "f1", "split": "dev", "attempt": 0, "candidate": "base", "run": "r",
            "manifest": "m", "success": False, "partial_credit": 0.5, "termination": "finished"}
     res = TaskResult.from_json(old)
     assert res.attempt_id == "" and res.pair_key == "" and res.observation_refs == []
-    cand = Candidate("spec", "stop", {"instructions": "x"}, "hypothesis")
-    assert cand.kind == "spec" and not hasattr(cand, "owner")
 
 
 # ---------------------------------------------------------------------------- CT-03
@@ -107,17 +106,12 @@ def test_ct03_unknown_schemas_and_implementations_are_refused(tmp_path):
 
 
 # ---------------------------------------------------------------------------- CT-04
-def test_ct04_a_summary_of_final_evidence_is_still_final_evidence():
+def test_ct04_final_evidence_is_not_visible_to_train_or_dev_and_a_partition_is_one_of_the_known():
     final = ct.EvidenceRef(id="e1", kind="task_result", scope_id="s", partition="final", producer_ref="p",
                            content_ref="change:sha256:" + "a" * 64)
     train = ct.EvidenceRef(id="e2", kind="task_result", scope_id="s", partition="train", producer_ref="p",
                            content_ref="change:sha256:" + "b" * 64)
-    assert ct.combine(final.partition, train.partition) == "final"
-    summary = ct.EvidenceRef(id="e3", kind="summary", scope_id="s",
-                             partition=ct.combine(final.partition, train.partition), producer_ref="llm",
-                             content_ref="change:sha256:" + "c" * 64, parents=(final.id, train.id))
-    assert summary.partition == "final"
-    assert not ct.visible(summary.partition, ("train", "dev"))
+    assert not ct.visible(final.partition, ("train", "dev")) and ct.visible(train.partition, ("train", "dev"))
     with pytest.raises(ct.ContractError):
         ct.EvidenceRef(id="e4", kind="summary", scope_id="s", partition="whatever", producer_ref="p",
                        content_ref="change:sha256:" + "d" * 64)

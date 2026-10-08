@@ -490,14 +490,3 @@ def train_literal_index(store) -> tuple[dict, set]:
             add_literals(index, row.get("task_id") or "", params)
             headers |= header_names(params)
     return index, headers
-
-
-def train_literals(store) -> set:
-    """The forbidden literals of the draft check: task-specific values in the assertion params of train attempts,
-    read from the grading store's raw record (docs/modules/00_CONTRACTS.md §3)."""
-    from ..agent.harness_package import literals_of
-    out: set = set()
-    for row in _read_jsonl(store.grading_path()):
-        if row.get("split") in TRAIN:
-            out |= literals_of([a.get("params") for a in row.get("assertions") or ()])
-    return out

@@ -698,5 +698,4 @@ def test_assertion_classes_cover_the_five_footprints():
     assert M.assertion_class("freshdesk_ticket_has_tag") == "categorical"
     assert M.assertion_class("calendly_event_field_equals") == "value"
     assert M.assertion_class("airtable_record_exists") == "exists"
-    from ouroloop.adapters import automationbench as ab
-    assert ab.assertion_class("docusign_envelope_status_equals") == "categorical"
+    assert M.assertion_class("docusign_envelope_status_equals") == "categorical"

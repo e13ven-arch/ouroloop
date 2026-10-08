@@ -267,6 +267,27 @@ def test_a_frozen_method_list_refuses_a_change_of_another_kind(tmp_path):
     assert any("a policy_edit change, and this activity allows only ['harness_edit']" in r for r in reasons)
 
 
+def test_core_checks_read_the_registered_feedback_builders_only_for_a_training_entry(tmp_path, monkeypatch):
+    """The research slot's admission passes no builders: a proposal without a training entry must not load
+    ouroloop.train through registered_builders (the subpackage stays off the bench path, P1 step 4)."""
+    from ouroloop.research import experiment as X
+    asked = []
+    monkeypatch.setattr(X, "registered_builders", lambda: asked.append(1) or ("completion_snapshot@v1",))
+    objects = ct.Objects(tmp_path)
+    core = ct.CoreManifest(domain="rsi")
+    prompt = ct.ExperimentProposal(owner="research", hypothesis="h",
+                                   changes=({"target": "research.diagnose", "kind": "prompt",
+                                             "change": {"text": "x"}},))
+    X.core_checks(prompt, context=None, core=core, objects=objects, owner="research")
+    assert asked == []
+    selection, recipe = objects.put_json("change", {"seed": 0}), objects.put_json("change", {})
+    training = ct.ExperimentProposal(owner="worker", hypothesis="h",
+                                     training=({"point": "worker.stop", "feedback_ref": "completion_snapshot@v1",
+                                                "data_selection_ref": selection, "recipe_ref": recipe},))
+    reasons = X.core_checks(training, context=None, core=core, objects=objects, owner="worker")
+    assert asked == [1] and not any("feedback builder" in r for r in reasons)
+
+
 def test_br6_14_a_first_version_cycle_needs_no_trainer_or_teacher(fake_upstream, tmp_path, fixture_preset):
     cfg = cycle_config(fake_upstream, tmp_path)
     settings = bench.improvement_settings(cfg)
@@ -769,13 +790,13 @@ def test_startup_checks_the_pinned_models(fake_upstream, tmp_path, fixture_prese
     activity = bench.open_activity(cfg, ".", out=lambda _line: None)     # W0 pins this actor
     # [llm] changed after the bootstrap: what is checked is what the release pins, and the research model
     later = {**cfg, "llm": {"type": "rsi:BusinessWorker"},
-             "research": {"llm": {"type": "manual", "dir": str(tmp_path / "m"), "max_tokens": 32768}}}
+             "research": {"llm": {"type": "rsi:BusinessWorker", "max_tokens": 32768}}}
     problems = bench.startup_checks(activity, later, phase="baseline")
     assert any(p.startswith("the actor the active release pins max_tokens 20000 is above") for p in problems)
     assert any("the actor the active release pins reads its key from OUROLOOP_TEST_UNSET_KEY" in p
                for p in problems)
     assert any(p.startswith("[research.llm] max_tokens 32768 is above") for p in problems)
-    assert not any("[research.llm] reads its key" in p for p in problems)    # a manual model has no key
+    assert not any("[research.llm] reads its key" in p for p in problems)    # a module:Class model has no key
     monkeypatch.setenv("OUROLOOP_TEST_UNSET_KEY", "set")
     assert not any("reads its key" in p for p in bench.startup_checks(activity, later, phase="baseline"))
 
@@ -1038,12 +1059,11 @@ def test_which_paid_phases_need_which_frozen_plans(fake_upstream, tmp_path, fixt
     assert all(any(f"names no {t}_ref" in p for p in problems) for t in ("task_plan", "schedule", "budget"))
 
 
-def test_a_manual_model_is_not_checked_for_a_key(fake_upstream, tmp_path, fixture_preset, monkeypatch):
+def test_only_an_openai_compat_model_is_checked_for_a_key(fake_upstream, tmp_path, fixture_preset, monkeypatch):
     monkeypatch.delenv("OUROLOOP_TEST_UNSET_KEY", raising=False)
     cfg = cycle_config(fake_upstream, tmp_path)
     activity, _ = gap_w0(cfg, tmp_path)
-    later = {**cfg, "research": {"llm": {"type": "manual", "dir": str(tmp_path / "m"),
-                                         "api_key_env": "OUROLOOP_TEST_UNSET_KEY"}}}
+    later = {**cfg, "research": {"llm": {"type": "rsi:BusinessWorker", "api_key_env": "OUROLOOP_TEST_UNSET_KEY"}}}
     assert not any("reads its key" in p for p in bench.startup_checks(activity, later, phase="baseline"))
 
 
@@ -1336,7 +1356,7 @@ def test_common_inputs_that_leave_the_arms_short_end_the_slot_inconclusive(fake_
     activity = bench.open_activity(cfg, ".", out=lambda _line: None)
     receipt = activity.objects.load(slot["receipt"], ct.EvaluationReceipt)
     assert "cannot set aside both arms' shares" in receipt.reasons[0] and "outer" not in receipt.costs
-    assert Budgets(tmp_path / "ws").open_reservations() == []
+    assert rsi.open_reservations(Budgets(tmp_path / "ws")) == []
     assert not list(ct.Events(activity.root).of("campaign_arm"))
 
 
@@ -1676,8 +1696,8 @@ def test_an_inner_gate_confirms_before_it_installs(fake_upstream, tmp_path, fixt
     assert receipt.metrics["confirmation_gain"] == receipt.metrics["gain"] == receipt.metrics["first_reading"]["gain"]
     states = [e["status"] for e in Execution(roots["candidate"], json.loads(
         (roots["candidate"] / "rsi" / "arm.json").read_text())["rounds"][0]["experiment"]).state()["history"]]
-    assert states == ["admitted", "building", "screening", "evaluating", "evaluated", "confirming", "evaluated",
-                      "accepted", "installing", "installed"]
+    assert states == ["admitted", "building", "evaluating", "evaluated", "confirming", "evaluated", "accepted",
+                      "installing", "installed"]
     arm_events = [e for e in ct.Events(activity.root).of("campaign_arm")]
     assert len({e["w_star"] for e in arm_events}) == 2
     assert ct.SystemRelease.from_json(activity.objects.get(activity.releases.active()["release_ref"])).research_ref \

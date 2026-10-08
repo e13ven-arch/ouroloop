@@ -1,5 +1,6 @@
 """Append-only JSONL ledger of sessions, decisions, escalations and outcomes, plus the context store that lets a changed
-view be re-rendered offline, and the champion spec store."""
+view be re-rendered offline. (The champion's calibration and spec stores went with the champion pointer in P1 step 5;
+tag archive-2026-10-08.)"""
 from __future__ import annotations
 
 import fcntl
@@ -16,8 +17,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-# Only what the environment and people say may become a training target (docs/DESIGN.md invariant 6). Answers of any
-# model or LLM, and labels derived from them such as a promotion gate's verdict, are kept for evaluation only.
+# Data lineage and selection (docs/DESIGN.md §8, invariant 6): `source` says where an answer or a label came from,
+# and which sources a fit, a threshold or an evaluation uses is the data plan's choice. Until v2.0 replaces this gate
+# and its defaults with that selection (docs/design/V2_TRAINING_PIPELINE.md §2.5, §3.8, §7), the ledger still gates
+# by source: only what the environment and people say becomes a training target here, and answers of any model or
+# LLM, and labels derived from them such as a promotion gate's verdict, are kept for evaluation only.
 SOURCE_WEIGHTS = {"env": 1.0, "human": 1.0}
 EVAL_ONLY = {"frontier_llm", "open_llm", "jev", "gate"}
 SOURCES = set(SOURCE_WEIGHTS) | EVAL_ONLY
@@ -257,80 +261,3 @@ class SessionStore:
     def get(self, ref: str) -> Any:
         session, _, step = ref.rpartition("#")
         return self._load(session)[int(step)]
-
-
-class CalibrationStore:
-    """Temperature and per-phase thresholds by (model id, spec hash, point), fitted on the calibration split
-    (docs/DESIGN.md invariant 1). The model id is the one the answering backend reports, so a rollback brings the old
-    values back and a changed model, spec or view finds none. A file in the old per-point format is discarded, not
-    migrated.
-
-    Reads follow the file (it is re-read when it changes); a write re-reads it under a lock and changes one entry, so a
-    process never writes back a stale copy over another's entries. Loaded entries are never changed in place: a
-    session's snapshot stays as it was when the session opened."""
-    VERSION = 2
-
-    def __init__(self, path: str | Path):
-        self.path = Path(path)
-        self._key: tuple | None = None
-        self._entries: dict = {}
-
-    def _read(self) -> dict:
-        raw = json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else {}
-        return raw.get("entries", {}) if raw.get("version") == self.VERSION else {}
-
-    def entries(self) -> dict:
-        key = file_key(self.path)
-        if key != self._key:
-            self._entries, self._key = self._read(), key
-        return self._entries
-
-    @staticmethod
-    def lookup(entries: dict, model: str, spec_hash: str, point: str) -> dict:
-        return entries.get(model, {}).get(spec_hash, {}).get(point, {})
-
-    def get(self, model: str, spec_hash: str, point: str) -> dict:
-        return self.lookup(self.entries(), model, spec_hash, point)
-
-    def set(self, model: str, spec_hash: str, point: str, entry: dict) -> None:
-        with locked(self.path):
-            data = self._read()
-            data.setdefault(model, {}).setdefault(spec_hash, {})[point] = {**entry, "ts": now()}
-            write_json(self.path, {"version": self.VERSION, "entries": data})
-
-
-class PromotionConflict(RuntimeError):
-    """The champion moved while the candidate was evaluated: it was built on another version."""
-
-
-ANY = object()      # a write that checks nothing (tests, setup)
-
-
-class SpecStore:
-    """The current champion spec of each decision point, with its history. `get` gives the specs as loaded, which the
-    registered points run; a promotion re-reads the file under a lock and compares and swaps (docs/DESIGN.md invariant
-    7)."""
-
-    def __init__(self, path: str | Path):
-        self.path = Path(path)
-        self.data = self._read()
-
-    def _read(self) -> dict:
-        return json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else {}
-
-    def get(self, point: str) -> dict | None:
-        entry = self.data.get(point)
-        return entry["spec"] if entry else None
-
-    def set(self, point: str, spec: dict, note: str = "", expected: dict | None | object = ANY) -> None:
-        """Make `spec` the point's champion, only while the stored one is still `expected` (None: none promoted),
-        the spec the candidate was evaluated against; other points' entries stay as another process left them."""
-        with locked(self.path):
-            data = self._read()
-            entry = data.setdefault(point, {"spec": None, "history": []})
-            if expected is not ANY and entry["spec"] != expected:
-                raise PromotionConflict(f"the {point} spec changed while the candidate was evaluated")
-            entry["history"].append({"ts": now(), "spec": spec, "note": note})
-            entry["spec"] = spec
-            write_json(self.path, data)
-        self.data = {**self.data, point: entry}     # other points: as loaded, as the registered points run them
