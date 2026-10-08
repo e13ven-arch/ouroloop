@@ -1,6 +1,6 @@
 """Training hosts (hosts/, bootstrap.sh) and trainer plugins through the real job path, on this machine: host init and
 check against target "local" in a temporary home, pip stood in for (OUROLOOP_TEST_PIP), so nothing is downloaded;
-the signature plugin from spec.json through `python -m ouroloop.worker` to a model the gate promotes."""
+the signature plugin from spec.json through `python -m ouroloop.worker` to a trained artifact that serving loads."""
 import json
 import os
 import subprocess
@@ -9,19 +9,17 @@ from pathlib import Path
 
 import pytest
 
+from jobs_fixtures import QUESTION, dataset
 from ouroloop import config
-from ouroloop.train.cli import main
-from ouroloop.evolve.gate import freeze_template, records
-from ouroloop.evolve.pipeline import evolve_model
-from ouroloop.evolve.registry import Registry
+from ouroloop.evolve.pipeline import train_artifact
 from ouroloop.evolve.train import CHECKOUT, DEFAULT_RECIPE, JobTrainer, TrainError, TrainJob
 from ouroloop.hosts import MANIFEST, read, stale
 from ouroloop.release import code_version
 from ouroloop.stores import kind
+from ouroloop.train.cli import main
 from ouroloop.trainers import load
-from test_gate_record import ACT_GATE, CFG, collect, ctx
-
-pytestmark = pytest.mark.usefixtures("loose_risk")
+from ouroloop.types import Question, Request
+from ouroloop.workspace import Workspace
 
 # pip, stood in for: it logs each call to <venv>/pip.log, and "installs" an archive by unpacking it and pointing a .pth
 # file at it; of an sdist (an archive with a pyproject.toml) only what pip installs is kept: modules and the declared
@@ -158,20 +156,16 @@ def test_a_host_on_another_version_is_initialized_again_before_the_job(home, tmp
     assert tr.serving.backend(result.backend).model == job["id"]
 
 
-def test_a_host_that_cannot_be_initialized_leaves_the_round_inconclusive_before_anything_is_used(home, tmp_path,
-                                                                                                  monkeypatch):
+def test_a_host_that_cannot_be_initialized_fails_the_build_before_anything_is_used(home, tmp_path, monkeypatch):
     monkeypatch.setenv("STUB_PIP", "fail")
     jobs = tmp_path / "jobs"
-    cfg = {**CFG, "models": {"jobs_root": str(jobs)},             # an old config: [models] and no [store]
+    cfg = {"models": {"jobs_root": str(jobs)},             # an old config: [models] and no [store]
            "trainer": {"type": "signature", "host": "local", "jobs_root": str(jobs)}}
-    rt = config.build_runtime(cfg, tmp_path)
-    collect(rt, 150)
-    freeze_template(rt.root, ACT_GATE)
+    rt = Workspace(tmp_path / "ws", serving=lambda: config.build_serving(cfg))
     trainer = config.build_trainer(cfg, rt.serving)
-    card = evolve_model(rt, trainer)
-    (record,) = records(rt.root)
-    assert card["gate"] == "inconclusive" and not record.used and "model_id" not in card
-    assert "host init on this machine failed" in card["reasons"][0] and "No matching distribution" in card["reasons"][0]
+    built = train_artifact(rt, trainer, dataset(rt.root), version="m_0001")
+    assert built.status == "failed" and built.model_ref is None and built.artifact_ref is None
+    assert "host init on this machine failed" in built.errors[0] and "No matching distribution" in built.errors[0]
     assert not jobs.exists() and not (home / ".ouroloop" / "host.json").exists()
     with pytest.raises(TrainError, match="host init"):
         trainer.train(a_job(tmp_path / "ws2"))
@@ -423,31 +417,30 @@ def test_a_plugin_has_the_contract(name):
         load("../evil")
 
 
-def test_the_signature_plugin_through_the_job_path_to_a_promoted_model(tmp_path):
-    """spec.json -> python -m ouroloop.worker -> run -> result.json -> the backend by its ref -> calibration and the
-    gate -> the champion answers new sessions as its ref."""
+def test_the_signature_plugin_through_the_job_path_to_a_trained_artifact(tmp_path):
+    """spec.json -> python -m ouroloop.worker -> run -> result.json -> the backend by its ref -> the load probe, and
+    the model answers as its ref with what it learned (its key function: test_hosts:says)."""
     jobs = tmp_path / "jobs"
-    cfg = {**CFG, "store": {"type": "dir", "root": str(jobs)},
+    cfg = {"store": {"type": "dir", "root": str(jobs)},
            "trainer": {"type": "signature", "jobs_root": str(jobs), "poll_s": 0.05},
            "trainers": {"signature": {"signature": "test_hosts:says"}}}
-    rt = config.build_runtime(cfg, tmp_path)
-    collect(rt, 150)
-    freeze_template(rt.root, ACT_GATE)
+    rt = Workspace(tmp_path / "ws", serving=lambda: config.build_serving(cfg))
     trainer = config.build_trainer(cfg, rt.serving)
     assert trainer.supports_weights
     out = trainer.dry_run(a_job(tmp_path / "ws", "m_0000"))
     assert out["check"] == {"ok": True, "counts": {"train": 5, "val": 1}}
-    card = evolve_model(rt, trainer)
-    job = card["job"]
-    assert card["gate"] == "accepted" and card["model_id"] == job["id"]
-    assert card["backend"] == {"type": "model", "model": job["id"], "trainer": "signature",
-                               "options": {"signature": "test_hosts:says"}}
+    built = train_artifact(rt, trainer, dataset(rt.root), version="m_0001")
+    job = built.job_ref
+    assert built.status == "ready" and built.errors == () and built.model_ref == job["id"]
+    assert built.backend_spec == {"type": "model", "model": job["id"], "trainer": "signature",
+                                  "options": {"signature": "test_hosts:says"}}
     assert job["result"]["plugin"] == {"name": "signature", "version": None}
     assert job["spec"]["ouroloop"]["code"] == code_version() and job["spec"]["trainer"] == "signature"
     assert sorted(p.name for p in (jobs / job["id"]).iterdir()) == ["exit", "log", "pid", "result.json", "run",
                                                                     "spec.json", "train.jsonl", "val.jsonl"]
-    assert Registry(rt.root).champion()["version"] == card["version"] and card["calibration"]
-    assert rt.ask("stop", ctx(), session="s_new", phase="per_turn").model == job["id"]
+    model = rt.serving.backend(built.backend_spec)
+    yes, no = model.decide([Request(f"task: t1\nsay {label}", Question("noul", QUESTION)) for label in ("yes", "no")])
+    assert (yes.model, yes.label, no.label) == (job["id"], "yes", "no") and yes.confidence > 0.9
 
 
 def test_a_trainer_checks_its_config_before_any_job():

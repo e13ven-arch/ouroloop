@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from conftest import accept
+from jobs_fixtures import FAKE_HF, keys  # noqa: F401 - keys is a fixture
 from ouroloop import config
 from ouroloop.decision import Noul
 from ouroloop.evolve.gate import freeze_template, records
@@ -25,9 +26,7 @@ from ouroloop.serving import PROBE, Serving
 from ouroloop.stores import make
 from ouroloop.trainers import signature
 from test_counting import Says, session
-from test_cloud import keys  # noqa: F401 - a fixture
 from test_gate_record import ACT_GATE, CFG, SOME, OracleTrainer, collect, ctx
-from test_jobs import FAKE_HF
 
 pytestmark = pytest.mark.usefixtures("loose_risk")
 
@@ -270,7 +269,7 @@ def test_a_new_store_is_a_new_module_only(tmp_path, monkeypatch, keys):
     from ouroloop import stores
     from ouroloop.evolve import cloud as clouds
     from ouroloop.hosts import manifest, plan, stale
-    from test_cloud import Ssh, VastApi, a_job, options
+    from jobs_fixtures import Ssh, VastApi, a_job, options
     (tmp_path / "more").mkdir()
     (tmp_path / "more" / "objects.py").write_text(OBJECTS)
     monkeypatch.setattr(stores, "__path__", [*stores.__path__, str(tmp_path / "more")])

@@ -17,10 +17,11 @@ from ouroloop.evolve import experience
 from ouroloop.evolve.gate import (TEMPLATE, decide_points, freeze_template, load_template, open_record,
                                   records, run)
 from ouroloop.evolve.plan import admit, decide, sessions_needed
-from ouroloop.evolve.pipeline import default_errors, evolve_model, prepare_model, promote_model, recipe_evaluator
+from ouroloop.evolve.pipeline import (default_errors, evolve_model, prepare_model, promote_model, recipe_evaluator,
+                                     research_context)
 from ouroloop.evolve.registry import Registry
 from ouroloop.evolve.replay import EVALUATORS, EvalResult, labelled
-from ouroloop.evolve.train import TrainError, TrainResult
+from ouroloop.evolve.train import JobTrainer, TrainError, TrainResult
 from ouroloop.ledger import CalibrationStore, PromotionConflict, SpecStore
 from ouroloop.points import retry_point, stop_point
 from ouroloop.policy import Policy
@@ -275,6 +276,24 @@ def trained_on(rt, version: str) -> set:
     """Every session in the trainer's directory."""
     return {json.loads(line)["source_id"] for p in (rt.root / "models" / version / "data").glob("*.jsonl")
             for line in p.open()}
+
+
+def test_a_recipe_candidate_is_shown_the_keys_it_may_set_and_checked_before_any_job():
+    """What a research candidate of kind "recipe" is shown (the recipe over its plugin's defaults, and the keys it may
+    set: never a path key), and its change checked before any job starts (from test_jobs, P1 step 4)."""
+    tde, signature = JobTrainer("tde"), JobTrainer("signature")
+    assert research_context(signature, {"min_weight": 1.0})["recipe_keys"] == ["focus", "min_weight", "seed"]
+    shown = research_context(tde, {"replay": "~/general.jsonl"})
+    assert shown["recipe"]["replay"] == "~/general.jsonl" and shown["recipe"]["lr_head"] == 1e-4
+    keys = shown["recipe_keys"]
+    assert "replay" not in keys and "init_from" not in keys and "w_rps" in keys
+
+    class Untouched:
+        def train(self, job):
+            raise AssertionError("no job may start")
+
+    with pytest.raises(ValueError, match="must be a number"):
+        recipe_evaluator(Untouched())(None, Candidate("recipe", "stop", {"min_weight": "fast"}, "h"), None)
 
 
 def test_an_m6_ledger_through_freeze_evolve_gate_promote_and_the_next_rounds(tmp_path):

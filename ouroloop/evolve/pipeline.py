@@ -402,7 +402,7 @@ def train_artifact(rt, trainer, dataset, recipe: dict | None = None, *, parent_m
             return TrainingBuild(status="cancelled", dataset_ref=dataset.dataset_ref or "",
                                  recipe_ref=recipe_ref, errors=("cancelled",))
         return TrainingBuild(status="failed", dataset_ref=dataset.dataset_ref or "", recipe_ref=recipe_ref,
-                             errors=(f"{type(e).__name__}: {e}"[:400],))
+                             errors=(_reason(e),))
     seconds = round(time.monotonic() - started, 1)
     receipt = budget.settle(reservation.id, {"train_jobs": 1, "training_seconds": seconds}) if reservation else None
     metrics, errors = {"train_seconds": seconds, **(result.job or {}).get("result", {})}, ()
@@ -420,6 +420,14 @@ def train_artifact(rt, trainer, dataset, recipe: dict | None = None, *, parent_m
                          costs={"training_seconds": seconds,
                                 **({"receipt": receipt.reservation_id} if receipt else {})},
                          artifact_ref=artifact, backend_spec=result.backend)
+
+
+def _reason(e: BaseException, limit: int = 400) -> str:
+    """Why a job failed, in at most about `limit` characters: its head (which job, where, the exit code) and its tail.
+    A failed job's message ends with the end of its log, which is where the reason is; cutting the tail off would
+    keep the job's id and lose why it failed."""
+    text = f"{type(e).__name__}: {e}"
+    return text if len(text) <= limit else f"{text[:limit // 3]} [...] {text[-(limit - limit // 3):]}"
 
 
 class TrainingUnknown(RuntimeError):

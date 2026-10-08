@@ -19,24 +19,20 @@ from pathlib import Path
 import httpx
 import pytest
 
+from jobs_fixtures import FAKE_HF, dataset
 from ouroloop import config
 from ouroloop.backends import TdeBackend
 from ouroloop.backends.http import HttpBackend
 from ouroloop.evolve import compute as compute_module
 from ouroloop.evolve.compute import SEP, Compute
-from ouroloop.evolve.gate import freeze_template, records
-from ouroloop.evolve.pipeline import check_change, evolve_model, recipe_evaluator, research_context
-from ouroloop.evolve.registry import Registry
+from ouroloop.evolve.pipeline import check_change, full_recipe, train_artifact
 from ouroloop.evolve.train import CHECKOUT, DEFAULT_RECIPE, JobTrainer, TrainError, TrainJob
 from ouroloop.release import code_version
-from ouroloop.research import Candidate
 from ouroloop.serving import Serving
 from ouroloop.stores import make as make_store
 from ouroloop.trainers.signature import SignatureTrainer
 from ouroloop.types import Question, Request
-from test_gate_record import ACT_GATE, CFG, collect, ctx
-
-pytestmark = pytest.mark.usefixtures("loose_risk")
+from ouroloop.workspace import Workspace
 
 STUB_TRAIN = """
 import json, os, pathlib, sys, time
@@ -75,33 +71,6 @@ def load_jsonl(path):
     if os.environ.get("STUB_TDE") == "hang_validate":
         time.sleep(60)
     return [Example(json.loads(line)) for line in open(path) if line.strip()]
-"""
-FAKE_HF = """
-import hashlib, json, os, shutil
-ROOT = os.environ["FAKE_HF"]
-class CommitOperationAdd:
-    def __init__(self, path_in_repo, path_or_fileobj):
-        self.path_in_repo, self.path_or_fileobj = path_in_repo, path_or_fileobj
-class HfApi:
-    def create_repo(self, repo_id, private=False, exist_ok=False):
-        os.makedirs(os.path.join(ROOT, repo_id), exist_ok=exist_ok)
-        with open(os.path.join(ROOT, repo_id, "repo.json"), "w") as f:
-            json.dump({"private": private}, f)
-    def create_commit(self, repo_id, operations, commit_message):
-        h = hashlib.sha1(commit_message.encode())
-        for op in operations:
-            h.update(op.path_in_repo.encode() + open(op.path_or_fileobj, "rb").read())
-        sha = h.hexdigest()
-        for op in operations:
-            dst = os.path.join(ROOT, repo_id, sha, op.path_in_repo)
-            os.makedirs(os.path.dirname(dst), exist_ok=True)
-            shutil.copyfile(op.path_or_fileobj, dst)
-        return type("CommitInfo", (), {"oid": sha})()
-def snapshot_download(repo_id, revision):
-    path = os.path.join(ROOT, repo_id, revision)
-    if not os.path.isdir(path):
-        raise FileNotFoundError(path)
-    return path
 """
 EXAMPLE = json.dumps({"id": "e", "candidates": [{"name": "yes"}, {"name": "no"}], "target": [1.0, 0.0]})
 
@@ -210,23 +179,23 @@ def on_this_machine(args, input=None, timeout=None):
     return subprocess.run(["sh", "-c", args[-1]], input=input, capture_output=True, text=True, check=True)
 
 
-# ---------------------------------------------------------------- a round, end to end
-def test_an_evolve_round_trains_a_job_and_the_next_one_starts_from_its_model(tmp_path, repo, decider):
+# ---------------------------------------------------------------- an artifact, end to end
+def test_a_trained_artifact_is_a_job_and_the_next_one_starts_from_its_model(tmp_path, repo, decider):
+    """train_artifact (bench._train's training step) over the tde plugin as a job: the job, its record, the load probe
+    through serving, and a second job whose parent is the first one's model."""
     jobs = tmp_path / "jobs"
     base = str(repo / "runs" / "base")
-    cfg = {**CFG, "store": {"type": "dir", "root": str(jobs)},
+    cfg = {"store": {"type": "dir", "root": str(jobs)},
            "trainer": {"type": "tde", "jobs_root": str(jobs), "poll_s": 0.05}, "trainers": {"tde": {"init_from": base}}}
-    rt = config.build_runtime(cfg, tmp_path)
-    collect(rt, 150)
-    freeze_template(rt.root, ACT_GATE)
+    rt = Workspace(tmp_path / "ws", serving=lambda: config.build_serving(cfg))
     tde = config.build_trainer(cfg, rt.serving)
     recipe = {"replay": str(repo / "data" / "replay.jsonl"), "replay_ratio": 0.5, "lr_head": 0.000123}
-    first = evolve_model(rt, tde, recipe)
-    job = first["job"]
-    assert first["gate"] == "accepted" and Registry(rt.root).champion()["version"] == first["version"]
-    assert first["model_id"] == job["id"]
-    assert first["backend"] == {"type": "model", "model": job["id"], "trainer": "tde", "options": {"init_from": base}}
-    assert "run" not in first and job["host"] is None and job["id"].startswith("m_0001_")
+    first = train_artifact(rt, tde, dataset(rt.root), recipe, version="m_0001")
+    job = first.job_ref
+    assert first.status == "ready" and first.errors == () and first.model_ref == job["id"]
+    assert first.backend_spec == {"type": "model", "model": job["id"], "trainer": "tde",
+                                  "options": {"init_from": base}}
+    assert job["host"] is None and job["id"].startswith("m_0001_")
     result = job["result"]
     assert (result["model"], result["ouroloop"]) == (job["id"], code_version()) and job["spec"]["store"] == {
         "type": "dir", "root": str(jobs)}
@@ -234,40 +203,39 @@ def test_an_evolve_round_trains_a_job_and_the_next_one_starts_from_its_model(tmp
     assert result["host"]["gpu"] == [] and result["host"]["python"]
     spec = job["spec"]
     assert spec["workspace"] == str(rt.root.resolve()) and spec["recipe"]["lr_head"] == 0.000123
-    assert spec["ouroloop"]["code"] == code_version() and spec["parent"] == base
+    assert spec["ouroloop"]["code"] == code_version() and spec["parent"] == base    # [trainers.tde] init_from
     # the job's directory: the three files it was given, and what the job wrote
     d = jobs / job["id"]
     assert sorted(p.name for p in d.iterdir()) == ["exit", "log", "pid", "result.json", "run", "spec.json", "tde",
                                                    "train.jsonl", "val.jsonl"]
     assert (d / "exit").read_text().strip() == "0"
     run = json.loads((d / "run" / "config.json").read_text())
-    n = sum(1 for _ in open(rt.root / "models" / "m_0001" / "data" / "train.jsonl"))
+    n = sum(1 for _ in open(rt.root / "rsi" / "datasets" / "worker.stop" / "train.jsonl"))
     assert run["init_from"] == str(repo / "runs" / "base") and run["backbone"] == "gliclass"
     assert run["n_train"] == n + int(n * 0.5) and run["lr_head"] == 0.000123
-    # the champion answers new sessions as its ref, loaded from its run
-    d_new = rt.ask("stop", ctx(), session="s_new", phase="per_turn")
-    assert d_new.model == job["id"] and str(d / "run") in decider
+    # the load probe asked it through serving, loaded from its run, and it answered as its ref
+    assert decider == [str(d / "run")]
+    assert rt.serving.backend(first.backend_spec).decide([Request("say yes", Question("noul", "done?"))])[0].model \
+        == job["id"]
 
-    # the next round starts from the champion's model, and records that the TDE checkout changed
+    # the next job starts from the first one's model, and records that the TDE checkout changed
     (repo / "tde" / "train.py").write_text(STUB_TRAIN + "# changed\n")
-    collect(rt, 40, start=150)
-    second = evolve_model(rt, tde, recipe)
-    assert second["parent"] == first["version"] and second["job"]["spec"]["parent"] == job["id"]
-    assert second["job"]["result"]["plugin"]["version"].endswith("-dirty")
-    run = json.loads((jobs / second["job"]["id"] / "run" / "config.json").read_text())
+    second = train_artifact(rt, tde, dataset(tmp_path / "ws2", 190), recipe, parent_model_ref=first.model_ref,
+                            version="m_0002")
+    assert second.status == "ready" and second.job_ref["spec"]["parent"] == job["id"]
+    assert second.job_ref["result"]["plugin"]["version"].endswith("-dirty")
+    run = json.loads((jobs / second.job_ref["id"] / "run" / "config.json").read_text())
     assert run["init_from"] == str(d / "run") and run["backbone"] == "gliclass"
 
 
-# ---------------------------------------------------------------- failures are TrainError: inconclusive
-def test_a_failed_job_leaves_the_round_inconclusive_and_the_record_unused(tmp_path, repo, monkeypatch):
+# ---------------------------------------------------------------- failures are TrainError: a failed build
+def test_a_failed_job_is_a_failed_build_that_says_why(tmp_path, repo, monkeypatch):
     monkeypatch.setenv("STUB_TDE", "fail")
-    rt = config.build_runtime({**CFG, "store": {"type": "dir", "root": str(tmp_path / "jobs")}}, tmp_path)
-    collect(rt, 150)
-    freeze_template(rt.root, ACT_GATE)
-    card = evolve_model(rt, trainer(repo, tmp_path / "jobs"))
-    (record,) = records(rt.root)
-    assert card["gate"] == "inconclusive" and not record.used and "model_id" not in card
-    assert "exit 1" in card["reasons"][0] and "CUDA out of memory" in card["reasons"][0]   # the end of its log
+    rt = Workspace(tmp_path / "ws")
+    built = train_artifact(rt, trainer(repo, tmp_path / "jobs"), dataset(rt.root), version="m_0001")
+    assert built.status == "failed" and built.model_ref is None and built.artifact_ref is None
+    assert built.errors[0].startswith("TrainError: job m_0001_")
+    assert "exit 1" in built.errors[0] and "CUDA out of memory" in built.errors[0]   # the end of its log
 
 
 def test_a_job_that_hangs_is_stopped_at_its_deadline(tmp_path, repo, monkeypatch):
@@ -614,8 +582,8 @@ def test_the_http_backend_sends_a_chunk_again_after_a_failure(tmp_path):
     assert Serving({"url": "http://serve", "timeout": 60}).backend(ref).timeout.read == 60
 
 
-# ---------------------------------------------------------------- research candidates
-def test_a_research_recipe_sets_only_hyperparameters_of_their_types():
+# ---------------------------------------------------------------- recipes
+def test_a_recipe_change_sets_only_hyperparameters_of_their_types():
     tde = JobTrainer("tde")
     for good in ({"epochs": 2}, {"lr_head": 1e-4}, {"max_steps": 100}, {"focus": 0.5}, {"batch_size": 4},
                  {"gradient_checkpointing": False}):
@@ -634,18 +602,14 @@ def test_a_research_recipe_sets_only_hyperparameters_of_their_types():
         check_change({"min_weight": 1.0, "focus": 0.5, "seed": 3}, trainer)
         with pytest.raises(ValueError, match="unknown recipe keys: \\['lr_backbone'\\]"):
             check_change({"lr_backbone": 5e-5}, trainer)
-    assert research_context(signature, {"min_weight": 1.0})["recipe_keys"] == ["focus", "min_weight", "seed"]
-    ctx = research_context(tde, {"replay": "~/general.jsonl"})
-    assert ctx["recipe"]["replay"] == "~/general.jsonl" and ctx["recipe"]["lr_head"] == 1e-4
-    keys = ctx["recipe_keys"]
-    assert "replay" not in keys and "init_from" not in keys and "w_rps" in keys
-
-    class Untouched:
-        def train(self, job):
-            raise AssertionError("no job may start")
-
-    with pytest.raises(ValueError, match="must be a number"):
-        recipe_evaluator(Untouched())(None, Candidate("recipe", "stop", {"min_weight": "fast"}, "h"), None)
+    # a recipe as train_artifact takes it: over the plugin's defaults, and only the plugin's keys
+    recipe = full_recipe(tde, {"replay": "~/general.jsonl"})
+    assert recipe["replay"] == "~/general.jsonl" and recipe["lr_head"] == 1e-4 and recipe["init_from"] is None
+    assert set(full_recipe(signature, None)) == {"min_weight", "init_from", "focus", "seed"}
+    with pytest.raises(ValueError, match="unknown recipe keys: \\['lr_backbone'\\]"):
+        full_recipe(signature, {"lr_backbone": 5e-5})
+    with pytest.raises(ValueError, match="a share in"):
+        full_recipe(tde, {"focus": 1.5})
 
 
 def test_a_sigterm_during_a_job_cancels_it_before_the_process_ends(tmp_path, repo, monkeypatch):
