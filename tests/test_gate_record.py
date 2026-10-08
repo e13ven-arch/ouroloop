@@ -12,13 +12,10 @@ import pytest
 
 from conftest import SMALL_GATE, accept
 from ouroloop import config
-from ouroloop.agent.loop import SYSTEM
-from ouroloop.agent.prompt import PromptStore
 from ouroloop.backends.http import HttpBackend
 from ouroloop.evolve import experience
 from ouroloop.evolve.gate import (TEMPLATE, decide_points, freeze_template, load_template, open_record,
                                   records, run)
-from ouroloop.evolve.harness import prompt_evaluator
 from ouroloop.evolve.plan import admit, decide, sessions_needed
 from ouroloop.evolve.pipeline import default_errors, evolve_model, prepare_model, promote_model, recipe_evaluator
 from ouroloop.evolve.registry import Registry
@@ -233,27 +230,6 @@ def test_research_candidates_of_every_kind_go_through_the_record(tmp_path):
     assert [(e["kind"], e["gate"], e["used"]) for e in res.evaluated] == [("spec", "rejected", False),
                                                                           ("recipe", "validated", False)]
     assert Registry(rt.root).champion()["version"] == champion and not rt.specs.get("stop")
-
-
-def test_a_prompt_gate_runs_the_champion_again(tmp_path, frozen):
-    from test_harness import FIX, setup, task
-    tasks = [task("a"), task("b"), task("c")]
-    rt, _, runner = setup(tmp_path)
-    frozen(rt.root, suite={"min_items": 3})
-    recorded = runner.runs(PromptStore(rt.root).get(), tasks)            # the champion's runs from earlier rounds
-    ev = prompt_evaluator(tasks, runner, repeats=1, screen=0)
-    agent = Proposes(("prompt", "harness", {"system": f"{SYSTEM} {FIX}"}))
-    used = open_record(rt)
-    used.consume("another candidate")
-    res = run_round(rt, agent, None, rt.backends["mock"], evaluators={"prompt": ev}, record=used)
-    assert [e["gate"] for e in res.evaluated] == ["validated"] and not PromptStore(rt.root).get().system.endswith(FIX)
-    res = run_round(rt, agent, None, rt.backends["mock"], evaluators={"prompt": ev})
-    record = records(rt.root)[-1]                                       # the next round froze a new record
-    assert [(e["gate"], e["record"]) for e in res.evaluated] == [("accepted", record.round)]
-    assert record.round != used.round
-    ran = record.usage["sessions"]
-    assert len(ran) == 6 and not set(ran) & {r["session"] for r in recorded}    # champion and challenger, anew
-    assert Registry(rt.root).seen_sessions() >= set(ran) and PromptStore(rt.root).get().system.endswith(FIX)
 
 
 M6_CFG = {"workspace": {"root": "ws"}, "registry": {"base": "base"},
@@ -638,7 +614,7 @@ def test_a_session_answered_by_another_model_than_its_champion_never_acts(tmp_pa
     assert (d.route, d.acted, d.action) == ("error", False, "no") and "the session runs 'R1'" in row["error"]
 
 
-def test_spec_and_prompt_promotions_compare_and_swap(tmp_path):
+def test_spec_promotions_compare_and_swap(tmp_path):
     path = tmp_path / "specs.json"
     a, b = SpecStore(path), SpecStore(path)          # two processes, both loaded before either promoted
     b.set("stop", {"instructions": "b"}, expected=None)
@@ -660,10 +636,6 @@ def test_spec_and_prompt_promotions_compare_and_swap(tmp_path):
     res = run_round(rt, Proposes(("spec", "stop", {"instructions": "Is the task done?"})), None, Model(),
                     evaluators={"spec": elsewhere})
     assert [e["gate"] for e in res.evaluated] == ["conflict"]
-    x, y = PromptStore(tmp_path), PromptStore(tmp_path)
-    y.set(x.get().apply({"system": "y"}))
-    with pytest.raises(PromotionConflict):
-        x.set(x.get().apply({"system": "x"}))
 
 
 # ---------------------------------------------------------------- promotion

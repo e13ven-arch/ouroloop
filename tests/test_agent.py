@@ -16,7 +16,7 @@ from ouroloop.providers import ProviderError
 from ouroloop.providers.anthropic import AnthropicProvider, to_anthropic
 from ouroloop.providers.openai_compat import OpenAICompatProvider
 from ouroloop.runtime import Runtime
-from ouroloop.types import Answer
+from ouroloop.types import Answer, Question
 
 FLAKY = "test -f flag || { touch flag; echo 'ConnectionResetError: connection reset by peer' >&2; exit 1; }"
 
@@ -304,6 +304,46 @@ def test_a_passing_verification_is_never_overruled_and_is_rechecked_at_the_end(t
     res = Agent(chat, rt2, tools2,
                 config=AgentConfig(approve="auto", max_turns=1, verify_command="test -f done.txt")).run("t")
     assert (res.stop, res.verified) == ("max_turns", True)
+
+
+# the stop point's phases, and a verification that overrules a confident yes (from test_probe, P1 step 3)
+def test_phases_and_a_confident_yes_after_a_turn(tmp_path, gated):
+    rt = Runtime(tmp_path / "ws", {"yes": Fixed(0.9)}, "yes", seed=0)
+    rt.register(stop_point(policy=Policy(act=True, explore=0.0)))
+    gated(rt, "stop", "fixed-1", 0.6)
+    (tmp_path / "work").mkdir()
+    chat = ScriptedChat([ChatTurn("", [ToolCall("b", "bash", {"command": "true"})], "tool_use")])
+    res = Agent(chat, rt, Tools(tmp_path / "work"), config=AgentConfig(approve="auto")).run("t")
+    assert (res.stop, res.turns, chat.calls) == ("stop_point", 1, 1)
+
+    ctx = {"task": "t", "turns": 1, "files": "", "actions": "", "message": ""}
+    for phase in ("later", None):                   # only a declared phase; stop declares two
+        with pytest.raises(ValueError):
+            rt.record("stop", ctx, phase=phase)
+    gated(rt, "stop", "fixed-1", 0.95)              # not confident enough: the phase's default is the action
+    assert [rt.ask("stop", ctx, phase=ph).action for ph in ("per_turn", "on_finish")] == ["no", "yes"]
+    rt.ask_question("research.q", Question("noul", "Worth trying?"), "state")
+    rows = [r.decision for r in rt.ledger.rows()][-3:]
+    assert [(d["phase"], d["default"]) for d in rows] == [("per_turn", "no"), ("on_finish", "yes"), (None, None)]
+
+
+def test_a_confident_yes_after_a_turn_needs_the_checker_and_the_last_turn_decides_nothing(tmp_path, gated):
+    rt = Runtime(tmp_path / "ws", {"yes": Fixed(0.9)}, "yes", seed=0)
+    rt.register(stop_point(policy=Policy(act=True, explore=0.0)))
+    gated(rt, "stop", "fixed-1", 0.6)
+    for verify, expected in (("test -f f2", ("stop_point", 2)), ("test -f f9", ("max_turns", 3))):
+        work = tmp_path / verify[-2:]
+        work.mkdir()
+        chat = ScriptedChat([ChatTurn("", [ToolCall("w", "write", {"path": f"f{i}", "content": "x"})], "tool_use")
+                             for i in (1, 2, 3)])
+        res = Agent(chat, rt, Tools(work),
+                    config=AgentConfig(approve="auto", max_turns=3, verify_command=verify)).run("t")
+        assert (res.stop, res.turns) == expected
+    # "yes" after every turn: a failing verification overrules it (a veto, and a label), and after the last turn,
+    # which nothing follows, there is no decision at all
+    stops = [r for r in rt.ledger.rows() if r.decision["point"] == "stop"]
+    assert [(r.decision["route"], r.decision["action"], r.outcomes[0]["label"]) for r in stops] == [
+        ("rule", "no", "no"), ("act", "yes", "yes"), ("rule", "no", "no"), ("rule", "no", "no")]
 
 
 def test_route_picks_the_small_tier_once_it_acts_and_learns_from_the_task_outcome(tmp_path, gated):

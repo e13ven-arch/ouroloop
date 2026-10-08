@@ -237,32 +237,11 @@ def register_builtin_points(rt: Runtime) -> None:
             rt.register(make())
 
 
-def build_agent_factory(cfg: dict, rt: Runtime):
-    """-> (make_agent(workdir, task, prompt), identity): the coding agent that suite runs put to work.
-    [suite.llm] and [suite.llm_small] override [llm] and [llm_small]; [suite] max_turns caps every task."""
-    from .agent import Agent, AgentConfig, Tools
-    suite = cfg.get("suite", {})
-    large = suite.get("llm") or cfg.get("llm")
-    if not large:
-        raise ValueError("suite runs need an [llm] or [suite.llm] table")
-    small = suite.get("llm_small") if "llm" in suite else cfg.get("llm_small")
-    provider = build_provider(large)
-    tiers = {"large": provider, "small": build_provider(small)} if small else None
-    cap = suite.get("max_turns")
-    # Everything besides the prompt and the task that changes a run belongs in the identity of its records.
-    identity = "+".join(str(s.get("model", s["type"])) for s in (large, small) if s)
-    identity = f"{identity}/max_turns={cap}" if cap else identity
-
-    def make(workdir, task, prompt):
-        return Agent(provider, rt, Tools(workdir, descriptions=prompt.tools), tiers=tiers, system=prompt.system,
-                     config=AgentConfig(approve="auto", max_turns=min(task.max_turns, cap or task.max_turns),
-                                        verify_command=task.verify), session_meta={"agent": identity})
-
-    return make, identity
-
-
-def build_research(cfg: dict, rt: Runtime, base: str | Path = "."):
+def build_research(cfg: dict, rt: Runtime):
     """-> (agent, llm, judge backend, extra run_round arguments)."""
+    if "suite" in cfg:
+        raise ValueError("[suite]: the coding-task suites and their prompt evolution were removed in P1 step 3 "
+                         "(tag archive-2026-10-08)")
     from .evolve.pipeline import recipe_evaluator, research_context
     r = dict(cfg.get("research", {}))
     agent = import_object(r.pop("agent", "ouroloop.research.basic:BasicResearcher"))(**r.pop("options", {}))
@@ -275,16 +254,6 @@ def build_research(cfg: dict, rt: Runtime, base: str | Path = "."):
         trainer = build_trainer(cfg, rt.serving)
         evaluators["recipe"] = recipe_evaluator(trainer, recipe)
         context = research_context(trainer, recipe)
-    if "suite" in cfg:
-        from .agent.suite import load_suite
-        from .evolve.harness import SuiteRunner, prompt_evaluator, suite_context
-        s = cfg["suite"]
-        tasks = load_suite(Path(base) / s.get("path", "tasks"))
-        register_builtin_points(rt)
-        runner = SuiteRunner(rt.root, *build_agent_factory(cfg, rt))
-        evaluators["prompt"] = prompt_evaluator(tasks, runner, **{k: s[k] for k in ("repeats", "screen") if k in s})
-        static, current = context, suite_context(tasks, runner)
-        context = lambda: {**static, **current()}   # noqa: E731 - recomputed each round: the champion may change
     if evaluators:
         kw["evaluators"] = evaluators
     if context:
