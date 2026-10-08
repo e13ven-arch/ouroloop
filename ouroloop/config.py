@@ -5,15 +5,14 @@ A config names the four roles, whatever the number of machines: this process is 
 trains, stores and serves is a layout of these tables, not a design (docs/TRAINING_HOSTS.md)."""
 from __future__ import annotations
 
+import importlib
 import os
 import tomllib
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from . import policy
-from .backends import JevBackend, KeywordBackend, LlmBackend, TdeBackend
-from .points import BUILTIN
-from .policy import Policy
-from .runtime import Runtime, import_object
+if TYPE_CHECKING:
+    from .runtime import Runtime
 
 # The only keys of a [points.X] table: risk comes from the gate template (M8), defaults from the point's definition.
 POINT_KEYS = {"backend", "define", "act", "explore"}
@@ -22,6 +21,12 @@ POINT_KEYS = {"backend", "define", "act", "explore"}
 FROZEN = (("research", "min_items"), ("suite", "min_items"), ("checks", None))
 # Keys of an old config's [models] table (now [serving]) that name the store; read as its [store] (store_table).
 MODELS_STORE_KEYS = {"jobs_root", "hf_prefix"}
+
+
+def import_object(ref: str):
+    """"package.module:name" -> the object."""
+    module, _, attr = ref.partition(":")
+    return getattr(importlib.import_module(module), attr)
 
 
 def load_dotenv(path: str | Path = ".env") -> None:
@@ -57,6 +62,7 @@ def build_provider(spec: dict):
 def build_backend(spec: dict, serving=None):
     """A backend from its config table. {"type": "model", "model": ref, "trainer": plugin, "options": {...}} is a
     trained model, asked through `serving` (serving.Serving: the config's [serving] and [store])."""
+    from .backends import JevBackend, KeywordBackend, LlmBackend, TdeBackend
     spec = dict(spec)
     kind = spec.pop("type")
     if kind == "mock":
@@ -173,8 +179,14 @@ def check_frozen(cfg: dict) -> None:
 
 
 def build_runtime(cfg: dict, base: str | Path = ".") -> Runtime:
+    """The v1 decision runtime: the config's backends and points, the champion pointer. Only the v1 loop (agent.loop)
+    and the old CLI commands need it; an attempt under the runner shell records its session in a workspace.Workspace."""
+    from . import policy
     from .evolve.gate import template_path
     from .evolve.registry import Registry
+    from .points import BUILTIN
+    from .policy import Policy
+    from .runtime import Runtime
     root = workspace_root(cfg, base)
     if template_path(root).exists():
         check_frozen(cfg)
@@ -219,6 +231,7 @@ def build_runtime(cfg: dict, base: str | Path = ".") -> Runtime:
 
 def register_builtin_points(rt: Runtime) -> None:
     """Built-in points the config does not define keep their defaults."""
+    from .points import BUILTIN
     for name, make in BUILTIN.items():
         if name not in rt.points:
             rt.register(make())

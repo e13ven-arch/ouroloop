@@ -686,6 +686,33 @@ class FeedbackRecord(Record):
             raise ContractError(f"feedback status {self.status!r}: one of {list(FEEDBACK_STATUS)}")
 
 
+@dataclass
+class FeedbackSet:
+    """One builder's FeedbackRecords over the ledger (evolve.feedback.build_feedback), and why decisions were left out.
+    Here rather than with the builders: a measurement that builds no feedback still hands R the empty set of the same
+    shape (bench.Improvement.feedback), without importing them."""
+    records: list = field(default_factory=list)          # FeedbackRecord
+    refs: list = field(default_factory=list)
+    excluded: dict = field(default_factory=dict)         # reason -> count
+    builder_ref: str = ""
+
+    def valid(self) -> list:
+        return [r for r in self.records if r.status == "valid"]
+
+    def exclude(self, reason: str) -> None:
+        self.excluded[reason] = self.excluded.get(reason, 0) + 1
+
+    def summary(self) -> dict:
+        labels: dict = {}
+        for r in self.valid():
+            for label in r.target:
+                labels[label] = labels.get(label, 0) + 1
+        return {"records": len(self.records), "valid": len(self.valid()), "labels": labels,
+                "excluded": dict(self.excluded), "builder": self.builder_ref,
+                "conflicted": sum(r.status == "conflicted" for r in self.records),
+                "unknown": sum(r.status == "unknown" for r in self.records)}
+
+
 # ---------------------------------------------------------------------------- results of the core interfaces
 # ---------------------------------------------------------------------------- v0.6 records
 # New record types join at the current SCHEMA_VERSION; they are not a second schema (docs/modules/00_CONTRACTS.md).

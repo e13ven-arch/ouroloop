@@ -408,11 +408,25 @@ class StopDecider:
                  default: str = "yes"):
         self.descriptor = descriptor
         self.ref = descriptor.ref()
-        self.point = point
+        self._point = point
         self.backend = backend
         self.inference = inference or {}
         self.default = default
         self.actions = actions_of(descriptor.output_schema)
+
+    @property
+    def point(self):
+        """The decision point the policy's view is rendered at: the one given, else the business stop point, built
+        when something first asks for it. Only a loop that asks worker.stop (the v1 loop's StopGuard) does; under the
+        runner shell nothing does, so binding a rule policy constructs no DecisionPoint and imports no points."""
+        if self._point is None:
+            from .points import business_stop_point
+            self._point = business_stop_point()
+        return self._point
+
+    @point.setter
+    def point(self, point) -> None:
+        self._point = point
 
     @property
     def kind(self) -> str:
@@ -503,6 +517,8 @@ class Services:
     """What binding needs from the host. Nothing here is reachable from a policy's configuration."""
     objects: ct.Objects
     runtime: Any = None
+    # serving.Serving, or a function that builds it: only a model policy is loaded through it (_bind_stop), so a
+    # release of rule policies never constructs one.
     serving: Any = None
     capabilities: dict = field(default_factory=dict)
     probe_models: bool = True                 # ask a loaded model which model it is (PR-04)
@@ -590,22 +606,23 @@ def _bind_stop(p: PolicyDescriptor, services: Services) -> StopDecider:
     registration names, or a later comparison between a default arm and a model arm would be comparing two
     different records of the same moment.
     """
+    reg = resolve(p.target)
+    if p.kind == "rule":
+        return StopDecider(p, default=reg.fallback)        # the business stop point, built if a loop asks for it
     from .decision import Spec
     from .points import business_stop_point
-    reg = resolve(p.target)
     point = business_stop_point()
-    if p.kind == "rule":
-        return StopDecider(p, point=point, default=reg.fallback)
     spec = services.objects.get(p.implementation["spec_ref"])
     inference = parse_inference(services.objects.get(p.implementation["inference_ref"]),
                                actions_of(p.output_schema))
     point.spec = Spec(spec.get("instructions") or point.spec.instructions,
                       spec.get("criteria") or point.spec.criteria, dict(spec.get("view_params") or {}))
     backend_spec = spec.get("backend") or {"type": "model", "model": p.implementation["model_ref"]}
-    if services.serving is None:
+    serving = services.serving() if callable(services.serving) else services.serving
+    if serving is None:
         raise BindError(f"{p.target} is a model policy and there is no serving to load it with")
     try:
-        backend = services.serving.backend(backend_spec)
+        backend = serving.backend(backend_spec)
     except Exception as e:  # noqa: BLE001 - reported as a failed assembly, never as a fallback to the default
         raise BindError(f"{p.target}: the model could not be loaded: {type(e).__name__}: {e}") from None
     if services.probe_models and inference.get("model_id"):
@@ -884,12 +901,9 @@ def fixed_defaults(services: Services, *, profile: str = "task") -> BoundRuntime
     installed (docs/modules/03_EVALUATION_RELEASE.md §4).
     """
     default = descriptor(services.objects, "worker.stop", "rule", {"builtin": "default.v1"})
-    from .points import business_stop_point
     return BoundRuntime(release_ref="", profile=profile, authorization="fixed_defaults",
                         worker={"worker.stop": default},
-                        stop=StopDecider(default, point=business_stop_point(),
-                                         default=resolve("worker.stop").fallback),
-                        services=services)
+                        stop=StopDecider(default, default=resolve("worker.stop").fallback), services=services)
 
 
 # ---------------------------------------------------------------------------- a proposal as a candidate version

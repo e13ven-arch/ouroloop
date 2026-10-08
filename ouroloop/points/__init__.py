@@ -1,10 +1,9 @@
-"""Built-in decision points of the harness: retry, compact, tool_gate, stop and route, plus the deterministic deny list
-that runs before every tool call. Each declares the phase it is asked in and its default there: the action taken while
-the point is shadow, and whenever the model does not act."""
+"""Built-in decision points of the harness: retry, compact, tool_gate, stop and route. Each declares the phase it is
+asked in and its default there: the action taken while the point is shadow, and whenever the model does not act. The
+deterministic deny list that runs before every tool call is the agent host's (agent/deny.py)."""
 from __future__ import annotations
 
 import json
-import re
 
 from ..decision import Choice, DecisionPoint, Noul
 
@@ -171,22 +170,5 @@ def builtin_points() -> list[DecisionPoint]:
     return [make() for make in BUILTIN.values()]
 
 
-# Commands that are never run, whatever any model says. Rules first, model second.
-DENY = [re.compile(p) for p in (
-    r"\brm\s+-\w*r\w*\s+(/|~|\$HOME)(/?\*)?(\s|;|&|$)",
-    r"\bmkfs(\.\w+)?\b",
-    r"\bdd\b[^\n]*\bof=/dev/",
-    r":\(\)\s*\{\s*:\|:&\s*\};:",
-    r"\b(shutdown|reboot|halt|poweroff)\b",
-    r"\bgit\s+push\b[^\n]*\s(--force|-f)(\s|$)",
-    r"\b(curl|wget)\b[^|\n]*\|\s*(sudo\s+)?(ba|z)?sh\b",
-    r"\bchmod\s+-R\s+777\s+/",
-)]
-
-
-def denied(command: str) -> str | None:
-    """The deny-list pattern this command matches, or None."""
-    for rx in DENY:
-        if rx.search(command):
-            return rx.pattern
-    return None
+# The deny list is the agent host's (agent/deny.py); these names stay importable from here for older callers.
+from ..agent.deny import DENY, denied  # noqa: E402,F401

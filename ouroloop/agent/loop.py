@@ -20,9 +20,10 @@ from typing import Callable
 
 from ..chat import ChatProvider, ToolCall
 from ..ledger import _append_jsonl, new_id, now, redact
-from ..points import denied
 from ..runtime import Runtime
 from ..stop import StopCall, StopGuard
+from .deny import denied
+from .runner import AgentResult
 from .tools import ToolResult, Tools
 
 SYSTEM = ("You are a coding agent working in {workdir}. Use the tools to complete the task: read files before "
@@ -49,18 +50,6 @@ class AgentConfig:
     # requirements live in (docs/modules/01_POLICY_RUNTIME.md §3).
     stop_view: str = "stop.file.v2"
     max_event_result_chars: int = 2000            # per tool result kept in the observation, before the view cuts
-
-
-@dataclass
-class AgentResult:
-    text: str
-    turns: int
-    stop: str
-    session: str
-    verified: bool | None = None
-    # v0.3 (agent/runner.py): the hard limit that ended the attempt (act_calls, model_calls, tool_calls, seconds,
-    # tokens), None when the agent finished. This loop never sets it: its turn cap is its `stop`.
-    limit: str | None = None
 
 
 def describe(call: ToolCall) -> str:

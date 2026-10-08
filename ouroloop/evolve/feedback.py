@@ -13,37 +13,14 @@ equivalence to prove, and the loop closes without it.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from . import contracts as ct
+from .contracts import FeedbackSet
 
 # Labels a completion decision can carry, and the actions they correspond to.
 COMPLETION_LABELS = ("yes", "no")
 PROBE_NOTE = "completion probe"
-
-
-@dataclass
-class FeedbackSet:
-    records: list = field(default_factory=list)          # ct.FeedbackRecord
-    refs: list = field(default_factory=list)
-    excluded: dict = field(default_factory=dict)         # reason -> count
-    builder_ref: str = ""
-
-    def valid(self) -> list:
-        return [r for r in self.records if r.status == "valid"]
-
-    def exclude(self, reason: str) -> None:
-        self.excluded[reason] = self.excluded.get(reason, 0) + 1
-
-    def summary(self) -> dict:
-        labels: dict = {}
-        for r in self.valid():
-            for label in r.target:
-                labels[label] = labels.get(label, 0) + 1
-        return {"records": len(self.records), "valid": len(self.valid()), "labels": labels,
-                "excluded": dict(self.excluded), "builder": self.builder_ref,
-                "conflicted": sum(r.status == "conflicted" for r in self.records),
-                "unknown": sum(r.status == "unknown" for r in self.records)}
 
 
 @dataclass(frozen=True)

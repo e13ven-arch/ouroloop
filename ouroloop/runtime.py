@@ -1,7 +1,6 @@
 """The runtime that ties decision points, backends, default answerers and the ledger together."""
 from __future__ import annotations
 
-import importlib
 import json
 import random
 import threading
@@ -10,18 +9,13 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import policy
+from .config import import_object
 from .decision import Decision, DecisionPoint, Spec
 from .evolve.contracts import CandidateDefect
 from .ledger import CalibrationStore, Ledger, SessionStore, SpecStore, write_json
 from .policy import Policy, Route, route
 from .release import Accepted, Release, Revoked, harness_hash, spec_hash
 from .types import Backend, Question, Request, temper
-
-
-def import_object(ref: str):
-    """"package.module:name" -> the object."""
-    module, _, attr = ref.partition(":")
-    return getattr(importlib.import_module(module), attr)
 
 
 class _NoPolicy(Exception):

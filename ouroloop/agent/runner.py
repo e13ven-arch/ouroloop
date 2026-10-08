@@ -20,16 +20,30 @@ is what ended it.
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 
 from ..evolve import contracts as ct
 from ..ledger import _append_jsonl, new_id, now, redact
 from .default_agent import DEFAULT_ENTRY, DEFAULT_PATH, seed_files
 from .gateway import AttemptBroker, Gateway, HostContext, HostFault, Marks, SkillReader
 from .harness_package import HOST_TOOLS, CapabilityError, usable_worker
-from .loop import AgentResult
 from .worker import AgentRunError, LimitHit, PackageCallError, WorkerCrashed, component_view
 
 MAX_PUSHBACKS = 2                     # the default agent's cap, recorded with the session's harness as before
+
+
+@dataclass
+class AgentResult:
+    """What an attempt's agent returns to the attempt runner (evolve.task_eval.run_attempt): the final message, the
+    act calls (turns), how it stopped and the session it recorded. The v1 loop (agent.loop.Agent) returns the same."""
+    text: str
+    turns: int
+    stop: str
+    session: str
+    verified: bool | None = None
+    # v0.3: the hard limit that ended the attempt (act_calls, model_calls, tool_calls, seconds, tokens), None when
+    # the agent finished. The v1 loop never sets it: its turn cap is its `stop`.
+    limit: str | None = None
 
 
 def attempt_view(task: str, system: str, surface, bound, package, max_output_chars: int = 20000,

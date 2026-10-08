@@ -152,10 +152,11 @@ OUTCOME = ("task_id", "family_id", "split", "attempt", "candidate", "success", "
            "validity", "invalid_reason", "failure_class", "attempt_id", "pair_key", "supersedes", "evidence")
 
 
-def v3_config(upstream: str, root: Path, monkeypatch) -> dict:
+def v3_config(upstream: str, root: Path, monkeypatch, preset: str = "automationbench_harness_v3") -> dict:
     """The v3 preset on the rsi domain, as tests/test_research_session.py's v3_fixture adapts it: no image (a
-    ProcessWorker for tests stands in for the Docker worker), the gate's least counts the domain's three dev tasks."""
-    preset = copy.deepcopy(bench.PRESETS["automationbench_harness_v3"])
+    ProcessWorker for tests stands in for the Docker worker), the gate's least counts the domain's three dev tasks.
+    `preset` adapts another preset the same way (tests/test_hot_path_boundary.py runs the v5 one)."""
+    preset = copy.deepcopy(bench.PRESETS[preset])
     preset["domain"] = DOMAIN
     preset["harness"].update(sandbox=None)
     preset["task_plan"]["gate"].update(min_groups=1, bootstrap_replicates=200, min_tasks=3)

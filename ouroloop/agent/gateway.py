@@ -33,7 +33,7 @@ import uuid
 
 from ..chat import ToolCall, ToolSpec
 from ..evolve.execution import normalize_usage
-from ..points import denied
+from .deny import denied
 from .worker import Broker, LimitHit
 
 # The reasoning-effort tiers, lowest first (the `claude_code` provider's names). K's `max_effort` is the ceiling the

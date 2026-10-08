@@ -419,8 +419,8 @@ def _attempt(cfg: dict, base: str | Path, bench: BenchConfig, suite: ab.Suite, m
     if "llm" not in cfg:
         out("run        no [llm] table: the checks above need no model, an attempt does")
         return {}
-    rt = config_mod.build_runtime(cfg, base)
-    config_mod.register_builtin_points(rt)
+    max_effort = smoke_max_effort(cfg, base)
+    rt = attempt_workspace(cfg, base, runner_shell=max_effort is not None)
     provider = config_mod.build_provider(cfg["llm"])
     model = model_identity(provider, cfg["llm"])
     # The prompt of this run is whatever system prompt upstream ships with the tasks being attempted. They are
@@ -442,7 +442,7 @@ def _attempt(cfg: dict, base: str | Path, bench: BenchConfig, suite: ab.Suite, m
     rows = run_tasks(suite, chosen, make_agent_factory(rt, provider, budget=bench.budget,
                                                        meta={"agent": model.get("model") or provider.name,
                                                              "bench": bench.domain},
-                                                       max_effort=smoke_max_effort(cfg, base)),
+                                                       max_effort=max_effort),
                      run=run, splits=manifest, results=results, repeats=bench.repeats, on_result=show,
                      concurrency=bench.concurrency)
     total = summarise(rows)
@@ -450,6 +450,20 @@ def _attempt(cfg: dict, base: str | Path, bench: BenchConfig, suite: ab.Suite, m
         f"invalid={total['invalid']}, cost={'unmeasured' if total['cost_usd'] is None else total['cost_usd']} "
         f"(missing on {total['cost_missing']} attempts), usage={total['usage']}")
     return {"attempts": [r.to_json() for r in rows], "summary": total, "run": run.to_json()}
+
+
+def attempt_workspace(cfg: dict, base: str | Path = ".", *, runner_shell: bool):
+    """What an activity's attempts record their sessions in (docs/PLAN.md P1 step 2), at the config's workspace root.
+    Under the runner shell — a K that fixes `max_effort` — the host asks no decision point, so the thin
+    workspace.Workspace is all an attempt needs: the root, the `session` row and `.release.json`, and the config's
+    serving, built only if something asks for it (a model policy to bind, a trainer). An older K keeps the v1 loop,
+    which asks the built-in decision points through the full v1 runtime (config.build_runtime) until that loop goes
+    (P1 step 5)."""
+    if runner_shell:
+        return Workspace(config_mod.workspace_root(cfg, base), serving=lambda: config_mod.build_serving(cfg))
+    rt = config_mod.build_runtime(cfg, base)
+    config_mod.register_builtin_points(rt)
+    return rt
 
 
 def smoke_max_effort(cfg: dict, base: str | Path) -> str | None:
@@ -500,20 +514,21 @@ from dataclasses import field as _field
 from . import policies as _P
 from .evolve import contracts as _ct
 from .evolve import experience as _experience
-from .evolve import feedback as _feedback
-from .evolve.build import build_task_dataset as _build_task_dataset
 from .evolve.execution import BudgetError, BudgetMismatch, Budgets, Schedule
 from .evolve.task_gate import GatePlan, TaskEvalPlan, evaluate_task
 from .evolve.task_gate import refill as _refill
 from .evolve.task_gate import refill_attempts as _refill_attempts
 from .evolve.task_gate import screen as _screen
 from .evolve.task_gate import shortfall as _shortfall
-from .points import business_stop_point as _business_stop_point
 from .release import Releases
 from .research.context import make_context as _make_context
 from .research.context import task_results_summary as _task_results_summary
 from .research.inspection import inspect as _inspect
+from .workspace import Workspace
 
+# The builder a measurement's feedback is read with: evolve.feedback.COMPLETION_SNAPSHOT.ref, named here so the empty
+# set of a measurement that builds none (Improvement.feedback) carries it without importing the builders.
+FEEDBACK_BUILDER = "completion_snapshot@v1"
 RSI_KEYS = {"profile", "initial_release_ref", "core_ref", "schedule_ref", "budget_ref", "task_plan_ref",
             "research_plan_ref", "final_plan_ref", "scope_id", "stop_view", "train", "repeats", "order_seed"}
 PLACEHOLDER = ("<", "TODO", "changeme")
@@ -580,7 +595,7 @@ class Improvement:
     order_seed: int = 0
     screen_ids: tuple = ()
     budget: object = None
-    serving: object = None
+    serving: object = None                      # serving.Serving, or a function that builds it (policies.Services)
     trainer: object = None
     results: object = None                      # benchmark.Results, appended as attempts finish
     stop_view: str = "stop.business.v1"
@@ -612,6 +627,30 @@ class Improvement:
 
     def families(self) -> dict:
         return {e.task_id: e.family_id for e in self.splits.entries}
+
+    def feedback(self, release_ref: str) -> _ct.FeedbackSet:
+        """M2's labels on the ledger's completion decisions (evolve.feedback.build_feedback), as a measurement of
+        `release_ref` hands them to R. They are built only where a decision can be on the ledger or used: a K without
+        the runner shell (the v1 loop records a stop decision at every finish), a core with training on, or a W that
+        binds a decision target to a model. Otherwise — every release under the runner shell, which asks no decision
+        point — the set is empty, and it is the empty set of the default builder, with the same keys and shape, so
+        R's context reads as it did; the decision stack is not imported (docs/PLAN.md P1 step 2)."""
+        from .agent.runner import release_max_effort
+        if release_max_effort(self.objects, release_ref) is not None and not self._decides(release_ref):
+            return _ct.FeedbackSet(builder_ref=FEEDBACK_BUILDER)
+        from .evolve.feedback import build_feedback
+        return build_feedback(self.rt, objects=self.objects, scope_id=self.scope_id)
+
+    def _decides(self, release_ref: str) -> bool:
+        """Whether the release's core enables training or its W binds a decision target (worker.stop) to a model."""
+        release = self.objects.load(release_ref, _ct.SystemRelease)
+        if (self.objects.load(release.core_ref, _ct.CoreManifest).capabilities or {}).get("training"):
+            return True
+        for ref in self.objects.load(release.worker_ref, _ct.PolicySet).policies:
+            p = self.objects.load(ref, _ct.PolicyDescriptor)
+            if p.target in _P.REGISTRY and _P.REGISTRY[p.target].binding == "decision" and p.kind != "rule":
+                return True
+        return False
 
     def plan(self, candidate_ref: str, control_ref: str, parent_release: str) -> TaskEvalPlan:
         return TaskEvalPlan(candidate_ref=candidate_ref, control_ref=control_ref, parent_release=parent_release,
@@ -789,7 +828,7 @@ class Improvement:
                                        [(t, i) for t in self.dev_tasks for i in range(self.repeats)],
                                        plan_ref="", split=_split_of_tasks(self.splits, self.dev_tasks),
                                        candidate="current", role="base")
-        feedback = _feedback.build_feedback(self.rt, objects=self.objects, scope_id=self.scope_id)
+        feedback = self.feedback(release_ref)
         return {"results": [*train_results, *dev_results], "train": train_results, "dev": dev_results,
                 "feedback": feedback, "release": release_ref}
 
@@ -846,7 +885,7 @@ class Improvement:
             tasks, first = list(self.train_tasks or self.splits.ids("train")), True
         rows = self.train_measurement(release_ref, tasks, first=first)
         failed = [r.task_id for r in rows if not r.success]
-        feedback = _feedback.build_feedback(self.rt, objects=self.objects, scope_id=self.scope_id)
+        feedback = self.feedback(release_ref)
         pool = "this activity's whole train split" if set(tasks) >= set(self.splits.ids("train")) \
             else f"a train pool of {len(tasks)} tasks"
         return {"release": release_ref, "results": list(rows), "train": list(rows), "dev": [],
@@ -1072,7 +1111,7 @@ class Improvement:
         rows, seen = [*rows, *reused], seen | {r.task_id for r in reused}
         missing = [t for t in planned if t not in seen]
         extra = collected.get(latest, [])
-        feedback = _feedback.build_feedback(self.rt, objects=self.objects, scope_id=self.scope_id)
+        feedback = self.feedback(latest)
         return {"release": latest, "results": [*rows, *extra], "train": [*rows, *extra], "dev": [],
                 "feedback": feedback, "failed": [r.task_id for r in rows if not r.success] + missing,
                 "reused": True, "planned": planned, "missing": missing, "first": bool(plan and plan.get("first")),
@@ -1574,7 +1613,10 @@ class Improvement:
 
     def _train(self, entry: dict, budget) -> dict:
         """The training entry of a proposal: dataset, artifact, inference configuration. No pointer moves."""
+        from .evolve import feedback as _feedback
+        from .evolve.build import build_task_dataset
         from .evolve.pipeline import train_artifact
+        from .points import business_stop_point
         if self.trainer is None:
             raise ValueError("this activity has no trainer: a training proposal cannot be built")
         if entry.get("point") != "worker.stop":
@@ -1585,13 +1627,13 @@ class Improvement:
                                            builder=entry.get("feedback_ref", "completion_snapshot.v1")
                                            .replace("@", "."), scope_id=self.scope_id)
         selection = self.objects.get(entry["data_selection_ref"])
-        dataset = _build_task_dataset(self.rt, _business_stop_point(), feedback,
-                                      out_dir=self.rt.root / "rsi" / "datasets" / entry["point"],
-                                      objects=self.objects, splits=self.splits,
-                                      seed=int(selection.get("seed", 0)),
-                                      validation=float(selection.get("validation", 0.25)),
-                                      max_per_task=int(selection.get("max_per_task", 20)),
-                                      min_groups=int(selection.get("min_groups", 2)))
+        dataset = build_task_dataset(self.rt, business_stop_point(), feedback,
+                                     out_dir=self.rt.root / "rsi" / "datasets" / entry["point"],
+                                     objects=self.objects, splits=self.splits,
+                                     seed=int(selection.get("seed", 0)),
+                                     validation=float(selection.get("validation", 0.25)),
+                                     max_per_task=int(selection.get("max_per_task", 20)),
+                                     min_groups=int(selection.get("min_groups", 2)))
         if dataset.status != "ready":
             return {"reason": f"dataset {dataset.status}: {dataset.exclusions}"}
         built = train_artifact(self.rt, self.trainer, dataset, self.objects.get(entry["recipe_ref"]),
@@ -2213,8 +2255,6 @@ def open_activity(cfg: dict, base: str | Path = ".", *, out: Callable[[str], Non
         # each domain's split hash and counts; `ouroloop freeze` asks for the strata too (M7 §5)
         for line in domain_lines(manifest, strata=strata):
             out(line)
-    rt = config_mod.build_runtime(cfg, base)
-    config_mod.register_builtin_points(rt)
     objects = _ct.Objects(root)
     releases = Releases(root, objects)
     release_ref, bootstrapped = releases.active()["release_ref"], False
@@ -2282,6 +2322,8 @@ def open_activity(cfg: dict, base: str | Path = ".", *, out: Callable[[str], Non
     out(f"release    {_ct.short(release_ref)} active, core {_ct.short(_ct.SystemRelease.from_json(objects.get(release_ref)).core_ref)}")
     for line in drift:
         out(f"DRIFT      {line}")
+    from .agent.runner import release_max_effort
+    rt = attempt_workspace(cfg, base, runner_shell=release_max_effort(objects, release_ref) is not None)
     return Activity(bench, rsi, suite, manifest, drift, root, results, rt, objects, releases, versions,
                     release_ref, Budgets(root), bootstrapped)
 
@@ -2570,7 +2612,7 @@ def improvement(activity: Activity, *, template_ref: str | None = None, provider
         gate=gate, dev_tasks=tasks, scope_id=scope_id or activity.rsi.scope_id,
         repeats=template.repeats if template else activity.rsi.repeats,
         order_seed=template.order_seed if template else activity.rsi.order_seed,
-        screen_ids=template.screen_ids if template else (), serving=activity.rt.serving, trainer=trainer,
+        screen_ids=template.screen_ids if template else (), serving=lambda: activity.rt.serving, trainer=trainer,
         budget=budget,
         results=activity.results, stop_view=activity.rsi.stop_view, attempt_budget=attempt,
         probe_train=True, train_tasks=tuple(activity.splits.ids("train")), owner=owner, pricing=pricing,
@@ -2602,6 +2644,14 @@ FRONTIER_KEYS = {"llm", "effort", "fallback", "source", "date", "note", "pricing
 def _harness_of(activity: Activity) -> dict | None:
     rel = _ct.SystemRelease.from_json(activity.objects.get(activity.release_ref))
     return (activity.objects.load(rel.core_ref, _ct.CoreManifest).capabilities or {}).get("harness")
+
+
+def _slot_workspace(activity: Activity, root: str | Path):
+    """A research slot's arm or common-inputs workspace at `root`, for the attempts it runs under the activity's K:
+    attempt_workspace over a config with no backends but the mock, as the slot's workspaces always had."""
+    from .agent.runner import release_max_effort
+    return attempt_workspace({"workspace": {"root": str(root)}, "backends": {"mock": {"type": "mock"}}}, ".",
+                             runner_shell=release_max_effort(activity.objects, activity.release_ref) is not None)
 
 
 def _five_limits(activity: Activity, plan: TaskEvalPlan | None) -> bool:
@@ -2769,9 +2819,11 @@ def collect(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
     out(f"collect    {rows['tasks']} tasks, {rows['attempts']} attempts, {rows['invalid']} invalid")
     out(f"feedback   {summary['valid']} valid labels over {summary['labels']}, {summary['unknown']} unknown, "
         f"{summary['conflicted']} conflicted; excluded {summary['excluded']}")
-    built = _build_task_dataset(activity.rt, _business_stop_point(), evidence["feedback"],
-                               out_dir=activity.root / "rsi" / "datasets" / "audit", objects=activity.objects,
-                               splits=activity.splits, min_groups=1)
+    from .evolve.build import build_task_dataset
+    from .points import business_stop_point
+    built = build_task_dataset(activity.rt, business_stop_point(), evidence["feedback"],
+                              out_dir=activity.root / "rsi" / "datasets" / "audit", objects=activity.objects,
+                              splits=activity.splits, min_groups=1)
     out(f"data       {built.status}: rows={built.stats.get('rows')} groups={built.groups} "
         f"tasks={built.stats.get('tasks')}")
     for reason, count in sorted((built.exclusions or {}).items()):
@@ -3622,7 +3674,7 @@ def _install_research(activity: Activity, plan, recorded: dict, out) -> dict | N
         preflight=lambda target: {"release": target,
                                   "policies": _P.describe(_P.bind_release(
                                       target, profile="preflight",
-                                      services=_P.Services(activity.objects, serving=activity.rt.serving)))})
+                                      services=_P.Services(activity.objects, serving=lambda: activity.rt.serving)))})
     out(f"install    {installation.status} {_ct.short(installation.target_release)}"
         + (f" ({installation.reason})" if installation.reason else ""))
     return {k: v for k, v in vars(installation).items() if isinstance(v, (str, int, float, bool, type(None)))}
@@ -3737,8 +3789,7 @@ def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_
     core_ref = _ct.SystemRelease.from_json(activity.objects.get(activity.release_ref)).core_ref
     _ct.copy_closure(activity.objects, objects, [pair.initial_w_ref, r_ref, core_ref])
     releases = Releases(root, objects)
-    rt = config_mod.build_runtime({"workspace": {"root": str(root)}, "backends": {"mock": {"type": "mock"}}}, ".")
-    config_mod.register_builtin_points(rt)
+    rt = _slot_workspace(activity, root)
     start = releases.bootstrap(pair.initial_w_ref, r_ref, core_ref,
                                reason=f"campaign {plan.id} {pair.pair_id} arm {arm}",
                                **_campaign_host(activity, objects, pair.initial_w_ref))
@@ -3748,7 +3799,7 @@ def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_
                         dev_tasks=tuple(_tasks_of(activity, pair.inner_dev_groups)),
                         scope_id=f"{plan.id}:{pair.pair_id}:{arm}", repeats=pair.repeats,
                         order_seed=pair.seed_schedule[0] if pair.seed_schedule else 0,
-                        budget=arm_budget, serving=rt.serving, results=Results(root, activity.bench.domain),
+                        budget=arm_budget, serving=lambda: rt.serving, results=Results(root, activity.bench.domain),
                         pricing=pricing, concurrency=activity.bench.concurrency,
                         stop_view=activity.rsi.stop_view, attempt_budget=_attempt_budget(activity),
                         probe_train=True, train_tasks=tuple(_tasks_of(activity, pair.inner_train_groups)),
@@ -3807,7 +3858,7 @@ def _run_campaign_arm(activity: Activity, plan, pair, arm: str, r_ref: str, arm_
             common = shared["measurement"]
             own = {**common, "release": start, "results": [*common["results"], *mine],
                    "train": [*common["train"], *mine], "missing": [],
-                   "feedback": _feedback.build_feedback(inner.rt, objects=inner.objects, scope_id=inner.scope_id)}
+                   "feedback": inner.feedback(start)}
         elif (own := inner.last_measurement(releases.active()["release_ref"])) is not None \
                 and own["release"] != start and inner._runs_like(own["release"], start):
             # The copied rows name the common release; the arm's own collection batches ran on `start` (the release
@@ -3977,8 +4028,7 @@ def _campaign_common(activity: Activity, plan, pair, budget, *, provider, pricin
     _ct.copy_closure(activity.objects, objects, [pair.initial_w_ref, plan.r_control_ref, plan.r_candidate_ref,
                                                  core_ref])
     releases = Releases(root, objects)
-    rt = config_mod.build_runtime({"workspace": {"root": str(root)}, "backends": {"mock": {"type": "mock"}}}, ".")
-    config_mod.register_builtin_points(rt)
+    rt = _slot_workspace(activity, root)
     start = releases.bootstrap(pair.initial_w_ref, plan.r_control_ref, core_ref,
                                reason=f"campaign {plan.id} {pair.pair_id} common inputs",
                                **_campaign_host(activity, objects, pair.initial_w_ref))
@@ -3986,7 +4036,7 @@ def _campaign_common(activity: Activity, plan, pair, budget, *, provider, pricin
     common = Improvement(rt=rt, suite=activity.suite, splits=activity.splits, objects=objects, releases=releases,
                          provider=provider, core_ref=core_ref, gate=_gate_of(activity, plan),
                          dev_tasks=tuple(_tasks_of(activity, pair.inner_dev_groups)),
-                         scope_id=f"{plan.id}:{pair.pair_id}:common", budget=budget, serving=rt.serving,
+                         scope_id=f"{plan.id}:{pair.pair_id}:common", budget=budget, serving=lambda: rt.serving,
                          results=Results(root, activity.bench.domain), pricing=pricing,
                          concurrency=activity.bench.concurrency,
                          stop_view=activity.rsi.stop_view, attempt_budget=_attempt_budget(activity),
@@ -4902,7 +4952,7 @@ def research_slot(cfg: dict, base: str | Path = ".", *, pairs, researcher, arm_r
         # measurement stands for the current version, and R's input is the experience log's projection.
         evidence = work.last_measurement(release_ref) or {
             "results": [], "train": [], "dev": [], "release": release_ref,
-            "feedback": _feedback.build_feedback(activity.rt, objects=activity.objects, scope_id=work.scope_id)}
+            "feedback": work.feedback(release_ref)}
     else:
         evidence = work.collect()
     experience, experience_ref = _experience.snapshot(activity.root)
@@ -5060,7 +5110,7 @@ def startup_checks(activity: Activity, cfg: dict, *, phase: str, needs_model: bo
                             f"{plan.gate().min_groups}")
     try:
         bound = _P.bind_release(activity.release_ref, profile="preflight",
-                                services=_P.Services(activity.objects, serving=activity.rt.serving))
+                                services=_P.Services(activity.objects, serving=lambda: activity.rt.serving))
         activity.releases.authorize(activity.release_ref, profile="task")
     except Exception as e:  # noqa: BLE001 - a release that does not assemble is not something to run
         problems.append(f"the active release does not assemble: {type(e).__name__}: {e}"[:300])

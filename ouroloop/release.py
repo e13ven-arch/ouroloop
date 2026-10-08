@@ -8,9 +8,8 @@ import json
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
-from .decision import _digest
 from .ledger import file_key, locked, now, write_json
 
 PACKAGE = Path(__file__).resolve().parent
@@ -27,6 +26,11 @@ class Release:
 
     def to_json(self) -> dict:
         return asdict(self)
+
+
+def _digest(obj: Any) -> str:
+    """The short content hash of a release's parts and of a decision point's spec (decision.Spec)."""
+    return hashlib.sha1(json.dumps(obj, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:12]
 
 
 def spec_hash(points: dict) -> str:

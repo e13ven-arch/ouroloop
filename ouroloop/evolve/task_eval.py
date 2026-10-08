@@ -22,7 +22,6 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from typing import Callable
 
-from ..agent import Agent, AgentConfig
 from ..agent.harness_package import mount
 from ..agent.runner import PackageAgent, k_max_effort, k_methods
 from ..agent.tools import ToolResult
@@ -399,6 +398,7 @@ def make_agent_factory(rt, provider, *, budget: Budget, tiers: dict | None = Non
                                 worker=worker, session_meta={**(meta or {}), "task": task.task_id},
                                 methods=method_view,
                                 extra_system=str((extra_system or {}).get(getattr(task, "task_id", None)) or ""))
+        from ..agent.loop import Agent, AgentConfig      # the v1 loop, only for a K without the runner shell
         if bound is not None:
             # The capability package: skills are read through the host's read_skill, and a package that runs
             # code needs the isolated worker, refused here otherwise (docs/modules/01_POLICY_RUNTIME.md §1).

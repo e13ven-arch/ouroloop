@@ -5,17 +5,13 @@ so a research agent can propose a changed spec and the framework can replay it o
 """
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from .policy import Policy
+from .release import _digest            # one content hash for specs and releases (release.spec_hash)
 from .types import Question
-
-
-def _digest(obj: Any) -> str:
-    return hashlib.sha1(json.dumps(obj, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:12]
 
 
 @dataclass

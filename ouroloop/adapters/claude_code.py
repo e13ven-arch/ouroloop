@@ -20,7 +20,7 @@ import re
 from contextlib import contextmanager
 from pathlib import Path
 
-from ..points import denied
+from ..agent.deny import denied
 
 TOOLS = {"Bash": "bash", "Write": "write", "Edit": "edit", "MultiEdit": "edit"}
 EVENTS = ("UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "PostToolUseFailure", "Stop")
