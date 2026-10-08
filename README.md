@@ -34,12 +34,7 @@ Test splits read so far: marketing 3 times, finance once, support, sales and HR 
 - **Released:** tag `v0.4.0`, the finance final; earlier tags `v0.1.0` to `v0.3.0`.
 - **Implemented, not released:** v0.5's method library and experience library, merged into `m1-automationbench` (`7e7732e`). Under the batch-3 rule agreed before the run, the experience library stays as the memory base behind a preset switch, because both of its process readings held (train D ≥ +2; learning curve P ≥ 0.8). The method library's readings were never taken, so the rule cuts it. That cut is a proposal the user may veto.
 - **Slimming batch 1 (done on branch `slim/1`, 2026-10-08):** the dead code and legacy paths are gone, and every attempt runs under the runner shell. The typed decision contracts (compatible with Jev and TDE), the decision records and the controller training chain are kept in the optional subpackage `ouroloop/train/` (extras `[train]` and `[train-jobs]`, entry point `python -m ouroloop.train`), off the benchmark path. The v1 agent loop's decision points and champion releases are removed (read them at tag `archive-2026-10-08`). Hash identity with the existing workspaces was not kept: no existing activity resumes at HEAD, and old workspaces are re-rendered or resumed at their tags. HEAD still reads their train/dev records.
-- **Next** ([docs/PLAN.md](docs/PLAN.md)):
-  - Slimming batches 2 and 3.
-  - Memory work, open source first. No existing cross-task memory fits as it is, so the experience library stays the base and borrows designs from ACE and ReMe.
-  - R0 changes so that R also proposes tools and loop patches. K already allows writable package tools and agent-program edits, but R has never proposed a tool, while StarHarness reports +26.1 on finance (on a different metric) from such patches.
-  - New single-domain activities with sealed finals. Any domain may run one under conditional reuse, with its read count disclosed.
-  - Phase 1 of the v2 training chain: Tinker LoRA for training and self-hosted vLLM on RunPod for evaluation inference, accepted on chain receipts only.
+- **Forward design (2026-10-09, awaiting review):** [docs/DESIGN.md](docs/DESIGN.md) v1.0. The framework has two jobs, improving the harness automatically and training models. The harness becomes a typed component graph (agent, vendor, tool, hook, prompt, skill, memory, model, config, test), each kind with its own edit path, $0 verification, credit condition and limit; Stirrup is vendored as the agent base behind one adapter file, ReMe's procedural-memory ops run in a sidecar behind our platform rules; the improver is the framework's own eight-step loop with a per-kind verification ladder; the platform keeps only what protects money, prevents leakage and keeps results correct. Stages and costs: [docs/PLAN.md](docs/PLAN.md) §2 (stages 1 to 3 cost nothing; the first paid run is a finance activity under the new preset).
 
 ## Quick start
 
@@ -127,10 +122,10 @@ For another domain, copy `quickstart.toml`. Change `[bench] domains` and the `[b
 
 The design documents are in Chinese.
 
+- [docs/DESIGN.md](docs/DESIGN.md) and [docs/modules/](docs/modules/README.md): the architecture (v1.0) and the rules of the current code.
 - [docs/PLAN.md](docs/PLAN.md): where things stand, the rules, the next stages, and what waits for the user. Start here.
 - [docs/RESULTS.md](docs/RESULTS.md) and [docs/JOURNAL.md](docs/JOURNAL.md): the results, and a log of every change and run, newest first.
-- [docs/DESIGN.md](docs/DESIGN.md), [docs/ROADMAP.md](docs/ROADMAP.md) and [docs/modules/](docs/modules/README.md): the design, the activity history and the module rules.
-- [docs/design/](docs/design/): the slimming inventory, the open-source components plan, the v2 training pipeline, and the v0.4 and v0.5 plans.
+- [docs/design/](docs/design/): the v2 training chain; [docs/history/](docs/history/): the pre-registered plans and analyses of measured activities, and the framework survey.
 
 Every file deleted on 2026-10-08, in the cleanup and in slimming batch 1, is still readable at tag `archive-2026-10-08`.
 

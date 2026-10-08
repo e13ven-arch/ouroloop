@@ -6,7 +6,7 @@
 
 （v2，2026-10-08，[V2_TRAINING_PIPELINE](../design/V2_TRAINING_PIPELINE.md) §7 第 4 项与“考虑过、不做”）v2 不做 `adapt_workflow`：教师的私有参考就是 K，即各域 W\* 的 memory 与 skills 原文，用固定模板渲染（没有 W\* 的域为空），以 ref 冻结进 DistillationPlan；学生在 W0 下行动。本节适配规格保留作记录，不在 v2 实现；DS6-01、DS6-09～11 随之不适用。
 
-M4 负责提出和执行验证源工作流；本模块负责把已验证方法适配到学生的目标动作空间，然后组织学生在环采集。SourceWorkflow 引用确切源 release/harness、train 方法说明及实际验证结果；不要求人写优化工作流或教学提示。手工导入只作为可选入口，仍受同一验证约束。`purpose=source_validation` 的 passed 结果即可作为输入，不要求 source 已做生产 dev gate 或已安装；无发布资格不会阻断合规教学适配。第二版的源 h* 在学生 actor（Qwen3.5-9B）上演化并验证（[DESIGN](../DESIGN.md) §2、[ROADMAP](../ROADMAP.md) §3）；首版在 GLM-5.3 上演化的包不直接作为学生的 source。
+M4 负责提出和执行验证源工作流；本模块负责把已验证方法适配到学生的目标动作空间，然后组织学生在环采集。SourceWorkflow 引用确切源 release/harness、train 方法说明及实际验证结果；不要求人写优化工作流或教学提示。手工导入只作为可选入口，仍受同一验证约束。`purpose=source_validation` 的 passed 结果即可作为输入，不要求 source 已做生产 dev gate 或已安装；无发布资格不会阻断合规教学适配。第二版的源 h* 在学生 actor（Qwen3.5-9B）上演化并验证（[DESIGN](../DESIGN.md) §2、ROADMAP（tag archive-2026-10-09） §3）；首版在 GLM-5.3 上演化的包不直接作为学生的 source。
 
 拟新增窄函数 `adapt_workflow(source_ref, target_harness_ref, adaptation_spec, services, budget, operation) -> reference_ref 或 unsupported/invalid`，放 `distill/teacher.py`。它不是通用代码编译器。适配前固定来源、目标、模板、provider、允许输入和修复次数，逐次生成调用纳入 M5：
 

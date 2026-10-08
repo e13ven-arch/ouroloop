@@ -1,11 +1,13 @@
 # 模块详细设计与开发交接（v0.7）
 
+> **2026-10-09：** 这十份文档描述现有代码（v0.7 架构）。架构以 [DESIGN v1.0](../DESIGN.md) 为准；每个模块的文档随它的代码在阶段 1～3 被替换时删除（[PLAN](../PLAN.md) §2）。
+>
 > 2026-10-04 修订（v0.3）：首版交付物改为“可演化的 agent 程序 + 最小运行壳 + 所 pin 的模型”（[总设计](../DESIGN.md)页首与 §1、§3、§5）。随之：M0 多出包 API v2 与轨迹记录格式，M1 多出网关与运行壳，M4 多出实验账目与编码会话，M3/M5 的 gate 统计重写。本页只改所有权与开发顺序；各模块的规则在各自文件里，新规则标“（v0.3，2026-10-04）”。
 > 代码基线 `b1cb7a7`，2026-09-30 修订交付边界。首版交付能力包代码演化/发布/递归；第二版完善训练，保留其详细规格。M0～M7 既有实现不重写。历史状态见快照（`docs/history/V0_5_IMPLEMENTATION.md`，2026-10-08 删除，tag `archive-2026-10-08` 上可读）。首版 `*6-` 用例大多已按阶段 A～E 实现为离线测试（覆盖清单见 [JOURNAL](../JOURNAL.md)；仍部分实现的用例见 [集成验收](08_INTEGRATION_CASES.md) 头部），标为第二版的用例仍是待实现规格；离线通过只证明接线，不是真实收益。v0.1/v0.2 的真实结果见 [RESULTS](../RESULTS.md)。
 > 2026-10-08（support 两臂对照停止后，[JOURNAL](../JOURNAL.md) 2026-10-08）：本页补 v0.5 的归属（所有权表 M1、M4、M5、M7 四行的 v0.5 注，M8 行的代码位置注）与“v0.4、v0.5 的顺序与现状”一节；训练子包 `ouroloop/train/` 的归属随瘦身第一批写进 M2 一行。瘦身各批不再等 support 的 final 或 H1。
 > 2026-10-08（瘦身第一批完成，分支 `slim/1`，[PLAN](../PLAN.md) P1）：所有权表 M1、M2 两行的代码位置改到现状：v1 循环 `agent/loop.py`、`runtime.py`、`points/` 已删，每次尝试都走运行壳，session 行由 `workspace.py` 写；决策与训练栈在 `ouroloop/train/`（`[train]`）与 `ouroloop/train/jobs/`（`[train-jobs]`），子包里每个模块由哪份 v2 文档点名见 [M2](02_EVIDENCE_TRAINING.md) §3c（日落规则）。
 
-先读 [总设计](../DESIGN.md)、[技术选型](../TECHNOLOGY.md)和 [实施顺序](../ROADMAP.md)。核心交付是自动发现有效方法、验证、固化、发布，并让改进方法的更新实际参与下一轮。源 harness（运行壳 + agent 包）可以演化；单次蒸馏的目标 harness 冻结。人工流程可调试，不能替代核心自动路径。
+先读 [总设计](../DESIGN.md)、技术选型（tag archive-2026-10-09）和 实施顺序（tag archive-2026-10-09）。核心交付是自动发现有效方法、验证、固化、发布，并让改进方法的更新实际参与下一轮。源 harness（运行壳 + agent 包）可以演化；单次蒸馏的目标 harness 冻结。人工流程可调试，不能替代核心自动路径。
 
 ## 模块所有权
 
@@ -28,7 +30,7 @@ M0 独占公共字段与记录格式；M1 独占实际运行/provider 绑定、�
 
 ## 开发顺序与完成条件
 
-v0.1/v0.2 按下列 1～4 步交付，离线与真实运行记录保留（[ROADMAP §3](../ROADMAP.md)）。v0.3 的顺序在其后。
+v0.1/v0.2 按下列 1～4 步交付，离线与真实运行记录保留（ROADMAP §3（tag archive-2026-10-09））。v0.3 的顺序在其后。
 
 1. 首版先做诊断输入与文本能力包：M1 pin actor（原定 GLM-5.3，2026-10-03 起为 Claude Opus 5.5）；M0 HarnessPackage/worker.harness 身份；M1 宿主装配 skills/memory，纯文本包不启动隔离 worker；M4 train/fit 失败摘要与断言明细、逐题笔记→汇总、harness_edit 文本组件；M4/M5 文本草稿检查（结构/路径/manifest）与有界修订；M3 的 run_tasks 另存判分明细 `bench/<domain>/grading.jsonl`，M7 结果存储按冻结 split 读取；所需上限（max_failure_notes、失败摘要条目长度上限、max_draft_repairs）由 preset/K 先行固定。首轮真实演化前运行所 pin actor 的 train+dev 基线；补任务反馈后按有界 driver 继续，零人工优化方案即可起步，不需要 Docker、trainer 或 teacher。（已完成）
 2. 首版再接代码组件与隔离：M1 固定 API/工具 broker/Docker 隔离 worker、hook（先 on_finish）与包工具；M4 harness_edit 代码组件；M4/M5 把冻结前草稿试跑修复扩展到 isolated_probe/package_test，次数由同一 preset 上限固定。生成代码只在 worker 执行、不在控制面 import，组件种类由 K 冻结，K 允许代码时 freeze/smoke 须确认 worker，运行中不可用按 M0 §3 记 infrastructure_failed/repair_runtime 并暂停活动，不收窄种类；保留旧绑定/身份。本机 Docker daemon 可用是真实检查前提。（已完成）
@@ -47,7 +49,7 @@ v0.1/v0.2 按下列 1～4 步交付，离线与真实运行记录保留（[ROADM
    - 默认 agent 在进程内与在 worker 内产生相同的记录序列，并照常运行 v1 的 hooks/tools/skills/memory；v1 含代码的包整个在 worker 里跑默认 agent；镜像的 runner 与宿主不同即拒绝（M1：`test_a_text_only_v1_package_runs_in_process_and_its_records_match_the_worker_placement`、`test_it6_29_a_v1_package_under_the_default_agent_makes_the_same_calls_as_the_host_loop`、`test_the_v02_w_star_shape_runs_under_the_default_agent_in_the_worker`、`test_the_default_agent_runs_a_v1_package_through_run_in_the_qualified_worker`（Docker）、`test_a_worker_running_another_runner_is_refused_at_load_and_named_at_startup`）。
    - 失败语义：worker 崩溃/运行时异常 = infrastructure；草稿检查期间异常 = draft 失败并回传 R；每个含代码的草稿都经 smoke（M1：`test_it6_43_a_crash_at_run_time_is_infrastructure_a_crash_in_the_draft_check_is_a_draft_failure_and_a_hard_limit_is_budget`、`test_an_agent_that_raises_at_run_time_is_infrastructure_not_a_candidate_defect`、`test_a_code_package_without_an_agent_entry_is_smoked_through_the_default_agent`）。
    - 报告从宿主记录读出 agent 入口与放置、按角色的调用数、effort 截顶次数、触顶的维度（M7：`test_report.py::test_pr7_11_the_report_reads_the_agent_entry_placement_roles_effort_caps_and_limits_from_the_gateway_log`）。
-   - 彩排的假 actor 经网关答复：离线检验的每次尝试走运行壳（网关、broker、默认 agent），Docker 干跑在 v3 的 K 下走到 gate 裁决（M1：`test_rehearsal_world.py::test_the_fake_actor_answers_through_the_gateway`、`test_the_expected_path_runs_end_to_end_offline`，这个测试文件 2026-10-08 随彩排一起移出 HEAD，tag `archive-2026-10-08` 上可读；[REHEARSAL §8](../REHEARSAL.md)）。
+   - 彩排的假 actor 经网关答复：离线检验的每次尝试走运行壳（网关、broker、默认 agent），Docker 干跑在 v3 的 K 下走到 gate 裁决（M1：`test_rehearsal_world.py::test_the_fake_actor_answers_through_the_gateway`、`test_the_expected_path_runs_end_to_end_offline`，这个测试文件 2026-10-08 随彩排一起移出 HEAD，tag `archive-2026-10-08` 上可读；REHEARSAL §8（tag archive-2026-10-09））。
    - 留给第 2 步：`trajectory_ref`、Inspection 里的 `policies_read`/effort 逐次分布/有效工具 schema 去重集合、PR7-10 的专门用例、多域 preset（v3 preset 目前仍只 Marketing）。
 2. **M3/M5：统计与速度。** **代码已实现（2026-10-04；见 JOURNAL “v0.3 第 2 步”两条）；退出条件：第一版确认规则 4/20 未达成，第二版 0/20 达成（见末条）。** 完成条件与实现的测试名（以此为准）：
    - 对照臂为同计划、同模型身份下已安装 W 的全部有效读数的合并；没有读数时新测（M3：`test_task_gate.py::test_the_control_arm_pools_every_valid_reading_of_the_installed_version`、`test_the_control_arm_reads_only_the_pairs_the_pool_is_short_of`、`test_a_pooled_control_counts_only_readings_under_the_same_plan_conditions_and_model`、`test_cycle.py::test_a_control_arm_cut_short_is_topped_up_on_restart_and_nothing_is_paid_twice`——归属与补齐规则在 M3 §2.1(a)；M6 的两支：`test_cycle.py::test_an_arm_pools_only_the_common_readings_and_its_own`）。
@@ -93,9 +95,9 @@ v0.1/v0.2 按下列 1～4 步交付，离线与真实运行记录保留（[ROADM
 6. **v0.3.0。** 全套测试通过，合并进 main，继续在 `m1-automationbench` 开发。
 
 **v0.4、v0.5 的顺序与现状（2026-10-08 记）。**
-- **v0.4（[V0_4_PLAN](../design/V0_4_PLAN.md)）：一个领域一个活动。** finance 活动三轮加封存 final 已完成（2026-10-07）：W\* 62.7% 对 W0 54.7%，+8.0 [−4.0, +22.7]，不确定；每次尝试成本 $0.482 → $0.378（−22%，显著）；tag `v0.4.0`（`7f65947`），尚未合并进 main。support 活动成了 v0.5 两臂对照里的 v0.4 臂，只跑了基线（dev 26/75）。
-- **v0.5（[V0_5_PLAN](../design/V0_5_PLAN.md)）：方法库 + 经验库。** 实现合入 `m1-automationbench`（`7e7732e`），未发布。support 两臂对照（2026-10-07 冻结）跑完两臂基线（v0.4 臂 dev 26/75，v0.5 臂 27/75）与 v0.5 臂的 3b（经验库流 D = 3.0，前后两半 0.00 → 0.12，P 0.89；快照过 dev gate：首读 +0.24、确认 +0.08、合并 +0.16 [+0.047, +0.287]，每次尝试成本 −6.6%；$81.86）。2026-10-08 用户停止对照：3c、3d 与两份 final 都没跑，H1 未测。按瘦身第三批的规则，经验库保留为 memory 的底座（preset 开关，不进默认），方法库拟删（用户可否决）。v0.5 的跨模块用例见 [集成验收](08_INTEGRATION_CASES.md) §1b。
-- **之后：** 瘦身三批、开源组件的试验（[OSS_COMPONENTS_PLAN](../design/OSS_COMPONENTS_PLAN.md)）与 v2 训练链（[V2_TRAINING_PIPELINE](../design/V2_TRAINING_PIPELINE.md)）的顺序见 [DESIGN](../DESIGN.md) 页首指向的开发计划与 [ROADMAP](../ROADMAP.md)；每批都不再等 final 或 H1。
+- **v0.4（[V0_4_PLAN](../history/V0_4_PLAN.md)）：一个领域一个活动。** finance 活动三轮加封存 final 已完成（2026-10-07）：W\* 62.7% 对 W0 54.7%，+8.0 [−4.0, +22.7]，不确定；每次尝试成本 $0.482 → $0.378（−22%，显著）；tag `v0.4.0`（`7f65947`），尚未合并进 main。support 活动成了 v0.5 两臂对照里的 v0.4 臂，只跑了基线（dev 26/75）。
+- **v0.5（[V0_5_PLAN](../history/V0_5_PLAN.md)）：方法库 + 经验库。** 实现合入 `m1-automationbench`（`7e7732e`），未发布。support 两臂对照（2026-10-07 冻结）跑完两臂基线（v0.4 臂 dev 26/75，v0.5 臂 27/75）与 v0.5 臂的 3b（经验库流 D = 3.0，前后两半 0.00 → 0.12，P 0.89；快照过 dev gate：首读 +0.24、确认 +0.08、合并 +0.16 [+0.047, +0.287]，每次尝试成本 −6.6%；$81.86）。2026-10-08 用户停止对照：3c、3d 与两份 final 都没跑，H1 未测。按瘦身第三批的规则，经验库保留为 memory 的底座（preset 开关，不进默认），方法库拟删（用户可否决）。v0.5 的跨模块用例见 [集成验收](08_INTEGRATION_CASES.md) §1b。
+- **之后：** 瘦身三批、开源组件的试验（OSS_COMPONENTS_PLAN（tag archive-2026-10-09））与 v2 训练链（[V2_TRAINING_PIPELINE](../design/V2_TRAINING_PIPELINE.md)）的顺序见 [DESIGN](../DESIGN.md) 页首指向的开发计划与 ROADMAP（tag archive-2026-10-09）；每批都不再等 final 或 H1。
 
 **推迟到第二版**（各在所属模块只留一段）：决策点（stop/retry/compact/route）移到网关/broker 边界给 C3 挂点（M1）；教师在网关介入、训练投影读网关日志、演化 → 冻结 → 训练 → 换学生 → 重演化的 schedule 与共适应注（M2）；组件归因与删除规则（M4，DESIGN §7）。**考虑过、不做（v0.3）**的完整清单见 [DESIGN §9](../DESIGN.md)。
 

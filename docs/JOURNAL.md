@@ -8,6 +8,19 @@
 
 ---
 
+## 2026-10-09 正向设计：DESIGN v1.0；文档清理
+
+- 用户的决定（2026-10-09）："我刚才大概看了一下我们的代码，我们的核心代码好像很简单，agent，memory，harness 这些核心组件都只有一个文件，这应该不正常吧？其他的框架这些核心机制都设计的很完善，我们不仅闭门造车，还都是按照demo级别做的设计与开发，大量的开发工作和代码都用来保障无关紧要的外围系统了，有点本末倒置了。清理掉无关的设计文档和过时的文档。我们需要设计完善的架构与机制来自己实现RSI改进器，包括agent 如何使用开源的代码，以及引入进来之后我们如何做嵌入和二开，这些都是需要正向设计出来的，而不是我要求加入所以就加入了，memory同理。RSI框架本身的职责要清楚，就是自动化提升harness和训练模型。那么这里的harness的设计如何能够完成自动提升的都要有正向的设计。" 另："不用看上一个会话的记录，重新思考设计"；"不需要那么多并行任务，文档看一遍不就清楚哪些有价值哪些没价值吗"。
+- 做了什么：
+  - 读数（`6a06e45`）：核心三件 `agent/default_agent.py` 295 行、`research/library.py` 640 行、`agent/harness_package.py` 723 行；`bench.py` 5,360 行，加 `report.py`、`evolve/{execution,contracts,task_gate}.py`、`policies.py`、`release.py` 约 5,100 行。判断成立。
+  - 新写 [DESIGN v1.0](DESIGN.md)，取代 v0.7 的 DESIGN 与 10-08 的三份设计稿。要点：框架两项职责（自动提升 harness、训练模型）；harness 是有类型的组件图（agent / vendor / tool / hook / prompt / skill / memory / model / config / test），每类有位置、改法、$0 验收、记功条件与 K 的上限；开源底座 Stirrup 整份 vendor 进 W，接缝只有一个适配文件，二开按适配层 → 补丁栈 → R 直接改三档，升级 = 换上游重放补丁；memory 是 W 的组件，ReMe 算子在 sidecar 里提炼与检索，平台管出处、train-only、留一、引用记功、退役、容量，快照走阶梯，反复出现又可机械化的条目升级成 tool/hook；改进器是我们自己的八步循环（证据 → 诊断成原因簇 → 学出来的分层 → 编码会话 → 逐档验收 → 筛选与 gate → 装入与存档 → 条件记功与反膨胀），验收阶梯 V0 静态 / V1 单元 / V2 toolcheck·回放·可达 / V3 train 筛 / V4 dev gate / V5 final；模型是 W 的 `model` 组件，训练链产物绑进候选走同一条阶梯；平台只留保护钱、防泄漏、保结果正确三类；目标布局 `harness/ runtime/ memory/ improver/ evaluate/ activity/`，框架 30k → 约 20k 行；五个阶段，阶段 0～3 都是 $0。
+  - 文档清理（tag `archive-2026-10-09` = `6a06e45`，删掉的都在上面）：删 `ROADMAP.md`（活的部分在 PLAN，历史在 JOURNAL/RESULTS）、`TECHNOLOGY.md`、`REHEARSAL.md`（记录的代码已删）、`design/OSS_COMPONENTS_PLAN.md`、`design/MEMORY_AGENT_ITERATION.md`、`design/V0_6_DESIGN.md`（三份被 DESIGN v1.0 取代；V0_6 的证据表与 S1 读数在 DESIGN 里引用）、`design/SLIMMING_INVENTORY.md`（第一批已完成，其余并入阶段 1）、`design/V0_5_EVOLVING_SEARCH.md`、`design/V0_5_METHOD_LIBRARY.md`（方法库删，经验库由 memory 组件取代）、`history/V0_6_AUDIT_2026-10-01.md`、`history/V0_6_REVIEW_2026-10-02.md`（审的代码已删）。`design/V0_4_PLAN.md`、`design/V0_5_PLAN.md` 是已测活动的预注册记录，移到 `history/`。其他文档里指向删掉文件的链接改成“（tag archive-2026-10-09）”。留下：PLAN、JOURNAL、RESULTS、DESIGN、SURVEY_RSI_FRAMEWORKS、TRAINING_HOSTS、design/V2_TRAINING_PIPELINE、modules/（描述现有代码，随阶段 1～3 的代码一起删）、history/ 的分析与调研。
+  - [PLAN](PLAN.md) 改写：阶段按 DESIGN §8 重排（0～5），原 P2～P7 并入；规则加第 19（不为基准定制）、20（平台只留三类）条；§3 列待审项。`CLAUDE.md`、两份 README 的状态段与文档链接随之改。
+- 证据：没改 `ouroloop/` 下的代码，没跑测试，没调模型，没付费，没读 `.env`，没读任何 test 内容。
+- commit：本条所在的提交。
+
+---
+
 ## 2026-10-08 瘦身第一批的验收与三份评审（P1）
 
 - 验收（在 `288ea61` 上，没改代码，没提交）：
@@ -179,7 +192,7 @@
 
 ## 2026-10-08 support v0.5 臂 3b 之后的决定
 
-- 背景：3b 跑完后写了两份文档。一是开源 memory 与 agent 底座的计划 [design/OSS_COMPONENTS_PLAN.md](design/OSS_COMPONENTS_PLAN.md)（`fb27022`，草案，交用户审）；二是 V2 训练链按 Tinker/RunPod 核价的更正（`d2f60f5`）。用户审 OSS 计划时定了下面几项。
+- 背景：3b 跑完后写了两份文档。一是开源 memory 与 agent 底座的计划 design/OSS_COMPONENTS_PLAN.md（tag archive-2026-10-09）（`fb27022`，草案，交用户审）；二是 V2 训练链按 Tinker/RunPod 核价的更正（`d2f60f5`）。用户审 OSS 计划时定了下面几项。
 - 用户的决定（2026-10-08）：
   1. actor 的传输：“这个还是通过cli的方式来跑”。actor 继续经 claude_code CLI 走订阅，不开要 API key 的臂。OSS 计划的“W0 走 API（原生 tool use）”臂删去（S3 ①、§4、§5、§9 第 1 项），预算减去它的约 $50 真实 + $33 名义。原生 tool use 只能经 Claude Code 原生臂测：CLI 加一个 MCP server，把我们的三个基础工具暴露给 Claude Code、转发到我们的 broker。这一臂暂缓，support 两份 final 之后再评估，因为它让循环、系统提示和传输同时变；Claude Code 要联网，进不了无网络的 worker；计量只能按会话算。
   2. 密封 final 放哪些域：用户问“不能全跑吗？”，采纳。finance、support、sales、hr、marketing 都可以跑密封 final，一律按有条件复用规则：构建学生的任何产物都不读之前 final 的逐题记录（由结果库按 split 过滤、代码强制），每份报告披露这份 test 被读过几次。只有 operations 整域从未读过，留作 v2 的 LODO。取代前一条记录第 2 项里的“sales、hr 的 test 留给 v2（v1 活动在这两域不跑 final）”和“marketing 已用尽”。V2 C5 的 test 池随之是五个域的 test（123 题），加上 operations 的 LODO。费用：一个单领域活动名义约为基线 $56 + 3 轮约 $120 + final 约 $72（订阅），按域分批开。
@@ -204,7 +217,7 @@
 
 ## 2026-10-08 support 两臂基线；瘦身清单与 v2 训练链设计
 
-- 做了什么（2026-10-07/08）：support 两臂各跑完基线（`--phase cycle --until baseline`）；v0.5 臂的 3b 经验库轨道（`--phase library`）2026-10-07 开始，仍在跑。写瘦身清单 [design/SLIMMING_INVENTORY.md](design/SLIMMING_INVENTORY.md)（按用户反馈改过两版）与 v2 训练链设计 [design/V2_TRAINING_PIPELINE.md](design/V2_TRAINING_PIPELINE.md)；ROADMAP 加“瘦身（2026-10-07 决定）”“v2 训练链（2026-10-08 决定）”两节，v0.5 一节记下两臂基线；按 V2 §7 同步 DESIGN、TECHNOLOGY、M0（00）、M2（02）、M8（09）与瘦身清单（改名 `[train]`/`[train-jobs]`），复核后再给 M3、M4、08、modules/README、TRAINING_HOSTS 与 V0_4/V0_5 两份计划里的旧写法加注。两份设计稿只读代码、文档与 train/dev 记录：没改代码、没调模型、没读 `.env` 与任何 test 结果（重放原型曾在内存里解析过 test 题的任务定义、未输出，V2 §2.6 第 1 条）。
+- 做了什么（2026-10-07/08）：support 两臂各跑完基线（`--phase cycle --until baseline`）；v0.5 臂的 3b 经验库轨道（`--phase library`）2026-10-07 开始，仍在跑。写瘦身清单 design/SLIMMING_INVENTORY.md（tag archive-2026-10-09）（按用户反馈改过两版）与 v2 训练链设计 [design/V2_TRAINING_PIPELINE.md](design/V2_TRAINING_PIPELINE.md)；ROADMAP 加“瘦身（2026-10-07 决定）”“v2 训练链（2026-10-08 决定）”两节，v0.5 一节记下两臂基线；按 V2 §7 同步 DESIGN、TECHNOLOGY、M0（00）、M2（02）、M8（09）与瘦身清单（改名 `[train]`/`[train-jobs]`），复核后再给 M3、M4、08、modules/README、TRAINING_HOSTS 与 V0_4/V0_5 两份计划里的旧写法加注。两份设计稿只读代码、文档与 train/dev 记录：没改代码、没调模型、没读 `.env` 与任何 test 结果（重放原型曾在内存里解析过 test 题的任务定义、未输出，V2 §2.6 第 1 条）。
 - 证据（基线，名义美元）：
   - v0.4 臂（`claude-v4-support.toml`）：W0 train 18/50（36%）；dev 三次读数 8、9、9（32%、36%、36%），合计 26/75（34.7%）；$56.19。
   - v0.5 臂（`claude-v5-support.toml`）：W0 train 19/50（38%）；dev 三次读数 10、9、8（40%、36%、32%），合计 27/75（36.0%）；$56.97。
@@ -288,7 +301,7 @@
 
 ## 2026-10-06 v0.5 方案：方法库 + 经验库，贪心环不动
 
-- 做了什么：写 [design/V0_5_PLAN.md](design/V0_5_PLAN.md)、ROADMAP “v0.5（2026-10-06 决定）”与本条；三份设计稿（方法库、进化搜索、agent 内 RL）顶端标为输入。然后实现与测试（离线，在隔离工作树；没有调用模型、没有付费阶段、没有读 `.env`、没有读任何 test 结果、没有碰 `workspace-claude-v4-finance`）。
+- 做了什么：写 [design/V0_5_PLAN.md](history/V0_5_PLAN.md)、ROADMAP “v0.5（2026-10-06 决定）”与本条；三份设计稿（方法库、进化搜索、agent 内 RL）顶端标为输入。然后实现与测试（离线，在隔离工作树；没有调用模型、没有付费阶段、没有读 `.env`、没有读任何 test 结果、没有碰 `workspace-claude-v4-finance`）。
 - 决定：v0.5 = v0.4 的单领域贪心环（骨干，不改）+ 方法库 + 经验库，新行为只在 preset `automationbench_harness_v5` 冻结的 K 下出现。依据：方法库的 158 道失败 train 题里 140 道带方法可修的模式（117 道确认；核对 50、分析 40、搜索 38、版本 12、统计 6），而宽泛的核对伤人（send_review 修 3 坏 2），所以适用处由 train 配对奖励学（方法库仿真：finance 全开 −1.2、学到的开关 +2.8～+7.4 / 100 道新题）；进化搜索的统一仿真里只有经验库赢过贪心（$300：finance +0.17 ± .07、support +0.26、sales +0.23 题/25），也只有它随 train 题数上升（L+G .71 → .95，G .71 → .63）。agent 内 RL 只留“收住伤害”（方法表的 silent 格）；档案 + 合并、B-Race、算子老虎机、完整 agent RL 记为“考虑过、不做”。
 - 为等预算与单领域实测，对草稿的改动：快照只在 n = 50 过一次 gate；对照取基线的 W0 train 读数；learn 读数只跑重放触发过的 train 题（≤ 24 道）；重拟候选走自己的固定轮；参考方法（扇出搜索、行台账、政策版本、发送前与写后核对）只作夹具与消融，不给 R、不进 W0；S1 finance 与 S1-L 不跑。
 - 真实检验（预注册，V0_5_PLAN §3）：support 上两臂等预算（同一划分 `3da11232f5d5ff38`、根 $450、final 份额 $160、同样的限额）：v0.4 臂 `claude-v4-support.toml`，v0.5 臂 `claude-v5-support.toml`；各自封存 final（25 道 test × 3，W0 对 W\*）。H1：按题配对的 W\*_v5 − W\*_v4 区间下界 > 0；功效约 30%，预期多半“不确定”。经验库的学习曲线（首遇配对效应对见过的 train 题数）作过程证据。
@@ -326,7 +339,7 @@
 
 ## 2026-10-06 v0.4 迭代方案
 
-- 做了什么：按用户批准的更简单方案写 [design/V0_4_PLAN.md](design/V0_4_PLAN.md)、ROADMAP “v0.4（2026-10-06 决定）”与本条，再实现、测试。两份设计稿（分片 + 路由的 V0_4_SHARDED_RSI、冻结孪生的 RSI_PLAN）顶端标为被取代，保留作历史。全部离线：没有调用模型、没有付费阶段、没有读 `.env`、没有改任何示例工作区的记录（v3 工作区只读）。
+- 做了什么：按用户批准的更简单方案写 [design/V0_4_PLAN.md](history/V0_4_PLAN.md)、ROADMAP “v0.4（2026-10-06 决定）”与本条，再实现、测试。两份设计稿（分片 + 路由的 V0_4_SHARDED_RSI、冻结孪生的 RSI_PLAN）顶端标为被取代，保留作历史。全部离线：没有调用模型、没有付费阶段、没有读 `.env`、没有改任何示例工作区的记录（v3 工作区只读）。
 - 方案（八项，每项的证据与预期在 V0_4_PLAN §1）：(1) 每个新领域一个单领域活动，配置 `claude-v4-finance.toml`、`claude-v4-support.toml`，划分用分层规则与 seed 1、由 `[bench.frozen_splits]` 钉成 v3 工作区冻结的 hash（钉子现在按能重现它的那条规则重算）；(2) R 的新输入 `api_errors.json`（只从 train 轨迹按端点计调用、错误、重试、未读的下一页、空结果），方法说明要它先修接口；(3) 轨迹清单加通过的 train 尝试（含“不得做”断言的优先），准入要求每个候选读过其 `predicted_affected` 中一条失败轨迹、本会话读过一条通过轨迹；(4) 笔记的 `direction`（omission | over_action | other）与覆盖计数；(5) 字面量检查给出文件、行、字面量，区分大小写，豁免纯数字、键与表头、≥2 道 train 题共有的值；(6) 通过样本每轮重抽 6 道（种子 (order_seed, 轮次)、“不得做”优先），资格为 ≥1 修复且 ≤1 样本退步再按净翻转排，`[bench] control_readings = 3`；(7) 会话核心的 R0 换成 k 个候选的方法说明与带方向的笔记提示；(8) final 并列 W0 的 pass@k（等成本参照）。
 - 证据（离线）：
   - 字面量检查回放（数字规则按评审改后重放）（`examples/automationbench/literal_replay.py`，只读 `workspace-claude-v3` 的 20 次 `draft_check` 与草稿对象、grading 与上游初始状态）：v0.3 规则复现了记录里的 14 次拒绝（每份草稿的命中数都对得上）；v0.4 规则 0 次拒绝；往第一份被拒草稿里写入一个只属于一道 train 题、原样大小写的记录名（'ACH Processing'），v0.4 规则照旧拒绝并写出 `memory.md:2`；植入一道题的断言数字同样被拒（五个领域的 train 断言 params 里 154 个数字，123 个只属于一道题，全部禁止）。14 次里 10 次只因小写普通短语对上大写表值或表头，3 次只因 '3000'，1 次两者都有。
@@ -1408,4 +1421,4 @@
 
 ## 还没建的
 
-日志记的是改了什么、什么时候改的。当前未完成项以 [下一阶段计划](PLAN.md) 与 [实施路线图](ROADMAP.md) 为准。原先并列的研究员状态表 `docs/RESEARCH_AGENT.md` 已被取代，见 tag `archive-2026-10-08`。
+日志记的是改了什么、什么时候改的。当前未完成项以 [下一阶段计划](PLAN.md) 与 实施路线图（tag archive-2026-10-09） 为准。原先并列的研究员状态表 `docs/RESEARCH_AGENT.md` 已被取代，见 tag `archive-2026-10-08`。

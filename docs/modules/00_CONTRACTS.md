@@ -4,7 +4,7 @@
 >
 > v0.3（2026-10-04，DESIGN v0.7）：首版交付物从“固定 agent 循环 + 能力包”改为“可演化的 agent 程序 + 最小运行壳 + 被 pin 的模型”（运行壳即 DESIGN §1 的 runner shell，本文与 M1 只用这一个词）。能力包就是 agent 程序：它可以改循环本身。本文新增包 API v2（`agent` 组件、ctx 表面、角色、单次尝试硬上限、宿主写入的轨迹记录、包永远拿不到的东西）与相应的 release/导出变化；v1 包仍合法，由 K 自带的默认 agent 运行。理由与业界对照见 [SURVEY_RSI_FRAMEWORKS.md](../SURVEY_RSI_FRAMEWORKS.md) §4、§6、§7：v0.1/v0.2 装进去的两个改动都是文字提醒，剩下的失败质量在判断与未读状态上，只有循环层的机制（核对回合、判断前的证据表、拿事实的工具、用算力换准确）够得着；报告更大留出收益的框架（StarHarness Finance +29、AutoSaddler +9～10）都改循环与工具。v0.1/v0.2 的记录（[RESULTS.md](../RESULTS.md)）与 2026-10-03/04 的记录不删。
 >
-> v0.5（2026-10-07 合入；2026-10-08 现状，[V0_5_PLAN](../design/V0_5_PLAN.md) §6）：新增的契约只有三处，都不改任何已有身份：§2 末的经验库快照形状与 `library_retrieval` 事件、§3 末的固定代码候选（`ORIGINS` 加 `fixed`，台账的 `fixed_code`）；方法库的 `method_decision` 标记与 `m_` 前缀的只读规则随方法库按瘦身第三批拟删（用户可否决）。
+> v0.5（2026-10-07 合入；2026-10-08 现状，[V0_5_PLAN](../history/V0_5_PLAN.md) §6）：新增的契约只有三处，都不改任何已有身份：§2 末的经验库快照形状与 `library_retrieval` 事件、§3 末的固定代码候选（`ORIGINS` 加 `fixed`，台账的 `fixed_code`）；方法库的 `method_decision` 标记与 `m_` 前缀的只读规则随方法库按瘦身第三批拟删（用户可否决）。
 
 ## 1. 身份与版本
 
@@ -172,7 +172,7 @@ ActorTraining    = {method: distill_actor, target: worker.actor,
 
 `Experiment` 继续冻结 proposal、parent release、experience、K、eval template 和 budget；增加的 purpose/execution base 不允许运行中改写。续跑也只按这些冻结值完成，评测模板或预算 scope 不一致则不续跑并暂停（M5 §3）。source_validation 使用 train 验证模板，deployment 使用生产 gate 模板；不把 collect/train/evaluate 分成三个可以各自安装的候选。`build_candidate` 输出 ready/invalid/infrastructure_failed；内部 `TrainingBuild` 保持 ready/failed/cancelled，外部未知请求保存在操作记录，由 M5 映射为待核对或 inconclusive，不能伪造 ready。
 
-（v0.4，2026-10-06，[V0_4_PLAN §1.5](../design/V0_4_PLAN.md)）字面量检查改为按题的索引：每个 train 字面量记下出现它的 train 题（断言 params 与初始状态各自按题），只出现在一道题里的值禁止进包；在 ≥2 道题里出现的值、纯数字（但不含 train 断言 params 里只属于一道题的数字：那是判分器查的答案，评审 2026-10-06）、作为字典键或 `headers`/`columns` 列表成员出现的串（字段名与表头）不禁止。匹配区分大小写（邮箱不分）。检查输出写出文件、行号与字面量：它是 train 数据，R 在失败摘要与轨迹里本就读得到，输出只回给 R、不进包。原因：v0.3 的 20 份草稿被误拒 14 份，全是普通词或常量。
+（v0.4，2026-10-06，[V0_4_PLAN §1.5](../history/V0_4_PLAN.md)）字面量检查改为按题的索引：每个 train 字面量记下出现它的 train 题（断言 params 与初始状态各自按题），只出现在一道题里的值禁止进包；在 ≥2 道题里出现的值、纯数字（但不含 train 断言 params 里只属于一道题的数字：那是判分器查的答案，评审 2026-10-06）、作为字典键或 `headers`/`columns` 列表成员出现的串（字段名与表头）不禁止。匹配区分大小写（邮箱不分）。检查输出写出文件、行号与字面量：它是 train 数据，R 在失败摘要与轨迹里本就读得到，输出只回给 R、不进包。原因：v0.3 的 20 份草稿被误拒 14 份，全是普通词或常量。
 
 （v0.5，2026-10-07，V0_5_PLAN §1.3、§1.4、§6；`evolve/contracts.py:42`、`research/fixed.py`）**固定代码的候选。** `ExperimentProposal.origin` 多一个允许值 `fixed`：候选由框架的固定代码声明（经验库快照，算子 `library`；方法表重拟，算子 `refit`），不是 R 的，也不是人的；入口照旧固定写入，不接受自报。声明照常写成 `candidate_declaration` 的形状，另带 `operator` 与 `declared_by: "fixed code"`，`predicted_affected` 是它要筛的失败 train 题。候选 id 是 `<scope>/f<序号>/<算子>`，实验 id 由候选 id 推出（`x_` 加摘要），续跑时不变（M5 §1 的 v0.5 段）。台账的声明行带 `fixed_code: true`，`ledger_rows` 折叠后的条目也带它（`evolve/experience.py:124-125`），报告与续跑据此认出固定轮；旧工作区里没有这种实验，旧 ref 不变。2026-10-08：`refit` 随方法库按瘦身第三批拟删（用户可否决），`library` 与 `fixed` 保留。
 

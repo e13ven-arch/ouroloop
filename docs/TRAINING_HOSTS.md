@@ -1,6 +1,6 @@
 # 训练主机与训练器插件
 
-> 本文说明现有决策 trainer、作业与 serving，保持兼容。新 actor 生成训练归第二版，以 Tinker 托管服务为参考实现（自托管训练写插件模块路径，由 `JobTrainer` 作为作业运行，不走 `module:Class`；评测推理走 RunPod 上自托管的 vLLM；2026-10-08，V2 §7 第 6 项），加独立生成 artifact/provider 契约，不要求本地/SSH host。首版能力包演化不要求训练账号。见 [技术选型](TECHNOLOGY.md)与 [M2](modules/02_EVIDENCE_TRAINING.md)。
+> 本文说明现有决策 trainer、作业与 serving，保持兼容。新 actor 生成训练归第二版，以 Tinker 托管服务为参考实现（自托管训练写插件模块路径，由 `JobTrainer` 作为作业运行，不走 `module:Class`；评测推理走 RunPod 上自托管的 vLLM；2026-10-08，V2 §7 第 6 项），加独立生成 artifact/provider 契约，不要求本地/SSH host。首版能力包演化不要求训练账号。见 技术选型（tag archive-2026-10-09）与 [M2](modules/02_EVIDENCE_TRAINING.md)。
 >
 > 2026-10-08（瘦身第一批，[PLAN](PLAN.md) P1）：本文的代码移进可选子包，路径与命令随之改：插件、模型库与 serving 在 `ouroloop/train/`（extra `[train]`），作业、主机与云在 `ouroloop/train/jobs/`（extra `[train-jobs]`）；`ouroloop host` 改为 `python -m ouroloop.train host`；作业进程是 `python -m ouroloop.train.jobs.worker`；训练主机镜像是 `ouroloop/train/jobs/Dockerfile`。冠军指针一族（门、注册表、模型卡、校准、部署、监控撤销）、`ouroloop serve` 与 `[serving] url` 已删，tag `archive-2026-10-08` 上可读：训练出的模型由 `train_artifact`（`ouroloop/train/train.py`）做成一个产物，加载探针过了才算 ready；serving 只在控制面进程内按引用加载，所以别的机器上训练的模型发布到 `hf` 库。下文按现状改写，删掉的配置写法不再列出。
 

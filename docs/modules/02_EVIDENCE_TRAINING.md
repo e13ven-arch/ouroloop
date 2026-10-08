@@ -8,7 +8,7 @@
 >
 > 2026-10-08（support 两臂对照停止后，[JOURNAL](../JOURNAL.md) 2026-10-08）：对照已由用户停止，上段“等 support 两份 final 评完、H1 算完”的条件作废，代码从瘦身第一批合入之后开始。同日按 V2 的 Tinker/RunPod 核价更正同步 §3b：`[train.actor]` 的自托管写插件模块路径、由 `JobTrainer` 运行（`module:Class` 只用于测试与 demo）；默认配方只做 LoRA，α 在 Tinker 上设不了，lr 改为扫描；serving 默认 `openai_compat` 指向 RunPod 上服务合并权重的 vLLM（V2 §3.3、§3.5、§3.7、§7 第 6 项）。被取代的原文保留在注里。
 >
-> 2026-10-08（瘦身第一批完成，分支 `slim/1`，[PLAN](../PLAN.md) P1）：本模块的代码已收进可选子包。`ouroloop/train/`（extra `[train]`）放决策契约、标签、建集、检查、`train_artifact`、后端、模型库、serving、trainer 插件、StopGuard 与入口 `python -m ouroloop.train`；`ouroloop/train/jobs/`（extra `[train-jobs]`）放作业、主机与云。冠军流水线（gate、registry、replay、monitor、plan、pipeline 的旧半边、`calibrate_point`）已删，tag `archive-2026-10-08` 上可读，v2 按 Releases 与 task_gate 重写。下文的代码位置改到新路径；新加 §3c，列出子包里每个模块由哪份 v2 文档点名，即日落规则的点名清单（[SLIMMING](../design/SLIMMING_INVENTORY.md) §0.1）。测试在 `tests/train/` 与 `tests/train/jobs/`。“训练出的 decider 改变 agent 的行为”在 HEAD 上没有测试：要等宿主重新问 stop 点或 `write_gate`（V2 §3.8；SLIMMING §2.6）。
+> 2026-10-08（瘦身第一批完成，分支 `slim/1`，[PLAN](../PLAN.md) P1）：本模块的代码已收进可选子包。`ouroloop/train/`（extra `[train]`）放决策契约、标签、建集、检查、`train_artifact`、后端、模型库、serving、trainer 插件、StopGuard 与入口 `python -m ouroloop.train`；`ouroloop/train/jobs/`（extra `[train-jobs]`）放作业、主机与云。冠军流水线（gate、registry、replay、monitor、plan、pipeline 的旧半边、`calibrate_point`）已删，tag `archive-2026-10-08` 上可读，v2 按 Releases 与 task_gate 重写。下文的代码位置改到新路径；新加 §3c，列出子包里每个模块由哪份 v2 文档点名，即日落规则的点名清单（SLIMMING（tag archive-2026-10-09） §0.1）。测试在 `tests/train/` 与 `tests/train/jobs/`。“训练出的 decider 改变 agent 的行为”在 HEAD 上没有测试：要等宿主重新问 stop 点或 `write_gate`（V2 §3.8；SLIMMING §2.6）。
 
 ## 1. 两条数据路径
 
@@ -78,7 +78,7 @@ Tinker 训练状态与 sampling 权重不是同一产物。恢复保存 training
 4. **switch_student**：训练产物经 M1 装载探针与 M3 无教师 dev gate（学生 release 对同 h 的基线 B，比较见 [DESIGN §8](../DESIGN.md) 表“有效 harness 与蒸馏 actor”）后才能形成新 release；gate 不过则保留原 release，费用照记。
 5. **re_evolve**：（v2，2026-10-08：在 v2.5 实现，V2 §5“v2.5 以后”；轨道 B 的 C5、C5′ 不依赖它，报告“蒸馏 app”的成绩仍要它，见下文 (a)(b)）以学生为 pin 的模型重新开一个活动，在学生上演化 agent 程序。学生上的 **W0 是更简单的种子**：M0 §2（v0.3）的默认 agent（`agent/default_agent.py`，即今天的宿主循环移植成包）加上 Opus 活动中被接受的文本组件（memory/skills），不是 Opus 上演化出的整个 agent 程序。Opus 上的 W* 可以作为该活动第一轮的一个候选，与学生 W0 过同一个 gate；它不是种子。（2026-10-08：v2 里学生的 W0 就是默认 agent 包，不带 Opus 的文本组件；W\* 的 memory/skills 只作教师的 K（第 2 步）。re_evolve 的种子到 v2.5 再定。）
 
-**harness–模型共适应是一项成本，不是假设。** 在 Opus 上演化出的循环（更高 effort、多采样、发送前核对）以 Opus 的判断力为前提，放到 9B 学生上可能费用更高、收益更低，甚至为负（Harness-Zero 的 h* 之所以在学生上验证，正是因为 base+h* 是学生带 h* 的成绩，[ROADMAP §3](../ROADMAP.md)）。所以：(a) re_evolve 是必经阶段，不能把 Opus 的 W* 直接装给学生就报告蒸馏完成；(b) 报告里“蒸馏 app”的成绩是学生 + 学生上演化出的包，与 Opus + Opus 上的包并列，再加学生 + Opus 的包作为共适应成本的直接读数（三者都是无教师、同 split）；(c) 每一步的费用计入同一预算根，re_evolve 的预算在 freeze 时预留，不能把钱全花在前四步。
+**harness–模型共适应是一项成本，不是假设。** 在 Opus 上演化出的循环（更高 effort、多采样、发送前核对）以 Opus 的判断力为前提，放到 9B 学生上可能费用更高、收益更低，甚至为负（Harness-Zero 的 h* 之所以在学生上验证，正是因为 base+h* 是学生带 h* 的成绩，ROADMAP §3（tag archive-2026-10-09））。所以：(a) re_evolve 是必经阶段，不能把 Opus 的 W* 直接装给学生就报告蒸馏完成；(b) 报告里“蒸馏 app”的成绩是学生 + 学生上演化出的包，与 Opus + Opus 上的包并列，再加学生 + Opus 的包作为共适应成本的直接读数（三者都是无教师、同 split）；(c) 每一步的费用计入同一预算根，re_evolve 的预算在 freeze 时预留，不能把钱全花在前四步。
 
 ### 3b. 配置形状与 actor 产物契约（v2，2026-10-08，[V2_TRAINING_PIPELINE](../design/V2_TRAINING_PIPELINE.md) §3.3、§3.7）
 
@@ -108,7 +108,7 @@ teacher、judge、actor（含学生）与 trainer 都是配置项，开发者换
 
 ### 3c. 子包的模块与日落规则的点名清单（2026-10-08，瘦身第一批）
 
-日落规则（[SLIMMING](../design/SLIMMING_INVENTORY.md) §0.1）：到 v1.0 tag 时，子包里不在下表、或点名它的 v2 段落已经删掉的模块，一律删掉。往子包里新加模块，要在下表写上点名它的段落才算点名。行号与路径以 `slim/1` 的 `455ffe2` 为准。
+日落规则（SLIMMING（tag archive-2026-10-09） §0.1）：到 v1.0 tag 时，子包里不在下表、或点名它的 v2 段落已经删掉的模块，一律删掉。往子包里新加模块，要在下表写上点名它的段落才算点名。行号与路径以 `slim/1` 的 `455ffe2` 为准。
 
 | 模块 | 内容 | 点名它的 v2 文档 |
 |---|---|---|

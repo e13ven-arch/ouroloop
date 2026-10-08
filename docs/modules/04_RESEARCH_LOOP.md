@@ -1,9 +1,9 @@
 # M4：自动发现、实验选择与经验循环
 
 > 首版必需：从任务反馈自动演化能力包代码/材料，并改进和回用 R。复用 `research/agent.py`、`basic.py`、`context.py`、`experiment.py`、`loop.py`、`evolve/experience.py`（2026-10-08 瘦身第一批：`research/agent.py`、`ask.py`、`basic.BasicResearcher` 与 `loop.py` 里的旧决策研究轮已删）；第二版再接 actor 蒸馏/controller 新训练，不新增研究服务或调度器。
-> v0.3（2026-10-04，[DESIGN](../DESIGN.md) v0.7）：R 的汇总步从“一次 JSON 回复给一个 patch”改为 worker 内对包目录的一次有界编码会话（每轮一次，修订续写同一会话），每轮至多 k 个带声明的候选，先过 train 侧筛选再付 dev gate；引擎自有的简单台账进入 E，准入拒绝重复的 (mechanism, site)；R 的输入增加原始 train 轨迹（只读、限字节）、dev 失败类型直方图与台账投影。失败摘要、逐题笔记、草稿检查、冻结与准入不变。考虑过、不做（v0.3）：成功侧摘要、每段至少一个代码候选、逐题 TRUE FIX/TRUE REGRESSION/STOCHASTIC 标签与预测记分（各在所属小节写明原因）；组件归因与淘汰推迟到第二版（§5）。依据：v0.1/v0.2 装入的两个改动都是文字提醒，13 个候选无一改工具或代码，R 的笔记里 26 条建议 before_tool（[ROADMAP §3](../ROADMAP.md) 第 2a 步第 9 项）；业界报出更大留出增益的框架都改 loop 与工具，且提案者读原始轨迹（[SURVEY §4](../SURVEY_RSI_FRAMEWORKS.md) 第 2、3、5、6、7 项）。本文新增或修改的规则逐条标“（v0.3，2026-10-04）”。
+> v0.3（2026-10-04，[DESIGN](../DESIGN.md) v0.7）：R 的汇总步从“一次 JSON 回复给一个 patch”改为 worker 内对包目录的一次有界编码会话（每轮一次，修订续写同一会话），每轮至多 k 个带声明的候选，先过 train 侧筛选再付 dev gate；引擎自有的简单台账进入 E，准入拒绝重复的 (mechanism, site)；R 的输入增加原始 train 轨迹（只读、限字节）、dev 失败类型直方图与台账投影。失败摘要、逐题笔记、草稿检查、冻结与准入不变。考虑过、不做（v0.3）：成功侧摘要、每段至少一个代码候选、逐题 TRUE FIX/TRUE REGRESSION/STOCHASTIC 标签与预测记分（各在所属小节写明原因）；组件归因与淘汰推迟到第二版（§5）。依据：v0.1/v0.2 装入的两个改动都是文字提醒，13 个候选无一改工具或代码，R 的笔记里 26 条建议 before_tool（ROADMAP §3（tag archive-2026-10-09） 第 2a 步第 9 项）；业界报出更大留出增益的框架都改 loop 与工具，且提案者读原始轨迹（[SURVEY §4](../SURVEY_RSI_FRAMEWORKS.md) 第 2、3、5、6、7 项）。本文新增或修改的规则逐条标“（v0.3，2026-10-04）”。
 > 2026-10-08（瘦身第一批，分支 `slim/1`，[PLAN](../PLAN.md) P1 第 6 步）：v0.3 的筛选与准入兼容代码已删，tag `archive-2026-10-08` 上可读。包括 v0.3 的固定通过样本（`passing_sample_v4` 改名为 `passing_sample`）、`ScreenSettings.v04` 开关、`pick_best` 的 int 路径、`_ungrounded` 与 `grounding_inputs` 里 floors=0 的短路（下限为 0 时不读也算满足），以及 `session_inputs` 的 v0.3 分支。所以 v0.3 的 K（`workspace-claude-v3`）只能在 tag `v0.3.0` 上续跑；下文 §2 里 v0.3 筛选的条文是历史写法。
-> v0.5（2026-10-07 合入；2026-10-08 现状，[V0_5_PLAN](../design/V0_5_PLAN.md)）：经验库与 R 的研究剧本见 §5 末“经验库与 R 的研究剧本”；§2 末加了写工具与统一 effort 的注。方法库（`research/methods.py`、`research/method_kit/`）按瘦身第三批拟删（用户可否决），本文不另写它的规则，以 V0_5_PLAN §1.1–§1.3 为准。
+> v0.5（2026-10-07 合入；2026-10-08 现状，[V0_5_PLAN](../history/V0_5_PLAN.md)）：经验库与 R 的研究剧本见 §5 末“经验库与 R 的研究剧本”；§2 末加了写工具与统一 effort 的注。方法库（`research/methods.py`、`research/method_kit/`）按瘦身第三批拟删（用户可否决），本文不另写它的规则，以 V0_5_PLAN §1.1–§1.3 为准。
 
 ## 1. 输入、输出与启动
 
@@ -15,7 +15,7 @@ ResearchContext 由白名单投影得到：当前 W/R/K、包内文件与固定 
 
 首版新增判分明细存储，与结果分开存：M3 的 `run_tasks`（`ouroloop/evolve/task_eval.py`）在追加结果之后把每次尝试的逐条断言结果（type/params/passed/excluded）另存 `bench/<domain>/grading.jsonl`，不进入 results.jsonl。M7 的结果存储（`ouroloop/benchmark.py`）提供按冻结 split 过滤的读取接口，默认只返回 train，非 train 返回空；失败摘要由 M4 在 `research/context.py` 投影，只经该接口取明细，dev/final 明细即使存在于 grading.jsonl 也不进入上下文；原始判分记录完整保留，供审计与复现。`prompt_state` 的 12,000 字符整体截断（`context.py:50`）不适用于失败摘要；摘要按条目有长度上限，由 preset 固定。
 
-诊断按串行 map/reduce 执行：每个纳入本轮诊断的失败任务一次笔记调用，写失败类别、根因、可泛化机制和建议组件种类，并论证其适用于一类任务，不写单题答案；再一次汇总调用读取 train 血缘笔记、当前包及经验的 train 受限投影（dev 结果只经固定代码投影的通用枚举/统计进入，M0 §4），产出至多一个 patch 或结构化 next_action，patch 保持 train 血缘。汇总请求还列出宿主的基础工具（名称、描述与参数 schema，`tools` 字段），即包工具与 hook 经 `ctx.call_tool` 能调用的工具：汇总看不到失败过程，写代码组件所需的工具名与参数从这里得到；端点、字段名、actor 消息里的标记这类只出现在失败过程中的细节，由笔记带过去（2026-10-03，第二次彩排发现）。笔记是 train 血缘 artifact，计入预算。笔记身份是渲染后的完整笔记请求摘要（system 提示、格式与注入的全部字段：失败摘要 refs 与投影版本、K 允许的组件种类与优先级、长度上限、包/manifest 摘录、笔记 schema 版本）加 provider/模型/推理配置；完全一致才复用、不重复收费，任一变化即重新生成：R1 改了 diagnose，就不能用 R0 的旧笔记证明 R1 已生效；只改 propose 时，身份一致的笔记可以复用；阶段 A 在只允许文本组件的 K 下写的笔记，不会在允许代码的 K 下被复用。M6 两支的共享规则见 [M6 §2](06_RESEARCH_CAMPAIGN.md)。每轮汇总调用读取的笔记数上限（缓存命中与新生成合计）由 preset/K 固定（示例 30），R 不能提高，这样各轮、各支的诊断覆盖可比；失败任务超过上限时，按最近一次被纳入诊断的轮次从久到新选择（从未纳入的最先），同序按冻结 split 顺序，避免排在后面的失败始终得不到诊断。（v0.3，2026-10-06 改）失败跨几个领域时（任务 id 为 `领域.题名`，且不止一个领域），按领域分层轮流选：每个领域内照上面的规则排（从未纳入的在前，再按最近一次纳入从久到新，同序按冻结顺序），领域按其题在冻结顺序里首次出现的先后，每个领域轮流取一题，取满上限为止——上限 30、五个领域时各 6 题（某领域失败不够时由其余领域依次补足）；未纳入的题按同一轮流顺序记录。逐轮轮转因此在每个领域内进行，各轮依次覆盖每个领域的失败。只有一个领域（或任务 id 不带领域）时，选择与以前逐字相同，旧工作区的笔记身份、覆盖记录与摘要不变。多领域时覆盖记录另有 `by_domain`（每领域的失败数与纳入数），R 在 `coverage.json` 里看到。笔记身份不变，所以已缓存的笔记照身份复用。原因：第 5 步第 2 阶段按合并后的冻结顺序取前 30 题，合并顺序 marketing 在前、sales 其次，两轮笔记是 marketing 27 + sales 3 与 sales 30，support、hr、finance 的失败 R 一道没看到，两个候选都在 marketing 上涨、在 sales 上跌（ROADMAP 第 5 步）。实现 `research/diagnosis.select_failures`；测试 `test_diagnosis.py::test_notes_over_five_domains_are_stratified_and_rotate_within_each_domain`、`test_a_single_domain_selects_notes_exactly_as_before`。选中与未纳入的任务都记录，汇总调用与经验写明覆盖：已纳入笔记数/本轮诊断工作集失败数，并注明工作集范围（重跑子集与新增补采），未重跑的 train 任务不在分母内，不能把部分诊断表述为全部失败都已分析。笔记调用使用被 pin 的 `research.diagnose` 配置，汇总调用使用 `research.propose`，两者按 [M6](06_RESEARCH_CAMPAIGN.md) §4 记录实际加载的 R 与提示摘要，R1 的改动因此作用于这两步。两类调用都复用实际绑定 R 的现有 research provider，不建子 agent 平台；这对应 Harness-Zero 的“子 agent 逐题笔记 → 主 agent 汇总”，本项目改为串行（对照见 [技术选型](../TECHNOLOGY.md) §4）。
+诊断按串行 map/reduce 执行：每个纳入本轮诊断的失败任务一次笔记调用，写失败类别、根因、可泛化机制和建议组件种类，并论证其适用于一类任务，不写单题答案；再一次汇总调用读取 train 血缘笔记、当前包及经验的 train 受限投影（dev 结果只经固定代码投影的通用枚举/统计进入，M0 §4），产出至多一个 patch 或结构化 next_action，patch 保持 train 血缘。汇总请求还列出宿主的基础工具（名称、描述与参数 schema，`tools` 字段），即包工具与 hook 经 `ctx.call_tool` 能调用的工具：汇总看不到失败过程，写代码组件所需的工具名与参数从这里得到；端点、字段名、actor 消息里的标记这类只出现在失败过程中的细节，由笔记带过去（2026-10-03，第二次彩排发现）。笔记是 train 血缘 artifact，计入预算。笔记身份是渲染后的完整笔记请求摘要（system 提示、格式与注入的全部字段：失败摘要 refs 与投影版本、K 允许的组件种类与优先级、长度上限、包/manifest 摘录、笔记 schema 版本）加 provider/模型/推理配置；完全一致才复用、不重复收费，任一变化即重新生成：R1 改了 diagnose，就不能用 R0 的旧笔记证明 R1 已生效；只改 propose 时，身份一致的笔记可以复用；阶段 A 在只允许文本组件的 K 下写的笔记，不会在允许代码的 K 下被复用。M6 两支的共享规则见 [M6 §2](06_RESEARCH_CAMPAIGN.md)。每轮汇总调用读取的笔记数上限（缓存命中与新生成合计）由 preset/K 固定（示例 30），R 不能提高，这样各轮、各支的诊断覆盖可比；失败任务超过上限时，按最近一次被纳入诊断的轮次从久到新选择（从未纳入的最先），同序按冻结 split 顺序，避免排在后面的失败始终得不到诊断。（v0.3，2026-10-06 改）失败跨几个领域时（任务 id 为 `领域.题名`，且不止一个领域），按领域分层轮流选：每个领域内照上面的规则排（从未纳入的在前，再按最近一次纳入从久到新，同序按冻结顺序），领域按其题在冻结顺序里首次出现的先后，每个领域轮流取一题，取满上限为止——上限 30、五个领域时各 6 题（某领域失败不够时由其余领域依次补足）；未纳入的题按同一轮流顺序记录。逐轮轮转因此在每个领域内进行，各轮依次覆盖每个领域的失败。只有一个领域（或任务 id 不带领域）时，选择与以前逐字相同，旧工作区的笔记身份、覆盖记录与摘要不变。多领域时覆盖记录另有 `by_domain`（每领域的失败数与纳入数），R 在 `coverage.json` 里看到。笔记身份不变，所以已缓存的笔记照身份复用。原因：第 5 步第 2 阶段按合并后的冻结顺序取前 30 题，合并顺序 marketing 在前、sales 其次，两轮笔记是 marketing 27 + sales 3 与 sales 30，support、hr、finance 的失败 R 一道没看到，两个候选都在 marketing 上涨、在 sales 上跌（ROADMAP 第 5 步）。实现 `research/diagnosis.select_failures`；测试 `test_diagnosis.py::test_notes_over_five_domains_are_stratified_and_rotate_within_each_domain`、`test_a_single_domain_selects_notes_exactly_as_before`。选中与未纳入的任务都记录，汇总调用与经验写明覆盖：已纳入笔记数/本轮诊断工作集失败数，并注明工作集范围（重跑子集与新增补采），未重跑的 train 任务不在分母内，不能把部分诊断表述为全部失败都已分析。笔记调用使用被 pin 的 `research.diagnose` 配置，汇总调用使用 `research.propose`，两者按 [M6](06_RESEARCH_CAMPAIGN.md) §4 记录实际加载的 R 与提示摘要，R1 的改动因此作用于这两步。两类调用都复用实际绑定 R 的现有 research provider，不建子 agent 平台；这对应 Harness-Zero 的“子 agent 逐题笔记 → 主 agent 汇总”，本项目改为串行（对照见 技术选型（tag archive-2026-10-09） §4）。
 
 这改变了 `research.diagnose` 的契约。现有代码中它每轮调用一次，输入 research.context.v1、输出 requirement_list.v1（`ouroloop/policies.py:53-54`、`ouroloop/research/experiment.py:238-242`），默认提示要求只列需求、不提修复（`ouroloop/research/basic.py:231-234`），无提案时按是否有需求回退为 collect 或 stop（`experiment.py:250-252`）。首版登记带版本的逐题契约：输入 failure_summary.v1，输出 failure_note.v1（失败类别、根因、可泛化机制、建议组件种类与泛化论证）；`research.propose` 读取笔记集合与覆盖，产出 Requirement 列表与至多一个 patch 或 next_action，无提案回退改按该 Requirement 判定。默认 R0 的 diagnose 提示随之更新，形成新的 R0 身份，首版活动重新 bootstrap。汇总只看笔记，所以 R0 的 diagnose 提示要求笔记逐字保留改动会用到的接口事实：actor 调用的工具与端点及其方法和字段名、调用返回的错误原文、actor 结束消息里表明没有做完的原话。这些不是任务答案；任务的名字、id 与取值仍不写（2026-10-03，第三次彩排后决定）。旧 requirement_list.v1 路径保留给旧模式，旧 R 候选与经验按其原 schema 解释，不与新笔记混用。
 
@@ -92,7 +92,7 @@ v0.3 考虑过成功侧摘要（`success_digest`：对通过的 train 尝试再�
   - 报告的 C4 保持 not_run，detail 写“研究位回复无效”及原因，不写“R 没有提案”（[M7 §4](07_BENCH_REPORT.md)）。
 - 截断：回复在输出上限处被截断，任何一步都属于配置问题，按 [M5 §3](05_EXECUTION_BUDGET.md) 暂停活动；续跑时用改正后的配置重新询问同一步，不计 invalid。
 
-这些规则对由 manual provider 作答的回复同样适用。付费前彩排（[ROADMAP §3](../ROADMAP.md) 首个真实活动协议）逐步注入这些回复形态来验收。
+这些规则对由 manual provider 作答的回复同样适用。付费前彩排（ROADMAP §3（tag archive-2026-10-09） 首个真实活动协议）逐步注入这些回复形态来验收。
 
 worker 轮的部分已在阶段 3 实现（2026-10-02）：
 - 汇总回复空、拒答、非 JSON、无提案也无 next_action、或带形状不合法的提案时，本轮 invalid（`test_research_round.py::test_an_unreadable_reply_is_an_invalid_round`）。
@@ -111,7 +111,7 @@ worker 轮的部分已在阶段 3 实现（2026-10-02）：
 
 ### R 的输入与准入（v0.4，2026-10-06）
 
-[V0_4_PLAN §1.2～§1.4、§1.7](../design/V0_4_PLAN.md)。新增或改动：
+[V0_4_PLAN §1.2～§1.4、§1.7](../history/V0_4_PLAN.md)。新增或改动：
 
 - **`inputs/api_errors.json`（`research/api_errors.py`）。** 固定代码从本活动最近一次 train 测量的有效尝试（失败与通过）的宿主轨迹投影：按端点（`METHOD host/path`，路径段含数字——版本号除外——或只在一道题里出现时写 `{id}`；非 `api_fetch` 的工具按名字）计调用数、涉及题数、错误响应数与按“状态码 + 归一化信息”（数字、引号内的值、邮箱、路径都替换）的分类、紧跟错误的同端点重试、响应表明还有下一页而之后没再调该端点的次数、空结果，以及调用落在失败尝试里的次数。没有任务 id、没有参数值；dev 与 test 永不进入。原因：StarHarness 在 AutomationBench Finance 的留出增益来自工具与接口修复，v0.3 的 9 个候选没有一个改工具。
 - **轨迹清单列出通过的尝试。** `trajectories.json` 每项带 `outcome`：本轮纳入诊断的失败尝试，加至多 6 个通过的 train 尝试（含“不得做”断言——类型名含 `_not_`——的题优先，再按冻结顺序）。`read_trajectory` 仍只接受 train 尝试。
@@ -137,7 +137,7 @@ worker 轮的部分已在阶段 3 实现（2026-10-02）：
 
 首版默认方法是 policy_edit/harness_edit，新增训练方法不进入菜单或账户预检；旧 trainer/API 不删除。v0.1/v0.2 每轮至多一个候选；v0.3（2026-10-04）每轮至多 k 个，k 由 preset 的 `max_candidates_per_round` 固定（预设 3），冻结进 schedule 的 `candidates_per_round`（`bench._cycle_tables`）。`bench.improvement_settings` 接受 1～preset 值、缺省取 preset，`bench._beyond_preset` 拒绝高于配置的 schedule（2026-10-05 已实现；此前的代码拒绝 ≠1）。k 个候选来自同一会话、同一组笔记，须在 (mechanism, site) 上互不相同——相同者后者记 dropped；原因是 k 的意义在于并行试不同机制而非同一机制的三个措辞，单候选三轮串行是 v0.2 的搜索宽度不足（[SURVEY §7](../SURVEY_RSI_FRAMEWORKS.md)）。候选都以当前已采用包为起点，优先修已有机制；没有收益时保留原版本、分析失败或停止。包文件数/大小、hook/工具数、冻结前草稿修复次数、每轮失败笔记数、每轮候选数、会话轮数与编辑数、筛选样本数与测试时间由 preset/K 固定，不允许 R 提高上限。
 
-组件种类优先级为 memory/skills → on_finish 守卫 → before_tool/after_tool 守卫 → 包工具；逐题笔记的建议组件种类与汇总 patch 按此顺序优先选择。包工具置后的依据是 Harness-Zero 三个学生库最终共 12 个中间件、3 个 skill、3 个工具，工具只出现在 USPTO（化学校验），SpreadsheetBench 与 AppWorld 没有工具；memory/skills 置前是因为纯文本包无需隔离 worker、可在阶段 A 先交付（[ROADMAP](../ROADMAP.md) §2），并非来自 Harness-Zero 的组件数量。改上下文的组件（context_guard 类）按设计不支持，是有意取舍（TargetHarness 固定上下文算法）；其余挂点覆盖见 [M1](01_POLICY_RUNTIME.md) §1。
+组件种类优先级为 memory/skills → on_finish 守卫 → before_tool/after_tool 守卫 → 包工具；逐题笔记的建议组件种类与汇总 patch 按此顺序优先选择。包工具置后的依据是 Harness-Zero 三个学生库最终共 12 个中间件、3 个 skill、3 个工具，工具只出现在 USPTO（化学校验），SpreadsheetBench 与 AppWorld 没有工具；memory/skills 置前是因为纯文本包无需隔离 worker、可在阶段 A 先交付（ROADMAP（tag archive-2026-10-09） §2），并非来自 Harness-Zero 的组件数量。改上下文的组件（context_guard 类）按设计不支持，是有意取舍（TargetHarness 固定上下文算法）；其余挂点覆盖见 [M1](01_POLICY_RUNTIME.md) §1。
 
 以上优先级与取舍是 v0.1/v0.2 的规则，保留为历史。v0.3（2026-10-04）起：
 
@@ -145,7 +145,7 @@ worker 轮的部分已在阶段 3 实现（2026-10-02）：
 - v0.3 考虑过“每段至少一个候选改代码”（`require_code_candidate`，由草稿检查 shape 阶段强制），不做：取消优先级后由 R 自选载体，强制项另加检查链分支。候选的载体分布照常进台账与报告（M7 §4）。
 - `agent` 组件是可变层的一部分（M0 §2（v0.3）：manifest `harness_package.v2` 的 `agent` 入口，`run(ctx, task)`；ctx 只暴露 `model`、`tool`、`skills`、`limits`、`view`）；默认 agent `agent/default_agent.py` 把现行宿主循环搬进包，v1 包即带默认 agent 的 v2 包，hook 挂点作为默认 agent 遵守的约定保留。K 不变的部分：模型身份与推理配置上限、网关、broker、权限、评分、split、gate、预算根、单次尝试硬上限、宿主写的事件/轨迹记录、R 的代码与研究位。
 
-2026-10-08 注（[OSS_COMPONENTS_PLAN](../design/OSS_COMPONENTS_PLAN.md) §1、§9 第 4 项）：
+2026-10-08 注（OSS_COMPONENTS_PLAN（tag archive-2026-10-09） §1、§9 第 4 项）：
 - **写工具与 agent 程序。** v0.3/v0.4 的 12 个候选里没有一个是工具或 agent。K 已经允许：普通包工具拿到可写的 broker（`agent/default_agent.py:283` 的 `read_only=False`），只读的只有 hook（`:170`）与 v0.5 的 `m_` 方法（`:281`），worker 也只在只读时拒绝写（`agent/worker.py:476`）。是 R 从没提过，不是 K 不让。R0 的方法说明（`PROPOSE_SESSION`）没有点名这两种载体；StarHarness 在 finance 上的 +26.1 来自写前分诊、日期锚定与把算术、表格交给确定性工具这类补丁。改 R0 的方法说明属于下一份开发计划，旧常量的字节不动。
 - **effort 统一。** 上表“任务内按需提高 effort”一项不再是候选方向：所有臂保持同一个 effort（现行 medium），新配置的 K 的 `max_effort` 等于 pin 的档位，请求更高的 effort 按上限截顶。多采样与核验回合仍可，照旧受成本项约束。
 
@@ -169,7 +169,7 @@ worker 轮的部分已在阶段 3 实现（2026-10-02）：
 
 ### 筛选（v0.4，2026-10-06）
 
-[V0_4_PLAN §1.6](../design/V0_4_PLAN.md)。K 的筛选表有 `max_sample_regressions` 时（v3 preset 新冻结的 K）：通过样本每轮重抽，种子为 (`order_seed`, 本 scope 的诊断序号)，从最近一次测量通过的 train 题里抽 `passing_sample`（preset 6）道，含“不得做”断言的题优先（`session.passing_sample_v4`）；资格为修复数（失败集里转通过的题）≥ `min_fixes`（1）、样本退步数（样本里转失败的题）≤ `max_sample_regressions`（1）、净翻转 ≥ `min_net_flips`（preset 降为 0；失败集只能转通过、样本只能转失败，所以净翻转 = 修复 − 样本退步），再按净翻转、成本、声明顺序排（`session.pick_best`）。筛选行与台账多记 `fixes`、`sample_regressions`。没有该键的 K 照 v0.3：固定样本、净翻转 ≥ `min_net_flips`。原因：v0.3 七次筛选的样本都是同 5 题、没有 hr；rulesmem 在样本上 0 退步、到 dev 上退步 10 题。
+[V0_4_PLAN §1.6](../history/V0_4_PLAN.md)。K 的筛选表有 `max_sample_regressions` 时（v3 preset 新冻结的 K）：通过样本每轮重抽，种子为 (`order_seed`, 本 scope 的诊断序号)，从最近一次测量通过的 train 题里抽 `passing_sample`（preset 6）道，含“不得做”断言的题优先（`session.passing_sample_v4`）；资格为修复数（失败集里转通过的题）≥ `min_fixes`（1）、样本退步数（样本里转失败的题）≤ `max_sample_regressions`（1）、净翻转 ≥ `min_net_flips`（preset 降为 0；失败集只能转通过、样本只能转失败，所以净翻转 = 修复 − 样本退步），再按净翻转、成本、声明顺序排（`session.pick_best`）。筛选行与台账多记 `fixes`、`sample_regressions`。没有该键的 K 照 v0.3：固定样本、净翻转 ≥ `min_net_flips`。原因：v0.3 七次筛选的样本都是同 5 题、没有 hr；rulesmem 在样本上 0 退步、到 dev 上退步 10 题。
 
 ## 3. 工作流发现与教学材料的衔接
 
@@ -352,7 +352,7 @@ preset/K 新增参数汇总（v0.3，2026-10-04；均冻结进 K，R 不能提�
 
 ### 经验库与 R 的研究剧本（v0.5，2026-10-07；2026-10-08 现状）
 
-[V0_5_PLAN §1.1、§1.4](../design/V0_5_PLAN.md)；代码 `research/library.py`、`research/fixed.py`、`bench.library_track`。只在 K 有 `library` 表（preset `automationbench_harness_v5`）时生效；没有库文件的包，系统提示与原来逐字节相同。
+[V0_5_PLAN §1.1、§1.4](../history/V0_5_PLAN.md)；代码 `research/library.py`、`research/fixed.py`、`bench.library_track`。只在 K 有 `library` 表（preset `automationbench_harness_v5`）时生效；没有库文件的包，系统提示与原来逐字节相同。
 
 - **条目与流（只在 train）。** 条目有 `shelf`、`kind`（workflow | insight | api_note）、`title`/`when`/`body`/`avoid`（各有字数上限，值写成占位符）、来源题的文本哈希、`origin`（success | contrast | reflexion）与记功计数。流按冻结顺序走 train 题：已有读数进提炼队列；首遇读数是 W_base 加上目前的库；失败时带失败断言的投影重试一次；每道有新成功的题调一次固定的提炼提示（代码常量，不在 R0 里，R 改不了），至多 2 条。
 - **检查与合并。** 模式与长度；字面量检查，带一次自动占位替换；`when` 必须在来源之外检索到 ≥ 2 道 train 题；与已有条目余弦 ≥ 0.8 就逐条合并，从不整库重写；每架 ≤ 6 条，满了挤掉效用最低的。
@@ -360,7 +360,7 @@ preset/K 新增参数汇总（v0.3，2026-10-04；均冻结进 K，R 不能提�
 - **记功与退役。** 有条目被检索出的每次首遇尝试，每条都记满一份 `r − b(t)`（b(t) 是 W_base 在该题上全部有效 train 读数的均值；不是在同屏的条目间平分），W_base 通过而尝试失败记一次伤害；伤害 ≥ 2，或展示 ≥ 3 次且效用 ≤ −0.2 就退役。重试不记功，只作提炼来源。
 - **快照进 W。** 流走完（n = 50）编译一次快照：每架一个 `skills/library/<shelf>.md`，在 manifest 里列为停用的技能，只由宿主检索。D ≤ 0 时不付 gate；否则快照是固定代码声明的候选（算子 `library`），走固定轮（M5 §1 的 v0.5 段）：筛选（按留一检索）、gate、确认，规则与 R 的候选相同。装上后 R 读 `inputs/library.json`（只来自 train），改不了库：R 对库文件的改动被撤回并附注。
 - **R 的研究剧本（playbook）。** `finish` 可带 `playbook`：每条教训以 `[<候选 id>: <字段> <值>]` 结尾，宿主逐条对台账核对，对不上就删并告诉 R；通过的文本存进 E（`kind="method_playbook"`），下一次会话接在方法说明之后，会话记录剧本的哈希。今天它只在方法库开着时注入（`research/session.py:1082-1129`，核对在 `research/methods.py:955`）；瘦身第三批把它改成不依赖方法库，它是跨活动 C4 里 R1 的来源（M6 页首注）。
-- **现状（2026-10-08，[JOURNAL](../JOURNAL.md)）。** support 的 v0.5 臂跑过一次 3b：D = 3.0、B = 1，前后两半 0.00 → 0.12（P 0.8895），记功秩相关 0.2；条目 active 7、retired 35、在检查处丢弃 45，每次尝试平均展示 1.24 条；快照过 dev gate（首读 +0.24、确认 +0.08、合并 +0.16），装上 `9f07d95032b4`（6 个 library-* skill）。都是过程证据。按瘦身第三批的规则，经验库保留为 memory 的底座，作 preset 开关、不进默认；改进方向（嵌入检索、按实际用到的条目记功、从失败提炼、合并与删除）按 [OSS_COMPONENTS_PLAN](../design/OSS_COMPONENTS_PLAN.md) §3、§6 借 ACE、ReMe 的设计，触发条件出现才做。已知缺口：R 自写的 agent 程序能从磁盘读到 `skills/library/`，绕过留一（V0_5_PLAN §8），今天没有检查。
+- **现状（2026-10-08，[JOURNAL](../JOURNAL.md)）。** support 的 v0.5 臂跑过一次 3b：D = 3.0、B = 1，前后两半 0.00 → 0.12（P 0.8895），记功秩相关 0.2；条目 active 7、retired 35、在检查处丢弃 45，每次尝试平均展示 1.24 条；快照过 dev gate（首读 +0.24、确认 +0.08、合并 +0.16），装上 `9f07d95032b4`（6 个 library-* skill）。都是过程证据。按瘦身第三批的规则，经验库保留为 memory 的底座，作 preset 开关、不进默认；改进方向（嵌入检索、按实际用到的条目记功、从失败提炼、合并与删除）按 OSS_COMPONENTS_PLAN（tag archive-2026-10-09） §3、§6 借 ACE、ReMe 的设计，触发条件出现才做。已知缺口：R 自写的 agent 程序能从磁盘读到 `skills/library/`，绕过留一（V0_5_PLAN §8），今天没有检查。
 
 ## 6. 用例
 

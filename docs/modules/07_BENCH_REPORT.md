@@ -2,11 +2,11 @@
 
 > 首版用现有命令接通能力包自动演化、发布和研究方法回用；第二版增加蒸馏配置。保留七个历史 phase，另加 `cycle`（v0.5 起另有 `library`、`learn`，见下文 v0.5 一条）。所有者 `bench.py`、`benchmark.py`、`report.py`、`cli.py` 与 adapters。首版配置（`[improvement]`、preset `marketing_harness_v1`、`[harness_evolution]`）与 `cycle` 已实现（2026-09-30）；第二版配置仍为待实现契约，reader 明确拒绝。
 >
-> v0.3（2026-10-04 决定，DESIGN v0.7，[ROADMAP §3 “v0.3”](../ROADMAP.md)）：交付物从“固定 agent 循环 + 能力包”改为“可演化的 agent 程序 + 最小运行壳 + 所 pin 的模型”，比较口径改称“同模型”（M0 §2（v0.3）：manifest `harness_package.v2` 增加 `agent` 组件，默认 agent 是今天的宿主循环移植成包）。M7 相应变化：`[bench]` 接受领域列表并按领域分别划分、合并使用；Marketing 的 test 已读过三次，对新主张声明为已耗尽；报告增加每次有效尝试成本（`cost_per_attempt`）、实验台账、余量、按领域分列，匹配成本的 best-of-k 对照臂只在发表结果时运行并并列报告（可选）；并发默认 8，每轮墙上时间单域 25 题 gate 约 10～15 分钟、多域合并 dev（约 125 题）约 45～60 分钟；配置示例换到 v0.3 的 preset。v0.1/v0.2 的配置、结果与 2026-10-03/04 的记录保持原义，不删除。本文标“（v0.3，2026-10-04）”的条目是新增或改动的规则，其余不变。
+> v0.3（2026-10-04 决定，DESIGN v0.7，ROADMAP §3 “v0.3”（tag archive-2026-10-09））：交付物从“固定 agent 循环 + 能力包”改为“可演化的 agent 程序 + 最小运行壳 + 所 pin 的模型”，比较口径改称“同模型”（M0 §2（v0.3）：manifest `harness_package.v2` 增加 `agent` 组件，默认 agent 是今天的宿主循环移植成包）。M7 相应变化：`[bench]` 接受领域列表并按领域分别划分、合并使用；Marketing 的 test 已读过三次，对新主张声明为已耗尽；报告增加每次有效尝试成本（`cost_per_attempt`）、实验台账、余量、按领域分列，匹配成本的 best-of-k 对照臂只在发表结果时运行并并列报告（可选）；并发默认 8，每轮墙上时间单域 25 题 gate 约 10～15 分钟、多域合并 dev（约 125 题）约 45～60 分钟；配置示例换到 v0.3 的 preset。v0.1/v0.2 的配置、结果与 2026-10-03/04 的记录保持原义，不删除。本文标“（v0.3，2026-10-04）”的条目是新增或改动的规则，其余不变。
 >
 > 2026-10-08（瘦身第一批，分支 `slim/1`，[PLAN](../PLAN.md) P1）：命令行只剩 `ouroloop bench`、`freeze`、`export`；`decide`、`smoke --jev`、`host` 移到 `python -m ouroloop.train`，其余旧命令在 tag `archive-2026-10-08` 上。`--phase collect` 与本地 frontier 臂已删：baseline 只跑起点一臂；final 里每一臂都跑它的 release 钉住的 actor；带自己 `llm` 或 `pricing` 的比较、以及 `[frontier]` 表，都会被拒绝。C2 要么是公开引用（不确定），要么是 `not_run`。下文 §1 表的 collect 一行、§4 的 frontier 与 `paired_run` 都按此读。研究位、多领域与采集批随第二批删。
 >
-> v0.5（2026-10-07 合入；2026-10-08 现状，[V0_5_PLAN](../design/V0_5_PLAN.md)）：phase 多了 `library` 与 `learn`（`bench.PHASES`，`bench.py:41`），preset 多了 `automationbench_harness_v5`（v0.4 时的 v3 preset 加 `methods`、`library` 两张表，只由 preset 设），报告多 v0.5 一段；见 §1 表末两行与 §2 的“v0.5 的两个阶段与 preset”。support 两臂对照 2026-10-08 由用户停止：按瘦身第三批的规则，`library` 保留、经验库降为 preset 开关，`learn` 与方法库拟删（用户可否决）。
+> v0.5（2026-10-07 合入；2026-10-08 现状，[V0_5_PLAN](../history/V0_5_PLAN.md)）：phase 多了 `library` 与 `learn`（`bench.PHASES`，`bench.py:41`），preset 多了 `automationbench_harness_v5`（v0.4 时的 v3 preset 加 `methods`、`library` 两张表，只由 preset 设），报告多 v0.5 一段；见 §1 表末两行与 §2 的“v0.5 的两个阶段与 preset”。support 两臂对照 2026-10-08 由用户停止：按瘦身第三批的规则，`library` 保留、经验库降为 preset 开关，`learn` 与方法库拟删（用户可否决）。
 
 ## 1. 阶段与端到端入口
 
@@ -146,11 +146,11 @@ v3 RunManifest 增加 mode、actual actor identity、source/target harness refs�
 
 ### 单领域活动与 v0.4 的配置（v0.4，2026-10-06）
 
-[V0_4_PLAN §1.1、§1.6](../design/V0_4_PLAN.md)：每个新领域一个单领域活动（`claude-v4-finance.toml`、`claude-v4-support.toml`）。`[bench.frozen_splits]` 钉住的领域现在按能重现所钉 hash 的那条规则重算——先配置的 `split_rule`，再另一条——所以分层规则的划分也钉得住；两份 v0.4 配置以分层规则、seed 1 重现 v3 工作区冻结的 finance `4fd91eaf9fb8daf5`、support `3da11232f5d5ff38`，test 仍是从未读过的那 25 道。Marketing 的 hash 规则钉子不变。`[bench] control_readings`（缺省 1）是基线读 W0 dev 的次数（M3 §2.1（v0.4））。v3 preset 的筛选表加 `min_fixes`（下限，1）与 `max_sample_regressions`（上限，1），`passing_sample` 6、`min_net_flips` 0；会话表加 `min_failing_reads`、`min_passing_reads`（下限，都是 1）：新冻结的 K 带上它们，旧 K 没有这些键，照 v0.3 运行。报告加 `final_reference`（M3 §2.2（v0.4））。
+[V0_4_PLAN §1.1、§1.6](../history/V0_4_PLAN.md)：每个新领域一个单领域活动（`claude-v4-finance.toml`、`claude-v4-support.toml`）。`[bench.frozen_splits]` 钉住的领域现在按能重现所钉 hash 的那条规则重算——先配置的 `split_rule`，再另一条——所以分层规则的划分也钉得住；两份 v0.4 配置以分层规则、seed 1 重现 v3 工作区冻结的 finance `4fd91eaf9fb8daf5`、support `3da11232f5d5ff38`，test 仍是从未读过的那 25 道。Marketing 的 hash 规则钉子不变。`[bench] control_readings`（缺省 1）是基线读 W0 dev 的次数（M3 §2.1（v0.4））。v3 preset 的筛选表加 `min_fixes`（下限，1）与 `max_sample_regressions`（上限，1），`passing_sample` 6、`min_net_flips` 0；会话表加 `min_failing_reads`、`min_passing_reads`（下限，都是 1）：新冻结的 K 带上它们，旧 K 没有这些键，照 v0.3 运行。报告加 `final_reference`（M3 §2.2（v0.4））。
 
 ### v0.5 的两个阶段与 preset（v0.5，2026-10-07；2026-10-08 现状）
 
-[V0_5_PLAN §1、§3、§7](../design/V0_5_PLAN.md)。preset `automationbench_harness_v5`（`bench._v5_preset`）是 v0.4 时的 v3 preset 加 `methods`、`library` 两张表；两张表只由 preset 设，配置写了就拒绝（`bench.PRESET_ONLY_TABLES`）。v5 bootstrap 的 R0 的 `research.propose` 是 `PROPOSE_SESSION_V5`（v0.4 的文本加方法一段），所以 `claude-v5-*` 的 K 与 R0 都不是 `claude-v4-*` 的；v0.4 的配置在这份代码下行为不变（测试钉住）。唯一的 v5 配置是 `examples/automationbench/claude-v5-support.toml`，按 3a 基线（`--phase cycle --until baseline`）→ 3b `--phase library` → 3c `--phase cycle`（带方法的 R 轮次）→ 3d `--phase learn` → 3e final 的顺序手动跑。
+[V0_5_PLAN §1、§3、§7](../history/V0_5_PLAN.md)。preset `automationbench_harness_v5`（`bench._v5_preset`）是 v0.4 时的 v3 preset 加 `methods`、`library` 两张表；两张表只由 preset 设，配置写了就拒绝（`bench.PRESET_ONLY_TABLES`）。v5 bootstrap 的 R0 的 `research.propose` 是 `PROPOSE_SESSION_V5`（v0.4 的文本加方法一段），所以 `claude-v5-*` 的 K 与 R0 都不是 `claude-v4-*` 的；v0.4 的配置在这份代码下行为不变（测试钉住）。唯一的 v5 配置是 `examples/automationbench/claude-v5-support.toml`，按 3a 基线（`--phase cycle --until baseline`）→ 3b `--phase library` → 3c `--phase cycle`（带方法的 R 轮次）→ 3d `--phase learn` → 3e final 的顺序手动跑。
 
 现状（2026-10-08，[JOURNAL](../JOURNAL.md)）：3a、3b 跑完，2026-10-08 用户停止对照，3c、3d、3e 都没跑。support 的 W0 dev 噪声由 `control_readings = 3` 量到：v0.4 臂 8、9、9，v0.5 臂 10、9、8（每次 25 题）；下一份配置的 `control_readings` 按瘦身清单 §2 的规则据此定。按瘦身第三批的规则，`library` 阶段与经验库保留（经验库降为 preset 开关、不进默认），`learn` 与方法库拟删（用户可否决）；下一份 preset 的其余变化（去掉 `cost_beta0/1`、`max_effort` 写 medium）见瘦身清单与 DESIGN §3 注。
 
@@ -202,7 +202,7 @@ v3 最终计划区分 C2 的 `mode=published_reference`（默认）与 `paired_r
 
 C4 读取真实 campaign 结果，不预设 not_run。只有未执行才标 not_run；研究位在形成 campaign 之前结束时（研究位回复无效、R 没有提案、准入拒绝或构建失败），C4 仍标 not_run，detail 按 `rsi/cycle.json` 中该研究位的结局如实写出，不写成“没有 campaign 记录”（2026-10-02，见 [M4 §1](04_RESEARCH_LOOP.md)）。`cycle.json` 中研究位在 campaign 之前的结局记 outcome、reason 与 stage（reply 指 R 的回复，admission 指准入，build 指构建），报告据此区分这四种；研究位暂停、预算耗尽（写明在 campaign 之前还是之中）、计划已冻结而尚无收据时，同样标 not_run 并写明。campaign 有收据时（含某一支暂停时登记的 inconclusive），C4 按收据读；已运行但样本不足为 inconclusive；没有收益如实记录。完整 v0.6 验收要求递归路径和有界真实验证，单个 manual 蒸馏实验无需伪装覆盖 C4。历史 research 报告仍按既有结果读取。`report` 禁止触发模型请求、重新选择 checkpoint 或补跑 final。恢复 `evaluate/improve` 只补计划缺项，已完成结果不重花钱。
 
-（v0.4，2026-10-06，[V0_4_PLAN §1.8](../design/V0_4_PLAN.md)）报告加 `final_reference`：有 final 的 W0 臂时，从它自己的重复算 W0 的 pass@k（k = 1..n，每题 n 次中 c 次通过，1 − C(n−c, k)/C(n, k) 的题均值），并列 W* 的通过率、两臂每次成本之比与等成本的 k，标为“等成本参照”；Markdown 报告有同名一节。它不花钱、不进任何主张的裁决（M3 §2.2（v0.4））。v0.4 的筛选行与台账另记 `fixes`、`sample_regressions`（M4 §2（v0.4）），R 的台账投影里也有。
+（v0.4，2026-10-06，[V0_4_PLAN §1.8](../history/V0_4_PLAN.md)）报告加 `final_reference`：有 final 的 W0 臂时，从它自己的重复算 W0 的 pass@k（k = 1..n，每题 n 次中 c 次通过，1 − C(n−c, k)/C(n, k) 的题均值），并列 W* 的通过率、两臂每次成本之比与等成本的 k，标为“等成本参照”；Markdown 报告有同名一节。它不花钱、不进任何主张的裁决（M3 §2.2（v0.4））。v0.4 的筛选行与台账另记 `fixes`、`sample_regressions`（M4 §2（v0.4）），R 的台账投影里也有。
 
 ## 5. 用例
 

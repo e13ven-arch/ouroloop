@@ -17,7 +17,7 @@ What this says: in all three finals the loop found changes from training failure
 
 ## v0.5: support, stopped after the experience-library phase (2026-10-08)
 
-v0.5 adds two parts to v0.4's single-domain loop. Both appear only under the preset `automationbench_harness_v5`; the rules are in [design/V0_5_PLAN.md](design/V0_5_PLAN.md).
+v0.5 adds two parts to v0.4's single-domain loop. Both appear only under the preset `automationbench_harness_v5`; the rules are in [design/V0_5_PLAN.md](history/V0_5_PLAN.md).
 
 - **A method library.** R writes read-only, deterministic `m_` package tools. Fixed code learns from paired train rewards where each one should be used and freezes that as a table.
 - **An experience library.** Entries are distilled from train attempts the grader verified and retrieved per task for the actor, leaving out the task's own entries. They are credited and retired by reward. The whole library goes through the gate as one candidate and is frozen before a final.
@@ -62,7 +62,7 @@ v0.5 was merged into `m1-automationbench` (`7e7732e`). It is not released: there
 - **Process evidence only, not a claim.** All three pre-registered process readings for the experience library held (V0_5_PLAN §3): it is effective on train (D ≥ +2), it has a learning curve (P ≥ 0.8), and its credit carries information (rank correlation > 0). They are noisy, with one reading per train task.
 - **The dev gain is selection-biased.** The gate used it to select, and it fell from +0.24 on the first reading to +0.08 on the confirmation. The true effect is probably below +0.16; only a test final could tell, and none ran.
 - **The method library has no readings.** Its two readings ("R can build a usable method", "it learned where to use it") need the R rounds and the fit, which did not run.
-- **What follows from this.** The slimming plan's third batch had a rule fixed before the stop: without an H1 reading, each library is judged on its own process readings ([design/SLIMMING_INVENTORY.md](design/SLIMMING_INVENTORY.md) §3).
+- **What follows from this.** The slimming plan's third batch had a rule fixed before the stop: without an H1 reading, each library is judged on its own process readings (design/SLIMMING_INVENTORY.md（tag archive-2026-10-09） §3).
   - The experience library passed both of its readings. It is kept, behind a preset switch and off by default, as the memory base for later work.
   - The method library has no readings, so under the same rule it is cut. This is a proposal, and the user may veto it.
 
@@ -84,7 +84,7 @@ v0.4 went back to v0.1's shape, one activity per new domain, and fixed the frame
 - a screen blind to harm: a 6-task passing sample redrawn each round, with at most 1 sample regression allowed;
 - a single control reading, replaced by three W0 dev readings.
 
-The final also reports W0's pass@k as an equal-cost reference. The rules are in [design/V0_4_PLAN.md](design/V0_4_PLAN.md).
+The final also reports W0's pass@k as an equal-cost reference. The rules are in [design/V0_4_PLAN.md](history/V0_4_PLAN.md).
 
 - **Config:** [`examples/automationbench/claude-v4-finance.toml`](../examples/automationbench/claude-v4-finance.toml).
 - **Workspace:** `workspace-claude-v4-finance`, not committed.
@@ -144,7 +144,7 @@ The full post-hoc analysis is in [history/FINANCE_V04_ANALYSIS_2026-10-07.md](hi
 The config and the sealed final plan are committed; the workspace is not. To rerun the same code:
 
 1. Check out tag `v0.4.0`.
-2. Copy the config. Give the copy its own `[workspace] root` and `[rsi] scope_id`, as in [ROADMAP §3, step 2a](ROADMAP.md); the committed config points at the original workspace.
+2. Copy the config. Give the copy its own `[workspace] root` and `[rsi] scope_id`, as in ROADMAP §3, step 2a（tag archive-2026-10-09）; the committed config points at the original workspace.
 3. Run `ouroloop freeze` on the copy, and add the `[rsi]` lines it prints.
 4. Run `--phase cycle`.
 5. Fill `[freeze.final]` with W\*, freeze and commit the plan, then run `--phase evaluate`.
@@ -403,7 +403,7 @@ The runs took about 8.6 hours of serial attempts.
 
 ### Reproduce
 
-The commands below run from the repository root. The config, its sealed plans and the final plan are committed in [`examples/automationbench/claude.toml`](../examples/automationbench/claude.toml). The step-by-step protocol is in [ROADMAP §3, step 2a](ROADMAP.md). To run the code that produced this result, check out tag `v0.1.0` first: the slimming plan ([design/SLIMMING_INVENTORY.md](design/SLIMMING_INVENTORY.md)) removes this config and its preset from later code.
+The commands below run from the repository root. The config, its sealed plans and the final plan are committed in [`examples/automationbench/claude.toml`](../examples/automationbench/claude.toml). The step-by-step protocol is in ROADMAP §3, step 2a（tag archive-2026-10-09）. To run the code that produced this result, check out tag `v0.1.0` first: the slimming plan (design/SLIMMING_INVENTORY.md（tag archive-2026-10-09）) removes this config and its preset from later code.
 
 ```text
 claude auth login                       # a Claude subscription; turn extra usage off

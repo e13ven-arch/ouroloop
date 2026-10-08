@@ -38,7 +38,7 @@ collect 可引用已有完整轨迹；dataset 身份固定选择规则/投影；
 
 （v0.4，2026-10-06）字面量检查的结构错误输出写出“文件:行: 字面量”（M0 §3（v0.4）），不再只给各类计数；豁免规则见 M0 §3。
 
-（v0.5，2026-10-07，[V0_5_PLAN §1.3、§1.4](../design/V0_5_PLAN.md)；`research/fixed.py`）**固定代码的候选轮。** 经验库快照（算子 `library`）与方法表重拟（算子 `refit`）的候选由固定代码声明（M0 §3 的 v0.5 段），走自己的一轮：没有 R 的会话、笔记与修订，其余是同一条链——草稿检查、准入、train 侧筛选、资格、gate、确认、经 M5 安装，每个阶段照常写台账。可续跑：候选 id 是 `<scope>/f<序号>/<算子>`，实验 id 由候选 id 推出，所以筛选建出的候选 W、筛选尝试的运行身份与 gate 的 Execution 在重跑时都是同一个；没结束的固定轮（有声明行、没有终结的 `round` 行）沿用它的序号，已写的阶段不再写，已付的尝试不再付；结束的轮答回记录的结果。R 的段续跑时跳过来源为 `fixed` 的实验（`research/loop.py` 的 `resume_unfinished(skip_fixed=)`），它不算 R 的一轮，由它自己的阶段收尾。经验库的流也可续跑：每道题结束、以及首遇之前的提炼之后各存一次检查点；提炼或合并调用遇到研究模型的错误时，流在上一个检查点暂停，不当作崩溃。测试 `test_v05_phases.py::test_a_fixed_round_keeps_its_ordinal_and_experiment_id_until_it_ends`、`test_an_interrupted_snapshot_round_resumes_where_it_stopped_and_pays_nothing_twice`、`test_r_still_gets_its_three_rounds_when_a_fixed_rounds_gate_is_open`、`test_an_interrupted_stream_continues_where_it_stopped_and_refuses_another_w`、`test_a_distillation_failure_pauses_the_stream_and_its_resume_pays_no_distillation_twice`。2026-10-08：重拟轮随方法库按瘦身第三批拟删（用户可否决），快照轮保留。
+（v0.5，2026-10-07，[V0_5_PLAN §1.3、§1.4](../history/V0_5_PLAN.md)；`research/fixed.py`）**固定代码的候选轮。** 经验库快照（算子 `library`）与方法表重拟（算子 `refit`）的候选由固定代码声明（M0 §3 的 v0.5 段），走自己的一轮：没有 R 的会话、笔记与修订，其余是同一条链——草稿检查、准入、train 侧筛选、资格、gate、确认、经 M5 安装，每个阶段照常写台账。可续跑：候选 id 是 `<scope>/f<序号>/<算子>`，实验 id 由候选 id 推出，所以筛选建出的候选 W、筛选尝试的运行身份与 gate 的 Execution 在重跑时都是同一个；没结束的固定轮（有声明行、没有终结的 `round` 行）沿用它的序号，已写的阶段不再写，已付的尝试不再付；结束的轮答回记录的结果。R 的段续跑时跳过来源为 `fixed` 的实验（`research/loop.py` 的 `resume_unfinished(skip_fixed=)`），它不算 R 的一轮，由它自己的阶段收尾。经验库的流也可续跑：每道题结束、以及首遇之前的提炼之后各存一次检查点；提炼或合并调用遇到研究模型的错误时，流在上一个检查点暂停，不当作崩溃。测试 `test_v05_phases.py::test_a_fixed_round_keeps_its_ordinal_and_experiment_id_until_it_ends`、`test_an_interrupted_snapshot_round_resumes_where_it_stopped_and_pays_nothing_twice`、`test_r_still_gets_its_three_rounds_when_a_fixed_rounds_gate_is_open`、`test_an_interrupted_stream_continues_where_it_stopped_and_refuses_another_w`、`test_a_distillation_failure_pauses_the_stream_and_its_resume_pays_no_distillation_twice`。2026-10-08：重拟轮随方法库按瘦身第三批拟删（用户可否决），快照轮保留。
 
 ## 2. 预算所有权
 
@@ -124,7 +124,7 @@ Tinker optim_step 若状态不明，不能重复 apply。只有已确认训练 c
 - 当前活动的计划或 scope 与之不一致时不续跑：实验保持打开并记录原因，活动暂停，由人决定关闭该实验还是恢复原计划。不得用新计划或新预算完成旧实验。
 - 筛选与评测的 control、permit 与候选 release，都建在冻结的 `parent_release` 上。
 - 安装仍按冻结的 `parent_release` 做 CAS；active 已移动时记 stale_parent，不暂停。
-- 首版活动内不重新冻结 task plan、schedule、预算或计价（[ROADMAP §3](../ROADMAP.md) 首个真实活动协议）。
+- 首版活动内不重新冻结 task plan、schedule、预算或计价（ROADMAP §3（tag archive-2026-10-09） 首个真实活动协议）。
 - （v0.3，2026-10-04）confirming 的续跑按同一 `eval_template_ref`：复测的尝试与第一次读数在同一计划身份下，只是 `retry_index`/读数序号不同；合并对照的读数归属也按冻结计划的条件摘要判（M3 §2.1(a)（v0.3）），不按当前配置。
 
 （v0.3，2026-10-05，第 0/1 阶段评审）基础设施失败的尝试按冻结的 retry_policy 补跑一次，这条也用于 W0 的读数：train 测量（`Improvement.train_measurement`）与基线的 dev 臂（`bench.baseline`）都经 `task_gate.refill_attempts`（retry_index 1、记 supersedes），测量的读数取每个（题、重复）最新的一条（`bench.latest_attempts`，`last_measurement` 同）。原来 `run_arm(resume=True)` 把已记录的任何一行都当完成，一次 429 用尽重试的尝试（如 16 路试跑里的）会永远是 W0 合并读数里的洞。测试 `test_cycle.py::test_an_infrastructure_casualty_in_the_baseline_is_refilled_once_and_the_pooled_reading_is_complete`。
@@ -159,7 +159,7 @@ cancel 停新付费请求并尽力取消后台作业；取消仍可能收费，�
 - 尝试内的预算不符，仍按 budget_exhausted 记录。
 - v0.3 本模块的新增里，第 1 步已实现 `max_model_calls`/`max_tokens`、termination `budget` 的 `limit`、aux 计量；第 2 步（2026-10-04）已实现 confirming、`cost_per_attempt`、验证预留的新算法（筛选份额除外）、v3 preset 下并发默认 8 与 `rate_limited` 计数、笔记并发、进程内的在飞上限；第 3 步（2026-10-05）已实现 `train_screen`（轮次级事件，筛选前逐候选查 `affordable`）、会话每回合入账与 k 候选的草稿链；`_verify_bound` 没有把 k 份筛选加进上界——筛选发生在实验冻结之前、各自先查过预算，上界里加它会重复计数。final 份额的 `concurrency` 份上界检查与运行前估算已于 2026-10-05（第 5 步）实现（见 §2 “final 份额的定法”末）。实现前不是保证。
 
-首版按 [ROADMAP §2](../ROADMAP.md) 阶段补：阶段 A 补文本草稿检查（结构/路径/manifest）与有界修订、笔记调用计量；阶段 B 把同一修复循环扩展到 isolated_probe/package_test，并补包 worker 生命周期/资源与 broker 内部工具调用计量。教师/Tinker 的新恢复路径归第二版，已有旧 job/serving 兼容不删除。
+首版按 ROADMAP §2（tag archive-2026-10-09） 阶段补：阶段 A 补文本草稿检查（结构/路径/manifest）与有界修订、笔记调用计量；阶段 B 把同一修复循环扩展到 isolated_probe/package_test，并补包 worker 生命周期/资源与 broker 内部工具调用计量。教师/Tinker 的新恢复路径归第二版，已有旧 job/serving 兼容不删除。
 
 | ID | 条件 | 预期 |
 |---|---|---|
