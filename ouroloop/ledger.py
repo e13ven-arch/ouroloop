@@ -17,8 +17,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-# Only what the environment and people say may become a training target (docs/DESIGN.md invariant 6). Answers of any
-# model or LLM, and labels derived from them such as a promotion gate's verdict, are kept for evaluation only.
+# Data lineage and selection (docs/DESIGN.md §8, invariant 6): `source` says where an answer or a label came from,
+# and which sources a fit, a threshold or an evaluation uses is the data plan's choice. Until v2.0 replaces this gate
+# and its defaults with that selection (docs/design/V2_TRAINING_PIPELINE.md §2.5, §3.8, §7), the ledger still gates
+# by source: only what the environment and people say becomes a training target here, and answers of any model or
+# LLM, and labels derived from them such as a promotion gate's verdict, are kept for evaluation only.
 SOURCE_WEIGHTS = {"env": 1.0, "human": 1.0}
 EVAL_ONLY = {"frontier_llm", "open_llm", "jev", "gate"}
 SOURCES = set(SOURCE_WEIGHTS) | EVAL_ONLY

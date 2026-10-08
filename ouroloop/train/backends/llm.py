@@ -1,6 +1,7 @@
 """An LLM as a decision backend: a phase's default answerer ("llm:<backend name>") or a judge. It picks one
-candidate; a reply it cannot parse abstains. Its answers are for evaluation only, never training targets
-(docs/DESIGN.md invariant 6)."""
+candidate; a reply it cannot parse abstains. Its answers carry the provider's `source` as their lineage
+(docs/DESIGN.md §8, invariant 6, data lineage and selection); until v2.0 replaces the ledger's source gate with the
+data plan's selection (docs/design/V2_TRAINING_PIPELINE.md §2.5, §3.8), they are kept for evaluation only."""
 from __future__ import annotations
 
 import json

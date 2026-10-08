@@ -1,9 +1,11 @@
 """LLM providers used by the agent, the research agent and `llm` backends (a default answerer or a judge).
 
 A provider has `complete(system, prompt) -> str` and a `source` that says where its answers come from
-("frontier_llm" or "open_llm"). Either way they are for evaluation only, never training targets (docs/DESIGN.md
-invariant 6). Besides the API providers (anthropic, openai_compat) there is `claude_code` (claude_code.py): Claude
-through headless Claude Code on this machine's login, one blind request per call.
+("frontier_llm" or "open_llm"): their lineage (docs/DESIGN.md §8, invariant 6, data lineage and selection). Until
+v2.0 moves the ledger from a source gate to the data plan's selection (docs/design/V2_TRAINING_PIPELINE.md §2.5,
+§3.8, §7), these sources are kept for evaluation only and never become training targets. Besides the API
+providers (anthropic, openai_compat) there is `claude_code` (claude_code.py): Claude through headless Claude Code on
+this machine's login, one blind request per call.
 """
 from __future__ import annotations
 

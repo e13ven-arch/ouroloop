@@ -163,8 +163,10 @@ class Runtime:
     def _default(self, ctx: Any, view: str | None, q: Question | None, label: str | None, answerer: str | None,
                  extra: dict) -> str | None:
         """The phase's default: its answerer's answer, or its fixed label when it has none or the answerer fails
-        (an exception, a timeout, an abstention or a tie, an answer that is not a label). The answerer is recorded;
-        its answer is for evaluation only, never a training target."""
+        (an exception, a timeout, an abstention or a tie, an answer that is not a label). The answerer is recorded
+        as the answer's lineage (docs/DESIGN.md §8, invariant 6); until v2.0 replaces the ledger's source gate
+        (docs/design/V2_TRAINING_PIPELINE.md §2.5, §3.8) its answer is for evaluation only, never a training
+        target."""
         if answerer is None:
             return label
         extra["answerer"] = answerer

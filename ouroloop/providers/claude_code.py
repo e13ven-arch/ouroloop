@@ -244,7 +244,7 @@ def run_child(cmd: list, *, input: str, timeout: float, cwd, env) -> subprocess.
 
 class ClaudeCodeProvider:
     name = "claude_code"
-    source = "frontier_llm"            # a closed model's answers are never training targets
+    source = "frontier_llm"            # lineage (DESIGN §8, invariant 6); eval-only in the ledger until v2.0
     supports_history_edits = True      # the whole history is sent again each call; nothing is replayed verbatim
 
     def __init__(self, model: str, effort: str | None = None, max_tokens: int | None = None,

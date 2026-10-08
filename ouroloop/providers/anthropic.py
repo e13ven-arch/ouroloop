@@ -42,7 +42,7 @@ def to_anthropic(messages: list[dict], provider: str = "anthropic") -> list[dict
 
 class AnthropicProvider:
     name = "anthropic"
-    source = "frontier_llm"            # a closed model's answers are never training targets
+    source = "frontier_llm"            # lineage (DESIGN §8, invariant 6); eval-only in the ledger until v2.0
     supports_history_edits = False     # edited history invalidates Claude's thinking blocks; keep it append-only
 
     def __init__(self, model: str = "claude-opus-5", max_tokens: int = 16000, effort: str | None = None,
