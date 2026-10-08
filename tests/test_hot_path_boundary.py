@@ -22,16 +22,12 @@ from ouroloop.ledger import _read_jsonl
 TESTS = Path(__file__).resolve().parent
 REPO = TESTS.parent
 
-# The plan's three: the training subpackage (since step 4 also the typed decision contracts, the feedback builders,
-# the datasets, train_artifact, the backends, stores, serving, the trainer plugins and StopGuard) and the built-in
-# decision points.
-REQUIRED = ("ouroloop.train", "ouroloop.points")
-# What stays of the decision stack outside the subpackage until it goes with the v1 loop and the champion pointer
-# (step 5): off the path as well.
-DECISION_STACK = ("ouroloop.runtime", "ouroloop.evolve.gate", "ouroloop.evolve.registry", "ouroloop.evolve.replay",
-                  "ouroloop.evolve.monitor", "ouroloop.evolve.plan", "ouroloop.evolve.build", "ouroloop.evolve.calibrate",
-                  "ouroloop.evolve.pipeline", "ouroloop.agent.loop", "ouroloop.research.loop",
-                  "ouroloop.research.agent", "ouroloop.research.basic")
+# The training subpackage: the typed decision contracts, the feedback builders, the datasets, train_artifact, the
+# backends, stores, serving, the trainer plugins, StopGuard and the stop trace (the built-in decision points, the v1
+# loop and the champion pointer that were off the path beside it went in P1 step 5).
+REQUIRED = ("ouroloop.train",)
+# The research round's modules, which the smoke, the baseline and a measurement have no use for.
+DECISION_STACK = ("ouroloop.research.loop", "ouroloop.research.basic")
 
 # Per preset: the smoke's checks (`--phase smoke --checks-only`), the smoke's one attempt, then the baseline phase
 # limited to one dev task (which also measures one train task) — open_activity, the startup checks, the budget book,
@@ -95,29 +91,26 @@ def test_a_v3_and_a_v5_bench_path_load_no_decision_or_training_code(fake_upstrea
 
 
 # ---------------------------------------------------------------------------- the thin workspace
-def _bench_runtime(root: Path):
-    """The v1 runtime as open_activity built it before this step, for comparison."""
-    from ouroloop import config
-    rt = config.build_runtime({"workspace": {"root": str(root)}, "backends": {"mock": {"type": "mock"}},
-                               "points": {"default_backend": "mock"}}, ".")
-    config.register_builtin_points(rt)
-    return rt
-
-
 def test_the_workspace_writes_the_session_row_and_release_file_the_v1_runtime_wrote(tmp_path):
+    """The rows and the file as the v1 runtime wrote them for every bench session (compared with it in step 2, before
+    it went in step 5): the release triple with no model and the built-in points' spec hash, the champion None, and a
+    reopened session keeping the release it was fixed at."""
+    from ouroloop.release import harness_hash
     from ouroloop.workspace import BUILTIN_SPEC, Workspace
     harness = {"system": "s", "tools": {"api_fetch": "fetch"}, "agent": {"entry": "e", "roles": ["act"],
                                                                          "placement": "host"}}
     meta = {"arm": "base", "scope": "x", "task": "t1", "split": "dev", "held_out": True}
-    records = {}
-    for name, ws in (("runtime", _bench_runtime(tmp_path / "a")), ("workspace", Workspace(tmp_path / "b"))):
-        release = ws.session("s_1", meta, harness=harness)
-        ws.session("s_1", {**meta, "again": True})               # reopened: the release it was fixed at, no harness
-        rows = [{k: v for k, v in e.items() if k != "ts"} for e in ws.ledger.events()]
-        saved = json.loads((Path(ws.root) / "sessions" / "s_1.release.json").read_text(encoding="utf-8"))
-        records[name] = (release.to_json(), rows, saved)
-    assert records["workspace"] == records["runtime"]
-    assert records["workspace"][0]["spec"] == BUILTIN_SPEC and records["workspace"][0]["model"] is None
+    ws = Workspace(tmp_path)
+    release = ws.session("s_1", meta, harness=harness)
+    ws.session("s_1", {**meta, "again": True})               # reopened: the release it was fixed at, no harness
+    expected = {"model": None, "spec": BUILTIN_SPEC, "harness": harness_hash(harness)}
+    assert release == expected and BUILTIN_SPEC == "0b0ad2d0005b"
+    rows = [{k: v for k, v in e.items() if k != "ts"} for e in ws.ledger.events()]
+    assert rows == [{**meta, "type": "session", "session": "s_1", "release": expected, "champion": None},
+                    {**meta, "again": True, "type": "session", "session": "s_1", "release": expected,
+                     "champion": None}]
+    saved = json.loads((tmp_path / "sessions" / "s_1.release.json").read_text(encoding="utf-8"))
+    assert saved == {"release": expected, "champion": None}
 
 
 def test_an_activity_gets_the_thin_workspace_and_builds_serving_only_when_asked(fake_upstream, tmp_path,
@@ -180,7 +173,7 @@ def test_decides_reads_the_core_and_the_kind_of_the_bound_decision_target(fake_u
 
 
 # ---------------------------------------------------------------------------- a rule stop policy builds no point
-def test_a_rule_stop_policy_builds_its_business_point_only_when_a_loop_asks(tmp_path):
+def test_a_rule_stop_policy_builds_its_business_point_only_when_a_host_asks(tmp_path):
     from ouroloop import policies as P
     from ouroloop.train.views import business_stop_point
     objects = ct.Objects(tmp_path)
@@ -189,8 +182,7 @@ def test_a_rule_stop_policy_builds_its_business_point_only_when_a_loop_asks(tmp_
     assert decider._point is None and decider.kind == "rule" and decider.default == "yes"
     assert decider.propose({}) == ("yes", "default")         # proposing the default needs no point either
     assert decider._point is None
-    assert decider.point.spec_hash == business_stop_point().spec_hash      # the v1 loop's StopGuard reads this
-    assert P.fixed_defaults(P.Services(objects)).stop.point.spec_hash == business_stop_point().spec_hash
+    assert decider.point.spec_hash == business_stop_point().spec_hash      # a host's StopGuard reads this
 
 
 def test_a_model_policy_builds_the_serving_it_is_loaded_through_only_then(tmp_path):

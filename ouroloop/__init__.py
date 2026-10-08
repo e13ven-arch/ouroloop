@@ -1,16 +1,16 @@
 """ouroloop: a lightweight RSI framework. An LLM improves a small decision model, and the decision model
 improves the agent harness.
 
-The decision-model names below are imported on first use, so `import ouroloop.bench` (and every attempt under the
-runner shell) loads none of the decision stack."""
+The decision-model names below are the training stack's (ouroloop/train/), imported on first use, so
+`import ouroloop.bench` (and every attempt) loads none of it."""
 from __future__ import annotations
 
 from importlib import import_module
 
 __version__ = "0.1.0"
-_LAZY = {"Choice": ".decision", "Decision": ".decision", "DecisionPoint": ".decision", "Noul": ".decision",
-         "Score": ".decision", "Spec": ".decision", "Policy": ".policy", "Runtime": ".runtime", "Answer": ".types",
-         "Question": ".types", "Request": ".types"}
+_LAZY = {"Choice": ".train.decision", "Decision": ".train.decision", "DecisionPoint": ".train.decision",
+         "Noul": ".train.decision", "Score": ".train.decision", "Spec": ".train.decision", "Policy": ".train.policy",
+         "Runtime": ".train.runtime", "Answer": ".train.types", "Question": ".train.types", "Request": ".train.types"}
 __all__ = ["Answer", "Choice", "Decision", "DecisionPoint", "Noul", "Policy", "Question", "Request", "Runtime",
            "Score", "Spec"]
 

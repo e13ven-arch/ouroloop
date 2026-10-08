@@ -6,11 +6,11 @@ runtime, a context for the stop point's view, and optionally a checker.
     on_finish   when the agent wants to finish; default "yes". A failing checker, or with no checker a confident
                 "no", sends the agent back to work, at most max_pushbacks times and never on the last turn.
 
-Order: model -> checker -> pushback -> turn cap (per_turn runs the checker only on a "yes"). A rule overrules the
-model, never the other way round, and its verdict is recorded as the decision's veto (route "rule"); a checker that
-breaks is recorded on route "error" and the phase's fixed default is taken. The model is asked only when the stop
-point's act is on; otherwise the context is recorded, the decision model is not called, and the phase's default (its
-answerer's answer, or its fixed label) is the action.
+Order: policy -> checker -> pushback -> turn cap (per_turn runs the checker only on a "yes"). A rule overrules the
+policy, never the other way round, and its verdict is recorded as the decision's veto (route "rule"); a checker that
+breaks is recorded on route "error" and the phase's fixed default is taken. A bound worker.stop policy is asked
+(runtime.propose); without one the context is recorded, no model is called, and the phase's default (its answerer's
+answer, or its fixed label) is the action. (The v1 runtime's `ask` of a champion went with it in P1 step 5.)
 """
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ class StopGuard:
         """checker() -> (passed, what to tell the agent when it failed).
 
         `policy`: a bound worker.stop policy of the task/research profile (policies.StopDecider). With one, the
-        decision goes through runtime.propose instead of the champion pointer, and the guard's own limits stay
+        decision goes through runtime.propose, and the guard's own limits stay
         exactly where they were: the maximum pushbacks and the turn cap are hard edges, so a policy that keeps
         saying "no" is overruled at the cap and the row records that it was overruled, not that it agreed
         (docs/modules/01_POLICY_RUNTIME.md §3).
@@ -103,6 +103,5 @@ class StopGuard:
             d = self.rt.propose(self.policy.point or p, ctx, policy=asked, session=self.session, phase=phase,
                                 veto=veto, on_record=on_record)
             return d.id, d.action
-        ask = self.rt.ask if p.policy.act else self.rt.record
-        d = ask(p, ctx, session=self.session, phase=phase, veto=veto)
+        d = self.rt.record(p, ctx, session=self.session, phase=phase, veto=veto)
         return d.id, d.action

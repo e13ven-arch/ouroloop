@@ -1,4 +1,5 @@
-"""Provider-neutral chat types for the agent loop.
+"""Provider-neutral chat types: what a provider's `chat(system, messages, tools) -> ChatTurn` takes and returns, as the
+gateway calls it for the agent (agent/gateway.py) and R's session calls it (research/session.py).
 
 History entries:
     {"role": "user", "content": str}
@@ -10,7 +11,7 @@ Providers convert these to their own format on every call. `native` keeps the pr
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Protocol
+from typing import Any, Callable
 
 
 @dataclass
@@ -34,14 +35,6 @@ class ChatTurn:
     stop: str                 # "end", "tool_use", "max_tokens", "refusal" or "other"
     native: Any = None
     usage: dict = field(default_factory=dict)
-
-
-class ChatProvider(Protocol):
-    name: str
-    model: str
-    supports_history_edits: bool   # False when edited history breaks the provider (e.g. Claude's thinking check)
-
-    def chat(self, system: str, messages: list[dict], tools: list[ToolSpec]) -> ChatTurn: ...
 
 
 class ScriptedChat:

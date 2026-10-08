@@ -622,7 +622,7 @@ class Improvement:
 
     # -------------------------------------------------------------- pieces
     def services(self) -> _P.Services:
-        return _P.Services(self.objects, runtime=self.rt, serving=self.serving,
+        return _P.Services(self.objects, serving=self.serving,
                            provider_factory=lambda identity, config: config_mod.build_provider(config))
 
     def families(self) -> dict:
@@ -5171,7 +5171,7 @@ def effort_problems(activity: Activity, core: _ct.CoreManifest) -> list[str]:
         return []
     ceiling = harness.get("max_effort")
     if ceiling is None:
-        return []          # a K frozen before v0.3: its workspace runs the v1 loop, and no gateway caps anything
+        return []          # a K frozen before v0.3 fixes no ceiling: the gateway caps nothing
     effort = (activity.objects.get(pinned.inference_ref) or {}).get("effort")
     if effort in EFFORTS and ceiling in EFFORTS and EFFORTS.index(effort) > EFFORTS.index(ceiling):
         return [f"the actor the active release pins has effort {effort!r}, above K's max_effort {ceiling!r}: the "

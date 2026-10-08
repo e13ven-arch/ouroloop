@@ -14,14 +14,12 @@ from pathlib import Path
 
 import pytest
 
-from decision_fixtures import seed_ledger
 from ouroloop.train import config as train_config
-from ouroloop.train.backends import KeywordBackend, TdeBackend
-from ouroloop.train.decision import Choice, Score
-from ouroloop.evolve.build import build
+from ouroloop.train.backends import TdeBackend
+from ouroloop.train.dataset import to_example
+from ouroloop.train.decision import Choice, Noul, Score
 from ouroloop.train import train
-from ouroloop.points import retry_point
-from ouroloop.runtime import Runtime
+from ouroloop.train.runtime import Runtime
 from ouroloop.train.trainers import tde
 from ouroloop.train.trainers.tde import prepare_job, tde_config
 from ouroloop.train.types import Question, Request
@@ -38,16 +36,32 @@ SMALL_RECIPE = {"epochs": 1.0, "train_limit": 5000, "batch_size": 16, "grad_accu
                 "max_state_tokens": 256, "gradient_checkpointing": False, "min_weight": 1.0}
 
 
-def all_primitives(tmp_path) -> Runtime:
-    rt = Runtime(tmp_path, {"mock": KeywordBackend()}, "mock", seed=0)
-    rt.register(retry_point())
+def all_primitives(root: Path) -> Path:
+    """Labelled decisions of a noul, a choice and a score point, written as the training files every trainer plugin
+    reads (train/dataset.py's example format): two thirds of the sessions to train.jsonl, the rest to val.jsonl. ->
+    the data directory."""
+    rt = Runtime(root / "ws", seed=0)
+    retry = rt.register(Noul("retry", "Rerunning this failed command unchanged will succeed",
+                             {"true": "a transient failure", "false": "a failure that needs a change"},
+                             phases={"after_failure": "no"}))
     route = rt.register(Choice("route", "Which model tier is enough?", {"small": "a quick edit", "large": "a redesign"}))
     effort = rt.register(Score("effort", "How much work is left?", ["none", "some", "a lot"]))
-    seed_ledger(rt, sessions=30)
     for s in range(30):
-        rt.outcome(rt.ask(route, f"task {s}", session=f"s{s:03d}").id, "small" if s % 3 else "large")
-        rt.outcome(rt.ask(effort, f"task {s}", session=f"s{s:03d}").id, str(s % 3))
-    return rt
+        session = f"s{s:03d}"
+        rt.outcome(rt.record(retry, f"pip install failed: connection reset ({s})", session=session).id,
+                   "yes" if s % 2 else "no")
+        rt.outcome(rt.record(route, f"task {s}", session=session).id, "small" if s % 3 else "large")
+        rt.outcome(rt.record(effort, f"task {s}", session=session).id, str(s % 3))
+    data = root / "data"
+    data.mkdir()
+    points = {"retry": retry, "route": route, "effort": effort}
+    files = {"train": [], "val": []}
+    for row, target, weight in rt.ledger.training_rows():
+        split = "val" if int(row.decision["session"][1:]) % 3 == 0 else "train"
+        files[split].append(to_example(rt, points[row.decision["point"]], row, target, weight, split))
+    for split, rows in files.items():
+        (data / f"{split}.jsonl").write_text("".join(json.dumps(e) + "\n" for e in rows))
+    return data
 
 
 @needs_tde
@@ -56,15 +70,14 @@ def test_built_examples_pass_tdes_own_validation(tmp_path):
     schema = importlib.util.module_from_spec(spec)
     sys.modules["tde_schema"] = schema          # dataclasses resolve annotations through sys.modules
     spec.loader.exec_module(schema)
-    ds = build(all_primitives(tmp_path), tmp_path / "data")
-    assert ds.splits["val"] and {e["split"] for e in ds.splits["val"]} == {"val"}      # the framework's name
+    data = all_primitives(tmp_path)
     # what TDE reads: the job's files as the plugin prepares them (val -> TDE's "calibration", which it selects on)
-    prepare_job(str(tmp_path / "data"), json.dumps(tde_config(DEFAULT_RECIPE, "run", None, "m_0001")))
+    prepare_job(str(data), json.dumps(tde_config(DEFAULT_RECIPE, "run", None, "m_0001")))
     seen = set()
     for name, split in (("train", "train"), ("calibration", "calibration")):
-        rows = [json.loads(line) for line in (tmp_path / "data" / "tde" / f"{name}.jsonl").read_text().splitlines()]
+        rows = [json.loads(line) for line in (data / "tde" / f"{name}.jsonl").read_text().splitlines()]
         assert rows and {e["split"] for e in rows} == {split}
-        for e in rows + ds.splits["test"]:
+        for e in rows:
             schema.DecisionExample.from_dict(e).validate()
             seen.add(e["primitive"])
     assert seen == {"noul", "choice", "score"}

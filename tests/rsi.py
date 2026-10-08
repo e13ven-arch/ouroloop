@@ -62,13 +62,26 @@ def harness_table() -> dict:
     return {**table, "sandbox": None, "image": None}
 
 
+def bootstrap_workspace(root, *, objects: ct.Objects | None = None, worker_ref: str | None = None,
+                        research_ref: str | None = None, core_ref: str | None = None, **core_kw):
+    """A workspace with W0, R0, K and a bootstrap release installed (formerly policies.bootstrap_workspace, which only
+    tests called). -> (Releases, release ref)."""
+    from ouroloop import policies as P
+    from ouroloop.release import Releases
+    objects = objects or ct.Objects(root)
+    releases = Releases(root, objects)
+    worker_ref = worker_ref or P.default_worker_set(objects)
+    research_ref = research_ref or P.default_research_set(objects)
+    core_ref = core_ref or P.default_core(objects, **core_kw)
+    return releases, releases.bootstrap(worker_ref, research_ref, core_ref)
+
+
 def workspace(root, split_ref: str = "", worker_ref: str | None = None, research_ref: str | None = None,
               **core_kw):
     """A workspace with W0, R0, a v3-style K and a bootstrap release installed. -> (Releases, release ref, Objects)."""
-    from ouroloop import policies as P
     objects = ct.Objects(root)
     capabilities = {"training": False, "harness": harness_table(), **core_kw.pop("capabilities", {})}
-    releases, rel = P.bootstrap_workspace(root, objects=objects, worker_ref=worker_ref,
+    releases, rel = bootstrap_workspace(root, objects=objects, worker_ref=worker_ref,
                                           research_ref=research_ref, domain=DOMAIN, split_ref=split_ref,
                                           adapter="ouroloop.adapters.automationbench", scorer="rubric.v1",
                                           toolset=ab.TOOLSET, capabilities=capabilities, **core_kw)

@@ -537,15 +537,19 @@ def test_bootstrap_refuses_to_freeze_a_k_that_allows_code_without_the_worker_ima
     assert not (tmp_path / "ws" / "rsi" / "active.json").exists()
 
 
-def test_package_code_is_never_mounted_on_a_worker_that_does_not_isolate_it(tmp_path):
+def test_package_code_never_runs_on_a_worker_that_does_not_isolate_it(tmp_path):
     import pytest
     from ouroloop.agent.worker import ProcessWorker
     from test_package_worker import FINISH_GUARD, World, bound_with
     bound, _ = bound_with(tmp_path, {"middlewares/guard.py": FINISH_GUARD},
                           {"hooks": [{"name": "guard", "site": "on_finish", "entrypoint": "middlewares/guard.py:run"}]})
+    from ouroloop.agent.runner import PackageAgent
+    from ouroloop.benchmark import Budget
     with pytest.raises(hp.CapabilityError, match="no qualified isolated worker"):
-        hp.mount(World(), bound, worker=ProcessWorker())
-    assert hp.mount(World(), bound, worker=ProcessWorker(for_tests=True)) is not None
+        PackageAgent(None, None, World(), bound=bound, budget=Budget(max_steps=1), worker=ProcessWorker())
+    shell = PackageAgent(None, None, World(), bound=bound, budget=Budget(max_steps=1),
+                         worker=ProcessWorker(for_tests=True))
+    assert shell.placement == "worker"
 
 
 def test_a_drafted_package_records_the_worker_image_k_froze(tmp_path):
@@ -619,7 +623,7 @@ def test_the_package_api_says_how_a_test_reaches_package_code():
 def test_the_package_api_says_what_a_hook_sees_is_cut_and_the_actor_had_the_whole_result():
     """The first Claude activity (2026-10-03): R read the view's `truncated` and a summary's cut mark as cuts the
     actor saw, and wrote a hook that told the actor so after every long result. The API says whose cuts they are."""
-    from ouroloop.agent.loop import HOOK_RESULT_CHARS
+    from ouroloop.agent.default_agent import HOOK_RESULT_CHARS
     from ouroloop.research.basic import PACKAGE_API
     assert f"result is at most the first {HOOK_RESULT_CHARS} characters" in PACKAGE_API
     assert "truncated says only that this excerpt is shorter than the result" in PACKAGE_API

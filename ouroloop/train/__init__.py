@@ -4,8 +4,9 @@ the bench path: nothing an activity runs imports it (tests/test_hot_path_boundar
 
     types, decision, policy     the typed decision contracts (noul, choice, score), decision points, routing and the
                                 Clopper-Pearson threshold
-    runtime, stop, views        recording and proposing decisions (the general half of the v1 runtime), StopGuard, the
+    runtime, stop, views        recording and proposing decisions (the decision runtime), StopGuard, the
                                 business stop point
+    trace                       a stop decision's context, observation and trace, for a host that asks the stop point
     feedback, dataset, checks   labels from the ledger, the task profile's training files and DataManifest, data checks
     train, calibrate            the trainer contract, recipes, train_artifact and its load probe; the temperature fit
     backends, stores, serving   how a model is asked, kept and loaded by its ref

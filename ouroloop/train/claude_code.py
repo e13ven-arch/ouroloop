@@ -1,16 +1,20 @@
-"""Claude Code hooks adapter: turns ordinary Claude Code sessions into ouroloop decisions and outcomes.
+"""Claude Code hooks adapter: turns ordinary Claude Code sessions into ouroloop decisions and outcomes, the one
+source of human labels the training stack has (docs/design/SLIMMING_INVENTORY.md §0.1 B).
 
-`ouroloop hook print-settings` prints the settings.json block to add. By default the adapter only records: it asks
-no model and changes nothing in Claude Code, so it adds almost no latency. Labels:
+`settings(command)` is the settings.json block that sends the hooks to `command`, a process that hands each event to
+ClaudeCodeAdapter.handle (the `ouroloop hook` entry that did is on tag archive-2026-10-08). The adapter only records
+(runtime.record): it asks no model and changes nothing in Claude Code, so it adds almost no latency. Labels:
 
     tool_gate   a permission prompt was shown and the tool then ran           -> "yes" (human)
                 no prompt (your permission rules allowed it) and the tool ran  -> "yes" (human, weight 0.5)
                 a prompt was shown and the tool had not run when the turn ended -> "no" (human)
-    retry       a failed Bash command rerun unchanged as the very next Bash call -> the rerun's result
+    retry       a failed Bash command rerun unchanged as the very next Bash call -> the rerun's result (a runtime
+                with a `retry` point registered)
 
-With live=True the backend is asked at hook time, and its answers are recorded. The adapter never allows a call: every
-call still goes through your own permission rules, so a "yes" above is always a person's, or their rules'. With
-enforce_deny_list=True, a command on the deny list is denied, and the veto is recorded on tool_gate (route "rule").
+The adapter never allows a call: every call still goes through your own permission rules, so a "yes" above is always
+a person's, or their rules'. With enforce_deny_list=True, a command on the deny list is denied, and the veto is
+recorded on tool_gate (route "rule"). (Asking a model at hook time, `live`, was the v1 runtime's `ask` of a champion,
+removed with it in P1 step 5.)
 """
 from __future__ import annotations
 
@@ -62,7 +66,7 @@ def deny(event: dict) -> dict | None:
                                             "permissionDecisionReason": f"ouroloop deny list: {rule}"}}
 
 
-def settings(command: str = "ouroloop hook claude-code") -> dict:
+def settings(command: str) -> dict:
     """The hooks block for .claude/settings.json (or ~/.claude/settings.json)."""
     handler = [{"type": "command", "command": command}]
     tools = "Bash|Write|Edit|MultiEdit"
@@ -77,9 +81,9 @@ def settings(command: str = "ouroloop hook claude-code") -> dict:
 
 
 class ClaudeCodeAdapter:
-    def __init__(self, runtime, live: bool = False, enforce_deny_list: bool = False):
+    def __init__(self, runtime, enforce_deny_list: bool = False):
+        """`runtime`: a train.runtime.Runtime with the points to record (tool_gate, retry)."""
         self.rt = runtime
-        self.live = live
         self.enforce_deny_list = enforce_deny_list
         self.state_dir = runtime.root / "hooks"
 
@@ -120,8 +124,6 @@ class ClaudeCodeAdapter:
         return None
 
     def _decide(self, point: str, ctx: dict, session: str, veto: str | None = None):
-        if self.live:
-            return self.rt.ask(point, ctx, session=session, veto=veto)
         return self.rt.record(point, ctx, session=session, veto=veto)
 
     def _pre(self, event: dict, st: dict, session: str) -> dict | None:
@@ -170,7 +172,7 @@ class ClaudeCodeAdapter:
         st["retry"] = None
 
 
-def settings_json(command: str = "ouroloop hook claude-code") -> str:
+def settings_json(command: str) -> str:
     return json.dumps(settings(command), indent=2)
 
 

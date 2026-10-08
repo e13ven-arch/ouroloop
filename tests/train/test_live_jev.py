@@ -13,7 +13,7 @@ pytestmark = pytest.mark.live
 
 
 def test_three_primitives_in_one_call():
-    load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+    load_dotenv(Path(__file__).resolve().parents[2] / ".env")      # the checkout root
     if not os.environ.get("TYPESAFE_API_KEY"):
         pytest.skip("TYPESAFE_API_KEY not set")
     answers = JevBackend().decide([Request(SMOKE_STATE, q) for q in SMOKE_QUESTIONS.values()])

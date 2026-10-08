@@ -1,12 +1,10 @@
-"""The general half of the runtime (ouroloop/train/runtime.py, P1 step 4): `record` writes the shadow row the v1
-runtime wrote, from the phase's default answerer or a rule's veto, and asks no model; a broken view or rule leaves a
-row and the fixed default. The parity test compares it with the v1 runtime (ouroloop/runtime.py) while that exists
-(it goes in step 5); the expectations below it stand on their own."""
+"""The decision runtime (ouroloop/train/runtime.py): `record` writes the shadow row the v1 runtime wrote (compared
+row for row with it in P1 step 4, before that runtime went in step 5), from the phase's default answerer or a rule's
+veto, and asks no model; a broken view or rule leaves a row and the fixed default."""
 from dataclasses import replace
 
 import pytest
 
-from ouroloop.runtime import Runtime as V1Runtime
 from ouroloop.train.backends import KeywordBackend
 from ouroloop.train.decision import Noul
 from ouroloop.train.runtime import Runtime
@@ -48,13 +46,6 @@ def run(rt) -> tuple[list, list]:
     return [replace(d, id="") for d in decisions], rows
 
 
-def test_record_writes_the_rows_the_v1_runtime_wrote(tmp_path):
-    backends = {"judge": KeywordBackend()}
-    general = run(Runtime(tmp_path / "a", backends, "judge"))
-    v1 = run(V1Runtime(tmp_path / "b", backends, "judge"))
-    assert general == v1
-
-
 def test_record_takes_the_default_or_the_veto_and_asks_no_model(tmp_path):
     rt = Runtime(tmp_path, {"judge": KeywordBackend()}, "judge")
     _, rows = run(rt)
@@ -70,8 +61,6 @@ def test_record_takes_the_default_or_the_veto_and_asks_no_model(tmp_path):
                    ("blind", "error", "no", "no", None, "KeyError: 'm", ""),
                    ("plain", "error", "no", "no", None, "ZeroDivision", "")]
     assert {(r["backend"], r["model"], r["probs"], r["propensity"]) for r in rows} == {("none", "", None, 1.0)}
-    with pytest.raises(NotImplementedError, match="asks no model"):
-        rt._decide("plain", {}, "s", None, "here", None, asking=True)
     assert not hasattr(rt, "ask")
     first = next(rt.ledger.events())["id"]
     rt.outcome(first, "yes", note="probe")

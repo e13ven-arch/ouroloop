@@ -1,3 +1,5 @@
+"""The decision primitives (train/decision.py, policy.py, types.py) and the ledger: the execution rule, thresholds
+counted per session, decision points, label sources and old rows."""
 import random
 
 import pytest
@@ -5,7 +7,6 @@ import pytest
 from ouroloop.train.decision import Choice, Noul, Spec
 from ouroloop.ledger import Ledger, SessionStore, redact
 from ouroloop.train.policy import Policy, cp_upper, fit_threshold, route
-from ouroloop.research.ask import NONE_FIT, QuestionError, fit_state, normalize
 from ouroloop.train.types import Answer, Question
 
 
@@ -114,27 +115,7 @@ def test_redaction_and_session_store(tmp_path):
     assert reopened.put("s1", {"cmd": "cd"}) == "s1#2"
 
 
-# ---------------------------------------------------------------- question conversion
-def test_normalize_questions():
-    q = normalize({"type": "choice", "instructions": "pick", "criteria": {"a": "first", "b": "second"}})
-    assert q.labels() == ["a", "b", NONE_FIT]
-    assert normalize(Question("choice", "pick", {"a": "x", "b": "y"}), escape=False).labels() == ["a", "b"]
-    bad = [
-        {"type": "choice", "instructions": "pick", "criteria": {"A": "x", "a": "y"}},
-        {"type": "choice", "instructions": "pick", "criteria": {"a": "same", "b": "same"}},
-        {"type": "choice", "instructions": "pick", "criteria": {"a": "only"}},
-        {"type": "score", "instructions": "rate", "criteria": ["one"]},
-        {"type": "score", "instructions": "rate", "criteria": [str(i) for i in range(11)]},
-        {"type": "noul", "instructions": "yes?", "criteria": {"maybe": "x"}},
-        {"type": "vote", "instructions": "x"},
-        {"type": "noul", "instructions": " "},
-    ]
-    for b in bad:
-        with pytest.raises(QuestionError):
-            normalize(b)
-    assert fit_state("abcdef", 3) == ("abc", True) and fit_state("ab", 3) == ("ab", False)
-
-
+# ---------------------------------------------------------------- the order a question is shown in
 def test_candidate_order_is_shuffled_at_presentation(tmp_path):
     import random
 
@@ -149,29 +130,77 @@ def test_candidate_order_is_shuffled_at_presentation(tmp_path):
         assert fixed.presented(random.Random(0)).criteria == fixed.criteria     # ordinal and fixed stay put
 
 
-def test_the_ledger_records_the_order_the_model_was_shown(tmp_path):
-    from ouroloop.train.decision import Choice
-    from ouroloop.runtime import Runtime
-    from ouroloop.train.types import Answer
+# ---------------------------------------------------------------- thresholds counted per session (formerly test_act)
+def test_rows_of_one_session_are_not_independent_evidence():
+    rng = random.Random(0)
+    conf = [rng.uniform(0.6, 1.0) for _ in range(100)]
+    correct = [rng.random() < 0.99 for _ in range(100)]
+    independent = fit_threshold(conf, correct, [f"s{i}" for i in range(100)])
+    five = fit_threshold(conf, correct, [f"s{i % 5}" for i in range(100)])
+    assert independent is not None and (five is None or five >= independent)
+    assert five is None
 
-    class Echo:
-        """Answers with a fixed preference by label, so probabilities must follow the labels, not the order."""
-        name = "echo"
 
-        def decide(self, requests):
-            return [Answer({lab: (0.7 if lab == "keep" else 0.3 / (len(r.question.labels()) - 1))
-                            for lab in r.question.labels()}, "echo-1") for r in requests]
+def test_59_sessions_without_a_harm_are_needed_and_one_wrong_act_harms_its_session():
+    def fit(n, rows=1, later_right=True):
+        # each session acts first on a right answer, then on its later rows
+        conf, correct, sessions = [], [], []
+        for i in range(n):
+            for j in range(rows):
+                conf.append(0.9)
+                correct.append(j == 0 or later_right)
+                sessions.append(f"s{i}")
+        return fit_threshold(conf, correct, sessions)
 
-    point = Choice("pick", "what next", {"keep": "keep going", "stop": "stop", "ask": "ask a person"},
-                   view=lambda ctx, params: str(ctx))
-    rt = Runtime(tmp_path, {"echo": Echo()}, "echo", seed=0)
-    rt.register(point)
-    for i in range(12):
-        rt.ask("pick", f"context {i}")
-    rows = [r.decision for r in rt.ledger.rows()]
-    assert len({tuple(r["candidates"]) for r in rows}) > 1          # the order varies between decisions
-    for r in rows:
-        assert set(r["candidates"]) == {"keep", "stop", "ask"}
-        shown = dict(zip(r["candidates"], r["probs"]))
-        assert shown["keep"] == 0.7                                  # probabilities align with the recorded order
-        assert r["question"]["criteria"]["keep"] == "keep going"
+    assert fit(59) == 0.9 and fit(58) is None
+    assert fit(59, rows=3) == 0.9 and fit(59, rows=3, later_right=False) is None
+
+
+def test_llm_escalations_and_gate_verdicts_are_never_training_targets(tmp_path):
+    led = Ledger(tmp_path)
+    escalated = led.decision(point="p")
+    led.escalation(escalated, "yes", None, by="qwen", source="open_llm")
+    judged = led.decision(point="p")
+    led.outcome(judged, "yes", source="gate")
+    observed = led.decision(point="p")
+    led.escalation(observed, "yes", None, by="qwen", source="open_llm")
+    led.outcome(observed, "no", source="env")
+    assert [(r.decision["id"], t, w) for r, t, w in led.training_rows()] == [(observed, {"no": 1.0}, 1.0)]
+
+
+def test_rows_written_by_m6_still_read(tmp_path):
+    """The fields the M6 code wrote, in its order, for the stop, tool_gate and retry points: the targets the ledger
+    reads from them (the v2 data pipeline's projector reads old ledgers this way)."""
+    led, sessions = Ledger(tmp_path / "ledger"), SessionStore(tmp_path / "sessions")
+    question = Noul("stop", "The task is complete").question({}).to_json()
+    for i in range(60):
+        s = f"s_{i:03d}"
+        led.append({"type": "session", "session": s, "task": "t", "held_out": False, "agent": "glm/max_turns=4"})
+        for phase, default in (("per_turn", "no"), ("on_finish", "yes")):
+            c = {"task": "t", "turns": 1, "files": "", "actions": "", "message": "say yes 0.9"}
+            did = led.decision(session=s, ctx=sessions.put(s, c), point="stop", spec_hash="fe55fe1febdf",
+                               backend="none", model="", view="v", view_chars=1, truncated=False, question=question,
+                               candidates=["yes", "no"], probs=None, route="shadow", explored=False, propensity=1.0,
+                               action=None, usage={}, phase=phase, default=default)
+            led.outcome(did, "yes" if i % 2 else "no", source="env", note="probe", score=1.0)
+        g = {"task": "t", "workdir": "/w", "tool": "bash", "detail": "command: say no 0.7"}
+        did = led.decision(session=s, ctx=sessions.put(s, g), point="tool_gate", spec_hash="b30fa9a7b0e1",
+                           backend="mock", model="mock-keyword", view="v", view_chars=1, truncated=False,
+                           question={"type": "noul", "instructions": "q"}, candidates=["yes", "no"], probs=[0.5, 0.5],
+                           route="shadow", explored=False, propensity=1.0, action=None, usage={}, phase=None,
+                           default=None)
+        led.outcome(did, "no", source="human", note="approval")
+        r = {"command": "make", "stderr": "say no 0.6", "exit_code": 1}
+        route, action = ("auto", "no") if i % 2 else ("fallback", None)      # M6 routes of an asked point
+        did = led.decision(session=s, ctx=sessions.put(s, r), point="retry", spec_hash="531169554799",
+                           backend="mock", model="mock-keyword", view="v", view_chars=1, truncated=False,
+                           question={"type": "noul", "instructions": "q"}, candidates=["yes", "no"], probs=[0.4, 0.6],
+                           route=route, explored=False, propensity=0.95, action=action, usage={}, phase=None,
+                           default=None)
+        led.escalation(did, "yes", {"yes": 1.0, "no": 0.0}, "llm:qwen", "open_llm")   # M6: never a target
+        if i % 2:
+            led.outcome(did, "no", note="rerun by the agent")
+    assert [len(led.training_rows(p)) for p in ("stop", "tool_gate", "retry")] == [120, 60, 30]
+    held, _ = led.sessions()
+    assert len(held) == 60 and not any(info["held_out"] for info in held.values())
+    assert {"stop", "tool_gate", "retry"} == set().union(*(info["labelled"] for info in held.values()))

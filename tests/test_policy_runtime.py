@@ -1,5 +1,6 @@
-"""M1 in a real run (docs/modules/01_POLICY_RUNTIME.md §5): the W0 gap and the finish check closing it, what an
-install does to a running session, and a failure in assembling or closing an attempt."""
+"""M1 in a real run (docs/modules/01_POLICY_RUNTIME.md §5): the W0 gap and the finish check closing it, and a failure
+in assembling or closing an attempt. (PR-05, a session binder re-pinning a session on revocation, went with the
+champion pointer in P1 step 5: an arm binds the release it runs once, bench.Improvement.run_arm.)"""
 import pytest
 import rsi
 
@@ -53,34 +54,6 @@ def test_the_same_task_passes_once_the_finish_check_is_bound(tmp_path, suite, sp
     objects = ct.Objects(tmp_path / "ws")
     bound, attempt, _ = run(tmp_path, suite, splits, rsi.w1(objects), rsi.BusinessWorker())
     assert attempt.result.success is True and attempt.result.partial_credit == 1.0
-
-
-# ---------------------------------------------------------------------------- PR-05
-def test_pr05_an_install_reaches_only_sessions_that_start_after_it(tmp_path, suite, splits):
-    root = tmp_path / "ws"
-    objects = ct.Objects(root)
-    releases, r0, _ = rsi.workspace(root, split_ref=splits.hash(), worker_ref=rsi.w0(objects))
-    binder = P.SessionBinder(releases, P.Services(objects))
-    first = binder.open("s1")
-    # a second release installed while s1 is open
-    core = objects.load(r0, ct.SystemRelease).core_ref
-    receipt = ct.EvaluationReceipt(experiment_ref="experiment:sha256:" + "a" * 64, profile="task",
-                                   subject_ref=rsi.w1(objects), control_ref=rsi.w0(objects),
-                                   plan_ref=objects.put_json("change", {"plan": "dev"}),
-                                   results_ref=objects.put_json("change", {"results": []}), verdict="accepted")
-    receipt_ref = objects.put(receipt)
-    releases.register_receipt(receipt_ref, plan=receipt.plan_ref)
-    installed = releases.install(receipt_ref, r0, "op-install-1")
-    assert installed.status == "installed"
-    assert binder.current("s1").release_ref == first.release_ref        # the open session keeps its version
-    assert binder.open("s2").release_ref == installed.target_release    # a new session gets the new one
-    # revoking the version a session runs leaves that session the defaults, not whatever is active now
-    releases.revoke(first.release_ref, "rolled back for the test")
-    fallen = binder.current("s1")
-    # the defaults release here is the one that was revoked, so the session runs the registered defaults, which
-    # are not a release and are never written to the pointer
-    assert fallen.authorization == "fixed_defaults" and fallen.stop.kind == "rule"
-    assert "revoked" in binder.reason("s1") and releases.active()["release_ref"] == installed.target_release
 
 
 # ---------------------------------------------------------------------------- ER-09

@@ -2,9 +2,9 @@
 package's `agent.run`, with the gateway and the broker on the host (docs/modules/01_POLICY_RUNTIME.md §1,
 docs/DESIGN.md §5).
 
-PackageAgent is what task_eval drives in place of agent.loop.Agent for a release whose K was frozen under v0.3: the
-same `run(task) -> AgentResult`, session, transcript channel and attributes the attempt runner reads, over a different
-loop. Where the loop runs is the package's: a package with an `agent` entry or with code (tools, hooks) runs in the
+PackageAgent is what task_eval drives for every attempt (the v1 loop, agent.loop.Agent, which ran a K frozen before
+v0.3, went in P1 step 5): `run(task) -> AgentResult`, the session, the transcript channel and the attributes the
+attempt runner reads. Where the loop runs is the package's: a package with an `agent` entry or with code (tools, hooks) runs in the
 isolated worker — a v1 package with code gets the default agent added to its loaded bundle, which changes nothing of
 its identity — and a package with text only (or no package) runs the default agent in this process over a HostContext.
 Both placements use the same Gateway, AttemptBroker, SkillReader and Marks, so their records are the same records
@@ -35,14 +35,14 @@ MAX_PUSHBACKS = 2                     # the default agent's cap, recorded with t
 @dataclass
 class AgentResult:
     """What an attempt's agent returns to the attempt runner (evolve.task_eval.run_attempt): the final message, the
-    act calls (turns), how it stopped and the session it recorded. The v1 loop (agent.loop.Agent) returns the same."""
+    act calls (turns), how it stopped and the session it recorded."""
     text: str
     turns: int
     stop: str
     session: str
     verified: bool | None = None
     # v0.3: the hard limit that ended the attempt (act_calls, model_calls, tool_calls, seconds, tokens), None when
-    # the agent finished. The v1 loop never sets it: its turn cap is its `stop`.
+    # the agent finished.
     limit: str | None = None
 
 
@@ -265,8 +265,8 @@ class PackageAgent:
 
 def release_max_effort(objects, release_ref: str) -> str | None:
     """K's `max_effort` when the release's core was frozen under v0.3 — its harness capabilities fix one, the same
-    key bench._five_limits reads — else None: an older K (a v0.1/v0.2 workspace, a v2 release) keeps the v1 loop
-    with its decision points and terminations (PR7-13), and is not migrated."""
+    key bench._five_limits reads — else None: an older K (a v0.1/v0.2 workspace, a v2 release) fixed no ceiling, and
+    its attempts run uncapped."""
     try:
         rel = objects.load(release_ref, ct.SystemRelease)
         core = objects.load(rel.core_ref, ct.CoreManifest)

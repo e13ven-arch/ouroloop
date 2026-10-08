@@ -3,6 +3,7 @@ version with its failure and recovery paths."""
 import json
 
 import pytest
+import rsi
 
 from ouroloop import policies as P
 from ouroloop.benchmark import TaskResult, pair_key
@@ -265,7 +266,7 @@ def test_the_receipt_lists_each_regressed_task(tmp_path):
 # ---------------------------------------------------------------------------- installing (ER-06 to ER-10)
 def workspace(tmp_path):
     objects = ct.Objects(tmp_path)
-    releases, parent = P.bootstrap_workspace(tmp_path, objects=objects)
+    releases, parent = rsi.bootstrap_workspace(tmp_path, objects=objects)
     return objects, releases, parent
 
 

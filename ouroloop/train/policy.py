@@ -18,20 +18,9 @@ from .types import Answer
 # (runtime.propose). It is a separate name because the permission behind it is different — a release's
 # authorisation, not a gate record's calibration.
 ROUTES = ("act", "default", "shadow", "rule", "error", "policy")
-# The harness's built-in points (ouroloop.points). In v0.2 stop is the only one of them that may be switched on
-# (docs/ROADMAP.md §5: the others wait for their triggers); a point that a scenario pack or a contract user defines may
-# be.
-HARNESS = frozenset({"retry", "compact", "tool_gate", "stop", "route"})
-ACTING = {"stop"}
-
-
-def may_act(point: str) -> bool:
-    return point in ACTING or point not in HARNESS
-
-
 @dataclass
 class Policy:
-    act: bool = False       # may the model's answer be acted on; off, the point is shadow (see may_act)
+    act: bool = False       # may the model's answer be acted on; off, the point is shadow
     explore: float = 0.05   # share of decisions the model could act on that still take the default, for outcomes
 
 

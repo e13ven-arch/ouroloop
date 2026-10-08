@@ -353,7 +353,7 @@ def test_a_signature_run_says_what_it_is_so_a_model_server_loads_the_same_model(
                "target": [1.0, 0.0], "meta": {"weight": 1.0}}
     (job / "train.jsonl").write_text(json.dumps(example) + "\n")
     signature.train({"options": {"signature": "test_hosts:says"}}, str(job), 0)
-    for options in ({}, {"signature": "ouroloop.evolve.replay:signature"}):     # the server's own options
+    for options in ({}, {"signature": "ouroloop.train.trainers.signature:signature"}):     # the server's own options
         backend = signature.backend(str(job / "run"), "m_0001_x", options)
         assert backend.signature is says and backend.model == "m_0001_x"
     old = tmp_path / "jobs" / "m_0000_x" / "run"            # a run from before: the table alone, options say the key

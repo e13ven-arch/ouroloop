@@ -1,12 +1,13 @@
-"""Releases (docs/DESIGN.md invariant 7): the (model, decision spec, harness) triple a session runs with, the gate
-records that accepted what may answer and act, the revocation list that stops a release from acting, and the version of
-the code that gates and serves them."""
+"""Releases (docs/DESIGN.md invariant 7): the complete versions a session runs (SystemRelease: W, R and K), the active
+pointer they are installed on by compare-and-swap, their revocation and rollback, the export of an installed one, and
+the version of the code that gates and serves them. (The v1 release triple of model, decision spec and harness, the
+gate records that accepted a champion, and the legacy profile went with the champion pointer in P1 step 5; tag
+archive-2026-10-08.)"""
 from __future__ import annotations
 
 import hashlib
 import json
 import re
-from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -18,26 +19,13 @@ PACKAGE = Path(__file__).resolve().parent
 PACKAGE_DATA = ("train/jobs/hosts/bootstrap.sh", "train/jobs/hosts/start.sh")
 
 
-@dataclass(frozen=True)
-class Release:
-    model: str | None       # the champion's model_id (M9: <hf id>@<sha>); None before the first promotion
-    spec: str               # hash of the registered points' specs, view versions included
-    harness: str | None     # hash of the prompt, tools and StopGuard settings; None when ouroloop runs no harness
-
-    def to_json(self) -> dict:
-        return asdict(self)
-
-
 def _digest(obj: Any) -> str:
     """The short content hash of a release's parts and of a decision point's spec (decision.Spec)."""
     return hashlib.sha1(json.dumps(obj, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:12]
 
 
-def spec_hash(points: dict) -> str:
-    return _digest({name: p.spec_hash for name, p in points.items()})
-
-
 def harness_hash(harness: dict | None) -> str | None:
+    """The hash of what a session ran with (its prompt, tools and agent), as its session row records it."""
     return None if harness is None else _digest(harness)
 
 
@@ -57,56 +45,11 @@ def code_version() -> str:
     return h.hexdigest()[:16]
 
 
-class Accepted:
-    """The gate records that accepted a candidate, from their copies in <workspace>/gates/ (re-read when they change):
-    record hash -> the candidate it accepted, and the calibrations its promotion stores. Only a champion promoted
-    through such a record answers, and only a calibration as such a record accepted it acts (docs/DESIGN.md invariant
-    1): a champion pointer, card or calibration written by hand, or one a gate rejected, never does. A rollback
-    withdraws the record's acceptance: its model still answers the sessions pinned to it, but neither it nor its
-    calibrations act again, and it cannot be promoted again."""
-
-    def __init__(self, root: str | Path):
-        self.dir = Path(root) / "gates"
-        self._key: tuple | None = None
-        self._by: dict = {}
-        self._cal: dict = {}
-        self._withdrawn: set = set()
-
-    def by(self) -> dict[str, str]:
-        paths = sorted(self.dir.glob("r_*.used.json"))
-        key = tuple((p.name, file_key(p)) for p in paths)
-        if key != self._key:
-            by, cal, withdrawn = {}, {}, set()
-            for p in paths:
-                try:
-                    use = json.loads(p.read_text(encoding="utf-8"))
-                except (OSError, ValueError):
-                    continue
-                if use.get("outcome") == "accepted" and use.get("record"):
-                    by[use["record"]] = use.get("by")
-                    if use.get("revoked"):
-                        withdrawn.add(use["record"])
-                    for c in use.get("calibrations") or []:
-                        cal[(use["record"], c["model"], c["spec"], c["point"])] = {
-                            "temperature": c["temperature"], "thresholds": c["thresholds"]}
-            self._by, self._cal, self._withdrawn, self._key = by, cal, withdrawn, key
-        return self._by
-
-    def calibration(self, record: str | None, model: str, spec: str, point: str) -> dict | None:
-        """The temperature and thresholds that `record` accepted for this model, spec and point, while it stands."""
-        self.by()
-        return None if record in self._withdrawn else self._cal.get((record, model, spec, point))
-
-    def promoted(self, card: dict, standing: bool = False) -> bool:
-        """The card's model was promoted by the gate record it names (`standing`: and was not rolled back since)."""
-        record = card.get("gate_record")
-        return (bool(record) and self.by().get(record) == card.get("version")
-                and not (standing and record in self._withdrawn))
-
-
 class Revoked:
-    """<workspace>/harness/revoked.json: registry versions and model ids that may never act again. Checked on every
-    ask (re-read when the file changes): a session whose model is on it takes its defaults from then on."""
+    """<workspace>/harness/revoked.json: registry versions and model ids that may never act again (re-read when the
+    file changes). Its reader, the v1 runtime, went with the champion pointer in P1 step 5; the list and `revoke` stay
+    as the revocation primitive a v2 serving of trained models rebuilds on (docs/design/SLIMMING_INVENTORY.md §0.1 D,
+    §0.2 item 9)."""
 
     def __init__(self, path: str | Path):
         self.path = Path(path)
@@ -142,10 +85,8 @@ def revoke(root: str | Path, version: str | None, model: str | None, reason: str
 
 
 # ---------------------------------------------------------------------------- the task/research profile
-# Everything below serves the complete-version profile of docs/modules/03_EVALUATION_RELEASE.md §4: one
-# SystemRelease at a time, in <workspace>/rsi/active.json, installed by compare-and-swap. The legacy decision
-# profile above (gate records, models/champion.json, calibrations) is untouched and is never read from here.
-PROFILES = ("task", "research", "legacy")
+# The complete-version profile of docs/modules/03_EVALUATION_RELEASE.md §4: one SystemRelease at a time, in
+# <workspace>/rsi/active.json, installed by compare-and-swap.
 
 
 class Stale(RuntimeError):
@@ -154,25 +95,6 @@ class Stale(RuntimeError):
 
 class NotAuthorized(RuntimeError):
     """This release may not run this way: a permit is not permission to start a normal session or to install."""
-
-
-def resolve_profile(root: str | Path, profile: str | None) -> str:
-    """Which pointer a session runs from. A workspace may hold both an old champion and a new release, so the
-    profile is always named: assembling one session out of two pointers is how a model no gate accepted ends up
-    acting (CT-05)."""
-    root = Path(root)
-    has_new = (root / "rsi" / "active.json").exists()
-    has_legacy = (root / "models" / "champion.json").exists()
-    if profile is None:
-        if has_new and has_legacy:
-            raise ValueError(f"{root} holds both a legacy champion and an installed release: name the profile "
-                             f"({list(PROFILES)}); a session reads exactly one of them")
-        return "task" if has_new else "legacy"
-    if profile not in PROFILES:
-        raise ValueError(f"unknown profile {profile!r}: one of {list(PROFILES)}")
-    if profile in ("task", "research") and not has_new:
-        raise ValueError(f"{root} has no rsi/active.json: nothing is installed for the {profile} profile")
-    return profile
 
 
 def package_api_of(objects, worker_ref: str) -> str | None:
@@ -225,10 +147,6 @@ class Releases:
             return {"release_ref": None, "revision": 0, "last_operation_id": None}
         return json.loads(self.active_path.read_text(encoding="utf-8"))
 
-    def defaults(self) -> str | None:
-        path = self.dir / "defaults.json"
-        return json.loads(path.read_text(encoding="utf-8"))["release_ref"] if path.exists() else None
-
     # ------------------------------------------------------------------ authorisations
     def bootstrap(self, worker_ref: str, research_ref: str, core_ref: str, *, reason: str = "initial version",
                   activate: bool = True, target_harness_ref: str | None = None,
@@ -243,7 +161,6 @@ class Releases:
                                                 required_capabilities=required_capabilities))
         self.events.append("release_created", release=ref, authorization="bootstrap", reason=reason)
         if activate:
-            write_json(self.dir / "defaults.json", {"release_ref": ref, "ts": now()})
             with locked(self.active_path):
                 if not self.active_path.exists():
                     write_json(self.active_path, {"release_ref": ref, "revision": 1, "last_operation_id": None})
@@ -469,7 +386,7 @@ class Releases:
         return True
 
     def last_good(self, release_ref: str | None) -> str | None:
-        """The nearest ancestor that is authorised, not revoked and built on the same core; None: the defaults."""
+        """The nearest ancestor that is authorised, not revoked and built on the same core; None when there is none."""
         ct = self._ct
         if not release_ref:
             return None
@@ -487,7 +404,8 @@ class Releases:
         return None
 
     def rollback(self, reason: str, *, operation_id: str | None = None):
-        """Revoke the active release and move the pointer to the nearest good ancestor, or to the defaults.
+        """Revoke the active release and move the pointer to the nearest good ancestor (the bootstrap release at the
+        root of every chain, unless it is revoked too).
 
         Never to a version that was assembled here for the occasion: a pointer may only name a release that was
         evaluated and installed before (docs/modules/03_EVALUATION_RELEASE.md §4).
@@ -495,9 +413,9 @@ class Releases:
         current = self.active()["release_ref"]
         if current:
             self.revoke(current, reason)
-        target = self.last_good(current) or self.defaults()
+        target = self.last_good(current)
         if target is None:
-            raise NotAuthorized("no authorised ancestor and no defaults release to fall back to")
+            raise NotAuthorized("no authorised ancestor that is not revoked to fall back to")
         op = operation_id or f"rollback-{now()}"
         with locked(self.active_path):
             state = self.active()

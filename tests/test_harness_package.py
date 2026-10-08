@@ -171,7 +171,6 @@ def test_a_skill_name_with_a_trailing_newline_is_refused():
 
 
 def test_enabled_is_a_boolean_and_a_disabled_tool_is_not_offered(tmp_path):
-    from ouroloop.chat import ToolSpec
     with pytest.raises(hp.PackageError, match="enabled is true or false"):
         hp.check_shape(tool_files(enabled="false"), CODE)
     manifest = json.loads(code_files()["manifest.json"])
@@ -187,10 +186,9 @@ def test_enabled_is_a_boolean_and_a_disabled_tool_is_not_offered(tmp_path):
     objects = ct.Objects(tmp_path)
     ref = hp.build_package(objects, {**files, "manifest.json": json.dumps(manifest)}, CODE)
 
-    class Surface:
-        def specs(self):
-            return [ToolSpec("api_search", "search", {"type": "object"})]
-    offered = set(hp.PackageTools(Surface(), hp.load_package(objects, ref)).tools)
+    from ouroloop.agent.worker import component_view
+    # what the runner shell's view hands the default agent to offer (runner.attempt_view)
+    offered = {t["name"] for t in component_view(hp.load_package(objects, ref).manifest)["tools"]}
     assert offered == {"lookup_contact"}
 
 
@@ -262,33 +260,35 @@ def test_the_package_text_reaches_the_prompt_and_is_recorded(tmp_path):
 
 
 def test_read_skill_is_a_host_read_and_is_recorded(tmp_path):
+    """ctx.skills on the host (agent.gateway.SkillReader): a read answers from the package's own text, never from the
+    business world, and every read is on the record with whether it was found."""
+    from ouroloop.agent.gateway import SkillReader
     releases, rel, objects, package = v06_workspace(tmp_path, text_files(skill=NOTE))
+    bound = P.bind_release(rel, profile="task", services=P.Services(objects))
+    reads, records = [], []
+    skills = SkillReader(bound.package, record=lambda kind, data: records.append((kind, data)),
+                         on_read=lambda n, found: reads.append((n, found)))
+    assert skills.index == [{"name": SKILL, "description": "check before finishing"}]
+    assert skills.read(SKILL) == NOTE and skills.read("other") is None
+    assert reads == [(SKILL, True), ("other", False)]
+    assert [(kind, data.get("name"), data.get("found", not data.get("is_error"))) for kind, data in records] == [
+        ("skill_read", SKILL, True), ("tool", "read_skill", True), ("skill_read", "other", False),
+        ("tool", "read_skill", False)]
+
+
+def test_a_package_that_runs_code_is_refused_without_a_worker(tmp_path):
+    from ouroloop.agent.runner import PackageAgent
+    from ouroloop.benchmark import Budget
+    limits = hp.Limits(components=hp.KINDS)
+    releases, rel, objects, package = v06_workspace(tmp_path, code_files(), limits)
     bound = P.bind_release(rel, profile="task", services=P.Services(objects))
 
     class Business:
         def specs(self):
             return []
 
-        def run(self, name, args):
-            raise AssertionError("read_skill must not reach the business world")
-
-        def mutates(self, name, args):
-            return True
-
-    reads = []
-    surface = hp.mount(Business(), bound, on_read=lambda n, found: reads.append((n, found)))
-    assert [s.name for s in surface.specs()] == ["read_skill"]
-    assert surface.run("read_skill", {"name": SKILL}).output == NOTE
-    assert surface.run("read_skill", {"name": "other"}).is_error
-    assert reads == [(SKILL, True), ("other", False)] and not surface.mutates("read_skill", {})
-
-
-def test_a_package_that_runs_code_is_refused_without_a_worker(tmp_path):
-    limits = hp.Limits(components=hp.KINDS)
-    releases, rel, objects, package = v06_workspace(tmp_path, code_files(), limits)
-    bound = P.bind_release(rel, profile="task", services=P.Services(objects))
-    with pytest.raises(hp.CapabilityError, match="runs code"):
-        hp.mount(object(), bound)
+    with pytest.raises(hp.CapabilityError, match="runs code and no qualified isolated worker"):
+        PackageAgent(None, None, Business(), bound=bound, budget=Budget(max_steps=1))
 
 
 def test_the_scripted_worker_follows_a_skill_it_reads(tmp_path):

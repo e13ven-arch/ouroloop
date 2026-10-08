@@ -6,7 +6,6 @@ import pytest
 from ouroloop import policies as P
 from ouroloop.benchmark import RunManifest, TaskResult
 from ouroloop.evolve import contracts as ct
-from ouroloop.research.agent import Candidate
 
 
 def prompt_policy(objects, text):
@@ -71,13 +70,11 @@ def test_ct02_old_records_keep_their_hash_and_cannot_pose_as_v2():
     assert v2.v2() and v2.hash() != run.hash()
 
 
-def test_ct02_old_task_results_and_candidates_still_read():
+def test_ct02_old_task_results_still_read():
     old = {"task_id": "t1", "family_id": "f1", "split": "dev", "attempt": 0, "candidate": "base", "run": "r",
            "manifest": "m", "success": False, "partial_credit": 0.5, "termination": "finished"}
     res = TaskResult.from_json(old)
     assert res.attempt_id == "" and res.pair_key == "" and res.observation_refs == []
-    cand = Candidate("spec", "stop", {"instructions": "x"}, "hypothesis")
-    assert cand.kind == "spec" and not hasattr(cand, "owner")
 
 
 # ---------------------------------------------------------------------------- CT-03

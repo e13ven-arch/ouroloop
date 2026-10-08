@@ -1,13 +1,12 @@
-"""The agent host. Its names are imported on first use: an attempt under the runner shell (agent.runner) loads the
-gateway, the broker and the worker, never the v1 loop (agent.loop) or the decision points it asks."""
+"""The agent host: the runner shell (runner), the gateway and the broker (gateway), the isolated worker (worker), the
+default agent and the capability package. Its names are imported on first use."""
 from __future__ import annotations
 
 from importlib import import_module
 
-_LAZY = {"Agent": ".loop", "AgentConfig": ".loop", "AgentResult": ".runner", "ToolResult": ".tools", "Tools": ".tools",
-         "ToolSurface": ".tools"}
+_LAZY = {"AgentResult": ".runner", "ToolResult": ".tools"}
 
-__all__ = ["Agent", "AgentConfig", "AgentResult", "ToolResult", "Tools", "ToolSurface"]
+__all__ = ["AgentResult", "ToolResult"]
 
 
 def __getattr__(name: str):

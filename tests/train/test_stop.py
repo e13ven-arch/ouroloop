@@ -91,6 +91,23 @@ def Runtime_with_yes_after_a_turn(root):
     return rt
 
 
+def always_yes(_ctx) -> str:
+    return "yes"
+
+
+def test_without_a_policy_the_phases_answerer_decides_and_no_model_is_asked(tmp_path):
+    """A rule answerer's "yes" after a turn ends the session; the row is a shadow row with the answerer named, no
+    backend and no probabilities (formerly test_act, on the v1 runtime)."""
+    from ouroloop.train.runtime import Runtime
+    rt = Runtime(tmp_path)
+    rt.register(business_stop_point(phases={"per_turn": {"default": "rule:test_stop:always_yes", "label": "no"},
+                                            "on_finish": "yes"}))
+    assert StopGuard(rt, "s")("per_turn", ctx("per_turn"), 1).stop
+    (row,) = rows(rt)
+    assert (row["route"], row["action"], row["answerer"], row["backend"], row["probs"]) == (
+        "shadow", "yes", "rule:test_stop:always_yes", "none", None)
+
+
 def test_a_passing_checker_is_never_overruled_by_a_policy_that_says_no(tmp_path, objects_and_release):
     objects, releases, ref = objects_and_release
     backend = Model(answer={"no": 0.99, "yes": 0.01})

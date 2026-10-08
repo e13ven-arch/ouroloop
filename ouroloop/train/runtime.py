@@ -1,7 +1,8 @@
-"""The decision runtime's general half (docs/modules/01_POLICY_RUNTIME.md §4): decision points, their default answerers
-and the ledger. A decision is recorded without asking a model (`record`, shadow collection), or asked of a bound policy
+"""The decision runtime (docs/modules/01_POLICY_RUNTIME.md §4): decision points, their default answerers and the
+ledger. A decision is recorded without asking a model (`record`, shadow collection), or asked of a bound policy
 (`propose`, policies.StopDecider), and its outcome recorded (`outcome`). Nothing here reads a champion pointer or a
-calibration: the v1 runtime (ouroloop/runtime.py) adds those, and goes with the v1 loop in P1 step 5."""
+calibration: those, and the v1 runtime's `ask` through them, went with the champion pointer in P1 step 5 (tag
+archive-2026-10-08); what may act is a bound policy's, under its release's authorisation."""
 from __future__ import annotations
 
 import random
@@ -56,14 +57,8 @@ class Runtime:
                phase: str | None = None, veto: str | Callable[[str | None], str | None] | None = None) -> Decision:
         """Log a decision point's context without asking the decision model (shadow collection): the action is the
         phase's default, as its answerer gives it, or a rule's `veto` (route "rule"). The model's
-        probabilities can be computed later by offline replay; only the context and the outcome are needed."""
-        return self._decide(point, ctx, session, step, phase, veto, asking=False)
-
-    def _decide(self, point, ctx, session, step, phase, veto, asking: bool) -> Decision:
-        """A decision recorded without asking a model (`record`): the phase's default, from its answerer, or the
-        rule's veto. Asking a model is a bound policy's (`propose`), or the v1 runtime's (ouroloop/runtime.py)."""
-        if asking:
-            raise NotImplementedError("this runtime asks no model: bind a policy and use propose")
+        probabilities can be computed later by offline replay; only the context and the outcome are needed. Asking a
+        model is a bound policy's (`propose`)."""
         p = self.points[point] if isinstance(point, str) else point
         phase, label, answerer = p.default_for(phase)
         rule = answerer if answerer and answerer.startswith("rule:") else None
