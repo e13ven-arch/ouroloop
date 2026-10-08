@@ -5,11 +5,11 @@ from pathlib import Path
 import pytest
 
 from conftest import accept
+from decision_fixtures import MockProvider, research_round, round_llm, seed_ledger
 from ouroloop import config
 from ouroloop.backends import KeywordBackend
 from ouroloop.chat import ScriptedChat  # noqa: F401 - keeps the chat module importable in isolation
 from ouroloop.decision import Choice, Noul
-from ouroloop.demo import demo_llm, run, seed_ledger
 from ouroloop.evolve import experience
 from ouroloop.evolve.build import build
 from ouroloop.evolve.calibrate import calibrate_point, fit_temperature
@@ -19,7 +19,6 @@ from ouroloop.evolve.pipeline import evolve_model, recipe_evaluator
 from ouroloop.evolve.registry import Registry
 from ouroloop.evolve.replay import labelled, split, splits
 from ouroloop.points import retry_point
-from ouroloop.providers import MockProvider
 from ouroloop.release import Revoked
 from ouroloop.research import BasicResearcher, Candidate, run_round
 from ouroloop.research.loop import run_rounds
@@ -186,8 +185,8 @@ class RecipeAgent:
         return [Candidate("recipe", "retry", {"min_weight": 1.0}, "train on the point's own outcomes")]
 
 
-def test_demo_rounds_promote_a_spec_then_a_model(tmp_path):
-    root, res = run(tmp_path, seed=0)
+def test_scripted_rounds_promote_a_spec_then_a_model(tmp_path):
+    root, res = research_round(tmp_path, seed=0)
     assert [(e["kind"], e["gate"]) for e in res.evaluated] == [("spec", "accepted")]     # one verdict per round
     rt = Runtime(tmp_path, {"mock": KeywordBackend()}, "mock", seed=1)
     rt.register(retry_point())
@@ -226,7 +225,7 @@ def test_rounds_stop_when_nothing_is_promoted(tmp_path, frozen):
                                                                    "change": {"view_params": {"unused": 1}}}]}))
     results = run_rounds(rt, BasicResearcher(), stale, KeywordBackend(), rounds=5, patience=2)
     assert len(results) == 2 and all(not r.promoted for r in results)
-    assert demo_llm().model == "scripted-demo"
+    assert round_llm().model == "scripted-round"
 
 
 def test_focus_keeps_every_default_error_and_a_sample_of_the_rest(tmp_path):

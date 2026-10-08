@@ -8,13 +8,13 @@ import httpx
 import pytest
 
 from conftest import GATE, accept
+from decision_fixtures import MockProvider, seed_ledger
 from ouroloop import config, policy
 from ouroloop.adapters.claude_code import ClaudeCodeAdapter
 from ouroloop.agent import Agent, AgentConfig, Tools
 from ouroloop.backends import KeywordBackend, LlmBackend
 from ouroloop.backends.http import HttpBackend
 from ouroloop.chat import ChatTurn, ScriptedChat, ToolCall
-from ouroloop.demo import seed_ledger
 from ouroloop.evolve.build import build
 from ouroloop.evolve.calibrate import calibrate_point
 from ouroloop.evolve.pipeline import ModelCandidate, promote_model
@@ -24,7 +24,6 @@ from ouroloop.evolve.train import TrainResult
 from ouroloop.ledger import Ledger
 from ouroloop.points import builtin_points, retry_point, stop_point, tool_gate_point
 from ouroloop.policy import Policy, fit_threshold
-from ouroloop.providers import MockProvider
 from ouroloop.research import BasicResearcher, run_round
 from ouroloop.runtime import Runtime
 from ouroloop.stop import StopGuard

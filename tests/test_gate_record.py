@@ -11,6 +11,7 @@ import httpx
 import pytest
 
 from conftest import SMALL_GATE, accept
+from decision_fixtures import MockProvider
 from ouroloop import config
 from ouroloop.agent.loop import SYSTEM
 from ouroloop.agent.prompt import PromptStore
@@ -28,7 +29,6 @@ from ouroloop.evolve.train import TrainError, TrainResult
 from ouroloop.ledger import CalibrationStore, PromotionConflict, SpecStore
 from ouroloop.points import retry_point, stop_point
 from ouroloop.policy import Policy
-from ouroloop.providers import MockProvider
 from ouroloop.release import code_version, revoke
 from ouroloop.research import Candidate, run_round
 from ouroloop.runtime import Runtime

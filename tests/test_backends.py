@@ -3,8 +3,8 @@ import json
 import httpx
 import pytest
 
+from decision_fixtures import MockProvider
 from ouroloop.backends import JevBackend, JevError, KeywordBackend, LlmBackend, TdeBackend
-from ouroloop.providers import MockProvider
 from ouroloop.types import Question, Request
 
 NOUL = Question("noul", "urgent?")

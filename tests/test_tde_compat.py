@@ -14,10 +14,10 @@ from pathlib import Path
 
 import pytest
 
+from decision_fixtures import seed_ledger
 from ouroloop import config
 from ouroloop.backends import KeywordBackend, TdeBackend
 from ouroloop.decision import Choice, Score
-from ouroloop.demo import seed_ledger
 from ouroloop.evolve.build import build
 from ouroloop.evolve import train
 from ouroloop.points import retry_point

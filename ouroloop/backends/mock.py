@@ -1,4 +1,4 @@
-"""A deterministic stand-in for a decision model, for tests and the offline demo.
+"""A deterministic stand-in for a decision model, for tests and offline runs.
 
 It scores each candidate by word overlap between the candidate's description and the state, so rewording a
 question or trimming a view really changes its answers. It knows nothing else.

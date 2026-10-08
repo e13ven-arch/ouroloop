@@ -1,26 +1,40 @@
-"""A self-contained run of one research round, with no network and no model by default.
+"""Fixtures of the v1 decision tests, formerly ouroloop/demo.py and providers.MockProvider (P1 step 3 removed both from
+the package): a scripted LLM, a synthetic `retry` ledger, and one research round over it through a frozen gate.
 
-It seeds a workspace with synthetic `retry` decisions and their outcomes and freezes a gate (standing in for the
-person who does), then: report -> the largest error group -> a scripted LLM proposes two spec changes -> offline
-replay -> the frozen gate, once per round -> experience record. The judge's view of the target and of each candidate
-is recorded, not acted on. With judge="jev" it is the real Jev API.
+The ledger has `retry` decisions with the outcomes of rerunning the command; the round goes report -> the largest
+error group -> the scripted LLM proposes two spec changes (and a recipe, when one may be proposed) -> offline replay
+-> the frozen gate, once per round -> experience record. No network and no model.
 """
 from __future__ import annotations
 
 import json
 import random
 import re
-import tempfile
 from pathlib import Path
+from typing import Callable
 
-from .backends import JevBackend, KeywordBackend
-from .evolve.gate import freeze_template, template_path
-from .evolve.pipeline import recipe_evaluator, research_context
-from .points import retry_point  # noqa: F401 - also exposed as ouroloop.demo:retry_point
-from .providers import MockProvider
-from .research import BasicResearcher, run_round
-from .runtime import Runtime
-from .trainers.signature import SignatureTrainer
+from ouroloop.backends import KeywordBackend
+from ouroloop.evolve.gate import freeze_template, template_path
+from ouroloop.evolve.pipeline import recipe_evaluator, research_context
+from ouroloop.points import retry_point
+from ouroloop.research import BasicResearcher, run_round
+from ouroloop.runtime import Runtime
+from ouroloop.trainers.signature import SignatureTrainer
+
+
+class MockProvider:
+    """Answers with a function of the prompt."""
+
+    name = "mock"
+
+    def __init__(self, fn: Callable[[str, str], str], model: str = "scripted", source: str = "frontier_llm"):
+        self.fn = fn
+        self.model = model
+        self.source = source
+
+    def complete(self, system: str, prompt: str) -> str:
+        return self.fn(system, prompt)
+
 
 TRANSIENT = [
     ("pip install -r requirements.txt", "ConnectionResetError: [Errno 54] Connection reset by peer"),
@@ -82,28 +96,26 @@ def _propose(system: str, prompt: str) -> str:
                          "better than keyword overlap."}] if "- recipe:" in prompt else [])})
 
 
-def demo_llm() -> MockProvider:
-    return MockProvider(_propose, model="scripted-demo")
+def round_llm() -> MockProvider:
+    return MockProvider(_propose, model="scripted-round")
 
 
-# A gate a single synthetic point can pass: the checks scaled to the demo's ledger, and half the training sessions
+# A gate a single synthetic point can pass: the checks scaled to the synthetic ledger, and half the training sessions
 # kept for calibration, so that a model can earn a threshold at the 5% risk (59 sessions it acts in, none harmed).
-DEMO_GATE = {"checks": {"min_train": 100, "max_mde": 0.2}, "min_cal_sessions": 10, "cal_frac": {"*": 0.5}}
+ROUND_GATE = {"checks": {"min_train": 100, "max_mde": 0.2}, "min_cal_sessions": 10, "cal_frac": {"*": 0.5}}
 
 
-def run(root: str | Path | None = None, judge: str = "mock", seed: int = 0, sessions: int = 400, train: bool = True):
+def research_round(root: str | Path, seed: int = 0, sessions: int = 400, train: bool = True):
     """One round, through one gate record: the first candidate to reach the gate's verdict ends it. With train=True
-    the LLM may also propose a training recipe, trained in-process by a small signature model (the stand-in for TDE
-    on a GPU host)."""
-    root = Path(root) if root else Path(tempfile.mkdtemp(prefix="ouroloop-demo-"))
+    the LLM may also propose a training recipe, trained in-process by a small signature model."""
+    root = Path(root)
     rt = Runtime(root, {"mock": KeywordBackend()}, default_backend="mock", seed=seed)
     rt.register(retry_point())
     seed_ledger(rt, sessions, seed=seed)
     if not template_path(root).exists():
-        freeze_template(root, DEMO_GATE)
-    judge_backend = JevBackend() if judge == "jev" else KeywordBackend()
+        freeze_template(root, ROUND_GATE)
     kw = {}
     if train:
         trainer = SignatureTrainer()
         kw = {"evaluators": {"recipe": recipe_evaluator(trainer)}, "context": research_context(trainer, None)}
-    return root, run_round(rt, BasicResearcher(budget=3), demo_llm(), judge_backend, seed=seed, **kw)
+    return root, run_round(rt, BasicResearcher(budget=3), round_llm(), KeywordBackend(), seed=seed, **kw)

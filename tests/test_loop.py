@@ -1,10 +1,10 @@
 import json
 import random
 
+from decision_fixtures import research_round, seed_ledger
 from ouroloop import config
 from ouroloop.backends import KeywordBackend
 from ouroloop.decision import Noul
-from ouroloop.demo import run, seed_ledger
 from ouroloop.evolve import experience
 from ouroloop.evolve.gate import decide
 from ouroloop.points import retry_point
@@ -75,8 +75,8 @@ def test_register_prefers_the_promoted_spec(tmp_path):
 
 
 # ---------------------------------------------------------------- one research round
-def test_demo_round_promotes_the_criteria_rewrite_only(tmp_path):
-    root, res = run(tmp_path, seed=0, train=False)
+def test_a_scripted_round_promotes_the_criteria_rewrite_only(tmp_path):
+    root, res = research_round(tmp_path, seed=0, train=False)
     assert [e["gate"] for e in res.evaluated] == ["accepted"]      # the round's one verdict ends it
     assert "criteria" in res.promoted[0]["change"]
     specs = json.loads((tmp_path / "harness" / "specs.json").read_text())
