@@ -405,38 +405,6 @@ def test_the_first_version_baseline_runs_train_and_dev_with_the_pinned_actor(fak
     assert base["summary"]["tasks"] == len(rsi.DEV) and base["train"]["tasks"] == len(rsi.TRAIN)
 
 
-class FrontierProbe:
-    """A frontier arm's own model: it counts its calls and answers like the fixture worker."""
-    name = "frontier-probe"
-    model = "frontier-x"
-    calls = 0
-
-    def chat(self, system, messages, specs):
-        FrontierProbe.calls += 1
-        return rsi.BusinessWorker().chat(system, messages, specs)
-
-
-def test_a_final_comparison_with_its_own_model_runs_that_model_not_the_pinned_actor(fake_upstream, tmp_path):
-    cfg, activity, w0 = v06_prepared(fake_upstream, tmp_path)
-    FrontierProbe.calls = 0
-    plan = bench.FinalizationPlan(
-        experiment_id="final-frontier", core_ref=activity.objects.load(w0, ct.SystemRelease).core_ref,
-        split_ref=activity.splits.hash(), claims=("C1", "C2"),
-        comparisons=({"claim": "C1", "subject": "base", "control": "base", "role": "base"},
-                     {"claim": "C2", "subject": "frontier_a", "control": "base", "role": "frontier_a",
-                      "llm": {"type": "test_harness_loop:FrontierProbe"}}),
-        release_refs={"base": w0, "frontier_a": w0}, task_ids=tuple(rsi.FINAL), repeats=1,
-        statistical_plan={"confidence": 0.95, "bootstrap_replicates": 100, "bootstrap_seed": 1})
-    sealed = bench.seal(plan, activity.root, activity.objects)
-    cfg["rsi"]["final_plan_ref"] = sealed["plan"]
-    bench.evaluate(cfg, ".", out=lambda _line: None, plan_ref=sealed["plan"])
-    assert FrontierProbe.calls > 0
-    runs = [json.loads(p.read_text()) for p in (activity.results.root / "runs").glob("*.json")]
-    frontier = [m for m in runs if m.get("candidate") == "frontier_a"]
-    assert frontier and all(m["model"]["provider"] == "frontier-probe" and not m.get("actor_identity_ref")
-                            for m in frontier)
-
-
 def test_the_report_shows_the_package_what_the_actor_read_and_what_the_drafts_cost(fake_upstream, tmp_path):
     """docs/modules/07_BENCH_REPORT.md §4: the package of each release, the skill reads the transcripts show, the
     draft checks, the note coverage, the gate's frozen thresholds; C3 is not_run in the first version."""

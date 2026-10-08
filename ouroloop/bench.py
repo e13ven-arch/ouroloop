@@ -7,9 +7,9 @@ sequence that writes them, and `adapters/automationbench.py` is the binding to t
     smoke       what upstream this is, the frozen task groups, the adapter contract checks, the input audit, and
                 a few real attempts on development tasks. It makes no claim about capability: it says the runner
                 measures what upstream measures, and shows what one attempt looks like end to end.
-    baseline    a reasonable base version and the declared frontier models, on development tasks, through this
-                same driver. Fewer than two vendors is published as an incomplete C2, never filled in with a
-                weaker model.
+    baseline    the starting version on development tasks (and, for the first version, on train), through this
+                same driver. No frontier model is run here: C2 cites published results (report.py), as decided
+                on 2026-09-28; the local frontier arm is at tag v0.4.0.
     improve     the worker loop with a fixed research policy: diagnose, propose, build, evaluate, install.
     research    two research policies compared by the task policies they produce, in isolated arms (M6).
     evaluate    one sealed finalization plan on the final tasks. It reports; it does not choose.
@@ -40,8 +40,8 @@ from .ledger import now, redact, write_json
 # (the method table's learn reading and refit round), train only, run by hand in the order the plan names.
 PHASES = ("smoke", "baseline", "improve", "research", "evaluate", "report", "cycle", "library", "learn")
 IMPLEMENTED = PHASES
-# Every phase is wired; what a phase needs is checked before it starts (a frozen plan, a model table, two
-# frontier configurations), and a missing piece is named rather than quietly skipped (BR-01).
+# Every phase is wired; what a phase needs is checked before it starts (a frozen plan, a model table), and a missing
+# piece is named rather than quietly skipped (BR-01).
 NOT_YET: dict[str, str] = {}
 BENCH_KEYS = {"domain", "upstream_path", "toolset", "seed", "ratios", "budget", "families", "smoke_tasks",
               "near_duplicate_threshold", "repeats", "concurrency",
@@ -607,7 +607,6 @@ class Improvement:
     pricing: object = None                      # execution.Pricing: what the agent's calls cost
     harness: dict | None = None                 # v0.6: the package/diagnosis limits K froze, or None (v2 loop)
     worker: object = None                       # the qualified isolated worker for package code, or None
-    actor_override: bool = False                # a frontier arm runs its own provider, as a separate comparison
     segment: str | None = None                  # the cycle's worker segment, whose collection quota is its own
     allocation: str | None = None               # the root allocation the arm's calls spend ("final"), if any
     template_ref: str = ""                      # the frozen evaluation template its experiments are held to
@@ -714,14 +713,13 @@ class Improvement:
         bound = _P.bind_release(release_ref, profile="evaluation" if permit else "task",
                                 services=self.services(), authorization=permit or "installed")
         # The release pins the actor it runs; the configured [llm] only bootstrapped it and cannot override it.
-        # A frontier arm is the one exception, and it is a different comparison (docs/modules/01_POLICY_RUNTIME.md).
         actor = self.provider
-        if bound.actor_identity is not None and not self.actor_override:
+        pinned = bound.actor_identity is not None
+        if pinned:
             if bound.actor is None:
                 raise _P.BindError(f"{_ct.short(release_ref)} pins an actor and no provider could be built for it")
             actor = bound.actor
         release = self.objects.load(release_ref, _ct.SystemRelease)
-        pinned = bound.actor_identity is not None and not self.actor_override
         # The first version's run fields (docs/modules/07_BENCH_REPORT.md §2): what kind of run this is, the host
         # contract it ran on, and — for the pinned actor — its recorded configuration rather than an empty one.
         # A v2 activity leaves all three unset, so its run identities do not move.
@@ -2484,7 +2482,7 @@ def final_plan_problem(activity: Activity, cfg: dict, plan: "FinalizationPlan", 
         return ""
     estimate = final_estimate(activity, task_ids=plan.task_ids, repeats=plan.repeats,
                               arms={c["subject"]: plan.release_refs.get(c["subject"]) or activity.release_ref
-                                    for c in plan.comparisons if not c.get("llm")},
+                                    for c in plan.comparisons},
                               pricing=pricing, concurrency=activity.bench.concurrency,
                               fallback=estimate_settings(cfg))
     for line in estimate_lines(estimate, float(share["usd"])):
@@ -2636,9 +2634,6 @@ def require(problems: list, *, phase: str) -> None:
 
 
 # ---------------------------------------------------------------------------- baseline
-FRONTIER_KEYS = {"llm", "effort", "fallback", "source", "date", "note", "pricing"}
-
-
 def _harness_of(activity: Activity) -> dict | None:
     rel = _ct.SystemRelease.from_json(activity.objects.get(activity.release_ref))
     return (activity.objects.load(rel.core_ref, _ct.CoreManifest).capabilities or {}).get("harness")
@@ -2689,110 +2684,86 @@ def _pinned_actor(activity: Activity):
     return None
 
 
-def frontier_configs(cfg: dict) -> dict:
-    """`[frontier.a]` / `[frontier.b]`: the leading models this experiment compares against, with where the
-    choice came from. Two vendors is what a complete C2 needs; one is published as an incomplete C2 rather than
-    filled in with a weaker model (docs/modules/07_BENCH_REPORT.md §1)."""
-    out = {}
-    for name, table in (cfg.get("frontier") or {}).items():
-        unknown = sorted(set(table) - FRONTIER_KEYS)
-        if unknown:
-            raise ValueError(f"[frontier.{name}] does not take {unknown}; it takes {sorted(FRONTIER_KEYS)}")
-        if "llm" not in table:
-            raise ValueError(f"[frontier.{name}] needs an [frontier.{name}.llm] table")
-        out[name] = dict(table)
-    return out
-
-
 def baseline(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = print, limit: int | None = None,
              tasks=None) -> dict:
-    """A reasonable base run and the frontier models, on development tasks, through the same driver.
+    """The starting version's run on development tasks (and, for the first version, on train), through the same
+    driver every later reading uses.
 
-    Nothing is weakened on purpose: each model gets the full task, the ordinary tool discovery and its own
-    declared fallback, and a model that cannot be called is recorded as absent rather than replaced.
+    Nothing is weakened on purpose: the model gets the full task and the ordinary tool discovery, and a model that
+    cannot be called is recorded as absent rather than replaced. No frontier model runs here: C2 cites published
+    results (docs/modules/07_BENCH_REPORT.md §4; the local frontier arm is at tag v0.4.0), and a [frontier] table is
+    refused at startup (startup_checks).
     """
     activity = open_activity(cfg, base, out=out)
     require(startup_checks(activity, cfg, phase="baseline"), phase="baseline")
     dev = list(tasks or activity.splits.ids("dev"))[:limit] if limit else list(tasks or activity.splits.ids("dev"))
-    frontier = frontier_configs(cfg)
-    out(f"baseline   {len(dev)} dev tasks; frontier configurations: {sorted(frontier) or 'none declared'}")
-    if len(frontier) < 2:
-        out("NOTE       fewer than two vendors are declared: C2 will be reported as incomplete, and no weaker "
-            "model is substituted")
-    report = {"tasks": dev, "arms": {}, "c2_complete": len(frontier) >= 2, "absent": [],
-              "splits": activity.splits.hash(), "frontier": {k: {kk: vv for kk, vv in v.items() if kk != "llm"}
-                                                             for k, v in frontier.items()}}
-    arms = [("base", "base", cfg["llm"])] + [(name, f"frontier_{name}", table["llm"])
-                                             for name, table in sorted(frontier.items())]
+    out(f"baseline   {len(dev)} dev tasks")
+    report = {"tasks": dev, "arms": {}, "absent": [], "splits": activity.splits.hash()}
+    candidate = role = "base"
+    llm = cfg["llm"]
     pinned = _pinned_actor(activity)
     # A first-version baseline runs under the frozen task plan's conditions (repeats, per-attempt limits), so its
     # train run has the same identity as the first round's measurement and is not paid for twice.
     template_ref = activity.rsi.task_plan_ref if _harness_of(activity) and activity.rsi.task_plan_ref and \
         activity.objects.has(activity.rsi.task_plan_ref) else None
-    for candidate, role, llm in arms:
-        own = candidate in frontier
-        provider = None
-        if own or pinned is None:
-            try:
-                provider = config_mod.build_provider(llm)
-            except Exception as e:  # noqa: BLE001 - an unavailable model is an absence, never a zero
-                report["absent"].append({"arm": candidate, "reason": f"{type(e).__name__}: {e}"[:200]})
-                out(f"ABSENT     {candidate}: {type(e).__name__}: {e}"[:160])
-                continue
-        arm_pricing = pricing_of({"pricing": frontier[candidate].get("pricing")}) if candidate in frontier \
-            else pricing_of(cfg)
-        work = improvement(activity, template_ref=template_ref, provider=provider, pricing=arm_pricing,
-                           budget=activity_budget(activity, cfg, f"baseline:{candidate}"))
-        # A frontier arm runs its own model on purpose: a different comparison, never the pinned actor swapped.
-        work.actor_override = own
-        order = [(t, i) for t in dev for i in range(work.repeats)]
-        # Attempts already on record for this run are kept, not paid again: a restarted baseline (a cycle that
-        # stopped half way through it) runs only what is missing.
-        def run(arm, pairs, retry=0, supersedes=None, _work=work, _candidate=candidate, _role=role):
-            return _work.run_arm(arm, activity.release_ref, pairs, plan_ref="", candidate=_candidate, role=_role,
-                                 retry_index=retry, resume=True, supersedes=supersedes)
-        # Stage 0/1 review (M5 §3): attempts lost to infrastructure are refilled once, also on a restart that finds
-        # them recorded — the 16-way trial's 429 casualties would otherwise be holes in W0's pooled dev reading
-        rows = latest_attempts(_refill_attempts(run(candidate, order), run, candidate, work.retries()))
-        summary = summarise(rows)
-        readings = [summary]
-        if not own and activity.bench.control_readings > 1:
-            # v0.4 (V0_4_PLAN §1.6, M3 §2.1(a) v0.4): W0's further dev readings, unconditionally, before any gate —
-            # each its own run of the same execution identity: only the candidate label differs (`base:reading-2`,
-            # in the run's hash, so a reading is a run of its own; a label the pooled control does not compare), so
-            # the pool counts them as readings, a restart resumes each, and the first keeps its identity
-            n = activity.bench.control_readings
-            for i in range(2, n + 1):
-                name = f"{candidate}:reading-{i}"
+    provider = None
+    if pinned is None:
+        try:
+            provider = config_mod.build_provider(llm)
+        except Exception as e:  # noqa: BLE001 - an unavailable model is an absence, never a zero
+            report["absent"].append({"arm": candidate, "reason": f"{type(e).__name__}: {e}"[:200]})
+            out(f"ABSENT     {candidate}: {type(e).__name__}: {e}"[:160])
+            return report
+    work = improvement(activity, template_ref=template_ref, provider=provider, pricing=pricing_of(cfg),
+                       budget=activity_budget(activity, cfg, f"baseline:{candidate}"))
+    order = [(t, i) for t in dev for i in range(work.repeats)]
 
-                def again(arm, pairs, retry=0, supersedes=None, _work=work, _name=name, _role=role):
-                    return _work.run_arm(arm, activity.release_ref, pairs, plan_ref="", candidate=_name, role=_role,
-                                         retry_index=retry, resume=True, supersedes=supersedes,
-                                         notes=f"control reading of the baseline ([bench] control_readings = {n})")
-                readings.append(summarise(latest_attempts(_refill_attempts(again(candidate, order), again, candidate,
-                                                                           work.retries()))))
-                out(f"arm        {name} ({role}) dev: {readings[-1]['passed']}/{readings[-1]['tasks']} passed")
-        # The label is what actually ran: the pinned actor, unless the arm names its own model.
-        label = model_identity(provider, llm) if (own or pinned is None) else \
-            {"provider": pinned.provider, "model": pinned.base_model, "actor_identity_ref": pinned.ref()}
-        report["arms"][candidate] = {"role": role, "summary": summary, "model": label,
-                                     "terminations": summary["terminations"],
-                                     "failures": {r.task_id: r.failure_class for r in rows if not r.success},
-                                     **({"control_readings": [{k: s[k] for k in ("passed", "tasks", "pass_rate")}
-                                                              for s in readings]} if len(readings) > 1 else {})}
-        if work.harness and not own:
-            # The first version's "before" is train and dev (docs/ROADMAP.md §2 stage A): the train split runs
-            # as its own run, never merged into the dev figures. It is the measurement the first worker round reads
-            # (Improvement.train_measurement), so W0's train split is paid for once per activity.
-            train = list(work.train_tasks or activity.splits.ids("train"))
-            train_rows = work.train_measurement(activity.release_ref, train[:limit] if limit else train,
-                                                first=True, planned=train)
-            report["arms"][candidate]["train"] = summarise(train_rows)
-            out(f"arm        {candidate} ({role}) train: {report['arms'][candidate]['train']['passed']}/"
-                f"{report['arms'][candidate]['train']['tasks']} passed")
-        out(f"arm        {candidate} ({role}): {summary['passed']}/{summary['tasks']} passed, "
-            f"partial={summary['partial_credit']}, cost="
-            f"{'unmeasured' if summary['cost_usd'] is None else summary['cost_usd']}")
+    # Attempts already on record for this run are kept, not paid again: a restarted baseline (a cycle that
+    # stopped half way through it) runs only what is missing.
+    def run(arm, pairs, retry=0, supersedes=None):
+        return work.run_arm(arm, activity.release_ref, pairs, plan_ref="", candidate=candidate, role=role,
+                            retry_index=retry, resume=True, supersedes=supersedes)
+    # Stage 0/1 review (M5 §3): attempts lost to infrastructure are refilled once, also on a restart that finds
+    # them recorded — the 16-way trial's 429 casualties would otherwise be holes in W0's pooled dev reading
+    rows = latest_attempts(_refill_attempts(run(candidate, order), run, candidate, work.retries()))
+    summary = summarise(rows)
+    readings = [summary]
+    if activity.bench.control_readings > 1:
+        # v0.4 (V0_4_PLAN §1.6, M3 §2.1(a) v0.4): W0's further dev readings, unconditionally, before any gate —
+        # each its own run of the same execution identity: only the candidate label differs (`base:reading-2`,
+        # in the run's hash, so a reading is a run of its own; a label the pooled control does not compare), so
+        # the pool counts them as readings, a restart resumes each, and the first keeps its identity
+        n = activity.bench.control_readings
+        for i in range(2, n + 1):
+            name = f"{candidate}:reading-{i}"
+
+            def again(arm, pairs, retry=0, supersedes=None, _name=name):
+                return work.run_arm(arm, activity.release_ref, pairs, plan_ref="", candidate=_name, role=role,
+                                    retry_index=retry, resume=True, supersedes=supersedes,
+                                    notes=f"control reading of the baseline ([bench] control_readings = {n})")
+            readings.append(summarise(latest_attempts(_refill_attempts(again(candidate, order), again, candidate,
+                                                                       work.retries()))))
+            out(f"arm        {name} ({role}) dev: {readings[-1]['passed']}/{readings[-1]['tasks']} passed")
+    # The label is what actually ran: the pinned actor, or [llm] for a release that pins none.
+    label = model_identity(provider, llm) if pinned is None else \
+        {"provider": pinned.provider, "model": pinned.base_model, "actor_identity_ref": pinned.ref()}
+    arm = report["arms"][candidate] = {
+        "role": role, "summary": summary, "model": label, "terminations": summary["terminations"],
+        "failures": {r.task_id: r.failure_class for r in rows if not r.success},
+        **({"control_readings": [{k: s[k] for k in ("passed", "tasks", "pass_rate")} for s in readings]}
+           if len(readings) > 1 else {})}
+    if work.harness:
+        # The first version's "before" is train and dev (docs/ROADMAP.md §2 stage A): the train split runs
+        # as its own run, never merged into the dev figures. It is the measurement the first worker round reads
+        # (Improvement.train_measurement), so W0's train split is paid for once per activity.
+        train = list(work.train_tasks or activity.splits.ids("train"))
+        train_rows = work.train_measurement(activity.release_ref, train[:limit] if limit else train,
+                                            first=True, planned=train)
+        arm["train"] = summarise(train_rows)
+        out(f"arm        {candidate} ({role}) train: {arm['train']['passed']}/{arm['train']['tasks']} passed")
+    out(f"arm        {candidate} ({role}): {summary['passed']}/{summary['tasks']} passed, "
+        f"partial={summary['partial_credit']}, cost="
+        f"{'unmeasured' if summary['cost_usd'] is None else summary['cost_usd']}")
     return report
 
 
@@ -4182,7 +4153,7 @@ class FinalizationPlan(_ct.Record):
     core_ref: str = ""
     split_ref: str = ""
     claims: tuple[str, ...] = ("C1", "C2")
-    comparisons: tuple = ()                   # {"claim", "subject", "control", "release_ref"?, "llm"?}
+    comparisons: tuple = ()                   # {"claim", "subject", "control", "role"?}
     release_refs: dict = _field(default_factory=dict)
     manifests: tuple[str, ...] = ()
     task_ids: tuple[str, ...] = ()
@@ -4201,6 +4172,12 @@ class FinalizationPlan(_ct.Record):
             raise _ct.ContractError("a finalization plan names the final tasks before it is sealed")
         if "C1" in self.claims and not any(c.get("claim") == "C1" for c in self.comparisons):
             raise _ct.ContractError("C1 needs an evolved/base comparison in `comparisons`")
+        own = sorted({k for c in self.comparisons for k in ("llm", "pricing") if k in c})
+        if own:
+            # every arm runs the actor its release pins; a comparison with a model of its own (the local frontier
+            # arm, docs/modules/07_BENCH_REPORT.md §1) is at tag v0.4.0, and C2 cites published results
+            raise _ct.ContractError(f"a comparison names its own {own}: every arm runs the actor its release pins "
+                                    f"(the frontier arm is at tag v0.4.0)")
 
 
 def seal(plan: FinalizationPlan, root, objects: _ct.Objects) -> dict:
@@ -4266,7 +4243,7 @@ def evaluate(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = 
     # first attempt — a final whose lanes run out of reservations half way is not cheaper, it is void (final-1).
     estimate = final_estimate(activity, task_ids=plan.task_ids, repeats=plan.repeats,
                               arms={c["subject"]: plan.release_refs.get(c["subject"]) or activity.release_ref
-                                    for c in plan.comparisons if not c.get("llm")},
+                                    for c in plan.comparisons},
                               plan_ref=ref, pricing=pricing_of(cfg), concurrency=activity.bench.concurrency,
                               fallback=estimate_settings(cfg))
     left = budget.remaining(allocation=final_share).get("effective_remaining", {}).get("usd")
@@ -4283,9 +4260,9 @@ def evaluate(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = 
     # What is already on record, from the results themselves rather than the state file: a run that died inside an
     # arm recorded its attempts one by one, before the state file heard of any of them.
     recorded_before = {r.attempt_id for r in activity.results.all() if r.attempt_id}
+    llm = cfg.get("llm")
     for comparison in plan.comparisons:
         arm = comparison["subject"]
-        llm = comparison.get("llm") or cfg.get("llm")
         if llm is None:
             raise ValueError(f"{arm}: no model table for this arm")
         try:
@@ -4295,13 +4272,10 @@ def evaluate(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = 
             rows[arm] = {"absent": f"{type(e).__name__}: {e}"[:200]}
             continue
         release_ref = plan.release_refs.get(arm) or activity.release_ref
-        arm_pricing = pricing_of({"pricing": comparison["pricing"]}) if comparison.get("pricing") \
-            else pricing_of(cfg)
+        # every arm runs the actor its release pins (run_identity); [llm] only builds the provider a release that
+        # pins none would run
         work = improvement(activity, provider=provider, scope_id=f"final:{plan.experiment_id}", installs=False,
-                           pricing=arm_pricing, budget=budget)
-        # A comparison that names its own model (a frontier arm) runs that model, a separate comparison; every
-        # other arm runs the actor its release pins.
-        work.actor_override = bool(comparison.get("llm"))
+                           pricing=pricing_of(cfg), budget=budget)
         work.allocation = final_share
         work.dev_tasks = tuple(plan.task_ids)
         order = [(t, i) for t in plan.task_ids for i in range(plan.repeats)]
@@ -5012,6 +4986,10 @@ def startup_checks(activity: Activity, cfg: dict, *, phase: str, needs_model: bo
     problems += domain_problems(activity)
     if needs_model and "llm" not in cfg:
         problems.append(f"the {phase} phase needs an [llm] table: it runs real attempts")
+    if "frontier" in cfg:
+        # named rather than ignored: a config written for the local frontier arm would otherwise run without it
+        problems.append("[frontier] is not read any more: no frontier model runs locally, C2 cites published results "
+                        "(bench/<domain>/external_references.json); the frontier arm is at tag v0.4.0")
     plan = _frozen_plan(activity, rsi_cfg.task_plan_ref)
     problems += limit_problems(_attempt_budget(activity, plan), _five_limits(activity, plan))
     if not isinstance(activity.bench.concurrency, int) or isinstance(activity.bench.concurrency, bool) \
@@ -5275,13 +5253,13 @@ def _final_estimate_at_freeze(activity: Activity, table: dict | None, cfg: dict)
         repeats = int(table.get("repeats", 1))
         refs = dict(table.get("release_refs") or {})
         arms = {c["subject"]: refs.get(c["subject"]) or activity.release_ref
-                for c in table.get("comparisons") or () if not c.get("llm")}
+                for c in table.get("comparisons") or ()}
         plan_ref = None
     elif activity.rsi.final_plan_ref and activity.objects.has(activity.rsi.final_plan_ref):
         plan = FinalizationPlan.from_json(activity.objects.get(activity.rsi.final_plan_ref))
         task_ids, repeats, plan_ref = plan.task_ids, plan.repeats, activity.rsi.final_plan_ref
         arms = {c["subject"]: plan.release_refs.get(c["subject"]) or activity.release_ref
-                for c in plan.comparisons if not c.get("llm")}
+                for c in plan.comparisons}
     else:
         return final_estimate(activity, task_ids=(), repeats=0, arms={}, pricing=pricing_of(cfg),
                               concurrency=activity.bench.concurrency) | {"expected": None, "suggested_share": None}

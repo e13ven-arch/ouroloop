@@ -184,9 +184,8 @@ def test_it07_a_report_is_recomputed_from_the_records_and_never_picks_a_winner(f
     assert json.dumps(first, sort_keys=True, default=str) == json.dumps(again, sort_keys=True, default=str)
     text = render_markdown(first)
     assert "ouroloop report" in text and "## Claims" in text
-    # C2 has no frontier run here, and C4 no campaign: both say so instead of being omitted
+    # C2 cites no published result here, and C4 has no campaign: both say so instead of being omitted
     assert first["claims"]["C2"]["state"] == "not_run" and first["claims"]["C4"]["state"] == "not_run"
-    assert any("frontier" in line for line in first["identity"]["missing"])
     # the improvement evidence separates proposed, accepted and installed
     evidence = first["improvement_evidence"]
     assert evidence["experiments"] and evidence["receipts"]

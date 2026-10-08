@@ -1,5 +1,5 @@
-"""M7 acceptance (docs/modules/07_BENCH_REPORT.md §5): the frontier configuration, the sealed final plan, and a
-report that is a projection rather than a choice."""
+"""M7 acceptance (docs/modules/07_BENCH_REPORT.md §5): no local frontier arm, the sealed final plan, and a report
+that is a projection rather than a choice."""
 import json
 
 import pytest
@@ -31,36 +31,34 @@ def record(results: Results, *, candidate, role, split="dev", tasks=None, cost=N
 
 
 # ---------------------------------------------------------------------------- BR-02 / BR-03
-def test_br03_a_frontier_table_without_a_model_or_with_extra_keys_is_refused():
-    with pytest.raises(ValueError, match="needs an"):
-        bench.frontier_configs({"frontier": {"a": {"effort": "max"}}})
-    with pytest.raises(ValueError, match="does not take"):
-        bench.frontier_configs({"frontier": {"a": {"llm": {"type": "mock"}, "temperature": 1}}})
-    parsed = bench.frontier_configs({"frontier": {"a": {"llm": {"type": "mock"}, "source": "official page",
-                                                       "date": "2026-09-27", "fallback": "declared"}}})
-    assert parsed["a"]["source"] == "official page"
-
-
-def test_br03_one_vendor_is_an_incomplete_c2_and_no_weaker_model_is_substituted(fake_upstream, tmp_path):
+def test_br03_no_frontier_model_runs_locally_a_frontier_table_or_a_final_arm_with_its_own_model_is_refused(
+        fake_upstream, tmp_path):
+    """C2 cites published results (2026-09-28): a [frontier] table is named at startup rather than ignored, and a
+    final comparison that names a model or prices of its own is refused when the plan is built, so every arm runs the
+    actor its release pins."""
     cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
     cfg["frontier"] = {"a": {"llm": {"type": "rsi:BusinessWorker"}, "source": "fixture", "date": "2026-09-27"}}
-    lines = []
-    report = bench.baseline(cfg, ".", out=lines.append, tasks=["rsi.dev_update_stage"])
-    assert report["c2_complete"] is False
-    assert any("fewer than two vendors" in line for line in lines)
-    assert set(report["arms"]) == {"base", "a"}
+    with pytest.raises(ValueError, match=r"\[frontier\] is not read"):
+        bench.baseline(cfg, ".", out=lambda _l: None, tasks=["rsi.dev_update_stage"])
+    for own in ({"llm": {"type": "rsi:BusinessWorker"}}, {"pricing": {"input_per_1k": 1.0}}):
+        with pytest.raises(ct.ContractError, match="names its own"):
+            bench.FinalizationPlan(experiment_id="final-x", task_ids=tuple(rsi.FINAL), claims=("C1", "C2"),
+                                   comparisons=({"claim": "C1", "subject": "evolved", "control": "base"},
+                                                {"claim": "C2", "subject": "frontier_a", "control": "base", **own}))
     built = build_report(activity.root, rsi.DOMAIN)
-    assert built["claims"]["C2"]["state"] in ("inconclusive", "not_run")
-    assert any("frontier" in line for line in built["identity"]["missing"])
+    assert built["claims"]["C2"]["state"] == "not_run" and "published" in built["claims"]["C2"]["detail"]
+    assert not any("frontier" in line for line in built["identity"]["missing"])
 
 
-def test_a_model_that_cannot_be_built_is_recorded_as_absent(fake_upstream, tmp_path):
+def test_a_model_that_cannot_be_built_is_recorded_as_absent(fake_upstream, tmp_path, monkeypatch):
+    """A release that pins no actor runs [llm]; when that model cannot be built the arm is recorded as absent,
+    never replaced or counted as a zero."""
     cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
-    cfg["frontier"] = {"a": {"llm": {"type": "rsi:BusinessWorker"}},
-                       "b": {"llm": {"type": "rsi:NoSuchProvider"}}}
+    monkeypatch.setattr(bench, "_pinned_actor", lambda activity: None)
+    cfg["llm"] = {"type": "rsi:NoSuchProvider"}
     report = bench.baseline(cfg, ".", out=lambda _l: None, tasks=["rsi.dev_update_stage"])
-    assert report["absent"] and report["absent"][0]["arm"] == "b"
-    assert "b" not in report["arms"]
+    assert report["absent"] and report["absent"][0]["arm"] == "base"
+    assert report["arms"] == {}
 
 
 def test_br02_identical_configurations_share_one_run_identity(fake_upstream, tmp_path):

@@ -427,15 +427,6 @@ def test_a_round_that_meets_an_account_error_pauses_and_the_experiment_resumes_a
 from test_cycle import fixture_preset  # noqa: E402,F401 - the cycle tests' preset, as a fixture here too
 
 
-class _Refused:
-    """A frontier model whose account the provider refuses."""
-    name, model = "frontier", "frontier-1"
-
-    def chat(self, system, messages, specs=()):
-        from ouroloop.providers import ProviderAccountError
-        raise ProviderAccountError('HTTP 429: {"error":{"code":"1113","message":"余额不足"}}')
-
-
 def _broken_actor(monkeypatch, state):
     """The fixture's actor, refused by its provider while `state["broke"]` is set."""
     import rsi
@@ -464,9 +455,8 @@ def _attempt_ids(tmp_path):
     return [r.attempt_id for r in rows_of(tmp_path)]
 
 
-@pytest.mark.parametrize("where,step", [("baseline", "baseline"), ("frontier", "baseline"),
-                                        ("resume", "segment-0"), ("slot", "slot-0"), ("common", "slot-0"),
-                                        ("outer", "slot-0")])
+@pytest.mark.parametrize("where,step", [("baseline", "baseline"), ("resume", "segment-0"), ("slot", "slot-0"),
+                                        ("common", "slot-0"), ("outer", "slot-0")])
 def test_every_cycle_step_pauses_on_an_account_error(fake_upstream, tmp_path, fixture_preset, monkeypatch, where,
                                                      step):
     """docs/modules/05_EXECUTION_BUDGET.md §3: an account refusal outside a task attempt pauses the activity with
@@ -483,8 +473,6 @@ def test_every_cycle_step_pauses_on_an_account_error(fake_upstream, tmp_path, fi
     slot = RProposer()
     if where == "baseline":
         _breaks_on_entry(monkeypatch, bench, "baseline", state)
-    elif where == "frontier":
-        cfg["frontier"] = {"a": {"llm": {"type": "test_real_run_findings:_Refused"}}}
     elif where == "common":
         _breaks_on_entry(monkeypatch, bench, "_campaign_common", state)
         # 2026-10-05 review: the common inputs reuse the mainline's readings of the start W, which under this
@@ -518,9 +506,8 @@ def test_every_cycle_step_pauses_on_an_account_error(fake_upstream, tmp_path, fi
     assert "refuses the account" in recorded["steps"][step]["reason"]
     later = {"baseline": "segment-0", "segment-0": "slot-0", "slot-0": "segment-1"}[step]
     assert later not in recorded["steps"]                        # nothing past the paused step ran
-    # the repair: the account is topped up, the frontier model's too
+    # the repair: the account is topped up
     state["broke"] = None
-    cfg.pop("frontier", None) if where == "frontier" else None
     before = _attempt_ids(tmp_path)
     again = bench.cycle(cfg, ".", out=lambda _line: None, researcher=Stopper(), slot_researcher=RProposer(),
                         arm_researcher=arms([Stopper, Stopper, SkillAnyway])[0])
