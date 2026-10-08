@@ -1485,8 +1485,8 @@ class Improvement:
 
     def train_state_index(self) -> tuple[dict, set]:
         """(v0.4, docs/design/V0_4_PLAN.md §1.5) The initial states' literals by train task (literal -> tasks) and their
-        header names (record fields, sheet columns): what train_state_literals reads, kept per task so the draft
-        check can tell one task's answer from the domain's vocabulary. Train tasks only."""
+        header names (record fields, sheet columns), kept per task so the draft check can tell one task's answer
+        from the domain's vocabulary. Train tasks only."""
         from .agent.harness_package import add_literals, header_names
         index: dict = {}
         headers: set = set()
@@ -1498,19 +1498,6 @@ class Improvement:
             add_literals(index, task_id, state)
             headers |= header_names(state)
         return index, headers
-
-    def train_state_literals(self) -> set:
-        """Task-specific identifiers in the initial state of train tasks (record ids, e-mails, record names): R
-        sees them in tool outputs, and none may be written into a shared component (docs/modules/00_CONTRACTS.md
-        §3). Read from the grading side of the suite, train tasks only."""
-        from .agent.harness_package import literals_of
-        out: set = set()
-        for task_id in self.train_tasks or self.splits.ids("train"):
-            try:
-                out |= literals_of(self.suite.grading(task_id).initial_state)
-            except Exception:  # noqa: BLE001 - a task without a readable initial state adds nothing
-                continue
-        return out
 
     def base_tools(self) -> list[dict]:
         """The host's base tools as R is shown them when it writes or revises a package: name, description and

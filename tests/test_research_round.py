@@ -206,17 +206,13 @@ def test_rl02_experience_holds_the_improvement_and_the_regression_together(fake_
         release_before=release, release_after=release, tags=("worker.finish",),
         targets=("worker.finish",), open_questions=["the notify_once task regressed"])
     experience_mod.append(activity.root, record)
-    experience_mod.append(activity.root, experience_mod.summary_record(
-        summary_ref=activity.objects.put_json("change", {"text": "fixes the omission, breaks repeat sending"}),
-        source_refs=["experience:x1"], producer_policy_ref="policy:sha256:" + "d" * 64,
-        applicable_to={"targets": ["worker.finish"]}, status="regression",
-        counterexamples=["rsi.notify_once"]))
     entries = experience_mod.read(activity.root)
-    assert experience_mod.requirement_status(entries, "req:rsi.dev_notify_after_update") == "regressed"
-    # both facts are retrievable by the next round, and the retrieval can only narrow
+    # the gain and the regression are one record, retrievable by the next round, and the retrieval can only narrow
     found = retrieve(entries, {"targets": ("worker.finish",), "max_items": 10, "sort": "recency"})
     assert found and found[0]["targets"] == ["worker.finish"]
-    assert retrieve(entries, {"statuses": ("regression",), "max_items": 10}) != []
+    assert found[0]["metrics"]["gain"] == 0.2 and found[0]["regression_rate"] == 0.25
+    assert found[0]["requirements"] == ["req:rsi.dev_notify_after_update"] and not found[0]["installed"]
+    assert retrieve(entries, {"statuses": ("regression",), "max_items": 10}) == []    # no entry carries a status
     assert len(retrieve(entries, {"max_items": 1})) == 1
 
 

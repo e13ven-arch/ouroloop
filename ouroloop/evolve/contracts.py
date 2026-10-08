@@ -43,12 +43,11 @@ MODEL_ROLES = ("actor", "controller")
 # library snapshot, a refit method table), not R's and not a person's.
 ORIGINS = ("manual", "scripted", "llm", "fixed")
 # Every partition an evidence record can belong to, from the most freely readable to the one a result may only
-# be read out of once (docs/DESIGN.md §3.1). The order is the strictness order combine() uses.
+# be read out of once (docs/DESIGN.md §3.1), in strictness order.
 PARTITIONS = ("train", "dev", "research_dev", "final")
 IMPLEMENTATIONS = ("prompt", "rule", "workflow", "model")
 PROFILES = ("task", "research")
 VERDICTS = ("accepted", "rejected", "inconclusive", "invalid")
-REQUIREMENT_STATUS = ("open", "addressed", "regressed", "insufficient_evidence")
 FEEDBACK_STATUS = ("valid", "unknown", "conflicted", "invalid")
 INSTALL_STATUS = ("installed", "stale_parent", "installation_failed")
 AUTHORIZATIONS = ("bootstrap", "evaluation_permit", "accepted")
@@ -114,21 +113,6 @@ def check_refs(refs, *, kind: str | None = None, what: str = "reference") -> tup
             raise ContractError(f"{what} {short(r)} is a {k}, not a {kind}")
         out.append(r)
     return tuple(out)
-
-
-def combine(*partitions: str) -> str:
-    """The partition a record derived from these inputs belongs to: the strictest of them.
-
-    A research note with no task of its own inherits the boundary of everything it read, so a summary of a
-    final-split result cannot be filed as training evidence by leaving the task id out.
-    """
-    strictness = {p: i for i, p in enumerate(PARTITIONS)}
-    worst = "train"
-    for p in partitions:
-        if p not in strictness:
-            raise ContractError(f"unknown partition {p!r}: one of {list(PARTITIONS)}")
-        worst = p if strictness[p] > strictness[worst] else worst
-    return worst
 
 
 def visible(partition: str, allowed: tuple[str, ...]) -> bool:
@@ -243,19 +227,6 @@ def _plain(value: Any) -> Any:
     if isinstance(value, dict):
         return {k: _plain(v) for k, v in value.items()}
     return value
-
-
-@dataclass
-class ArtifactRef(Record):
-    """Where the bytes are, and what they must hash to. `ref` locates, `digest` verifies."""
-    TYPE = "artifact"
-    ref_: str = ""                 # a store reference: a path under the workspace, a model store id
-    media_type: str = "application/json"
-    digest: str = ""
-
-    def payload(self) -> dict:
-        return {"schema_version": SCHEMA_VERSION, "ref": self.ref_, "media_type": self.media_type,
-                "digest": self.digest}
 
 
 @dataclass
@@ -446,29 +417,6 @@ class CoreManifest(Record):
     retry_policy: dict = field(default_factory=dict)
     code_version: str = ""
     schema_version: int = SCHEMA_VERSION
-
-
-@dataclass
-class Requirement(Record):
-    """A behaviour gap with evidence behind it, before anyone chooses what to change."""
-    TYPE = "requirement"
-    id: str = ""
-    owner: str = "worker"
-    context: str = ""
-    expected_behavior: str = ""
-    observed_behavior: str = ""
-    evidence_refs: tuple[str, ...] = ()
-    acceptance: str = ""                    # a behaviour description, never a gate threshold
-    recurrence: int = 1
-    status: str = "open"
-    notes: str = ""                         # for people; rewording it is not a different requirement
-    schema_version: int = SCHEMA_VERSION
-
-    def __post_init__(self) -> None:
-        if self.owner not in OWNERS:
-            raise ContractError(f"owner {self.owner!r}: one of {list(OWNERS)}")
-        if self.status not in REQUIREMENT_STATUS:
-            raise ContractError(f"requirement status {self.status!r}: one of {list(REQUIREMENT_STATUS)}")
 
 
 @dataclass
@@ -886,8 +834,8 @@ class RoundResult:
     action_ref: str | None = None
 
 
-TYPES = {c.TYPE: c for c in (ArtifactRef, EvidenceRef, PolicyDescriptor, PolicySet, Authorization, SystemRelease,
-                             EvaluationPermit, CoreManifest, Requirement, ExperimentProposal, Experiment,
+TYPES = {c.TYPE: c for c in (EvidenceRef, PolicyDescriptor, PolicySet, Authorization, SystemRelease,
+                             EvaluationPermit, CoreManifest, ExperimentProposal, Experiment,
                              EvaluationReceipt, InstallationReceipt, DataManifest, Observation, DecisionTrace,
                              FeedbackRecord, ModelIdentity, TargetHarness, HarnessPackage,
                              CollectionRequest, DeploymentManifest)}

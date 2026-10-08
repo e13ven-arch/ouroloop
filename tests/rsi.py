@@ -96,6 +96,14 @@ def run_manifest(candidate: str, role: str, split: str, *, budget: Budget | None
                        budget=budget or Budget(max_steps=8, max_tool_calls=12), data=data, **v2)
 
 
+def open_reservations(book, scope_id: str | None = None) -> list[dict]:
+    """The book's reservations still open or unknown, in `scope_id`'s subtree (all scopes without one): what the
+    money-safety tests check is left behind. A read of the book for the tests; nothing in the framework asks it."""
+    data = book._read()
+    scopes = book.subtree(scope_id, data) if scope_id else set(data["scopes"])
+    return [r for r in data["reservations"].values() if r["status"] in ("open", "unknown") and r["scope_id"] in scopes]
+
+
 W0_FINISH = "Report what you did when you are finished."
 
 

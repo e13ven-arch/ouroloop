@@ -17,7 +17,6 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
 
 import threading
 
@@ -453,13 +452,6 @@ class Budgets:
             self.events.append("budget_breach", scope=r["scope_id"], reservation=reservation_id, breach=breach)
         return receipt
 
-    def open_reservations(self, scope_id: str | None = None) -> list[dict]:
-        book = self._read()
-        scopes = self.subtree(scope_id, book) if scope_id else set(book["scopes"])
-        return [r for r in book["reservations"].values()
-                if r["status"] in ("open", "unknown") and r["scope_id"] in scopes]
-
-
 @dataclass
 class BudgetAccount:
     """One scope's handle on the shared book."""
@@ -521,23 +513,6 @@ class BudgetAccount:
         return not self.budgets.stopped(self.scope_id, book) and not self.budgets._exceeds(
             self.scope_id, book, {k: float(v) for k, v in bound.items() if v is not None and k in LIMITS},
             allocation=allocation)
-
-
-def spend(account: BudgetAccount, operation_id: str, bound: dict, call: Callable[[], Any], *,
-          measure: Callable[[Any], dict] | None = None, allocation: str | None = None):
-    """Reserve, call, settle. -> (result, receipt).
-
-    A call that raises before it can be measured settles as unknown rather than free: the provider may well have
-    charged for it, and only a request id or a job id can say otherwise.
-    """
-    reservation = account.reserve(operation_id, bound, allocation=allocation)
-    try:
-        result = call()
-    except BaseException:
-        account.settle(reservation.id, None, "unknown")
-        raise
-    receipt = account.settle(reservation.id, (measure or (lambda _r: {}))(result), "settled")
-    return result, receipt
 
 
 # ---------------------------------------------------------------------------- the experiment loop
@@ -620,8 +595,7 @@ def execute_experiment(experiment, handlers: dict, *, budget: BudgetAccount, exe
                 step("confirming")
         op = execution.operation("evaluate", (build.candidate_ref,))
         evaluate = handlers["evaluate"]
-        receipt = evaluate(build.candidate_ref, budget, confirming=confirming) if _takes(evaluate, "confirming") \
-            else evaluate(build.candidate_ref, budget)
+        receipt = evaluate(build.candidate_ref, budget, confirming=confirming)
         execution.finish(op, "done", output_refs=(receipt.ref(),))
         step("evaluated", receipt=receipt.ref(), verdict=receipt.verdict)
         if receipt.verdict != "accepted":
@@ -646,17 +620,6 @@ def execute_experiment(experiment, handlers: dict, *, budget: BudgetAccount, exe
     out["installation"] = installation
     step(installation.status, reason=installation.reason or "", release=installation.target_release)
     return out
-
-
-def _takes(handler, name: str) -> bool:
-    """Whether a handler accepts the keyword `name`: an older handler (a fixture's two-argument evaluate) is called
-    as it always was."""
-    import inspect
-    try:
-        parameters = inspect.signature(handler).parameters
-    except (TypeError, ValueError):
-        return False
-    return name in parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values())
 
 
 def unfinished(root: str | Path) -> list[dict]:

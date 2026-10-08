@@ -7,7 +7,7 @@ import pytest
 from ouroloop.chat import ChatTurn
 from ouroloop.evolve import contracts as ct
 from ouroloop.evolve.execution import (Budgets, BudgetError, Execution, MeteredProvider, Pricing, Schedule,
-                                       StateError, check_pricing, execute_experiment, operation_id, spend)
+                                       StateError, check_pricing, execute_experiment, operation_id)
 
 
 def book(tmp_path):
@@ -108,18 +108,6 @@ def test_ex02_a_lost_response_keeps_its_bound_and_a_retry_is_a_new_call(tmp_path
     # only a confirmation that the call never happened releases it
     account.settle(lost.id, None, "released")
     assert account.remaining()["remaining"]["usd"] == 9.0
-
-
-def test_a_call_that_raises_settles_as_unknown(tmp_path):
-    b = book(tmp_path)
-    account = b.account("round", {"usd": 5.0})
-
-    def call():
-        raise TimeoutError("no response")
-
-    with pytest.raises(TimeoutError):
-        spend(account, "op-1", {"usd": 2.0}, call)
-    assert account.remaining()["remaining"]["usd"] == 3.0 and account.remaining()["unknown"] == 1
 
 
 def test_spending_over_the_bound_is_a_breach_that_stops_paid_work(tmp_path):
@@ -263,7 +251,7 @@ def test_execute_experiment_records_every_state_and_its_operations(tmp_path):
                                    reasons=("no gain",))
     out = execute_experiment(_experiment(tmp_path), {
         "build": lambda experiment, budget: ct.BuildResult(status="ready", candidate_ref=candidate),
-        "evaluate": lambda ref, budget: receipt}, budget=account, execution=ex)
+        "evaluate": lambda ref, budget, confirming=None: receipt}, budget=account, execution=ex)
     assert out["states"] == ["admitted", "building", "evaluating", "evaluated", "rejected"]
     assert out["receipt"].verdict == "rejected" and out["installation"] is None
     saved = json.loads((tmp_path / "rsi" / "operations" /
