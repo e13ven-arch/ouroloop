@@ -56,7 +56,7 @@ train = ["huggingface_hub>=0.20"]
 train-jobs = ["ouroloop[train]"]
 
 [project.scripts]
-ouroloop = "ouroloop.cli:main"
+ouroloop = "ouroloop.activity.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["ouroloop*"]

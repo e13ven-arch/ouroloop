@@ -75,3 +75,20 @@ class ReplyRefused(ProviderError):
 
     def __init__(self, message: str = ""):
         super().__init__(message, retryable=False)
+
+
+def build_provider(spec: dict):
+    """A provider from its config table ({type, ...}): anthropic, openai_compat, claude_code, or "package.module:Class"."""
+    spec = dict(spec)
+    kind = spec.pop("type")
+    if kind == "anthropic":
+        from .anthropic import AnthropicProvider
+        return AnthropicProvider(**spec)
+    if kind == "openai_compat":
+        from .openai_compat import OpenAICompatProvider
+        return OpenAICompatProvider(**spec)
+    if kind == "claude_code":
+        from .claude_code import ClaudeCodeProvider
+        return ClaudeCodeProvider(**spec)
+    from ..contracts import import_object
+    return import_object(kind)(**spec)

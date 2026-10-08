@@ -15,6 +15,7 @@ Each package registers its record types (`register`); `Objects.load(ref)` finds 
 from __future__ import annotations
 
 import fcntl
+import importlib
 import json
 import os
 import re
@@ -277,6 +278,25 @@ def write_json(path: Path, obj: Any) -> None:
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     os.replace(tmp, path)
+
+
+def load_dotenv(path: str | Path = ".env") -> None:
+    """Read KEY=VALUE lines into the environment without overriding variables that are already set. The CLIs call it
+    for the operator's .env; nothing else reads that file."""
+    p = Path(path)
+    if not p.exists():
+        return
+    for line in p.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key, _, value = line.partition("=")
+            os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
+
+
+def import_object(ref: str):
+    """"package.module:name" -> the object."""
+    module, _, attr = ref.partition(":")
+    return getattr(importlib.import_module(module), attr)
 
 
 def file_key(path: Path) -> tuple | None:

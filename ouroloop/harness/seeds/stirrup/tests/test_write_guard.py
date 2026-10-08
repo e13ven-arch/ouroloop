@@ -49,7 +49,7 @@ def model_call(messages, role="act", turn=1):
 WRITE = {"method": "POST", "url": "https://slack.com/api/chat.postMessage", "body": '{"channel": "C1", "text": "hi"}'}
 PLAN = {"changes": [{"content": "post hi", "status": "pending"}], "excluded": []}
 INBOX = "https://gmail.googleapis.com/gmail/v1/users/me/messages/m1"
-DATED = '{"id": "m1", "internalDate": "1772452800000"}'                      # 2026-03-02
+DATED = '{"id": "m1", "internalDate": "1906718400000"}'                      # 2030-06-03
 
 
 def guard():
@@ -117,9 +117,9 @@ def test_the_ledger_stays_whole_past_the_views_twenty_events(ctx=None):
 def test_dates_skip_due_expiry_and_end_fields(ctx=None):
     g = guard()
     text = ('{"created_at": "2026-02-10T09:00:00Z", "due_date": "2026-09-30", "expires_at": "2027-01-01", '
-            '"endTime": "2026-12-01", "sent": "Mon, 02 Mar 2026 08:00:00 +0000", "ts": "1772000000.000200", '
+            '"endTime": "2026-12-01", "sent": "Mon, 03 Jun 2030 08:00:00 +0000", "ts": "1772000000.000200", '
             '"contacts": "2030-01-01"}')
-    assert g.newest_date(text) == ("2026-03-02", "sent")
+    assert g.newest_date(text) == ("2030-06-03", "sent")
     assert g.newest_date('{"due": "2026-05-01", "end_date": "2026-05-02"}') is None
 
 
@@ -131,14 +131,14 @@ def test_the_anchor_rides_on_every_act_call_once_a_date_is_read(ctx=None):
     tool_turn = history + [{"role": "assistant", "text": "", "tool_calls": []},
                            {"role": "tool", "results": [{"id": "c1", "output": DATED}]}]
     answer = g.anchor(Ctx(), model_call(tool_turn, turn=2))
-    note = g.DATE_MESSAGE.format(date="2026-03-02", field="internalDate")
+    note = g.DATE_MESSAGE.format(date="2030-06-03", field="internalDate")
     assert answer["messages"][:-1] == tool_turn and answer["messages"][-1] == {"role": "user", "content": note}
     assert tool_turn[-1]["role"] == "tool"                                 # the history itself is not changed
     # after a user message the note joins it rather than making two user messages in a row
     joined = g.anchor(Ctx(), model_call(history, turn=3))["messages"]
     assert len(joined) == 2 and joined[-1]["content"] == "task\n\n" + note
     assert g.anchor(Ctx(), model_call(history, role="aux")) is None        # a summary call is left alone
-    assert g.snapshot()["anchored"] == ("2026-03-02", "internalDate")
+    assert g.snapshot()["anchored"] == ("2030-06-03", "internalDate")
 
 
 def test_no_date_is_read_from_a_write_or_after_it(ctx=None):
@@ -146,11 +146,11 @@ def test_no_date_is_read_from_a_write_or_after_it(ctx=None):
     read after the first write, may carry the real date, so they never move the anchor."""
     g = guard()
     _read(g, 1)
-    stamped = '{"id": "r9", "created_at": "2026-10-08T12:00:00Z"}'
+    stamped = '{"id": "r9", "created_at": "2031-10-08T12:00:00Z"}'
     write = event(2, "POST", WRITE["url"], WRITE["body"], result=stamped)
     g.ledger(Ctx([write]), after("api_fetch", WRITE, stamped, 2))
     _read(g, 3, result=stamped, url="https://x/api/records/r9", turn=3)
-    assert g.snapshot()["date"] == ("2026-03-02", "internalDate")
+    assert g.snapshot()["date"] == ("2030-06-03", "internalDate")
 
 
 def test_a_planned_time_is_not_today_whether_named_or_nested(ctx=None):
