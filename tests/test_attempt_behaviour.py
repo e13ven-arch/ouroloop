@@ -1,11 +1,13 @@
 """What one attempt does, pinned before slimming (docs/PLAN.md P1; decision of 2026-10-08).
 
 Hash identity with the existing workspaces is not required: no existing activity is resumed at HEAD, so ids, refs,
-digests and timestamps are normalised away here. What is pinned is behaviour: under a v3-style K (the
-`automationbench_harness_v3` preset on the miniature `rsi` domain, W0/R0/K bootstrapped from the configuration as a
-real activity's are), the baseline phase limited to one dev task and one train task runs two attempts through the
-production path (open_activity, the startup checks, the activity's budget book, Improvement.run_arm, the runner
-shell). The scripted actor below answers from what it is sent, and for both attempts this test pins
+digests and timestamps are normalised away here. What is pinned is behaviour: under the K of the
+`automationbench_harness_v3` preset and, separately, of the `automationbench_harness_v5` one (the base of the next
+preset: its method and library tables), each on the miniature `rsi` domain with W0/R0/K bootstrapped from the
+configuration as a real activity's are, the baseline phase limited to one dev task and one train task runs two
+attempts through the production path (open_activity, the startup checks, the activity's budget book,
+Improvement.run_arm, the runner shell). The scripted actor below answers from what it is sent, and for both attempts
+this test pins
 
 - the model-call sequence the actor received (system prompt, messages by role, tool names, the effort keyword) and
   what it answered;
@@ -13,8 +15,11 @@ shell). The scripted actor below answers from what it is sent, and for both atte
   its arguments, gate decision and output, the end event);
 - the outcome (the result row's outcome fields) and the grading row.
 
-The fixture was captured from the code at 8434c03, before any slimming step. To recapture it after a change that is
-meant to alter behaviour (and only then, with the diff explained in the commit):
+The fixture was captured from the code at 8434c03, before any slimming step, under the v3 K. Under the v5 K the
+same capture, made at tag archive-2026-10-08 (the same ouroloop/ and tests/fake_upstream as 8434c03; the P1 review,
+2026-10-08), is byte for byte this fixture: W0 holds no library entry and no method, so nothing of v5's tables reaches
+these attempts, and both presets are pinned by the one file. To recapture it after a change that is meant to alter
+behaviour (and only then, with the diff explained in the commit; a v5 run that differs then needs its own file):
 
     OUROLOOP_CAPTURE_BEHAVIOUR=1 .venv/bin/python -m pytest -q tests/test_attempt_behaviour.py
 """
@@ -37,6 +42,7 @@ from ouroloop.chat import ChatTurn, ToolCall
 from ouroloop.ledger import _read_jsonl
 
 FIXTURE = Path(__file__).parent / "fixtures" / "attempt_behaviour_v3.json"
+PRESETS = ("automationbench_harness_v3", "automationbench_harness_v5")
 CAPTURE = os.environ.get("OUROLOOP_CAPTURE_BEHAVIOUR") == "1"
 
 DOMAIN = "rsi"
@@ -178,13 +184,13 @@ def v3_config(upstream: str, root: Path, monkeypatch, preset: str = "automationb
             "freeze": {"budget": {"model_calls": 4000, "tool_calls": 4000, "usd": 50}}}
 
 
-def run_baseline(upstream: str, tmp_path: Path, monkeypatch) -> dict:
+def run_baseline(upstream: str, tmp_path: Path, monkeypatch, preset: str = "automationbench_harness_v3") -> dict:
     root = tmp_path / "ws"
     suite = ab.load_suite(DOMAIN, upstream)
     fams, rule = ab.families(suite, FAMILIES)
     SplitManifest(DOMAIN, suite.versions, rule, suite.entries(fams), dict(SPLITS)).freeze(
         Results(root, DOMAIN).manifest_path())
-    cfg = v3_config(upstream, root, monkeypatch)
+    cfg = v3_config(upstream, root, monkeypatch, preset=preset)
     refs = bench.freeze(cfg, ".", out=lambda _line: None)
     cfg = {**cfg, "rsi": {**cfg["rsi"], **refs}}
     ScriptedActor.seen = []
@@ -205,13 +211,14 @@ def run_baseline(upstream: str, tmp_path: Path, monkeypatch) -> dict:
                         for arm, v in report["arms"].items()}}
 
 
-def test_one_baseline_attempt_per_split_behaves_as_before_slimming(fake_upstream, tmp_path, monkeypatch):
-    got = normalise(run_baseline(fake_upstream, tmp_path, monkeypatch),
+@pytest.mark.parametrize("preset", PRESETS)
+def test_one_baseline_attempt_per_split_behaves_as_before_slimming(fake_upstream, tmp_path, monkeypatch, preset):
+    got = normalise(run_baseline(fake_upstream, tmp_path, monkeypatch, preset=preset),
                     {str(tmp_path): "<tmp>", str(fake_upstream): "<upstream>"})
     # the shape this test relies on, whatever the fixture says: one dev and one train attempt, the actor called
     assert [a["outcome"]["split"] for a in got["attempts"]] == ["dev", "train"]
     assert got["model_calls"] and all(a["grading"]["assertions"] for a in got["attempts"])
-    if CAPTURE:
+    if CAPTURE and preset == PRESETS[0]:
         FIXTURE.parent.mkdir(parents=True, exist_ok=True)
         FIXTURE.write_text(json.dumps(got, indent=1, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
     want = json.loads(FIXTURE.read_text(encoding="utf-8"))
