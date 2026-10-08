@@ -196,25 +196,40 @@ def test_it07_a_report_is_recomputed_from_the_records_and_never_picks_a_winner(f
 
 
 # ---------------------------------------------------------------------------- IT-02
-def test_it02_a_trained_decider_changes_what_the_agent_does(fake_upstream, tmp_path):
+def test_it02_labels_become_a_trained_decider_that_a_candidate_binds_and_the_gate_compares(fake_upstream, tmp_path):
+    """IT-02, as far as the runner shell goes (docs/design/SLIMMING_INVENTORY.md §2.6): labels from observed facts ->
+    a family-split dataset with no oracle -> a trained artifact on the budget book -> a candidate W whose worker.stop
+    is the model policy, assembled by the preflight bind and compared at the dev gate. The stop decisions it trains on
+    are played by stop_fixtures.play: the runner shell asks no stop point, so no attempt makes one, and the trained
+    decider changes nothing an attempt does — the candidate cannot beat its control. That it changes what the agent
+    does (the old ending of this test) is untested until a host asks the stop point again (the stop bridge,
+    docs/design/V2_TRAINING_PIPELINE.md §3.8)."""
+    from stop_fixtures import play, stop_runtime
     lines = []
     cfg, activity, w0_release, plan_ref = prepared(fake_upstream, tmp_path, train=True, out=lines.append)
     cfg["serving"] = {}
+    objects = activity.objects
+    bound = P.bind_release(w0_release, profile="task", services=P.Services(objects), authorization="bootstrap")
+    stops = stop_runtime(activity.root)
+    for task in rsi.TRAIN:
+        for i in range(2):
+            play(stops, activity.suite, activity.splits, task, rsi.BusinessWorker(), bound=bound, objects=objects,
+                 attempt=i)
     result = bench.improve(cfg, ".", out=lines.append,
                            researcher=rsi.ScriptedResearcher(carrier="train", min_labels=2))
     rounds = [r for r in result["rounds"] if r["outcome"] != "stopped"]
-    assert rounds and rounds[0]["outcome"] == "installed", [r["outcome"] for r in result["rounds"]] + lines[-6:]
-    objects = activity.objects
-    installed = ct.SystemRelease.from_json(objects.get(result["release"]))
-    policies = P.validate_policy_set(objects.load(installed.worker_ref, ct.PolicySet), objects).policies
+    assert rounds and rounds[0]["outcome"] == "rejected", [r["outcome"] for r in result["rounds"]] + lines[-6:]
+    assert result["release"] == w0_release                       # nothing the runner shell runs differs: not installed
+    (receipt,) = [objects.load(e["receipt"], ct.EvaluationReceipt)
+                  for e in ct.Events(activity.root).of("evaluation_completed")]
+    policies = P.validate_policy_set(objects.load(receipt.subject_ref, ct.PolicySet), objects).policies
     stop = policies["worker.stop"]
     assert stop.kind == "model" and stop.implementation["model_ref"] == "trained-1"
     inference = objects.get(stop.implementation["inference_ref"])
     assert inference["model_id"] == "trained-1" and inference["threshold_source"] == "argmax"
+    assert receipt.metrics["gain"] == 0
     # the dataset kept the families apart and carried no oracle
-    manifest = ct.DataManifest.from_json(objects.get(
-        [e for e in ct.Events(activity.root).all() if e.get("event") == "state"] and
-        _dataset_ref(objects)))
+    manifest = ct.DataManifest.from_json(objects.get(_dataset_ref(objects)))
     assert set(manifest.fit_groups) & set(rsi.SPLITS) and not (set(manifest.fit_groups)
                                                               & set(manifest.validation_groups))
     assert not (set(manifest.fit_groups) & {f for f, s in rsi.SPLITS.items() if s != "train"})
@@ -222,16 +237,14 @@ def test_it02_a_trained_decider_changes_what_the_agent_does(fake_upstream, tmp_p
             (activity.root / "rsi" / "datasets" / "worker.stop" / "train.jsonl").read_text().splitlines()]
     assert rows and all("rubric" not in r["state"] and "assertion" not in r["state"] for r in rows)
     assert {c["name"] for r in rows for c in r["candidates"]} == {"yes", "no"}
-    # and the installed model really intervenes: a "no" sends the agent back, and the task then completes
-    work = bench.improvement(activity, template_ref=plan_ref, provider=rsi.BusinessWorker())
-    work.serving = activity.rt.serving
-    after = work.run_arm("after_install", result["release"], [("rsi.dev_notify_after_update", 0)], plan_ref="",
-                         split="dev")
-    assert after[0].success is True
-    stops = [r.decision for r in activity.rt.ledger.rows("stop")
-             if r.decision.get("session") == after[0].evidence and r.decision["phase"] == "on_finish"]
-    assert [(d["proposed"], d["action"]) for d in stops][:1] == [("no", "no")]
-    assert stops[-1]["proposed"] == "yes"
+    # the candidate W assembles as the preflight bind assembled it: its worker.stop loads the trained model through
+    # serving, and the model answers as the inference configuration names it
+    from dataclasses import replace
+    from ouroloop.train.serving import PROBE
+    w0 = objects.load(w0_release, ct.SystemRelease)
+    preflight = objects.put(replace(w0, worker_ref=receipt.subject_ref, parent_ref=w0_release))
+    candidate = P.bind_release(preflight, profile="preflight", services=P.Services(objects, serving=activity.rt.serving))
+    assert candidate.stop.kind == "model" and candidate.stop.backend.decide([PROBE])[0].model == "trained-1"
     # training, inference and failed jobs are all on the budget book
     used = activity.budgets.account("it", json.loads(
         (activity.root / "rsi" / "budget" / "book.json").read_text())["scopes"]["it"]["limits"]).remaining()["used"]

@@ -650,8 +650,8 @@ def test_startup_refuses_a_pinned_actor_effort_above_k_max_effort(fake_upstream,
         if effort == "max":
             problems = bench.startup_checks(reopened, cfg, phase="baseline", needs_model=False)
             assert any("has effort 'max', above K's max_effort 'high'" in p for p in problems), problems
-            # a K frozen before v0.3 fixes no ceiling: its workspace runs the v1 loop, nothing caps the pinned
-            # default, and the check does not invent one from the gateway's default
+            # a K frozen before v0.3 fixes no ceiling: nothing caps the pinned default, and the check does not
+            # invent one from the gateway's default
             older = ct.CoreManifest(**{**{f: getattr(core, f) for f in core.__dataclass_fields__},
                                        "capabilities": {**core.capabilities, "harness": {
                                            k: v for k, v in core.capabilities["harness"].items() if k != "max_effort"}}})
@@ -663,15 +663,15 @@ def test_startup_refuses_a_pinned_actor_effort_above_k_max_effort(fake_upstream,
 def test_the_smoke_phase_runs_under_the_active_releases_k_when_the_workspace_has_one(fake_upstream, tmp_path):
     """bench.smoke_max_effort (docs/modules/01_POLICY_RUNTIME.md §1): the smoke's attempts run the loop the active
     release's K fixes — its `max_effort` when the workspace has a release, whatever the config's table says — and
-    only a workspace without one takes the loop from the configured first-version table; with neither, the v1
-    loop."""
+    only a workspace without one takes the ceiling from the configured first-version table; with neither, the
+    gateway's default."""
     cfg, activity, w0 = v06_prepared(fake_upstream, tmp_path)
     assert bench.smoke_max_effort(cfg, ".") == "high"                       # K's ceiling, the preset's
     lowered = {**cfg, "harness_evolution": {**cfg["harness_evolution"], "max_effort": "low"}}
     assert bench.smoke_max_effort(lowered, ".") == "high"                   # K, not the table, while a release is active
     fresh = {**lowered, "workspace": {"root": str(tmp_path / "fresh")}}
     assert bench.smoke_max_effort(fresh, ".") == "low"                      # no release yet: the table's
-    assert bench.smoke_max_effort({"workspace": {"root": str(tmp_path / "plain")}}, ".") is None
+    assert bench.smoke_max_effort({"workspace": {"root": str(tmp_path / "plain")}}, ".") == bench.DEFAULT_MAX_EFFORT
 
 
 # ---------------------------------------------------------------------------- v0.3 (IT6-32): k candidates and the train-side screen

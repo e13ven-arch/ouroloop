@@ -13,11 +13,10 @@ import pytest
 
 import rsi
 from ouroloop import bench, policies as P
-from ouroloop.agent import Agent, AgentConfig
 from ouroloop.agent import harness_package as hp
 from ouroloop.agent.tools import ToolResult
-from ouroloop.agent.worker import (DEFAULT_IMAGE, Broker, PackageCallError, ProcessWorker, WorkerCrashed,
-                                   docker_worker)
+from ouroloop.agent.worker import (DEFAULT_IMAGE, AgentRunError, Broker, PackageCallError, ProcessWorker,
+                                   WorkerCrashed, docker_worker)
 from ouroloop.chat import ChatTurn, ToolCall, ToolSpec
 from ouroloop.evolve import contracts as ct
 
@@ -70,14 +69,9 @@ class World:
 
 
 def agent_for(tmp_path, bound, world, provider, **cfg):
-    surface = hp.mount(world, bound, worker=ProcessWorker(for_tests=True))
-    prompt, _ = bound.system_prompt("You are a business agent.")
-    agent = Agent(provider, rsi.runtime(tmp_path), surface, system=prompt,
-                  config=AgentConfig(approve="auto", max_turns=cfg.get("max_turns", 8), gated_tools=(),
-                                     max_pushbacks=cfg.get("max_pushbacks", 2)))
-    if getattr(surface, "runtime", None) is not None:
-        surface.runtime.on_event = lambda kind, data: agent._emit(kind, **data)
-    return agent
+    """The runner shell over the World with the process worker (shell_agent below), at `max_turns` act calls."""
+    return shell_agent(tmp_path, bound, world, provider,
+                       budget=Budget(max_steps=cfg.get("max_turns", 8), max_tool_calls=12))
 
 
 def transcript(tmp_path, agent):
@@ -122,8 +116,13 @@ def test_pr6_10_a_package_tool_is_exposed_and_its_base_calls_go_through_the_brok
     agent = agent_for(tmp_path, bound, world, Uses())
     agent.run("find x")
     assert world.calls == [("api_search", {"q": "x"})]
-    tool_event = [e for e in transcript(tmp_path, agent) if e["kind"] == "tool" and e["name"] == "paged_search"][0]
-    assert tool_event["output"] == "paged: api_search ok" and tool_event["broker_calls"][0]["tool"] == "api_search"
+    events = transcript(tmp_path, agent)
+    # the broker records the base call itself; the package tool's own run is the package's mark
+    assert [(e["kind"], e.get("name") or e.get("tool")) for e in events if e["kind"] in ("tool", "broker_event")] == \
+        [("tool", "api_search"), ("broker_event", "api_search")]
+    (mark,) = [e for e in events if e["kind"] == "package_tool"]
+    assert mark["tool"] == "paged_search" and mark["output"] == "paged: api_search ok"
+    assert mark["broker_calls"] == [{"tool": "api_search", "is_error": False}]
 
 
 # ---------------------------------------------------------------------------- PR6-11
@@ -149,11 +148,15 @@ def test_pr6_11_before_tool_block_stops_the_call_and_the_rest_of_the_turn(tmp_pa
     agent = agent_for(tmp_path, bound, world, TwoCalls())
     agent.run("do it")
     assert world.calls == [("api_search", {"q": "r"})]           # the prefix ran; the blocked call and the rest not
-    tools = [e for e in transcript(tmp_path, agent) if e["kind"] == "tool"]
-    assert [e.get("blocked") or e.get("skipped") or False for e in tools] == [False, True, True]
+    events = transcript(tmp_path, agent)
+    assert [e["name"] for e in events if e["kind"] == "tool"] == ["api_search"]
+    assert [(e["kind"], e["tool"]) for e in events if e["kind"] in ("tool_blocked", "tool_skipped")] == [
+        ("tool_blocked", "api_fetch"), ("tool_skipped", "api_search")]
 
 
-def test_pr6_11_an_after_tool_exception_is_a_defect_and_the_real_result_is_kept(tmp_path):
+def test_pr6_11_an_after_tool_exception_ends_the_run_and_the_real_call_is_not_resent(tmp_path):
+    """Under the runner shell a hook that raises at run time is infrastructure (M1 §1 失败语义; the draft check is
+    where a deterministic failure is found first): the run ends, and the call the hook looked at ran once."""
     hook = "def run(ctx, event):\n    raise ValueError('broken check')\n"
     bound, _ = bound_with(tmp_path, {"middlewares/a.py": hook},
                           {"hooks": [{"name": "a", "site": "after_tool", "entrypoint": "middlewares/a.py:run"}]})
@@ -165,9 +168,10 @@ def test_pr6_11_an_after_tool_exception_is_a_defect_and_the_real_result_is_kept(
         def chat(self, system, messages, specs):
             return ChatTurn("", [ToolCall("a", "api_fetch", {"url": "u", "method": "POST"})], "tool_use")
     agent = agent_for(tmp_path, bound, world, One())
-    with pytest.raises(PackageCallError, match="broken check"):
+    with pytest.raises(AgentRunError, match="broken check"):
         agent.run("write it")
     assert world.calls == [("api_fetch", {"url": "u", "method": "POST"})]       # executed once, never resent
+    assert not issubclass(AgentRunError, ct.CandidateDefect)
 
 
 def test_pr6_11_repeated_on_finish_feedback_is_bounded_by_the_pushback_cap(tmp_path):
@@ -186,7 +190,9 @@ def test_pr6_11_repeated_on_finish_feedback_is_bounded_by_the_pushback_cap(tmp_p
     assert len(pushes) == 2 and result.turns == 3
 
 
-def test_an_illegal_hook_answer_is_a_defect_never_continue(tmp_path):
+def test_an_illegal_hook_answer_ends_the_run_never_continue(tmp_path):
+    """An answer outside the hook protocol is never read as "continue": the run ends there (infrastructure at run
+    time under the runner shell, M1 §1)."""
     hook = "def run(ctx, event):\n    return {'action': 'maybe'}\n"
     bound, _ = bound_with(tmp_path, {"middlewares/x.py": hook},
                           {"hooks": [{"name": "x", "site": "on_finish", "entrypoint": "middlewares/x.py:run"}]})
@@ -196,7 +202,7 @@ def test_an_illegal_hook_answer_is_a_defect_never_continue(tmp_path):
 
         def chat(self, system, messages, specs):
             return ChatTurn("finished", [], "end")
-    with pytest.raises(PackageCallError, match="answered"):
+    with pytest.raises(AgentRunError, match="answered"):
         agent_for(tmp_path, bound, World(), Finisher()).run("anything")
 
 
@@ -218,23 +224,17 @@ class Finisher:
         return ChatTurn("finished", [], "end")
 
 
-def test_a_package_that_kills_its_worker_is_the_candidates_defect(tmp_path):
-    """os._exit in a hook: a fresh worker then answers normally, so the package did it (M5 §1)."""
+def test_a_package_that_kills_its_worker_mid_run_ends_the_attempt_as_a_worker_crash(tmp_path, monkeypatch):
+    """os._exit in a hook while the agent runs: the worker is gone mid-run, which the attempt runner records as
+    infrastructure (M1 §1 失败语义), whether or not a fresh worker would answer — a bounded package call (a draft's
+    probe, sys.exit in a tool) is where the fresh-worker check makes it the package's (the tests above)."""
     hook = "import os\ndef run(ctx, event):\n    os._exit(3)\n"
     bound, _ = bound_with(tmp_path, {"middlewares/d.py": hook},
                           {"hooks": [{"name": "d", "site": "on_finish", "entrypoint": "middlewares/d.py:run"}]})
-    with pytest.raises(PackageCallError, match="a fresh worker answers normally"):
-        agent_for(tmp_path, bound, World(), Finisher()).run("anything")
-
-
-def test_a_worker_that_dies_on_its_own_is_infrastructure_not_a_defect(tmp_path, monkeypatch):
-    """The same death when a fresh worker does not answer either: nothing shows the package caused it."""
-    hook = "import os\ndef run(ctx, event):\n    os._exit(3)\n"
-    bound, _ = bound_with(tmp_path, {"middlewares/d.py": hook},
-                          {"hooks": [{"name": "d", "site": "on_finish", "entrypoint": "middlewares/d.py:run"}]})
-    monkeypatch.setattr(ProcessWorker, "healthy", lambda self: False)
-    with pytest.raises(WorkerCrashed):
-        agent_for(tmp_path, bound, World(), Finisher()).run("anything")
+    for healthy in (True, False):
+        monkeypatch.setattr(ProcessWorker, "healthy", lambda self, healthy=healthy: healthy)
+        with pytest.raises(WorkerCrashed, match="exited during run"):
+            agent_for(tmp_path / str(healthy), bound, World(), Finisher()).run("anything")
     assert not issubclass(WorkerCrashed, ct.CandidateDefect)
 
 
@@ -244,7 +244,7 @@ def test_a_package_tool_may_not_take_a_base_tools_name(tmp_path):
                           {"tools": [{"name": "api_fetch", "description": "shadow", "entrypoint": "tools/f.py:run",
                                       "input_schema": {"type": "object", "properties": {}}}]})
     with pytest.raises(PackageCallError, match="take the names of this host's tools"):
-        hp.mount(World(), bound, worker=ProcessWorker(for_tests=True))
+        agent_for(tmp_path, bound, World(), Finisher())
     with pytest.raises(hp.PackageError, match="the host's own tool"):
         hp.parse_manifest(json.dumps({**hp.empty_manifest(), "tools": [
             {"name": "read_skill", "description": "d", "entrypoint": "tools/f.py:run",
@@ -293,8 +293,8 @@ def test_a_package_tool_sees_the_episode_view_even_without_hooks(tmp_path):
                 else ChatTurn("done", [], "end")
     agent = agent_for(tmp_path, bound, World(), Calls())
     agent.run("find the record")
-    event = [e for e in transcript(tmp_path, agent) if e["kind"] == "tool" and e["name"] == "view_tool"][0]
-    assert event["output"] == "task=find the rec"
+    (mark,) = [e for e in transcript(tmp_path, agent) if e["kind"] == "package_tool"]
+    assert mark["tool"] == "view_tool" and mark["output"] == "task=find the rec"
 
 
 def session_with(files, **limits):
@@ -893,7 +893,7 @@ def shell_agent(tmp_path, bound, world, provider, *, budget=None, worker=None, p
     """The runner shell over the World: what task_eval builds for a release whose K was frozen under v0.3."""
     budget = budget or Budget(max_steps=8, max_tool_calls=12)
     surface = Budgeted(world, budget)
-    make = make_agent_factory(rsi.runtime(tmp_path), provider, budget=budget, bound=bound,
+    make = make_agent_factory(rsi.ws(tmp_path), provider, budget=budget, bound=bound,
                               worker=worker or ProcessWorker(for_tests=True), max_effort=max_effort)
     agent = make(surface, SimpleNamespace(task_id="t1"), "You are a business agent.")
     assert isinstance(agent, PackageAgent)
@@ -907,24 +907,16 @@ def kinds(events, only=FOUR):
 
 
 def trace(events):
-    """The (kind, name) sequence of a run as both loops record it: every model turn with its stop, every hook with
-    its answer, every pushback, and every tool call by name. The two loops differ in two shapes and nowhere else: the
-    v1 loop writes a blocked or skipped call as a `tool` event flagged blocked/skipped, the default agent as a
-    `tool_blocked`/`tool_skipped` mark; and a package tool is one `tool` event in the v1 loop carrying its base calls,
-    while under the shell the broker records the base calls themselves and the outer call is a `package_tool` mark —
-    so a package tool's event is projected to the base calls it made, the sequence the broker saw in both."""
+    """The (kind, name) sequence of a run: every model turn with its stop, every hook with its answer, every pushback,
+    every tool call by name, and a blocked or skipped call as the default agent's `tool_blocked`/`tool_skipped` mark.
+    A package tool's base calls are the broker's `tool` events; its own run is a `package_tool` mark, left out here.
+    (The v1 loop, removed in P1 step 5, wrote the same sequence in two other shapes: a blocked or skipped call as a
+    flagged `tool` event, a package tool as one `tool` event carrying its base calls.)"""
     out = []
     for e in events:
         kind = e["kind"]
         if kind == "tool":
-            if e.get("blocked"):
-                out.append(("tool_blocked", e["name"]))
-            elif e.get("skipped"):
-                out.append(("tool_skipped", e["name"]))
-            elif e.get("broker_calls") is not None:
-                out += [("tool", c["tool"]) for c in e["broker_calls"]]
-            else:
-                out.append(("tool", e["name"]))
+            out.append(("tool", e["name"]))
         elif kind in ("tool_blocked", "tool_skipped"):
             out.append((kind, e["tool"]))
         elif kind == "hook":
@@ -972,65 +964,60 @@ BLOCKER = ("def run(ctx, event):\n    if event['tool'] == 'api_fetch':\n"
            "        return {'action': 'block', 'message': 'read the record first'}\n    return {'action': 'continue'}\n")
 
 
-def test_it6_29_a_v1_package_under_the_default_agent_makes_the_same_calls_as_the_host_loop(tmp_path):
-    """IT6-29 / PR7-08 (M1 §1 默认 agent 即种子包): on the same World with the same scripted actor, the default agent
-    under the runner shell issues the tool-call sequence of agent.loop.Agent, the same final message and turn count,
-    and the same (kind, name) sequence of model turns, tool calls, hook answers, blocks, skips and pushbacks — a plain
-    task, a package whose on_finish hook pushes back once, a package with a tool whose base call goes through the
-    broker, and a package whose before_tool hook blocks a call and so skips the rest of the turn."""
+def test_it6_29_a_v1_package_under_the_default_agent_makes_the_host_loops_calls(tmp_path):
+    """IT6-29 / PR7-08 (M1 §1 默认 agent 即种子包): on the World with a scripted actor, the default agent under the
+    runner shell makes the calls, the final message and the turns the host loop made (agent.loop.Agent, compared
+    call for call until it was removed in P1 step 5) — a plain task, a package whose on_finish hook pushes back once,
+    a package with a tool whose base call goes through the broker, and a package whose before_tool hook blocks a call
+    and so skips the rest of the turn."""
+    update = ("api_fetch", {"method": "PATCH", "url": rsi.HUBSPOT, "body": '{"id": "c1", "stage": "opportunity"}'})
+    post = ("api_fetch", {"method": "POST", "url": rsi.SLACK,
+                          "body": '{"channel": "C1", "text": "deal moved for the contact"}'})
     cases = {
-        "plain": ({}, {}, rsi.BusinessWorker, NOTIFY_TASK),
+        "plain": ({}, {}, rsi.BusinessWorker, NOTIFY_TASK, [update], "Done: the record is updated.", 2,
+                  [("assistant", "tool_use"), ("tool", "api_fetch"), ("assistant", "end")]),
         "on_finish": ({"middlewares/guard.py": FINISH_GUARD},
                       {"hooks": [{"name": "guard", "site": "on_finish", "entrypoint": "middlewares/guard.py:run"}]},
-                      rsi.BusinessWorker, NOTIFY_TASK),
+                      rsi.BusinessWorker, NOTIFY_TASK, [update, post], "Done: the record is updated. Message posted.",
+                      4, [("assistant", "tool_use"), ("tool", "api_fetch"), ("assistant", "end"),
+                          ("hook", "guard", "block"), ("pushback",), ("assistant", "tool_use"), ("tool", "api_fetch"),
+                          ("assistant", "end"), ("hook", "guard", "continue")]),
         "tool": ({"tools/paged.py": "def run(ctx, args):\n    r = ctx.call_tool('api_search', {'q': args.get('q', '')})\n"
                                     "    return 'paged: ' + r.output\n"},
                  {"tools": [{"name": "paged_search", "description": "search every page",
                              "input_schema": {"type": "object", "properties": {"q": {"type": "string"}}},
                              "entrypoint": "tools/paged.py:run"}]},
                  lambda: Scripted([ChatTurn("", [ToolCall("c1", "paged_search", {"q": "x"})], "tool_use"),
-                                   ChatTurn("done", [], "end")]), "find x"),
+                                   ChatTurn("done", [], "end")]), "find x", [("api_search", {"q": "x"})], "done", 2,
+                 [("assistant", "tool_use"), ("tool", "api_search"), ("assistant", "end")]),
         "before_tool": ({"middlewares/b.py": BLOCKER},
                         {"hooks": [{"name": "b", "site": "before_tool", "entrypoint": "middlewares/b.py:run"}]},
                         lambda: Scripted([ChatTurn("", [ToolCall("a", "api_search", {"q": "r"}),
                                                         ToolCall("b", "api_fetch", {"url": "u", "method": "POST"}),
                                                         ToolCall("c", "api_search", {"q": "after"})], "tool_use"),
-                                          ChatTurn("stop", [], "end")]), "do it"),
+                                          ChatTurn("stop", [], "end")]), "do it", [("api_search", {"q": "r"})],
+                        "stop", 2, [("assistant", "tool_use"), ("hook", "b", "continue"), ("tool", "api_search"),
+                                    ("hook", "b", "block"), ("tool_blocked", "api_fetch"),
+                                    ("tool_skipped", "api_search"), ("assistant", "end")]),
     }
-    for name, (files, manifest, provider, task) in cases.items():
-        old_world, new_world = World(), World()
-        bound, _ = bound_with(tmp_path / name / "old", files, manifest)
-        old = agent_for(tmp_path / name / "old", bound, old_world, provider())
-        old_result = old.run(task)
-        bound, _ = bound_with(tmp_path / name / "new", files, manifest)
-        new = shell_agent(tmp_path / name / "new", bound, new_world, provider())
-        new_result = new.run(task)
-        assert new_world.calls == old_world.calls, name
-        assert new_result.text == old_result.text and new_result.turns == old_result.turns, name
-        old_events, new_events = transcript(tmp_path / name / "old", old), transcript(tmp_path / name / "new", new)
-        assert trace(new_events) == trace(old_events), (name, trace(new_events), trace(old_events))
-        if name != "before_tool":           # a block is the one event the two loops write under different kinds
-            assert kinds(new_events) == kinds(old_events), name
+    for name, (files, manifest, provider, task, calls, text, turns, expected) in cases.items():
+        world = World()
+        bound, _ = bound_with(tmp_path / name, files, manifest)
+        shell = shell_agent(tmp_path / name, bound, world, provider())
+        result = shell.run(task)
+        assert world.calls == calls, name
+        assert (result.text, result.turns) == (text, turns), name
+        events = transcript(tmp_path / name, shell)
+        assert trace(events) == expected, (name, trace(events))
         if name == "on_finish":
-            assert new_world.calls == [("api_fetch", {"method": "PATCH", "url": rsi.HUBSPOT,
-                                                      "body": '{"id": "c1", "stage": "opportunity"}'}),
-                                       ("api_fetch", {"method": "POST", "url": rsi.SLACK,
-                                                      "body": '{"channel": "C1", "text": "deal moved for the contact"}'})]
-            pushes = [e for e in new_events if e["kind"] == "pushback"]
-            assert len(pushes) == 1 and pushes[0]["source"] == "package"
-            assert [e["action"] for e in new_events if e["kind"] == "hook"] == ["block", "continue"]
+            assert [e["source"] for e in events if e["kind"] == "pushback"] == ["package"]
         if name == "tool":
-            assert trace(new_events) == [("assistant", "tool_use"), ("tool", "api_search"), ("assistant", "end")]
-            assert [e["tool"] for e in new_events if e["kind"] == "package_tool"] == ["paged_search"]
+            assert [e["tool"] for e in events if e["kind"] == "package_tool"] == ["paged_search"]
         if name == "before_tool":
-            assert new_world.calls == [("api_search", {"q": "r"})]       # the prefix ran, the block and the rest not
-            assert trace(new_events) == [("assistant", "tool_use"), ("hook", "b", "continue"), ("tool", "api_search"),
-                                         ("hook", "b", "block"), ("tool_blocked", "api_fetch"),
-                                         ("tool_skipped", "api_search"), ("assistant", "end")]
-            assert [e["source"] for e in new_events if e["kind"] in ("tool_blocked", "tool_skipped")] == ["package"] * 2
+            assert [e["source"] for e in events if e["kind"] in ("tool_blocked", "tool_skipped")] == ["package"] * 2
         # the default agent of a package with code ran in the worker; the host wrote the session's cost
-        assert (new.placement == "worker") == bool(files)
-        assert bool([e for e in new_events if e["kind"] == "worker_session"]) == bool(files)
+        assert (shell.placement == "worker") == bool(files)
+        assert bool([e for e in events if e["kind"] == "worker_session"]) == bool(files)
 
 
 def test_it6_29_an_agent_component_runs_in_the_worker_and_every_model_and_tool_call_goes_through_the_host(tmp_path):
@@ -1231,7 +1218,7 @@ def test_it6_43_a_crash_at_run_time_is_infrastructure_a_crash_in_the_draft_check
         bound, objects = v2_bound(tmp_path / name, code)
         manifest = rsi.run_manifest("c", "evolved", "train", budget=Budget(max_steps=2, max_tool_calls=12),
                                     data=splits.hash())
-        factory = make_agent_factory(rsi.runtime(tmp_path / name), Scripted([ChatTurn("x", [], "end")]),
+        factory = make_agent_factory(rsi.ws(tmp_path / name), Scripted([ChatTurn("x", [], "end")]),
                                      budget=manifest.budget, bound=bound, worker=ProcessWorker(for_tests=True),
                                      max_effort="high")
         attempt = run_attempt(suite, "rsi.update_stage", factory, run=manifest, splits=splits)

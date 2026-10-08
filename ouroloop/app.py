@@ -58,10 +58,10 @@ class App:
         actor = bound.actor if bound.actor_identity is not None else provider
         if actor is None:
             raise P.BindError("the export pins no actor and none was given")
-        # The export carries K's `max_effort` instead of K itself: with one, the app runs under the runner shell
-        # (gateway, broker, default agent) as the activity did; an app exported from an older K keeps the v1 loop.
+        # The export carries K's `max_effort` instead of K itself: the app runs under the runner shell (gateway,
+        # broker, default agent) as the activity did, at that ceiling; an app exported from an older K has none.
         core = self.objects.get(self.manifest.required_core_ref) if self.manifest.required_core_ref else {}
-        return make_agent_factory(rt, actor, budget=budget, bound=bound, objects=self.objects, worker=worker,
+        return make_agent_factory(rt, actor, budget=budget, bound=bound, worker=worker,
                                   max_effort=(core or {}).get("max_effort"))
 
     def describe(self) -> dict:

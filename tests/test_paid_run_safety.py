@@ -451,8 +451,7 @@ def test_the_in_flight_cap_is_shared_by_the_arms_and_screens_of_one_gate(fake_up
             releases, rel, objects = rsi.workspace(root, split_ref=splits.hash())
             bound = P.bind_release(rel, profile="task", services=P.Services(objects), authorization="bootstrap")
             manifest = rsi.run_manifest(name, "base", "dev", data=splits.hash(), system_release_ref=rel)
-            factory = make_agent_factory(rsi.runtime(root), InFlight(), budget=manifest.budget, bound=bound,
-                                         objects=objects)
+            factory = make_agent_factory(rsi.ws(root), InFlight(), budget=manifest.budget, bound=bound)
             rows = run_tasks(suite, list(rsi.DEV), factory, run=manifest, splits=splits,
                              results=Results(root, rsi.DOMAIN), release_ref=rel, arm=name, concurrency=2)
             assert len(rows) == len(rsi.DEV) and all(r.validity == "valid" for r in rows)

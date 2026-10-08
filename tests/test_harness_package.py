@@ -292,18 +292,22 @@ def test_a_package_that_runs_code_is_refused_without_a_worker(tmp_path):
 
 
 def test_the_scripted_worker_follows_a_skill_it_reads(tmp_path):
-    """IT6-22 (text part) in miniature: the same request, and a package skill changes what gets done."""
-    from ouroloop.agent import Agent, AgentConfig
+    """IT6-22 (text part) in miniature: the same request, and a package skill changes what gets done — under the
+    runner shell, the default agent offering read_skill beside the base tools."""
+    from types import SimpleNamespace
+    from ouroloop.benchmark import Budget
+    from ouroloop.evolve.task_eval import Budgeted, make_agent_factory
     from tests import rsi
     releases, rel, objects, package = v06_workspace(tmp_path, text_files(skill=rsi.FINISH_CHECK_MARK))
     bound = P.bind_release(rel, profile="task", services=P.Services(objects))
-    worker = rsi.BusinessWorker()
-    prompt, _ = bound.system_prompt("You are a business agent.")
     calls = []
 
     class World:
+        tool_calls = 0
+
         def specs(self):
-            return []
+            from ouroloop.chat import ToolSpec
+            return [ToolSpec("api_fetch", "fetch", {"type": "object", "properties": {}})]
 
         def run(self, name, args):
             from ouroloop.agent.tools import ToolResult
@@ -313,8 +317,9 @@ def test_the_scripted_worker_follows_a_skill_it_reads(tmp_path):
         def mutates(self, name, args):
             return True
 
-    agent = Agent(worker, rsi.runtime(tmp_path), hp.mount(World(), bound), system=prompt,
-                  config=AgentConfig(approve="auto", max_turns=6, gated_tools=()))
+    budget = Budget(max_steps=6, max_tool_calls=12)
+    make = make_agent_factory(rsi.ws(tmp_path), rsi.BusinessWorker(), budget=budget, bound=bound, max_effort="high")
+    agent = make(Budgeted(World(), budget), SimpleNamespace(task_id="t1"), "You are a business agent.")
     agent.run("Move Dana Reyes to opportunity stage, then post to #ops with the phrase deal moved.")
     assert calls == [rsi.HUBSPOT, rsi.SLACK]
 

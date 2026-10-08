@@ -12,12 +12,10 @@ import json
 import re
 
 from ouroloop.adapters import automationbench as ab
-from ouroloop.train.backends import KeywordBackend
 from ouroloop.benchmark import Budget, RunManifest, SplitManifest, digest
 from ouroloop.chat import ChatTurn, ToolCall
 from ouroloop.evolve import contracts as ct
-from ouroloop.points import builtin_points
-from ouroloop.runtime import Runtime
+from ouroloop.workspace import Workspace
 
 DOMAIN = "rsi"
 SLACK = "https://slack.com/api/chat.postMessage"
@@ -51,22 +49,29 @@ def splits(s: ab.Suite) -> SplitManifest:
     return SplitManifest(DOMAIN, s.versions, rule, s.entries(fams), dict(SPLITS))
 
 
-def runtime(root) -> Runtime:
-    rt = Runtime(root, {"mock": KeywordBackend()}, "mock", seed=0)
-    for p in builtin_points():
-        rt.register(p)
-    return rt
+def ws(root) -> Workspace:
+    """What an attempt records its session in: the thin workspace the runner shell needs (bench.attempt_workspace)."""
+    return Workspace(root)
+
+
+def harness_table() -> dict:
+    """The harness table of a v3-style K: the automationbench_harness_v3 preset's, with no sandbox (the tests that
+    need the isolated worker build their own). K fixes `max_effort`, as every K frozen since v0.3 does."""
+    from ouroloop import bench
+    table = bench.harness_settings({"improvement": {"mode": "automatic", "preset": "automationbench_harness_v3"}})
+    return {**table, "sandbox": None, "image": None}
 
 
 def workspace(root, split_ref: str = "", worker_ref: str | None = None, research_ref: str | None = None,
               **core_kw):
-    """A workspace with W0, R0, K and a bootstrap release installed. -> (Releases, release ref, Objects)."""
+    """A workspace with W0, R0, a v3-style K and a bootstrap release installed. -> (Releases, release ref, Objects)."""
     from ouroloop import policies as P
     objects = ct.Objects(root)
+    capabilities = {"training": False, "harness": harness_table(), **core_kw.pop("capabilities", {})}
     releases, rel = P.bootstrap_workspace(root, objects=objects, worker_ref=worker_ref,
                                           research_ref=research_ref, domain=DOMAIN, split_ref=split_ref,
                                           adapter="ouroloop.adapters.automationbench", scorer="rubric.v1",
-                                          toolset=ab.TOOLSET, **core_kw)
+                                          toolset=ab.TOOLSET, capabilities=capabilities, **core_kw)
     return releases, rel, objects
 
 
@@ -182,16 +187,15 @@ class BusinessWorker:
 
 
 def collect(root, suite, splits, *, worker_ref=None, provider=None, tasks=(), probe=True, serving=None,
-            releases=None, objects=None, rt=None, split="train", repeats=1, candidate="W0", role="base",
-            arm="subject", plan_ref="", stop_view=None):
-    """Run some tasks with a bound release and return everything a later step needs.
+            releases=None, objects=None, split="train", repeats=1, candidate="W0", role="base",
+            arm="subject", plan_ref=""):
+    """Run some tasks with a bound release under the runner shell and return everything a later step needs.
 
-    With `probe`, the completion probe labels each stop decision from the state it was made on, which is what the
-    train split is for; the runner refuses it anywhere else.
-    """
+    `probe` attaches the completion probe, which the runner refuses anywhere but the train split; the runner shell
+    asks no stop point, so it labels nothing (the stop decisions the training tests build from are played by
+    tests/train/stop_fixtures.py)."""
     from ouroloop import policies as P
     from ouroloop.evolve.task_eval import make_agent_factory, run_tasks
-    rt = rt or runtime(root)
     objects = objects or ct.Objects(root)
     if releases is None:
         releases, release, objects = workspace(root, split_ref=splits.hash(), worker_ref=worker_ref)
@@ -202,12 +206,11 @@ def collect(root, suite, splits, *, worker_ref=None, provider=None, tasks=(), pr
                             worker_ref=objects.load(release, ct.SystemRelease).worker_ref,
                             research_ref=objects.load(release, ct.SystemRelease).research_ref,
                             core_ref=objects.load(release, ct.SystemRelease).core_ref)
-    factory = make_agent_factory(rt, provider or BusinessWorker(), budget=manifest.budget, bound=bound,
-                                objects=objects, stop_view=stop_view)
+    factory = make_agent_factory(ws(root), provider or BusinessWorker(), budget=manifest.budget, bound=bound)
     results = run_tasks(suite, list(tasks or TRAIN), factory, run=manifest, splits=splits, probe=probe,
                         repeats=repeats, arm=arm, plan_ref=plan_ref, release_ref=release)
-    return {"rt": rt, "objects": objects, "bound": bound, "results": results, "releases": releases,
-            "release": release, "run": manifest}
+    return {"objects": objects, "bound": bound, "results": results, "releases": releases, "release": release,
+            "run": manifest}
 
 
 # ---------------------------------------------------------------------------- a scripted research step

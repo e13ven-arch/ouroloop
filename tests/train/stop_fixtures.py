@@ -25,7 +25,10 @@ BUDGET = Budget(max_steps=8, max_tool_calls=12)
 
 
 def stop_runtime(root, **kw) -> Runtime:
-    """The general runtime over a workspace root, with the business stop point registered under its name, "stop"."""
+    """The general runtime over a workspace root, with the business stop point registered under its name, "stop", and
+    in-process serving (a trained artifact's load probe asks a model through it)."""
+    from ouroloop.train.serving import Serving
+    kw.setdefault("serving", Serving())
     rt = Runtime(root, seed=0, **kw)
     rt.register(business_stop_point())
     return rt

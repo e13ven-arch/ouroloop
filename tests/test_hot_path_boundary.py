@@ -120,8 +120,8 @@ def test_the_workspace_writes_the_session_row_and_release_file_the_v1_runtime_wr
     assert records["workspace"][0]["spec"] == BUILTIN_SPEC and records["workspace"][0]["model"] is None
 
 
-def test_a_runner_shell_activity_gets_the_thin_workspace_and_an_older_k_the_v1_runtime(fake_upstream, tmp_path,
-                                                                                         monkeypatch):
+def test_an_activity_gets_the_thin_workspace_and_builds_serving_only_when_asked(fake_upstream, tmp_path,
+                                                                                 monkeypatch):
     import test_attempt_behaviour as tab
     from ouroloop.workspace import Workspace
     tab.run_baseline(fake_upstream, tmp_path, monkeypatch)
@@ -133,8 +133,8 @@ def test_a_runner_shell_activity_gets_the_thin_workspace_and_an_older_k_the_v1_r
     from ouroloop.train.config import build_serving
     serving = activity.rt.serving                            # a model policy to bind asks: the config's, built once
     assert serving.store.table == build_serving(cfg).store.table and activity.rt.serving is serving
-    v1 = bench.attempt_workspace({"workspace": {"root": str(tmp_path / "v1")}}, ".", runner_shell=False)
-    assert type(v1).__name__ == "Runtime" and "stop" in v1.points
+    # every K's attempts run under the runner shell now (P1 step 5): a workspace without a release gets the same
+    assert isinstance(bench.attempt_workspace({"workspace": {"root": str(tmp_path / "plain")}}, "."), Workspace)
 
 
 # ---------------------------------------------------------------------------- feedback only where it can exist

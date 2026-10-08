@@ -420,7 +420,7 @@ def _attempt(cfg: dict, base: str | Path, bench: BenchConfig, suite: ab.Suite, m
         out("run        no [llm] table: the checks above need no model, an attempt does")
         return {}
     max_effort = smoke_max_effort(cfg, base)
-    rt = attempt_workspace(cfg, base, runner_shell=max_effort is not None)
+    rt = attempt_workspace(cfg, base)
     provider = config_mod.build_provider(cfg["llm"])
     model = model_identity(provider, cfg["llm"])
     # The prompt of this run is whatever system prompt upstream ships with the tasks being attempted. They are
@@ -452,18 +452,12 @@ def _attempt(cfg: dict, base: str | Path, bench: BenchConfig, suite: ab.Suite, m
     return {"attempts": [r.to_json() for r in rows], "summary": total, "run": run.to_json()}
 
 
-def attempt_workspace(cfg: dict, base: str | Path = ".", *, runner_shell: bool):
+def attempt_workspace(cfg: dict, base: str | Path = ".") -> Workspace:
     """What an activity's attempts record their sessions in (docs/PLAN.md P1 step 2), at the config's workspace root.
-    Under the runner shell — a K that fixes `max_effort` — the host asks no decision point, so the thin
-    workspace.Workspace is all an attempt needs: the root, the `session` row and `.release.json`, and the config's
-    serving, built only if something asks for it (a model policy to bind, a trainer). An older K keeps the v1 loop,
-    which asks the built-in decision points through the full v1 runtime (config.build_runtime) until that loop goes
-    (P1 step 5)."""
-    if runner_shell:
-        return Workspace(config_mod.workspace_root(cfg, base), serving=lambda: _serving(cfg))
-    rt = config_mod.build_runtime(cfg, base)
-    config_mod.register_builtin_points(rt)
-    return rt
+    The runner shell asks no decision point, so the thin workspace.Workspace is all an attempt needs: the root, the
+    `session` row and `.release.json`, and the config's serving, built only if something asks for it (a model policy
+    to bind, a trainer)."""
+    return Workspace(config_mod.workspace_root(cfg, base), serving=lambda: _serving(cfg))
 
 
 def _serving(cfg: dict):
@@ -473,17 +467,17 @@ def _serving(cfg: dict):
 
 
 def smoke_max_effort(cfg: dict, base: str | Path) -> str | None:
-    """Which loop the smoke's attempts run (docs/modules/01_POLICY_RUNTIME.md §1): the active release's K fixes
-    `max_effort` when the workspace has one — the smoke then runs under the runner shell as the activity's attempts
-    do, and under the same ceiling — else the configured first-version table's; None (the v1 loop) when neither
-    sets one. A smoke binds no release, so this is read from the workspace directly, not from a bound runtime."""
+    """The effort ceiling of the smoke's attempts (docs/modules/01_POLICY_RUNTIME.md §1): the active release's K's
+    `max_effort` when the workspace has one — the smoke then runs under the ceiling the activity's attempts run
+    under (none for a K frozen before v0.3) — else the configured first-version table's, else DEFAULT_MAX_EFFORT. A
+    smoke binds no release, so this is read from the workspace directly, not from a bound runtime."""
     from .agent.runner import release_max_effort
     root = config_mod.workspace_root(cfg, base)
     release_ref = Releases(root, _ct.Objects(root)).active().get("release_ref")
     if release_ref:
         return release_max_effort(_ct.Objects(root), release_ref)
     settings = harness_settings(cfg)
-    return settings["max_effort"] if settings else None
+    return settings["max_effort"] if settings else DEFAULT_MAX_EFFORT
 
 
 def run_phase(cfg: dict, base: str | Path = ".", *, phase: str = "smoke", **kw) -> dict:
@@ -636,13 +630,12 @@ class Improvement:
 
     def feedback(self, release_ref: str) -> _ct.FeedbackSet:
         """M2's labels on the ledger's completion decisions (train/feedback.py's build_feedback), as a measurement of
-        `release_ref` hands them to R. They are built only where a decision can be on the ledger or used: a K without
-        the runner shell (the v1 loop records a stop decision at every finish), a core with training on, or a W that
-        binds a decision target to a model. Otherwise — every release under the runner shell, which asks no decision
-        point — the set is empty, and it is the empty set of the default builder, with the same keys and shape, so
-        R's context reads as it did; the decision stack is not imported (docs/PLAN.md P1 step 2)."""
-        from .agent.runner import release_max_effort
-        if release_max_effort(self.objects, release_ref) is not None and not self._decides(release_ref):
+        `release_ref` hands them to R. They are built only where a decision can be used: a core with training on, or
+        a W that binds a decision target to a model. Otherwise the set is empty, and it is the empty set of the
+        default builder, with the same keys and shape, so R's context reads as it did; the decision stack is not
+        imported (docs/PLAN.md P1 step 2). The runner shell asks no decision point, so what the ledger holds of one
+        was written by something else (a host that asks the stop point; v2)."""
+        if not self._decides(release_ref):
             return _ct.FeedbackSet(builder_ref=FEEDBACK_BUILDER)
         from .train.feedback import build_feedback
         return build_feedback(self.rt, objects=self.objects, scope_id=self.scope_id)
@@ -789,7 +782,6 @@ class Improvement:
                                        operation=f"{self.scope_id}:{arm}:{run.hash()}", max_retries=0,
                                        allocation=self.allocation)
         factory = make_agent_factory(self.rt, provider, budget=self.attempt_budget, bound=bound,
-                                     objects=self.objects, stop_view=self.stop_view,
                                      meta={"arm": arm, "scope": self.scope_id}, worker=self.worker,
                                      # v0.5: a library stream's retry note per task (train only); None otherwise
                                      extra_system=extra_system)
@@ -2328,8 +2320,7 @@ def open_activity(cfg: dict, base: str | Path = ".", *, out: Callable[[str], Non
     out(f"release    {_ct.short(release_ref)} active, core {_ct.short(_ct.SystemRelease.from_json(objects.get(release_ref)).core_ref)}")
     for line in drift:
         out(f"DRIFT      {line}")
-    from .agent.runner import release_max_effort
-    rt = attempt_workspace(cfg, base, runner_shell=release_max_effort(objects, release_ref) is not None)
+    rt = attempt_workspace(cfg, base)
     return Activity(bench, rsi, suite, manifest, drift, root, results, rt, objects, releases, versions,
                     release_ref, Budgets(root), bootstrapped)
 
@@ -2654,10 +2645,8 @@ def _harness_of(activity: Activity) -> dict | None:
 
 def _slot_workspace(activity: Activity, root: str | Path):
     """A research slot's arm or common-inputs workspace at `root`, for the attempts it runs under the activity's K:
-    attempt_workspace over a config with no backends but the mock, as the slot's workspaces always had."""
-    from .agent.runner import release_max_effort
-    return attempt_workspace({"workspace": {"root": str(root)}, "backends": {"mock": {"type": "mock"}}}, ".",
-                             runner_shell=release_max_effort(activity.objects, activity.release_ref) is not None)
+    attempt_workspace over a config with no serving of its own, as the slot's workspaces always had."""
+    return attempt_workspace({"workspace": {"root": str(root)}}, ".")
 
 
 def _five_limits(activity: Activity, plan: TaskEvalPlan | None) -> bool:

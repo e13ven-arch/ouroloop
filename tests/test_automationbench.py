@@ -10,32 +10,10 @@ import os
 import pytest
 
 from ouroloop.adapters import automationbench as ab
-from ouroloop.agent import AgentConfig
-from ouroloop.train.backends import KeywordBackend
 from ouroloop.benchmark import Budget, RunManifest, Results, SplitManifest, assign_splits
 from ouroloop.chat import ChatTurn, ScriptedChat, ToolCall
 from ouroloop.evolve.task_eval import Budgeted, run_attempt, run_tasks
-from ouroloop.points import builtin_points
-from ouroloop.runtime import Runtime
-
-class NotDone:
-    """A decision backend that answers "the task is not done" with a fixed confidence."""
-    name = "fixed"
-
-    def __init__(self, p_no: float):
-        self.p_no = p_no
-
-    def decide(self, requests):
-        from ouroloop.train.types import Answer
-        return [Answer({"no": self.p_no, "yes": 1 - self.p_no}, "fixed-1") for _ in requests]
-
-
-@pytest.fixture
-def every_stop_may_act(monkeypatch):
-    """v0.2 already lets `stop` act; this pins it so the test does not depend on that staying true."""
-    from ouroloop.train import policy
-    monkeypatch.setattr(policy, "ACTING", set(policy.ACTING) | {"stop"})
-
+from ouroloop.workspace import Workspace
 
 LEAD = "marketing.lead_followup"
 HOLD = "marketing.unverified_request_hold"
@@ -64,10 +42,8 @@ def solve(world_calls):
 
 
 def runtime(tmp_path):
-    rt = Runtime(tmp_path / "ws", {"mock": KeywordBackend()}, "mock", seed=0)
-    for p in builtin_points():
-        rt.register(p)
-    return rt
+    """What an attempt records its session in (bench.attempt_workspace)."""
+    return Workspace(tmp_path / "ws")
 
 
 def factory(rt, provider, budget=None):
@@ -546,80 +522,6 @@ class TestCompletionProbe:
                              probe=True).result
         # Every scoring happened after the last tool call, never between them.
         assert seen and all(n == result.tool_calls == 1 for n in seen)
-
-
-class TestTheInterventionWorks:
-    """Whether the stop point, once it acts, can change a benchmark task's outcome.
-
-    A Marketing task's `task_completed_correctly` is a conjunction over a median of twelve scored assertions, so a
-    task is lost by leaving one requirement undone. This is the mechanism that is supposed to catch that; these
-    tests check that it is wired, not that a model would judge well.
-    """
-
-    def train(self, suite):
-        fams, rule = ab.families(suite)
-        return SplitManifest("marketing", suite.versions, rule, suite.entries(fams),
-                             {f: "train" for f in fams.values()})
-
-    def half_then_finish_when_pushed(self):
-        """Stops after one of the two required writes; does the second only if sent back to work."""
-        def script(messages):
-            done = {json.loads(m["results"][0]["output"]).get("ok") for m in messages if m.get("role") == "tool"}
-            writes = sum(1 for m in messages if m.get("role") == "tool")
-            pushed = any(m.get("role") == "user" and "Keep working" in str(m.get("content", ""))
-                         for m in messages[1:])
-            if writes == 0:
-                return ChatTurn("", [ToolCall("c0", "api_fetch",
-                                              {"method": "PATCH", "url": HUBSPOT,
-                                               "body": json.dumps({"id": "c1", "stage": "opportunity"})})],
-                                "tool_use")
-            if pushed and writes == 1:
-                return ChatTurn("", [ToolCall("c1", "api_fetch",
-                                              {"method": "POST", "url": SLACK,
-                                               "body": json.dumps({"channel": "C1",
-                                                                   "text": "quarterly pipeline review"})})],
-                                "tool_use")
-            return ChatTurn("All done." if done else "Done.", [], "end")
-        return ScriptedChat(script)
-
-    def attempt(self, tmp_path, suite, points, backends=None, gated=None, confidence=0.9):
-        splits = self.train(suite)
-        run = RunManifest("base", "base", "train", {"model": "scripted"}, data=splits.hash(),
-                          budget=Budget(max_steps=8, max_tool_calls=8))
-        rt = Runtime(tmp_path / "ws", backends or {"mock": KeywordBackend()},
-                     "mock" if not backends else next(iter(backends)), seed=0)
-        for p in points:
-            rt.register(p)
-        if gated is not None:
-            gated(rt, "stop", "fixed-1", confidence - 0.3)
-        return rt, run_attempt(suite, LEAD, factory(rt, self.half_then_finish_when_pushed()), run=run,
-                               splits=splits, probe=True)
-
-    def test_without_the_point_acting_the_task_is_lost(self, tmp_path, suite, every_stop_may_act):
-        rt, at = self.attempt(tmp_path, suite, builtin_points())
-        assert at.result.success is False and at.result.partial_credit == 0.5
-        assert at.result.labelled > 0          # and the miss is on record as a "no" for the stop point
-        assert all(d.get("no") == 1.0 for d in [r.target()[0] for r in rt.ledger.rows() if r.target()])
-
-    def test_a_confident_not_done_sends_the_agent_back_and_the_task_passes(self, tmp_path, suite, gated,
-                                                                          every_stop_may_act):
-        from ouroloop.points import stop_point
-        from ouroloop.train.policy import Policy
-        rt, at = self.attempt(tmp_path, suite, [stop_point(policy=Policy(act=True, explore=0.0))],
-                              backends={"fixed": NotDone(0.9)}, gated=gated)
-        assert at.result.success is True and at.result.partial_credit == 1.0
-        assert at.result.steps > 2             # it was sent back to work
-        # The same scripted model, the same task: the only difference is the point acting.
-        scores = sorted(e["score"] for e in rt.ledger.events() if e["type"] == "outcome")
-        assert scores[0] == 0.5 and scores[-1] == 1.0
-
-    def test_an_unconfident_answer_takes_the_default_and_changes_nothing(self, tmp_path, suite, gated,
-                                                                        every_stop_may_act):
-        from ouroloop.points import stop_point
-        from ouroloop.train.policy import Policy
-        rt, at = self.attempt(tmp_path, suite, [stop_point(policy=Policy(act=True, explore=0.0))],
-                              backends={"fixed": NotDone(0.55)}, gated=gated, confidence=0.9)
-        assert at.result.success is False      # below the threshold: on_finish keeps its default, "yes"
 
 
 class TestTaskSignature:

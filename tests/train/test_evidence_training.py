@@ -1,9 +1,14 @@
 """M2 acceptance (docs/modules/02_EVIDENCE_TRAINING.md §6): feedback that only observed facts produce, family
-grouping, re-rendering from what was stored, and training with no promotion side effect."""
+grouping, re-rendering from what was stored, and training with no promotion side effect.
+
+The stop decisions these build from are played by stop_fixtures.play, a host that asks the stop point: the runner
+shell asks none, and the v1 loop that did was removed in P1 step 5. The task results beside them are real attempts
+under the runner shell (rsi.collect)."""
 import json
 
 import pytest
 import rsi
+from stop_fixtures import play, stop_runtime
 from train_fixtures import PhraseTrainer, UnknownJobTrainer
 
 from ouroloop import policies as P
@@ -28,11 +33,19 @@ def splits(suite):
 
 
 def gather(root, suite, splits, *, tasks=None, repeats=1, worker=None, provider=None, probe=True):
+    """The tasks' attempts under the runner shell, and the same tasks played with their stop decisions labelled by
+    the completion probe; out["rt"] is the general runtime over the workspace those decisions are on."""
     objects = ct.Objects(root)
+    tasks = tasks or ["rsi.notify_after_update"]
     out = rsi.collect(root, suite, splits, worker_ref=worker or rsi.w1(objects), objects=objects,
-                      tasks=tasks or ["rsi.notify_after_update"], repeats=repeats, probe=probe,
-                      provider=provider)
-    feedback = build_feedback(out["rt"], objects=objects, scope_id="round-1")
+                      tasks=tasks, repeats=repeats, probe=probe, provider=provider)
+    rt = stop_runtime(root)
+    for task in tasks:
+        for i in range(repeats):
+            play(rt, suite, splits, task, provider or rsi.BusinessWorker(), bound=out["bound"], objects=objects,
+                 probe=probe, attempt=i)
+    out["rt"] = rt
+    feedback = build_feedback(rt, objects=objects, scope_id="round-1")
     return out, feedback
 
 
@@ -74,13 +87,14 @@ def test_dt02_one_episode_yields_a_no_before_the_step_and_a_yes_after_it(tmp_pat
 
 def test_dt02_the_probe_is_refused_outside_the_train_split(tmp_path, suite, splits):
     objects = ct.Objects(tmp_path / "ws")
-    rt = rsi.runtime(tmp_path / "ws")
     releases, release, _ = rsi.workspace(tmp_path / "ws", split_ref=splits.hash(), worker_ref=rsi.w1(objects))
     bound = P.bind_release(release, profile="task", services=P.Services(objects))
     manifest = rsi.run_manifest("W1", "base", "dev", data=splits.hash())
-    factory = make_agent_factory(rt, rsi.BusinessWorker(), budget=manifest.budget, bound=bound, objects=objects)
+    factory = make_agent_factory(rsi.ws(tmp_path / "ws"), rsi.BusinessWorker(), budget=manifest.budget, bound=bound)
     with pytest.raises(ValueError, match="only the train split"):
         run_attempt(suite, "rsi.dev_notify_after_update", factory, run=manifest, splits=splits, probe=True)
+    with pytest.raises(ValueError, match="only the train split"):
+        play(stop_runtime(tmp_path / "ws"), suite, splits, "rsi.dev_notify_after_update", rsi.BusinessWorker())
 
 
 # ---------------------------------------------------------------------------- DT-03
@@ -251,15 +265,12 @@ def test_dt07_a_scorer_that_raises_produces_unknown_and_never_a_no(tmp_path, sui
 
     monkeypatch.setattr(ab.Episode, "score", broken)
     root = tmp_path / "ws"
-    objects = ct.Objects(root)
-    out = rsi.collect(root, suite, splits, worker_ref=rsi.w1(objects), objects=objects,
-                      tasks=["rsi.notify_after_update"])
+    out, feedback = gather(root, suite, splits)
     assert out["results"][0].validity == "invalid" and out["results"][0].failure_class == "evaluator"
-    feedback = build_feedback(out["rt"], objects=objects)
     assert feedback.records and all(r.status == "unknown" and not r.target for r in feedback.records)
     assert not feedback.valid()
     built = build_task_dataset(out["rt"], business_stop_point(), feedback, out_dir=root / "data",
-                              objects=objects, splits=splits, min_groups=1)
+                              objects=out["objects"], splits=splits, min_groups=1)
     assert built.status == "insufficient_data" and built.exclusions["status:unknown"] >= 1
 
 
