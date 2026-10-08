@@ -4,11 +4,13 @@
 
 v0.3（2026-10-04，DESIGN v0.7）在本模块加的是：确认复测的状态与记账（§1、§2）、一轮 k 个候选与 train 侧筛选的子操作（§1）、每次尝试成本进收据、aux 调用的计量、单次尝试硬上限的维度、并发默认 8 与订阅速率上限的处理、逐题笔记并发、final 份额的定法（§2）。§3 的暂停与结束规则不变，只加两条分类。不变的还有：一个活动一个预算根、带预留的账本、续跑的冻结输入、Docker 隔离与 broker、`claude_code` provider。
 
+2026-10-08（瘦身第一批，分支 `slim/1`，[PLAN](../PLAN.md) P1 第 6 步）：`execute_experiment` 不再有 screening 一步（v1 的 dev 筛选随 task_gate 的 `screen()` 删了）。`STATES`/`NEXT` 仍列着 `screening` 与 `screened_out`，旧的实验日志照样能读、能续跑。没有调用者的 `execution.spend`、`Budgets.open_reservations` 与 `_takes` 也删了：生产路径的计费走 MeteredProvider（EX-04），测试读账本用 `tests/rsi.py` 的辅助函数。预留、份额、按 attempt id 续跑、五项硬限额与 `_verify_bound` 都没动。
+
 v0.5（2026-10-07 合入；2026-10-08 现状）在本模块加的是：固定代码候选轮的状态与续跑（§1 末）、`library`/`learn` 付费前的预算检查（§2 末）。`learn` 与重拟轮随方法库按瘦身第三批拟删（用户可否决）。
 
 ## 1. 状态机与子操作
 
-deployment 保留已有 drafted → admitted → building → screening（可选）→ evaluating → evaluated → accepted → installing → installed；其他终态保持 rejected/inconclusive/invalid/screened_out/installation_failed/stale_parent/cancelled。installation_failed 仅可重试同一已接受 artifact 的安装。
+deployment 保留已有 drafted → admitted → building → screening（可选；2026-10-08 起不再进入，只为读旧日志保留）→ evaluating → evaluated → accepted → installing → installed；其他终态保持 rejected/inconclusive/invalid/screened_out/installation_failed/stale_parent/cancelled。installation_failed 仅可重试同一已接受 artifact 的安装。
 
 v0.3 在 evaluating 与 evaluated 之间加 **confirming**（v0.3，2026-10-04）：计划的 `confirmation_repeats > 0`（M3 §2.1(b)（v0.3）的一条规则：第一阶段清过 `min_gain` 0.05 与退步规则的候选，在同一计划下再测一次候选臂；复测这一次单独对合并对照也清过 `min_gain` 才 accepted——规则第二版，2026-10-04，第一版为“≥ 0”）时，第一次读数的裁决写成临时 evaluated 事件（verdict 与数字都记，不签发能安装的收据），进入 confirming 跑候选臂的复测，再写最终 evaluated 与收据。收据的 `kind` 只有 `full` 与 `confirmed`：确认通过与确认未通过都是 `kind="confirmed"`，后者 verdict rejected、`first_reading` 保留。第一阶段未清过门槛时不进入 confirming，直接 rejected。confirming 中 worker 不可用或账号错误按 evaluating 的同一规则处理（唯一重试、infrastructure_failed、暂停）；续跑时按 operation 事实判断复测已跑到哪，只补缺项。原因：确认是裁决的一部分而不是新的状态机；一个中间状态加一个收据 kind 就够让续跑与报告分辨它。候选臂每次都跑完整配对（v0.3 不做提前拒绝，M3 §2.1(g) 有说明）。实现（v0.3，2026-10-04）：`execute_experiment` 把 `confirming` 回调交给接受该参数的 evaluate 处理器（`Improvement._evaluate`）；回调写临时 `evaluated`（事件带 `provisional: true`、verdict、gain，无 receipt）再写 `confirming`；允许的转移是 evaluated → confirming、confirming → evaluated；续跑从 `confirming` 或临时 `evaluated` 进入时不重写这两条事件，也不再 screening，evaluate 处理器重新跑并按 attempt id 只补确认读数的缺项（确认读数是自己的运行身份，M3 §2.1(b)）。测试：`test_task_gate.py::test_a_confirming_experiment_passes_through_confirming_and_a_restart_finishes_it`（EX6-14）、`test_cycle.py::test_an_inner_gate_confirms_before_it_installs`。
 

@@ -9,6 +9,7 @@
 > - **v0.5。** 方法库 + 经验库已合并进 `m1-automationbench`（`7e7732e`），未发版。support 两臂对照在 v0.5 臂的 3b 之后由用户停止，没有 final，H1 未检验（§3 “v0.5” 第 3 步）。
 > - **下一阶段。** 计划在 [PLAN.md](PLAN.md)，本文不重复。本文各节是到 2026-10-08 为止的记录，被取代的写法就地加注。
 > - **删除的文件。** 2026-10-08 清理从 HEAD 移除的文件，在 tag `archive-2026-10-08`（清理前的 HEAD，`80254a3`）上可读。
+> - **瘦身第一批（PLAN P1）。** 2026-10-08 在分支 `slim/1` 上完成（JOURNAL 2026-10-08 瘦身第一批一条）。删掉的代码与文档同样在 tag `archive-2026-10-08` 上可读。同日用户定：不写金标身份测试，与现有工作区的哈希身份不再保持；改为读兼容与尝试行为两组测试，旧工作区只在 tag 上续跑或重渲染（§3“瘦身”第 0、1 步的注）。
 
 ## 1. 现有基础与缺口
 
@@ -501,7 +502,7 @@ v0.3 的五领域活动三轮都没有安装（第 5 步；[诊断](history/DIAG
 
 ### 瘦身（2026-10-07 决定）
 
-清单、逐模块判定与分批在 [design/SLIMMING_INVENTORY.md](design/SLIMMING_INVENTORY.md)；本节是顺序与前提。原则：提升效果、提升结果可信度、保护资金，三者占一样就留；已存记录引用的字段、字面量与 preset 数值一律不删，只让逻辑失效；先迁测试，后删代码；旧版本靠 tag。不改任何已报告的数字；验收全部离线（金标测试、记录重渲染、`--checks-only`），不付费。框架现约 35.3k 行，瘦身后主包约 17.8k～22.1k 行（看第三批两库删或留）。
+清单、逐模块判定与分批在 [design/SLIMMING_INVENTORY.md](design/SLIMMING_INVENTORY.md)；本节是顺序与前提。原则：提升效果、提升结果可信度、保护资金，三者占一样就留；已存记录引用的字段、字面量与 preset 数值一律不删，只让逻辑失效；先迁测试，后删代码；旧版本靠 tag。不改任何已报告的数字；验收全部离线（金标测试、记录重渲染、`--checks-only`），不付费。（2026-10-08 用户定，取代“字段一律不删”与“金标测试”：现有活动都不在 HEAD 上续跑，与旧工作区的哈希身份不必保持；只为保旧哈希而留的字段，在能让死代码一起删时可以删。要守住的是 HEAD 读得了四个工作区的 train/dev 记录、一次尝试的行为不变、新活动里的资金安全。见 [PLAN.md](PLAN.md) P1。）框架现约 35.3k 行，瘦身后主包约 17.8k～22.1k 行（看第三批两库删或留）。
 
 **用户的决定（2026-10-07）。**
 - (a) C4：保留 R 递归，换实现。删活动内研究位的编排（v3/v4/v5 的配置都写 `research_slots = 0`，单领域 dev 25 题开不了位）；判定代码抽成 `research/recursion.py`；C4 改为跨活动比较：R1 臂 = R0 加前一个活动产出、经台账核对的 playbook，同一划分、根与日程，W0、W\*\_R0、W\*\_R1 联合 final；新接线随下一个新领域活动做。v0.4 对 v0.5 不是 R0 对 R1，H1 仍叫“框架 v0.5 对 v0.4”。（2026-10-08：按 V2 §7 第 2 项，本基准已无可供 v1 联合 final 的新 test：marketing 已用尽，sales、hr 留给 v2，operations 留作 LODO。跨活动 C4 要么在 finance/support 按有条件复用规则跑并披露读取次数（会占用 C5 的 test 池），要么记 not_run；由用户定。）（同日用户改为全部域可跑 final：跨活动 C4 的联合 final 可以放在五个域里任何一个，按有条件复用规则披露读取次数；operations 仍整域留出。）
@@ -512,8 +513,8 @@ v0.3 的五领域活动三轮都没有安装（第 5 步；[诊断](history/DIAG
 
 **步骤（按序；每批一个分支 `slim/1～3`，单独合并、可单独 revert）。** support 两臂在主检出里用当前代码付费运行，任何 `.py` 改动都会改 `code_version`、从而改 K，所以每一批都等两份 final 评完、H1 算完之后才合入；在那之前只在隔离 worktree 里准备。（2026-10-08：对照已停，主检出里没有付费活动在跑，这个前提取消；“付费活动运行期间不往它的检出合入 `.py` 改动”照旧。排期见 [PLAN.md](PLAN.md)。）
 
-0. **准备。** 在 `7f65947`（finance final）打 tag `v0.4.0`，H1 算完后打 `v0.5.0`（2026-10-08：`v0.4.0` 已打；没有 H1，`v0.5.0` 的时机待定；清理前的 HEAD 已打 tag `archive-2026-10-08`）；先加金标测试并通过：v3/v5 preset 的 K 表、finance 与两份 support 冻结计划的 ref 与哈希、v4/v5 配置的 RunManifest 负载与 attempt id、W0/R0 的 ref、finance 的 report.json 重渲染逐字节相同；`test_aa_replay` 加 skip-if-absent。
-1. **第一批：死代码、遗留路径与决策栈隔离（删约 5.5k 行框架代码，移入子包约 4.4k 行）。** 先单独一个提交做热路径解耦（行为不变，加边界测试：bench 路径跑完后不 import 子包）；删旧入口（旧 CLI、demo、serve、suite、ceiling 跑法、rehearsal 与 ManualProvider）；可复用的决策/训练栈移进 `ouroloop/train/`；删冠军指针一族与 v1 Agent 循环（同一提交把 `tests/rsi.py` 迁到 v3 的 K）；顺带删 frontier 臂、task_gate 的经济模式、无调用者的函数与 v0.3 兼容。providers 里 “never training targets” 的注释（默认值随 v2.0）随这一批改（V2 §7）。验收：金标、全量（含子包与 jobs）与边界测试通过；副本里用 v4 配置跑 `--checks-only` 与假上游上的一次尝试，transcript、results 与 `session` 行逐字节不变。
+0. **准备。** 在 `7f65947`（finance final）打 tag `v0.4.0`，H1 算完后打 `v0.5.0`（2026-10-08：`v0.4.0` 已打；没有 H1，`v0.5.0` 的时机待定；清理前的 HEAD 已打 tag `archive-2026-10-08`）；先加金标测试并通过：v3/v5 preset 的 K 表、finance 与两份 support 冻结计划的 ref 与哈希、v4/v5 配置的 RunManifest 负载与 attempt id、W0/R0 的 ref、finance 的 report.json 重渲染逐字节相同；`test_aa_replay` 加 skip-if-absent。（2026-10-08 用户问“有必要吗？在我们这个场景”，定为不写金标测试：现有活动都不在 HEAD 上续跑，旧工作区在 tag `v0.4.0`、`archive-2026-10-08` 上重渲染或续跑。改写 `tests/test_record_compat.py`（HEAD 读得了 v4-finance、v3、v5-support、v4-support 四个工作区的 train/dev 记录）与 `tests/test_attempt_behaviour.py`（假上游上一次尝试的模型调用、工具调用、结果与评分不变），`2dbd935`。）
+1. **第一批：死代码、遗留路径与决策栈隔离（删约 5.5k 行框架代码，移入子包约 4.4k 行）。** 先单独一个提交做热路径解耦（行为不变，加边界测试：bench 路径跑完后不 import 子包）；删旧入口（旧 CLI、demo、serve、suite、ceiling 跑法、rehearsal 与 ManualProvider）；可复用的决策/训练栈移进 `ouroloop/train/`；删冠军指针一族与 v1 Agent 循环（同一提交把 `tests/rsi.py` 迁到 v3 的 K）；顺带删 frontier 臂、task_gate 的经济模式、无调用者的函数与 v0.3 兼容。providers 里 “never training targets” 的注释（默认值随 v2.0）随这一批改（V2 §7）。验收：金标、全量（含子包与 jobs）与边界测试通过；副本里用 v4 配置跑 `--checks-only` 与假上游上的一次尝试，transcript、results 与 `session` 行逐字节不变。（2026-10-08 完成，分支 `slim/1`：金标换成读兼容与尝试行为两组测试；框架代码 35.3k → 30.1k 行；默认套件 1117 passed、5 skipped；明细见 JOURNAL 2026-10-08 瘦身第一批一条。）
 2. **第二批：没产生过证据的机制（约 3.3k 行）。** 研究位编排（抽出 recursion）、多领域合并、采集批与段延长、旧轮次路径（先把夹具迁到 v3 preset 与 `SessionScript`）、context 与 inspection 的简化、api_errors、final 预算检查合一，最后单独一个提交去掉 bench 的版本史注释。验收：finance 报告重渲染只在 C2/C3/C4 的说明上有差异；support 两个工作区能载入、能续跑（`--checks-only`）。
 3. **第三批：v0.5 两库（0～4.3k 行）。** 完全照 V0_5_PLAN §3 的预注册读法决定，不追加读数：H1 成立两库都留，否定两库都删，不确定时各看自己的过程读数，留下的作 preset 开关。playbook 路径无论如何保留（跨活动 C4 的 R1 来源）。tag `v0.5.0` 上 support 两个工作区仍能重渲染、复算 H1。
    - **2026-10-08：本条规则用在停止的对照上。** H1 没有读数，两库各看自己的过程读数。

@@ -1,6 +1,6 @@
 # V2 训练链设计：数据管线、试验设计、训练管线
 
-> **现状（2026-10-08，support 对照停止后）：** 现行，已定稿；§7 第 9 项待用户定。用户已停止 support 两臂对照（JOURNAL 2026-10-08）：文中“等 support 两份 final 评完、H1 算完”的时机（§1“时机”、§2.6 第 8 条、§4.6 轨道 B 的排期、§7 同步清单）改为“瘦身第一批合入之后”，support 的重放现在就能做；support 没有跑 final，§7 第 2 项的“support（final 后读过 2 次）”应为读过 0 次。support 的 K（W\* 文本）现在只有 v0.5 臂经 dev gate 装上的经验库快照（release `9f07d95032b4`，6 个 library-* skill，没有 final）：拿它作 K，还是当 support 没有 W\*、K 为空，待用户定（§2.6 第 6 条、§7 第 4 项）。§7“核价更正待同步”清单里的 DESIGN、TECHNOLOGY、02、TRAINING_HOSTS、ROADMAP 五处已于 2026-10-08 整理时同步。
+> **现状（2026-10-08，support 对照停止后）：** 现行，已定稿；§7 第 9 项待用户定。用户已停止 support 两臂对照（JOURNAL 2026-10-08）：文中“等 support 两份 final 评完、H1 算完”的时机（§1“时机”、§2.6 第 8 条、§4.6 轨道 B 的排期、§7 同步清单）改为“瘦身第一批合入之后”，support 的重放现在就能做；support 没有跑 final，§7 第 2 项的“support（final 后读过 2 次）”应为读过 0 次。support 的 K（W\* 文本）现在只有 v0.5 臂经 dev gate 装上的经验库快照（release `9f07d95032b4`，6 个 library-* skill，没有 final）：拿它作 K，还是当 support 没有 W\*、K 为空，待用户定（§2.6 第 6 条、§7 第 4 项）。§7“核价更正待同步”清单里的 DESIGN、TECHNOLOGY、02、TRAINING_HOSTS、ROADMAP 五处已于 2026-10-08 整理时同步。瘦身第一批已于 2026-10-08 在分支 `slim/1` 上完成（[PLAN](../PLAN.md) P1）：子包 `ouroloop/train/`、`ouroloop/train/jobs/` 已建，入口 `python -m ouroloop.train` 已有（`decide`、`smoke --jev`、`host`），§2.5 与 §7 列的 7 处注释已改；v2.0 的代码从这里开始。同日用户定：不写金标身份测试，旧工作区的哈希身份不必保持；§3.6 “身份由金标测试守住”一句随之改写。
 >
 > **状态：** 已定稿（2026-10-08：用户按 §7 默认值全部确认；§7 第 9 项是核价后新增的，待用户决定；同日第 2 项由用户改为全部域可跑 final）。**日期：** 2026-10-08。
 >
@@ -10,7 +10,7 @@
 >
 > **依据。** 在 HEAD `03f68b3` 上只读阅读代码和文档：SLIMMING_INVENTORY §0.1/§0.2、modules/02、09、DESIGN、TECHNOLOGY、ROADMAP、RESULTS。另外参考四份子报告（assets、jev、data、external）和两份评审（evidence、scope）。
 > - 计数只读了 train/dev 记录，没有读 test。脚本在 scratchpad 的 `v2-train/{assets,data,stats,scope}/` 下。
-> - file:line 以 `03f68b3` 为准。瘦身第一批会把决策栈搬进子包，合入后按 SLIMMING §2.3、§3 改写这些引用。
+> - file:line 以 `03f68b3` 为准（`ouroloop/` 与 tag `archive-2026-10-08` 相同）。瘦身第一批会把决策栈搬进子包，合入后按 SLIMMING §2.3、§3 改写这些引用。（2026-10-08，瘦身第一批完成后：搬进子包或被删掉的模块，引用已改成新路径，路径以 `train/` 开头，行号按 `slim/1` 的 `455ffe2`；删掉的写明 tag。§2.5 的代码位置清单与 §7 的注释清单也按 `455ffe2` 改了。其余文件没有搬，行号仍按 `03f68b3`，在 tag `archive-2026-10-08` 上对照。）
 > - 行数是估计，误差约 ±25%。
 
 ## 0 结论
@@ -51,12 +51,12 @@
 |---|---|---|---|
 | 学生上下文 | chars/4 估出 11k/18k/30k；`max_seq` 65536 | 用 Qwen3 tokenizer 实测（中位/p90/最大）：v4-finance train 14.5k/22.0k/34.7k，v4-support 16.9k/25.6k/32.4k，约 3.1–3.25 字符/token；`max_seq` 定为 32768。它排除 X1 训练集 S1′ 的 4.8%（sales 17 条里排掉 3 条），不是原写的 0.7%（2026-10-08 按 Tinker/RunPod 核价更正） | `scope/tok2.py` |
 | 决策视图上限 | 12,000 字符 | Qwen decider（`max_ctx` 4096）放约 10.5k 字符；TDE（≤900 token）放 ≤2,900 字符；或者按目标 tokenizer 截断 | `stats/tok.py`；jev `ops/decider_lora_train.py:24` |
-| 配置形状 | `[trainer.actor]`、`[student]` | `build_trainer` 直接从 `cfg["trainer"]` 取 `type`（config.py:124-138），表一嵌套就报 KeyError。改为 `[train.actor]`、`[train.decision]`；学生就是 `[llm]` | §3.7 |
-| actor 的 `module:Class` | 声称"配置即可" | 插件契约的 serving 端只返回决策 Backend（trainers/__init__.py:1-40）。§3.3 补上 actor 产物契约 | — |
-| MLX 训 TDE | 列为 v2.1 的一条路径 | 不支持。`tde` 插件只走 torch，设备是 cuda 或 cpu（trainers/tde.py:9-10、:188-195） | — |
-| 阈值 | 用 `fit_threshold` 控制"误拦" | `fit_threshold` 控制的是"拦下的会话里错拦的比例"（policy.py:107-135），不是"通过的尝试被误拦的比例"。另写函数，按族聚类，α 取 5%（§3.4） | — |
+| 配置形状 | `[trainer.actor]`、`[student]` | `build_trainer` 直接从 `cfg["trainer"]` 取 `type`（train/config.py:82-96），表一嵌套就报 KeyError。改为 `[train.actor]`、`[train.decision]`；学生就是 `[llm]` | §3.7 |
+| actor 的 `module:Class` | 声称"配置即可" | 插件契约的 serving 端只返回决策 Backend（train/trainers/__init__.py:1-40）。§3.3 补上 actor 产物契约 | — |
+| MLX 训 TDE | 列为 v2.1 的一条路径 | 不支持。`tde` 插件只走 torch，设备是 cuda 或 cpu（train/trainers/tde.py:9-10、:188-195） | — |
+| 阈值 | 用 `fit_threshold` 控制"误拦" | `fit_threshold` 控制的是"拦下的会话里错拦的比例"（train/policy.py:96-124），不是"通过的尝试被误拦的比例"。另写函数，按族聚类，α 取 5%（§3.4） | — |
 | `parse_inference` | "要加 threshold" | 已有 `threshold`、`threshold_source`、`normalization: temperature`（policies.py:173-194）；只缺温度值和 `calibration_ref` | — |
-| `checks` | 只说 `min_train` 会阻断 | `max_mde` 按 `ds.splits["test"]` 算（checks.py:88-95），没有 test 时恒为"不足"。两项都改成非阻断的族级有效 n 警告 | — |
+| `checks` | 只说 `min_train` 会阻断 | `max_mde` 按 `ds.splits["test"]` 算（train/checks.py:88-95），没有 test 时恒为"不足"。两项都改成非阻断的族级有效 n 警告 | — |
 | K（W\* 文本）"只来自 train" | 是 | 不对。R 读过 dev 失败直方图（research/session.py:809-829，经 bench.py:1229-1239），W\* 又是 dev gate 选出来的。所以 finance 和 support 的 dev 读数会被 K 抬高（§2.6） | RESULTS v0.2：W\* 在 dev 80–84%、test 52% |
 | `near_duplicates` | 对 test 只输出计数 | `task_signature` 会读所有题的断言值（adapters/automationbench.py:422-437），包括 test。改为冻结前跑一次，只出计数并记录（§2.6） | — |
 | 计数口径 | 5 域含 operations | operations 整域留作 LODO，所有计数都去掉它（§2.1） | `data/out_main*.json` |
@@ -74,7 +74,7 @@
 ## 1 目标与范围
 
 **交付物。** teacher、judge、actor（包括学生）和 trainer 都是配置项。
-- provider 由 `config.build_provider` 构造（config.py:39-54），支持 anthropic、openai_compat、claude_code 和 `module:Class`。瘦身第一批会删掉 manual。
+- provider 由 `config.build_provider` 构造（config.py:39-54），支持 anthropic、openai_compat、claude_code 和 `module:Class`。manual 已随瘦身第一批删除（2026-10-08）。
 - trainer 按角色由 `[train.<role>]` 指定，取值是插件名或 `module:Class`。插件名也可以是模块路径，自托管训练走这条（§3.3；2026-10-08 按 Tinker/RunPod 核价更正）。
 
 | 线 | 产物 | 绑定位置 | 首个用例 |
@@ -141,10 +141,10 @@
 
 | 记录 | 字段 | 由来 |
 |---|---|---|
-| DecisionRecord（ledger 的 decision 行） | `decision_id, attempt_id, anchor(call_id), point, spec_hash, view_ref, question, candidates, probs, route(act\|shadow\|default), threshold, explored, propensity, action, default, policy_ref, policy_kind, actor_identity_ref, package_ref` | runtime.py:299-366 的 `propose`；把 :356-361 写死的 `probs=None, explored=False, propensity=1.0` 改为取 `policy.route`（policy.py:45-56）的结果 |
+| DecisionRecord（ledger 的 decision 行） | `decision_id, attempt_id, anchor(call_id), point, spec_hash, view_ref, question, candidates, probs, route(act\|shadow\|default), threshold, explored, propensity, action, default, policy_ref, policy_kind, actor_identity_ref, package_ref` | train/runtime.py:94-161 的 `propose`；把 :151-156 写死的 `probs=None, explored=False, propensity=1.0` 改为取 `policy.route`（train/policy.py:34-45）的结果 |
 | LabelRecord | `anchor(decision_id \| attempt_id+event_id), point, target{label: p}, source, rule "<labeler>@<ver>", weight, status(valid\|unknown\|conflicted), supersedes, evidence_refs` | 由 `FeedbackRecord`（evolve/contracts.py:666-686）泛化 |
 | ReviewRecord（v2.2） | `call_id, attempt_id, teacher_identity_ref, verdict(PASS\|REPLACE\|ERROR), proposal_ref, replacement_ref?, rationale_ref, repairs, usage, cost` | 新写；偏好对 (proposal, replacement) 就存在这里 |
-| DecisionExample 行 | 与 jev 的 `tde/schema.py:35-46` 逐字段一致，不加任何顶层键（jev 的 `from_dict` 是 `cls(**d)`） | `dataset` = 决策点名；`source_id = <domain>:<family>`（现在是 session，build.py:44）；`template_id = spec_hash`；`meta = {source, weight, task, family, attempt_id, decision_id, call_seq, rule, package_ref, input_schema, truncated, tokens}` |
+| DecisionExample 行 | 与 jev 的 `tde/schema.py:35-46` 逐字段一致，不加任何顶层键（jev 的 `from_dict` 是 `cls(**d)`） | `dataset` = 决策点名；`source_id = <domain>:<family>`（现在是 session，train/dataset.py:41）；`template_id = spec_hash`；`meta = {source, weight, task, family, attempt_id, decision_id, call_seq, rule, package_ref, input_schema, truncated, tokens}` |
 | SFT 行 | `id, source_id, split(fit\|val), messages\|ref, tools, targets[{call_id, turn_index, producer: model:<id>, verdict: PASS\|REPLACE\|none}], meta{attempt_id, dataset, package_ref, actor_identity_ref, redacted_input, tokens}` | 新写；每条轨迹一行、多个目标；只取 `role="act"`；包压缩上下文导致前缀链断开时，在断点处切段 |
 | 数据计划目录 | `plan.json`（来源工作区及其记录 digest、FamilySplit、来源选择、打标器版本、renderer、每题上限）、`labels.jsonl`、`decision/`、`sft/`、`manifest.json` | 由 `DataManifest`（evolve/contracts.py:609-630）补字段：各 JSONL 的 sha256、来源直方图、按原因的排除计数、split 断言结果 |
 
@@ -153,7 +153,7 @@
 - 上限是决策点 spec 的参数，进 `spec_hash`。TDE 用 2,900 字符，Qwen decider 用 10.5k 字符。
 - 视图里永远没有断言。
 
-**交给 trainer 的 split。** 作业目录里只放 `train.jsonl`（fit）和 `val.jsonl`（val）。tde 插件会把 val 改名为 jev 的 `calibration`（trainers/tde.py:77-81）。cal 只留在数据计划目录里，供阈值使用。
+**交给 trainer 的 split。** 作业目录里只放 `train.jsonl`（fit）和 `val.jsonl`（val）。tde 插件会把 val 改名为 jev 的 `calibration`（train/trainers/tde.py:77-81）。cal 只留在数据计划目录里，供阈值使用。
 
 ### 2.4 打标器（纯函数：Episode → LabelRecord）
 
@@ -178,7 +178,7 @@
 
 - **source 文法**：`env:<labeler>@<ver>`、`human:<channel>`、`model:<identity_ref>`。
   - provider 的 `source` 由网关按调用身份写入。
-  - claude_code 权限弹窗那一路（adapters/claude_code.py:126-130）记为 `human:claude_code_permission`。
+  - claude_code 权限弹窗那一路（train/claude_code.py:145-149）记为 `human:claude_code_permission`。
 - **选择写在数据计划里**：
 
 | 用途 | 默认 |
@@ -189,20 +189,20 @@
 
   - env 与 model 冲突时以 env 为准，记为 `conflicted`。
   - 没有 env 标签可用来定阈值的模型，状态为 `uncalibrated`，只能以 shadow 模式绑定。
-- **要改的位置**：
-  - ledger.py:19-23（:19-20 的注释；:21-23 的 `SOURCE_WEIGHTS`/`EVAL_ONLY` 从闸门改为血缘）；
-  - evolve/contracts.py:671、:682-684；
-  - evolve/feedback.py:83-84（跳过逻辑）、:21、:91、:146（标签集和 kind 改为从 builder 取）；
-  - providers/__init__.py:4、claude_code.py:235、anthropic.py:45、openai_compat.py:44 的注释与默认值；backends/llm.py:1-3、runtime.py:372（`_default` 的 docstring，随 `[train]` 搬）的注释；
-  - providers/manual.py:87、research/loop.py:99 也引用不变量 6，随瘦身第一批整删，不用改。
-  - 时机：注释随瘦身第一批改；闸门与默认值随 v2.0（§3.8 第一行），因为 ledger.py:143、:152 只收 `SOURCES` 里的来源。
+- **要改的位置**（行号按 `455ffe2`，瘦身第一批之后；括号里是 `03f68b3` 的原位置）：
+  - ledger.py:20-27（:20-24 的注释；:25-27 的 `SOURCE_WEIGHTS`/`EVAL_ONLY`/`SOURCES` 从闸门改为血缘；原 :19-23）；
+  - evolve/contracts.py:619、:630-632（原 :671、:682-684）；
+  - train/feedback.py:60-61（跳过逻辑）、:22、:68、:123（标签集和 kind 改为从 builder 取；原 evolve/feedback.py:83-84、:21、:91、:146）；
+  - providers/__init__.py:4、claude_code.py:247、anthropic.py:45、openai_compat.py:44 的默认值；
+  - providers/manual.py:87（整个文件）与 research/loop.py:99（旧决策研究那一段）也引用不变量 6，已随瘦身第一批删掉。
+  - 时机：注释已于瘦身第一批改为指向 DESIGN §8 不变量 6（`41d702a`：上面 providers 的四处、ledger.py:20-24、train/backends/llm.py:1-3、train/runtime.py:167 的 `_default` docstring，原 runtime.py:372）；闸门与默认值随 v2.0（§3.8 第一行），因为 ledger.py:147、:156（原 :143、:152）只收 `SOURCES` 里的来源。
 
 ### 2.6 划分与防泄漏（全部由固定代码执行）
 
 | # | 规则 | 执行方式 |
 |---|---|---|
 | 1 | 采集、打标、建集、选 checkpoint、阈值、K 的构建，全部只用各域冻结 split 里的 train 题 | 加载器按题名只实例化 train 题，不先解析再过滤。builder 遇到 dev 或 test 行直接失败（`split_violation`），也不发 GPU 请求。重放原型（`data/replay.py:52-56`）曾在内存里解析过全部题的 info，包括 sales 和 hr 的 test 题，但没有输出它们。这一点照实披露，正式加载器修掉 |
-| 2 | FamilySplit：每个数据计划一张，只含 train 题，按 `<domain>:<family>` 哈希分成 fit/val/cal（70/15/15） | 在任何打标器运行前冻结；决策和 SFT 共用。重复尝试和增强副本与原题同侧。每题上限：被接受的轨迹 ≤ 4 条，决策行 ≤ 30 行。复用 evolve/build.py:164-258、:272-289 |
+| 2 | FamilySplit：每个数据计划一张，只含 train 题，按 `<domain>:<family>` 哈希分成 fit/val/cal（70/15/15） | 在任何打标器运行前冻结；决策和 SFT 共用。重复尝试和增强副本与原题同侧。每题上限：被接受的轨迹 ≤ 4 条，决策行 ≤ 30 行。复用 train/dataset.py:113-207、:221-238（原 evolve/build.py:164-258、:272-289） |
 | 3 | 交叉拟合 | C3b 的分数、K5/K6 的召回、写门阈值，都用全部 train 族按族 5 折得到的折外分数，不在调过参的 val/cal 上读 |
 | 4 | 用途隔离 | checkpoint 只看 val loss，不看 val 任务成功率；dev 只给在线 gate 用，dev 记录不进任何数据集；test 只给密封 final 用 |
 | 5 | 输入隔离 | teacher 和 judge 只看学生可见的 messages、proposal、tool specs 和 K；只有打标器读断言。投影后做字面量扫描（DT6-02） |
@@ -217,7 +217,7 @@
 - **作主张需要**：
   - SFT：300–500 条被接受的轨迹，与 HZ 每域 282–500 条同量级，只能靠审阅采集（轨道 B）得到。
   - 决策：≥ 3k 行，跨 ≥ 3 个域，交叉拟合后至少 40 个含有害写的族。
-  - `checks.min_train=1000`（evolve/checks.py:38）从阻断改为"不足以作主张"的警告。
+  - `checks.min_train=1000`（train/checks.py:38）从阻断改为"不足以作主张"的警告。
 - **瓶颈是负例**：Opus 记录里有害的写约 170 次，集中在约 60 题上。学生的有害写预计更多，所以 C3 改在学生上测。
 - **扩量顺序**：多域合并 → judge 给全部写打标 → 学生运行 → 每题多采几次 → 噪声种子副本（与原题同侧，不算独立样本）→ 部署日志（v2.5）。
 
@@ -239,21 +239,21 @@ DataPlan（冻结：来源工作区及 digest、FamilySplit、来源选择、打
 
 | 组件 | 复用 | 新写或修改 |
 |---|---|---|
-| `build_decision_dataset` | `build_task_dataset`（evolve/build.py:164）、`to_example`（:34-52）、`DatasetBuild`（:115-127） | `source_id`、split 映射、`template_id`；DecisionExample 校验器（与 jev 字节兼容，不依赖 torch）；manifest sha256 |
+| `build_decision_dataset` | `build_task_dataset`（train/dataset.py:113）、`to_example`（:31-49）、`DatasetBuild`（:64-76） | `source_id`、split 映射、`template_id`；DecisionExample 校验器（与 jev 字节兼容，不依赖 torch）；manifest sha256 |
 | `build_sft_dataset` | — | 用 `prev[:prefix]+tail` 重建 messages（v4-finance 3,068 次调用 0 处不一致）；按 `after_call_id` 关联 `tool_specs`、`broker_event`；按 role、split、success、verdict、`package_ref` 过滤；`redacted_input` 默认排除；超过 `max_seq` 的样本排除并计数，不截断 |
-| 检查 | evolve/checks.py：截断、答案位置偏斜、13-gram | 适配 `DatasetBuild`（约 10 行）；`min_train` 和 `max_mde`（:88-95）改为族级有效 n 警告；SFT 另查长度、mask 覆盖、私有字面量、tool-call 往返 |
+| 检查 | train/checks.py：截断、答案位置偏斜、13-gram | 适配 `DatasetBuild`（约 10 行）；`min_train` 和 `max_mde`（:88-95）改为族级有效 n 警告；SFT 另查长度、mask 覆盖、私有字面量、tool-call 往返 |
 
 ### 3.3 作业、插件与产物契约
 
 - **作业层**（契约 `TrainJob`/`TrainResult`/`Trainer` 与 `train_artifact` 在 `[train]`，`JobTrainer` 与云、主机作业层在 `[train-jobs]`，SLIMMING §0.1 A、C）：
-  - `TrainJob`/`TrainResult`/`Trainer`（evolve/train.py:59-77）；
+  - `TrainJob`/`TrainResult`/`Trainer`（train/train.py:45-63）；
   - `JobTrainer`（:84 起），可在本地、ssh、RunPod/Vast 上运行，有价格上限、截止时间和取消；
-  - `train_artifact` 先预留预算，续跑时 attach（evolve/pipeline.py:361-422）。但 attach 只在 trainer 有 `attach` 时才调（:389-390），`JobTrainer` 没有：重启后清理残留实例和作业、整轮重跑（train.py:108-111），所以对 GPU 作业"续跑不重复付费"只部分成立，见 §6（2026-10-08 按 Tinker/RunPod 核价更正）。
+  - `train_artifact` 先预留预算，续跑时 attach（train/train.py:127-188）。但 attach 只在 trainer 有 `attach` 时才调（:155-156），`JobTrainer` 没有：重启后清理残留实例和作业、整轮重跑（train/jobs/trainer.py:53-56），所以对 GPU 作业"续跑不重复付费"只部分成立，见 §6（2026-10-08 按 Tinker/RunPod 核价更正）。
 - **`train_artifact` 按 role 分派**：
-  - 决策探针按决策点取问题。现在问题写死为 stop（pipeline.py:442、serving.py:22）。
+  - 决策探针按决策点取问题。现在问题写死为 stop（train/train.py:216、train/serving.py:21）。
   - actor 用生成探针。
 
-**actor 产物契约（新增，写进 trainers/__init__.py）。**
+**actor 产物契约（新增，写进 train/trainers/__init__.py）。**
 
 | 端 | 契约 |
 |---|---|
@@ -281,17 +281,17 @@ vllm serve <base> --enable-lora --lora-modules <ref>=<dir> --max-lora-rank 32 --
 |---|---|---|---|
 | `signature` | decision | 现有 | 纯标准库，离线测试用 |
 | `mock_sft` | actor | v2.0 | 离线，写出符合契约的假 adapter |
-| `tde` | decision | v2.1 | 修漂移：`ARCHITECTURE` 补 `topology`/`max_total`（trainers/tde.py:40），`max_state_tokens` 对齐（:32），pin `tde==0.1.x`。在 CPU 或经 `[train-jobs]` 租的 CUDA 上训。截断到 1,024 token 对链路验收可以接受，记进 `truncated` |
+| `tde` | decision | v2.1 | 修漂移：`ARCHITECTURE` 补 `topology`/`max_total`（train/trainers/tde.py:40），`max_state_tokens` 对齐（:32），pin `tde==0.1.x`。在 CPU 或经 `[train-jobs]` 租的 CUDA 上训。截断到 1,024 token 对链路验收可以接受，记进 `truncated` |
 | `tinker_lora` | actor | v2.1 | validate → forward_backward → optim_step → val loss → save_state → 采样 ref（TECHNOLOGY §2）。默认配方见 §3.7 的配方表：只做 LoRA；HZ 的 α 32 在 Tinker 上设不了，lr 改为扫描（2026-10-08 按 Tinker/RunPod 核价更正） |
 | `decider_lora` | decision | 轨道 B | 移植 jev 的 `ops/decider_lora_train.py`（112 行）和 `scripts/export_decider.py`（64 行）。加上：按 val 选 checkpoint；保留软标签，或者记明已 argmax；CUDA 检查；`version = ref` |
-| 插件模块路径（如 `mypkg.sft`） | 任意 | — | 自托管训练（TRL、PEFT，跑在 RunPod 或自有集群上）走这条：`JobTrainer` 按模块路径加载插件（trainers/__init__.py:50-54），作为作业运行，有云上生命周期（cloud.py）、价格上限和截止时间；遵守上面的契约（2026-10-08 按 Tinker/RunPod 核价更正） |
-| `module:Class` | 任意 | — | 在控制平面进程里直接构造（config.py:131-132），没有作业、没有云上生命周期，也没有价格上限；只用于测试和 demo（TRAINING_HOSTS），不用于自托管 GPU 训练（2026-10-08 按 Tinker/RunPod 核价更正） |
+| 插件模块路径（如 `mypkg.sft`） | 任意 | — | 自托管训练（TRL、PEFT，跑在 RunPod 或自有集群上）走这条：`JobTrainer` 按模块路径加载插件（train/trainers/__init__.py:50-54），作为作业运行，有云上生命周期（train/jobs/cloud.py）、价格上限和截止时间；遵守上面的契约（2026-10-08 按 Tinker/RunPod 核价更正） |
+| `module:Class` | 任意 | — | 在控制平面进程里直接构造（train/config.py:89-90），没有作业、没有云上生命周期，也没有价格上限；只用于测试（TRAINING_HOSTS；demo 已随瘦身第一批删除），不用于自托管 GPU 训练（2026-10-08 按 Tinker/RunPod 核价更正） |
 
 ### 3.4 阈值与温度
 
-- **温度**：`fit_temperature`（evolve/calibrate.py:15）。结果写进 `parse_inference`（policies.py:173-194），只加 `temperature` 和 `calibration_ref` 两个字段。
+- **温度**：`fit_temperature`（train/calibrate.py:10）。结果写进 `parse_inference`（policies.py:173-194），只加 `temperature` 和 `calibration_ref` 两个字段。
 - **阈值**：新函数 `fit_hold_threshold`。
-  - 风险定义："通过的尝试所在的族里，至少有一次写被拦下的族所占比例"。用 Clopper-Pearson 上界 ≤ α，按族聚类，像 `fit_threshold`（policy.py:107-135）一样按固定顺序逐个检验（Learn-then-Test）。
+  - 风险定义："通过的尝试所在的族里，至少有一次写被拦下的族所占比例"。用 Clopper-Pearson 上界 ≤ α，按族聚类，像 `fit_threshold`（train/policy.py:96-124）一样按固定顺序逐个检验（Learn-then-Test）。
   - 默认 α = 5%。零错误时上界能降到 α 所需的最少族数：α = 5% 要 59 族，α = 2% 要 149 族。只有一个 cal 划分（约 38 族）时，2% 根本无法认证，所以用全部 train 族的折外分数。
 - 拿不到阈值的模型状态为 `uncalibrated`，只能 shadow。换 actor 后必须重定阈值，不继承（02 §4）。
 
@@ -299,17 +299,17 @@ vllm serve <base> --enable-lora --lora-modules <ref>=<dir> --max-lora-rank 32 --
 
 | 对象 | 做法 |
 |---|---|
-| 决策模型 ref | 沿用 `stores/`（dir、hf）。新增 hub ref `hf:<repo>@<rev>[:<subfolder>]`，因为现在的 `JOB_ID` 正则不收带点的名字（stores/__init__.py:36、hf.py:59-63） |
+| 决策模型 ref | 沿用 `train/stores/`（dir、hf）。新增 hub ref `hf:<repo>@<rev>[:<subfolder>]`，因为现在的 `JOB_ID` 正则不收带点的名字（train/stores/__init__.py:36、train/stores/hf.py:59-63） |
 | actor ref | 下载 adapter，sha256 写进 `ModelIdentity.artifact_digest`，同时填 `adapter_ref`、`tokenizer_ref`、`renderer_ref`（evolve/contracts.py:693-721，这几个字段从没被填过）。release 只钉 digest |
-| 决策模型 serving | 用一个 `/v1/systemone` 后端，复用 backends/jev.py。key 改为可选（:40-42 现在 key 为空就报错）；以 `--name <ref>` 启动，让身份探针对得上。tde-serve、decider serve、TypeSafe 共用这一个后端 |
+| 决策模型 serving | 用一个 `/v1/systemone` 后端，复用 train/backends/jev.py。key 改为可选（:40-42 现在 key 为空就报错）；以 `--name <ref>` 启动，让身份探针对得上。tde-serve、decider serve、TypeSafe 共用这一个后端 |
 | 学生 serving | openai_compat（vLLM/SGLang/Ollama）或 tinker 采样 provider。评测时大批量的学生推理走 RunPod 上自托管的 vLLM（合并权重）；Tinker 采样和它的 OpenAI/Anthropic 兼容接口（beta，官方说明只供低流量测试）只作冒烟或兜底（2026-10-08 按 Tinker/RunPod 核价更正）。runner shell 至今只跑过 claude_code，所以 v2.1 必须先过能力探针 |
-| judge（轨道 B 的运行时绑定） | 任意 chat provider。`backends/llm.py` 只给独热答案（:47-50），要改为解析结构化概率 |
+| judge（轨道 B 的运行时绑定） | 任意 chat provider。`train/backends/llm.py` 只给独热答案（:48-51），要改为解析结构化概率 |
 
 ### 3.6 绑定、导出与 RSI 接口
 
 - **通用 target**：把 `TargetRegistration("worker.stop", …)`（policies.py:66）推广为 `worker.decide.<point>`。
   - v2.0 的 kind 为 `rule|model`，mode 为 `shadow|act`。`judge` kind 和 model → judge → default 回退链放到轨道 B。
-  - 去掉 stop 的硬编码（bench.py:1580-1588、pipeline.py:442）。`worker.stop` 迁为 `worker.decide.stop`，身份由瘦身的金标测试守住。
+  - 去掉 stop 的硬编码（bench.py:1580-1588、train/train.py:216）。`worker.stop` 迁为 `worker.decide.stop`，身份由瘦身的金标测试守住。（2026-10-08 用户定，不写金标测试：现有活动都不在 HEAD 上续跑，迁名不必保持旧工作区的哈希；要守住的是 HEAD 读得了旧的 train/dev 记录，`tests/test_record_compat.py`。）
 - **学生 actor**：作为 `worker.actor` 的新 `ModelIdentity`，经 `_bind_one`（policies.py:542-571）由 `provider_factory` 构造。
 - **导出**：
   - `_export_into`（release.py:543-624）的 `model_refs` 现在只收 actor 身份（:600-618），要加上决策模型 ref、阈值 ref 和 adapter digest。
@@ -375,26 +375,26 @@ per_task_cap = 4
 
 | 环节 | 复用（file:line） | 新写或修改 | v2.0 | v2.1 | v2.2 | 轨道 B |
 |---|---|---|---|---|---|---|
-| 血缘与精确脱敏 | ledger.py:20-49；evolve/contracts.py:671、:682-684；evolve/feedback.py:21、:83-84、:91、:146 | source 文法、选择器、按值脱敏 | 90–130 | | | |
+| 血缘与精确脱敏 | ledger.py:20-49；evolve/contracts.py:671、:682-684；train/feedback.py:22、:60-61、:68、:123 | source 文法、选择器、按值脱敏 | 90–130 | | | |
 | 写分类与 adapter 钩子 | adapters/automationbench.py:604 | `is_write`、`labelers()`、只读 POST 白名单 | 40–60 | | | |
 | 投影器 | `assets/scan.py` 原型 | `ouroloop/train/stream.py`，带逐行 token 计数 | 250–350 | | | |
 | 重放 | `data/replay.py` 原型（201 行）；adapters/automationbench.py:604-650 | 按题名加载、ID 重映射、复现率；`replay_skip`；输出回填 | 250–350 | 160–240 | | |
-| 打标器与 FamilySplit | evolve/feedback.py:101-161；evolve/build.py:164-289 | 3 个打标器、FamilySplit、交叉拟合折 | 180–260 | | 60–80 | |
-| 两个 builder 与检查 | evolve/build.py:34-52、:115-127；evolve/checks.py | 见 §3.2 | 450–650 | | | |
-| `write_gate` 挂点 | agent/gateway.py:340-380；runtime.py:299-366；policy.py:45-56 | shadow/act、fail-open、决策行字段 | 200–280 | | | |
+| 打标器与 FamilySplit | train/feedback.py:78-138；train/dataset.py:113-238 | 3 个打标器、FamilySplit、交叉拟合折 | 180–260 | | 60–80 | |
+| 两个 builder 与检查 | train/dataset.py:31-49、:64-76；train/checks.py | 见 §3.2 | 450–650 | | | |
+| `write_gate` 挂点 | agent/gateway.py:340-380；train/runtime.py:94-161；train/policy.py:34-45 | shadow/act、fail-open、决策行字段 | 200–280 | | | |
 | 通用 target | policies.py:66、:294-333、:542-616；bench.py:1580-1588 | `worker.decide.<point>` | 120–180 | | | judge 绑定和回退链 150–200 |
-| 训练入口与探针 | evolve/pipeline.py:340-454；evolve/train.py:59-77、:84 起；`[train-jobs]` | role 分派、按决策点探针、生成探针、actor 契约 | 150–220 | 60–100 | | |
-| trainer 插件 | trainers/__init__.py、signature.py、tde.py | `mock_sft`；`tde` 修漂移；`tinker_lora`；`decider_lora` | 60–80 | 320–490 | | 200–300 |
+| 训练入口与探针 | train/train.py:106-228、:45-63；train/jobs/trainer.py:29 起（`[train-jobs]`） | role 分派、按决策点探针、生成探针、actor 契约 | 150–220 | 60–100 | | |
+| trainer 插件 | train/trainers/__init__.py、signature.py、tde.py | `mock_sft`；`tde` 修漂移；`tinker_lora`；`decider_lora` | 60–80 | 320–490 | | 200–300 |
 | renderer | — | 学生 chat template、tool-call 编码、loss mask | | 150–250 | | |
-| 阈值与评估 | evolve/calibrate.py:15；policy.py:107-135 | `fit_hold_threshold`；召回、误拦、AUROC，按族聚类的 bootstrap | 120–180 | | | ECE、coverage@risk 100–150 |
-| ref、store、serving | stores/；serving.py:22；backends/jev.py:40-42 | hub ref、tinker ref 与 digest、key 可选、能力探针、学生计价 | | 200–330 | | |
+| 阈值与评估 | train/calibrate.py:10；train/policy.py:96-124 | `fit_hold_threshold`；召回、误拦、AUROC，按族聚类的 bootstrap | 120–180 | | | ECE、coverage@risk 100–150 |
+| ref、store、serving | train/stores/；train/serving.py:21；train/backends/jev.py:40-42 | hub ref、tinker ref 与 digest、key 可选、能力探针、学生计价 | | 200–330 | | |
 | 网关角色与审阅 | evolve/contracts.py:774-802（`CollectionRequest(mode="reviewed")`）；M2 §1a | role → provider 映射、审阅钩子、ReviewRecord、K 构建、有界修复 | | | 450–700 | |
 | 导出 | release.py:543-624；app.py:25-34 | 导出模型 ref；App.bind 带 Serving | 60–100 | | | |
-| CLI 与臂运行 | config.py:124-138；evolve/task_eval.py:247、:366 | `python -m ouroloop.train`；`arm` 子命令（在 val+cal 族上跑学生） | 150–220 | 100–150 | | `bench --phase train` 与计划字段 300–450 |
+| CLI 与臂运行 | train/config.py:82-96、train/cli.py；evolve/task_eval.py:247、:366 | `python -m ouroloop.train`；`arm` 子命令（在 val+cal 族上跑学生） | 150–220 | 100–150 | | `bench --phase train` 与计划字段 300–450 |
 | **合计** | | | **2.2–3.2k** | **1.0–1.6k** | **0.5–0.8k** | **0.75–1.1k** |
 
 - 测试：v2.0 约 1.2k 行，v2.1–v2.2 约 0.8k 行。
-- 另外沿用瘦身第一批搬进 `[train]` 的约 2.4k 行，复用 `[train-jobs]` 约 2.0k 行（同一子包，代码只搬一次）。
+- 另外沿用瘦身第一批搬进 `[train]` 的约 2.4k 行，复用 `[train-jobs]` 约 2.0k 行（同一子包，代码只搬一次）。2026-10-08 实际搬完：`ouroloop/train/` 3,042 行（不含 jobs），`ouroloop/train/jobs/` 1,697 行（另有 sh 与 Dockerfile）。
 - jev 一侧保留模型代码、tde-serve 和 releases。ouroloop 不 import jev 的内部函数，只 pin `tde` 版本。
 
 ## 4 试验设计
@@ -542,8 +542,8 @@ python -m ouroloop.train fit       <plan> --role decision          # 用 [train.
 python -m ouroloop.train threshold <plan> <model_ref>
 python -m ouroloop.train eval      <plan> <model_ref> --controls always,rule
 python -m ouroloop.train smoke     --offline
-pytest -q tests/test_train_data.py tests/test_train_decision.py tests/test_train_actor.py \
-          tests/test_evidence_training.py tests/test_jobs.py tests/test_train_config.py tests/test_export.py
+pytest -q tests/train/test_train_data.py tests/train/test_train_decision.py tests/train/test_train_actor.py \
+          tests/train/test_evidence_training.py tests/train/jobs/test_jobs.py tests/train/test_train_config.py tests/test_export.py
 ```
 
 **验收（按命令的实际输入，即 v4-finance 的 train）：**
@@ -591,7 +591,7 @@ python -m ouroloop.train label <x1-plan> --labelers replay_effect,replay_skip
   3. 用 `tinker_lora` 训出 S_F。
   4. 合并权重后以 RunPod 上的 vLLM（openai_compat）接回，过生成探针（含 renderer 与 chat template 的 token 比对）；Tinker 采样只作冒烟或兜底（2026-10-08 按 Tinker/RunPod 核价更正）。
   5. 在 W0 下经 runner shell 跑 X1。
-- **RunPod 第一次付费前**（2026-10-08 按 Tinker/RunPod 核价更正）：用一张 H100 跑约 20 分钟（约 $1–2），一个训练任务加 30 次尝试的推理测试。这也是 `cloud.py` 第一次对真实 API 运行。
+- **RunPod 第一次付费前**（2026-10-08 按 Tinker/RunPod 核价更正）：用一张 H100 跑约 20 分钟（约 $1–2），一个训练任务加 30 次尝试的推理测试。这也是 `train/jobs/cloud.py` 第一次对真实 API 运行。
 - **验收**：smoke 收据每个环节都有 ref；全程不碰 dev/test；X1 按 §4.2 的读法写进收据。
 
 ### v2.2 审阅采集链路（Claude ≤ $20）
@@ -650,7 +650,7 @@ python -m ouroloop.train label <x1-plan> --labelers replay_effect,replay_skip
 | 被拦后 agent 换个方式重试同一个有害写 | 报告拦截后的重试率；结论以现场读数为准 |
 | 订阅限流（429/529） | 按现行规则不计费重试；采集墙钟时间按限流估算 |
 | Tinker 不可用或涨价 | 能力探针在提交前就会失败；回退到由 `JobTrainer` 运行的自托管插件模块（如 RunPod 上）必须在配置里显式声明，不静默换后端（2026-10-08 按 Tinker/RunPod 核价更正） |
-| 已知缺口：GPU 作业续跑会重复付费。`JobTrainer` 没有 `attach()`，重启后清理残留实例和作业、整轮重跑（train.py:108-111、:378、:456）；丢掉的 GPU 时间要再付一次，也不能从 checkpoint 续训 | 随 v2.1 的 `[train-jobs]` 漂移修复（SLIMMING §0.1 C）一起修（2026-10-08 按 Tinker/RunPod 核价更正） |
+| 已知缺口：GPU 作业续跑会重复付费。`JobTrainer` 没有 `attach()`，重启后清理残留实例和作业、整轮重跑（train/jobs/trainer.py:53-56、:325、:403）；丢掉的 GPU 时间要再付一次，也不能从 checkpoint 续训 | 随 v2.1 的 `[train-jobs]` 漂移修复（SLIMMING §0.1 C）一起修（2026-10-08 按 Tinker/RunPod 核价更正） |
 | test 被 v1 final 反复读 | 2026-10-08 用户改为全部域可跑 final，原来"sales/hr 的 test 先被 v1 读了，C5 的池降为 finance+support 50 题"的情形不再是止损条件。C5 的池是五个域的 test（123 题），每份都可能已被 v1 final 读过：按有条件复用规则（构建学生的任何产物都不读之前 final 的逐题记录，由结果库按 split 过滤、代码强制），报告按域披露读取次数。operations 81 题是唯一从未读过的留出集，C5-LODO 是唯一的全新读数（2026-10-08 用户改为全部域可跑 final） |
 
 ## 7 未决问题与决定（2026-10-08：前八项已定下，第 9 项待定）
@@ -677,7 +677,7 @@ python -m ouroloop.train label <x1-plan> --labelers replay_effect,replay_skip
 | RunPod 和 vLLM | 吞吐、耗时和推理费用都是估算；Qwen3.5 在 vLLM 里的前缀缓存是实验功能；vLLM 能否以 LoRA 方式服务 Qwen3.5 的 adapter（线性注意力层、lm_head）；9B 沿用 35B/397B recipe 的启动参数是推断；RunPod 没有 spot 实例；jev 那次的 RunPod 花费没有发票 |
 | 模型能力 | AA 是唯一来源，换算系数 0.6 是粗估；没有 9B 关思考时的 AutomationBench 数据；K2 Horizon 7B（AA 20.9%，不在 Tinker 上）的许可证没核实；27B 的费用都是粗估 |
 
-**需要同步改的文档**（2026-10-08 定稿时同步。标"本轮已同步"的是这一轮改的文档；代码一律不改，等 support 两份 final 评完、H1 算完再动：注释随瘦身第一批，其余随 v2.0）：
+**需要同步改的文档**（2026-10-08 定稿时同步。标"本轮已同步"的是这一轮改的文档；代码一律不改，等 support 两份 final 评完、H1 算完再动：注释随瘦身第一批，其余随 v2.0；2026-10-08：注释已随瘦身第一批改完）：
 - **DESIGN**（本轮已同步）：不变量 6（ledger.py:19 引用它）、§4 的 controller 行、§8 的 C3 行（改为在学生上测）。
 - **00_CONTRACTS**（本轮已同步）：约 :181 处"不能通过改 source 绕过 EVAL_ONLY"那段，改为血缘加选择。
 - **02**（本轮已同步）：
@@ -696,7 +696,7 @@ python -m ouroloop.train label <x1-plan> --labelers replay_effect,replay_skip
   - :167 那一条按本稿重写（同上）；
   - 第 10、12 项标为已决定（本轮）；
   - 按第 7 项改第一批的命名（本轮；全文的 `[decision]`/`[decision-jobs]` 一并改为 `[train]`/`[train-jobs]`）。
-- **代码注释**（本轮不改）：providers/__init__.py:4、claude_code.py:235、anthropic.py:45、openai_compat.py:44、backends/llm.py:1-3、runtime.py:372、ledger.py:19-20 这 7 处注释随瘦身第一批；默认值随 v2.0 的血缘改动（§3.8 第一行），因为 ledger.py:143、:152 只收 SOURCES 里的来源（§2.5）。现在改任何 .py 都会改 `code_version`，从而改动正在跑的活动的 K。
+- **代码注释**（本轮不改）：providers/__init__.py:4、claude_code.py:235、anthropic.py:45、openai_compat.py:44、backends/llm.py:1-3、runtime.py:372、ledger.py:19-20 这 7 处注释随瘦身第一批（2026-10-08 已改，`41d702a`；现在的位置见 §2.5）；默认值随 v2.0 的血缘改动（§3.8 第一行），因为 ledger.py:143、:152 只收 SOURCES 里的来源（§2.5）。现在改任何 .py 都会改 `code_version`，从而改动正在跑的活动的 K。
 - **ROADMAP**（本轮已同步）：v2 一节指向本稿。
 - **复核后另补**（2026-10-08）：M3（03）§1 共适应注、M4（04）§3 材料准备、集成验收（08）IT6-01/38、modules/README 的 M2/M8 两行、TRAINING_HOSTS 页首、V0_4_PLAN 与 V0_5_METHOD_LIBRARY §7.4 里 sales/hr 的 test 计划，各加注；README 与代码随瘦身第一批。
 - **核价更正待同步**（2026-10-08，本轮只登记、不改；2026-10-08 整理时已同步）：TECHNOLOGY :13、:42（自托管写成 `module:Class`；vLLM 命令只有 LoRA 参数）、:32（排除比例 0.7%）；TRAINING_HOSTS :3；02 :87、:92（HZ 配方 α 32、lr 2e-4；`module:Class`）、:100；ROADMAP :511；DESIGN :90、:213。

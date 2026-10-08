@@ -1,6 +1,6 @@
 # M0：公共契约、身份与兼容
 
-> 目标：以最小类型增量支持首版能力包演化与递归回用，保留现有 decision/task/research 行为。教学/训练契约保留为第二版规格；首版用到的新增字段/API 已实现（2026-09-30），第二版字段仍未实现。已有实现见 [历史快照](../history/V0_5_IMPLEMENTATION.md)。所有者：`evolve/contracts.py`。
+> 目标：以最小类型增量支持首版能力包演化与递归回用，保留现有 decision/task/research 行为。教学/训练契约保留为第二版规格；首版用到的新增字段/API 已实现（2026-09-30），第二版字段仍未实现。已有实现见历史快照（`docs/history/V0_5_IMPLEMENTATION.md`，2026-10-08 删除，tag `archive-2026-10-08` 上可读）。所有者：`evolve/contracts.py`。
 >
 > v0.3（2026-10-04，DESIGN v0.7）：首版交付物从“固定 agent 循环 + 能力包”改为“可演化的 agent 程序 + 最小运行壳 + 被 pin 的模型”（运行壳即 DESIGN §1 的 runner shell，本文与 M1 只用这一个词）。能力包就是 agent 程序：它可以改循环本身。本文新增包 API v2（`agent` 组件、ctx 表面、角色、单次尝试硬上限、宿主写入的轨迹记录、包永远拿不到的东西）与相应的 release/导出变化；v1 包仍合法，由 K 自带的默认 agent 运行。理由与业界对照见 [SURVEY_RSI_FRAMEWORKS.md](../SURVEY_RSI_FRAMEWORKS.md) §4、§6、§7：v0.1/v0.2 装进去的两个改动都是文字提醒，剩下的失败质量在判断与未读状态上，只有循环层的机制（核对回合、判断前的证据表、拿事实的工具、用算力换准确）够得着；报告更大留出收益的框架（StarHarness Finance +29、AutoSaddler +9～10）都改循环与工具。v0.1/v0.2 的记录（[RESULTS.md](../RESULTS.md)）与 2026-10-03/04 的记录不删。
 >
@@ -189,7 +189,7 @@ ActorTraining    = {method: distill_actor, target: worker.actor,
 - **血缘文法**：`env:<labeler>@<ver>`、`human:<channel>`、`model:<identity_ref>`；由打标器或网关按调用身份写入，调用方不能自报或改写（把教师 REPLACE 改记成 env 仍按 CT6-04 拒绝）。教师输出进 ReviewRecord、`purpose=actor_imitation` 的轨迹，以及 `teacher_review@1` 从 REPLACE 打出的 `write_gate` 标签（V2 §2.4），血缘都是 `model:<teacher_ref>`。
 - **选择写在数据计划里**，冻结后不改：`sources_fit` 默认 env 与 model（可改为只用 env），`sources_threshold` 只用 env，`sources_eval` 只用 env 与 human。env 与 model 冲突时以 env 为准、记 `conflicted`；没有 env 标签可定阈值的模型记 `uncalibrated`，只能 shadow 绑定。
 - **只保留两条正确性规则**：(1) 评测、阈值、gate 用的真值只来自 `env:*` 或 `human:*`；(2) 评分信息（断言、grading、重放结果）永不进 actor、teacher、judge 的输入，也不进 SFT 输入与决策视图。
-- **代码改动的时机**：注释（providers/__init__.py:4、claude_code.py:235、anthropic.py:45、openai_compat.py:44、backends/llm.py:1-3、runtime.py:372、ledger.py:19-20）随瘦身第一批改；`ledger.py:21-23` 的 `SOURCE_WEIGHTS`/`EVAL_ONLY`、`evolve/contracts.py:671`、`:682-684`、`evolve/feedback.py:83-84` 与 providers 的 `source` 默认值从闸门改为血缘是 v2.0 的代码（V2 §3.8 第一行），在瘦身第一批之后合入；此前代码仍按旧闸门执行。
+- **代码改动的时机**：注释（providers/__init__.py:4、claude_code.py:235、anthropic.py:45、openai_compat.py:44、backends/llm.py:1-3、runtime.py:372、ledger.py:19-20）随瘦身第一批改（2026-10-08 已改，`41d702a`；现在的位置是 providers/__init__.py:4、claude_code.py:247、anthropic.py:45、openai_compat.py:44、`train/backends/llm.py:1-3`、`train/runtime.py:167`、ledger.py:20-24）；`ledger.py:21-23` 的 `SOURCE_WEIGHTS`/`EVAL_ONLY`（现 :25-27）、`evolve/contracts.py:671`、`:682-684`（现 :619、:630-632）、`evolve/feedback.py:83-84`（现 `train/feedback.py:60-61`）与 providers 的 `source` 默认值从闸门改为血缘是 v2.0 的代码（V2 §3.8 第一行），在瘦身第一批之后合入；此前代码仍按旧闸门执行。
 
 环境最终成功是轨迹筛选条件，不证明各步最优或教师理由真实。
 

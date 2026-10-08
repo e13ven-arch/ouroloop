@@ -33,8 +33,13 @@ test 读过的次数：marketing 3 次，finance 1 次，support、sales、hr 0 
 
 - **已发布：** tag `v0.4.0`（finance final）；更早的是 `v0.1.0`～`v0.3.0`。
 - **已实现、未发布：** v0.5 的方法库与经验库，已合入 `m1-automationbench`（`7e7732e`）。按事先定的第三批规则：经验库的两项过程读数都成立（train D ≥ +2；学习曲线 P ≥ 0.8），保留，作为 memory 底座、放在 preset 开关后面；方法库的读数没跑，按规则删。删方法库是提议，用户可以否决。
-- **下一步**（[docs/PLAN.md](docs/PLAN.md)）：瘦身分三批；memory 改进按开源优先，现成的跨任务 memory 没有能直接用的，所以经验库作底座，借 ACE、ReMe 的设计；改 R0，让 R 也提工具与循环补丁（K 允许可写的包工具和改 agent 程序，但 R 从没提过工具；StarHarness 靠这类补丁在 finance 上报告 +26.1，口径不同）；新一轮单领域活动与封存 final，任何域都可以按有条件复用规则跑、披露读取次数；v2 训练链第一期：训练用 Tinker LoRA，评测推理用 RunPod 上自托管的 vLLM，只按链路收据验收。
-- **遗留代码：** benchmark 之前的决策栈（Jev、TDE 后端，本地 trainer，GPU 作业，决策点，以及 `run`、`demo`、`suite`、`research`、`evolve`、`serve` 等命令）还在代码里，不在 benchmark 路径上；瘦身第一批把其中可复用的部分移进可选子包 `ouroloop/train/`（extra `[train]`、`[train-jobs]`），其余删掉。
+- **瘦身第一批（分支 `slim/1`，2026-10-08 完成）：** 死代码与遗留路径已删，每次尝试都走运行壳。Jev/TDE 兼容的类型化决策契约、决策记录和 controller 训练链保留在可选子包 `ouroloop/train/`（extra `[train]`、`[train-jobs]`，入口 `python -m ouroloop.train`），不在 benchmark 路径上；v1 Agent 循环的决策点与冠军发布已删（tag `archive-2026-10-08` 上可读）。与现有工作区的哈希身份不再保持：现有活动都不在 HEAD 上续跑，旧工作区在各自的 tag 上重渲染或续跑；HEAD 仍能读它们的 train/dev 记录。
+- **下一步**（[docs/PLAN.md](docs/PLAN.md)）：
+  - 瘦身第二、三批。
+  - memory 改进，开源优先：现成的跨任务 memory 没有能直接用的，所以经验库作底座，借 ACE、ReMe 的设计。
+  - 改 R0，让 R 也提工具与循环补丁。K 允许可写的包工具和改 agent 程序，但 R 从没提过工具；StarHarness 靠这类补丁在 finance 上报告 +26.1（口径不同）。
+  - 新一轮单领域活动与封存 final，任何域都可以按有条件复用规则跑、披露读取次数。
+  - v2 训练链第一期：训练用 Tinker LoRA，评测推理用 RunPod 上自托管的 vLLM，只按链路收据验收。
 
 ## 快速上手
 
@@ -42,16 +47,35 @@ test 读过的次数：marketing 3 次，finance 1 次，support、sales、hr 0 
 
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
-pip install -e ".[dev,automationbench]"
+pip install -e ".[dev,automationbench]"                  # 要训练栈再加 ,train,train-jobs
 pytest -q                                                # 离线：不联网，不跑模型；不含 live 与 slow
 OUROLOOP_TEST_REQUIRE_DOCKER=1 pytest -q -m "not live"   # 全量：再加 Docker worker（镜像见下）与上游检出
 ```
 
+然后用 [examples/automationbench/quickstart.toml](examples/automationbench/quickstart.toml) 跑第一个活动。它就是 v0.4 的 finance 活动，换成新的工作区 `examples/automationbench/workspace-quickstart/`，还什么都没冻结，所以不碰任何现有记录。需要 benchmark 的检出（见下一节）。第一条命令不调模型：
+
+```bash
+ouroloop bench --config examples/automationbench/quickstart.toml --phase smoke --checks-only   # $0：划分、计分契约、输入审计
+ouroloop bench --config examples/automationbench/quickstart.toml --phase smoke                 # 一次 dev 尝试，名义约 $0.5
+ouroloop freeze --config examples/automationbench/quickstart.toml                              # 打印要加进文件的 [rsi] 行
+ouroloop bench --config examples/automationbench/quickstart.toml --phase cycle --until baseline   # W0 跑 train 与 dev，名义约 $58
+```
+
+后面的阶段和各自的费用写在配置的页首。文件里有意不写 `[freeze.final]`：final 要读 finance 的 test，而 v0.4 的 final 已经读过一次。
+
 ## 在 AutomationBench 上运行
 
-AutomationBench 用 47 个模拟 SaaS 工具搭出业务流程，按 agent 的工具最后留下的世界状态评分。agent 拿到的是任务 prompt 和工具 schema，断言与初始状态在它收不到的对象里。ouroloop 延迟导入它：clone 下来，让 `[bench] upstream_path` 指向那个目录（需要装什么见 [examples/automationbench/README.md](examples/automationbench/README.md)）。本地公开任务集的分数不是榜单成绩。
+AutomationBench 用 47 个模拟 SaaS 工具搭出业务流程，按 agent 的工具最后留下的世界状态评分。agent 拿到的是任务 prompt 和工具 schema，断言与初始状态在它收不到的对象里。
 
-**模型。** actor（`[llm]`）与 R（`[research.llm]`）用 `type = "claude_code"`：每次调用是一个新的无头 `claude -p`，用本机的 Claude 订阅登录（`claude auth login`），不开工具、不带本地定制，在空目录里运行；工具调用写成结构化 JSON 输出，不是原生 tool use。启动检查拒绝非订阅的登录和没写 `effort` 的表。实测配置都 pin `claude-opus-5-5`、effort medium，所有臂同一档。另有 `openai_compat` 与 `anthropic` 两个 provider，已报告的结果都没用它们。
+ouroloop 延迟导入它：clone 下来，让 `[bench] upstream_path` 指向那个目录（需要装什么见 [examples/automationbench/README.md](examples/automationbench/README.md)）。本地公开任务集的分数不是榜单成绩。
+
+**模型。** actor（`[llm]`）与 R（`[research.llm]`）用 `type = "claude_code"`。
+- 每次调用是一个新的无头 `claude -p`，用本机的 Claude 订阅登录（`claude auth login`），在空目录里运行，不开工具、不带本地定制。
+- 工具调用写成结构化 JSON 输出，不是原生 tool use。
+- 启动检查拒绝非订阅的登录和没写 `effort` 的表。
+- 实测配置都 pin `claude-opus-5-5`、effort medium，所有臂同一档。
+
+另有 `openai_compat` 与 `anthropic` 两个 provider，已报告的结果都没用它们。
 
 **包代码**只在隔离 worker 镜像里运行：
 
@@ -59,37 +83,45 @@ AutomationBench 用 47 个模拟 SaaS 工具搭出业务流程，按 agent 的�
 docker build -f docker/worker.Dockerfile -t ouroloop-worker:py3.12 .
 ```
 
-**一个活动**分阶段跑，每个阶段后停下来读：
+**命令。** 一个活动分阶段跑，每个阶段后停下来读。
 
-```bash
-ouroloop bench --config <cfg> --phase smoke --checks-only    # 上游身份、冻结划分、契约与输入审计；不调模型
-ouroloop freeze --config <cfg>                               # 冻结任务计划、日程与预算，打印要加的 [rsi] 行
-ouroloop bench --config <cfg> --phase cycle --until baseline # W0 跑 train 与 dev
-ouroloop bench --config <cfg> --phase library                # 只用于 v5 preset：经验库的流与快照轮
-ouroloop bench --config <cfg> --phase cycle                  # R 的轮次：笔记、编码会话、筛选、dev gate、确认
-# 有确认的安装之后才做：在 [freeze.final] 填入 W*，再 freeze，提交计划哈希，然后
-ouroloop bench --config <cfg> --phase evaluate               # test 上的封存 final
-ouroloop bench --config <cfg> --phase report                 # 从磁盘上的记录重算一切；不调模型
-ouroloop export --config <cfg> --to exported-app             # 把已安装的版本导出为最小 app
-```
+| 命令 | 做什么 |
+|---|---|
+| `ouroloop bench --config <cfg> --phase smoke --checks-only` | 上游身份、冻结划分、计分契约与输入审计；不调模型 |
+| `ouroloop bench --config <cfg> --phase smoke` | 同样的检查，再跑一次完整的 dev 尝试 |
+| `ouroloop freeze --config <cfg>` | 冻结任务计划、日程与预算（有 `[freeze.final]` 时也冻结 final 计划），打印要加的 `[rsi]` 行 |
+| `ouroloop bench --config <cfg> --phase cycle --until baseline` | W0 跑 train 与 dev |
+| `ouroloop bench --config <cfg> --phase library` | 只用于 v5 preset：经验库的流与快照轮 |
+| `ouroloop bench --config <cfg> --phase cycle --until segment-0/round-K` | R 的轮次，一轮一停：笔记、编码会话、筛选、dev gate、确认 |
+| `ouroloop bench --config <cfg> --phase evaluate` | test 上的封存 final；只在有确认的安装、`[freeze.final]` 填入 W\* 并冻结、计划哈希已提交之后 |
+| `ouroloop bench --config <cfg> --phase report` | 从磁盘上的记录重算一切；不调模型 |
+| `ouroloop export --config <cfg> --to exported-app` | 把已安装的版本导出为最小 app |
+| `python -m ouroloop.train decide \| smoke --jev \| host init \| host check` | 可选的训练栈：向后端问一次决策、后端冒烟、训练主机（[docs/TRAINING_HOSTS.md](docs/TRAINING_HOSTS.md)） |
 
-`cycle` 或 `library` 中断后再跑，从停下的地方继续，已记录的部分不重复付费。付费阶段到活动的预算根（名义美元）就停。`baseline`、`improve`、`collect`、`research`、`learn` 几个阶段在 HEAD 上也还在；瘦身计划删活动内研究位，用户不否决的话也删方法库的 `learn`。
+`cycle` 或 `library` 中断后再跑，从停下的地方继续，已记录的部分不重复付费。付费阶段到活动的预算根（名义美元）就停。`baseline`、`improve`、`research`、`learn` 几个阶段在 HEAD 上也还在；瘦身第二批删活动内研究位，第三批在用户不否决时删方法库的 `learn`。
 
-**配置。** 实测配置是 `examples/automationbench/claude-v4-finance.toml`（v0.4 的 final）和 `claude-v4-support.toml`、`claude-v5-support.toml`（support 两臂），各自的页首写着阶段与费用。它们的 `[workspace]` 根是本机、被 git 忽略的运行记录，`[rsi]` 里的 ref 指向那里冻结的计划。开新活动时复制一份，换新的 `[workspace] root` 和 `[rsi] scope_id`，`[rsi]` 的计划 ref 换成自己 `freeze` 打印的行，有 W\* 之前不写 `[freeze.final]`。
+**配置。**
+- `quickstart.toml` 是开新活动的模板。
+- 实测配置是 `examples/automationbench/claude-v4-finance.toml`（v0.4 的 final）和 `claude-v4-support.toml`、`claude-v5-support.toml`（support 两臂），各自的页首写着阶段与费用。
+- 它们的 `[workspace]` 根是本机、被 git 忽略的运行记录，`[rsi]` 里的 ref 指向那里冻结的计划。这些工作区跑在旧代码上：在各自的 tag（`v0.4.0`、`archive-2026-10-08`）上重渲染或续跑，不在 HEAD 上。
 
-## 代码结构（benchmark 路径）
+换一个域：复制 `quickstart.toml`，改 `[bench] domains` 与 `[bench.frozen_splits]` 的 pin（用 `workspace-claude-v3` 为该域冻结的哈希，或去掉 pin 重新划分），换新的 `[workspace] root` 和 `[rsi] scope_id`；有 W\* 之前不写 `[freeze.final]`。
+
+## 代码结构
 
 | 路径 | 内容 |
 |---|---|
-| `ouroloop/bench.py` | `ouroloop bench` 的各个 phase、preset、启动检查、冻结与 cycle |
+| `ouroloop/cli.py`、`ouroloop/bench.py` | `ouroloop bench`、`freeze`、`export` 三个命令；各个 phase、preset、启动检查、冻结与 cycle |
 | `ouroloop/adapters/automationbench.py` | 任务、业务工具、官方评分器 |
-| `ouroloop/agent/` | 运行壳（`runner.py`、`gateway.py`）、默认 agent 程序、能力包（`harness_package.py`）与隔离 worker（`worker.py`、`worker_runner.py`） |
+| `ouroloop/agent/` | 运行壳（`runner.py`、`gateway.py`，拒绝表在 `deny.py`）、默认 agent 程序、能力包（`harness_package.py`）与隔离 worker（`worker.py`、`worker_runner.py`） |
 | `ouroloop/research/` | R：失败诊断、编码会话（`session.py`）、草稿检查、经验库（`library.py`）、方法库（`methods.py`、`method_kit/`） |
-| `ouroloop/evolve/` | 公共契约与对象库（`contracts.py`）、配对任务门（`task_gate.py`）、执行与预算账（`execution.py`）；遗留的 trainer 与晋升门也在这里 |
-| `ouroloop/release.py`、`ouroloop/policies.py` | W/R 发布、安装与恢复；已注册的策略目标 |
+| `ouroloop/evolve/` | 公共契约与对象库（`contracts.py`）、配对任务门（`task_gate.py`）、执行与预算账（`execution.py`）、跑尝试（`task_eval.py`）、实验台账（`experience.py`） |
+| `ouroloop/release.py`、`ouroloop/policies.py`、`ouroloop/workspace.py` | W/R 发布、安装、恢复与导出；已注册的策略目标；每次尝试写的 session 记录 |
 | `ouroloop/report.py` | 离线报告：身份、任务效果、成本、C1～C4 状态 |
-| `ouroloop/providers/` | `claude_code`、`openai_compat`、`anthropic`、`manual` |
+| `ouroloop/providers/` | `claude_code`、`openai_compat`、`anthropic` |
 | `ouroloop/app.py` | 导出版本运行时的最小 app |
+| `ouroloop/train/`（extra `[train]`） | 训练与决策栈，不在 benchmark 路径上：决策契约、标签与数据集、`train_artifact`、后端（Jev、TDE、LLM）、模型库与 serving、trainer 插件、StopGuard、`python -m ouroloop.train` |
+| `ouroloop/train/jobs/`（extra `[train-jobs]`） | 训练作业：本机、经 ssh 的主机、或 RunPod / Vast.ai 实例；主机准备脚本与训练主机镜像 |
 
 ## 文档
 
@@ -98,7 +130,7 @@ ouroloop export --config <cfg> --to exported-app             # 把已安装的�
 - [docs/DESIGN.md](docs/DESIGN.md)、[docs/ROADMAP.md](docs/ROADMAP.md)、[docs/modules/](docs/modules/README.md)：设计、历次活动、模块规则。
 - [docs/design/](docs/design/)：瘦身清单、开源组件计划、v2 训练链、v0.4 与 v0.5 的计划。
 
-2026-10-08 整理中删掉的文件都能在 tag `archive-2026-10-08` 上读到。
+2026-10-08 整理和瘦身第一批删掉的文件都能在 tag `archive-2026-10-08` 上读到。
 
 ## 许可证
 

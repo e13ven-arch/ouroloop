@@ -735,6 +735,34 @@ def test_the_v04_configs_are_single_domain_activities_on_the_v3_workspaces_froze
         assert cfg["pricing"] == tomllib.loads((examples / "claude-v3.toml").read_text())["pricing"]
 
 
+def test_the_quickstart_config_is_the_v04_finance_activity_in_a_new_workspace_with_nothing_frozen():
+    """README's quick start (docs/PLAN.md P1 docs): quickstart.toml reads exactly as claude-v4-finance.toml does — the
+    same split pin, preset, harness table, limits, actor, R and prices — but its workspace root is one no other config
+    names, so running it touches no existing record; it names no frozen plan and has no [freeze.final], so a new
+    `ouroloop freeze` makes its plans and no final can read finance's test from it."""
+    import tomllib
+    examples = Path(__file__).resolve().parents[1] / "examples" / "automationbench"
+    quick = tomllib.loads((examples / "quickstart.toml").read_text())
+    v4 = tomllib.loads((examples / "claude-v4-finance.toml").read_text())
+    assert quick["workspace"]["root"] == "workspace-quickstart"
+    others = {tomllib.loads(p.read_text()).get("workspace", {}).get("root")
+              for p in examples.glob("*.toml") if p.name != "quickstart.toml"}
+    assert quick["workspace"]["root"] not in others
+    rsi = bench.RsiConfig.load(quick)
+    assert rsi.scope_id == "finance-quickstart" and rsi.scope_id != bench.RsiConfig.load(v4).scope_id
+    assert not any(getattr(rsi, k) for k in ("task_plan_ref", "schedule_ref", "budget_ref", "final_plan_ref"))
+    assert "final" not in quick["freeze"]
+    assert bench.BenchConfig.load(quick, examples) == bench.BenchConfig.load(v4, examples)
+    assert bench.improvement_settings(quick) == bench.improvement_settings(v4)
+    assert bench.harness_settings(quick) == bench.harness_settings(v4)
+    for table in ("llm", "research", "estimate"):
+        assert quick[table] == v4[table], table
+    assert {k: v for k, v in quick["pricing"].items() if k != "source"} == \
+        {k: v for k, v in v4["pricing"].items() if k != "source"}
+    assert quick["freeze"]["schedule"] == v4["freeze"]["schedule"]
+    assert quick["freeze"]["budget"] == v4["freeze"]["budget"]
+
+
 def test_the_v04_configs_reproduce_the_v3_workspaces_finance_and_support_splits_offline(tmp_path):
     """V0_4_PLAN §1.1: under each v0.4 config the upstream checkout splits its domain into exactly the manifest
     workspace-claude-v3 froze (the pinned hash, the same 25 test tasks), offline — no model, nothing written but a

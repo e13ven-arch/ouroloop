@@ -4,7 +4,79 @@
 
 证据只写量到过的：贪吃蛇（当时的 `examples/snake`）在一台 GPU 主机上的几次多代运行（下称 run4、run5、run6）、离线运行、决策集上的统计，以及先写失败测试再修的评审。没有证据的改动照实说"没有运行证据"。
 
-哪些数字能复算，哪些不能：决策集上的统计从 `evals/replay_campaign/` 重算；M6 的真实验收从 `examples/workspace-m6/ledger/` 重算。**贪吃蛇场景包与多代演示循环已于 2026-09-27 删除**（见当日第二条记录），因此所有贪吃蛇数字——离线演示与 run4～run6——现在都无法从本仓库复算；它们留在下面的历史条目里，作为当时改动的依据，不作为可复现结果。run4、run5、run6 本来也跑在一台未发布工作区的 GPU 主机上。
+哪些数字能复算，哪些不能：决策集上的统计在 tag `archive-2026-10-08` 上从 `evals/replay_campaign/` 重算（`evals/` 与 `ouroloop replay` 随 2026-10-08 瘦身第一批移出 HEAD；被 git 忽略的三个文件留在主检出原处）；M6 的真实验收从 `examples/workspace-m6/ledger/` 重算。**贪吃蛇场景包与多代演示循环已于 2026-09-27 删除**（见当日第二条记录），因此所有贪吃蛇数字——离线演示与 run4～run6——现在都无法从本仓库复算；它们留在下面的历史条目里，作为当时改动的依据，不作为可复现结果。run4、run5、run6 本来也跑在一台未发布工作区的 GPU 主机上。
+
+---
+
+## 2026-10-08 瘦身第一批（P1）：死代码、遗留路径与决策栈隔离
+
+- 用户的决定（2026-10-08，P1 开始之后）：P1 第 1 步原计划先写金标身份测试，用户问“有必要吗？在我们这个场景”。定为不写。
+  - 理由：现有活动都不会在 HEAD 上续跑。support 对照已停，下一轮活动在新 preset、新 K 下重开；旧工作区在 tag `v0.4.0`、`archive-2026-10-08` 上重渲染或续跑。
+  - 所以与旧工作区的哈希身份不再要求。只为保旧哈希而留的字段（RunManifest 的 decisions、model_ref、policy、`input_schema_refs=(stop_view,)`，`_host_contract` 的字面量，只为旧 ref 留着的 REGISTRY `worker.stop` 与内置点，K 的 `capabilities.training`），在能让死代码一起删时可以删；纯外观的删除不花工夫。这一批实际一个也没删，只改了 `release.PACKAGE_DATA` 的路径。
+  - 必须守住三条：(1) 读兼容：HEAD 的读取器照样读得了 workspace-claude-v4-finance、-v3、-v5-support、-v4-support 的 train/dev 记录（v2 数据管线与 P4-S1 要读）；(2) 行为：假上游上的一次尝试，模型调用序列、工具调用、结果与评分都不变（id、哈希、时间戳归一化）；(3) 新活动里的资金安全：预算根与份额、预留、按 attempt id 续跑、测量复用、五项硬限额、`_verify_bound`、启动检查。
+  - 写进了 PLAN（§0.2 末行、规则 15、P1 第 1 步，以及 P2～P5 里提到金标的地方）、SLIMMING（页首、§1、§3 各批、§4、§5），ROADMAP、V2、DESIGN 就地加注。
+- 做了什么。分支 `slim/1`，从 `8434c03` 起，27 个提交，在 worktree 里做，主检出一行没动。每个提交之前默认套件都通过。
+  - 第 1 步 `2dbd935`：两组测试，代替金标。
+    - `tests/test_record_compat.py`（24 个）：在 `OUROLOOP_RECORDS_ROOT` 下只读四个工作区。读的是 train/dev 的结果、运行清单、评分行、抽样的 transcript、session 行与 `.release.json`、release 与对象闭包、`library_stream.json`。读前读后对每个文件求哈希，工作区的文件、大小与 mtime 都不变；缺了工作区就 skip。
+    - `tests/test_attempt_behaviour.py` 加夹具 `tests/fixtures/attempt_behaviour_v3.json`（在 `8434c03` 上录）：v3 preset 的 K 下，脚本化的 actor 跑一次 dev、一次 train 尝试。
+  - 第 2 步 `eb8c505`：热路径解耦，行为不变。
+    - 尝试改用薄的 `workspace.Workspace` 写 session 行与 `.release.json`，`release.spec` 写冻结常量。rule 类 `worker.stop` 不再构造决策点。feedback、build、points 改懒导入；拒绝表移到 `agent/deny.py`。
+    - 新加 `tests/test_hot_path_boundary.py`：在新解释器里跑 v3、v5 的 smoke 检查、一次 smoke 尝试、基线与测量，之后 `ouroloop.train` 与其余决策栈一个模块都没被加载。
+  - 第 3 步 `24a2aa6`～`0115d1d`：删旧入口。
+    - `ouroloop` 命令只剩 bench、freeze、export；decide、`smoke --jev`、host 移到 `python -m ouroloop.train`。
+    - 删了 demo 与 MockProvider（夹具移进测试）、serve、`agent/{suite,prompt,probe}`、`evolve/harness.py`、manual provider（`request_json` 移到 `providers/claude_code.py`）、`evals/`（35 个跟踪文件，3,091 行）、`marketing.toml`。
+  - 第 4 步 `7432c0e`～`81e75ee`：建子包。`ouroloop/train/`（`[train]`）与 `ouroloop/train/jobs/`（`[train-jobs]`），pyproject 加两个 extra；测试移进 `tests/train/`、`tests/train/jobs/`。`[train-jobs]` 的测试改写到 `train_artifact` 上，不再经 gate。
+  - 第 5 步 `16db62a`～`af3f82e`：删冠军指针一族与 v1 循环（SLIMMING §0.1 E）。
+    - 每次尝试都走运行壳；`tests/rsi.py` 冻结 v3 式的 K，原来走 v1 循环的 126 个测试换到运行壳上。
+    - 删了 `agent/loop.py`、`points/`、`runtime.py`、gate、plan、pipeline、replay、monitor、registry、calibrate、build、`research/agent.py`、`ask.py`、`backends/http.py` 与 serving 的 url 模式、`--phase collect`、`examples/ouroloop.toml`。
+  - 第 6、7 步 `c766cd4`～`455ffe2`：顺带删的与注释。
+    - 删：本地 frontier 臂（C2 只引公开结果）；task_gate 的 economy、protected、成本比与 v1 dev 筛选，计划字段留着取冻结值，设了这些的 gate 会被拒绝，54 份冻结计划没有一份设过；没有调用者的函数；v0.3 的筛选与准入兼容。
+    - 7 处“invariant 6”注释改指新的不变量 6。
+  - 文档（本条所在的提交）：
+    - 两份 README：快速上手改用新写的 `examples/automationbench/quickstart.toml`，它的工作区根是新的 `workspace-quickstart`，没有冻结 ref，也没有 `[freeze.final]`；另有命令表与代码结构。`tests/test_bench_phase.py` 加一个测试守住这份配置。
+    - 同步了 DESIGN、ROADMAP、TECHNOLOGY、TRAINING_HOSTS、modules 00～05、07、08 与 README、CLAUDE.md、`examples/automationbench/README.md`。modules/02 新加 §3c：子包每个模块由哪份 v2 文档点名，即日落规则的点名清单。
+    - V2 里搬走模块的 file:line 改到新路径；SLIMMING 各行标了步号。
+    - 删了 DEMO、RESEARCH_AGENT、`history/V0_5_IMPLEMENTATION.md`、`docs/assets/`。指向快照的四处链接改指 tag。本文页首“从 `evals/replay_campaign/` 重算”一句改为在 tag 上重算。
+- 量到的数：
+  - 行数：
+    - 框架 `ouroloop/**/*.py` 35,253 → 30,126（−5,127，−14.5%）。主包 25,387，`[train]` 3,042，`[train-jobs]` 1,697（另有 sh 与 Dockerfile）。`bench.py` 5,360。
+    - 测试（不含 fake_upstream）25,554 → 23,237。
+    - `8434c03..455ffe2` 共 191 个文件，+6,848/−15,571。
+  - 默认套件，每步末：第 2 步 1252 passed、5 skipped、2 deselected；第 3 步 1240、5、1；第 4 步 1244、5、1；第 5 步 1124、5、1；第 6、7 步 1117、5、1；本条提交 1118 passed、5 skipped、1 deselected（约 144 s）。
+    - 第 5 步少的约 120 个，是随 v1 循环和冠军指针一族整删的测试文件：test_gate_record、test_act、test_gate_bypass、test_evolve、test_loop 等。
+  - 带 Docker 的全量（`OUROLOOP_TEST_REQUIRE_DOCKER=1 -m "not live"`）：第 2 步 1253 passed，多出的一个是唯一的 slow 测试，第 3 步随 test_harness 删掉；之后各步都与默认套件同数。加 `TDE_REPO` 时第 5 步为 1127 passed、2 skipped。干净副本（`git archive`）第 6、7 步末 1093 passed、29 skipped。
+  - 变异检查：每步在隔离的 `git archive` 副本里做，共 83 个变异（第 2 步 9、第 3 步 17、第 4 步 15、第 5 步 19、第 6 步 23）。
+    - 初次漏掉 5 个，都补了测试：`request_json` 丢掉工具 schema（`0115d1d`）；bench 的 Workspace 的 serving 换成 None（`81e75ee`）；网关从 K 读的 effort 上限，以及没有好祖先可退的回滚（`af3f82e`）；`grounding_inputs` 恒返回 None，这是这一批之前就有的缺口（`455ffe2`）。
+    - 另 1 个漏掉，是选测试文件时漏了 `test_research_round`，补上之后就抓到了。补测后全部抓到。
+- 三条：
+  - (1) 读兼容：`test_record_compat` 的 24 个测试在四个真实工作区上都通过。
+  - (2) 行为：`attempt_behaviour_v3.json` 一次没改，每个提交都通过。第 2 步另比对过 v3 基线的 session 行、`.release.json`、transcript、结果、评分与工作区文件列表，完全相同；v3、v5 的 smoke 检查、smoke 尝试、基线与测量，除了哈希值（K 记着 `code_version`）都与改动前相同。
+  - (3) 资金安全：预算、预留、续跑、限额、`_verify_bound` 与启动检查的代码，除了删掉 collect 阶段、screening 一步和没有调用者的 `spend`/`open_reservations`，都没动。`test_paid_run_safety` 通过，现在跑在运行壳上，也就是生产路径上。final 的费用估算现在算进每个比较：原来只跳过自带模型的臂，这样的臂现在被拒绝。
+- 停下来分析：
+  - 有没有字节差？行为夹具与第 2 步的比对都没有。没做的：PLAN 验收里在 finance 副本上跑 `--checks-only` 的逐字节对照。按上面的决定，旧工作区不在 HEAD 上续跑，这个对照不再是要求；checks-only 与尝试路径由假上游上的边界与行为测试覆盖。`quickstart.toml` 在 scratch 副本里对真实上游跑了 `--phase smoke --checks-only`（通过，finance 划分哈希 `4fd91eaf9fb8daf5`）和 `freeze`（打印出三行 `[rsi]`）。
+  - 有没有哪项保证只在被删的路径上测过？有五项，现在没有测试，因为代码没了：
+    - hook 入口的失效保护：它从不弄坏 Claude Code 会话，运行时起不来时也保留拒绝表。随 `ouroloop hook` 删；适配器的拒绝表仍有测试。
+    - PR-05：撤销后重新绑定 session。一次运行臂现在只绑一次 release。
+    - CT-05：遗留冠军与已安装的 release 并存。
+    - HTTP 后端的重试与 256 条分块。
+    - “训练出的 decider 改变 agent 的行为”：要等宿主重新问 stop 点或 `write_gate`（V2 §3.8），SLIMMING §2.6 早已写明。
+    - 其余被删测试的保证都迁到了生产路径上，逐项见 SLIMMING §2.6 与各步提交说明。
+- 与计划不同的地方（SLIMMING §2.1 末有全表）：
+  - 没有 `max_effort` 的 K 不拒绝，在运行壳下跑、effort 不截顶。现在就拒绝，得把约 60 个无 harness 的夹具提前迁到 v3 preset，归第二批。
+  - `host` 搬进子包，没删。两个 trainer 插件整个留在 `train/trainers/`，没拆进 `jobs/`。
+  - `Improvement.collect` 与 `Releases.recover` 留着。`Releases.defaults` 删了，所以回滚只退到好的祖先，没有可退的就先拒绝、什么都不撤销。
+  - 运行壳下，hook 在运行时抛错、答出协议之外或弄死 worker，算基础设施，不算候选的缺陷；有界的 worker 调用（草稿、探针）仍算包的缺陷。
+  - `train_artifact` 的失败原因现在留头和尾。
+  - Claude Code 适配器去掉了 `live` 模式。
+  - 没跑 `pip install -e '.[train,train-jobs]'`，因为会改主 venv 的可编辑安装；在 worktree 里用 `PYTHONPATH` 跑了 `python -m ouroloop.train smoke --jev --backend mock`，退出码 0。
+- 发现了，没修：
+  - `tests/test_bench_phase.py::TestPhases` 用默认的 base `"."` 与 root `"ws"`，会往 pytest 的当前目录写 `ws/bench/marketing` 与 `ws/rsi`。从主检出跑默认套件时，它写的就是主检出的 `ws/`，而规则 12 把 `ws/` 列为不能再生的运行记录。改法是传 `tmp_path` 作 base。
+  - 检索的 `statuses` 过滤（`policies.py:135`）现在匹配不到框架写的任何东西，因为 summary 行已删。它是 W/R 的策略键，留给第二批。
+  - `evaluate` 给每一臂都从 `[llm]` 建 provider，即使这一臂的 release 钉了 actor，所以 `[llm]` 建不出来时，钉了 actor 的臂也会缺席。这一批之前就是这样。
+  - `JobTrainer` 缺父模型时的报错还写着 “no champion”。
+  - `tests/train/jobs/test_jobs.py` 里取消残留作业的那个测试，有一次因计时失败，重跑通过。
+- 证据：没调模型，没付费，没读 `.env`，也没读任何 test 题的内容。`quickstart.toml` 的 smoke 检查和任何 smoke 一样：按题目定义算划分，契约检查与输入审计只读一道 dev 题。
+- commit：`2dbd935`～`455ffe2`（第 1～7 步），文档是本条所在的提交，都在 `slim/1` 上，没合入。
 
 ---
 

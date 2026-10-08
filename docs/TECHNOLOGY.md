@@ -1,5 +1,6 @@
 # 技术选型与实现原则（v0.6）
 
+> 2026-10-08（瘦身第一批完成，分支 `slim/1`，[PLAN](PLAN.md) P1）：v1 Agent 循环 `agent/loop.py`、`evolve/pipeline.py` 与冠军指针一族已删（tag `archive-2026-10-08` 上可读），决策与训练栈在可选子包 `ouroloop/train/`。据此改 §1 的 agent 执行与 controller 训练两行、§4 表中“组件优先级与挂点”一格的行号、§4 末“项目内可直接复用的实现”一段。被取代的原文保留在注里。
 > 2026-10-08（support 两臂对照停止后，[JOURNAL](JOURNAL.md) 2026-10-08）：按 V2 的 Tinker/RunPod 核价更正（V2 §0.3、§3.3、§3.5、§7 第 6 项）改 §1 的 actor 训练一行、§2 的超长排除比例与末段的自托管接法；按 [OSS_COMPONENTS_PLAN](design/OSS_COMPONENTS_PLAN.md)（开源优先）加 §1 的跨任务 memory 一行，§1 末与 §3 末的 DeepAgents 段加注（agent 底座）；§1 的 R 一行注明 C4 换实现；§4 的“首版 actor”一句加注（在学生上重新演化推到 v2.5）。被取代的原文保留在注里。
 > 2026-10-08：按 V2 训练链决定（[V2_TRAINING_PIPELINE](design/V2_TRAINING_PIPELINE.md) §7，用户“按默认”）改了 §1 的两行训练与教师一行、§2 的底座、上下文、教师与后端、§4 表中教师私有指导一行；§4 末段注明 C4 换实现（2026-10-07）。2026-09-30 修订首/二版边界。本文决定新设计如何落地，具体字段见 [M0](modules/00_CONTRACTS.md)。外部项目是设计来源；不是 benchmark 比较对象。当前依赖以 `pyproject.toml` 为准，以下新增依赖均未接入。
 
@@ -7,12 +8,12 @@
 
 | 能力 | 选择 | 采用理由与边界 | 首次交付 |
 |---|---|---|---|
-| agent 执行 | 现有 agent/loop.py、provider、ToolSurface、StopGuard | 已接真实工具；首版补包绑定与 hook，第二版补教师，不重写 Agent | 首版必需 |
+| agent 执行 | 运行壳（`agent/runner.py` 的 `PackageAgent`、`agent/gateway.py` 的网关与 broker）、默认 agent（`agent/default_agent.py`）、provider、ToolSurface；StopGuard 在 `ouroloop/train/stop.py`（2026-10-08 瘦身第一批；原写“现有 agent/loop.py、provider、ToolSurface、StopGuard”，v1 循环已删） | 已接真实工具；首版补包绑定与 hook，第二版补教师，不重写 Agent | 首版必需 |
 | 能力包代码演化 | 内容寻址 bundle/manifest + 固定 package API + Docker 隔离 worker/工具 broker | 包内生成工具/中间件代码，复用原工具权限与评测；不在控制面 import 候选；只含 skills/memory 的包由宿主装配，不启动 worker | 首版必需，先文本组件后代码组件，M0/M1/M4/M5 |
 | 业务任务 | 现有 AutomationBench adapter | 保持上游评分语义、任务划分、直接模拟环境 | 必需 |
 | 沙箱任务/并行 rollout | 可选 Harbor adapter | 复用原生任务、环境和 trial；不自行再造容器调度 | 明确的 Harbor 任务接入时 |
 | actor 生成训练 | Tinker 托管 LoRA SFT 作参考实现（`tinker_lora`）；自托管训练写插件模块路径，由 `JobTrainer` 作为作业运行；评测时的大批量学生推理走 RunPod 上自托管的 vLLM（合并权重，经 `openai_compat`），Tinker 采样只作冒烟或兜底（2026-10-08 按 Tinker/RunPod 核价更正，V2 §3.3、§3.5、§7 第 6 项；原写“自托管走 `module:Class` trainer”） | 复用 GPU 调度、checkpoint 和 sampling；训练能力不绑定供应商：trainer 由 `[train.actor]` 指定，遵守 actor 产物契约（V2 §3.3）；`module:Class` 在控制面进程里直接构造，没有作业、云上生命周期和价格上限，只用于测试与 demo | 第二版；启用后检查账户 |
-| controller 训练 | 现有 trainer/TDE 作业与 serving，随瘦身第一批收进可选子包 `ouroloop/train/`（extra `[train]`、`[train-jobs]`，入口 `python -m ouroloop.train`） | 保持有限动作、校准、弃权协议及 actor/controller 分离；训练与 GPU 作业属于框架，不归 jev 仓库，ouroloop 只 pin `tde` 版本；撤回的只有 v1 Agent 循环的决策点与冠军发布（2026-10-07） | 首版兼容已有能力，移出热路径；新增验证第二版 |
+| controller 训练 | 现有 trainer/TDE 作业与 serving，随瘦身第一批收进可选子包 `ouroloop/train/`（extra `[train]`、`[train-jobs]`，入口 `python -m ouroloop.train`；2026-10-08 已完成，作业层在 `ouroloop/train/jobs/`） | 保持有限动作、校准、弃权协议及 actor/controller 分离；训练与 GPU 作业属于框架，不归 jev 仓库，ouroloop 只 pin `tde` 版本；撤回的只有 v1 Agent 循环的决策点与冠军发布（2026-10-07） | 首版兼容已有能力，移出热路径；新增验证第二版 |
 | 工作流发现与 R 更新 | 现有 research 流程/provider/campaign | 从反馈提出注册候选，验证后回用；不增加研究服务。2026-10-07：campaign 的活动内研究位随瘦身第二批删除，C4 改为跨活动比较，判定代码抽到 `research/recursion.py`（§4 末段、DESIGN §7“C4 换实现”） | 必需 |
 | 跨任务 memory | 经验库 VEL（`research/library.py`，只用标准库），借 ACE、ReMe 的设计，不搬代码（2026-10-08，[OSS_COMPONENTS_PLAN](design/OSS_COMPONENTS_PLAN.md) §3） | 没有一个开源的跨任务 memory 能原样当底座：ACE 依赖 torch/faiss、默认预算 80k token，其余多是对话记忆或在评测流上在线学；VEL 已有只从 train 学、留一检索、逐条记功与退役、快照过 dev gate 的协议。借的设计（标出实际用到的条目再记功、从失败提炼、按效用删除）等 OSS §6 的条件触发才做 | v0.5 已实现；按瘦身第三批保留为 preset 开关，不进默认 |
 | 教师与适配 | 现有 provider + 受限参考读取 | M8 逐步审阅；教师私有指导 K 为各域 W\* 的 memory 与 skills 原文（固定模板），不做目标动作映射（2026-10-08，V2 §7 第 4 项；原为“M4 发现源方法，M8 映射目标动作/逐步审阅”） | 第二版；DeepAgents 按实需再评估 |
@@ -81,7 +82,7 @@ DeepAgents 作为依赖调用，既不复制源码也不把现有 Agent 再包�
 | 组件执行与隔离 | 组件在 agent 进程内 importlib 加载；Harbor 容器分开任务环境与 verifier | tools/middlewares 代码只在 Docker worker 执行，经 broker 调业务工具；只含 skills/memory 的包由宿主装配 | 直连模式下世界状态在宿主进程内，所有分区的断言都在本地任务数据里，能读文件的生成代码就能读到 dev/test 答案 |
 | 失败诊断 | 每轮最多 10 个子 agent 逐题笔记，主 agent 汇总去重后改库 | 输入为 train/fit 失败摘要与断言明细，dev/final 不给明细和轨迹；复用现有 research provider 串行 map/reduce：每个纳入本轮的失败任务一次笔记调用（每轮读取笔记数有上限，久未纳入者优先，覆盖如实记录；须论证适用于一类任务，不写单题答案），再一次汇总调用产出至多一个 patch 或结构化 next_action；笔记为 train 血缘 artifact 并计费，每轮笔记数上限由 preset/K 固定 | 单控制面串行与单预算，不建子 agent 平台 |
 | 冒烟与修复 | 主 agent 改库后先做 import/加载/pytest 冒烟，再提交评测 | 草稿包在同一 operation 日志内做 package_check → isolated_probe → package_test；只含 skills/memory 的草稿只做结构/路径/manifest 检查；失败时只把检查输出回传 R，在 preset/K 固定次数内修订，用尽则本轮以无效提案结束；通过才冻结进 Experiment，冻结后源码不变 | 修复有界且逐次记录计费，冻结实验可复现 |
-| 组件优先级与挂点 | 学生库以中间件为主，工具只在 USPTO | memory/skills → on_finish 守卫 → before_tool/after_tool 守卫 → 包工具；除 context_guard 外的中间件都落到三个挂点：turn_budget 以 after_tool feedback 近似，空回合即完成请求（`ouroloop/agent/loop.py:166`）由 on_finish 处理（stop 为 end/other 时才经 on_finish，`loop.py:167`；因长度截断的空回合直接结束），bootstrap 指令由宿主注入的 memory/skills 承担 | 改上下文（context_guard 类）不支持，是有意取舍：TargetHarness 固定上下文算法 |
+| 组件优先级与挂点 | 学生库以中间件为主，工具只在 USPTO | memory/skills → on_finish 守卫 → before_tool/after_tool 守卫 → 包工具；除 context_guard 外的中间件都落到三个挂点：turn_budget 以 after_tool feedback 近似，空回合即完成请求（`ouroloop/agent/default_agent.py:225`；原写 v1 循环的 `agent/loop.py:166`，已删）由 on_finish 处理（stop 为 end/other 时才经 on_finish，`default_agent.py:226`；因长度截断的空回合直接结束），bootstrap 指令由宿主注入的 memory/skills 承担 | 改上下文（context_guard 类）不支持，是有意取舍：TargetHarness 固定上下文算法 |
 
 开发时可按以下入口核对控制顺序、表示与恢复思路，不拷贝实现：
 
@@ -91,7 +92,7 @@ DeepAgents 作为依赖调用，既不复制源码也不把现有 Agent 再包�
 
 该方法没有提供通用“训练完自动生成最小 harness”的编译器；目标 harness 由实现者提供，在一次蒸馏内固定，源 harness 仍可演化。不要把论文结果、任务范围或短代码量视作本项目已具备同等效果。依赖承担的执行和训练工作也是完整系统的一部分。
 
-项目内可直接复用的实现：`policies.py` 的注册/装配、`agent/loop.py` 的工具执行、`evolve/pipeline.py` 的纯 artifact 构建边界、`evolve/execution.py` 的状态机与共享预算、`release.py` 的 preflight/CAS。`research/loop.py` 和 `research/campaign.py` 继续承担自动改进及方法比较，接入新的构建方法（2026-10-07：`campaign.py` 的活动内研究位编排随瘦身第二批删除，方法比较改为跨活动 C4，判定代码抽到 `research/recursion.py`，见 DESIGN §7）；避免平行 registry、release、scheduler 或研究引擎。
+项目内可直接复用的实现：`policies.py` 的注册/装配、`agent/loop.py` 的工具执行、`evolve/pipeline.py` 的纯 artifact 构建边界、`evolve/execution.py` 的状态机与共享预算、`release.py` 的 preflight/CAS。（2026-10-08 瘦身第一批：工具执行现在是运行壳的 broker，`agent/gateway.py` 的 `AttemptBroker`；纯 artifact 构建边界是 `ouroloop/train/train.py` 的 `train_artifact`；`agent/loop.py` 与 `evolve/pipeline.py` 已删。）`research/loop.py` 和 `research/campaign.py` 继续承担自动改进及方法比较，接入新的构建方法（2026-10-07：`campaign.py` 的活动内研究位编排随瘦身第二批删除，方法比较改为跨活动 C4，判定代码抽到 `research/recursion.py`，见 DESIGN §7）；避免平行 registry、release、scheduler 或研究引擎。
 
 ## 5. 防止实现膨胀的审查标准
 

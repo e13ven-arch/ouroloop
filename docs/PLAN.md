@@ -3,6 +3,8 @@
 > 下一轮开发的唯一入口：现在在哪、规则、按序的阶段、待用户决定的事。规则细节与论证不写在这里，写在 §4 列的来源文档里，本文只引用。每个阶段结束后更新本文（§5）。
 >
 > 写于 2026-10-08，基于 HEAD `80254a3` 加本次整理（P0）。整理中删掉的文件都能在 tag `archive-2026-10-08` 上读到。
+>
+> 2026-10-08 更新：P1（瘦身第一批）在分支 `slim/1` 上做完，待用户审后合入（§0.3、§2 P1；JOURNAL 2026-10-08 瘦身第一批一条）。同日用户定：不写金标身份测试（§0.2 末行；规则 15 随之改写）。
 
 ## 0 现在在哪
 
@@ -45,17 +47,18 @@ v0.5 只有 train/dev 上的过程证据，不作主张：
 | 10-08 | 推理期 RSI 还没到头：StarHarness 靠工具与循环补丁在 finance 上 +26.1（口径不同，不能直接比）。K 允许可写包工具和改 agent 程序，但 R 在 v0.3/v0.4 的 12 个候选里一个工具都没提过 | OSS §1 |
 | 10-08 | 叫停 support 对照：“没有可用基线没关系，能够改进的地方都改进掉，看的是最终结果”。3c、3d 和两份 final 都不跑，H1 没测。两个工作区留作本机记录 | JOURNAL 2026-10-08（support 对照停止一条） |
 | 10-08 | 第三批的事先规则套到叫停后的对照上。经验库两项过程读数都成立（D = 3.0 ≥ +2，P = 0.89 ≥ 0.8），保留，作为 preset 开关。方法库的两项读数没跑，删掉。**删方法库是提议，用户可以否决**（§3） | SLIMMING §3；[V0_5_PLAN](design/V0_5_PLAN.md) §3 |
+| 10-08 | 不写金标身份测试。用户问：“有必要吗？在我们这个场景”。不必要：现有活动都不在 HEAD 上续跑（support 对照已停，下一轮活动在新 preset 与新 K 下重开），旧工作区在 tag `v0.4.0`、`archive-2026-10-08` 上重渲染或续跑。所以与旧工作区的哈希身份不再要求；只为保旧哈希而留的字段，在能让死代码一起删时可以删。必须守住三条：HEAD 读得了四个工作区的 train/dev 记录（v2 数据管线与 P4-S1 要读）；假上游上一次尝试的调用、结果与评分不变；新活动里的资金安全不变。适用于全部三批 | SLIMMING 页首；P1 第 1 步 |
 
 ### 0.3 停在哪里
 
 | 项 | 状态 |
 |---|---|
-| 分支 | `m1-automationbench`，P0 的提交。`main` 还在 `b71502d`（v0.3），v0.4.0 没合入 |
-| 代码 | `ouroloop/` 与 support 两臂跑的完全相同（`e414f7c` 之后没改过 `.py`）。tag `archive-2026-10-08` 是整理前的 HEAD |
-| 测试 | 在 `80254a3` 上：默认套件 1243 passed、3 deselected（约 190 s）；全量 `-m "not live"` 1245 passed、1 deselected（约 4.5 min）。P0 删了 20 个测试（ceiling 10、rehearsal 6、support_h1 4）；删完之后在干净副本（`git archive HEAD`，没有被忽略的文件）上 `-m "not live"` 为 1220 passed、5 skipped。P0 后主检出：默认 1224 passed、2 deselected；`-m "not live"` 1225 passed、1 deselected。以后的新数以 JOURNAL 为准 |
+| 分支 | `m1-automationbench`，P0 的提交。`main` 还在 `b71502d`（v0.3），v0.4.0 没合入。P1 在 `slim/1`（从 `8434c03` 起，未合入；worktree `.claude/worktrees/slim-1`） |
+| 代码 | `m1-automationbench` 上的 `ouroloop/` 与 support 两臂跑的完全相同（`e414f7c` 之后没改过 `.py`）。tag `archive-2026-10-08` 是整理前的 HEAD。`slim/1` 上：框架 35,253 → 30,126 行，决策与训练栈在 `ouroloop/train/`（3,042 行）与 `ouroloop/train/jobs/`（1,697 行），每次尝试都走运行壳 |
+| 测试 | 在 `80254a3` 上：默认套件 1243 passed、3 deselected（约 190 s）；全量 `-m "not live"` 1245 passed、1 deselected（约 4.5 min）。P0 删了 20 个测试（ceiling 10、rehearsal 6、support_h1 4）；删完之后在干净副本（`git archive HEAD`，没有被忽略的文件）上 `-m "not live"` 为 1220 passed、5 skipped。P0 后主检出：默认 1224 passed、2 deselected；`-m "not live"` 1225 passed、1 deselected。以后的新数以 JOURNAL 为准。`slim/1` 的 P1 收尾提交上：默认套件 1118 passed、5 skipped、1 deselected |
 | test 读过几次 | finance 1、support 0、sales 0、hr 0、marketing 3；operations 从未读过 |
 | 本机记录 | `examples/automationbench/workspace-*/`（含 v4-finance、v4-support、v5-support）、`examples/workspace-*/`、`examples/rehearsal/workspace*/`、`ws/`、各处 `*.local.toml`、`evals/replay_campaign/` 下三个被忽略的文件。都被 git 忽略，只在本机，没法再生 |
-| 下一步 | P1 |
+| 下一步 | 用户审 P1、合入 `slim/1`；然后 P2（与 P4-S1 可并行） |
 
 ## 1 规则
 
@@ -75,7 +78,7 @@ v0.5 只有 train/dev 上的过程证据，不作主张：
 | 12 | 运行记录没法再生 | git 忽略的 `examples/**/workspace*/`、`ws/`、`*.local.toml`、`evals/replay_campaign/` 里被忽略的文件不删、不改。删文件只用 `git rm`，只删跟踪的文件；删一个目录时，里面被忽略的文件留在原处。旧版本靠 tag 读 |
 | 13 | 付费活动从哪个检出跑，活动期间就不往那里合入 `ouroloop/` 的改动 | `code_version` 进 K，改一个 `.py` 就是新 K。付费运行共用一个订阅账户，只能串行 |
 | 14 | 对外的数字只来自封存 final | dev gate 的增益有选择偏差，只作过程记录 |
-| 15 | 已存记录引用的字段、字面量与 preset 数值不删 | 只让逻辑失效，由金标测试守住（P1 第 1 步） |
+| 15 | 旧工作区只在 tag 上续跑或重渲染，HEAD 只须读得了它们的 train/dev 记录 | 与旧工作区的哈希身份不必保持（2026-10-08 用户定，§0.2）；只为保旧哈希而留的字段，在能让死代码一起删时可以删。守住读兼容（`tests/test_record_compat.py`，工作区经 `OUROLOOP_RECORDS_ROOT` 只读）、一次尝试的行为（`tests/test_attempt_behaviour.py`）与新活动的资金安全（`test_paid_run_safety` 等）。原规则“已存记录引用的字段、字面量与 preset 数值不删，由金标测试守住”作废 |
 | 16 | 用中文回复用户 | — |
 | 17 | commit message 最后一行写 `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>` | — |
 | 18 | 每个阶段写一条 JOURNAL（倒序，最新在上），并更新本文 | §5 |
@@ -87,7 +90,7 @@ v0.5 只有 train/dev 上的过程证据，不作主张：
 | 阶段 | 目标 | 前置 | 可以并行 | 花费 | 状态 |
 |---|---|---|---|---|---|
 | P0 | 文档记账，删独立的过时文件 | — | — | $0 | 已完成（`efe2047`） |
-| P1 | 瘦身第一批 | P0 | P4-S1 | $0 | 进行中（2026-10-08，分支 `slim/1`） |
+| P1 | 瘦身第一批 | P0 | P4-S1 | $0 | 已完成，待用户审后合入（2026-10-08，分支 `slim/1`；JOURNAL 2026-10-08 瘦身第一批一条） |
 | P2 | 瘦身第二批 | P1 | P4-S1、P7-v2.0 | $0 | 待做 |
 | P3 | v0.5 两个库的去留 | P2；用户没有否决 | P4-S1、P7-v2.0 | $0 | 待做 |
 | P4 | memory 改进 | S1：P0。二开：P3 | S1 可与 P1～P3 并行 | S1 $0；S2 名义 $50～180 | 待做 |
@@ -121,9 +124,11 @@ git status --short --ignored    # 被忽略的工作区与 *.local.toml 和整�
 
 **目标：** 删死代码与遗留路径；决策/训练栈收进 `ouroloop/train/`，移出热路径；每次尝试的行为与身份逐字节不变。分支 `slim/1`，单独合入。
 
+**状态（2026-10-08）：** 第 1～7 步与文档都做完了，在 `slim/1` 上，每个提交之前默认套件都通过，待用户审后合入。“身份逐字节不变”按 §0.2 末行改为：读兼容、一次尝试的行为、新活动的资金安全三条不变。做了什么、读数、与计划不同的地方、“停下来分析”两问的回答，见 JOURNAL 2026-10-08 瘦身第一批一条；SLIMMING 各行就地标了步号，偏离列在其 §2.1 末。
+
 | 步 | 做什么 | 文件 |
 |---|---|---|
-| 1 | **先写金标测试**，单独一个提交，全绿之后才删东西。不依赖工作区的部分：v3、v5 preset 的 `harness_settings`（K 表）逐字节；由 `claude-v4-finance.toml`、`claude-v5-support.toml` 算出的 RunManifest 负载与 attempt id；W0、R0 的策略集 ref。依赖工作区、缺了就 skip 的部分：finance 的冻结计划（TaskEvalPlan、GatePlan、Schedule、FinalizationPlan、budget）与 `report.json` 重渲染逐字节相同；support 两臂的 TaskEvalPlan、GatePlan、Schedule、budget（没有 FinalizationPlan）。K 的 core 带 `code_version`（`policies.py:813`），改任何 `.py` 都会变，所以由配置现算的 ref 在金标里把它固定成常量再比。工作区只读：`report.json` 用 `bench.report(cfg, write=False)` 重算，按 `write_json` 的格式序列化后再比；凡会写 session 行或 `.release.json` 的调用（`open_activity`、`--checks-only`）只在 `tmp_path` 拷贝上跑（规则 12） | 新建 `tests/test_golden_identity.py` |
+| 1 | **（2026-10-08 用户定，取代本步：不写金标测试，§0.2 末行。实际做的是 `2dbd935`：`tests/test_record_compat.py` 在 `OUROLOOP_RECORDS_ROOT` 下只读四个工作区的 train/dev 记录，`tests/test_attempt_behaviour.py` 钉住假上游上一次尝试的调用、结果与评分；两组都先在没改过的代码上通过。下面是原文。）** **先写金标测试**，单独一个提交，全绿之后才删东西。不依赖工作区的部分：v3、v5 preset 的 `harness_settings`（K 表）逐字节；由 `claude-v4-finance.toml`、`claude-v5-support.toml` 算出的 RunManifest 负载与 attempt id；W0、R0 的策略集 ref。依赖工作区、缺了就 skip 的部分：finance 的冻结计划（TaskEvalPlan、GatePlan、Schedule、FinalizationPlan、budget）与 `report.json` 重渲染逐字节相同；support 两臂的 TaskEvalPlan、GatePlan、Schedule、budget（没有 FinalizationPlan）。K 的 core 带 `code_version`（`policies.py:813`），改任何 `.py` 都会变，所以由配置现算的 ref 在金标里把它固定成常量再比。工作区只读：`report.json` 用 `bench.report(cfg, write=False)` 重算，按 `write_json` 的格式序列化后再比；凡会写 session 行或 `.release.json` 的调用（`open_activity`、`--checks-only`）只在 `tmp_path` 拷贝上跑（规则 12） | 新建 `tests/test_golden_identity.py` |
 | 2 | **热路径解耦**，单独一个提交，行为不变。`open_activity` 和 `_attempt` 改用薄的 `Workspace(root).session()`，不再调 `build_runtime`/`register_builtin_points`；rule 类 `worker.stop` 绑定时不构造 `DecisionPoint`；feedback、build、points 改懒导入，DENY 移到 `agent/`；`build_feedback` 只在 K 绑了非 rule 的决策点或开了训练时才跑；`AgentResult` 移到 runner，`research/__init__` 改懒导入。加边界测试：v3/v5 的 bench 路径跑完后，`sys.modules` 里没有 `ouroloop.train`、`evolve.feedback`、`points` | `bench.py:2216-2217`（`open_activity`）、`:422-423`（`_attempt`）、`:503-511`；`policies.py:594-597`；`agent/gateway.py:36` |
 | 3 | **删旧入口**：按 SLIMMING §2.1 的清单删旧 CLI 命令（smoke、decide 搬进子包）、demo、serve、suite/prompt/probe、ManualProvider（`request_json` 移到 `providers/claude_code.py`）；还有 `evals/`、`examples/automationbench/marketing.toml`（`cli.py:602`、`:634` 的 `--config` 帮助示例写的就是它，同一提交改成 `claude-v4-finance.toml`）。`git rm -r evals/` 只删跟踪的文件，`evals/replay_campaign/` 下被忽略的三个文件留着；如果 `[train]` 的测试需要 Jev/TDE 格式的夹具，就挑最小的一份先移到 `tests/fixtures/`。`examples/ouroloop.toml` 被 test_loop 读（:104），放到第 5 步同一个提交里删 | `ouroloop/cli.py`、`demo.py`、`serve.py`、`providers/manual.py`、`agent/{suite,prompt,probe}.py` |
 | 4 | **建子包**：SLIMMING §0.1 A、B 移进 `ouroloop/train/`，C 移进 `ouroloop/train/jobs/`；`pyproject.toml` 加 extra `[train]`、`[train-jobs]`；入口 `python -m ouroloop.train`；`docker/worker/Dockerfile` 随 `[train-jobs]` 一起移 | `ouroloop/train/**`、`pyproject.toml` |
@@ -146,6 +151,9 @@ git status --short --ignored    # 被忽略的工作区与 *.local.toml 和整�
 
 **验收**
 ```
+# 2026-10-08：金标换成读兼容与尝试行为两组测试（§0.2 末行）；pip install 不在 worktree 里跑（会改主 venv 的可编辑安装），
+# 改为 PYTHONPATH 指向 worktree 跑 `python -m ouroloop.train smoke --jev --backend mock`；finance 副本上的 --checks-only 字节对照没做，
+# 由假上游上的边界与行为测试代替（JOURNAL 2026-10-08 瘦身第一批一条）。下面是原文。
 .venv/bin/python -m pytest -q                                                      # 金标、边界测试都在内
 OUROLOOP_TEST_REQUIRE_DOCKER=1 .venv/bin/python -m pytest -q -m "not live"
 .venv/bin/pip install -e '.[train,train-jobs]' && .venv/bin/python -m ouroloop.train smoke --jev --backend mock
@@ -156,9 +164,9 @@ OUROLOOP_TEST_REQUIRE_DOCKER=1 .venv/bin/python -m pytest -q -m "not live"
 # 并去掉 ts 等时间字段（results 行 benchmark.py:591、transcript 事件 agent/runner.py:120、session 行 ledger.py:133）；只允许这两类差异
 ```
 
-**停下来分析：** 有没有字节差？有没有哪项保证只在被删的路径上测过？
+**停下来分析：** 有没有字节差？有没有哪项保证只在被删的路径上测过？（2026-10-08 的回答见 JOURNAL 瘦身第一批一条。）
 
-**文档：** 两份 README（快速上手改用新写的 `examples/automationbench/quickstart.toml`，工作区根是新的 `workspace-quickstart`，不碰现有记录；命令表、代码结构）、DESIGN、ROADMAP、TECHNOLOGY（:10、:94 还引 v1 的 `agent/loop.py`、`research/loop.py`）、TRAINING_HOSTS（路径改到 `ouroloop/train/jobs/`）、modules/01、02（日落规则的点名清单）、modules/README、08；删 DEMO、RESEARCH_AGENT、history/V0_5_IMPLEMENTATION、`docs/assets/`（README 已不引用架构动图）；指向 history/V0_5_IMPLEMENTATION 的四处链接（DESIGN:7、modules/README:4、00_CONTRACTS:3、08:10）改指 tag `archive-2026-10-08`；JOURNAL 页首“从 `evals/replay_campaign/` 重算”一句改为“在 tag archive-2026-10-08 上”；V2 里的 file:line 引用。
+**文档**（2026-10-08 已做，另加 modules/00、03、04、05、07 的就地注、`CLAUDE.md`、`examples/automationbench/README.md`）**：** 两份 README（快速上手改用新写的 `examples/automationbench/quickstart.toml`，工作区根是新的 `workspace-quickstart`，不碰现有记录；命令表、代码结构）、DESIGN、ROADMAP、TECHNOLOGY（:10、:94 还引 v1 的 `agent/loop.py`、`research/loop.py`）、TRAINING_HOSTS（路径改到 `ouroloop/train/jobs/`）、modules/01、02（日落规则的点名清单）、modules/README、08；删 DEMO、RESEARCH_AGENT、history/V0_5_IMPLEMENTATION、`docs/assets/`（README 已不引用架构动图）；指向 history/V0_5_IMPLEMENTATION 的四处链接（DESIGN:7、modules/README:4、00_CONTRACTS:3、08:10）改指 tag `archive-2026-10-08`；JOURNAL 页首“从 `evals/replay_campaign/` 重算”一句改为“在 tag archive-2026-10-08 上”；V2 里的 file:line 引用。
 
 ### P2 瘦身第二批（$0；SLIMMING §3 第二批）
 
@@ -169,11 +177,11 @@ OUROLOOP_TEST_REQUIRE_DOCKER=1 .venv/bin/python -m pytest -q -m "not live"
 | 1 | 删活动内研究位；判定代码抽成 `research/recursion.py`（`judge_research`、`carries`/`unused_changes`、CampaignPair 的不重叠检查、discovery 标签），配 `tests/test_recursion.py`。test_campaign 只留 `judge_research`、`carries` 与不重叠的测试，移进 test_recursion，其余删 | `research/campaign.py:322-348`、`:382-485`，CampaignPair `:29-52`，discovery `:78`、`:90-91` → `research/recursion.py` |
 | 2 | 删多领域合并、采集批、段延长 | `bench.py`、`report.py` |
 | 3 | 先迁夹具：`fixture_preset`（test_cycle 90 处、test_real_run_findings 4 处）改用 v3 preset 与 `SessionScript`；再删旧轮次路径和 `marketing_harness_v1`；test_bench_phase 用 `claude-v3.toml` 的 `llm`、`pricing` 表比对 v4 配置（:734-735），把这两张表内联进测试；test_cycle 读 `improvement.toml`（:282）、test_bench_phase 读 `claude.toml`、`claude-full.toml`（:448），改写这几处后删这四份配置；`bench.py:4349` 的报错文字点名 `improvement.toml`，同一提交改掉 | `tests/test_cycle.py`、`tests/test_bench_phase.py`、`examples/automationbench/` |
-| 4 | 简化 context 与 inspection（`check_label_availability` 保留）；删 `research/api_errors.py`，以及它在 `session.py:1080` 的输入和 `session.py:165-166` 的文字。`PROPOSE_SESSION`（`policies.py:718-738`）不动，新文字放进 P5 的新常量，否则 v3 的 R0 金标会变。删之前先把 `api_errors._calls`（约 20 行）移进 `research/methods.py`（`methods.py:328` 的 `replay_events` 用它；SLIMMING §2.1）；方法库在 P3 删时随之删 | `research/context.py`、`research/session.py` |
+| 4 | 简化 context 与 inspection（`check_label_availability` 保留）；删 `research/api_errors.py`，以及它在 `session.py:1080` 的输入和 `session.py:165-166` 的文字。`PROPOSE_SESSION`（`policies.py:718-738`）不动，新文字放进 P5 的新常量，否则 v3 的 R0 金标会变（2026-10-08：没有金标了，但 v3 的 R0 文本仍是 v0.4 的预注册原文，照样不动）。删之前先把 `api_errors._calls`（约 20 行）移进 `research/methods.py`（`methods.py:328` 的 `replay_events` 用它；SLIMMING §2.1）；方法库在 P3 删时随之删 | `research/context.py`、`research/session.py` |
 | 5 | final 的三处预算检查合成一处（`final_fits`），test_paid_run_safety 里约 7 个测试改写成它的规格，保留。并删 SLIMMING §2.2 第 3 行的小分支：`_five_limits`/`limit_problems(five=False)`、`run_phase` 的 NOT_YET/IMPLEMENTED、`RsiConfig` 的 5 个字段（`research_plan_ref/profile/train/initial_release_ref/core_ref`）、`open_activity` 的 v2 bootstrap、`startup_checks` 的 openai 键检查和 v2 检查、`Improvement` 的 trainer/serving/probe_train/actor_override/owner、cli 的 `--repeats/--reason/--plan`、`cycle()` 拉直（`capabilities['training']` 键保留；`--until baseline`、`segment-N/round-K` 保留） | `bench.py`、`cli.py` |
 | 6 | 最后单独一个提交：去掉 `bench.py` 里的版本史注释 | `bench.py` |
 
-要守住的身份：Schedule 的 `research_slots`、`collection_batches`；FinalizationPlan 的 `research_campaign_plan_ref`、`claims`；TaskEvalPlan 的 `screen_ids`；v3/v5 的 K 表（由金标测试守住）。
+要守住的身份：Schedule 的 `research_slots`、`collection_batches`；FinalizationPlan 的 `research_campaign_plan_ref`、`claims`；TaskEvalPlan 的 `screen_ids`；v3/v5 的 K 表（由金标测试守住）。（2026-10-08，§0.2 末行：这些不再是必须守住的身份，只在能让死代码一起删时才删；守住的是读兼容、尝试行为与资金安全三条，`test_record_compat`、`test_attempt_behaviour` 与资金安全测试照跑。）
 
 测试（SLIMMING §2.6 标 2 的各行）：test_cycle（约 30 个研究位测试、9 个采集测试）、test_rsi_integration（约 16 个）、test_real_run_findings、test_report（C4 2 个、多领域 4 个）、test_bench_phase、test_harness_loop、test_research_round、test_diagnosis、test_evidence_training。
 
@@ -182,6 +190,8 @@ OUROLOOP_TEST_REQUIRE_DOCKER=1 .venv/bin/python -m pytest -q -m "not live"
 **验收**
 ```
 .venv/bin/python -m pytest -q && OUROLOOP_TEST_REQUIRE_DOCKER=1 .venv/bin/python -m pytest -q -m "not live"
+# 2026-10-08（§0.2 末行）：旧工作区不在 HEAD 上续跑，下面三条重渲染与 checks-only 改为可选的参考读数；必跑的是
+# test_record_compat（OUROLOOP_RECORDS_ROOT 指向主检出的 examples/automationbench）与 test_attempt_behaviour，都在默认套件里
 # 在 scratch 拷贝里：finance 的报告重渲染，只允许 C2/C3/C4 的说明文字有差异
 .venv/bin/python -m ouroloop bench --config <scratch>/claude-v4-finance.toml --phase report
 # support 两个工作区的拷贝能载入，启动检查通过（v4、v5 两份配置各跑一次）
@@ -200,7 +210,7 @@ OUROLOOP_TEST_REQUIRE_DOCKER=1 .venv/bin/python -m pytest -q -m "not live"
 | 处理 | 内容 |
 |---|---|
 | 删 | `research/methods.py`、`research/method_kit/`（含 `reference/`：SLIMMING §2.3 写明方法库删时一起删）；`bench.py` 的 `learn` 阶段（:3001，含 :3013 的导入）、`_refit_round`（:3113，含 :3119）、explore 守卫（:724-729），以及 :1298、:1332、:1344、:1387、:1431 处的 `methods.*` 导入；`research/drafts.py:115`、`:192`、`:212` 的 kit 钩子；`agent/default_agent.py:278-281` 的 `m_` 只读路径；`agent/runner.py` 的方法视图（`attempt_view` 的 `methods`，:36-59、:72-77）；报告里的方法部分（`report.py` 的 `m_tool_writes`、`v05_evidence` 的方法项）；test_methods；test_v05 与 test_v05_phases 里方法与 learn/refit 的测试 |
-| 留 | `research/library.py`、`research/fixed.py`（`library_track` 用它）、`--phase library`、`agent/runner.py:138-148` 的检索、`drafts.library`、报告的经验库证据；test_library；test_v05_phases 的经验库与固定轮次测试；playbook 测试。v5 preset 的 K 表照旧：`_v5_preset`（`bench.py:1910-1916`）与 `harness_settings`（:2147-2155）现在从 `MethodSettings` 取 `methods` 表，改成冻结字面量（规则 15），由 v5 金标守住 |
+| 留 | `research/library.py`、`research/fixed.py`（`library_track` 用它）、`--phase library`、`agent/runner.py:138-148` 的检索、`drafts.library`、报告的经验库证据；test_library；test_v05_phases 的经验库与固定轮次测试；playbook 测试。v5 preset 的 K 表照旧：`_v5_preset`（`bench.py:1910-1916`）与 `harness_settings`（:2147-2155）现在从 `MethodSettings` 取 `methods` 表，改成冻结字面量（原规则 15），由 v5 金标守住（2026-10-08：没有金标，规则 15 已改；不必冻结成字面量，能删就删） |
 | 解耦 | `inputs/library.json` 与 playbook 现在只在 `method_inputs` 里、方法库开着时才构建（`bench.py:1141-1144`、`:1425-1450`）；会话按 `methods_on` 决定给不给 playbook（`session.py:1082-1090`、`:1123-1129`）。改成不依赖方法库；`playbook_check`（`methods.py:955`）移进 `research/recursion.py` |
 
 **验收**
@@ -227,7 +237,7 @@ git grep -nE "research\.methods|research import methods|from \.methods|method_ki
 | S2 | 开源提炼臂（要用户批准预算）：ACE 的 Reflector/Curator、ReMe 0.2.0.6 的 task memory 总结，各在自己的 venv 里原样跑写入步骤，输入是 3b 流里已付过费的 train 轨迹；LLM 调用经一个小 shim 走计量过的研究 provider；结果导出成 W 现有的载体。留下的臂各跑一次 dev gate，同时并发重读 VEL 快照和 W_base（OSS §5、§7） | 名义 $50～180 |
 | 二开 | 只在触发条件成立时做（OSS §6）：嵌入检索（`retrieve`，`library.py:450-468`，加无网络的边车）；ACE 式“实际用了哪条”的记功，取代给同屏每条都记全额 r − b(t)（`library.py:274-284`、`bench.py:3240-3245`）；ReMe 式的失败提炼与 α/β 删除规则（`ORIGINS` 在 `library.py:33`，`DISTILL`/`MERGE` 在 :489/:499）；合并与删除 | $0 代码 |
 
-**验收：** 每处改动有测试（去掉改动测试就失败）；新数值只出现在新 preset 下；v5 preset 的金标不变；`.venv/bin/python -m pytest -q` 通过。
+**验收：** 每处改动有测试（去掉改动测试就失败）；新数值只出现在新 preset 下；v5 preset 的金标不变（2026-10-08：没有金标；改为 v5 preset 的现有测试照过）；`.venv/bin/python -m pytest -q` 通过。
 
 **停下来分析：** 退役是记功噪声，还是条目真有害？问题出在检索还是内容？哪条触发条件在至少 3 道题上成立？S2 有没有臂胜过 VEL？
 
@@ -248,7 +258,7 @@ git grep -nE "research\.methods|research import methods|from \.methods|method_ki
 
 **验收**
 ```
-.venv/bin/python -m pytest -q                       # v3 的 K、R0 金标 ref 不变
+.venv/bin/python -m pytest -q                       # v3 的 K、R0 ref 不变（2026-10-08：没有金标测试，由下面的新测试守）
 # 在 v4-finance 台账上离线重放新的 pick_best：选 policy_routes，不选 send_scope（FINANCE_V04_ANALYSIS:523）
 # 新测试：新 preset 的 default_research_set 给出新的 R0 ref，v3、v5 的 R0 ref 不变
 ```

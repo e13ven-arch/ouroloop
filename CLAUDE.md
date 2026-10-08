@@ -12,8 +12,9 @@ Start at `docs/PLAN.md`: where things stand (§0), the rules (§1), the stages i
 - Run mutation and review checks only in an isolated copy (`cp -R` into the scratchpad, or a `git worktree`). Snapshot `git diff` and the untracked files before, and compare after.
 - The actor and R run through the claude_code CLI; no API-key arms. Every arm uses the same effort level (medium).
 - Open source first: plug in a mature component as it is; fork only on a gap an experiment has shown.
-- Run records cannot be regenerated. Never delete or modify git-ignored files (`examples/**/workspace*/`, `ws/`, `*.local.toml`, the ignored files in `evals/replay_campaign/`). Remove only tracked files, with `git rm`. Old versions live on tags: `archive-2026-10-08` has every file deleted in the 2026-10-08 cleanup.
+- Run records cannot be regenerated. Never delete or modify git-ignored files (`examples/**/workspace*/`, `ws/`, `*.local.toml`, the ignored files in `evals/replay_campaign/`). Remove only tracked files, with `git rm`. Old versions live on tags: `archive-2026-10-08` has every file deleted in the 2026-10-08 cleanup and in slimming batch 1.
 - While a paid activity runs from a checkout, merge nothing under `ouroloop/` into it: `code_version` is part of K.
+- Existing workspaces are not resumed at HEAD: re-render or resume them at their tags (`v0.4.0`, `archive-2026-10-08`). HEAD must still read their train/dev records (`tests/test_record_compat.py`), and one attempt on the fake upstream must behave as before (`tests/test_attempt_behaviour.py`). Hash identity with old workspaces is not kept (PLAN P1, 2026-10-08).
 - Reply to the user in Chinese. End every commit message with
   `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`
 - After each stage: add a JOURNAL entry (newest first) and update `docs/PLAN.md`.
@@ -27,5 +28,6 @@ Start at `docs/PLAN.md`: where things stand (§0), the rules (§1), the stages i
 - Plan, log, results: `docs/PLAN.md`, `docs/JOURNAL.md`, `docs/RESULTS.md`. Design: `docs/DESIGN.md`, `docs/design/`, `docs/modules/`.
 - Benchmark configs and how to run them: `examples/automationbench/` (see its `README.md`).
 - Run records: `examples/automationbench/workspace-*/`, local and git-ignored.
-- Code: `ouroloop/`; after slimming batch 1 the training stack is in `ouroloop/train/`. Tests: `tests/`.
+- Code: `ouroloop/`; the training stack is in `ouroloop/train/` (extras `[train]`, `[train-jobs]`; `python -m ouroloop.train`), off the benchmark path. Tests: `tests/`; the training stack's tests are in `tests/train/`.
+- A first activity: `examples/automationbench/quickstart.toml` (new workspace, nothing frozen).
 - Scratch files go in the session scratchpad, never in the repo.

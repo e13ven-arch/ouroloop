@@ -7,6 +7,8 @@
 > v2（2026-10-08）：用户对 [V2_TRAINING_PIPELINE](../design/V2_TRAINING_PIPELINE.md) §7 答“按默认”，八项按默认值定下。本文据此改了：§1 的来源规则（血缘加选择，取代 EVAL_ONLY 闸门）、§1a（不建原文对象库、精确值脱敏、教师读 K）、§2 第 5 步（目标 `accepted`，`pass_only` 只作 dev 消融）、§3a 第 2–3 步（学生在 W0 下、教师带 K 审阅）、新增 §3b（`[train.<role>]` 配置形状与 actor 产物契约、Qwen3.5-9B + Tinker 参考实现、`ouroloop/train/` 与 `[train]`/`[train-jobs]` 命名）、DT6-01/07/10/12/13/14；同日复核后另补 §1 表的决策学习一行、§2 首段（不另建 TrajectoryRecord）、§3 的 role 名、§3a 首段与第 5 步、§4 首段的注。其余决定不在本模块重复，见该文 §7：轨道 B 在 X1 读完后再定开不开，老师写在计划文件里；test 复用规则；finance、hr、marketing、sales、support 五域合训一个学生，operations 整域留出报 LODO；`contact_human` 在本基准上不作效果主张。标“（v2，2026-10-08）”的是写定日期，不表示已实现：代码一律等 support 两份 final 评完、H1 算完才动，从瘦身第一批开始（V2 §1“时机”）。
 >
 > 2026-10-08（support 两臂对照停止后，[JOURNAL](../JOURNAL.md) 2026-10-08）：对照已由用户停止，上段“等 support 两份 final 评完、H1 算完”的条件作废，代码从瘦身第一批合入之后开始。同日按 V2 的 Tinker/RunPod 核价更正同步 §3b：`[train.actor]` 的自托管写插件模块路径、由 `JobTrainer` 运行（`module:Class` 只用于测试与 demo）；默认配方只做 LoRA，α 在 Tinker 上设不了，lr 改为扫描；serving 默认 `openai_compat` 指向 RunPod 上服务合并权重的 vLLM（V2 §3.3、§3.5、§3.7、§7 第 6 项）。被取代的原文保留在注里。
+>
+> 2026-10-08（瘦身第一批完成，分支 `slim/1`，[PLAN](../PLAN.md) P1）：本模块的代码已收进可选子包。`ouroloop/train/`（extra `[train]`）放决策契约、标签、建集、检查、`train_artifact`、后端、模型库、serving、trainer 插件、StopGuard 与入口 `python -m ouroloop.train`；`ouroloop/train/jobs/`（extra `[train-jobs]`）放作业、主机与云。冠军流水线（gate、registry、replay、monitor、plan、pipeline 的旧半边、`calibrate_point`）已删，tag `archive-2026-10-08` 上可读，v2 按 Releases 与 task_gate 重写。下文的代码位置改到新路径；新加 §3c，列出子包里每个模块由哪份 v2 文档点名，即日落规则的点名清单（[SLIMMING](../design/SLIMMING_INVENTORY.md) §0.1）。测试在 `tests/train/` 与 `tests/train/jobs/`。“训练出的 decider 改变 agent 的行为”在 HEAD 上没有测试：要等宿主重新问 stop 点或 `write_gate`（V2 §3.8；SLIMMING §2.6）。
 
 ## 1. 两条数据路径
 
@@ -51,7 +53,7 @@ v0.6 的规格假定循环由宿主持有，所以 M8 的审计流/学生流由 
 在 `train_artifact` 既有纯构建边界增加 role/method 分派，保持旧调用签名与默认 decision 行为。目标接口：
 
 ```text
-build_task_dataset(...) -> 既有决策 DatasetBuild          # ouroloop/evolve/build.py:164，现有
+build_task_dataset(...) -> 既有决策 DatasetBuild          # ouroloop/train/dataset.py:113，现有（原 evolve/build.py:164）
 build_sft_dataset(...) -> DatasetBuild(status, dataset_ref, exclusions)
 train_artifact(..., role=actor 或 decision) -> TrainingBuild
 ```
@@ -102,7 +104,30 @@ teacher、judge、actor（含学生）与 trainer 都是配置项，开发者换
 | 自托管 | 唯一一步手工操作：在 RunPod 上起 vLLM，默认服务合并后的完整权重（`vllm serve <merged_dir> --served-model-name <ref> --max-model-len <≥ max_seq> …`）；以 LoRA 方式服务 adapter 是备选，要给 `--max-lora-rank 32`；完整参数见 V2 §3.3（2026-10-08 按核价更正，原写只有 `vllm serve <base> --enable-lora --lora-modules <ref>=<dir>`） |
 | 生成探针 | 核对服务名等于 ref；做一次 tool-call 往返（含 `_unparsed`）；核对上下文长度 ≥ `max_seq`；（2026-10-08 按核价补）用 Tinker 训练时的 renderer 与 vLLM 的 HF chat template 各渲染同一条轨迹、逐 token 比对，不一致就不过（V2 §3.3）。actor 产物送进决策探针时拒绝（DT6-05） |
 
-命名（v2，2026-10-08，用户决定，V2 §7 第 7 项）：子包 `ouroloop/train/`，extra `[train]` 与 `[train-jobs]`（`TrainJob`/`TrainResult`/`Trainer` 契约与 `train_artifact` 在 `[train]`，`JobTrainer` 与云、主机作业层在 `[train-jobs]`，SLIMMING §0.1 A、C），入口 `python -m ouroloop.train`；取代瘦身清单里的 `ouroloop[decision]`/`ouroloop[decision-jobs]`，代码随瘦身第一批只搬一次，等 support 两份 final 与 H1 完成后合入（2026-10-08：对照已停止，这个条件作废，按瘦身的批次顺序合入）。
+命名（v2，2026-10-08，用户决定，V2 §7 第 7 项）：子包 `ouroloop/train/`，extra `[train]` 与 `[train-jobs]`（`TrainJob`/`TrainResult`/`Trainer` 契约与 `train_artifact` 在 `[train]`，`JobTrainer` 与云、主机作业层在 `[train-jobs]`，SLIMMING §0.1 A、C），入口 `python -m ouroloop.train`；取代瘦身清单里的 `ouroloop[decision]`/`ouroloop[decision-jobs]`，代码随瘦身第一批只搬一次，等 support 两份 final 与 H1 完成后合入（2026-10-08：对照已停止，这个条件作废，按瘦身的批次顺序合入）。2026-10-08 已搬完（分支 `slim/1`）：模块与点名见 §3c。
+
+### 3c. 子包的模块与日落规则的点名清单（2026-10-08，瘦身第一批）
+
+日落规则（[SLIMMING](../design/SLIMMING_INVENTORY.md) §0.1）：到 v1.0 tag 时，子包里不在下表、或点名它的 v2 段落已经删掉的模块，一律删掉。往子包里新加模块，要在下表写上点名它的段落才算点名。行号与路径以 `slim/1` 的 `455ffe2` 为准。
+
+| 模块 | 内容 | 点名它的 v2 文档 |
+|---|---|---|
+| `train/types.py`、`train/decision.py` | 类型化决策契约：`Question`/`Request`/`Answer`（noul、choice、score，与 Jev/TDE 同构）；`DecisionPoint`、视图与 `spec_hash` | V2 §2.2（决策行的 `spec_hash`、`question`、`candidates`）、§3.6（`worker.decide.<point>`，首个点 `write_gate`） |
+| `train/policy.py` | `Policy`、`route`、按 session 的 `fit_threshold` | V2 §2.2（决策行的 `route`，取自 `route`）、§3.4（阈值的 Learn-then-Test） |
+| `train/runtime.py` | 决策运行时的通用半边：`record`（shadow）、`propose`、`outcome`、`_default` | V2 §2.2（DecisionRecord 由 `propose` 写）、§2.5（`_default` 的血缘） |
+| `train/trace.py` | `Observation` 与 `DecisionTrace` 的构造（原 v1 循环的 `_stop_ctx`、`_trace`） | V2 §2.2（宿主写的记录点） |
+| `train/views.py`、`train/stop.py` | 业务 stop 视图与点；StopGuard（checker 否决、回推上限、override 行） | V2 §5“v2.5 以后”（`ctx.finish` 与运行时 stop）；本文 §4 |
+| `train/feedback.py` | 只认 env/human 的完成标签 | V2 §2.4（打标器）、§2.5、§3.8 |
+| `train/dataset.py` | `build_task_dataset`、`to_example`、`DatasetBuild`、按族划分与血缘检查 | V2 §2.6（FamilySplit 复用）、§3.2（`build_decision_dataset`） |
+| `train/checks.py` | 截断、答案位置偏斜、13-gram 重叠、`min_train`、`max_mde` | V2 §3.2（检查） |
+| `train/calibrate.py` | `fit_temperature` | V2 §3.4（温度） |
+| `train/train.py` | `TrainJob`/`TrainResult`/`Trainer` 契约、`train_artifact`（先预留预算、续跑 attach）、`full_recipe`、`check_change`、加载探针 | V2 §3.1、§3.3（训练入口与探针） |
+| `train/backends/` | `jev`（`/v1/systemone`）、`llm`（judge）、`tde`、`mock`（测试夹具） | V2 §3.5（决策模型 serving、judge）、§3.3（`tde` 插件） |
+| `train/serving.py`、`train/stores/` | 按引用加载模型；`dir`、`hf` 模型库 | V2 §3.5（ref、存储与 serving） |
+| `train/trainers/` | 插件契约，`signature`、`tde` 两个插件 | V2 §3.3（插件与产物契约；v2.0 加 `mock_sft`，v2.1 加 `tinker_lora`、修 `tde`） |
+| `train/claude_code.py` | Claude Code 适配器：权限弹窗 → 人工标签，带 `tool_gate` 点 | V2 §2.5（`human:claude_code_permission`） |
+| `train/config.py`、`train/cli.py`、`train/__main__.py` | `build_backend`/`build_store`/`build_serving`/`build_trainer`；`python -m ouroloop.train` | V2 §3.7（配置）、§5（各里程碑的命令） |
+| `train/jobs/`（`trainer.py`、`cloud.py`、`compute.py`、`worker.py`、`hosts/`、`Dockerfile`） | `JobTrainer`：本机、ssh 主机、RunPod/Vast.ai 实例上的作业；价格上限、截止时间、取消 | V2 §3.3（插件模块路径由 `JobTrainer` 作为作业运行）、§5 v2.1（RunPod 冒烟）；[TRAINING_HOSTS](../TRAINING_HOSTS.md) |
 
 ## 4. 决策模型独立性与漂移
 
@@ -131,4 +156,4 @@ v0.3 的宿主不问任何决策点：包返回即完成（termination `finished
 | DT6-13（第二版） | 同一学生模型、两个不同 agent 包采的轨迹送入一个 plan | plan 校验拒绝：目标 harness 身份含 agent 代码，不是同一 plan 的数据。（v2，2026-10-08）按包 digest（`package_ref`）判定，不按工作区：不同工作区里同一 digest 的轨迹由投影器合并计入；`teacher_rollouts` 同样只收一个包（V2 §2.1 S1′） |
 | DT6-14（第二版） | preset 的 distillation.stages 被改序（v2.5 起：或跳过 re_evolve）；或把 Opus 的 W\*（或其 memory/skills）装给采集中的学生 | freeze 拒绝。（v2，2026-10-08，§3a 第 2–3 步）采集与训练的学生 h 是 W0；W\* 的 memory 与 skills 原文只以 K 交给教师，固定模板渲染、以 ref 冻结进 plan，学生的 `messages` 里没有 K。W\* 装给学生只出现在 C5′ 的 S+W\* 对照臂，或 re_evolve（v2.5）里作为候选进 gate |
 
-DT6-09～14 于 2026-10-04 随 v0.3 写定，验收归第二版；v0.3 不为它们写测试。DT6-01/07/10/12/13/14 于 2026-10-08 按 [V2_TRAINING_PIPELINE](../design/V2_TRAINING_PIPELINE.md) §7 改写，测试落点按其 §5（v2.0 的离线套件；v2.2 在 fake_upstream 上用脚本化的学生和教师）。复用 `test_evidence_training.py`、`test_train_config.py`、`test_jobs.py`；第二版新增少量生成 renderer/mask 与 fake Tinker 测试。实际云 smoke 单列，不放默认离线测试。第二版的测试以 M1 §1（v0.3）落盘的网关日志格式为 fixture；格式一变，先改 M1 再改这里，不在 M2 另立一份 schema。
+DT6-09～14 于 2026-10-04 随 v0.3 写定，验收归第二版；v0.3 不为它们写测试。DT6-01/07/10/12/13/14 于 2026-10-08 按 [V2_TRAINING_PIPELINE](../design/V2_TRAINING_PIPELINE.md) §7 改写，测试落点按其 §5（v2.0 的离线套件；v2.2 在 fake_upstream 上用脚本化的学生和教师）。复用 `tests/train/test_evidence_training.py`、`tests/train/test_train_config.py`、`tests/train/jobs/test_jobs.py`（2026-10-08 随子包移进 `tests/train/`）；第二版新增少量生成 renderer/mask 与 fake Tinker 测试。实际云 smoke 单列，不放默认离线测试。第二版的测试以 M1 §1（v0.3）落盘的网关日志格式为 fixture；格式一变，先改 M1 再改这里，不在 M2 另立一份 schema。
