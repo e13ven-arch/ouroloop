@@ -258,7 +258,9 @@ def core_checks(proposal: ct.ExperimentProposal, *, context, core: ct.CoreManife
                 owner: str, budget=None, feedback_builders=None) -> list[str]:
     """What no research policy may change, reorder or remove. Every reason returned blocks the experiment."""
     reasons = []
-    feedback_builders = registered_builders() if feedback_builders is None else feedback_builders
+    if feedback_builders is None and proposal.training:
+        # only a training entry names a builder: a proposal without one never loads the training stack (ouroloop/train)
+        feedback_builders = registered_builders()
     if proposal.owner != owner:
         reasons.append(f"this round produces {owner} candidates; the proposal says {proposal.owner}")
     for change in proposal.changes:

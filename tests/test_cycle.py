@@ -267,6 +267,27 @@ def test_a_frozen_method_list_refuses_a_change_of_another_kind(tmp_path):
     assert any("a policy_edit change, and this activity allows only ['harness_edit']" in r for r in reasons)
 
 
+def test_core_checks_read_the_registered_feedback_builders_only_for_a_training_entry(tmp_path, monkeypatch):
+    """The research slot's admission passes no builders: a proposal without a training entry must not load
+    ouroloop.train through registered_builders (the subpackage stays off the bench path, P1 step 4)."""
+    from ouroloop.research import experiment as X
+    asked = []
+    monkeypatch.setattr(X, "registered_builders", lambda: asked.append(1) or ("completion_snapshot@v1",))
+    objects = ct.Objects(tmp_path)
+    core = ct.CoreManifest(domain="rsi")
+    prompt = ct.ExperimentProposal(owner="research", hypothesis="h",
+                                   changes=({"target": "research.diagnose", "kind": "prompt",
+                                             "change": {"text": "x"}},))
+    X.core_checks(prompt, context=None, core=core, objects=objects, owner="research")
+    assert asked == []
+    selection, recipe = objects.put_json("change", {"seed": 0}), objects.put_json("change", {})
+    training = ct.ExperimentProposal(owner="worker", hypothesis="h",
+                                     training=({"point": "worker.stop", "feedback_ref": "completion_snapshot@v1",
+                                                "data_selection_ref": selection, "recipe_ref": recipe},))
+    reasons = X.core_checks(training, context=None, core=core, objects=objects, owner="worker")
+    assert asked == [1] and not any("feedback builder" in r for r in reasons)
+
+
 def test_br6_14_a_first_version_cycle_needs_no_trainer_or_teacher(fake_upstream, tmp_path, fixture_preset):
     cfg = cycle_config(fake_upstream, tmp_path)
     settings = bench.improvement_settings(cfg)
