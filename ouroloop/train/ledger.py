@@ -1,21 +1,16 @@
-"""Append-only JSONL ledger of sessions, decisions, escalations and outcomes, plus the context store that lets a changed
-view be re-rendered offline. (The champion's calibration and spec stores went with the champion pointer in P1 step 5;
-tag archive-2026-10-08.)"""
+"""The decision ledger and the context store of the training stack (docs/design/V2_TRAINING_PIPELINE.md): append-only
+JSONL of sessions, decisions, escalations and outcomes, and the raw contexts a changed view is re-rendered from. Moved
+from ouroloop/ledger.py in stage 1; the file helpers it used are in ouroloop/contracts.py."""
 from __future__ import annotations
 
-import fcntl
-import json
-import os
 import re
-import threading
-import time
-import uuid
 from collections import defaultdict
-from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
+
+from ..contracts import append_jsonl as _append_jsonl
+from ..contracts import new_id, now, read_jsonl as _read_jsonl, redact
 
 # Data lineage and selection (docs/DESIGN.md §8, invariant 6): `source` says where an answer or a label came from,
 # and which sources a fit, a threshold or an evaluation uses is the data plan's choice. Until v2.0 replaces this gate
@@ -25,88 +20,6 @@ from typing import Any, Iterator
 SOURCE_WEIGHTS = {"env": 1.0, "human": 1.0}
 EVAL_ONLY = {"frontier_llm", "open_llm", "jev", "gate"}
 SOURCES = set(SOURCE_WEIGHTS) | EVAL_ONLY
-
-# Applied to everything ouroloop writes: ledger, session contexts, transcripts, run records, experience.
-_SECRETS = [re.compile(p) for p in (
-    r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----",
-    r"(?i)\b\w*(api[_-]?key|access[_-]?key|token|secret|passw(or)?d|credential)\w*[\"']?\s*[=:]\s*"
-    r"(?![\d.,]+(\s|$))\S+",                                 # a number (max_tokens: 4096) is no secret
-    r"sk-[A-Za-z0-9_\-]{16,}",
-    r"(?i)bearer\s+[A-Za-z0-9._\-]{16,}",
-    r"AKIA[0-9A-Z]{16}",
-    r"\bgh[pousr]_[A-Za-z0-9]{30,}|\bgithub_pat_[A-Za-z0-9_]{30,}",
-    r"\bxox[abprs]-[A-Za-z0-9-]{10,}",
-    r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}",
-    r"\b[0-9a-f]{32}\.[A-Za-z0-9]{16}\b",                  # Zhipu API keys
-)]
-
-
-def redact(obj: Any) -> Any:
-    if isinstance(obj, str):
-        for rx in _SECRETS:
-            obj = rx.sub("[REDACTED]", obj)
-        return obj
-    if isinstance(obj, dict):
-        return {k: redact(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [redact(v) for v in obj]
-    return obj
-
-
-def now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
-
-
-def new_id(prefix: str) -> str:
-    return f"{prefix}_{int(time.time() * 1000):x}{uuid.uuid4().hex[:6]}"
-
-
-_APPEND = threading.Lock()     # concurrent attempts append from several threads; a line is written whole
-
-
-def _append_jsonl(path: Path, obj: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    line = json.dumps(obj, ensure_ascii=False) + "\n"
-    with _APPEND, open(path, "a", encoding="utf-8") as f:
-        f.write(line)
-
-
-def _read_jsonl(path: Path) -> Iterator[dict]:
-    if path.exists():
-        with open(path, encoding="utf-8") as f:
-            for line in f:
-                if line.strip():
-                    yield json.loads(line)
-
-
-@contextmanager
-def locked(path: Path):
-    """An exclusive lock on `path` (through a .lock file beside it), shared by every process that writes it."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path.with_name(f"{path.name}.lock"), "a") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
-
-
-def write_json(path: Path, obj: Any) -> None:
-    """Replace a JSON file in one step: a reader sees the old content or the new, never half of it."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-    tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
-    os.replace(tmp, path)
-
-
-def file_key(path: Path) -> tuple | None:
-    """Changes whenever the file is replaced or rewritten; None when there is none."""
-    try:
-        st = path.stat()
-    except FileNotFoundError:
-        return None
-    return st.st_mtime_ns, st.st_size, st.st_ino
-
 
 @dataclass
 class Row:

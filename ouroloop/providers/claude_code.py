@@ -29,7 +29,7 @@ import time
 import uuid
 from pathlib import Path
 
-from ..chat import ChatTurn, ToolCall, ToolSpec
+from ..runtime.chat import ChatTurn, ToolCall, ToolSpec
 from . import ProviderAccountError, ProviderError
 
 USAGE_KEYS = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")

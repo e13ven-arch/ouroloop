@@ -9,9 +9,8 @@ import random
 from pathlib import Path
 from typing import Any, Callable
 
-from ..config import import_object
-from ..evolve.contracts import CandidateDefect
-from ..ledger import Ledger, SessionStore
+from ..contracts import CandidateDefect, import_object
+from .ledger import Ledger, SessionStore
 from .decision import Decision, DecisionPoint
 from .policy import Route
 from .types import Backend, Question, Request

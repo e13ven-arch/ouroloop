@@ -5,7 +5,24 @@ A config names the four roles, whatever the number of machines: this process is 
 trains, stores and serves is a layout of these tables, not a design (docs/TRAINING_HOSTS.md)."""
 from __future__ import annotations
 
-from ..config import build_provider, import_object
+import tomllib
+from pathlib import Path
+
+from ..contracts import import_object, load_dotenv
+from ..providers import build_provider
+
+def load(path: str | Path) -> dict:
+    """The training stack's config: TOML, its optional env_file (relative to the config) loaded like .env; the options
+    of the [trainer] type's plugin, [trainers.<type>], are also its `options`, so the table builds the trainer alone."""
+    with open(path, "rb") as f:
+        cfg = tomllib.load(f)
+    if cfg.get("env_file"):
+        load_dotenv(Path(path).resolve().parent / cfg["env_file"])
+    trainer = cfg.get("trainer")
+    if isinstance(trainer, dict) and "options" not in trainer and trainer.get("type") in cfg.get("trainers", {}):
+        cfg["trainer"] = {**trainer, "options": cfg["trainers"][trainer["type"]]}
+    return cfg
+
 
 # Keys of an old config's [models] table (now [serving]) that name the store; read as its [store] (store_table).
 MODELS_STORE_KEYS = {"jobs_root", "hf_prefix"}

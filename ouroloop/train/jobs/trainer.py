@@ -18,7 +18,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from ...ledger import new_id
+from ...contracts import new_id
 from ..train import DEFAULT_RECIPE, PATH_KEYS, TrainError, TrainJob, TrainResult
 
 
@@ -152,7 +152,7 @@ class JobTrainer:
     def _job(self, job: TrainJob, job_id: str, parent: str | None, workspace: str,
              check_only: bool) -> tuple[dict, dict]:
         """The job on the host that self.compute reaches, prepared: launch, wait, its result."""
-        from ...release import code_version
+        from ...evaluate.release import code_version
         from .worker import git_state
         spec = {"job": job_id, "version": job.version, "parent": parent, "trainer": self.name,
                 "options": self.options, "recipe": job.recipe, "host": self.host, "jobs_root": self.jobs_root,

@@ -44,7 +44,7 @@ def record_trace(objects, bound, guard, call, ctx: dict, phase: str, decision: d
     did with it — which is the only way a later round can tell "the policy was overruled" from "the policy agreed"
     (docs/modules/00_CONTRACTS.md §2). `decision` is the row as the runtime wrote it (StopGuard's on_record).
     """
-    from ..evolve import contracts as ct
+    from . import records as ct
     observation = ct.Observation(
         task_text=ctx.get("task_text", ""), tool_events=tuple(json.dumps(e, sort_keys=True, default=str)
                                                               for e in ctx.get("tool_events") or ()),

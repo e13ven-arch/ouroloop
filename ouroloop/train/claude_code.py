@@ -24,7 +24,7 @@ import re
 from contextlib import contextmanager
 from pathlib import Path
 
-from ..agent.deny import denied
+from ..runtime.broker import denied
 from .decision import DecisionPoint, Noul
 
 

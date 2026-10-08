@@ -137,7 +137,7 @@ def train_artifact(rt, trainer, dataset, recipe: dict | None = None, *, parent_m
     remote state cannot be read, this returns `failed` with that reason instead of submitting a second job, since
     two jobs are two bills and only one of them was ever planned (DT-08).
     """
-    from ..evolve import contracts as ct
+    from .. import contracts as ct
     objects = objects or ct.Objects(rt.root)
     if getattr(dataset, "status", "ready") != "ready":
         return TrainingBuild(status="failed", dataset_ref=getattr(dataset, "dataset_ref", "") or "",

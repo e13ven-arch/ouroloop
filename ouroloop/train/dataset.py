@@ -14,7 +14,8 @@ import random
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..evolve import contracts as ct
+from .. import contracts
+from . import records
 
 
 def candidates(q) -> list[dict]:
@@ -181,7 +182,7 @@ def build_task_dataset(rt, point, feedback, *, out_dir, objects, splits=None, se
                  "labels": _label_counts(rows), "truncated": sum(bool(e["meta"].get("truncated"))
                                                                  for e in rows["fit"]),
                  "max_per_task": max_per_task, "seed": seed}
-    manifest = ct.DataManifest(
+    manifest = records.DataManifest(
         source_split_ref=splits.hash() if splits is not None else "",
         family_map_ref=objects.put_json("change", {"families": {r.task_id: r.family_id for r in records}}),
         feedback_ref=feedback.builder_ref, input_schema=input_schema, transform_ref=transform_ref,
@@ -228,11 +229,11 @@ def check_lineage(feedback, allowed: tuple[str, ...] = ("train",), *, objects=No
     for record in feedback.records:
         for ref in record.evidence_refs:
             try:
-                evidence = ct.EvidenceRef.from_json(objects.get(ref)) if objects else None
-            except (KeyError, ct.ContractError):
-                bad.append(f"{record.decision_id}: evidence {ct.short(ref)} is unreadable")
+                evidence = records.EvidenceRef.from_json(objects.get(ref)) if objects else None
+            except (KeyError, contracts.ContractError):
+                bad.append(f"{record.decision_id}: evidence {contracts.short(ref)} is unreadable")
                 continue
-            if evidence is not None and not ct.visible(evidence.partition, allowed):
+            if evidence is not None and not records.visible(evidence.partition, allowed):
                 bad.append(f"{record.decision_id}: evidence is {evidence.partition} data, and this dataset may "
                            f"only read {list(allowed)}")
     return bad
