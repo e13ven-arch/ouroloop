@@ -245,8 +245,11 @@ class PackageAgent:
             def handle(reply):
                 served[0] += 1
                 if meter is not None:
-                    meter.poll()
-                return handler(reply)
+                    meter.poll()               # what went out since the last callback, before anything else
+                answer = handler(reply)
+                if meter is not None and reply.get("op") == "base_call":
+                    meter.poll()               # the cap follows the base call just made: package code may go out
+                return answer                  # again before its next callback
             return handle
 
         def model_call(reply: dict) -> dict:
