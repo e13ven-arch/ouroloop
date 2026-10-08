@@ -39,6 +39,15 @@ anthropic = ["anthropic>=1.7"]
 # compare against upstream.
 automationbench = ["pydantic>=2", "datasets>=2", "openai>=1"]
 dev = ["pytest>=8"]
+# The training and decision stack (ouroloop/train/, `python -m ouroloop.train`). Its code is in every install and nothing
+# on the bench path imports it; this is what it needs besides httpx: huggingface_hub, for an "hf" model store and
+# models fetched from the Hub (train/stores/hf.py, train/backends/tde.py). TDE itself, and torch, are a trainer
+# plugin's source ([trainers.tde] source): host init installs them on the training machine, and test_tde_compat
+# reads a checkout at TDE_REPO.
+train = ["huggingface_hub>=0.20"]
+# The job layer (ouroloop/train/jobs/): jobs on this machine, on a host over ssh, or on a RunPod or Vast.ai instance.
+# It needs ssh, rsync and tar on the control plane and no Python package beyond [train].
+train-jobs = ["ouroloop[train]"]
 
 [project.scripts]
 ouroloop = "ouroloop.cli:main"
