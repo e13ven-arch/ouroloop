@@ -15,7 +15,7 @@ from ouroloop.train.jobs import cloud
 from ouroloop.train.train import train_artifact
 from ouroloop.train.jobs.trainer import JobTrainer
 from ouroloop.train.train import TrainError
-from ouroloop.workspace import Workspace
+from ouroloop.train.runtime import Runtime
 
 def trainer(cloud_options, api, ssh, **kw) -> JobTrainer:
     return JobTrainer("signature", cloud=cloud_options, api=api.transport(), runner=ssh, store=STORE,
@@ -382,7 +382,7 @@ def test_no_offer_under_the_price_fails_the_build_before_anything_is_used(tmp_pa
     api = RunPodApi(price=2.5) if provider == "runpod" else VastApi()
     ssh = Ssh()
     tr = trainer(options(provider, keys, max_price=0.3), api, ssh)
-    rt = Workspace(tmp_path / "ws", serving=lambda: tr.serving)
+    rt = Runtime(tmp_path / "ws", serving=tr.serving)
     built = train_artifact(rt, tr, dataset(rt.root), version="m_0001")
     assert built.status == "failed" and built.model_ref is None and built.artifact_ref is None
     assert "no offer under the price" in built.errors[0]

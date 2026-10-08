@@ -25,12 +25,12 @@ from ouroloop.train.jobs import compute as compute_module
 from ouroloop.train.jobs.compute import SEP, Compute
 from ouroloop.train.jobs.trainer import CHECKOUT, JobTrainer
 from ouroloop.train.train import DEFAULT_RECIPE, TrainError, TrainJob, check_change, full_recipe, train_artifact
-from ouroloop.release import code_version
+from ouroloop.evaluate.release import code_version
 from ouroloop.train.serving import Serving
 from ouroloop.train.stores import make as make_store
 from ouroloop.train.trainers.signature import SignatureTrainer
 from ouroloop.train.types import Question, Request
-from ouroloop.workspace import Workspace
+from ouroloop.train.runtime import Runtime
 
 STUB_TRAIN = """
 import json, os, pathlib, sys, time
@@ -185,7 +185,7 @@ def test_a_trained_artifact_is_a_job_and_the_next_one_starts_from_its_model(tmp_
     base = str(repo / "runs" / "base")
     cfg = {"store": {"type": "dir", "root": str(jobs)},
            "trainer": {"type": "tde", "jobs_root": str(jobs), "poll_s": 0.05}, "trainers": {"tde": {"init_from": base}}}
-    rt = Workspace(tmp_path / "ws", serving=lambda: train_config.build_serving(cfg))
+    rt = Runtime(tmp_path / "ws", serving=train_config.build_serving(cfg))
     tde = train_config.build_trainer(cfg, rt.serving)
     recipe = {"replay": str(repo / "data" / "replay.jsonl"), "replay_ratio": 0.5, "lr_head": 0.000123}
     first = train_artifact(rt, tde, dataset(rt.root), recipe, version="m_0001")
@@ -229,7 +229,7 @@ def test_a_trained_artifact_is_a_job_and_the_next_one_starts_from_its_model(tmp_
 # ---------------------------------------------------------------- failures are TrainError: a failed build
 def test_a_failed_job_is_a_failed_build_that_says_why(tmp_path, repo, monkeypatch):
     monkeypatch.setenv("STUB_TDE", "fail")
-    rt = Workspace(tmp_path / "ws")
+    rt = Runtime(tmp_path / "ws")
     built = train_artifact(rt, trainer(repo, tmp_path / "jobs"), dataset(rt.root), version="m_0001")
     assert built.status == "failed" and built.model_ref is None and built.artifact_ref is None
     assert built.errors[0].startswith("TrainError: job m_0001_")
