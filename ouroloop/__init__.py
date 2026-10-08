@@ -1,10 +1,10 @@
-"""ouroloop: bounded recursive self-improvement for agent applications. A research policy R evolves the worker W, a
-versioned capability package run by a fixed runner shell, under a fixed core K (scorer, splits, gate, permissions,
-budgets); a change is installed only after a train screen, a paired dev gate and a confirmation reading (README.md,
-docs/DESIGN.md).
+"""ouroloop: bounded recursive self-improvement for agent applications. An improver R evolves the harness package W —
+the agent loop, tools, hooks, prompts, skills, memory, model binding and config of one business line — run by a fixed
+runner shell under a fixed core K (scorer, splits, gate, budgets); a change is installed only after a train screen, a
+paired dev gate and a confirmation reading (README.md, docs/DESIGN.md).
 
 The decision-model names below are the optional training stack's (ouroloop/train/, `python -m ouroloop.train`),
-imported on first use, so `import ouroloop.bench` (and every attempt) loads none of it."""
+imported on first use, so an activity (and every attempt) loads none of it."""
 from __future__ import annotations
 
 from importlib import import_module

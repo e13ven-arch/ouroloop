@@ -1,6 +1,6 @@
 # harness：包模型、组件类型、种子与 vendor、包侧契约
 
-> 阶段 1 设计文档。包 `ouroloop/harness/`。对应 [DESIGN](../DESIGN.md) §3、§4。来源：`agent/harness_package.py`（HEAD 与 `v6-agent` 分支）、`agent/seed_v6/`。
+> 阶段 1 设计文档。包 `ouroloop/harness/`。对应 [DESIGN](../DESIGN.md) §3、§4。来源：`agent/harness_package.py`（HEAD 与 `v6-agent` 分支）、`agent/seed_v6/`。2026-10-09 按阶段 1 的实现对齐。
 
 ## 1 职责与不做
 
@@ -14,17 +14,18 @@
 |---|---|
 | `harness/package.py` | `Manifest`、`Package`、`Limits`、`classify`、`parse_manifest`、`check_shape`、`build`、`files_of`、`apply_patch`、`diff` |
 | `harness/kinds.py` | 组件类型表：位置模式、manifest 条目、是代码还是文本、验收档、记功条件（§3） |
-| `harness/contract.py` | 包侧契约：ctx 的名字与形状、hook 站点与事件、工具与 agent 入口的签名；`worker_runner.py` 与适配层共用的常量 |
+| `harness/contract.py` | 包侧契约：ctx 的名字与形状、hook 站点与事件、各站点返回形状与 `action_of`（把 hook 的答复归为 none/block/modify/feedback/pushback，越界即 `HookAnswerError`）、worker 协议的 op 与回调；`as_json()` 是 `worker_runner.py` 嵌入的常量 |
 | `harness/literals.py` | 字面量索引与检查（相对种子改动的行） |
 | `harness/seed.py` | `build_seed(name, core) -> Package`：从 `harness/seeds/<name>/` 构建 |
 | `harness/vendor.py` | `PROVENANCE.json`、补丁栈的应用与提取、上游升级 |
-| `harness/seeds/stirrup/` | `vendor/stirrup/**`、`agent/stirrup_agent.py`、`agent/http_fetch.py`、`middlewares/write_guard.py`、`tools/plan_changes.py`、`prompt/*.md`、`tests/*.py`、`patches/`、`manifest.json` |
+| `harness/seeds/stirrup/` | `vendor/stirrup/**`、`agent/stirrup_agent.py`（v6 适配层，原 `default_agent.py` 的执行与 hook 分发并入）、`agent/http_fetch.py`、`middlewares/write_guard.py`（ledger、triage、anchor、verify 四个 hook）、`tools/plan_changes.py`、`prompt/system.md`（空）、`prompt/finish.md`（原 FINISH_CHECK）、`tests/*.py`、`patches/`（目前只有 README）、`manifest.json` |
 
 ## 3 组件类型与上限
 
 ```python
 SITES = ("before_run", "before_model", "before_tool", "after_tool", "after_turn", "on_finish")
 KINDS = ("agent", "vendor", "tool", "hook", "prompt", "skill", "memory", "model", "config", "test")
+CREDITS = ("all", "invoked", "triggered", "cited", "read", "none")      # test 的记功是 none：它不在尝试里运行
 CODE_KINDS = ("agent", "vendor", "tool", "hook", "test")
 TEXT_KINDS = ("prompt", "skill")
 HOST_KINDS = ("memory",)              # 宿主写、R 不能写、worker 不装载
@@ -58,7 +59,13 @@ class Limits:                         # K 的 harness.limits；R 不能放宽
     kinds: tuple[str, ...] = KINDS
     sites: tuple[str, ...] = SITES
     config_ranges: dict[str, tuple] = ...   # {"max_turns": (10, 80), "summarize_at": (0.5, 0.9), "shown_k": (0, 5), "subagent_depth": (0, 2)}
+    model_base: str | None = None           # K 的 model.identity
+    max_effort: str = "medium"              # K 的 model.max_effort
+    @classmethod
+    def from_core(cls, core) -> "Limits"    # K 的 harness.limits、kinds、sites、config_ranges 与 model
 ```
+
+包文件都是 UTF-8 文本（无 NUL、无孤立代理）；二进制文件拒绝（种子与上游 Stirrup 都是文本）。`memory/snapshot.jsonl` 单独计 `max_memory_bytes`，不计入文件数与包字节。
 
 数值来自证据（V0_6 §8）：原 24 文件 / 256 KiB 放不下 vendor；worker 实测峰值 80 MB。
 
@@ -83,7 +90,10 @@ class Limits:                         # K 的 harness.limits；R 不能放宽
 规则：
 - `api_version` 只有 v3；旧的 v1/v2 包不在 HEAD 上跑。
 - `model.base` 必须等于 K 的 `model.identity`；`effort` ≤ K 的 `max_effort`；`artifact_ref` 只能指向训练链产物（EVALUATE §8），为 null 即 pin 的基座。
-- `config` 的每个键在 `Limits.config_ranges` 内。
+- `config` 的每个键在 `Limits.config_ranges` 内；种子构建时 `config` 用默认值补全。
+- `agent` 必填（每个 v3 包自带循环）；`tools[]`、`hooks[]`、`skills[]` 可带 `enabled`；名字在三者间唯一，包工具不能用宿主工具名（`read_skill`、`recall`）。
+- `prompt` 的每个键指向 `prompt/<key>.md` 且文件在包里；没被点名的 prompt、skill、test 文件拒绝；`vendor/<name>/` 与 `vendor` 条目一一对应。
+- `memory.snapshot` 出现当且仅当包里有 `memory/snapshot.jsonl`。
 - `tools[].writes` 由入口声明；broker 对 `writes=false` 的工具强制 `read_only`。
 - `hooks[].site` ∈ K 的 `harness.sites`。
 - `memory.snapshot` 只由 memory 包写（HOST_KINDS）；R 的候选改它即 `PackageError`。
@@ -99,8 +109,8 @@ class Ctx(Protocol):
     def model(self, messages: list[dict], tools: list[dict] = (), *, role: str = "act", effort: str | None = None) -> ModelReply
     def tool(self, name: str, args: dict, *, read_only: bool = False) -> ToolReply
     skills: Skills                      # .index() -> list[{name, description}]; .read(name) -> str | None
-    memory: Memory                      # .recall(query: str, k: int | None = None) -> list[Entry]
-    limits: dict                        # {"act_calls", "model_calls", "tool_calls", "seconds", "output_tokens"} 剩余
+    memory: Memory                      # .recall(query: str, k: int | None = None) -> list[Entry]；没有 memory 时返回 []
+    limits: dict                        # {"act_calls", "model_calls", "tool_calls", "seconds", "tokens"} 剩余（tokens 是输出 token，与 LimitHit 的维度名一致）
     view: dict                          # 只读投影：system, base_tools, package, last_usage, events(最近 20 条), max_output_chars
     def mark(self, kind: str, **data) -> None
 
@@ -124,14 +134,16 @@ def <hook>(ctx: Ctx, event: dict) -> dict | None
 | `after_turn` | `{site, turn, tool_results: [...]}` | `{message?: str}` | feedback |
 | `on_finish` | `{site, turn, reason, final_text, pushbacks}` | `{pushback?: str}` | pushback |
 
-返回 `None` 即无动作。返回形状之外的键是 `CandidateDefect`。hook 抛异常是 `CandidateDefect`（该次尝试记 `harness_error`）。每次触发由适配层 `ctx.mark("hook", site=, name=, action=)` 上报，宿主转写成 `hook` 行。
+返回 `None` 即无动作。返回形状之外的键是 `CandidateDefect`。hook 抛异常是 `CandidateDefect`（适配层抛 `HookError`，带 `ouroloop_defect` 标记，宿主记 `harness_error`）。每次**有动作的**触发由适配层 `ctx.mark("hook", site=, name=, action=, detail=, turn=)` 上报，宿主转写成 `hook` 行；action 为 none 的不记。
+
+hook 拿到的 ctx 没有 `model`，`tool` 一律只读：hook 只看不做，V2b 才能在记录的事件上回放它。各站点的语义：`before_run` 在系统提示合成后、第一次调用前，hook 看到前面 hook 加的消息；`before_model` 只对 act 调用（摘要的 aux 调用不过）；`before_tool` 第一个 block 结束本回合（同回合其余调用与 finish 都“Not executed”），`args` 改写按 manifest 顺序传给下一个 hook；`after_tool` 的 output 改写串联、feedback 汇总成回合结果后的一条 user 消息；`after_turn` 只在主 agent 的回合末触发（子 agent 的回合不触发）；`on_finish` 的 `reason` 是 "finish" 或 "implicit"（第 N 次纯文本答复转成的 finish），第一个 pushback 生效，最多 `MAX_PUSHBACKS`（2）次且最后一次 act 调用不退回。
 
 ### 5.3 工具入口
 
 ```python
-def run(ctx: Ctx, args: dict) -> dict      # {"output": str} 或 {"output": str, "is_error": true}
+def run(ctx: Ctx, args: dict) -> dict      # {"output": str} 或 {"output": str, "is_error": true}；纯字符串也算 output
 ```
-入口在 worker 里运行；世界只经 `ctx.tool`；`writes=false` 的工具调 `ctx.tool(..., read_only=True)`。
+入口在 worker 里运行；世界只经 `ctx.tool`；工具的 ctx 也没有 `model`；`writes=false` 的工具，适配层给它的 `ctx.tool` 强制只读。工具抛异常或答复不是工具结果，适配层抛 `PackageToolError`（`ouroloop_defect`）。
 
 ### 5.4 agent 入口
 
@@ -152,16 +164,18 @@ def check(ctx: Ctx, tools: dict[str, Callable]) -> None   # 以 tools.get(name)(
 @dataclass(frozen=True)
 class Manifest: ...                                      # §4 的字段，from_json/to_json，校验在 parse_manifest
 @dataclass(frozen=True)
-class Package(Record):                                   # kind "package"
+class Package(Record):                                   # kind "package"；存储的 payload 是 {manifest, files: {path: file 对象的 ref}}
     manifest: Manifest
-    files: dict[str, str]                                # path -> 文本（二进制以 base64 前缀）
+    files: dict[str, str]                                # path -> 文本（只收文本）
     @property
     def kinds(self) -> set[str]
     def component(self, kind: str) -> list[dict]
 def classify(path: str) -> str
 def parse_manifest(text: str, files: dict[str, str], *, limits: Limits) -> Manifest
-def check_shape(files: dict[str, str], *, limits: Limits, seed: Package) -> list[str]   # 形状、上限、vendor 保护文件、HOST_KINDS 未改
-def build(objects: Objects, files: dict[str, str], *, limits: Limits, seed: Package) -> Package   # 全部检查通过才入库
+def check_shape(files: dict[str, str], *, limits: Limits, seed: Package | None, parent: Package | None = None) -> list[str]
+    # 形状、上限、vendor 保护文件（与 seed 相同）、HOST_KINDS 未改（与 parent 相同；memory 包构建时不给 parent）
+def build(objects: Objects, files: dict[str, str], *, limits: Limits, seed: Package | None, parent: Package | None = None) -> Package
+def load(objects: Objects, package_ref: str) -> Package
 def files_of(objects: Objects, package_ref: str) -> dict[str, str]
 def run_files(package: Package) -> dict[str, str]        # 装进 worker 的文件：去掉 tests/ 与 memory/
 def apply_patch(parent: Package, patch: dict[str, str | None]) -> dict[str, str]   # None 即删除
@@ -181,11 +195,12 @@ class Kind:
 KIND_TABLE: dict[str, Kind]
 
 # literals.py
-def literal_index(grading_rows: Iterable[dict]) -> LiteralIndex     # 只从 train 的评分行建
-def forbidden(index: LiteralIndex, *, exempt: set[str]) -> set[str]
+def literal_index(rows: Iterable[dict]) -> LiteralIndex     # 只从 train 建：行 {task_id, assertions:[{params}], state?}（评分行或 train 题的初始状态）
+def forbidden(index: LiteralIndex, *, exempt: set[str] = frozenset()) -> set[str]
 def changed_lines(text: str, base: str | None) -> set[int]
-def findings(files: dict[str, str], seed: Package, forbidden: set[str], *, allowed: set[str] = frozenset()) -> list[dict]
-    # 只扫相对种子改动的行；返回 [{path, line, literal}]
+def findings(files: dict[str, str], seed: Package | None, forbidden: set[str], *, allowed: set[str] = frozenset()) -> list[dict]
+    # 只扫相对种子改动的行与新文件（含路径、manifest 里新出现的解码字符串）；seed=None 扫全部；返回 [{path, line, literal, kind}]
+def describe(found) -> str                                       # 给 R 的检查输出
 
 # seed.py
 def build_seed(name: str, *, core: dict, objects: Objects) -> Package
@@ -194,8 +209,10 @@ def protected_files(name: str) -> dict[str, bytes]      # vendor/<name>/{LICENSE
 
 # vendor.py
 @dataclass(frozen=True)
-class Provenance: name: str; version: str; url: str; tag: str; sha256: str; license: str; files: int
+class Provenance: name: str; version: str; url: str; tag: str; sha256: str; license: str; files: int; hashes: dict; license_sha256: str
 def read_provenance(files: dict[str, str], name: str) -> Provenance
+def verify(files: dict[str, str], name: str) -> list[str]      # 每个文件的 sha256 与 PROVENANCE 相符、没有多出的文件、LICENSE 相符
+def apply_unified(files, patch_text, *, name) -> dict[str, str]  # 统一 diff 的应用（PatchError）
 def apply_patches(vendor_files: dict[str, str], patches_dir: Path) -> tuple[dict[str, str], list[str]]   # 失败的补丁名
 def extract_patch(seed: Package, installed: Package, name: str) -> str | None   # 装入后把 R 对 vendor 的改动抽成补丁文本
 def upgrade(seed_dir: Path, new_source: Path, provenance: Provenance) -> list[str]   # 换上游、重放补丁；返回失败的补丁
@@ -203,13 +220,15 @@ def upgrade(seed_dir: Path, new_source: Path, provenance: Provenance) -> list[st
 
 ## 7 种子 `stirrup` 的构建
 
-1. `vendor/stirrup/**` 来自 Stirrup 0.2.0 的 sdist（`PROVENANCE.json`：version、tag、sha256、license=MIT、文件数）；构建时校验 sha256。
+1. `vendor/stirrup/**` 来自 Stirrup 0.2.0 的 sdist（`PROVENANCE.json`：version、tag、sdist 的 sha256、license=MIT、每个文件的 sha256、文件数）；构建时逐文件校验 sha256，不符即 `SeedUnavailable`。
 2. `patches/NNN-<slug>.patch` 依次重放（当前为空：七处修正都在适配层里）。
 3. 适配层、守卫、`plan_changes`、prompt、tests 从 `seeds/stirrup/` 拷入。
 4. `manifest.json` 的 `model.base` 填 K 的 identity，`config` 取默认，`memory.enabled` 取 K。
 5. `check_shape` 通过，`build` 入库；种子 release 由 activity 写。
 
-适配层职责（`agent/stirrup_agent.py`，沿用 v6-agent 的实现并扩站点）：`LLMClient` → `ctx.model`；`Tool` → 基础工具经 `ctx.tool`、包工具经入口、`read_skill`、`recall`；六个站点的分发与 `mark`；finish 的修正；子 agent 深度受 `config.subagent_depth`；摘要用 role `aux`。
+适配层职责（`agent/stirrup_agent.py`，沿用 v6-agent 的实现并扩站点）：`LLMClient` → `ctx.model`；`Tool` → 基础工具经 `ctx.tool`、包工具经入口、`read_skill`、`recall`（manifest 的 memory 开着才提供）；六个站点的分发与 `mark`；finish 的七处修正；`config.max_turns`、`summarize_at` 生效，子 agent 只在 `config.subagent_depth ≥ 1` 时提供；摘要用 role `aux`。
+
+种子的写入守卫（DESIGN §4.2）：`ledger`（after_tool，记写操作、计划与读到的最新日期，第一次写之后不再读日期）、`triage`（before_tool，未调 `plan_changes` 的第一次写阻止一次）、`anchor`（before_model，读到日期后每次 act 调用末尾附日期锚，不改历史）、`verify`（on_finish，第一次 finish 退回一次，列出计划、台账与排除项）。种子测试里的示例日期不取任何 train 题的值（smoke 的种子全量字面量扫描会查）。
 
 ## 8 不变量
 
@@ -225,8 +244,8 @@ def upgrade(seed_dir: Path, new_source: Path, provenance: Provenance) -> list[st
 |---|---|
 | `agent/harness_package.py`（HEAD 723 行；v6 加 vendor/library） | 拆成 `package.py`、`literals.py`、`kinds.py`；`library` kind 改名 `memory`；`PackageView`/`prompt_block` 移到 runtime（宿主合成系统提示） |
 | `agent/seed_v6/**`（v6-agent） | 搬到 `harness/seeds/stirrup/`；hook 站点扩到六个；manifest 升到 v3 |
-| `agent/default_agent.py` | 删 |
-| `tests/test_harness_package.py`、`test_write_guard.py`、`test_worker_resources.py`（v6） | 迁到 `tests/harness/` |
+| `agent/default_agent.py` | 删；它的执行与 hook 分发并入 `stirrup_agent.py` |
+| `tests/test_harness_package.py`、`test_write_guard.py`（v6） | 重写到 `tests/harness/`（`test_harness_package.py`、`test_harness_literals.py`、`test_harness_seed.py`）；`test_worker_resources.py` 归 `tests/runtime/` |
 
 ## 10 测试
 
