@@ -130,6 +130,9 @@ def test_a_runner_shell_activity_gets_the_thin_workspace_and_an_older_k_the_v1_r
     assert release_max_effort(activity.objects, activity.release_ref) == "medium"
     assert isinstance(activity.rt, Workspace)
     assert activity.rt._serving is None                      # nothing asked for serving: none was built
+    from ouroloop.train.config import build_serving
+    serving = activity.rt.serving                            # a model policy to bind asks: the config's, built once
+    assert serving.store.table == build_serving(cfg).store.table and activity.rt.serving is serving
     v1 = bench.attempt_workspace({"workspace": {"root": str(tmp_path / "v1")}}, ".", runner_shell=False)
     assert type(v1).__name__ == "Runtime" and "stop" in v1.points
 
