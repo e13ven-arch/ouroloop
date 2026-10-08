@@ -77,13 +77,16 @@ def test_old_configs_with_transport_and_models_still_load(tmp_path):
     assert train_config.store_table(old) == {"type": "dir", "root": "/srv/jobs"}
     assert train_config.store_table({"trainer": {"type": "signature", "jobs_root": "~/jobs"}}) == {"type": "dir",
                                                                                             "root": "~/jobs"}
-    hf = {"trainer": {"type": "signature", "transport": "hf", "hf_prefix": "org/o-"}, "models": {"url": "http://g:1"}}
+    hf = {"trainer": {"type": "signature", "transport": "hf", "hf_prefix": "org/o-"}, "models": {"device": "cpu"}}
     assert train_config.store_table(hf) == {"type": "hf", "prefix": "org/o-"}
-    assert train_config.serving_table(hf) == {"url": "http://g:1"} and train_config.serving_table(old) == {}
+    assert train_config.serving_table(hf) == {"device": "cpu"} and train_config.serving_table(old) == {}
     trainer = train_config.build_trainer(hf)
-    assert trainer.store.table == {"type": "hf", "prefix": "org/o-"} and trainer.serving.url == "http://g:1"
+    assert trainer.store.table == {"type": "hf", "prefix": "org/o-"} and trainer.serving.device == "cpu"
     serving = train_config.build_serving(old)
-    assert serving.store.table == {"type": "dir", "root": "/srv/jobs"} and not serving.url
+    assert serving.store.table == {"type": "dir", "root": "/srv/jobs"}
+    # an old [models] url (a model server) is refused by name: that mode went in P1 step 5
+    with pytest.raises(ValueError, match="model-server mode was removed"):
+        train_config.build_serving({"models": {"url": "http://g:1"}})
     for bad, why in (({**old, "serving": {}}, "keep one"),
                      ({"trainer": {"type": "x", "transport": "s3"}}, "transport"),
                      ({"store": {"type": "dir"}, "models": {"jobs_root": "/a", "hf_prefix": "org/o-"}},
@@ -91,7 +94,7 @@ def test_old_configs_with_transport_and_models_still_load(tmp_path):
         with pytest.raises(ValueError, match=why):
             train_config.build_serving(bad)
     with pytest.raises(ValueError, match=r"\[store\] and \[trainer\] transport, \[trainer\] hf_prefix"):
-        train_config.build_trainer({"trainer": hf["trainer"], "store": {"type": "dir"}, "serving": {"url": "http://x:1"}})
+        train_config.build_trainer({"trainer": hf["trainer"], "store": {"type": "dir"}, "serving": {}})
     # an old model server's config: [models] jobs_root and hf_prefix, no transport, loaded refs from the Hub
     server = {"models": {"jobs_root": "~/.ouroloop/jobs", "hf_prefix": "org/o-"}}
     assert train_config.store_table(server) == {"type": "hf", "prefix": "org/o-"}
@@ -128,12 +131,10 @@ def test_drop_closes_the_model_and_a_job_releases_only_a_serving_on_its_machine(
             self.released = True
 
     hf = {"type": "hf", "prefix": "org/o-"}
-    for host, url, shares in (("user@gpu", "http://gpu:8765", True), ("user@gpu-a", "http://serve-b:8765", False),
-                              (None, "http://127.0.0.1:8765", True), ("local", "http://serve-b:8765", False),
-                              ("user@gpu", None, False), (None, None, True)):
-        serving = Released({"url": url} if url else {})
+    for host, shares in (("user@gpu", False), ("local", True), (None, True)):     # this process's serving only
+        serving = Released()
         JobTrainer("signature", host=host, store=hf, serving=serving)._release()
-        assert getattr(serving, "released", False) is shares, (host, url)
+        assert getattr(serving, "released", False) is shares, host
 
 
 def test_only_a_run_that_is_copied_or_uploaded_keeps_publish_s_of_the_deadline(tmp_path):
@@ -141,9 +142,8 @@ def test_only_a_run_that_is_copied_or_uploaded_keeps_publish_s_of_the_deadline(t
     for store, kept in (({"type": "dir", "root": jobs}, 0.0), ({"type": "dir", "root": str(tmp_path / "m")}, 60.0),
                         ({"type": "hf", "prefix": "org/o-"}, 60.0), (None, 0.0)):
         assert JobTrainer("signature", jobs_root=jobs, store=store, publish_s=60).publish_s == kept
-    remote = JobTrainer("signature", host="u@gpu", store={"type": "dir"}, serving={"url": "http://gpu:1"},
-                        publish_s=60)
-    assert remote.publish_s == 0.0                  # both at ~/.ouroloop/jobs, on that host
+    remote = JobTrainer("signature", host="u@gpu", store={"type": "hf", "prefix": "org/o-"}, publish_s=60)
+    assert remote.publish_s == 60.0                 # an upload to the Hub, from that host
 
 
 # ---------------------------------------------------------------- a new store is a new module

@@ -448,7 +448,7 @@ def test_the_signature_plugin_through_the_job_path_to_a_trained_artifact(tmp_pat
 
 def test_a_trainer_checks_its_config_before_any_job():
     for kw, why in (({"host": "u@gpu"}, "stay there"),
-                    ({"host": "u@gpu", "serving": {"url": "http://gpu:8765"}, "jobs_root": "jobs"}, "jobs_root"),
+                    ({"host": "u@gpu", "store": {"type": "hf", "prefix": "o/p-"}, "jobs_root": "jobs"}, "jobs_root"),
                     ({"store": {"type": "hf"}}, "needs prefix")):
         with pytest.raises(ValueError, match=why):
             JobTrainer("signature", **kw)

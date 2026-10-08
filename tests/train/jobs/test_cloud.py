@@ -357,7 +357,7 @@ def test_start_sh_marks_when_it_is_done(tmp_path):
 
 # ---------------------------------------------------------------- refused before anything is used
 def test_a_cloud_trainer_refuses_a_dir_store_and_bad_options(keys):
-    base = {"serving": {"url": "http://gpu:8765"}}
+    base = {}
     with pytest.raises(ValueError, match='needs a \\[store\\] that outlives the instance'):
         JobTrainer("signature", cloud=options("runpod", keys), **base)
     with pytest.raises(ValueError, match="one or the other"):
@@ -374,7 +374,7 @@ def test_a_cloud_trainer_refuses_a_dir_store_and_bad_options(keys):
                              "cloud": options("vast", keys)}, "models": {"jobs_root": "~/.ouroloop/jobs"}}):
         tr = train_config.build_trainer(cfg)
         assert tr.cloud["provider"] == "vast" and tr.python == "~/.ouroloop/venv/bin/python"
-        assert tr.store.table == STORE and not tr.serving.url
+        assert tr.store.table == STORE and tr.serving.store.table == STORE
 
 
 @pytest.mark.parametrize("provider", ["runpod", "vast"])

@@ -22,7 +22,6 @@ import pytest
 from jobs_fixtures import FAKE_HF, dataset
 from ouroloop.train import config as train_config
 from ouroloop.train.backends import TdeBackend
-from ouroloop.train.backends.http import HttpBackend
 from ouroloop.train.jobs import compute as compute_module
 from ouroloop.train.jobs.compute import SEP, Compute
 from ouroloop.train.train import check_change, full_recipe, train_artifact
@@ -381,39 +380,47 @@ def test_a_parent_job_resolves_in_the_jobs_directory_whatever_the_paths_were_rel
 
 
 def test_a_trainer_checks_how_its_models_are_stored_and_served_before_any_job(tmp_path):
+    """Serving loads a ref in this process, so the models of a job on another machine go to a store this machine
+    reads ("hf"): a "dir" store there is refused, whatever its root (the [serving] url that reached a model server
+    there went in P1 step 5, and is refused by name)."""
     host = {"host": "u@gpu", "runner": Host()}
-    url = {"serving": {"url": "http://gpu:8765"}}
-    for kw, why in (({"serving": {"url": "http://gpu:8765", "port": 1}}, "may only set"),
+    hub = {"store": {"type": "hf", "prefix": "o/p-"}}
+    for kw, why in (({"serving": {"url": "http://gpu:8765"}}, "model-server mode was removed"),
+                    ({"serving": {"port": 1}}, "may only set"),
                     ({"store": {"type": "s3"}}, '"dir" or "hf"'),
                     ({"store": {"type": "hf"}}, "needs prefix"),
                     ({"store": {"type": "dir", "jobs_root": "j"}}, "may only set"),
                     (host, "stay there"),
                     ({**host, "store": {"type": "dir", "root": "~/.ouroloop/jobs"}}, "stay there"),
-                    ({**host, **url, "jobs_root": "jobs"}, "jobs_root 'jobs'"),
-                    ({**host, **url, "store": {"type": "dir", "root": "models"}}, "root 'models'")):
+                    ({**host, **hub, "jobs_root": "jobs"}, "jobs_root 'jobs'")):
         with pytest.raises(ValueError, match=why):
             JobTrainer("tde", **kw)
-    JobTrainer("tde", **host, **url)                                            # a model server on the host
-    JobTrainer("tde", **host, store={"type": "hf", "prefix": "o/p-"})          # loaded here, from the Hub
+    JobTrainer("tde", **host, **hub)                                            # loaded here, from the Hub
     # a host over ssh runs the jobs under the venv host init made there
-    assert JobTrainer("tde", **host, **url).python == "~/.ouroloop/venv/bin/python"
+    assert JobTrainer("tde", **host, **hub).python == "~/.ouroloop/venv/bin/python"
 
 
 # ---------------------------------------------------------------- over ssh
 class Host:
-    """Stands in for ssh and rsync to a host whose home is /home/u, prepared by host init for this ouroloop and the
-    tde plugin. Status reads fail `drop` times first."""
+    """Stands in for ssh and rsync to a host whose home is /home/u, prepared by host init for this ouroloop, the tde
+    plugin and an "hf" store; its jobs publish to the Hub under `prefix`. Status reads fail `drop` times first."""
+    PREFIX = "o/p-"
 
     def __init__(self, drop: int = 2, fail_launch: bool = False, fail_cancel: bool = False):
         self.commands, self.drop, self.polls, self.job = [], drop, 0, None
         self.fail_launch, self.fail_cancel = fail_launch, fail_cancel
+
+    @property
+    def ref(self) -> str:
+        return f"{self.PREFIX}{self.job}@{'a' * 40}"
 
     def __call__(self, args, input=None, timeout=None):
         self.commands.append(args)
         out = ""
         command = args[-1] if args[0] == "ssh" else ""
         if "/.ouroloop/host.json" in command:
-            out = json.dumps({"ouroloop": {"code": code_version()}, "plugins": {"tde": {"source": None}}})
+            out = json.dumps({"ouroloop": {"code": code_version()}, "plugins": {"tde": {"source": None}},
+                              "stores": {"hf": {"hub": True, "token": True}}})
         elif 'echo "$HOME"' in command:
             out = "/home/u\n"
         elif command.startswith("mkdir"):
@@ -428,7 +435,7 @@ class Host:
                 raise subprocess.CalledProcessError(255, args, stderr="ssh: connect to host gpu: timed out")
             out = "running\n" if self.polls == self.drop + 1 else "exited\n"
         elif command.startswith("cd") and SEP in command:
-            result = {"model": self.job, "plugin": {"name": "tde", "version": "0.1.1"}, "hf_commit": None}
+            result = {"model": self.ref, "plugin": {"name": "tde", "version": "0.1.1"}, "hf_commit": "a" * 40}
             out = f"0\n{SEP}\n{json.dumps(result)}\n\n{SEP}\nworker: done\n"
         return subprocess.CompletedProcess(args, 0, out, "")
 
@@ -436,10 +443,10 @@ class Host:
 def test_over_ssh_status_reads_may_fail_and_no_spec_value_reaches_a_shell(tmp_path):
     host = Host(drop=2)
     tde = JobTrainer("tde", {"init_from": "~/tde/runs/base"}, host="user@gpu", runner=host, sleep=lambda s: None,
-                     serving={"url": "http://127.0.0.1:9"})
+                     store={"type": "hf", "prefix": Host.PREFIX})
     job = a_job(tmp_path / "ws", parent="runs/base", lr_head=0.000123)
     result = tde.train(job)
-    assert result.model_id == host.job and result.job["host"] == "user@gpu" and host.polls == 4
+    assert result.model_id == host.ref and result.job["host"] == "user@gpu" and host.polls == 4
     ssh = [a[-1] for a in host.commands if a[0] == "ssh"]
     launch = next(c for c in ssh if "setsid" in c)
     assert f"jobs/{host.job} " in launch and "setsid nohup sh -c" in launch and "-m ouroloop.train.jobs.worker spec.json" in launch
@@ -462,7 +469,7 @@ def test_a_job_whose_launch_failed_is_cancelled_or_left_to_the_next_sweep(tmp_pa
         host = Host(fail_launch=True, fail_cancel=fail_cancel)
         ws = tmp_path / f"ws{fail_cancel}"
         tde = JobTrainer("tde", {"init_from": "~/tde/runs/base"}, host="user@gpu", runner=host,
-                         sleep=lambda s: None, serving={"url": "http://127.0.0.1:9"})
+                         sleep=lambda s: None, store={"type": "hf", "prefix": Host.PREFIX})
         with pytest.raises(TrainError, match="could not start.*Connection reset"):
             tde.train(a_job(ws))
         assert any("kill -s TERM" in a[-1] for a in host.commands)          # it may have started
@@ -536,51 +543,6 @@ def test_serving_loads_a_job_by_its_ref_and_refuses_anything_else(tmp_path, deci
     assert TdeBackend._loaded
     serving.release()                                                # before a training job on its GPU
     assert not TdeBackend._loaded
-
-
-def test_the_http_backend_sends_a_chunk_again_after_a_failure(tmp_path):
-    calls = []
-
-    def serve(request):
-        calls.append(request)
-        if len(calls) == 1:
-            raise httpx.ConnectError("refused", request=request)
-        if len(calls) == 2:
-            return httpx.Response(503)
-        n = len(json.loads(request.content)["requests"])
-        return httpx.Response(200, json={"answers": [{"probs": {"yes": 0.8, "no": 0.2}, "model": "m"}] * n})
-
-    pauses = []
-    backend = HttpBackend("http://serve", client=httpx.Client(transport=httpx.MockTransport(serve)),
-                          sleep=pauses.append)
-    assert [a.label for a in backend.decide([Request("s", Question("noul", "q?"))] * 3)] == ["yes"] * 3
-    assert pauses == [1.0, 2.0] and len(calls) == 3
-    down = HttpBackend("http://serve", sleep=pauses.append, client=httpx.Client(transport=httpx.MockTransport(
-        lambda r: httpx.Response(502))))
-    with pytest.raises(httpx.HTTPStatusError):
-        down.decide([Request("s", Question("noul", "q?"))] * 2)
-    assert pauses == [1.0, 2.0, 1.0, 2.0, 4.0]                      # three retries, then the failure
-    with pytest.raises(httpx.HTTPStatusError):                       # a single decision: its caller takes the default
-        down.decide([Request("s", Question("noul", "q?"))])
-    assert pauses == [1.0, 2.0, 1.0, 2.0, 4.0]
-    refused = HttpBackend("http://serve", sleep=pauses.append, client=httpx.Client(transport=httpx.MockTransport(
-        lambda r: httpx.Response(400, json={"error": "not a model ref"}))))
-    with pytest.raises(httpx.HTTPStatusError):                       # a bad request is not sent again
-        refused.decide([Request("s", Question("noul", "q?"))] * 2)
-    assert pauses == [1.0, 2.0, 1.0, 2.0, 4.0]
-    sizes = []
-
-    def answers(request):
-        n = len(json.loads(request.content)["requests"])
-        sizes.append(n)
-        return httpx.Response(200, json={"answers": [{"probs": {"yes": 0.8, "no": 0.2}, "model": "m"}] * n})
-
-    chunked = HttpBackend("http://serve", client=httpx.Client(transport=httpx.MockTransport(answers)))
-    assert len(chunked.decide([Request("s", Question("noul", "q?"))] * 600)) == 600 and sizes == [256, 256, 88]
-    ref = {"type": "model", "model": "m_0001_abc"}
-    served = Serving({"url": "http://serve"}).backend(ref)
-    assert served.timeout.read == 600 and served.timeout.connect == 10          # long enough for a first load
-    assert Serving({"url": "http://serve", "timeout": 60}).backend(ref).timeout.read == 60
 
 
 # ---------------------------------------------------------------- recipes

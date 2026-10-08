@@ -33,8 +33,8 @@ def build_backend(spec: dict, serving=None):
         from .trainers.signature import SignatureBackend
         return SignatureBackend(spec["path"], signature=spec.get("signature"))
     if kind == "http":
-        from .backends.http import HttpBackend
-        return HttpBackend(**spec)
+        raise ValueError('backend type "http": its /decide protocol and the server that spoke it were removed in P1 '
+                         'step 5 (tag archive-2026-10-08)')
     return import_object(kind)(**spec)
 
 

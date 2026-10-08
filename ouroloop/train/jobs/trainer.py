@@ -17,7 +17,6 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from urllib.parse import urlparse
 
 from ...ledger import new_id
 from ..train import DEFAULT_RECIPE, PATH_KEYS, TrainError, TrainJob, TrainResult
@@ -46,9 +45,9 @@ class JobTrainer:
     machine that trains; an "hf" store commits the run once to a private repository <prefix><job id>, and the ref is
     <repo>@<commit>. `publish_s` of the deadline is kept for publishing, unless the run stays in place (a "dir" store
     at jobs_root). `serving` (a [serving] table, or a Serving; default: in-process) is how the models are asked; it
-    is checked here, before any job starts: a "dir" store on a host over ssh is served by a model server there (url),
-    since this machine never holds its runs. Before a job the trainer asks a serving on the job's machine to let go of
-    the models on the GPU (_release).
+    is checked here, before any job starts: serving loads a ref in this process, so a job on another machine
+    publishes to a store this machine can read ("hf"), never to a "dir" store there. Before a job on this machine the
+    trainer asks serving to let go of the models on the GPU (_release).
 
     Any failure of the job or of reaching it is a TrainError, which the gate takes for inconclusive: a job that exits
     non-zero, is lost (no exit code, its process gone), outlives deadline_s by two polls, or leaves no well-formed
@@ -102,9 +101,11 @@ class JobTrainer:
         if self.store.ON_TRAINING_HOST and remote and not root.startswith(("/", "~")):
             raise ValueError(f"[store] root {root!r}: absolute, or from ~ (the home on {where})")
         self.serving = serving if isinstance(serving, Serving) else Serving(serving, self.store, {plugin: self.options})
-        if remote and self.store.ON_TRAINING_HOST and not self.serving.url:
-            raise ValueError(f"the models trained on {where} stay there (a {self.store.TYPE!r} store): [serving] "
-                             f"needs url (a model server there), or a [store] of type \"hf\" to load them here")
+        if remote and self.store.ON_TRAINING_HOST:
+            # Serving loads a ref from the store in this process, and this machine never holds those runs (the url
+            # mode that reached a model server there went in P1 step 5).
+            raise ValueError(f"the models trained on {where} stay there (a {self.store.TYPE!r} store), and serving "
+                             f"loads them in this process: use a [store] of type \"hf\" to load them here")
         self.python = PYTHON if remote else os.path.expanduser(PYTHON) if host == "local" else sys.executable
         self.host, self.jobs_root = host, jobs_root
         self.deadline_s, self.poll_s, self.sleep, self.ssh_opts = float(deadline_s), float(poll_s), sleep, ssh_opts
@@ -414,17 +415,12 @@ class JobTrainer:
 
     def _release(self) -> None:
         """Let go of the models resident on the GPU before a job needs it, only where they share the job's machine:
-        in this process for a job on this machine, and on a model server at loopback (a job here) or at the training
-        host's name (the part after @). A serving elsewhere keeps its models loaded."""
-        local = self.host in (None, "local")
-        if self.serving.url:
-            at = urlparse(self.serving.url).hostname or ""
-            if not (at in LOOPBACK if local else at == self.host.rpartition("@")[2]):
-                return
-        elif not local:
+        this process's, for a job on this machine (no host, or "local"). A job on a host elsewhere leaves them
+        loaded."""
+        if self.host not in (None, "local"):
             return
         release = getattr(self.plugin, "release", None)
-        if callable(release) and local:
+        if callable(release):
             release()
         try:
             self.serving.release()
@@ -433,7 +429,6 @@ class JobTrainer:
 
 
 STARTED = ".ouroloop/started"          # under the home: start.sh writes it when it is done, on each boot
-LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 TTL_MARGIN_S = 1800                     # an instance's life beyond its boot, a host init and its job's deadline
 
 
