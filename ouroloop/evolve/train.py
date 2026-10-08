@@ -158,7 +158,7 @@ class JobTrainer:
         self.serving = serving if isinstance(serving, Serving) else Serving(serving, self.store, {plugin: self.options})
         if remote and self.store.ON_TRAINING_HOST and not self.serving.url:
             raise ValueError(f"the models trained on {where} stay there (a {self.store.TYPE!r} store): [serving] "
-                             f"needs url (`ouroloop serve` there), or a [store] of type \"hf\" to load them here")
+                             f"needs url (a model server there), or a [store] of type \"hf\" to load them here")
         self.python = PYTHON if remote else os.path.expanduser(PYTHON) if host == "local" else sys.executable
         self.host, self.jobs_root = host, jobs_root
         self.deadline_s, self.poll_s, self.sleep, self.ssh_opts = float(deadline_s), float(poll_s), sleep, ssh_opts

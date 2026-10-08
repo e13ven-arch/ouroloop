@@ -1,7 +1,7 @@
 """The training job path (docs/DESIGN.md §2.2, pipeline 2): JobTrainer -> Compute -> python -m ouroloop.worker -> the
 tde plugin -> TDE, on this machine against a stub TDE checkout, and over a stand-in for ssh; model refs served
-in-process and through `ouroloop serve`; Hugging Face through a stand-in package. Nothing trains, nothing leaves this
-machine. Hosts and the signature plugin end to end: test_hosts.py."""
+in-process; Hugging Face through a stand-in package. Nothing trains, nothing leaves this machine. Hosts and the
+signature plugin end to end: test_hosts.py."""
 import importlib.machinery
 import importlib.util
 import json
@@ -11,7 +11,6 @@ import shlex
 import signal
 import subprocess
 import sys
-import threading
 import time
 import types
 from collections import OrderedDict
@@ -21,7 +20,7 @@ import httpx
 import pytest
 
 from ouroloop import config
-from ouroloop.backends import KeywordBackend, TdeBackend
+from ouroloop.backends import TdeBackend
 from ouroloop.backends.http import HttpBackend
 from ouroloop.evolve import compute as compute_module
 from ouroloop.evolve.compute import SEP, Compute
@@ -31,8 +30,6 @@ from ouroloop.evolve.registry import Registry
 from ouroloop.evolve.train import CHECKOUT, DEFAULT_RECIPE, JobTrainer, TrainError, TrainJob
 from ouroloop.release import code_version
 from ouroloop.research import Candidate
-from ouroloop.runtime import Runtime
-from ouroloop.serve import make_server
 from ouroloop.serving import Serving
 from ouroloop.stores import make as make_store
 from ouroloop.trainers.signature import SignatureTrainer
@@ -549,45 +546,27 @@ def test_hf_commits_the_run_once_and_the_ref_loads_at_that_commit(tmp_path, repo
 
 
 # ---------------------------------------------------------------- serving refs
-def test_serve_loads_a_job_by_its_ref_and_refuses_anything_else(tmp_path, decider):
+def test_serving_loads_a_job_by_its_ref_and_refuses_anything_else(tmp_path, decider):
     jobs = tmp_path / "jobs"
     (jobs / "m_0001_abc" / "run").mkdir(parents=True)
-    rt = Runtime(tmp_path / "ws", {"mock": KeywordBackend()}, "mock",
-                 serving=Serving(store=make_store({"type": "dir", "root": str(jobs)}), plugins={"tde": {}}))
-    server = make_server(rt, port=0)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    url = f"http://127.0.0.1:{server.server_port}"
+    serving = Serving(store=make_store({"type": "dir", "root": str(jobs)}), plugins={"tde": {}})
     q = Question("noul", "done?")
-    try:
-        sizes, pauses = [], []
-        client = httpx.Client(event_hooks={"request": [
-            lambda r: sizes.append(len(json.loads(r.content)["requests"]))]})
-        ans = HttpBackend(url, model="m_0001_abc", client=client, sleep=pauses.append).decide(
-            [Request(f"say {'yes' if i % 2 else 'no'} {i}", q) for i in range(600)])
-        assert sizes == [256, 256, 88] and len(ans) == 600 and not pauses
-        assert {a.model for a in ans} == {"m_0001_abc"} and ans[1].label == "yes" and ans[0].label == "no"
-        assert decider == [str(jobs / "m_0001_abc" / "run")]
-        assert HttpBackend(url).decide([Request("x", q)])[0].model != "m_0001_abc"     # the server's default
-        for bad in ("../m_0001_abc", "m_0001_abc/run", "/etc/passwd", "m_0002_none", "evil/x@" + "0" * 40,
-                    "org/ouroloop-x@HEAD", 7):
-            resp = httpx.post(f"{url}/decide", json={"model": bad, "requests": [
-                {"state": "s", "question": q.to_json()}]})
-            assert resp.status_code == 400, bad
-        for trainer in ("os", "ouroloop.cli", "nosuch"):                 # a request never names a module to import
-            resp = httpx.post(f"{url}/decide", json={"model": "m_0001_abc", "trainer": trainer, "requests": [
-                {"state": "s", "question": q.to_json()}]})
-            assert resp.status_code == 400 and "no trainer plugin" in resp.json()["error"], trainer
-        signature = HttpBackend(url, model="m_0001_abc", trainer="signature")    # this package's: loads, or says no
-        with pytest.raises(httpx.HTTPStatusError):
-            signature.decide([Request("x", q)])
-        with pytest.raises(httpx.HTTPStatusError):                   # a bad request is not sent again
-            HttpBackend(url, model="../x", sleep=pauses.append).decide([Request("x", q)])
-        assert not pauses
-        assert TdeBackend._loaded
-        HttpBackend(url).release()                                   # before a training job on its GPU
-        assert not TdeBackend._loaded
-    finally:
-        server.shutdown()
+    ans = serving.backend({"type": "model", "model": "m_0001_abc", "trainer": "tde"}).decide(
+        [Request(f"say {'yes' if i % 2 else 'no'} {i}", q) for i in range(600)])
+    assert len(ans) == 600 and {a.model for a in ans} == {"m_0001_abc"} and ans[1].label == "yes"
+    assert ans[0].label == "no" and decider == [str(jobs / "m_0001_abc" / "run")]
+    for bad in ("../m_0001_abc", "m_0001_abc/run", "/etc/passwd", "m_0002_none", "evil/x@" + "0" * 40,
+                "org/ouroloop-x@HEAD", 7):
+        with pytest.raises(ValueError, match="not a model ref|no model"):
+            serving.backend({"type": "model", "model": bad, "trainer": "tde"})
+    for trainer in ("os", "ouroloop.cli", "nosuch"):                 # a spec never names a module to import
+        with pytest.raises(ValueError, match="no trainer plugin"):
+            serving.backend({"type": "model", "model": "m_0001_abc", "trainer": trainer})
+    with pytest.raises(ValueError, match="no model"):               # this package's plugin: loads, or says no
+        serving.backend({"type": "model", "model": "m_0001_abc", "trainer": "signature"})
+    assert TdeBackend._loaded
+    serving.release()                                                # before a training job on its GPU
+    assert not TdeBackend._loaded
 
 
 def test_the_http_backend_sends_a_chunk_again_after_a_failure(tmp_path):
@@ -615,6 +594,20 @@ def test_the_http_backend_sends_a_chunk_again_after_a_failure(tmp_path):
     with pytest.raises(httpx.HTTPStatusError):                       # a single decision: its caller takes the default
         down.decide([Request("s", Question("noul", "q?"))])
     assert pauses == [1.0, 2.0, 1.0, 2.0, 4.0]
+    refused = HttpBackend("http://serve", sleep=pauses.append, client=httpx.Client(transport=httpx.MockTransport(
+        lambda r: httpx.Response(400, json={"error": "not a model ref"}))))
+    with pytest.raises(httpx.HTTPStatusError):                       # a bad request is not sent again
+        refused.decide([Request("s", Question("noul", "q?"))] * 2)
+    assert pauses == [1.0, 2.0, 1.0, 2.0, 4.0]
+    sizes = []
+
+    def answers(request):
+        n = len(json.loads(request.content)["requests"])
+        sizes.append(n)
+        return httpx.Response(200, json={"answers": [{"probs": {"yes": 0.8, "no": 0.2}, "model": "m"}] * n})
+
+    chunked = HttpBackend("http://serve", client=httpx.Client(transport=httpx.MockTransport(answers)))
+    assert len(chunked.decide([Request("s", Question("noul", "q?"))] * 600)) == 600 and sizes == [256, 256, 88]
     ref = {"type": "model", "model": "m_0001_abc"}
     served = Serving({"url": "http://serve"}).backend(ref)
     assert served.timeout.read == 600 and served.timeout.connect == 10          # long enough for a first load

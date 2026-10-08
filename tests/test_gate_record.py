@@ -4,18 +4,16 @@ safety review's leftovers. The ledger is written the way the M6 collection write
 import json
 import random
 import re
-import threading
 from contextlib import contextmanager
+from dataclasses import asdict
 
 import httpx
 import pytest
 
 from conftest import SMALL_GATE, accept
-from decision_fixtures import MockProvider
 from ouroloop import config
 from ouroloop.agent.loop import SYSTEM
 from ouroloop.agent.prompt import PromptStore
-from ouroloop.backends import LlmBackend
 from ouroloop.backends.http import HttpBackend
 from ouroloop.evolve import experience
 from ouroloop.evolve.gate import (TEMPLATE, decide_points, freeze_template, load_template, open_record,
@@ -32,7 +30,6 @@ from ouroloop.policy import Policy
 from ouroloop.release import code_version, revoke
 from ouroloop.research import Candidate, run_round
 from ouroloop.runtime import Runtime
-from ouroloop.serve import make_server
 from ouroloop.stop import MOMENTS, StopGuard
 from ouroloop.trainers.signature import SignatureTrainer
 from ouroloop.types import Answer
@@ -174,16 +171,10 @@ def held_out(rt) -> set:
 
 
 @contextmanager
-def serving(rt):
-    """`ouroloop serve` on this runtime; yields ask(session, label) -> the decision served over HTTP."""
-    server = make_server(rt, port=0)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    url = f"http://127.0.0.1:{server.server_port}"
-    try:
-        yield lambda session, label="yes": httpx.post(f"{url}/ask", json={
-            "point": "stop", "session": session, "phase": "per_turn", "ctx": ctx(label)}).json()
-    finally:
-        server.shutdown()
+def long_running(rt):
+    """This runtime, kept for the whole test as a long-running process keeps it; yields ask(session, label) -> the
+    recorded decision, as a dict (what `ouroloop serve` answered over HTTP before P1 step 3 removed it)."""
+    yield lambda session, label="yes": asdict(rt.ask("stop", ctx(label), session=session, phase="per_turn"))
 
 
 # ---------------------------------------------------------------- the frozen template
@@ -702,9 +693,9 @@ def test_two_candidates_from_one_parent_cannot_both_be_promoted(tmp_path):
 
 
 def test_a_promotion_reaches_new_sessions_only_and_a_rollback_stops_the_old_ones(tmp_path):
-    rt = workspace(tmp_path)                    # held by a long-running serve, never rebuilt below
+    rt = workspace(tmp_path)                    # held by a long-running process, never rebuilt below
     harness = {"system": "p", "tools": {}, "stop": {"max_pushbacks": 2}}
-    with serving(rt) as ask:
+    with long_running(rt) as ask:
         rt.session("s_before", {"task": "t"}, harness)
         first = evolve_model(config.build_runtime(CFG, tmp_path), OracleTrainer("R1", knows=SOME))   # elsewhere
         (r1,) = records(rt.root)
@@ -717,7 +708,7 @@ def test_a_promotion_reaches_new_sessions_only_and_a_rollback_stops_the_old_ones
         rt.session("s_r2", {"task": "t"}, harness)
         assert [(d["model"], d["acted"]) for d in (ask("s_r1"), ask("s_r2"))] == [("R1", True), ("R2", True)]
         assert ask("s_first_asked")["model"] == "R2"        # a session never opened is fixed at its first ask
-        restarted = config.build_runtime(CFG, tmp_path)     # a serve restarted mid-session resumes its release
+        restarted = config.build_runtime(CFG, tmp_path)     # a process restarted mid-session resumes its release
         assert [restarted.ask("stop", ctx(), session=s, phase="per_turn").model for s in ("s_before", "s_r1")] == [
             "base", "R1"]
         # the release: all three components; a model promotion changes the model only
@@ -806,21 +797,23 @@ def test_a_breaking_rule_or_view_leaves_a_row_and_takes_the_default(tmp_path):
     assert (call.stop, call.checked) == (True, None) and rt.ledger.rows()[-1].decision["route"] == "error"
 
 
-def test_serve_forwards_an_abstention_to_its_clients(tmp_path, gated):
-    unsure = Runtime(tmp_path / "gpu", {"llm": LlmBackend(MockProvider(lambda s, p: "hard to say"))}, "llm")
-    server = make_server(unsure, port=0)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    url = f"http://127.0.0.1:{server.server_port}"
-    try:
-        client = Runtime(tmp_path / "harness", {"http": HttpBackend(url, token_env=None)}, "http", seed=0)
-        client.register(stop_point(policy=Policy(act=True, explore=0.0)))
-        gated(client, "stop", "mock:scripted", 0.0)
-        d = client.ask("stop", ctx(), phase="per_turn")
-        (row,) = [r.decision for r in client.ledger.rows()]
-        assert row["abstained"] and (d.route, d.acted, d.action) == ("default", False, "no")
-        assert HttpBackend(url, token_env=None).code_version() == code_version()    # for the gate records
-    finally:
-        server.shutdown()
+def test_a_model_servers_abstention_stays_one_at_its_client(tmp_path, gated):
+    """A decisive answer the server marks as an abstention is never acted on: the point takes its default."""
+    def server(request):
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"ok": True, "code": code_version()})
+        n = len(json.loads(request.content)["requests"])
+        return httpx.Response(200, json={"answers": [{"probs": {"yes": 0.9, "no": 0.1}, "model": "mock:scripted",
+                                                      "abstained": True}] * n})
+
+    http = HttpBackend("http://serve", token_env=None, client=httpx.Client(transport=httpx.MockTransport(server)))
+    client = Runtime(tmp_path / "harness", {"http": http}, "http", seed=0)
+    client.register(stop_point(policy=Policy(act=True, explore=0.0)))
+    gated(client, "stop", "mock:scripted", 0.0)
+    d = client.ask("stop", ctx(), phase="per_turn")
+    (row,) = [r.decision for r in client.ledger.rows()]
+    assert row["abstained"] and (d.route, d.acted, d.action) == ("default", False, "no")
+    assert http.code_version() == code_version()                    # for the gate records
 
 
 def test_an_unused_record_gives_way_once_newer_sessions_would_change_its_test_set(tmp_path):

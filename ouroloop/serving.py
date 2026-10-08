@@ -5,9 +5,10 @@ the gate's test scoring and the deploy probe all get a model's backend here, nev
 
     in-process          no url: a ref is fetched from the [store] and loaded by the trainer plugin that trained it
                         (device: the plugin's device); a model server runs this way
-    url, token_env      one model server, `ouroloop serve` with the same [store], on any host that can read the
-                        store (a "dir" store: the host that holds it; "hf": anywhere); timeout: per chunk of requests,
-                        long enough for the server's first load of a model
+    url, token_env      one model server with the same [store] (backends/http.py's protocol; its server,
+                        `ouroloop serve`, is on tag archive-2026-10-08), on any host that can read the store (a "dir"
+                        store: the host that holds it; "hf": anywhere); timeout: per chunk of requests, long enough
+                        for the server's first load of a model
 
 A card's backend spec {"type": "model", "model": ref, "trainer": plugin, "options": {...}} is a stored model; any
 other spec is a backend built in this process (config.build_backend), with or without a url: a "module:Class"

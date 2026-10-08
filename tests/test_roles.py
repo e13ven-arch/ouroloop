@@ -4,7 +4,6 @@ good ancestor. Old configs (transport, [models]) still load. Nothing trains, not
 import importlib.util
 import json
 import sys
-import threading
 
 import httpx
 import pytest
@@ -22,7 +21,6 @@ from ouroloop.release import code_version
 from ouroloop.policy import Policy
 from ouroloop.release import Revoked, revoke
 from ouroloop.runtime import Runtime
-from ouroloop.serve import make_server
 from ouroloop.serving import PROBE, Serving
 from ouroloop.stores import make
 from ouroloop.trainers import signature
@@ -173,41 +171,16 @@ def test_calibration_and_test_scoring_ask_through_serving_and_never_the_trainer(
     assert rt.ask("stop", ctx(), session="s_new", phase="per_turn").model == "R1"
 
 
-def test_a_model_server_deploys_a_ref_by_load_and_drops_it(tmp_path):
+def test_serving_deploys_a_ref_by_loading_it_and_drops_it(tmp_path):
     jobs = tmp_path / "jobs"
     signature_job(jobs, "m_0001_x")
-    rt = Runtime(tmp_path / "gpu", {"says": Says()}, "says",
-                 serving=config.build_serving({"store": {"type": "dir", "root": str(jobs)}}))
-    server = make_server(rt, port=0)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    remote = Serving({"url": f"http://127.0.0.1:{server.server_port}", "token_env": None})
+    serving = config.build_serving({"store": {"type": "dir", "root": str(jobs)}})
     spec = {"type": "model", "model": "m_0001_x", "trainer": "signature"}
-    try:
-        assert remote.deploy(spec) == "m_0001_x" and list(rt.serving._loaded) == [("m_0001_x", "signature")]
-        with pytest.raises(httpx.HTTPStatusError):
-            remote.deploy({**spec, "model": "m_0002_none"})
-        remote.drop(spec)
-        assert rt.serving._loaded == {}
-        # a control plane with a [serving] url still serves its own decisions, and forwards the model calls
-        plane = make_server(Runtime(tmp_path / "x", {"says": Says()}, "says", serving=remote), port=0)
-        threading.Thread(target=plane.serve_forever, daemon=True).start()
-        try:
-            url = f"http://127.0.0.1:{plane.server_port}"
-            assert httpx.post(f"{url}/load", json={"model": "m_0001_x", "trainer": "signature"}).json() == {
-                "model": "m_0001_x"}
-            assert list(rt.serving._loaded) == [("m_0001_x", "signature")]
-            body = {"model": "m_0001_x", "trainer": "signature",
-                    "requests": [{"state": PROBE.state, "question": PROBE.question.to_json()}]}
-            assert httpx.post(f"{url}/decide", json=body).json()["answers"][0]["model"] == "m_0001_x"
-            assert httpx.post(f"{url}/drop", json={"model": "m_0001_x"}).json() == {"ok": True}
-            assert rt.serving._loaded == {}
-        finally:
-            plane.shutdown()
-        itself = Serving({"url": "http://127.0.0.1:8799"})
-        with pytest.raises(ValueError, match="is this server"):
-            make_server(Runtime(tmp_path / "y", {"says": Says()}, "says", serving=itself), port=8799)
-    finally:
-        server.shutdown()
+    assert serving.deploy(spec) == "m_0001_x" and list(serving._loaded) == [("m_0001_x", "signature")]
+    with pytest.raises(ValueError, match="no model"):
+        serving.deploy({**spec, "model": "m_0002_none"})
+    serving.drop(spec)
+    assert serving._loaded == {}
 
 
 def test_drop_closes_the_model_and_a_job_releases_only_a_serving_on_its_machine():

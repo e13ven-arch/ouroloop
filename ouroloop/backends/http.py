@@ -1,5 +1,6 @@
-"""A backend served by `ouroloop serve` on another machine (for example TDE kept loaded on the GPU host), and the
-deploy calls a model server takes (serving.py)."""
+"""A backend asked over HTTP, from a model server on another machine (for example TDE kept loaded on the GPU host),
+and the deploy calls a model server takes (serving.py). The server this protocol was written for, `ouroloop serve`,
+was removed in P1 step 3 (tag archive-2026-10-08); what a [serving] url speaks to is settled in P1 step 4."""
 from __future__ import annotations
 
 import os

@@ -1,15 +1,9 @@
-import threading
-
-import httpx
-import pytest
-
+"""The Claude Code adapter (adapters/claude_code.py): its hooks record decisions and labels from normal sessions."""
 from ouroloop.adapters.claude_code import ClaudeCodeAdapter, settings
 from ouroloop.backends import KeywordBackend
-from ouroloop.backends.http import HttpBackend
 from ouroloop.points import builtin_points, tool_gate_point
 from ouroloop.runtime import Runtime
-from ouroloop.serve import make_server
-from ouroloop.types import Answer, Question, Request
+from ouroloop.types import Answer
 
 
 class Fixed:
@@ -27,36 +21,6 @@ def runtime(tmp_path, backends=None, points=None, **kw):
     for p in points or builtin_points():
         rt.register(p)
     return rt
-
-
-# ---------------------------------------------------------------- decision service
-def test_serve_and_http_backend(tmp_path, monkeypatch):
-    rt = runtime(tmp_path)
-    with pytest.raises(ValueError, match="needs a token"):
-        make_server(rt, host="0.0.0.0", port=0)
-    server = make_server(rt, port=0, token="secret")
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    url = f"http://127.0.0.1:{server.server_port}"
-    try:
-        assert httpx.get(f"{url}/health").json()["points"] == ["compact", "retry", "route", "stop", "tool_gate"]
-        assert httpx.post(f"{url}/decide", json={"requests": []}).status_code == 401
-        monkeypatch.setenv("OUROLOOP_TOKEN", "secret")
-        q = Question("noul", "transient?", {"true": "network timeout", "false": "syntax error"})
-        ans = HttpBackend(url).decide([Request("network timeout", q), Request("syntax error", q)])
-        assert [a.label for a in ans] == ["yes", "no"] and ans[0].model == "mock-keyword"
-        auth = {"Authorization": "Bearer secret"}
-        d = httpx.post(f"{url}/ask", headers=auth, json={"point": "retry", "session": "s1",
-                       "ctx": {"command": "pip install x", "stderr": "ConnectionResetError", "exit_code": 1}}).json()
-        assert d["point"] == "retry" and d["route"] == "shadow"
-        assert httpx.post(f"{url}/outcome", headers=auth, json={"decision": d["id"], "label": "yes"}).json()["ok"]
-        for bad in ([], ["yes", "yes"]):            # a list of right answers: non-empty, distinct strings
-            assert httpx.post(f"{url}/outcome", headers=auth,
-                              json={"decision": d["id"], "label": bad}).status_code == 400
-        assert httpx.post(f"{url}/ask", headers=auth, json={"point": "nope", "ctx": {}}).status_code == 400
-        (row,) = [r for r in rt.ledger.rows() if r.decision["point"] == "retry"]
-        assert row.target() == ({"yes": 1.0}, 1.0)
-    finally:
-        server.shutdown()
 
 
 # ---------------------------------------------------------------- Claude Code hooks
