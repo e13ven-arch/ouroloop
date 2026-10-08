@@ -64,7 +64,9 @@ class Activity:
 
     @property
     def concurrency(self) -> int:
-        return max(int(self.k["bench"].get("concurrency") or 1), 1)
+        """Attempts in flight: [bench] concurrency of the config, else the preset's; a machine setting, not in K."""
+        from .config import resolve
+        return max(int(resolve(self.config)["bench"].get("concurrency") or 1), 1)
 
     def attempt_limits(self) -> Budget:
         return Budget.from_core(self.k["limits"])
