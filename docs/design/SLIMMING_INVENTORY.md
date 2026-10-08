@@ -1,6 +1,6 @@
 # 瘦身清单（2026-10-07）
 
-> **第一批已完成（2026-10-08，分支 `slim/1`，[PLAN](../PLAN.md) P1，JOURNAL 2026-10-08 瘦身第一批一条）。** §2.1、§2.3、§2.6 里标 1 的行都已做，各行就地标了步号；与“做法”列不同的地方列在 §2.1 末。实测：框架 `ouroloop/**/*.py` 35,253 → 30,126 行，其中 `[train]` 3,042、`[train-jobs]` 1,697 行（另有 sh 与 Dockerfile）；测试（不含 fake_upstream）25,554 → 23,237 行；`evals/`（3,091 行）、DEMO、RESEARCH_AGENT、`history/V0_5_IMPLEMENTATION.md` 与 `docs/assets/`（画架构动图的脚本与两张动图）已删。
+> **第一批已完成（2026-10-08，分支 `slim/1`，[PLAN](../PLAN.md) P1，JOURNAL 2026-10-08 瘦身第一批一条）。** §2.1、§2.3、§2.6 里标 1 的行都已做，各行就地标了步号；与“做法”列不同的地方列在 §2.1 末。实测：框架 `ouroloop/**/*.py` 35,253 → 30,126 行，其中 `[train]` 3,042、`[train-jobs]` 1,697 行（另有 sh 与 Dockerfile）；测试（不含 fake_upstream）25,554 → 23,265 行（原写 23,237，少算了文档提交加的一个测试）。评审之后（`3da9a0c`）框架 30,113 行（`[train]` 3,025），测试 23,529 行；`evals/`（3,091 行）、DEMO、RESEARCH_AGENT、`history/V0_5_IMPLEMENTATION.md` 与 `docs/assets/`（画架构动图的脚本与两张动图）已删。
 >
 > **用户决定（2026-10-08）：不写金标身份测试。** 用户问：“有必要吗？在我们这个场景”。不必要：现有活动都不会在 HEAD 上续跑（support 对照已停，下一轮活动在新 preset 与新 K 下重开），旧工作区在 tag `v0.4.0`、`archive-2026-10-08` 上重渲染或续跑。所以与现有工作区的哈希身份不再要求，§1“身份不动”、§3 第 0 步的金标测试、各批“必须守住的身份”与 §4 的身份漂移一行都按此放宽（就地加注）。只为保旧哈希而留的字段（RunManifest 的 decisions、model_ref、policy、`input_schema_refs=(stop_view,)`，`_host_contract` 的字面量，只为旧 ref 留着的 REGISTRY `worker.stop` 与内置点，K 的 `capabilities.training`），在能让死代码一起删时可以删；纯外观的字段删除不花工夫。必须守住的三条：(1) 读兼容：HEAD 的读取器（Results、grading、transcripts、session 行、`library_stream.json`、当作普通 JSON 的冻结对象）照样读得了 workspace-claude-v4-finance、-v3、-v5-support、-v4-support 的 train/dev 记录（v2 的数据管线与 PLAN P4-S1 要读它们），由 `tests/test_record_compat.py` 守住；(2) 行为：在 `tests/fake_upstream` 上的一次尝试，模型调用序列、工具调用、结果与评分都与改动前相同（id、哈希、时间戳归一化后），由 `tests/test_attempt_behaviour.py` 守住；(3) 新活动里的资金安全：预算根与份额、预留、按 attempt id 续跑、测量复用、五项硬限额、`_verify_bound`、启动检查的行为与测试都不变。会破坏这三条的改动不做，并记下原因。
 
@@ -96,7 +96,7 @@
 
 | 模块 | 行 | 改动 | 证据 |
 |---|---|---|---|
-| `types.py`、`decision.py`、`policy.py` | 416 | policy 去掉 `HARNESS`/`may_act` 对内置点的锁（policy.py:24-29） | noul/choice/score 与 Jev/TDE 同构，含 nll、brier；按 session 的 Clopper-Pearson LTT 阈值 `fit_threshold`（policy.py:107）。三个文件只互相依赖 |
+| `types.py`、`decision.py`、`policy.py` | 416 | policy 去掉 `HARNESS`/`may_act` 对内置点的锁（policy.py:24-29） | noul/choice/score 与 Jev/TDE 同构，含 nll（brier 没有调用者，2026-10-08 评审后删了，policy 的 `cp_lower` 同）；按 session 的 Clopper-Pearson LTT 阈值 `fit_threshold`（policy.py:107）。三个文件只互相依赖 |
 | `evolve/feedback.py` | 161 | 标签集和 `kind` 改为取自 builder（≈ 15 行） | 只认 env/human，unknown 不等于 no，冲突要标出。现在标签写死 `("yes","no")`（:21、:91），`kind` 写死 `completion_snapshot`（:146），写门类 builder 的标签会被静默丢掉 |
 | `evolve/build.py` 任务半边，连同 `candidates`、`to_example` | ≈ 215 | 删 :17 的 replay 导入（任务半边不用它） | `build_task_dataset`（:164）在 :212 调 `to_example`（:34-52），后者用 `candidates`（:23-31），三段要一起走。按族分 fit/val/cal、每题上限、血缘检查（:272-289）；导出格式与 TDE 的 `DecisionExample` 一致 |
 | `train_artifact`、`TrainingBuild`、`_probe_artifact`、`full_recipe`（pipeline.py:79-88、:340-454），加 train.py 的契约 `TrainJob`、`TrainResult`、`Trainer`、`recipe_defaults`、`path_keys`（train.py:44-77） | ≈ 175 | 探针不再写死 stop 问题（pipeline.py:441），按 point 取 | 先预留预算再提交；续跑时用 `attach` 查询，不重复提交；加载探针核对模型身份和标签 |
@@ -223,10 +223,11 @@ monitor（上线后按实际伤害算 CP 下界并自动吊销）、replay（付
 - **serve 一行**：`trainers/signature.py` 与 tde 的作业半边没有移进 `jobs/`，两个插件整个留在 `ouroloop/train/trainers/`。一个插件是一个模块，`validate`、`train`、`backend` 缺一不可，而加载插件的 serving 在 `[train]`；插件里只在 worker 侧跑的函数懒导入 `jobs.worker`。`release.PACKAGE_DATA` 与 pyproject 的 package-data 改指 `train/jobs/hosts/`：身份不必再守（§3 第 0 步的注）。`backends/http.py` 随 serving 的 url 模式一起删（5d）；别的机器上训练的模型改为发布到 `hf` 库。
 - **cli 一行**：`host` 搬进 `python -m ouroloop.train host`，没删：`hosts/` 与它的测试随 `[train-jobs]` 留着，worker 与 TDE 的报错也指向它。`evolve/harness.py` 与 `config.build_agent_factory` 提前到第 3 步删，因为它们在模块顶层导入 suite 和 prompt。
 - **plan/harness 一行**：`Improvement.collect` 留着，第二批的 v2 轮次与研究位还用它；删的只是 `--phase collect`。
-- **冠军遗留一行**：`Releases.recover` 留着（IT-04 与 `test_task_gate` 用它读安装记录）；`Releases.defaults` 删了，所以 `rollback` 只退到一个好的祖先，没有可退的祖先时先拒绝、什么都不撤销（原来可能把 active 指回刚撤销的那个）。`release.Revoked` 与 `revoke` 按 §0.1 D 留着，现在没人调用。
+- **冠军遗留一行**：`Releases.recover` 留着（IT-04 与 `test_task_gate` 用它读安装记录）；`Releases.defaults` 删了，所以 `rollback` 只退到一个好的祖先，没有可退的祖先时先拒绝、什么都不撤销（原来可能把 active 指回刚撤销的那个）。`release.Revoked` 与 `revoke` 按 §0.1 D 留着，现在没人调用（评审后有了往返测试）。
 - **运行时枢纽一行**：`release.spec` 写冻结常量 `BUILTIN_SPEC`（`workspace.py`）；`_host_contract` 的字面量 `ouroloop.agent.loop` 没动（只是外观）。
 - **命名**：模块名保留 `decision.py`、`feedback.py`，没按 §2.3 改成 point、labels。Claude Code 适配器在 `train/claude_code.py`，去掉了 `live` 模式，`settings()` 要显式给 hook 命令（`ouroloop hook` 已删）。
 - **[train] 里的一处行为改动**：`train_artifact` 失败时原来只留原因的前 400 字符，现在留头和尾；失败作业的原因在日志末尾。
+- **评审之后（2026-10-08，JOURNAL 验收与评审一条）**：`train/types.py` 的 `brier`、`train/policy.py` 的 `cp_lower` 删了（没有调用者，没有 V2 段落点名）；`tests/test_core.py` 移进 `tests/train/`；`checks.py` 与 `fit_temperature` 随 test_evolve 失去的测试补回 `tests/train/test_checks.py`；`release.Revoked`/`revoke` 有了往返测试。
 - **不再有测试的保证**：hook 入口的失效保护（随 `ouroloop hook` 删）；PR-05（撤销后重新绑定 session，一次运行臂现在只绑一次）；CT-05（遗留冠军与安装的 release 并存）；HTTP 后端的重试与分块；“训练出的 decider 改变 agent 的行为”（§2.6 已写明，要等宿主重新问决策点，V2 §3.8）。
 
 ### 2.2 简化（SIMPLIFY，模块保留，只删内部）

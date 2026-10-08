@@ -124,7 +124,7 @@ git status --short --ignored    # 被忽略的工作区与 *.local.toml 和整�
 
 **目标：** 删死代码与遗留路径；决策/训练栈收进 `ouroloop/train/`，移出热路径；每次尝试的行为与身份逐字节不变。分支 `slim/1`，单独合入。
 
-**状态（2026-10-08）：** 第 1～7 步与文档都做完了，在 `slim/1` 上，每个提交之前默认套件都通过，待用户审后合入。“身份逐字节不变”按 §0.2 末行改为：读兼容、一次尝试的行为、新活动的资金安全三条不变。做了什么、读数、与计划不同的地方、“停下来分析”两问的回答，见 JOURNAL 2026-10-08 瘦身第一批一条；SLIMMING 各行就地标了步号，偏离列在其 §2.1 末。
+**状态（2026-10-08）：** 第 1～7 步与文档都做完了，在 `slim/1` 上，每个提交之前默认套件都通过，待用户审后合入。验收与三份评审也做完了：验收没改代码；评审的修改是 `8a72709`～`3da9a0c` 七个提交加一个文档提交（JOURNAL 2026-10-08 瘦身第一批的验收与评审一条）。“身份逐字节不变”按 §0.2 末行改为：读兼容、一次尝试的行为、新活动的资金安全三条不变。做了什么、读数、与计划不同的地方、“停下来分析”两问的回答，见 JOURNAL 2026-10-08 瘦身第一批一条；SLIMMING 各行就地标了步号，偏离列在其 §2.1 末。
 
 | 步 | 做什么 | 文件 |
 |---|---|---|
@@ -140,20 +140,21 @@ git status --short --ignored    # 被忽略的工作区与 *.local.toml 和整�
 
 | 处理 | 测试 |
 |---|---|
-| 整文件随代码删 | test_evolve、test_gate_bypass、test_gate_record、test_loop、test_probe、test_live_jev、test_harness（含唯一剩下的 slow 测试）、test_manual；`conftest.py` 里的 v1 夹具（accepted、accept、gated、frozen、loose_risk、SMALL_GATE）。`fake_upstream` 保留 |
-| 拆分，删掉 v1 部分 | test_act、test_core、test_counting、test_roles、test_policy_runtime、test_policies；test_agent 删 12 个 v1 测试，3 个 provider 测试移进 test_providers；test_automationbench 删 TestTheInterventionWorks，TestCompletionProbe 改成直接单测 |
-| 移进 `[train]` | test_backends、test_tde_compat、test_train_config、test_integrations（删掉 serve 与 backends.http 部分）、test_evidence_training（改写 IT-02） |
+| 整文件随代码删 | test_evolve（其中 `train/checks.py` 与 `fit_temperature` 的测试，2026-10-08 评审后补回 `tests/train/test_checks.py`）、test_gate_bypass、test_gate_record、test_loop、test_probe、test_harness（含唯一剩下的 slow 测试）、test_manual；`conftest.py` 里的 v1 夹具（accepted、accept、gated、frozen、loose_risk、SMALL_GATE）。`fake_upstream` 保留 |
+| 拆分，删掉 v1 部分 | test_act、test_core（剩下的只测 train 的决策原语，评审后移进 `tests/train/`）、test_counting、test_roles、test_policy_runtime、test_policies；test_agent 删 12 个 v1 测试，3 个 provider 测试移进 test_providers；test_automationbench 删 TestTheInterventionWorks，TestCompletionProbe 改成直接单测 |
+| 移进 `[train]` | test_live_jev（随 `JevBackend`，`tests/train/test_live_jev.py`；原表列在“整文件随代码删”）、test_backends、test_tde_compat、test_train_config、test_integrations（删掉 serve 与 backends.http 部分）、test_evidence_training（改写 IT-02） |
 | 移进 `[train-jobs]`，要改写 | test_jobs、test_cloud、test_hosts。三个都 import `evolve.gate`、`pipeline.evolve_model`（test_jobs、test_hosts 还 import `evolve.registry`，test_jobs 还 import `serve.make_server`），并用 `loose_risk`。gate、registry 的用例改写到 `train_artifact` 上 |
 | 小改 | test_claude_code_provider（`request_json` 改从 `providers/claude_code.py` 导入）；test_contracts；test_harness_loop（`HOOK_RESULT_CHARS`）；test_task_gate（约 6 个）；test_real_run_findings（2 个）；test_paid_run_safety（1 个）；test_report（3 个 frontier 测试）；test_research_round |
 | 夹具迁移 | `tests/rsi.py` 去掉 `rt`、KeywordBackend、points，改用 v3 的 K。有 18 个文件 import 它 |
 | 夹具耦合 | test_jobs、test_cloud、test_hosts、test_roles 从 test_gate_record 导入 `ACT_GATE`、`CFG`、`collect`（另有 `ctx`、`SOME`、`OracleTrainer`）；test_roles 还从 test_jobs（`FAKE_HF`）、test_cloud（`keys`、`Ssh`、`VastApi`、`a_job`、`options`）、test_counting（`Says`、`session`）导入。删 test_gate_record 之前，先把这些移进 `[train-jobs]` 测试的共享夹具 |
-| 标记 | test_harness 删掉后没有 slow 测试了，test_live_jev 删掉后也没有 live 测试了。`slow`、`live` 两个 marker 的定义都留着，以后有慢测试或调真实 API 的测试再标；两条测试命令照旧 |
+| 标记 | test_harness 删掉后没有 slow 测试了。test_live_jev 移进 `tests/train/`，仍是唯一的 live 测试（默认套件里 deselected 的那一个）。`slow`、`live` 两个 marker 的定义都留着，以后有慢测试或调真实 API 的测试再标；两条测试命令照旧 |
 
 **验收**
 ```
 # 2026-10-08：金标换成读兼容与尝试行为两组测试（§0.2 末行）；pip install 不在 worktree 里跑（会改主 venv 的可编辑安装），
 # 改为 PYTHONPATH 指向 worktree 跑 `python -m ouroloop.train smoke --jev --backend mock`；finance 副本上的 --checks-only 字节对照没做，
-# 由假上游上的边界与行为测试代替（JOURNAL 2026-10-08 瘦身第一批一条）。下面是原文。
+# 由假上游上的边界与行为测试代替（JOURNAL 2026-10-08 瘦身第一批一条）。验收时两项都补做了：checks-only 两棵树输出相同、拷贝没变；
+# 假上游上的尝试与 tag 上的相同，只差已记的删除（JOURNAL 2026-10-08 瘦身第一批的验收与评审一条）。下面是原文。
 .venv/bin/python -m pytest -q                                                      # 金标、边界测试都在内
 OUROLOOP_TEST_REQUIRE_DOCKER=1 .venv/bin/python -m pytest -q -m "not live"
 .venv/bin/pip install -e '.[train,train-jobs]' && .venv/bin/python -m ouroloop.train smoke --jev --backend mock
@@ -178,14 +179,14 @@ OUROLOOP_TEST_REQUIRE_DOCKER=1 .venv/bin/python -m pytest -q -m "not live"
 | 2 | 删多领域合并、采集批、段延长 | `bench.py`、`report.py` |
 | 3 | 先迁夹具：`fixture_preset`（test_cycle 90 处、test_real_run_findings 4 处）改用 v3 preset 与 `SessionScript`；再删旧轮次路径和 `marketing_harness_v1`；test_bench_phase 用 `claude-v3.toml` 的 `llm`、`pricing` 表比对 v4 配置（:734-735），把这两张表内联进测试；test_cycle 读 `improvement.toml`（:282）、test_bench_phase 读 `claude.toml`、`claude-full.toml`（:448），改写这几处后删这四份配置；`bench.py:4349` 的报错文字点名 `improvement.toml`，同一提交改掉 | `tests/test_cycle.py`、`tests/test_bench_phase.py`、`examples/automationbench/` |
 | 4 | 简化 context 与 inspection（`check_label_availability` 保留）；删 `research/api_errors.py`，以及它在 `session.py:1080` 的输入和 `session.py:165-166` 的文字。`PROPOSE_SESSION`（`policies.py:718-738`）不动，新文字放进 P5 的新常量，否则 v3 的 R0 金标会变（2026-10-08：没有金标了，但 v3 的 R0 文本仍是 v0.4 的预注册原文，照样不动）。删之前先把 `api_errors._calls`（约 20 行）移进 `research/methods.py`（`methods.py:328` 的 `replay_events` 用它；SLIMMING §2.1）；方法库在 P3 删时随之删 | `research/context.py`、`research/session.py` |
-| 5 | final 的三处预算检查合成一处（`final_fits`），test_paid_run_safety 里约 7 个测试改写成它的规格，保留。并删 SLIMMING §2.2 第 3 行的小分支：`_five_limits`/`limit_problems(five=False)`、`run_phase` 的 NOT_YET/IMPLEMENTED、`RsiConfig` 的 5 个字段（`research_plan_ref/profile/train/initial_release_ref/core_ref`）、`open_activity` 的 v2 bootstrap、`startup_checks` 的 openai 键检查和 v2 检查、`Improvement` 的 trainer/serving/probe_train/actor_override/owner、cli 的 `--repeats/--reason/--plan`、`cycle()` 拉直（`capabilities['training']` 键保留；`--until baseline`、`segment-N/round-K` 保留） | `bench.py`、`cli.py` |
+| 5 | final 的三处预算检查合成一处（`final_fits`），test_paid_run_safety 里约 7 个测试改写成它的规格，保留。并删 SLIMMING §2.2 第 3 行的小分支：`_five_limits`/`limit_problems(five=False)`、`run_phase` 的 NOT_YET/IMPLEMENTED、`RsiConfig` 的 5 个字段（`research_plan_ref/profile/train/initial_release_ref/core_ref`）、`open_activity` 的 v2 bootstrap、`startup_checks` 的 openai 键检查和 v2 检查、`Improvement` 的 trainer/serving/probe_train/actor_override/owner、cli 的 `--repeats/--reason/--plan`、`cycle()` 拉直（`capabilities['training']` 键保留；`--until baseline`、`segment-N/round-K` 保留）。同时定 `startup_checks` 要不要拒绝 `[trainer]`：运行壳下训练出的 `worker.stop` 不改任何尝试，直到 V2 §3.8 的 stop 桥；拒绝它会让 IT-02 与 test_research_round 的两个训练提案测试跑不了 `bench.improve`（P1 资金评审第 3 条，JOURNAL 2026-10-08 验收与评审一条） | `bench.py`、`cli.py` |
 | 6 | 最后单独一个提交：去掉 `bench.py` 里的版本史注释 | `bench.py` |
 
 要守住的身份：Schedule 的 `research_slots`、`collection_batches`；FinalizationPlan 的 `research_campaign_plan_ref`、`claims`；TaskEvalPlan 的 `screen_ids`；v3/v5 的 K 表（由金标测试守住）。（2026-10-08，§0.2 末行：这些不再是必须守住的身份，只在能让死代码一起删时才删；守住的是读兼容、尝试行为与资金安全三条，`test_record_compat`、`test_attempt_behaviour` 与资金安全测试照跑。）
 
 测试（SLIMMING §2.6 标 2 的各行）：test_cycle（约 30 个研究位测试、9 个采集测试）、test_rsi_integration（约 16 个）、test_real_run_findings、test_report（C4 2 个、多领域 4 个）、test_bench_phase、test_harness_loop、test_research_round、test_diagnosis、test_evidence_training。
 
-夹具耦合（迁移时连带的文件）：test_cycle 的 `cycle_config`、`gap_w0`、`RProposer`、`R1_PROPOSE`、`arms`、`outer_on_the_gap`、`SkillAnyway`、`Stopper`、`rows_of`、`fixture_preset` 被 test_rsi_integration、test_real_run_findings、test_bench_phase、test_v05、test_research_session 导入；test_rsi_integration 的 `prepared`、`campaign_pairs` 被 test_research_round、test_report、test_paid_run_safety、test_task_gate、test_harness_loop、test_campaign 导入。改写或删这两个文件里的夹具之前，先把被导入的部分移进共享夹具（`tests/rsi.py` 或 `conftest.py`）。
+夹具耦合（迁移时连带的文件）：test_cycle 的 `cycle_config`、`gap_w0`、`RProposer`、`R1_PROPOSE`、`arms`、`outer_on_the_gap`、`SkillAnyway`、`Stopper`、`rows_of`、`fixture_preset` 被 test_rsi_integration、test_real_run_findings、test_bench_phase、test_v05、test_research_session 导入；test_rsi_integration 的 `prepared`、`campaign_pairs` 被 test_research_round、test_report、test_paid_run_safety、test_task_gate、test_harness_loop、test_campaign 导入。改写或删这两个文件里的夹具之前，先把被导入的部分移进共享夹具（`tests/rsi.py` 或 `conftest.py`）。`test_paid_run_safety` 的计量与资金测试（约 30 个）随 `prepared` 迁到 v3 preset（`prepared_v3`，它取 test_cycle 的 `cycle_config`、`gap_w0`），不随 `prepared` 删；v3 一轮的计量已有 `test_every_agent_call_of_a_v3_round_is_reserved_and_settled_on_the_activity_book`（2026-10-08 评审后加）。
 
 **验收**
 ```

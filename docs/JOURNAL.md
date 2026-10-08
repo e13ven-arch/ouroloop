@@ -8,6 +8,40 @@
 
 ---
 
+## 2026-10-08 瘦身第一批的验收与三份评审（P1）
+
+- 验收（在 `288ea61` 上，没改代码，没提交）：
+  - 默认套件 1118 passed、5 skipped、1 deselected；带 Docker 的全量（`OUROLOOP_TEST_REQUIRE_DOCKER=1 -m "not live"`）同数。`ouroloop/agent/worker_runner.py` 与 `docker/worker.Dockerfile` 自 tag `archive-2026-10-08` 起没改过。
+  - `python -m ouroloop.train smoke --jev --backend mock` 退出 0，三行 ok，与 tag 上旧命令 `python -m ouroloop smoke --backend mock` 的输出相同（两边都在空目录里跑：两个 CLI 都读 `./.env`）。
+  - `--checks-only` 字节对照（P1 验收原文的一条，上一条记为没做）：两棵树各在一份 workspace-claude-v4-finance 拷贝上跑，退出码 0，stdout（31 行）与 stderr 相同，划分哈希 `4fd91eaf9fb8daf5`，拷贝的 1257 个文件一个没变。
+  - 假上游上的尝试对照：`slim/1` 对 tag `archive-2026-10-08`（`ouroloop/` 与 `tests/fake_upstream` 与 `8434c03` 相同），两边 `code_version` 打桩成同一常量，每个场景每棵树跑两次。smoke（1 次尝试、5 次模型调用、5 次工具调用）与 v3、v5 的 baseline（各 2 次尝试、9 次模型调用、9 次工具调用）的模型调用序列、结果行、评分行、运行清单、transcript、session 行、`.release.json` 与台账都相同，内容哈希也相同。差的只有已记的删除：baseline 打印的 frontier 两行与返回报告的 `c2_complete`、`frontier`（6a）；`rsi/defaults.json`（`Releases.defaults` 删了，5c）。
+  - 范围（行为评审的提醒）：这是 HEAD 的 v3、v5 preset 在迷你 `rsi` 领域上、用 ProcessWorker 跑的，不是四个工作区各自冻结的 K 与 Docker 镜像。四个工作区的 K 都是 `max_effort=medium`、`training=False`，两棵树都让它们走运行壳；它们的记录由 `test_record_compat` 只读核对，不在 HEAD 上重跑。
+  - 另看了无 preset 的 v0.1 式配置（四个工作区都不用）：tag 上走 v1 循环，`slim/1` 走运行壳（5b）。模型调用、工具调用及其参数与输出、结果、评分与运行清单相同；transcript 多了 `agent`、`tool_specs`、`gateway_call`、`broker_event` 事件，工具 id 带网关前缀；台账与结果行里的 5 个 `worker.stop` 决策没了，也没有 `sessions/<id>.jsonl`。
+- 三份评审（读兼容与行为、资金安全与测试保证、完整性）都认为可以合入，提了 4 + 4 + 11 条。逐条核过，修了的（每个提交之前默认套件都通过）：
+  - `8a72709` 读兼容：`test_record_compat` 把四个对象库里类型化的冻结对象（finalization、receipt、change 除外，它们装着 final 的计划与读数）都用 HEAD 的类型载入，plan 连同它的 GatePlan、schedule 按 `Schedule`；四个库的 143 个 release 都在 preflight 下绑定。新加经验台账一项：`ledger_rows`、`ledger_projection` 照读，HEAD 的 `pick_best` 按 K 的筛选设置逐轮重放，选中的就是记录里的 `selected`（v3 3/3 轮、v4-finance 3/3、v5-support 1/1）。设了 `OUROLOOP_RECORDS_ROOT` 却找不到工作区时改为失败，不再整组 skip；broker_event 断言 16 位的 `output_digest`。`test_aa_replay` 与 `test_harness_package` 的字面量重放改从 `OUROLOOP_RECORDS_ROOT` 找工作区（原来在 worktree 里总是 skip），用本检出的代码跑，并核对工作区只被读过。变异检查（隔离副本）：去掉 REGISTRY 的 `worker.stop`、GatePlan 拒绝 `regression_drop`、`pick_best` 反序、`min_net_flips` 差一，都被抓到；`min_fixes` 下限这几份记录区分不出。
+  - `ab79761` 行为：`test_attempt_behaviour` 对 v3、v5 两个 preset 各跑一次。v5 的录制在 tag `archive-2026-10-08` 上做，与 v3 的夹具逐字节相同（W0 没有库条目也没有方法），所以一份夹具守两个 preset。
+  - `794d144` 资金：`test_paid_run_safety` 新加 v3 一轮的计量测试（`prepared_v3`：measure、R 的会话、train_screen、dev gate 与确认），每个预留都 settled、根的 `used.model_calls` 等于预留数。让 train_screen 的调用不结算的变异只被它抓到。原来的计量测试都跑在 `prepared` 的无 preset K 与 v2 轮上。
+  - `7ea956a` `TestPhases` 在 `tmp_path` 里跑：原来它往 pytest 当前目录的 `ws/` 引导一个 release（上一条“发现了，没修”的第一项）。跑完默认套件，worktree 里没有新文件，被忽略的也没有。
+  - `0651017` 研究位的准入不再加载 `ouroloop.train`：`core_checks` 只在提案有训练条目时才取已注册的 feedback builder。
+  - `7704a3e` `[train]` 里留着的 `train/checks.py` 与 `fit_temperature` 随 test_evolve 失去了全部测试，补回 `tests/train/test_checks.py`（截断、13-gram、test 与 train 重复、`min_train`、可测差、答案位置偏斜与并列答案、温度拟合；每项的变异都被抓到）；`release.Revoked`/`revoke` 加往返测试；删了没有调用者、也没有 V2 段落点名的 `train/types.py` 的 `brier` 与 `train/policy.py` 的 `cp_lower`；`tests/test_core.py` 只测 train 的决策原语，移进 `tests/train/`；test_jobs 去掉没用的 `httpx` 导入。
+  - `3da9a0c` 措辞与版本：trainer 插件契约、TDE 插件、`JobTrainer` 缺父模型的报错（上一条“发现了，没修”的一项）与 stores 的说明不再写冠军、gate、校准与部署；指向已删 `agent/loop.py` 的四处写明是 tag 上的 v1 循环；`ouroloop/__init__.py` 与 pyproject 的描述改用 README 的说法；`__version__` 由 0.1.0 改为 pyproject 的 0.3.0（host init 用它给发出的 sdist 命名），加测试守住两者相等。
+  - 本条所在的提交：文档（本条、上一条的更正、PLAN、SLIMMING）。
+- 没修的，与原因：
+  - `startup_checks` 对 `[trainer]` 的拒绝（资金评审第 3 条，评审记为可选）：没加。运行壳不问 `worker.stop`，训练出的模型赢不了对照（IT-02 的读数就是 gain 0）；但运行壳不写 stop 决策，数据集凑不齐，不会付训练费。现在加，IT-02 与 test_research_round 的两个训练提案测试就跑不了 `bench.improve`，留在 `[train]` 的训练路径会失去端到端测试。等第二批迁夹具或 V2 §3.8 的 stop 桥时一起定（PLAN P2 第 5 步）。
+  - `train.check_change` 与 `JobTrainer.dry_run` 现在只有测试调用：前者 modules/02 §3c 点名（V2 §3.1），后者是 TRAINING_HOSTS 的干跑，都按 §3c 留着。
+  - `compute.py` 的 MARK 改了，瘦身前的控制面起的作业不再被 `unfinished`/`cancel` 认出。现在没有在跑的旧作业，云实例仍按标签清理。
+  - test_jobs 里取消残留作业的测试偶发计时失败，base 上一样，不属于 P1。
+- 读数（`3da9a0c`，代码与本条所在的提交相同）：
+  - 默认套件 1136 passed、3 skipped、1 deselected（约 159 s）；带 Docker 的全量同数（约 162 s）。比验收时多 18 个 passed：16 个新测试，另 2 个是原来 skip 的 `test_aa_replay` 与字面量重放，现在在 `OUROLOOP_RECORDS_ROOT` 下真跑；剩下 3 个 skip 是没有 TDE 仓库，1 个 deselected 是唯一的 live 测试 `tests/train/test_live_jev.py`。
+  - `--checks-only` 对照与假上游上的尝试对照在 `3da9a0c` 上重跑（tag 一侧用 `git archive` 解出的副本，不建 worktree），结果与验收时逐项相同；`python -m ouroloop.train smoke --jev --backend mock` 退出 0。
+  - 行数（`8434c03` → `3da9a0c`）：框架 `ouroloop/**/*.py` 103 个文件 35,253 行 → 95 个文件 30,113 行（−5,140，−14.6%），其中主包 25,391、`[train]` 3,025、`[train-jobs]` 1,697；`ouroloop/` 下全部文件 35,460 → 30,386。测试（`tests/**/*.py`，不含 fake_upstream）25,554 → 23,529。`8434c03..3da9a0c` 共 34 个提交。
+- 合入前要知道的：
+  - `m1-automationbench` 在验收之后到了 `03cca42`，只加了 `docs/design/V0_6_DESIGN.md`（914 行），不碰 `slim/1` 删的路径；`git merge-tree` 没有冲突。两点 diff（`m1-automationbench..slim/1`）会把它和 `MEMORY_AGENT_ITERATION.md` 算成删除，合并会留着它们。
+  - V0_6 计划的三个 worktree（`v6-agent`、`v6-gateway`、`v6-memory`）从 `slim/1@eb8c505` 分出，与 HEAD 文本上都能干净合并；`v6-agent` 改 `harness_package.py`，`v6-gateway` 改 `gateway.py` 与 `runner.py`，`slim/1` 在 `eb8c505` 之后也改过这三个文件，所以要在 HEAD 之上重跑它们的套件。`v6-agent` 加的一处 docstring 引了 5c 删掉的 `PackageRuntime.call_tool`；V0_6 里的 file:line 以 `eb8c505` 为准。
+  - 合并后从主检出跑默认套件，`OUROLOOP_RECORDS_ROOT` 可以不设（默认就是主检出的 `examples/automationbench`），读兼容与两个重放测试都会真跑，只读。
+- 证据：没调模型，没付费，没读 `.env`，也没读任何 test 题的内容；对象库里装 final 读数的 finalization、receipt、change 不被类型化载入。`test_aa_replay` 照旧读 v0.1/v0.2 工作区里 W0 的 marketing test 读数（只计数，那份 test 早已读过三次）。
+- commit：`8a72709`～`3da9a0c` 与本条所在的提交，都在 `slim/1` 上，没合入。
+
 ## 2026-10-08 瘦身第一批（P1）：死代码、遗留路径与决策栈隔离
 
 - 用户的决定（2026-10-08，P1 开始之后）：P1 第 1 步原计划先写金标身份测试，用户问“有必要吗？在我们这个场景”。定为不写。
@@ -40,7 +74,7 @@
 - 量到的数：
   - 行数：
     - 框架 `ouroloop/**/*.py` 35,253 → 30,126（−5,127，−14.5%）。主包 25,387，`[train]` 3,042，`[train-jobs]` 1,697（另有 sh 与 Dockerfile）。`bench.py` 5,360。
-    - 测试（不含 fake_upstream）25,554 → 23,237。
+    - 测试（不含 fake_upstream）25,554 → 23,265（原写 23,237，是文档提交加 `quickstart.toml` 的测试之前的数；评审后的读数见 2026-10-08 瘦身第一批的验收与评审一条）。
     - `8434c03..455ffe2` 共 191 个文件，+6,848/−15,571。
   - 默认套件，每步末：第 2 步 1252 passed、5 skipped、2 deselected；第 3 步 1240、5、1；第 4 步 1244、5、1；第 5 步 1124、5、1；第 6、7 步 1117、5、1；本条提交 1118 passed、5 skipped、1 deselected（约 144 s）。
     - 第 5 步少的约 120 个，是随 v1 循环和冠军指针一族整删的测试文件：test_gate_record、test_act、test_gate_bypass、test_evolve、test_loop 等。
@@ -53,13 +87,14 @@
   - (2) 行为：`attempt_behaviour_v3.json` 一次没改，每个提交都通过。第 2 步另比对过 v3 基线的 session 行、`.release.json`、transcript、结果、评分与工作区文件列表，完全相同；v3、v5 的 smoke 检查、smoke 尝试、基线与测量，除了哈希值（K 记着 `code_version`）都与改动前相同。
   - (3) 资金安全：预算、预留、续跑、限额、`_verify_bound` 与启动检查的代码，除了删掉 collect 阶段、screening 一步和没有调用者的 `spend`/`open_reservations`，都没动。`test_paid_run_safety` 通过，现在跑在运行壳上，也就是生产路径上。final 的费用估算现在算进每个比较：原来只跳过自带模型的臂，这样的臂现在被拒绝。
 - 停下来分析：
-  - 有没有字节差？行为夹具与第 2 步的比对都没有。没做的：PLAN 验收里在 finance 副本上跑 `--checks-only` 的逐字节对照。按上面的决定，旧工作区不在 HEAD 上续跑，这个对照不再是要求；checks-only 与尝试路径由假上游上的边界与行为测试覆盖。`quickstart.toml` 在 scratch 副本里对真实上游跑了 `--phase smoke --checks-only`（通过，finance 划分哈希 `4fd91eaf9fb8daf5`）和 `freeze`（打印出三行 `[rsi]`）。
+  - 有没有字节差？行为夹具与第 2 步的比对都没有。没做的：PLAN 验收里在 finance 副本上跑 `--checks-only` 的逐字节对照。按上面的决定，旧工作区不在 HEAD 上续跑，这个对照不再是要求；checks-only 与尝试路径由假上游上的边界与行为测试覆盖。（验收时补做了：两棵树的输出相同，拷贝没变；见 2026-10-08 瘦身第一批的验收与评审一条。）`quickstart.toml` 在 scratch 副本里对真实上游跑了 `--phase smoke --checks-only`（通过，finance 划分哈希 `4fd91eaf9fb8daf5`）和 `freeze`（打印出三行 `[rsi]`）。
   - 有没有哪项保证只在被删的路径上测过？有五项，现在没有测试，因为代码没了：
     - hook 入口的失效保护：它从不弄坏 Claude Code 会话，运行时起不来时也保留拒绝表。随 `ouroloop hook` 删；适配器的拒绝表仍有测试。
     - PR-05：撤销后重新绑定 session。一次运行臂现在只绑一次 release。
     - CT-05：遗留冠军与已安装的 release 并存。
     - HTTP 后端的重试与 256 条分块。
     - “训练出的 decider 改变 agent 的行为”：要等宿主重新问 stop 点或 `write_gate`（V2 §3.8），SLIMMING §2.6 早已写明。
+    - （评审补，2026-10-08）漏列的一项：`[train]` 里留着的 `train/checks.py` 与 `fit_temperature`，它们的测试随 test_evolve 删了。评审后补回 `tests/train/test_checks.py`（`7704a3e`）。
     - 其余被删测试的保证都迁到了生产路径上，逐项见 SLIMMING §2.6 与各步提交说明。
 - 与计划不同的地方（SLIMMING §2.1 末有全表）：
   - 没有 `max_effort` 的 K 不拒绝，在运行壳下跑、effort 不截顶。现在就拒绝，得把约 60 个无 harness 的夹具提前迁到 v3 preset，归第二批。
@@ -70,10 +105,10 @@
   - Claude Code 适配器去掉了 `live` 模式。
   - 没跑 `pip install -e '.[train,train-jobs]'`，因为会改主 venv 的可编辑安装；在 worktree 里用 `PYTHONPATH` 跑了 `python -m ouroloop.train smoke --jev --backend mock`，退出码 0。
 - 发现了，没修：
-  - `tests/test_bench_phase.py::TestPhases` 用默认的 base `"."` 与 root `"ws"`，会往 pytest 的当前目录写 `ws/bench/marketing` 与 `ws/rsi`。从主检出跑默认套件时，它写的就是主检出的 `ws/`，而规则 12 把 `ws/` 列为不能再生的运行记录。改法是传 `tmp_path` 作 base。
+  - `tests/test_bench_phase.py::TestPhases` 用默认的 base `"."` 与 root `"ws"`，会往 pytest 的当前目录写 `ws/bench/marketing` 与 `ws/rsi`。从主检出跑默认套件时，它写的就是主检出的 `ws/`，而规则 12 把 `ws/` 列为不能再生的运行记录。改法是传 `tmp_path` 作 base。（评审后已修，`7ea956a`。）
   - 检索的 `statuses` 过滤（`policies.py:135`）现在匹配不到框架写的任何东西，因为 summary 行已删。它是 W/R 的策略键，留给第二批。
   - `evaluate` 给每一臂都从 `[llm]` 建 provider，即使这一臂的 release 钉了 actor，所以 `[llm]` 建不出来时，钉了 actor 的臂也会缺席。这一批之前就是这样。
-  - `JobTrainer` 缺父模型时的报错还写着 “no champion”。
+  - `JobTrainer` 缺父模型时的报错还写着 “no champion”。（评审后已改，`3da9a0c`。）
   - `tests/train/jobs/test_jobs.py` 里取消残留作业的那个测试，有一次因计时失败，重跑通过。
 - 证据：没调模型，没付费，没读 `.env`，也没读任何 test 题的内容。`quickstart.toml` 的 smoke 检查和任何 smoke 一样：按题目定义算划分，契约检查与输入审计只读一道 dev 题。
 - commit：`2dbd935`～`455ffe2`（第 1～7 步），文档是本条所在的提交，都在 `slim/1` 上，没合入。
