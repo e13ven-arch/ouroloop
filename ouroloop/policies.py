@@ -420,7 +420,7 @@ class StopDecider:
         when something first asks for it. Only a loop that asks worker.stop (the v1 loop's StopGuard) does; under the
         runner shell nothing does, so binding a rule policy constructs no DecisionPoint and imports no points."""
         if self._point is None:
-            from .points import business_stop_point
+            from .train.views import business_stop_point
             self._point = business_stop_point()
         return self._point
 
@@ -443,7 +443,7 @@ class StopDecider:
         answer, and abstains on a tie, an unknown class or a confidence below its threshold."""
         if self.kind != "model" or self.backend is None:
             return self.default, "default"
-        from .types import Request
+        from .train.types import Request
         view, truncated = self.point.render(observation)
         q = self.point.question(observation)
         try:
@@ -609,8 +609,8 @@ def _bind_stop(p: PolicyDescriptor, services: Services) -> StopDecider:
     reg = resolve(p.target)
     if p.kind == "rule":
         return StopDecider(p, default=reg.fallback)        # the business stop point, built if a loop asks for it
-    from .decision import Spec
-    from .points import business_stop_point
+    from .train.decision import Spec
+    from .train.views import business_stop_point
     point = business_stop_point()
     spec = services.objects.get(p.implementation["spec_ref"])
     inference = parse_inference(services.objects.get(p.implementation["inference_ref"]),
@@ -634,7 +634,7 @@ def _bind_stop(p: PolicyDescriptor, services: Services) -> StopDecider:
 
 
 def _identity(backend) -> str:
-    from .serving import PROBE
+    from .train.serving import PROBE
     try:
         return backend.decide([PROBE])[0].model
     except Exception:  # noqa: BLE001 - an identity that cannot be read is reported as unknown, not as a match
@@ -916,7 +916,7 @@ def build_candidate(experiment, *, objects: ct.Objects, parent_release: str, own
     never an empty candidate that later reads as "the default did fine" (docs/modules/00_CONTRACTS.md §3).
 
     `train(entry, budget) -> {"model_ref", "spec", "inference", "artifacts", "costs"}` is the caller's training
-    step (pipeline.train_artifact over a built dataset). It is called only for the proposal's training entries,
+    step (train/train.py's train_artifact over a built dataset). It is called only for the proposal's training entries,
     and a training failure is a failed build, not a silent prompt-only candidate.
     """
     proposal = objects.load(experiment.proposal_ref, ct.ExperimentProposal)

@@ -23,10 +23,10 @@ from typing import Callable
 import httpx
 
 from ..ledger import Ledger, PromotionConflict, locked, now, write_json
-from ..policy import cp_lower
+from ..train.policy import cp_lower
 from ..release import code_version
 from .replay import EvalResult, in_calibration
-from .train import TrainError
+from ..train.train import TrainError
 
 TEMPLATE = {
     "risk": 0.05,                   # the share of sessions acted in that may be harmed (any acted decision wrong)
@@ -34,7 +34,7 @@ TEMPLATE = {
     "min_sessions": 30,             # non-held-out test sessions a model or spec gate needs, per point
     "cal_frac": {"stop": 0.4, "*": 0.15},  # share of the training sessions kept for calibration, per point
     "min_cal_sessions": 120,        # fewer calibration sessions: no thresholds, the point cannot act
-    "checks": {"min_train": 200, "max_mde": 0.10},     # data checks before training (evolve/checks.py)
+    "checks": {"min_train": 200, "max_mde": 0.10},     # data checks before training (train/checks.py)
     "suite": {"min_items": 10},     # prompt gates: development-task runs per side
     "test_sessions": "the latest non-held-out sessions with a labelled decision that started after the freezing of "
                      "the last gate record whose fresh sessions a gate used, and never went through a gate, at most "

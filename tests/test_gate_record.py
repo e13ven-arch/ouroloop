@@ -12,7 +12,7 @@ import pytest
 
 from conftest import SMALL_GATE, accept
 from ouroloop import config
-from ouroloop.backends.http import HttpBackend
+from ouroloop.train.backends.http import HttpBackend
 from ouroloop.evolve import experience
 from ouroloop.evolve.gate import (TEMPLATE, decide_points, freeze_template, load_template, open_record,
                                   records, run)
@@ -21,16 +21,17 @@ from ouroloop.evolve.pipeline import (default_errors, evolve_model, prepare_mode
                                      research_context)
 from ouroloop.evolve.registry import Registry
 from ouroloop.evolve.replay import EVALUATORS, EvalResult, labelled
-from ouroloop.evolve.train import JobTrainer, TrainError, TrainResult
+from ouroloop.evolve.train import JobTrainer
+from ouroloop.train.train import TrainError, TrainResult
 from ouroloop.ledger import CalibrationStore, PromotionConflict, SpecStore
 from ouroloop.points import retry_point, stop_point
-from ouroloop.policy import Policy
+from ouroloop.train.policy import Policy
 from ouroloop.release import code_version, revoke
 from ouroloop.research import Candidate, run_round
 from ouroloop.runtime import Runtime
-from ouroloop.stop import MOMENTS, StopGuard
-from ouroloop.trainers.signature import SignatureTrainer
-from ouroloop.types import Answer
+from ouroloop.train.stop import MOMENTS, StopGuard
+from ouroloop.train.trainers.signature import SignatureTrainer
+from ouroloop.train.types import Answer
 
 pytestmark = pytest.mark.usefixtures("loose_risk")
 

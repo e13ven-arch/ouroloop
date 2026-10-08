@@ -11,7 +11,7 @@ import pytest
 
 from ouroloop.adapters import automationbench as ab
 from ouroloop.agent import AgentConfig
-from ouroloop.backends import KeywordBackend
+from ouroloop.train.backends import KeywordBackend
 from ouroloop.benchmark import Budget, RunManifest, Results, SplitManifest, assign_splits
 from ouroloop.chat import ChatTurn, ScriptedChat, ToolCall
 from ouroloop.evolve.task_eval import Budgeted, run_attempt, run_tasks
@@ -26,14 +26,14 @@ class NotDone:
         self.p_no = p_no
 
     def decide(self, requests):
-        from ouroloop.types import Answer
+        from ouroloop.train.types import Answer
         return [Answer({"no": self.p_no, "yes": 1 - self.p_no}, "fixed-1") for _ in requests]
 
 
 @pytest.fixture
 def every_stop_may_act(monkeypatch):
     """v0.2 already lets `stop` act; this pins it so the test does not depend on that staying true."""
-    from ouroloop import policy
+    from ouroloop.train import policy
     monkeypatch.setattr(policy, "ACTING", set(policy.ACTING) | {"stop"})
 
 
@@ -564,7 +564,7 @@ class TestTheInterventionWorks:
     def test_a_confident_not_done_sends_the_agent_back_and_the_task_passes(self, tmp_path, suite, gated,
                                                                           every_stop_may_act):
         from ouroloop.points import stop_point
-        from ouroloop.policy import Policy
+        from ouroloop.train.policy import Policy
         rt, at = self.attempt(tmp_path, suite, [stop_point(policy=Policy(act=True, explore=0.0))],
                               backends={"fixed": NotDone(0.9)}, gated=gated)
         assert at.result.success is True and at.result.partial_credit == 1.0
@@ -576,7 +576,7 @@ class TestTheInterventionWorks:
     def test_an_unconfident_answer_takes_the_default_and_changes_nothing(self, tmp_path, suite, gated,
                                                                         every_stop_may_act):
         from ouroloop.points import stop_point
-        from ouroloop.policy import Policy
+        from ouroloop.train.policy import Policy
         rt, at = self.attempt(tmp_path, suite, [stop_point(policy=Policy(act=True, explore=0.0))],
                               backends={"fixed": NotDone(0.55)}, gated=gated, confidence=0.9)
         assert at.result.success is False      # below the threshold: on_finish keeps its default, "yes"

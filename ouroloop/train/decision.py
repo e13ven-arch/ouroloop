@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from .policy import Policy
-from .release import _digest            # one content hash for specs and releases (release.spec_hash)
+from ..release import _digest  # one content hash for specs and releases (release.spec_hash)
 from .types import Question
 
 

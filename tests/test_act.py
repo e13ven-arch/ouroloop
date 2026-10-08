@@ -9,25 +9,27 @@ import pytest
 
 from conftest import GATE, accept
 from decision_fixtures import MockProvider, seed_ledger
-from ouroloop import config, policy
-from ouroloop.adapters.claude_code import ClaudeCodeAdapter
+from ouroloop import config
+from ouroloop.train import policy
+from ouroloop.train.claude_code import ClaudeCodeAdapter
 from ouroloop.agent import Agent, AgentConfig, Tools
-from ouroloop.backends import KeywordBackend, LlmBackend
-from ouroloop.backends.http import HttpBackend
+from ouroloop.train.backends import KeywordBackend, LlmBackend
+from ouroloop.train.backends.http import HttpBackend
 from ouroloop.chat import ChatTurn, ScriptedChat, ToolCall
 from ouroloop.evolve.build import build
 from ouroloop.evolve.calibrate import calibrate_point
 from ouroloop.evolve.pipeline import ModelCandidate, promote_model
 from ouroloop.evolve.registry import Registry
 from ouroloop.evolve.replay import labelled, predict
-from ouroloop.evolve.train import TrainResult
+from ouroloop.train.train import TrainResult
 from ouroloop.ledger import Ledger
-from ouroloop.points import builtin_points, retry_point, stop_point, tool_gate_point
-from ouroloop.policy import Policy, fit_threshold
+from ouroloop.points import builtin_points, retry_point, stop_point
+from ouroloop.train.claude_code import tool_gate_point
+from ouroloop.train.policy import Policy, fit_threshold
 from ouroloop.research import BasicResearcher, run_round
 from ouroloop.runtime import Runtime
-from ouroloop.stop import StopGuard
-from ouroloop.types import Answer, Question, temper
+from ouroloop.train.stop import StopGuard
+from ouroloop.train.types import Answer, Question, temper
 
 
 class Model:

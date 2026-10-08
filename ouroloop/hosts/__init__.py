@@ -62,8 +62,8 @@ def manifest(plan: dict | None = None) -> dict:
     from .. import __version__
     from ..ledger import now
     from ..release import code_version
-    from ..stores import kind, types
-    from ..trainers import load, version
+    from ..train.stores import kind, types
+    from ..train.trainers import load, version
     plan = plan or {}
     plugins = {}
     for name, info in (plan.get("plugins") or {}).items():
@@ -151,7 +151,7 @@ def plan(trainers: dict, out: str | Path, store=None) -> Path:
     """Write what init sends into `out`: the ouroloop sdist, each local plugin source as <name>.tar.gz,
     requirements.txt (those, and the requirements of the plugins and of `store`, a store or its class), plan.json
     and bootstrap.sh."""
-    from ..trainers import load
+    from ..train.trainers import load
     from ..worker import git_state
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)

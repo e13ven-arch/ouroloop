@@ -10,15 +10,16 @@ from pathlib import Path
 import pytest
 
 from jobs_fixtures import QUESTION, dataset
-from ouroloop import config
-from ouroloop.evolve.pipeline import train_artifact
-from ouroloop.evolve.train import CHECKOUT, DEFAULT_RECIPE, JobTrainer, TrainError, TrainJob
+from ouroloop.train import config as train_config
+from ouroloop.train.train import train_artifact
+from ouroloop.evolve.train import CHECKOUT, JobTrainer
+from ouroloop.train.train import DEFAULT_RECIPE, TrainError, TrainJob
 from ouroloop.hosts import MANIFEST, read, stale
 from ouroloop.release import code_version
-from ouroloop.stores import kind
+from ouroloop.train.stores import kind
 from ouroloop.train.cli import main
-from ouroloop.trainers import load
-from ouroloop.types import Question, Request
+from ouroloop.train.trainers import load
+from ouroloop.train.types import Question, Request
 from ouroloop.workspace import Workspace
 
 # pip, stood in for: it logs each call to <venv>/pip.log, and "installs" an archive by unpacking it and pointing a .pth
@@ -161,8 +162,8 @@ def test_a_host_that_cannot_be_initialized_fails_the_build_before_anything_is_us
     jobs = tmp_path / "jobs"
     cfg = {"models": {"jobs_root": str(jobs)},             # an old config: [models] and no [store]
            "trainer": {"type": "signature", "host": "local", "jobs_root": str(jobs)}}
-    rt = Workspace(tmp_path / "ws", serving=lambda: config.build_serving(cfg))
-    trainer = config.build_trainer(cfg, rt.serving)
+    rt = Workspace(tmp_path / "ws", serving=lambda: train_config.build_serving(cfg))
+    trainer = train_config.build_trainer(cfg, rt.serving)
     built = train_artifact(rt, trainer, dataset(rt.root), version="m_0001")
     assert built.status == "failed" and built.model_ref is None and built.artifact_ref is None
     assert "host init on this machine failed" in built.errors[0] and "No matching distribution" in built.errors[0]
@@ -226,7 +227,7 @@ def test_a_broken_venv_or_a_failed_plugin_check_is_not_ready(home, tmp_path):
 
 def test_a_plugin_check_is_given_its_options_and_a_failing_one_is_recorded(monkeypatch):
     from ouroloop import hosts
-    from ouroloop.trainers import signature
+    from ouroloop.train.trainers import signature
     seen = []
 
     def check(options):
@@ -257,7 +258,7 @@ def test_a_stray_file_in_the_package_is_neither_hashed_nor_sent(tmp_path, monkey
     before = code_version()
     (copy / "ouroloop" / ".DS_Store").write_bytes(b"\0")
     (copy / "ouroloop" / "evolve" / ".train.py.swp").write_bytes(b"\0")
-    (copy / "ouroloop" / "trainers" / "mytrainer.yaml").write_text("x: 1\n")
+    (copy / "ouroloop" / "train" / "trainers" / "mytrainer.yaml").write_text("x: 1\n")
     assert code_version() == before
     with tarfile.open(hosts.pack_ouroloop(tmp_path)) as t:
         sent = {n.split("/", 1)[1] for n in t.getnames()}
@@ -343,7 +344,7 @@ def test_the_bootstrap_says_what_is_wrong_with_the_python_that_is_here(home, tmp
 def test_a_signature_run_says_what_it_is_so_a_model_server_loads_the_same_model(tmp_path):
     """The key function travels in the run, not in the options: a server without [trainers.signature] (options {})
     loads the model the job trained."""
-    from ouroloop.trainers import signature
+    from ouroloop.train.trainers import signature
     job = tmp_path / "jobs" / "m_0001_x"
     job.mkdir(parents=True)
     example = {"id": "e", "state": "say yes", "question": "done?", "candidates": [{"name": "yes"}, {"name": "no"}],
@@ -424,8 +425,8 @@ def test_the_signature_plugin_through_the_job_path_to_a_trained_artifact(tmp_pat
     cfg = {"store": {"type": "dir", "root": str(jobs)},
            "trainer": {"type": "signature", "jobs_root": str(jobs), "poll_s": 0.05},
            "trainers": {"signature": {"signature": "test_hosts:says"}}}
-    rt = Workspace(tmp_path / "ws", serving=lambda: config.build_serving(cfg))
-    trainer = config.build_trainer(cfg, rt.serving)
+    rt = Workspace(tmp_path / "ws", serving=lambda: train_config.build_serving(cfg))
+    trainer = train_config.build_trainer(cfg, rt.serving)
     assert trainer.supports_weights
     out = trainer.dry_run(a_job(tmp_path / "ws", "m_0000"))
     assert out["check"] == {"ok": True, "counts": {"train": 5, "val": 1}}

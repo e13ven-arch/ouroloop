@@ -15,18 +15,18 @@ from pathlib import Path
 import pytest
 
 from decision_fixtures import seed_ledger
-from ouroloop import config
-from ouroloop.backends import KeywordBackend, TdeBackend
-from ouroloop.decision import Choice, Score
+from ouroloop.train import config as train_config
+from ouroloop.train.backends import KeywordBackend, TdeBackend
+from ouroloop.train.decision import Choice, Score
 from ouroloop.evolve.build import build
-from ouroloop.evolve import train
+from ouroloop.train import train
 from ouroloop.points import retry_point
 from ouroloop.runtime import Runtime
-from ouroloop.trainers import tde
-from ouroloop.trainers.tde import prepare_job, tde_config
-from ouroloop.types import Question, Request
+from ouroloop.train.trainers import tde
+from ouroloop.train.trainers.tde import prepare_job, tde_config
+from ouroloop.train.types import Question, Request
 
-REPO = Path(os.environ.get("TDE_REPO", Path(__file__).resolve().parents[2] / "jev"))
+REPO = Path(os.environ.get("TDE_REPO", Path(__file__).resolve().parents[3] / "jev"))
 needs_tde = pytest.mark.skipif(not (REPO / "tde" / "schema.py").exists(), reason="TDE repository not found")
 has_tde = importlib.util.find_spec("tde") is not None
 DEFAULT_RECIPE = {**train.DEFAULT_RECIPE, **tde.RECIPE}        # the recipe of a tde trainer
@@ -85,10 +85,10 @@ def test_generated_config_only_uses_real_trainconfig_fields():
 @pytest.mark.skipif(has_tde, reason="tde is importable here")
 def test_without_tde_the_local_path_fails_at_once_and_says_why(tmp_path):
     (tmp_path / "m_0001_x" / "run").mkdir(parents=True)
-    serving = config.build_serving({"store": {"type": "dir", "root": str(tmp_path)}})
-    for build in (lambda: TdeBackend("runs/m_0001"), lambda: config.build_backend({"type": "tde", "run": "r"}),
-                  lambda: config.build_backend({"type": "model", "model": "m_0001_x"}, serving),
-                  lambda: config.build_backend({"type": "model", "model": "m_0001_x", "trainer": "tde"}, serving)):
+    serving = train_config.build_serving({"store": {"type": "dir", "root": str(tmp_path)}})
+    for build in (lambda: TdeBackend("runs/m_0001"), lambda: train_config.build_backend({"type": "tde", "run": "r"}),
+                  lambda: train_config.build_backend({"type": "model", "model": "m_0001_x"}, serving),
+                  lambda: train_config.build_backend({"type": "model", "model": "m_0001_x", "trainer": "tde"}, serving)):
         with pytest.raises(ImportError, match="host init local --trainer tde"):
             build()
 

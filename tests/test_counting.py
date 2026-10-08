@@ -6,16 +6,16 @@ import random
 import pytest
 
 from conftest import accept
-from ouroloop.decision import Noul, _digest
+from ouroloop.train.decision import Noul, _digest
 from ouroloop.evolve.calibrate import calibrate_point
 from ouroloop.evolve.monitor import Tally, acted, realized
 from ouroloop.evolve.pipeline import default_errors
 from ouroloop.evolve.registry import Registry
 from ouroloop.evolve.replay import gain, summarize
 from ouroloop.ledger import Ledger
-from ouroloop.policy import Policy, cp_lower, cp_upper, fit_threshold, harmed
+from ouroloop.train.policy import Policy, cp_lower, cp_upper, fit_threshold, harmed
 from ouroloop.runtime import Runtime
-from ouroloop.types import Answer
+from ouroloop.train.types import Answer
 
 
 def naive(confidences, correct, sessions, risk):

@@ -4,25 +4,12 @@ in keeps a Clopper-Pearson bound below the phase's share of the risk, the cut-of
 (policy.fit_threshold). Both are keyed by the model id the backend reports and by the point's spec hash."""
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 
-from ..policy import fit_threshold
-from ..types import nll, temper
+from ..train.calibrate import fit_temperature
+from ..train.policy import fit_threshold
+from ..train.types import temper
 from .replay import answers, gold, labelled, not_held_out, right, routing_default, splits
-
-
-def fit_temperature(probs: list[dict], targets: list[dict]) -> float:
-    if not probs:
-        return 1.0
-
-    def loss(t: float) -> float:
-        return sum(nll(temper(p, t), y) for p, y in zip(probs, targets)) / len(probs)
-
-    grid = [math.exp(math.log(0.2) + i * (math.log(10.0) - math.log(0.2)) / 119) for i in range(120)]
-    best = min(grid, key=loss)
-    fine = [best * math.exp(-0.14 + i * 0.28 / 59) for i in range(60)]
-    return min(fine, key=loss)
 
 
 @dataclass

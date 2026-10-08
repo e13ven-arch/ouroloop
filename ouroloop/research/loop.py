@@ -7,8 +7,9 @@ from dataclasses import dataclass, field
 
 from ..evolve import experience, gate
 from ..evolve.gate import GateRecord
-from ..evolve.replay import EVALUATORS, gold, labelled, predict, right, signature
-from ..types import brier
+from ..evolve.replay import EVALUATORS, gold, labelled, predict, right
+from ..train.trainers.signature import signature
+from ..train.types import brier
 from .agent import Report, Workspace
 
 

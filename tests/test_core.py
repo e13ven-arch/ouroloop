@@ -2,11 +2,11 @@ import random
 
 import pytest
 
-from ouroloop.decision import Choice, Noul, Spec
+from ouroloop.train.decision import Choice, Noul, Spec
 from ouroloop.ledger import Ledger, SessionStore, redact
-from ouroloop.policy import Policy, cp_upper, fit_threshold, route
+from ouroloop.train.policy import Policy, cp_upper, fit_threshold, route
 from ouroloop.research.ask import NONE_FIT, QuestionError, fit_state, normalize
-from ouroloop.types import Answer, Question
+from ouroloop.train.types import Answer, Question
 
 
 # ---------------------------------------------------------------- policy
@@ -138,7 +138,7 @@ def test_normalize_questions():
 def test_candidate_order_is_shuffled_at_presentation(tmp_path):
     import random
 
-    from ouroloop.types import Question
+    from ouroloop.train.types import Question
 
     q = Question("choice", "which", {"a": "A", "b": "B", "c": "C", "d": "D (do nothing)"})
     orders = {tuple(q.presented(random.Random(s)).labels()) for s in range(30)}
@@ -150,9 +150,9 @@ def test_candidate_order_is_shuffled_at_presentation(tmp_path):
 
 
 def test_the_ledger_records_the_order_the_model_was_shown(tmp_path):
-    from ouroloop.decision import Choice
+    from ouroloop.train.decision import Choice
     from ouroloop.runtime import Runtime
-    from ouroloop.types import Answer
+    from ouroloop.train.types import Answer
 
     class Echo:
         """Answers with a fixed preference by label, so probabilities must follow the labels, not the order."""

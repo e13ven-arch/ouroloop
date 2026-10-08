@@ -21,60 +21,11 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
 from urllib.parse import urlparse
 
 from ..ledger import new_id
-
-# The recipe's keys the framework reads itself (pipeline._parts, the parent). A plugin adds its trainer's own
-# (ouroloop.trainers: RECIPE, PATH_KEYS); a trainer's recipe_defaults are both, and only those keys are accepted.
-DEFAULT_RECIPE = {
-    "min_weight": 0.5,       # 1.0 keeps only environment and human labels
-    "init_from": None,       # the first model's parent run on the training machine (or the plugin's init_from)
-    "focus": None,           # share of the ledger's training rows that are default errors (pipeline._parts)
-    "seed": 0,
-}
-# Files and runs on the training machine: set by a person in [recipe], never by a research candidate, which could
-# name the calibration split, or a run trained on the test sessions.
-PATH_KEYS = {"init_from"}
-
-
-def recipe_defaults(trainer) -> dict:
-    """The recipe keys `trainer` accepts, with their defaults: the framework's, and its plugin's."""
-    return getattr(trainer, "recipe_defaults", DEFAULT_RECIPE)
-
-
-def path_keys(trainer) -> set:
-    """The recipe keys of `trainer` that name files or runs on the training machine."""
-    return getattr(trainer, "path_keys", PATH_KEYS)
-
-
-class TrainError(RuntimeError):
-    pass
-
-
-@dataclass
-class TrainJob:
-    version: str
-    data_dir: Path
-    recipe: dict
-    init_from: str | None
-
-
-@dataclass
-class TrainResult:
-    model_id: str           # the model ref, which the backend reports as Answer.model: calibrations, thresholds,
-                            # revocations and session pins are keyed by it, and the next job starts from it
-    backend: dict           # the backend spec serving asks it by (serving.py): {"type": "model", ...} for a stored one
-    job: dict | None = None     # the training job: id, host, dir, spec, result
-
-
-class Trainer(Protocol):
-    supports_weights: bool      # it weighs each example by meta.weight; if not, it is given weight-1.0 rows only
-
-    def train(self, job: TrainJob) -> TrainResult: ...
+from ..train.train import DEFAULT_RECIPE, PATH_KEYS, TrainError, TrainJob, TrainResult
 
 
 # ---------------------------------------------------------------------- a plugin as a job
@@ -125,9 +76,9 @@ class JobTrainer:
                  poll_s: float = 30, ssh_opts: str = "-o BatchMode=yes", publish_s: float = 900,
                  cloud: dict | None = None, api=None, runner=None, sleep=time.sleep):
         from ..hosts import PYTHON
-        from ..serving import Serving
-        from ..stores import make
-        from ..trainers import load
+        from ..train.serving import Serving
+        from ..train.stores import make
+        from ..train.trainers import load
         from .compute import Compute
         self.name, self.plugin, self.options = plugin, load(plugin), dict(options or {})
         self.supports_weights = bool(getattr(self.plugin, "SUPPORTS_WEIGHTS", False))

@@ -15,8 +15,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from . import contracts as ct
-from .contracts import FeedbackSet
+from ..evolve import contracts as ct
+from ..evolve.contracts import FeedbackSet
 
 # Labels a completion decision can carry, and the actions they correspond to.
 COMPLETION_LABELS = ("yes", "no")

@@ -21,6 +21,23 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from ..agent.deny import denied
+from .decision import DecisionPoint, Noul
+
+
+# The adapter's decision point: whether a tool call is safe to run without asking a person. Its view is a coding
+# session's (working directory, command, file); a business version is written anew (SLIMMING §0.1 B).
+def tool_gate_view(ctx: dict, params: dict) -> str:
+    return f"task: {ctx['task']}\nworking directory: {ctx['workdir']}\ntool: {ctx['tool']}\n{ctx['detail']}"
+
+
+def tool_gate_point(**kw) -> DecisionPoint:
+    kw.setdefault("phases", {"before_call": "no"})         # not cleared: the host asks a person
+    return Noul("tool_gate", "This action is safe to run without asking a person",
+                {"true": "read-only, or a reversible change inside the working directory that the task calls for",
+                 "false": "destructive, irreversible, outside the working directory, exposes credentials, or "
+                          "unrelated to the task"},
+                view=tool_gate_view, **kw)
+
 
 TOOLS = {"Bash": "bash", "Write": "write", "Edit": "edit", "MultiEdit": "edit"}
 EVENTS = ("UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "PostToolUseFailure", "Stop")

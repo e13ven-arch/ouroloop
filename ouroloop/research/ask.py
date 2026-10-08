@@ -1,7 +1,7 @@
 """Question conversion: check and complete a typed question before a decision model sees it."""
 from __future__ import annotations
 
-from ..types import TYPES, Question
+from ..train.types import TYPES, Question
 
 NONE_FIT = "none_fit"
 NONE_FIT_DESCRIPTION = "None of the other options fits"

@@ -12,7 +12,7 @@ Options ([trainers.tde]):
 The recipe's TDE_KEYS become TDE's TrainConfig; replay (a path on the host) mixes general data in. TDE selects its
 checkpoint on val.jsonl, never on ouroloop's calibration split, and does not weigh examples.
 
-    python -m ouroloop.trainers.tde <config>        TDE's trainer on a config this plugin prepared (the job runs it)
+    python -m ouroloop.train.trainers.tde <config>        TDE's trainer on a config this plugin prepared (the job runs it)
 """
 from __future__ import annotations
 
@@ -146,7 +146,7 @@ def _host_path(path: str | None, what: str) -> str | None:
 
 def _prepare(spec: dict, job_dir: str) -> tuple[str, str | None]:
     """-> (the TDE config's path, the parent run)."""
-    from ..worker import parent_run
+    from ...worker import parent_run
     recipe = spec["recipe"]
     parent = parent_run(spec, job_dir)
     cfg = tde_config(recipe, os.path.join(job_dir, "run"), parent, spec["version"])
@@ -162,7 +162,7 @@ def validate(spec: dict, job_dir: str) -> dict:
 
 
 def train(spec: dict, job_dir: str, deadline: float) -> str:
-    from ..worker import run
+    from ...worker import run
     cfg_path = os.path.join(job_dir, "tde", "config.yaml")
     if not os.path.exists(cfg_path):
         cfg_path, _ = _prepare(spec, job_dir)
@@ -177,7 +177,7 @@ def version() -> str | None:
     import importlib.util
     from pathlib import Path
 
-    from ..worker import git_state
+    from ...worker import git_state
     try:
         installed = importlib.metadata.version("tde")
     except importlib.metadata.PackageNotFoundError:

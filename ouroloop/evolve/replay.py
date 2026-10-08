@@ -9,24 +9,13 @@ from __future__ import annotations
 import hashlib
 import json
 import random
-import re
 from dataclasses import dataclass, field
 from typing import Callable
 
-from ..decision import DecisionPoint, Spec
-from ..policy import Policy, route
-from ..runtime import import_object
-from ..types import Answer, Request, temper
-
-_SIGNATURE = re.compile(r"\b[A-Z][A-Za-z]+(?:Error|Exception)\b|command not found|No such file or directory|"
-                        r"timed out|rate limit|Permission denied|refused|Unavailable|Could not get lock|is locked|"
-                        r"invalid argument|expected one argument|unrecognized arguments")
-
-
-def signature(view: str) -> str:
-    """A coarse error signature: the last exception name or common failure phrase in the view."""
-    hits = _SIGNATURE.findall(view)
-    return hits[-1] if hits else "other"
+from ..train.decision import DecisionPoint, Spec
+from ..train.policy import Policy, route
+from ..config import import_object
+from ..train.types import Answer, Request, temper
 
 
 def labelled(rt, point: str) -> list[tuple]:

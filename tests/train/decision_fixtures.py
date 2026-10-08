@@ -13,13 +13,13 @@ import re
 from pathlib import Path
 from typing import Callable
 
-from ouroloop.backends import KeywordBackend
+from ouroloop.train.backends import KeywordBackend
 from ouroloop.evolve.gate import freeze_template, template_path
 from ouroloop.evolve.pipeline import recipe_evaluator, research_context
 from ouroloop.points import retry_point
 from ouroloop.research import BasicResearcher, run_round
 from ouroloop.runtime import Runtime
-from ouroloop.trainers.signature import SignatureTrainer
+from ouroloop.train.trainers.signature import SignatureTrainer
 
 
 class MockProvider:

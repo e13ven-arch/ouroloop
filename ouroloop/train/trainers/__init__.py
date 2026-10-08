@@ -2,7 +2,7 @@
 
 ouroloop trains decision models of any kind; a plugin is one kind. The framework does the rest the same way for all:
 it builds the data, runs the job on a host (evolve/compute.py, ouroloop/worker.py), publishes the run to the model
-store (ouroloop/stores: a ref, a job id or <repo>@<commit>), gates, calibrates, deploys and serves the model by its
+store (stores/: a ref, a job id or <repo>@<commit>), gates, calibrates, deploys and serves the model by its
 ref (serving.py). A plugin is a module with:
 
     NAME             its name, the [trainer] type
@@ -21,7 +21,7 @@ ref (serving.py). A plugin is a module with:
   worker side (on the host, in the job's directory; spec is spec.json: job, version, parent, recipe, options, ...)
     validate(spec, job_dir) -> dict      what a dry run checks, without training
     train(spec, job_dir, deadline) -> the run directory, job_dir/run, which the worker publishes to the store;
-                     reads job_dir/train.jsonl and val.jsonl (the examples evolve/build.py describes) and maps
+                     reads job_dir/train.jsonl and val.jsonl (the examples dataset.py describes) and maps
                      spec["recipe"] to its trainer, starting from worker.parent_run(spec, job_dir); runs any process
                      through ouroloop.worker.run, which stops it at `deadline`
     version() -> str | None             optional: what it trains with, recorded in result.json and host.json
@@ -48,7 +48,7 @@ NAME = re.compile(r"[a-z][a-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*")
 
 
 def load(name: str):
-    """The plugin module `name`: ouroloop.trainers.<name> for a plain name, else the module path."""
+    """The plugin module `name`: ouroloop.train.trainers.<name> for a plain name, else the module path."""
     if not isinstance(name, str) or not NAME.fullmatch(name):
         raise ValueError(f"not a trainer plugin name: {name!r}")
     module = importlib.import_module(f"{__name__}.{name}" if "." not in name else name)

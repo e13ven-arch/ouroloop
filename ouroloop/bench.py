@@ -460,10 +460,16 @@ def attempt_workspace(cfg: dict, base: str | Path = ".", *, runner_shell: bool):
     which asks the built-in decision points through the full v1 runtime (config.build_runtime) until that loop goes
     (P1 step 5)."""
     if runner_shell:
-        return Workspace(config_mod.workspace_root(cfg, base), serving=lambda: config_mod.build_serving(cfg))
+        return Workspace(config_mod.workspace_root(cfg, base), serving=lambda: _serving(cfg))
     rt = config_mod.build_runtime(cfg, base)
     config_mod.register_builtin_points(rt)
     return rt
+
+
+def _serving(cfg: dict):
+    """The config's serving.Serving, for a Workspace that is asked for it (the training stack is imported only then)."""
+    from .train.config import build_serving
+    return build_serving(cfg)
 
 
 def smoke_max_effort(cfg: dict, base: str | Path) -> str | None:
@@ -526,7 +532,7 @@ from .research.context import task_results_summary as _task_results_summary
 from .research.inspection import inspect as _inspect
 from .workspace import Workspace
 
-# The builder a measurement's feedback is read with: evolve.feedback.COMPLETION_SNAPSHOT.ref, named here so the empty
+# The builder a measurement's feedback is read with: train/feedback.py's COMPLETION_SNAPSHOT.ref, named here so the empty
 # set of a measurement that builds none (Improvement.feedback) carries it without importing the builders.
 FEEDBACK_BUILDER = "completion_snapshot@v1"
 RSI_KEYS = {"profile", "initial_release_ref", "core_ref", "schedule_ref", "budget_ref", "task_plan_ref",
@@ -629,7 +635,7 @@ class Improvement:
         return {e.task_id: e.family_id for e in self.splits.entries}
 
     def feedback(self, release_ref: str) -> _ct.FeedbackSet:
-        """M2's labels on the ledger's completion decisions (evolve.feedback.build_feedback), as a measurement of
+        """M2's labels on the ledger's completion decisions (train/feedback.py's build_feedback), as a measurement of
         `release_ref` hands them to R. They are built only where a decision can be on the ledger or used: a K without
         the runner shell (the v1 loop records a stop decision at every finish), a core with training on, or a W that
         binds a decision target to a model. Otherwise — every release under the runner shell, which asks no decision
@@ -638,7 +644,7 @@ class Improvement:
         from .agent.runner import release_max_effort
         if release_max_effort(self.objects, release_ref) is not None and not self._decides(release_ref):
             return _ct.FeedbackSet(builder_ref=FEEDBACK_BUILDER)
-        from .evolve.feedback import build_feedback
+        from .train.feedback import build_feedback
         return build_feedback(self.rt, objects=self.objects, scope_id=self.scope_id)
 
     def _decides(self, release_ref: str) -> bool:
@@ -1613,10 +1619,10 @@ class Improvement:
 
     def _train(self, entry: dict, budget) -> dict:
         """The training entry of a proposal: dataset, artifact, inference configuration. No pointer moves."""
-        from .evolve import feedback as _feedback
-        from .evolve.build import build_task_dataset
-        from .evolve.pipeline import train_artifact
-        from .points import business_stop_point
+        from .train import feedback as _feedback
+        from .train.dataset import build_task_dataset
+        from .train.train import train_artifact
+        from .train.views import business_stop_point
         if self.trainer is None:
             raise ValueError("this activity has no trainer: a training proposal cannot be built")
         if entry.get("point") != "worker.stop":
@@ -2819,8 +2825,8 @@ def collect(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
     out(f"collect    {rows['tasks']} tasks, {rows['attempts']} attempts, {rows['invalid']} invalid")
     out(f"feedback   {summary['valid']} valid labels over {summary['labels']}, {summary['unknown']} unknown, "
         f"{summary['conflicted']} conflicted; excluded {summary['excluded']}")
-    from .evolve.build import build_task_dataset
-    from .points import business_stop_point
+    from .train.dataset import build_task_dataset
+    from .train.views import business_stop_point
     built = build_task_dataset(activity.rt, business_stop_point(), evidence["feedback"],
                               out_dir=activity.root / "rsi" / "datasets" / "audit", objects=activity.objects,
                               splits=activity.splits, min_groups=1)
@@ -2887,7 +2893,10 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
                 "release": activity.releases.active()["release_ref"], "stop_reason": seglog.state["stop_reason"],
                 "already_finished": True}
     provider = config_mod.build_provider(cfg["llm"])
-    trainer = config_mod.build_trainer(cfg, activity.rt.serving) if cfg.get("trainer") else None
+    trainer = None
+    if cfg.get("trainer"):
+        from .train.config import build_trainer
+        trainer = build_trainer(cfg, activity.rt.serving)
     work = improvement(activity, template_ref=activity.rsi.task_plan_ref, provider=provider, trainer=trainer)
     schedule = Schedule(**(activity.objects.get(activity.rsi.schedule_ref) if activity.rsi.schedule_ref
                            else {"worker_rounds": rounds or 1}))

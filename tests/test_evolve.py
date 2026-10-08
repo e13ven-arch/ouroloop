@@ -7,13 +7,14 @@ import pytest
 from conftest import accept
 from decision_fixtures import MockProvider, research_round, round_llm, seed_ledger
 from ouroloop import config
-from ouroloop.backends import KeywordBackend
+from ouroloop.train.backends import KeywordBackend
 from ouroloop.chat import ScriptedChat  # noqa: F401 - keeps the chat module importable in isolation
-from ouroloop.decision import Choice, Noul
+from ouroloop.train.decision import Choice, Noul
 from ouroloop.evolve import experience
 from ouroloop.evolve.build import build
-from ouroloop.evolve.calibrate import calibrate_point, fit_temperature
-from ouroloop.evolve.checks import check
+from ouroloop.evolve.calibrate import calibrate_point
+from ouroloop.train.calibrate import fit_temperature
+from ouroloop.train.checks import check
 from ouroloop.evolve.gate import records
 from ouroloop.evolve.pipeline import evolve_model, recipe_evaluator
 from ouroloop.evolve.registry import Registry
@@ -23,9 +24,9 @@ from ouroloop.release import Revoked
 from ouroloop.research import BasicResearcher, Candidate, run_round
 from ouroloop.research.loop import run_rounds
 from ouroloop.runtime import Runtime
-from ouroloop.trainers.signature import SignatureTrainer
-from ouroloop.trainers.tde import prepare_job
-from ouroloop.types import temper
+from ouroloop.train.trainers.signature import SignatureTrainer
+from ouroloop.train.trainers.tde import prepare_job
+from ouroloop.train.types import temper
 
 LOOSE = {"min_train": 100, "max_mde": 0.2}
 

@@ -11,20 +11,23 @@ import pytest
 from conftest import accept
 from jobs_fixtures import FAKE_HF, keys  # noqa: F401 - keys is a fixture
 from ouroloop import config
-from ouroloop.decision import Noul
+from ouroloop.train import config as train_config
+from ouroloop.train.decision import Noul
 from ouroloop.evolve.gate import freeze_template, records
-from ouroloop.evolve.pipeline import deploy, deploy_version, evolve_model, full_recipe, parent_ref
+from ouroloop.evolve.pipeline import deploy, deploy_version, evolve_model, parent_ref
+from ouroloop.train.train import full_recipe
 from ouroloop.evolve.plan import decide
-from ouroloop.evolve.train import JobTrainer, TrainError
+from ouroloop.evolve.train import JobTrainer
+from ouroloop.train.train import TrainError
 from ouroloop.evolve.registry import Registry
 from ouroloop.ledger import Ledger, PromotionConflict
 from ouroloop.release import code_version
-from ouroloop.policy import Policy
+from ouroloop.train.policy import Policy
 from ouroloop.release import Revoked, revoke
 from ouroloop.runtime import Runtime
-from ouroloop.serving import PROBE, Serving
-from ouroloop.stores import make
-from ouroloop.trainers import signature
+from ouroloop.train.serving import PROBE, Serving
+from ouroloop.train.stores import make
+from ouroloop.train.trainers import signature
 from test_counting import Says, session
 from test_gate_record import ACT_GATE, CFG, SOME, OracleTrainer, collect, ctx
 
@@ -132,13 +135,13 @@ def test_a_dir_store_and_an_hf_store_behind_one_interface(tmp_path, hub, monkeyp
 
 def test_old_configs_with_transport_and_models_still_load(tmp_path):
     old = {"trainer": {"type": "signature", "jobs_root": "~/jobs"}, "models": {"jobs_root": "/srv/jobs"}}
-    assert config.store_table(old) == {"type": "dir", "root": "/srv/jobs"}
-    assert config.store_table({"trainer": {"type": "signature", "jobs_root": "~/jobs"}}) == {"type": "dir",
+    assert train_config.store_table(old) == {"type": "dir", "root": "/srv/jobs"}
+    assert train_config.store_table({"trainer": {"type": "signature", "jobs_root": "~/jobs"}}) == {"type": "dir",
                                                                                             "root": "~/jobs"}
     hf = {"trainer": {"type": "signature", "transport": "hf", "hf_prefix": "org/o-"}, "models": {"url": "http://g:1"}}
-    assert config.store_table(hf) == {"type": "hf", "prefix": "org/o-"}
-    assert config.serving_table(hf) == {"url": "http://g:1"} and config.serving_table(old) == {}
-    trainer = config.build_trainer(hf)
+    assert train_config.store_table(hf) == {"type": "hf", "prefix": "org/o-"}
+    assert train_config.serving_table(hf) == {"url": "http://g:1"} and train_config.serving_table(old) == {}
+    trainer = train_config.build_trainer(hf)
     assert trainer.store.table == {"type": "hf", "prefix": "org/o-"} and trainer.serving.url == "http://g:1"
     rt = config.build_runtime({**CFG, **old}, tmp_path)
     assert rt.serving.store.table == {"type": "dir", "root": "/srv/jobs"} and not rt.serving.url
@@ -147,13 +150,13 @@ def test_old_configs_with_transport_and_models_still_load(tmp_path):
                      ({"store": {"type": "dir"}, "models": {"jobs_root": "/a", "hf_prefix": "org/o-"}},
                       r"\[store\] and \[models\] hf_prefix, \[models\] jobs_root: .* keep one")):
         with pytest.raises(ValueError, match=why):
-            config.build_serving(bad)
+            train_config.build_serving(bad)
     with pytest.raises(ValueError, match=r"\[store\] and \[trainer\] transport, \[trainer\] hf_prefix"):
-        config.build_trainer({"trainer": hf["trainer"], "store": {"type": "dir"}, "serving": {"url": "http://x:1"}})
+        train_config.build_trainer({"trainer": hf["trainer"], "store": {"type": "dir"}, "serving": {"url": "http://x:1"}})
     # an old model server's config: [models] jobs_root and hf_prefix, no transport, loaded refs from the Hub
     server = {"models": {"jobs_root": "~/.ouroloop/jobs", "hf_prefix": "org/o-"}}
-    assert config.store_table(server) == {"type": "hf", "prefix": "org/o-"}
-    assert config.build_serving(server).store.job(f"org/o-m_0001_x@{'a' * 40}") == "m_0001_x"
+    assert train_config.store_table(server) == {"type": "hf", "prefix": "org/o-"}
+    assert train_config.build_serving(server).store.job(f"org/o-m_0001_x@{'a' * 40}") == "m_0001_x"
 
 
 # ---------------------------------------------------------------- serving
@@ -173,7 +176,7 @@ def test_calibration_and_test_scoring_ask_through_serving_and_never_the_trainer(
 def test_serving_deploys_a_ref_by_loading_it_and_drops_it(tmp_path):
     jobs = tmp_path / "jobs"
     signature_job(jobs, "m_0001_x")
-    serving = config.build_serving({"store": {"type": "dir", "root": str(jobs)}})
+    serving = train_config.build_serving({"store": {"type": "dir", "root": str(jobs)}})
     spec = {"type": "model", "model": "m_0001_x", "trainer": "signature"}
     assert serving.deploy(spec) == "m_0001_x" and list(serving._loaded) == [("m_0001_x", "signature")]
     with pytest.raises(ValueError, match="no model"):
@@ -266,14 +269,14 @@ STORE = ObjectStore
 
 
 def test_a_new_store_is_a_new_module_only(tmp_path, monkeypatch, keys):
-    from ouroloop import stores
+    from ouroloop.train import stores
     from ouroloop.evolve import cloud as clouds
     from ouroloop.hosts import manifest, plan, stale
     from jobs_fixtures import Ssh, VastApi, a_job, options
     (tmp_path / "more").mkdir()
     (tmp_path / "more" / "objects.py").write_text(OBJECTS)
     monkeypatch.setattr(stores, "__path__", [*stores.__path__, str(tmp_path / "more")])
-    monkeypatch.delitem(sys.modules, "ouroloop.stores.objects", raising=False)
+    monkeypatch.delitem(sys.modules, "ouroloop.train.stores.objects", raising=False)
     store = stores.make({"type": "objects"})
     assert "objects" in stores.types() and manifest()["stores"]["objects"] == {"client": True}
     assert "objclient" in (plan({}, tmp_path / "init", store) / "requirements.txt").read_text().splitlines()

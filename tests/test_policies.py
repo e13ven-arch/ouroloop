@@ -4,9 +4,9 @@ import pytest
 
 from ouroloop import policies as P
 from ouroloop.evolve import contracts as ct
-from ouroloop.points import business_stop_view
+from ouroloop.train.views import business_stop_view
 from ouroloop.release import NotAuthorized, Releases, resolve_profile
-from ouroloop.types import Answer, Request
+from ouroloop.train.types import Answer, Request
 
 
 class ScriptedBackend:

@@ -1,25 +1,21 @@
-"""The runtime that ties decision points, backends, default answerers and the ledger together."""
+"""The v1 decision runtime (agent/loop.py, the old CLI commands): the general runtime (ouroloop/train/runtime.py) and
+the champion pointer: sessions pinned to the promoted champion, its calibrations and thresholds, `ask`, revocation and
+the post-act monitor. It goes with the v1 loop in P1 step 5."""
 from __future__ import annotations
 
 import json
-import random
 import threading
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
-from . import policy
-from .config import import_object
-from .decision import Decision, DecisionPoint, Spec
-from .evolve.contracts import CandidateDefect
-from .ledger import CalibrationStore, Ledger, SessionStore, SpecStore, write_json
-from .policy import Policy, Route, route
+from .ledger import CalibrationStore, SpecStore, write_json
 from .release import Accepted, Release, Revoked, harness_hash, spec_hash
-from .types import Backend, Question, Request, temper
-
-
-class _NoPolicy(Exception):
-    """No policy is bound at this phase: the fixed default is taken, and nothing is recorded as proposed."""
+from .train import policy
+from .train.decision import Decision, DecisionPoint, Spec
+from .train.policy import Policy, Route, route
+from .train.runtime import Runtime as _Runtime
+from .train.types import Backend, Question, Request, temper
 
 
 @dataclass(frozen=True)
@@ -36,51 +32,32 @@ class Pin:
 
 _SESSIONS = threading.Lock()
 
-class Runtime:
+
+class Runtime(_Runtime):
     def __init__(self, root: str | Path, backends: dict[str, Backend], default_backend: str,
                  point_backends: dict[str, str] | None = None, seed: int | None = None, serving=None):
         """`serving`: how the trained models on the registry's cards are asked (serving.Serving; default: in-process,
         with no store)."""
-        from .serving import Serving
-        self.root = Path(root)
-        self.ledger = Ledger(self.root / "ledger")
-        self.sessions = SessionStore(self.root / "sessions")
+        from .train.serving import Serving
+        super().__init__(root, backends, default_backend, point_backends, seed, serving or Serving())
         self.specs = SpecStore(self.root / "harness" / "specs.json")
         self.calibration = CalibrationStore(self.root / "harness" / "calibration.json")
         self.revoked = Revoked(self.root / "harness" / "revoked.json")
         self.accepted = Accepted(self.root)
-        self.backends = backends
-        self.serving = serving or Serving()
-        self.default_backend = default_backend
-        self.point_backends = dict(point_backends or {})
-        self.points: dict[str, DecisionPoint] = {}
-        self.rng = random.Random(seed)
         self._pins: dict[str, Pin] = {}
         self._built: dict[str, tuple[Backend | None, str]] = {}     # champion version -> (backend, error)
         self._tally = None      # the post-act monitor's counts (evolve.monitor.Tally), built at its first check
 
     def register(self, point: DecisionPoint) -> DecisionPoint:
-        """Add a decision point. A promoted spec (harness/specs.json) replaces the one in code. Each phase's default
-        must be one of the point's labels, and its default answerer must resolve. In v0.2 the harness's built-in
-        points other than stop may not act (policy.may_act)."""
+        """Add a decision point (train.runtime.Runtime.register). A promoted spec (harness/specs.json) replaces the one
+        in code first. In v0.2 the harness's built-in points other than stop may not act (policy.may_act)."""
         if point.policy.act and not policy.may_act(point.name):
             raise ValueError(f"point {point.name!r} has act on: of the built-in points only "
                              f"{sorted(policy.ACTING)} may act in v0.2")
         stored = self.specs.get(point.name)
         if stored is not None:
             point.spec = Spec.from_json(stored)
-        labels = None if point.candidates else point.question().labels()
-        for phase in point.phases:
-            _, label, answerer = point.default_for(phase)
-            if labels is not None and label not in labels:
-                raise ValueError(f"point {point.name!r}, phase {phase!r}: default {label!r} is not one of {labels}")
-            kind, _, ref = (answerer or "").partition(":")
-            if kind == "llm" and ref not in self.backends:
-                raise ValueError(f"point {point.name!r}, phase {phase!r}: no backend {ref!r} for {answerer}")
-            if kind == "rule":
-                import_object(ref)
-        self.points[point.name] = point
-        return point
+        return super().register(point)
 
     # ------------------------------------------------------------------ releases
     def champion(self, version: str | None = None) -> tuple[dict, Backend | None, str]:
@@ -220,14 +197,8 @@ class Runtime:
         revoked or rolled back, the session takes its defaults."""
         return self._decide(point, ctx, session, step, phase, veto, asking=True)
 
-    def record(self, point: str | DecisionPoint, ctx: Any, *, session: str = "s_default", step: int | None = None,
-               phase: str | None = None, veto: str | Callable[[str | None], str | None] | None = None) -> Decision:
-        """Log a decision point's context without asking the decision model (shadow collection): the action is the
-        phase's default, as its answerer gives it (see `ask`), or a rule's `veto` (route "rule"). The model's
-        probabilities can be computed later by offline replay; only the context and the outcome are needed."""
-        return self._decide(point, ctx, session, step, phase, veto, asking=False)
-
     def _decide(self, point, ctx, session, step, phase, veto, asking: bool) -> Decision:
+        """`ask` (asking=True) and `record`: the champion of the session's release answers, under its calibration."""
         p = self.points[point] if isinstance(point, str) else point
         phase, label, answerer = p.default_for(phase)
         rule = answerer if answerer and answerer.startswith("rule:") else None
@@ -290,97 +261,6 @@ class Runtime:
                         ans.confidence if ans else 0.0, r.route, r.explored, r.propensity, action, model,
                         r.route == "act")
 
-    def propose(self, point: str | DecisionPoint, ctx: Any, *, policy, session: str = "s_default",
-                step: int | None = None, phase: str | None = None,
-                veto: str | Callable[[str | None], str | None] | None = None,
-                extra: dict | None = None, on_record: Callable[[dict], None] | None = None) -> Decision:
-        """Ask a bound policy of the task/research profile (policies.StopDecider) and record what happened.
-
-        This path never reads the champion pointer or the legacy calibration: what may act in that profile is
-        decided by the release's authorisation (docs/modules/01_POLICY_RUNTIME.md §4), and reusing the old
-        thresholds here would be borrowing a permission that was granted for another version.
-
-        The row separates the two facts a trace needs: `proposed` is the policy's answer, `action` is what was
-        executed, and `executor` says who decided it. A policy that abstains, or whose service is unavailable,
-        leaves the phase's fixed default and the reason is recorded — it is not written down as agreement.
-
-        `on_record` receives the row as it was written. A caller that needs it (the agent, to store the decision's
-        trace) gets it here rather than reading the ledger back: the ledger is append-only and grows with the run,
-        so re-reading it per decision would make a long run quadratic in its own history.
-        """
-        p = self.points[point] if isinstance(point, str) else point
-        phase, label, _ = p.default_for(phase)
-        ref = self.sessions.put(session, ctx, step)
-        fields: dict = dict(extra or {})
-        view, truncated, q, proposed, reason = None, False, None, None, ""
-        route_name, executor = "default", "default"
-        action = label
-        try:
-            view, truncated = p.render(ctx)
-            q = p.question(ctx)
-            if policy is None:      # no policy is bound at this phase: the fixed default, and nothing proposed
-                raise _NoPolicy
-            proposed, reason = policy.propose(ctx)
-            if proposed in (q.labels() if q else ()):
-                action, route_name, executor = proposed, "policy", "policy"
-            else:
-                fields["fallback_reason"] = reason
-        except CandidateDefect as e:
-            self.ledger.decision(session=session, ctx=ref, point=p.name, spec_hash=p.spec_hash, backend="policy",
-                                 model=getattr(policy, "ref", ""), view=view, view_chars=len(view or ""),
-                                 truncated=truncated, question=q.to_json() if q else None, probs=None,
-                                 candidates=q.labels() if q else None, route="error", explored=False,
-                                 propensity=1.0, action=None, usage={}, phase=phase, default=label,
-                                 executor="none", policy_ref=getattr(policy, "ref", ""),
-                                 defect=f"{e}"[:500], **fields)
-            raise                       # a defective candidate does not get the default's result recorded as its own
-        except _NoPolicy:
-            pass
-        except Exception as e:  # noqa: BLE001 - whatever breaks, the fixed default is taken and the row says why
-            route_name, fields["error"] = "error", f"{type(e).__name__}: {e}"[:500]
-        try:
-            if isinstance(veto, str):
-                action, route_name, executor = veto, "rule", "guard"
-            elif callable(veto) and (verdict := veto(action)) is not None:
-                fields["override_reason"] = f"guard overruled {action!r}"
-                action, route_name, executor = verdict, "rule", "guard"
-        except Exception as e:  # noqa: BLE001 - a checker that breaks overrules nothing
-            route_name, executor = "error", "default"
-            action, fields["error"] = label, f"{type(e).__name__}: {e}"[:500]
-        row = dict(session=session, ctx=ref, point=p.name, spec_hash=p.spec_hash, backend="policy",
-                   model=getattr(policy, "ref", ""), view=view, view_chars=len(view or ""), truncated=truncated,
-                   question=q.to_json() if q else None, candidates=q.labels() if q else None, probs=None,
-                   route=route_name, explored=False, propensity=1.0, action=action, usage={}, phase=phase,
-                   default=label, proposed=proposed, executor=executor,
-                   policy_ref=getattr(policy, "ref", ""), policy_kind=getattr(policy, "kind", ""), **fields)
-        did = self.ledger.decision(**row)
-        if on_record is not None:
-            on_record({"id": did, **row})
-        return Decision(did, p.name, proposed, {}, 0.0, route_name, False, 1.0, action,
-                        getattr(policy, "ref", ""), route_name == "policy")
-
-    def _default(self, ctx: Any, view: str | None, q: Question | None, label: str | None, answerer: str | None,
-                 extra: dict) -> str | None:
-        """The phase's default: its answerer's answer, or its fixed label when it has none or the answerer fails
-        (an exception, a timeout, an abstention or a tie, an answer that is not a label). The answerer is recorded;
-        its answer is for evaluation only, never a training target."""
-        if answerer is None:
-            return label
-        extra["answerer"] = answerer
-        kind, _, ref = answerer.partition(":")
-        try:
-            if kind == "rule":
-                out = import_object(ref)(ctx)
-            else:
-                a = self.backends[ref].decide([Request(view, q)])[0]
-                out = a.label if a.decisive else None
-            if out not in q.labels():
-                raise ValueError(f"answered {out!r}")
-            return out
-        except Exception as e:  # noqa: BLE001 - the fixed label is the default of last resort
-            extra["answerer_error"] = f"{type(e).__name__}: {e}"[:300]
-            return label
-
     def ask_question(self, name: str, question: Question, state: str, *, default: str | None = None,
                      backend: Backend | None = None, session: str = "research", meta: dict | None = None) -> Decision:
         """A one-off typed question (no decision point, no view), recorded like any other decision. It goes through
@@ -397,9 +277,3 @@ class Runtime:
                                    **(meta or {}))
         return Decision(did, name, ans.label if ans.decisive else None, ans.probs, ans.confidence, r.route,
                         r.explored, r.propensity, default, ans.model)
-
-    def outcome(self, decision: str, label: str | list[str] | None, source: str = "env", weight: float = 1.0,
-                **extra) -> None:
-        """Record what happened after `decision`: its right answer, a list of answers that are all right, or None
-        when none was."""
-        self.ledger.outcome(decision, label, source, weight, **extra)

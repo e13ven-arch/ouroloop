@@ -35,7 +35,7 @@ def prepared(fake_upstream, tmp_path, *, cfg=None, gate=None, screen=(), dev=Non
     """A workspace with W0 installed and a frozen development plan, as `bench improve` needs it."""
     cfg = cfg or config(fake_upstream, tmp_path)
     if train:
-        cfg["trainer"] = {"type": "rsi:PhraseTrainer"}
+        cfg["trainer"] = {"type": "train_fixtures:PhraseTrainer"}
     # The fixture's splits are declared, not hashed: these tasks were written to be a training pool, a
     # development pool and a final pool, and the test says which is which (docs/DESIGN.md §3.1.2).
     from ouroloop.benchmark import Results
@@ -114,9 +114,9 @@ def test_the_installed_version_makes_the_failing_dev_task_pass(fake_upstream, tm
 
 # ---------------------------------------------------------------------------- IT-05 (permissions)
 def test_it05_each_boundary_is_refused_by_the_module_that_owns_it(fake_upstream, tmp_path):
-    from ouroloop.evolve.build import build_task_dataset, check_lineage
-    from ouroloop.evolve.feedback import build_feedback
-    from ouroloop.points import business_stop_point
+    from ouroloop.train.dataset import build_task_dataset, check_lineage
+    from ouroloop.train.feedback import build_feedback
+    from ouroloop.train.views import business_stop_point
     from ouroloop.research.context import AccessDenied, make_context
     cfg, activity, release, plan_ref = prepared(fake_upstream, tmp_path)
     objects = activity.objects

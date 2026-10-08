@@ -8,6 +8,7 @@ import json
 
 import pytest
 import rsi
+from train_fixtures import PhraseTrainer
 
 from ouroloop import bench, policies as P
 from ouroloop.evolve import contracts as ct
@@ -41,7 +42,7 @@ def test_rl01_a_training_proposal_without_the_input_or_the_labels_does_not_spend
                                                                                             tmp_path):
     cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path, train=True)
     work = bench.improvement(activity, template_ref=plan_ref, provider=rsi.BusinessWorker(),
-                             trainer=rsi.PhraseTrainer())
+                             trainer=PhraseTrainer())
     context, evidence = context_of(activity, work)
     trained = rsi.ScriptedResearcher(carrier="train", min_labels=0)
     result = propose_experiment(context, P.bind_release(activity.releases.active()["release_ref"], profile="task",
@@ -64,7 +65,7 @@ def test_rl01_a_training_proposal_without_the_input_or_the_labels_does_not_spend
 def test_a_training_proposal_with_one_label_class_is_not_a_training_experiment(fake_upstream, tmp_path):
     cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path, train=True)
     work = bench.improvement(activity, template_ref=plan_ref, provider=rsi.BusinessWorker(),
-                             trainer=rsi.PhraseTrainer())
+                             trainer=PhraseTrainer())
     context, _ = context_of(activity, work)
     proposal = ct.ExperimentProposal(owner="worker", hypothesis="train it",
                                      training=({"point": "worker.stop", "feedback_ref": "completion_snapshot@v1",

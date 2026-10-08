@@ -9,9 +9,9 @@ from pathlib import Path
 import httpx
 import pytest
 
-from ouroloop.evolve.build import DatasetBuild
+from ouroloop.train.dataset import DatasetBuild
 from ouroloop.evolve.compute import SEP
-from ouroloop.evolve.train import DEFAULT_RECIPE, TrainJob
+from ouroloop.train.train import DEFAULT_RECIPE, TrainJob
 from ouroloop.release import code_version
 
 # huggingface_hub, stood in for: repositories and commits under $FAKE_HF; a job's Python imports it from PYTHONPATH.

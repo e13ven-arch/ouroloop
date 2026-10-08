@@ -10,10 +10,11 @@ import pytest
 
 from jobs_fixtures import (COMMIT, GPU_RP, GPU_VAST, HF_TOKEN, PREFIX, RUNPOD_KEY, STORE, VAST_KEY, RunPodApi, Ssh,
                            VastApi, a_job, dataset, keys, options)  # noqa: F401 - keys is a fixture
-from ouroloop import config
+from ouroloop.train import config as train_config
 from ouroloop.evolve import cloud
-from ouroloop.evolve.pipeline import train_artifact
-from ouroloop.evolve.train import JobTrainer, TrainError
+from ouroloop.train.train import train_artifact
+from ouroloop.evolve.train import JobTrainer
+from ouroloop.train.train import TrainError
 from ouroloop.workspace import Workspace
 
 def trainer(cloud_options, api, ssh, **kw) -> JobTrainer:
@@ -371,7 +372,7 @@ def test_a_cloud_trainer_refuses_a_dir_store_and_bad_options(keys):
     for cfg in ({"trainer": {"type": "signature", "cloud": options("vast", keys)}, "store": STORE},
                 {"trainer": {"type": "signature", "transport": "hf", "hf_prefix": PREFIX,
                              "cloud": options("vast", keys)}, "models": {"jobs_root": "~/.ouroloop/jobs"}}):
-        tr = config.build_trainer(cfg)
+        tr = train_config.build_trainer(cfg)
         assert tr.cloud["provider"] == "vast" and tr.python == "~/.ouroloop/venv/bin/python"
         assert tr.store.table == STORE and not tr.serving.url
 

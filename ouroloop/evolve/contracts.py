@@ -688,7 +688,7 @@ class FeedbackRecord(Record):
 
 @dataclass
 class FeedbackSet:
-    """One builder's FeedbackRecords over the ledger (evolve.feedback.build_feedback), and why decisions were left out.
+    """One builder's FeedbackRecords over the ledger (train/feedback.py's build_feedback), and why decisions were left out.
     Here rather than with the builders: a measurement that builds no feedback still hands R the empty set of the same
     shape (bench.Improvement.feedback), without importing them."""
     records: list = field(default_factory=list)          # FeedbackRecord

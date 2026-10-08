@@ -21,7 +21,7 @@ from typing import Callable
 from ..chat import ChatProvider, ToolCall
 from ..ledger import _append_jsonl, new_id, now, redact
 from ..runtime import Runtime
-from ..stop import StopCall, StopGuard
+from ..train.stop import StopCall, StopGuard
 from .deny import denied
 from .runner import AgentResult
 from .tools import ToolResult, Tools

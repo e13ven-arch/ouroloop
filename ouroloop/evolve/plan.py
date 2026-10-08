@@ -23,9 +23,9 @@ import json
 import math
 from dataclasses import asdict, dataclass, field
 
-from ..policy import cp_upper
+from ..train.policy import cp_upper
 from . import experience, monitor
-from .checks import min_detectable_difference
+from ..train.checks import min_detectable_difference
 from .gate import TEMPLATE, choose, load_template, records
 from .registry import Registry
 from .replay import default_error, in_calibration, labelled

@@ -4,15 +4,16 @@ import json
 
 import pytest
 import rsi
+from train_fixtures import PhraseTrainer, UnknownJobTrainer
 
 from ouroloop import policies as P
 from ouroloop.evolve import contracts as ct
-from ouroloop.evolve.build import build_task_dataset, check_lineage
+from ouroloop.train.dataset import build_task_dataset, check_lineage
 from ouroloop.evolve.execution import Budgets, Execution
-from ouroloop.evolve.feedback import COMPLETION_SNAPSHOT, build_feedback
-from ouroloop.evolve.pipeline import train_artifact
+from ouroloop.train.feedback import COMPLETION_SNAPSHOT, build_feedback
+from ouroloop.train.train import train_artifact
 from ouroloop.evolve.task_eval import make_agent_factory, run_attempt
-from ouroloop.points import business_stop_point
+from ouroloop.train.views import business_stop_point
 from ouroloop.research.context import AccessDenied, make_context, task_results_summary
 
 
@@ -188,7 +189,7 @@ def test_dt06_training_produces_an_artifact_and_moves_no_pointer(tmp_path, suite
     out, feedback = gather(root, suite, splits, tasks=rsi.TRAIN, repeats=2)
     built = dataset(out, feedback, splits=splits, validation=0.25, min_groups=1)
     assert built.status == "ready" and built.dataset_ref
-    trainer = rsi.PhraseTrainer()
+    trainer = PhraseTrainer()
     account = Budgets(root).account("experiment", {"train_jobs": 2, "training_seconds": 600})
     before = out["releases"].active()
     build = train_artifact(out["rt"], trainer, built, {}, objects=out["objects"], budget=account)
@@ -207,7 +208,7 @@ def test_dt06_a_failed_job_is_not_ready_and_still_costs(tmp_path, suite, splits)
     out, feedback = gather(root, suite, splits, tasks=rsi.TRAIN, repeats=2)
     built = dataset(out, feedback, splits=splits, validation=0.25, min_groups=1)
     account = Budgets(root).account("experiment", {"train_jobs": 2, "training_seconds": 600})
-    build = train_artifact(out["rt"], rsi.PhraseTrainer(fail=True), built, {}, objects=out["objects"],
+    build = train_artifact(out["rt"], PhraseTrainer(fail=True), built, {}, objects=out["objects"],
                            budget=account)
     assert build.status == "failed" and build.model_ref is None and "CUDA" in build.errors[0]
     assert account.remaining()["used"]["train_jobs"] == 1.0
@@ -218,7 +219,7 @@ def test_a_model_that_answers_as_another_model_fails_the_load_probe(tmp_path, su
     out, feedback = gather(root, suite, splits, tasks=rsi.TRAIN, repeats=2)
     built = dataset(out, feedback, splits=splits, validation=0.25, min_groups=1)
 
-    class Mislabelled(rsi.PhraseTrainer):
+    class Mislabelled(PhraseTrainer):
         def train(self, job):
             result = super().train(job)
             return type(result)("another-model", result.backend, result.job)
@@ -235,7 +236,7 @@ def test_dt08_an_unreadable_remote_job_is_queried_not_resubmitted(tmp_path, suit
     op = execution.operation("train", (built.dataset_ref,))
     op.attempts = ({"job_id": "job-remote-1"},)
     execution.put(op)
-    trainer = rsi.UnknownJobTrainer()
+    trainer = UnknownJobTrainer()
     build = train_artifact(out["rt"], trainer, built, {}, objects=out["objects"], operation=op)
     assert build.status == "failed" and "still unknown" in build.errors[0]
     assert trainer.attached == ["job-remote-1"] and not trainer.jobs      # nothing was submitted twice

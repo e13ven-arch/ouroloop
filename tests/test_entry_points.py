@@ -46,7 +46,7 @@ class Lopsided:
     name = "lopsided"
 
     def decide(self, requests):
-        from ouroloop.types import Answer
+        from ouroloop.train.types import Answer
         return [Answer({label: 0.9 for label in r.question.labels()}, "lopsided") for r in requests]
 
 

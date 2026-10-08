@@ -1,9 +1,10 @@
-"""The Claude Code adapter (adapters/claude_code.py): its hooks record decisions and labels from normal sessions."""
-from ouroloop.adapters.claude_code import ClaudeCodeAdapter, settings
-from ouroloop.backends import KeywordBackend
-from ouroloop.points import builtin_points, tool_gate_point
+"""The Claude Code adapter (train/claude_code.py): its hooks record decisions and labels from normal sessions."""
+from ouroloop.train.claude_code import ClaudeCodeAdapter, settings
+from ouroloop.train.backends import KeywordBackend
+from ouroloop.points import builtin_points
+from ouroloop.train.claude_code import tool_gate_point
 from ouroloop.runtime import Runtime
-from ouroloop.types import Answer
+from ouroloop.train.types import Answer
 
 
 class Fixed:

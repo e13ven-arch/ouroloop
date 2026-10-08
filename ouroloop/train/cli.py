@@ -18,7 +18,8 @@ import json
 import sys
 
 from .. import config
-from ..types import Question, Request
+from .config import build_backend, build_serving, plugin_options, store_table
+from .types import Question, Request
 
 SMOKE_STATE = ("Customer: I was charged twice for my March invoice and the second charge is still pending. "
                "I need this fixed before my card statement closes on Friday.")
@@ -42,13 +43,13 @@ def _backend(args):
             print(f"python -m ouroloop.train {args.cmd}: {args.config} has no [backends.{args.backend}] "
                   f"(it has {', '.join(sorted(tables))})", file=sys.stderr)
             return None
-        return config.build_backend(tables[args.backend], config.build_serving(cfg))
+        return build_backend(tables[args.backend], build_serving(cfg))
     spec = {"type": args.backend}
     if args.backend == "jev" and args.model:
         spec["model"] = args.model
     if args.backend == "tde":
         spec["run"] = args.run
-    return config.build_backend(spec)
+    return build_backend(spec)
 
 
 def cmd_decide(args) -> int:
@@ -82,13 +83,13 @@ def cmd_host(args) -> int:
     keeps it from running their jobs (docs/TRAINING_HOSTS.md). Plugins and their options come from --trainer and the
     config's [trainer] and [trainers.<name>] tables."""
     from ..hosts import HostError, init, read, stale
-    from ..stores import kind
+    from .stores import kind
     cfg = config.load(args.config) if args.config else {}
-    options, table = config.plugin_options(cfg), cfg.get("trainer") or {}
+    options, table = plugin_options(cfg), cfg.get("trainer") or {}
     names = args.trainer or [n for n in [table.get("type")] if n and ":" not in n]
     trainers = {name: options.get(name, {}) for name in names}
     ssh_opts = args.ssh_opts or table.get("ssh_opts", "-o BatchMode=yes")
-    store = kind("hf" if args.hf else config.store_table(cfg).get("type", "dir"))
+    store = kind("hf" if args.hf else store_table(cfg).get("type", "dir"))
     try:
         if args.action == "init":
             m, log = init(args.target, trainers, ssh_opts, store)

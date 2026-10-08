@@ -1,5 +1,5 @@
-"""The signature model: label frequencies per question and error signature (replay.signature), or per any key of the
-view a scenario defines ("module:function", view -> key). Tiny, standard library only: a plugin that runs through
+"""The signature model: label frequencies per question and error signature (signature() below), or per any key of
+the view a scenario defines ("module:function", view -> key). Tiny, standard library only: a plugin that runs through
 the real job path in the offline tests, and, as SignatureTrainer, in this process for tests and demos.
 
 Options ([trainers.signature]): signature, the key function (it must import on the host too). A run is
@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections import defaultdict
 from pathlib import Path
 
-from ..evolve.train import TrainJob, TrainResult
+from ..train import TrainJob, TrainResult
 from ..types import Answer, Request
 
 NAME = "signature"
@@ -21,6 +22,16 @@ SUPPORTS_WEIGHTS = True
 RECIPE: dict = {}               # no hyperparameters: the framework's recipe keys only
 MODEL = "model.json"            # in the run directory
 
+_SIGNATURE = re.compile(r"\b[A-Z][A-Za-z]+(?:Error|Exception)\b|command not found|No such file or directory|"
+                        r"timed out|rate limit|Permission denied|refused|Unavailable|Could not get lock|is locked|"
+                        r"invalid argument|expected one argument|unrecognized arguments")
+
+
+def signature(view: str) -> str:
+    """A coarse error signature: the last exception name or common failure phrase in the view."""
+    hits = _SIGNATURE.findall(view)
+    return hits[-1] if hits else "other"
+
 
 class SignatureBackend:
     """Predicts the label distribution seen in training for the same question and error signature."""
@@ -28,7 +39,7 @@ class SignatureBackend:
 
     def __init__(self, path: str | None = None, table: dict | None = None, signature: str | None = None,
                  model: str | None = None):
-        """`signature`: "module:function", view -> key, in place of the error signature (replay.signature).
+        """`signature`: "module:function", view -> key, in place of the error signature (signature()).
         `model`: the id the answers report; by default signature:<the model file's directory>."""
         self.path = path
         self.table = table if table is not None else json.loads(Path(path).read_text(encoding="utf-8"))
@@ -47,8 +58,7 @@ class SignatureBackend:
 
 
 def key_function(ref: str | None):
-    from ..evolve.replay import signature
-    from ..runtime import import_object
+    from ...config import import_object
     return import_object(ref) if ref else signature
 
 

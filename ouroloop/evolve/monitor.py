@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 
 from ..ledger import Ledger, Row
-from ..policy import cp_lower, harmed
+from ..train.policy import cp_lower, harmed
 from ..release import revoke
 from .gate import load_template, template_path
 from .registry import Registry

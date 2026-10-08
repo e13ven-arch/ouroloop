@@ -3,13 +3,13 @@
     <python> -m ouroloop.worker spec.json <job id>         in the job's directory, <jobs_root>/<job id>/
 
 (the job id only marks the process, for Compute). The directory holds spec.json, train.jsonl and val.jsonl: the data
-contract every trainer reads (evolve/build.py). The worker is installed on the host (`python -m ouroloop.train host
+contract every trainer reads (train/dataset.py). The worker is installed on the host (`python -m ouroloop.train host
 init`), never copied: it refuses a job made by another ouroloop (spec.ouroloop.code), since the job and the models it
 yields are only what that code makes of them.
 
-It loads the trainer plugin spec.trainer names (ouroloop.trainers), records the host manifest and the plugin's
+It loads the trainer plugin spec.trainer names (ouroloop/train/trainers), records the host manifest and the plugin's
 version, has the plugin validate the job (spec.check_only stops there: a dry run), trains until the
-deadline less publish_s, publishes the run to the model store spec.store names (ouroloop.stores; without one, a "dir"
+deadline less publish_s, publishes the run to the model store spec.store names (ouroloop/train/stores; without one, a "dir"
 store in the jobs' directory), and writes result.json (by os.replace): {model: the ref the store gave, ouroloop,
 plugin, host}.
 
@@ -52,7 +52,7 @@ def git_state(path) -> dict | None:
 
 def store(spec: dict, job_dir: str):
     """The model store of the job: spec.store, or a "dir" store in the jobs' directory."""
-    from .stores import make
+    from .train.stores import make
     return make(spec.get("store") or {"type": "dir", "root": os.path.dirname(os.path.abspath(job_dir))})
 
 
@@ -137,7 +137,7 @@ def main(path: str) -> int:
     with open(path, encoding="utf-8") as f:
         spec = json.load(f)
     from .release import code_version
-    from .trainers import load, version
+    from .train.trainers import load, version
     mine, want = code_version(), (spec.get("ouroloop") or {}).get("code")
     fix = f"run `python -m ouroloop.train host init {spec.get('host') or 'local'}` from the control plane"
     if mine != want:

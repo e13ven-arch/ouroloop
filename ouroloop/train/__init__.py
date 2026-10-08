@@ -1,6 +1,18 @@
-"""The optional training and decision stack (docs/design/SLIMMING_INVENTORY.md §0.1 A-C), off the bench path: nothing
-an activity runs imports it (tests/test_hot_path_boundary.py). Its commands are `python -m ouroloop.train` (cli.py).
+"""The optional training and decision stack (docs/design/SLIMMING_INVENTORY.md §0.1 A-C; extra `ouroloop[train]`), off
+the bench path: nothing an activity runs imports it (tests/test_hot_path_boundary.py). Its commands are
+`python -m ouroloop.train` (cli.py).
 
-P1 step 4 moves the typed decision contracts, the labels and datasets, train_artifact, the backends, the stores, serving
-and the trainer plugins in here, and the job infrastructure into ouroloop/train/jobs/; the v2 training chain
-(docs/design/V2_TRAINING_PIPELINE.md) is written here too."""
+    types, decision, policy     the typed decision contracts (noul, choice, score), decision points, routing and the
+                                Clopper-Pearson threshold
+    runtime, stop, views        recording and proposing decisions (the general half of the v1 runtime), StopGuard, the
+                                business stop point
+    feedback, dataset, checks   labels from the ledger, the task profile's training files and DataManifest, data checks
+    train, calibrate            the trainer contract, recipes, train_artifact and its load probe; the temperature fit
+    backends, stores, serving   how a model is asked, kept and loaded by its ref
+    trainers                    the trainer plugins (tde, signature)
+    config                      a config's [backends], [store], [serving] and [trainer]
+    claude_code                 the Claude Code hooks adapter and its tool_gate point
+    cli                         decide, smoke --jev, host
+
+The v2 training chain (docs/design/V2_TRAINING_PIPELINE.md) is written here too.
+"""

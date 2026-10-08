@@ -3,15 +3,15 @@ import random
 
 from decision_fixtures import research_round, seed_ledger
 from ouroloop import config
-from ouroloop.backends import KeywordBackend
-from ouroloop.decision import Noul
+from ouroloop.train.backends import KeywordBackend
+from ouroloop.train.decision import Noul
 from ouroloop.evolve import experience
 from ouroloop.evolve.gate import decide
 from ouroloop.points import retry_point
-from ouroloop.policy import Policy
+from ouroloop.train.policy import Policy
 from ouroloop.research import Candidate, run_round
 from ouroloop.runtime import Runtime
-from ouroloop.types import Answer
+from ouroloop.train.types import Answer
 
 
 # ---------------------------------------------------------------- gate

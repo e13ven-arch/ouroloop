@@ -1,7 +1,7 @@
 """The decision and training stack stays off the bench path (docs/PLAN.md P1 step 2).
 
 Under a v3 or v5 K the runner shell asks no decision point, so nothing an activity runs there needs the decision
-runtime, the built-in points, the feedback builders or the training code. Each check runs in a fresh interpreter,
+runtime, the built-in points, the feedback builders or the training code (ouroloop/train/, P1 step 4). Each check runs in a fresh interpreter,
 because this process has imported everything the other tests use.
 """
 from __future__ import annotations
@@ -22,16 +22,16 @@ from ouroloop.ledger import _read_jsonl
 TESTS = Path(__file__).resolve().parent
 REPO = TESTS.parent
 
-# The plan's three: the training subpackage, the feedback builders and the built-in decision points.
-REQUIRED = ("ouroloop.train", "ouroloop.evolve.feedback", "ouroloop.points")
-# The rest of the decision stack, off the path as well: what moves into ouroloop/train/ (P1 step 4) or goes with the
-# v1 loop and the champion pointer (step 5). ouroloop.types since step 3, which moved the CLI's smoke/decide commands
-# (its last importer on the path) into the subpackage.
-DECISION_STACK = ("ouroloop.types", "ouroloop.runtime", "ouroloop.decision", "ouroloop.policy", "ouroloop.backends",
-                  "ouroloop.serving", "ouroloop.stores", "ouroloop.trainers", "ouroloop.stop", "ouroloop.evolve.gate",
-                  "ouroloop.evolve.registry", "ouroloop.evolve.replay", "ouroloop.evolve.monitor",
-                  "ouroloop.evolve.build", "ouroloop.evolve.train", "ouroloop.evolve.pipeline", "ouroloop.agent.loop",
-                  "ouroloop.research.loop", "ouroloop.research.agent", "ouroloop.research.basic")
+# The plan's three: the training subpackage (since step 4 also the typed decision contracts, the feedback builders,
+# the datasets, train_artifact, the backends, stores, serving, the trainer plugins and StopGuard) and the built-in
+# decision points.
+REQUIRED = ("ouroloop.train", "ouroloop.points")
+# What stays of the decision stack outside the subpackage until it goes with the v1 loop and the champion pointer
+# (step 5): off the path as well.
+DECISION_STACK = ("ouroloop.runtime", "ouroloop.evolve.gate", "ouroloop.evolve.registry", "ouroloop.evolve.replay",
+                  "ouroloop.evolve.monitor", "ouroloop.evolve.plan", "ouroloop.evolve.build", "ouroloop.evolve.calibrate",
+                  "ouroloop.evolve.train", "ouroloop.evolve.pipeline", "ouroloop.agent.loop", "ouroloop.research.loop",
+                  "ouroloop.research.agent", "ouroloop.research.basic")
 
 # Per preset: the smoke's checks (`--phase smoke --checks-only`), the smoke's one attempt, then the baseline phase
 # limited to one dev task (which also measures one train task) — open_activity, the startup checks, the budget book,
@@ -138,7 +138,7 @@ def test_a_runner_shell_activity_gets_the_thin_workspace_and_an_older_k_the_v1_r
 def test_a_runner_shell_measurement_hands_r_the_empty_feedback_set_build_feedback_would_have(fake_upstream,
                                                                                               tmp_path, monkeypatch):
     import test_attempt_behaviour as tab
-    from ouroloop.evolve import feedback as fb
+    from ouroloop.train import feedback as fb
     tab.run_baseline(fake_upstream, tmp_path, monkeypatch)
     cfg = tab.v3_config(fake_upstream, tmp_path / "ws", monkeypatch)
     work = bench.improvement(bench.open_activity(cfg, ".", out=lambda _line: None))
@@ -179,7 +179,7 @@ def test_decides_reads_the_core_and_the_kind_of_the_bound_decision_target(fake_u
 # ---------------------------------------------------------------------------- a rule stop policy builds no point
 def test_a_rule_stop_policy_builds_its_business_point_only_when_a_loop_asks(tmp_path):
     from ouroloop import policies as P
-    from ouroloop.points import business_stop_point
+    from ouroloop.train.views import business_stop_point
     objects = ct.Objects(tmp_path)
     rule = P.descriptor(objects, "worker.stop", "rule", {"builtin": "default.v1"})
     decider = P._bind_stop(rule, P.Services(objects))

@@ -9,7 +9,7 @@ from ouroloop import policies as P
 from ouroloop.evolve import contracts as ct
 from ouroloop.evolve.task_eval import make_agent_factory, run_attempt
 from ouroloop.research.inspection import inspect, public
-from ouroloop.types import Answer, Request
+from ouroloop.train.types import Answer, Request
 
 NOTIFY = "rsi.notify_after_update"
 

@@ -20,18 +20,19 @@ import httpx
 import pytest
 
 from jobs_fixtures import FAKE_HF, dataset
-from ouroloop import config
-from ouroloop.backends import TdeBackend
-from ouroloop.backends.http import HttpBackend
+from ouroloop.train import config as train_config
+from ouroloop.train.backends import TdeBackend
+from ouroloop.train.backends.http import HttpBackend
 from ouroloop.evolve import compute as compute_module
 from ouroloop.evolve.compute import SEP, Compute
-from ouroloop.evolve.pipeline import check_change, full_recipe, train_artifact
-from ouroloop.evolve.train import CHECKOUT, DEFAULT_RECIPE, JobTrainer, TrainError, TrainJob
+from ouroloop.train.train import check_change, full_recipe, train_artifact
+from ouroloop.evolve.train import CHECKOUT, JobTrainer
+from ouroloop.train.train import DEFAULT_RECIPE, TrainError, TrainJob
 from ouroloop.release import code_version
-from ouroloop.serving import Serving
-from ouroloop.stores import make as make_store
-from ouroloop.trainers.signature import SignatureTrainer
-from ouroloop.types import Question, Request
+from ouroloop.train.serving import Serving
+from ouroloop.train.stores import make as make_store
+from ouroloop.train.trainers.signature import SignatureTrainer
+from ouroloop.train.types import Question, Request
 from ouroloop.workspace import Workspace
 
 STUB_TRAIN = """
@@ -187,8 +188,8 @@ def test_a_trained_artifact_is_a_job_and_the_next_one_starts_from_its_model(tmp_
     base = str(repo / "runs" / "base")
     cfg = {"store": {"type": "dir", "root": str(jobs)},
            "trainer": {"type": "tde", "jobs_root": str(jobs), "poll_s": 0.05}, "trainers": {"tde": {"init_from": base}}}
-    rt = Workspace(tmp_path / "ws", serving=lambda: config.build_serving(cfg))
-    tde = config.build_trainer(cfg, rt.serving)
+    rt = Workspace(tmp_path / "ws", serving=lambda: train_config.build_serving(cfg))
+    tde = train_config.build_trainer(cfg, rt.serving)
     recipe = {"replay": str(repo / "data" / "replay.jsonl"), "replay_ratio": 0.5, "lr_head": 0.000123}
     first = train_artifact(rt, tde, dataset(rt.root), recipe, version="m_0001")
     job = first.job_ref

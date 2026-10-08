@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from ..decision import Decision
+from ..train.decision import Decision
 from ..ledger import new_id
 from .ask import fit_state, normalize
 
