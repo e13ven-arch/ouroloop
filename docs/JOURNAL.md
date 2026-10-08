@@ -8,6 +8,20 @@
 
 ---
 
+## 2026-10-08 support v0.5 臂 3b 之后的决定
+
+- 背景：3b 跑完后写了两份文档。一是开源 memory 与 agent 底座的计划 [design/OSS_COMPONENTS_PLAN.md](design/OSS_COMPONENTS_PLAN.md)（`fb27022`，草案，交用户审）；二是 V2 训练链按 Tinker/RunPod 核价的更正（`d2f60f5`）。用户审 OSS 计划时定了下面几项。
+- 用户的决定（2026-10-08）：
+  1. actor 的传输：“这个还是通过cli的方式来跑”。actor 继续经 claude_code CLI 走订阅，不开要 API key 的臂。OSS 计划的“W0 走 API（原生 tool use）”臂删去（S3 ①、§4、§5、§9 第 1 项），预算减去它的约 $50 真实 + $33 名义。原生 tool use 只能经 Claude Code 原生臂测：CLI 加一个 MCP server，把我们的三个基础工具暴露给 Claude Code、转发到我们的 broker。这一臂暂缓，support 两份 final 之后再评估，因为它让循环、系统提示和传输同时变；Claude Code 要联网，进不了无网络的 worker；计量只能按会话算。
+  2. 密封 final 放哪些域：用户问“不能全跑吗？”，采纳。finance、support、sales、hr、marketing 都可以跑密封 final，一律按有条件复用规则：构建学生的任何产物都不读之前 final 的逐题记录（由结果库按 split 过滤、代码强制），每份报告披露这份 test 被读过几次。只有 operations 整域从未读过，留作 v2 的 LODO。取代前一条记录第 2 项里的“sales、hr 的 test 留给 v2（v1 活动在这两域不跑 final）”和“marketing 已用尽”。V2 C5 的 test 池随之是五个域的 test（123 题），加上 operations 的 LODO。费用：一个单领域活动名义约为基线 $56 + 3 轮约 $120 + final 约 $72（订阅），按域分批开。
+  3. effort：“不要，就保持统一的档位”。不做 Max 读数，不做自适应 effort，K 不让 W 买 effort；所有臂保持同一个 effort（现行 medium）。OSS 计划删去 S3′ 和 effort 杠杆，S4 之前的合计降到约 $50～245 名义、没有真实花费。V2 §7 第 9 项（学生的思考档位）是另一个问题，仍待定，但同一比较里各臂用同一档位的偏好照样适用。
+  4. Stirrup（OSS 计划 §9 第 3 项）：仍待用户决定（已向用户解释影响与实现）。
+- 同步的文档：OSS_COMPONENTS_PLAN（§4、§5、§9、§10、状态行）；V2_TRAINING_PIPELINE（§4.1 C5、§6 的 test 风险行、§7 第 2 项的决定列、第 9 项的注与同步清单、页首）；DESIGN §8 与 C4 段；ROADMAP（v0.4 读法、瘦身 (a)、轨道 B 的 C5、v2 决定第 2 项）；V0_4_PLAN 读法；V0_5_METHOD_LIBRARY §7.4；SLIMMING_INVENTORY (a)。被取代的原文保留并加注。
+- 证据：没有运行证据。没改代码、没付费、没读 `.env` 与任何 test 内容。
+- commit：`fb27022`（OSS 计划）、`d2f60f5`（V2 核价更正）；本条见本条之后的提交。
+
+---
+
 ## 2026-10-08 support v0.5 臂 3b：经验库流与快照轮
 
 - 做了什么：`ouroloop bench --config examples/automationbench/claude-v5-support.toml --phase library`（2026-10-07 开始，2026-10-08 跑完），之后 `--phase report`（不付费）。

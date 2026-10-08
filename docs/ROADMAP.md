@@ -442,7 +442,7 @@ v0.3 的五领域活动三轮都没有安装（第 5 步；[诊断](history/DIAG
 4. **读法（预注册）。**
    - 某领域有确认的安装 → 该领域封存 final，结果照报。
    - 3 轮没有安装 → 该领域停止，如实报告“R 以 k = 3、接口优先的方法在 3 轮内没有在该领域得到确认的安装”；不续跑同一条管线。
-   - 某领域的 final 显著（95% 区间下界 > 0）→ 加 sales 与 hr，各自一个单领域活动，同样的配置形状。（2026-10-08，V2 §7 第 2 项：sales、hr 的 test 留给 v2；在这两域开 v1 活动时不跑 final，只报 dev 读数，或不开。）
+   - 某领域的 final 显著（95% 区间下界 > 0）→ 加 sales 与 hr，各自一个单领域活动，同样的配置形状。（2026-10-08，V2 §7 第 2 项：sales、hr 的 test 留给 v2；在这两域开 v1 活动时不跑 final，只报 dev 读数，或不开。）（同日用户改为全部域可跑 final：sales、hr 的活动照常可以封存 final，按有条件复用规则披露读取次数；只有 operations 整域留出。一个单领域活动名义约为基线 $56 + 3 轮约 $120 + final 约 $72（订阅），按域分批开。）
    - 不做：不重判 v0.3 的三张收据；不在边缘读数后追加读数或重复；不给 R dev 题号或 dev 轨迹；不读 Marketing 已 spent 的 test。
 5. **v0.4.0。** 有结果（含负结果）后写 RESULTS 与 README，合并进 main。
 
@@ -476,7 +476,7 @@ v0.3 的五领域活动三轮都没有安装（第 5 步；[诊断](history/DIAG
 清单、逐模块判定与分批在 [design/SLIMMING_INVENTORY.md](design/SLIMMING_INVENTORY.md)；本节是顺序与前提。原则：提升效果、提升结果可信度、保护资金，三者占一样就留；已存记录引用的字段、字面量与 preset 数值一律不删，只让逻辑失效；先迁测试，后删代码；旧版本靠 tag。不改任何已报告的数字；验收全部离线（金标测试、记录重渲染、`--checks-only`），不付费。框架现约 35.3k 行，瘦身后主包约 17.8k～22.1k 行（看第三批两库删或留）。
 
 **用户的决定（2026-10-07）。**
-- (a) C4：保留 R 递归，换实现。删活动内研究位的编排（v3/v4/v5 的配置都写 `research_slots = 0`，单领域 dev 25 题开不了位）；判定代码抽成 `research/recursion.py`；C4 改为跨活动比较：R1 臂 = R0 加前一个活动产出、经台账核对的 playbook，同一划分、根与日程，W0、W\*\_R0、W\*\_R1 联合 final；新接线随下一个新领域活动做。v0.4 对 v0.5 不是 R0 对 R1，H1 仍叫“框架 v0.5 对 v0.4”。（2026-10-08：按 V2 §7 第 2 项，本基准已无可供 v1 联合 final 的新 test：marketing 已用尽，sales、hr 留给 v2，operations 留作 LODO。跨活动 C4 要么在 finance/support 按有条件复用规则跑并披露读取次数（会占用 C5 的 test 池），要么记 not_run；由用户定。）
+- (a) C4：保留 R 递归，换实现。删活动内研究位的编排（v3/v4/v5 的配置都写 `research_slots = 0`，单领域 dev 25 题开不了位）；判定代码抽成 `research/recursion.py`；C4 改为跨活动比较：R1 臂 = R0 加前一个活动产出、经台账核对的 playbook，同一划分、根与日程，W0、W\*\_R0、W\*\_R1 联合 final；新接线随下一个新领域活动做。v0.4 对 v0.5 不是 R0 对 R1，H1 仍叫“框架 v0.5 对 v0.4”。（2026-10-08：按 V2 §7 第 2 项，本基准已无可供 v1 联合 final 的新 test：marketing 已用尽，sales、hr 留给 v2，operations 留作 LODO。跨活动 C4 要么在 finance/support 按有条件复用规则跑并披露读取次数（会占用 C5 的 test 池），要么记 not_run；由用户定。）（同日用户改为全部域可跑 final：跨活动 C4 的联合 final 可以放在五个域里任何一个，按有条件复用规则披露读取次数；operations 仍整域留出。）
 - (b) Jev、TDE 与本地决策 trainer 不撤回：可复用部分（约 4.4k 行）收进可选子包、移出每次尝试的热路径，约 0.7k 行原位保留、热路径不执行；撤回的只有“v1 Agent 循环的决策点与冠军发布继续可用”。从 runner shell 到决策点与训练数据的桥登记为 v2 前置（清单 §0.2）。
 - 冠军指针一族（gate、registry、replay、monitor、plan 等，已被 Releases 与 `task_gate` 取代）按过时删，tag 上仍可读；monitor、replay 的概念在 v2 按 Releases 重写。
 - 训练与蒸馏是 ouroloop 框架的一部分（不放在 jev 仓库），GPU 作业设施保留。
@@ -498,13 +498,13 @@ v0.3 的五领域活动三轮都没有安装（第 5 步；[诊断](history/DIAG
 - **v2.1 接真模型，跑首个试验 X1（Claude 名义 ≤ $35，真实 ≤ $80）。** 决策链：Claude 作 judge 给写打标 → `tde` → 写门先 shadow 后 act → 导出。actor 链：`tinker_lora` 训出 S_F → 接回 → 在 W0 下经 runner shell 跑。X1：在 train 的 val+cal 族上比 S0（Qwen3.5-9B + W0）与 S_F（用 W0 包的老师成功轨迹做 LoRA SFT），同时离线读出学生上写门的上限；只读方向、不作主张，读法（K1、K1b、写门上限）在第一次学生运行前提交。
 - **v2.2 审阅采集链路（Claude ≤ $20）。** 网关的 role → provider 映射、只作用于 act 调用的审阅钩子、ReviewRecord；在 finance train 上审阅 10–20 次学生尝试，建 `reviewed_student` 集并训一次。smoke 收据齐全、X1 读完，轨道 A 结束（合计名义约 $30–55，真实 ≤ $90）。
 
-**轨道 B：效果主张（v2.3–v2.4）。** 在自己冻结的计划下跑（冻结 FamilySplit、学生与老师身份、K 的 ref、配方、采样温度、预算根、预注册读法与 ≥ 3 次 S0 对照读数）。主张 C5（S_d+W0 对 S+W0，test 100 题 × 3）、C5-LODO（operations 81 题 × 3）与 C3（写门在学生上的增量，final 里的测量臂），三者 Holm 校正；C5′（训练对直接给学生 W\*）为次要主张；C3b（小 decider 对 judge）与 C6（成本）只报告。止损 K2～K7 见 V2 §6。名义约 $0.8–1.3k，真实 ≤ $0.33k。X1 读完后由用户决定开不开；发布要的“留出集上的可测增益”只有轨道 B 能给。
+**轨道 B：效果主张（v2.3–v2.4）。** 在自己冻结的计划下跑（冻结 FamilySplit、学生与老师身份、K 的 ref、配方、采样温度、预算根、预注册读法与 ≥ 3 次 S0 对照读数）。主张 C5（S_d+W0 对 S+W0，五个域的 test 123 题 × 3，按域披露读取次数；2026-10-08 用户改为全部域可跑 final 前是 100 题）、C5-LODO（operations 81 题 × 3）与 C3（写门在学生上的增量，final 里的测量臂），三者 Holm 校正；C5′（训练对直接给学生 W\*）为次要主张；C3b（小 decider 对 judge）与 C6（成本）只报告。止损 K2～K7 见 V2 §6。名义约 $0.8–1.3k，真实 ≤ $0.33k。X1 读完后由用户决定开不开；发布要的“留出集上的可测增益”只有轨道 B 能给。
 
 **顺序。** support 两份 final 评完、H1 算完 → 瘦身第一批合入 → v2 代码合入（v2.0 可先在隔离 worktree 开发）→ v2.1 → v2.2 → 用户决定轨道 B。轨道 B 与 support 两臂共用一个账户，排在两份 final 之后。v2.5 以后：运行时 stop 与 `ctx.finish`、在学生上重新演化、R 提训练条目、部署日志回流、`contact_human`、DPO/KTO 与 RL。
 
 **用户的决定（2026-10-08，“按默认”，即 V2 §7 的全部默认）。**
 1. 轨道 B：X1 读完后再定开不开；老师写在计划文件里。
-2. test 复用：sales、hr 的 test 留给 v2（v1 活动在这两域不跑 final）；finance（读过 1 次）、support（final 后读过 2 次）有条件复用：构建学生的任何产物都没读过之前 final 的逐题记录（由结果库按 split 过滤、代码强制），报告披露读取次数；marketing（读过 3 次）已用尽；operations 整域留出（LODO）。
+2. test 复用：sales、hr 的 test 留给 v2（v1 活动在这两域不跑 final）；finance（读过 1 次）、support（final 后读过 2 次）有条件复用：构建学生的任何产物都没读过之前 final 的逐题记录（由结果库按 split 过滤、代码强制），报告披露读取次数；marketing（读过 3 次）已用尽；operations 整域留出（LODO）。**同日用户改为全部域可跑 final**（用户问“不能全跑吗？”，采纳）：finance、support、sales、hr、marketing 都可以跑密封 final，一律按上面的有条件复用规则，每份报告披露这份 test 被读过几次；只有 operations 整域从未读过，留作 v2 的 LODO。取代本项的“sales、hr 留给 v2”与“marketing 已用尽”。
 3. SFT 目标：`accepted`（PASS + REPLACE 的动作部分，同 HZ）；`pass_only` 只作只看 dev 的消融。
 4. 采集 harness：学生用 W0，老师带 K（各域 W\* 的 memory 与 skills 原文，固定模板渲染）审阅，同 HZ。
 5. 跨域：五个域（finance、hr、marketing、sales、support）合训一个学生，operations 留出报 LODO。

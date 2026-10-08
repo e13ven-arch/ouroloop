@@ -59,7 +59,7 @@
 - **(a) C4（R0/R1 递归）：保留能力，换实现。**
   - 删活动内研究位的编排（≈ 1,500 行）。它在单领域活动里结构上开不了：要求内外两个 gate 各至少 `min_tasks` 题（bench.py:4636-4650），单领域 dev 只有 25 题，一开位就是 `no_slot_pool`；v3/v4/v5 的配置全写 `research_slots = 0`。唯一一次运行（v0.2）两臂封存了同一个 W\*，外层比较没跑。
   - 抽出 `research/recursion.py`（≈ 200 行）：`judge_research`（campaign.py:382-485）、`carries/unused_changes`（:322-348）、`CampaignPair` 的不重叠检查、`discovery` 标签。不抽 `basic.propose_research`：它只服务 v0.1/v0.2 的 note-contract R（experiment.py:396-402），会话 R 没有这条路径。
-  - C4 改成跨活动比较。R0 臂就是该领域普通的 C1 活动；R1 臂 = R0 加上前一个活动产出、经台账核对的 playbook，所有字节由系统写出；同一划分、根和日程；W0、W\*\_R0、W\*\_R1 联合 final。边际成本是每领域多一个 R1 活动和一个 final 臂。新接线约 100–200 行（从冻结的 R1 起活动、跨工作区载入发布做联合 final、C4 脚本），随下一个新领域活动做，不算瘦身。（2026-10-08：按 V2_TRAINING_PIPELINE §7 第 2 项，本基准已无可供 v1 联合 final 的新 test：marketing 已用尽，sales、hr 留给 v2，operations 留作 LODO。跨活动 C4 要么在 finance/support 按有条件复用规则跑并披露读取次数（会占用 C5 的 test 池），要么记 not_run；由用户定。）
+  - C4 改成跨活动比较。R0 臂就是该领域普通的 C1 活动；R1 臂 = R0 加上前一个活动产出、经台账核对的 playbook，所有字节由系统写出；同一划分、根和日程；W0、W\*\_R0、W\*\_R1 联合 final。边际成本是每领域多一个 R1 活动和一个 final 臂。新接线约 100–200 行（从冻结的 R1 起活动、跨工作区载入发布做联合 final、C4 脚本），随下一个新领域活动做，不算瘦身。（2026-10-08：按 V2_TRAINING_PIPELINE §7 第 2 项，本基准已无可供 v1 联合 final 的新 test：marketing 已用尽，sales、hr 留给 v2，operations 留作 LODO。跨活动 C4 要么在 finance/support 按有条件复用规则跑并披露读取次数（会占用 C5 的 test 池），要么记 not_run；由用户定。）（同日用户改为全部域可跑 final：联合 final 可以放在五个域里任何一个，按有条件复用规则披露读取次数；operations 仍整域留出。）
   - v4 对 v5 不是 R0 对 R1：两臂的 K、R0 文本、固定阶段都不同，而且都是人写的。H1 仍叫"框架 v0.5 对 v0.4"。
   - 功效照实写：25 题 × 3 次的 final 在真实 +8 点时功效约 30%；预期的 R 层效应只有 +0.75～+1.5 题/25，预注册"不确定"为最可能的结论。
 - **(b) Jev、TDE 与本地决策 trainer：不撤回能力，改写承诺。**
