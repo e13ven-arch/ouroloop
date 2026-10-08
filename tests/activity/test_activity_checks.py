@@ -57,8 +57,8 @@ def test_prices_that_do_not_bound_a_call_are_refused(tmp_path, fake_upstream, pr
 
 
 def test_a_final_share_that_cannot_hold_the_in_flight_reservations_is_refused(tmp_path, fake_upstream):
-    a = activity(tmp_path, fake_upstream, budget={"final_usd": 0.1})          # one call's bound is $0.18
-    only(problems(a), "the final share $0.1 cannot hold 1 in-flight reservations of $0.1800")
+    a = activity(tmp_path, fake_upstream, budget={"final_usd": 0.1})          # one call's bound is $0.26
+    only(problems(a), "the final share $0.1 cannot hold 1 in-flight reservations of $0.2600")
 
 
 def test_a_model_that_is_not_the_claude_code_cli_is_refused(tmp_path, fake_upstream, monkeypatch):

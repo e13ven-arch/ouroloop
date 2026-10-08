@@ -144,7 +144,7 @@ worker → 宿主的回调：`model_call{id, role, effort, messages, tools}` →
 | `agent/runner.py`（v6 版，含 EgressMeter、last_usage） | → `runtime/runner.py`；去掉 `bound`/policies 的参数，改收 `package` 与 `core` |
 | `egress/__init__.py`、`egress/addon.py`（v6-gateway） | → `runtime/egress.py`、`runtime/egress_addon.py` 原样 |
 | `app.py` | → `runtime/app.py`；不再经 policies 绑定 |
-| `agent/deny.py` | → `runtime/broker.py` 的 `DenyTable` |
+| `agent/deny.py` | → `runtime/broker.py` 的模块级 `DENY` 表与 `denied()` |
 | `chat.py`（ToolSpec、ToolCall、ScriptedChat） | → `runtime/chat.py` |
 | `providers/` | 不动（`claude_code`、`openai_compat`、`anthropic`）；`build_provider` 从 `config.py` 搬进 `providers/__init__.py` |
 | `docker/worker-v6.Dockerfile`、`egress.Dockerfile`（v6） | → `docker/worker.Dockerfile`（标签 `ouroloop-worker:py3.12`，带 Stirrup 的依赖闭包，`docker/worker.requirements.txt` 按哈希）、`docker/egress.Dockerfile`（`ouroloop-egress:v6.1`） |

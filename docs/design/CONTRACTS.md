@@ -143,7 +143,7 @@ class InstallReceipt(Record):        # kind "install"：装入或回滚的事实
 | 包 | `package:<digest>`，覆盖 manifest 与全部文件字节（含 vendor、memory 快照） |
 | 候选 | 同包的 ref；候选目录导出成包后才有 ref |
 | 声明 | `declaration:<digest>`，随候选存档 |
-| 尝试 | `attempt_id = f"{run}:{task_id}:{repeat}:{arm}[:r{retry}]"`（现有 `benchmark.attempt_id`） |
+| 尝试 | `attempt_id = f"{run}/{task_id}/r{repeat}/{arm}#{retry}"`（`evaluate.results.attempt_id`）；`arm` 只用字母、数字与 `_ . -`（final 的 W\* 写作 `W_star`） |
 | session | 等于 `attempt_id`，用于 transcript 文件名（`/` 写成 `__`） |
 | 轮 | `round_id = f"{scope_id}/r{index}"` |
 | 运行 | `RunManifest`（现有）：candidate、模型、limits、split 哈希、core_ref 的摘要 |

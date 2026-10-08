@@ -33,7 +33,8 @@ class StopGuard:
                  max_pushbacks: int = 2, max_turns: int | None = None, point: str = "stop", policy=None):
         """checker() -> (passed, what to tell the agent when it failed).
 
-        `policy`: a bound worker.stop policy of the task/research profile (policies.StopDecider). With one, the
+        `policy`: a bound worker.stop policy of the task/research profile (the duck type runtime.Runtime.propose takes:
+        `enabled(phase)`, `point`, `ref`, `kind`, `propose(ctx) -> (label, reason)`). With one, the
         decision goes through runtime.propose, and the guard's own limits stay
         exactly where they were: the maximum pushbacks and the turn cap are hard edges, so a policy that keeps
         saying "no" is overruled at the cap and the row records that it was overruled, not that it agreed

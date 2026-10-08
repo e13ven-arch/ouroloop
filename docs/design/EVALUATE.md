@@ -108,12 +108,12 @@ class Releases:
 
 - 计划冻结在候选第一次尝试之前（`TaskEvalPlan` 入库，ref 进 K 的 `gate`）。
 - 任务为单位：重复先平均；区间按家族重抽样。
-- 规则：点估计 ≥ `min_gain`、退步率 ≤ `max_regression_rate`、成本项 `ΔC ≤ β0 + β1·ΔS`（有 pricing 时）、任务数 ≥ `min_tasks`；首读通过后确认复测（`confirmations` 次），合并读数再判。对照读数按 `control_pooling`（fresh 或 pooled）与 `control_readings`。
+- 规则：点估计 ≥ `min_gain`、退步率 ≤ `max_regression_rate`、成本项 `ΔC ≤ β0 + β1·ΔS`（有 pricing 时）、有效家族数 ≥ `min_groups`；任务数 ≥ `min_tasks` 在冻结 gate 模板时检查（`activity` 的 freeze 拒绝，`judge` 不再查）；首读通过后确认复测（`confirmations` 次），合并读数再判。对照读数按 `control_pooling`（fresh 或 pooled）与 `control_readings`。
 - 收据 `GateReceipt{plan_ref, subject_ref, control_ref, parent_release, results_ref, verdict, reasons, metrics, uncertainty, costs, kind}`；各臂的全部尝试（含失败）在 results 对象里；逐题差值由 `receipt_differences` 从收据读出（`fixed / regressed / still_failing` 的 dev 题号只在收据里，不给 R）。
 
 ## 6 final（V5）
 
-- `FinalPlan` 封存：任务 = 全部 test、`repeats`、臂（W0 与 W\*，可选 R1）、主张；`seal` 写对象与事件，哈希由用户提交到 git（规则 6）。活动只在有装入（W\* ≠ W0）之后封存（ACTIVITY §4）。
+- `FinalPlan` 封存：任务 = 全部 test、`repeats`、臂（W0 与 W\*，可选 R1）、主张；臂名进每个 attempt id（即 session id），所以计划里 W\* 写作 `W_star`，不能进 attempt id 的臂名在构造时就拒绝；`seal` 写对象与事件，哈希由用户提交到 git（规则 6）。活动只在有装入（W\* ≠ W0）之后封存（ACTIVITY §4）。
 - `run_final` 先打印预计花费与份额，份额不够就拒绝；每臂每题每次都是独立尝试；续跑只跑缺的；完成后 `report` 读汇总，披露该域 test 的读取次数。
 
 ## 7 发布与装入
@@ -125,7 +125,7 @@ class Releases:
 ## 8 model 组件的绑定点
 
 - 训练链（`train/`，V2）产出 `artifact_ref`（对象库里的 `train_artifact` 记录：产物位置、父模型、配方、数据 manifest、链路收据）。
-- 候选把它写进 manifest 的 `model.artifact_ref`；`evaluate.model.check_binding(manifest, core, objects)`：`base` 等于 K 的 identity、产物的父模型等于 base、产物的数据 manifest 只含 train 血缘（`train.dataset.check_lineage`）。
+- 候选把它写进 manifest 的 `model.artifact_ref`；`evaluate.model.check_binding(manifest, core, objects)`：`base` 等于 K 的 identity、产物的父模型等于 base、产物的数据 manifest 只含 train 血缘。阶段 1 的实现读产物记录自己的 `splits` 字段，还没有调用方；训练链接上时（阶段 5）改由 `train.dataset.check_lineage` 判血缘，并在候选进阶梯前调用。
 - 这样的候选从 V3 起走阶梯；评测时 actor provider 由 `serving`（V2 §3.5，RunPod 上的 vLLM 经 `openai_compat`）按 `artifact_ref` 构建，仍经网关计量。
 - 训练与 harness 改动不在同一轮同时进 gate（DESIGN §7）。
 
@@ -134,6 +134,8 @@ class Releases:
 - 计划先冻结，读数后判；test 在封存前不读；dev 只给汇总；grading 只对 train。
 - 每次付费调用先预留后结算；一个活动一个预算根；final 的份额事先留出；续跑不重复付费。
 - `test_paid_run_safety` 的全部用例迁到 `tests/evaluate/`，名单（现有）：预留与结算一一对应、一个根、研究步计量、无法核价的候选不开始、中途耗尽作 budget_exhausted、尝试带成本、用量词表归一化、只在有界的维度上判超、崩溃后续跑只跑缺的、final 用预留的份额、完成的 final 再跑不付费、refill 记前因、中断的改进续跑、无 ref 的实验关闭不猜、freeze 的四条、价目含缓存、尝试保留缓存计数、gate 少于 min_tasks 拒绝、并发是机器设置、并发上限共享、两次确认与 economy 拒绝、速率限制记录、速率计数跨账户错误、研究会话每回合计量、final 份额装不下拒绝、final 先打印预计花费、final 估算读 W\* 的 gate 读数、份额装不下不开始、不封存、验证界核价、checks-only 在付费阶段拒绝。
+- 阶段 1 已在 `tests/evaluate/test_paid_run_safety.py`（加上 `test_evaluate_budget.py`、`test_evaluate_gate.py`）：除下面几条外的全部。等 improver（阶段 3）的：研究步计量、无法核价的候选不开始、中断的改进续跑、无 ref 的实验关闭不猜、研究会话每回合计量、验证界核价，记在 IMPROVER §13。速率限制目前只在 meter 上计数并测试（`MeteredProvider.rate_limited`），还没有写进事件或报告。
+- 价目的两条保守规则：一次调用的上界按输入侧最贵的单价算（缓存写入可能比普通输入贵）；某类 token 没有声明价格的调用，账本按它的上界扣，不记 $0（该尝试自己的 `cost_usd` 仍是 None，即未知）。
 - `test_record_compat`：HEAD 读得了四个旧工作区的 train/dev 记录（Results、RunManifest、transcript、release 与对象闭包）。
 
 ## 10 与现有代码的对应
@@ -144,7 +146,7 @@ class Releases:
 | `evolve/task_eval.py` | → `attempt.py`；去掉 `bound`、policies |
 | `evolve/task_gate.py` | → `gate.py`；删 economy / protected / `_ratio`；`screen()` 由 improver 的 V3 代替 |
 | `evolve/execution.py` | 预算、Execution、Pricing、MeteredProvider → `budget.py`；`execute_experiment` 的状态机由 improver 的 round 用 Execution 自己驱动；`Schedule` → activity |
-| `ledger.py` | `Ledger`（决策行）搬进 `train/`；`SessionStore`、`_append_jsonl`、`redact`、`now`、`new_id` → `runtime/records.py` |
+| `ledger.py` | `Ledger`（决策行）与 `SessionStore` 搬进 `train/ledger.py`；`_append_jsonl`、`redact`、`now`、`new_id` → `contracts.py` |
 | `release.py` | → `release.py`；记录改三元组；`export_deployment` → `runtime.app.export` |
 | `workspace.py` | 删（session 行由 runner 写 `task`/`end`，`.release.json` 不再需要） |
 

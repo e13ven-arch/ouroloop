@@ -85,9 +85,14 @@ def config(root: Path, upstream: str, **sections) -> dict:
 
 def write_split(root: Path, s: ab.Suite) -> SplitManifest:
     """The rsi domain's declared split, frozen into the workspace before the activity opens (freeze_split keeps what is
-    on disk), so tests read the train/dev/test sets of SPLITS rather than a hash rule's."""
+    on disk), so tests read the train/dev/test sets of SPLITS rather than a hash rule's. A split already frozen there is
+    kept: the fake upstream's versions name pydantic only once something has imported it, so freezing it again after a
+    phase would read as a changed split."""
+    path = Results(Path(root) / "ws", DOMAIN).manifest_path()
+    if path.exists():
+        return SplitManifest.load(path)
     manifest = splits(s)
-    manifest.freeze(Results(Path(root) / "ws", DOMAIN).manifest_path())
+    manifest.freeze(path)
     return manifest
 
 

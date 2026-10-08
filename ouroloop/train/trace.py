@@ -37,7 +37,7 @@ def stop_context(task_text: str, final_message: str, *, phase: str, step: int, t
 
 def record_trace(objects, bound, guard, call, ctx: dict, phase: str, decision: dict, *,
                  input_schema: str = STOP_VIEW) -> tuple[str, str]:
-    """One observation and one trace for a stop decision of a bound release (`bound`, policies.BoundRuntime), and the
+    """One observation and one trace for a stop decision of a bound release (`bound`: the v1 policies.BoundRuntime, on tag archive-2026-10-09), and the
     release's activity counters. -> (observation ref, trace ref).
 
     The proposed and the executed action come from two different places — the policy's answer and what the guard

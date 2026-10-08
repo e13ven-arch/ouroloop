@@ -1,8 +1,9 @@
 """The decision runtime (docs/modules/01_POLICY_RUNTIME.md §4): decision points, their default answerers and the
 ledger. A decision is recorded without asking a model (`record`, shadow collection), or asked of a bound policy
-(`propose`, policies.StopDecider), and its outcome recorded (`outcome`). Nothing here reads a champion pointer or a
-calibration: those, and the v1 runtime's `ask` through them, went with the champion pointer in P1 step 5 (tag
-archive-2026-10-08); what may act is a bound policy's, under its release's authorisation."""
+(`propose`: any object with `enabled(phase)`, `point`, `ref`, `kind` and `propose(ctx) -> (label, reason)`; the v1
+policies.StopDecider is on tag archive-2026-10-09), and its outcome recorded (`outcome`). Nothing here reads a
+champion pointer or a calibration: those, and the v1 runtime's `ask` through them, went with the champion pointer in
+P1 step 5 (tag archive-2026-10-08); what may act is a bound policy's, under its release's authorisation."""
 from __future__ import annotations
 
 import random
@@ -94,7 +95,7 @@ class Runtime:
                 step: int | None = None, phase: str | None = None,
                 veto: str | Callable[[str | None], str | None] | None = None,
                 extra: dict | None = None, on_record: Callable[[dict], None] | None = None) -> Decision:
-        """Ask a bound policy of the task/research profile (policies.StopDecider) and record what happened.
+        """Ask a bound policy of the task/research profile (the duck type in the module docstring) and record what happened.
 
         This path never reads the champion pointer or the legacy calibration: what may act in that profile is
         decided by the release's authorisation (docs/modules/01_POLICY_RUNTIME.md §4), and reusing the old

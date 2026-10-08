@@ -297,6 +297,11 @@ def test_usage_vocabularies_are_normalized_and_an_unpriced_cache_is_unknown():
     assert measured["input_tokens"] == 120 and measured["output_tokens"] == 5      # the cache counts as input
     assert measured["usd"] == pytest.approx((10 * 0.003 + 5 * 0.015 + 90 * 0.0003 + 20 * 0.00375) / 1000)
     assert "usd" not in Pricing().measure(anthropic)
+    # a bounded pricing charges a call it cannot price its bound, never $0; the bound takes the dearest input rate
+    bounded = Pricing(0.003, 0.015, max_input_tokens=1000, max_output_tokens=100, cache_write_per_1k=0.00375)
+    assert bounded.bound()["usd"] == pytest.approx(0.00375 + 0.0015)
+    assert bounded.cost(normalize_usage(anthropic)) is None
+    assert bounded.measure(anthropic)["usd"] == pytest.approx(bounded.bound()["usd"])
 
 
 # ---------------------------------------------------------------------------- the metered provider

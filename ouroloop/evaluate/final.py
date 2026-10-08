@@ -1,6 +1,6 @@
 """The sealed final (docs/design/EVALUATE.md §6; DESIGN §6.6 V5): the only source of an outside number.
 
-A FinalPlan names, before any test task is read, every arm (W0, W*, optionally R1's W*), the test tasks, the repeats
+A FinalPlan names, before any test task is read, every arm (W0, W* as "W_star", optionally R1's W*), the test tasks, the repeats
 and the claims. `seal` writes it and marks it sealed; its hash is committed to git by the user before the first test
 attempt (PLAN rule 6). `run_final` then runs every arm on every task `repeats` times, each attempt independent; it
 prints the expected spend first and refuses when the final's share cannot hold it; run again after an interruption it
@@ -10,6 +10,7 @@ the report, because dropping an arm now would make the remaining numbers a selec
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -19,6 +20,7 @@ from .gate import refill_attempts
 from .results import TaskResult, summarise
 
 CLAIMS = ("C1", "C2", "C3", "C4")
+ARM_NAME = re.compile(r"\w[\w.-]{0,63}")   # an arm's name is part of every attempt id, which is a session id
 STUCK_BOUNDS = 2           # settlements that never come back hold their bound; a share keeps room for this many
 
 
@@ -48,6 +50,9 @@ class FinalPlan(Record):
             raise ContractError("repeats is at least 1")
         if not self.arms:
             raise ContractError("a final plan names its arms")
+        bad = sorted(a for a in self.arms if not ARM_NAME.fullmatch(a))
+        if bad:
+            raise ContractError(f"arm names {bad} cannot be part of an attempt id: letters, digits, _ . -")
         check_refs(self.arms.values(), kind="release", what="arm release")
         if "C1" in self.claims and len(self.arms) < 2:
             raise ContractError("C1 compares W* with W0: the plan names both arms")

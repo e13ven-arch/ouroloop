@@ -90,6 +90,7 @@ class Limits:                         # K 的 harness.limits；R 不能放宽
 规则：
 - `api_version` 只有 v3；旧的 v1/v2 包不在 HEAD 上跑。
 - `model.base` 必须等于 K 的 `model.identity`；`effort` ≤ K 的 `max_effort`；`artifact_ref` 只能指向训练链产物（EVALUATE §8），为 null 即 pin 的基座。
+- 阶段 1 的 stirrup 种子不把 manifest 的 `model.effort` 传给 `ctx.model`（`CtxClient` 不带 effort），调用按 provider 固定的 K 的 effort（medium）走；候选改 `model.effort` 目前不生效。种子还按 `ctx.limits["act_calls"]` 给自己的回合封顶，所以用完回合的尝试记作 `finished`（`stirrup_end` 标记里 `finished: false`），而不是 `budget`/`act_calls`。
 - `config` 的每个键在 `Limits.config_ranges` 内；种子构建时 `config` 用默认值补全。
 - `agent` 必填（每个 v3 包自带循环）；`tools[]`、`hooks[]`、`skills[]` 可带 `enabled`；名字在三者间唯一，包工具不能用宿主工具名（`read_skill`、`recall`）。
 - `prompt` 的每个键指向 `prompt/<key>.md` 且文件在包里；没被点名的 prompt、skill、test 文件拒绝；`vendor/<name>/` 与 `vendor` 条目一一对应。

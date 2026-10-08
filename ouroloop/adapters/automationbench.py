@@ -212,7 +212,7 @@ def _runner_fns() -> tuple[Callable, Callable, str]:
 def hide_live_keys() -> Iterator[None]:
     """Hide the keys that would turn a simulated action into a live API call, for a whole run of episodes.
 
-    Entered once, on the main thread, around concurrent attempts (task_eval.run_tasks): a per-call pop and restore
+    Entered once, on the main thread, around concurrent attempts (evaluate.attempt.run_tasks): a per-call pop and restore
     from several threads would race with every other reader of os.environ (the claude CLI's child environment,
     the worker's), and a KeyError there would turn a paid call into an infrastructure failure. With the keys gone
     for the whole pool, the per-call guard below has nothing to pop.

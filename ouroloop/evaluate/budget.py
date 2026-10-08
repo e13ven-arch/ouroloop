@@ -546,17 +546,23 @@ class Pricing:
         if self.max_output_tokens is not None:
             out["output_tokens"] = self.max_output_tokens
         if self.bounded:
-            out["usd"] = (self.max_input_tokens / 1000 * self.input_per_1k
+            # Any input token may arrive as a cache write, which can cost more than plain input: the dearest rate.
+            per_input = max(p for p in (self.input_per_1k, self.cache_read_per_1k, self.cache_write_per_1k)
+                            if p is not None)
+            out["usd"] = (self.max_input_tokens / 1000 * per_input
                           + self.max_output_tokens / 1000 * self.output_per_1k) * (1 + len(self.declared_fallbacks))
         return out
 
     def measure(self, usage: dict) -> dict:
-        """The measured cost of one call, in budget dimensions. `usd` is present only when every token class the
-        call used has a declared price."""
+        """The measured cost of one call, in budget dimensions. A call some of whose tokens have no declared price
+        is charged its bound when there is one, never $0 (the attempt's own cost stays unknown: `cost`); with no
+        bound there is no dollar limit to charge it against."""
         u = normalize_usage(usage)
         out = {"model_calls": 1, "input_tokens": u["input_tokens"] + u["cache_read_tokens"] + u["cache_write_tokens"],
                "output_tokens": u["output_tokens"]}
         usd = self.cost(u)
+        if usd is None and self.bounded:
+            usd = self.bound()["usd"]
         if usd is not None:
             out["usd"] = usd
         return out

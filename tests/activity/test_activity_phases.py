@@ -276,10 +276,10 @@ def test_a_sealed_final_runs_w0_and_w_star_on_test_and_the_report_counts_its_rea
     lines = []
     b = reopen(a, final={})
     refs = phases.freeze(b, out=lines.append)
-    assert any(line.startswith("estimate   W*: 6 attempts to run") for line in lines)
+    assert any(line.startswith("estimate   W_star: 6 attempts to run") for line in lines)
     assert f'final_plan_ref = "{refs["final_plan_ref"]}"' in lines
     plan = FinalPlan.from_json(b.objects.get(refs["final_plan_ref"]))
-    assert plan.arms == {"W0": b.seed_release().ref(), "W*": w_star.ref()} and plan.claims == ("C1",)
+    assert plan.arms == {"W0": b.seed_release().ref(), "W_star": w_star.ref()} and plan.claims == ("C1",)
     assert plan.tasks == tuple(b.splits.ids("test")) and sorted(plan.tasks) == sorted(rsi.FINAL)
     assert (plan.repeats, plan.core_ref, plan.split_hash) == (3, b.core_ref, b.splits.hash())
     assert list(b.events.read("test_read")) == [] and rows(b, "test") == []      # sealing reads no test task
@@ -289,11 +289,11 @@ def test_a_sealed_final_runs_w0_and_w_star_on_test_and_the_report_counts_its_rea
     named = {k: v for k, v in refs.items() if k != "gate_template"}
     c = reopen(a, provider=provider, final={}, rsi=named)
     out = phases.evaluate(c, out=quiet)
-    assert set(out["arms"]) == {"W0", "W*"} and out["estimate"]["expected"] is not None
+    assert set(out["arms"]) == {"W0", "W_star"} and out["estimate"]["expected"] is not None
     test = rows(c, "test")
     assert [r.attempt_id for r in test if r.validity != "valid"] == []      # every arm ran, W* too
     assert len(test) == 2 * len(rsi.FINAL) * 3
-    assert {r.system_release_ref for r in test} == {plan.arms["W0"], plan.arms["W*"]}
+    assert {r.system_release_ref for r in test} == {plan.arms["W0"], plan.arms["W_star"]}
     assert all(str(r.pair_key).startswith(f"{refs['final_plan_ref']}/") for r in test)
     final_spend = c.account("final").remaining(allocation="final")
     assert final_spend["used"]["usd"] > 0
@@ -301,7 +301,7 @@ def test_a_sealed_final_runs_w0_and_w_star_on_test_and_the_report_counts_its_rea
     assert report["test_reads"] == 1
     assert report["final"] == [{"experiment": "rsi-test-final", "plan": short(refs["final_plan_ref"]),
                                 "status": "completed", "claims": ["C1"], "arms": report["final"][0]["arms"]}]
-    assert {arm: s["attempts"] for arm, s in report["final"][0]["arms"].items()} == {"W0": 6, "W*": 6}
+    assert {arm: s["attempts"] for arm, s in report["final"][0]["arms"].items()} == {"W0": 6, "W_star": 6}
     assert "final" in report["spend"]["phases"]
 
     calls = provider.calls

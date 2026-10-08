@@ -144,7 +144,7 @@ def import_entries(snapshot_text, *, source_release_ref, source_line, target_lin
 |---|---|
 | `v6-memory` 的 `memory/*` | 搬入，`vel.py` 改名 `rules.py`，加 `promotable`；`track.py` 的 trace 输入改用 `improver.evidence.TraceStore`（trace 先搬到 improver，memory 只读它） |
 | `v6-gateway` 的 `bridge.py` | → `memory/bridge.py`（唯一使用者在 memory） |
-| `research/library.py`（HEAD 的 VEL） | 删 |
+| `research/library.py`（VEL） | 已在阶段 1 删除（tag `archive-2026-10-09` 可读） |
 | `tests/test_memory_sidecar.py`、`test_memory_track.py`（v6） | → `tests/memory/` |
 
 trace 的归属：`TraceStore` 在 `improver/evidence.py`；memory 依赖 improver 的这一个模块会违反 CONTRACTS §1 的方向，所以 `TraceStore` 放 `runtime/trace.py`（它只读 transcript，属于证据的读取面），improver 与 memory 都 import 它。IMPROVER §4 据此写。

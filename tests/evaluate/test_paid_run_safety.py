@@ -27,8 +27,9 @@ from ouroloop.harness import package as pk
 from ouroloop.providers import ProviderAccountError, ProviderError
 from ouroloop.runtime.worker import ProcessWorker
 
-# One call's reservation under rsi.PRICING: 20000 input and 5000 output tokens at the declared prices.
-BOUND = 20 * rsi.PRICING["input_per_1k"] + 5 * rsi.PRICING["output_per_1k"]          # $0.18
+# One call's reservation under rsi.PRICING: 20000 input tokens at the dearest input-side rate (a cache write) and 5000
+# output tokens.
+BOUND = 20 * rsi.PRICING["cache_write_per_1k"] + 5 * rsi.PRICING["output_per_1k"]     # $0.26
 
 
 def quiet(_line: str) -> None:
@@ -188,11 +189,11 @@ class BigCalls(rsi.BusinessWorker):
 
 
 def test_a_budget_that_runs_out_mid_run_ends_attempts_as_budget_exhausted(tmp_path, fake_upstream):
-    """$0.65 with $0.20 set aside for the final leaves $0.45: four calls of $0.08 fit beside one call's $0.18 bound,
+    """$0.84 with $0.30 set aside for the final leaves $0.54: four calls of $0.08 fit beside one call's $0.26 bound,
     the fifth does not. The attempts that could not run are budget_exhausted, invalid and never refilled, and the
     final's share is untouched."""
     actor = BigCalls()
-    act = rsi.activity(tmp_path, fake_upstream, provider=actor, budget={"usd": 0.65, "final_usd": 0.2})
+    act = rsi.activity(tmp_path, fake_upstream, provider=actor, budget={"usd": 0.84, "final_usd": 0.3})
     phases.baseline(act, out=quiet)
     rows = list(act.results.all())
     assert len(rows) == len(rsi.TRAIN) + len(rsi.DEV)
@@ -204,7 +205,7 @@ def test_a_budget_that_runs_out_mid_run_ends_attempts_as_budget_exhausted(tmp_pa
     held = reservations(act)
     assert len(held) == actor.calls == 4 and all(r["status"] == "settled" for r in held)
     root = act.root_account().remaining(allocation="final")
-    assert root["effective_remaining"]["usd"] == pytest.approx(0.2) and not root["stopped"]
+    assert root["effective_remaining"]["usd"] == pytest.approx(0.3) and not root["stopped"]
     assert not book(act)["breaches"]
 
 
@@ -239,6 +240,10 @@ def test_an_attempt_carries_its_cost_and_its_cache_counts(tmp_path, fake_upstrea
     phases.smoke(unpriced, out=quiet)
     (row,) = list(unpriced.results.all())
     assert row.validity == "valid" and row.cost_usd is None and row.usage["cache_read_tokens"] > 0
+    # ... and the book charges each such call its bound, not $0: the dollar limit still holds
+    settled = [r for r in reservations(unpriced) if r["status"] == "settled"]
+    used = unpriced.root_account().remaining()["used"]["usd"]
+    assert settled and used == pytest.approx(len(settled) * unpriced.pricing().bound()["usd"])
 
 
 def test_usage_vocabularies_are_normalized_and_an_unpriced_cache_is_unknown():
@@ -414,11 +419,20 @@ def test_the_final_estimate_finds_readings_by_what_a_release_executes(paid):
     assert "cannot be checked" in share_problem(estimate, 10.0)
 
 
+def test_a_final_plan_refuses_an_arm_name_no_attempt_id_can_carry():
+    """An arm's name is part of every attempt id, which is the transcript's session id: an arm named "W*" would fail
+    every one of its attempts as infrastructure, so the plan is refused before it is sealed."""
+    ref = "release:sha256:" + "0" * 64
+    with pytest.raises(ContractError, match="cannot be part of an attempt id"):
+        FinalPlan(experiment_id="x", tasks=("t",), repeats=1, arms={"W0": ref, "W*": ref})
+    assert FinalPlan(experiment_id="x", tasks=("t",), repeats=1, arms={"W0": ref, "W_star": ref}).arms
+
+
 def test_a_final_the_share_cannot_hold_is_refused_before_the_first_attempt(tmp_path, fake_upstream):
     act, refs = sealed(tmp_path, fake_upstream)
     root = act.root_account()
     spent = root.reserve("spent elsewhere", {"usd": 9.9}, allocation="final")
-    root.settle(spent.id, {"usd": 9.9})                 # $0.10 left: under one call's $0.18 bound
+    root.settle(spent.id, {"usd": 9.9})                 # $0.10 left: under one call's $0.26 bound
     actor = rsi.BusinessWorker()
     act.provider_factory = lambda _table: actor
     lines: list[str] = []
@@ -442,7 +456,7 @@ def test_a_final_plan_the_share_cannot_hold_is_not_sealed(tmp_path, fake_upstrea
     phases.baseline(act, out=quiet)
     lines: list[str] = []
     with pytest.raises(ValueError, match=r"the final share \$0\.50 cannot hold the plan: expected \$0\.\d\d \+ 1 "
-                                         r"in-flight and 2 stuck reservations of \$0\.1800"):
+                                         r"in-flight and 2 stuck reservations of \$0\.2600"):
         phases.freeze(act, out=lines.append)
     assert not state_path(act.root, plan).exists() and not list(act.events.read("final_sealed"))
     assert not any(line.startswith("[rsi]") for line in lines) and any(line.startswith("estimate") for line in lines)
