@@ -212,6 +212,8 @@ class Releases:
         intent = json.loads(intent_path.read_text(encoding="utf-8")) if intent_path.exists() else {}
         if intent and intent.get("target_release") != target:
             raise ValueError(f"operation {operation_id} was recorded for another release")
+        if intent.get("status") == "installed" and intent.get("receipt"):
+            return self.objects.load(intent["receipt"], InstallReceipt)     # committed before: the same answer
         write_json(intent_path, {"operation_id": operation_id, "target_release": target,
                                  "expected_parent": expected_parent, "status": "intent", "ts": now()})
         with locked(self.active_path):
