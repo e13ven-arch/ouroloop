@@ -1734,6 +1734,25 @@ def test_grounding_needs_a_failed_read_among_the_predicted_tasks_and_one_passing
     assert grounding_reasons(decl, {"failing": ["a"], "passing": [], **{**floors, "passing_listed": False}}) == []
 
 
+def test_admission_reads_the_floors_against_the_hosts_read_record():
+    """V0_4_PLAN §1.3 (review 2026-10-06): what admission's backstop checks (grounding_inputs) is the host's record
+    of the session's reads with K's floors, and whether a passing attempt was listed; a floor of 0 is met by no read
+    (P1 step 6: no separate path for it), and without a reader there is nothing to check."""
+    from types import SimpleNamespace
+    from ouroloop.research.session import SessionLimits, grounding_inputs
+    reader = SimpleNamespace(read_tasks=lambda: {"failing": ["a"], "passing": []})
+    floors = SessionLimits(min_failing_reads=1, min_passing_reads=1)
+    reads = grounding_inputs(SimpleNamespace(limits=floors, trajectories=reader), [{"outcome": "passing"}])
+    assert reads == {"failing": ["a"], "passing": [], "min_failing": 1, "min_passing": 1, "passing_listed": True}
+    assert declaration_reasons({"predicted_affected": ["a"]}, reads=reads)[0].startswith("ungrounded: the session "
+                                                                                        "read 0 passing")
+    assert len(declaration_reasons({"predicted_affected": ["b"]}, reads=reads)) == 2
+    none = grounding_inputs(SimpleNamespace(limits=SessionLimits(), trajectories=reader), [{"outcome": "passing"}])
+    assert none["min_failing"] == none["min_passing"] == 0
+    assert declaration_reasons({"predicted_affected": ["b"]}, reads=none) == []
+    assert grounding_inputs(SimpleNamespace(limits=floors, trajectories=None), []) is None
+
+
 def test_an_ungrounded_finish_is_refused_in_the_session_and_admission_is_the_backstop(fake_upstream, tmp_path,
                                                                                       monkeypatch):
     """V0_4_PLAN §1.3 (M4 §1 v0.4; review 2026-10-06): under the v3 preset's read floors, the first `finish` of a
