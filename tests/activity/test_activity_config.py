@@ -4,6 +4,8 @@ code."""
 from __future__ import annotations
 
 import json
+import tomllib
+from pathlib import Path
 
 import pytest
 
@@ -11,6 +13,7 @@ from ouroloop.activity import config as cf
 from ouroloop.activity import presets
 from ouroloop.activity.config import ConfigError
 from ouroloop.harness.contract import SITES
+from ouroloop.providers.claude_code import REQUESTS_PER_CALL
 
 PRESET = presets.preset("automationbench_v1")
 PROXY = {"mode": "proxy", "allow": [{"host": "api.example.com", "port": 443, "methods": ["GET"]},
@@ -176,3 +179,24 @@ def test_relative_paths_are_read_against_the_configs_directory(tmp_path):
     cfg = cf.load_config(path)
     assert cf.workspace_root(cfg) == (tmp_path / "examples" / "workspace-a").resolve()
     assert cf.upstream_path(cfg) == str((tmp_path / "upstream").resolve())
+
+
+def test_the_quickstart_config_is_a_new_finance_activity_with_nothing_frozen():
+    """README's first activity: it resolves under the new tables, pins finance's v0.4 split, runs in a workspace no
+    other config names (so it touches no run record), names no frozen ref and has no [final], so no final can read
+    finance's test from it; the memory waits for stage 2, and one CLI call's output fits a reservation."""
+    examples = Path(__file__).resolve().parents[2] / "examples" / "automationbench"
+    cfg = cf.load_config(examples / "quickstart.toml")
+    k = cf.resolve(cfg)
+    assert (k["bench"]["domain"], k["bench"]["frozen_splits"]) == ("finance", {"finance": "4fd91eaf9fb8daf5"})
+    assert cf.preset_name(cfg) == "automationbench_v1" and k["harness"]["seed"] == "stirrup"
+    assert cf.workspace_root(cfg) == examples / "workspace-quickstart"
+    others = {tomllib.loads(p.read_text(encoding="utf-8")).get("workspace", {}).get("root")
+              for p in examples.glob("*.toml") if p.name != "quickstart.toml"}
+    assert "workspace-quickstart" not in others
+    assert cfg["rsi"] == {"scope_id": "finance-quickstart"} and "final" not in cfg
+    assert k["memory"]["enabled"] is False and k["worker"]["network"] == "none"
+    assert (k["model"]["type"], k["model"]["effort"]) == (k["research_model"]["type"], k["research_model"]["effort"]) \
+        == ("claude_code", "medium")
+    for section in ("model", "research_model"):
+        assert k[section]["max_tokens"] * REQUESTS_PER_CALL <= k["pricing"]["max_output_tokens"]
