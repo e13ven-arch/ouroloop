@@ -34,7 +34,7 @@ test 读过的次数：marketing 3 次，finance 1 次，support、sales、hr 0 
 - **已发布：** tag `v0.4.0`（finance final）；更早的是 `v0.1.0`～`v0.3.0`。
 - **已实现、未发布：** v0.5 的方法库与经验库，已合入 `m1-automationbench`（`7e7732e`）。按事先定的第三批规则：经验库的两项过程读数都成立（train D ≥ +2；学习曲线 P ≥ 0.8），保留，作为 memory 底座、放在 preset 开关后面；方法库的读数没跑，按规则删。删方法库是提议，用户可以否决。
 - **瘦身第一批（分支 `slim/1`，2026-10-08 完成）：** 死代码与遗留路径已删，每次尝试都走运行壳。Jev/TDE 兼容的类型化决策契约、决策记录和 controller 训练链保留在可选子包 `ouroloop/train/`（extra `[train]`、`[train-jobs]`，入口 `python -m ouroloop.train`），不在 benchmark 路径上；v1 Agent 循环的决策点与冠军发布已删（tag `archive-2026-10-08` 上可读）。与现有工作区的哈希身份不再保持：现有活动都不在 HEAD 上续跑，旧工作区在各自的 tag 上重渲染或续跑；HEAD 仍能读它们的 train/dev 记录。
-- **正向设计（2026-10-09，待审）：** [docs/DESIGN.md](docs/DESIGN.md) v1.0。框架两项职责：自动提升 harness、训练模型。harness 是有类型的组件图（agent、vendor、tool、hook、prompt、skill、memory、model、config、test），每类有自己的改法、$0 验收、记功条件与上限；agent 底座 Stirrup 整份 vendor 进包、只有一个适配文件，memory 用 ReMe 的 procedural memory 算子跑在 sidecar 里、平台规则是我们的；改进器是框架自己的八步循环，按类型走验收阶梯；平台只留保护钱、防泄漏、保结果正确三类。阶段与花费见 [docs/PLAN.md](docs/PLAN.md) §2（阶段 1～3 都是 $0，第一次付费是新 preset 下的 finance 活动）。
+- **正向设计（2026-10-09，待审）：** [docs/DESIGN.md](docs/DESIGN.md) v1.1。先定让哪一层变化：工具与流程代码是主要搜索面，文字是辅助，循环允许但少动，权重第二阶段。交付物是业务线专属的轻量 harness 包 + 运行壳 + 模型描述，蒸馏作第二杠杆。框架两项职责：自动提升 harness、训练模型。harness 是有类型的组件图（agent、vendor、tool、hook、prompt、skill、memory、model、config、test），每类有自己的改法、$0 验收、记功条件与上限；agent 底座 Stirrup 整份 vendor 进包、只有一个适配文件，memory 用 ReMe 的 procedural memory 算子跑在 sidecar 里、平台规则是我们的；改进器是框架自己的八步循环，按类型走验收阶梯；平台只留保护钱、防泄漏、保结果正确三类。阶段与花费见 [docs/PLAN.md](docs/PLAN.md) §2（阶段 1～3 都是 $0，第一次付费是新 preset 下的 finance 活动）。
 
 ## 快速上手
 
@@ -120,7 +120,7 @@ docker build -f docker/worker.Dockerfile -t ouroloop-worker:py3.12 .
 
 ## 文档
 
-- [docs/DESIGN.md](docs/DESIGN.md)、[docs/modules/](docs/modules/README.md)：架构（v1.0）；现有代码的模块规则。
+- [docs/DESIGN.md](docs/DESIGN.md)：架构（v1.1）：职责与层次、特色、有类型的 harness、种子 agent、memory、改进器、训练、平台、代码布局与阶段。
 - [docs/PLAN.md](docs/PLAN.md)：现在在哪、规则、接下来的阶段、待用户决定的事。从这里开始。
 - [docs/RESULTS.md](docs/RESULTS.md)、[docs/JOURNAL.md](docs/JOURNAL.md)：结果；每次改动与运行的日志（倒序）。
 - [docs/design/](docs/design/)：v2 训练链；[docs/history/](docs/history/)：已测活动的预注册计划与事后分析、框架调研。

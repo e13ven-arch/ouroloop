@@ -2,7 +2,7 @@
 
 > 下一轮开发的唯一入口：现在在哪、规则、按序的阶段、待用户决定的事。规则细节与论证写在 §4 列的来源文档里，本文只引用。每个阶段结束后更新本文（§5）。
 >
-> 2026-10-09 改写：按正向设计 [DESIGN v1.0](DESIGN.md) 重排阶段。P1 瘦身第一批已合入 `m1-automationbench`（`6a06e45`）；原 P2～P7 并入新阶段。清理前的 HEAD 是 tag `archive-2026-10-09`，删掉的文档都在那上面。
+> 2026-10-09 改写：按正向设计 [DESIGN v1.1](DESIGN.md) 重排阶段。P1 瘦身第一批已合入 `m1-automationbench`（`6a06e45`）；原 P2～P7 并入新阶段。清理前的 HEAD 是 tag `archive-2026-10-09`，删掉的文档都在那上面。
 
 ## 0 现在在哪
 
@@ -29,7 +29,7 @@
 | 10-08 | 开源优先：agent 底座 Stirrup、memory 用 ReMe，我们只写平台层；二开要有明确理由并先讨论 | DESIGN §2.3、§3.7 |
 | 10-08 | 叫停 support 对照：“能够改进的地方都改进掉，看的是最终结果” | JOURNAL 2026-10-08 |
 | 10-08 | 不写金标身份测试；旧工作区只在 tag 上续跑或重渲染，HEAD 只须读得了它们的 train/dev 记录 | 规则 15 |
-| 10-09 | 框架职责是自动提升 harness 与训练模型；改进器由我们自己设计实现；harness、改进器、memory 都要正向设计 | DESIGN v1.0 |
+| 10-09 | 框架职责是自动提升 harness 与训练模型；改进器由我们自己设计实现；harness、agent、evolution、memory 都要正向设计；选型先定让哪一层变化；特色是轻量 harness 包 + 运行壳 + 模型描述，蒸馏作第二杠杆 | DESIGN v1.1 §1 |
 | 10-09 | 框架不为某个基准定制；原则直接遵守，不另加审查 | DESIGN §9 |
 
 ### 0.3 停在哪里
@@ -41,7 +41,7 @@
 | 测试 | `6a06e45` 上默认套件 1139 passed（JOURNAL 2026-10-08 瘦身第一批验收一条） |
 | test 读过几次 | finance 1、support 0、sales 0、hr 0、marketing 3；operations 从未读过 |
 | 本机记录 | `examples/automationbench/workspace-*/`、`examples/workspace-*/`、`ws/`、`*.local.toml`，git 忽略，不删不改 |
-| 下一步 | 用户审 DESIGN v1.0（§3）；审定后开阶段 1 |
+| 下一步 | 用户审 DESIGN v1.1（§3）；审定后开阶段 1 |
 
 ## 1 规则
 
@@ -72,16 +72,16 @@
 
 | 阶段 | 内容 | 验收 | 花费 | 状态 |
 |---|---|---|---|---|
-| 0 | 正向设计 [DESIGN v1.0](DESIGN.md)；文档清理；本文改写 | 用户审定 | $0 | 已写，待审 |
-| 1 | harness 与平台收缩：`harness/`、`runtime/`、`evaluate/`、`activity/`；Stirrup 种子；worker 资源与网络从 K 读；DESIGN §6 的删除 | 默认与 Docker 全量通过；`quickstart.toml` 的 `--phase smoke --checks-only` 通过；假上游上用新种子跑一次尝试；框架 ≤ 22k 行 | $0 | 待做 |
-| 2 | memory 组件：`memory/`、sidecar 与锁文件、`recall` 工具、记功与容量、快照走阶梯 | 假上游上 `--phase library` 端到端；变异检查在隔离副本 | $0 | 待做 |
-| 3 | 改进器：`improver/` 八步、toolcheck 与回放、分层估值、档案与反膨胀、R 的配置 | 假上游上脚本化的 R 一轮端到端：tool 候选过 V0～V2a 并在 V3 记条件修复；hook 候选过 V2b | $0 | 待做 |
+| 0 | 正向设计 [DESIGN v1.1](DESIGN.md)；文档清理（含 modules/）；本文改写 | 用户审定 | $0 | 已写，待审 |
+| 1 | harness 与平台收缩：`harness/`、`runtime/`、`evaluate/`、`activity/`；Stirrup 种子与六个 hook 站点；worker 资源与网络从 K 读；DESIGN §8 的删除 | 默认与 Docker 全量通过；`quickstart.toml` 的 `--phase smoke --checks-only` 通过；假上游上用新种子跑一次尝试；框架 ≤ 22k 行 | $0 | 待做 |
+| 2 | memory 组件：`memory/`、sidecar 与锁文件、`recall` 工具、记功与容量、快照走阶梯、记忆 → 技能 → 工具的升级 | 假上游上 `--phase library` 端到端；变异检查在隔离副本 | $0 | 待做 |
+| 3 | 改进器：`improver/` 八步、toolcheck 与回放、分层估值与代码先验、档案与反膨胀、R 的配置 | 假上游上脚本化的 R 一轮端到端：tool 候选过 V0～V2a 并在 V3 记条件修复；hook 候选过 V2b；有可机械化簇而无代码候选时台账记 `no_code_candidate` | $0 | 待做 |
 | 4 | finance 实测：新 preset，基线 → library → 3 轮（每轮后停）→ 有装入则封存 final → RESULTS、README、合入 main | 过程检查成立；计划哈希早于第一次 test 尝试；报告两次相同 | 名义约 $300～480，每步先批准 | 待做 |
 | 5 | 训练绑定：v2.0 离线链对新记录跑通，`model` 组件绑定；之后按 V2 的 v2.1、v2.2 | V2 §5 的断言 | $0；v2.1 另批 | 待做 |
 
 每个阶段：先把 DESIGN 的对应节改定稿 → 代码 → 测试 → JOURNAL → 停。阶段 1～3 各自一个分支，串行合入。阶段 4 期间不往它的检出合入代码（规则 13）。
 
-**阶段 1 的做法要点：** 从 `m1-automationbench` 开分支；`v6-agent` 与 `v6-gateway` 的代码按 DESIGN §7 的布局搬入（不是合并分支）；`bench.py` 拆成 `activity/` 时，先把资金安全与计量测试迁到新路径再删旧路径；`default_agent.py` 删掉时，`test_attempt_behaviour` 的夹具在新种子上重录。
+**阶段 1 的做法要点：** 从 `m1-automationbench` 开分支；`v6-agent` 与 `v6-gateway` 的代码按 DESIGN §9 的布局搬入（不是合并分支）；`bench.py` 拆成 `activity/` 时，先把资金安全与计量测试迁到新路径再删旧路径；`default_agent.py` 删掉时，`test_attempt_behaviour` 的夹具在新种子上重录。
 
 **阶段 3 的停下来分析：** 脚本化的 R 产出的 tool 候选，toolcheck 的通过是不是只在它调用了工具的题上？V3 的条件记功和无条件记功差多少？
 
@@ -91,11 +91,13 @@
 
 | # | 事项 | 建议 |
 |---|---|---|
-| 1 | DESIGN v1.0 取代 v0.7 与三份设计稿；modules/ 的十份文档随阶段 1～3 的代码一起删 | 是 |
-| 2 | 阶段 1 从 `m1-automationbench` 起，v6 三条分支按 DESIGN §7 搬入，不合并 `v6` 的 WIP | 是 |
-| 3 | 第一个实测域 finance | 是 |
-| 4 | 阶段 4 的预算根 | 到阶段 4 前批准，名义约 $300～480 |
-| 5 | DESIGN §2.1 的组件类型表与 §4.6 的阶梯有没有要加减的 | — |
+| 1 | DESIGN v1.1 取代 v0.7、三份设计稿与 modules/ 十份文档（已删） | 是 |
+| 2 | 种子 agent：Stirrup；Pi 只作 hook API 参照；Deep Agents 作第二种子备选（DESIGN §4.1） | 是 |
+| 3 | 特色：轻量 harness 包 + 运行壳 + 模型描述，蒸馏作第二杠杆（DESIGN §1.3） | 是 |
+| 4 | 分层的代码先验与“有可机械化簇就必须有代码候选到 V2”的结构保证（DESIGN §6.4） | 是 |
+| 5 | 阶段 1 从 `m1-automationbench` 起，v6 三条分支按 DESIGN §9 搬入，不合并 `v6` 的 WIP | 是 |
+| 6 | 第一个实测域 finance；阶段 4 的预算根名义约 $300～480 | 到阶段 4 前批准 |
+| 7 | DESIGN §3.1 的组件类型表、§4.3 的 hook 站点与 §6.6 的阶梯有没有要加减的 | — |
 
 ## 4 文档地图
 
@@ -104,18 +106,17 @@
 | 现在做什么、下一步、谁来定 | 本文 |
 | 发生过什么 | [JOURNAL](JOURNAL.md)（倒序） |
 | 对外的结果 | [RESULTS](RESULTS.md)；README 的结果段 |
-| 架构：职责、harness、memory、改进器、平台、代码布局、实施计划 | [DESIGN](DESIGN.md)（v1.0） |
+| 架构：职责与层次、特色、对照主流框架、harness、agent、memory、改进器、训练、平台、代码布局、实施计划 | [DESIGN](DESIGN.md)（v1.1） |
 | 训练链 | [design/V2_TRAINING_PIPELINE](design/V2_TRAINING_PIPELINE.md) |
 | 训练主机与训练器插件 | [TRAINING_HOSTS](TRAINING_HOSTS.md) |
-| 现有代码的模块规则（随代码一起删） | [modules/](modules/README.md) |
 | 外部 RSI 框架调研 | [SURVEY_RSI_FRAMEWORKS](SURVEY_RSI_FRAMEWORKS.md)、history/survey-2026-10/ |
 | 已测活动的预注册规则与事后分析 | history/V0_4_PLAN、V0_5_PLAN、FINANCE_V04_ANALYSIS、DIAGNOSIS_FIVE_DOMAIN |
 | 怎么跑基准 | [examples/automationbench/README](../examples/automationbench/README.md) |
-| 已删的文件 | tag `archive-2026-10-09`（本次删的文档）、`archive-2026-10-08`（10-08 清理与瘦身第一批）、`v0.1.0`～`v0.4.0` |
+| 已删的文件 | tag `archive-2026-10-09`（本次删的文档，含 modules/ 十份模块文档）、`archive-2026-10-08`（10-08 清理与瘦身第一批）、`v0.1.0`～`v0.4.0` |
 
 文档之间冲突时：架构以 DESIGN 为准，顺序与状态以本文为准，发生过什么以 JOURNAL 为准。发现冲突先改文档，再继续执行。
 
-**新 agent 的阅读顺序：** 根目录 `CLAUDE.md` → 本文 §0～§1 → DESIGN → §2 里当前阶段那一段 → JOURNAL 最上面三条 → 要改的代码对应的 modules 文档。
+**新 agent 的阅读顺序：** 根目录 `CLAUDE.md` → 本文 §0～§1 → DESIGN → §2 里当前阶段那一段 → JOURNAL 最上面三条。现有代码的 docstring 仍引用 tag 上的 modules 文档，代码重写时一并改。
 
 ## 5 怎么更新本计划
 

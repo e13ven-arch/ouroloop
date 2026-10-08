@@ -346,7 +346,7 @@ The comparison plan was sealed and committed (`663f930`) before any test task wa
   - Dev decides installs, and R sees only aggregate dev scores.
   - Test was run only for this final comparison.
 - **Model.** Claude Opus 5.5 (`claude-opus-5-5`, effort medium) is both the actor and the research agent R.
-  - It is called through headless Claude Code (`claude -p`), one fresh process per call, with no tools and no local customization, on a Claude subscription login. See the [`claude_code` provider](modules/01_POLICY_RUNTIME.md).
+  - It is called through headless Claude Code (`claude -p`), one fresh process per call, with no tools and no local customization, on a Claude subscription login. See the `claude_code` provider（tag archive-2026-10-09）.
   - Tool calls are structured JSON output, not native tool use.
   - The CLI also attaches the account's e-mail address and the date. The actor's format note says these are not part of the task.
   - These scores are therefore not directly comparable with published native tool-use results.

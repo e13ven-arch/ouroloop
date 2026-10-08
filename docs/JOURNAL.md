@@ -8,6 +8,22 @@
 
 ---
 
+## 2026-10-09 DESIGN v1.1：先定哪一层变化；特色；对照主流框架；modules/ 删除
+
+- 用户的指示（2026-10-09，第二轮）："先把文档清理干净，以正向设计为出发点，设计清楚 agent、harness、evolution、memory 的架构，整体架构可以参考一下主流的开源 RSI 框架，需要引入开源组件的直接使用即可，如果要自己开发必须要设计完善，不能只开发一个 demo 机制。我们的特色也明确一下，就是我们可以通过蒸馏和修改轻量级的 harness 来交付业务场景化的 harness+agent 系统，这个不合理的话也可以跟业界做类似的就是整个 harness 框架都可以 rsi，不同的业务直接跑独立的副本就可以。之前的文档里记录了一些失败的经验，比如只修改 prompt 文字能够带来的提升不是很大，相对于其他框架在 benchmark 上的得分，我们之前 RSI 对于代码、工具和流程上的修改偏弱，大部分时间都没有做代码上的提升，因此很难获得更高的得分。" 又："模块不一定只有这四个，但整体架构确实可以参考一下开源的 star 比较高的 RSI 框架，但也不用完全照搬，之前我们交付 H\* 这个理念参考的是 harness-zero，他们的设计只是比较有特色不一定实用，辩证的思考一下。" 参考项目：Pi、Deep Agents、GEPA / OpenEvolve、DGM / Exo、SIA；"积累记忆、自动写技能、优化任务代码、修改自身 harness，是不同层次的自我改进。选型时先确定你想让哪一层发生变化。"
+- 查了什么（只读网页，2026-10-09）：Pi（pi-mono，TS，MIT，约 11 万 star；pi-agent-core 的 `beforeToolCall` / `afterToolCall` / `prepareRequest` / `finishTurn`，扩展事件 `before_agent_start`、`context`、`tool_call`、`tool_result`、`turn_end`、`session_*`，`registerTool`，skills，无内置子 agent）；Deep Agents（Python，MIT，约 3 万 star；Filesystem / SubAgent / TodoList / 摘要 / HITL 中间件，AGENTS.md 记忆，SKILL.md 技能）；OpenEvolve（Apache-2.0，7.5k star；MAP-Elites 岛、级联评估、artifacts）；Exo（Rust + TS，MIT，1.5k star；无状态执行层 / 受保护 harness / 沙箱，不可变事件日志，自我重建与克隆谱系）；SIA（hexo-ai，MIT，2.2k star，arXiv 2605.27276；meta-agent / target agent / feedback agent，harness 停滞时切到 LoRA，W+H 在三个基准上都优于只改 H，自述“两个优化器互相过拟合固定验证器”）；Harness-Zero（arXiv 2609.24974；agent-as-harness 蒸馏，Qwen3.5-9B 23.3% → 44.3%）；HarnessBank（基因库 + gated screening）；Ouroboros（评审过的核心演化）；加上调研里的 DGM、GEPA、AutoSaddler、RRSI、Meta-Harness、HSI、HyperAgents、StarHarness。
+- [DESIGN](DESIGN.md) 改为 v1.1：
+  - §1.2 七层表（记忆、技能与提示、任务代码、流程、harness 本体、权重、改进器自身），每层写外部代表、我们量到的、本设计的处理。结论：工具与流程代码是主要搜索面，文字是辅助与暂存，循环与配置允许但少动，权重第二阶段。教训落进设计：诊断标 `mechanizable`，分层初值按量到的历史定（文字 +8；代码本地未测、外部 +26），有可机械化簇而无代码候选到达 V2 记 `no_code_candidate`。
+  - §1.3 对 Harness-Zero 的辩证：保留核与面的划分和“harness 是学到行为的载体”；“部署时去掉 harness”不必要（StarHarness 的冻结 harness 迁移到 Qwen3.6-27B 48.2 → 75.5，不用训练）；蒸馏作第二杠杆。特色定为“一个主框架为每条业务线各自演化出轻量 harness 包并持续发布；改进器经验跨线共享；蒸馏可选”。
+  - §2 对照主流框架的部件表（可变面、改进器、诊断、实现前检查、选择与档案、记功与反膨胀、改进器学习、权重、隔离、评测）。
+  - §4 agent 一节：Stirrup 作种子，Pi 的扩展事件模型作 hook API 参照（站点从 3 个扩到 6 个：before_run、before_model、before_tool、after_tool、after_turn、on_finish），Deep Agents 的中间件集合作复杂任务能力清单并逐项对照；不选 Pi、Deep Agents 作种子的原因写明。
+  - §5.6 记忆 → 技能 → 工具/hook 的逐级升级；§6.4 分层的代码先验与结构保证；§6.11 运行语义；§11 不做的项加 Pi、Deep Agents、OpenEvolve/GEPA 种群、SIA 在线 RL、Exo 自我重建。
+- 文档清理（续）：`git rm -r docs/modules/`（十份 v0.7 的模块文档；描述的代码随阶段 1～3 替换，规则以 DESIGN 为准；代码 docstring 里对 `docs/modules/*.md` 的引用在代码重写时一并改）。docs/ 现在是：DESIGN、PLAN、JOURNAL、RESULTS、SURVEY_RSI_FRAMEWORKS、TRAINING_HOSTS、design/V2_TRAINING_PIPELINE、history/。
+- 证据：没改 `ouroloop/` 下的代码，没跑测试，没调模型，没付费，没读 `.env`，没读任何 test 内容。
+- commit：本条所在的提交。
+
+---
+
 ## 2026-10-09 正向设计：DESIGN v1.0；文档清理
 
 - 用户的决定（2026-10-09）："我刚才大概看了一下我们的代码，我们的核心代码好像很简单，agent，memory，harness 这些核心组件都只有一个文件，这应该不正常吧？其他的框架这些核心机制都设计的很完善，我们不仅闭门造车，还都是按照demo级别做的设计与开发，大量的开发工作和代码都用来保障无关紧要的外围系统了，有点本末倒置了。清理掉无关的设计文档和过时的文档。我们需要设计完善的架构与机制来自己实现RSI改进器，包括agent 如何使用开源的代码，以及引入进来之后我们如何做嵌入和二开，这些都是需要正向设计出来的，而不是我要求加入所以就加入了，memory同理。RSI框架本身的职责要清楚，就是自动化提升harness和训练模型。那么这里的harness的设计如何能够完成自动提升的都要有正向的设计。" 另："不用看上一个会话的记录，重新思考设计"；"不需要那么多并行任务，文档看一遍不就清楚哪些有价值哪些没价值吗"。

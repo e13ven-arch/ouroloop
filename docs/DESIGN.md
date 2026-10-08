@@ -1,234 +1,347 @@
-# ouroloop 架构设计（v1.0，正向设计）
+# ouroloop 架构设计（v1.1，正向设计）
 
-> 写于 2026-10-09。取代 v0.7 的 DESIGN（tag `archive-2026-10-09` 上可读）与 2026-10-08 的三份设计稿（OSS_COMPONENTS_PLAN、MEMORY_AGENT_ITERATION、V0_6_DESIGN，同一 tag）。它们是按需求一项项堆起来的；本文从框架的职责出发，推出 harness、改进器、memory 各自该是什么样，再对应到现有代码。
+> 2026-10-09。取代 v0.7 的 DESIGN、10-08 的三份设计稿与 modules/ 的十份模块文档（都在 tag `archive-2026-10-09` 上）。本文从框架的职责出发，先定“让哪一层发生变化”，再推出 harness、agent、memory、改进器（evolution）、训练与平台各自该是什么样，整体结构对照主流开源 RSI 框架，但不照搬。
 >
-> 用户原话（2026-10-09）："我们的核心代码好像很简单，agent，memory，harness 这些核心组件都只有一个文件……大量的开发工作和代码都用来保障无关紧要的外围系统了，有点本末倒置了。……RSI 框架本身的职责要清楚，就是自动化提升 harness 和训练模型。那么这里的 harness 的设计如何能够完成自动提升的都要有正向的设计。"
+> 用户原话（2026-10-09）："RSI 框架本身的职责要清楚，就是自动化提升 harness 和训练模型。那么这里的 harness 的设计如何能够完成自动提升的都要有正向的设计。" "需要引入开源组件的直接使用即可，如果要自己开发必须要设计完善，不能只开发一个 demo 机制。" "积累记忆、自动写技能、优化任务代码、修改自身 harness，是不同层次的自我改进。选型时先确定你想让哪一层发生变化。" "之前我们 RSI 对于代码、工具和流程上的修改偏弱，大部分时间都没有做代码上的提升，因此很难获得更高的得分。"
 >
-> 状态：待用户审。审定之前不改代码、不付费。已定的前提（不再讨论）：actor 与 R 经 claude_code CLI 走订阅；各臂统一 effort（medium）；对外数字只来自封存 final；memory 与 agent 底座用开源件（ReMe、Stirrup），我们只写平台层与二开；训练与蒸馏属于框架，在 `ouroloop/train/`；框架不为某个基准定制。
+> 状态：待用户审。审定之前不改代码、不付费。已定的前提：actor 与 R 经 claude_code CLI 走订阅；各臂统一 effort（medium）；对外数字只来自封存 final；训练与蒸馏属于框架，在 `ouroloop/train/`；框架不为某个基准定制。
 
 ## 0 结论
 
 | 问题 | 结论 |
 |---|---|
-| 框架的职责 | 两件：**自动提升 harness**；**训练模型并把模型装回 harness**。其余一切（计量、隔离、划分、gate、报告）只是为了这两件事的结果可信，是平台，不是产品 |
-| 现状为什么本末倒置 | 核心三件（agent 295 行、memory 640 行、包格式 723 行）是最简实现；外围（`bench.py` 5,360 行加 gate、预算、契约、策略、报告约 5,100 行）是精心打磨的壳。壳保护了钱和结果，但里面没有能被自动改进的结构：组件没有类型，改进器没有诊断、分层、验收阶梯和记功，memory 只在开头检索一次。改进器三次活动提了 12 个候选，没有一个是工具或循环改动（RESULTS），是因为它没有产出工具的路径，不是模型不会 |
-| 正向设计的推导 | 要自动改进，harness 必须是**有类型的组件图**：每种组件有固定位置、改法、$0 验收、记功方式和上限。改进器围绕组件类型工作：从轨迹诊断出原因簇 → 按学到的估值选一层 → 在我们自己的编码会话里实现 → 逐档验收 → 装入 → 按条件记功。memory 是组件之一：固定代码从 train 奖励写，agent 按题读，反复出现又能机械化的条目升级成工具或 hook。模型也是组件之一：训练链产出的模型绑进候选，走同一条阶梯 |
-| 开源怎么用 | agent 底座 **Stirrup 0.2.0** 整份 vendor 进 W（`vendor/stirrup/`），我们写适配层把它的扩展点接到宿主契约 ctx；对上游的改动记成补丁栈，升级 = 换上游、重放补丁、跑适配层测试。memory 用 **ReMe 0.3.1.10** 的 procedural memory 算子（提炼、校验、去重、检索、重排），跑在独立 sidecar 进程里；出处、只用 train、留一、记功、退役、快照过 gate 是我们的平台规则 |
-| 平台留什么 | 只留三类：**保护钱**（预算根、预留、续跑、硬限额、计量网关）、**防泄漏**（划分冻结、train-only、字面量检查、留一、封存计划哈希）、**保结果正确**（配对 gate 与确认、内容寻址发布、隔离 worker）。其余删 |
-| 规模目标 | 框架 30,113 行 → 约 20k：核心（harness + memory + 改进器）从约 2.9k 升到约 9k，平台从约 18k 降到约 7k，`train/` 4.7k 不动 |
-| 花费 | 阶段 0～3 都是 $0；第一次付费是阶段 4 的 finance 活动，名义约 $300～480，每一步先批准 |
+| 职责 | 两件：**自动提升 harness**；**训练模型并装回 harness**。其余（计量、隔离、划分、gate、报告）是让这两件事的结果可信的平台，不是产品 |
+| 让哪一层变化 | 五层都纳入，但各有机制、各有验收，名额按证据分配：**工具与流程代码（L3/L4）是主要搜索面**，文字（prompt/skill/memory，L1/L2）是辅助与暂存，循环与配置（L5）允许但少动，权重（L6）是第二阶段。依据：我们三次 final 平均 +8，装入的全是文字；同基准 StarHarness 靠工具与循环补丁 +26（held-out +29）；AutoSaddler 量到文字补丁退步率是代码补丁的两倍（17% 对 8%）；SIA 量到权重 + harness 严格优于只改 harness |
+| 特色 | **一个主框架，为每条业务线各自演化出一个轻量 harness 包并持续发布**：包里是工具、hook、技能、memory、循环补丁，内容寻址、可导出为 app、可换模型运行；改进器的经验（分层估值、研究剧本）跨业务线共享；蒸馏是可选的第二杠杆，只在量到收益时交付。这与业界“整个 harness 都可 RSI、不同业务跑独立副本”是同一机制（§1.3 的辩证） |
+| harness | 有类型的组件图，每类有位置、改法、$0 验收、记功条件、上限（§3）。hook 站点从 3 个扩到 6 个，按 Pi 的扩展事件模型设计（§4.3） |
+| agent | 种子 agent 用 **Stirrup 0.2.0** 整份 vendor 进包，一个适配文件接宿主契约；Pi 的扩展模型是我们 hook API 的设计参照，Deep Agents 的中间件集合是“复杂任务能力”的清单；两者都不作种子（§4.1） |
+| memory | W 的一个组件：ReMe 的 procedural memory 算子在 sidecar 里提炼与检索，平台管出处、只用 train、留一、引用记功、退役、容量；条目按“记忆 → 技能 → 工具/hook”逐级升级（§5） |
+| 改进器 | 框架自己的八步循环：证据 → 诊断成原因簇 → 分层 → 编码会话 → 逐档验收 → 筛选与 gate → 装入与存档 → 条件记功。验收阶梯 V0～V5，每类组件有自己的 $0 档（§6）。结构上保证每轮有代码类候选到达验收 |
+| 平台 | 只留保护钱、防泄漏、保结果正确三类（§8）。框架 30k 行 → 约 20k，核心约 2.9k → 约 9k |
+| 花费 | 阶段 0～3 都是 $0；第一次付费是阶段 4 的 finance 活动，名义约 $300～480，每步先批准 |
 
-## 1 职责与边界
+## 1 职责、层次与特色
 
-**框架的输入：** 一个任务环境（适配器：任务、工具、评分）、一个起点 harness（种子）、一个 pin 住的模型、预算。
-**框架的输出：** 一个改进过的 harness 版本 W\*（可部署的包 + 运行壳 + 模型描述），以及证明它更好的封存读数；在第二版，再加一个训练出的模型。
+### 1.1 职责与边界
 
 | 职责 | 框架做 | 框架不做 |
 |---|---|---|
-| 提升 harness | 从自己的运行记录里找原因，改组件，验证，装入，记功，反复 | 不替用户写工作流；不按某个基准定制改法 |
+| 提升 harness | 从自己的运行记录找原因，改组件，验证，装入，记功，反复 | 不替用户写工作流；不按某个基准定制改法 |
 | 训练模型 | 从宿主写的轨迹建数据、训练、绑定、过同一条阶梯 | 不以 loss 或模型大小为目标；不处理教师输出的许可 |
 | 让结果可信 | 计量、隔离、划分、gate、封存、报告 | 不做通用实验平台、数据库、队列、远程控制面 |
 
-系统仍记作 S = (W, R, E; K)：W 是 harness（可演化的包），R 是改进器，E 是宿主写的证据，K 是固定核心。四者的关系没变；变的是 W 有了类型结构，R 有了完整机制，K 收缩到三类。
+### 1.2 自我改进的层次：让哪一层变化
+
+| 层 | 内容 | 外部代表 | 我们量到的 | 本设计的处理 |
+|---|---|---|---|---|
+| L1 记忆 | 跨任务积累经验条目 | ReMe、ReasoningBank、ACE、Letta | support 经验库流 D = 3.0，快照过 dev gate +0.16；42 条里 35 条退役是容量 bug | 组件 `memory`：固定代码写、agent 读；是暂存层，条目往上升级（§5.6） |
+| L2 技能与提示 | 自动写程序性文字、改系统提示 | GEPA、AutoSkill、Agent Zero | 三次 final 装入的全是文字，平均 +8，区间都含 0 | 组件 `skill`、`prompt`：允许，但名额按估值给；可机械化的内容不留在文字里 |
+| L3 任务代码 | 工具、确定性程序 | StarHarness（计算器、分诊）、AutoSaddler capability 补丁 | 从没提过一个工具 | **主要搜索面**。组件 `tool`，$0 验收 toolcheck（§6.6） |
+| L4 流程 | hook、守卫、核对、计划 | AutoSaddler hook.json、Pi 的 tool_call/tool_result 事件、Deep Agents 中间件 | 从没提过一个 hook | **主要搜索面**。组件 `hook`，六个站点，$0 验收回放 |
+| L5 harness 本体 | 循环、上下文管理、子 agent、配置 | DGM、HyperAgents、Meta-Harness、RRSI、Exo | 从没改过 | 允许：`agent`、`vendor`、`config`；只在原因簇指向循环时动；改动走 smoke 与包测试 |
+| L6 权重 | 训练或蒸馏 | SIA（harness 停滞时切到 LoRA）、Harness-Zero（蒸馏）、Agent0 | 没有 | 组件 `model`；第二阶段，训练链产物绑进候选走同一条阶梯（§7） |
+| L7 改进器自身 | 改进器从结果里学 | HSI 元进化、HyperAgents 元 agent、RRSI 的 PATTERNS | C4 没有证据 | 分层估值与研究剧本跨活动学习，跨活动双臂验证（§6.9） |
+
+**本轮的教训怎么落进设计。** 三次活动 12 个候选没有一个工具，不是 K 不让，是改进器没有产出代码的路径：没有诊断出“哪些原因能机械化”，没有工具的 $0 验收，没有在筛选里按“是否调用”记功，R 的提示把造工具指向一张 401 错误表。所以：诊断给每个原因簇标 `mechanizable`；分层的初值按量到的历史定（文字 +8，代码本地未测、外部 +26）并给代码类留探索名额；toolcheck 与回放让代码候选不付费就能证明自己；筛选按条件记功；有可机械化簇而没有代码候选到达 V2 的一轮，视为改进器失职并写进台账。不是“每条失败都变工具”的规则，是让代码路径畅通、让估值说话。
+
+### 1.3 特色：辩证地看 Harness-Zero
+
+v0.7 的交付理念“源 harness h\* → 蒸馏到学生”参考了 Harness-Zero（agent-as-harness：优化过的 harness 指导一个教师 agent 纠正学生的动作，纠正后的轨迹作训练数据，Qwen3.5-9B 宏平均 23.3% → 44.3%）。它的特色是“把 harness 教进权重，部署时不再需要专用 harness”。辩证地看：
+
+| 方面 | 成立的部分 | 不成立或代价大的部分 |
+|---|---|---|
+| 核与面的划分 | 固定核 K + 可变面 W，正是我们的结构，保留 | — |
+| harness 是学到行为的载体 | 成立，而且不需要训练就能迁移：StarHarness 把在 GPT-5.4 上演化出的 harness 原样放到 Qwen3.6-27B 上，AutomationBench 48.2 → 75.5，GPT-5.4-mini 29.6 → 70.0 | “部署时去掉 harness”这个目标本身不必要：轻量 harness 包随 app 走没有成本 |
+| 蒸馏到小模型 | SIA 与 Harness-Zero 都量到权重 + harness 优于只改 harness | 每条业务线训一个学生要付训练与评测费，还有 SIA 自己指出的“harness 与权重互相过拟合固定验证器”的风险；我们没有任何训练收益的读数 |
+
+所以交付物定为：**轻量 harness 包 + 固定运行壳 + 模型描述**。包是业务线专属的，由 RSI 演化出来；模型可以是前沿模型，也可以换更便宜的模型（StarHarness 的迁移证据）；蒸馏作为第二杠杆，训练链先打通、效果另量，量到了再交付。这与业界“整个 harness 都可 RSI，不同业务跑独立副本”是同一机制，区别有三：(a) 运行壳、gate、改进器是共享的主框架，升级一次各线受益；(b) 改进器自己的学习（分层估值、研究剧本）跨线共享，memory 可跨线导入；(c) 每个包有 $0 的分类型验收与条件记功，别人没有。
+
+## 2 总体架构
+
+S = (W, R, E; K) 不变：W 是 harness 包，R 是改进器，E 是宿主写的证据，K 是固定核心。
 
 ```
-                 ┌──────────── K：平台（固定）────────────┐
- 环境适配器 ──→  │ 网关·broker·worker·预算·划分·gate·发布 │ ──→ E：轨迹、事件、台账（宿主写，包与 R 写不了）
-                 └──────────────┬───────────────┬────────┘
-                                │ 运行          │ 证据
-                       W：harness 包            R：改进器
-                 组件图：agent/tool/hook/…       诊断→分层→实现→验收→装入→记功
-                 memory 组件 ⇄ memory sidecar    ↑ 自己的策略也从台账学（C4）
-                 model 组件 ⇄ train/ 训练链 ─────┘
+                  ┌──────────────── K：平台（固定）────────────────┐
+ 环境适配器 ──→   │ 网关 · broker · worker · 预算 · 划分 · gate · 发布 │ ──→ E：轨迹、事件、台账（宿主写；包与 R 写不了）
+                  └────────────────┬───────────────┬────────────┘
+                                   │ 运行          │ 证据
+                         W：harness 包（§3）      R：改进器（§6）
+                   agent（Stirrup + 适配层，§4）   诊断 → 分层 → 实现 → 验收 → 装入 → 记功
+                   tool / hook / prompt / skill    ↑ 自己的估值与剧本从台账学（§6.9）
+                   memory ⇄ memory sidecar（§5）
+                   model ⇄ train/ 训练链（§7）  ──┘
 ```
 
-## 2 Harness（W）：有类型的组件图
+**对照主流框架。** 下表是我们每个部件采用了谁的做法、哪里不同。
 
-### 2.1 组件类型
+| 部件 | 主流做法 | 我们 |
+|---|---|---|
+| 可变面 | 整仓可改（DGM、HyperAgents、Meta-Harness、StarHarness 的 vendor/stirrup、Exo）或有类型的组件词表（RRSI 的 K 九类、AutoSaddler 的 θ、Harness-Zero 的 surface） | 有类型的组件词表，代码里强制（§3.1）；vendor 整份可改但改动记成补丁 |
+| 改进器 | 现成编码 agent（StarHarness 用 omp、Meta-Harness 用 Claude Code、AutoSaddler 用 Claude Agent SDK）或固定协议的自研会话（RRSI 的 harness engineer：JSON 动作协议、40 回合、80 次编辑） | 自研的有界编码会话（§6.5），形状接近 RRSI，加上在会话内就能跑的 $0 验收 |
+| 诊断 | RRSI 的 analyst + 三种视角的 digester，连同 6 条成功轨迹；Meta-Harness“深读失败与成功轨迹”是它唯一的硬结论（只给分数 34.6、给摘要 34.9、给原始轨迹 50.0） | 案例 → 原因簇，带证据 ref 与 `mechanizable`；R 读原始轨迹；每轮附最好的几条成功轨迹（§6.3） |
+| 实现前的检查 | StarHarness 的 scope 守卫、import 检查、1 题 smoke、test-flip、LLM proceed gate；RRSI 的 critic + 5 轮修复 + smoke；AutoSaddler 的 verifier；OpenEvolve 的级联评估；HarnessBank 的 gated screening | 阶梯 V0～V2（§6.6），分类型；toolcheck 来自 ASI |
+| 选择与档案 | 单一在位者（RRSI、StarHarness）；档案 + 子代惩罚（DGM、HyperAgents）；Pareto（GEPA）；MAP-Elites 岛（OpenEvolve）；EvoDAG + dev 过滤（AutoSaddler） | 单一在位者 + 配对 dev gate + 确认 + 成本项；档案只作证据与 R 的输入（§6.7） |
+| 记功与反膨胀 | RRSI 的归因记分板与 prune 集；AutoSaddler 的 fixed/regressed 分类与“宁换勿加” | 按宿主事件的条件记功；零功组件生成删除候选（§6.8） |
+| 改进器学习 | HSI 元进化（只做语法校验）；HyperAgents 元 agent 随任务分数搭车；RRSI 的 PATTERNS.md 先验 | 分层估值 + 研究剧本，跨活动双臂验证（§6.9） |
+| 权重 | SIA：harness 停滞时切到 LoRA，RL 目标按任务选；Harness-Zero：蒸馏 | `model` 是组件；训练链在 `train/`；“停滞再训”作分层估值的一条规则（§7） |
+| 隔离 | Exo 的三层：无状态执行层 / 受保护的有状态 harness / 沙箱，加不可变事件日志；DGM、HyperAgents 用容器但把密钥放进去 | 运行壳 / 宿主写的证据 / worker，包拿不到评分器、provider、凭据；transcript 与台账只追加 |
+| 评测 | 几乎没人同时做重复、留出、区间与预注册（SURVEY §2） | 配对 gate + 确认 + 封存 final + 计划哈希，保留 |
+
+## 3 Harness：有类型的组件图
+
+### 3.1 组件类型
 
 一个 harness 是一个包目录，内容寻址，每种组件有固定位置。改进器只能按类型改；K 规定每种类型允许与否和上限。
 
-| 类型 | 位置 | 内容 | 谁写 | $0 验收（§4.6） | 记功条件 | K 的上限 |
+| 类型 | 位置 | 内容 | 谁写 | $0 验收（§6.6） | 记功条件 | K 的上限 |
 |---|---|---|---|---|---|---|
-| `agent` | `agent/*.py` | 循环本身：回合、完成协议、上下文管理、子 agent。种子里是 Stirrup 的适配层 | 种子、R | smoke（脚本化模型，找确定性崩溃）、包测试 | 全部尝试 | 文件数、字节数 |
-| `vendor` | `vendor/<name>/**` | 原样嵌入的开源程序，带 `PROVENANCE.json` 与 LICENSE | 上游；R 可改，改动记成补丁 | 适配层测试 | 同 agent | 字节数；LICENSE/PROVENANCE 不可改 |
-| `tool` | `tools/<name>.py` + manifest 的 schema | 确定性代码，模型可调用：计算、表格比对、核对清单、查询封装。可写（经 broker） | R | 单元测试；**toolcheck**：R 为声称能修的 train 题各给一段调用脚本，宿主在新世界里执行，按真实断言判分 | 该次尝试调用过它 | 个数、schema 深度 |
-| `hook` | `middlewares/<name>.py`，站点 before_tool / after_tool / on_finish | 流程约束：写前分诊、提交前核对、发送前扫描、日期锚 | 种子、R | **回放**：对已记录的 train 轨迹回放，在声称的失败题上触发 ≥ 2 道，并报告在通过题上的误触发率 | 该次尝试触发过它 | 个数 |
+| `agent` | `agent/*.py` | 循环本身的适配层：接缝、hook 站点、完成协议 | 种子、R | smoke（脚本化模型）、包测试 | 全部尝试 | 文件数、字节 |
+| `vendor` | `vendor/<name>/**` | 原样嵌入的开源程序 + `PROVENANCE.json` + LICENSE | 上游；R 可改，改动记成补丁 | 适配层测试、smoke | 全部尝试 | 字节；LICENSE/PROVENANCE 不可改 |
+| `tool` | `tools/<name>.py` + manifest 的 schema | 确定性代码，模型可调用：计算、表格比对、核对清单、查询封装；可写（经 broker） | R | 单元测试；**toolcheck** | 该次尝试调用过它 | 个数、schema 深度 |
+| `hook` | `middlewares/<name>.py`，六个站点（§4.3） | 流程约束：写前分诊、提交前核对、发送前扫描、日期锚、上下文整理 | 种子、R | **回放** | 该次尝试触发过它 | 个数 |
 | `prompt` | `prompt/system.md`、`prompt/finish.md` | 系统提示与完成提示 | 种子、R | 字面量检查 | 全部尝试 | 字数 |
-| `skill` | `skills/<name>.md` | 多步程序性文字，按需读 | R | 字面量、可达性（能被 ≥ 2 道来源外 train 题检索到） | 该次尝试读过它 | 个数、字数 |
-| `memory` | `memory/`（宿主写）| 验证过的经验条目，按题检索（§3） | 固定代码，只从 train | 出处、字面量、可达性、去重 | 该次尝试引用过该条 | 条数、字节 |
-| `model` | manifest 的 `model` 项 | 模型身份与推理配置（effort 钉死） | 种子；训练链（§5） | 训练链收据 | — | effort 上限 |
-| `config` | manifest 的 `config` 项 | 数值旋钮：回合数、摘要阈值、检索条数 | R | 在 K 的范围内 | 全部尝试 | 每个键的范围 |
+| `skill` | `skills/<name>.md` | 多步程序性文字，按需读 | R、memory 升级 | 字面量、可达性 | 该次尝试读过它 | 个数、字数 |
+| `memory` | `memory/`（宿主写） | 验证过的经验条目，按题检索（§5） | 固定代码，只从 train | 出处、字面量、可达性、去重 | 该次尝试引用过该条 | 条数、字节 |
+| `model` | manifest 的 `model` 项 | 模型身份与推理配置（effort 钉死）；训练产物 ref | 种子；训练链 | 训练链收据 | — | effort 上限 |
+| `config` | manifest 的 `config` 项 | 数值旋钮：回合数、摘要阈值、检索条数、子 agent 深度 | R | 在 K 的范围内 | 全部尝试 | 每个键的范围 |
 | `test` | `tests/*.py` | 包自己的测试，草稿检查时跑 | R | — | — | 个数 |
 
-设计依据：
-- 类型来自失败证据，不是凭空列的。456 次 W0 失败尝试的九类原因里（tag `archive-2026-10-09` 上 MEMORY_AGENT_ITERATION §2.2），可机械化的是：消息里提到被排除项（98 次，before_tool 扫描 hook）、算错漏算（48 次，表格比对工具）、用了真实日期（103 次尝试中 76 次失败，日期锚 hook）、写落错位置（约 24 次，表格写工具）；判断类的留在 prompt / skill / memory。
-- 别的改进器怎么分：RRSI 的 K 把 harness 分成 prompt / control_flow / config / context_mgmt / client_tool / skill / memory / subagent 九类并在代码里强制；AutoSaddler 的 θ = prompts + tools + middleware + loop；两者是仅有的在代码里强制类型的系统（SURVEY §6）。我们与之对齐，并给每类配 $0 验收，这是别人没有的。
+类型来自失败证据：456 次 W0 失败尝试的九类原因里，可机械化的是消息里提到被排除项（98 次 → before_tool 扫描 hook）、算错漏算（48 次 → 表格比对工具）、用了真实日期（103 次尝试中 76 次失败 → 日期锚 hook）、写落错位置（约 24 次 → 表格写工具）；判断类的留在 prompt / skill / memory（tag 上 MEMORY_AGENT_ITERATION §2.2）。
 
-### 2.2 包、种子与候选
+### 3.2 包、种子与候选
 
-- **包**是不可变对象：每个文件一个对象，manifest 列出各类型的条目，整包一个 ref（现有 `harness_package.py` 的做法保留）。
-- **种子**（W0）由 K 点名，从 `ouroloop/harness/seeds/<name>/` 构建：上游源码（vendor）+ 我们的适配层 + 补丁栈 + 种子 hook（只放通用的写入守卫：分诊计划、提交前核对、日期锚；具体工具不放，留给 R 编译，这样"RSI 的增益"与"人写架构的增益"按构造分开）。
-- **候选** = 对父包的一组类型化改动，带声明 `{cause_id, kind, site, predicted_affected, trigger}`。固定代码对照 diff 核对声明。字面量检查只扫相对种子改动的行（上游自己的行不扫）。
+- **包**是不可变对象：每个文件一个对象，manifest 列出各类型的条目，整包一个 ref。
+- **种子**（W0）由 K 点名，从 `ouroloop/harness/seeds/<name>/` 构建：上游源码（vendor）+ 适配层 + 补丁栈 + 种子 hook（只放通用的写入守卫：分诊计划、提交前核对、日期锚）。具体工具不放进种子，留给 R 编译，让“RSI 的增益”与“人写架构的增益”按构造分开。
+- **候选** = 对父包的一组类型化改动，带声明 `{cause_id, kind, site, predicted_affected, trigger, differs_from?}`。固定代码对照 diff 核对声明。字面量检查只扫相对种子改动的行。
 - **身份**：包 ref 覆盖全部字节；改 vendor 一行也是新 W。
 
-### 2.3 开源底座的嵌入与二开
+### 3.3 开源程序的嵌入与二开
 
 | 问题 | 做法 |
 |---|---|
-| 放哪 | 上游整份放 `vendor/<name>/`，不装进镜像：R 读得到、改得了，和 StarHarness 对 Stirrup 的做法一样 |
-| 接缝 | 只有一个适配文件 `agent/<name>_agent.py`，把上游的扩展点接到 ctx 的六个名字：Stirrup 的 `LLMClient` → `ctx.model`，`Tool` → `ctx.tool` / 包工具入口 / `ctx.skills`，logger 回调 → `ctx.mark`，用量 → `ctx.view["last_usage"]`。上游不知道宿主的存在 |
-| 用上游的什么 | Stirrup：`Agent.run` 循环、finish 工具（必须单独一回合）、剩余回合提醒、按窗口比例的上下文摘要与溢出回退、子 agent（`to_tool`）、系统提示模板。不用：它的 clients（由适配层代替）、code backends（世界只经 ctx.tool）、skills 加载器（skills 只来自包）、web / browser 工具（基准 worker 无网；生产经 egress 代理时另作 tool 组件接入）、cache、SIGINT |
-| 二开 | 三种，按侵入程度排序，先用轻的：① 适配层里做（大多数）；② 对上游的补丁，放 `seeds/<name>/patches/NNN-<slug>.patch`，构建种子时重放；③ R 在候选里直接改 vendor 文件，装入后由固定代码抽成补丁追加到补丁栈。每个补丁带原因与证据 ref |
-| 升级上游 | 换 `PROVENANCE.json` 指向的版本 → 重放补丁栈 → 跑适配层测试与 smoke。重放失败的补丁作为一个 cause 交给 R 修（框架用自己的改进器维护自己 vendor 的代码） |
+| 放哪 | 上游整份放 `vendor/<name>/`，不装进镜像：R 读得到、改得了（StarHarness 对 Stirrup 的做法） |
+| 接缝 | 只有一个适配文件 `agent/<name>_agent.py`，把上游的扩展点接到 ctx 的名字上。上游不知道宿主的存在 |
+| 二开三档 | ① 适配层里做（大多数）；② 对上游的补丁，放 `seeds/<name>/patches/NNN-<slug>.patch`，构建种子时重放；③ R 在候选里直接改 vendor 文件，装入后由固定代码抽成补丁追加到补丁栈。每个补丁带原因与证据 ref |
+| 升级上游 | 换 `PROVENANCE.json` 指向的版本 → 重放补丁栈 → 跑适配层测试与 smoke。重放失败的补丁作为一个 cause 交给 R 修 |
 | 不做 | 不 fork 上游仓库；不在控制面 import 上游（它只在 worker 里跑） |
 
-### 2.4 宿主契约 ctx（运行壳的接缝）
+### 3.4 宿主契约 ctx
 
-包里的代码只认这六个名字，宿主保证它们在 worker 里和在生产里语义相同：
+包里的代码只认这几个名字，宿主保证它们在 worker 里和在生产里语义相同：
 
 | 名字 | 做什么 | 记录 |
 |---|---|---|
-| `ctx.model(messages, tools, role, effort)` | 经网关调 pin 的模型；effort 超上限截顶；role ∈ {act, aux} | 每次一条 gateway_call |
-| `ctx.tool(name, args, read_only)` | 经 broker 调环境工具；权限、拒绝表、硬限额都在 broker | 每次一条 broker_event |
+| `ctx.model(messages, tools, role, effort)` | 经网关调 pin 的模型；effort 超上限截顶；role ∈ {act, aux} | gateway_call |
+| `ctx.tool(name, args, read_only)` | 经 broker 调环境工具；权限、拒绝表、硬限额在 broker | broker_event |
 | `ctx.skills` | 只读的 skill 索引与正文 | skill_read |
-| `ctx.memory.recall(query)` | **新**：按题检索经验条目（§3.3）。做成一个基础工具，所以 hook 与记功对它同样生效 | library_retrieval |
+| `ctx.memory.recall(query)` | 按题检索经验条目（§5.3）；做成基础工具，hook 与记功同样生效 | library_retrieval |
 | `ctx.limits` / `ctx.view` | 剩余限额；只读投影（system、base_tools、last_usage） | — |
 | `ctx.mark(kind, data)` | 包对自己循环的自述，标 source=package，不是证据 | mark |
 
 包拿不到：评分器、provider、凭据、对象库、结果句柄、任何 dev/test 的信息。
 
-### 2.5 运行环境由 K 指定
+### 3.5 运行环境由 K 指定
 
-worker 的镜像、内存、pid 数、网络策略（`none` 或经 egress 代理的 allowlist）都是 K 的字段，按证据定值，不写死在代码里（现在是 256 MB / 64 pid 写死，v6 分支已改成从 K 读，照用）。生产环境有网络、资源大；基准环境无网、资源小。两者跑同一套包和同一套契约，差别只在 K。
+worker 的镜像、内存、pid 数、网络策略（`none` 或经 egress 代理的 allowlist）都是 K 的字段，按证据定值。生产环境有网络、资源大；基准环境无网、资源小。两者跑同一套包和契约，差别只在 K。
 
-### 2.6 不在可变面内
+### 3.6 不在可变面内
 
-网关、broker、worker 运行器、评分、划分、预算、gate、发布、R 的代码与 K 本身。这条和 v0.7 相同，原因也相同：候选能碰到的每一面都是它可能学会取分的面（SURVEY §5 第 3、6 条）。
+网关、broker、worker 运行器、评分、划分、预算、gate、发布、R 的代码与 K 本身。候选能碰到的每一面都是它可能学会取分的面（DGM 删过幻觉标记、伪造过测试日志；HyperAgents 被改掉过证书校验）。
 
-## 3 Memory：W 的一个组件
+## 4 Agent：种子 agent 程序
 
-### 3.1 职责
+### 4.1 选型：Stirrup 作种子，Pi 与 Deep Agents 作参照
 
-memory 是**经验的暂存层**：把 train 尝试里验证过的"何时、做什么、避免什么"变成条目，按题给 agent；反复出现、又能机械化的条目，交给改进器升级成工具或 hook。它不是知识库，也不是对话记忆。
+| 候选 | 是什么 | 优点 | 不作种子的原因 |
+|---|---|---|---|
+| **Pi**（pi-mono，TS，MIT，约 11 万 star） | “最小、可扩展的 agent harness”：pi-agent-core 的循环（prompt / continue / steer / followUp，hook `beforeToolCall` / `afterToolCall` / `prepareRequest` / `finishTurn`）+ pi-coding-agent 的扩展 API（事件 `before_agent_start`、`context`、`tool_call` 可阻止与改参数、`tool_result` 可改结果、`turn_end`、`session_*`；`registerTool`；skills；会话树与压缩） | 扩展事件模型是同类里最完整的；社区最大 | TS/Node 要进 worker 镜像，包里的 hook 与工具变成 TS，我们的 toolcheck、回放、训练链都是 Python，等于两套工具链；它的强项（TUI、会话树、生态）是开发者侧的，沙箱里的业务 agent 用不上 |
+| **Deep Agents**（LangChain，Python，MIT，约 3 万 star） | 中间件栈：Filesystem、SubAgent（`task` 工具、隔离上下文）、TodoList（可选）、摘要、HITL、prompt 缓存；memory 用 AGENTS.md，skills 用 SKILL.md 渐进披露；Harness-Zero 的学生 harness | 现成的复杂任务能力最全；中间件就是 hook 系统 | 拉进 LangGraph/LangChain 整棵依赖；循环核在库里，R 改不了（只能改中间件与配置）；模型调用经 LangChain 模型类，要包一层。要长程文件型任务（编码类业务线）时可作第二种子，接同一契约 |
+| **Stirrup**（Artificial Analysis，Python，MIT，0.2.0） | 一个循环（`Agent.run`）、finish 工具单独一回合、剩余回合提醒、按窗口比例的上下文摘要与溢出回退、子 agent（`to_tool`）、skills 加载器、`Tool` 与 `LLMClient` 两个接口；约 12k 行 | Python，最小，R 整份读得完；同基准唯一的 RSI 先例在它上面（+26）；v6-agent 分支已接通并有测试 | 没有 hook 系统（我们在适配层加，§4.3）；社区小 |
 
-### 3.2 写入路径（固定代码，只读 train）
+**结论：** Stirrup 作种子；Pi 的扩展事件模型是我们 hook API 的设计参照；Deep Agents 的中间件集合是“复杂任务能力”的清单，我们用种子工具与 hook 补齐（§4.4）。种子是可换的：harness 的类型与契约不依赖哪个上游，第二种子（Deep Agents）只需另一个适配文件。
+
+### 4.2 种子 agent 程序由什么组成
+
+| 文件 | 内容 | 来源 |
+|---|---|---|
+| `vendor/stirrup/**` | 上游 42 个文件，原样 | Stirrup 0.2.0 |
+| `agent/stirrup_agent.py` | 适配层：`LLMClient` → `ctx.model`（宿主报告的用量进 `ctx.view["last_usage"]`，供摘要阈值用）；`Tool` → 基础工具经 `ctx.tool`、包工具经入口、`read_skill` 经 `ctx.skills`、`recall` 经 `ctx.memory`；logger 回调 → `ctx.mark`；六个 hook 站点的分发（§4.3）；finish 的七处修正（v6-agent 分支已做并有测试） | 我们 |
+| `prompt/system.md`、`prompt/finish.md` | 系统提示与完成提示 | 种子 |
+| `middlewares/write_guard.py` | 种子 hook：台账（after_tool）、分诊（before_tool，第一次写之前要求 `plan_changes`）、提交前两向核对（on_finish）、日期锚（before_model） | 我们（移植 StarHarness、SWE-agent submit review、Todo 的模式） |
+| `tools/plan_changes.py` | 结构化计划：要做的改动、各自状态、`excluded` 清单；不改世界 | 我们 |
+| `tests/*.py` | 适配层与守卫的测试 | 我们 |
+| `manifest.json` | 类型条目、`model`、`config` | 种子 |
+
+用上游的什么、不用什么：用 `Agent.run`、finish、剩余回合提醒、摘要与溢出回退、子 agent、系统提示模板；不用 clients（适配层代替）、code backends（世界只经 ctx.tool）、skills 加载器（skills 只来自包）、web/browser 工具（无网；生产经 egress 时另作 `tool` 组件接入）、cache、SIGINT。
+
+### 4.3 hook 站点：按 Pi 的事件模型
+
+现在只有 before_tool / after_tool / on_finish 三个站点，流程类改动放不下（上下文整理、系统提示注入、回合末核对）。按 Pi 的扩展事件扩成六个，语义一致：能阻止的阻止，能改的改，其余只通知。
+
+| 站点 | 时机 | 能做什么 | 对应 Pi 事件 |
+|---|---|---|---|
+| `before_run` | 尝试开始，系统提示合成后 | 注入消息、改系统提示 | `before_agent_start` |
+| `before_model` | 每次 act 调用之前 | 非破坏地改 messages（整理、锚定、去冗） | `context` / `prepareRequest` |
+| `before_tool` | 工具执行前 | 阻止（给理由）、改参数 | `tool_call` |
+| `after_tool` | 工具执行后 | 改结果、追加一条反馈 | `tool_result` |
+| `after_turn` | 一回合结束 | 记台账、追加提醒 | `turn_end` |
+| `on_finish` | agent 要结束时 | 退回（最多 N 次，最后一回合不退） | `finishTurn` |
+
+hook 是 Python 函数，签名 `hook(event, view) -> dict | None`；事件与返回值的形状写在适配层的契约测试里；宿主记每次触发（site、name、动作）。回放（§6.6 V2b）就是对已记录的轨迹重新调用这些函数。
+
+### 4.4 复杂任务能力：对照 Deep Agents 的中间件
+
+| 能力 | Deep Agents | 我们怎么给 |
+|---|---|---|
+| 计划 | `write_todos`（TodoList 中间件） | 种子工具 `plan_changes`（结构化改动清单 + excluded） |
+| 子 agent | `task` 工具，隔离上下文 | Stirrup 的 `to_tool`；K 限深度；子 agent 的调用在同一次尝试里计量 |
+| 文件系统 / 草稿空间 | Filesystem 中间件（ls/read/write/edit） | 基准里没有文件世界，不给；编码类业务线换第二种子 |
+| 上下文管理 | 摘要中间件 | Stirrup 的摘要（aux 调用）+ `before_model` hook |
+| 技能 | SKILL.md 渐进披露 | `skill` 组件 + `read_skill` |
+| 记忆 | AGENTS.md | `memory` 组件 + `recall`（§5） |
+| 人工介入 | HITL 中间件 | 不给：无人值守是前提；生产里由 broker 的权限表代替 |
+
+### 4.5 R 怎么改 agent
+
+- 改 `agent`、`config`、`vendor` 是 L5，只在原因簇指向循环本身（如上下文溢出、完成协议、子 agent 失控）时分配名额；改动必须过 smoke 与包测试；每轮至多一个 L5 候选。
+- Stirrup 的常量（`AGENT_MAX_TURNS`、`CONTEXT_SUMMARIZATION_CUTOFF`、`TURNS_REMAINING_WARNING_THRESHOLD`）与摘要提示由 `config` 与 `prompt` 暴露，不必动 vendor。
+
+## 5 Memory：W 的一个组件
+
+### 5.1 职责
+
+memory 是**经验的暂存层**：把 train 尝试里验证过的“何时、做什么、避免什么”变成条目，按题给 agent；反复出现的条目往上升级为技能（文字）或工具/hook（代码）。它不是知识库，也不是对话记忆。
+
+### 5.2 写入路径（固定代码，只读 train）
 
 ```
 train 尝试（基线、首遇、重试）的轨迹（宿主写，按 K 的字节上限裁剪）
-  → ReMe 算子：TrajectoryPreprocess → Segmentation → Success/Failure/ComparativeExtraction → Validation → 批内 Deduplication
-  → 平台检查：出处（每条带 attempt、task、trace ref）、只用 train、字面量（含 ReMe 元数据）、可达性（when 能检索到 ≥ 2 道来源外 train 题）、与库内去重（同一向量空间）
+  → ReMe 算子：TrajectoryPreprocess → TrajectorySegmentation → Success / Failure / ComparativeExtraction → MemoryValidation → 批内 MemoryDeduplication
+  → 平台检查：出处（attempt、task、trace ref）、只用 train、字面量（含 ReMe 元数据）、可达性（when 能检索到 ≥ 2 道来源外 train 题）、与库内去重（同一向量空间）
   → 入库（chroma，一个集合一个业务线），记出处与统计
 ```
 
-ReMe 自带的记账与删除不用（会丢计数、记功是共享的）；去重只用批内那一半，跟库比由平台做。原因见 V0_6_DESIGN §5.7（tag 上）。
+ReMe 自带的记账与删除不用（会丢计数、记功共享）；去重只用批内那一半，跟库比由平台做。
 
-### 3.3 读取路径
+### 5.3 读取路径
 
-- 尝试开始时，宿主按任务文本检索 `shown_k` 条附在系统提示里（现有做法）；
-- 尝试中，agent 可调 `recall(query)` 再取（新增）。两者走同一个检索（ReMe MemoryRetrieval，可选 Rerank），同一条留一规则：来源含本题的条目不给（train 上是留一；dev/test 从不是来源）。
-- 重写（RewriteMemory）不用：多一次模型调用，没有证据。
+- 尝试开始时，宿主按任务文本检索 `shown_k` 条附在系统提示里；
+- 尝试中，agent 可调 `recall(query)` 再取。两者走同一个检索（ReMe MemoryRetrieval，可选 RerankMemory），同一条留一规则：来源含本题的条目不给；dev/test 从不是来源。
+- RewriteMemory 不用：多一次模型调用，没有证据。
 
-### 3.4 记功、退役与容量
+### 5.4 记功、退役与容量
 
 | 规则 | 内容 |
 |---|---|
-| 引用记功 | 首遇尝试的完成理由里有 `library-used:` 一行，点名的条目各记 r − b(t)；没有这一行，同屏条目平分。伤害按不同题计数 |
+| 引用记功 | 首遇尝试的完成理由里 `library-used:` 一行点名的条目各记 r − b(t)；没有这一行，同屏条目平分。伤害按不同题计数 |
 | 观察期 | 展示满 3 次之前不淘汰 |
 | 退役 | 伤害 ≥ 2 题，或效用 ≤ 阈值且展示 ≥ 3 次 |
-| 容量 | `max_active`（按证据定，约 500），满了按效用淘汰；不再有 6 架 × 6 条（S1 查出的容量 bug：42 条进库 35 条退役，其中 34 条是被挤出满架） |
-| 确定性 | 同分排序用名字作次键，不依赖哈希种子 |
+| 容量 | `max_active`（按证据定，约 500），满了按效用淘汰；不再有 6 架 × 6 条 |
+| 确定性 | 同分排序用名字作次键 |
 
-### 3.5 快照过阶梯
+### 5.5 快照过阶梯
 
-库是 W 的一个组件，所以它的快照是一个候选：流跑完后 D ≤ 0 就不付 gate；否则整库快照走 §4.6 的阶梯从 V3 起（V0～V2 在写入时已做）。装入后 dev/test 只见冻结快照。
+库是 W 的组件，它的快照是一个候选：流跑完后 D ≤ 0 就不付 gate；否则整库快照从 V3 起走 §6.6 的阶梯。装入后 dev/test 只见冻结快照。
 
-### 3.6 升级成代码
+### 5.6 逐级升级：记忆 → 技能 → 工具/hook
 
-条目 `fixes ≥ 2`、来源 ≥ 2 道 train 题、诊断标为可机械化 → 作为一个 cause 进入改进器的输入（§4.3），附条目原文。R 实现成 tool / hook 并装入后，条目标 `superseded_by`，不再展示。这是"经验 → 验证过的工具"的机制本身，不是"每条失败都变工具"的规则。
+| 条件 | 升级为 | 谁做 |
+|---|---|---|
+| 条目 `fixes ≥ 2`、来源 ≥ 2 道 train 题、不可机械化、正文是多步程序 | `skill`：固定代码把条目改写成技能候选，走阶梯 | 固定代码 |
+| 条目满足上两条且诊断标 `mechanizable` | 作为一个 cause 进入改进器输入（附条目原文），R 实现成 `tool` 或 `hook` | R |
+| 升级候选装入 | 条目标 `superseded_by`，不再展示 | 固定代码 |
 
-### 3.7 ReMe 的嵌入
+这是“经验 → 验证过的技能与工具”的机制本身，不是“每条失败都变工具”的规则。
+
+### 5.7 ReMe 的嵌入
 
 | 项 | 做法 |
 |---|---|
-| 进程 | ReMe 跑在独立 venv 的 sidecar（它自带的 HttpService），宿主只用 httpx。嵌入模型 bge-small（ONNX）本地跑；LLM 调用经我们的 OpenAI 兼容桥到计量过的研究 provider（claude_code），所以 memory 的每次模型调用都记账 |
-| 用哪些算子 | summary 下 8 个、retrieve 下 Retrieval / Rerank、dump / load。不用：RewriteMemory、MemoryDeletion、UpdateMemoryMetadata（由平台规则代替） |
-| 二开 | 只有一处子类：Deduplication 改成只在批内去重。其余都是平台层：`memory/vel.py`（规则）、`memory/track.py`（写入步，可断点续跑）、`memory/retrieval.py`、`memory/client.py`（sidecar 生命周期） |
+| 进程 | ReMe 跑在独立 venv 的 sidecar（它自带的 HttpService），宿主只用 httpx。嵌入模型 bge-small（ONNX）本地跑；LLM 调用经 OpenAI 兼容桥到计量过的研究 provider，所以 memory 的每次模型调用都记账 |
+| 用哪些算子 | summary 下 8 个、retrieve 下 MemoryRetrieval / RerankMemory、DumpMemory / LoadMemory。不用：RewriteMemory、MemoryDeletion、UpdateMemoryMetadata |
+| 二开 | 一处子类：Deduplication 改成只在批内去重。其余是平台层：`memory/vel.py`（规则）、`memory/track.py`（写入步，可断点续跑）、`memory/retrieval.py`、`memory/client.py` |
 | 版本 | 0.3.1.10 钉死（0.4 线删掉了 task memory），锁文件按哈希 |
 
-## 4 改进器（R）：框架的核心机制
+## 6 改进器（evolution）：框架的核心机制
 
-### 4.1 一轮的八步
+### 6.1 一轮的八步
 
-改进器是我们自己设计、自己实现的循环，不交给任何现成编码 agent 的循环。R 的模型经 claude_code CLI，但循环的驱动、工具、上限、输入、验收都是框架的。
+改进器是框架自己设计实现的循环：R 的模型经 claude_code CLI，但循环的驱动、工具、上限、输入、验收都是框架的。
 
 | 步 | 输入 | 输出 | 谁做 | 模块 |
 |---|---|---|---|---|
 | 1 证据 | 本轮 train 尝试的轨迹与事件 | trace ref、可重建的轨迹、全文索引（只限 train） | 固定代码 | `improver/evidence.py` |
-| 2 诊断 | 失败的 train 尝试 | 失败案例（证据 ref、原因标签、可机械化与否）→ 跨题聚成**原因簇** `causes.jsonl` | aux 模型调用 + 确定性特征（断言类型、工具错误、终止原因） | `improver/diagnose.py` |
-| 3 分层 | 原因簇、台账里各类型的估值 | 本轮每个簇指派的组件类型与名额 | 固定代码（§4.4） | `improver/allocate.py` |
-| 4 实现 | 指派、当前包、轨迹读取、检查命令 | ≤ k 个候选目录，各带声明 | R 的编码会话（§4.5） | `improver/session.py` |
-| 5 验收 | 候选 | 逐档结果；过 V2 的候选才付费 | 固定代码（§4.6） | `improver/verify/` |
+| 2 诊断 | 失败的 train 尝试（加最好的几条成功尝试） | 案例 → **原因簇** `causes.jsonl` | aux 模型调用 + 确定性特征 | `improver/diagnose.py` |
+| 3 分层 | 原因簇、台账里各层的估值 | 每个簇指派的组件类型与名额 | 固定代码 | `improver/allocate.py` |
+| 4 实现 | 指派、当前包、轨迹读取、检查命令 | ≤ k 个候选目录，各带声明 | R 的编码会话 | `improver/session.py` |
+| 5 验收 | 候选 | 逐档结果；过 V2 才付费 | 固定代码 | `improver/verify/` |
 | 6 筛选与 gate | 过 V2 的候选 | train 筛选最优者付 dev gate + 确认 | 固定代码 | `evaluate/` |
 | 7 装入与存档 | gate 收据 | 装入主线或拒绝；候选、声明、逐档结果、收据进档案 | 固定代码 | `improver/archive.py`、`evaluate/release.py` |
-| 8 记功 | 装入后的 train 读数与事件 | 按条件给组件记功；无功组件生成删除候选；台账更新各类型估值 | 固定代码 | `improver/credit.py`、`improver/ledger.py` |
+| 8 记功 | 装入后的 train 读数与事件 | 条件记功；无功组件生成删除候选；台账更新估值 | 固定代码 | `improver/credit.py`、`improver/ledger.py` |
 
-### 4.2 证据与 trace
+### 6.2 证据与 trace
 
-宿主已经写下每次模型调用（messages 以前缀计数加尾段）、每次工具调用、每个 mark。证据层只在读取时派生：`<session>:L<line>` 作稳定引用；按 act 调用重建"actor 看到的轨迹"（跨 Stirrup 的摘要）；SQLite FTS5 全文索引，只索引 train，非 train 的 session 连第一行都不给读。v6-gateway 分支的 `trace.py` 就是这个，照用。
+宿主已经写下每次模型调用（messages 以前缀计数加尾段）、每次工具调用、每个 hook 触发、每个 mark。证据层只在读取时派生：`<session>:L<line>` 作稳定引用；按 act 调用重建“actor 看到的轨迹”（跨 Stirrup 的摘要）；SQLite FTS5 全文索引，只索引 train，非 train 的 session 连第一行都不给读。v6-gateway 分支的 `trace.py` 就是这个，照用。
 
-### 4.3 诊断与原因簇
+### 6.3 诊断与原因簇
 
-- 每个失败尝试产出一条案例：`{attempt, task, evidence_refs, cause, mechanizable, assertion_kinds, tool_errors, termination}`。cause 是稳定的短名（如 `excluded_mentioned`、`arith_mismatch`、`real_date`），由 aux 调用在给定的词表上选，词表可增项但增项要带两条以上案例。
+- 每个失败尝试产出一条案例：`{attempt, task, evidence_refs, cause, mechanizable, assertion_kinds, tool_errors, termination}`。cause 是稳定短名（`excluded_mentioned`、`arith_mismatch`、`real_date`、`missing_recipient`……），由 aux 调用在给定词表上选；词表可增项，增项要带 ≥ 2 条案例。
 - 簇 = 同 cause 的案例集合，带题数、尝试数、来源 ref。簇是分层和记功的单位；R 只看簇与它的证据，不看 dev/test。
-- memory 里满足 §3.6 的条目也进簇（带条目原文）。
-- v0.4 的逐题笔记与失败摘要并入案例，不再另有一套。
+- 每轮附最好的若干条成功轨迹（RRSI 的做法：别破坏已经成立的习惯）。
+- memory 里满足 §5.6 的条目也进簇（带条目原文）。
+- 旧的逐题笔记与失败摘要并入案例，不另有一套。
 
-### 4.4 分层：学出来的，不是写死的
+### 6.4 分层：学出来的，带代码先验
 
-对每个（业务线，cause，组件类型）维护一个估值：装入后在该 cause 的题上的净修复数 / 名义花费，来自台账。本轮给每个簇选估值上界最高的类型；每轮留一个名额给该 cause 上从没试过的类型（探索）。初值一律相同，R 的提示里没有"先做工具"的倾向。估值随活动累积，是 R 自己学习的一部分（§4.8）。
+- 对每个（业务线，cause，层）维护估值：装入后在该 cause 题上的净修复数 / 名义花费，来自台账。本轮给每个簇选估值上界最高的层；每轮留一个名额给该 cause 上从没试过的层（探索）。
+- **初值按量到的历史定**，不是一律相同：文字层按我们三次 final（平均 +8，区间含 0）；代码层本地没有读数，按同基准的外部读数（+26）给较高的先验不确定性，使探索名额先落在代码层。
+- 结构保证：诊断里有 `mechanizable` 的簇时，本轮至少一个 `tool` 或 `hook` 候选要到达 V2；没有到达，记为改进器失职（台账 `no_code_candidate`），下一轮该簇的代码层名额加倍。
+- L5（agent/vendor/config）每轮至多一个名额，只在簇指向循环时给。L6（权重）是估值表里的一层：只在代码层与文字层连续 N 轮估值不涨（停滞，SIA 的切换规则）且训练链已打通时才指派。
 
-### 4.5 编码会话
+### 6.5 编码会话
 
 | 项 | 内容 |
 |---|---|
 | 在哪跑 | 模型循环在宿主，文件树在 worker（`/work`：`package/` 只读、`inputs/` 只读、`candidates/<dir>/` 可写）。R 写的任何字节都不是宿主的文件 |
-| 输入 | 指派（簇 + 类型 + 名额）、簇的证据 ref、当前包、台账的 train 投影（哪些机制试过、结果如何）、dev 失败类型直方图（只有枚举与计数） |
-| 工具 | 文件五个（list / read / write / edit / delete）；`read_trajectory(ref)`；`search_trace(query)`；`run_tests(dir)`；`run_check(dir)`：对候选跑 V0～V2 并返回结果，**R 在 finish 之前就能自己验**；`finish(declaration)` |
-| 上限 | 回合、编辑数、读取字节，都是 K 的字段 |
-| 产出 | ≤ k 个候选，每个声明 `{cause_id, kind, site, predicted_affected, trigger, differs_from?}`；toolcheck 用的脚本随声明交，只给检查，不进包 |
+| 输入 | 指派（簇 + 层 + 名额）、簇的证据 ref、成功轨迹 ref、当前包、台账的 train 投影（试过什么、结果如何、归因记分板）、研究剧本、dev 失败类型直方图（只有枚举与计数） |
+| 工具 | 文件五个（list / read / write / edit / delete）；`read_trajectory(ref)`；`search_trace(query)`；`run_tests(dir)`；`run_check(dir)`：对候选跑 V0～V2 并返回结果，R 在 finish 之前就能自己验；`finish(declaration)` |
+| 上限 | 回合、编辑数、读取字节，都是 K 的字段（RRSI 的 40 回合 / 80 次编辑是参照） |
+| 产出 | ≤ k 个候选，每个声明 `{cause_id, kind, site, predicted_affected, trigger, differs_from?, scripts[]}`；toolcheck 用的脚本随声明交，只给检查，不进包 |
 | 没有的 | shell、网络、宿主文件、dev/test 的任何内容、改自己上限的办法 |
+| 失败处理 | 会话超限或协议错误：本轮无候选，记台账；worker 崩溃：基础设施故障，不算 R 的；声明与 diff 不符：候选 invalid，退回修订一次 |
 
-这就是现有 `research/session.py` 的形状，差别是：输入从"失败笔记 + 摘要"换成簇与指派；多了 `search_trace` 与 `run_check`；删掉 playbook 段落以外的方法库相关输入。
-
-### 4.6 验收阶梯
+### 6.6 验收阶梯
 
 每档过了才花下一档的钱。V0～V2 不调付费模型。
 
 | 档 | 内容 | 适用类型 |
 |---|---|---|
-| V0 静态 | 包形状、类型是否被 K 允许、上限、相对种子改动行的字面量检查、禁止读 `memory/`、manifest schema | 全部 |
-| V1 单元 | 包测试在 worker 里跑；agent 改动另跑 smoke（脚本化模型） | agent、vendor、tool、hook |
+| V0 静态 | 包形状、类型是否被 K 允许、上限、相对种子改动行的字面量检查、禁止读 `memory/`、manifest schema、声明与 diff 一致 | 全部 |
+| V1 单元 | 包测试在 worker 里跑；agent / vendor / config 改动另跑 smoke（脚本化模型，找确定性崩溃与协议违规） | agent、vendor、config、tool、hook |
 | V2a toolcheck | R 为每道声称能修的失败 train 题交一段调用新工具的脚本；宿主在该题的新世界里经可写 broker 执行，用真实断言（含 must-not）判分；要求脚本调用了新工具；≥ 2 道声称题通过。只回传通过与否和失败断言的**类别** | tool |
 | V2b 回放 | 对已记录的 train 轨迹回放 hook：声称的失败题上触发 ≥ 2 道；报告通过题上的误触发率 | hook |
 | V2c 可达 | when / 标题能检索到 ≥ 2 道来源外 train 题 | skill、memory |
 | V3 train 筛 | 付费：声称的失败题 + 固定通过样本；**按条件记修复**（tool 只在调用过的题上记，hook 只在触发过的题上记，文字在足迹出现的题上记）；净翻转最优者进 V4 | 全部 |
-| V4 dev gate | 配对、确认复测、`min_tasks`、退步容忍、成本项（现有） | 全部 |
+| V4 dev gate | 配对、确认复测、`min_tasks`、退步容忍、成本项 | 全部 |
 | V5 封存 final | 对外数字只来自这一档 | 发布 |
 
-V2a 只证明"工具正确，而且用它存在可行解"，不证明 actor 会用；后者由 V3/V4 判断（ASI 论文表 3：执行验证带来的增益 +6.4，形式从文字换成程序只多 +1.1）。
+V2a 只证明“工具正确，而且用它存在可行解”，不证明 actor 会用；后者由 V3/V4 判断（ASI：执行验证 +6.4，文字换程序只多 +1.1）。
 
-### 4.7 装入、存档与反膨胀
+### 6.7 装入、存档与父包
 
-- 装入仍是 dev gate 后的 CAS（现有 `release.py`）；父包永远是主线，回滚退到好的祖先。
-- 档案保存每个评过的候选：父 ref、声明、逐档结果、收据。它是记功和 R 输入的来源，不是第二条主线（多父、重定基推迟，见 §9）。
-- 反膨胀：连续 N 轮零条件记功的组件，由固定代码生成删除候选，走同一条阶梯（V3 起）；gate 的成本项照旧。AutoSaddler 的 Iter 46（挑了 8 个 hook 丢 12.3 点）与 GEPA 的提示 +75% 长度 −2% 都是没有这条的后果。
+- 装入是 dev gate 后的 CAS（现有 `release.py`）；父包永远是主线；回滚退到好的祖先。
+- 档案保存每个评过的候选：父 ref、声明、逐档结果、收据。它是记功和 R 输入的来源，不是第二条主线。多父、重定基（AutoSaddler 的 EvoDAG、DGM 的档案）推迟：单领域 3 轮的活动里没有用武之地。
 
-### 4.8 R 自己的学习（C4）
+### 6.8 条件记功与反膨胀
 
-R 的策略 = 分层估值（§4.4）+ 研究剧本（playbook，台账核对过的教训）。两者都从台账学，都在活动之间延续。递归判据不变：R 的更新经下游 W\* 比较验证，并被下一次改进实际使用。比较仍是跨活动：R1 = R0 + 上一活动的估值与剧本，同划分、同根、同日程，W0 / W\*\_R0 / W\*\_R1 联合 final。
+- 记功只按宿主事件：tool 在调用过的题上、hook 在触发过的题上、memory 条目在引用过的题上、skill 在读过的题上记；agent/prompt/config 的足迹是全部题。
+- 连续 N 轮零条件记功的组件，由固定代码生成删除候选，走阶梯（V3 起）；gate 的成本项照旧。AutoSaddler 的 Iter 46（挑了 8 个 hook 丢 12.3 点）与 GEPA 的提示 +75% 长度 −2% 都是没有这条的后果。
 
-### 4.9 接口（数据形状）
+### 6.9 改进器自己的学习（C4）
+
+R 的策略 = 分层估值（§6.4）+ 研究剧本（台账核对过的教训，带证据 ref）。两者从台账学，在活动之间延续，可跨业务线共享。递归判据不变：R 的更新经下游 W\* 比较验证，并被下一次改进实际使用。比较是跨活动：R1 = R0 + 上一活动的估值与剧本，同划分、同根、同日程，W0 / W\*\_R0 / W\*\_R1 联合 final。
+
+### 6.10 接口（数据形状）
 
 | 名字 | 形状 | 写者 |
 |---|---|---|
@@ -240,31 +353,37 @@ R 的策略 = 分层估值（§4.4）+ 研究剧本（playbook，台账核对过
 | Credit | `{release_ref, component, task_id, conditioned: bool, delta}` | credit |
 | Estimate | `{line, cause, kind, fixes, cost, n}` | ledger |
 
-## 5 模型训练在同一回路
+### 6.11 运行语义
 
-- `model` 是 W 的一个组件：manifest 的 `model` 项记身份与推理配置。训练链（`ouroloop/train/`，按 V2_TRAINING_PIPELINE）从宿主写的 act 调用建数据，训出产物 ref；一个候选 W 把它绑进 `model` 项，从 V3 起走同一条阶梯（V0～V2 换成数据检查与链路收据）。
+- 每一步幂等、可续跑：每步的产物带输入 ref，重跑同一输入直接取已有产物（现有 execution 日志的做法）。
+- 一轮内候选的 V0～V2 并行；V3 起串行（共用一个订阅账户）。
+- 所有付费步骤先预留再结算，预算根与份额是 K 的；一轮的花费单列 R 的会话、aux 诊断、V3、V4。
+
+## 7 训练在同一回路
+
+- `model` 是 W 的组件：manifest 的 `model` 项记身份、推理配置与训练产物 ref。训练链（`ouroloop/train/`，按 V2_TRAINING_PIPELINE）从宿主写的 act 调用建数据，训出产物 ref；一个候选 W 把它绑进 `model` 项，从 V3 起走同一条阶梯（V0～V2 换成数据检查与链路收据）。
 - 顺序不变：演化 → 冻结 release → 在该 release 上采集/训练 → 换学生 → 在学生上重新演化。
-- 决策模型（写门等）是同一机制的另一个插件；首个挂点仍是 broker 边界的 `write_gate`。
-- 本文不改 V2 的任何决定；只规定它怎么接到 W 上。
+- 什么时候训：按 §6.4 的停滞规则，或用户指定；训练与 harness 改动不在同一轮同时进 gate（SIA 指出的“两个优化器互相过拟合固定验证器”）。
+- 决策模型（写门等）是同一机制的另一个插件；首个挂点仍是 broker 边界的 `write_gate`。本文不改 V2 的任何决定。
 
-## 6 平台（K）：只留三类
+## 8 平台（K）：只留三类
 
 | 类 | 留 | 代码（现有 → 目标） |
 |---|---|---|
 | 保护钱 | 预算根与份额、预留、按 attempt id 续跑、五项硬限额、计量网关、启动检查里的资金项 | `evolve/execution.py` 的预算部分、`ledger.py`、`agent/gateway.py` → `runtime/gateway.py`、`activity/budget.py` |
 | 防泄漏 | 划分冻结与哈希、R 与 memory 只读 train、字面量检查、留一、封存 final 的计划哈希先于第一次 test 尝试、R 的工作树在 worker | `benchmark.py`、`harness_package.py` 的字面量部分、`trace.py` 的 split 守卫 → `evaluate/splits.py`、`harness/literals.py` |
-| 保结果正确 | 配对 gate 与确认复测、`min_tasks`、退步容忍、成本项、内容寻址对象与 CAS 装入、回滚、隔离 worker 与 broker、报告 | `evolve/task_gate.py`、`task_eval.py`、`release.py`、`agent/worker*.py` → `evaluate/gate.py`、`evaluate/release.py`、`runtime/worker.py`、`activity/report.py` |
+| 保结果正确 | 配对 gate 与确认、`min_tasks`、退步容忍、成本项、内容寻址对象与 CAS 装入、回滚、隔离 worker 与 broker、报告 | `evolve/task_gate.py`、`task_eval.py`、`release.py`、`agent/worker*.py` → `evaluate/gate.py`、`evaluate/release.py`、`runtime/worker.py`、`activity/report.py` |
 
-删掉（都在 `bench.py`、`policies.py`、`research/` 里）：活动内研究位与 campaign 配对、多领域合并、采集批、段延长、方法库与 `learn` 阶段、v3/v5 preset 的兼容分支、economy / protected / frontier 的残留、PolicySet / PolicyDescriptor / TargetRegistration 一族（W 的提示是包文件，R 的配置是 R 的文件，release 只需钉 `{W ref, R config ref, K ref}`）、`research/campaign.py`、`research/basic.py`、`research/api_errors.py`。
+删掉：活动内研究位与 campaign 配对、多领域合并、采集批、段延长、方法库与 `learn` 阶段、v3/v5 preset 的兼容分支、economy / protected / frontier 残留、PolicySet / PolicyDescriptor / TargetRegistration 一族（W 的提示是包文件，R 的配置是 R 的文件，release 只需钉 `{W ref, R config ref, K ref}`）、`research/campaign.py`、`research/basic.py`、`research/api_errors.py`。
 
-## 7 代码布局与现有代码的对应
+## 9 代码布局与现有代码的对应
 
 ```
 ouroloop/
   harness/      包模型、组件类型、种子构建、vendor 与补丁栈、字面量检查      ← agent/harness_package.py、v6-agent 分支
-    seeds/stirrup/   适配层、写入守卫 hook、补丁栈、PROVENANCE               ← v6 的 seed_v6
+    seeds/stirrup/   适配层、写入守卫、plan_changes、补丁栈、PROVENANCE      ← v6 的 seed_v6
   runtime/      网关、broker、worker 与运行器、egress、导出的 App            ← agent/{gateway,worker,worker_runner,runner}.py、app.py、v6-gateway
-  memory/       sidecar 客户端、平台规则、写入步、检索                        ← v6-memory 分支（research/library.py 删）
+  memory/       sidecar 客户端、平台规则、写入步、检索、升级                   ← v6-memory 分支（research/library.py 删）
   improver/     evidence、diagnose、allocate、session、verify/、archive、credit、ledger、policy  ← research/{session,drafts,diagnosis,experiment,inspection,context}.py 拆分重写
   evaluate/     划分、gate、final 计划与封存、发布                            ← benchmark.py、evolve/{task_gate,task_eval}.py、release.py
   activity/     阶段编排、预算、config 与 preset、报告                         ← bench.py（5,360 行）拆成约 1,200 行
@@ -276,42 +395,48 @@ ouroloop/
 |---|---|
 | `agent/default_agent.py` | 删。种子 agent 是 Stirrup 适配层；旧包不再在 HEAD 上跑（规则 15） |
 | `research/library.py`、`methods.py`、`method_kit/`、`fixed.py`、`campaign.py`、`basic.py`、`api_errors.py`、`loop.py` | 删 |
-| `evolve/contracts.py`、`experience.py` | 保留对象库与 Record；删训练/决策以外没有使用者的契约类型（随 `policies.py` 一族） |
+| `evolve/contracts.py`、`experience.py` | 保留对象库与 Record；删没有使用者的契约类型 |
 | `policies.py` | 删。release 改钉三个 ref |
-| v6 分支 | `v6-agent`（Stirrup 种子、vendor 类型、K 的 worker 资源与 egress）、`v6-gateway`（桥、trace、egress、usage view）、`v6-memory`（sidecar、VEL 规则、写入步）三条都在各自的测试下是绿的，按上面的布局搬入；`v6` 合并分支上未完成的接线（WIP）不用 |
-| 测试 | 随代码迁；`test_record_compat`、`test_attempt_behaviour`（夹具换成新种子重录）、`test_paid_run_safety` 与 `test_hot_path_boundary` 必须一直绿 |
+| v6 分支 | `v6-agent`（Stirrup 种子、vendor 类型、worker 资源与 egress）、`v6-gateway`（桥、trace、egress、usage view）、`v6-memory`（sidecar、VEL 规则、写入步）各自测试绿，按布局搬入；`v6` 合并分支上未完成的接线不用 |
+| 测试 | 随代码迁；`test_record_compat`、`test_attempt_behaviour`（夹具换新种子重录）、`test_paid_run_safety`、`test_hot_path_boundary` 必须一直绿 |
 
-## 8 实施计划
+规模目标：框架 30,113 行 → 约 20k；核心（harness + agent 适配 + memory + improver）约 2.9k → 约 9k；平台约 18k → 约 7k；`train/` 4.7k 不动。
 
-每个阶段：先文档（本文的对应节改定稿）→ 代码 → 默认与全量测试 → JOURNAL → 停下等用户。阶段 1～3 各自一个分支，串行合入，$0。
+## 10 实施计划
+
+每个阶段：先把本文对应节改定稿 → 代码 → 默认与全量测试 → JOURNAL → 停下等用户。阶段 1～3 各自一个分支，串行合入，$0。
 
 | 阶段 | 内容 | 验收 | 花费 |
 |---|---|---|---|
 | 0 | 本文；文档清理；PLAN 改写 | 用户审定 | $0 |
-| 1 harness 与平台收缩 | `harness/`、`runtime/`、`evaluate/`、`activity/`；Stirrup 种子；K 的 worker 资源与网络；§6 的删除 | 默认与 Docker 全量通过；`quickstart.toml` 的 `--phase smoke --checks-only` 与假上游上的一次尝试（新种子）通过；框架行数 ≤ 22k | $0 |
-| 2 memory | `memory/`；sidecar 与锁文件；`recall` 工具；记功与容量规则；快照走阶梯 | 假上游上 `--phase library` 端到端：写入、检索、记功、快照；变异检查在隔离副本 | $0（sidecar venv 要联网安装） |
-| 3 改进器 | `improver/` 八步；toolcheck 与回放；分层估值；档案与反膨胀；R 的配置 | 假上游上脚本化的 R 一轮端到端：产出一个 tool 候选，过 V0～V2a，V3 筛选记条件修复；一个 hook 候选过 V2b | $0 |
-| 4 实测 | finance，新 preset：基线 → library → 3 轮（每轮后停）→ 有装入则封存 final | 过程检查成立；计划哈希提交早于第一次 test 尝试；报告两次相同 | 名义约 $300～480，每步先批准 |
+| 1 harness 与平台收缩 | `harness/`、`runtime/`、`evaluate/`、`activity/`；Stirrup 种子与六个 hook 站点；worker 资源与网络从 K 读；§8 的删除 | 默认与 Docker 全量通过；`quickstart.toml` 的 `--phase smoke --checks-only` 通过；假上游上用新种子跑一次尝试；框架 ≤ 22k 行 | $0 |
+| 2 memory | `memory/`；sidecar 与锁文件；`recall` 工具；记功与容量；快照走阶梯；升级规则 | 假上游上 `--phase library` 端到端；变异检查在隔离副本 | $0（sidecar venv 要联网安装） |
+| 3 改进器 | `improver/` 八步；toolcheck 与回放；分层估值与代码先验；档案与反膨胀；R 的配置 | 假上游上脚本化的 R 一轮端到端：tool 候选过 V0～V2a 并在 V3 记条件修复；hook 候选过 V2b；有 mechanizable 簇而无代码候选时台账记 `no_code_candidate` | $0 |
+| 4 实测 | finance，新 preset：基线 → library → 3 轮（每轮后停）→ 有装入则封存 final | 过程检查成立；计划哈希早于第一次 test 尝试；报告两次相同 | 名义约 $300～480，每步先批准 |
 | 5 训练绑定 | v2.0 离线链对新记录跑通；`model` 组件绑定；之后按 V2 的 v2.1 | V2 §5 的断言 | $0；v2.1 另批 |
 
-## 9 考虑过、不做
+## 11 考虑过、不做
 
 | 项 | 为什么不做 |
 |---|---|
-| 把改进器交给 Claude Code 自己的循环 | 改进器是框架的核心机制，要自己设计实现；用现成循环就无法定义输入、上限、验收与记功（用户 2026-10-09） |
-| 多父档案、重定基到任意祖先（AutoSaddler EvoDAG、DGM 档案） | 单领域 3 轮的活动里没有用武之地；先记档案，分支策略等有证据再加 |
+| 把改进器交给 Claude Code / omp 等现成编码 agent 的循环 | 改进器是框架核心机制，要自己设计实现；用现成循环就无法定义输入、上限、验收与记功 |
+| Pi 作种子 agent | 两套工具链进 worker；它的强项在开发者侧。只借它的扩展事件模型 |
+| Deep Agents 作首个种子 | 依赖重、循环核不可改；作编码类业务线的第二种子备选 |
+| OpenEvolve 式的 MAP-Elites 岛与 GEPA 的 Pareto | 每个候选评一次就是一次 25 题 dev gate，种群式搜索付不起；单一在位者 + 档案 |
+| SIA 式的在线 RL 回路 | 训练链先按 V2 打通；“停滞再训”作分层规则采纳，RL 目标的选择不在第一期 |
+| Exo 式的运行时自我重建与克隆 | 候选改宿主、改自己的运行器是我们禁止的可变面；只借它的三层划分与不可变事件日志 |
 | 在尝试中让 ReMe 重写、删除条目 | 多一次模型调用且动库；平台规则代替 |
-| 自适应 effort、Max 读数 | 用户已定统一档位 |
-| 种子里放具体工具（calc、table_diff） | 把人写的增益和 RSI 的增益混在一起；finance 的"算术"失败多半是比对漏行、规则用错，不是算术本身 |
-| 为每条原则加审查或自动检查 | 用户 2026-10-09："不要因为一个原则的加入从而引入过多的无关审查" |
+| 种子里放具体工具（calc、table_diff） | 把人写的增益和 RSI 的增益混在一起 |
+| 为每条原则加审查或自动检查 | 用户 2026-10-09 |
 | 方法库、活动内研究位、多领域合并 | 没有产生过证据；C4 已改为跨活动 |
 
-## 10 待用户决定
+## 12 待用户决定
 
 | # | 事项 | 建议 |
 |---|---|---|
-| 1 | 本文取代 DESIGN v0.7、OSS_COMPONENTS_PLAN、MEMORY_AGENT_ITERATION、V0_6_DESIGN；modules/ 的十份文档描述现有代码，随阶段 1～3 的代码一起删 | 是 |
-| 2 | 阶段 1 的分支从 `m1-automationbench` 起，v6 的三条分支按 §7 搬入，不合并 `v6` 的 WIP | 是 |
-| 3 | 第一个实测域 finance（噪声最小，有 v0.4 作参照） | 是 |
-| 4 | 阶段 4 的预算根，名义约 $300～480 | 到阶段 4 前批准 |
-| 5 | §2.1 的组件类型表与 §4.6 的阶梯是否有要加减的 | — |
+| 1 | 本文取代 DESIGN v0.7、三份设计稿与 modules/ 十份文档 | 是 |
+| 2 | 种子 agent：Stirrup；Pi 只作 hook API 参照；Deep Agents 作第二种子备选 | 是 |
+| 3 | 特色定为“轻量 harness 包 + 运行壳 + 模型描述，蒸馏作第二杠杆” | 是 |
+| 4 | 分层的代码先验与“有可机械化簇就必须有代码候选到 V2”的结构保证 | 是 |
+| 5 | 阶段 1 从 `m1-automationbench` 起，v6 三条分支按 §9 搬入 | 是 |
+| 6 | 第一个实测域 finance；阶段 4 预算名义约 $300～480 | 到阶段 4 前批准 |
