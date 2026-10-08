@@ -652,11 +652,11 @@ class CodingSession:
 
 def _calls_of(reply) -> list[ToolCall]:
     """The tool calls of a reply: the provider's own, else one written as JSON in the text ({"tool", "args"} or
-    {"tool_calls": [...]}) for a provider that answers in text only (the manual provider's hand-written replies).
+    {"tool_calls": [...]}) for a provider that answers in text only.
     A provider whose replies carry their own content (`native`: the Anthropic API) has native tool use, so its
     text is never read as a call: the replayed content would hold no tool_use for the tool_result that followed,
     which the API refuses — such a reply gets the session's nudge instead."""
-    # Every provider answers with ToolCall objects (anthropic, openai_compat, claude_code, manual); nothing else is
+    # Every provider answers with ToolCall objects (anthropic, openai_compat, claude_code); nothing else is
     # read as a structured call.
     calls = [c for c in getattr(reply, "tool_calls", None) or () if isinstance(c, ToolCall)]
     if calls or getattr(reply, "native", None) is not None:

@@ -550,7 +550,7 @@ def test_a_surrogate_in_a_tool_name_or_the_reply_text_is_escaped_in_every_record
 def test_a_written_tool_calls_field_that_is_not_a_list_is_no_call(text):
     """M4 §1 (2026-10-05, second recheck): `tool_calls` written in the text is read only when it is a list; anything
     else is no call, answered with the session's nudge, never a TypeError. A structured tool call that is not a
-    ToolCall (no provider makes one: anthropic, openai_compat, claude_code and manual all answer with ToolCall) is
+    ToolCall (no provider makes one: anthropic, openai_compat and claude_code all answer with ToolCall) is
     no call either."""
     from ouroloop.research.session import NUDGE
     session, tree = tree_with()

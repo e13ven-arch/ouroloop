@@ -50,9 +50,6 @@ def build_provider(spec: dict):
     if kind == "openai_compat":
         from .providers.openai_compat import OpenAICompatProvider
         return OpenAICompatProvider(**spec)
-    if kind == "manual":
-        from .providers.manual import ManualProvider
-        return ManualProvider(**spec)
     if kind == "claude_code":
         from .providers.claude_code import ClaudeCodeProvider
         return ClaudeCodeProvider(**spec)

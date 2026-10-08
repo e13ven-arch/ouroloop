@@ -2,9 +2,8 @@
 
 A provider has `complete(system, prompt) -> str` and a `source` that says where its answers come from
 ("frontier_llm" or "open_llm"). Either way they are for evaluation only, never training targets (docs/DESIGN.md
-invariant 6). Besides the API providers (anthropic, openai_compat) there are `claude_code` (claude_code.py): Claude
-through headless Claude Code on this machine's login, one blind request per call; and `manual` (manual.py): the same
-requests and replies, as files that a person or another process answers.
+invariant 6). Besides the API providers (anthropic, openai_compat) there is `claude_code` (claude_code.py): Claude
+through headless Claude Code on this machine's login, one blind request per call.
 """
 from __future__ import annotations
 

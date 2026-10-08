@@ -13,8 +13,7 @@ from ouroloop.chat import ToolCall, ToolSpec
 from ouroloop.config import build_provider
 from ouroloop.evolve.execution import normalize_usage
 from ouroloop.providers import ProviderAccountError, ProviderError, ReplyRefused, ReplyTruncated, is_account_error
-from ouroloop.providers.claude_code import _SET, TURN_NOTE, ClaudeCodeProvider, cli_problem
-from ouroloop.providers.manual import request_json
+from ouroloop.providers.claude_code import _SET, TURN_NOTE, ClaudeCodeProvider, cli_problem, request_json
 
 FAKE = """#!{python}
 import json, os, sys, time

@@ -79,8 +79,8 @@ def cap_effort(requested: str | None, max_effort: str | None) -> str | None:
 
 def takes_effort(provider) -> bool:
     """Whether the provider's `chat` takes an `effort` keyword, looking through meters (a `.provider` whose chat
-    passes **kwargs on) to the provider that makes the call. Read once per gateway: ScriptedChat, the test
-    workers and `manual` keep their three-argument chat and are never handed a keyword they do not take."""
+    passes **kwargs on) to the provider that makes the call. Read once per gateway: ScriptedChat and the test
+    workers keep their three-argument chat and are never handed a keyword they do not take."""
     seen: set[int] = set()
     while provider is not None and id(provider) not in seen:
         seen.add(id(provider))

@@ -769,13 +769,13 @@ def test_startup_checks_the_pinned_models(fake_upstream, tmp_path, fixture_prese
     activity = bench.open_activity(cfg, ".", out=lambda _line: None)     # W0 pins this actor
     # [llm] changed after the bootstrap: what is checked is what the release pins, and the research model
     later = {**cfg, "llm": {"type": "rsi:BusinessWorker"},
-             "research": {"llm": {"type": "manual", "dir": str(tmp_path / "m"), "max_tokens": 32768}}}
+             "research": {"llm": {"type": "rsi:BusinessWorker", "max_tokens": 32768}}}
     problems = bench.startup_checks(activity, later, phase="baseline")
     assert any(p.startswith("the actor the active release pins max_tokens 20000 is above") for p in problems)
     assert any("the actor the active release pins reads its key from OUROLOOP_TEST_UNSET_KEY" in p
                for p in problems)
     assert any(p.startswith("[research.llm] max_tokens 32768 is above") for p in problems)
-    assert not any("[research.llm] reads its key" in p for p in problems)    # a manual model has no key
+    assert not any("[research.llm] reads its key" in p for p in problems)    # a module:Class model has no key
     monkeypatch.setenv("OUROLOOP_TEST_UNSET_KEY", "set")
     assert not any("reads its key" in p for p in bench.startup_checks(activity, later, phase="baseline"))
 
@@ -1038,12 +1038,11 @@ def test_which_paid_phases_need_which_frozen_plans(fake_upstream, tmp_path, fixt
     assert all(any(f"names no {t}_ref" in p for p in problems) for t in ("task_plan", "schedule", "budget"))
 
 
-def test_a_manual_model_is_not_checked_for_a_key(fake_upstream, tmp_path, fixture_preset, monkeypatch):
+def test_only_an_openai_compat_model_is_checked_for_a_key(fake_upstream, tmp_path, fixture_preset, monkeypatch):
     monkeypatch.delenv("OUROLOOP_TEST_UNSET_KEY", raising=False)
     cfg = cycle_config(fake_upstream, tmp_path)
     activity, _ = gap_w0(cfg, tmp_path)
-    later = {**cfg, "research": {"llm": {"type": "manual", "dir": str(tmp_path / "m"),
-                                         "api_key_env": "OUROLOOP_TEST_UNSET_KEY"}}}
+    later = {**cfg, "research": {"llm": {"type": "rsi:BusinessWorker", "api_key_env": "OUROLOOP_TEST_UNSET_KEY"}}}
     assert not any("reads its key" in p for p in bench.startup_checks(activity, later, phase="baseline"))
 
 

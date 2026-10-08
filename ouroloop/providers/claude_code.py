@@ -31,7 +31,6 @@ from pathlib import Path
 
 from ..chat import ChatTurn, ToolCall, ToolSpec
 from . import ProviderAccountError, ProviderError
-from .manual import request_json
 
 USAGE_KEYS = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
 # The most model requests one CLI call can make: the request, up to 3 continuations the CLI makes on its own after a
@@ -133,6 +132,19 @@ def _json(value) -> str:
     # "@" is written as its JSON escape, which decodes to the same text: the CLI reads " @path" in a prompt as a file
     # to attach, and a turn must not reach a file through what an earlier turn wrote.
     return json.dumps(value, ensure_ascii=False, indent=1).replace("@", "\\u0040")
+
+
+def request_json(system: str, messages: list[dict], tools: list[ToolSpec]) -> dict:
+    """The request as JSON: history entries as chat.py defines them, tool calls as objects, no provider's native
+    content."""
+    history = []
+    for m in messages:
+        m = {k: v for k, v in m.items() if k != "native"}
+        if m.get("tool_calls"):
+            m["tool_calls"] = [{"id": c.id, "name": c.name, "args": c.args} for c in m["tool_calls"]]
+        history.append(m)
+    return {"system": system, "messages": history,
+            "tools": [{"name": t.name, "description": t.description, "schema": t.schema} for t in tools]}
 
 
 def turn_blocks(system: str, messages: list[dict], tools: list[ToolSpec]) -> list[str]:
