@@ -1180,20 +1180,22 @@ def test_pick_best_pins_every_key():
     """M4 §2 (2026-10-05): the pick is the highest net flips at or above the floor whatever the list order; a tie
     goes to the lower mean cost, an unknown cost after a known one, and equal cost to declaration order; below the
     floor nothing is eligible."""
-    from ouroloop.research.session import pick_best
+    from ouroloop.research.session import ScreenSettings, pick_best
+    one, none = ScreenSettings(min_net_flips=1), ScreenSettings(min_net_flips=0)
     rows = [{"candidate": "a", "order": 0, "net_flips": 1, "cost_per_attempt": 0.1},
             {"candidate": "b", "order": 1, "net_flips": 3, "cost_per_attempt": 0.9},
             {"candidate": "c", "order": 2, "net_flips": 3, "cost_per_attempt": 0.2}]
-    assert pick_best(rows, 1)["candidate"] == "c" and pick_best(list(reversed(rows)), 1)["candidate"] == "c"
+    assert pick_best(rows, one)["candidate"] == "c" and pick_best(list(reversed(rows)), one)["candidate"] == "c"
     tie = [{"candidate": "x", "order": 0, "net_flips": 2, "cost_per_attempt": None},
            {"candidate": "y", "order": 1, "net_flips": 2, "cost_per_attempt": 0.5}]
-    assert pick_best(tie, 1)["candidate"] == "y"                    # known cost before unknown
+    assert pick_best(tie, one)["candidate"] == "y"                    # known cost before unknown
     equal = [{"candidate": "p", "order": 1, "net_flips": 2, "cost_per_attempt": 0.5},
              {"candidate": "q", "order": 0, "net_flips": 2, "cost_per_attempt": 0.5}]
-    assert pick_best(equal, 1)["candidate"] == "q"                  # equal: declaration order
-    assert pick_best([{"candidate": "z", "order": 0, "net_flips": 0, "cost_per_attempt": 0.1}], 1) is None
-    assert pick_best([{"candidate": "n", "order": 0, "net_flips": None, "cost_per_attempt": None}], 0) is None
-    assert pick_best([{"candidate": "z", "order": 0, "net_flips": 0, "cost_per_attempt": 0.1}], 0)["candidate"] == "z"
+    assert pick_best(equal, one)["candidate"] == "q"                  # equal: declaration order
+    assert pick_best([{"candidate": "z", "order": 0, "net_flips": 0, "cost_per_attempt": 0.1}], one) is None
+    assert pick_best([{"candidate": "n", "order": 0, "net_flips": None, "cost_per_attempt": None}], none) is None
+    zero = [{"candidate": "z", "order": 0, "net_flips": 0, "cost_per_attempt": 0.1}]
+    assert pick_best(zero, none)["candidate"] == "z"
 
 
 def test_declaration_reasons_require_a_real_difference_against_the_cited_row():
@@ -1676,35 +1678,32 @@ def test_the_ledger_projection_shows_each_domains_gate_outcome_without_dev_task_
 # ---------------------------------------------------------------------------- v0.4 (docs/design/V0_4_PLAN.md)
 from ouroloop.benchmark import TaskResult  # noqa: E402
 from ouroloop.research.experiment import grounding_reasons  # noqa: E402
-from ouroloop.research.session import (ScreenSettings, eligible, passing_sample, passing_sample_v4,  # noqa: E402
-                                       pick_best)
+from ouroloop.research.session import ScreenSettings, eligible, passing_sample, pick_best  # noqa: E402
 
 
 def _passed(tasks):
     return [TaskResult(t, t, "train", 0, "W0", "r", "m", success=True, partial_credit=1.0) for t in tasks]
 
 
-def test_the_v04_passing_sample_is_redrawn_each_round_with_must_not_tasks_first():
+def test_the_passing_sample_is_redrawn_each_round_with_must_not_tasks_first():
     """V0_4_PLAN §1.6 (a): six of the passing train tasks, drawn afresh each round from (order_seed, the round's
     ordinal) — the same round draws the same tasks, another round others — tasks with must-not checks taken first,
-    listed in the frozen order; v0.3's draw (one sample per activity) is unchanged."""
+    listed in the frozen order."""
     order = [f"t{i:02d}" for i in range(20)]
     rows = _passed(order[:16])
     must_not = ("t03", "t11", "t15")
-    draws = [passing_sample_v4(rows, order=order, size=6, seed=1, round_ordinal=r, must_not=must_not) for r in range(4)]
+    draws = [passing_sample(rows, order=order, size=6, seed=1, round_ordinal=r, must_not=must_not) for r in range(4)]
     assert all(len(d) == 6 and set(must_not) <= set(d) and d == sorted(d) for d in draws)
     assert len({tuple(d) for d in draws}) > 1                                   # redrawn per round
-    assert passing_sample_v4(rows, order=order, size=6, seed=1, round_ordinal=2, must_not=must_not) == draws[2]
-    assert set(passing_sample_v4(rows, order=order, size=2, seed=1, round_ordinal=0, must_not=must_not)) <= set(must_not)
-    assert not set(passing_sample_v4(rows, order=order, size=6, seed=1, round_ordinal=0)) - set(order[:16])
-    fixed = [passing_sample(rows, order=order, size=5, seed=1) for _ in range(2)]
-    assert fixed[0] == fixed[1] and len(fixed[0]) == 5                           # v0.3: one sample, every round
+    assert passing_sample(rows, order=order, size=6, seed=1, round_ordinal=2, must_not=must_not) == draws[2]
+    assert set(passing_sample(rows, order=order, size=2, seed=1, round_ordinal=0, must_not=must_not)) <= set(must_not)
+    assert not set(passing_sample(rows, order=order, size=6, seed=1, round_ordinal=0)) - set(order[:16])
 
 
-def test_a_v04_screen_needs_a_fix_and_at_most_one_sample_regression_then_ranks_by_net_flips():
+def test_the_screen_needs_a_fix_and_at_most_one_sample_regression_then_ranks_by_net_flips():
     """V0_4_PLAN §1.6 (b): eligible with ≥ min_fixes fixes and ≤ max_sample_regressions regressions on the passing
-    sample (net flips = fixes − regressions, floor 0), then the highest net flips; under a v0.3 K net flips alone, as
-    before — so a broad change that fixes three and breaks two passes v0.3's screen and not v0.4's."""
+    sample (net flips = fixes − regressions, floor 0), then the highest net flips — so a broad change that fixes
+    three and breaks two is not eligible; without the cap, sample regressions count only through net flips."""
     def screened(name, order, fixes, regressions, cost=0.5):
         failing, sample = [f"f{i}" for i in range(3)], [f"s{i}" for i in range(6)]
         before = {**{t: False for t in failing}, **{t: True for t in sample}}
@@ -1718,10 +1717,9 @@ def test_a_v04_screen_needs_a_fix_and_at_most_one_sample_regression_then_ranks_b
     one_each = screened("even", 3, 1, 1)
     assert eligible(one_each, v04) and one_each["net_flips"] == 0
     assert pick_best([one_each, narrow], v04)["candidate"] == "narrow"           # ranked by net flips
-    v03 = ScreenSettings(passing_sample=5, min_net_flips=1)
-    assert pick_best([broad, narrow, quiet], v03)["candidate"] == "broad"        # v0.3: net flips alone
-    assert pick_best([broad, narrow, quiet], 1) == pick_best([broad, narrow, quiet], v03)
-    assert not v03.v04 and v04.v04 and v03.to_json() == {"passing_sample": 5, "min_net_flips": 1}
+    uncapped = ScreenSettings(passing_sample=6, min_net_flips=0, min_fixes=1)
+    assert [eligible(s, uncapped) for s in (broad, narrow, quiet)] == [True, True, False]
+    assert pick_best([broad, narrow, quiet], uncapped)["candidate"] == "broad"   # a tie on net flips: declaration order
 
 
 def test_grounding_needs_a_failed_read_among_the_predicted_tasks_and_one_passing_read():

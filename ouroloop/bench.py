@@ -1189,33 +1189,28 @@ class Improvement:
 
         v0.4 (docs/design/V0_4_PLAN.md §1.2, §1.3, §1.6): the interface error table over the latest train attempts
         (research/api_errors.py), the passing train attempts for the trajectory listing with must-not tasks first,
-        and — under a K with the v0.4 screen — a passing sample redrawn for this round (`round_ordinal`, the scope's
-        diagnosis count) with must-not tasks first; a v0.3 K keeps the one fixed sample.
+        and a passing sample redrawn for this round (`round_ordinal`, the scope's diagnosis count) with must-not
+        tasks first (v0.3's one fixed sample is at tag v0.3.0).
 
         After an install the measurement reruns only the previous failures (measure), so the train tasks it did not
         rerun — all passes — are filled in from the activity's earlier measurements (carried_train_readings) before
-        anything is derived: the passing listing, the interface table and, under the v0.4 screen, the sample and its
-        "before" see the whole train split, not W0's former failures alone (review 2026-10-06). The measurement, the
-        diagnosis and the train score are not touched; a v0.3 K's sample and "before" stay the measurement's."""
+        anything is derived: the passing listing, the interface table, the sample and its "before" see the whole
+        train split, not W0's former failures alone (review 2026-10-06). The measurement, the diagnosis and the
+        train score are not touched."""
         from .agent import harness_package as hp
         from .research.api_errors import api_error_table
-        from .research.session import (ScreenSettings, SessionInputs, SessionLimits, TrajectoryReader, passing_sample,
-                                       passing_sample_v4)
+        from .research.session import ScreenSettings, SessionInputs, SessionLimits, TrajectoryReader, passing_sample
         limits = SessionLimits.from_json(self.harness["research_session"])
         screen = ScreenSettings.from_json(self.harness.get("screen"))
         order = list(self.splits.ids("train"))
         latest = {r.task_id: r for r in evidence.get("train") or () if r.validity == "valid"}
         parent = self.releases.active()["release_ref"]
         full = {**self.carried_train_readings(parent, [t for t in order if t not in latest]), **latest}
-        screened = full if screen.v04 else latest
         must_not = tuple(t for t in order if ab.has_must_not(self.suite, t))
         passing = [full[t] for t in order if t in full and full[t].success]
         passing.sort(key=lambda r: (r.task_id not in must_not, order.index(r.task_id)))
-        if screen.v04:
-            sample = passing_sample_v4(full.values(), order=order, size=screen.passing_sample, seed=self.order_seed,
-                                       round_ordinal=round_ordinal, must_not=must_not)
-        else:
-            sample = passing_sample(latest.values(), order=order, size=screen.passing_sample, seed=self.order_seed)
+        sample = passing_sample(full.values(), order=order, size=screen.passing_sample, seed=self.order_seed,
+                                round_ordinal=round_ordinal, must_not=must_not)
         transcripts = Path(self.rt.root) / "transcripts"
         return SessionInputs(
             limits=limits, screen=screen, k=int(getattr(self, "candidates_per_round", 1) or 1), worker=self.worker,
@@ -1224,7 +1219,7 @@ class Improvement:
             histogram=self.dev_histogram(parent),
             trajectories=TrajectoryReader(self.results, transcripts, limits),
             train_tasks=tuple(order), train_order=tuple(order), sample=tuple(sample),
-            before={t: bool(r.success) for t, r in screened.items()},
+            before={t: bool(r.success) for t, r in full.items()},
             build=self.screen_build, screen_arm=self.train_screen,
             affordable=(lambda n: self.budget.affordable({"model_calls": n, "tool_calls": n})) if self.budget else None,
             base_tools=self.base_tools(), api_version=self.harness.get("package_api") or hp.AGENT_API_VERSION,
@@ -1817,8 +1812,8 @@ HARNESS_KEYS = {"package_api", "components", "sandbox", "image", "max_files", "m
 # screen's numbers — and the keys each takes. research_session.* and screen.passing_sample are caps the config may
 # only lower; screen.min_net_flips is a floor it may only raise (HARNESS_TABLE_FLOORS: lowering it loosens the screen).
 # v0.4 (docs/design/V0_4_PLAN.md §1.3, §1.6): the read floors admission checks (research_session.min_failing_reads,
-# min_passing_reads) and the v0.4 screen's floor and cap (screen.min_fixes, max_sample_regressions). A K frozen before
-# them has none of the four and runs v0.3's admission and screen.
+# min_passing_reads) and the v0.4 screen's floor and cap (screen.min_fixes, max_sample_regressions); a floor of 0 asks
+# nothing and a missing cap is no cap (v0.3's admission and fixed-sample screen are at tag v0.3.0).
 HARNESS_TABLES = {"research_session": ("max_turns", "max_edits", "max_trajectory_bytes", "max_trajectory_bytes_total",
                                        "min_failing_reads", "min_passing_reads"),
                   "screen": ("passing_sample", "min_net_flips", "min_fixes", "max_sample_regressions")}
