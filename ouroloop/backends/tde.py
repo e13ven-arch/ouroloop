@@ -1,8 +1,8 @@
 """A TDE run loaded in-process: a run directory, or a Hugging Face repository at a commit (revision). Needs the `tde`
-package, torch and a checkpoint: run ouroloop where TDE is installed (trainers/tde.py, `ouroloop host init`). At
-most `max_loaded` runs stay loaded (the least recently used is let go, and loaded again when asked), and a training
-job on the same GPU lets go of all of them (release). Many requests at once (the gate, calibration) are batched
-across their states."""
+package, torch and a checkpoint: run ouroloop where TDE is installed (trainers/tde.py, `python -m ouroloop.train host
+init`). At most `max_loaded` runs stay loaded (the least recently used is let go, and loaded again when asked), and a
+training job on the same GPU lets go of all of them (release). Many requests at once (the gate, calibration) are
+batched across their states."""
 from __future__ import annotations
 
 import importlib.util
@@ -26,7 +26,7 @@ class TdeBackend:
         if decider is None and importlib.util.find_spec("tde") is None:
             raise ImportError(f"the tde backend needs the tde package, which {sys.executable} cannot import: run "
                               f"ouroloop where TDE is installed, e.g. with ~/.ouroloop/venv/bin/python after "
-                              f"`ouroloop host init local --trainer tde`")
+                              f"`python -m ouroloop.train host init local --trainer tde`")
         self.run = run if revision else str(Path(run).expanduser())
         self.revision = revision
         self.device = device

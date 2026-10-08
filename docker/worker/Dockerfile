@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
-# A training host as an image (docs/TRAINING_HOSTS.md): the same bootstrap.sh as `ouroloop host init`, run at build
-# time, and an sshd that the control plane reaches like any host. Build from the ouroloop checkout:
+# A training host as an image (docs/TRAINING_HOSTS.md): the same bootstrap.sh as `python -m ouroloop.train host init`,
+# run at build time, and an sshd that the control plane reaches like any host. Build from the ouroloop checkout:
 #
 #   docker build -f docker/worker/Dockerfile -t ouroloop-worker .                   # ouroloop alone
 #   docker build -f docker/worker/Dockerfile --build-arg TRAINERS="tde" \

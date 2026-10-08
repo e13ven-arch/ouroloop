@@ -16,7 +16,6 @@ from ouroloop.agent.loop import SYSTEM
 from ouroloop.agent.prompt import PromptStore
 from ouroloop.backends import LlmBackend
 from ouroloop.backends.http import HttpBackend
-from ouroloop.cli import main
 from ouroloop.evolve import experience
 from ouroloop.evolve.gate import (TEMPLATE, decide_points, freeze_template, load_template, open_record,
                                   records, run)
@@ -201,14 +200,6 @@ def test_once_frozen_the_config_cannot_loosen_the_gate(tmp_path):
     g, _ = run(open_record(rt), lambda: EvalResult("harness", [1.0] * 3, [0.0] * 3, ["a", "b", "c"], lambda: None,
                                                    gate={"min_items": 1}))
     assert g.outcome == "insufficient_evidence"
-    # `ouroloop gate freeze` refuses a config that would not start once frozen, and takes changed parameters
-    toml = tmp_path / "ouroloop.toml"
-    toml.write_text('[workspace]\nroot = "other"\n\n[checks]\nmin_train = 1\n')
-    with pytest.raises(ValueError, match=r"remove \[checks\]"):
-        main(["gate", "freeze", "--config", str(toml)])
-    toml.write_text('[workspace]\nroot = "other"\n')
-    assert main(["gate", "freeze", "--config", str(toml), "--set", "min_sessions=40"]) == 0
-    assert json.loads((tmp_path / "other" / "gates" / "template.json").read_text())["min_sessions"] == 40
 
 
 # ---------------------------------------------------------------- test sessions and verdicts
@@ -620,24 +611,6 @@ def test_the_experience_record_pairs_the_plans_prediction_with_the_measured_gain
     assert record["prediction"]["gain"] == 1.0          # it did better than the plan predicted
     # the next round has the wall time and the rows of that job: it can say what another one would cost
     assert decide(rt)[3].minutes_per_row is not None
-
-
-def test_the_plan_command_prints_the_diagnosis_and_what_is_missing(tmp_path, capsys):
-    toml = tmp_path / "ouroloop.toml"
-    toml.write_text('[workspace]\nroot = "ws"\n\n[registry]\nbase = "base"\n\n[backends.base]\n'
-                    'type = "test_gate_record:Model"\np_yes = 0.5\nmodel = "base"\n\n'
-                    '[points]\ndefault_backend = "base"\n\n[points.stop]\nbackend = "champion"\nact = true\n'
-                    'explore = 0.0\n')
-    rt = config.build_runtime(config.load(toml), tmp_path)
-    collect(rt, 60)
-    freeze_template(rt.root, ACT_GATE)
-    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
-    assert main(["plan", "--config", str(toml)]) == 0
-    out = capsys.readouterr().out
-    assert "stop: 30 default errors in 54 labelled sessions" in out and "champion: none promoted yet" in out
-    assert "plan: recipe {} at stop: no candidate trained yet" in out and "verdict: no training" in out
-    assert "no model trained on this data could ever act" in out
-    assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
 
 
 def test_default_errors_leave_out_points_that_can_never_act(tmp_path):

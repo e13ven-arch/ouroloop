@@ -1,6 +1,5 @@
 """M7 offline acceptance: a point acts only by the execution rule, and takes its declared default on errors and
 doubts (docs/DESIGN.md invariant 1)."""
-import io
 import json
 import random
 import re
@@ -15,7 +14,6 @@ from ouroloop.agent import Agent, AgentConfig, Tools
 from ouroloop.backends import KeywordBackend, LlmBackend
 from ouroloop.backends.http import HttpBackend
 from ouroloop.chat import ChatTurn, ScriptedChat, ToolCall
-from ouroloop.cli import ledger_stats, main
 from ouroloop.demo import seed_ledger
 from ouroloop.evolve.build import build
 from ouroloop.evolve.calibrate import calibrate_point
@@ -383,16 +381,6 @@ def test_a_shadow_stop_takes_its_answerers_default_without_asking_the_model(tmp_
                                                                              "rule:test_act:always_yes", "none")
 
 
-def test_calibrate_reports_and_writes_nothing(tmp_path, capsys):
-    (tmp_path / "ouroloop.toml").write_text('[workspace]\nroot = "ws"\n\n[backends.mock]\ntype = "mock"\n\n'
-                                            '[points]\ndefault_backend = "mock"\n\n[points.retry]\n')
-    seed_ledger(config.build_runtime(config.load(tmp_path / "ouroloop.toml"), tmp_path), 120)
-    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
-    assert main(["calibrate", "--config", str(tmp_path / "ouroloop.toml")]) == 0
-    assert "retry: model=mock-keyword" in capsys.readouterr().out
-    assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
-
-
 def test_llm_escalations_and_gate_verdicts_are_never_training_targets(tmp_path):
     led = Ledger(tmp_path)
     escalated = led.decision(point="p")
@@ -467,23 +455,6 @@ def test_the_adapter_never_allows_whatever_the_route(tmp_path, gated, monkeypatc
     assert outs == {("ls", None), ("touch x; echo reboot", "deny")}
 
 
-def test_the_hook_denies_even_when_the_runtime_cannot_start_or_record(tmp_path, monkeypatch, capsys):
-    ok = '[workspace]\nroot = "ws"\n\n[backends.mock]\ntype = "mock"\n'
-    configs = {"pre-M7 fallback": 'fallback = "mock"\n' + ok, "unwritable ledger": ok}
-    for i, (case, text) in enumerate(configs.items()):
-        path = tmp_path / f"{i}.toml"
-        path.write_text(text)
-        if case == "unwritable ledger":
-            monkeypatch.setattr(Ledger, "append", lambda self, event: (_ for _ in ()).throw(OSError("disk full")))
-        for command, expected in (("rm -rf /", "deny"), ("ls", None)):
-            monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({
-                "hook_event_name": "PreToolUse", "session_id": "s", "cwd": "/w", "tool_name": "Bash",
-                "tool_use_id": "t", "tool_input": {"command": command}})))
-            assert main(["hook", "claude-code", "--config", str(path), "--enforce-deny-list"]) == 0
-            out = capsys.readouterr().out
-            assert (json.loads(out)["hookSpecificOutput"]["permissionDecision"] if out else None) == expected, case
-
-
 # ---------------------------------------------------------------- M6 rows still read
 def test_rows_written_by_m6_still_read(tmp_path):
     rt = Runtime(tmp_path, {"r": Reads()}, "r", seed=0)
@@ -523,9 +494,6 @@ def test_rows_written_by_m6_still_read(tmp_path):
     assert [len(rt.ledger.training_rows(p)) for p in ("stop", "tool_gate", "retry")] == [120, 60, 30]
     ds = build(rt, tmp_path / "data", ["stop", "tool_gate", "retry"])
     assert sum(len(part) for part in ds.splits.values()) == 210
-    stats = ledger_stats(rt.ledger.rows())
-    assert [(stats[p]["labelled"], stats[p]["scored"]) for p in ("stop", "tool_gate", "retry")] == [
-        (120, 0), (60, 60), (30, 30)]
     _, probs = predict(rt, stop, stop.spec, labelled(rt, "stop"))
     assert len(probs) == 120
     assert set(calibrate_point(rt, "retry", test_frac=0.1, cal_frac=0.9, min_items=10).thresholds) == {"after_failure"}

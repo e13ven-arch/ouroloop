@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from ouroloop import config
-from ouroloop.cli import main
+from ouroloop.train.cli import main
 from ouroloop.evolve.gate import freeze_template, records
 from ouroloop.evolve.pipeline import evolve_model
 from ouroloop.evolve.registry import Registry
@@ -374,7 +374,7 @@ def test_the_worker_refuses_a_job_made_by_another_ouroloop(tmp_path):
                                              "ouroloop": {"code": "0" * 16, "git": None}}))
     out = subprocess.run([sys.executable, "-m", "ouroloop.worker", "spec.json", d.name], cwd=d, capture_output=True,
                          text=True, env={**os.environ, "PYTHONPATH": str(CHECKOUT)})
-    assert out.returncode == 3 and "run `ouroloop host init u@gpu`" in out.stdout
+    assert out.returncode == 3 and "run `python -m ouroloop.train host init u@gpu`" in out.stdout
     assert not (d / "result.json").exists()
 
 

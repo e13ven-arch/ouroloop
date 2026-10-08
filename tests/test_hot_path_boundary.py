@@ -24,10 +24,10 @@ REPO = TESTS.parent
 
 # The plan's three: the training subpackage, the feedback builders and the built-in decision points.
 REQUIRED = ("ouroloop.train", "ouroloop.evolve.feedback", "ouroloop.points")
-# The rest of the decision stack, off the path since this step as well: what moves into ouroloop/train/ (P1 step 4)
-# or goes with the v1 loop and the champion pointer (step 5). Not yet ouroloop.types: the CLI module imports it for
-# its old smoke/decide commands, which step 3 moves into the subpackage; add it here then.
-DECISION_STACK = ("ouroloop.runtime", "ouroloop.decision", "ouroloop.policy", "ouroloop.backends",
+# The rest of the decision stack, off the path as well: what moves into ouroloop/train/ (P1 step 4) or goes with the
+# v1 loop and the champion pointer (step 5). ouroloop.types since step 3, which moved the CLI's smoke/decide commands
+# (its last importer on the path) into the subpackage.
+DECISION_STACK = ("ouroloop.types", "ouroloop.runtime", "ouroloop.decision", "ouroloop.policy", "ouroloop.backends",
                   "ouroloop.serving", "ouroloop.stores", "ouroloop.trainers", "ouroloop.stop", "ouroloop.evolve.gate",
                   "ouroloop.evolve.registry", "ouroloop.evolve.replay", "ouroloop.evolve.monitor",
                   "ouroloop.evolve.build", "ouroloop.evolve.train", "ouroloop.evolve.pipeline", "ouroloop.agent.loop",

@@ -6,8 +6,9 @@ is a new directory <jobs_root>/<job id>/ holding exactly the files it was given,
 whose leader's pid is in `pid`; the leader and the worker both carry the job id as their last argument, so a pid that
 now belongs to another process, or to another job, is never taken for this one. The shell line holds only paths a
 person set (python, jobs_root) and the job id; everything else reaches the job through its files. The worker is
-installed on the host (hosts/, `ouroloop host init`), never copied. `poll` reads the exit code, result.json and the
-end of the log; `cancel` stops the process group; `unfinished` lists the jobs of a workspace that never exited.
+installed on the host (hosts/, `python -m ouroloop.train host init`), never copied. `poll` reads the exit code,
+result.json and the end of the log; `cancel` stops the process group; `unfinished` lists the jobs of a workspace that
+never exited.
 """
 from __future__ import annotations
 

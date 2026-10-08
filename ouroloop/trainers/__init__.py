@@ -6,9 +6,9 @@ store (ouroloop/stores: a ref, a job id or <repo>@<commit>), gates, calibrates, 
 ref (serving.py). A plugin is a module with:
 
     NAME             its name, the [trainer] type
-    REQUIREMENTS     pip requirement strings its host needs besides ouroloop (`ouroloop host init` installs them);
-                     the plugin's own package may come from its options' `source`: a local directory (a checkout,
-                     which host init sends) or a pip requirement (e.g. a git URL of a private package)
+    REQUIREMENTS     pip requirement strings its host needs besides ouroloop (`python -m ouroloop.train host init`
+                     installs them); the plugin's own package may come from its options' `source`: a local directory
+                     (a checkout, which host init sends) or a pip requirement (e.g. a git URL of a private package)
     SUPPORTS_WEIGHTS optional, default False: it weighs each example by meta.weight; if not, the framework hands it
                      full-weight rows only
     NEEDS_PARENT     optional, default False: it trains from a parent model; a job without one is refused before

@@ -87,8 +87,8 @@ class JobTrainer:
     val.jsonl, run by the worker installed there (python -m ouroloop.worker). `host`:
 
         None        this machine, under this Python, which imports what this process imports; no host.json
-        "local"     this machine, under ~/.ouroloop/venv (`ouroloop host init local`)
-        "user@box"  that host over ssh, under ~/.ouroloop/venv there (`ouroloop host init user@box`)
+        "local"     this machine, under ~/.ouroloop/venv (`python -m ouroloop.train host init local`)
+        "user@box"  that host over ssh, under ~/.ouroloop/venv there (`python -m ouroloop.train host init user@box`)
 
     With a host, the trainer reads its host.json before each job and runs host init when the host runs another
     ouroloop, lacks the plugin or has it from another source (hosts.ensure); an init that fails is a TrainError,

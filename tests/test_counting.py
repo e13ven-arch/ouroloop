@@ -6,7 +6,6 @@ import random
 import pytest
 
 from conftest import accept
-from ouroloop.cli import main
 from ouroloop.decision import Noul, _digest
 from ouroloop.evolve.calibrate import calibrate_point
 from ouroloop.evolve.monitor import Tally, acted, realized
@@ -331,12 +330,3 @@ def test_an_answer_among_several_right_ones_is_right_everywhere(tmp_path, gated)
     losses = [-gain({"yes": 0.9, "no": 0.1}, t, "no", 0.5) for t in [{"no": 0.5, "yes": 0.5}] * 4 + [{"yes": 1.0}]]
     m = summarize({"check": ([0] * 5, losses, list("abcde"), [False] * 4 + [True])})["check"]["challenger"]
     assert (m["fixes"], m["harms"], m["fixed_share"]) == (1, 0, 1.0)
-
-
-def test_the_ledger_report_calls_one_answer_right_every_time_not_reportable(tmp_path, capsys):
-    """Labels that differ but always share one answer: a constant answer scores 100%, so agreement says nothing."""
-    rt = acting(tmp_path)
-    for j, label in enumerate([["no", "yes"], "yes"]):
-        rt.outcome(rt.ask("check", {"j": j}, session="s").id, label, source="env")
-    assert main(["ledger", "--dir", str(tmp_path)]) == 0
-    assert "NOT REPORTABLE (2 scored, one answer right every time;" in capsys.readouterr().out

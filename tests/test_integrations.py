@@ -1,5 +1,3 @@
-import io
-import json
 import threading
 
 import httpx
@@ -8,7 +6,6 @@ import pytest
 from ouroloop.adapters.claude_code import ClaudeCodeAdapter, settings
 from ouroloop.backends import KeywordBackend
 from ouroloop.backends.http import HttpBackend
-from ouroloop.cli import ledger_stats, main
 from ouroloop.points import builtin_points, tool_gate_point
 from ouroloop.runtime import Runtime
 from ouroloop.serve import make_server
@@ -58,10 +55,6 @@ def test_serve_and_http_backend(tmp_path, monkeypatch):
         assert httpx.post(f"{url}/ask", headers=auth, json={"point": "nope", "ctx": {}}).status_code == 400
         (row,) = [r for r in rt.ledger.rows() if r.decision["point"] == "retry"]
         assert row.target() == ({"yes": 1.0}, 1.0)
-        st = ledger_stats(rt.ledger.rows())["retry"]
-        assert st["decisions"] == 1 and st["labelled"] == 1 and st["scored"] == 1
-        assert st["agree"] == int(row.decision["probs"][0] >= 0.5)
-        assert st["degenerate"] and st["baseline"] == 1.0   # one label: a constant answer is always right
     finally:
         server.shutdown()
 
@@ -109,12 +102,6 @@ def test_live_hooks_only_record_and_the_deny_list_denies_as_a_rule(tmp_path):
                                                                        ("rule", "no", "none")]
 
 
-def test_hook_command_reads_stdin_and_never_fails(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(event("PreToolUse", **bash("t1", "ls")))))
-    assert main(["hook", "claude-code"]) == 0
-    assert list((tmp_path / ".ouroloop" / "ledger").glob("*.jsonl"))
-    monkeypatch.setattr("sys.stdin", io.StringIO("not json"))
-    assert main(["hook", "claude-code"]) == 0 and "ouroloop hook" in capsys.readouterr().err
+def test_the_settings_block_names_every_event_the_adapter_handles():
     assert set(settings()["hooks"]) == {"UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse",
                                          "PostToolUseFailure", "Stop"}

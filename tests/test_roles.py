@@ -11,7 +11,6 @@ import pytest
 
 from conftest import accept
 from ouroloop import config
-from ouroloop.cli import main
 from ouroloop.decision import Noul
 from ouroloop.evolve.gate import freeze_template, records
 from ouroloop.evolve.pipeline import deploy, deploy_version, evolve_model, full_recipe, parent_ref
@@ -327,7 +326,7 @@ def test_a_new_store_is_a_new_module_only(tmp_path, monkeypatch, keys):
 
 
 # ---------------------------------------------------------------- deploy
-def test_a_failed_deploy_promotes_nothing_and_ouroloop_deploy_retries_it_later(tmp_path, capsys):
+def test_a_failed_deploy_promotes_nothing_and_deploy_version_retries_it_later(tmp_path):
     rt = workspace(tmp_path, Spy(down=True))
     card = evolve_model(rt, OracleTrainer("R1"))
     reg = Registry(rt.root)
@@ -338,13 +337,12 @@ def test_a_failed_deploy_promotes_nothing_and_ouroloop_deploy_retries_it_later(t
     assert rt.threshold("stop", "R1", "per_turn") is None             # nothing it was calibrated for acts
     d = rt.ask("stop", ctx(), session="s_1", phase="per_turn")
     assert (d.model, d.acted) == ("base", False)
-    # later, with serving up: `ouroloop deploy` loads it, promotes it over its parent and stores its calibrations
+    # later, with serving up: deploy_version loads it, promotes it over its parent and stores its calibrations
     path = tmp_path / "ouroloop.toml"
     path.write_text('[workspace]\nroot = "ws"\n[registry]\nbase = "base"\n[backends.base]\n'
                     'type = "test_gate_record:Model"\np_yes = 0.5\nmodel = "base"\n[points]\ndefault_backend = "base"\n'
                     '[points.stop]\nbackend = "champion"\nact = true\nexplore = 0.0\n')
-    assert main(["deploy", card["version"], "--config", str(path)]) == 0
-    assert "deployed, the champion" in capsys.readouterr().out
+    assert deploy_version(config.build_runtime(config.load(path), tmp_path), card["version"], reg)
     assert reg.champion()["version"] == card["version"] and reg.card(card["version"])["deployed"]
     assert "deploy_error" not in reg.card(card["version"])
     fresh = config.build_runtime(CFG, tmp_path)
@@ -357,8 +355,6 @@ def test_a_failed_deploy_promotes_nothing_and_ouroloop_deploy_retries_it_later(t
                      "backend": {"type": "test_gate_record:Oracle", "model": "R3"}})
     revoke(rt.root, "m_0003", "R3", "a test")
     for version, why in (("m_0002", "no gate record accepted it"), ("m_0003", "is revoked")):
-        assert main(["deploy", version, "--config", str(path)]) == 1
-        assert why in capsys.readouterr().err
         with pytest.raises(ValueError, match=why):
             deploy_version(fresh, version)
     assert reg.champion()["version"] == card["version"]

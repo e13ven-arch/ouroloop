@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from ouroloop.backends import JevBackend
-from ouroloop.cli import SMOKE_QUESTIONS, SMOKE_STATE
+from ouroloop.train.cli import SMOKE_QUESTIONS, SMOKE_STATE
 from ouroloop.config import load_dotenv
 from ouroloop.types import Request
 

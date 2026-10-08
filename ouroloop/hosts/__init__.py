@@ -1,9 +1,11 @@
 """Training hosts (docs/TRAINING_HOSTS.md): a machine that runs ouroloop's training jobs, prepared by bootstrap.sh
 and described by ~/.ouroloop/host.json.
 
-    ouroloop host init <target> --trainer NAME     pack this checkout's ouroloop (an sdist) and the plugins' local
-                                                   sources, send them, run bootstrap.sh there, print host.json
-    ouroloop host check <target>                   print host.json, and what keeps it from running this ouroloop
+    python -m ouroloop.train host init <target> --trainer NAME
+        pack this checkout's ouroloop (an sdist) and the plugins' local sources, send them, run bootstrap.sh there,
+        print host.json
+    python -m ouroloop.train host check <target>
+        print host.json, and what keeps it from running this ouroloop
 
 A target is "local" (this machine) or user@host over ssh. Before each job the trainer reads host.json and, when the
 host runs another ouroloop, lacks a plugin or has it from another source, runs init itself (`ensure`): bootstrap.sh

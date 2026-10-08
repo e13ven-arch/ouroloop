@@ -3,12 +3,12 @@
     <python> -m ouroloop.worker spec.json <job id>         in the job's directory, <jobs_root>/<job id>/
 
 (the job id only marks the process, for Compute). The directory holds spec.json, train.jsonl and val.jsonl: the data
-contract every trainer reads (evolve/build.py). The worker is installed on the host (`ouroloop host init`), never
-copied: it refuses a job made by another ouroloop (spec.ouroloop.code), since the job and the models it yields are
-only what that code makes of them.
+contract every trainer reads (evolve/build.py). The worker is installed on the host (`python -m ouroloop.train host
+init`), never copied: it refuses a job made by another ouroloop (spec.ouroloop.code), since the job and the models it
+yields are only what that code makes of them.
 
 It loads the trainer plugin spec.trainer names (ouroloop.trainers), records the host manifest and the plugin's
-version, has the plugin validate the job (spec.check_only stops there: `ouroloop evolve --dry-run`), trains until the
+version, has the plugin validate the job (spec.check_only stops there: a dry run), trains until the
 deadline less publish_s, publishes the run to the model store spec.store names (ouroloop.stores; without one, a "dir"
 store in the jobs' directory), and writes result.json (by os.replace): {model: the ref the store gave, ouroloop,
 plugin, host}.
@@ -118,8 +118,8 @@ def run(args: list, deadline: float, **popen) -> None:
 
 # ---------------------------------------------------------------------- the job
 def manifest() -> dict:
-    """What this host is: ~/.ouroloop/host.json when this Python is the one `ouroloop host init` made, else what can
-    be read now."""
+    """What this host is: ~/.ouroloop/host.json when this Python is the one `python -m ouroloop.train host init`
+    made, else what can be read now."""
     from .hosts import MANIFEST, VENV, gpus
     if os.path.realpath(sys.prefix) == os.path.realpath(os.path.expanduser(VENV)):
         try:
@@ -139,7 +139,7 @@ def main(path: str) -> int:
     from .release import code_version
     from .trainers import load, version
     mine, want = code_version(), (spec.get("ouroloop") or {}).get("code")
-    fix = f"run `ouroloop host init {spec.get('host') or 'local'}` from the control plane"
+    fix = f"run `python -m ouroloop.train host init {spec.get('host') or 'local'}` from the control plane"
     if mine != want:
         print(f"worker: this host runs ouroloop {mine}, the job was made by ouroloop {want}: {fix}", flush=True)
         return REFUSED

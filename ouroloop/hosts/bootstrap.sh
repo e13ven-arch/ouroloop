@@ -3,11 +3,11 @@
 #
 #     sh bootstrap.sh <dir>
 #
-# <dir> is what `ouroloop host init` sends (or `python -m ouroloop.hosts pack` writes): ouroloop.tar.gz, the control
-# plane's own code; the plugins' local sources, <name>.tar.gz; requirements.txt, all of them and the plugins'
-# requirements; plan.json. It installs what is missing of rsync, git, ps and a Python >= 3.11 with venv (as root, or
-# with sudo if it is there and needs no password), makes ~/.ouroloop/venv, installs everything into it, checks the
-# GPU, and writes ~/.ouroloop/host.json.
+# <dir> is what `python -m ouroloop.train host init` sends (or `python -m ouroloop.hosts pack` writes):
+# ouroloop.tar.gz, the control plane's own code; the plugins' local sources, <name>.tar.gz; requirements.txt, all of
+# them and the plugins' requirements; plan.json. It installs what is missing of rsync, git, ps and a Python >= 3.11
+# with venv (as root, or with sudo if it is there and needs no password), makes ~/.ouroloop/venv, installs everything
+# into it, checks the GPU, and writes ~/.ouroloop/host.json.
 #
 # Environment:
 #   OUROLOOP_PYTHON     the Python to make the venv from (default: the newest python3.x >= 3.11 on PATH)
