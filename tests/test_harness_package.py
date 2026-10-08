@@ -455,16 +455,25 @@ def test_the_twenty_recorded_v03_draft_checks_replay_to_no_false_refusal():
     """V0_4_PLAN §1.5's regression (examples/automationbench/literal_replay.py, read-only over workspace-claude-v3):
     the v0.3 rule reproduces the 14 refusals the activity recorded among its 20 draft checks; the v0.4 rule refuses
     none of them; a value of exactly one train task, planted in its own case into the first refused draft, is still
-    refused. Needs the v0.3 workspace and the upstream checkout, which are not in the repository. Run as its own
-    process: the upstream package is imported from the real checkout there, never the test fixture's copy."""
+    refused. Needs the v0.3 workspace (under OUROLOOP_RECORDS_ROOT, as tests/test_record_compat.py finds it) and the
+    upstream checkout, which are not in the repository; the workspace is only read. Run as its own process, on this
+    checkout's code: the upstream package is imported from the real checkout there, never the test fixture's copy."""
+    import os
     import subprocess
     import sys
-    script = Path(__file__).resolve().parent.parent / "examples" / "automationbench" / "literal_replay.py"
-    workspace = script.parent / "workspace-claude-v3"
+    from test_record_compat import RECORDS, ReadOnly
+    repo = Path(__file__).resolve().parent.parent
+    script = repo / "examples" / "automationbench" / "literal_replay.py"
+    workspace = RECORDS / "workspace-claude-v3"
     if not (workspace / "rsi" / "events.jsonl").exists() or not Path("~/workspace/AutomationBench").expanduser().exists():
-        pytest.skip("workspace-claude-v3 or the upstream checkout is not here")
-    done = subprocess.run([sys.executable, str(script), "--json"], capture_output=True, text=True, timeout=300)
+        pytest.skip(f"workspace-claude-v3 is not under {RECORDS}, or the upstream checkout is not here")
+    guard = ReadOnly(workspace)
+    guard.read(workspace / "rsi" / "events.jsonl")
+    done = subprocess.run([sys.executable, str(script), "--workspace", str(workspace), "--json"],
+                          capture_output=True, text=True, timeout=300,
+                          env={**os.environ, "PYTHONPATH": str(repo)})
     assert done.returncode == 0, done.stderr[-2000:]
+    guard.check()
     out = json.loads(done.stdout.strip().splitlines()[-1])
     assert out["checks"] == 20 and out["recorded_refusals"] == 14
     assert out["old_rule_refusals"] == 14 and out["old_rule_reproduces_record"]

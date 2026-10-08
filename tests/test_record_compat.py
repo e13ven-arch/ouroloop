@@ -4,17 +4,21 @@ No existing activity is resumed at HEAD, so hash identity with these workspaces 
 re-rendered or resumed at the tags v0.4.0 and archive-2026-10-08). What is required is that the records stay
 readable, because the v2 data pipeline (docs/design/V2_TRAINING_PIPELINE.md §2.1) and PLAN P4-S1 read them: the
 train/dev results with their run manifests, the grading rows, the transcripts, the ledger's session rows and the
-sessions' release files, the frozen objects as plain JSON, and library_stream.json.
+sessions' release files, the frozen objects as plain JSON and through HEAD's types (every release binds), the
+experience ledger (PLAN P5 step 4 replays pick_best on it), and library_stream.json.
 
 The records are git-ignored and live only in the main checkout, under OUROLOOP_RECORDS_ROOT (default: this
-checkout's examples/automationbench); a workspace that is not there is skipped. They cannot be regenerated, so:
+checkout's examples/automationbench); a workspace that is not there is skipped, unless OUROLOOP_RECORDS_ROOT is set,
+where a missing workspace fails (a misdirected root would otherwise skip every test here and pass). They cannot be
+regenerated, so:
 
 - nothing here writes under a workspace. Every file a test reads is hashed before its first read and again at the
   end, and every file under the workspace keeps its size and mtime, with none added or removed;
 - no test split content is touched. A multi-split file (results.jsonl, grading.jsonl, the ledger) is filtered on
   each row's `split` before anything else of the row is looked at, and HEAD's readers of those files run on a copy
   in tmp_path holding the train and dev rows only. Per-attempt files (transcripts, release files, run manifests) are
-  opened only for train and dev attempts. No test-split transcript is ever opened.
+  opened only for train and dev attempts. No test-split transcript is ever opened. Of the frozen objects, the kinds
+  that hold the final's readings (finalization, receipt, change) are not loaded by type.
 
 The counts below were read from the records on 2026-10-08; the activities are finished, so they do not move.
 """
@@ -48,20 +52,34 @@ class Expected:
     sessions: dict                  # split -> session rows in the ledger
     runs: int                       # distinct run manifests of the train/dev attempts
     releases: int                   # distinct system releases of the train/dev attempts
+    typed: dict                     # kind -> frozen objects of the kinds loaded through HEAD's types
+    ledger: tuple | None = None     # experience.jsonl: (entries, ledger rows, rounds with a screen); None: no file
     library: dict | None = None     # rsi/library_stream.json, where the activity ran the experience library
 
 
 EXPECTED = {
-    "workspace-claude-v4-finance": Expected("finance", {"train": (152, 97, 50), "dev": (175, 68, 25)},
-                                            {"train": 152, "dev": 175}, runs=17, releases=13),
-    "workspace-claude-v3": Expected("marketing+sales+support+hr+finance",
-                                    {"train": (350, 153, 252), "dev": (500, 212, 125)},
-                                    {"train": 350, "dev": 509}, runs=12, releases=11),
-    "workspace-claude-v5-support": Expected("support", {"train": (165, 70, 50), "dev": (125, 53, 25)},
-                                            {"train": 165, "dev": 134}, runs=57, releases=52,
-                                            library={"order": 50, "active": 7, "retired": 35, "D": 3.0, "B": 1}),
-    "workspace-claude-v4-support": Expected("support", {"train": (50, 18, 50), "dev": (75, 26, 25)},
-                                            {"train": 50, "dev": 75}, runs=4, releases=1),
+    "workspace-claude-v4-finance": Expected(
+        "finance", {"train": (152, 97, 50), "dev": (175, 68, 25)}, {"train": 152, "dev": 175}, runs=17, releases=13,
+        typed={"authorization": 13, "core": 1, "experiment": 3, "harness": 1, "installation": 1, "model_identity": 1,
+               "package": 8, "permit": 11, "plan": 12, "policy": 17, "policyset": 10, "proposal": 8, "release": 21,
+               "schedule": 1},
+        ledger=(41, 8, 3)),
+    "workspace-claude-v3": Expected(
+        "marketing+sales+support+hr+finance", {"train": (350, 153, 252), "dev": (500, 212, 125)},
+        {"train": 350, "dev": 509}, runs=12, releases=11,
+        typed={"authorization": 11, "core": 1, "experiment": 3, "harness": 1, "model_identity": 1, "package": 7,
+               "permit": 10, "plan": 11, "policy": 16, "policyset": 9, "proposal": 7, "release": 18, "schedule": 1},
+        ledger=(41, 9, 3)),
+    "workspace-claude-v5-support": Expected(
+        "support", {"train": (165, 70, 50), "dev": (125, 53, 25)}, {"train": 165, "dev": 134}, runs=57, releases=52,
+        typed={"authorization": 53, "core": 1, "experiment": 1, "harness": 1, "installation": 1, "model_identity": 1,
+               "package": 16, "permit": 51, "plan": 52, "policy": 24, "policyset": 52, "proposal": 50, "release": 103,
+               "schedule": 1},
+        ledger=(51, 1, 1), library={"order": 50, "active": 7, "retired": 35, "D": 3.0, "B": 1}),
+    "workspace-claude-v4-support": Expected(
+        "support", {"train": (50, 18, 50), "dev": (75, 26, 25)}, {"train": 50, "dev": 75}, runs=4, releases=1,
+        typed={"authorization": 1, "core": 1, "harness": 1, "model_identity": 1, "package": 1, "plan": 1,
+               "policy": 9, "policyset": 2, "release": 1, "schedule": 1}),
 }
 
 
@@ -148,6 +166,8 @@ def ws(request, tmp_path) -> Workspace:
     name = request.param
     root = RECORDS / name
     if not root.is_dir():
+        if os.environ.get("OUROLOOP_RECORDS_ROOT"):
+            pytest.fail(f"{name} is not under OUROLOOP_RECORDS_ROOT={RECORDS}")
         pytest.skip(f"{name} is not under {RECORDS} (git-ignored run records; set OUROLOOP_RECORDS_ROOT)")
     expected = EXPECTED[name]
     guard = ReadOnly(root)
@@ -258,6 +278,7 @@ def test_a_sample_of_train_and_dev_transcripts_reads_with_heads_projections(ws):
             assert got == [w for w in wanted if w in set(got)]
         for b in (e for e in events if e.get("kind") == "broker_event"):
             assert b["attempt_id"] == r.attempt_id and b["tool"] and isinstance(b["args"], dict) and b["gate"]
+            assert len(b["output_digest"]) == 16          # V2 §2.2 checks a backfilled output against it
         assert m_tool_writes(events)["executed"] == 0
         if r.split == "train" and not r.success:
             summary = failure_summary(r, events, store.grading(r.attempt_id), DiagnosisLimits())
@@ -324,6 +345,72 @@ def test_the_releases_the_attempts_ran_and_everything_they_reference_load_as_pla
         if recorded.get("package_ref"):
             run_files, _ = hp.files_of(objects, recorded["package_ref"])
             assert "manifest.json" in run_files and all(isinstance(v, str) for v in run_files.values())
+    ws.guard.check()
+
+
+# The kinds HEAD reads by type: a plan as TaskEvalPlan and its GatePlan, a schedule as Schedule, the rest through
+# ct.TYPES. finalization, receipt and change are left out (the final's plan, its readings and the change payloads);
+# bundle, file, note, manifest, declaration, budget and transcript have no typed reader.
+TYPED = ("authorization", "core", "experiment", "harness", "installation", "model_identity", "package", "permit",
+         "plan", "policy", "policyset", "proposal", "release", "schedule")
+
+
+def test_the_frozen_objects_load_with_heads_types_and_every_release_binds(ws):
+    """Load-time refusals HEAD added (GatePlan's economy fields, a plan's screen ids) and removed registrations
+    (a REGISTRY target an old release binds) break here, not in the v2 pipeline or P4-S1, which read these typed.
+    Binding under the preflight profile constructs no model and writes nothing."""
+    from ouroloop import policies as P
+    from ouroloop.evolve.execution import Schedule
+    from ouroloop.evolve.task_gate import TaskEvalPlan
+    objects = ws.objects
+    counts: dict = {}
+    for kind in TYPED:
+        for path in sorted((objects.dir / kind).glob("*.json")):
+            payload = objects.get(f"{kind}:sha256:{path.stem}")
+            if kind == "plan":
+                TaskEvalPlan.from_json(payload).gate()
+            elif kind == "schedule":
+                Schedule(**payload)
+            else:
+                ct.TYPES[kind].from_json(payload)
+            counts[kind] = counts.get(kind, 0) + 1
+    assert counts == ws.expected.typed
+    for path in sorted((objects.dir / "release").glob("*.json")):
+        bound = P.bind_release(f"release:sha256:{path.stem}", profile="preflight", services=P.Services(objects))
+        assert P.describe(bound)
+    ws.guard.check()
+
+
+# ---------------------------------------------------------------------------- the experience ledger
+def test_the_experience_ledger_folds_and_heads_pick_replays_every_recorded_selection(ws):
+    """The engine ledger as R and a report read it (ledger_rows, ledger_projection), and HEAD's pick_best replayed
+    per round on the recorded screens under K's screen settings: it picks the candidate the round recorded as
+    `selected`, or none where none was (PLAN P5 step 4 replays a new pick_best on these rows)."""
+    from ouroloop.evolve import experience as E
+    from ouroloop.research.session import ScreenSettings, pick_best
+    path = ws.root / "experience.jsonl"
+    if ws.expected.ledger is None:
+        assert not path.exists(), f"{ws.name} has an experience.jsonl"
+        return
+    ws.guard.read(path)
+    entries = E.read(ws.root)
+    rows = E.ledger_rows(entries)
+    projection = E.ledger_projection(rows, ws.objects)
+    assert len(projection) == len(rows) and all(p["candidate"] for p in projection)
+    objects = ws.objects
+    (core_ref,) = {objects.load(r.system_release_ref, ct.SystemRelease).core_ref for r in ws.rows()}
+    core = objects.load(core_ref, ct.CoreManifest)
+    screen = ScreenSettings.from_json(((core.capabilities or {}).get("harness") or {}).get("screen"))
+    rounds: dict = {}
+    for e in rows:
+        if e.get("screen"):
+            rounds.setdefault((e["scope"], e["round"]), []).append(
+                {**e["screen"], "candidate": e["candidate"], "order": e.get("ordinal") or 0})
+    assert (len(entries), len(rows), len(rounds)) == ws.expected.ledger
+    for key, screened in sorted(rounds.items()):
+        best = pick_best(screened, screen)
+        recorded = [s["candidate"] for s in screened if s["outcome"] == "selected"]
+        assert ([best["candidate"]] if best else []) == recorded, key
     ws.guard.check()
 
 
