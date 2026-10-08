@@ -8,6 +8,40 @@
 
 ---
 
+## 2026-10-09 阶段 1 完成：harness 与平台收缩（`s1/harness-platform`）
+
+- 用户的指示（2026-10-09）："按照设计文档完成代码开发"；开发入口是 [design/README](design/README.md)，先读 CONTRACTS，再按各包文档的接口与开发顺序写代码与测试。又："现在后台的任务目的是什么？直接按照设计文档写代码不行吗？"——开工前的调研 workflow 因此停掉，直接按文档写代码；多 agent 只用在代码写完之后的测试与变异检查（记忆 `no-needless-fanout` 已更新）。
+- 做了什么（分支 `s1/harness-platform`，从 `m1-automationbench` 的 `9a21fe4` 起，26 个提交，未合入）：
+  - `11aa567` 第 1 步：`contracts.py`（身份、Record 与类型注册、对象库、事件、文件助手、错误类）；`harness/`（contract、kinds、package 与 manifest v3、literals、vendor 与补丁栈、seed）；`stirrup` 种子：Stirrup 0.2.0 原样 vendor、一个适配文件、六个 hook 站点、write guard 与 `plan_changes`。
+  - `7f333c3` 第 2 步：`runtime/`（chat、records、gateway、broker、worker_runner、worker、egress、runner、app）、`evaluate/`（splits、limits、results、budget、release、gate、attempt、final、model）、`activity/`（presets、config、workspace、checks、phases、report、cli）。
+  - `0958398` 第 3 步：删旧代码（`bench.py`、`benchmark.py`、`policies.py`、`release.py`、`report.py`、`workspace.py`、`app.py`、`chat.py`、`config.py`、`cli.py`、`ledger.py`、`evolve/`、`agent/`、`research/`）与它们的 33 个测试文件；训练栈要用的几块搬进 `train/`（`records.py`、`ledger.py`、`probe.py`）。
+  - `f6c9db0`：设计文档按实现对齐（工作区布局、ref 形式、K 的节、transcript 行、gate 接口等）；README、CLAUDE.md、examples（`quickstart.toml`、`finance-v1.toml`）随之改，旧配置删。
+  - 测试：六个 agent 各在自己的 worktree 里按各文档的“测试”一节写测试并做变异检查，合入（6 个 merge 提交）。它们找到 6 个真缺陷，各自单独修复提交：
+    - `f2a3c18` `Releases.install`：已提交的操作在指针移走后重放，会把记录从 installed 改写成 stale_parent。
+    - `b5e5d2a` / `f621ec4` final 的 W\* 臂：臂名进 attempt id（即 session id），`*` 不合法，W\* 的每次尝试都记成 infrastructure，final 实际只量了 W0 还报 completed。两个 agent 修法不同，合并后统一为 `W_star`（`c2f9ff4`），并让 `FinalPlan` 在构造时拒绝不能进 attempt id 的臂名。
+    - `7c1fa7d` `[bench] concurrency` 进了 K：改并发就换了 core_ref，旧工作区被拒、gate 模板与 final 计划随并发变。现在并发只是机器设置。
+    - `a213bc7` 同一工作区换个 `[rsi] scope_id` 会再开一个预算根，花费不再受第一个根限制。现在拒绝。
+    - `10f217f` proxy 模式下 egress 的请求上限只在下一个回调时收紧：在 Docker 里复现，`max_tool_calls` 2 时一次 base call 加两个直连请求共 3 次全部放行。v6 的第二次轮询在搬运时丢了，补回。
+    - `9f706a9` `train/dataset.py` 的局部变量 `records` 遮住了模块名，构建数据集时 AttributeError。
+  - `c2f9ff4` 合并后的修正：一次调用的预留上界按输入侧最贵的单价算（缓存写入 $0.008/1k 比普通输入 $0.004/1k 贵；quickstart 的单次上界因此从 $7.28 变成 $11.28）；某类 token 没有声明价格的调用，账本按上界扣，不再记 $0（agent 报告：没有缓存单价时美元上限实际不生效）。`tests/rsi.write_split` 保留已冻结的划分。指向已删 `policies.*`、`task_eval.run_tasks` 的 docstring 改指新位置或 tag。设计文档对齐：CONTRACTS §7 的 attempt id 形式、EVALUATE §5（`min_tasks` 在冻结时查）/§6（`W_star`）/§8（`check_binding` 还没有调用方）/§9（付费安全里等到阶段 3 的六条；两条保守计价规则）/§10、RUNTIME 的 `DENY`、HARNESS §4、IMPROVER §12/§13、MEMORY §10。
+- 证据：
+  - 默认套件 751 passed、1 deselected（live）；带 Docker 的全量（`OUROLOOP_TEST_REQUIRE_DOCKER=1 -m "not live"`，先重建 `ouroloop-worker:py3.12`）751 passed、0 skipped。
+  - `OUROLOOP_RECORDS_ROOT=examples/automationbench` 下 `test_record_compat`、`test_aa_replay`、`test_attempt_behaviour`、`test_hot_path_boundary` 共 32 passed：HEAD 读得了旧工作区的 train/dev 记录，只读守卫没报改动。
+  - `quickstart.toml --phase smoke --checks-only`：upstream `4a8e10612540`（package 1.0.6，python 3.12.14）；划分哈希 `4fd91eaf9fb8daf5`，train 50 / dev 25 / test 25；评分契约 `partial_credit`、`task_completed_correctly`；输入审查 0 泄漏；种子对 988 个单题 train 值的字面量搜索 0 命中。没调模型。
+  - 新种子在假上游上的一次尝试：`tests/fixtures/attempt_behaviour_stirrup.json` 重录，8 次 act 调用（第一次写被 triage 拦下 → plan_changes → PUT 404 → PATCH → POST → finish → verify 退回 → 再 finish），连放 6 次相同；同一种子在真实 DockerWorker 里跑一次尝试的测试也通过。
+  - 行数：`ouroloop/` 的 Python（不含种子）从 30,113 行（`6a06e45`）降到 16,489 行，其中训练栈 5,157 行、其余框架 11,332 行（验收线 22k）。种子 14,082 行，绝大部分是原样 vendor 的 Stirrup。测试 23,966 → 13,762 行。
+  - 变异检查（都在 scratchpad 的私有副本里，worktree 前后的 `git status`/`git diff` 相同）：evaluate 69 个全部被杀（加强了两条测试后）；付费安全 18/18；activity 58/59，剩下一个是等价变异（续跑时 baseline 重跑但不付费）；runtime 31/31；边界与兼容 15/16，剩下的是 hook 细节从 500 字截到 300 字，这次尝试的细节本来就短于 300；适配器与训练栈 11/12，剩下的由另一条拒答检查兜住。两个 agent 曾误把文件拷进别人用的 `scratchpad/mut`，被覆盖的是基线内容，只可能让变异显得“存活”，不会造出假的“被杀”；它们之后都改在自己的目录里跑。
+- 已知、没修（记在设计文档里）：
+  - stirrup 种子不把 manifest 的 `model.effort` 传给 `ctx.model`，调用按 K 的 effort（medium）走，候选改 effort 不生效；种子按 `ctx.limits["act_calls"]` 给自己的回合封顶，用完回合的尝试记作 `finished` 而不是 `budget`/`act_calls`，报告里的步数上限终止会少算（HARNESS §4）。
+  - 速率限制只在 meter 上计数（`MeteredProvider.rate_limited`），没有写进事件和报告（EVALUATE §9）。
+  - `Execution.operation()` 与 `Releases.install()` 共用 `rsi/operations/<id>.json`，阶段 3 的 round 必须给两者不同的 id（IMPROVER §13）。
+  - `check_binding` 还没有调用方；`core_problems` 定义了没人调用（其两项检查在别处做了）。
+  - 新代码里有 30 来行超过 120 字符；仓库没配 linter，旧代码也有，没动。
+- 没付费，没调模型（订阅也没有），没读 `.env`，没读任何 test 题的内容（quickstart 的划分只给 test 计数）。
+- commit：`11aa567`、`7f333c3`、`0958398`、`f6c9db0`、六个 merge、`c2f9ff4`，以及本条所在的提交。
+
+---
+
 ## 2026-10-09 阶段 1 的设计：各模块的设计文档与接口
 
 - 用户的决定（2026-10-09）："按默认，开始阶段 1 的设计，完成各个模块的设计文档与 interface 的定义即可，后续再根据设计文档完成各个模块的开发。" DESIGN v1.1 §12 的六项待定全部按建议定下（取代旧设计与 modules/；种子 Stirrup，Pi 作 hook API 参照，Deep Agents 作第二种子备选；特色是轻量 harness 包 + 运行壳 + 模型描述，蒸馏作第二杠杆；分层的代码先验与结构保证；阶段 1 从 `m1-automationbench` 起、v6 三条分支搬入；第一个实测域 finance）。

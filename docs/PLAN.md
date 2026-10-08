@@ -37,12 +37,12 @@
 
 | 项 | 状态 |
 |---|---|
-| 分支 | `m1-automationbench`。`main` 在 `b71502d`（v0.3）。`v6-agent`、`v6-gateway`、`v6-memory` 各自测试绿，等阶段 1～3 按 DESIGN §7 搬入；`v6` 合并分支上的 WIP 不用；`slim/1` 已合入，可删 |
-| 代码 | 与 `6a06e45` 相同，本阶段没改 `.py` |
-| 测试 | `6a06e45` 上默认套件 1139 passed（JOURNAL 2026-10-08 瘦身第一批验收一条） |
+| 分支 | 阶段 1 在 `s1/harness-platform`（从 `m1-automationbench` 的 `9a21fe4` 起，26 个提交），等用户确认后本地合入 `m1-automationbench`。`main` 在 `b71502d`（v0.3）。`v6-agent`、`v6-gateway` 已搬入；`v6-memory` 等阶段 2；`v6` 合并分支上的 WIP 不用；`slim/1` 已合入，可删；阶段 1 测试用的六个 `worktree-wf_d50a7e72-6fa-*` 分支已合入，可删 |
+| 代码 | 阶段 1 完成：`contracts.py`、`harness/`（含 stirrup 种子）、`runtime/`、`evaluate/`、`activity/`；旧的 `bench.py`、`evolve/`、`agent/`、`research/` 等已删。`ouroloop/` 不含种子 16,489 行（训练栈 5,157） |
+| 测试 | 默认套件 751 passed；带 Docker 的全量 751 passed、0 skipped；record-compat 对真实旧记录 32 passed（JOURNAL 2026-10-09 阶段 1 完成一条） |
 | test 读过几次 | finance 1、support 0、sales 0、hr 0、marketing 3；operations 从未读过 |
 | 本机记录 | `examples/automationbench/workspace-*/`、`examples/workspace-*/`、`ws/`、`*.local.toml`，git 忽略，不删不改 |
-| 下一步 | 用户审阶段 1 的模块设计文档与接口（[design/](design/README.md)）；审定后按文档开发阶段 1 |
+| 下一步 | 用户审阶段 1 的结果（§3 第 1 项）；确认后合入 `m1-automationbench`，开始阶段 2（memory，[design/MEMORY](design/MEMORY.md)） |
 
 ## 1 规则
 
@@ -74,7 +74,7 @@
 | 阶段 | 内容 | 验收 | 花费 | 状态 |
 |---|---|---|---|---|
 | 0 | 正向设计 [DESIGN v1.1](DESIGN.md)；文档清理（含 modules/）；本文改写 | 用户审定 | $0 | 已审定（2026-10-09“按默认”） |
-| 1 | harness 与平台收缩：`harness/`、`runtime/`、`evaluate/`、`activity/`；Stirrup 种子与六个 hook 站点；worker 资源与网络从 K 读；DESIGN §8 的删除 | 默认与 Docker 全量通过；`quickstart.toml` 的 `--phase smoke --checks-only` 通过；假上游上用新种子跑一次尝试；框架 ≤ 22k 行 | $0 | 设计文档已写（design/CONTRACTS、HARNESS、RUNTIME、EVALUATE、ACTIVITY），待审；开发待做 |
+| 1 | harness 与平台收缩：`harness/`、`runtime/`、`evaluate/`、`activity/`；Stirrup 种子与六个 hook 站点；worker 资源与网络从 K 读；DESIGN §8 的删除 | 默认与 Docker 全量通过；`quickstart.toml` 的 `--phase smoke --checks-only` 通过；假上游上用新种子跑一次尝试；框架 ≤ 22k 行 | $0 | 完成（2026-10-09，`s1/harness-platform`），四条验收都满足；待用户确认后合入 |
 | 2 | memory 组件：`memory/`、sidecar 与锁文件、`recall` 工具、记功与容量、快照走阶梯、记忆 → 技能 → 工具的升级 | 假上游上 `--phase library` 端到端；变异检查在隔离副本 | $0 | 接口已定（design/MEMORY）；开发待做 |
 | 3 | 改进器：`improver/` 八步、toolcheck 与回放、分层估值与代码先验、档案与反膨胀、R 的配置 | 假上游上脚本化的 R 一轮端到端：tool 候选过 V0～V2a 并在 V3 记条件修复；hook 候选过 V2b；有可机械化簇而无代码候选时台账记 `no_code_candidate` | $0 | 接口已定（design/IMPROVER）；开发待做 |
 | 4 | finance 实测：新 preset，基线 → library → 3 轮（每轮后停）→ 有装入则封存 final → RESULTS、README、合入 main | 过程检查成立；计划哈希早于第一次 test 尝试；报告两次相同 | 名义约 $300～480，每步先批准 | 待做 |
@@ -92,7 +92,7 @@
 
 | # | 事项 | 建议 |
 |---|---|---|
-| 1 | 阶段 1 的模块设计文档与接口（[design/](design/README.md)）：CONTRACTS、HARNESS、RUNTIME、EVALUATE、ACTIVITY，以及先定接口的 MEMORY、IMPROVER | 审定后按文档开发；有要改的接口先改文档 |
+| 1 | 阶段 1 的结果（JOURNAL 2026-10-09 阶段 1 完成）：合入 `m1-automationbench` 并开始阶段 2 | 确认后本地合入；“已知、没修”的几项（种子不传 effort、回合用完记 finished、速率限制不落事件）在阶段 3 前处理，不挡阶段 2 |
 | 2 | 阶段 4 的预算根，名义约 $300～480 | 到阶段 4 前批准 |
 
 ## 4 文档地图
