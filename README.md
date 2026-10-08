@@ -125,7 +125,7 @@ The design documents are in Chinese.
 - [docs/DESIGN.md](docs/DESIGN.md): the architecture (v1.1): responsibilities, which layer changes, the typed harness, the agent seed, memory, the improver, training, the platform, code layout and stages.
 - [docs/PLAN.md](docs/PLAN.md): where things stand, the rules, the next stages, and what waits for the user. Start here.
 - [docs/RESULTS.md](docs/RESULTS.md) and [docs/JOURNAL.md](docs/JOURNAL.md): the results, and a log of every change and run, newest first.
-- [docs/design/](docs/design/): the v2 training chain; [docs/history/](docs/history/): the pre-registered plans and analyses of measured activities, and the framework survey.
+- [docs/design/](docs/design/README.md): the module designs and interfaces, and the v2 training chain; [docs/history/](docs/history/): the pre-registered plans and analyses of measured activities, and the framework survey.
 
 Every file deleted on 2026-10-08, in the cleanup and in slimming batch 1, is still readable at tag `archive-2026-10-08`.
 

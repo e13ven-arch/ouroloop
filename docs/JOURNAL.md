@@ -8,6 +8,22 @@
 
 ---
 
+## 2026-10-09 阶段 1 的设计：各模块的设计文档与接口
+
+- 用户的决定（2026-10-09）："按默认，开始阶段 1 的设计，完成各个模块的设计文档与 interface 的定义即可，后续再根据设计文档完成各个模块的开发。" DESIGN v1.1 §12 的六项待定全部按建议定下（取代旧设计与 modules/；种子 Stirrup，Pi 作 hook API 参照，Deep Agents 作第二种子备选；特色是轻量 harness 包 + 运行壳 + 模型描述，蒸馏作第二杠杆；分层的代码先验与结构保证；阶段 1 从 `m1-automationbench` 起、v6 三条分支搬入；第一个实测域 finance）。
+- 写了什么（`docs/design/`，索引在 [README](design/README.md)）：
+  - [CONTRACTS](design/CONTRACTS.md)：包的依赖方向与热路径边界；对象库与引用；工作区布局；K 的节与“只能收紧”；release 三元组 `{package_ref, improver_ref, core_ref}` 取代 PolicySet 一族；transcript 行的 kind 与字段（新增 `hook`、`library_retrieval` 的 site、`egress`）；身份规则；错误分类；配置表的新名（`[model]`、`[research_model]`、`[limits]`、`[harness]`、`[worker]`、`[memory]`、`[improver]`、`[schedule]`、`[budget]`、`[final]`，旧表名报错）；测试约定。
+  - [HARNESS](design/HARNESS.md)：十种组件类型与位置模式；`Limits`（96 文件 / 768 KiB 等，按 v6 的证据）；manifest v3（`model.base` 必须等于 K、`artifact_ref` 绑训练产物、`config` 有范围、`tools[].writes`）；包侧契约：ctx 的六个名字（新增 `ctx.memory.recall`）、六个 hook 站点的事件与返回形状、工具与 agent 入口、toolcheck 脚本签名；种子 `stirrup` 的构建（vendor + 补丁栈 + 适配层）；`vendor.py` 的补丁提取与上游升级；接口签名；测试清单。
+  - [RUNTIME](design/RUNTIME.md)：gateway / broker / records / worker / worker_runner / egress / runner / app 的接口；`WorkerResources` 全部来自 K；worker 协议加 `memory_recall` 与 `check` 两个 op；一次尝试的流程与四种结束方式；v6-gateway、v6-agent 的对应。
+  - [EVALUATE](design/EVALUATE.md)：splits / limits / attempt / results / gate / final / budget / release / model 的接口；gate 去掉 economy 与 protected；`Releases.install` 的 CAS 与 `last_good` 回滚；model 组件的绑定检查（`base` 等于 K、产物父模型、数据血缘只含 train）；`test_paid_run_safety` 的 33 条必须一直绿的名单。
+  - [ACTIVITY](design/ACTIVITY.md)：配置 → preset → K；`Activity` 句柄；八个阶段与停下点；预算根与份额；启动检查只查三类；报告；CLI；从 `bench.py` 删掉的清单（研究位、多领域、采集批、段延长、方法库、v3/v5 兼容、`policies.py`），目标约 1,200 行。
+  - [MEMORY](design/MEMORY.md)（阶段 2，接口先定）：Settings；client / bridge / rules / track / retrieval / snapshot / promote / importing 的接口；写入步七步；开场块与 `recall`；快照作候选从 V3 起；升级规则；`TraceStore` 放 `runtime/trace.py`（memory 与 improver 都读它，不违反依赖方向）。
+  - [IMPROVER](design/IMPROVER.md)（阶段 3，接口先定）：Settings（含各层先验）；一轮的九个状态；evidence / diagnose（cause 词表、`Case`、`Cause`、词表增项规则）/ allocate（上界排序、探索名额、代码保证、L5 与 L6 的条件）/ session（十个工具、`run_check`、修订一次）/ verify（V0 静态、V1 单元与 smoke、V2a toolcheck、V2b 回放、V2c 可达）/ screen（条件记功）/ archive / credit（删除候选）/ ledger（12 种 stage、投影去 dev 题号、记分板）/ policy（估值 + 剧本，跨活动导出导入）/ round 的接口；与 `research/*` 的对应；端到端测试。
+- 没写代码，没跑测试，没调模型，没付费，没读 `.env`，没读任何 test 内容。
+- commit：本条所在的提交。
+
+---
+
 ## 2026-10-09 DESIGN v1.1：先定哪一层变化；特色；对照主流框架；modules/ 删除
 
 - 用户的指示（2026-10-09，第二轮）："先把文档清理干净，以正向设计为出发点，设计清楚 agent、harness、evolution、memory 的架构，整体架构可以参考一下主流的开源 RSI 框架，需要引入开源组件的直接使用即可，如果要自己开发必须要设计完善，不能只开发一个 demo 机制。我们的特色也明确一下，就是我们可以通过蒸馏和修改轻量级的 harness 来交付业务场景化的 harness+agent 系统，这个不合理的话也可以跟业界做类似的就是整个 harness 框架都可以 rsi，不同的业务直接跑独立的副本就可以。之前的文档里记录了一些失败的经验，比如只修改 prompt 文字能够带来的提升不是很大，相对于其他框架在 benchmark 上的得分，我们之前 RSI 对于代码、工具和流程上的修改偏弱，大部分时间都没有做代码上的提升，因此很难获得更高的得分。" 又："模块不一定只有这四个，但整体架构确实可以参考一下开源的 star 比较高的 RSI 框架，但也不用完全照搬，之前我们交付 H\* 这个理念参考的是 harness-zero，他们的设计只是比较有特色不一定实用，辩证的思考一下。" 参考项目：Pi、Deep Agents、GEPA / OpenEvolve、DGM / Exo、SIA；"积累记忆、自动写技能、优化任务代码、修改自身 harness，是不同层次的自我改进。选型时先确定你想让哪一层发生变化。"

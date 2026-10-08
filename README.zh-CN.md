@@ -123,7 +123,7 @@ docker build -f docker/worker.Dockerfile -t ouroloop-worker:py3.12 .
 - [docs/DESIGN.md](docs/DESIGN.md)：架构（v1.1）：职责与层次、特色、有类型的 harness、种子 agent、memory、改进器、训练、平台、代码布局与阶段。
 - [docs/PLAN.md](docs/PLAN.md)：现在在哪、规则、接下来的阶段、待用户决定的事。从这里开始。
 - [docs/RESULTS.md](docs/RESULTS.md)、[docs/JOURNAL.md](docs/JOURNAL.md)：结果；每次改动与运行的日志（倒序）。
-- [docs/design/](docs/design/)：v2 训练链；[docs/history/](docs/history/)：已测活动的预注册计划与事后分析、框架调研。
+- [docs/design/](docs/design/README.md)：各模块的设计与接口、v2 训练链；[docs/history/](docs/history/)：已测活动的预注册计划与事后分析、框架调研。
 
 2026-10-08 整理和瘦身第一批删掉的文件在 tag `archive-2026-10-08` 上；2026-10-09 删掉的文档在 tag `archive-2026-10-09` 上。
 

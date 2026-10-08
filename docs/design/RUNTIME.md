@@ -1,0 +1,153 @@
+# runtime：网关、broker、worker 与运行器、egress、运行壳、App
+
+> 阶段 1 设计文档。包 `ouroloop/runtime/`。对应 [DESIGN](../DESIGN.md) §3.4、§3.5、§8。来源：`agent/gateway.py`、`agent/worker.py`、`agent/worker_runner.py`、`agent/runner.py`、`app.py`，以及 `v6-gateway`（egress、usage view）、`v6-agent`（worker 资源从 K 读）。
+
+## 1 职责与不做
+
+**做：** 跑一次尝试：起 worker（资源与网络按 K）、装载包、调包的 `agent.run`，回答它的 `model_call` / `base_call` / `skill_read` / `memory_recall` / `mark`，每次都计量、截顶、记录；硬限额到顶就结束；导出的 App 用同一套壳跑。
+
+**不做：** 不评分、不读划分（evaluate 给它 task 与 split 标签）；不写 memory；不知道候选与 gate。
+
+## 2 文件
+
+| 文件 | 内容 |
+|---|---|
+| `runtime/gateway.py` | `Gateway`：模型调用的计量、effort 截顶、role 校验、记录 |
+| `runtime/broker.py` | `AttemptBroker`：环境工具调用的权限、只读、硬限额、记录；`SkillReader`；`MemoryRecall`；`Marks`；`HostContext` |
+| `runtime/records.py` | transcript 行的写入与 kind 常量（CONTRACTS §6） |
+| `runtime/worker.py` | `Worker`、`ProcessWorker`、`DockerWorker`、`WorkerSession`、`WorkerResources` |
+| `runtime/worker_runner.py` | worker 里唯一运行的程序（标准库），协议见 §4 |
+| `runtime/egress.py` | `EgressPool`、`EgressSession`、`LazyPool`（v6-gateway 原样） |
+| `runtime/egress_addon.py` | mitmproxy addon（v6 原样，构建进 egress 镜像） |
+| `runtime/runner.py` | `PackageAgent`：一次尝试的运行壳 |
+| `runtime/app.py` | 导出的 App：从导出目录装配运行壳 |
+
+## 3 接口
+
+```python
+# gateway.py
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+class Gateway:
+    def __init__(self, provider, *, roles: tuple[str, ...], max_effort: str, budget: BudgetAccount, record: Recorder, pricing: Pricing)
+    def model(self, messages, tools=(), *, role="act", effort=None) -> ModelReply   # 预留→调用→结算→记 gateway_call；role 不在 roles 即 CandidateDefect
+    def limits(self) -> dict                         # 剩余 act_calls / model_calls / output_tokens / seconds
+    def last_usage(self) -> dict                     # 给 ctx.view["last_usage"]
+def cap_effort(requested, max_effort) -> str
+def malformed(messages, tools) -> str | None         # 形状检查，坏的消息不发给 provider
+
+# broker.py
+class AttemptBroker:
+    def __init__(self, episode_tools, *, record, limits: Budget, deny: DenyTable, view: dict)
+    def call(self, name, args, *, read_only=False) -> ToolReply    # 拒绝表、只读、tool_calls 限额、记 tool + broker_event
+    def tool_calls(self) -> int
+class SkillReader:   def __init__(self, package: Package, *, record);  def index(self) -> list[dict];  def read(self, name) -> str | None
+class MemoryRecall:  def __init__(self, reader: Callable[[str, int], list[Entry]] | None, *, record, max_k: int);  def recall(self, query, k=None) -> list[Entry]
+class Marks:         def __init__(self, record);  def mark(self, kind, data) -> None   # 包的自述，source=package
+class HostContext:   gateway, broker, skills, memory, marks, view, limits  # 宿主侧的 ctx，供 ProcessWorker 测试与 toolcheck 用
+
+# worker.py
+@dataclass(frozen=True)
+class WorkerResources:                 # K 的 worker 表
+    image: str; image_id: str | None; cpus: str = "1"; memory: str = "512m"; memory_swap: str | None = None
+    pids: int = 128; tmpfs_mb: int = 64; network: dict | str = "none"; env: dict[str, str] = ...
+    @classmethod
+    def from_core(cls, core: dict) -> "WorkerResources"
+class Worker(Protocol):
+    qualified: bool
+    def start(self, egress: EgressSession | None = None) -> WorkerSession
+    def egress_session(self, attempt_id, *, read_only=False, max_requests=None) -> EgressSession | None
+    def runner_problem(self) -> str | None          # runner sha256 不符即 StaleWorker
+    def image_id(self) -> str | None
+    def describe(self) -> dict
+class ProcessWorker(Worker): ...                   # 协议测试；qualified = False
+class DockerWorker(Worker):
+    def __init__(self, resources: WorkerResources, *, egress_pool: EgressPool | None = None)
+class WorkerSession:
+    def load(self, files: dict[str, str]) -> dict                     # 返回 {runner_sha256, ops}
+    def run(self, *, entry, task, roles, view, limits, skills, handlers: dict, deadline) -> str   # 整个尝试；handlers: model_call/base_call/skill_read/memory_recall/mark
+    def request(self, message: dict, *, handlers: dict, deadline) -> object   # 单个 op：probe/call_tool/hook/test/smoke/check/work
+    def work(self, action: str, **fields) -> dict                     # R 的工作树（IMPROVER §6）
+    def close(self, force=False) -> None
+class EgressPool / EgressSession / LazyPool        # v6-gateway 的签名不变（session(attempt_id, read_only, max_requests)、poll、close）
+
+# runner.py
+@dataclass(frozen=True)
+class AgentResult: text: str; termination: str; limit: str | None; usage: dict; cost: float | None; hooks: list[dict]; marks: list[dict]
+class PackageAgent:
+    def __init__(self, *, provider, package: Package, core: dict, episode, budget: BudgetAccount, pricing, worker: Worker,
+                 memory_reader=None, record: Recorder, system: str, attempt_id: str)
+    def run(self, task: str) -> AgentResult
+
+# app.py
+@dataclass(frozen=True)
+class AppManifest(Record): package_ref: str; core_subset: dict; validation_ref: str; image_id: str | None
+class App:
+    def __init__(self, directory)
+    def agent(self, *, provider, episode, budget, worker, memory_reader=None) -> PackageAgent
+    def describe(self) -> dict
+def export(objects, release: Release, core: dict, destination: Path) -> AppManifest
+```
+
+## 4 worker 协议（`worker_runner.py`）
+
+一行一个 JSON。宿主 → worker 的 op：
+
+| op | 字段 | 答 |
+|---|---|---|
+| `load` | `files` | `{runner_sha256, ops}` |
+| `run` | `entry, task, roles, view, limits, skills` | 过程中 worker 发 `model_call` / `base_call` / `skill_read` / `memory_recall` / `mark`；最后 `{op:"result", value:<final text>}` 或 `{op:"error", kind, message}` |
+| `smoke` | `entry, roles, task, deadline, view` | 同 run，但模型由 worker 本地脚本化（每个工具各调一次再结束）；小限额 |
+| `hook` | `entry, event, view` | `{op:"result", value}`（回放与草稿检查用） |
+| `call_tool` | `entry, args, view` | 同上 |
+| `probe` | `entries` | 导入每个入口，报错即 `CandidateDefect` |
+| `test` | — | 跑 `tests/*.py`，返回 `{passed, failed, output}` |
+| `check` | `script, tools: [name], view` | 跑 toolcheck 脚本（HARNESS §5.5），世界经宿主的可写 broker |
+| `work` | `action, ...` | R 的工作树：init / list / read / write / edit / delete / export |
+
+worker → 宿主的回调：`model_call{id, role, effort, messages, tools}` → `model_result{id, text, tool_calls, stop}` 或 `{id, is_error, error}`；`base_call{id, name, args, read_only}` → `base_result{id, output, is_error}`；`skill_read{id, name}` → `skill_result{id, text}`；`memory_recall{id, query, k}` → `memory_result{id, entries}`；`mark{id, kind, data}` → `mark_result{id}`。每个答复可带 `limits` 与 `view`（变化的键）。id 按 kind 单调；错位即协议错误。
+
+`load` 的答复里的 `runner_sha256` 必须等于宿主的副本；不等即 `StaleWorker`（启动检查与每次 load 都查）。
+
+## 5 一次尝试的流程（`PackageAgent.run`）
+
+1. 记 `task` 行。合成 `system`（prompt/system.md + skills 索引 + memory 的开场检索块，由 evaluate 传入）。
+2. 若 K 的 `worker.network` 是 proxy：开 egress session（配额 = 剩余 tool_calls）；起 worker；`load(run_files(package))`。
+3. `run(entry, task, roles, view, limits, skills, handlers)`；handlers 把 `model_call` 交给 gateway，`base_call` 交给 broker，`skill_read` 交给 SkillReader，`memory_recall` 交给 MemoryRecall，`mark` 交给 Marks（`kind == "hook"` 的转写成 `hook` 行）。每个答复附剩余 limits 与 `last_usage`。
+4. 结束：`result` → termination `finished`；handler 抛 `LimitHit` → `budget`（维度写 `limit`）；worker 崩溃或超时 → `infrastructure`（到 `max_seconds` 则算 seconds 限额）；`AgentRunError` → `infrastructure`（草稿 smoke 已挡确定性崩溃）。
+5. egress 的行并入 transcript；记 `end` 行；关 worker。
+
+## 6 不变量
+
+- 每次模型调用先预留再结算；effort 超上限截顶，记请求值与发出值；manifest 未声明的 role 拒绝。
+- 每次环境工具调用过拒绝表与只读规则；`writes=false` 的包工具发出的 base_call 一律 read_only。
+- worker：无宿主挂载、只读根、丢弃 capability、资源与网络按 K；proxy 模式只在 internal 网络上起，否则 `EgressUnavailable`。
+- transcript 只追加，包写不到；`mark` 标 `source: package`，不是证据。
+- `WorkerResources` 的每个字段都来自 K；代码里没有写死的 256m / 64。
+
+## 7 与现有代码的对应
+
+| 现有 | 处理 |
+|---|---|
+| `agent/gateway.py` | → `runtime/gateway.py` + `runtime/broker.py`（拆开）；加 `MemoryRecall` |
+| `agent/worker.py`（v6 版） | → `runtime/worker.py`；`WorkerResources` 取代散落的参数 |
+| `agent/worker_runner.py` | → `runtime/worker_runner.py`；加 `memory_recall`、`check` 两个 op；hook op 的 event 形状按 HARNESS §5.2 |
+| `agent/runner.py`（v6 版，含 EgressMeter、last_usage） | → `runtime/runner.py`；去掉 `bound`/policies 的参数，改收 `package` 与 `core` |
+| `egress/__init__.py`、`egress/addon.py`（v6-gateway） | → `runtime/egress.py`、`runtime/egress_addon.py` 原样 |
+| `app.py` | → `runtime/app.py`；不再经 policies 绑定 |
+| `agent/deny.py` | → `runtime/broker.py` 的 `DenyTable` |
+| `chat.py`（ToolSpec、ToolCall、ScriptedChat） | → `runtime/chat.py` |
+| `providers/` | 不动（`claude_code`、`openai_compat`、`anthropic`） |
+| `docker/worker-v6.Dockerfile`、`egress.Dockerfile`（v6） | → `docker/worker.Dockerfile`、`docker/egress.Dockerfile` |
+
+## 8 测试
+
+- 协议：每个 op 一例正常、一例错位 id、一例超长行；`load` 的 sha256 不符即 StaleWorker。
+- 网关：effort 截顶与记录；未声明 role 拒绝；预留/结算一一对应（`test_paid_run_safety` 的计量测试迁到这里）；`malformed` 拒绝坏消息。
+- broker：拒绝表；`read_only` 对写方法的拒绝；tool_calls 限额；记录字段完整。
+- worker：资源全部来自 K（变异：改 K 的 memory 字段，`docker inspect` 读到的值变）；proxy 只在 internal 网络起；egress 配额与 tool_calls 联动（v6 `test_worker_resources`、`test_egress` 迁入）。
+- 运行壳：`test_attempt_behaviour` 在新种子上重录夹具；四种结束方式各一例；hook 行由 mark 转写。
+- App：导出目录只含白名单对象；镜像 id 不符拒绝；无 provider 拒绝。
+
+## 9 开发顺序
+
+`records.py` → `gateway.py`、`broker.py` → `worker_runner.py`（协议）→ `worker.py`（含 egress）→ `runner.py` → `app.py` → 迁测试。

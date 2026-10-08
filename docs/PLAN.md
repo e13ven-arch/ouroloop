@@ -31,6 +31,7 @@
 | 10-08 | 不写金标身份测试；旧工作区只在 tag 上续跑或重渲染，HEAD 只须读得了它们的 train/dev 记录 | 规则 15 |
 | 10-09 | 框架职责是自动提升 harness 与训练模型；改进器由我们自己设计实现；harness、agent、evolution、memory 都要正向设计；选型先定让哪一层变化；特色是轻量 harness 包 + 运行壳 + 模型描述，蒸馏作第二杠杆 | DESIGN v1.1 §1 |
 | 10-09 | 框架不为某个基准定制；原则直接遵守，不另加审查 | DESIGN §9 |
+| 10-09 | “按默认”：DESIGN v1.1 取代旧设计与 modules/；种子 Stirrup，Pi 作 hook API 参照，Deep Agents 作第二种子备选；特色定为轻量 harness 包 + 运行壳 + 模型描述，蒸馏作第二杠杆；分层的代码先验与“有可机械化簇就必须有代码候选到 V2”；阶段 1 从 `m1-automationbench` 起、v6 三条分支搬入；第一个实测域 finance | DESIGN §12 |
 
 ### 0.3 停在哪里
 
@@ -41,7 +42,7 @@
 | 测试 | `6a06e45` 上默认套件 1139 passed（JOURNAL 2026-10-08 瘦身第一批验收一条） |
 | test 读过几次 | finance 1、support 0、sales 0、hr 0、marketing 3；operations 从未读过 |
 | 本机记录 | `examples/automationbench/workspace-*/`、`examples/workspace-*/`、`ws/`、`*.local.toml`，git 忽略，不删不改 |
-| 下一步 | 用户审 DESIGN v1.1（§3）；审定后开阶段 1 |
+| 下一步 | 用户审阶段 1 的模块设计文档与接口（[design/](design/README.md)）；审定后按文档开发阶段 1 |
 
 ## 1 规则
 
@@ -72,10 +73,10 @@
 
 | 阶段 | 内容 | 验收 | 花费 | 状态 |
 |---|---|---|---|---|
-| 0 | 正向设计 [DESIGN v1.1](DESIGN.md)；文档清理（含 modules/）；本文改写 | 用户审定 | $0 | 已写，待审 |
-| 1 | harness 与平台收缩：`harness/`、`runtime/`、`evaluate/`、`activity/`；Stirrup 种子与六个 hook 站点；worker 资源与网络从 K 读；DESIGN §8 的删除 | 默认与 Docker 全量通过；`quickstart.toml` 的 `--phase smoke --checks-only` 通过；假上游上用新种子跑一次尝试；框架 ≤ 22k 行 | $0 | 待做 |
-| 2 | memory 组件：`memory/`、sidecar 与锁文件、`recall` 工具、记功与容量、快照走阶梯、记忆 → 技能 → 工具的升级 | 假上游上 `--phase library` 端到端；变异检查在隔离副本 | $0 | 待做 |
-| 3 | 改进器：`improver/` 八步、toolcheck 与回放、分层估值与代码先验、档案与反膨胀、R 的配置 | 假上游上脚本化的 R 一轮端到端：tool 候选过 V0～V2a 并在 V3 记条件修复；hook 候选过 V2b；有可机械化簇而无代码候选时台账记 `no_code_candidate` | $0 | 待做 |
+| 0 | 正向设计 [DESIGN v1.1](DESIGN.md)；文档清理（含 modules/）；本文改写 | 用户审定 | $0 | 已审定（2026-10-09“按默认”） |
+| 1 | harness 与平台收缩：`harness/`、`runtime/`、`evaluate/`、`activity/`；Stirrup 种子与六个 hook 站点；worker 资源与网络从 K 读；DESIGN §8 的删除 | 默认与 Docker 全量通过；`quickstart.toml` 的 `--phase smoke --checks-only` 通过；假上游上用新种子跑一次尝试；框架 ≤ 22k 行 | $0 | 设计文档已写（design/CONTRACTS、HARNESS、RUNTIME、EVALUATE、ACTIVITY），待审；开发待做 |
+| 2 | memory 组件：`memory/`、sidecar 与锁文件、`recall` 工具、记功与容量、快照走阶梯、记忆 → 技能 → 工具的升级 | 假上游上 `--phase library` 端到端；变异检查在隔离副本 | $0 | 接口已定（design/MEMORY）；开发待做 |
+| 3 | 改进器：`improver/` 八步、toolcheck 与回放、分层估值与代码先验、档案与反膨胀、R 的配置 | 假上游上脚本化的 R 一轮端到端：tool 候选过 V0～V2a 并在 V3 记条件修复；hook 候选过 V2b；有可机械化簇而无代码候选时台账记 `no_code_candidate` | $0 | 接口已定（design/IMPROVER）；开发待做 |
 | 4 | finance 实测：新 preset，基线 → library → 3 轮（每轮后停）→ 有装入则封存 final → RESULTS、README、合入 main | 过程检查成立；计划哈希早于第一次 test 尝试；报告两次相同 | 名义约 $300～480，每步先批准 | 待做 |
 | 5 | 训练绑定：v2.0 离线链对新记录跑通，`model` 组件绑定；之后按 V2 的 v2.1、v2.2 | V2 §5 的断言 | $0；v2.1 另批 | 待做 |
 
@@ -91,13 +92,8 @@
 
 | # | 事项 | 建议 |
 |---|---|---|
-| 1 | DESIGN v1.1 取代 v0.7、三份设计稿与 modules/ 十份文档（已删） | 是 |
-| 2 | 种子 agent：Stirrup；Pi 只作 hook API 参照；Deep Agents 作第二种子备选（DESIGN §4.1） | 是 |
-| 3 | 特色：轻量 harness 包 + 运行壳 + 模型描述，蒸馏作第二杠杆（DESIGN §1.3） | 是 |
-| 4 | 分层的代码先验与“有可机械化簇就必须有代码候选到 V2”的结构保证（DESIGN §6.4） | 是 |
-| 5 | 阶段 1 从 `m1-automationbench` 起，v6 三条分支按 DESIGN §9 搬入，不合并 `v6` 的 WIP | 是 |
-| 6 | 第一个实测域 finance；阶段 4 的预算根名义约 $300～480 | 到阶段 4 前批准 |
-| 7 | DESIGN §3.1 的组件类型表、§4.3 的 hook 站点与 §6.6 的阶梯有没有要加减的 | — |
+| 1 | 阶段 1 的模块设计文档与接口（[design/](design/README.md)）：CONTRACTS、HARNESS、RUNTIME、EVALUATE、ACTIVITY，以及先定接口的 MEMORY、IMPROVER | 审定后按文档开发；有要改的接口先改文档 |
+| 2 | 阶段 4 的预算根，名义约 $300～480 | 到阶段 4 前批准 |
 
 ## 4 文档地图
 
@@ -107,6 +103,7 @@
 | 发生过什么 | [JOURNAL](JOURNAL.md)（倒序） |
 | 对外的结果 | [RESULTS](RESULTS.md)；README 的结果段 |
 | 架构：职责与层次、特色、对照主流框架、harness、agent、memory、改进器、训练、平台、代码布局、实施计划 | [DESIGN](DESIGN.md)（v1.1） |
+| 各模块的设计与接口（阶段 1 的产物；开发按它们做） | [design/README](design/README.md)：CONTRACTS、HARNESS、RUNTIME、EVALUATE、ACTIVITY、MEMORY、IMPROVER |
 | 训练链 | [design/V2_TRAINING_PIPELINE](design/V2_TRAINING_PIPELINE.md) |
 | 训练主机与训练器插件 | [TRAINING_HOSTS](TRAINING_HOSTS.md) |
 | 外部 RSI 框架调研 | [SURVEY_RSI_FRAMEWORKS](SURVEY_RSI_FRAMEWORKS.md)、history/survey-2026-10/ |
@@ -116,7 +113,7 @@
 
 文档之间冲突时：架构以 DESIGN 为准，顺序与状态以本文为准，发生过什么以 JOURNAL 为准。发现冲突先改文档，再继续执行。
 
-**新 agent 的阅读顺序：** 根目录 `CLAUDE.md` → 本文 §0～§1 → DESIGN → §2 里当前阶段那一段 → JOURNAL 最上面三条。现有代码的 docstring 仍引用 tag 上的 modules 文档，代码重写时一并改。
+**新 agent 的阅读顺序：** 根目录 `CLAUDE.md` → 本文 §0～§1 → DESIGN → §2 里当前阶段那一段 → 要做的模块的 design/ 文档（先读 CONTRACTS）→ JOURNAL 最上面三条。现有代码的 docstring 仍引用 tag 上的 modules 文档，代码重写时一并改。
 
 ## 5 怎么更新本计划
 
