@@ -16,8 +16,8 @@ from ouroloop.contracts import CandidateDefect, Infrastructure, LimitHit, StaleW
 from ouroloop.harness import contract as hc
 from ouroloop.runtime.broker import Broker
 from ouroloop.runtime.worker import (MAX_LINE, MAX_MODEL_LINE, PACKAGE_OPS, RUNNER, AgentRunError, PackageCallError,
-                                     ProcessWorker, RunDefect, runner_digest)
-from runtime_world import World, runner_module, session_with
+                                     ProcessWorker, RunDefect, check_package, runner_digest)
+from runtime_world import World, runner_module, seed, session_with
 
 AGENT = '''
 def run(ctx, task):
@@ -429,6 +429,30 @@ def test_check_runs_a_toolcheck_whose_tools_write_through_the_hosts_broker():
             session.request({"op": "check", "script": "x = 1\n", "tools": tools, "view": {}})
     finally:
         session.close()
+
+
+def test_check_package_probes_smokes_and_tests_the_seed_and_names_the_rung_a_broken_draft_fails(tmp_path):
+    """check_package (the V1 draft check in the worker): every entrypoint imported, the agent smoked against the canned
+    model with the fixture's tools, the package's tests run. The seed passes all three, its smoke touching the
+    fixture through its own hooks; an entry that does not exist fails the probe, a hook that raises fails the smoke, a failing test fails
+    the tests — each a problem of the draft, nothing raised."""
+    base = seed(tmp_path)
+    manifest = base.manifest.to_json()
+    worker = ProcessWorker(for_tests=True)
+    world = World()
+    assert check_package(worker, dict(base.files), manifest, fixture=world) == []
+    assert world.calls == [("api_search", {})]          # the tour's read ran; its unplanned write the guard stopped
+    missing = json.loads(json.dumps(manifest))
+    missing["hooks"][0]["entrypoint"] = "middlewares/write_guard.py:absent"
+    (probe,) = check_package(worker, dict(base.files), missing, fixture=World())
+    assert probe.startswith("probe: ") and "no callable absent" in probe
+    guard = base.files["middlewares/write_guard.py"].replace("def ledger(ctx, event):\n",
+                                                             "def ledger(ctx, event):\n    raise KeyError('ledger')\n")
+    (smoke,) = check_package(worker, {**base.files, "middlewares/write_guard.py": guard}, manifest, fixture=World())
+    assert smoke.startswith("smoke: ") and "HookError" in smoke and "ledger" in smoke
+    failing = {**base.files, "tests/test_write_guard.py": "def test_x(ctx=None):\n    assert False, 'broken'\n"}
+    assert check_package(worker, failing, manifest, fixture=World()) == [
+        "test: test_write_guard.py:test_x: AssertionError: broken"]
 
 
 def test_package_code_that_exits_hangs_or_floods_stderr_in_a_bounded_op_is_the_packages():

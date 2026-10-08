@@ -16,7 +16,8 @@ from ouroloop.evaluate.limits import Budget
 from ouroloop.runtime.records import TERMINATIONS, digest16
 from ouroloop.runtime.runner import SKILL_INDEX, EgressMeter, compose_system
 from ouroloop.runtime.worker import RUNNER, ProcessWorker
-from runtime_world import ATTEMPT, Script, World, attempt, core, finish, kinds, minimal, of, seed, turn, variant
+from runtime_world import (ATTEMPT, EffortAware, Script, World, attempt, core, finish, kinds, minimal, of, seed, turn,
+                           variant)
 
 USAGE = {"input_tokens": 100, "output_tokens": 20}
 CRM = "https://crm.example/contacts"
@@ -81,6 +82,19 @@ def test_a_finished_attempt_writes_its_transcript_in_order_and_the_hooks_lines_c
                              "cache_write_tokens": 0}}
     assert end["cost"] == r.cost == pytest.approx(5 * (0.1 * 0.004 + 0.02 * 0.02))
     assert r.tools_called == ["api_fetch"] and r.tool_calls == 1 and r.session == ATTEMPT
+
+
+def test_the_shell_caps_effort_at_ks_max_effort_and_hands_the_agent_each_calls_usage_and_limits(tmp_path):
+    """The gateway's ceiling is K's model.max_effort; each answer carries the call's usage, which the worker puts in
+    ctx.view["last_usage"], and the remaining limits, which become ctx.limits."""
+    agent = ("def run(ctx, task):\n    before = ctx.view['last_usage']\n"
+             "    ctx.model([{'role': 'user', 'content': task}], effort='max')\n"
+             "    return repr([before, ctx.view['last_usage'], ctx.limits['act_calls'], ctx.limits['model_calls']])\n")
+    provider = EffortAware([turn("x", usage=USAGE)], effort="low")
+    a = attempt(tmp_path, minimal(tmp_path / "pkg", agent), provider, k=core(model={"max_effort": "medium"}))
+    assert a.result.text == repr([None, USAGE, 7, 19]) and provider.efforts == ["medium"]
+    (call,) = of(a.lines, "gateway_call")
+    assert (call["effort_requested"], call["effort_sent"]) == ("max", "medium")
 
 
 # ---------------------------------------------------------------------------- the four endings
