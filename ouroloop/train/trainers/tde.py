@@ -4,8 +4,8 @@ the process that asks (backends/tde.py).
 Options ([trainers.tde]):
     source      where TDE comes from: a TDE checkout on the control plane (host init sends it), or a pip requirement
                 such as "git+ssh://git@github.com/your-org/tde.git@v0.1.1"
-    init_from   the first model's parent run, a path on the host (absolute, or from ~); later ones start from the
-                champion. A [recipe] init_from does the same.
+    init_from   the parent run of a job given no parent model, a path on the host (absolute, or from ~); a job
+                with a parent_model_ref starts from that model. A [recipe] init_from does the same.
     device      TDE's device ("cuda", "cpu", ...); by default a host whose torch sees no CUDA device is not ready,
                 and "cpu" allows one. Loading a model in-process uses it too, unless [serving] device says otherwise.
 

@@ -5,14 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ouroloop"
 version = "0.3.0"
-description = "A lightweight RSI framework: an LLM improves a small decision model, and the decision model improves the agent harness"
+description = "Bounded recursive self-improvement for agent applications: a research policy evolves the agent's capability package under a fixed core, and a change installs only through a paired gate"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "The ouroloop Authors" }]
 requires-python = ">=3.11"
 dependencies = ["httpx>=0.27"]
-keywords = ["agents", "llm", "harness", "decision-model", "self-improvement", "rsi"]
+keywords = ["agents", "llm", "harness", "self-improvement", "rsi", "evaluation"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",

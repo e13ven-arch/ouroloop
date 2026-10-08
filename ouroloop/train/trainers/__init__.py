@@ -2,8 +2,8 @@
 
 ouroloop trains decision models of any kind; a plugin is one kind. The framework does the rest the same way for all:
 it builds the data, runs the job on a host (jobs/compute.py, jobs/worker.py), publishes the run to the model
-store (stores/: a ref, a job id or <repo>@<commit>), gates, calibrates, deploys and serves the model by its
-ref (serving.py). A plugin is a module with:
+store (stores/: a ref, a job id or <repo>@<commit>) and serves the model by its ref (serving.py), where a candidate
+W binds it and the dev gate compares that W with its control (bench.py `_train`). A plugin is a module with:
 
     NAME             its name, the [trainer] type
     REQUIREMENTS     pip requirement strings its host needs besides ouroloop (`python -m ouroloop.train host init`
@@ -12,7 +12,8 @@ ref (serving.py). A plugin is a module with:
     SUPPORTS_WEIGHTS optional, default False: it weighs each example by meta.weight; if not, the framework hands it
                      full-weight rows only
     NEEDS_PARENT     optional, default False: it trains from a parent model; a job without one is refused before
-                     it starts. The parent is the champion when this plugin trained it, else init_from
+                     it starts. The parent is the job's parent_model_ref, else the [recipe] or
+                     [trainers.<name>] init_from
     RECIPE           optional: its trainer's recipe keys and their defaults ({} or absent: none), on top of the
                      framework's (train.py: min_weight, focus, seed, init_from); research candidates may
                      change them, and any other key is refused

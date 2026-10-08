@@ -1,13 +1,15 @@
-"""ouroloop: a lightweight RSI framework. An LLM improves a small decision model, and the decision model
-improves the agent harness.
+"""ouroloop: bounded recursive self-improvement for agent applications. A research policy R evolves the worker W, a
+versioned capability package run by a fixed runner shell, under a fixed core K (scorer, splits, gate, permissions,
+budgets); a change is installed only after a train screen, a paired dev gate and a confirmation reading (README.md,
+docs/DESIGN.md).
 
-The decision-model names below are the training stack's (ouroloop/train/), imported on first use, so
-`import ouroloop.bench` (and every attempt) loads none of it."""
+The decision-model names below are the optional training stack's (ouroloop/train/, `python -m ouroloop.train`),
+imported on first use, so `import ouroloop.bench` (and every attempt) loads none of it."""
 from __future__ import annotations
 
 from importlib import import_module
 
-__version__ = "0.1.0"
+__version__ = "0.3.0"                 # pyproject.toml's version (tests/test_entry_points.py)
 _LAZY = {"Choice": ".train.decision", "Decision": ".train.decision", "DecisionPoint": ".train.decision",
          "Noul": ".train.decision", "Score": ".train.decision", "Spec": ".train.decision", "Policy": ".train.policy",
          "Runtime": ".train.runtime", "Answer": ".train.types", "Question": ".train.types", "Request": ".train.types"}

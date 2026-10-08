@@ -2,12 +2,13 @@
 it is served.
 
 The training worker publishes each run to the store once; what comes back is an immutable model ref, the only thing
-cards, calibrations, pins and revocations hold. Serving fetches a ref from the same store, on whatever machine can
-reach it. A store is a module of this package named by its [store] type, with a class STORE:
+a model policy and a revocation hold. Serving fetches a ref from the same store, in the process that binds the
+policy. A store is a module of this package named by its [store] type, with a class STORE:
 
     TYPE                the [store] type
-    ON_TRAINING_HOST    its models are on the machine that trains them ("dir" with a training host): serving must
-                        then run there, and a cloud instance, gone after its job, cannot hold them
+    ON_TRAINING_HOST    its models are on the machine that trains them ("dir" with a training host): serving here
+                        cannot load them, so JobTrainer refuses that pairing (use "hf"), and a cloud instance, gone
+                        after its job, cannot hold them
     STORE(table)        the [store] table; any key it does not know is a ValueError
     .table              the table, as a job's spec.json carries it to the worker
     .job(ref)           the job id a ref of this store names, or None when it is not one of its refs

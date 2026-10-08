@@ -486,7 +486,7 @@ def anthropic_response(text="", calls=()):
 
 
 def test_a_reply_s_native_content_is_kept_under_the_provider_name_and_replayed_on_the_next_turn():
-    """M4 §1 (2026-10-05, second recheck): the session keeps a reply's native content as agent/loop.py does —
+    """M4 §1 (2026-10-05, second recheck): the session keeps a reply's native content as the v1 agent/loop.py did —
     {provider name: content} — so the Anthropic provider replays it on the session's next call (a bare list made
     to_anthropic's `.get(provider)` raise on the second call); a reply with a call that is not strict UTF-8 keeps no
     native content, and the next request is rebuilt from the escaped text and calls, every message encodable."""

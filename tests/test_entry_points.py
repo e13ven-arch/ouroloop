@@ -26,6 +26,16 @@ def test_the_ouroloop_command_runs_the_benchmark_only(capsys):
     capsys.readouterr()
 
 
+def test_the_package_version_is_pyprojects():
+    """pip names an install after pyproject's version, and host init names the sdist it sends after __version__
+    (train/jobs/hosts): the two are one number."""
+    import tomllib
+
+    import ouroloop
+    with open(REPO / "pyproject.toml", "rb") as f:
+        assert ouroloop.__version__ == tomllib.load(f)["project"]["version"]
+
+
 def test_smoke_jev_asks_the_three_primitives_and_checks_each_answer(capsys):
     assert train_cli.main(["smoke", "--jev", "--backend", "mock"]) == 0
     lines = capsys.readouterr().out.splitlines()

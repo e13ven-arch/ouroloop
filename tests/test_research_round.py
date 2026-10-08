@@ -1471,7 +1471,7 @@ def test_the_proposal_ref_is_read_from_the_admitted_row():
 # ---------------------------------------------------------------------------- second recheck of 2026-10-05
 def test_the_round_keys_native_content_by_the_research_providers_name(fake_upstream, tmp_path, monkeypatch):
     """M4 §1 (2026-10-05, second recheck): the round names the session's provider by the research completion
-    interface's `name` (as agent/loop.py keys native content), so a session run through the Anthropic provider
+    interface's `name` (as the v1 agent/loop.py keyed native content), so a session run through the Anthropic provider
     replays the first reply's blocks on its second call and the round installs; with the bare list it raised."""
     from types import SimpleNamespace
     from test_research_session import FakeAnthropic, anthropic_response

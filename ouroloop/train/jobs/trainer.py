@@ -134,7 +134,7 @@ class JobTrainer:
         """-> (job id, spec, result.json, where it ran: {} on a host, {"cloud": ...} on a cloud instance)"""
         parent = job.init_from or self.options.get("init_from")
         if getattr(self.plugin, "NEEDS_PARENT", False) and not parent:
-            raise ValueError(f"{job.version}: no parent to train from: no champion, and no init_from in [recipe] or "
+            raise ValueError(f"{job.version}: no parent to train from: no parent model, and no init_from in [recipe] or "
                              f"[trainers.{self.name}]")
         workspace = str(Path(job.data_dir).resolve().parents[2])    # <workspace>/models/<version>/data
         job_id = new_id(job.version)

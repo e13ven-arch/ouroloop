@@ -372,7 +372,7 @@ class CodingSession:
                  trajectories: TrajectoryReader | None = None, note_refs=(), provider: str = "llm", tools=TOOLS):
         self.turn, self.work, self.limits, self.k = turn, work, limits, max(int(k), 1)
         self.tools = tuple(tools)
-        # the name a reply's native content is kept under, as agent/loop.py keys it ({provider.name: content}): the
+        # the name a reply's native content is kept under, as the v1 agent/loop.py keyed it ({provider.name: content}): the
         # provider replays its own content on the next turn (providers/anthropic.to_anthropic reads it by name)
         self.provider = provider
         self.system, self.inputs, self.trajectories = system, inputs, trajectories
