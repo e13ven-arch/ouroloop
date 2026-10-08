@@ -16,12 +16,12 @@ from ouroloop.train.train import train_artifact
 from ouroloop.train.jobs.trainer import CHECKOUT, JobTrainer
 from ouroloop.train.train import DEFAULT_RECIPE, TrainError, TrainJob
 from ouroloop.train.jobs.hosts import MANIFEST, read, stale
-from ouroloop.release import code_version
+from ouroloop.evaluate.release import code_version
 from ouroloop.train.stores import kind
 from ouroloop.train.cli import main
 from ouroloop.train.trainers import load
 from ouroloop.train.types import Question, Request
-from ouroloop.workspace import Workspace
+from ouroloop.train.runtime import Runtime
 
 # pip, stood in for: it logs each call to <venv>/pip.log, and "installs" an archive by unpacking it and pointing a .pth
 # file at it; of an sdist (an archive with a pyproject.toml) only what pip installs is kept: modules and the declared
@@ -55,10 +55,12 @@ for r in reqs:
         (top,) = os.listdir(dest)
         root = os.path.join(dest, top)
         if os.path.exists(os.path.join(root, "pyproject.toml")):
-            import tomllib
+            import glob, tomllib
             with open(os.path.join(root, "pyproject.toml"), "rb") as f:
                 data = tomllib.load(f).get("tool", {}).get("setuptools", {}).get("package-data", {})
-            keep = {os.path.join(*pkg.split("."), n) for pkg, names in data.items() for n in names}
+            # setuptools reads package-data as globs, `**` recursive (the seed trees: "seeds/**/*")
+            keep = {p for pkg, names in data.items() for n in names
+                    for p in glob.glob(os.path.join(*pkg.split("."), n), root_dir=root, recursive=True)}
             for base, _, names in os.walk(root):
                 for n in names:
                     rel = os.path.relpath(os.path.join(base, n), root)
@@ -163,7 +165,7 @@ def test_a_host_that_cannot_be_initialized_fails_the_build_before_anything_is_us
     jobs = tmp_path / "jobs"
     cfg = {"models": {"jobs_root": str(jobs)},             # an old config: [models] and no [store]
            "trainer": {"type": "signature", "host": "local", "jobs_root": str(jobs)}}
-    rt = Workspace(tmp_path / "ws", serving=lambda: train_config.build_serving(cfg))
+    rt = Runtime(tmp_path / "ws", serving=train_config.build_serving(cfg))
     trainer = train_config.build_trainer(cfg, rt.serving)
     built = train_artifact(rt, trainer, dataset(rt.root), version="m_0001")
     assert built.status == "failed" and built.model_ref is None and built.artifact_ref is None
@@ -250,7 +252,7 @@ def test_a_stray_file_in_the_package_is_neither_hashed_nor_sent(tmp_path, monkey
     import tomllib
 
     from ouroloop.train.jobs import hosts
-    from ouroloop import release
+    from ouroloop.evaluate import release
     copy = tmp_path / "checkout"
     shutil.copytree(CHECKOUT / "ouroloop", copy / "ouroloop", ignore=shutil.ignore_patterns("__pycache__"))
     shutil.copy(CHECKOUT / "pyproject.toml", copy / "pyproject.toml")
@@ -259,18 +261,18 @@ def test_a_stray_file_in_the_package_is_neither_hashed_nor_sent(tmp_path, monkey
     monkeypatch.setattr(hosts, "CHECKOUT", copy)
     before = code_version()
     (copy / "ouroloop" / ".DS_Store").write_bytes(b"\0")
-    (copy / "ouroloop" / "evolve" / ".train.py.swp").write_bytes(b"\0")
+    (copy / "ouroloop" / "train" / ".train.py.swp").write_bytes(b"\0")
     (copy / "ouroloop" / "train" / "trainers" / "mytrainer.yaml").write_text("x: 1\n")
     assert code_version() == before
     with tarfile.open(hosts.pack_ouroloop(tmp_path)) as t:
         sent = {n.split("/", 1)[1] for n in t.getnames()}
     assert sent == {"pyproject.toml"} | {p.relative_to(copy).as_posix() for p in release.package_files()}
     assert "ouroloop/train/jobs/hosts/start.sh" in sent and not any(n.endswith((".DS_Store", ".swp", ".yaml")) for n in sent)
-    # pyproject's package-data is PACKAGE_DATA: what pip installs besides the modules
+    # pyproject's package-data is PACKAGE_DATA and the seed trees: what pip installs besides the modules
     with open(CHECKOUT / "pyproject.toml", "rb") as f:
         data = tomllib.load(f)["tool"]["setuptools"]["package-data"]
     assert {f"{pkg.partition('.')[2].replace('.', '/')}/{n}" for pkg, names in data.items() for n in names} == set(
-        release.PACKAGE_DATA)
+        release.PACKAGE_DATA) | {f"{release.SEEDS}**/*"}
 
 
 def test_init_over_ssh_sends_one_tar_so_a_host_without_rsync_can_be_prepared(home, tmp_path):
@@ -427,7 +429,7 @@ def test_the_signature_plugin_through_the_job_path_to_a_trained_artifact(tmp_pat
     cfg = {"store": {"type": "dir", "root": str(jobs)},
            "trainer": {"type": "signature", "jobs_root": str(jobs), "poll_s": 0.05},
            "trainers": {"signature": {"signature": "test_hosts:says"}}}
-    rt = Workspace(tmp_path / "ws", serving=lambda: train_config.build_serving(cfg))
+    rt = Runtime(tmp_path / "ws", serving=train_config.build_serving(cfg))
     trainer = train_config.build_trainer(cfg, rt.serving)
     assert trainer.supports_weights
     out = trainer.dry_run(a_job(tmp_path / "ws", "m_0000"))

@@ -12,7 +12,7 @@ import pytest
 from ouroloop.train.dataset import DatasetBuild
 from ouroloop.train.jobs.compute import SEP
 from ouroloop.train.train import DEFAULT_RECIPE, TrainJob
-from ouroloop.release import code_version
+from ouroloop.evaluate.release import code_version
 
 # huggingface_hub, stood in for: repositories and commits under $FAKE_HF; a job's Python imports it from PYTHONPATH.
 FAKE_HF = """

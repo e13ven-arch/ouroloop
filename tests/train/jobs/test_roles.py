@@ -12,7 +12,7 @@ from jobs_fixtures import FAKE_HF, keys  # noqa: F401 - keys is a fixture
 from ouroloop.train import config as train_config
 from ouroloop.train.jobs.trainer import JobTrainer
 from ouroloop.train.train import TrainError
-from ouroloop.release import code_version
+from ouroloop.evaluate.release import code_version
 from ouroloop.train.serving import PROBE, Serving
 from ouroloop.train.stores import make
 from ouroloop.train.trainers import signature
