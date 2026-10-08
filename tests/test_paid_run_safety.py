@@ -56,6 +56,25 @@ def test_every_agent_call_is_reserved_and_settled_on_the_activity_book(fake_upst
     assert used["model_calls"] == len(reservations) and used["usd"] > 0
 
 
+def test_every_agent_call_of_a_v3_round_is_reserved_and_settled_on_the_activity_book(fake_upstream, tmp_path,
+                                                                                    monkeypatch):
+    """The test above on the path new activities run (the v3 preset: a measurement, R's session, the train screen,
+    the dev gate and its confirmation), so it does not go with `prepared`'s preset-less K when batch 2 moves it."""
+    from test_research_session import MEMORY, memory_candidate, prepared_v3
+    cfg, activity, w0 = prepared_v3(fake_upstream, tmp_path, monkeypatch)
+    step = rsi.SessionScript(lambda inputs: [memory_candidate(inputs, name="good", text=MEMORY)])
+    result = bench.improve(cfg, ".", out=lambda _l: None, researcher=step)
+    assert [r["outcome"] for r in result["rounds"]] == ["installed", "stopped"]
+    reservations = list(book(activity)["reservations"].values())
+    assert reservations and all(r["status"] == "settled" for r in reservations)
+    operations = {r["operation_id"].split(":")[1] for r in reservations}
+    assert {"measure", "train_screen", "subject", "control", "confirm"} <= operations
+    scopes = book(activity)["scopes"]
+    (root,) = [name for name, entry in scopes.items() if entry["parent"] is None]
+    used = activity.budgets.account(root, scopes[root]["limits"]).remaining()["used"]
+    assert used["model_calls"] == len(reservations) and used["usd"] > 0
+
+
 def test_one_activity_has_one_budget_root(fake_upstream, tmp_path):
     from test_rsi_integration import campaign_pairs
     cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
