@@ -385,62 +385,109 @@ class TestMultiTurnPrompt:
         assert all(suite.tasks[t].turns == 1 for t in suite.ids())
 
 
+UPDATE = ("api_fetch", {"method": "PATCH", "url": HUBSPOT, "body": json.dumps({"id": "c1", "stage": "opportunity"})})
+POST = ("api_fetch", {"method": "POST", "url": SLACK,
+                      "body": json.dumps({"channel": "C1", "text": "quarterly pipeline review"})})
+
+
 class TestCompletionProbe:
-    """The stop point's environment label: was the task actually complete when the agent decided to stop?"""
+    """The stop point's environment label: was the task actually complete when the agent decided to stop?
 
-    def train(self, suite):
-        fams, rule = ab.families(suite)
-        return SplitManifest("marketing", suite.versions, rule, suite.entries(fams),
-                             {f: "train" for f in fams.values()})
+    The probe is called directly here, on an episode and a decision the test records: the runner shell asks no
+    decision point, so no attempt makes a stop decision for it to label (docs/design/SLIMMING_INVENTORY.md §0.1 D;
+    the bridge from an attempt to the stop point is v2 work). What an attempt does with `probe` is checked at the
+    end: refused outside train, and the scorer never consulted while the agent works."""
 
-    def run(self, tmp_path, suite, calls, splits=None, probe=True):
-        splits = splits or self.train(suite)
-        run = RunManifest("base", "base", splits.split_of(LEAD), {"model": "scripted"}, data=splits.hash(),
-                          budget=Budget(max_steps=8, max_tool_calls=8))
-        rt = runtime(tmp_path)
-        attempt = run_attempt(suite, LEAD, factory(rt, solve(calls)), run=run, splits=splits, probe=probe)
-        return rt, attempt.result
+    def probe(self, tmp_path, suite, **kw):
+        from ouroloop.train.runtime import Runtime as TrainRuntime
+        rt = TrainRuntime(tmp_path / "ws")
+        episode = suite.episode(LEAD)
+        surface = Budgeted(episode, Budget())
+        return rt, surface, ab.CompletionProbe(rt, episode, surface=surface, **kw)
 
-    def test_a_finished_task_labels_its_stop_decisions_yes(self, tmp_path, suite):
-        rt, result = self.run(tmp_path, suite,
-                              [("api_fetch", {"method": "PATCH", "url": HUBSPOT,
-                                              "body": json.dumps({"id": "c1", "stage": "opportunity"})}),
-                               ("api_fetch", {"method": "POST", "url": SLACK,
-                                              "body": json.dumps({"channel": "C1",
-                                                                  "text": "quarterly pipeline review"})})])
-        assert result.success and result.labelled > 0
-        labels = [(r.decision["point"], t[0]) for r, t, _w in
-                  [(row, row.target(), 0) for row in rt.ledger.rows() if row.target()]]
-        assert labels and all(point == "stop" for point, _ in labels)
-        assert any(dist.get("yes") == 1.0 for _point, dist in labels)
+    def stop(self, rt, probe, surface, changes: int) -> str:
+        """A stop decision made now, snapped as a host would snap it."""
+        did = rt.ledger.decision(session="s1", point="stop", ctx="s1#0", phase="on_finish")
+        probe.snap(did, changes)
+        return did
+
+    def labels(self, rt) -> dict:
+        return {e["decision"]: e for e in rt.ledger.events() if e["type"] == "outcome"}
+
+    def test_a_finished_task_labels_its_stop_decision_yes(self, tmp_path, suite):
+        rt, surface, probe = self.probe(tmp_path, suite)
+        for name, args in (UPDATE, POST):
+            surface.run(name, args)
+        did = self.stop(rt, probe, surface, 2)
+        assert probe.label() == 1
+        label = self.labels(rt)[did]
+        assert (label["label"], label["score"], label["assertions"]) == ("yes", 1.0, "2/2")
 
     def test_stopping_too_early_is_labelled_no(self, tmp_path, suite):
         """One of the two required writes done: the task is not complete, and the stop decision says so."""
-        rt, result = self.run(tmp_path, suite,
-                              [("api_fetch", {"method": "PATCH", "url": HUBSPOT,
-                                              "body": json.dumps({"id": "c1", "stage": "opportunity"})})])
-        assert not result.success and result.partial_credit == 0.5 and result.labelled > 0
-        dists = [row.target()[0] for row in rt.ledger.rows() if row.target()]
-        assert dists and all(d.get("no") == 1.0 for d in dists)
+        rt, surface, probe = self.probe(tmp_path, suite)
+        surface.run(*UPDATE)
+        did = self.stop(rt, probe, surface, 1)
+        assert probe.label() == 1
+        assert (self.labels(rt)[did]["label"], self.labels(rt)[did]["score"]) == ("no", 0.5)
 
     def test_a_label_is_an_env_outcome_that_training_may_read(self, tmp_path, suite):
-        rt, _ = self.run(tmp_path, suite, [])
-        outcomes = [e for e in rt.ledger.events() if e["type"] == "outcome"]
-        assert outcomes and all(e["source"] == "env" for e in outcomes)
-        assert all(e["note"] == "completion probe" for e in outcomes)
-        assert rt.ledger.training_rows("stop")          # the existing builder can draw from these
+        rt, surface, probe = self.probe(tmp_path, suite)
+        self.stop(rt, probe, surface, 0)
+        probe.label()
+        outcomes = list(self.labels(rt).values())
+        assert outcomes and all(e["source"] == "env" and e["note"] == "completion probe" for e in outcomes)
+        assert rt.ledger.training_rows("stop")          # the builder can draw from these
 
     def test_each_state_is_labelled_from_its_own_snapshot(self, tmp_path, suite):
-        """The decision made before the second write must not be labelled from the state after it."""
-        rt, result = self.run(tmp_path, suite,
-                              [("api_fetch", {"method": "PATCH", "url": HUBSPOT,
-                                              "body": json.dumps({"id": "c1", "stage": "opportunity"})}),
-                               ("api_fetch", {"method": "POST", "url": SLACK,
-                                              "body": json.dumps({"channel": "C1",
-                                                                  "text": "quarterly pipeline review"})})])
-        scores = sorted(e["score"] for e in rt.ledger.events() if e["type"] == "outcome")
-        assert scores[0] < scores[-1]      # the earlier state scored lower than the final one
-        assert scores[-1] == 1.0
+        """The decision made before the second write must not be labelled from the state after it, and decisions on
+        one state share its snapshot."""
+        rt, surface, probe = self.probe(tmp_path, suite)
+        surface.run(*UPDATE)
+        early, same = self.stop(rt, probe, surface, 1), self.stop(rt, probe, surface, 1)
+        surface.run(*POST)
+        late = self.stop(rt, probe, surface, 2)
+        assert len(probe.snaps) == 2 and probe.label() == 3
+        labels = self.labels(rt)
+        assert [(labels[d]["label"], labels[d]["score"]) for d in (early, same, late)] == [("no", 0.5), ("no", 0.5),
+                                                                                         ("yes", 1.0)]
+        assert all(s["world"] is None for s in probe.snaps)        # the worlds are let go once labelled
+
+    def test_the_probe_scores_only_when_it_labels(self, tmp_path, suite, monkeypatch):
+        """An official scorer used as an online checker would quietly correct the agent's mistakes: a snapshot is a
+        copy, and scoring happens in label(), after the episode."""
+        seen = []
+        original = ab.Episode.score
+        monkeypatch.setattr(ab.Episode, "score", lambda self, world=None: (seen.append(1), original(self, world))[1])
+        rt, surface, probe = self.probe(tmp_path, suite)
+        surface.run(*UPDATE)
+        self.stop(rt, probe, surface, 1)
+        assert seen == []
+        probe.label()
+        assert seen == [1]
+
+    def test_a_world_that_cannot_be_copied_stays_unlabelled(self, tmp_path, suite, monkeypatch):
+        rt, surface, probe = self.probe(tmp_path, suite)
+        monkeypatch.setattr(surface.episode, "snapshot", lambda: (_ for _ in ()).throw(RuntimeError("no copy")))
+        did = self.stop(rt, probe, surface, 0)
+        assert probe.label() == 0
+        label = self.labels(rt)[did]
+        assert label["label"] is None and "could not be copied" in label["error"]
+        assert not rt.ledger.training_rows("stop")
+
+    def test_a_scorer_that_fails_leaves_the_label_unknown_never_no(self, tmp_path, suite, monkeypatch):
+        rt, surface, probe = self.probe(tmp_path, suite)
+        did = self.stop(rt, probe, surface, 0)
+        monkeypatch.setattr(ab.Episode, "score", lambda self, world=None: 1 / 0)
+        assert probe.label() == 0
+        label = self.labels(rt)[did]
+        assert label["label"] is None and label["error"].startswith("ZeroDivisionError")
+
+    def test_snapshots_are_bounded(self, tmp_path, suite):
+        rt, surface, probe = self.probe(tmp_path, suite, max_snapshots=2)
+        for i in range(5):
+            probe.snap(f"d{i}", i)
+        assert sum(s["world"] is not None for s in probe.snaps) == 2 and probe.dropped == 3
 
     def test_a_read_does_not_count_as_a_change(self, suite):
         ep = suite.episode(LEAD)
@@ -448,48 +495,6 @@ class TestCompletionProbe:
         assert not ep.mutates("api_fetch", {"method": "GET", "url": SLACK})
         assert not ep.mutates("api_search", {"query": "slack"})
         assert not ep.mutates("base64_encode", {"text": "hi"})
-
-    def test_the_probe_is_refused_outside_train(self, tmp_path, suite):
-        fams, rule = ab.families(suite)
-        dev = SplitManifest("marketing", suite.versions, rule, suite.entries(fams),
-                            {f: "dev" for f in fams.values()})
-        with pytest.raises(ValueError, match="only the train split"):
-            self.run(tmp_path, suite, [], splits=dev)
-
-    def test_only_the_train_split_is_trainable(self, tmp_path, suite):
-        """dev decides between candidates, so its sessions are held out from training just as test's are."""
-        fams, rule = ab.families(suite)
-        dev = SplitManifest("marketing", suite.versions, rule, suite.entries(fams),
-                            {f: "dev" for f in fams.values()})
-        rt, result = self.run(tmp_path, suite, [], splits=dev, probe=False)
-        sessions, _ = rt.ledger.sessions()
-        assert sessions[result.evidence]["held_out"] is True
-
-    def test_the_scorer_is_never_consulted_during_the_run(self, tmp_path, suite, monkeypatch):
-        """An official scorer used as an online checker would quietly correct the agent's mistakes."""
-        seen = []
-        original = ab.Episode.score
-        monkeypatch.setattr(ab.Episode, "score",
-                            lambda self, world=None: (seen.append(len(self.calls)), original(self, world))[1])
-        rt, result = self.run(tmp_path, suite,
-                              [("api_fetch", {"method": "PATCH", "url": HUBSPOT,
-                                              "body": json.dumps({"id": "c1", "stage": "opportunity"})})])
-        # Every scoring happened after the last tool call, never between them.
-        assert seen and all(n == result.tool_calls for n in seen)
-
-    def test_a_world_that_cannot_be_copied_stays_unlabelled(self, tmp_path, suite, monkeypatch):
-        ep = suite.episode(LEAD)
-        monkeypatch.setattr(ab.Suite, "episode", lambda self, tid: ep)
-        monkeypatch.setattr(type(ep.world), "model_copy",
-                            lambda self, deep=False: (_ for _ in ()).throw(RuntimeError("no copy")), raising=False)
-        rt, result = self.run(tmp_path, suite, [])
-        assert result.validity == "valid" and result.labelled == 0      # no label, and the run still stands
-
-    def test_snapshots_are_bounded(self, tmp_path, suite):
-        probe = ab.CompletionProbe(runtime(tmp_path), suite.episode(LEAD), max_snapshots=2)
-        for i in range(5):
-            probe.snap(f"d{i}", i)
-        assert sum(s["world"] is not None for s in probe.snaps) == 2 and probe.dropped == 3
 
     def test_the_wrapped_surface_still_reports_changes(self, suite):
         surface = Budgeted(suite.episode(LEAD), Budget())
@@ -505,7 +510,42 @@ class TestCompletionProbe:
                 return None
 
         with pytest.raises(ab.UpstreamError, match="which calls change the world"):
-            ab.CompletionProbe(runtime(tmp_path), suite.episode(LEAD), surface=Opaque())
+            ab.CompletionProbe(None, suite.episode(LEAD), surface=Opaque())
+
+    # ---------------------------------------------------------------- what an attempt does with `probe`
+    def dev(self, suite) -> SplitManifest:
+        fams, rule = ab.families(suite)
+        return SplitManifest("marketing", suite.versions, rule, suite.entries(fams), {f: "dev" for f in fams.values()})
+
+    def test_an_attempt_refuses_the_probe_outside_train(self, tmp_path, suite):
+        dev = self.dev(suite)
+        run = RunManifest("base", "base", "dev", {"model": "scripted"}, data=dev.hash())
+        with pytest.raises(ValueError, match="only the train split"):
+            run_attempt(suite, LEAD, factory(runtime(tmp_path), solve([])), run=run, splits=dev, probe=True)
+
+    def test_only_the_train_split_is_trainable(self, tmp_path, suite):
+        """dev decides between candidates, so its sessions are held out from training just as test's are."""
+        dev = self.dev(suite)
+        run = RunManifest("base", "base", "dev", {"model": "scripted"}, data=dev.hash())
+        rt = runtime(tmp_path)
+        result = run_attempt(suite, LEAD, factory(rt, solve([])), run=run, splits=dev).result
+        sessions, _ = rt.ledger.sessions()
+        assert sessions[result.evidence]["held_out"] is True
+
+    def test_the_scorer_is_never_consulted_during_an_attempt(self, tmp_path, suite, monkeypatch):
+        seen = []
+        original = ab.Episode.score
+        monkeypatch.setattr(ab.Episode, "score",
+                            lambda self, world=None: (seen.append(len(self.calls)), original(self, world))[1])
+        fams, rule = ab.families(suite)
+        train = SplitManifest("marketing", suite.versions, rule, suite.entries(fams),
+                              {f: "train" for f in fams.values()})
+        run = RunManifest("base", "base", "train", {"model": "scripted"}, data=train.hash(),
+                          budget=Budget(max_steps=8, max_tool_calls=8))
+        result = run_attempt(suite, LEAD, factory(runtime(tmp_path), solve([UPDATE])), run=run, splits=train,
+                             probe=True).result
+        # Every scoring happened after the last tool call, never between them.
+        assert seen and all(n == result.tool_calls == 1 for n in seen)
 
 
 class TestTheInterventionWorks:

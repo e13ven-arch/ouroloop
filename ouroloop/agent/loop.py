@@ -22,6 +22,7 @@ from ..chat import ChatProvider, ToolCall
 from ..ledger import _append_jsonl, new_id, now, redact
 from ..runtime import Runtime
 from ..train.stop import StopCall, StopGuard
+from ..train.trace import record_trace, stop_context, tool_event
 from .deny import denied
 from .runner import AgentResult
 from .tools import ToolResult, Tools
@@ -286,52 +287,22 @@ class Agent:
             return {"task": self._task_head(), "turns": turn,
                     "files": ", ".join(sorted(self._modified))[:500],
                     "actions": "\n".join(self._actions[-10:]), "message": text[:1500]}
-        cut = [e["call_id"] for e in self._tool_events if e.get("truncated")]
         budget = getattr(self.tools, "budget", None)
         remaining = {"steps": max(self.config.max_turns - turn, 0)}
         if budget is not None:
             remaining["tool_calls"] = max(budget.max_tool_calls - getattr(self.tools, "tool_calls",
                                                                          len(self._tool_events)), 0)
-        return {"task_text": self._task, "final_message": text[:4000], "phase": phase, "step": turn,
-                "tool_events": list(self._tool_events), "budget_remaining": remaining,
-                "truncation": {"tool_results_cut": cut} if cut else {}}
+        return stop_context(self._task, text, phase=phase, step=turn, tool_events=self._tool_events,
+                            budget_remaining=remaining)
 
     def _trace(self, call: StopCall, ctx: dict, phase: str, decision: dict) -> None:
-        """One observation and one trace per decision of a bound policy.
-
-        The proposed and the executed action come from two different places — the policy's answer and what the
-        guard did with it — which is the only way a later round can tell "the policy was overruled" from "the
-        policy agreed" (docs/modules/00_CONTRACTS.md §2). `decision` is the row as the runtime wrote it.
-        """
-        from ..evolve import contracts as ct
+        """One observation and one trace per decision of a bound policy (train.trace.record_trace)."""
         if self.objects is None:
             return
-        observation = ct.Observation(
-            task_text=ctx.get("task_text", ""), tool_events=tuple(json.dumps(e, sort_keys=True, default=str)
-                                                                  for e in ctx.get("tool_events") or ()),
-            phase=phase, step=int(ctx.get("step") or 0), final_message=ctx.get("final_message", ""),
-            budget_remaining=dict(ctx.get("budget_remaining") or {}),
-            truncation=dict(ctx.get("truncation") or {}))
-        obs_ref = self.objects.put(observation)
-        trace = ct.DecisionTrace(
-            decision_id=call.decision or "", observation_ref=obs_ref,
-            policy_ref=getattr(self.policy.stop, "ref", ""), input_schema=self.config.stop_view,
-            rendered_input_ref=self.objects.put_json("change", {"view": decision.get("view") or ""}),
-            proposed_action=decision.get("proposed"), executed_action=decision.get("action"),
-            executor=decision.get("executor") or "default",
-            fallback_reason=decision.get("fallback_reason"), override_reason=decision.get("override_reason"))
+        obs_ref, trace_ref = record_trace(self.objects, self.policy, self.guard, call, ctx, phase, decision,
+                                          input_schema=self.config.stop_view)
         self._observation_refs.append(obs_ref)
-        self._trace_refs.append(self.objects.put(trace))
-        target = "worker.stop"
-        if not decision.get("policy_ref"):
-            return                      # no policy was bound at this phase: an observation, not a call
-        self.policy.activity.call(target)
-        self.policy.activity.propose(target, decision.get("proposed"))
-        self.policy.activity.execute(target, decision.get("action"))
-        if decision.get("fallback_reason"):
-            self.policy.activity.fallback(target, str(decision["fallback_reason"])[:80])
-        if decision.get("override_reason") or any(o["decision"] == call.decision for o in self.guard.overruled):
-            self.policy.activity.override(target, str(decision.get("override_reason") or "guard limit"))
+        self._trace_refs.append(trace_ref)
 
     def _check(self) -> tuple[bool, str]:
         verified, out = self._verify()
@@ -366,10 +337,8 @@ class Agent:
         self._errors += res.is_error
         self._actions.append(f"{_short(call)} -> {'error' if res.is_error else 'ok'}")
         limit = self.config.max_event_result_chars
-        self._tool_events.append({"call_id": call.id, "name": call.name, "args": call.args,
-                                  "result_excerpt": "" if res.is_error else res.output[:limit],
-                                  "error": res.output[:limit] if res.is_error else "",
-                                  "truncated": len(res.output) > limit, "step": self._turn})
+        self._tool_events.append(tool_event(call.id, call.name, call.args, res.output, res.is_error, self._turn,
+                                            max_chars=limit))
         extra = {"broker_calls": res.meta["broker_calls"]} if (res.meta or {}).get("broker_calls") else {}
         self._emit("tool", id=call.id, name=call.name, is_error=res.is_error, output=res.output[:2000], **extra)
         return res
