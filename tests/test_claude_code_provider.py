@@ -168,6 +168,24 @@ def test_an_actor_turn_sends_the_history_and_the_tools_and_reads_the_tool_calls(
     assert again[:len(blocks)] == blocks and len(again) == len(blocks) + 2
 
 
+def test_the_request_is_the_history_as_json_with_each_tool_whole_and_no_native_content():
+    """What an actor turn's blocks are made of (formerly tested through the manual provider, which shared it)."""
+    call = ToolCall("call_1", "api_fetch", {"url": "https://x.test/a"})
+    messages = [{"role": "user", "content": "task"},
+                {"role": "assistant", "text": "", "tool_calls": [call], "native": {"claude_code": "dropped"}},
+                {"role": "tool", "results": [{"id": "call_1", "name": "api_fetch", "output": "ok", "is_error": False}]}]
+    request = request_json("SYSTEM", messages, TOOLS)
+    assert request["system"] == "SYSTEM"
+    assert request["tools"] == [{"name": t.name, "description": t.description, "schema": t.schema} for t in TOOLS]
+    user, assistant, tool = request["messages"]
+    assert user == messages[0] and tool == messages[2]
+    assert assistant == {"role": "assistant", "text": "",
+                         "tool_calls": [{"id": "call_1", "name": "api_fetch", "args": {"url": "https://x.test/a"}}]}
+    assert messages[1]["tool_calls"] == [call] and "native" in messages[1]          # the caller's history is kept
+    assert request_json("judge", [{"role": "user", "content": "is it?"}], []) == {
+        "system": "judge", "messages": [{"role": "user", "content": "is it?"}], "tools": []}
+
+
 def test_a_turn_without_tool_calls_ends_and_a_json_result_text_is_read(cli, provider):
     cli.reply({"stdout": "\n".join([json.dumps({"type": "system", "subtype": "init"}),
                                      json.dumps(ok('Here it is: {"text": "Done: Ada is won.", "tool_calls": []}'))])})
