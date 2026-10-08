@@ -36,12 +36,12 @@ def package(objects, files, manifest_extra):
     return hp.build_package(objects, {"manifest.json": json.dumps(manifest), **files}, CODE)
 
 
-def bound_with(tmp_path, files, manifest_extra):
+def bound_with(tmp_path, files, manifest_extra, **core_kw):
     objects = ct.Objects(tmp_path)
     ref = package(objects, files, manifest_extra)
     worker = P.default_worker_set(objects, finish_check=rsi.W0_FINISH, package_ref=ref)
     targets = (*P.targets_of("worker"), "worker.harness", *P.targets_of("research"))
-    releases, rel, objects = rsi.workspace(tmp_path, worker_ref=worker, targets=targets)
+    releases, rel, objects = rsi.workspace(tmp_path, worker_ref=worker, targets=targets, **core_kw)
     return P.bind_release(rel, profile="task", services=P.Services(objects)), objects
 
 
@@ -1147,6 +1147,25 @@ def test_effort_above_max_effort_is_capped_on_the_record_and_the_request_is_kept
     assert shell.run("t").text == "ab"
     assistants = [e for e in transcript(tmp_path / "plain", shell) if e["kind"] == "assistant"]
     assert [(e["effort"], e["requested_effort"]) for e in assistants] == [("high", "max"), (None, None)]
+
+
+def test_with_no_ceiling_named_the_gateway_caps_at_ks_max_effort_and_an_older_k_caps_nothing(tmp_path):
+    """An activity's arms name no ceiling (bench.Improvement.run_arm): the runner shell reads it from the bound
+    release's K (agent.runner.k_max_effort), so `effort="max"` under a K frozen at "low" is sent at "low"; a K frozen
+    before v0.3 fixed none, and the request goes out as it was made."""
+    agent = "def run(ctx, task):\n    return ctx.model([{'role': 'user', 'content': task}], effort='max').text\n"
+    manifest = {"api_version": hp.AGENT_API_VERSION, "agent": {"entrypoint": "agent/main.py:run", "roles": ["act"]}}
+    for ceiling, sent in (("low", "low"), (None, "max")):
+        harness = {k: v for k, v in rsi.harness_table().items() if k != "max_effort"}
+        bound, _ = bound_with(tmp_path / str(ceiling), {"agent/main.py": agent}, manifest,
+                              capabilities={"harness": {**harness, **({"max_effort": ceiling} if ceiling else {})}})
+        provider = EffortAware([ChatTurn("a", [], "end")])
+        budget = Budget(max_steps=4, max_tool_calls=4)
+        make = make_agent_factory(rsi.ws(tmp_path / str(ceiling)), provider, budget=budget, bound=bound,
+                                  worker=ProcessWorker(for_tests=True))
+        shell = make(Budgeted(World(), budget), SimpleNamespace(task_id="t1"), "You are a business agent.")
+        assert shell.max_effort == ceiling
+        assert shell.run("t").text == "a" and provider.efforts == [sent], ceiling
 
 
 def test_an_undeclared_role_is_refused_by_the_gateway_without_a_model_call_and_recorded(tmp_path):

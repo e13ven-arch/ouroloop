@@ -405,17 +405,17 @@ class Releases:
 
     def rollback(self, reason: str, *, operation_id: str | None = None):
         """Revoke the active release and move the pointer to the nearest good ancestor (the bootstrap release at the
-        root of every chain, unless it is revoked too).
+        root of every chain, unless it is revoked too). Without one, nothing is revoked and the pointer stays.
 
         Never to a version that was assembled here for the occasion: a pointer may only name a release that was
         evaluated and installed before (docs/modules/03_EVALUATION_RELEASE.md §4).
         """
         current = self.active()["release_ref"]
+        target = self.last_good(current)        # its ancestors' standing does not depend on revoking it
+        if target is None:
+            raise NotAuthorized("no authorised ancestor that is not revoked to fall back to; nothing was revoked")
         if current:
             self.revoke(current, reason)
-        target = self.last_good(current)
-        if target is None:
-            raise NotAuthorized("no authorised ancestor that is not revoked to fall back to")
         op = operation_id or f"rollback-{now()}"
         with locked(self.active_path):
             state = self.active()

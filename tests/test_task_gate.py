@@ -392,6 +392,21 @@ def test_a_revoked_ancestor_is_skipped_by_the_rollback(tmp_path):
     assert two.status == "installed"
 
 
+def test_a_rollback_with_no_good_ancestor_is_refused_and_changes_nothing(tmp_path):
+    """The pointer may only name a release that was evaluated and installed before: with no authorised ancestor that
+    stands (here the bootstrap release has none), the rollback is refused before anything is revoked."""
+    objects, releases, parent = workspace(tmp_path)
+    with pytest.raises(NotAuthorized, match="no authorised ancestor"):
+        releases.rollback("nothing to fall back to")
+    assert releases.active()["release_ref"] == parent and releases.revoked(parent) is False
+    one = releases.install(accepted_receipt(objects, releases, parent, text="one"), parent, "op-a")
+    releases.revoke(parent, "the bootstrap is bad too")
+    with pytest.raises(NotAuthorized, match="no authorised ancestor"):
+        releases.rollback("its only ancestor is revoked")
+    assert releases.active()["release_ref"] == one.target_release        # the pointer stays where it was
+    assert one.target_release not in releases.revoked()                     # and nothing more was revoked
+
+
 # ---------------------------------------------------------------------------- v0.3 (M3 §2.1): the gate's statistics
 def readings(p: TaskEvalPlan, *outcome_sets, cost=None, run_prefix="ctl") -> list[TaskResult]:
     """Several readings of one version under the plan's conditions, each as its own run: what a pooled control is
