@@ -4,6 +4,8 @@
 
 v0.3（2026-10-04，DESIGN v0.7）在本模块加的是：确认复测的状态与记账（§1、§2）、一轮 k 个候选与 train 侧筛选的子操作（§1）、每次尝试成本进收据、aux 调用的计量、单次尝试硬上限的维度、并发默认 8 与订阅速率上限的处理、逐题笔记并发、final 份额的定法（§2）。§3 的暂停与结束规则不变，只加两条分类。不变的还有：一个活动一个预算根、带预留的账本、续跑的冻结输入、Docker 隔离与 broker、`claude_code` provider。
 
+v0.5（2026-10-07 合入；2026-10-08 现状）在本模块加的是：固定代码候选轮的状态与续跑（§1 末）、`library`/`learn` 付费前的预算检查（§2 末）。`learn` 与重拟轮随方法库按瘦身第三批拟删（用户可否决）。
+
 ## 1. 状态机与子操作
 
 deployment 保留已有 drafted → admitted → building → screening（可选）→ evaluating → evaluated → accepted → installing → installed；其他终态保持 rejected/inconclusive/invalid/screened_out/installation_failed/stale_parent/cancelled。installation_failed 仅可重试同一已接受 artifact 的安装。
@@ -31,6 +33,10 @@ harness preparation、首版草稿检查/修复、M8 教学适配和补采使用
 补采由持久化 CollectionRequest 驱动，operation key 包含 activity、分支 scope、请求 ref、冻结任务/attempt 身份；事件记录请求、pending、已完成 refs、计数和后续 round 的关联。恢复优先完成/核对 pending，再用实际结果重建 context。只复用已确认数据，未知 API/副作用仍按下节处理；不重置补采上限，不重跑完成批次。
 
 collect 可引用已有完整轨迹；dataset 身份固定选择规则/投影；train 身份固定数据/配方/底座；probe 固定实际 artifact/runtime。任何上游输入变化生成新操作，不覆盖旧结果。同一 plan 的未完成采集只补计划允许的缺口；不能挑最好轨迹无限重试。
+
+（v0.4，2026-10-06）字面量检查的结构错误输出写出“文件:行: 字面量”（M0 §3（v0.4）），不再只给各类计数；豁免规则见 M0 §3。
+
+（v0.5，2026-10-07，[V0_5_PLAN §1.3、§1.4](../design/V0_5_PLAN.md)；`research/fixed.py`）**固定代码的候选轮。** 经验库快照（算子 `library`）与方法表重拟（算子 `refit`）的候选由固定代码声明（M0 §3 的 v0.5 段），走自己的一轮：没有 R 的会话、笔记与修订，其余是同一条链——草稿检查、准入、train 侧筛选、资格、gate、确认、经 M5 安装，每个阶段照常写台账。可续跑：候选 id 是 `<scope>/f<序号>/<算子>`，实验 id 由候选 id 推出，所以筛选建出的候选 W、筛选尝试的运行身份与 gate 的 Execution 在重跑时都是同一个；没结束的固定轮（有声明行、没有终结的 `round` 行）沿用它的序号，已写的阶段不再写，已付的尝试不再付；结束的轮答回记录的结果。R 的段续跑时跳过来源为 `fixed` 的实验（`research/loop.py` 的 `resume_unfinished(skip_fixed=)`），它不算 R 的一轮，由它自己的阶段收尾。经验库的流也可续跑：每道题结束、以及首遇之前的提炼之后各存一次检查点；提炼或合并调用遇到研究模型的错误时，流在上一个检查点暂停，不当作崩溃。测试 `test_v05_phases.py::test_a_fixed_round_keeps_its_ordinal_and_experiment_id_until_it_ends`、`test_an_interrupted_snapshot_round_resumes_where_it_stopped_and_pays_nothing_twice`、`test_r_still_gets_its_three_rounds_when_a_fixed_rounds_gate_is_open`、`test_an_interrupted_stream_continues_where_it_stopped_and_refuses_another_w`、`test_a_distillation_failure_pauses_the_stream_and_its_resume_pays_no_distillation_twice`。2026-10-08：重拟轮随方法库按瘦身第三批拟删（用户可否决），快照轮保留。
 
 ## 2. 预算所有权
 
@@ -71,6 +77,8 @@ v0.3 的五个硬上限，名字与数值与 M0 §2（v0.3）相同：
 外部收费前 reserve；返回后按实际 usage settle。Tinker 需分别记录训练和 sampling 的计价维度，不能直接用聊天 API 输入/输出价格计算梯度训练。后端提供可执行上界时才能使用严格美元/时间模式；否则启动前要求选择可执行的调用/token/job 限额并报告费用限制，不能静默降级。
 
 本地 CPU/GPU 资源也记录时间/估算依据。教师无外部副作用的文件读取无需假造 API 费用，但读取权限和工具次数受 collect limits 约束。实际费用超上界记 budget_breach 并停止后续付费；无法撤回已发生账单。
+
+**v0.5 的两个阶段先看钱够不够（v0.5，2026-10-07，V0_5_PLAN §1.3、§1.4、§5）。** 固定轮在第一次筛选尝试之前，检查各份筛选的尝试数加 gate 的验证预留放得下；放不下就以 `budget_exhausted` 结束这一轮，一分钱不花（与 R 的会话轮同样的检查，`research/fixed.py`）。`learn` 在第一次孪生尝试之前，检查孪生、重拟筛选的上限与 gate 的验证预留加起来放得下，放不下同样拒绝。经验库的流每次调用照常预留与结算，预算耗尽时停在上一个检查点，这道题的记功与条目都不写两次。测试 `test_v05_phases.py::test_learn_and_a_fixed_round_refuse_before_paying_what_the_budget_cannot_hold`。2026-10-08：`learn` 随方法库拟删（用户可否决）。
 
 ## 3. 重试与不确定结果
 

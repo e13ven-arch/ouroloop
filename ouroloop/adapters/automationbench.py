@@ -479,6 +479,26 @@ def stratum(suite: Suite, task_id: str) -> str:
     return f"{'+'.join(kinds) or 'none'}|{family}"
 
 
+def assertion_class(type_name) -> str:
+    """v0.5 (docs/design/V0_5_PLAN.md §1.3): the footprint class of an assertion type — body_contains, not_contains,
+    value, exists or categorical — by its name, the classes a method declares it moves and the learner credits it
+    by (research.methods.assertion_class)."""
+    from ..research.methods import assertion_class as _footprint
+    return _footprint(type_name)
+
+
+def has_must_not(suite: Suite, task_id: str) -> bool:
+    """Whether a task scores a must-not check — a `forbidden_write` assertion (a type name with `_not_`) that its
+    definition does not mark unscored or excluded (docs/design/V0_4_PLAN.md §1.3, §1.6): the tasks where restraint is
+    the right behaviour, which the v0.4 passing sample and trajectory listing put first. From the definition only."""
+    try:
+        g = suite.grading(task_id)
+    except Exception:  # noqa: BLE001 - a task without a readable grading side has no known must-not check
+        return False
+    return any(assertion_kind(a.get("type")) == "forbidden_write" for a in g.assertions
+               if a.get("scored") is not False and a.get("excluded") is not True)
+
+
 def pool_suites(name: str, suites: list[Suite]) -> Suite:
     """Several domains' suites as one (M7 §2): the tasks and their grading side by side, each task under its own
     upstream name, which carries its domain. Two tasks with one name, or a task whose name does not carry its

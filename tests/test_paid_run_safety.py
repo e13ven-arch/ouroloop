@@ -588,13 +588,15 @@ class SessionModel(rsi.BusinessWorker):
 def test_every_turn_of_the_research_session_is_metered_on_the_research_scope(fake_upstream, tmp_path, monkeypatch):
     """M5 §2 (v0.3 R 作为编码会话的研究调用): every model call of the session is reserved and settled on the activity
     book under the research operation, labelled `session`, beside the notes' `note` calls; the file tools and the
-    trajectory reads cost nothing on the book but are counted in the session's record."""
+    trajectory reads cost nothing on the book but are counted in the session's record. Under a K without v0.4's read
+    floors (V0_4_PLAN §2: the K a v0.3 workspace froze), so the scripted session's three turns are the whole record."""
+    from test_research_round import V03_SESSION
     from test_research_session import prepared_v3
     from ouroloop.agent import harness_package as hp  # noqa: F401 - SessionModel reads it at call time
     import test_paid_run_safety
     test_paid_run_safety.hp = hp
     SessionModel.turns = 0
-    cfg, activity, w0 = prepared_v3(fake_upstream, tmp_path, monkeypatch)
+    cfg, activity, w0 = prepared_v3(fake_upstream, tmp_path, monkeypatch, harness={"research_session": V03_SESSION})
     cfg["research"] = {"llm": {"type": "test_paid_run_safety:SessionModel"}}
     result = bench.improve(cfg, ".", out=lambda _l: None)
     assert [r["outcome"] for r in result["rounds"]][0] == "installed", result["rounds"]

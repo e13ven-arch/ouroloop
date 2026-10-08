@@ -101,11 +101,11 @@ is the number the step's record keeps.
 
 ## The ceiling experiment (v0.3 step 4)
 
-`ceiling_run.py` with `claude-ceiling.toml` runs v0.2's W\* and a hand-written agent package (W\*'s components plus
-full-text reading, an evidence table before the first write, a check before finishing, effort at K's cap) on the 13
-dev and train tasks W\* still fails, frozen in `ceiling/tasks.json`, under the v3 runner shell. A decision record for
-docs/ROADMAP.md §3 v0.3 step 4, never a claim; how to run it, what it costs and the decision rule are in
-[ceiling/README.md](ceiling/README.md).
+`ceiling_run.py` with `claude-ceiling.toml` (both removed from HEAD on 2026-10-08, unchanged at tag `v0.3.0`) ran
+v0.2's W\* and a hand-written agent package (W\*'s components plus full-text reading, an evidence table before the
+first write, a check before finishing, effort at K's cap) on the 13 dev and train tasks W\* still fails, frozen in
+`ceiling/tasks.json`, under the v3 runner shell. A decision record for docs/ROADMAP.md §3 v0.3 step 4, never a claim;
+how to run it, what it costs and the decision rule are in [ceiling/README.md](ceiling/README.md).
 
 ## The multi-domain activity (v0.3 step 5)
 
@@ -116,9 +116,10 @@ pooled train/dev/test, and its results live under the pooled name (`bench/market
 final reads the new domains' test only. The file's header has the order of the steps before the root opens, the
 16-way concurrency trial and the recomputed estimate (root $2,800, final share $420; docs/ROADMAP.md §3 v0.3 step 5).
 
-`claude-v3-pilot.toml` runs first: W0's baseline and one real worker round — R's coding session, the train screen and
-the dev gate — on a small operations + Marketing subset, about $40 nominal, so the new R path has run with the real
-model before the activity's root opens:
+`claude-v3-pilot.toml` (removed from HEAD on 2026-10-08; read it at tag `v0.3.0`) ran first: W0's baseline and one
+real worker round — R's coding session, the train screen and the dev gate — on a small operations + Marketing subset,
+about $40 nominal, so the new R path has run with the real model before the activity's root opens. On a checkout of
+tag `v0.3.0`:
 
 ```text
 ouroloop bench --config examples/automationbench/claude-v3-pilot.toml --phase cycle --until segment-0/round-0

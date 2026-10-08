@@ -3,6 +3,8 @@
 > 目标：以最小类型增量支持首版能力包演化与递归回用，保留现有 decision/task/research 行为。教学/训练契约保留为第二版规格；首版用到的新增字段/API 已实现（2026-09-30），第二版字段仍未实现。已有实现见 [历史快照](../history/V0_5_IMPLEMENTATION.md)。所有者：`evolve/contracts.py`。
 >
 > v0.3（2026-10-04，DESIGN v0.7）：首版交付物从“固定 agent 循环 + 能力包”改为“可演化的 agent 程序 + 最小运行壳 + 被 pin 的模型”（运行壳即 DESIGN §1 的 runner shell，本文与 M1 只用这一个词）。能力包就是 agent 程序：它可以改循环本身。本文新增包 API v2（`agent` 组件、ctx 表面、角色、单次尝试硬上限、宿主写入的轨迹记录、包永远拿不到的东西）与相应的 release/导出变化；v1 包仍合法，由 K 自带的默认 agent 运行。理由与业界对照见 [SURVEY_RSI_FRAMEWORKS.md](../SURVEY_RSI_FRAMEWORKS.md) §4、§6、§7：v0.1/v0.2 装进去的两个改动都是文字提醒，剩下的失败质量在判断与未读状态上，只有循环层的机制（核对回合、判断前的证据表、拿事实的工具、用算力换准确）够得着；报告更大留出收益的框架（StarHarness Finance +29、AutoSaddler +9～10）都改循环与工具。v0.1/v0.2 的记录（[RESULTS.md](../RESULTS.md)）与 2026-10-03/04 的记录不删。
+>
+> v0.5（2026-10-07 合入；2026-10-08 现状，[V0_5_PLAN](../design/V0_5_PLAN.md) §6）：新增的契约只有三处，都不改任何已有身份：§2 末的经验库快照形状与 `library_retrieval` 事件、§3 末的固定代码候选（`ORIGINS` 加 `fixed`，台账的 `fixed_code`）；方法库的 `method_decision` 标记与 `m_` 前缀的只读规则随方法库按瘦身第三批拟删（用户可否决）。
 
 ## 1. 身份与版本
 
@@ -48,7 +50,7 @@ v2 的完整目标集合按原注册清单校验，不因新增 worker.actor/wor
 | `GenerationArtifact` | `model_identity_ref, dataset_ref, recipe_ref, trainer_ref, checkpoint_ref, sampling_ref, recovery_ref?, export_ref?, probe_ref`；recovery/采样/便携权重引用不同，不能混用 |
 | `DeploymentManifest` | `source_release_ref, worker_ref, target_harness_ref, runtime_ref, required_core_ref, model_refs, tool_bindings_schema_ref, validation_ref, external_dependencies`；白名单导出，不复制全量对象闭包。（v0.3）app = agent 包 + 运行壳 + 模型服务描述：`worker_ref` 所含的包（含 agent 代码）、`runtime_ref` 的运行壳、`external_dependencies.model_service` 的 provider/模型身份；不带 R、评分器、任务数据、网关日志 |
 
-`HarnessPackage`、`CollectionRequest`（首版仅 task_feedback/plain）、`ModelIdentity`（未训练 actor 的 provider/底座身份）与 `TargetHarness`（只描述当前宿主）是首版新增公共记录。TeachingReference、DistillationPlan、ReviewRecord、reviewed Trajectory/SFTDataManifest 与 GenerationArtifact 属于第二版；首版 bootstrap actor 只需真实 provider 身份，不创建训练产物。DeploymentManifest 两版共用。
+`HarnessPackage`、`CollectionRequest`（首版仅 task_feedback/plain）、`ModelIdentity`（未训练 actor 的 provider/底座身份）与 `TargetHarness`（只描述当前宿主）是首版新增公共记录。TeachingReference、DistillationPlan、ReviewRecord、reviewed Trajectory/SFTDataManifest 与 GenerationArtifact 属于第二版；首版 bootstrap actor 只需真实 provider 身份，不创建训练产物。DeploymentManifest 两版共用。（v2，2026-10-08，[V2_TRAINING_PIPELINE](../design/V2_TRAINING_PIPELINE.md) §2.3、§7）v2 不做 `adapt_workflow`，`TeachingReference` 的 `mapping_ref`/`adaptation_ref` 不用：教师的私有参考是 K（各域 W\* 的 memory 与 skills 原文，固定模板渲染），以 ref 冻结进 DistillationPlan（M2 §3a 第 2 步）；`TrajectoryRecord`/`TrajectoryStep` 不建成单独的存储类型，episode 是投影器按 `attempt_id` 关联网关日志得出的内存视图；ReviewRecord 的字段以 V2 §2.3 为准（verdict 多一个 ERROR）。
 
 SourceWorkflow 指第二版教学来源，源 h* 的完整身份是 source release 中的 W/package 加宿主 TargetHarness；source_harness_ref 引同一宿主类型，不新增另一套 runtime schema。源和学生的宿主契约可相同，W/package 可不同。源包代码在 K 许可的扩展 API 内演化；目标宿主与学生非训练 W 在一次蒸馏内固定。source_validation 只用冻结 train/fit，输出 passed/failed/inconclusive/invalid artifact，不授予安装权；guide 与教学材料内容血缘独立校验。
 
@@ -135,6 +137,8 @@ worker 实验默认继承 parent 的运行契约；显式指定已验证的 `exe
 
 v3 模型 implementation 仍是 `kind=model`，由 `binding` 分派。generation 必须包含 `model_identity_ref`；未训练的 bootstrap actor 直接使用该 provider/底座身份，不伪造 dataset/recipe/checkpoint。经训练的 actor 另外要求 `artifact_ref` 指向 GenerationArtifact，且两者模型身份一致。decision 继续校验旧 spec/inference 的有限动作。actor 不能调用 `.decide()`，controller 不能被当作 ChatProvider。（v0.3）比较的口径从“同 actor”改为“同模型”（业界的说法）：同一 ModelIdentity、同一推理配置上限之下，循环、工具、提示、材料都可以不同；C1～C4 的含义不变。切换 ModelIdentity 或 `max_effort` 创建新比较身份（§4）。
 
+（v0.5，2026-10-07，V0_5_PLAN §1.4、§6；`research/library.py`）**经验库快照与检索记录。** 包这一侧没有新种类：快照是每架一个文件 `skills/library/<shelf>.md`，在 manifest 里列为**停用**的技能（不进技能索引，`read_skill` 读不到，只由宿主检索）；文件首行写 K 冻结的检索参数（`<!-- library shown_k=… min_score=… -->`），每条条目一段，以 `<!-- entry: <id> shelf=<s> kind=<k> src=<来源题文本哈希> -->` 开头。检索读包里的规则，从不读运行的划分；来源哈希含本题文本哈希的条目不检索。宿主每次检索写一条 `library_retrieval` 事件（条目、分数、字符数）；包里没有库时不出现，系统提示与原来逐字节相同。另有两项只进转录、不进任何身份：每条 `broker_event` 多一个 `read_only` 字段；`gateway.MARK_KINDS` 多 `method_decision`（后者随方法库拟删）。
+
 ## 3. 提案与训练操作
 
 首版 `harness_edit` 复用 worker proposal 的 changes，目标为 worker.harness；M4 把 LLM 返回的包内 patch 经固定路径/大小校验后应用到当前 bundle 的新副本，存不可变 source refs，形成草稿包（新 package ref）。规范化只写对象，不 import 代码。冻结前由 M5 在同一 operation 日志里对草稿做草稿检查（package_check → isolated_probe → package_test）；只含 skills/memory 的草稿只做结构/路径/manifest 检查，不需要 isolated_probe。（v0.3，2026-10-04）运行含代码的草稿——带 `agent` 条目的经自己的入口，v1 含代码的经默认 agent——isolated_probe 除 import 外还做一次**接口 smoke**（实现：`agent/worker.py` 的 `check_package`、`agent/worker_runner.py` 的 `SmokeContext`）：在 worker 里对草稿检查既有的 fixture 世界（合成或仅 train 构造的，不是 dev/test）以罐装模型跑一遍 `run`——第一次带工具的调用答一回合 tool_use、每个所给工具各调一次最小参数，之后每次答结束——核对它返回字符串、只用声明的角色、hook 与包工具按协议作答、不在 smoke 的小上限（`SMOKE_LIMITS`）内崩溃或打转；smoke 失败是草稿失败（检查输出回传 R，占一次修订），不是基础设施故障；smoke 不计任务成绩，不进任何测量。理由：M1 §1 把 agent 运行时的异常记作基础设施故障（Leon 的决定），若没有 smoke，一个必崩的 agent 会在 gate 里花钱、被补跑、再把活动暂停；smoke 让确定性的崩溃在付费前就以草稿失败回到 R。允许的组件种类由 K 在 freeze 时固定并写入 R 上下文；freeze/smoke 预检须确认当前已采用包的组件种类都在 K 内，K 允许代码组件或当前包运行含代码时还须确认合格隔离 worker，否则不能以该配置启动；“改用只含文本组件的 preset”只适用于当前包不含代码的情形。草稿（按应用 patch 后的完整包判断）使用 K 未允许的组件种类属于结构错误：检查输出回传 R，占用一次修订。完整草稿含代码、K 允许代码而运行中隔离 worker 不可用，属于基础设施故障，不是候选缺陷：按唯一重试策略重试，仍不可用则本轮记 `outcome=infrastructure_failed`（无 experiment_id，保留草稿 ref、修订序号与故障记录；不消耗修订次数、不回传 R，计入 schedule 的 max_infrastructure_failures，不计失败上限与耐心，已发生费用照计），并以 `next_action=repair_runtime` 暂停活动：不再调度后续 worker 段与 research slot；smoke 复核 worker 恢复后，以保留的草稿 ref 与原修订序号重跑草稿检查、继续本轮，不重新调用 R。不 in-process 执行，也不在活动中途收窄组件种类。package_check 还做字面量检查：包文本出现 train 断言 params 或任务初始状态中的特定标识（邮箱、ID、记录名等，不含工具 schema 中的名称）属于结构错误，回传 R 并占用一次修订，防止把单题答案写进共享组件。（v0.3）字面量检查覆盖 `agent/*.py`，与其他包文本相同。W 的 prompt 改动（worker.system_prompt 的文本，worker.finish 的文本或 finish_check 指令）在准入前做同一字面量检查；prompt 改动没有草稿与修订，命中即本轮 `outcome=invalid`，不回传 R 修订、不冻结、不评测（2026-10-02）。检查失败时只把检查输出（不含任何任务结果或评分）回传 R，R 可修订；修订次数上限 `max_draft_repairs` 由 preset/K 固定（默认 3，指初稿之后最多修订 3 次、最多 4 份草稿），R 不能提高；每次草稿都有新 package ref，逐次记录并计费。只有检查通过的草稿才写入完整 proposal 并冻结进 Experiment；用尽次数则本轮以无效提案结束：RoundResult `outcome=invalid`（无 experiment_id），保留各草稿 ref 与检查 operation，计入候选轮次与失败上限。冻结后源码不变；building 按相同输入摘要复用已确认的草稿检查，不重复运行。proposal 引确切源包和新文件内容，不把“未来会生成的包”占位 ref 写入 Experiment。首版默认菜单不含 distill_actor/decision_train，training=[]；旧 trainer 和第二版联合类型保留兼容。
@@ -162,9 +166,15 @@ ActorTraining    = {method: distill_actor, target: worker.actor,
                     distillation_plan_ref, data_selection_ref, recipe_ref}
 ```
 
+（v2，2026-10-08，V2 §3.6）`DecisionTraining.target` 推广为 `worker.decide.<point>`，首个是 `worker.decide.write_gate`；`worker.stop` 迁为 `worker.decide.stop`，身份由瘦身金标测试守住。
+
 以下训练操作用于第二版：data_selection_ref 是冻结选择规则，实际 dataset_ref 由 build 追加产物事件，不在采集前假造。仅复用 plan/学生版本/划分/投影完全匹配的采集；新增 v3 路径每实验最多一个训练条目。旧 API 多条训练兼容保留。首版包变化和 prompt/workflow 变化可组合但须先冻结，同模型比较保持 actor 身份和推理参数不变。（v0.3）“推理参数不变”指 pin 的默认档与 K 的 `max_effort` 不变；包在上限内按调用选择 effort 属于 W 的变化，不是模型身份的变化。第二版的演化/训练时间表见 §2 末“第二版”一段。
 
 `Experiment` 继续冻结 proposal、parent release、experience、K、eval template 和 budget；增加的 purpose/execution base 不允许运行中改写。续跑也只按这些冻结值完成，评测模板或预算 scope 不一致则不续跑并暂停（M5 §3）。source_validation 使用 train 验证模板，deployment 使用生产 gate 模板；不把 collect/train/evaluate 分成三个可以各自安装的候选。`build_candidate` 输出 ready/invalid/infrastructure_failed；内部 `TrainingBuild` 保持 ready/failed/cancelled，外部未知请求保存在操作记录，由 M5 映射为待核对或 inconclusive，不能伪造 ready。
+
+（v0.4，2026-10-06，[V0_4_PLAN §1.5](../design/V0_4_PLAN.md)）字面量检查改为按题的索引：每个 train 字面量记下出现它的 train 题（断言 params 与初始状态各自按题），只出现在一道题里的值禁止进包；在 ≥2 道题里出现的值、纯数字（但不含 train 断言 params 里只属于一道题的数字：那是判分器查的答案，评审 2026-10-06）、作为字典键或 `headers`/`columns` 列表成员出现的串（字段名与表头）不禁止。匹配区分大小写（邮箱不分）。检查输出写出文件、行号与字面量：它是 train 数据，R 在失败摘要与轨迹里本就读得到，输出只回给 R、不进包。原因：v0.3 的 20 份草稿被误拒 14 份，全是普通词或常量。
+
+（v0.5，2026-10-07，V0_5_PLAN §1.3、§1.4、§6；`evolve/contracts.py:42`、`research/fixed.py`）**固定代码的候选。** `ExperimentProposal.origin` 多一个允许值 `fixed`：候选由框架的固定代码声明（经验库快照，算子 `library`；方法表重拟，算子 `refit`），不是 R 的，也不是人的；入口照旧固定写入，不接受自报。声明照常写成 `candidate_declaration` 的形状，另带 `operator` 与 `declared_by: "fixed code"`，`predicted_affected` 是它要筛的失败 train 题。候选 id 是 `<scope>/f<序号>/<算子>`，实验 id 由候选 id 推出（`x_` 加摘要），续跑时不变（M5 §1 的 v0.5 段）。台账的声明行带 `fixed_code: true`，`ledger_rows` 折叠后的条目也带它（`evolve/experience.py:124-125`），报告与续跑据此认出固定轮；旧工作区里没有这种实验，旧 ref 不变。2026-10-08：`refit` 随方法库按瘦身第三批拟删（用户可否决），`library` 与 `fixed` 保留。
 
 ## 4. 数据、权限与授权
 
@@ -174,7 +184,14 @@ ActorTraining    = {method: distill_actor, target: worker.actor,
 
 首版 train/fit 任务的断言级失败明细（每条断言 type/params/passed；评分器排除的断言不给，即作者声明不计分、或初始即成立且结束时仍成立的断言；初始成立但被破坏的断言按失败计分，照常作为失败明细给 R）对 R 可见；dev 只给汇总，final 不进入 R 上下文，dev/final 都不给断言明细和轨迹。这是本版变化：v0.5 研究上下文的 task_results_summary 只给逐题 success/partial/终止/失败类，不含断言明细（docstring `research/context.py:120`）也不含轨迹（`:116-146`）。放开 train 明细定位“漏了哪一步”最直接，不涉及 dev/test；泛化由 dev gate 把关，包内材料仍只写通用规则。判分明细与任务结果分开存：每次尝试的逐条断言结果（type/params/passed/excluded）写入 `bench/<domain>/grading.jsonl`，不进入 results.jsonl；写入点在 M3 的 run_tasks（`evolve/task_eval.py`）追加结果之后，读取接口由 M7 的结果存储（`benchmark.py`）提供，按冻结 split 过滤，默认只返回 train，非 train 返回空；dev/final 明细即使存在于 grading.jsonl 也不进入 R 上下文；投影只影响 R 的输入，原始判分记录（含 excluded 条目）完整保留，供审计与复现。（v0.3，2026-10-04）网关日志与 broker 事件（§2）按同一规则读：R 的原始轨迹工具（M4 §1（v0.3））经结果存储的 split 过滤只返回 train 尝试的条目，dev/final 的条目即使在同一 transcripts 目录里也不返回；dev 给 R 的只有固定代码投影的失败**类型**直方图（枚举类型与计数，M4 §1（v0.3）：无 params、无任务 id），test 什么都不给。网关日志里的 `messages` 含任务正文与工具结果，它的分区就是该尝试的 split，不因 release ref 可追溯到 dev 收据而改变。
 
-反馈与模仿数据是两种类型：`FeedbackRecord.source=env/human` 不变；教师输出只进入 ReviewRecord 与 `purpose=actor_imitation` 的轨迹，不能通过改 source 绕过既有 EVAL_ONLY 限制。环境最终成功是轨迹筛选条件，不证明各步最优或教师理由真实。
+反馈与模仿数据是两种类型。（v2，2026-10-08，用户按 [V2_TRAINING_PIPELINE](../design/V2_TRAINING_PIPELINE.md) §7 默认值确认；规则见其 §0.1 第 3 点、§2.5）`source` 改为普通的数据血缘，不再按来源设闸门，取代原句“`FeedbackRecord.source=env/human` 不变……不能通过改 source 绕过既有 EVAL_ONLY 限制”：
+
+- **血缘文法**：`env:<labeler>@<ver>`、`human:<channel>`、`model:<identity_ref>`；由打标器或网关按调用身份写入，调用方不能自报或改写（把教师 REPLACE 改记成 env 仍按 CT6-04 拒绝）。教师输出进 ReviewRecord、`purpose=actor_imitation` 的轨迹，以及 `teacher_review@1` 从 REPLACE 打出的 `write_gate` 标签（V2 §2.4），血缘都是 `model:<teacher_ref>`。
+- **选择写在数据计划里**，冻结后不改：`sources_fit` 默认 env 与 model（可改为只用 env），`sources_threshold` 只用 env，`sources_eval` 只用 env 与 human。env 与 model 冲突时以 env 为准、记 `conflicted`；没有 env 标签可定阈值的模型记 `uncalibrated`，只能 shadow 绑定。
+- **只保留两条正确性规则**：(1) 评测、阈值、gate 用的真值只来自 `env:*` 或 `human:*`；(2) 评分信息（断言、grading、重放结果）永不进 actor、teacher、judge 的输入，也不进 SFT 输入与决策视图。
+- **代码改动的时机**：注释（providers/__init__.py:4、claude_code.py:235、anthropic.py:45、openai_compat.py:44、backends/llm.py:1-3、runtime.py:372、ledger.py:19-20）随瘦身第一批改；`ledger.py:21-23` 的 `SOURCE_WEIGHTS`/`EVAL_ONLY`、`evolve/contracts.py:671`、`:682-684`、`evolve/feedback.py:83-84` 与 providers 的 `source` 默认值从闸门改为血缘是 v2.0 的代码（V2 §3.8 第一行），在瘦身第一批之后合入；此前代码仍按旧闸门执行。
+
+环境最终成功是轨迹筛选条件，不证明各步最优或教师理由真实。
 
 隔离执行复用现有 EvaluationPermit，以显式 scope 限定允许的 release、任务及 mode；v3 permit 字段和外部许可校验规则须一起接入，v2 不自动获得额外权限；本版扩展其受限 baseline/source_validation/reviewed_collection 用途，不让准备版本冒充 installed。候选生产评测仍走正式许可链；accepted deployment/research receipt 才能授权安装，source 验证或 baseline 完成不授予安装权。初次创建受限 release 时保持 plan → permit → evaluation release 的单向引用，避免哈希循环。已存在的准备版本 B 用于后续采集时，先冻结以 B 为 student 的 DistillationPlan，再签发含 subject_release_ref=B 的补充 permit；M1 验证该外部许可的确切 release/plan/scope/mode，不修改 B 的内容或冒充 installed。补充 permit 仅为已存在 release 授予本次执行权，不授予安装权；安装 release 引 accepted receipt，W/R 内容与被评测候选一致。正式 verdict 仅 accepted/rejected/inconclusive/invalid；采集 PASS 不是 release accepted。
 

@@ -704,6 +704,63 @@ PROPOSE_PACKAGE = (
     "what would make you abandon it. Never write a specific task's answers into the package.")
 
 
+# v0.4 (docs/design/V0_4_PLAN.md §1.4, §1.7; M4 §1 v0.4): R0 under a core whose K carries the coding session. The
+# session's system text is research.propose's text followed by SESSION_FORMAT: the protocol (the tree, the inputs, the
+# tools, the caps, the declaration, the admission rules) is SESSION_FORMAT's; the method — how many candidates, which
+# evidence first, which way to fix — is this text's. v0.3 kept the summary call's PROPOSE_PACKAGE here ("Propose at
+# most one change… Prefer… memory notes"), which contradicted the session's k candidates (the five-domain diagnosis,
+# RC4). The note prompt asks for the failure's direction; NOTE_FORMAT itself is unchanged, so an older R0's notes keep
+# their identities. A v1 core (the summary call) keeps DIAGNOSE_NOTE and PROPOSE_PACKAGE.
+DIAGNOSE_SESSION = (
+    DIAGNOSE_NOTE + " Also say which way the agent went wrong, as \"direction\" in the JSON: \"omission\" (it left "
+    "out something the task required: a read, a write, a step), \"over_action\" (it did something the task, the data "
+    "or a policy said not to do: a write, a send, a change to a record it should have left alone) or \"other\".")
+PROPOSE_SESSION = (
+    "You improve an agent's capability package from its failures on this domain's train tasks, in one coding session. "
+    "Method. (1) Start where the agent fights the interface: inputs/api_errors.json counts, per endpoint and tool, "
+    "the calls, the error responses by kind, the retries after an error, the responses with a next page the agent "
+    "never read, and the empty results. When failures cluster on an endpoint or a tool, make a fix at the interface "
+    "first — a package tool that calls it the right way (the right method and fields, every page) or a before_tool or "
+    "after_tool hook that corrects or explains the call — before any behavioural text: it works for every task that "
+    "uses the endpoint and does not depend on the agent remembering an instruction. (2) Read raw trajectories, "
+    "failing and passing: for each candidate read at least one failed attempt among the tasks it predicts to fix, and "
+    "read at least one passing attempt — preferably one listed with must-not checks — to see what the agent does "
+    "right and must keep doing. Summaries alone guided changes no better than scores did; raw trajectories did "
+    "(Meta-Harness: 34.6 with scores, 34.9 with summaries, 50.0 with trajectories). (3) Fix each failure in its "
+    "direction: the notes say omission (a read, a write or a step left out), over_action (a write, a send or a change "
+    "the task, the data or a policy said not to make) or other. An over_action failure is fixed by restraint — a "
+    "condition under which the agent does not write, send or change — never by more reading or writing; a change that "
+    "makes the agent do more everywhere mends omissions and breaks the tasks where doing less is right, and the "
+    "screen's passing sample holds tasks with must-not checks to catch exactly that. (4) Make up to k candidates, "
+    "each on a different cause; for each, say when it acts and when it does not (trigger_condition), and prefer a "
+    "change that acts under a condition to one that always acts. Change, merge or delete existing components before "
+    "adding new ones. (5) Never write a task's specific answers (names, e-mail addresses, ids, values) into a "
+    "candidate: a rule must hold for the domain, not for one task.")
+
+
+# v0.5 (docs/design/V0_5_PLAN.md §1.1; V0_5_METHOD_LIBRARY.md §4.2): R0's method text under a K with the method
+# library — PROPOSE_SESSION and the methods paragraph. The families it names (search, table analysis, date or
+# threshold, policy version, pre-send check) are a human prior written into R0 and booked as such in the autonomy
+# accounting; no method, pattern or example is given. A K without the methods table bootstraps PROPOSE_SESSION.
+METHODS_PARAGRAPH = (
+    "(6) Methods. When the actor did the same search, table analysis, date or threshold choice, policy-version choice "
+    "or pre-send check by hand and got it wrong in two or more failing train tasks, you may write a method: a "
+    "read-only package tool named m_<name>, built from inputs/method_kit/. A method returns evidence with provenance "
+    "and an `unclassified` part; it never writes and never decides. Declare its trigger (a pure function of the tool "
+    "event and the view), its `on` action, its footprint, at most one context feature and at most four variants in "
+    "the module's METHODS literal, and test it on synthetic data. Do not edit middlewares/m_router.py or "
+    "middlewares/m_table.py: the router is fixed and the table is fitted from train rewards. inputs/methods.json and "
+    "inputs/uncovered.json show where your methods fired, were used, helped or hurt; refine, narrow or retire them "
+    "from it, and inputs/method_research.json shows how your own earlier method candidates fared. A new or changed "
+    "method must fire, in a replay of the recorded train attempts, on at least two train tasks and on one of the "
+    "failing tasks you predict, and run there without error; the check output gives you counts. Judgment failures "
+    "(what a policy allows, what not to do) belong in memory or skills, not in a method. (7) Your playbook: finish may "
+    "carry `playbook`, lessons about your own research, one per line, each ending with a citation of the ledger "
+    "[<candidate id>: <field> <value>]; the host keeps only the lessons whose citation matches the ledger and shows "
+    "them to your next session.")
+PROPOSE_SESSION_V5 = PROPOSE_SESSION + " " + METHODS_PARAGRAPH
+
+
 def prompts_of(objects: ct.Objects, set_ref: str) -> dict:
     """target -> the prompt text each prompt policy of a policy set renders with, as bind_release reads it."""
     out = {}
@@ -715,11 +772,20 @@ def prompts_of(objects: ct.Objects, set_ref: str) -> dict:
 
 
 def default_research_set(objects: ct.Objects, *, diagnose: str | None = None, propose: str | None = None,
-                         checks: tuple[str, ...] = PREFLIGHT_CHECKS, note_contract: bool = False) -> str:
+                         checks: tuple[str, ...] = PREFLIGHT_CHECKS, note_contract: bool = False,
+                         session: bool = False, methods: bool = False) -> str:
     """R0. With `note_contract`, the first version's R0: research.diagnose takes one failure summary and writes a
-    failure note; otherwise the v2 R0 with its requirement list."""
-    diagnose = diagnose if diagnose is not None else (DIAGNOSE_NOTE if note_contract else DIAGNOSE)
-    propose = propose if propose is not None else (PROPOSE_PACKAGE if note_contract else PROPOSE)
+    failure note; otherwise the v2 R0 with its requirement list. With `session` too (v0.4: K carries the coding
+    session), the note asks for the failure's direction and research.propose is the session's method text; with
+    `methods` (v0.5: K carries the method library) that text has the methods paragraph."""
+    if note_contract and session:
+        default_diagnose, default_propose = DIAGNOSE_SESSION, (PROPOSE_SESSION_V5 if methods else PROPOSE_SESSION)
+    elif note_contract:
+        default_diagnose, default_propose = DIAGNOSE_NOTE, PROPOSE_PACKAGE
+    else:
+        default_diagnose, default_propose = DIAGNOSE, PROPOSE
+    diagnose = diagnose if diagnose is not None else default_diagnose
+    propose = propose if propose is not None else default_propose
     schemas = ("failure_summary.v1", "failure_note.v1") if note_contract else None
     return policy_set(objects, "research", [
         descriptor(objects, "research.diagnose", "prompt", {"text": diagnose}, schemas=schemas),

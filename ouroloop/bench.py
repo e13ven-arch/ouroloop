@@ -36,7 +36,9 @@ from .benchmark import (HARD_LIMITS, SPLIT_RULES, V03_BUDGET_FIELDS, Budget, Res
 from .ledger import now, redact, write_json
 
 # The seven phases, and `cycle`: the thin automatic entry that calls them in the frozen order (M7 §1).
-PHASES = ("smoke", "baseline", "collect", "improve", "research", "evaluate", "report", "cycle")
+# v0.5 (docs/design/V0_5_PLAN.md §3): `library` (the experience library's stream and snapshot round) and `learn`
+# (the method table's learn reading and refit round), train only, run by hand in the order the plan names.
+PHASES = ("smoke", "baseline", "collect", "improve", "research", "evaluate", "report", "cycle", "library", "learn")
 IMPLEMENTED = PHASES
 # Every phase is wired; what a phase needs is checked before it starts (a frozen plan, a model table, two
 # frontier configurations), and a missing piece is named rather than quietly skipped (BR-01).
@@ -45,7 +47,9 @@ BENCH_KEYS = {"domain", "upstream_path", "toolset", "seed", "ratios", "budget", 
               "near_duplicate_threshold", "repeats", "concurrency",
               # v0.3 step 5 (docs/modules/07_BENCH_REPORT.md §2): the domain list, how a domain without a frozen
               # split is split, the domains whose split is pinned to a hash, and the domains whose test is spent
-              "domains", "split_rule", "frozen_splits", "spent"}
+              "domains", "split_rule", "frozen_splits", "spent",
+              # v0.4 (docs/design/V0_4_PLAN.md §1.6): how many W0 dev readings the baseline takes for the pooled control
+              "control_readings"}
 # A key whose value is the secret itself, rather than the name of the variable that holds it (api_key_env is a
 # name and belongs in the manifest). redact() reads a value's shape and a bare key has none, so the key decides.
 SECRET_KEY = re.compile(r"(?i)(api[_-]?key|token|secret|passw(or)?d|credential)$")
@@ -78,11 +82,18 @@ class BenchConfig:
     split_rule: str = "hash"        # for a domain with no frozen split; a frozen one is kept whatever this says
     frozen_splits: dict[str, str] = field(default_factory=dict)    # domain -> the hash its hash-rule split must have
     spent: tuple[str, ...] = ()     # domains whose test is spent: a new claim's final never reads it
+    # v0.4 (V0_4_PLAN §1.6, M3 §2.1(a) v0.4): the baseline reads W0's dev this many times, unconditionally and before
+    # any gate, so the pooled control starts with that many readings; 1 is v0.3's one reading
+    control_readings: int = 1
 
     def __post_init__(self) -> None:
         self.domains = tuple(self.domains) or (self.domain,)
         self.domain = pooled_name(self.domains)
         self.spent = tuple(self.spent)
+        if isinstance(self.control_readings, bool) or not isinstance(self.control_readings, int) \
+                or self.control_readings < 1:
+            raise ValueError(f"[bench] control_readings = {self.control_readings!r}: a whole number of W0 dev "
+                             f"readings, at least 1")
 
     @classmethod
     def load(cls, cfg: dict, base: str | Path = ".") -> "BenchConfig":
@@ -173,9 +184,12 @@ def freeze_splits(suite: ab.Suite, cfg: BenchConfig, path: str | Path, *,
     A manifest already on disk is the one that is used, whatever the config now asks for: the groups are fixed
     before the first result is looked at, so a changed ratio, seed or split rule is a new experiment
     (docs/DESIGN.md §3.1) — a changed rule is noted, never applied (M7 §2: `split_rule` has no effect on a frozen
-    manifest). A new manifest follows the domain's rule: the hash rule for a domain [bench.frozen_splits] pins (and
-    it must reproduce the pinned hash), else [bench] split_rule — "hash" (v0.1/v0.2) or "stratified" over the
-    adapter's static strata (`ab.stratum`: assertion kinds × tool family, from the task definitions alone).
+    manifest). A new manifest follows [bench] split_rule — "hash" (v0.1/v0.2) or "stratified" over the adapter's
+    static strata (`ab.stratum`: assertion kinds × tool family, from the task definitions alone). A domain
+    [bench.frozen_splits] pins must reproduce the pinned hash, under the rule that does (v0.4, docs/design/
+    V0_4_PLAN.md §1.1): split_rule first, then the other — Marketing's v0.2 pin is a hash-rule split, the v0.4 configs
+    pin the stratified finance and support splits the v0.3 workspace froze. The rule and the seed are in the hashed
+    manifest, so at most one rule reproduces a pin; neither doing it is refused, as before.
     """
     path = Path(path)
     domain = suite.domain
@@ -185,30 +199,37 @@ def freeze_splits(suite: ab.Suite, cfg: BenchConfig, path: str | Path, *,
     fams, rule = ab.families(suite, declared)
     entries = suite.entries(fams)
     pinned = cfg.frozen_splits.get(domain)
-    wanted = "hash" if pinned else cfg.split_rule
+    wanted = cfg.split_rule
     if path.exists() and not replace_existing:
         frozen = SplitManifest.load(path)
         if pinned and frozen.hash() != pinned:
             raise ValueError(f"{path} freezes split {frozen.hash()}, and [bench.frozen_splits] pins {domain} to "
                              f"{pinned}: the frozen split is kept as it is, so this workspace is not the pinned one")
-        if out is not None and (frozen.split_rule or "hash") != wanted:
+        if out is not None and not pinned and (frozen.split_rule or "hash") != wanted:
             out(f"NOTE       {domain}: the frozen split was made under the {frozen.split_rule or 'hash'} rule and is "
                 f"kept; [bench] asks for {wanted}, which only a new workspace would use")
         return frozen, frozen.drift(entries)
-    strata = None
-    if wanted == "stratified":
-        members: dict[str, list[str]] = {}
-        for tid in suite.ids():
-            members.setdefault(fams[tid], []).append(ab.stratum(suite, tid))
-        # a declared family of several tasks is one unit: its stratum is the set of its tasks' strata
-        splits, strata = stratified_splits({f: ";".join(sorted(set(k))) for f, k in members.items()}, cfg.ratios,
-                                           cfg.seed)
-    else:
-        splits = assign_splits(fams.values(), cfg.ratios, cfg.seed)
-    manifest = SplitManifest(domain, cfg.environment(suite.versions), rule, entries, splits, cfg.ratios,
+
+    def split_under(rule_name: str) -> SplitManifest:
+        strata = None
+        if rule_name == "stratified":
+            members: dict[str, list[str]] = {}
+            for tid in suite.ids():
+                members.setdefault(fams[tid], []).append(ab.stratum(suite, tid))
+            # a declared family of several tasks is one unit: its stratum is the set of its tasks' strata
+            splits, strata = stratified_splits({f: ";".join(sorted(set(k))) for f, k in members.items()},
+                                               cfg.ratios, cfg.seed)
+        else:
+            splits = assign_splits(fams.values(), cfg.ratios, cfg.seed)
+        return SplitManifest(domain, cfg.environment(suite.versions), rule, entries, splits, cfg.ratios,
                              cfg.seed, split_rule="stratified" if strata is not None else None, strata=strata)
+    manifest = split_under(wanted)
     if pinned and manifest.hash() != pinned:
-        raise ValueError(f"the hash rule splits {domain} into {manifest.hash()} here, and [bench.frozen_splits] pins "
+        other = split_under(next(r for r in SPLIT_RULES if r != wanted))
+        manifest = other if other.hash() == pinned else manifest
+    if pinned and manifest.hash() != pinned:
+        raise ValueError(f"neither split rule reproduces {domain}'s pin: the {wanted} rule splits it into "
+                         f"{manifest.hash()} here, and [bench.frozen_splits] pins "
                          f"{pinned}: upstream or this environment (commit, package, python) changed since it was "
                          f"frozen. Copy the frozen manifest from the workspace that froze it into {path}, or pin the "
                          f"new hash in a new activity")
@@ -456,12 +477,13 @@ def run_phase(cfg: dict, base: str | Path = ".", *, phase: str = "smoke", **kw) 
     if phase == "smoke":
         return smoke(cfg, base, **kw)
     runner = {"baseline": baseline, "collect": collect, "improve": improve, "research": research,
-              "evaluate": evaluate, "report": report, "cycle": cycle}[phase]
+              "evaluate": evaluate, "report": report, "cycle": cycle, "library": library_track, "learn": learn}[phase]
     allowed = {"baseline": {"out", "limit", "tasks"}, "collect": {"out", "repeats", "tasks"},
                "improve": {"out", "rounds", "researcher", "segment", "reason"},
                "research": {"out", "researcher", "campaign_ref", "r_candidate_ref"},
                "evaluate": {"out", "plan_ref", "resume"}, "report": {"out", "write"},
-               "cycle": {"out", "researcher", "slot_researcher", "arm_researcher", "until"}}[phase]
+               "cycle": {"out", "researcher", "slot_researcher", "arm_researcher", "until"},
+               "library": {"out", "distiller", "merger"}, "learn": {"out"}}[phase]
     unknown = sorted(set(kw) - allowed)
     if unknown:
         raise TypeError(f"the {phase} phase does not take {unknown}; it takes {sorted(allowed)}")
@@ -643,7 +665,7 @@ class Improvement:
                 and r.task_id in wanted and _arm_of(r.attempt_id) not in SCREEN_ARMS]
 
     def run_identity(self, release_ref: str, *, plan_ref: str, split: str, candidate: str, role: str,
-                     permit: str | None = None, scope: str | None = None) -> tuple:
+                     permit: str | None = None, scope: str | None = None, notes: str = "") -> tuple:
         """The run an arm's attempts are recorded under, and what it binds: (RunManifest, bound release, actor).
         Its hash is the attempts' identity, so a run already on record can be found before anything is paid."""
         if permit is not None:
@@ -677,13 +699,14 @@ class Improvement:
                           input_schema_refs=(self.stop_view,),
                           actor_identity_ref=bound.actor_identity.ref() if pinned else None,
                           package_ref=bound.package.ref if bound.package is not None else None,
-                          mode=mode, target_harness_ref=release.target_harness_ref)
+                          mode=mode, target_harness_ref=release.target_harness_ref, notes=notes)
         return run, bound, actor
 
     def run_arm(self, arm: str, release_ref: str, order, *, plan_ref: str, split: str = "dev",
                 candidate: str = "candidate", role: str = "evolved", probe: bool = False,
                 permit: str | None = None, scope: str | None = None, retry_index: int = 0,
-                resume: bool = False, supersedes: dict | None = None) -> list:
+                resume: bool = False, supersedes: dict | None = None, notes: str = "",
+                extra_system: dict | None = None) -> list:
         """One arm's attempts. Each arm is assembled from its own release, with its own session, tool environment
         and episode; nothing mutable is shared between the two sides (docs/modules/03_EVALUATION_RELEASE.md §2).
 
@@ -696,7 +719,14 @@ class Improvement:
         from .evolve.execution import MeteredProvider, Pricing
         from .evolve.task_eval import make_agent_factory, run_tasks
         run, bound, actor = self.run_identity(release_ref, plan_ref=plan_ref, split=split, candidate=candidate,
-                                              role=role, permit=permit, scope=scope)
+                                              role=role, permit=permit, scope=scope, notes=notes)
+        if split != "train" and bound.package is not None:
+            # v0.5 receipt 1 (V0_5_PLAN §1.3): dev and test run a frozen greedy method table only — an explore twin
+            # exists for a learn reading on train and is refused here, before anything is paid
+            from .research.methods import frozen_table_problems
+            problems = frozen_table_problems(bound.package.run_files)
+            if problems:
+                raise _ct.ContractError(f"{arm} on {split}: " + "; ".join(problems))
         if self.results is not None:
             self.results.put_run(run)
         order = list(order)
@@ -715,7 +745,9 @@ class Improvement:
                                        allocation=self.allocation)
         factory = make_agent_factory(self.rt, provider, budget=self.attempt_budget, bound=bound,
                                      objects=self.objects, stop_view=self.stop_view,
-                                     meta={"arm": arm, "scope": self.scope_id}, worker=self.worker)
+                                     meta={"arm": arm, "scope": self.scope_id}, worker=self.worker,
+                                     # v0.5: a library stream's retry note per task (train only); None otherwise
+                                     extra_system=extra_system)
         try:
             rows = run_tasks(self.suite, [t for t, _ in order], factory, run=run, splits=self.splits,
                              results=self.results, probe=probe, arm=arm, plan_ref=plan_ref,
@@ -1066,6 +1098,7 @@ class Improvement:
         from .agent import harness_package as hp
         from .research import diagnosis as dg
         from .research.drafts import Drafts
+        index_of_round = index
         limits = dg.DiagnosisLimits(**self.harness["diagnosis"])
         package = hp.Limits.from_json(self.harness["package"])
         latest = {r.task_id: r for r in evidence.get("train") or () if r.validity == "valid"}
@@ -1081,45 +1114,117 @@ class Improvement:
             components=package.components, package={**run_files, **test_files},
             scope=evidence.get("scope") or "train failures of the latest measurement",
             measured=len(latest), passed=sum(1 for r in latest.values() if r.success))
-        drafts = Drafts(self.objects, parent_ref=bound.package.ref, limits=package,
-                        literals=dg.train_literals(self.results) | self.train_state_literals(),
+        # v0.4 (docs/design/V0_4_PLAN.md §1.5): the literals by train task, from the assertion params and the initial
+        # states; only a value of one task is forbidden, and the field and column names are the schema, not answers.
+        # The assertion params' own literals are the answers: a number among them stays forbidden (review 2026-10-06)
+        index, headers = dg.train_literal_index(self.results)
+        answers = set(index)
+        state_index, state_headers = self.train_state_index()
+        for lit, tasks in state_index.items():
+            index.setdefault(lit, set()).update(tasks)
+        drafts = Drafts(self.objects, parent_ref=bound.package.ref, limits=package, literals=index,
                         max_repairs=int(self.harness["max_draft_repairs"]), events=_ct.Events(root),
-                        worker=self.worker, round_index=index, scope=self.scope_id,
-                        allowed_literals=self.tool_vocabulary(), fixture=self.fixture_world,
+                        worker=self.worker, round_index=index_of_round, scope=self.scope_id,
+                        allowed_literals=self.tool_vocabulary() | headers | state_headers, fixture=self.fixture_world,
                         reserved_names=self.tool_vocabulary(names_only=True),
-                        image=self.harness.get("image_id") or self.harness.get("image"), tools=self.base_tools())
-        session = self.session_inputs(evidence, bound, run_files=run_files, test_files=test_files) \
+                        image=self.harness.get("image_id") or self.harness.get("image"), tools=self.base_tools(),
+                        answers=answers)
+        methods = self.method_settings()
+        if methods is not None:
+            # v0.5 (V0_5_PLAN §1.1): the kit completion, the kit check and the reach check join the draft chain
+            drafts.methods, drafts.reach = methods, self.reach_fn()
+        # v0.5 (V0_5_PLAN §1.4): the experience library is fixed code's; an R candidate's edits to it are undone
+        drafts.library = self.library_settings() is not None
+        session = self.session_inputs(evidence, bound, run_files=run_files, test_files=test_files,
+                                      round_ordinal=diagnosis.round_index) \
             if self.harness.get("research_session") else None
+        if session is not None and methods is not None:
+            session.methods = methods
+            session.extra_inputs, session.playbook = self.method_inputs(
+                bound, {**run_files, **test_files}, {r.task_id: r for r in evidence.get("train") or ()
+                                                     if r.validity == "valid"}, experience)
         return diagnosis, drafts, session
 
-    def session_inputs(self, evidence: dict, bound, *, run_files: dict, test_files: dict):
+    def session_inputs(self, evidence: dict, bound, *, run_files: dict, test_files: dict, round_ordinal: int = 0):
         """What R's coding session needs this round (research.session.SessionInputs, M4 §1 R 的输入, §2 筛选): K's
         caps and screen numbers, the isolated worker, the current package and W's prompt texts, the dev failure-type
         histogram over the installed W's pooled dev readings, the read-only trajectory reader over this workspace's
-        results and transcripts, the train split in its frozen order, the round's fixed passing sample drawn from the
+        results and transcripts, the train split in its frozen order, the round's passing sample drawn from the
         latest measurement with the plan's order_seed, that measurement's per-task outcomes (the screen's "before"),
-        and the two callables that build a candidate W and run its screen arm."""
+        and the two callables that build a candidate W and run its screen arm.
+
+        v0.4 (docs/design/V0_4_PLAN.md §1.2, §1.3, §1.6): the interface error table over the latest train attempts
+        (research/api_errors.py), the passing train attempts for the trajectory listing with must-not tasks first,
+        and — under a K with the v0.4 screen — a passing sample redrawn for this round (`round_ordinal`, the scope's
+        diagnosis count) with must-not tasks first; a v0.3 K keeps the one fixed sample.
+
+        After an install the measurement reruns only the previous failures (measure), so the train tasks it did not
+        rerun — all passes — are filled in from the activity's earlier measurements (carried_train_readings) before
+        anything is derived: the passing listing, the interface table and, under the v0.4 screen, the sample and its
+        "before" see the whole train split, not W0's former failures alone (review 2026-10-06). The measurement, the
+        diagnosis and the train score are not touched; a v0.3 K's sample and "before" stay the measurement's."""
         from .agent import harness_package as hp
-        from .research.session import ScreenSettings, SessionInputs, SessionLimits, TrajectoryReader
+        from .research.api_errors import api_error_table
+        from .research.session import (ScreenSettings, SessionInputs, SessionLimits, TrajectoryReader, passing_sample,
+                                       passing_sample_v4)
         limits = SessionLimits.from_json(self.harness["research_session"])
         screen = ScreenSettings.from_json(self.harness.get("screen"))
-        from .research.session import passing_sample
         order = list(self.splits.ids("train"))
         latest = {r.task_id: r for r in evidence.get("train") or () if r.validity == "valid"}
         parent = self.releases.active()["release_ref"]
+        full = {**self.carried_train_readings(parent, [t for t in order if t not in latest]), **latest}
+        screened = full if screen.v04 else latest
+        must_not = tuple(t for t in order if ab.has_must_not(self.suite, t))
+        passing = [full[t] for t in order if t in full and full[t].success]
+        passing.sort(key=lambda r: (r.task_id not in must_not, order.index(r.task_id)))
+        if screen.v04:
+            sample = passing_sample_v4(full.values(), order=order, size=screen.passing_sample, seed=self.order_seed,
+                                       round_ordinal=round_ordinal, must_not=must_not)
+        else:
+            sample = passing_sample(latest.values(), order=order, size=screen.passing_sample, seed=self.order_seed)
+        transcripts = Path(self.rt.root) / "transcripts"
         return SessionInputs(
             limits=limits, screen=screen, k=int(getattr(self, "candidates_per_round", 1) or 1), worker=self.worker,
             package_files={**run_files, **test_files},
             prompt_texts={t: bound.prompts[t] for t in ("worker.system_prompt", "worker.finish") if bound.prompts.get(t)},
             histogram=self.dev_histogram(parent),
-            trajectories=TrajectoryReader(self.results, Path(self.rt.root) / "transcripts", limits),
-            train_tasks=tuple(order), train_order=tuple(order),
-            sample=tuple(passing_sample(latest.values(), order=order, size=screen.passing_sample, seed=self.order_seed)),
-            before={t: bool(r.success) for t, r in latest.items()},
+            trajectories=TrajectoryReader(self.results, transcripts, limits),
+            train_tasks=tuple(order), train_order=tuple(order), sample=tuple(sample),
+            before={t: bool(r.success) for t, r in screened.items()},
             build=self.screen_build, screen_arm=self.train_screen,
             affordable=(lambda n: self.budget.affordable({"model_calls": n, "tool_calls": n})) if self.budget else None,
             base_tools=self.base_tools(), api_version=self.harness.get("package_api") or hp.AGENT_API_VERSION,
-            max_package_bytes=hp.Limits.from_json(self.harness["package"]).max_package_bytes)
+            max_package_bytes=hp.Limits.from_json(self.harness["package"]).max_package_bytes,
+            passing_attempts=tuple(r.attempt_id for r in passing), must_not=must_not,
+            api_errors=api_error_table(full.values(), transcripts))
+
+    def carried_train_readings(self, release_ref: str, tasks) -> dict:
+        """task -> the latest valid train measurement reading (arm `measure`) of each of `tasks` recorded under this
+        activity's K — the same `core_ref` as `release_ref`, any W of the lineage — in the order the store holds them
+        (review 2026-10-06). After an install, measure reruns only the previous failures, and the passes it does not
+        rerun stay the history of the version that produced them; this hands that history to the session's inputs,
+        never to a measurement or a score. The same W and K alone (`_runs_like`) would find nothing here: an install
+        changed W. Screen readings are not taken (a candidate's, not the lineage's)."""
+        if self.results is None or not tasks:
+            return {}
+        try:
+            core = self.objects.load(release_ref, _ct.SystemRelease).core_ref
+        except (KeyError, _ct.ContractError):
+            return {}
+        wanted, cores, out = set(tasks), {}, {}
+        for r in self.results.all():
+            if r.split != "train" or r.validity != "valid" or r.task_id not in wanted or not r.system_release_ref \
+                    or _arm_of(r.attempt_id) != "measure":
+                continue
+            ref = r.system_release_ref
+            if ref not in cores:
+                try:
+                    cores[ref] = self.objects.load(ref, _ct.SystemRelease).core_ref
+                except (KeyError, _ct.ContractError):
+                    cores[ref] = None
+            if cores[ref] == core:
+                out[r.task_id] = r
+        return out
 
     def dev_histogram(self, parent_release: str) -> dict:
         """The dev failure-type histogram (M4 §1 R 的输入): over the installed W's pooled dev readings under the
@@ -1151,12 +1256,19 @@ class Improvement:
             raise _ct.ContractError("; ".join(build.errors)[:300])
         return build.candidate_ref
 
-    def train_screen(self, candidate_ref: str, tasks) -> list:
+    def train_screen(self, candidate_ref: str, tasks, *, arm: str = "train_screen", notes: str = "",
+                     extra_system: dict | None = None, repeat: int = 0) -> list:
         """One candidate's train-side screen (M4 §2): its arm on the given train tasks, one attempt each, under a
         permit and a plan of its own (`train_screen` arm), so the attempts carry an identity that an install can
         later read as this version's train readings (screen_readings) and that never enters a dev pool. Attempts lost
         to infrastructure are refilled once under the plan's retry policy, as a gate arm's are (task_gate.refill); the
-        parent is the pointer, as for screen_build."""
+        parent is the pointer, as for screen_build.
+
+        v0.5 (V0_5_PLAN §1.3, §1.4): the same path, under another `arm` and `notes`, runs a learn reading's twins
+        (`learn_A`, `learn_B`) and the library stream's attempts (`library_first`, `library_retry`, the retry with its
+        note in `extra_system`): train only, never a screen reading an install would reuse."""
+        if arm != "train_screen" and arm in SCREEN_ARMS:
+            raise ValueError(f"arm {arm!r} is a screen arm")
         parent = self.releases.active()["release_ref"]
         tasks = list(tasks)
         plan = TaskEvalPlan(candidate_ref=candidate_ref,
@@ -1169,16 +1281,189 @@ class Improvement:
         permit = self.releases.permit(candidate_ref, parent, plan_ref, self.scope_id, self.core_ref)
         arm_release = self.releases.candidate_release(parent, candidate_ref, permit)
 
-        def run(arm, order, retry=0, supersedes=None):
-            return self.run_arm(arm, arm_release, order, plan_ref=plan_ref, permit=permit, split="train",
+        def run(arm_name, order, retry=0, supersedes=None):
+            return self.run_arm(arm_name, arm_release, order, plan_ref=plan_ref, permit=permit, split="train",
                                 candidate="candidate", role="evolved", retry_index=retry, resume=True,
-                                supersedes=supersedes)
-        return _refill(plan, "train_screen", list(run("train_screen", [(t, 0) for t in tasks])), run)
+                                supersedes=supersedes, notes=notes, extra_system=extra_system)
+        return _refill(plan, arm, list(run(arm, [(t, int(repeat)) for t in tasks])), run)
 
     def fixture_world(self):
         """The world package tests run against: a fresh episode of the first train task, never dev or final
         (docs/modules/05_EXECUTION_BUDGET.md §1)."""
         return self.suite.episode(next(iter(self.train_tasks or self.splits.ids("train"))))
+
+    # -------------------------------------------------------------- v0.5: the method and library tables of K
+    def method_settings(self):
+        """K's methods table as research.methods.MethodSettings, or None (a K before v0.5)."""
+        from .research.methods import MethodSettings
+        table = (self.harness or {}).get("methods")
+        return MethodSettings.from_json(table) if isinstance(table, dict) else None
+
+    def library_settings(self):
+        """K's library table as research.library.LibrarySettings, or None (a K before v0.5)."""
+        from .research.library import LibrarySettings
+        table = (self.harness or {}).get("library")
+        return LibrarySettings.from_json(table) if isinstance(table, dict) else None
+
+    def task_text(self, task_id: str) -> str:
+        """The text the agent is given for a task (its trigger)."""
+        return self.suite.tasks[task_id].trigger
+
+    def train_rows(self) -> list:
+        """Every valid train attempt of this activity, in the store's order (train only, by the record's split)."""
+        train = set(self.splits.ids("train"))
+        return [r for r in (self.results.all() if self.results is not None else ())
+                if r.split == "train" and r.validity == "valid" and r.task_id in train]
+
+    def latest_train(self, rows=None) -> dict:
+        """task -> its latest valid train attempt (any arm)."""
+        out = {}
+        for r in rows if rows is not None else self.train_rows():
+            out[r.task_id] = r
+        return out
+
+    def transcript_of(self, row) -> list:
+        from .research.diagnosis import read_transcript
+        return read_transcript(Path(self.rt.root) / "transcripts", row.evidence)
+
+    def recorded_attempts(self) -> list:
+        """The reach check's replay set (V0_5_PLAN §1.1): the latest valid train attempt of every train task, as
+        [{task, success, attempt_id, events, final}]; train only."""
+        from .research.methods import replay_events
+        out = []
+        for task, row in self.latest_train().items():
+            events, final = replay_events(self.transcript_of(row))
+            out.append({"task": task, "success": bool(row.success), "attempt_id": row.attempt_id, "events": events,
+                        "final": final})
+        return out
+
+    def reach_fn(self):
+        """(files, names, declaration) -> (errors, report): the reach check over this activity's recorded train
+        attempts, the claimed tasks' replays from their latest failed attempt, fresh train worlds, the task's
+        assertion values counted on the host."""
+        from .research.methods import assertion_values, reach_check, replay_events
+        settings = self.method_settings()
+
+        def reach(files, names, declaration):
+            attempts = self.recorded_attempts()
+            failed = {}
+            for r in self.train_rows():
+                if not r.success:
+                    failed[r.task_id] = r
+            claimed = []
+            for task in declaration.get("predicted_affected") or ():
+                if task in failed:
+                    events, final = replay_events(self.transcript_of(failed[task]))
+                    claimed.append({"task": task, "events": events, "final": final})
+            by_task = {a["task"]: a for a in attempts}
+            for c in claimed:
+                by_task[c["task"]] = {**by_task.get(c["task"], {}), **c}
+            return reach_check(self.worker, files, names, attempts=list(by_task.values()),
+                               predicted=[c["task"] for c in claimed], world_of=self.suite.episode,
+                               values_of=lambda t: assertion_values(self.suite.grading(t).assertions),
+                               task_text_of=self.task_text, settings=settings)
+        return reach
+
+    def package_candidate(self, files: dict, *, label: str) -> str:
+        """A candidate W whose package is `files` — fixed code's variant of the installed package (a learn reading's
+        twin, the library stream's W_base ⊕ L_n) — built as a screened candidate is: on the pointer, never installed
+        by itself. Its experiment id is the package's and the label's digest, so a resumed phase finds the same W and
+        the attempts it already ran under it."""
+        from .agent import harness_package as hp
+        limits = hp.Limits.from_json(self.harness["package"])
+        package_ref = hp.build_package(self.objects, files, limits,
+                                       image=self.harness.get("image_id") or self.harness.get("image"))
+        proposal = _ct.ExperimentProposal(
+            owner=self.owner, hypothesis=label[:2000], origin="fixed",
+            changes=({"target": "worker.harness", "kind": "workflow",
+                      "change": {"builtin": hp.load_package(self.objects, package_ref).api_version,
+                                 "package_ref": package_ref}},))
+        return self.screen_build(proposal, "x" + digest({"package": package_ref, "label": label})[:16])
+
+    def trigger_replay(self, files: dict) -> dict:
+        """task -> the methods whose trigger fires on the task's latest recorded train attempt (the reach harness
+        with run off, in the worker): the train tasks a learn reading can learn from (V0_5_PLAN §1.3)."""
+        from .agent.worker import PackageCallError
+        from .research import methods as M
+        decls = M.methods_of(files)
+        if not decls:
+            return {}
+        manifest = M.manifest_of(files)
+        package = {"tools": [dict(t) for t in manifest.get("tools") or () if t.get("enabled", True)]}
+        wire = {n: {k: d.get(k) for k in ("module", "func", "trigger", "kinds", "on", "default_variant")}
+                for n, d in decls.items() if d.get("enabled", True)}
+        out = {}
+        session = self.worker.start()
+        try:
+            session.load(M.reach_harness_files(files))
+            for a in self.recorded_attempts():
+                try:
+                    value = session.request({"op": "hook", "entry": f"{M.REACH_PATH}:replay",
+                                             "event": {"methods": wire, "events": a["events"],
+                                                       "task": self.task_text(a["task"]), "final_message": a["final"],
+                                                       "package": package, "run": False}, "view": {}})
+                except PackageCallError:
+                    continue
+                fired = [n for n, r in ((value or {}).get("methods") or {}).items() if r.get("fired")]
+                if fired:
+                    out[a["task"]] = sorted(fired)
+        finally:
+            session.close()
+        return out
+
+    def base_means(self, release_ref: str) -> dict:
+        """task -> the mean success of a W's valid train readings (its measurements and the baseline, arm
+        `measure`): b(t), the library stream's control and the credit's baseline (V0_5_PLAN §1.4)."""
+        sums: dict = {}
+        for r in self.train_rows():
+            if r.system_release_ref == release_ref and _arm_of(r.attempt_id) == "measure":
+                s = sums.setdefault(r.task_id, [0, 0])
+                s[0] += int(bool(r.success))
+                s[1] += 1
+        return {t: s[0] / s[1] for t, s in sums.items() if s[1]}
+
+    def method_inputs(self, bound, package_files: dict, latest: dict, experience=()) -> tuple[dict, str]:
+        """R's method-library inputs (V0_5_PLAN §1.1; V0_5_METHOD_LIBRARY §4.2), train only: methods.json,
+        uncovered.json, method_research.json, the kit, the playbook so far and — with an experience library in the
+        package — library.json. -> (files, the playbook text)."""
+        from .evolve import experience as xp
+        from .research import library as lib
+        from .research import methods as M
+        fits = [e for e in experience if e.get("kind") == "method_fit"]
+        rows = [(r, self.transcript_of(r)) for r in self.latest_train().values()]
+        failing = [(r, self.transcript_of(r), self.results.grading(r.attempt_id)) for r in latest.values()
+                   if not r.success]
+        playbooks = [e for e in experience if e.get("kind") == "method_playbook"]
+        playbook = playbooks[-1].get("text", "") if playbooks else ""
+        files = {"methods.json": json.dumps(M.method_telemetry(rows, package_files, fits), ensure_ascii=False,
+                                            indent=1, default=str),
+                 "uncovered.json": json.dumps(M.uncovered_clusters(failing, package_files, fits), ensure_ascii=False,
+                                              indent=1, default=str),
+                 "method_research.json": json.dumps(M.research_moves(xp.ledger_rows(experience), fits),
+                                                    ensure_ascii=False, indent=1, default=str),
+                 "playbook.md": playbook or "(empty: finish with a `playbook` to start one)\n",
+                 **M.method_kit_inputs()}
+        entries, _ = lib.library_of(package_files)
+        if entries:
+            files["library.json"] = json.dumps(lib.telemetry(entries, experience), ensure_ascii=False, indent=1,
+                                               default=str)
+        return files, playbook
+
+    def train_state_index(self) -> tuple[dict, set]:
+        """(v0.4, docs/design/V0_4_PLAN.md §1.5) The initial states' literals by train task (literal -> tasks) and their
+        header names (record fields, sheet columns): what train_state_literals reads, kept per task so the draft
+        check can tell one task's answer from the domain's vocabulary. Train tasks only."""
+        from .agent.harness_package import add_literals, header_names
+        index: dict = {}
+        headers: set = set()
+        for task_id in self.train_tasks or self.splits.ids("train"):
+            try:
+                state = self.suite.grading(task_id).initial_state
+            except Exception:  # noqa: BLE001 - a task without a readable initial state adds nothing
+                continue
+            add_literals(index, task_id, state)
+            headers |= header_names(state)
+        return index, headers
 
     def train_state_literals(self) -> set:
         """Task-specific identifiers in the initial state of train tasks (record ids, e-mails, record names): R
@@ -1520,8 +1805,12 @@ HARNESS_KEYS = {"package_api", "components", "sandbox", "image", "max_files", "m
 # v0.3 step 3 (M4 §1, §2; M7 §2): the two nested harness tables — R's coding session's caps and the train-side
 # screen's numbers — and the keys each takes. research_session.* and screen.passing_sample are caps the config may
 # only lower; screen.min_net_flips is a floor it may only raise (HARNESS_TABLE_FLOORS: lowering it loosens the screen).
-HARNESS_TABLES = {"research_session": ("max_turns", "max_edits", "max_trajectory_bytes", "max_trajectory_bytes_total"),
-                  "screen": ("passing_sample", "min_net_flips")}
+# v0.4 (docs/design/V0_4_PLAN.md §1.3, §1.6): the read floors admission checks (research_session.min_failing_reads,
+# min_passing_reads) and the v0.4 screen's floor and cap (screen.min_fixes, max_sample_regressions). A K frozen before
+# them has none of the four and runs v0.3's admission and screen.
+HARNESS_TABLES = {"research_session": ("max_turns", "max_edits", "max_trajectory_bytes", "max_trajectory_bytes_total",
+                                       "min_failing_reads", "min_passing_reads"),
+                  "screen": ("passing_sample", "min_net_flips", "min_fixes", "max_sample_regressions")}
 # The reasoning-effort tiers, lowest first (the `claude_code` provider's names). K's `max_effort` is the ceiling the
 # gateway caps a package's requested effort to (docs/modules/00_CONTRACTS.md §2, v0.3): a request above it is sent
 # at the ceiling, never refused, with the requested value on the record. Like every harness key it narrows only.
@@ -1577,8 +1866,13 @@ PRESETS["automationbench_harness_v3"] = {
                 # read_trajectory and 524288 per session — and the screen's fixed passing sample of 5 train tasks
                 # with net flips of at least 1 to pay the dev gate. Frozen into K; R cannot raise them.
                 "research_session": {"max_turns": 40, "max_edits": 24, "max_trajectory_bytes": 65536,
-                                     "max_trajectory_bytes_total": 524288},
-                "screen": {"passing_sample": 5, "min_net_flips": 1}},
+                                     "max_trajectory_bytes_total": 524288,
+                                     # v0.4 (V0_4_PLAN §1.3): admission's read floors — each candidate grounded
+                                     # in a failed trajectory of its predicted tasks, and one passing read a session
+                                     "min_failing_reads": 1, "min_passing_reads": 1},
+                # v0.4 (V0_4_PLAN §1.6): 6 passing tasks redrawn each round with must-not tasks first; eligible with
+                # ≥1 fix and ≤1 sample regression, then ranked by net flips (= fixes − regressions, so 0 is the floor)
+                "screen": {"passing_sample": 6, "min_net_flips": 0, "min_fixes": 1, "max_sample_regressions": 1}},
     # v0.3 step 3 (M4 §2): up to three candidates a round, from one session; [improvement] may set 1..3.
     "max_candidates_per_round": 3,
     "budget": {"max_steps": 50, "max_model_calls": 200, "max_tool_calls": 200, "max_seconds": 900.0,
@@ -1606,6 +1900,27 @@ PRESETS["automationbench_harness_v3"] = {
                  "min_groups": 1, "min_headroom_tasks": 6},
     "concurrency": 8,
 }
+
+
+# The v0.5 preset (docs/design/V0_5_PLAN.md §0, §1): the v3 preset as of v0.4 — the per-domain greedy loop, unchanged —
+# plus two tables only this preset has and no config may change: `methods` (the method contract and the applicability
+# learner's numbers, research.methods.MethodSettings) and `library` (the experience library's,
+# research.library.LibrarySettings). A K frozen under it is a v0.5 K; every new behaviour reads these tables from K,
+# so a K without them (v0.1–v0.4) runs exactly as before.
+def _v5_preset() -> dict:
+    from .research.library import LibrarySettings
+    from .research.methods import MethodSettings
+    preset = json.loads(json.dumps(PRESETS["automationbench_harness_v3"]))
+    preset["harness"]["methods"] = MethodSettings().to_json()
+    preset["harness"]["library"] = LibrarySettings().to_json()
+    return preset
+
+
+PRESETS["automationbench_harness_v5"] = _v5_preset()
+# The harness tables only a preset sets (v0.5): [harness_evolution] may not name them.
+PRESET_ONLY_TABLES = ("methods", "library")
+# What the method router needs K to allow: tools for the methods, and the three hook sites it registers.
+METHOD_COMPONENTS = ("tools", "after_tool", "before_tool", "on_finish")
 
 
 def preset_concurrency(cfg: dict) -> int:
@@ -1683,6 +1998,10 @@ def improvement_settings(cfg: dict) -> dict | None:
 def _preset_harness(cfg: dict, preset: dict) -> dict:
     """The preset's harness table narrowed by [harness_evolution]: fewer component kinds, lower limits."""
     table = dict(cfg.get("harness_evolution") or {})
+    fixed = sorted(set(table) & set(PRESET_ONLY_TABLES))
+    if fixed:
+        raise ValueError(f"[harness_evolution] {fixed}: the preset fixes these tables (V0_5_PLAN §1); a config does "
+                         f"not change them")
     unknown = sorted(set(table) - HARNESS_KEYS)
     if unknown:
         raise ValueError(f"[harness_evolution] does not take {unknown}; it takes {sorted(HARNESS_KEYS)}")
@@ -1722,11 +2041,14 @@ def _preset_harness(cfg: dict, preset: dict) -> dict:
 
 # The direction each nested harness number tightens in (M4 §1, §2; M7 §2, 2026-10-05): a cap is lowered, a floor is
 # raised; and the least value any of them may take, with or without a preset.
-HARNESS_TABLE_FLOORS = {("screen", "min_net_flips")}
+HARNESS_TABLE_FLOORS = {("screen", "min_net_flips"), ("screen", "min_fixes"),
+                        ("research_session", "min_failing_reads"), ("research_session", "min_passing_reads")}
 HARNESS_TABLE_LEAST = {("research_session", "max_turns"): 1, ("research_session", "max_edits"): 1,
                        ("research_session", "max_trajectory_bytes"): 1,
                        ("research_session", "max_trajectory_bytes_total"): 1,
-                       ("screen", "passing_sample"): 0, ("screen", "min_net_flips"): 0}
+                       ("research_session", "min_failing_reads"): 0, ("research_session", "min_passing_reads"): 0,
+                       ("screen", "passing_sample"): 0, ("screen", "min_net_flips"): 0, ("screen", "min_fixes"): 0,
+                       ("screen", "max_sample_regressions"): 0}
 
 
 def _harness_table(key: str, value, preset_table: dict | None) -> dict:
@@ -1751,6 +2073,9 @@ def _harness_table(key: str, value, preset_table: dict | None) -> dict:
         if v < least:
             raise ValueError(f"[harness_evolution.{key}] {sub} = {v} is below the least value {least}")
         if preset_table is not None:
+            if sub not in preset_table:
+                raise ValueError(f"[harness_evolution.{key}] {sub}: the preset has no {sub}, and a preset is not "
+                                 f"widened from the config")
             if (key, sub) in HARNESS_TABLE_FLOORS and v < int(preset_table[sub]):
                 raise ValueError(f"[harness_evolution.{key}] {sub} = {v} is below the preset's {preset_table[sub]}: a "
                                  f"floor may be raised here, not lowered")
@@ -1774,7 +2099,10 @@ def harness_settings(cfg: dict) -> dict | None:
         table = dict(cfg.get("harness_evolution") or {})
     if not table:
         return None
-    unknown = sorted(set(table) - HARNESS_KEYS)
+    if improvement_cfg is None and set(table) & set(PRESET_ONLY_TABLES):
+        raise ValueError(f"[harness_evolution] {sorted(set(table) & set(PRESET_ONLY_TABLES))}: only a preset sets "
+                         f"these tables")
+    unknown = sorted(set(table) - HARNESS_KEYS - set(PRESET_ONLY_TABLES))
     if unknown:
         raise ValueError(f"[harness_evolution] does not take {unknown}; it takes {sorted(HARNESS_KEYS)}")
     # The package API K freezes is the one its candidates write to; a core frozen to v1 keeps taking v1 manifests
@@ -1812,6 +2140,21 @@ def harness_settings(cfg: dict) -> dict | None:
             value = table.get(key, {})
             # under a preset the table is already the preset's narrowed one (a dict); without one it is the config's
             out[key] = _harness_table(key, value, None) if improvement_cfg is None else _harness_table(key, {}, value)
+    # v0.5 (V0_5_PLAN §1): the method and library tables of the v5 preset, into K as the preset fixed them. They need
+    # the coding session (R writes methods in it), and methods need the router's hook sites and tools.
+    if any(key in table for key in PRESET_ONLY_TABLES):
+        from .research.library import LibrarySettings
+        from .research.methods import MethodSettings
+        if not out.get("research_session"):
+            raise ValueError("the methods and library tables need the coding session (package_api v2)")
+        if "methods" in table:
+            missing = sorted(set(METHOD_COMPONENTS) - set(limits.components))
+            if missing:
+                raise ValueError(f"[harness_evolution] components drop {missing}: the method library needs "
+                                 f"{list(METHOD_COMPONENTS)} (methods are tools; the router is three hooks)")
+            out["methods"] = MethodSettings.from_json(table["methods"]).to_json()
+        if "library" in table:
+            out["library"] = LibrarySettings.from_json(table["library"]).to_json()
     return out
 
 
@@ -1914,7 +2257,11 @@ def open_activity(cfg: dict, base: str | Path = ".", *, out: Callable[[str], Non
             adapter="ouroloop.adapters.automationbench", scorer="automationbench.rubric",
             toolset=bench.toolset, targets=targets, capabilities=capabilities)
         release_ref = releases.bootstrap(_P.default_worker_set(objects, **worker_kw),
-                                        _P.default_research_set(objects, note_contract=harness is not None),
+                                        # v0.4 (V0_4_PLAN §1.7): a core with the coding session gets the session's R0
+                                        _P.default_research_set(objects, note_contract=harness is not None,
+                                                                session=bool((harness or {}).get("research_session")),
+                                                                # v0.5: a K with the method library
+                                                                methods=bool((harness or {}).get("methods"))),
                                         core_ref, reason="initial version from the configuration",
                                         **(_host_contract(objects, bench, rsi, harness) if harness is not None
                                            else {}))
@@ -2362,12 +2709,31 @@ def baseline(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = 
         # them recorded — the 16-way trial's 429 casualties would otherwise be holes in W0's pooled dev reading
         rows = latest_attempts(_refill_attempts(run(candidate, order), run, candidate, work.retries()))
         summary = summarise(rows)
+        readings = [summary]
+        if not own and activity.bench.control_readings > 1:
+            # v0.4 (V0_4_PLAN §1.6, M3 §2.1(a) v0.4): W0's further dev readings, unconditionally, before any gate —
+            # each its own run of the same execution identity: only the candidate label differs (`base:reading-2`,
+            # in the run's hash, so a reading is a run of its own; a label the pooled control does not compare), so
+            # the pool counts them as readings, a restart resumes each, and the first keeps its identity
+            n = activity.bench.control_readings
+            for i in range(2, n + 1):
+                name = f"{candidate}:reading-{i}"
+
+                def again(arm, pairs, retry=0, supersedes=None, _work=work, _name=name, _role=role):
+                    return _work.run_arm(arm, activity.release_ref, pairs, plan_ref="", candidate=_name, role=_role,
+                                         retry_index=retry, resume=True, supersedes=supersedes,
+                                         notes=f"control reading of the baseline ([bench] control_readings = {n})")
+                readings.append(summarise(latest_attempts(_refill_attempts(again(candidate, order), again, candidate,
+                                                                           work.retries()))))
+                out(f"arm        {name} ({role}) dev: {readings[-1]['passed']}/{readings[-1]['tasks']} passed")
         # The label is what actually ran: the pinned actor, unless the arm names its own model.
         label = model_identity(provider, llm) if (own or pinned is None) else \
             {"provider": pinned.provider, "model": pinned.base_model, "actor_identity_ref": pinned.ref()}
         report["arms"][candidate] = {"role": role, "summary": summary, "model": label,
                                      "terminations": summary["terminations"],
-                                     "failures": {r.task_id: r.failure_class for r in rows if not r.success}}
+                                     "failures": {r.task_id: r.failure_class for r in rows if not r.success},
+                                     **({"control_readings": [{k: s[k] for k in ("passed", "tasks", "pass_rate")}
+                                                              for s in readings]} if len(readings) > 1 else {})}
         if work.harness and not own:
             # The first version's "before" is train and dev (docs/ROADMAP.md §2 stage A): the train split runs
             # as its own run, never merged into the dev figures. It is the measurement the first worker round reads
@@ -2522,7 +2888,9 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
     from .research.loop import resume_unfinished
     # An open experiment finishes under the template and the scope it was frozen with, or the segment pauses.
     resumed = resume_unfinished(activity.root, activity.objects, work.handlers(), budget,
-                                eval_template_ref=work.template_ref, budget_scope=work.scope_id)
+                                eval_template_ref=work.template_ref, budget_scope=work.scope_id,
+                                # v0.5: a fixed round's experiment is its phase's, never one of R's rounds
+                                skip_fixed=True)
     # a resume that paused (a refused plan, a halt) or ended (a spent budget) runs no new round behind it
     halted = bool(resumed) and resumed[-1].outcome == "stopped"
     for result in resumed:
@@ -2577,6 +2945,458 @@ def improve(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = p
             "release": activity.releases.active()["release_ref"], "stop_reason": stop_reason,
             **({"segment": segment} if segment else {}),
             **({"extension": seglog.state["extensions"][-1]} if extension is not None else {})}
+
+
+# ---------------------------------------------------------------------------- v0.5: the learn reading, the library track
+def _phase_work(cfg: dict, base, phase: str, out):
+    """(activity, Improvement, budget) of a v0.5 phase: the frozen task plan, the startup checks, the actor the
+    release pins, the phase's account on the activity's one root."""
+    activity = open_activity(cfg, base, out=out)
+    missing = activity.rsi.check(activity.objects, needs=("task_plan_ref",))
+    if missing:
+        raise ValueError("; ".join(missing) + "; freeze one with `ouroloop freeze`")
+    require(startup_checks(activity, cfg, phase=phase), phase=phase)
+    provider = config_mod.build_provider(cfg["llm"])
+    work = improvement(activity, template_ref=activity.rsi.task_plan_ref, provider=provider)
+    budget = activity_budget(activity, cfg, phase)
+    work.budget = budget
+    work.pricing = pricing_of(cfg)
+    return activity, work, budget
+
+
+def _fixed_context(activity: Activity, work, *, research_model: dict | None = None, ordinal: int | None = None):
+    """The RoundContext of a fixed-code round (research.fixed): this round's measurement (reused when nothing was
+    installed since), the experience, the bound release, the draft check and the screen inputs; `ordinal` the fixed
+    round's, when the caller resumes one. -> (ctx, evidence)."""
+    from .research.fixed import next_ordinal
+    from .research.loop import RoundContext
+    release_ref = activity.releases.active()["release_ref"]
+    evidence = work.measure(release_ref, work.last_measurement(release_ref))
+    experience, experience_ref = _experience.snapshot(activity.root)
+    context = work.context(goal="improve the full-task pass rate on the development tasks", release_ref=release_ref,
+                           evidence=evidence, experience=experience, experience_ref=experience_ref)
+    bound = _P.bind_release(release_ref, profile="task", services=work.services(), authorization="installed")
+    index = ordinal if ordinal is not None else next_ordinal(experience)
+    diagnosis, drafts, session = work.round_inputs(index, evidence, experience, bound, root=activity.root,
+                                                   research_model=research_model or {})
+    ctx = RoundContext(releases=activity.releases, objects=activity.objects, scope_id=activity.rsi.scope_id,
+                       context=context, researcher=None, bound=bound, core_ref=work.core_ref,
+                       eval_template_ref=work.template_ref, handlers=work.handlers(), experience_ref=experience_ref,
+                       experience=tuple(experience), owner="worker",
+                       history=frozen_signatures(experience, activity.objects, parent=release_ref),
+                       root=activity.root, diagnosis=diagnosis, drafts=drafts, round_index=index, session=session)
+    return ctx, evidence
+
+
+def _research_completion(cfg: dict, budget, step: str):
+    """(system, user) -> text on the research model, metered on the activity's book as `<scope>:research:<step>`: the
+    library's distillation and merge calls are research, and cost what research costs."""
+    from .evolve.execution import MeteredProvider
+    table = dict(cfg.get("research") or {}).get("llm") or cfg["llm"]
+    provider = MeteredProvider(config_mod.build_provider(table), budget, pricing_of(cfg),
+                               operation=f"{budget.scope_id}:research:{step}", max_retries=0)
+    return _Completions(provider).complete
+
+
+def learn(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = print) -> dict:
+    """`--phase learn` (docs/design/V0_5_PLAN.md §1.3; V0_5_METHOD_LIBRARY.md §3), train only.
+
+    The installed W's methods are replayed over its recorded train attempts (free, in the worker); the train tasks
+    where a trigger fires — at most `learn_max_tasks` — run once under each of two explore twins, which differ from W
+    only in the table: every switch decision is on in one twin and off in the other by a hash of the task text, with
+    exact propensities. The paired outcomes are credited by the methods' footprint classes and fitted into a greedy
+    table (Beta posteriors; n >= 5, P >= 0.8, task-level fixes - regressions >= 0, must-not <= 1, the cost guard),
+    recorded as a `method_fit` row. A table that differs from the installed one is a refit candidate in its own
+    fixed round: screen, gate, confirmation, install, as for any candidate. Dev and test never run a twin (run_arm
+    refuses an explore table off train)."""
+    from .agent import harness_package as hp
+    from .research import methods as M
+    activity, work, budget = _phase_work(cfg, base, "learn", out)
+    settings = work.method_settings()
+    if settings is None:
+        raise ValueError("--phase learn needs a K with the method library (preset automationbench_harness_v5)")
+    scope = activity.rsi.scope_id
+    release_ref = activity.releases.active()["release_ref"]
+    bound = _P.bind_release(release_ref, profile="task", services=work.services(), authorization="installed")
+    run_files, test_files = hp.files_of(activity.objects, bound.package.ref)
+    files = {**run_files, **test_files}
+    decls = {n: d for n, d in M.methods_of(files).items() if d.get("enabled", True)}
+    if not decls:
+        out("learn      the installed W has no enabled method: nothing to learn")
+        return {"learned": False, "reason": "no method"}
+    fired = work.trigger_replay(files)
+    order = list(activity.splits.ids("train"))
+    tasks = [t for t in order if t in fired][:settings.learn_max_tasks]
+    if not tasks:
+        out("learn      no recorded train attempt fires a method's trigger: nothing to learn")
+        return {"learned": False, "reason": "no trigger fires on train"}
+    from .research.fixed import round_ended
+    experience = _experience.read(activity.root)
+    fits = [e for e in experience if e.get("kind") == "method_fit" and e.get("scope") == scope]
+    if fits and fits[-1].get("changed"):
+        last = fits[-1]
+        ordinal = _refit_ordinal(experience, last["stage"])
+        started = ordinal is not None
+        if (started and round_ended(experience, ordinal) is None) or (not started and last.get("release") == release_ref):
+            # the last reading moved the table and its refit round has not ended (an interrupted phase): finish that
+            # round — under its own ordinal when it had started — rather than pay for another reading
+            fit_bound = _P.bind_release(last["release"], profile="task", services=work.services(),
+                                        authorization="installed")
+            fit_run, fit_tests = hp.files_of(activity.objects, fit_bound.package.ref)
+            fit_files = {**fit_run, **fit_tests}
+            out(f"learn      {last['stage']}'s refit round has not ended: finishing it")
+            return _refit_round(activity, work, budget, fit_files,
+                                {n: d for n, d in M.methods_of(fit_files).items() if d.get("enabled", True)},
+                                last["table"], last["stage"], last.get("moved") or (),
+                                {t: list(decls) for t in last.get("tasks") or ()}, settings, out,
+                                {"learned": True, "stage": last["stage"], "resumed": True}, ordinal=ordinal)
+    stage = f"learn{len(fits)}"
+    salt = M.learn_salt(work.order_seed, stage)
+    # 2026-10-07 review: before the first twin attempt, the twins, the refit round's screen at its largest (the
+    # triggered tasks and the passing sample) and the gate's verification bound must fit, or nothing is paid
+    verify = dict(work.handlers().get("verify_bound") or {})
+    sample = int(((work.harness or {}).get("screen") or {}).get("passing_sample") or 0)
+    attempts = 2 * len(tasks) + len(tasks) + sample
+    need = {"model_calls": attempts + int(verify.get("model_calls") or 0),
+            "tool_calls": attempts + int(verify.get("tool_calls") or 0)}
+    if verify.get("usd") is not None:
+        need["usd"] = round(float(verify["usd"]) + attempts * float(verify.get("usd_per_attempt") or 0.0), 6)
+    if not budget.affordable(need):
+        out(f"learn      {stage}: the twins ({2 * len(tasks)} attempts), a refit screen and the gate's bound "
+            f"{verify} do not fit the budget: nothing is paid (budget_exhausted)")
+        return {"learned": False, "reason": "budget_exhausted", "stage": stage, "need": need}
+    out(f"learn      {stage}: {len(tasks)} train tasks where a trigger fires, twins A and B (salt {salt})")
+    readings: dict = {}
+    for twin in ("A", "B"):
+        candidate = work.package_candidate(M.twin_files(files, salt=salt, twin=twin), label=f"learn twin {twin} {stage}")
+        rows = work.train_screen(candidate, tasks, arm=f"learn_{twin}", notes=f"v0.5 {stage}")
+        if any(r.validity != "valid" and r.failure_class == "budget_exhausted" for r in rows):
+            out(f"learn      twin {twin} ran out of budget: nothing is fitted")
+            return {"learned": False, "reason": "budget_exhausted", "stage": stage}
+        for r in rows:
+            if r.validity == "valid":
+                readings.setdefault(r.task_id, {})[twin] = r
+    pairs = [{"task": t, **{tw: {"success": r.success, "cost": r.cost_usd,
+                                 "assertions": activity.results.grading(r.attempt_id),
+                                 "decisions": M.decisions_of(work.transcript_of(r))} for tw, r in two.items()}}
+             for t, two in ((t, readings.get(t, {})) for t in tasks) if set(two) == {"A", "B"}]
+    obs = M.observations(pairs, decls)
+    prior = {k: {"k": v.get("k", 0), "m": v.get("m", 0)} for k, v in ((fits[-1].get("cells") or {}).items()
+                                                                       if fits else ())}
+    current = M.table_of(files) or {"mode": "greedy", "cells": {}, "splits": {}}
+    table, record = M.fit_table(obs, decls, current, settings, prior)
+    changed = M.table_changed(current, table)
+    moved = sorted(k for k in table["cells"] if (current.get("cells") or {}).get(k) != table["cells"][k])
+    _experience.append(activity.root, {"kind": "method_fit", "scope": scope, "release": release_ref, "stage": stage,
+                                       "salt": salt, "tasks": tasks, "pairs": len(pairs), "observations": len(obs),
+                                       "cells": record, "table": table, "changed": changed, "moved": moved})
+    out(f"learn      fitted {len(record)} cells from {len(obs)} paired decisions on {len(pairs)} tasks; "
+        + (f"moved {moved}" if changed else "the table stays as installed"))
+    result = {"learned": True, "stage": stage, "tasks": tasks, "pairs": len(pairs), "cells": record,
+              "changed": changed, "moved": moved}
+    if not changed:
+        return result
+    return _refit_round(activity, work, budget, files, decls, table, stage, moved, fired, settings, out, result)
+
+
+REFIT_MECHANISM = "refit method table from paired train rewards {stage}"
+
+
+def _refit_ordinal(experience, stage: str) -> int | None:
+    """The ordinal of the fixed round that declared learn reading `stage`'s refit candidate, or None."""
+    wanted = REFIT_MECHANISM.format(stage=stage)
+    return next((int(e.get("ordinal") or 0) for e in experience if e.get("kind") == "ledger" and e.get("fixed_code")
+                 and e.get("stage") == "declared"
+                 and str((e.get("declaration") or {}).get("mechanism") or "") == wanted), None)
+
+
+def _refit_round(activity: Activity, work, budget, files: dict, decls: dict, table: dict, stage: str, moved, fired: dict,
+                 settings, out, result: dict, *, ordinal: int | None = None) -> dict:
+    """The refit candidate of a learn reading in its own fixed round (V0_5_PLAN §1.3): only the table changes (and
+    the enabled flag of a method every cell of which is silent and the actor hardly calls); its screen reads the
+    triggered train tasks of the moved methods that fail now, plus the round's passing sample; gate, confirmation and
+    install as for any candidate. `ordinal` resumes the round an interruption left (research.fixed)."""
+    from .research import methods as M
+    from .research.fixed import fixed_candidate, next_ordinal, run_fixed_round
+    rates = M.call_rates([(r, work.transcript_of(r)) for r in work.latest_train().values()], list(decls))
+    refit, disabled = M.refit_files(files, table, call_rates=rates, settings=settings)
+    methods_moved = {k.split("|", 1)[0] for k in moved}
+    failing = [t for t in activity.splits.ids("train") if set(fired.get(t) or ()) & methods_moved]
+    if ordinal is None:
+        ordinal = next_ordinal(_experience.read(activity.root))
+    ctx, _ = _fixed_context(activity, work, ordinal=ordinal)
+    candidate = fixed_candidate(operator="refit", files=refit, site="after_tool", carrier="hook", failing=failing,
+                                mechanism=REFIT_MECHANISM.format(stage=stage),
+                                trigger_condition="the cells the learn reading moved: " + ", ".join(moved)[:400],
+                                notes=f"disabled {disabled}" if disabled else "")
+    round_result = run_fixed_round(ctx, budget, [candidate], ordinal=ordinal)
+    out(f"refit      {round_result.outcome}" + (f" ({round_result.reason})" if round_result.reason else ""))
+    return {**result, "refit": {"outcome": round_result.outcome, "release": activity.releases.active()["release_ref"],
+                                "disabled": disabled}}
+
+
+def library_track(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = print, distiller=None,
+                  merger=None) -> dict:
+    """`--phase library` (docs/design/V0_5_PLAN.md §1.4; V0_5_EVOLVING_SEARCH.md §2.4), train only.
+
+    A stream over the train split in a frozen order (seeded by the plan's order_seed and the domain, its hash
+    recorded): at each task the W_base readings of it already on record are distilled (a success, or a success and
+    a failure as a contrast pair); the task is read once under W_base ⊕ L_n — the library so far, retrieved by the
+    host with the task's own entries left out — and once more with the failed checks as a note when that failed;
+    every new success is distilled (one call of the fixed prompt, at most `max_per_distill` entries), each entry
+    checked (schema, the literal check with one placeholder pass, at least `min_other_tasks` train tasks reached
+    beyond its sources), merged into a near-duplicate or added; every entry shown in a first encounter is credited
+    r − b(t) (the retry carries a note, so it is a source of distillation and never of credit); entries that harm or
+    do not pay are retired. The stream's state is saved after every task and after the distillation before a task's
+    first encounter, so an interrupted phase continues where it stopped and pays for nothing twice; a research-model
+    failure during distillation pauses it there. At its end D and B are read (V0_5_PLAN §3): with D <= abort_d the
+    snapshot is not gated (B is a process number); otherwise the library is compiled into W_base's package and
+    offered in a fixed round — screen with leave-one-out retrieval, gate, confirmation, install — like any candidate,
+    resumed as it stood when the phase is run again."""
+    import random
+    from .agent import harness_package as hp
+    from .research import library as lib
+    from .research.diagnosis import DiagnosisLimits, failure_summary
+    from .research.fixed import fixed_candidate, next_ordinal, run_fixed_round
+    activity, work, budget = _phase_work(cfg, base, "library", out)
+    settings = work.library_settings()
+    if settings is None:
+        raise ValueError("--phase library needs a K with the experience library (preset automationbench_harness_v5)")
+    root = Path(activity.root)
+    state_path = root / "rsi" / "library_stream.json"
+    order = list(activity.splits.ids("train"))
+    stream = list(order)
+    random.Random(f"library:{work.order_seed}:{activity.bench.domain}").shuffle(stream)
+    order_hash = digest({"order": stream})[:16]
+    release_ref = activity.releases.active()["release_ref"]
+    state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {
+        "schema": "library_stream.v1", "order": stream, "order_hash": order_hash, "base_release": release_ref,
+        "cursor": 0, "entries": {}, "readings": {}, "distill_calls": 0, "dropped": [], "status": "streaming",
+        "utility_at_half": None, "distill_prompt": digest({"distill": lib.DISTILL, "merge": lib.MERGE})[:16]}
+    if state["order_hash"] != order_hash:
+        raise ValueError(f"{state_path}: the stream's order {state['order_hash']} is not this plan's {order_hash}")
+    if state["status"] == "done":
+        out(f"library    the stream and its snapshot round are done ({state.get('snapshot')})")
+        return {"status": "done", "readout": state.get("readout"), "snapshot": state.get("snapshot")}
+    if state["base_release"] != release_ref and state["status"] == "streaming":
+        raise ValueError(f"the stream runs on W_base {_ct.short(state['base_release'])}, and the pointer is now "
+                         f"{_ct.short(release_ref)}: a stream is not continued over another W")
+
+    def save() -> None:
+        write_json(state_path, state)
+    base_bound = _P.bind_release(state["base_release"], profile="task", services=work.services(),
+                                 authorization="installed")
+    run_files, test_files = hp.files_of(activity.objects, base_bound.package.ref)
+    base_files = {**run_files, **test_files}
+    limits = hp.Limits.from_json(work.harness["package"])
+    b = work.base_means(state["base_release"])
+    texts = {t: work.task_text(t) for t in order}
+    ctx, _ = _fixed_context(activity, work)
+    forbidden, allowed = ctx.drafts.forbidden(), set(ctx.drafts.allowed_literals)
+    distiller = distiller or _research_completion(cfg, budget, "distill")
+    note_limits = DiagnosisLimits(**work.harness["diagnosis"])
+    entries = list(state["entries"].values())
+
+    def active() -> list:
+        return [e for e in entries if e.get("status") == "active"]
+
+    def summary(row) -> dict:
+        return failure_summary(row, work.transcript_of(row), activity.results.grading(row.attempt_id), note_limits)
+
+    def merge_call(old: dict, new: dict):
+        if merger is not None:
+            return merger(old, new)
+        got = lib.parse_distilled(distiller(lib.MERGE, json.dumps({"a": old, "b": new}, default=str)), max_entries=1)
+        return got[0] if got else None
+
+    def distill(task: str, success, failure, origin: str, n: int) -> None:
+        system, user = lib.distill_request(summary(success), summary(failure) if failure is not None else None,
+                                           max_entries=settings.max_per_distill)
+        state["distill_calls"] += 1
+        sources = {lib.task_hash(texts[x]) for x in lib.near_duplicates(task, texts, settings.sibling_sim)}
+        for raw in lib.parse_distilled(distiller(system, user), max_entries=settings.max_per_distill):
+            entry = lib.make_entry(raw, sources=sources, origin=origin, n=n,
+                                   provenance=[{"task": task, "attempt": success.attempt_id}])
+            checked, why = lib.check_entry(entry, forbidden=forbidden, train_texts=texts, settings=settings,
+                                           allowed=allowed, library=active())
+            if checked is None:
+                state["dropped"].append({"n": n, "origin": origin, "why": why})
+                continue
+            dup = lib.duplicate_of(checked, active(), settings)
+            if dup is not None:
+                joined = lib.merged(dup, checked, merge_call)
+                joined["stats"] = dict(dup.get("stats") or {})
+                dup["status"], dup["merged_into"] = "merged", joined["entry_id"]
+                entries.append(joined)
+            else:
+                entries.append(checked)
+        for e in lib.shelf_overflow(entries, settings):
+            e["status"], e["retired"] = "retired", "pushed off a full shelf"
+
+    def shown_in(row) -> list:
+        return next((list(e.get("entries") or ()) for e in work.transcript_of(row)
+                     if e.get("kind") == "library_retrieval"), [])
+
+    def credit(row, task: str) -> None:
+        by_id = {e["entry_id"]: e for e in entries}
+        base_mean = b.get(task)
+        for entry_id in shown_in(row):
+            if entry_id in by_id:
+                lib.credit(by_id[entry_id], int(bool(row.success)), base_mean, stable_pass=base_mean == 1.0)
+
+    def attempt(task: str, arm: str, extra=None):
+        """One train attempt of `task` under W_base ⊕ the active library (W_base itself while the library is
+        empty): the first valid row, or (None, why)."""
+        files_n = lib.with_library(base_files, active(), settings, max_chars=limits.max_skill_chars,
+                                   max_skills=limits.max_skills)
+        # the retry is the second attempt at the task under the same package: repeat index 1, its own attempt id
+        repeat = 1 if arm == "library_retry" else 0
+        if files_n == base_files:
+            rows = work.run_arm(arm, state["base_release"], [(task, repeat)], plan_ref="", split="train",
+                                candidate="current", role="evolved", resume=True, notes=f"v0.5 library stream {arm}",
+                                extra_system=extra)
+        else:
+            candidate = work.package_candidate(files_n, label=f"library stream {lib.task_hash(texts[task])}")
+            rows = work.train_screen(candidate, [task], arm=arm, notes=f"v0.5 library stream {arm}", extra_system=extra,
+                                     repeat=repeat)
+        valid = [r for r in rows if r.validity == "valid"]
+        if valid:
+            return valid[0], None
+        return None, ("budget_exhausted" if any(r.failure_class == "budget_exhausted" for r in rows) else "lost")
+
+    from .evolve.execution import BudgetExhausted
+    from .providers import ProviderError
+    scope = activity.rsi.scope_id
+    if state["status"] == "streaming":
+        try:
+            for i in range(int(state["cursor"]), len(stream)):
+                task = stream[i]
+                mine = [r for r in work.train_rows() if r.task_id == task
+                        and r.system_release_ref == state["base_release"] and _arm_of(r.attempt_id) == "measure"]
+                had_success = next((r for r in reversed(mine) if r.success), None)
+                had_failure = next((r for r in reversed(mine) if not r.success), None)
+                if had_success is not None and state.get("pre_distilled") != task:
+                    distill(task, had_success, had_failure, "contrast" if had_failure is not None else "success", i)
+                    # a checkpoint (2026-10-07 review): a resume skips the distillation it already paid for
+                    state["pre_distilled"] = task
+                    state["entries"] = {e["entry_id"]: e for e in entries}
+                    save()
+                first, why = attempt(task, "library_first")
+                if first is None and why == "budget_exhausted":
+                    raise BudgetExhausted(f"the first encounter of stream position {i} could not run")
+                reading = {"n": i, "control": b.get(task), "lib": None, "retry": None, "shown": []}
+                if first is not None:
+                    credit(first, task)
+                    reading.update(lib=int(bool(first.success)), shown=shown_in(first), attempt=first.attempt_id)
+                    if first.success and had_success is None:
+                        distill(task, first, had_failure, "contrast" if had_failure is not None else "success", i)
+                    elif not first.success and settings.retry:
+                        note = lib.retry_note(activity.results.grading(first.attempt_id))
+                        second, why = attempt(task, "library_retry", {task: note}) if note else (None, "no check")
+                        if second is None and why == "budget_exhausted":
+                            raise BudgetExhausted(f"the retry of stream position {i} could not run")
+                        if second is not None:
+                            # not credited (2026-10-07 review): the retry carries its failed checks as a note, so
+                            # its outcome is not the entries' alone; it is a source of reflexion distillation only
+                            reading.update(retry=int(bool(second.success)), retry_attempt=second.attempt_id)
+                            if second.success:
+                                distill(task, second, first, "reflexion", i)
+                for e in active():
+                    why_retired = lib.retire_reason(e, settings)
+                    if why_retired:
+                        e["status"], e["retired"] = "retired", why_retired
+                state["readings"][task] = reading
+                if i + 1 == len(stream) // 2:
+                    state["utility_at_half"] = {e["entry_id"]: lib.utility(e) for e in active()}
+                state["cursor"], state["pre_distilled"] = i + 1, None
+                state["entries"] = {e["entry_id"]: e for e in entries}
+                save()
+                out(f"library    n={i + 1}/{len(stream)} first={reading['lib']} retry={reading['retry']} "
+                    f"control={reading['control']} active={len(active())} shown={len(reading['shown'])}")
+        except BudgetExhausted as e:
+            # the state file holds the last checkpoint: nothing of this task is credited or written twice on a resume
+            out(f"library    stopped: {e}")
+            return {"status": "budget_exhausted", "cursor": state["cursor"]}
+        except ProviderError as e:
+            # a distillation or merge call the research model failed: the stream pauses at its last checkpoint
+            out(f"library    paused: the research model failed ({type(e).__name__}: {str(e)[:200]}); run the phase "
+                f"again to continue from n={state['cursor']}")
+            return {"status": "paused", "cursor": state["cursor"], "reason": f"{type(e).__name__}: {str(e)[:200]}"}
+        readout = lib.stream_readout(state["readings"], stream)
+        readout["p_second_half_better"] = lib.bootstrap_halves(state["readings"], stream)
+        half = len(stream) // 2
+        later: dict = {}
+        for t in stream[half:]:
+            r = state["readings"].get(t) or {}
+            if r.get("lib") is None or r.get("control") is None:
+                continue
+            for entry_id in r.get("shown") or ():
+                later.setdefault(entry_id, []).append(r["lib"] - r["control"])
+        at_half = state.get("utility_at_half") or {}
+        paired = [(at_half[k], sum(v) / len(v)) for k, v in sorted(later.items()) if k in at_half]
+        readout["credit_rank_correlation"] = lib.rank_correlation([a for a, _ in paired], [b_ for _, b_ in paired])
+        readout["entries"] = {"active": len(active()),
+                              "retired": sum(1 for e in entries if e.get("status") == "retired"),
+                              "merged": sum(1 for e in entries if e.get("status") == "merged"),
+                              "dropped_at_check": len(state["dropped"]), "distill_calls": state["distill_calls"]}
+        readout["shown_per_attempt"] = round(sum(len((state["readings"][t] or {}).get("shown") or ())
+                                                 for t in state["readings"]) / max(len(state["readings"]), 1), 3)
+        state["readout"] = readout
+        experience = _experience.read(activity.root)
+        if not any(e.get("kind") == "library_stream" and e.get("scope") == scope and e.get("order_hash") == order_hash
+                   and e.get("base_release") == state["base_release"] for e in experience):
+            # the stream's record, written once (a resume after it finds it and does not write it again)
+            for e in entries:
+                # the entry's own kind (workflow, insight, api_note) travels as `entry_kind`: the row's `kind` is
+                # the record's
+                _experience.append(activity.root, {**{k: e.get(k) for k in (
+                    "entry_id", "shelf", "title", "when", "body", "avoid", "origin", "born_at_n", "status", "stats",
+                    "retired", "merged_into", "source_hashes", "provenance")},
+                    "kind": "library_entry", "entry_kind": e.get("kind"), "scope": scope})
+            _experience.append(activity.root, {"kind": "library_stream", "scope": scope,
+                                               "base_release": state["base_release"], "order_hash": order_hash,
+                                               "distill_prompt": state["distill_prompt"], "readout": readout,
+                                               "readings": state["readings"]})
+        out(f"library    stream done: D={readout['D']} B={readout['B']} halves {readout['first_half']} -> "
+            f"{readout['second_half']} (P {readout['p_second_half_better']}) active={readout['entries']['active']}")
+        snapshot = lib.with_library(base_files, active(), settings, max_chars=limits.max_skill_chars,
+                                    max_skills=limits.max_skills)
+        # 2026-10-07 review: D alone decides; B is a process number (harm is the snapshot round's screen's, gate's
+        # and confirmation's to catch)
+        abort = lib.snapshot_abort(readout, settings, empty=snapshot == base_files)
+        if abort:
+            state.update(status="done", snapshot={"outcome": "not_gated", "why": abort})
+            save()
+            _experience.append(activity.root, {"kind": "library_snapshot", "scope": scope, "outcome": "not_gated",
+                                               "why": abort, "readout": readout})
+            out(f"library    the snapshot is not gated: {abort}")
+            return {"status": "done", "readout": readout, "snapshot": state["snapshot"]}
+        state.update(status="snapshot", snapshot_ordinal=next_ordinal(experience, "library"))
+        save()
+    # the snapshot round, resumed as an interruption left it: the same ordinal, so the same candidate, experiment id,
+    # screen attempts and gate (research.fixed)
+    readout = state["readout"]
+    ordinal = int(state["snapshot_ordinal"])
+    snapshot = lib.with_library(base_files, active(), settings, max_chars=limits.max_skill_chars,
+                                max_skills=limits.max_skills)
+    ctx, _ = _fixed_context(activity, work, ordinal=ordinal)
+    failing = [t for t, ok in ctx.session.before.items() if not ok]
+    candidate = fixed_candidate(operator="library", files=snapshot, site="skills/library/", carrier="skill",
+                                failing=failing, mechanism="experience library snapshot from verified train successes",
+                                trigger_condition="retrieved by task similarity at the start of every attempt",
+                                notes=f"{len(active())} entries")
+    result = run_fixed_round(ctx, budget, [candidate], ordinal=ordinal)
+    state.update(status="done", snapshot={"outcome": result.outcome, "reason": result.reason,
+                                          "release": activity.releases.active()["release_ref"]})
+    save()
+    if not any(e.get("kind") == "library_snapshot" and e.get("ordinal") == ordinal
+               for e in _experience.read(activity.root)):
+        _experience.append(activity.root, {"kind": "library_snapshot", "scope": scope, "ordinal": ordinal,
+                                           "outcome": result.outcome, "reason": result.reason,
+                                           "entries": len(active()),
+                                           "release_after": activity.releases.active()["release_ref"]})
+    out(f"library    snapshot round: {result.outcome}" + (f" ({result.reason})" if result.reason else ""))
+    return {"status": "done", "readout": readout, "snapshot": state["snapshot"]}
 
 
 def _extension_of(activity: Activity, rounds: int | None, reason: str | None) -> tuple:

@@ -162,7 +162,28 @@ AUXILIARY = {"input_coverage": check_input_coverage, "label_availability": check
 
 
 # ---------------------------------------------------------------------------- the declaration's fixed checks (v0.3)
-def declaration_reasons(declaration: dict | None, *, ledger=(), train_tasks=None) -> list[str]:
+def grounding_reasons(declaration: dict, reads: dict) -> list[str]:
+    """Why a candidate is not grounded in what the session read (docs/design/V0_4_PLAN.md §1.3, M4 §1 v0.4), or []:
+    fewer than `min_failing` failed trajectories read among the tasks of its predicted_affected, or — when a passing
+    attempt was listed — fewer than `min_passing` passing trajectories read in the session. `reads` comes from the
+    host's record of the session's calls (TrajectoryReader.read_tasks), never from R. Each reason names what is
+    missing, so the record says which read the candidate lacked."""
+    reasons = []
+    predicted = set(declaration.get("predicted_affected") or ())
+    failing = [t for t in reads.get("failing") or () if t in predicted]
+    if len(failing) < int(reads.get("min_failing") or 0):
+        reasons.append(f"ungrounded: the session read {len(failing)} failed trajectory(ies) of tasks in this "
+                       f"candidate's predicted_affected ({sorted(predicted)[:5]}), and admission needs "
+                       f"{reads.get('min_failing')}; read one with read_trajectory before declaring it")
+    passing = list(reads.get("passing") or ())
+    if reads.get("passing_listed") and len(passing) < int(reads.get("min_passing") or 0):
+        reasons.append(f"ungrounded: the session read {len(passing)} passing trajectory(ies), and admission needs "
+                       f"{reads.get('min_passing')}; read one listed with outcome passing to see what the agent "
+                       f"must keep doing")
+    return reasons
+
+
+def declaration_reasons(declaration: dict | None, *, ledger=(), train_tasks=None, reads: dict | None = None) -> list[str]:
     """Why a candidate's declaration is refused at admission (docs/modules/04_RESEARCH_LOOP.md §5 准入
     repeated_mechanism, docs/modules/00_CONTRACTS.md §3 CT7-08), or []. Fixed code beside the core checks, not an
     auxiliary a research policy could reorder out of its preflight list.
@@ -171,11 +192,12 @@ def declaration_reasons(declaration: dict | None, *, ledger=(), train_tasks=None
     (mechanism, site) whose outcome was rejected or screened_out, and this declaration's `differs_from` does not
     cite that row with a non-empty statement that is not the earlier mechanism's own words. The code does not judge
     whether the stated difference holds — the screen and the gate do — only that it was written down and recorded.
-    A dev or test task id in `predicted_affected` is refused: the declaration is train-lineage.
+    A dev or test task id in `predicted_affected` is refused: the declaration is train-lineage. With `reads` (v0.4,
+    a K with read floors), a candidate the session's reads do not ground is refused (grounding_reasons).
     """
     if not declaration:
         return []
-    reasons = []
+    reasons = grounding_reasons(declaration, reads) if reads is not None else []
     if train_tasks is not None:
         outside = sorted(set(declaration.get("predicted_affected") or ()) - set(train_tasks))
         if outside:
@@ -293,7 +315,8 @@ def core_checks(proposal: ct.ExperimentProposal, *, context, core: ct.CoreManife
 
 def admit(proposal: ct.ExperimentProposal, *, context, core: ct.CoreManifest, objects: ct.Objects,
           owner: str = "worker", checks: tuple[str, ...] = (), history=(), budget=None,
-          feedback_builders=None, declaration: dict | None = None, ledger=(), train_tasks=None) -> Admission:
+          feedback_builders=None, declaration: dict | None = None, ledger=(), train_tasks=None,
+          reads: dict | None = None) -> Admission:
     """The auxiliary checks in the order the research policy asked for, then the core checks always.
 
     An auxiliary `block` sends the round to collect or repair rather than spending the experiment's budget; a
@@ -318,7 +341,7 @@ def admit(proposal: ct.ExperimentProposal, *, context, core: ct.CoreManifest, ob
                        "detail": "; ".join(reasons) or "owner, targets, schemas, evidence and budget are in order",
                        "evidence_refs": []})
     if declaration is not None:
-        declared = declaration_reasons(declaration, ledger=ledger, train_tasks=train_tasks)
+        declared = declaration_reasons(declaration, ledger=ledger, train_tasks=train_tasks, reads=reads)
         out.checks.append({"check": "declaration", "verdict": "block" if declared else "pass",
                            "detail": "; ".join(declared) or "the declaration names train tasks and no refused "
                                                              "mechanism without a stated difference",

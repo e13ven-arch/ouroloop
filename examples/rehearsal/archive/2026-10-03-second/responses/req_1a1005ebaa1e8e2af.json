@@ -1,4 +1,0 @@
-{
-  "text": "{\"failure_class\": \"missing tool for a closing step\",\n \"root_cause\": \"The agent made the main update, then tried to add the call note with its plain text and the notes endpoint refused it with a 400: it wants the note base64url-encoded. The agent's last message says none of its tools adds a note to a contact from its plain text, given the contact id and the text, so it stopped. The only failed check is the note.\",\n \"mechanism\": \"A tool wrapper that takes the contact id and the plain note text, encodes the text base64url and posts it to the notes endpoint through the base API tool.\",\n \"component\": \"tools\",\n \"generality\": \"Every request that ends with a call note needs the same encoding step; a tool that takes plain text covers all of them, and the agent names exactly that interface as what it lacks.\"}\n",
-  "stop": "end"
-}

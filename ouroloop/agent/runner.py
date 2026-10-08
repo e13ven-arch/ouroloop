@@ -32,12 +32,17 @@ from .worker import AgentRunError, LimitHit, PackageCallError, WorkerCrashed, co
 MAX_PUSHBACKS = 2                     # the default agent's cap, recorded with the session's harness as before
 
 
-def attempt_view(task: str, system: str, surface, bound, package, max_output_chars: int = 20000) -> dict:
+def attempt_view(task: str, system: str, surface, bound, package, max_output_chars: int = 20000,
+                 methods: dict | None = None) -> dict:
     """ctx.view (M0 §2): the task, the composed system prompt, the base tools (`base_tools`, the contract's name),
     the package's enabled components (what the default agent needs to run a v1 package), W's prompt policies, the
     recent broker events — refreshed in place by the broker, so a reference the agent keeps stays current — and
     `max_output_chars`, K's bound on any tool's output (WorkerLimits), so a package tool's output is clipped where a
-    base tool's is. Nothing of the scorer, the provider or the stores."""
+    base tool's is. Nothing of the scorer, the provider or the stores.
+
+    v0.5 (docs/design/V0_5_PLAN.md §1.1): `methods` — {prefix, max_calls}, only under a K with a methods table — tells
+    the default agent which package tools are methods (read-only, a call cap a run). Without it the view has no
+    such key and the agent runs every package tool as before."""
     base_tools = [{"name": s.name, "description": s.description, "schema": s.schema} for s in surface.specs()]
     pkg = None
     if package is not None:
@@ -47,8 +52,12 @@ def attempt_view(task: str, system: str, surface, bound, package, max_output_cha
     policies = {}
     if bound is not None:
         policies = {"system_prompt": bound.prompts.get("worker.system_prompt"), "finish": bound.prompts.get("worker.finish")}
-    return {"task": task[:4000], "system": system, "base_tools": base_tools, "package": pkg, "policies": policies,
+    view = {"task": task[:4000], "system": system, "base_tools": base_tools, "package": pkg, "policies": policies,
             "events": [], "max_output_chars": int(max_output_chars)}
+    if methods:
+        view["methods"] = {"prefix": str(methods.get("prefix") or "m_"),
+                           "max_calls": int(methods.get("max_calls") or methods.get("method_calls") or 25)}
+    return view
 
 
 class PackageAgent:
@@ -60,8 +69,12 @@ class PackageAgent:
 
     def __init__(self, provider, rt, surface, *, bound=None, system: str = "", budget, max_effort=None, worker=None,
                  session: str | None = None, session_meta: dict | None = None, on_event=None,
-                 placement: str | None = None):
+                 placement: str | None = None, methods: dict | None = None, extra_system: str = ""):
         self.provider, self.rt, self.surface, self.bound = provider, rt, surface, bound
+        # v0.5 (docs/design/V0_5_PLAN.md §1.1, §1.4): K's methods ({prefix, max_calls}) for the view, and a text the
+        # host appends to this attempt's system prompt (the library stream's retry note on train); neither is set
+        # for a v0.4 K, so its attempts are composed as before.
+        self.methods, self.extra_system = methods, extra_system
         self.package = getattr(bound, "package", None) if bound is not None else None
         self.system, self.budget, self.max_effort, self.worker = system, budget, max_effort, worker
         self.session = session or new_id("s")
@@ -121,7 +134,21 @@ class PackageAgent:
         self._emit("agent", entry=self.entry, placement=self.placement, roles=list(self.roles))
         limits = getattr(self.worker, "limits", None)
         max_output_chars = getattr(limits, "max_output_chars", 20000)
-        view = attempt_view(task, self.system, self.surface, self.bound, self.package, max_output_chars)
+        system = self.system
+        if self.package is not None:
+            # v0.5 (V0_5_PLAN §1.4, the `start` site): the experience library's entries for this task, retrieved by
+            # fixed host code and appended to the system prompt; a package without a library adds nothing, so the
+            # prompt is the same bytes as before.
+            from ..research.library import retrieval_block
+            block, retrieval = retrieval_block(self.package, task)
+            if block:
+                system = f"{system}\n\n{block}" if system else block
+            if retrieval is not None:
+                self._emit("library_retrieval", **retrieval)
+        if self.extra_system:
+            system = f"{system}\n\n{self.extra_system}" if system else self.extra_system
+        view = attempt_view(task, system, self.surface, self.bound, self.package, max_output_chars,
+                            methods=self.methods)
         activity = getattr(self.bound, "activity", None)
         prefix = f"{self.session}:"
         attempt_id = self.session_meta.get("attempt_id")
@@ -242,3 +269,29 @@ def k_max_effort(bound) -> str | None:
     if objects is None or not getattr(bound, "release_ref", ""):
         return None
     return release_max_effort(objects, bound.release_ref)
+
+
+def release_harness_table(objects, release_ref: str, key: str) -> dict | None:
+    """One table of K's harness capabilities (v0.5: `methods`, `library`) for the release's core, or None — a K
+    frozen before v0.5, or under a preset without the table, has none."""
+    try:
+        rel = objects.load(release_ref, ct.SystemRelease)
+        core = objects.load(rel.core_ref, ct.CoreManifest)
+    except (KeyError, ct.ContractError):
+        return None
+    harness = (core.capabilities or {}).get("harness")
+    table = harness.get(key) if isinstance(harness, dict) else None
+    return dict(table) if isinstance(table, dict) else None
+
+
+def k_methods(bound) -> dict | None:
+    """The view's `methods` for a bound release whose K carries a methods table (V0_5_PLAN §1.1): the prefix and the
+    call cap; None otherwise, and the default agent then treats no package tool as a method."""
+    services = getattr(bound, "services", None)
+    objects = getattr(services, "objects", None)
+    if objects is None or not getattr(bound, "release_ref", ""):
+        return None
+    table = release_harness_table(objects, bound.release_ref, "methods")
+    if table is None:
+        return None
+    return {"prefix": "m_", "max_calls": int(table.get("method_calls") or 25)}

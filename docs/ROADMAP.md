@@ -3,10 +3,16 @@
 > 2026-09-30 范围修订，代码基线 `b1cb7a7`。首版交付受限 harness 代码演化、应用发布与递归回用；第二版完善训练固化。仅调整相关规格，已有实现、旧 CLI 与历史证据保持原义。详细交接见 [模块目录](modules/README.md)。
 >
 > 2026-10-04：v0.1、v0.2 两个活动已完成并合并进 main（结果见 [RESULTS.md](RESULTS.md)，记录在 §3 第 2a 步）。同日决定 v0.3 的方向：首版交付物改为“可演化的 agent 程序 + 最小运行壳 + 所 pin 的模型”，设计版本 DESIGN v0.7；步骤、费用、风险与不变项见 §3 末“v0.3（2026-10-04 决定）”，功效预期见 §4。§1～§3 的历史条目不改。
+>
+> 2026-10-08：
+> - **v0.4。** finance 的封存 final 已于 2026-10-07 跑完：+8.0 [−4.0, +22.7]，不确定；每次尝试成本 −22%，显著。tag `v0.4.0` = `7f65947`。RESULTS 的 v0.4 一节于 2026-10-08 补写；尚未合并进 main。
+> - **v0.5。** 方法库 + 经验库已合并进 `m1-automationbench`（`7e7732e`），未发版。support 两臂对照在 v0.5 臂的 3b 之后由用户停止，没有 final，H1 未检验（§3 “v0.5” 第 3 步）。
+> - **下一阶段。** 计划在 [PLAN.md](PLAN.md)，本文不重复。本文各节是到 2026-10-08 为止的记录，被取代的写法就地加注。
+> - **删除的文件。** 2026-10-08 清理从 HEAD 移除的文件，在 tag `archive-2026-10-08`（清理前的 HEAD，`80254a3`）上可读。
 
 ## 1. 现有基础与缺口
 
-已有 M0～M7：注册策略、真实业务观察、反馈/训练、完整任务配对评测、W/R 发布、单预算根和恢复、研究一轮及 R0/R1 campaign、七个 bench phase。代码基线 `b1cb7a7` 的离线测试为 554 passed, 1 deselected（[实现快照](history/V0_5_IMPLEMENTATION.md)与 JOURNAL 中的 553 为此前记录）。
+已有 M0～M7：注册策略、真实业务观察、反馈/训练、完整任务配对评测、W/R 发布、单预算根和恢复、研究一轮及 R0/R1 campaign、七个 bench phase。代码基线 `b1cb7a7` 的离线测试为 554 passed, 1 deselected（实现快照 `docs/history/V0_5_IMPLEMENTATION.md`（tag `archive-2026-10-08`）与 JOURNAL 中的 553 为此前记录）。
 
 已有真实 GLM-5.3 在 `marketing.product_adoption` 一次 dev 运行：该任务共 14 条断言，其中 6 条初始即成立且结束时仍成立，被评分器排除、不计入分母；8 条计分断言全部通过（task_completed_correctly=1，partial 1.0）；15 turns、29 次工具调用、229 秒，第 15 轮请求的历史为 27,132 token；当时未配置价格，cost unknown。该任务保持 dev，不得重新标为未见 test。这只证明一次运行可用，没有证明训练或递归收益。[运行日志](JOURNAL.md)
 
@@ -43,7 +49,7 @@
 
 修复前不进入付费运行。修复与真实运行的顺序见 §3 的首个真实活动协议。
 
-A～E 属于首版，递归方法比较与实际回用仍为必做。第二版接 M8 教学适配/采集、M2 SFT、M1 sampling/teacher hook 及独立 controller 新训练验证，沿用已写规格；不把这些账户或依赖放入首版预检。按 [分版验收](modules/08_INTEGRATION_CASES.md)执行，未来用例不删除也不算首版缺项。真实试验需模型服务与冻结预算；不具备时真实验证标未完成。
+A～E 属于首版，递归方法比较与实际回用仍为必做。第二版接 M8 教学适配/采集、M2 SFT、M1 sampling/teacher hook 及独立 controller 新训练验证，沿用已写规格；不把这些账户或依赖放入首版预检。按 [分版验收](modules/08_INTEGRATION_CASES.md)执行，未来用例不删除也不算首版缺项。真实试验需模型服务与冻结预算；不具备时真实验证标未完成。（2026-10-08：第二版的范围、轨道、里程碑与顺序改以 [design/V2_TRAINING_PIPELINE.md](design/V2_TRAINING_PIPELINE.md) 与 §3 “v2 训练链（2026-10-08 决定）”为准。）
 
 补采请求经同一 driver 自动续跑（purpose=task_feedback）属首版，IT6-19/21 首版验收，覆盖补采恢复及 worker 段与活动的停止区别；更换 h 时创建 baseline release/新比较身份与 source_validation（只验证教学来源）属第二版，IT6-18/20 第二版验收。
 
@@ -185,7 +191,7 @@ A～E 属于首版，递归方法比较与实际回用仍为必做。第二版�
    - 顺序（每一步先看用量与稳定性，用户确认后再进下一步）：
      1. 实现 provider 与离线测试（假 `claude` 程序），不耗额度。
      2. 探针：经 provider 直接发两次调用，一次普通问答、一次带一个假工具的结构化回复。核对 CLI 的输出形状（`structured_output`、`num_turns`、`stop_reason`）、用量与缓存、`modelUsage` 里实际作答的模型、`cli_cost_usd` 与 `[pricing]` 是否相符、工作目录是否仍为空，以及模型看到的请求之外的内容。
-        - 2026-10-03 结果（`examples/automationbench/claude_probe.py`）：两次都成功，普通问答 `num_turns` 1、4.5 秒，结构化回复 `num_turns` 2、2.6 秒，正确调用了假工具；`modelUsage` 只有 claude-opus-5-5；工作目录仍为空；账本与 CLI 报价逐分相等（缓存写按 1 小时价 $8/M，已改进 `[pricing]`）。模型看到的请求之外的内容只有一段 userEmail 上下文（CLI 自带“不属于用户消息”的说明），没有看到日期。effort medium 下普通问答的 thinking 为 117 token。
+        - 2026-10-03 结果（`examples/automationbench/claude_probe.py`；2026-10-08 移出 HEAD，tag `archive-2026-10-08` 上可读）：两次都成功，普通问答 `num_turns` 1、4.5 秒，结构化回复 `num_turns` 2、2.6 秒，正确调用了假工具；`modelUsage` 只有 claude-opus-5-5；工作目录仍为空；账本与 CLI 报价逐分相等（缓存写按 1 小时价 $8/M，已改进 `[pricing]`）。模型看到的请求之外的内容只有一段 userEmail 上下文（CLI 自带“不属于用户消息”的说明），没有看到日期。effort medium 下普通问答的 thinking 为 117 token。
      3. 冒烟：复制 `claude.toml` 为 `claude-smoke.local.toml`，改 `[workspace] root` 与 `[rsi] scope_id`，`[freeze.budget]` 压到几美元；跑 `--phase smoke`（1 道 dev 题），看一道题的调用次数、token、缓存命中与耗时。
         - 2026-10-03 结果（`marketing.social_engagement_response`）：
           - 第一次：7/7 通过，12 轮、26 次工具调用、74 秒。暴露两个问题。
@@ -236,7 +242,7 @@ A～E 属于首版，递归方法比较与实际回用仍为必做。第二版�
           - segment-1（仍由 R0）：第 1 轮结束前对账的 on_finish hook 接受（dev 68%→84%，无退步）；第 2、3 轮拒绝。W* = W0 + 写前规程 + 结束前对账（`release:6cd37b8e49a4`）。
           - 并发实测：一臂内 4 路，每次尝试墙上时间 88 秒→27 秒（3.2 倍），单次耗时不变，无无效尝试。
           - final 计划冻结并提交（`finalization:sha256:dc0c3261…`），随后运行。
-          - 第一次 final（final-1）中止：W* 支 38 次有效（10/19 题通过），W0 支只有 2 次有效，51 次记 budget_exhausted。实际只花了 $23，但 4 路并发同时占住 4 份 $7.28 的预留上界，$50 的份额放不下。计量器已改为预留被拒且有调用在飞时等待（M5 §2）。预算根开了不能改，所以同一比较（同一对 release、同一 23 题、每题 2 次）以 final-2 在对象库的副本工作区（`workspace-claude-full-final`，`claude-full-final.toml`，final 份额 $120）重跑；final-1 的尝试留在记录里，与 final-2 并列报告。test 题在 final-1 里已被读过一次，但计划未因此改动。
+          - 第一次 final（final-1）中止：W* 支 38 次有效（10/19 题通过），W0 支只有 2 次有效，51 次记 budget_exhausted。实际只花了 $23，但 4 路并发同时占住 4 份 $7.28 的预留上界，$50 的份额放不下。计量器已改为预留被拒且有调用在飞时等待（M5 §2）。预算根开了不能改，所以同一比较（同一对 release、同一 23 题、每题 2 次）以 final-2 在对象库的副本工作区（`workspace-claude-full-final`，`claude-full-final.toml`（2026-10-08 移出 HEAD，tag `v0.2.0` 上可读），final 份额 $120）重跑；final-1 的尝试留在记录里，与 final-2 并列报告。test 题在 final-1 里已被读过一次，但计划未因此改动。
           - final-2 结果：W0 47.8%、W* 52.2%，配对差值 +0.043，95% 区间 [−0.109, +0.196]，C1 inconclusive；4 题变好、2 题变差、17 题持平；每次尝试成本 $0.452 对 $0.570。同一个 W0 在 v0.1 的 final 是 41.3%，两次相差 6 个点，是这种 final 的噪声底。两个活动按题平均 +8.7 [−2.2, +20.7]（事后合并，不是冻结计划）。全程名义约 $373（主账本 $303、final-1 $23、final-2 $47）。见 [RESULTS.md](RESULTS.md)。
           - 以 v0.2.0 合并进 main。下一版要让研究位的内层 gate 能分辨小效应（每个 gate 更多尝试，并发之后时间上可承受），否则 C4 测不出来。
         - 2026-10-04 两份分析（离线，不调用模型）：
@@ -304,7 +310,7 @@ A～E 属于首版，递归方法比较与实际回用仍为必做。第二版�
    - **第一版规则的回放（2026-10-04）：退出条件未达成**：`examples/automationbench/aa_replay.py`（测试 `test_aa_replay.py`）用 W0 的 5 次 dev 读数回放——每个有向对 =（作候选的读数，作确认的读数），对照为其余 3 次读数合并——新规则（min_gain 0.05、`regression_drop` 0.5、合并对照、确认复测）**接受 4/20**，与旧规则（新测对照、任何下降即退步）的 4/20 相同；加成本项仍 4/20。四组都是 v0.2 工作区那次 48%（12/25）的读数作候选：对 36% 的合并对照第一读数 +0.12，合并后 +0.06 仍清过 0.05，确认读数（36% 对 36%）恰为 0、满足“≥ 0”。test 的 4 次读数（两次 final 各 2 次重复，23 题）12 组里新规则 2 组、旧规则 3 组。结论：确认读数“单独 ≥ 0”对一次偏高的读数没有约束力（同一 W 再读一次的期望正好是 0），合并点估计只把偏高减半；按本步的约定，规则回到 M3 §2.1 修改后再实现，本次没有改规则（M3 §2.1 末有同一记录）。
    - **第二版规则的回放（2026-10-04）：退出条件达成**。M3 §2.1(b) 改为“确认读数单独对合并对照也清过 `min_gain`”（两次独立读数各清过一次 gate；无改动时一次读数 ≥ +0.05 约 0.22、两次约 0.05 ≈ 1/20；真实 +0.10 的功效约 0.64、+0.15 约 0.88、+0.05 约 0.25），其余不动（第一读数清过 min_gain 与退步规则；退步与成本项按合并读数判；合并增益照记；`min_gain` 0.05 不变）。同一回放：**dev 0/20**（第一读数仍清过 4 组，确认读数都是 0 < 0.05），加成本项 0/20；**test 0/12**（第一读数清过 3 组，确认 +0.022、−0.043、+0.022）。第一版的 4/20 留在上一条。代码只改 `judge` 的确认条款与理由文字；安装授权、`confirming` 状态机、续跑路径、收据形状都没有依赖“≥ 0”，未改。全套离线测试通过。
 3. **M4：R 作为编码会话、台账、k 候选、筛选、输入。** R 是一轮一个的有界编码会话，在 worker 里以文件工具改包目录（`research_session.max_turns` 40、`max_edits` 24，一轮内含修订合计；修订继续同一会话；工具只有文件工具、`read_trajectory` 与 `finish`，没有 shell），产出至多 k=3 个候选目录，草稿检查（形状 → 隔离导入/接口 smoke → 测试）、有界修订、冻结、准入不变；k 由 preset `max_candidates_per_round` 定（原 `bench.py` 拒绝 ≠1，2026-10-05 已改为 1..preset），每个候选声明 mechanism、site、carrier、predicted_affected、trigger_condition、differs_from，固定代码对照 diff 核对；dev gate 前先做 train 侧筛选（重跑候选笔记来源的失败 train 题加 `screen.passing_sample` 5 个固定的通过 train 题，净翻转 ≥ `screen.min_net_flips` 1 的最好候选付 dev gate，否则本轮 `screened_out`；失败集（笔记任务 ∪ predicted_affected，∩ 最新 train 测量仍失败）少于 3 题；通过样本不计的标 `thin_screen`；筛选不读 dev）；引擎自有的简单台账在 E 里（每个候选的声明、筛选结果、gate 收据 ref，以及从收据逐题差值读出的 fixed/regressed/still_failing）；准入拒绝 (mechanism, site) 与已拒候选相同而 `differs_from` 不说明差别的候选（`repeated_mechanism`）；R 的输入是原始 train 轨迹（只读、`read_trajectory` 单次 65536 字节、累计 524288）、dev 失败类型直方图（只有枚举类型与计数；无参数、无任务 id；test 永不）与台账投影；研究位：内层 gate 仍是 dev 合并清单的前一半、外层是后一半，每一半 ≥25 题，所以 dev ≥ 2 × min_tasks（50 题）才开位，不够记 `no_slot_pool`、C4 not_run（只含 Marketing 的活动如此）；`worker_round_limit` 2→3；开位前余量检查（起点 W 从未通过的内层任务少于 `campaign.min_headroom_tasks` 6 时拒绝，记 `no_headroom`）；裁决只看下游 W*（[M4 §1、§2、§5](modules/04_RESEARCH_LOOP.md)（v0.3）、[M6 §2～3](modules/06_RESEARCH_CAMPAIGN.md)（v0.3））。退出：彩排在新 R 路径上走到安装与回用检查；离线测试通过。费用 0。
-   - **实现完成，退出条件部分达成（2026-10-05，未提交；见 JOURNAL “v0.3 第 3 步”及其评审、复核两条）**：`research/session.py`（会话驱动、声明核对、筛选、轮次驱动）、worker 协议的 `work` 操作（`/work` 树在 worker，模型循环在宿主）、`evolve/experience.py` 的台账行与投影、准入的 `declaration_reasons`（`repeated_mechanism`、train 限定）、`ExperimentProposal.declaration_ref`、v3 preset 的 `research_session`/`screen`/`max_candidates_per_round`（`bench.py` 的 ≠1 拒绝改为 1..preset）、报告的台账与会话小节、E0 去 dev 题号、`_reuse_fact` 认 `session` 步。实现与设计的出入写进 M4 §1/§2/§5 的“实现”段（工具多一个 `delete_file`、候选目录由首次写入建立、W 的提示文本以 `worker/*.md` 出现、`differs_from` 的形状、`thin_screen`（失败集（笔记任务 ∪ predicted_affected，∩ 最新 train 测量仍失败）少于 3 题；通过样本不计）、平局取低成本再按声明顺序、会话草稿不续跑）。**退出条件部分达成**（2026-10-05）：“彩排在新 R 路径上走到安装与回用检查”里，经 CLI、由 manual provider 作答的那次彩排**没有跑**；代之的是离线干跑（`examples/rehearsal/dry_run.py`，脚本研究员）：进程内注册 `rehearsal_v3` preset（v3 preset 按 16 题的世界调低 `min_tasks` 8、`min_headroom_tasks` 2，`[bench] concurrency = 1`，`rehearsal.toml` 本身未改），走到 segment-0 装入包工具（技能被成本项拒绝：读技能多一次模型调用）、C 的 memory 被筛出、研究位 accepted、R1 装入、segment-1 在 R1 下三轮各装一个 memory、回用 verified、两次补跑、Docker 修订回路一次；全套离线测试通过（见 JOURNAL）。阻塞点：`rehearsal.toml` 用 `marketing_harness_v1` preset，其 K 不带 `research_session`，不进会话路径；换 `automationbench_harness_v3` 则 `min_tasks` 25 容不下 16 题的 dev（两半各 8）。补齐它需要：一个按规模配好的 v3 彩排 preset（或在 preset 表上允许彩排配置调低 `min_tasks`/`min_headroom_tasks`——这是放宽，今天 `_beyond_preset` 拒绝），以及 manual provider 的回复写成工具调用（`{"text", "tool_calls": [{"name", "args"}]}`，或正文里一个 `{"tool", "args"}` JSON）。`_verify_bound` 不加 k 份筛选：筛选在冻结前，第一次筛选之前一次性查全部筛选尝试加 gate 预留（M5 §1）。
+   - **实现完成，退出条件部分达成（2026-10-05，未提交；见 JOURNAL “v0.3 第 3 步”及其评审、复核两条）**：`research/session.py`（会话驱动、声明核对、筛选、轮次驱动）、worker 协议的 `work` 操作（`/work` 树在 worker，模型循环在宿主）、`evolve/experience.py` 的台账行与投影、准入的 `declaration_reasons`（`repeated_mechanism`、train 限定）、`ExperimentProposal.declaration_ref`、v3 preset 的 `research_session`/`screen`/`max_candidates_per_round`（`bench.py` 的 ≠1 拒绝改为 1..preset）、报告的台账与会话小节、E0 去 dev 题号、`_reuse_fact` 认 `session` 步。实现与设计的出入写进 M4 §1/§2/§5 的“实现”段（工具多一个 `delete_file`、候选目录由首次写入建立、W 的提示文本以 `worker/*.md` 出现、`differs_from` 的形状、`thin_screen`（失败集（笔记任务 ∪ predicted_affected，∩ 最新 train 测量仍失败）少于 3 题；通过样本不计）、平局取低成本再按声明顺序、会话草稿不续跑）。**退出条件部分达成**（2026-10-05）：“彩排在新 R 路径上走到安装与回用检查”里，经 CLI、由 manual provider 作答的那次彩排**没有跑**；代之的是离线干跑（`examples/rehearsal/dry_run.py`，脚本研究员；彩排世界 `examples/rehearsal/` 于 2026-10-08 移出 HEAD，tag `v0.4.0` 与 `archive-2026-10-08` 上可读）：进程内注册 `rehearsal_v3` preset（v3 preset 按 16 题的世界调低 `min_tasks` 8、`min_headroom_tasks` 2，`[bench] concurrency = 1`，`rehearsal.toml` 本身未改），走到 segment-0 装入包工具（技能被成本项拒绝：读技能多一次模型调用）、C 的 memory 被筛出、研究位 accepted、R1 装入、segment-1 在 R1 下三轮各装一个 memory、回用 verified、两次补跑、Docker 修订回路一次；全套离线测试通过（见 JOURNAL）。阻塞点：`rehearsal.toml` 用 `marketing_harness_v1` preset，其 K 不带 `research_session`，不进会话路径；换 `automationbench_harness_v3` 则 `min_tasks` 25 容不下 16 题的 dev（两半各 8）。补齐它需要：一个按规模配好的 v3 彩排 preset（或在 preset 表上允许彩排配置调低 `min_tasks`/`min_headroom_tasks`——这是放宽，今天 `_beyond_preset` 拒绝），以及 manual provider 的回复写成工具调用（`{"text", "tool_calls": [{"name", "args"}]}`，或正文里一个 `{"tool", "args"}` JSON）。`_verify_bound` 不加 k 份筛选：筛选在冻结前，第一次筛选之前一次性查全部筛选尝试加 gate 预留（M5 §1）。
 4. **天花板实验（约 $10～20 名义）。** 手写一个 agent 包（全文读取工具、判断前的证据表、发送前核对、effort 到上限），只跑 W* 仍失败的 4 道 dev 题与 train 失败题，不跑 test。它回答的是 v0.3 的重点放在搜索还是训练准备：手写包修掉大半，说明循环层机制够得着，v0.3 的搜索值得做；修不掉，说明剩余失败是模型能力，重点转到第二版的训练准备。结果只作决策记录，不进任何主张；包不安装。
    - **已运行（2026-10-05）：结论为“重心转向训练准备”（training）。** 52 次尝试全部读到（无效 0、硬限额截断 0、包崩溃 0），名义费用 $45.28（W* 臂 $17.82、每次 $0.69；手写包臂 $27.46、每次 $1.06，贵 54%）。R（W* 在本次两次都失败）= 8 题，X（手写包至少过一次）= 1 题（`featured_snippet`），B（W* 过、手写包两次都不过）= 2 题（`voice_of_customer`、`google_ads_pause_low_ctr`），E = 5；搜索需要 |X| ≥ 5 且 |X| > |B|，不满足。两臂通过率都是 23.1%（6/26）。v0.2 三次读数都失败的 4 道 dev 题本次两臂四次都失败。机制确实在起作用：手写包臂 27 份记录里 aux 调用 53 次（约每次尝试两次：证据表与完成前核对）。按失败类型：missing_write 8 题里修 1 破 1，content/count/forbidden_write 都是修 0 破 1。读法：在 W* 剩下的失败上，循环层的读取、证据表、核对与 effort 上限够不着；这些失败是同一模型的能力边界（或任务与评分的歧义），要靠第二版的训练准备。边界：一个手写包、每臂每题 2 次，题数 13；只说明 Marketing 上 RSI 之后的残余失败，不说明新领域从 W0 起步时可达的增益（v0.1 在 Marketing 上从 W0 起 +13.0）。结果与逐题表在 `workspace-claude-ceiling/ceiling/result.md`（工作区不入库）。见 JOURNAL “2026-10-05 v0.3 第 4 步：天花板实验的结果”。
    - 准备（2026-10-05，commit `882fed5`）：见 JOURNAL “2026-10-05 v0.3 第 4 步：天花板实验的准备”，做法与数字的细节在 [ceiling/README](../examples/automationbench/ceiling/README.md)。
@@ -339,7 +345,7 @@ A～E 属于首版，递归方法比较与实际回用仍为必做。第二版�
    - 费用：
      - 估算：v0.2 的 W* 在这 13 题上每次约 $0.50（effort medium，25 次）。按 W* 臂 $0.65、手写包 $0.90 每次估算，52 次约 $40（$34～47）。
      - 根：$150 名义、硬停（2026-10-05 评审后定；初稿 $30、随后 $60 都太小）。根按预留定，不按花费定：每次调用先预留最坏情形 bound = 1M 输入 × $4/M + 163,840 输出 × $20/M = $7.2768，结算为 unknown（被杀的 `claude` 子进程、没回来的应答）的调用继续占着 bound，所以同时在飞的调用数 = floor((根 − 已花 − unknown 数 × bound) / bound)，等待预留的调用在其尝试的 900 秒里等。$60 时最后几条线（W* 的第 2 轮重复总在最后）只剩 2～3 个槽位给 8 个尝试，被 seconds 上限截断的尝试会记成 W* 失败，偏向“搜索”；一次 Ctrl-C 就可能让结论成为 incomplete。$150 时花到约 $40 仍保有全部 8 个槽位，并容得下几次 unknown（需要 150 − 7.28 × 9 = $84.5 > $40）。runner 运行前的提示按“根 − bound × (1 + 并发)”比较估算。真正的钱的护栏是关掉 extra usage 的订阅；预计花费仍约 $40（$34～47），高于本步原写的 $10～20：任务按记录是 13 题而不是 4 题，两臂各 2 次，effort high。根一开就不能改。
-   - 运行：
+   - 运行（2026-10-08：`ceiling_run.py`、`claude-ceiling.toml`、`ceiling/package` 与 `ceiling/wstar_package` 移出 HEAD，下面的命令在 tag `v0.3.0` 上跑；`ceiling/README.md` 与 `ceiling/tasks.json` 保留）：
      - 先跑 `.venv/bin/python examples/automationbench/ceiling_run.py --config examples/automationbench/claude-ceiling.toml --checks-only`。它做冻结、bootstrap、全部启动检查、任务表对划分、两个包的草稿检查与候选 W 构建；不调模型、不开预算根、不跑尝试。结果里每臂列出被硬上限截断的尝试（按维度，如 seconds）、算作失败的包崩溃与因环境未读的尝试。
      - 去掉 `--checks-only` 即真实运行。同一命令可续跑。结果写进 `workspace-claude-ceiling/ceiling/result.json` 与 `result.md`。
 5. **多领域活动（根 $1,800 名义，并发 8～16 时 1～2 天）。** `[bench] domains` 列出 Marketing 与四个新领域（sales、support、hr、finance，各 100 题；上游另有 operations，本活动不用，2026-10-04 定），共五个；新领域按计分断言构成与工具族分层划分为 train/dev/test 三个分区，比例 0.5/0.25/0.25（2026-10-04 定：多给 train 无用，每轮最多读 30 条笔记；多给 test 直接换来更窄的 final 区间）；Marketing 划分原样、其 test 对新主张已耗尽（读过三次：v0.1 final、final-1、final-2），只给 train/dev 用与报告单列（[M7 §2](modules/07_BENCH_REPORT.md)）。结构同第 4 步：基线 → segment-0 → 研究位 → segment-1 → 封存的 final；研究位的内层 gate 是合并 dev 的前一半、外层是后一半（各约 62 题，≥25），余量检查在开位前；final 在新领域的 test 上，W0 对 W*，repeats 3（定值，2026-10-04 定：100 题以上题间异质性主导区间宽度，× 2 半宽约 ±6.0、× 4 约 ±5.5，取 3 作折中），计划 hash 先提交；匹配成本的 best-of-k W0 臂可选，发表结果时另加（M3 §2.2（v0.3））。估算（按 v0.2 每次尝试 $0.45～0.57；四个新领域按 0.5/0.25/0.25 得 train 200、dev 100、test 100，加 Marketing 的 train 52、dev 25，合并 train 252、dev 125、test 100）：基线 train + dev 约 377 题约 $190；每轮一个候选臂 125 题约 $60，加筛选约 $5、确认测量约 $60（只对第一次读数过门槛的）、k 个候选的编码会话与笔记约 $5～10，两段六轮约 $500；研究位两支各约 $220（三轮、内层约 62 题、含确认测量，份额按主线轮实测费用重估，M6 §2（v0.3）），外测约 $50；final 两臂 × 100 题 × 3 次约 $300。合计约 $1,500～1,700，根按 $1,800 名义开、final 份额 $400；预算根开之前按本步实测的每题费用重算（第 2a.4 步的做法）。墙上时间：8 路并发时每次尝试约 12～15 秒；多域合并 dev 的 gate 一臂约 30 分钟，一轮约 45～60 分钟（单域 25 题时约 10～15 分钟）；研究位两支并行跑；全程约 9 小时的尝试加 R 会话与限流暂停，1～2 天。并发先在 16 路试基线的头 50 题，429 重试数超过尝试数就退回 8（M5 §2（v0.3））。预算根按估算上界加一份预留上界开，开了不能改（M5 §2）。止损沿用第 6 步的 K1～K3；另加：第 4 步结论为“模型能力”时，本步只跑基线与 final，不开研究位（2026-10-05 第 4 步判为 training 后，用户决定不执行这一条，照完整设计跑，见第 4 步）。
@@ -362,10 +368,10 @@ A～E 属于首版，递归方法比较与实际回用仍为必做。第二版�
      - 原估算 $1,500～1,700 偏低的原因：没算安装后的 train 重跑（每次约 $90）与研究位公共输入（$217）、k = 3 的筛选按 $5 而不是约 $25、候选按 $0.45～0.57 而 v3 的包可跑在 high、没算在飞预留。低情形（W* 维持 v0.2 medium 下的 $0.57、每轮一个候选、主线一次安装、研究位不安装）花费约 $1,590、根约 $1,740，$1,800 够；高情形（循环层的包像天花板手写包那样每次 $1.06）花费约 $4,400。
      - 配置 `examples/automationbench/claude-v3.toml` 按 $2,800 / $420 写（注释里有同一张表）；**开根前由用户确认根**：若定 $1,800，须同时把 `arm_share`/`outer_share` 改为 0.25 / 0.093，并接受中央情形下活动在研究位或 segment-1 因预算结束。根一开就不能改。
    - 并发试跑（手动一步，用现有的 `--limit` 与 `--concurrency`，不加新参数）：`ouroloop freeze` 之后、cycle 之前跑 `ouroloop bench --config examples/automationbench/claude-v3.toml --phase baseline --limit 25 --concurrency 16`，即基线的头 50 次尝试（25 道 dev + 25 道 train；这一步打开预算根）；报告里该 run 的 `rate_limited` 超过 50 就留在 8，否则 cycle 加 `--concurrency 16`，但只在根的余额高于 16 × $7.2768 = $116 加剩余花费时用，segment-1 与 final 回到 8（份额按 8 路定）。
-   - （已被下文第 0 阶段取代：试点改为 k = 3、约 $52、根 $130。）试点（开根之前，约 $40 名义）：`examples/automationbench/claude-v3-pilot.toml`，独立工作区 `workspace-claude-v3-pilot`；领域 operations（本活动不用）+ Marketing（test 已 spent），各按分层 6/13/81 划分，合并 train 12、dev 26（gate 的 `min_tasks` 25 不能调低，所以 dev ≥ 25；< 50 时研究位本来就是 `no_slot_pool`，配置干脆 `research_slots = 0`，也免去研究位份额对小根的检查）；k = 1、K 的 `max_effort` 调低到 medium 以省钱，都不碰要验的会话路径；根 $120 硬停（4 路在飞 $29.1 + 一次 unknown 之外可花 $83）。命令：`ouroloop bench --config examples/automationbench/claude-v3-pilot.toml --phase cycle --until segment-0/round-0`；第 0 轮若 `screened_out`（没有候选进 gate），用 `--until segment-0/round-1` 再跑一轮。必须看到：`research_session` 事件（回合、编辑、轨迹读取、结束方式）与每回合带工具调用的记录（write_file/edit_file、read_trajectory、finish）；台账的 declared（mechanism、site、carrier、predicted_affected、trigger_condition）、drafted、admitted、screened（train 题、净翻转、thin_screen）行；筛选选中时有 gated 行与 gate 收据（`evaluation_completed` 事件，kind full 或 confirmed）。预计：基线 $17 + 笔记与会话约 $6 + 筛选约 $4.5 + gate $11.7 ≈ $40；第一次读数过门槛再加确认 $11.7；需要第二轮约再加 $22。它量到的每轮会话费用替换上面的 $10。
+   - （已被下文第 0 阶段取代：试点改为 k = 3、约 $52、根 $130。）试点（开根之前，约 $40 名义）：`examples/automationbench/claude-v3-pilot.toml`（2026-10-08 移出 HEAD，tag `v0.3.0` 上可读），独立工作区 `workspace-claude-v3-pilot`；领域 operations（本活动不用）+ Marketing（test 已 spent），各按分层 6/13/81 划分，合并 train 12、dev 26（gate 的 `min_tasks` 25 不能调低，所以 dev ≥ 25；< 50 时研究位本来就是 `no_slot_pool`，配置干脆 `research_slots = 0`，也免去研究位份额对小根的检查）；k = 1、K 的 `max_effort` 调低到 medium 以省钱，都不碰要验的会话路径；根 $120 硬停（4 路在飞 $29.1 + 一次 unknown 之外可花 $83）。命令：`ouroloop bench --config examples/automationbench/claude-v3-pilot.toml --phase cycle --until segment-0/round-0`；第 0 轮若 `screened_out`（没有候选进 gate），用 `--until segment-0/round-1` 再跑一轮。必须看到：`research_session` 事件（回合、编辑、轨迹读取、结束方式）与每回合带工具调用的记录（write_file/edit_file、read_trajectory、finish）；台账的 declared（mechanism、site、carrier、predicted_affected、trigger_condition）、drafted、admitted、screened（train 题、净翻转、thin_screen）行；筛选选中时有 gated 行与 gate 收据（`evaluation_completed` 事件，kind full 或 confirmed）。预计：基线 $17 + 笔记与会话约 $6 + 筛选约 $4.5 + gate $11.7 ≈ $40；第一次读数过门槛再加确认 $11.7；需要第二轮约再加 $22。它量到的每轮会话费用替换上面的 $10。
    - （已被下文的分阶段运行取代。）开根前的顺序：试点 → `ouroloop freeze --config examples/automationbench/claude-v3.toml`（打印每个领域的 hash、计数与分层，加 `[rsi]` 行）→ 16 路试跑 → `--phase cycle` → 填 `[freeze.final]`（W* 的 release）、冻结、提交计划 hash → `--phase evaluate`。
    - **分阶段运行（2026-10-05 用户决定）：每个阶段结束都停下来分析，不一次跑完约 $2,000、16 小时。** 配置 `examples/automationbench/claude-v3.toml`：活动的 schedule 改为一个 segment、6 轮、`research_slots = 0`、patience 2（`[freeze.schedule]`；`_beyond_preset` 只拒绝比 preset 多的研究位与候选数，不查轮数，preset 本身不用改）；研究位移到另一个工作区（第 5 阶段），本工作区报告的 C4 为 not_run，理由“deferred to a separate workspace”（cycle 记 `research_deferred`，报告据此写）。K 的 `max_effort` 降到 medium（W0 的 pin 也是 medium；`[harness_evolution]` 只能调低，冻进 K，`test_cycle.py::test_max_effort_is_frozen_into_k_with_a_default_of_high_and_narrows_only`）：候选不能用更高的 effort 换增益，C1 读的是 harness 而不是算力，每次尝试成本约 $0.50。运行手册（每段的命令、预计费用与时间、继续/停止的规则）：
-     - **第 0 阶段：试点**（`claude-v3-pilot.toml`，约 $52，约 1 小时，开根之前）：operations + Marketing 的小子集上一轮真实主线轮，`max_candidates_per_round = 3`，使会话与活动的一样（评审第 6 条），`research_slots = 0`，根 $130。命令 `ouroloop bench --config examples/automationbench/claude-v3-pilot.toml --phase cycle --until segment-0/round-0`（第 0 轮 screened_out 时再跑 `--until segment-0/round-1`）。继续：有带工具调用的真实 `research_session`（事件的 `transcript_ref` 指向整段会话：R 的回复、每个工具调用及其参数、每个工具的结果或拒绝原因）、候选的声明、筛选行与 gate 收据，R 路径可用。停止：会话无效或崩溃、没有声明、草稿过不了检查——离线修好，不开根。按比例推到活动：R 每轮 = 试点每条笔记的费用 × 30 + 试点在 k = 3 下的会话费用；筛选每个候选 =（失败题 + 5 个通过样本）× 每次成本；gate = dev 题数 × 每次成本（试点 26、活动 125）。
+     - **第 0 阶段：试点**（`claude-v3-pilot.toml`（tag `v0.3.0`），约 $52，约 1 小时，开根之前）：operations + Marketing 的小子集上一轮真实主线轮，`max_candidates_per_round = 3`，使会话与活动的一样（评审第 6 条），`research_slots = 0`，根 $130。命令 `ouroloop bench --config examples/automationbench/claude-v3-pilot.toml --phase cycle --until segment-0/round-0`（第 0 轮 screened_out 时再跑 `--until segment-0/round-1`）。继续：有带工具调用的真实 `research_session`（事件的 `transcript_ref` 指向整段会话：R 的回复、每个工具调用及其参数、每个工具的结果或拒绝原因）、候选的声明、筛选行与 gate 收据，R 路径可用。停止：会话无效或崩溃、没有声明、草稿过不了检查——离线修好，不开根。按比例推到活动：R 每轮 = 试点每条笔记的费用 × 30 + 试点在 k = 3 下的会话费用；筛选每个候选 =（失败题 + 5 个通过样本）× 每次成本；gate = dev 题数 × 每次成本（试点 26、活动 125）。
        - **第 0 阶段已运行（2026-10-05）：继续。** 名义 $47.11（基线 $15.27：W0 在 12 道 train 与 26 道 dev 上，每次 $0.39～0.42；一轮 $31.84：7 条笔记 $0.90、会话 3 回合约 $0.3、筛选 11 次 $5.65、gate 26 题 $12.41、确认复测 26 题 $12.67），848 次 act 调用全在 medium，硬限额截断 0，预留全部结算。R 的会话（`transcript_ref` 已存）：读 manifest、finish 检查与包 API，写一个 memory 候选（“写之前先拿全证据”的清单：读完列表里每条记录、找最新政策、逐实体判断、解析真实 id、更新已有资源），声明 carrier memory、site memory.md、predicted_affected 为 7 道失败 train 题；k = 3 但只交了 1 个，没有读轨迹。筛选净翻转 4；gate 收据 kind confirmed：dev 0.423 → 0.692（第一读数与复测都是 +0.269），无退步，Marketing +0.31、operations +0.23，成本 $0.48 对 $0.39（允许 $0.64）；已安装。暴露的小问题：`list_files("package/")` 带尾斜杠被拒、浪费一回合——已修（读与列目录接受尾斜杠，写仍须指文件），worker 镜像按 Dockerfile 重建（runner `77b280fb…`）。按比例推到活动：R 每轮约 $0.13 × 30 条笔记 + 会话 ≈ $4（低于估计的 $10）；单价与估计相符（W0 约 $0.40～0.45、候选约 $0.48）；段 1～4 的估计不变，约 $1,200。另：试点第一次是被 `--phase cycle --checks-only` 误启动的（cycle 不读这个参数，照常付费跑），中断时 248 笔预留全部结算、花 $11.95，续跑未重付；`--checks-only` 现对 smoke 以外的阶段直接拒绝。
      - 第 1～3 阶段的操作规则（第 0/1 阶段评审，2026-10-05）：在普通终端里跑，不用有会话时限的环境（时限截断会留下 open 的预留）；只用 `--until` 停；任何中断之后、下一阶段之前，数一下 `workspace-claude-v3/rsi/budget/book.json` 里 status 为 `open` 与 `unknown` 的预留（每个占着根的 $7.2768，直到结算）。`claude` 子进程现在各在自己的 session 里，终端的 Ctrl-C 只到父进程，在飞的调用跑完并结算；超时由父进程杀掉子进程的整个进程组。
      - **第 1 阶段：基线**（约 $170，8 路约 1.5 小时；根在这里打开）：先 `ouroloop freeze --config examples/automationbench/claude-v3.toml`、把打印的 `[rsi]` 行写进配置；16 路试跑是这一段的头 50 次尝试（`--phase baseline --limit 25 --concurrency 16`，见上文“并发试跑”）；再 `ouroloop bench --config examples/automationbench/claude-v3.toml --phase cycle --until baseline`。继续：按领域的 W0 train/dev 通过率与实测每次成本；用实测成本重算第 2～4 阶段，并对照根的余额（根已开、不能改）：装不下第 3 阶段就只跑第 2 与第 4 阶段。停止：某个新领域无效尝试多（基础设施）、或实测成本让第 2 阶段加 final 都装不下。
@@ -395,7 +401,7 @@ A～E 属于首版，递归方法比较与实际回用仍为必做。第二版�
 
 ### v0.4 方向（2026-10-06）
 
-v0.3 的五领域活动三轮都没有安装（第 5 步；[诊断](history/DIAGNOSIS_FIVE_DOMAIN_2026-10-06.md)）。下一版的方向是把搜索按领域分片并加路由，设计在 v0.3.0 合并之后于 `m1-automationbench` 上写进 `docs/design/`；顺序、费用、止损与规则都以那里为准，本节只作指针。
+v0.3 的五领域活动三轮都没有安装（第 5 步；[诊断](history/DIAGNOSIS_FIVE_DOMAIN_2026-10-06.md)）。下一版的方向是把搜索按领域分片并加路由，设计在 v0.3.0 合并之后于 `m1-automationbench` 上写进 `docs/design/`；顺序、费用、止损与规则都以那里为准，本节只作指针。（2026-10-06 更新：用户批准的是更简单的方案——每个新领域一个单领域活动，不写路由；见下一节“v0.4（2026-10-06 决定）”与 [design/V0_4_PLAN.md](design/V0_4_PLAN.md)。分片与路由的设计稿和冻结孪生方案都已标为被取代（2026-10-08 两份设计稿从 HEAD 删除，tag `archive-2026-10-08` 上可读）。本节下面的风险、不变项与推迟项仍是 v0.3 的记录。）
 
 **已知风险。**
 - 目标劫持面变大：包能改循环，就能学会在 on_finish 里短路核对、在证据表里编造。对策是评分器与 provider 对包不可达、事件/轨迹由宿主写、包拿不到 objects/results 句柄（M0 §2（v0.3））；gate 证据只读宿主记录。
@@ -406,7 +412,7 @@ v0.3 的五领域活动三轮都没有安装（第 5 步；[诊断](history/DIAG
 
 **不变的部分（须说明）。** train/dev/test 的信息分离在固定代码里（判分明细按冻结 split 过滤，dev 只给枚举直方图，test 不进 R）；final 封存、计划 hash 先提交；预算账本与预留（M5 §2，含并发下的预留上界）；R0 对 R1 由下游 W* 裁决（M6 §3）；Docker 隔离与工具 broker（M1 §1）；`claude_code` provider 与计量（M1 §1、第 2a 步）。
 
-**第二版的训练兼容（计划，不实现）。** v0.3 实现的只有网关记录里的 `role` 字段。其余是第二版计划：训练投影只读网关日志里 role=act 且教师 PASS 的调用；教师在网关对 act 调用介入（PASS/REPLACE，回复到包之前），对包透明；aux 调用计采集限额但不进训练数据；顺序为 演化 → 冻结 release → 在该 release 上采集/训练 → 换学生 → 在学生上重新演化（[M2 §1～3](modules/02_EVIDENCE_TRAINING.md)（v0.3））。
+**第二版的训练兼容（计划，不实现）。** v0.3 实现的只有网关记录里的 `role` 字段。其余是第二版计划：训练投影只读网关日志里 role=act 且教师 PASS 的调用；教师在网关对 act 调用介入（PASS/REPLACE，回复到包之前），对包透明；aux 调用计采集限额但不进训练数据；顺序为 演化 → 冻结 release → 在该 release 上采集/训练 → 换学生 → 在学生上重新演化（[M2 §1～3](modules/02_EVIDENCE_TRAINING.md)（v0.3））。（2026-10-08：训练目标改为 `accepted`，学生在 W0 下、教师带 K 审阅，重新演化推到 v2.5，见下文“v2 训练链”一节。）
 
 **推迟到第二版（v0.3 只留一段说明，无字段表、无测试）。**
 - 把决策点（stop/retry/compact/route/tool_gate）移到网关/broker 边界供 C3 使用；v0.3 的宿主不问任何决策点，tool_gate 留在 broker 作权限（K）。
@@ -424,6 +430,136 @@ v0.3 的五领域活动三轮都没有安装（第 5 步；[诊断](history/DIAG
 - 部分得分作为新列项：它已在报告里，不另说。
 - best-of-k 臂“成本比 <1.5 时不需要”的规则：臂本身可选，只在发表时跑。
 - 提案者的组件种类优先顺序作为规则。
+
+### v0.4（2026-10-06 决定）
+
+规则在 [design/V0_4_PLAN.md](design/V0_4_PLAN.md)；本节是顺序、费用与止损。v0.4 回到 v0.1 的形状——每个新领域一个单领域活动——并修掉诊断找到的五个框架缺陷（R 的输入与旧提示、字面量误拒、看不见伤害的筛选、只有一次读数的对照），final 并列等成本参照。
+
+**步骤（按序；每步先看结果，用户确认后进下一步）。**
+
+0. **文档（$0）。** V0_4_PLAN、本节、JOURNAL 条目；两份被取代的设计稿顶端加一行说明；受影响的模块文档（M0 §3、M3 §2.1–2.2、M4 §1–2、M5 §1、M7 §2、§4）各加一段“（v0.4，2026-10-06）”。
+1. **代码与测试（$0，离线）。** V0_4_PLAN §1 的八项，每项有测试（去掉改动测试就失败）；字面量检查回放 `workspace-claude-v3` 的 20 次草稿检查（只读），14 次误拒归 0、单题的值照旧被拒；两份配置 `claude-v4-finance.toml`、`claude-v4-support.toml` 的划分 hash 与 v3 工作区冻结的相同（finance `4fd91eaf9fb8daf5`、support `3da11232f5d5ff38`）。退出：全套离线测试在前台通过。
+2. **finance 活动（约 $250，可选，用户决定开始）。** `examples/automationbench/claude-v4-finance.toml`，工作区 `workspace-claude-v4-finance`（新根 $450，其中 final 份额 $160）。付费前：`claude auth login`；按 `docker/worker.Dockerfile` 重建 worker 镜像；`ouroloop freeze --config examples/automationbench/claude-v4-finance.toml` 打印划分 hash（须为 `4fd91eaf9fb8daf5`）与要加的 `[rsi]` 三行。
+   - **2a 基线**（`--phase cycle --until baseline`，约 $58）：W0 的 train 50 + dev 25 × 3 次读数（`[bench] control_readings = 3`，无条件，在任何 gate 之前）。
+     - **finance 2a 已运行（2026-10-06）：继续。** 125 次尝试全部有效，名义 $57.92（dev 每次 $0.43～0.45，train $0.50），2 笔限流调用不计费释放，没有卡住的预留。W0：train 25/50（50%）；dev 三次读数 9、8、9 道（36%、32%、36%）。逐题看，25 道 dev 里 16 道三次都失败、8 道三次都通过、只有 1 道不稳（2/3）——finance 的重跑噪声远小于五领域的估计（不一致率约 12%），对照几乎不抖，gate 能看清 +2～3 题的真实变化；16 道稳定失败的题就是余量。
+   - **2b 3 轮**（`--phase cycle`，约 $120；一次确认加 $12、一次安装加 $11）：一段 3 轮、patience 2、k = 3。每轮之后读过程检查（免费）：字面量误拒为 0；每个候选都有准入认可的轨迹读取（失败的在其 `predicted_affected` 里，加一条通过的）；3 轮里至少一个工具或 hook 候选到达筛选。不成立就停下离线修，不付下一轮。
+   - **2c 封存 final**（只在有确认的安装时，约 $72）：`[freeze.final]` 填 W\* 的 release，`ouroloop freeze` 封存并提交计划 hash，`--phase evaluate`：finance 的 25 道 test × 3 次，W0 对 W\*；报告并列 W0 的 pass@k（k = 1～3）作等成本参照。
+3. **support 活动（约 $250，同样的形状）。** `claude-v4-support.toml`，划分 hash 须为 `3da11232f5d5ff38`。（2026-10-07 起它作为 support 两臂对照的 v0.4 臂运行，见下一节 v0.5 第 3 步。只跑了基线；2026-10-08 对照停止，2b、2c 没有跑。）
+4. **读法（预注册）。**
+   - 某领域有确认的安装 → 该领域封存 final，结果照报。
+   - 3 轮没有安装 → 该领域停止，如实报告“R 以 k = 3、接口优先的方法在 3 轮内没有在该领域得到确认的安装”；不续跑同一条管线。
+   - 某领域的 final 显著（95% 区间下界 > 0）→ 加 sales 与 hr，各自一个单领域活动，同样的配置形状。（2026-10-08，V2 §7 第 2 项：sales、hr 的 test 留给 v2；在这两域开 v1 活动时不跑 final，只报 dev 读数，或不开。）（同日用户改为全部域可跑 final：sales、hr 的活动照常可以封存 final，按有条件复用规则披露读取次数；只有 operations 整域留出。一个单领域活动名义约为基线 $56 + 3 轮约 $120 + final 约 $72（订阅），按域分批开。）
+   - 不做：不重判 v0.3 的三张收据；不在边缘读数后追加读数或重复；不给 R dev 题号或 dev 轨迹；不读 Marketing 已 spent 的 test。
+5. **v0.4.0。** 有结果（含负结果）后写 RESULTS 与 README，合并进 main。（2026-10-08：tag `v0.4.0` 已打在 `7f65947`；RESULTS 的 v0.4 一节于 2026-10-08 补写；尚未合并进 main。）
+
+**功效（如实写）。** 单领域 gate 读 25 道 dev：`min_gain` 0.05 约 1.25 题，单次读数噪声约 ±7～9 个点；抗噪靠三次对照读数的合并池与确认复测（复测单独也须清过 `min_gain`）。final 25 × 3 次时最小可检出效应约 15 个点（§4 的口径）；StarHarness 在 Finance 上报的 +29.3 若有一半留下来就看得出，+5～8 个点看不出。
+
+### v0.5（2026-10-06 决定）
+
+规则在 [design/V0_5_PLAN.md](design/V0_5_PLAN.md)；三份设计稿（方法库、进化搜索、agent 内 RL）是它的输入（agent 内 RL 一份于 2026-10-08 从 HEAD 删除，tag `archive-2026-10-08` 上可读）。本节是顺序、费用与止损。v0.5 = v0.4 的单领域贪心环（骨干，不改）+ 方法库（R 写只读、确定性的 `m_` 包工具，固定代码从 train 配对奖励学每格开不开，冻结成贪心表）+ 经验库（从 train 的验证成功提炼条目、按题检索给 actor、按奖励记功退役、整库作为候选过 gate、final 前冻结）。档案 + 合并、B-Race、算子老虎机、完整的 agent 内 RL 不做（V0_5_PLAN §4）。
+
+**步骤（按序；每步先看结果，用户确认后进下一步）。**
+
+0. **文档（$0）。** V0_5_PLAN、本节、JOURNAL 条目；三份设计稿顶端标为输入。
+1. **代码与测试（$0，离线）。** V0_5_PLAN §1 的部件，每项有测试；新行为只在 preset `automationbench_harness_v5` 冻结的 K（`methods`、`library` 两张表）下出现，v0.4 配置的行为与身份不变（测试钉住）；两份配置 `claude-v5-support.toml` 与 `claude-v4-support.toml` 的划分、根、final 份额与限额相同。退出：全套离线测试在前台通过。
+   - **已完成（2026-10-07，隔离工作树，待合并）。** 对照表与开放项在 V0_5_PLAN §7–§8；新增 63 个测试，24 处突变检查全部被测试抓住；合并前在主检出跑 `-m 'not live'`（含 Docker 与上游检出的慢测试）。合并时机：v0.4 finance 活动的 final 提交之后（它在主检出用自己的代码跑）。2026-10-07 已合并进 `m1-automationbench`（`7e7732e`）。
+2. **v0.4 finance 活动收尾（进行中，不受本版影响）。** 它在主检出用自己的代码跑；本版的代码在它的 final 提交之后才合入。（2026-10-07 已结束：final +8.0 [−4.0, +22.7]，不确定；每次尝试成本 −22%，显著；见 [RESULTS v0.4](RESULTS.md)。）
+3. **support 的两臂（根各 $600、final 份额各 $160，同一日程；用户决定开始）。** 等上限、同日程，不是等花费：v0.4 臂按自己的日程停下（约 $203），v0.5 臂跑完整套设计（约 $356）；报告并列两臂的实际花费（2026-10-07 评审的决定）。各自的工作区与根：
+   - **v0.4 臂** `claude-v4-support.toml`：2a 基线、2b 3 轮、2c 有确认的安装才有 final（V0_4_PLAN §3 的形状）。
+   - **v0.5 臂** `claude-v5-support.toml`：
+     - 3a 基线（`--phase cycle --until baseline`，约 $58）；
+     - 3b 经验库的轨道（`--phase library`：50 道 train 的首遇流、失败重试（不记功）、提炼；流走完时 D ≤ 0 就不给快照付 gate（B 只报告），否则 n = 50 的快照轮：留一筛选、gate、确认；约 $46～98；中断后重跑从检查点继续，不重复付费）；
+     - 3c R 的轮次（`--phase cycle`：3 轮、patience 2，带方法）；
+     - 3d 有方法装上时 `--phase learn`（只跑重放触发过的 train 题的对偶孪生，拟合，表变了就走重拟轮；钱不够就拒绝、一分不花；≤ $55）；
+     - 3e final 总是跑（没装上东西时 W\* = W0）。
+   - **两臂基线已运行（2026-10-07）：起点相同。** v0.4 臂 W0 train 18/50，dev 三次读数 8、9、9（26/75），名义 $56.19；v0.5 臂 W0 train 19/50，dev 10、9、8（27/75），$56.97。v0.5 臂的 3b 于 2026-10-07 开始（2026-10-08 跑完，见下一条）。
+   - **v0.5 臂 3b 已运行（2026-10-07～08）：经验库的读数，都是 train/dev 的过程证据（JOURNAL 同日条）。**
+     - 流（50 道 train 题，每题首遇一次）：
+       - D = 3.0（修好 4、弄坏 1），B = 1；
+       - 前后两半 0.00 → 0.12（P = 0.8895）；
+       - 记功秩相关 0.2；
+       - 条目 active 7、retired 35、检查处丢弃 45，每次尝试平均展示 1.24 条。
+     - n = 50 的快照轮：
+       - 筛选修 2、样本退 1；
+       - gate 首读 +0.24，确认 +0.08（单独清过 `min_gain`），合并 +0.16，dev 区间 [+0.047, +0.287]，退步 0；
+       - 每次尝试成本 −6.6%（区间不含 0）；
+       - 装上 release `9f07d95032b4`（6 个 library-* skill）。
+     - 花费：$81.86；v0.5 臂累计 $138.83。
+   - **对照于 2026-10-08 停止（用户决定）。** 用户：“没有可用基线没关系，能够改进的地方都改进掉，看的是最终结果”。
+     - 没跑的：
+       - v0.4 臂的 2b（3 轮）与 2c（final）；
+       - v0.5 臂的 3c（R 的 3 轮，带方法库）、3d（`--phase learn`）与 3e（final）。
+     - 两份 final 计划都没有封存。H1 与两臂的 C1 都未检验，support 的 test 没有读过。
+     - 量到的只有两臂基线与 3b：经验库只有 train/dev 的过程证据，方法库没有任何读数。
+     - 记录：
+       - 两个工作区 `workspace-claude-v4-support`、`workspace-claude-v5-support` 留作本地记录，不入库、不删除。
+       - 冻结（`e414f7c`）之后没有 `.py`/`.toml` 改动，所以 tag `archive-2026-10-08` 上的代码就是两臂运行的代码，两个工作区在那里重渲染。
+     - 下面的 final 顺序、第 4 步的 H1 读法与第 5 步都被这次停止取代，原文保留作预注册的记录。
+   - **final 的顺序：**（被 2026-10-08 的停止取代，没有执行；`support_h1.py` 于 2026-10-08 移出 HEAD，tag `archive-2026-10-08` 上可读。）v0.4 臂若有确认的安装，先填 `[freeze.final]`、`ouroloop freeze` 封存并打印哈希；v0.5 臂同样；两份哈希（或 v0.4 臂没有 final 的说明）随 JOURNAL 提交；然后才各自 `--phase evaluate`；最后 `examples/automationbench/support_h1.py` 算 H1。每步之后读免费的过程检查：字面量误拒为 0；每个候选都有准入认可的轨迹读取；方法候选都过了触达底线；报告 `m_tool_writes` 里执行了的写为 0；检索的留一审计为 0（显示给题 t 的条目出处里没有 t 或其近似重复题）。不成立就停下离线修。
+4. **读法（预注册，V0_5_PLAN §3）。** H1：两份 final 按题配对（自助 2000 次、种子 1），W\*_v5 − W\*_v4 的 95% 区间下界 > 0 才算 v0.5 胜出；v0.4 臂没有 final 时（没装上东西，W\* = W0）用 v0.5 那份 final 自己的 W0 臂作对照；预期多半“不确定”（功效约 30%），照报。C1 每臂各报。经验库的 D、B（只报告）、学习曲线、记功秩相关，方法的过程数字与学习器的格，都是过程证据。不做：追加读数或重复；按 dev 挑快照；给 R dev 题号或 dev 轨迹。（2026-10-08：H1 与两臂的 C1 未检验。经验库的三项过程读法都成立：D ≥ +2、学习曲线 P ≥ 0.8、记功秩相关 > 0。方法库的两项（“R 能造出可用的方法”“学会了何处用”）没有跑，记为未测。）
+5. **v0.5.0。** 有结果（含负结果）后写 RESULTS 与 README，合并进 main。（2026-10-08：没有 final，v0.5 不作为评测过的版本发布；RESULTS 的 v0.5 一节只写过程证据。是否打 tag `v0.5.0`、打在哪个 commit，待定。）
+
+### 瘦身（2026-10-07 决定）
+
+清单、逐模块判定与分批在 [design/SLIMMING_INVENTORY.md](design/SLIMMING_INVENTORY.md)；本节是顺序与前提。原则：提升效果、提升结果可信度、保护资金，三者占一样就留；已存记录引用的字段、字面量与 preset 数值一律不删，只让逻辑失效；先迁测试，后删代码；旧版本靠 tag。不改任何已报告的数字；验收全部离线（金标测试、记录重渲染、`--checks-only`），不付费。框架现约 35.3k 行，瘦身后主包约 17.8k～22.1k 行（看第三批两库删或留）。
+
+**用户的决定（2026-10-07）。**
+- (a) C4：保留 R 递归，换实现。删活动内研究位的编排（v3/v4/v5 的配置都写 `research_slots = 0`，单领域 dev 25 题开不了位）；判定代码抽成 `research/recursion.py`；C4 改为跨活动比较：R1 臂 = R0 加前一个活动产出、经台账核对的 playbook，同一划分、根与日程，W0、W\*\_R0、W\*\_R1 联合 final；新接线随下一个新领域活动做。v0.4 对 v0.5 不是 R0 对 R1，H1 仍叫“框架 v0.5 对 v0.4”。（2026-10-08：按 V2 §7 第 2 项，本基准已无可供 v1 联合 final 的新 test：marketing 已用尽，sales、hr 留给 v2，operations 留作 LODO。跨活动 C4 要么在 finance/support 按有条件复用规则跑并披露读取次数（会占用 C5 的 test 池），要么记 not_run；由用户定。）（同日用户改为全部域可跑 final：跨活动 C4 的联合 final 可以放在五个域里任何一个，按有条件复用规则披露读取次数；operations 仍整域留出。）
+- (b) Jev、TDE 与本地决策 trainer 不撤回：可复用部分（约 4.4k 行）收进可选子包、移出每次尝试的热路径，约 0.7k 行原位保留、热路径不执行；撤回的只有“v1 Agent 循环的决策点与冠军发布继续可用”。从 runner shell 到决策点与训练数据的桥登记为 v2 前置（清单 §0.2）。
+- 冠军指针一族（gate、registry、replay、monitor、plan 等，已被 Releases 与 `task_gate` 取代）按过时删，tag 上仍可读；monitor、replay 的概念在 v2 按 Releases 重写。
+- 训练与蒸馏是 ouroloop 框架的一部分（不放在 jev 仓库），GPU 作业设施保留。
+- 子包命名按 v2 的决定（下一节第 7 项）：`ouroloop/train/`，extra `[train]`、`[train-jobs]`，入口 `python -m ouroloop.train`；取代清单原来的 `ouroloop[decision]`、`ouroloop[decision-jobs]`，代码只搬一次。
+
+**步骤（按序；每批一个分支 `slim/1～3`，单独合并、可单独 revert）。** support 两臂在主检出里用当前代码付费运行，任何 `.py` 改动都会改 `code_version`、从而改 K，所以每一批都等两份 final 评完、H1 算完之后才合入；在那之前只在隔离 worktree 里准备。（2026-10-08：对照已停，主检出里没有付费活动在跑，这个前提取消；“付费活动运行期间不往它的检出合入 `.py` 改动”照旧。排期见 [PLAN.md](PLAN.md)。）
+
+0. **准备。** 在 `7f65947`（finance final）打 tag `v0.4.0`，H1 算完后打 `v0.5.0`（2026-10-08：`v0.4.0` 已打；没有 H1，`v0.5.0` 的时机待定；清理前的 HEAD 已打 tag `archive-2026-10-08`）；先加金标测试并通过：v3/v5 preset 的 K 表、finance 与两份 support 冻结计划的 ref 与哈希、v4/v5 配置的 RunManifest 负载与 attempt id、W0/R0 的 ref、finance 的 report.json 重渲染逐字节相同；`test_aa_replay` 加 skip-if-absent。
+1. **第一批：死代码、遗留路径与决策栈隔离（删约 5.5k 行框架代码，移入子包约 4.4k 行）。** 先单独一个提交做热路径解耦（行为不变，加边界测试：bench 路径跑完后不 import 子包）；删旧入口（旧 CLI、demo、serve、suite、ceiling 跑法、rehearsal 与 ManualProvider）；可复用的决策/训练栈移进 `ouroloop/train/`；删冠军指针一族与 v1 Agent 循环（同一提交把 `tests/rsi.py` 迁到 v3 的 K）；顺带删 frontier 臂、task_gate 的经济模式、无调用者的函数与 v0.3 兼容。providers 里 “never training targets” 的注释（默认值随 v2.0）随这一批改（V2 §7）。验收：金标、全量（含子包与 jobs）与边界测试通过；副本里用 v4 配置跑 `--checks-only` 与假上游上的一次尝试，transcript、results 与 `session` 行逐字节不变。
+2. **第二批：没产生过证据的机制（约 3.3k 行）。** 研究位编排（抽出 recursion）、多领域合并、采集批与段延长、旧轮次路径（先把夹具迁到 v3 preset 与 `SessionScript`）、context 与 inspection 的简化、api_errors、final 预算检查合一，最后单独一个提交去掉 bench 的版本史注释。验收：finance 报告重渲染只在 C2/C3/C4 的说明上有差异；support 两个工作区能载入、能续跑（`--checks-only`）。
+3. **第三批：v0.5 两库（0～4.3k 行）。** 完全照 V0_5_PLAN §3 的预注册读法决定，不追加读数：H1 成立两库都留，否定两库都删，不确定时各看自己的过程读数，留下的作 preset 开关。playbook 路径无论如何保留（跨活动 C4 的 R1 来源）。tag `v0.5.0` 上 support 两个工作区仍能重渲染、复算 H1。
+   - **2026-10-08：本条规则用在停止的对照上。** H1 没有读数，两库各看自己的过程读数。
+     - 经验库：D = 3.0 ≥ +2、P = 0.8895 ≥ 0.8，两项成立 → 保留，作 preset 开关、不进默认值，作 memory 的底座（[design/OSS_COMPONENTS_PLAN.md](design/OSS_COMPONENTS_PLAN.md) §3）。
+     - 方法库：两项读数没有跑（3c、3d 未跑）→ 按规则删。这是提议，用户可以否决。
+     - “复算 H1”不再适用；support 两个工作区在 tag `archive-2026-10-08` 上重渲染。
+
+### v2 训练链（2026-10-08 决定）
+
+规则在 [design/V2_TRAINING_PIPELINE.md](design/V2_TRAINING_PIPELINE.md)（下称 V2）；本节是轨道、里程碑、顺序与用户定下的默认。§2、§3 里关于第二版的旧写法以本节与 V2 为准；M2、M8（09）、DESIGN 等文档与代码注释的同步清单在 V2 §7。交付物是一条链：teacher、judge、actor（含学生）与 trainer 都是配置项，开发者换成自己的模型就能端到端跑通；Claude 只用来验收链路完整、能跑通，老师输出的许可与条款不在范围内（2026-10-07 决定）。链：宿主记录 → 投影 → 离线重放打标 → 决策集或 SFT 集 → 检查 → 作业 → 产物 → 阈值 → serving → 作为 W 的组件绑定 → 同一个 `task_gate` → Release → 导出。两条线：actor 蒸馏（垂域学生）与决策模型（第一个决策点 `write_gate`）。正确性规则只有两条：评测、阈值与 gate 的真值只来自 `env:*` 或 `human:*`；评分信息永不进 actor、teacher、judge 与 SFT 的输入。
+
+**轨道 A：链路（交付物）。**
+- **v2.0 离线跑通（$0）。** 在 v4-finance 的 train 记录与 `tests/fake_upstream` 上，用脚本化 provider 加 `signature`、`mock_sft` 两个 trainer 走完整条链（新写或修改约 2.2–3.2k 行）。K0：离线套件或投影复现不过，不进任何付费步骤。
+- **v2.1 接真模型，跑首个试验 X1（Claude 名义 ≤ $35，真实 ≤ $80）。** 决策链：Claude 作 judge 给写打标 → `tde` → 写门先 shadow 后 act → 导出。actor 链：`tinker_lora` 训出 S_F → 接回 → 在 W0 下经 runner shell 跑。X1：在 train 的 val+cal 族上比 S0（Qwen3.5-9B + W0）与 S_F（用 W0 包的老师成功轨迹做 LoRA SFT），同时离线读出学生上写门的上限；只读方向、不作主张，读法（K1、K1b、写门上限）在第一次学生运行前提交。
+- **v2.2 审阅采集链路（Claude ≤ $20）。** 网关的 role → provider 映射、只作用于 act 调用的审阅钩子、ReviewRecord；在 finance train 上审阅 10–20 次学生尝试，建 `reviewed_student` 集并训一次。smoke 收据齐全、X1 读完，轨道 A 结束（合计名义约 $30–55，真实 ≤ $90）。
+
+**轨道 B：效果主张（v2.3–v2.4）。** 在自己冻结的计划下跑（冻结 FamilySplit、学生与老师身份、K 的 ref、配方、采样温度、预算根、预注册读法与 ≥ 3 次 S0 对照读数）。主张 C5（S_d+W0 对 S+W0，五个域的 test 123 题 × 3，按域披露读取次数；2026-10-08 用户改为全部域可跑 final 前是 100 题）、C5-LODO（operations 81 题 × 3）与 C3（写门在学生上的增量，final 里的测量臂），三者 Holm 校正；C5′（训练对直接给学生 W\*）为次要主张；C3b（小 decider 对 judge）与 C6（成本）只报告。止损 K2～K7 见 V2 §6。名义约 $0.8–1.3k，真实 ≤ $0.33k。X1 读完后由用户决定开不开；发布要的“留出集上的可测增益”只有轨道 B 能给。
+
+**顺序。** support 两份 final 评完、H1 算完 → 瘦身第一批合入 → v2 代码合入（v2.0 可先在隔离 worktree 开发）→ v2.1 → v2.2 → 用户决定轨道 B。轨道 B 与 support 两臂共用一个账户，排在两份 final 之后。（2026-10-08：support 对照已停，第一步不再有，顺序从瘦身第一批开始；轨道 B 不再“排在两份 final 之后”，但 v1 活动、v2.1/v2.2 与轨道 B 仍共用一个订阅账户，付费运行串行。排期见 [PLAN.md](PLAN.md)。）v2.5 以后：运行时 stop 与 `ctx.finish`、在学生上重新演化、R 提训练条目、部署日志回流、`contact_human`、DPO/KTO 与 RL。
+
+**用户的决定（2026-10-08，“按默认”，即 V2 §7 的全部默认）。**
+1. 轨道 B：X1 读完后再定开不开；老师写在计划文件里。
+2. test 复用：sales、hr 的 test 留给 v2（v1 活动在这两域不跑 final）；finance（读过 1 次）、support（final 后读过 2 次）有条件复用：构建学生的任何产物都没读过之前 final 的逐题记录（由结果库按 split 过滤、代码强制），报告披露读取次数；marketing（读过 3 次）已用尽；operations 整域留出（LODO）。**同日用户改为全部域可跑 final**（用户问“不能全跑吗？”，采纳）：finance、support、sales、hr、marketing 都可以跑密封 final，一律按上面的有条件复用规则，每份报告披露这份 test 被读过几次；只有 operations 整域从未读过，留作 v2 的 LODO。取代本项的“sales、hr 留给 v2”与“marketing 已用尽”。（2026-10-08 更正：“support（final 后读过 2 次）”是按两份 final 跑完预计的次数；对照已停、没有跑 final，support 的 test 读过 0 次。）
+3. SFT 目标：`accepted`（PASS + REPLACE 的动作部分，同 HZ）；`pass_only` 只作只看 dev 的消融。
+4. 采集 harness：学生用 W0，老师带 K（各域 W\* 的 memory 与 skills 原文，固定模板渲染）审阅，同 HZ。
+5. 跨域：五个域（finance、hr、marketing、sales、support）合训一个学生，operations 留出报 LODO。
+6. 底座 Qwen3.5-9B，训练后端 Tinker 作参考实现；自托管走 `module:Class`。（2026-10-08 按 Tinker/RunPod 核价更正，V2 §7 第 6 项：自托管训练不走 `module:Class`，而是由 `JobTrainer` 运行的插件模块；评测时大批量的学生推理走 RunPod 上自托管的 vLLM，用合并权重，经 `openai_compat`。）
+7. 命名：子包 `ouroloop/train/`，extra `[train]` 与 `[train-jobs]`，入口 `python -m ouroloop.train`；瘦身第一批按此命名，代码只搬一次（取代瘦身清单原来的 `ouroloop[decision]`、`ouroloop[decision-jobs]`）。
+8. `contact_human`：本基准上不作效果主张；真实标签来自 v2.5 的部署审批。
+
+### 开源组件（2026-10-08 决定）
+
+规则与证据在 [design/OSS_COMPONENTS_PLAN.md](design/OSS_COMPONENTS_PLAN.md)（下称 OSS），用户的原话与决定记在 JOURNAL 2026-10-08 “support v0.5 臂 3b 之后的决定”一条。本节只列定下的事。
+- **actor 的传输。** actor 与 R 继续经 claude_code CLI 走订阅，不开要 API key 的臂。原生 tool use 只经 Claude Code 原生臂测；这一臂暂缓，原定“support 两份 final 之后再评估”，对照已停，何时评估待定。
+- **final。** 密封 final 可以放在 finance、support、sales、hr、marketing 任一域，一律按有条件复用规则，披露读取次数；operations 整域留出。这一条已写进上文 v0.4 读法与 v2 决定第 2 项。
+- **effort。** 所有臂保持统一档位（现行 medium）：不做 Max 读数，不做自适应 effort，K 不让 W 买 effort。
+- **开源优先（“站在巨人的肩膀上”）。**
+  - memory：没有能直接用作跨任务经验库的开源项目，所以以经验库（VEL）为底座，借 ACE/ReMe 的设计，不照搬代码。
+  - agent 底座：首选 Stirrup，待用户定。
+  - 二开：只在至少 3 道题的记录指向同一原因时才做（OSS §6）。
+- **推理期 RSI 没有到头。** StarHarness 在 finance 上的 +26.1 来自工具与循环补丁。我们的 R 在 v0.3/v0.4 的 12 个候选里一次也没提过工具，而 K 已允许可写的包工具与 agent 程序改动。
+- **试验。** 试验 S1～S5 在 OSS §5；原写的“S1 在 final 和 H1 之后”随停止取消。
+
+### 下一阶段（2026-10-08）
+
+下一阶段的计划在 [PLAN.md](PLAN.md)：顺序、验收、费用与待用户决定的事项，本文不重复。本文上面各节里仍以“等 support 两份 final 评完、H1 算完”为前提的写法，都已被 2026-10-08 的停止取代，以 PLAN.md 为准。
 
 ## 4. 效果验收与最小比较
 
@@ -447,6 +583,6 @@ C2 默认只引用官方榜单和上游公开结果，记录来源/日期/任务
 
 ## 5. 明确后置的功能
 
-Harbor 仅在需要其原生任务/沙箱时接入，DeepAgents 仅在 source 原语确实需要时接入。首版不做新决策点大全、新训练后端、专用研究权重训练、多 agent 研究群、市场、多租户、数据库/队列、框架全仓代码自修改或 RL/DPO 平台。受限能力包代码演化属于首版，不能以此条禁止其实现。
+Harbor 仅在需要其原生任务/沙箱时接入，DeepAgents 仅在 source 原语确实需要时接入。（2026-10-08：agent 与 memory 底座改为开源优先，见上文“开源组件（2026-10-08 决定）”与 [design/OSS_COMPONENTS_PLAN.md](design/OSS_COMPONENTS_PLAN.md)；deepagents 留给 v2。）首版不做新决策点大全、新训练后端、专用研究权重训练、多 agent 研究群、市场、多租户、数据库/队列、框架全仓代码自修改或 RL/DPO 平台。受限能力包代码演化属于首版，不能以此条禁止其实现。
 
 每个模块提交说明复用位置、新增文件/依赖的必要性、错误恢复语义和对应验证。保留包名、CLI、旧身份；不复制第三方代码。完整方法链与递归核心必须完成，外围 feature 按实际缺口逐步加。

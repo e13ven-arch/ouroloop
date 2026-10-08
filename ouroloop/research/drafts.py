@@ -80,17 +80,48 @@ class Drafts:
     objects: ct.Objects
     parent_ref: str
     limits: hp.Limits
-    literals: set = field(default_factory=set)
+    literals: set = field(default_factory=set)     # forbidden literals, or (v0.4) literal -> its train tasks
     max_repairs: int = 3
     events: ct.Events | None = None
     worker: object = None
     round_index: int = 0
-    allowed_literals: set = field(default_factory=set)     # tool-schema vocabulary, never a task's answer
+    allowed_literals: set = field(default_factory=set)     # tool-schema vocabulary and (v0.4) train header names
     scope: str = ""
     fixture: object = None      # () -> a surface over a synthetic or train-only world, for package tests
     reserved_names: set = field(default_factory=set)       # the host's base tool names: not a package tool's
     image: str | None = None    # the worker image K froze, recorded with every package built here
     tools: list = field(default_factory=list)              # the host's base tools, shown to R with a revision
+    answers: set = field(default_factory=set)              # (v0.4) the train assertion params' literals
+    # v0.5 (docs/design/V0_5_PLAN.md §1.1): K's method settings (research.methods.MethodSettings) and the reach
+    # check — (files, names, declaration) -> (errors, report) — when K carries the method library; None keeps the
+    # v0.4 chain exactly.
+    methods: object = None
+    reach: object = None
+    last_reach: dict = field(default_factory=dict)
+    library: bool = False                  # (v0.5) K carries the experience library: R's candidates may not edit it
+
+    def complete(self, parent: dict, files: dict) -> tuple[dict, list[str]]:
+        """Before an R candidate's check (V0_5_PLAN §1.1, §1.4): with the method library, a candidate with an `m_`
+        tool gets the router, the table and the hooks, R's edits to the kit files replaced; with the experience
+        library, R's edits to the library's shelves are undone (fixed code writes it). The files as given when K has
+        neither."""
+        notes: list[str] = []
+        if self.library:
+            from .library import keep_parents_library
+            files, kept = keep_parents_library(parent, files)
+            notes += kept
+        if self.methods is None:
+            return files, notes
+        from .methods import kit_complete
+        files, kit = kit_complete(parent, files)
+        return files, notes + kit
+
+    def forbidden(self) -> set:
+        """The literals no draft may contain (v0.4, docs/design/V0_4_PLAN.md §1.5): from an index (literal -> the train
+        tasks it occurs in) only the values of one task, less pure numbers that are no train assertion's value
+        (`answers`); a plain set is forbidden whole, as in v0.3. The schema words and the tool vocabulary are
+        `allowed_literals`."""
+        return hp.forbidden_literals(self.literals, answers=self.answers)
 
     def _revise(self, revise, prompt: str, patch: dict, check_output: str):
         """R's revision, shown the parent package the patch applies to and the host's base tools, when its
@@ -133,14 +164,18 @@ class Drafts:
         return {"draft_id": draft_id, "proposal_ref": started[draft_id]["proposal_ref"],
                 "checks": checks.get(draft_id, [])}
 
-    def check(self, files: dict) -> tuple[list[str], str | None]:
+    def check(self, files: dict, *, declaration: dict | None = None) -> tuple[list[str], str | None]:
         """-> (errors, package ref). Raises WorkerUnavailable when the checks need a worker there is not. The errors
         are strict UTF-8 (a lone surrogate in a package's own exception text is backslash-escaped), since they go into
-        the draft events and back to R, and a record that does not encode would end the round."""
-        errors, ref = self._check(files)
+        the draft events and back to R, and a record that does not encode would end the round.
+
+        v0.5: under a K with the method library, a candidate with methods also passes the kit check (before the
+        worker) and — for its new or changed methods, given the declaration they claim to fix — the reach check
+        (after the worker checks, before the package is stored)."""
+        errors, ref = self._check(files) if declaration is None else self._check(files, declaration)
         return [str(e).encode("utf-8", "backslashreplace").decode("utf-8") for e in errors], ref
 
-    def _check(self, files: dict) -> tuple[list[str], str | None]:
+    def _check(self, files: dict, declaration: dict | None = None) -> tuple[list[str], str | None]:
         try:
             manifest = hp.check_shape(files, self.limits)
         except hp.PackageError as e:
@@ -150,9 +185,14 @@ class Drafts:
         taken = sorted({t["name"] for t in manifest["tools"]} & set(self.reserved_names))
         if taken:
             return [f"package tools {taken} take the names of the host's base tools; choose other names"], None
-        hits = hp.literal_hits(files, self.literals, allowed=self.allowed_literals)
+        hits = hp.literal_findings(files, self.forbidden(), allowed=self.allowed_literals)
         if hits:
             return [hp.describe_hits(hits)], None
+        if self.methods is not None:
+            from .methods import kit_check
+            errors = kit_check(files, self.methods)
+            if errors:
+                return [f"kit_check: {e}" for e in errors[:10]], None
         if hp.needs_worker_for_checks(files, manifest):
             if self.worker is None:
                 raise WorkerUnavailable("the draft holds code and no isolated worker is available for its checks")
@@ -167,6 +207,19 @@ class Drafts:
                     closer()
             if errors:
                 return errors, None
+        self.last_reach = {}
+        if self.methods is not None and self.reach is not None and declaration is not None:
+            from .methods import changed_methods
+            run, tests = hp.files_of(self.objects, self.parent_ref)
+            names = changed_methods({**run, **tests}, files)
+            if names:
+                try:
+                    errors, report = self.reach(files, names, declaration)
+                except WorkerCrashed as e:
+                    raise WorkerUnavailable(f"the isolated worker failed during the reach check: {e}") from None
+                self.last_reach = report
+                if errors:
+                    return errors, None
         return [], hp.build_package(self.objects, files, self.limits, image=self.image)
 
     def check_texts(self, proposal: ct.ExperimentProposal) -> list[str]:
@@ -176,7 +229,8 @@ class Drafts:
         errors = []
         for change in proposal.changes:
             text = text_of(change, self.objects)
-            hits = hp.literal_hits({"text": text}, self.literals, allowed=self.allowed_literals) if text else []
+            hits = hp.literal_findings({change['target']: text}, self.forbidden(), allowed=self.allowed_literals) \
+                if text else []
             if hits:
                 errors.append(f"{change['target']}: {hp.describe_hits(hits, what='the text')}")
         return errors

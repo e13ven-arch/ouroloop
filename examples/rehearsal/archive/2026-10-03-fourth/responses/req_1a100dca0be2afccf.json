@@ -1,4 +1,0 @@
-{
-  "text": "{\"failure_class\": \"closing step skipped\",\n \"root_cause\": \"The agent read its skill (read_skill), called api_fetch with method PATCH, url https://api.hubapi.com/crm/v3/objects/contacts and body fields id and stage, which succeeded, and then finished. No call returned an error. Its last message says: 'Not done: the closing step at the end of the request, logging the follow-up task; nothing in my instructions covers closing steps of this kind.' The failed check is hubspot_task_exists.\",\n \"mechanism\": \"A working note that tells the agent: when a request ends by asking to log a follow-up task for the contact, create that task with the title the request gives before finishing.\",\n \"component\": \"memory\",\n \"generality\": \"Every request that ends with a follow-up task meets the same gap: the agent stops after the main update when its instructions do not name the closing step, and says so in its last message.\"}\n",
-  "stop": "end"
-}

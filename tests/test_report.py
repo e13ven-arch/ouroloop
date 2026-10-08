@@ -586,3 +586,34 @@ def test_a_claim_before_the_final_reads_the_dev_readings_only(fake_upstream, tmp
     record(activity.results, candidate="better", role="evolved", split="dev")
     c1 = build_report(activity.root, rsi.DOMAIN)["claims"]["C1"]
     assert c1["state"] == "inconclusive" and "on development records" in c1["detail"]
+
+
+# ---------------------------------------------------------------------------- v0.4: the equal-compute reference
+def test_the_final_reports_w0s_pass_at_k_from_its_own_repeats_beside_w_star(tmp_path):
+    """V0_4_PLAN §1.8, M3 §2.2 (v0.4): from the final's own W0 repeats (n per task, c passes) the report computes W0's
+    oracle pass@k for k = 1..n — the unbiased 1 − C(n−c, k)/C(n, k), averaged over tasks — beside W*'s pass rate and
+    the cost ratio, labelled the equal-compute reference; it costs no attempt and is not a claim. Worked by hand: t1
+    passes 1 of 3 and t2 0 of 3 for W0, so pass@1 = (1/3 + 0)/2, pass@2 = (2/3 + 0)/2, pass@3 = (1 + 0)/2; W* passes
+    3 of 3 and 2 of 3, 0.8333; W* costs 0.6 an attempt against W0's 0.4, a ratio of 1.5. A dev-only record has none."""
+    results = Results(tmp_path, rsi.DOMAIN)
+    runs = {}
+    for role, cost in (("base", 0.4), ("evolved", 0.6)):
+        runs[role] = rsi.run_manifest(role, role, "test")
+        results.put_run(runs[role])
+    outcomes = {"base": {"t1": [True, False, False], "t2": [False, False, False]},
+                "evolved": {"t1": [True, True, True], "t2": [True, False, True]}}
+    for role, tasks in outcomes.items():
+        for task, passes in tasks.items():
+            for i, ok in enumerate(passes):
+                results.append(TaskResult(task, task, "test", i, role, runs[role].hash(), "man", success=ok,
+                                          partial_credit=1.0 if ok else 0.5, cost_usd=0.4 if role == "base" else 0.6))
+    reference = build_report(tmp_path, rsi.DOMAIN)["final_reference"]
+    assert reference["tasks"] == 2 and reference["repeats"] == 3
+    assert reference["base_pass_at_k"] == {"1": 0.1667, "2": 0.3333, "3": 0.5}
+    assert reference["evolved_pass_rate"] == 0.8333 and reference["cost_ratio"] == 1.5
+    assert "equal-compute reference" in reference["label"] and "not part of C1" in reference["label"]
+    text = render_markdown(build_report(tmp_path, rsi.DOMAIN))
+    assert "Equal-compute reference" in text and "pass@3 0.5" in text
+    dev = Results(tmp_path / "dev", rsi.DOMAIN)
+    record(dev, candidate="base", role="base", split="dev")
+    assert "final_reference" not in build_report(tmp_path / "dev", rsi.DOMAIN)

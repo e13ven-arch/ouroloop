@@ -954,7 +954,10 @@ def test_the_segment_after_an_install_runs_its_session_under_r1s_propose_text(fa
     assert not bad and "gateway_call" in text and reader.listing([copied[0].attempt_id])[0]["bytes"] > 0
     arm_inputs = made[2].inputs
     listed = arm_inputs["trajectories"]
-    assert listed and {t["task_id"] for t in listed} <= {r.task_id for r in copied if not r.success}
+    # v0.4 (V0_4_PLAN §1.3): the failed attempts, then the passing ones, each marked with its outcome
+    assert listed and {t["task_id"] for t in listed if t["outcome"] == "failing"} <= \
+        {r.task_id for r in copied if not r.success}
+    assert {t["task_id"] for t in listed if t["outcome"] == "passing"} <= {r.task_id for r in copied if r.success}
     assert all(t["bytes"] > 0 and reader.read(t["attempt_ref"])[1] is False for t in listed)
     assert sum(arm_inputs["dev_failure_histogram"]["types"].values()) >= 1
     assert arm_inputs["k"] == 3

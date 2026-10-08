@@ -1,8 +1,10 @@
 # M7：任务后端、配置与成绩报告
 
-> 首版用现有命令接通能力包自动演化、发布和研究方法回用；第二版增加蒸馏配置。保留七个历史 phase，另加 `cycle`。所有者 `bench.py`、`benchmark.py`、`report.py`、`cli.py` 与 adapters。首版配置（`[improvement]`、preset `marketing_harness_v1`、`[harness_evolution]`）与 `cycle` 已实现（2026-09-30）；第二版配置仍为待实现契约，reader 明确拒绝。
+> 首版用现有命令接通能力包自动演化、发布和研究方法回用；第二版增加蒸馏配置。保留七个历史 phase，另加 `cycle`（v0.5 起另有 `library`、`learn`，见下文 v0.5 一条）。所有者 `bench.py`、`benchmark.py`、`report.py`、`cli.py` 与 adapters。首版配置（`[improvement]`、preset `marketing_harness_v1`、`[harness_evolution]`）与 `cycle` 已实现（2026-09-30）；第二版配置仍为待实现契约，reader 明确拒绝。
 >
 > v0.3（2026-10-04 决定，DESIGN v0.7，[ROADMAP §3 “v0.3”](../ROADMAP.md)）：交付物从“固定 agent 循环 + 能力包”改为“可演化的 agent 程序 + 最小运行壳 + 所 pin 的模型”，比较口径改称“同模型”（M0 §2（v0.3）：manifest `harness_package.v2` 增加 `agent` 组件，默认 agent 是今天的宿主循环移植成包）。M7 相应变化：`[bench]` 接受领域列表并按领域分别划分、合并使用；Marketing 的 test 已读过三次，对新主张声明为已耗尽；报告增加每次有效尝试成本（`cost_per_attempt`）、实验台账、余量、按领域分列，匹配成本的 best-of-k 对照臂只在发表结果时运行并并列报告（可选）；并发默认 8，每轮墙上时间单域 25 题 gate 约 10～15 分钟、多域合并 dev（约 125 题）约 45～60 分钟；配置示例换到 v0.3 的 preset。v0.1/v0.2 的配置、结果与 2026-10-03/04 的记录保持原义，不删除。本文标“（v0.3，2026-10-04）”的条目是新增或改动的规则，其余不变。
+>
+> v0.5（2026-10-07 合入；2026-10-08 现状，[V0_5_PLAN](../design/V0_5_PLAN.md)）：phase 多了 `library` 与 `learn`（`bench.PHASES`，`bench.py:41`），preset 多了 `automationbench_harness_v5`（v0.4 时的 v3 preset 加 `methods`、`library` 两张表，只由 preset 设），报告多 v0.5 一段；见 §1 表末两行与 §2 的“v0.5 的两个阶段与 preset”。support 两臂对照 2026-10-08 由用户停止：按瘦身第三批的规则，`library` 保留、经验库降为 preset 开关，`learn` 与方法库拟删（用户可否决）。
 
 ## 1. 阶段与端到端入口
 
@@ -14,7 +16,9 @@
 | improve | 首版 M4 run_worker_round 读取 train 失败摘要、逐题笔记后汇总诊断，生成包内 patch/策略候选，经冻结前草稿检查进入唯一 executor；第二版准备教学/训练。（v0.3，2026-10-04）一轮是 R 的一个编码会话（修订继续同一会话），产出至多 `max_candidates_per_round`（preset 3）个候选，先做 train 侧筛选，只有最好的一个付 dev gate；第一次读数清过 min_gain 0.05 与退步规则的候选，再按同一计划做一次确认测量，确认读数单独对合并对照也清过 min_gain 才安装（M4 §2（v0.3）筛选、M3 §2.1(b)（v0.3）确认，规则第二版 2026-10-04）；M7 不另写循环，只把 k 个候选、筛选与确认当作同一轮的子操作记账 |
 | research | 用 M6 做有界 R0/R1 比较，条件满足才安装 R1。（v0.3，2026-10-04）研究位只在 dev 合并清单 ≥ 2 × `task_plan.gate.min_tasks`（50 题）时开位：前一半作两支内层 gate、后一半作外层比较，每一半不少于 25 题；不够时研究位记 `no_slot_pool`，C4 not_run——只含 Marketing 的活动（dev 25 题）因此不开位。开位前再做余量检查：起点 W 从未通过的内层任务少于 preset 的 `campaign.min_headroom_tasks` 时拒绝开位，记 `no_headroom`（M6 §2（v0.3））；原因是 v0.2 的研究位里 W* 在内层已到 67～80%，两支都无处可改，比较了个空 |
 | evaluate | 方案锁定后的无教师 final，禁止据此继续选择或采集训练数据。（v0.3，2026-10-04）final 计划可选加一支匹配成本的 best-of-k W0 臂，只在发表结果时运行，与 W* 并列报告、不进 C1（M3 §2.2（v0.3）） |
-| report | 纯离线读取，区分源验证/采集/dev/final、脚本/真实、应用/研究收益和费用。（v0.3，2026-10-04）增加 §4 列出的字段：每次有效尝试成本（`cost_per_attempt`）、实验台账、余量、best-of-k 臂（若运行）、按领域分列 |
+| report | 纯离线读取，区分源验证/采集/dev/final、脚本/真实、应用/研究收益和费用。（v0.3，2026-10-04）增加 §4 列出的字段：每次有效尝试成本（`cost_per_attempt`）、实验台账、余量、best-of-k 臂（若运行）、按领域分列。（v0.5，2026-10-07）有 v0.5 记录时加 v0.5 一段（`report.v05_evidence`）：经验库的流与学习曲线、固定轮、learn 读数、`m_tool_writes`；没有时与原来相同 |
+| library（v0.5，2026-10-07） | 只在 train 上：经验库的流（冻结顺序的首遇读数，按来源留一检索；失败后带失败断言重试一次，重试不记功；提炼、检查、合并、记功、退役）走完后读 D 与 B，D ≤ `abort_d` 时快照不付 gate，否则快照作为固定代码的候选走自己的固定轮（筛选、gate、确认、安装）；可续跑；K 没有 `library` 表时拒绝（V0_5_PLAN §1.4，`bench.library_track`）。support 的 v0.5 臂跑过一次（3b，2026-10-08）。保留 |
+| learn（v0.5，2026-10-07） | 只在 train 上：方法表的对偶孪生读数、拟合，表变了就走重拟轮；付费前查预算；K 没有 `methods` 表时拒绝（V0_5_PLAN §1.3）。从没跑过；随方法库按瘦身第三批拟删（用户可否决） |
 
 无需用户手动拼 refs 或每轮执行七个命令。新增一个薄入口 `ouroloop bench --phase cycle`（已实现，`bench.cycle`）：按冻结 schedule 调用现有 phase handler，先预检和缺失基线，再自动 worker rounds/已计划 research slot/安装后下一轮回用，最后生成开发报告。不重写内层状态机、不默认自动运行 final；中断后复用同一 activity 和 operations。单独 phase 仍可用于排错和续跑。
 
@@ -37,7 +41,7 @@ cycle 按 M4 的结构化结果推进，而非看到 proposals 为空就退出�
 
 ## 2. 用户配置、默认配方与冻结
 
-新配置示意如下。v0.1/v0.2 的 reader 已实现 `marketing_harness_v1`，完整可运行的历史示例见 `examples/automationbench/improvement.toml`（GLM-5.3）、`claude.toml`（v0.1）、`claude-full.toml` 与 `claude-full-final.toml`（v0.2）；它们和它们冻结的 `[rsi]` ref 不改。其余环境路径、工具绑定、定价与硬预算沿用现有完整配置。preset 是代码中的配置模板（`bench.PRESETS`，`ouroloop/bench.py:1027-1050`），不是插件；它的 harness 数值是上限，`[harness_evolution]` 只能收窄或调低。
+新配置示意如下。v0.1/v0.2 的 reader 已实现 `marketing_harness_v1`，完整可运行的历史示例见 `examples/automationbench/improvement.toml`（GLM-5.3）、`claude.toml`（v0.1）、`claude-full.toml` 与 `claude-full-final.toml`（v0.2；后者 2026-10-08 移出 HEAD，tag `v0.2.0` 上可读）；它们和它们冻结的 `[rsi]` ref 不改。其余环境路径、工具绑定、定价与硬预算沿用现有完整配置。preset 是代码中的配置模板（`bench.PRESETS`，`ouroloop/bench.py:1027-1050`），不是插件；它的 harness 数值是上限，`[harness_evolution]` 只能收窄或调低。
 
 （v0.3，2026-10-04）示例换到新 preset `automationbench_harness_v3`。它不是 `marketing_harness_v1` 的改值，而是另一个 preset：旧 preset 锁定 `domain = "marketing"`（`bench.py:1080-1082`），其数值已冻结进 v0.1/v0.2 的 K，不能回头改。下面每个新键右侧注明定义它的模块；M7 只持有 preset 与 reader，不另定义语义。
 
@@ -72,6 +76,7 @@ test_timeout_seconds = 30           # 示例限额，freeze 后 R 不可提高
 max_draft_repairs = 3               # 初稿之后的修订次数上限（最多 4 份草稿）
 max_failure_notes = 30              # 每轮汇总读取的笔记数上限（缓存与新生成合计）
 max_effort = "high"                 # （v0.3）M0 §2/§4：K 的 effort 上限，preset 为 high，这里只能调低；W0 pin 的默认档仍是 medium，包按调用在上限内选，超出的请求由网关截顶并记下请求值，不拒绝
+                                    # （2026-10-08）各臂统一 effort（OSS_COMPONENTS_PLAN §9 第 4 项）：新配置写 "medium"，等于 W0 pin 的档位，W 不按题买 effort；v0.4、v0.5 的配置已是如此
 
 [collect]
 mode = "plain"                      # 首版收集 task_feedback，不要求教师或训练账号
@@ -111,7 +116,7 @@ v3 preset 固定、且 `[freeze.*]` 只能收紧的其余数值（（v0.3，2026
 - 新领域的划分分层（`split_rule = "stratified"`）：每题的层由两个静态特征决定，计分断言的类型构成（`Grading.assertions` 的 `type` 多重集，`adapters/automationbench.py:322-331`）与工具族（授予工具所属的服务，`task_signature` 的 `svc:` 项，`:423-437`）；层内按原哈希规则分配（`assign_splits`，`benchmark.py:80-106`），层的 train/dev/test 计数向整体比例取整。两个特征都来自任务定义，不读任何运行结果，所以划分不需要跑模型，也不是 train 血缘之外的信息；冻结后 manifest 记下每层的计数。原因：25/23 题的哈希划分碰上一个偏的种子是现实风险（SURVEY §4 #10）；v0.2 的 dev–test 差距主要是失败类型分布不同（W* 修的那一类在 dev 失败断言里占 58%、test 只占 31%）。禁止按任何模型的成绩调划分：划分在基线之前冻结，`drift` 检查照旧。
 - 分层的实现（v0.3，2026-10-05，与上文的出入）：层键是 `<断言种类集合>|<工具族>`（`ab.stratum`）。断言构成取**种类的集合**而不是类型的多重集：种类按天花板实验的读法由类型名定（`_not_` → forbidden_write，`count` → count，`contains` → content，其余 missing_write，`ab.assertion_kind`），只算任务定义里计分的断言（定义里标了不计分或排除的不算；评分器自己的“初始已成立”排除要给状态评分，不算）；原因：上游每个领域 100 题有 56～98 种不同的类型多重集，按多重集分层每层一题，什么都平衡不了。工具族取两类：任务世界订阅了办公服务（gmail、google_drive、google_sheets、google_calendar、slack）之外的业务应用记 `app`，否则 `office`（`ab.OFFICE_SERVICES`）。分配（`benchmark.stratified_splits`）：家族按层键、层内按原哈希规则的哈希点排序，整条序列用“落后最多者先得”的序列定各分区名额，所以整个领域的计数正好是比例（100 题 0.5/0.25/0.25 即 50/25/25），每层与其份额相差不到 2；层内按哈希点依 train、dev、test 的顺序填（哈希规则的顺序，分界放在计数上而不是固定比例上）。同一 seed 两次得到同一 manifest，列出顺序不影响结果。manifest 新增可选字段 `split_rule` 与 `strata`（每层的 train/dev/test 计数），为 None 时不进哈希载荷，所以哈希规则冻结的旧 manifest（含 Marketing 的 v0.2 划分）hash 不变（`test_a_frozen_hash_split_is_kept_when_the_rule_changes`）。真实上游（seed 1）：sales、support、hr、finance 各 50/25/25，分层 4～10 层；Marketing 按 `frozen_splits` 复现 `aa7ff7ec189c0cbb`（52/25/23）；合并 train 252、dev 125、test 123（其中新主张可读 100），合并 hash `5e68b39fca26a675`（2026-10-05 离线核对）。
 - 已冻结划分在规则改变后保留（v0.3，2026-10-05）：磁盘上已有的 manifest 照原样使用，配置的 `split_rule` 与它的规则不同时只打印一条说明、不重划（改规则要新工作区）；`frozen_splits` 钉住的领域即使 `split_rule = "stratified"` 也按哈希规则划分并核对 hash。
-- Marketing 的划分原样冻结（`claude.toml` 的 seed 1，52/25/23），`split_rule` 对已冻结的 manifest 无效。它的 test 已被读过三次（v0.1 final、v0.2 final-1、final-2），对新主张声明为已耗尽：Marketing 可留在列表里给 train/dev 用，它的 test 结果在报告里单列并标 `spent`，不进入 final 的主张区间，也不与新领域的 test 合并计算；原因是据 test 结果继续优化后不能再声称独立测试（DESIGN §8）。新主张只来自新领域的 test。
+- Marketing 的划分原样冻结（`claude.toml` 的 seed 1，52/25/23），`split_rule` 对已冻结的 manifest 无效。它的 test 已被读过三次（v0.1 final、v0.2 final-1、final-2），对新主张声明为已耗尽：Marketing 可留在列表里给 train/dev 用，它的 test 结果在报告里单列并标 `spent`，不进入 final 的主张区间，也不与新领域的 test 合并计算；原因是据 test 结果继续优化后不能再声称独立测试（DESIGN §8）。新主张只来自新领域的 test。（2026-10-08，V2 §7 第 2 项、DESIGN §8 注，取代上文 Marketing 的“已耗尽”：五个域都可以跑密封 final，一律按有条件复用规则，每份报告披露这份 test 被读过几次，operations 整域留出；新活动的配置不列 `spent` 即可，报告按域披露读取次数还没有实现。）
 - preset 的领域锁改为“列表里的每个领域上游都能装载”，不再锁定 marketing（`bench.py:1080-1082` 的改动点）。实现（v0.3，2026-10-05）：v3 preset 的 `domain` 为 None（无锁），`improvement_settings` 只对带 `domain` 的 preset（v1 的 marketing）检查列表；“每个领域都能装载”由 `load_domains` 在每次打开活动时执行（`test_the_v3_preset_checks_every_listed_domain_loads`）。
 - 第 5 步的分阶段运行（v0.3，2026-10-05，用户决定）：`claude-v3.toml` 的 `[freeze.schedule]` 是一个 segment、6 轮、`research_slots = 0`、patience 2，`[harness_evolution] max_effort = "medium"`（只能调低，冻进 K），另有顶层 `[estimate] cost_per_attempt`（final 估算在臂还没有计价读数时用的计划数字，`bench.estimate_settings`，不是限额、不进任何计划）。运行手册在 ROADMAP 第 5 步。
 - Marketing test 的 `spent`（v0.3，2026-10-05 实现）：`SplitManifest.spent()` 读合并划分所记的 spent 领域，`claim_ids` 是去掉它们之后的 id；`[freeze.final] tasks = "test"` 解析为新领域的 test，显式列表含 spent 领域的 test 题拒绝冻结（`bench._task_ids`），`--phase evaluate` 对含这些题的计划在付费前拒绝；报告单列并不进主张区间（§4）。
@@ -136,6 +141,16 @@ v3 RunManifest 增加 mode、actual actor identity、source/target harness refs�
 首版还冻结 package_ref、有效工具 schema/hook 清单、package API/image/限额与代码来源；teaching/training 字段未启用时为 None（序列化时省略，不以空串/空列表占位，旧 RunManifest hash 不变），不填假 dataset/checkpoint。RunManifest 新字段分版：首版启用 mode、actual actor identity、target harness ref（当前宿主）、任务后端/version、package_ref/有效工具 schema/hook 清单/package API/image/限额、实际 R/experiment、parent 与 pending/completed collection refs；distillation_plan_ref、dataset/training provenance、teacher present、source harness、execution base 与 experiment purpose 第二版启用，首版保持 None 不写出（purpose None 即 deployment，M0 §3）。构建检查、实际 hook/工具行为、安装及下一包迭代分别引用 operation/事件。
 
 最小 app 导出由 M3 实现，M7 为现有 release/CLI 增加一个窄入口（命令拼写由实现随帮助文档一起冻结），输入已安装 release 和目标目录，输出 DeploymentManifest。开发示例须提供精确导出/装载命令；不要只给设计 API 便称用户可用。（v0.3，2026-10-04）导出的 app = agent 包 + 运行壳（网关、broker、权限、硬限额）+ 模型服务描述（M3 §4（v0.3））；R、评分器、任务数据与凭据照旧不随 app 导出。
+
+### 单领域活动与 v0.4 的配置（v0.4，2026-10-06）
+
+[V0_4_PLAN §1.1、§1.6](../design/V0_4_PLAN.md)：每个新领域一个单领域活动（`claude-v4-finance.toml`、`claude-v4-support.toml`）。`[bench.frozen_splits]` 钉住的领域现在按能重现所钉 hash 的那条规则重算——先配置的 `split_rule`，再另一条——所以分层规则的划分也钉得住；两份 v0.4 配置以分层规则、seed 1 重现 v3 工作区冻结的 finance `4fd91eaf9fb8daf5`、support `3da11232f5d5ff38`，test 仍是从未读过的那 25 道。Marketing 的 hash 规则钉子不变。`[bench] control_readings`（缺省 1）是基线读 W0 dev 的次数（M3 §2.1（v0.4））。v3 preset 的筛选表加 `min_fixes`（下限，1）与 `max_sample_regressions`（上限，1），`passing_sample` 6、`min_net_flips` 0；会话表加 `min_failing_reads`、`min_passing_reads`（下限，都是 1）：新冻结的 K 带上它们，旧 K 没有这些键，照 v0.3 运行。报告加 `final_reference`（M3 §2.2（v0.4））。
+
+### v0.5 的两个阶段与 preset（v0.5，2026-10-07；2026-10-08 现状）
+
+[V0_5_PLAN §1、§3、§7](../design/V0_5_PLAN.md)。preset `automationbench_harness_v5`（`bench._v5_preset`）是 v0.4 时的 v3 preset 加 `methods`、`library` 两张表；两张表只由 preset 设，配置写了就拒绝（`bench.PRESET_ONLY_TABLES`）。v5 bootstrap 的 R0 的 `research.propose` 是 `PROPOSE_SESSION_V5`（v0.4 的文本加方法一段），所以 `claude-v5-*` 的 K 与 R0 都不是 `claude-v4-*` 的；v0.4 的配置在这份代码下行为不变（测试钉住）。唯一的 v5 配置是 `examples/automationbench/claude-v5-support.toml`，按 3a 基线（`--phase cycle --until baseline`）→ 3b `--phase library` → 3c `--phase cycle`（带方法的 R 轮次）→ 3d `--phase learn` → 3e final 的顺序手动跑。
+
+现状（2026-10-08，[JOURNAL](../JOURNAL.md)）：3a、3b 跑完，2026-10-08 用户停止对照，3c、3d、3e 都没跑。support 的 W0 dev 噪声由 `control_readings = 3` 量到：v0.4 臂 8、9、9，v0.5 臂 10、9、8（每次 25 题）；下一份配置的 `control_readings` 按瘦身清单 §2 的规则据此定。按瘦身第三批的规则，`library` 阶段与经验库保留（经验库降为 preset 开关、不进默认），`learn` 与方法库拟删（用户可否决）；下一份 preset 的其余变化（去掉 `cost_beta0/1`、`max_effort` 写 medium）见瘦身清单与 DESIGN §3 注。
 
 ## 3. 任务执行后端
 
@@ -184,6 +199,8 @@ v3 最终计划区分 C2 的 `mode=published_reference`（默认）与 `paired_r
 （v0.3，2026-10-05，第 0/1 阶段评审）final 之前的主张（没有封存计划或没有 final 读数时 `_pair_claim` 的退路）只比两种角色的 dev 读数：W 的 train 侧筛选与 train 测量也是 `evolved`/`base` 角色，但是另一组题，原来被平均进去；有 final 时的区间路径不变。测试 `test_report.py::test_a_claim_before_the_final_reads_the_dev_readings_only`。
 
 C4 读取真实 campaign 结果，不预设 not_run。只有未执行才标 not_run；研究位在形成 campaign 之前结束时（研究位回复无效、R 没有提案、准入拒绝或构建失败），C4 仍标 not_run，detail 按 `rsi/cycle.json` 中该研究位的结局如实写出，不写成“没有 campaign 记录”（2026-10-02，见 [M4 §1](04_RESEARCH_LOOP.md)）。`cycle.json` 中研究位在 campaign 之前的结局记 outcome、reason 与 stage（reply 指 R 的回复，admission 指准入，build 指构建），报告据此区分这四种；研究位暂停、预算耗尽（写明在 campaign 之前还是之中）、计划已冻结而尚无收据时，同样标 not_run 并写明。campaign 有收据时（含某一支暂停时登记的 inconclusive），C4 按收据读；已运行但样本不足为 inconclusive；没有收益如实记录。完整 v0.6 验收要求递归路径和有界真实验证，单个 manual 蒸馏实验无需伪装覆盖 C4。历史 research 报告仍按既有结果读取。`report` 禁止触发模型请求、重新选择 checkpoint 或补跑 final。恢复 `evaluate/improve` 只补计划缺项，已完成结果不重花钱。
+
+（v0.4，2026-10-06，[V0_4_PLAN §1.8](../design/V0_4_PLAN.md)）报告加 `final_reference`：有 final 的 W0 臂时，从它自己的重复算 W0 的 pass@k（k = 1..n，每题 n 次中 c 次通过，1 − C(n−c, k)/C(n, k) 的题均值），并列 W* 的通过率、两臂每次成本之比与等成本的 k，标为“等成本参照”；Markdown 报告有同名一节。它不花钱、不进任何主张的裁决（M3 §2.2（v0.4））。v0.4 的筛选行与台账另记 `fixes`、`sample_regressions`（M4 §2（v0.4）），R 的台账投影里也有。
 
 ## 5. 用例
 

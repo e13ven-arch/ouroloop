@@ -2,6 +2,7 @@
 
 > 首版必需：从任务反馈自动演化能力包代码/材料，并改进和回用 R。复用 `research/agent.py`、`basic.py`、`context.py`、`experiment.py`、`loop.py`、`evolve/experience.py`；第二版再接 actor 蒸馏/controller 新训练，不新增研究服务或调度器。
 > v0.3（2026-10-04，[DESIGN](../DESIGN.md) v0.7）：R 的汇总步从“一次 JSON 回复给一个 patch”改为 worker 内对包目录的一次有界编码会话（每轮一次，修订续写同一会话），每轮至多 k 个带声明的候选，先过 train 侧筛选再付 dev gate；引擎自有的简单台账进入 E，准入拒绝重复的 (mechanism, site)；R 的输入增加原始 train 轨迹（只读、限字节）、dev 失败类型直方图与台账投影。失败摘要、逐题笔记、草稿检查、冻结与准入不变。考虑过、不做（v0.3）：成功侧摘要、每段至少一个代码候选、逐题 TRUE FIX/TRUE REGRESSION/STOCHASTIC 标签与预测记分（各在所属小节写明原因）；组件归因与淘汰推迟到第二版（§5）。依据：v0.1/v0.2 装入的两个改动都是文字提醒，13 个候选无一改工具或代码，R 的笔记里 26 条建议 before_tool（[ROADMAP §3](../ROADMAP.md) 第 2a 步第 9 项）；业界报出更大留出增益的框架都改 loop 与工具，且提案者读原始轨迹（[SURVEY §4](../SURVEY_RSI_FRAMEWORKS.md) 第 2、3、5、6、7 项）。本文新增或修改的规则逐条标“（v0.3，2026-10-04）”。
+> v0.5（2026-10-07 合入；2026-10-08 现状，[V0_5_PLAN](../design/V0_5_PLAN.md)）：经验库与 R 的研究剧本见 §5 末“经验库与 R 的研究剧本”；§2 末加了写工具与统一 effort 的注。方法库（`research/methods.py`、`research/method_kit/`）按瘦身第三批拟删（用户可否决），本文不另写它的规则，以 V0_5_PLAN §1.1–§1.3 为准。
 
 ## 1. 输入、输出与启动
 
@@ -107,6 +108,16 @@ worker 轮的部分已在阶段 3 实现（2026-10-02）：
 
 （v0.3，2026-10-05，第 0/1 阶段评审）会话的记录：除每次调用一行（回合、工具、路径、ok）之外，整段会话存为一个对象（`CodingSession.transcript()`，`transcript:sha256:…`）：按顺序的每条消息——输入与之后的用户消息、R 的回复文本与它的工具调用及参数、每个工具的结果或拒绝原因——每项截到 8,000 字符、全部严格 UTF-8 可编码；`research_session` 事件记 `transcript_ref`，报告的会话行列出它；被拒调用的那一行也带错误文本（截到 500 字符）。原因：被拒的写入、读取错误与 R 的回复原来只在会话的内存里，会话一结束就没了；第 0 阶段的继续/停止规则要读它。测试 `test_research_session.py::test_the_sessions_turns_are_stored_with_refusals_and_the_event_names_them`、`test_a_transcript_item_is_cut_and_strict_utf8`。
 
+### R 的输入与准入（v0.4，2026-10-06）
+
+[V0_4_PLAN §1.2～§1.4、§1.7](../design/V0_4_PLAN.md)。新增或改动：
+
+- **`inputs/api_errors.json`（`research/api_errors.py`）。** 固定代码从本活动最近一次 train 测量的有效尝试（失败与通过）的宿主轨迹投影：按端点（`METHOD host/path`，路径段含数字——版本号除外——或只在一道题里出现时写 `{id}`；非 `api_fetch` 的工具按名字）计调用数、涉及题数、错误响应数与按“状态码 + 归一化信息”（数字、引号内的值、邮箱、路径都替换）的分类、紧跟错误的同端点重试、响应表明还有下一页而之后没再调该端点的次数、空结果，以及调用落在失败尝试里的次数。没有任务 id、没有参数值；dev 与 test 永不进入。原因：StarHarness 在 AutomationBench Finance 的留出增益来自工具与接口修复，v0.3 的 9 个候选没有一个改工具。
+- **轨迹清单列出通过的尝试。** `trajectories.json` 每项带 `outcome`：本轮纳入诊断的失败尝试，加至多 6 个通过的 train 尝试（含“不得做”断言——类型名含 `_not_`——的题优先，再按冻结顺序）。`read_trajectory` 仍只接受 train 尝试。
+- **准入的读取检查。** K 的 `research_session.min_failing_reads`、`min_passing_reads`（v3 preset 都是 1；缺省 0 即不查，旧 K 不变）：每个候选须在本会话里读过（宿主读取记录：字节 > 0、未被拒）至少这么多条其 `predicted_affected` 中题目的失败轨迹，本会话须读过至少这么多条通过轨迹（清单里没有通过尝试时不要求）。不满足是准入 invalid，理由写明缺哪一样（`research.experiment.declaration_reasons` 的 `reads`）。（评审 2026-10-06）同一检查先在第一次 `finish` 时做（`CodingSession._ungrounded`）：缺读数是该次 `finish` 的错误，R 补读后再 `finish`；修订的 `finish` 不查；准入是兜底。安装之后，清单、接口错误表与 v0.4 的样本和“before”用的 train 读数补上这次测量没重跑的题（`bench.Improvement.carried_train_readings`：同一 K 下 `measure` 臂的最近有效读数），测量本身不变。原因：Meta-Harness 的消融（分数 34.6、摘要 34.9、原始轨迹 50.0）；v0.3 的 R 一条通过轨迹都没读。
+- **笔记的方向。** 笔记可带 `direction`：`omission` | `over_action` | `other`（其他写法归 `other`，不写则缺省）；覆盖记录 `by_direction` 给各方向的笔记数（有笔记写了方向时才有）。会话核心新 bootstrap 的 R0 的 `research.diagnose` 文本（`policies.DIAGNOSE_SESSION`）要求它；`NOTE_FORMAT` 不变，所以旧 R0 的笔记身份不变。
+- **R0 的方法说明。** 会话核心新 bootstrap 的 R0 的 `research.propose` 是 `policies.PROPOSE_SESSION`：先看 api_errors 并优先修接口、读失败与通过的轨迹、按方向修（over_action 靠克制）、k 个候选各一个原因并写明何时不作用、优先有条件的改动、不写任务答案。`SESSION_FORMAT` 只留协议（工作树、输入、工具、上限、声明、准入规则），“做 k 个、先读轨迹”的方法句移到 propose 文本里。旧 R0（v0.3 工作区）的会话因此只剩它自己的文本加协议。
+
 ## 2. 首版可执行的候选空间
 
 | 失败证据 | 候选/处理 | 必须具备的条件 |
@@ -133,6 +144,10 @@ worker 轮的部分已在阶段 3 实现（2026-10-02）：
 - v0.3 考虑过“每段至少一个候选改代码”（`require_code_candidate`，由草稿检查 shape 阶段强制），不做：取消优先级后由 R 自选载体，强制项另加检查链分支。候选的载体分布照常进台账与报告（M7 §4）。
 - `agent` 组件是可变层的一部分（M0 §2（v0.3）：manifest `harness_package.v2` 的 `agent` 入口，`run(ctx, task)`；ctx 只暴露 `model`、`tool`、`skills`、`limits`、`view`）；默认 agent `agent/default_agent.py` 把现行宿主循环搬进包，v1 包即带默认 agent 的 v2 包，hook 挂点作为默认 agent 遵守的约定保留。K 不变的部分：模型身份与推理配置上限、网关、broker、权限、评分、split、gate、预算根、单次尝试硬上限、宿主写的事件/轨迹记录、R 的代码与研究位。
 
+2026-10-08 注（[OSS_COMPONENTS_PLAN](../design/OSS_COMPONENTS_PLAN.md) §1、§9 第 4 项）：
+- **写工具与 agent 程序。** v0.3/v0.4 的 12 个候选里没有一个是工具或 agent。K 已经允许：普通包工具拿到可写的 broker（`agent/default_agent.py:283` 的 `read_only=False`），只读的只有 hook（`:170`）与 v0.5 的 `m_` 方法（`:281`），worker 也只在只读时拒绝写（`agent/worker.py:476`）。是 R 从没提过，不是 K 不让。R0 的方法说明（`PROPOSE_SESSION`）没有点名这两种载体；StarHarness 在 finance 上的 +26.1 来自写前分诊、日期锚定与把算术、表格交给确定性工具这类补丁。改 R0 的方法说明属于下一份开发计划，旧常量的字节不动。
+- **effort 统一。** 上表“任务内按需提高 effort”一项不再是候选方向：所有臂保持同一个 effort（现行 medium），新配置的 K 的 `max_effort` 等于 pin 的档位，请求更高的 effort 按上限截顶。多采样与核验回合仍可，照旧受成本项约束。
+
 ### train 侧筛选（v0.3，2026-10-04）
 
 冻结后的候选先在 train 上筛，只有最佳者付 dev gate：
@@ -151,6 +166,10 @@ worker 轮的部分已在阶段 3 实现（2026-10-02）：
 
 失败 train 工作集用于定位机制；候选采用前仍评测完整固定 dev 清单，不从 dev 移除本次对照版本成功的任务。沿用 M3 的冻结门槛决定采用与否；首版不另外维护历史成功任务池或设计回归修复流程，已有评测无法解决的具体问题在实跑后再判断。未装配/未调用的工具先修可发现性或删除重复项，不通过继续加组件掩盖问题。停用/删除也生成新包候选并走 gate；只记录组件使用与整体效果，不为首版建设全面自动消融搜索。
 
+### 筛选（v0.4，2026-10-06）
+
+[V0_4_PLAN §1.6](../design/V0_4_PLAN.md)。K 的筛选表有 `max_sample_regressions` 时（v3 preset 新冻结的 K）：通过样本每轮重抽，种子为 (`order_seed`, 本 scope 的诊断序号)，从最近一次测量通过的 train 题里抽 `passing_sample`（preset 6）道，含“不得做”断言的题优先（`session.passing_sample_v4`）；资格为修复数（失败集里转通过的题）≥ `min_fixes`（1）、样本退步数（样本里转失败的题）≤ `max_sample_regressions`（1）、净翻转 ≥ `min_net_flips`（preset 降为 0；失败集只能转通过、样本只能转失败，所以净翻转 = 修复 − 样本退步），再按净翻转、成本、声明顺序排（`session.pick_best`）。筛选行与台账多记 `fixes`、`sample_regressions`。没有该键的 K 照 v0.3：固定样本、净翻转 ≥ `min_net_flips`。原因：v0.3 七次筛选的样本都是同 5 题、没有 hr；rulesmem 在样本上 0 退步、到 dev 上退步 10 题。
+
 ## 3. 工作流发现与教学材料的衔接
 
 首版以 deployment 用途（purpose 字段保持 None，M0 §3）直接构建能力包并走完整任务 gate，成功后发布；不依赖 SourceWorkflow、教师适配或训练。以下 source_validation → 教学材料的接线归第二版，原规格保留，不能成为首版默认必经阶段。
@@ -164,6 +183,8 @@ source validation 的任务清单、尝试次数和成功/回归要求在运行�
 第二步为材料准备：R 选择已验证 source 与目标 h/配方 key。若目标 h 不同于当前 parent，先按 M3 `prepare_harness` 创建受限基线 release 并运行新基线；完成后才以它作为 execution base/student release，调用 M8 `adapt_workflow`。目标不变则直接沿用 parent。固定代码校验每个选择的 scope、能力和余量，R 不能自行拼装一个未经检查的执行起点。M8 在 train 受限上下文中自动生成 TeachingReference；固定校验通过后生成 DistillationPlan，再构造完整 v3 proposal 并按原 admission/freeze 流程执行。LLM 返回的选择意图是内部临时值，不是缺失 ref 的可执行 ExperimentProposal。
 
 适配调用属于活动预算下的准备 operation，输入先冻结，结果按身份复用；失败保留费用，不开始训练。source 验证、适配与蒸馏实验形成 ref 依赖，不用虚构未来 artifact，也不新建一套计划状态机。最终蒸馏 build 可复用完整匹配的 reviewed collection，或调用 M8/M2 采集训练。
+
+（v2，2026-10-08，[V2_TRAINING_PIPELINE](../design/V2_TRAINING_PIPELINE.md) §1、§3.6、§7）v2 不做 `adapt_workflow`：教师读 K，即各域 W\* 的 memory 与 skills 原文（M8 §1 注）。训练条目只由 K 的排程或 CLI（`python -m ouroloop.train`）产生；`LATER_METHODS` 继续对 R 拒绝训练方法，R 提训练条目到 v2.5。上两段保留作记录。
 
 dev 汇总可以提示“完成检查不充分”，但包含 dev 任务事实的上下文不能生成 train guide。选择意图仅投影注册目标、通用失败类别和已有合规 source ref；参考编写重新加载 train/fit 内容，记录实际输入 parents。若无法证明该投影不含任务事实，拒绝训练材料准入，回到 train 诊断。不是把同一对话改名为 train。
 
@@ -327,6 +348,18 @@ preset/K 新增参数汇总（v0.3，2026-10-04；均冻结进 K，R 不能提�
 当前代码在 `run_worker_round` 把无 proposal 的 collect 请求折叠为 no_proposal，`run_worker_rounds` 随即停止。本版必须修改这两个分支，保留结构化 action 并先分派补采；仅在文档或日志里写 collect 不能通过验收。旧 v2 模式维持原行为；只有新 driver 启用该协议，并写入带 next_action/action_ref 新字段的 RoundResult。
 
 首版无研究员专用训练、自治专家群或全仓任意代码改写；包内代码演化是明确支持的范围。人工 proposal 用同一执行器调试，scripted 用于接线；二者不能作为真实自动发现的成绩证据。训练/教学相关分支在第二版启用，未启用时不可隐式采样教师或探测 Tinker 账号。
+
+### 经验库与 R 的研究剧本（v0.5，2026-10-07；2026-10-08 现状）
+
+[V0_5_PLAN §1.1、§1.4](../design/V0_5_PLAN.md)；代码 `research/library.py`、`research/fixed.py`、`bench.library_track`。只在 K 有 `library` 表（preset `automationbench_harness_v5`）时生效；没有库文件的包，系统提示与原来逐字节相同。
+
+- **条目与流（只在 train）。** 条目有 `shelf`、`kind`（workflow | insight | api_note）、`title`/`when`/`body`/`avoid`（各有字数上限，值写成占位符）、来源题的文本哈希、`origin`（success | contrast | reflexion）与记功计数。流按冻结顺序走 train 题：已有读数进提炼队列；首遇读数是 W_base 加上目前的库；失败时带失败断言的投影重试一次；每道有新成功的题调一次固定的提炼提示（代码常量，不在 R0 里，R 改不了），至多 2 条。
+- **检查与合并。** 模式与长度；字面量检查，带一次自动占位替换；`when` 必须在来源之外检索到 ≥ 2 道 train 题；与已有条目余弦 ≥ 0.8 就逐条合并，从不整库重写；每架 ≤ 6 条，满了挤掉效用最低的。
+- **检索是宿主代码。** 在 `start` 位点（`agent/runner.py:139-147`），任务文本对条目的 `title + when` 做 TF-IDF，过 `min_score`（0.2，未标定，V0_5_PLAN §8）、按相关度再按效用排序，至多 3 条接在系统提示后；来源哈希含本题的条目不检索（train 上即留一，dev/test 题从来不是来源）。每次检索写一条 `library_retrieval` 事件。
+- **记功与退役。** 有条目被检索出的每次首遇尝试，每条都记满一份 `r − b(t)`（b(t) 是 W_base 在该题上全部有效 train 读数的均值；不是在同屏的条目间平分），W_base 通过而尝试失败记一次伤害；伤害 ≥ 2，或展示 ≥ 3 次且效用 ≤ −0.2 就退役。重试不记功，只作提炼来源。
+- **快照进 W。** 流走完（n = 50）编译一次快照：每架一个 `skills/library/<shelf>.md`，在 manifest 里列为停用的技能，只由宿主检索。D ≤ 0 时不付 gate；否则快照是固定代码声明的候选（算子 `library`），走固定轮（M5 §1 的 v0.5 段）：筛选（按留一检索）、gate、确认，规则与 R 的候选相同。装上后 R 读 `inputs/library.json`（只来自 train），改不了库：R 对库文件的改动被撤回并附注。
+- **R 的研究剧本（playbook）。** `finish` 可带 `playbook`：每条教训以 `[<候选 id>: <字段> <值>]` 结尾，宿主逐条对台账核对，对不上就删并告诉 R；通过的文本存进 E（`kind="method_playbook"`），下一次会话接在方法说明之后，会话记录剧本的哈希。今天它只在方法库开着时注入（`research/session.py:1082-1129`，核对在 `research/methods.py:955`）；瘦身第三批把它改成不依赖方法库，它是跨活动 C4 里 R1 的来源（M6 页首注）。
+- **现状（2026-10-08，[JOURNAL](../JOURNAL.md)）。** support 的 v0.5 臂跑过一次 3b：D = 3.0、B = 1，前后两半 0.00 → 0.12（P 0.8895），记功秩相关 0.2；条目 active 7、retired 35、在检查处丢弃 45，每次尝试平均展示 1.24 条；快照过 dev gate（首读 +0.24、确认 +0.08、合并 +0.16），装上 `9f07d95032b4`（6 个 library-* skill）。都是过程证据。按瘦身第三批的规则，经验库保留为 memory 的底座，作 preset 开关、不进默认；改进方向（嵌入检索、按实际用到的条目记功、从失败提炼、合并与删除）按 [OSS_COMPONENTS_PLAN](../design/OSS_COMPONENTS_PLAN.md) §3、§6 借 ACE、ReMe 的设计，触发条件出现才做。已知缺口：R 自写的 agent 程序能从磁盘读到 `skills/library/`，绕过留一（V0_5_PLAN §8），今天没有检查。
 
 ## 6. 用例
 

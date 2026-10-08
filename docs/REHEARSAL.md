@@ -1,6 +1,8 @@
 # 付费前彩排：fixture 世界与假 actor
 
 > ROADMAP §3 首个真实活动协议第 2 步的规格。写于 2026-10-03，先于实现。彩排经 CLI 走生产路径，R 由 Claude 通过 manual provider 作答；它证明接线与故障协议，不证明任何模型的效果。
+>
+> **现状（2026-10-08）：** 彩排记录，正文不改。文中的 `examples/rehearsal/` 下跟踪的文件（fixture 上游、假 actor `rehearsal_actor.py`、`answer.py`、`check_world.py`、`dry_run.py`、`rehearsal.toml`、`rehearsal2.toml`、`archive/` 下请求与回复的存档）与 `tests/test_rehearsal_world.py` 已移出 HEAD，在 tag `archive-2026-10-08`（以及 `v0.4.0`）上可读。被 git 忽略的 `workspace-rehearsal*`、`workspace-actor-manual` 与 `*.local.toml` 留在本机原处。
 
 ## 1. 边界
 

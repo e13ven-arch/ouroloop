@@ -1471,9 +1471,13 @@ def test_the_v3_preset_freezes_a_k_with_the_agent_kind_the_effort_ceiling_and_th
     assert same(v3["harness"]) == same(v1["harness"])
     # v0.3 step 3 (M4 §1, §2; M7 §2): the coding session's caps, the screen's numbers and k live on the v3 preset
     # only; the v1 preset has no session and runs one candidate a round as its cores froze it
+    # v0.4 (V0_4_PLAN §1.3, §1.6): admission's read floors and the v0.4 screen (6 passing tasks redrawn per round,
+    # ≥1 fix and ≤1 sample regression, net flips ≥ 0) join them; a K frozen before has neither
     assert v3["harness"]["research_session"] == {"max_turns": 40, "max_edits": 24, "max_trajectory_bytes": 65536,
-                                                 "max_trajectory_bytes_total": 524288}
-    assert v3["harness"]["screen"] == {"passing_sample": 5, "min_net_flips": 1} and v3["max_candidates_per_round"] == 3
+                                                 "max_trajectory_bytes_total": 524288, "min_failing_reads": 1,
+                                                 "min_passing_reads": 1}
+    assert v3["harness"]["screen"] == {"passing_sample": 6, "min_net_flips": 0, "min_fixes": 1,
+                                       "max_sample_regressions": 1} and v3["max_candidates_per_round"] == 3
     assert "research_session" not in v1["harness"] and "max_candidates_per_round" not in v1
     assert v3["schedule"] == v1["schedule"]
     # v0.3 step 2 (M3 §2.1, M6 §2, M5 §2): the v3 preset's gate statistics, slot rules and concurrency; the v1

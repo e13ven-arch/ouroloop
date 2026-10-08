@@ -438,6 +438,12 @@ class LeakyPrompt:
 LEAKED = "Sam Okafor"            # a record name from the train tasks' initial state: a literal the check knows
 
 
+def leaked_in_one_task(monkeypatch):
+    """V0_4_PLAN §1.5: only a value of one train task is forbidden, and the fixture's contacts are in every train
+    task's state; here LEAKED is made one task's value, the shape a real answer has."""
+    monkeypatch.setattr(bench.Improvement, "train_state_index", lambda self: ({LEAKED: {"rsi.notify_once"}}, set()))
+
+
 @pytest.mark.parametrize("changes", [
     [{"target": "worker.system_prompt", "kind": "prompt",
       "change": {"text": f"Rules:\n{LEAKED} must hear about every update."}}],
@@ -449,11 +455,12 @@ LEAKED = "Sam Okafor"            # a record name from the train tasks' initial s
         "memory.md": "Do every step the request asks for."}}}},
      {"target": "worker.system_prompt", "kind": "prompt", "change": {"text": f"Always copy {LEAKED}."}}]],
     ids=["system_prompt", "finish_instruction", "mixed_with_a_clean_package"])
-def test_a_prompt_change_gets_the_literal_check(fake_upstream, tmp_path, changes):
-    """A prompt reaches the actor as directly as a package file: a train literal in its text makes the round
-    invalid — no revision (a prompt has no draft), nothing frozen, no gate paid — and the record says how many
-    literals of which kind, never which."""
+def test_a_prompt_change_gets_the_literal_check(fake_upstream, tmp_path, changes, monkeypatch):
+    """A prompt reaches the actor as directly as a package file: a train literal of one task in its text makes the
+    round invalid — no revision (a prompt has no draft), nothing frozen, no gate paid — and (v0.4, V0_4_PLAN §1.5)
+    the record names the target, the line and the literal, as the check output to R does."""
     from test_harness_loop import v06_prepared
+    leaked_in_one_task(monkeypatch)
     cfg, activity, w0 = v06_prepared(fake_upstream, tmp_path)
     researcher = LeakyPrompt(changes)
     result = bench.improve(cfg, ".", out=lambda _line: None, researcher=researcher)
@@ -464,11 +471,13 @@ def test_a_prompt_change_gets_the_literal_check(fake_upstream, tmp_path, changes
     assert not list(ct.Events(activity.root).of("draft_check"))       # refused before any package draft
     row = [e for e in experience_mod.read(activity.root) if e.get("kind") == "round"][0]
     assert row["outcome"] == "invalid" and "task-specific values" in row["checks"][0]["detail"]
-    assert LEAKED not in json.dumps({k: v for k, v in row.items() if k != "hypothesis"})
+    target = next(c["target"] for c in changes if c["target"] != "worker.harness")
+    assert f"{target}:" in row["checks"][0]["detail"] and repr(LEAKED) in row["checks"][0]["detail"]
 
 
-def test_a_finish_instruction_stored_by_ref_gets_the_literal_check(fake_upstream, tmp_path):
+def test_a_finish_instruction_stored_by_ref_gets_the_literal_check(fake_upstream, tmp_path, monkeypatch):
     from test_harness_loop import v06_prepared
+    leaked_in_one_task(monkeypatch)
     cfg, activity, _ = v06_prepared(fake_upstream, tmp_path)
     ref = activity.objects.put_json("change", {"text": f"Before finishing, message {LEAKED}."})
     researcher = LeakyPrompt([{"target": "worker.finish", "kind": "workflow",
@@ -492,6 +501,10 @@ from test_research_session import MEMORY, SKILL, memory_candidate, prepared_v3  
 
 from ouroloop.evolve import experience as xp  # noqa: E402
 from ouroloop.research.experiment import declaration_reasons  # noqa: E402
+
+
+# the v0.3 session table: a K frozen before v0.4's read floors (V0_4_PLAN §2: such a K keeps v0.3's admission)
+V03_SESSION = {"max_turns": 40, "max_edits": 24, "max_trajectory_bytes": 65536, "max_trajectory_bytes_total": 524288}
 
 
 def skill_candidate(inputs, *, name="s1", text=f"Before you finish, {rsi.FINISH_CHECK_MARK}.\n",
@@ -879,7 +892,12 @@ def test_it6_39_r_reads_raw_train_trajectories_through_a_byte_capped_tool_and_a_
     step = Reader(lambda inputs: [memory_candidate(inputs)])
     bench.improve(cfg, ".", out=lambda _line: None, researcher=step)
     inputs = seen["inputs"]
-    assert {t["task_id"] for t in inputs["trajectories"]} == {"rsi.notify_after_update", "rsi.notify_after_update_variant"}
+    failing = [t for t in inputs["trajectories"] if t["outcome"] == "failing"]
+    assert {t["task_id"] for t in failing} == {"rsi.notify_after_update", "rsi.notify_after_update_variant"}
+    # v0.4 (V0_4_PLAN §1.3): the passing train attempts are listed too, each marked, after the failures
+    passing = [t for t in inputs["trajectories"] if t["outcome"] == "passing"]
+    assert passing and {t["task_id"] for t in passing} <= set(rsi.TRAIN) - {t["task_id"] for t in failing}
+    assert inputs["trajectories"] == failing + passing
     histogram = inputs["dev_failure_histogram"]
     assert set(histogram) == {"split", "types", "readings", "tasks", "attempts"} and histogram["split"] == "dev"
     assert histogram["readings"] == 1 and histogram["tasks"] == len(rsi.DEV) and sum(histogram["types"].values()) >= 1
@@ -1610,8 +1628,9 @@ def test_a_screen_row_outcome_outside_the_vocabulary_is_refused_where_the_row_is
 
 def test_a_candidate_with_no_failing_task_is_not_screened(fake_upstream, tmp_path, monkeypatch):
     """M4 §2 (2026-10-05, second recheck): a candidate whose notes and predicted_affected name no task that fails
-    now has an empty failing set: it is `invalid` and no screen attempt runs for it."""
-    cfg, activity, w0 = prepared_v3(fake_upstream, tmp_path, monkeypatch)
+    now has an empty failing set: it is `invalid` and no screen attempt runs for it. Under a K without the v0.4 read
+    floors: with them, admission refuses it first (test_a_candidate_whose_session_read_none_of_its_failures_is_refused)."""
+    cfg, activity, w0 = prepared_v3(fake_upstream, tmp_path, monkeypatch, harness={"research_session": V03_SESSION})
 
     def plan(inputs):
         passing = sorted({r.task_id for r in activity.results.all() if "/measure" in r.attempt_id and r.success})
@@ -1655,3 +1674,317 @@ def test_the_ledger_projection_shows_each_domains_gate_outcome_without_dev_task_
     one = [rows[0], xp.ledger_row("gated", "s/d2/m1", scope="s", round=2, verdict="rejected",
                                   fixed=["rsi.dev_update_stage"], regressed=[], still_failing=[])]
     assert "by_domain" not in xp.ledger_projection(xp.ledger_rows(one))[0]["gate"]
+
+
+# ---------------------------------------------------------------------------- v0.4 (docs/design/V0_4_PLAN.md)
+from ouroloop.benchmark import TaskResult  # noqa: E402
+from ouroloop.research.experiment import grounding_reasons  # noqa: E402
+from ouroloop.research.session import (ScreenSettings, eligible, passing_sample, passing_sample_v4,  # noqa: E402
+                                       pick_best)
+
+
+def _passed(tasks):
+    return [TaskResult(t, t, "train", 0, "W0", "r", "m", success=True, partial_credit=1.0) for t in tasks]
+
+
+def test_the_v04_passing_sample_is_redrawn_each_round_with_must_not_tasks_first():
+    """V0_4_PLAN §1.6 (a): six of the passing train tasks, drawn afresh each round from (order_seed, the round's
+    ordinal) — the same round draws the same tasks, another round others — tasks with must-not checks taken first,
+    listed in the frozen order; v0.3's draw (one sample per activity) is unchanged."""
+    order = [f"t{i:02d}" for i in range(20)]
+    rows = _passed(order[:16])
+    must_not = ("t03", "t11", "t15")
+    draws = [passing_sample_v4(rows, order=order, size=6, seed=1, round_ordinal=r, must_not=must_not) for r in range(4)]
+    assert all(len(d) == 6 and set(must_not) <= set(d) and d == sorted(d) for d in draws)
+    assert len({tuple(d) for d in draws}) > 1                                   # redrawn per round
+    assert passing_sample_v4(rows, order=order, size=6, seed=1, round_ordinal=2, must_not=must_not) == draws[2]
+    assert set(passing_sample_v4(rows, order=order, size=2, seed=1, round_ordinal=0, must_not=must_not)) <= set(must_not)
+    assert not set(passing_sample_v4(rows, order=order, size=6, seed=1, round_ordinal=0)) - set(order[:16])
+    fixed = [passing_sample(rows, order=order, size=5, seed=1) for _ in range(2)]
+    assert fixed[0] == fixed[1] and len(fixed[0]) == 5                           # v0.3: one sample, every round
+
+
+def test_a_v04_screen_needs_a_fix_and_at_most_one_sample_regression_then_ranks_by_net_flips():
+    """V0_4_PLAN §1.6 (b): eligible with ≥ min_fixes fixes and ≤ max_sample_regressions regressions on the passing
+    sample (net flips = fixes − regressions, floor 0), then the highest net flips; under a v0.3 K net flips alone, as
+    before — so a broad change that fixes three and breaks two passes v0.3's screen and not v0.4's."""
+    def screened(name, order, fixes, regressions, cost=0.5):
+        failing, sample = [f"f{i}" for i in range(3)], [f"s{i}" for i in range(6)]
+        before = {**{t: False for t in failing}, **{t: True for t in sample}}
+        after = {**{t: i < fixes for i, t in enumerate(failing)}, **{t: i >= regressions for i, t in enumerate(sample)}}
+        return {"candidate": name, "order": order, "failing": failing, "sample": sample, "before": before,
+                "after": after, "net_flips": fixes - regressions, "cost_per_attempt": cost}
+    broad, narrow, quiet = screened("broad", 0, 3, 2), screened("narrow", 1, 1, 0), screened("quiet", 2, 0, 0)
+    v04 = ScreenSettings(passing_sample=6, min_net_flips=0, min_fixes=1, max_sample_regressions=1)
+    assert [eligible(s, v04) for s in (broad, narrow, quiet)] == [False, True, False]
+    assert pick_best([broad, narrow, quiet], v04)["candidate"] == "narrow"
+    one_each = screened("even", 3, 1, 1)
+    assert eligible(one_each, v04) and one_each["net_flips"] == 0
+    assert pick_best([one_each, narrow], v04)["candidate"] == "narrow"           # ranked by net flips
+    v03 = ScreenSettings(passing_sample=5, min_net_flips=1)
+    assert pick_best([broad, narrow, quiet], v03)["candidate"] == "broad"        # v0.3: net flips alone
+    assert pick_best([broad, narrow, quiet], 1) == pick_best([broad, narrow, quiet], v03)
+    assert not v03.v04 and v04.v04 and v03.to_json() == {"passing_sample": 5, "min_net_flips": 1}
+
+
+def test_grounding_needs_a_failed_read_among_the_predicted_tasks_and_one_passing_read():
+    """V0_4_PLAN §1.3: the host's read record grounds a candidate — a failed trajectory of a task in its
+    predicted_affected, and a passing one in the session when one was listed; each reason names what is missing."""
+    decl = {"predicted_affected": ["a", "b"]}
+    floors = {"min_failing": 1, "min_passing": 1, "passing_listed": True}
+    assert grounding_reasons(decl, {"failing": ["b"], "passing": ["z"], **floors}) == []
+    missing = grounding_reasons(decl, {"failing": ["c"], "passing": [], **floors})
+    assert len(missing) == 2 and "failed trajectory" in missing[0] and "['a', 'b']" in missing[0]
+    assert "passing trajectory" in missing[1]
+    assert grounding_reasons(decl, {"failing": ["a"], "passing": [], **{**floors, "passing_listed": False}}) == []
+
+
+def test_an_ungrounded_finish_is_refused_in_the_session_and_admission_is_the_backstop(fake_upstream, tmp_path,
+                                                                                      monkeypatch):
+    """V0_4_PLAN §1.3 (M4 §1 v0.4; review 2026-10-06): under the v3 preset's read floors, the first `finish` of a
+    session that read no trajectory is the finish call's error, naming the failed and the passing read each candidate
+    lacks — R may read and finish again within its caps, and then its candidate is admitted and screened; a session
+    that never reads decides nothing and no screen is paid. The reads are the host's record, not R's word; admission
+    checks the same record as the backstop (declaration_reasons with `reads`)."""
+    from ouroloop.chat import ChatTurn
+    cfg, activity, w0 = prepared_v3(fake_upstream, tmp_path, monkeypatch)
+    result = bench.improve(cfg, ".", out=lambda _line: None,
+                           researcher=rsi.SessionScript(lambda inputs: [memory_candidate(inputs)], read=False))
+    assert result["rounds"][0]["outcome"] == "invalid"
+    session = list(ct.Events(activity.root).of("research_session"))[0]
+    refused = [c for c in session["calls"] if c["tool"] == "finish" and not c.get("ok")]
+    assert refused and "not grounded" in refused[0]["error"] and "failed trajectory" in refused[0]["error"]
+    assert "passing trajectory" in refused[0]["error"]
+    assert not [r for r in activity.results.all() if "/train_screen" in r.attempt_id]
+
+    class ReadsWhenTold(rsi.SessionScript):
+        def session_turn(self, system, messages, tools):
+            last = messages[-1]
+            if last.get("role") == "tool" and any("not grounded" in str(r.get("output")) for r in last["results"]):
+                self.requests.append({"step": "session", "system": system})
+                self._queue = [self._reads(self.plan(self.inputs)), [self._declare(self.plan(self.inputs))]]
+                return ChatTurn("", self._queue.pop(0), "tool_use")
+            return super().session_turn(system, messages, tools)
+    cfg2, activity2, _ = prepared_v3(fake_upstream, tmp_path / "told", monkeypatch)
+    bench.improve(cfg2, ".", out=lambda _line: None,
+                  researcher=ReadsWhenTold(lambda inputs: [memory_candidate(inputs)], read=False))
+    grounded = ledger_of(activity2)["m1"]
+    assert grounded["admission"]["status"] == "admitted" and grounded["screen"]["net_flips"] is not None
+    session = list(ct.Events(activity2.root).of("research_session"))[0]
+    assert [c.get("ok") for c in session["calls"] if c["tool"] == "finish"] == [False, True]
+    assert session["trajectory_reads"] == 2
+    decl = {"predicted_affected": ["rsi.notify_after_update"]}
+    backstop = declaration_reasons(decl, reads={"failing": [], "passing": [], "min_failing": 1, "min_passing": 1,
+                                                "passing_listed": True})
+    assert len(backstop) == 2 and all(r.startswith("ungrounded") for r in backstop)
+
+
+def test_the_session_lists_passing_attempts_must_not_first_and_reads_the_interface_table(fake_upstream, tmp_path,
+                                                                                         monkeypatch):
+    """V0_4_PLAN §1.2, §1.3: the session's inputs hold api_errors.json — counted over the latest train measurement,
+    no task id in it — and trajectories.json lists the failures, then the passing train attempts with the tasks that
+    score a must-not check first and marked; the v0.4 screen's sample comes from the same passing tasks, must-not
+    first, and the screen's ledger row carries its fixes and sample regressions."""
+    from ouroloop.adapters import automationbench as ab
+    marked = "rsi.policy_hold"
+    monkeypatch.setattr(ab, "has_must_not", lambda suite, task: task == marked)
+    cfg, activity, w0 = prepared_v3(fake_upstream, tmp_path, monkeypatch, screen={"passing_sample": 1})
+
+    class Lister(rsi.SessionScript):
+        def _reads(self, candidates):
+            from ouroloop.chat import ToolCall
+            return [ToolCall("l1", "list_files", {"path": "inputs"}), *super()._reads(candidates)]
+    step = Lister(lambda inputs: [memory_candidate(inputs)])
+    bench.improve(cfg, ".", out=lambda _line: None, researcher=step)
+    assert any("api_errors.json" in s and "trajectories.json" in s for s in step.seen)   # in the inputs/ tree
+    inputs = step.inputs
+    passing = [t for t in inputs["trajectories"] if t["outcome"] == "passing"]
+    assert passing[0]["task_id"] == marked and passing[0]["must_not"] is True
+    assert all("must_not" not in t for t in passing[1:])
+    table = inputs["api_errors"]
+    assert table["split"] == "train" and table["attempts"] == len(rsi.TRAIN) and table["endpoints"]
+    assert any(e["endpoint"].startswith("PATCH api.hubapi.com/crm/v3/objects/contacts") for e in table["endpoints"])
+    assert not any(t in json.dumps(table) for t in rsi.TRAIN)
+    m1 = ledger_of(activity)["m1"]
+    assert m1["screen"]["sample"] == [marked]                     # one task, the must-not one first
+    assert m1["screen"]["fixes"] >= 1 and m1["screen"]["sample_regressions"] == 0
+    shown = xp.ledger_projection(xp.ledger_rows(xp.read(activity.root)))[0]["screen"]
+    assert (shown["fixes"], shown["sample_regressions"]) == (m1["screen"]["fixes"], 0)     # R reads them too
+
+
+def test_a_package_tool_candidate_passes_the_draft_chain_and_reaches_the_screen(fake_upstream, tmp_path, monkeypatch):
+    """V0_4_PLAN §1.2 (c): a `tools` candidate written in the session — the tool's code and its manifest entry —
+    matches its declaration (carrier tool, site its name), passes the whole draft chain in the worker (shape, kinds,
+    literals, isolated probe and the interface smoke that calls the tool), is admitted and is screened: a reading on
+    its failing set. The fixture's agent never calls the tool, so it fixes nothing and the v0.4 screen keeps it
+    from the gate; what is shown is that an interface fix travels the path a text change does."""
+    from ouroloop.agent import harness_package as hp
+    cfg, activity, w0 = prepared_v3(fake_upstream, tmp_path, monkeypatch,
+                                    components=("memory", "skills", "on_finish", "tools"))
+    tool = ("def run(ctx, args):\n"
+            "    r = ctx.call_tool('api_search', {'query': str(args.get('query') or 'contacts'), 'top_k': 3})\n"
+            "    return 'every page read: ' + str(r.output)[:2000]\n")
+
+    def plan(inputs):
+        manifest = {**hp.empty_manifest(), "api_version": "harness_package.v2", "tools": [{
+            "name": "search_all_pages", "description": "Search the API catalogue and read every page of the answer.",
+            "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}},
+            "entrypoint": "tools/search_all_pages.py:run"}]}
+        return [{"dir": "t1", "files": {"manifest.json": json.dumps(manifest), "tools/search_all_pages.py": tool},
+                 "declaration": {"mechanism": "a tool that reads every page of a search", "site": "search_all_pages",
+                                 "carrier": "tool", "trigger_condition": "when the agent searches the catalogue"}}]
+    bench.improve(cfg, ".", out=lambda _line: None, researcher=rsi.SessionScript(plan))
+    t1 = ledger_of(activity)["t1"]
+    assert t1["declaration"]["carrier"] == "tool" and t1["declaration"]["site"] == "search_all_pages"
+    assert t1["drafts"][-1]["ok"] is True and t1["package_ref"]
+    assert t1["admission"]["status"] == "admitted"
+    assert t1["screen"]["net_flips"] is not None and t1["screen"]["failing"]
+    checks = [e for e in ct.Events(activity.root).of("draft_check") if e.get("candidate", "").endswith("/t1")]
+    assert checks and checks[-1]["ok"]
+    view = hp.load_package(activity.objects, t1["package_ref"])
+    assert [t["name"] for t in view.manifest["tools"]] == ["search_all_pages"]
+
+
+def test_the_baseline_reads_w0s_dev_three_times_and_the_gate_pools_all_three(fake_upstream, tmp_path, monkeypatch):
+    """V0_4_PLAN §1.6 (c), M3 §2.1(a) (v0.4): `[bench] control_readings = 3` makes the baseline read W0's dev three
+    times, unconditionally and before any gate — three runs of one execution identity, the first the very run a
+    one-reading baseline records — and the gate's pooled control counts all three readings."""
+    cfg1, activity1, _ = prepared_v3(fake_upstream, tmp_path / "one", monkeypatch)
+    bench.baseline(cfg1, ".", out=lambda _line: None)
+    one = {r.run for r in activity1.results.all() if r.split == "dev"}
+    cfg, activity, w0 = prepared_v3(fake_upstream, tmp_path / "three", monkeypatch, bench_extra={"control_readings": 3})
+    report = bench.baseline(cfg, ".", out=lambda _line: None)
+    dev_runs = {r.run for r in activity.results.all() if r.split == "dev"}
+    assert len(dev_runs) == 3 and one <= dev_runs                        # the first reading keeps its identity
+    assert len(report["arms"]["base"]["control_readings"]) == 3
+    work = bench.improvement(bench.open_activity(cfg, ".", out=lambda _line: None),
+                             template_ref=cfg["rsi"]["task_plan_ref"])
+    pool = work.control_pool(w0)
+    assert {r.run for r in pool} == dev_runs and len(pool) == 3 * len(rsi.DEV)
+    bench.improve(cfg, ".", out=lambda _line: None,
+                  researcher=rsi.SessionScript(lambda inputs: [memory_candidate(inputs)]))
+    gate = ledger_of(activity)["m1"]["gate"]
+    assert gate["control_readings"] == 3
+    with pytest.raises(ValueError, match="control_readings"):
+        bench.BenchConfig.load({"bench": {"control_readings": 0}})
+
+
+def test_a_session_core_bootstraps_the_v04_r0_and_its_sessions_run_under_the_method_text(fake_upstream, tmp_path,
+                                                                                         monkeypatch):
+    """V0_4_PLAN §1.7 (M4 §1 v0.4): a core whose K carries the coding session bootstraps R0 with the session's method
+    text for research.propose (k candidates, interface first, failing and passing trajectories, restraint for an
+    over-action, conditions) and the direction-asking note prompt — not the summary call's "Propose at most one
+    change"; the session's system text is that method followed by SESSION_FORMAT, which holds the protocol only (the
+    inputs, the tools, the caps, the admission's read rule) and no method sentence; a v1 core keeps its R0."""
+    from ouroloop.research.session import SESSION_FORMAT, SESSION_READS
+    cfg, activity, w0 = prepared_v3(fake_upstream, tmp_path, monkeypatch)
+    prompts = P.prompts_of(activity.objects, activity.objects.load(w0, ct.SystemRelease).research_ref)
+    assert prompts["research.propose"] == P.PROPOSE_SESSION and prompts["research.diagnose"] == P.DIAGNOSE_SESSION
+    assert "at most one change" not in P.PROPOSE_SESSION and "api_errors.json" in P.PROPOSE_SESSION
+    assert "restraint" in P.PROPOSE_SESSION and "passing attempt" in P.PROPOSE_SESSION
+    assert "Use the round" not in SESSION_FORMAT and "api_errors.json" in SESSION_FORMAT
+    step = rsi.SessionScript(lambda inputs: [memory_candidate(inputs)])
+    bench.improve(cfg, ".", out=lambda _line: None, researcher=step)
+    system = next(r["system"] for r in step.requests if r["step"] == "session")
+    assert system.startswith(P.PROPOSE_SESSION) and SESSION_FORMAT[:60] in system
+    assert SESSION_READS[:40] in system                                  # the preset's read floors are protocol
+    from test_harness_loop import v06_prepared
+    _, v1, v1_release = v06_prepared(fake_upstream, tmp_path / "v1")
+    v1_prompts = P.prompts_of(v1.objects, v1.objects.load(v1_release, ct.SystemRelease).research_ref)
+    assert v1_prompts["research.propose"] == P.PROPOSE_PACKAGE and v1_prompts["research.diagnose"] == P.DIAGNOSE_NOTE
+
+
+# ---------------------------------------------------------------------------- v0.4 review (2026-10-06)
+def test_after_an_install_the_session_inputs_see_the_whole_train_split(fake_upstream, tmp_path, monkeypatch):
+    """V0_4_PLAN §1.3, §1.6 (review 2026-10-06): after an install the measurement reruns only W0's former failures,
+    so the next round's session inputs fill in the train tasks it did not rerun from the activity's earlier
+    measurements: the v0.4 passing sample is drawn from every passing train task (the fixture has five train tasks, so
+    all five, under the sample's six), R's passing list includes the tasks W0 passed and nobody reran, the screen's
+    "before" covers them, and api_errors.json counts over the whole train split. The measurement itself is not
+    touched: it still holds only the rerun tasks."""
+    captured = []
+    original = bench.Improvement.session_inputs
+
+    def recording(self, evidence, bound, **kw):
+        out = original(self, evidence, bound, **kw)
+        captured.append((list(evidence.get("train") or ()), out))
+        return out
+    monkeypatch.setattr(bench.Improvement, "session_inputs", recording)
+    cfg, activity, w0 = prepared_v3(fake_upstream, tmp_path, monkeypatch, rounds=2)
+    result = bench.improve(cfg, ".", out=lambda _line: None,
+                           researcher=rsi.SessionScript(lambda inputs: [memory_candidate(inputs)]))
+    assert [r["outcome"] for r in result["rounds"]][0] == "installed", result["rounds"]
+    assert len(captured) >= 2
+    w0_rows, first = captured[0]
+    measured, second = captured[1]
+    w0_passed = {r.task_id for r in w0_rows if r.success}
+    rerun = {r.task_id for r in measured}
+    assert rerun == {r.task_id for r in w0_rows if not r.success} and w0_passed and not w0_passed & rerun
+    assert set(second.sample) == set(rsi.TRAIN) and len(second.sample) == len(rsi.TRAIN) <= 6
+    by_id = {r.attempt_id: r.task_id for r in activity.results.all()}
+    assert w0_passed <= {by_id[a] for a in second.passing_attempts}
+    assert set(second.before) == set(rsi.TRAIN) and all(second.before[t] for t in w0_passed)
+    assert second.api_errors["attempts"] == len(rsi.TRAIN) and first.api_errors["attempts"] == len(rsi.TRAIN)
+
+
+def test_the_round_hands_the_draft_check_the_literal_index_its_answers_and_the_header_exemptions(
+        fake_upstream, tmp_path, monkeypatch):
+    """V0_4_PLAN §1.5 (review 2026-10-06), through Improvement.round_inputs: Drafts gets the literal index (literal ->
+    its train tasks, not a flat set), the assertion params' literals as `answers`, and the header names among its
+    allowed literals — so a candidate naming a value two train tasks share and a column header of one task passes its
+    draft check, and one naming a single task's value is refused. Fails if the index is flattened or the headers or
+    the answers are dropped."""
+    from ouroloop.agent import harness_package as hp
+    from ouroloop.research import drafts as drafts_mod
+    made = []
+
+    class Recording(drafts_mod.Drafts):
+        def __init__(self, *args, **kw):
+            super().__init__(*args, **kw)
+            made.append(self)
+    monkeypatch.setattr(drafts_mod, "Drafts", Recording)
+    state = {"Legal Hold": {"rsi.notify_once", "rsi.policy_hold"}, "Exclusion Rule": {"rsi.notify_once"},
+             "Ada Quist": {"rsi.policy_hold"}}
+    monkeypatch.setattr(bench.Improvement, "train_state_index", lambda self: (dict(state), {"Exclusion Rule"}))
+    # the grading params' literals: one task's checked amount (the fixture's own params hold no literal)
+    from ouroloop.research import diagnosis as dg
+    monkeypatch.setattr(dg, "train_literal_index", lambda store: ({"4,250": {"rsi.notify_once"}}, {"Stage"}))
+    cfg, activity, w0 = prepared_v3(fake_upstream, tmp_path, monkeypatch)
+    text = f"Before you finish, {rsi.FINISH_CHECK_MARK}. Keep Legal Hold rows; read the Exclusion Rule column.\n"
+    bench.improve(cfg, ".", out=lambda _line: None,
+                  researcher=rsi.SessionScript(lambda inputs: [memory_candidate(inputs, text=text)]))
+    drafts = made[0]
+    assert isinstance(drafts.literals, dict) and drafts.literals["Legal Hold"] == state["Legal Hold"]
+    assert "Exclusion Rule" in drafts.allowed_literals and "Exclusion Rule" not in drafts.answers
+    assert drafts.answers == {"4,250"} and "4,250" in drafts.forbidden()      # a number, but one task's answer
+    assert "Stage" in drafts.allowed_literals                                   # the params' headers too
+    assert "Ada Quist" not in drafts.answers                                   # a state value, not an answer
+    assert {"Legal Hold", "Exclusion Rule"}.isdisjoint(drafts.forbidden() - drafts.allowed_literals)
+    assert "Ada Quist" in drafts.forbidden()
+    m1 = ledger_of(activity)["m1"]
+    assert m1["drafts"][0]["ok"] is True and m1["admission"]["status"] == "admitted"
+    errors, _ = drafts.check({"manifest.json": json.dumps({**hp.empty_manifest(), "memory": {"enabled": True}}),
+                              "memory.md": "Ask Ada Quist first.\n"})
+    assert errors and "memory.md:1: 'Ada Quist'" in errors[0]
+
+
+def test_read_tasks_counts_only_the_reads_the_host_served(fake_upstream, tmp_path):
+    """V0_4_PLAN §1.3 (review 2026-10-06): the reads a floor is checked against are the ones the host served — bytes
+    returned, no refusal; a dev attempt (AccessDenied), a read past the session's cap, a read past the end of the
+    record (0 bytes) and a malformed read meet no floor, and a second read of one attempt counts once."""
+    from test_diagnosis import run
+    from ouroloop.research.session import SessionLimits, TrajectoryReader
+    results, rows, _ = run(fake_upstream, tmp_path, [rsi.TRAIN[1]], "train",
+                           worker=rsi.BusinessWorker(ignore_finish_check=True))
+    run(fake_upstream, tmp_path, [rsi.DEV[0]], "dev")
+    train = rows[0]
+    dev = next(r for r in results.all() if r.split == "dev")
+    reader = TrajectoryReader(results, tmp_path / "transcripts", SessionLimits(max_trajectory_bytes=100,
+                                                                               max_trajectory_bytes_total=150))
+    assert reader.read(dev.attempt_id)[1] and reader.read(train.attempt_id, 10 ** 9, 50)[1] is False
+    assert reader.read(train.attempt_id, "x", 1)[1]
+    assert reader.read_tasks() == {"failing": [], "passing": []}            # denied, 0 bytes, malformed: none served
+    assert reader.read(train.attempt_id, 0, 100)[1] is False and reader.read(train.attempt_id, 100, 100)[1]
+    assert reader.read_tasks() == {"failing": [train.task_id], "passing": []}
+    assert reader.read(train.attempt_id, 100, 40)[1] is False
+    assert reader.read_tasks() == {"failing": [train.task_id], "passing": []}   # one attempt, counted once

@@ -445,27 +445,124 @@ def _texts(files: dict[str, str]) -> str:
     return "\n".join(parts)
 
 
+# v0.4 (docs/design/V0_4_PLAN.md §1.5; docs/modules/00_CONTRACTS.md §3, v0.4): which train literals are a task's
+# answer. A value written in two or more train tasks is the domain's vocabulary, not one task's answer; a pure number
+# is a constant as often as a value ('3000' of `[:3000]`); a field name or a column header is the schema. Only a
+# value of exactly one train task stays forbidden — the v0.3 check refused 14 of 20 drafts on ordinary words.
+NUMBER = re.compile(r"[+-]?\d[\d.,]*%?")
+HEADER_LISTS = ("headers", "header", "columns", "fieldnames")
+MIN_SHARED_TASKS = 2
+
+
+def header_names(values) -> set[str]:
+    """The schema words inside train data: every string key of a mapping (a record's field, a sheet row's column)
+    and the strings of a list under a key named like a header row (HEADER_LISTS)."""
+    out: set[str] = set()
+
+    def walk(v, key=None) -> None:
+        if isinstance(v, dict):
+            for k, x in v.items():
+                if isinstance(k, str) and k.strip():
+                    out.add(k.strip())
+                walk(x, k)
+        elif isinstance(v, (list, tuple)):
+            for x in v:
+                if isinstance(x, str) and isinstance(key, str) and key.lower() in HEADER_LISTS and x.strip():
+                    out.add(x.strip())
+                else:
+                    walk(x)
+    walk(values)
+    return out
+
+
+def add_literals(index: dict, task_id: str, values) -> None:
+    """Record the literals of one train task's values (assertion params or initial state) in `index`: literal ->
+    the set of train tasks it occurs in."""
+    for lit in literals_of(values):
+        index.setdefault(lit, set()).add(str(task_id))
+
+
+def forbidden_literals(index: dict, *, exempt=frozenset(), answers=frozenset()) -> set[str]:
+    """The literals a package may not contain: those of exactly one train task (fewer than MIN_SHARED_TASKS), less
+    the `exempt` schema words (header_names) and less pure numbers — except a number that is a train assertion's
+    value (`answers`: the literals of the train assertion params). A number in one task's state or in code
+    (`[:3000]`) is a constant as often as a value; a number the grader checks for in one task ('13,650', a finance
+    amount) is that task's answer and stays forbidden — of finance's 50 train tasks, 35 have such an amount (review of
+    2026-10-06). An index given as a plain set (the v0.3 form) is every literal, as before."""
+    if not isinstance(index, dict):
+        return set(index) - set(exempt)
+    answers, exempt = set(answers), set(exempt)
+    return {lit for lit, tasks in index.items()
+            if len(set(tasks)) < MIN_SHARED_TASKS and lit not in exempt
+            and (not NUMBER.fullmatch(lit) or lit in answers)}
+
+
+def _pattern(lit: str) -> re.Pattern:
+    """A literal as a whole token. Case-sensitive (v0.4): 'not sent' in a hook's regex is not the sheet value
+    'Not Sent'; an e-mail address is matched in any case, since it is the same address."""
+    flags = re.IGNORECASE if literal_kind(lit) == "e-mail address" else 0
+    return re.compile(r"(?<![\w@.-])" + re.escape(lit) + r"(?![\w@-])", flags)
+
+
+def literal_findings(files: dict[str, str], literals: set[str], *, allowed: set[str] = frozenset()) -> list[dict]:
+    """Where each forbidden literal occurs: [{file, line, literal, kind}], in file order. Searched in what the host
+    uses — each file's path (line 0), its body line by line, and the manifest's decoded strings as well (a JSON
+    escape must not hide a literal; a hit there that the raw text lacks has line None). A finding is a structure
+    error: a single task's answer written into a shared component (docs/modules/00_CONTRACTS.md §3)."""
+    whole = _texts(files)
+    lower = whole.lower()
+    # a substring test over everything first (an e-mail address in any case); only the few that pass get a pattern
+    # and the line-by-line pass
+    wanted = [(lit, _pattern(lit)) for lit in sorted(set(literals) - set(allowed))
+              if lit in whole or ("@" in lit and lit.lower() in lower)]
+    out: list[dict] = []
+    for path in sorted(files):
+        text = files[path] if isinstance(files[path], str) else ""
+        found: set[str] = set()
+        for lit, pat in wanted:
+            if pat.search(path):
+                out.append({"file": path, "line": 0, "literal": lit, "kind": literal_kind(lit) or "value"})
+                found.add(lit)
+        for n, line in enumerate(text.splitlines(), start=1):
+            for lit, pat in wanted:
+                if pat.search(line):
+                    out.append({"file": path, "line": n, "literal": lit, "kind": literal_kind(lit) or "value"})
+                    found.add(lit)
+        if path == "manifest.json":
+            try:
+                decoded = json.dumps(json.loads(text), ensure_ascii=False)
+            except (json.JSONDecodeError, TypeError):
+                decoded = ""
+            for lit, pat in wanted:
+                if lit not in found and pat.search(decoded):
+                    out.append({"file": path, "line": None, "literal": lit, "kind": literal_kind(lit) or "value"})
+    return out
+
+
 def literal_hits(files: dict[str, str], literals: set[str], *, allowed: set[str] = frozenset()) -> list[str]:
-    """Which forbidden literals occur in the package, matched as whole tokens, case-insensitively. A hit is a
-    structure error: a single task's answer written into a shared component (docs/modules/00_CONTRACTS.md §3)."""
-    body = _texts(files)
-    hits = []
-    for lit in sorted(set(literals) - set(allowed)):
-        if re.search(r"(?<![\w@.-])" + re.escape(lit) + r"(?![\w@-])", body, re.IGNORECASE):
-            hits.append(lit)
-    return hits
+    """Which forbidden literals occur in the package (literal_findings), each once, sorted."""
+    return sorted({f["literal"] for f in literal_findings(files, literals, allowed=allowed)})
 
 
-def describe_hits(hits: list[str], *, what: str = "the package") -> str:
-    """The check output for literal hits: counts by kind, never the values, so the output returned to R carries
-    no task data of its own (docs/modules/05_EXECUTION_BUDGET.md §1)."""
-    counts: dict = {}
+MAX_LISTED_FINDINGS = 12
+
+
+def describe_hits(hits, *, what: str = "the package") -> str:
+    """The check output for literal findings (v0.4): file, line and the literal, so R revises the line it wrote
+    instead of guessing (v0.3 gave counts only, and 14 of R's 25 turns went to blind revisions). The literal is train
+    data R already reads in its failure summaries and trajectories; the output goes back to R only, never into a
+    package. Plain strings (literal_hits) are listed as they are."""
+    listed = []
     for h in hits:
-        kind = literal_kind(h) or "value"
-        counts[kind] = counts.get(kind, 0) + 1
-    listed = ", ".join(f"{n} {k}{'es' if n > 1 and k.endswith('ss') else 's' if n > 1 else ''}"
-                       for k, n in sorted(counts.items()))
-    return f"{what} contains task-specific values from train tasks ({listed}); replace them with a general rule"
+        if isinstance(h, dict):
+            where = h["file"] if h.get("line") is None else f"{h['file']}:{h['line']}"
+            listed.append(f"{where}: {h['literal']!r} ({h.get('kind') or 'value'})")
+        else:
+            listed.append(f"{h!r} ({literal_kind(h) or 'value'})")
+    more = f"; and {len(listed) - MAX_LISTED_FINDINGS} more" if len(listed) > MAX_LISTED_FINDINGS else ""
+    return (f"{what} contains task-specific values from train tasks — a value that occurs in only one train task is "
+            f"that task's answer: " + "; ".join(listed[:MAX_LISTED_FINDINGS]) + more
+            + ". Replace each with a general rule (match case-sensitively: a lower-case phrase is not the value)")
 
 
 # ---------------------------------------------------------------------------- storage

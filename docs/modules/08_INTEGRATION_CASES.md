@@ -10,6 +10,8 @@
 > 明细见 `history/V0_6_AUDIT_2026-10-01.md` 与 `history/V0_6_REVIEW_2026-10-02.md`。标为第二版的用例仍是待开发规格。v0.5 历史见 [快照](../history/V0_5_IMPLEMENTATION.md)。首版验收诊断输入、能力包文本/代码演化、隔离/回归/发布与递归；第二版验收教学/训练固化，旧草案用例保留原义。真实实验与 fixture 分开。
 >
 > v0.3（2026-10-04，[DESIGN v0.7](../DESIGN.md)、[ROADMAP §3](../ROADMAP.md) v0.3 步骤）：第一版交付物改为“可演化的 agent 程序 + 最小运行壳 + pin 的模型”，比较主张改称“同模型”（替代“同 actor”，C1～C4 含义不变）。本文件新增 IT6-29～43（§1a），v0.3 用例各标所属模块与一个 新增 测试，第二版用例不带测试，IT6-35 已撤销（2026-10-04 剪裁，DESIGN §9“考虑过、不做（v0.3）”）；§3 补 v0.1/v0.2 的事实与 v0.3 的效果目标。v0.1/v0.2 的结果与 2026-10-03/04 的记录不删（[RESULTS.md](../RESULTS.md)）。不变并在此写明的：train/dev/test 的信息分离由固定代码执行；final 先封存、提交再运行；带预留的预算账本；R0 对 R1 以下游 W* 比较；Docker 隔离加工具 broker；`claude_code` provider。
+>
+> v0.5（2026-10-07 实现；2026-10-08 现状）：新增 §1b（IT6-44～50，经验库、固定轮与研究剧本，测试都已实现）。v0.4 finance 的封存 final（+8.0 [−4.0, +22.7]，不确定）见 [RESULTS](../RESULTS.md) 与 [分析](../history/FINANCE_V04_ANALYSIS_2026-10-07.md)；v0.5 只有 support 上的过程证据，对照 2026-10-08 由用户停止，H1 未测。
 
 ## 1. 核心闭环与必须覆盖的场景
 
@@ -21,7 +23,7 @@ v0.3 必做 IT6-29～34、36、39～41、43（v0.3，2026-10-04）；IT6-37 可�
 
 | ID | 场景/涉及模块 | 必须观察的结果 |
 |---|---|---|
-| IT6-01 | 完整蒸馏，M0/M1/M8/M2/M3/M5/M7 | 有效 source → 自动适配 → reviewed 真实执行 → 合格 SFT → artifact → 无教师 gate → 安装 → 新 session 真正加载新 actor（v0.3：reviewed 执行指教师在网关审阅 act 调用，IT6-38） |
+| IT6-01 | 完整蒸馏，M0/M1/M8/M2/M3/M5/M7 | 有效 source → 自动适配 → reviewed 真实执行 → 合格 SFT → artifact → 无教师 gate → 安装 → 新 session 真正加载新 actor（v0.3：reviewed 执行指教师在网关审阅 act 调用，IT6-38；v2，2026-10-08：不做自动适配，学生在 W0 下、教师带 K（各域 W\* 原文）审阅，V2 §7 第 4 项） |
 | IT6-02 | 隐私与投影，M0/M1/M2/M8/M3 | 私有参考、被拒草稿、review 理由和 oracle 标记不进入学生输入/训练/部署；审计仍可追溯（v0.3：学生输入就是网关记录的 `messages`，M2 §1a（v0.3）） |
 | IT6-03 | 分离决策，M1/M2/M3 | 同 actor 的 controller 开/关；实际 no/pushback 改变行为；误拒和额外费用也报告；标签非 teacher 自评 |
 | IT6-04 | 假接线，M1/M3 | actor ref 已变但调用旧 provider，或正式评测存在 teacher，必须验收失败 |
@@ -65,12 +67,28 @@ IT6-14（此前草案“首版不得调用研究员”）撤销，不实现为�
 | IT6-35 | 撤销（2026-10-04） | 原草案的序贯提前拒绝已从 v0.3 剪掉（DESIGN §9“考虑过、不做（v0.3）”）；ID 不复用 | — |
 | IT6-36 | 多域活动与分层划分，M7 | `[bench] domains` 取列表（上游 marketing 之外还有 sales、support、hr、finance、operations，各 100 题）；划分按域各自做再合并；新域只分 train/dev/test，按计分断言组合 × 工具族分层；Marketing 的划分原样冻结且其 test 标为已耗尽（被 v0.1 final、final-1、final-2 读过三次），新主张不得再用；并发默认 8，429/529 是未计费的重试、不是暂停；报告按域与合并各列 `cost_per_attempt`、账本、headroom（起始 W 从未通过的内层题数）；墙上时间如实记：单域 25 题 gate 约 10～15 分钟，多域合并 dev（约 125 题）约 45～60 分钟，只作记录 | 已实现（2026-10-05，第 5 步）`test_bench_phase.py::test_it6_36_domains_are_split_per_domain_pooled_and_stratified_while_marketings_split_is_frozen_and_its_test_is_spent`；`test_report.py::test_it6_36_the_report_lists_cost_per_attempt_the_ledger_and_headroom_per_domain`。实现与本行的出入（v0.3，2026-10-05）：结果与判分明细存在合并名下的一个目录、划分按领域存放（M7 §2“实现”）；研究位的两半在每个领域内切，两半都覆盖每个领域（M6 §2，`bench.halve_dev`）；按领域的 headroom 是研究位记录的计数（`headroom_by_domain`），台账按领域的是 gate 后三类题的计数；并发 8 是 v3 preset 的缺省（`[bench] concurrency` 写了就按写的），16 路试跑是手动一步（ROADMAP 第 5 步） |
 | IT6-37（可选） | 匹配成本的 best-of-k W0 臂，M3/M7 | 发表结果时 final 计划多一臂 best-of-k W0（M3 §2.2（v0.3）；[arXiv 2607.12227](https://arxiv.org/abs/2607.12227) 的批评）：k 由固定代码按 `k = max(2, round(cost_W* / cost_W0))` 从合并对照与 W* 的每次尝试平均费用算出并写入封存计划；语义是 oracle：W0 每题 k 次独立尝试、任一通过即通过，是同成本测试时算力的上界、不可部署；报告与 W* 并列给出 pass@k（标为上界）与各臂每题费用；永不进入 C1 的裁决；repeats 从 2 到 4 在预算允许时 | （可选，发表时，待实现）`test_paid_run_safety.py::test_it6_37_when_the_final_carries_the_optional_best_of_k_arm_its_k_is_sealed_in_the_plan_and_it_is_reported_beside_w_star_outside_c1` |
-| IT6-38（第二版） | 教师在网关，M1/M2/M8 | 采集模式下只有 `role="act"` 的 response 先到教师；PASS 原样返回、REPLACE 以替换响应返回，包收到的是被接受的那条，拿不到 proposal 与理由；该条网关记录多一个 `review_ref?`；aux 不经教师；训练投影只取 PASS 的 act（M2 §2 第 5 步）；生产与 gate 模式配置了教师即启动拒绝（IT6-04 不变）。v0.3 只记 `role`，不建教师 | 第二版，无测试 |
+| IT6-38（第二版） | 教师在网关，M1/M2/M8 | 采集模式下只有 `role="act"` 的 response 先到教师；PASS 原样返回、REPLACE 以替换响应返回，包收到的是被接受的那条，拿不到 proposal 与理由；该条网关记录多一个 `review_ref?`；aux 不经教师；训练投影取 `accepted`：PASS 的 act 加 REPLACE 替换响应的动作部分（M2 §2 第 5 步；v2，2026-10-08 改，原为只取 PASS）；生产与 gate 模式配置了教师即启动拒绝（IT6-04 不变）。v0.3 只记 `role`，不建教师 | 第二版，无测试 |
 | IT6-39 | R 作为有界编码会话，M4/M5 | 一轮一个编码会话：R 在 worker 里对包目录用文件工具编辑，≤ `research_session.max_turns`（40）轮、≤ `research_session.max_edits`（24）次编辑，上限覆盖整轮含修订，修订在同一会话续写；产出至多 k=3 个候选目录与声明文件（`finish`）；工具只有文件工具、`read_trajectory`、`finish`，无 shell、无网络；会话拿不到宿主仓库、评分器、dev/test；之后的草稿检查（形状 → 隔离 import/接口 smoke → tests）、冻结、准入不变；会话的模型调用按研究调用计费（今天占花费 3.2%）；R 的输入增加：原始 train 轨迹经只读 `read_trajectory`（单次 ≤ `research_session.max_trajectory_bytes` 65536，累计 ≤ `max_trajectory_bytes_total` 524288）；dev 失败类型直方图（只有枚举类型与计数，无 params、无题号）；账本投影；test 任何形式零进入 | 已实现（2026-10-05）`test_research_round.py::test_it6_39_r_edits_the_package_in_one_bounded_worker_session_per_round_and_the_draft_check_is_unchanged`；`test_research_round.py::test_it6_39_r_reads_raw_train_trajectories_through_a_byte_capped_tool_and_a_dev_type_histogram_without_task_facts`；会话自身的边界在 `test_research_session.py`（M4 §6）。实现与设计的出入：模型循环在宿主、文件树在 worker（M4 §1（v0.3）实现段） |
 | IT6-40 | 研究位的开位条件、内层 gate 与 headroom，M6/M7 | 内层 gate 仍是 dev 的前一半、外层是后一半（如今天），但任何 gate 不少于 `min_tasks` 25 题，所以 dev ≥ 2 × 25 = 50 题才开研究位；只含 Marketing（dev 25）的活动不开位，outcome `no_slot_pool`、C4 `not_run`；内层 gate 用合并对照与确认复测（IT6-33）；`campaign.worker_round_limit` 2 → 3；开位前做 headroom 检查：起始 W 从未通过的内层题少于 `campaign.min_headroom_tasks`（6）时不问 R、不开两支，记 `no_headroom`（v0.2 的 W* 在内层 67～80% 时两支都加不出东西）；裁决只看下游 W*，两支 W* 相同仍判 inconclusive（M6 §3 不变） | 第 2 步已实现的部分（2026-10-04）：`test_cycle.py::test_a_slot_without_headroom_asks_r_nothing`、`test_the_headroom_check_runs_before_the_budget_check`、`test_a_dev_split_under_twice_min_tasks_opens_no_slot`、`test_an_arm_pools_only_the_common_readings_and_its_own`、`test_an_inner_gate_confirms_before_it_installs`；`worker_round_limit` 3 见 `test_the_v3_preset_freezes_a_k_with_the_agent_kind_the_effort_ceiling_and_the_five_limits`；（v0.3，2026-10-05，第 5 步）多领域时“前一半/后一半”在每个领域内切、两半都覆盖每个领域（M6 §2），`test_cycle.py::test_the_slot_halves_a_pooled_dev_inside_each_domain`，开位前的余量按领域记（`headroom_by_domain`，`test_bench_phase.py::test_it6_36_…`） |
 | IT6-41 | 导出 app = agent 包 + 运行壳 + 模型服务描述，M3/M1 | 干净目录只放运行壳、已安装 release 的 agent 包（运行 bundle）与模型服务描述符，即可跑一个合法任务；运行壳仍在部署时写网关日志与 broker 事件；导出物不含 R、评分器、tests、研究材料、凭据；包字节与评测时相同，隔离镜像 digest 一致 | （待实现：v0.3 必做，ROADMAP 第 1～5 步都没有排它，须在第 6 步 v0.3.0 之前补上）`test_export.py::test_it6_41_the_exported_app_is_the_agent_package_the_runner_shell_and_a_model_descriptor_and_runs_a_task_from_a_clean_directory` |
 | IT6-42（第二版） | 组件归因与删除规则，M4/M3 | 第二版：以账本的逐题 fixed/regressed 把增益归到组件，连续两轮没有归因增益的组件由固定代码提出删除候选、同过筛选与 gate；v0.3 不做归因，停用候选仍由 R 自己提出（IT6-26） | 第二版，无测试 |
 | IT6-43 | 失败语义，M1/M5 | worker 崩溃或 agent 在 `run` 中抛错 = 基础设施（尝试 invalid，按冻结 retry_policy 补一次，连续超过 `max_infrastructure_failures` 暂停）；在草稿检查中抛错 = 草稿失败（回传检查输出，占一次修订）；硬限额结束 = termination=budget（尝试有效，按最终状态评分）；三者各自计数，不互相冒充；`claude_code` provider 与计费不变 | 已实现（2026-10-04，第 1 步）`test_package_worker.py::test_it6_43_a_crash_at_run_time_is_infrastructure_a_crash_in_the_draft_check_is_a_draft_failure_and_a_hard_limit_is_budget` |
+
+### 1b. v0.5 的用例（2026-10-07 实现；2026-10-08 现状）
+
+[V0_5_PLAN](../design/V0_5_PLAN.md) §7 的实现对照是测试清单的权威；这里只列跨模块的几条。离线测试，全部已实现。support 两臂对照 2026-10-08 由用户停止：经验库的用例保留；方法库的用例（`tests/test_methods.py`、`test_v05.py` 与 `test_v05_phases.py` 的方法与 learn 部分）随方法库按瘦身第三批拟删（用户可否决），R 的研究剧本的用例保留。
+
+| ID | 场景/涉及模块 | 必须观察的结果 | 测试 |
+|---|---|---|---|
+| IT6-44（v0.5） | 经验库的流只读 train，M4/M5/M7 | 冻结顺序的首遇读数按来源留一检索；失败后带失败断言重试一次、重试不记功；提炼、检查、记功、退役只读 train 尝试；D ≤ `abort_d` 时快照不付 gate，否则快照作为固定代码的候选过筛选、gate、确认后安装 | `test_v05_phases.py::test_the_library_stream_reads_train_only_distils_credits_and_gates_its_snapshot`、`test_a_failed_first_encounter_is_retried_with_its_failed_checks_and_a_library_without_effect_is_not_gated`、`test_the_snapshot_is_held_back_by_d_alone_and_b_is_only_reported` |
+| IT6-45（v0.5） | 留一与 dev/test 的检索，M1/M4 | train 上条目从不检索给它的来源题及其近似重复题；dev/test 题从来不是来源，看到全部 active 条目；包里没有库时系统提示逐字节不变，v0.4 尝试的第一条系统提示与 v0.5 之前相同 | `test_library.py::test_an_entry_is_never_retrieved_for_its_source_task_or_a_near_duplicate_on_train`、`test_dev_and_test_retrieval_sees_every_active_entry`、`test_with_the_start_site_off_the_system_prompt_is_byte_identical_to_the_package_without_a_library`；`test_v05.py::test_a_v04_attempts_first_system_prompt_is_the_same_bytes_as_before_v05` |
+| IT6-46（v0.5） | R 写不了库，M4 | R 对 `skills/library/` 的改动被撤回并附注；单题字面量的条目在一次占位替换后仍不过就丢，流继续 | `test_library.py::test_r_cannot_write_the_library_its_edits_are_undone_with_a_note`、`test_an_entry_with_a_single_train_tasks_literal_is_refused_after_one_placeholder_pass`；`test_v05_phases.py::test_a_library_entry_with_a_single_tasks_literal_is_refused_and_the_stream_continues` |
+| IT6-47（v0.5） | 固定轮与流的续跑，M5 | 打断后重跑不重复付费：流从检查点继续；快照轮在筛选、gate 首读、确认三处打断后续上；固定轮保持序号与实验 id；R 的三轮照常 | `test_v05_phases.py::test_an_interrupted_stream_continues_where_it_stopped_and_refuses_another_w`、`test_an_interrupted_snapshot_round_resumes_where_it_stopped_and_pays_nothing_twice`、`test_a_fixed_round_keeps_its_ordinal_and_experiment_id_until_it_ends`、`test_r_still_gets_its_three_rounds_when_a_fixed_rounds_gate_is_open` |
+| IT6-48（v0.5） | 付费前的预算检查，M5 | 固定轮与 `learn` 在第一笔付费前核对放不放得下，放不下就 `budget_exhausted`、一分不花 | `test_v05_phases.py::test_learn_and_a_fixed_round_refuse_before_paying_what_the_budget_cannot_hold` |
+| IT6-49（v0.5） | R 的研究剧本，M4/M6 | 剧本每条教训的引用对不上台账就删；通过的文本给下一次会话 | `test_v05.py::test_a_playbook_lesson_is_kept_only_with_a_matching_ledger_citation_and_shown_to_the_next_session` |
+| IT6-50（v0.5） | 旧配置不变，M7 | v0.4 的 preset 保留它的 K、R0 与会话文本；两张 v0.5 表只由 preset 设；没有 v0.5 记录的活动报告与原来相同 | `test_v05.py::test_the_v4_preset_keeps_its_k_r0_and_session_text`、`test_a_config_cannot_set_the_preset_only_tables`；`test_v05_phases.py::test_an_activity_without_v05_records_reports_as_before` |
+
+真实运行（2026-10-08，[JOURNAL](../JOURNAL.md)）：support 的 v0.5 臂跑过一次 IT6-44 的路径（3b）。D = 3.0，快照过 dev gate 并装上（`9f07d95032b4`），都是过程证据；没有 final。
 
 ## 2. 可选接入
 
@@ -129,7 +147,7 @@ IT6-14（此前草案“首版不得调用研究员”）撤销，不实现为�
   - R 由 manual provider 作答，即 Claude 读请求文件回复；
   - actor 是对包内容作出反应的确定性假 actor；
   - 任务世界是以 marketing 域名导出的小型 fixture 上游。
-- v0.3 第 3 步（2026-10-05）：离线干跑 `examples/rehearsal/dry_run.py` 走新的 R 路径——脚本研究员以工具调用在 worker 的 `/work` 里写候选目录并 `finish` 声明，候选经筛选再付 gate，台账进 E；v3 preset 按世界规模调低（`min_tasks` 8、`min_headroom_tasks` 2，尝试串行），因为 16 题的世界容不下 Marketing 的 25；结果见 REHEARSAL §8。经 CLI、由 manual provider 作答的彩排尚未在新路径上做：manual provider 的回复要写成工具调用（`{"text", "tool_calls": [...]}`，或正文里一个 `{"tool", "args"}` JSON），这是下一次彩排的事。
+- v0.3 第 3 步（2026-10-05）：离线干跑 `examples/rehearsal/dry_run.py`（2026-10-08 移出 HEAD，tag `archive-2026-10-08` 上可读）走新的 R 路径——脚本研究员以工具调用在 worker 的 `/work` 里写候选目录并 `finish` 声明，候选经筛选再付 gate，台账进 E；v3 preset 按世界规模调低（`min_tasks` 8、`min_headroom_tasks` 2，尝试串行），因为 16 题的世界容不下 Marketing 的 25；结果见 REHEARSAL §8。经 CLI、由 manual provider 作答的彩排尚未在新路径上做：manual provider 的回复要写成工具调用（`{"text", "tool_calls": [...]}`，或正文里一个 `{"tool", "args"}` JSON），这是下一次彩排的事。
 - v0.3 的改动（v0.3，2026-10-04）：假 actor 改为网关后面的假模型，默认 agent 作为 W0 的包运行它；另备一个 fixture agent 包（在默认 agent 上加一次 `role="aux"` 的发送前核对调用，并在指定 dev 题上据此改对），让 gate 候选臂的网关日志出现 agent 代码发出的 aux 调用与 broker 事件；注入表加三行：agent 在 `run` 中抛错 → 尝试 invalid（基础设施）；agent 在草稿检查中抛错 → 占一次修订；agent 调用未声明的 role → 草稿检查结构错误。其余做法、验收与边界不变。
 - 验收：
   - 至少一次走到 gate 裁决；

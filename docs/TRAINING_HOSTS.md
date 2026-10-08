@@ -1,6 +1,6 @@
 # 训练主机与训练器插件
 
-> 本文说明现有决策 trainer、作业与 serving，保持兼容。新 actor 生成训练归第二版，首选 Tinker 托管服务及独立生成 artifact/provider 契约，不要求本地/SSH host。首版能力包演化不要求训练账号。见 [技术选型](TECHNOLOGY.md)与 [M2](modules/02_EVIDENCE_TRAINING.md)。
+> 本文说明现有决策 trainer、作业与 serving，保持兼容。新 actor 生成训练归第二版，以 Tinker 托管服务为参考实现（自托管训练写插件模块路径，由 `JobTrainer` 作为作业运行，不走 `module:Class`；评测推理走 RunPod 上自托管的 vLLM；2026-10-08，V2 §7 第 6 项），加独立生成 artifact/provider 契约，不要求本地/SSH host。首版能力包演化不要求训练账号。见 [技术选型](TECHNOLOGY.md)与 [M2](modules/02_EVIDENCE_TRAINING.md)。
 
 
 本文介绍现有的决策模型训练路径，不限于哪一种决策模型。一种模型就是一个训练器插件：TDE 是 demo 用的那一种（`tde`），签名小模型是另一种（`signature`，只用标准库，离线测试走的就是它）。框架负责其余的一切，对所有插件都一样：建数据、在主机上跑作业、把 run 发布到模型库、校准、过门、部署、按模型引用服务。

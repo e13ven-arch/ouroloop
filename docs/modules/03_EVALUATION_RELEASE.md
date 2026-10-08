@@ -29,7 +29,7 @@ actor 蒸馏的主要对照是同底座未训练 actor 和已选 prompt/workflow
 
 **同模型比较的条件（v0.3，2026-10-04）。** 包可以改循环之后，“相同运行配置”指两臂共用的是 K 而不是循环：
 - 两臂 pin 的 package ref 覆盖 `agent` 代码（M0 §2（v0.3）：包身份含 agent 代码），都经同一运行壳运行（M1 §1（v0.3）：episode → worker 会话 → `agent.run`，网关与 broker 在宿主）；模型身份、推理配置上限（含 `max_effort`）、网关、broker、权限、评分器、split、gate、预算根、单次尝试硬上限（M5 §2（v0.3）：act 调用、模型调用、工具调用、秒、token）对两臂相同，由冻结计划带着。原因：这些是“同模型”主张的全部内容；少任一项，差异就可能来自条件而不是包。
-- 候选在 K 上限内提高 effort 或多采样是合法的包内容，不是违规；它的代价由 §2.1(e) 的成本项显现（公布结果时另跑 §2.2 的同成本对照臂），不由 gate 禁止。原因：用算力换准确正是循环层机制的一种，禁止它等于把可变面收回到文字；但不计成本地接受它，会把“更贵”错当“更好”。
+- 候选在 K 上限内提高 effort 或多采样是合法的包内容，不是违规；它的代价由 §2.1(e) 的成本项显现（公布结果时另跑 §2.2 的同成本对照臂），不由 gate 禁止。原因：用算力换准确正是循环层机制的一种，禁止它等于把可变面收回到文字；但不计成本地接受它，会把“更贵”错当“更好”。（2026-10-08，用户“保持统一的档位”，OSS_COMPONENTS_PLAN §9 第 4 项：所有臂同一 effort（现行 medium），新配置的 K 的 `max_effort` 等于 pin 的档位，提高 effort 的请求按上限截顶；多采样与核验回合仍是合法的包内容，照旧受成本项约束。）
 - 两臂的事件与轨迹记录由宿主从网关与 broker 调用写出（M0 §2（v0.3）），包不能写；gate 读的实际工具/hook 事件与模型调用计数来自这些记录。原因：可改循环的候选也能学会伪造“已复核”的事件；证据必须出自包够不到的层。
 - 候选崩溃或 agent 在运行中抛出按基础设施处理并按 retry_policy 补跑一次（如今日），硬上限触顶的尝试是有效的失败（termination `budget`），不补跑（M1 §1（v0.3））。原因：补跑只修环境，不修候选。
 - gate 的统计规则（合并对照、确认复测、退步幅度、成本项、最少题数）在 §2.1（v0.3），final 的结构在 §2.2（v0.3）；其他模块引用的写法是“M3 §2.1(x)（v0.3）”，早先写作“M3 §1（v0.3）(x)”或“M3 §2（v0.3）(x)”的引用指同一条款。
@@ -48,7 +48,7 @@ actor 蒸馏的主要对照是同底座未训练 actor 和已选 prompt/workflow
 
 换 h 的实验可只改 harness，也可后续蒸馏；h-only 候选以明确 execution_base_ref 表示真实变化，不要求伪造 prompt 改动。若原 parent 已被另一安装替换，本实验保持旧输入，安装返回 stale_parent，不能偷偷继承新 W/R。若新 h 超出 K，需要另行授权活动，不让 R 修改 K。没有选新 h 时 execution base 就是 parent，不增加准备或额外基线开销。
 
-第二版换学生时的 harness–模型共同适应是一项成本（M2 §3a（v0.3）：在 Opus 上演化出的循环未必迁移到 9B 学生，学生的 W0 是更简单的种子）；本节的 B 基线就是把它测出来的地方，不是回避它的地方。
+第二版换学生时的 harness–模型共同适应是一项成本（M2 §3a（v0.3）：在 Opus 上演化出的循环未必迁移到 9B 学生，学生的 W0 是更简单的种子）；本节的 B 基线就是把它测出来的地方，不是回避它的地方。（2026-10-08：v2 采集与评测里学生的 W0 就是默认 agent 包，W\* 的 memory/skills 只作教师的 K；在学生上重新演化到 v2.5，M2 §3a。）
 
 ## 2. 评测流程与结果
 
@@ -116,8 +116,10 @@ final 的协议不变：计划（`bench.FinalizationPlan`）先封存并提交�
 
 - **重复 2 → 3**（`[freeze.final] repeats = 3`，定值，2026-10-04 定）。原因：区间宽度由题间异质性和同题随机性两部分组成，100 题以上前者占主导，重复只压后者——100 题 × 2 次半宽约 ±6.0，× 4 约 ±5.5，费用翻倍只窄不到 10%；取 3 是在费用与第三次读数能暴露“2 次恰好相同”的假确定性之间的折中。更多的任务（M7 §2（v0.3）多领域）比更多重复有效得多，题数优先。
 - **可选的同成本 best-of-k W0 臂**（[arXiv 2607.12227](https://arxiv.org/abs/2607.12227) 的批评：演化花费是额外的搜索算力，部署时的匹配算力对照应当在场）。它在**公布结果时**运行，不是每次 final 的必备部分：封存前由固定代码从合并对照与 W* 的每次尝试平均成本算出 `k = max(2, round(cost_W* / cost_W0))`，写进 FinalizationPlan.comparisons 的一项 `{"claim": "C1", "role": "matched_cost", "release_ref": <W0>, "best_of": k}`；W0 对每题跑 k 次独立尝试（各自重建世界），**任一通过即记通过**——这是 oracle 选择，是 W0 在同成本下测试时算力的**上界**，不是可部署策略，报告里与 W* 并列并写明这一点。它从不进入 C1 的裁决：C1 仍是 W* 对 W0（同 effort、同配置）的配对差；同成本臂回答的是“这笔增益有多少只是算力”，W* 不高于 best-of-k 上界时报告如实写“增益不超过同成本的测试时算力上界”。计划含该臂时，final 份额按三臂定（M5 §2（v0.3））。
-- Marketing 的 test 已被读过三次（v0.1 final、final-1、final-2），对新主张宣布为已耗尽（M7 §2（v0.3）：Marketing 的 split 原样冻结，新领域的 split 按计分断言种类与工具家族分层）；新领域的 final 才能支撑新主张，Marketing 的 test 只用于与历史数字对照。（v0.3，2026-10-05 实现）`[bench] spent` 记在合并划分里，`[freeze.final] tasks = "test"` 只解析为新领域的 test，显式列出 spent 领域的 test 题拒绝冻结，`--phase evaluate` 对含这些题的计划在付费前拒绝，报告的主张区间不含它们（M7 §2、§4）。
+- Marketing 的 test 已被读过三次（v0.1 final、final-1、final-2），对新主张宣布为已耗尽（M7 §2（v0.3）：Marketing 的 split 原样冻结，新领域的 split 按计分断言种类与工具家族分层）；新领域的 final 才能支撑新主张，Marketing 的 test 只用于与历史数字对照。（v0.3，2026-10-05 实现）`[bench] spent` 记在合并划分里，`[freeze.final] tasks = "test"` 只解析为新领域的 test，显式列出 spent 领域的 test 题拒绝冻结，`--phase evaluate` 对含这些题的计划在付费前拒绝，报告的主张区间不含它们（M7 §2、§4）。（2026-10-08，V2 §7 第 2 项、DESIGN §8 注，取代上文 Marketing 的“已耗尽”：finance、support、sales、hr、marketing 都可以跑密封 final，一律按有条件复用规则，每份报告披露这份 test 被读过几次；到 2026-10-08 为止 finance 1 次、support 0 次、sales 0 次、hr 0 次、marketing 3 次；operations 整域留出。`spent` 是 `[bench]` 的配置项，新活动的配置不列它即可；报告按域披露读取次数还没有实现。）
 - 测试（可选，发表时，待实现）：`test_paid_run_safety.py::test_the_final_runs_the_matched_cost_arm_when_it_is_sealed_in_the_plan`、`test_report.py::test_the_matched_cost_arm_is_reported_beside_w_star_and_not_as_the_claim`。
+
+（v0.4，2026-10-06，[V0_4_PLAN §1.6、§1.8](../design/V0_4_PLAN.md)）(a) 的合并池在基线时就有三次读数：`[bench] control_readings = 3` 让基线无条件（在任何 gate 之前）读 W0 的 dev 三次，第一次的运行身份不变，另外两次是同一执行身份下 `notes` 标签不同的新运行，合并规则照旧把它们都算进来（收据的 `control_readings` 为 3）。原因：v0.3 三次 gate 共用一次读数，噪声约 ±3.9 题/125；三次读数把空候选的误收从 1.0～1.6% 降到 0.2～0.4%。缺省 1，旧配置不变。§2.2 的同成本参照另加一个不付费的版本：报告从 final 自己的 W0 重复（每题 n 次中 c 次通过）算 W0 的 pass@k（k = 1..n，无偏估计 1 − C(n−c, k)/C(n, k) 的题均值，oracle 上界），与 W\* 的通过率和两臂每次成本之比并列，标为“等成本参照”（`report.final_reference`）；它不进 C1 的裁决。
 
 ### 2.3 field 清单（v0.3，2026-10-04）
 

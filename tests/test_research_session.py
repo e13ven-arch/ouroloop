@@ -40,15 +40,17 @@ def v3_fixture(monkeypatch, *, components=("memory", "skills", "on_finish"), scr
 
 
 def prepared_v3(fake_upstream, tmp_path, monkeypatch, *, rounds: int = 1, k: int | None = None, screen=None,
-                llm: dict | None = None, harness=None, **gate):
+                llm: dict | None = None, harness=None, components=("memory", "skills", "on_finish"), bench_extra=None,
+                **gate):
     """A v3 activity from W0 with the fixture's gap, its plans frozen as the cycle would freeze them, the pricing a
     placeholder that bounds every call: -> (cfg, activity, W0 release ref). `llm` replaces the fixture actor's
-    table before the bootstrap pins it."""
+    table before the bootstrap pins it; `components` are K's kinds; `bench_extra` more [bench] keys."""
     from test_cycle import cycle_config, gap_w0
-    preset = v3_fixture(monkeypatch, screen=screen, harness=harness, **gate)
+    preset = v3_fixture(monkeypatch, components=components, screen=screen, harness=harness, **gate)
     preset["schedule"].update(worker_rounds=rounds, patience=max(rounds, 2))
     cfg = cycle_config(fake_upstream, tmp_path)
     del cfg["bench"]["budget"]
+    cfg["bench"].update(bench_extra or {})
     cfg["improvement"]["preset"] = "v3_test"
     if llm is not None:
         cfg["llm"] = dict(llm)
