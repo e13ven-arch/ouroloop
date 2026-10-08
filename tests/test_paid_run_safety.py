@@ -788,7 +788,7 @@ def test_the_verification_bound_prices_the_gate_and_a_gate_it_cannot_pay_for_nev
     assert not [r for r in Results(activity.root, rsi.DOMAIN).all() if r.pair_key]      # no gate attempt ran
 
 
-@pytest.mark.parametrize("phase", ["baseline", "collect", "improve", "research", "evaluate", "cycle"])
+@pytest.mark.parametrize("phase", ["baseline", "improve", "research", "evaluate", "cycle"])
 def test_checks_only_on_a_paid_phase_is_refused_before_anything_runs(phase, tmp_path, monkeypatch, capsys):
     """2026-10-05: `--phase cycle --checks-only` ran a pilot cycle for real, because only smoke reads the flag. A
     flag a phase would ignore is refused before the config is even read, so nothing is opened or paid."""

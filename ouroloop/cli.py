@@ -35,7 +35,6 @@ def cmd_bench(args) -> int:
     kw = {"smoke": dict(tasks=args.task, limit=args.limit, run_agent=not args.checks_only,
                         replace_splits=args.replace_splits),
           "baseline": dict(tasks=args.task, limit=args.limit),
-          "collect": dict(tasks=args.task, repeats=args.repeats),
           "improve": dict(rounds=args.rounds, reason=args.reason),
           "research": dict(campaign_ref=args.plan),
           "evaluate": dict(plan_ref=args.plan),
@@ -94,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
     bn.add_argument("--config", required=True, help="e.g. examples/automationbench/claude-v4-finance.toml")
     bn.add_argument("--phase", choices=list(PHASES), default="smoke",
                     help="smoke: versions, frozen splits, contract checks, input audit and a few dev attempts; "
-                         "then baseline, collect, improve, research, evaluate, report")
+                         "then baseline, improve, research, evaluate, report")
     bn.add_argument("--task", action="append", help="only this task; repeatable (development tasks only)")
     bn.add_argument("--limit", type=int, help="how many tasks to attempt (default: [bench] smoke_tasks)")
     bn.add_argument("--checks-only", action="store_true", help="run the checks and call no model")
@@ -109,7 +108,6 @@ def main(argv: list[str] | None = None) -> int:
                                                "rounds, recorded as an extension beyond the frozen schedule")
     bn.add_argument("--reason", help="improve --rounds on an ended segment: why the frozen schedule is extended "
                                      "(required; recorded with the extension)")
-    bn.add_argument("--repeats", type=int, help="collect: attempts per training task")
     bn.add_argument("--plan", help="research/evaluate: the frozen plan to run, instead of the one in [rsi]")
     bn.add_argument("--until", help="cycle: stop after this step and pay for nothing past it: baseline, segment-N, "
                                     "segment-N/round-K or slot-N; running the cycle again continues from there")

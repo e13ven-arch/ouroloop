@@ -10,8 +10,6 @@ sequence that writes them, and `adapters/automationbench.py` is the binding to t
     baseline    a reasonable base version and the declared frontier models, on development tasks, through this
                 same driver. Fewer than two vendors is published as an incomplete C2, never filled in with a
                 weaker model.
-    collect     the installed version on training tasks, with the completion probe labelling offline, and an
-                audit of how many labels came from how many independent groups.
     improve     the worker loop with a fixed research policy: diagnose, propose, build, evaluate, install.
     research    two research policies compared by the task policies they produce, in isolated arms (M6).
     evaluate    one sealed finalization plan on the final tasks. It reports; it does not choose.
@@ -35,10 +33,12 @@ from .benchmark import (HARD_LIMITS, SPLIT_RULES, V03_BUDGET_FIELDS, Budget, Res
                         assign_splits, digest, pool_manifests, stratified_splits, summarise, task_domain)
 from .ledger import now, redact, write_json
 
-# The seven phases, and `cycle`: the thin automatic entry that calls them in the frozen order (M7 §1).
+# The phases, and `cycle`: the thin automatic entry that calls them in the frozen order (M7 §1). (`collect`, the
+# installed version on training tasks with the completion probe labelling its stop decisions, went with the v1 loop in
+# P1 step 5: the runner shell makes no stop decision to label.)
 # v0.5 (docs/design/V0_5_PLAN.md §3): `library` (the experience library's stream and snapshot round) and `learn`
 # (the method table's learn reading and refit round), train only, run by hand in the order the plan names.
-PHASES = ("smoke", "baseline", "collect", "improve", "research", "evaluate", "report", "cycle", "library", "learn")
+PHASES = ("smoke", "baseline", "improve", "research", "evaluate", "report", "cycle", "library", "learn")
 IMPLEMENTED = PHASES
 # Every phase is wired; what a phase needs is checked before it starts (a frozen plan, a model table, two
 # frontier configurations), and a missing piece is named rather than quietly skipped (BR-01).
@@ -490,9 +490,9 @@ def run_phase(cfg: dict, base: str | Path = ".", *, phase: str = "smoke", **kw) 
         raise ValueError(f"unknown phase {phase!r}: one of {list(PHASES)}")
     if phase == "smoke":
         return smoke(cfg, base, **kw)
-    runner = {"baseline": baseline, "collect": collect, "improve": improve, "research": research,
+    runner = {"baseline": baseline, "improve": improve, "research": research,
               "evaluate": evaluate, "report": report, "cycle": cycle, "library": library_track, "learn": learn}[phase]
-    allowed = {"baseline": {"out", "limit", "tasks"}, "collect": {"out", "repeats", "tasks"},
+    allowed = {"baseline": {"out", "limit", "tasks"},
                "improve": {"out", "rounds", "researcher", "segment", "reason"},
                "research": {"out", "researcher", "campaign_ref", "r_candidate_ref"},
                "evaluate": {"out", "plan_ref", "resume"}, "report": {"out", "write"},
@@ -807,13 +807,14 @@ class Improvement:
 
     # -------------------------------------------------------------- evidence
     def collect(self, *, tasks=None, release_ref: str | None = None, repeats: int = 1, dev: bool = True) -> dict:
-        """Run the current version and gather what a round may learn from.
+        """Run the current version and gather what a round may learn from: the v2 round's evidence (a K without a
+        harness table; the first version measures with `measure`), and a research slot's (batch 2 removes both).
 
-        Training tasks are run with the completion probe, which labels each stop decision from the state it was
-        made on. The development tasks are run too, without a probe and without any online score: a behaviour gap
-        is something the current version does on tasks it will be judged on, and a round that only saw the
-        training pool could not name one (docs/DESIGN.md §4.3). The version changes between rounds, so this is
-        measured per round rather than once.
+        Training tasks are run with the completion probe attached (it labels nothing under the runner shell, which
+        makes no stop decision). The development tasks are run too, without a probe and without any online score: a
+        behaviour gap is something the current version does on tasks it will be judged on, and a round that only
+        saw the training pool could not name one (docs/DESIGN.md §4.3). The version changes between rounds, so this
+        is measured per round rather than once.
         """
         release_ref = release_ref or self.releases.active()["release_ref"]
         tasks = tuple(tasks or self.train_tasks or self.splits.ids("train"))
@@ -2793,39 +2794,6 @@ def baseline(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = 
             f"partial={summary['partial_credit']}, cost="
             f"{'unmeasured' if summary['cost_usd'] is None else summary['cost_usd']}")
     return report
-
-
-# ---------------------------------------------------------------------------- collect
-def collect(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = print, repeats: int = 1,
-            tasks=None) -> dict:
-    """Run the installed version on training tasks and label the completion decisions offline.
-
-    The audit that follows is the point of the phase: how many labels exist, how many independent groups they
-    come from, and what was excluded. A phase that reported only the count would hide that twenty labels came
-    from one task.
-    """
-    activity = open_activity(cfg, base, out=out)
-    require(startup_checks(activity, cfg, phase="collect"), phase="collect")
-    work = improvement(activity, provider=config_mod.build_provider(cfg["llm"]), pricing=pricing_of(cfg),
-                       budget=activity_budget(activity, cfg, "collect"))
-    evidence = work.collect(tasks=tasks, repeats=repeats)
-    summary = evidence["feedback"].summary()
-    rows = summarise(evidence["results"])
-    out(f"collect    {rows['tasks']} tasks, {rows['attempts']} attempts, {rows['invalid']} invalid")
-    out(f"feedback   {summary['valid']} valid labels over {summary['labels']}, {summary['unknown']} unknown, "
-        f"{summary['conflicted']} conflicted; excluded {summary['excluded']}")
-    from .train.dataset import build_task_dataset
-    from .train.views import business_stop_point
-    built = build_task_dataset(activity.rt, business_stop_point(), evidence["feedback"],
-                              out_dir=activity.root / "rsi" / "datasets" / "audit", objects=activity.objects,
-                              splits=activity.splits, min_groups=1)
-    out(f"data       {built.status}: rows={built.stats.get('rows')} groups={built.groups} "
-        f"tasks={built.stats.get('tasks')}")
-    for reason, count in sorted((built.exclusions or {}).items()):
-        out(f"           excluded {reason}: {count}")
-    return {"results": [r.to_json() for r in evidence["results"]], "feedback": summary,
-            "dataset": {"status": built.status, "stats": built.stats, "groups": built.groups,
-                        "exclusions": built.exclusions, "ref": built.dataset_ref}}
 
 
 # ---------------------------------------------------------------------------- improve
