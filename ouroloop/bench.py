@@ -518,7 +518,6 @@ from .evolve.execution import BudgetError, BudgetMismatch, Budgets, Schedule
 from .evolve.task_gate import GatePlan, TaskEvalPlan, evaluate_task
 from .evolve.task_gate import refill as _refill
 from .evolve.task_gate import refill_attempts as _refill_attempts
-from .evolve.task_gate import screen as _screen
 from .evolve.task_gate import shortfall as _shortfall
 from .release import Releases
 from .research.context import make_context as _make_context
@@ -578,8 +577,8 @@ class RsiConfig:
 class Improvement:
     """One improvement activity: the environment, the workspace, the budget and the frozen comparison policy.
 
-    It owns the four handlers an experiment runs through — build, screen, evaluate, install — so that every round
-    of every phase uses the same path from a proposal to a pointer.
+    It owns the handlers an experiment runs through — build, evaluate, install — so that every round of every phase
+    uses the same path from a proposal to a pointer.
     """
     rt: object
     suite: object
@@ -593,7 +592,6 @@ class Improvement:
     scope_id: str = "activity"
     repeats: int = 1
     order_seed: int = 0
-    screen_ids: tuple = ()
     budget: object = None
     serving: object = None                      # serving.Serving, or a function that builds it (policies.Services)
     trainer: object = None
@@ -655,8 +653,8 @@ class Improvement:
                             core_ref=self.core_ref, split_ref=self.splits.hash(), task_ids=tuple(self.dev_tasks),
                             repeats=self.repeats, order_seed=self.order_seed,
                             per_attempt_budget=self.attempt_budget.limits(),
-                            retry_policy={"max_infrastructure_retries": 1}, screen_ids=tuple(self.screen_ids),
-                            gate_plan=self.gate.to_json(), installs=self.plan_installs,
+                            retry_policy={"max_infrastructure_retries": 1}, gate_plan=self.gate.to_json(),
+                            installs=self.plan_installs,
                             control_pooling=self.control_pooling, confirmation_repeats=self.confirmation_repeats)
 
     def control_pool(self, parent_release: str, *, plan: TaskEvalPlan | None = None, tasks=None) -> list:
@@ -671,9 +669,9 @@ class Improvement:
         if it ran under one, froze the same conditions as this plan (`TaskEvalPlan.conditions`): the same tasks,
         repeats, seed and limits. The baseline's run has no plan and ran under the frozen template's conditions
         (bench.baseline). Only the plan's tasks (or `tasks`) on the plan's split count, and only valid attempts;
-        the screen arms (`screen_subject`/`screen_control`: the screen tasks only, attempt 0, not a reading of the
-        plan) never count. The pool is the control's starting point: what it is short of, the gate's control arm
-        reads (task_gate.shortfall), so an empty pool is simply the whole plan short.
+        the screen arms (SCREEN_ARMS: not a reading of the plan) never count. The pool is the control's starting
+        point: what it is short of, the gate's control arm reads (task_gate.shortfall), so an empty pool is simply
+        the whole plan short.
         """
         plan = plan or self.plan("", "", parent_release)
         if self.results is None or not plan.pooled:
@@ -1563,7 +1561,7 @@ class Improvement:
         # A new round starts from the pointer, not from the parent the previous experiment was frozen on: the carried
         # values are cleared before `verify_bound` reads them, and `_begin` sets them again for the experiment that runs.
         self._parent_release, self._experiment_ref = "", ""
-        return {"begin": self._begin, "build": self._build, "screen": self._screen, "evaluate": self._evaluate,
+        return {"begin": self._begin, "build": self._build, "evaluate": self._evaluate,
                 "install": self._install, "verify_bound": self._verify_bound(),
                 "load_receipt": lambda ref: self.objects.load(ref, _ct.EvaluationReceipt)}
 
@@ -1642,19 +1640,6 @@ class Improvement:
                 "inference": {"model_id": built.model_ref, "actions": {"yes": "yes", "no": "no"},
                               "threshold_source": "argmax"},
                 "costs": built.costs, "dataset_ref": dataset.dataset_ref}
-
-    def _screen(self, candidate_ref: str, budget) -> tuple:
-        if not self.screen_ids:
-            return "pass", ["no screen in this plan"]
-        parent = self._parent()
-        plan = self.plan(candidate_ref, self.objects.load(parent, _ct.SystemRelease).worker_ref, parent)
-        plan_ref = self.objects.put(plan)
-        permit = self.releases.permit(candidate_ref, parent, plan_ref, self.scope_id, self.core_ref)
-        arm_release = self.releases.candidate_release(parent, candidate_ref, permit)
-        order = [(t, 0) for t in self.screen_ids]
-        subject = self.run_arm("screen_subject", arm_release, order, plan_ref=plan_ref, permit=permit)
-        control = self.run_arm("screen_control", parent, order, plan_ref=plan_ref)
-        return _screen(plan, subject, control)
 
     def _evaluate(self, candidate_ref: str, budget, confirming=None) -> _ct.EvaluationReceipt:
         """The gate: the candidate arm under the frozen plan against the control — under a pooled plan the installed
@@ -1747,9 +1732,9 @@ def _arm_of(attempt_id: str | None) -> str:
     return (attempt_id or "").rpartition("#")[0].rpartition("/")[2]
 
 
-# The screen's arms (Improvement._screen): the predeclared screen tasks only, at attempt 0 — not a reading of the
-# plan, so never part of a pooled control (M3 §2.1(a), v0.3). The train-side screen's arm (`train_screen`, M4 §2)
-# runs on train and never meets a dev pool.
+# The screen arms, never part of a pooled control (M3 §2.1(a), v0.3): the train-side screen's arm (`train_screen`,
+# M4 §2) runs on train and never meets a dev pool; `screen_subject`/`screen_control` are the v1 dev screen's (the
+# predeclared screen tasks at attempt 0, not a reading of the plan; removed in P1 step 6), kept out of a pool too.
 SCREEN_ARMS = ("screen_subject", "screen_control", "train_screen")
 # The run-manifest fields that name an arm rather than an execution identity (M3 §2.1(a)): two runs equal in every
 # other field ran the same W under the same model, limits, split and host contract.
@@ -2552,7 +2537,7 @@ def activity_budget(activity: Activity, cfg: dict, phase: str):
 
 
 def freeze_task_plan(objects: _ct.Objects, *, core_ref: str, split_ref: str, task_ids, gate: GatePlan,
-                     repeats: int = 1, order_seed: int = 0, screen_ids=(), installs: bool = True,
+                     repeats: int = 1, order_seed: int = 0, installs: bool = True,
                      per_attempt_budget: dict | None = None, control_pooling: str | None = None,
                      confirmation_repeats: int | None = None) -> str:
     """The development plan template: tasks, repeats, order, thresholds and statistics, frozen before the first
@@ -2567,8 +2552,7 @@ def freeze_task_plan(objects: _ct.Objects, *, core_ref: str, split_ref: str, tas
                          f"{gate.min_tasks} (M3 §2.1(f))")
     return objects.put(TaskEvalPlan(candidate_ref="", control_ref="", parent_release="", core_ref=core_ref,
                                     split_ref=split_ref, task_ids=task_ids, repeats=repeats,
-                                    order_seed=order_seed, screen_ids=tuple(screen_ids),
-                                    gate_plan=gate.to_json(), installs=installs,
+                                    order_seed=order_seed, gate_plan=gate.to_json(), installs=installs,
                                     per_attempt_budget=dict(per_attempt_budget or {}),
                                     control_pooling=control_pooling, confirmation_repeats=confirmation_repeats))
 
@@ -2608,7 +2592,7 @@ def improvement(activity: Activity, *, template_ref: str | None = None, provider
         gate=gate, dev_tasks=tasks, scope_id=scope_id or activity.rsi.scope_id,
         repeats=template.repeats if template else activity.rsi.repeats,
         order_seed=template.order_seed if template else activity.rsi.order_seed,
-        screen_ids=template.screen_ids if template else (), serving=lambda: activity.rt.serving, trainer=trainer,
+        serving=lambda: activity.rt.serving, trainer=trainer,
         budget=budget,
         results=activity.results, stop_view=activity.rsi.stop_view, attempt_budget=attempt,
         probe_train=True, train_tasks=tuple(activity.splits.ids("train")), owner=owner, pricing=pricing,
@@ -5217,7 +5201,7 @@ def harness_checks(activity: Activity, bound) -> list[str]:
 
 # ---------------------------------------------------------------------------- freezing plans
 FREEZE_TABLES = {"task_plan", "schedule", "budget", "final"}
-TASK_PLAN_KEYS = {"tasks", "repeats", "order_seed", "screen", "installs", "per_attempt_budget", "gate",
+TASK_PLAN_KEYS = {"tasks", "repeats", "order_seed", "installs", "per_attempt_budget", "gate",
                   "control_pooling", "confirmation_repeats"}
 FINAL_KEYS = {"experiment_id", "claims", "comparisons", "release_refs", "tasks", "repeats", "statistical_plan",
               "stop_rules", "research_campaign_plan_ref"}
@@ -5327,7 +5311,7 @@ def freeze(cfg: dict, base: str | Path = ".", *, out: Callable[[str], None] = pr
             activity.objects, core_ref=core_ref, split_ref=activity.splits.hash(),
             task_ids=_task_ids(activity, t.get("tasks", "dev"), "task_plan"), gate=gate,
             repeats=int(t.get("repeats", 1)), order_seed=int(t.get("order_seed", 0)),
-            screen_ids=tuple(t.get("screen") or ()), installs=bool(t.get("installs", True)),
+            installs=bool(t.get("installs", True)),
             # Every per-attempt limit is part of the plan: one not written here would be read from [bench.budget]
             # at run time, and a change to it would finish an open comparison under other limits (M5 §3).
             per_attempt_budget={**{k: v for k, v in asdict(activity.bench.budget).items() if v is not None},

@@ -263,9 +263,8 @@ def test_execute_experiment_records_every_state_and_its_operations(tmp_path):
                                    reasons=("no gain",))
     out = execute_experiment(_experiment(tmp_path), {
         "build": lambda experiment, budget: ct.BuildResult(status="ready", candidate_ref=candidate),
-        "screen": lambda ref, budget: ("pass", []),
         "evaluate": lambda ref, budget: receipt}, budget=account, execution=ex)
-    assert out["states"] == ["admitted", "building", "screening", "evaluating", "evaluated", "rejected"]
+    assert out["states"] == ["admitted", "building", "evaluating", "evaluated", "rejected"]
     assert out["receipt"].verdict == "rejected" and out["installation"] is None
     saved = json.loads((tmp_path / "rsi" / "operations" /
                         f"{operation_id('exp-7', 'evaluate', (candidate,))}.json").read_text())

@@ -13,7 +13,8 @@ What the module is careful about:
     Development acceptance is not significance. A small positive gain that clears the plan's threshold may be
     accepted as the next version while the interval still contains zero; the receipt says both, and a report may
     not upgrade the first into the second (ER-04).
-    Missing cost is missing. An economy verdict on unknown cost is inconclusive, never "cheaper" (ER-05).
+    Missing cost is missing. Under the cost term, unknown cost follows the plan's missing-cost policy and is
+    never read as zero (ER-05).
 
 v0.3 (docs/modules/03_EVALUATION_RELEASE.md §2.1, 2026-10-04) adds to the same `judge`, read off the same frozen
 plan: a pooled control (a), a confirmation reading before an install that has to clear the gate on its own (b,
@@ -21,6 +22,12 @@ second version of the rule), a regression that is a drop of a magnitude rather t
 beside the gain (e) and a least task count at freeze (f). Every
 new field is None when a plan was frozen without it, and `Record.payload` leaves None out, so a plan frozen before
 these fields existed keeps its ref and is judged as it was; the v3 preset carries the design's values.
+
+P1 step 6 (docs/PLAN.md): the economy mode, protected requirements, the runtime cost ratio and the v1 dev screen
+never decided a result (of 54 frozen plans none set the first three, and only a local smoke named screen tasks), and
+their logic is gone (tag v0.4.0). Their GatePlan and TaskEvalPlan fields stay, at the values the plans were frozen
+with, so a plan's ref is what it was; a gate that sets one of the three is refused, and `screen_ids` is read by
+nothing.
 """
 from __future__ import annotations
 
@@ -30,7 +37,7 @@ from dataclasses import dataclass, field
 from ..benchmark import TaskResult, pair_key, task_domain
 from . import contracts as ct
 
-MODES = ("quality", "economy")
+MODES = ("quality",)                       # "economy" is at tag v0.4.0
 MISSING_COST = ("refuse", "report_unknown")
 CONTROL_POOLING = ("fresh", "pooled")
 # The two kinds of a task receipt (M3 §2.1(b), v0.3): one complete paired reading, or one the confirmation reading
@@ -49,16 +56,16 @@ class GatePlan(ct.Record):
         min_tasks         (f) a gate plan with fewer tasks is refused at freeze; None: no least count
     """
     TYPE = "gateplan"
-    mode: str = "quality"
+    mode: str = "quality"                         # the only mode (P1 step 6)
     min_groups: int = 3
     min_gain: float = 0.05
-    max_quality_loss: float = 0.02
+    max_quality_loss: float = 0.02                # the economy mode's; in every plan's ref, judged by nothing
     max_regression_rate: float = 0.2
-    max_runtime_cost_ratio: float | None = None
+    max_runtime_cost_ratio: float | None = None   # identity only: a plan that sets it is refused
     confidence_level: float = 0.95
     bootstrap_seed: int = 0
     bootstrap_replicates: int = 2000
-    protected_requirements: tuple[str, ...] = ()
+    protected_requirements: tuple[str, ...] = ()  # identity only: a plan that sets it is refused
     missing_cost_policy: str = "refuse"
     regression_drop: float | None = None
     cost_beta0: float | None = None
@@ -68,13 +75,15 @@ class GatePlan(ct.Record):
 
     def __post_init__(self) -> None:
         if self.mode not in MODES:
-            raise ct.ContractError(f"gate mode {self.mode!r}: one of {list(MODES)}")
+            raise ct.ContractError(f"gate mode {self.mode!r}: one of {list(MODES)} (economy is at tag v0.4.0)")
+        if self.max_runtime_cost_ratio is not None or self.protected_requirements:
+            # fields kept for the plans' identity; no frozen plan set them, and nothing judges them now
+            raise ct.ContractError("max_runtime_cost_ratio and protected_requirements are not judged any more (tag "
+                                   "v0.4.0): the cost term is cost_beta0/cost_beta1")
         if self.missing_cost_policy not in MISSING_COST:
             raise ct.ContractError(f"missing_cost_policy {self.missing_cost_policy!r}: {list(MISSING_COST)}")
-        if self.mode == "quality" and not self.min_gain > 0:
+        if not self.min_gain > 0:
             raise ct.ContractError("min_gain must be above zero: a threshold at zero accepts a tie")
-        if self.mode == "economy" and self.max_runtime_cost_ratio is None:
-            raise ct.ContractError("an economy gate needs a measurable cost ratio to judge")
         if not 0.5 <= self.confidence_level < 1:
             raise ct.ContractError(f"confidence_level {self.confidence_level!r}")
         if self.regression_drop is not None and not 0 < float(self.regression_drop) < 1:
@@ -123,7 +132,7 @@ class TaskEvalPlan(ct.Record):
     order_seed: int = 0
     per_attempt_budget: dict = field(default_factory=dict)
     retry_policy: dict = field(default_factory=dict)
-    screen_ids: tuple[str, ...] = ()
+    screen_ids: tuple[str, ...] = ()          # the v1 dev screen's tasks: identity only, read by nothing (P1 step 6)
     gate_plan: dict = field(default_factory=dict)
     price_ref: str | None = None
     cache_policy: str = "identity_only"
@@ -149,12 +158,6 @@ class TaskEvalPlan(ct.Record):
             # third reading is not part of it, and would only be paid for.
             raise ct.ContractError(f"confirmation_repeats {self.confirmation_repeats!r}: 0 or 1 — one confirmation "
                                    f"reading (M3 §2.1(b))")
-        gate = GatePlan.from_json(self.gate_plan) if self.gate_plan else None
-        if gate is not None and gate.mode == "economy" and self.confirmations > 0:
-            # The confirmation clause lives in the quality verdict: an economy plan would pay for a reading that
-            # constrains nothing and still write a receipt of kind "confirmed".
-            raise ct.ContractError("confirmation_repeats with an economy gate: the confirmation reading is a clause "
-                                   "of the quality verdict (M3 §2.1(b))")
 
     def gate(self) -> GatePlan:
         return GatePlan.from_json(self.gate_plan)
@@ -364,12 +367,9 @@ def integrity(plan: TaskEvalPlan, subject: list[TaskResult], control: list[TaskR
 
 
 def judge(plan: TaskEvalPlan, subject: list[TaskResult], control: list[TaskResult], families: dict[str, str],
-          *, protected: dict | None = None, control_pooled: bool = False,
-          confirmation: list[TaskResult] | None = None, first: dict | None = None) -> tuple[str, list[str], dict, dict]:
+          *, control_pooled: bool = False, confirmation: list[TaskResult] | None = None,
+          first: dict | None = None) -> tuple[str, list[str], dict, dict]:
     """-> (verdict, reasons, metrics, uncertainty), read off the frozen plan.
-
-    `protected` maps a protected requirement id to whether it still holds; a requirement that regressed blocks
-    acceptance whatever the averages say.
 
     `control_pooled` says the control rows are the installed version's pooled readings (M3 §2.1(a), v0.3): the
     receipt then lists how many readings and which attempts, so a reviewer can recompute it. `confirmation` is the
@@ -380,9 +380,8 @@ def judge(plan: TaskEvalPlan, subject: list[TaskResult], control: list[TaskResul
     second reading of an unchanged version meets by expectation: the A/A replay accepted 4 of 20 same-version
     pairs.) `first` ({gain, verdict}) is kept on the receipt as `first_reading`.
 
-    The clauses are judged in the order M3 §2.1(h) fixes — integrity, protected requirements, gain, regression,
-    cost, the plan's other conditions, the confirmation — and every clause that fails is written down, not only
-    the first.
+    The clauses are judged in the order M3 §2.1(h) fixes — integrity, gain, regression, cost, the confirmation —
+    and every clause that fails is written down, not only the first.
     """
     gate = plan.gate()
     verdict, reasons = integrity(plan, subject, control, families, control_pooled=control_pooled,
@@ -435,103 +434,47 @@ def judge(plan: TaskEvalPlan, subject: list[TaskResult], control: list[TaskResul
                    "significant": bool(quality.get("excludes_zero") and quality.get("reliable")),
                    "note": "a development interval describes this comparison; a formal claim needs the locked "
                            "final plan"}
-    broken = sorted(k for k, ok in (protected or {}).items() if not ok)
-    if broken:
-        return "rejected", [*reasons, f"protected requirements regressed: {broken}"], metrics, uncertainty
     if verdict:
         return verdict, reasons, metrics, uncertainty
-    if gate.mode == "quality":
-        notes: list[str] = []
-        if quality["point"] < gate.min_gain:
-            reasons.append(f"gain {quality['point']} below the plan's min_gain {gate.min_gain}")
-        if regressions > gate.max_regression_rate:
-            reasons.append(f"regression rate {regressions} above {gate.max_regression_rate}")
-        if gate.cost_term:
-            # M3 §2.1(e): cost_subject ≤ cost_control × (1 + β0 + β1 × gain), gain as a fraction. A dearer candidate
-            # that is not better is refused; one that is dearer and better passes in proportion. Unknown cost on
-            # any valid attempt follows the plan's missing-cost policy: never read as zero.
-            if s_attempt is None or c_attempt is None or s_unpriced or c_unpriced:
-                why = (f"cost per attempt is not measured on every valid attempt (unpriced: subject {s_unpriced}, "
-                       f"control {c_unpriced})")
-                if gate.missing_cost_policy == "refuse":
-                    return "inconclusive", [*reasons, f"{why} and this plan refuses unknown cost"], metrics, \
-                        uncertainty
-                notes.append(f"{why}: the cost term was not judged (missing_cost_policy report_unknown)")
-            else:
-                allowed = round(c_attempt * (1 + float(gate.cost_beta0) + float(gate.cost_beta1) * quality["point"]), 6)
-                metrics["cost_per_attempt"]["allowed"] = allowed
-                if s_attempt > allowed + 1e-9:
-                    reasons.append(f"cost per attempt {s_attempt} above the allowed {allowed} (control {c_attempt} × "
-                                   f"(1 + β0 {gate.cost_beta0} + β1 {gate.cost_beta1} × gain {quality['point']}))")
-        if gate.max_runtime_cost_ratio is not None:
-            ratio = _ratio(metrics["subject_cost_usd"], metrics["control_cost_usd"])
-            if ratio is None and gate.missing_cost_policy == "refuse":
-                return "inconclusive", [*reasons, "cost was not measured and this plan refuses unknown cost"], \
-                    metrics, uncertainty
-            if ratio is not None and ratio > gate.max_runtime_cost_ratio:
-                reasons.append(f"cost ratio {ratio} above {gate.max_runtime_cost_ratio}")
-        if confirmation is not None and (confirmation_gain is None or confirmation_gain < gate.min_gain):
-            # M3 §2.1(b), second version: the confirmation reading on its own clears min_gain too, whatever the
-            # pooled estimate says. A second reading of an unchanged version sits at 0 against the pooled control
-            # by expectation, so "≥ 0" constrained nothing (the replay accepted 4/20 same-version pairs); two
-            # independent readings each at ≥ +0.05 happen by chance about once in twenty.
-            reasons.append(f"the confirmation reading alone has gain {confirmation_gain}, below the plan's "
-                           f"min_gain {gate.min_gain}")
-        if reasons:
-            return "rejected", [*reasons, *notes], metrics, uncertainty
-        return "accepted", ["development acceptance: the gain clears the plan's threshold"
-                            + (" on the first reading, on the confirmation reading alone and on the pool of both"
-                               if confirmation is not None else "")
-                            + ("" if uncertainty["significant"] else "; the interval still contains zero, so "
-                                                                    "this is not a significant improvement"),
-                            *notes], metrics, uncertainty
-    # economy: quality must be non-inferior and cost must be lower
-    ratio = _ratio(metrics["subject_cost_usd"], metrics["control_cost_usd"])
-    if ratio is None or s_missing or c_missing:
-        return "inconclusive", [*reasons, "an economy verdict needs measured cost on both arms; unknown cost is "
-                                          "not zero"], metrics, uncertainty
-    if quality["low"] is None or not quality["reliable"]:
-        return "inconclusive", [*reasons, "the non-inferiority interval is not reliable at this group count"], \
-            metrics, uncertainty
-    if quality["low"] < -gate.max_quality_loss:
-        reasons.append(f"quality could be {quality['low']} below control, past -{gate.max_quality_loss}")
-    if not (cost["high"] is not None and cost["high"] < 0):
-        return "inconclusive", [*reasons, "the cost interval does not support a reduction"], metrics, uncertainty
-    if ratio > gate.max_runtime_cost_ratio:
-        reasons.append(f"cost ratio {ratio} above {gate.max_runtime_cost_ratio}")
+    notes: list[str] = []
+    if quality["point"] < gate.min_gain:
+        reasons.append(f"gain {quality['point']} below the plan's min_gain {gate.min_gain}")
     if regressions > gate.max_regression_rate:
         reasons.append(f"regression rate {regressions} above {gate.max_regression_rate}")
+    if gate.cost_term:
+        # M3 §2.1(e): cost_subject ≤ cost_control × (1 + β0 + β1 × gain), gain as a fraction. A dearer candidate
+        # that is not better is refused; one that is dearer and better passes in proportion. Unknown cost on
+        # any valid attempt follows the plan's missing-cost policy: never read as zero.
+        if s_attempt is None or c_attempt is None or s_unpriced or c_unpriced:
+            why = (f"cost per attempt is not measured on every valid attempt (unpriced: subject {s_unpriced}, "
+                   f"control {c_unpriced})")
+            if gate.missing_cost_policy == "refuse":
+                return "inconclusive", [*reasons, f"{why} and this plan refuses unknown cost"], metrics, uncertainty
+            notes.append(f"{why}: the cost term was not judged (missing_cost_policy report_unknown)")
+        else:
+            allowed = round(c_attempt * (1 + float(gate.cost_beta0) + float(gate.cost_beta1) * quality["point"]), 6)
+            metrics["cost_per_attempt"]["allowed"] = allowed
+            if s_attempt > allowed + 1e-9:
+                reasons.append(f"cost per attempt {s_attempt} above the allowed {allowed} (control {c_attempt} × "
+                               f"(1 + β0 {gate.cost_beta0} + β1 {gate.cost_beta1} × gain {quality['point']}))")
+    if confirmation is not None and (confirmation_gain is None or confirmation_gain < gate.min_gain):
+        # M3 §2.1(b), second version: the confirmation reading on its own clears min_gain too, whatever the
+        # pooled estimate says. A second reading of an unchanged version sits at 0 against the pooled control
+        # by expectation, so "≥ 0" constrained nothing (the replay accepted 4/20 same-version pairs); two
+        # independent readings each at ≥ +0.05 happen by chance about once in twenty.
+        reasons.append(f"the confirmation reading alone has gain {confirmation_gain}, below the plan's "
+                       f"min_gain {gate.min_gain}")
     if reasons:
-        return "rejected", reasons, metrics, uncertainty
-    return "accepted", ["development acceptance: non-inferior quality at lower measured cost"], metrics, \
-        uncertainty
-
-
-def _ratio(subject: float | None, control: float | None) -> float | None:
-    if subject is None or control is None or control == 0:
-        return None
-    return round(subject / control, 6)
+        return "rejected", [*reasons, *notes], metrics, uncertainty
+    return "accepted", ["development acceptance: the gain clears the plan's threshold"
+                        + (" on the first reading, on the confirmation reading alone and on the pool of both"
+                           if confirmation is not None else "")
+                        + ("" if uncertainty["significant"] else "; the interval still contains zero, so "
+                                                                "this is not a significant improvement"),
+                        *notes], metrics, uncertainty
 
 
 # ---------------------------------------------------------------------------- the evaluation
-def screen(plan: TaskEvalPlan, subject: list[TaskResult], control: list[TaskResult]) -> tuple[str, list[str]]:
-    """The cheap screen: it removes a candidate with a definite defect or an obvious predeclared regression.
-
-    It does not promote and it does not remove a candidate merely for not having triggered: a policy that was
-    never in a position to act on these tasks has produced no evidence either way, and that is recorded rather
-    than counted against it (docs/modules/03_EVALUATION_RELEASE.md §2.3).
-    """
-    defects = [r for r in subject if r.failure_class == "candidate_defect"]
-    if defects:
-        return "invalid", [f"candidate defect on {r.task_id}: {r.invalid_reason}" for r in defects[:5]]
-    s_tasks, c_tasks = per_task(subject), per_task(control)
-    lost = sorted(t for t in set(s_tasks) & set(c_tasks) if c_tasks[t] == 1.0 and s_tasks[t] == 0.0)
-    if lost:
-        return "screened_out", [f"tasks the control passed and the candidate failed: {lost}"]
-    return "pass", ["screen passed: no defect and no predeclared regression"
-                    + ("" if s_tasks else "; no task result yet")]
-
-
 def refill_attempts(rows: list, run, arm: str, limit: int) -> list:
     """Re-run the attempts that failed for infrastructure reasons, at most `limit` times per pair.
 
@@ -613,8 +556,8 @@ def shortfall(plan: TaskEvalPlan, control_pool: list | None) -> list[tuple[str, 
 
 
 def evaluate_task(plan: TaskEvalPlan, *, run, objects: ct.Objects, experiment_ref: str,
-                  families: dict[str, str], protected: dict | None = None,
-                  results_sink=None, control_pool: list | None = None, confirming=None) -> ct.EvaluationReceipt:
+                  families: dict[str, str], results_sink=None, control_pool: list | None = None,
+                  confirming=None) -> ct.EvaluationReceipt:
     """Run both arms of a frozen plan and file the receipt.
 
     `run(arm, order, retry=0, supersedes=None) -> list[TaskResult]` belongs to the caller: this module fixes the
@@ -652,7 +595,7 @@ def evaluate_task(plan: TaskEvalPlan, *, run, objects: ct.Objects, experiment_re
         for r in topped_up:
             results_sink("control", r)
     verdict, reasons, metrics, uncertainty = judge(plan, rows["subject"], rows["control"], families,
-                                                   protected=protected, control_pooled=pooled)
+                                                   control_pooled=pooled)
     kind = "full"
     if plan.confirmations > 0 and verdict == "accepted":
         first = {"gain": metrics["gain"], "verdict": verdict}
@@ -667,8 +610,8 @@ def evaluate_task(plan: TaskEvalPlan, *, run, objects: ct.Objects, experiment_re
                     results_sink(arm, r)
             confirmation.extend(rows[arm])
         verdict, reasons, metrics, uncertainty = judge(plan, rows["subject"], rows["control"], families,
-                                                       protected=protected, control_pooled=pooled,
-                                                       confirmation=confirmation, first=first)
+                                                       control_pooled=pooled, confirmation=confirmation,
+                                                       first=first)
         kind = "confirmed"
     results_ref = objects.put_json("change", {
         "plan": plan_ref, "attempts": {arm: [r.to_json() for r in rows[arm]] for arm in rows},

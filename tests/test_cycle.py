@@ -1675,8 +1675,8 @@ def test_an_inner_gate_confirms_before_it_installs(fake_upstream, tmp_path, fixt
     assert receipt.metrics["confirmation_gain"] == receipt.metrics["gain"] == receipt.metrics["first_reading"]["gain"]
     states = [e["status"] for e in Execution(roots["candidate"], json.loads(
         (roots["candidate"] / "rsi" / "arm.json").read_text())["rounds"][0]["experiment"]).state()["history"]]
-    assert states == ["admitted", "building", "screening", "evaluating", "evaluated", "confirming", "evaluated",
-                      "accepted", "installing", "installed"]
+    assert states == ["admitted", "building", "evaluating", "evaluated", "confirming", "evaluated", "accepted",
+                      "installing", "installed"]
     arm_events = [e for e in ct.Events(activity.root).of("campaign_arm")]
     assert len({e["w_star"] for e in arm_events}) == 2
     assert ct.SystemRelease.from_json(activity.objects.get(activity.releases.active()["release_ref"])).research_ref \

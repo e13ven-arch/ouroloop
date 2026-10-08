@@ -30,10 +30,12 @@ STATES = ("drafted", "admitted", "building", "screening", "evaluating", "evaluat
           "stale_parent", "cancelled")
 TERMINAL = frozenset({"installed", "rejected", "inconclusive", "invalid", "screened_out", "installation_failed",
                       "stale_parent", "cancelled"})
-# Where each state may go. `screening` is skippable when the frozen plan has no screen, but no necessary
-# preflight is skippable, and nothing walks back out of a terminal state. `confirming` (M5 §1, v0.3) sits between
-# a provisional `evaluated` — the first reading's verdict, written with its numbers and no receipt — and the final
-# `evaluated` that carries the receipt: the candidate arm is read again there, under the same frozen plan.
+# Where each state may go. No necessary preflight is skippable, and nothing walks back out of a terminal state.
+# `screening` and `screened_out` were the v1 dev screen's (removed in P1 step 6): no step enters them now; they stay
+# so an older experiment log still reads, and one left in `screening` resumes at `evaluating`. `confirming` (M5 §1,
+# v0.3) sits between a provisional `evaluated` — the first reading's verdict, written with its numbers and no
+# receipt — and the final `evaluated` that carries the receipt: the candidate arm is read again there, under the
+# same frozen plan.
 NEXT: dict[str, frozenset] = {
     "drafted": frozenset({"admitted", "invalid", "cancelled"}),
     "admitted": frozenset({"building", "invalid", "inconclusive", "cancelled"}),
@@ -541,7 +543,7 @@ def spend(account: BudgetAccount, operation_id: str, bound: dict, call: Callable
 # ---------------------------------------------------------------------------- the experiment loop
 def execute_experiment(experiment, handlers: dict, *, budget: BudgetAccount, execution: Execution,
                        expected_parent: str | None = None) -> dict:
-    """Build, screen, evaluate and install one experiment, recording every step's state and operation.
+    """Build, evaluate and install one experiment, recording every step's state and operation.
 
     The handlers belong to the owning modules (build to M1/M2, evaluate to M3 or M6, install to M3); this loop
     only decides the order, what the budget must allow before a step starts, and which state each result means.
@@ -604,13 +606,6 @@ def execute_experiment(experiment, handlers: dict, *, budget: BudgetAccount, exe
             step("invalid" if build.status == "invalid" else "inconclusive",
                  reason="; ".join(build.errors)[:300])
             return out
-        screen = handlers.get("screen")
-        if screen is not None and status not in mid_evaluation:
-            step("screening")
-            verdict, reasons = screen(build.candidate_ref, budget)
-            if verdict != "pass":
-                step("screened_out" if verdict == "screened_out" else "invalid", reason="; ".join(reasons)[:300])
-                return out
         if status not in mid_evaluation or out["states"]:
             step("evaluating")
 

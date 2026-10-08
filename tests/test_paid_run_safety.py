@@ -499,17 +499,18 @@ class AccountAfterLimit(rsi.BusinessWorker):
         raise ProviderAccountError("You've hit your usage limit")
 
 
-def test_freeze_refuses_two_confirmations_an_economy_confirmation_and_a_vacuous_regression_drop(fake_upstream,
-                                                                                                tmp_path):
+def test_freeze_refuses_two_confirmations_an_economy_gate_and_a_vacuous_regression_drop(fake_upstream, tmp_path):
     """M3 §2.1(b)(d) (v0.3, after review), through `ouroloop freeze`: a [freeze.task_plan] table asking for two
-    confirmation readings, a confirmation under an economy gate, or a regression_drop of 1.0 is refused before
-    anything is frozen."""
+    confirmation readings, an economy gate or screen tasks (both removed in P1 step 6), or a regression_drop of 1.0
+    is refused before anything is frozen."""
     cfg, activity, release, plan_ref = setup(fake_upstream, tmp_path)
     gate = {"min_gain": 0.05, "min_groups": 1}
     for table, match in (({"tasks": "dev", "confirmation_repeats": 2, "gate": gate}, "0 or 1"),
                          ({"tasks": "dev", "confirmation_repeats": 1,
                            "gate": {"mode": "economy", "max_runtime_cost_ratio": 0.9, "min_groups": 1}},
-                          "economy gate"),
+                          "economy is at tag v0.4.0"),
+                         ({"tasks": "dev", "screen": ["rsi.dev_update_stage"], "gate": gate},
+                          r"does not take \['screen'\]"),
                          ({"tasks": "dev", "gate": {**gate, "regression_drop": 1.0}}, r"strictly inside \(0, 1\)")):
         cfg["freeze"] = {"task_plan": table}
         with pytest.raises((ValueError, ct.ContractError), match=match):

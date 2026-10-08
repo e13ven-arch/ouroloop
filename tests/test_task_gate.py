@@ -8,8 +8,8 @@ import rsi
 from ouroloop import policies as P
 from ouroloop.benchmark import TaskResult, pair_key
 from ouroloop.evolve import contracts as ct
-from ouroloop.evolve.task_gate import (GatePlan, TaskEvalPlan, evaluate_task, judge, paired_bootstrap,
-                                       per_task, regression_rate, screen)
+from ouroloop.evolve.task_gate import (GatePlan, TaskEvalPlan, evaluate_task, judge, paired_bootstrap, per_task,
+                                       regression_rate)
 from ouroloop.release import NotAuthorized, Releases, Stale
 
 FAMILIES = {"t1": "f1", "t2": "f1", "t3": "f2", "t4": "f3", "t5": "f4"}
@@ -66,22 +66,13 @@ def test_regression_rate_counts_tasks_whose_mean_fell():
 
 
 # ---------------------------------------------------------------------------- ER-01 / ER-04 / ER-05
-def test_er01_a_candidate_that_passes_the_screen_and_loses_on_dev_is_rejected(tmp_path):
-    p = plan(tmp_path, screen_ids=("t1", "t3"))
-    screened = screen(p, rows(p, {"t1": True, "t3": True}), rows(p, {"t1": False, "t3": False}))
-    assert screened[0] == "pass"
+def test_er01_a_candidate_that_loses_on_dev_is_rejected(tmp_path):
+    p = plan(tmp_path)
     verdict, reasons, metrics, uncertainty = judge(
         p, rows(p, {"t1": True, "t2": False, "t3": False, "t4": False, "t5": False}),
         rows(p, {"t1": True, "t2": True, "t3": True, "t4": False, "t5": False}), FAMILIES)
     assert verdict == "rejected" and metrics["regression_rate"] > 0
     assert any("regression rate" in r or "min_gain" in r for r in reasons)
-
-
-def test_a_screen_never_removes_a_candidate_for_not_having_triggered(tmp_path):
-    p = plan(tmp_path, screen_ids=("t1",))
-    same = {"t1": False}
-    verdict, reasons = screen(p, rows(p, same), rows(p, same))
-    assert verdict == "pass" and "no defect" in reasons[0]
 
 
 def test_er04_a_small_gain_can_be_accepted_without_being_significant(tmp_path):
@@ -93,46 +84,24 @@ def test_er04_a_small_gain_can_be_accepted_without_being_significant(tmp_path):
     assert uncertainty["significant"] is False and "not a significant improvement" in reasons[0]
 
 
-def test_er05_an_economy_verdict_on_unknown_cost_is_inconclusive(tmp_path):
-    gate = GatePlan(mode="economy", max_quality_loss=0.05, max_runtime_cost_ratio=0.8, min_groups=3,
-                    bootstrap_replicates=400)
-    p = plan(tmp_path, gate=gate)
-    same = {"t1": True, "t2": True, "t3": True, "t4": False, "t5": False}
-    verdict, reasons, metrics, _ = judge(p, rows(p, same), rows(p, same, cost=0.1), FAMILIES)
-    assert verdict == "inconclusive" and "unknown cost is not zero" in reasons[-1]
-    assert metrics["cost_missing"]["subject"] == 5
-    # measured on both arms but the quality interval is too wide to call non-inferior
-    worse = {"t1": False, "t2": False, "t3": True, "t4": False, "t5": False}
-    verdict, reasons, _, _ = judge(p, rows(p, worse, cost=0.01), rows(p, same, cost=0.1), FAMILIES)
-    assert verdict == "rejected" and any("below control" in r for r in reasons)
-
-
-def test_er05_economy_accepts_only_a_supported_cost_reduction(tmp_path):
-    gate = GatePlan(mode="economy", max_quality_loss=0.05, max_runtime_cost_ratio=0.8, min_groups=3,
-                    bootstrap_replicates=400)
-    p = plan(tmp_path, gate=gate)
-    same = {"t1": True, "t2": True, "t3": True, "t4": True, "t5": True}
-    verdict, reasons, metrics, unc = judge(p, rows(p, same, cost=0.05), rows(p, same, cost=0.10), FAMILIES)
-    assert verdict == "accepted" and metrics["subject_cost_usd"] < metrics["control_cost_usd"]
-    assert unc["cost"]["high"] < 0
-    equal = judge(p, rows(p, same, cost=0.10), rows(p, same, cost=0.10), FAMILIES)
-    assert equal[0] == "inconclusive" and "does not support a reduction" in equal[1][-1]
-
-
 def test_a_quality_gate_may_not_have_a_min_gain_of_zero():
     with pytest.raises(ct.ContractError, match="above zero"):
         GatePlan(mode="quality", min_gain=0.0)
-    with pytest.raises(ct.ContractError, match="measurable cost"):
-        GatePlan(mode="economy")
 
 
-def test_protected_requirements_block_acceptance(tmp_path):
-    p = plan(tmp_path, gate=GatePlan(min_gain=0.05, min_groups=3, bootstrap_replicates=200,
-                                     protected_requirements=("req-1",)))
-    better = {"t1": True, "t2": True, "t3": True, "t4": True, "t5": True}
-    verdict, reasons, _, _ = judge(p, rows(p, better), rows(p, {t: False for t in TASKS}), FAMILIES,
-                                   protected={"req-1": False})
-    assert verdict == "rejected" and "protected requirements regressed" in reasons[-1]
+def test_a_gate_that_sets_a_removed_clause_is_refused_and_the_kept_fields_keep_the_plan_ref():
+    """P1 step 6: the economy mode, the runtime cost ratio and protected requirements are judged by nothing, so a
+    gate setting one is refused rather than frozen and silently ignored; their fields stay at the values every plan
+    was frozen with, so a plan's ref does not move."""
+    for kw, match in (({"mode": "economy", "max_runtime_cost_ratio": 0.8}, "economy is at tag v0.4.0"),
+                      ({"max_runtime_cost_ratio": 0.8}, "not judged any more"),
+                      ({"protected_requirements": ("req-1",)}, "not judged any more")):
+        with pytest.raises(ct.ContractError, match=match):
+            GatePlan(**kw)
+    fields = GatePlan().to_json()
+    assert fields["mode"] == "quality" and fields["max_runtime_cost_ratio"] is None
+    assert fields["protected_requirements"] == [] and fields["max_quality_loss"] == 0.02
+    assert GatePlan.from_json(fields).ref() == GatePlan().ref()
 
 
 # ---------------------------------------------------------------------------- ER-02 / integrity
@@ -778,18 +747,13 @@ def test_a_confirming_experiment_passes_through_confirming_and_a_restart_finishe
     assert ex.state()["history"][5]["receipt"] == receipt.ref() and len(calls) == 2
 
 
-def test_a_plan_takes_one_confirmation_reading_and_none_under_an_economy_gate(tmp_path):
+def test_a_plan_takes_one_confirmation_reading(tmp_path):
     """M3 §2.1(b) (v0.3, after review): `confirmation_repeats` is 0 or 1 — the rule is two readings each clearing
-    the gate, a third reading would only be paid for; an economy gate takes no confirmation at all (the clause lives
-    in the quality verdict); `regression_drop` is strictly inside (0, 1), since at 1.0 "more than" never fires. The
-    receipt's `readings` is 1 + confirmation_repeats."""
+    the gate, a third reading would only be paid for; `regression_drop` is strictly inside (0, 1), since at 1.0
+    "more than" never fires. The receipt's `readings` is 1 + confirmation_repeats."""
     with pytest.raises(ct.ContractError, match=r"0 or 1 — one confirmation reading \(M3 §2.1\(b\)\)"):
         plan(tmp_path, confirmation_repeats=2)
-    economy = GatePlan(mode="economy", max_quality_loss=0.05, max_runtime_cost_ratio=0.8, min_groups=3,
-                       bootstrap_replicates=200)
-    with pytest.raises(ct.ContractError, match="confirmation_repeats with an economy gate"):
-        plan(tmp_path, gate=economy, confirmation_repeats=1)
-    assert plan(tmp_path, gate=economy, confirmation_repeats=0).confirmations == 0
+    assert plan(tmp_path, confirmation_repeats=0).confirmations == 0
     with pytest.raises(ct.ContractError, match=r"strictly inside \(0, 1\)"):
         GatePlan(regression_drop=1.0)
     assert GatePlan(regression_drop=0.99).regression_drop == 0.99

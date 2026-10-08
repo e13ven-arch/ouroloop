@@ -31,7 +31,7 @@ def config(fake_upstream, tmp_path, **extra):
     return cfg
 
 
-def prepared(fake_upstream, tmp_path, *, cfg=None, gate=None, screen=(), dev=None, train=False, out=None):
+def prepared(fake_upstream, tmp_path, *, cfg=None, gate=None, dev=None, train=False, out=None):
     """A workspace with W0 installed and a frozen development plan, as `bench improve` needs it."""
     cfg = cfg or config(fake_upstream, tmp_path)
     if train:
@@ -53,7 +53,7 @@ def prepared(fake_upstream, tmp_path, *, cfg=None, gate=None, screen=(), dev=Non
     plan_ref = bench.freeze_task_plan(
         activity.objects, core_ref=ct.SystemRelease.from_json(activity.objects.get(release)).core_ref,
         split_ref=activity.splits.hash(), task_ids=tuple(dev or rsi.DEV),
-        gate=gate or GatePlan(min_gain=0.05, min_groups=1, bootstrap_replicates=200), screen_ids=tuple(screen))
+        gate=gate or GatePlan(min_gain=0.05, min_groups=1, bootstrap_replicates=200))
     cfg["rsi"]["task_plan_ref"] = plan_ref
     cfg["rsi"]["schedule_ref"] = activity.objects.put_json("change", {"worker_rounds": 1, "patience": 1,
                                                                      "candidates_per_round": 1})
