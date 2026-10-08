@@ -1,0 +1,73 @@
+{
+ "name": "stirrup",
+ "version": "0.2.0",
+ "license": {
+  "spdx": "MIT",
+  "file": "LICENSE",
+  "sha256": "06b15284cce5761591c0a89c91208ba9f85845f1cef9452a97b97891003ea378",
+  "copyright": "Artificial Analysis, Inc."
+ },
+ "upstream": {
+  "repository": "https://github.com/ArtificialAnalysis/Stirrup",
+  "tag": "v0.2.0",
+  "commit": "247f24d56b2108235880ed2a2baea5d35b5a67ee"
+ },
+ "pypi": {
+  "sdist": {
+   "file": "stirrup-0.2.0.tar.gz",
+   "sha256": "0783046d4cd9abc05a30a995e972c4f69e790c7ff1de8f79db8cfb7f7c27ffc8"
+  },
+  "wheel": {
+   "file": "stirrup-0.2.0-py3-none-any.whl",
+   "sha256": "3f1284f52556d4a4b8516da93aefc9cdc7544a86a7b297cf2b60101b099fe3de"
+  }
+ },
+ "source": "stirrup-0.2.0/src/stirrup/ of the sdist, byte for byte (identical to the wheel and to src/stirrup/ at the tag); LICENSE is stirrup-0.2.0/LICENSE",
+ "vendored": "2026-10-08",
+ "files": {
+  "__init__.py": "0b7f6c44140f70113aaa16e577277c283689ef8da6853e49ec69d0ef378633b7",
+  "clients/__init__.py": "bc7b51d6ba8aef0f4b31608125725d7bf475a7075bba3f5fe806c027889bdf19",
+  "clients/chat_completions_client.py": "c312035d9e3068c1396548a35b5e52dad3d1549b06d0d3b408e5c681d45df161",
+  "clients/litellm_client.py": "1270004f1ac8766cd267b6a117d01a834ed384159e11d5ef0316f847f7f8f845",
+  "clients/open_responses_client.py": "43d1af9a486f5af4525f5e812929e3013c107a1c71c1fd7b73d51e73f90ad9fa",
+  "clients/utils.py": "929ad1222b41dcd242ddc85a3bae51104079d72a1a05b229337485ab743093ac",
+  "constants.py": "e7b915b6f5e4158b78f956c0e799d088782d82879b359098f6702bbeacad981f",
+  "core/__init__.py": "45e05597b07d87f14d919efbbc2c76c657ee2b526e434c93497ac481ce2d38d5",
+  "core/agent.py": "2b20311504f9c1ea064c8b4db5de890915fdfaec9117d64313d610c6dcfb2410",
+  "core/cache.py": "50550dde8fe540266f0d6adf7b2c2910916bb4db0b4f7f11048bb57ca02a8f97",
+  "core/exceptions.py": "078be250168c0a123e97e03e372a10da244f87160d0ea1c0bb8e53437b32ba34",
+  "core/models.py": "8c9e281fb92ff45eec6157166850711a16de1e86b12e58831cbb4e9391dea890",
+  "integrations/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "integrations/slack/Dockerfile": "874f41652b5d6f5f9ce18fd3769a704196d623a372e6211d7b90d786e1a1dc64",
+  "integrations/slack/README.md": "b713d927d35f325f005f2a1f961ccd203f4a1a5593af94ae820e827e31487dbb",
+  "integrations/slack/__init__.py": "401586dba6e74fef6498e46cb7589a65f47021b5b983464d9a67ba0118b475d4",
+  "integrations/slack/__main__.py": "c969a1a71950ddfb36d722bcf936e72e82c355a0af9d0f2f5bf05277e03c15f7",
+  "integrations/slack/slack.py": "a5350c97cea23f5a81a899d4b7443ecd4567f95e708384bcc0345bc1ebbba691",
+  "prompts/__init__.py": "30867d88301e7dc601733da1f18bc9c8f14cd68f5ec5096e2560fb9270d71f1b",
+  "prompts/base_system_prompt.txt": "e1b45e1abd203e0b0d8d98eaa612eda82bd0254032552292fa5154d2bd637d1b",
+  "prompts/message_summarizer.txt": "b90a13c6b78cb82e36ad3192666a07d439e3d3a5ab1106f480b903bd5321a2c4",
+  "prompts/message_summarizer_bridge.txt": "b166df9c7b48e9159e98123242c9ea1cc1a99d4f84e854db7d40baaef9041cb6",
+  "prompts/message_summarizer_text_only.txt": "286f2b613fefba4861e43a1b74b3ff526746948344ff7e7a29a1683f4ebe8332",
+  "py.typed": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "skills/__init__.py": "044726752b247c1cf1fd02b878a5c40ae7277482918c75f3cf0c30b1a7b3f24e",
+  "skills/skills.py": "aa10371c8e7991a46a2f2be7ff9e82b3bd7cdf75da720fbca8fee6b87af0aee1",
+  "tools/__init__.py": "169d8d71efc0fe96b82d09effb183e5d4611ce4c250e45f0b918276733f99fd1",
+  "tools/browser_use.py": "19aaca0ca0c48a8243451e7ecc888db84f84dcdabc9f049ebe268d80894d1691",
+  "tools/calculator.py": "a185b4125f4ae1ef9ab37b4c3bb3c76b50812a1b361395741291c992a48ee989",
+  "tools/code_backends/__init__.py": "3acdc2874b6bf144d1fea5981890769ac15e50664b7001b41d3e9a0a24d7dd50",
+  "tools/code_backends/base.py": "8a16b5edb11a99e955d092aa1859f9f350efce979cbd55145a843972e82710af",
+  "tools/code_backends/docker.py": "ed928243e68be0dbb6536fd1e47d6a574a1f60a20013ba34505fde3578768a8d",
+  "tools/code_backends/e2b.py": "016a4fcaae8b2ec42325902b670b153c383d231b16df322fdc4f56c8bebdd206",
+  "tools/code_backends/local.py": "c81969f9460ad1bb867475b1c85e802b77df46358c8df0c082fabfb49d960302",
+  "tools/finish.py": "6e23a9a9e3e813c9c5551a20d73b1986fe7c6304e33be135aba4419162ed7273",
+  "tools/mcp.py": "e47ccafed057e96a5e53e1d4e6c26d03e4ff212657d4df3f4bf646b0f859f8f2",
+  "tools/user_input.py": "a7f63f38bf3742321febc6c567915ca79eeebed14bfe8a7fdef65b38af6d6c0b",
+  "tools/view_image.py": "1f99d05a6595234675eda7067eaa9ff7cfddd8a17a9c91696dfa09ad5ac72d25",
+  "tools/web.py": "a778bb95c8b0ad2cad34f9077df90665c2f369a280aec1256e603f8d65912f24",
+  "utils/__init__.py": "e2472e131ae98525ea831460bb5abcfd9e91adbf5a019a48a385eae12f53c2e9",
+  "utils/logging.py": "b2bc3eff0e0619747a252b2153b7ff7969d711ab1987abcb85269bf274f24614",
+  "utils/text.py": "de51a571717343e31c96c6eeef025c886dc2707bd0fd293df2da8e67160b946c"
+ },
+ "file_count": 42,
+ "total_bytes": 493075
+}
