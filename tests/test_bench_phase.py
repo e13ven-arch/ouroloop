@@ -136,6 +136,13 @@ class TestSmoke:
 
 
 class TestPhases:
+    @pytest.fixture(autouse=True)
+    def _in_tmp_path(self, tmp_path, monkeypatch):
+        """run_phase's default base is "." and config()'s root "ws": run from tmp_path, so the refused phases that
+        open the activity first write their bootstrap there, never into the directory pytest was started from
+        (the main checkout's ws/ holds run records, docs/PLAN.md rule 12)."""
+        monkeypatch.chdir(tmp_path)
+
     def test_br01_a_phase_whose_requirements_are_missing_is_refused_before_a_model_is_called(self, fake_upstream):
         """BR-01: the refusal names the missing piece, and the smoke entry keeps working."""
         with pytest.raises(ValueError, match=r"\[llm\] table"):
