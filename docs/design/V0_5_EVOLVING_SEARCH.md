@@ -1,10 +1,12 @@
 # v0.5 进化搜索：框架怎样随见过的任务变好（2026-10-06）
 
+> **现状（2026-10-08）：** 部分实施，正文是设计输入、不改。只有经验库（§2.4，VEL）按 V0_5_PLAN 实现（`7e7732e`，`ouroloop/research/library.py`）；档案 + 合并、B-Race、算子老虎机没有采纳（V0_5_PLAN §4）。support 上 3b 的过程读数（D = 3.0，P 0.89）满足瘦身第三批的保留条件，VEL 保留为 memory 的底座、作 preset 开关、不进默认，改进时按 [OSS_COMPONENTS_PLAN](OSS_COMPONENTS_PLAN.md) §3 借 ACE、ReMe 的设计；没有 final。文中引用的 V0_5_AGENT_RL 与 RSI_PLAN_2026-10-06 已于 2026-10-08 删除（以及若删的 V0_5_METHOD_LIBRARY），在 tag `archive-2026-10-08` 上可读。
+>
 > **（2026-10-06 定稿说明）本文是 v0.5 的输入，保留作依据；v0.5 的规则以 [V0_5_PLAN.md](V0_5_PLAN.md) 为准**：只采纳经验库（§2.4）；档案 + 合并、B-Race、算子老虎机记在 V0_5_PLAN §4“考虑过、不做”；快照只在 n = 50 过一次 gate、对照取基线的 W0 train 读数、S1-L finance 探针不跑（V0_5_PLAN §2）。两者不一致处以 V0_5_PLAN 为准。
 >
 > 设计稿，待批准。用户方向（2026-10-06）：按计划推进；希望 RSI 框架本身有进化能力，包括类似 RL 的机制，让 agent 接触的任务越多、成绩越好；多个方案都可以测试。
-> 先文档后执行：本文只写设计。实现与任何付费阶段都排在 v0.4 finance 活动（三轮加封存 final）结束并提交之后；在那之前 `ouroloop/` 下的代码一行不动，正在付费运行的 `workspace-claude-v4-finance` 不碰。本文与 [V0_5_METHOD_LIBRARY.md](V0_5_METHOD_LIBRARY.md)（方法库）、[V0_5_AGENT_RL.md](V0_5_AGENT_RL.md)（agent 内 RL）之间的接口写在 §4.2，三份文档对齐之后才写代码。
-> 依据：四份候选设计（档案 + 帕累托 + 合并、自适应评估 B-Race、类 RL 的搜索策略、经验累积 VEL）各自的仿真；一个把四者放进同一个标定世界、等预算、配对种子的统一仿真（§3，每格 400～600 个种子）；只读的记录：`workspace-claude-v4-finance`（W0 基线与第 1 轮）、`workspace-claude-v3`（五领域三轮）、`workspace-claude-full` / `workspace-claude`（v0.1/v0.2 Marketing）、`workspace-claude-v3-pilot`、`workspace-claude-ceiling`；[V0_4_PLAN](V0_4_PLAN.md)；[五领域诊断](../history/DIAGNOSIS_FIVE_DOMAIN_2026-10-06.md)；[RSI_PLAN §1](RSI_PLAN_2026-10-06.md) 的业界对照；[04_RESEARCH_LOOP](../modules/04_RESEARCH_LOOP.md)。没有调用模型，没有付费阶段，没有读 `.env`，没有读任何 test 结果。
+> 先文档后执行：本文只写设计。实现与任何付费阶段都排在 v0.4 finance 活动（三轮加封存 final）结束并提交之后；在那之前 `ouroloop/` 下的代码一行不动，正在付费运行的 `workspace-claude-v4-finance` 不碰。本文与 [V0_5_METHOD_LIBRARY.md](V0_5_METHOD_LIBRARY.md)（方法库）、`V0_5_AGENT_RL.md`（agent 内 RL；tag `archive-2026-10-08`）之间的接口写在 §4.2，三份文档对齐之后才写代码。
+> 依据：四份候选设计（档案 + 帕累托 + 合并、自适应评估 B-Race、类 RL 的搜索策略、经验累积 VEL）各自的仿真；一个把四者放进同一个标定世界、等预算、配对种子的统一仿真（§3，每格 400～600 个种子）；只读的记录：`workspace-claude-v4-finance`（W0 基线与第 1 轮）、`workspace-claude-v3`（五领域三轮）、`workspace-claude-full` / `workspace-claude`（v0.1/v0.2 Marketing）、`workspace-claude-v3-pilot`、`workspace-claude-ceiling`；[V0_4_PLAN](V0_4_PLAN.md)；[五领域诊断](../history/DIAGNOSIS_FIVE_DOMAIN_2026-10-06.md)；RSI_PLAN §1（tag `archive-2026-10-08`）的业界对照；[04_RESEARCH_LOOP](../modules/04_RESEARCH_LOOP.md)。没有调用模型，没有付费阶段，没有读 `.env`，没有读任何 test 结果。
 
 ## 0. 结论先行
 

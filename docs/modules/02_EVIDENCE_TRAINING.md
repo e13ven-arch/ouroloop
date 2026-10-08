@@ -5,6 +5,8 @@
 > v0.3（2026-10-04，[DESIGN v0.7](../DESIGN.md)）：**v0.3 实现的只有网关记录里的 `role` 字段，其余是第二版计划。** 第一版的交付物改为“可演化的 agent 程序 + 最小运行壳 + pin 的模型”，agent 程序就是能力包，可以改循环本身（M0 §2（v0.3）：manifest `harness_package.v2` 增加 `agent` 组件，`run(ctx, task)`，ctx 只暴露 `model/tool/skills/limits/view`）。模型调用因此全部经宿主网关（M1 §1（v0.3）：网关与 broker 在宿主里，宿主为每次调用写轨迹记录，包写不了）。本模块随之改写第二版训练投影的**来源**：从网关日志读，不从包的任何记录读；教师移到网关；aux 调用不进训练数据；演化→冻结→采集/训练→换学生→在学生上再演化的顺序写进 K 的 schedule。M2 的状态不变：仍是第二版，v0.3 不训练模型、不建教师、不要求 Tinker 账号，也不为本模块写测试。本文件写定 M2 以后怎样读网关日志，让 M1 现在就按可训练的形状落盘（记 `role`），免得第二版再改日志格式而使 v0.3 的轨迹作废。每条规则标“（v0.3，2026-10-04）”表示写定日期，不表示 v0.3 实现。
 >
 > v2（2026-10-08）：用户对 [V2_TRAINING_PIPELINE](../design/V2_TRAINING_PIPELINE.md) §7 答“按默认”，八项按默认值定下。本文据此改了：§1 的来源规则（血缘加选择，取代 EVAL_ONLY 闸门）、§1a（不建原文对象库、精确值脱敏、教师读 K）、§2 第 5 步（目标 `accepted`，`pass_only` 只作 dev 消融）、§3a 第 2–3 步（学生在 W0 下、教师带 K 审阅）、新增 §3b（`[train.<role>]` 配置形状与 actor 产物契约、Qwen3.5-9B + Tinker 参考实现、`ouroloop/train/` 与 `[train]`/`[train-jobs]` 命名）、DT6-01/07/10/12/13/14；同日复核后另补 §1 表的决策学习一行、§2 首段（不另建 TrajectoryRecord）、§3 的 role 名、§3a 首段与第 5 步、§4 首段的注。其余决定不在本模块重复，见该文 §7：轨道 B 在 X1 读完后再定开不开，老师写在计划文件里；test 复用规则；finance、hr、marketing、sales、support 五域合训一个学生，operations 整域留出报 LODO；`contact_human` 在本基准上不作效果主张。标“（v2，2026-10-08）”的是写定日期，不表示已实现：代码一律等 support 两份 final 评完、H1 算完才动，从瘦身第一批开始（V2 §1“时机”）。
+>
+> 2026-10-08（support 两臂对照停止后，[JOURNAL](../JOURNAL.md) 2026-10-08）：对照已由用户停止，上段“等 support 两份 final 评完、H1 算完”的条件作废，代码从瘦身第一批合入之后开始。同日按 V2 的 Tinker/RunPod 核价更正同步 §3b：`[train.actor]` 的自托管写插件模块路径、由 `JobTrainer` 运行（`module:Class` 只用于测试与 demo）；默认配方只做 LoRA，α 在 Tinker 上设不了，lr 改为扫描；serving 默认 `openai_compat` 指向 RunPod 上服务合并权重的 vLLM（V2 §3.3、§3.5、§3.7、§7 第 6 项）。被取代的原文保留在注里。
 
 ## 1. 两条数据路径
 
@@ -84,23 +86,23 @@ teacher、judge、actor（含学生）与 trainer 都是配置项，开发者换
 |---|---|
 | `[llm]` | 活动的 actor；学生臂就是把它换成学生（例如 `openai_compat`，`model` = 产物 ref）。provider 由 `config.build_provider` 构造：anthropic、openai_compat、claude_code 或 `module:Class` |
 | `[teacher]`、`[judge]` | 只属于宿主（K）：teacher 在采集时审阅 act 调用（v2.2 起），judge 离线打标；包可调的 role 仍只有 `act`/`aux` |
-| `[train.<role>]` | 按角色选 trainer：`[train.actor]` 的 `trainer` 取 `tinker_lora`、`mock_sft` 或 `module:Class`，`recipe` 记底座与超参；`[train.decision]` 的 `trainer` 取 `tde`、`signature`、`decider_lora` 或 `module:Class`。`[train.decision]` 取代旧的 `[trainer]`，旧表按 `[train.decision]` 读以保持兼容。不用 `[trainer.actor]`：`build_trainer` 直接从 `cfg["trainer"]` 取 `type`（config.py:124-138），嵌套表会 KeyError |
+| `[train.<role>]` | 按角色选 trainer：`[train.actor]` 的 `trainer` 取 `tinker_lora`、`mock_sft` 或插件模块路径（自托管 GPU 训练，由 `JobTrainer` 作为作业运行；`module:Class` 在控制面进程里直接构造，没有作业与价格上限，只用于测试与 demo；2026-10-08 按核价更正，原写 `module:Class`），`recipe` 记底座与超参；`[train.decision]` 的 `trainer` 取 `tde`、`signature`、`decider_lora` 或 `module:Class`。`[train.decision]` 取代旧的 `[trainer]`，旧表按 `[train.decision]` 读以保持兼容。不用 `[trainer.actor]`：`build_trainer` 直接从 `cfg["trainer"]` 取 `type`（config.py:124-138），嵌套表会 KeyError |
 | `[trainers.<name>]` | 插件选项（怎么运行），沿用现有 plugin_options |
 | `[data]` | `sources_fit`、`sources_threshold`（§1、M0 §4）、`sft_targets`（默认 `accepted`，§2 第 5 步）、`per_task_cap` |
 | `[pricing.<provider>]` | 学生必须有价（按 token 或 GPU 小时），否则 gate 的成本项判 inconclusive |
 
-参考实现（v2，2026-10-08，用户决定，V2 §7 第 6 项）：底座 Qwen3.5-9B，训练后端 Tinker（`tinker_lora`，默认配方沿用 HZ：rank 32、α 32、2 epochs、lr 2e-4、batch 8、seed 42、`max_seq` 32768）；自托管走 `module:Class`，v2 不维护第二套生成训练栈。学生训练与评测都关 thinking。
+参考实现（v2，2026-10-08，用户决定，V2 §7 第 6 项）：底座 Qwen3.5-9B，训练后端 Tinker（`tinker_lora`）。默认配方（2026-10-08 按 Tinker/RunPod 核价更正，V2 §3.7）：只做 LoRA，rank 32、所有层含 MLP；α 在 Tinker 上设不了，以导出的 `adapter_config.json` 为准；lr 扫 {2e-4, 5e-4, 1e-3}、按 val NLL 选；batch 8、2 epochs、5% warmup 后线性衰减、seed 42；`max_seq` 32768（排除 X1 训练集 S1′ 的 4.8%）。自托管训练写插件模块路径、由 `JobTrainer` 运行；评测时大批量的学生推理走 RunPod 上自托管的 vLLM（合并权重，经 `openai_compat`），Tinker 采样只作冒烟或兜底；v2 不维护第二套生成训练栈。原写“默认配方沿用 HZ：rank 32、α 32、2 epochs、lr 2e-4……；自托管走 `module:Class`”。学生训练与评测都关 thinking（是否改为 low/medium 是 V2 §7 第 9 项，待用户定）。
 
 **actor 产物契约**（写进 trainers/__init__.py；现有插件契约的 serving 端只返回决策 Backend，这里为 actor 补上）：
 
 | 端 | 契约 |
 |---|---|
 | 训练端 | `train()` 写出 adapter 和 `manifest.json`：`{base, tokenizer, renderer, sha256, max_seq}`；sha256 写进 `ModelIdentity.artifact_digest`，同时填 `adapter_ref`、`tokenizer_ref`、`renderer_ref`，release 只钉 digest（V2 §3.5） |
-| serving 端 | `provider(run, ref, options) -> dict`，返回一张 `build_provider` 能构造的表：Tinker 采样，或 `openai_compat`（`base_url`，加上与 ref 同名的服务模型名） |
-| 自托管 | 唯一一步手工操作：`vllm serve <base> --enable-lora --lora-modules <ref>=<dir>` |
-| 生成探针 | 核对服务名等于 ref；做一次 tool-call 往返（含 `_unparsed`）；核对上下文长度 ≥ `max_seq`。actor 产物送进决策探针时拒绝（DT6-05） |
+| serving 端 | `provider(run, ref, options) -> dict`，返回一张 `build_provider` 能构造的表：`openai_compat`（`base_url`，加上与 ref 同名的服务模型名；评测默认，指向 RunPod 上自托管的 vLLM），或 Tinker 采样（只作冒烟或兜底）（2026-10-08 按核价更正） |
+| 自托管 | 唯一一步手工操作：在 RunPod 上起 vLLM，默认服务合并后的完整权重（`vllm serve <merged_dir> --served-model-name <ref> --max-model-len <≥ max_seq> …`）；以 LoRA 方式服务 adapter 是备选，要给 `--max-lora-rank 32`；完整参数见 V2 §3.3（2026-10-08 按核价更正，原写只有 `vllm serve <base> --enable-lora --lora-modules <ref>=<dir>`） |
+| 生成探针 | 核对服务名等于 ref；做一次 tool-call 往返（含 `_unparsed`）；核对上下文长度 ≥ `max_seq`；（2026-10-08 按核价补）用 Tinker 训练时的 renderer 与 vLLM 的 HF chat template 各渲染同一条轨迹、逐 token 比对，不一致就不过（V2 §3.3）。actor 产物送进决策探针时拒绝（DT6-05） |
 
-命名（v2，2026-10-08，用户决定，V2 §7 第 7 项）：子包 `ouroloop/train/`，extra `[train]` 与 `[train-jobs]`（`TrainJob`/`TrainResult`/`Trainer` 契约与 `train_artifact` 在 `[train]`，`JobTrainer` 与云、主机作业层在 `[train-jobs]`，SLIMMING §0.1 A、C），入口 `python -m ouroloop.train`；取代瘦身清单里的 `ouroloop[decision]`/`ouroloop[decision-jobs]`，代码随瘦身第一批只搬一次，等 support 两份 final 与 H1 完成后合入。
+命名（v2，2026-10-08，用户决定，V2 §7 第 7 项）：子包 `ouroloop/train/`，extra `[train]` 与 `[train-jobs]`（`TrainJob`/`TrainResult`/`Trainer` 契约与 `train_artifact` 在 `[train]`，`JobTrainer` 与云、主机作业层在 `[train-jobs]`，SLIMMING §0.1 A、C），入口 `python -m ouroloop.train`；取代瘦身清单里的 `ouroloop[decision]`/`ouroloop[decision-jobs]`，代码随瘦身第一批只搬一次，等 support 两份 final 与 H1 完成后合入（2026-10-08：对照已停止，这个条件作废，按瘦身的批次顺序合入）。
 
 ## 4. 决策模型独立性与漂移
 

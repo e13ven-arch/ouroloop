@@ -1,4 +1,0 @@
-{
-  "text": "{\"failure_class\": \"closing step skipped\", \"root_cause\": \"The agent finished after the main update without the closing post.\", \"component\": \"memory\"}\n",
-  "stop": "end"
-}

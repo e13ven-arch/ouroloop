@@ -1,5 +1,7 @@
 # V2 训练链设计：数据管线、试验设计、训练管线
 
+> **现状（2026-10-08，support 对照停止后）：** 现行，已定稿；§7 第 9 项待用户定。用户已停止 support 两臂对照（JOURNAL 2026-10-08）：文中“等 support 两份 final 评完、H1 算完”的时机（§1“时机”、§2.6 第 8 条、§4.6 轨道 B 的排期、§7 同步清单）改为“瘦身第一批合入之后”，support 的重放现在就能做；support 没有跑 final，§7 第 2 项的“support（final 后读过 2 次）”应为读过 0 次。support 的 K（W\* 文本）现在只有 v0.5 臂经 dev gate 装上的经验库快照（release `9f07d95032b4`，6 个 library-* skill，没有 final）：拿它作 K，还是当 support 没有 W\*、K 为空，待用户定（§2.6 第 6 条、§7 第 4 项）。§7“核价更正待同步”清单里的 DESIGN、TECHNOLOGY、02、TRAINING_HOSTS、ROADMAP 五处已于 2026-10-08 整理时同步。
+>
 > **状态：** 已定稿（2026-10-08：用户按 §7 默认值全部确认；§7 第 9 项是核价后新增的，待用户决定；同日第 2 项由用户改为全部域可跑 final）。**日期：** 2026-10-08。
 >
 > **历史：** 2026-10-07 草案（待用户审），提交于 `b58f5cc`。2026-10-08 用户答"按默认"，§7 八项全部按默认值定下（见 §7 的"决定"列）。正文只把 extra 名按 §7 第 7 项改为 `[train]`/`[train-jobs]`（原 `[decision]`/`[decision-jobs]`），并在 §7 标出本轮已同步的文档。同日复核后另补：§2.5 的代码位置与时机、§3.3 的 extra 归属、§5 v2.2 的测试编号、§7 的同步清单。同日又按 Tinker/RunPod 核价（官方价目与文档，2026-10-08 核对）更正 §0.3、§3.1、§3.3、§3.5、§3.7、§4.2、§4.6、§5 v2.1、§6 和 §7 第 6 项，各处标"（2026-10-08 按 Tinker/RunPod 核价更正）"；§7 另补核价时没能确认的事项和新的待决第 9 项（学生思考档位）。同日（support v0.5 臂 3b 之后）用户问"不能全跑吗？"，§7 第 2 项改为全部域可跑 final；据此改 §4.1 的 C5、§6 的"test 被提前用掉"一行和 §7 第 2 项，各处标"（2026-10-08 用户改为全部域可跑 final）"。§7 第 9 项补注用户"保持统一的档位"的偏好。
@@ -427,7 +429,7 @@ per_task_cap = 4
 | 项 | 内容 |
 |---|---|
 | 臂 | S0：Qwen3.5-9B + W0，thinking 开、关各跑一次。S_F：S0 底座用 S1′（W0 包的成功轨迹，只取 fit 族，回填后的）做 LoRA SFT |
-| 题 | 各域 train 的 val+cal 族，约 60–75 题（finance、sales、hr、marketing；support 的 final 跑完后加入），每臂 1 次 |
+| 题 | 各域 train 的 val+cal 族，约 60–75 题（finance、sales、hr、marketing；support 没有 final，加不加入待用户定，§7 第 4 项），每臂 1 次 |
 | 免费读数 | 在 S0 的记录上跑 `replay_effect` 和 `replay_skip`，得到学生上写门的上限（被救回的失败 ÷ 尝试数） |
 | 链路收据 | 记录 → 投影 → 打标 → 建集 → 检查 → 训练 → 探针 → 阈值 → shadow/act 绑定 → build_candidate → 导出 → App.bind 跑 1 题，每个环节都有 ref；全程不碰 dev/test |
 | 费用 | Claude $0（加 judge 标签时 ≤ $35）；GPU 和 Tinker < $80（按核价，Tinker 上的训练、扫学习率、推理加开思考的 S0 臂合计约 $20–45，明细见 §4.6；2026-10-08 按 Tinker/RunPod 核价更正） |
@@ -697,7 +699,7 @@ python -m ouroloop.train label <x1-plan> --labelers replay_effect,replay_skip
 - **代码注释**（本轮不改）：providers/__init__.py:4、claude_code.py:235、anthropic.py:45、openai_compat.py:44、backends/llm.py:1-3、runtime.py:372、ledger.py:19-20 这 7 处注释随瘦身第一批；默认值随 v2.0 的血缘改动（§3.8 第一行），因为 ledger.py:143、:152 只收 SOURCES 里的来源（§2.5）。现在改任何 .py 都会改 `code_version`，从而改动正在跑的活动的 K。
 - **ROADMAP**（本轮已同步）：v2 一节指向本稿。
 - **复核后另补**（2026-10-08）：M3（03）§1 共适应注、M4（04）§3 材料准备、集成验收（08）IT6-01/38、modules/README 的 M2/M8 两行、TRAINING_HOSTS 页首、V0_4_PLAN 与 V0_5_METHOD_LIBRARY §7.4 里 sales/hr 的 test 计划，各加注；README 与代码随瘦身第一批。
-- **核价更正待同步**（2026-10-08，本轮只登记、不改）：TECHNOLOGY :13、:42（自托管写成 `module:Class`；vLLM 命令只有 LoRA 参数）、:32（排除比例 0.7%）；TRAINING_HOSTS :3；02 :87、:92（HZ 配方 α 32、lr 2e-4；`module:Class`）、:100；ROADMAP :511；DESIGN :90、:213。
+- **核价更正待同步**（2026-10-08，本轮只登记、不改；2026-10-08 整理时已同步）：TECHNOLOGY :13、:42（自托管写成 `module:Class`；vLLM 命令只有 LoRA 参数）、:32（排除比例 0.7%）；TRAINING_HOSTS :3；02 :87、:92（HZ 配方 α 32、lr 2e-4；`module:Class`）、:100；ROADMAP :511；DESIGN :90、:213。
 - **第 2 项改为全部域可跑 final**（2026-10-08，本轮已同步）：DESIGN §8 与 C4 段、ROADMAP（v0.4 读法、瘦身 (a)、轨道 B 的 C5、v2 决定第 2 项）、V0_4_PLAN 读法、V0_5_METHOD_LIBRARY §7.4、SLIMMING (a)、OSS_COMPONENTS_PLAN §9 第 2 项，各加注，原文保留。
 
 **考虑过、不做：**

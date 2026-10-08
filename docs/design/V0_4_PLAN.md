@@ -1,8 +1,10 @@
 # v0.4 迭代方案（2026-10-06）
 
-> 2026-10-06，用户批准。本文取代同目录的 [V0_4_SHARDED_RSI.md](V0_4_SHARDED_RSI.md)（分片搜索 + 路由）与 [RSI_PLAN_2026-10-06.md](RSI_PLAN_2026-10-06.md)（冻结孪生点火检验）两份设计稿：两者保留作历史，不实现。本文是 v0.4 的规则来源，模块文档里标“（v0.4，2026-10-06）”的段落指回这里。
+> **现状（2026-10-08）：** 已实施，是 v0.4 已测结果的规则记录，正文不改。finance 活动三轮与密封 final 已完成（2026-10-07）：W\* 62.7% 对 W0 54.7%，+8.0 [−4.0, +22.7]，不确定；每次尝试成本 −22%，显著；tag `v0.4.0`（`7f65947`），见 [分析](../history/FINANCE_V04_ANALYSIS_2026-10-07.md) §0。support 成了 v0.5 两臂对照里的 v0.4 臂，只跑了基线（dev 26/75），对照 2026-10-08 由用户停止。下文引用的 RSI_PLAN、V0_4_SHARDED_RSI 已于 2026-10-08 删除，在 tag `archive-2026-10-08` 上可读。
+>
+> 2026-10-06，用户批准。本文取代同目录的 `V0_4_SHARDED_RSI.md`（分片搜索 + 路由）与 `RSI_PLAN_2026-10-06.md`（冻结孪生点火检验）两份设计稿：两者保留作历史，不实现（2026-10-08 删除，tag `archive-2026-10-08` 上可读）。本文是 v0.4 的规则来源，模块文档里标“（v0.4，2026-10-06）”的段落指回这里。
 > 先文档后执行：本文、ROADMAP “v0.4” 一节与 JOURNAL 条目先写，代码与测试随后；全部离线，没有调用模型，没有付费阶段，没有读任何 test。
-> 依据：[v0.3 五领域三轮的诊断](../history/DIAGNOSIS_FIVE_DOMAIN_2026-10-06.md)（RC1～RC4、P1～P5），[RSI_PLAN §1](RSI_PLAN_2026-10-06.md) 的业界对照（Meta-Harness 只给分数 34.6、给摘要 34.9、给原始轨迹 50.0；StarHarness 在 AutomationBench Finance 留出 +29.3，来自工具与接口修复），[RESULTS](../RESULTS.md) 的 v0.1（单领域 +13.0 [+2.2, +26.1]）。
+> 依据：[v0.3 五领域三轮的诊断](../history/DIAGNOSIS_FIVE_DOMAIN_2026-10-06.md)（RC1～RC4、P1～P5），RSI_PLAN §1（tag `archive-2026-10-08`；Meta-Harness 与 StarHarness 的数字也见 [SURVEY_RSI_FRAMEWORKS](../SURVEY_RSI_FRAMEWORKS.md) §3、§4）的业界对照（Meta-Harness 只给分数 34.6、给摘要 34.9、给原始轨迹 50.0；StarHarness 在 AutomationBench Finance 留出 +29.3，来自工具与接口修复），[RESULTS](../RESULTS.md) 的 v0.1（单领域 +13.0 [+2.2, +26.1]）。
 
 ## 0. 结论
 

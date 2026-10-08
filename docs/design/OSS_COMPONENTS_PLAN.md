@@ -1,8 +1,10 @@
 # 开源 memory 与 agent 底座：回答与精简试验计划
 
+> **现状（2026-10-08，support 对照停止后）：** 现行（草案），§9 第 3 项（Stirrup）与第 1 项的预算仍待用户定。用户已停止 support 两臂对照（JOURNAL 2026-10-08），文中“等 support 两份 final 和 H1”的时机都不再成立：§5 原则第 4 条的代码改动现在就可以在独立 worktree 里做；S1 只读本机记录、不改代码，P0 之后即可做，与瘦身第一批并行（PLAN §2.0 P4）；S1 ⑤ 若要补代码，排在瘦身第一批合入之后；§8 的顺序以 PLAN.md 为准；§5 杠杆 1 所说的 3c 与 v0.4 臂的 R 轮次没有跑，写工具改到下一个活动的 R 轮次（S4）看；§4 与 §9 第 1 项的 Claude Code 原生臂原定“support 两份 final 之后再评估”，改为随 S3/S4 再定（待用户）。经验库按瘦身第三批的规则保留（D = 3.0、P = 0.89），方法库拟删（用户可否决），都不改 §2–§6。更正 §2 表：VEL 的记功不是“平分”，同一次展示的每条都记满 r − b(t)（`ouroloop/research/library.py:274-284`）。正文 §4、§5、§8、§9 里按“support 正在跑”写的时机已就地改掉（2026-10-08 整理）。
+>
 > **状态：** 草案。2026-10-08 用户审过：§9 第 1 项的 key、第 2 项、第 4 项已定；第 1 项的预算和第 3 项（Stirrup）待定。**日期：** 2026-10-08。
 >
-> **范围：** 只读阅读代码、文档与公开网页写成。没改其他文件，没跑模型、付费阶段或测试，没读 `.env`、任何 test 内容，也没读 `workspace-claude-v4-support`、`workspace-claude-v5-support` 的记录；support 经验库的状态只取自 docs/JOURNAL.md:25-35。下文 file:line 相对仓库根；外部事实都是 2026-10-08 抓取，另注日期的除外。初稿经过一轮评审，§10 列出改了哪些地方。
+> **范围：** 只读阅读代码、文档与公开网页写成。没改其他文件，没跑模型、付费阶段或测试，没读 `.env`、任何 test 内容，也没读 `workspace-claude-v4-support`、`workspace-claude-v5-support` 的记录；support 经验库的状态只取自 docs/JOURNAL.md:25-35。下文 file:line 相对仓库根；引 JOURNAL 的 file:line 以 `80254a3`（tag `archive-2026-10-08`）为准（JOURNAL 倒序，新条目会把行号往下推），引其他文档的已按 2026-10-08 整理后的行号改过；外部事实都是 2026-10-08 抓取，另注日期的除外。初稿经过一轮评审，§10 列出改了哪些地方。
 
 ## 用户原话（2026-10-08）
 
@@ -18,7 +20,7 @@
 
 | 问题 | 结论 | 关键证据 |
 |---|---|---|
-| 不训练的推理期 RSI 做到头了吗 | **没有** | 我们三次封存 final 是 +13.0、+4.3、+8.0，区间都宽（docs/RESULTS.md:7-10；docs/history/FINANCE_V04_ANALYSIS_2026-10-07.md:17）。同基准的 StarHarness 在 finance 上 +26.1。官方榜上光 effort 从 XHigh 到 Max 就有 +6.7（§1） |
+| 不训练的推理期 RSI 做到头了吗 | **没有** | 我们三次封存 final 是 +13.0、+4.3、+8.0，区间都宽（docs/RESULTS.md:7-14；docs/history/FINANCE_V04_ANALYSIS_2026-10-07.md:17）。同基准的 StarHarness 在 finance 上 +26.1。官方榜上光 effort 从 XHigh 到 Max 就有 +6.7（§1） |
 | memory 效果差是设计问题吗 | **memory.md 是。经验库（下称 VEL）有具体缺口**。另外，外部证据显示，规则或工作流类记忆在 Claude 上不涨甚至掉分；有正证据的是"成功和失败都提炼"以及"检索具体经验"这两类（§2） | finance 那份 memory.md 约 15 条规则，增益只来自 2～3 条，R 还把功劳记错了规则（FINANCE_V04_ANALYSIS:30-33、:282）。VEL 的 42 条入库条目退役了 35 条，每次尝试平均只展示 1.24 条（JOURNAL:28） |
 | 有专做跨任务记忆的开源项目吗 | **有，十几个，但没有一个能直接拿来当我们的经验库**。所以跨任务 memory 作为我们的特色，以 VEL 为底座二开，借开源的设计 | 没有项目同时做到：只从打分器验证过的 train 轨迹学、留一读数、逐条记功和退役、过配对 dev gate 并做确认、最后封存 final。每一项单独都有人做过（§3） |
 | 别人的 RSI 是不是都引入现成 agent | **是，大多如此**。只有改自己源码的那一支自己写 agent，而且故意写得很小 | Harness-Zero 用 deepagents，StarHarness 用 Stirrup，Live-SWE-agent 用 mini-swe-agent，AutoSaddler、RRSI、Meta-Harness 都从各自基准的参考 agent 起步（§4） |
@@ -31,9 +33,9 @@
 | 我们的 final | v0.1 +13.0 [+2.2, +26.1]；v0.2 +4.3 [−10.9, +19.6]；v0.4 finance +8.0 [−4.0, +22.7]，部分得分 0.843→0.915 | 三次互相在噪声内，平均约 +8 个点（FINANCE_V04_ANALYSIS:220） |
 | StarHarness（arXiv 2608.24804；GPT-5.4 medium；Finance-100） | 目标得分 57.1→83.2（+26.1），部分得分 67.3→86.1（+18.8），held-out 上 +29.3。补丁内容：写前先分诊、日期锚定到沙箱时钟、算术和表格交给确定性工具 | 口径不同（目标完成率、单次重复），不能直接比。但能说明一点：大增益来自工具和循环补丁 |
 | 官方榜（zapier.com/benchmarks v1.0.6） | Opus 5.5 XHigh 35.77%（$0.89/题），Max 42.47%（$1.44/题）。榜首 Gemini 4 Argon High 51.29% | Medium 29.53%、High 33.03% 是第三方汇总（benchlm，2026-10-01）的数字，官方页这次只列了 XHigh 和 Max 两行，没复核 |
-| 我们的天花板实验（全程 effort high，外加 4 个循环机制） | W\* 每次都失败的 8 道题里修好 1 道、弄坏 2 道（docs/RESULTS.md:28-40） | 只靠 effort 加循环检查修不动难题 |
-| 失败构成 | 一个完美的"别写"闸门，最多救回 train 失败的 8.1%、dev 失败的 16.0%（docs/design/V2_TRAINING_PIPELINE.md:61） | 其余失败是该写没写或写错。所以收益要靠"写全、写对"，也就是结构化写工具和工作流记忆管的事 |
-| R 提了什么 | v0.3/v0.4 的 12 个候选里没有一个是工具或 agent（docs/design/V0_5_PLAN.md:16、:191） | 带写权限的包工具 K 已经允许：普通包工具拿到的是 `read_only=False`（ouroloop/agent/default_agent.py:283），只有 hook（:170）和 `m_` 方法（:281）是只读的，worker 也只在只读时才拒绝写（ouroloop/agent/worker.py:476）。是 R 从没提过，不是 K 不让 |
+| 我们的天花板实验（全程 effort high，外加 4 个循环机制） | W\* 每次都失败的 8 道题里修好 1 道、弄坏 2 道（docs/RESULTS.md:166-178） | 只靠 effort 加循环检查修不动难题 |
+| 失败构成 | 一个完美的"别写"闸门，最多救回 train 失败的 8.1%、dev 失败的 16.0%（docs/design/V2_TRAINING_PIPELINE.md:63） | 其余失败是该写没写或写错。所以收益要靠"写全、写对"，也就是结构化写工具和工作流记忆管的事 |
+| R 提了什么 | v0.3/v0.4 的 12 个候选里没有一个是工具或 agent（docs/design/V0_5_PLAN.md:18、:193） | 带写权限的包工具 K 已经允许：普通包工具拿到的是 `read_only=False`（ouroloop/agent/default_agent.py:283），只有 hook（:170）和 `m_` 方法（:281）是只读的，worker 也只在只读时才拒绝写（ouroloop/agent/worker.py:476）。是 R 从没提过，不是 K 不让 |
 
 **不是差距来源，不用做：** 上下文压缩只认 read/bash 两个工具（default_agent.py:42-45），在本基准上从没触发过；20k 的输出截断从没触发过；没有 oracle 的 best-of-n 余量很小（finance pass@1 0.547，oracle pass@3 也只有 0.640）。
 
@@ -43,10 +45,10 @@
 |---|---|---|---|
 | 单位 | 一段文字，≤8,000 字（ouroloop/agent/harness_package.py:77），同一领域每题都给，不检索 | 条目，最多 6 架 × 6 条（ouroloop/research/library.py:53-54） | ACE：逐条 bullet，带 helpful/harmful 计数；ReMe：条目带"何时用" |
 | 写入 | 只有 R 整段改写；一轮最多装 1 个 | 每道有新成功的题提炼 ≤2 条。来源只有成功、对比、重试三种（library.py:33），**失败本身不提炼** | ReMe、ReasoningBank 都会从失败里单独提炼 |
-| 检索 | 无 | 只在开头检索一次：用 TF-IDF 在库里自己约 36 条的 title+when 上算分，取 top 3 且分数 ≥0.2。这个阈值没校准过（library.py:121-126、:450；ouroloop/agent/runner.py:139-147；V0_5_PLAN.md:188） | ReMe：嵌入检索 + 可选的 LLM 重排和改写；ReasoningBank：嵌入检索 |
+| 检索 | 无 | 只在开头检索一次：用 TF-IDF 在库里自己约 36 条的 title+when 上算分，取 top 3 且分数 ≥0.2。这个阈值没校准过（library.py:121-126、:450；ouroloop/agent/runner.py:139-147；V0_5_PLAN.md:190） | ReMe：嵌入检索 + 可选的 LLM 重排和改写；ReasoningBank：嵌入检索 |
 | 记功 | 没有单条记功 | 同一次展示的条目平分 r − b(t)，每题只有一次读数（library.py:274-284）；42 条里退役了 35 条 | ACE 由生成者标出实际用了哪几条；ReMe 被检索 ≥5 次且平均效用 ≤0.5 就删 |
 | 学习预算 | 每个活动 1～2 次安装 | 50 题跑一遍后冻结 | ACE 的离线模式可以跑多轮（`--num_epochs`） |
-| gate 分辨率 | 25 题 dev | 预期增益 +0.1～+0.35 题/25，远低于 gate 能分辨的量（V0_5_PLAN.md:20） | 多数没有 held-out gate |
+| gate 分辨率 | 25 题 dev | 预期增益 +0.1～+0.35 题/25，远低于 gate 能分辨的量（V0_5_PLAN.md:22） | 多数没有 held-out gate |
 
 **外部证据：在 Claude 上什么样的记忆有用。**
 
@@ -116,8 +118,8 @@
 | 候选 | 判定 | 理由与接法 |
 |---|---|---|
 | W0 走 API（原生 tool use） | **不做**（用户 2026-10-08："这个还是通过cli的方式来跑"） | actor 继续经 claude_code CLI 走订阅，不开要 API key 的臂。初稿的理由仍然成立：现成的 `ouroloop/providers/anthropic.py` 发原生 `tool_use`/`tool_result`（:17-40、:88），只改传输一个因素，不用改代码。但它要 API key、按 API 真实计费（约 $50），所以删去 |
-| **Stirrup**（MIT，0.2.0，2026-08-04，Python ≥3.12） | **第二，由你决定** | 同基准唯一的自改进先例就是在它上面做的。接口薄：`LLMClient.generate`、`Tool`。适配层 `agent/stirrup_agent.py` 放在 W 里，估 150–250 行：`generate` 接 `ctx.model`，`Tool` 接 `ctx.tool`，复用 default_agent 的 `_execute`/`_run_hooks`/`_PackageContext`，所有 ctx 调用用一把锁串行。**需要改代码：**① 配置里不能换镜像，必须新建 preset（ouroloop/bench.py:2016-2019）；② worker 的 256m 内存是默认值，不从 K 读（worker.py:192、:255）。Stirrup 可能要 512 MB，这需要加参数。③ Stirrup 自带的 skill 加载器不能去读 `skills/library/`，否则绕过留一（V0_5_PLAN.md:191）。它自身大概率带来约 0 的增益（StarHarness 的原样基线就是 57.1%），价值在于 R 能改的面更大 |
-| Claude Code 原生 | 暂缓，support 两份 final 之后再评估 | 不走 API，原生 tool use 就只能经这一臂测：CLI 照旧走订阅，把我们的三个基础工具做成 MCP server 暴露给 Claude Code，server 把调用转发给我们的 broker。代价：循环、系统提示、传输三样同时变，分不出是哪个起作用；Claude Code 要联网，进不了无网络的 worker；计量只能按会话算，不能按调用；闭源循环，可能有旁路调用；要做的最多（宿主侧新 runner 加计量代理） |
+| **Stirrup**（MIT，0.2.0，2026-08-04，Python ≥3.12） | **第二，由你决定** | 同基准唯一的自改进先例就是在它上面做的。接口薄：`LLMClient.generate`、`Tool`。适配层 `agent/stirrup_agent.py` 放在 W 里，估 150–250 行：`generate` 接 `ctx.model`，`Tool` 接 `ctx.tool`，复用 default_agent 的 `_execute`/`_run_hooks`/`_PackageContext`，所有 ctx 调用用一把锁串行。**需要改代码：**① 配置里不能换镜像，必须新建 preset（ouroloop/bench.py:2016-2019）；② worker 的 256m 内存是默认值，不从 K 读（worker.py:192、:255）。Stirrup 可能要 512 MB，这需要加参数。③ Stirrup 自带的 skill 加载器不能去读 `skills/library/`，否则绕过留一（V0_5_PLAN.md:193）。它自身大概率带来约 0 的增益（StarHarness 的原样基线就是 57.1%），价值在于 R 能改的面更大 |
+| Claude Code 原生 | 暂缓；原定“support 两份 final 之后再评估”，对照已停，何时再评估待用户定（PLAN §3 第 13 项） | 不走 API，原生 tool use 就只能经这一臂测：CLI 照旧走订阅，把我们的三个基础工具做成 MCP server 暴露给 Claude Code，server 把调用转发给我们的 broker。代价：循环、系统提示、传输三样同时变，分不出是哪个起作用；Claude Code 要联网，进不了无网络的 worker；计量只能按会话算，不能按调用；闭源循环，可能有旁路调用；要做的最多（宿主侧新 runner 加计量代理） |
 | pi（v1.0.4，TypeScript） | 不选 | 要装 Node 并写一座桥，worker 的 256 MB / 64 pid 很紧。**更正初稿：**StarHarness 的基线里有 "GEPA (Pi)"，也就是在 pi 上做提示词优化，结果比进化后的 Stirrup 低 17.6 个点。可见决定结果的是 R 能改工具和循环，不是选哪个底座 |
 | smolagents / mini-swe-agent / OpenHands、Agno、CrewAI、AG2 / deepagents / GEPA | 依次是：暂缓；不选（和 W0 同类）；不选（太重）；留给 v2；作 R 侧对照，暂缓 | — |
 
@@ -128,12 +130,12 @@
 - 开源库原样跑它的写入路径，读取路径用我们自己的；
 - 臂由 S1 的 $0 诊断来挑，不预先定死；
 - 每一步都停下来分析；
-- 所有代码改动都等 support 两份 final 和 H1 出来之后，在独立 worktree 里做。
+- 所有代码改动都在独立 worktree 里做、逐批合入（原定等 support 两份 final 和 H1；对照 2026-10-08 已停，顺序见 PLAN.md）。
 
 | 阶段 | 内容 | 花费（名义） | 停下来分析的问题 |
 |---|---|---|---|
 | S0（现在） | 本计划交你审；不改任何代码 | $0 | 选的臂对不对 |
-| S1（final 和 H1 之后） | ① 读 3b 的检索记录：命中分布、无关命中的比例；抽样读退役的 35 条，看原因。② 算 support train/dev 题目文本的相似度。③ 在 scratch venv 里，用录下的 train 题文本重放检索：TF-IDF 对 MiniLM，命中率零成本可得。④ 写设计文档；合入瘦身第一批。⑤ 核对：冻结的 evaluate 计划能不能对包外构建的包做 dev 读数，不能的话补一条小代码路径 | $0 | 3b 的退役主要是记功噪声，还是条目真的有害；问题出在检索还是内容 |
+| S1（P0 之后，与瘦身第一批并行） | ① 读 3b 的检索记录：命中分布、无关命中的比例；抽样读退役的 35 条，看原因。② 算 support train/dev 题目文本的相似度。③ 在 scratch venv 里，用录下的 train 题文本重放检索：TF-IDF 对 MiniLM，命中率零成本可得。④ 写设计文档（`docs/design/MEMORY_S1.md`，PLAN P4）。⑤ 核对：冻结的 evaluate 计划能不能对包外构建的包做 dev 读数，不能的话补一条小代码路径，排在瘦身第一批合入之后 | $0 | 3b 的退役主要是记功噪声，还是条目真的有害；问题出在检索还是内容 |
 | S2 memory（1～2 个臂） | 共同输入：3b 流里全部 train 轨迹（对照、带库、重试），已经付过费。每个库在独立 venv 里原样跑写入步骤（ACE 的 Reflector/Curator；ReMe 0.2.0.6 的 task memory 总结），LLM 调用经一个小 shim 走计量过的研究 provider，每个库 $5～25。结果导出成 W 现有的载体：ACE 的 playbook 把预算压到能放进 8,000 字，作为 memory.md，或者作为 VEL 的书架；ReMe 的条目作为 VEL 书架条目，检索不变，这样测的是提炼。留下的臂各跑一次 dev gate，同时并发重读 VEL 快照和 W_base | $50～180 | 有没有臂胜过 VEL；据此决定 §6 的哪一项二开 |
 | S3 agent | 你同意 Stirrup 的话（§9 第 3 项），W0′-Stirrup 臂对 W0（claude_code），并发读，dev 25 × 3。原来的 ① W0-API 臂已删（用户 2026-10-08，§4）；原 S3′ 的 Max effort 读数也删了（§9 第 4 项） | 名义约 $33～65 | 换不换底座 |
 | S4 RSI | 在选定的底座上跑 R：3 轮，patience 2。R 能改的面里加上可写的结构化工具；底座切换的增益和 RSI 的增益分开报。final 可以放在任何一个开了活动的域（§9 第 2 项，已定） | $300～350 | 底座增益和 RSI 增益各有多少 |
@@ -143,7 +145,7 @@ S4 之前合计约 $50～245 名义，没有真实花费：S2 $50～180，你同
 
 **不用改代码、现在就能排的杠杆（零成本或很便宜）：**
 
-1. **可写的结构化工具。** K 已经允许（§1）。3c 和 v0.4 臂的 R 轮次正好排在接下来的日程里（JOURNAL:32），先看 R 在那里会不会提出写工具。
+1. **可写的结构化工具。** K 已经允许（§1）。3c 与 v0.4 臂的 R 轮次没有跑（对照 2026-10-08 停止）；改在下一个活动的 R 轮次（PLAN P5/P6）看 R 会不会提出写工具。
 2. **effort 杠杆不做（用户 2026-10-08 否决："不要，就保持统一的档位"）。** 原来的第 2 项"自适应 effort，最高到 high"和第 3 项"不做 High 的读数"一并撤下：所有臂保持同一个 effort（现行 medium），K 不让 W 买 effort（§9 第 4 项）。原第 2 项的接法是新配置写 `max_effort = "high"`，R 经 `ctx.model(effort=)` 按调用请求（ouroloop/agent/worker_runner.py:212-213），网关按上限截断（ouroloop/agent/gateway.py:72-77、:279）。
 
 ## §6 什么情况下才二开
@@ -182,8 +184,8 @@ S4 之前合计约 $50～245 名义，没有真实花费：S2 $50～180，你同
 
 **衔接**
 
-- **顺序：** 主检出正在跑 support（接下来是 3c 和 v0.4 臂的 3 轮）→ 两份 final 和 H1 → 瘦身第一批 → 本计划的 S1。任何 `.py` 改动都会改 `code_version`，所以在那之前什么代码都不动（JOURNAL:61）。
-- **v2：** V2 §7 第 4 项是用户已经接受的设计，规定采集时学生跑在 W0 下（docs/design/V2_TRAINING_PIPELINE.md:663）。换底座就改了这项设计，需要你决定。建议 v2 第一期仍用现在的 W0：第一期只搭链路、不设效果指标（V2_TRAINING_PIPELINE.md:20）。
+- **顺序：** support 对照已停（2026-10-08）；顺序见 PLAN.md：S1 在 P0 之后，与瘦身第一批并行；S2 以后的排期见 PLAN P4、P5。任何 `.py` 改动都会改 `code_version`，所以付费活动跑着时，不往它的检出合入代码（PLAN 规则 13）。
+- **v2：** V2 §7 第 4 项是用户已经接受的设计，规定采集时学生跑在 W0 下（docs/design/V2_TRAINING_PIPELINE.md:665）。换底座就改了这项设计，需要你决定。建议 v2 第一期仍用现在的 W0：第一期只搭链路、不设效果指标（V2_TRAINING_PIPELINE.md:22）。
 
 **风险**
 
@@ -195,9 +197,9 @@ S4 之前合计约 $50～245 名义，没有真实花费：S2 $50～180，你同
 
 ## §9 待你决定
 
-1. **预算和 key。** 预算待定：是否批准新根，约 $50～245 名义（订阅），没有真实花费。key 已定（用户 2026-10-08："这个还是通过cli的方式来跑"）：actor 继续经 claude_code CLI 走订阅，W0-API 臂删去，不需要 API key。原生 tool use 只能经 Claude Code 原生臂测（CLI 加上把三个基础工具暴露给 Claude Code、转发到我们 broker 的 MCP server），暂缓，support 两份 final 之后再评估（§4）。
+1. **预算和 key。** 预算待定：是否批准新根，约 $50～245 名义（订阅），没有真实花费。key 已定（用户 2026-10-08："这个还是通过cli的方式来跑"）：actor 继续经 claude_code CLI 走订阅，W0-API 臂删去，不需要 API key。原生 tool use 只能经 Claude Code 原生臂测（CLI 加上把三个基础工具暴露给 Claude Code、转发到我们 broker 的 MCP server），暂缓；原定“support 两份 final 之后再评估”，对照已停，何时再评估待用户定（§4；PLAN §3 第 13 项）。
 2. **final 放哪个域。** 已定（用户 2026-10-08 问"不能全跑吗？"，采纳）：finance、support、sales、hr、marketing 都可以跑密封 final，一律按有条件复用规则：构建学生的任何产物都不读之前 final 的逐题记录（由结果库按 split 过滤、代码强制），每份报告披露这份 test 被读过几次。只有 operations 整域从未读过，留作 v2 的 LODO（V2_TRAINING_PIPELINE.md §7 第 2 项）。这取代了原来"sales 和 hr 的 test 留给 v2、marketing 已经用尽"的限制，S2 的赢家和 S4 的封存 final 不必再在"finance/support 上复用"和"只报 dev 或 not_run"之间二选一。费用：在一个新域上开活动，名义约为基线 $56 + 3 轮约 $120 + final 约 $72（订阅），按域分批开。
-3. **agent 底座。** 要不要让 R 在 Stirrup 上进化？这需要改代码（新 preset 和镜像、worker 内存参数），在 final 之后、在 worktree 里做。另外请确认：Claude Code 臂暂缓、pi 不选；v2 第一期仍用现在的 W0。待用户决定（已解释影响与实现）。
+3. **agent 底座。** 要不要让 R 在 Stirrup 上进化？这需要改代码（新 preset 和镜像、worker 内存参数），在瘦身之后（PLAN P5 第 5b 步）、在 worktree 里做。另外请确认：Claude Code 臂暂缓、pi 不选；v2 第一期仍用现在的 W0。待用户决定（已解释影响与实现）。
 4. **effort。** 已定（用户 2026-10-08："不要，就保持统一的档位"）：所有臂保持同一个 effort（现行 medium）；不做 Max 读数，不做自适应 effort，K 也不让 W 按成本项买 effort。S3′ 和 §5 的 effort 杠杆随之删去。
 
 ## §10 相对初稿的更正

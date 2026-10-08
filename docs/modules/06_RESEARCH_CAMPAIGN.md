@@ -2,6 +2,7 @@
 
 > 首版必需。目标：把更新后的改进方法实际用于后续改进，并独立检验它产生的任务结果。复用 `research/campaign.py` 和既有安装机制；不创建新元研究系统，不要求专用研究模型训练。
 > v0.3（2026-10-04，[DESIGN](../DESIGN.md) v0.7）：两支的内层 gate 用合并对照、确认复测与成本项；内层仍是 dev 冻结顺序的前一半、外层仍是后一半，但内层不得少于 `min_tasks` 25 题，研究位因此只在 dev ≥ 2 × min_tasks（50 题）时开；`campaign.worker_round_limit` 2 → 3；开研究位前先查余量；裁决仍只看下游 W*。考虑过、不做（v0.3）：另立 `research_dev` 外层分区与 `no_outer_pool`、把台账指标写进研究收据（`metrics.ledger.*`），原因见 §2。原因：v0.2 的研究位两支各两轮、内层 gate 12 题，空候选通过率约 1/3，一题就是 8 个点，W* 已在内层 67～80%，两支都装不进任何东西，判 inconclusive，C4 没有证据（[RESULTS](../RESULTS.md)、[ROADMAP §3](../ROADMAP.md) 第 2a 步第 9 项）。本文新增或修改的规则逐条标“（v0.3，2026-10-04）”。
+> 2026-10-07/08 注（[DESIGN §7](../DESIGN.md)“C4 换实现”，[SLIMMING_INVENTORY](../design/SLIMMING_INVENTORY.md) §0 (a)）：活动内研究位随瘦身第二批删除。它在单领域活动里结构上开不了（dev 25 题 < 2 × `min_tasks`），v3/v4/v5 的配置都写 `research_slots = 0`。C4 改为跨活动比较：R0 臂就是该领域普通的 C1 活动；R1 臂 = R0 加上前一个活动产出、经台账核对的 R 研究剧本（playbook，[V0_5_PLAN](../design/V0_5_PLAN.md) §1.1；方法库即使删除，这条路径也保留，瘦身清单 §3 的例外）；同一划分、根和日程，W0、W\*\_R0、W\*\_R1 联合 final。联合 final 可以放在五个域任何一个，按有条件复用规则披露这份 test 的读取次数；operations 整域留出（DESIGN §8 注）。判定代码（`judge_research`、`carries`、不重叠检查）抽到 `research/recursion.py` 保留；新接线随下一个新领域活动做。本文以下的研究位规则在第二批之前仍是代码的现状，第二批时围绕 `research/recursion.py` 与 playbook 重写。
 
 ## 1. 比较什么
 

@@ -1,6 +1,6 @@
 # M8：工作流蒸馏与学生在环采集
 
-> 第二版新增模块，首版 harness 演化不依赖 M8。完整保留“有效方法 → 目标动作 → 真实执行 → 成功轨迹 → SFT → 无教师运行”规格；文中“首版”指本模块首次接入版本。拟增 distill/teacher.py 与 distill/collect.py，调用 M1/M2/M5，不建立独立平台。
+> 第二版新增模块，首版 harness 演化不依赖 M8。完整保留“有效方法 → 目标动作 → 真实执行 → 成功轨迹 → SFT → 无教师运行”规格；文中“首版”指本模块首次接入版本。拟增 distill/teacher.py 与 distill/collect.py，调用 M1/M2/M5，不建立独立平台。（2026-10-08，V2 §3.8、§5 v2.2、§7 第 7 项：不另建 `distill/`；v2 的代码进可选子包 `ouroloop/train/`（入口 `python -m ouroloop.train`），审阅钩子是网关的 role → provider 映射加只作用于 act 调用的审阅钩子与 ReviewRecord，在 v2.2 做。）
 
 ## 1. 从可执行源方法到教师参考
 

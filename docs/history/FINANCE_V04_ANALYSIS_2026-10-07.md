@@ -496,7 +496,7 @@ V0_4_PLAN §3 的预注册过程检查：
 
 ## 5. 对 v0.5 的含义
 
-按“保留 / 推迟 / 删”给出，只推荐一条路径。v0.5 的三份设计稿（[方法库](../design/V0_5_METHOD_LIBRARY.md)、[agent 内 RL](../design/V0_5_AGENT_RL.md)、[进化搜索与经验库](../design/V0_5_EVOLVING_SEARCH.md)）都写于本次 final 之前，下面用本次的证据去检验它们的前提。
+按“保留 / 推迟 / 删”给出，只推荐一条路径。v0.5 的三份设计稿（[方法库](../design/V0_5_METHOD_LIBRARY.md)、agent 内 RL（`V0_5_AGENT_RL.md`，2026-10-08 删除，tag `archive-2026-10-08` 上可读）、[进化搜索与经验库](../design/V0_5_EVOLVING_SEARCH.md)）都写于本次 final 之前，下面用本次的证据去检验它们的前提。
 
 ### 5.1 主张与 gate 的功效
 

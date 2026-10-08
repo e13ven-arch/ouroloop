@@ -10,6 +10,8 @@
 > 明细见 `history/V0_6_AUDIT_2026-10-01.md` 与 `history/V0_6_REVIEW_2026-10-02.md`。标为第二版的用例仍是待开发规格。v0.5 历史见 [快照](../history/V0_5_IMPLEMENTATION.md)。首版验收诊断输入、能力包文本/代码演化、隔离/回归/发布与递归；第二版验收教学/训练固化，旧草案用例保留原义。真实实验与 fixture 分开。
 >
 > v0.3（2026-10-04，[DESIGN v0.7](../DESIGN.md)、[ROADMAP §3](../ROADMAP.md) v0.3 步骤）：第一版交付物改为“可演化的 agent 程序 + 最小运行壳 + pin 的模型”，比较主张改称“同模型”（替代“同 actor”，C1～C4 含义不变）。本文件新增 IT6-29～43（§1a），v0.3 用例各标所属模块与一个 新增 测试，第二版用例不带测试，IT6-35 已撤销（2026-10-04 剪裁，DESIGN §9“考虑过、不做（v0.3）”）；§3 补 v0.1/v0.2 的事实与 v0.3 的效果目标。v0.1/v0.2 的结果与 2026-10-03/04 的记录不删（[RESULTS.md](../RESULTS.md)）。不变并在此写明的：train/dev/test 的信息分离由固定代码执行；final 先封存、提交再运行；带预留的预算账本；R0 对 R1 以下游 W* 比较；Docker 隔离加工具 broker；`claude_code` provider。
+>
+> v0.5（2026-10-07 实现；2026-10-08 现状）：新增 §1b（IT6-44～50，经验库、固定轮与研究剧本，测试都已实现）。v0.4 finance 的封存 final（+8.0 [−4.0, +22.7]，不确定）见 [RESULTS](../RESULTS.md) 与 [分析](../history/FINANCE_V04_ANALYSIS_2026-10-07.md)；v0.5 只有 support 上的过程证据，对照 2026-10-08 由用户停止，H1 未测。
 
 ## 1. 核心闭环与必须覆盖的场景
 
@@ -72,6 +74,22 @@ IT6-14（此前草案“首版不得调用研究员”）撤销，不实现为�
 | IT6-42（第二版） | 组件归因与删除规则，M4/M3 | 第二版：以账本的逐题 fixed/regressed 把增益归到组件，连续两轮没有归因增益的组件由固定代码提出删除候选、同过筛选与 gate；v0.3 不做归因，停用候选仍由 R 自己提出（IT6-26） | 第二版，无测试 |
 | IT6-43 | 失败语义，M1/M5 | worker 崩溃或 agent 在 `run` 中抛错 = 基础设施（尝试 invalid，按冻结 retry_policy 补一次，连续超过 `max_infrastructure_failures` 暂停）；在草稿检查中抛错 = 草稿失败（回传检查输出，占一次修订）；硬限额结束 = termination=budget（尝试有效，按最终状态评分）；三者各自计数，不互相冒充；`claude_code` provider 与计费不变 | 已实现（2026-10-04，第 1 步）`test_package_worker.py::test_it6_43_a_crash_at_run_time_is_infrastructure_a_crash_in_the_draft_check_is_a_draft_failure_and_a_hard_limit_is_budget` |
 
+### 1b. v0.5 的用例（2026-10-07 实现；2026-10-08 现状）
+
+[V0_5_PLAN](../design/V0_5_PLAN.md) §7 的实现对照是测试清单的权威；这里只列跨模块的几条。离线测试，全部已实现。support 两臂对照 2026-10-08 由用户停止：经验库的用例保留；方法库的用例（`tests/test_methods.py`、`test_v05.py` 与 `test_v05_phases.py` 的方法与 learn 部分）随方法库按瘦身第三批拟删（用户可否决），R 的研究剧本的用例保留。
+
+| ID | 场景/涉及模块 | 必须观察的结果 | 测试 |
+|---|---|---|---|
+| IT6-44（v0.5） | 经验库的流只读 train，M4/M5/M7 | 冻结顺序的首遇读数按来源留一检索；失败后带失败断言重试一次、重试不记功；提炼、检查、记功、退役只读 train 尝试；D ≤ `abort_d` 时快照不付 gate，否则快照作为固定代码的候选过筛选、gate、确认后安装 | `test_v05_phases.py::test_the_library_stream_reads_train_only_distils_credits_and_gates_its_snapshot`、`test_a_failed_first_encounter_is_retried_with_its_failed_checks_and_a_library_without_effect_is_not_gated`、`test_the_snapshot_is_held_back_by_d_alone_and_b_is_only_reported` |
+| IT6-45（v0.5） | 留一与 dev/test 的检索，M1/M4 | train 上条目从不检索给它的来源题及其近似重复题；dev/test 题从来不是来源，看到全部 active 条目；包里没有库时系统提示逐字节不变，v0.4 尝试的第一条系统提示与 v0.5 之前相同 | `test_library.py::test_an_entry_is_never_retrieved_for_its_source_task_or_a_near_duplicate_on_train`、`test_dev_and_test_retrieval_sees_every_active_entry`、`test_with_the_start_site_off_the_system_prompt_is_byte_identical_to_the_package_without_a_library`；`test_v05.py::test_a_v04_attempts_first_system_prompt_is_the_same_bytes_as_before_v05` |
+| IT6-46（v0.5） | R 写不了库，M4 | R 对 `skills/library/` 的改动被撤回并附注；单题字面量的条目在一次占位替换后仍不过就丢，流继续 | `test_library.py::test_r_cannot_write_the_library_its_edits_are_undone_with_a_note`、`test_an_entry_with_a_single_train_tasks_literal_is_refused_after_one_placeholder_pass`；`test_v05_phases.py::test_a_library_entry_with_a_single_tasks_literal_is_refused_and_the_stream_continues` |
+| IT6-47（v0.5） | 固定轮与流的续跑，M5 | 打断后重跑不重复付费：流从检查点继续；快照轮在筛选、gate 首读、确认三处打断后续上；固定轮保持序号与实验 id；R 的三轮照常 | `test_v05_phases.py::test_an_interrupted_stream_continues_where_it_stopped_and_refuses_another_w`、`test_an_interrupted_snapshot_round_resumes_where_it_stopped_and_pays_nothing_twice`、`test_a_fixed_round_keeps_its_ordinal_and_experiment_id_until_it_ends`、`test_r_still_gets_its_three_rounds_when_a_fixed_rounds_gate_is_open` |
+| IT6-48（v0.5） | 付费前的预算检查，M5 | 固定轮与 `learn` 在第一笔付费前核对放不放得下，放不下就 `budget_exhausted`、一分不花 | `test_v05_phases.py::test_learn_and_a_fixed_round_refuse_before_paying_what_the_budget_cannot_hold` |
+| IT6-49（v0.5） | R 的研究剧本，M4/M6 | 剧本每条教训的引用对不上台账就删；通过的文本给下一次会话 | `test_v05.py::test_a_playbook_lesson_is_kept_only_with_a_matching_ledger_citation_and_shown_to_the_next_session` |
+| IT6-50（v0.5） | 旧配置不变，M7 | v0.4 的 preset 保留它的 K、R0 与会话文本；两张 v0.5 表只由 preset 设；没有 v0.5 记录的活动报告与原来相同 | `test_v05.py::test_the_v4_preset_keeps_its_k_r0_and_session_text`、`test_a_config_cannot_set_the_preset_only_tables`；`test_v05_phases.py::test_an_activity_without_v05_records_reports_as_before` |
+
+真实运行（2026-10-08，[JOURNAL](../JOURNAL.md)）：support 的 v0.5 臂跑过一次 IT6-44 的路径（3b）。D = 3.0，快照过 dev gate 并装上（`9f07d95032b4`），都是过程证据；没有 final。
+
 ## 2. 可选接入
 
 | ID | 条件 | 预期 |
@@ -129,7 +147,7 @@ IT6-14（此前草案“首版不得调用研究员”）撤销，不实现为�
   - R 由 manual provider 作答，即 Claude 读请求文件回复；
   - actor 是对包内容作出反应的确定性假 actor；
   - 任务世界是以 marketing 域名导出的小型 fixture 上游。
-- v0.3 第 3 步（2026-10-05）：离线干跑 `examples/rehearsal/dry_run.py` 走新的 R 路径——脚本研究员以工具调用在 worker 的 `/work` 里写候选目录并 `finish` 声明，候选经筛选再付 gate，台账进 E；v3 preset 按世界规模调低（`min_tasks` 8、`min_headroom_tasks` 2，尝试串行），因为 16 题的世界容不下 Marketing 的 25；结果见 REHEARSAL §8。经 CLI、由 manual provider 作答的彩排尚未在新路径上做：manual provider 的回复要写成工具调用（`{"text", "tool_calls": [...]}`，或正文里一个 `{"tool", "args"}` JSON），这是下一次彩排的事。
+- v0.3 第 3 步（2026-10-05）：离线干跑 `examples/rehearsal/dry_run.py`（2026-10-08 移出 HEAD，tag `archive-2026-10-08` 上可读）走新的 R 路径——脚本研究员以工具调用在 worker 的 `/work` 里写候选目录并 `finish` 声明，候选经筛选再付 gate，台账进 E；v3 preset 按世界规模调低（`min_tasks` 8、`min_headroom_tasks` 2，尝试串行），因为 16 题的世界容不下 Marketing 的 25；结果见 REHEARSAL §8。经 CLI、由 manual provider 作答的彩排尚未在新路径上做：manual provider 的回复要写成工具调用（`{"text", "tool_calls": [...]}`，或正文里一个 `{"tool", "args"}` JSON），这是下一次彩排的事。
 - v0.3 的改动（v0.3，2026-10-04）：假 actor 改为网关后面的假模型，默认 agent 作为 W0 的包运行它；另备一个 fixture agent 包（在默认 agent 上加一次 `role="aux"` 的发送前核对调用，并在指定 dev 题上据此改对），让 gate 候选臂的网关日志出现 agent 代码发出的 aux 调用与 broker 事件；注入表加三行：agent 在 `run` 中抛错 → 尝试 invalid（基础设施）；agent 在草稿检查中抛错 → 占一次修订；agent 调用未声明的 role → 草稿检查结构错误。其余做法、验收与边界不变。
 - 验收：
   - 至少一次走到 gate 裁决；

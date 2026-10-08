@@ -8,6 +8,68 @@
 
 ---
 
+## 2026-10-08 support 对照停止；文档清理与下一阶段计划
+
+- 用户的决定（2026-10-08，3b 之后）：“没有可用基线没关系，能够改进的地方都改进掉，看的是最终结果”。support 两臂对照到此停止，取代 3b 一条的“下一步：3c”。
+  - 没跑的：v0.4 臂的 2b（3 轮）与 2c（final）；v0.5 臂的 3c（R 的 3 轮，带方法库）、3d（`--phase learn`）与 3e（final）。两份 final 计划都没有封存。
+  - 所以 H1 与两臂的 C1 都未检验。support 的 test 没有被读过（0 次）：两臂基线一条第 2 项，以及 ROADMAP、DESIGN、V2 里的“support（final 后读过 2 次）”，都是按两份 final 跑完预计的次数。
+  - 量到的只有两样：
+    - 两臂基线：v0.4 臂 dev 26/75，$56.19；v0.5 臂 27/75，$56.97。
+    - v0.5 臂的 3b：D = 3.0，两半 0.00 → 0.12（P 0.89）；快照 gate 首读 +0.24、确认 +0.08、合并 +0.16 [+0.047, +0.287]，每次尝试成本 −6.6%；$81.86。
+  - 经验库只有 train/dev 的过程证据，方法库没有任何读数。support 合计 $195.02（v0.4 臂 $56.19，v0.5 臂 $138.83）。
+  - 记录：
+    - `workspace-claude-v4-support`、`workspace-claude-v5-support` 留作本地记录，不入库、不删除。
+    - 冻结（`e414f7c`）到 `80254a3` 之间没有 `.py` 或 `.toml` 改动，所以 tag `archive-2026-10-08` 上的代码就是两臂运行的代码，两个工作区在这个 tag 上用 `--phase report` 重渲染。
+    - 两份配置注释里提到的 `support_h1.py` 是预注册原文，不改；脚本只在这个 tag 上。
+- 瘦身第三批的规则（SLIMMING_INVENTORY §3，事先定的）照用于停止的对照：H1 没有读数，两库各看自己的过程读数。
+  - 经验库：D = 3.0 ≥ +2、学习曲线 P = 0.8895 ≥ 0.8，两项都成立 → 保留，作 preset 开关、不进默认值；它也是 memory 的底座（OSS_COMPONENTS_PLAN §3）。
+  - 方法库：“R 能造出可用的方法”与“学会了何处用”两项都没跑（3c、3d 未跑）→ 按规则删。这是提议，用户可以否决；playbook 路径按清单的例外保留。
+- 时机：瘦身清单、V2、OSS 计划和 ROADMAP 里“等 support 两份 final 评完、H1 算完”的前提随停止取消。主检出里没有付费活动在跑；“付费活动运行期间不往它的检出合入 `.py` 改动”的规则照旧。
+- 文档清理（2026-10-08）：
+  - tag：
+    - `archive-2026-10-08` = `80254a3`，即清理前的 HEAD；删掉的文件都在这个 tag 上可读。
+    - `v0.4.0` = `7f65947`，已打，但还没合并进 main（main 仍是 v0.3 的 `b71502d`）。
+  - 删的文档：
+    - `docs/RSI_REVIEW.md`：2026-09-30 的 v0.6 评审与交付门槛，没有代码引用；后继是 DESIGN §7～§9、modules/08 与 ROADMAP §4。
+    - `docs/design/RSI_PLAN_2026-10-06.md` 与 `docs/design/V0_4_SHARDED_RSI.md`：都已自标被 V0_4_PLAN 取代，后者从未实现或运行。
+    - `docs/design/V0_5_AGENT_RL.md`：未采纳，只有仿真；留下的部分在 V0_5_PLAN §1.3、§4。
+  - 删的示例与测试，都已跑完，或没有阶段与测试再用：
+    - 天花板实验的跑法、配置与两个包：`ceiling_run.py`、`claude-ceiling.toml`、`ceiling/package`、`ceiling/wstar_package`、`test_ceiling.py`。v0.3 第 4 步已出结论；RESULTS 引用的 `ceiling/README.md` 与 `tasks.json` 保留。
+    - 彩排世界：`examples/rehearsal/`、`test_rehearsal_world.py`。四次彩排的结果仍在 `docs/REHEARSAL.md`。
+    - `support_h1.py` 与 `test_support_h1.py`：H1 不会再算。
+    - `claude_probe.py`：第 2a.2 步的探针，会调模型，没有测试用它。
+    - `claude-full-final.toml`、`claude-v3-pilot.toml`、`examples/zhipu.toml`：没有阶段再跑、没有测试载入的旧配置。
+    - `examples/__init__.py`：已删的贪吃蛇场景包留下的标记。
+    - git 忽略的本地文件不动：各工作区，以及彩排目录里的 `*.local.toml`、`workspace-rehearsal*` 与 `workspace-actor-manual`。
+  - 改的测试：`tests/test_aa_replay.py` 加 skip-if-absent。它读 git 忽略的 `workspace-claude` 记录，干净检出上原本会失败。
+  - 暂不删、随瘦身各批走的：
+    - 第一批（还有代码或测试引用）：`DEMO.md`、`RESEARCH_AGENT.md`、`docs/assets/`、`history/V0_5_IMPLEMENTATION.md`、`evals/`、`marketing.toml`、`examples/ouroloop.toml`。
+    - 第二批（测试载入）：`improvement.toml`、`claude.toml`、`claude-full.toml`、`claude-v3.toml`。
+    - 第三批：`V0_5_METHOD_LIBRARY.md`，用户不否决方法库的删除时才删。
+    - `docs/REHEARSAL.md` 作记录保留。
+  - 本条所在的提交还改了：
+    - ROADMAP：
+      - 页首；v0.4/v0.5 的状态与停止；
+      - 瘦身的时机与第三批的判定；v2 的顺序；
+      - support 的读取次数；`module:Class` 的核价更正；
+      - 新加“开源组件（2026-10-08 决定）”与“下一阶段”两节；删掉的示例改指 tag。
+    - RESULTS：
+      - 总表加 v0.4、v0.5 两行；
+      - 加“v0.4: finance”与“v0.5: support, stopped”两节，后者只写过程证据、不作主张；
+      - 指向删掉的文件的链接与 v0.1 的 Reproduce 改指 tag。
+    - 本文末“还没建的”一节的链接。
+    - 其余文档的同步见提交。
+  - 复核后补（同日）：PLAN 的 P1～P3 补上测试夹具的跨文件导入（test_gate_record、test_cycle、test_rsi_integration）、`api_errors._calls` 先移走、第二批的小分支、金标比对时给 `code_version` 打桩并去掉 `ts`、金标测试不写工作区；SLIMMING 里与规则 12 冲突的三处（`*.local.toml` 的通配、“移出仓库归档”）改掉；OSS 正文里按“support 正在跑”写的时机就地改掉，S1 改为与瘦身第一批并行；X1 的域照 V2 §4.2；TRAINING_HOSTS 页首的核价更正；被本次整理挪动的 file:line。
+  - 下一阶段的计划写在 [PLAN.md](PLAN.md)（新的活文档），另加根目录的 `CLAUDE.md`；ROADMAP 只放指针，不重复。
+- 证据：没有运行证据。没改 `ouroloop/` 下的代码，没调模型，没付费，没读 `.env` 与任何 test 内容。
+  - 清理前在 `80254a3` 上：`.venv/bin/pytest -q -m "not live"` 为 1245 passed, 1 deselected；默认 `pytest -q` 为 1243 passed, 3 deselected。
+  - 在 scratch 的干净副本里（`git archive HEAD`，没有 git 忽略的文件）：`1 failed, 1240 passed, 4 skipped`，失败的是 `test_aa_replay`，它读 git 忽略的 v0.1/v0.2 工作区。
+  - 同一副本删掉上面的示例与测试、给 `test_aa_replay` 加 skip-if-absent 之后：`1220 passed, 5 skipped`。少的 20 个测试是天花板 10、彩排 6、support_h1 4。
+  - 清理后在主检出上（`git rm` 198 个跟踪文件、共 7,017 行之后）：`.venv/bin/python -m pytest -m "not live" -q` 为 1225 passed, 1 deselected（约 3 min），默认 `pytest -q` 为 1224 passed, 2 deselected，比清理前少的正是上面 20 个；`git status --ignored` 与清理前逐行相同，被忽略的工作区与 `*.local.toml` 一个没少。
+- commit：本条与清理见本条之后的提交。
+
+---
+
 ## 2026-10-08 support v0.5 臂 3b 之后的决定
 
 - 背景：3b 跑完后写了两份文档。一是开源 memory 与 agent 底座的计划 [design/OSS_COMPONENTS_PLAN.md](design/OSS_COMPONENTS_PLAN.md)（`fb27022`，草案，交用户审）；二是 V2 训练链按 Tinker/RunPod 核价的更正（`d2f60f5`）。用户审 OSS 计划时定了下面几项。
@@ -1239,4 +1301,4 @@
 
 ## 还没建的
 
-日志记的是改了什么、什么时候改的。当前未完成项以 [研究员状态表](RESEARCH_AGENT.md)与[实施路线图](ROADMAP.md)为准。
+日志记的是改了什么、什么时候改的。当前未完成项以 [下一阶段计划](PLAN.md) 与 [实施路线图](ROADMAP.md) 为准。原先并列的研究员状态表 `docs/RESEARCH_AGENT.md` 已被取代，见 tag `archive-2026-10-08`。

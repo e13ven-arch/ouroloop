@@ -1,8 +1,10 @@
 # v0.5 方案（2026-10-06；2026-10-07 评审修订）
 
+> **现状（2026-10-08）：** 已实施（`7e7732e`），未发布；§3 的真实检验没跑完，正文是预注册记录、不改。3a 两臂基线完成（dev：v0.4 臂 26/75，v0.5 臂 27/75）；3b 经验库流 D = 3.0、B = 1，前后两半 0.00 → 0.12（P 0.8895），记功秩相关 0.2，快照轮 gate 首读 +0.24、确认 +0.08、合并 +0.16 [+0.047, +0.287]，装上 `9f07d95032b4`。2026-10-08 用户停止对照：3c、3d、3e 都没跑，H1 与 C1 未测；§3 方法库的两项过程读数（R 能造出可用的方法、学会了何处用）从未读出，即“选择未测”。按瘦身第三批的规则，经验库保留为 preset 开关，方法库拟删（用户可否决）。下文引用的 V0_5_AGENT_RL 已于 2026-10-08 删除（以及若删的 V0_5_METHOD_LIBRARY），H1 脚本 `support_h1.py` 与 `tests/test_support_h1.py` 也在同日移出 HEAD，都在 tag `archive-2026-10-08` 上可读。
+>
 > 2026-10-07 评审（协调者在隔离副本里跑了脚本化的 v0.5 臂全流程；有效性、公平性与旧工作区身份都核过）：14 条确认，全部按其决定改了——两臂的根都升到 $600（等上限、同日程，各报实花）；经验库的中止规则只看 D；固定代码的轮次可续跑、不计入 R 的轮次；带附注的重试不记功；H1 在一臂没装东西时的配对写死并给了脚本；以及若干记录与测试。改动散在 §1.3、§1.4、§3、§5、§6、§7、§8。
 
-> 本文是 v0.5 的规则来源。三份设计稿 [V0_5_METHOD_LIBRARY](V0_5_METHOD_LIBRARY.md)（方法库）、[V0_5_EVOLVING_SEARCH](V0_5_EVOLVING_SEARCH.md)（进化搜索）、[V0_5_AGENT_RL](V0_5_AGENT_RL.md)（agent 内 RL）是本文的输入，保留作依据；三者与本文不一致处以本文为准。
+> 本文是 v0.5 的规则来源。三份设计稿 [V0_5_METHOD_LIBRARY](V0_5_METHOD_LIBRARY.md)（方法库）、[V0_5_EVOLVING_SEARCH](V0_5_EVOLVING_SEARCH.md)（进化搜索）、V0_5_AGENT_RL（agent 内 RL；2026-10-08 删除，tag `archive-2026-10-08` 上可读）是本文的输入，保留作依据；三者与本文不一致处以本文为准。
 > 先文档后执行：本文、ROADMAP “v0.5” 一节与 JOURNAL 条目先写，代码与测试随后；全部离线，没有调用模型，没有付费阶段，没有读 `.env`，没有读任何 test 结果。正在付费运行的 `workspace-claude-v4-finance` 不碰。
 
 ## 0. 结论
@@ -171,7 +173,7 @@
 | 5 中止规则只看 D，B 只报告 | `research/library.py:589` `snapshot_abort`；`bench.py:3366` | `test_v05_phases.py::test_the_snapshot_is_held_back_by_d_alone_and_b_is_only_reported` |
 | 6 + 11 + 12 固定轮可续跑、不进 R 的段 | `research/fixed.py:26` `round_ended`、`:34` `next_ordinal`、`:49` `fixed_experiment_id`、`:96`（已结束的轮答回记录）、`:117`（读回已写的阶段）、`:191`、`:250`（续 Execution）、`:263` `_resume_execution`；`research/loop.py:374` `resume_unfinished(skip_fixed=)`、`:500`；`evolve/experience.py:124`；`bench.py:2893`（R 的段跳过固定实验）、`:3040`（learn 收尾没结束的重拟轮）、`:3374`（快照轮的序号进检查点）| `test_v05_phases.py::test_a_fixed_round_keeps_its_ordinal_and_experiment_id_until_it_ends`、`test_an_interrupted_snapshot_round_resumes_where_it_stopped_and_pays_nothing_twice`（在筛选、gate 首读、确认三处打断）、`test_a_snapshot_round_that_ended_answers_with_its_recorded_outcome`、`test_r_still_gets_its_three_rounds_when_a_fixed_rounds_gate_is_open`、`test_an_interrupted_refit_gate_is_finished_by_the_next_learn` |
 | 7 带附注的重试不记功 | `bench.py:3301` | `test_v05_phases.py::test_a_failed_first_encounter_is_retried_…` |
-| 8 H1 的配对（一臂没装东西时）与脚本 | `examples/automationbench/support_h1.py:41` `final_outcomes`、`:62` `spend`、`:74` `h1`、`:91` `support_h1`；§3；v5 配置的读法 | `tests/test_support_h1.py` 4 个 |
+| 8 H1 的配对（一臂没装东西时）与脚本 | `examples/automationbench/support_h1.py:41` `final_outcomes`、`:62` `spend`、`:74` `h1`、`:91` `support_h1`；§3；v5 配置的读法。（2026-10-08：对照停止，H1 没有算；脚本与测试移出 HEAD，tag `archive-2026-10-08` 上可读）| `tests/test_support_h1.py` 4 个（同上，已移出） |
 | 10 流把近似重复题记进来源 | `bench.py:3216` | `test_v05_phases.py::test_the_stream_records_an_entrys_near_duplicate_train_tasks_among_its_sources` |
 | 1 `broker_event` 的 `read_only` 与报告的 `m_tool_writes` | `agent/gateway.py:370`；`report.py:129` `m_tool_writes`、`:221`、`:1070` | `test_methods.py::test_an_m_tool_gets_a_read_only_broker_and_a_post_is_refused`；`test_v05_phases.py::test_the_learn_phase_…`（v5 臂写 0 次）|
 | 2 合并回复是单个条目对象 | `research/library.py:527` | `test_v05_phases.py::test_a_merge_reply_of_one_bare_entry_is_read` |

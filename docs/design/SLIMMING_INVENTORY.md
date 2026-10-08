@@ -1,5 +1,7 @@
 # 瘦身清单（2026-10-07）
 
+> **现状（2026-10-08，support 对照停止后）：** 现行。用户已停止 support 两臂对照（JOURNAL 2026-10-08）：两份 final 没跑、H1 未测，页首“时机”与 §3、§4 里“等两份 final 评完、H1 算完”的条件作废，三批现在就按顺序在 worktree 里做、逐批合入。第三批按预注册的单库过程读数套用（H1 没测，不是“不确定”）：经验库两项成立（D = 3.0 ≥ +2，P = 0.89 ≥ 0.8；记功秩相关 0.2），保留为 preset 开关、不进默认（留 `library.py`、`fixed.py`、`library_track`、runner 的检索、报告的库证据）；方法库两项没跑（3c、3d 未跑），按规则删，这是提议，用户可否决（删 `methods.py`、`method_kit/`、`learn` 与 `_refit_*`、方法分支、`test_methods` 与 `test_v05_phases` 的 learn 部分）；playbook 例外照旧。“在 tag v0.5.0 上复算 H1”改为在 tag `archive-2026-10-08` 上重渲染两个 support 工作区（两臂跑的就是这份代码）；support 的对照噪声已量到（v0.4 臂 dev 8/9/9，v0.5 臂 10/9/8），供 §2 `control_readings` 一行用。文中引其他文档的 file:line，凡被 2026-10-08 整理挪动的，已改成整理后的行号；引代码的行号以 `80254a3`（tag `archive-2026-10-08`）为准，那之后没改过 `.py`。
+>
 > 用户（2026-10-07）："先整理瘦身清单，对照臂先不加。" 本文只给清单与分批计划，不改代码，不加对照臂，也不加新机制。
 >
 > **依据。** HEAD `e414f7c` 的静态阅读（import 与调用链、grep、ast）；`docs/JOURNAL.md`、`RESULTS.md`、`ROADMAP.md`、`history/FINANCE_V04_ANALYSIS_2026-10-07.md`；另外只读查看了工作区记录（v4-finance 的 ledger、events、report.json，以及各工作区的冻结计划）。没跑测试，没调模型，没读 `.env`。
@@ -74,12 +76,12 @@
 
 | 问题 | 结论 | 依据 |
 |---|---|---|
-| 从 RSI 完整性看，要不要有权重这一层（训练、蒸馏、决策模型） | 要 | 改程序（W）和改权重（θ）是同一条路线的前后两段：v1 对标的 Harness-Zero 先演化 h\*，再蒸馏进学生（基线 23.3% → 挂 harness 41.7% → 蒸馏后去掉 harness 44.3%）。本基准上判断环节是真实的：v0.4 finance 的 W\* 在 test 上失败的 36 条断言里有 25 条是"不得做"（FINANCE_V04_ANALYSIS:294）。M2 已写明在旧代码上扩展：`train_artifact` 加 role 分派，复用 `test_evidence_training`、`test_train_config`、`test_jobs`（02_EVIDENCE_TRAINING.md:49、:132）；controller 训练用"现有 trainer/TDE 作业与 serving"（TECHNOLOGY.md:14）。第一版清单要整删的正是这些 |
+| 从 RSI 完整性看，要不要有权重这一层（训练、蒸馏、决策模型） | 要 | 改程序（W）和改权重（θ）是同一条路线的前后两段：v1 对标的 Harness-Zero 先演化 h\*，再蒸馏进学生（基线 23.3% → 挂 harness 41.7% → 蒸馏后去掉 harness 44.3%）。本基准上判断环节是真实的：v0.4 finance 的 W\* 在 test 上失败的 36 条断言里有 25 条是"不得做"（FINANCE_V04_ANALYSIS:294）。M2 已写明在旧代码上扩展：`train_artifact` 加 role 分派，复用 `test_evidence_training`、`test_train_config`、`test_jobs`（02_EVIDENCE_TRAINING.md:51、:134）；controller 训练用"现有 trainer/TDE 作业与 serving"（TECHNOLOGY.md:15）。第一版清单要整删的正是这些 |
 | 现有代码是不是地基 | 一部分是：约 3,100 行收进子包或原位保留，约 2,000 行作业设施保留、归属后定为 ouroloop（§0.2 第 12 项），约 5,100 行确已过时 | 下表 A–E |
 
 有五点要照实说：
-1. **没有证据。** 这套栈在 AutomationBench 上没产出过 held-out 结果，每个 test 数字都来自包演化（v0.1 +13.0、v0.2 +4.3、v0.4 finance +8.0）。唯一测过的训练决策模型是贪吃蛇：冠军与规则持平，模型推翻规则的那些步只有 15–26% 是对的（JOURNAL:1014、:1093）。保留是对 v2 计划下注。
-2. **它不训练、也不服务蒸馏出的语言模型。** 训练路径假设模型是分类器：`Backend.decide` 输出标签概率，`_probe_artifact` 问写死的 stop 问题（pipeline.py:441）。actor 蒸馏按计划走 Tinker（TECHNOLOGY.md:13）。"蒸馏垂域模型"的代码基本要新写（§0.2 第 11 项）。
+1. **没有证据。** 这套栈在 AutomationBench 上没产出过 held-out 结果，每个 test 数字都来自包演化（v0.1 +13.0、v0.2 +4.3、v0.4 finance +8.0）。唯一测过的训练决策模型是贪吃蛇：冠军与规则持平，模型推翻规则的那些步只有 15–26% 是对的（JOURNAL 2026-09-27“重切：训练线为主线”与 2026-09-26“以默认为基准的价值”两条）。保留是对 v2 计划下注。
+2. **它不训练、也不服务蒸馏出的语言模型。** 训练路径假设模型是分类器：`Backend.decide` 输出标签概率，`_probe_artifact` 问写死的 stop 问题（pipeline.py:441）。actor 蒸馏按计划走 Tinker（TECHNOLOGY.md:14）。"蒸馏垂域模型"的代码基本要新写（§0.2 第 11 项）。
 3. **它和现在的 agent 路径是断开的。** runner shell 不问任何决策点（agent/runner.py:115-116）；回推发生在包内（default_agent.py:224-235），宿主只看到 `run` 返回一次；导出的 app 没有 serving（app.py:27），model 策略在那里会 BindError（policies.py:605-606）。
 4. **用户举的两个决策点都还没设计。** 唯一注册的决策 target 是 `worker.stop`（policies.py:66）。"要不要发邮件"有环境真值，即 `gmail_email_not_sent_to`、`*_not_exists` 这类"不得做"断言；"要不要联系人工"在本基准上没有真值：工具只有 `api_search`、`api_fetch`、`base64_encode`（automationbench.py:19-21），没有交接工具，也没有奖励升级的断言。
 5. **标签契约排除了 LLM 老师。** `FeedbackRecord.source` 只收 env/human（contracts.py:682），`ledger.EVAL_ONLY` 含 `frontier_llm`、`jev`（ledger.py:22）。外部常见做法（子报告引用的 Intercom 转人工模型）是用 LLM 老师标注；要走这条路，得在 02 里给决策加一条老师标签路径，参照 actor 侧的 PASS/REPLACE（§0.2 第 10 项）。**已定（2026-10-08，V2_TRAINING_PIPELINE §2.5，定稿见 §7）：** 加老师标签路径；`source` 不再作闸门，只作血缘（`env:*`、`human:*`、`model:<identity_ref>`），拟合默认收 env 与 model，阈值只收 env，评测收 env 与 human；评分信息永不进 actor、teacher、judge 的输入，也不进 SFT 输入。
@@ -116,7 +118,7 @@
 
 | 模块 | 行 | 说明 |
 |---|---|---|
-| `evolve/train.py`（契约以外）、`cloud.py`、`compute.py`；`ouroloop/worker.py`；`hosts/`；`trainers/tde.py` 的作业半边（:120-226）；`trainers/signature.py`；`docker/worker/Dockerfile` | ≈ 2,000 | 价格上限、截止时间、续跑不重付，这些重建很贵；M2 点名复用 `test_jobs`（02:132）。`signature.py` 是离线测试走真实作业路径用的纯标准库 trainer，test_jobs、test_cloud、test_hosts 都用它，`replay.signature` 的默认键函数要一起搬来。依赖 `[train]` 的 stores、serving、trainers |
+| `evolve/train.py`（契约以外）、`cloud.py`、`compute.py`；`ouroloop/worker.py`；`hosts/`；`trainers/tde.py` 的作业半边（:120-226）；`trainers/signature.py`；`docker/worker/Dockerfile` | ≈ 2,000 | 价格上限、截止时间、续跑不重付，这些重建很贵；M2 点名复用 `test_jobs`（02:134）。`signature.py` 是离线测试走真实作业路径用的纯标准库 trainer，test_jobs、test_cloud、test_hosts 都用它，`replay.signature` 的默认键函数要一起搬来。依赖 `[train]` 的 stores、serving、trainers |
 | 已知问题（登记，不修） | — | 与 jev 的 `tde/train.py`、`ops/decider_lora_train.py`、`hf_push_run.sh` 重复。`trainers/tde.ARCHITECTURE`（:40）没有 `topology`/`max_total`：以 `topology="set"` 的父模型续训时会默默变成 jev 的默认 `seq`（jev tde/train.py:66，以 `strict=False` 加载，:266）。RECIPE 的 `max_state_tokens=1024`（:32）与 jev 默认的 448（tde/train.py:67）不一致。编码器 TDE 的 1,024 token 放不下约 3k token 的业务视图，只有 Qwen 版 decider（32k）放得下，而 ouroloop 没有它的训练插件 |
 
 **D. 原位保留，懒用（≈ 700）**
@@ -152,7 +154,7 @@ monitor（上线后按实际伤害算 CP 下界并自动吊销）、replay（付
 
 | # | 项 | 内容 | 约行数 |
 |---|---|---|---|
-| 1 | 写门挂点 | 在 `AttemptBroker.call`（gateway.py:340）的写操作之前问 `write_gate`。默认 shadow，只记录；开启后能拒绝调用、返回错误输出。用 `surface.mutates`（automationbench.py:604）识别写操作，先修"POST 查询被算成写"。挂在宿主侧，C3 在可演化的 agent 程序下才有定义（DESIGN:82） | 150–250 |
+| 1 | 写门挂点 | 在 `AttemptBroker.call`（gateway.py:340）的写操作之前问 `write_gate`。默认 shadow，只记录；开启后能拒绝调用、返回错误输出。用 `surface.mutates`（automationbench.py:604）识别写操作，先修"POST 查询被算成写"。挂在宿主侧，C3 在可演化的 agent 程序下才有定义（DESIGN:89） | 150–250 |
 | 2 | stop 生效 | 回推在包内（default_agent.py:224-235），worker 协议是一次尝试一个 `run`，宿主在返回点只能记录。要生效必须改包 API：要么 `ctx.decide`，要么宿主强制的完成协议（`ctx.finish`，宿主可以回推）。两者都会改变 runner 的 sha 和 worker 镜像 | 150–300 |
 | 3 | 通用 target 与 judge 绑定 | `worker.stop` 推广为 `worker.decide.<point>`，去掉 stop 的硬编码（policies.py:66、bench.py:1580-1588、pipeline.py:441）。加一种 `judge` 绑定，给零样本或提示词 decider 用：现在只允许 `rule` 和 `model` 两种（policies.py:66），model 必须来自训练条目（experiment.py:250-253）。judge 要说清用哪个 provider、怎么计量（网关现在只有 actor 一个 provider）、身份怎么算 | 200–350 |
 | 4 | 决策行字段 | 任务路径记录 probs、explored、propensity，并接入 `policy.route`；inference schema 加温度字段（policies.py:173-194 现在没有）。这会改变策略身份 | 100–160 |
@@ -200,12 +202,12 @@ monitor（上线后按实际伤害算 CP 下界并自动吊销）、replay（付
 | v1 Agent 相关：`agent/loop.py`（`_stop_ctx/_trace` 除外）、`tools.py` 里的 Tools/SPECS、`harness_package` 的 mount 半边、`chat.ChatProvider`、`task_eval` 的 v1 分支与 probe 参数 | ≈ 765 | v1 Agent 循环、编码工具、包的 v1 挂载 | 否。K 带 `harness.max_effort` 时（v3 和 v5 的 preset 都带），`make_agent_factory` 走 `PackageAgent`（task_eval.py:386-398）。v1 分支只服务 v0.1/v0.2 的 K 和没有 preset 的测试夹具 | 无 | CUT·1 | `AgentResult` 移到 runner。v1 分支改为拒绝，并在提示里指向对应 tag。`smoke_max_effort` 在没有 preset 时回退到 `DEFAULT_MAX_EFFORT`。**移走，不删**：`stop.py`（StopGuard）和 `_stop_ctx/_trace` → `[train]`；`CompletionProbe` 原位保留，补直接单测（§0.1 D） | test_agent 12/15、TestTheInterventionWorks 删；TestCompletionProbe 改写成直接单测；另有约 25–40 个测试经 `tests/rsi.py` 跑在 v1 循环上，需要迁移 | 765 | 中：这是最大的一次测试迁移 |
 | research 里的旧决策研究：`research/agent.py`、`ask.py`、`loop.py:1-127`、`basic.BasicResearcher` 及其常量、`loop._refused_model_changes`、`research/__init__` 的急切导出 | ≈ 430 | 旧决策剖面的研究循环 | 否。只有 `cli research/demo` 调用。但 `research/__init__` 是急切导入的，所以每次跑 bench 都会把 gate、replay、types 加载进来 | 无 | CUT·1 | 删除，并把 `__init__` 改为懒导入。**原位保留**训练准入（`check_label_availability`、`registered_builders`、`model_change_reasons`、`core_checks` 的训练条款，≈ 70 行）：保留的 `build_candidate` 依赖它（policies.py:924） | test_loop 8、test_harness 7 | 430 | 低 |
 | 散在保留模块里的冠军遗留：`ledger.CalibrationStore/SpecStore/PromotionConflict`；`release` 的 Release 三元组、Accepted、`resolve_profile`、`Releases.defaults/recover`；`policies` 的 SessionBinder、只有它调用的 `fixed_defaults`、`Services.runtime/probe_models` | ≈ 235 | v1 发布三元组、按 session 换绑、校准与 spec 存储 | 否。SessionBinder 在 policies.py 之外没有调用者。校准与 spec 存储只服务冠军路径 | 无 | CUT·1 | 删除。**保留** REGISTRY 的全部目标（含 `worker.stop`）、BUILTINS、SCHEMAS 条目、PROFILES/ORIGINS，以及所有保留记录的全部字段。**原位保留**（懒用，§0.1 D）：ledger 的 `Row/Ledger/SessionStore`；`Revoked`、`Releases.revoked/revoke/last_good/rollback`；policies 的 `StopDecider`、`_bind_stop`、`parse_inference`、`Services.serving`、`build_candidate` 的训练循环；contracts 的 `EvidenceRef/DataManifest/Observation/DecisionTrace/FeedbackRecord`。`bootstrap_workspace` 移到 tests | test_policy_runtime、test_policies 里 SessionBinder 的部分删；test_task_gate 的回滚、吊销测试保留 | 235 | 低 |
-| `providers/manual.py` 的 ManualProvider、parse_turn | 95 | 人工用文件应答的提供方，只用于彩排 | 否。只有 rehearsal 的配置用它。ROADMAP:307 记录会话路径上的人工彩排没有跑，已换成离线 dry_run | 无 | CUT·1 | 和 rehearsal 一起删。`request_json`（11 行）移到 `claude_code.py` | test_manual 3 | 95 | 低 |
+| `providers/manual.py` 的 ManualProvider、parse_turn | 95 | 人工用文件应答的提供方，只用于彩排 | 否。只有 rehearsal 的配置用它。ROADMAP:313 记录会话路径上的人工彩排没有跑，已换成离线 dry_run | 无 | CUT·1 | 和 rehearsal 一起删。`request_json`（11 行）移到 `claude_code.py` | test_manual 3 | 95 | 低 |
 | frontier 臂：`bench.frontier_configs/FRONTIER_KEYS/actor_override`，以及 evaluate 里逐比较的 `llm` 与定价 | 50 | 在本地跑前沿模型作对照臂（C2） | 否。没有配置有 `[frontier]`。2026-09-28 已决定不在本地跑前沿模型，C2 引用官方榜单 | 无 | CUT·1 | 删除。report 的 C2 改成固定的 not_run（见下面的研究位一行） | test_report 3 | 50 | 低 |
 | `task_gate` 的经济模式、protected 需求、`max_runtime_cost_ratio/_ratio`、v1 dev `screen()`，以及 `bench._screen` 处理器 | 85 | 非劣且更便宜的判决、受保护需求的否决、成本比上限、预声明 dev 题的廉价筛选 | 逻辑上从未生效。54 份冻结计划里：economy 0 份，protected 非空 0 份，cost_ratio 非空 0 份，`screen_ids` 非空只有 linkcheck2（本地冒烟）。`_screen` 遇到空列表立即返回 pass | 无 | CUT·1 | 删逻辑，**字段全部保留**，因为计划哈希依赖它们。`execute_experiment` 的 screening 步骤删掉，STATES 保留，以便读旧日志 | test_task_gate ~6、test_real_run_findings 2、test_paid_run_safety 1 例 | 85 | 低：现有计划的判决不会变 |
 | 没有调用者的函数：`Improvement.train_state_literals`、`diagnosis.train_literals`、`automationbench.assertion_class`、`contracts.ArtifactRef/Requirement/combine`、`experience.verdict/summary_record/requirement_status`、`execution.spend/open_reservations/_takes`（只有测试在用） | ~150 | — | 否。`ouroloop/` 内没有调用者 | 无 | CUT·1 | 删除。用到它们的测试改用 `reserve/settle` | test_contracts 2、test_research_round 若干 | 150 | 无 |
 | v0.3 兼容代码：`session.passing_sample`、`ScreenSettings.v04` 开关、`pick_best` 的 int 路径、floors=0 路径、`session_inputs` 的 v0.3 分支 | 60 | 让 v0.3 的 K 照旧运行 | 否。v3 和 v5 的 preset 都带 v0.4 的数字；v0.3 的工作区已经结束 | 无 | CUT·1 | 删除。workspace-claude-v3 只能在 tag v0.3.0 上续跑 | test_research_round 少数几个 | 60 | 低 |
-| **研究位 / R0–R1 战役（C4）**：`research/campaign.py`；bench 的 `research()`、`_install_research`、`_campaign_*`、`_run_campaign_arm`、`_arm_outcome`、`_evaluate_outer`、`_cycle_slot`、`research_slot`、`slot_headroom`、`never_passed`、`per_domain_counts`、`cycle_pairs`、`halve_dev`、`_reuse_fact`、`_copy_*`、`_starting/_seed_experience`、`common_inputs_estimate`（bench.py:3521-4153、4616-4958）；`cycle()` 里的研究位分支；preset 的 campaign 表；`RoundLog.watch/requests`；`basic.propose_research`；`loop.pause_of`；experiment 的 research 分支；`Results.copy_grading`；`contracts.copy_closure`；report 的 C4、复用、余量、延长部分（C2/C3 改为固定 not_run，各附一句理由） | ~1,700 | R0 提出 R1；两个隔离臂各跑一遍 worker 循环；外层比较判定 R1 是否更好；安装 R1 并验证复用 | 否。v3/v4/v5 的全部配置都写 `research_slots = 0`（例如 claude-v4-finance.toml:162），`cycle()` 在 `_cycle_slot` 之前 break（bench.py:4483）。`--phase research` 自 v0.2 之后没再跑过。唯一还在用的是常量 `campaign.PAUSES`（loop.py:546） | 无。v0.2 结论不确定：两臂封存了同一个 W\*，没有做外层比较（RESULTS:151/159）。v0.3、v0.4 都推迟了。v0.5 改用 `support_h1.py` 做跨活动比较 | CUT·2（编排）；C4 能力保留 | 删活动内编排。**抽出保留** `research/recursion.py`（≈ 200 行）：`judge_research`、`carries/unused_changes`、`CampaignPair` 的不重叠检查、`discovery` 标签，连同从 test_campaign 移植的测试。`basic.propose_research` 照删：它只服务 note-contract R（experiment.py:396-402）。`PAUSES` 移到 loop.py。**保留字段** `FinalizationPlan.research_campaign_plan_ref` 和 `Schedule.research_slots`。C4 改为跨活动比较（§0 (a)） | test_campaign 29（`judge_research` 等的测试移到 test_recursion，≈ 200 行）、test_cycle ~30、test_rsi_integration ~16、test_real_run_findings 2–5、test_report 2；其余 5 个文件各 1 个；合计约 85 个测试、约 1,900 行 | 1,500 | 路径上低风险；C4 的新接线（≈ 100–200 行）随下一个新领域活动做，不算瘦身 |
+| **研究位 / R0–R1 战役（C4）**：`research/campaign.py`；bench 的 `research()`、`_install_research`、`_campaign_*`、`_run_campaign_arm`、`_arm_outcome`、`_evaluate_outer`、`_cycle_slot`、`research_slot`、`slot_headroom`、`never_passed`、`per_domain_counts`、`cycle_pairs`、`halve_dev`、`_reuse_fact`、`_copy_*`、`_starting/_seed_experience`、`common_inputs_estimate`（bench.py:3521-4153、4616-4958）；`cycle()` 里的研究位分支；preset 的 campaign 表；`RoundLog.watch/requests`；`basic.propose_research`；`loop.pause_of`；experiment 的 research 分支；`Results.copy_grading`；`contracts.copy_closure`；report 的 C4、复用、余量、延长部分（C2/C3 改为固定 not_run，各附一句理由） | ~1,700 | R0 提出 R1；两个隔离臂各跑一遍 worker 循环；外层比较判定 R1 是否更好；安装 R1 并验证复用 | 否。v3/v4/v5 的全部配置都写 `research_slots = 0`（例如 claude-v4-finance.toml:162），`cycle()` 在 `_cycle_slot` 之前 break（bench.py:4483）。`--phase research` 自 v0.2 之后没再跑过。唯一还在用的是常量 `campaign.PAUSES`（loop.py:546） | 无。v0.2 结论不确定：两臂封存了同一个 W\*，没有做外层比较（RESULTS:289/297）。v0.3、v0.4 都推迟了。v0.5 改用 `support_h1.py` 做跨活动比较（对照停止，H1 没有算；脚本 2026-10-08 已删，tag `archive-2026-10-08` 上可读） | CUT·2（编排）；C4 能力保留 | 删活动内编排。**抽出保留** `research/recursion.py`（≈ 200 行）：`judge_research`、`carries/unused_changes`、`CampaignPair` 的不重叠检查、`discovery` 标签，连同从 test_campaign 移植的测试。`basic.propose_research` 照删：它只服务 note-contract R（experiment.py:396-402）。`PAUSES` 移到 loop.py。**保留字段** `FinalizationPlan.research_campaign_plan_ref` 和 `Schedule.research_slots`。C4 改为跨活动比较（§0 (a)） | test_campaign 29（`judge_research` 等的测试移到 test_recursion，≈ 200 行）、test_cycle ~30、test_rsi_integration ~16、test_real_run_findings 2–5、test_report 2；其余 5 个文件各 1 个；合计约 85 个测试、约 1,900 行 | 1,500 | 路径上低风险；C4 的新接线（≈ 100–200 行）随下一个新领域活动做，不算瘦身 |
 | **多领域合并**：`benchmark.pool_manifests/POOLED_RULE/spent/claim_ids`、`automationbench.pool_suites`、`bench.load_domains` 的多领域分支、`pooled_name`、`_one_dev_task_per_domain`、`domain_problems`、smoke 里逐领域的部分、`task_gate.per_domain`、`experience.gate_by_domain/strip_dev_task_ids`、`diagnosis.select_failures` 的领域交错、report 的 `_per_domain/_final_by_domain` | ~380 | 让多个领域共享一个包的合并活动 | 否。这些代码都以 `len(domains) > 1` 为前提，而三份当前配置各只列一个领域。ROADMAP v0.4 的决定是"每个新领域一个单领域活动" | 无。v0.3 的五领域活动三轮都没有候选通过 gate | CUT·2 | `domains=[x]` 作为 `domain` 的别名继续接受。`bench/<domain>` 路径不变，单领域的划分哈希不受影响 | test_bench_phase ~5、test_report 4，另有 4 个文件各 1 个（约 400 行） | 380 | 低：v0.3 报告重渲染时会少逐领域表，但数字已写进 RESULTS |
 | **采集批**：`Improvement.collect_batch/_run_collection/finish_collections/_collection_batches`、improve 里 collector 的接线、`run_worker_rounds` 的 collect 分支、`unanswered_collections`、session 的 needs_collection 结束条件、`max_collection_batches` | 130 | R 回答 collect 时，额外付费跑一批 train 尝试 | 接线在，但从没触发过：四个真实工作区里 `collection_booked` 都是 0 次 | 无。每轮测量本来就会重跑失败的 train 题 | CUT·2 | collect 回答当作 no_proposal 处理。**保留** `Schedule.collection_batches` 字段和它的值 2，因为冻结的日程 JSON 里有这个值 | test_cycle 9 处、test_research_round 5、test_harness_loop 3 | 130 | 低 |
 | **段延长**：`_extension_of/_record_extension`、improve 和 RoundLog 里的延长分支、cli 的 `--reason/--rounds`、report 的 `extensions` | 85 | 在冻结日程之外记录在案地续跑一个已结束的段 | 只在对 cycle 活动直接执行 `--phase improve` 时才会走到。只用过一次（v0.3 第 3 轮，被拒）。v0.4/v0.5 的预注册明确禁止续跑同一条管线（ROADMAP v0.4 §4） | 无 | CUT·2 | 对 cycle 活动执行 `--phase improve` 改为拒绝 | test_bench_phase 2、test_harness_loop 1 | 85 | 低 |
@@ -225,17 +227,17 @@ monitor（上线后按实际伤害算 CP 下界并自动吊销）、replay（付
 
 | 对象 | 行 | 证据 | 做法 | 风险 |
 |---|---|---|---|---|
-| 成本项 `cost_beta0/1`（task_gate） | ~20 | 从没决定过一次结果。finance v0.4 第 2、3 轮没过成本项，但已经因增益为负被拒（FINANCE_V04_ANALYSIS:408）；v0.3 各轮也都因增益被拒。v3 以后的每份冻结计划都带着它，包括正在跑的 support | 代码保留，因为删掉会改变已封存计划的判决。下一版 preset 去掉它；等没有可续跑的计划再带它时，再删这 20 行 | 现在删是高风险，只改 preset 则无风险 |
+| 成本项 `cost_beta0/1`（task_gate） | ~20 | 从没决定过一次结果。finance v0.4 第 2、3 轮没过成本项，但已经因增益为负被拒（FINANCE_V04_ANALYSIS:408）；v0.3 各轮也都因增益被拒。v3 以后的每份冻结计划都带着它，包括 support 两臂 | 代码保留，因为删掉会改变已封存计划的判决。下一版 preset 去掉它；等没有可续跑的计划再带它时，再删这 20 行 | 现在删是高风险，只改 preset 则无风险 |
 | `control_readings = 3` | 0（配置） | finance 里没改变任何决定（§4 1.6(c)：任何一次单独读数都超过 min_gain），多花了 $21.85。分析的建议是等量出 support 的噪声再定 | support 结束后，如果噪声小，下一版配置设为 1–2 | 无 |
 | `research/method_kit/reference/` 和 `methods.reference_files` | 565 | 没有任何阶段会触达它，只有 test_methods 调用。V0_5_PLAN §1.2 写明它只作夹具和可选消融 | 移到 `tests/fixtures/method_reference/`（第三批）；如果方法库被删，就一起删 | 低 |
 | `providers/anthropic.py`、`openai_compat.py` | 208 | 当前配置不用。它们本来就是懒加载，anthropic SDK 已经是 extra；GLM-5.3 是"推迟，不删"（JOURNAL 2026-10-03） | 保持可选，在 README 里标成"API 提供方" extra | 无 |
-| `ouroloop[train]`：新子包 `ouroloop/train/`（types、point、policy、runtime 通用半边、views、labels、dataset、train、calibrate、checks、backends、serving、stores、trainers 契约、StopGuard、trace、adapters/claude_code） | ≈ 2,400 | 用户 2026-10-07：训练链与决策模型要保留；M2 要在 `train_artifact` 上扩展（02:49、:132）。当前路径不执行（§0） | 懒导入，自带测试（≈ 1,300 行），`pip install ouroloop[train]`，入口 `python -m ouroloop.train`（命名按 V2_TRAINING_PIPELINE §7 第 7 项）。逐模块见 §0.1 A、B。日落规则见 §0.1 | 测试常驻 CI；`worker.stop` 在 REGISTRY、SCHEMAS 里的身份要一直守着 |
-| `ouroloop[train-jobs]`：`ouroloop/train/jobs/`（train、cloud、compute、worker、hosts、trainer 的作业半边、signature、训练主机 Dockerfile） | ≈ 2,000，另有 sh 207、Dockerfile 66 | M2 点名复用 `test_jobs`（02:132）；云计费安全逻辑重建很贵 | 依赖 `[train]`。归属已定：在 ouroloop 训练（§0.2 第 12 项）；已知漂移在瘦身里登记不修，v2.1 修（§0.1 C） | 测试 1,766 行常驻 CI；与 jev 的作业链重复 |
+| `ouroloop[train]`：新子包 `ouroloop/train/`（types、point、policy、runtime 通用半边、views、labels、dataset、train、calibrate、checks、backends、serving、stores、trainers 契约、StopGuard、trace、adapters/claude_code） | ≈ 2,400 | 用户 2026-10-07：训练链与决策模型要保留；M2 要在 `train_artifact` 上扩展（02:51、:134）。当前路径不执行（§0） | 懒导入，自带测试（≈ 1,300 行），`pip install ouroloop[train]`，入口 `python -m ouroloop.train`（命名按 V2_TRAINING_PIPELINE §7 第 7 项）。逐模块见 §0.1 A、B。日落规则见 §0.1 | 测试常驻 CI；`worker.stop` 在 REGISTRY、SCHEMAS 里的身份要一直守着 |
+| `ouroloop[train-jobs]`：`ouroloop/train/jobs/`（train、cloud、compute、worker、hosts、trainer 的作业半边、signature、训练主机 Dockerfile） | ≈ 2,000，另有 sh 207、Dockerfile 66 | M2 点名复用 `test_jobs`（02:134）；云计费安全逻辑重建很贵 | 依赖 `[train]`。归属已定：在 ouroloop 训练（§0.2 第 12 项）；已知漂移在瘦身里登记不修，v2.1 修（§0.1 C） | 测试 1,766 行常驻 CI；与 jev 的作业链重复 |
 | 原位保留（懒用）：contracts 决策记录、policies 的 Decider 与模型绑定、ledger 行、`Releases.revoke/rollback/last_good`、`CompletionProbe`、训练准入、`bench._train` | ≈ 700 | §0.1 D | 留在原模块，热路径不执行；rule 类绑定不构造 `DecisionPoint` | 低 |
 
 ### 2.4 待定（第三批：v0.5 两库，等 support 的结果）
 
-只在 preset `automationbench_harness_v5` 下才会触达（`claude-v5-support.toml` 正在跑）。v0.4 的 K 下，`method_settings()` 和 `library_settings()` 都返回 None。
+只在 preset `automationbench_harness_v5` 下才会触达（`claude-v5-support.toml` 跑过；对照 2026-10-08 停止）。v0.4 的 K 下，`method_settings()` 和 `library_settings()` 都返回 None。
 
 | 路径 | 行 | 用途 | 触达 | 测试 |
 |---|---|---|---|---|
@@ -271,7 +273,7 @@ monitor（上线后按实际伤害算 CP 下界并自动吊销）、replay（付
 
 | 对象 | 行 | 建议·批 | 做法 |
 |---|---|---|---|
-| 整个文件删除的旧测试，共 6 个：test_evolve、test_gate_bypass、test_gate_record、test_loop、test_probe、test_live_jev；另加 conftest 里的 v1 夹具 | ~1,800 | CUT·1 | 和它们所测的模块放在**同一个提交**里删，不能提前删，因为它们是那些模块唯一的测试。去掉 pytest 的 live 标记 |
+| 整个文件删除的旧测试，共 6 个：test_evolve、test_gate_bypass、test_gate_record、test_loop、test_probe、test_live_jev；另加 conftest 里的 v1 夹具 | ~1,800 | CUT·1 | 和它们所测的模块放在**同一个提交**里删，不能提前删，因为它们是那些模块唯一的测试。test_live_jev 删掉后没有 live 测试了，`live` marker 的定义照 `slow` 留着，两条测试命令照旧（PLAN P1“标记”一行） |
 | 拆分：test_act、test_core、test_counting、test_roles、test_policy_runtime（共 1,782 行） | 删 ~1,100，留 ~600 | CUT·1 / 移入 extra | 冠军、pin、校准存储、deploy 的部分删；stores、serving、`record/propose/outcome`、Activity 计数的部分移到子包测试 |
 | 随 `[train]` 移走：test_backends 86、test_tde_compat 221（没有 `TDE_REPO` 时跳过）、test_train_config 15、test_integrations 120、test_evidence_training 269 | ~710 | 移入 extra | 加上拆分来的 ~600，子包测试约 1,300 行 |
 | 随 `[train-jobs]` 移走：test_jobs 674、test_cloud 630、test_hosts 462 | 1,766 | 移入 extra | 照常跑；归属已定为 ouroloop（§0.2 第 12 项） |
@@ -280,16 +282,16 @@ monitor（上线后按实际伤害算 CP 下界并自动吊销）、replay（付
 | `tests/rsi.py` | 512→~340 | SIMPLIFY·1 | 删 probe；PhraseDecider、PhraseTrainer、UnknownJobTrainer 移到子包测试的夹具。`workspace()` 改为冻结一个带 max_effort 的 v3 式 harness 表，去掉 `rt`。这样约 25–40 个测试从 v1 循环换到 runner shell 上跑 |
 | test_cycle 的 `fixture_preset` 等夹具，迁到 v3 preset 加 `SessionScript` | 0（改写约 120–150 个测试） | SIMPLIFY·2 | 先迁夹具，再删 2.1 的旧轮次路径。`test_br6_09…` 改写成没有研究位的整条 cycle 端到端测试 |
 | test_campaign（`judge_research`、`carries`、不重叠检查的测试除外，这些移到 test_recursion，≈ 200 行），以及各文件里的研究位、多领域、采集批、段延长、C2/C3/C4 测试 | ~2,600 | CUT·2 | gate 的对照臂和候选臂测试保留（这里的"臂"指 gate 的臂，不是研究位的臂） |
-| test_ceiling、ceiling_run.py、claude-ceiling.toml、`ceiling/{package,wstar_package}` | ~2,300 | CUT·1 | 实验已经结束（RESULTS v0.3，判为 "training"，花费 $45.28）。保留 `ceiling/README.md` 和 `tasks.json`（RESULTS 链接了它们），并加一行说明"在 tag v0.3.0 上运行" |
-| test_rehearsal_world 和 `examples/rehearsal/`（156 个存档 JSON、第二个迷你上游、answer/check_world/dry_run/actor 脚本、2 个 toml） | ~2,450 | CUT·1 | 这是首次付费前的彩排，已被真实付费运行取代。它的 dry_run 走研究位。Docker 隔离仍由 test_package_worker 的 4 个测试覆盖。本地的 workspace-rehearsal\* 约 65 MB，移出仓库归档 |
-| test_aa_replay 和 aa_replay.py | 277 | KEEP | 它是确认规则的证据。加上 skip-if-absent：它依赖 gitignore 掉的 workspace-claude 记录，在干净检出和 CI 上会失败（JOURNAL 2026-10-07） |
-| v0.5 测试和 support_h1.py | 2,024 | PENDING·3 | test_support_h1 和 support_h1.py 保留到 RESULTS 写完为止 |
+| test_ceiling、ceiling_run.py、claude-ceiling.toml、`ceiling/{package,wstar_package}` | ~2,300 | CUT·1 | 实验已经结束（RESULTS v0.3，判为 "training"，花费 $45.28）。保留 `ceiling/README.md` 和 `tasks.json`（RESULTS 链接了它们），并加一行说明"在 tag v0.3.0 上运行"。**已做（2026-10-08）**：已 `git rm`，tag `v0.3.0`、`v0.4.0`、`archive-2026-10-08` 上可读；README 已加那一行 |
+| test_rehearsal_world 和 `examples/rehearsal/`（156 个存档 JSON、第二个迷你上游、answer/check_world/dry_run/actor 脚本、2 个 toml） | ~2,450 | CUT·1 | 这是首次付费前的彩排，已被真实付费运行取代。它的 dry_run 走研究位。Docker 隔离仍由 test_package_worker 的 4 个测试覆盖。**已做（2026-10-08）**：跟踪的文件已 `git rm`，tag `v0.4.0`、`archive-2026-10-08` 上可读；被 git 忽略的 `workspace-rehearsal*`、`workspace-actor-manual` 与 `*.local.toml` 留在本机原处，不删 |
+| test_aa_replay 和 aa_replay.py | 277 | KEEP | 它是确认规则的证据。加上 skip-if-absent：它依赖 gitignore 掉的 workspace-claude 记录，在干净检出和 CI 上会失败（JOURNAL 2026-10-07）。**已做（2026-10-08）** |
+| v0.5 测试和 support_h1.py | 2,024 | PENDING·3 | test_support_h1 和 support_h1.py 保留到 RESULTS 写完为止。2026-10-08：对照停止，H1 没有算，这两个文件已 `git rm`（tag `archive-2026-10-08` 上可读）；其余 v0.5 测试照第三批 |
 | 其余当前路径的测试（约 750 个） | ~13,800 | KEEP | — |
-| HEAD 上已经跑不起来的旧配置：claude.toml、claude-full\*.toml、improvement.toml、marketing\*.toml、linkcheck\*、claude-v3\*.toml、claude-ceiling.toml、examples/ouroloop.toml、zhipu.toml | — | CUT·2 | 留着会让人以为还能跑。RESULTS 里的链接和 Reproduce 改指对应 tag |
+| HEAD 上已经跑不起来的旧配置（只算跟踪的）：claude.toml、claude-full.toml、improvement.toml、marketing.toml、claude-v3.toml、examples/ouroloop.toml，以及已删的 claude-ceiling.toml、claude-full-final.toml、claude-v3-pilot.toml、zhipu.toml。只删跟踪的；`*.local.toml` 是本机记录，不删（PLAN 规则 12） | — | CUT·2 | 留着会让人以为还能跑。RESULTS 里的链接和 Reproduce 改指对应 tag。2026-10-08 已先删其中没有测试读的 claude-ceiling.toml、claude-full-final.toml、claude-v3-pilot.toml、zhipu.toml（连同 `examples/__init__.py`），其余随第一、二批 |
 | 文档：DEMO（30）删；TRAINING_HOSTS（233）随 `[train-jobs]` 保留；modules/06_RESEARCH_CAMPAIGN（121）改写成跨活动 C4 | 30 | CUT·1/2 | — |
-| 文档移入 history：REHEARSAL（373）；V0_4_SHARDED_RSI（545）和 RSI_PLAN（497），这两份已自标"已被取代" | 1,415 | 1 | — |
-| README:9/19/97、README.zh-CN:19 及两份 README 里 smoke/decide/run/demo、hook、evolve/TDE/serve、suite 各段和模块表；DESIGN:126（§6）、:163（§7）、:213（§9）（第一版写的“§5/§9”指错了；这三处与 TECHNOLOGY:14 已于 2026-10-08 改写，TECHNOLOGY:9、:90 仍引 v1 的 `agent/loop.py`、`research/loop.py`，随本批改）；ROADMAP:46/54/291/517；TECHNOLOGY.md:9/14/90；modules 02 的决策学习路径；04/05/07 里研究位、多领域、frontier 的段落 | 改写 | 1/2 | 决策与训练统一成一句："保留 Jev/TDE 兼容的类型化决策契约、决策记录和 controller 训练链（可选 extra `ouroloop[train]`、`[train-jobs]`）；v1 Agent 循环的决策点与冠军发布已移除（tag v0.4.0）；决策标签按血缘选择：拟合可收 env 与 model 标签，阈值只收 env，评测只收 env 与 human。” C4 统一成：“R 递归保留，C4 以跨活动的 R0/R1 比较测量。” (a)、(b) 已于 2026-10-07 确认 |
-| V0_5_AGENT_RL（717，未采纳）；如果两库被删，再加上 V0_5_METHOD_LIBRARY（860）和 V0_5_EVOLVING_SEARCH（753） | 717～2,330 | 3 | 移入 history |
+| 文档移入 history：REHEARSAL（373）；V0_4_SHARDED_RSI（545）和 RSI_PLAN（497），这两份已自标"已被取代" | 1,415 | 1 | 2026-10-08 改为：V0_4_SHARDED_RSI 与 RSI_PLAN 直接删（tag `archive-2026-10-08` 上可读）；REHEARSAL 留在原处、只加页首说明，因为 JOURNAL、ROADMAP、modules 与 test_harness_loop 引它的路径 |
+| 两份 README（2026-10-08 整理时已重写，只剩 :37 的“遗留代码”一条随本批改；原来点名的 README:9/19/97、README.zh-CN:19 与 smoke/decide/run/demo、hook、evolve/TDE/serve、suite 各段已不在）；DESIGN:133（§6）、:172（§7）、:222（§9）（第一版写的“§5/§9”指错了；这三处与 TECHNOLOGY:15 已于 2026-10-08 改写，TECHNOLOGY:10、:94 仍引 v1 的 `agent/loop.py`、`research/loop.py`，随本批改）；ROADMAP:52/60/297/566；TECHNOLOGY.md:10/15/94；modules 02 的决策学习路径；04/05/07 里研究位、多领域、frontier 的段落 | 改写 | 1/2 | 决策与训练统一成一句："保留 Jev/TDE 兼容的类型化决策契约、决策记录和 controller 训练链（可选 extra `ouroloop[train]`、`[train-jobs]`）；v1 Agent 循环的决策点与冠军发布已移除（tag v0.4.0）；决策标签按血缘选择：拟合可收 env 与 model 标签，阈值只收 env，评测只收 env 与 human。” C4 统一成：“R 递归保留，C4 以跨活动的 R0/R1 比较测量。” (a)、(b) 已于 2026-10-07 确认 |
+| V0_5_AGENT_RL（717，未采纳）；如果两库被删，再加上 V0_5_METHOD_LIBRARY（860）和 V0_5_EVOLVING_SEARCH（753） | 717～2,330 | 3 | 移入 history。2026-10-08：V0_5_AGENT_RL 已删（tag `archive-2026-10-08` 上可读）；经验库保留，V0_5_EVOLVING_SEARCH 留；V0_5_METHOD_LIBRARY 随第三批删（若方法库删） |
 
 ## 3. 分批执行计划
 
@@ -314,13 +316,13 @@ monitor（上线后按实际伤害算 CP 下界并自动吊销）、replay（付
      - `build_feedback` 只在 K 绑了非 rule 的决策 target 或 `capabilities.training` 为真时才跑，否则写同形状的空值；
      - `AgentResult` 移到 runner，`research/__init__` 改懒导入；
      - 加边界测试：跑 v3、v5 的 bench 路径（`--checks-only`，加假上游上的一次尝试）之后，`sys.modules` 里没有 `ouroloop.train`、`evolve.feedback`、`points`。
-  2. **删入口**：旧 CLI 命令（smoke/decide 搬进子包）、demo、serve、suite/prompt/probe、evals、ceiling 跑法、rehearsal 和 ManualProvider。
+  2. **删入口**：旧 CLI 命令（smoke/decide 搬进子包）、demo、serve、suite/prompt/probe、evals、ceiling 跑法、rehearsal 和 ManualProvider（ceiling 跑法与 rehearsal 已于 2026-10-08 提前删除）。
   3. **建子包**：按 §0.1 A、B 把模块移进 `ouroloop/train/`，C 移进 `ouroloop/train/jobs/`，对应测试一起移；`tests/rsi.py` 的 PhraseDecider/PhraseTrainer 改作子包测试的夹具；`trainers/signature.py` 带上 `replay.signature` 的键函数；pyproject 加两个 extra `[train]`、`[train-jobs]`，入口 `python -m ouroloop.train`（命名按 V2_TRAINING_PIPELINE §7 第 7 项，v2 的代码进同一个子包，不再搬第二次）。
   4. **删冠军指针一族和 v1 循环**（§0.1 E）：gate、registry、replay、monitor、plan、harness，pipeline/build/calibrate 的旧半边，runtime 的冠军半边，`backends/http`，编码决策点，v1 Agent 循环与 v1 分支，bench 的 `collect` 阶段，ledger、release、policies 里的冠军遗留。同一提交里：把 `tests/rsi.py` 迁到 v3 的 K；改写 IT-02（见 §2.6）；给 `CompletionProbe` 补直接单测。train 已移进 jobs，删 gate 不受 `train.TrainError` 的影响。
   5. **顺带删**：frontier 臂、task_gate 的经济模式、无调用者的函数、v0.3 兼容代码。
   6. **改注释**：providers/__init__.py:4、claude_code.py:235、anthropic.py:45、openai_compat.py:44、backends/llm.py:1-3、runtime.py:372（随 `[train]` 搬）、ledger.py:19-20 这 7 处 “evaluation only / never training targets (DESIGN invariant 6)” 一类的注释，改为指向新的不变量 6（数据血缘与选择，DESIGN §8），写明闸门与默认值在 v2.0 改（V2_TRAINING_PIPELINE §2.5、§3.8、§7）；`providers/manual.py:87`、`research/loop.py:99` 随本批整删。
 - **删的测试**：2.6 中标 1 的各行。
-- **文档**：删 DEMO；TRAINING_HOSTS 留（随 jobs）；REHEARSAL、V0_4_SHARDED_RSI、RSI_PLAN 移入 history；README、DESIGN、ROADMAP、TECHNOLOGY、modules/02 统一改成 §2.6 的那句话；02 写进日落规则的点名清单和 §0.2；RESULTS 的 v0.1 Reproduce 改成"在 tag v0.1.0 上"。
+- **文档**：删 DEMO；TRAINING_HOSTS 留（随 jobs）；REHEARSAL、V0_4_SHARDED_RSI、RSI_PLAN 移入 history（2026-10-08 已提前处理：后两份删除，REHEARSAL 留在原处、加页首说明）；README、DESIGN、ROADMAP、TECHNOLOGY、modules/02 统一改成 §2.6 的那句话；02 写进日落规则的点名清单和 §0.2；RESULTS 的 v0.1 Reproduce 改成"在 tag v0.1.0 上"。
 - **必须守住的身份**：
   - `RunManifest` 的负载，包括遗留字段 decisions、model_ref、policy，以及 `input_schema_refs=(stop_view,)`；
   - `_host_contract` 里的两个字面量；
@@ -333,7 +335,7 @@ monitor（上线后按实际伤害算 CP 下界并自动吊销）、replay（付
 **第二批：没产生过证据的机制（约 3,300 行框架代码，约 2,600 行测试）。**
 - **前提**：用户确认 §0 的 (a)（已确认，2026-10-07）；support 已经结束，因为 api_errors 和 context 都是两臂 R 的输入。
 - **顺序**：
-  1. 研究位：删活动内编排，抽出 `research/recursion.py` 和 test_recursion。support_h1.py 推广成跨活动的 C4 脚本时，在 H1 旁边并列打印缺失的题数和尝试数：它现在取两臂题目的交集，会悄悄去掉缺尝试的题。这不改变预注册的读法。
+  1. 研究位：删活动内编排，抽出 `research/recursion.py` 和 test_recursion。support_h1.py 推广成跨活动的 C4 脚本时，在 H1 旁边并列打印缺失的题数和尝试数：它现在取两臂题目的交集，会悄悄去掉缺尝试的题。这不改变预注册的读法。（2026-10-08：support_h1.py 已删，tag `archive-2026-10-08` 上可读；跨活动 C4 脚本改为新写，这条要求照旧。）
   2. 多领域合并。
   3. 采集批和段延长。
   4. 把 test_cycle 等夹具迁到 `SessionScript`，然后删旧轮次路径和 `marketing_harness_v1`。
@@ -357,7 +359,7 @@ monitor（上线后按实际伤害算 CP 下界并自动吊销）、replay（付
   - 方法库：只有"R 能造出可用的方法"和"学会了何处用"两项都成立才保留；否则删。
   - 经验库：只有"经验库在 train 上有效（D ≥ +2）"和"学习曲线（P ≥ 0.8）"两项都成立才保留；否则删。
   - 保留下来的那一个库作为 preset 开关（降为可选），不进默认值。
-- 无论结果如何：参考方法移到 `tests/fixtures/`；V0_5_AGENT_RL 移入 history；support_h1.py 和两个工作区的记录保留到 RESULTS 写完。
+- 无论结果如何：参考方法移到 `tests/fixtures/`；V0_5_AGENT_RL 移入 history；support_h1.py 和两个工作区的记录保留到 RESULTS 写完。（2026-10-08：V0_5_AGENT_RL 与 support_h1.py 已删，tag `archive-2026-10-08` 上可读；两个工作区留作本机记录。）
 - **例外**：playbook 路径（session.py:1082-1129 的 playbook 注入、`methods.playbook_check`，methods.py:955，约 50 行）即使方法库被删也保留，并改成不依赖 `inputs.methods`。它是跨活动 C4 里 R1 的来源（§0 (a)）。
 - **必须守住**：在 tag `v0.5.0` 上，support 两个工作区都能重渲染、能复算 H1。
 
@@ -368,7 +370,7 @@ monitor（上线后按实际伤害算 CP 下界并自动吊销）、replay（付
 | 改动波及正在跑的活动 | 在主检出里改代码，导致 support 两臂的代码中途变化 | 两份 final 评完、H1 算完之前一律不合入；在 worktree 里准备；遵守"变更在隔离副本里审" | — |
 | 身份漂移，导致续跑拒绝或重复付费 | 删了某个记录字段、REGISTRY 目标、preset 数值，或改了 RunManifest 负载 | 第 0 步的金标测试；只让逻辑失效，数据全部保留。保留清单：RunManifest（含遗留字段和 `stop_view`）、TaskEvalPlan、GatePlan、FinalizationPlan、Schedule、CoreManifest、ExperimentProposal、PolicyDescriptor 的字段；K 的 `schema_registry`；`_host_contract` 的字面量；成本项的代码 | revert 该批的合并 |
 | 旧工作区在 HEAD 上读不了 | v0.1/v0.2 的 trace 和 CampaignPlan 对象、v0.3 的多领域报告、v0.1–v0.3 的续跑 | 这些工作区都已结束，数字已写进 RESULTS；用 tag v0.1.0/v0.2.0/v0.3.0 读；RESULTS 的链接改指 tag | 检出对应 tag |
-| RESULTS 引用的记录丢失 | ceiling/README、tasks.json；本地的 workspace-claude\*（没有提交，aa_replay 也要用） | 这些文件和本地工作区保留，不删；rehearsal 和 ceiling 的工作区移出仓库归档，不删除 | — |
+| RESULTS 引用的记录丢失 | ceiling/README、tasks.json；本地的 workspace-claude\*（没有提交，aa_replay 也要用） | 这些文件和本地工作区保留，不删；rehearsal 和 ceiling 的工作区留在本机原处，不删、不移（PLAN 规则 12） | — |
 | 测试迁移漏掉某项保证 | 把 rsi.py 和 fixture_preset 迁到生产路径时，原来覆盖的续跑、暂停、预算保证没有被新测试覆盖 | 迁移前列出每个被改写测试断言的保证，迁移后逐项核对；先迁移，再删代码 | revert |
 | 每次尝试的路径变了 | Runtime 薄化后 `rt.session` 的行为不同 | 在副本里用假上游跑尝试，transcript 和 results 必须逐字节相同；`context_ref` 的变化事先写明 | revert 第一批的第 3 步 |
 | 定位变化 | C4 换实现；Jev/TDE 承诺改写为可选 extra | 先由用户确认 §0 的 (a)、(b)（已确认，2026-10-07） | 从 tag 恢复 |
@@ -394,5 +396,5 @@ monitor（上线后按实际伤害算 CP 下界并自动吊销）、replay（付
 13. **anthropic 和 openai_compat 提供方**：体量小，懒加载，GLM 路线是"推迟，不删"。
 14. **aa_replay**：它是确认规则的证据，只需要补一个 skip。
 15. **v0.5 两库**：现在不动，按预注册的读法决定（第三批）。
-16. **决策/训练链的可复用部分**（`ouroloop[train]`、`[train-jobs]`、原位保留的契约）：用户 2026-10-07 定为必须保留，v2 的决策模型与蒸馏要在它上面扩展（02_EVIDENCE_TRAINING.md:49、:132；TECHNOLOGY.md:14）。保留是对 v2 计划下注，不是已有证据支持（§0.1）。
-17. **C4 的判定代码**（`research/recursion.py`）和 playbook 路径：R 递归是 v1 定位的一部分（DESIGN:203、ROADMAP:60）；删掉"系统自己写出下一代 R"这条唯一路径，产品就退化成自动 harness 工程。
+16. **决策/训练链的可复用部分**（`ouroloop[train]`、`[train-jobs]`、原位保留的契约）：用户 2026-10-07 定为必须保留，v2 的决策模型与蒸馏要在它上面扩展（02_EVIDENCE_TRAINING.md:51、:134；TECHNOLOGY.md:15）。保留是对 v2 计划下注，不是已有证据支持（§0.1）。
+17. **C4 的判定代码**（`research/recursion.py`）和 playbook 路径：R 递归是 v1 定位的一部分（DESIGN:212、ROADMAP:66）；删掉"系统自己写出下一代 R"这条唯一路径，产品就退化成自动 harness 工程。

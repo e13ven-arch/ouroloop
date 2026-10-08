@@ -1,10 +1,11 @@
 # ouroloop 设计（v0.7）
 
-> 2026-10-08：按 2026-10-07 的瘦身决定（训练与蒸馏属于框架；C4 换实现）与 2026-10-08 的 V2 训练链决定（[V2_TRAINING_PIPELINE](design/V2_TRAINING_PIPELINE.md) §7，用户“按默认”）同步：§4 的 controller 行与首个决策点、§5 第二版计划的采集与 SFT 目标、§6 第 4、6 条、§7 的 C4 与训练承诺、§8 的 test 复用、不变量 6（数据血缘与选择）、C3 与 C4 两行、§9 的归属与后端。被取代的原文保留并加注。代码等 support 两份 final 与 H1 完成后再改：`ledger.py` 与 providers 的注释随瘦身第一批，闸门改血缘（含默认值）随 v2.0（V2 §3.8）。
+> 2026-10-08（support 两臂对照停止后）：用户停止了 support 两臂对照（“没有可用基线没关系，能够改进的地方都改进掉，看的是最终结果”，[JOURNAL](JOURNAL.md) 2026-10-08）：3c、3d 与两份 final 都没跑，H1 未测，support 的 test 没有被读过。据此同步：页首的现状（加 v0.4、v0.5）与开发入口（加 [PLAN](PLAN.md)）、§1 例子与 §2 首证明场、§3 表的“在学生上重新演化”注、§2 的当前证据、§3 的 v0.5 两库与统一 effort 档位、§5 与 §9 的自托管训练与评测推理（按 V2 核价更正）、§7 的候选载体注与成本项、§8 support 的 test 读取次数、§9 的 v0.5 归属与开源组件（[OSS_COMPONENTS_PLAN](design/OSS_COMPONENTS_PLAN.md)）。瘦身各批不再等 final 或 H1。被取代的原文保留并加注。
+> 2026-10-08：按 2026-10-07 的瘦身决定（训练与蒸馏属于框架；C4 换实现）与 2026-10-08 的 V2 训练链决定（[V2_TRAINING_PIPELINE](design/V2_TRAINING_PIPELINE.md) §7，用户“按默认”）同步：§4 的 controller 行与首个决策点、§5 第二版计划的采集与 SFT 目标、§6 第 4、6 条、§7 的 C4 与训练承诺、§8 的 test 复用、不变量 6（数据血缘与选择）、C3 与 C4 两行、§9 的归属与后端。被取代的原文保留并加注。代码等 support 两份 final 与 H1 完成后再改（已作废：对照已停止，见上一条）：`ledger.py` 与 providers 的注释随瘦身第一批，闸门改血缘（含默认值）随 v2.0（V2 §3.8）。
 > 2026-10-04，v0.7：首版交付物从“固定 agent 循环 + 能力包”改为“**可演化的 agent 程序 + 最小运行壳 + 所 pin 的模型**”。原因：v0.1/v0.2 两次安装的改动都是文字提醒（[RESULTS](RESULTS.md)）；剩下的失败主要是判断错误与未读状态，这类失败只有循环层的机制（核验回合、判断前的证据表、以工具取事实、以算力换准确）才触及得到；Harness-Zero 固定循环是因为它的学生要被训练，而训练已移到第二版；业界报告较大留出增益的框架（StarHarness 在 AutomationBench Finance 留出 +29.3，AutoSaddler +9～10）都在改循环与工具（[SURVEY_RSI_FRAMEWORKS](SURVEY_RSI_FRAMEWORKS.md) §4、§6）。随之改写 §1、§3、§5、§7、§8、§9；§2、§4、§6 保留原文，§2 只加一条口径注、§6 只加一条 v0.3 注。新增或改动的规则都标“（v0.3，2026-10-04）”；v0.1/v0.2 的结果与记录不删。同日按“先剪再做”的原则剪过一轮：考虑过而不做的项与推迟到第二版的项各列一份清单在 §9。
 > 2026-09-28，按确认后的产品定位修订：交付能够依据任务反馈改进自身的 agent 应用，以及产生、验证和持续更新这个应用的框架。首版保留完整的最小 RSI 闭环，以实现范围控制复杂度。
-> 本文是开发目标。代码基线为 `b1cb7a7`；2026-09-30 调整交付顺序：首版交付受限的 harness 代码演化、独立部署与递归回用；第二版完善教学适配和模型训练。首版（阶段 A～E）的工程链路已实现并经离线 fixture 验证。真实模型跑到过一次 dev gate（2026-10-01），因供应商余额耗尽判 inconclusive；2026-10-02 复核发现 4 个高危缺陷，修复后进入付费运行（[ROADMAP §3](ROADMAP.md) 首个真实活动协议）。2026-10-04 已有两个完整活动的密封 final：v0.1 同模型 +13.0 [+2.2, +26.1]，v0.2 +4.3 [−10.9, +19.6]，C4 无证据（[RESULTS](RESULTS.md)）。第二版能力未实现。已有实现及实测见 [历史快照](history/V0_5_IMPLEMENTATION.md)和 [JOURNAL](JOURNAL.md)。
-> 开发入口：[ROADMAP](ROADMAP.md) → [技术选型](TECHNOLOGY.md) → [模块设计](modules/README.md)。公共字段以 [M0](modules/00_CONTRACTS.md)为准。
+> 本文是开发目标。代码基线为 `b1cb7a7`；2026-09-30 调整交付顺序：首版交付受限的 harness 代码演化、独立部署与递归回用；第二版完善教学适配和模型训练。首版（阶段 A～E）的工程链路已实现并经离线 fixture 验证。真实模型跑到过一次 dev gate（2026-10-01），因供应商余额耗尽判 inconclusive；2026-10-02 复核发现 4 个高危缺陷，修复后进入付费运行（[ROADMAP §3](ROADMAP.md) 首个真实活动协议）。2026-10-04 已有两个完整活动的密封 final：v0.1 同模型 +13.0 [+2.2, +26.1]，v0.2 +4.3 [−10.9, +19.6]，C4 无证据（[RESULTS](RESULTS.md)）。v0.3 的五领域活动没有 final，不确定。2026-10-07 v0.4 finance 的密封 final：W\* 62.7% 对 W0 54.7%，+8.0 [−4.0, +22.7]（不确定），每次尝试成本 −22%（显著，tag `v0.4.0`；[分析](history/FINANCE_V04_ANALYSIS_2026-10-07.md) §0）。v0.5（方法库 + 经验库）已实现并合入 `m1-automationbench`（`7e7732e`），未发布：support 两臂对照 2026-10-08 由用户停止，只有 train/dev 的过程证据，H1 未测（JOURNAL 2026-10-08）。第二版能力未实现。已有实现及实测见 [历史快照](history/V0_5_IMPLEMENTATION.md)和 [JOURNAL](JOURNAL.md)。
+> 开发入口：[PLAN](PLAN.md)（当前的开发计划，2026-10-08 起）→ [ROADMAP](ROADMAP.md) → [技术选型](TECHNOLOGY.md) → [模块设计](modules/README.md)。公共字段以 [M0](modules/00_CONTRACTS.md)为准。
 
 ## 1. 最终做出来是什么
 
@@ -12,7 +13,7 @@ ouroloop 让一个 agent 应用从任务经验中发现更有效的方法，验�
 
 用户给出任务环境、目标与验收方式、允许的工具和权限、初始模型、可用训练资源和预算。框架提供初始 agent 程序（默认 agent，即今天的宿主循环移植成包）、默认改进策略、经过能力检查的训练配方；从真实运行失败开始自动提出并试验改进。用户不必先写好优化后的工作流，也不必每轮选择训练方法或超参数。用户仍决定业务目标、资源和权限，框架不能从任务日志可靠推导这些授权。
 
-以“更新记录并通知”为例：初始 agent 漏通知 → 框架从任务反馈定位遗漏 → 候选可以是一个查询/更新/确认的工具封装，也可以是判断前先列出证据表的循环改动、发送前的二次核验回合，或在 K 的 effort 上限内对关键决策多采样 → 隔离检查并在失败过的 train 题上先筛 → 在固定 dev 清单上与当前版本的合并对照比较效果、退化与成本，再确认一次 → 按冻结门槛发布新 app。下一轮使用新程序继续发现失败；改进策略本身若反复选错实验，也作为候选被验证和更新，下一次真实改进调用加载更新后的策略。第二版再将值得固化的方法采集为学生的训练数据。
+以“更新记录并通知”为例：初始 agent 漏通知 → 框架从任务反馈定位遗漏 → 候选可以是一个查询/更新/确认的工具封装，也可以是判断前先列出证据表的循环改动、发送前的二次核验回合，或在 K 的 effort 上限内对关键决策多采样（2026-10-08 起各臂 effort 统一，多采样仍可，§3 注） → 隔离检查并在失败过的 train 题上先筛 → 在固定 dev 清单上与当前版本的合并对照比较效果、退化与成本，再确认一次 → 按冻结门槛发布新 app。下一轮使用新程序继续发现失败；改进策略本身若反复选错实验，也作为候选被验证和更新，下一次真实改进调用加载更新后的策略。第二版再将值得固化的方法采集为学生的训练数据。
 
 用户最终看到三样东西：可部署 app（agent 包 + 运行壳 + 模型服务描述，M3 §4）、包含成功与失败的质量/成本报告（每次有效尝试的成本 `cost_per_attempt`、实验账目、研究位的剩余空间、按领域分列，§8）、可继续演化的工作区。部署端只需要运行依赖；改进工作区保存研究、训练及实验材料。多个业务流程可以分别发布 app，不需要先建设应用商店服务。
 
@@ -22,9 +23,11 @@ agent 的失败可能来自领域推理、工作流顺序、工具使用或完�
 
 小模型的价值是有条件的：在目标任务上复现有效行为，降低部署开销，或提高决策稳定性。如果 prompt/规则已经满足质量和成本要求，框架可以直接保留它，不强制训练。训练是否值得取决于无教师任务结果及总成本，不能用 loss 下降、模型更小或模型数量证明。
 
-首个证明场是 AutomationBench Marketing。首版 actor 原定 GLM-5.3（已配置并计价的 OpenAI 兼容接口；2026-10-03 起先跑 Claude Opus 5.5，见 ROADMAP §3 第 2a 步），冻结其底座、权重身份和推理配置，比较起点、有效 prompt/workflow 与自动演化的能力包；第二版换 Qwen3.5-9B 学生时，h* 须在学生上重新演化（Harness-Zero 的 h* 在学生上验证，其 base+h* 是学生带 h* 的成绩），再比较蒸馏 app；独立决策模型的贡献另用同 actor 比较（v0.3 起读作“同模型”，§3）。领先模型沿用既定选择：默认引用其已公布结果作为外部背景，不自行启动付费复测。首要目标是整体有效，不建设拆尽每个组件贡献的消融平台；对某组件作独立贡献主张时才要求相应对照。
+首个证明场是 AutomationBench Marketing。首版 actor 原定 GLM-5.3（已配置并计价的 OpenAI 兼容接口；2026-10-03 起先跑 Claude Opus 5.5，见 ROADMAP §3 第 2a 步），冻结其底座、权重身份和推理配置，比较起点、有效 prompt/workflow 与自动演化的能力包；第二版换 Qwen3.5-9B 学生时，h* 须在学生上重新演化（Harness-Zero 的 h* 在学生上验证，其 base+h* 是学生带 h* 的成绩），再比较蒸馏 app（2026-10-08：采集时学生在 W0 下行动、老师读 K，在学生上重新演化推到 v2.5，§5 注、V2 §7 第 4 项）；独立决策模型的贡献另用同 actor 比较（v0.3 起读作“同模型”，§3）。领先模型沿用既定选择：默认引用其已公布结果作为外部背景，不自行启动付费复测。首要目标是整体有效，不建设拆尽每个组件贡献的消融平台；对某组件作独立贡献主张时才要求相应对照。
 
 当前证据：v0.5 的策略、训练作业、配对评测、发布、预算与研究回用已有离线工程验证；GLM-5.3 在 2026-09-28 完成一个 Marketing dev 任务。2026-10-01 有两次真实运行：一次把失败的 train 任务从逐题笔记、汇总、草稿检查与一次修订、准入、冻结实验走到构建候选，在 gate 前有意停止；另一次的草稿首检即通过，经筛选走到一次 dev gate，gate 因余额耗尽判 inconclusive，未安装。**这些都不是通过率，没有证明训练或递归改进收益。** 本版设计也不是新增实验结果。
+
+2026-10-08 注：上段是 2026-10-01 的状态。现在的证据以 [RESULTS](RESULTS.md) 为准：三次密封 final，v0.1 +13.0 [+2.2, +26.1]、v0.2 +4.3 [−10.9, +19.6]、v0.4 finance +8.0 [−4.0, +22.7]（后两次区间含 0），v0.3 没有 final；C4 仍没有证据。v0.5 只有 support 上 train/dev 的过程证据：经验库流 D = 3.0，前后两半 0.00 → 0.12（后半更好的自助概率 0.89），快照过 dev gate（首读 +0.24、确认 +0.08、合并 +0.16 [+0.047, +0.287]，dev 在 gate 里被用来选择，不是主张），没有 final（JOURNAL 2026-10-08）。
 
 ## 3. 框架能力、实验约束与首条实现路径
 
@@ -33,9 +36,13 @@ agent 的失败可能来自领域推理、工作流顺序、工具使用或完�
 | 框架 | 可版本化的 agent 程序、改进策略、经验和固定验收核心（v0.3） | 目标是能力的发现、验证、固化、递归回用；不以某个模型或训练算法定义框架 |
 | 单次实验 | 冻结起点、任务、模型身份、候选变更、预算和比较协议 | 保证结果可归因、可复现；换工具/底座/运行壳要创建新实验身份（v0.3） |
 | 单次蒸馏 | 固定学生、动作表示、网关记录格式、数据划分和采样条件（v0.3） | 保证采集、训练和部署一致；不意味着源 agent 程序永远不能演化（v0.3） |
-| 首条实现路径 | AutomationBench 直连、所 pin 的模型（原定 GLM-5.3，2026-10-03 起为 Claude Opus 5.5）与现有 provider、隔离 worker 中的 agent 包、有界实验及既有 R campaign（v0.3） | 同模型证明 agent 程序改进与递归回用（v0.3）；模型训练在第二版完善，换学生时 h* 在学生上重新演化 |
+| 首条实现路径 | AutomationBench 直连、所 pin 的模型（原定 GLM-5.3，2026-10-03 起为 Claude Opus 5.5）与现有 provider、隔离 worker 中的 agent 包、有界实验及既有 R campaign（v0.3） | 同模型证明 agent 程序改进与递归回用（v0.3）；模型训练在第二版完善，换学生时 h* 在学生上重新演化（2026-10-08：推到 v2.5，§5 注） |
 
 **可变面（v0.3，2026-10-04）。** agent 程序就是能力包，首版允许自动修改它的全部内容：循环本身（planner/executor 结构、上下文管理、重试、完成协议）、工具封装与编排、提示、memory、skills、hook/中间件、判断前的证据表、发送前的二次核验、在 K 上限内按任务调节 effort、对关键决策多采样。此前只开放工具封装、中间件、技能与经验材料。原因见页首：剩余失败是判断与未读状态，文字提醒已证明够不到它们。既有注册 W/R 策略仍可变。
+
+2026-10-08 注（用户：“不要，就保持统一的档位”，[OSS_COMPONENTS_PLAN](design/OSS_COMPONENTS_PLAN.md) §9 第 4 项；取代上段的“在 K 上限内按任务调节 effort”）：所有臂保持同一个 effort（现行 medium）；K 的 `max_effort` 等于 pin 的档位（v0.4、v0.5 的配置已把 preset 的 high 降到 medium），超出的请求照旧按上限截顶，所以 W 不能按题买 effort；不做 Max 读数，也不做自适应 effort。多采样与核验回合仍在可变面内，仍受成本项约束（§8）。
+
+**v0.5 的两库（2026-10-07 合入，2026-10-08 现状；[V0_5_PLAN](design/V0_5_PLAN.md)）。** v0.5 在 v0.4 的单领域贪心环上加两样，只在 preset `automationbench_harness_v5` 的 K（`methods`、`library` 两张表）下生效：**经验库**（VEL：固定代码从 train 尝试里提炼条目，在 `start` 位点由宿主代码按题检索、按来源留一，按 train 奖励记功与退役，整库作为固定代码的候选过筛选、dev gate 与确认后成为 W 的停用技能 `skills/library/`）和**方法库**（R 写的只读 `m_` 包工具，固定代码从 train 配对奖励学它们何处适用）。support 对照停止后，按瘦身第三批的规则套用两库各自的预注册过程读数（[SLIMMING_INVENTORY](design/SLIMMING_INVENTORY.md) §3；H1 没测，所以这是按单库读数定，不是按 H1）：经验库的两项都成立（train 上 D = 3.0 ≥ +2；后半更好的概率 0.89 ≥ 0.8），保留为 memory 的底座，作 preset 开关、不进默认；方法库的两项（R 能造出可用的方法、学会了何处用）都没跑（3c、3d 没跑），按规则拟删，这是提议，用户可否决。R 的研究剧本（playbook）路径不随方法库删，它是跨活动 C4 里 R1 的来源（同上 §3 的例外，§7“C4 换实现”）。这些读数都是过程证据，不是主张。
 
 **固定核心 K（v0.3，2026-10-04）。** 模型身份与推理配置上限；模型网关（计量、pin 模型，每次模型调用都经它）；工具 broker（每次真实工具调用都经它）；权限；评分器；划分；gate；预算根；每次尝试的五项硬限额（act 模型调用、总模型调用、工具调用、秒数、输出 token；名字与值见 §5）；由宿主从网关与 broker 调用写成的事件/轨迹记录（包不能写）；R 的代码与研究位。包只在包目录内形成不可变候选，在固定接口和隔离 worker 中执行；不能改框架源码、评分、权限、预算或发布核心。包通过 gate 后才生效，下一轮以已采用版本为起点；不要求每轮添加组件或训练模型。接口归 M0/M1，候选与验收归 M4/M3/M5；不新增通用代码编辑平台。
 
@@ -87,7 +94,7 @@ v1 的包种类（memory/skills/hooks/tools）仍然有效：随框架交付的*
 
 第二版（计划，不在 v0.3 实现，M2 §1a、§3a）：训练投影只读网关日志中 `role="act"` 且教师判 PASS 的调用，`aux` 调用（核验、证据表、多采样等）计入采集限额但永不进训练数据；教师在网关对 act 调用介入（PASS/REPLACE，在响应到达包之前），对包透明；时序为 演化 → 冻结 release → 在该 release 上采集/训练 → 换学生 → 在学生上重新演化；学生的 W0 是默认 agent 加上 Opus 活动中被接受的文本组件（memory/skills），不是 Opus 的 W*；harness–模型共适应记为一项成本，在 Opus 上演化出的循环未必迁移到 9B 学生。
 
-2026-10-08 注（V2 §4.1、§7 第 3–6 项，取代上段的两处）：SFT 目标为 `accepted`，即 PASS 与 REPLACE 的动作部分（同 HZ；替换理由永不进目标），`pass_only` 只作只看 dev 的消融，取代“教师判 PASS 的调用”；采集时学生在 W0 下行动，老师带 K 审阅，K 是各域 W\* 的 memory 与 skills 原文、用固定模板渲染（没有 W\* 的域 K 为空，同 HZ），取代“学生的 W0 是默认 agent 加上被接受的文本组件”，也取代下文对教学参考的自动映射（不做 M8 的 `adapt_workflow`）。五个域（finance、hr、marketing、sales、support）的 train 合训一个学生，operations 整域留出报 LODO；底座 Qwen3.5-9B，训练后端 Tinker 作参考实现，自托管走 `module:Class`（[TECHNOLOGY](TECHNOLOGY.md) §2）。评测时都没有老师；在学生上重新演化放到 v2.5。
+2026-10-08 注（V2 §4.1、§7 第 3–6 项，取代上段的两处）：SFT 目标为 `accepted`，即 PASS 与 REPLACE 的动作部分（同 HZ；替换理由永不进目标），`pass_only` 只作只看 dev 的消融，取代“教师判 PASS 的调用”；采集时学生在 W0 下行动，老师带 K 审阅，K 是各域 W\* 的 memory 与 skills 原文、用固定模板渲染（没有 W\* 的域 K 为空，同 HZ），取代“学生的 W0 是默认 agent 加上被接受的文本组件”，也取代下文对教学参考的自动映射（不做 M8 的 `adapt_workflow`）。五个域（finance、hr、marketing、sales、support）的 train 合训一个学生，operations 整域留出报 LODO；底座 Qwen3.5-9B，训练后端 Tinker LoRA 作参考实现，自托管训练写插件模块路径、由 `JobTrainer` 作为作业运行（`module:Class` 在控制面进程里直接构造，没有作业与价格上限，只用于测试与 demo），评测时大批量的学生推理走 RunPod 上自托管的 vLLM（合并权重，经 `openai_compat`）（2026-10-08 按 Tinker/RunPod 核价更正，V2 §3.3、§3.5、§7 第 6 项；原写“自托管走 `module:Class`”；[TECHNOLOGY](TECHNOLOGY.md) §2）。评测时都没有老师；在学生上重新演化放到 v2.5。
 
 宿主契约本身变化时才选 K 许可目录中的另一个目标：原生产版本 S0(h0) → 保留模型/策略的新基线 B(h1) → 在 h1 中构建候选 S1；B 不改变生产指针。最终发布仍比较 S0/S1 并对 S0 做 CAS。第二版一次蒸馏同时冻结目标宿主契约和学生 W 中非训练内容，训练收益比较同条件 B/S1。
 
@@ -148,6 +155,8 @@ flowchart TD
 
 第二版：组件归因与删除规则（安装后若干轮没有归因收益的组件由固定代码提出删除候选）；v0.3 只记账目，不实现。v0.3 还考虑过每段至少一个代码候选的强制项（`require_code_candidate`），不做：筛与 gate 已奖励有效改动，强制形式只会制造无效代码候选。
 
+2026-10-08 注（[OSS_COMPONENTS_PLAN](design/OSS_COMPONENTS_PLAN.md) §1）：推理期 RSI 还没到头。我们三次 final 平均约 +8 点；同基准的 StarHarness 在 finance 上 +26.1，增益来自工具与循环补丁（写前先分诊、日期锚定到沙箱时钟、算术与表格交给确定性工具）。v0.3/v0.4 的 12 个候选没有一个是工具或 agent 程序，而 K 已经允许：普通包工具拿到可写的 broker（`agent/default_agent.py:283`，只有 hook 与 `m_` 方法只读），agent 程序也在可变面内。是 R 从没提过，不是 K 不让；R0 的方法说明至今没有点名这两种载体，改法属于下一份开发计划。
+
 首版复用已有 R 策略晋升路径，避免另外造元研究系统。研究位开放的 R 候选面仍是 R 的提示文本——现在是编码会话的指令（`research.diagnose`、`research.propose` 与候选声明格式）：研究位中，当前 R 依据经验投影与账目，提出其中一段的完整新文本（`ouroloop/research/basic.py` 的 `PolicyResearcher.propose_research`）。编码会话的驱动代码、文件工具、轮数/编辑上限、检索规则与底座模型属于 K，首版不开放。M6 对相同 W0/E0、允许方法及预算的两支运行，比较各自产出的无教师 W*；安装仅更新主线 R，下一轮捕获真实请求与新 R 的绑定。
 
 递归的判据是：R 的更新经下游 W* 比较验证，并被下一次改进实际使用。这个判据与更新的形式无关。按此判据，首版是有界、一阶、单代的改进策略更新：
@@ -162,13 +171,13 @@ flowchart TD
 
 首版必须支持并工程验证：从零人工优化方案启动、自动生成包内 agent 程序/工具/中间件代码与技能/经验、隔离运行、筛/回归/gate/发布、干净部署、后续包迭代以及 R 候选比较和真实调用回用。端到端验收至少观察一项循环层或工具层的真实行为变化（网关或 broker 事件里可见：多出的核验调用、证据表的工具读取、被 block 的发送），不能全由 prompt 修改充数（v0.3，2026-10-04）。真实实验尝试同模型应用收益 C1 和有界方法比较 C4；没有提升则效果目标未达到。actor/controller 职责与已有训练链保留（训练与蒸馏属于框架，收进可选子包 `ouroloop/train/`，2026-10-07）；完整蒸馏、新训练后端和 C3 新效果验证归第二版（[V2_TRAINING_PIPELINE](design/V2_TRAINING_PIPELINE.md)），不削弱首版递归核心。
 
-**已知风险（v0.3，2026-10-04）。** 可变面扩大，目标黑箱攻击面随之扩大：评分器/provider 保持不可达，记录由宿主写，`on_finish` 一类的完成协议改动是候选最可能学会走捷径的地方。以算力换准确（更高 effort、多采样、核验回合）必须受成本项约束（§8 的成本项；发表结果时另跑等成本 best-of-k 对照）。R 作为编码会话消耗更多研究调用；今天研究只占花费 3.2%，承受得起，但要在报告里单列。
+**已知风险（v0.3，2026-10-04）。** 可变面扩大，目标黑箱攻击面随之扩大：评分器/provider 保持不可达，记录由宿主写，`on_finish` 一类的完成协议改动是候选最可能学会走捷径的地方。以算力换准确（更高 effort、多采样、核验回合）必须受成本项约束（§8 的成本项；发表结果时另跑等成本 best-of-k 对照）。（2026-10-08：更高 effort 不再开放，各臂统一档位，§3 注；多采样与核验回合照旧受成本项约束。）R 作为编码会话消耗更多研究调用；今天研究只占花费 3.2%，承受得起，但要在报告里单列。
 
 ## 8. 评测、数据和报告
 
 按任务/工作流家族冻结 train/dev/research_dev/final；test 对应 final（research_dev 是 M0 §4 的证据权限名，指研究位外层比较所用的 dev 后一半，不是第四个划分；v0.3 考虑过为新领域另立 `research_dev` 划分，不做，见 §9）。重复、变体、前缀和种子不跨家族边界。train 内部 fit/validation 在源方法示例和教学参考生成前划分；参考任务事实只来自 fit。dev 可用于候选选择，不能把答案改写为训练样本。首版 R 可见 train/fit 失败尝试的逐条断言结果（type/params/passed；评分器排除的断言不给，初始成立但被破坏的断言按失败照常给出）与原始 train 轨迹（§7 的只读字节上限工具）；dev 只给汇总与失败类型直方图（枚举类型与计数，无参数、无题号），final 不进入 R 上下文，dev/final 都不给断言明细和轨迹；判分明细与任务结果分开存，读取按冻结 split 过滤；这改变了 v0.5 不给研究员任何断言明细的做法。R 的源方法/参考编写使用 train 受限上下文，不能把看过 dev 答案的同一会话清空标记后称为 train。train/dev/test 的信息分离由固定代码执行，这一点不变。
 
-**多领域与划分（M7，v0.3，2026-10-04）。** `[bench]` 接受领域列表（上游除 marketing 外还有 sales、support、hr、finance、operations，每域 100 题）；划分按域各自冻结再合并（合并后的 dev 约 125 题）；新域的划分按计分断言组合 × 工具族分层，只分 train/dev/test 三个划分。Marketing 的划分原样冻结：它的 test 已被读过三次（v0.1 final、final-1、final-2），对新主张宣告用尽，只作对照记录。test 复用（2026-10-08，V2 §7 第 2 项）：sales、hr 的 test 留给第二版，v1 活动在这两域不跑 final；finance（读过 1 次）、support（final 后读过 2 次）有条件复用，条件是构建学生的任何产物都没读过之前 final 的逐题记录（由结果库按 split 过滤，代码强制），报告披露读取次数；operations 整域留出作 LODO，不进任何训练。2026-10-08 注（用户问“不能全跑吗？”，V2 §7 第 2 项的决定列；取代上两句里 Marketing 的“宣告用尽”与 sales、hr 的“留给第二版”）：finance、support、sales、hr、marketing 都可以跑密封 final，一律按上面的有条件复用规则，每份报告披露这份 test 被读过几次；只有 operations 整域从未读过，留作第二版的 LODO。
+**多领域与划分（M7，v0.3，2026-10-04）。** `[bench]` 接受领域列表（上游除 marketing 外还有 sales、support、hr、finance、operations，每域 100 题）；划分按域各自冻结再合并（合并后的 dev 约 125 题）；新域的划分按计分断言组合 × 工具族分层，只分 train/dev/test 三个划分。Marketing 的划分原样冻结：它的 test 已被读过三次（v0.1 final、final-1、final-2），对新主张宣告用尽，只作对照记录。test 复用（2026-10-08，V2 §7 第 2 项）：sales、hr 的 test 留给第二版，v1 活动在这两域不跑 final；finance（读过 1 次）、support（final 后读过 2 次；2026-10-08 更正：support 没有跑 final，它的 test 读过 0 次）有条件复用，条件是构建学生的任何产物都没读过之前 final 的逐题记录（由结果库按 split 过滤，代码强制），报告披露读取次数；operations 整域留出作 LODO，不进任何训练。2026-10-08 注（用户问“不能全跑吗？”，V2 §7 第 2 项的决定列；取代上两句里 Marketing 的“宣告用尽”与 sales、hr 的“留给第二版”）：finance、support、sales、hr、marketing 都可以跑密封 final，一律按上面的有条件复用规则，每份报告披露这份 test 被读过几次；只有 operations 整域从未读过，留作第二版的 LODO。到 2026-10-08 为止的读取次数：finance 1、support 0、sales 0、hr 0、marketing 3。
 
 环境最终 reward 是轨迹筛选依据，不是所有中间决策的真值；actor 模仿与 controller 事实标签分别建集。来源、实际调用模型、网关记录、上下文裁剪和成本均可追溯。final 在方案锁定后按冻结协议执行，计划 hash 先提交；据它继续调优后不得仍声称独立测试。
 
@@ -204,13 +213,15 @@ flowchart TD
 
 ## 9. 模块与轻量化原则
 
-首版复用 M0～M7，不增加平行演化模块；第二版新增 M8 负责教学适配、教师与采集协调（2026-10-08：K 直接用 W\* 原文，M8 不做自动适配，§5 注）。v0.3 的归属（2026-10-04）：M0 持有包 API v2（`agent` 组件、`ctx` 面、role 列表）与轨迹记录格式；M1 持有网关、broker、运行壳（episode → worker → `agent.run`）、默认 agent 与 `claude_code` provider；M2 在 v0.3 只持有网关记录里的 `role` 字段，训练投影与 schedule 是第二版计划；M3 持有 gate 统计（合并对照、确认复测、`min_tasks` 25、幅度退步、成本项）、final 计划（repeats 3；等成本 best-of-k 臂可选）与导出（agent 包 + 运行壳 + 模型服务描述）；M4 持有编码会话、k 候选与声明、train 侧筛、简单实验账目、R 的输入与准入去重；M5 持有状态机、预算、五项硬限额、并发、合并对照的读数登记与确认复测的调度；M6 持有研究位（dev 前一半内层 gate、后一半外层、dev ≥ 50 才开位、`worker_round_limit` 3、剩余空间检查；2026-10-07 起活动内研究位随瘦身第二批删除，M6 改持跨活动 C4 与 `research/recursion.py`，§7）；M7 持有多领域 `[bench]`、分层划分、报告新字段。[详细模块责任](modules/README.md)
+首版复用 M0～M7，不增加平行演化模块；第二版新增 M8 负责教学适配、教师与采集协调（2026-10-08：K 直接用 W\* 原文，M8 不做自动适配，§5 注）。v0.3 的归属（2026-10-04）：M0 持有包 API v2（`agent` 组件、`ctx` 面、role 列表）与轨迹记录格式；M1 持有网关、broker、运行壳（episode → worker → `agent.run`）、默认 agent 与 `claude_code` provider；M2 在 v0.3 只持有网关记录里的 `role` 字段，训练投影与 schedule 是第二版计划；M3 持有 gate 统计（合并对照、确认复测、`min_tasks` 25、幅度退步、成本项）、final 计划（repeats 3；等成本 best-of-k 臂可选）与导出（agent 包 + 运行壳 + 模型服务描述）；M4 持有编码会话、k 候选与声明、train 侧筛、简单实验账目、R 的输入与准入去重；M5 持有状态机、预算、五项硬限额、并发、合并对照的读数登记与确认复测的调度；M6 持有研究位（dev 前一半内层 gate、后一半外层、dev ≥ 50 才开位、`worker_round_limit` 3、剩余空间检查；2026-10-07 起活动内研究位随瘦身第二批删除，M6 改持跨活动 C4 与 `research/recursion.py`，§7）；M7 持有多领域 `[bench]`、分层划分、报告新字段。v0.5 的归属（2026-10-08）：M4 持有经验库（`research/library.py`）与固定代码的候选轮（`research/fixed.py`）；M1 持有 `start` 位点的检索（`agent/runner.py:139-147`，宿主代码）；M5 持有固定轮的续跑与付费前的预算检查；M7 持有 `--phase library` 与报告的 v0.5 段；方法库（`research/methods.py`、`research/method_kit/`、`--phase learn`）若按第三批删除，归属随之撤销（§3 的 v0.5 段）。[详细模块责任](modules/README.md)
 
 **考虑过、不做（v0.3，2026-10-04）。** 顺序早拒（`early_rejection`、`rejected_early`、`stopped_early`、min_pairs/net_deficit）：筛已挡掉弱候选，再加一套收据不值。按题 TRUE FIX / TRUE REGRESSION / STOCHASTIC 标签（`ledger.min_control_readings/stable_fail/stable_pass`）与预测命中记分板：收据的逐题差值够用。成功侧摘要（`success_digest`）：多一次模型调用，收益无证据。每段至少一个代码候选的强制项（`require_code_candidate`、`require_code_change_per_segment`）：筛与 gate 已奖励有效改动。账目数字作研究位的次要指标（`metrics.ledger.*`）：C4 只看下游 W*。收据字段 `null_acceptance`、`noise_sd`、`acceptance_rule`/`two_stage`/`stage1_min_gain` 与 `min_gain` 0.12 预设：确认复测是唯一的抗噪规则，`min_gain` 留 0.05。为新领域另立 `research_dev` 划分与 `no_outer_pool`：外层仍用 dev 后一半，dev 不足 50 题则不开位（`no_slot_pool`）。partial credit 作新列项：它已在报告里，没有新内容。提案者偏好顺序作为规则：由筛与账目替代。等成本 best-of-k 的 W0 臂作为 final 必备臂与“成本比 < 1.5 不需要”的规则：臂改为发表结果时可选。
 
 **推迟到第二版（v0.3，2026-10-04）。** 决策点（stop/retry/compact/route）移到网关/broker 边界作 controller 挂点（C3）；教师在网关介入、训练投影读网关日志、演化 → 冻结 → 训练 → 换学生 → 重演化的 schedule 与共适应注（M2 §1a、§3a）；组件归因与删除规则（§7）。
 
-首个任务后端复用 AutomationBench；agent 包代码使用 M1 的固定 Docker 隔离 worker 和工具 broker，不把 Python 反射/AST 检查当隔离（Docker 隔离与 broker 不变）。Tinker 是第二版生成 SFT 的参考实现，自托管走 `module:Class` trainer（2026-10-08），不是首版运行或完整 RSI 的账户前提。已有 Jev/TDE/决策 trainer 与 GPU 作业层保留（训练与蒸馏属于框架，不归 jev 仓库），随瘦身第一批收进可选子包 `ouroloop/train/`（extra `[train]`、`[train-jobs]`，入口 `python -m ouroloop.train`），移出每次尝试的热路径；撤回的只有 v1 Agent 循环的决策点与冠军发布，冠军指针一族删除、第二版按 Releases 与 task_gate 重写（2026-10-07）。Harbor 仅在需要其原生环境与 trial 时接入，DeepAgents 仅在源工作流需要时接入；不因代码演化强制换任务后端。
+首个任务后端复用 AutomationBench；agent 包代码使用 M1 的固定 Docker 隔离 worker 和工具 broker，不把 Python 反射/AST 检查当隔离（Docker 隔离与 broker 不变）。Tinker 是第二版生成 SFT 的参考实现；自托管训练写插件模块路径、由 `JobTrainer` 运行，评测推理走 RunPod 上自托管的 vLLM（合并权重，经 `openai_compat`），`module:Class` 只用于测试与 demo（2026-10-08 按 Tinker/RunPod 核价更正，V2 §3.3、§7 第 6 项；原写“自托管走 `module:Class` trainer”）；它们都不是首版运行或完整 RSI 的账户前提。已有 Jev/TDE/决策 trainer 与 GPU 作业层保留（训练与蒸馏属于框架，不归 jev 仓库），随瘦身第一批收进可选子包 `ouroloop/train/`（extra `[train]`、`[train-jobs]`，入口 `python -m ouroloop.train`），移出每次尝试的热路径；撤回的只有 v1 Agent 循环的决策点与冠军发布，冠军指针一族删除、第二版按 Releases 与 task_gate 重写（2026-10-07）。Harbor 仅在需要其原生环境与 trial 时接入，DeepAgents 仅在源工作流需要时接入；不因代码演化强制换任务后端。
+
+2026-10-08 注（开源优先，用户：“站在巨人的肩膀上比自己闭门造车更快”；[OSS_COMPONENTS_PLAN](design/OSS_COMPONENTS_PLAN.md) §0、§3、§4、§6；取代上句 DeepAgents 的写法）：memory 与 agent 底座优先用开源，只在已证实的缺口上二开（至少 3 道题的记录指向同一原因；能改适配层就先改适配层）。memory：开源的跨任务 memory 有十几个，没有一个能原样当我们的经验库——没有一个同时做到只从打分器验证过的 train 轨迹学、留一读数、逐条记功和退役、过配对 dev gate 加确认——所以以 VEL 为底座，借 ACE（标出实际用到的条目再记功）、ReMe（从失败与对比里提炼、按效用删除）的设计，不搬代码，等 OSS §6 的条件触发才动。agent 底座：其他 RSI 系统大多引入现成 agent（Harness-Zero 用 deepagents，StarHarness 用 Stirrup）；首选 Stirrup，待用户定，deepagents 留给第二版。actor 与 R 继续经 claude_code CLI 走订阅，不开要 API key 的臂；原生 tool use 只能经 Claude Code 原生臂测，暂缓（JOURNAL 2026-10-08 第 1 项）。
 
 不新增数据库、队列、远程控制平台、交易市场、专用研究模型训练、多研究员群、通用插件发现、RL/DPO 或全仓任意源码改写；受限于包目录的 agent 程序演化属于首版，网关、broker、评分、权限、预算、划分、gate、记录与 R 的代码不在可变面内。新后端沿已有边界接入。部署白名单导出 agent 包（含 agent 代码与 manifest）、运行壳、所 pin 模型的服务描述与推理配置上限、工具绑定及验证摘要（M3 §4），不携带 R、teacher、原始任务数据、轨迹记录、oracle 或凭据；托管模型仍依赖服务。
 

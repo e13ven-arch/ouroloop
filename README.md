@@ -2,195 +2,105 @@
 
 English | [中文](README.zh-CN.md)
 
-An engineering prototype of bounded recursive self-improvement (bounded RSI): it discovers useful methods from task feedback, validates and consolidates them into runnable agent applications, and lets a validated update to its own improvement policy drive the next improvement. In the first release that update is limited to the improver's two research prompts, with scoring, permissions and budgets fixed; see [design §7](docs/DESIGN.md).
+An engineering prototype of bounded recursive self-improvement (bounded RSI) for agent applications, built and measured on [AutomationBench](https://github.com/zapier/AutomationBench). The system is S = (W, R, E; K):
 
-**Results (2026-10-06).** Two complete activities on AutomationBench Marketing with Claude Opus 5.5, each measured on the held-out test split under a plan sealed and committed before the test tasks were run. v0.1: the evolved version raised the pass rate from **41.3% to 54.3%** (+13.0 points, 95% interval [+2.2, +26.1]). v0.2, a full activity including the research slot: 47.8% to 52.2% (+4.3 points, [−10.9, +19.6], not significant on its own); over both activities the per-task average is +8.7 points [−2.2, +20.7]. The changes were found by the framework from training failures alone, with no human choosing them, at about the same cost per attempt. The recursive part, R improving its own research prompts, is not yet shown: v0.2's research slot compared nothing because neither research policy added a change. v0.3 adds no held-out number. Its five-domain activity (Marketing plus sales, support, HR and finance, one shared package) rejected all three rounds on 125 dev tasks (+3.2, +2.4 and +0.8 points, every net gain on Marketing), so by the pre-registered rule no final was run and the new domains' test split is unread. A ceiling experiment found that a hand-written loop-level package fixed only 1 of the 8 Marketing tasks the evolved version still failed. Setup, process, costs (about $525 API-equivalent for v0.1 and v0.2, $517 for v0.3), a diagnosis of the five-domain rounds, and limits: [docs/RESULTS.md](docs/RESULTS.md).
+- **W**, the worker: an evolvable agent program (a versioned capability package that holds the loop itself, its tools, hooks, skills and memory), run by a fixed runner shell against a pinned model.
+- **R**, the improvement policy: it reads train failures and proposes package changes in a bounded coding session.
+- **E**, the evidence: the permission-filtered record of runs and experiments, written by the host, never by the package.
+- **K**, the fixed core: scorer, splits, gate, permissions, budgets and per-attempt limits. R cannot change any of it.
 
-The [v0.6 design](docs/DESIGN.md) connects capability discovery, validation, consolidation and recursive reuse. Users supply a task environment, goals, permissions, initial models and a budget. The first release evolves tools, middleware, skills and memory inside versioned harness packages, runs generated code through a fixed isolated API, validates task outcomes and regressions, and releases an app with the same actor. Improvement policies are also evaluated and reused through the existing research loop. The second release adds teacher-guided distillation and further training support; actor/controller separation and existing decision trainers remain supported. Tinker is a proposed training backend, not a prerequisite for the first release.
+A change is installed only after a screen on train tasks, a paired dev gate and a confirmation reading. An effect is claimed only from a sealed final on the held-out test split. The recursion is bounded: an update to R counts only when a downstream W\* comparison validates it and the next improvement actually uses it ([design §7](docs/DESIGN.md)). That part has not been shown yet.
 
-**Implemented:** decision policies and training infrastructure, the AutomationBench adapter, paired task evaluation, complete W/R releases, shared budgets and recovery, a task-improvement loop, and isolated research-policy comparison and reuse ([implementation snapshot](docs/history/V0_5_IMPLEMENTATION.md)). The first release's engineering path is now in place too: per-task diagnosis of train failures, versioned capability packages (memory, skills, hooks and tools) with a draft check before anything is frozen, package code run only in an isolated Docker worker, research campaigns on that loop with a check that an installed R1 is actually used, the `cycle` entry with its preset, and export of an installed version as a minimal app. All of it is validated offline with fixture worlds and scripted researchers; CI builds the worker image and runs the Docker isolation tests. A review on 2026-10-02 found four high-severity defects: when the core freezes no method list, a proposal could name a model backend that the control plane imports; research verdicts accepted identical or unpaired arms; and a resumed experiment ignored its frozen plan. All four are now fixed ([roadmap §3](docs/ROADMAP.md)).
+## Results
 
-**Added in v0.3** ([roadmap §3, v0.3](docs/ROADMAP.md)): the agent program is part of the package (package API v2), run by a fixed runner shell with a metered model gateway that caps effort, a tool broker and five hard limits per attempt. The gate pools the control readings and tops them up per task, and installs only after a confirmation re-run that clears `min_gain` on its own (an A/A replay of recorded W0 readings accepts 0/20 on dev and 0/12 on test); it also has a magnitude rule for regressions, a cost term and `min_tasks`, and attempts run 8 at a time. R works as a bounded coding session: up to k declared candidates a round, an engine ledger, a train-side screen before the dev gate, and raw train trajectories and a dev failure-type histogram as inputs. Activities can span several domains, with per-domain stratified splits, spent test splits kept out of claims, and per-domain reports. Runs can be staged, and a finished segment can be extended on the record. 1140 offline tests pass.
+Each final tests claim C1, a same-model gain: it compares the evolved version W\* with the starting version W0 on held-out test tasks, under a plan sealed and committed before the first test attempt. The actor and R are Claude Opus 5.5 through headless Claude Code.
 
-**Measured:** GLM-5.3 completed one Marketing development task on 2026-09-28. On 2026-10-01 two real runs followed: one took a failed train task through failure notes, a summary proposal, a draft check with one revision, admission and a frozen experiment to a built candidate, and stopped before the gate on purpose; another, whose draft passed its check without revision, went through screening to one dev gate. The provider account ran out of balance during that comparison (19 of 20 dev attempts invalid), so the gate was inconclusive and nothing was installed. Those GLM runs were not evidence of improvement. The first measured gain came on 2026-10-04 with Claude Opus 5.5 ([results](docs/RESULTS.md)); the recursive-research gain (R improving itself) is not yet measured. Actor distillation, its Tinker backend and teacher review belong to the second release. See the [journal](docs/JOURNAL.md).
+| Version | Activity | W0 | W\* | Paired difference, 95% interval | Reading |
+|---|---|---|---|---|---|
+| v0.1 | Marketing, 23 test tasks × 2 | 41.3% | 54.3% | **+13.0** [+2.2, +26.1] | C1 supported |
+| v0.2 | Marketing with the research slot, 23 × 2 | 47.8% | 52.2% | +4.3 [−10.9, +19.6] | inconclusive |
+| v0.3 | five domains, one shared package | — | — | no final: three rounds rejected on 125 dev tasks, nothing installed | — |
+| v0.4 | finance, 25 × 3 | 54.7% | 62.7% | +8.0 [−4.0, +22.7] | inconclusive; cost per attempt $0.482 → $0.378 (−22%, interval [−$0.145, −$0.070], significant) |
+| v0.5 | support, v0.4 arm against v0.5 arm | — | — | no final: the user stopped the comparison after step 3b | train/dev process evidence only |
 
-AutomationBench Marketing remains the first proving ground. The first release compares the same pinned actor before and after harness-package evolution (planned as GLM-5.3; from 2026-10-03 Claude Opus 5.5 runs first, docs/ROADMAP.md §3 step 2a), retains an effective prompt/workflow baseline, and uses published leading-model results as a separately labelled reference. Local frontier runs remain optional future work, consistent with the latest benchmark plan. In the second release, h* is re-evolved on the Qwen3.5-9B student before distillation. Teacher-assisted collection scores are reported separately from deployment scores.
+Every installed change came from train failures alone; no person chose it. Gains on dev were selected by the gate and are kept as process records, never as results. R improving itself (C4) is not shown: in v0.2's research slot neither research policy added a change, so there was nothing to compare. Costs are nominal API-equivalent dollars on a subscription: about $525 for v0.1 and v0.2, $517 for v0.3, $209.73 for v0.4. Setup, per-task detail, diagnoses and limits: [docs/RESULTS.md](docs/RESULTS.md).
 
-Decision labels still require observed evidence or human feedback; a final reward does not label every intermediate action. The planned teacher trajectories have a separate imitation-learning purpose and do not relax this rule for decision training. Jev and existing local decision trainers remain supported.
+**v0.5 on support (process evidence, not a claim).** The two arms started level (W0 on dev: 26/75 for the v0.4 arm, 27/75 for the v0.5 arm). In step 3b, the experience library's stream over 50 train tasks scored D = 3.0, and the second half did better than the first (0.00 → 0.12, P = 0.89). Its snapshot then passed the paired dev gate: first reading +0.24, confirmation +0.08, pooled +0.16 [+0.047, +0.287], cost per attempt −6.6%. The step cost $81.86. On 2026-10-08 the user stopped the comparison: a missing baseline does not matter, improve everything that can be improved, and judge by the final result. So R's rounds (3c), `learn` (3d) and both finals were not run. H1 (v0.5 beats v0.4) is untested, and support's test split is unread.
 
-Implementation starts with the [roadmap](docs/ROADMAP.md), [technology choices](docs/TECHNOLOGY.md), and [module specifications](docs/modules/README.md). The commands below describe existing functionality; second-release configuration (distillation, teachers, training) is marked as proposed in the design docs and refused by the readers.
-
-## How the loop improves itself
-
-`ouroloop bench --phase improve` runs this loop round by round on the business benchmark ([ouroloop/bench.py](ouroloop/bench.py)); a harness of your own runs the online half on every session. A round trains only what an admission passed, so a round with nothing new to learn from spends no GPU (`ouroloop plan` shows the same reading). Each `ouroloop evolve` call runs one round of the legacy decision profile (the training job, calibration, the gate, promotion) whatever the plan would say.
-
-<p align="center"><img src="docs/assets/architecture.gif" alt="ouroloop architecture: a loop whose top half runs every session and whose bottom half runs every round" width="100%"></p>
-
-The diagram illustrates the existing decision-learning loop, not measured business improvement or the complete v0.6 architecture. The new workflow-distillation path is described in the design docs.
-
-The first-release plan connects bounded package code evolution to the existing automatic loop: R proposes package edits from feedback; fixed code enforces isolation, permissions, budgets, evaluation and release. Updated W runs subsequent tasks, while an accepted R update must be loaded by the next actual improvement call. Distillation follows in the second release. Real harness-evolution and recursive gains remain unproven.
-
-The existing takeover policy uses calibrated thresholds, labelled-session risk checks and runtime revocation. These controls depend on their feedback and statistical assumptions; they do not establish a 5% business-task failure bound. The benchmark profile evaluates complete task outcomes under a separately fixed protocol while preserving the existing deployment profile.
-
-`ouroloop research` is the legacy decision profile's own round, kept as it was; the business loop's rounds run through `ouroloop bench --phase improve` and `--phase research`.
-
-## Quick start
-
-Python 3.11 or newer, on macOS or Linux (the agent's tools use bash; on Windows, use WSL).
-
-```bash
-python3 -m venv .venv && . .venv/bin/activate
-pip install -e ".[dev]"      # the only runtime dependency is httpx
-pytest -q                    # offline: no network, no models
-ouroloop demo                # one research round on synthetic data, offline
-```
-
-To use Jev, put `TYPESAFE_API_KEY=...` in `.env` at the repository root (git ignores it).
-
-```bash
-ouroloop smoke                   # ask Jev one question of each type
-ouroloop demo --judge jev        # let Jev make the research loop's judgments
-ouroloop decide --backend jev --type noul --question "The failure is transient" --state "ConnectionResetError"
-pytest -m live                   # smoke tests against the real API
-```
-
-## Run the agent
-
-The built-in agent is minimal: an LLM with read, write, edit and bash, plus five decision points around it (`route`, `tool_gate`, `retry`, `compact`, `stop`).
-
-```bash
-pip install -e ".[anthropic]"    # for Claude; set ANTHROPIC_API_KEY
-ouroloop run "fix the failing tests" --llm anthropic --judge jev
-ouroloop run "..." --llm openai_compat --model qwen3 --base-url http://localhost:11434/v1
-ouroloop run "..." --llm anthropic --verify "pytest -q" --small-model claude-haiku-4-5
-```
-
-- Tool calls ask for your approval (y/N) unless you pass `--yes`. Commands on the deny list (`rm -rf /`, `curl ... | sh` and the like) never run.
-- `--verify` takes a command that exits 0 when the task is done. When the agent wants to stop, ouroloop runs it first and sends the output back if it fails (at most twice). The result also labels the `stop` decision.
-- `--small-model` adds a cheaper tier; the `route` decision point picks the tier for each step once it acts; until then every step uses the large tier. The task outcome is a weak label for small-tier steps.
-- In an interactive run, ouroloop asks at the end whether the task was done, and records the answer.
-- `ouroloop hook print-settings` prints Claude Code hooks that record tool calls and their results from your normal Claude Code sessions into the ledger, without changing Claude Code's behaviour.
-
-## Models
-
-The research agent and `ouroloop run` work with any model:
-
-- Claude through the official SDK: `[llm] type = "anthropic"` (default `claude-opus-5`, with prompt caching).
-- Claude through headless Claude Code on a subscription login: `type = "claude_code"` (`claude -p` with no tools, in an empty directory; tool calls as structured JSON output). See docs/modules/01_POLICY_RUNTIME.md §1.
-- Anything with an OpenAI-compatible API: `type = "openai_compat"` (Zhipu GLM, OpenRouter, DeepSeek, vLLM, Ollama and others), with retries on rate limits and server errors. Provider-specific request fields go in `[llm.extra]`, for example GLM's reasoning effort. See [examples/zhipu.toml](examples/zhipu.toml).
-- A config's `env_file` points at a `.env` relative to the config, so keys are found from any directory.
-
-## Research and evolution
-
-```bash
-ouroloop gate freeze --config examples/ouroloop.toml           # once, by a person: the gate every promotion goes through
-ouroloop research --config examples/ouroloop.toml --rounds 3   # research rounds over the ledger
-ouroloop plan --config examples/ouroloop.toml                  # what the data says, and whether a round should train
-ouroloop evolve --config examples/ouroloop.toml                # train a new decision model; promote only if it passes the gate
-ouroloop calibrate --config examples/ouroloop.toml             # report each point's temperature and thresholds
-ouroloop models --dir examples/workspace                       # model lineage; --rollback to go back (and revoke)
-ouroloop ledger --dir examples/workspace                       # decisions, label coverage and agreement per point
-```
-
-The gate template can tighten, never loosen, the 5% risk, the 30 fresh sessions each gate needs and the bootstrap. Each round's gate record, its use and its verdict are events in the ledger; `gates/` holds copies. Only what a gate record accepted can be promoted, answer or act.
-
-About TDE: TDE is a separate project that will be released on its own. The `tde` trainer records how ouroloop trains it: as a job (`ouroloop/worker.py`) on this machine, or on a GPU host over ssh with `host = "user@box"`, in a new directory `<jobs_root>/<job id>/` there. The job publishes its run to the model store, `[store]`, and the model it yields is a ref: the job id with `type = "dir"` (a directory, on the training host when there is one), or `<repo>@<commit>` with `type = "hf"`, which commits the run once to a private Hugging Face repository. `[serving]` (formerly `[models]`) says how refs are asked: `url` (and `token_env`) for `ouroloop serve` on a host that can read the store, or in-process from the store. A model the gate accepts is deployed before it becomes the champion (`ouroloop deploy <version>` retries a failed deploy). Control plane, training, store and serving are four roles; one GPU host that holds three of them is a layout (docs/TRAINING_HOSTS.md). Without TDE, the whole pipeline runs with the built-in signature model (`type = "signature"`). To bring your own model, write a trainer plugin (`ouroloop/trainers/__init__.py`, docs/TRAINING_HOSTS.md §1): `train` runs as the job on the training machine, `backend(run, ref, options)` loads the model for serving; name it in the config as `type = "your.module"`. A `type = "your.module:YourTrainer"` trainer trains in this process and its backend is built here, outside the store and `[serving]`: for tests and demos.
-
-To serve a model for harnesses on other machines, run the decision service where the model lives and point an `http` backend at it. Binding to anything other than localhost requires a token, because `/outcome` writes training labels into the ledger.
-
-```bash
-OUROLOOP_TOKEN=... ouroloop serve --config host.toml --host 0.0.0.0 --port 8765
-```
-
-## Task suites and prompt evolution
-
-[evals/tasks](evals/tasks) holds 29 small coding tasks: 21 for development and 8 held out. Each task is one TOML file with a prompt, starting files, check commands, and hidden tests that are written only after the agent finishes, so the agent cannot edit them. A run scores the share of checks that pass.
-
-```bash
-ouroloop suite --validate --tasks evals/tasks               # no LLM: every task fails as given and passes with its solution
-ouroloop suite --config examples/zhipu.toml                 # run the suite with the champion prompt
-ouroloop research --config examples/zhipu.toml --rounds 2   # with a [suite], the research agent also improves the harness prompt
-```
-
-A prompt candidate is evaluated in steps:
-
-- a change that only touches whitespace is rejected without running anything;
-- it runs on a few development tasks first, and only if it does no worse than the champion do the champion and the candidate both run again on every task, held-out ones included, for the promotion gate;
-- the research agent never sees held-out results;
-- each run is recorded once per (prompt, model, task, repeat) in `harness/runs.jsonl`; recorded runs serve the first step only, and a round gates once, so re-running a prompt until it gets lucky is not possible.
-
-The checks at the end of a task also label that run's `stop` and `route` decisions. Suite runs execute bash automatically, in a temporary directory with the deny list in force; use a container or a VM if you do not trust the model.
-
-## AutomationBench
-
-[AutomationBench](https://github.com/zapier/AutomationBench) simulates business workflows across 47 SaaS tools and
-checks whether the agent left the world in the correct state. It is a separate runtime that ouroloop imports
-lazily; clone it and point `[bench] upstream_path` at the checkout
-([examples/automationbench/README.md](examples/automationbench/README.md) lists what to install).
-
-```bash
-ouroloop bench --config examples/automationbench/marketing.toml --phase smoke --checks-only   # no model called
-ouroloop bench --config examples/automationbench/marketing.toml --phase smoke                 # and a few dev tasks
-```
-
-The first release's automatic loop is one command over a config with an `[improvement]` preset and a budget
-([examples/automationbench/improvement.toml](examples/automationbench/improvement.toml)): it freezes the plans it is
-not given, runs the starting version's baseline, a worker segment, the planned research slot and one more segment
-that shows whether an installed R is used, and ends with the offline report. Interrupted, it resumes without paying
-again for what is on record. Package code runs only in the isolated worker image:
-
-```bash
-docker build -f docker/worker.Dockerfile -t ouroloop-worker:py3.12 .
-ouroloop bench --config examples/automationbench/improvement.toml --phase cycle
-ouroloop export --config examples/automationbench/improvement.toml --to exported-marketing
-```
-
-The smoke phase reports which upstream this is, freezes the train/dev/test task groups into
-`<workspace>/bench/<domain>/splits.json` before any result is looked at, checks this adapter against upstream's own
-rubric entry point, service gate and tool schemas, audits that nothing grading-related reaches the agent, and then
-attempts a couple of development tasks end to end. It makes no claim about capability, and a local score on the
-public task set is not an official leaderboard score — the leaderboard runs a private set.
-
-The boundaries are structural rather than a matter of care: the agent is handed the task prompt and the tool
-schemas while the assertions and the seeded state live in an object it never receives, and the score comes from
-the world the tools left, so a run that writes the wrong record and then reports success scores what it wrote.
-The later phases run the same loop: `baseline` measures a reasonable base version. It also supports explicit
-frontier arms, but the current plan uses published frontier references instead. `collect` labels completion
-decisions offline, `improve` runs the worker loop with a fixed
-research policy, `research` compares two research policies in isolated arms, `evaluate` runs one sealed final plan,
-and `report` recomputes everything from the records on disk. They run against frozen plans — objects in the
-workspace rather than settings in the config file — and a phase whose plan or model table is missing says so before
-it calls a model.
-
-## Code layout
-
-| Path | What it holds |
-|---|---|
-| `ouroloop/decision.py` | decision points and specs (question, candidates, view parameters) |
-| `ouroloop/policy.py` | the execution rule, threshold fitting, exploration and propensities |
-| `ouroloop/ledger.py` | the ledger, raw contexts, champion specs, redaction |
-| `ouroloop/runtime.py` | ties decision points, backends, default answerers and the ledger together; fixes each session's release |
-| `ouroloop/release.py` | the release a session runs with: the legacy triple, and the complete W/R release with its permits, installs, recovery and revocations |
-| `ouroloop/policies.py` | the registered policy targets, what may be bound to each, assembly, session pinning and candidate building |
-| `ouroloop/agent/` | the minimal agent: loop, four tools, harness prompt, task suites; capability packages (`harness_package.py`) and the isolated worker that runs their code (`worker.py`, `worker_runner.py`) |
-| `ouroloop/app.py` | the minimal app an exported release runs as |
-| `ouroloop/points/` | built-in points `retry`, `compact`, `tool_gate`, `stop`, `route`, and the deny list |
-| `ouroloop/chat.py` | a provider-neutral chat format |
-| `ouroloop/providers/` | Anthropic (official SDK), OpenAI-compatible APIs, headless Claude Code, and `manual` (requests and replies as files) |
-| `ouroloop/backends/` | decision backends: `mock`, `jev`, `tde`, `llm`, `http` |
-| `ouroloop/research/` | question conversion, the research agent interface and default, research rounds, what a researcher may read (`context.py`), what actually ran (`inspection.py`), proposals and admission (`experiment.py`), research-policy campaigns (`campaign.py`), per-task failure diagnosis (`diagnosis.py`), draft checks and revisions (`drafts.py`) |
-| `ouroloop/evolve/` | the shared contracts and object store (`contracts.py`), feedback builders, dataset building, data checks, trainers and their training jobs (worker, compute), calibration, the frozen promotion gate and its records, the paired task gate (`task_gate.py`), the execution state machine and budget book (`execution.py`), model registry, experience records |
-| `ouroloop/serve.py` | the HTTP decision service |
-| `ouroloop/benchmark.py` | the benchmark run contract: frozen task groups, run identity, one attempt's result |
-| `ouroloop/bench.py` | the phases of `ouroloop bench`, the startup checks and the wiring one improvement activity runs through |
-| `ouroloop/report.py` | the offline report: identity, task effect, costs, improvement and RSI evidence, C1 to C4 states |
-| `ouroloop/adapters/` | AutomationBench (tasks, business tools, the official scorer); Claude Code hooks (an optional data source) |
+Test splits read so far: marketing 3 times, finance once, support, sales and HR never. Operations has never been read and stays fully held out.
 
 ## Status
 
-The current implementation includes the v0.5 engineering loop, the first release's package-evolution loop (stages A–E of the [roadmap](docs/ROADMAP.md), validated offline with fixtures), the v0.3 additions listed above, and the real-model runs listed under Measured above (results in [docs/RESULTS.md](docs/RESULTS.md)). Of the four high-severity defects found on 2026-10-02, two are fixed and two are fixed before any research slot runs ([roadmap §3](docs/ROADMAP.md)). The second release (teacher adaptation, distillation, training) is specified but not implemented. Historical test results and known limitations are preserved in the [implementation snapshot](docs/history/V0_5_IMPLEMENTATION.md); measured results remain in the [journal](docs/JOURNAL.md).
+- **Released:** tag `v0.4.0`, the finance final; earlier tags `v0.1.0` to `v0.3.0`.
+- **Implemented, not released:** v0.5's method library and experience library, merged into `m1-automationbench` (`7e7732e`). Under the batch-3 rule agreed before the run, the experience library stays as the memory base behind a preset switch, because both of its process readings held (train D ≥ +2; learning curve P ≥ 0.8). The method library's readings were never taken, so the rule cuts it. That cut is a proposal the user may veto.
+- **Next** ([docs/PLAN.md](docs/PLAN.md)): slimming in three batches. Memory work, open source first: no existing cross-task memory fits as it is, so the experience library stays the base and borrows designs from ACE and ReMe. R0 changes so that R also proposes tools and loop patches; K already allows writable package tools and agent-program edits, but R has never proposed a tool, while StarHarness reports +26.1 on finance (on a different metric) from such patches. New single-domain activities with sealed finals: any domain may run one under conditional reuse, with its read count disclosed. Phase 1 of the v2 training chain: Tinker LoRA for training, self-hosted vLLM on RunPod for evaluation inference, accepted on chain receipts only.
+- **Legacy code:** the pre-benchmark decision stack (Jev and TDE backends, local trainers, GPU jobs, decision points, and commands such as `run`, `demo`, `suite`, `research`, `evolve` and `serve`) is still in the tree, off the benchmark path, until slimming batch 1 moves its reusable part into the optional subpackage `ouroloop/train/` (extras `[train]`, `[train-jobs]`) and deletes the rest.
 
-The design documents are currently in Chinese: [overall design](docs/DESIGN.md), [technology choices](docs/TECHNOLOGY.md), [roadmap](docs/ROADMAP.md), [module handoff and acceptance cases](docs/modules/README.md), [research protocol](docs/RESEARCH_AGENT.md), [design review](docs/RSI_REVIEW.md), and [demo and evidence](docs/DEMO.md).
+## Quick start
+
+Python 3.11 or newer, on macOS or Linux (on Windows, use WSL).
+
+```bash
+python3 -m venv .venv && . .venv/bin/activate
+pip install -e ".[dev,automationbench]"
+pytest -q                                      # offline: no network, no model; live and slow tests excluded
+OUROLOOP_TEST_REQUIRE_DOCKER=1 pytest -q -m "not live"   # the full run: adds the Docker worker (image below) and the upstream checkout
+```
+
+## Run on AutomationBench
+
+AutomationBench simulates business workflows across 47 SaaS tools and scores the world state the agent's tools leave behind. The agent receives the task prompt and the tool schemas; the assertions and the seeded state stay in an object it never receives. ouroloop imports the benchmark lazily: clone it and point `[bench] upstream_path` at the checkout ([examples/automationbench/README.md](examples/automationbench/README.md) lists what to install). A local score on the public task set is not a leaderboard score.
+
+**Model.** The actor (`[llm]`) and R (`[research.llm]`) use `type = "claude_code"`. Each call is a fresh headless `claude -p` on this machine's Claude subscription login (`claude auth login`), with no tools and no local customization, in an empty directory. Tool calls come back as structured JSON output, not native tool use. The startup check refuses a login that is not a subscription and a table without `effort`. The measured configs pin `claude-opus-5-5` at effort medium, one level for every arm. The `openai_compat` and `anthropic` providers also exist; no reported result uses them.
+
+**Package code** runs only in the isolated worker image:
+
+```bash
+docker build -f docker/worker.Dockerfile -t ouroloop-worker:py3.12 .
+```
+
+**An activity** runs in stages, and you stop after each one to read it:
+
+```bash
+ouroloop bench --config <cfg> --phase smoke --checks-only    # upstream identity, frozen splits, contract and input audit; no model call
+ouroloop freeze --config <cfg>                               # freezes the task plan, schedule and budget; prints the [rsi] lines to add
+ouroloop bench --config <cfg> --phase cycle --until baseline # W0 on train and dev
+ouroloop bench --config <cfg> --phase library                # v5 preset only: the experience library's stream and snapshot round
+ouroloop bench --config <cfg> --phase cycle                  # R's rounds: notes, coding session, screen, dev gate, confirmation
+# only after a confirmed install: fill [freeze.final] with W*, freeze again and commit the plan hash, then
+ouroloop bench --config <cfg> --phase evaluate               # the sealed final on the test split
+ouroloop bench --config <cfg> --phase report                 # recomputes everything from the records on disk; no model call
+ouroloop export --config <cfg> --to exported-app             # an installed release as a minimal app
+```
+
+An interrupted `cycle` or `library` run continues where it stopped and pays nothing twice. Every paid phase stops at the activity's budget root, in notional dollars. The phases `baseline`, `improve`, `collect`, `research` and `learn` also exist at HEAD. The slimming plan removes the in-activity research slot and, unless the user vetoes, the method library's `learn`.
+
+**Configs.** The measured configs are `examples/automationbench/claude-v4-finance.toml` (v0.4's final) and `claude-v4-support.toml` and `claude-v5-support.toml` (the two support arms). Each header lists its stages and their costs. Their `[workspace]` roots hold local, git-ignored run records, and their `[rsi]` refs name plans frozen there. For a new activity, copy one and give it a new `[workspace] root` and `[rsi] scope_id`. Replace the `[rsi]` plan refs with the lines your `freeze` prints, and leave out `[freeze.final]` until there is a W\*.
+
+## Code layout (the benchmark path)
+
+| Path | What it holds |
+|---|---|
+| `ouroloop/bench.py` | the phases of `ouroloop bench`, presets, startup checks, freezing and the cycle |
+| `ouroloop/adapters/automationbench.py` | tasks, business tools, the official scorer |
+| `ouroloop/agent/` | the runner shell (`runner.py`, `gateway.py`), the default agent program, capability packages (`harness_package.py`) and the isolated worker (`worker.py`, `worker_runner.py`) |
+| `ouroloop/research/` | R: failure diagnosis, the coding session (`session.py`), draft checks, the experience library (`library.py`), the method library (`methods.py`, `method_kit/`) |
+| `ouroloop/evolve/` | contracts and the object store (`contracts.py`), the paired task gate (`task_gate.py`), execution and the budget book (`execution.py`); the legacy trainers and promotion gate live here too |
+| `ouroloop/release.py`, `ouroloop/policies.py` | W/R releases, installs and recovery; registered policy targets |
+| `ouroloop/report.py` | the offline report: identity, task effect, costs, C1–C4 states |
+| `ouroloop/providers/` | `claude_code`, `openai_compat`, `anthropic` and `manual` |
+| `ouroloop/app.py` | the minimal app an exported release runs as |
+
+## Documents
+
+The design documents are in Chinese.
+
+- [docs/PLAN.md](docs/PLAN.md): where things stand, the rules, the next stages, and what waits for the user. Start here.
+- [docs/RESULTS.md](docs/RESULTS.md) and [docs/JOURNAL.md](docs/JOURNAL.md): the results, and a log of every change and run, newest first.
+- [docs/DESIGN.md](docs/DESIGN.md), [docs/ROADMAP.md](docs/ROADMAP.md) and [docs/modules/](docs/modules/README.md): the design, the activity history and the module rules.
+- [docs/design/](docs/design/): the slimming inventory, the open-source components plan, the v2 training pipeline, and the v0.4 and v0.5 plans.
+
+Every file deleted in the 2026-10-08 cleanup is still readable at tag `archive-2026-10-08`.
 
 ## License
 

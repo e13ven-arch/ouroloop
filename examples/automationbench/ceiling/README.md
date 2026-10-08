@@ -1,5 +1,10 @@
 # The ceiling experiment (v0.3 step 4)
 
+> Ran on 2026-10-05, during v0.3. On 2026-10-08 the runner, its config, both packages and the offline tests were
+> removed from HEAD; they are unchanged at tag `v0.3.0` and can also be read at `v0.4.0` and `archive-2026-10-08`.
+> This README and `tasks.json` stay as the record of the rule and the task set; the result is in docs/RESULTS.md
+> (v0.3).
+
 One question, answered once before v0.3's multi-domain activity (docs/ROADMAP.md §3, v0.3 step 4): can mechanisms at
 the level of the agent loop reach the failures v0.2's W\* still has? If a hand-written agent package fixes most of
 them, the loop layer can reach them and v0.3's weight belongs on search (R writing such packages). If it cannot, what
@@ -70,6 +75,8 @@ ids and the rule:
   trajectory's content and no assertion param was read for it (the replay above measured output lengths only).
 
 ## How to run
+
+On a checkout of tag `v0.3.0` (the runner and its config are not at HEAD):
 
 ```text
 claude auth login                       # a Claude subscription; extra usage turned off in claude.ai's settings
@@ -167,6 +174,8 @@ Why each part:
 - `stopped` — set when the budget root's hard stop ended the run; `budget` — the root's state at the end.
 
 ## Files
+
+All but `tasks.json` and this README were removed from HEAD on 2026-10-08; read them at tag `v0.3.0`.
 
 | Path | What |
 |---|---|
