@@ -70,20 +70,6 @@ def cp_upper(errors: int, n: int, alpha: float = 0.05) -> float:
     return hi
 
 
-def cp_lower(errors: int, n: int, alpha: float = 0.05) -> float:
-    """One-sided Clopper-Pearson lower bound on an error rate after `errors` mistakes in `n` trials."""
-    if n == 0 or errors <= 0:
-        return 0.0
-    lo, hi = 0.0, errors / n
-    for _ in range(60):
-        mid = (lo + hi) / 2
-        if 1.0 - _binom_cdf(errors - 1, n, mid) < alpha:
-            lo = mid
-        else:
-            hi = mid
-    return lo
-
-
 def harmed(items) -> dict:
     """(session, correct) pairs of the decisions a model acted on -> session -> whether it is harmed (any of them
     wrong)."""

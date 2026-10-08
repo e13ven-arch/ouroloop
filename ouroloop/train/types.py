@@ -129,8 +129,3 @@ def temper(probs: dict[str, float], temperature: float) -> dict[str, float]:
 
 def nll(probs: dict[str, float], target: dict[str, float]) -> float:
     return -sum(t * math.log(max(probs.get(lab, 0.0), 1e-6)) for lab, t in target.items())
-
-
-def brier(probs: dict[str, float], target: dict[str, float]) -> float:
-    labels = set(probs) | set(target)
-    return sum((probs.get(lab, 0.0) - target.get(lab, 0.0)) ** 2 for lab in labels)

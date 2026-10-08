@@ -16,7 +16,6 @@ import types
 from collections import OrderedDict
 from pathlib import Path
 
-import httpx
 import pytest
 
 from jobs_fixtures import FAKE_HF, dataset
@@ -24,9 +23,8 @@ from ouroloop.train import config as train_config
 from ouroloop.train.backends import TdeBackend
 from ouroloop.train.jobs import compute as compute_module
 from ouroloop.train.jobs.compute import SEP, Compute
-from ouroloop.train.train import check_change, full_recipe, train_artifact
 from ouroloop.train.jobs.trainer import CHECKOUT, JobTrainer
-from ouroloop.train.train import DEFAULT_RECIPE, TrainError, TrainJob
+from ouroloop.train.train import DEFAULT_RECIPE, TrainError, TrainJob, check_change, full_recipe, train_artifact
 from ouroloop.release import code_version
 from ouroloop.train.serving import Serving
 from ouroloop.train.stores import make as make_store

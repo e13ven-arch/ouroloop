@@ -376,6 +376,23 @@ def test_a_rollback_with_no_good_ancestor_is_refused_and_changes_nothing(tmp_pat
     assert one.target_release not in releases.revoked()                     # and nothing more was revoked
 
 
+def test_the_revocation_list_round_trips_and_revoking_twice_writes_nothing(tmp_path):
+    """release.Revoked and revoke, kept as the revocation primitive a v2 serving of trained models rebuilds on
+    (docs/design/SLIMMING_INVENTORY.md §0.1 D); their reader went with the v1 runtime in P1 step 5."""
+    from ouroloop.release import Revoked, revoke
+    path = tmp_path / "harness" / "revoked.json"
+    listed = Revoked(path)
+    assert listed.ids() == frozenset() and listed.hit("m_0001") is None
+    assert revoke(tmp_path, "m_0001", "model-a", "broke a task") is True
+    assert listed.ids() == {"m_0001", "model-a"}                          # re-read: the file changed
+    assert listed.hit(None, "model-b", "model-a") == "model-a"
+    before = path.read_bytes()
+    assert revoke(tmp_path, "m_0001", None, "again") is False and path.read_bytes() == before
+    assert revoke(tmp_path, None, "model-b", "a second model") is True
+    assert Revoked(path).ids() == {"m_0001", "model-a", "model-b"}
+    assert [e["reason"] for e in json.loads(path.read_text())["revoked"]] == ["broke a task", "a second model"]
+
+
 # ---------------------------------------------------------------------------- v0.3 (M3 §2.1): the gate's statistics
 def readings(p: TaskEvalPlan, *outcome_sets, cost=None, run_prefix="ctl") -> list[TaskResult]:
     """Several readings of one version under the plan's conditions, each as its own run: what a pooled control is
