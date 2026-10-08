@@ -282,9 +282,11 @@ def evaluate(activity, *, out: Callable[[str], None] = print) -> dict:
                          f"${float(left):.2f} left to the final; nothing was run")
 
     def arm(name, release_ref, pairs, retry, supersedes):
+        # the arm's name is in the attempt id, which is the transcript's session id (letters, digits and _ . @ : # +
+        # / -): W* is Wstar there
         return run_arm(activity, release=activity.releases.load(release_ref), split="test", candidate=name, role=name,
-                       pairs=pairs, account=account, plan_ref=ref, arm=name, retry=retry, supersedes=supersedes,
-                       allocation="final")
+                       pairs=pairs, account=account, plan_ref=ref, arm=name.replace("*", "star"), retry=retry,
+                       supersedes=supersedes, allocation="final")
     return {**run_final(plan, root=activity.root, objects=activity.objects, run_arm=arm,
                         recorded={r.attempt_id for r in rows if r.attempt_id}, out=out), "estimate": estimate}
 
