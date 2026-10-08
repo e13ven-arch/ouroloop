@@ -211,8 +211,11 @@ def resolve(config: dict) -> dict:
 
 
 def freeze_core(config: dict, *, split_hash: str, code_version: str) -> Core:
-    """K, frozen. Same config, same split, same code: same ref."""
-    return Core(preset=preset_name(config), sections=resolve(config), split_hash=split_hash, code_version=code_version)
+    """K, frozen. Same config, same split, same code: same ref. [bench] concurrency is a setting of the machine
+    (Activity.concurrency reads it from the config), not of K: a resume may change it."""
+    sections = resolve(config)
+    sections["bench"].pop("concurrency", None)
+    return Core(preset=preset_name(config), sections=sections, split_hash=split_hash, code_version=code_version)
 
 
 def core_problems(core: Core) -> list[str]:

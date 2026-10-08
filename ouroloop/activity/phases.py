@@ -186,7 +186,8 @@ def final_plan(activity) -> FinalPlan:
     final = activity.k["final"]
     release = activity.active_release()
     seed = activity.seed_release()
-    arms = {"W0": seed.ref()} if release.ref() == seed.ref() else {"W0": seed.ref(), "W*": release.ref()}
+    # An arm's name is part of every attempt id, which is a session id (runtime.records.SESSION_ID): W* is "W_star".
+    arms = {"W0": seed.ref()} if release.ref() == seed.ref() else {"W0": seed.ref(), "W_star": release.ref()}
     return FinalPlan(experiment_id=f"{activity.scope_id}-final", tasks=tuple(activity.splits.ids(final["tasks"])),
                      repeats=int(final["repeats"]), arms=arms, claims=tuple(final["claims"]) if len(arms) > 1 else (),
                      split_hash=activity.splits.hash(), core_ref=activity.core_ref,

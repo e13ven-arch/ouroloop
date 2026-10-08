@@ -64,7 +64,9 @@ class Activity:
 
     @property
     def concurrency(self) -> int:
-        return max(int(self.k["bench"].get("concurrency") or 1), 1)
+        """Attempts in flight: [bench] concurrency of the config, else the preset's; a machine setting, not in K."""
+        from .config import resolve
+        return max(int(resolve(self.config)["bench"].get("concurrency") or 1), 1)
 
     def attempt_limits(self) -> Budget:
         return Budget.from_core(self.k["limits"])
@@ -106,6 +108,11 @@ class Activity:
         other limits."""
         budget = self.k.get("budget") or {}
         limits = {"usd": float(budget["usd"])} if budget.get("usd") is not None else {}
+        roots = sorted(name for name, scope in self.budgets._read()["scopes"].items()
+                       if scope.get("parent") is None and name != self.scope_id)
+        if roots:
+            raise ConfigError(f"this workspace's budget book has the root {roots}, and [rsi] scope_id "
+                              f"{self.scope_id!r} would open another: one activity has one budget root")
         root = self.budgets.account(self.scope_id, limits)
         if budget.get("final_usd") is not None:
             wanted = {"final": {"usd": float(budget["final_usd"])}}
