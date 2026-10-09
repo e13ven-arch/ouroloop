@@ -38,12 +38,12 @@
 
 | 项 | 状态 |
 |---|---|
-| 分支 | `m1-automationbench`；阶段 1 的 `s1/harness-platform` 已本地合入（合并提交 `46a4b90`，2026-10-09，用户核过进度）。`main` 在 `b71502d`（v0.3）。`v6-agent`、`v6-gateway` 已搬入；`v6-memory` 等阶段 2；`v6` 合并分支上的 WIP 不用；`slim/1` 已合入，可删；阶段 1 测试用的六个 `worktree-wf_d50a7e72-6fa-*` 分支已合入，可删 |
-| 代码 | 阶段 1 完成：`contracts.py`、`harness/`（含 stirrup 种子）、`runtime/`、`evaluate/`、`activity/`；旧的 `bench.py`、`evolve/`、`agent/`、`research/` 等已删。`ouroloop/` 不含种子 16,489 行（训练栈 5,157） |
-| 测试 | 默认套件 751 passed；带 Docker 的全量 751 passed、0 skipped；record-compat 对真实旧记录 32 passed（JOURNAL 2026-10-09 阶段 1 完成一条） |
+| 分支 | 阶段 2 在 `s2/memory`（从 `m1-automationbench` 的 `c133043` 起），等用户确认后本地合入 `m1-automationbench`。阶段 1 的 `s1/harness-platform` 已合入（`46a4b90`）。`main` 在 `b71502d`（v0.3）。`v6-agent`、`v6-gateway`、`v6-memory` 都已搬入；`v6` 合并分支上的 WIP 不用；`slim/1` 已合入，可删；两轮测试用的 worktree 分支已合入并删掉 |
+| 代码 | 阶段 1、2 完成：`contracts.py`、`harness/`（含 stirrup 种子）、`runtime/`（含 `trace.py`）、`evaluate/`、`memory/`（ReMe sidecar、桥、规则、写入步、检索、快照、升级）、`activity/`（含 `library` 阶段）。`ouroloop/` 不含种子 21,619 行（只作读数） |
+| 测试 | 默认套件 1124 passed、86 deselected；全量（Docker + 真 memory sidecar）1208 passed，唯一的失败（quickstart 配置测试钉着旧值）已改（JOURNAL 2026-10-09 阶段 2 完成一条）。memory 的 venv 在本机 `~/.cache/ouroloop/memory-venv/19f9b139c36d1d05` |
 | test 读过几次 | finance 1、support 0、sales 0、hr 0、marketing 3；operations 从未读过 |
 | 本机记录 | `examples/automationbench/workspace-*/`、`examples/workspace-*/`、`ws/`、`*.local.toml`，git 忽略，不删不改 |
-| 下一步 | 阶段 2（memory，[design/MEMORY](design/MEMORY.md)）：从 `m1-automationbench` 开分支 `s2/memory`，按文档开发 |
+| 下一步 | 用户审阶段 2 的结果（§3 第 1 项）；确认后合入 `m1-automationbench`，开始阶段 3（改进器，[design/IMPROVER](design/IMPROVER.md)） |
 
 ## 1 规则
 
@@ -75,8 +75,8 @@
 | 阶段 | 内容 | 验收 | 花费 | 状态 |
 |---|---|---|---|---|
 | 0 | 正向设计 [DESIGN v1.1](DESIGN.md)；文档清理（含 modules/）；本文改写 | 用户审定 | $0 | 已审定（2026-10-09“按默认”） |
-| 1 | harness 与平台收缩：`harness/`、`runtime/`、`evaluate/`、`activity/`；Stirrup 种子与六个 hook 站点；worker 资源与网络从 K 读；DESIGN §8 的删除 | 默认与 Docker 全量通过；`quickstart.toml` 的 `--phase smoke --checks-only` 通过；假上游上用新种子跑一次尝试 | $0 | 完成（2026-10-09，`s1/harness-platform`），四条验收都满足；待用户确认后合入 |
-| 2 | memory 组件：`memory/`、sidecar 与锁文件、`recall` 工具、记功与容量、快照走阶梯、记忆 → 技能 → 工具的升级 | 假上游上 `--phase library` 端到端；变异检查在隔离副本 | $0 | 接口已定（design/MEMORY）；开发待做 |
+| 1 | harness 与平台收缩：`harness/`、`runtime/`、`evaluate/`、`activity/`；Stirrup 种子与六个 hook 站点；worker 资源与网络从 K 读；DESIGN §8 的删除 | 默认与 Docker 全量通过；`quickstart.toml` 的 `--phase smoke --checks-only` 通过；假上游上用新种子跑一次尝试 | $0 | 完成并合入（2026-10-09，`46a4b90`） |
+| 2 | memory 组件：`memory/`、sidecar 与锁文件、`recall` 工具、记功与容量、快照走阶梯、记忆 → 技能 → 工具的升级 | 假上游上 `--phase library` 端到端；变异检查在隔离副本 | $0（sidecar venv 联网安装） | 完成（2026-10-09，`s2/memory`）：假 client 与真 sidecar 各端到端一遍；285 个变异全被杀；待用户确认后合入 |
 | 3 | 改进器：`improver/` 八步、toolcheck 与回放、分层估值与代码先验、档案与反膨胀、R 的配置 | 假上游上脚本化的 R 一轮端到端：tool 候选过 V0～V2a 并在 V3 记条件修复；hook 候选过 V2b；有可机械化簇而无代码候选时台账记 `no_code_candidate` | $0 | 接口已定（design/IMPROVER）；开发待做 |
 | 4 | finance 实测：新 preset，基线 → library → 3 轮（每轮后停）→ 有装入则封存 final → RESULTS、README、合入 main | 过程检查成立；计划哈希早于第一次 test 尝试；报告两次相同 | 名义约 $300～480，每步先批准 | 待做 |
 | 5 | 训练绑定：v2.0 离线链对新记录跑通，`model` 组件绑定；之后按 V2 的 v2.1、v2.2 | V2 §5 的断言 | $0；v2.1 另批 | 待做 |
@@ -93,7 +93,7 @@
 
 | # | 事项 | 建议 |
 |---|---|---|
-| 1 | 阶段 1 的结果（JOURNAL 2026-10-09 阶段 1 完成）：合入 `m1-automationbench` 并开始阶段 2 | 确认后本地合入；“已知、没修”的几项（种子不传 effort、回合用完记 finished、速率限制不落事件）在阶段 3 前处理，不挡阶段 2 |
+| 1 | 阶段 2 的结果（JOURNAL 2026-10-09 阶段 2 完成）：合入 `m1-automationbench` 并开始阶段 3 | 确认后本地合入；阶段 1 留下的几项（种子不传 effort、回合用完记 finished、速率限制不落事件）在阶段 3 开工时处理 |
 | 2 | 阶段 4 的预算根，名义约 $300～480 | 到阶段 4 前批准 |
 
 ## 4 文档地图
