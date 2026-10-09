@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from ouroloop.benchmark import Results, TaskResult
+from ouroloop.evaluate.results import Results, TaskResult
 
 SCRIPT = Path(__file__).resolve().parent.parent / "examples" / "automationbench" / "aa_replay.py"
 

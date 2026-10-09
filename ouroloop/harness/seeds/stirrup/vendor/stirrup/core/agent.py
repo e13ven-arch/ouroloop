@@ -1,0 +1,1809 @@
+# Context var for passing parent depth to sub-agent executors
+import contextvars
+import glob as glob_module
+import inspect
+import logging
+import re
+import signal
+from contextlib import AsyncExitStack
+from dataclasses import dataclass, field
+from itertools import chain, takewhile
+from pathlib import Path
+from time import perf_counter
+from types import TracebackType
+from typing import Annotated, Any, Self, overload
+
+import anyio
+from pydantic import BaseModel, Field, ValidationError
+
+from stirrup.constants import (
+    AGENT_MAX_TURNS,
+    CONTEXT_SUMMARIZATION_CUTOFF,
+    TURNS_REMAINING_WARNING_THRESHOLD,
+)
+from stirrup.core.cache import CacheManager, CacheState, compute_task_hash
+from stirrup.core.exceptions import ContextOverflowError
+from stirrup.core.models import (
+    AssistantMessage,
+    ChatMessage,
+    ImageContentBlock,
+    LLMClient,
+    SubAgentMetadata,
+    SummaryMessage,
+    SystemMessage,
+    TokenUsage,
+    Tool,
+    ToolCall,
+    ToolMessage,
+    ToolProvider,
+    ToolResult,
+    ToolUseCountMetadata,
+    TurnWarningMessage,
+    UserMessage,
+    joined_text,
+    tool_call_blocks,
+)
+from stirrup.prompts import MESSAGE_SUMMARIZER, MESSAGE_SUMMARIZER_BRIDGE_TEMPLATE, MESSAGE_SUMMARIZER_TEXT_ONLY
+from stirrup.skills import SkillMetadata, format_skills_section, load_skills_metadata
+from stirrup.tools import default_tools
+from stirrup.tools.code_backends.base import (
+    CodeExecToolProvider,
+    SavedFile,
+    SaveOutputFilesResult,
+    _safe_output_relative_path,
+)
+from stirrup.tools.code_backends.local import LocalCodeExecToolProvider
+from stirrup.tools.finish import SIMPLE_FINISH_TOOL
+from stirrup.tools.finish import FinishParams as SimpleFinishParams
+from stirrup.utils.logging import AgentLogger, AgentLoggerBase
+
+_PARENT_DEPTH: contextvars.ContextVar[int] = contextvars.ContextVar("parent_depth", default=0)
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class SessionState:
+    """Per-session state for resource lifecycle management.
+
+    Kept minimal - only contains resources that need async lifecycle management
+    (exit_stack, exec_env) and session-specific configuration (output_dir).
+
+    Tool availability is managed via Agent._active_tools (instance-scoped),
+    and run results are stored on the agent instance temporarily.
+
+    For subagent file transfer:
+    - parent_exec_env: Reference to the parent's exec env (for cross-env transfers)
+    - depth: Agent depth (0 = root, >0 = subagent)
+    - output_dir: For root agent, this is a local filesystem path. For subagents,
+      this is a path within the parent's exec env.
+    - exec_env_owned: Whether this session owns the exec_env and should clean it up.
+      When share_parent_exec_env=True, the subagent borrows the parent's exec_env
+      and exec_env_owned=False to prevent cleanup on subagent exit.
+    """
+
+    exit_stack: AsyncExitStack
+    exec_env: CodeExecToolProvider | None = None
+    output_dir: str | None = None  # String path (contextual: local for root, in parent env for subagent)
+    parent_exec_env: CodeExecToolProvider | None = None
+    depth: int = 0
+    exec_env_owned: bool = True  # Whether this session owns (and should cleanup) the exec_env
+    uploaded_file_paths: list[str] = field(default_factory=list)  # Paths of files uploaded to exec_env
+    skills_metadata: list[SkillMetadata] = field(default_factory=list)  # Loaded skills metadata
+    logger: AgentLoggerBase | None = None  # Logger for pause/resume during user input
+    run_started: bool = False
+    finish_params: Any = None
+    run_metadata: dict[str, Any] = field(default_factory=dict)
+    output_files_result: SaveOutputFilesResult | None = None
+
+
+_SESSION_STATE: contextvars.ContextVar[SessionState] = contextvars.ContextVar("session_state")
+
+__all__ = [
+    "Agent",
+    "SessionAgent",
+    "SubAgentParams",
+]
+
+LOGGER = logging.getLogger(__name__)
+
+
+def _num_turns_remaining_msg(number_of_turns_remaining: int) -> TurnWarningMessage:
+    """Create a user message warning the agent about remaining turns before max_turns is reached."""
+    if number_of_turns_remaining == 1:
+        return TurnWarningMessage(content="This is the last turn. Please finish the task by calling a finish tool.")
+    return TurnWarningMessage(
+        content=f"You have {number_of_turns_remaining} turns remaining to complete the task. Please continue. Remember you will need a separate turn to call a finish tool.",
+    )
+
+
+def _tool_arguments_json(tool_call: ToolCall) -> str:
+    """Return the call's arguments as JSON, treating an empty string as no arguments.
+
+    Clients coerce a missing arguments field to "", so every site that validates a call
+    must normalize it the same way.
+    """
+    return tool_call.arguments if tool_call.arguments.strip() else "{}"
+
+
+def _handle_text_only_tool_responses(tool_messages: list[ToolMessage]) -> tuple[list[ToolMessage], list[UserMessage]]:
+    """Extract image blocks from tool messages and convert them to user messages for text-only models."""
+    user_messages: list[UserMessage] = []
+    for tm in tool_messages:
+        if isinstance(tm.content, list):
+            for idx, block in enumerate(tm.content):
+                if isinstance(block, ImageContentBlock):
+                    user_messages.append(
+                        UserMessage(content=[f"Here is the image for tool call {tm.tool_call_id}", block]),
+                    )
+                    tm.content[idx] = f"Done! The User will provide the image for tool call {tm.tool_call_id}"
+                elif isinstance(block, str):
+                    continue
+                else:
+                    raise NotImplementedError(f"Unsupported content block: {type(block)}")
+
+    return tool_messages, user_messages
+
+
+def _normalize_finish_tools[FinishParams: BaseModel, FinishMeta](
+    finish_tool: Tool[FinishParams, FinishMeta] | list[Tool] | None,
+) -> dict[str, Tool[Any, Any]]:
+    """Normalize a single finish tool or list of finish tools into a name-keyed mapping."""
+    finish_tools: list[Tool]
+    if finish_tool is None:
+        finish_tools = [SIMPLE_FINISH_TOOL]
+    elif isinstance(finish_tool, list):
+        if not finish_tool:
+            raise ValueError("finish_tool list cannot be empty")
+        finish_tools = finish_tool
+    else:
+        finish_tools = [finish_tool]
+
+    seen_names: set[str] = set()
+    duplicate_names: set[str] = set()
+    for tool in finish_tools:
+        if tool.name in seen_names:
+            duplicate_names.add(tool.name)
+        seen_names.add(tool.name)
+    if duplicate_names:
+        raise ValueError(f"Finish tools must have unique names, found duplicates: {sorted(duplicate_names)}")
+
+    return {tool.name: tool for tool in finish_tools}
+
+
+def _get_total_token_usage(messages: list[list[ChatMessage]]) -> list[TokenUsage]:
+    """
+    Returns a list of TokenUsage objects aggregated from all AssistantMessage
+    instances across the provided grouped message history.
+
+    Args:
+        messages: A list where each item is a list of ChatMessage objects representing a segment
+                  or turn group of the conversation history.
+
+    Returns:
+        List of TokenUsage corresponding to each AssistantMessage in the flattened conversation history.
+    """
+    return [msg.token_usage for msg in chain.from_iterable(messages) if isinstance(msg, AssistantMessage)]
+
+
+def _get_tool_durations(messages: list[list[ChatMessage]]) -> dict[str, list[float]]:
+    """Collect tool execution durations grouped by tool name from message history."""
+    durations: dict[str, list[float]] = {}
+    for msg in chain.from_iterable(messages):
+        if isinstance(msg, ToolMessage) and msg.name and msg.tool_duration is not None:
+            durations.setdefault(msg.name, []).append(msg.tool_duration)
+    return durations
+
+
+def _get_turn_count(full_msg_history: list[list[ChatMessage]], messages: list[ChatMessage]) -> int:
+    """Count accepted assistant turns still present in history."""
+    all_messages = chain(chain.from_iterable(full_msg_history), messages)
+    return sum(1 for msg in all_messages if isinstance(msg, AssistantMessage))
+
+
+def _merge_run_metadata(run_metadata_by_turn: dict[str, dict[str, list[Any]]]) -> dict[str, list[Any]]:
+    """Merge per-turn metadata into the public run_metadata shape."""
+    run_metadata: dict[str, list[Any]] = {}
+    for turn_metadata in run_metadata_by_turn.values():
+        for name, metadata_list in turn_metadata.items():
+            run_metadata.setdefault(name, []).extend(metadata_list)
+    return run_metadata
+
+
+def _get_model_speed_stats(messages: list[list[ChatMessage]], model_slug: str) -> dict[str, float | int | str]:
+    """Compute speed stats for this agent's model from AssistantMessages.
+
+    Returns a flat dict with model_slug, num_calls, output_tokens, duration, e2e_otps.
+    Returns empty dict if no timed messages found.
+    """
+    num_calls = 0
+    output_tokens = 0
+    duration = 0.0
+    for msg in chain.from_iterable(messages):
+        if not isinstance(msg, AssistantMessage):
+            continue
+        if msg.request_start_time is None or msg.request_end_time is None:
+            continue
+        msg_duration = msg.request_end_time - msg.request_start_time
+        if msg_duration <= 0:
+            continue
+        num_calls += 1
+        output_tokens += msg.token_usage.output
+        duration += msg_duration
+    if num_calls == 0:
+        return {}
+    return {
+        "model_slug": model_slug,
+        "num_calls": num_calls,
+        "output_tokens": output_tokens,
+        "duration": duration,
+        "e2e_otps": output_tokens / duration if duration > 0 else 0.0,
+    }
+
+
+class SubAgentParams(BaseModel):
+    """Parameters for sub-agent tool invocation."""
+
+    task: Annotated[str, Field(description="The task/prompt for the sub-agent to complete")]
+    input_files: Annotated[
+        list[str],
+        Field(
+            default_factory=list,
+            description="List of file paths to upload to the sub-agent's execution environment. "
+            "Use paths from output_dir (e.g., files saved by previous sub-agents).",
+        ),
+    ]
+
+
+DEFAULT_SUB_AGENT_DESCRIPTION = "A sub agent that can be used to handle a contained, specific task."
+
+# Agent name validation pattern: alphanumeric, underscores, hyphens, 1-128 chars
+AGENT_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
+
+
+class Agent[FinishParams: BaseModel, FinishMeta]:
+    """Agent that executes tool-using loops with automatic context management.
+
+    Runs up to max_turns iterations of: LLM generation → tool execution → message accumulation.
+    When conversation history exceeds context window limits, older messages are automatically
+    condensed into a summary to preserve working memory.
+
+    The Agent can be used as an async context manager via .session() for automatic tool
+    lifecycle management, logging, and file saving:
+
+        from stirrup.clients.chat_completions_client import ChatCompletionsClient
+
+        # Create client and agent
+        client = ChatCompletionsClient(model="gpt-5.6-luna", max_tokens=8_192, context_window_tokens=1_000_000)
+        agent = Agent(client=client, name="assistant")
+
+        async with agent.session(output_dir="./output") as session:
+            finish_params, history, metadata = await session.run("Your task here")
+    """
+
+    @overload
+    def __init__(
+        self: "Agent[SimpleFinishParams, ToolUseCountMetadata]",
+        client: LLMClient,
+        name: str,
+        *,
+        max_turns: int = ...,
+        system_prompt: str | None = ...,
+        tools: list[Tool | ToolProvider] | None = ...,
+        finish_tool: None = None,
+        context_summarization_cutoff: float = ...,
+        turns_remaining_warning_threshold: int = ...,
+        run_sync_in_thread: bool = ...,
+        text_only_tool_responses: bool = ...,
+        block_successive_assistant_messages: bool = ...,
+        recover_from_context_overflow: bool = ...,
+        share_parent_exec_env: bool = ...,
+        logger: AgentLoggerBase | None = ...,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self: "Agent[FinishParams, FinishMeta]",
+        client: LLMClient,
+        name: str,
+        *,
+        max_turns: int = ...,
+        system_prompt: str | None = ...,
+        tools: list[Tool | ToolProvider] | None = ...,
+        finish_tool: Tool[FinishParams, FinishMeta],
+        context_summarization_cutoff: float = ...,
+        turns_remaining_warning_threshold: int = ...,
+        run_sync_in_thread: bool = ...,
+        text_only_tool_responses: bool = ...,
+        block_successive_assistant_messages: bool = ...,
+        recover_from_context_overflow: bool = ...,
+        share_parent_exec_env: bool = ...,
+        logger: AgentLoggerBase | None = ...,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self: "Agent[BaseModel, Any]",
+        client: LLMClient,
+        name: str,
+        *,
+        max_turns: int = ...,
+        system_prompt: str | None = ...,
+        tools: list[Tool | ToolProvider] | None = ...,
+        finish_tool: list[Tool],
+        context_summarization_cutoff: float = ...,
+        turns_remaining_warning_threshold: int = ...,
+        run_sync_in_thread: bool = ...,
+        text_only_tool_responses: bool = ...,
+        block_successive_assistant_messages: bool = ...,
+        recover_from_context_overflow: bool = ...,
+        share_parent_exec_env: bool = ...,
+        logger: AgentLoggerBase | None = ...,
+    ) -> None: ...
+
+    def __init__(
+        self,
+        client: LLMClient,
+        name: str,
+        *,
+        max_turns: int = AGENT_MAX_TURNS,
+        system_prompt: str | None = None,
+        tools: list[Tool | ToolProvider] | None = None,
+        finish_tool: Tool[FinishParams, FinishMeta] | list[Tool] | None = None,
+        # Agent options
+        context_summarization_cutoff: float = CONTEXT_SUMMARIZATION_CUTOFF,
+        turns_remaining_warning_threshold: int = TURNS_REMAINING_WARNING_THRESHOLD,
+        run_sync_in_thread: bool = True,
+        text_only_tool_responses: bool = True,
+        block_successive_assistant_messages: bool = True,
+        recover_from_context_overflow: bool = True,
+        # Subagent options
+        share_parent_exec_env: bool = False,
+        # Logging
+        logger: AgentLoggerBase | None = None,
+    ) -> None:
+        """Initialize the agent with an LLM client and configuration.
+
+        Args:
+            client: LLM client for generating responses. Use ChatCompletionsClient for
+                    OpenAI/OpenAI-compatible APIs, or LiteLLMClient for other providers.
+                    The client's context_window_tokens (a positive int) decides when
+                    conversation history is summarized; a ValueError is raised otherwise.
+            name: Name of the agent (used for logging purposes)
+            max_turns: Maximum number of turns before stopping
+            system_prompt: System prompt to prepend to all runs (when using string prompts)
+            tools: List of Tools and/or ToolProviders available to the agent.
+                   If None, uses default_tools(). ToolProviders are automatically
+                   set up and torn down by Agent.session().
+                   Use [*default_tools(), extra_tool] to extend defaults.
+            finish_tool: Tool or list of Tools used to signal task completion.
+                         Defaults to SIMPLE_FINISH_TOOL. If a list is provided,
+                         a successful call to any listed tool ends the run.
+            context_summarization_cutoff: Fraction of context window (0-1) at which to trigger summarization
+            run_sync_in_thread: Execute synchronous tool executors in a separate thread
+            text_only_tool_responses: Extract images from tool responses as separate user messages
+            block_successive_assistant_messages: If True (default), automatically inject a continue
+                                               message when assistant responds without tool calls to
+                                               prevent successive assistant messages.
+            recover_from_context_overflow: If True (default), drop one completed turn and retry when
+                                           the model reports a context overflow. If the original
+                                           prompt still overflows, the context error is raised.
+            share_parent_exec_env: When True and used as a subagent, share the parent's code
+                                   execution environment instead of creating a new one. This
+                                   provides better performance (no file copying) and allows
+                                   the subagent to see all files in the parent's environment.
+                                   Only effective when the agent is used as a subagent via to_tool().
+            logger: Optional logger instance. If None, creates AgentLogger() internally.
+
+        """
+        # Validate agent name
+        if not AGENT_NAME_PATTERN.match(name):
+            raise ValueError(
+                f"Invalid agent name '{name}'. "
+                "Agent names must match pattern '^[a-zA-Z0-9_-]{1,128}$' "
+                "(alphanumeric, underscores, hyphens only, 1-128 characters)."
+            )
+
+        self._client: LLMClient = client
+        context_window_tokens = client.context_window_tokens
+        if (
+            isinstance(context_window_tokens, bool)
+            or not isinstance(context_window_tokens, int)
+            or context_window_tokens <= 0
+        ):
+            raise ValueError(
+                f"client.context_window_tokens must be a positive int, "
+                f"got {context_window_tokens!r} ({type(context_window_tokens).__name__})"
+            )
+        self._context_window_tokens = context_window_tokens
+
+        self._name = name
+        self._max_turns = max_turns
+        self._system_prompt = system_prompt
+        self._tools = tools if tools is not None else default_tools()
+        self._finish_tools: dict[str, Tool[Any, Any]] = _normalize_finish_tools(finish_tool)
+        self._context_summarization_cutoff = context_summarization_cutoff
+        self._turns_remaining_warning_threshold = turns_remaining_warning_threshold
+        self._run_sync_in_thread = run_sync_in_thread
+        self._text_only_tool_responses = text_only_tool_responses
+        self._block_successive_assistant_messages = block_successive_assistant_messages
+        self._recover_from_context_overflow = recover_from_context_overflow
+        self._share_parent_exec_env = share_parent_exec_env
+
+        # Logger (can be passed in or created here)
+        self._logger: AgentLoggerBase = logger if logger is not None else AgentLogger()
+
+        # Session configuration (set during session(), used in __aenter__)
+        self._pending_output_dir: Path | None = None
+        self._pending_input_files: str | Path | list[str | Path] | None = None
+        self._pending_skills_dir: Path | None = None
+        self._resume: bool = False
+        self._clear_cache_on_success: bool = True
+        self._cache_on_interrupt: bool = True
+
+        # Eagerly register static tools + finish tools (available without a session)
+        self._active_tools: dict[str, Tool] = {}
+        for tool in self._tools:
+            if isinstance(tool, Tool):
+                if tool.name in self._finish_tools:
+                    raise ValueError(
+                        f"Tool name '{tool.name}' in `tools` collides with a finish tool. "
+                        "Tool names must be unique across `tools` and `finish_tool`."
+                    )
+                self._active_tools[tool.name] = tool
+        self._active_tools.update(self._finish_tools)
+        self._has_tool_providers = any(isinstance(t, ToolProvider) for t in self._tools)
+
+        # Cache state for resumption (set during run(), used in __aexit__ for caching on interrupt)
+        self._current_task_hash: str | None = None
+        self._current_run_state: CacheState | None = None
+
+    @property
+    def name(self) -> str:
+        """The name of this agent."""
+        return self._name
+
+    @property
+    def client(self) -> LLMClient:
+        """The LLM client used by this agent."""
+        return self._client
+
+    @property
+    def tools(self) -> dict[str, Tool]:
+        """Currently active tools (available after entering session context)."""
+        return self._active_tools
+
+    @property
+    def finish_tool(self) -> Tool[FinishParams, FinishMeta]:
+        """The single finish tool used to signal task completion.
+
+        Raises ValueError if multiple finish tools are configured; use ``finish_tools`` instead.
+        """
+        if len(self._finish_tools) != 1:
+            raise ValueError(
+                "Agent has multiple finish tools configured. Use finish_tools to access all finish tools by name."
+            )
+        return next(iter(self._finish_tools.values()))
+
+    @property
+    def finish_tools(self) -> dict[str, Tool]:
+        """All finish tools keyed by name."""
+        return self._finish_tools
+
+    @property
+    def logger(self) -> AgentLoggerBase:
+        """The logger instance used by this agent."""
+        return self._logger
+
+    def session(
+        self,
+        output_dir: Path | str | None = None,
+        input_files: str | Path | list[str | Path] | None = None,
+        skills_dir: Path | str | None = None,
+        resume: bool = False,
+        clear_cache_on_success: bool = True,
+        cache_on_interrupt: bool = True,
+    ) -> Self:
+        """Configure a session and return self for use as async context manager.
+
+        Args:
+            output_dir: Directory to save output files from finish_params.paths
+            input_files: Files to upload to the execution environment at session start.
+                        Accepts a single path or list of paths. Supports:
+                        - File paths (str or Path)
+                        - Directory paths (uploaded recursively)
+                        - Glob patterns (e.g., "data/*.csv", "**/*.py")
+                        Raises ValueError if no CodeExecToolProvider is configured
+                        or if a glob pattern matches no files.
+            skills_dir: Directory containing skill definitions to load and make available
+                       to the agent. Skills are uploaded to the execution environment
+                       and their metadata is included in the system prompt.
+            resume: If True, attempt to resume from cached state if available.
+                   The cache is identified by hashing the init_msgs passed to run().
+                   Cached state includes message history, current turn, and execution
+                   environment files from a previous interrupted run.
+            clear_cache_on_success: If True (default), automatically clear the cache
+                                   when the agent completes successfully. Set to False
+                                   to preserve caches for inspection or debugging.
+            cache_on_interrupt: If True (default), set up a SIGINT handler to cache
+                               state on Ctrl+C. Set to False when running agents in
+                               threads or subprocesses where signal handlers cannot
+                               be registered from non-main threads.
+
+        Returns:
+            Self, for use with `async with agent.session(...) as session:`
+
+        Example:
+            async with agent.session(output_dir="./output", input_files="data/*.csv") as session:
+                result = await session.run("Analyze the CSV files")
+
+        Note:
+            Multiple concurrent sessions from the same Agent instance are supported.
+            Each session maintains isolated state via ContextVar.
+
+        """
+        self._pending_output_dir = Path(output_dir) if output_dir else None
+        self._pending_input_files = input_files
+        self._pending_skills_dir = Path(skills_dir) if skills_dir else None
+        self._resume = resume
+        self._clear_cache_on_success = clear_cache_on_success
+        self._cache_on_interrupt = cache_on_interrupt
+        return self
+
+    def _handle_interrupt(self, _signum: int, _frame: object) -> None:
+        """Handle SIGINT to ensure caching before exit.
+
+        Converts the signal to a KeyboardInterrupt exception so that __aexit__
+        is properly called and can cache the state before cleanup.
+        """
+        raise KeyboardInterrupt("Agent interrupted - state will be cached")
+
+    def _resolve_input_files(self, input_files: str | Path | list[str | Path]) -> list[Path]:
+        """Resolve input file paths, expanding globs and normalizing to Path objects.
+
+        Args:
+            input_files: Single path or list of paths (strings, Paths, or glob patterns)
+
+        Returns:
+            List of resolved Path objects
+
+        Raises:
+            ValueError: If a glob pattern matches no files
+
+        """
+        # Normalize to list
+        paths = [input_files] if isinstance(input_files, str | Path) else list(input_files)
+
+        resolved: list[Path] = []
+        for path in paths:
+            path_str = str(path)
+
+            # Check if it looks like a glob pattern
+            if any(c in path_str for c in ("*", "?", "[")):
+                # Expand glob pattern
+                matches = glob_module.glob(path_str, recursive=True)
+                if not matches:
+                    raise ValueError(f"Glob pattern '{path_str}' matched no files")
+                resolved.extend(Path(m) for m in matches)
+            else:
+                # Regular path - add as-is (upload_files will handle non-existent)
+                resolved.append(Path(path))
+
+        return resolved
+
+    def _collect_all_tools(self) -> list[Tool | ToolProvider]:
+        """Collect all tools from this agent and any sub-agents recursively."""
+        all_tools: list[Tool | ToolProvider] = list(self._tools)
+
+        for tool in self._tools:
+            # Check if this tool wraps a sub-agent (created via to_tool())
+            if isinstance(tool, Tool) and hasattr(tool, "executor"):
+                # Check if the executor is a closure that captured an Agent
+                closure = getattr(tool.executor, "__closure__", None)
+                if closure:
+                    for cell in closure:
+                        try:
+                            cell_contents = cell.cell_contents
+                            if isinstance(cell_contents, Agent):
+                                # Recursively collect from sub-agent
+                                all_tools.extend(cell_contents._collect_all_tools())  # noqa: SLF001
+                        except ValueError:
+                            # cell_contents can raise ValueError if empty
+                            pass
+
+        return all_tools
+
+    def _collect_warnings(self) -> list[str]:
+        """Collect warnings about agent configuration."""
+        warnings = []
+
+        # Collect all tools including from sub-agents
+        all_tools = self._collect_all_tools()
+
+        # Check for LocalCodeExecToolProvider (security risk) - only in top-level agent
+        for tool in self._tools:
+            if isinstance(tool, LocalCodeExecToolProvider):
+                warnings.append(
+                    "LocalCodeExecToolProvider can access your local filesystem. "
+                    "Consider using DockerCodeExecToolProvider or E2BCodeExecToolProvider for sandboxed execution.",
+                )
+                break
+
+        # Check for missing default tools (across entire agent tree).
+        # These throwaway instances are only inspected for their types; constructing
+        # them costs nothing and keeps this check in step with default_tools().
+        for default_tool in default_tools():
+            default_type = type(default_tool)
+
+            # Special case: For code exec providers, check if ANY CodeExecToolProvider is present
+            if isinstance(default_tool, CodeExecToolProvider):
+                found = any(isinstance(t, CodeExecToolProvider) for t in all_tools)
+            else:
+                found = any(isinstance(t, default_type) for t in all_tools)
+
+            if not found:
+                warnings.append(f"Missing default tool: {default_type.__name__}")
+
+        # Check for code execution tool per-agent (including sub-agents)
+        agents_without_code_exec = self._collect_agents_without_code_exec()
+        warnings.extend(
+            f"Agent '{agent_name}' has no code execution tool. It will not be able to save files to the output directory."
+            for agent_name in agents_without_code_exec
+        )
+
+        # Check for code execution without output directory
+        state = _SESSION_STATE.get(None)
+        if state and state.exec_env and not state.output_dir:
+            warnings.append(
+                "Code execution environment is configured but no output_dir is set. "
+                "Files created by the agent will be lost when the session ends.",
+            )
+
+        return warnings
+
+    def _build_system_prompt(self) -> str:
+        """Build the complete system prompt: base + input files + user instructions.
+
+        Returns:
+            Complete system prompt string combining base prompt, input file listing,
+            and user's custom system_prompt (if provided).
+        """
+        from stirrup.prompts import BASE_SYSTEM_PROMPT_TEMPLATE
+
+        parts: list[str] = []
+
+        # Base prompt with max_turns
+        parts.append(BASE_SYSTEM_PROMPT_TEMPLATE.format(max_turns=self._max_turns))
+
+        # User interaction guidance based on whether user_input tool is available
+        if "user_input" in self._active_tools:
+            parts.append(
+                " You have access to the user_input tool which allows you to ask the user "
+                "questions when you need clarification or are uncertain about something."
+            )
+        else:
+            parts.append(" You are not able to interact with the user during the task.")
+
+        # Input files section (if any were uploaded)
+        state = _SESSION_STATE.get(None)
+        if state and state.uploaded_file_paths:
+            files_section = "\n\nThe following input files have been provided for this task:"
+            for file_path in state.uploaded_file_paths:
+                files_section += f"\n- {file_path}"
+            parts.append(files_section)
+
+        # Skills section (if skills were loaded)
+        if state and state.skills_metadata:
+            skills_section = format_skills_section(state.skills_metadata)
+            if skills_section:
+                parts.append(f"\n\n{skills_section}")
+
+        # User's custom system prompt (if provided)
+        if self._system_prompt:
+            parts.append(f"\n\nFollow these instructions from the User:\n{self._system_prompt}")
+
+        return "".join(parts)
+
+    def _collect_agents_without_code_exec(self) -> list[str]:
+        """Collect names of agents (including self and sub-agents) that lack a code execution tool."""
+        agents_missing: list[str] = []
+
+        # Check if this agent has a code execution tool
+        has_code_exec = any(isinstance(t, CodeExecToolProvider) for t in self._tools)
+        if not has_code_exec:
+            agents_missing.append(self._name)
+
+        # Recursively check sub-agents
+        for tool in self._tools:
+            if isinstance(tool, Tool) and hasattr(tool, "executor"):
+                closure = getattr(tool.executor, "__closure__", None)
+                if closure:
+                    for cell in closure:
+                        try:
+                            cell_contents = cell.cell_contents
+                            if isinstance(cell_contents, Agent):
+                                agents_missing.extend(cell_contents._collect_agents_without_code_exec())  # noqa: SLF001
+                        except ValueError:
+                            pass
+
+        return agents_missing
+
+    def _validate_subagent_code_exec_requirements(self) -> None:
+        """Validate that if any subagent has code exec, the parent must also have code exec.
+
+        This validation ensures proper file transfer chain - subagent files transfer to
+        parent's exec env, so parent must have one to receive them.
+
+        Raises:
+            ValueError: If a subagent has code exec but this parent doesn't.
+
+        """
+        parent_has_code_exec = any(isinstance(t, CodeExecToolProvider) for t in self._tools)
+
+        for tool in self._tools:
+            if isinstance(tool, Tool) and hasattr(tool, "executor"):
+                closure = getattr(tool.executor, "__closure__", None)
+                if closure:
+                    for cell in closure:
+                        try:
+                            cell_contents = cell.cell_contents
+                            if isinstance(cell_contents, Agent):
+                                subagent = cell_contents
+                                subagent_has_code_exec = any(
+                                    isinstance(t, CodeExecToolProvider)
+                                    for t in subagent._tools  # noqa: SLF001
+                                )
+
+                                if subagent_has_code_exec and not parent_has_code_exec:
+                                    raise ValueError(
+                                        f"Subagent '{subagent._name}' has a code execution tool, "  # noqa: SLF001
+                                        f"but parent agent '{self._name}' does not. "
+                                        f"Parent must have a code execution tool to receive files from subagent."
+                                    )
+
+                                # Recursively validate nested subagents
+                                subagent._validate_subagent_code_exec_requirements()  # noqa: SLF001
+                        except ValueError as e:
+                            if "code execution tool" in str(e):
+                                raise
+                            # cell_contents can raise ValueError if empty - ignore
+
+    async def __aenter__(self) -> "SessionAgent[FinishParams, FinishMeta]":
+        """Enter session context: set up tools, logging, and resources.
+
+        Returns a SessionAgent wrapping this agent's state, providing access to
+        both static tools and ToolProvider-created tools. The SessionAgent shares
+        this agent's __dict__, so state changes are visible to __aexit__.
+        """
+        exit_stack = AsyncExitStack()
+        await exit_stack.__aenter__()
+
+        # Get parent state if exists (for subagent file transfer)
+        parent_state = _SESSION_STATE.get(None)
+
+        current_depth = _PARENT_DEPTH.get()
+
+        # Create session state and store in ContextVar
+        state = SessionState(
+            exit_stack=exit_stack,
+            output_dir=str(self._pending_output_dir) if self._pending_output_dir else None,
+            parent_exec_env=parent_state.exec_env if parent_state else None,
+            depth=current_depth,
+            logger=self._logger,
+        )
+        _SESSION_STATE.set(state)
+
+        try:
+            # === TWO-PASS TOOL INITIALIZATION ===
+            # First pass initializes CodeExecToolProvider so that dependent tools
+            # (like ViewImageToolProvider) can access state.exec_env in second pass.
+            active_tools: list[Tool] = []
+
+            # Check if we should share parent's exec_env (subagent with share_parent_exec_env=True)
+            should_share_exec_env = (
+                self._share_parent_exec_env
+                and current_depth > 0
+                and parent_state is not None
+                and parent_state.exec_env is not None
+            )
+
+            if should_share_exec_env:
+                # SHARED EXEC ENV: Use parent's exec_env directly, don't create new one
+                state.exec_env = parent_state.exec_env  # type: ignore[union-attr]
+                state.exec_env_owned = False
+                logger.debug(
+                    "[%s __aenter__] Sharing parent's exec_env: %s (temp_dir=%s)",
+                    self._name,
+                    type(state.exec_env).__name__,
+                    getattr(state.exec_env, "_temp_dir", "N/A"),
+                )
+                # Skip CodeExecToolProvider initialization but still need to add code exec tool
+                # Create the tool from the shared exec_env using get_code_exec_tool()
+                # (the exec_env is already entered by parent, so we just create the tool wrapper)
+                if state.exec_env is None:
+                    raise RuntimeError("Expected shared exec_env to be set, but it is None")
+                code_exec_tool = state.exec_env.get_code_exec_tool()
+                active_tools.append(code_exec_tool)
+            else:
+                # OWNED EXEC ENV: Initialize our own CodeExecToolProvider (at most one allowed)
+                code_exec_providers = [t for t in self._tools if isinstance(t, CodeExecToolProvider)]
+                if len(code_exec_providers) > 1:
+                    raise ValueError(
+                        f"Agent can only have one CodeExecToolProvider, found {len(code_exec_providers)}: "
+                        f"{[type(p).__name__ for p in code_exec_providers]}"
+                    )
+
+                if code_exec_providers:
+                    provider = code_exec_providers[0]
+                    result = await exit_stack.enter_async_context(provider)
+                    if isinstance(result, list):
+                        active_tools.extend(result)
+                    else:
+                        active_tools.append(result)
+                    state.exec_env = provider
+                    state.exec_env_owned = True
+
+            # Second pass: Initialize remaining ToolProviders and static Tools
+            for tool in self._tools:
+                if isinstance(tool, CodeExecToolProvider):
+                    continue  # Already processed in first pass
+
+                if isinstance(tool, ToolProvider):
+                    # ToolProvider: enter context and get returned tool(s)
+                    result = await exit_stack.enter_async_context(tool)
+                    # Handle both single Tool and list[Tool] returns (e.g., MCPToolProvider)
+                    if isinstance(result, list):
+                        active_tools.extend(result)
+                    else:
+                        active_tools.append(result)
+                else:
+                    # Static Tool, use directly
+                    active_tools.append(tool)
+
+            # Detect collisions between session-resolved tool names and finish tool names.
+            # Static-Tool collisions are caught earlier in __init__; ToolProvider-derived tools
+            # only have known names at this point.
+            colliding = sorted({t.name for t in active_tools} & self._finish_tools.keys())
+            if colliding:
+                raise ValueError(
+                    f"Session-resolved tool name(s) {colliding} collide with finish tool name(s). "
+                    "Tool names must be unique across `tools` and `finish_tool`."
+                )
+
+            # Merge session-initialized tools into _active_tools and ensure finish tools take precedence.
+            self._active_tools.update({t.name: t for t in active_tools})
+            self._active_tools.update(self._finish_tools)
+
+            # Validate subagent code exec requirements (only at root level)
+            if current_depth == 0:
+                self._validate_subagent_code_exec_requirements()
+
+            # Upload input files to exec_env if specified
+            if self._pending_input_files:
+                if not state.exec_env:
+                    raise ValueError("input_files specified but no CodeExecToolProvider configured")
+
+                logger.debug(
+                    "[%s __aenter__] Uploading input files: %s, depth=%d, parent_exec_env=%s, parent_exec_env._temp_dir=%s, exec_env_owned=%s",
+                    self._name,
+                    self._pending_input_files,
+                    state.depth,
+                    type(state.parent_exec_env).__name__ if state.parent_exec_env else None,
+                    getattr(state.parent_exec_env, "_temp_dir", "N/A") if state.parent_exec_env else None,
+                    state.exec_env_owned,
+                )
+
+                input_files: list[str | Path] = (
+                    [self._pending_input_files]
+                    if isinstance(self._pending_input_files, (str, Path))
+                    else self._pending_input_files
+                )
+
+                if state.depth > 0 and state.parent_exec_env:
+                    if not state.exec_env_owned:
+                        # SHARED EXEC ENV: Files already accessible - no transfer needed
+                        # Just record the paths as "uploaded" for system prompt
+                        state.uploaded_file_paths = [str(p) for p in input_files]
+                        logger.debug(
+                            "[%s __aenter__] Shared exec_env - files already accessible: %s",
+                            self._name,
+                            state.uploaded_file_paths,
+                        )
+                    else:
+                        # SEPARATE EXEC ENV: Read files from parent's exec env, write to subagent's exec env
+                        # input_files are paths within the parent's environment
+                        result = await state.exec_env.upload_files(
+                            *input_files,
+                            source_env=state.parent_exec_env,
+                        )
+                        logger.debug(
+                            "[%s __aenter__] Upload result: uploaded=%s, failed=%s",
+                            self._name,
+                            result.uploaded,
+                            result.failed,
+                        )
+                        state.uploaded_file_paths = [uf.dest_path for uf in result.uploaded]
+                        if result.failed:
+                            raise RuntimeError(f"Failed to upload files: {result.failed}")
+                else:
+                    # ROOT AGENT: Read files from local filesystem
+                    resolved = self._resolve_input_files(self._pending_input_files)
+                    result = await state.exec_env.upload_files(*resolved)
+                    logger.debug(
+                        "[%s __aenter__] Upload result: uploaded=%s, failed=%s",
+                        self._name,
+                        result.uploaded,
+                        result.failed,
+                    )
+                    state.uploaded_file_paths = [uf.dest_path for uf in result.uploaded]
+                    if result.failed:
+                        raise RuntimeError(f"Failed to upload files: {result.failed}")
+            self._pending_input_files = None  # Clear pending state
+
+            # Upload skills directory if it exists and load metadata
+            if self._pending_skills_dir:
+                skills_path = self._pending_skills_dir
+                if skills_path.exists() and skills_path.is_dir():
+                    if state.exec_env:
+                        logger.debug("[%s __aenter__] Uploading skills directory: %s", self._name, skills_path)
+                        await state.exec_env.upload_files(skills_path, dest_dir="skills")
+                    # Load skills metadata (even if no exec_env, for system prompt)
+                    state.skills_metadata = load_skills_metadata(skills_path)
+                    logger.debug("[%s __aenter__] Loaded %d skills", self._name, len(state.skills_metadata))
+                self._pending_skills_dir = None  # Clear pending state
+            elif parent_state and parent_state.skills_metadata:
+                # Sub-agent: inherit skills from parent
+                state.skills_metadata = parent_state.skills_metadata
+                logger.debug("[%s __aenter__] Inherited %d skills from parent", self._name, len(state.skills_metadata))
+                # Transfer skills directory from parent's exec_env to sub-agent's exec_env
+                # (only if we have a separate exec_env)
+                if state.exec_env and parent_state.exec_env and state.exec_env_owned:
+                    await state.exec_env.upload_files("skills", source_env=parent_state.exec_env)
+
+            # Configure and enter logger context
+            self._logger.name = self._name
+            self._logger.model = self._client.model_slug
+            self._logger.max_turns = self._max_turns
+            # depth is already set (0 for main agent, passed in for sub-agents)
+            self._logger.__enter__()
+
+            # Set up signal handler for graceful caching on interrupt (root agent only)
+            if current_depth == 0 and self._cache_on_interrupt:
+                self._original_sigint = signal.getsignal(signal.SIGINT)
+                signal.signal(signal.SIGINT, self._handle_interrupt)
+
+            return SessionAgent.from_agent(self, state)
+
+        except Exception:
+            await exit_stack.__aexit__(None, None, None)
+            raise
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        """Exit session context: save files, cleanup resources.
+
+        File handling is depth-aware:
+        - Root agent (depth=0): Saves files to local filesystem output_dir
+        - Subagent (depth>0): Transfers files to parent's exec env at output_dir path
+        """
+        state = _SESSION_STATE.get()
+
+        try:
+            # Cache state on non-success exit (only at root level)
+            should_cache = (
+                state.depth == 0
+                and state.run_started
+                and self._cache_on_interrupt
+                and (exc_type is not None or state.finish_params is None)
+                and self._current_task_hash is not None
+                and self._current_run_state is not None
+            )
+
+            logger.debug(
+                "[%s __aexit__] Cache decision: should_cache=%s, depth=%d, exc_type=%s, "
+                "finish_params=%s, task_hash=%s, run_state=%s",
+                self._name,
+                should_cache,
+                state.depth,
+                exc_type,
+                state.finish_params is not None,
+                self._current_task_hash,
+                self._current_run_state is not None,
+            )
+
+            if should_cache:
+                cache_manager = CacheManager(clear_on_success=self._clear_cache_on_success)
+
+                exec_env_dir = state.exec_env.temp_dir if state.exec_env else None
+
+                # Explicit checks to keep type checker happy - should_cache condition guarantees these
+                if self._current_task_hash is None or self._current_run_state is None:
+                    raise ValueError("Cache state is unexpectedly None after should_cache check")
+
+                # Temporarily block SIGINT during cache save to prevent interruption
+                original_handler = signal.getsignal(signal.SIGINT)
+                signal.signal(signal.SIGINT, signal.SIG_IGN)
+                try:
+                    cache_manager.save_state(
+                        self._current_task_hash,
+                        self._current_run_state,
+                        exec_env_dir,
+                    )
+                finally:
+                    signal.signal(signal.SIGINT, original_handler)
+                self._logger.info(f"Cached state for task {self._current_task_hash}")
+            # Save files from finish_params.paths based on depth
+            if state.output_dir and state.finish_params and state.exec_env:
+                paths = getattr(state.finish_params, "paths", None)
+                if paths:
+                    if state.depth == 0:
+                        # ROOT AGENT: Save to local filesystem
+                        output_path = Path(state.output_dir)
+                        output_path.mkdir(parents=True, exist_ok=True)
+                        logger.debug(
+                            "[%s] ROOT AGENT (depth=0): Saving %d file(s) to local filesystem: %s -> %s",
+                            self._name,
+                            len(paths),
+                            paths,
+                            output_path,
+                        )
+                        result = await state.exec_env.save_output_files(paths, output_path, dest_env=None)
+                        state.output_files_result = result
+                        logger.debug(
+                            "[%s] ROOT AGENT: Saved %d file(s), failed %d",
+                            self._name,
+                            len(result.saved),
+                            len(result.failed),
+                        )
+                        for failed_source, reason in result.failed.items():
+                            logger.warning(
+                                "[%s] ROOT AGENT: Output file not saved: %s (%s)",
+                                self._name,
+                                failed_source,
+                                reason,
+                            )
+                    else:
+                        # SUBAGENT: Handle file transfer based on exec_env ownership
+                        if not state.exec_env_owned:
+                            # SHARED EXEC ENV: Validate declared files in place before
+                            # telling the parent they are available.
+                            result = SaveOutputFilesResult()
+                            for source_path in dict.fromkeys(paths):
+                                try:
+                                    relative_path = _safe_output_relative_path(
+                                        source_path,
+                                        source_roots=state.exec_env.output_source_roots(),
+                                    )
+                                    resolved_source = await state.exec_env.resolve_output_source(source_path)
+                                    content = await state.exec_env.read_file_bytes(resolved_source)
+                                    result.saved.append(SavedFile(source_path, relative_path, len(content)))
+                                except Exception as exc:
+                                    result.failed[source_path] = str(exc)
+                                    logger.warning(
+                                        "[%s] SUBAGENT: Shared output file is unavailable: %s (%s)",
+                                        self._name,
+                                        source_path,
+                                        exc,
+                                    )
+                            state.output_files_result = result
+                            logger.debug(
+                                "[%s] SUBAGENT (depth=%d, shared_exec_env): Validated %d file(s), failed %d",
+                                self._name,
+                                state.depth,
+                                len(result.saved),
+                                len(result.failed),
+                            )
+                        elif state.parent_exec_env:
+                            # SEPARATE EXEC ENV: Transfer to parent's exec env
+                            logger.debug(
+                                "[%s] SUBAGENT (depth=%d): Transferring %d file(s) to parent exec env: %s -> %s",
+                                self._name,
+                                state.depth,
+                                len(paths),
+                                paths,
+                                state.output_dir,
+                            )
+                            result = await state.exec_env.save_output_files(
+                                paths, state.output_dir, dest_env=state.parent_exec_env
+                            )
+                            state.output_files_result = result
+                            logger.debug(
+                                "[%s] SUBAGENT: Transferred %d file(s) to parent, failed %d. Paths: %s",
+                                self._name,
+                                len(result.saved),
+                                len(result.failed),
+                                [str(saved.output_path) for saved in result.saved],
+                            )
+                            if result.failed:
+                                logger.warning("Failed to transfer some files to parent env: %s", result.failed)
+                        else:
+                            reason = "No parent execution environment is available for transfer"
+                            state.output_files_result = SaveOutputFilesResult(
+                                failed={source_path: reason for source_path in dict.fromkeys(paths)}
+                            )
+                            logger.warning(
+                                "Subagent at depth %d has exec_env but no parent_exec_env. "
+                                "Files will not be transferred.",
+                                state.depth,
+                            )
+        finally:
+            # Restore original signal handler (root agent only)
+            if hasattr(self, "_original_sigint"):
+                signal.signal(signal.SIGINT, self._original_sigint)
+                del self._original_sigint
+
+            # Exit logger context
+            self._logger.finish_params = state.finish_params
+            self._logger.run_metadata = state.run_metadata
+            self._logger.output_dir = str(state.output_dir) if state.output_dir else None
+            self._logger.__exit__(exc_type, exc_val, exc_tb)
+
+            # Reset active tools to static-only (remove session-initialized tools)
+            self._active_tools = {}
+            for tool in self._tools:
+                if isinstance(tool, Tool):
+                    self._active_tools[tool.name] = tool
+            self._active_tools.update(self._finish_tools)
+
+            # Cleanup all async resources
+            await state.exit_stack.__aexit__(exc_type, exc_val, exc_tb)
+
+    async def run_tool(self, tool_call: ToolCall, run_metadata: dict[str, list[Any]]) -> ToolMessage:
+        """Execute a single tool call with error handling for invalid JSON/arguments.
+
+        Returns a ToolMessage containing either the tool output or an error description.
+        Metadata from the tool result is stored in the provided run_metadata dict.
+        """
+        tool = self._active_tools.get(tool_call.name)
+        result: ToolResult
+        args_valid = True
+
+        # Ensure tool is tracked in metadata dict (even if no metadata returned)
+        if tool_call.name not in run_metadata:
+            run_metadata[tool_call.name] = []
+
+        tool_start_time = perf_counter()
+
+        if tool:
+            try:
+                params = tool.parameters.model_validate_json(_tool_arguments_json(tool_call))
+
+                # Set parent depth for sub-agent tools to read
+                prev_depth = _PARENT_DEPTH.set(self._logger.depth)
+                try:
+                    if inspect.iscoroutinefunction(tool.executor):
+                        result = await tool.executor(params)
+                    elif self._run_sync_in_thread:
+                        # type checker doesn't understand iscoroutinefunction narrowing
+                        result = await anyio.to_thread.run_sync(tool.executor, params)  # ty: ignore[unresolved-attribute]
+                    else:
+                        # iscoroutinefunction check above ensures this is sync
+                        result = tool.executor(params)  # ty: ignore[invalid-assignment]
+                finally:
+                    _PARENT_DEPTH.reset(prev_depth)
+
+                # Store metadata if present
+                if result.metadata is not None:
+                    run_metadata[tool_call.name].append(result.metadata)
+            except ValidationError:
+                LOGGER.debug(
+                    "LLMClient tried to use the tool %s but the tool arguments are not valid: %r",
+                    tool_call.name,
+                    tool_call.arguments,
+                )
+                result = ToolResult(content="Tool arguments are not valid", success=False)
+                args_valid = False
+        else:
+            LOGGER.debug(f"LLMClient tried to use the tool {tool_call.name} which is not in the tools list")
+            result = ToolResult(content=f"{tool_call.name} is not a valid tool", success=False)
+
+        tool_end_time = perf_counter()
+
+        return ToolMessage(
+            content=result.content,
+            tool_call_id=tool_call.tool_call_id,
+            name=tool_call.name,
+            args_was_valid=args_valid,
+            success=result.success,
+            tool_start_time=tool_start_time,
+            tool_end_time=tool_end_time,
+        )
+
+    def _unwind_context_overflow(self, messages: list[ChatMessage]) -> tuple[list[ChatMessage], str]:
+        """Drop the latest completed turn, preserving the original task prompt."""
+        if not self._recover_from_context_overflow:
+            raise ContextOverflowError("Context overflow recovery is disabled")
+
+        turn = self._latest_completed_turn(messages)
+        if turn is None:
+            raise self._context_boundary_error(messages)
+
+        turn_start, assistant_message_id = turn
+        if not self._has_prior_completed_turn(messages, turn_start):
+            raise self._context_boundary_error(messages[:turn_start])
+        return messages[:turn_start], assistant_message_id
+
+    @staticmethod
+    def _latest_completed_turn(messages: list[ChatMessage]) -> tuple[int, str] | None:
+        """Return the start index and id for the latest assistant turn.
+
+        A turn-warning message immediately before an assistant response belongs to that
+        assistant turn, so it is unwound with the assistant response.
+        """
+        for index in range(len(messages) - 1, -1, -1):
+            msg = messages[index]
+            if isinstance(msg, SummaryMessage):
+                return None
+
+            if isinstance(msg, AssistantMessage):
+                if index > 0 and isinstance(messages[index - 1], TurnWarningMessage):
+                    return index - 1, msg.id
+                return index, msg.id
+
+        return None
+
+    @staticmethod
+    def _has_prior_completed_turn(messages: list[ChatMessage], before_index: int) -> bool:
+        for msg in reversed(messages[:before_index]):
+            if isinstance(msg, SummaryMessage):
+                return False
+            if isinstance(msg, AssistantMessage):
+                return True
+        return False
+
+    def _context_boundary_error(self, messages: list[ChatMessage]) -> ContextOverflowError:
+        boundary = (
+            "summarized context" if any(isinstance(msg, SummaryMessage) for msg in messages) else "original prompt"
+        )
+        return ContextOverflowError(
+            f"Context overflow reached the {boundary} "
+            f"(configured context_window_tokens={self._context_window_tokens}; providers that count "
+            "the response budget inside the context window leave less room for input)"
+        )
+
+    async def step(
+        self,
+        messages: list[ChatMessage],
+        run_metadata: dict[str, list[Any]],
+        turn: int = 0,
+        max_turns: int = 0,
+    ) -> tuple[AssistantMessage, list[ToolMessage], FinishParams | None]:
+        """Execute one agent step: generate assistant message and run any requested tool calls.
+
+        Args:
+            messages: Current conversation messages
+            run_metadata: Metadata storage for tool results
+            turn: Current turn number (1-indexed) for logging
+            max_turns: Maximum turns for logging
+
+        Returns the assistant message, tool execution results, and finish tool call (if present).
+        There is one tool result per requested call, ordered as the calls were executed: every
+        ordinary call first, then any finish call.
+
+        """
+        assistant_message = await self._client.generate(messages, self._active_tools)
+
+        # Log assistant message immediately
+        if turn > 0:
+            self._logger.assistant_message(turn, max_turns, assistant_message)
+
+        finish_params: FinishParams | None = None
+        tool_messages: list[ToolMessage] = []
+        tool_calls = tool_call_blocks(assistant_message.blocks)
+        if tool_calls:
+            # If multiple finish tools were called in one turn, refuse all of them without
+            # executing — silently picking one would discard the model's other intent and
+            # may swap in contradictory params. Force the model to retry with a single call.
+            finish_call_names = [tc.name for tc in tool_calls if tc.name in self._finish_tools]
+            reject_all_finish_calls = len(finish_call_names) > 1
+
+            # Every ordinary call runs before any finish call, so a successful finish is always the
+            # last thing that happens in the turn and no side effect can follow the run ending.
+            # `sorted` is stable, so calls keep their relative order within each group. The returned
+            # messages are in this execution order; providers match them to calls by tool_call_id.
+            for tool_call in sorted(tool_calls, key=lambda tc: tc.name in self._finish_tools):
+                if reject_all_finish_calls and tool_call.name in self._finish_tools:
+                    tool_message = ToolMessage(
+                        content=(
+                            f"Cannot call finish tool '{tool_call.name}': multiple finish tools "
+                            f"({sorted(set(finish_call_names))}) were called in the same turn. "
+                            "Only one finish tool may be called per turn — retry with a single "
+                            "finish tool call."
+                        ),
+                        tool_call_id=tool_call.tool_call_id,
+                        name=tool_call.name,
+                        success=False,
+                    )
+                else:
+                    tool_message = await self.run_tool(tool_call, run_metadata)
+                    if tool_message.success and tool_message.name in self._finish_tools:
+                        finish_tool = self._finish_tools[tool_message.name]
+                        finish_params = finish_tool.parameters.model_validate_json(_tool_arguments_json(tool_call))
+
+                tool_messages.append(tool_message)
+                self._logger.tool_result(tool_message)
+
+        return assistant_message, tool_messages, finish_params
+
+    async def summarize_messages(
+        self,
+        messages: list[ChatMessage],
+        run_metadata_by_turn: dict[str, dict[str, list[Any]]],
+    ) -> tuple[list[ChatMessage], list[ChatMessage]]:
+        """Summarize messages, unwinding completed turns if summarization overflows."""
+        current_messages = messages
+        while True:
+            try:
+                task_context: list[ChatMessage] = list(
+                    takewhile(lambda m: not isinstance(m, (AssistantMessage, SummaryMessage)), current_messages)
+                )
+
+                # Give the summarizer the active tools so it can interpret prior tool
+                # calls/results. Some models answer with only a tool call despite the
+                # prompt telling them not to, so escalate: repeat with an explicit
+                # text-only warning, then withhold the tools entirely (rendered as
+                # text) so a tool call is structurally impossible.
+                text_only_prompt = f"{MESSAGE_SUMMARIZER}\n\n{MESSAGE_SUMMARIZER_TEXT_ONLY}"
+                tool_docs = "\n".join(f"- {tool.name}: {tool.description}" for tool in self._active_tools.values())
+                no_tools_prompt = (
+                    f"{text_only_prompt}\n\nTools are disabled for this response. "
+                    f"For reference, the tools available earlier in the conversation were:\n{tool_docs}"
+                )
+                attempts: list[tuple[str, dict[str, Tool]]] = [
+                    (MESSAGE_SUMMARIZER, self._active_tools),
+                    (text_only_prompt, self._active_tools),
+                    (no_tools_prompt, {}),
+                ]
+                summary_content: str | None = None
+                for prompt, tools in attempts:
+                    summary = await self._client.generate([*current_messages, UserMessage(content=prompt)], tools)
+                    summary_content = joined_text(summary.blocks)
+                    if summary_content is not None:
+                        break
+                    logger.warning("Summarizer response contained no text blocks; retrying summarization")
+
+                removed = current_messages[len(task_context) :]
+                if summary_content is None:
+                    # Replacing history with an empty summary would silently erase all
+                    # context past task_context, so give up loudly instead.
+                    raise RuntimeError("Summarizer response contained no text blocks; cannot summarize context")
+                summary_bridge_prompt = MESSAGE_SUMMARIZER_BRIDGE_TEMPLATE.format(summary=summary_content)
+                # Chain lineage across summarization rounds: a removed prior summary
+                # contributes the ids it already stood for, so the final summary's
+                # replaced_ids transitively covers every collapsed assistant turn.
+                replaced_ids: list[str] = []
+                for m in removed:
+                    if isinstance(m, SummaryMessage):
+                        replaced_ids.extend(m.replaced_ids)
+                    elif isinstance(m, AssistantMessage):
+                        replaced_ids.append(m.id)
+                summary_bridge = SummaryMessage(
+                    content=summary_bridge_prompt,
+                    replaced_ids=replaced_ids,
+                )
+                # Use a user acknowledgement to avoid consecutive assistant messages with strict providers.
+                acknowledgement_msg = UserMessage(content="Got it, thanks!")
+
+                self._logger.context_summarization_complete(summary_content, summary_bridge_prompt)
+
+                return current_messages, [*task_context, summary_bridge, acknowledgement_msg]
+            except ContextOverflowError:
+                # Summarization can overflow too; drop the latest completed turn and retry.
+                # _unwind_context_overflow raises if that would cross a progress boundary.
+                current_messages, dropped_turn_id = self._unwind_context_overflow(current_messages)
+                run_metadata_by_turn.pop(dropped_turn_id, None)
+
+    async def run(
+        self,
+        init_msgs: str | list[ChatMessage],
+        *,
+        depth: int | None = None,
+    ) -> tuple[FinishParams | None, list[list[ChatMessage]], dict[str, Any]]:
+        """Execute the agent loop until finish tool is called or max_turns reached.
+
+        A base system prompt is automatically prepended to all runs, including:
+        - Agent purpose and max_turns info
+        - List of input files (if provided via session())
+        - User's custom system_prompt (if configured in __init__)
+
+        Args:
+            init_msgs: Either a string prompt (converted to UserMessage) or a list of
+                      ChatMessage to extend the conversation after the system prompt.
+            depth: Logging depth for sub-agent runs. If provided, updates logger.depth for this run.
+
+        Returns:
+            Tuple of (finish params, message history, run metadata).
+            finish params is None if max_turns reached.
+            run metadata maps tool/agent names to lists of metadata returned by each call.
+
+        Example:
+            # Simple string prompt
+            await agent.run("Analyze this data and create a report")
+
+            # Multiple messages
+            await agent.run([
+                UserMessage(content="First, read the data"),
+                AssistantMessage(blocks=[TextBlock(text="I've read the data file...")]),
+                UserMessage(content="Now analyze it"),
+            ])
+
+        """
+
+        # Guard: fail if ToolProviders are attached but we're not in a session
+        if self._has_tool_providers and not isinstance(self, SessionAgent):
+            provider_names = [type(t).__name__ for t in self._tools if isinstance(t, ToolProvider)]
+            raise RuntimeError(
+                f"Agent.run() called without a session, but the agent has ToolProviders "
+                f"that require session initialization: {provider_names}. "
+                f"Use `async with agent.session(...) as session: await session.run(...)` instead."
+            )
+
+        session_state = _SESSION_STATE.get(None) if isinstance(self, SessionAgent) else None
+        if session_state is not None:
+            session_state.run_started = True
+            session_state.finish_params = None
+            session_state.run_metadata = {}
+            session_state.output_files_result = None
+
+        # Compute task hash for caching/resume
+        task_hash = compute_task_hash(init_msgs)
+        self._current_task_hash = task_hash
+
+        # Initialize cache manager
+        cache_manager = CacheManager(clear_on_success=self._clear_cache_on_success)
+        resumed = False
+        cached_run_metadata_by_turn: dict[str, dict[str, list[Any]]] | None = None
+
+        # Try to resume from cache if requested
+        if self._resume:
+            state = _SESSION_STATE.get()
+            cached = cache_manager.load_state(task_hash)
+            if cached:
+                # Restore files to exec env
+                if state.exec_env and state.exec_env.temp_dir:
+                    cache_manager.restore_files(task_hash, state.exec_env.temp_dir)
+
+                # Restore state
+                msgs = cached.msgs
+                full_msg_history = cached.full_msg_history
+                cached_run_metadata_by_turn = cached.run_metadata_by_turn
+                resumed = True
+                restored_turn = _get_turn_count(full_msg_history, msgs)
+                self._logger.info(f"Resuming from cached state at turn {restored_turn}")
+            else:
+                self._logger.info(f"No cache found for task {task_hash}, starting fresh")
+
+        if not resumed:
+            msgs: list[ChatMessage] = []
+
+            # Build the complete system prompt (base + input files + user instructions)
+            full_system_prompt = self._build_system_prompt()
+            msgs.append(SystemMessage(content=full_system_prompt))
+
+            if isinstance(init_msgs, str):
+                msgs.append(UserMessage(content=init_msgs))
+            else:
+                msgs.extend(init_msgs)
+
+            full_msg_history: list[list[ChatMessage]] = []
+
+        # Set logger depth if provided (for sub-agent runs)
+        if depth is not None:
+            self._logger.depth = depth
+
+        # Log the task at run start (only if not resuming)
+        if not resumed:
+            last_message = msgs[-1]
+            task_content = (
+                joined_text(last_message.blocks) or ""
+                if isinstance(last_message, AssistantMessage)
+                else last_message.content
+            )
+            self._logger.task_message(task_content)
+
+        # Show warnings (top-level only, if logger supports it)
+        if self._logger.depth == 0 and isinstance(self._logger, AgentLogger):
+            run_warnings = self._collect_warnings()
+            if run_warnings:
+                self._logger.warnings_message(run_warnings)
+
+        # Use logger callback if available and not overridden
+        step_callback = self._logger.on_step
+        run_metadata_by_turn: dict[str, dict[str, list[Any]]] = {}
+        if cached_run_metadata_by_turn is not None:
+            run_metadata_by_turn.update(cached_run_metadata_by_turn)
+
+        # Cumulative stats for spinner
+        total_tool_calls = 0
+        total_input_tokens = 0
+        total_output_tokens = 0
+        finish_params: FinishParams | None = None
+
+        while _get_turn_count(full_msg_history, msgs) < self._max_turns:
+            turn = _get_turn_count(full_msg_history, msgs)
+            # Capture current state for potential caching (before any async work)
+            self._current_run_state = CacheState(
+                msgs=list(msgs),
+                full_msg_history=[list(group) for group in full_msg_history],
+                run_metadata_by_turn={turn_id: dict(metadata) for turn_id, metadata in run_metadata_by_turn.items()},
+                task_hash=task_hash,
+                agent_name=self._name,
+            )
+            if self._max_turns - turn <= self._turns_remaining_warning_threshold and turn != 0:
+                num_turns_remaining_msg = _num_turns_remaining_msg(self._max_turns - turn)
+                msgs.append(num_turns_remaining_msg)
+                self._logger.user_message(num_turns_remaining_msg)
+
+            while True:
+                turn_metadata: dict[str, list[Any]] = {}
+                try:
+                    # Pass turn info to step() for real-time logging
+                    assistant_message, tool_messages, finish_params = await self.step(
+                        msgs,
+                        turn_metadata,
+                        turn=_get_turn_count(full_msg_history, msgs) + 1,
+                        max_turns=self._max_turns,
+                    )
+                    break
+                except ContextOverflowError:
+                    msgs, dropped_turn_id = self._unwind_context_overflow(msgs)
+                    run_metadata_by_turn.pop(dropped_turn_id, None)
+
+            # Update cumulative stats
+            run_metadata_by_turn[assistant_message.id] = turn_metadata
+            accepted_turn = _get_turn_count(full_msg_history, msgs) + 1
+            total_tool_calls += len(tool_messages)
+            total_input_tokens += assistant_message.token_usage.input
+            total_output_tokens += assistant_message.token_usage.output
+
+            # Call progress callback after step completes
+            if step_callback:
+                step_callback(accepted_turn, total_tool_calls, total_input_tokens, total_output_tokens)
+
+            user_messages: list[UserMessage] = []
+            if self._text_only_tool_responses:
+                tool_messages, user_messages = _handle_text_only_tool_responses(tool_messages)
+
+            # Log user messages (e.g., image content extracted from tool responses)
+            for user_msg in user_messages:
+                self._logger.user_message(user_msg)
+
+            msgs.extend([assistant_message, *tool_messages, *user_messages])
+
+            if finish_params:
+                break
+
+            pct_context_used = assistant_message.token_usage.total / self._context_window_tokens
+            if pct_context_used >= self._context_summarization_cutoff and accepted_turn != self._max_turns:
+                self._logger.context_summarization_start(pct_context_used, self._context_summarization_cutoff)
+                messages_to_summarize, msgs = await self.summarize_messages(msgs, run_metadata_by_turn)
+                full_msg_history.append(messages_to_summarize)
+
+            # Avoid successive assistant messages (only if next turn won't show turns remaining)
+            next_turn_will_show_warning = self._max_turns - accepted_turn <= self._turns_remaining_warning_threshold
+            if (
+                self._block_successive_assistant_messages
+                and not tool_messages
+                and not user_messages
+                and not next_turn_will_show_warning
+            ):
+                continue_msg = UserMessage(content="Please continue the task")
+                msgs.append(continue_msg)
+
+        if finish_params is None:
+            LOGGER.error(
+                f"Maximum number of turns reached: {self._max_turns}. The agent was not able to finish the task. Consider increasing the max_turns parameter.",
+            )
+
+        full_msg_history.append(msgs)
+
+        # Add agent's own token usage, tool durations, and model speed to run_metadata
+        run_metadata: dict[str, Any] = _merge_run_metadata(run_metadata_by_turn)
+        run_metadata["token_usage"] = _get_total_token_usage(full_msg_history)
+        run_metadata["_tool_durations"] = _get_tool_durations(full_msg_history)
+        run_metadata["_model_speed"] = _get_model_speed_stats(full_msg_history, self._client.model_slug)
+        if session_state is not None:
+            session_state.finish_params = finish_params
+            session_state.run_metadata = run_metadata
+
+        # Clear cache on successful completion (finish_params is set)
+        if finish_params is not None and cache_manager.clear_on_success:
+            cache_manager.clear_cache(task_hash)
+            self._current_task_hash = None
+            self._current_run_state = None
+
+        return finish_params, full_msg_history, run_metadata
+
+    def to_tool(
+        self,
+        *,
+        description: str = DEFAULT_SUB_AGENT_DESCRIPTION,
+        system_prompt: str | None = None,
+    ) -> Tool[SubAgentParams, SubAgentMetadata]:
+        """Convert this Agent to a Tool for use as a sub-agent.
+
+        Args:
+            description: Tool description shown to the parent agent
+            system_prompt: Optional system prompt to prepend when running
+
+        Returns:
+            Tool that executes this agent when called, returning SubAgentMetadata
+            containing token usage, message history, and any metadata from tools
+            the sub-agent used.
+
+        """
+        agent = self  # Capture self for closure
+
+        async def sub_agent_executor(params: SubAgentParams) -> ToolResult[SubAgentMetadata]:
+            """Execute the sub-agent with the given task.
+
+            Sub-agents enter their own full session to ensure:
+            1. Tool isolation - each agent only sees its own tools (fixes recursive sub-agent bug)
+            2. Proper ToolProvider lifecycle - sub-agent's ToolProviders are initialized
+            3. Correct logging - logger context is entered for proper output formatting
+            """
+            # Get parent's depth and calculate subagent depth
+            parent_depth = _PARENT_DEPTH.get()
+            sub_agent_depth = parent_depth + 1
+
+            # Save parent's session state so we can restore it after subagent completes
+            # This ensures sibling subagents see the parent's state, not a previous sibling's stale state
+            parent_session_state = _SESSION_STATE.get(None)
+            logger.debug(
+                "[%s] PRE-SESSION: _SESSION_STATE=%s, exec_env=%s, exec_env._temp_dir=%s",
+                agent.name,
+                id(parent_session_state) if parent_session_state else None,
+                type(parent_session_state.exec_env).__name__
+                if parent_session_state and parent_session_state.exec_env
+                else None,
+                getattr(parent_session_state.exec_env, "_temp_dir", "N/A")
+                if parent_session_state and parent_session_state.exec_env
+                else None,
+            )
+
+            # Set _PARENT_DEPTH to subagent's depth BEFORE entering session
+            # so that __aenter__ reads the correct depth for SessionState.depth
+            prev_depth = _PARENT_DEPTH.set(sub_agent_depth)
+            try:
+                init_msgs: list[ChatMessage] = []
+                if system_prompt:
+                    init_msgs.append(SystemMessage(content=system_prompt))
+                init_msgs.append(UserMessage(content=params.task))
+
+                # Sub-agent enters its own full session for tool isolation and proper lifecycle
+                # output_dir is a path within the parent's exec env (not local filesystem)
+                # Files are transferred to parent's env at __aexit__ via save_output_files(dest_env=parent)
+                async with agent.session(
+                    output_dir=".",  # Path in parent's exec env
+                    input_files=list(params.input_files) if params.input_files else None,
+                ) as agent_session:
+                    agent_session._logger.depth = sub_agent_depth  # noqa: SLF001
+                    finish_params, msg_history, run_metadata = await agent_session.run(init_msgs)
+                    completed_state = _SESSION_STATE.get()
+
+                # Output transfer happens during session exit, so compose the response afterwards.
+                last_assistant_msg: AssistantMessage | None = None
+                for msg_group in reversed(msg_history):
+                    for msg in reversed(msg_group):
+                        if isinstance(msg, AssistantMessage) and joined_text(msg.blocks):
+                            last_assistant_msg = msg
+                            break
+                    if last_assistant_msg:
+                        break
+
+                content_parts: list[str] = []
+                if last_assistant_msg and (content := joined_text(last_assistant_msg.blocks)):
+                    content_parts.append(content)
+
+                if finish_params is not None:
+                    finish_dict = finish_params.model_dump()
+                    if finish_dict:
+                        content_parts.append(f"Finish params: {finish_dict}")
+
+                available_paths: list[str] = []
+                transfer_failures: dict[str, str] = {}
+                if completed_state.output_files_result is not None:
+                    available_paths = [str(saved.output_path) for saved in completed_state.output_files_result.saved]
+                    transfer_failures = completed_state.output_files_result.failed
+
+                if available_paths:
+                    content_parts.append(f"Files available in your environment: {available_paths}")
+                if transfer_failures:
+                    content_parts.append(
+                        "Files that FAILED to transfer to your environment "
+                        "(referencing them will yield missing or wrong data): "
+                        f"{transfer_failures}"
+                    )
+
+                if not content_parts:
+                    result_content = "<sub_agent_result>\n<error>No assistant message or finish params found</error>\n</sub_agent_result>"
+                else:
+                    content = "\n".join(content_parts)
+                    result_content = (
+                        f"<sub_agent_result>"
+                        f"\n<response>{content}</response>"
+                        f"\n<finished>{finish_params is not None}</finished>"
+                        f"\n</sub_agent_result>"
+                    )
+
+                sub_metadata = SubAgentMetadata(message_history=msg_history, run_metadata=run_metadata)
+                return ToolResult(content=result_content, metadata=sub_metadata)
+
+            except Exception as e:
+                # On error, return empty metadata
+                error_metadata = SubAgentMetadata(
+                    message_history=[],
+                    run_metadata={},
+                )
+                return ToolResult(
+                    content=f"<sub_agent_result>\n<error>{e!s}</error>\n</sub_agent_result>",
+                    success=False,
+                    metadata=error_metadata,
+                )
+            finally:
+                # DEBUG: Log SESSION_STATE after subagent session
+                post_session_state = _SESSION_STATE.get(None)
+                logger.debug(
+                    "[%s] POST-SESSION: _SESSION_STATE=%s, exec_env=%s, exec_env._temp_dir=%s",
+                    agent.name,
+                    id(post_session_state) if post_session_state else None,
+                    type(post_session_state.exec_env).__name__
+                    if post_session_state and post_session_state.exec_env
+                    else None,
+                    getattr(post_session_state.exec_env, "_temp_dir", "N/A")
+                    if post_session_state and post_session_state.exec_env
+                    else None,
+                )
+
+                # Restore parent's depth
+                _PARENT_DEPTH.reset(prev_depth)
+                # Restore parent's session state so next sibling subagent sees it
+                if parent_session_state is not None:
+                    _SESSION_STATE.set(parent_session_state)
+
+        return Tool[SubAgentParams, SubAgentMetadata](
+            name=self._name,
+            description=description,
+            parameters=SubAgentParams,
+            executor=sub_agent_executor,
+        )
+
+
+class SessionAgent[FinishParams: BaseModel, FinishMeta](Agent[FinishParams, FinishMeta]):
+    """Agent running inside an active session with full tool access.
+
+    Returned by ``async with agent.session(...) as session``. A SessionAgent
+    shares its ``__dict__`` with the parent Agent, so it has the same
+    configuration and state. The key difference is that ToolProvider-created
+    tools have been initialized and are available in ``_active_tools``.
+
+    ``Agent.run()`` raises ``RuntimeError`` when ToolProviders are present
+    but the caller is not a SessionAgent. This makes the invalid state
+    (calling ``run()`` with uninitialized ToolProviders) a type-level
+    distinction rather than just a runtime flag.
+    """
+
+    __slots__ = ("_output_state",)
+
+    _output_state: SessionState
+
+    @property
+    def last_output_files_result(self) -> SaveOutputFilesResult | None:
+        """Return this session's output-saving result."""
+        return self._output_state.output_files_result
+
+    @classmethod
+    def from_agent(
+        cls,
+        agent: Agent[FinishParams, FinishMeta],
+        output_state: SessionState,
+    ) -> "SessionAgent[FinishParams, FinishMeta]":
+        """Create a SessionAgent sharing configuration but retaining its own result state."""
+        session_agent: SessionAgent[FinishParams, FinishMeta] = object.__new__(cls)
+        session_agent.__dict__ = agent.__dict__
+        session_agent._output_state = output_state
+        return session_agent

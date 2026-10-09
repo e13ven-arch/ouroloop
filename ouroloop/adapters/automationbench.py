@@ -36,9 +36,29 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from ..agent.tools import ToolResult, clip
-from ..benchmark import TaskEntry
-from ..chat import ToolSpec
+
+
+@dataclass
+class ToolSpec:
+    """A tool as the model is offered it (the same three fields the framework's chat.ToolSpec has: this adapter
+    imports nothing of the framework, docs/design/CONTRACTS.md §1)."""
+    name: str
+    description: str
+    schema: dict
+
+
+@dataclass
+class ToolResult:
+    output: str
+    is_error: bool = False
+    meta: dict = field(default_factory=dict)
+
+
+def clip(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    half = limit // 2
+    return f"{text[:half]}\n[... {len(text) - limit} characters omitted ...]\n{text[-half:]}"
 
 TOOLSET = "api"
 # api_fetch takes the world as its first argument; the model never sees it, and the episode injects it.
@@ -192,7 +212,7 @@ def _runner_fns() -> tuple[Callable, Callable, str]:
 def hide_live_keys() -> Iterator[None]:
     """Hide the keys that would turn a simulated action into a live API call, for a whole run of episodes.
 
-    Entered once, on the main thread, around concurrent attempts (task_eval.run_tasks): a per-call pop and restore
+    Entered once, on the main thread, around concurrent attempts (evaluate.attempt.run_tasks): a per-call pop and restore
     from several threads would race with every other reader of os.environ (the claude CLI's child environment,
     the worker's), and a KeyError there would turn a paid call into an infrastructure failure. With the keys gone
     for the whole pool, the per-call guard below has nothing to pop.
@@ -314,8 +334,10 @@ class BenchTask:
     def turns(self) -> int:
         return sum(1 for m in self.messages if m.get("role") != "system")
 
-    def entry(self, family_id: str) -> TaskEntry:
-        return TaskEntry(self.task_id, family_id, self.example_id, self.contract, tuple(self.tools))
+    def entry(self, family_id: str) -> dict:
+        """The task as a split manifest pins it (evaluate.splits.TaskEntry's fields, as plain data)."""
+        return {"task_id": self.task_id, "family_id": family_id, "example_id": self.example_id,
+                "contract": self.contract, "tools": list(self.tools)}
 
 
 @dataclass(frozen=True)
@@ -357,7 +379,7 @@ class Suite:
     def ids(self) -> list[str]:
         return list(self.tasks)
 
-    def entries(self, families: dict[str, str]) -> list[TaskEntry]:
+    def entries(self, families: dict[str, str]) -> list[dict]:
         return [t.entry(families[tid]) for tid, t in self.tasks.items()]
 
     def episode(self, task_id: str) -> "Episode":
@@ -489,29 +511,6 @@ def has_must_not(suite: Suite, task_id: str) -> bool:
         return False
     return any(assertion_kind(a.get("type")) == "forbidden_write" for a in g.assertions
                if a.get("scored") is not False and a.get("excluded") is not True)
-
-
-def pool_suites(name: str, suites: list[Suite]) -> Suite:
-    """Several domains' suites as one (M7 §2): the tasks and their grading side by side, each task under its own
-    upstream name, which carries its domain. Two tasks with one name, or a task whose name does not carry its
-    domain, are refused rather than merged. The versions are the first suite's; every suite came from the same
-    checkout, which is checked."""
-    tasks: dict[str, BenchTask] = {}
-    grading: dict[str, Grading] = {}
-    for s in suites:
-        stray = [t for t in s.ids() if not t.startswith(f"{s.domain}.")]
-        if stray:
-            raise UpstreamError(f"upstream domain {s.domain} names tasks {stray[:3]} without the domain prefix, so "
-                                f"pooled task ids could collide")
-        both = sorted(set(s.tasks) & set(tasks))
-        if both:
-            raise UpstreamError(f"upstream domains share the task ids {both[:3]}")
-        if s.versions.get("commit") != suites[0].versions.get("commit") or \
-                s.versions.get("path") != suites[0].versions.get("path"):
-            raise UpstreamError(f"domain {s.domain} was loaded from another checkout than {suites[0].domain}")
-        tasks.update(s.tasks)
-        grading.update({t: s.grading(t) for t in s.ids()})
-    return Suite(name, tasks, grading, suites[0].versions)
 
 
 def near_duplicates(suite: Suite, threshold: float = 0.8) -> list[tuple[str, str, float]]:
@@ -842,80 +841,3 @@ def _plain_type(entry: dict) -> str | None:
         rest = [x.get("type") for x in entry["anyOf"] if x.get("type") != "null"]
         return rest[0] if len(rest) == 1 else None
     return t
-
-
-# ---------------------------------------------------------------------------- the completion probe
-class CompletionProbe:
-    """An environment label for every stop decision of an episode: was the task actually complete at that moment?
-
-    This is the first of the two feedback paths in docs/DESIGN.md §4.2 -- a locally verifiable outcome. At each
-    stop decision it keeps a snapshot of the world; after the episode it scores each snapshot with the official
-    rubric and labels the decisions that were made on that state. What it trains is the completion judgement, not
-    a claim that continuing is always worth it.
-
-    It is not a checker. The scoring happens after the run, so neither StopGuard nor the view nor the agent can
-    see it, and an official scorer is never consulted while the agent is working (§5.2). Nor can it fail a run: a
-    state it cannot copy or score stays unlabelled.
-
-    Why this point and this label: a Marketing task's `task_completed_correctly` is a conjunction over a median of
-    twelve scored assertions, so a task is lost by leaving one requirement undone. Whether the work is finished is
-    exactly the judgement that decides that, it is visible from the state at the time, and on a training task it
-    can be checked. Whether a model learns it is a separate question, which the task results answer.
-    """
-
-    def __init__(self, rt, episode: Episode, max_snapshots: int = 60, surface=None):
-        # `surface` is what the agent actually calls, which may wrap the episode. The probe snapshots on the
-        # agent's change count, and that count comes from the surface's `mutates`: a surface that cannot answer
-        # would leave the count at zero and every label would describe the state at the first stop decision. That
-        # is a silent wrong label on every training example, so it is refused here rather than discovered later.
-        if surface is not None and getattr(surface, "mutates", None) is None:
-            raise UpstreamError(f"{type(surface).__name__} does not report which calls change the world, so the "
-                                f"probe cannot tell one state from another")
-        self.rt = rt
-        self.episode = episode
-        self.max_snapshots = max_snapshots        # a bound on memory, not a judgement: ~0.1 MB per world
-        self.snaps: list[dict] = []               # {"changes", "world", "decisions"}
-        self.dropped = 0
-
-    def snap(self, decision: str, changes: int) -> None:
-        """At a stop decision. `changes` is the agent's count of calls that may have changed the world: an
-        unchanged state is not copied again, and the decisions made on it share one snapshot."""
-        if not self.snaps or self.snaps[-1]["changes"] != changes:
-            world = None
-            if len(self.snaps) < self.max_snapshots:
-                try:
-                    world = self.episode.snapshot()
-                except Exception:  # noqa: BLE001 - a state that cannot be copied stays unlabelled
-                    world = None
-            else:
-                self.dropped += 1
-            self.snaps.append({"changes": changes, "world": world, "decisions": []})
-        self.snaps[-1]["decisions"].append(decision)
-
-    def label(self) -> int:
-        """After the episode: label every stop decision from its own snapshot. Returns how many were labelled.
-
-        A snapshot the scorer cannot read is recorded as a label nobody could give (label None), not skipped and
-        certainly not guessed: a feedback builder then reports `unknown`, and a "no" that came from a broken
-        scorer would be a wrong label on a real decision (docs/modules/02_EVIDENCE_TRAINING.md §2).
-        """
-        labelled = 0
-        for s in self.snaps:
-            if s["world"] is None:
-                for d in s["decisions"]:
-                    self.rt.outcome(d, None, source="env", note="completion probe",
-                                    error="the state at this decision could not be copied")
-                continue
-            try:
-                score = self.episode.score(s["world"])
-            except Exception as e:  # noqa: BLE001 - the scorer failed: unknown, never a guessed label
-                for d in s["decisions"]:
-                    self.rt.outcome(d, None, source="env", note="completion probe",
-                                    error=f"{type(e).__name__}: {e}"[:300])
-                continue
-            for d in s["decisions"]:
-                self.rt.outcome(d, "yes" if score.success else "no", source="env", note="completion probe",
-                                score=round(score.partial_credit, 6), assertions=f"{score.passed}/{score.scored}")
-                labelled += 1
-        self.snaps = [{**s, "world": None} for s in self.snaps]      # the worlds are not needed again
-        return labelled

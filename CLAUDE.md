@@ -23,11 +23,11 @@ Start at `docs/PLAN.md`: where things stand (§0), the rules (§1), the stages i
 
 ## Tests
 - `.venv/bin/python -m pytest -q`: the default run; it excludes `live` and `slow` (pyproject `addopts`).
-- `OUROLOOP_TEST_REQUIRE_DOCKER=1 .venv/bin/python -m pytest -q -m "not live"`: the full run, including Docker and the upstream checkout. Build the worker image first (`docker build -f docker/worker.Dockerfile -t ouroloop-worker:py3.12 .`). Required before a paid run and before a merge.
+- `OUROLOOP_TEST_REQUIRE_DOCKER=1 .venv/bin/python -m pytest -q -m "not live"`: the full run, including Docker and the upstream checkout. Build the worker image first (`docker build --provenance=false -f docker/worker.Dockerfile -t ouroloop-worker:py3.12 .`; the egress image too for its tests: `docker build --provenance=false -f docker/egress.Dockerfile -t ouroloop-egress:v6.1 .`). Required before a paid run and before a merge.
 - `live` tests call real APIs. Run them only when the user asks.
 
 ## Where things live
-- Plan, log, results: `docs/PLAN.md`, `docs/JOURNAL.md`, `docs/RESULTS.md`. Design: `docs/DESIGN.md` (v1.1); the module designs and interfaces in `docs/design/` (start at its README; code follows them); the training chain in `docs/design/V2_TRAINING_PIPELINE.md`. The old module docs are on tag `archive-2026-10-09`; docstrings that cite `docs/modules/*.md` point there until the code is rewritten.
+- Plan, log, results: `docs/PLAN.md`, `docs/JOURNAL.md`, `docs/RESULTS.md`. Design: `docs/DESIGN.md` (v1.1); the module designs and interfaces in `docs/design/` (start at its README; code follows them); the training chain in `docs/design/V2_TRAINING_PIPELINE.md`. The old module docs are on tag `archive-2026-10-09`; the training stack's docstrings that cite `docs/modules/*.md` point there.
 - Benchmark configs and how to run them: `examples/automationbench/` (see its `README.md`).
 - Run records: `examples/automationbench/workspace-*/`, local and git-ignored.
 - Code: `ouroloop/`; the training stack is in `ouroloop/train/` (extras `[train]`, `[train-jobs]`; `python -m ouroloop.train`), off the benchmark path. Tests: `tests/`; the training stack's tests are in `tests/train/`.

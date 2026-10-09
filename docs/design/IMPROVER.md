@@ -199,6 +199,8 @@ def export_policy(activity) -> ImproverPolicy;  def import_policy(activity, poli
 
 ## 12 与现有代码的对应
 
+`research/` 与 `evolve/` 已在阶段 1 删除，下表的“现有”从 tag `archive-2026-10-09` 读。
+
 | 现有 | 处理 |
 |---|---|
 | `research/session.py` | `CodingSession`、`WorkTree`、`TrajectoryReader` 的形状保留，改输入与工具；`ScreenSettings` → Settings；`FINISH_V5`、方法库相关删 |
@@ -221,6 +223,8 @@ def export_policy(activity) -> ImproverPolicy;  def import_policy(activity, poli
 - 筛选：条件记功（变异：把条件去掉，结果变）；thin；pick_best 的并列规则。
 - 记功与反膨胀：零功组件 N 轮后产生删除候选。
 - 台账与策略：投影无 dev 题号；记分板；剧本只含带 ref 的教训；导出导入往返。
+- 付费安全里等到本阶段的几条（EVALUATE §9）：研究步计量、无法核价的候选不开始、中断的改进续跑、无 ref 的实验关闭不猜、研究会话每回合计量、验证界核价。
+- 操作记录：`Execution.operation()` 与 `Releases.install()` 都写 `<root>/rsi/operations/<id>.json`。round 给装入用的 `operation_id` 必须和它的 Execution 操作 id 不同（例如加 `install:` 前缀），否则 install 读到别人的记录，报 recorded for another release；这条要有一个测试。
 - 端到端（`fake_upstream` 的 `rsi` 域，脚本化 R）：一轮产出一个 tool 候选过 V0～V2a、V3 记条件修复；一个 hook 候选过 V2b；有可机械化簇而无代码候选时台账记 `no_code_candidate`。
 
 ## 14 开发顺序

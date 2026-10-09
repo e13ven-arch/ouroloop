@@ -5,7 +5,8 @@ import random
 import pytest
 
 from ouroloop.train.decision import Choice, Noul, Spec
-from ouroloop.ledger import Ledger, SessionStore, redact
+from ouroloop.contracts import redact
+from ouroloop.train.ledger import Ledger, SessionStore
 from ouroloop.train.policy import Policy, cp_upper, fit_threshold, route
 from ouroloop.train.types import Answer, Question
 

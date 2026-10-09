@@ -60,8 +60,8 @@ def manifest(plan: dict | None = None) -> dict:
     import platform
 
     from .... import __version__
-    from ....ledger import now
-    from ....release import code_version
+    from ....contracts import now
+    from ....evaluate.release import code_version
     from ...stores import kind, types
     from ...trainers import load, version
     plan = plan or {}
@@ -119,7 +119,7 @@ def pack_ouroloop(out: Path) -> Path:
     """This ouroloop as an sdist: pyproject.toml, README.md, LICENSE and the package's files that pip installs,
     exactly the files code_version hashes (release.package_files), so the host runs this code."""
     from .... import __version__
-    from ....release import package_files
+    from ....evaluate.release import package_files
     if not (CHECKOUT / "pyproject.toml").exists():
         raise HostError(f"{PACKAGE} is an installed copy: run host init from an ouroloop checkout")
     names = [n for n in SDIST if (CHECKOUT / n).exists()]
@@ -182,7 +182,7 @@ def _remote(target: str, ssh_opts: str, runner):
 
 
 LIVE = "#ouroloop-live-code"
-LIVE_CODE = "from ouroloop.release import code_version; print(code_version())"
+LIVE_CODE = "from ouroloop.evaluate.release import code_version; print(code_version())"
 
 
 def read(target: str, ssh_opts: str = "-o BatchMode=yes", runner=None) -> dict | None:
@@ -217,7 +217,7 @@ def read(target: str, ssh_opts: str = "-o BatchMode=yes", runner=None) -> dict |
 def stale(m: dict | None, trainers: dict, store=None) -> list[str]:
     """Why a host with manifest `m` cannot run this ouroloop's jobs of `trainers` ({name: options}) that publish to
     `store` (a store or its class); none if it can."""
-    from ....release import code_version
+    from ....evaluate.release import code_version
     if not m:
         return [f"no {MANIFEST}"]
     why, mine = [], code_version()
@@ -259,7 +259,7 @@ def init(target: str, trainers: dict, ssh_opts: str = "-o BatchMode=yes", store=
             import base64
             import io
 
-            from ....ledger import new_id
+            from ....contracts import new_id
             remote, name = _remote(target, ssh_opts, runner), new_id("init")
             where = f'"$HOME"/.ouroloop/incoming/{name}'
             bundle = io.BytesIO()           # one tar through ssh: the host may have no rsync yet (bootstrap adds it)

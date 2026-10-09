@@ -15,8 +15,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..evolve import contracts as ct
-from ..evolve.contracts import FeedbackSet
+from .. import contracts
+from . import records
+from .records import FeedbackSet
 
 # Labels a completion decision can carry, and the actions they correspond to.
 COMPLETION_LABELS = ("yes", "no")
@@ -48,7 +49,7 @@ BUILDERS = {COMPLETION_SNAPSHOT.id + "." + COMPLETION_SNAPSHOT.version: COMPLETI
 def resolve(name: str) -> FeedbackBuilder:
     builder = BUILDERS.get(name)
     if builder is None:
-        raise ct.ContractError(f"no feedback builder {name!r}: {sorted(set(BUILDERS))}")
+        raise contracts.ContractError(f"no feedback builder {name!r}: {sorted(set(BUILDERS))}")
     return builder
 
 
@@ -75,7 +76,7 @@ def _labels(row) -> tuple[dict, dict]:
     return labels, events
 
 
-def build_feedback(rt, *, builder: FeedbackBuilder | str = COMPLETION_SNAPSHOT, objects: ct.Objects,
+def build_feedback(rt, *, builder: FeedbackBuilder | str = COMPLETION_SNAPSHOT, objects: contracts.Objects,
                    partition_of=None, policy_ref: str = "", input_schema: str = "stop.business.v1",
                    scope_id: str = "") -> FeedbackSet:
     """Every decision of the builder's point that carries an observed label, as FeedbackRecords.
@@ -119,11 +120,11 @@ def build_feedback(rt, *, builder: FeedbackBuilder | str = COMPLETION_SNAPSHOT, 
             "decision": decision["id"], "point": builder.point, "phase": decision.get("phase"),
             "outcomes": [{k: v for k, v in ev.items() if k not in ("ts",)} for ev in row.outcomes],
             "builder": builder.ref})
-        evidence_ref = objects.put(ct.EvidenceRef(
+        evidence_ref = objects.put(records.EvidenceRef(
             id=f"{decision['id']}:{builder.ref}", kind="completion_snapshot", scope_id=scope_id,
             partition=partition, producer_ref=builder.ref, content_ref=evidence,
             task_id=info.get("task"), family_id=info.get("family")))
-        record = ct.FeedbackRecord(
+        record = records.FeedbackRecord(
             decision_id=decision["id"], task_id=info.get("task") or "", family_id=info.get("family") or "",
             source=source, feedback_ref=builder.ref,
             target={label: 1.0} if label else {}, evidence_refs=(evidence_ref,),

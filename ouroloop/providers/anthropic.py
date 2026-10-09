@@ -5,7 +5,7 @@ owns the tool-use cycle itself, because decision points run before and after eve
 """
 from __future__ import annotations
 
-from ..chat import ChatTurn, ToolCall, ToolSpec
+from ..runtime.chat import ChatTurn, ToolCall, ToolSpec
 from . import ProviderError
 
 # Models that accept server-side refusal fallbacks in their "default" (route-by-category) form.

@@ -10,8 +10,13 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from .policy import Policy
-from ..release import _digest  # one content hash for specs and releases (release.spec_hash)
 from .types import Question
+
+
+def _digest(obj: Any) -> str:
+    """The short content hash of a decision point's spec (it was release._digest, the same bytes)."""
+    import hashlib
+    return hashlib.sha1(json.dumps(obj, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:12]
 
 
 @dataclass

@@ -17,7 +17,8 @@ import argparse
 import json
 import sys
 
-from .. import config
+from ..contracts import load_dotenv
+from . import config
 from .config import build_backend, build_serving, plugin_options, store_table
 from .types import Question, Request
 
@@ -107,7 +108,7 @@ def cmd_host(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    config.load_dotenv(".env")
+    load_dotenv(".env")
     p = argparse.ArgumentParser(prog="python -m ouroloop.train")
     sub = p.add_subparsers(dest="cmd", required=True)
     for name, fn in (("decide", cmd_decide), ("smoke", cmd_smoke)):

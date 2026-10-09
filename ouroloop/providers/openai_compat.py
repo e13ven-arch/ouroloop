@@ -7,7 +7,7 @@ import time
 
 import httpx
 
-from ..chat import ChatTurn, ToolCall, ToolSpec
+from ..runtime.chat import ChatTurn, ToolCall, ToolSpec
 from . import ProviderAccountError, ProviderError, is_account_error
 
 _STOP = {"stop": "end", "tool_calls": "tool_use", "length": "max_tokens", "content_filter": "refusal"}

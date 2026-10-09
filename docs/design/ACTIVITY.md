@@ -1,6 +1,6 @@
 # activity：配置与 preset → K、工作区、阶段编排、预算根、启动检查、报告、CLI
 
-> 阶段 1 设计文档。包 `ouroloop/activity/`。对应 [DESIGN](../DESIGN.md) §8、§10。来源：`bench.py`（5,360 行）、`cli.py`、`report.py`、`config.py`、`policies.py`（删）。
+> 阶段 1 设计文档。包 `ouroloop/activity/`。对应 [DESIGN](../DESIGN.md) §8、§10。来源：`bench.py`（5,360 行）、`cli.py`、`report.py`、`config.py`、`policies.py`（删）。2026-10-09 按阶段 1 的实现对齐（`activity/` 合计约 1,300 行）。
 
 ## 1 职责与不做
 
@@ -13,7 +13,7 @@
 | 文件 | 内容 |
 |---|---|
 | `activity/config.py` | TOML 读取、schema 校验、与 preset 合并（只能收紧）、`Core` 冻结 |
-| `activity/presets.py` | preset 表：`automationbench_v1`（种子 stirrup、六站点、Limits、worker 512m/128、memory 开、improver 默认） |
+| `activity/presets.py` | preset 表：`automationbench_v1`（种子 stirrup、六站点、Limits、worker 512m/128/256 MiB tmpfs、memory 开、improver 与 gate 的默认，数值来自 v6 的证据）；`RULES`：每个字段的合并规则 |
 | `activity/workspace.py` | `Activity`：工作区的全部句柄（suite、splits、objects、events、releases、budgets、results、transcripts、trace、memory、worker、egress） |
 | `activity/phases.py` | 八个阶段函数与 `cycle --until` |
 | `activity/checks.py` | 启动检查 |
@@ -25,41 +25,54 @@
 ```python
 # config.py
 @dataclass(frozen=True)
-class Core(Record):                      # kind "core"；CONTRACTS §4 的节；含 code_version
-def load_config(path) -> dict
-def merge(config: dict, preset: dict) -> dict          # 只能收紧；违反即 ConfigError 并指出字段
-def freeze_core(config: dict, *, preset: dict, split_hash: str, code_version: str) -> Core
+class Core(Record):                      # kind "core"：preset、sections（CONTRACTS §4 的节）、split_hash、code_version；json() 是 core.json
+def load_config(path) -> dict            # 带 _base（配置所在目录），env_file 像 .env 一样加载
+def check_tables(config) -> None         # 旧表名报错并指出新名；未知表、[rsi] 未知键、占位符 ref 报错
+def merge(config: dict, preset: dict) -> dict          # 按 RULES 只能收紧；违反即 ConfigError 并指出字段
+def resolve(config) -> dict              # preset 补全 + 合并 + 派生字段（model.provider/identity/max_effort、harness.api_version）
+def freeze_core(config: dict, *, split_hash: str, code_version: str) -> Core
 def core_problems(core: Core) -> list[str]
+def workspace_root(config) -> Path;  upstream_path(config) -> str | None
 
 # workspace.py
 class Activity:
-    root: Path; config: dict; core: Core; suite; splits: SplitManifest; objects: Objects; events: Events
-    releases: Releases; budgets: Budgets; results: Results; transcripts: Path
-    def worker(self) -> Worker                           # DockerWorker(WorkerResources.from_core)
-    def egress(self) -> EgressPool | None
-    def trace(self) -> TraceStore                        # improver.evidence
-    def memory(self) -> MemoryClient | None              # memory 开着才起 sidecar
-    def actor_provider(self) -> MeteredProvider          # K.model，计量在活动根
-    def research_provider(self, step: str) -> MeteredProvider   # K.research_model，计量在研究份额
-def open_activity(config: dict, base: Path, *, out) -> Activity   # 第一次：冻结划分、写 core.json、种子 release、预算根
+    config; root: Path; core: Core; core_ref; suite; splits: SplitManifest; drift; versions; objects; events
+    releases: Releases; budgets: Budgets; results: Results; worker_factory; provider_factory
+    k -> dict;  domain;  scope_id;  transcripts;  concurrency;  attempt_limits() -> Budget
+    def active_release(self) -> Release;  seed_release();  package(release=None) -> Package
+    def worker(self) -> Worker                           # docker_worker(WorkerResources.from_core(K))，或测试给的
+    def egress(self) -> LazyPool | None                  # K 的网络是代理时
+    def pricing(self) -> Pricing;  root_account() -> BudgetAccount;  account(phase) -> BudgetAccount
+    def actor_provider(self, account, *, allocation=None) -> MeteredProvider   # K.model
+    def research_provider(self, step: str) -> MeteredProvider                 # K.research_model，在 research:<step> 账户
+    def memory(self)                                     # 阶段 2；之前 memory 开着的 K 由启动检查拒绝
+    def run_manifest(self, *, candidate, role, split, release, notes="", repeats=1) -> RunManifest
+    # trace() 随阶段 3 加入（runtime/trace.py）
+def freeze_split(suite, bench, path, versions) -> (SplitManifest, drift)
+def open_activity(config: dict, *, out, freeze_k=True, worker_factory=None, provider_factory=None) -> Activity
+    # 冻结或读出划分、由配置算 K；[rsi] core_ref 或 core.json 与之不同即拒绝（新 K 是新活动）；
+    # freeze_k 时第一次写 core.json 与种子 release；--checks-only 的 smoke 不写
 
 # phases.py
 PHASES = ("smoke", "freeze", "baseline", "library", "round", "evaluate", "report", "export")
-def smoke(activity, *, tasks=None, checks_only=False, out) -> dict      # 划分哈希、评分契约、输入审计；一次 dev 尝试
+def run_arm(activity, *, release, split, candidate, role, pairs, account, plan_ref="", arm="subject", retry=0, supersedes=None, notes="", allocation=None) -> list[TaskResult]
+    # 一个运行身份下的一组尝试；已在记录里的不再付费
+def smoke(activity, *, tasks=None, limit=None, checks_only=False, out) -> dict      # 划分哈希、评分契约、输入审计、种子全量字面量扫描；一次 dev 尝试
 def freeze(activity, *, out) -> dict                                    # 冻结 gate 计划、日程、预算、final 计划；打印 [rsi] 行
 def baseline(activity, *, out) -> dict                                  # W0 在 train 与 dev（control_readings 次）
-def library(activity, *, out) -> dict                                   # memory 的流与快照（MEMORY §7）
-def round(activity, index: int, *, out) -> RoundResult                  # improver.run_round；每轮后停
+def library(activity, *, out) -> dict                                   # memory 的流与快照（MEMORY §7；阶段 2 之前抛 NotImplementedError）
+def round_(activity, index: int, *, out) -> RoundResult                 # improver.run_round；每轮后停（阶段 3 之前抛 NotImplementedError）
 def evaluate(activity, *, out) -> dict                                  # final（EVALUATE §6）
 def report(activity, *, out) -> dict
 def export(activity, release_ref, to: Path, *, out) -> AppManifest
 def cycle(activity, *, until: str | None, out) -> dict                  # baseline → library → round 0..N；`--until baseline | library | round-K`
 
 # checks.py
-def startup_checks(activity, *, phase: str, needs_model: bool) -> list[str]
+def startup_checks(activity, *, phase: str, needs_model: bool = True, needs_worker: bool | None = None) -> list[str]
     # 钱：预算根与份额存在、价目有界、provider 是订阅登录、effort 钉在 K；
     # 泄漏：划分哈希相符、test 未读（final 之前）、R 与 memory 只读 train 的配置；
-    # 正确性：worker 镜像 id 与 runner sha256、egress 镜像、memory sidecar 锁文件、种子 ref 与 K 一致、code_version 相符
+    # 正确性：worker 镜像 id 与 runner sha256、egress 镜像、memory sidecar 锁文件（阶段 2）、种子 ref 与 K 一致、code_version 相符、评分契约
+    # 阶段 1 里 memory 开着的 K 归在“泄漏”一类拒绝：memory 读 train 证据，要等 memory 包到位
 
 # report.py
 def build_report(activity) -> dict      # 基线、每轮（簇数、候选、各档通过数、gate 读数、装入）、memory 读数、final、花费（按步单列）、test 读取次数
@@ -77,7 +90,7 @@ def write_report(activity, report) -> dict   # 两次相同（确定性）
 | 阶段 | 做什么 | 停下来分析 | 花费 |
 |---|---|---|---|
 | smoke | `--checks-only`：上游版本、划分哈希、评分契约、输入审计；不带：一次 dev 尝试走完整运行壳 | 划分哈希与预期一致？ | $0 / 约 $0.5 |
-| freeze | 冻结 gate 计划（`TaskEvalPlan`）、日程、预算（根与 final 份额）、final 计划（若配置写了）；打印 `[rsi]` 的 ref 行，用户填回配置并提交 | — | $0 |
+| freeze | 冻结 gate 计划模板（`TaskEvalPlan`，任务 = 全部 dev，阈值来自 K 的 `gate`）、打开预算根（final 份额事先留出）、final 计划（配置有 `[final]` 且已有装入时封存）；打印 `[rsi]` 的 `scope_id`、`core_ref`、`split_ref`、`final_plan_ref`，用户填回配置并提交；日程在 K 里，不另冻结 | — | $0 |
 | baseline | W0 跑 train 全部 + dev × `control_readings` | 余量与噪声 | 约 $58 |
 | library | memory 流（MEMORY §7）：对 train 逐题首遇与重试，写入、记功；快照作候选从 V3 起走阶梯 | D、学习曲线、快照 gate | 约 $50～100 |
 | round k | improver 的一轮（IMPROVER §3）；每轮后停 | 有没有代码候选到 V2；V3/V4 读数 | 约 $40 |

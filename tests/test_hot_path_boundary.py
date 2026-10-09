@@ -1,11 +1,18 @@
-"""The decision and training stack stays off the bench path (docs/PLAN.md P1 step 2).
+"""The import boundaries of docs/design/CONTRACTS.md §1.
 
-Under a v3 or v5 K the runner shell asks no decision point, so nothing an activity runs there needs the decision
-runtime, the built-in points, the feedback builders or the training code (ouroloop/train/, P1 step 4). Each check runs in a fresh interpreter,
-because this process has imported everything the other tests use.
+- An attempt (`evaluate.attempt.run_attempt`) leaves no `ouroloop.improver`, `ouroloop.memory.sidecar` or
+  `ouroloop.train` in sys.modules, and neither do the activity phases an attempt runs under (ACTIVITY.md §9).
+- The control plane never imports package code: nothing of a package's vendor/, agent/, tools/, middlewares/ or
+  tests/ is a module of the host process; it runs in the worker only.
+- adapters/ imports nothing of the framework, and harness, runtime, evaluate, activity and contracts import only the
+  packages below them.
+
+The run-time checks each start a fresh interpreter, because this process has imported whatever the other tests use
+(tests/harness imports the seed's own tests, for one).
 """
 from __future__ import annotations
 
+import ast
 import json
 import os
 import subprocess
@@ -14,213 +21,202 @@ from pathlib import Path
 
 import pytest
 
-from ouroloop import bench
-from ouroloop.agent.runner import release_max_effort
-from ouroloop.evolve import contracts as ct
-from ouroloop.ledger import _read_jsonl
+from ouroloop.harness import seed as sd
 
 TESTS = Path(__file__).resolve().parent
 REPO = TESTS.parent
+PACKAGE = REPO / "ouroloop"
 
-# The training subpackage: the typed decision contracts, the feedback builders, the datasets, train_artifact, the
-# backends, stores, serving, the trainer plugins, StopGuard and the stop trace (the built-in decision points, the v1
-# loop and the champion pointer that were off the path beside it went in P1 step 5).
-REQUIRED = ("ouroloop.train",)
-# The research round's modules, which the smoke, the baseline and a measurement have no use for.
-DECISION_STACK = ("ouroloop.research.loop", "ouroloop.research.basic")
+# Off the hot path: the improver and the memory's sidecar client (stages 2 and 3) and the training stack.
+OFF_PATH = ("ouroloop.improver", "ouroloop.memory.sidecar", "ouroloop.train")
+# A package's code directories (HARNESS §2): they run in the worker, never in the control plane.
+PACKAGE_DIRS = ("vendor", "agent", "tools", "middlewares", "tests")
 
-# Per preset: the smoke's checks (`--phase smoke --checks-only`), the smoke's one attempt, then the baseline phase
-# limited to one dev task (which also measures one train task) — open_activity, the startup checks, the budget book,
-# run_arm and the runner shell, with the scripted actor of tests/test_attempt_behaviour.py — and the measurement a
-# round would hand R, with its feedback.
+# CONTRACTS §1: what each package may import of the framework, besides itself.
+LAYERS = {
+    "contracts": set(),
+    "harness": {"contracts"},
+    "runtime": {"contracts", "harness"},
+    "evaluate": {"contracts", "harness", "runtime", "adapters"},
+    "activity": {"contracts", "harness", "runtime", "evaluate", "adapters", "memory", "improver"},
+}
+# providers/ has no place in CONTRACTS §1 (RUNTIME §10 leaves it as it was). It builds on runtime.chat, and these
+# packages reach it only inside a function: runtime to tell an account error, evaluate for ProviderError, activity to
+# build K's providers. A module-level import of it from them is refused like any other edge.
+FUNCTION_LEVEL_ONLY = {"runtime": {"providers"}, "evaluate": {"providers"}, "activity": {"providers"}}
+
+
+# ---------------------------------------------------------------------------- run-time checks, in a fresh process
 SCRIPT = r"""
 import json, sys
 from pathlib import Path
 upstream, tmp = sys.argv[1], Path(sys.argv[2])
 sys.path.insert(0, upstream)
-from _pytest.monkeypatch import MonkeyPatch
-from ouroloop import bench, cli  # noqa: F401 - the CLI module is on the path of `ouroloop bench` too
-from ouroloop.adapters import automationbench as ab
-from ouroloop.benchmark import Results, SplitManifest
-import test_attempt_behaviour as tab
+import ouroloop
+import rsi
+from ouroloop.activity import cli  # noqa: F401 - the CLI module is on the path of `ouroloop bench` too
+from ouroloop.activity import phases
+from ouroloop.evaluate.attempt import make_agent_factory, run_attempt
+
+def modules():
+    return {name: getattr(m, "__file__", None) for name, m in list(sys.modules.items())}
 
 quiet = lambda _line: None
-mp = MonkeyPatch()
-for preset in ("automationbench_harness_v3", "automationbench_harness_v5"):
-    root = tmp / preset
-    suite = ab.load_suite(tab.DOMAIN, upstream)
-    fams, rule = ab.families(suite, tab.FAMILIES)
-    SplitManifest(tab.DOMAIN, suite.versions, rule, suite.entries(fams), dict(tab.SPLITS)).freeze(
-        Results(root, tab.DOMAIN).manifest_path())
-    cfg = tab.v3_config(upstream, root, mp, preset=preset)
-    checks = bench.run_phase(cfg, ".", phase="smoke", run_agent=False, out=quiet)
-    smoke = bench.run_phase(cfg, ".", phase="smoke", tasks=[tab.DEV_TASK], limit=1, out=quiet)
-    refs = bench.freeze(cfg, ".", out=quiet)
-    cfg = {**cfg, "rsi": {**cfg["rsi"], **refs}}
-    baseline = bench.baseline(cfg, ".", tasks=[tab.DEV_TASK], limit=1, out=quiet)
-    # what a round's measurement hands R, read back from the baseline's train attempt
-    work = bench.improvement(bench.open_activity(cfg, ".", out=quiet), template_ref=cfg["rsi"]["task_plan_ref"])
-    measured = work.last_measurement(work.releases.active()["release_ref"])
-    print(json.dumps({"preset": preset, "checks_ok": checks["ok"], "smoke_attempts": len(smoke["attempts"]),
-                      "baseline_attempts": sum(a["summary"]["attempts"] + a["train"]["attempts"]
-                                               for a in baseline["arms"].values()),
-                      "measured": len(measured["train"]), "feedback": measured["feedback"].summary()}))
-print(json.dumps(sorted(m for m in sys.modules if m == "ouroloop" or m.startswith("ouroloop."))))
+# one attempt, through evaluate.attempt.run_attempt and the runner shell, the seed in a ProcessWorker
+activity = rsi.activity(tmp / "attempt", upstream)
+release = activity.active_release()
+run = activity.run_manifest(candidate="boundary", role="base", split="train", release=release)
+make = make_agent_factory(provider=activity.actor_provider(activity.account("boundary")),
+                          package=activity.package(release), core=activity.k, worker=activity.worker(),
+                          root=activity.root, pricing=activity.pricing(), release_ref=release.ref(),
+                          core_ref=activity.core_ref)
+attempt = run_attempt(activity.suite, rsi.TRAIN[1], make, run=run, splits=activity.splits, release_ref=release.ref())
+attempt.episode.close()
+print(json.dumps({"ouroloop": ouroloop.__file__, "termination": attempt.result.termination,
+                  "validity": attempt.result.validity, "success": attempt.result.success,
+                  "steps": attempt.result.steps, "modules": modules()}))
+# the phases an attempt runs under: the smoke with its attempt, freeze, a baseline of one train and one dev task, report
+activity = rsi.activity(tmp / "phases", upstream)
+smoke = phases.smoke(activity, out=quiet)
+frozen = phases.freeze(activity, out=quiet)
+baseline = phases.baseline(activity, limit=1, out=quiet)
+report = phases.report(activity, out=quiet)
+print(json.dumps({"smoke_ok": smoke["ok"], "smoke_attempts": len(smoke["attempts"]), "frozen": sorted(frozen),
+                  "baseline": [baseline["train"]["attempts"]] + [d["attempts"] for d in baseline["dev"]],
+                  "report": sorted(report), "modules": modules()}))
 """
 
 
-def loaded(module: str, modules: list[str]) -> list[str]:
-    return [m for m in modules if m == module or m.startswith(module + ".")]
+def loaded(prefix: str, modules) -> list[str]:
+    return sorted(m for m in modules if m == prefix or m.startswith(prefix + "."))
 
 
-def test_a_v3_and_a_v5_bench_path_load_no_decision_or_training_code(fake_upstream, tmp_path):
+def package_code(modules: dict) -> list[str]:
+    """The modules of this process that are package code: a file of the seed's source tree, a module named by a
+    vendored package, a module the worker runner names (`pkg_`, `pkgtest_`), or a file whose path ends in one of the
+    package's code files wherever it was unpacked."""
+    root = sd.seed_dir("stirrup")
+    files = sd.read_tree(root)
+    code = sorted(p for p in files if p.split("/")[0] in PACKAGE_DIRS and p.endswith(".py"))
+    vendored = sorted({p.split("/")[1] for p in files if p.startswith("vendor/")})
+    assert code and vendored == ["stirrup"]
+    found = []
+    for name, file in modules.items():
+        path = Path(file).resolve().as_posix() if file else ""
+        if (path.startswith(sd.SEEDS.resolve().as_posix() + "/") or name.split(".")[0] in vendored
+                or name.startswith(("pkg_", "pkgtest_")) or any(path.endswith("/" + p) for p in code)):
+            found.append(name)
+    return sorted(found)
+
+
+def test_an_attempt_and_the_phases_load_no_off_path_or_package_code(fake_upstream, tmp_path):
     env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(REPO), str(TESTS)])}
     run = subprocess.run([sys.executable, "-c", SCRIPT, fake_upstream, str(tmp_path)], cwd=tmp_path, env=env,
-                         capture_output=True, text=True, timeout=600)
+                         capture_output=True, text=True, timeout=300)
     assert run.returncode == 0, run.stderr[-4000:]
-    *phases, modules = [json.loads(line) for line in run.stdout.splitlines() if line.startswith(("{", "["))]
-    # the path really ran: both presets, their checks, the smoke's attempt and the baseline's two attempts
-    assert [p["preset"] for p in phases] == ["automationbench_harness_v3", "automationbench_harness_v5"]
-    assert all(p["checks_ok"] and p["smoke_attempts"] == 1 and p["baseline_attempts"] == 2 and p["measured"] == 1
-               for p in phases), phases
-    assert all(p["feedback"] == {"records": 0, "valid": 0, "labels": {}, "excluded": {},
-                                 "builder": "completion_snapshot@v1", "conflicted": 0, "unknown": 0} for p in phases)
-    assert "ouroloop.bench" in modules and "ouroloop.agent.runner" in modules and "ouroloop.workspace" in modules
-    assert [m for name in REQUIRED for m in loaded(name, modules)] == []
-    assert [m for name in DECISION_STACK for m in loaded(name, modules)] == []
+    attempt, activity = [json.loads(line) for line in run.stdout.splitlines() if line.startswith("{")]
+    # this checkout's code ran, and the path really ran: a valid attempt, the smoke's attempt, a baseline of two
+    assert Path(attempt["ouroloop"]).resolve().is_relative_to(REPO)
+    assert (attempt["termination"], attempt["validity"], attempt["success"]) == ("finished", "valid", True)
+    assert attempt["steps"] > 1
+    assert activity["smoke_ok"] and activity["smoke_attempts"] == 1 and activity["baseline"] == [1, 1]
+    assert "core_ref" in activity["frozen"] and "baseline" in activity["report"]
+    assert "ouroloop.runtime.runner" in attempt["modules"] and "ouroloop.activity.phases" in activity["modules"]
+    for snapshot in (attempt, activity):
+        assert [m for prefix in OFF_PATH for m in loaded(prefix, snapshot["modules"])] == []
+        assert package_code(snapshot["modules"]) == []
 
 
-# ---------------------------------------------------------------------------- the thin workspace
-def test_the_workspace_writes_the_session_row_and_release_file_the_v1_runtime_wrote(tmp_path):
-    """The rows and the file as the v1 runtime wrote them for every bench session (compared with it in step 2, before
-    it went in step 5): the release triple with no model and the built-in points' spec hash, the champion None, and a
-    reopened session keeping the release it was fixed at."""
-    from ouroloop.release import harness_hash
-    from ouroloop.workspace import BUILTIN_SPEC, Workspace
-    harness = {"system": "s", "tools": {"api_fetch": "fetch"}, "agent": {"entry": "e", "roles": ["act"],
-                                                                         "placement": "host"}}
-    meta = {"arm": "base", "scope": "x", "task": "t1", "split": "dev", "held_out": True}
-    ws = Workspace(tmp_path)
-    release = ws.session("s_1", meta, harness=harness)
-    ws.session("s_1", {**meta, "again": True})               # reopened: the release it was fixed at, no harness
-    expected = {"model": None, "spec": BUILTIN_SPEC, "harness": harness_hash(harness)}
-    assert release == expected and BUILTIN_SPEC == "0b0ad2d0005b"
-    rows = [{k: v for k, v in e.items() if k != "ts"} for e in ws.ledger.events()]
-    assert rows == [{**meta, "type": "session", "session": "s_1", "release": expected, "champion": None},
-                    {**meta, "again": True, "type": "session", "session": "s_1", "release": expected,
-                     "champion": None}]
-    saved = json.loads((tmp_path / "sessions" / "s_1.release.json").read_text(encoding="utf-8"))
-    assert saved == {"release": expected, "champion": None}
+# ---------------------------------------------------------------------------- the dependency direction
+def module_of(path: Path) -> str:
+    parts = list(path.relative_to(REPO).with_suffix("").parts)
+    return ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
 
 
-def test_an_activity_gets_the_thin_workspace_and_builds_serving_only_when_asked(fake_upstream, tmp_path,
-                                                                                 monkeypatch):
-    import test_attempt_behaviour as tab
-    from ouroloop.workspace import Workspace
-    tab.run_baseline(fake_upstream, tmp_path, monkeypatch)
-    cfg = tab.v3_config(fake_upstream, tmp_path / "ws", monkeypatch)
-    activity = bench.open_activity(cfg, ".", out=lambda _line: None)
-    assert release_max_effort(activity.objects, activity.release_ref) == "medium"
-    assert isinstance(activity.rt, Workspace)
-    assert activity.rt._serving is None                      # nothing asked for serving: none was built
-    from ouroloop.train.config import build_serving
-    serving = activity.rt.serving                            # a model policy to bind asks: the config's, built once
-    assert serving.store.table == build_serving(cfg).store.table and activity.rt.serving is serving
-    # every K's attempts run under the runner shell now (P1 step 5): a workspace without a release gets the same
-    assert isinstance(bench.attempt_workspace({"workspace": {"root": str(tmp_path / "plain")}}, "."), Workspace)
+def imports(path: Path) -> list[tuple[str, int, bool]]:
+    """(module imported, line, inside a function) for every import of a file, relative ones resolved."""
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    here = module_of(path).split(".")
+    package = here if path.name == "__init__.py" else here[:-1]
+    out: list = []
+
+    def visit(node, in_function: bool):
+        for child in ast.iter_child_nodes(node):
+            nested = in_function or isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
+            if isinstance(child, ast.Import):
+                out.extend((a.name, child.lineno, in_function) for a in child.names)
+            elif isinstance(child, ast.ImportFrom):
+                base = package[:len(package) - child.level + 1] if child.level else []
+                target = ".".join(base + ([child.module] if child.module else []))
+                out.append((target, child.lineno, in_function))
+                if not child.module:                     # `from .. import x`: x may be a module
+                    out.extend((f"{target}.{a.name}", child.lineno, in_function) for a in child.names)
+            visit(child, nested)
+    visit(tree, False)
+    return out
 
 
-# ---------------------------------------------------------------------------- feedback only where it can exist
-def test_a_runner_shell_measurement_hands_r_the_empty_feedback_set_build_feedback_would_have(fake_upstream,
-                                                                                              tmp_path, monkeypatch):
-    import test_attempt_behaviour as tab
-    from ouroloop.train import feedback as fb
-    tab.run_baseline(fake_upstream, tmp_path, monkeypatch)
-    cfg = tab.v3_config(fake_upstream, tmp_path / "ws", monkeypatch)
-    work = bench.improvement(bench.open_activity(cfg, ".", out=lambda _line: None))
-    release = work.releases.active()["release_ref"]
-    assert bench.FEEDBACK_BUILDER == fb.COMPLETION_SNAPSHOT.ref
-    built = fb.build_feedback(work.rt, objects=work.objects, scope_id=work.scope_id)
-    calls = []
-    monkeypatch.setattr(fb, "build_feedback", lambda *a, **kw: calls.append(kw) or built)
-    empty = work.feedback(release)
-    assert calls == [] and isinstance(empty, ct.FeedbackSet)
-    assert empty.summary() == built.summary() and empty.records == built.records == []
-    # a W that binds worker.stop to a model (or a core with training on) reads the ledger's decisions again
-    monkeypatch.setattr(bench.Improvement, "_decides", lambda self, ref: True)
-    assert work.feedback(release) is built and len(calls) == 1
+def framework_edges(package: str) -> list[tuple[str, str, bool]]:
+    """(file:line, the framework package imported, inside a function) for every import from `package` of another
+    ouroloop package. The seeds under harness/seeds/ are package code, not the harness package's."""
+    root = PACKAGE / package
+    files = [root.with_suffix(".py")] if not root.is_dir() else \
+        [f for f in sorted(root.rglob("*.py")) if "seeds" not in f.relative_to(root).parts]
+    assert files, package
+    edges = []
+    for f in files:
+        for target, line, in_function in imports(f):
+            parts = target.split(".")
+            if parts[0] != "ouroloop" or len(parts) < 2 or parts[1] == package or parts[1] == "__version__":
+                continue
+            edges.append((f"{f.relative_to(REPO)}:{line}", parts[1], in_function))
+    return edges
 
 
-def test_decides_reads_the_core_and_the_kind_of_the_bound_decision_target(fake_upstream, tmp_path, monkeypatch):
-    import dataclasses
-    import test_attempt_behaviour as tab
-    from ouroloop import policies as P
-    tab.run_baseline(fake_upstream, tmp_path, monkeypatch)
-    cfg = tab.v3_config(fake_upstream, tmp_path / "ws", monkeypatch)
-    work = bench.improvement(bench.open_activity(cfg, ".", out=lambda _line: None))
-    objects = work.objects
-    release = work.releases.active()["release_ref"]
-    assert work._decides(release) is False                   # W0: worker.stop is the rule default, training off
-    active = objects.load(release, ct.SystemRelease)
-    model = P.descriptor(objects, "worker.stop", "model", {"instructions": "done?"}, model_ref="m@1",
-                         inference={"model_id": "m"})
-    with_model = objects.put(dataclasses.replace(active, worker_ref=P.replace_policies(objects, active.worker_ref,
-                                                                                        [model])))
-    assert work._decides(with_model) is True
-    core = objects.load(active.core_ref, ct.CoreManifest)
-    training = objects.put(dataclasses.replace(core, capabilities={**core.capabilities, "training": True}))
-    assert work._decides(objects.put(dataclasses.replace(active, core_ref=training))) is True
+def test_adapters_import_nothing_of_the_framework():
+    edges = [(where, target) for where, target, _ in framework_edges("adapters")]
+    climbs = [f"{f.relative_to(REPO)}:{node.lineno}" for f in sorted((PACKAGE / "adapters").rglob("*.py"))
+              for node in ast.walk(ast.parse(f.read_text(encoding="utf-8")))
+              if isinstance(node, ast.ImportFrom) and node.level > 1]
+    imported = [t for f in sorted((PACKAGE / "adapters").rglob("*.py")) for t, _, _ in imports(f)]
+    assert "automationbench" in {t.split(".")[0] for t in imported}     # the reader works: it sees upstream
+    assert edges == [] and climbs == []
 
 
-# ---------------------------------------------------------------------------- a rule stop policy builds no point
-def test_a_rule_stop_policy_builds_its_business_point_only_when_a_host_asks(tmp_path):
-    from ouroloop import policies as P
-    from ouroloop.train.views import business_stop_point
-    objects = ct.Objects(tmp_path)
-    rule = P.descriptor(objects, "worker.stop", "rule", {"builtin": "default.v1"})
-    decider = P._bind_stop(rule, P.Services(objects))
-    assert decider._point is None and decider.kind == "rule" and decider.default == "yes"
-    assert decider.propose({}) == ("yes", "default")         # proposing the default needs no point either
-    assert decider._point is None
-    assert decider.point.spec_hash == business_stop_point().spec_hash      # a host's StopGuard reads this
+@pytest.mark.parametrize("package", sorted(LAYERS))
+def test_each_package_imports_only_the_packages_below_it(package):
+    allowed, lazy = LAYERS[package], FUNCTION_LEVEL_ONLY.get(package, set())
+    edges = framework_edges(package)
+    wrong = [(where, target) for where, target, in_function in edges
+             if target not in allowed and not (in_function and target in lazy)]
+    assert wrong == [], f"{package} may import {sorted(allowed)}"
+    assert package == "contracts" or {t for _, t, _ in edges} & allowed      # the reader sees the real edges
 
 
-def test_a_model_policy_builds_the_serving_it_is_loaded_through_only_then(tmp_path):
-    from ouroloop import policies as P
-    built = []
-
-    class Serving:
-        def backend(self, spec):
-            raise RuntimeError("no model here")
-
-    def make():
-        built.append(1)
-        return Serving()
-    objects = ct.Objects(tmp_path)
-    rule = P.descriptor(objects, "worker.stop", "rule", {"builtin": "default.v1"})
-    P._bind_stop(rule, P.Services(objects, serving=make))
-    assert built == []
-    model = P.descriptor(objects, "worker.stop", "model", {"instructions": "done?"}, model_ref="m@1",
-                         inference={"model_id": "m"})
-    with pytest.raises(P.BindError, match="could not be loaded: RuntimeError: no model here"):
-        P._bind_stop(model, P.Services(objects, serving=make))
-    assert built == [1]
+IMPORT_ALL = r"""
+import importlib, json, pkgutil, sys
+name, out = sys.argv[1], sys.argv[2]
+top = importlib.import_module("ouroloop." + name)
+for info in pkgutil.iter_modules(getattr(top, "__path__", []), top.__name__ + "."):
+    importlib.import_module(info.name)
+with open(out, "w") as f:           # not stdout: runtime.worker_runner takes fd 1 for its protocol when imported
+    json.dump({"ouroloop": sys.modules["ouroloop"].__file__, "modules": sorted(sys.modules)}, f)
+"""
 
 
-def test_the_session_rows_of_a_bench_run_read_back_as_before(fake_upstream, tmp_path, monkeypatch):
-    """Ledger.sessions() (the v2 data pipeline's reader) over the rows the thin workspace wrote."""
-    import test_attempt_behaviour as tab
-    from ouroloop.ledger import Ledger
-    from ouroloop.workspace import BUILTIN_SPEC
-    tab.run_baseline(fake_upstream, tmp_path, monkeypatch)
-    root = tmp_path / "ws"
-    sessions, _ = Ledger(root / "ledger").sessions()
-    results = list(_read_jsonl(root / "bench" / "rsi" / "results.jsonl"))
-    assert sorted(sessions) == sorted(r["evidence"] for r in results)
-    for r in results:
-        info = sessions[r["evidence"]]
-        assert info["task"] == r["task_id"] and info["split"] == r["split"]
-        assert info["held_out"] is (r["split"] != "train") and info["attempt_id"] == r["attempt_id"]
-        assert info["release"]["spec"] == BUILTIN_SPEC and info["champion"] is None
-        saved = json.loads((root / "sessions" / f"{r['evidence']}.release.json").read_text(encoding="utf-8"))
-        assert saved == {"release": info["release"], "champion": None}
+@pytest.mark.parametrize("package", sorted(LAYERS))
+def test_importing_a_package_loads_nothing_above_it(package, tmp_path):
+    """Every module of the package imported in a fresh interpreter: the framework packages it pulls in, at any depth,
+    are the ones below it (a package outside the table, reached at module level, would show here)."""
+    env = {**os.environ, "PYTHONPATH": str(REPO)}
+    out = tmp_path / "modules.json"
+    run = subprocess.run([sys.executable, "-c", IMPORT_ALL, package, str(out)], cwd=tmp_path, env=env,
+                         capture_output=True, text=True, timeout=120)
+    assert run.returncode == 0, run.stderr[-4000:]
+    got = json.loads(out.read_text())
+    modules = got["modules"]
+    assert Path(got["ouroloop"]).resolve().is_relative_to(REPO)
+    pulled = {m.split(".")[1] for m in modules if m.startswith("ouroloop.")} - {package}
+    assert f"ouroloop.{package}" in modules
+    assert pulled <= LAYERS[package], f"ouroloop.{package} loads {sorted(pulled - LAYERS[package])}"
+    assert [m for prefix in OFF_PATH for m in loaded(prefix, modules)] == []

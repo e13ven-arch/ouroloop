@@ -1,3 +1,3 @@
-from .cli import main
+from .activity.cli import main
 
 raise SystemExit(main())

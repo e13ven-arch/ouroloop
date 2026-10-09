@@ -37,14 +37,14 @@ def stop_context(task_text: str, final_message: str, *, phase: str, step: int, t
 
 def record_trace(objects, bound, guard, call, ctx: dict, phase: str, decision: dict, *,
                  input_schema: str = STOP_VIEW) -> tuple[str, str]:
-    """One observation and one trace for a stop decision of a bound release (`bound`, policies.BoundRuntime), and the
+    """One observation and one trace for a stop decision of a bound release (`bound`: the v1 policies.BoundRuntime, on tag archive-2026-10-09), and the
     release's activity counters. -> (observation ref, trace ref).
 
     The proposed and the executed action come from two different places — the policy's answer and what the guard
     did with it — which is the only way a later round can tell "the policy was overruled" from "the policy agreed"
     (docs/modules/00_CONTRACTS.md §2). `decision` is the row as the runtime wrote it (StopGuard's on_record).
     """
-    from ..evolve import contracts as ct
+    from . import records as ct
     observation = ct.Observation(
         task_text=ctx.get("task_text", ""), tool_events=tuple(json.dumps(e, sort_keys=True, default=str)
                                                               for e in ctx.get("tool_events") or ()),

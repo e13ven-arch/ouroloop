@@ -1,6 +1,6 @@
 """The business stop point and its view (docs/modules/01_POLICY_RUNTIME.md §3, schema stop.business.v1): what a
-completion decision of a business task may see. policies.py builds it for a bound worker.stop policy, and the task
-profile's datasets render their examples through it (dataset.py)."""
+completion decision of a business task may see. The v1 policies.py (tag archive-2026-10-09) built it for a bound
+worker.stop policy, and the task profile's datasets render their examples through it (dataset.py)."""
 from __future__ import annotations
 
 import json

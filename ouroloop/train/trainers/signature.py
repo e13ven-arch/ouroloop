@@ -58,7 +58,7 @@ class SignatureBackend:
 
 
 def key_function(ref: str | None):
-    from ...config import import_object
+    from ...contracts import import_object
     return import_object(ref) if ref else signature
 
 

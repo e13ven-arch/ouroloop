@@ -136,7 +136,7 @@ def main(path: str) -> int:
     job_dir = os.path.dirname(os.path.abspath(path))
     with open(path, encoding="utf-8") as f:
         spec = json.load(f)
-    from ...release import code_version
+    from ...evaluate.release import code_version
     from ..trainers import load, version
     mine, want = code_version(), (spec.get("ouroloop") or {}).get("code")
     fix = f"run `python -m ouroloop.train host init {spec.get('host') or 'local'}` from the control plane"

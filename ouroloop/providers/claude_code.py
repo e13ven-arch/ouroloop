@@ -29,7 +29,7 @@ import time
 import uuid
 from pathlib import Path
 
-from ..chat import ChatTurn, ToolCall, ToolSpec
+from ..runtime.chat import ChatTurn, ToolCall, ToolSpec
 from . import ProviderAccountError, ProviderError
 
 USAGE_KEYS = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
@@ -189,7 +189,7 @@ def _structured(result: dict):
 # ---------------------------------------------------------------------------- the `claude` children
 # Each call's `claude` child runs in a session of its own (stage 0/1 review, 2026-10-05): a terminal's Ctrl-C goes to
 # the foreground process group, and the child is no longer in it, so it reaches only this process — whose interrupt
-# handling (task_eval.run_tasks) lets the attempts in flight finish and their calls settle, instead of every child
+# handling (evaluate.attempt.run_tasks) lets the attempts in flight finish and their calls settle, instead of every child
 # dying under the same signal and leaving its call `unknown` at the full reservation bound. What the parent no longer
 # waits for it kills itself: a call past its timeout (the child's whole process group), a wait the parent's own
 # thread was interrupted in (concurrency 1: the attempt runs on the main thread), and, at interpreter exit, any child
