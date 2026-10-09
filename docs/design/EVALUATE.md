@@ -46,8 +46,9 @@ def run_attempt(suite, task_id, make_agent, *, run: RunManifest, splits, attempt
     # 钱的错误记 budget_exhausted；StaleWorker 与账户错误抛出
 def run_tasks(suite, task_ids, make_agent, *, run, splits, results=None, repeats=1, order=None, concurrency=1, **kw)
     # 每次尝试完成即写 results 与评分行（train 才可读）；并发上限共享（in_flight_cap）
-def make_agent_factory(*, provider, package: Package, core: dict, worker, root, pricing=None, memory_reader=None,
-                       opening=None, release_ref=None, core_ref=None, arm="subject") -> Callable
+def make_agent_factory(*, provider, package: Package, core: dict, worker, root, pricing=None, memory=None,
+                       release_ref=None, core_ref=None, arm="subject") -> Callable
+    # memory(task, task_hash) -> TaskMemory | None（MEMORY §4）；task_hash(task) 是 task_id 与 contract 的摘要
 
 # results.py（现有 benchmark.py 的，不变）
 class RunManifest(...)      # candidate、model identity、limits、split hash、core_ref 摘要、package_ref

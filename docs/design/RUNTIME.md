@@ -83,7 +83,8 @@ class AgentResult: text; termination; limit; usage; cost; hooks: list[dict]; mar
 def compose_system(base: str, package: Package, opening: str = "") -> str   # 任务自带的 system + prompt/system.md + prompt/finish.md + 技能索引 + memory 开场块
 class PackageAgent:
     def __init__(self, *, provider, package: Package, core: dict, surface, worker: Worker, transcript: Transcript,
-                 system: str = "", attempt_id: str, task_meta: dict | None = None, memory_reader=None, opening: str = "", pricing=None)
+                 system: str = "", attempt_id: str, task_meta: dict | None = None, memory=None, pricing=None)
+    # memory：memory.retrieval.TaskMemory（opening、event、recall）或 None；event 记成紧跟 task 行的 library_retrieval{site:"start"}
     def run(self, task: str) -> AgentResult        # 钱的错误（BudgetError）、provider 的账户错误、StaleWorker 写完 end 行后抛出
 
 # app.py
@@ -91,7 +92,7 @@ class PackageAgent:
 class AppManifest(Record): package_ref: str; core_subset: dict; validation_ref: str; image_id: str | None; release_ref: str | None   # kind "app"
 class App:
     def __init__(self, directory)
-    def agent(self, *, provider, surface, worker, attempt_id, system="", memory_reader=None, opening="", pricing=None, task_meta=None) -> PackageAgent
+    def agent(self, *, provider, surface, worker, attempt_id, system="", memory=None, pricing=None, task_meta=None) -> PackageAgent
     def describe(self) -> dict
 def export(objects, release, core: dict, destination: Path, *, validation: dict) -> AppManifest   # 导出 package 闭包、validation、app 三类对象与 app.json
 ```
