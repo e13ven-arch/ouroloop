@@ -77,8 +77,11 @@ class Round:
         active = activity.active_release()
         if self.state_path.exists():
             self.state = json.loads(self.state_path.read_text(encoding="utf-8"))
+            # the line moved under the round, unless the round's own install moved it (killed before its gate step
+            # was saved: the gate's replay is free and the install's replay a no-op)
+            own = activity.releases.recover(f"install:{self.round_id}".replace("/", "_"))
             if self.state["base_release"] != active.ref() and self.state.get("status") not in ("done", "stopped") \
-                    and "gated" not in self.state["steps"]:
+                    and "gated" not in self.state["steps"] and getattr(own, "status", None) != "installed":
                 raise ValueError(f"round {self.i} started on {short(self.state['base_release'])} and the line is now "
                                  f"{short(active.ref())}: a round is not continued on another W")
         else:
@@ -172,14 +175,22 @@ class Round:
         self._save()
         return self.result()
 
+    def _recorded(self, candidate: str, role: str) -> int:
+        """The valid attempts on record under a run of this name and role."""
+        runs = self.a.results.runs()
+        return sum(1 for r in self.a.results.all() if r.validity == "valid" and runs.get(r.run) is not None
+                   and runs[r.run].candidate == candidate and runs[r.run].role == role)
+
     # ------------------------------------------------------------------ measure, evidence
     def _measure(self, release, package_ref: str, kind: str) -> dict:
         missing = self.evidence.missing(package_ref)
         if missing:
             def run(arm, chosen, retry=0, supersedes=None):
-                return self.run_arm(self.a, release=release, split="train", candidate=f"train:{short(release.ref())}",
-                                    role="measure", pairs=chosen, account=self.child(kind), arm=arm, retry=retry,
-                                    supersedes=supersedes, notes="the current W's train reading")
+                # the run is this round's: an attempt an earlier round's budget refused is read again, not handed back
+                return self.run_arm(self.a, release=release, split="train",
+                                    candidate=f"train:{short(release.ref())}:r{self.i}", role="measure", pairs=chosen,
+                                    account=self.child(kind), arm=arm, retry=retry, supersedes=supersedes,
+                                    notes="the W's train reading")
             rows = refill_attempts(run("subject", [(t, 0) for t in missing]), run, "subject",
                                    int(self.a.k["gate"]["max_infrastructure_retries"]))
             if any(r.failure_class == "budget_exhausted" for r in rows):
@@ -241,8 +252,8 @@ class Round:
             cases.append((ref, case))
             cached += hit
         entries = self.memory_entries()
-        entry_causes = dg.classify_entries(list(entries.values()), researcher=researcher, vocabulary=vocabulary) \
-            if entries else {}
+        entry_causes = dg.classify_entries(list(entries.values()), researcher=researcher, vocabulary=vocabulary,
+                                           cache=cache) if entries else {}
         from ..memory.promote import cause_input
         from ..memory.rules import promotable
         from ..memory.settings import Settings as MemorySettings
@@ -365,10 +376,27 @@ class Round:
         out["package_api.md"] = api
         return out, readable
 
+    def _declared(self, decl, files: dict, verdict) -> dict:
+        self.ledger.row("declared", round_id=self.round_id, line=self.line, dir=decl.dir, cause_id=decl.cause_id,
+                        cause=decl.cause_id.rpartition(":")[2], kind=decl.kind, site=decl.site, trigger=decl.trigger,
+                        predicted_affected=list(decl.predicted_affected), differs_from=list(decl.differs_from))
+        return {"dir": decl.dir, "declaration": self.a.objects.put(decl),
+                "files": self.a.objects.put_json("candidate_files", files), "verdict": self.a.objects.put(verdict)}
+
     def implemented(self) -> dict:
         assignments = self.assignments()
         if not assignments:
             return {"candidates": [], "session": None}
+        saved = self.state.get("session_result")
+        if saved is not None:       # the session ran before the step was cut short: its candidates, not paid again
+            vctx = self.vctx()
+            out = []
+            for item in saved["candidates"]:
+                decl = Declaration.from_json(self.a.objects.get(item["declaration"]))
+                files = self.a.objects.get(item["files"])
+                out.append(self._declared(decl, files, run_ladder(files, decl, vctx)))
+            self.out(f"round      {self.round_id}: the session's {len(out)} candidates, as it left them")
+            return {"candidates": out, "session": saved["session"]}
         inputs, readable = self.inputs(assignments)
         kinds = sorted({a.kind for a in assignments})
         k = min(self.s.k, sum(a.slots for a in assignments))
@@ -384,7 +412,6 @@ class Round:
         vctx = self.vctx()
         tree = WorkTree(wsession)
         session = None
-        verdicts: dict = {}
         try:
             wsession.load({})
             tree.init({p: t for p, t in self.package.files.items() if p != MEMORY_PATH}, inputs,
@@ -413,12 +440,18 @@ class Round:
                                         "inputs": sorted(f"inputs/{n}" for n in inputs)},
                                     readable=readable, kinds=kinds)
             result = session.start()
-            out = []
+            fetched = []
             for decl in result.declarations:
                 files, error = tree.fetch(decl.dir)
-                if files is None:
-                    continue
-                files = self.with_memory(files)
+                if files is not None:
+                    fetched.append((decl, self.with_memory(files)))
+            # on record before anything else can fail: a resumed step does not pay for the session again
+            self.state["session_result"] = {"session": str(self.dir / "session.json"), "candidates": [
+                {"declaration": self.a.objects.put(d), "files": self.a.objects.put_json("candidate_files", f)}
+                for d, f in fetched]}
+            self._save()
+            out = []
+            for decl, files in fetched:
                 verdict = run_ladder(files, decl, vctx)
                 if not verdict.passed() and not session.ended:
                     session.revise(f"candidates/{decl.dir} failed its check:\n{verdict.text()}\nEdit its files and "
@@ -427,14 +460,7 @@ class Round:
                     if again is not None:
                         files = self.with_memory(again)
                         verdict = run_ladder(files, decl, vctx)
-                verdicts[decl.dir] = verdict
-                self.ledger.row("declared", round_id=self.round_id, line=self.line, dir=decl.dir,
-                                cause_id=decl.cause_id, cause=decl.cause_id.rpartition(":")[2], kind=decl.kind,
-                                site=decl.site, trigger=decl.trigger, predicted_affected=list(decl.predicted_affected),
-                                differs_from=list(decl.differs_from))
-                out.append({"dir": decl.dir, "declaration": self.a.objects.put(decl),
-                            "files": self.a.objects.put_json("candidate_files", files),
-                            "verdict": self.a.objects.put(verdict)})
+                out.append(self._declared(decl, files, verdict))
         finally:
             wsession.close(force=True)
             if session is not None:
@@ -471,8 +497,11 @@ class Round:
                 name = next(s["name"] for s in json.loads(files["manifest.json"])["skills"]
                             if s["name"].endswith(mid[:8]))
                 from ..memory.rules import distilled_from
+                from ..evaluate.attempt import task_hash
+                ids = {task_hash(self.a.suite.tasks[t]): t for t in self.a.splits.ids("train")}
                 out.append((Declaration(dir=f"promoted-{mid[:8]}", cause_id=f"{self.round_id}:memory", kind="skill",
-                                        site=name, predicted_affected=tuple(sorted(distilled_from(e))),
+                                        site=name, predicted_affected=tuple(sorted(ids[h] for h in distilled_from(e)
+                                                                                   if h in ids)),
                                         trigger="the skill index lists it", fixed=f"promotion:{mid}"), files))
         history = [r.get("history") for r in self.ledger.rows(stage="credited") if r.get("history")]
         for comp, files in removal_candidates(history, self.package, zero_rounds=self.s.removal_zero_credit_rounds):
@@ -504,6 +533,9 @@ class Round:
             verdict = run_ladder(files, decl, vctx)
             self.ledger.row("declared", round_id=self.round_id, line=self.line, dir=decl.dir, kind=decl.kind,
                             site=decl.site, source=decl.fixed, cause=decl.cause_id.rpartition(":")[2])
+            if decl.kind == "removal":
+                self.ledger.row("removal_proposed", round_id=self.round_id, line=self.line, dir=decl.dir,
+                                site=decl.site, reason=decl.trigger)
             self.archive.put(self.i, decl.dir, files, decl, verdict, line=self.line)
             for rung, v in verdict.steps.items():
                 ladder[rung] = ladder.get(rung, 0) + bool(v.get("passed"))
@@ -540,7 +572,11 @@ class Round:
                 claimed |= failing_now
             failing = [t for t in order if t in claimed and t in failing_now]
             plans.append((item, decl, failing))
-        attempts = sum(len(f) + len(sample) for _, _, f in plans if f)
+        # what is left to pay: each screen's attempts less those on record (a resumed step re-reads them for free),
+        # and the credit step's train reading of the winner where its screen did not read it
+        attempts = sum(max(len(set(f) | set(sample)) - self._recorded(f"r{self.i}:{d.dir}", "screen"), 0)
+                       for _, d, f in plans if f)
+        attempts += max((len(order) - len(set(f) | set(sample)) for _, _, f in plans if f), default=0)
         usd, why = price(self.a, self.base.package_ref, screen_attempts=attempts)
         if usd is None:
             raise Stop(f"unpriced: {why}")
@@ -628,12 +664,16 @@ class Round:
                     if Declaration.from_json(self.a.objects.get(i["declaration"])).dir == sc["best"])
         cause = next((c for c in self.causes() if c.cause_id == decl.cause_id), None)
         if cause is not None and not decl.fixed:
+            # the cause's net fixes where a component of the declared kind showed (IMPROVER §10)
+            shown = {c.task_id for c in credits if c.conditioned and c.kind == decl.kind}
             fixes = sum(int(child_reading[t].success) - int(parent_reading[t].success) for t in cause.tasks
-                        if t in child_reading and t in parent_reading)
+                        if t in child_reading and t in parent_reading and t in shown)
             Estimates(self.a.root, self.s).update(self.line, cause.name, decl.kind,
                                                   fixes=fixes / max(len(cause.tasks), 1),
                                                   cost=float((self.spend().get("used") or {}).get("usd") or 0.0),
                                                   key=f"{self.round_id}:{decl.dir}")
+        if decl.fixed.startswith("promotion:"):         # the entry's skill is installed: the entry is superseded
+            self.a.memory().supersede(decl.fixed.partition(":")[2], by=new.ref())
         history = {"footprints": footprints(child_reading, new_package, self.evidence),
                    "installed": {k: v["credit"] for k, v in table.items()}}
         self.ledger.row("credited", round_id=self.round_id, line=self.line, release=new.ref(),

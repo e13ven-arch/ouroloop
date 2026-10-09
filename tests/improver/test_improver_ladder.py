@@ -476,6 +476,9 @@ RAW = {"dir": "notify", "cause_id": "rsi-test/r0:missed_action", "kind": "tool",
     ({**RAW, "predicted_affected": [1]}, "predicted_affected is a list of train task ids"),
     ({**RAW, "scripts": {FAILING[0]: 3}}, "scripts maps a train task id to a toolcheck script"),
     ({**RAW, "differs_from": [{"how": "x"}]}, "differs_from is a list of {ref, how}"),
+    ({**RAW, "dir": "memory-snapshot"}, "are the fixed code's candidates"),
+    ({**RAW, "dir": "promoted-1a2b3c4d"}, "are the fixed code's candidates"),
+    ({**RAW, "dir": "remove-tool-x"}, "are the fixed code's candidates"),
 ])
 def test_read_declaration_refuses_what_finish_must_not_take(raw, why):
     got, error = read_declaration(raw, dirs=["notify"], kinds_allowed=["tool", "hook"])
@@ -561,6 +564,18 @@ def test_v2a_passes_need_toolcheck_min_pass(ctx, parent):
     assert got["detail"].startswith("1 of 2 claimed train tasks pass with the tool (at least 2)")
     assert toolcheck(with_tool(parent), tool_decl(scripts), with_settings(ctx, toolcheck_min_pass=1))["passed"]
     assert not toolcheck(with_tool(parent), tool_decl(), with_settings(ctx, toolcheck_min_pass=3))["passed"]
+
+
+def test_v2a_counts_only_claimed_train_tasks_the_current_w_fails(ctx, parent):
+    """A script per claimed failing task (DESIGN §6.6): one for a task the current W passes, or one the declaration
+    does not claim, is not a pass however the world ends."""
+    notify = "rsi.notify_once"                     # passed by the current W; a script that posts would pass it
+    scripts = {**{t: script_for(t) for t in FAILING}, notify: script_for(notify, "single update")}
+    got = toolcheck(with_tool(parent), tool_decl(scripts, predicted=(*FAILING, notify)), ctx)
+    assert got["passed"] and not got["tasks"][notify]["passed"]
+    assert "not a task the declaration claims that the current W fails" in got["tasks"][notify]["error"]
+    unclaimed = toolcheck(with_tool(parent), tool_decl(predicted=FAILING[:1]), with_settings(ctx, toolcheck_min_pass=2))
+    assert not unclaimed["passed"] and [t for t, r in unclaimed["tasks"].items() if r["passed"]] == [FAILING[0]]
 
 
 def test_v2a_a_world_the_grader_fails_hands_back_the_assertion_types_only(ctx, parent):

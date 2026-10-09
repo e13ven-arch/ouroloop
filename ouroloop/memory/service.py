@@ -83,6 +83,27 @@ class MemoryService:
                           forbidden_literals=forbidden, allowed_literals=allowed, trajectory_of=trajectory_of,
                           bridge_calls_of=self.scope.calls, set_step=self.scope.set_step, concurrency=concurrency)
 
+    def supersede(self, entry_id: str, by: str) -> None:
+        """A promoted entry whose skill was installed (MEMORY §8): superseded in the stream's ledger, retired from the
+        live store and gone from the live library, never shown or promoted again. Needs no research scope."""
+        import json
+        from .client import canonical_rows, parse_jsonl
+        from .promote import mark_superseded
+        from .rules import snapshot_rows
+        from .track import write_atomic
+        path = self.dir / "stream.json"
+        ledger = json.loads(path.read_text(encoding="utf-8"))
+        entries = ledger.get("entries") or {}
+        if (entries.get(entry_id) or {}).get("status") == "superseded":
+            return
+        mark_superseded(entries, entry_id, by)
+        if self.client is None:
+            self.start()
+        self.client.retire([entry_id], self.collection)
+        rows = parse_jsonl(self.client.dump(self.collection))
+        write_atomic(self.dir / "live.jsonl", canonical_rows(snapshot_rows(rows, entries)))   # the library first
+        write_atomic(path, json.dumps(ledger, indent=1, sort_keys=True, ensure_ascii=False))
+
     def healthy(self) -> bool:
         """Whether the sidecar answers (a cheap call: its health route)."""
         if self.client is None:

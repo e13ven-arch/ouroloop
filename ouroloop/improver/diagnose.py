@@ -184,13 +184,23 @@ def diagnose_case(evidence: Evidence, ev: AttemptEvidence, *, researcher, vocabu
     return cache.put(identity, case), case, False
 
 
-def classify_entries(entries: list[dict], *, researcher, vocabulary) -> dict[str, str]:
-    """{entry id: cause} for the memory's promotable entries (a cause outside the vocabulary is other)."""
+def classify_entries(entries: list[dict], *, researcher, vocabulary, cache: NoteCache | None = None) \
+        -> dict[str, str]:
+    """{entry id: cause} for the memory's promotable entries (a cause outside the vocabulary is other). With a cache
+    an entry asked about before under the same request and model is not asked again."""
     out = {}
     for e in entries:
+        eid = str(e.get("memory_id") or e.get("id"))
         system, user = entry_request(e, vocabulary)
+        identity = digest({"entry": eid, "system": system, "user": user, "model": model_of(researcher)})
+        ref = cache.get(identity) if cache is not None else None
+        if ref is not None:
+            out[eid] = Case.from_json(cache.objects.get(ref)).cause
+            continue
         cause = str(_ask(researcher, system, user).get("cause") or "other")
-        out[str(e.get("memory_id") or e.get("id"))] = cause if cause in vocabulary else "other"
+        out[eid] = cause if cause in vocabulary else "other"
+        if cache is not None:
+            cache.put(identity, Case(attempt_id=f"entry:{eid}", cause=out[eid]))
     return out
 
 

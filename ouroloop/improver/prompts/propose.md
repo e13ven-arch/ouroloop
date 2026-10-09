@@ -9,8 +9,8 @@ Make at most {k} candidates, one per candidates/<dir>/: the first write under a 
 there, then you change it. One candidate is one kind of change (a tool, a hook, a skill, a prompt edit, the agent,
 config); tests under tests/ may go with any of them.
 
-What works here, from earlier rounds (inputs/playbook.md, inputs/ledger.json, inputs/scoreboard.json, inputs/archive.json):
-read it before you design. Code that does a step for the agent (a tool) or checks a step it took (a hook) has moved
+What works here, from earlier rounds (inputs/playbook.md, inputs/ledger.json, inputs/scoreboard.json, and each
+cause's "earlier" candidates in inputs/causes.json): read it before you design. Code that does a step for the agent (a tool) or checks a step it took (a hook) has moved
 these tasks more than text that asks the model to try harder. A tool is only useful if the agent calls it: give it a
 name and a description that make the call obvious, and make its output say what it did.
 

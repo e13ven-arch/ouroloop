@@ -184,9 +184,11 @@ def gate(activity, *, run_arm, round_id: str, package, base_release, account) ->
 
     def run(arm, order, retry=0, supersedes=None):
         if arm == "control":
-            return run_arm(activity, release=base_release, split="dev", candidate=f"control:{short(base_release.ref())}",
-                           role="control", pairs=order, account=account, arm="control", retry=retry,
-                           supersedes=supersedes, notes="the gate's control top-up")
+            # this gate's run: a top-up an earlier gate's budget refused is read again, not handed back
+            return run_arm(activity, release=base_release, split="dev",
+                           candidate=f"control:{short(base_release.ref())}:{round_id}", role="control", pairs=order,
+                           account=account, arm="control", retry=retry, supersedes=supersedes,
+                           notes="the gate's control top-up")
         return run_arm(activity, release=base_release, split="dev", candidate=f"{round_id}:gate", role="subject",
                        pairs=order, account=account, plan_ref=plan_ref, arm=arm, retry=retry, supersedes=supersedes,
                        package=package, notes=f"the gate of {round_id}")

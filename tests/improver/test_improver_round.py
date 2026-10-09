@@ -464,7 +464,7 @@ def test_a_round_resumed_after_its_install_measures_the_new_w_once_and_credits_a
     measured = results_of_role(s.a, "measure")
     runs = s.a.results.runs()
     assert sorted(x.task_id for x in measured) == sorted(unread)                      # each once
-    assert {runs[x.run].candidate for x in measured} == {f"train:{short(new.ref())}"}
+    assert {runs[x.run].candidate for x in measured} == {f"train:{short(new.ref())}:r0"}
     assert {runs[x.run].package_ref for x in measured} == {new.package_ref}
     reservations = book(s.a)["reservations"].values()
     assert sum(1 for x in reservations if x["scope_id"] == f"{ACCOUNT}:measure" and x["status"] == "settled") > 0
@@ -520,7 +520,7 @@ def test_screens_that_cannot_be_priced_are_not_started(tmp_path, fake_upstream):
     runs = a.results.runs()
     rows = list(a.results.all())
     assert {runs[x.run].role for x in rows} == {"measure"} and {x.split for x in rows} == {"train"}
-    assert {runs[x.run].candidate for x in rows} == {f"train:{short(s.base.ref())}"}
+    assert {runs[x.run].candidate for x in rows} == {f"train:{short(s.base.ref())}:r0"}
     assert results_of_role(a, "screen") == []
     new = new_reservations(s.before, s.after)
     assert settled_by_scope(new) == {f"{ACCOUNT}:measure": s.after["actor"] - s.before["actor"],

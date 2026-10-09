@@ -24,9 +24,13 @@ def toolcheck(files: dict[str, str], decl, ctx) -> dict:
                                                         "task it claims (declaration.scripts)"}
     run = worker_files(files, tests=False)
     results: dict = {}
+    claimed = set(decl.predicted_affected) & set(ctx.failed_sessions or ())
     for task_id, script in sorted(decl.scripts.items()):
         if task_id not in set(ctx.train_tasks):
             results[task_id] = {"passed": False, "error": "not a train task"}
+            continue
+        if task_id not in claimed:          # a script per claimed train task the current W fails (DESIGN §6.6)
+            results[task_id] = {"passed": False, "error": "not a task the declaration claims that the current W fails"}
             continue
         episode = ctx.suite.episode(task_id)
         session = ctx.worker.start()

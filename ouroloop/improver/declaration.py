@@ -8,6 +8,7 @@ from ..contracts import Record, register
 
 KINDS = ("tool", "hook", "skill", "prompt", "agent", "config", "vendor", "memory", "removal")
 FIELDS = ("dir", "cause_id", "kind", "site", "predicted_affected", "trigger")
+RESERVED = ("memory-snapshot", "promoted-", "remove-")     # the fixed code's candidate directories
 
 
 @register
@@ -37,6 +38,8 @@ def read_declaration(raw, *, dirs, kinds_allowed) -> tuple[Declaration | None, s
     missing = [f for f in FIELDS if raw.get(f) in (None, "") and f != "site"]
     if missing:
         return None, f"it lacks {missing}"
+    if str(raw["dir"]).startswith(RESERVED):
+        return None, f"dir {raw['dir']!r}: names starting with {list(RESERVED)} are the fixed code's candidates'"
     if raw["dir"] not in set(dirs):
         return None, f"dir {raw['dir']!r} is not a candidate directory you wrote ({sorted(dirs) or 'none yet'})"
     if raw["kind"] not in set(kinds_allowed):
