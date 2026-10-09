@@ -8,6 +8,18 @@
 
 ---
 
+## 2026-10-09 阶段 4：finance-v1 的 library 在第一步停下（ReMe 的调用被 API 以 400 拒绝）
+
+- 用户的批准（2026-10-09）："开始跑 library"。启动检查通过（memory venv、模型、K 的 backend 钉表），在用户的终端面板里跑 `--phase cycle --until library`。
+- 结果：第一批 4 道题的首遇与重试跑完（8 次尝试，4 道通过，$3.72），随后 ReMe 的总结流向桥发出 12 次研究调用（success、failure、comparative 各 4 次），全部失败：`API Error: 400 system: text content blocks must contain non-whitespace text`。这批什么都没写（`MemoryStepError`），阶段按设计暂停（`paused`），流的台账停在 `ol-live-59c81405:00001`。
+- 原因：ReMe 的每次调用只有一条 user 消息、没有 system；桥把空的 system 交给 claude_code 提供方，提供方在命令行上以 `--system-prompt " "` 传出（空 system 的占位），API 拒绝只有空白的 system 文本块。测试里的研究模型全是脚本化的，探针只发了带 system 的两种 R 调用，这条路径在冻结前没被真实 CLI 走过（预检评审 OPS-9 指出过这类风险）。
+- 钱：12 次调用各按上界 $11.28 记 unknown，共 $135.32 占在根上（这些请求在模型运行前就被 API 拒绝，没有计费；而且走的是订阅）。提供方把 `API Error: 400` 归为不可重试、但没有标成未计费，所以按上界扣着。活动累计记账 $190.25，其中实际结算 $54.93（基线 $51.21 + library 的 8 次尝试 $3.72）。根的有效余额 $289.75（不含 final 的 $220）。
+- 后果：修复要改 `ouroloop/` 的代码（空 system 的占位，以及 400 归为未计费），code_version 随之变，K 是 finance-v1 冻结的那个，这个活动在新代码上不能续跑（规则 13）；它也不能跳过 library（K 里 memory 开着，cycle 要 library 完成才进入轮次）。finance-v1 的代码在 `7764f75`。
+- 待用户：是否放弃 finance-v1、修代码后开新活动（finance-v2：新工作区与 scope，重付基线约 $51）。
+- 没读 `.env`，没读任何 test 题的内容。
+
+---
+
 ## 2026-10-09 阶段 4：finance-v1 冻结与基线
 
 - 用户的批准（2026-10-09）：定预算、freeze、跑 baseline（在“继续跑测试”的确认里选了“定预算、freeze、跑 baseline”）。先于此，用户让推送 `m1-automationbench`（`b51083c..c22f698`）、`s4/finance`（新分支，`9af98c2`）与 tag `archive-2026-10-09` 到 origin，推送前全量 1,489 passed。
