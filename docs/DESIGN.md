@@ -17,7 +17,7 @@
 | agent | 种子 agent 用 **Stirrup 0.2.0** 整份 vendor 进包，一个适配文件接宿主契约；Pi 的扩展模型是我们 hook API 的设计参照，Deep Agents 的中间件集合是“复杂任务能力”的清单；两者都不作种子（§4.1） |
 | memory | W 的一个组件：ReMe 的 procedural memory 算子在 sidecar 里提炼与检索，平台管出处、只用 train、留一、引用记功、退役、容量；条目按“记忆 → 技能 → 工具/hook”逐级升级（§5） |
 | 改进器 | 框架自己的八步循环：证据 → 诊断成原因簇 → 分层 → 编码会话 → 逐档验收 → 筛选与 gate → 装入与存档 → 条件记功。验收阶梯 V0～V5，每类组件有自己的 $0 档（§6）。结构上保证每轮有代码类候选到达验收 |
-| 平台 | 只留保护钱、防泄漏、保结果正确三类（§8）。框架 30k 行 → 约 20k，核心约 2.9k → 约 9k |
+| 平台 | 只留保护钱、防泄漏、保结果正确三类（§8）。工作量不落在外围组件上，核心系统认真打磨；行数只作读数，不作验收（用户 2026-10-09） |
 | 花费 | 阶段 0～3 都是 $0；第一次付费是阶段 4 的 finance 活动，名义约 $300～480，每步先批准 |
 
 ## 1 职责、层次与特色
@@ -400,7 +400,7 @@ ouroloop/
 | v6 分支 | `v6-agent`（Stirrup 种子、vendor 类型、worker 资源与 egress）、`v6-gateway`（桥、trace、egress、usage view）、`v6-memory`（sidecar、VEL 规则、写入步）各自测试绿，按布局搬入；`v6` 合并分支上未完成的接线不用 |
 | 测试 | 随代码迁；`test_record_compat`、`test_attempt_behaviour`（夹具换新种子重录）、`test_paid_run_safety`、`test_hot_path_boundary` 必须一直绿 |
 
-规模目标：框架 30,113 行 → 约 20k；核心（harness + agent 适配 + memory + improver）约 2.9k → 约 9k；平台约 18k → 约 7k；`train/` 4.7k 不动。
+规模不是验收标准（用户 2026-10-09：“不用限制验收的代码行数，我只是不希望大量的工作处在外围组件上，应该认真打磨核心系统”）。读数只作记录：阶段 0 时框架 30,113 行，核心（agent、memory、包格式）约 2.9k；阶段 1 后框架不含种子 16,489 行。
 
 ## 10 实施计划
 
@@ -409,7 +409,7 @@ ouroloop/
 | 阶段 | 内容 | 验收 | 花费 |
 |---|---|---|---|
 | 0 | 本文；文档清理；PLAN 改写 | 用户审定 | $0 |
-| 1 harness 与平台收缩 | `harness/`、`runtime/`、`evaluate/`、`activity/`；Stirrup 种子与六个 hook 站点；worker 资源与网络从 K 读；§8 的删除 | 默认与 Docker 全量通过；`quickstart.toml` 的 `--phase smoke --checks-only` 通过；假上游上用新种子跑一次尝试；框架 ≤ 22k 行 | $0 |
+| 1 harness 与平台收缩 | `harness/`、`runtime/`、`evaluate/`、`activity/`；Stirrup 种子与六个 hook 站点；worker 资源与网络从 K 读；§8 的删除 | 默认与 Docker 全量通过；`quickstart.toml` 的 `--phase smoke --checks-only` 通过；假上游上用新种子跑一次尝试 | $0 |
 | 2 memory | `memory/`；sidecar 与锁文件；`recall` 工具；记功与容量；快照走阶梯；升级规则 | 假上游上 `--phase library` 端到端；变异检查在隔离副本 | $0（sidecar venv 要联网安装） |
 | 3 改进器 | `improver/` 八步；toolcheck 与回放；分层估值与代码先验；档案与反膨胀；R 的配置 | 假上游上脚本化的 R 一轮端到端：tool 候选过 V0～V2a 并在 V3 记条件修复；hook 候选过 V2b；有 mechanizable 簇而无代码候选时台账记 `no_code_candidate` | $0 |
 | 4 实测 | finance，新 preset：基线 → library → 3 轮（每轮后停）→ 有装入则封存 final | 过程检查成立；计划哈希早于第一次 test 尝试；报告两次相同 | 名义约 $300～480，每步先批准 |

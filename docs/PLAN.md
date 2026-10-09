@@ -32,6 +32,7 @@
 | 10-09 | 框架职责是自动提升 harness 与训练模型；改进器由我们自己设计实现；harness、agent、evolution、memory 都要正向设计；选型先定让哪一层变化；特色是轻量 harness 包 + 运行壳 + 模型描述，蒸馏作第二杠杆 | DESIGN v1.1 §1 |
 | 10-09 | 框架不为某个基准定制；原则直接遵守，不另加审查 | DESIGN §9 |
 | 10-09 | “按默认”：DESIGN v1.1 取代旧设计与 modules/；种子 Stirrup，Pi 作 hook API 参照，Deep Agents 作第二种子备选；特色定为轻量 harness 包 + 运行壳 + 模型描述，蒸馏作第二杠杆；分层的代码先验与“有可机械化簇就必须有代码候选到 V2”；阶段 1 从 `m1-automationbench` 起、v6 三条分支搬入；第一个实测域 finance | DESIGN §12 |
+| 10-09 | 不以代码行数作验收；要求是工作量不落在外围组件上，核心系统认真打磨。行数只作读数 | JOURNAL 2026-10-09 不以行数作验收一条 |
 
 ### 0.3 停在哪里
 
@@ -74,7 +75,7 @@
 | 阶段 | 内容 | 验收 | 花费 | 状态 |
 |---|---|---|---|---|
 | 0 | 正向设计 [DESIGN v1.1](DESIGN.md)；文档清理（含 modules/）；本文改写 | 用户审定 | $0 | 已审定（2026-10-09“按默认”） |
-| 1 | harness 与平台收缩：`harness/`、`runtime/`、`evaluate/`、`activity/`；Stirrup 种子与六个 hook 站点；worker 资源与网络从 K 读；DESIGN §8 的删除 | 默认与 Docker 全量通过；`quickstart.toml` 的 `--phase smoke --checks-only` 通过；假上游上用新种子跑一次尝试；框架 ≤ 22k 行 | $0 | 完成（2026-10-09，`s1/harness-platform`），四条验收都满足；待用户确认后合入 |
+| 1 | harness 与平台收缩：`harness/`、`runtime/`、`evaluate/`、`activity/`；Stirrup 种子与六个 hook 站点；worker 资源与网络从 K 读；DESIGN §8 的删除 | 默认与 Docker 全量通过；`quickstart.toml` 的 `--phase smoke --checks-only` 通过；假上游上用新种子跑一次尝试 | $0 | 完成（2026-10-09，`s1/harness-platform`），四条验收都满足；待用户确认后合入 |
 | 2 | memory 组件：`memory/`、sidecar 与锁文件、`recall` 工具、记功与容量、快照走阶梯、记忆 → 技能 → 工具的升级 | 假上游上 `--phase library` 端到端；变异检查在隔离副本 | $0 | 接口已定（design/MEMORY）；开发待做 |
 | 3 | 改进器：`improver/` 八步、toolcheck 与回放、分层估值与代码先验、档案与反膨胀、R 的配置 | 假上游上脚本化的 R 一轮端到端：tool 候选过 V0～V2a 并在 V3 记条件修复；hook 候选过 V2b；有可机械化簇而无代码候选时台账记 `no_code_candidate` | $0 | 接口已定（design/IMPROVER）；开发待做 |
 | 4 | finance 实测：新 preset，基线 → library → 3 轮（每轮后停）→ 有装入则封存 final → RESULTS、README、合入 main | 过程检查成立；计划哈希早于第一次 test 尝试；报告两次相同 | 名义约 $300～480，每步先批准 | 待做 |
