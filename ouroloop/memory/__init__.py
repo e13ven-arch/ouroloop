@@ -34,6 +34,10 @@ LOCK = SIDECAR_DIR / "requirements-macos-arm64.lock"
 # pins the two equal. The live library of an activity is ol-live-<scope8>, a snapshot ol-snap-<16 hex>.
 COLLECTION_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{1,510}[A-Za-z0-9]$")
 
+# The research provider's own timeout behind the bridge, under the openai SDK's 600 s default read timeout
+# (memory/bridge.py; the activity cuts the provider's timeout to it).
+RESEARCH_SECONDS = 540.0
+
 REME_VERSION = "0.3.1.10"
 REME_WHEEL_SHA256 = "53ec84033fd72ec0151a7dd25b0f52f1c4e708f9a07c80427e13006634b1e210"
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
 
-from . import complete_retriever, default_backend, default_retriever
+from . import RESEARCH_SECONDS, complete_retriever, default_backend, default_retriever
 
 ORIGINS = ("success", "failure", "comparative")
 
@@ -45,7 +45,7 @@ class Settings:
     abort_d: float = 0.0
     heldout_domains: tuple = ("operations",)
     imports: tuple = ()                   # [{release_ref, snapshot_digest}]
-    llm_timeout_s: float = 600.0
+    llm_timeout_s: float = 1800.0         # ReMe's client read timeout: the provider's 540 s plus the wait for a slot
     promote_fixes: int = 2
     promote_sources: int = 2
     retriever: dict = field(default_factory=default_retriever)
@@ -54,7 +54,8 @@ class Settings:
     def __post_init__(self):
         object.__setattr__(self, "retriever", complete_retriever(self.retriever))
         object.__setattr__(self, "origins", tuple(self.origins))
-        object.__setattr__(self, "heldout_domains", tuple(self.heldout_domains))
+        held = self.heldout_domains
+        object.__setattr__(self, "heldout_domains", (held,) if isinstance(held, str) else tuple(held))
         bad = sorted(set(self.origins) - set(ORIGINS))
         if bad or not self.origins:
             raise ValueError(f"memory.origins {list(self.origins)}: a non-empty subset of {list(ORIGINS)}")
@@ -68,6 +69,9 @@ class Settings:
         for name in ("shown_k", "recall_k", "fetch_factor", "max_active", "stream_batch"):
             if int(getattr(self, name)) < 1:
                 raise ValueError(f"memory.{name} is at least 1")
+        if float(self.llm_timeout_s) < RESEARCH_SECONDS + 60:
+            raise ValueError(f"memory.llm_timeout_s {self.llm_timeout_s}: at least {RESEARCH_SECONDS + 60:.0f} s, the "
+                             f"research provider's own {RESEARCH_SECONDS:.0f} s and a minute to wait for a slot")
 
     def to_json(self) -> dict:
         out = {}
@@ -87,7 +91,7 @@ class Settings:
                 raise ValueError(f"memory.{k}: not a memory setting ({sorted(known)})")
             base = getattr(default, k)
             if isinstance(base, tuple):
-                out[k] = tuple(v or ())
+                out[k] = (v,) if isinstance(v, str) else tuple(v or ())
             elif isinstance(base, dict):
                 out[k] = dict(v or {})
             elif isinstance(base, bool):

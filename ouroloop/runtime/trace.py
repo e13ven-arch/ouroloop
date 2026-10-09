@@ -249,7 +249,7 @@ class TraceStore:
         raise TraceError(f"{ref}: no event on that line")
 
     def finish(self, session: str) -> dict:
-        """What a train attempt said at its end: {reason (the last finish call's), text (the last reply's text),
+        """What a train attempt said at its end: {reason (the last finish call's), text (the last act reply with any text),
         termination, shown (ids of the entries the memory gave it, start then recall, in order)}."""
         reason, text, termination, shown = None, "", None, []
         for _n, e in self._lines(self._train(session)):

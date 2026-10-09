@@ -1142,3 +1142,27 @@ def test_the_bridge_is_ipv4_loopback_only():
     assert Bridge("localhost").host == "127.0.0.1"
     with Bridge() as bridge:
         assert bridge._server.server_address[0] == "127.0.0.1"
+
+
+# ---------------------------------------------------------------------------- the review's case (2026-10-09)
+def test_a_request_that_waits_past_max_wait_is_503_slots_busy_and_nothing_is_booked(bridge, tmp_path):
+    """The wait for a slot counts against the client's read timeout: past `max_wait` the request is answered 503
+    before the provider is called, so the client never times out a request the bridge still serves and pays for."""
+    gate = threading.Event()
+    model = ScriptedReMeModel(gate=gate)
+    meter = MeteredProvider(model, account(tmp_path), PRICING, operation=f"{SCOPE}:research:reme", max_retries=0)
+    rows = Rows()
+    scope = bridge.open_scope("research", scope_id=SCOPE, step="s0", provider=meter, record=rows, models=MODELS,
+                              effort_cap="medium", max_concurrency=1, max_wait=0.2)
+    body = {"model": "research/reme:success", "messages": [{"role": "user", "content": "x"}], "stream": True}
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        held = pool.submit(post, scope, body)
+        wait_for(scope, 1, 0)
+        late = post(scope, body)
+        gate.set()
+        assert held.result(timeout=20).status_code == 200
+    assert late.status_code == 503 and late.headers["x-should-retry"] == "false"
+    assert late.json()["error"]["code"] == "slots_busy" and len(model.seen) == 1
+    assert [r["status"] for r in rows.rows] == [503, 200] or [r["status"] for r in rows.rows] == [200, 503]
+    assert [r["status"] for r in reservations(tmp_path)] == ["settled"]          # one call, one reservation
+    assert (scope.in_flight, scope.waiting) == (0, 0)

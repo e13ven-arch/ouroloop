@@ -94,7 +94,7 @@ def test_stamp_blanks_the_clock_so_equal_streams_give_equal_bytes():
     later = {**MEMORY, "time_created": "2027-01-01 00:00:00", "time_modified": "2027-01-01 00:00:09",
              "vector": [0.9, 0.9, 0.9]}
     assert json.dumps(R.stamp(later, **STAMP), sort_keys=True) == json.dumps(row, sort_keys=True)
-    assert R.stamp({**MEMORY, "message_time": "m1"}, **STAMP)["message_time"] == "m1"
+    assert R.stamp({**MEMORY, "message_time": "m1"}, **STAMP)["message_time"] == ""      # a clock field too
 
 
 def test_stamp_refuses_a_non_train_or_held_out_source_and_records_an_import():
@@ -190,7 +190,7 @@ def test_the_pass_replaces_the_longest_literal_first():
 def test_a_literal_that_survives_the_pass_drops_the_memory():
     # replacing ORD-4471 writes another train task's value, ref_9:<value>: the second check finds it
     got, hits = R.literal_pass({"when": "When a ref is asked", "content": "Look up ref_9:ORD-4471 first."}, FORBIDDEN)
-    assert got is None and [h["literal"] for h in hits] == ["ORD-4471"]
+    assert got is None and [h["literal"] for h in hits] == ["ref_9:<value>"]      # what the pass left, the reason
 
 
 def test_an_allowed_literal_passes():
@@ -586,3 +586,9 @@ def test_promotion_reads_its_counts_from_the_settings():
     assert [e["memory_id"] for e, _ in R.promotable(entries, Settings(promote_fixes=1, promote_sources=1))] \
         == ["p0", "p2", "p3", "p6"]
     assert R.promotable({}, S) == []
+
+
+# ---------------------------------------------------------------------------- the review's cases (2026-10-09)
+def test_a_bare_citation_line_does_not_read_the_next_line():
+    assert R.parse_citation("Done.\nlibrary-used:\nab12cd34 was useful", None) == []
+    assert R.parse_citation("Done.\nlibrary-used: ab12cd34", None) == ["ab12cd34"]

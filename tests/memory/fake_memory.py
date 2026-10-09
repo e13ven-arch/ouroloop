@@ -98,6 +98,9 @@ class FakeMemoryClient:
     def connection(self) -> dict:
         return {}
 
+    def health(self) -> dict:
+        return {"status": "ok", "collections": {k: len(v) for k, v in self.collections.items()}}
+
     # ------------------------------------------------------------------ the store
     def _coll(self, name: str) -> dict:
         return self.collections.setdefault(name, {})

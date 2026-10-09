@@ -59,7 +59,7 @@ class Settings:
     abort_d: float = 0.0
     heldout_domains: tuple = ("operations",)
     imports: tuple = ()                   # [{release_ref, snapshot_digest}]
-    llm_timeout_s: float = 600.0
+    llm_timeout_s: float = 1800.0         # ReMe 的客户端读超时：研究 provider 自己的 540 s 加等待桥上空位的时间
     promote_fixes: int = 2; promote_sources: int = 2
     retriever: dict                        # 模型、修订、各文件 sha256、维度、池化、query_prefix（钉死）
     backend: dict                          # reme 版本、轮子、锁文件与 flows 的 sha256（钉死）
@@ -87,9 +87,11 @@ class MemoryClient:
     def embed(self, texts, *, query=False) -> list[list[float]]
 
 # bridge.py（v6 签名）
-class Bridge:  start(); stop(); open_scope(kind="research", *, scope_id, step, provider, record, models, effort_cap, max_concurrency) -> Scope
+class Bridge:  start(); stop(); open_scope(kind="research", *, scope_id, step, provider, record, models, effort_cap, max_concurrency, max_wait=None) -> Scope
 class Scope:   base_url; token; set_step(step); calls(step) -> list[dict]; close()
-# provider：有 chat()、pricing、operation、max_retries == 0 的计量 provider（activity 的 research_provider，重试全关）
+# provider：有 chat()、pricing、operation、account、max_retries == 0 的计量 provider（activity 的 research_provider(step, retries=False)）
+# max_wait：等桥上空位的上限。等待算在 ReMe 客户端的读超时里（llm_timeout_s），超过就在调用 provider 之前答 503 slots_busy、
+# 什么都不记账，免得客户端超时重发一个桥还在付费服务的请求；MemoryService 取 llm_timeout_s − 540 s − 30 s
 
 # rules.py
 def require_train(split, source_line, heldout) -> None                 # 否则 contracts.TrainOnlyError
@@ -127,6 +129,7 @@ class MemoryService:
     def start(self, *, research=None) -> "MemoryService"    # research：计量 provider；有它才开桥与研究作用域
     def stream(self, *, train_texts, forbidden, allowed, trajectory_of, activity) -> StreamStep
     def reader(self, *, snapshot_text=None, live=None) -> LibraryReader
+    def healthy(self) -> bool
     def stop(self)
 
 # snapshot.py
@@ -135,7 +138,8 @@ def stream_files(parent: Package) -> dict[str, str]                             
 def library_of(package: Package) -> list[dict]
 
 # promote.py
-def skill_candidate(entry: dict, parent: Package) -> dict[str, str]    # skills/<slug>.md，带来源（条目 id、trace ref）
+def skill_candidate(entry: dict, parent: Package) -> dict[str, str]    # skills/memory/mem-<slug>-<id8>.md：何时用、步骤、来自哪条条目
+def skill_provenance(entry: dict) -> dict                              # 候选声明里的来源：条目、修好的题数、来源题、trace ref
 def cause_input(entry: dict) -> dict                                   # IMPROVER §4 的 Cause 条目（memory_entries）
 def mark_superseded(entries, entry_id, by: str) -> None
 
@@ -143,7 +147,7 @@ def mark_superseded(entries, entry_id, by: str) -> None
 def import_entries(snapshot_text, *, source_release_ref, source_line, target_line, client, collection, heldout_domains, fix=None) -> dict
 ```
 
-一次尝试怎么拿到 memory（RUNTIME §3、EVALUATE §3）：`make_agent_factory(memory=...)`，`memory(task, task_hash) -> TaskMemory | None`；`PackageAgent` 把 `TaskMemory.opening` 接在系统提示后、把 `event` 记成 `library_retrieval{site:"start"}`（紧跟 task 行），`recall` 交给 `MemoryRecall`。包的 manifest 里 `memory.enabled` 为真时，种子才给 agent `recall` 工具。没有 memory 的包（W0）什么都不起，热路径不变。
+一次尝试怎么拿到 memory（RUNTIME §3、EVALUATE §3）：`make_agent_factory(memory=...)`，`memory(task, task_hash) -> TaskMemory | None`；`PackageAgent` 把 `TaskMemory.opening` 接在系统提示后、把 `event` 记成 `library_retrieval{site:"start"}`（紧跟 task 行），`recall` 交给 `MemoryRecall`。包的 manifest 里 `memory.enabled` 为真时，种子才给 agent `recall` 工具。种子的 `memory.enabled` 取 K（HARNESS §7），所以 K 开着 memory 时 W0 也开着 memory、但没有快照：它读空库，空库不起 sidecar（没有开场块、没有开场行、recall 都空），热路径不变；基线与流因此只差在库的内容上。只有带快照的包、或 library 阶段才起 sidecar，启动检查也只在这时查 venv 与模型。sidecar 不能给一次尝试开场时，`run_attempt` 抛出（同 StaleWorker），整次运行停下，不记成无效尝试。
 
 条目 id：agent 看到的都是 8 位（开场块 `[lib <id8>]`，recall 返回 `id` 也是 8 位）；`start` 行记完整 id；记功时按 8 位前缀回到完整 id。
 
@@ -170,8 +174,10 @@ def import_entries(snapshot_text, *, source_release_ref, source_line, target_lin
 `library` 阶段（ACTIVITY §4）：
 - 流的包：W_base 的文件加 manifest `memory: {"enabled": true}`（没有快照文件，读 live）。尝试记在 W_base 的 release 下，run 的 `package_ref` 是流的包，候选名 `library`。
 - 顺序：train 题按 `Random(f"library:{gate.order_seed}:{domain}")` 打乱，冻结在台账里。
-- b(t)：W_base 在这道题上 train 读数（基线）的有效尝试的平均成功率；`stable_pass` = b == 1；没有读数的题不进 D。
-- 每批 `stream_batch` 道题：首遇（arm `first`）并发跑；失败且 `retry` 开着的再跑一次（arm `retry`，开场块后接失败断言的类型与参数，train 的评分行）；首遇按规则补跑后仍无效的题记作 lost（不总结、不记功）；然后 `process_batch`，基线那次尝试的轨迹一起总结。
+- b(t)：W_base 在这道题上 train 读数（基线）的有效尝试的平均成功率，不算流自己的尝试（run 的 role 为 `library`；K 开 memory 时流的包就是 W_base 的包）；`stable_pass` = b == 1；没有读数的题不进 D。W_base 一条 train 读数都没有时，阶段在付费之前拒绝（先跑基线）。
+- 每批 `stream_batch` 道题：首遇（arm `first`）并发跑；失败且 `retry` 开着的再跑一次（arm `retry`，开场块后接失败断言的类型与参数，train 的评分行）；然后 `process_batch`，基线那次尝试的轨迹一起总结；首遇按规则补跑后仍无效的题在这批写入之后才记作 lost（不总结、不记功），这样一批写入失败时，下次切出的还是同一批。没有一次模型调用的有效尝试（没有轨迹）照样提交，只是不进总结。
+- 钱：本次运行里预算拒掉首遇或重试，阶段停下（`budget_exhausted`），这批不写入；下次运行时，上次被拒的尝试按下一段重试编号重跑并记 supersedes，已在记录里的不重付。
+- sidecar 出故障：阶段暂停（`paused`），不把题记成 lost（记 lost 之前先查 sidecar 是否还在答）；下次运行接着跑。
 - 结束：`finish()` → 读数、快照、`snapshot_abort`。D ≤ `abort_d` 或库空就不付 gate；否则 `snapshot_candidate` 产出只改快照与 manifest memory 节的候选包，入对象库、记事件 `library_snapshot`，交 improver 的阶梯从 V3 起（阶段 3；V0 的形状与字面量在写入时已过）。
 - 续跑：已记录的尝试按 attempt id 复用、不重付；台账是真相，`resume()` 对齐 store；挂起的 batch 不重新总结。
 - 装入后 dev/test 只见快照。
@@ -218,11 +224,11 @@ trace 的归属：`TraceStore` 放 `runtime/trace.py`（它只读 transcript，�
 清单：
 - sidecar：锁文件哈希不符拒绝启动；健康检查；`summarize` 走桥且每次调用有记录（变异：绕过桥的调用被 `_check_replies` 抓到）。
 - 规则：train-only；引用记功与平分；观察期；退役两条；容量淘汰确定；快照行合并出处；一次占位。
-- 写入步：七步各一例；断点续跑（中途杀掉再 resume 不重复入库）；字面量占位符豁免。
+- 写入步：八步各一例；断点续跑（中途杀掉再 resume 不重复入库）；字面量占位符豁免；没有轨迹的尝试；导入不带回退役或已升级的内容。
 - 读取：留一（来源含本题不给）；`recall` 经 runtime 记录；开场行紧跟 task 行。
 - 快照：只改快照与 manifest 的 memory 节；readout 的 abort。
 - 升级：两种条件各一例；superseded 后不再展示。
-- library 阶段：假上游上端到端（假 client 一例，真 sidecar 一例）；续跑不重付；首遇无效的题记 lost。
+- library 阶段：假上游上端到端（假 client 一例，真 sidecar 一例）；续跑不重付；首遇无效的题记 lost；一批写入失败且含 lost 题时续跑；预算拒掉首遇或重试后续跑；sidecar 宕机暂停、不丢题；没有基线读数拒绝；W0 在 memory 开着的 K 下不起 sidecar。
 - 变异检查在隔离副本（v6 做过 15 项，照迁）。
 
 ## 12 开发顺序

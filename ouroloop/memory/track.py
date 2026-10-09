@@ -51,7 +51,7 @@ from .rules import (IMPORTED, ORIGINS, REME_META_KEYS, REPLY_FORMAT_COUNTERS, co
 from .settings import settings_of
 
 SCHEMA = "memory_stream.v1"
-CUT_KEYS = ("tool_outputs_cut", "messages_cut", "chars_cut")
+CUT_KEYS = ("tool_outputs_cut", "messages_cut", "chars_cut", "no_trajectory")
 DEDUP_CANDIDATES = 5       # stored entries compared by content once their when_to_use is within the threshold
 
 
@@ -330,14 +330,22 @@ class StreamStep:
         require_train(task.get("split", "train"), self.line, self.heldout)
 
     def _trajectories(self, task: dict, first: dict, retry, baseline) -> tuple[list[dict], dict]:
-        counts = {"tool_outputs_cut": 0, "messages_cut": 0, "chars_cut": 0}
+        counts = {"tool_outputs_cut": 0, "messages_cut": 0, "chars_cut": 0, "no_trajectory": 0}
         out = []
         for kind, att in (("baseline", baseline), ("first", first), ("retry", retry)):
             if att is None:
                 continue
-            msgs, c = cut_trajectory(self.trajectory_of(att["session"]), tool_chars=self.s.traj_tool_chars,
+            try:
+                messages = self.trajectory_of(att["session"])
+            except Exception as e:  # noqa: BLE001 - a valid attempt that made no model call has no trajectory
+                from ..runtime.trace import TraceAccessError
+                if isinstance(e, TraceAccessError):
+                    raise                  # a session that is not train is never summarised
+                counts["no_trajectory"] += 1
+                continue
+            msgs, c = cut_trajectory(messages, tool_chars=self.s.traj_tool_chars,
                                      total_chars=self.s.traj_total_chars)
-            for k in counts:
+            for k in c:
                 counts[k] += c[k]
             out.append({"task_id": task["task_hash"], "messages": msgs, "score": float(att["reward"]),
                         "metadata": {"query": task["text"], "session": att["session"], "kind": kind}})
@@ -376,6 +384,9 @@ class StreamStep:
         results, errors = {}, {}
 
         def one(th):
+            if not prepared[th]:          # no attempt of the task left a trajectory: nothing to summarise, no call
+                results[th] = {"memory_list": [], "validated": 0, "replies": [], "unparsed": []}
+                return
             try:
                 results[th] = self.client.summarize(prepared[th])
             except MemorySidecarError as e:
@@ -620,7 +631,8 @@ class StreamStep:
         return fixed["when"], fixed["content"], out, ""
 
     def _import_fix(self, row: dict) -> tuple[dict | None, str]:
-        """An imported row under this line's checks: lengths and the literal check (this line's train literals)."""
+        """An imported row under this line's checks: lengths and the literal check (this line's train literals); a
+        content this stream retired or superseded does not come back through an import either."""
         when, content = row.get("when_to_use") or "", row.get("content") or ""
         why = self._shape(when, content)
         reme = {k: v for k, v in (row.get("metadata") or {}).items() if k in REME_META_KEYS}
@@ -628,6 +640,9 @@ class StreamStep:
             when, content, reme, why = self._literal(when, content, reme)
         if why:
             return None, why
+        prior = self.entries.get(content_id(content), {})
+        if prior.get("status") in ("retired", "superseded"):
+            return None, f"{prior['status']} before in this stream"
         return {**row, "when_to_use": when, "content": content, "memory_id": content_id(content),
                 "metadata": {**row["metadata"], **reme}}, ""
 

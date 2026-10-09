@@ -12,13 +12,14 @@ import threading
 from pathlib import Path
 
 from . import digest, memory_venv
-from .bridge import Bridge
+from .bridge import RESEARCH_SECONDS, Bridge
 from .client import MemoryClient
 from .retrieval import LibraryReader
 from .settings import settings_of
 from .track import StreamStep
 
 LLM_OPS = ("success", "failure", "comparative", "validation")    # sidecar/serve.py: one LLM per ReMe op
+SLOT_MARGIN = 30.0         # seconds of the client's read timeout kept free of the wait for a slot and the call
 
 
 class MemoryService:
@@ -58,7 +59,8 @@ class MemoryService:
                 self.scope = self.bridge.open_scope(
                     "research", scope_id=f"{self.scope_id}:memory", step=None, provider=research,
                     record=self.dir / "bridge_calls.jsonl", models=[f"research/reme:{op}" for op in LLM_OPS],
-                    effort_cap=self.effort_cap, max_concurrency=max(int(concurrency or 1), 1))
+                    effort_cap=self.effort_cap, max_concurrency=max(int(concurrency or 1), 1),
+                    max_wait=self.s.llm_timeout_s - RESEARCH_SECONDS - SLOT_MARGIN)
             try:
                 client = self.client_factory()
                 client.start(venv=self.venv or memory_venv(), chroma_path=self.dir / "chroma",
@@ -80,6 +82,16 @@ class MemoryService:
                           activity=activity, heldout_domains=self.s.heldout_domains, train_texts=train_texts,
                           forbidden_literals=forbidden, allowed_literals=allowed, trajectory_of=trajectory_of,
                           bridge_calls_of=self.scope.calls, set_step=self.scope.set_step, concurrency=concurrency)
+
+    def healthy(self) -> bool:
+        """Whether the sidecar answers (a cheap call: its health route)."""
+        if self.client is None:
+            return False
+        try:
+            self.client.health()
+            return True
+        except Exception:  # noqa: BLE001 - any failure to answer is "not healthy"
+            return False
 
     def reader(self, *, snapshot_text: str | None = None, live: dict | None = None) -> LibraryReader:
         if self.client is None:

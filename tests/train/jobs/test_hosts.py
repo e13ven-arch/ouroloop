@@ -267,12 +267,14 @@ def test_a_stray_file_in_the_package_is_neither_hashed_nor_sent(tmp_path, monkey
     with tarfile.open(hosts.pack_ouroloop(tmp_path)) as t:
         sent = {n.split("/", 1)[1] for n in t.getnames()}
     assert sent == {"pyproject.toml"} | {p.relative_to(copy).as_posix() for p in release.package_files()}
-    assert "ouroloop/train/jobs/hosts/start.sh" in sent and not any(n.endswith((".DS_Store", ".swp", ".yaml")) for n in sent)
-    # pyproject's package-data is PACKAGE_DATA and the seed trees: what pip installs besides the modules
+    assert "ouroloop/train/jobs/hosts/start.sh" in sent and "ouroloop/memory/sidecar/flows.yaml" in sent
+    assert not any(n.endswith((".DS_Store", ".swp")) or n.endswith(".yaml") and "/memory/sidecar/" not in n for n in sent)
+    # pyproject's package-data is PACKAGE_DATA, the seed trees and the memory sidecar's modules (sidecar/ is no
+    # package): what pip installs besides the modules
     with open(CHECKOUT / "pyproject.toml", "rb") as f:
         data = tomllib.load(f)["tool"]["setuptools"]["package-data"]
     assert {f"{pkg.partition('.')[2].replace('.', '/')}/{n}" for pkg, names in data.items() for n in names} == set(
-        release.PACKAGE_DATA) | {f"{release.SEEDS}**/*"}
+        release.PACKAGE_DATA) | {f"{release.SEEDS}**/*", "memory/sidecar/*.py"}
 
 
 def test_init_over_ssh_sends_one_tar_so_a_host_without_rsync_can_be_prepared(home, tmp_path):

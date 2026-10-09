@@ -438,3 +438,138 @@ def test_a_w0_baseline_under_a_k_with_the_memory_on_reads_an_empty_library_and_w
         lines = read(session_file(s.a.root, r.attempt_id))
         assert not [line for line in lines if line["kind"] == "library_retrieval" and line["site"] == "start"]
     assert all(LIBRARY_MARK not in seen["system"] for seen in s.actor.seen)
+
+
+# ---------------------------------------------------------------------------- the review's cases (2026-10-09)
+class FailingAt(rsi.BusinessWorker):
+    """The actor's provider fails on one task's text while `bad` names it."""
+    bad = None
+
+    def chat(self, system, messages, specs, **kw):
+        task = next((m["content"] for m in messages if m.get("role") == "user"), "")
+        if self.bad and task == self.bad:
+            self.calls += 1
+            raise RuntimeError("the provider failed")
+        return super().chat(system, messages, specs, **kw)
+
+
+def test_a_failed_batch_holding_a_lost_task_is_cut_the_same_on_the_next_run(tmp_path, fake_upstream, monkeypatch):
+    """A batch of four whose first task is lost and whose summary then fails on the bridge: the lost task is recorded
+    only once the batch is written, so the next run cuts the same batch, commits the pending summaries and goes on."""
+    monkeypatch.setitem(rsi._preset["memory"], "stream_batch", 4)      # the real preset's value
+    s = stream(tmp_path, fake_upstream, actor=FailingAt(forget_notify=True))
+    assert s.a.k["memory"]["stream_batch"] == 4
+    phases.baseline(s.a, out=quiet)
+    first = phases.stream_order(s.a)[0]
+    s.actor.bad = s.a.suite.tasks[first].trigger
+    s.research.fail = {"validation": 1}
+    with pytest.raises(Exception, match="research calls failed on the bridge"):
+        phases.library(s.a, out=quiet)
+    led = ledger(s.a)
+    assert led["pending"] is not None and led["processed"] == {} and led["lost"] == {}
+    s.actor.bad = None
+    result = phases.library(s.a, out=quiet)
+    led = ledger(s.a)
+    assert result["status"] == "done" and led["pending"] is None and len(led["processed"]) == len(rsi.TRAIN)
+    assert led["lost"] == {hashes(s.a)[first]: "the first encounter is infrastructure"}
+    assert result["readout"]["tasks"] == len(rsi.TRAIN) - 1
+
+
+def test_a_retry_the_budget_refused_stops_the_phase_and_runs_on_the_next(tmp_path, fake_upstream, monkeypatch):
+    """A retry refused by the budget is no evidence: the phase stops before the batch is written, and the next run
+    runs the retry again (superseding it) and goes on."""
+    from ouroloop.contracts import BudgetExhausted
+    from ouroloop.evaluate import budget as bg
+    from ouroloop.memory import retrieval as rt
+    state = {"refuse": True, "retrying": False}
+    for_task, reserve = rt.LibraryReader.for_task, bg.BudgetAccount.reserve
+
+    def noting(self, text, th, **kw):
+        state["retrying"] = bool(kw.get("note"))
+        return for_task(self, text, th, **kw)
+
+    def refusing(self, oid, bound, **kw):
+        if state["refuse"] and state["retrying"] and ":research:" not in self.scope_id:
+            raise BudgetExhausted("no further paid operations: the root is spent")
+        return reserve(self, oid, bound, **kw)
+    monkeypatch.setattr(rt.LibraryReader, "for_task", noting)
+    monkeypatch.setattr(bg.BudgetAccount, "reserve", refusing)
+    s = stream(tmp_path, fake_upstream)
+    phases.baseline(s.a, out=quiet)
+    lines = []
+    stopped = phases.library(s.a, out=lines.append)
+    assert stopped["status"] == "budget_exhausted" and lines[-1].endswith("the budget refused a retry; run the phase "
+                                                                          "again to continue")
+    refused = [r for r in library_rows(s.a) if "/retry#" in r.attempt_id]
+    assert [r.failure_class for r in refused] == ["budget_exhausted"]
+    assert hashes(s.a)[refused[0].task_id] not in ledger(s.a)["processed"]
+    state["refuse"] = False
+    result = phases.library(s.a, out=quiet)
+    again = [r for r in library_rows(s.a) if r.supersedes == refused[0].attempt_id]
+    assert result["status"] == "done" and len(again) == 1 and again[0].validity == "valid"
+    assert ledger(s.a)["readings"][hashes(s.a)[refused[0].task_id]]["retry"] is not None
+
+
+def test_a_sidecar_that_dies_mid_stream_pauses_the_phase_and_loses_no_task(tmp_path, fake_upstream):
+    """The sidecar stops answering once the library holds an entry: the phase pauses (nothing is recorded as lost
+    for it), and the next run with a working sidecar streams every remaining task."""
+    from ouroloop.contracts import MemorySidecarError
+
+    class Dying(FakeMemoryClient):
+        dead = False
+
+        def _down(self):
+            raise MemorySidecarError("POST /retrieve_task_memory_v6: ConnectError: connection refused")
+
+        def retrieve(self, query, collection, **kw):
+            if self.dead or kw.get("expected_count") and self.count(collection) >= 1:
+                self.dead = True
+                self._down()
+            return super().retrieve(query, collection, **kw)
+
+        def health(self):
+            if self.dead:
+                self._down()
+            return super().health()
+    s = stream(tmp_path, fake_upstream)
+    s.client = Dying()
+    s.a.memory_client_factory = lambda: s.client
+    phases.baseline(s.a, out=quiet)
+    lines = []
+    paused = phases.library(s.a, out=lines.append)
+    led = ledger(s.a)
+    assert paused["status"] == "paused" and "ConnectError" in paused["why"] and led["lost"] == {}
+    assert 0 < len(led["processed"]) < len(rsi.TRAIN) and lines[-1].startswith("library    paused: ")
+    s.client.dead = False
+    s.client.retrieve = lambda query, collection, **kw: FakeMemoryClient.retrieve(s.client, query, collection, **kw)
+    result = phases.library(s.a, out=quiet)
+    assert result["status"] == "done" and ledger(s.a)["lost"] == {}
+    assert result["readout"]["tasks"] == len(rsi.TRAIN)
+
+
+def test_the_library_refuses_before_paying_without_w_bases_train_readings(tmp_path, fake_upstream):
+    s = stream(tmp_path, fake_upstream)
+    with pytest.raises(ValueError, match="has none: run the baseline first"):
+        phases.library(s.a, out=quiet)
+    assert calls(s) == (0, 0) and not (s.a.root / "memory" / s.a.domain / "stream.json").exists()
+
+
+def test_the_streams_own_attempts_never_count_as_w_bases_readings(streamed):
+    """Under a K with the memory on the stream's package is W_base's own (HARNESS §7): b(t) still reads only the
+    baseline's runs."""
+    a = streamed.a
+    readings = phases.base_readings(a, a.active_release())
+    runs = a.results.runs()
+    assert readings and all(runs[r.run].role != "library" for rows in readings.values() for r in rows)
+    assert sum(len(rows) for rows in readings.values()) == len(rsi.TRAIN)
+
+
+def test_a_w0_baseline_under_the_memory_on_starts_no_sidecar_and_needs_no_venv(tmp_path, fake_upstream, monkeypatch):
+    """W0 holds no snapshot: its empty library starts nothing, so its baseline needs neither the client nor the venv."""
+    monkeypatch.setenv("OUROLOOP_MEMORY_VENV", str(tmp_path / "no-venv"))
+    s = stream(tmp_path, fake_upstream)
+    s.a.memory_client_factory = None
+    assert s.a.package().manifest.memory == {"enabled": True}
+    assert startup_checks(s.a, phase="baseline") == []
+    phases.baseline(s.a, out=quiet)
+    assert s.a._memory is None and s.starts == 0

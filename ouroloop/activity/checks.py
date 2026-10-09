@@ -85,14 +85,15 @@ def leakage_problems(activity, *, phase: str) -> list[str]:
 
 
 def uses_memory(activity, phase: str) -> bool:
-    """Whether this phase reads or writes the memory: the library phase, or a package it runs that reads memory."""
+    """Whether this phase needs the memory's sidecar: the library phase, or a package it runs that holds a snapshot
+    (a package with memory on and no snapshot reads an empty library, which starts nothing)."""
     if phase == "library":
         return True
     releases = [activity.active_release()] if activity.releases.active_ref() else []
     plan_ref = (activity.config.get("rsi") or {}).get("final_plan_ref")
     if phase == "evaluate" and plan_ref and activity.objects.has(plan_ref):
         releases += [activity.releases.load(r) for r in (activity.objects.get(plan_ref).get("arms") or {}).values()]
-    return any(activity.package(r).manifest.memory.get("enabled") for r in releases)
+    return any(activity.package(r).memory_text.strip() for r in releases)
 
 
 def memory_problems(activity) -> list[str]:

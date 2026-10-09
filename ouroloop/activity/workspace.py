@@ -171,9 +171,14 @@ class Activity:
     def memory_for(self, package: Package, *, live: dict | None = None, note_of: Callable | None = None):
         """What each attempt of `package` gets of the memory: task, task_hash -> TaskMemory, from the package's
         frozen snapshot or, during the stream, from `live` (StreamStep.live_view()); `note_of(task)` is appended to
-        the opening (the stream's retry note). None for a package that reads no memory."""
+        the opening (the stream's retry note). None for a package that reads no memory. A package that reads memory
+        but holds no snapshot (W0 under a K with the memory on: HARNESS §7) reads an empty library, and an empty
+        library starts no sidecar: no block, no start line, every recall empty."""
         if not package.manifest.memory.get("enabled"):
             return None
+        if live is None and not package.memory_text.strip():
+            from ..memory.retrieval import TaskMemory
+            return lambda task, task_hash: TaskMemory(opening=note_of(task) if note_of is not None else "")
         service = self.memory()
         reader = service.reader(live=live) if live is not None else service.reader(snapshot_text=package.memory_text)
 

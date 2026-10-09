@@ -41,7 +41,7 @@ SNAPSHOT_KEYS = ("ol_sources", "ol_stats")   # merged from the ledger into a sna
 # `when_to_use` again plus whatever else the model wrote; MemoryNode's to_vector_node spreads metadata over
 # memory_type, author, score and content, so an unchecked key overrides them
 REME_META_KEYS = ("step_type", "confidence", "tags", "tools_used")
-CITATION = re.compile(r"library-used\s*:\s*(?P<ids>[^\n]*)", re.IGNORECASE)
+CITATION = re.compile(r"library-used[ \t]*:[ \t]*(?P<ids>[^\n]*)", re.IGNORECASE)   # the ids on the line itself
 ID8 = re.compile(r"\b[0-9a-f]{8,16}\b")
 PLACEHOLDER = "<value>"
 STEP_LINE = re.compile(r"^\s*(?:\d+[.)]|[-*•])\s+\S", re.MULTILINE)
@@ -110,7 +110,7 @@ def stamp(memory: dict, *, line: str, source_line: str, split: str, task_hash: s
         "ol_source_score": float(source_score), "ol_validation_score": float(memory.get("score") or 0.0),
         "ol_imported_from": imported_from or ""})
     out = {k: v for k, v in memory.items() if k not in ("vector", "metadata")}
-    out.update(metadata=meta, time_created="", time_modified="", message_time=out.get("message_time") or "")
+    out.update(metadata=meta, time_created="", time_modified="", message_time="")
     return out
 
 
@@ -122,7 +122,8 @@ def content_id(content: str) -> str:
 # ---------------------------------------------------------------------------------------------- literals
 def literal_pass(fields: dict, forbidden, allowed=frozenset()) -> tuple[dict | None, list]:
     """The literal check on a memory's text fields ({name: text}), with one placeholder pass: each hit is replaced by
-    PLACEHOLDER and the fields are checked again; a hit that remains drops the memory. -> (fields or None, hits)."""
+    PLACEHOLDER and the fields are checked again; a hit that remains drops the memory. -> (fields or None, the hits:
+    those found, or for a dropped memory those that remained)."""
     files = {f"{k}.md": str(v or "") for k, v in fields.items()}
     hits = findings(files, None, set(forbidden or ()), allowed=set(allowed or ()))
     if not hits:
@@ -134,7 +135,7 @@ def literal_pass(fields: dict, forbidden, allowed=frozenset()) -> tuple[dict | N
             fixed[k] = pattern.sub(PLACEHOLDER, str(fixed[k] or ""))
     again = findings({f"{k}.md": str(v or "") for k, v in fixed.items()}, None, set(forbidden or ()),
                      allowed=set(allowed or ()))
-    return (None, hits) if again else (fixed, hits)
+    return (None, again) if again else (fixed, hits)       # dropped: the hits the placeholder pass left
 
 
 # ---------------------------------------------------------------------------------------------- citation

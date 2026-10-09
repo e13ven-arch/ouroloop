@@ -277,13 +277,14 @@ def stream_order(activity) -> list[str]:
 
 
 def base_readings(activity, release: Release) -> dict:
-    """W_base's valid train readings per task (its own package, not the stream's): {task_id: [rows]}."""
+    """W_base's valid train readings per task: its own package's runs, never the stream's (role "library": under a K
+    with the memory on the stream's package is W_base's own). -> {task_id: [rows]}."""
     runs = activity.results.runs()
     out: dict = {}
     for r in activity.results.all():
         run = runs.get(r.run)
         if r.split != "train" or r.validity != "valid" or r.system_release_ref != release.ref() or run is None \
-                or run.package_ref != release.package_ref:
+                or run.package_ref != release.package_ref or run.role == "library":
             continue
         out.setdefault(r.task_id, []).append(r)
     return out
@@ -295,8 +296,10 @@ def library(activity, *, out: Callable[[str], None] = print) -> dict:
     more with its failed checks as a note, then the batch's trajectories (the baseline's too) summarised by ReMe
     through the metered bridge, checked and written, the first encounters credited. At the end the readout, and —
     unless D <= abort_d or the library is empty — the snapshot as a candidate package for the improver's ladder
-    (stage 3). Run again, it continues where it stopped and pays for nothing on record."""
+    (stage 3). Run again, it continues where it stopped and pays for nothing on record. A failure of the memory's
+    sidecar pauses the phase (status `paused`): nothing is recorded as lost for it."""
     require(startup_checks(activity, phase="library"), phase="library")
+    from ..contracts import MemorySidecarError
     from ..memory import snapshot_digest
     from ..memory.settings import Settings
     from ..memory.snapshot import snapshot_candidate, stream_files
@@ -312,6 +315,9 @@ def library(activity, *, out: Callable[[str], None] = print) -> dict:
     hashes = {t: task_hash(tasks[t]) for t in train}
     by_hash = {h: t for t, h in hashes.items()}
     readings = base_readings(activity, base)
+    if not readings:
+        raise ValueError(f"the library compares each first encounter with W_base's own train readings, and "
+                         f"{short(base.ref())} has none: run the baseline first")
     b = {t: sum(int(r.success) for r in rows) / len(rows) for t, rows in readings.items()}
     trace = TraceStore(activity.root, activity.splits.split_of)
     rows = [{"task_id": t, "assertions": [dict(a) for a in activity.suite.grading(t).assertions],
@@ -350,8 +356,17 @@ def library(activity, *, out: Callable[[str], None] = print) -> dict:
             run = run_from(offset)
             rows = latest(rows + refill_attempts(run(name, sorted(refused), 0, refused), run, name, retries))
 
+    def paused(e: Exception) -> dict:
+        out(f"library    paused: the memory's sidecar failed ({type(e).__name__}: {str(e)[:200]}); run the phase "
+            f"again to continue")
+        return {"status": "paused", "why": f"{type(e).__name__}: {str(e)[:300]}"}
+
     service = activity.memory()
-    service.start(research=activity.research_provider("memory", retries=False), concurrency=activity.concurrency)
+    try:
+        service.start(research=activity.research_provider("memory", retries=False), concurrency=activity.concurrency)
+    except MemorySidecarError as e:
+        service.stop()
+        return paused(e)
     try:
         step = service.stream(train_texts={hashes[t]: tasks[t].trigger for t in train}, forbidden=banned,
                               trajectory_of=lambda s: trace.trajectory(s, annotations=False),
@@ -379,11 +394,14 @@ def library(activity, *, out: Callable[[str], None] = print) -> dict:
             if notes:
                 memory = activity.memory_for(stream_package, live=live, note_of=lambda task: notes[task.task_id])
                 seconds = {r.task_id: r for r in arm_of("retry", memory, [(t, 0) for t in sorted(notes)])}
-            items = []
+            if any(r.failure_class == "budget_exhausted" for r in seconds.values()):
+                out("library    stopped: the budget refused a retry; run the phase again to continue")
+                return {"status": "budget_exhausted", "processed": len(step.ledger["processed"])}
+            items, lost = [], []
             for t in batch:
                 first = firsts.get(t)
                 if first is None or first.validity != "valid":
-                    step.lose(hashes[t], f"the first encounter is {first.failure_class if first else 'missing'}")
+                    lost.append((hashes[t], f"the first encounter is {first.failure_class if first else 'missing'}"))
                     continue
                 second = seconds.get(t)
                 base_row = readings.get(t, [None])[-1]
@@ -391,14 +409,21 @@ def library(activity, *, out: Callable[[str], None] = print) -> dict:
                                "stable_pass": b.get(t) == 1.0, "split": "train"},
                               attempt(first), attempt(second if second is not None and second.validity == "valid"
                                                       else None), attempt(base_row)))
+            if lost and not service.healthy():
+                raise MemorySidecarError("the sidecar does not answer: the lost first encounters are its, not the "
+                                         "tasks'")
             if items:
                 step.process_batch(items)
+            for h, why in lost:              # after the batch is written, so a failed batch is cut the same next run
+                step.lose(h, why)
             done = step.ledger["processed"]
             out(f"library    {len(done)}/{len(train)}: " + ", ".join(
                 f"{t} first={int(firsts[t].success) if t in firsts else '-'}"
                 f"{' retry=' + str(int(seconds[t].success)) if t in seconds else ''}"
                 f" +{len(done[hashes[t]].get('added') or ())}" for t in batch) + f"; {len(step.active())} live")
         result = step.finish()
+    except MemorySidecarError as e:
+        return paused(e)
     finally:
         service.stop()
     ro, snapshot = result["readout"], result["snapshot"]

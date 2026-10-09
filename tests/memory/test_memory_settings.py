@@ -26,7 +26,7 @@ DESIGN_DEFAULTS = {
     "max_active": 500, "probation_shown": 3, "retire_harm_tasks": 2, "retire_harm_min_shown": 5,
     "retire_min_shown": 3, "retire_mean_credit": -0.2, "min_other_tasks": 2, "when_chars": 400,
     "content_chars": 1600, "traj_tool_chars": 4000, "traj_total_chars": 60000, "stream_batch": 4, "cite": True,
-    "retry": True, "abort_d": 0.0, "heldout_domains": ("operations",), "imports": (), "llm_timeout_s": 600.0,
+    "retry": True, "abort_d": 0.0, "heldout_domains": ("operations",), "imports": (), "llm_timeout_s": 1800.0,
     "promote_fixes": 2, "promote_sources": 2,
 }
 PINS = ("retriever", "backend")
@@ -115,12 +115,12 @@ def test_to_json_and_from_json_round_trip():
     assert Settings.from_json(doc) == s and Settings.from_json(json.loads(json.dumps(doc))) == s
     tight = Settings.from_json({"enabled": False, "shown_k": 1, "min_score": 0.7, "origins": ["failure", "success"],
                                 "heldout_domains": ["operations", "finance"], "imports": [IMPORT],
-                                "llm_timeout_s": 300})
+                                "llm_timeout_s": 900})
     again = Settings.from_json(json.loads(json.dumps(tight.to_json())))
     assert again == tight and again.to_json() == tight.to_json()
     assert tight.origins == ("failure", "success") and tight.heldout_domains == ("operations", "finance")
     assert tight.imports == (IMPORT,) and tight.to_json()["imports"] == [IMPORT]
-    assert isinstance(tight.llm_timeout_s, float) and tight.llm_timeout_s == 300.0
+    assert isinstance(tight.llm_timeout_s, float) and tight.llm_timeout_s == 900.0
 
 
 def test_from_json_of_nothing_and_from_core_are_the_defaults():
@@ -200,7 +200,7 @@ def test_an_empty_memory_table_merges_to_the_preset():
 @pytest.mark.parametrize("key,loose,tight", [
     ("shown_k", 3, 1), ("recall_k", 4, 2), ("max_active", 501, 100), ("when_chars", 401, 200),
     ("content_chars", 1601, 800), ("traj_tool_chars", 4001, 2000), ("traj_total_chars", 60001, 30000),
-    ("llm_timeout_s", 601.0, 300.0), ("sibling_sim", 0.97, 0.9),
+    ("llm_timeout_s", 1801.0, 900.0), ("sibling_sim", 0.97, 0.9),
     ("min_score", 0.6, 0.7), ("validation_threshold", 0.5, 0.7), ("min_other_tasks", 1, 3), ("abort_d", -1.0, 0.5),
     ("promote_fixes", 1, 3), ("promote_sources", 1, 3),
 ])
@@ -272,3 +272,16 @@ def test_a_resolved_k_carries_the_tightened_memory_section():
     assert (s.shown_k, s.heldout_domains, s.min_score) == (1, ("operations", "finance"), 0.7)
     assert {f: getattr(s, f) for f in ("recall_k", "origins", "retriever", "backend")} == \
         {f: getattr(Settings(), f) for f in ("recall_k", "origins", "retriever", "backend")}
+
+
+# ---------------------------------------------------------------------------- the review's cases (2026-10-09)
+def test_a_held_out_line_given_as_one_string_is_one_line():
+    assert Settings(heldout_domains="operations").heldout_domains == ("operations",)
+    assert Settings.from_json({"heldout_domains": "finance"}).heldout_domains == ("finance",)
+
+
+def test_the_clients_timeout_leaves_the_research_provider_its_time_and_a_minute_for_a_slot():
+    from ouroloop.memory import RESEARCH_SECONDS
+    assert Settings().llm_timeout_s >= RESEARCH_SECONDS + 60
+    with pytest.raises(ValueError, match="at least 600 s"):
+        Settings(llm_timeout_s=RESEARCH_SECONDS + 59)

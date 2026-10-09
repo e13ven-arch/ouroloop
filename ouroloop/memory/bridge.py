@@ -2,9 +2,9 @@
 OpenAI chat API reaches the research model by setting one `base_url`, and every call it makes is still metered,
 recorded and booked on the activity's budget like any other research call.
 
-v6 serves one scope kind, `research`, for one user: ReMe's task-memory pipeline in the memory sidecar, whose
-`openai` LLM backend always streams and sends `tools: null` (the 51 chat requests of the smoke,
-tests/fixtures/reme_requests.jsonl). Only `POST /v1/chat/completions` is served; `/v1/embeddings`, `/v1/models`, an
+It serves one scope kind, `research`, for one user: ReMe's task-memory pipeline in the memory sidecar, whose
+`openai` LLM backend always streams and sends `tools: null` (the shape of the 51 chat requests
+recorded in v6's ReMe smoke). Only `POST /v1/chat/completions` is served; `/v1/embeddings`, `/v1/models`, an
 embed scope, an attempt scope and the tool-call mapping have no user and are not built.
 
     bridge = Bridge().start()
@@ -34,7 +34,8 @@ tool calls on a scope that offered none is the provider's error.
 
 Errors, in OpenAI's shape {"error": {"message", "type", "code", "param"}}: 401 an unknown or closed token; 404 an
 unknown model or path; 400 a bad request (the gateway's or this bridge's own reason as the message); 429
-`budget_exhausted` when the meter refuses the reservation (nothing is booked); 502 `provider_error`, and
+`budget_exhausted` when the meter refuses the reservation (code `budget_exhausted`, or `budget_mismatch` for a book that
+does not hold the scope; nothing is booked); 503 `slots_busy` (see Concurrency); 502 `provider_error`, and
 for an account-class failure (providers.is_account_error: a subscription limit, a login) `code: account` with the
 scope closed at once, so ReMe's retries cannot swallow it; 500 `record_failed` when the record could not be written;
 500 `internal_error` for the bridge's own fault. The length checks come before authentication: 411 a chunked body,
@@ -51,7 +52,10 @@ called; and the activity keeps the research provider's own timeout under the SDK
 there is, and each of its requests is booked on its own.
 
 Concurrency: one semaphore per scope, `max_concurrency` (the activity's concurrency, a machine setting); a request over
-it waits, it is never refused. The server is a ThreadingHTTPServer on 127.0.0.1:0, one thread per connection,
+it waits. The wait counts against the client's read timeout (ReMe's `memory.llm_timeout_s`), so it is bounded by
+`max_wait`, which the host sets to what that timeout leaves after the provider's own: a request still waiting then is
+answered 503 `slots_busy` before the provider is called (nothing booked), rather than timed out by the client and sent
+again while the first one is still served. The server is a ThreadingHTTPServer on 127.0.0.1:0, one thread per connection,
 HTTP/1.1 keep-alive.
 
 Records: every authenticated request writes one `bridge_call` row — {call_id, scope_id, step, op, model,
@@ -75,10 +79,10 @@ from typing import Callable
 from ..contracts import BudgetError, BudgetExhausted, append_jsonl, now
 from ..harness.contract import EFFORTS
 from ..runtime.gateway import cap_effort, malformed, normalize_usage, own_effort, split_system, takes_effort
+from . import RESEARCH_SECONDS  # noqa: F401 - the research provider's own timeout (the activity applies it)
 
 KINDS = ("research",)                 # the scope kinds served: research only
 SDK_READ_SECONDS = 600.0              # the openai SDK's default read timeout (openai/_constants.py DEFAULT_TIMEOUT)
-RESEARCH_SECONDS = 540.0              # the research provider's own timeout is kept under it (activity)
 RETRY_HEADER = "x-stainless-retry-count"   # the openai SDK's count of its own resends of one request
 PATH = "/v1/chat/completions"
 MAX_BODY = 16 * 1024 * 1024           # one request body; ReMe's largest smoke request is under 10 KiB
@@ -177,12 +181,13 @@ class Scope:
     Bridge.open_scope; the token is valid until close()."""
 
     def __init__(self, bridge: "Bridge", kind: str, *, scope_id: str, step, provider, record,
-                 models, effort_cap, max_concurrency: int):
+                 models, effort_cap, max_concurrency: int, max_wait: float | None = None):
         self._bridge, self.kind, self.scope_id = bridge, kind, scope_id
         self.provider = provider
         self.models = tuple(models)
         self.effort_cap = effort_cap
         self.max_concurrency = int(max_concurrency)
+        self.max_wait = None if max_wait is None else max(float(max_wait), 0.0)
         self.token = secrets.token_urlsafe(32)
         self._digest = _digest(self.token)
         self._record = record
@@ -365,7 +370,13 @@ class Scope:
         kwargs = {"effort": request["effort"]} if request["effort"] is not None and self._effort_kw else {}
         with self._lock:
             self.waiting += 1
-        self._slots.acquire()                # over max_concurrency a request waits here; it is never refused
+        got = self._slots.acquire(timeout=self.max_wait) if self.max_wait is not None else self._slots.acquire()
+        if not got:
+            with self._lock:
+                self.waiting -= 1
+            raise BridgeError(503, f"every one of the scope's {self.max_concurrency} slots stayed busy for "
+                                   f"{self.max_wait:.0f} s: the client would time this request out and send it "
+                                   f"again; nothing was booked", type="server_error", code="slots_busy")
         with self._lock:
             self.waiting -= 1
             self.in_flight += 1
@@ -585,7 +596,7 @@ class Bridge:
         return f"http://{self.host}:{self.port}"
 
     def open_scope(self, kind: str, *, scope_id: str, step, provider, record: Callable | str | Path, models,
-                   effort_cap: str | None, max_concurrency: int) -> Scope:
+                   effort_cap: str | None, max_concurrency: int, max_wait: float | None = None) -> Scope:
         """A new scope with its own token. `provider` is the metered research provider (the activity's, with the
         provider's and the meter's retries off);
         `record` a callable record(kind, data) or a JSONL path; `models` the model names it may be asked for,
@@ -617,7 +628,7 @@ class Bridge:
         if not callable(record) and not isinstance(record, (str, Path)):
             raise TypeError("record is a callable record(kind, data) or a JSONL path")
         scope = Scope(self, kind, scope_id=scope_id, step=step, provider=provider, record=record, models=names,
-                      effort_cap=effort_cap, max_concurrency=max_concurrency)
+                      effort_cap=effort_cap, max_concurrency=max_concurrency, max_wait=max_wait)
         with self._lock:
             self._scopes[scope._digest] = scope
         return scope

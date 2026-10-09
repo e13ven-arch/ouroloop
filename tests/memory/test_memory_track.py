@@ -935,3 +935,33 @@ def test_only_train_tasks_of_a_line_that_is_not_held_out_enter(env):
     with pytest.raises(MemoryStepError, match="a batch holds a task twice"):
         step.process_batch(items(("T1",)) + items(("T1",)))
     assert env.research.calls == [] and env.client.summaries == 0 and step.ledger["seq"] == 0
+
+
+# ---------------------------------------------------------------------------- the review's cases (2026-10-09)
+def test_an_attempt_without_a_trajectory_is_summarised_without_it_and_blocks_nothing(env):
+    """A valid attempt that made no model call (a harness_error before its first call) has no gateway_call lines:
+    its trajectory is left out and counted; a task with no trajectory at all costs no research call."""
+    from ouroloop.runtime.trace import TraceError
+
+    def no_calls(session):
+        if session.startswith("T1-"):
+            raise TraceError(f"session {session} has no gateway_call records")
+        return env.sessions(session)
+    step = stream(env)
+    step.trajectory_of = no_calls
+    done = step.process_batch(items(("T1", "T2")))
+    assert [d["added"] for d in done][0] == [] and step.ledger["counters"]["no_trajectory"] == 1
+    assert set(step.ledger["processed"]) == {HASH["T1"], HASH["T2"]} and step.ledger["pending"] is None
+    assert env.client.summaries == 1                       # T2's only: T1 had nothing to summarise
+
+
+def test_an_import_does_not_bring_back_content_this_stream_retired_or_superseded(env):
+    step = stream(env, imports=(SALES_IMPORT,))
+    step.process(*items(("T1",))[0])
+    target = SALES[0]["memory_id"]
+    step.entries[target] = {"memory_id": target, "origin": "success", "born_at": 0, "status": "superseded",
+                            "superseded_by": "rel-skill-1", "sources": [], "stats": new_stats(), "events": []}
+    got = step.import_snapshot(SALES_TEXT, source_release_ref="rel-sales-3", source_line="sales")
+    assert target not in got["added"] and step.entries[target]["status"] == "superseded"
+    assert {d["memory_id"]: d["why"] for d in got["dropped"]}[target] == "superseded before in this stream"
+    assert target not in store_ids(env.client)
