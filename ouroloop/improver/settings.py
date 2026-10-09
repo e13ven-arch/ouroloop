@@ -26,8 +26,9 @@ class Settings:
     fixed_per_round: int = 2                     # the fixed code's candidates per round (snapshot, promotions, removals)
     session_max_turns: int = 40
     session_max_edits: int = 32
-    session_max_read_bytes: int = 65536
-    session_max_read_total: int = 1048576
+    session_max_read_bytes: int = 65536          # one read (read_trajectory or read_file)
+    session_max_read_total: int = 196608         # all reads of a session: the transcript is re-sent every turn
+    session_compact_tokens: int = 120000         # past this many input tokens the oldest outputs are elided
     diagnose_max_cases: int = 60
     diagnose_successes: int = 6
     causes: tuple = CAUSES
@@ -111,7 +112,8 @@ def preset_table() -> dict:
 
 
 RULES = {"k": "cap", "fixed_per_round": "cap", "session_max_turns": "cap", "session_max_edits": "cap",
-         "session_max_read_bytes": "cap", "session_max_read_total": "cap", "diagnose_max_cases": "cap",
+         "session_max_read_bytes": "cap", "session_max_read_total": "cap", "session_compact_tokens": "cap",
+         "diagnose_max_cases": "cap",
          "diagnose_successes": "cap", "causes": "superset", "mechanizable": "superset", "priors": "fixed",
          "explore_slots": "cap", "l5_slots": "cap", "code_guarantee": "fixed", "stall_rounds": "cap",
          "toolcheck_min_pass": "floor", "replay_min_triggers": "floor", "reach_min_tasks": "floor",

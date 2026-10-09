@@ -464,3 +464,24 @@ time.sleep(60)
             break
         time.sleep(0.1)
     assert not any(alive(p) for p in pids), pids
+
+
+def test_an_answer_that_is_not_a_turn_is_booked_at_what_it_used_not_at_the_bound(cli, provider, tmp_path,
+                                                                                    monkeypatch):
+    """The model answered (its use reported) but not as a turn — a call to a tool that was not offered: the meter
+    settles the call at its measured cost, retries, and keeps nothing at the bound. A call whose failure came with no
+    reported use stays unknown."""
+    import time
+    from ouroloop.evaluate.budget import Budgets, MeteredProvider, Pricing
+    from ouroloop.runtime.chat import ToolSpec
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
+    account = Budgets(tmp_path / "book").account("arm", {"usd": 100.0})
+    pricing = Pricing(input_per_1k=0.004, output_per_1k=0.02, cache_read_per_1k=0.0002, cache_write_per_1k=0.008,
+                      max_input_tokens=1000, max_output_tokens=1000)
+    metered = MeteredProvider(provider, account, pricing, operation="arm", max_retries=1)
+    spec = ToolSpec("look", "Look.", {"type": "object", "properties": {}})
+    cli.reply(ok(structured={"text": "", "tool_calls": [{"name": "launch", "args": {}}]}),
+              ok(structured={"text": "done", "tool_calls": []}))
+    assert metered.chat("S", [{"role": "user", "content": "x"}], [spec]).text == "done"
+    assert [r.status for r in metered.receipts] == ["settled", "settled"]
+    assert metered.receipts[0].measured == pricing.measure(dict(USAGE))

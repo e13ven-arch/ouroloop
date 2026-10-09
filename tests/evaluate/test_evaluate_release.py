@@ -361,5 +361,7 @@ def test_code_version_changes_when_a_py_or_a_seed_file_changes_and_nothing_else(
 def test_code_version_of_this_checkout_covers_its_modules():
     files = {p.relative_to(rel.PACKAGE).as_posix() for p in rel.package_files()}
     assert {"contracts.py", "evaluate/release.py", "train/jobs/hosts/bootstrap.sh"} <= files
+    # R's prompts are read at every round step: an edit of one is another K
+    assert {f"improver/prompts/{n}.md" for n in ("diagnose", "package_api", "playbook", "propose")} <= files
     assert not any(f.endswith(".pyc") or "__pycache__" in f for f in files)
     assert rel.code_version() == rel.code_version()

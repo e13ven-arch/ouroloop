@@ -108,8 +108,9 @@ def smoke(activity, *, tasks=None, limit: int | None = None, checks_only: bool =
     for line in activity.drift:
         out(f"DRIFT      {line}")
     threshold = float(activity.k["bench"]["near_duplicate_threshold"])
-    dups = ab.near_duplicates(activity.suite, threshold)
-    out(f"families   {len(splits.splits)} groups; {len(dups)} task pairs above overlap {threshold}")
+    # train and dev only: the test tasks' assertions are not read before the final plan is sealed (PLAN rule 6)
+    dups = ab.near_duplicates(activity.suite, threshold, ids=[*splits.ids("train"), *splits.ids("dev")])
+    out(f"families   {len(splits.splits)} groups; {len(dups)} train/dev task pairs above overlap {threshold}")
     dev = splits.ids("dev")
     chosen = [t for t in (tasks or []) if t in dev] if tasks else dev[:int(activity.k["bench"]["smoke_tasks"])]
     chosen = chosen[:limit] if limit else chosen
@@ -165,7 +166,7 @@ def seed_literal_scan(activity) -> dict:
     for tid in activity.splits.ids("train"):
         grading = activity.suite.grading(tid)
         rows.append({"task_id": tid, "assertions": [dict(a) for a in grading.assertions],
-                     "state": grading.initial_state})
+                     "state": grading.initial_state, "prompt": activity.suite.tasks[tid].trigger})
     banned = forbidden(literal_index(rows))
     from ..harness.seed import seed_files
     found = findings(seed_files(activity.k["harness"]["seed"], core=activity.k), None, banned)
@@ -213,10 +214,13 @@ def freeze(activity, *, out: Callable[[str], None] = print) -> dict:
     root = activity.root_account()
     out(f"budget     root {activity.scope_id}: {root.remaining()['limits'] or 'no dollar limit'}, "
         f"set aside {root.remaining()['allocations'] or 'nothing'}")
-    if "final" in activity.config:
-        plan = final_plan(activity)
-        if len(plan.arms) < 2:
-            raise ValueError("freeze refused: the final compares W* with W0, and nothing was installed yet")
+    plan = final_plan(activity) if "final" in activity.config else None
+    if plan is not None and len(plan.arms) < 2:
+        out("final      not sealed: the final compares W* with W0, and nothing is installed yet; freeze again when "
+            "the rounds are over")
+    elif plan is not None:
+        out(f"final      sealing W* = the active release {short(activity.active_release().ref())}: a round after "
+            f"this one cannot change the final, so seal when the rounds are over")
         estimate = final_estimate(list(activity.results.all()), plan, plan_ref=None,
                                   execution_of=lambda ref: _execution(activity, ref), pricing=activity.pricing(),
                                   concurrency=activity.concurrency)
@@ -245,7 +249,7 @@ def _execution(activity, release_ref):
 def baseline(activity, *, limit: int | None = None, out: Callable[[str], None] = print) -> dict:
     """W0 on train (once) and on dev `control_readings` times, each reading its own run of the same release, so the
     pooled control starts with that many readings. A restarted baseline runs only what is missing."""
-    require(startup_checks(activity, phase="baseline"), phase="baseline")
+    require(startup_checks(activity, phase="baseline"), phase="baseline", activity=activity)
     release = activity.active_release()
     account = activity.account("baseline")
     train = activity.splits.ids("train")[:limit] if limit else activity.splits.ids("train")
@@ -304,8 +308,9 @@ def library(activity, *, out: Callable[[str], None] = print) -> dict:
     unless D <= abort_d or the library is empty — the snapshot as a candidate package for the improver's ladder
     (stage 3). Run again, it continues where it stopped and pays for nothing on record. A failure of the memory's
     sidecar pauses the phase (status `paused`): nothing is recorded as lost for it."""
-    require(startup_checks(activity, phase="library"), phase="library")
+    require(startup_checks(activity, phase="library"), phase="library", activity=activity)
     from ..contracts import MemorySidecarError
+    from ..memory.track import MemoryStepError
     from ..memory import snapshot_digest
     from ..memory.settings import Settings
     from ..memory.snapshot import snapshot_candidate, stream_files
@@ -327,7 +332,8 @@ def library(activity, *, out: Callable[[str], None] = print) -> dict:
     b = {t: sum(int(r.success) for r in rows) / len(rows) for t, rows in readings.items()}
     trace = TraceStore(activity.root, activity.splits.split_of)
     rows = [{"task_id": t, "assertions": [dict(a) for a in activity.suite.grading(t).assertions],
-             "state": activity.suite.grading(t).initial_state} for t in train]
+             "state": activity.suite.grading(t).initial_state, "prompt": activity.suite.tasks[t].trigger}
+            for t in train]
     banned = forbidden(literal_index(rows))
     account = activity.account("library")
     retries = int(activity.k["gate"]["max_infrastructure_retries"])
@@ -428,7 +434,8 @@ def library(activity, *, out: Callable[[str], None] = print) -> dict:
                 f"{' retry=' + str(int(seconds[t].success)) if t in seconds else ''}"
                 f" +{len(done[hashes[t]].get('added') or ())}" for t in batch) + f"; {len(step.active())} live")
         result = step.finish()
-    except MemorySidecarError as e:
+    except (MemorySidecarError, MemoryStepError) as e:
+        # a step that could not be trusted stores nothing; the summaries that passed are on the ledger
         return paused(e)
     finally:
         service.stop()
@@ -472,7 +479,7 @@ def _import(activity, step, spec: dict) -> dict:
 
 def round_(activity, index: int, *, out: Callable[[str], None] = print):
     """One round of the improver (docs/design/IMPROVER.md §3); run again, it continues and pays for nothing done."""
-    require(startup_checks(activity, phase="round"), phase="round")
+    require(startup_checks(activity, phase="round"), phase="round", activity=activity)
     from ..improver.round import run_round
     return run_round(activity, index, run_arm=run_arm, out=out)
 
@@ -485,7 +492,7 @@ def evaluate(activity, *, out: Callable[[str], None] = print) -> dict:
     if not ref or not activity.objects.has(ref):
         raise ValueError("[rsi] final_plan_ref must name the final plan `ouroloop freeze` sealed")
     plan = FinalPlan.from_json(activity.objects.get(ref))
-    require(startup_checks(activity, phase="evaluate"), phase="evaluate")
+    require(startup_checks(activity, phase="evaluate"), phase="evaluate", activity=activity)
     account = activity.account("final")
     rows = list(activity.results.all())
     estimate = final_estimate(rows, plan, plan_ref=ref, execution_of=lambda r: _execution(activity, r),

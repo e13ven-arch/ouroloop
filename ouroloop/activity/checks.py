@@ -154,6 +154,11 @@ def correctness_problems(activity, *, phase: str, needs_worker: bool) -> list[st
                                                                 capture_output=True).returncode != 0:
                 problems.append(f"K's network is the egress proxy and the image {EGRESS_IMAGE} is not built "
                                 f"(docker build --provenance=false -f docker/egress.Dockerfile -t {EGRESS_IMAGE} .)")
+    recorded, current = cli_versions(activity, phase)
+    if recorded and current != recorded:
+        problems.append(f"the claude CLI is {current or 'unreadable'} and this activity ran on {recorded}: a model "
+                        f"call's transport is part of what a comparison holds fixed; reinstall {recorded} (and set "
+                        f"DISABLE_AUTOUPDATER=1 for the activity's duration) or start a new activity")
     if phase == "round" and not list(activity.events.read("gate_template")):
         problems.append("no frozen gate plan: run `ouroloop freeze` before a round (the gate's template is fixed "
                         "before any candidate is seen)")
@@ -172,6 +177,24 @@ def startup_checks(activity, *, phase: str, needs_model: bool = True, needs_work
             + correctness_problems(activity, phase=phase, needs_worker=needs_worker))
 
 
-def require(problems: list[str], *, phase: str) -> None:
+def cli_versions(activity, phase: str) -> tuple[str | None, str | None]:
+    """(the claude CLI version this activity's first paid phase recorded, the one on PATH now) — (None, None) when
+    the phase calls no CLI (a test's providers, another type)."""
+    if phase not in PAID or getattr(activity, "provider_factory", None) is not None:
+        return None, None
+    tables = [activity.model_table(s) for s in ("model", "research_model")]
+    if not any(t["type"] == "claude_code" for t in tables):
+        return None, None
+    from ..providers.claude_code import cli_version
+    rows = list(activity.events.read("cli_version"))
+    return (rows[0].get("version") if rows else None), cli_version()
+
+
+def require(problems: list[str], *, phase: str, activity=None) -> None:
+    """Refuse the phase on any problem; otherwise record, once per activity, the claude CLI it runs on."""
     if problems:
         raise RuntimeError(f"the {phase} phase cannot start: " + "; ".join(problems))
+    if activity is not None:
+        recorded, current = cli_versions(activity, phase)
+        if current and not recorded:
+            activity.events.append("cli_version", version=current, phase=phase)

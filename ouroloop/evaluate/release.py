@@ -29,7 +29,8 @@ PACKAGE = Path(__file__).resolve().parents[1]
 # The package's files besides its modules that pip installs: pyproject.toml's [tool.setuptools.package-data] says the
 # same. The seeds are source trees whose every file is part of what runs.
 PACKAGE_DATA = ("train/jobs/hosts/bootstrap.sh", "train/jobs/hosts/start.sh", "memory/sidecar/flows.yaml",
-                "memory/sidecar/requirements-macos-arm64.lock")
+                "memory/sidecar/requirements-macos-arm64.lock", "improver/prompts/diagnose.md",
+                "improver/prompts/package_api.md", "improver/prompts/playbook.md", "improver/prompts/propose.md")
 SEEDS = "harness/seeds/"
 
 

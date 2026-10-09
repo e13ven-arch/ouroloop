@@ -146,10 +146,15 @@ def test_a_gate_over_fewer_dev_tasks_than_min_tasks_is_not_frozen(tmp_path, fake
     assert list(a.events.read("gate_template")) == [] and not (a.root / "rsi" / "budget" / "book.json").exists()
 
 
-def test_freeze_with_a_final_table_is_refused_while_w_star_is_w0(tmp_path, fake_upstream):
+def test_freeze_with_a_final_table_seals_nothing_while_w_star_is_w0(tmp_path, fake_upstream):
+    """The first freeze of a config that already names its final: the gate and the budget root are frozen and the
+    [rsi] lines printed; the final is not sealed (nothing is installed) and says so."""
     a = rsi.activity(tmp_path, fake_upstream, final={})
-    with pytest.raises(ValueError, match="the final compares W\\* with W0, and nothing was installed yet"):
-        phases.freeze(a, out=quiet)
+    lines = []
+    refs = phases.freeze(a, out=lines.append)
+    assert "final_plan_ref" not in refs and any(l.startswith("final      not sealed: the final compares W* with W0")
+                                                for l in lines)
+    assert "[rsi]" in lines and list(a.events.read("gate_template"))
     assert not (a.root / "rsi" / "finalization").exists()
 
 
@@ -227,7 +232,7 @@ def test_the_report_is_the_same_bytes_twice_and_its_phase_spend_sums_to_the_root
     assert spend["root"]["usd"] == pytest.approx(settled) and spend["limits"] == {"usd": 50.0}
     assert first["baseline"]["train"]["tasks"] == len(rsi.TRAIN) and len(first["baseline"]["dev"]) == 1
     assert first["test_reads"] == 0 and first["final"] == [] and first["release"] == short(a.releases.active_ref())
-    assert "- test read 0 time(s)" in written["report.md"].decode()
+    assert "- test read 0 time(s) by this activity's final" in written["report.md"].decode()
 
 
 # ---------------------------------------------------------------------------- the final
@@ -295,7 +300,11 @@ def test_a_sealed_final_runs_w0_and_w_star_on_test_and_the_report_counts_its_rea
     report = phases.report(c, out=quiet)
     assert report["test_reads"] == 1
     assert report["final"] == [{"experiment": "rsi-test-final", "plan": short(refs["final_plan_ref"]),
-                                "status": "completed", "claims": ["C1"], "arms": report["final"][0]["arms"]}]
+                                "status": "completed", "claims": ["C1"], "arms": report["final"][0]["arms"],
+                                "c1": report["final"][0]["c1"]}]
+    c1 = report["final"][0]["c1"]                                            # W* - W0 over the test tasks
+    assert c1["tasks"] == len(rsi.FINAL) and c1["low"] <= c1["points"] <= c1["high"] and c1["confidence"] == 0.95
+    assert "W* - W0:" in (c.root / "report.md").read_text(encoding="utf-8")
     assert {arm: s["attempts"] for arm, s in report["final"][0]["arms"].items()} == {"W0": 6, "W_star": 6}
     assert "final" in report["spend"]["phases"]
 

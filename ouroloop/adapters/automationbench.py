@@ -513,16 +513,17 @@ def has_must_not(suite: Suite, task_id: str) -> bool:
                if a.get("scored") is not False and a.get("excluded") is not True)
 
 
-def near_duplicates(suite: Suite, threshold: float = 0.8) -> list[tuple[str, str, float]]:
+def near_duplicates(suite: Suite, threshold: float = 0.8, ids=None) -> list[tuple[str, str, float]]:
     """Task pairs whose signatures overlap enough to be worth reading as possible variants of one workflow,
-    highest overlap first.
+    highest overlap first. `ids` limits the pairs to those tasks (a frozen split's train and dev: a test task's
+    assertions are not read before its final is sealed).
 
     A hint for a human before the split is frozen, never a grouping: a high overlap says two tasks are over the
     same things, not that one is a variant of the other. Nothing declares a family on this alone.
     """
-    sig = {tid: task_signature(suite, tid) for tid in suite.ids()}
+    ids = [t for t in suite.ids() if ids is None or t in set(ids)]
+    sig = {tid: task_signature(suite, tid) for tid in ids}
     out = []
-    ids = suite.ids()
     for i, a in enumerate(ids):
         for b in ids[i + 1:]:
             union = sig[a] | sig[b]

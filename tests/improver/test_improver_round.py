@@ -508,23 +508,22 @@ def test_a_round_without_the_frozen_gate_plan_refuses_before_paying(tmp_path, fa
 
 def test_screens_that_cannot_be_priced_are_not_started(tmp_path, fake_upstream):
     """No baseline: the round measures the current W's train itself (role measure, in its measure account), and with
-    no dev reading on record the gate cannot be priced, so no screen starts."""
+    no dev reading on record the gate cannot be priced: the round stops before it pays for diagnosis or a session."""
     s = round_activity(tmp_path, fake_upstream, "tool", baseline=False)
     played(s)
     a, r = s.a, s.result
     assert (r.status, r.stop) == ("stopped", "unpriced: the current W has no priced train or dev reading on record: "
                                              "the screens cannot be priced")
-    assert r.ladder == {"V0": 1, "V1": 1, "V2a": 1} and r.screened is None and r.gate is None
+    assert r.ladder == {} and r.screened is None and r.gate is None
     state = round_state(a, 0)
-    assert tuple(state["steps"]) == FREE and state["steps"]["measure"]["measured"] == len(rsi.TRAIN)
+    assert tuple(state["steps"]) == ("measure", "evidence") and state["steps"]["measure"]["measured"] == len(rsi.TRAIN)
     runs = a.results.runs()
     rows = list(a.results.all())
     assert {runs[x.run].role for x in rows} == {"measure"} and {x.split for x in rows} == {"train"}
     assert {runs[x.run].candidate for x in rows} == {f"train:{short(s.base.ref())}:r0"}
     assert results_of_role(a, "screen") == []
     new = new_reservations(s.before, s.after)
-    assert settled_by_scope(new) == {f"{ACCOUNT}:measure": s.after["actor"] - s.before["actor"],
-                                     f"{ACCOUNT}:diagnose": 2, f"{ACCOUNT}:session": 4}
+    assert settled_by_scope(new) == {f"{ACCOUNT}:measure": s.after["actor"] - s.before["actor"]}
     assert "screened" not in stages(a) and ledger_rows(a)[-1]["reason"] == r.stop
 
 
@@ -542,7 +541,8 @@ def test_screens_that_do_not_fit_what_the_round_has_left_are_not_started(tmp_pat
     before = paid(s)
     result = phases.round_(s.a, 0, out=out)
     assert result.status == "stopped" and re.fullmatch(
-        r"budget: the screens and the gate need up to \$\d+\.\d\d and the round has \$0\.01", result.stop), result.stop
+        r"budget: the screens and the gate would need up to \$\d+\.\d\d \(\$\d+\.\d\d at the means on record, \+15%, and two "
+        r"calls' bound\) and the round has \$0\.01", result.stop), result.stop
     assert lines[-1] == f"round      {ROUND} stopped: {result.stop}"
     after = paid(s)
     assert after["actor"] == before["actor"] and after["r"][len(before["r"]):] == ["diagnose", "diagnose"] + \
@@ -553,8 +553,8 @@ def test_screens_that_do_not_fit_what_the_round_has_left_are_not_started(tmp_pat
 
 
 def test_a_round_the_budget_refuses_stops_on_record_and_the_cycle_stops_there(tmp_path, fake_upstream):
-    """Someone else sets aside all but $0.01 of the root before the round: its first research call cannot be reserved,
-    the round stops `budget` on record without paying, and the cycle stops at that round."""
+    """Someone else sets aside all but $0.01 of the root before the round: the gate and the least screen do not fit,
+    so the round stops `budget` on record before its first research call, and the cycle stops at that round."""
     s = round_activity(tmp_path, fake_upstream, "tool")
     left = s.a.account("other").remaining()["effective_remaining"]["usd"]
     s.a.account("other").hold("someone else's reservation", {"usd": round(left - 0.01, 6)})
@@ -562,7 +562,7 @@ def test_a_round_the_budget_refuses_stops_on_record_and_the_cycle_stops_there(tm
     cycle = phases.cycle(s.a, out=quiet)
     assert (cycle["status"], cycle["at"]) == ("stopped", "round-0") and "round-1" not in cycle["steps"]
     stop = cycle["steps"]["round-0"]["stop"]
-    assert stop.startswith("budget: round-0:diagnose#0.0 would exceed usd of ") and \
+    assert stop.startswith("budget: the gate and the least screen would need up to $") and \
         cycle["steps"]["round-0"]["status"] == "stopped"
     assert paid(s) == before
     assert stages(s.a) == ["measured", "stopped"] and ledger_rows(s.a)[-1]["reason"] == stop

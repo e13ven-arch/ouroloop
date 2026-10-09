@@ -131,14 +131,36 @@ def test_the_anchor_rides_on_every_act_call_once_a_date_is_read(ctx=None):
     tool_turn = history + [{"role": "assistant", "text": "", "tool_calls": []},
                            {"role": "tool", "results": [{"id": "c1", "output": DATED}]}]
     answer = g.anchor(Ctx(), model_call(tool_turn, turn=2))
-    note = g.DATE_MESSAGE.format(date="2030-06-03", field="internalDate")
-    assert answer["messages"][:-1] == tool_turn and answer["messages"][-1] == {"role": "user", "content": note}
+    note = {"role": "user", "content": g.DATE_MESSAGE.format(date="2030-06-03", field="internalDate")}
+    assert answer["messages"] == tool_turn + [note]
     assert tool_turn[-1]["role"] == "tool"                                 # the history itself is not changed
-    # after a user message the note joins it rather than making two user messages in a row
-    joined = g.anchor(Ctx(), model_call(history, turn=3))["messages"]
-    assert len(joined) == 2 and joined[-1]["content"] == "task\n\n" + note
-    assert g.anchor(Ctx(), model_call(history, role="aux")) is None        # a summary call is left alone
+    # the next call keeps the note where it was given: the earlier call is a prefix of this one (the prompt cache)
+    later = tool_turn + [{"role": "assistant", "text": "", "tool_calls": []},
+                         {"role": "tool", "results": [{"id": "c2", "output": "{}"}]}]
+    again = g.anchor(Ctx(), model_call(later, turn=3))["messages"]
+    assert again == tool_turn + [note] + later[len(tool_turn):]
+    assert again[:len(answer["messages"])] == answer["messages"]
+    assert g.anchor(Ctx(), model_call(later, role="aux")) is None          # a summary call is left alone
     assert g.snapshot()["anchored"] == ("2030-06-03", "internalDate")
+
+
+def test_a_newer_date_gets_its_own_note_and_a_summary_starts_the_notes_over(ctx=None):
+    g = guard()
+    history = [{"role": "system", "content": "s"}, {"role": "user", "content": "task"}]
+    _read(g, 1)
+    first = g.anchor(Ctx(), model_call(history, turn=2))["messages"]
+    g.STATE["date"] = ("2030-07-01", "sent")                              # a newer date read later
+    grown = history + [{"role": "assistant", "text": "", "tool_calls": []}]
+    second = g.anchor(Ctx(), model_call(grown, turn=3))["messages"]
+    assert second[:len(first)] == first and "2030-07-01" in second[-1]["content"]
+    assert [m["content"] for m in second if "newest date" in str(m.get("content"))] == \
+        [first[-1]["content"], second[-1]["content"]]
+    # a summary shortened the history: one note, at its end
+    short = [{"role": "system", "content": "s"}]
+    assert g.anchor(Ctx(), model_call(short, turn=4))["messages"] == short + [second[-1]]
+    # a sub-agent's conversation (another first message) has its own notes
+    sub = [{"role": "system", "content": "sub"}, {"role": "user", "content": "look"}]
+    assert g.anchor(Ctx(), model_call(sub, turn=5))["messages"] == sub + [second[-1]]
 
 
 def test_no_date_is_read_from_a_write_or_after_it(ctx=None):

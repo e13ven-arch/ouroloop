@@ -7,8 +7,12 @@
                           plan_changes arguments; and, until the first write, the newest date in what was read.
   triage  (before_tool)   the first write of the attempt, when plan_changes has not been called, is blocked once with
                           TRIAGE_MESSAGE.
-  anchor  (before_model)  once a date has been read, every act call is sent with DATE_MESSAGE after its last message
-                          (non-destructive: the agent's history is not changed, the note rides on each call).
+  anchor  (before_model)  once a date has been read, every act call is sent with DATE_MESSAGE as a note at the place
+                          it was first given — the end of the first act call that knew the date — and kept there
+                          (non-destructive: the agent's history is not changed). A newer date gets its own note where
+                          it is first given. Notes never move, so an act call's earlier messages are the previous
+                          call's and the provider's prompt cache holds; a summary that shortens the history starts the
+                          notes over at its end.
   verify  (on_finish)     the first finish, while act calls remain, is pushed back once with the plan, the ledger and
                           the excluded items side by side and a check in both directions; an empty ledger is named.
 
@@ -75,7 +79,7 @@ def reset() -> None:
     """A fresh attempt's state (the module is loaded once per attempt; tests call this between cases)."""
     STATE.clear()
     STATE.update({"writes": {}, "order": [], "seen": set(), "plan": None, "date": None, "triaged": False,
-                  "verified": False, "own": 0, "anchored": None})
+                  "verified": False, "own": 0, "anchored": None, "notes": {}})
 
 
 reset()
@@ -269,17 +273,26 @@ def triage(ctx, event):
     return {"block": {"reason": TRIAGE_MESSAGE}}
 
 
+def _conversation(messages: list) -> str:
+    """Which conversation a call belongs to (the attempt's own or a sub-agent's): its first message."""
+    first = messages[0] if messages else {}
+    return f"{first.get('role')}:{str(first.get('content') or '')[:200]}"
+
+
 def anchor(ctx, event):
-    """The date read so far, after the last message of every act call (never a summary's)."""
+    """The dates read so far, each a note at the place it was first given, in every act call (never a summary's)."""
     if not DATE_ANCHOR or STATE["date"] is None or event.get("role") != "act":
         return None
-    STATE["anchored"] = STATE["anchored"] or STATE["date"]
     messages = [dict(m) for m in event.get("messages") or ()]
-    note = anchor_message()
-    if messages and messages[-1].get("role") == "user" and isinstance(messages[-1].get("content"), str):
-        messages[-1]["content"] = messages[-1]["content"] + "\n\n" + note
-    else:
-        messages.append({"role": "user", "content": note})
+    notes = STATE["notes"].setdefault(_conversation(messages), [])
+    if notes and notes[-1][0] > len(messages):         # a summary shortened the history: start over at its end
+        notes.clear()
+    text = anchor_message()
+    if not notes or notes[-1][1] != text:
+        notes.append((len(messages), text))
+    STATE["anchored"] = STATE["anchored"] or STATE["date"]
+    for index, note in reversed(notes):
+        messages.insert(index, {"role": "user", "content": note})
     return {"messages": messages}
 
 

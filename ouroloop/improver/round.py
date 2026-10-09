@@ -33,7 +33,8 @@ from .declaration import Declaration, read_declaration
 from .evidence import Evidence, dev_histogram
 from .ledger import Ledger
 from .policy import read_playbook, update_playbook
-from .screen import ScreenResult, condition, gate as run_gate, passing_sample, pick_best, price, screen
+from .screen import (ScreenResult, condition, cost_per_attempt, gate as run_gate, gate_attempts, passing_sample,
+                     pick_best, price, screen)
 from .session import CodingSession, WorkTree
 from .settings import CODE_KINDS, Settings
 from .verify import Verdict, VerifyContext, run_ladder
@@ -57,6 +58,9 @@ class RoundResult:
     installed: str | None = None
     stop: str | None = None
     spend: dict = field(default_factory=dict)
+
+
+PRICE_MARGIN = 0.15                     # over the means on record: candidates cost what they cost
 
 
 class Stop(Exception):
@@ -155,6 +159,8 @@ class Round:
         ev = self.step("evidence", self.gather)
         if not ev["failed"]:
             raise Stop("nothing_to_fix: the current W passes every train task it was read on")
+        if "diagnosed" not in self.state["steps"]:
+            self._floor()
         self.step("diagnosed", self.diagnosed)
         self.step("allocated", self.allocated)
         self.step("implemented", self.implemented)
@@ -174,6 +180,27 @@ class Round:
         self.state["status"] = "done"
         self._save()
         return self.result()
+
+    def _afford(self, usd: float, what: str) -> None:
+        """Stop the round on record unless `usd` (a price from the means on record) fits what the round has left with
+        PRICE_MARGIN for the spread and two calls' reservation bound: every call reserves the bound, so a round can
+        never spend its last bound, and one call in flight beside the last keeps an arm from stalling."""
+        left = (self.account.remaining().get("effective_remaining") or {}).get("usd")
+        if left is None:
+            return
+        bound = float(self.a.pricing().bound().get("usd") or 0.0)
+        need = round(usd * (1 + PRICE_MARGIN) + 2 * bound, 6)
+        if need > float(left) + 1e-9:
+            raise Stop(f"budget: {what} would need up to ${need:.2f} (${usd:.2f} at the means on record, "
+                       f"+{PRICE_MARGIN:.0%}, and two calls' bound) and the round has ${float(left):.2f}")
+
+    def _floor(self) -> None:
+        """Before the round pays for diagnosis and R's session: the least it must pay later — the gate and a screen
+        of the passing sample — has a price, and fits."""
+        usd, why = price(self.a, self.base.package_ref, screen_attempts=self.s.screen_passing_sample)
+        if usd is None:
+            raise Stop(f"unpriced: {why}")
+        self._afford(usd, "the gate and the least screen")
 
     def _recorded(self, candidate: str, role: str) -> int:
         """The valid attempts on record under a run of this name and role."""
@@ -311,13 +338,13 @@ class Round:
         train = tuple(self.a.splits.ids("train"))
         reading = self.evidence.reading(self.base.package_ref)
         rows = [{"task_id": t, "assertions": [dict(x) for x in self.a.suite.grading(t).assertions],
-                 "state": self.a.suite.grading(t).initial_state} for t in train]
+                 "state": self.a.suite.grading(t).initial_state, "prompt": self.a.suite.tasks[t].trigger}
+                for t in train]
         failed = [t for t in train if t in reading and not reading[t].success]
         passed = [t for t in train if t in reading and reading[t].success]
+        # V2c reads reach on lexical_embed's scale, the one reach_min_score is calibrated on (bge-small puts unrelated
+        # texts at 0.5 and above: on it 0.2 would pass every description)
         embed = None
-        if (self.a.k.get("memory") or {}).get("enabled"):
-            def embed(texts, query=False):
-                return self.a.memory().start().client.embed(list(texts), query=query)
         return VerifyContext(parent=self.package, seed=self.a.package(self.a.seed_release()), core=self.a.k,
                              objects=self.a.objects, worker=self.a.worker(), suite=self.a.suite,
                              evidence=self.evidence, forbidden=forbidden_of(literal_index(rows)), train_tasks=train,
@@ -383,6 +410,36 @@ class Round:
         return {"dir": decl.dir, "declaration": self.a.objects.put(decl),
                 "files": self.a.objects.put_json("candidate_files", files), "verdict": self.a.objects.put(verdict)}
 
+    def _session(self, session: CodingSession, tree: WorkTree):
+        """Start R's session, or go on with the one a provider failure stopped (its messages, counters and candidate
+        directories were saved): the turns already paid are not paid again. A provider failure saves the session
+        and is raised; the round is resumed when the provider answers again."""
+        from ..providers import ProviderError
+        saved = self.state.get("session_checkpoint")
+        try:
+            if saved is None:
+                return session.start()
+            session.restore(self.a.objects.get(saved["state"]))
+            for name, files in self.a.objects.get(saved["files"]).items():
+                for path, text in files.items():
+                    tree.do("write", path=f"candidates/{name}/{path}", text=text)
+                listed, bad = tree.do("list", path=f"candidates/{name}")
+                for path in ([] if bad else listed or ()):
+                    if path not in files:
+                        tree.do("delete", path=f"candidates/{name}/{path}")
+            self.out(f"round      {self.round_id}: R's session goes on from turn {session.turns}")
+            return session.resume()
+        except ProviderError:
+            files = {}
+            for name in session.dirs:
+                got, _ = tree.fetch(name)
+                if got is not None:
+                    files[name] = got
+            self.state["session_checkpoint"] = {"state": self.a.objects.put_json("session_state", session.state()),
+                                                "files": self.a.objects.put_json("candidate_dirs", files)}
+            self._save()
+            raise
+
     def implemented(self) -> dict:
         assignments = self.assignments()
         if not assignments:
@@ -403,7 +460,8 @@ class Round:
         system = (PROMPTS / "propose.md").read_text(encoding="utf-8")
         for name, value in {"k": k, "max_turns": self.s.session_max_turns, "max_edits": self.s.session_max_edits,
                             "max_read": self.s.session_max_read_bytes,
-                            "max_read_total": self.s.session_max_read_total}.items():
+                            "max_read_total": self.s.session_max_read_total,
+                            "max_tokens": int(self.a.k["research_model"]["max_tokens"])}.items():
             system = system.replace("{" + name + "}", str(value))
         worker = self.a.worker()
         if worker is None:
@@ -439,7 +497,7 @@ class Round:
                                         "round": self.round_id, "assignments": json.loads(inputs["assignments.json"]),
                                         "inputs": sorted(f"inputs/{n}" for n in inputs)},
                                     readable=readable, kinds=kinds)
-            result = session.start()
+            result = self._session(session, tree)
             fetched = []
             for decl in result.declarations:
                 files, error = tree.fetch(decl.dir)
@@ -449,6 +507,7 @@ class Round:
             self.state["session_result"] = {"session": str(self.dir / "session.json"), "candidates": [
                 {"declaration": self.a.objects.put(d), "files": self.a.objects.put_json("candidate_files", f)}
                 for d, f in fetched]}
+            self.state.pop("session_checkpoint", None)
             self._save()
             out = []
             for decl, files in fetched:
@@ -580,9 +639,7 @@ class Round:
         usd, why = price(self.a, self.base.package_ref, screen_attempts=attempts)
         if usd is None:
             raise Stop(f"unpriced: {why}")
-        left = (self.account.remaining().get("effective_remaining") or {}).get("usd")
-        if left is not None and usd > float(left) + 1e-9:
-            raise Stop(f"budget: the screens and the gate need up to ${usd:.2f} and the round has ${float(left):.2f}")
+        self._afford(usd, "the screens and the gate")
         results, rows = [], []
         for item, decl, failing in plans:
             files = self.a.objects.get(item["files"])
@@ -626,6 +683,14 @@ class Round:
     def gated(self) -> dict:
         sc = self.state["steps"]["screened"]
         package = load_package(self.a.objects, sc["best_package"])
+        if not self._recorded(f"{self.round_id}:gate", "subject"):      # a resumed gate's own attempts are on record
+            dev = cost_per_attempt(self.a, self.base.package_ref, "dev")
+            train = cost_per_attempt(self.a, self.base.package_ref, "train")
+            best = ScreenResult.from_json(self.a.objects.get(next(r["screen"] for r in sc["screens"]
+                                                                  if r["dir"] == sc["best"])))
+            scale = max(1.0, (best.cost or 0.0) / train) if train else 1.0     # the candidate costs what it costs
+            if dev is not None:
+                self._afford(gate_attempts(self.a, self.base.package_ref) * dev * scale, "the gate")
         got = run_gate(self.a, run_arm=self.run_arm, round_id=self.round_id, package=package,
                        base_release=self.base, account=self.child("gate"))
         item = next(i for i in self.state["steps"]["verified"]["passed"]

@@ -357,9 +357,9 @@ def test_the_transcript_and_the_record(world, tree):
     # run_check and run_tests: the callables' text for a written dir, the call's error otherwise
     assert cs.checked == [("notify", decl())] and cs.tested == ["notify"]
     rec = cs.record()
-    assert set(rec) == {"turns", "edits", "read_bytes", "dirs", "declared", "ended", "calls"}
+    assert set(rec) == {"turns", "edits", "read_bytes", "dirs", "declared", "ended", "calls", "compactions"}
     assert (rec["turns"], rec["edits"], rec["read_bytes"], rec["dirs"], rec["declared"], rec["ended"]) == \
-        (4, 1, 0, ["notify"], ["notify"], "")
+        (4, 1, ITEM_CHARS + 500, ["notify"], ["notify"], "")          # read_file counts toward the session's reads
     assert rec["calls"] == [
         {"turn": 2, "tool": "write_file", "path": "candidates/notify/notes.txt", "ok": True},
         {"turn": 2, "tool": "read_file"}, {"turn": 2, "tool": "bogus_tool"},
@@ -421,7 +421,7 @@ def test_run_check_answers_the_text_of_run_ladders_verdict(done):
 
 def test_a_rounds_session_record_and_transcript(done):
     rec = done.record
-    assert set(rec) == {"turns", "edits", "read_bytes", "dirs", "declared", "ended", "calls", "transcript"}
+    assert set(rec) == {"turns", "edits", "read_bytes", "dirs", "declared", "ended", "calls", "compactions", "transcript"}
     assert (rec["turns"], rec["edits"], rec["dirs"], rec["declared"], rec["ended"]) == (4, 2, ["notify"], ["notify"], "")
     assert [c["tool"] for c in rec["calls"]] == ["read_file", "read_file", "write_file", "write_file", "run_check",
                                                  "finish"]
@@ -716,8 +716,7 @@ def test_an_unpriced_round_stops_before_any_screen_is_paid(tmp_path, fake_upstre
     got = run_round(s.a, 0, run_arm=run_arm, out=quiet)
     assert got.status == "stopped" and got.stop.startswith("unpriced: ") and "cannot be priced" in got.stop
     state = round_state(s.a, 0)
-    assert state["steps"]["verified"]["passed"]                              # a candidate was ready to screen
-    assert "screened" not in state["steps"] and "gated" not in state["steps"]
+    assert tuple(state["steps"]) == ("measure", "evidence")         # stopped before it paid for diagnosis or R
     # the train reading is the only arm and its attempts the actor's last calls
     assert [(role, split) for role, split, _ in arms] == [("measure", "train")]
     assert s.actor.calls == arms[-1][2] > 0
@@ -807,3 +806,76 @@ def test_a_rejected_gate_registers_its_receipt_and_installs_nothing(world):
         (package.ref(), world.base_release.package_ref, world.base_release.ref())
     assert a.releases.pointer() == pointer
     assert a.releases.recover("install:rsi-test_r8") is None
+
+
+# ---------------------------------------------------------------------------- the context (stage-4 pre-flight)
+class Replies:
+    """A researcher answering fixed ChatTurns in order (a stop and usage of the test's choosing)."""
+
+    def __init__(self, *turns):
+        self.turns, self.seen = list(turns), []
+
+    def chat(self, system, messages, specs, **_kw):
+        self.seen.append([dict(m) for m in messages])
+        return self.turns.pop(0)
+
+
+def calls(*pairs, usage=None) -> ChatTurn:
+    return ChatTurn("", [ToolCall(f"c{i}", n, a) for i, (n, a) in enumerate(pairs)], "tool_use", usage=usage or {})
+
+
+def test_read_file_counts_toward_the_sessions_reads_and_is_capped_per_read(world, tree):
+    big = "y" * 5000
+    script = Script([write(name="notes.txt", text=big)],
+                    [("read_file", {"path": "candidates/notify/notes.txt"})],
+                    [("read_file", {"path": "candidates/notify/notes.txt", "limit": -3})],
+                    [("read_file", {"path": "candidates/notify/notes.txt"})], [finish(decl())])
+    cs = coding(world, tree, script, session_max_read_bytes=3000, session_max_read_total=3500)
+    cs.start()
+    outs = results(cs, "read_file")
+    assert outs[0]["output"].startswith("y" * 3000) and not outs[0]["is_error"]       # one read: at most 3000
+    assert outs[1]["is_error"] and "positive" in outs[1]["output"]
+    left = 3500 - len(outs[0]["output"].encode("utf-8"))           # the first page and its "follows" line
+    assert not outs[2]["is_error"] and outs[2]["output"].split("\n[...")[0] == "y" * left
+    assert cs.read_bytes >= 3500
+
+
+def test_a_reply_cut_at_the_output_limit_is_named_and_two_in_a_row_end_the_session(world, tree):
+    cut = ChatTurn("", [], "max_tokens", usage={})
+    cs = coding(world, tree, Replies(cut, calls(write()), cut, cut))
+    got = cs.start()
+    users = [m["content"] for m in cs.messages if m.get("role") == "user"][1:]
+    assert users[0].startswith("Your last reply was cut at the output limit") and NUDGE not in users
+    assert got.ended == "two replies in a row were cut at the output limit" and cs.turns == 4
+
+
+def test_past_the_compact_threshold_old_outputs_and_writes_are_elided_once(world, tree):
+    long = "z" * 2000
+    heavy = {"input_tokens": 10, "cache_read_input_tokens": 500, "cache_creation_input_tokens": 0}   # the CLI's
+    turns = [calls(write(name=f"f{i}.txt", text=long)) for i in range(6)]
+    turns += [calls(("list_files", {"path": "inputs"}), usage=heavy), calls(("list_files", {"path": "inputs"})),
+              calls(finish(decl()))]
+    r = Replies(*turns)
+    cs = coding(world, tree, r, session_compact_tokens=400)
+    cs.start()
+    assert cs.compactions == 1
+    writes = [c.args.get("text") for m in cs.messages if m.get("role") == "assistant" for c in m["tool_calls"]
+              if c.name == "write_file"]
+    assert sum(t.startswith("[elided: 2000 characters") for t in writes) == 3 and writes[-3:] == [long] * 3
+    # the call after the compaction extends it: compaction happens once per crossing
+    after, last = r.seen[-2], r.seen[-1]
+    assert last[:len(after)] == after
+
+
+def test_a_session_state_restores_into_a_new_session(world, tree):
+    script = Script([write()], [("read_file", {"path": "candidates/notify/tools/x.py"})])
+    cs = coding(world, tree, script, session_max_turns=2)
+    cs.start()
+    state = json.loads(json.dumps(cs.state()))                  # through JSON, as the object store keeps it
+    other = coding(world, tree, Script([finish(decl())]), session_max_turns=3)
+    other.restore(state)
+    assert (other.turns, other.edits, other.dirs, other.ended) == (2, 1, ["notify"], cs.ended)
+    other.ended = ""
+    got = other.resume()
+    assert [d.dir for d in got.declarations] == ["notify"] and other.turns == 3
+    assert other.messages[:len(cs.messages)] == cs.messages

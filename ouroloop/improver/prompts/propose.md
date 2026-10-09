@@ -31,5 +31,8 @@ repeat of, [{"ref", "how"}]), "scripts" (a tool: {task_id: script} — a Python 
 calls tools["<your tool>"]({...}) to do the task's work, for each claimed task)}. When nothing you can build would
 fix an assigned cause, finish with an empty list: the ledger records that the round has no candidate of yours.
 
-Limits: {max_turns} turns, {max_edits} edits, {max_read} bytes per trajectory read and {max_read_total} in all. The
-package's contract is inputs/package_api.md.
+Limits: {max_turns} turns, {max_edits} edits, {max_read} bytes per read (a trajectory or a file) and {max_read_total}
+in all. Each reply, your thinking included, is capped at {max_tokens} output tokens: a reply over the cap is lost and
+none of its calls run, so change existing files with edit_file, write one large file per reply, and keep a run_check
+or a finish with many scripts small. Old tool outputs are shortened when the session grows long; read again what you
+need. The package's contract is inputs/package_api.md.

@@ -30,6 +30,21 @@ def _open(args, *, freeze_k: bool = True):
     return open_activity(config, freeze_k=freeze_k)
 
 
+def _lock(root: Path):
+    """One process per activity: a paid phase holds <root>/rsi/activity.lock while it runs (two processes would
+    both pay for the same missing attempts). -> the open file, or None when another process holds it."""
+    import fcntl
+    path = Path(root) / "rsi" / "activity.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    f = path.open("a")
+    try:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        return None
+    return f
+
+
 def cmd_bench(args) -> int:
     from ..adapters.automationbench import UpstreamError
     from . import phases
@@ -37,9 +52,15 @@ def cmd_bench(args) -> int:
         print(f"ouroloop bench: --checks-only is a smoke option; --phase {args.phase} would ignore it and run for real",
               file=sys.stderr)
         return 2
-    activity = None
+    activity = lock = None
     try:
         activity = _open(args, freeze_k=not (args.phase == "smoke" and args.checks_only))
+        if args.phase not in ("report", "export") and not (args.phase == "smoke" and args.checks_only):
+            lock = _lock(activity.root)
+            if lock is None:
+                print(f"ouroloop bench: another ouroloop process is running this activity ({activity.root}): let it "
+                      f"finish or stop it with one Ctrl-C, then run again", file=sys.stderr)
+                return 2
         if args.phase == "smoke":
             report = phases.smoke(activity, tasks=args.task, limit=args.limit, checks_only=args.checks_only)
         elif args.phase == "freeze":
@@ -59,12 +80,18 @@ def cmd_bench(args) -> int:
             return 2
         else:
             report = phases.cycle(activity, until=args.until)
+            used = (activity.root_account().remaining().get("used") or {}).get("usd")
+            print(f"cycle      {report['status']}" + (f" at {report['at']}" if report.get("at") else "")
+                  + (f": {report['reason']}" if report.get("reason") else "")
+                  + (f"; the activity has spent ${used:.2f}" if used is not None else ""))
     except (UpstreamError, ConfigError, NotImplementedError, ValueError, RuntimeError) as e:
         print(f"ouroloop bench: {e}", file=sys.stderr)
         return 2
     finally:
         if activity is not None:
             activity.close()            # the memory's sidecar, when a phase started one
+        if lock is not None:
+            lock.close()
     if args.out:
         Path(args.out).write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
         print(f"report: {args.out}")

@@ -619,8 +619,10 @@ SITE_HOOKS = {
                    '{"feedback": "the record is updated; now the rest of the request"}'),
     "after_turn": ('any(r["name"] == "api_fetch" and "opportunity" in r["output"] for r in event["tool_results"])',
                    '{"message": "the record is updated; now the rest of the request"}'),
-    "on_finish": ('"record is updated" in event["reason"] and "posted" not in event["reason"] and '
-                  'event["pushbacks"] == 0 and event["final_text"] == ""', '{"pushback": "Keep working on the task"}'),
+    # the seed's verify pushes back on every attempt's first finish and answers first: the candidate, after it in the
+    # manifest, sees the second, with one pushback before it (as live)
+    "on_finish": ('event["reason"] == "finish" and "record is updated" in event["final_text"] and "posted" not in '
+                  'event["final_text"] and event["pushbacks"] == 1', '{"pushback": "Keep working on the task"}'),
 }
 
 
@@ -664,7 +666,7 @@ def test_v2b_needs_replay_min_triggers_claimed_failing_tasks(ctx, parent):
 
 def test_v2b_a_hook_answering_outside_its_sites_protocol_fails(ctx, parent):
     """It pushes back on both failing tasks, and answers notify_once's finish with a key on_finish does not take."""
-    code = site_hook('"posted" not in event["reason"]', '{"pushback": "Keep working on the task"}').replace(
+    code = site_hook('"posted" not in event["final_text"]', '{"pushback": "Keep working on the task"}').replace(
         "    return None\n", "    return {\"message\": \"done\"}\n")
     got = replay_check(with_hook(parent, code), decl("hook", "on_finish"), ctx)
     assert got["fired"] == list(FAILING)
@@ -688,6 +690,15 @@ def test_site_events_rebuild_a_train_attempt(ctx):
     assert [e["name"] for e in events["before_tool"]][:2] == ["plan_changes", "api_fetch"]
     assert {e["call_id"] for e in events["after_tool"]} <= {e["call_id"] for e in events["before_tool"]}
     assert [e["pushbacks"] for e in events["on_finish"]] == list(range(len(events["on_finish"])))
+    # as the seed passes them: reason "finish" and the finish's own reason as final_text; finish is no tool call
+    finishes = [c for c in ctx.evidence.trace.calls(ctx.failed_sessions[FAILING[0]]) if c.get("role") == "act"
+                for c in (c.get("response") or {}).get("tool_calls") or () if c.get("name") == "finish"]
+    assert [(e["reason"], e["final_text"]) for e in events["on_finish"]] == \
+        [("finish", f["args"]["reason"]) for f in finishes]
+    assert "finish" not in {e["name"] for e in events["before_tool"]}
+    assert all(set(r) == {"call_id", "name", "is_error", "output"} for e in events["after_turn"]
+               for r in e["tool_results"])
+    assert events["on_finish"][0]["acted"] == ["verify"]          # the seed's verify pushed the first one back
 
 
 # ---------------------------------------------------------------------------- V2c

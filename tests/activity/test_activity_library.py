@@ -463,8 +463,8 @@ def test_a_failed_batch_holding_a_lost_task_is_cut_the_same_on_the_next_run(tmp_
     first = phases.stream_order(s.a)[0]
     s.actor.bad = s.a.suite.tasks[first].trigger
     s.research.fail = {"validation": 1}
-    with pytest.raises(Exception, match="research calls failed on the bridge"):
-        phases.library(s.a, out=quiet)
+    paused = phases.library(s.a, out=quiet)                 # a step that cannot be trusted pauses the phase
+    assert paused["status"] == "paused" and "research calls failed on the bridge" in paused["why"]
     led = ledger(s.a)
     assert led["pending"] is not None and led["processed"] == {} and led["lost"] == {}
     s.actor.bad = None

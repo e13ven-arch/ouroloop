@@ -712,8 +712,14 @@ class MeteredProvider:
                 except Exception as e:  # noqa: BLE001 - the call may well have been charged: unknown, not free
                     # Released only when the request is known never to have reached the model; otherwise unknown.
                     unbilled = bool(getattr(e, "unbilled", False))
-                    self.receipts.append(self.account.settle(reservation.id, None,
-                                                             "released" if unbilled else "unknown"))
+                    used = getattr(e, "usage", None)
+                    if not unbilled and isinstance(used, dict):
+                        # it ran and its use was reported (an unusable reply): settled at what it used
+                        self.receipts.append(self.account.settle(reservation.id, self.pricing.measure(used),
+                                                                 "settled"))
+                    else:
+                        self.receipts.append(self.account.settle(reservation.id, None,
+                                                                 "released" if unbilled else "unknown"))
                     last = e
                     if unbilled and _retryable(e):
                         with self._lock:

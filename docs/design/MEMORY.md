@@ -25,7 +25,7 @@
 | `memory/snapshot.py` | 快照写进包的 `memory/snapshot.jsonl`，作为候选交给 improver 的阶梯 |
 | `memory/promote.py` | 升级：条目 → 技能候选；条目 → 原因簇输入；`mark_superseded` |
 | `memory/importing.py` | 跨业务线导入（v6 原样） |
-| `runtime/trace.py` | `TraceStore`：transcript 的稳定引用、按 actor 所见重建轨迹、FTS 索引，只读 train（v6 `trace.py`，行格式改成阶段 1 的） |
+| `runtime/trace.py` | `TraceStore`：transcript 的稳定引用、按 actor 所见重建轨迹、FTS 索引，只读 train（v6 `trace.py`，行格式改成阶段 1 的）；一次没有结果就中断、在同一个 id 下重跑的尝试，读它最后一次运行（最后一个 `task` 行起），不拼接两次 |
 
 ## 3 Settings（K 的 `memory` 节）
 
@@ -177,7 +177,7 @@ def import_entries(snapshot_text, *, source_release_ref, source_line, target_lin
 - b(t)：W_base 在这道题上 train 读数（基线）的有效尝试的平均成功率，不算流自己的尝试（run 的 role 为 `library`；K 开 memory 时流的包就是 W_base 的包）；`stable_pass` = b == 1；没有读数的题不进 D。W_base 一条 train 读数都没有时，阶段在付费之前拒绝（先跑基线）。
 - 每批 `stream_batch` 道题：首遇（arm `first`）并发跑；失败且 `retry` 开着的再跑一次（arm `retry`，开场块后接失败断言的类型与参数，train 的评分行）；然后 `process_batch`，基线那次尝试的轨迹一起总结；首遇按规则补跑后仍无效的题在这批写入之后才记作 lost（不总结、不记功），这样一批写入失败时，下次切出的还是同一批。没有一次模型调用的有效尝试（没有轨迹）照样提交，只是不进总结。
 - 钱：本次运行里预算拒掉首遇或重试，阶段停下（`budget_exhausted`），这批不写入；下次运行时，上次被拒的尝试按下一段重试编号重跑并记 supersedes，已在记录里的不重付。
-- sidecar 出故障：阶段暂停（`paused`），不把题记成 lost（记 lost 之前先查 sidecar 是否还在答）；下次运行接着跑。
+- sidecar 出故障，或一批的研究调用在桥上失败（`MemoryStepError`，这批什么都不写）：阶段暂停（`paused`），不把题记成 lost（记 lost 之前先查 sidecar 是否还在答）；下次运行接着跑。总结流不设宿主侧的读超时：它串着若干研究调用，每个都在桥的等待上限与提供方的超时之内，sidecar 随宿主退出。
 - 结束：`finish()` → 读数、快照、`snapshot_abort`。D ≤ `abort_d` 或库空就不付 gate；否则 `snapshot_candidate` 产出只改快照与 manifest memory 节的候选包，入对象库、记事件 `library_snapshot`，交 improver 的阶梯从 V3 起（阶段 3；V0 的形状与字面量在写入时已过）。
 - 续跑：已记录的尝试按 attempt id 复用、不重付；台账是真相，`resume()` 对齐 store；挂起的 batch 不重新总结。
 - 装入后 dev/test 只见快照。
@@ -191,7 +191,7 @@ def import_entries(snapshot_text, *, source_release_ref, source_line, target_lin
 每轮改进器开始前 `promotable(entries, settings, mechanizable)`：
 - `fixes ≥ promote_fixes`、来源题 ≥ `promote_sources`、`mechanizable(entry)` 为假、正文是多步程序（≥ 2 个编号或列表行，或 ≥ 2 句）→ `skill_candidate`，作为固定代码候选进本轮阶梯（V0 字面量、V2c 可达、V3 起付费）；
 - 计数满足且 `mechanizable(entry)` 为真（诊断词表里的 cause 能对上；阶段 2 里没有词表，恒为假）→ `cause_input`，进本轮的簇；
-- 升级候选装入后 `mark_superseded`：条目 `status = "superseded"`，live store 退役它，不再展示。
+- 升级候选装入后（改进器的记功一步调 `MemoryService.supersede`）`mark_superseded`：条目 `status = "superseded"`，live store 退役它，live 库文件里没有它，不再展示。
 
 阶段 2 交付这三个函数与测试；接进轮次是阶段 3。
 

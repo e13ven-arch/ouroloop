@@ -139,6 +139,8 @@ class TestLoading:
         pairs = ab.near_duplicates(suite, 0.0)
         assert pairs and pairs[0][2] < 1.0        # the two tasks overlap on hubspot, and are not merged
         assert ab.families(suite)[0][LEAD] == LEAD
+        # limited to some tasks (a frozen split's train and dev), the others are not read
+        assert ab.near_duplicates(suite, 0.0, ids=[LEAD]) == []
 
 
 class TestStrata:

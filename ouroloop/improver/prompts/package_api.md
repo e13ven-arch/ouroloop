@@ -41,7 +41,12 @@ A hook's ctx has no model and its tool is read-only: a hook looks and answers, i
 
 {sites}
 
-None (or {{}}) is no action.
+None (or {}) is no action.
+
+A before_model hook that changes the messages must keep every earlier message of the call where it was and as it was:
+add a note at the end of the first call that needs it and keep it at that place in later calls. The provider caches
+the beginning of each call; a call whose earlier messages differ from the previous call's is paid in full, several
+times the cost of an attempt.
 
 ## A toolcheck script (V2a, never part of the package)
 
