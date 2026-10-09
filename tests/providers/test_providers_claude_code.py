@@ -485,3 +485,33 @@ def test_an_answer_that_is_not_a_turn_is_booked_at_what_it_used_not_at_the_bound
     assert metered.chat("S", [{"role": "user", "content": "x"}], [spec]).text == "done"
     assert [r.status for r in metered.receipts] == ["settled", "settled"]
     assert metered.receipts[0].measured == pricing.measure(dict(USAGE))
+
+
+# ---------------------------------------------------------------------------- stage 4: a call with no system
+def test_a_call_with_no_system_sends_a_plain_one_not_a_blank(cli, provider):
+    """ReMe's calls are a single user message: the API refuses a system text that is only whitespace (400), so a call
+    without one sends NO_SYSTEM, never " " (finance-v1's library lost its first step to this)."""
+    from ouroloop.providers.claude_code import NO_SYSTEM
+    for system in ("", "   ", None):
+        cli.reply(ok("fine"))
+        assert provider.chat(system, [{"role": "user", "content": "Summarise this."}], []).text == "fine"
+        assert arg(cli.calls()[-1], "--system-prompt") == NO_SYSTEM
+    cli.reply(ok("fine"))
+    provider.chat("SYSTEM", [{"role": "user", "content": "x"}], [])
+    assert arg(cli.calls()[-1], "--system-prompt") == "SYSTEM"
+
+
+def test_a_request_the_api_refuses_as_malformed_is_released_not_held_at_the_bound(cli, provider, tmp_path,
+                                                                                  monkeypatch):
+    """A 400 (a blank text block, a prompt too long) is refused before any model runs: the meter releases its
+    reservation and does not retry the same request."""
+    from ouroloop.evaluate.budget import Budgets, MeteredProvider, Pricing
+    account = Budgets(tmp_path / "book").account("arm", {"model_calls": 10})
+    metered = MeteredProvider(provider, account, Pricing(), operation="arm", max_retries=2)
+    for text in ("API Error: 400 system: text content blocks must contain non-whitespace text",
+                 "API Error: 400 Prompt is too long"):
+        cli.reply(err(text))
+        with pytest.raises(ProviderError):
+            metered.chat("S", [{"role": "user", "content": "x"}], ())
+        assert metered.receipts[-1].status == "released"
+    assert len(cli.calls()) == 2 and account.remaining()["used"].get("model_calls", 0) == 0

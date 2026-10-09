@@ -76,6 +76,13 @@ tools, list them in tool_calls; they run in order, and you see their results in 
 without calling a tool, leave tool_calls empty and put your message in text."""
 
 
+# The system prompt of a call that brings none (ReMe's calls are a single user message): the API refuses a system text
+# block that is only whitespace (400), and leaving the flag out would give the CLI's own long system prompt.
+NO_SYSTEM = "Answer the request in the user's message."
+# The API refused the request as malformed before any model ran (a blank text block, a prompt too long): not billed.
+_INVALID = re.compile(r"api error: 400\b|invalid_request_error|prompt is too long")
+
+
 def child_env(max_tokens: int | None = None) -> dict:
     env = {k: v for k, v in os.environ.items() if not k.startswith(_INHERITED)}
     env.update(_SET)
@@ -300,7 +307,7 @@ class ClaudeCodeProvider:
     def _command(self, system: str, schema: dict | None, effort: str | None = None) -> list[str]:
         cmd = [self.binary, "-p", "--model", self.model, "--tools", "", "--safe-mode", "--setting-sources", "",
                "--strict-mcp-config", "--no-session-persistence", "--disable-slash-commands",
-               "--system-prompt", system or " "]
+               "--system-prompt", system if (system or "").strip() else NO_SYSTEM]
         if effort or self.effort:
             cmd += ["--effort", str(effort or self.effort)]
         if schema is None:
@@ -391,6 +398,8 @@ class ClaudeCodeProvider:
             return ProviderError(f"claude CLI: {text[:300]}", retryable=True, unbilled=True)
         if any(m in lowered for m in _ACCOUNT) or status in (401, 403):
             return ProviderAccountError(f"claude CLI: {text[:300]}")
+        if status == 400 or _INVALID.search(lowered):
+            return ProviderError(f"claude CLI: {text[:300]}", unbilled=True)
         if status in (429, 529) or _UNBILLED.search(lowered):
             return ProviderError(f"claude CLI: {text[:300]}", retryable=True, unbilled=True)
         if (isinstance(status, int) and status >= 500) or _TRANSIENT.search(lowered):
