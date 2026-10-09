@@ -8,6 +8,18 @@
 
 ---
 
+## 2026-10-09 阶段 4：修复 ReMe 调用的空 system，memory 探针，开 finance-v2
+
+- 用户的决定（2026-10-09）："按 A 走，先修代码"：放弃 finance-v1，修代码后开新活动 finance-v2，重付基线。用户问 code_version 变了有什么影响、RSI 不是一直在变吗：RSI 改的是 W（每轮装入）与 R 的策略；K（平台代码、preset、划分、阈值、预算）在一个活动里不变，是比较读数的量尺；这次的修复其实不碰测量路径，但 code_version 对 `ouroloop/` 的任何改动都敏感，更窄的“K 修订”规则记为以后的设计项，这次不做。
+- finance-v1 的代码打本地 tag `finance-v1`（`d82ba92`，code_version `47a0c958db380d8e`）；它的记录原样保留，新代码打不开它（`a changed K is a new activity`，探针脚本第一次运行时撞上了这条保护）。
+- 修复（`647fea9`）：claude_code 提供方给没有 system 的调用传一句中性的 system（`NO_SYSTEM`），不传空白；API 以 400 拒绝的畸形请求（空白文本块、提示过长）释放预留、不重试，不再按上界记 unknown。测试各一；全量 1,491 passed。
+- memory 探针（用户批准，`finance-v1-probe3.local.toml`，根 $40）：取 finance-v1 library 首批里成败混合的一道 train 题（`finance.tax_prep_summary`，三条轨迹：基线失败、首遇失败、重试成功，只读 finance-v1 的记录），经 sidecar、桥与真实 CLI 让 ReMe 总结一遍：15 次桥调用全部 200（success 1、failure 2、comparative 1、validation 11），全部结算；验证通过 11 条、去重后 6 条，都是程序性的通用经验（表格读不全时扩大范围、邮件里要求逐字保留的数值照抄等）。花费 $1.48。
+- 读数：一道三条轨迹的题，ReMe 的调用约 $1.48，主要是逐条验证；只有基线与首遇两条轨迹的题更少。library 的估算改为：约 75 次尝试 × $0.515 ≈ $39，加 ReMe 约 $50～75，合计约 $90～115。
+- finance-v2：配置与 finance-v1 相同（根 $700、final 份额 $220、并发 8、memory 开、3 轮），只换工作区与 scope。
+- 花费：探针实际约 $1.48；finance-v1 实际结算 $54.93（另有 $135.32 记在它的根上，是被 API 拒绝、没有计费的 12 次调用）。
+
+---
+
 ## 2026-10-09 阶段 4：finance-v1 的 library 在第一步停下（ReMe 的调用被 API 以 400 拒绝）
 
 - 用户的批准（2026-10-09）："开始跑 library"。启动检查通过（memory venv、模型、K 的 backend 钉表），在用户的终端面板里跑 `--phase cycle --until library`。
