@@ -62,11 +62,11 @@ def smoke(activity, *, tasks=None, limit=None, checks_only=False, out) -> dict  
 def freeze(activity, *, out) -> dict                                    # 冻结 gate 计划、日程、预算、final 计划；打印 [rsi] 行
 def baseline(activity, *, out) -> dict                                  # W0 在 train 与 dev（control_readings 次）
 def library(activity, *, out) -> dict                                   # memory 的流与快照（MEMORY §7）：首遇、重试、写入、读数、快照候选
-def round_(activity, index: int, *, out) -> RoundResult                 # improver.run_round；每轮后停（阶段 3 之前抛 NotImplementedError）
+def round_(activity, index: int, *, out) -> RoundResult                 # improver.run_round（IMPROVER §3）；每轮后停
 def evaluate(activity, *, out) -> dict                                  # final（EVALUATE §6）
 def report(activity, *, out) -> dict
 def export(activity, release_ref, to: Path, *, out) -> AppManifest
-def cycle(activity, *, until: str | None, out) -> dict                  # baseline → library → round 0..N；`--until baseline | library | round-K`
+def cycle(activity, *, until: str | None, out) -> dict                  # baseline → library → round 0..N；`--until baseline | library | round-K`；连续 patience 轮没有装入就停
 
 # checks.py
 def startup_checks(activity, *, phase: str, needs_model: bool = True, needs_worker: bool | None = None) -> list[str]
