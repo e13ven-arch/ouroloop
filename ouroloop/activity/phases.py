@@ -319,6 +319,7 @@ def library(activity, *, out: Callable[[str], None] = print) -> dict:
     banned = forbidden(literal_index(rows))
     account = activity.account("library")
     retries = int(activity.k["gate"]["max_infrastructure_retries"])
+    earlier = {r.attempt_id for r in activity.results.all()}       # on record before this run of the phase
 
     def attempt(row) -> dict | None:
         if row is None:
@@ -329,11 +330,25 @@ def library(activity, *, out: Callable[[str], None] = print) -> dict:
                 "final_text": said["text"], "trace_refs": [trace.ref(row.attempt_id, 1)]}
 
     def arm_of(name: str, memory, pairs) -> list[TaskResult]:
-        def run(arm, chosen, retry=0, supersedes=None):
-            return run_arm(activity, release=base, split="train", candidate="library", role="library", pairs=chosen,
-                           account=account, arm=arm, retry=retry, supersedes=supersedes, package=stream_package,
-                           memory=memory, notes=f"memory stream: {name}")
-        return latest(refill_attempts(run(name, pairs), run, name, retries))
+        def run_from(offset: int):
+            def run(arm, chosen, retry=0, supersedes=None):
+                return run_arm(activity, release=base, split="train", candidate="library", role="library",
+                               pairs=chosen, account=account, arm=arm, retry=offset + retry, supersedes=supersedes,
+                               package=stream_package, memory=memory, notes=f"memory stream: {name}")
+            return run
+        rows = latest(refill_attempts(run_from(0)(name, pairs), run_from(0), name, retries))
+        # An attempt the budget refused on an earlier run of the phase is no evidence, and the stream has no
+        # comparison for the refusal to end (EVALUATE §5): it runs again, superseding it, at the next block of retry
+        # indexes. A block on record is reused, so a later run pays for nothing twice.
+        offset = 0
+        while True:
+            refused = {(r.task_id, r.attempt): r.attempt_id for r in rows
+                       if r.failure_class == "budget_exhausted" and r.attempt_id in earlier}
+            if not refused:
+                return rows
+            offset += retries + 1
+            run = run_from(offset)
+            rows = latest(rows + refill_attempts(run(name, sorted(refused), 0, refused), run, name, retries))
 
     service = activity.memory()
     service.start(research=activity.research_provider("memory", retries=False), concurrency=activity.concurrency)
