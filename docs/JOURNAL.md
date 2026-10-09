@@ -8,6 +8,19 @@
 
 ---
 
+## 2026-10-09 阶段 4：探针（真实 CLI，两个临时工作区，K 未冻结）
+
+- 用户的批准（2026-10-09）："先跑探针"。在临时工作区跑，不碰 finance-v1：`finance-v1-probe.local.toml`（根 $25）与 `finance-v1-probe2.local.toml`（根 $40），都是 git 忽略的本地文件，工作区 `examples/automationbench/workspace-finance-v1-probe{,2}/`。
+- 第一次 dev 尝试（`finance.invoice_email_extract`，W0 = stirrup 种子）：前 10 次 act 调用正常；第 11 次（verify 退回之后）连续两次 `API Error: Connection dropped (ECONNRESET)`，相隔约 3 s 重试也断；两次各按上界 $11.28 记 unknown，占满 $25 的根，第三次重试被预算拒，尝试记 infrastructure、invalid。实际结算 $0.47。
+- 第二次（新工作区，同一道题）：12 次 act 调用，完成、有效，部分得分 0.5，$0.59。缓存：每次调用的缓存读取从 3,852 增到 30,507 token，写入只有增量（0～5,467），anchor 开始改消息之后和 verify 退回之后都一样——日期锚的修复成立（修之前按 v4 的读数每次尝试约 ×3.5）。
+- R 的两种调用形状（`scratchpad/probe_r.py`，研究模型经计量 provider）：诊断返回合法 JSON（missed_action，$0.009）；会话第 1 回合按 TOOLS 的结构化输出调 `list_files`，第 2 回合调 `finish([])` 且读到 4,268 token 的缓存；三次共 $0.054。
+- 因此改了（K 冻结前）：计量器重试前等 5 s、20 s（原来 1 s、2 s，一次几秒的断连就丢掉整次尝试，并按上界占住两个 $11.28）；测试里由 `tests/conftest.py` 把等待设为 0，另有一个测试钉住 5 s、20 s。
+- 读数（单次，只作参考）：dev 尝试 $0.59，比估算用的 $0.50～0.55 高约 10～20%。按 $0.59 重算：基线约 $60、library 约 $82、一轮 $55～105、final 约 $89；final 在并发 8 时需 $89 + 10 × $11.28 ≈ $201。所以预算建议改为根 $700、final 份额 $220（round_share 仍 0.25，每轮 $175）。
+- 花费：探针实际结算约 $1.12（$0.47 + $0.59 + $0.054）；另有两次断连按上界记在第一个探针工作区（$22.55），那是那个工作区的余量，不是 finance-v1 的钱。没读 `.env`，没读任何 test 题的内容。
+- commit：本条所在的提交。
+
+---
+
 ## 2026-10-09 阶段 4 开工：付费前预检（`s4/finance`，K 未冻结）
 
 - 用户的指示（2026-10-09）："合入 m1-automationbench，然后开始阶段 4"。`s3/improver` 本地合入 `m1-automationbench`（`c22f698`），阶段 4 在 `s4/finance` 上。

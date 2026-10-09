@@ -428,3 +428,27 @@ def test_a_reservation_refused_for_headroom_waits_for_a_call_in_flight_rather_th
         first.result(5)
         second.result(5)                           # the first settled at $0.0045, so the second's bound now fits
     assert [r.status for r in provider.receipts] == ["settled", "settled"]
+
+
+def test_a_failed_call_is_retried_after_the_meters_wait(tmp_path, monkeypatch):
+    """A dropped connection is retried after RETRY_SECONDS (5 s, then 20 s), not at once."""
+    import time
+    from ouroloop.evaluate import budget as b
+    from ouroloop.providers import ProviderError
+    from ouroloop.runtime.chat import ChatTurn
+    monkeypatch.setattr(b, "RETRY_SECONDS", (5.0, 20.0))
+    waits = []
+    monkeypatch.setattr(time, "sleep", waits.append)
+
+    class Flaky:
+        retries, calls = 2, 0
+
+        def chat(self, system, messages, specs, **kw):
+            self.calls += 1
+            if self.calls < 3:
+                raise ProviderError("claude CLI: API Error: Connection dropped (ECONNRESET)", retryable=True)
+            return ChatTurn("ok", [], "end", usage={"input_tokens": 1, "output_tokens": 1})
+    account = b.Budgets(tmp_path / "book").account("arm", {"model_calls": 10})
+    metered = b.MeteredProvider(Flaky(), account, b.Pricing(), operation="arm", max_retries=2)
+    assert metered.chat("S", [{"role": "user", "content": "x"}], ()).text == "ok"
+    assert waits == [5.0, 20.0]

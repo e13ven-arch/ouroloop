@@ -43,7 +43,7 @@
 | 测试 | 默认套件 1,403 passed、86 deselected；全量（Docker + 真 memory sidecar）1,488 passed、1 deselected（JOURNAL 2026-10-09 阶段 4 开工一条）。memory 的 venv 在本机 `~/.cache/ouroloop/memory-venv/19f9b139c36d1d05` |
 | test 读过几次 | finance 1、support 0、sales 0、hr 0、marketing 3；operations 从未读过 |
 | 本机记录 | `examples/automationbench/workspace-*/`、`examples/workspace-*/`、`ws/`、`*.local.toml`，git 忽略，不删不改 |
-| 下一步 | 付费前预检已完成并修复（JOURNAL 2026-10-09 阶段 4 开工）；等用户批准 §3 第 1、2 项后：探针 → freeze → 基线 |
+| 下一步 | 付费前预检与探针已完成（JOURNAL 2026-10-09 两条）；等用户批准 §3 第 1 项（预算）后 freeze，再批准基线 |
 
 ## 1 规则
 
@@ -93,8 +93,8 @@
 
 | # | 事项 | 建议 |
 |---|---|---|
-| 1 | finance-v1 的预算（K，freeze 前定）：根 $650、final 份额 $200（现为 $450 / $160） | 批准；预计花费中位约 $440，根是上限 |
-| 2 | 探针：另一个工作区（`workspace-finance-v1-probe`，根 $25）跑一次 dev 尝试与 R 的两种调用形状，约 $3 | 批准后再 freeze；之后基线约 $53 单独批准 |
+| 1 | finance-v1 的预算（K，freeze 前定）：根 $700、final 份额 $220（现为 $450 / $160；探针测得 dev 尝试 $0.59） | 批准；预计花费中位约 $440～530，根是上限 |
+| 2 | freeze（$0）之后的基线，约 $60（100 次尝试） | 预算定了、freeze 之后单独批准 |
 
 ## 4 文档地图
 

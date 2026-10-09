@@ -23,3 +23,10 @@ def fake_upstream():
         sys.path.remove(root)
         for name in [m for m in sys.modules if m == "automationbench" or m.startswith("automationbench.")]:
             del sys.modules[name]
+
+
+@pytest.fixture(autouse=True)
+def no_retry_wait(monkeypatch):
+    """The meter waits RETRY_SECONDS before retrying a failed call; the tests' providers fail on purpose and at once."""
+    from ouroloop.evaluate import budget
+    monkeypatch.setattr(budget, "RETRY_SECONDS", (0.0,))

@@ -620,6 +620,11 @@ def _retryable(e: Exception) -> bool:
                                                                                   "APITimeoutError")
 
 
+# Before a retry of a failed call: long enough to ride out a dropped connection (a probe of the finance activity lost an
+# attempt to two `ECONNRESET`s three seconds apart, each kept at its bound), short beside a call.
+RETRY_SECONDS = (5.0, 20.0)
+
+
 class MeteredProvider:
     """A chat provider whose every call is reserved before it happens and settled after.
 
@@ -728,7 +733,7 @@ class MeteredProvider:
                         break                  # the same request would fail the same way: do not pay for it again
                     if attempt < self.max_retries:
                         import time
-                        time.sleep(min(30.0, 2.0 ** attempt))
+                        time.sleep(RETRY_SECONDS[min(attempt, len(RETRY_SECONDS) - 1)])
                     continue
                 self.receipts.append(self.account.settle(reservation.id,
                                                          self.pricing.measure(turn.usage or {}), "settled"))
