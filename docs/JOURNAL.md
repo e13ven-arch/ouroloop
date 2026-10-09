@@ -8,6 +8,37 @@
 
 ---
 
+## 2026-10-09 阶段 3 完成：改进器（`s3/improver`）
+
+- 用户的指示（2026-10-09）："合入 m1-automationbench，然后开始阶段 3"。`s2/memory` 本地合入 `m1-automationbench`（`c92ddcc`），从那里开分支 `s3/improver`。
+- 先文档后代码（`fea5813`）：IMPROVER.md 按阶段 1、2 的代码定稿；CONTRACTS 的 `rounds/r<i>/`、`rounds/notes.jsonl`、`ledger/`；ACTIVITY 的 round 与 cycle。阶段 1 留下的三项先做（`82484a9`）：种子把 K 的 effort 传给模型；宿主截断回合后种子补一次 act 调用记 finished；速率限制落 `rate_limited` 事件。
+- 代码（`749107b`，`ouroloop/improver/` 2,871 行）：Settings（K 的 `improver` 节、preset、收紧规则）；证据（只读 train，dev 只有失败类型直方图）；诊断（固定词表，两例才增项，NoteCache）；分层（估值上界、探索名额、代码保证、`no_code_candidate` 后代码名额加倍、L5 只给循环类簇、L6 停滞时记不可用）；编码会话（worker 里的文件树，`read_trajectory`、`search_trace`、`run_check`、`run_tests`、`finish`，上限都在 K）；阶梯 V0 静态、V1 包测试、V2a toolcheck、V2b hook 回放、V2c 可达；V3 train 筛选按足迹条件记功；V4 冻结模板的配对 gate、池化对照、CAS 装入 `install:<round_id>`；档案、记功与反膨胀、台账（train 投影、记分板）、剧本（只留引得上台账行的教训）、策略导出导入；`round.py` 的可续跑步骤与本轮账户 `<scope>:round-<i>`（`round_share` × 根）及六个子账户。`phases.round_` 与 `cycle`（耐心规则）接上。
+- 先在假上游上手跑一轮（脚本化 R `tests/improver/scripted_r.py`，忘发通知的 actor）找到的问题，与代码一起提交：
+  - **字面量索引一直是空的**（阶段 1 起）：`literal_index` 只读断言的 `params`，而评分器的断言是扁平 dict，种子扫描、library 的禁用集和 V0 都没拿到任何断言值。修后 finance 的 train 有 1,105 个单题值，种子 0 命中（`smoke --checks-only`，$0；它写下了 `workspace-finance-v1/bench/finance/splits.json`，哈希 `4fd91eaf9fb8daf5`，与配置钉的一致）。
+  - 种子的适配器测试驱动 manifest 里的所有 hook，候选加任何 on_finish hook 都让它们失败（V1 拒掉所有 hook 候选）；改为按名字驱动 write guard 的四个 hook。
+  - round 之前要有冻结的 gate 计划：启动检查在付费前拒绝（原来要到 gate 才报错，筛选已付）；开了 memory 的 round 查 sidecar。
+  - 手跑结果：tool 模式 V0、V1、V2a 过，V3 两道通知题条件修复（净翻转 2），V4 accepted（gain 0.33）并装入，记功、剧本；hook 模式（导入一个 tool 已试过的估值）V2b 过并装入；none 模式记 `no_code_candidate`、第二轮代码名额 ×2、两轮无装入按耐心停；memory 开着时快照作为固定候选过 V0、V3 修 1 道并装入。三种模式合计约 20 s。
+- 测试：五个 agent 各写一块（worktree 起初切在旧提交 `94e799b` 上，它们停下报告；改为在 `s3/improver` 上重建后重做），cherry-pick 进来，我修 bug、去掉对应的 strict xfail；再一个只读 agent 在导出副本里做独立评审。
+  - 新测试 257 个：诊断与分层 41、阶梯 124、记录（证据、台账、档案、记功、策略）29、会话与筛选 34、一轮端到端与钱 22、续跑与钱 7。全部在默认套件里，improver 部分约 2 分钟。
+  - 变异检查（各在 `/tmp` 下自己的副本，worktree 前后相同）：诊断与分层 53/53、记录 42/42、会话与筛选 46/47（存活的一个在这个夹具上等价：通过题只有 3 道、样本 6 道，按轮抽样无从区分）、阶梯 59/63（4 个存活：两个检查互为冗余、两个在假上游上等价）、一轮 32/32；评审修复的抽查 6/6。共 238/243。
+  - 测试找出的缺陷（各有回归测试）：诊断的说明存进对象库时丢了（`note` 是 Record 的易变字段）、NoteCache 的键没有 attempt、L5 名额可被回落与探索突破；档案没有筛选结果与收据、删除候选把组件出现之前的轮次算成零功；负的读取上限绕过两个读取上限、修订能加声明、gate 核价漏了对照缺口；V0 把候选自己的 `execute()` 当成 `exec`、别名的 `os.system` 看不出来、agent 的 roles 换序或 memory 的 null 快照被当成改动；verified 一步中断后快照候选丢失（本轮自己的 declared 行被当成已做）。
+  - 评审报 12 条，全部处理（`45fb2c6`）：两条高的——一轮的 train 读数或 gate 的对照补读被预算拒掉后，之后同一个 W 上的每一轮都直接停在 budget、每次 gate 都 inconclusive 还照付（run 名不带轮次，被拒的记录被原样交回）；改为每轮、每次 gate 一个 run。中的：续跑的筛选把已付的尝试重新核价、可能因此停下；装入之后、gated 保存之前被杀的一轮永远续不上；会话之后断了要重付整段会话。低的：装入后估值用了无条件修复；V2a 接受非声称题的脚本；R 的目录可与固定候选同名；升级技能的 `predicted_affected` 是 memory 的题哈希；升级装入后没有 supersede 条目（新增 `MemoryService.supersede`）；条目分类不缓存；`removal_proposed` 从不写；提示里提到不存在的 `inputs/archive.json`。
+- 阶段 3 的停下来分析（PLAN §2）：
+  - toolcheck 的通过只在脚本调用了声明的工具、且是声称的当前失败的 train 题上：直接改世界不经工具的脚本即使世界通过也判失败；别的题的脚本不算。
+  - 条件与无条件记功：假上游上真 tool 候选的两道修复都在工具被调用的题上（条件 2、无条件 0）；同一次运行若候选声明的是一个从不出手的 hook，同样两道翻转全归无条件（条件 0），不够资格进 gate；去掉条件它会带着 2 个净翻转去付 gate 的钱。真实差距要到阶段 4 量。
+- 证据：
+  - 默认套件 1,385 passed、86 deselected（评审修复后）；全量（Docker + 真 memory sidecar，`-m "not live"`）在评审之前 1,460 passed、1 deselected；评审修复后（`75e6623`）1,471 passed、1 deselected（live 一个），0 失败。
+  - 行数（只作读数）：`improver/` 2,871 行，提示 109 行；`ouroloop/` 不含种子 24,553 行；improver 测试 3,999 行。
+- 已知、没修：
+  - 一轮停在 `budget` 就不再续（它的份额已用完），`cycle` 再跑从下一轮接着；library 阶段则是下次接着。设计里写明了这一条（IMPROVER §3）。
+  - 核价用每次尝试的均值，预算按单次调用的上界预留，核价通过后预算仍可能拒掉一次尝试，这一轮停在 `budget`。
+  - 已装入的 W 里，升级成技能的条目在它的快照里仍在，直到下一个快照候选；supersede 只管流的台账与 live 库。
+  - 脚本化 R 与假上游只验证了机制；R 在真模型下会不会写出过 V2 的代码候选、V3 的条件修复有多少，是阶段 4 的问题。
+- 没付费，没调真模型（订阅也没有），没读 `.env`，没读任何 test 题的内容。
+- commit：`fea5813`、`82484a9`、`749107b`、`21aa118`、`05e3527`、五个测试文件的提交与它们之后的修复（`8a75d82`、`3ac36b5`、`66e0c73`、`3725886`）、`8613d35`（README）、`45fb2c6`、`75e6623`，以及本条所在的提交。
+
+---
+
 ## 2026-10-09 阶段 2 完成：memory 组件（`s2/memory`）
 
 - 用户的指示（2026-10-09）："s1/harness-platform 应该已经合入 m1-automationbench了，测试的分支清理掉，然后继续开发"。阶段 1 已由用户在 `46a4b90` 合入；阶段 1 测试用的六个 worktree 分支与四个停在 9 月旧提交的空 workflow 分支（都已合入、worktree 干净）删掉；阶段 2 从 `m1-automationbench`（`c133043`）开分支 `s2/memory`。
