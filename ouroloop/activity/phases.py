@@ -53,14 +53,21 @@ def run_arm(activity, *, release: Release, split: str, candidate: str, role: str
     want = [(t, i, attempt_id(run.hash(), t, i, arm, retry)) for t, i in pairs]
     todo = [(t, i) for t, i, a in want if a not in recorded]
     if todo:
-        make = make_agent_factory(provider=activity.actor_provider(account, allocation=allocation), package=package,
-                                  core=activity.k, worker=activity.worker(), root=activity.root,
-                                  pricing=activity.pricing(), release_ref=release.ref(), core_ref=activity.core_ref,
-                                  arm=arm, memory=memory if memory is not None else activity.memory_for(package))
-        for r in run_tasks(activity.suite, [], make, run=run, splits=activity.splits, results=activity.results,
-                           order=todo, arm=arm, plan_ref=plan_ref, release_ref=release.ref(), retry_index=retry,
-                           supersedes=supersedes, concurrency=activity.concurrency):
-            recorded[r.attempt_id] = r
+        provider = activity.actor_provider(account, allocation=allocation)
+        make = make_agent_factory(provider=provider, package=package, core=activity.k, worker=activity.worker(),
+                                  root=activity.root, pricing=activity.pricing(), release_ref=release.ref(),
+                                  core_ref=activity.core_ref, arm=arm,
+                                  memory=memory if memory is not None else activity.memory_for(package))
+        try:
+            for r in run_tasks(activity.suite, [], make, run=run, splits=activity.splits, results=activity.results,
+                               order=todo, arm=arm, plan_ref=plan_ref, release_ref=release.ref(), retry_index=retry,
+                               supersedes=supersedes, concurrency=activity.concurrency):
+                recorded[r.attempt_id] = r
+        finally:
+            # the provider's rate-limit refusals the meter absorbed (released, never charged): on record per run
+            if getattr(provider, "rate_limited", 0):
+                activity.events.append("rate_limited", run=run.hash(), candidate=candidate, split=split,
+                                       count=int(provider.rate_limited))
     return [recorded[a] for _t, _i, a in want if a in recorded]
 
 
