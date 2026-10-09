@@ -7,7 +7,8 @@ platform's three kinds — money, leakage, correctness. A failing check names it
     leakage      the split is the frozen one (K's and the pinned hash) and upstream has not drifted; no test task was
                  read before the final; the memory stream runs only on a line K does not hold out
     correctness  the worker image is the one K pinned and runs this host's worker_runner.py; the egress image under a
-                 proxy K; the seed K builds is the seed release's; the code is the code K froze; where memory is read
+                 proxy K; the seed K builds is the seed release's; the code is the code K froze; a round has the frozen
+                 gate plan; where memory is read
                  or written, the sidecar's venv is the lock, the model is the pinned one and K's backend pins are this
                  checkout's sidecar files
 """
@@ -87,8 +88,8 @@ def leakage_problems(activity, *, phase: str) -> list[str]:
 def uses_memory(activity, phase: str) -> bool:
     """Whether this phase needs the memory's sidecar: the library phase, or a package it runs that holds a snapshot
     (a package with memory on and no snapshot reads an empty library, which starts nothing)."""
-    if phase == "library":
-        return True
+    if phase == "library" or (phase == "round" and (activity.k.get("memory") or {}).get("enabled")):
+        return True                     # a round screens the library's snapshot and reads the stream's entries
     releases = [activity.active_release()] if activity.releases.active_ref() else []
     plan_ref = (activity.config.get("rsi") or {}).get("final_plan_ref")
     if phase == "evaluate" and plan_ref and activity.objects.has(plan_ref):
@@ -153,6 +154,9 @@ def correctness_problems(activity, *, phase: str, needs_worker: bool) -> list[st
                                                                 capture_output=True).returncode != 0:
                 problems.append(f"K's network is the egress proxy and the image {EGRESS_IMAGE} is not built "
                                 f"(docker build --provenance=false -f docker/egress.Dockerfile -t {EGRESS_IMAGE} .)")
+    if phase == "round" and not list(activity.events.read("gate_template")):
+        problems.append("no frozen gate plan: run `ouroloop freeze` before a round (the gate's template is fixed "
+                        "before any candidate is seen)")
     if phase in PAID and uses_memory(activity, phase):
         problems += memory_problems(activity)
     checks = ab.contract_check(activity.suite, activity.splits.ids("dev")[:1])

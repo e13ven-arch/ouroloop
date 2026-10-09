@@ -7,7 +7,7 @@ another package: the attempt and the gate in evaluate/, the run in runtime/, the
               sealed final plan; prints the [rsi] lines the config then names
     baseline  W0 on every train task and on dev `control_readings` times (the pooled control's first readings)
     library   the memory's train stream and its snapshot as a candidate (docs/design/MEMORY.md §7)
-    round     one round of the improver (stage 3, docs/design/IMPROVER.md §3)
+    round     one round of the improver (docs/design/IMPROVER.md §3); `cycle` runs them with the patience rule
     evaluate  the sealed final on the test tasks; it reports, it does not choose
     report    the activity's report from what is on disk; no model is called
     export    an installed release as an app
@@ -34,7 +34,6 @@ from ..harness.package import Limits, PackageError, build
 from .checks import require, startup_checks
 
 PHASES = ("smoke", "freeze", "baseline", "library", "round", "evaluate", "report", "export")
-STAGE3 = "the round phase needs the improver package (stage 3, docs/design/IMPROVER.md §3)"
 
 
 # ---------------------------------------------------------------------------- one arm of tasks
@@ -471,8 +470,11 @@ def _import(activity, step, spec: dict) -> dict:
     return step.import_snapshot(package.memory_text, source_release_ref=ref, source_line=lines[0])
 
 
-def round_(activity, index: int, *, out: Callable[[str], None] = print) -> dict:
-    raise NotImplementedError(STAGE3)
+def round_(activity, index: int, *, out: Callable[[str], None] = print):
+    """One round of the improver (docs/design/IMPROVER.md §3); run again, it continues and pays for nothing done."""
+    require(startup_checks(activity, phase="round"), phase="round")
+    from ..improver.round import run_round
+    return run_round(activity, index, run_arm=run_arm, out=out)
 
 
 # ---------------------------------------------------------------------------- the final
@@ -554,4 +556,18 @@ def cycle(activity, *, until: str | None = None, out: Callable[[str], None] = pr
             return {**state, "status": "stopped", "at": "library"}
     if until == "library":
         return {**state, "status": "stopped", "at": "library"}
-    raise NotImplementedError(STAGE3)
+    idle = 0
+    for i in range(int(activity.k["schedule"]["rounds"])):
+        key = f"round-{i}"
+        if (state["steps"].get(key) or {}).get("status") not in ("done", "stopped"):
+            result = round_(activity, i, out=out)
+            state["steps"][key] = {"status": result.status, "installed": result.installed, "stop": result.stop}
+            write_json(path, state)
+            if result.status != "done" and result.stop and result.stop.startswith(("budget", "unpriced")):
+                return {**state, "status": "stopped", "at": key}
+        idle = 0 if state["steps"][key].get("installed") else idle + 1
+        if until == key:
+            return {**state, "status": "stopped", "at": key}
+        if idle >= int(activity.k["schedule"]["patience"]):
+            return {**state, "status": "stopped", "at": key, "reason": f"{idle} rounds without an install"}
+    return {**state, "status": "done"}

@@ -685,5 +685,8 @@ def _normal(key: str, value):
     return value
 
 
+normal_section = _normal              # public: a raw manifest section as parse_manifest stores it
+
+
 def code_kinds(kinds) -> set[str]:
     return set(kinds) & set(CODE_KINDS)

@@ -133,7 +133,7 @@ def test_a_config_with_an_old_table_exits_two_naming_the_new_one(tmp_path, fake_
 def test_a_phase_of_a_later_stage_exits_two_and_says_which(tmp_path, fake_upstream, capsys):
     path = write_config(tmp_path, fake_upstream)
     assert cli.main(["bench", "--config", str(path), "--phase", "round"]) == 2
-    assert "needs the improver package (stage 3" in capsys.readouterr().err
+    assert "no frozen gate plan" in capsys.readouterr().err
     assert cli.main(["bench", "--config", str(path), "--phase", "export"]) == 2
     assert "`ouroloop export --config C --to DIR`" in capsys.readouterr().err
 

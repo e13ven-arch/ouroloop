@@ -120,6 +120,7 @@ def activity(root: Path, upstream: str, *, provider=None, worker=None, freeze_k:
 PUSHBACK = "Keep working on the task"
 FINISH_CHECK_MARK = "name the tool result that shows it is done"
 LIBRARY_MARK = "[lib "                  # an entry of the memory's opening block (memory/retrieval.py)
+NOTIFY_TOOL = "post_channel_message"    # a package tool for the notification: offered, the actor uses it
 
 
 def _needs(text: str) -> dict:
@@ -144,6 +145,8 @@ def _done(messages: list[dict]) -> dict:
                 continue
             if call.name == "plan_changes":
                 planned = True
+            if call.name == NOTIFY_TOOL:
+                sent += 1
             if call.name != "api_fetch":
                 continue
             body = json.loads(call.args.get("body") or "{}")
@@ -157,7 +160,8 @@ class BusinessWorker:
 
     It plans first when the package offers plan_changes, updates the record, and posts the notification only when
     something in front of it says to check the request again: the finish-check text in the system prompt, a pushback,
-    or a note of the memory's opening block about #ops. It finishes with the finish tool when one is offered, and
+    or a note of the memory's opening block about #ops — or when the package offers a tool for it (NOTIFY_TOOL), which
+    it then uses. It finishes with the finish tool when one is offered, and
     then names the library entries it was shown in a `library-used:` line. `forget_notify` ignores the finish check,
     which is the behaviour gap a candidate (or a lesson of the memory) can close."""
     name = "scripted"
@@ -176,8 +180,10 @@ class BusinessWorker:
         names = {s.name for s in specs or ()}
         task = next((m["content"] for m in messages if m.get("role") == "user"), "")
         want, done = _needs(task), _done(messages)
-        pushed = any(PUSHBACK in str(m.get("content", "")) for m in messages if m.get("role") == "user")
         read = [r.get("output", "") for m in messages if m.get("role") == "tool" for r in m.get("results") or ()]
+        # a pushback comes back as a user message or as the finish tool's result (the stirrup seed's on_finish)
+        pushed = any(PUSHBACK in str(m.get("content", "")) for m in messages if m.get("role") == "user") or \
+            any(str(r).startswith(PUSHBACK) for r in read)
         noted = LIBRARY_MARK in (system or "") and "#ops" in (system or "").split(LIBRARY_MARK, 1)[1]
         reminded = not self.forget_notify and (FINISH_CHECK_MARK in (system or "") or
                                                any(FINISH_CHECK_MARK in str(r) for r in read)) or \
@@ -197,6 +203,8 @@ class BusinessWorker:
         if want["update"] and not done["updated"]:
             return call("api_fetch", {"method": "PATCH", "url": HUBSPOT,
                                       "body": json.dumps({"id": want["contact"], "stage": "opportunity"})})
+        if want["notify"] and NOTIFY_TOOL in names and done["sent"] == 0 and (done["updated"] or not want["update"]):
+            return call(NOTIFY_TOOL, {"phrase": want["phrase"]})
         if want["notify"] and (reminded or not want["update"]) and done["sent"] == 0:
             return call("api_fetch", {"method": "POST", "url": SLACK,
                                       "body": json.dumps({"channel": "C1", "text": f"{want['phrase']} for the contact"})})

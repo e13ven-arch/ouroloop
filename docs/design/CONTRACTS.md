@@ -16,7 +16,7 @@ train/           训练链                                                     �
 ```
 
 硬规则（`tests/test_hot_path_boundary.py` 守住）：
-- 一次尝试（`evaluate.run_attempt`）跑完，`sys.modules` 里没有 `ouroloop.improver`、`ouroloop.memory.sidecar`、`ouroloop.train`。
+- 一次尝试（`evaluate.run_attempt`）跑完，`sys.modules` 里没有 `ouroloop.improver`、`ouroloop.memory.sidecar`、`ouroloop.train`；例外只有 K 的节取默认值的 `ouroloop.improver.settings`（与包的 `__init__`），它们只用标准库。
 - 控制面进程永远不 import 包里的代码（`vendor/`、`agent/`、`tools/`、`middlewares/`、`tests/`）；它们只在 worker 里跑。
 - `adapters/` 不 import 本框架的其他包。
 

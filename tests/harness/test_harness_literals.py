@@ -35,6 +35,21 @@ def test_the_index_keeps_one_tasks_values_and_drops_shared_ones_headers_and_cons
     assert "Closed Won" not in L.forbidden(index, exempt={"Closed Won"})
 
 
+def test_the_graders_own_assertions_index_their_values_beside_the_type():
+    """A grading row's assertion is upstream's flat dict ({type, its fields}), not an attempt's {type, params}."""
+    flat = [{"task_id": "t1", "assertions": [{"type": "google_sheets_row_exists", "spreadsheet_id": "ss_inv_tracker",
+                                              "cell_contains": {"Vendor": "Acme", "Invoice": "ACM-2026-0412",
+                                                                "Amount": "4,750"}}]},
+            {"task_id": "t2", "assertions": [{"type": "google_sheets_row_exists", "spreadsheet_id": "ss_inv_tracker",
+                                              "excluded": False}]}]
+    index = L.literal_index(flat)
+    forbidden = L.forbidden(index)
+    assert {"ACM-2026-0412", "4,750"} <= forbidden and "4,750" in index.answers
+    assert "ss_inv_tracker" not in forbidden                    # two train tasks
+    assert "google_sheets_row_exists" not in index.tasks        # the assertion's type is the grader's schema
+    assert "Vendor" in index.headers
+
+
 def test_only_changed_lines_of_a_seed_file_are_searched(seed):
     forbidden = L.forbidden(L.literal_index(ROWS))
     # an upstream line that already holds a literal is not the candidate's: plant one in the "seed" itself
