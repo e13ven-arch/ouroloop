@@ -38,12 +38,12 @@
 
 | 项 | 状态 |
 |---|---|
-| 分支 | 阶段 1 在 `s1/harness-platform`（从 `m1-automationbench` 的 `9a21fe4` 起，26 个提交），等用户确认后本地合入 `m1-automationbench`。`main` 在 `b71502d`（v0.3）。`v6-agent`、`v6-gateway` 已搬入；`v6-memory` 等阶段 2；`v6` 合并分支上的 WIP 不用；`slim/1` 已合入，可删；阶段 1 测试用的六个 `worktree-wf_d50a7e72-6fa-*` 分支已合入，可删 |
+| 分支 | `m1-automationbench`；阶段 1 的 `s1/harness-platform` 已本地合入（合并提交 `46a4b90`，2026-10-09，用户核过进度）。`main` 在 `b71502d`（v0.3）。`v6-agent`、`v6-gateway` 已搬入；`v6-memory` 等阶段 2；`v6` 合并分支上的 WIP 不用；`slim/1` 已合入，可删；阶段 1 测试用的六个 `worktree-wf_d50a7e72-6fa-*` 分支已合入，可删 |
 | 代码 | 阶段 1 完成：`contracts.py`、`harness/`（含 stirrup 种子）、`runtime/`、`evaluate/`、`activity/`；旧的 `bench.py`、`evolve/`、`agent/`、`research/` 等已删。`ouroloop/` 不含种子 16,489 行（训练栈 5,157） |
 | 测试 | 默认套件 751 passed；带 Docker 的全量 751 passed、0 skipped；record-compat 对真实旧记录 32 passed（JOURNAL 2026-10-09 阶段 1 完成一条） |
 | test 读过几次 | finance 1、support 0、sales 0、hr 0、marketing 3；operations 从未读过 |
 | 本机记录 | `examples/automationbench/workspace-*/`、`examples/workspace-*/`、`ws/`、`*.local.toml`，git 忽略，不删不改 |
-| 下一步 | 用户审阶段 1 的结果（§3 第 1 项）；确认后合入 `m1-automationbench`，开始阶段 2（memory，[design/MEMORY](design/MEMORY.md)） |
+| 下一步 | 阶段 2（memory，[design/MEMORY](design/MEMORY.md)）：从 `m1-automationbench` 开分支 `s2/memory`，按文档开发 |
 
 ## 1 规则
 
