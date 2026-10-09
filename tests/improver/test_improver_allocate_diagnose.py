@@ -93,7 +93,7 @@ def test_a_scripted_research_model_gives_the_cases(base, tmp_path):
         assert not hit
         assert (case.attempt_id, case.task_id) == (ev.attempt_id, ev.task_id)
         assert case.cause == "missed_action" and case.mechanizable
-        assert "#ops" in case.note and case.proposed == ""
+        assert "#ops" in case.explanation and case.proposed == ""
         assert case.evidence_refs and all(x.startswith(ev.session + ":L") for x in case.evidence_refs)
         assert case.assertion_kinds == ("slack_message_contains",)
         assert case.termination == ev.result.termination
@@ -206,25 +206,17 @@ def test_a_note_whose_case_is_not_in_the_store_is_a_miss(base, tmp_path):
     assert not hit and len(aux.asked) == 1
 
 
-@pytest.mark.xfail(strict=True, reason="BUG: Case.note is a VOLATILE field (contracts.py:145), so Objects.put "
-                                       "drops it: a cached case (diagnose.py:171) and every case the round reads "
-                                       "back for R's inputs/causes.json (round.py:335-339) has note == '' "
-                                       "(IMPROVER §5, §7)")
 def test_a_case_read_back_keeps_its_note(base, tmp_path):
     ev = base.failed[0]
     cache = cache_in(tmp_path)
     ref, case, _ = case_of(base.evidence, ev, Aux({"cause": "missed_action", "note": "it never posted in #ops"}), cache)
-    assert case.note == "it never posted in #ops"
+    assert case.explanation == "it never posted in #ops"
     _, cached, hit = case_of(base.evidence, ev, Aux({"cause": "other"}), cache)
     assert hit
-    assert cached.note == case.note
-    assert Case.from_json(cache.objects.get(ref)).note == case.note
+    assert cached.explanation == case.explanation
+    assert Case.from_json(cache.objects.get(ref)).explanation == case.explanation
 
 
-@pytest.mark.xfail(strict=True, reason="BUG: NoteCache's key is (request digest, model) without the attempt id "
-                                       "(IMPROVER §5: (attempt_id, request digest, model) -> Case ref); two attempts "
-                                       "whose requests coincide (no trajectory tail) share one case, which names the "
-                                       "first attempt")
 def test_a_cached_case_belongs_to_the_attempt_it_was_asked_for(base, tmp_path):
     bare = SimpleNamespace(features=Evidence.features, trace=SimpleNamespace(trajectory=lambda _session: []))
     one = replace(base.failed[0], attempt_id="run-a/t#0", session="run-a/t#0")
@@ -537,18 +529,12 @@ def test_at_most_l5_slots_l5_kinds_a_round(tmp_path):
                                                                ("finish_protocol", "skill", False)]
 
 
-@pytest.mark.xfail(strict=True, reason="BUG: allocate.py:100 falls back to the L5 kinds (`... or kinds`) when a loop "
-                                       "cause has no other allowed kind, so a round can get more than l5_slots L5 "
-                                       "assignments (IMPROVER §6.5: L5 每轮 ≤ l5_slots)")
 def test_l5_slots_hold_when_k_allows_only_l5_kinds(tmp_path):
     out, _ = assign(tmp_path, [cause("context_overflow", 3), cause("finish_protocol", 2)], allowed=L5,
                     explore_slots=0)
     assert sum(a.kind in L5 for a in out) <= 1
 
 
-@pytest.mark.xfail(strict=True, reason="BUG: allocate.py:108-122 does not count the L5 kinds the exploration slots "
-                                       "pick (`l5` is not updated), so with explore_slots >= 2 two explorations can "
-                                       "both take an L5 kind past l5_slots (IMPROVER §6.5: L5 每轮 ≤ l5_slots)")
 def test_l5_slots_hold_across_exploration_slots(tmp_path):
     table = {name: {"skill": tried(1, 1.0), "prompt": tried(1)} for name in ("context_overflow", "finish_protocol")}
     out, _ = assign(tmp_path, [cause("context_overflow", 3), cause("finish_protocol", 2)], table, explore_slots=2)

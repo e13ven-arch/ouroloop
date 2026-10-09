@@ -336,7 +336,7 @@ class Round:
                 row = next(iter(self._rows([case.attempt_id])), None)
                 session = (row.evidence or row.attempt_id) if row is not None else ""
                 readable.add(session)
-                rows.append({"task_id": case.task_id, "session": session, "note": case.note,
+                rows.append({"task_id": case.task_id, "session": session, "note": case.explanation,
                              "evidence_refs": list(case.evidence_refs), "failed_assertion_kinds":
                              list(case.assertion_kinds), "tool_errors": list(case.tool_errors),
                              "termination": case.termination})

@@ -97,7 +97,9 @@ def allocate(causes, estimates: Estimates, *, settings: Settings, line: str, all
     for c in chosen:
         kinds = kinds_for(c.name, mechanizable=c.mechanizable, allowed=allowed)
         if l5 >= settings.l5_slots:
-            kinds = [k for k in kinds if k not in L5_KINDS] or kinds
+            kinds = [k for k in kinds if k not in L5_KINDS]
+        if not kinds:                   # only L5 kinds, and the round's L5 slots are taken
+            continue
         scored = sorted(kinds, key=lambda k: (-estimates.get(line, c.name, k).upper, kinds.index(k)))
         kind = scored[0]
         l5 += kind in L5_KINDS
@@ -117,6 +119,7 @@ def allocate(causes, estimates: Estimates, *, settings: Settings, line: str, all
             continue
         untried.sort(key=lambda k: (k not in CODE_KINDS, kinds.index(k)))
         kind = a.kind if a.kind in untried else untried[0]
+        l5 += (kind in L5_KINDS) - (a.kind in L5_KINDS)
         out[i] = Assignment(cause_id=a.cause_id, cause=a.cause, kind=kind, exploration=True,
                             reason=f"exploration: {kind} never tried on {a.cause}")
         explored += 1

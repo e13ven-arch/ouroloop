@@ -53,7 +53,7 @@ class Case(Record):
     assertion_kinds: tuple = ()
     tool_errors: tuple = ()
     termination: str = ""
-    note: str = ""
+    explanation: str = ""               # the model's note ("note" is a volatile field of a record: not stored)
     proposed: str = ""
 
 
@@ -165,7 +165,7 @@ def diagnose_case(evidence: Evidence, ev: AttemptEvidence, *, researcher, vocabu
                   cache: NoteCache) -> tuple[str, Case, bool]:
     """One failed attempt's case. -> (case ref, case, whether it came from the cache)."""
     system, user = case_request(evidence, ev, vocabulary)
-    identity = digest({"system": system, "user": user, "model": model_of(researcher)})
+    identity = digest({"attempt": ev.attempt_id, "system": system, "user": user, "model": model_of(researcher)})
     ref = cache.get(identity)
     if ref is not None:
         return ref, Case.from_json(cache.objects.get(ref)), True
@@ -179,7 +179,7 @@ def diagnose_case(evidence: Evidence, ev: AttemptEvidence, *, researcher, vocabu
     case = Case(attempt_id=ev.attempt_id, task_id=ev.task_id, cause=cause, mechanizable=cause in set(mechanizable),
                 evidence_refs=refs, assertion_kinds=tuple(sorted({str(c["type"]) for c in ev.failed_checks})),
                 tool_errors=tuple(sorted(set(ev.tool_errors))), termination=ev.result.termination,
-                note=str(reply.get("note") or "")[:1200],
+                explanation=str(reply.get("note") or "")[:1200],
                 proposed=proposed if cause == "other" and NAME.match(proposed or "") else "")
     return cache.put(identity, case), case, False
 
