@@ -37,6 +37,7 @@ def cmd_bench(args) -> int:
         print(f"ouroloop bench: --checks-only is a smoke option; --phase {args.phase} would ignore it and run for real",
               file=sys.stderr)
         return 2
+    activity = None
     try:
         activity = _open(args, freeze_k=not (args.phase == "smoke" and args.checks_only))
         if args.phase == "smoke":
@@ -61,6 +62,9 @@ def cmd_bench(args) -> int:
     except (UpstreamError, ConfigError, NotImplementedError, ValueError, RuntimeError) as e:
         print(f"ouroloop bench: {e}", file=sys.stderr)
         return 2
+    finally:
+        if activity is not None:
+            activity.close()            # the memory's sidecar, when a phase started one
     if args.out:
         Path(args.out).write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
         print(f"report: {args.out}")

@@ -47,6 +47,9 @@ RULE_CASES = {
               lambda k: k["worker"]["image"], "ouroloop-worker:py3.12"),
     "network": ("worker", {"network": PROXY}, "network", {"network": "none"}, lambda k: k["worker"]["network"],
                 "none"),
+    "superset": ("memory", {"heldout_domains": ["finance"]}, "heldout_domains",
+                 {"heldout_domains": ["finance", "operations"]}, lambda k: k["memory"]["heldout_domains"],
+                 ["operations", "finance"]),
 }
 
 

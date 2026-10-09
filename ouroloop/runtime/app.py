@@ -72,8 +72,8 @@ class App:
         self.package = load_package(self.objects, self.manifest.package_ref)
         self.core = dict(self.manifest.core_subset)
 
-    def agent(self, *, provider, surface, worker, attempt_id: str, system: str = "", memory_reader=None,
-              opening: str = "", pricing=None, task_meta: dict | None = None) -> PackageAgent:
+    def agent(self, *, provider, surface, worker, attempt_id: str, system: str = "", memory=None, pricing=None,
+              task_meta: dict | None = None) -> PackageAgent:
         """The runner shell over this app. The worker must be a qualified one running the validated image."""
         if provider is None:
             raise AppError("an app runs with the caller's provider for its model; none was given")
@@ -88,7 +88,7 @@ class App:
         transcript = Transcript(session_file(self.directory, attempt_id))
         return PackageAgent(provider=provider, package=self.package, core=self.core, surface=surface, worker=worker,
                             transcript=transcript, system=system, attempt_id=attempt_id, task_meta=task_meta,
-                            memory_reader=memory_reader, opening=opening, pricing=pricing)
+                            memory=memory, pricing=pricing)
 
     def describe(self) -> dict:
         return {"package": short(self.manifest.package_ref),

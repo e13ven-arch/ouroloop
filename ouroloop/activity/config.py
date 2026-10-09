@@ -123,6 +123,10 @@ def _merge_value(rule, given, default, where: str):
         if not isinstance(given, list) or sorted(set(given) - set(default or ())):
             raise ConfigError(f"{where} = {given!r}: a subset of the preset's {default!r}")
         return [x for x in default if x in given]
+    if rule == "superset":
+        if not isinstance(given, list) or sorted(set(default or ()) - set(given)):
+            raise ConfigError(f"{where} = {given!r}: it keeps every item of the preset's {default!r} and may add more")
+        return list(default or ()) + sorted(set(given) - set(default or ()))
     if rule == "ranges":
         given, out = dict(given or {}), dict(default or {})
         for key, pair in given.items():

@@ -38,12 +38,14 @@ LAYERS = {
     "harness": {"contracts"},
     "runtime": {"contracts", "harness"},
     "evaluate": {"contracts", "harness", "runtime", "adapters"},
+    "memory": {"contracts", "harness", "runtime"},
     "activity": {"contracts", "harness", "runtime", "evaluate", "adapters", "memory", "improver"},
 }
 # providers/ has no place in CONTRACTS §1 (RUNTIME §10 leaves it as it was). It builds on runtime.chat, and these
 # packages reach it only inside a function: runtime to tell an account error, evaluate for ProviderError, activity to
 # build K's providers. A module-level import of it from them is refused like any other edge.
-FUNCTION_LEVEL_ONLY = {"runtime": {"providers"}, "evaluate": {"providers"}, "activity": {"providers"}}
+FUNCTION_LEVEL_ONLY = {"runtime": {"providers"}, "evaluate": {"providers"}, "memory": {"providers"},
+                       "activity": {"providers"}}
 
 
 # ---------------------------------------------------------------------------- run-time checks, in a fresh process

@@ -4,7 +4,7 @@ same bytes every time it is written (nothing in it reads the clock).
     activity   scope, K, preset, code version, the split's hash and counts
     baseline   W0's train reading and its dev readings
     rounds     each round of the improver (stage 3): causes, candidates, rungs passed, the gate's reading, the install
-    memory     the memory's readout (stage 2)
+    memory     the memory stream's readout (D, the halves, the entries), what it dropped and lost, its snapshot
     final      each arm of the sealed final, and how many times this domain's test was read
     spend      what each phase reserved and settled, from the budget book; the steps sum to the root
 """
@@ -54,6 +54,22 @@ def spend(activity) -> dict:
             "allocations": book["scopes"][activity.scope_id].get("allocations")}
 
 
+def memory_report(activity) -> dict | None:
+    """The stream's ledger (memory/<domain>/stream.json) as the report reads it, and its snapshot's outcome."""
+    path = activity.root / "memory" / activity.domain / "stream.json"
+    if not path.exists():
+        return None
+    ledger = json.loads(path.read_text(encoding="utf-8"))
+    snapshots = [e for e in activity.events.read("library_snapshot")]
+    last = snapshots[-1] if snapshots else None
+    return {"status": ledger.get("status"), "processed": len(ledger.get("processed") or {}),
+            "planned": len((ledger.get("plan") or {}).get("order") or ()), "lost": len(ledger.get("lost") or {}),
+            "readout": ledger.get("readout"), "counters": ledger.get("counters"),
+            "dropped": len(ledger.get("dropped") or ()), "imports": len(ledger.get("imports") or ()),
+            "snapshot": None if last is None else {k: last.get(k) for k in ("outcome", "why", "package_ref",
+                                                                            "snapshot_digest")}}
+
+
 def build_report(activity) -> dict:
     train = _runs_by_candidate(activity, "train")
     dev = _runs_by_candidate(activity, "dev")
@@ -76,7 +92,7 @@ def build_report(activity) -> dict:
                          "code_version": activity.core.code_version, "domain": activity.domain,
                          "split": activity.splits.hash(), "counts": activity.splits.counts()},
             "release": short(activity.releases.active_ref()) if activity.releases.active_ref() else None,
-            "baseline": baseline, "rounds": [], "memory": None, "final": finals,
+            "baseline": baseline, "rounds": [], "memory": memory_report(activity), "final": finals,
             "test_reads": sum(1 for e in events if e.get("event") == "test_read"),
             "spend": spend(activity)}
 
@@ -94,6 +110,21 @@ def render_markdown(report: dict) -> str:
                      f"cost/attempt {d['cost_per_attempt']}")
     if not b["train"] and not b["dev"]:
         lines.append("- not run")
+    lines += ["", "## Memory"]
+    m = report["memory"]
+    if m is None:
+        lines.append("- no stream")
+    else:
+        ro = m["readout"] or {}
+        lines.append(f"- stream {m['status']}: {m['processed']}/{m['planned']} train tasks ({m['lost']} lost), "
+                     f"{m['dropped']} memories dropped at the checks")
+        if ro:
+            lines.append(f"- D {ro.get('D')}, B {ro.get('B')}, halves {ro.get('first_half')} -> {ro.get('second_half')} "
+                         f"(P {ro.get('p_second_half_better')}), entries {ro.get('entries')}")
+        if m["snapshot"]:
+            s = m["snapshot"]
+            lines.append(f"- snapshot {s['outcome']}" + (f": {s['why']}" if s.get("why") else
+                                                         f" {short(s['package_ref'])}" if s.get("package_ref") else ""))
     lines += ["", "## Rounds", "- none (the improver comes with stage 3)", "", "## Final"]
     for f in report["final"]:
         lines.append(f"- {f['experiment']} ({f['plan']}, {f['status']}): " + ", ".join(

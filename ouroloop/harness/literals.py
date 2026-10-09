@@ -127,10 +127,11 @@ def changed_lines(text: str, base: str | None) -> set[int]:
     return out
 
 
-def _pattern(lit: str) -> re.Pattern:
+def literal_pattern(lit: str) -> re.Pattern:
     """A literal as a whole token; case-sensitive except an e-mail address."""
     flags = re.IGNORECASE if literal_kind(lit) == "e-mail address" else 0
     return re.compile(r"(?<![\w@.-])" + re.escape(lit) + r"(?![\w@-])", flags)
+
 
 
 def _strings(value) -> set[str]:
@@ -156,7 +157,7 @@ def findings(files: dict[str, str], seed, forbidden: set[str], *, allowed: set[s
     if not wanted:
         return []
     base = dict(seed.files) if seed is not None else {}
-    patterns = [(lit, _pattern(lit)) for lit in wanted]
+    patterns = [(lit, literal_pattern(lit)) for lit in wanted]
     out: list[dict] = []
     for path in sorted(files):
         if path == MEMORY_PATH:

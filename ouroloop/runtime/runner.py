@@ -127,16 +127,15 @@ class PackageAgent:
     `limits`, `model.max_effort` and `worker.network` are read here); `surface` the episode's tool surface with the
     attempt's limits on it; `worker` the isolated worker; `transcript` the session's writer; `system` the task's own
     system prompt; `task_meta` the `task` line's fields (task_id, split, task_hash, release_ref, core_ref, arm);
-    `memory_reader(query, k)` and `opening` the memory's recall and opening block (none before the memory package);
+    `memory` the attempt's memory (memory.retrieval.TaskMemory: `opening`, the block appended to the system prompt;
+    `event`, the start's `library_retrieval` line; `recall(query, k)`), None for a package that reads none;
     `pricing` turns each call's usage into a cost."""
 
     def __init__(self, *, provider, package: Package, core: dict, surface, worker, transcript: Transcript,
-                 system: str = "", attempt_id: str, task_meta: dict | None = None, memory_reader=None,
-                 opening: str = "", pricing=None):
+                 system: str = "", attempt_id: str, task_meta: dict | None = None, memory=None, pricing=None):
         self.provider, self.package, self.core, self.surface, self.worker = provider, package, core, surface, worker
         self.transcript, self.base_system, self.attempt_id = transcript, system, attempt_id
-        self.task_meta, self.memory_reader, self.opening, self.pricing = dict(task_meta or {}), memory_reader, \
-            opening, pricing
+        self.task_meta, self.memory, self.pricing = dict(task_meta or {}), memory, pricing
         self.limits = dict(core.get("limits") or {})
         self.gateway: Gateway | None = None
         self.broker: AttemptBroker | None = None
@@ -155,8 +154,13 @@ class PackageAgent:
     def run(self, task: str) -> AgentResult:
         self._record("task", {**self.task_meta, "attempt_id": self.attempt_id, "package_ref": self.package.ref(),
                               "text": task})
+        opening = str(getattr(self.memory, "opening", "") or "")
+        event = getattr(self.memory, "event", None)
+        if event:
+            self._record("library_retrieval", {**{k: v for k, v in dict(event).items() if k != "site"},
+                                               "site": "start"})
         max_output_chars = int(self.limits.get("max_output_chars") or 20000)
-        system = compose_system(self.base_system, self.package, self.opening)
+        system = compose_system(self.base_system, self.package, opening)
         view = attempt_view(system, self.surface, self.package, max_output_chars)
         prefix = f"{self.attempt_id}:"
         self.gateway = Gateway(self.provider, roles=self.roles, max_effort=(self.core.get("model") or {}).get(
@@ -165,7 +169,7 @@ class PackageAgent:
         self.broker = AttemptBroker(self.surface, record=self._record, gateway=self.gateway, view=view,
                                     call_prefix=prefix, max_output_chars=max_output_chars)
         skills = SkillReader(self.package, record=self._record)
-        memory = MemoryRecall(self.memory_reader, record=self._record,
+        memory = MemoryRecall(self.memory.recall if self.memory is not None else None, record=self._record,
                               max_k=int((self.core.get("memory") or {}).get("recall_k") or 5))
         marks = Marks(self._record)
         text, termination, limit, error, raised = "", "finished", None, "", None

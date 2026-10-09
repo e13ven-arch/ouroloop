@@ -95,18 +95,18 @@ def task_hash(task) -> str:
 
 
 def make_agent_factory(*, provider, package: Package, core: dict, worker, root: Path, pricing=None,
-                       memory_reader=None, opening=None, release_ref: str | None = None, core_ref: str | None = None,
+                       memory=None, release_ref: str | None = None, core_ref: str | None = None,
                        arm: str = "subject"):
     """-> make(surface, task, attempt_id, split) -> PackageAgent: the runner shell over one episode, its transcript at
-    <root>/transcripts/<attempt id>.jsonl. `opening(task) -> str` is the memory's opening block (none before the
-    memory package)."""
+    <root>/transcripts/<attempt id>.jsonl. `memory(task, task_hash)` gives the attempt's memory (a
+    memory.retrieval.TaskMemory, or None), for a package that reads one."""
     def make(surface, task, attempt_id: str, split: str) -> PackageAgent:
         meta = {"task_id": task.task_id, "split": split, "task_hash": task_hash(task), "release_ref": release_ref,
                 "core_ref": core_ref, "arm": arm}
         return PackageAgent(provider=provider, package=package, core=core, surface=surface, worker=worker,
                             transcript=Transcript(session_file(root, attempt_id)), system=task.system,
-                            attempt_id=attempt_id, task_meta=meta, memory_reader=memory_reader,
-                            opening=opening(task) if opening is not None else "", pricing=pricing)
+                            attempt_id=attempt_id, task_meta=meta,
+                            memory=memory(task, meta["task_hash"]) if memory is not None else None, pricing=pricing)
     return make
 
 
