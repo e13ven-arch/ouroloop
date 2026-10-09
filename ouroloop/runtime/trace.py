@@ -35,6 +35,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import time
 from pathlib import Path
 from typing import Callable, Iterator
 
@@ -290,7 +291,7 @@ class TraceStore:
     def _open(self) -> tuple[sqlite3.Connection, int | None]:
         db = sqlite3.connect(self.index_path, timeout=30)
         try:
-            db.execute("PRAGMA journal_mode=WAL")
+            _wal(db)
             row = db.execute("SELECT value FROM meta WHERE key = 'schema'").fetchone()
             return db, (int(row[0]) if row else None)
         except sqlite3.OperationalError as e:
@@ -472,6 +473,21 @@ SCHEMA_SQL = (
     "CREATE VIRTUAL TABLE docs USING fts5(text, ref UNINDEXED, session UNINDEXED, task_hash UNINDEXED, "
     "kind UNINDEXED, tool UNINDEXED, tokenize = 'unicode61')",
 )
+
+
+def _wal(db: sqlite3.Connection, seconds: float = 30.0) -> None:
+    """The index in WAL mode. A switch that races another connection's lock on a new index file is answered
+    "database is locked" at once — SQLite does not wait on a lock it could deadlock on — so it is tried again until
+    `seconds` pass (the connection's own timeout): two stores opening a new index at once both get it."""
+    deadline = time.monotonic() + seconds
+    while True:
+        try:
+            db.execute("PRAGMA journal_mode=WAL")
+            return
+        except sqlite3.OperationalError as e:
+            if "locked" not in str(e) or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.01)
 
 
 def _require_fts5() -> None:
