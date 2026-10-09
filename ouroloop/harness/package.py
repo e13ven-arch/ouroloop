@@ -679,7 +679,13 @@ def _normal(key: str, value):
     if key in ("prompt", "config"):
         return dict(value or {})
     if key == "memory":
-        return value if value is not None else {"enabled": False}
+        if not isinstance(value, dict):
+            return value if value is not None else {"enabled": False}
+        return {**{k: v for k, v in value.items() if not (k == "snapshot" and v is None)},
+                "enabled": bool(value.get("enabled", False))}
+    if key == "agent" and isinstance(value, dict) and isinstance(value.get("roles"), list):
+        roles = value["roles"]
+        return {**value, "roles": [r for r in ROLES if r in roles] + [r for r in roles if r not in ROLES]}
     if key == "model" and isinstance(value, dict):
         return {**value, "artifact_ref": value.get("artifact_ref")}
     return value

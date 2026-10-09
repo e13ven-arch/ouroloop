@@ -17,8 +17,8 @@ from ..components import components
 
 FORBIDDEN_IMPORTS = ("socket", "subprocess", "ctypes", "pickle", "multiprocessing", "shutil", "urllib", "http",
                      "requests", "httpx")
-FORBIDDEN_CALLS = ("os.system", "os.popen", "os.exec", "os.spawn", "os.fork", "eval", "exec", "compile",
-                   "__import__")
+FORBIDDEN_CALLS = ("os.system", "os.popen", "os.fork", "eval", "exec", "compile", "__import__")
+FORBIDDEN_PREFIXES = ("os.exec", "os.spawn")         # os.execv, os.spawnl, ...
 # a candidate's code reaches the world through ctx.tool only; the egress tool of the seed (agent/http_fetch.py) is the
 # package's own and stays as it is
 EXTRA_KINDS = ("test",)               # what any candidate may change besides its declared kind
@@ -30,15 +30,22 @@ def _reaches(text: str, path: str) -> list[tuple[int, str]]:
         tree = ast.parse(text, filename=path)
     except SyntaxError as e:
         return [(e.lineno or 0, f"does not parse: {e.msg}")]
-    out = []
+    out, alias = [], {}
+    for node in ast.walk(tree):             # `import os as o` and `from os import system` name the same call
+        if isinstance(node, ast.Import):
+            alias.update({a.asname: a.name for a in node.names if a.asname})
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            alias.update({a.asname or a.name: f"{node.module}.{a.name}" for a in node.names})
     for node in ast.walk(tree):
         names = [a.name for a in node.names] if isinstance(node, ast.Import) else \
             [node.module or ""] if isinstance(node, ast.ImportFrom) else []
         out += [(node.lineno, f"imports {n}") for n in names if n.split(".")[0] in FORBIDDEN_IMPORTS]
         if isinstance(node, ast.Call):
             called = _dotted(node.func)
-            if called and any(called == f or called.startswith(f) for f in FORBIDDEN_CALLS):
-                out.append((node.lineno, f"calls {called}"))
+            head, dot, rest = called.partition(".")
+            resolved = alias.get(head, head) + dot + rest if called else ""
+            if resolved and (resolved in FORBIDDEN_CALLS or resolved.startswith(FORBIDDEN_PREFIXES)):
+                out.append((node.lineno, f"calls {resolved}"))
     return out
 
 

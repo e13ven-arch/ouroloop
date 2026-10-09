@@ -116,6 +116,7 @@ class CodingSession:
         self.dirs: list[str] = []
         self.declarations: dict[str, Declaration] = {}
         self.ended = ""
+        self.revising = False
 
     # ------------------------------------------------------------------ driving
     def start(self) -> SessionResult:
@@ -125,6 +126,7 @@ class CodingSession:
     def revise(self, text: str) -> SessionResult:
         if self.ended:
             return SessionResult(list(self.declarations.values()), self.ended)
+        self.revising = True
         self.messages.append({"role": "user", "content": text})
         return self._run()
 
@@ -222,6 +224,8 @@ class CodingSession:
             limit = min(int(args.get("limit") or self.s.session_max_read_bytes), self.s.session_max_read_bytes)
         except (TypeError, ValueError):
             return "offset and limit are integers", True
+        if limit < 1:
+            return "limit is a positive number of bytes", True
         if self.read_bytes + limit > self.s.session_max_read_total:
             return (f"refused: this read would pass the session's {self.s.session_max_read_total} bytes "
                     f"({self.read_bytes} read so far)"), True
@@ -245,6 +249,9 @@ class CodingSession:
                 problems.append(f"candidates[{i}]: {why}")
             elif decl.dir in seen:
                 problems.append(f"candidates[{i}]: dir {decl.dir!r} is declared twice")
+            elif self.revising and decl.dir not in self.declarations:
+                problems.append(f"candidates[{i}]: a revision changes files of {sorted(self.declarations)}; it "
+                                f"declares no new candidate")
             else:
                 seen.add(decl.dir)
         return ("the declarations are not readable: " + "; ".join(problems))[:2000] if problems else ""

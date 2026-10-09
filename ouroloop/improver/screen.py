@@ -19,7 +19,7 @@ import random
 from dataclasses import dataclass, replace
 
 from ..contracts import Record, register
-from ..evaluate.gate import TaskEvalPlan, evaluate_task, receipt_differences, refill_attempts
+from ..evaluate.gate import TaskEvalPlan, evaluate_task, receipt_differences, refill_attempts, shortfall
 from ..evaluate.results import TaskResult
 
 WHOLE_KINDS = ("prompt", "agent", "config", "vendor", "removal", "model")
@@ -134,11 +134,15 @@ def cost_per_attempt(activity, package_ref: str, split: str) -> float | None:
     return sum(costs) / len(costs)
 
 
-def gate_attempts(activity) -> int:
-    """The gate's attempts at most: every dev task of the template, the subject arm and its confirmations (the
-    pooled control is on record; its top-up is bounded by the same count)."""
+def gate_attempts(activity, control_ref: str | None = None) -> int:
+    """The gate's attempts at most: every dev task of the template, the subject arm and its confirmations, and the
+    pairs the pooled control of `control_ref` (the current W's package) is short of — after an install the new W's
+    dev readings are its gate's subject arm, not a control, so its first gate reads the whole control."""
     plan = template(activity)
-    return len(plan.task_ids) * plan.repeats * (1 + plan.confirmations) if plan is not None else 0
+    if plan is None:
+        return 0
+    short = shortfall(plan, control_pool(activity, control_ref, plan.task_ids)) if control_ref else []
+    return len(plan.task_ids) * plan.repeats * (1 + plan.confirmations) + len(short)
 
 
 def price(activity, base_package_ref: str, *, screen_attempts: int, gate: bool = True) -> tuple[float | None, str]:
@@ -148,7 +152,7 @@ def price(activity, base_package_ref: str, *, screen_attempts: int, gate: bool =
     dev = cost_per_attempt(activity, base_package_ref, "dev") if gate else 0.0
     if train is None or dev is None:
         return None, "the current W has no priced train or dev reading on record: the screens cannot be priced"
-    return round(screen_attempts * train + (gate_attempts(activity) * dev if gate else 0.0), 6), ""
+    return round(screen_attempts * train + (gate_attempts(activity, base_package_ref) * dev if gate else 0.0), 6), ""
 
 
 # ---------------------------------------------------------------------------- V4

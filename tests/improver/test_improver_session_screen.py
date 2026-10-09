@@ -28,9 +28,8 @@ unless a package offers it post_channel_message):
 - the gate over the frozen template with the pooled control: an accepted receipt is registered and installs under
   `install:<round>` with "/" made "_"; a rejected one is registered and installs nothing.
 
-Three tests are strict expected failures that show bugs (reason "BUG: ..."): a negative read_trajectory limit lifts
-both read caps; a revision can add a declaration; the gate's price leaves out the pooled control's top-up that §9
-counts.
+And three found bugs, fixed: a negative read_trajectory limit no longer lifts the read caps; a revision cannot add a
+declaration; the gate's price counts the pooled control's top-up (§9).
 """
 from __future__ import annotations
 
@@ -240,10 +239,6 @@ def test_read_trajectory_refuses_a_read_past_session_max_read_total(world, tree)
     assert cs.read_bytes == 250 and got.ended == "" and len(script.seen) == 6
 
 
-@pytest.mark.xfail(strict=True, reason="BUG: session.py _read_trajectory takes a negative `limit` as given: "
-                                       "min(-1, cap) is -1, so the page is data[offset:offset-1] (the whole "
-                                       "trajectory but one byte) and the total check read_bytes + limit passes; "
-                                       "§7 caps every read at session_max_read_bytes / session_max_read_total")
 def test_a_negative_limit_does_not_lift_the_read_caps(world, tree):
     session = world.sessions[NOTIFY[0]]
     assert len(trajectory_bytes(world, session)) > 400
@@ -334,16 +329,16 @@ def test_revise_continues_the_session_and_changes_files_not_declarations(world, 
     assert cs.record()["declared"] == ["notify"]
 
 
-@pytest.mark.xfail(strict=True, reason="BUG: session.py _finish adds any dir not yet declared, so a revision's finish "
-                                       "declares a new candidate (past k, and never verified: round.py checks the "
-                                       "declarations start() returned); §7 says a revision changes files, not "
-                                       "declarations")
 def test_a_revision_cannot_add_a_declaration(world, tree):
-    script = Script([write()], [finish(decl())], [write(dir="other")], [finish(decl(dir="other"))])
+    script = Script([write()], [finish(decl())], [write(dir="other")], [finish(decl(dir="other"))],
+                    [finish(decl())])
     cs = coding(world, tree, script, k=1)
     first = cs.start()
     again = cs.revise("candidates/notify failed its check:\nV0: FAILED")
-    assert again.ended == "" and len(script.seen) == 4
+    assert again.ended == "" and len(script.seen) == 5        # the new dir is a tool error; the next finish ends it
+    refused = [r for m in cs.messages if m.get("role") == "tool" for r in m.get("results") or ()
+               if "declares no new candidate" in str(r.get("output"))]
+    assert len(refused) == 1 and refused[0].get("is_error")
     assert again.declarations == first.declarations
     assert cs.record()["declared"] == ["notify"]
 
@@ -747,11 +742,6 @@ def test_after_an_install_the_pooled_control_of_the_new_w_is_short(done):
     assert sc.cost_per_attempt(a, w1.package_ref, "dev") > 0 and sc.cost_per_attempt(a, w1.package_ref, "train") > 0
 
 
-@pytest.mark.xfail(strict=True, reason="BUG: screen.py gate_attempts (used by price) counts the subject arm and its "
-                                       "confirmations only; §9 prices the gate as dev tasks x (1 + confirmations) "
-                                       "plus the pooled control's shortfall, which evaluate_task then runs (the whole "
-                                       "control after an install), so the bound is short and the round account can "
-                                       "be overdrawn")
 def test_the_gate_price_includes_the_pooled_controls_shortfall(done):
     a, w1 = done.a, done.a.active_release()
     plan = sc.template(a)
