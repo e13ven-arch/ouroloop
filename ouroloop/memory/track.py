@@ -507,8 +507,10 @@ class StreamStep:
             mem = {**mem, "when_to_use": when, "content": content, "metadata": meta,
                    "memory_id": content_id(content)}
             mid = mem["memory_id"]
-            if self.entries.get(mid, {}).get("status") == "retired":    # retired content does not come back
-                why = f"retired before: {self.entries[mid].get('retired')}"
+            prior = self.entries.get(mid, {})
+            if prior.get("status") in ("retired", "superseded"):    # retired or superseded content does not come back
+                why = (f"retired before: {prior.get('retired')}" if prior["status"] == "retired"
+                       else f"superseded before: {prior.get('superseded_by')}")
                 self._drop(n, th, mem, why)
                 record["dropped"].append(why)
                 continue
