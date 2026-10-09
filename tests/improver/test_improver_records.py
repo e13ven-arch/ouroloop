@@ -323,6 +323,16 @@ def test_ledger_ids_follow_write_order(tmp_path):
     assert ledger.rows()[1] == {**two, "tasks": ["t.a"]}
 
 
+def test_a_resumed_step_writing_its_row_again_gets_the_row_on_record(tmp_path):
+    ledger = Ledger(tmp_path)
+    first = ledger.row("no_code_candidate", round_id="s/r0", line="d", cause="missed_action")
+    assert ledger.row("no_code_candidate", round_id="s/r0", line="d", cause="missed_action") == first
+    assert ledger.row("no_code_candidate", round_id="s/r1", line="d", cause="missed_action")["id"] == "L2"
+    assert ledger.row("no_code_candidate", round_id="s/r0", line="d", cause="other")["id"] == "L3"
+    assert ledger.row("vocabulary_added", line="d", cause="x")["id"] == "L4"     # no round: always a new row
+    assert ledger.row("vocabulary_added", line="d", cause="x")["id"] == "L5"
+
+
 def test_the_projection_keeps_projected_fields_of_the_line(tmp_path):
     ledger = Ledger(tmp_path)
     ledger.row("gated", round_id="s/r0", line="d", dir="notify", verdict="accepted", gain=0.25, fixed_count=1,

@@ -19,7 +19,7 @@ Covered:
   left, do not start; a round the budget refuses stops on record and the cycle stops there;
 - the install's operation id is `install:<round_id>`, never an Execution operation's id, and replaying it is a no-op.
 
-Three cases are strict xfails for bugs found here: a fixed candidate lost when the verified step is interrupted, the
+Three cases came from bugs found here, now fixed: a fixed candidate lost when the verified step was interrupted, the
 gate priced without the control's top-up, the archive missing the screen and the receipt.
 """
 from __future__ import annotations
@@ -476,11 +476,6 @@ def test_a_round_resumed_after_its_install_measures_the_new_w_once_and_credits_a
     assert stages(s.a).count("credited") == 1
 
 
-@pytest.mark.xfail(strict=True, reason="BUG: Round.fixed_candidates (ouroloop/improver/round.py:452) skips every "
-                                       "fixed candidate whose source has a `declared` ledger row, this round's own "
-                                       "included; a round interrupted in its verified step after the snapshot's row "
-                                       "was written drops the snapshot on resume and stops no_candidate (IMPROVER "
-                                       "§11: every step idempotent, a resumed round pays only for what is missing)")
 def test_a_round_interrupted_after_the_snapshot_was_declared_still_screens_it_on_resume(tmp_path, fake_upstream,
                                                                                         memory):
     """Killed as the verified step reports (its ledger rows written, its output not yet in round.json)."""
@@ -574,10 +569,6 @@ def test_a_round_the_budget_refuses_stops_on_record_and_the_cycle_stops_there(tm
     assert round_state(s.a, 0)["stop"] == stop and tuple(round_state(s.a, 0)["steps"]) == ("measure", "evidence")
 
 
-@pytest.mark.xfail(strict=True, reason="BUG: improver/screen.py:137-141 gate_attempts prices the gate as dev tasks x "
-                                       "repeats x (1 + confirmations) and leaves out the pooled control's shortfall, "
-                                       "which evaluate_task tops up and pays for; IMPROVER §9 prices the gate's "
-                                       "bound as dev tasks x (1 + confirmations) + the control's gap")
 def test_the_round_prices_the_gates_control_top_up_before_paying(tmp_path, fake_upstream):
     """A baseline on two of the three dev tasks: the gate tops the pooled control up by one attempt, and the price the
     round checked before the screens holds that attempt too."""
@@ -624,12 +615,6 @@ def test_the_install_operation_id_is_the_rounds_own_and_installing_again_changes
     assert a.releases.pointer() == pointer and list(a.events.read("installed")) == events
 
 
-@pytest.mark.xfail(strict=True, reason="BUG: Round.screened/gated (ouroloop/improver/round.py:526-601) never hand the "
-                                       "screen or the gate's receipt to the archive (Archive.put is called only in "
-                                       "verified, without screen= or receipt_ref=), so the archive row has neither "
-                                       "and R's `earlier` (Archive.for_prompt) never shows a screen or a gate "
-                                       "(IMPROVER §10 the archive holds screen.json; DESIGN §6.7 candidates, "
-                                       "declarations, rungs and receipts go into the archive)")
 def test_the_archive_keeps_the_screened_candidates_screen_and_its_receipt(tool):
     a, r = tool.a, tool.result
     archive = Archive(a.root, a.objects)

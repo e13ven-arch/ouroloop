@@ -223,7 +223,8 @@ class Round:
         from ..memory.settings import Settings as MemorySettings
         ms = MemorySettings.from_core(self.a.k)
         entries = json.loads(path.read_text(encoding="utf-8")).get("entries") or {}
-        done = {r.get("source") for r in self.ledger.rows(stage="declared") if r.get("source")}
+        done = {r.get("source") for r in self.ledger.rows(stage="declared")       # earlier rounds' (a resumed
+                if r.get("source") and r.get("round_id") != self.round_id}         # step declares it again)
         return {k: e for k, e in entries.items() if e.get("status") == "active" and f"promotion:{k}" not in done
                 and int((e.get("stats") or {}).get("fixes") or 0) >= ms.promote_fixes
                 and len(distilled_from(e)) >= ms.promote_sources}
@@ -449,7 +450,8 @@ class Round:
         """The library's snapshot not yet on the ladder, the memory's promoted skills, removal candidates — at most
         fixed_per_round, in that order."""
         out: list[tuple[Declaration, dict]] = []
-        done = {r.get("source") for r in self.ledger.rows(stage="declared") if r.get("source")}
+        done = {r.get("source") for r in self.ledger.rows(stage="declared")       # earlier rounds' (a resumed
+                if r.get("source") and r.get("round_id") != self.round_id}         # step declares it again)
         for e in reversed(list(self.a.events.read("library_snapshot"))):
             src = f"snapshot:{e.get('snapshot_digest')}"
             if e.get("outcome") == "candidate" and src not in done and e.get("package_ref"):

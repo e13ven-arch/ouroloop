@@ -7,6 +7,8 @@ counts of fixed and regressed dev tasks, not which ones (they are in the receipt
 """
 from __future__ import annotations
 
+import json
+
 from pathlib import Path
 
 from ..contracts import append_jsonl, locked, now, read_jsonl
@@ -29,8 +31,14 @@ class Ledger:
         if stage not in STAGES:
             raise ValueError(f"ledger stage {stage!r}: one of {list(STAGES)}")
         with locked(self.path):
-            n = sum(1 for _ in read_jsonl(self.path))
-            row = {"id": f"L{n + 1}", "ts": now(), "stage": stage, **fields}
+            rows = list(read_jsonl(self.path))
+            if fields.get("round_id"):      # a resumed step writes its rows again: the same row is the one on record
+                same = json.dumps({"stage": stage, **fields}, sort_keys=True, default=str)
+                for r in rows:
+                    if r.get("round_id") == fields["round_id"] and same == json.dumps(
+                            {k: v for k, v in r.items() if k not in ("id", "ts")}, sort_keys=True, default=str):
+                        return r
+            row = {"id": f"L{len(rows) + 1}", "ts": now(), "stage": stage, **fields}
             append_jsonl(self.path, row)
         return row
 
