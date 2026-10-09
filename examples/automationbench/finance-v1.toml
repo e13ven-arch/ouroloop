@@ -70,8 +70,10 @@ rounds = 3
 patience = 2
 
 [budget]
-usd = 450.0
-final_usd = 160.0
+# approved 2026-10-09 after the probe (a dev attempt of the stirrup seed cost $0.59): expected spend about $440-530;
+# the final's share holds its expected spend and (concurrency + 2) calls' bound at concurrency 8
+usd = 700.0
+final_usd = 220.0
 
 [final]
 repeats = 3
