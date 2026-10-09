@@ -164,3 +164,22 @@ def test_an_entry_is_classified_once_per_request_and_model(tmp_path):
     other.model = "another-model"
     dg.classify_entries(entries[:1], researcher=other, vocabulary=vocabulary, cache=cache)
     assert other.calls == 1
+
+
+# ---------------------------------------------------------------------------- an installed promotion
+def test_an_installed_promotion_supersedes_its_entry(tmp_path, fake_upstream):
+    """MEMORY §8: the entry is superseded in the stream's ledger, retired from the live store, gone from the live
+    library; doing it again changes nothing."""
+    s = round_activity(tmp_path, fake_upstream, "none", memory=True, freeze=False)
+    path = s.a.root / "memory" / s.a.domain / "stream.json"
+    entries = json.loads(path.read_text(encoding="utf-8"))["entries"]
+    eid = next(k for k, e in entries.items() if e.get("status") == "active")
+    service = s.a.memory()
+    service.supersede(eid, by="release:sha256:" + "1" * 64)
+    after = json.loads(path.read_text(encoding="utf-8"))["entries"][eid]
+    assert after["status"] == "superseded" and after["superseded_by"] == "release:sha256:" + "1" * 64
+    live = (s.a.root / "memory" / s.a.domain / "live.jsonl").read_text(encoding="utf-8")
+    assert eid not in live and eid not in service.client.dump(service.collection)
+    before = path.read_text(encoding="utf-8")
+    service.supersede(eid, by="another")
+    assert path.read_text(encoding="utf-8") == before

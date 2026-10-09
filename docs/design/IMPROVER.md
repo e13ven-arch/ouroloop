@@ -43,8 +43,9 @@ def run_round(activity, index: int, *, out) -> RoundResult
 
 `measure → evidence → diagnosed → allocated → implemented → verified → screened → gated → installed | rejected → credited`
 
-- **measure**：当前 W（活跃 release 的包）在每道 train 题上要有一次有效读数；第 0 轮用基线的读数，装入之后缺的题现量（run 的 role `measure`，候选名 `train:<release 短 ref>`；记功与下一轮共用这一次）。
-- **stop**：没有失败的 train 题 → `nothing_to_fix`；研究份额不够付下一档 → `budget`；会话没有候选、没有固定候选 → `no_candidate`。停下也写台账。
+- **measure**：当前 W（活跃 release 的包）在每道 train 题上要有一次有效读数；第 0 轮用基线的读数，装入之后缺的题现量（run 的 role `measure`，候选名 `train:<release 短 ref>:r<i>`：每轮一个 run，一轮被预算拒掉的尝试下一轮重读，不会被当成记录交回；读数按包汇总，记功与下一轮共用）。
+- **stop**：没有失败的 train 题 → `nothing_to_fix`；研究份额不够付下一档 → `budget`；会话没有候选、没有固定候选 → `no_candidate`。停下也写台账。停下的一轮不再续跑（它的份额已用完），`cycle` 再跑时从下一轮接着。
+- **续跑**：会话一结束，它的声明与文件就记进 `round.json`（`session_result`），之后断了只重验、不重付会话；这一轮自己的装入移动了活跃 release（`install:<round_id>` 的收据是 installed）而 gated 一步还没保存时照常续跑（gate 从记录重放、装入重放是空操作）；台账行在一轮里按内容去重，续跑写同一行拿到记录里那一行。
 - 一轮的花费记在 `<scope>:round-<i>` 账户（上限 `round_share × [budget] usd`），下分 `measure`、`diagnose`、`session`、`screen`、`gate`、`policy` 子账户，报告按它们单列。
 
 `cycle --until round-K` 依次跑第 0～K 轮；连续 `schedule.patience` 轮没有装入就停。
@@ -146,9 +147,9 @@ def run_ladder(files, decl, *, ctx: VerifyContext) -> Verdict
 # VerifyContext: parent、seed、core、limits、objects、worker、suite、evidence、forbidden 字面量、train 题文本、embed
 ```
 
-- **V0 静态**（`verify/static.py`）：`check_shape`（含上限、manifest、vendor 保护文件）；diff 的 kind ⊆ K 的 `harness.kinds`；hook 站点 ⊆ K 的 `sites`；`memory/` 未改；相对种子改动行的字面量；改动的 `.py` 不 import `socket`、`subprocess`、`ctypes`、`pickle`、`multiprocessing`，不调 `os.system`/`os.popen`/`eval`/`exec`；声明与 diff 一致（声明的 kind 在 diff 的 kinds 里；tool 的 site 是包里新增或改动的工具名，hook 的 site 是改动的 hook 所在站点，skill 的 site 是技能名）；`predicted_affected` 都是 train 题。
+- **V0 静态**（`verify/static.py`）：`check_shape`（含上限、manifest、vendor 保护文件）；diff 的 kind ⊆ K 的 `harness.kinds`；hook 站点 ⊆ K 的 `sites`；`memory/` 未改；相对种子改动行的字面量；改动的 `.py` 不新增 import `socket`、`subprocess`、`ctypes`、`pickle`、`multiprocessing` 等，不新增调用 `os.system`/`os.popen`/`os.exec*`/`os.spawn*`/`eval`/`exec`（按名字匹配，`import os as o`、`from os import system` 解析成原名）；声明与 diff 一致（声明的 kind 在 diff 的 kinds 里；tool 的 site 是包里新增或改动的工具名，hook 的 site 是改动的 hook 所在站点，skill 的 site 是技能名）；`predicted_affected` 都是 train 题。
 - **V1 单元**（`verify/unit.py`）：`runtime.worker.check_package`（probe、smoke、包测试），夹具是一道 train 题的新 episode。
-- **V2a toolcheck**（`verify/toolcheck.py`）：声明里每道题的脚本：该题新 episode → worker 装候选 → `check` op（世界经可写 broker）→ `episode.score()`；要求脚本调用了 site 指的工具，通过 ≥ `toolcheck_min_pass` 道。只回传 `{task_id: {passed, failed_kinds}}`，不回传断言参数。
+- **V2a toolcheck**（`verify/toolcheck.py`）：声明里每道声称的、当前 W 失败的 train 题的脚本（别的题的脚本不算通过）：该题新 episode → worker 装候选 → `check` op（世界经可写 broker）→ `episode.score()`；要求脚本调用了 site 指的工具，通过 ≥ `toolcheck_min_pass` 道。只回传 `{task_id: {passed, failed_kinds}}`，不回传断言参数。
 - **V2b 回放**（`verify/replay.py`）：从 transcript 重建站点事件——`before_run`（任务、system）、`before_model`（每次 act 调用的 messages 与工具）、`before_tool` / `after_tool`（每个工具调用与它在下一次调用里的结果）、`after_turn`（一个回合的结果）、`on_finish`（finish 的 reason 与最后的文字）——逐个经 `hook` op 调候选在该站点的 hook；返回非 none 的 action 算触发；声称的失败题上触发 ≥ `replay_min_triggers` 道；报告通过样本上的误触发率。
 - **V2c 可达**（`verify/reach.py`）：技能的名字与描述对 train 题文本的相似度 ≥ `reach_min_score` 的题，除去 `predicted_affected`，≥ `reach_min_tasks` 道。向量：K 开着 memory 时用 sidecar 的 bge-small，否则用确定的词袋向量。
 
@@ -166,8 +167,8 @@ def gate(activity, candidate_package_ref, *, round_id, account) -> dict         
 - 失败集 = (声称的题 ∪ 簇的题) ∩ 当前 W 仍失败的 train 题；样本 = `screen_passing_sample` 道当前通过的 train 题（按 `order_seed` 与轮次抽，重跑同一轮抽到同样的）。失败集少于 `thin_screen_tasks` 道记 `thin`。
 - 运行：`run_arm(release=W_base, package=候选, split="train", candidate=f"r{i}:{dir}", role="screen")`。
 - 条件记功：修复只在 `footprint` 为真的题上算（§4）；退步在样本上算，不论足迹。净翻转 = 条件修复 − 退步。资格：净翻转 ≥ `screen_min_net_flips`、条件修复 ≥ `screen_min_fixes`、退步 ≤ `screen_max_sample_regressions`；最优者（净翻转大，再成本低，再声明顺序）进 V4。
-- 付费之前核价：所有筛选的尝试数 × W_base 的 train 每次尝试成本，加 gate 的界（dev 题数 ×（1 + 确认次数）+ 对照缺口）× W_base 的 dev 每次尝试成本，要放得进本轮账户的余额；没有成本读数就无法核价，不开始。
-- V4：冻结的 gate 模板（`gate_template` 事件）填上候选包、对照包、父 release，经 `evaluate.gate.evaluate_task`；对照池是 W_base 在 dev 上同条件的有效读数（基线的读数在里面）；被测臂 `run_arm(package=候选, split="dev", role="subject")`。收据登记后若 accepted：`Releases.candidate` → `install(..., operation_id=f"install:{round_id}")`（与 Execution 的操作 id 不同名，避免读到别人的记录）。
+- 付费之前核价：筛选还没记录的尝试数（续跑时已付的不再算）加记功一步对胜者的 train 重读（它的筛选没读到的题）× W_base 的 train 每次尝试成本，加 gate 的界（dev 题数 ×（1 + 确认次数）+ 对照池的缺口，`evaluate.gate.shortfall`）× W_base 的 dev 每次尝试成本，要放得进本轮账户的余额；没有成本读数就无法核价，不开始。核价用均值，单次调用仍按定价的上界预留，所以核价通过后预算仍可能拒掉一次尝试，这一轮就停在 `budget`。
+- V4：冻结的 gate 模板（`gate_template` 事件）填上候选包、对照包、父 release，经 `evaluate.gate.evaluate_task`；对照池是 W_base 在 dev 上同条件的有效读数（role `base` 或 `control`；基线的读数在里面；装入之后新 W 在 dev 上的读数是它那次 gate 的被测臂，不进池，所以它的第一次 gate 要补满对照），补缺口的 run 是这一次 gate 的（候选名 `control:<W 短 ref>:<round_id>`，一次被拒的补读下次 gate 重读）；被测臂 `run_arm(package=候选, split="dev", role="subject")`。收据登记后若 accepted：`Releases.candidate` → `install(..., operation_id=f"install:{round_id}")`（与 Execution 的操作 id 不同名，避免读到别人的记录）。
 
 ## 10 档案、记功、台账、策略、固定候选
 
@@ -201,9 +202,11 @@ def update_playbook(ledger, playbook, *, researcher, line) -> str      # 轮末�
 def export_policy(activity) -> str;  def import_policy(activity, policy_ref) -> None
 ```
 
-- 记功（装入后）：新 W 在 train 上量一遍（与下一轮的 measure 同一次）；对改动的每个组件，在 `footprint` 为真的题上记 `delta = r_新 − r_旧`；估值 `(line, cause, kind)` 用该 cause 的题上的条件净修复与本轮花费更新。
+- 记功（装入后）：新 W 在 train 上量一遍（与下一轮的 measure 同一次）；对改动的每个组件，在 `footprint` 为真的题上记 `delta = r_新 − r_旧`；估值 `(line, cause, kind)` 用该 cause 的题上、声明的 kind 的组件有足迹处的净修复与本轮花费更新。估值的每个观测按 `round:dir` 记：筛选时记一次（条件净翻转 / 失败集），装入后用记功的读数替换它，续跑写同一键不重复计。
 - 反膨胀：一个组件连续 `removal_zero_credit_rounds` 个已记功的轮次条件记功为零 → 删除候选（固定代码生成），下一轮作为固定候选进 V3。
 - R 的策略（估值与剧本）在活动内随台账更新；release 里的 `improver_ref` 在一个活动内保持 R0，活动结束时 `export_policy` 产出下一个活动的 R1（DESIGN §6.9）。
+- 升级的技能装入后，记功一步调 `MemoryService.supersede`：流的台账里条目 `superseded`，live store 退役它，live 库文件里没有它（MEMORY §8）。memory 条目的分类按（条目、请求、模型）缓存在 `rounds/notes.jsonl`。
+- 固定候选的目录名（`memory-snapshot`、`promoted-`、`remove-` 开头）R 不能用。
 - 固定候选（每轮 ≤ `fixed_per_round`，先快照、再升级技能、再删除）：library 阶段的快照候选（`library_snapshot` 事件，outcome candidate，还没进过阶梯的）走 V0 → V3；memory 升级出的技能候选走 V0、V2c → V3；删除候选走 V0 → V3。它们和 R 的候选一起筛选，最优者进 V4。
 
 ## 11 不变量
