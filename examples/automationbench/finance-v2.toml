@@ -83,4 +83,6 @@ repeats = 3
 
 [rsi]
 scope_id = "finance-v2"
-# core_ref / split_ref / final_plan_ref: the lines `ouroloop freeze` prints.
+# printed by `ouroloop freeze` on 2026-10-09 (K frozen at code s4/finance c7aaca8); final_plan_ref comes with the seal
+core_ref = "core:sha256:eb459dae455d4162920a2c098b5398576a2404ea202734d9f1b921bb7cace2ae"
+split_ref = "4fd91eaf9fb8daf5"
