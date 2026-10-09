@@ -20,6 +20,7 @@ import json
 from ..harness.contract import SITES
 from ..harness.kinds import KINDS
 from ..harness.package import DEFAULT_CONFIG_RANGES
+from ..improver.settings import RULES as IMPROVER_RULES, preset_table as improver_preset
 from ..memory.settings import preset_table as memory_preset
 
 THREAD_ENV = {"OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"}
@@ -45,10 +46,7 @@ AUTOMATIONBENCH_V1 = {
                "memory_swap": "512m", "pids": 128, "tmpfs_mb": 256, "network": "none", "env": dict(THREAD_ENV),
                "request_seconds": 30.0, "max_output_chars": 20000},
     "memory": memory_preset(),             # memory/settings.py: v6's calibrated values, the sidecar's pins
-    "improver": {"k": 3, "session_max_turns": 40, "session_max_edits": 32, "session_max_read_bytes": 65536,
-                 "session_max_read_total": 1048576, "diagnose_max_cases": 60, "explore_slots": 1, "l5_slots": 1,
-                 "screen_passing_sample": 6, "screen_min_net_flips": 0, "screen_min_fixes": 1,
-                 "screen_max_sample_regressions": 1, "round_share": 0.25},
+    "improver": improver_preset(),         # improver/settings.py: the priors from what was measured
     "gate": {"min_gain": 0.05, "min_groups": 5, "min_tasks": 25, "max_regression_rate": 0.1, "regression_drop": 0.5,
              "confirmations": 1, "control_pooling": "pooled", "control_readings": 2, "repeats": 1, "order_seed": 0,
              "missing_cost_policy": "refuse", "max_infrastructure_retries": 1},
@@ -81,10 +79,7 @@ RULES = {
                "traj_total_chars": "cap", "stream_batch": "fixed", "cite": "fixed", "retry": "free", "abort_d": "floor",
                "heldout_domains": "superset", "imports": "free", "llm_timeout_s": "cap", "promote_fixes": "floor",
                "promote_sources": "floor", "retriever": "fixed", "backend": "fixed"},
-    "improver": {"k": "cap", "session_max_turns": "cap", "session_max_edits": "cap", "session_max_read_bytes": "cap",
-                 "session_max_read_total": "cap", "diagnose_max_cases": "cap", "explore_slots": "cap",
-                 "l5_slots": "cap", "screen_passing_sample": "cap", "screen_min_net_flips": "floor",
-                 "screen_min_fixes": "floor", "screen_max_sample_regressions": "cap", "round_share": "cap"},
+    "improver": dict(IMPROVER_RULES),
     "gate": {"min_gain": "floor", "min_groups": "floor", "min_tasks": "floor", "max_regression_rate": "cap",
              "regression_drop": "cap", "confirmations": "floor", "control_pooling": "fixed",
              "control_readings": "floor", "repeats": "floor", "order_seed": "free", "missing_cost_policy": "fixed",

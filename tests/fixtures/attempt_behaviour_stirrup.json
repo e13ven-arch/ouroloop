@@ -53,8 +53,8 @@
  },
  "gateway_calls": [
   {
-   "effort_requested": null,
-   "effort_sent": null,
+   "effort_requested": "medium",
+   "effort_sent": "medium",
    "messages_prefix": 0,
    "model": "scripted-actor-1",
    "reply": {
@@ -84,8 +84,8 @@
    }
   },
   {
-   "effort_requested": null,
-   "effort_sent": null,
+   "effort_requested": "medium",
+   "effort_sent": "medium",
    "messages_prefix": 2,
    "model": "scripted-actor-1",
    "reply": {
@@ -110,8 +110,8 @@
    }
   },
   {
-   "effort_requested": null,
-   "effort_sent": null,
+   "effort_requested": "medium",
+   "effort_sent": "medium",
    "messages_prefix": 5,
    "model": "scripted-actor-1",
    "reply": {
@@ -144,8 +144,8 @@
    }
   },
   {
-   "effort_requested": null,
-   "effort_sent": null,
+   "effort_requested": "medium",
+   "effort_sent": "medium",
    "messages_prefix": 8,
    "model": "scripted-actor-1",
    "reply": {
@@ -170,8 +170,8 @@
    }
   },
   {
-   "effort_requested": null,
-   "effort_sent": null,
+   "effort_requested": "medium",
+   "effort_sent": "medium",
    "messages_prefix": 11,
    "model": "scripted-actor-1",
    "reply": {
@@ -196,8 +196,8 @@
    }
   },
   {
-   "effort_requested": null,
-   "effort_sent": null,
+   "effort_requested": "medium",
+   "effort_sent": "medium",
    "messages_prefix": 14,
    "model": "scripted-actor-1",
    "reply": {
@@ -222,8 +222,8 @@
    }
   },
   {
-   "effort_requested": null,
-   "effort_sent": null,
+   "effort_requested": "medium",
+   "effort_sent": "medium",
    "messages_prefix": 17,
    "model": "scripted-actor-1",
    "reply": {
@@ -246,8 +246,8 @@
    }
   },
   {
-   "effort_requested": null,
-   "effort_sent": null,
+   "effort_requested": "medium",
+   "effort_sent": "medium",
    "messages_prefix": 20,
    "model": "scripted-actor-1",
    "reply": {
@@ -380,7 +380,7 @@
  ],
  "model_calls": [
   {
-   "effort": null,
+   "effort": "medium",
    "messages": [
     {
      "content": "Sam Okafor replied to the campaign. Our records are the source of truth for the pipeline, so read the contact before you change it and keep the change minimal. Do not touch any other contact, do not invent fields, and do not ask clarifying questions. Use the API endpoints you can discover with the search tool, and check what each call returned before moving on. Move his contact to the opportunity stage, and once that is done post a message in #ops containing the phrase stage updated.",
@@ -396,7 +396,7 @@
    ]
   },
   {
-   "effort": null,
+   "effort": "medium",
    "messages": [
     {
      "content": "Sam Okafor replied to the campaign. Our records are the source of truth for the pipeline, so read the contact before you change it and keep the change minimal. Do not touch any other contact, do not invent fields, and do not ask clarifying questions. Use the API endpoints you can discover with the search tool, and check what each call returned before moving on. Move his contact to the opportunity stage, and once that is done post a message in #ops containing the phrase stage updated.",
@@ -447,7 +447,7 @@
    ]
   },
   {
-   "effort": null,
+   "effort": "medium",
    "messages": [
     {
      "content": "Sam Okafor replied to the campaign. Our records are the source of truth for the pipeline, so read the contact before you change it and keep the change minimal. Do not touch any other contact, do not invent fields, and do not ask clarifying questions. Use the API endpoints you can discover with the search tool, and check what each call returned before moving on. Move his contact to the opportunity stage, and once that is done post a message in #ops containing the phrase stage updated.",
@@ -525,7 +525,7 @@
    ]
   },
   {
-   "effort": null,
+   "effort": "medium",
    "messages": [
     {
      "content": "Sam Okafor replied to the campaign. Our records are the source of truth for the pipeline, so read the contact before you change it and keep the change minimal. Do not touch any other contact, do not invent fields, and do not ask clarifying questions. Use the API endpoints you can discover with the search tool, and check what each call returned before moving on. Move his contact to the opportunity stage, and once that is done post a message in #ops containing the phrase stage updated.",
@@ -638,7 +638,7 @@
    ]
   },
   {
-   "effort": null,
+   "effort": "medium",
    "messages": [
     {
      "content": "Sam Okafor replied to the campaign. Our records are the source of truth for the pipeline, so read the contact before you change it and keep the change minimal. Do not touch any other contact, do not invent fields, and do not ask clarifying questions. Use the API endpoints you can discover with the search tool, and check what each call returned before moving on. Move his contact to the opportunity stage, and once that is done post a message in #ops containing the phrase stage updated.",
@@ -778,7 +778,7 @@
    ]
   },
   {
-   "effort": null,
+   "effort": "medium",
    "messages": [
     {
      "content": "Sam Okafor replied to the campaign. Our records are the source of truth for the pipeline, so read the contact before you change it and keep the change minimal. Do not touch any other contact, do not invent fields, and do not ask clarifying questions. Use the API endpoints you can discover with the search tool, and check what each call returned before moving on. Move his contact to the opportunity stage, and once that is done post a message in #ops containing the phrase stage updated.",
@@ -945,7 +945,7 @@
    ]
   },
   {
-   "effort": null,
+   "effort": "medium",
    "messages": [
     {
      "content": "Sam Okafor replied to the campaign. Our records are the source of truth for the pipeline, so read the contact before you change it and keep the change minimal. Do not touch any other contact, do not invent fields, and do not ask clarifying questions. Use the API endpoints you can discover with the search tool, and check what each call returned before moving on. Move his contact to the opportunity stage, and once that is done post a message in #ops containing the phrase stage updated.",
@@ -1139,7 +1139,7 @@
    ]
   },
   {
-   "effort": null,
+   "effort": "medium",
    "messages": [
     {
      "content": "Sam Okafor replied to the campaign. Our records are the source of truth for the pipeline, so read the contact before you change it and keep the change minimal. Do not touch any other contact, do not invent fields, and do not ask clarifying questions. Use the API endpoints you can discover with the search tool, and check what each call returned before moving on. Move his contact to the opportunity stage, and once that is done post a message in #ops containing the phrase stage updated.",

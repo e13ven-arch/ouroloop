@@ -7,7 +7,7 @@ another package: the attempt and the gate in evaluate/, the run in runtime/, the
               sealed final plan; prints the [rsi] lines the config then names
     baseline  W0 on every train task and on dev `control_readings` times (the pooled control's first readings)
     library   the memory's train stream and its snapshot as a candidate (docs/design/MEMORY.md §7)
-    round     one round of the improver (stage 3, docs/design/IMPROVER.md §3)
+    round     one round of the improver (docs/design/IMPROVER.md §3); `cycle` runs them with the patience rule
     evaluate  the sealed final on the test tasks; it reports, it does not choose
     report    the activity's report from what is on disk; no model is called
     export    an installed release as an app
@@ -34,7 +34,6 @@ from ..harness.package import Limits, PackageError, build
 from .checks import require, startup_checks
 
 PHASES = ("smoke", "freeze", "baseline", "library", "round", "evaluate", "report", "export")
-STAGE3 = "the round phase needs the improver package (stage 3, docs/design/IMPROVER.md §3)"
 
 
 # ---------------------------------------------------------------------------- one arm of tasks
@@ -53,14 +52,21 @@ def run_arm(activity, *, release: Release, split: str, candidate: str, role: str
     want = [(t, i, attempt_id(run.hash(), t, i, arm, retry)) for t, i in pairs]
     todo = [(t, i) for t, i, a in want if a not in recorded]
     if todo:
-        make = make_agent_factory(provider=activity.actor_provider(account, allocation=allocation), package=package,
-                                  core=activity.k, worker=activity.worker(), root=activity.root,
-                                  pricing=activity.pricing(), release_ref=release.ref(), core_ref=activity.core_ref,
-                                  arm=arm, memory=memory if memory is not None else activity.memory_for(package))
-        for r in run_tasks(activity.suite, [], make, run=run, splits=activity.splits, results=activity.results,
-                           order=todo, arm=arm, plan_ref=plan_ref, release_ref=release.ref(), retry_index=retry,
-                           supersedes=supersedes, concurrency=activity.concurrency):
-            recorded[r.attempt_id] = r
+        provider = activity.actor_provider(account, allocation=allocation)
+        make = make_agent_factory(provider=provider, package=package, core=activity.k, worker=activity.worker(),
+                                  root=activity.root, pricing=activity.pricing(), release_ref=release.ref(),
+                                  core_ref=activity.core_ref, arm=arm,
+                                  memory=memory if memory is not None else activity.memory_for(package))
+        try:
+            for r in run_tasks(activity.suite, [], make, run=run, splits=activity.splits, results=activity.results,
+                               order=todo, arm=arm, plan_ref=plan_ref, release_ref=release.ref(), retry_index=retry,
+                               supersedes=supersedes, concurrency=activity.concurrency):
+                recorded[r.attempt_id] = r
+        finally:
+            # the provider's rate-limit refusals the meter absorbed (released, never charged): on record per run
+            if getattr(provider, "rate_limited", 0):
+                activity.events.append("rate_limited", run=run.hash(), candidate=candidate, split=split,
+                                       count=int(provider.rate_limited))
     return [recorded[a] for _t, _i, a in want if a in recorded]
 
 
@@ -464,8 +470,11 @@ def _import(activity, step, spec: dict) -> dict:
     return step.import_snapshot(package.memory_text, source_release_ref=ref, source_line=lines[0])
 
 
-def round_(activity, index: int, *, out: Callable[[str], None] = print) -> dict:
-    raise NotImplementedError(STAGE3)
+def round_(activity, index: int, *, out: Callable[[str], None] = print):
+    """One round of the improver (docs/design/IMPROVER.md §3); run again, it continues and pays for nothing done."""
+    require(startup_checks(activity, phase="round"), phase="round")
+    from ..improver.round import run_round
+    return run_round(activity, index, run_arm=run_arm, out=out)
 
 
 # ---------------------------------------------------------------------------- the final
@@ -547,4 +556,18 @@ def cycle(activity, *, until: str | None = None, out: Callable[[str], None] = pr
             return {**state, "status": "stopped", "at": "library"}
     if until == "library":
         return {**state, "status": "stopped", "at": "library"}
-    raise NotImplementedError(STAGE3)
+    idle = 0
+    for i in range(int(activity.k["schedule"]["rounds"])):
+        key = f"round-{i}"
+        if (state["steps"].get(key) or {}).get("status") not in ("done", "stopped"):
+            result = round_(activity, i, out=out)
+            state["steps"][key] = {"status": result.status, "installed": result.installed, "stop": result.stop}
+            write_json(path, state)
+            if result.status != "done" and result.stop and result.stop.startswith(("budget", "unpriced")):
+                return {**state, "status": "stopped", "at": key}
+        idle = 0 if state["steps"][key].get("installed") else idle + 1
+        if until == key:
+            return {**state, "status": "stopped", "at": key}
+        if idle >= int(activity.k["schedule"]["patience"]):
+            return {**state, "status": "stopped", "at": key, "reason": f"{idle} rounds without an install"}
+    return {**state, "status": "done"}

@@ -39,12 +39,14 @@ LAYERS = {
     "runtime": {"contracts", "harness"},
     "evaluate": {"contracts", "harness", "runtime", "adapters"},
     "memory": {"contracts", "harness", "runtime"},
+    "improver": {"contracts", "harness", "runtime", "evaluate", "memory", "adapters"},
     "activity": {"contracts", "harness", "runtime", "evaluate", "adapters", "memory", "improver"},
 }
 # providers/ has no place in CONTRACTS §1 (RUNTIME §10 leaves it as it was). It builds on runtime.chat, and these
 # packages reach it only inside a function: runtime to tell an account error, evaluate for ProviderError, activity to
 # build K's providers. A module-level import of it from them is refused like any other edge.
 FUNCTION_LEVEL_ONLY = {"runtime": {"providers"}, "evaluate": {"providers"}, "memory": {"providers"},
+                       "improver": {"providers"},
                        "activity": {"providers"}}
 
 
@@ -89,8 +91,13 @@ print(json.dumps({"smoke_ok": smoke["ok"], "smoke_attempts": len(smoke["attempts
 """
 
 
+# K's sections take their defaults from the packages they configure; those modules import nothing of the improver's
+# or the memory's code (standard library only), and are the only ones of those packages a phase of W0 may load.
+SETTINGS_MODULES = ("ouroloop.improver", "ouroloop.improver.settings")
+
+
 def loaded(prefix: str, modules) -> list[str]:
-    return sorted(m for m in modules if m == prefix or m.startswith(prefix + "."))
+    return sorted(m for m in modules if (m == prefix or m.startswith(prefix + ".")) and m not in SETTINGS_MODULES)
 
 
 def package_code(modules: dict) -> list[str]:
@@ -221,4 +228,4 @@ def test_importing_a_package_loads_nothing_above_it(package, tmp_path):
     pulled = {m.split(".")[1] for m in modules if m.startswith("ouroloop.")} - {package}
     assert f"ouroloop.{package}" in modules
     assert pulled <= LAYERS[package], f"ouroloop.{package} loads {sorted(pulled - LAYERS[package])}"
-    assert [m for prefix in OFF_PATH for m in loaded(prefix, modules)] == []
+    assert [m for prefix in OFF_PATH if prefix != f"ouroloop.{package}" for m in loaded(prefix, modules)] == []

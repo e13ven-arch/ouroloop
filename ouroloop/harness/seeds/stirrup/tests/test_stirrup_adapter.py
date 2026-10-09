@@ -8,6 +8,7 @@ import os
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 POST = "https://slack.com/api/chat.postMessage"
 HERE = "tests/test_stirrup_adapter.py"
+GUARD = ("ledger", "triage", "anchor", "verify")    # the write guard's hooks: a hook added later brings its own tests
 
 
 def _load(rel, name):
@@ -57,7 +58,7 @@ class FakeCtx:
                                      "schema": {"type": "object", "properties": {"method": {"type": "string"},
                                                                                  "url": {"type": "string"},
                                                                                  "body": {"type": "string"}}}}],
-                     "package": {"hooks": manifest["hooks"] if hooks is None else hooks, "tools": manifest["tools"],
+                     "package": {"hooks": [h for h in manifest["hooks"] if h["name"] in GUARD] if hooks is None else hooks, "tools": manifest["tools"],
                                  "memory": {"enabled": memory is not None}, "config": config or manifest["config"]}}
         self.limits = {"act_calls": act_calls, "tokens": 100000}
         self.skills = Skills(skills)

@@ -85,13 +85,20 @@ class LiteralIndex:
     headers: set = field(default_factory=set)       # field and column names
 
 
+def _values(assertion: dict):
+    if "params" in assertion:
+        return assertion.get("params")
+    return {k: v for k, v in assertion.items() if k not in ("type", "excluded", "passed")}
+
+
 def literal_index(rows: Iterable[dict]) -> LiteralIndex:
-    """From train rows only: {task_id, assertions: [{params, ...}], state?}. A grading row has this shape; the
-    activity adds a train task's initial state as `state`."""
+    """From train rows only: {task_id, assertions, state?}. An assertion is the grader's own (its values beside its
+    `type`) or an attempt's record of it ({type, params, passed, excluded}); the activity adds a train task's initial
+    state as `state`."""
     index = LiteralIndex()
     for row in rows:
         task = str(row.get("task_id") or "")
-        params = [a.get("params") for a in row.get("assertions") or () if isinstance(a, dict)]
+        params = [_values(a) for a in row.get("assertions") or () if isinstance(a, dict)]
         for lit in literals_of(params):
             index.tasks.setdefault(lit, set()).add(task)
             index.answers.add(lit)

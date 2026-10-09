@@ -140,10 +140,12 @@ class Activity:
         provider = (self.provider_factory or build_provider)(self.model_table("model"))
         return MeteredProvider(provider, account, self.pricing(), operation="actor", allocation=allocation)
 
-    def research_provider(self, step: str, *, retries: bool = True) -> MeteredProvider:
-        """K's research model for an improver or memory step, in its own account. Without `retries` neither the
-        provider nor the meter retries and the provider's own timeout is kept under the OpenAI SDK's read timeout:
-        what the memory's bridge serves (memory/bridge.py: every request is served once)."""
+    def research_provider(self, step: str, *, retries: bool = True, account: BudgetAccount | None = None) \
+            -> MeteredProvider:
+        """K's research model for an improver or memory step, in its own account (`account`, or `research:<step>`
+        under the root). Without `retries` neither the provider nor the meter retries and the provider's own timeout
+        is kept under the OpenAI SDK's read timeout: what the memory's bridge serves (memory/bridge.py: every request
+        is served once)."""
         from ..providers import build_provider
         provider = (self.provider_factory or build_provider)(self.model_table("research_model"))
         if not retries:
@@ -153,8 +155,8 @@ class Activity:
             timeout = getattr(provider, "timeout", None)
             if isinstance(timeout, (int, float)) and not isinstance(timeout, bool) and timeout > RESEARCH_SECONDS:
                 provider.timeout = RESEARCH_SECONDS
-        return MeteredProvider(provider, self.account(f"research:{step}"), self.pricing(), operation=step,
-                               **({} if retries else {"max_retries": 0}))
+        return MeteredProvider(provider, account if account is not None else self.account(f"research:{step}"),
+                               self.pricing(), operation=step, **({} if retries else {"max_retries": 0}))
 
     # ------------------------------------------------------------------ memory
     def memory(self):

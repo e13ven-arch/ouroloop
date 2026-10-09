@@ -324,7 +324,7 @@ def test_the_cycle_with_the_memory_on_stops_at_the_library_and_a_second_cycle_pa
     paid, reservations, starts = calls(s), book(s.a)["reservations"], s.starts
     second = phases.cycle(s.a, until="library", out=quiet)
     assert json.loads(json.dumps(second)) == json.loads(json.dumps(first))
-    with pytest.raises(NotImplementedError, match="stage 3"):
+    with pytest.raises(RuntimeError, match="no frozen gate plan"):
         phases.cycle(s.a, out=quiet)
     assert calls(s) == paid and book(s.a)["reservations"] == reservations and s.starts == starts
 

@@ -200,19 +200,13 @@ def test_cycle_stops_after_the_baseline_resumes_without_paying_and_names_the_sta
     assert json.loads((a.root / "rsi" / "cycle.json").read_text(encoding="utf-8"))["steps"] == first["steps"]
     calls = provider.calls
     assert phases.cycle(a, until="baseline", out=quiet) == first
-    # the memory is off in this K: the library step is done by being skipped, and the rounds wait for stage 3
+    # the memory is off in this K: the library step is done by being skipped; a round waits for the frozen gate plan
     at_library = phases.cycle(a, until="library", out=quiet)
     assert at_library["at"] == "library" and at_library["steps"]["library"]["skipped"] == "[memory] enabled = false"
     for until in (None, "round-0", "round-2"):
-        with pytest.raises(NotImplementedError, match="stage 3"):
+        with pytest.raises(RuntimeError, match="no frozen gate plan"):
             phases.cycle(a, until=until, out=quiet)
     assert provider.calls == calls
-
-
-def test_the_round_names_its_stage(tmp_path, fake_upstream):
-    a = rsi.activity(tmp_path, fake_upstream, freeze_k=False)
-    with pytest.raises(NotImplementedError, match=r"improver package \(stage 3"):
-        phases.round_(a, 0, out=quiet)
 
 
 # ---------------------------------------------------------------------------- report
@@ -354,7 +348,8 @@ phases.baseline(a, limit=1, out=lambda _l: None)
 # memory: no client, bridge, service, stream or reader, and never the sidecar's own modules
 print(json.dumps(sorted(m for m in sys.modules if m.startswith(("ouroloop.train", "ouroloop.improver",
                                                                  "ouroloop.memory"))
-                        and m not in ("ouroloop.memory", "ouroloop.memory.settings"))))
+                        and m not in ("ouroloop.memory", "ouroloop.memory.settings", "ouroloop.improver",
+                                      "ouroloop.improver.settings"))))
 """
 
 

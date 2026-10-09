@@ -16,7 +16,7 @@ train/           训练链                                                     �
 ```
 
 硬规则（`tests/test_hot_path_boundary.py` 守住）：
-- 一次尝试（`evaluate.run_attempt`）跑完，`sys.modules` 里没有 `ouroloop.improver`、`ouroloop.memory.sidecar`、`ouroloop.train`。
+- 一次尝试（`evaluate.run_attempt`）跑完，`sys.modules` 里没有 `ouroloop.improver`、`ouroloop.memory.sidecar`、`ouroloop.train`；例外只有 K 的节取默认值的 `ouroloop.improver.settings`（与包的 `__init__`），它们只用标准库。
 - 控制面进程永远不 import 包里的代码（`vendor/`、`agent/`、`tools/`、`middlewares/`、`tests/`）；它们只在 worker 里跑。
 - `adapters/` 不 import 本框架的其他包。
 
@@ -68,8 +68,9 @@ def copy_closure(src: Objects, dst: Objects, refs) -> set[str]   # 导出时拷�
   bench/<domain>/               splits.json（冻结的划分）、results.jsonl、runs/、grading.jsonl（evaluate.results）
   transcripts/<attempt>.jsonl   每次尝试一份（runtime.records；attempt id 里的 / 写成 __）
   index/trace.sqlite            trace 的 FTS 索引，派生、可重建（阶段 3，runtime/trace.py）
-  rounds/<round_id>/            一轮改进器的产物（阶段 3）
-  ledger/experience.jsonl       改进器台账（阶段 3）
+  rounds/r<i>/                  一轮改进器的产物（阶段 3）：round.json（每步的输出）、candidates/<dir>/、session 记录
+  rounds/notes.jsonl            诊断的缓存
+  ledger/experience.jsonl       改进器台账（阶段 3）；ledger/estimates.json、ledger/playbook.md
   memory/<line>/                memory（阶段 2）：stream.json（流的台账）、live.jsonl、chroma/、bridge_calls.jsonl
   report.json、report.md        报告（activity.report）
 ```

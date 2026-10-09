@@ -196,7 +196,7 @@ class Kind:
 KIND_TABLE: dict[str, Kind]
 
 # literals.py
-def literal_index(rows: Iterable[dict]) -> LiteralIndex     # 只从 train 建：行 {task_id, assertions:[{params}], state?}（评分行或 train 题的初始状态）
+def literal_index(rows: Iterable[dict]) -> LiteralIndex     # 只从 train 建：行 {task_id, assertions, state?}；断言是评分器自己的扁平 dict（type 之外的字段）或尝试记下的 {type, params}
 def forbidden(index: LiteralIndex, *, exempt: set[str] = frozenset()) -> set[str]
 def changed_lines(text: str, base: str | None) -> set[int]
 def findings(files: dict[str, str], seed: Package | None, forbidden: set[str], *, allowed: set[str] = frozenset()) -> list[dict]

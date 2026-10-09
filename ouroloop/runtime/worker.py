@@ -652,11 +652,13 @@ class WorkerSession:
 # ---------------------------------------------------------------------------- draft checks
 def package_view(manifest: dict) -> dict:
     """ctx.view["package"]: what the adapter reads to run the package — its enabled hooks and tools, the memory
-    switch, the config knobs — the same projection in an attempt (runtime/runner.py) and in the smoke."""
+    switch, the config knobs, the effort its model calls ask for (the gateway caps it at K's) — the same projection in
+    an attempt (runtime/runner.py) and in the smoke."""
     return {"hooks": [dict(h) for h in manifest.get("hooks") or () if h.get("enabled", True)],
             "tools": [dict(t) for t in manifest.get("tools") or () if t.get("enabled", True)],
             "memory": {"enabled": bool((manifest.get("memory") or {}).get("enabled"))},
-            "config": dict(manifest.get("config") or {})}
+            "config": dict(manifest.get("config") or {}),
+            "model": {"effort": (manifest.get("model") or {}).get("effort")}}
 
 
 def smoke_view(manifest: dict, fixture, max_output_chars: int) -> dict:

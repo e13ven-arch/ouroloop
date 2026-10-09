@@ -47,7 +47,7 @@ removed from here.
 - `quickstart.toml`: a new single-domain activity on finance with nothing frozen yet, so it touches no existing
   record. Its header lists the steps and their nominal cost.
 - `finance-v1.toml`: the first measured activity of the forward design (docs/PLAN.md stage 4). It enables the memory
-  and runs the improver's rounds, so its rounds wait for stage 3.
+  and runs the improver's rounds.
 
 ## The phases
 
@@ -57,6 +57,7 @@ ouroloop bench --config C --phase smoke                 # one dev attempt end to
 ouroloop freeze --config C                              # K, the gate template, the budget root (and a final plan); prints [rsi]
 ouroloop bench --config C --phase cycle --until baseline   # W0 on train and on dev control_readings times
 ouroloop bench --config C --phase cycle --until library    # the memory's train stream; its snapshot as a candidate
+ouroloop bench --config C --phase cycle --until round-0    # one improver round (then round-1, round-2: stop after each)
 ouroloop bench --config C --phase report                # the report from what is on disk; no model is called
 ouroloop export --config C --to DIR                     # an installed release as an app
 ```
@@ -66,8 +67,13 @@ the first time it writes `core.json` (K, with the frozen split's hash and the co
 {W0, R0, K}; after that, a config, a code change or a split that gives another K is refused — a changed K is a new
 activity (docs/PLAN.md rule 13). The library step streams the train tasks once through W0 with the live library
 (first encounters, a retry with the failed checks), writes what ReMe distils through the platform's checks, and ends
-with the readout (D, the halves) and, when D > 0, the snapshot as a candidate package; the improver's ladder (stage 3)
-takes it from there, as it takes `--until round-K`.
+with the readout (D, the halves) and, when D > 0, the snapshot as a candidate package. A round (docs/design/IMPROVER.md
+§3) measures the current W on train, diagnoses its failures into causes, assigns each a kind of component, runs R's
+coding session, checks every candidate on the free rungs (V0 static, V1 package tests, V2 toolcheck / hook replay /
+skill reach), screens the passing ones on train (V3, its first paid rung), sends the best through the dev gate (V4)
+and installs it when the receipt accepts; the library's snapshot and the memory's promoted skills enter at the ladder
+as fixed candidates. A round needs the gate plan `freeze` wrote; it is priced before its screens are paid, and a
+resumed round pays only for what is missing. `cycle` stops after `schedule.patience` rounds without an install.
 
 ## What the smoke phase establishes
 

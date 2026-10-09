@@ -900,7 +900,7 @@ class Tools:
 
 # ---------------------------------------------------------------------------- the entrypoint
 async def _main(ctx, task: str) -> str:
-    client = CtxClient(ctx)
+    client = CtxClient(ctx, effort=((ctx.view.get("package") or {}).get("model") or {}).get("effort"))
     tools = Tools(ctx, client)
     client.hooks = tools.hooks
     if int(tools.config.get("subagent_depth", 1)) >= 1:
@@ -913,6 +913,7 @@ async def _main(ctx, task: str) -> str:
         system, opening = tools.hooks.before_run(task, system)
     max_turns = int(tools.config.get("max_turns") or MAX_TURNS)
     left = (ctx.limits or {}).get("act_calls")
+    host_capped = isinstance(left, int) and 0 < left <= max_turns
     if isinstance(left, int) and left > 0:
         max_turns = min(max_turns, left)
     agent = Agent(client=client, name="stirrup_agent", system_prompt=system, tools=tools.stirrup_tools(),
@@ -932,6 +933,13 @@ async def _main(ctx, task: str) -> str:
         text = r.text
     finally:
         client.summarizing = False               # fix 4: an exception out of a summary lowers the flag too
+    if finished is None and host_capped and not _turns_left(ctx):
+        # Stirrup stopped at the host's act-call limit without finishing: one more act call lets the host end the
+        # attempt at its limit (refused before any model is called), so the record says budget, act_calls — not a
+        # run that finished
+        ctx.mark("stirrup_end", finished=False, implicit=False, turns=client.turn, summaries=client.summaries,
+                 pushbacks=tools.pushbacks, maxrss_mb=_maxrss_mb())
+        client.ctx.model([{"role": "user", "content": task}], [], role="act", effort=client.effort)
     # fix 7: the run's end as the agent saw it
     ctx.mark("stirrup_end", finished=finished is not None, implicit=finished is not None and tools.finished_implicit,
              turns=client.turn, summaries=client.summaries, pushbacks=tools.pushbacks, maxrss_mb=_maxrss_mb())
