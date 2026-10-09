@@ -230,6 +230,6 @@ def test_the_claude_cli_an_activity_first_ran_on_is_recorded_and_a_changed_one_r
     assert [e["version"] for e in a.events.read("cli_version")] == ["2.1.288 (Claude Code)"]
     version["now"] = "2.2.0 (Claude Code)"
     assert checks.cli_versions(a, "round") == ("2.1.288 (Claude Code)", "2.2.0 (Claude Code)")
-    assert checks.cli_versions(a, "report") == (None, None)                 # a phase that calls no model
+    assert checks.cli_versions(a, "report") is None                          # a phase that calls no model
     scripted = SimpleNamespace(provider_factory=lambda t: None, model_table=a.model_table, events=a.events)
-    assert checks.cli_versions(scripted, "round") == (None, None)
+    assert checks.cli_versions(scripted, "round") is None

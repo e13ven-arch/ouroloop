@@ -215,9 +215,14 @@ def freeze(activity, *, out: Callable[[str], None] = print) -> dict:
     out(f"budget     root {activity.scope_id}: {root.remaining()['limits'] or 'no dollar limit'}, "
         f"set aside {root.remaining()['allocations'] or 'nothing'}")
     plan = final_plan(activity) if "final" in activity.config else None
+    unfinished = sorted(p.parent.name for p in (activity.root / "rounds").glob("r*/round.json")
+                        if json.loads(p.read_text(encoding="utf-8")).get("status") not in ("done", "stopped"))
     if plan is not None and len(plan.arms) < 2:
         out("final      not sealed: the final compares W* with W0, and nothing is installed yet; freeze again when "
             "the rounds are over")
+    elif plan is not None and unfinished:
+        out(f"final      not sealed: round {', '.join(unfinished)} is not finished, and a round can still install; "
+            f"freeze again when the rounds are over")
     elif plan is not None:
         out(f"final      sealing W* = the active release {short(activity.active_release().ref())}: a round after "
             f"this one cannot change the final, so seal when the rounds are over")

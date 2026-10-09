@@ -562,7 +562,7 @@ def test_a_round_the_budget_refuses_stops_on_record_and_the_cycle_stops_there(tm
     cycle = phases.cycle(s.a, out=quiet)
     assert (cycle["status"], cycle["at"]) == ("stopped", "round-0") and "round-1" not in cycle["steps"]
     stop = cycle["steps"]["round-0"]["stop"]
-    assert stop.startswith("budget: the gate and the least screen would need up to $") and \
+    assert stop.startswith("budget: the gate, the least screen and the research would need up to $") and \
         cycle["steps"]["round-0"]["status"] == "stopped"
     assert paid(s) == before
     assert stages(s.a) == ["measured", "stopped"] and ledger_rows(s.a)[-1]["reason"] == stop

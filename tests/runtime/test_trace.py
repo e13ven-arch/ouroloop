@@ -1162,3 +1162,6 @@ def test_an_attempt_run_again_under_its_id_reads_as_its_last_run(tmp_path):
     assert [c["ref"] for c in store.calls("s/again#0")] == [f"s/again#0:L{second}"]
     texts = [m.get("content") for m in store.trajectory("s/again#0") if m.get("role") == "assistant"]
     assert texts == ["Second try."] and "First try." not in json.dumps(store.trajectory("s/again#0"))
+    # the search index forgets the dead run too
+    assert store.search("First try") == [] and [h["ref"] for h in store.search("Second try")] == \
+        [f"s/again#0:L{second}"]

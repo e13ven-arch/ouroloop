@@ -382,6 +382,13 @@ class TraceStore:
             last, end_offset = n, after
             ref = self.ref(session, n)
             kind = event.get("kind")
+            if kind == "task" and n > 1:
+                # the attempt runs again under its id (the last run died without a result): what was indexed of
+                # the dead run goes, as the readers read the last run only
+                db.execute("DELETE FROM docs WHERE session = ?", (session,))
+                db.execute("DELETE FROM results WHERE session = ?", (session,))
+                docs.clear(), new_results.clear(), seen.clear()
+                finished = ended = False
             if kind == "gateway_call":
                 response = event.get("response") or {}
                 if response.get("text"):

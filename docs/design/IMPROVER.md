@@ -131,11 +131,11 @@ TOOLS = ("list_files", "read_file", "write_file", "edit_file", "delete_file", "r
 
 - 模型循环在宿主（研究模型经计量 provider，每回合先预留后结算），文件树在 worker（`/work`：`package/` 只读、`inputs/` 只读、`candidates/<dir>/` 可写；第一次写某个 dir 时它从当前包复制）。
 - `inputs/`：`assignments.json`（簇、kind、名额）、`causes.json`（案例：题号、cause、说明、证据 ref、失败断言类型）、`successes.json`（成功轨迹的 session）、`ledger.json`（台账的 train 投影）、`scoreboard.json`、`playbook.md`、`histogram.json`（dev 失败类型与计数）、`base_tools.json`、`package_api.md`（包侧契约：ctx、hook 站点的事件与返回、工具与 agent 入口、toolcheck 脚本、manifest 的形状）。
-- `read_trajectory(session, offset?, limit?)`：重建的轨迹（JSON），只限 `readable`（本轮的 train session）；按 `session_max_read_bytes` / `session_max_read_total` 截断；`read_file` 同样计入这两个上限（会话的转写每回合整段重发）。上一回合报告的输入（含缓存读写）超过 `session_compact_tokens` 时，除最近 4 条之外的工具输出与写入文本换成“已省略，重读可见”的一行，每越过一次才做一次，其间每次调用仍是上一次的延伸（缓存）。回复被输出上限截断时告诉 R 写小一点；连续两次截断结束会话。`search_trace(query)`：TraceStore 的 FTS，只限 train。
+- `read_trajectory(session, offset?, limit?)`：重建的轨迹（JSON），只限 `readable`（本轮的 train session）；按 `session_max_read_bytes` / `session_max_read_total` 截断；`read_file` 同样计入这两个上限（会话的转写每回合整段重发）。下一次调用要发的上下文（按文本估算，3 字一 token）超过 `session_compact_tokens` 时，除最近 4 条（不够就 2 条、1 条）之外的工具输出与写入文本换成“已省略，重读可见”的一行，直到降到阈值的 0.6；被省略的读取把字节还给读取总量，重读不会被拒；两次压缩之间每次调用都是上一次的延伸（缓存）。回复被输出上限截断时告诉 R 写小一点；连续两次截断结束会话。`search_trace(query)`：TraceStore 的 FTS，只限 train。
 - `run_check(dir, declaration)`：对该目录当前文件跑 V0～V2，返回逐档结果的文本；`run_tests(dir)`：只跑包测试。都不付费。
 - `finish(candidates)`：每个是一份声明。声明不全或 dir 没写过 → 工具错误，R 可以在上限内再 finish。`finish([])` 直接结束会话（R 认为没有可做的）。超出 `session_max_turns` / `session_max_edits` 即结束，已声明的候选照常验收；没有声明则本轮没有 R 的候选。
 - 验收：每个候选跑一次阶梯；没过的把 Verdict 文本退回会话修订一次（`revise`），修订只改文件、不改声明（声明新目录是工具错误）；仍不过 → invalid。
-- 提供方失败（订阅限额、超时用尽）：会话的消息、计数与候选目录的文件存进 `round.json` 的 `session_checkpoint`，异常照常抛出；同一轮再跑时从那一回合接着，已付的回合不再付。会话一结束，候选就记进 `session_result`。
+- 提供方失败（订阅限额、超时用尽）或 Ctrl-C：会话的消息、计数与候选目录的文件存进 `round.json` 的 `session_checkpoint`，异常照常抛出；同一轮再跑时把候选目录原样恢复（先删包里有而它没有的文件，再按增量从小到大写；任何一步被拒就报错、检查点留着），从那一回合接着，已付的回合不再付。worker 崩溃或进程被杀时没有检查点，会话重付。会话一结束，候选就记进 `session_result`。
 - 诊断与剧本的回复被拒、被截断或读不出 JSON：不算答案，不进缓存（诊断记 other 并注明，下一轮再问）；剧本保留原有的教训。
 - 提示文本在 `improver/prompts/{diagnose,propose,playbook}.md`，哈希进 `ImproverPolicy`。
 
@@ -153,7 +153,7 @@ def run_ladder(files, decl, *, ctx: VerifyContext) -> Verdict
 - **V0 静态**（`verify/static.py`）：`check_shape`（含上限、manifest、vendor 保护文件）；diff 的 kind ⊆ K 的 `harness.kinds`；hook 站点 ⊆ K 的 `sites`；`memory/` 未改；相对种子改动行的字面量；改动的 `.py` 不新增 import `socket`、`subprocess`、`ctypes`、`pickle`、`multiprocessing` 等，不新增调用 `os.system`/`os.popen`/`os.exec*`/`os.spawn*`/`eval`/`exec`（按名字匹配，`import os as o`、`from os import system` 解析成原名）；声明与 diff 一致（声明的 kind 在 diff 的 kinds 里；tool 的 site 是包里新增或改动的工具名，hook 的 site 是改动的 hook 所在站点，skill 的 site 是技能名）；`predicted_affected` 都是 train 题。
 - **V1 单元**（`verify/unit.py`）：`runtime.worker.check_package`（probe、smoke、包测试），夹具是一道 train 题的新 episode。
 - **V2a toolcheck**（`verify/toolcheck.py`）：声明里每道声称的、当前 W 失败的 train 题的脚本（别的题的脚本不算通过）：该题新 episode → worker 装候选 → `check` op（世界经可写 broker）→ `episode.score()`；要求脚本调用了 site 指的工具，通过 ≥ `toolcheck_min_pass` 道。只回传 `{task_id: {passed, failed_kinds}}`，不回传断言参数。
-- **V2b 回放**（`verify/replay.py`）：从 transcript 重建站点事件，形状与 stirrup 种子交给 hook 的一致——`before_run`（任务、system）、`before_model`（每次 act 调用的 messages 与工具）、`before_tool` / `after_tool`（每个非 finish 的工具调用与它的结果；被阻止或跳过的没有 after_tool）、`after_turn`（一个回合的结果，`call_id`、输出截到 4000 字）、`on_finish`（reason 为 finish 或 implicit，final_text 是 finish 的理由，pushbacks 是此前的退回次数；连续纯文字回复变成的隐式 finish 也在）——按 manifest 顺序，同一站点上排在候选前面、在记录里已经退回或阻止了这个事件的 hook 先答，候选不会被问到，这个事件不给它；逐个经 `hook` op 调候选在该站点的 hook；返回非 none 的 action 算触发；声称的失败题上触发 ≥ `replay_min_triggers` 道；报告通过样本上的误触发率。
+- **V2b 回放**（`verify/replay.py`）：从 transcript 重建站点事件，形状与 stirrup 种子交给 hook 的一致——`before_run`（任务、system）、`before_model`（每次 act 调用的 messages 与工具）、`before_tool` / `after_tool`（每个非 finish 的工具调用与它的结果；被阻止或跳过的没有 after_tool）、`after_turn`（一个回合的结果，`call_id`、输出截到 4000 字）、`on_finish`（reason 为 finish 或 implicit，final_text 是 finish 的理由，pushbacks 是此前的退回次数；连续纯文字回复变成的隐式 finish 也在）——按 manifest 顺序，同一站点上排在候选前面、在记录里阻止了这一次调用（before_tool 的 block）或退回了这一次 finish（on_finish 的 pushback）的 hook 先答，候选不会被问到，这个事件不给它；逐个经 `hook` op 调候选在该站点的 hook；返回非 none 的 action 算触发；声称的失败题上触发 ≥ `replay_min_triggers` 道；报告通过样本上的误触发率。
 - **V2c 可达**（`verify/reach.py`）：技能的名字与描述对 train 题文本的相似度 ≥ `reach_min_score` 的题，除去 `predicted_affected`，≥ `reach_min_tasks` 道。向量：确定的词袋向量（`lexical_embed`），`reach_min_score` 按它校准；不用 sidecar 的 bge-small（它给无关文本 0.5 以上，0.2 会放过一切描述）。
 
 ## 9 筛选 V3（`screen.py`）与 gate V4
@@ -170,8 +170,8 @@ def gate(activity, candidate_package_ref, *, round_id, account) -> dict         
 - 失败集 = (声称的题 ∪ 簇的题) ∩ 当前 W 仍失败的 train 题；样本 = `screen_passing_sample` 道当前通过的 train 题（按 `order_seed` 与轮次抽，重跑同一轮抽到同样的）。失败集少于 `thin_screen_tasks` 道记 `thin`。
 - 运行：`run_arm(release=W_base, package=候选, split="train", candidate=f"r{i}:{dir}", role="screen")`。
 - 条件记功：修复只在 `footprint` 为真的题上算（§4）；退步在样本上算，不论足迹。净翻转 = 条件修复 − 退步。资格：净翻转 ≥ `screen_min_net_flips`、条件修复 ≥ `screen_min_fixes`、退步 ≤ `screen_max_sample_regressions`；最优者（净翻转大，再成本低，再声明顺序）进 V4。
-- 付诸任何研究调用之前（诊断之前）先核一个下限：gate 与只筛通过样本的价（加下面的余量）放不进本轮的余额 → 停在 `budget`，不付诊断与会话；没有成本读数 → 停在 `unpriced`。
-- 付费之前核价：筛选还没记录的尝试数（续跑时已付的不再算）加记功一步对胜者的 train 重读（它的筛选没读到的题）× W_base 的 train 每次尝试成本，加 gate 的界（dev 题数 ×（1 + 确认次数）+ 对照池的缺口，`evaluate.gate.shortfall`）× W_base 的 dev 每次尝试成本，乘以 1.15 再加两次调用的上界，要放得进本轮账户的余额（每次调用都按上界预留，所以一轮永远花不到最后一个上界；两个上界让最后一臂不至于串行）；没有成本读数就无法核价，不开始。gate 开跑之前按胜者的筛选成本再核一次 gate 的价，放不下就停在 `budget`，不付一个跑不完的 gate。
+- 付诸任何研究调用之前（诊断之前）先核一个下限：gate、一次小筛选（通过样本加 `thin_screen_tasks` 道失败题）与将要付的研究（每个案例一次诊断、每回合一次会话，按活动里研究调用的均价；还没有记录时不算）的价，加下面的余量，放不进本轮的余额 → 停在 `budget`，不付诊断与会话；没有成本读数 → 停在 `unpriced`。
+- 付费之前逐个核价：筛选按 R 的候选（声明顺序）、固定代码的候选、库快照（它声称所有失败题）最后的顺序，一个个加进来，只要已加的筛选、它自己与 gate 放得进余额就收下；放不下的记台账 `screened`（outcome not_run，原因 budget），一个都放不下才停在 `budget`。价＝还没记录的筛选尝试数（续跑时已付的不再算）× W_base 的 train 每次尝试成本，加 gate 的界（dev 题数 ×（1 + 确认次数）+ 对照池的缺口，`evaluate.gate.shortfall`）× W_base 的 dev 每次尝试成本，乘以 1.15 再加两次调用的上界，要放得进本轮账户的余额（每次调用都按上界预留，所以一轮永远花不到最后一个上界；两个上界让最后一臂不至于串行）；没有成本读数就无法核价，不开始。gate 开跑之前按胜者的筛选成本再核一次 gate 的价，放不下就停在 `budget`，不付一个跑不完的 gate；也再读一次 claude CLI 的版本，与活动记下的不同就停在 `cli`。记功一步对新 W 的 train 重读不在筛选的价里（只在装入后才付）：预算拒掉它时装入照常，这次装入不记功（台账 credited 写明 not credited），下一轮照常量新 W。
 - V4：冻结的 gate 模板（`gate_template` 事件）填上候选包、对照包、父 release，经 `evaluate.gate.evaluate_task`；对照池是 W_base 在 dev 上同条件的有效读数（role `base` 或 `control`；基线的读数在里面；装入之后新 W 在 dev 上的读数是它那次 gate 的被测臂，不进池，所以它的第一次 gate 要补满对照），补缺口的 run 是这一次 gate 的（候选名 `control:<W 短 ref>:<round_id>`，一次被拒的补读下次 gate 重读）；被测臂 `run_arm(package=候选, split="dev", role="subject")`。收据登记后若 accepted：`Releases.candidate` → `install(..., operation_id=f"install:{round_id}")`（与 Execution 的操作 id 不同名，避免读到别人的记录）。
 
 ## 10 档案、记功、台账、策略、固定候选

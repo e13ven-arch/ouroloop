@@ -181,26 +181,44 @@ class Round:
         self._save()
         return self.result()
 
-    def _afford(self, usd: float, what: str) -> None:
-        """Stop the round on record unless `usd` (a price from the means on record) fits what the round has left with
-        PRICE_MARGIN for the spread and two calls' reservation bound: every call reserves the bound, so a round can
+    def _need(self, usd: float) -> tuple[float, float | None]:
+        """(what `usd` at the means on record needs with PRICE_MARGIN for the spread and two calls' reservation bound,
+        what the round has left; None when it has no dollar limit). Every call reserves the bound, so a round can
         never spend its last bound, and one call in flight beside the last keeps an arm from stalling."""
         left = (self.account.remaining().get("effective_remaining") or {}).get("usd")
-        if left is None:
-            return
         bound = float(self.a.pricing().bound().get("usd") or 0.0)
-        need = round(usd * (1 + PRICE_MARGIN) + 2 * bound, 6)
-        if need > float(left) + 1e-9:
+        return round(usd * (1 + PRICE_MARGIN) + 2 * bound, 6), (None if left is None else float(left))
+
+    def _afford(self, usd: float, what: str) -> None:
+        """Stop the round on record unless `usd` fits what the round has left (_need)."""
+        need, left = self._need(usd)
+        if left is not None and need > left + 1e-9:
             raise Stop(f"budget: {what} would need up to ${need:.2f} (${usd:.2f} at the means on record, "
-                       f"+{PRICE_MARGIN:.0%}, and two calls' bound) and the round has ${float(left):.2f}")
+                       f"+{PRICE_MARGIN:.0%}, and two calls' bound) and the round has ${left:.2f}")
+
+    def _research_mean(self) -> float | None:
+        """The mean cost of one research call on record in this activity (the memory's bridge, earlier rounds'
+        diagnosis, sessions and playbooks), or None before any."""
+        book = self.a.budgets._read()
+        costs = [float((r.get("measured") or {}).get("usd") or 0.0) for r in (book.get("reservations") or {}).values()
+                 if r.get("status") == "settled" and str(r.get("scope_id") or "").startswith(self.a.scope_id + ":")
+                 and str(r.get("scope_id")).rpartition(":")[2] in ("memory", "diagnose", "session", "policy")]
+        return sum(costs) / len(costs) if costs else None
 
     def _floor(self) -> None:
-        """Before the round pays for diagnosis and R's session: the least it must pay later — the gate and a screen
-        of the passing sample — has a price, and fits."""
-        usd, why = price(self.a, self.base.package_ref, screen_attempts=self.s.screen_passing_sample)
+        """Before the round pays for diagnosis and R's session, the least the round must pay to have an outcome fits:
+        the gate, one small screen (the passing sample and thin_screen_tasks failing tasks), and the research it is
+        about to pay — a call per case to diagnose and per turn of the session, at the research calls' mean on record
+        (left out before any is on record)."""
+        usd, why = price(self.a, self.base.package_ref,
+                         screen_attempts=self.s.screen_passing_sample + self.s.thin_screen_tasks)
         if usd is None:
             raise Stop(f"unpriced: {why}")
-        self._afford(usd, "the gate and the least screen")
+        mean = self._research_mean()
+        if mean is not None:
+            cases = min(len(self.state["steps"]["evidence"]["failed"]), self.s.diagnose_max_cases)
+            usd += mean * (cases + self.s.session_max_turns)
+        self._afford(usd, "the gate, the least screen and the research")
 
     def _recorded(self, candidate: str, role: str) -> int:
         """The valid attempts on record under a run of this name and role."""
@@ -421,15 +439,10 @@ class Round:
                 return session.start()
             session.restore(self.a.objects.get(saved["state"]))
             for name, files in self.a.objects.get(saved["files"]).items():
-                for path, text in files.items():
-                    tree.do("write", path=f"candidates/{name}/{path}", text=text)
-                listed, bad = tree.do("list", path=f"candidates/{name}")
-                for path in ([] if bad else listed or ()):
-                    if path not in files:
-                        tree.do("delete", path=f"candidates/{name}/{path}")
+                self._restore_dir(tree, name, files)
             self.out(f"round      {self.round_id}: R's session goes on from turn {session.turns}")
             return session.resume()
-        except ProviderError:
+        except (ProviderError, KeyboardInterrupt):
             files = {}
             for name in session.dirs:
                 got, _ = tree.fetch(name)
@@ -439,6 +452,24 @@ class Round:
                                                 "files": self.a.objects.put_json("candidate_dirs", files)}
             self._save()
             raise
+
+    def _restore_dir(self, tree: WorkTree, name: str, files: dict) -> None:
+        """A saved candidate directory, exactly: the files it lacks of the package deleted first (the first delete
+        seeds it from the package), then its files written, the ones that shrink first, so the directory's size only
+        grows toward the saved one. A refused step stops here, the checkpoint kept, rather than go on with a tree that
+        is not what R wrote."""
+        parent = {p: t for p, t in self.package.files.items() if p != MEMORY_PATH}
+        steps = [("delete", p, None) for p in sorted(set(parent) - set(files))]
+        delta = lambda p: len(files[p].encode("utf-8")) - len(parent.get(p, "").encode("utf-8"))   # noqa: E731
+        steps += [("write", p, files[p]) for p in sorted(files, key=lambda p: (delta(p), p))
+                  if files[p] != parent.get(p)]                                  # the seed holds the others
+        if not steps:
+            steps = [("write", p, files[p]) for p in sorted(files)[:1]]           # an unchanged dir: seed it
+        for action, path, text in steps:
+            value, bad = tree.do(action, path=f"candidates/{name}/{path}", **({"text": text} if text is not None
+                                                                                 else {}))
+            if bad:
+                raise RuntimeError(f"R's saved session cannot be restored: candidates/{name}/{path}: {value}")
 
     def implemented(self) -> dict:
         assignments = self.assignments()
@@ -631,15 +662,30 @@ class Round:
                 claimed |= failing_now
             failing = [t for t in order if t in claimed and t in failing_now]
             plans.append((item, decl, failing))
-        # what is left to pay: each screen's attempts less those on record (a resumed step re-reads them for free),
-        # and the credit step's train reading of the winner where its screen did not read it
-        attempts = sum(max(len(set(f) | set(sample)) - self._recorded(f"r{self.i}:{d.dir}", "screen"), 0)
-                       for _, d, f in plans if f)
-        attempts += max((len(order) - len(set(f) | set(sample)) for _, _, f in plans if f), default=0)
-        usd, why = price(self.a, self.base.package_ref, screen_attempts=attempts)
-        if usd is None:
-            raise Stop(f"unpriced: {why}")
-        self._afford(usd, "the screens and the gate")
+        # The screens are paid in this order — R's candidates as declared, then the fixed code's, the library's
+        # snapshot last (it claims every failing task) — and each is taken while the screens taken so far, it and the
+        # gate fit what the round has left (each screen's attempts less those on record: a resumed step re-reads them
+        # for free). The credit step's train reading is not priced here: it is paid only after an install, and when
+        # the budget refuses it the credit waits for the next round's measure.
+        plans.sort(key=lambda p: (bool(p[1].fixed), p[1].kind == "memory"))
+        to_pay = lambda chosen: sum(max(len(set(f) | set(sample)) - self._recorded(f"r{self.i}:{d.dir}", "screen"),
+                                        0) for _, d, f in chosen)                        # noqa: E731
+        chosen, dropped = [], []
+        for plan in [p for p in plans if p[2]]:
+            usd, why = price(self.a, self.base.package_ref, screen_attempts=to_pay([*chosen, plan]))
+            if usd is None:
+                raise Stop(f"unpriced: {why}")
+            need, left = self._need(usd)
+            (chosen if left is None or need <= left + 1e-9 else dropped).append(plan)
+        if dropped and not chosen:
+            usd, _ = price(self.a, self.base.package_ref, screen_attempts=to_pay(dropped[:1]))
+            self._afford(usd, "the screens and the gate")
+        for _item, decl, failing in dropped:
+            self.ledger.row("screened", round_id=self.round_id, line=self.line, dir=decl.dir, kind=decl.kind,
+                            outcome="not_run", reason="budget: its screen and the gate do not fit what the round has "
+                                                      "left beside the screens before it")
+        plans = [p for p in plans if p not in dropped]
+        usd, _ = price(self.a, self.base.package_ref, screen_attempts=to_pay([p for p in plans if p[2]]))
         results, rows = [], []
         for item, decl, failing in plans:
             files = self.a.objects.get(item["files"])
@@ -680,9 +726,22 @@ class Round:
         return {"screens": rows, "best": chosen["dir"] if chosen else None,
                 "best_package": chosen["package"] if chosen else None, "usd_priced": usd}
 
+    def _same_cli(self) -> None:
+        """The gate compares the candidate with readings of the current W taken earlier: the claude CLI they ran on
+        must be the one the activity recorded (an update mid-round would mix two transports in one comparison)."""
+        rows = list(self.a.events.read("cli_version"))
+        if not rows or getattr(self.a, "provider_factory", None) is not None:
+            return
+        from ..providers.claude_code import cli_version
+        now = cli_version()
+        if now != rows[0].get("version"):
+            raise Stop(f"cli: the claude CLI is {now or 'unreadable'} and this activity ran on {rows[0].get('version')}"
+                       f": no gate on mixed transports (reinstall it, with DISABLE_AUTOUPDATER=1)")
+
     def gated(self) -> dict:
         sc = self.state["steps"]["screened"]
         package = load_package(self.a.objects, sc["best_package"])
+        self._same_cli()
         if not self._recorded(f"{self.round_id}:gate", "subject"):      # a resumed gate's own attempts are on record
             dev = cost_per_attempt(self.a, self.base.package_ref, "dev")
             train = cost_per_attempt(self.a, self.base.package_ref, "train")
@@ -717,7 +776,13 @@ class Round:
     def credited(self) -> dict:
         new = self.a.releases.load(self.state["steps"]["gated"]["installed"])
         new_package = self.a.package(new)
-        self._measure(new, new.package_ref, "measure")
+        try:
+            self._measure(new, new.package_ref, "measure")
+        except (Stop, BudgetError) as e:
+            # the install stands; its credit is not recorded (the next round measures the new W for its own reading)
+            self.ledger.row("credited", round_id=self.round_id, line=self.line, release=new.ref(), component=[],
+                            credit={}, reason=f"not credited: {str(e)[:200]}")
+            return {"release": new.ref(), "credit": {}, "not_credited": str(e)[:300]}
         parent_reading = self.evidence.reading(self.base.package_ref)
         child_reading = self.evidence.reading(new.package_ref)
         comps = [c for c in components(self.package, new_package.files) if c["kind"] != "test"]

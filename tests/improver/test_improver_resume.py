@@ -9,7 +9,7 @@ import json
 
 import pytest
 import rsi
-from rounds import quiet, round_activity, round_state
+from rounds import ledger_rows, quiet, round_activity, round_state
 
 from ouroloop.activity import phases
 from ouroloop.contracts import Objects, short
@@ -244,3 +244,57 @@ def test_the_report_shows_each_round_and_is_the_same_bytes_twice(tmp_path, fake_
     assert r["spend"]["usd"] == pytest.approx(result.spend["used"]["usd"])
     md = written["report.md"].decode()
     assert "- rsi-test/r0 done: causes {'missed_action': 2}" in md and "gate notify: accepted" in md
+    # the spend's phases are the root's children, each with its subtree: they sum to the root
+    spend = first["spend"]
+    assert "round-0" in spend["phases"] and not any(":" in p for p in spend["phases"])
+    assert sum(p.get("usd", 0) for p in spend["phases"].values()) == pytest.approx(spend["root"]["usd"])
+
+
+# ---------------------------------------------------------------------------- screens priced one by one
+def test_the_screens_that_fit_are_paid_and_the_rest_are_recorded_as_not_run(tmp_path, fake_upstream):
+    """R's candidate and the library's snapshot both pass their free rungs; the round has room for one screen and
+    the gate: R's (first in the order) is screened, the snapshot's is on record as not run for the budget."""
+    from ouroloop.improver.round import PRICE_MARGIN
+    s = round_activity(tmp_path, fake_upstream, "tool", memory=True)
+
+    def squeezing(line: str) -> None:
+        if "passed their free rungs" in line:
+            base = s.a.active_release().package_ref
+            one, _ = price(s.a, base, screen_attempts=len(rsi.TRAIN))          # failing 2 and the sample of 3
+            bound = float(s.a.pricing().bound()["usd"])
+            squeeze(s.a, one * (1 + PRICE_MARGIN) + 2 * bound + 0.001)
+    result = phases.round_(s.a, 0, out=squeezing)
+    rows = {r["dir"]: r for r in ledger_rows(s.a, "screened")}
+    assert rows["notify"]["outcome"] == "screened"
+    assert rows["memory-snapshot"]["outcome"] == "not_run" and rows["memory-snapshot"]["reason"].startswith("budget")
+    assert result.screened == "notify"
+
+
+def test_an_install_whose_train_reading_the_budget_refuses_stands_and_is_not_credited(tmp_path, fake_upstream):
+    s = round_activity(tmp_path, fake_upstream, "tool", improver={"screen_passing_sample": 1})
+
+    def squeezing(line: str) -> None:
+        if "the gate says" in line:                 # installed; the credit step must read two more train tasks
+            squeeze(s.a, 0.0001)
+    result = phases.round_(s.a, 0, out=squeezing)
+    assert result.status == "done" and result.installed == s.a.releases.active_ref()
+    (row,) = ledger_rows(s.a, "credited")
+    assert row["credit"] == {} and row["reason"].startswith("not credited: budget") and "history" not in row
+    assert round_state(s.a, 0)["steps"]["credited"]["not_credited"]
+
+
+def test_a_claude_cli_that_changed_during_the_round_stops_it_before_the_gate(tmp_path, fake_upstream, monkeypatch):
+    """The gate compares the candidate with the current W's earlier readings: when the CLI on PATH is not the one the
+    activity recorded, the round stops before the gate pays anything."""
+    import ouroloop.providers.claude_code as cc
+    from ouroloop.improver.round import Round, Stop
+    s = round_activity(tmp_path, fake_upstream, "tool")
+    s.a.events.append("cli_version", version="2.1.288 (Claude Code)", phase="baseline")
+    monkeypatch.setattr(s.a, "provider_factory", None)              # as in a real run: the CLI is the transport
+    monkeypatch.setattr(cc, "cli_version", lambda binary="claude": "2.2.0 (Claude Code)")
+    rd = Round(s.a, 0, run_arm=phases.run_arm, out=quiet)
+    rd.state["steps"]["screened"] = {"best": "x", "best_package": s.a.active_release().package_ref, "screens": []}
+    calls = s.actor.calls
+    with pytest.raises(Stop, match="cli: the claude CLI is 2.2.0"):
+        rd.gated()
+    assert s.actor.calls == calls

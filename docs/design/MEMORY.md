@@ -25,7 +25,7 @@
 | `memory/snapshot.py` | 快照写进包的 `memory/snapshot.jsonl`，作为候选交给 improver 的阶梯 |
 | `memory/promote.py` | 升级：条目 → 技能候选；条目 → 原因簇输入；`mark_superseded` |
 | `memory/importing.py` | 跨业务线导入（v6 原样） |
-| `runtime/trace.py` | `TraceStore`：transcript 的稳定引用、按 actor 所见重建轨迹、FTS 索引，只读 train（v6 `trace.py`，行格式改成阶段 1 的）；一次没有结果就中断、在同一个 id 下重跑的尝试，读它最后一次运行（最后一个 `task` 行起），不拼接两次 |
+| `runtime/trace.py` | `TraceStore`：transcript 的稳定引用、按 actor 所见重建轨迹、FTS 索引，只读 train（v6 `trace.py`，行格式改成阶段 1 的）；一次没有结果就中断、在同一个 id 下重跑的尝试，读它最后一次运行（最后一个 `task` 行起），不拼接两次；FTS 索引遇到重跑的 `task` 行就丢掉前一次的内容 |
 
 ## 3 Settings（K 的 `memory` 节）
 

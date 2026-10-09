@@ -15,7 +15,7 @@ import rsi
 from ouroloop.activity import phases
 from ouroloop.activity.checks import startup_checks
 from ouroloop.activity.workspace import open_activity
-from ouroloop.contracts import short
+from ouroloop.contracts import write_json, short
 from ouroloop.evaluate.final import FinalPlan
 from ouroloop.evaluate.release import GateReceipt, NotAuthorized, Release
 from ouroloop.harness.package import Limits, apply_patch, build
@@ -156,6 +156,18 @@ def test_freeze_with_a_final_table_seals_nothing_while_w_star_is_w0(tmp_path, fa
                                                 for l in lines)
     assert "[rsi]" in lines and list(a.events.read("gate_template"))
     assert not (a.root / "rsi" / "finalization").exists()
+
+
+def test_freeze_seals_no_final_while_a_round_is_unfinished(tmp_path, fake_upstream):
+    """W* is the active release when the final is sealed: with a round still running, nothing is sealed."""
+    a = rsi.activity(tmp_path, fake_upstream)
+    phases.smoke(a, out=quiet)
+    install_w_star(a)
+    write_json(a.root / "rounds" / "r1" / "round.json", {"round_id": "x/r1", "index": 1, "status": "running",
+                                                         "steps": {}})
+    lines = []
+    refs = phases.freeze(reopen(a, final={}), out=lines.append)
+    assert "final_plan_ref" not in refs and any("round r1 is not finished" in l for l in lines)
 
 
 # ---------------------------------------------------------------------------- baseline and cycle

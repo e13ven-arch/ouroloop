@@ -47,7 +47,8 @@ def spend(activity) -> dict:
     if activity.scope_id not in book.get("scopes", {}):
         return {"root": None, "phases": {}}
     phases = {}
-    for name in sorted(activity.budgets.subtree(activity.scope_id, book) - {activity.scope_id}):
+    # the root's own children, each with its subtree (a round's account holds its steps' accounts): they sum to it
+    for name in sorted(n for n, e in book["scopes"].items() if e.get("parent") == activity.scope_id):
         used = activity.budgets.usage(name, book)
         phases[name.split(":", 1)[-1]] = {k: round(v, 6) for k, v in used.items() if v}
     root = activity.budgets.usage(activity.scope_id, book)
@@ -91,7 +92,8 @@ def rounds_report(activity) -> list[dict]:
         causes = [Cause.from_json(activity.objects.get(r)) for r in (steps.get("diagnosed") or {}).get("causes") or ()]
         assigned = [Assignment.from_json(activity.objects.get(r))
                     for r in (steps.get("allocated") or {}).get("assignments") or ()]
-        verified = [{"dir": r.get("dir"), "kind": r.get("kind"), "passed": r.get("passed")}
+        verified = [{"dir": r.get("dir"), "kind": r.get("kind"), "passed": r.get("passed"),
+                     **({"outcome": r["outcome"]} if r.get("outcome") else {})}
                     for r in ledger.rows(stage="verified", round_id=state["round_id"])]
         screens = []
         for r in (steps.get("screened") or {}).get("screens") or ():
@@ -204,8 +206,9 @@ def render_markdown(report: dict) -> str:
                      + ", ".join(f"{a['cause']}->{a['kind']}" + ("*" if a["exploration"] else "")
                                  + (f"x{a['slots']}" if a["slots"] > 1 else "") for a in r["assignments"]))
         if r["candidates"]:
-            lines.append("  candidates " + ", ".join(f"{c['dir']} ({c['kind']}, {'passed' if c['passed'] else 'failed'})"
-                                                     for c in r["candidates"]) + f"; rungs passed {r['ladder']}")
+            lines.append("  candidates " + ", ".join(
+                f"{c['dir']} ({c['kind']}, {c.get('outcome') or ('passed' if c['passed'] else 'failed')})"
+                for c in r["candidates"]) + f"; rungs passed {r['ladder']}")
         for sc in r["screens"]:
             lines.append(f"  screen {sc['dir']}: {sc['outcome']}, fixed {sc['fixed']} (unconditioned "
                          f"{sc['unconditioned']}), regressed {sc['regressed']}, net {sc['net_flips']}"

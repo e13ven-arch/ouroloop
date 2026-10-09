@@ -849,22 +849,30 @@ def test_a_reply_cut_at_the_output_limit_is_named_and_two_in_a_row_end_the_sessi
     assert got.ended == "two replies in a row were cut at the output limit" and cs.turns == 4
 
 
-def test_past_the_compact_threshold_old_outputs_and_writes_are_elided_once(world, tree):
+def test_past_the_compact_threshold_old_outputs_and_writes_are_elided_and_reads_given_back(world, tree):
+    """The context is measured from what the next call sends: past the threshold the older written texts and read
+    outputs are elided, the newest kept; an elided read gives its bytes back, so reading it again is not refused;
+    between compactions each call extends the one before."""
     long = "z" * 2000
-    heavy = {"input_tokens": 10, "cache_read_input_tokens": 500, "cache_creation_input_tokens": 0}   # the CLI's
-    turns = [calls(write(name=f"f{i}.txt", text=long)) for i in range(6)]
-    turns += [calls(("list_files", {"path": "inputs"}), usage=heavy), calls(("list_files", {"path": "inputs"})),
-              calls(finish(decl()))]
+    turns = [calls(write(name=f"f{i}.txt", text=long)) for i in range(3)]
+    turns += [calls(("read_file", {"path": "candidates/notify/f0.txt"}))]
+    turns += [calls(write(name=f"g{i}.txt", text=long)) for i in range(3)]
+    turns += [calls(("list_files", {"path": "inputs"})), calls(("read_file", {"path": "candidates/notify/f0.txt"})),
+              calls(("list_files", {"path": "inputs"})), calls(finish(decl()))]
     r = Replies(*turns)
-    cs = coding(world, tree, r, session_compact_tokens=400)
+    cs = coding(world, tree, r, session_compact_tokens=3500, session_max_read_total=2500)
     cs.start()
-    assert cs.compactions == 1
+    assert cs.compactions >= 1
     writes = [c.args.get("text") for m in cs.messages if m.get("role") == "assistant" for c in m["tool_calls"]
               if c.name == "write_file"]
-    assert sum(t.startswith("[elided: 2000 characters") for t in writes) == 3 and writes[-3:] == [long] * 3
-    # the call after the compaction extends it: compaction happens once per crossing
-    after, last = r.seen[-2], r.seen[-1]
-    assert last[:len(after)] == after
+    assert writes[0].startswith("[elided: 2000 characters")
+    reads = results(cs, "read_file")
+    assert reads[0]["output"].startswith("[elided") and not reads[1]["is_error"]       # read again, not refused
+    assert reads[1]["output"].startswith("z" * 100)
+    assert cs._context_tokens() <= 3500                                     # the session stays under its threshold
+    # a call that does not extend the one before is a compaction's, and only those
+    breaks = sum(1 for a, b in zip(r.seen, r.seen[1:]) if b[:len(a)] != a)
+    assert breaks == cs.compactions
 
 
 def test_a_session_state_restores_into_a_new_session(world, tree):
@@ -879,3 +887,20 @@ def test_a_session_state_restores_into_a_new_session(world, tree):
     got = other.resume()
     assert [d.dir for d in got.declarations] == ["notify"] and other.turns == 3
     assert other.messages[:len(cs.messages)] == cs.messages
+
+
+def test_a_saved_candidate_directory_is_restored_exactly(world, tree):
+    """What R left in candidates/<dir> — a file of the package deleted, another changed, a new one — comes back as it
+    was; a step the tree refuses stops the restore with an error instead of a partial directory."""
+    base = {p: t for p, t in world.base.files.items() if p != MEMORY_PATH}
+    gone = sorted(p for p in base if p.startswith("prompt/") or p.endswith(".md"))[0]
+    saved = {p: t for p, t in base.items() if p != gone}
+    saved["tools/new_tool.py"] = "X = 2\n"
+    changed = next(p for p in sorted(saved) if p.endswith(".py") and p != "tools/new_tool.py")
+    saved[changed] = saved[changed] + "\n# changed\n"
+    fake = SimpleNamespace(package=world.base)
+    Round._restore_dir(fake, tree, "back", saved)
+    got, error = tree.fetch("back")
+    assert error == "" and got == saved
+    with pytest.raises(RuntimeError, match="cannot be restored"):
+        Round._restore_dir(fake, tree, "bad", {**saved, "../escape.py": "x"})

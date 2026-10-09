@@ -101,11 +101,21 @@ def cmd_bench(args) -> int:
 def cmd_freeze(args) -> int:
     from ..adapters.automationbench import UpstreamError
     from . import phases
+    lock = None
     try:
-        phases.freeze(_open(args))
+        activity = _open(args)
+        lock = _lock(activity.root)
+        if lock is None:
+            print(f"ouroloop freeze: another ouroloop process is running this activity ({activity.root}): let it "
+                  f"finish first", file=sys.stderr)
+            return 2
+        phases.freeze(activity)
     except (UpstreamError, ConfigError, ValueError, RuntimeError) as e:
         print(f"ouroloop freeze: {e}", file=sys.stderr)
         return 2
+    finally:
+        if lock is not None:
+            lock.close()
     return 0
 
 

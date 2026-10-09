@@ -49,6 +49,7 @@ def site_events(trace, session: str) -> dict[str, list[dict]]:
             tools_at.append(specs)
     marks = [(item["line"], _mark(item["event"]), item["event"]) for item in items if _mark(item["event"])]
     skipped = {str(e.get("call_id")) for _, m, e in marks if m == "tool_skipped"}
+    pushed = {str(e.get("call_id")) for _, m, e in marks if m == "pushback"}
     blocked = {str(e.get("call_id")) for _, m, e in marks if m == "tool_blocked"}
     calls = trace.calls(session)
     results = {}
@@ -67,6 +68,11 @@ def site_events(trace, session: str) -> dict[str, list[dict]]:
         here, after = lines[k], (lines[k + 1] if k + 1 < len(lines) else float("inf"))
         acted = {site: [e.get("name") for line, m, e in marks if m == "hook" and here < line < after
                         and e.get("site") == site] for site in SITES}
+        # who answered first, per event: the hook that blocked this call, the hook that pushed this finish back
+        blockers = [e.get("name") for line, m, e in marks if m == "hook" and here < line < after
+                    and e.get("site") == "before_tool" and e.get("action") == "block"]
+        pushers = [e.get("name") for line, m, e in marks if m == "hook" and here < line < after
+                   and e.get("site") == "on_finish" and e.get("action") == "pushback"]
         pushbacks = sum(1 for line, m, _ in marks if m == "pushback" and line < here)
         out["before_model"].append({"site": "before_model", "turn": turn, "role": "act", "messages": call["messages"],
                                     "tools": tools_at[k] if k < len(tools_at) else [], "acted": acted["before_model"]})
@@ -81,10 +87,10 @@ def site_events(trace, session: str) -> dict[str, list[dict]]:
             if name == FINISH:
                 out["on_finish"].append({"site": "on_finish", "turn": turn, "reason": "finish",
                                          "final_text": str(args.get("reason") or ""), "pushbacks": pushbacks,
-                                         "acted": acted["on_finish"]})
+                                         "acted": pushers if cid in pushed else []})
                 continue
             out["before_tool"].append({"site": "before_tool", "turn": turn, "call_id": cid, "name": name,
-                                       "args": args, "acted": acted["before_tool"]})
+                                       "args": args, "acted": blockers if cid in blocked else []})
             if cid in results and cid not in blocked:
                 output, is_error = results[cid]
                 out["after_tool"].append({"site": "after_tool", "turn": turn, "call_id": cid, "name": name,
@@ -96,7 +102,7 @@ def site_events(trace, session: str) -> dict[str, list[dict]]:
             if m == "implicit_finish" and here < line < after and str(e.get("call_id")) not in skipped:
                 out["on_finish"].append({"site": "on_finish", "turn": turn, "reason": "implicit",
                                          "final_text": str(response.get("text") or ""), "pushbacks": pushbacks,
-                                         "acted": acted["on_finish"]})
+                                         "acted": pushers if str(e.get("call_id")) in pushed else []})
         out["after_turn"].append({"site": "after_turn", "turn": turn, "tool_results": turn_results,
                                   "acted": acted["after_turn"]})
     return out

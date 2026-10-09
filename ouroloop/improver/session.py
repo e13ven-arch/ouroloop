@@ -17,7 +17,6 @@ import json
 from dataclasses import dataclass, field
 
 from ..runtime.chat import ToolCall, ToolSpec
-from ..runtime.gateway import normalize_usage
 from .declaration import Declaration, read_declaration
 
 NUDGE = ("Reply with tool calls: list_files, read_file, write_file, edit_file, delete_file, read_trajectory, "
@@ -26,6 +25,9 @@ CUT = ("Your last reply was cut at the output limit and none of its calls ran. W
        "existing files with edit_file, and keep a run_check or finish with many scripts small.")
 REFUSED = "Your last reply was refused and none of its calls ran. Reply with tool calls for the assigned work."
 KEEP_RECENT = 4                         # tool messages (and assistant turns) kept whole when the session is compacted
+COMPACT_TO = 0.6                        # of session_compact_tokens: where a compaction brings the context down to
+CHARS_PER_TOKEN = 3                     # the estimate of a call's tokens from its text (JSON with code: on the low side)
+READ_TOOLS = ("read_file", "read_trajectory")
 EDIT_TOOLS = ("write_file", "edit_file", "delete_file")
 ITEM_CHARS = 8000                      # of one message in the stored transcript
 DECLARATION_SCHEMA = {"type": "object", "properties": {
@@ -152,10 +154,10 @@ class CodingSession:
             if self.turns >= self.s.session_max_turns:
                 return self._end(f"the session used its {self.s.session_max_turns} turns")
             self.turns += 1
+            self._compact()
             reply = self.researcher.chat(self.system, self.messages, list(TOOLS))
             calls = [c for c in getattr(reply, "tool_calls", None) or () if isinstance(c, ToolCall)]
             self.messages.append({"role": "assistant", "text": reply.text or "", "tool_calls": calls})
-            self._compact(getattr(reply, "usage", None))
             if not calls:
                 stop = getattr(reply, "stop", "")
                 self.cut = self.cut + 1 if stop == "max_tokens" else 0
@@ -296,37 +298,49 @@ class CodingSession:
         return "declared: " + (", ".join(self.declarations) or "nothing"), False
 
     # ------------------------------------------------------------------ the context
-    def _compact(self, usage) -> None:
-        """Past session_compact_tokens of input, the outputs of all but the last KEEP_RECENT tool messages and the
-        texts written by all but the last KEEP_RECENT assistant turns are replaced by a line that says how to see them
-        again. It happens once per crossing, so between crossings each call extends the one before (the cache)."""
-        u = normalize_usage(usage if isinstance(usage, dict) else {})        # the CLI's names or the host's
-        tokens = sum(int(u.get(k) or 0) for k in ("input_tokens", "cache_read_tokens", "cache_write_tokens"))
-        if tokens <= self.s.session_compact_tokens:
+    def _context_tokens(self) -> int:
+        """What the next call sends, in tokens, estimated from its text (CHARS_PER_TOKEN characters a token, on the
+        low side): the billed usage of a call sums the CLI's continuations and retries, and says nothing exact."""
+        sent = json.dumps([_plain(m) for m in self.messages], ensure_ascii=False, default=str)
+        return (len(self.system or "") + len(sent)) // CHARS_PER_TOKEN
+
+    def _compact(self) -> None:
+        """Before a call whose context passes session_compact_tokens: the outputs of the older tool messages and the
+        texts the older assistant turns wrote become a line that says how to see them again, keeping the last
+        KEEP_RECENT (fewer if that is not enough) until the context is under COMPACT_TO of the threshold. Between two
+        compactions each call extends the one before (the cache). An elided read gives its bytes back to the
+        session's read total, so reading it again is not refused."""
+        limit = int(self.s.session_compact_tokens)
+        if self._context_tokens() <= limit:
             return
-        tools = [i for i, m in enumerate(self.messages) if m.get("role") == "tool"][:-KEEP_RECENT]
-        turns = [i for i, m in enumerate(self.messages) if m.get("role") == "assistant"][:-KEEP_RECENT]
         changed = False
-        for i in tools:
-            results = []
-            for r in self.messages[i].get("results") or ():
-                out = str(r.get("output") or "")
-                if len(out) > 300 and not out.startswith("[elided"):
-                    r = {**r, "output": f"[elided to keep the session within its context: {len(out)} characters; "
-                                        f"call {r.get('name')} again to see it]"}
-                    changed = True
-                results.append(r)
-            self.messages[i] = {**self.messages[i], "results": results}
-        for i in turns:
-            calls = []
-            for c in self.messages[i].get("tool_calls") or ():
-                args = dict(c.args) if isinstance(c.args, dict) else c.args
-                for key in ("text", "old", "new"):
-                    if isinstance(args, dict) and isinstance(args.get(key), str) and len(args[key]) > 300:
-                        args[key] = f"[elided: {len(args[key])} characters; read the file to see it]"
+        for keep in (KEEP_RECENT, 2, 1):
+            tools = [i for i, m in enumerate(self.messages) if m.get("role") == "tool"][:-keep]
+            turns = [i for i, m in enumerate(self.messages) if m.get("role") == "assistant"][:-keep]
+            for i in tools:
+                results = []
+                for r in self.messages[i].get("results") or ():
+                    out = str(r.get("output") or "")
+                    if len(out) > 300 and not out.startswith("[elided"):
+                        if r.get("name") in READ_TOOLS and not r.get("is_error"):
+                            self.read_bytes = max(self.read_bytes - len(out.encode("utf-8")), 0)
+                        r = {**r, "output": f"[elided to keep the session within its context: {len(out)} "
+                                            f"characters; call {r.get('name')} again to see it]"}
                         changed = True
-                calls.append(ToolCall(c.id, c.name, args))
-            self.messages[i] = {**self.messages[i], "tool_calls": calls}
+                    results.append(r)
+                self.messages[i] = {**self.messages[i], "results": results}
+            for i in turns:
+                calls = []
+                for c in self.messages[i].get("tool_calls") or ():
+                    args = dict(c.args) if isinstance(c.args, dict) else c.args
+                    for key in ("text", "old", "new"):
+                        if isinstance(args, dict) and isinstance(args.get(key), str) and len(args[key]) > 300:
+                            args[key] = f"[elided: {len(args[key])} characters; read the file to see it]"
+                            changed = True
+                    calls.append(ToolCall(c.id, c.name, args))
+                self.messages[i] = {**self.messages[i], "tool_calls": calls}
+            if self._context_tokens() <= limit * COMPACT_TO:
+                break
         self.compactions += changed
 
     # ------------------------------------------------------------------ checkpoints
