@@ -38,12 +38,12 @@
 
 | 项 | 状态 |
 |---|---|
-| 分支 | 阶段 3 在 `s3/improver`（从 `m1-automationbench` 的 `c92ddcc` 起），等用户确认后本地合入 `m1-automationbench`。阶段 1、2 已合入（`46a4b90`、`c92ddcc`）。`main` 在 `b71502d`（v0.3）。`v6-agent`、`v6-gateway`、`v6-memory` 都已搬入；`v6` 合并分支上的 WIP 不用；`slim/1` 已合入，可删；两轮测试用的 worktree 分支已合入并删掉 |
+| 分支 | 阶段 4 在 `s4/finance`（从 `m1-automationbench` 的 `c22f698` 起）；付费活动从这个检出跑，期间不往这里合入 `ouroloop/` 的改动（规则 13）。阶段 1～3 已合入（`46a4b90`、`c92ddcc`、`c22f698`）。`main` 在 `b71502d`（v0.3）。`v6-agent`、`v6-gateway`、`v6-memory` 都已搬入；`v6` 合并分支上的 WIP 不用；`slim/1` 已合入，可删；两轮测试用的 worktree 分支已合入并删掉 |
 | 代码 | 阶段 1～3 完成：`contracts.py`、`harness/`（含 stirrup 种子）、`runtime/`（含 `trace.py`）、`evaluate/`、`memory/`（ReMe sidecar、桥、规则、写入步、检索、快照、升级）、`improver/`（一轮的可续跑步骤、诊断、分层、编码会话、阶梯 V0～V4、档案、记功、台账、剧本）、`activity/`（含 `library`、`round`、`cycle`）。`ouroloop/` 不含种子 24,553 行（只作读数） |
-| 测试 | 默认套件 1,385 passed、86 deselected；全量（Docker + 真 memory sidecar）1,471 passed、1 deselected（JOURNAL 2026-10-09 阶段 3 完成一条）。memory 的 venv 在本机 `~/.cache/ouroloop/memory-venv/19f9b139c36d1d05` |
+| 测试 | 默认套件 1,403 passed、86 deselected；全量（Docker + 真 memory sidecar）1,488 passed、1 deselected（JOURNAL 2026-10-09 阶段 4 开工一条）。memory 的 venv 在本机 `~/.cache/ouroloop/memory-venv/19f9b139c36d1d05` |
 | test 读过几次 | finance 1、support 0、sales 0、hr 0、marketing 3；operations 从未读过 |
 | 本机记录 | `examples/automationbench/workspace-*/`、`examples/workspace-*/`、`ws/`、`*.local.toml`，git 忽略，不删不改 |
-| 下一步 | 用户审阶段 3 的结果（§3 第 1 项）；确认后合入 `m1-automationbench`，准备阶段 4（finance 实测，每步先批准） |
+| 下一步 | 付费前预检已完成并修复（JOURNAL 2026-10-09 阶段 4 开工）；等用户批准 §3 第 1、2 项后：探针 → freeze → 基线 |
 
 ## 1 规则
 
@@ -78,7 +78,7 @@
 | 1 | harness 与平台收缩：`harness/`、`runtime/`、`evaluate/`、`activity/`；Stirrup 种子与六个 hook 站点；worker 资源与网络从 K 读；DESIGN §8 的删除 | 默认与 Docker 全量通过；`quickstart.toml` 的 `--phase smoke --checks-only` 通过；假上游上用新种子跑一次尝试 | $0 | 完成并合入（2026-10-09，`46a4b90`） |
 | 2 | memory 组件：`memory/`、sidecar 与锁文件、`recall` 工具、记功与容量、快照走阶梯、记忆 → 技能 → 工具的升级 | 假上游上 `--phase library` 端到端；变异检查在隔离副本 | $0（sidecar venv 联网安装） | 完成（2026-10-09，`s2/memory`）：假 client 与真 sidecar 各端到端一遍；285 个变异全被杀；待用户确认后合入 |
 | 3 | 改进器：`improver/` 八步、toolcheck 与回放、分层估值与代码先验、档案与反膨胀、R 的配置 | 假上游上脚本化的 R 一轮端到端：tool 候选过 V0～V2a 并在 V3 记条件修复；hook 候选过 V2b；有可机械化簇而无代码候选时台账记 `no_code_candidate` | $0 | 完成（2026-10-09，`s3/improver`）：四种验收都端到端成立，另有快照固定候选进 V3 并装入；257 个新测试，变异 238/243 被杀；评审 12 条全修；待用户确认后合入 |
-| 4 | finance 实测：新 preset，基线 → library → 3 轮（每轮后停）→ 有装入则封存 final → RESULTS、README、合入 main | 过程检查成立；计划哈希早于第一次 test 尝试；报告两次相同 | 名义约 $300～480，每步先批准 | 待做 |
+| 4 | finance 实测：新 preset，基线 → library → 3 轮（每轮后停）→ 有装入则封存 final → RESULTS、README、合入 main | 过程检查成立；计划哈希早于第一次 test 尝试；报告两次相同 | 名义约 $440（$350～600），每步先批准 | 进行中：付费前预检完成（两轮评审，修复 `eddaf9a`、`133112e`），等预算与探针的批准 |
 | 5 | 训练绑定：v2.0 离线链对新记录跑通，`model` 组件绑定；之后按 V2 的 v2.1、v2.2 | V2 §5 的断言 | $0；v2.1 另批 | 待做 |
 
 每个阶段：先把 DESIGN 的对应节改定稿 → 代码 → 测试 → JOURNAL → 停。阶段 1～3 各自一个分支，串行合入。阶段 4 期间不往它的检出合入代码（规则 13）。
@@ -93,8 +93,8 @@
 
 | # | 事项 | 建议 |
 |---|---|---|
-| 1 | 阶段 3 的结果（JOURNAL 2026-10-09 阶段 3 完成）：合入 `m1-automationbench` | 确认后本地合入；阶段 4 每个付费步骤先批准 |
-| 2 | 阶段 4 的预算根，名义约 $300～480 | 到阶段 4 前批准 |
+| 1 | finance-v1 的预算（K，freeze 前定）：根 $650、final 份额 $200（现为 $450 / $160） | 批准；预计花费中位约 $440，根是上限 |
+| 2 | 探针：另一个工作区（`workspace-finance-v1-probe`，根 $25）跑一次 dev 尝试与 R 的两种调用形状，约 $3 | 批准后再 freeze；之后基线约 $53 单独批准 |
 
 ## 4 文档地图
 
