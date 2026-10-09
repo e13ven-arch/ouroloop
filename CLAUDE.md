@@ -23,7 +23,7 @@ Start at `docs/PLAN.md`: where things stand (§0), the rules (§1), the stages i
 
 ## Tests
 - `.venv/bin/python -m pytest -q`: the default run; it excludes `live` and `slow` (pyproject `addopts`).
-- `OUROLOOP_TEST_REQUIRE_DOCKER=1 .venv/bin/python -m pytest -q -m "not live"`: the full run, including Docker and the upstream checkout. Build the worker image first (`docker build --provenance=false -f docker/worker.Dockerfile -t ouroloop-worker:py3.12 .`; the egress image too for its tests: `docker build --provenance=false -f docker/egress.Dockerfile -t ouroloop-egress:v6.1 .`). Required before a paid run and before a merge.
+- `OUROLOOP_TEST_REQUIRE_DOCKER=1 OUROLOOP_TEST_REQUIRE_MEMORY=1 .venv/bin/python -m pytest -q -m "not live"`: the full run, including Docker, the upstream checkout and the real memory sidecar. Build the worker image first (`docker build --provenance=false -f docker/worker.Dockerfile -t ouroloop-worker:py3.12 .`; the egress image too for its tests: `docker build --provenance=false -f docker/egress.Dockerfile -t ouroloop-egress:v6.1 .`) and the sidecar's venv (`.venv/bin/python -m ouroloop.memory setup`; `OUROLOOP_MEMORY_VENV` names another). Required before a paid run and before a merge.
 - `live` tests call real APIs. Run them only when the user asks.
 
 ## Where things live

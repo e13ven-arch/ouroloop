@@ -11,7 +11,9 @@
 #   3  `ouroloop freeze --config examples/automationbench/quickstart.toml`: K, the gate template and the budget root;
 #      prints the [rsi] lines (scope_id, core_ref, split_ref) to add below                                          $0
 #   4  `... --phase cycle --until baseline`: W0 on train 50 + dev 25 x 2 readings                                ~$58
-#   The library (stage 2) and the improver's rounds (stage 3) come with their packages.
+#   5  `... --phase cycle --until library`: the memory's stream over train 50 (first encounters, retries of the
+#      failed ones, ReMe's summaries through the metered bridge); needs `python -m ouroloop.memory setup`  ~$50-100
+#   The improver's rounds (stage 3) come with its package.
 #
 # No [final] table here, on purpose: a sealed final reads finance's test split, which v0.4's final read once
 # (docs/PLAN.md §0.1); a final belongs to a planned activity whose plan hash is committed before its first test attempt
@@ -70,7 +72,7 @@ seed = "stirrup"
 network = "none"
 
 [memory]
-enabled = false                 # the memory package comes with stage 2 (docs/design/MEMORY.md)
+enabled = true                  # the library phase (docs/design/MEMORY.md); false runs no memory stream
 
 [schedule]
 rounds = 3

@@ -76,6 +76,6 @@ testpaths = ["tests"]
 pythonpath = [".", "tests", "tests/memory", "tests/train", "tests/train/jobs"]
 markers = [
     "live: calls a real external API and needs its key",
-    "slow: end-to-end in Docker or against the real upstream checkout (about 90 s); run with -m 'not live' before a paid run or a merge",
+    "slow: end-to-end in Docker, against the real upstream checkout, or on the real memory sidecar (its venv); run with -m 'not live' before a paid run or a merge",
 ]
 addopts = "-m 'not live and not slow'"
