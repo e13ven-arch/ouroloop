@@ -45,8 +45,9 @@ class Activity:
     def pricing(self) -> Pricing;  root_account() -> BudgetAccount;  account(phase) -> BudgetAccount
     def actor_provider(self, account, *, allocation=None) -> MeteredProvider   # K.model
     def research_provider(self, step: str) -> MeteredProvider                 # K.research_model，在 research:<step> 账户
-    def memory(self)                                     # 阶段 2；之前 memory 开着的 K 由启动检查拒绝
-    def run_manifest(self, *, candidate, role, split, release, notes="", repeats=1) -> RunManifest
+    def memory(self) -> MemoryService                    # 惰性起 sidecar（MEMORY §4）；进程结束时停
+    def memory_for(self, package, *, live=None) -> Callable | None   # 包的 manifest 开了 memory 才有：task -> TaskMemory
+    def run_manifest(self, *, candidate, role, split, release, package=None, notes="", repeats=1) -> RunManifest
     # trace() 随阶段 3 加入（runtime/trace.py）
 def freeze_split(suite, bench, path, versions) -> (SplitManifest, drift)
 def open_activity(config: dict, *, out, freeze_k=True, worker_factory=None, provider_factory=None) -> Activity
@@ -55,12 +56,12 @@ def open_activity(config: dict, *, out, freeze_k=True, worker_factory=None, prov
 
 # phases.py
 PHASES = ("smoke", "freeze", "baseline", "library", "round", "evaluate", "report", "export")
-def run_arm(activity, *, release, split, candidate, role, pairs, account, plan_ref="", arm="subject", retry=0, supersedes=None, notes="", allocation=None) -> list[TaskResult]
+def run_arm(activity, *, release, split, candidate, role, pairs, account, plan_ref="", arm="subject", retry=0, supersedes=None, notes="", allocation=None, package=None, memory=None) -> list[TaskResult]
     # 一个运行身份下的一组尝试；已在记录里的不再付费
 def smoke(activity, *, tasks=None, limit=None, checks_only=False, out) -> dict      # 划分哈希、评分契约、输入审计、种子全量字面量扫描；一次 dev 尝试
 def freeze(activity, *, out) -> dict                                    # 冻结 gate 计划、日程、预算、final 计划；打印 [rsi] 行
 def baseline(activity, *, out) -> dict                                  # W0 在 train 与 dev（control_readings 次）
-def library(activity, *, out) -> dict                                   # memory 的流与快照（MEMORY §7；阶段 2 之前抛 NotImplementedError）
+def library(activity, *, out) -> dict                                   # memory 的流与快照（MEMORY §7）：首遇、重试、写入、读数、快照候选
 def round_(activity, index: int, *, out) -> RoundResult                 # improver.run_round；每轮后停（阶段 3 之前抛 NotImplementedError）
 def evaluate(activity, *, out) -> dict                                  # final（EVALUATE §6）
 def report(activity, *, out) -> dict
@@ -71,8 +72,7 @@ def cycle(activity, *, until: str | None, out) -> dict                  # baseli
 def startup_checks(activity, *, phase: str, needs_model: bool = True, needs_worker: bool | None = None) -> list[str]
     # 钱：预算根与份额存在、价目有界、provider 是订阅登录、effort 钉在 K；
     # 泄漏：划分哈希相符、test 未读（final 之前）、R 与 memory 只读 train 的配置；
-    # 正确性：worker 镜像 id 与 runner sha256、egress 镜像、memory sidecar 锁文件（阶段 2）、种子 ref 与 K 一致、code_version 相符、评分契约
-    # 阶段 1 里 memory 开着的 K 归在“泄漏”一类拒绝：memory 读 train 证据，要等 memory 包到位
+    # 正确性：worker 镜像 id 与 runner sha256、egress 镜像、memory sidecar 的 venv 等于锁文件、模型各文件的 sha256、K 的 backend 钉表等于本检出的锁文件与 flows（library 阶段，及跑开了 memory 的包的阶段）、种子 ref 与 K 一致、code_version 相符、评分契约
 
 # report.py
 def build_report(activity) -> dict      # 基线、每轮（簇数、候选、各档通过数、gate 读数、装入）、memory 读数、final、花费（按步单列）、test 读取次数

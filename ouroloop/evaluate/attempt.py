@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from ..contracts import BudgetError, StaleWorker
+from ..contracts import BudgetError, MemorySidecarError, StaleWorker
 from ..harness.package import Package
 from ..runtime.records import Transcript, session_file
 from ..runtime.runner import AgentResult, PackageAgent
@@ -95,18 +95,18 @@ def task_hash(task) -> str:
 
 
 def make_agent_factory(*, provider, package: Package, core: dict, worker, root: Path, pricing=None,
-                       memory_reader=None, opening=None, release_ref: str | None = None, core_ref: str | None = None,
+                       memory=None, release_ref: str | None = None, core_ref: str | None = None,
                        arm: str = "subject"):
     """-> make(surface, task, attempt_id, split) -> PackageAgent: the runner shell over one episode, its transcript at
-    <root>/transcripts/<attempt id>.jsonl. `opening(task) -> str` is the memory's opening block (none before the
-    memory package)."""
+    <root>/transcripts/<attempt id>.jsonl. `memory(task, task_hash)` gives the attempt's memory (a
+    memory.retrieval.TaskMemory, or None), for a package that reads one."""
     def make(surface, task, attempt_id: str, split: str) -> PackageAgent:
         meta = {"task_id": task.task_id, "split": split, "task_hash": task_hash(task), "release_ref": release_ref,
                 "core_ref": core_ref, "arm": arm}
         return PackageAgent(provider=provider, package=package, core=core, surface=surface, worker=worker,
                             transcript=Transcript(session_file(root, attempt_id)), system=task.system,
-                            attempt_id=attempt_id, task_meta=meta, memory_reader=memory_reader,
-                            opening=opening(task) if opening is not None else "", pricing=pricing)
+                            attempt_id=attempt_id, task_meta=meta,
+                            memory=memory(task, meta["task_hash"]) if memory is not None else None, pricing=pricing)
     return make
 
 
@@ -115,7 +115,8 @@ def run_attempt(suite, task_id: str, make_agent: Callable, *, run: RunManifest, 
                 release_ref: str | None = None, supersedes: str = "") -> Attempt:
     """One attempt at one task. Every failure that is not the agent's is an invalid attempt with a reason, never a
     zero. A money error ends the attempt as `budget_exhausted` (the comparison it belonged to is inconclusive); a
-    provider's account error and a stale worker image stop the run (raised)."""
+    provider's account error, a stale worker image and a memory sidecar that cannot give the attempt its opening stop
+    the run (raised): they are the host's, and every attempt after would fail the same way."""
     family, split = splits.family_of(task_id), splits.split_of(task_id)
     if split != run.split:
         raise ValueError(f"{task_id} is in {split}, but this run reads {run.split}")
@@ -140,6 +141,10 @@ def run_attempt(suite, task_id: str, make_agent: Callable, *, run: RunManifest, 
         episode = suite.episode(task_id)
         surface = Budgeted(episode, run.budget)
         agent = make_agent(surface, task, ids["attempt_id"], split)
+    except MemorySidecarError:
+        if episode is not None:
+            episode.close()
+        raise
     except Exception as e:  # noqa: BLE001 - the episode or the agent could not be built: no evidence either way
         return broken(f"harness: {type(e).__name__}: {e}", "infrastructure", episode=episode)
     try:

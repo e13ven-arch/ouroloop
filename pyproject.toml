@@ -67,15 +67,18 @@ include = ["ouroloop*"]
 "ouroloop.train.jobs.hosts" = ["bootstrap.sh", "start.sh"]
 # The seeds are source trees, not Python packages: every file under them is package data (harness/seed.py reads them).
 "ouroloop.harness" = ["seeds/**/*"]
+# The memory's sidecar runs in its own venv: its modules, flows and hashed lock are files the host starts and pins
+# (memory/__init__.py), not modules of this package.
+"ouroloop.memory" = ["sidecar/*.py", "sidecar/flows.yaml", "sidecar/requirements-macos-arm64.lock"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # tests import the package and the examples from the checkout, and the shared test modules by name wherever they
 # live: tests/train/ holds the training stack's tests and their fixtures (decision_fixtures, train_fixtures),
 # tests/train/jobs/ the job layer's (jobs_fixtures)
-pythonpath = [".", "tests", "tests/train", "tests/train/jobs"]
+pythonpath = [".", "tests", "tests/memory", "tests/train", "tests/train/jobs"]
 markers = [
     "live: calls a real external API and needs its key",
-    "slow: end-to-end in Docker or against the real upstream checkout (about 90 s); run with -m 'not live' before a paid run or a merge",
+    "slow: end-to-end in Docker, against the real upstream checkout, or on the real memory sidecar (its venv); run with -m 'not live' before a paid run or a merge",
 ]
 addopts = "-m 'not live and not slow'"

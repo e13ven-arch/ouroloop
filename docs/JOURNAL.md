@@ -8,6 +8,34 @@
 
 ---
 
+## 2026-10-09 阶段 2 完成：memory 组件（`s2/memory`）
+
+- 用户的指示（2026-10-09）："s1/harness-platform 应该已经合入 m1-automationbench了，测试的分支清理掉，然后继续开发"。阶段 1 已由用户在 `46a4b90` 合入；阶段 1 测试用的六个 worktree 分支与四个停在 9 月旧提交的空 workflow 分支（都已合入、worktree 干净）删掉；阶段 2 从 `m1-automationbench`（`c133043`）开分支 `s2/memory`。
+- 先文档后代码（`f51f98e`）：MEMORY.md 按 v6 的证据与阶段 1 的代码定稿。Settings 取 v6 校准过的数（`min_score` 0.62、`sibling_sim` 0.95、去重 0.85/0.9/0.85；草稿里的 0.2 会让几乎所有条目都过），删掉没有证据的 `rerank`、`title_chars`、`collection_prefix`；研究调用的并发是机器设置、不进 K；新接口 `MemoryService`、`TaskMemory`、`make_agent_factory(memory=...)`；流的包、顺序、b(t)、重试、lost；工作区 `memory/<line>/`；启动检查；`heldout_domains` 用新的 superset 规则；两层测试。CONTRACTS、EVALUATE、RUNTIME、ACTIVITY 跟着改。
+- 代码（`a91f0e5`）：
+  - `ouroloop/memory/`：v6 的 sidecar（ReMe 0.3.1.10 的 HttpService 加我们的 op、chroma、bge-small ONNX、按哈希的锁文件）、client、桥（provider 按鸭子类型；activity 用 `research_provider(step, retries=False)` 建，重试全关）、importing、setup CLI 原样搬入；`settings.py`；`rules.py`（v6 的 VEL 规则，加字面量一次占位、学习曲线与 P(后半更好)、`promotable`）；`track.py`（StreamStep，加冻结的流顺序与 lost）；`retrieval.py`（`LibraryReader`、`TaskMemory`；agent 看到的条目 id 都是 8 位）；`service.py`；`snapshot.py`（流的包与快照候选，manifest 的 memory 项原地替换）；`promote.py`。
+  - `runtime/trace.py`：v6 的 TraceStore 改读阶段 1 的行（`reply`、带 `data` 的 `mark` 行、broker 的 call id），按冻结划分判 train；加 `finish()`。
+  - 接线：`PackageAgent(memory=TaskMemory)` 在 task 行后写开场的 `library_retrieval`；`make_agent_factory` 按题哈希给每次尝试它的 TaskMemory；preset 的 memory 节就是 Settings；启动检查（library 要 memory 开、业务线没留出；sidecar 的 venv 等于锁文件、模型是钉的、K 的 backend 钉表等于本检出的文件）取代阶段 1 的整体拒绝；`library` 阶段、cycle 的 library 一步、报告的 memory 一节。
+- 测试：六个 agent 各在自己的 worktree 写一块，一个只读 agent 做独立评审，然后合入（6 个 merge）。
+  - 新测试：规则与 Settings 146、写入步 34、trace 41、桥 64、真 sidecar 93（其中 85 个标 slow，只在全量里跑）、读取/快照/升级/service/library 阶段 64。默认套件用进程内的假 client（`tests/memory/fake_memory.py`：词袋向量，总结经真桥发到脚本化的研究模型，所以计量路径是真的）；真 sidecar 的测试要 venv，没有就跳过，`OUROLOOP_TEST_REQUIRE_MEMORY=1` 时失败。
+  - 变异检查：规则 63、写入步 57、trace 37、桥 48、真 sidecar 32、library 48，共 285 个，全部被杀；各在 scratchpad 里自己的目录（`s2-<块>-mut`），worktree 前后的 status 与 diff 相同。阶段 1 那次两个 agent 撞同一个目录的事没再发生。
+  - agent 顺手修的缺陷（各自单独提交）：`00c4c1f` 已升级（superseded）的条目会被后面的题重新学回来；`859af2a` 两个进程同时把新索引切成 WAL 时偶发 "database is locked"（v6 的六进程并发测试 1/6 失败，私有复现 9/100，修后 0/200）；`855eda1` 预算拒掉首遇后，阶段说“再跑一次继续”却永远继续不了。
+  - 评审（只读，在 `s2-review-scratch` 里复现）报了 9 条，我在 `e244687` 全修并各加回归测试：一批含 lost 题又写入失败时续跑卡死（lost 改到这批写入之后记）；预算拒掉的重试被当成没重试提交（改为停下、下次重跑）；sidecar 宕机把剩下的题永久记 lost（改为暂停：开场取不到时 `run_attempt` 抛出，记 lost 之前先查 sidecar 是否还在答）；没有基线读数也照付一整轮（改为付费前拒绝）；W0 在 memory 开着的 K 下为空库起 sidecar（种子的 `memory.enabled` 取 K，HARNESS §7；改为空库什么都不起，且流的包就是 W0 时 b(t) 只算基线的 run）；桥上等空位的时间算在 ReMe 客户端超时里，可能超时重发、一个调用付两次（改为等待有上限，超了就在调用 provider 之前答 503、不记账，`llm_timeout_s` 默认 1800 s）；没有模型调用的有效尝试卡住流；导入带回已退役或已升级的内容；sidecar 的文件不是包数据。小的：`library-used:` 空着时读到下一行、丢弃原因写错字面量、`message_time` 没清空、单个字符串的留出业务线被拆成字符。
+- 证据：
+  - 假上游上 library 阶段端到端：假 client 与真 sidecar（ReMe 0.3.1.10、chroma、bge-small，经真桥）各一遍，结果相同：5 道 train 题 D = 1.0（W0 用 `forget_notify` 做错的通知题，首遇时读到库里关于 #ops 的教训后做对了），B = 0，4 条条目，快照成为候选包；真 sidecar 一遍约 24 s。再跑一次不付任何钱。
+  - sidecar 的 venv 按锁文件建好（`python -m ouroloop.memory setup`：161 个包，按哈希；bge-small 已在 HF 缓存）。从 PyPI 下载，没有付费。
+  - 全量（`OUROLOOP_TEST_REQUIRE_DOCKER=1 OUROLOOP_TEST_REQUIRE_MEMORY=1 -m "not live"`，先重建 worker 镜像）：1208 passed、1 failed，失败的是 quickstart 的配置测试还钉着 `memory.enabled = false`（quickstart 已打开 memory），改测试后默认套件 1124 passed、86 deselected（85 个 slow 的真 sidecar 测试与 1 个 live）。
+  - `quickstart.toml --phase smoke --checks-only` 在 memory 开着时通过（划分哈希 `4fd91eaf9fb8daf5`）；它的 memory 启动检查在本机也通过（venv 等于锁文件、模型与 K 的钉表一致）。
+  - 行数（只作读数）：`memory/` 宿主侧 3,100 行，sidecar 990 行，`runtime/trace.py` 682 行；`ouroloop/` 不含种子 21,619 行（含训练栈与 sidecar）。memory 相关测试 8,664 行。
+- 已知、没修：
+  - 升级（§8）的三个函数与测试已交付，接进轮次是阶段 3；快照候选从 V3 起走阶梯也是阶段 3。
+  - 桥的 slot 数等于活动的并发，ReMe 一次总结里三个提炼算子并行，并发高时会等；等待超过上限答 503，这次总结失败，通过的保留、其余下次再总结（会重付这几次）。实测负载下是否常见要到阶段 4 才知道。
+  - 锁文件只有 macOS arm64 一份。
+- 没付费，没调真模型（订阅也没有），没读 `.env`，没读任何 test 题的内容。
+- commit：`f51f98e`、`a91f0e5`、`76a8b95`（示例与说明）、6 个 merge、`e244687`，以及本条所在的提交。
+
+---
+
 ## 2026-10-09 用户：不以代码行数作验收
 
 - 用户原话（2026-10-09，看阶段 1 的进度汇报时）："不用限制验收的代码行数吧，我只是不希望大量的工作处在外围组件上，应该认真打磨核心系统"。

@@ -27,6 +27,14 @@ Stirrup's own dependencies, pinned by hash in `docker/worker.requirements.txt`:
 docker build --provenance=false -f docker/worker.Dockerfile -t ouroloop-worker:py3.12 .
 ```
 
+The memory (`[memory] enabled = true`, the `library` phase) runs ReMe 0.3.1.10 in a sidecar with its own venv, built
+from the hashed lock `ouroloop/memory/sidecar/requirements-macos-arm64.lock` (161 wheels) together with the pinned
+bge-small model; the startup checks refuse a venv that is not the lock (docs/design/MEMORY.md):
+
+```bash
+python -m ouroloop.memory setup
+```
+
 ## A config
 
 A config names the preset it tightens (`[harness] preset = "automationbench_v1"`); every other table may only
@@ -39,7 +47,7 @@ removed from here.
 - `quickstart.toml`: a new single-domain activity on finance with nothing frozen yet, so it touches no existing
   record. Its header lists the steps and their nominal cost.
 - `finance-v1.toml`: the first measured activity of the forward design (docs/PLAN.md stage 4). It enables the memory
-  and runs the improver's rounds, so its paid steps wait for stages 2 and 3; the startup checks refuse until then.
+  and runs the improver's rounds, so its rounds wait for stage 3.
 
 ## The phases
 
@@ -48,6 +56,7 @@ ouroloop bench --config C --phase smoke --checks-only   # upstream, frozen split
 ouroloop bench --config C --phase smoke                 # one dev attempt end to end through the runner shell
 ouroloop freeze --config C                              # K, the gate template, the budget root (and a final plan); prints [rsi]
 ouroloop bench --config C --phase cycle --until baseline   # W0 on train and on dev control_readings times
+ouroloop bench --config C --phase cycle --until library    # the memory's train stream; its snapshot as a candidate
 ouroloop bench --config C --phase report                # the report from what is on disk; no model is called
 ouroloop export --config C --to DIR                     # an installed release as an app
 ```
@@ -55,8 +64,10 @@ ouroloop export --config C --to DIR                     # an installed release a
 `smoke --checks-only` calls no model and writes nothing but the frozen split. Every other phase opens the activity:
 the first time it writes `core.json` (K, with the frozen split's hash and the code version) and the seed release
 {W0, R0, K}; after that, a config, a code change or a split that gives another K is refused — a changed K is a new
-activity (docs/PLAN.md rule 13). `--until library` and `--until round-K` wait for the memory (stage 2) and the
-improver (stage 3).
+activity (docs/PLAN.md rule 13). The library step streams the train tasks once through W0 with the live library
+(first encounters, a retry with the failed checks), writes what ReMe distils through the platform's checks, and ends
+with the readout (D, the halves) and, when D > 0, the snapshot as a candidate package; the improver's ladder (stage 3)
+takes it from there, as it takes `--until round-K`.
 
 ## What the smoke phase establishes
 

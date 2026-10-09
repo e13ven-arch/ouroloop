@@ -200,16 +200,17 @@ def test_cycle_stops_after_the_baseline_resumes_without_paying_and_names_the_sta
     assert json.loads((a.root / "rsi" / "cycle.json").read_text(encoding="utf-8"))["steps"] == first["steps"]
     calls = provider.calls
     assert phases.cycle(a, until="baseline", out=quiet) == first
-    for until, stage in ((None, "stage 2"), ("library", "stage 2"), ("round-0", "stage 3"), ("round-2", "stage 3")):
-        with pytest.raises(NotImplementedError, match=stage):
+    # the memory is off in this K: the library step is done by being skipped, and the rounds wait for stage 3
+    at_library = phases.cycle(a, until="library", out=quiet)
+    assert at_library["at"] == "library" and at_library["steps"]["library"]["skipped"] == "[memory] enabled = false"
+    for until in (None, "round-0", "round-2"):
+        with pytest.raises(NotImplementedError, match="stage 3"):
             phases.cycle(a, until=until, out=quiet)
     assert provider.calls == calls
 
 
-def test_library_and_round_name_their_stage(tmp_path, fake_upstream):
+def test_the_round_names_its_stage(tmp_path, fake_upstream):
     a = rsi.activity(tmp_path, fake_upstream, freeze_k=False)
-    with pytest.raises(NotImplementedError, match=r"memory package \(stage 2"):
-        phases.library(a, out=quiet)
     with pytest.raises(NotImplementedError, match=r"improver package \(stage 3"):
         phases.round_(a, 0, out=quiet)
 
@@ -349,8 +350,11 @@ a = rsi.activity(root, sys.argv[2])
 phases.smoke(a, checks_only=True, out=lambda _l: None)
 phases.smoke(a, out=lambda _l: None)
 phases.baseline(a, limit=1, out=lambda _l: None)
+# K's memory section reads its defaults from ouroloop.memory.settings (standard library only); W0's path starts no
+# memory: no client, bridge, service, stream or reader, and never the sidecar's own modules
 print(json.dumps(sorted(m for m in sys.modules if m.startswith(("ouroloop.train", "ouroloop.improver",
-                                                                 "ouroloop.memory")))))
+                                                                 "ouroloop.memory"))
+                        and m not in ("ouroloop.memory", "ouroloop.memory.settings"))))
 """
 
 

@@ -13,6 +13,7 @@ from ouroloop.contracts import LimitHit, StaleWorker
 from ouroloop.evaluate.attempt import Budgeted
 from ouroloop.evaluate.budget import Pricing
 from ouroloop.evaluate.limits import Budget
+from ouroloop.memory.retrieval import TaskMemory
 from ouroloop.runtime.records import TERMINATIONS, digest16
 from ouroloop.runtime.runner import SKILL_INDEX, EgressMeter, compose_system
 from ouroloop.runtime.worker import RUNNER, ProcessWorker
@@ -214,11 +215,15 @@ def test_the_system_prompt_is_composed_in_order_and_skills_and_memory_answer_thr
         asked.append((query, n))
         return [{"id": "e1", "when": "2026-01-02", "content": "Post in #ops after the update.", "score": 0.9}]
     provider = Script([turn("", ("read_skill", {"name": "crm"}), ("recall", {"query": "ops", "k": 9})), finish()])
-    a = attempt(tmp_path, package, provider, k=k, system="TASK SYSTEM", opening="OPENING BLOCK", memory_reader=reader)
+    memory = TaskMemory(opening="OPENING BLOCK", event={"query": "search for x", "shown": ["e0full"], "scores": [0.7]},
+                        recaller=reader)
+    a = attempt(tmp_path, package, provider, k=k, system="TASK SYSTEM", memory=memory)
     assert a.result.termination == "finished"
     assert composed in provider.seen[0]["system"] and {"read_skill", "recall"} <= set(provider.seen[0]["tools"])
     assert [(s["name"], s["found"]) for s in of(a.lines, "skill_read")] == [("crm", True)]
-    (retrieval,) = of(a.lines, "library_retrieval")
+    assert kinds(a.lines)[:2] == ["task", "library_retrieval"]               # the start's line follows the task's
+    start, retrieval = of(a.lines, "library_retrieval")
+    assert (start["site"], start["shown"], start["scores"]) == ("start", ["e0full"], [0.7])
     assert (retrieval["site"], retrieval["query"], retrieval["shown"]) == ("recall", "ops", ["e1"])
     assert asked == [("ops", 2)]                                             # capped at K's recall_k
     results = [res["output"] for m in provider.seen[1]["messages"] if m.get("role") == "tool" for res in m["results"]]

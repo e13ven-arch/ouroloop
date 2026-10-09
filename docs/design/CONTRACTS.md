@@ -70,13 +70,13 @@ def copy_closure(src: Objects, dst: Objects, refs) -> set[str]   # 导出时拷�
   index/trace.sqlite            trace 的 FTS 索引，派生、可重建（阶段 3，runtime/trace.py）
   rounds/<round_id>/            一轮改进器的产物（阶段 3）
   ledger/experience.jsonl       改进器台账（阶段 3）
-  memory/<line>/                memory（阶段 2）
+  memory/<line>/                memory（阶段 2）：stream.json（流的台账）、live.jsonl、chroma/、bridge_calls.jsonl
   report.json、report.md        报告（activity.report）
 ```
 
 ## 4 K：固定核心
 
-K 是配置经 preset 补全、按“只能收紧”规则合并后冻结的一份 JSON（`core.json`；对象是 `activity.config.Core{preset, sections, split_hash, code_version}`），`core_ref` 覆盖它的全部字节，并含 `code_version`（框架源码与种子目录的摘要），所以改任何 `.py` 都是新 K（PLAN 规则 13）。每个字段的合并规则（cap、floor、subset、ranges、effort、bytes、network、fixed、free）写在 `activity/presets.py` 的 `RULES`。
+K 是配置经 preset 补全、按“只能收紧”规则合并后冻结的一份 JSON（`core.json`；对象是 `activity.config.Core{preset, sections, split_hash, code_version}`），`core_ref` 覆盖它的全部字节，并含 `code_version`（框架源码与种子目录的摘要），所以改任何 `.py` 都是新 K（PLAN 规则 13）。每个字段的合并规则（cap、floor、subset、superset、ranges、effort、bytes、network、fixed、free）写在 `activity/presets.py` 的 `RULES`。
 
 | 节 | 字段 | 谁用 |
 |---|---|---|
@@ -87,7 +87,7 @@ K 是配置经 preset 补全、按“只能收紧”规则合并后冻结的一�
 | `pricing` | 名义价目：`input_per_1k`、`cache_read_per_1k`、`cache_write_per_1k`、`output_per_1k`、`max_input_tokens`、`max_output_tokens` | evaluate.budget |
 | `harness` | `seed`（种子名）、`api_version`、`kinds`（允许的组件类型）、`sites`（允许的 hook 站点）、`limits`（HARNESS §3 的 Limits 字段）、`config_ranges`（每个 config 键的范围） | harness、improver |
 | `worker` | `image`、`image_id`、`cpus`、`memory`、`memory_swap`、`pids`、`tmpfs_mb`、`network`（`"none"` 或 `{mode:"proxy", allow:[{host,port,methods}]}`）、`env`、`request_seconds`、`max_output_chars` | runtime.worker、runtime.egress |
-| `memory` | `enabled`、`shown_k`、`recall_k`、`min_score`、`max_active`（阶段 1）；MEMORY §3 的其余字段随阶段 2 加入 | memory |
+| `memory` | MEMORY §3 的 Settings：`enabled`、检索（`shown_k`、`recall_k`、`fetch_factor`、`min_score`、`sibling_sim`）、写入（去重与验证阈值、`origins`、字符上限、`stream_batch`、`retry`、`cite`）、记功与退役、容量、`abort_d`、`heldout_domains`、`imports`、升级阈值、`retriever` 与 `backend` 钉表 | memory |
 | `improver` | `k`、会话上限、诊断案例数、探索与 L5 名额、筛选、`round_share`（阶段 1）；IMPROVER §2 的其余字段随阶段 3 加入 | improver |
 | `gate` | `min_gain`、`min_groups`、`min_tasks`、`max_regression_rate`、`regression_drop`、`confirmations`、`control_readings`、`control_pooling`、`repeats`、`order_seed`、`missing_cost_policy`、`max_infrastructure_retries`；成本项 `cost_beta0/1` 默认不判（PLAN P6） | evaluate.gate |
 | `schedule` | `rounds`、`patience`、`max_infrastructure_failures` | activity |

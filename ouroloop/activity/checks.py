@@ -5,9 +5,11 @@ platform's three kinds — money, leakage, correctness. A failing check names it
                  the in-flight reservations; the actor and the research model are the claude_code CLI on a
                  subscription login, at K's effort, and no call can ask for more output than its reservation bounds
     leakage      the split is the frozen one (K's and the pinned hash) and upstream has not drifted; no test task was
-                 read before the final; the memory, which reads train evidence, is the memory package's (stage 2)
+                 read before the final; the memory stream runs only on a line K does not hold out
     correctness  the worker image is the one K pinned and runs this host's worker_runner.py; the egress image under a
-                 proxy K; the seed K builds is the seed release's; the code is the code K froze
+                 proxy K; the seed K builds is the seed release's; the code is the code K froze; where memory is read
+                 or written, the sidecar's venv is the lock, the model is the pinned one and K's backend pins are this
+                 checkout's sidecar files
 """
 from __future__ import annotations
 
@@ -72,9 +74,42 @@ def leakage_problems(activity, *, phase: str) -> list[str]:
     reads = list(activity.events.read("test_read"))
     if phase != "evaluate" and reads:
         problems.append(f"{len(reads)} final run(s) already read the test tasks: this activity's development is over")
-    if (activity.k.get("memory") or {}).get("enabled"):
-        problems.append("[memory] enabled = true needs the memory package (stage 2: docs/design/MEMORY.md); set "
-                        "[memory] enabled = false until it is in place")
+    if phase == "library":
+        memory = activity.k.get("memory") or {}
+        if not memory.get("enabled"):
+            problems.append("[memory] enabled = false: this activity runs no memory stream")
+        if activity.domain in set(memory.get("heldout_domains") or ()):
+            problems.append(f"{activity.domain} is a held-out business line ([memory] heldout_domains): none of its "
+                            f"experience enters a library")
+    return problems
+
+
+def uses_memory(activity, phase: str) -> bool:
+    """Whether this phase needs the memory's sidecar: the library phase, or a package it runs that holds a snapshot
+    (a package with memory on and no snapshot reads an empty library, which starts nothing)."""
+    if phase == "library":
+        return True
+    releases = [activity.active_release()] if activity.releases.active_ref() else []
+    plan_ref = (activity.config.get("rsi") or {}).get("final_plan_ref")
+    if phase == "evaluate" and plan_ref and activity.objects.has(plan_ref):
+        releases += [activity.releases.load(r) for r in (activity.objects.get(plan_ref).get("arms") or {}).values()]
+    return any(activity.package(r).memory_text.strip() for r in releases)
+
+
+def memory_problems(activity) -> list[str]:
+    """The sidecar this activity would start: K's backend pins are this checkout's files; the venv is the lock and the
+    model the pinned one (a test's in-process client stands in for both)."""
+    from ..memory import backend_problems, memory_venv, model_problems
+    from ..memory.settings import Settings
+    try:
+        settings = Settings.from_core(activity.k)
+    except ValueError as e:
+        return [f"[memory]: {e}"]
+    problems = [f"K's memory backend: {p}" for p in backend_problems(settings.backend)]
+    if getattr(activity, "memory_client_factory", None) is None:
+        from ..memory.__main__ import LOCK, venv_problems
+        problems += [f"the memory sidecar's venv: {p}" for p in venv_problems(memory_venv(), LOCK)]
+        problems += [f"the memory's model: {p}" for p in model_problems(settings.retriever)]
     return problems
 
 
@@ -118,6 +153,8 @@ def correctness_problems(activity, *, phase: str, needs_worker: bool) -> list[st
                                                                 capture_output=True).returncode != 0:
                 problems.append(f"K's network is the egress proxy and the image {EGRESS_IMAGE} is not built "
                                 f"(docker build --provenance=false -f docker/egress.Dockerfile -t {EGRESS_IMAGE} .)")
+    if phase in PAID and uses_memory(activity, phase):
+        problems += memory_problems(activity)
     checks = ab.contract_check(activity.suite, activity.splits.ids("dev")[:1])
     problems += [f"scorer contract: {line}" for line in checks["failed"]]
     return problems

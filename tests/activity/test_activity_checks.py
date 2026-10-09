@@ -115,9 +115,19 @@ def test_a_test_read_ends_development(tmp_path, fake_upstream):
     assert not [p for p in problems(a, "evaluate") if "test tasks" in p]
 
 
-def test_the_memory_is_refused_before_its_package_exists(tmp_path, fake_upstream):
+def test_the_library_phase_needs_the_memory_on_and_a_line_k_does_not_hold_out(tmp_path, fake_upstream):
+    off = activity(tmp_path / "off", fake_upstream)
+    only(problems(off, "library"), "[memory] enabled = false: this activity runs no memory stream")
+    assert problems(off) == []                                  # the baseline of a W0 reads no memory
+    held = activity(tmp_path / "held", fake_upstream, memory={"enabled": True, "heldout_domains": ["operations", "rsi"]})
+    only(problems(held, "library"), "rsi is a held-out business line")
+
+
+def test_the_library_phase_needs_the_sidecar_k_pinned(tmp_path, fake_upstream, monkeypatch):
+    """No venv for the lock (here: an empty directory named as the venv) is refused before anything is paid."""
+    monkeypatch.setenv("OUROLOOP_MEMORY_VENV", str(tmp_path / "no-venv"))
     a = activity(tmp_path, fake_upstream, memory={"enabled": True})
-    only(problems(a), "[memory] enabled = true needs the memory package (stage 2")
+    only(problems(a, "library"), "the memory sidecar's venv: ")
 
 
 # ---------------------------------------------------------------------------- correctness

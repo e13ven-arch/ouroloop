@@ -43,7 +43,9 @@ class Activity:
     results: Results
     worker_factory: Callable | None = None
     provider_factory: Callable | None = None
+    memory_client_factory: Callable | None = None      # a test's in-process stand-in for the sidecar's client
     _egress: object = field(default=None, repr=False)
+    _memory: object = field(default=None, repr=False)
 
     # ------------------------------------------------------------------ K and identity
     @property
@@ -138,20 +140,60 @@ class Activity:
         provider = (self.provider_factory or build_provider)(self.model_table("model"))
         return MeteredProvider(provider, account, self.pricing(), operation="actor", allocation=allocation)
 
-    def research_provider(self, step: str) -> MeteredProvider:
-        """K's research model for an improver or memory step, in its own account."""
+    def research_provider(self, step: str, *, retries: bool = True) -> MeteredProvider:
+        """K's research model for an improver or memory step, in its own account. Without `retries` neither the
+        provider nor the meter retries and the provider's own timeout is kept under the OpenAI SDK's read timeout:
+        what the memory's bridge serves (memory/bridge.py: every request is served once)."""
         from ..providers import build_provider
         provider = (self.provider_factory or build_provider)(self.model_table("research_model"))
-        return MeteredProvider(provider, self.account(f"research:{step}"), self.pricing(), operation=step)
+        if not retries:
+            from ..memory.bridge import RESEARCH_SECONDS
+            if isinstance(getattr(provider, "retries", None), int):
+                provider.retries = 0
+            timeout = getattr(provider, "timeout", None)
+            if isinstance(timeout, (int, float)) and not isinstance(timeout, bool) and timeout > RESEARCH_SECONDS:
+                provider.timeout = RESEARCH_SECONDS
+        return MeteredProvider(provider, self.account(f"research:{step}"), self.pricing(), operation=step,
+                               **({} if retries else {"max_retries": 0}))
 
+    # ------------------------------------------------------------------ memory
     def memory(self):
-        """The memory reader. The memory package comes with stage 2; until then a K with memory enabled refuses to
-        run (checks.startup_checks), so there is nothing to return."""
-        return None
+        """The memory of this process (memory.service.MemoryService over <root>/memory/<domain>/), made on first use;
+        its sidecar starts when something reads or writes, and stops with close()."""
+        if self._memory is None:
+            from ..memory.service import MemoryService
+            from ..memory.settings import Settings
+            self._memory = MemoryService(self.root, self.domain, Settings.from_core(self.k), scope_id=self.scope_id,
+                                         client_factory=self.memory_client_factory,
+                                         effort_cap=self.k["model"]["max_effort"])
+        return self._memory
+
+    def memory_for(self, package: Package, *, live: dict | None = None, note_of: Callable | None = None):
+        """What each attempt of `package` gets of the memory: task, task_hash -> TaskMemory, from the package's
+        frozen snapshot or, during the stream, from `live` (StreamStep.live_view()); `note_of(task)` is appended to
+        the opening (the stream's retry note). None for a package that reads no memory. A package that reads memory
+        but holds no snapshot (W0 under a K with the memory on: HARNESS §7) reads an empty library, and an empty
+        library starts no sidecar: no block, no start line, every recall empty."""
+        if not package.manifest.memory.get("enabled"):
+            return None
+        if live is None and not package.memory_text.strip():
+            from ..memory.retrieval import TaskMemory
+            return lambda task, task_hash: TaskMemory(opening=note_of(task) if note_of is not None else "")
+        service = self.memory()
+        reader = service.reader(live=live) if live is not None else service.reader(snapshot_text=package.memory_text)
+
+        def of(task, task_hash: str):
+            return reader.for_task(task.trigger, task_hash, note=note_of(task) if note_of is not None else "")
+        return of
+
+    def close(self) -> None:
+        """Stop what this process started for the activity: the memory's sidecar."""
+        if self._memory is not None:
+            self._memory.stop()
 
     # ------------------------------------------------------------------ runs
-    def run_manifest(self, *, candidate: str, role: str, split: str, release: Release, notes: str = "",
-                     repeats: int = 1) -> RunManifest:
+    def run_manifest(self, *, candidate: str, role: str, split: str, release: Release, package: Package | None = None,
+                     notes: str = "", repeats: int = 1) -> RunManifest:
         model = self.k["model"]
         return RunManifest(candidate, role, split, {"provider": model["provider"], "model": model["identity"],
                                                     "effort": model["effort"]},
@@ -159,7 +201,8 @@ class Activity:
                                         "package": self.versions.get("package", ""),
                                         "python": self.versions.get("python", ""), "toolset": "api"},
                            budget=self.attempt_limits(), data=self.splits.hash(), repeats=repeats, notes=notes,
-                           system_release_ref=release.ref(), core_ref=self.core_ref, package_ref=release.package_ref,
+                           system_release_ref=release.ref(), core_ref=self.core_ref,
+                           package_ref=package.ref() if package is not None else release.package_ref,
                            mode="task_evaluation")
 
 
@@ -207,7 +250,7 @@ def freeze_split(suite, bench: dict, path: Path, versions: dict) -> tuple[SplitM
 
 # ---------------------------------------------------------------------------- opening
 def open_activity(config: dict, *, out: Callable[[str], None] = print, freeze_k: bool = True, worker_factory=None,
-                  provider_factory=None) -> Activity:
+                  provider_factory=None, memory_client_factory=None) -> Activity:
     """The activity of a config. `freeze_k` off (the smoke's checks) reads K without writing core.json or a release."""
     root = workspace_root(config)
     bench = dict(config.get("bench") or {})
@@ -238,7 +281,7 @@ def open_activity(config: dict, *, out: Callable[[str], None] = print, freeze_k:
                               f"checkout, or start a new workspace")
     releases = Releases(root, objects)
     activity = Activity(config, root, core, core_ref, suite, splits, drift, versions, objects, Events(root), releases,
-                        Budgets(root), results, worker_factory, provider_factory)
+                        Budgets(root), results, worker_factory, provider_factory, memory_client_factory)
     if not freeze_k:
         return activity
     if not core_file.exists():

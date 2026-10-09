@@ -3,7 +3,8 @@ move it. A config may only tighten a preset: lower a cap, narrow a set, raise a 
 code; a new preset name goes with a new version.
 
 Rules, by field (RULES): "cap" (the config's number is at most the preset's), "floor" (at least the preset's), "subset"
-(the config's list is inside the preset's), "range" (the config's [lo, hi] is inside the preset's), "effort" (at most
+(the config's list is inside the preset's), "superset" (the config's list keeps every item of the preset's and may
+add more: the held-out business lines), "range" (the config's [lo, hi] is inside the preset's), "effort" (at most
 the preset's by the effort order), "bytes" (a size like "512m", at most the preset's), "fixed" (equal to the preset's),
 "free" (the config chooses; the preset's value is only a default). A field that has no rule is not a field of K.
 
@@ -19,6 +20,7 @@ import json
 from ..harness.contract import SITES
 from ..harness.kinds import KINDS
 from ..harness.package import DEFAULT_CONFIG_RANGES
+from ..memory.settings import preset_table as memory_preset
 
 THREAD_ENV = {"OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"}
 
@@ -42,7 +44,7 @@ AUTOMATIONBENCH_V1 = {
     "worker": {"image": "ouroloop-worker:py3.12", "image_id": None, "cpus": "1", "memory": "512m",
                "memory_swap": "512m", "pids": 128, "tmpfs_mb": 256, "network": "none", "env": dict(THREAD_ENV),
                "request_seconds": 30.0, "max_output_chars": 20000},
-    "memory": {"enabled": True, "shown_k": 2, "recall_k": 3, "min_score": 0.2, "max_active": 500},
+    "memory": memory_preset(),             # memory/settings.py: v6's calibrated values, the sidecar's pins
     "improver": {"k": 3, "session_max_turns": 40, "session_max_edits": 32, "session_max_read_bytes": 65536,
                  "session_max_read_total": 1048576, "diagnose_max_cases": 60, "explore_slots": 1, "l5_slots": 1,
                  "screen_passing_sample": 6, "screen_min_net_flips": 0, "screen_min_fixes": 1,
@@ -70,7 +72,15 @@ RULES = {
     "worker": {"image": "fixed", "image_id": "free", "cpus": "cap", "memory": "bytes", "memory_swap": "bytes",
                "pids": "cap", "tmpfs_mb": "cap", "network": "network", "env": "free", "request_seconds": "cap",
                "max_output_chars": "cap"},
-    "memory": {"enabled": "free", "shown_k": "cap", "recall_k": "cap", "min_score": "floor", "max_active": "cap"},
+    "memory": {"enabled": "free", "shown_k": "cap", "recall_k": "cap", "fetch_factor": "fixed", "min_score": "floor",
+               "sibling_sim": "cap", "batch_dedup_threshold": "fixed", "store_dedup_threshold": "fixed",
+               "store_dedup_content_threshold": "fixed", "validation_threshold": "floor", "success_threshold": "fixed",
+               "origins": "subset", "max_active": "cap", "probation_shown": "fixed", "retire_harm_tasks": "fixed",
+               "retire_harm_min_shown": "fixed", "retire_min_shown": "fixed", "retire_mean_credit": "fixed",
+               "min_other_tasks": "floor", "when_chars": "cap", "content_chars": "cap", "traj_tool_chars": "cap",
+               "traj_total_chars": "cap", "stream_batch": "fixed", "cite": "fixed", "retry": "free", "abort_d": "floor",
+               "heldout_domains": "superset", "imports": "free", "llm_timeout_s": "cap", "promote_fixes": "floor",
+               "promote_sources": "floor", "retriever": "fixed", "backend": "fixed"},
     "improver": {"k": "cap", "session_max_turns": "cap", "session_max_edits": "cap", "session_max_read_bytes": "cap",
                  "session_max_read_total": "cap", "diagnose_max_cases": "cap", "explore_slots": "cap",
                  "l5_slots": "cap", "screen_passing_sample": "cap", "screen_min_net_flips": "floor",

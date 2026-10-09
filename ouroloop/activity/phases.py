@@ -6,7 +6,7 @@ another package: the attempt and the gate in evaluate/, the run in runtime/, the
     freeze    the gate's plan template, the budget root and its final share, and — when the config has [final] — the
               sealed final plan; prints the [rsi] lines the config then names
     baseline  W0 on every train task and on dev `control_readings` times (the pooled control's first readings)
-    library   the memory's stream and snapshot (stage 2, docs/design/MEMORY.md §7)
+    library   the memory's train stream and its snapshot as a candidate (docs/design/MEMORY.md §7)
     round     one round of the improver (stage 3, docs/design/IMPROVER.md §3)
     evaluate  the sealed final on the test tasks; it reports, it does not choose
     report    the activity's report from what is on disk; no model is called
@@ -18,32 +18,36 @@ resumes, and pays for nothing already on record.
 from __future__ import annotations
 
 import json
+import random
 from pathlib import Path
 from typing import Callable
 
 from ..adapters import automationbench as ab
 from ..contracts import short, write_json
-from ..evaluate.attempt import make_agent_factory, run_tasks
+from ..evaluate.attempt import make_agent_factory, run_tasks, task_hash
 from ..evaluate.final import FinalPlan, estimate_lines, final_estimate, run_final, seal, share_problem
 from ..evaluate.gate import GatePlan, TaskEvalPlan, refill_attempts
 from ..evaluate.release import NotAuthorized, Release
 from ..evaluate.results import TaskResult, attempt_id, summarise
 from ..harness.literals import findings, forbidden, literal_index
+from ..harness.package import Limits, PackageError, build
 from .checks import require, startup_checks
 
 PHASES = ("smoke", "freeze", "baseline", "library", "round", "evaluate", "report", "export")
-STAGE2 = "the library phase needs the memory package (stage 2, docs/design/MEMORY.md §7)"
 STAGE3 = "the round phase needs the improver package (stage 3, docs/design/IMPROVER.md §3)"
 
 
 # ---------------------------------------------------------------------------- one arm of tasks
 def run_arm(activity, *, release: Release, split: str, candidate: str, role: str, pairs: list, account,
             plan_ref: str = "", arm: str = "subject", retry: int = 0, supersedes: dict | None = None,
-            notes: str = "", allocation: str | None = None) -> list[TaskResult]:
+            notes: str = "", allocation: str | None = None, package=None, memory=None) -> list[TaskResult]:
     """The attempts of one arm, under one run identity. Attempts already on record for this run and these pairs are
-    kept as they were, not paid again; the rest run through the runner shell with K's worker."""
-    package = activity.package(release)
-    run = activity.run_manifest(candidate=candidate, role=role, split=split, release=release, notes=notes)
+    kept as they were, not paid again; the rest run through the runner shell with K's worker. `package` runs in
+    place of the release's own W (the memory stream's W_base with memory on); `memory` is what each attempt gets of
+    the memory, by default the package's own snapshot when it reads one."""
+    package = package if package is not None else activity.package(release)
+    run = activity.run_manifest(candidate=candidate, role=role, split=split, release=release, package=package,
+                                notes=notes)
     activity.results.put_run(run)
     recorded = {r.attempt_id: r for r in activity.results.of_run(run.hash())}
     want = [(t, i, attempt_id(run.hash(), t, i, arm, retry)) for t, i in pairs]
@@ -52,7 +56,7 @@ def run_arm(activity, *, release: Release, split: str, candidate: str, role: str
         make = make_agent_factory(provider=activity.actor_provider(account, allocation=allocation), package=package,
                                   core=activity.k, worker=activity.worker(), root=activity.root,
                                   pricing=activity.pricing(), release_ref=release.ref(), core_ref=activity.core_ref,
-                                  arm=arm)
+                                  arm=arm, memory=memory if memory is not None else activity.memory_for(package))
         for r in run_tasks(activity.suite, [], make, run=run, splits=activity.splits, results=activity.results,
                            order=todo, arm=arm, plan_ref=plan_ref, release_ref=release.ref(), retry_index=retry,
                            supersedes=supersedes, concurrency=activity.concurrency):
@@ -252,8 +256,212 @@ def baseline(activity, *, limit: int | None = None, out: Callable[[str], None] =
     return report
 
 
+# ---------------------------------------------------------------------------- the memory stream
+def retry_note(checks) -> str:
+    """The retry's note: the failed checks of the first encounter by type and params (train grading only)."""
+    failed = [c for c in checks or () if not c.get("passed") and not c.get("excluded")]
+    if not failed:
+        return ""
+    lines = [f"- {c.get('type')}: {json.dumps(c.get('params'), ensure_ascii=False, default=str)[:300]}"
+             for c in failed[:12]]
+    return ("A previous attempt at this very task was graded and failed these checks. Work the task again from the "
+            "start and make sure the result satisfies them:\n" + "\n".join(lines))
+
+
+def stream_order(activity) -> list[str]:
+    """The train tasks in the stream's order: shuffled once by K's gate.order_seed and the domain, then frozen in the
+    stream's ledger."""
+    order = list(activity.splits.ids("train"))
+    random.Random(f"library:{activity.k['gate']['order_seed']}:{activity.domain}").shuffle(order)
+    return order
+
+
+def base_readings(activity, release: Release) -> dict:
+    """W_base's valid train readings per task: its own package's runs, never the stream's (role "library": under a K
+    with the memory on the stream's package is W_base's own). -> {task_id: [rows]}."""
+    runs = activity.results.runs()
+    out: dict = {}
+    for r in activity.results.all():
+        run = runs.get(r.run)
+        if r.split != "train" or r.validity != "valid" or r.system_release_ref != release.ref() or run is None \
+                or run.package_ref != release.package_ref or run.role == "library":
+            continue
+        out.setdefault(r.task_id, []).append(r)
+    return out
+
+
 def library(activity, *, out: Callable[[str], None] = print) -> dict:
-    raise NotImplementedError(STAGE2)
+    """The memory's train stream and its snapshot (docs/design/MEMORY.md §7). In the stream's frozen order, a batch at
+    a time: each task's first encounter under W_base with the live library (leave-one-out), a failed one tried once
+    more with its failed checks as a note, then the batch's trajectories (the baseline's too) summarised by ReMe
+    through the metered bridge, checked and written, the first encounters credited. At the end the readout, and —
+    unless D <= abort_d or the library is empty — the snapshot as a candidate package for the improver's ladder
+    (stage 3). Run again, it continues where it stopped and pays for nothing on record. A failure of the memory's
+    sidecar pauses the phase (status `paused`): nothing is recorded as lost for it."""
+    require(startup_checks(activity, phase="library"), phase="library")
+    from ..contracts import MemorySidecarError
+    from ..memory import snapshot_digest
+    from ..memory.settings import Settings
+    from ..memory.snapshot import snapshot_candidate, stream_files
+    from ..runtime.trace import TraceStore
+    settings = Settings.from_core(activity.k)
+    base = activity.active_release()
+    base_package = activity.package(base)
+    limits = Limits.from_core(activity.k)
+    seed_package = activity.package(activity.seed_release())
+    stream_package = build(activity.objects, stream_files(base_package), limits=limits, seed=seed_package)
+    train = activity.splits.ids("train")
+    tasks = {t: activity.suite.tasks[t] for t in train}
+    hashes = {t: task_hash(tasks[t]) for t in train}
+    by_hash = {h: t for t, h in hashes.items()}
+    readings = base_readings(activity, base)
+    if not readings:
+        raise ValueError(f"the library compares each first encounter with W_base's own train readings, and "
+                         f"{short(base.ref())} has none: run the baseline first")
+    b = {t: sum(int(r.success) for r in rows) / len(rows) for t, rows in readings.items()}
+    trace = TraceStore(activity.root, activity.splits.split_of)
+    rows = [{"task_id": t, "assertions": [dict(a) for a in activity.suite.grading(t).assertions],
+             "state": activity.suite.grading(t).initial_state} for t in train]
+    banned = forbidden(literal_index(rows))
+    account = activity.account("library")
+    retries = int(activity.k["gate"]["max_infrastructure_retries"])
+    earlier = {r.attempt_id for r in activity.results.all()}       # on record before this run of the phase
+
+    def attempt(row) -> dict | None:
+        if row is None:
+            return None
+        said = trace.finish(row.attempt_id)
+        return {"session": row.attempt_id, "reward": float(row.partial_credit), "passed": bool(row.success),
+                "release_ref": row.system_release_ref, "shown": said["shown"], "final_reason": said["reason"],
+                "final_text": said["text"], "trace_refs": [trace.ref(row.attempt_id, 1)]}
+
+    def arm_of(name: str, memory, pairs) -> list[TaskResult]:
+        def run_from(offset: int):
+            def run(arm, chosen, retry=0, supersedes=None):
+                return run_arm(activity, release=base, split="train", candidate="library", role="library",
+                               pairs=chosen, account=account, arm=arm, retry=offset + retry, supersedes=supersedes,
+                               package=stream_package, memory=memory, notes=f"memory stream: {name}")
+            return run
+        rows = latest(refill_attempts(run_from(0)(name, pairs), run_from(0), name, retries))
+        # An attempt the budget refused on an earlier run of the phase is no evidence, and the stream has no
+        # comparison for the refusal to end (EVALUATE §5): it runs again, superseding it, at the next block of retry
+        # indexes. A block on record is reused, so a later run pays for nothing twice.
+        offset = 0
+        while True:
+            refused = {(r.task_id, r.attempt): r.attempt_id for r in rows
+                       if r.failure_class == "budget_exhausted" and r.attempt_id in earlier}
+            if not refused:
+                return rows
+            offset += retries + 1
+            run = run_from(offset)
+            rows = latest(rows + refill_attempts(run(name, sorted(refused), 0, refused), run, name, retries))
+
+    def paused(e: Exception) -> dict:
+        out(f"library    paused: the memory's sidecar failed ({type(e).__name__}: {str(e)[:200]}); run the phase "
+            f"again to continue")
+        return {"status": "paused", "why": f"{type(e).__name__}: {str(e)[:300]}"}
+
+    service = activity.memory()
+    try:
+        service.start(research=activity.research_provider("memory", retries=False), concurrency=activity.concurrency)
+    except MemorySidecarError as e:
+        service.stop()
+        return paused(e)
+    try:
+        step = service.stream(train_texts={hashes[t]: tasks[t].trigger for t in train}, forbidden=banned,
+                              trajectory_of=lambda s: trace.trajectory(s, annotations=False),
+                              activity=activity.scope_id, concurrency=activity.concurrency)
+        step.resume()
+        for spec in settings.imports:
+            imported = _import(activity, step, spec)
+            out(f"library    imported {spec['release_ref'][:24]}: {len(imported['added'])} added, "
+                f"{len(imported['dropped'])} dropped{' (already imported)' if imported['again'] else ''}")
+        todo = step.plan([hashes[t] for t in stream_order(activity)])
+        out(f"library    W_base {short(base.ref())}: {len(train)} train tasks, {len(todo)} to stream, "
+            f"{len(step.active())} entries live")
+        for i in range(0, len(todo), settings.stream_batch):
+            batch = [by_hash[h] for h in todo[i:i + settings.stream_batch]]
+            live = step.live_view()
+            firsts = {r.task_id: r for r in arm_of("first", activity.memory_for(stream_package, live=live),
+                                                   [(t, 0) for t in batch])}
+            if any(r.failure_class == "budget_exhausted" for r in firsts.values()):
+                out("library    stopped: the budget refused a first encounter; run the phase again to continue")
+                return {"status": "budget_exhausted", "processed": len(step.ledger["processed"])}
+            notes = {t: retry_note(activity.results.grading(r.attempt_id)) for t, r in firsts.items()
+                     if settings.retry and r.validity == "valid" and not r.success}
+            notes = {t: n for t, n in notes.items() if n}
+            seconds = {}
+            if notes:
+                memory = activity.memory_for(stream_package, live=live, note_of=lambda task: notes[task.task_id])
+                seconds = {r.task_id: r for r in arm_of("retry", memory, [(t, 0) for t in sorted(notes)])}
+            if any(r.failure_class == "budget_exhausted" for r in seconds.values()):
+                out("library    stopped: the budget refused a retry; run the phase again to continue")
+                return {"status": "budget_exhausted", "processed": len(step.ledger["processed"])}
+            items, lost = [], []
+            for t in batch:
+                first = firsts.get(t)
+                if first is None or first.validity != "valid":
+                    lost.append((hashes[t], f"the first encounter is {first.failure_class if first else 'missing'}"))
+                    continue
+                second = seconds.get(t)
+                base_row = readings.get(t, [None])[-1]
+                items.append(({"task_hash": hashes[t], "text": tasks[t].trigger, "b": b.get(t),
+                               "stable_pass": b.get(t) == 1.0, "split": "train"},
+                              attempt(first), attempt(second if second is not None and second.validity == "valid"
+                                                      else None), attempt(base_row)))
+            if lost and not service.healthy():
+                raise MemorySidecarError("the sidecar does not answer: the lost first encounters are its, not the "
+                                         "tasks'")
+            if items:
+                step.process_batch(items)
+            for h, why in lost:              # after the batch is written, so a failed batch is cut the same next run
+                step.lose(h, why)
+            done = step.ledger["processed"]
+            out(f"library    {len(done)}/{len(train)}: " + ", ".join(
+                f"{t} first={int(firsts[t].success) if t in firsts else '-'}"
+                f"{' retry=' + str(int(seconds[t].success)) if t in seconds else ''}"
+                f" +{len(done[hashes[t]].get('added') or ())}" for t in batch) + f"; {len(step.active())} live")
+        result = step.finish()
+    except MemorySidecarError as e:
+        return paused(e)
+    finally:
+        service.stop()
+    ro, snapshot = result["readout"], result["snapshot"]
+    out(f"library    D={ro['D']} B={ro['B']} halves {ro['first_half']} -> {ro['second_half']} "
+        f"(P {ro['p_second_half_better']}); entries {ro['entries']}")
+    outcome = {"outcome": "not_gated", "why": result["abort"]} if result["abort"] else None
+    if outcome is None:
+        try:
+            candidate = build(activity.objects, snapshot_candidate(base_package, snapshot), limits=limits,
+                              seed=seed_package)
+            outcome = {"outcome": "candidate", "package_ref": candidate.ref(), "parent": base.ref()}
+        except PackageError as e:
+            outcome = {"outcome": "not_gated", "why": f"the snapshot does not fit K's package limits: {e}"}
+    outcome["snapshot_digest"] = snapshot_digest(snapshot)
+    if not any(e.get("snapshot_digest") == outcome["snapshot_digest"] and e.get("base") == base.ref()
+               for e in activity.events.read("library_snapshot")):
+        activity.events.append("library_snapshot", base=base.ref(), readout=ro, **outcome)
+    if outcome["outcome"] == "candidate":
+        out(f"library    the snapshot is a candidate: {short(outcome['package_ref'])} (the improver's ladder takes "
+            f"it from V3; stage 3)")
+    else:
+        out(f"library    the snapshot is not gated: {outcome['why']}")
+    return {"status": "done", "readout": ro, "snapshot": outcome}
+
+
+def _import(activity, step, spec: dict) -> dict:
+    """One of K's memory.imports: the release's package must be in this activity's object store."""
+    ref = spec["release_ref"]
+    if not activity.objects.has(ref):
+        raise ValueError(f"[memory] imports names {ref}, which this workspace's object store does not hold: copy the "
+                         f"release's closure in first (contracts.copy_closure)")
+    package = activity.package(activity.releases.load(ref))
+    from ..memory.client import parse_jsonl
+    rows = parse_jsonl(package.memory_text)
+    lines = sorted({(r.get("metadata") or {}).get("ol_line") for r in rows})
+    if len(lines) != 1:
+        raise ValueError(f"{ref}: a snapshot of one business line is imported, not {lines}")
+    return step.import_snapshot(package.memory_text, source_release_ref=ref, source_line=lines[0])
 
 
 def round_(activity, index: int, *, out: Callable[[str], None] = print) -> dict:
@@ -329,4 +537,14 @@ def cycle(activity, *, until: str | None = None, out: Callable[[str], None] = pr
         write_json(path, state)
     if until == "baseline":
         return {**state, "status": "stopped", "at": "baseline"}
-    raise NotImplementedError(STAGE2 if until in (None, "library") else STAGE3)
+    if (state["steps"].get("library") or {}).get("status") != "done":
+        if (activity.k.get("memory") or {}).get("enabled"):
+            state["steps"]["library"] = library(activity, out=out)
+        else:
+            state["steps"]["library"] = {"status": "done", "skipped": "[memory] enabled = false"}
+        write_json(path, state)
+        if state["steps"]["library"].get("status") != "done":
+            return {**state, "status": "stopped", "at": "library"}
+    if until == "library":
+        return {**state, "status": "stopped", "at": "library"}
+    raise NotImplementedError(STAGE3)

@@ -2,8 +2,8 @@
 # the stratified split v0.4 read (pinned below), the automationbench_v1 preset, the stirrup seed, a $450 nominal root
 # with $160 set aside for the final. Every paid step is approved in chat first (PLAN rule 3).
 #
-# Not runnable yet: [memory] enabled needs the memory package (stage 2) and the rounds need the improver (stage 3); the
-# startup checks refuse until they are in place. The order then is:
+# The rounds need the improver (stage 3); the memory's library step runs now (after `python -m ouroloop.memory
+# setup`). The order is:
 #   1  `ouroloop bench --config examples/automationbench/finance-v1.toml --phase smoke --checks-only`              $0
 #   2  `ouroloop freeze --config ...`: K, the gate template and the budget root; add the printed [rsi] lines       $0
 #   3  `... --phase cycle --until baseline`, then `--until library`, then `--until round-0`, round-1, round-2

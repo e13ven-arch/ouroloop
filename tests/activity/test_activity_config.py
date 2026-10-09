@@ -47,6 +47,9 @@ RULE_CASES = {
               lambda k: k["worker"]["image"], "ouroloop-worker:py3.12"),
     "network": ("worker", {"network": PROXY}, "network", {"network": "none"}, lambda k: k["worker"]["network"],
                 "none"),
+    "superset": ("memory", {"heldout_domains": ["finance"]}, "heldout_domains",
+                 {"heldout_domains": ["finance", "operations"]}, lambda k: k["memory"]["heldout_domains"],
+                 ["operations", "finance"]),
 }
 
 
@@ -195,7 +198,7 @@ def test_the_quickstart_config_is_a_new_finance_activity_with_nothing_frozen():
               for p in examples.glob("*.toml") if p.name != "quickstart.toml"}
     assert "workspace-quickstart" not in others
     assert cfg["rsi"] == {"scope_id": "finance-quickstart"} and "final" not in cfg
-    assert k["memory"]["enabled"] is False and k["worker"]["network"] == "none"
+    assert k["memory"]["enabled"] is True and k["worker"]["network"] == "none"           # the library step runs
     assert (k["model"]["type"], k["model"]["effort"]) == (k["research_model"]["type"], k["research_model"]["effort"]) \
         == ("claude_code", "medium")
     for section in ("model", "research_model"):

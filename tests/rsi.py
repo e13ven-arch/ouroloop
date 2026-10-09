@@ -45,11 +45,14 @@ FINAL = [t for t, f in FAMILIES.items() if SPLITS[f] == "test"]
 # A preset for the miniature domain: the real preset's every rule, with the gate's floors and the limits small enough for
 # three dev tasks and a scripted actor. Registered under its own name; nothing outside the tests reads it.
 TEST_PRESET = "rsi_test"
+RESEARCH_MODEL = "scripted-research"
 _preset = json.loads(json.dumps(presets.AUTOMATIONBENCH_V1))
 _preset["limits"] = {"max_steps": 12, "max_model_calls": 30, "max_tool_calls": 20, "max_seconds": 120,
                      "max_tokens": 50000, "max_output_chars": 20000}
 _preset["gate"].update({"min_groups": 1, "min_tasks": 1, "control_readings": 1, "confirmations": 0})
 _preset["bench"]["concurrency"] = 1
+# the memory under the fake client's bag-of-words vectors (tests/memory/fake_memory.py), one task per stream step
+_preset["memory"].update({"min_score": 0.2, "min_other_tasks": 1, "stream_batch": 1})
 presets.PRESETS[TEST_PRESET] = _preset
 
 PRICING = {"input_per_1k": 0.004, "output_per_1k": 0.02, "cache_read_per_1k": 0.0002, "cache_write_per_1k": 0.008,
@@ -70,7 +73,7 @@ def config(root: Path, upstream: str, **sections) -> dict:
     cfg = {"_base": str(root), "workspace": {"root": str(Path(root) / "ws")},
            "bench": {"domain": DOMAIN, "upstream_path": upstream, "families": dict(FAMILIES), "smoke_tasks": 1},
            "model": {"type": "claude_code", "model": "scripted-1", "effort": "medium", "max_tokens": 1000},
-           "research_model": {"type": "claude_code", "model": "scripted-1", "effort": "medium", "max_tokens": 1000},
+           "research_model": {"type": "claude_code", "model": RESEARCH_MODEL, "effort": "medium", "max_tokens": 1000},
            "pricing": dict(PRICING), "harness": {"preset": TEST_PRESET}, "memory": {"enabled": False},
            "budget": {"usd": 50.0, "final_usd": 10.0}, "rsi": {"scope_id": "rsi-test"}}
     for name, table in sections.items():
@@ -97,21 +100,26 @@ def write_split(root: Path, s: ab.Suite) -> SplitManifest:
 
 
 def activity(root: Path, upstream: str, *, provider=None, worker=None, freeze_k: bool = True, out=None,
-             **sections):
+             research=None, memory_client=None, **sections):
     """The activity of `config(root, upstream, **sections)` with the declared split, ProcessWorker (a test worker:
-    for_tests) and `provider` (a BusinessWorker by default) built for every model call."""
+    for_tests), `provider` (a BusinessWorker by default) for the actor's calls and `research` for the research model's
+    (the actor's provider when none is given). `memory_client` makes the memory's client (a test's in-process stand-in
+    for the sidecar's; the real one otherwise)."""
     cfg = config(root, upstream, **sections)
     write_split(root, suite(upstream))
     provider = provider if provider is not None else BusinessWorker()
+    research = research if research is not None else provider
     return open_activity(cfg, out=out or (lambda _line: None), freeze_k=freeze_k,
                          worker_factory=(lambda: worker) if worker is not None else
                          (lambda: ProcessWorker(for_tests=True)),
-                         provider_factory=lambda _table: provider)
+                         provider_factory=lambda table: research if table.get("model") == RESEARCH_MODEL else provider,
+                         memory_client_factory=memory_client)
 
 
 # ---------------------------------------------------------------------------- the scripted actor
 PUSHBACK = "Keep working on the task"
 FINISH_CHECK_MARK = "name the tool result that shows it is done"
+LIBRARY_MARK = "[lib "                  # an entry of the memory's opening block (memory/retrieval.py)
 
 
 def _needs(text: str) -> dict:
@@ -148,9 +156,10 @@ class BusinessWorker:
     """A scripted actor over the rsi tasks.
 
     It plans first when the package offers plan_changes, updates the record, and posts the notification only when
-    something in front of it says to check the request again: the finish-check text in the system prompt, or a
-    pushback. It finishes with the finish tool when one is offered. `forget_notify` ignores the finish check, which is
-    the behaviour gap a candidate can close."""
+    something in front of it says to check the request again: the finish-check text in the system prompt, a pushback,
+    or a note of the memory's opening block about #ops. It finishes with the finish tool when one is offered, and
+    then names the library entries it was shown in a `library-used:` line. `forget_notify` ignores the finish check,
+    which is the behaviour gap a candidate (or a lesson of the memory) can close."""
     name = "scripted"
     model = "scripted-1"
 
@@ -169,9 +178,11 @@ class BusinessWorker:
         want, done = _needs(task), _done(messages)
         pushed = any(PUSHBACK in str(m.get("content", "")) for m in messages if m.get("role") == "user")
         read = [r.get("output", "") for m in messages if m.get("role") == "tool" for r in m.get("results") or ()]
+        noted = LIBRARY_MARK in (system or "") and "#ops" in (system or "").split(LIBRARY_MARK, 1)[1]
         reminded = not self.forget_notify and (FINISH_CHECK_MARK in (system or "") or
                                                any(FINISH_CHECK_MARK in str(r) for r in read)) or \
-            (pushed and not self.ignore_pushback)
+            (pushed and not self.ignore_pushback) or noted
+        self.cited = sorted(set(re.findall(r"\[lib ([0-9a-f]{8})\]", system or "")))
         usage = dict(self.usage)
 
         def call(name, args, n=1):
@@ -195,6 +206,8 @@ class BusinessWorker:
         return self._finish("Done: the record is updated." + (" Message posted." if done["sent"] else ""), names, usage)
 
     def _finish(self, text: str, names: set, usage: dict) -> ChatTurn:
+        if getattr(self, "cited", None):
+            text += "\nlibrary-used: " + ",".join(self.cited)
         if "finish" in names:
             return ChatTurn("", [ToolCall(f"c{self.calls}.f", "finish", {"reason": text})], "tool_use", usage=usage)
         return ChatTurn(text, [], "end", usage=usage)

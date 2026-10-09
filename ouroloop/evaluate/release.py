@@ -28,7 +28,8 @@ INSTALL_STATUS = ("installed", "stale_parent", "installation_failed")
 PACKAGE = Path(__file__).resolve().parents[1]
 # The package's files besides its modules that pip installs: pyproject.toml's [tool.setuptools.package-data] says the
 # same. The seeds are source trees whose every file is part of what runs.
-PACKAGE_DATA = ("train/jobs/hosts/bootstrap.sh", "train/jobs/hosts/start.sh")
+PACKAGE_DATA = ("train/jobs/hosts/bootstrap.sh", "train/jobs/hosts/start.sh", "memory/sidecar/flows.yaml",
+                "memory/sidecar/requirements-macos-arm64.lock")
 SEEDS = "harness/seeds/"
 
 
