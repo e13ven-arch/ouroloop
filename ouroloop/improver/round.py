@@ -33,10 +33,10 @@ from .declaration import Declaration, read_declaration
 from .evidence import Evidence, dev_histogram
 from .ledger import Ledger
 from .policy import read_playbook, update_playbook
-from .screen import condition, gate as run_gate, passing_sample, pick_best, price, screen
+from .screen import ScreenResult, condition, gate as run_gate, passing_sample, pick_best, price, screen
 from .session import CodingSession, WorkTree
 from .settings import CODE_KINDS, Settings
-from .verify import VerifyContext, run_ladder
+from .verify import Verdict, VerifyContext, run_ladder
 from .verify.unit import worker_files
 
 PROMPTS = dg.PROMPTS
@@ -482,7 +482,6 @@ class Round:
         return out[:self.s.fixed_per_round]
 
     def verified(self) -> dict:
-        from .verify import Verdict
         vctx = None
         passed, fixed, ladder = [], [], {}
         for item in self.state["steps"]["implemented"]["candidates"]:
@@ -564,6 +563,8 @@ class Round:
                          thin_tasks=self.s.thin_screen_tasks)
             results.append(res)
             rows.append({"dir": decl.dir, "screen": self.a.objects.put(res), "package": package.ref()})
+            self.archive.put(self.i, decl.dir, files, decl, Verdict.from_json(self.a.objects.get(item["verdict"])),
+                             screen=res, package_ref=package.ref(), line=self.line)
             self.ledger.row("screened", round_id=self.round_id, line=self.line, dir=decl.dir, kind=decl.kind,
                             cause=decl.cause_id.rpartition(":")[2], predicted_affected=list(decl.predicted_affected),
                             fixed=list(res.fixed), regressed=list(res.regressed), net_flips=res.net_flips,
@@ -572,7 +573,8 @@ class Round:
             if res.outcome == "screened" and cause is not None and not decl.fixed:
                 Estimates(self.a.root, self.s).update(self.line, cause.name, decl.kind,
                                                       fixes=res.net_flips / max(len(res.failing), 1),
-                                                      cost=(res.cost or 0.0) * len(res.tasks))
+                                                      cost=(res.cost or 0.0) * len(res.tasks),
+                                                      key=f"{self.round_id}:{decl.dir}")
             if res.outcome == "budget_exhausted":
                 raise Stop("budget: the budget refused a screen attempt")
         best = pick_best(results, self.s)
@@ -588,6 +590,14 @@ class Round:
         package = load_package(self.a.objects, sc["best_package"])
         got = run_gate(self.a, run_arm=self.run_arm, round_id=self.round_id, package=package,
                        base_release=self.base, account=self.child("gate"))
+        item = next(i for i in self.state["steps"]["verified"]["passed"]
+                    if Declaration.from_json(self.a.objects.get(i["declaration"])).dir == sc["best"])
+        screened = next(r for r in sc["screens"] if r["dir"] == sc["best"])
+        self.archive.put(self.i, sc["best"], self.a.objects.get(item["files"]),
+                         Declaration.from_json(self.a.objects.get(item["declaration"])),
+                         Verdict.from_json(self.a.objects.get(item["verdict"])),
+                         screen=ScreenResult.from_json(self.a.objects.get(screened["screen"])),
+                         receipt_ref=got["receipt"], package_ref=sc["best_package"], line=self.line)
         self.ledger.row("gated", round_id=self.round_id, line=self.line, dir=sc["best"], verdict=got["verdict"],
                         gain=got.get("gain"), fixed_count=got["fixed_count"], regressed_count=got["regressed_count"])
         if got.get("installed"):
@@ -620,7 +630,8 @@ class Round:
                         if t in child_reading and t in parent_reading)
             Estimates(self.a.root, self.s).update(self.line, cause.name, decl.kind,
                                                   fixes=fixes / max(len(cause.tasks), 1),
-                                                  cost=float((self.spend().get("used") or {}).get("usd") or 0.0))
+                                                  cost=float((self.spend().get("used") or {}).get("usd") or 0.0),
+                                                  key=f"{self.round_id}:{decl.dir}")
         history = {"footprints": footprints(child_reading, new_package, self.evidence),
                    "installed": {k: v["credit"] for k, v in table.items()}}
         self.ledger.row("credited", round_id=self.round_id, line=self.line, release=new.ref(),

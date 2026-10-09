@@ -73,7 +73,8 @@ def removal_candidates(history: list[dict], package, *, zero_rounds: int) -> lis
     out = []
     for comp in present(package):
         k = key(comp)
-        dead = all(int((h.get("footprints") or {}).get(k, 0)) == 0 for h in recent)
+        # a round before the component was in the package is not a round it failed to show in
+        dead = all(k in (h.get("footprints") or {}) and int(h["footprints"][k]) == 0 for h in recent)
         installed_at = [i for i, h in enumerate(history) if k in (h.get("installed") or {})]
         idle = bool(installed_at) and len(history) - installed_at[-1] >= zero_rounds and all(
             float((h.get("installed") or {}).get(k, 0.0)) <= 0.0 for h in history[installed_at[-1]:])

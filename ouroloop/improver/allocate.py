@@ -34,7 +34,9 @@ class Estimate:
 
 
 class Estimates:
-    """<workspace>/ledger/estimates.json: {line: {cause: {kind: {fixes, cost, n}}}}. Importable across activities."""
+    """<workspace>/ledger/estimates.json: {line: {cause: {kind: {fixes, cost, n, observations}}}}. Importable across
+    activities. A screened candidate is one observation (its conditioned net flips per cause task); an installed one's
+    observation becomes its net fixes on the cause's tasks after the install (DESIGN §6.4)."""
 
     def __init__(self, root, settings: Settings):
         self.path = Path(root) / "ledger" / "estimates.json"
@@ -50,12 +52,22 @@ class Estimates:
         return Estimate(line, cause, kind, fixes, float(row.get("cost", 0.0)), n,
                         round((prior + fixes) / (1 + n), 6), round(unc / math.sqrt(1 + n), 6))
 
-    def update(self, line: str, cause: str, kind: str, *, fixes: float, cost: float = 0.0) -> None:
+    def update(self, line: str, cause: str, kind: str, *, fixes: float, cost: float = 0.0, key: str | None = None) \
+            -> None:
+        """One observation. Under a `key` (round:dir) it is that candidate's: writing the key again replaces it (a
+        resumed step, or the install's reading taking the place of the screen's)."""
         slot = self.table.setdefault(line, {}).setdefault(cause, {}).setdefault(kind, {"fixes": 0.0, "cost": 0.0,
                                                                                      "n": 0})
+        seen = slot.setdefault("observations", {}) if key is not None else {}
+        if key is not None and key in seen:
+            old_fixes, old_cost = seen[key]
+            slot["fixes"], slot["cost"] = float(slot["fixes"]) - old_fixes, float(slot["cost"]) - old_cost
+            slot["n"] = int(slot["n"]) - 1
         slot["fixes"] = round(float(slot["fixes"]) + float(fixes), 6)
         slot["cost"] = round(float(slot["cost"]) + float(cost or 0.0), 6)
         slot["n"] = int(slot["n"]) + 1
+        if key is not None:
+            seen[key] = [round(float(fixes), 6), round(float(cost or 0.0), 6)]
         write_json(self.path, self.table)
 
     def tried(self, line: str, cause: str) -> set[str]:

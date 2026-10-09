@@ -334,6 +334,20 @@ def test_estimates_start_at_the_prior_which_counts_as_one_observation(tmp_path):
     assert again.tried("other_line", "real_date") == set()
 
 
+def test_a_keyed_observation_is_one_candidates_and_writing_it_again_replaces_it(tmp_path):
+    """The screen's observation of a candidate, then the install's reading in its place; a resumed step writes the
+    same key again and counts once."""
+    est = Estimates(tmp_path, Settings())
+    est.update(LINE, "missed_action", "tool", fixes=1.0, cost=0.2, key="r0:notify")
+    est.update(LINE, "missed_action", "tool", fixes=1.0, cost=0.2, key="r0:notify")
+    e = est.get(LINE, "missed_action", "tool")
+    assert (e.n, e.fixes, e.cost) == (1, 1.0, 0.2)
+    est.update(LINE, "missed_action", "tool", fixes=0.5, cost=0.7, key="r0:notify")
+    est.update(LINE, "missed_action", "tool", fixes=0.0, cost=0.1, key="r1:other")
+    e = Estimates(tmp_path, Settings()).get(LINE, "missed_action", "tool")
+    assert (e.n, e.fixes, e.cost) == (2, 0.5, 0.8)
+
+
 def test_a_kind_on_record_with_no_reading_is_not_tried(tmp_path):
     write_json(tmp_path / "ledger" / "estimates.json",
                {LINE: {"real_date": {"hook": {"fixes": 0.0, "cost": 0.0, "n": 0},

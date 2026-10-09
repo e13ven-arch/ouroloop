@@ -18,12 +18,11 @@ Covered:
   projection keeps only the projected fields and the line; it has no dev task id in a real round; the scoreboard;
   `last_round_of`;
 - archive (§10): put/rows (the latest per round and dir, a line's rows), duplicates (same files in an earlier round,
-  not in the same round), `for_prompt`; on the real round, the archived candidate keeps its screen and receipt
-  (xfail: BUG, round.py never archives them);
+  not in the same round), `for_prompt`; on the real round, the archived candidate keeps its screen and receipt;
 - credit and anti-bloat (§10; DESIGN §6.8): a delta is conditioned on the footprint, and test and deleted components
   get no credit; `summary`; a component that shows on no attempt for `removal_zero_credit_rounds` credited rounds,
   or that has had no conditioned credit since its install, is a removal candidate, and not one round earlier; a
-  re-install restarts the count; rounds before a component existed do not count (xfail: BUG); `without` drops the
+  re-install restarts the count; rounds before a component existed do not count; `without` drops the
   manifest entry, and its file only when no other entry names it;
   the round's credited row checked against a recomputation;
 - policy (§10): only lessons whose citations are all ledger ids survive (`check_lessons`, `update_playbook` with the
@@ -539,10 +538,6 @@ def test_an_install_with_no_conditioned_credit_is_proposed_after_n_rounds():
     assert "tool:off" not in proposed(idle, pkg, n=1)
 
 
-@pytest.mark.xfail(strict=True, reason="BUG: credit.removal_candidates counts a credited round in which the component "
-                   "was not in the package (absent from that round's footprints) as a zero round, so a component "
-                   "installed in the last credited round with no footprint yet is proposed after 1 round, not N "
-                   "(IMPROVER §10: N consecutive credited rounds of zero conditioned credit)")
 def test_rounds_before_a_component_existed_do_not_count():
     pkg = package_of(SMALL)
     before = {k: v for k, v in SHOWING.items() if k != "skill:ops"}       # the skill came with the last install
@@ -673,9 +668,6 @@ def test_the_round_ledger_ids_projection_and_scoreboard(rnd):
     assert rnd.ledger.last_round_of("rsi.update_stage") == -1
 
 
-@pytest.mark.xfail(strict=True, reason="BUG: improver/round.py archives a candidate only in `verified` (screen=None, "
-                   "no receipt) and never again after its screen and gate, so the archive and for_prompt never show a "
-                   "screened or gated candidate (IMPROVER §10, DESIGN §6.7: the archive keeps the screen and receipt)")
 def test_the_round_archives_the_screen_and_receipt_of_its_candidate(rnd):
     archive = Archive(rnd.a.root, rnd.a.objects)
     row = next(r for r in archive.rows(line=rnd.a.domain) if r["dir"] == "notify")
