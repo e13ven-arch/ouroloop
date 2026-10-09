@@ -72,7 +72,7 @@ def cycle(activity, *, until: str | None, out) -> dict                  # baseli
 def startup_checks(activity, *, phase: str, needs_model: bool = True, needs_worker: bool | None = None) -> list[str]
     # 钱：预算根与份额存在、价目有界、provider 是订阅登录、effort 钉在 K；
     # 泄漏：划分哈希相符、test 未读（final 之前）、R 与 memory 只读 train 的配置；
-    # 正确性：worker 镜像 id 与 runner sha256、egress 镜像、memory sidecar 的 venv 等于锁文件、模型各文件的 sha256、K 的 backend 钉表等于本检出的锁文件与 flows（library 阶段，及跑开了 memory 的包的阶段）、种子 ref 与 K 一致、code_version 相符、评分契约
+    # 正确性：worker 镜像 id 与 runner sha256、egress 镜像、memory sidecar 的 venv 等于锁文件、模型各文件的 sha256、K 的 backend 钉表等于本检出的锁文件与 flows（library 阶段、开了 memory 的 round，及跑开了 memory 的包的阶段）、种子 ref 与 K 一致、code_version 相符、评分契约、round 前 gate 计划模板已冻结
 
 # report.py
 def build_report(activity) -> dict      # 基线、每轮（簇数、候选、各档通过数、gate 读数、装入）、memory 读数、final、花费（按步单列）、test 读取次数

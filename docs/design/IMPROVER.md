@@ -131,7 +131,7 @@ TOOLS = ("list_files", "read_file", "write_file", "edit_file", "delete_file", "r
 - `inputs/`：`assignments.json`（簇、kind、名额）、`causes.json`（案例：题号、cause、说明、证据 ref、失败断言类型）、`successes.json`（成功轨迹的 session）、`ledger.json`（台账的 train 投影）、`scoreboard.json`、`playbook.md`、`histogram.json`（dev 失败类型与计数）、`base_tools.json`、`package_api.md`（包侧契约：ctx、hook 站点的事件与返回、工具与 agent 入口、toolcheck 脚本、manifest 的形状）。
 - `read_trajectory(session, offset?, limit?)`：重建的轨迹（JSON），只限 `readable`（本轮的 train session）；按 `session_max_read_bytes` / `session_max_read_total` 截断。`search_trace(query)`：TraceStore 的 FTS，只限 train。
 - `run_check(dir, declaration)`：对该目录当前文件跑 V0～V2，返回逐档结果的文本；`run_tests(dir)`：只跑包测试。都不付费。
-- `finish(candidates)`：每个是一份声明。声明不全或 dir 没写过 → 工具错误，R 可以在上限内再 finish。超出 `session_max_turns` / `session_max_edits` 即结束，已声明的候选照常验收；没有声明则本轮没有 R 的候选。
+- `finish(candidates)`：每个是一份声明。声明不全或 dir 没写过 → 工具错误，R 可以在上限内再 finish。`finish([])` 直接结束会话（R 认为没有可做的）。超出 `session_max_turns` / `session_max_edits` 即结束，已声明的候选照常验收；没有声明则本轮没有 R 的候选。
 - 验收：每个候选跑一次阶梯；没过的把 Verdict 文本退回会话修订一次（`revise`），修订只改文件、不改声明；仍不过 → invalid。
 - 提示文本在 `improver/prompts/{diagnose,propose,playbook}.md`，哈希进 `ImproverPolicy`。
 
