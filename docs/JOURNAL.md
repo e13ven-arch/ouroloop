@@ -8,6 +8,22 @@
 
 ---
 
+## 2026-10-09 阶段 4：finance-v1 冻结与基线
+
+- 用户的批准（2026-10-09）：定预算、freeze、跑 baseline（在“继续跑测试”的确认里选了“定预算、freeze、跑 baseline”）。先于此，用户让推送 `m1-automationbench`（`b51083c..c22f698`）、`s4/finance`（新分支，`9af98c2`）与 tag `archive-2026-10-09` 到 origin，推送前全量 1,489 passed。
+- 预算（K）：根 $700，final 份额 $220（`19b01bd`）。`ouroloop freeze`：K `core:sha256:5e021a1ca650…`，code_version `47a0c958db380d8e`，划分 `4fd91eaf9fb8daf5`，种子 release `c4dcd052272b`（W0 = 包 `fabb9f63495d`），gate 模板冻结；final 没有封存（还没有装入）。`[rsi]` 的两行在 `a6b244f` 里。
+- 基线（`--phase cycle --until baseline`，并发 8，在用户的终端面板里跑，约 30 分钟）：
+  - train：21/50 通过（42%），部分得分 0.768；dev 两次读数都是 8/25（32%），部分得分 0.793 / 0.746。
+  - 噪声：dev 的两次读数逐题完全相同（8 道都过，17 道都没过，0 道翻转）。gate 的对照很稳；`min_gain` 0.05 在 25 道 dev 上要净修好 2 道。
+  - 余量：train 29 道失败，dev 17 道两次都失败。train 失败里没过的检查类型：Gmail 发出的邮件正文该有的没有 16、不该有的有了 9、收件人 3；Sheets 行更新 5、行存在 4；QuickBooks、Xero、Wave 的记录各 1～4；Slack 消息 3。dev 的失败类型直方图同样以邮件正文为主（33 / 10）。
+  - 对照旧种子（v0.3 的 W0，同一划分）：train 54% → 42%，dev 32% → 32%。stirrup 种子在 train 上低 12 个点，dev 相同。
+  - 有效性与钱：100 次尝试全部有效、全部正常结束；1,260 次调用全部结算，没有 unknown，没有速率限制；CLI 2.1.288 记入事件。花费 $51.21（估算约 $60）：train 每次 $0.515，dev 每次 $0.545 / $0.472。
+- 按实测重算后面的步骤：library 约 75 次尝试 × $0.515 ≈ $39，加 ReMe 的提炼约 $37（仍未实测），约 $76（$55–115）；每轮 $55–105；final 约 150 × $0.51 ≈ $77，并发 8 时封存需 $77 + 10 × $11.28 ≈ $190，$220 的份额放得下。根剩 $648.8，非 final 部分剩 $428.8。
+- 报告（`--phase report`，$0）写在工作区里，与上面一致。
+- 没读 `.env`，没读任何 test 题的内容。下一步 library，等用户批准。
+
+---
+
 ## 2026-10-09 阶段 4：探针（真实 CLI，两个临时工作区，K 未冻结）
 
 - 用户的批准（2026-10-09）："先跑探针"。在临时工作区跑，不碰 finance-v1：`finance-v1-probe.local.toml`（根 $25）与 `finance-v1-probe2.local.toml`（根 $40），都是 git 忽略的本地文件，工作区 `examples/automationbench/workspace-finance-v1-probe{,2}/`。
