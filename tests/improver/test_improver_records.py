@@ -26,8 +26,8 @@ Covered:
   manifest entry, and its file only when no other entry names it;
   the round's credited row checked against a recomputation;
 - policy (§10): only lessons whose citations are all ledger ids survive (`check_lessons`, `update_playbook` with the
-  scripted R's cited and uncited lesson); the real round's playbook; export_policy/import_policy round trip, and
-  an import refused once the ledger has rows.
+  scripted R's cited and uncited lesson; written without the held-out tasks' ids); the real round's playbook;
+  export_policy/import_policy round trip, and an import refused once the ledger has rows.
 """
 from __future__ import annotations
 
@@ -354,19 +354,33 @@ def test_the_projection_keeps_projected_fields_of_the_line(tmp_path):
 
 
 def test_the_scoreboard(tmp_path):
+    """Per kind and in all: the candidates screened, their conditioned fixes, regressions and net, in counts (the
+    screens run on the held-out train tasks, so predictions are not matched there); a screen not run is left out."""
     ledger = Ledger(tmp_path)
     ledger.row("screened", round_id="s/r0", line="d", kind="tool", predicted_affected=["a", "b"], fixed=["a", "c"],
-               regressed=["d"])
+               regressed=["d"], outcome="screened")
     ledger.row("screened", round_id="s/r0", line="d", kind="hook", predicted_affected=["a"], fixed=[],
-               regressed=["a"])
-    ledger.row("screened", round_id="o/r0", line="other", kind="tool", predicted_affected=["x"], fixed=["x"])
+               regressed=["a"], outcome="screened")
+    ledger.row("screened", round_id="s/r0", line="d", kind="skill", outcome="not_run", reason="budget")
+    ledger.row("screened", round_id="o/r0", line="other", kind="tool", predicted_affected=["x"], fixed=["x"],
+               outcome="screened")
     ledger.row("declared", round_id="s/r0", line="d", kind="tool", predicted_affected=["a"], fixed=["a"])
     assert ledger.scoreboard("d") == {
-        "all": {"candidates": 2, "hits": 1, "misses": 2, "unpredicted_regressions": 1},
-        "hook": {"candidates": 1, "hits": 0, "misses": 1, "unpredicted_regressions": 0},
-        "tool": {"candidates": 1, "hits": 1, "misses": 1, "unpredicted_regressions": 1}}
-    assert ledger.scoreboard()["tool"] == {"candidates": 2, "hits": 2, "misses": 1, "unpredicted_regressions": 1}
+        "all": {"candidates": 2, "fixed": 2, "regressed": 2, "net": 0},
+        "hook": {"candidates": 1, "fixed": 0, "regressed": 1, "net": -1},
+        "tool": {"candidates": 1, "fixed": 2, "regressed": 1, "net": 1}}
+    assert ledger.scoreboard()["tool"] == {"candidates": 2, "fixed": 3, "regressed": 1, "net": 2}
     assert Ledger(tmp_path / "empty").scoreboard() == {}
+
+
+def test_the_projection_counts_held_out_tasks_and_never_names_them(tmp_path):
+    ledger = Ledger(tmp_path)
+    ledger.row("screened", round_id="s/r0", line="d", kind="tool", predicted_affected=["a"], fixed=["h1", "a"],
+               regressed=["h2"], outcome="screened", net_flips=0)
+    (row,) = ledger.projection(line="d", hide={"h1", "h2"})
+    assert row["fixed"] == ["a"] and row["fixed_held_out"] == 1 and "regressed" not in row
+    assert row["regressed_held_out"] == 1 and "h1" not in json.dumps(row) and "h2" not in json.dumps(row)
+    assert ledger.projection(line="d")[0]["fixed"] == ["h1", "a"]
 
 
 def test_last_round_of(tmp_path):
@@ -440,13 +454,17 @@ def test_for_prompt(tmp_path):
              "rungs": {"V0": True, "V1": True, "V2a": False}, "screen": None, "gated": False},
             {"round": 1, "dir": "notify2", "kind": "hook", "site": "on_finish", "declaration": second["declaration"],
              "rungs": {"V0": True, "V1": True, "V2a": True},
-             "screen": {"outcome": "screened", "net_flips": 0, "fixed": ["t.a"], "regressed": ["t.b"]},
+             "screen": {"outcome": "screened", "net_flips": 0, "fixed": ["t.a"], "regressed": ["t.b"],
+                        "fixed_held_out": 0, "regressed_held_out": 0},
              "gated": True}]
     assert archive.for_prompt("d", "missed_action") == want
     assert archive.for_prompt("d", "missed_action", n=1) == want[1:]
     assert [r["dir"] for r in archive.for_prompt("d", "wrong_value")] == ["value"]
     assert [r["dir"] for r in archive.for_prompt("other", "missed_action")] == ["elsewhere"]
     assert archive.for_prompt("d", "unclear_request") == []
+    # a held-out task is counted, never named
+    hidden = archive.for_prompt("d", "missed_action", hide={"t.a"})[1]["screen"]
+    assert hidden["fixed"] == [] and hidden["fixed_held_out"] == 1 and hidden["regressed"] == ["t.b"]
 
 
 # ---------------------------------------------------------------------------- credit
@@ -621,6 +639,15 @@ def test_update_playbook_keeps_the_cited_lesson(tmp_path):
     assert read_playbook(tmp_path) == "- A tool that posts the requested message fixed missed_action [L2]\n"
 
 
+def test_the_playbook_is_written_without_the_held_out_tasks(tmp_path):
+    ledger = Ledger(tmp_path)                       # R reads the playbook: a held-out task's id must not reach it
+    ledger.row("screened", round_id="s/r0", line="d", kind="tool", fixed=["t.held", "t.seen"], outcome="screened")
+    r = Recording()
+    update_playbook(tmp_path, ledger, researcher=r, line="d", hide={"t.held"})
+    (row,) = r.asked[0]["ledger_rows"]
+    assert (row["fixed"], row["fixed_held_out"]) == (["t.seen"], 1) and "t.held" not in json.dumps(r.asked)
+
+
 def test_a_lesson_citing_a_row_that_does_not_exist_is_dropped(tmp_path):
     ledger = Ledger(tmp_path)                       # empty: the scripted R cites L1, which is no row
     got = update_playbook(tmp_path, ledger, researcher=ScriptedR(), line="d")
@@ -672,7 +699,7 @@ def test_the_round_ledger_ids_projection_and_scoreboard(rnd):
     gated = rnd.ledger.rows(stage="gated")[0]
     assert {k: gated[k] for k in ("verdict", "fixed_count", "regressed_count")} == \
         {"verdict": "accepted", "fixed_count": 1, "regressed_count": 0}
-    board = {"candidates": 1, "hits": 2, "misses": 0, "unpredicted_regressions": 0}
+    board = {"candidates": 1, "fixed": 2, "regressed": 0, "net": 2}
     assert rnd.ledger.scoreboard(rnd.a.domain) == {"all": board, "tool": board}
     assert rnd.ledger.last_round_of("rsi.notify_after_update") == 0
     assert rnd.ledger.last_round_of("rsi.update_stage") == -1

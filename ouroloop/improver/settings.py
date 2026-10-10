@@ -48,6 +48,7 @@ class Settings:
     screen_max_sample_regressions: int = 1
     thin_screen_tasks: int = 3
     removal_zero_credit_rounds: int = 3
+    holdout_share: float = 0.4                   # the train tasks R never sees; V3 screens there only (0: none)
     round_share: float = 0.25
 
     def __post_init__(self):
@@ -62,6 +63,8 @@ class Settings:
         object.__setattr__(self, "priors", priors)
         if self.k < 1 or self.session_max_turns < 1:
             raise ValueError("improver.k and improver.session_max_turns are at least 1")
+        if not 0 <= float(self.holdout_share) < 1:
+            raise ValueError("improver.holdout_share is a share of the train tasks, in [0, 1)")
         if not 0 < float(self.round_share) <= 1:
             raise ValueError("improver.round_share is a share of the root, in (0, 1]")
 
@@ -119,4 +122,4 @@ RULES = {"k": "cap", "fixed_per_round": "cap", "session_max_turns": "cap", "sess
          "toolcheck_min_pass": "floor", "replay_min_triggers": "floor", "reach_min_tasks": "floor",
          "reach_min_score": "floor", "screen_passing_sample": "cap", "screen_min_net_flips": "floor",
          "screen_min_fixes": "floor", "screen_max_sample_regressions": "cap", "thin_screen_tasks": "floor",
-         "removal_zero_credit_rounds": "fixed", "round_share": "cap"}
+         "removal_zero_credit_rounds": "fixed", "holdout_share": "floor", "round_share": "cap"}

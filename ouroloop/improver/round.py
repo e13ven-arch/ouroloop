@@ -220,6 +220,26 @@ class Round:
             usd += mean * (cases + self.s.session_max_turns)
         self._afford(usd, "the gate, the least screen and the research")
 
+    def split(self) -> tuple[tuple, tuple]:
+        """(the train tasks R studies, the train tasks held out from it), fixed for the activity: whole families,
+        ranked by a hash of K's order seed and the family, are held out until holdout_share of the train tasks are.
+        V3 screens on the held-out part only, so a screen reads whether a candidate fixes tasks R never saw."""
+        if getattr(self, "_split", None) is None:
+            import hashlib
+            train = list(self.a.splits.ids("train"))
+            want = min(int(round(len(train) * float(self.s.holdout_share))), max(len(train) - 1, 0))
+            families: dict = {}
+            for t in train:
+                families.setdefault(self.a.splits.family_of(t), []).append(t)
+            seed = int(self.a.k["gate"]["order_seed"])
+            held: list = []
+            for fam in sorted(families, key=lambda f: hashlib.sha256(f"holdout:{seed}:{f}".encode()).hexdigest()):
+                if len(held) >= want:
+                    break
+                held += families[fam]
+            self._split = (tuple(t for t in train if t not in set(held)), tuple(t for t in train if t in set(held)))
+        return self._split
+
     def _recorded(self, candidate: str, role: str) -> int:
         """The valid attempts on record under a run of this name and role."""
         runs = self.a.results.runs()
@@ -256,7 +276,8 @@ class Round:
         order = {t: i for i, t in enumerate(self.a.splits.ids("train"))}
         failed.sort(key=lambda e: (self.ledger.last_round_of(e.task_id), order.get(e.task_id, 0)))
         chosen = failed[:self.s.diagnose_max_cases]
-        successes = self.evidence.best_successes(self.base.package_ref, self.s.diagnose_successes)
+        successes = self.evidence.best_successes(self.base.package_ref, self.s.diagnose_successes,
+                                                 tasks=self.split()[0])
         return {"failed": [e.attempt_id for e in chosen], "failed_tasks": [e.task_id for e in chosen],
                 "not_diagnosed": [e.task_id for e in failed[self.s.diagnose_max_cases:]],
                 "successes": [{"task_id": e.task_id, "session": e.session} for e in successes]}
@@ -332,7 +353,11 @@ class Round:
         previous = f"{self.a.scope_id}/r{self.i - 1}"
         no_code = {r.get("cause") for r in self.ledger.rows(stage="no_code_candidate", round_id=previous)}
         estimates = Estimates(self.a.root, self.s)
-        assignments, notes = allocate(self.causes(), estimates, settings=self.s, line=self.line,
+        causes, study, held = self.causes(), *(set(p) for p in self.split())
+        if held:        # a cause is assigned only where R has the cases V2a and V2b need and V3 held-out tasks to screen on
+            need = max(int(self.s.toolcheck_min_pass), int(self.s.replay_min_triggers), 1)
+            causes = [c for c in causes if len(study & set(c.tasks)) >= need and held & set(c.tasks)]
+        assignments, notes = allocate(causes, estimates, settings=self.s, line=self.line,
                                       allowed=self.a.k["harness"]["kinds"], no_code=no_code,
                                       stalled=stalled(self.ledger, self.s.stall_rounds), train_available=False)
         self.ledger.row("allocated", round_id=self.round_id, line=self.line,
@@ -358,8 +383,9 @@ class Round:
         rows = [{"task_id": t, "assertions": [dict(x) for x in self.a.suite.grading(t).assertions],
                  "state": self.a.suite.grading(t).initial_state, "prompt": self.a.suite.tasks[t].trigger}
                 for t in train]
-        failed = [t for t in train if t in reading and not reading[t].success]
-        passed = [t for t in train if t in reading and reading[t].success]
+        study = self.split()[0]
+        failed = [t for t in study if t in reading and not reading[t].success]
+        passed = [t for t in study if t in reading and reading[t].success]
         # V2c reads reach on lexical_embed's scale, the one reach_min_score is calibrated on (bge-small puts unrelated
         # texts at 0.5 and above: on it 0.2 would pass every description)
         embed = None
@@ -370,7 +396,8 @@ class Round:
                              settings=self.s, fixture_task=(failed or passed or list(train))[0],
                              failed_sessions={t: reading[t].evidence or reading[t].attempt_id for t in failed},
                              passed_sessions={t: reading[t].evidence or reading[t].attempt_id
-                                              for t in passed[:self.s.screen_passing_sample]})
+                                              for t in passed[:self.s.screen_passing_sample]},
+                             study_tasks=study)
 
     def with_memory(self, files: dict) -> dict:
         """A candidate's files with the parent's host-only memory snapshot put back (R's tree never holds it)."""
@@ -383,6 +410,7 @@ class Round:
     def inputs(self, assignments) -> tuple[dict, set]:
         steps = self.state["steps"]
         causes = {c.cause_id: c for c in self.causes()}
+        study, held = (set(p) for p in self.split())
         readable = set()
         cause_rows = []
         for a in assignments:
@@ -390,6 +418,8 @@ class Round:
             rows = []
             for ref in c.cases:
                 case = dg.Case.from_json(self.a.objects.get(ref))
+                if case.task_id not in study:
+                    continue                                # held out: R never reads it
                 row = next(iter(self._rows([case.attempt_id])), None)
                 session = (row.evidence or row.attempt_id) if row is not None else ""
                 readable.add(session)
@@ -398,9 +428,11 @@ class Round:
                              list(case.assertion_kinds), "tool_errors": list(case.tool_errors),
                              "termination": case.termination})
             cause_rows.append({"cause_id": c.cause_id, "name": c.name, "mechanizable": c.mechanizable,
-                               "definition": dg.DEFINITIONS.get(c.name, ""), "tasks": list(c.tasks), "cases": rows,
+                               "definition": dg.DEFINITIONS.get(c.name, ""),
+                               "tasks": [t for t in c.tasks if t in study],
+                               "held_out_tasks": sum(1 for t in c.tasks if t in held), "cases": rows,
                                "memory_entries": list(c.memory_entries),
-                               "earlier": self.archive.for_prompt(self.line, c.name)})
+                               "earlier": self.archive.for_prompt(self.line, c.name, hide=held)})
         successes = steps["evidence"]["successes"]
         readable |= {s["session"] for s in successes}
         episode = self.a.suite.episode(self.a.splits.ids("train")[0])
@@ -414,7 +446,8 @@ class Round:
         files = {"assignments.json": [{"cause_id": a.cause_id, "cause": a.cause, "kind": a.kind, "slots": a.slots,
                                        "exploration": a.exploration} for a in assignments],
                  "causes.json": cause_rows, "successes.json": successes,
-                 "ledger.json": self.ledger.projection(line=self.line), "scoreboard.json": self.ledger.scoreboard(),
+                 "ledger.json": self.ledger.projection(line=self.line, hide=held),
+                 "scoreboard.json": self.ledger.scoreboard(),
                  "histogram.json": dev_histogram(self.a, self.base.package_ref), "base_tools.json": base_tools}
         out = {name: json.dumps(v, ensure_ascii=False, indent=1, default=str) for name, v in files.items()}
         out["playbook.md"] = read_playbook(self.a.root)
@@ -471,6 +504,18 @@ class Round:
             if bad:
                 raise RuntimeError(f"R's saved session cannot be restored: candidates/{name}/{path}: {value}")
 
+    def _unused(self, assignments, out: list) -> None:
+        """An assigned (cause, kind) R declared nothing for: on the ledger, and an observation of no fix for its
+        estimate, so the exploration does not keep landing where R does not go."""
+        decls = [Declaration.from_json(self.a.objects.get(i["declaration"])) for i in out]
+        declared = {(d.cause_id, d.kind) for d in decls}
+        estimates = Estimates(self.a.root, self.s)
+        for a in assignments:
+            if (a.cause_id, a.kind) not in declared:
+                self.ledger.row("unused", round_id=self.round_id, line=self.line, cause=a.cause, kind=a.kind)
+                estimates.update(self.line, a.cause, a.kind, fixes=0.0,
+                                 key=f"{self.round_id}:unused:{a.cause}:{a.kind}")
+
     def implemented(self) -> dict:
         assignments = self.assignments()
         if not assignments:
@@ -484,6 +529,7 @@ class Round:
                 files = self.a.objects.get(item["files"])
                 out.append(self._declared(decl, files, run_ladder(files, decl, vctx)))
             self.out(f"round      {self.round_id}: the session's {len(out)} candidates, as it left them")
+            self._unused(assignments, out)
             return {"candidates": out, "session": saved["session"]}
         inputs, readable = self.inputs(assignments)
         kinds = sorted({a.kind for a in assignments})
@@ -559,6 +605,7 @@ class Round:
         self.out(f"round      {self.round_id}: the session declared {len(out)} candidates "
                  f"({session.turns if session else 0} turns, {session.edits if session else 0} edits"
                  + (f"; ended: {session.ended}" if session and session.ended else "") + ")")
+        self._unused(assignments, out)
         return {"candidates": out, "session": str(self.dir / "session.json")}
 
     # ------------------------------------------------------------------ the fixed code's candidates
@@ -648,7 +695,11 @@ class Round:
     # ------------------------------------------------------------------ V3 and V4
     def screened(self) -> dict:
         reading = self.evidence.reading(self.base.package_ref)
-        order = self.a.splits.ids("train")
+        held = self.split()[1]
+        # V3 reads the held-out train tasks: a candidate's failing set is the held-out tasks of its cause the current W
+        # still fails (the fixed code's: every held-out task it fails), its sample the held-out tasks it passes. With
+        # nothing held out, the claimed and the cause's tasks and a sample of all train tasks (as before).
+        order = list(held) if held else self.a.splits.ids("train")
         sample = passing_sample(reading, order=order, size=self.s.screen_passing_sample,
                                 seed=int(self.a.k["gate"]["order_seed"]), round_index=self.i)
         failing_now = {t for t, r in reading.items() if not r.success}
@@ -657,7 +708,7 @@ class Round:
         for item in self.state["steps"]["verified"]["passed"]:
             decl = Declaration.from_json(self.a.objects.get(item["declaration"]))
             cause = causes.get(decl.cause_id)
-            claimed = set(decl.predicted_affected) | set(cause.tasks if cause is not None else ())
+            claimed = set(cause.tasks if cause is not None else ()) | (set() if held else set(decl.predicted_affected))
             if decl.fixed:                            # the fixed code's candidates claim every failing task
                 claimed |= failing_now
             failing = [t for t in order if t in claimed and t in failing_now]
@@ -814,7 +865,8 @@ class Round:
     # ------------------------------------------------------------------ the playbook
     def playbook(self) -> dict:
         try:
-            got = update_playbook(self.a.root, self.ledger, researcher=self.researcher("policy"), line=self.line)
+            got = update_playbook(self.a.root, self.ledger, researcher=self.researcher("policy"), line=self.line,
+                                  hide=set(self.split()[1]))
         except (BudgetError, MemorySidecarError) as e:
             return {"skipped": str(e)[:200]}
         self.ledger.row("playbook", round_id=self.round_id, line=self.line, status=f"{got['lessons']} lessons")

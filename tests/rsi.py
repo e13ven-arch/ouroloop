@@ -53,6 +53,9 @@ _preset["gate"].update({"min_groups": 1, "min_tasks": 1, "control_readings": 1, 
 _preset["bench"]["concurrency"] = 1
 # the memory under the fake client's bag-of-words vectors (tests/memory/fake_memory.py), one task per stream step
 _preset["memory"].update({"min_score": 0.2, "min_other_tasks": 1, "stream_batch": 1})
+# nothing held out by default: the improver's tests read the claimed tasks on the screen; a test that holds a part of
+# train out sets improver.holdout_share (a floor, so it may only raise it)
+_preset["improver"]["holdout_share"] = 0.0
 presets.PRESETS[TEST_PRESET] = _preset
 
 PRICING = {"input_per_1k": 0.004, "output_per_1k": 0.02, "cache_read_per_1k": 0.0002, "cache_write_per_1k": 0.008,

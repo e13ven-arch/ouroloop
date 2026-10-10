@@ -55,8 +55,9 @@ def check_lessons(text: str, known_ids: set) -> tuple[list[str], list[str]]:
     return kept[:MAX_LESSONS], dropped
 
 
-def update_playbook(root, ledger, *, researcher, line: str) -> dict:
-    rows = ledger.projection(line=line)[-ROWS_SHOWN:]
+def update_playbook(root, ledger, *, researcher, line: str, hide=frozenset()) -> dict:
+    """The playbook from the ledger's projection; `hide` the held-out train tasks (R reads the playbook)."""
+    rows = ledger.projection(line=line, hide=hide)[-ROWS_SHOWN:]
     system = (PROMPTS / "playbook.md").read_text(encoding="utf-8")
     user = json.dumps({"playbook": read_playbook(root), "ledger_rows": rows}, ensure_ascii=False, default=str)
     turn = researcher.chat(system, [{"role": "user", "content": user}], [])

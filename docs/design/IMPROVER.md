@@ -27,10 +27,11 @@ class Settings:
     screen_passing_sample: int = 6; screen_min_net_flips: int = 0; screen_min_fixes: int = 1
     screen_max_sample_regressions: int = 1; thin_screen_tasks: int = 3
     removal_zero_credit_rounds: int = 3
+    holdout_share: float = 0.4                  # 留出的 train 题：R 看不到，V3 只在这里筛
     round_share: float = 0.25                    # 每轮研究份额占根的比例上限（一轮的账户就是这么大）
 ```
 
-先验按 DESIGN §6.4：文字层按三次 final 的读数（均值低、不确定度小），代码层按外部读数给高不确定度，所以探索名额先落在代码层。合并规则：数量上限 cap，筛选与通过门槛 floor，`causes`、`mechanizable` superset（只能多），`priors` fixed。
+先验按 DESIGN §6.4：文字层按三次 final 的读数（均值低、不确定度小），代码层按外部读数给高不确定度，所以探索名额先落在代码层。合并规则：数量上限 cap，筛选与通过门槛 floor（`holdout_share` 也是 floor：只能留出更多），`causes`、`mechanizable` superset（只能多），`priors` fixed。
 
 ## 3 一轮（`round.py`）
 
@@ -44,6 +45,7 @@ def run_round(activity, index: int, *, out) -> RoundResult
 
 `measure → evidence → diagnosed → allocated → implemented → verified → screened → gated → installed | rejected → credited`
 
+- **研究部分与留出部分**：train 题按 `holdout_share` 分两部分，整个活动固定（按冻结的 train 顺序与 K 的 `gate.order_seed` 定）。诊断覆盖所有失败题；R 只看研究部分：它的案例、成功轨迹、可读的 session、`predicted_affected`、toolcheck 与回放都在研究部分；V3 只在留出部分筛选。这样筛选量的是候选能不能修好它没见过的同类题（finance-v2 的两轮里，筛选在 R 研究过的题上净 +1～+3，dev 上增益都是 0）。`holdout_share` 为 0 时不留出，筛选回到声称的题（测试用）。
 - **measure**：当前 W（活跃 release 的包）在每道 train 题上要有一次有效读数；第 0 轮用基线的读数，装入之后缺的题现量（run 的 role `measure`，候选名 `train:<release 短 ref>:r<i>`：每轮一个 run，一轮被预算拒掉的尝试下一轮重读，不会被当成记录交回；读数按包汇总，记功与下一轮共用）。
 - **stop**：没有失败的 train 题 → `nothing_to_fix`；研究份额不够付下一档 → `budget`；会话没有候选、没有固定候选 → `no_candidate`。停下也写台账。停下的一轮不再续跑（它的份额已用完），`cycle` 再跑时从下一轮接着。
 - **续跑**：会话一结束，它的声明与文件就记进 `round.json`（`session_result`），之后断了只重验、不重付会话；这一轮自己的装入移动了活跃 release（`install:<round_id>` 的收据是 installed）而 gated 一步还没保存时照常续跑（gate 从记录重放、装入重放是空操作）；台账行在一轮里按内容去重，续跑写同一行拿到记录里那一行。
@@ -106,12 +108,14 @@ class Assignment(Record): cause_id; kind; slots: int; exploration: bool; reason:
 def allocate(causes, estimates, *, settings, line, kinds_allowed, history: Ledger, train_available=False) -> list[Assignment]
 ```
 
+0. 有留出时，只分配研究部分至少 max(`toolcheck_min_pass`, `replay_min_triggers`) 道题、留出部分至少 1 道题的 cause：R 要有 V2a、V2b 需要的案例，V3 要有留出题可筛（finance 每族一道题，0.4 留出时 5 道题的簇可能一道留出题都没有，2 道题的簇研究部分只剩 1 道）。
 1. 簇可用的 kind：可机械化 → tool、hook、skill、prompt；否则 → skill、prompt；cause ∈ `LOOP_CAUSES` 再加 agent、config、vendor（L5）。都要在 K 的 `harness.kinds` 里。memory 不派给 R：R 不能写 memory，库的快照是固定候选（§10）。
 2. 分数 = `mean + unc`（上界）；簇按题数从大到小，前 `k` 个簇各给分数最高的 kind（同分取靠前的，代码类在前）。
 3. 探索：`explore_slots` 个名额换成该 cause 上 `n == 0` 的 kind，代码类优先。
-4. 代码保证：有可机械化簇而指派里没有 tool/hook → 最后一个名额换成最大可机械化簇的代码类；上一轮台账记了这个 cause 的 `no_code_candidate` → 这一轮它的代码名额 `slots = 2`。
-5. L5 每轮 ≤ `l5_slots`，只给 `LOOP_CAUSES` 的簇。
-6. L6（model）：`stalled(line, 代码与文字类, stall_rounds)` 且 `train_available`；阶段 3 训练链没接上，`train_available` 恒为假，台账记 `l6_unavailable`。
+4. 没用上的名额：会话结束时，指派里有 (cause, kind) 一个候选都没声明的，台账记 `unused`，估值按这个名额的观测记一次（修复 0），所以探索不会一直落在 R 不去做的那一处。
+5. 代码保证：有可机械化簇而指派里没有 tool/hook → 最后一个名额换成最大可机械化簇的代码类；上一轮台账记了这个 cause 的 `no_code_candidate` → 这一轮它的代码名额 `slots = 2`。
+6. L5 每轮 ≤ `l5_slots`，只给 `LOOP_CAUSES` 的簇。
+7. L6（model）：`stalled(line, 代码与文字类, stall_rounds)` 且 `train_available`；阶段 3 训练链没接上，`train_available` 恒为假，台账记 `l6_unavailable`。
 
 ## 7 编码会话（`session.py`）
 
@@ -130,7 +134,7 @@ TOOLS = ("list_files", "read_file", "write_file", "edit_file", "delete_file", "r
 ```
 
 - 模型循环在宿主（研究模型经计量 provider，每回合先预留后结算），文件树在 worker（`/work`：`package/` 只读、`inputs/` 只读、`candidates/<dir>/` 可写；第一次写某个 dir 时它从当前包复制）。
-- `inputs/`：`assignments.json`（簇、kind、名额）、`causes.json`（案例：题号、cause、说明、证据 ref、失败断言类型）、`successes.json`（成功轨迹的 session）、`ledger.json`（台账的 train 投影）、`scoreboard.json`、`playbook.md`、`histogram.json`（dev 失败类型与计数）、`base_tools.json`、`package_api.md`（包侧契约：ctx、hook 站点的事件与返回、工具与 agent 入口、toolcheck 脚本、manifest 的形状）。
+- `inputs/`：`assignments.json`（簇、kind、名额）、`causes.json`（只有研究部分的案例：题号、cause、说明、证据 ref、失败断言类型；留出部分只给题数）、`successes.json`（成功轨迹的 session）、`ledger.json`（台账的 train 投影，留出题的题号换成计数）、`scoreboard.json`（每类候选在留出部分的修复、退步与净值）、`playbook.md`、`histogram.json`（dev 失败类型与计数）、`base_tools.json`、`package_api.md`（包侧契约：ctx、hook 站点的事件与返回、工具与 agent 入口、toolcheck 脚本、manifest 的形状）。
 - `read_trajectory(session, offset?, limit?)`：重建的轨迹（JSON），只限 `readable`（本轮的 train session）；按 `session_max_read_bytes` / `session_max_read_total` 截断；`read_file` 同样计入这两个上限（会话的转写每回合整段重发）。下一次调用要发的上下文（按文本估算，3 字一 token）超过 `session_compact_tokens` 时，除最近 4 条（不够就 2 条、1 条）之外的工具输出与写入文本换成“已省略，重读可见”的一行，直到降到阈值的 0.6；被省略的读取把字节还给读取总量，重读不会被拒；两次压缩之间每次调用都是上一次的延伸（缓存）。回复被输出上限截断时告诉 R 写小一点；连续两次截断结束会话。`search_trace(query)`：TraceStore 的 FTS，只限 train。
 - `run_check(dir, declaration)`：对该目录当前文件跑 V0～V2，返回逐档结果的文本；`run_tests(dir)`：只跑包测试。都不付费。
 - `finish(candidates)`：每个是一份声明。声明不全或 dir 没写过 → 工具错误，R 可以在上限内再 finish。`finish([])` 直接结束会话（R 认为没有可做的）。超出 `session_max_turns` / `session_max_edits` 即结束，已声明的候选照常验收；没有声明则本轮没有 R 的候选。
@@ -150,10 +154,10 @@ def run_ladder(files, decl, *, ctx: VerifyContext) -> Verdict
 # VerifyContext: parent、seed、core、limits、objects、worker、suite、evidence、forbidden 字面量、train 题文本、embed
 ```
 
-- **V0 静态**（`verify/static.py`）：`check_shape`（含上限、manifest、vendor 保护文件）；diff 的 kind ⊆ K 的 `harness.kinds`；hook 站点 ⊆ K 的 `sites`；`memory/` 未改；相对种子改动行的字面量；改动的 `.py` 不新增 import `socket`、`subprocess`、`ctypes`、`pickle`、`multiprocessing` 等，不新增调用 `os.system`/`os.popen`/`os.exec*`/`os.spawn*`/`eval`/`exec`（按名字匹配，`import os as o`、`from os import system` 解析成原名）；声明与 diff 一致（声明的 kind 在 diff 的 kinds 里；tool 的 site 是包里新增或改动的工具名，hook 的 site 是改动的 hook 所在站点，skill 的 site 是技能名）；`predicted_affected` 都是 train 题。
+- **V0 静态**（`verify/static.py`）：`check_shape`（含上限、manifest、vendor 保护文件）；diff 的 kind ⊆ K 的 `harness.kinds`；hook 站点 ⊆ K 的 `sites`；`memory/` 未改；相对种子改动行的字面量；改动的 `.py` 不新增 import `socket`、`subprocess`、`ctypes`、`pickle`、`multiprocessing` 等，不新增调用 `os.system`/`os.popen`/`os.exec*`/`os.spawn*`/`eval`/`exec`（按名字匹配，`import os as o`、`from os import system` 解析成原名）；声明与 diff 一致（声明的 kind 在 diff 的 kinds 里；tool 的 site 是包里新增或改动的工具名，hook 的 site 是改动的 hook 所在站点，skill 的 site 是技能名）；`predicted_affected` 都是研究部分的 train 题。
 - **V1 单元**（`verify/unit.py`）：`runtime.worker.check_package`（probe、smoke、包测试），夹具是一道 train 题的新 episode。
-- **V2a toolcheck**（`verify/toolcheck.py`）：声明里每道声称的、当前 W 失败的 train 题的脚本（别的题的脚本不算通过）：该题新 episode → worker 装候选 → `check` op（世界经可写 broker）→ `episode.score()`；要求脚本调用了 site 指的工具，通过 ≥ `toolcheck_min_pass` 道。只回传 `{task_id: {passed, failed_kinds}}`，不回传断言参数。
-- **V2b 回放**（`verify/replay.py`）：从 transcript 重建站点事件，形状与 stirrup 种子交给 hook 的一致——`before_run`（任务、system）、`before_model`（每次 act 调用的 messages 与工具）、`before_tool` / `after_tool`（每个非 finish 的工具调用与它的结果；被阻止或跳过的没有 after_tool）、`after_turn`（一个回合的结果，`call_id`、输出截到 4000 字）、`on_finish`（reason 为 finish 或 implicit，final_text 是 finish 的理由，pushbacks 是此前的退回次数；连续纯文字回复变成的隐式 finish 也在）——按 manifest 顺序，同一站点上排在候选前面、在记录里阻止了这一次调用（before_tool 的 block）或退回了这一次 finish（on_finish 的 pushback）的 hook 先答，候选不会被问到，这个事件不给它；逐个经 `hook` op 调候选在该站点的 hook；返回非 none 的 action 算触发；声称的失败题上触发 ≥ `replay_min_triggers` 道；报告通过样本上的误触发率。
+- **V2a toolcheck**（`verify/toolcheck.py`）：声明里每道声称的、当前 W 失败的研究部分 train 题的脚本（别的题的脚本不算通过）：该题新 episode → worker 装候选 → `check` op（世界经可写 broker）→ `episode.score()`；要求脚本调用了 site 指的工具，通过 ≥ `toolcheck_min_pass` 道。只回传 `{task_id: {passed, failed_kinds}}`，不回传断言参数。
+- **V2b 回放**（`verify/replay.py`）：从 transcript 重建站点事件，形状与 stirrup 种子交给 hook 的一致——`before_run`（任务、system）、`before_model`（每次 act 调用的 messages 与工具）、`before_tool` / `after_tool`（每个非 finish 的工具调用与它的结果；被阻止或跳过的没有 after_tool）、`after_turn`（一个回合的结果，`call_id`、输出截到 4000 字）、`on_finish`（reason 为 finish 或 implicit，final_text 是 finish 的理由，pushbacks 是此前的退回次数；连续纯文字回复变成的隐式 finish 也在）——按 manifest 顺序，同一站点上排在候选前面、在记录里阻止了这一次调用（before_tool 的 block）或退回了这一次 finish（on_finish 的 pushback）的 hook 先答，候选不会被问到，这个事件不给它；逐个经 `hook` op 调候选在该站点的 hook；返回非 none 的 action 算触发；声称的失败题（研究部分）上触发 ≥ `replay_min_triggers` 道；报告研究部分通过样本上的误触发率。
 - **V2c 可达**（`verify/reach.py`）：技能的名字与描述对 train 题文本的相似度 ≥ `reach_min_score` 的题，除去 `predicted_affected`，≥ `reach_min_tasks` 道。向量：确定的词袋向量（`lexical_embed`），`reach_min_score` 按它校准；不用 sidecar 的 bge-small（它给无关文本 0.5 以上，0.2 会放过一切描述）。
 
 ## 9 筛选 V3（`screen.py`）与 gate V4
@@ -167,7 +171,7 @@ def pick_best(results, settings) -> ScreenResult | None
 def gate(activity, candidate_package_ref, *, round_id, account) -> dict           # V4：evaluate_task + 装入
 ```
 
-- 失败集 = (声称的题 ∪ 簇的题) ∩ 当前 W 仍失败的 train 题；样本 = `screen_passing_sample` 道当前通过的 train 题（按 `order_seed` 与轮次抽，重跑同一轮抽到同样的）。失败集少于 `thin_screen_tasks` 道记 `thin`。
+- 失败集 = 留出部分里当前 W 仍失败、诊断归到候选所属 cause 的题（固定代码的候选：留出部分里所有失败题）；样本 = `screen_passing_sample` 道留出部分里当前通过的题（按 `order_seed` 与轮次抽，重跑同一轮抽到同样的）。失败集为空 → 不筛（not_run）；少于 `thin_screen_tasks` 道记 `thin`。memory 的库从全部 train 题学，它的快照在留出部分上的筛选不是迁移检验，gate 才是。`holdout_share` 为 0 时：失败集 = (声称的题 ∪ 簇的题) ∩ 当前 W 仍失败的 train 题，样本取自所有通过的 train 题。
 - 运行：`run_arm(release=W_base, package=候选, split="train", candidate=f"r{i}:{dir}", role="screen")`。
 - 条件记功：修复只在 `footprint` 为真的题上算（§4）；退步在样本上算，不论足迹。净翻转 = 条件修复 − 退步。资格：净翻转 ≥ `screen_min_net_flips`、条件修复 ≥ `screen_min_fixes`、退步 ≤ `screen_max_sample_regressions`；最优者（净翻转大，再成本低，再声明顺序）进 V4。
 - 付诸任何研究调用之前（诊断之前）先核一个下限：gate、一次小筛选（通过样本加 `thin_screen_tasks` 道失败题）与将要付的研究（每个案例一次诊断、每回合一次会话，按活动里研究调用的均价；还没有记录时不算）的价，加下面的余量，放不进本轮的余额 → 停在 `budget`，不付诊断与会话；没有成本读数 → 停在 `unpriced`。
@@ -192,12 +196,12 @@ def removal_candidates(credits_by_round, package, *, zero_rounds) -> list[tuple[
 
 # ledger.py
 STAGES = ("measured", "diagnosed", "allocated", "declared", "verified", "screened", "gated", "installed", "rejected",
-          "credited", "removal_proposed", "no_code_candidate", "vocabulary_added", "l6_unavailable", "stopped", "playbook")
+          "credited", "removal_proposed", "no_code_candidate", "unused", "vocabulary_added", "l6_unavailable", "stopped", "playbook")
 class Ledger:    # ledger/experience.jsonl
     def row(self, stage, **fields) -> dict
     def rows(self, *, stage=None, round_id=None) -> list[dict]
-    def projection(self, *, line) -> list[dict]     # 给 R：只有 train 题号；dev 只有计数
-    def scoreboard(self, line) -> dict              # predicted_affected 命中 / 未命中 / 未预测的退步
+    def projection(self, *, line, hide=()) -> list[dict]   # 给 R：只有 train 题号（hide 里的留出题换成计数）；dev 只有计数
+    def scoreboard(self, line) -> dict              # 每类候选在筛选上的修复、退步、净值（计数）
 
 # policy.py
 @dataclass(frozen=True)

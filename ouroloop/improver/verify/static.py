@@ -69,7 +69,7 @@ def _dotted(node) -> str:
     return ""
 
 
-def declaration_problems(decl, comps: list[dict], *, train_tasks) -> list[str]:
+def declaration_problems(decl, comps: list[dict], *, train_tasks, study_tasks=()) -> list[str]:
     if not comps:
         return ["the candidate changes nothing"]
     kinds = {c["kind"] for c in comps}
@@ -98,9 +98,12 @@ def declaration_problems(decl, comps: list[dict], *, train_tasks) -> list[str]:
     if extra and not decl.fixed:
         out.append(f"the files also change {extra}: one candidate is one kind of change (declare another candidate)")
     if not decl.fixed:
-        outside = sorted(set(decl.predicted_affected) - set(train_tasks))
+        studied = set(study_tasks or train_tasks)
+        outside = sorted(set(decl.predicted_affected) - studied)
         if outside:
-            out.append(f"predicted_affected names {outside[:5]}, which are not train tasks")
+            out.append(f"predicted_affected names {outside[:5]}, which are not train tasks you were given"
+                       if set(outside) <= set(train_tasks) else
+                       f"predicted_affected names {outside[:5]}, which are not train tasks")
         if not decl.predicted_affected:
             out.append("predicted_affected names no train task")
     return out
@@ -129,5 +132,6 @@ def static_check(files: dict[str, str], decl, ctx) -> dict:
     for path, status in d.changed.items():
         if status != "deleted" and path.endswith(".py"):
             problems += code_problems(path, files[path], ctx.parent.files.get(path))
-    problems += declaration_problems(decl, components(ctx.parent, files), train_tasks=ctx.train_tasks)
+    problems += declaration_problems(decl, components(ctx.parent, files), train_tasks=ctx.train_tasks,
+                                     study_tasks=ctx.study_tasks)
     return {"passed": not problems, "detail": "; ".join(problems)[:3000]}

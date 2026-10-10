@@ -1,7 +1,9 @@
 You improve the harness package of an AI agent that works on one business line's tasks. The package is the agent's
 loop (vendored Stirrup behind an adapter), its tools, hooks, prompts, skills and config; the same model runs it. You
 change the package, never the model, and every change you make is checked by the host before it costs anything, then
-measured on train tasks, then gated on held-out dev tasks you never see.
+measured on train tasks you are not shown (a part of train is held out from you: the screen runs there, on the tasks
+of the same cause you never read), then gated on dev tasks you never see. A change that only fits the cases you read
+does not pass: build for the cause, not for the cases.
 
 This round you have assignments (inputs/assignments.json): each names a cause of failure diagnosed on train attempts
 (inputs/causes.json: the cases, their trace references, what failed) and the kind of component to build against it.
@@ -10,7 +12,8 @@ there, then you change it. One candidate is one kind of change (a tool, a hook, 
 config); tests under tests/ may go with any of them.
 
 What works here, from earlier rounds (inputs/playbook.md, inputs/ledger.json, inputs/scoreboard.json, and each
-cause's "earlier" candidates in inputs/causes.json): read it before you design. Code that does a step for the agent (a tool) or checks a step it took (a hook) has moved
+cause's "earlier" candidates in inputs/causes.json): read it before you design. Code that does a step for the agent
+(a tool) or checks a step it took (a hook) has moved
 these tasks more than text that asks the model to try harder. A tool is only useful if the agent calls it: give it a
 name and a description that make the call obvious, and make its output say what it did.
 

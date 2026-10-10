@@ -17,7 +17,10 @@ Covered:
   at the playbook, or while the credit step measures the new W on the moved line); a done or stopped round run again
   pays nothing; no round without the frozen gate plan; screens that cannot be priced, or do not fit what the round has
   left, do not start; a round the budget refuses stops on record and the cycle stops there;
-- the install's operation id is `install:<round_id>`, never an Execution operation's id, and replaying it is a no-op.
+- the install's operation id is `install:<round_id>`, never an Execution operation's id, and replaying it is a no-op;
+- a part of train held out: whole families, the same for every round; R's inputs name only the studied tasks (the
+  held-out ones are counts), its candidate predicts only those, and V3 screens on the held-out tasks of the cause and a
+  held-out passing sample; a cause without enough studied tasks or without a held-out one is not assigned.
 
 Three cases came from bugs found here, now fixed: a fixed candidate lost when the verified step was interrupted, the
 gate priced without the control's top-up, the archive missing the screen and the receipt.
@@ -33,7 +36,7 @@ import rsi
 from rounds import ledger_rows, quiet, round_activity, round_state
 from scripted_r import TOOL_ENTRY
 
-from ouroloop.activity import phases
+from ouroloop.activity import phases, presets
 from ouroloop.activity.checks import startup_checks
 from ouroloop.contracts import short
 from ouroloop.evaluate.budget import operation_id as execution_operation_id
@@ -42,7 +45,7 @@ from ouroloop.harness.package import load
 from ouroloop.improver.archive import Archive
 from ouroloop.improver.declaration import Declaration
 from ouroloop.improver.evidence import Evidence
-from ouroloop.improver.round import STEPS
+from ouroloop.improver.round import STEPS, Round
 from ouroloop.improver.screen import ScreenResult
 from ouroloop.improver.verify import Verdict
 
@@ -277,8 +280,10 @@ def test_no_code_candidate_is_on_record_and_the_round_stops_no_candidate(idle):
     assert (r.causes, r.assignments, r.candidates, r.ladder, r.screened, r.gate, r.installed) == \
         (1, 1, 0, {}, None, None, None)
     rows = [x for x in ledger_rows(a) if x["round_id"] == ROUND]
-    assert [x["stage"] for x in rows] == ["measured", "diagnosed", "allocated", "no_code_candidate", "stopped"]
-    assert rows[3]["cause"] == "missed_action" and rows[4]["reason"] == r.stop
+    assert [x["stage"] for x in rows] == ["measured", "diagnosed", "allocated", "unused", "no_code_candidate",
+                                          "stopped"]
+    assert (rows[3]["cause"], rows[3]["kind"]) == ("missed_action", "tool")          # the slot R did not use
+    assert rows[4]["cause"] == "missed_action" and rows[5]["reason"] == r.stop
     state = round_state(a, 0)
     assert (state["status"], state["stop"]) == ("stopped", r.stop) and tuple(state["steps"]) == FREE
     # it paid for the diagnosis and R's one turn, nothing else
@@ -297,11 +302,13 @@ def test_under_the_cycle_the_code_slot_doubles_and_the_cycle_stops_after_patienc
     assert [k for k in cycle["steps"] if k.startswith("round-")] == ["round-0", "round-1"]
     assert cycle["steps"]["round-0"] == {"status": "stopped", "installed": None, "stop": idle.result.stop}
     assert not (a.root / "rounds" / "r2").exists()
-    # round 1 reads round 0's no_code_candidate: its code slot is doubled
+    # round 1 reads round 0's no_code_candidate (its code slot is doubled) and the tool slot R left unused (an
+    # observation of no fix: the exploration moves on to the hook)
     (allocated,) = [x for x in ledger_rows(a) if x["stage"] == "allocated" and x["round_id"] == "rsi-test/r1"]
     (assignment,) = allocated["assignments"]
-    assert (assignment["cause"], assignment["kind"], assignment["slots"]) == ("missed_action", "tool", 2)
-    assert stages(a, "rsi-test/r1") == ["measured", "diagnosed", "allocated", "no_code_candidate", "stopped"]
+    assert (assignment["cause"], assignment["kind"], assignment["slots"]) == ("missed_action", "hook", 2)
+    assert stages(a, "rsi-test/r1") == ["measured", "diagnosed", "allocated", "unused", "no_code_candidate",
+                                        "stopped"]
     # round 0, already stopped, was not run again by the cycle: one stop on record, nothing paid for it
     assert stages(a, ROUND).count("stopped") == 1
     assert idle.end["r"][len(idle.after["r"]):] == ["session"]           # round 1's diagnosis is the cached one
@@ -624,3 +631,64 @@ def test_the_archive_keeps_the_screened_candidates_screen_and_its_receipt(tool):
     (shown,) = archive.for_prompt(a.domain, "missed_action")
     assert shown["gated"] is True and shown["screen"]["outcome"] == "screened"
     assert sorted(shown["screen"]["fixed"]) == list(NOTIFY)
+
+
+# ---------------------------------------------------------------------------- the held-out part of train
+VARIANT, STUDY = NOTIFY[1], ("rsi.update_stage", NOTIFY[0], "rsi.notify_once")
+HELD = (VARIANT, "rsi.policy_hold")
+
+
+def test_the_held_out_part_is_whole_families_the_same_for_every_round(tmp_path, fake_upstream):
+    s = round_activity(tmp_path, fake_upstream, "none", improver={"holdout_share": 0.4})
+    study, held = Round(s.a, 0, run_arm=None, out=quiet).split()
+    assert sorted(study + held) == sorted(rsi.TRAIN) and not set(study) & set(held)
+    assert len(held) >= round(len(rsi.TRAIN) * 0.4) and study
+    families = lambda tasks: {rsi.FAMILIES[t] for t in tasks}                     # noqa: E731
+    assert not families(study) & families(held)
+    assert Round(s.a, 1, run_arm=None, out=quiet).split() == (study, held)
+    nothing = round_activity(tmp_path / "none", fake_upstream, "none")
+    assert Round(nothing.a, 0, run_arm=None, out=quiet).split() == (tuple(nothing.a.splits.ids("train")), ())
+
+
+def test_a_cause_without_enough_studied_tasks_or_a_held_out_one_is_not_assigned(tmp_path, fake_upstream):
+    """The notify tasks are one family, so the one cause lies wholly on one side: nothing is assigned, R's session is
+    not paid, the round stops without a candidate."""
+    s = played(round_activity(tmp_path, fake_upstream, "tool", actor=Actor(), improver={"holdout_share": 0.4}))
+    (allocated,) = [x for x in ledger_rows(s.a) if x["stage"] == "allocated"]
+    assert allocated["assignments"] == [] and "session" not in s.r.calls
+    assert s.result.status == "stopped" and s.result.stop.startswith("no_candidate")
+
+
+@pytest.fixture(scope="module")
+def held_out(tmp_path_factory, fake_upstream):
+    """One notify task studied, the other held out (a split by hand: the real one keeps a family whole, and the
+    miniature domain has one family per cause), V2a and V2b asking for the one studied task."""
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(Round, "split", lambda self: (STUDY, HELD))
+        for name in ("toolcheck_min_pass", "replay_min_triggers"):
+            mp.setitem(presets.PRESETS[rsi.TEST_PRESET]["improver"], name, 1)
+        s = played(round_activity(tmp_path_factory.mktemp("held"), fake_upstream, "tool", actor=Actor()))
+        s.inputs, s.readable = (lambda r: r.inputs(r.assignments()))(Round(s.a, 0, run_arm=None, out=quiet))
+        s.sessions = {(x.evidence or x.attempt_id): x.task_id for x in s.a.results.all()}
+        return s
+
+
+def test_r_reads_only_the_studied_tasks_and_its_candidate_predicts_only_those(held_out):
+    a, inputs = held_out.a, held_out.inputs
+    (cause,) = json.loads(inputs["causes.json"])
+    assert (cause["tasks"], cause["held_out_tasks"]) == ([NOTIFY[0]], 1)
+    assert [c["task_id"] for c in cause["cases"]] == [NOTIFY[0]]
+    assert not [(name, t) for name, text in inputs.items() for t in HELD if t in text]
+    assert {held_out.sessions[x] for x in held_out.readable if x} <= set(STUDY)
+    (item,) = round_state(a, 0)["steps"]["verified"]["passed"]
+    assert list(Declaration.from_json(a.objects.get(item["declaration"])).predicted_affected) == [NOTIFY[0]]
+    # what R reads of the screen next round: the held-out fix as a count
+    (screened,) = [x for x in json.loads(inputs["ledger.json"]) if x["stage"] == "screened"]
+    assert "fixed" not in screened and screened["fixed_held_out"] == 1
+
+
+def test_v3_screens_on_the_held_out_tasks_of_the_cause_and_a_held_out_passing_sample(held_out):
+    a, res = held_out.a, screen_of(held_out.a)
+    assert (list(res.failing), list(res.sample), list(res.fixed)) == ([VARIANT], ["rsi.policy_hold"], [VARIANT])
+    assert res.net_flips == 1 and res.outcome == "screened"
+    assert sorted(x.task_id for x in results_of_role(a, "screen")) == sorted(HELD)

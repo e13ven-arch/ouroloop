@@ -391,6 +391,14 @@ def test_v0_refuses_predicted_affected_outside_train_or_empty(ctx, parent, predi
     assert v0(with_tool(parent), tool_decl(predicted=predicted, fixed="removal:x"), ctx)["passed"]
 
 
+def test_v0_refuses_predicted_affected_on_a_held_out_train_task(ctx, parent):
+    study = dataclasses.replace(ctx, study_tasks=tuple(t for t in ctx.train_tasks if t != FAILING[1]))
+    got = v0(with_tool(parent), tool_decl(predicted=FAILING), study)
+    assert got == {"passed": False, "detail": f"predicted_affected names {[FAILING[1]]}, which are not train tasks "
+                                              f"you were given"}
+    assert v0(with_tool(parent), tool_decl(predicted=FAILING[:1]), study) == {"passed": True, "detail": ""}
+
+
 def test_v0_a_removal_must_delete_a_tool_a_hook_or_a_skill(ctx, parent):
     gone = without(parent, {"kind": "tool", "name": "plan_changes"})
     removal = decl("removal", "plan_changes", predicted=(), fixed="removal:tool:plan_changes")
