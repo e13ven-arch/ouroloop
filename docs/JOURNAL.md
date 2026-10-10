@@ -8,6 +8,23 @@
 
 ---
 
+## 2026-10-10 阶段 4：finance-v2 第 0 轮（R 的工具过了免费阶梯与筛选，gate 拒绝，增益 0）
+
+- 用户的决定（2026-10-10）："按 A，跑第 0 轮"（finance-v2 继续，只有 R 的候选；快照的修复另做）。
+- 诊断：W0 的 27 道 train 失败（基线的读数，本轮没有重量）归成 9 类：arith_mismatch 5、excluded_mentioned 5、missed_action 5、real_date 5、unread_value 2、wrong_target 2、missing_recipient 1、premature_stop 1、other 1。27 次诊断调用。
+- 分层：arith_mismatch → tool（探索）、excluded_mentioned → tool（上界 0.6）、missed_action → skill（上界 0.18）。
+- R 的编码会话（第一次在真实模型上）：18 回合、7 次编辑、读 131 KB，没有压缩、没有截断或出错；声明 2 个候选（arith_mismatch 的名额没用）：
+  - `excl_send`（tool，excluded_mentioned）：`send_report_email`，带上排除项，主题或正文提到排除项就拒绝发送。V0、V1、V2a 通过：声称的 2 道 train 题用这个工具都做成。
+  - `action_skill`（skill，missed_action）：“required-actions-checklist”，V0 通过，V2c 覆盖另外 6 道 train 题。
+- V3 筛选：两个都是净 +1。tool 修好 payroll_variance_check、intercompany_balance_recon（只有后一道是它声称的），弄坏 lease_payment_schedule；skill 修好 slack_receipt_capture、invoice_reconciliation，弄坏 qb_customer_balance_review。打平按成本，tool 进 gate。筛选里 11 次尝试都调用了这个工具（足迹成立）。
+- V4 gate：**rejected，增益 0.0**。候选第一次 dev 读数 10/25，W0 的两次读数池化均值 10/25；逐题它修好 expense_split_allocation、financial_close_checklist，在 W0 两次读数里时过时不过的题上丢回同样的量；25 次尝试全部调用了 `send_report_email`。没有确认读数（第一次没接受）。
+- R 的剧本：7 条教训，每条都引台账行（例如“train 筛选上的 excluded_mentioned 收益没有带到 dev”、“predicted_affected 与实际翻转只部分吻合”）。
+- 读数：真实模型下 R 能写出过 V0～V2a 的工具，actor 也会用它；但这一轮的增益在 W0 的重跑噪声之内（dev 上约 4/25 道翻转），gate 正确地拒绝了。
+- 花费：本轮 $25.23（诊断、会话与剧本约 $3，筛选约 $11，gate 25 次 × $0.456）；finance-v2 累计 $169.18，根剩 $530.82，非 final 部分 $310.82。按耐心规则（2 轮没有装入就停），还可以跑第 1 轮，第 1、2 轮都没有装入就结束。
+- 待用户：第 1 轮（约 $25～100）。
+
+---
+
 ## 2026-10-10 阶段 4：finance-v2 的 library（D = 3，快照超出 K 的包上限，没有成为候选）
 
 - 用户的批准（2026-10-09）："跑 library"。第一批的 ReMe 调用全部 200（finance-v1 卡住的那一步通过）。
