@@ -58,13 +58,18 @@ def test_a_released_library_of_one_line_seeds_another(venv, fake, tmp_path):
         assert sorted(got["added"]) == sorted(r["memory_id"] for r in rows) and got["skipped"] == []
         assert b.import_snapshot(snap, source_release_ref="rel-A1", source_line="finance")["again"] is True
         assert client.count(b.collection) == len(rows) and client.dump(a.collection) == a_before
-        stored = {r["memory_id"]: r["metadata"] for r in parse_jsonl(client.dump(b.collection))}
+        dumped = {r["memory_id"]: r for r in parse_jsonl(client.dump(b.collection))}
+        stored = {k: r["metadata"] for k, r in dumped.items()}
         for r in rows:
             m = stored[r["memory_id"]]
             assert m["ol_line"] == "sales" and m["ol_source_line"] == "finance" and m["ol_origin"] == "imported"
-            assert m["ol_imported_from"] == f"rel-A1:{r['memory_id']}"
-            assert m["ol_task_hash"] == r["metadata"]["ol_task_hash"] and m["ol_split"] == "train"
-            assert m["ol_trace_refs"] == r["metadata"]["ol_trace_refs"]          # back to A's trajectories
+            assert m["ol_imported_from"] == f"rel-A1:{r['memory_id']}" and m["ol_split"] == "train"
+            # a snapshot row carries no trace refs (memory/snapshot.py snapshot_row): the way back to A's
+            # trajectories is ol_imported_from, A's row id in A's ledger
+            assert "ol_trace_refs" not in m and json.loads(a.entries[r["memory_id"]]["row"]["metadata"]
+                                                           ["ol_trace_refs"])
+            row = dumped[r["memory_id"]]            # ReMe stamps no clock on an imported row
+            assert (row["time_created"], row["time_modified"], row["message_time"]) == ("", "", "")
             assert "ol_sources" not in m and "ol_stats" not in m
             e = b.entries[r["memory_id"]]
             assert e["origin"] == "imported" and e["sources"] == [] and e["stats"]["n_shown"] == 0   # probation anew

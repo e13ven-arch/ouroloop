@@ -65,7 +65,7 @@ class Limits:                         # K 的 harness.limits；R 不能放宽
     def from_core(cls, core) -> "Limits"    # K 的 harness.limits、kinds、sites、config_ranges 与 model
 ```
 
-包文件都是 UTF-8 文本（无 NUL、无孤立代理）；二进制文件拒绝（种子与上游 Stirrup 都是文本）。`memory/snapshot.jsonl` 单独计 `max_memory_bytes`，不计入文件数与包字节。
+包文件都是 UTF-8 文本（无 NUL、无孤立代理）；二进制文件拒绝（种子与上游 Stirrup 都是文本）。`memory/snapshot.jsonl` 单独计 `max_memory_bytes`，不计入文件数与包字节。memory 写快照时就按这个上限装（精简行，按记功排序取前缀，没装的记下：MEMORY §7.1），所以 library 阶段的快照总放得下；这里的检查是最后的守卫。
 
 数值来自证据（V0_6 §8）：原 24 文件 / 256 KiB 放不下 vendor；worker 实测峰值 80 MB。
 

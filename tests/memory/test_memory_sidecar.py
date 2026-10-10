@@ -44,7 +44,9 @@ from ouroloop.memory import (COLLECTION_NAME, LOCK, MODEL_AUX_SHA256, MODEL_FILE
                              flows_sha256, lock_sha256)
 from ouroloop.memory.client import SHORT, MemoryClient, canonical_rows, parse_jsonl
 from ouroloop.memory.retrieval import LibraryReader, snapshot_collection
+from ouroloop.memory.rules import snapshot_rows
 from ouroloop.memory.settings import Settings
+from ouroloop.memory.snapshot import fit_snapshot
 
 FLOWS = sorted(["summary_task_memory_v6", "add_task_memory_v6", "retrieve_task_memory_v6", "get_task_memory_v6",
                 "retire_task_memory_v6", "dump_memory_v6", "load_memory_v6"])
@@ -656,6 +658,37 @@ def test_snapshot_collections_beyond_eight_go_least_recently_used_first_and_a_sh
         assert loads == []
     finally:
         client.stop()
+
+
+@pytest.mark.slow
+def test_a_snapshots_lean_rows_load_into_reme_and_read_what_its_whole_rows_do(shared):
+    """ReMe's load validates each row as a MemoryNode: a snapshot row (memory/snapshot.py snapshot_row: no author,
+    score or clock, the metadata cut to the readers' keys) loads whole, and the opening, its start line and recall
+    over it are those over the live library's whole rows, leave-one-out included."""
+    client, _ = shared
+    lessons = [("When a task asks to email customers about overdue or unpaid invoices", "List the overdue invoices "
+                "and email each customer once.", "T1"),
+               ("When a task asks to post computed totals to a team chat channel", "Compute the totals from the "
+                "sheet first and post one message with all of them.", "T7"),
+               ("When a task says some CRM contacts must be skipped", "Read the exclusion list before any write.",
+                "T3"),
+               ("When a task asks to reconcile two ledgers before the close", "Match the entries by amount and date, "
+                "then report what is left.", "T2")]
+    rows = [stamped(content, when, task_name=name) for when, content, name in lessons]
+    entries = {r["memory_id"]: {"sources": [HASH[name], HASH["T4"]], "stats": {"fixes": i, "n_cited": i}}
+               for r, (_w, _c, name), i in zip(rows, lessons, range(4))}
+    whole = canonical_rows(snapshot_rows(rows, entries))
+    lean, fit = fit_snapshot(whole, None)
+    assert fit["kept"] == 4 and "author" not in lean and len(lean) < len(whole)
+    readers = [reader(client, snapshot_text=t, min_score=0.0) for t in (whole, lean)]
+    for query, task in ((TASKS["T5"], "a-dev-task"), (TASKS["T1"], HASH["T1"]), (TASKS["T3"], HASH["T4"])):
+        got = [r.for_task(query, task) for r in readers]
+        assert got[0].opening == got[1].opening and got[1].event["library_size"] == 4
+        assert {k: v for k, v in got[0].event.items() if k not in ("snapshot", "collection")} == \
+            {k: v for k, v in got[1].event.items() if k not in ("snapshot", "collection")}
+        assert got[0].recall("invoices and totals") == got[1].recall("invoices and totals")
+    assert readers[1].for_task(TASKS["T3"], HASH["T4"]).event["excluded_as_source"] > 0
+    assert client.count(snapshot_collection(lean, client.settings["retriever"])) == 4
 
 
 @pytest.mark.slow

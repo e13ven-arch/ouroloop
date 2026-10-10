@@ -61,7 +61,7 @@ def run_arm(activity, *, release, split, candidate, role, pairs, account, plan_r
 def smoke(activity, *, tasks=None, limit=None, checks_only=False, out) -> dict      # 划分哈希、评分契约、输入审计、种子全量字面量扫描；一次 dev 尝试
 def freeze(activity, *, out) -> dict                                    # 冻结 gate 计划、日程、预算、final 计划；打印 [rsi] 行
 def baseline(activity, *, out) -> dict                                  # W0 在 train 与 dev（control_readings 次）
-def library(activity, *, out) -> dict                                   # memory 的流与快照（MEMORY §7）：首遇、重试、写入、读数、快照候选
+def library(activity, *, out) -> dict                                   # memory 的流与快照（MEMORY §7）：首遇、重试、写入、读数、快照候选（按 K 的 max_memory_bytes 装，MEMORY §7.1）
 def round_(activity, index: int, *, out) -> RoundResult                 # improver.run_round（IMPROVER §3）；每轮后停
 def evaluate(activity, *, out) -> dict                                  # final（EVALUATE §6）
 def report(activity, *, out) -> dict
@@ -93,7 +93,7 @@ def write_report(activity, report) -> dict   # 两次相同（确定性）
 | smoke | `--checks-only`：上游版本、划分哈希、评分契约、输入审计、train 与 dev 之间的近重复（不读 test 的断言）；不带：一次 dev 尝试走完整运行壳 | 划分哈希与预期一致？ | $0 / 约 $0.5 |
 | freeze | 冻结 gate 计划模板（`TaskEvalPlan`，任务 = 全部 dev，阈值来自 K 的 `gate`）、打开预算根（final 份额事先留出）、final 计划（配置有 `[final]` 且已有装入时封存；还没有装入时注明“未封存”，照常打印 `[rsi]`；封存的 W* 是当时的活跃 release，所以在轮次结束后再封存；还有未结束的轮次时不封存并注明）；打印 `[rsi]` 的 `scope_id`、`core_ref`、`split_ref`、`final_plan_ref`，用户填回配置并提交；日程在 K 里，不另冻结 | — | $0 |
 | baseline | W0 跑 train 全部 + dev × `control_readings` | 余量与噪声 | 约 $58 |
-| library | memory 流（MEMORY §7）：对 train 逐题首遇与重试，写入、记功；快照作候选从 V3 起走阶梯 | D、学习曲线、快照 gate | 约 $50～100 |
+| library | memory 流（MEMORY §7）：对 train 逐题首遇与重试，写入、记功；快照（精简行，按记功装进 K 的 `max_memory_bytes`，没装的记在 `library_snapshot` 事件的 `fit`：MEMORY §7.1）作候选从 V3 起走阶梯 | D、学习曲线、快照装了几条、快照 gate | 约 $50～100 |
 | round k | improver 的一轮（IMPROVER §3）；每轮后停 | 有没有代码候选到 V2；V3/V4 读数 | 约 $40 |
 | evaluate | final | — | 约 $72 |
 | report | 报告 | — | $0 |

@@ -211,7 +211,7 @@ def export_policy(activity) -> str;  def import_policy(activity, policy_ref) -> 
 - R 的策略（估值与剧本）在活动内随台账更新；release 里的 `improver_ref` 在一个活动内保持 R0，活动结束时 `export_policy` 产出下一个活动的 R1（DESIGN §6.9）。
 - 升级的技能装入后，记功一步调 `MemoryService.supersede`：流的台账里条目 `superseded`，live store 退役它，live 库文件里没有它（MEMORY §8）。memory 条目的分类按（条目、请求、模型）缓存在 `rounds/notes.jsonl`。
 - 固定候选的目录名（`memory-snapshot`、`promoted-`、`remove-` 开头）R 不能用。
-- 固定候选（每轮 ≤ `fixed_per_round`，先快照、再升级技能、再删除）：library 阶段的快照候选（`library_snapshot` 事件，outcome candidate，还没进过阶梯的）走 V0 → V3；memory 升级出的技能候选走 V0、V2c → V3；删除候选走 V0 → V3。它们和 R 的候选一起筛选，最优者进 V4。
+- 固定候选（每轮 ≤ `fixed_per_round`，先快照、再升级技能、再删除）：library 阶段的快照候选（`library_snapshot` 事件，outcome candidate，还没进过阶梯的；快照文本是 library 阶段按 K 的 `max_memory_bytes` 装好的，MEMORY §7.1，原样放到当前 W 上，同一个 K 下照样放得下）走 V0 → V3；memory 升级出的技能候选走 V0、V2c → V3；删除候选走 V0 → V3。它们和 R 的候选一起筛选，最优者进 V4。
 
 ## 11 不变量
 

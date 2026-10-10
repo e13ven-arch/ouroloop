@@ -33,6 +33,7 @@ from ouroloop.memory.retrieval import LibraryReader
 from ouroloop.memory.rules import PROVENANCE_KEYS, REME_META_KEYS, content_id, new_stats, stamp
 from ouroloop.memory.service import LLM_OPS
 from ouroloop.memory.settings import Settings
+from ouroloop.memory.snapshot import fit_snapshot, row_bytes
 from ouroloop.memory.track import MemoryStepError, StreamStep, cut_trajectory
 
 LINE = "crm"
@@ -881,12 +882,19 @@ def test_finish_reads_out_and_the_same_stream_gives_the_same_bytes(env):
     led = json.loads(step.ledger_path.read_text())
     assert led["status"] == "done" and led["abort"] is None
     assert led["snapshot_digest"] == snapshot_digest(out["snapshot"])
-    assert step.live_path.read_text() == out["snapshot"]
-    rows = parse_jsonl(out["snapshot"])
-    assert [r["memory_id"] for r in rows] == sorted([A, B, C, D])
-    assert {r["memory_id"]: json.loads(r["metadata"]["ol_sources"]) for r in rows}[A] == sorted(
-        HASH[n] for n in ("T1", "T2", "T4"))
-    assert json.loads(rows[[r["memory_id"] for r in rows].index(A)]["metadata"]["ol_stats"])["credit_sum"] == 1.0
+    # the live file holds the library's whole rows; the snapshot is those rows as a package carries them, all kept
+    live = step.live_path.read_text()
+    assert out["snapshot"] == fit_snapshot(live, None)[0] and led["snapshot_fit"] == out["fit"]
+    assert (out["fit"]["entries"], out["fit"]["kept"], out["fit"]["omitted"]) == (4, 4, [])
+    for text in (live, out["snapshot"]):
+        rows = parse_jsonl(text)
+        assert [r["memory_id"] for r in rows] == sorted([A, B, C, D])
+        assert {r["memory_id"]: json.loads(r["metadata"]["ol_sources"]) for r in rows}[A] == sorted(
+            HASH[n] for n in ("T1", "T2", "T4"))
+    stats = {r["memory_id"]: json.loads(r["metadata"]["ol_stats"]) for r in parse_jsonl(live)}
+    assert stats[A]["credit_sum"] == 1.0
+    assert {r["memory_id"]: json.loads(r["metadata"]["ol_stats"]) for r in parse_jsonl(out["snapshot"])} == \
+        {k: {"fixes": s["fixes"], "n_cited": s["n_cited"]} for k, s in stats.items()}
     with pytest.raises(MemoryStepError, match="the stream is done"):
         step.process(*items(("T1",))[0])
     # the same stream again, on another bridge, book and store: the same bytes
@@ -897,6 +905,26 @@ def test_finish_reads_out_and_the_same_stream_gives_the_same_bytes(env):
         assert step2.ledger_path.read_bytes() == step.ledger_path.read_bytes()
     finally:
         other.bridge.stop()
+
+
+def test_finish_keeps_the_snapshot_within_max_bytes_by_credit_and_records_what_it_left_out(env):
+    """K's max_memory_bytes holds one of the four entries: the one T2 cited and was fixed with (A) is kept; the live
+    library keeps all four; the ledger records the fit. A cap no entry fits gives no snapshot and an abort."""
+    step, out = _finish_run(env)
+    sizes = {r["memory_id"]: row_bytes(r) for r in parse_jsonl(out["snapshot"])}
+    cap = sizes[A] + min(n for k, n in sizes.items() if k != A) - 1
+    capped = step.finish(max_bytes=cap)
+    assert [r["memory_id"] for r in parse_jsonl(capped["snapshot"])] == [A] and capped["abort"] is None
+    fit = capped["fit"]
+    assert (fit["entries"], fit["kept"], fit["bytes"], fit["max_bytes"], fit["why"]) == \
+        (4, 1, sizes[A], cap, "K's max_memory_bytes")
+    assert sorted(o["memory_id"] for o in fit["omitted"]) == sorted([B, C, D])
+    assert len(parse_jsonl(step.live_path.read_text())) == 4
+    led = json.loads(step.ledger_path.read_text())
+    assert led["snapshot_fit"] == fit and led["snapshot_digest"] == snapshot_digest(capped["snapshot"])
+    none = step.finish(max_bytes=10)
+    assert none["snapshot"] == "" and none["abort"] == "no entry of the library fits K's max_memory_bytes (10)"
+    assert json.loads(step.ledger_path.read_text())["abort"] == none["abort"]
 
 
 def test_finish_aborts_on_d_at_most_abort_d_or_an_empty_library(env):
