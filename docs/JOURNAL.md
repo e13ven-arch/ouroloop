@@ -8,6 +8,21 @@
 
 ---
 
+## 2026-10-10 阶段 4：finance-v3 开工：freeze 与基线（train 23/50，dev 7/25 与 8/25，$51.49）
+
+- 用户的批准（2026-10-10）："开 finance-v3，先 freeze 再跑 baseline"。配置 [finance-v3.toml](../examples/automationbench/finance-v3.toml) 由 finance-v2 的改来，只改工作区、scope 与注释。
+- smoke（`--checks-only`，$0）通过：切分哈希 `4fd91eaf9fb8daf5`（50 / 25 / 25，每题一族），种子对 1,103 个单题 train 值查过，0 处。freeze（$0）：K `core:8a4765606710`（代码 `s4/finance` `d9dca97`，code_version `073054b7fe2b9c83`），预算根 $700、final 份额 $220，镜像 id 与 finance-v2 相同，K 的 `improver.holdout_share` 0.4；`[rsi]` 三行提交在 `4547faa`。
+- 为什么重付基线：三项修复改了 `ouroloop/`，code_version 变了，K 就变了，finance-v2 的记录在新 K 下不能用。实际上 baseline 走的尝试路径（actor、harness、worker_runner、评分）这次没改，finance-v2 的 W0 读数内容上仍有效；是哈希覆盖整个包、不分哪部分影响读数。开跑前没有把这笔重复花费讲清楚，是疏漏。拆分 code_version 的设计稿作为待办提出（只写设计、不改代码）。
+- 基线：train 23/50（partial 0.789，$26.06）；dev 7/25（0.744，$12.98）与 8/25（0.768，$12.44）；合计 $51.49。
+- 与 finance-v2 的 W0 逐题对比（同一 W0 包、同一切分，只是 K 不同，不能正式合并，只作旁证）：
+  - dev 四次读数 11、9、7、8：7 道每次都过，13 道每次都没过，5 道时过时不过（cash_sweep、expense_split_allocation、financial_close_checklist 只在 v2 的第一次读数里过；vendor_insurance_verification 0100；vendor_payment_approval 1101）。
+  - train 两次都是 23/50：19 道都过、23 道都没过、8 道翻转。
+- 读数：
+  - W0 的 dev 通过数随读数在 7～11 之间。v2 的 gate 拿候选的 10/25 比 W0 池化的 10/25；v3 的 W0 池化是 7.5/25，同样 10/25 的候选在这里会显出约 +0.10 的增益，这是对照的噪声，不是候选的效果。gate 有一次确认读数（`confirmations` 1）和 `min_gain` 0.05 防这个，但 25 道题上的把握有限：v3 的 gate 若接受，要连同确认读数和逐题翻转一起读，不只看增益。
+  - 留出（seed 0）：研究 30 道、留出 20 道；W0 失败的 27 道里研究 16、留出 11；留出里通过的 9 道（筛选样本从这里抽 6）。按 finance-v2 的诊断标签预览，能分配的是 missed_action（研究 2 / 留出 3）、arith_mismatch（2 / 2）、excluded_mentioned（3 / 2）；另有 4 道新失败没有旧标签，第 0 轮诊断时再归类。
+- 花费：$51.49；根剩 $648.51，非 final 部分 $428.51。阶段 4 实际花费累计约 $302.5（finance-v1 $54.93、探针约 $2.6、finance-v2 $193.57、finance-v3 $51.49）。
+- 待用户：library（约 $90～115）。
+
 ## 2026-10-10 阶段 4：改进器两项修复（V3 只在 R 没研究过的留出 train 题上筛；没用上的名额记账），合入快照修复；$0
 
 - 用户的决定（2026-10-10）："按 B，先做这三项修复"：快照装进上限（上一条，另一个会话做）、筛选只用 R 没研究过的 train 题、处理没用上的名额。没有付费调用。
