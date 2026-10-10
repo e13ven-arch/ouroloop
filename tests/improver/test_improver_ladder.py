@@ -405,7 +405,8 @@ def test_v0_refuses_extra_kinds_besides_the_declared_one_and_test(ctx, parent):
 
 
 @pytest.mark.parametrize("predicted,why", [
-    (("rsi.dev_update_stage",), "predicted_affected names ['rsi.dev_update_stage'], which are not train tasks"),
+    (("rsi.dev_update_stage",),
+     "predicted_affected names ['rsi.dev_update_stage'], which are not among the train tasks you were given"),
     ((), "predicted_affected names no train task"),
 ], ids=["outside-train", "empty"])
 def test_v0_refuses_predicted_affected_outside_train_or_empty(ctx, parent, predicted, why):
@@ -417,9 +418,18 @@ def test_v0_refuses_predicted_affected_outside_train_or_empty(ctx, parent, predi
 def test_v0_refuses_predicted_affected_on_a_held_out_train_task(ctx, parent):
     study = dataclasses.replace(ctx, study_tasks=tuple(t for t in ctx.train_tasks if t != FAILING[1]))
     got = v0(with_tool(parent), tool_decl(predicted=FAILING), study)
-    assert got == {"passed": False, "detail": f"predicted_affected names {[FAILING[1]]}, which are not train tasks "
-                                              f"you were given"}
+    assert got == {"passed": False, "detail": f"predicted_affected names {[FAILING[1]]}, which are not among the "
+                                              f"train tasks you were given"}       # the same words as a dev id's
     assert v0(with_tool(parent), tool_decl(predicted=FAILING[:1]), study) == {"passed": True, "detail": ""}
+
+
+def test_v0_refuses_a_cause_id_the_round_did_not_assign(ctx, parent):
+    assigned = dataclasses.replace(ctx, cause_ids=("rsi-test/r0:wrong_target",))
+    got = v0(with_tool(parent), tool_decl(), assigned)
+    assert got == {"passed": False, "detail": "cause_id 'rsi-test/r0:missed_action' is not a cause you were assigned: "
+                                              "one of ['rsi-test/r0:wrong_target']"}
+    assert v0(with_tool(parent), tool_decl(), dataclasses.replace(ctx, cause_ids=("rsi-test/r0:missed_action",))) \
+        == {"passed": True, "detail": ""}
 
 
 def test_v0_a_removal_must_delete_a_tool_a_hook_or_a_skill(ctx, parent):
@@ -625,7 +635,12 @@ def test_v2a_a_script_error_or_a_task_outside_train_is_not_a_pass(ctx, parent):
     assert not any(r["passed"] for r in got["tasks"].values())
     assert "the script gives up" in got["tasks"][FAILING[0]]["error"]
     assert "check(ctx, tools)" in got["tasks"][FAILING[1]]["error"]
-    assert got["tasks"]["rsi.dev_update_stage"] == {"passed": False, "error": "not a train task"}
+    assert got["tasks"]["rsi.dev_update_stage"] == {"passed": False,
+                                                    "error": "not one of the train tasks you were given"}
+    # a held-out train task's script gets the same words as a dev task's: the check does not say which is which
+    study = dataclasses.replace(with_settings(ctx, toolcheck_min_pass=1), study_tasks=PASSING + FAILING[:1])
+    held = toolcheck(with_tool(parent), tool_decl({FAILING[1]: script_for(FAILING[1])}, predicted=FAILING[:1]), study)
+    assert held["tasks"][FAILING[1]] == {"passed": False, "error": "not one of the train tasks you were given"}
     none = toolcheck(with_tool(parent), tool_decl({}), ctx)
     assert not none["passed"] and "declaration.scripts" in none["detail"]
 

@@ -639,6 +639,15 @@ def test_update_playbook_keeps_the_cited_lesson(tmp_path):
     assert read_playbook(tmp_path) == "- A tool that posts the requested message fixed missed_action [L2]\n"
 
 
+def test_the_projection_scrubs_a_held_out_task_from_a_text(tmp_path):
+    ledger = Ledger(tmp_path)                       # a defect screen's reason names the task it broke on
+    ledger.row("screened", round_id="s/r0", line="d", kind="tool", outcome="defect",
+               reason="candidate defect on t.held: tool_use")
+    (row,) = ledger.projection(line="d", hide={"t.held"})
+    assert row["reason"] == "candidate defect on <a held-out task>: tool_use"
+    assert ledger.projection(line="d")[0]["reason"] == "candidate defect on t.held: tool_use"
+
+
 def test_the_playbook_is_written_without_the_held_out_tasks(tmp_path):
     ledger = Ledger(tmp_path)                       # R reads the playbook: a held-out task's id must not reach it
     ledger.row("screened", round_id="s/r0", line="d", kind="tool", fixed=["t.held", "t.seen"], outcome="screened")

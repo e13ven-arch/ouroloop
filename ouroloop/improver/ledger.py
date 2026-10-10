@@ -24,6 +24,19 @@ PROJECTED = ("id", "stage", "round_id", "candidate", "dir", "cause", "cause_id",
              "component", "credit", "names", "status")
 
 
+def _scrub(value, hide: set):
+    if isinstance(value, str):
+        for t in hide:
+            if t in value:
+                value = value.replace(t, "<a held-out task>")
+        return value
+    if isinstance(value, list):
+        return [_scrub(v, hide) for v in value]
+    if isinstance(value, dict):
+        return {k: _scrub(v, hide) for k, v in value.items()}
+    return value
+
+
 class Ledger:
     def __init__(self, root):
         self.path = Path(root) / "ledger" / "experience.jsonl"
@@ -59,6 +72,8 @@ class Ledger:
             if line is not None and r.get("line") not in (None, line):
                 continue
             row = {k: r[k] for k in PROJECTED if k in r and r[k] not in (None, "", [], {})}
+            if hide:                # a held-out id inside a text (a defect screen's reason names its task)
+                row = {k: _scrub(v, hide) if k not in TASK_LISTS else v for k, v in row.items()}
             for k in TASK_LISTS:
                 if hide and isinstance(row.get(k), list):
                     held = [t for t in row[k] if t in hide]

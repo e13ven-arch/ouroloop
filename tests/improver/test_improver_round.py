@@ -27,6 +27,7 @@ gate priced without the control's top-up, the archive missing the screen and the
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 from collections import Counter
@@ -42,6 +43,8 @@ from ouroloop.contracts import short
 from ouroloop.evaluate.budget import operation_id as execution_operation_id
 from ouroloop.evaluate.release import GateReceipt
 from ouroloop.harness.package import load
+from ouroloop.evaluate.attempt import task_hash
+from ouroloop.improver.allocate import Assignment
 from ouroloop.improver.archive import Archive
 from ouroloop.improver.declaration import Declaration
 from ouroloop.improver.evidence import Evidence
@@ -642,10 +645,13 @@ def test_the_held_out_part_is_whole_families_the_same_for_every_round(tmp_path, 
     s = round_activity(tmp_path, fake_upstream, "none", improver={"holdout_share": 0.4})
     study, held = Round(s.a, 0, run_arm=None, out=quiet).split()
     assert sorted(study + held) == sorted(rsi.TRAIN) and not set(study) & set(held)
-    assert len(held) >= round(len(rsi.TRAIN) * 0.4) and study
+    assert 0 < len(held) <= round(len(rsi.TRAIN) * 0.4) and study                # never more than its share
     families = lambda tasks: {rsi.FAMILIES[t] for t in tasks}                     # noqa: E731
     assert not families(study) & families(held)
     assert Round(s.a, 1, run_arm=None, out=quiet).split() == (study, held)
+    # seed 0 ranks the notify family (2 tasks) first: a share of 1 task skips it rather than overshoot
+    small = round_activity(tmp_path / "small", fake_upstream, "none", improver={"holdout_share": 0.2})
+    assert len(Round(small.a, 0, run_arm=None, out=quiet).split()[1]) == 1
     nothing = round_activity(tmp_path / "none", fake_upstream, "none")
     assert Round(nothing.a, 0, run_arm=None, out=quiet).split() == (tuple(nothing.a.splits.ids("train")), ())
 
@@ -656,6 +662,8 @@ def test_a_cause_without_enough_studied_tasks_or_a_held_out_one_is_not_assigned(
     s = played(round_activity(tmp_path, fake_upstream, "tool", actor=Actor(), improver={"holdout_share": 0.4}))
     (allocated,) = [x for x in ledger_rows(s.a) if x["stage"] == "allocated"]
     assert allocated["assignments"] == [] and "session" not in s.r.calls
+    (why,) = allocated["not_assigned"]
+    assert why["cause"] == "missed_action" and sorted((why["studied"], why["held_out"])) == [0, 2]
     assert s.result.status == "stopped" and s.result.stop.startswith("no_candidate")
 
 
@@ -682,6 +690,7 @@ def test_r_reads_only_the_studied_tasks_and_its_candidate_predicts_only_those(he
     assert {held_out.sessions[x] for x in held_out.readable if x} <= set(STUDY)
     (item,) = round_state(a, 0)["steps"]["verified"]["passed"]
     assert list(Declaration.from_json(a.objects.get(item["declaration"])).predicted_affected) == [NOTIFY[0]]
+    assert Round(a, 0, run_arm=None, out=quiet).vctx().cause_ids == (f"{ROUND}:missed_action",)   # V0 checks it
     # what R reads of the screen next round: the held-out fix as a count
     (screened,) = [x for x in json.loads(inputs["ledger.json"]) if x["stage"] == "screened"]
     assert "fixed" not in screened and screened["fixed_held_out"] == 1
@@ -692,3 +701,28 @@ def test_v3_screens_on_the_held_out_tasks_of_the_cause_and_a_held_out_passing_sa
     assert (list(res.failing), list(res.sample), list(res.fixed)) == ([VARIANT], ["rsi.policy_hold"], [VARIANT])
     assert res.net_flips == 1 and res.outcome == "screened"
     assert sorted(x.task_id for x in results_of_role(a, "screen")) == sorted(HELD)
+
+
+def test_a_memory_entry_distilled_from_a_held_out_task_is_not_shown_to_r(held_out, monkeypatch):
+    monkeypatch.setattr(Round, "split", lambda self: (STUDY, HELD))
+    r = Round(held_out.a, 0, run_arm=None, out=quiet)
+    hashed = {t: task_hash(held_out.a.suite.tasks[t]) for t in rsi.TRAIN}
+    entries = ({"entry": "seen", "distilled_from": [hashed[NOTIFY[0]], hashed["rsi.update_stage"]]},
+               {"entry": "held", "distilled_from": [hashed[NOTIFY[0]], hashed[VARIANT]]})
+    (cause,) = r.causes()
+    monkeypatch.setattr(Round, "causes", lambda self: [dataclasses.replace(cause, memory_entries=entries)])
+    inputs, _ = r.inputs(r.assignments())
+    assert [e["entry"] for e in json.loads(inputs["causes.json"])[0]["memory_entries"]] == ["seen"]
+
+
+def test_an_empty_assignment_is_unused_only_while_r_had_candidates_to_spare(held_out):
+    r = Round(held_out.a, 0, run_arm=None, out=quiet)
+    (real,) = r.assignments()
+    other = Assignment(cause_id=f"{ROUND}:wrong_target", cause="wrong_target", kind="hook")
+    out = round_state(held_out.a, 0)["steps"]["implemented"]["candidates"]
+    r.s = dataclasses.replace(r.s, k=1)              # R declared its one candidate: the empty slot is the cap's
+    r._unused([real, other], out)
+    assert [x for x in ledger_rows(held_out.a, "unused") if x["round_id"] == ROUND] == []
+    r.s = dataclasses.replace(r.s, k=3)
+    r._unused([real, other], out)
+    assert [(x["cause"], x["kind"]) for x in ledger_rows(held_out.a, "unused")] == [("wrong_target", "hook")]

@@ -222,7 +222,8 @@ class Round:
 
     def split(self) -> tuple[tuple, tuple]:
         """(the train tasks R studies, the train tasks held out from it), fixed for the activity: whole families,
-        ranked by a hash of K's order seed and the family, are held out until holdout_share of the train tasks are.
+        ranked by a hash of K's order seed and the family, are held out while they fit in holdout_share of the train
+        tasks (a family that would overshoot it is skipped; one task at least stays studied).
         V3 screens on the held-out part only, so a screen reads whether a candidate fixes tasks R never saw."""
         if getattr(self, "_split", None) is None:
             import hashlib
@@ -234,9 +235,8 @@ class Round:
             seed = int(self.a.k["gate"]["order_seed"])
             held: list = []
             for fam in sorted(families, key=lambda f: hashlib.sha256(f"holdout:{seed}:{f}".encode()).hexdigest()):
-                if len(held) >= want:
-                    break
-                held += families[fam]
+                if len(held) + len(families[fam]) <= want:      # a family that would overshoot the share is skipped
+                    held += families[fam]
             self._split = (tuple(t for t in train if t not in set(held)), tuple(t for t in train if t in set(held)))
         return self._split
 
@@ -354,15 +354,19 @@ class Round:
         no_code = {r.get("cause") for r in self.ledger.rows(stage="no_code_candidate", round_id=previous)}
         estimates = Estimates(self.a.root, self.s)
         causes, study, held = self.causes(), *(set(p) for p in self.split())
+        not_assigned = []
         if held:        # a cause is assigned only where R has the cases V2a and V2b need and V3 held-out tasks to screen on
             need = max(int(self.s.toolcheck_min_pass), int(self.s.replay_min_triggers), 1)
+            not_assigned = [{"cause": c.name, "studied": len(study & set(c.tasks)), "held_out": len(held & set(c.tasks))}
+                            for c in causes if not (len(study & set(c.tasks)) >= need and held & set(c.tasks))]
             causes = [c for c in causes if len(study & set(c.tasks)) >= need and held & set(c.tasks)]
         assignments, notes = allocate(causes, estimates, settings=self.s, line=self.line,
                                       allowed=self.a.k["harness"]["kinds"], no_code=no_code,
                                       stalled=stalled(self.ledger, self.s.stall_rounds), train_available=False)
         self.ledger.row("allocated", round_id=self.round_id, line=self.line,
                         assignments=[{"cause": a.cause, "kind": a.kind, "slots": a.slots,
-                                      "exploration": a.exploration} for a in assignments])
+                                      "exploration": a.exploration} for a in assignments],
+                        **({"not_assigned": not_assigned} if not_assigned else {}))
         for note in notes:
             if note.startswith("l6_unavailable"):
                 self.ledger.row("l6_unavailable", round_id=self.round_id, line=self.line, reason=note)
@@ -397,7 +401,9 @@ class Round:
                              failed_sessions={t: reading[t].evidence or reading[t].attempt_id for t in failed},
                              passed_sessions={t: reading[t].evidence or reading[t].attempt_id
                                               for t in passed[:self.s.screen_passing_sample]},
-                             study_tasks=study)
+                             study_tasks=study,
+                             cause_ids=tuple(a.cause_id for a in self.assignments())
+                             if "allocated" in self.state["steps"] else ())
 
     def with_memory(self, files: dict) -> dict:
         """A candidate's files with the parent's host-only memory snapshot put back (R's tree never holds it)."""
@@ -411,6 +417,8 @@ class Round:
         steps = self.state["steps"]
         causes = {c.cause_id: c for c in self.causes()}
         study, held = (set(p) for p in self.split())
+        from ..evaluate.attempt import task_hash
+        held_hashes = {task_hash(self.a.suite.tasks[t]) for t in held}
         readable = set()
         cause_rows = []
         for a in assignments:
@@ -431,7 +439,9 @@ class Round:
                                "definition": dg.DEFINITIONS.get(c.name, ""),
                                "tasks": [t for t in c.tasks if t in study],
                                "held_out_tasks": sum(1 for t in c.tasks if t in held), "cases": rows,
-                               "memory_entries": list(c.memory_entries),
+                               # an entry distilled from a held-out task's trajectory is that task's: not shown
+                               "memory_entries": [e for e in c.memory_entries
+                                                  if not set(e.get("distilled_from") or ()) & held_hashes],
                                "earlier": self.archive.for_prompt(self.line, c.name, hide=held)})
         successes = steps["evidence"]["successes"]
         readable |= {s["session"] for s in successes}
@@ -508,6 +518,8 @@ class Round:
         """An assigned (cause, kind) R declared nothing for: on the ledger, and an observation of no fix for its
         estimate, so the exploration does not keep landing where R does not go."""
         decls = [Declaration.from_json(self.a.objects.get(i["declaration"])) for i in out]
+        if len(decls) >= min(self.s.k, sum(a.slots for a in assignments)):
+            return                  # R declared as many candidates as it could: an empty slot is the cap's
         declared = {(d.cause_id, d.kind) for d in decls}
         estimates = Estimates(self.a.root, self.s)
         for a in assignments:

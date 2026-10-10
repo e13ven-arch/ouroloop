@@ -60,6 +60,7 @@ class VerifyContext:
     passed_sessions: dict = field(default_factory=dict)     # task_id -> session of a passing train attempt (V2b)
     failed_sessions: dict = field(default_factory=dict)     # task_id -> session of a failing train attempt (V2b)
     study_tasks: tuple = ()             # the train tasks R studies (predicted_affected names only these); () = all
+    cause_ids: tuple = ()           # the causes this round assigned: a declaration names one of them
 
 
 def run_ladder(files: dict[str, str], decl: Declaration, ctx: VerifyContext, *, rungs: tuple | None = None) -> Verdict:
