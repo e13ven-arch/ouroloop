@@ -8,6 +8,31 @@
 
 ---
 
+## 2026-10-10 阶段 4：改进器两项修复（V3 只在 R 没研究过的留出 train 题上筛；没用上的名额记账），合入快照修复；$0
+
+- 用户的决定（2026-10-10）："按 B，先做这三项修复"：快照装进上限（上一条，另一个会话做）、筛选只用 R 没研究过的 train 题、处理没用上的名额。没有付费调用。
+- 起因（finance-v2 两轮的读数）：train 筛选上净 +1～+3，dev 上增益都是 0；筛选的失败集就是 R 研究过、声称的那几道题，量的是样本内的修复。分配给 arith_mismatch 的工具名额两轮都没用，没有筛选读数，估值不动，探索一直落在同一处。
+- 设计（[IMPROVER](design/IMPROVER.md) §2、§3、§6、§7、§8、§9、§10）：
+  - `holdout_share` 0.4（floor，只能留出更多）：family 按 K 的 `gate.order_seed` 与 family 名的哈希排序，整族留出，加上会超过份额的那一族跳过，至少留一道题在研究部分；整个活动固定。
+  - R 只看研究部分：案例、成功轨迹、可读 session、`predicted_affected`、toolcheck 与回放；从留出题轨迹蒸馏出的 memory 条目不进 R 的输入；台账投影、档案里早先的筛选、剧本的输入，把留出题号换成计数，文字里的题号换成 "<a held-out task>"。
+  - V3 只在留出部分筛：失败集是候选所属 cause 在留出部分仍失败的题，样本是留出部分里当前通过的题。快照与升级技能的库从全部 train 学，它们在留出部分上的筛选不是迁移检验，gate 才是。
+  - 分配：有留出时，只分配研究部分 ≥ max(`toolcheck_min_pass`, `replay_min_triggers`) 道题、留出部分 ≥ 1 道题的 cause；没分配的记在 `allocated` 行的 `not_assigned`。
+  - 没用上的名额：R 声明的候选少于它能声明的数，而某个 (cause, kind) 一个都没声明 → 台账 `unused`，估值记一次修复 0。
+  - scoreboard 改成计数：每类候选在筛选上的修复、退步、净值。
+- 按 finance-v2 的诊断只读模拟（seed 0）：50 道 train 题、50 个 family（每族一道），留出 20 道。9 个 cause 里能分配的是 arith_mismatch（研究 3 / 留出 2）、excluded_mentioned（3 / 2）、missed_action（2 / 3），正好 k = 3；real_date（5 / 0）没有留出题，2 道和 1 道题的 cause 研究部分不够 V2a/V2b。所以筛选会很薄（失败集 2～3 道），gate 仍是决定。
+- 评审（3 个角度、19 个 agent，逐条反驳式复核）：确认 6 项，全修，`c4902f6`：
+  1. `causes.json` 的 `memory_entries` 没过滤：库从全部 train 学，条目的 trace ref 写着留出题号与 session（高）。
+  2. defect 筛选的 `reason` 写着留出题号，投影只过滤题号列表。
+  3. V0 与 V2a 对留出题和非 train 题的报错不同，`run_check` 免费可重复，等于可以试出哪些题被留出。
+  4. `cause_id` 不校验：对不上的候选在留出部分永远不筛，名额还被记成 unused。
+  5. 代码名额翻倍时名额之和可以超过 k，R 用满之后别的指派被迫空着，却被记成 unused。
+  6. 整族留出可能超过份额，大 family 时甚至整个 train；没分配的 cause 也没有记录。
+  另 4 项被驳回（V2c 只回计数、记功按全部 cause 题是设计、只有 memory 的 cause 不分配是省钱、下限定价与设计一致）。
+- 测试：新增 11 个（整族留出且各轮一致、份额不超、cause 一边空不分配且有记录、R 的输入只有研究部分、V3 在留出部分筛、memory 条目过滤、V0 拒绝留出题与未指派的 cause_id、V2a 同一句报错、投影去掉文字里的题号、剧本输入不含留出题、名额用满不记 unused），改 7 处旧断言；`tests/rsi.py` 的测试 preset 把 `holdout_share` 设为 0，旧测试照旧在声称的题上筛。变异在隔离副本（rsync 到 scratchpad，前后 `git status` 一致）：两批 18 个，第一遍活下 5 个，补断言后剩 1 个活着：续跑路径上的 `unused` 调用（与新路径是同一个函数，没单独测）。
+- 合入：`snapshot-fit`（`594cfdc`）在 finance-v2 结束后合入 `s4/finance`（`4514d5a`），JOURNAL 与 PLAN 的顶部冲突两条都留。全量（Docker + 真 memory sidecar）1,512 passed、1 deselected。
+- 对 K：`code_version` 变了，下一个活动是 finance-v3，要重付基线与 library。worker 镜像只拷 `runtime/worker_runner.py`，它没改，finance-v2 钉住的镜像 id 照用。
+- 待用户：finance-v3，每一步先批准（freeze $0，基线约 $51，library 约 $90～115，每轮约 $25）。
+
 ## 2026-10-10 阶段 4：快照装进 K 的包上限（精简行、按记功取前缀、记下没装的；$0）
 
 - 起因：finance-v2 的 library（2026-10-10 一条）整库快照 550,524 字节，K 的 `max_memory_bytes` 262,144，阶段记 `not_gated`，第 0 轮没有 memory 的固定候选。用户的决定（第 0 轮一条）：快照的修复另做。分支 `claude/snapshot-fit-099f38`（从 `s4/finance` 的 `a17b861` 起，独立 worktree）；finance-v2 从主检出跑，这里什么都没合入（规则 13）。没有付费调用。

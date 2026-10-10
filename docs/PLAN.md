@@ -40,10 +40,10 @@
 |---|---|
 | 分支 | 阶段 4 在 `s4/finance`（从 `m1-automationbench` 的 `c22f698` 起）；付费活动从这个检出跑，期间不往这里合入 `ouroloop/` 的改动（规则 13）。阶段 1～3 已合入（`46a4b90`、`c92ddcc`、`c22f698`）。`main` 在 `b71502d`（v0.3）。`v6-agent`、`v6-gateway`、`v6-memory` 都已搬入；`v6` 合并分支上的 WIP 不用；`slim/1` 已合入，可删；两轮测试用的 worktree 分支已合入并删掉。快照装进包上限的修复在 `claude/snapshot-fit-099f38`（从 `s4/finance` 的 `a17b861` 起），没有合入，finance-v2 结束后再合 |
 | 代码 | 阶段 1～3 完成：`contracts.py`、`harness/`（含 stirrup 种子）、`runtime/`（含 `trace.py`）、`evaluate/`、`memory/`（ReMe sidecar、桥、规则、写入步、检索、快照、升级）、`improver/`（一轮的可续跑步骤、诊断、分层、编码会话、阶梯 V0～V4、档案、记功、台账、剧本）、`activity/`（含 `library`、`round`、`cycle`）。`ouroloop/` 不含种子 24,553 行（只作读数） |
-| 测试 | 默认套件 1,403 passed、86 deselected；全量（Docker + 真 memory sidecar）1,488 passed、1 deselected（JOURNAL 2026-10-09 阶段 4 开工一条）。memory 的 venv 在本机 `~/.cache/ouroloop/memory-venv/19f9b139c36d1d05` |
+| 测试 | 全量（Docker + 真 memory sidecar）1,512 passed、1 deselected（JOURNAL 2026-10-10 改进器两项修复一条）。memory 的 venv 在本机 `~/.cache/ouroloop/memory-venv/19f9b139c36d1d05` |
 | test 读过几次 | finance 1、support 0、sales 0、hr 0、marketing 3；operations 从未读过 |
 | 本机记录 | `examples/automationbench/workspace-*/`、`examples/workspace-*/`、`ws/`、`*.local.toml`，git 忽略，不删不改 |
-| 下一步 | finance-v2 结束：两轮各有候选过了免费阶梯与筛选，gate 都拒绝（增益 0），按耐心规则停，没有装入、没有 final（JOURNAL 2026-10-10）；快照修复在 `snapshot-fit` 会话里进行；等用户决定下一步 |
+| 下一步 | finance-v2 结束（两轮 gate 都拒绝，增益 0，没有装入、没有 final）。之后三项修复已合入 `s4/finance`（快照按记功装进上限；V3 只在 R 没研究过的留出 train 题上筛；没用上的名额记账），评审确认的 6 项全修（JOURNAL 2026-10-10）；等用户批准 finance-v3 |
 
 ## 1 规则
 
