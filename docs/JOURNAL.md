@@ -8,6 +8,26 @@
 
 ---
 
+## 2026-10-10 阶段 4：四项修复落地（日期锚、组合候选与 V2a 探针、留出为空的 cause、每两轮一次 gate 带累积与部分得分）；finance-v4 冻结；$0
+
+- 用户的决定（2026-10-10）："按这四项改，改完再跑 finance-v3"。设计先定稿（`c370fed`：[DESIGN §6.12](DESIGN.md)，[HARNESS §7.1](design/HARNESS.md)，[IMPROVER §7.1、§8.1、§9.1～§9.3](design/IMPROVER.md)，[EVALUATE §5.1](design/EVALUATE.md)，CONTRACTS 的三个键），再改代码；分支 `s4/finance-v4`（从 `s4/finance` 的 `20a7fa7` 起）。
+- 为什么是 finance-v4 而不是续跑 finance-v3：四项修复改了 `ouroloop/`，code_version 变了，K 就变了，finance-v3 的 K 与基线（$51.49）不能沿用（规则 13），新活动要重付基线（约 $51）。这笔重复花费这次先写明，开跑前讲清。
+- 代码（`9c13d6a`）：
+  1. 日期锚（种子 `middlewares/write_guard.py`）：键或路径里带 `SYSTEM_WORDS`（meta、metadata、updated、modified、edited、lastupdated、lastmodified、lastedited、sync、synced、indexed、audit）的字段不作日期；等于或晚于 worker 当天的日期不作日期（`STATE["today"]`，默认真实日期；finance-v2 的三道 real_date 失败读的 QuickBooks `MetaData.CreateTime` / `LastUpdatedTime` 与 Xero `UpdatedDateUTC` 都是这两条之一）；`DATE_WORDS` 去掉 updated、modified；写入之后继续读（写入自己的结果仍不读）。
+  2. 组合候选：`declaration.py` 加 `probes`（{task: [{args, expect}]}）并校验；V0 允许声明种类之外的 tool、hook、skill、prompt 作同一机制的载体（agent、config、vendor、memory、model 仍须各自成候选）；`verify/__init__.py` 的 `supporting()` 给每个载体一个影子声明，按各自的 rung（`V2a@<名>`、`V2b@<名>`、`V2c@<名>`）接在主梯之后爬，文本候选带代码时插入 V1；`screen.condition()` 的条件记功算上载体；`package_api.md`、`propose.md` 写明"为 cause 造，不为题造"、一个机制可带几个载体。
+  3. V2a 探针（`verify/toolcheck.py`）：`probe_script()` 由声明的探针生成检查脚本，工具在抽出的输入上不报错且输出含期望串即过；一道题有脚本则以脚本为准，两者都没有不算；结果带 `by: script | probe`。
+  4. 留出为空的 cause（`round.py` 的 allocated）：研究部分够 V2a/V2b 的题数而留出部分为空的 cause 也分配，记 `in_sample`，V3 在研究部分的失败题上筛（`ScreenResult.in_sample`），报告标出；只有研究部分不够的才记 `not_assigned`。
+  5. gate 节奏（`improver.gate_every` 2，cap；`round.py`）：非 gate 轮把筛选最优候选写进 `rounds/carry.json`（台账 `carried`），下一轮在累积包上测量、取证、诊断、再改；gate 轮把最优候选送 gate，没有新候选时把累积包送 gate；gate 拒绝就丢弃累积（台账 `carry_dropped`）；cycle 的耐心只数 gate 轮。preset `schedule.rounds` 8（cap）、`patience` 2。
+  6. 部分得分（`evaluate/gate.py`；preset `gate.partial_min_gain` 0.03，floor）：gate 同时 bootstrap 部分得分的增益；严格规则与部分得分规则二选一接受，后者要区间不含 0、严格增益 ≥ 0、确认读数自己也过门槛；`accepted_by`、`partial_gain`、`partial_interval` 进指标。
+- smoke（`--checks-only`，$0）第一次失败：字面量检查在新写的种子测试里找到 `2026-03-02`，是某道 train 题的值；换成别的日期后 0 处。种子包里的测试也在字面量检查的范围里，写种子测试时日期要避开数据的年份。
+- 测试：新增 17 个（种子 2、gate 的部分得分 5、阶梯 6、round 4），重写 2 个；默认套件 1,440 passed、87 deselected（第一次跑 2 失败：carry 测试按"后一半调用"断言，R 会话的轮数比预想多就落入前一轮，改成从第 1 轮起点数；另一个中断续跑的快照测试单跑与整文件都过，全量复核）；全量（Docker + 真 memory sidecar）1,526 passed、1 deselected。
+- freeze（$0）：K `core:a587428e5f26`（代码 `s4/finance-v4` `9c13d6a`，code_version `bfbb687e5def864c`），切分 `4fd91eaf9fb8daf5` 不变，预算根 $700、final 份额 $220，镜像 id 与 finance-v1 相同；`schedule.rounds` 6（第 0、2、4 轮筛选并累积，第 1、3、5 轮 gate）。预期花费约 $330（基线约 $51、library 约 $90～115、累积轮各约 $15、gate 轮各约 $28、final 约 $50）。
+- 花费 $0。
+- 预期读数（开跑前写下，之后对照）：基线的 train 与 dev 应与 finance-v3 的在噪声内（23/50，7～8/25）；library 的 D 看快照能否过筛；第 0 轮应有至少一个带载体的 tool 候选到 V3（arith_mismatch 的名额这次有探针可证）；第 1 轮的 gate 看累积包的严格增益与部分得分增益。
+- 下一步：基线（约 $51，用户 2026-10-10 "改完再跑"的批准下开跑），之后每一步停下汇报。
+
+---
+
 ## 2026-10-10 阶段 4：finance-v3 开工：freeze 与基线（train 23/50，dev 7/25 与 8/25，$51.49）
 
 - 用户的批准（2026-10-10）："开 finance-v3，先 freeze 再跑 baseline"。配置 [finance-v3.toml](../examples/automationbench/finance-v3.toml) 由 finance-v2 的改来，只改工作区、scope 与注释。

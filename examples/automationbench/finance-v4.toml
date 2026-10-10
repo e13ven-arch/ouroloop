@@ -89,3 +89,9 @@ final_usd = 220.0
 
 [final]
 repeats = 3
+
+[rsi]
+scope_id = "finance-v4"
+# printed by `ouroloop freeze` on 2026-10-10 (K frozen at code s4/finance-v4 9c13d6a); final_plan_ref comes with the seal
+core_ref = "core:sha256:a587428e5f26fc4d3871f6369926924b71500890a6f521408251b3d2a312befd"
+split_ref = "4fd91eaf9fb8daf5"
