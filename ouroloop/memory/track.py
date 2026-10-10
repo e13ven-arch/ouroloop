@@ -675,12 +675,17 @@ class StreamStep:
         return {"added": got["added"], "skipped": got["skipped"], "dropped": got["dropped"], "again": False}
 
     # ------------------------------------------------------------------------------------------- the end
-    def finish(self) -> dict:
-        """The stream's end: the readout, the snapshot (canonical, retired entries are not in the store) and why it
-        is not gated, if it is not (D <= abort_d, or an empty library)."""
+    def finish(self, *, max_bytes: int | None = None) -> dict:
+        """The stream's end: the readout, the snapshot — the live library (retired entries are not in the store) as
+        a package carries it, within `max_bytes` (K's harness.limits.max_memory_bytes; snapshot.fit_snapshot), with
+        the record of what it left out — and why it is not gated, if it is not (D <= abort_d, an empty library, or no
+        entry that fits)."""
         if self.ledger.get("pending"):
             raise MemoryStepError(f"step {self.ledger['pending']['step']} is pending: process it first")
-        text = self.snapshot_text()
+        from .snapshot import fit_snapshot
+
+        library = self.snapshot_text()
+        text, fit = fit_snapshot(library, max_bytes)
         ro = readout(self.ledger["readings"], self.ledger["order"], self.entries)
         ro["counters"] = dict(self.ledger["counters"])
         why: dict = {}
@@ -690,7 +695,8 @@ class StreamStep:
         ro["dropped"] = why
         ro["imports"] = len(self.ledger["imports"])
         ro["reply_format"] = reply_format_problems(ro["counters"])
-        abort = snapshot_abort(ro, self.s, empty=not text)
-        self.ledger.update(status="done", readout=ro, abort=abort, snapshot_digest=snapshot_digest(text))
+        abort = snapshot_abort(ro, self.s, empty=not library, fit=fit)
+        self.ledger.update(status="done", readout=ro, abort=abort, snapshot_digest=snapshot_digest(text),
+                           snapshot_fit=fit)
         self.checkpoint()
-        return {"snapshot": text, "readout": ro, "abort": abort}
+        return {"snapshot": text, "fit": fit, "readout": ro, "abort": abort}

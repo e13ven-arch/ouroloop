@@ -310,9 +310,11 @@ def library(activity, *, out: Callable[[str], None] = print) -> dict:
     a time: each task's first encounter under W_base with the live library (leave-one-out), a failed one tried once
     more with its failed checks as a note, then the batch's trajectories (the baseline's too) summarised by ReMe
     through the metered bridge, checked and written, the first encounters credited. At the end the readout, and —
-    unless D <= abort_d or the library is empty — the snapshot as a candidate package for the improver's ladder
-    (stage 3). Run again, it continues where it stopped and pays for nothing on record. A failure of the memory's
-    sidecar pauses the phase (status `paused`): nothing is recorded as lost for it."""
+    unless D <= abort_d, the library is empty or none of it fits — the snapshot as a candidate package for the
+    improver's ladder (stage 3): its rows as a package carries them, ranked by credit and kept within K's
+    max_memory_bytes, what it left out recorded in the `library_snapshot` event (MEMORY §7.1). Run again, it
+    continues where it stopped and pays for nothing on record. A failure of the memory's sidecar pauses the phase
+    (status `paused`): nothing is recorded as lost for it."""
     require(startup_checks(activity, phase="library"), phase="library", activity=activity)
     from ..contracts import MemorySidecarError
     from ..memory.track import MemoryStepError
@@ -438,15 +440,19 @@ def library(activity, *, out: Callable[[str], None] = print) -> dict:
                 f"{t} first={int(firsts[t].success) if t in firsts else '-'}"
                 f"{' retry=' + str(int(seconds[t].success)) if t in seconds else ''}"
                 f" +{len(done[hashes[t]].get('added') or ())}" for t in batch) + f"; {len(step.active())} live")
-        result = step.finish()
+        result = step.finish(max_bytes=limits.max_memory_bytes)
     except (MemorySidecarError, MemoryStepError) as e:
         # a step that could not be trusted stores nothing; the summaries that passed are on the ledger
         return paused(e)
     finally:
         service.stop()
-    ro, snapshot = result["readout"], result["snapshot"]
+    ro, snapshot, fit = result["readout"], result["snapshot"], result["fit"]
     out(f"library    D={ro['D']} B={ro['B']} halves {ro['first_half']} -> {ro['second_half']} "
         f"(P {ro['p_second_half_better']}); entries {ro['entries']}")
+    best = fit["omitted"][0] if fit["omitted"] else None
+    out(f"library    snapshot: {fit['kept']}/{fit['entries']} entries, {fit['bytes']} bytes of K's {fit['max_bytes']}"
+        + (f"; {len(fit['omitted'])} left out by rank ({fit['rank']}), the best of them with {best['fixes']} fixes "
+           f"and {best['n_cited']} citations" if best else ""))
     outcome = {"outcome": "not_gated", "why": result["abort"]} if result["abort"] else None
     if outcome is None:
         try:
@@ -458,7 +464,7 @@ def library(activity, *, out: Callable[[str], None] = print) -> dict:
     outcome["snapshot_digest"] = snapshot_digest(snapshot)
     if not any(e.get("snapshot_digest") == outcome["snapshot_digest"] and e.get("base") == base.ref()
                for e in activity.events.read("library_snapshot")):
-        activity.events.append("library_snapshot", base=base.ref(), readout=ro, **outcome)
+        activity.events.append("library_snapshot", base=base.ref(), readout=ro, fit=fit, **outcome)
     if outcome["outcome"] == "candidate":
         out(f"library    the snapshot is a candidate: {short(outcome['package_ref'])} (the improver's ladder takes "
             f"it from V3; stage 3)")

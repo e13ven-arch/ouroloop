@@ -8,6 +8,21 @@
 
 ---
 
+## 2026-10-10 阶段 4：快照装进 K 的包上限（精简行、按记功取前缀、记下没装的；$0）
+
+- 起因：finance-v2 的 library（2026-10-10 一条）整库快照 550,524 字节，K 的 `max_memory_bytes` 262,144，阶段记 `not_gated`，第 0 轮没有 memory 的固定候选。用户的决定（第 0 轮一条）：快照的修复另做。分支 `claude/snapshot-fit-099f38`（从 `s4/finance` 的 `a17b861` 起，独立 worktree）；finance-v2 从主检出跑，这里什么都没合入（规则 13）。没有付费调用。
+- 设计（[MEMORY §7.1](design/MEMORY.md)；HARNESS §3、ACTIVITY §3～4、IMPROVER §10、DESIGN §5.4～5.5 对齐）：
+  - 精简行：只带 `memory_id`、`memory_type`（ReMe 加载必需）、`when_to_use`、`content`，metadata 只留 `ol_line`、`ol_split`（检索过滤、导入的 train-only）、`ol_source_line`（导入的留出检查）、`ol_sources`（留一）、`ol_stats` 的 `{fixes, n_cited}`（排序依据），导入的行另留 `ol_imported_from`。逐个查过读者：`retrieval.LibraryReader`、`snapshot_collection`、`snapshot.library_of`、`importing.import_entries`、`phases._import`、`improver/round.py` 的 `fixed_candidates`、`activity/workspace.py` 的 `memory_for`、真 sidecar 的 `LoadMemory`（`MemoryNode.model_validate` 只要 `memory_type`）；worker 不读快照（host-only）。其余字段留在台账 `stream.json` 与 `live.jsonl`（格式不变）。
+  - 放不下时：按（修复数、引用数、`memory_id`）排序取严格前缀，装到 `max_memory_bytes`；`fit` 记录（留下几条、多少字节、没装的每条及其记功与字节、原因）进台账、`finish()` 的结果与 `library_snapshot` 事件，阶段打印一行，报告带摘要。一条都放不下时 abort，不付 gate。
+  - 容量：字节只在快照处管，上限就是 K 的 `max_memory_bytes`；`max_active` 500 仍只管 live 库的条数。理由：字节上限是包的性质；排序要的证据只在流里积累，在流里按字节淘汰会在观察期里扔条目、让 D 随包上限变；一个约束只在一处执行。
+- 用 finance-v2 的 live 库只读重算：精简行平均 1,331 字节（全行 2,469），精简后整库 296,867 字节，仍超上限；装下 197/223 条（261,488 字节），4 条有修复的、24 条有引用的全在，没装的 26 条都没有修复也没有引用。
+- 代码：`memory/snapshot.py`（`snapshot_row`、`snapshot_rank`、`row_bytes`、`fit_snapshot`）、`memory/track.py`（`finish(max_bytes=…)`，台账 `snapshot_fit`）、`memory/rules.py`（`snapshot_abort` 的 `fit`）、`memory/importing.py`（导入的 live 行与 `stamp` 一样置空时间字段，否则 ReMe 补导入时刻）、`activity/phases.py`（传 K 的上限、打印、事件带 `fit`）、`activity/report.py`（报告的快照段带 `fit` 摘要）。
+- 测试：新增 10 个（默认套件 9：精简行的字段与幂等、超上限的库成为放得下且留下有记功条目的候选、严格前缀与含上限的边界、放得下的库一条不少且字节稳定、精简行与全行检索给同样的条目、一条都放不下就 abort、V0 在 preset 上限下过、`finish(max_bytes)` 记下没装的、library 阶段在调低的上限下产出放得下的候选；真 sidecar 1 个：ReMe 加载精简行、检索与全行相同）；改 5 个旧断言到新契约（live 文件仍是全行而快照是精简行；出处与 trace ref 从台账读，导入的行经 `ol_imported_from` 回到 A；报告多 `fit`）。默认套件 1,395 passed、20 skipped、87 deselected（skip 主要是 worktree 里没有 git 忽略的运行记录）；全量（Docker + 真 memory sidecar，`OUROLOOP_RECORDS_ROOT` 指主检出的记录，只读）1,498 passed、3 skipped（worktree 里没有 TDE 仓库）、1 deselected。变异在隔离副本（rsync 到 scratchpad，前后 `git diff` 与未跟踪文件一致）：19 个，第一遍活下 3 个（引用排在修复前、跳过放不下的行继续装、上限不含等号），补了严格前缀的测试后 19/19 被杀。
+- 对 K：preset 的数值不变（`max_memory_bytes` 262,144、`max_active` 500）；新活动的 K 只因 code_version 不同；配置不需要新键。同一个库的快照字节与旧格式不同（精简行），所以摘要也不同；HEAD 照样读旧的全行快照。
+- 合入：finance-v2 结束后合入 `s4/finance`（2026-10-10，与第 1 轮的条目在文件顶部冲突，两条都留、按时间排）。下一个活动要重付基线与 library（约 $145）。
+
+---
+
 ## 2026-10-10 阶段 4：finance-v2 第 1 轮（gate 再次拒绝，增益 0）；两轮无装入，按耐心规则结束
 
 - 用户的批准（2026-10-10）："跑第 1 轮，同时开始做快照修复"。快照修复在另一个会话的独立 worktree 里做（分支 `snapshot-fit`，从 `s4/finance` 起），finance-v2 结束前不合入这个检出。

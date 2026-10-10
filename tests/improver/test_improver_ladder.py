@@ -45,7 +45,8 @@ from ouroloop.improver.verify.replay import replay_check, site_events
 from ouroloop.improver.verify.static import static_check
 from ouroloop.improver.verify.toolcheck import toolcheck
 from ouroloop.improver.verify.unit import unit_check
-from ouroloop.memory.snapshot import snapshot_candidate
+from ouroloop.activity.presets import AUTOMATIONBENCH_V1
+from ouroloop.memory.snapshot import fit_snapshot, snapshot_candidate
 
 FAILING = ("rsi.notify_after_update", "rsi.notify_after_update_variant")
 PASSING = ("rsi.update_stage", "rsi.policy_hold", "rsi.notify_once")
@@ -231,6 +232,28 @@ def test_v0_passes_the_memory_snapshot_of_the_memory_candidate(ctx, parent):
     got = v0(files, decl("memory", "snapshot", predicted=(), fixed="snapshot:abc"), ctx)
     assert got == {"passed": True, "detail": ""}
     assert run_ladder(files, decl("memory", "snapshot", predicted=(), fixed="snapshot:abc"), ctx).steps.keys() == {"V0"}
+
+
+def test_v0_passes_the_snapshot_of_a_library_over_ks_memory_bytes_once_it_is_fitted(ctx, parent):
+    """The fixed candidate of a library whose whole rows exceed the preset's max_memory_bytes (finance-v2's, 550 KB
+    against 256 KiB) fails V0 as it was written then; fitted (memory/snapshot.py fit_snapshot) it passes, with the
+    credited entry in it."""
+    cap = Limits.from_core(ctx.core).max_memory_bytes
+    assert cap == AUTOMATIONBENCH_V1["harness"]["limits"]["max_memory_bytes"]
+    rows = [{"memory_id": f"{i:016x}", "memory_type": "procedural", "author": "research/reme:success",
+             "when_to_use": f"When a request asks for #ops, case {i}", "content": f"Post it, case {i}. " + "x" * 1600,
+             "metadata": {"ol_line": "rsi", "ol_split": "train", "ol_source_line": "rsi", "ol_sources": "[]",
+                          "ol_trace_refs": json.dumps([f"run/t{i}/r0/first#0:L1"] * 3),
+                          "ol_stats": json.dumps({"fixes": int(i == 299), "n_cited": int(i == 299)})}}
+            for i in range(300)]
+    whole = "".join(json.dumps(r, sort_keys=True) + "\n" for r in rows)
+    d = decl("memory", "snapshot", predicted=(), fixed="snapshot:abc")
+    got = v0(snapshot_candidate(parent, whole), d, ctx)
+    assert not got["passed"] and f"bytes in {MEMORY_PATH}: K allows {cap}" in got["detail"]
+    text, fit = fit_snapshot(whole, cap)
+    files = snapshot_candidate(parent, text)
+    assert v0(files, d, ctx) == {"passed": True, "detail": ""}
+    assert 0 < fit["kept"] < 300 and f"{299:016x}" in text and len(text.encode("utf-8")) <= cap
 
 
 def test_v0_on_a_parent_with_a_snapshot_refuses_a_change_of_it_and_not_its_presence(ctx, parent):

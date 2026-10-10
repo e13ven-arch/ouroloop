@@ -66,13 +66,15 @@ def test_the_library_phase_on_the_real_sidecar_makes_a_snapshot_candidate_and_pa
     research_spend = spent(a, "research:memory")
     assert research_spend["model_calls"] == len(calls) and research_spend["usd"] > 0
 
-    # the candidate: W_base with memory/snapshot.jsonl holding the library and the manifest naming it
+    # the candidate: W_base with memory/snapshot.jsonl holding the library (its rows as a package carries them, all
+    # within K's max_memory_bytes here) and the manifest naming it; each row's trace refs are the ledger's
     files = load_package(a.objects, snap["package_ref"]).files
     rows = parse_jsonl(files[MEMORY_PATH])
     assert len(rows) == ro["entries"]["active"]
     assert all(r["metadata"]["ol_split"] == "train" and r["metadata"]["ol_line"] == rsi.DOMAIN
-               and json.loads(r["metadata"]["ol_sources"]) and json.loads(r["metadata"]["ol_trace_refs"])
-               for r in rows)
+               and json.loads(r["metadata"]["ol_sources"]) and "ol_trace_refs" not in r["metadata"] for r in rows)
+    ledger = json.loads((tmp_path / "ws" / "memory" / rsi.DOMAIN / "stream.json").read_text(encoding="utf-8"))
+    assert all(json.loads(ledger["entries"][r["memory_id"]]["row"]["metadata"]["ol_trace_refs"]) for r in rows)
     assert json.loads(files["manifest.json"])["memory"] == {"enabled": True, "snapshot": MEMORY_PATH}
     base = a.package(a.active_release()).files
     assert {p for p in files if files[p] != base.get(p)} == {MEMORY_PATH, "manifest.json"}

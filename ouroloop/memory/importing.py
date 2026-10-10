@@ -8,8 +8,10 @@ its start, records it in its ledger and so in its identity, and B's snapshot sti
 on B filters on it), `ol_source_line` stays A, `ol_origin` becomes `imported` and `ol_imported_from` names A's
 release and the row's id; A's sources and stats are not carried (they are A's train tasks and A's credit), so every
 imported entry starts B's probation from zero and is credited on B's train only. Of a row's metadata only the
-provenance keys and ReMe's kept keys (rules.reme_metadata) are copied. A held-out source line, or any row that is not
-train experience, refuses the whole import; `fix` (StreamStep's: B's lengths and literal check) drops or fixes a row.
+provenance keys and ReMe's kept keys (rules.reme_metadata) are copied; a released snapshot's rows hold few of them
+(snapshot.snapshot_row: the line, split, source line and sources), and A's ledger holds the rest. A held-out source
+line, or any row that is not train experience, refuses the whole import; `fix` (StreamStep's: B's lengths and literal
+check) drops or fixes a row.
 """
 from __future__ import annotations
 
@@ -25,7 +27,10 @@ def imported_row(row: dict, *, source_release_ref: str, target_line: str) -> dic
     meta = {**reme_metadata(src), **{k: src[k] for k in PROVENANCE_KEYS if k in src}}
     meta.update(ol_line=target_line, ol_source_line=meta.get("ol_source_line") or meta.get("ol_line") or "",
                 ol_origin=IMPORTED, ol_imported_from=f"{source_release_ref}:{row['memory_id']}")
-    return {**{k: v for k, v in row.items() if k != "vector"}, "metadata": meta}
+    # a snapshot row has no clock fields (snapshot.snapshot_row) and ReMe would stamp the time of the import: blank,
+    # as rules.stamp blanks them, so equal imports give equal live rows
+    return {**{k: v for k, v in row.items() if k != "vector"}, "metadata": meta, "time_created": "",
+            "time_modified": "", "message_time": ""}
 
 
 def import_entries(snapshot_text: str, *, source_release_ref: str, source_line: str, target_line: str, client,

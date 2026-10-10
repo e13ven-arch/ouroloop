@@ -389,12 +389,15 @@ def reply_format_problems(counters: dict) -> list[str]:
     return [f"{k}: {counters[k]}" for k in REPLY_FORMAT_COUNTERS if counters.get(k)]
 
 
-def snapshot_abort(result: dict, settings: Settings, *, empty: bool) -> str | None:
-    """Why the snapshot is not offered to the ladder: D <= abort_d, or an empty library."""
+def snapshot_abort(result: dict, settings: Settings, *, empty: bool, fit: dict | None = None) -> str | None:
+    """Why the snapshot is not offered to the ladder: D <= abort_d, an empty library, or a library none of whose
+    entries fits K's max_memory_bytes (`fit`, snapshot.fit_snapshot's record)."""
     if result["D"] <= settings.abort_d:
         return f"D {result['D']} <= {settings.abort_d}"
     if empty:
         return "the library is empty"
+    if fit is not None and fit["entries"] and not fit["kept"]:
+        return f"no entry of the library fits K's max_memory_bytes ({fit['max_bytes']})"
     return None
 
 

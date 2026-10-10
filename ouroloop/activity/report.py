@@ -65,12 +65,17 @@ def memory_report(activity) -> dict | None:
     ledger = json.loads(path.read_text(encoding="utf-8"))
     snapshots = [e for e in activity.events.read("library_snapshot")]
     last = snapshots[-1] if snapshots else None
+    snapshot = None
+    if last is not None:
+        fit = last.get("fit")           # what the snapshot kept within K's max_memory_bytes (MEMORY §7.1)
+        snapshot = {**{k: last.get(k) for k in ("outcome", "why", "package_ref", "snapshot_digest")},
+                    "fit": None if not fit else {**{k: fit.get(k) for k in ("entries", "kept", "bytes", "max_bytes")},
+                                                 "omitted": len(fit.get("omitted") or ())}}
     return {"status": ledger.get("status"), "processed": len(ledger.get("processed") or {}),
             "planned": len((ledger.get("plan") or {}).get("order") or ()), "lost": len(ledger.get("lost") or {}),
             "readout": ledger.get("readout"), "counters": ledger.get("counters"),
             "dropped": len(ledger.get("dropped") or ()), "imports": len(ledger.get("imports") or ()),
-            "snapshot": None if last is None else {k: last.get(k) for k in ("outcome", "why", "package_ref",
-                                                                            "snapshot_digest")}}
+            "snapshot": snapshot}
 
 
 def rounds_report(activity) -> list[dict]:
