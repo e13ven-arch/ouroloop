@@ -112,6 +112,15 @@ class Releases:
 - 规则：点估计 ≥ `min_gain`、退步率 ≤ `max_regression_rate`、成本项 `ΔC ≤ β0 + β1·ΔS`（有 pricing 时）、有效家族数 ≥ `min_groups`；任务数 ≥ `min_tasks` 在冻结 gate 模板时检查（`activity` 的 freeze 拒绝，`judge` 不再查）；首读通过后确认复测（`confirmations` 次），合并读数再判。对照读数按 `control_pooling`（fresh 或 pooled）与 `control_readings`。
 - 收据 `GateReceipt{plan_ref, subject_ref, control_ref, parent_release, results_ref, verdict, reasons, metrics, uncertainty, costs, kind}`；各臂的全部尝试（含失败）在 results 对象里；逐题差值由 `receipt_differences` 从收据读出（`fixed / regressed / still_failing` 的 dev 题号只在收据里，不给 R）。
 
+### 5.1 部分得分的接受规则（2026-10-10 修订）
+
+`GatePlan` 多一个可选字段 `partial_min_gain`（K 的 `gate.partial_min_gain`，floor；None 即只按严格规则）。设了它时，`judge` 另算部分得分（`partial_credit`）的配对点估计与家族 bootstrap 区间，接受条件改为二选一：
+
+1. 严格：`gain ≥ min_gain`（原规则）；
+2. 部分得分：`partial_gain ≥ partial_min_gain` 且区间不含 0，并且 `gain ≥ 0`。
+
+退步率、成本项、完整性不变；有确认读数时，确认读数单独也要满足所选的那一条（严格的按 `min_gain`，部分得分的按 `partial_min_gain`）。收据的 `metrics` 多 `partial_gain`、`partial_interval`、`accepted_by`（"strict" | "partial"）；报告两者并列，对外主张仍只用严格口径。
+
 ## 6 final（V5）
 
 - `FinalPlan` 封存：任务 = 全部 test、`repeats`、臂（W0 与 W\*，可选 R1）、主张；臂名进每个 attempt id（即 session id），所以计划里 W\* 写作 `W_star`，不能进 attempt id 的臂名在构造时就拒绝；`seal` 写对象与事件，哈希由用户提交到 git（规则 6）。活动只在有装入（W\* ≠ W0）之后封存（ACTIVITY §4）。

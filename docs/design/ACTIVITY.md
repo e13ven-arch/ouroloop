@@ -100,6 +100,8 @@ def write_report(activity, report) -> dict   # 两次相同（确定性）
 
 `cycle --until` 保留：`baseline`、`library`、`round-K`；中间崩溃按 `Execution` 续跑。
 
+**gate 的节奏（2026-10-10 修订，IMPROVER §9.2）：** `cycle` 的耐心只数付过 gate 而没装入的轮；carry 轮（最优候选带到下一轮）不计。`schedule.rounds` 的上限 8；`improver.gate_every` 默认 2。报告的每轮一行多 `carried` 与 `in_sample` 的标注。
+
 ## 5 预算根与份额
 
 - 一个活动一个根（`budget.usd`）；final 份额在根打开时预留（`final_usd`）；每轮的研究份额按 K 的 `improver.round_share` 分配；超出的付费步骤不开始。

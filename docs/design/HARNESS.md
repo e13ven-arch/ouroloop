@@ -231,6 +231,14 @@ def upgrade(seed_dir: Path, new_source: Path, provenance: Provenance) -> list[st
 
 种子的写入守卫（DESIGN §4.2）：`ledger`（after_tool，记写操作、计划与读到的最新日期，第一次写之后不再读日期）、`triage`（before_tool，未调 `plan_changes` 的第一次写阻止一次）、`anchor`（before_model，读到日期后，在第一次知道这个日期的 act 调用末尾放一条日期注记，之后每次调用都把它留在原位；更新的日期另放一条；不改历史。注记不挪位置，所以每次调用的前段就是上一次调用，提供方的提示缓存能读到——v4 的读数下挪到末尾会让每次尝试的成本约 ×3.5）、`verify`（on_finish，第一次 finish 退回一次，列出计划、台账与排除项）。种子测试里的示例日期不取任何 train 题的值（smoke 的种子全量字面量扫描会查）。
 
+### 7.1 日期锚的规则（2026-10-10 修订）
+
+finance-v2 的 27 道 train 失败里 5 道是 real_date，三道的锚点本身就是真实日期：QuickBooks 的 `MetaData.CreateTime` / `LastUpdatedTime`、Xero 的 `UpdatedDateUTC` 由模拟世界用真实时钟盖章，锚取"读到的最新日期"就取到了它们。规则改为：
+
+1. **系统盖章的字段不算日期**：字段名含 create / created / updated / modified / last_updated / edited / meta / internal / sync 一类词的，是记录系统的审计时间，不是业务日期（同时去掉 DATE_WORDS 里的 created）。
+2. **等于或晚于 worker 当日的日期不算**：数据里不可能有"今天"或未来的业务日期，只有时钟能产生它；生产里今天就是真实日期，少这一个锚点不损失什么。
+3. **写之后仍然读日期**，只是写调用自己的结果不读（原来第一次写之后就不再读，ap_aging_report 的首个动作是建草稿，锚从未出现）。
+
 ## 8 不变量
 
 - 包 ref 覆盖全部字节；任何文件变即新 ref。

@@ -28,6 +28,7 @@ class Settings:
     screen_max_sample_regressions: int = 1; thin_screen_tasks: int = 3
     removal_zero_credit_rounds: int = 3
     holdout_share: float = 0.4                  # 留出的 train 题：R 看不到，V3 只在这里筛
+    gate_every: int = 2                          # 每几轮付一次 gate：其余轮的最优候选先带着（carry），下一次 gate 一起评
     round_share: float = 0.25                    # 每轮研究份额占根的比例上限（一轮的账户就是这么大）
 ```
 
@@ -51,7 +52,7 @@ def run_round(activity, index: int, *, out) -> RoundResult
 - **续跑**：会话一结束，它的声明与文件就记进 `round.json`（`session_result`），之后断了只重验、不重付会话；这一轮自己的装入移动了活跃 release（`install:<round_id>` 的收据是 installed）而 gated 一步还没保存时照常续跑（gate 从记录重放、装入重放是空操作）；台账行在一轮里按内容去重，续跑写同一行拿到记录里那一行。
 - 一轮的花费记在 `<scope>:round-<i>` 账户（上限 `round_share × [budget] usd`），下分 `measure`、`diagnose`、`session`、`screen`、`gate`、`policy` 子账户，报告按它们单列。
 
-`cycle --until round-K` 依次跑第 0～K 轮；连续 `schedule.patience` 轮没有装入就停。
+`cycle --until round-K` 依次跑第 0～K 轮；连续 `schedule.patience` 个付过 gate 的轮没有装入就停（carry 轮不计，§9.2）。
 
 ## 4 证据（`runtime/trace.py` + `improver/evidence.py`）
 
@@ -143,6 +144,16 @@ TOOLS = ("list_files", "read_file", "write_file", "edit_file", "delete_file", "r
 - 诊断与剧本的回复被拒、被截断或读不出 JSON：不算答案，不进缓存（诊断记 other 并注明，下一轮再问）；剧本保留原有的教训。
 - 提示文本在 `improver/prompts/{diagnose,propose,playbook}.md`，哈希进 `ImproverPolicy`。
 
+### 7.1 组合候选（2026-10-10 修订）
+
+finance-v2 的两轮里 R 每个候选只改一种组件（一个工具、一个技能），每个只动 2～3 道题，到 dev 增益为 0。一个机制常常要几个载体一起才起作用：一个工具、一个在该用它的步骤上提醒或强制调用它的 hook、一条说明何时用它的技能。所以：
+
+- 一个候选仍是**一个机制**，但可以带多种组件：`kind` 是指派的主类型（tool / hook / skill / prompt），其余是辅助组件，只能是 tool、hook、skill、prompt 四类；agent、config、vendor 仍各自单独成候选。
+- V0 的声明检查：主类型的组件必须存在（名字或站点对得上）；辅助组件记进 `Verdict` 与台账的 `kinds`。
+- 阶梯按**出现的组件类型取并集**：有 tool 就跑 V2a，有 hook 就跑 V2b，有 skill 就跑 V2c；主类型的档必须过，辅助类型的档也必须过（一个不触发的 hook、一条够不着的技能不该进包）。
+- V3 的条件记功按候选改动的全部 tool / hook / skill 组件取并集：任一组件在该题留下足迹即算条件修复；估值仍按主类型更新。
+- 提示词相应改：一个机制可以带几个载体，但不要把两个机制塞进一个候选。
+
 ## 8 验收阶梯（`verify/`）
 
 ```python
@@ -159,6 +170,15 @@ def run_ladder(files, decl, *, ctx: VerifyContext) -> Verdict
 - **V2a toolcheck**（`verify/toolcheck.py`）：声明里每道声称的、当前 W 失败的研究部分 train 题的脚本（别的题的脚本不算通过）：该题新 episode → worker 装候选 → `check` op（世界经可写 broker）→ `episode.score()`；要求脚本调用了 site 指的工具，通过 ≥ `toolcheck_min_pass` 道。只回传 `{task_id: {passed, failed_kinds}}`，不回传断言参数。
 - **V2b 回放**（`verify/replay.py`）：从 transcript 重建站点事件，形状与 stirrup 种子交给 hook 的一致——`before_run`（任务、system）、`before_model`（每次 act 调用的 messages 与工具）、`before_tool` / `after_tool`（每个非 finish 的工具调用与它的结果；被阻止或跳过的没有 after_tool）、`after_turn`（一个回合的结果，`call_id`、输出截到 4000 字）、`on_finish`（reason 为 finish 或 implicit，final_text 是 finish 的理由，pushbacks 是此前的退回次数；连续纯文字回复变成的隐式 finish 也在）——按 manifest 顺序，同一站点上排在候选前面、在记录里阻止了这一次调用（before_tool 的 block）或退回了这一次 finish（on_finish 的 pushback）的 hook 先答，候选不会被问到，这个事件不给它；逐个经 `hook` op 调候选在该站点的 hook；返回非 none 的 action 算触发；声称的失败题（研究部分）上触发 ≥ `replay_min_triggers` 道；报告研究部分通过样本上的误触发率。
 - **V2c 可达**（`verify/reach.py`）：技能的名字与描述对 train 题文本的相似度 ≥ `reach_min_score` 的题，除去 `predicted_affected`，≥ `reach_min_tasks` 道。向量：确定的词袋向量（`lexical_embed`），`reach_min_score` 按它校准；不用 sidecar 的 bge-small（它给无关文本 0.5 以上，0.2 会放过一切描述）。
+
+### 8.1 V2a 的两种证明：脚本与探针（2026-10-10 修订）
+
+finance-v2 里 R 两轮都没为 arith_mismatch 写工具：V2a 要求脚本把整道题做完才算过，对计算、比对一类的工具门槛过高。改为两种证明，任一种够 `toolcheck_min_pass` 道题即过：
+
+- **脚本**（原样）：`scripts[task_id]` 做完整道题，世界按真实断言评分，须调用了声明的工具。这是强证明。
+- **探针**（新）：`probes[task_id] = [{"args": {...}, "expect": "<子串或 null>"}, ...]`。宿主在该题的新世界里装载候选，对每个探针调用一次声明的工具（经可写 broker，世界用完即弃），要求没有 `is_error`、输出含 `expect`（给了的话）。这证明工具在真实世界的接口上能跑、输出对得上 R 从轨迹里抽出的输入；它不证明用它能做完任务，那是 V3 的事。
+- 一道题两种都给时以脚本为准；回传给 R 的仍只有通过与否、失败断言的类别和探针的错误文本（截断）。
+- `Declaration` 多一个 `probes` 字段；V0 校验形状（args 是对象，expect 是字符串或 null）。
 
 ## 9 筛选 V3（`screen.py`）与 gate V4
 
@@ -177,6 +197,23 @@ def gate(activity, candidate_package_ref, *, round_id, account) -> dict         
 - 付诸任何研究调用之前（诊断之前）先核一个下限：gate、一次小筛选（通过样本加 `thin_screen_tasks` 道失败题）与将要付的研究（每个案例一次诊断、每回合一次会话，按活动里研究调用的均价；还没有记录时不算）的价，加下面的余量，放不进本轮的余额 → 停在 `budget`，不付诊断与会话；没有成本读数 → 停在 `unpriced`。
 - 付费之前逐个核价：筛选按 R 的候选（声明顺序）、固定代码的候选、库快照（它声称所有失败题）最后的顺序，一个个加进来，只要已加的筛选、它自己与 gate 放得进余额就收下；放不下的记台账 `screened`（outcome not_run，原因 budget），一个都放不下才停在 `budget`。价＝还没记录的筛选尝试数（续跑时已付的不再算）× W_base 的 train 每次尝试成本，加 gate 的界（dev 题数 ×（1 + 确认次数）+ 对照池的缺口，`evaluate.gate.shortfall`）× W_base 的 dev 每次尝试成本，乘以 1.15 再加两次调用的上界，要放得进本轮账户的余额（每次调用都按上界预留，所以一轮永远花不到最后一个上界；两个上界让最后一臂不至于串行）；没有成本读数就无法核价，不开始。gate 开跑之前按胜者的筛选成本再核一次 gate 的价，放不下就停在 `budget`，不付一个跑不完的 gate；也再读一次 claude CLI 的版本，与活动记下的不同就停在 `cli`。记功一步对新 W 的 train 重读不在筛选的价里（只在装入后才付）：预算拒掉它时装入照常，这次装入不记功（台账 credited 写明 not credited），下一轮照常量新 W。
 - V4：冻结的 gate 模板（`gate_template` 事件）填上候选包、对照包、父 release，经 `evaluate.gate.evaluate_task`；对照池是 W_base 在 dev 上同条件的有效读数（role `base` 或 `control`；基线的读数在里面；装入之后新 W 在 dev 上的读数是它那次 gate 的被测臂，不进池，所以它的第一次 gate 要补满对照），补缺口的 run 是这一次 gate 的（候选名 `control:<W 短 ref>:<round_id>`，一次被拒的补读下次 gate 重读）；被测臂 `run_arm(package=候选, split="dev", role="subject")`。收据登记后若 accepted：`Releases.candidate` → `install(..., operation_id=f"install:{round_id}")`（与 Execution 的操作 id 不同名，避免读到别人的记录）。
+
+### 9.1 留出部分为空的 cause（2026-10-10 修订）
+
+整族留出后，一个 cause 的题可能全在研究部分（finance-v2 的 real_date：研究 5 / 留出 0）。原规则不分配它，于是最可机械化的 cause 永远分不到名额。改为：研究部分 ≥ max(`toolcheck_min_pass`, `replay_min_triggers`) 道题即可分配；留出部分为空时，V3 的失败集退回研究部分里声称且仍失败的题，`ScreenResult.in_sample = true`，台账与报告标明"样本内"；资格规则不变，gate 仍是裁决。
+
+### 9.2 gate 的节奏：carry 与 `gate_every`（2026-10-10 修订）
+
+每轮一次 25 题 dev gate，噪声约 ±2 题，一个只动 1～2 题的组件单独过不了，几个这样的组件也就永远累积不起来。改为每 `gate_every` 轮付一次 gate：
+
+- **carry 轮**（`(i + 1) % gate_every != 0`）：V3 筛出的最优候选不付 gate，记为带着的包（`rounds/carry.json`：`package_ref`、`dirs`、`since`），台账 `carried`。下一轮的 R 从带着的包起（它的 train 读数在下一轮的 measure 里补，所以诊断看到的是带着的包的失败），对照仍是主线 W0 的池化读数。
+- **gate 轮**：本轮的最优候选（已经含带着的改动）付 gate；本轮没有候选而有带着的包时，gate 带着的包本身。accepted 即装入整个累积的包并清空 carry；rejected 则清空 carry（台账 `carry_dropped`），下一轮从主线重来。
+- `schedule.patience` 只数**付过 gate 而没装入**的轮；carry 轮不计。`schedule.rounds` 的 preset 上限从 3 放到 8。
+- 代价：carry 轮省下 gate（约 $21），多付带着的包的 train 读数（约 $25），一轮花费大致不变。
+
+### 9.3 部分得分进 gate（2026-10-10 修订）
+
+严格通过率是任务级 0/1，25 题的分辨率是 4 个点；部分得分（通过的断言比例）是连续的，同一次读数的功效高一个量级。gate 同时报两者，接受规则二选一（EVALUATE §5.1）：严格增益 ≥ `min_gain`（原规则），或部分得分的配对增益 ≥ `partial_min_gain` 且其区间不含 0、严格增益 ≥ 0、退步率与成本项照旧；确认读数单独也要满足所选的那条。对外的 C1 仍按严格口径，部分得分并列披露。
 
 ## 10 档案、记功、台账、策略、固定候选
 
