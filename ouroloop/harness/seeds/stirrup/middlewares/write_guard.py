@@ -4,7 +4,7 @@
                           ctx.view["events"] (the broker's recent calls, a package tool's own included): every write —
                           a fetch whose method is neither GET nor HEAD and whose route is not a search (READ_POST) —
                           with its method, URL, status and the first LEDGER_BODY_CHARS of its body; the latest
-                          plan_changes arguments; and, until the first write, the newest date in what was read.
+                          plan_changes arguments; and the newest date in what was read (never a write's own result).
   triage  (before_tool)   the first write of the attempt, when plan_changes has not been called, is blocked once with
                           TRIAGE_MESSAGE.
   anchor  (before_model)  once a date has been read, every act call is sent with DATE_MESSAGE as a note at the place
@@ -18,10 +18,13 @@
 
 The date anchor (failure cause #8: the claude_code CLI tells the model the real date, the sandbox's data is months
 earlier, and 76 of 103 attempts that wrote the real date failed). DATE_MESSAGE names the newest date the agent read as
-the earliest the task's "today" can be. Dates are read only until the first write, never from a write's own result:
-the benchmark's world stamps a record it creates with the real clock, so a date read after a write may be the real one.
-A date is a value whose field name has a word of DATE_WORDS and whose field — or any object it sits in (`start` of
-`{"start": {"dateTime": ...}}`) — has no word of NOT_TODAY: a planned, due or scheduled time is not "today".
+the earliest the task's "today" can be. A date is a value whose field name has a word of DATE_WORDS and whose field —
+or any object it sits in (`start` of `{"start": {"dateTime": ...}}`) — has no word of NOT_TODAY (a planned, due or
+scheduled time is not "today") and no word of SYSTEM_WORDS (a record system's audit stamp — QuickBooks' MetaData,
+Xero's UpdatedDateUTC — is the clock's, not the data's: finance-v2's three anchored real_date failures all read one
+of those). A date on or after the worker's own day is the clock's too and is never taken: the data cannot hold today
+(docs/design/HARNESS.md §7.1). Dates are read from every read result, before and after the first write; a write's
+own result is never read (the world stamps what the agent creates with the real clock).
 
 Ported from StarHarness's triage before the first write and SWE-agent's review_on_submit. The ledger is accumulated at
 every after_tool because the view keeps only the latest 20 broker events and a hook sees 4,000 characters of a result.
@@ -60,7 +63,12 @@ EMPTY_LEDGER = "no change was made; if the request asks for one, make it"
 # names of planned times, and are what the guard uses.
 DATE_WORDS_42 = {"date", "sent", "created", "ts", "timestamp"}
 NOT_TODAY_42 = {"due", "expires", "end"}
-DATE_WORDS = DATE_WORDS_42 | {"time", "datetime", "received", "updated", "modified"}
+DATE_WORDS = DATE_WORDS_42 | {"time", "datetime", "received"}
+# A record system's own stamps: set by the system's clock when a record is made or touched, so in a simulated world
+# they carry the real date (HARNESS §7.1). `created` is kept as a business date on its own (a ticket's created date),
+# but any such field under a `MetaData`-like object is the stamp's.
+SYSTEM_WORDS = {"meta", "metadata", "updated", "modified", "edited", "lastupdated", "lastmodified", "lastedited",
+                "sync", "synced", "indexed", "audit"}
 NOT_TODAY = NOT_TODAY_42 | {"expire", "expiry", "expiration", "ends", "until", "deadline", "scheduled", "start",
                             "starts", "next", "renewal", "renews", "close", "closing", "publish", "planned", "target",
                             "expected", "estimated", "eta", "effective", "remind", "reminder", "follow", "followup",
@@ -79,7 +87,7 @@ def reset() -> None:
     """A fresh attempt's state (the module is loaded once per attempt; tests call this between cases)."""
     STATE.clear()
     STATE.update({"writes": {}, "order": [], "seen": set(), "plan": None, "date": None, "triaged": False,
-                  "verified": False, "own": 0, "anchored": None, "notes": {}})
+                  "verified": False, "own": 0, "anchored": None, "notes": {}, "today": None})
 
 
 reset()
@@ -106,9 +114,9 @@ def _date_of(key: str, text, number, *, within=(), words_of=DATE_WORDS, not_toda
     """The day a field holds, when its name says it is a record's time: `key` the field, `within` the keys of the
     objects it sits in (outermost first)."""
     words = _words(key)
-    if not words or not_today & set(words):
+    if not words or not_today & set(words) or SYSTEM_WORDS & set(words):
         return None
-    if any(not_today & set(_words(k)) for k in within):
+    if any((not_today | SYSTEM_WORDS) & set(_words(k)) for k in within):
         return None
     joined = "".join(words)
     if not (words_of & set(words) or joined in words_of or (words[-1] == "at" and len(words) > 1)):
@@ -140,7 +148,13 @@ def _date_of(key: str, text, number, *, within=(), words_of=DATE_WORDS, not_toda
             return None
     if day is None or not 2000 <= day.year <= 2100:
         return None
+    if day >= _today():                 # the clock's, not the data's (HARNESS §7.1)
+        return None
     return day.isoformat()
+
+
+def _today() -> datetime.date:
+    return STATE.get("today") or datetime.date.today()
 
 
 def _string(tok: str):
@@ -201,9 +215,7 @@ def newest_date(text, *, words=DATE_WORDS, not_today=NOT_TODAY, nested=True) -> 
 
 
 def _note_date(text) -> None:
-    """A date read before the first write; after it, a date may be the real clock's (see the module's docstring)."""
-    if STATE["order"]:
-        return
+    """The newest date in a read result (a write's own result never comes here; see the module's docstring)."""
     found = newest_date(text)
     if found is not None and (STATE["date"] is None or found[0] > STATE["date"][0]):
         STATE["date"] = found
@@ -257,8 +269,7 @@ def ledger(ctx, event):
         _record(f"{tool}:{event.get('turn')}:{STATE['own']}", tool, args,
                 str(event.get("output") or "")[:80] if event.get("is_error") else "")
     if not is_write(tool, args):
-        # this call's result, unless it or a broker call inside it (a package tool's) wrote: _note_date reads nothing
-        # once the ledger holds a write
+        # this call's result (a write's own result is never read: the world stamps what the agent makes)
         _note_date(event.get("output"))
     return None
 

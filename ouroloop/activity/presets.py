@@ -49,8 +49,12 @@ AUTOMATIONBENCH_V1 = {
     "improver": improver_preset(),         # improver/settings.py: the priors from what was measured
     "gate": {"min_gain": 0.05, "min_groups": 5, "min_tasks": 25, "max_regression_rate": 0.1, "regression_drop": 0.5,
              "confirmations": 1, "control_pooling": "pooled", "control_readings": 2, "repeats": 1, "order_seed": 0,
-             "missing_cost_policy": "refuse", "max_infrastructure_retries": 1},
-    "schedule": {"rounds": 3, "patience": 2, "max_infrastructure_failures": 2},
+             "missing_cost_policy": "refuse", "max_infrastructure_retries": 1,
+             # EVALUATE §5.1: the partial-credit rule beside the strict one (finance-v2: 25 dev tasks resolve the
+             # strict rate in steps of 4 points; the partial credit is continuous)
+             "partial_min_gain": 0.03},
+    # IMPROVER §9.2: up to 8 rounds, a gate every improver.gate_every of them; the patience counts gate rounds
+    "schedule": {"rounds": 8, "patience": 2, "max_infrastructure_failures": 2},
     "budget": {"usd": None, "final_usd": None},
     "final": {"tasks": "test", "repeats": 3, "claims": ["C1"]},
 }
@@ -83,7 +87,7 @@ RULES = {
     "gate": {"min_gain": "floor", "min_groups": "floor", "min_tasks": "floor", "max_regression_rate": "cap",
              "regression_drop": "cap", "confirmations": "floor", "control_pooling": "fixed",
              "control_readings": "floor", "repeats": "floor", "order_seed": "free", "missing_cost_policy": "fixed",
-             "max_infrastructure_retries": "cap"},
+             "max_infrastructure_retries": "cap", "partial_min_gain": "floor"},
     "schedule": {"rounds": "cap", "patience": "cap", "max_infrastructure_failures": "cap"},
     "budget": {"usd": "free", "final_usd": "free"},
     "final": {"tasks": "fixed", "repeats": "floor", "claims": "free"},

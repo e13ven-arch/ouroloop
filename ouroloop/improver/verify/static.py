@@ -22,6 +22,7 @@ FORBIDDEN_PREFIXES = ("os.exec", "os.spawn")         # os.execv, os.spawnl, ...
 # a candidate's code reaches the world through ctx.tool only; the egress tool of the seed (agent/http_fetch.py) is the
 # package's own and stays as it is
 EXTRA_KINDS = ("test",)               # what any candidate may change besides its declared kind
+SUPPORT_KINDS = ("tool", "hook", "skill", "prompt")   # a mechanism's carriers may travel together (IMPROVER §7.1)
 
 
 def _reaches(text: str, path: str) -> list[tuple[int, str]]:
@@ -93,10 +94,13 @@ def declaration_problems(decl, comps: list[dict], *, train_tasks, study_tasks=()
                        f"{sorted(c['name'] for c in mine)}")
         if decl.kind == "prompt" and decl.site and not any(c["name"] == decl.site for c in mine):
             out.append(f"a prompt candidate's site is system or finish, the file it changes")
-    extra = sorted(kinds - {decl.kind} - set(EXTRA_KINDS) - ({"tool", "hook", "skill"} if decl.kind == "removal"
-                                                             else set()))
+    extra = set(kinds) - {decl.kind} - set(EXTRA_KINDS) - ({"tool", "hook", "skill"} if decl.kind == "removal"
+                                                            else set())
+    if decl.kind in SUPPORT_KINDS:
+        extra -= set(SUPPORT_KINDS)       # one mechanism's supporting components travel with it (IMPROVER §7.1)
     if extra and not decl.fixed:
-        out.append(f"the files also change {extra}: one candidate is one kind of change (declare another candidate)")
+        out.append(f"the files also change {sorted(extra)}: the agent, config, a vendored package, the memory or the "
+                   f"model is a candidate of its own (declare another candidate)")
     if not decl.fixed:
         studied = set(study_tasks or train_tasks)
         outside = sorted(set(decl.predicted_affected) - studied)

@@ -3,11 +3,12 @@ the rung below passed. V0 static, V1 unit (the package's tests, probe and smoke 
 replay, V2c reach. V3 (the paid train screen) and V4 (the dev gate) are screen.py's."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from ...contracts import Record, register
 from ..declaration import Declaration
 
+SUPPORT = {"tool": "V2a", "hook": "V2b", "skill": "V2c"}     # a supporting component's own rung (IMPROVER §7.1)
 LADDERS = {"tool": ("V0", "V1", "V2a"), "hook": ("V0", "V1", "V2b"), "skill": ("V0", "V2c"), "prompt": ("V0",),
            "agent": ("V0", "V1"), "vendor": ("V0", "V1"), "config": ("V0", "V1"), "memory": ("V0",),
            "removal": ("V0",), "test": ("V0",)}
@@ -63,18 +64,43 @@ class VerifyContext:
     cause_ids: tuple = ()           # the causes this round assigned: a declaration names one of them
 
 
+def supporting(files: dict[str, str], decl: Declaration, ctx: VerifyContext) -> list[tuple[str, Declaration]]:
+    """(rung key, shadow declaration) for every supporting tool, hook or skill a candidate carries beside its declared
+    component (IMPROVER §7.1): each climbs its own rung under a declaration that names it, keyed `V2x@<name>`."""
+    if decl.fixed or decl.kind not in ("tool", "hook", "skill", "prompt"):
+        return []
+    from ..components import components
+    out = []
+    for c in components(ctx.parent, files):
+        if c["kind"] not in SUPPORT or c.get("change") == "deleted":
+            continue
+        own = c["kind"] == decl.kind and (c.get("site") == decl.site if c["kind"] == "hook" else c["name"] == decl.site)
+        if own:
+            continue
+        site = c.get("site") if c["kind"] == "hook" else c["name"]
+        out.append((f"{SUPPORT[c['kind']]}@{c['name']}", replace(decl, kind=c["kind"], site=site)))
+    return out
+
+
 def run_ladder(files: dict[str, str], decl: Declaration, ctx: VerifyContext, *, rungs: tuple | None = None) -> Verdict:
-    """Every rung of the candidate's kind in order; a failed rung ends the climb (the rest are not run)."""
+    """Every rung of the candidate's kind in order, then the rung of each supporting component it carries; a failed
+    rung ends the climb (the rest are not run)."""
     from .reach import reach_check
     from .replay import replay_check
     from .static import static_check
     from .toolcheck import toolcheck
     from .unit import unit_check
     run = {"V0": static_check, "V1": unit_check, "V2a": toolcheck, "V2b": replay_check, "V2c": reach_check}
+    plan = [(r, r, decl) for r in (rungs or ladder_for(decl.kind))]
+    if rungs is None:
+        extras = supporting(files, decl, ctx)
+        if extras and "V1" not in {p[0] for p in plan} and any(k.startswith(("V2a", "V2b")) for k, _ in extras):
+            plan.insert(1, ("V1", "V1", decl))                 # code travels with a text candidate: its tests, probe, smoke
+        plan += [(key, key.partition("@")[0], d) for key, d in extras]
     steps: dict = {}
-    for rung in rungs or ladder_for(decl.kind):
-        result = run[rung](files, decl, ctx)
-        steps[rung] = result
+    for key, rung, d in plan:
+        result = run[rung](files, d, ctx)
+        steps[key] = result
         if not result.get("passed"):
             break
     return Verdict(dir=decl.dir, steps=steps)

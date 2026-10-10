@@ -39,6 +39,9 @@ class GatePlan(Record):
         cost_beta0/1         the candidate's cost per attempt may exceed the control's by beta0 + beta1 × gain;
                              None: no cost term
         min_tasks            a plan with fewer tasks is refused at freeze; None: no least count
+        partial_min_gain     EVALUATE §5.1: a candidate whose strict gain is below min_gain is still accepted when its
+                             partial-credit gain reaches this, with an interval above zero, and its strict gain is
+                             not below zero; None: the strict rule alone
     """
     TYPE = "gateplan"
     min_groups: int = 3
@@ -52,6 +55,7 @@ class GatePlan(Record):
     cost_beta0: float | None = None
     cost_beta1: float | None = None
     min_tasks: int | None = None
+    partial_min_gain: float | None = None
 
     def __post_init__(self) -> None:
         if self.missing_cost_policy not in MISSING_COST:
@@ -69,6 +73,9 @@ class GatePlan(Record):
             raise ContractError("cost_beta0 and cost_beta1 are allowances, not below zero")
         if self.min_tasks is not None and int(self.min_tasks) < 1:
             raise ContractError("min_tasks is a count of tasks, at least 1; leave it out for no least count")
+        if self.partial_min_gain is not None and not 0 < float(self.partial_min_gain) < 1:
+            raise ContractError("partial_min_gain is a partial-credit gain strictly inside (0, 1); leave it out for "
+                                "the strict rule alone")
 
     @property
     def cost_term(self) -> bool:
@@ -78,7 +85,7 @@ class GatePlan(Record):
         return {k: v for k, v in super().to_json().items() if not (k in OPTIONAL_GATE_FIELDS and v is None)}
 
 
-OPTIONAL_GATE_FIELDS = ("regression_drop", "cost_beta0", "cost_beta1", "min_tasks")
+OPTIONAL_GATE_FIELDS = ("regression_drop", "cost_beta0", "cost_beta1", "min_tasks", "partial_min_gain")
 
 
 @register
@@ -332,6 +339,9 @@ def judge(plan: TaskEvalPlan, subject: list[TaskResult], control: list[TaskResul
                                replicates=gate.bootstrap_replicates, confidence=gate.confidence_level)
     cost = paired_bootstrap(s_cost, c_cost, families, seed=gate.bootstrap_seed,
                             replicates=gate.bootstrap_replicates, confidence=gate.confidence_level)
+    s_partial, c_partial = per_task(candidate, metric="partial_credit"), per_task(control, metric="partial_credit")
+    partial = paired_bootstrap(s_partial, c_partial, families, seed=gate.bootstrap_seed,
+                               replicates=gate.bootstrap_replicates, confidence=gate.confidence_level)
     regressions = regression_rate(s_tasks, c_tasks, gate.regression_drop)
     s_attempt, s_unpriced = cost_per_attempt(candidate)
     c_attempt, c_unpriced = cost_per_attempt(control)
@@ -341,6 +351,9 @@ def judge(plan: TaskEvalPlan, subject: list[TaskResult], control: list[TaskResul
                "control_partial_credit": (round(sum(per_task(control, metric="partial_credit").values())
                                                 / max(len(c_tasks), 1), 6) if c_tasks else None),
                "gain": quality["point"], "regression_rate": regressions,
+               # EVALUATE §5.1: the partial-credit gain beside the strict one, whichever rule the plan judges by
+               "partial_gain": partial["point"], "partial_interval": [partial.get("low"), partial.get("high")],
+               "accepted_by": None,
                # Each task the rate counted, with both arms' means: a regression within the frozen limit stays on
                # record, not only in a count (ER6-13). These are dev task ids, so the experience log leaves the
                # key out and no step of R reads it (IMPROVER §11).
@@ -359,12 +372,14 @@ def judge(plan: TaskEvalPlan, subject: list[TaskResult], control: list[TaskResul
                "control_readings": len({r.run for r in control if r.validity == "valid"}),
                "control_attempt_refs": sorted(r.attempt_id for r in control if r.validity == "valid" and r.attempt_id),
                "readings": 1 + plan.confirmations if confirmation is not None else 1}
-    confirmation_gain = None
+    confirmation_gain = confirmation_partial = None
     if confirmation is not None:
         confirmation_gain = paired_point(per_task(confirmation), c_tasks)
+        confirmation_partial = paired_point(per_task(confirmation, metric="partial_credit"), c_partial)
         metrics["confirmation_gain"] = confirmation_gain
+        metrics["confirmation_partial_gain"] = confirmation_partial
         metrics["first_reading"] = dict(first or {})
-    uncertainty = {"quality": quality, "cost": cost,
+    uncertainty = {"quality": quality, "cost": cost, "partial": partial,
                    # Said plainly so nothing downstream has to infer it (ER-04).
                    "significant": bool(quality.get("excludes_zero") and quality.get("reliable")),
                    "note": "a development interval describes this comparison; a formal claim needs the locked "
@@ -372,8 +387,21 @@ def judge(plan: TaskEvalPlan, subject: list[TaskResult], control: list[TaskResul
     if verdict:
         return verdict, reasons, metrics, uncertainty
     notes: list[str] = []
-    if quality["point"] < gate.min_gain:
-        reasons.append(f"gain {quality['point']} below the plan's min_gain {gate.min_gain}")
+    # EVALUATE §5.1: the strict rule, or — when the plan sets partial_min_gain — the partial-credit rule, each with its
+    # own confirmation clause; whichever the candidate clears names the acceptance
+    strict_ok = quality["point"] >= gate.min_gain and (
+        confirmation is None or (confirmation_gain is not None and confirmation_gain >= gate.min_gain))
+    partial_ok = gate.partial_min_gain is not None and partial["point"] is not None \
+        and partial["point"] >= float(gate.partial_min_gain) and bool(partial.get("excludes_zero")) \
+        and bool(partial.get("reliable")) and quality["point"] >= 0 and (
+            confirmation is None or (confirmation_partial is not None
+                                     and confirmation_partial >= float(gate.partial_min_gain)))
+    if quality["point"] < gate.min_gain and not partial_ok:
+        reasons.append(f"gain {quality['point']} below the plan's min_gain {gate.min_gain}"
+                       + (f"; partial-credit gain {partial['point']} {metrics['partial_interval']} does not clear "
+                          f"partial_min_gain {gate.partial_min_gain} with an interval above zero"
+                          + (" and a strict gain of at least zero" if quality["point"] < 0 else "")
+                          if gate.partial_min_gain is not None else ""))
     if regressions > gate.max_regression_rate:
         reasons.append(f"regression rate {regressions} above {gate.max_regression_rate}")
     if gate.cost_term:
@@ -392,15 +420,23 @@ def judge(plan: TaskEvalPlan, subject: list[TaskResult], control: list[TaskResul
             if s_attempt > allowed + 1e-9:
                 reasons.append(f"cost per attempt {s_attempt} above the allowed {allowed} (control {c_attempt} × "
                                f"(1 + β0 {gate.cost_beta0} + β1 {gate.cost_beta1} × gain {quality['point']}))")
-    if confirmation is not None and (confirmation_gain is None or confirmation_gain < gate.min_gain):
+    if confirmation is not None and not strict_ok and not partial_ok \
+            and (confirmation_gain is None or confirmation_gain < gate.min_gain):
         # M3 §2.1(b), second version: the confirmation reading on its own clears min_gain too, whatever the
         # pooled estimate says. A second reading of an unchanged version sits at 0 against the pooled control
         # by expectation, so "≥ 0" constrained nothing (the replay accepted 4/20 same-version pairs); two
         # independent readings each at ≥ +0.05 happen by chance about once in twenty.
         reasons.append(f"the confirmation reading alone has gain {confirmation_gain}, below the plan's "
-                       f"min_gain {gate.min_gain}")
+                       f"min_gain {gate.min_gain}"
+                       + (f" (and its partial-credit gain {confirmation_partial} is below partial_min_gain "
+                          f"{gate.partial_min_gain})" if gate.partial_min_gain is not None else ""))
     if reasons:
         return "rejected", [*reasons, *notes], metrics, uncertainty
+    metrics["accepted_by"] = "strict" if strict_ok else "partial"
+    if not strict_ok:
+        notes.append(f"accepted by partial credit: gain {partial['point']} {metrics['partial_interval']} clears "
+                     f"partial_min_gain {gate.partial_min_gain} with an interval above zero, the strict gain "
+                     f"{quality['point']} is not below zero")
     return "accepted", ["development acceptance: the gain clears the plan's threshold"
                         + (" on the first reading, on the confirmation reading alone and on the pool of both"
                            if confirmation is not None else "")

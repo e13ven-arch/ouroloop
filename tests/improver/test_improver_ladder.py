@@ -391,12 +391,15 @@ def test_v0_passes_a_site_that_is_the_changed_component(ctx, parent, kind, site,
     assert v0(build_files(parent), decl(kind, site), ctx) == {"passed": True, "detail": ""}
 
 
-def test_v0_refuses_extra_kinds_besides_the_declared_one_and_test(ctx, parent):
+def test_v0_takes_a_supporting_hook_with_a_tool_and_refuses_the_agent_or_config_beside_it(ctx, parent):
+    """IMPROVER §7.1: one mechanism's carriers (tool, hook, skill, prompt) travel together; the agent, config and the
+    vendored package are candidates of their own."""
     both = rewrite(with_tool(parent), lambda m: m["hooks"].append(dict(HOOK_ENTRY)),
                    {"middlewares/remind_ops.py": HOOK_CODE})
-    got = v0(both, tool_decl(), ctx)
-    assert not got["passed"]
-    assert "the files also change ['hook']" in got["detail"]
+    assert v0(both, tool_decl(), ctx) == {"passed": True, "detail": ""}
+    with_config = rewrite(with_tool(parent), lambda m: m["config"].update(max_turns=40))
+    got = v0(with_config, tool_decl(), ctx)
+    assert not got["passed"] and "the files also change ['config']" in got["detail"]
     test = "def test_phrase(ctx=None):\n    assert True\n"
     tested = with_tool(parent, add={"tests/test_notify.py": test},
                        change=lambda m: m["tests"].append("tests/test_notify.py"))
@@ -587,13 +590,15 @@ def direct_script(task_id: str) -> str:
 def test_v2a_passes_scripts_that_do_the_task_with_the_tool(ctx, parent):
     got = toolcheck(with_tool(parent), tool_decl(), ctx)
     assert got["passed"]
-    assert got["tasks"] == {t: {"passed": True, "called_tool": True, "failed_kinds": []} for t in FAILING}
+    assert got["tasks"] == {t: {"passed": True, "by": "script", "called_tool": True, "failed_kinds": []}
+                            for t in FAILING}
 
 
 def test_v2a_refuses_a_script_that_never_calls_the_tool(ctx, parent):
     got = toolcheck(with_tool(parent), tool_decl({t: direct_script(t) for t in FAILING}), ctx)
     assert not got["passed"]
-    assert got["tasks"] == {t: {"passed": False, "called_tool": False, "failed_kinds": []} for t in FAILING}
+    assert got["tasks"] == {t: {"passed": False, "by": "script", "called_tool": False, "failed_kinds": []}
+                            for t in FAILING}
     assert f"the script never called {TOOL}" in got["detail"]
 
 
@@ -622,8 +627,8 @@ def test_v2a_counts_only_claimed_train_tasks_the_current_w_fails(ctx, parent):
 def test_v2a_a_world_the_grader_fails_hands_back_the_assertion_types_only(ctx, parent):
     got = toolcheck(with_tool(parent), tool_decl({t: script_for(t, "all done") for t in FAILING}), ctx)
     assert not got["passed"]
-    assert got["tasks"] == {t: {"passed": False, "called_tool": True, "failed_kinds": ["slack_message_contains"]}
-                            for t in FAILING}
+    assert got["tasks"] == {t: {"passed": False, "by": "script", "called_tool": True,
+                                "failed_kinds": ["slack_message_contains"]} for t in FAILING}
     assert "stage updated" not in json.dumps(got)          # the grader's parameter never goes back to R
 
 
@@ -843,3 +848,65 @@ def test_verdict_passed_and_text():
     assert not Verdict(dir="d").passed()
     assert Verdict(dir="d").text() == "nothing checked"
     assert Verdict.from_json(json.loads(json.dumps(v.to_json()))) == v
+
+
+# ---------------------------------------------------------------------------- V2a by probes; composite candidates
+PROBES = {t: [{"args": {"phrase": "stage updated"}, "expect": "posted"}] for t in FAILING}
+
+
+def test_v2a_passes_by_probes_when_the_tool_runs_without_error_and_answers_what_is_expected(ctx, parent):
+    """IMPROVER §8.1: a probe calls the tool once on the claimed task's fresh world; no error and `expect` in the
+    output is the proof. No grader runs for a probe."""
+    got = toolcheck(with_tool(parent), tool_decl(scripts={}, probes=PROBES), ctx)
+    assert got["passed"], got["detail"]
+    assert got["tasks"] == {t: {"passed": True, "by": "probe", "called_tool": True, "probes": 1} for t in FAILING}
+    assert "passed by probe" in got["detail"]
+
+
+def test_v2a_a_probe_whose_expectation_the_output_lacks_or_that_the_tool_refuses_fails(ctx, parent):
+    lacking = {t: [{"args": {"phrase": "stage updated"}, "expect": "nothing of the kind"}] for t in FAILING}
+    got = toolcheck(with_tool(parent), tool_decl(scripts={}, probes=lacking), ctx)
+    assert not got["passed"]
+    assert all(r["by"] == "probe" and not r["passed"] and "the output lacks" in r["error"]
+               for r in got["tasks"].values())
+    refused = {t: [{"args": {"phrase": ""}, "expect": None}] for t in FAILING}     # the tool answers is_error
+    got = toolcheck(with_tool(parent), tool_decl(scripts={}, probes=refused), ctx)
+    assert not got["passed"] and all("answered an error" in r["error"] for r in got["tasks"].values())
+
+
+def test_v2a_judges_a_task_with_both_by_its_script_and_wants_one_proof_at_least(ctx, parent):
+    both = tool_decl(scripts={FAILING[0]: direct_script(FAILING[0])}, probes={FAILING[1]: PROBES[FAILING[1]]})
+    got = toolcheck(with_tool(parent), both, ctx)
+    assert got["tasks"][FAILING[0]]["by"] == "script" and not got["tasks"][FAILING[0]]["passed"]   # never calls it
+    assert got["tasks"][FAILING[1]]["by"] == "probe" and got["tasks"][FAILING[1]]["passed"]
+    assert not got["passed"]                       # one of two, below toolcheck_min_pass
+    neither = toolcheck(with_tool(parent), tool_decl(scripts={}), ctx)
+    assert not neither["passed"] and "a probe (declaration.probes) or a toolcheck script" in neither["detail"]
+
+
+def test_a_tool_candidate_with_a_supporting_hook_climbs_its_rung_and_the_hooks(ctx, parent):
+    """IMPROVER §7.1: one mechanism's carriers travel together; each supporting component climbs its own rung, keyed
+    by its name, and a candidate passes only when every rung passed."""
+    files = rewrite(with_tool(parent), lambda m: m["hooks"].append(dict(HOOK_ENTRY)),
+                    {"middlewares/remind_ops.py": HOOK_CODE})
+    verdict = run_ladder(files, tool_decl(), ctx)
+    assert list(verdict.steps) == ["V0", "V1", "V2a", "V2b@remind_ops"] and verdict.passed(), verdict.text()
+    assert verdict.steps["V2b@remind_ops"]["fired"] == list(FAILING)
+    inert = rewrite(with_tool(parent), lambda m: m["hooks"].append(dict(HOOK_ENTRY)),
+                    {"middlewares/remind_ops.py": "def remind(ctx, event):\n    return None\n"})
+    verdict = run_ladder(inert, tool_decl(), ctx)
+    assert list(verdict.steps) == ["V0", "V1", "V2a", "V2b@remind_ops"] and not verdict.passed()
+    assert not verdict.steps["V2b@remind_ops"]["passed"]
+
+
+def test_a_hook_candidate_carrying_a_tool_proves_the_tool_by_the_declarations_probes(ctx, parent):
+    files = rewrite(with_tool(parent), lambda m: m["hooks"].append(dict(HOOK_ENTRY)),
+                    {"middlewares/remind_ops.py": HOOK_CODE})
+    verdict = run_ladder(files, decl("hook", "on_finish", probes=PROBES), ctx)
+    assert list(verdict.steps) == ["V0", "V1", "V2b", f"V2a@{TOOL}"] and verdict.passed(), verdict.text()
+    assert all(r["by"] == "probe" for r in verdict.steps[f"V2a@{TOOL}"]["tasks"].values())
+    # a text candidate carrying code climbs V1 too (the code's tests, probe and smoke), before its own rung
+    prompted = rewrite(with_tool(parent), add={"prompt/system.md": parent.files["prompt/system.md"]
+                                                + "\nWhen a request asks for a message in #ops, post it.\n"})
+    verdict = run_ladder(prompted, decl("prompt", "system", probes=PROBES), ctx)
+    assert list(verdict.steps) == ["V0", "V1", f"V2a@{TOOL}"] and verdict.passed(), verdict.text()

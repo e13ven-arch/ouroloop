@@ -550,3 +550,66 @@ def test_a_rejected_first_reading_is_not_confirmed(tmp_path):
     assert arms == ["subject"] and told == []
     assert receipt.verdict == "rejected" and receipt.kind == "full" and receipt.metrics["readings"] == 1
     assert "first_reading" not in receipt.metrics
+
+
+# ---------------------------------------------------------------------------- partial credit (EVALUATE §5.1)
+def with_partial(result_rows: list[TaskResult], value: float) -> list[TaskResult]:
+    for r in result_rows:
+        r.partial_credit = value
+    return result_rows
+
+
+def test_a_strict_tie_with_a_clear_partial_credit_gain_is_accepted_by_partial_credit():
+    p = plan(gate=gate(partial_min_gain=0.1))
+    none = dict.fromkeys(TASKS, False)
+    verdict, reasons, metrics, uncertainty = judge(p, with_partial(rows(p, none), 0.9),
+                                                   with_partial(rows(p, none), 0.5), FAMILIES)
+    assert verdict == "accepted" and metrics["gain"] == 0.0 and metrics["accepted_by"] == "partial"
+    assert metrics["partial_gain"] == pytest.approx(0.4) and uncertainty["partial"]["excludes_zero"]
+    assert any("accepted by partial credit" in r for r in reasons)
+
+
+def test_partial_credit_never_accepts_a_strict_loss_and_needs_an_interval_above_zero():
+    p = plan(gate=gate(partial_min_gain=0.1))
+    loss = with_partial(rows(p, {"t1": False, "t2": False, "t3": False, "t4": False, "t5": False}), 0.9)
+    control = with_partial(rows(p, {"t1": True, "t2": False, "t3": False, "t4": False, "t5": False}), 0.5)
+    verdict, reasons, metrics, _ = judge(p, loss, control, FAMILIES)
+    assert verdict == "rejected" and metrics["accepted_by"] is None
+    assert "and a strict gain of at least zero" in reasons[0]
+    # the same partial gain on one family only: the interval reaches zero
+    mixed = with_partial(rows(p, dict.fromkeys(TASKS, False)), 0.5)
+    mixed[0].partial_credit = mixed[1].partial_credit = 0.9             # t1, t2: family f1
+    verdict, reasons, metrics, uncertainty = judge(p, mixed, with_partial(rows(p, dict.fromkeys(TASKS, False)), 0.5),
+                                                   FAMILIES)
+    assert verdict == "rejected" and not uncertainty["partial"]["excludes_zero"]
+    assert "does not clear partial_min_gain 0.1 with an interval above zero" in reasons[0]
+
+
+def test_without_partial_min_gain_the_strict_rule_alone_judges():
+    p = plan()
+    none = dict.fromkeys(TASKS, False)
+    verdict, reasons, metrics, _ = judge(p, with_partial(rows(p, none), 0.9), with_partial(rows(p, none), 0.5),
+                                         FAMILIES)
+    assert verdict == "rejected" and reasons == ["gain 0.0 below the plan's min_gain 0.05"]
+    assert metrics["partial_gain"] == pytest.approx(0.4) and metrics["accepted_by"] is None
+
+
+def test_the_confirmation_reading_must_clear_partial_min_gain_on_its_own_too():
+    p = plan(gate=gate(partial_min_gain=0.1))
+    none = dict.fromkeys(TASKS, False)
+    control = with_partial(rows(p, none), 0.5)
+    good = with_partial(rows(p, none), 0.9)
+    flat = with_partial(rows(p, none, attempt_suffix="#c"), 0.5)
+    verdict, reasons, metrics, _ = judge(p, good, control, FAMILIES, confirmation=flat)
+    assert verdict == "rejected" and metrics["confirmation_partial_gain"] == pytest.approx(0.0)
+    assert "its partial-credit gain 0.0 is below partial_min_gain 0.1" in reasons[-1]
+    again = with_partial(rows(p, none, attempt_suffix="#c"), 0.9)
+    verdict, _, metrics, _ = judge(p, good, control, FAMILIES, confirmation=again)
+    assert verdict == "accepted" and metrics["accepted_by"] == "partial"
+
+
+def test_partial_min_gain_is_a_share_inside_zero_and_one():
+    with pytest.raises(ContractError):
+        gate(partial_min_gain=1.5)
+    assert gate(partial_min_gain=0.03).to_json()["partial_min_gain"] == 0.03
+    assert "partial_min_gain" not in gate().to_json()

@@ -15,7 +15,7 @@ from ..contracts import append_jsonl, locked, now, read_jsonl
 
 STAGES = ("measured", "diagnosed", "allocated", "declared", "verified", "screened", "gated", "installed", "rejected",
           "credited", "removal_proposed", "no_code_candidate", "unused", "vocabulary_added", "l6_unavailable", "stopped",
-          "playbook")
+          "playbook", "carried", "carry_dropped")
 # What R reads of a row (the projection): train facts and counts. Anything else of a row stays with the host.
 TASK_LISTS = ("predicted_affected", "fixed", "regressed")       # the projected fields that name train tasks
 PROJECTED = ("id", "stage", "round_id", "candidate", "dir", "cause", "cause_id", "kind", "site", "trigger",

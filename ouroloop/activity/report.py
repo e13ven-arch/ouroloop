@@ -105,7 +105,7 @@ def rounds_report(activity) -> list[dict]:
             sc = ScreenResult.from_json(activity.objects.get(r["screen"]))
             screens.append({"dir": r["dir"], "outcome": sc.outcome, "fixed": len(sc.fixed),
                             "unconditioned": len(sc.unconditioned), "regressed": len(sc.regressed),
-                            "net_flips": sc.net_flips, "thin": sc.thin})
+                            "net_flips": sc.net_flips, "thin": sc.thin, **({"in_sample": True} if sc.in_sample else {})})
         gated = steps.get("gated") or None
         scope = f"{activity.scope_id}:round-{state['index']}"
         used = activity.budgets.usage(scope, book) if scope in book.get("scopes", {}) else {}
@@ -118,6 +118,7 @@ def rounds_report(activity) -> list[dict]:
                     "gate": None if gated is None else {k: gated.get(k) for k in ("verdict", "kind", "gain",
                                                                                    "fixed_count", "regressed_count")},
                     "installed": short(gated["installed"]) if gated and gated.get("installed") else None,
+                    "carried": short((steps.get("carried") or {}).get("package_ref")) if steps.get("carried") else None,
                     "spend": {k: round(v, 6) for k, v in used.items() if v}})
     return out
 
@@ -222,7 +223,8 @@ def render_markdown(report: dict) -> str:
             g = r["gate"]
             lines.append(f"  gate {r['best']}: {g['verdict']} ({g['kind']}), gain {g['gain']}, dev fixed "
                          f"{g['fixed_count']} broke {g['regressed_count']}"
-                         + (f"; installed {r['installed']}" if r["installed"] else ""))
+                         + (f"; installed {r['installed']}" if r["installed"] else "")
+                         + (f"; carried {r['carried']}" if r.get("carried") else ""))
         lines.append(f"  spend {r['spend']}")
     if not report["rounds"]:
         lines.append("- none run")

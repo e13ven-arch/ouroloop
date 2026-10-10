@@ -23,12 +23,14 @@ class Declaration(Record):
     trigger: str = ""                   # when it acts
     differs_from: tuple = ()            # ({ref, how}) of earlier candidates it is not a repeat of
     scripts: dict = field(default_factory=dict)     # task_id -> toolcheck script (tool candidates)
+    probes: dict = field(default_factory=dict)      # task_id -> [{args, expect}] tool probes (IMPROVER §8.1)
     fixed: str = ""                     # "" for R's; the fixed code's source otherwise (snapshot, promotion, removal)
 
     def __post_init__(self):
         object.__setattr__(self, "predicted_affected", tuple(self.predicted_affected or ()))
         object.__setattr__(self, "differs_from", tuple(dict(d) for d in self.differs_from or ()))
         object.__setattr__(self, "scripts", dict(self.scripts or {}))
+        object.__setattr__(self, "probes", {k: [dict(x) for x in v] for k, v in dict(self.probes or {}).items()})
 
 
 def read_declaration(raw, *, dirs, kinds_allowed) -> tuple[Declaration | None, str]:
@@ -50,6 +52,13 @@ def read_declaration(raw, *, dirs, kinds_allowed) -> tuple[Declaration | None, s
     scripts = raw.get("scripts") or {}
     if not isinstance(scripts, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in scripts.items()):
         return None, "scripts maps a train task id to a toolcheck script"
+    probes = raw.get("probes") or {}
+    if not isinstance(probes, dict) or not all(
+            isinstance(k, str) and isinstance(v, list) and v and all(
+                isinstance(x, dict) and isinstance(x.get("args"), dict)
+                and (x.get("expect") is None or isinstance(x.get("expect"), str)) for x in v)
+            for k, v in probes.items()):
+        return None, "probes maps a train task id to a list of {args: object, expect: string or null}"
     differs = raw.get("differs_from") or []
     if not isinstance(differs, list) or not all(isinstance(d, dict) and isinstance(d.get("ref"), str)
                                                 for d in differs):
@@ -58,4 +67,6 @@ def read_declaration(raw, *, dirs, kinds_allowed) -> tuple[Declaration | None, s
                        site=None if raw.get("site") in (None, "") else str(raw["site"]),
                        predicted_affected=tuple(predicted), trigger=str(raw["trigger"])[:500],
                        differs_from=tuple({"ref": d["ref"], "how": str(d.get("how") or "")[:500]} for d in differs),
-                       scripts={k: v for k, v in scripts.items()}), ""
+                       scripts={k: v for k, v in scripts.items()},
+                       probes={k: [{"args": dict(x["args"]), "expect": x.get("expect")} for x in v]
+                               for k, v in probes.items()}), ""

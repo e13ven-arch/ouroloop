@@ -181,7 +181,8 @@ def gate_template(activity) -> TaskEvalPlan:
     gate = GatePlan(min_groups=int(g["min_groups"]), min_gain=float(g["min_gain"]),
                     max_regression_rate=float(g["max_regression_rate"]), missing_cost_policy=g["missing_cost_policy"],
                     regression_drop=g.get("regression_drop"), cost_beta0=g.get("cost_beta0"),
-                    cost_beta1=g.get("cost_beta1"), min_tasks=g.get("min_tasks"))
+                    cost_beta1=g.get("cost_beta1"), min_tasks=g.get("min_tasks"),
+                    partial_min_gain=g.get("partial_min_gain"))
     tasks = tuple(activity.splits.ids("dev"))
     if gate.min_tasks is not None and len(tasks) < int(gate.min_tasks):
         raise ValueError(f"freeze refused: the gate runs {len(tasks)} dev tasks, fewer than its min_tasks "
@@ -579,11 +580,16 @@ def cycle(activity, *, until: str | None = None, out: Callable[[str], None] = pr
         key = f"round-{i}"
         if (state["steps"].get(key) or {}).get("status") not in ("done", "stopped"):
             result = round_(activity, i, out=out)
-            state["steps"][key] = {"status": result.status, "installed": result.installed, "stop": result.stop}
+            state["steps"][key] = {"status": result.status, "installed": result.installed, "stop": result.stop,
+                                   "gated": result.gated, "carried": result.carried}
             write_json(path, state)
             if result.status != "done" and result.stop and result.stop.startswith(("budget", "unpriced")):
                 return {**state, "status": "stopped", "at": key}
-        idle = 0 if state["steps"][key].get("installed") else idle + 1
+        # the patience counts gate rounds without an install; a carry round is not idle (IMPROVER §9.2)
+        if state["steps"][key].get("installed"):
+            idle = 0
+        elif state["steps"][key].get("gated") or not state["steps"][key].get("carried"):
+            idle += 1
         if until == key:
             return {**state, "status": "stopped", "at": key}
         if idle >= int(activity.k["schedule"]["patience"]):

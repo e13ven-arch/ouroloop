@@ -303,7 +303,8 @@ def test_under_the_cycle_the_code_slot_doubles_and_the_cycle_stops_after_patienc
     assert (cycle["status"], cycle["at"], cycle["reason"]) == ("stopped", f"round-{patience - 1}",
                                                                f"{patience} rounds without an install")
     assert [k for k in cycle["steps"] if k.startswith("round-")] == ["round-0", "round-1"]
-    assert cycle["steps"]["round-0"] == {"status": "stopped", "installed": None, "stop": idle.result.stop}
+    assert cycle["steps"]["round-0"] == {"status": "stopped", "installed": None, "stop": idle.result.stop,
+                                         "gated": False, "carried": None}
     assert not (a.root / "rounds" / "r2").exists()
     # round 1 reads round 0's no_code_candidate (its code slot is doubled) and the tool slot R left unused (an
     # observation of no fix: the exploration moves on to the hook)
@@ -726,3 +727,77 @@ def test_an_empty_assignment_is_unused_only_while_r_had_candidates_to_spare(held
     r.s = dataclasses.replace(r.s, k=3)
     r._unused([real, other], out)
     assert [(x["cause"], x["kind"]) for x in ledger_rows(held_out.a, "unused")] == [("wrong_target", "hook")]
+
+
+# ---------------------------------------------------------------------------- a cause with nothing held out (§9.1)
+def test_a_cause_with_studied_tasks_and_none_held_out_is_screened_in_sample(tmp_path, fake_upstream):
+    """IMPROVER §9.1: at a share of 0.2 the notify family (2 tasks) would overshoot and stays studied, so its cause
+    has nothing held out: it is assigned all the same, V3 screens on the studied tasks it claims, marked in sample,
+    and the gate decides."""
+    s = played(round_activity(tmp_path, fake_upstream, "tool", actor=Actor(), improver={"holdout_share": 0.2}))
+    (allocated,) = [x for x in ledger_rows(s.a) if x["stage"] == "allocated"]
+    assert [a["cause"] for a in allocated["assignments"]] == ["missed_action"]
+    assert allocated["in_sample"] == ["missed_action"] and "not_assigned" not in allocated
+    res = screen_of(s.a)
+    assert res.in_sample is True and sorted(res.failing) == list(NOTIFY) and res.outcome == "screened"
+    assert len(res.sample) == 1 and res.sample[0] not in NOTIFY             # the held-out passing task
+    (row,) = [x for x in ledger_rows(s.a, "screened") if x["round_id"] == ROUND]
+    assert row["in_sample"] is True and sorted(row["fixed"]) == list(NOTIFY)
+    assert s.result.installed and s.result.gated
+
+
+# ---------------------------------------------------------------------------- the gate's cadence (§9.2)
+@pytest.fixture(scope="module")
+def carry(tmp_path_factory, fake_upstream):
+    """A gate every two rounds: round 0 carries its best candidate, round 1 finds nothing left to fix on the carried
+    package and gates it."""
+    s = played(round_activity(tmp_path_factory.mktemp("carry"), fake_upstream, "tool", actor=Actor(),
+                              improver={"gate_every": 2}))
+    s.first = s.result
+    s.carry_json = json.loads((s.a.root / "rounds" / "carry.json").read_text(encoding="utf-8"))
+    s.calls_before = len(s.r.calls)
+    played(s, 1)
+    return s
+
+
+def test_a_carry_round_keeps_its_best_candidate_instead_of_paying_the_gate(carry):
+    a, r = carry.a, carry.first
+    assert r.status == "done" and r.screened == "notify" and not r.gated and r.installed is None
+    assert r.carried == round_state(a, 0)["steps"]["screened"]["best_package"]
+    assert "gated" not in round_state(a, 0)["steps"] and "carried" in round_state(a, 0)["steps"]
+    assert carry.carry_json == {"package_ref": r.carried, "base": carry.base.ref(), "dirs": ["r0:notify"],
+                                "since": ROUND}
+    (row,) = [x for x in ledger_rows(a, "carried")]
+    assert (row["round_id"], row["dir"], row["dirs"]) == (ROUND, "notify", ["r0:notify"])
+    runs = a.results.runs()                                             # no gate attempt was paid for round 0
+    assert not [x for x in results_of_role(a, "subject") if runs[x.run].candidate == f"{ROUND}:gate"]
+    assert carry.first.installed is None and "installed" not in stages(a, ROUND)
+
+
+def test_the_gate_round_measures_the_carried_package_and_gates_it_when_nothing_is_left_to_fix(carry):
+    a, r = carry.a, carry.result
+    state = round_state(a, 1)
+    assert state["carry"]["package_ref"] == carry.first.carried
+    assert state["steps"]["measure"]["package"] == carry.first.carried          # the carried package's train reading
+    assert state["steps"]["measure"]["passed"] == len(rsi.TRAIN) and state["steps"]["evidence"]["failed"] == []
+    assert "diagnosed" not in state["steps"] and carry.r.calls[carry.calls_before:] == ["playbook"]
+    assert r.gated and r.gate["verdict"] == "accepted" and r.installed
+    assert a.releases.load(r.installed).package_ref == carry.first.carried
+    (gated,) = [x for x in ledger_rows(a, "gated") if x["round_id"] == "rsi-test/r1"]
+    assert (gated["dir"], gated["carried"]) == ("carry", ["r0:notify"])
+    assert json.loads((a.root / "rounds" / "carry.json").read_text(encoding="utf-8"))["package_ref"] is None
+    assert carry.lines[-1].startswith("round      rsi-test/r1: the gate says accepted")
+
+
+def test_a_carry_the_gate_rejects_is_dropped_and_the_cycle_counts_only_gate_rounds(tmp_path, fake_upstream):
+    s = round_activity(tmp_path, fake_upstream, "tool", actor=Actor(), improver={"gate_every": 2},
+                       gate={"min_gain": 0.9, "partial_min_gain": 0.9})
+    cycle = phases.cycle(s.a, until="round-1", out=quiet)
+    steps = cycle["steps"]
+    assert steps["round-0"]["carried"] and not steps["round-0"]["gated"]
+    assert steps["round-1"]["gated"] and steps["round-1"]["installed"] is None
+    assert "reason" not in cycle                                         # one gate round without an install: not idle twice
+    (dropped,) = ledger_rows(s.a, "carry_dropped")
+    assert dropped["dirs"] == ["r0:notify"] and dropped["verdict"] == "rejected"
+    assert json.loads((s.a.root / "rounds" / "carry.json").read_text(encoding="utf-8"))["package_ref"] is None
+    assert s.a.releases.active_ref() == s.a.seed_release().ref()

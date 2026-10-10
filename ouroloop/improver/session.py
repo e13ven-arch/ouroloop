@@ -36,7 +36,8 @@ DECLARATION_SCHEMA = {"type": "object", "properties": {
     "predicted_affected": {"type": "array", "items": {"type": "string"}},
     "trigger": {"type": "string"},
     "differs_from": {"type": "array", "items": {"type": "object"}},
-    "scripts": {"type": "object"}}, "required": ["dir", "cause_id", "kind", "predicted_affected", "trigger"]}
+    "scripts": {"type": "object"}, "probes": {"type": "object"}},
+    "required": ["dir", "cause_id", "kind", "predicted_affected", "trigger"]}
 
 TOOLS = (
     ToolSpec("list_files", "List the files under a directory of the work tree (default: all of it): package/ is the "

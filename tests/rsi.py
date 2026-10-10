@@ -56,6 +56,9 @@ _preset["memory"].update({"min_score": 0.2, "min_other_tasks": 1, "stream_batch"
 # nothing held out by default: the improver's tests read the claimed tasks on the screen; a test that holds a part of
 # train out sets improver.holdout_share (a floor, so it may only raise it)
 _preset["improver"]["holdout_share"] = 0.0
+# the cadence's cap (IMPROVER §9.2): the round tests gate every round (rounds.round_activity's default), the cadence
+# tests ask for 2
+_preset["improver"]["gate_every"] = 2
 presets.PRESETS[TEST_PRESET] = _preset
 
 PRICING = {"input_per_1k": 0.004, "output_per_1k": 0.02, "cache_read_per_1k": 0.0002, "cache_write_per_1k": 0.008,

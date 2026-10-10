@@ -525,15 +525,23 @@ def test_a_fix_counts_only_where_the_candidates_component_showed(world, screens)
     rows = screen_rows(world, "tool")
     assert all(rows[t].success and world.evidence.footprint(rows[t], {"kind": "tool", "name": TOOL_ENTRY["name"]})
                for t in NOTIFY)
-    # the same flips under a candidate that declares a hook: the hook never acted, so they are not its effect
+    # the same flips under a candidate that declares a hook and carries the tool with it (IMPROVER §7.1): the tool is
+    # the mechanism's supporting component, so its footprint conditions the fix too
+    hook_comp = {"kind": "hook", "name": "inert_ops", "change": "added", "site": "on_finish"}
+    tool_comp = {"kind": "tool", "name": TOOL_ENTRY["name"], "change": "added"}
     assert sc.condition(Declaration(kind="hook"), components(world.base, screens["mixed"].files)) == \
-        [{"kind": "hook", "name": "inert_ops", "change": "added", "site": "on_finish"}]
+        [hook_comp, tool_comp]
     assert all(screen_rows(world, "mixed")[t].success for t in NOTIFY)
-    assert mixed.fixed == () and mixed.unconditioned == NOTIFY and mixed.net_flips == 0
-    assert sc.eligible(tool, Settings()) and not sc.eligible(mixed, Settings())
-    # the mutation: drop the condition — every changed component, or a whole-package kind — and the same reading of
-    # the same screen (recorded, not run again) claims both fixes
+    assert mixed.fixed == NOTIFY and mixed.unconditioned == () and mixed.net_flips == 2
+    assert sc.eligible(tool, Settings()) and sc.eligible(mixed, Settings())
+    # conditioned on the hook alone (the fixed code's rule, or a hook with nothing else): it never acted, so the same
+    # reading of the same screen (recorded, not run again) counts the flips as unconditioned
     before = len(list(world.a.results.all()))
+    alone = run_screen(world, "mixed", screens["mixed"].files, screens["mixed"].package, "hook",
+                       conditions=[hook_comp])
+    assert alone.fixed == () and alone.unconditioned == NOTIFY and alone.net_flips == 0
+    assert not sc.eligible(alone, Settings())
+    # the mutation: drop the condition — every changed component, or a whole-package kind — and both fixes are claimed
     every = [{"kind": c["kind"], "name": c["name"]} for c in components(world.base, screens["mixed"].files)]
     for conditions in (every, sc.condition(Declaration(kind="prompt"), [])):
         dropped = run_screen(world, "mixed", screens["mixed"].files, screens["mixed"].package, "hook",
@@ -546,9 +554,12 @@ def test_condition_is_the_declared_kinds_changed_components_or_every_attempt():
     comps = [{"kind": "tool", "name": "a", "change": "added"}, {"kind": "tool", "name": "b", "change": "deleted"},
              {"kind": "hook", "name": "h", "change": "modified", "site": "on_finish"},
              {"kind": "skill", "name": "s", "change": "added"}, {"kind": "test", "name": "tests", "change": "modified"}]
-    assert sc.condition(Declaration(kind="tool"), comps) == [comps[0]]
-    assert sc.condition(Declaration(kind="hook"), comps) == [comps[2]]
-    assert sc.condition(Declaration(kind="skill"), comps) == [comps[3]]
+    # R's candidate: the declared kind's components first, then the supporting tools, hooks and skills it carries
+    assert sc.condition(Declaration(kind="tool"), comps) == [comps[0], comps[2], comps[3]]
+    assert sc.condition(Declaration(kind="hook"), comps) == [comps[2], comps[0], comps[3]]
+    assert sc.condition(Declaration(kind="skill"), comps) == [comps[3], comps[0], comps[2]]
+    # the fixed code's: only its own kind
+    assert sc.condition(Declaration(kind="skill", fixed="promotion:x"), comps) == [comps[3]]
     for kind in ("prompt", "agent", "config", "vendor", "removal", "model"):
         assert sc.condition(Declaration(kind=kind), comps) == [{"kind": "prompt", "name": "*"}]
     assert sc.condition(Declaration(kind="memory"), comps) == [{"kind": "memory", "name": "snapshot"}]
