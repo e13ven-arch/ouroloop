@@ -8,6 +8,23 @@
 
 ---
 
+## 2026-10-10 阶段 4：finance-v4 基线（train 24/50，dev 9/25 与 10/25，计 $52.28；一笔调用结果未知按上界 $11.28 占着）
+
+- 用户的批准（2026-10-10）："按这四项改，改完再跑 finance-v3"；四项修复改了 K，活动是 finance-v4（上一条）。在终端面板里跑 `--phase cycle --until baseline`，并发 8，约 30 分钟。
+- 启动时的一次拒绝（$0）：freeze 时 `[rsi] scope_id` 还没写进配置，预算簿的根记成了默认名 `activity`，bench 按"一个活动一个根"拒开。这个工作区只有 freeze 的产物（0 笔预留），整个目录移到会话的 scratchpad，配置带 `scope_id = "finance-v4"` 重新 smoke 与 freeze，K 逐字节相同（`core:a587428e5f26`）。教训：`[rsi] scope_id` 要在 freeze 之前写好；finance-v1～v3 都是这么做的，这次顺序反了。
+- 基线：train 24/50（partial 0.813，$27.24）；dev 9/25（0.801，$12.49）与 10/25（0.777，$12.55）；三臂计 $52.28，无 invalid。账本另有 1 笔 actor 调用（`actor#66.0`）状态 `unknown`：provider 抛了异常、不能确认没有计费，按上界 $11.28 占着预算（`evaluate/budget.py` 的规则），同一调用重试后尝试正常完成；所以活动记"已花 $63.56"。名义账，不影响真实订阅；根剩 $636.44，非 final 部分 $416.44。
+- 与 finance-v3 的基线逐题对比（**不是同一个 W0**：种子的日期锚改了，W0 包从 finance-v3 的变成 `package:fbd7c8f59bd8`；同一切分，只作旁证）：
+  - train 23 → 24：7 道翻转。翻成通过的 4 道：`qb_estimate_conversion`（0/2 → 2/2）、`xero_quote_to_invoice`（0/6 → 6/6）、`qb_void_stale_invoices`（6/8 → 6/6）、`expense_policy_violation`（5/8 → 8/8）；翻成失败的 3 道：`ap_aging_report`（5/5 → 3/6）、`fiscal_year_rollover`（7/7 → 6/7）、`po_three_way_match`（6/6 → 5/6）。
+  - finance-v2 诊断为 real_date 的 5 道里：`qb_estimate_conversion`、`xero_quote_to_invoice` 翻成通过，是日期锚修复的直接证据；`xero_bank_reconcile` 仍 2/6；`qb_undeposited_funds` 两次都过；`ap_aging_report` 反而掉了：这次的轨迹里 agent 写了"as of 2026-10-10"（真实日期），把 6 张账单全归入 90+ 天；finance-v3 的轨迹没写真实日期。锚有没有触发、给的是什么日期，记录里看不出来：守卫的 `snapshot()` 只给测试和 R 读，不进轨迹与 results。留给第 0 轮的诊断（它读轨迹）；下一个 K 考虑把守卫的状态记进尝试记录（$0，但改代码就是新 K，活动结束后再做）。
+  - arith_mismatch 的 5 道里 `qb_void_stale_invoices` 翻成通过，其余 4 道读数不变（`fiscal_year_rollover` 掉 1 条断言）。
+  - dev 四次读数（v3 两次、v4 两次）：7 道每次都过，15 道每次都没过，3 道翻转（`expense_split_allocation` 0011、`vendor_payment_approval` 0111、`weekly_expense_summary` 0001）。v4 的 W0 池化 9.5/25，比 v3 的 7.5/25 高 2 道，都在翻转题上。
+- 对照上一条写下的预期：基线在 finance-v3 的噪声内（train +1，dev +2），成立；real_date 的两道翻转是修复的证据，一道反向翻转待诊断。
+- 留出（seed 0，同 finance-v3 的规则）：研究 30 / 留出 20 不变；W0 失败的 26 道题分到两边的数在第 0 轮的 `allocated` 行里看。
+- 花费：三臂 $52.28，连同未知调用的上界 $63.56。阶段 4 实际花费累计约 $355（finance-v1 $54.93、探针约 $2.6、finance-v2 $193.57、finance-v3 $51.49、finance-v4 $52.28）。
+- 待用户：library（约 $90～115）。机器当时用电池（99%），基线 30 分钟够用；library 与各轮更长，建议接电源。
+
+---
+
 ## 2026-10-10 阶段 4：四项修复落地（日期锚、组合候选与 V2a 探针、留出为空的 cause、每两轮一次 gate 带累积与部分得分）；finance-v4 冻结；$0
 
 - 用户的决定（2026-10-10）："按这四项改，改完再跑 finance-v3"。设计先定稿（`c370fed`：[DESIGN §6.12](DESIGN.md)，[HARNESS §7.1](design/HARNESS.md)，[IMPROVER §7.1、§8.1、§9.1～§9.3](design/IMPROVER.md)，[EVALUATE §5.1](design/EVALUATE.md)，CONTRACTS 的三个键），再改代码；分支 `s4/finance-v4`（从 `s4/finance` 的 `20a7fa7` 起）。
