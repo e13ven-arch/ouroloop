@@ -43,7 +43,7 @@
 | 测试 | 默认套件 1,403 passed、86 deselected；全量（Docker + 真 memory sidecar）1,488 passed、1 deselected（JOURNAL 2026-10-09 阶段 4 开工一条）。memory 的 venv 在本机 `~/.cache/ouroloop/memory-venv/19f9b139c36d1d05` |
 | test 读过几次 | finance 1、support 0、sales 0、hr 0、marketing 3；operations 从未读过 |
 | 本机记录 | `examples/automationbench/workspace-*/`、`examples/workspace-*/`、`ws/`、`*.local.toml`，git 忽略，不删不改 |
-| 下一步 | finance-v2 第 0 轮完成：R 的工具过了免费阶梯与筛选，gate 拒绝（增益 0.0）；累计 $169.18；等用户批准第 1 轮 |
+| 下一步 | finance-v2 结束：两轮各有候选过了免费阶梯与筛选，gate 都拒绝（增益 0），按耐心规则停，没有装入、没有 final（JOURNAL 2026-10-10）；快照修复在 `snapshot-fit` 会话里进行；等用户决定下一步 |
 
 ## 1 规则
 
@@ -78,7 +78,7 @@
 | 1 | harness 与平台收缩：`harness/`、`runtime/`、`evaluate/`、`activity/`；Stirrup 种子与六个 hook 站点；worker 资源与网络从 K 读；DESIGN §8 的删除 | 默认与 Docker 全量通过；`quickstart.toml` 的 `--phase smoke --checks-only` 通过；假上游上用新种子跑一次尝试 | $0 | 完成并合入（2026-10-09，`46a4b90`） |
 | 2 | memory 组件：`memory/`、sidecar 与锁文件、`recall` 工具、记功与容量、快照走阶梯、记忆 → 技能 → 工具的升级 | 假上游上 `--phase library` 端到端；变异检查在隔离副本 | $0（sidecar venv 联网安装） | 完成（2026-10-09，`s2/memory`）：假 client 与真 sidecar 各端到端一遍；285 个变异全被杀；待用户确认后合入 |
 | 3 | 改进器：`improver/` 八步、toolcheck 与回放、分层估值与代码先验、档案与反膨胀、R 的配置 | 假上游上脚本化的 R 一轮端到端：tool 候选过 V0～V2a 并在 V3 记条件修复；hook 候选过 V2b；有可机械化簇而无代码候选时台账记 `no_code_candidate` | $0 | 完成（2026-10-09，`s3/improver`）：四种验收都端到端成立，另有快照固定候选进 V3 并装入；257 个新测试，变异 238/243 被杀；评审 12 条全修；待用户确认后合入 |
-| 4 | finance 实测：新 preset，基线 → library → 3 轮（每轮后停）→ 有装入则封存 final → RESULTS、README、合入 main | 过程检查成立；计划哈希早于第一次 test 尝试；报告两次相同 | 名义约 $440（$350～600），每步先批准 | 进行中：finance-v1 在 library 第一步作废（$54.93）；finance-v2 基线 $51.64、library $92.31（D = 3，快照超上限）；第 0 轮 $25.23（gate 拒绝）；下一步第 1 轮 |
+| 4 | finance 实测：新 preset，基线 → library → 3 轮（每轮后停）→ 有装入则封存 final → RESULTS、README、合入 main | 过程检查成立；计划哈希早于第一次 test 尝试；报告两次相同 | 名义约 $440（$350～600），每步先批准 | 进行中：finance-v1 在 library 第一步作废（$54.93）；finance-v2 基线 $51.64、library $92.31（D = 3，快照超上限）；第 0 轮 $25.23、第 1 轮 $24.39，gate 都拒绝（增益 0），两轮无装入按耐心规则结束，没有 final |
 | 5 | 训练绑定：v2.0 离线链对新记录跑通，`model` 组件绑定；之后按 V2 的 v2.1、v2.2 | V2 §5 的断言 | $0；v2.1 另批 | 待做 |
 
 每个阶段：先把 DESIGN 的对应节改定稿 → 代码 → 测试 → JOURNAL → 停。阶段 1～3 各自一个分支，串行合入。阶段 4 期间不往它的检出合入代码（规则 13）。
@@ -93,7 +93,7 @@
 
 | # | 事项 | 建议 |
 |---|---|---|
-| 1 | finance-v2 的第 1 轮：约 $25～100 | 批准后跑，跑完停下汇报；第 1、2 轮都没有装入则按耐心规则结束 |
+| 1 | finance-v2 之后：收尾阶段 4（如实报告：无装入）；或改进后开 finance-v3（快照修复、筛选只用 R 没研究过的 train 题、处理没用的名额），重付基线与 library 约 $145 加轮次 | 见 JOURNAL 2026-10-10 的读数 |
 
 ## 4 文档地图
 

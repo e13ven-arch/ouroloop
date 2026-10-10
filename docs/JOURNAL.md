@@ -8,6 +8,22 @@
 
 ---
 
+## 2026-10-10 阶段 4：finance-v2 第 1 轮（gate 再次拒绝，增益 0）；两轮无装入，按耐心规则结束
+
+- 用户的批准（2026-10-10）："跑第 1 轮，同时开始做快照修复"。快照修复在另一个会话的独立 worktree 里做（分支 `snapshot-fit`，从 `s4/finance` 起），finance-v2 结束前不合入这个检出。
+- 第 1 轮：诊断全部命中缓存（27 例，$0）；分层 arith_mismatch → tool（探索）、excluded_mentioned → hook（tool 上一轮已试）、missed_action → skill。R 的会话 12 回合、10 次编辑，声明 2 个候选（arith_mismatch 的工具名额连续两轮没用）：
+  - `scope_hook`（before_tool hook）：V0、V1、V2b 通过，回放里在声称的 5 道失败题中的 4 道上出手；筛选修好 2、弄坏 1，净 +1。
+  - `deliver_skill`（技能“deliverables-ledger”）：V0、V2c 通过；筛选修好 3（slack_receipt_capture、invoice_reconciliation、financial_ratio_analysis），弄坏 0，净 +3 → 进 gate。
+  - gate：**rejected，增益 0.0**，候选 10/25 对 W0 池化均值 10/25。
+- 逐题看 dev（W0 两次读数与两轮的候选，共 4 次读数）：8 道每次都过，13 道每次都没过，4 道时过时不过（financial_close_checklist、expense_split_allocation、cash_sweep、vendor_insurance_verification）。两个候选在 13 道“从未过”的 dev 题上一道都没有修好；它们的“修好”都在这 4 道翻转题上，被同一组题的翻转抵消。
+- 读数：
+  - R 在真实模型下两轮各交 2 个过了免费阶梯的候选（tool、skill、hook、skill），actor 会用它们，train 筛选上净 +1、+1、+1、+3；dev 上增益都是 0。train 上的修复是 R 研究过的那几道失败题（筛选的失败集就是它声称的题），没有迁移到 dev。
+  - 分配给 arith_mismatch 的工具名额两轮都没被用：没有筛选读数，估值不更新，探索名额就一直落在同一处。
+- 按 K 的耐心规则（`schedule.patience` = 2：连续 2 轮没有装入就停），cycle 在第 1 轮后结束，第 2 轮不跑；没有装入，所以没有 final。
+- 花费：第 1 轮 $24.39；finance-v2 合计 $193.57（基线 $51.64、library $92.31、第 0 轮 $25.23、第 1 轮 $24.39），根剩 $506.43。阶段 4 的实际花费合计约 $251（finance-v1 $54.93、探针约 $2.6、finance-v2 $193.57）。
+
+---
+
 ## 2026-10-10 阶段 4：finance-v2 第 0 轮（R 的工具过了免费阶梯与筛选，gate 拒绝，增益 0）
 
 - 用户的决定（2026-10-10）："按 A，跑第 0 轮"（finance-v2 继续，只有 R 的候选；快照的修复另做）。
