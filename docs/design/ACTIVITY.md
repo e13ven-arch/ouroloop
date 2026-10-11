@@ -100,7 +100,7 @@ def write_report(activity, report) -> dict   # 两次相同（确定性）
 
 `cycle --until` 保留：`baseline`、`library`、`round-K`；中间崩溃按 `Execution` 续跑。
 
-**gate 的节奏（2026-10-10 修订，IMPROVER §9.2）：** `cycle` 的耐心只数付过 gate 而没装入的轮；carry 轮（最优候选带到下一轮）不计。`schedule.rounds` 的上限 8；`improver.gate_every` 默认 2。报告的每轮一行多 `carried` 与 `in_sample` 的标注。
+**gate 的节奏（2026-10-10 修订，IMPROVER §9.2）：** `cycle` 的耐心数没有进展的轮：没装入、且（付了 gate，或没有候选可累积）的轮算闲置；把最优候选带到下一轮的 carry 轮不计。`gate_every` = 1 时没有 carry 轮，规则回到"连续 patience 轮没有装入就停"。`schedule.rounds` 的上限 8；`improver.gate_every` 默认 2。报告的每轮一行多 `carried` 与 `in_sample` 的标注。
 
 ## 5 预算根与份额
 

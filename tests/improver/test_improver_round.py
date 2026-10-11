@@ -789,14 +789,14 @@ def test_the_gate_round_measures_the_carried_package_and_gates_it_when_nothing_i
     assert carry.lines[-1].startswith("round      rsi-test/r1: the gate says accepted")
 
 
-def test_a_carry_the_gate_rejects_is_dropped_and_the_cycle_counts_only_gate_rounds(tmp_path, fake_upstream):
+def test_a_carry_the_gate_rejects_is_dropped_and_a_round_that_carried_is_not_idle(tmp_path, fake_upstream):
     s = round_activity(tmp_path, fake_upstream, "tool", actor=Actor(), improver={"gate_every": 2},
                        gate={"min_gain": 0.9, "partial_min_gain": 0.9})
     cycle = phases.cycle(s.a, until="round-1", out=quiet)
     steps = cycle["steps"]
     assert steps["round-0"]["carried"] and not steps["round-0"]["gated"]
     assert steps["round-1"]["gated"] and steps["round-1"]["installed"] is None
-    assert "reason" not in cycle                                         # one gate round without an install: not idle twice
+    assert "reason" not in cycle            # round 0 carried (not idle), round 1 gated without an install: idle once
     (dropped,) = ledger_rows(s.a, "carry_dropped")
     assert dropped["dirs"] == ["r0:notify"] and dropped["verdict"] == "rejected"
     assert json.loads((s.a.root / "rounds" / "carry.json").read_text(encoding="utf-8"))["package_ref"] is None

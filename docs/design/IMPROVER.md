@@ -52,7 +52,7 @@ def run_round(activity, index: int, *, out) -> RoundResult
 - **续跑**：会话一结束，它的声明与文件就记进 `round.json`（`session_result`），之后断了只重验、不重付会话；这一轮自己的装入移动了活跃 release（`install:<round_id>` 的收据是 installed）而 gated 一步还没保存时照常续跑（gate 从记录重放、装入重放是空操作）；台账行在一轮里按内容去重，续跑写同一行拿到记录里那一行。
 - 一轮的花费记在 `<scope>:round-<i>` 账户（上限 `round_share × [budget] usd`），下分 `measure`、`diagnose`、`session`、`screen`、`gate`、`policy` 子账户，报告按它们单列。
 
-`cycle --until round-K` 依次跑第 0～K 轮；连续 `schedule.patience` 个付过 gate 的轮没有装入就停（carry 轮不计，§9.2）。
+`cycle --until round-K` 依次跑第 0～K 轮；连续 `schedule.patience` 个没有进展的轮就停：没装入、且付了 gate 或没有候选可累积的轮算闲置；累积了候选的 carry 轮不计（§9.2）。
 
 ## 4 证据（`runtime/trace.py` + `improver/evidence.py`）
 
@@ -208,7 +208,7 @@ def gate(activity, candidate_package_ref, *, round_id, account) -> dict         
 
 - **carry 轮**（`(i + 1) % gate_every != 0`）：V3 筛出的最优候选不付 gate，记为带着的包（`rounds/carry.json`：`package_ref`、`dirs`、`since`），台账 `carried`。下一轮的 R 从带着的包起（它的 train 读数在下一轮的 measure 里补，所以诊断看到的是带着的包的失败），对照仍是主线 W0 的池化读数。
 - **gate 轮**：本轮的最优候选（已经含带着的改动）付 gate；本轮没有候选而有带着的包时，gate 带着的包本身。accepted 即装入整个累积的包并清空 carry；rejected 则清空 carry（台账 `carry_dropped`），下一轮从主线重来。
-- `schedule.patience` 只数**付过 gate 而没装入**的轮；carry 轮不计。`schedule.rounds` 的 preset 上限从 3 放到 8。
+- `schedule.patience` 数**没有进展**的轮：没装入、且（付了 gate，或筛选后没有候选可累积）的轮算闲置；累积了候选的 carry 轮不计（它的结果在下一个 gate 轮里读）。`gate_every` = 1 时没有 carry 轮，规则就是原来的"连续 patience 轮没有装入就停"；只数 gate 轮会让没有候选的轮空转到 `rounds` 上限，钱不安全。finance-v4 第 2 轮（carry 轮，三个候选都不可累积）按此计入，cycle 在两轮无进展后结束。`schedule.rounds` 的 preset 上限从 3 放到 8。
 - 代价：carry 轮省下 gate（约 $21），多付带着的包的 train 读数（约 $25），一轮花费大致不变。
 
 ### 9.3 部分得分进 gate（2026-10-10 修订）
