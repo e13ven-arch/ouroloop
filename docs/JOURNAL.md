@@ -8,6 +8,27 @@
 
 ---
 
+## 2026-10-11 阶段 4：finance-v4 第 0 轮（三个候选都过免费阶梯；`send_email` 净 +1 累积到第 1 轮；$14.43）
+
+- 用户的指示（2026-10-11）："付费运行直接启动"；第 0 轮由终端工具启动（手动权限模式下用户放行）。累积轮：筛选后把最优候选记进 `rounds/carry.json`，gate 在第 1 轮。
+- 测量复用基线（24/50，0 次新测量）。诊断 26 例（0 命中缓存）归 8 个 cause：missed_action 7、excluded_mentioned 5、arith_mismatch 4、unread_value 4、real_date 2、wrong_target 2、missing_recipient 1、other 1。分配（k = 3）：missed_action → skill（探索：技能没在这个 cause 上试过）、excluded_mentioned → tool（上界 0.6）、arith_mismatch → tool（上界 0.6）；三个 cause 两边都有题，没有样本内筛的 cause；real_date 只剩 2 例，不够分配。
+- R 的会话 11 回合、7 次编辑，声明 3 个候选，都是单组件（没有带 hook 或技能的载体）：
+  - `c_send_email`（tool `send_email`，excluded_mentioned）：一次调用发 Gmail（自己拼 RFC 2822、base64url、走 api_fetch），必填 `leave_out` 列表（被排除的实体，以及请求没要求报告的项：无变化、匹配、无差异的行），主题或正文按整词匹配到其中一项就拒发并点名。V0、V1、V2a 通过，V2a 靠声明的探针（两道题各一个探针，期望 "Sent to"）。
+  - `c_compute`（tool `compute`，arith_mismatch）：输入 [{name, value, source}]（没有来源的输入拒绝；"$1,234.50"、"10%" 可解析）、步骤为算术表达式（+ − × ÷ %、min、max、abs、round，AST 白名单求值），输出每个输入的来源、每步的值与"每个条款（折扣、覆盖、抵减、上限、修正）是否都作为一步应用"的检查单。V0、V1、V2a 通过，V2a 靠探针（两道题）。**上一个活动两轮都空着的 arith 工具名额这次填上了**，探针证明是它过 V2a 的方式。
+  - `c_skill_actions`（技能 `complete-every-required-action`，missed_action）：四条规则（禁令限制的是发什么、不是发不发；系统里没有的记录是要建的、不是跳过的理由；政策定义的报告格式覆盖每一项；每个收件人、每条记录一个计划项，finish 前逐项对应工具结果）。V0、V2c 通过。
+- 留出筛选（失败集 = 所属 cause 在留出部分仍失败的题；样本 = 留出部分 6 道通过题，三个候选共用）：
+  - `c_send_email`：失败集 2 道（`prepaid_amortization`、`intercompany_balance_recon`），修好 `intercompany_balance_recon`，样本无退步，净 +1 → 最优，累积。
+  - `c_compute`：失败集 1 道（`commission_calculation`），没修好，净 0。
+  - `c_skill_actions`：失败集 3 道（`slack_receipt_capture`、`invoice_reconciliation`、`payment_fraud_detection`），没修好，净 0。
+- 读数：
+  - 三个名额都交了过免费阶梯的候选，探针让工具名额不再空着；R 仍只做单组件，没有把 `compute` 配上强制 hook，也没有给 `send_email` 配技能——组合候选的规则是允许而不是要求，R 没用上。
+  - 留出失败集很薄（2、1、3 道）：excluded_mentioned 的 5 例里留出只有 2 道，净 +1 就是 2 道里修好 1 道。gate 才是迁移检验；第 1 轮在累积包上重新测量 50 道 train 题（约 $27）、再诊断、再改，然后 gate。
+  - `compute` 在 `commission_calculation` 上没修好：工具在、agent 是否调用、调用了结果对不对，第 1 轮的证据里看（留出题的轨迹 R 看不到，我们能看）。
+- 花费：$14.43（诊断约 $2.1、会话约 $2.4、筛选 24 次尝试约 $10）。活动计 $168.11，根剩 $531.89，非 final 部分 $311.89。
+- 下一步：第 1 轮（gate 轮）：在累积包上测量、诊断、R 再改，最优候选（或累积包）进 gate。
+
+---
+
 ## 2026-10-11 阶段 4：finance-v4 library（219 条，D = 0.0，快照不送 gate；$90.13）
 
 - 用户的指示（2026-10-11）："付费运行直接启动"。auto 模式的分类器三次拒绝发起付费运行（终端工具、Bash 后台、脱离终端的 Bash），本会话切到手动权限模式后由终端工具启动，用户在权限提示里放行。
