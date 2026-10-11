@@ -211,3 +211,25 @@ def test_ks_docker_worker_serves_this_host_and_a_pin_it_does_not_hold_is_no_work
     assert pinned.k["worker"]["image_id"] == "sha256:" + "0" * 64
     only(problems(pinned), f"no qualified worker: Docker or the image {DEFAULT_IMAGE} (pinned id sha256:000")
     assert startup_checks(pinned, phase="smoke", needs_model=False) == []
+
+
+def test_the_claude_cli_an_activity_first_ran_on_is_recorded_and_a_changed_one_refused(tmp_path, monkeypatch):
+    """The CLI is the actor's transport: its version is recorded at the first paid phase, and a later paid phase on
+    another version is refused (a comparison holds the transport fixed). A test's providers record nothing."""
+    from types import SimpleNamespace
+    from ouroloop.activity import checks
+    from ouroloop.contracts import Events
+    import ouroloop.providers.claude_code as cc
+    version = {"now": "2.1.288 (Claude Code)"}
+    monkeypatch.setattr(cc, "cli_version", lambda binary="claude": version["now"])
+    table = {"type": "claude_code", "model": "m", "effort": "medium", "max_tokens": 1, "timeout": 1}
+    a = SimpleNamespace(provider_factory=None, model_table=lambda section="model": table, events=Events(tmp_path))
+    assert checks.cli_versions(a, "baseline") == (None, "2.1.288 (Claude Code)")
+    checks.require([], phase="baseline", activity=a)
+    checks.require([], phase="library", activity=a)
+    assert [e["version"] for e in a.events.read("cli_version")] == ["2.1.288 (Claude Code)"]
+    version["now"] = "2.2.0 (Claude Code)"
+    assert checks.cli_versions(a, "round") == ("2.1.288 (Claude Code)", "2.2.0 (Claude Code)")
+    assert checks.cli_versions(a, "report") is None                          # a phase that calls no model
+    scripted = SimpleNamespace(provider_factory=lambda t: None, model_table=a.model_table, events=a.events)
+    assert checks.cli_versions(scripted, "round") is None

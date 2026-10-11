@@ -45,7 +45,8 @@ from ouroloop.improver.verify.replay import replay_check, site_events
 from ouroloop.improver.verify.static import static_check
 from ouroloop.improver.verify.toolcheck import toolcheck
 from ouroloop.improver.verify.unit import unit_check
-from ouroloop.memory.snapshot import snapshot_candidate
+from ouroloop.activity.presets import AUTOMATIONBENCH_V1
+from ouroloop.memory.snapshot import fit_snapshot, snapshot_candidate
 
 FAILING = ("rsi.notify_after_update", "rsi.notify_after_update_variant")
 PASSING = ("rsi.update_stage", "rsi.policy_hold", "rsi.notify_once")
@@ -233,6 +234,28 @@ def test_v0_passes_the_memory_snapshot_of_the_memory_candidate(ctx, parent):
     assert run_ladder(files, decl("memory", "snapshot", predicted=(), fixed="snapshot:abc"), ctx).steps.keys() == {"V0"}
 
 
+def test_v0_passes_the_snapshot_of_a_library_over_ks_memory_bytes_once_it_is_fitted(ctx, parent):
+    """The fixed candidate of a library whose whole rows exceed the preset's max_memory_bytes (finance-v2's, 550 KB
+    against 256 KiB) fails V0 as it was written then; fitted (memory/snapshot.py fit_snapshot) it passes, with the
+    credited entry in it."""
+    cap = Limits.from_core(ctx.core).max_memory_bytes
+    assert cap == AUTOMATIONBENCH_V1["harness"]["limits"]["max_memory_bytes"]
+    rows = [{"memory_id": f"{i:016x}", "memory_type": "procedural", "author": "research/reme:success",
+             "when_to_use": f"When a request asks for #ops, case {i}", "content": f"Post it, case {i}. " + "x" * 1600,
+             "metadata": {"ol_line": "rsi", "ol_split": "train", "ol_source_line": "rsi", "ol_sources": "[]",
+                          "ol_trace_refs": json.dumps([f"run/t{i}/r0/first#0:L1"] * 3),
+                          "ol_stats": json.dumps({"fixes": int(i == 299), "n_cited": int(i == 299)})}}
+            for i in range(300)]
+    whole = "".join(json.dumps(r, sort_keys=True) + "\n" for r in rows)
+    d = decl("memory", "snapshot", predicted=(), fixed="snapshot:abc")
+    got = v0(snapshot_candidate(parent, whole), d, ctx)
+    assert not got["passed"] and f"bytes in {MEMORY_PATH}: K allows {cap}" in got["detail"]
+    text, fit = fit_snapshot(whole, cap)
+    files = snapshot_candidate(parent, text)
+    assert v0(files, d, ctx) == {"passed": True, "detail": ""}
+    assert 0 < fit["kept"] < 300 and f"{299:016x}" in text and len(text.encode("utf-8")) <= cap
+
+
 def test_v0_on_a_parent_with_a_snapshot_refuses_a_change_of_it_and_not_its_presence(ctx, parent):
     limits = Limits.from_core(ctx.core)
     held = build(ctx.objects, snapshot_candidate(parent, SNAPSHOT), limits=limits, seed=ctx.seed)
@@ -368,12 +391,15 @@ def test_v0_passes_a_site_that_is_the_changed_component(ctx, parent, kind, site,
     assert v0(build_files(parent), decl(kind, site), ctx) == {"passed": True, "detail": ""}
 
 
-def test_v0_refuses_extra_kinds_besides_the_declared_one_and_test(ctx, parent):
+def test_v0_takes_a_supporting_hook_with_a_tool_and_refuses_the_agent_or_config_beside_it(ctx, parent):
+    """IMPROVER §7.1: one mechanism's carriers (tool, hook, skill, prompt) travel together; the agent, config and the
+    vendored package are candidates of their own."""
     both = rewrite(with_tool(parent), lambda m: m["hooks"].append(dict(HOOK_ENTRY)),
                    {"middlewares/remind_ops.py": HOOK_CODE})
-    got = v0(both, tool_decl(), ctx)
-    assert not got["passed"]
-    assert "the files also change ['hook']" in got["detail"]
+    assert v0(both, tool_decl(), ctx) == {"passed": True, "detail": ""}
+    with_config = rewrite(with_tool(parent), lambda m: m["config"].update(max_turns=40))
+    got = v0(with_config, tool_decl(), ctx)
+    assert not got["passed"] and "the files also change ['config']" in got["detail"]
     test = "def test_phrase(ctx=None):\n    assert True\n"
     tested = with_tool(parent, add={"tests/test_notify.py": test},
                        change=lambda m: m["tests"].append("tests/test_notify.py"))
@@ -382,13 +408,31 @@ def test_v0_refuses_extra_kinds_besides_the_declared_one_and_test(ctx, parent):
 
 
 @pytest.mark.parametrize("predicted,why", [
-    (("rsi.dev_update_stage",), "predicted_affected names ['rsi.dev_update_stage'], which are not train tasks"),
+    (("rsi.dev_update_stage",),
+     "predicted_affected names ['rsi.dev_update_stage'], which are not among the train tasks you were given"),
     ((), "predicted_affected names no train task"),
 ], ids=["outside-train", "empty"])
 def test_v0_refuses_predicted_affected_outside_train_or_empty(ctx, parent, predicted, why):
     got = v0(with_tool(parent), tool_decl(predicted=predicted), ctx)
     assert got == {"passed": False, "detail": why}
     assert v0(with_tool(parent), tool_decl(predicted=predicted, fixed="removal:x"), ctx)["passed"]
+
+
+def test_v0_refuses_predicted_affected_on_a_held_out_train_task(ctx, parent):
+    study = dataclasses.replace(ctx, study_tasks=tuple(t for t in ctx.train_tasks if t != FAILING[1]))
+    got = v0(with_tool(parent), tool_decl(predicted=FAILING), study)
+    assert got == {"passed": False, "detail": f"predicted_affected names {[FAILING[1]]}, which are not among the "
+                                              f"train tasks you were given"}       # the same words as a dev id's
+    assert v0(with_tool(parent), tool_decl(predicted=FAILING[:1]), study) == {"passed": True, "detail": ""}
+
+
+def test_v0_refuses_a_cause_id_the_round_did_not_assign(ctx, parent):
+    assigned = dataclasses.replace(ctx, cause_ids=("rsi-test/r0:wrong_target",))
+    got = v0(with_tool(parent), tool_decl(), assigned)
+    assert got == {"passed": False, "detail": "cause_id 'rsi-test/r0:missed_action' is not a cause you were assigned: "
+                                              "one of ['rsi-test/r0:wrong_target']"}
+    assert v0(with_tool(parent), tool_decl(), dataclasses.replace(ctx, cause_ids=("rsi-test/r0:missed_action",))) \
+        == {"passed": True, "detail": ""}
 
 
 def test_v0_a_removal_must_delete_a_tool_a_hook_or_a_skill(ctx, parent):
@@ -546,13 +590,15 @@ def direct_script(task_id: str) -> str:
 def test_v2a_passes_scripts_that_do_the_task_with_the_tool(ctx, parent):
     got = toolcheck(with_tool(parent), tool_decl(), ctx)
     assert got["passed"]
-    assert got["tasks"] == {t: {"passed": True, "called_tool": True, "failed_kinds": []} for t in FAILING}
+    assert got["tasks"] == {t: {"passed": True, "by": "script", "called_tool": True, "failed_kinds": []}
+                            for t in FAILING}
 
 
 def test_v2a_refuses_a_script_that_never_calls_the_tool(ctx, parent):
     got = toolcheck(with_tool(parent), tool_decl({t: direct_script(t) for t in FAILING}), ctx)
     assert not got["passed"]
-    assert got["tasks"] == {t: {"passed": False, "called_tool": False, "failed_kinds": []} for t in FAILING}
+    assert got["tasks"] == {t: {"passed": False, "by": "script", "called_tool": False, "failed_kinds": []}
+                            for t in FAILING}
     assert f"the script never called {TOOL}" in got["detail"]
 
 
@@ -581,8 +627,8 @@ def test_v2a_counts_only_claimed_train_tasks_the_current_w_fails(ctx, parent):
 def test_v2a_a_world_the_grader_fails_hands_back_the_assertion_types_only(ctx, parent):
     got = toolcheck(with_tool(parent), tool_decl({t: script_for(t, "all done") for t in FAILING}), ctx)
     assert not got["passed"]
-    assert got["tasks"] == {t: {"passed": False, "called_tool": True, "failed_kinds": ["slack_message_contains"]}
-                            for t in FAILING}
+    assert got["tasks"] == {t: {"passed": False, "by": "script", "called_tool": True,
+                                "failed_kinds": ["slack_message_contains"]} for t in FAILING}
     assert "stage updated" not in json.dumps(got)          # the grader's parameter never goes back to R
 
 
@@ -594,7 +640,12 @@ def test_v2a_a_script_error_or_a_task_outside_train_is_not_a_pass(ctx, parent):
     assert not any(r["passed"] for r in got["tasks"].values())
     assert "the script gives up" in got["tasks"][FAILING[0]]["error"]
     assert "check(ctx, tools)" in got["tasks"][FAILING[1]]["error"]
-    assert got["tasks"]["rsi.dev_update_stage"] == {"passed": False, "error": "not a train task"}
+    assert got["tasks"]["rsi.dev_update_stage"] == {"passed": False,
+                                                    "error": "not one of the train tasks you were given"}
+    # a held-out train task's script gets the same words as a dev task's: the check does not say which is which
+    study = dataclasses.replace(with_settings(ctx, toolcheck_min_pass=1), study_tasks=PASSING + FAILING[:1])
+    held = toolcheck(with_tool(parent), tool_decl({FAILING[1]: script_for(FAILING[1])}, predicted=FAILING[:1]), study)
+    assert held["tasks"][FAILING[1]] == {"passed": False, "error": "not one of the train tasks you were given"}
     none = toolcheck(with_tool(parent), tool_decl({}), ctx)
     assert not none["passed"] and "declaration.scripts" in none["detail"]
 
@@ -619,8 +670,10 @@ SITE_HOOKS = {
                    '{"feedback": "the record is updated; now the rest of the request"}'),
     "after_turn": ('any(r["name"] == "api_fetch" and "opportunity" in r["output"] for r in event["tool_results"])',
                    '{"message": "the record is updated; now the rest of the request"}'),
-    "on_finish": ('"record is updated" in event["reason"] and "posted" not in event["reason"] and '
-                  'event["pushbacks"] == 0 and event["final_text"] == ""', '{"pushback": "Keep working on the task"}'),
+    # the seed's verify pushes back on every attempt's first finish and answers first: the candidate, after it in the
+    # manifest, sees the second, with one pushback before it (as live)
+    "on_finish": ('event["reason"] == "finish" and "record is updated" in event["final_text"] and "posted" not in '
+                  'event["final_text"] and event["pushbacks"] == 1', '{"pushback": "Keep working on the task"}'),
 }
 
 
@@ -664,7 +717,7 @@ def test_v2b_needs_replay_min_triggers_claimed_failing_tasks(ctx, parent):
 
 def test_v2b_a_hook_answering_outside_its_sites_protocol_fails(ctx, parent):
     """It pushes back on both failing tasks, and answers notify_once's finish with a key on_finish does not take."""
-    code = site_hook('"posted" not in event["reason"]', '{"pushback": "Keep working on the task"}').replace(
+    code = site_hook('"posted" not in event["final_text"]', '{"pushback": "Keep working on the task"}').replace(
         "    return None\n", "    return {\"message\": \"done\"}\n")
     got = replay_check(with_hook(parent, code), decl("hook", "on_finish"), ctx)
     assert got["fired"] == list(FAILING)
@@ -688,6 +741,15 @@ def test_site_events_rebuild_a_train_attempt(ctx):
     assert [e["name"] for e in events["before_tool"]][:2] == ["plan_changes", "api_fetch"]
     assert {e["call_id"] for e in events["after_tool"]} <= {e["call_id"] for e in events["before_tool"]}
     assert [e["pushbacks"] for e in events["on_finish"]] == list(range(len(events["on_finish"])))
+    # as the seed passes them: reason "finish" and the finish's own reason as final_text; finish is no tool call
+    finishes = [c for c in ctx.evidence.trace.calls(ctx.failed_sessions[FAILING[0]]) if c.get("role") == "act"
+                for c in (c.get("response") or {}).get("tool_calls") or () if c.get("name") == "finish"]
+    assert [(e["reason"], e["final_text"]) for e in events["on_finish"]] == \
+        [("finish", f["args"]["reason"]) for f in finishes]
+    assert "finish" not in {e["name"] for e in events["before_tool"]}
+    assert all(set(r) == {"call_id", "name", "is_error", "output"} for e in events["after_turn"]
+               for r in e["tool_results"])
+    assert events["on_finish"][0]["acted"] == ["verify"]          # the seed's verify pushed the first one back
 
 
 # ---------------------------------------------------------------------------- V2c
@@ -786,3 +848,65 @@ def test_verdict_passed_and_text():
     assert not Verdict(dir="d").passed()
     assert Verdict(dir="d").text() == "nothing checked"
     assert Verdict.from_json(json.loads(json.dumps(v.to_json()))) == v
+
+
+# ---------------------------------------------------------------------------- V2a by probes; composite candidates
+PROBES = {t: [{"args": {"phrase": "stage updated"}, "expect": "posted"}] for t in FAILING}
+
+
+def test_v2a_passes_by_probes_when_the_tool_runs_without_error_and_answers_what_is_expected(ctx, parent):
+    """IMPROVER §8.1: a probe calls the tool once on the claimed task's fresh world; no error and `expect` in the
+    output is the proof. No grader runs for a probe."""
+    got = toolcheck(with_tool(parent), tool_decl(scripts={}, probes=PROBES), ctx)
+    assert got["passed"], got["detail"]
+    assert got["tasks"] == {t: {"passed": True, "by": "probe", "called_tool": True, "probes": 1} for t in FAILING}
+    assert "passed by probe" in got["detail"]
+
+
+def test_v2a_a_probe_whose_expectation_the_output_lacks_or_that_the_tool_refuses_fails(ctx, parent):
+    lacking = {t: [{"args": {"phrase": "stage updated"}, "expect": "nothing of the kind"}] for t in FAILING}
+    got = toolcheck(with_tool(parent), tool_decl(scripts={}, probes=lacking), ctx)
+    assert not got["passed"]
+    assert all(r["by"] == "probe" and not r["passed"] and "the output lacks" in r["error"]
+               for r in got["tasks"].values())
+    refused = {t: [{"args": {"phrase": ""}, "expect": None}] for t in FAILING}     # the tool answers is_error
+    got = toolcheck(with_tool(parent), tool_decl(scripts={}, probes=refused), ctx)
+    assert not got["passed"] and all("answered an error" in r["error"] for r in got["tasks"].values())
+
+
+def test_v2a_judges_a_task_with_both_by_its_script_and_wants_one_proof_at_least(ctx, parent):
+    both = tool_decl(scripts={FAILING[0]: direct_script(FAILING[0])}, probes={FAILING[1]: PROBES[FAILING[1]]})
+    got = toolcheck(with_tool(parent), both, ctx)
+    assert got["tasks"][FAILING[0]]["by"] == "script" and not got["tasks"][FAILING[0]]["passed"]   # never calls it
+    assert got["tasks"][FAILING[1]]["by"] == "probe" and got["tasks"][FAILING[1]]["passed"]
+    assert not got["passed"]                       # one of two, below toolcheck_min_pass
+    neither = toolcheck(with_tool(parent), tool_decl(scripts={}), ctx)
+    assert not neither["passed"] and "a probe (declaration.probes) or a toolcheck script" in neither["detail"]
+
+
+def test_a_tool_candidate_with_a_supporting_hook_climbs_its_rung_and_the_hooks(ctx, parent):
+    """IMPROVER §7.1: one mechanism's carriers travel together; each supporting component climbs its own rung, keyed
+    by its name, and a candidate passes only when every rung passed."""
+    files = rewrite(with_tool(parent), lambda m: m["hooks"].append(dict(HOOK_ENTRY)),
+                    {"middlewares/remind_ops.py": HOOK_CODE})
+    verdict = run_ladder(files, tool_decl(), ctx)
+    assert list(verdict.steps) == ["V0", "V1", "V2a", "V2b@remind_ops"] and verdict.passed(), verdict.text()
+    assert verdict.steps["V2b@remind_ops"]["fired"] == list(FAILING)
+    inert = rewrite(with_tool(parent), lambda m: m["hooks"].append(dict(HOOK_ENTRY)),
+                    {"middlewares/remind_ops.py": "def remind(ctx, event):\n    return None\n"})
+    verdict = run_ladder(inert, tool_decl(), ctx)
+    assert list(verdict.steps) == ["V0", "V1", "V2a", "V2b@remind_ops"] and not verdict.passed()
+    assert not verdict.steps["V2b@remind_ops"]["passed"]
+
+
+def test_a_hook_candidate_carrying_a_tool_proves_the_tool_by_the_declarations_probes(ctx, parent):
+    files = rewrite(with_tool(parent), lambda m: m["hooks"].append(dict(HOOK_ENTRY)),
+                    {"middlewares/remind_ops.py": HOOK_CODE})
+    verdict = run_ladder(files, decl("hook", "on_finish", probes=PROBES), ctx)
+    assert list(verdict.steps) == ["V0", "V1", "V2b", f"V2a@{TOOL}"] and verdict.passed(), verdict.text()
+    assert all(r["by"] == "probe" for r in verdict.steps[f"V2a@{TOOL}"]["tasks"].values())
+    # a text candidate carrying code climbs V1 too (the code's tests, probe and smoke), before its own rung
+    prompted = rewrite(with_tool(parent), add={"prompt/system.md": parent.files["prompt/system.md"]
+                                                + "\nWhen a request asks for a message in #ops, post it.\n"})
+    verdict = run_ladder(prompted, decl("prompt", "system", probes=PROBES), ctx)
+    assert list(verdict.steps) == ["V0", "V1", f"V2a@{TOOL}"] and verdict.passed(), verdict.text()

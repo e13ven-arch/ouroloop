@@ -16,7 +16,8 @@ class Settings:
     k: int = 3                                   # 每轮 R 的候选上限（固定代码的候选另算，≤ fixed_per_round）
     fixed_per_round: int = 2
     session_max_turns: int = 40; session_max_edits: int = 32
-    session_max_read_bytes: int = 65536; session_max_read_total: int = 1048576
+    session_max_read_bytes: int = 65536; session_max_read_total: int = 196608   # 一次读与整段会话的读（read_trajectory 与 read_file 合计）
+    session_compact_tokens: int = 120000          # 上一回合的输入过此数，较早的工具输出与写入文本换成一行说明
     diagnose_max_cases: int = 60; diagnose_successes: int = 6
     causes: tuple = CAUSES; mechanizable: tuple = MECHANIZABLE
     priors: dict = {"tool": (0.3, 0.3), "hook": (0.3, 0.3), "skill": (0.08, 0.1), "prompt": (0.08, 0.1),
@@ -26,10 +27,12 @@ class Settings:
     screen_passing_sample: int = 6; screen_min_net_flips: int = 0; screen_min_fixes: int = 1
     screen_max_sample_regressions: int = 1; thin_screen_tasks: int = 3
     removal_zero_credit_rounds: int = 3
+    holdout_share: float = 0.4                  # 留出的 train 题：R 看不到，V3 只在这里筛
+    gate_every: int = 2                          # 每几轮付一次 gate：其余轮的最优候选先带着（carry），下一次 gate 一起评
     round_share: float = 0.25                    # 每轮研究份额占根的比例上限（一轮的账户就是这么大）
 ```
 
-先验按 DESIGN §6.4：文字层按三次 final 的读数（均值低、不确定度小），代码层按外部读数给高不确定度，所以探索名额先落在代码层。合并规则：数量上限 cap，筛选与通过门槛 floor，`causes`、`mechanizable` superset（只能多），`priors` fixed。
+先验按 DESIGN §6.4：文字层按三次 final 的读数（均值低、不确定度小），代码层按外部读数给高不确定度，所以探索名额先落在代码层。合并规则：数量上限 cap，筛选与通过门槛 floor（`holdout_share` 也是 floor：只能留出更多），`causes`、`mechanizable` superset（只能多），`priors` fixed。
 
 ## 3 一轮（`round.py`）
 
@@ -43,12 +46,13 @@ def run_round(activity, index: int, *, out) -> RoundResult
 
 `measure → evidence → diagnosed → allocated → implemented → verified → screened → gated → installed | rejected → credited`
 
+- **研究部分与留出部分**：train 题按 `holdout_share` 分两部分，整个活动固定：family 按 K 的 `gate.order_seed` 与 family 名的哈希排序，整族留出，加上会超过份额的那一族跳过（至少留一道题在研究部分）。诊断覆盖所有失败题；R 只看研究部分：它的案例、成功轨迹、可读的 session、`predicted_affected`、toolcheck 与回放都在研究部分；从留出题的轨迹蒸馏出的 memory 条目不进 R 的输入；给 R 的台账与剧本里，留出题号换成计数，文字里的题号换成“<a held-out task>”；检查的报错对留出题和非 train 题用同一句话，不能拿来试探哪些题被留出。V3 只在留出部分筛选。这样筛选量的是候选能不能修好它没见过的同类题（finance-v2 的两轮里，筛选在 R 研究过的题上净 +1～+3，dev 上增益都是 0）。`holdout_share` 为 0 时不留出，筛选回到声称的题（测试用）。
 - **measure**：当前 W（活跃 release 的包）在每道 train 题上要有一次有效读数；第 0 轮用基线的读数，装入之后缺的题现量（run 的 role `measure`，候选名 `train:<release 短 ref>:r<i>`：每轮一个 run，一轮被预算拒掉的尝试下一轮重读，不会被当成记录交回；读数按包汇总，记功与下一轮共用）。
 - **stop**：没有失败的 train 题 → `nothing_to_fix`；研究份额不够付下一档 → `budget`；会话没有候选、没有固定候选 → `no_candidate`。停下也写台账。停下的一轮不再续跑（它的份额已用完），`cycle` 再跑时从下一轮接着。
 - **续跑**：会话一结束，它的声明与文件就记进 `round.json`（`session_result`），之后断了只重验、不重付会话；这一轮自己的装入移动了活跃 release（`install:<round_id>` 的收据是 installed）而 gated 一步还没保存时照常续跑（gate 从记录重放、装入重放是空操作）；台账行在一轮里按内容去重，续跑写同一行拿到记录里那一行。
 - 一轮的花费记在 `<scope>:round-<i>` 账户（上限 `round_share × [budget] usd`），下分 `measure`、`diagnose`、`session`、`screen`、`gate`、`policy` 子账户，报告按它们单列。
 
-`cycle --until round-K` 依次跑第 0～K 轮；连续 `schedule.patience` 轮没有装入就停。
+`cycle --until round-K` 依次跑第 0～K 轮；连续 `schedule.patience` 个没有进展的轮就停：没装入、且付了 gate 或没有候选可累积的轮算闲置；累积了候选的 carry 轮不计（§9.2）。
 
 ## 4 证据（`runtime/trace.py` + `improver/evidence.py`）
 
@@ -105,12 +109,14 @@ class Assignment(Record): cause_id; kind; slots: int; exploration: bool; reason:
 def allocate(causes, estimates, *, settings, line, kinds_allowed, history: Ledger, train_available=False) -> list[Assignment]
 ```
 
+0. 有留出时，只分配研究部分至少 max(`toolcheck_min_pass`, `replay_min_triggers`) 道题、留出部分至少 1 道题的 cause（没分配的记在台账 `allocated` 行的 `not_assigned`，带两部分的题数）：R 要有 V2a、V2b 需要的案例，V3 要有留出题可筛（finance 每族一道题，0.4 留出时 5 道题的簇可能一道留出题都没有，2 道题的簇研究部分只剩 1 道）。
 1. 簇可用的 kind：可机械化 → tool、hook、skill、prompt；否则 → skill、prompt；cause ∈ `LOOP_CAUSES` 再加 agent、config、vendor（L5）。都要在 K 的 `harness.kinds` 里。memory 不派给 R：R 不能写 memory，库的快照是固定候选（§10）。
 2. 分数 = `mean + unc`（上界）；簇按题数从大到小，前 `k` 个簇各给分数最高的 kind（同分取靠前的，代码类在前）。
 3. 探索：`explore_slots` 个名额换成该 cause 上 `n == 0` 的 kind，代码类优先。
-4. 代码保证：有可机械化簇而指派里没有 tool/hook → 最后一个名额换成最大可机械化簇的代码类；上一轮台账记了这个 cause 的 `no_code_candidate` → 这一轮它的代码名额 `slots = 2`。
-5. L5 每轮 ≤ `l5_slots`，只给 `LOOP_CAUSES` 的簇。
-6. L6（model）：`stalled(line, 代码与文字类, stall_rounds)` 且 `train_available`；阶段 3 训练链没接上，`train_available` 恒为假，台账记 `l6_unavailable`。
+4. 没用上的名额：会话结束时，R 声明的候选少于它能声明的数（`min(k, 名额之和)`），而指派里有 (cause, kind) 一个候选都没声明的，台账记 `unused`，估值按这个名额的观测记一次（修复 0），所以探索不会一直落在 R 不去做的那一处。
+5. 代码保证：有可机械化簇而指派里没有 tool/hook → 最后一个名额换成最大可机械化簇的代码类；上一轮台账记了这个 cause 的 `no_code_candidate` → 这一轮它的代码名额 `slots = 2`。
+6. L5 每轮 ≤ `l5_slots`，只给 `LOOP_CAUSES` 的簇。
+7. L6（model）：`stalled(line, 代码与文字类, stall_rounds)` 且 `train_available`；阶段 3 训练链没接上，`train_available` 恒为假，台账记 `l6_unavailable`。
 
 ## 7 编码会话（`session.py`）
 
@@ -129,12 +135,24 @@ TOOLS = ("list_files", "read_file", "write_file", "edit_file", "delete_file", "r
 ```
 
 - 模型循环在宿主（研究模型经计量 provider，每回合先预留后结算），文件树在 worker（`/work`：`package/` 只读、`inputs/` 只读、`candidates/<dir>/` 可写；第一次写某个 dir 时它从当前包复制）。
-- `inputs/`：`assignments.json`（簇、kind、名额）、`causes.json`（案例：题号、cause、说明、证据 ref、失败断言类型）、`successes.json`（成功轨迹的 session）、`ledger.json`（台账的 train 投影）、`scoreboard.json`、`playbook.md`、`histogram.json`（dev 失败类型与计数）、`base_tools.json`、`package_api.md`（包侧契约：ctx、hook 站点的事件与返回、工具与 agent 入口、toolcheck 脚本、manifest 的形状）。
-- `read_trajectory(session, offset?, limit?)`：重建的轨迹（JSON），只限 `readable`（本轮的 train session）；按 `session_max_read_bytes` / `session_max_read_total` 截断。`search_trace(query)`：TraceStore 的 FTS，只限 train。
+- `inputs/`：`assignments.json`（簇、kind、名额）、`causes.json`（只有研究部分的案例：题号、cause、说明、证据 ref、失败断言类型；留出部分只给题数）、`successes.json`（成功轨迹的 session）、`ledger.json`（台账的 train 投影，留出题的题号换成计数）、`scoreboard.json`（每类候选在留出部分的修复、退步与净值）、`playbook.md`、`histogram.json`（dev 失败类型与计数）、`base_tools.json`、`package_api.md`（包侧契约：ctx、hook 站点的事件与返回、工具与 agent 入口、toolcheck 脚本、manifest 的形状）。
+- `read_trajectory(session, offset?, limit?)`：重建的轨迹（JSON），只限 `readable`（本轮的 train session）；按 `session_max_read_bytes` / `session_max_read_total` 截断；`read_file` 同样计入这两个上限（会话的转写每回合整段重发）。下一次调用要发的上下文（按文本估算，3 字一 token）超过 `session_compact_tokens` 时，除最近 4 条（不够就 2 条、1 条）之外的工具输出与写入文本换成“已省略，重读可见”的一行，直到降到阈值的 0.6；被省略的读取把字节还给读取总量，重读不会被拒；两次压缩之间每次调用都是上一次的延伸（缓存）。回复被输出上限截断时告诉 R 写小一点；连续两次截断结束会话。`search_trace(query)`：TraceStore 的 FTS，只限 train。
 - `run_check(dir, declaration)`：对该目录当前文件跑 V0～V2，返回逐档结果的文本；`run_tests(dir)`：只跑包测试。都不付费。
 - `finish(candidates)`：每个是一份声明。声明不全或 dir 没写过 → 工具错误，R 可以在上限内再 finish。`finish([])` 直接结束会话（R 认为没有可做的）。超出 `session_max_turns` / `session_max_edits` 即结束，已声明的候选照常验收；没有声明则本轮没有 R 的候选。
-- 验收：每个候选跑一次阶梯；没过的把 Verdict 文本退回会话修订一次（`revise`），修订只改文件、不改声明；仍不过 → invalid。
+- 验收：每个候选跑一次阶梯；没过的把 Verdict 文本退回会话修订一次（`revise`），修订只改文件、不改声明（声明新目录是工具错误）；仍不过 → invalid。
+- 提供方失败（订阅限额、超时用尽）或 Ctrl-C：会话的消息、计数与候选目录的文件存进 `round.json` 的 `session_checkpoint`，异常照常抛出；同一轮再跑时把候选目录原样恢复（先删包里有而它没有的文件，再按增量从小到大写；任何一步被拒就报错、检查点留着），从那一回合接着，已付的回合不再付。worker 崩溃或进程被杀时没有检查点，会话重付。会话一结束，候选就记进 `session_result`。
+- 诊断与剧本的回复被拒、被截断或读不出 JSON：不算答案，不进缓存（诊断记 other 并注明，下一轮再问）；剧本保留原有的教训。
 - 提示文本在 `improver/prompts/{diagnose,propose,playbook}.md`，哈希进 `ImproverPolicy`。
+
+### 7.1 组合候选（2026-10-10 修订）
+
+finance-v2 的两轮里 R 每个候选只改一种组件（一个工具、一个技能），每个只动 2～3 道题，到 dev 增益为 0。一个机制常常要几个载体一起才起作用：一个工具、一个在该用它的步骤上提醒或强制调用它的 hook、一条说明何时用它的技能。所以：
+
+- 一个候选仍是**一个机制**，但可以带多种组件：`kind` 是指派的主类型（tool / hook / skill / prompt），其余是辅助组件，只能是 tool、hook、skill、prompt 四类；agent、config、vendor 仍各自单独成候选。
+- V0 的声明检查：主类型的组件必须存在（名字或站点对得上）；辅助组件记进 `Verdict` 与台账的 `kinds`。
+- 阶梯按**出现的组件类型取并集**：有 tool 就跑 V2a，有 hook 就跑 V2b，有 skill 就跑 V2c；主类型的档必须过，辅助类型的档也必须过（一个不触发的 hook、一条够不着的技能不该进包）。
+- V3 的条件记功按候选改动的全部 tool / hook / skill 组件取并集：任一组件在该题留下足迹即算条件修复；估值仍按主类型更新。
+- 提示词相应改：一个机制可以带几个载体，但不要把两个机制塞进一个候选。
 
 ## 8 验收阶梯（`verify/`）
 
@@ -147,11 +165,20 @@ def run_ladder(files, decl, *, ctx: VerifyContext) -> Verdict
 # VerifyContext: parent、seed、core、limits、objects、worker、suite、evidence、forbidden 字面量、train 题文本、embed
 ```
 
-- **V0 静态**（`verify/static.py`）：`check_shape`（含上限、manifest、vendor 保护文件）；diff 的 kind ⊆ K 的 `harness.kinds`；hook 站点 ⊆ K 的 `sites`；`memory/` 未改；相对种子改动行的字面量；改动的 `.py` 不新增 import `socket`、`subprocess`、`ctypes`、`pickle`、`multiprocessing` 等，不新增调用 `os.system`/`os.popen`/`os.exec*`/`os.spawn*`/`eval`/`exec`（按名字匹配，`import os as o`、`from os import system` 解析成原名）；声明与 diff 一致（声明的 kind 在 diff 的 kinds 里；tool 的 site 是包里新增或改动的工具名，hook 的 site 是改动的 hook 所在站点，skill 的 site 是技能名）；`predicted_affected` 都是 train 题。
+- **V0 静态**（`verify/static.py`）：`check_shape`（含上限、manifest、vendor 保护文件）；diff 的 kind ⊆ K 的 `harness.kinds`；hook 站点 ⊆ K 的 `sites`；`memory/` 未改；相对种子改动行的字面量；改动的 `.py` 不新增 import `socket`、`subprocess`、`ctypes`、`pickle`、`multiprocessing` 等，不新增调用 `os.system`/`os.popen`/`os.exec*`/`os.spawn*`/`eval`/`exec`（按名字匹配，`import os as o`、`from os import system` 解析成原名）；声明与 diff 一致（声明的 kind 在 diff 的 kinds 里；tool 的 site 是包里新增或改动的工具名，hook 的 site 是改动的 hook 所在站点，skill 的 site 是技能名）；`predicted_affected` 都是研究部分的 train 题；`cause_id` 是本轮指派的 cause 之一（固定候选除外）。
 - **V1 单元**（`verify/unit.py`）：`runtime.worker.check_package`（probe、smoke、包测试），夹具是一道 train 题的新 episode。
-- **V2a toolcheck**（`verify/toolcheck.py`）：声明里每道声称的、当前 W 失败的 train 题的脚本（别的题的脚本不算通过）：该题新 episode → worker 装候选 → `check` op（世界经可写 broker）→ `episode.score()`；要求脚本调用了 site 指的工具，通过 ≥ `toolcheck_min_pass` 道。只回传 `{task_id: {passed, failed_kinds}}`，不回传断言参数。
-- **V2b 回放**（`verify/replay.py`）：从 transcript 重建站点事件——`before_run`（任务、system）、`before_model`（每次 act 调用的 messages 与工具）、`before_tool` / `after_tool`（每个工具调用与它在下一次调用里的结果）、`after_turn`（一个回合的结果）、`on_finish`（finish 的 reason 与最后的文字）——逐个经 `hook` op 调候选在该站点的 hook；返回非 none 的 action 算触发；声称的失败题上触发 ≥ `replay_min_triggers` 道；报告通过样本上的误触发率。
-- **V2c 可达**（`verify/reach.py`）：技能的名字与描述对 train 题文本的相似度 ≥ `reach_min_score` 的题，除去 `predicted_affected`，≥ `reach_min_tasks` 道。向量：K 开着 memory 时用 sidecar 的 bge-small，否则用确定的词袋向量。
+- **V2a toolcheck**（`verify/toolcheck.py`）：声明里每道声称的、当前 W 失败的研究部分 train 题的脚本（别的题的脚本不算通过）：该题新 episode → worker 装候选 → `check` op（世界经可写 broker）→ `episode.score()`；要求脚本调用了 site 指的工具，通过 ≥ `toolcheck_min_pass` 道。只回传 `{task_id: {passed, failed_kinds}}`，不回传断言参数。
+- **V2b 回放**（`verify/replay.py`）：从 transcript 重建站点事件，形状与 stirrup 种子交给 hook 的一致——`before_run`（任务、system）、`before_model`（每次 act 调用的 messages 与工具）、`before_tool` / `after_tool`（每个非 finish 的工具调用与它的结果；被阻止或跳过的没有 after_tool）、`after_turn`（一个回合的结果，`call_id`、输出截到 4000 字）、`on_finish`（reason 为 finish 或 implicit，final_text 是 finish 的理由，pushbacks 是此前的退回次数；连续纯文字回复变成的隐式 finish 也在）——按 manifest 顺序，同一站点上排在候选前面、在记录里阻止了这一次调用（before_tool 的 block）或退回了这一次 finish（on_finish 的 pushback）的 hook 先答，候选不会被问到，这个事件不给它；逐个经 `hook` op 调候选在该站点的 hook；返回非 none 的 action 算触发；声称的失败题（研究部分）上触发 ≥ `replay_min_triggers` 道；报告研究部分通过样本上的误触发率。
+- **V2c 可达**（`verify/reach.py`）：技能的名字与描述对 train 题文本的相似度 ≥ `reach_min_score` 的题，除去 `predicted_affected`，≥ `reach_min_tasks` 道。向量：确定的词袋向量（`lexical_embed`），`reach_min_score` 按它校准；不用 sidecar 的 bge-small（它给无关文本 0.5 以上，0.2 会放过一切描述）。
+
+### 8.1 V2a 的两种证明：脚本与探针（2026-10-10 修订）
+
+finance-v2 里 R 两轮都没为 arith_mismatch 写工具：V2a 要求脚本把整道题做完才算过，对计算、比对一类的工具门槛过高。改为两种证明，任一种够 `toolcheck_min_pass` 道题即过：
+
+- **脚本**（原样）：`scripts[task_id]` 做完整道题，世界按真实断言评分，须调用了声明的工具。这是强证明。
+- **探针**（新）：`probes[task_id] = [{"args": {...}, "expect": "<子串或 null>"}, ...]`。宿主在该题的新世界里装载候选，对每个探针调用一次声明的工具（经可写 broker，世界用完即弃），要求没有 `is_error`、输出含 `expect`（给了的话）。这证明工具在真实世界的接口上能跑、输出对得上 R 从轨迹里抽出的输入；它不证明用它能做完任务，那是 V3 的事。
+- 一道题两种都给时以脚本为准；回传给 R 的仍只有通过与否、失败断言的类别和探针的错误文本（截断）。
+- `Declaration` 多一个 `probes` 字段；V0 校验形状（args 是对象，expect 是字符串或 null）。
 
 ## 9 筛选 V3（`screen.py`）与 gate V4
 
@@ -164,11 +191,29 @@ def pick_best(results, settings) -> ScreenResult | None
 def gate(activity, candidate_package_ref, *, round_id, account) -> dict           # V4：evaluate_task + 装入
 ```
 
-- 失败集 = (声称的题 ∪ 簇的题) ∩ 当前 W 仍失败的 train 题；样本 = `screen_passing_sample` 道当前通过的 train 题（按 `order_seed` 与轮次抽，重跑同一轮抽到同样的）。失败集少于 `thin_screen_tasks` 道记 `thin`。
+- 失败集 = 留出部分里当前 W 仍失败、诊断归到候选所属 cause 的题（固定代码的候选：留出部分里所有失败题）；样本 = `screen_passing_sample` 道留出部分里当前通过的题（按 `order_seed` 与轮次抽，重跑同一轮抽到同样的）。失败集为空 → 不筛（not_run）；少于 `thin_screen_tasks` 道记 `thin`。memory 的库从全部 train 题学，它的快照与升级出的技能在留出部分上的筛选不是迁移检验，gate 才是。`holdout_share` 为 0 时：失败集 = (声称的题 ∪ 簇的题) ∩ 当前 W 仍失败的 train 题，样本取自所有通过的 train 题。
 - 运行：`run_arm(release=W_base, package=候选, split="train", candidate=f"r{i}:{dir}", role="screen")`。
 - 条件记功：修复只在 `footprint` 为真的题上算（§4）；退步在样本上算，不论足迹。净翻转 = 条件修复 − 退步。资格：净翻转 ≥ `screen_min_net_flips`、条件修复 ≥ `screen_min_fixes`、退步 ≤ `screen_max_sample_regressions`；最优者（净翻转大，再成本低，再声明顺序）进 V4。
-- 付费之前核价：筛选还没记录的尝试数（续跑时已付的不再算）加记功一步对胜者的 train 重读（它的筛选没读到的题）× W_base 的 train 每次尝试成本，加 gate 的界（dev 题数 ×（1 + 确认次数）+ 对照池的缺口，`evaluate.gate.shortfall`）× W_base 的 dev 每次尝试成本，要放得进本轮账户的余额；没有成本读数就无法核价，不开始。核价用均值，单次调用仍按定价的上界预留，所以核价通过后预算仍可能拒掉一次尝试，这一轮就停在 `budget`。
+- 付诸任何研究调用之前（诊断之前）先核一个下限：gate、一次小筛选（通过样本加 `thin_screen_tasks` 道失败题）与将要付的研究（每个案例一次诊断、每回合一次会话，按活动里研究调用的均价；还没有记录时不算）的价，加下面的余量，放不进本轮的余额 → 停在 `budget`，不付诊断与会话；没有成本读数 → 停在 `unpriced`。
+- 付费之前逐个核价：筛选按 R 的候选（声明顺序）、固定代码的候选、库快照（它声称所有失败题）最后的顺序，一个个加进来，只要已加的筛选、它自己与 gate 放得进余额就收下；放不下的记台账 `screened`（outcome not_run，原因 budget），一个都放不下才停在 `budget`。价＝还没记录的筛选尝试数（续跑时已付的不再算）× W_base 的 train 每次尝试成本，加 gate 的界（dev 题数 ×（1 + 确认次数）+ 对照池的缺口，`evaluate.gate.shortfall`）× W_base 的 dev 每次尝试成本，乘以 1.15 再加两次调用的上界，要放得进本轮账户的余额（每次调用都按上界预留，所以一轮永远花不到最后一个上界；两个上界让最后一臂不至于串行）；没有成本读数就无法核价，不开始。gate 开跑之前按胜者的筛选成本再核一次 gate 的价，放不下就停在 `budget`，不付一个跑不完的 gate；也再读一次 claude CLI 的版本，与活动记下的不同就停在 `cli`。记功一步对新 W 的 train 重读不在筛选的价里（只在装入后才付）：预算拒掉它时装入照常，这次装入不记功（台账 credited 写明 not credited），下一轮照常量新 W。
 - V4：冻结的 gate 模板（`gate_template` 事件）填上候选包、对照包、父 release，经 `evaluate.gate.evaluate_task`；对照池是 W_base 在 dev 上同条件的有效读数（role `base` 或 `control`；基线的读数在里面；装入之后新 W 在 dev 上的读数是它那次 gate 的被测臂，不进池，所以它的第一次 gate 要补满对照），补缺口的 run 是这一次 gate 的（候选名 `control:<W 短 ref>:<round_id>`，一次被拒的补读下次 gate 重读）；被测臂 `run_arm(package=候选, split="dev", role="subject")`。收据登记后若 accepted：`Releases.candidate` → `install(..., operation_id=f"install:{round_id}")`（与 Execution 的操作 id 不同名，避免读到别人的记录）。
+
+### 9.1 留出部分为空的 cause（2026-10-10 修订）
+
+整族留出后，一个 cause 的题可能全在研究部分（finance-v2 的 real_date：研究 5 / 留出 0）。原规则不分配它，于是最可机械化的 cause 永远分不到名额。改为：研究部分 ≥ max(`toolcheck_min_pass`, `replay_min_triggers`) 道题即可分配；留出部分为空时，V3 的失败集退回研究部分里声称且仍失败的题，`ScreenResult.in_sample = true`，台账与报告标明"样本内"；资格规则不变，gate 仍是裁决。
+
+### 9.2 gate 的节奏：carry 与 `gate_every`（2026-10-10 修订）
+
+每轮一次 25 题 dev gate，噪声约 ±2 题，一个只动 1～2 题的组件单独过不了，几个这样的组件也就永远累积不起来。改为每 `gate_every` 轮付一次 gate：
+
+- **carry 轮**（`(i + 1) % gate_every != 0`）：V3 筛出的最优候选不付 gate，记为带着的包（`rounds/carry.json`：`package_ref`、`dirs`、`since`），台账 `carried`。下一轮的 R 从带着的包起（它的 train 读数在下一轮的 measure 里补，所以诊断看到的是带着的包的失败），对照仍是主线 W0 的池化读数。
+- **gate 轮**：本轮的最优候选（已经含带着的改动）付 gate；本轮没有候选而有带着的包时，gate 带着的包本身。accepted 即装入整个累积的包并清空 carry；rejected 则清空 carry（台账 `carry_dropped`），下一轮从主线重来。
+- `schedule.patience` 数**没有进展**的轮：没装入、且（付了 gate，或筛选后没有候选可累积）的轮算闲置；累积了候选的 carry 轮不计（它的结果在下一个 gate 轮里读）。`gate_every` = 1 时没有 carry 轮，规则就是原来的"连续 patience 轮没有装入就停"；只数 gate 轮会让没有候选的轮空转到 `rounds` 上限，钱不安全。finance-v4 第 2 轮（carry 轮，三个候选都不可累积）按此计入，cycle 在两轮无进展后结束。`schedule.rounds` 的 preset 上限从 3 放到 8。
+- 代价：carry 轮省下 gate（约 $21），多付带着的包的 train 读数（约 $25），一轮花费大致不变。
+
+### 9.3 部分得分进 gate（2026-10-10 修订）
+
+严格通过率是任务级 0/1，25 题的分辨率是 4 个点；部分得分（通过的断言比例）是连续的，同一次读数的功效高一个量级。gate 同时报两者，接受规则二选一（EVALUATE §5.1）：严格增益 ≥ `min_gain`（原规则），或部分得分的配对增益 ≥ `partial_min_gain` 且其区间不含 0、严格增益 ≥ 0、退步率与成本项照旧；确认读数单独也要满足所选的那条。对外的 C1 仍按严格口径，部分得分并列披露。
 
 ## 10 档案、记功、台账、策略、固定候选
 
@@ -188,12 +233,12 @@ def removal_candidates(credits_by_round, package, *, zero_rounds) -> list[tuple[
 
 # ledger.py
 STAGES = ("measured", "diagnosed", "allocated", "declared", "verified", "screened", "gated", "installed", "rejected",
-          "credited", "removal_proposed", "no_code_candidate", "vocabulary_added", "l6_unavailable", "stopped", "playbook")
+          "credited", "removal_proposed", "no_code_candidate", "unused", "vocabulary_added", "l6_unavailable", "stopped", "playbook")
 class Ledger:    # ledger/experience.jsonl
     def row(self, stage, **fields) -> dict
     def rows(self, *, stage=None, round_id=None) -> list[dict]
-    def projection(self, *, line) -> list[dict]     # 给 R：只有 train 题号；dev 只有计数
-    def scoreboard(self, line) -> dict              # predicted_affected 命中 / 未命中 / 未预测的退步
+    def projection(self, *, line, hide=()) -> list[dict]   # 给 R：只有 train 题号（hide 里的留出题换成计数）；dev 只有计数
+    def scoreboard(self, line) -> dict              # 每类候选在筛选上的修复、退步、净值（计数）
 
 # policy.py
 @dataclass(frozen=True)
@@ -207,7 +252,7 @@ def export_policy(activity) -> str;  def import_policy(activity, policy_ref) -> 
 - R 的策略（估值与剧本）在活动内随台账更新；release 里的 `improver_ref` 在一个活动内保持 R0，活动结束时 `export_policy` 产出下一个活动的 R1（DESIGN §6.9）。
 - 升级的技能装入后，记功一步调 `MemoryService.supersede`：流的台账里条目 `superseded`，live store 退役它，live 库文件里没有它（MEMORY §8）。memory 条目的分类按（条目、请求、模型）缓存在 `rounds/notes.jsonl`。
 - 固定候选的目录名（`memory-snapshot`、`promoted-`、`remove-` 开头）R 不能用。
-- 固定候选（每轮 ≤ `fixed_per_round`，先快照、再升级技能、再删除）：library 阶段的快照候选（`library_snapshot` 事件，outcome candidate，还没进过阶梯的）走 V0 → V3；memory 升级出的技能候选走 V0、V2c → V3；删除候选走 V0 → V3。它们和 R 的候选一起筛选，最优者进 V4。
+- 固定候选（每轮 ≤ `fixed_per_round`，先快照、再升级技能、再删除）：library 阶段的快照候选（`library_snapshot` 事件，outcome candidate，还没进过阶梯的；快照文本是 library 阶段按 K 的 `max_memory_bytes` 装好的，MEMORY §7.1，原样放到当前 W 上，同一个 K 下照样放得下）走 V0 → V3；memory 升级出的技能候选走 V0、V2c → V3；删除候选走 V0 → V3。它们和 R 的候选一起筛选，最优者进 V4。
 
 ## 11 不变量
 

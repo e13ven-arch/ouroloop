@@ -108,8 +108,9 @@ def smoke(activity, *, tasks=None, limit: int | None = None, checks_only: bool =
     for line in activity.drift:
         out(f"DRIFT      {line}")
     threshold = float(activity.k["bench"]["near_duplicate_threshold"])
-    dups = ab.near_duplicates(activity.suite, threshold)
-    out(f"families   {len(splits.splits)} groups; {len(dups)} task pairs above overlap {threshold}")
+    # train and dev only: the test tasks' assertions are not read before the final plan is sealed (PLAN rule 6)
+    dups = ab.near_duplicates(activity.suite, threshold, ids=[*splits.ids("train"), *splits.ids("dev")])
+    out(f"families   {len(splits.splits)} groups; {len(dups)} train/dev task pairs above overlap {threshold}")
     dev = splits.ids("dev")
     chosen = [t for t in (tasks or []) if t in dev] if tasks else dev[:int(activity.k["bench"]["smoke_tasks"])]
     chosen = chosen[:limit] if limit else chosen
@@ -165,7 +166,7 @@ def seed_literal_scan(activity) -> dict:
     for tid in activity.splits.ids("train"):
         grading = activity.suite.grading(tid)
         rows.append({"task_id": tid, "assertions": [dict(a) for a in grading.assertions],
-                     "state": grading.initial_state})
+                     "state": grading.initial_state, "prompt": activity.suite.tasks[tid].trigger})
     banned = forbidden(literal_index(rows))
     from ..harness.seed import seed_files
     found = findings(seed_files(activity.k["harness"]["seed"], core=activity.k), None, banned)
@@ -180,7 +181,8 @@ def gate_template(activity) -> TaskEvalPlan:
     gate = GatePlan(min_groups=int(g["min_groups"]), min_gain=float(g["min_gain"]),
                     max_regression_rate=float(g["max_regression_rate"]), missing_cost_policy=g["missing_cost_policy"],
                     regression_drop=g.get("regression_drop"), cost_beta0=g.get("cost_beta0"),
-                    cost_beta1=g.get("cost_beta1"), min_tasks=g.get("min_tasks"))
+                    cost_beta1=g.get("cost_beta1"), min_tasks=g.get("min_tasks"),
+                    partial_min_gain=g.get("partial_min_gain"))
     tasks = tuple(activity.splits.ids("dev"))
     if gate.min_tasks is not None and len(tasks) < int(gate.min_tasks):
         raise ValueError(f"freeze refused: the gate runs {len(tasks)} dev tasks, fewer than its min_tasks "
@@ -213,10 +215,18 @@ def freeze(activity, *, out: Callable[[str], None] = print) -> dict:
     root = activity.root_account()
     out(f"budget     root {activity.scope_id}: {root.remaining()['limits'] or 'no dollar limit'}, "
         f"set aside {root.remaining()['allocations'] or 'nothing'}")
-    if "final" in activity.config:
-        plan = final_plan(activity)
-        if len(plan.arms) < 2:
-            raise ValueError("freeze refused: the final compares W* with W0, and nothing was installed yet")
+    plan = final_plan(activity) if "final" in activity.config else None
+    unfinished = sorted(p.parent.name for p in (activity.root / "rounds").glob("r*/round.json")
+                        if json.loads(p.read_text(encoding="utf-8")).get("status") not in ("done", "stopped"))
+    if plan is not None and len(plan.arms) < 2:
+        out("final      not sealed: the final compares W* with W0, and nothing is installed yet; freeze again when "
+            "the rounds are over")
+    elif plan is not None and unfinished:
+        out(f"final      not sealed: round {', '.join(unfinished)} is not finished, and a round can still install; "
+            f"freeze again when the rounds are over")
+    elif plan is not None:
+        out(f"final      sealing W* = the active release {short(activity.active_release().ref())}: a round after "
+            f"this one cannot change the final, so seal when the rounds are over")
         estimate = final_estimate(list(activity.results.all()), plan, plan_ref=None,
                                   execution_of=lambda ref: _execution(activity, ref), pricing=activity.pricing(),
                                   concurrency=activity.concurrency)
@@ -245,7 +255,7 @@ def _execution(activity, release_ref):
 def baseline(activity, *, limit: int | None = None, out: Callable[[str], None] = print) -> dict:
     """W0 on train (once) and on dev `control_readings` times, each reading its own run of the same release, so the
     pooled control starts with that many readings. A restarted baseline runs only what is missing."""
-    require(startup_checks(activity, phase="baseline"), phase="baseline")
+    require(startup_checks(activity, phase="baseline"), phase="baseline", activity=activity)
     release = activity.active_release()
     account = activity.account("baseline")
     train = activity.splits.ids("train")[:limit] if limit else activity.splits.ids("train")
@@ -301,11 +311,14 @@ def library(activity, *, out: Callable[[str], None] = print) -> dict:
     a time: each task's first encounter under W_base with the live library (leave-one-out), a failed one tried once
     more with its failed checks as a note, then the batch's trajectories (the baseline's too) summarised by ReMe
     through the metered bridge, checked and written, the first encounters credited. At the end the readout, and —
-    unless D <= abort_d or the library is empty — the snapshot as a candidate package for the improver's ladder
-    (stage 3). Run again, it continues where it stopped and pays for nothing on record. A failure of the memory's
-    sidecar pauses the phase (status `paused`): nothing is recorded as lost for it."""
-    require(startup_checks(activity, phase="library"), phase="library")
+    unless D <= abort_d, the library is empty or none of it fits — the snapshot as a candidate package for the
+    improver's ladder (stage 3): its rows as a package carries them, ranked by credit and kept within K's
+    max_memory_bytes, what it left out recorded in the `library_snapshot` event (MEMORY §7.1). Run again, it
+    continues where it stopped and pays for nothing on record. A failure of the memory's sidecar pauses the phase
+    (status `paused`): nothing is recorded as lost for it."""
+    require(startup_checks(activity, phase="library"), phase="library", activity=activity)
     from ..contracts import MemorySidecarError
+    from ..memory.track import MemoryStepError
     from ..memory import snapshot_digest
     from ..memory.settings import Settings
     from ..memory.snapshot import snapshot_candidate, stream_files
@@ -327,7 +340,8 @@ def library(activity, *, out: Callable[[str], None] = print) -> dict:
     b = {t: sum(int(r.success) for r in rows) / len(rows) for t, rows in readings.items()}
     trace = TraceStore(activity.root, activity.splits.split_of)
     rows = [{"task_id": t, "assertions": [dict(a) for a in activity.suite.grading(t).assertions],
-             "state": activity.suite.grading(t).initial_state} for t in train]
+             "state": activity.suite.grading(t).initial_state, "prompt": activity.suite.tasks[t].trigger}
+            for t in train]
     banned = forbidden(literal_index(rows))
     account = activity.account("library")
     retries = int(activity.k["gate"]["max_infrastructure_retries"])
@@ -427,14 +441,19 @@ def library(activity, *, out: Callable[[str], None] = print) -> dict:
                 f"{t} first={int(firsts[t].success) if t in firsts else '-'}"
                 f"{' retry=' + str(int(seconds[t].success)) if t in seconds else ''}"
                 f" +{len(done[hashes[t]].get('added') or ())}" for t in batch) + f"; {len(step.active())} live")
-        result = step.finish()
-    except MemorySidecarError as e:
+        result = step.finish(max_bytes=limits.max_memory_bytes)
+    except (MemorySidecarError, MemoryStepError) as e:
+        # a step that could not be trusted stores nothing; the summaries that passed are on the ledger
         return paused(e)
     finally:
         service.stop()
-    ro, snapshot = result["readout"], result["snapshot"]
+    ro, snapshot, fit = result["readout"], result["snapshot"], result["fit"]
     out(f"library    D={ro['D']} B={ro['B']} halves {ro['first_half']} -> {ro['second_half']} "
         f"(P {ro['p_second_half_better']}); entries {ro['entries']}")
+    best = fit["omitted"][0] if fit["omitted"] else None
+    out(f"library    snapshot: {fit['kept']}/{fit['entries']} entries, {fit['bytes']} bytes of K's {fit['max_bytes']}"
+        + (f"; {len(fit['omitted'])} left out by rank ({fit['rank']}), the best of them with {best['fixes']} fixes "
+           f"and {best['n_cited']} citations" if best else ""))
     outcome = {"outcome": "not_gated", "why": result["abort"]} if result["abort"] else None
     if outcome is None:
         try:
@@ -446,7 +465,7 @@ def library(activity, *, out: Callable[[str], None] = print) -> dict:
     outcome["snapshot_digest"] = snapshot_digest(snapshot)
     if not any(e.get("snapshot_digest") == outcome["snapshot_digest"] and e.get("base") == base.ref()
                for e in activity.events.read("library_snapshot")):
-        activity.events.append("library_snapshot", base=base.ref(), readout=ro, **outcome)
+        activity.events.append("library_snapshot", base=base.ref(), readout=ro, fit=fit, **outcome)
     if outcome["outcome"] == "candidate":
         out(f"library    the snapshot is a candidate: {short(outcome['package_ref'])} (the improver's ladder takes "
             f"it from V3; stage 3)")
@@ -472,7 +491,7 @@ def _import(activity, step, spec: dict) -> dict:
 
 def round_(activity, index: int, *, out: Callable[[str], None] = print):
     """One round of the improver (docs/design/IMPROVER.md §3); run again, it continues and pays for nothing done."""
-    require(startup_checks(activity, phase="round"), phase="round")
+    require(startup_checks(activity, phase="round"), phase="round", activity=activity)
     from ..improver.round import run_round
     return run_round(activity, index, run_arm=run_arm, out=out)
 
@@ -485,7 +504,7 @@ def evaluate(activity, *, out: Callable[[str], None] = print) -> dict:
     if not ref or not activity.objects.has(ref):
         raise ValueError("[rsi] final_plan_ref must name the final plan `ouroloop freeze` sealed")
     plan = FinalPlan.from_json(activity.objects.get(ref))
-    require(startup_checks(activity, phase="evaluate"), phase="evaluate")
+    require(startup_checks(activity, phase="evaluate"), phase="evaluate", activity=activity)
     account = activity.account("final")
     rows = list(activity.results.all())
     estimate = final_estimate(rows, plan, plan_ref=ref, execution_of=lambda r: _execution(activity, r),
@@ -561,11 +580,16 @@ def cycle(activity, *, until: str | None = None, out: Callable[[str], None] = pr
         key = f"round-{i}"
         if (state["steps"].get(key) or {}).get("status") not in ("done", "stopped"):
             result = round_(activity, i, out=out)
-            state["steps"][key] = {"status": result.status, "installed": result.installed, "stop": result.stop}
+            state["steps"][key] = {"status": result.status, "installed": result.installed, "stop": result.stop,
+                                   "gated": result.gated, "carried": result.carried}
             write_json(path, state)
             if result.status != "done" and result.stop and result.stop.startswith(("budget", "unpriced")):
                 return {**state, "status": "stopped", "at": key}
-        idle = 0 if state["steps"][key].get("installed") else idle + 1
+        # the patience counts gate rounds without an install; a carry round is not idle (IMPROVER §9.2)
+        if state["steps"][key].get("installed"):
+            idle = 0
+        elif state["steps"][key].get("gated") or not state["steps"][key].get("carried"):
+            idle += 1
         if until == key:
             return {**state, "status": "stopped", "at": key}
         if idle >= int(activity.k["schedule"]["patience"]):

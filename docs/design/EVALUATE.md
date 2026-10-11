@@ -112,6 +112,15 @@ class Releases:
 - 规则：点估计 ≥ `min_gain`、退步率 ≤ `max_regression_rate`、成本项 `ΔC ≤ β0 + β1·ΔS`（有 pricing 时）、有效家族数 ≥ `min_groups`；任务数 ≥ `min_tasks` 在冻结 gate 模板时检查（`activity` 的 freeze 拒绝，`judge` 不再查）；首读通过后确认复测（`confirmations` 次），合并读数再判。对照读数按 `control_pooling`（fresh 或 pooled）与 `control_readings`。
 - 收据 `GateReceipt{plan_ref, subject_ref, control_ref, parent_release, results_ref, verdict, reasons, metrics, uncertainty, costs, kind}`；各臂的全部尝试（含失败）在 results 对象里；逐题差值由 `receipt_differences` 从收据读出（`fixed / regressed / still_failing` 的 dev 题号只在收据里，不给 R）。
 
+### 5.1 部分得分的接受规则（2026-10-10 修订）
+
+`GatePlan` 多一个可选字段 `partial_min_gain`（K 的 `gate.partial_min_gain`，floor；None 即只按严格规则）。设了它时，`judge` 另算部分得分（`partial_credit`）的配对点估计与家族 bootstrap 区间，接受条件改为二选一：
+
+1. 严格：`gain ≥ min_gain`（原规则）；
+2. 部分得分：`partial_gain ≥ partial_min_gain` 且区间不含 0，并且 `gain ≥ 0`。
+
+退步率、成本项、完整性不变；有确认读数时，确认读数单独也要满足所选的那一条（严格的按 `min_gain`，部分得分的按 `partial_min_gain`）。收据的 `metrics` 多 `partial_gain`、`partial_interval`、`accepted_by`（"strict" | "partial"）；报告两者并列，对外主张仍只用严格口径。
+
 ## 6 final（V5）
 
 - `FinalPlan` 封存：任务 = 全部 test、`repeats`、臂（W0 与 W\*，可选 R1）、主张；臂名进每个 attempt id（即 session id），所以计划里 W\* 写作 `W_star`，不能进 attempt id 的臂名在构造时就拒绝；`seal` 写对象与事件，哈希由用户提交到 git（规则 6）。活动只在有装入（W\* ≠ W0）之后封存（ACTIVITY §4）。
@@ -136,6 +145,7 @@ class Releases:
 - 每次付费调用先预留后结算；一个活动一个预算根；final 的份额事先留出；续跑不重复付费。
 - `test_paid_run_safety` 的全部用例迁到 `tests/evaluate/`，名单（现有）：预留与结算一一对应、一个根、研究步计量、无法核价的候选不开始、中途耗尽作 budget_exhausted、尝试带成本、用量词表归一化、只在有界的维度上判超、崩溃后续跑只跑缺的、final 用预留的份额、完成的 final 再跑不付费、refill 记前因、中断的改进续跑、无 ref 的实验关闭不猜、freeze 的四条、价目含缓存、尝试保留缓存计数、gate 少于 min_tasks 拒绝、并发是机器设置、并发上限共享、两次确认与 economy 拒绝、速率限制记录、速率计数跨账户错误、研究会话每回合计量、final 份额装不下拒绝、final 先打印预计花费、final 估算读 W\* 的 gate 读数、份额装不下不开始、不封存、验证界核价、checks-only 在付费阶段拒绝。
 - 阶段 1 已在 `tests/evaluate/test_paid_run_safety.py`（加上 `test_evaluate_budget.py`、`test_evaluate_gate.py`）：除下面几条外的全部。等 improver（阶段 3）的：研究步计量、无法核价的候选不开始、中断的改进续跑、无 ref 的实验关闭不猜、研究会话每回合计量、验证界核价，记在 IMPROVER §13。速率限制目前只在 meter 上计数并测试（`MeteredProvider.rate_limited`），还没有写进事件或报告。
+- 失败的调用在重试前等 5 s、20 s（`RETRY_SECONDS`：断开的连接要等一会儿才回来）。请求没到模型（限流、过载，或 API 以 400 拒绝的畸形请求：空白的文本块、提示过长）释放；模型答了而答复不能用（不是一个回合、结构化输出放弃、换了模型）且提供方报了用量，按用量结算；其余（超时、子进程崩溃、没报用量）按上界记 unknown。
 - 价目的两条保守规则：一次调用的上界按输入侧最贵的单价算（缓存写入可能比普通输入贵）；某类 token 没有声明价格的调用，账本按它的上界扣，不记 $0（该尝试自己的 `cost_usd` 仍是 None，即未知）。
 - `test_record_compat`：HEAD 读得了四个旧工作区的 train/dev 记录（Results、RunManifest、transcript、release 与对象闭包）。
 

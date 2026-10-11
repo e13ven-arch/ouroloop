@@ -14,13 +14,27 @@ from pathlib import Path
 from ..contracts import append_jsonl, locked, now, read_jsonl
 
 STAGES = ("measured", "diagnosed", "allocated", "declared", "verified", "screened", "gated", "installed", "rejected",
-          "credited", "removal_proposed", "no_code_candidate", "vocabulary_added", "l6_unavailable", "stopped",
-          "playbook")
+          "credited", "removal_proposed", "no_code_candidate", "unused", "vocabulary_added", "l6_unavailable", "stopped",
+          "playbook", "carried", "carry_dropped")
 # What R reads of a row (the projection): train facts and counts. Anything else of a row stays with the host.
+TASK_LISTS = ("predicted_affected", "fixed", "regressed")       # the projected fields that name train tasks
 PROJECTED = ("id", "stage", "round_id", "candidate", "dir", "cause", "cause_id", "kind", "site", "trigger",
              "predicted_affected", "differs_from", "fixed", "regressed", "net_flips", "fixes", "outcome", "verdict",
              "gain", "fixed_count", "regressed_count", "passed", "steps", "reason", "assignments", "causes",
              "component", "credit", "names", "status")
+
+
+def _scrub(value, hide: set):
+    if isinstance(value, str):
+        for t in hide:
+            if t in value:
+                value = value.replace(t, "<a held-out task>")
+        return value
+    if isinstance(value, list):
+        return [_scrub(v, hide) for v in value]
+    if isinstance(value, dict):
+        return {k: _scrub(v, hide) for k, v in value.items()}
+    return value
 
 
 class Ledger:
@@ -49,30 +63,45 @@ class Ledger:
     def ids(self) -> set[str]:
         return {r.get("id") for r in read_jsonl(self.path)}
 
-    def projection(self, *, line: str | None = None) -> list[dict]:
-        """What R reads: every row's projected fields (train task ids and counts only)."""
-        out = []
+    def projection(self, *, line: str | None = None, hide=frozenset()) -> list[dict]:
+        """What R reads: every row's projected fields (train task ids and counts only). A task of `hide` (the
+        held-out train tasks R never sees) is left out of the lists that name tasks; a `<field>_held_out` count says
+        how many there were."""
+        hide, out = set(hide), []
         for r in read_jsonl(self.path):
             if line is not None and r.get("line") not in (None, line):
                 continue
-            out.append({k: r[k] for k in PROJECTED if k in r and r[k] not in (None, "", [], {})})
+            row = {k: r[k] for k in PROJECTED if k in r and r[k] not in (None, "", [], {})}
+            if hide:                # a held-out id inside a text (a defect screen's reason names its task)
+                row = {k: _scrub(v, hide) if k not in TASK_LISTS else v for k, v in row.items()}
+            for k in TASK_LISTS:
+                if hide and isinstance(row.get(k), list):
+                    held = [t for t in row[k] if t in hide]
+                    row[k] = [t for t in row[k] if t not in hide]
+                    if held:
+                        row[f"{k}_held_out"] = len(held)
+                    if not row[k]:
+                        del row[k]
+            out.append(row)
         return out
 
     def scoreboard(self, line: str | None = None) -> dict:
-        """How R's predictions held up on the train screens: per kind and in all, the predicted tasks that the
-        screen fixed (hits), the predicted that it did not (misses), and the regressions nobody predicted."""
+        """How each kind of candidate did on the train screens, in counts: per kind and in all, the candidates
+        screened, the conditioned fixes, the regressions and the net (the screens run on the held-out train tasks,
+        which R never sees, so a prediction cannot be matched there)."""
         board: dict = {}
         for r in self.rows(stage="screened"):
             if line is not None and r.get("line") not in (None, line):
                 continue
-            predicted = set(r.get("predicted_affected") or ())
-            fixed, regressed = set(r.get("fixed") or ()), set(r.get("regressed") or ())
+            if r.get("outcome") != "screened":
+                continue
+            fixed, regressed = len(r.get("fixed") or ()), len(r.get("regressed") or ())
             for key in ("all", str(r.get("kind") or "?")):
-                slot = board.setdefault(key, {"candidates": 0, "hits": 0, "misses": 0, "unpredicted_regressions": 0})
+                slot = board.setdefault(key, {"candidates": 0, "fixed": 0, "regressed": 0, "net": 0})
                 slot["candidates"] += 1
-                slot["hits"] += len(predicted & fixed)
-                slot["misses"] += len(predicted - fixed)
-                slot["unpredicted_regressions"] += len(regressed - predicted)
+                slot["fixed"] += fixed
+                slot["regressed"] += regressed
+                slot["net"] += fixed - regressed
         return dict(sorted(board.items()))
 
     def last_round_of(self, task_id: str) -> int:

@@ -55,6 +55,7 @@ DATED = '{"id": "m1", "internalDate": "1906718400000"}'                      # 2
 def guard():
     module = _load("middlewares/write_guard.py")
     module.reset()
+    module.STATE["today"] = __import__("datetime").date(2032, 1, 1)     # the cases' data is dated 2026-2031
     return module
 
 
@@ -123,6 +124,19 @@ def test_dates_skip_due_expiry_and_end_fields(ctx=None):
     assert g.newest_date('{"due": "2026-05-01", "end_date": "2026-05-02"}') is None
 
 
+def test_a_record_systems_stamp_and_the_workers_own_day_are_not_dates(ctx=None):
+    """HARNESS §7.1: finance-v2's anchored real_date failures read QuickBooks' MetaData and Xero's UpdatedDateUTC, the
+    simulated world's clock stamps; and nothing the data holds can be today."""
+    g = guard()
+    stamped = ('{"Id": "7", "TxnDate": "2026-02-28", "MetaData": {"CreateTime": "2031-12-30T10:00:00Z", '
+               '"LastUpdatedTime": "2031-12-30T10:00:00Z"}, "UpdatedDateUTC": "2031-12-30T10:00:00", '
+               '"date_modified": "2031-12-31", "createdAt": "2026-03-01T00:00:00Z"}')
+    assert g.newest_date(stamped) == ("2026-03-01", "createdAt")
+    g.STATE["today"] = __import__("datetime").date(2026, 3, 1)
+    assert g.newest_date(stamped) == ("2026-02-28", "TxnDate")              # today itself is the clock's
+    assert g.newest_date('{"sent": "2026-03-13"}') is None                   # so is anything after it
+
+
 def test_the_anchor_rides_on_every_act_call_once_a_date_is_read(ctx=None):
     g = guard()
     history = [{"role": "system", "content": "s"}, {"role": "user", "content": "task"}]
@@ -131,26 +145,53 @@ def test_the_anchor_rides_on_every_act_call_once_a_date_is_read(ctx=None):
     tool_turn = history + [{"role": "assistant", "text": "", "tool_calls": []},
                            {"role": "tool", "results": [{"id": "c1", "output": DATED}]}]
     answer = g.anchor(Ctx(), model_call(tool_turn, turn=2))
-    note = g.DATE_MESSAGE.format(date="2030-06-03", field="internalDate")
-    assert answer["messages"][:-1] == tool_turn and answer["messages"][-1] == {"role": "user", "content": note}
+    note = {"role": "user", "content": g.DATE_MESSAGE.format(date="2030-06-03", field="internalDate")}
+    assert answer["messages"] == tool_turn + [note]
     assert tool_turn[-1]["role"] == "tool"                                 # the history itself is not changed
-    # after a user message the note joins it rather than making two user messages in a row
-    joined = g.anchor(Ctx(), model_call(history, turn=3))["messages"]
-    assert len(joined) == 2 and joined[-1]["content"] == "task\n\n" + note
-    assert g.anchor(Ctx(), model_call(history, role="aux")) is None        # a summary call is left alone
+    # the next call keeps the note where it was given: the earlier call is a prefix of this one (the prompt cache)
+    later = tool_turn + [{"role": "assistant", "text": "", "tool_calls": []},
+                         {"role": "tool", "results": [{"id": "c2", "output": "{}"}]}]
+    again = g.anchor(Ctx(), model_call(later, turn=3))["messages"]
+    assert again == tool_turn + [note] + later[len(tool_turn):]
+    assert again[:len(answer["messages"])] == answer["messages"]
+    assert g.anchor(Ctx(), model_call(later, role="aux")) is None          # a summary call is left alone
     assert g.snapshot()["anchored"] == ("2030-06-03", "internalDate")
 
 
-def test_no_date_is_read_from_a_write_or_after_it(ctx=None):
-    """The benchmark's world stamps the records an agent creates with the real clock: a write's own result, and any
-    read after the first write, may carry the real date, so they never move the anchor."""
+def test_a_newer_date_gets_its_own_note_and_a_summary_starts_the_notes_over(ctx=None):
+    g = guard()
+    history = [{"role": "system", "content": "s"}, {"role": "user", "content": "task"}]
+    _read(g, 1)
+    first = g.anchor(Ctx(), model_call(history, turn=2))["messages"]
+    g.STATE["date"] = ("2030-07-01", "sent")                              # a newer date read later
+    grown = history + [{"role": "assistant", "text": "", "tool_calls": []}]
+    second = g.anchor(Ctx(), model_call(grown, turn=3))["messages"]
+    assert second[:len(first)] == first and "2030-07-01" in second[-1]["content"]
+    assert [m["content"] for m in second if "newest date" in str(m.get("content"))] == \
+        [first[-1]["content"], second[-1]["content"]]
+    # a summary shortened the history: one note, at its end
+    short = [{"role": "system", "content": "s"}]
+    assert g.anchor(Ctx(), model_call(short, turn=4))["messages"] == short + [second[-1]]
+    # a sub-agent's conversation (another first message) has its own notes
+    sub = [{"role": "system", "content": "sub"}, {"role": "user", "content": "look"}]
+    assert g.anchor(Ctx(), model_call(sub, turn=5))["messages"] == sub + [second[-1]]
+
+
+def test_no_date_is_read_from_a_writes_own_result_but_reads_go_on_after_it(ctx=None):
+    """The benchmark's world stamps the records an agent creates with the real clock: a write's own result never
+    moves the anchor; a read after the write does (an attempt whose first action is a write still gets its anchor,
+    HARNESS §7.1), and a stamp of today in it is left out like any other."""
     g = guard()
     _read(g, 1)
     stamped = '{"id": "r9", "created_at": "2031-10-08T12:00:00Z"}'
     write = event(2, "POST", WRITE["url"], WRITE["body"], result=stamped)
     g.ledger(Ctx([write]), after("api_fetch", WRITE, stamped, 2))
-    _read(g, 3, result=stamped, url="https://x/api/records/r9", turn=3)
-    assert g.snapshot()["date"] == ("2030-06-03", "internalDate")
+    assert g.snapshot()["date"] == ("2030-06-03", "internalDate")           # the write's result: not read
+    _read(g, 3, result='{"id": "m2", "internalDate": "1909310400000"}', url=INBOX + "2", turn=3)   # 2030-07-03
+    assert g.snapshot()["date"] == ("2030-07-03", "internalDate")           # a later read still counts
+    g.STATE["today"] = __import__("datetime").date(2030, 7, 3)
+    _read(g, 4, result='{"id": "m3", "internalDate": "1909396800000"}', url=INBOX + "3", turn=4)   # 2030-07-04
+    assert g.snapshot()["date"] == ("2030-07-03", "internalDate")           # today or later: the clock's
 
 
 def test_a_planned_time_is_not_today_whether_named_or_nested(ctx=None):

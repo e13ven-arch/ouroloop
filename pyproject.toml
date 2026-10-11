@@ -70,6 +70,8 @@ include = ["ouroloop*"]
 # The memory's sidecar runs in its own venv: its modules, flows and hashed lock are files the host starts and pins
 # (memory/__init__.py), not modules of this package.
 "ouroloop.memory" = ["sidecar/*.py", "sidecar/flows.yaml", "sidecar/requirements-macos-arm64.lock"]
+# R's prompts are read at every round step: they are part of the code an activity freezes (code_version).
+"ouroloop.improver" = ["prompts/diagnose.md", "prompts/package_api.md", "prompts/playbook.md", "prompts/propose.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

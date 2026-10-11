@@ -92,10 +92,13 @@ def _values(assertion: dict):
 
 
 def literal_index(rows: Iterable[dict]) -> LiteralIndex:
-    """From train rows only: {task_id, assertions, state?}. An assertion is the grader's own (its values beside its
-    `type`) or an attempt's record of it ({type, params, passed, excluded}); the activity adds a train task's initial
-    state as `state`."""
+    """From train rows only: {task_id, assertions, state?, prompt?}. An assertion is the grader's own (its values beside
+    its `type`) or an attempt's record of it ({type, params, passed, excluded}); the activity adds a train task's
+    initial state as `state` and its request as `prompt`. A literal of the assertions and states that another train
+    task's request names is that task's too: what two requests name is the domain's vocabulary ("Accounts Payable"),
+    not one task's answer. Numbers are left out of that: an amount another request names may be this one's answer."""
     index = LiteralIndex()
+    rows = list(rows)
     for row in rows:
         task = str(row.get("task_id") or "")
         params = [_values(a) for a in row.get("assertions") or () if isinstance(a, dict)]
@@ -107,6 +110,13 @@ def literal_index(rows: Iterable[dict]) -> LiteralIndex:
             for lit in literals_of(row["state"]):
                 index.tasks.setdefault(lit, set()).add(task)
             index.headers |= header_names(row["state"])
+    prompts = [(str(row.get("task_id") or ""), str(row["prompt"])) for row in rows if row.get("prompt")]
+    if prompts:
+        for lit, tasks in index.tasks.items():
+            if NUMBER.fullmatch(lit):       # an amount another request happens to name may still be this one's answer
+                continue
+            pattern = literal_pattern(lit)
+            tasks.update(t for t, text in prompts if pattern.search(text))
     return index
 
 

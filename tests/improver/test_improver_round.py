@@ -17,13 +17,17 @@ Covered:
   at the playbook, or while the credit step measures the new W on the moved line); a done or stopped round run again
   pays nothing; no round without the frozen gate plan; screens that cannot be priced, or do not fit what the round has
   left, do not start; a round the budget refuses stops on record and the cycle stops there;
-- the install's operation id is `install:<round_id>`, never an Execution operation's id, and replaying it is a no-op.
+- the install's operation id is `install:<round_id>`, never an Execution operation's id, and replaying it is a no-op;
+- a part of train held out: whole families, the same for every round; R's inputs name only the studied tasks (the
+  held-out ones are counts), its candidate predicts only those, and V3 screens on the held-out tasks of the cause and a
+  held-out passing sample; a cause without enough studied tasks or without a held-out one is not assigned.
 
 Three cases came from bugs found here, now fixed: a fixed candidate lost when the verified step was interrupted, the
 gate priced without the control's top-up, the archive missing the screen and the receipt.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 from collections import Counter
@@ -33,16 +37,18 @@ import rsi
 from rounds import ledger_rows, quiet, round_activity, round_state
 from scripted_r import TOOL_ENTRY
 
-from ouroloop.activity import phases
+from ouroloop.activity import phases, presets
 from ouroloop.activity.checks import startup_checks
 from ouroloop.contracts import short
 from ouroloop.evaluate.budget import operation_id as execution_operation_id
 from ouroloop.evaluate.release import GateReceipt
 from ouroloop.harness.package import load
+from ouroloop.evaluate.attempt import task_hash
+from ouroloop.improver.allocate import Assignment
 from ouroloop.improver.archive import Archive
 from ouroloop.improver.declaration import Declaration
 from ouroloop.improver.evidence import Evidence
-from ouroloop.improver.round import STEPS
+from ouroloop.improver.round import STEPS, Round
 from ouroloop.improver.screen import ScreenResult
 from ouroloop.improver.verify import Verdict
 
@@ -277,8 +283,10 @@ def test_no_code_candidate_is_on_record_and_the_round_stops_no_candidate(idle):
     assert (r.causes, r.assignments, r.candidates, r.ladder, r.screened, r.gate, r.installed) == \
         (1, 1, 0, {}, None, None, None)
     rows = [x for x in ledger_rows(a) if x["round_id"] == ROUND]
-    assert [x["stage"] for x in rows] == ["measured", "diagnosed", "allocated", "no_code_candidate", "stopped"]
-    assert rows[3]["cause"] == "missed_action" and rows[4]["reason"] == r.stop
+    assert [x["stage"] for x in rows] == ["measured", "diagnosed", "allocated", "unused", "no_code_candidate",
+                                          "stopped"]
+    assert (rows[3]["cause"], rows[3]["kind"]) == ("missed_action", "tool")          # the slot R did not use
+    assert rows[4]["cause"] == "missed_action" and rows[5]["reason"] == r.stop
     state = round_state(a, 0)
     assert (state["status"], state["stop"]) == ("stopped", r.stop) and tuple(state["steps"]) == FREE
     # it paid for the diagnosis and R's one turn, nothing else
@@ -295,13 +303,16 @@ def test_under_the_cycle_the_code_slot_doubles_and_the_cycle_stops_after_patienc
     assert (cycle["status"], cycle["at"], cycle["reason"]) == ("stopped", f"round-{patience - 1}",
                                                                f"{patience} rounds without an install")
     assert [k for k in cycle["steps"] if k.startswith("round-")] == ["round-0", "round-1"]
-    assert cycle["steps"]["round-0"] == {"status": "stopped", "installed": None, "stop": idle.result.stop}
+    assert cycle["steps"]["round-0"] == {"status": "stopped", "installed": None, "stop": idle.result.stop,
+                                         "gated": False, "carried": None}
     assert not (a.root / "rounds" / "r2").exists()
-    # round 1 reads round 0's no_code_candidate: its code slot is doubled
+    # round 1 reads round 0's no_code_candidate (its code slot is doubled) and the tool slot R left unused (an
+    # observation of no fix: the exploration moves on to the hook)
     (allocated,) = [x for x in ledger_rows(a) if x["stage"] == "allocated" and x["round_id"] == "rsi-test/r1"]
     (assignment,) = allocated["assignments"]
-    assert (assignment["cause"], assignment["kind"], assignment["slots"]) == ("missed_action", "tool", 2)
-    assert stages(a, "rsi-test/r1") == ["measured", "diagnosed", "allocated", "no_code_candidate", "stopped"]
+    assert (assignment["cause"], assignment["kind"], assignment["slots"]) == ("missed_action", "hook", 2)
+    assert stages(a, "rsi-test/r1") == ["measured", "diagnosed", "allocated", "unused", "no_code_candidate",
+                                        "stopped"]
     # round 0, already stopped, was not run again by the cycle: one stop on record, nothing paid for it
     assert stages(a, ROUND).count("stopped") == 1
     assert idle.end["r"][len(idle.after["r"]):] == ["session"]           # round 1's diagnosis is the cached one
@@ -508,23 +519,22 @@ def test_a_round_without_the_frozen_gate_plan_refuses_before_paying(tmp_path, fa
 
 def test_screens_that_cannot_be_priced_are_not_started(tmp_path, fake_upstream):
     """No baseline: the round measures the current W's train itself (role measure, in its measure account), and with
-    no dev reading on record the gate cannot be priced, so no screen starts."""
+    no dev reading on record the gate cannot be priced: the round stops before it pays for diagnosis or a session."""
     s = round_activity(tmp_path, fake_upstream, "tool", baseline=False)
     played(s)
     a, r = s.a, s.result
     assert (r.status, r.stop) == ("stopped", "unpriced: the current W has no priced train or dev reading on record: "
                                              "the screens cannot be priced")
-    assert r.ladder == {"V0": 1, "V1": 1, "V2a": 1} and r.screened is None and r.gate is None
+    assert r.ladder == {} and r.screened is None and r.gate is None
     state = round_state(a, 0)
-    assert tuple(state["steps"]) == FREE and state["steps"]["measure"]["measured"] == len(rsi.TRAIN)
+    assert tuple(state["steps"]) == ("measure", "evidence") and state["steps"]["measure"]["measured"] == len(rsi.TRAIN)
     runs = a.results.runs()
     rows = list(a.results.all())
     assert {runs[x.run].role for x in rows} == {"measure"} and {x.split for x in rows} == {"train"}
     assert {runs[x.run].candidate for x in rows} == {f"train:{short(s.base.ref())}:r0"}
     assert results_of_role(a, "screen") == []
     new = new_reservations(s.before, s.after)
-    assert settled_by_scope(new) == {f"{ACCOUNT}:measure": s.after["actor"] - s.before["actor"],
-                                     f"{ACCOUNT}:diagnose": 2, f"{ACCOUNT}:session": 4}
+    assert settled_by_scope(new) == {f"{ACCOUNT}:measure": s.after["actor"] - s.before["actor"]}
     assert "screened" not in stages(a) and ledger_rows(a)[-1]["reason"] == r.stop
 
 
@@ -542,7 +552,8 @@ def test_screens_that_do_not_fit_what_the_round_has_left_are_not_started(tmp_pat
     before = paid(s)
     result = phases.round_(s.a, 0, out=out)
     assert result.status == "stopped" and re.fullmatch(
-        r"budget: the screens and the gate need up to \$\d+\.\d\d and the round has \$0\.01", result.stop), result.stop
+        r"budget: the screens and the gate would need up to \$\d+\.\d\d \(\$\d+\.\d\d at the means on record, \+15%, and two "
+        r"calls' bound\) and the round has \$0\.01", result.stop), result.stop
     assert lines[-1] == f"round      {ROUND} stopped: {result.stop}"
     after = paid(s)
     assert after["actor"] == before["actor"] and after["r"][len(before["r"]):] == ["diagnose", "diagnose"] + \
@@ -553,8 +564,8 @@ def test_screens_that_do_not_fit_what_the_round_has_left_are_not_started(tmp_pat
 
 
 def test_a_round_the_budget_refuses_stops_on_record_and_the_cycle_stops_there(tmp_path, fake_upstream):
-    """Someone else sets aside all but $0.01 of the root before the round: its first research call cannot be reserved,
-    the round stops `budget` on record without paying, and the cycle stops at that round."""
+    """Someone else sets aside all but $0.01 of the root before the round: the gate and the least screen do not fit,
+    so the round stops `budget` on record before its first research call, and the cycle stops at that round."""
     s = round_activity(tmp_path, fake_upstream, "tool")
     left = s.a.account("other").remaining()["effective_remaining"]["usd"]
     s.a.account("other").hold("someone else's reservation", {"usd": round(left - 0.01, 6)})
@@ -562,7 +573,7 @@ def test_a_round_the_budget_refuses_stops_on_record_and_the_cycle_stops_there(tm
     cycle = phases.cycle(s.a, out=quiet)
     assert (cycle["status"], cycle["at"]) == ("stopped", "round-0") and "round-1" not in cycle["steps"]
     stop = cycle["steps"]["round-0"]["stop"]
-    assert stop.startswith("budget: round-0:diagnose#0.0 would exceed usd of ") and \
+    assert stop.startswith("budget: the gate, the least screen and the research would need up to $") and \
         cycle["steps"]["round-0"]["status"] == "stopped"
     assert paid(s) == before
     assert stages(s.a) == ["measured", "stopped"] and ledger_rows(s.a)[-1]["reason"] == stop
@@ -624,3 +635,169 @@ def test_the_archive_keeps_the_screened_candidates_screen_and_its_receipt(tool):
     (shown,) = archive.for_prompt(a.domain, "missed_action")
     assert shown["gated"] is True and shown["screen"]["outcome"] == "screened"
     assert sorted(shown["screen"]["fixed"]) == list(NOTIFY)
+
+
+# ---------------------------------------------------------------------------- the held-out part of train
+VARIANT, STUDY = NOTIFY[1], ("rsi.update_stage", NOTIFY[0], "rsi.notify_once")
+HELD = (VARIANT, "rsi.policy_hold")
+
+
+def test_the_held_out_part_is_whole_families_the_same_for_every_round(tmp_path, fake_upstream):
+    s = round_activity(tmp_path, fake_upstream, "none", improver={"holdout_share": 0.4})
+    study, held = Round(s.a, 0, run_arm=None, out=quiet).split()
+    assert sorted(study + held) == sorted(rsi.TRAIN) and not set(study) & set(held)
+    assert 0 < len(held) <= round(len(rsi.TRAIN) * 0.4) and study                # never more than its share
+    families = lambda tasks: {rsi.FAMILIES[t] for t in tasks}                     # noqa: E731
+    assert not families(study) & families(held)
+    assert Round(s.a, 1, run_arm=None, out=quiet).split() == (study, held)
+    # seed 0 ranks the notify family (2 tasks) first: a share of 1 task skips it rather than overshoot
+    small = round_activity(tmp_path / "small", fake_upstream, "none", improver={"holdout_share": 0.2})
+    assert len(Round(small.a, 0, run_arm=None, out=quiet).split()[1]) == 1
+    nothing = round_activity(tmp_path / "none", fake_upstream, "none")
+    assert Round(nothing.a, 0, run_arm=None, out=quiet).split() == (tuple(nothing.a.splits.ids("train")), ())
+
+
+def test_a_cause_without_enough_studied_tasks_or_a_held_out_one_is_not_assigned(tmp_path, fake_upstream):
+    """The notify tasks are one family, so the one cause lies wholly on one side: nothing is assigned, R's session is
+    not paid, the round stops without a candidate."""
+    s = played(round_activity(tmp_path, fake_upstream, "tool", actor=Actor(), improver={"holdout_share": 0.4}))
+    (allocated,) = [x for x in ledger_rows(s.a) if x["stage"] == "allocated"]
+    assert allocated["assignments"] == [] and "session" not in s.r.calls
+    (why,) = allocated["not_assigned"]
+    assert why["cause"] == "missed_action" and sorted((why["studied"], why["held_out"])) == [0, 2]
+    assert s.result.status == "stopped" and s.result.stop.startswith("no_candidate")
+
+
+@pytest.fixture(scope="module")
+def held_out(tmp_path_factory, fake_upstream):
+    """One notify task studied, the other held out (a split by hand: the real one keeps a family whole, and the
+    miniature domain has one family per cause), V2a and V2b asking for the one studied task."""
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(Round, "split", lambda self: (STUDY, HELD))
+        for name in ("toolcheck_min_pass", "replay_min_triggers"):
+            mp.setitem(presets.PRESETS[rsi.TEST_PRESET]["improver"], name, 1)
+        s = played(round_activity(tmp_path_factory.mktemp("held"), fake_upstream, "tool", actor=Actor()))
+        s.inputs, s.readable = (lambda r: r.inputs(r.assignments()))(Round(s.a, 0, run_arm=None, out=quiet))
+        s.sessions = {(x.evidence or x.attempt_id): x.task_id for x in s.a.results.all()}
+        return s
+
+
+def test_r_reads_only_the_studied_tasks_and_its_candidate_predicts_only_those(held_out):
+    a, inputs = held_out.a, held_out.inputs
+    (cause,) = json.loads(inputs["causes.json"])
+    assert (cause["tasks"], cause["held_out_tasks"]) == ([NOTIFY[0]], 1)
+    assert [c["task_id"] for c in cause["cases"]] == [NOTIFY[0]]
+    assert not [(name, t) for name, text in inputs.items() for t in HELD if t in text]
+    assert {held_out.sessions[x] for x in held_out.readable if x} <= set(STUDY)
+    (item,) = round_state(a, 0)["steps"]["verified"]["passed"]
+    assert list(Declaration.from_json(a.objects.get(item["declaration"])).predicted_affected) == [NOTIFY[0]]
+    assert Round(a, 0, run_arm=None, out=quiet).vctx().cause_ids == (f"{ROUND}:missed_action",)   # V0 checks it
+    # what R reads of the screen next round: the held-out fix as a count
+    (screened,) = [x for x in json.loads(inputs["ledger.json"]) if x["stage"] == "screened"]
+    assert "fixed" not in screened and screened["fixed_held_out"] == 1
+
+
+def test_v3_screens_on_the_held_out_tasks_of_the_cause_and_a_held_out_passing_sample(held_out):
+    a, res = held_out.a, screen_of(held_out.a)
+    assert (list(res.failing), list(res.sample), list(res.fixed)) == ([VARIANT], ["rsi.policy_hold"], [VARIANT])
+    assert res.net_flips == 1 and res.outcome == "screened"
+    assert sorted(x.task_id for x in results_of_role(a, "screen")) == sorted(HELD)
+
+
+def test_a_memory_entry_distilled_from_a_held_out_task_is_not_shown_to_r(held_out, monkeypatch):
+    monkeypatch.setattr(Round, "split", lambda self: (STUDY, HELD))
+    r = Round(held_out.a, 0, run_arm=None, out=quiet)
+    hashed = {t: task_hash(held_out.a.suite.tasks[t]) for t in rsi.TRAIN}
+    entries = ({"entry": "seen", "distilled_from": [hashed[NOTIFY[0]], hashed["rsi.update_stage"]]},
+               {"entry": "held", "distilled_from": [hashed[NOTIFY[0]], hashed[VARIANT]]})
+    (cause,) = r.causes()
+    monkeypatch.setattr(Round, "causes", lambda self: [dataclasses.replace(cause, memory_entries=entries)])
+    inputs, _ = r.inputs(r.assignments())
+    assert [e["entry"] for e in json.loads(inputs["causes.json"])[0]["memory_entries"]] == ["seen"]
+
+
+def test_an_empty_assignment_is_unused_only_while_r_had_candidates_to_spare(held_out):
+    r = Round(held_out.a, 0, run_arm=None, out=quiet)
+    (real,) = r.assignments()
+    other = Assignment(cause_id=f"{ROUND}:wrong_target", cause="wrong_target", kind="hook")
+    out = round_state(held_out.a, 0)["steps"]["implemented"]["candidates"]
+    r.s = dataclasses.replace(r.s, k=1)              # R declared its one candidate: the empty slot is the cap's
+    r._unused([real, other], out)
+    assert [x for x in ledger_rows(held_out.a, "unused") if x["round_id"] == ROUND] == []
+    r.s = dataclasses.replace(r.s, k=3)
+    r._unused([real, other], out)
+    assert [(x["cause"], x["kind"]) for x in ledger_rows(held_out.a, "unused")] == [("wrong_target", "hook")]
+
+
+# ---------------------------------------------------------------------------- a cause with nothing held out (§9.1)
+def test_a_cause_with_studied_tasks_and_none_held_out_is_screened_in_sample(tmp_path, fake_upstream):
+    """IMPROVER §9.1: at a share of 0.2 the notify family (2 tasks) would overshoot and stays studied, so its cause
+    has nothing held out: it is assigned all the same, V3 screens on the studied tasks it claims, marked in sample,
+    and the gate decides."""
+    s = played(round_activity(tmp_path, fake_upstream, "tool", actor=Actor(), improver={"holdout_share": 0.2}))
+    (allocated,) = [x for x in ledger_rows(s.a) if x["stage"] == "allocated"]
+    assert [a["cause"] for a in allocated["assignments"]] == ["missed_action"]
+    assert allocated["in_sample"] == ["missed_action"] and "not_assigned" not in allocated
+    res = screen_of(s.a)
+    assert res.in_sample is True and sorted(res.failing) == list(NOTIFY) and res.outcome == "screened"
+    assert len(res.sample) == 1 and res.sample[0] not in NOTIFY             # the held-out passing task
+    (row,) = [x for x in ledger_rows(s.a, "screened") if x["round_id"] == ROUND]
+    assert row["in_sample"] is True and sorted(row["fixed"]) == list(NOTIFY)
+    assert s.result.installed and s.result.gated
+
+
+# ---------------------------------------------------------------------------- the gate's cadence (§9.2)
+@pytest.fixture(scope="module")
+def carry(tmp_path_factory, fake_upstream):
+    """A gate every two rounds: round 0 carries its best candidate, round 1 finds nothing left to fix on the carried
+    package and gates it."""
+    s = played(round_activity(tmp_path_factory.mktemp("carry"), fake_upstream, "tool", actor=Actor(),
+                              improver={"gate_every": 2}))
+    s.first = s.result
+    s.carry_json = json.loads((s.a.root / "rounds" / "carry.json").read_text(encoding="utf-8"))
+    s.calls_before = len(s.r.calls)
+    played(s, 1)
+    return s
+
+
+def test_a_carry_round_keeps_its_best_candidate_instead_of_paying_the_gate(carry):
+    a, r = carry.a, carry.first
+    assert r.status == "done" and r.screened == "notify" and not r.gated and r.installed is None
+    assert r.carried == round_state(a, 0)["steps"]["screened"]["best_package"]
+    assert "gated" not in round_state(a, 0)["steps"] and "carried" in round_state(a, 0)["steps"]
+    assert carry.carry_json == {"package_ref": r.carried, "base": carry.base.ref(), "dirs": ["r0:notify"],
+                                "since": ROUND}
+    (row,) = [x for x in ledger_rows(a, "carried")]
+    assert (row["round_id"], row["dir"], row["dirs"]) == (ROUND, "notify", ["r0:notify"])
+    runs = a.results.runs()                                             # no gate attempt was paid for round 0
+    assert not [x for x in results_of_role(a, "subject") if runs[x.run].candidate == f"{ROUND}:gate"]
+    assert carry.first.installed is None and "installed" not in stages(a, ROUND)
+
+
+def test_the_gate_round_measures_the_carried_package_and_gates_it_when_nothing_is_left_to_fix(carry):
+    a, r = carry.a, carry.result
+    state = round_state(a, 1)
+    assert state["carry"]["package_ref"] == carry.first.carried
+    assert state["steps"]["measure"]["package"] == carry.first.carried          # the carried package's train reading
+    assert state["steps"]["measure"]["passed"] == len(rsi.TRAIN) and state["steps"]["evidence"]["failed"] == []
+    assert "diagnosed" not in state["steps"] and carry.r.calls[carry.calls_before:] == ["playbook"]
+    assert r.gated and r.gate["verdict"] == "accepted" and r.installed
+    assert a.releases.load(r.installed).package_ref == carry.first.carried
+    (gated,) = [x for x in ledger_rows(a, "gated") if x["round_id"] == "rsi-test/r1"]
+    assert (gated["dir"], gated["carried"]) == ("carry", ["r0:notify"])
+    assert json.loads((a.root / "rounds" / "carry.json").read_text(encoding="utf-8"))["package_ref"] is None
+    assert carry.lines[-1].startswith("round      rsi-test/r1: the gate says accepted")
+
+
+def test_a_carry_the_gate_rejects_is_dropped_and_a_round_that_carried_is_not_idle(tmp_path, fake_upstream):
+    s = round_activity(tmp_path, fake_upstream, "tool", actor=Actor(), improver={"gate_every": 2},
+                       gate={"min_gain": 0.9, "partial_min_gain": 0.9})
+    cycle = phases.cycle(s.a, until="round-1", out=quiet)
+    steps = cycle["steps"]
+    assert steps["round-0"]["carried"] and not steps["round-0"]["gated"]
+    assert steps["round-1"]["gated"] and steps["round-1"]["installed"] is None
+    assert "reason" not in cycle            # round 0 carried (not idle), round 1 gated without an install: idle once
+    (dropped,) = ledger_rows(s.a, "carry_dropped")
+    assert dropped["dirs"] == ["r0:notify"] and dropped["verdict"] == "rejected"
+    assert json.loads((s.a.root / "rounds" / "carry.json").read_text(encoding="utf-8"))["package_ref"] is None
+    assert s.a.releases.active_ref() == s.a.seed_release().ref()

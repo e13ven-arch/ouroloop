@@ -1142,3 +1142,26 @@ def test_the_index_holds_what_the_actor_saw_and_did_and_an_excerpt_only_once_the
     # the frozen split decides at every search: what the index holds of a session that is not train is not returned
     assert TraceStore(tmp_path, {"t1": "dev"}.__getitem__).search("tangerine") == []
     assert indexed(tmp_path, "SELECT count(*) FROM docs WHERE docs MATCH 'tangerine'") == [(1,)]
+
+
+def test_an_attempt_run_again_under_its_id_reads_as_its_last_run(tmp_path):
+    """A run that died without a result is run again under the same id, appending to the same file: the trajectory,
+    the events and the calls are the last run's (from the last task line), never the two spliced; references keep
+    the file's line numbers."""
+    w = Writer(tmp_path, "s/again#0", "t1")
+    w.call([sys_("S"), user("Go.")], "First try.", ("c1", "api_search", {"q": "x"}))
+    w.tool("api_search", '{"hits": 1}')                              # ... and the process died here
+    first = w.line
+    w.t.write("task", task_id="t1", split="train", task_hash="hash-t1", attempt_id="s/again#0", text="the task t1")
+    w.previous = []
+    second = w.call([sys_("S"), user("Go.")], "Second try.")
+    w.end()
+    store = TraceStore(tmp_path, {"t1": "train"}.__getitem__)
+    events = store.events("s/again#0")
+    assert events[0]["line"] == first + 1 and events[0]["event"]["kind"] == "task"
+    assert [c["ref"] for c in store.calls("s/again#0")] == [f"s/again#0:L{second}"]
+    texts = [m.get("content") for m in store.trajectory("s/again#0") if m.get("role") == "assistant"]
+    assert texts == ["Second try."] and "First try." not in json.dumps(store.trajectory("s/again#0"))
+    # the search index forgets the dead run too
+    assert store.search("First try") == [] and [h["ref"] for h in store.search("Second try")] == \
+        [f"s/again#0:L{second}"]

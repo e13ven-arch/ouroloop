@@ -152,9 +152,13 @@ def _clip(text: str, n: int) -> str:
     return text if len(text) <= n else text[:n - n // 3] + f" [... {len(text) - n} characters ...] " + text[-n // 3:]
 
 
-def _ask(researcher, system: str, user: str) -> dict:
+def _ask(researcher, system: str, user: str) -> dict | None:
+    """The reply's JSON object, or None when there is none to read (refused, cut at the output limit, no object): an
+    unread reply is not an answer and is not cached."""
     turn = researcher.chat(system, [{"role": "user", "content": user}], [])
-    return read_reply(getattr(turn, "text", "") or "")
+    if getattr(turn, "stop", "") in ("refusal", "max_tokens"):
+        return None
+    return read_reply(getattr(turn, "text", "") or "") or None
 
 
 def model_of(researcher) -> str:
@@ -170,6 +174,8 @@ def diagnose_case(evidence: Evidence, ev: AttemptEvidence, *, researcher, vocabu
     if ref is not None:
         return ref, Case.from_json(cache.objects.get(ref)), True
     reply = _ask(researcher, system, user)
+    unread = reply is None
+    reply = reply or {}
     cause = str(reply.get("cause") or "other")
     proposed = str(reply.get("proposed") or "").strip().lower().replace(" ", "_").replace("-", "_")
     if cause not in vocabulary:
@@ -179,8 +185,10 @@ def diagnose_case(evidence: Evidence, ev: AttemptEvidence, *, researcher, vocabu
     case = Case(attempt_id=ev.attempt_id, task_id=ev.task_id, cause=cause, mechanizable=cause in set(mechanizable),
                 evidence_refs=refs, assertion_kinds=tuple(sorted({str(c["type"]) for c in ev.failed_checks})),
                 tool_errors=tuple(sorted(set(ev.tool_errors))), termination=ev.result.termination,
-                explanation=str(reply.get("note") or "")[:1200],
-                proposed=proposed if cause == "other" and NAME.match(proposed or "") else "")
+                explanation=str(reply.get("note") or ("the diagnosis reply could not be read" if unread else ""))
+                [:1200], proposed=proposed if cause == "other" and NAME.match(proposed or "") else "")
+    if unread:                          # asked again next round, not reused
+        return cache.objects.put(case), case, False
     return cache.put(identity, case), case, False
 
 
@@ -197,9 +205,10 @@ def classify_entries(entries: list[dict], *, researcher, vocabulary, cache: Note
         if ref is not None:
             out[eid] = Case.from_json(cache.objects.get(ref)).cause
             continue
-        cause = str(_ask(researcher, system, user).get("cause") or "other")
+        reply = _ask(researcher, system, user)
+        cause = str((reply or {}).get("cause") or "other")
         out[eid] = cause if cause in vocabulary else "other"
-        if cache is not None:
+        if cache is not None and reply is not None:
             cache.put(identity, Case(attempt_id=f"entry:{eid}", cause=out[eid]))
     return out
 

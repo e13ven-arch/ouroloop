@@ -1,0 +1,91 @@
+# finance-v3: the third finance activity under the forward design (docs/PLAN.md stage 4, docs/DESIGN.md §10). Finance on
+# the stratified split v0.4 read (pinned below), the automationbench_v1 preset, the stirrup seed, the memory on, three
+# improver rounds. Every paid step is approved in chat first (PLAN rule 3). Run from the repository's root with
+# `.venv/bin/python -m ouroloop`, in a terminal that stays open (tmux), on AC power under `caffeinate -dimsu`; stop a
+# step with one Ctrl-C and let it drain, never kill it (a killed call keeps its reservation's bound).
+#   1  `... bench --config examples/automationbench/finance-v3.toml --phase smoke --checks-only`                 $0
+#   2  `... freeze --config ...`: K (with the code version), the gate template and the budget root; the final is not
+#      sealed yet (nothing installed); add the printed [rsi] lines and commit                                    $0
+#   3  `... bench --config ... --phase cycle --until baseline`, then `--until library`, then `--until round-0`,
+#      round-1, round-2 (each approved, each read before the next; `--phase report` after each, $0)
+#   4  when the rounds are over and something was installed: `... freeze --config ...` again seals the final (W* is
+#      the active release then) and prints final_plan_ref; it is committed to git before the first test attempt
+#      (PLAN rule 6); then `... bench --config ... --phase evaluate`
+#
+# The numbers are the preset's (activity/presets.py, from evidence); a value here may only tighten one. The worker runs
+# by the image id below (K pins it; the tag ouroloop-worker:finance-v1 keeps the image from being pruned; the image
+# copies only runtime/worker_runner.py, unchanged since finance-v1).
+# It follows finance-v2 (tag finance-v2), whose two rounds were gate-rejected (gain 0) and ended by patience. Three
+# fixes changed the code since, so finance-v2's K (and its baseline) cannot be carried over (docs/JOURNAL.md
+# 2026-10-10): the library's snapshot fits K's max_memory_bytes; V3 screens only on the held-out part of train
+# (improver.holdout_share 0.4, the preset's), which R never reads; a slot R leaves unused is on the ledger.
+
+[workspace]
+root = "workspace-finance-v3"
+
+[bench]
+domain = "finance"
+upstream_path = "~/workspace/AutomationBench"
+split_rule = "stratified"
+seed = 1
+concurrency = 8
+
+[bench.frozen_splits]
+finance = "4fd91eaf9fb8daf5"
+
+[model]
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "medium"
+max_tokens = 32000
+timeout = 600
+
+[research_model]
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "medium"
+max_tokens = 32000
+timeout = 900
+
+[pricing]
+input_per_1k = 0.004
+cache_read_per_1k = 0.0002
+cache_write_per_1k = 0.008
+output_per_1k = 0.02
+max_input_tokens = 1000000
+max_output_tokens = 163840
+source = "notional, not a bill: claude-opus-5-5 API list price ($4/$20 per M, cache read $0.20, 1h cache write $8)"
+
+[harness]
+preset = "automationbench_v1"
+seed = "stirrup"
+
+[worker]
+network = "none"
+image_id = "sha256:cd61caba6a2b62678b451f06b09eab4cc9be3d843265630811277c279f5f0493"
+
+[memory]
+enabled = true
+
+[improver]
+k = 3
+
+[schedule]
+rounds = 3
+patience = 2
+
+[budget]
+# the root of finance-v1 and finance-v2 (approved 2026-10-09 after the probe: a dev attempt of the stirrup seed cost
+# $0.59); finance-v3's freeze and baseline approved in chat 2026-10-10. The final's share holds its expected spend and
+# (concurrency + 2) calls' bound at concurrency 8
+usd = 700.0
+final_usd = 220.0
+
+[final]
+repeats = 3
+
+[rsi]
+scope_id = "finance-v3"
+# printed by `ouroloop freeze` on 2026-10-10 (K frozen at code s4/finance d9dca97); final_plan_ref comes with the seal
+core_ref = "core:sha256:8a476560671068d70e68e3fc6b9549ac5e3966c8ea487bc7eb059fbcd80cb838"
+split_ref = "4fd91eaf9fb8daf5"

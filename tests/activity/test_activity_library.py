@@ -25,9 +25,10 @@ from ouroloop.evaluate.release import GateReceipt
 from ouroloop.harness.kinds import MEMORY_PATH
 from ouroloop.harness.package import Limits, build, load
 from ouroloop.memory import snapshot_digest
+from ouroloop.memory.client import parse_jsonl
 from ouroloop.memory.retrieval import snapshot_collection
 from ouroloop.memory.settings import Settings
-from ouroloop.memory.snapshot import library_of
+from ouroloop.memory.snapshot import fit_snapshot, library_of
 from ouroloop.memory.track import StreamStep
 from ouroloop.runtime.records import read, session_file
 
@@ -102,8 +103,12 @@ def test_the_stream_learns_from_train_and_freezes_its_library_into_a_candidate_p
         "base": base.ref(), "outcome": "candidate", "package_ref": result["snapshot"]["package_ref"],
         "parent": base.ref(), "snapshot_digest": result["snapshot"]["snapshot_digest"], "readout": result["readout"]}
     candidate, w_base = load(a.objects, event["package_ref"]), a.package(base)
-    text = (a.root / "memory" / a.domain / "live.jsonl").read_text(encoding="utf-8")
+    # the snapshot is the live library's rows as a package carries them, within K's max_memory_bytes; this one fits
+    live = (a.root / "memory" / a.domain / "live.jsonl").read_text(encoding="utf-8")
+    text, fit = fit_snapshot(live, Limits.from_core(a.k).max_memory_bytes)
     assert candidate.memory_text == text and snapshot_digest(text) == event["snapshot_digest"]
+    assert event["fit"] == fit and fit["kept"] == fit["entries"] == result["readout"]["entries"]["active"]
+    assert fit["omitted"] == [] and "why" not in fit and fit["bytes"] < fit["library_bytes"]
     assert candidate.manifest.memory == {"enabled": True, "snapshot": MEMORY_PATH}
     assert {p: t for p, t in candidate.files.items() if p not in (MEMORY_PATH, "manifest.json")} == \
         {p: t for p, t in w_base.files.items() if p != "manifest.json"}
@@ -112,9 +117,14 @@ def test_the_stream_learns_from_train_and_freezes_its_library_into_a_candidate_p
     entries = library_of(candidate)
     assert len(entries) == result["readout"]["entries"]["active"]
     train = set(hashes(a).values())
+    ledger = json.loads((a.root / "memory" / a.domain / "stream.json").read_text(encoding="utf-8"))
     for e in entries:
         assert e["sources"] and set(e["sources"]) <= train and e["provenance"]["ol_split"] == "train"
-        assert e["provenance"]["ol_release_ref"] == base.ref() and e["provenance"]["ol_line"] == a.domain
+        assert e["provenance"]["ol_line"] == e["provenance"]["ol_source_line"] == a.domain
+        # the rest of the provenance is the ledger's, under the entry's id
+        assert ledger["entries"][e["id"]]["row"]["metadata"]["ol_release_ref"] == base.ref()
+    assert s.lines[-2] == (f"library    snapshot: {fit['kept']}/{fit['entries']} entries, {fit['bytes']} bytes of "
+                           f"K's 262144")
     assert s.lines[-1] == (f"library    the snapshot is a candidate: {short(event['package_ref'])} (the improver's "
                            f"ladder takes it from V3; stage 3)")
 
@@ -173,6 +183,41 @@ def test_the_research_calls_and_the_attempts_are_booked_in_their_own_accounts_an
         assert sum(p[dim] for p in spend["phases"].values()) == pytest.approx(spend["root"][dim])
 
 
+def test_a_library_over_ks_memory_bytes_becomes_a_candidate_that_fits_and_names_what_it_left_out(tmp_path,
+                                                                                                 fake_upstream,
+                                                                                                 streamed):
+    """finance-v2's case (JOURNAL 2026-10-10: a 550 KB library against K's 256 KiB, no candidate) on the fake
+    upstream: K's max_memory_bytes lowered below the stream's library. The snapshot keeps the best-ranked entries
+    that fit — those that fixed a task first — the candidate builds under K, and the event and the phase's lines say
+    what was left out; the live library keeps everything."""
+    (full,) = streamed.a.events.read("library_snapshot")
+    cap = full["fit"]["bytes"] // 2
+    s = stream(tmp_path, fake_upstream, harness={"limits": {"max_memory_bytes": cap}})
+    assert Limits.from_core(s.a.k).max_memory_bytes == cap
+    phases.baseline(s.a, out=quiet)
+    lines = []
+    result = phases.library(s.a, out=lines.append)
+    (event,) = s.a.events.read("library_snapshot")
+    fit = event["fit"]
+    assert result["snapshot"]["outcome"] == event["outcome"] == "candidate"
+    assert fit["max_bytes"] == cap < fit["lean_bytes"] and 0 < fit["kept"] < fit["entries"]
+    assert fit["entries"] == result["readout"]["entries"]["active"] and fit["why"] == "K's max_memory_bytes"
+    candidate = load(s.a.objects, event["package_ref"])
+    assert build(s.a.objects, dict(candidate.files), limits=Limits.from_core(s.a.k),
+                 seed=s.a.package(s.a.seed_release())).ref() == candidate.ref()
+    live = (s.a.root / "memory" / s.a.domain / "live.jsonl").read_text(encoding="utf-8")
+    assert (candidate.memory_text, fit) == fit_snapshot(live, cap) and len(parse_jsonl(live)) == fit["entries"]
+    assert snapshot_digest(candidate.memory_text) == event["snapshot_digest"]
+    kept = {e["id"] for e in library_of(candidate)}
+    fixed = {k for k, e in ledger(s.a)["entries"].items() if e["status"] == "active" and e["stats"]["fixes"]}
+    assert fixed and fixed <= kept
+    assert {o["memory_id"] for o in fit["omitted"]} == {r["memory_id"] for r in parse_jsonl(live)} - kept
+    best = fit["omitted"][0]
+    assert lines[-2] == (f"library    snapshot: {fit['kept']}/{fit['entries']} entries, {fit['bytes']} bytes of K's "
+                         f"{cap}; {len(fit['omitted'])} left out by rank (fixes, then citations (n_cited), then "
+                         f"memory_id), the best of them with {best['fixes']} fixes and {best['n_cited']} citations")
+
+
 def test_the_reports_memory_section_reads_the_stream_and_is_the_same_bytes_twice(streamed):
     a = streamed.a
     first = phases.report(a, out=quiet)
@@ -183,8 +228,12 @@ def test_the_reports_memory_section_reads_the_stream_and_is_the_same_bytes_twice
     m, result = first["memory"], streamed.result
     assert (m["status"], m["processed"], m["planned"], m["lost"], m["imports"]) == ("done", 5, 5, 0, 0)
     assert m["readout"] == json.loads(json.dumps(result["readout"]))
+    n = result["readout"]["entries"]["active"]
     assert m["snapshot"] == {"outcome": "candidate", "why": None, "package_ref": result["snapshot"]["package_ref"],
-                             "snapshot_digest": result["snapshot"]["snapshot_digest"]}
+                             "snapshot_digest": result["snapshot"]["snapshot_digest"],
+                             "fit": {"entries": n, "kept": n, "omitted": 0, "max_bytes": a.k["harness"]["limits"][
+                                 "max_memory_bytes"], "bytes": len(load(a.objects, result["snapshot"]["package_ref"])
+                                                                   .memory_text.encode("utf-8"))}}
     md = written["report.md"].decode()
     assert f"- stream done: 5/5 train tasks (0 lost), {m['dropped']} memories dropped at the checks" in md
     assert f"- D {m['readout']['D']}, B {m['readout']['B']}" in md
@@ -463,8 +512,8 @@ def test_a_failed_batch_holding_a_lost_task_is_cut_the_same_on_the_next_run(tmp_
     first = phases.stream_order(s.a)[0]
     s.actor.bad = s.a.suite.tasks[first].trigger
     s.research.fail = {"validation": 1}
-    with pytest.raises(Exception, match="research calls failed on the bridge"):
-        phases.library(s.a, out=quiet)
+    paused = phases.library(s.a, out=quiet)                 # a step that cannot be trusted pauses the phase
+    assert paused["status"] == "paused" and "research calls failed on the bridge" in paused["why"]
     led = ledger(s.a)
     assert led["pending"] is not None and led["processed"] == {} and led["lost"] == {}
     s.actor.bad = None

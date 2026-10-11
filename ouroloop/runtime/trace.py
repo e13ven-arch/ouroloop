@@ -228,9 +228,12 @@ class TraceStore:
 
     @classmethod
     def _lines(cls, path: Path) -> Iterator[tuple[int, dict]]:
-        """(line number, event) for every complete line of a transcript."""
-        for n, event, _ in cls._read(path):
-            yield n, event
+        """(line number, event) for every complete line of a transcript's last run: an attempt that died without a
+        result runs again under its id and appends to the same file, and its trajectory is the last run's (from the
+        last `task` line), not the two spliced."""
+        rows = [(n, event) for n, event, _ in cls._read(path)]
+        start = max((i for i, (_n, e) in enumerate(rows) if e.get("kind") == "task"), default=0)
+        yield from rows[start:]
 
     def events(self, session: str) -> list[dict]:
         """[{ref, line, event}] of a train session, in transcript order."""
@@ -379,6 +382,13 @@ class TraceStore:
             last, end_offset = n, after
             ref = self.ref(session, n)
             kind = event.get("kind")
+            if kind == "task" and n > 1:
+                # the attempt runs again under its id (the last run died without a result): what was indexed of
+                # the dead run goes, as the readers read the last run only
+                db.execute("DELETE FROM docs WHERE session = ?", (session,))
+                db.execute("DELETE FROM results WHERE session = ?", (session,))
+                docs.clear(), new_results.clear(), seen.clear()
+                finished = ended = False
             if kind == "gateway_call":
                 response = event.get("response") or {}
                 if response.get("text"):

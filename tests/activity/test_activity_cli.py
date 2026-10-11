@@ -167,3 +167,18 @@ def test_python_m_ouroloop_train_runs_the_smoke(tmp_path):
     done = run_module(tmp_path, "ouroloop.train", "smoke", "--jev", "--backend", "mock")
     assert done.returncode == 0, done.stderr
     assert done.stdout.count(" ok") == 3 and "model=mock-keyword" in done.stdout
+
+
+def test_a_second_process_on_one_activity_is_refused_before_it_pays(tmp_path, fake_upstream, capsys):
+    """Two processes on one workspace would both pay for the same missing attempts: while one holds the activity's
+    lock, a paid phase of another exits 2; the report, which pays nothing, still runs."""
+    path = write_config(tmp_path, fake_upstream)
+    held = cli._lock(tmp_path / "ws")
+    try:
+        assert cli.main(["bench", "--config", str(path), "--phase", "baseline"]) == 2
+        assert "another ouroloop process is running this activity" in capsys.readouterr().err
+        assert not list((tmp_path / "ws").glob("bench/*/results/*.jsonl"))
+        assert cli.main(["bench", "--config", str(path), "--phase", "report"]) == 0
+    finally:
+        held.close()
+    assert cli._lock(tmp_path / "ws") is not None

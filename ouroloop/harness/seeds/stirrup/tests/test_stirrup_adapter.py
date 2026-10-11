@@ -256,7 +256,7 @@ def test_a_sub_agent_shares_the_guard_and_hands_the_turn_back(ctx=None):
                     Reply("", [write]),                                                           # parent
                     Reply("", [("finish", {"reason": "Posted."})]),                               # verify: back
                     Reply("", [("finish", {"reason": "Posted the update."})])],
-                   pages={inbox: '{"messages": [{"id": "m1", "internalDate": "1906718400000"}]}'})
+                   pages={inbox: '{"messages": [{"id": "m1", "internalDate": "1748908800000"}]}'})
     module = adapter()
     module.SUB_AGENTS = ({"name": "researcher", "description": "Reads what the task needs and reports it.",
                           "system_prompt": "Read only; report what you found."},)
@@ -274,8 +274,25 @@ def test_a_sub_agent_shares_the_guard_and_hands_the_turn_back(ctx=None):
     results = [r for m in parent if m["role"] == "tool" for r in m["results"]]
     assert [r["name"] for r in results] == ["researcher", "plan_changes"]
     assert "The newest message is m1." in results[0]["output"] and not results[0]["is_error"]
-    assert "2030-06-03 (field internalDate)" in parent[-1]["content"]          # the anchor rides on the call
+    assert "2025-06-03 (field internalDate)" in parent[-1]["content"]          # the anchor rides on the call
     assert not any("field internalDate" in json.dumps(m) for m in fake.sent[1])
     assert "tool_blocked" not in fake.kinds()
     verify = [r for m in fake.sent[5] if m["role"] == "tool" for r in m["results"]][-1]
     assert "POST " + POST + " -> ok" in verify["output"]
+
+
+def test_every_act_call_extends_the_one_before(ctx=None):
+    """With the write guard's hooks on and a date read, each act call's messages begin with the previous call's: the
+    provider's prompt cache reads the earlier part instead of writing it again. A hook added to the package must keep
+    this (inputs/package_api.md says so)."""
+    inbox = "https://gmail.googleapis.com/gmail/v1/users/me/messages"
+    plan = ("plan_changes", {"changes": [{"content": "post the update in #ops", "status": "pending"}], "excluded": []})
+    fake = FakeCtx([Reply("", [("api_fetch", {"method": "GET", "url": inbox})]), Reply("", [plan]),
+                    Reply("", [("api_fetch", {"method": "POST", "url": POST, "body": "{}"})]),
+                    Reply("", [("finish", {"reason": "Posted."})]), Reply("", [("finish", {"reason": "Posted it."})])],
+                   pages={inbox: '{"messages": [{"id": "m1", "internalDate": "1748908800000"}]}'})
+    assert adapter().run(fake, "Post the update in #ops.") == "Posted it."
+    acts = [m for m, r in zip(fake.sent, fake.roles) if r == "act"]
+    assert len(acts) == 5 and any("field internalDate" in json.dumps(m) for m in acts)
+    for before, after in zip(acts, acts[1:]):
+        assert after[:len(before)] == before

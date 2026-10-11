@@ -254,9 +254,9 @@ class MemoryClient:
         self.stop()
 
     # ------------------------------------------------------------------------------------------------ calls
-    def _call(self, method: str, path: str, body: dict | None = None) -> dict:
+    def _call(self, method: str, path: str, body: dict | None = None, *, timeout=None) -> dict:
         try:
-            r = self._client().request(method, path, json=body)
+            r = self._client().request(method, path, json=body, **({"timeout": timeout} if timeout else {}))
         except httpx.TransportError as e:
             raise MemorySidecarError(f"{method} {path}: {type(e).__name__}: {e}") from e
         if not 200 <= r.status_code < 300:
@@ -287,7 +287,11 @@ class MemoryClient:
         validated (how many passed validation, before the dedup), replies (each LLM call the flow made: op, the
         bridge's call_id, done, json state), unparsed (replies ReMe could not read)}. The LLM calls go to the
         research scope the sidecar was started with; the caller checks the replies against the bridge's record."""
-        data = self.flow("summary_task_memory_v6", trajectories=trajectories)
+        # no read timeout: the flow chains research calls that each wait for a bridge slot and run under the
+        # provider's own limit, so the host's 900 s would give up on a summary the sidecar still pays for; the sidecar
+        # ends with the host (its parent watch)
+        data = self._call("POST", "/summary_task_memory_v6", {"trajectories": trajectories},
+                          timeout=httpx.Timeout(None, connect=5.0))
         meta = data.get("metadata") or {}
         try:
             validated = len(json.loads(data.get("answer") or "[]"))

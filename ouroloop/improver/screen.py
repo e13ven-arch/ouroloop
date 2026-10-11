@@ -40,6 +40,7 @@ class ScreenResult(Record):
     net_flips: int = 0
     cost: float | None = None           # per valid attempt
     thin: bool = False
+    in_sample: bool = False             # the failing set is studied train tasks (the cause has none held out, §9.1)
     outcome: str = "screened"           # screened | invalid | budget_exhausted | defect | not_run
     reason: str = ""
 
@@ -54,13 +55,18 @@ def passing_sample(reading: dict, *, order, size: int, seed: int, round_index: i
 
 
 def condition(decl, comps: list[dict]) -> list[dict]:
-    """The components whose footprint conditions a fix: those of the declared kind the candidate changed; for a prompt,
-    the agent, a config, a vendored package, a removal or the model, every attempt."""
+    """The components whose footprint conditions a fix: those of the declared kind the candidate changed, and the
+    supporting tools, hooks and skills it carries with them (IMPROVER §7.1: any of them showing is the mechanism
+    showing); for a prompt, the agent, a config, a vendored package, a removal or the model, every attempt."""
     if decl.kind in WHOLE_KINDS:
         return [{"kind": "prompt", "name": "*"}]
     if decl.kind == "memory":
         return [{"kind": "memory", "name": "snapshot"}]
-    return [c for c in comps if c["kind"] == decl.kind and c["change"] != "deleted"]
+    own = [c for c in comps if c["kind"] == decl.kind and c["change"] != "deleted"]
+    if decl.fixed:
+        return own
+    return own + [c for c in comps if c["kind"] in ("tool", "hook", "skill") and c["change"] != "deleted"
+                  and c not in own]
 
 
 def latest(rows: list[TaskResult]) -> dict[str, TaskResult]:
@@ -71,11 +77,12 @@ def latest(rows: list[TaskResult]) -> dict[str, TaskResult]:
 
 
 def screen(activity, *, run_arm, name: str, package, base_release, failing: list[str], sample: list[str],
-           reading: dict, evidence, conditions: list[dict], account, retries: int, thin_tasks: int) -> ScreenResult:
+           reading: dict, evidence, conditions: list[dict], account, retries: int, thin_tasks: int,
+           in_sample: bool = False) -> ScreenResult:
     """Run one candidate's screen and read it. `reading` is the current W's train reading ({task: TaskResult})."""
     tasks = list(dict.fromkeys([*failing, *sample]))
     base = dict(candidate=name, package_ref=package.ref(), tasks=tuple(tasks), failing=tuple(failing),
-                sample=tuple(sample), thin=len(failing) < int(thin_tasks))
+                sample=tuple(sample), thin=len(failing) < int(thin_tasks), in_sample=bool(in_sample))
     if not failing:
         return ScreenResult(**base, outcome="not_run", reason="no train task it claims fails now")
 
@@ -145,14 +152,17 @@ def gate_attempts(activity, control_ref: str | None = None) -> int:
     return len(plan.task_ids) * plan.repeats * (1 + plan.confirmations) + len(short)
 
 
-def price(activity, base_package_ref: str, *, screen_attempts: int, gate: bool = True) -> tuple[float | None, str]:
-    """What the screens and the gate will cost at most, from the current W's costs on record. -> (usd, "") or (None,
-    why it cannot be priced)."""
+def price(activity, base_package_ref: str, *, screen_attempts: int, gate: bool = True,
+          dev_ref: str | None = None) -> tuple[float | None, str]:
+    """What the screens and the gate will cost at most, from the current W's costs on record (`dev_ref`: the package
+    whose dev readings price the gate, when the round works on a carried package that has none). -> (usd, "") or
+    (None, why it cannot be priced)."""
     train = cost_per_attempt(activity, base_package_ref, "train")
-    dev = cost_per_attempt(activity, base_package_ref, "dev") if gate else 0.0
+    dev = cost_per_attempt(activity, dev_ref or base_package_ref, "dev") if gate else 0.0
     if train is None or dev is None:
         return None, "the current W has no priced train or dev reading on record: the screens cannot be priced"
-    return round(screen_attempts * train + (gate_attempts(activity, base_package_ref) * dev if gate else 0.0), 6), ""
+    return round(screen_attempts * train + (gate_attempts(activity, dev_ref or base_package_ref) * dev if gate
+                                            else 0.0), 6), ""
 
 
 # ---------------------------------------------------------------------------- V4

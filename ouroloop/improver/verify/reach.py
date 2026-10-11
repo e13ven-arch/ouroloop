@@ -1,7 +1,9 @@
 """V2c, reach (docs/design/IMPROVER.md §8): a skill is listed in every attempt's system prompt by its name and
 description, so the check is that the description speaks to more than the tasks it was written for: it must be as
-close as `reach_min_score` to at least `reach_min_tasks` train tasks beyond its claimed ones. Vectors: the memory's
-bge-small when the activity runs the memory sidecar, else a deterministic bag of words (`lexical_embed`)."""
+close as `reach_min_score` to at least `reach_min_tasks` train tasks beyond its claimed ones. Vectors: a deterministic
+bag of words (`lexical_embed`), the scale reach_min_score is calibrated on; the round passes no other embedder (on the
+memory's bge-small unrelated texts score 0.5 and above, so 0.2 would pass every description). A context's `embed` is
+used when a caller gives one."""
 from __future__ import annotations
 
 import hashlib

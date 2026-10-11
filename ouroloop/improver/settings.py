@@ -26,8 +26,9 @@ class Settings:
     fixed_per_round: int = 2                     # the fixed code's candidates per round (snapshot, promotions, removals)
     session_max_turns: int = 40
     session_max_edits: int = 32
-    session_max_read_bytes: int = 65536
-    session_max_read_total: int = 1048576
+    session_max_read_bytes: int = 65536          # one read (read_trajectory or read_file)
+    session_max_read_total: int = 196608         # all reads of a session: the transcript is re-sent every turn
+    session_compact_tokens: int = 120000         # past this many input tokens the oldest outputs are elided
     diagnose_max_cases: int = 60
     diagnose_successes: int = 6
     causes: tuple = CAUSES
@@ -47,6 +48,8 @@ class Settings:
     screen_max_sample_regressions: int = 1
     thin_screen_tasks: int = 3
     removal_zero_credit_rounds: int = 3
+    holdout_share: float = 0.4                   # the train tasks R never sees; V3 screens there only (0: none)
+    gate_every: int = 2                          # a gate every this many rounds; between, the best screened is carried
     round_share: float = 0.25
 
     def __post_init__(self):
@@ -61,6 +64,10 @@ class Settings:
         object.__setattr__(self, "priors", priors)
         if self.k < 1 or self.session_max_turns < 1:
             raise ValueError("improver.k and improver.session_max_turns are at least 1")
+        if not 0 <= float(self.holdout_share) < 1:
+            raise ValueError("improver.holdout_share is a share of the train tasks, in [0, 1)")
+        if int(self.gate_every) < 1:
+            raise ValueError("improver.gate_every is at least 1 (1: a gate every round)")
         if not 0 < float(self.round_share) <= 1:
             raise ValueError("improver.round_share is a share of the root, in (0, 1]")
 
@@ -111,10 +118,11 @@ def preset_table() -> dict:
 
 
 RULES = {"k": "cap", "fixed_per_round": "cap", "session_max_turns": "cap", "session_max_edits": "cap",
-         "session_max_read_bytes": "cap", "session_max_read_total": "cap", "diagnose_max_cases": "cap",
+         "session_max_read_bytes": "cap", "session_max_read_total": "cap", "session_compact_tokens": "cap",
+         "diagnose_max_cases": "cap",
          "diagnose_successes": "cap", "causes": "superset", "mechanizable": "superset", "priors": "fixed",
          "explore_slots": "cap", "l5_slots": "cap", "code_guarantee": "fixed", "stall_rounds": "cap",
          "toolcheck_min_pass": "floor", "replay_min_triggers": "floor", "reach_min_tasks": "floor",
          "reach_min_score": "floor", "screen_passing_sample": "cap", "screen_min_net_flips": "floor",
          "screen_min_fixes": "floor", "screen_max_sample_regressions": "cap", "thin_screen_tasks": "floor",
-         "removal_zero_credit_rounds": "fixed", "round_share": "cap"}
+         "removal_zero_credit_rounds": "fixed", "holdout_share": "floor", "round_share": "cap", "gate_every": "cap"}

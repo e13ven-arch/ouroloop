@@ -49,7 +49,8 @@ def round_activity(root: Path, upstream: str, mode: str = "tool", *, memory: boo
     else:
         s.research = Research(s.r)
     s.a = rsi.activity(root, upstream, provider=s.actor, research=s.research,
-                       improver={"mechanizable": list(MECHANIZABLE) + ["missed_action"], **(improver or {})},
+                       improver={"mechanizable": list(MECHANIZABLE) + ["missed_action"], "gate_every": 1,
+                                 **(improver or {})},
                        **extra, **sections)
     if tried:
         write_json(s.a.root / "ledger" / "estimates.json",

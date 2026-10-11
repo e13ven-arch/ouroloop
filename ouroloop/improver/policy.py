@@ -55,12 +55,17 @@ def check_lessons(text: str, known_ids: set) -> tuple[list[str], list[str]]:
     return kept[:MAX_LESSONS], dropped
 
 
-def update_playbook(root, ledger, *, researcher, line: str) -> dict:
-    rows = ledger.projection(line=line)[-ROWS_SHOWN:]
+def update_playbook(root, ledger, *, researcher, line: str, hide=frozenset()) -> dict:
+    """The playbook from the ledger's projection; `hide` the held-out train tasks (R reads the playbook)."""
+    rows = ledger.projection(line=line, hide=hide)[-ROWS_SHOWN:]
     system = (PROMPTS / "playbook.md").read_text(encoding="utf-8")
     user = json.dumps({"playbook": read_playbook(root), "ledger_rows": rows}, ensure_ascii=False, default=str)
     turn = researcher.chat(system, [{"role": "user", "content": user}], [])
     kept, dropped = check_lessons(getattr(turn, "text", "") or "", ledger.ids())
+    old = read_playbook(root)
+    if not kept and (old.strip() or getattr(turn, "stop", "") in ("refusal", "max_tokens")):
+        # a reply with no lesson the ledger backs (refused, cut, or all uncited) does not wipe what was learned
+        return {"lessons": len([x for x in old.splitlines() if x.strip()]), "dropped": dropped, "kept_previous": True}
     text = "\n".join(kept) + ("\n" if kept else "")
     path = playbook_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)

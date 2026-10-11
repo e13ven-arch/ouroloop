@@ -21,6 +21,13 @@ from .declaration import Declaration, read_declaration
 
 NUDGE = ("Reply with tool calls: list_files, read_file, write_file, edit_file, delete_file, read_trajectory, "
          "search_trace, run_tests, run_check, or finish with your declarations. Text alone does nothing.")
+CUT = ("Your last reply was cut at the output limit and none of its calls ran. Write one file per reply, change "
+       "existing files with edit_file, and keep a run_check or finish with many scripts small.")
+REFUSED = "Your last reply was refused and none of its calls ran. Reply with tool calls for the assigned work."
+KEEP_RECENT = 4                         # tool messages (and assistant turns) kept whole when the session is compacted
+COMPACT_TO = 0.6                        # of session_compact_tokens: where a compaction brings the context down to
+CHARS_PER_TOKEN = 3                     # the estimate of a call's tokens from its text (JSON with code: on the low side)
+READ_TOOLS = ("read_file", "read_trajectory")
 EDIT_TOOLS = ("write_file", "edit_file", "delete_file")
 ITEM_CHARS = 8000                      # of one message in the stored transcript
 DECLARATION_SCHEMA = {"type": "object", "properties": {
@@ -29,7 +36,8 @@ DECLARATION_SCHEMA = {"type": "object", "properties": {
     "predicted_affected": {"type": "array", "items": {"type": "string"}},
     "trigger": {"type": "string"},
     "differs_from": {"type": "array", "items": {"type": "object"}},
-    "scripts": {"type": "object"}}, "required": ["dir", "cause_id", "kind", "predicted_affected", "trigger"]}
+    "scripts": {"type": "object"}, "probes": {"type": "object"}},
+    "required": ["dir", "cause_id", "kind", "predicted_affected", "trigger"]}
 
 TOOLS = (
     ToolSpec("list_files", "List the files under a directory of the work tree (default: all of it): package/ is the "
@@ -117,6 +125,8 @@ class CodingSession:
         self.declarations: dict[str, Declaration] = {}
         self.ended = ""
         self.revising = False
+        self.cut = 0                    # replies in a row cut at the output limit
+        self.compactions = 0
 
     # ------------------------------------------------------------------ driving
     def start(self) -> SessionResult:
@@ -134,17 +144,30 @@ class CodingSession:
         self.ended = why
         return SessionResult(list(self.declarations.values()), why)
 
+    def resume(self) -> SessionResult:
+        """A session restored from a checkpoint goes on where it stopped, under the same caps."""
+        if self.ended:
+            return SessionResult(list(self.declarations.values()), self.ended)
+        return self._run()
+
     def _run(self) -> SessionResult:
         while True:
             if self.turns >= self.s.session_max_turns:
                 return self._end(f"the session used its {self.s.session_max_turns} turns")
             self.turns += 1
+            self._compact()
             reply = self.researcher.chat(self.system, self.messages, list(TOOLS))
             calls = [c for c in getattr(reply, "tool_calls", None) or () if isinstance(c, ToolCall)]
             self.messages.append({"role": "assistant", "text": reply.text or "", "tool_calls": calls})
             if not calls:
-                self.messages.append({"role": "user", "content": NUDGE})
+                stop = getattr(reply, "stop", "")
+                self.cut = self.cut + 1 if stop == "max_tokens" else 0
+                if self.cut >= 2:
+                    return self._end("two replies in a row were cut at the output limit")
+                self.messages.append({"role": "user", "content": CUT if stop == "max_tokens" else
+                                      REFUSED if stop == "refusal" else NUDGE})
                 continue
+            self.cut = 0
             results, finished = [], False
             for call in calls:
                 if finished:
@@ -188,8 +211,20 @@ class CodingSession:
             value, bad = self.work.do("list", path=args.get("path") or ".")
             return (json.dumps(value) if not bad else value), bad, False
         if name == "read_file":
+            left = self.s.session_max_read_total - self.read_bytes
+            try:
+                want = int(args.get("limit") or self.s.session_max_read_bytes)
+            except (TypeError, ValueError):
+                return "offset and limit are integers", True, False
+            if want < 1:
+                return "limit is a positive number of characters", True, False
+            if left <= 0:
+                return (f"refused: the session has read its {self.s.session_max_read_total} bytes (files and "
+                        f"trajectories together)"), True, False
             value, bad = self.work.do("read", path=args.get("path"), offset=args.get("offset"),
-                                      limit=args.get("limit"))
+                                      limit=min(want, self.s.session_max_read_bytes, left))
+            if not bad:
+                self.read_bytes += len(str(value).encode("utf-8"))
             return str(value), bad, False
         if name == "read_trajectory":
             return (*self._read_trajectory(args), False)
@@ -263,10 +298,74 @@ class CodingSession:
                 self.declarations[decl.dir] = decl
         return "declared: " + (", ".join(self.declarations) or "nothing"), False
 
+    # ------------------------------------------------------------------ the context
+    def _context_tokens(self) -> int:
+        """What the next call sends, in tokens, estimated from its text (CHARS_PER_TOKEN characters a token, on the
+        low side): the billed usage of a call sums the CLI's continuations and retries, and says nothing exact."""
+        sent = json.dumps([_plain(m) for m in self.messages], ensure_ascii=False, default=str)
+        return (len(self.system or "") + len(sent)) // CHARS_PER_TOKEN
+
+    def _compact(self) -> None:
+        """Before a call whose context passes session_compact_tokens: the outputs of the older tool messages and the
+        texts the older assistant turns wrote become a line that says how to see them again, keeping the last
+        KEEP_RECENT (fewer if that is not enough) until the context is under COMPACT_TO of the threshold. Between two
+        compactions each call extends the one before (the cache). An elided read gives its bytes back to the
+        session's read total, so reading it again is not refused."""
+        limit = int(self.s.session_compact_tokens)
+        if self._context_tokens() <= limit:
+            return
+        changed = False
+        for keep in (KEEP_RECENT, 2, 1):
+            tools = [i for i, m in enumerate(self.messages) if m.get("role") == "tool"][:-keep]
+            turns = [i for i, m in enumerate(self.messages) if m.get("role") == "assistant"][:-keep]
+            for i in tools:
+                results = []
+                for r in self.messages[i].get("results") or ():
+                    out = str(r.get("output") or "")
+                    if len(out) > 300 and not out.startswith("[elided"):
+                        if r.get("name") in READ_TOOLS and not r.get("is_error"):
+                            self.read_bytes = max(self.read_bytes - len(out.encode("utf-8")), 0)
+                        r = {**r, "output": f"[elided to keep the session within its context: {len(out)} "
+                                            f"characters; call {r.get('name')} again to see it]"}
+                        changed = True
+                    results.append(r)
+                self.messages[i] = {**self.messages[i], "results": results}
+            for i in turns:
+                calls = []
+                for c in self.messages[i].get("tool_calls") or ():
+                    args = dict(c.args) if isinstance(c.args, dict) else c.args
+                    for key in ("text", "old", "new"):
+                        if isinstance(args, dict) and isinstance(args.get(key), str) and len(args[key]) > 300:
+                            args[key] = f"[elided: {len(args[key])} characters; read the file to see it]"
+                            changed = True
+                    calls.append(ToolCall(c.id, c.name, args))
+                self.messages[i] = {**self.messages[i], "tool_calls": calls}
+            if self._context_tokens() <= limit * COMPACT_TO:
+                break
+        self.compactions += changed
+
+    # ------------------------------------------------------------------ checkpoints
+    def state(self) -> dict:
+        """What a resumed session needs (the candidate directories' files are the host's to save)."""
+        return {"messages": [_plain(m) for m in self.messages], "turns": self.turns, "edits": self.edits,
+                "read_bytes": self.read_bytes, "calls": list(self.calls), "dirs": list(self.dirs),
+                "declarations": {d: decl.to_json() for d, decl in self.declarations.items()}, "ended": self.ended,
+                "revising": self.revising, "cut": self.cut, "compactions": self.compactions}
+
+    def restore(self, state: dict) -> None:
+        self.messages = [_unplain(m) for m in state.get("messages") or ()]
+        self.turns, self.edits = int(state.get("turns") or 0), int(state.get("edits") or 0)
+        self.read_bytes, self.calls = int(state.get("read_bytes") or 0), list(state.get("calls") or ())
+        self.dirs = list(state.get("dirs") or ())
+        self.declarations = {d: Declaration.from_json(v) for d, v in (state.get("declarations") or {}).items()}
+        self.ended, self.revising = str(state.get("ended") or ""), bool(state.get("revising"))
+        self.cut, self.compactions = int(state.get("cut") or 0), int(state.get("compactions") or 0)
+
     # ------------------------------------------------------------------ records
     def record(self) -> dict:
         return {"turns": self.turns, "edits": self.edits, "read_bytes": self.read_bytes, "dirs": list(self.dirs),
-                "declared": list(self.declarations), "ended": self.ended, "calls": list(self.calls)}
+                "declared": list(self.declarations), "ended": self.ended, "calls": list(self.calls),
+                "compactions": self.compactions}
 
     def transcript(self) -> dict:
         items = []
@@ -296,3 +395,15 @@ def _cut_all(value):
     if isinstance(value, list):
         return [_cut_all(v) for v in value]
     return value
+
+
+def _plain(m: dict) -> dict:
+    if m.get("role") != "assistant":
+        return dict(m)
+    return {**m, "tool_calls": [{"id": c.id, "name": c.name, "args": c.args} for c in m.get("tool_calls") or ()]}
+
+
+def _unplain(m: dict) -> dict:
+    if m.get("role") != "assistant":
+        return dict(m)
+    return {**m, "tool_calls": [ToolCall(c["id"], c["name"], c["args"]) for c in m.get("tool_calls") or ()]}

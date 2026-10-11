@@ -97,6 +97,8 @@ K 是配置经 preset 补全、按“只能收紧”规则合并后冻结的一�
 
 preset 与配置的关系：preset 给出每个字段的默认值与上限；配置只能把数值改小、把集合改窄、把 effort 改低（“只能收紧”，`activity.config.merge`）；超出即启动错误。preset 本身在代码里（`activity/presets.py`），新 preset 名随版本号。
 
+2026-10-10 修订：`gate` 节多 `partial_min_gain`（floor，可为 None）；`improver` 节多 `gate_every`（cap）；`schedule.rounds` 的 preset 上限 8。
+
 ## 5 Release 三元组与收据
 
 ```python

@@ -61,7 +61,7 @@ def run_arm(activity, *, release, split, candidate, role, pairs, account, plan_r
 def smoke(activity, *, tasks=None, limit=None, checks_only=False, out) -> dict      # 划分哈希、评分契约、输入审计、种子全量字面量扫描；一次 dev 尝试
 def freeze(activity, *, out) -> dict                                    # 冻结 gate 计划、日程、预算、final 计划；打印 [rsi] 行
 def baseline(activity, *, out) -> dict                                  # W0 在 train 与 dev（control_readings 次）
-def library(activity, *, out) -> dict                                   # memory 的流与快照（MEMORY §7）：首遇、重试、写入、读数、快照候选
+def library(activity, *, out) -> dict                                   # memory 的流与快照（MEMORY §7）：首遇、重试、写入、读数、快照候选（按 K 的 max_memory_bytes 装，MEMORY §7.1）
 def round_(activity, index: int, *, out) -> RoundResult                 # improver.run_round（IMPROVER §3）；每轮后停
 def evaluate(activity, *, out) -> dict                                  # final（EVALUATE §6）
 def report(activity, *, out) -> dict
@@ -72,10 +72,10 @@ def cycle(activity, *, until: str | None, out) -> dict                  # baseli
 def startup_checks(activity, *, phase: str, needs_model: bool = True, needs_worker: bool | None = None) -> list[str]
     # 钱：预算根与份额存在、价目有界、provider 是订阅登录、effort 钉在 K；
     # 泄漏：划分哈希相符、test 未读（final 之前）、R 与 memory 只读 train 的配置；
-    # 正确性：worker 镜像 id 与 runner sha256、egress 镜像、memory sidecar 的 venv 等于锁文件、模型各文件的 sha256、K 的 backend 钉表等于本检出的锁文件与 flows（library 阶段、开了 memory 的 round，及跑开了 memory 的包的阶段）、种子 ref 与 K 一致、code_version 相符、评分契约、round 前 gate 计划模板已冻结
+    # 正确性：worker 镜像 id 与 runner sha256、egress 镜像、memory sidecar 的 venv 等于锁文件、模型各文件的 sha256、K 的 backend 钉表等于本检出的锁文件与 flows（library 阶段、开了 memory 的 round，及跑开了 memory 的包的阶段）、种子 ref 与 K 一致、code_version 相符（含 R 的提示词 `improver/prompts/*.md`）、评分契约、round 前 gate 计划模板已冻结、claude CLI 的版本读得出且与活动第一次付费阶段记下的相同（`cli_version` 事件）
 
 # report.py
-def build_report(activity) -> dict      # 基线、每轮（簇数、候选、各档通过数、gate 读数、装入）、memory 读数、final、花费（按步单列）、test 读取次数
+def build_report(activity) -> dict      # 基线、每轮（簇、指派、候选与各档、筛选、gate 判定与增益、装入、停因、本轮花费）、memory 读数、final（各臂与 W* − W0 的家族重抽样 95% 区间）、花费（按步单列）、本活动 final 读 test 的次数
 def render_markdown(report) -> str
 def write_report(activity, report) -> dict   # 两次相同（确定性）
 
@@ -83,21 +83,24 @@ def write_report(activity, report) -> dict   # 两次相同（确定性）
 # ouroloop bench --config C --phase P [--until U] [--task T] [--limit N] [--checks-only] [--out J] [--concurrency N]
 # ouroloop freeze --config C
 # ouroloop export --config C [--release R] --to DIR
+# 付费阶段与 freeze 持有 <root>/rsi/activity.lock：同一个活动同时只有一个进程（两个进程会为同样缺的尝试各付一次）；cycle 结束时打印停在哪、为什么、活动已花多少；花费一节列根的直接子账户（各带子树），加起来等于根
 ```
 
 ## 4 阶段与停下点
 
 | 阶段 | 做什么 | 停下来分析 | 花费 |
 |---|---|---|---|
-| smoke | `--checks-only`：上游版本、划分哈希、评分契约、输入审计；不带：一次 dev 尝试走完整运行壳 | 划分哈希与预期一致？ | $0 / 约 $0.5 |
-| freeze | 冻结 gate 计划模板（`TaskEvalPlan`，任务 = 全部 dev，阈值来自 K 的 `gate`）、打开预算根（final 份额事先留出）、final 计划（配置有 `[final]` 且已有装入时封存）；打印 `[rsi]` 的 `scope_id`、`core_ref`、`split_ref`、`final_plan_ref`，用户填回配置并提交；日程在 K 里，不另冻结 | — | $0 |
+| smoke | `--checks-only`：上游版本、划分哈希、评分契约、输入审计、train 与 dev 之间的近重复（不读 test 的断言）；不带：一次 dev 尝试走完整运行壳 | 划分哈希与预期一致？ | $0 / 约 $0.5 |
+| freeze | 冻结 gate 计划模板（`TaskEvalPlan`，任务 = 全部 dev，阈值来自 K 的 `gate`）、打开预算根（final 份额事先留出）、final 计划（配置有 `[final]` 且已有装入时封存；还没有装入时注明“未封存”，照常打印 `[rsi]`；封存的 W* 是当时的活跃 release，所以在轮次结束后再封存；还有未结束的轮次时不封存并注明）；打印 `[rsi]` 的 `scope_id`、`core_ref`、`split_ref`、`final_plan_ref`，用户填回配置并提交；日程在 K 里，不另冻结 | — | $0 |
 | baseline | W0 跑 train 全部 + dev × `control_readings` | 余量与噪声 | 约 $58 |
-| library | memory 流（MEMORY §7）：对 train 逐题首遇与重试，写入、记功；快照作候选从 V3 起走阶梯 | D、学习曲线、快照 gate | 约 $50～100 |
+| library | memory 流（MEMORY §7）：对 train 逐题首遇与重试，写入、记功；快照（精简行，按记功装进 K 的 `max_memory_bytes`，没装的记在 `library_snapshot` 事件的 `fit`：MEMORY §7.1）作候选从 V3 起走阶梯 | D、学习曲线、快照装了几条、快照 gate | 约 $50～100 |
 | round k | improver 的一轮（IMPROVER §3）；每轮后停 | 有没有代码候选到 V2；V3/V4 读数 | 约 $40 |
 | evaluate | final | — | 约 $72 |
 | report | 报告 | — | $0 |
 
 `cycle --until` 保留：`baseline`、`library`、`round-K`；中间崩溃按 `Execution` 续跑。
+
+**gate 的节奏（2026-10-10 修订，IMPROVER §9.2）：** `cycle` 的耐心数没有进展的轮：没装入、且（付了 gate，或没有候选可累积）的轮算闲置；把最优候选带到下一轮的 carry 轮不计。`gate_every` = 1 时没有 carry 轮，规则回到"连续 patience 轮没有装入就停"。`schedule.rounds` 的上限 8；`improver.gate_every` 默认 2。报告的每轮一行多 `carried` 与 `in_sample` 的标注。
 
 ## 5 预算根与份额
 
@@ -115,7 +118,7 @@ def write_report(activity, report) -> dict   # 两次相同（确定性）
 
 - K 冻结后，活动期间任何 `.py` 改动都不合入该检出（规则 13，由 `code_version` 守住：启动检查比对）。
 - `freeze` 之后 `[rsi]` 的 ref 不变；改了即启动错误。
-- test 只在 `evaluate` 读；report 披露读取次数。
+- test 只在 `evaluate` 读；report 披露读取次数；smoke 的近重复提示只看 train 与 dev。
 - 启动检查只查三类；不加别的。
 
 ## 8 与现有代码的对应

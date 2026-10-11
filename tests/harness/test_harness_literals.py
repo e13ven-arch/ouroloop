@@ -85,3 +85,16 @@ def test_changed_lines_and_the_description_for_r():
     assert L.changed_lines("a\nb", None) == {1, 2}
     text = L.describe([{"path": "tools/x.py", "line": 3, "literal": "C0042", "kind": "identifier"}])
     assert "tools/x.py:3: 'C0042' (identifier)" in text
+
+
+def test_a_value_another_train_request_names_is_vocabulary_not_one_tasks_answer():
+    rows = [{"task_id": "t1", "assertions": [{"type": "row", "account": "Accounts Payable", "amount": "4,750"}],
+             "prompt": "Post the invoice to Accounts Payable."},
+            {"task_id": "t2", "assertions": [{"type": "row", "account": "Retained Earnings"}],
+             "prompt": "Close the books; Accounts Payable stays open."},
+            {"task_id": "t3", "assertions": [], "prompt": "Pay Acme Supplies 4,750 today."}]
+    index = L.literal_index(rows)
+    banned = L.forbidden(index)
+    assert "Accounts Payable" not in banned and index.tasks["Accounts Payable"] == {"t1", "t2"}
+    assert "Retained Earnings" in banned                   # named by its own task only
+    assert "4,750" in banned                                # an amount another request names stays this one's

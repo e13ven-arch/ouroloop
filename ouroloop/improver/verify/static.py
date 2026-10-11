@@ -22,6 +22,7 @@ FORBIDDEN_PREFIXES = ("os.exec", "os.spawn")         # os.execv, os.spawnl, ...
 # a candidate's code reaches the world through ctx.tool only; the egress tool of the seed (agent/http_fetch.py) is the
 # package's own and stays as it is
 EXTRA_KINDS = ("test",)               # what any candidate may change besides its declared kind
+SUPPORT_KINDS = ("tool", "hook", "skill", "prompt")   # a mechanism's carriers may travel together (IMPROVER §7.1)
 
 
 def _reaches(text: str, path: str) -> list[tuple[int, str]]:
@@ -69,7 +70,7 @@ def _dotted(node) -> str:
     return ""
 
 
-def declaration_problems(decl, comps: list[dict], *, train_tasks) -> list[str]:
+def declaration_problems(decl, comps: list[dict], *, train_tasks, study_tasks=(), cause_ids=()) -> list[str]:
     if not comps:
         return ["the candidate changes nothing"]
     kinds = {c["kind"] for c in comps}
@@ -93,16 +94,22 @@ def declaration_problems(decl, comps: list[dict], *, train_tasks) -> list[str]:
                        f"{sorted(c['name'] for c in mine)}")
         if decl.kind == "prompt" and decl.site and not any(c["name"] == decl.site for c in mine):
             out.append(f"a prompt candidate's site is system or finish, the file it changes")
-    extra = sorted(kinds - {decl.kind} - set(EXTRA_KINDS) - ({"tool", "hook", "skill"} if decl.kind == "removal"
-                                                             else set()))
+    extra = set(kinds) - {decl.kind} - set(EXTRA_KINDS) - ({"tool", "hook", "skill"} if decl.kind == "removal"
+                                                            else set())
+    if decl.kind in SUPPORT_KINDS:
+        extra -= set(SUPPORT_KINDS)       # one mechanism's supporting components travel with it (IMPROVER §7.1)
     if extra and not decl.fixed:
-        out.append(f"the files also change {extra}: one candidate is one kind of change (declare another candidate)")
+        out.append(f"the files also change {sorted(extra)}: the agent, config, a vendored package, the memory or the "
+                   f"model is a candidate of its own (declare another candidate)")
     if not decl.fixed:
-        outside = sorted(set(decl.predicted_affected) - set(train_tasks))
-        if outside:
-            out.append(f"predicted_affected names {outside[:5]}, which are not train tasks")
+        studied = set(study_tasks or train_tasks)
+        outside = sorted(set(decl.predicted_affected) - studied)
+        if outside:             # one message for a held-out task and any other id: it does not say which is which
+            out.append(f"predicted_affected names {outside[:5]}, which are not among the train tasks you were given")
         if not decl.predicted_affected:
             out.append("predicted_affected names no train task")
+        if cause_ids and decl.cause_id not in set(cause_ids):
+            out.append(f"cause_id {decl.cause_id!r} is not a cause you were assigned: one of {sorted(cause_ids)}")
     return out
 
 
@@ -129,5 +136,6 @@ def static_check(files: dict[str, str], decl, ctx) -> dict:
     for path, status in d.changed.items():
         if status != "deleted" and path.endswith(".py"):
             problems += code_problems(path, files[path], ctx.parent.files.get(path))
-    problems += declaration_problems(decl, components(ctx.parent, files), train_tasks=ctx.train_tasks)
+    problems += declaration_problems(decl, components(ctx.parent, files), train_tasks=ctx.train_tasks,
+                                     study_tasks=ctx.study_tasks, cause_ids=ctx.cause_ids)
     return {"passed": not problems, "detail": "; ".join(problems)[:3000]}

@@ -76,6 +76,13 @@ tools, list them in tool_calls; they run in order, and you see their results in 
 without calling a tool, leave tool_calls empty and put your message in text."""
 
 
+# The system prompt of a call that brings none (ReMe's calls are a single user message): the API refuses a system text
+# block that is only whitespace (400), and leaving the flag out would give the CLI's own long system prompt.
+NO_SYSTEM = "Answer the request in the user's message."
+# The API refused the request as malformed before any model ran (a blank text block, a prompt too long): not billed.
+_INVALID = re.compile(r"api error: 400\b|invalid_request_error|prompt is too long")
+
+
 def child_env(max_tokens: int | None = None) -> dict:
     env = {k: v for k, v in os.environ.items() if not k.startswith(_INHERITED)}
     env.update(_SET)
@@ -114,6 +121,16 @@ def cli_problem(table: dict) -> str | None:
                 f"{' with an API key from ' + repr(status['apiKeySource']) if status.get('apiKeySource') else ''}, "
                 f"not a Claude subscription: calls would be billed per use. Run `claude auth login --claudeai`")
     return None
+
+
+def cli_version(binary: str = "claude") -> str | None:
+    """The claude CLI's version (`claude --version`, no model call), or None when it cannot be read."""
+    try:
+        done = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=60, env=child_env(),
+                              stdin=subprocess.DEVNULL, cwd=default_workdir() if default_workdir().exists() else None)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return (done.stdout or "").strip()[:100] or None if done.returncode == 0 else None
 
 
 def turn_schema(names: list[str]) -> dict:
@@ -290,7 +307,7 @@ class ClaudeCodeProvider:
     def _command(self, system: str, schema: dict | None, effort: str | None = None) -> list[str]:
         cmd = [self.binary, "-p", "--model", self.model, "--tools", "", "--safe-mode", "--setting-sources", "",
                "--strict-mcp-config", "--no-session-persistence", "--disable-slash-commands",
-               "--system-prompt", system or " "]
+               "--system-prompt", system if (system or "").strip() else NO_SYSTEM]
         if effort or self.effort:
             cmd += ["--effort", str(effort or self.effort)]
         if schema is None:
@@ -334,13 +351,19 @@ class ClaudeCodeProvider:
             if any(m in lowered for m in _TRUNCATED):
                 return ChatTurn("", [], "max_tokens", usage=usage or {})
             if "structured_output" in lowered or "structured output" in lowered:
-                raise ProviderError(f"the reply did not follow the turn format: {text[:300]}", retryable=True)
+                # the model answered and the CLI gave up on the format: what it used is reported, and booked
+                raise ProviderError(f"the reply did not follow the turn format: {text[:300]}", retryable=True,
+                                    usage=usage)
             raise self._failure(text, result.get("api_error_status"))
         answer = str(result.get("result", "")).lower()
         if not (usage or {}).get("output_tokens") and any(m in answer for m in _ACCOUNT) \
                 and not any(m in answer for m in _NOT_ACCOUNT):
             raise ProviderAccountError(f"claude CLI: {str(result.get('result'))[:300]}")   # a limit, not an answer
-        self._check_model(result)
+        try:
+            self._check_model(result)
+        except ProviderError as e:
+            e.usage = usage                # the call ran (another model answered): booked at what it used
+            raise
         if usage is None:
             # A call settled without usage would be booked as free; it is booked at its bound instead.
             raise ProviderError("the claude CLI reported no usage for a call it answered")
@@ -352,7 +375,11 @@ class ClaudeCodeProvider:
             return ChatTurn(str(result.get("result") or ""), [], stop or "end", usage=usage)
         if stop:
             return ChatTurn("", [], stop, usage=usage)
-        text, calls = self._turn(_structured(result), offered)
+        try:
+            text, calls = self._turn(_structured(result), offered)
+        except ProviderError as e:
+            e.usage = usage                # an answer that is not a turn: it was paid for, and is booked at its use
+            raise
         return ChatTurn(text, calls, "tool_use" if calls else "end", usage=usage)
 
     def _continued(self, result: dict, usage: dict, schema: dict | None) -> bool:
@@ -371,6 +398,8 @@ class ClaudeCodeProvider:
             return ProviderError(f"claude CLI: {text[:300]}", retryable=True, unbilled=True)
         if any(m in lowered for m in _ACCOUNT) or status in (401, 403):
             return ProviderAccountError(f"claude CLI: {text[:300]}")
+        if status == 400 or _INVALID.search(lowered):
+            return ProviderError(f"claude CLI: {text[:300]}", unbilled=True)
         if status in (429, 529) or _UNBILLED.search(lowered):
             return ProviderError(f"claude CLI: {text[:300]}", retryable=True, unbilled=True)
         if (isinstance(status, int) and status >= 500) or _TRANSIENT.search(lowered):

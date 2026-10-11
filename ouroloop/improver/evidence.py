@@ -72,10 +72,11 @@ class Evidence:
         rows = self.reading(package_ref)
         return [self.of(rows[t]) for t in self.activity.splits.ids(TRAIN) if t in rows and rows[t].success]
 
-    def best_successes(self, package_ref: str, n: int) -> list[AttemptEvidence]:
-        """The n cleanest successes: fewest steps, then lowest cost, then the frozen order (RRSI: keep what works)."""
+    def best_successes(self, package_ref: str, n: int, tasks=None) -> list[AttemptEvidence]:
+        """The n cleanest successes (of `tasks` when given): fewest steps, then lowest cost, then the frozen order
+        (RRSI: keep what works)."""
         order = {t: i for i, t in enumerate(self.activity.splits.ids(TRAIN))}
-        passed = self.passed(package_ref)
+        passed = [e for e in self.passed(package_ref) if tasks is None or e.task_id in set(tasks)]
         passed.sort(key=lambda e: (e.result.steps, e.result.cost_usd if e.result.cost_usd is not None else 1e9,
                                    order.get(e.task_id, len(order))))
         return passed[:max(int(n), 0)]

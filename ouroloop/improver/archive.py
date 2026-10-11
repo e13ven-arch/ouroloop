@@ -45,8 +45,10 @@ class Archive:
         d = self.files_digest(files)
         return next((r for r in self.rows() if r["files_digest"] == d and r["round"] < before_round), None)
 
-    def for_prompt(self, line: str, cause: str, n: int = 10) -> list[dict]:
-        """What R reads of earlier candidates of a cause: kind, site, the rungs passed, the screen's counts."""
+    def for_prompt(self, line: str, cause: str, n: int = 10, hide=frozenset()) -> list[dict]:
+        """What R reads of earlier candidates of a cause: kind, site, the rungs passed, the screen's outcome and
+        counts (a task of `hide`, held out from R, is counted, never named)."""
+        hide = set(hide)
         out = []
         for r in self.rows(line=line):
             if r.get("cause") != cause:
@@ -56,7 +58,11 @@ class Archive:
             out.append({"round": r["round"], "dir": r["dir"], "kind": r["kind"], "site": r.get("site"),
                         "declaration": r["declaration"],
                         "rungs": {k: bool(v.get("passed")) for k, v in (verdict.get("steps") or {}).items()},
-                        "screen": {k: screen.get(k) for k in ("outcome", "net_flips", "fixed", "regressed")}
+                        "screen": {"outcome": screen.get("outcome"), "net_flips": screen.get("net_flips"),
+                                   **{k: [t for t in screen.get(k) or () if t not in hide]
+                                      for k in ("fixed", "regressed")},
+                                   **{f"{k}_held_out": sum(1 for t in screen.get(k) or () if t in hide)
+                                      for k in ("fixed", "regressed")}}
                         if screen else None, "gated": bool(r.get("receipt"))})
         return out[-n:]
 

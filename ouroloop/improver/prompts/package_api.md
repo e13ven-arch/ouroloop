@@ -41,12 +41,28 @@ A hook's ctx has no model and its tool is read-only: a hook looks and answers, i
 
 {sites}
 
-None (or {{}}) is no action.
+None (or {}) is no action.
 
-## A toolcheck script (V2a, never part of the package)
+A before_model hook that changes the messages must keep every earlier message of the call where it was and as it was:
+add a note at the end of the first call that needs it and keep it at that place in later calls. The provider caches
+the beginning of each call; a call whose earlier messages differ from the previous call's is paid in full, several
+times the cost of an attempt.
+
+## Proving a tool (V2a, never part of the package)
+
+Two ways, per claimed train task; either way, `toolcheck_min_pass` tasks must pass.
+
+A probe: `probes[task_id] = [{"args": {...}, "expect": "<a substring of the output, or null>"}]`. The host loads the
+candidate against that task's fresh world and calls your tool once per probe: it passes when the call returns no
+error and its output contains `expect`. Take the args from the task's trajectory (what the agent read). This proves
+the tool runs on the real interface and answers what you expect; whether the agent will use it is the train screen's
+question.
+
+A script, the stronger proof: `scripts[task_id]` is Python defining
 
     def check(ctx, tools):
         out = tools["<your tool>"]({...})     # runs the candidate's tool against the task's fresh world
         ...                                   # do the rest of the task's work with tools[...] if needed
 
-The host then scores the world with the task's own checks.
+The host then scores the world with the task's own checks; the task passes when the world passes and the script
+called your tool. A task with both is judged by its script.
