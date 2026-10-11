@@ -121,6 +121,15 @@ class Releases:
 
 退步率、成本项、完整性不变；有确认读数时，确认读数单独也要满足所选的那一条（严格的按 `min_gain`，部分得分的按 `partial_min_gain`）。收据的 `metrics` 多 `partial_gain`、`partial_interval`、`accepted_by`（"strict" | "partial"）；报告两者并列，对外主张仍只用严格口径。
 
+### 5.2 活动末的发布 gate（v1.2）
+
+v1.1 每轮一次 gate；v1.2 活动内的接受由改进器的留出筛选决定（IMPROVER §9），dev 只在活动末读一次：
+
+- 被测臂 = 工作线 W_work（`rsi/active.json`），读 `gate.repeats` 次（preset 2）；对照 = W0 在 dev 上的池化读数（基线的 `control_readings` 次，或导入的基线）。
+- 规则不变（§5 的严格规则，或 §5.1 的部分得分规则）；第二次读数就是确认读数，单独也要满足所选的那条。
+- 通过 → `Releases.promote(W_work, reason="gate")`：发布线 W\*，之后 `freeze` 封存 final；不通过 → 没有发布，活动结束。
+- `GateReceipt.kind` 多一种 `release`；报告并列工作线的留出曲线（每轮的留出通过数）与这一次 dev 读数。
+
 ## 6 final（V5）
 
 - `FinalPlan` 封存：任务 = 全部 test、`repeats`、臂（W0 与 W\*，可选 R1）、主张；臂名进每个 attempt id（即 session id），所以计划里 W\* 写作 `W_star`，不能进 attempt id 的臂名在构造时就拒绝；`seal` 写对象与事件，哈希由用户提交到 git（规则 6）。活动只在有装入（W\* ≠ W0）之后封存（ACTIVITY §4）。
@@ -128,7 +137,7 @@ class Releases:
 
 ## 7 发布与装入
 
-- `Release` 三元组（CONTRACTS §5）。装入 = `Releases.install(candidate_release, receipt_ref, expected_parent=active.ref)`，CAS：active 不是期望的父就拒绝；`operation_id` 幂等。
+- `Release` 三元组（CONTRACTS §5）。装入 = `Releases.install(candidate_release, receipt_ref, expected_parent=active.ref)`，CAS：active 不是期望的父就拒绝；`operation_id` 幂等。v1.2：`reason` 有 `seed`、`screen`（留出筛选接受，工作线）、`gate`（活动末发布，`promote`）、`rollback`、`import`；`rsi/active.json` 是工作线，`rsi/released.json` 是发布线（final 与导出只读它）。
 - 回滚只退到 `last_good`（装过且没被撤销的祖先）；没有可退的就拒绝、什么都不撤销。
 - 种子 release：`reason="seed"`，`receipt_ref=None`。
 
@@ -138,6 +147,7 @@ class Releases:
 - 候选把它写进 manifest 的 `model.artifact_ref`；`evaluate.model.check_binding(manifest, core, objects)`：`base` 等于 K 的 identity、产物的父模型等于 base、产物的数据 manifest 只含 train 血缘。阶段 1 的实现读产物记录自己的 `splits` 字段，还没有调用方；训练链接上时（阶段 5）改由 `train.dataset.check_lineage` 判血缘，并在候选进阶梯前调用。
 - 这样的候选从 V3 起走阶梯；评测时 actor provider 由 `serving`（V2 §3.5，RunPod 上的 vLLM 经 `openai_compat`）按 `artifact_ref` 构建，仍经网关计量。
 - 训练与 harness 改动不在同一轮同时进 gate（DESIGN §7）。
+- v1.2：`AttemptIdentity`（CONTRACTS §4）相同的两个活动共享 W0 的基线读数：`import_baseline` 把旧工作区的 train / dev 读数与 transcript 引用复制进新工作区（只读旧工作区，记来源），gate 的对照池与第 0 轮的 measure 直接用它。
 
 ## 9 不变量与必须一直绿的测试
 

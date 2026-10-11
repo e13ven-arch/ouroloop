@@ -59,7 +59,7 @@ def copy_closure(src: Objects, dst: Objects, refs) -> set[str]   # 导出时拷�
   core.json                     K 的冻结副本（activity 写，带 ref），core_ref = 对象库里 core 对象的 ref
   rsi/objects/                  Objects
   rsi/events.jsonl              Events（core_frozen、installed、evaluation_completed、final_sealed、test_read……）
-  rsi/active.json               当前 release 的指针（evaluate.release，CAS）
+  rsi/active.json               工作线的 release 指针（evaluate.release，CAS）；rsi/released.json 发布线（v1.2）
   rsi/operations/、revoked.json  装入的操作记录、撤销表
   rsi/budget/book.json          预算簿（evaluate.budget.Budgets）
   rsi/execution/                可续跑步骤的日志（evaluate.budget.Execution）
@@ -97,7 +97,14 @@ K 是配置经 preset 补全、按“只能收紧”规则合并后冻结的一�
 
 preset 与配置的关系：preset 给出每个字段的默认值与上限；配置只能把数值改小、把集合改窄、把 effort 改低（“只能收紧”，`activity.config.merge`）；超出即启动错误。preset 本身在代码里（`activity/presets.py`），新 preset 名随版本号。
 
-2026-10-10 修订：`gate` 节多 `partial_min_gain`（floor，可为 None）；`improver` 节多 `gate_every`（cap）；`schedule.rounds` 的 preset 上限 8。
+2026-10-10 修订：`gate` 节多 `partial_min_gain`（floor，可为 None）。
+
+2026-10-11 修订（v1.2）：
+- K 的版本拆成两项：`attempt_version`（`runtime/`、`harness/` 含种子、`evaluate/{attempt,results,limits,splits}.py`、`adapters/`、`providers/`、`contracts.py` 的摘要）与 `improver_version`（`improver/`、`memory/`、`activity/`、`evaluate/{gate,final,budget,release}.py`、R 的提示词的摘要）；`Core{..., attempt_version, improver_version}`，`code_version` 不再单独存在。启动检查分别比对两者。
+- `AttemptIdentity = digest(attempt_version, package_ref, limits, model, worker.image_id, split_hash)`，写在 `core.json` 与基线的 run manifest 里；两个工作区的 AttemptIdentity 相同时基线可导入（EVALUATE §8、ACTIVITY §4）。
+- `improver` 节按 IMPROVER §2 v1.2（`packages_per_round`、`require_code_component`、`l5_per_round`、`hook_aux_calls`、`accept_*`、`holdout_share`、`round_share`）；`gate_every` 删除。`schedule.rounds` 上限 12，`patience` 3。
+- `rsi` 节多 `baseline_from`（旧工作区路径，可选）。
+- preset `automationbench_v2`：以上默认值，`memory.enabled = false`。
 
 ## 5 Release 三元组与收据
 
@@ -109,7 +116,7 @@ class Release(Record):               # kind "release"
     improver_ref: str                # R 的策略（improver.ImproverPolicy 的 ref：估值、剧本、提示）
     core_ref: str                    # K
     receipt_ref: str | None          # 装入依据：GateReceipt（种子 release 为 None）
-    reason: str                      # "seed" | "gate" | "rollback" | "import"
+    reason: str                      # "seed" | "screen"（留出筛选接受，工作线） | "gate"（活动末发布） | "rollback" | "import"
 
 @dataclass(frozen=True)
 class GateReceipt(Record):           # kind "receipt"：一次配对 gate 的读数（EVALUATE §5）
@@ -117,7 +124,7 @@ class GateReceipt(Record):           # kind "receipt"：一次配对 gate 的读
 class InstallReceipt(Record):        # kind "install"：装入或回滚的事实（expected_parent、operation_id、outcome）
 ```
 
-`rsi/active.json` 指向当前 release；装入是 CAS（EVALUATE §7）。部署导出只带 `package_ref` 的闭包、运行壳需要的 `core` 子集（limits、model、worker、harness.limits、memory.recall_k）与验证摘要，不带 R、台账、轨迹、凭据。
+`rsi/active.json` 指向工作线的当前 release，`rsi/released.json` 指向发布线（v1.2，EVALUATE §7）；装入与发布都是 CAS。部署导出只带 `package_ref` 的闭包、运行壳需要的 `core` 子集（limits、model、worker、harness.limits、memory.recall_k）与验证摘要，不带 R、台账、轨迹、凭据。
 
 ## 6 记录：transcript 行
 

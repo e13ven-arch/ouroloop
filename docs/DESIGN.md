@@ -1,5 +1,7 @@
-# ouroloop 架构设计（v1.1，正向设计）
+# ouroloop 架构设计（v1.2，正向设计）
 
+> 2026-10-11 修订（v1.2）：搜索循环按 finance-v2～v4 的读数重做——一轮一个包、活动内按留出 train 接受并累积在工作线上、dev 只在活动末 gate 一次、以算力换准确进候选面、library 默认关、K 的版本拆成尝试路径与改进器两部分、基线可跨活动复用（§6、§8、§10、§12）。读数与理由在 §6.12。
+>
 > 2026-10-09。取代 v0.7 的 DESIGN、10-08 的三份设计稿与 modules/ 的十份模块文档（都在 tag `archive-2026-10-09` 上）。本文从框架的职责出发，先定“让哪一层发生变化”，再推出 harness、agent、memory、改进器（evolution）、训练与平台各自该是什么样，整体结构对照主流开源 RSI 框架，但不照搬。
 >
 > 用户原话（2026-10-09）："RSI 框架本身的职责要清楚，就是自动化提升 harness 和训练模型。那么这里的 harness 的设计如何能够完成自动提升的都要有正向的设计。" "需要引入开源组件的直接使用即可，如果要自己开发必须要设计完善，不能只开发一个 demo 机制。" "积累记忆、自动写技能、优化任务代码、修改自身 harness，是不同层次的自我改进。选型时先确定你想让哪一层发生变化。" "之前我们 RSI 对于代码、工具和流程上的修改偏弱，大部分时间都没有做代码上的提升，因此很难获得更高的得分。"
@@ -264,20 +266,23 @@ ReMe 自带的记账与删除不用（会丢计数、记功共享）；去重只
 
 ## 6 改进器（evolution）：框架的核心机制
 
-### 6.1 一轮的八步
+### 6.1 一轮：一个包（v1.2）
 
-改进器是框架自己设计实现的循环：R 的模型经 claude_code CLI，但循环的驱动、工具、上限、输入、验收都是框架的。
+改进器是框架自己设计实现的循环：R 的模型经 claude_code CLI，但循环的驱动、工具、上限、输入、验收都是框架的。v1.1 一轮给 k 个 cause 各一个名额、每个候选只改一种组件、每轮付一次 dev gate；finance-v2～v4 证明这个粒度过不了 gate（§6.12）。v1.2 改为：一轮一个包，活动内按留出 train 接受并累积在工作线上，dev 只在活动末读一次。
 
 | 步 | 输入 | 输出 | 谁做 | 模块 |
 |---|---|---|---|---|
-| 1 证据 | 本轮 train 尝试的轨迹与事件 | trace ref、可重建的轨迹、全文索引（只限 train） | 固定代码 | `improver/evidence.py` |
-| 2 诊断 | 失败的 train 尝试（加最好的几条成功尝试） | 案例 → **原因簇** `causes.jsonl` | aux 模型调用 + 确定性特征 | `improver/diagnose.py` |
-| 3 分层 | 原因簇、台账里各层的估值 | 每个簇指派的组件类型与名额 | 固定代码 | `improver/allocate.py` |
-| 4 实现 | 指派、当前包、轨迹读取、检查命令 | ≤ k 个候选目录，各带声明 | R 的编码会话 | `improver/session.py` |
-| 5 验收 | 候选 | 逐档结果；过 V2 才付费 | 固定代码 | `improver/verify/` |
-| 6 筛选与 gate | 过 V2 的候选 | train 筛选最优者付 dev gate + 确认 | 固定代码 | `evaluate/` |
-| 7 装入与存档 | gate 收据 | 装入主线或拒绝；候选、声明、逐档结果、收据进档案 | 固定代码 | `improver/archive.py`、`evaluate/release.py` |
-| 8 记功 | 装入后的 train 读数与事件 | 条件记功；无功组件生成删除候选；台账更新估值 | 固定代码 | `improver/credit.py`、`improver/ledger.py` |
+| 1 测量与证据 | 工作线的包在研究部分 train 题上的读数（缺的现量）；轨迹与事件 | trace ref、可重建的轨迹、全文索引（只限 train） | 固定代码 | `improver/evidence.py` |
+| 2 诊断 | 研究部分的失败尝试（加最好的几条成功尝试） | 案例 → 原因簇 `causes.jsonl`，每簇带题数、证据 ref、`mechanizable` | aux 调用 + 确定性特征 | `improver/diagnose.py` |
+| 3 聚焦 | 原因簇、台账里各（cause，类型）的估值、档案 | 给 R 的建议清单：簇按题数与估值排序、每簇建议的组件类型与试过的记录；硬要求：有可机械化簇时包里至少一个 tool 或 hook | 固定代码 | `improver/allocate.py` |
+| 4 实现 | 建议清单、全部簇的证据、成功轨迹、当前包、台账投影、剧本、检查命令 | **一个候选包**与包级声明：机制摘要 + 每个组件的 {kind, site, cause_ids, predicted_affected, trigger, scripts / probes} | R 的编码会话 | `improver/session.py` |
+| 5 验收 | 候选包 | V0、V1 对整包；V2a / V2b / V2c 对每个组件；有组件不过 → 退回修订一次，仍不过 → 本轮无候选 | 固定代码 | `improver/verify/` |
+| 6 留出筛选 = 活动内接受 | 过 V2 的包 | 在**全部**留出 train 题上各跑一次；净修复 ≥ 1、退步 ≤ 1、留出通过数不低于历史最好减容差 → 接受 | 固定代码 | `improver/screen.py` |
+| 7 装入工作线与存档 | 筛选结果 | 接受即装入工作线（release reason `screen`）；拒绝则工作线不动；候选、声明、逐档结果、筛选读数进档案 | 固定代码 | `improver/archive.py`、`evaluate/release.py` |
+| 8 记功 | 筛选读数与事件 | 每个组件在留出题上按足迹记功；估值按（cause，类型）更新；零功组件 N 轮后生成删除候选 | 固定代码 | `improver/credit.py`、`improver/ledger.py` |
+| 活动末：发布 gate | 工作线 W_work 对 W0 | dev 读数（W_work 读 `gate.repeats` 次，W0 池化），严格或部分得分规则，第二次读数作确认（EVALUATE §5.2）；通过 → 发布线 W\*，封存 final；不通过 → 无发布，工作线的留出曲线照实报告 | 固定代码 | `evaluate/gate.py`、`activity/phases.py` |
+
+轮数由 `schedule.rounds`（上限 12）与耐心（连续 `patience` 轮没有接受就停）定。一轮约 $28：会话约 $2、诊断约 $2、研究部分补测 ≤ $14、留出 20 题约 $10；dev 整个活动只读一次。
 
 ### 6.2 证据与 trace
 
@@ -291,46 +296,48 @@ ReMe 自带的记账与删除不用（会丢计数、记功共享）；去重只
 - memory 里满足 §5.6 的条目也进簇（带条目原文）。
 - 旧的逐题笔记与失败摘要并入案例，不另有一套。
 
-### 6.4 分层：学出来的，带代码先验
+### 6.4 聚焦：估值给建议，不再切名额（v1.2）
 
-- 对每个（业务线，cause，层）维护估值：装入后在该 cause 题上的净修复数 / 名义花费，来自台账。本轮给每个簇选估值上界最高的层；每轮留一个名额给该 cause 上从没试过的层（探索）。
-- **初值按量到的历史定**，不是一律相同：文字层按我们三次 final（平均 +8，区间含 0）；代码层本地没有读数，按同基准的外部读数（+26）给较高的先验不确定性，使探索名额先落在代码层。
-- 结构保证：诊断里有 `mechanizable` 的簇时，本轮至少一个 `tool` 或 `hook` 候选要到达 V2；没有到达，记为改进器失职（台账 `no_code_candidate`），下一轮该簇的代码层名额加倍。
-- L5（agent/vendor/config）每轮至多一个名额，只在簇指向循环时给。L6（权重）是估值表里的一层：只在代码层与文字层连续 N 轮估值不涨（停滞，SIA 的切换规则）且训练链已打通时才指派。
+- 估值不变：对每个（业务线，cause，类型）维护净修复 / 花费，来自留出筛选的条件记功；初值按量到的历史定（文字层低、代码层不确定度高）。
+- 估值的用法变了：不再给每个 cause 一个名额，而是生成给 R 的建议清单——簇按题数排序，每簇列估值上界最高的类型与试过的记录（档案）。R 自己决定包里放什么：一个包可以同时对几个簇，一个簇可以几个载体。v1.1 的切名额让每个候选只能动 1～2 道题，是 finance-v2～v4 零装入的直接原因（§6.12）。
+- 硬要求只有两条：诊断里有 `mechanizable` 的簇时，包里至少一个 tool 或 hook（否则台账 `no_code_candidate`，候选照常验收，下一轮的建议清单置顶代码类）；agent / config / vendor 的改动一轮至多一处，只在簇指向循环时建议。
+- L6（权重）不变：代码层与文字层连续 `stall_rounds` 轮估值不涨且训练链可用时才建议。
+- 以算力换准确回到候选面：`on_finish` 与 `after_turn` 的 hook 可以调 aux 模型（每次尝试 `improver.hook_aux_calls` 次封顶，每次计量、记 gateway_call），用于提交前的审核与补做。gate 没有成本项，K 的调用限额是边界；W0 的部分得分 0.8 对严格 0.4，差的正是最后一两项断言，这是对准它的杠杆。
 
 ### 6.5 编码会话
 
 | 项 | 内容 |
 |---|---|
-| 在哪跑 | 模型循环在宿主，文件树在 worker（`/work`：`package/` 只读、`inputs/` 只读、`candidates/<dir>/` 可写）。R 写的任何字节都不是宿主的文件 |
-| 输入 | 指派（簇 + 层 + 名额）、簇的证据 ref、成功轨迹 ref、当前包、台账的 train 投影（试过什么、结果如何、归因记分板）、研究剧本、dev 失败类型直方图（只有枚举与计数） |
-| 工具 | 文件五个（list / read / write / edit / delete）；`read_trajectory(ref)`；`search_trace(query)`；`run_tests(dir)`；`run_check(dir)`：对候选跑 V0～V2 并返回结果，R 在 finish 之前就能自己验；`finish(declaration)` |
-| 上限 | 回合、编辑数、读取字节，都是 K 的字段（RRSI 的 40 回合 / 80 次编辑是参照） |
-| 产出 | ≤ k 个候选，每个声明 `{cause_id, kind, site, predicted_affected, trigger, differs_from?, scripts[]}`；toolcheck 用的脚本随声明交，只给检查，不进包 |
-| 没有的 | shell、网络、宿主文件、dev/test 的任何内容、改自己上限的办法 |
-| 失败处理 | 会话超限或协议错误：本轮无候选，记台账；worker 崩溃：基础设施故障，不算 R 的；声明与 diff 不符：候选 invalid，退回修订一次 |
+| 在哪跑 | 模型循环在宿主，文件树在 worker（`/work`：`package/` 只读、`inputs/` 只读、`candidates/package/` 可写）。R 写的任何字节都不是宿主的文件 |
+| 输入 | 聚焦清单（§6.4）、全部簇及其证据 ref、成功轨迹 ref、当前工作线的包、台账的 train 投影（试过什么、留出筛选的结果、记分板）、研究剧本、dev 失败类型直方图（只有枚举与计数）。留出题从不出现 |
+| 工具 | 文件五个（list / read / write / edit / delete）；`read_trajectory(ref)`；`search_trace(query)`；`run_tests()`；`run_check()`：对候选包跑 V0～V2 并按组件返回结果；`finish(declaration)` |
+| 上限 | 回合、编辑数、读取字节、单次回复 token，都是 K 的字段 |
+| 产出 | 一个候选包，包级声明 `{mechanism, components: [{kind, site, cause_ids, predicted_affected, trigger, scripts?, probes?, uses_model?}], differs_from?}`；同一包里可以改工具、hook、技能、提示、config，一轮至多一处 agent / config / vendor |
+| 没有的 | shell、网络、宿主文件、dev / test 的任何内容、留出题、改自己上限的办法 |
+| 失败处理 | 会话超限或协议错误：本轮无候选，记台账；worker 崩溃：基础设施故障；声明与 diff 不符或某组件不过 V2：退回修订一次，仍不过 → 本轮无候选 |
 
-### 6.6 验收阶梯
+### 6.6 验收阶梯（v1.2）
 
 每档过了才花下一档的钱。V0～V2 不调付费模型。
 
-| 档 | 内容 | 适用类型 |
+| 档 | 内容 | 适用 |
 |---|---|---|
-| V0 静态 | 包形状、类型是否被 K 允许、上限、相对种子改动行的字面量检查、禁止读 `memory/`、manifest schema、声明与 diff 一致 | 全部 |
-| V1 单元 | 包测试在 worker 里跑；agent / vendor / config 改动另跑 smoke（脚本化模型，找确定性崩溃与协议违规） | agent、vendor、config、tool、hook |
-| V2a toolcheck | R 为每道声称能修的失败 train 题交一段调用新工具的脚本；宿主在该题的新世界里经可写 broker 执行，用真实断言（含 must-not）判分；要求脚本调用了新工具；≥ 2 道声称题通过。只回传通过与否和失败断言的**类别** | tool |
-| V2b 回放 | 对已记录的 train 轨迹回放 hook：声称的失败题上触发 ≥ 2 道；报告通过题上的误触发率 | hook |
-| V2c 可达 | when / 标题能检索到 ≥ 2 道来源外 train 题 | skill、memory |
-| V3 train 筛 | 付费：声称的失败题 + 固定通过样本；**按条件记修复**（tool 只在调用过的题上记，hook 只在触发过的题上记，文字在足迹出现的题上记）；净翻转最优者进 V4 | 全部 |
-| V4 dev gate | 配对、确认复测、`min_tasks`、退步容忍、成本项 | 全部 |
-| V5 封存 final | 对外数字只来自这一档 | 发布 |
+| V0 静态 | 包形状、类型与站点是否被 K 允许、上限、相对种子改动行的字面量检查、禁止读 `memory/`、manifest schema、声明与 diff 一致（声明的组件都在 diff 里，diff 里的组件都被声明） | 整包 |
+| V1 单元 | 包测试在 worker 里跑；agent / vendor / config 改动另跑 smoke（脚本化模型） | 整包 |
+| V2a toolcheck | 脚本（在该题的新世界里做完任务）或探针（在轨迹抽出的输入上调用）；≥ 2 道声称题 | 每个 tool |
+| V2b 回放 | 对研究部分的轨迹回放 hook：声称题触发 ≥ 2 道；报告通过题上的误触发率。调 aux 模型的 hook 不能回放，跳到 V3 | 每个不调模型的 hook |
+| V2c 可达 | 描述能检索到 ≥ 2 道来源外研究题 | 每个 skill |
+| V3 留出筛选 = 活动内接受 | 付费：候选包在全部留出 train 题上各一次；按足迹记功；接受规则：净修复 ≥ `accept_min_net_flips`、退步 ≤ `accept_max_regressions`、留出通过数 ≥ 历史最好 − `accept_floor_tolerance`。接受即装入工作线 | 整包 |
+| V4 发布 gate | 活动末一次：W_work 对 W0 在 dev 上，严格或部分得分规则，第二次读数作确认 | 工作线 |
+| V5 封存 final | 对外数字只来自这一档 | 发布线 |
 
-V2a 只证明“工具正确，而且用它存在可行解”，不证明 actor 会用；后者由 V3/V4 判断（ASI：执行验证 +6.4，文字换程序只多 +1.1）。
+V3 的接受是搜索的接受，不是发布：它决定下一轮从哪里起步。R 看不到留出题，但连续多轮在同一组留出题上接受会向它们适应，所以发布只看 dev，dev 只在活动末读一次。
 
-### 6.7 装入、存档与父包
+### 6.7 工作线、发布线与存档（v1.2）
 
-- 装入是 dev gate 后的 CAS（现有 `release.py`）；父包永远是主线；回滚退到好的祖先。
-- 档案保存每个评过的候选：父 ref、声明、逐档结果、收据。它是记功和 R 输入的来源，不是第二条主线。多父、重定基（AutoSaddler 的 EvoDAG、DGM 的档案）推迟：单领域 3 轮的活动里没有用武之地。
+- **工作线**：`rsi/active.json`，留出筛选接受就装入（CAS，reason `screen`），父包永远是工作线的上一个 release；活动内的测量、诊断、R 的起点都在工作线上。
+- **发布线**：活动末 dev gate 通过的 W_work 成为 W\*（reason `gate`），final 与导出只用它；gate 不通过就没有发布，工作线的历史与留出曲线照实报告。
+- 档案保存每个评过的候选：父 ref、声明、逐档结果、筛选读数。多父、重定基仍推迟。
 
 ### 6.8 条件记功与反膨胀
 
@@ -359,14 +366,14 @@ R 的策略 = 分层估值（§6.4）+ 研究剧本（台账核对过的教训�
 - 一轮内候选的 V0～V2 并行；V3 起串行（共用一个订阅账户）。
 - 所有付费步骤先预留再结算，预算根与份额是 K 的；一轮的花费单列 R 的会话、aux 诊断、V3、V4。
 
-### 6.12 finance-v2 之后的修订（2026-10-10）
+### 6.12 finance-v2～v4 的读数与 v1.2 的修订（2026-10-11）
 
-finance-v2 两轮：R 在真模型下写出了过免费阶梯的工具与 hook，actor 会用，train 筛选净 +1～+3，dev 增益都是 0（dev 25 题里 8 道总过、13 道从没过、4 道翻转，候选的修复全落在翻转题上）。四处修改，细节在各模块文档：
+四次活动 $528，零装入。W0 train 23～24/50，dev 八次读数 7～11/25（噪声约 ±2 题，15 道从没过）；13 个候选全部过免费阶梯（tool 4、hook 3、skill 5、prompt 1），留出筛选净值 −1～+3，三次 dev gate 增益 0.0、0.0、−0.02；唯一显著的读数是成本 −18%。library 两次 D = 3、0，快照没进过 gate。
 
-1. 种子的日期锚把模拟世界用真实时钟盖章的审计字段当成了数据（HARNESS §7.1）。
-2. 一个候选可以是一个机制的多个载体：工具 + 强制它的 hook + 说明何时用的技能（IMPROVER §7.1）。
-3. V2a 多一种证明：在轨迹抽出的输入上探针调用，不要求脚本做完整道题（IMPROVER §8.1）。
-4. gate 每 `gate_every` 轮一次，中间轮的最优候选带着累积；gate 并报部分得分，接受规则二选一（IMPROVER §9.2、§9.3，EVALUATE §5.1）；留出部分为空的 cause 也分配，样本内筛（IMPROVER §9.1）。
+读法：机制每一环都按设计工作，粒度错了。每个候选对一个 cause，cause 在留出里 1～3 道、dev 上 1～2 道，gate 要 1.25 题加确认，结构上过不了；每轮一次 dev gate 把搜索门槛定成了发布门槛，噪声内的 +1 累积不起来；每次活动 63% 的钱在基线与 library，搜索只有 9 个候选；v0.4 一份跨 cause 的整体 memory 曾给 dev +11.3、test +8，说明整体改动比按 cause 切的机制有效。
+
+v1.2 据此改六处：一轮一个包（§6.1、§6.5）；活动内按留出 train 接受、dev 只在活动末读一次（§6.6、§6.7）；以算力换准确进候选面（§6.4）；library 默认关（MEMORY §9）；K 的版本拆成尝试路径与改进器两部分，基线可跨活动复用（§8）；预期重写（§10）。10-10 的修改里，日期锚、V2a 探针照用；carry 与 `gate_every` 由工作线取代；"留出为空的 cause"随整包在全部留出题上筛选而不再需要；部分得分规则留在活动末的 gate。
+
 
 ## 7 训练在同一回路
 
@@ -384,6 +391,8 @@ finance-v2 两轮：R 在真模型下写出了过免费阶梯的工具与 hook�
 | 保结果正确 | 配对 gate 与确认、`min_tasks`、退步容忍、成本项、内容寻址对象与 CAS 装入、回滚、隔离 worker 与 broker、报告 | `evolve/task_gate.py`、`task_eval.py`、`release.py`、`agent/worker*.py` → `evaluate/gate.py`、`evaluate/release.py`、`runtime/worker.py`、`activity/report.py` |
 
 删掉：活动内研究位与 campaign 配对、多领域合并、采集批、段延长、方法库与 `learn` 阶段、v3/v5 preset 的兼容分支、economy / protected / frontier 残留、PolicySet / PolicyDescriptor / TargetRegistration 一族（W 的提示是包文件，R 的配置是 R 的文件，release 只需钉 `{W ref, R config ref, K ref}`）、`research/campaign.py`、`research/basic.py`、`research/api_errors.py`。
+
+**K 的版本（v1.2）。** `code_version` 拆成两部分：`attempt_version` 是一次尝试走到的代码（`runtime/`、`harness/` 含种子、`evaluate/{attempt,results,limits,splits}.py`、`adapters/`、`providers/`、`contracts.py`）的摘要；`improver_version` 是其余（`improver/`、`memory/`、`activity/`、`evaluate/{gate,final,budget,release}.py`、R 的提示词）。两者都进 K。`AttemptIdentity = digest(attempt_version, package_ref, limits, model, worker.image_id, split_hash)`：两个活动的 AttemptIdentity 相同，W0 的基线读数（train 与 dev）可以从旧工作区导入新活动（`activity.import_baseline`：只读旧工作区，复制读数与 transcript 引用，记来源），不重付。finance-v1～v4 的四次基线里三次是为改进器的改动重付的。
 
 ## 9 代码布局与现有代码的对应
 
@@ -421,7 +430,8 @@ ouroloop/
 | 1 harness 与平台收缩 | `harness/`、`runtime/`、`evaluate/`、`activity/`；Stirrup 种子与六个 hook 站点；worker 资源与网络从 K 读；§8 的删除 | 默认与 Docker 全量通过；`quickstart.toml` 的 `--phase smoke --checks-only` 通过；假上游上用新种子跑一次尝试 | $0 |
 | 2 memory | `memory/`；sidecar 与锁文件；`recall` 工具；记功与容量；快照走阶梯；升级规则 | 假上游上 `--phase library` 端到端；变异检查在隔离副本 | $0（sidecar venv 要联网安装） |
 | 3 改进器 | `improver/` 八步；toolcheck 与回放；分层估值与代码先验；档案与反膨胀；R 的配置 | 假上游上脚本化的 R 一轮端到端：tool 候选过 V0～V2a 并在 V3 记条件修复；hook 候选过 V2b；有 mechanizable 簇而无代码候选时台账记 `no_code_candidate` | $0 |
-| 4 实测 | finance，新 preset：基线 → library → 3 轮（每轮后停）→ 有装入则封存 final | 过程检查成立；计划哈希早于第一次 test 尝试；报告两次相同 | 名义约 $300～480，每步先批准 |
+| 4 实测 | finance，新 preset：基线 → library → 3 轮（每轮后停）→ 有装入则封存 final | 过程检查成立；计划哈希早于第一次 test 尝试；报告两次相同 | finance-v1～v4 共 $528：机制全部跑通，零装入（§6.12） |
+| 4b 搜索循环 v2 | 本文 v1.2 的六处修改落成代码（IMPROVER、EVALUATE、ACTIVITY、CONTRACTS、MEMORY 的对应节）；preset `automationbench_v2`；finance-v5 | 假上游上脚本化的 R 跑 6 轮：接受累积在工作线、活动末 gate 一次、基线从旧工作区导入；finance-v5 的预期：留出曲线不降，dev 严格 +3～6 题或部分得分 +0.05～0.10，成本不升 | 代码 $0；finance-v5 名义约 $350（基线导入 $0、12 轮 × $28、gate 约 $25、final 约 $72） |
 | 5 训练绑定 | v2.0 离线链对新记录跑通；`model` 组件绑定；之后按 V2 的 v2.1 | V2 §5 的断言 | $0；v2.1 另批 |
 
 ## 11 考虑过、不做
@@ -443,9 +453,8 @@ ouroloop/
 
 | # | 事项 | 建议 |
 |---|---|---|
-| 1 | 本文取代 DESIGN v0.7、三份设计稿与 modules/ 十份文档 | 是 |
-| 2 | 种子 agent：Stirrup；Pi 只作 hook API 参照；Deep Agents 作第二种子备选 | 是 |
-| 3 | 特色定为“轻量 harness 包 + 运行壳 + 模型描述，蒸馏作第二杠杆” | 是 |
-| 4 | 分层的代码先验与“有可机械化簇就必须有代码候选到 V2”的结构保证 | 是 |
-| 5 | 阶段 1 从 `m1-automationbench` 起，v6 三条分支按 §9 搬入 | 是 |
-| 6 | 第一个实测域 finance；阶段 4 预算名义约 $300～480 | 到阶段 4 前批准 |
+| 1 | v1.2 的六处修改（§6.12）取代 10-10 的 carry / `gate_every` 与按 cause 切名额 | 是 |
+| 2 | `hook_aux_calls` 默认 2；`schedule.rounds` 上限 12、`patience` 3；留出筛选的接受规则（净修复 ≥ 1、退步 ≤ 1、容差 1） | 是 |
+| 3 | library 默认关（preset `automationbench_v2` 的 `memory.enabled = false`）；memory 包保留，R 的输入里不再有条目 | 是 |
+| 4 | finance-v5 的预算：根 $500、final 份额 $200；基线从 finance-v4 导入（AttemptIdentity 相同时） | 到冻结前批准 |
+| 5 | 对外预期：一次活动 dev 严格 +3～6 题；80% 只在部分得分口径上谈 | 是 |

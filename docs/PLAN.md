@@ -33,18 +33,19 @@
 | 10-09 | 框架职责是自动提升 harness 与训练模型；改进器由我们自己设计实现；harness、agent、evolution、memory 都要正向设计；选型先定让哪一层变化；特色是轻量 harness 包 + 运行壳 + 模型描述，蒸馏作第二杠杆 | DESIGN v1.1 §1 |
 | 10-09 | 框架不为某个基准定制；原则直接遵守，不另加审查 | DESIGN §9 |
 | 10-09 | “按默认”：DESIGN v1.1 取代旧设计与 modules/；种子 Stirrup，Pi 作 hook API 参照，Deep Agents 作第二种子备选；特色定为轻量 harness 包 + 运行壳 + 模型描述，蒸馏作第二杠杆；分层的代码先验与“有可机械化簇就必须有代码候选到 V2”；阶段 1 从 `m1-automationbench` 起、v6 三条分支搬入；第一个实测域 finance | DESIGN §12 |
+| 10-11 | 跑了四次活动零装入，下一版改框架代码，不再跑活动等它自己提升；先写设计。按审查改六处：一轮一个包、留出接受累积在工作线、dev 只在活动末读一次、hook 可调 aux、library 默认关、版本拆分与基线导入 | DESIGN v1.2 §6.12 |
 | 10-09 | 不以代码行数作验收；要求是工作量不落在外围组件上，核心系统认真打磨。行数只作读数 | JOURNAL 2026-10-09 不以行数作验收一条 |
 
 ### 0.3 停在哪里
 
 | 项 | 状态 |
 |---|---|
-| 分支 | 阶段 4 在 `s4/finance-v4`（从 `s4/finance` 的 `20a7fa7` 起；`s4/finance` 止于 finance-v3 的基线）；付费活动从这个检出跑，期间不往这里合入 `ouroloop/` 的改动（规则 13）。阶段 1～3 已合入（`46a4b90`、`c92ddcc`、`c22f698`）。`main` 在 `b71502d`（v0.3）。`v6-agent`、`v6-gateway`、`v6-memory` 都已搬入；`v6` 合并分支上的 WIP 不用；`slim/1` 已合入，可删；两轮测试用的 worktree 分支已合入并删掉；`claude/snapshot-fit-099f38` 已合入 `s4/finance`（`4514d5a`），可删 |
+| 分支 | 阶段 4 的 `s4/finance-v4` 已合入 `m1-automationbench`（`c588b9c`）；阶段 4b 的设计在 `s5/search-loop`。`main` 在 `b71502d`（v0.3） |
 | 代码 | 阶段 1～3 完成：`contracts.py`、`harness/`（含 stirrup 种子）、`runtime/`（含 `trace.py`）、`evaluate/`、`memory/`（ReMe sidecar、桥、规则、写入步、检索、快照、升级）、`improver/`（一轮的可续跑步骤、诊断、分层、编码会话、阶梯 V0～V4、档案、记功、台账、剧本）、`activity/`（含 `library`、`round`、`cycle`）。finance-v2 之后的四项修复已落地（DESIGN §6.12；JOURNAL 2026-10-10 四项修复一条）：种子的日期锚、组合候选与 V2a 探针、留出为空的 cause 样本内筛、每 `gate_every` 轮一次 gate 带累积、gate 的部分得分。`ouroloop/` 不含种子 24,553 行（只作读数，四项修复之前） |
 | 测试 | 全量（Docker + 真 memory sidecar）1,526 passed、1 deselected（JOURNAL 2026-10-10 四项修复一条）。memory 的 venv 在本机 `~/.cache/ouroloop/memory-venv/19f9b139c36d1d05` |
 | test 读过几次 | finance 1、support 0、sales 0、hr 0、marketing 3；operations 从未读过 |
 | 本机记录 | `examples/automationbench/workspace-*/`、`examples/workspace-*/`、`ws/`、`*.local.toml`，git 忽略，不删不改 |
-| 下一步 | finance-v4 结束（两轮无进展按耐心停在第 2 轮，没有装入、没有 final，$225.36；JOURNAL 2026-10-11 结束一条）。等用户决定下一步的设计（§3）；没有付费活动在跑 |
+| 下一步 | 用户审 DESIGN v1.2（§3 第 1 项）；审定后按 IMPROVER / EVALUATE / ACTIVITY / CONTRACTS 的 v1.2 节开发，假上游 6 轮端到端，再冻结 finance-v5 |
 
 ## 1 规则
 
@@ -79,7 +80,8 @@
 | 1 | harness 与平台收缩：`harness/`、`runtime/`、`evaluate/`、`activity/`；Stirrup 种子与六个 hook 站点；worker 资源与网络从 K 读；DESIGN §8 的删除 | 默认与 Docker 全量通过；`quickstart.toml` 的 `--phase smoke --checks-only` 通过；假上游上用新种子跑一次尝试 | $0 | 完成并合入（2026-10-09，`46a4b90`） |
 | 2 | memory 组件：`memory/`、sidecar 与锁文件、`recall` 工具、记功与容量、快照走阶梯、记忆 → 技能 → 工具的升级 | 假上游上 `--phase library` 端到端；变异检查在隔离副本 | $0（sidecar venv 联网安装） | 完成（2026-10-09，`s2/memory`）：假 client 与真 sidecar 各端到端一遍；285 个变异全被杀；待用户确认后合入 |
 | 3 | 改进器：`improver/` 八步、toolcheck 与回放、分层估值与代码先验、档案与反膨胀、R 的配置 | 假上游上脚本化的 R 一轮端到端：tool 候选过 V0～V2a 并在 V3 记条件修复；hook 候选过 V2b；有可机械化簇而无代码候选时台账记 `no_code_candidate` | $0 | 完成（2026-10-09，`s3/improver`）：四种验收都端到端成立，另有快照固定候选进 V3 并装入；257 个新测试，变异 238/243 被杀；评审 12 条全修；待用户确认后合入 |
-| 4 | finance 实测：新 preset，基线 → library → 最多 8 轮、gate 每两轮一次（每步后停）→ 有装入则封存 final → RESULTS、README、合入 main | 过程检查成立；计划哈希早于第一次 test 尝试；报告两次相同 | 名义约 $440（$350～600），每步先批准 | 进行中：finance-v1 在 library 第一步作废（$54.93）；finance-v2 基线 $51.64、library $92.31（D = 3，快照超上限）；第 0 轮 $25.23、第 1 轮 $24.39，gate 都拒绝（增益 0），两轮无装入按耐心规则结束，没有 final。之后三项修复已合入 `s4/finance`（$0）：快照按记功装进 `max_memory_bytes`、V3 只在 R 没研究过的留出 train 题上筛、没用的名额记进台账与估值。finance-v3：freeze（K `core:8a4765606710`）、基线 $51.49（train 23/50，dev 7/25 与 8/25），止于此。之后四项修复（DESIGN §6.12，$0）又改了 K：finance-v4（freeze K `core:a587428e5f26`，6 轮，gate 在第 1、3、5 轮）：基线 $52.28（train 24/50，dev 9/25 与 10/25；real_date 的两道 train 题翻成通过）；library $90.13（219 条，D = 0.0，快照不送 gate）；第 0 轮 $14.43（`send_email`、`compute` 两个工具与一个技能过免费阶梯，`send_email` 留出净 +1 累积）；第 1 轮 $42.47（prompt、hook、技能各一，技能样本内净 +1 进 gate；gate 拒绝，增益 −0.02）；第 2 轮 $14.78（hook、技能、工具各一，筛选 0、0、−1，没有累积）；按耐心结束，没有装入、没有 final。活动 $225.36，阶段 4 累计约 $528 |
+| 4 | finance 实测：新 preset，基线 → library → 最多 8 轮、gate 每两轮一次（每步后停）→ 有装入则封存 final → RESULTS、README、合入 main | 过程检查成立；计划哈希早于第一次 test 尝试；报告两次相同 | 名义约 $440（$350～600），每步先批准 | 结束：finance-v1～v4 共 $528，机制全部跑通，零装入（JOURNAL 2026-10-11 finance-v4 结束一条） |
+| 4b | 搜索循环 v2（DESIGN v1.2 §6.12 的六处）：`improver/`（一轮一个包、聚焦、留出接受、工作线）、`evaluate/`（活动末 gate、`promote`、基线导入）、`activity/`（`gate` 阶段、`baseline_from`、preset `automationbench_v2`）、`contracts.py`（版本拆分、AttemptIdentity）、R 的提示词；然后 finance-v5 | 假上游上脚本化的 R 跑 6 轮：接受累积、耐心停、基线导入后第 0 轮不付测量；finance-v5：留出曲线不降，dev 严格 +3～6 题或部分得分 +0.05～0.10，成本不升 | 代码 $0；finance-v5 名义约 $350（根 $500、final 份额 $200） | 设计已写，待审；代码待做 |
 | 5 | 训练绑定：v2.0 离线链对新记录跑通，`model` 组件绑定；之后按 V2 的 v2.1、v2.2 | V2 §5 的断言 | $0；v2.1 另批 | 待做 |
 
 每个阶段：先把 DESIGN 的对应节改定稿 → 代码 → 测试 → JOURNAL → 停。阶段 1～3 各自一个分支，串行合入。阶段 4 期间不往它的检出合入代码（规则 13）。
@@ -94,7 +96,9 @@
 
 | # | 事项 | 建议 |
 |---|---|---|
-| 1 | finance-v4 之后的设计（JOURNAL 2026-10-11 结束一条）：候选粒度改为一轮一个跨 cause 的包；gate 的证据量（按覆盖面定门槛，或加确认读数）；是否提前阶段 5 的蒸馏 | 设计先行：先改 DESIGN/IMPROVER/EVALUATE，再定下一个活动；不跑付费活动 |
+| 1 | DESIGN v1.2 的六处修改与各模块文档的 v1.2 节（§6.12 有读数与理由） | 审定后开发阶段 4b |
+| 2 | 数值：`hook_aux_calls` 2、`rounds` 上限 12、`patience` 3、留出接受规则（净修复 ≥ 1、退步 ≤ 1、容差 1）、`round_share` 0.15 | 是 |
+| 3 | finance-v5 的预算：根 $500、final 份额 $200；基线从 finance-v4 导入 | 到冻结前批准 |
 
 ## 4 文档地图
 

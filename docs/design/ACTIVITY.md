@@ -94,19 +94,22 @@ def write_report(activity, report) -> dict   # 两次相同（确定性）
 | freeze | 冻结 gate 计划模板（`TaskEvalPlan`，任务 = 全部 dev，阈值来自 K 的 `gate`）、打开预算根（final 份额事先留出）、final 计划（配置有 `[final]` 且已有装入时封存；还没有装入时注明“未封存”，照常打印 `[rsi]`；封存的 W* 是当时的活跃 release，所以在轮次结束后再封存；还有未结束的轮次时不封存并注明）；打印 `[rsi]` 的 `scope_id`、`core_ref`、`split_ref`、`final_plan_ref`，用户填回配置并提交；日程在 K 里，不另冻结 | — | $0 |
 | baseline | W0 跑 train 全部 + dev × `control_readings` | 余量与噪声 | 约 $58 |
 | library | memory 流（MEMORY §7）：对 train 逐题首遇与重试，写入、记功；快照（精简行，按记功装进 K 的 `max_memory_bytes`，没装的记在 `library_snapshot` 事件的 `fit`：MEMORY §7.1）作候选从 V3 起走阶梯 | D、学习曲线、快照装了几条、快照 gate | 约 $50～100 |
-| round k | improver 的一轮（IMPROVER §3）；每轮后停 | 有没有代码候选到 V2；V3/V4 读数 | 约 $40 |
-| evaluate | final | — | 约 $72 |
+| round k | improver 的一轮（IMPROVER §3，v1.2：一个包，留出筛选接受即装入工作线，不读 dev） | 留出筛选的读数与工作线的留出曲线 | 约 $28 |
+| gate | 活动末一次：工作线对 W0 在 dev 上（EVALUATE §5.2）；通过才有发布线 | dev 读数对留出曲线 | 约 $25 |
+| evaluate | final（只在有发布线时） | — | 约 $72 |
 | report | 报告 | — | $0 |
 
-`cycle --until` 保留：`baseline`、`library`、`round-K`；中间崩溃按 `Execution` 续跑。
+`cycle --until` 保留：`baseline`、`library`、`round-K`、`gate`；中间崩溃按 `Execution` 续跑。v1.2：`baseline` 先查能不能导入——配置 `[rsi] baseline_from = "<旧工作区>"` 且两边 `AttemptIdentity` 相同（CONTRACTS §4）时，复制旧工作区的 W0 读数与 transcript 引用（只读旧工作区，记来源），$0；否则照常跑。`library` 只在 K 的 `memory.enabled` 时跑（preset `automationbench_v2` 默认关）。
 
-**gate 的节奏（2026-10-10 修订，IMPROVER §9.2）：** `cycle` 的耐心数没有进展的轮：没装入、且（付了 gate，或没有候选可累积）的轮算闲置；把最优候选带到下一轮的 carry 轮不计。`gate_every` = 1 时没有 carry 轮，规则回到"连续 patience 轮没有装入就停"。`schedule.rounds` 的上限 8；`improver.gate_every` 默认 2。报告的每轮一行多 `carried` 与 `in_sample` 的标注。
+**轮数与停止（v1.2）：** `cycle` 连续 `schedule.patience`（3）轮没有留出接受就停；`schedule.rounds` 上限 12。没有 carry 轮、没有活动内的 gate；`--phase gate` 在轮次结束后由用户启动。
+
 
 ## 5 预算根与份额
 
 - 一个活动一个根（`budget.usd`）；final 份额在根打开时预留（`final_usd`）；每轮的研究份额按 K 的 `improver.round_share` 分配；超出的付费步骤不开始。
 - 每次付费步骤先 `affordable(bound)`，再预留、再调用、再结算（EVALUATE §3 的 Budgets）。
-- 报告按步单列：基线、memory、每轮的 R 会话 / aux 诊断 / V3 / V4、final。
+- 报告按步单列：基线（或导入）、memory、每轮的 R 会话 / aux 诊断 / 补测 / 留出筛选、活动末 gate、final。
+- v1.2 的典型活动（finance，基线导入）：12 轮 × 约 $28 + gate 约 $25 + final 约 $72 ≈ $430 上限；根 $500、final 份额 $200。
 
 ## 6 删掉的（`bench.py` 的这些不搬）
 

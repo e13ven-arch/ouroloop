@@ -8,6 +8,24 @@
 
 ---
 
+## 2026-10-11 搜索循环 v2 的设计（DESIGN v1.2）：一轮一个包、留出接受累积在工作线、dev 只在活动末读一次；$0
+
+- 用户的判断（2026-10-11）：跑了几次试验效果不好；下一版要改框架代码，不是继续跑活动等它自己提升；先写设计。此前本会话的审查结论：机制每一环都在工作，粒度错了——单 cause 候选最多动 dev 1～2 题，gate 要 1.25 题加确认；每轮一次 dev gate 把发布门槛当成搜索门槛，+1 累积不起来；每次活动 63% 的钱在基线与 library；v0.4 一份跨 cause 的整体 memory 曾给 dev +11.3、test +8。
+- 分支：`s4/finance-v4` 合入 `m1-automationbench`（`c588b9c`，阶段 4 结束，零装入）；设计在 `s5/search-loop` 上。
+- [DESIGN v1.2](DESIGN.md) 的六处修改（§6.12 有读数与理由；§6.1、§6.4～6.7、§8、§10、§12 改定）：
+  1. 一轮一个包：R 看到全部簇与证据，交一个候选包，组件按需组合；阶梯 V0/V1 对整包、V2 按组件；某组件不过退回修订一次。聚焦清单取代名额：估值只给建议，硬要求只剩"有可机械化簇时至少一个 tool/hook"与"一轮至多一处 agent/config/vendor"。
+  2. 搜索接受与发布接受分开：V3 = 在全部留出 train 题上跑一遍，净修复 ≥ 1、退步 ≤ 1、留出通过数不低于历史最好减 1 → 装入工作线（release reason `screen`），逐轮累积；dev 只在活动末 `--phase gate` 读一次（W_work 读 2 次对 W0 池化），通过才有发布线 W\*（reason `gate`）与 final。carry 与 `gate_every` 删除；"留出为空的 cause"随整包筛选不再需要。
+  3. 以算力换准确进候选面：`on_finish` / `after_turn` 的 hook 可调 aux 模型，每次尝试 `hook_aux_calls`（2）次封顶，计量、记 gateway_call；这类 hook 跳过 V2b。
+  4. library 默认关：preset `automationbench_v2` 的 `memory.enabled = false`；包与 sidecar 保留；重开条件写在 MEMORY §9。
+  5. K 的版本拆成 `attempt_version` 与 `improver_version`；`AttemptIdentity = digest(attempt_version, package_ref, limits, model, worker.image_id, split_hash)` 相同时基线从旧工作区导入（`[rsi] baseline_from`，$0）。
+  6. 预期重写：一次活动 dev 严格 +3～6 题或部分得分 +0.05～0.10，成本不升；80% 只在部分得分口径上谈。
+- 模块文档：IMPROVER §2（Settings v1.2）、§3（一轮的步骤与停止）、§6（聚焦）、§7（包级声明）、§8（按组件的阶梯；调模型的 hook）、§9（留出筛选 = 接受；§9.1 适应；§9.2 活动末 gate）、§10～§13；EVALUATE §5.2（发布 gate）、§7（`screen`/`gate` 两种 reason，`released.json`）、§8（基线导入）；ACTIVITY §4（round 不读 dev、新 `gate` 阶段、`baseline_from`、library 只在开着时跑）、§5；CONTRACTS §4（版本拆分、AttemptIdentity、preset v2、`rsi.baseline_from`）、§5；MEMORY §9。另把 RESULTS 里指向阶段 1 删掉的旧配置的四个链接改指 tag。
+- 阶段 4b（PLAN §2）：设计 → 代码（`improver/`、`evaluate/`、`activity/`、`contracts.py`、preset、提示词）→ 假上游上脚本化的 R 跑 6 轮 → finance-v5（基线导入，根 $500、final 份额 $200，名义约 $350）。
+- 没改代码，没调模型，没付费，没读 `.env`，没读任何 test 内容。
+- commit：本条所在的提交。
+
+---
+
 ## 2026-10-11 阶段 4：finance-v4 结束：两轮无进展按耐心停在第 2 轮，没有装入、没有 final；活动 $225.36
 
 - 第 3 轮的启动（$0）：`cycle` 报"2 rounds without an install"结束。第 1 轮付了 gate 没装入、第 2 轮没有候选可累积，各计一次闲置，`patience` 2 到了。IMPROVER §9.2 与 ACTIVITY 原来写"只数 gate 轮"，与代码不一致；按字面只数 gate 轮，`gate_every` = 1 时没有候选的轮会空转到 `rounds` 上限，钱不安全，所以以代码的规则为准，改的是文档措辞（同日提交）。K 不变；活动在冻结的代码下结束，不补第 3 轮。

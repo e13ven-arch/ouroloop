@@ -237,6 +237,10 @@ check_shape 的字节检查（HARNESS §3）仍是最后的守卫：library 阶�
 
 ## 9 不变量
 
+v1.2（2026-10-11）：library 默认关。finance-v2、v4 两次流 D = 3、0，都在 W0 自身 ±4 题的噪声里，220 条里有记功的 4 条，快照没进过 gate，每次 $90；家族划分下 dev 没有 train 的同族题，具体经验无处落地。preset `automationbench_v2` 的 `memory.enabled = false`；包与 sidecar 保留，`library` 阶段与 R 输入里的条目只在显式打开时存在。重开的条件：改进器的留出接受稳定出现之后，用一次活动比较开与关。
+
+### 9.1 原不变量
+
 - 宿主只用 httpx；ReMe、chroma、onnxruntime 只在 sidecar 的 venv 里；`tests/test_hot_path_boundary` 守住一次尝试不加载 `memory.sidecar`，memory 只 import contracts、harness、runtime（providers 只在函数里）。
 - 每次 sidecar 的模型调用都经桥、都计量；桥只服务 research 作用域；桥与计量都不重试。
 - 任何非 train 的来源入库即 `TrainOnlyError`；留出的业务线不跑流、不被导入。
