@@ -8,6 +8,26 @@
 
 ---
 
+## 2026-10-11 阶段 4：finance-v4 第 1 轮（gate 轮）：累积包 train 30/50；gate 拒绝（增益 −0.02，部分得分 −0.004），累积丢弃；$42.47
+
+- 用户的指示同前（"付费运行直接启动"）；终端工具启动，手动权限模式下放行。
+- 测量：累积包（W0 + `send_email`）在 train 上 30/50（42 道新测、8 道沿用第 0 轮筛选读数，$19.08）。与 W0 基线逐题：翻成通过 6 道（`ap_aging_report`、`lease_payment_schedule`、`payroll_variance_check`、`qb_bill_payment_batch`、`wave_product_catalog`，加筛选里修好的 `intercompany_balance_recon`），翻成失败 1 道（`project_profitability`）。其中只有 `payroll_variance_check`、`intercompany_balance_recon` 是 excluded_mentioned 的题、能归到 `send_email`；`lease_payment_schedule`、`qb_bill_payment_batch`、`ap_aging_report` 在 library 的首次遇到或 v3 → v4 里也翻过，是 W0 自己的翻转题。train 的 +6 里大约 +2 是工具的，其余是噪声。
+- 诊断 20 例（0 命中缓存，$1.31）归 7 个 cause：missed_action 5、arith_mismatch 4、other 4、unread_value 3、excluded_mentioned 2、missing_recipient 1、wrong_target 1。分配：missed_action → prompt（探索）、arith_mismatch → hook（工具上一轮净 0，换层）、other → skill（留出为空，**样本内筛**，第一次用到 IMPROVER §9.1 的规则）。
+- R 的会话 9 回合、8 次编辑（$1.04），3 个候选，仍是单组件：
+  - `c_prompt_holds`（system prompt 加一段禁令/释放的处理规则；missed_action）：V0 通过。留出失败集 3 道（`slack_receipt_capture`、`invoice_reconciliation`、`payment_fraud_detection`），没修好，净 0。
+  - `c_hook_arith`（before_tool hook `arith_check`：本次尝试第一次发信或写入时，文本里有"两个以上数字用算术符号相连"的行就拦一次，附上那些行和复算清单；arith_mismatch）：V0、V1、V2b 通过。留出失败集 1 道（`commission_calculation`），没修好，净 0。
+  - `c_skill_terms`（技能 `record-with-source-terms`：往表、记录或报告写状态、类别、判断、结论之前读；other）：V0、V2c 通过。样本内失败集 4 道，修好 `xero_bank_reconcile`、`vendor_early_pay_discount`，样本退步 1，净 +1 → 最优，带累积的 `send_email` 进 gate。
+- gate（$10.28；候选 = W0 + `send_email` + `record-with-source-terms`，dev 25 题一次读数对 W0 两次读数池化）：**rejected**。严格 9/25 对 9.5/25，增益 −0.02（修好 2：`financial_close_checklist`、`xero_batch_invoice_send`，后者此前四次读数都没过；退步 2：`expense_split_allocation`、`vendor_payment_approval`，都是翻转题；`weekly_expense_summary` 0/1 → 0）。部分得分增益 −0.004 [−0.091, +0.100]，不过 `partial_min_gain` 0.03 的门槛，区间含 0。成本：候选每次尝试 $0.411 对对照 $0.501，便宜 18%，区间 [−0.13, −0.05] 不含 0——一次调用发信省了 base64 与 api_fetch 的回合。累积被丢弃（台账 `carry_dropped`），`carry.json` 清空；第 2 轮从 W0 重新开始。
+- 读数：
+  - 与 finance-v2 同一幅图：train 筛选净正（+1、+1）、累积包 train +6、dev 增益 0 上下。dev 的 2 修 2 退全落在翻转题与一道从没过的题上；严格读数在 25 题上分辨不了 ±2。部分得分也没分出来（−0.004），说明候选对没过的题的部分得分也没有系统性抬升。
+  - 这次的两个工具与两个技能都是"为 cause 造"的机制，不是题的补丁；但 cause 覆盖的 dev 题数本来就少：excluded_mentioned 在 train 是 5 例、留出 2 道；dev 上同类题有几道没有标签（dev 不诊断）。一个 cause 一轮最多在 dev 上动 1～2 道题，gate 的 `min_gain` 0.05 要 1.25 道以上的净增益，还要确认读数——单 cause 候选结构上过不了这个门；要么组合多个 cause 的机制进同一个候选（规则允许，R 没用），要么 gate 的门槛按 cause 的覆盖面定。这是设计层面的问题，活动结束后在 DESIGN 里议。
+  - 成本便宜 18% 是这轮唯一显著的读数，与 v0.4 的"每次尝试成本 −22%"同向；gate 不以成本为接受条件。
+- 花费：$42.47（测量 $19.08、筛选 $10.69、gate $10.28、诊断 $1.31、会话 $1.04、剧本 $0.08）。活动计 $210.58，根剩 $489.42，非 final 部分 $269.42。
+- 耐心：连续 1 个 gate 轮没有装入（`patience` 2）；第 2 轮（累积轮）、第 3 轮（gate 轮）照跑，第 3 轮再没装入则 cycle 结束。
+- 下一步：第 2 轮。
+
+---
+
 ## 2026-10-11 阶段 4：finance-v4 第 0 轮（三个候选都过免费阶梯；`send_email` 净 +1 累积到第 1 轮；$14.43）
 
 - 用户的指示（2026-10-11）："付费运行直接启动"；第 0 轮由终端工具启动（手动权限模式下用户放行）。累积轮：筛选后把最优候选记进 `rounds/carry.json`，gate 在第 1 轮。
