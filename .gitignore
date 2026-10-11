@@ -25,3 +25,4 @@ ws/
 # patch(1) backups and rejects
 *.orig
 *.rej
+.claude/settings.local.json
