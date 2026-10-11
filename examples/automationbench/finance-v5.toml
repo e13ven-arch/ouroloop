@@ -1,0 +1,84 @@
+# finance-v5: the fifth finance activity, the first under the search loop v2 (docs/PLAN.md stage 4b, docs/DESIGN.md
+# v1.2 §6, docs/JOURNAL.md 2026-10-11). Finance on the stratified split v0.4 read (pinned below), the automationbench_v2
+# preset (the library off, one candidate package a round, held-out acceptance on the working line, one dev gate at the
+# end of the activity), the stirrup seed, up to 12 rounds with a patience of 3. Every paid step is approved in chat
+# first (PLAN rule 3). Run from the repository's root with `.venv/bin/python -m ouroloop`, in a terminal that stays
+# open, on AC power under `caffeinate -dimsu`; stop a step with one Ctrl-C and let it drain, never kill it (a killed
+# call keeps its reservation's bound).
+#   1  `... bench --config examples/automationbench/finance-v5.toml --phase smoke --checks-only`                 $0
+#   2  `... freeze --config ...`: K (with the two code versions), the gate template and the budget root; the final
+#      is not sealed yet (no release line); add the printed [rsi] lines and commit                               $0
+#   3  `... bench --config ... --phase cycle --until baseline` (about $58: finance-v4's W0 cannot be imported, the
+#      seed's bytes changed with the hook's aux model, so the AttemptIdentity differs), then `--until round-0`,
+#      round-1, ... (each approved, each read before the next; `--phase report` after each, $0; the cycle stops by
+#      itself after 3 rounds in a row without a held-out acceptance, or at round 11)
+#   4  when the rounds are over: `... bench --config ... --phase gate` (about $25: the working line against W0 on
+#      dev, two readings); passed, W* is on the release line and `... freeze --config ...` again seals the final and
+#      prints final_plan_ref; it is committed to git before the first test attempt (PLAN rule 6); then
+#      `... bench --config ... --phase evaluate`
+#
+# The numbers are the preset's (activity/presets.py, from evidence); a value here may only tighten one. The worker runs
+# by the image id below (K pins it: the image built from this checkout on 2026-10-11, after runtime/worker_runner.py's
+# embedded contract gained `hook_aux_calls` in stage 4b; `docker image inspect ouroloop-worker:py3.12`).
+
+[workspace]
+root = "workspace-finance-v5"
+
+[bench]
+domain = "finance"
+upstream_path = "~/workspace/AutomationBench"
+split_rule = "stratified"
+seed = 1
+concurrency = 8
+
+[bench.frozen_splits]
+finance = "4fd91eaf9fb8daf5"
+
+[model]
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "medium"
+max_tokens = 32000
+timeout = 600
+
+[research_model]
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "medium"
+max_tokens = 32000
+timeout = 900
+
+[pricing]
+input_per_1k = 0.004
+cache_read_per_1k = 0.0002
+cache_write_per_1k = 0.008
+output_per_1k = 0.02
+max_input_tokens = 1000000
+max_output_tokens = 163840
+source = "notional, not a bill: claude-opus-5-5 API list price ($4/$20 per M, cache read $0.20, 1h cache write $8)"
+
+[harness]
+preset = "automationbench_v2"
+seed = "stirrup"
+
+[worker]
+network = "none"
+image_id = "sha256:04dbf822459b1f01c2d7b9008908cc904d09b95a1d78d9016a178109fc0cc792"
+
+[memory]
+enabled = false
+
+[schedule]
+rounds = 12
+patience = 3
+
+[budget]
+usd = 500.0
+final_usd = 200.0
+
+[final]
+repeats = 3
+
+[rsi]
+scope_id = "finance-v5"
+# core_ref, split_ref: from `ouroloop freeze`; final_plan_ref after the gate passed and freeze sealed the final

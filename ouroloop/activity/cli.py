@@ -71,6 +71,8 @@ def cmd_bench(args) -> int:
             report = phases.library(activity)
         elif args.phase == "round":
             report = phases.round_(activity, int(args.round or 0))
+        elif args.phase == "gate":
+            report = phases.gate(activity)
         elif args.phase == "evaluate":
             report = phases.evaluate(activity)
         elif args.phase == "report":
@@ -138,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
     bn.set_defaults(fn=cmd_bench)
     bn.add_argument("--config", required=True, help="e.g. examples/automationbench/quickstart.toml")
     bn.add_argument("--phase", choices=[*PHASES, CYCLE], default="smoke")
-    bn.add_argument("--until", help="cycle: stop after baseline, library or round-K")
+    bn.add_argument("--until", help="cycle: stop after baseline, library, round-K or gate (the release gate)")
     bn.add_argument("--round", type=int, help="round: which round of the schedule")
     bn.add_argument("--task", action="append", help="smoke: only this dev task; repeatable")
     bn.add_argument("--limit", type=int, help="smoke and baseline: at most this many tasks")
@@ -151,7 +153,7 @@ def main(argv: list[str] | None = None) -> int:
     ex = sub.add_parser("export", help="export an installed release as an app")
     ex.set_defaults(fn=cmd_export)
     ex.add_argument("--config", required=True)
-    ex.add_argument("--release", default=None, help="an installed release ref (default: the active one)")
+    ex.add_argument("--release", default=None, help="a released ref (default: the release line's W*)")
     ex.add_argument("--to", required=True)
     args = p.parse_args(argv)
     return args.fn(args)

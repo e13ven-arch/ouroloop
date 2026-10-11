@@ -1,8 +1,9 @@
-"""K's improver section (docs/design/IMPROVER.md §2; DESIGN §6.4).
+"""K's improver section (docs/design/IMPROVER.md §2; DESIGN §6.4), v1.2.
 
-The priors follow what was measured, not one number for every layer: the text layers by our three finals (a low mean,
-a small uncertainty), the code layers by the outside readings on the same benchmark (a higher uncertainty), so the
-exploration slots fall on code first. Everything here enters K; a config may only tighten it (activity/presets.py).
+One package a round, a focus list instead of slots, held-out acceptance instead of a per-round gate. The priors follow
+what was measured, not one number for every layer: the text layers by our three finals (a low mean, a small
+uncertainty), the code layers by the outside readings on the same benchmark (a higher uncertainty), so the focus list
+ranks code first. Everything here enters K; a config may only tighten it (activity/presets.py).
 """
 from __future__ import annotations
 
@@ -22,10 +23,10 @@ PRIORS = {"tool": (0.3, 0.3), "hook": (0.3, 0.3), "skill": (0.08, 0.1), "prompt"
 
 @dataclass(frozen=True)
 class Settings:
-    k: int = 3                                   # R's candidates per round
+    packages_per_round: int = 1                  # the candidate packages R hands in a round; the screen picks one
     fixed_per_round: int = 2                     # the fixed code's candidates per round (snapshot, promotions, removals)
     session_max_turns: int = 40
-    session_max_edits: int = 32
+    session_max_edits: int = 48
     session_max_read_bytes: int = 65536          # one read (read_trajectory or read_file)
     session_max_read_total: int = 196608         # all reads of a session: the transcript is re-sent every turn
     session_compact_tokens: int = 120000         # past this many input tokens the oldest outputs are elided
@@ -34,23 +35,20 @@ class Settings:
     causes: tuple = CAUSES
     mechanizable: tuple = MECHANIZABLE
     priors: dict = field(default_factory=lambda: {k: list(v) for k, v in PRIORS.items()})
-    explore_slots: int = 1
-    l5_slots: int = 1
-    code_guarantee: bool = True
+    require_code_component: bool = True          # a mechanizable cause and no tool or hook in the package: on the ledger
+    l5_per_round: int = 1                        # agent, config or vendor changes a round, at most
     stall_rounds: int = 3
+    hook_aux_calls: int = 2                      # aux model calls an on_finish or after_turn hook may make per attempt
     toolcheck_min_pass: int = 2
     replay_min_triggers: int = 2
     reach_min_tasks: int = 2
     reach_min_score: float = 0.2
-    screen_passing_sample: int = 6
-    screen_min_net_flips: int = 0
-    screen_min_fixes: int = 1
-    screen_max_sample_regressions: int = 1
-    thin_screen_tasks: int = 3
+    holdout_share: float = 0.4                   # the train tasks R never sees; V3 screens there only
+    accept_min_net_flips: int = 1                # held-out acceptance: conditioned fixes minus regressions, at least
+    accept_max_regressions: int = 1              # held-out passing tasks that fail now, at most
+    accept_floor_tolerance: int = 1              # held-out score at least the activity's best so far minus this
     removal_zero_credit_rounds: int = 3
-    holdout_share: float = 0.4                   # the train tasks R never sees; V3 screens there only (0: none)
-    gate_every: int = 2                          # a gate every this many rounds; between, the best screened is carried
-    round_share: float = 0.25
+    round_share: float = 0.15                    # a round's account, as a share of the root's dollars
 
     def __post_init__(self):
         for name in ("causes", "mechanizable"):
@@ -62,12 +60,17 @@ class Settings:
             raise ValueError(f"improver.mechanizable {sorted(set(self.mechanizable) - set(self.causes))} are not causes")
         priors = {str(k): [float(v[0]), float(v[1])] for k, v in dict(self.priors).items()}
         object.__setattr__(self, "priors", priors)
-        if self.k < 1 or self.session_max_turns < 1:
-            raise ValueError("improver.k and improver.session_max_turns are at least 1")
-        if not 0 <= float(self.holdout_share) < 1:
-            raise ValueError("improver.holdout_share is a share of the train tasks, in [0, 1)")
-        if int(self.gate_every) < 1:
-            raise ValueError("improver.gate_every is at least 1 (1: a gate every round)")
+        if self.packages_per_round < 1 or self.session_max_turns < 1:
+            raise ValueError("improver.packages_per_round and improver.session_max_turns are at least 1")
+        if not 0 < float(self.holdout_share) < 1:
+            raise ValueError("improver.holdout_share is a share of the train tasks, in (0, 1): the screen needs a "
+                             "held-out part")
+        if int(self.hook_aux_calls) < 0 or int(self.l5_per_round) < 0:
+            raise ValueError("improver.hook_aux_calls and improver.l5_per_round are counts (0 forbids)")
+        if int(self.accept_min_net_flips) < 1:
+            raise ValueError("improver.accept_min_net_flips is at least 1: an acceptance without a fix is a tie")
+        if int(self.accept_max_regressions) < 0 or int(self.accept_floor_tolerance) < 0:
+            raise ValueError("improver.accept_max_regressions and improver.accept_floor_tolerance are counts")
         if not 0 < float(self.round_share) <= 1:
             raise ValueError("improver.round_share is a share of the root, in (0, 1]")
 
@@ -117,12 +120,11 @@ def preset_table() -> dict:
     return Settings().to_json()
 
 
-RULES = {"k": "cap", "fixed_per_round": "cap", "session_max_turns": "cap", "session_max_edits": "cap",
+RULES = {"packages_per_round": "cap", "fixed_per_round": "cap", "session_max_turns": "cap", "session_max_edits": "cap",
          "session_max_read_bytes": "cap", "session_max_read_total": "cap", "session_compact_tokens": "cap",
-         "diagnose_max_cases": "cap",
-         "diagnose_successes": "cap", "causes": "superset", "mechanizable": "superset", "priors": "fixed",
-         "explore_slots": "cap", "l5_slots": "cap", "code_guarantee": "fixed", "stall_rounds": "cap",
-         "toolcheck_min_pass": "floor", "replay_min_triggers": "floor", "reach_min_tasks": "floor",
-         "reach_min_score": "floor", "screen_passing_sample": "cap", "screen_min_net_flips": "floor",
-         "screen_min_fixes": "floor", "screen_max_sample_regressions": "cap", "thin_screen_tasks": "floor",
-         "removal_zero_credit_rounds": "fixed", "holdout_share": "floor", "round_share": "cap", "gate_every": "cap"}
+         "diagnose_max_cases": "cap", "diagnose_successes": "cap", "causes": "superset", "mechanizable": "superset",
+         "priors": "fixed", "require_code_component": "fixed", "l5_per_round": "cap", "stall_rounds": "cap",
+         "hook_aux_calls": "cap", "toolcheck_min_pass": "floor", "replay_min_triggers": "floor",
+         "reach_min_tasks": "floor", "reach_min_score": "floor", "holdout_share": "floor",
+         "accept_min_net_flips": "floor", "accept_max_regressions": "cap", "accept_floor_tolerance": "cap",
+         "removal_zero_credit_rounds": "fixed", "round_share": "cap"}

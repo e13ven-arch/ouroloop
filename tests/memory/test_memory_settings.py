@@ -267,7 +267,7 @@ def test_a_resolved_k_carries_the_tightened_memory_section():
            "model": {"type": "claude_code", "model": "claude-opus-5-5", "effort": "medium"},
            "harness": {"preset": "automationbench_v1"}, "budget": {"usd": 100.0, "final_usd": 30.0},
            "memory": {"shown_k": 1, "heldout_domains": ["operations", "finance"], "min_score": 0.7}}
-    k = cf.freeze_core(cfg, split_hash="s" * 16, code_version="c" * 16).json()
+    k = cf.freeze_core(cfg, split_hash="s" * 16, attempt_version="a" * 16, improver_version="i" * 16).json()
     s = Settings.from_core(k)
     assert (s.shown_k, s.heldout_domains, s.min_score) == (1, ("operations", "finance"), 0.7)
     assert {f: getattr(s, f) for f in ("recall_k", "origins", "retriever", "backend")} == \

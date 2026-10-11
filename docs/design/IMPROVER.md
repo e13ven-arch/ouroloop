@@ -4,7 +4,7 @@
 
 ## 1 职责与不做
 
-**做：** 一轮改进：量当前 W 的 train；从 train 证据诊断出原因簇；按估值给簇指派组件类型；R 在自己的编码会话里实现候选；逐档验收；V3 筛选；V4 交 evaluate 的 gate；装入与存档；条件记功；维护估值与剧本。固定代码的候选（memory 快照、memory 升级出的技能、删除候选）也走同一条阶梯。
+**做：** 一轮改进（v1.2）：量工作线在研究部分的 train；从 train 证据诊断出原因簇；给 R 一份聚焦清单；R 在自己的编码会话里实现一个候选包；逐档验收（V0/V1 对整包，V2 按组件）；V3 在全部留出题上筛选并按接受规则装入工作线；存档；条件记功；维护估值与剧本。固定代码的候选（memory 快照、memory 升级出的技能、删除候选）也走同一条阶梯。活动末的发布 gate 是 evaluate 的（`activity/phases.py` 的 `gate` 阶段）。
 
 **不做：** 不写 gate 的统计（evaluate）；不写 memory（只读它的快照事件与升级输入）；不读 dev/test 的内容（dev 只有失败断言类型的直方图）；R 不跑 shell、不上网、不碰宿主文件。
 
@@ -234,8 +234,8 @@ def credit(release, parent_reading, child_reading, *, components, evidence) -> l
 def removal_candidates(credits_by_round, package, *, zero_rounds) -> list[tuple[dict, dict[str, str]]]   # (组件, 删掉它的文件集)
 
 # ledger.py
-STAGES = ("measured", "diagnosed", "allocated", "declared", "verified", "screened", "gated", "installed", "rejected",
-          "credited", "removal_proposed", "no_code_candidate", "unused", "vocabulary_added", "l6_unavailable", "stopped", "playbook")
+STAGES = ("measured", "diagnosed", "focused", "declared", "verified", "screened", "accepted", "gated", "installed",
+          "rejected", "credited", "removal_proposed", "no_code_candidate", "vocabulary_added", "l6_unavailable", "stopped", "playbook")
 class Ledger:    # ledger/experience.jsonl
     def row(self, stage, **fields) -> dict
     def rows(self, *, stage=None, round_id=None) -> list[dict]
@@ -254,7 +254,7 @@ def export_policy(activity) -> str;  def import_policy(activity, policy_ref) -> 
 - R 的策略（估值与剧本）在活动内随台账更新；release 里的 `improver_ref` 在一个活动内保持 R0，活动结束时 `export_policy` 产出下一个活动的 R1（DESIGN §6.9）。
 - 升级的技能装入后，记功一步调 `MemoryService.supersede`：流的台账里条目 `superseded`，live store 退役它，live 库文件里没有它（MEMORY §8）。memory 条目的分类按（条目、请求、模型）缓存在 `rounds/notes.jsonl`。
 - 固定候选的目录名（`memory-snapshot`、`promoted-`、`remove-` 开头）R 不能用。v1.2：library 默认关（MEMORY §9），没有 library 时固定候选只有删除候选。
-- 固定候选（每轮 ≤ `fixed_per_round`，先快照、再升级技能、再删除）：library 阶段的快照候选（`library_snapshot` 事件，outcome candidate，还没进过阶梯的；快照文本是 library 阶段按 K 的 `max_memory_bytes` 装好的，MEMORY §7.1，原样放到当前 W 上，同一个 K 下照样放得下）走 V0 → V3；memory 升级出的技能候选走 V0、V2c → V3；删除候选走 V0 → V3。它们和 R 的候选一起筛选，最优者进 V4。
+- 固定候选（每轮 ≤ `fixed_per_round`，先快照、再升级技能、再删除）：library 阶段的快照候选（`library_snapshot` 事件，outcome candidate，还没进过阶梯的；快照文本是 library 阶段按 K 的 `max_memory_bytes` 装好的，MEMORY §7.1，原样放到当前 W 上，同一个 K 下照样放得下）走 V0 → V3；memory 升级出的技能候选走 V0、V2c → V3；删除候选走 V0 → V3。它们和 R 的包一起筛选；一轮只装一个（先 R 的包），被接受而未选中的固定候选记 `not_selected`，下一轮再作固定候选。
 
 ## 11 不变量
 
@@ -287,7 +287,7 @@ def export_policy(activity) -> str;  def import_policy(activity, policy_ref) -> 
 
 - 证据：非 train 的 session 抛 `TraceAccessError`；特征与足迹确定；dev 直方图不带题号。
 - 诊断：脚本化 aux 给出案例；词表外归 other；增项需 ≥ 2 案例；缓存命中不调模型；memory 条目分类。
-- 分层：上界排序；探索名额落在 n=0 的代码类；代码保证触发；`no_code_candidate` 后名额加倍；L5 只在三类簇；L6 不可用时记台账。
+- 聚焦（v1.2）：簇按题数、kind 按分数排序；`require_code` 只在有可机械化簇且 K 允许代码时为真；L5 只对三类簇建议；L6 不可用时记台账；`stalled` 按连续无接受的 focused 轮数。
 - 会话：上限各一例；`run_check` 返回与 `run_ladder` 一致；声明不全被拒后再 finish；修订只改文件。
 - 阶梯：V0 每条规则一例；V1 抓确定性崩溃；V2a 在 fake_upstream 上一个脚本通过、一个没调用工具被拒；V2b 触发计数与误触发率；V2c 可达。
 - 筛选：条件记功（变异：把条件去掉，结果变）；thin；pick_best 的并列规则；核价不过不付费。
@@ -295,8 +295,8 @@ def export_policy(activity) -> str;  def import_policy(activity, policy_ref) -> 
 - 台账与策略：投影无 dev 题号；记分板；剧本只含引得上的教训；导出导入往返。
 - 付费安全（EVALUATE §9 等到本阶段的几条）：研究步计量（会话每回合、诊断每次调用、剧本）、无法核价的候选不开始、中断的一轮续跑不重付、验证界核价。
 - 装入的 operation_id 与 Execution 的操作 id 不冲突。
-- 端到端（`fake_upstream` 的 `rsi` 域，脚本化 R）：一轮产出一个 tool 候选过 V0～V2a、V3 记条件修复、V4 装入、记功；一个 hook 候选过 V2b；有可机械化簇而无代码候选时台账记 `no_code_candidate`；memory 快照作为固定候选进 V3。
+- 端到端（`fake_upstream` 的 `rsi` 域，脚本化 R；第六道 train 题 `rsi.notify_ticket` 让留出一对与研究部分各有一道失败题）：一轮产出一个 tool 包过 V0～V2a、V3 在留出题上记条件修复并接受装入工作线、记功；一个 hook 包过 V2b；tool + hook 的两组件包各过各的档；有可机械化簇而无代码候选时台账记 `no_code_candidate`；memory 快照作为固定候选进 V3。
 
 ## 14 开发顺序
 
-`settings.py` → `evidence.py` → `ledger.py`、`archive.py` → `diagnose.py` → `allocate.py` → `verify/static.py`、`unit.py` → `session.py` → `verify/toolcheck.py`、`replay.py`、`reach.py` → `screen.py`（含 V4）→ `credit.py` → `policy.py` → `round.py` → activity 的 `round` 阶段与 cycle → 测试。阶段 1 留下的三项（种子传 effort、回合用完记 budget、速率限制落事件）先做。
+`settings.py` → `evidence.py` → `ledger.py`、`archive.py` → `diagnose.py` → `allocate.py` → `verify/static.py`、`unit.py` → `session.py` → `verify/toolcheck.py`、`replay.py`、`reach.py` → `screen.py` → `credit.py` → `policy.py` → `round.py` → activity 的 `round` 阶段、cycle 与活动末的 `gate` → 测试。阶段 1 留下的三项（种子传 effort、回合用完记 budget、速率限制落事件）先做。

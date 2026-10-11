@@ -57,8 +57,10 @@ def _tasks() -> list[dict]:
 
 # ---------------------------------------------------------------------------- the rsi domain
 # The integration fixture of docs/modules/08_INTEGRATION_CASES.md §1: small independent business tasks with
-# explicit families — read and update, update and then notify, a lawful no-op, and one where sending twice is a
-# regression — plus development and final tasks whose important constraint sits at the end of the request.
+# explicit families — read and update, update and then notify (two variants), a lawful no-op, one where sending twice
+# is a regression, and a second update-then-notify family of its own (so a held-out part of train and the studied
+# part each hold a failing task of the same cause) — plus development and final tasks whose important constraint sits
+# at the end of the request.
 #
 # The marketing domain above stays at two tasks, because tests already measure that runner against it. These are
 # a fixture for the loop, not a benchmark: `synthetic_contract_test` is what any report of them must say.
@@ -115,6 +117,12 @@ def _rsi_tasks() -> list[dict]:
                   [{"type": "slack_message_contains", "text": "single update"},
                    {"type": "slack_message_count", "count": 1}],
                   tools=["slack_send_channel_message"]),
+        _rsi_task(1006, "rsi.notify_ticket",
+                  "Kai Mercer opened a billing ticket this morning. " + FILLER
+                  + "Set his contact to the opportunity stage; when that is through, let the team know in #ops "
+                    "with a short note that has the phrase stage updated.",
+                  [{"type": "hubspot_contact_stage", "contact_id": "c4", "stage": "opportunity"},
+                   {"type": "slack_message_contains", "text": "stage updated"}]),
         _rsi_task(2001, "rsi.dev_notify_after_update",
                   "Dana Reyes returned to the site. " + FILLER
                   + "Move her contact to the opportunity stage, and when that is done post a message in #ops "

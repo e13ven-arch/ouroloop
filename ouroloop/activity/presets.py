@@ -11,7 +11,7 @@ the preset's by the effort order), "bytes" (a size like "512m", at most the pres
 The numbers of `automationbench_v1` come from evidence (docs/design/HARNESS.md §3; the v6 preset's measurements):
 the seed is 53 files and 601 KB, 499 KB of it Stirrup; the worker's peak RSS was 80 MB; R's sessions used at most 13
 turns and 15 edits; the gate is v0.4's (pooled control, one confirmation, a regression is a drop of 0.5, at least 25
-tasks) without a cost term (PLAN P6).
+tasks) without a cost term (PLAN P6). `automationbench_v2` is v1.2's (the library off; the improver's v1.2 section).
 """
 from __future__ import annotations
 
@@ -53,13 +53,18 @@ AUTOMATIONBENCH_V1 = {
              # EVALUATE §5.1: the partial-credit rule beside the strict one (finance-v2: 25 dev tasks resolve the
              # strict rate in steps of 4 points; the partial credit is continuous)
              "partial_min_gain": 0.03},
-    # IMPROVER §9.2: up to 8 rounds, a gate every improver.gate_every of them; the patience counts gate rounds
-    "schedule": {"rounds": 8, "patience": 2, "max_infrastructure_failures": 2},
+    # IMPROVER §3 (v1.2): up to 12 rounds; the patience counts rounds in a row without a held-out acceptance
+    "schedule": {"rounds": 12, "patience": 3, "max_infrastructure_failures": 2},
     "budget": {"usd": None, "final_usd": None},
     "final": {"tasks": "test", "repeats": 3, "claims": ["C1"]},
 }
 
-PRESETS = {"automationbench_v1": AUTOMATIONBENCH_V1}
+# v1.2 (DESIGN §6.12, MEMORY §9): the search loop redone — the library off by default, one package a round, held-out
+# acceptance; otherwise automationbench_v1's numbers. A config may turn the memory on ([memory] enabled is free).
+AUTOMATIONBENCH_V2 = json.loads(json.dumps(AUTOMATIONBENCH_V1))
+AUTOMATIONBENCH_V2["memory"]["enabled"] = False
+
+PRESETS = {"automationbench_v1": AUTOMATIONBENCH_V1, "automationbench_v2": AUTOMATIONBENCH_V2}
 
 RULES = {
     "bench": {"domain": "free", "upstream_path": "free", "toolset": "fixed", "ratios": "free", "seed": "free",

@@ -3,8 +3,9 @@ same bytes every time it is written (nothing in it reads the clock).
 
     activity   scope, K, preset, code version, the split's hash and counts
     baseline   W0's train reading and its dev readings
-    rounds     each round of the improver: causes, assignments, candidates and the rungs they passed, the screens,
-               the gate's verdict and gain, the install, the stop, the round's spend
+    rounds     each round of the improver: causes, the focus list, candidates and the rungs they passed, the held-out
+               screens with the accept rule's answer, the install on the working line, the stop, the round's spend
+    gate       the release gate at the end of the activity: the working line against W0 on dev, and the release
     memory     the memory stream's readout (D, the halves, the entries), what it dropped and lost, its snapshot
     final      each arm of the sealed final, W* - W0 on test with its 95% interval over families (C1), and how many
                times this activity ran its final
@@ -78,13 +79,27 @@ def memory_report(activity) -> dict | None:
             "snapshot": snapshot}
 
 
+def gate_report(activity) -> dict | None:
+    """The release gate's record (rsi/gate.json), without its refs."""
+    path = activity.root / "rsi" / "gate.json"
+    if not path.exists():
+        return None
+    state = json.loads(path.read_text(encoding="utf-8"))
+    return {"status": state.get("status"), "verdict": state.get("verdict"), "kind": state.get("kind"),
+            "gain": state.get("gain"), "partial_gain": state.get("partial_gain"),
+            "fixed_count": state.get("fixed_count"), "regressed_count": state.get("regressed_count"),
+            "working": short(state["working"]) if state.get("working") else None,
+            "released": short(state["released"]) if state.get("released") else None,
+            "reasons": state.get("reasons") or []}
+
+
 def rounds_report(activity) -> list[dict]:
     """Each round as rounds/r<i>/round.json, the ledger and the budget book hold it (no timestamps). The improver's
     modules are loaded only when there is a round to read (a phase before the rounds stays off its path)."""
     paths = sorted((activity.root / "rounds").glob("r*/round.json"), key=lambda p: int(p.parent.name[1:]))
     if not paths:
         return []
-    from ..improver.allocate import Assignment
+    from ..improver.allocate import Focus
     from ..improver.diagnose import Cause
     from ..improver.ledger import Ledger
     from ..improver.screen import ScreenResult
@@ -95,8 +110,7 @@ def rounds_report(activity) -> list[dict]:
         state = json.loads(path.read_text(encoding="utf-8"))
         steps = state.get("steps") or {}
         causes = [Cause.from_json(activity.objects.get(r)) for r in (steps.get("diagnosed") or {}).get("causes") or ()]
-        assigned = [Assignment.from_json(activity.objects.get(r))
-                    for r in (steps.get("allocated") or {}).get("assignments") or ()]
+        focus = Focus.from_json(activity.objects.get(steps["focused"]["focus"])) if steps.get("focused") else None
         verified = [{"dir": r.get("dir"), "kind": r.get("kind"), "passed": r.get("passed"),
                      **({"outcome": r["outcome"]} if r.get("outcome") else {})}
                     for r in ledger.rows(stage="verified", round_id=state["round_id"])]
@@ -105,20 +119,19 @@ def rounds_report(activity) -> list[dict]:
             sc = ScreenResult.from_json(activity.objects.get(r["screen"]))
             screens.append({"dir": r["dir"], "outcome": sc.outcome, "fixed": len(sc.fixed),
                             "unconditioned": len(sc.unconditioned), "regressed": len(sc.regressed),
-                            "net_flips": sc.net_flips, "thin": sc.thin, **({"in_sample": True} if sc.in_sample else {})})
-        gated = steps.get("gated") or None
+                            "net_flips": sc.net_flips, "holdout_score": sc.holdout_score, "holdout": len(sc.holdout),
+                            "best_so_far": sc.best_so_far, "accepted": sc.accepted, "reasons": list(sc.reasons)})
+        accepted = steps.get("accepted") or {}
         scope = f"{activity.scope_id}:round-{state['index']}"
         used = activity.budgets.usage(scope, book) if scope in book.get("scopes", {}) else {}
         out.append({"round": state["round_id"], "status": state.get("status"), "stop": state.get("stop"),
                     "causes": {c.name: len(c.tasks) for c in causes},
-                    "assignments": [{"cause": a.cause, "kind": a.kind, "slots": a.slots,
-                                     "exploration": a.exploration} for a in assigned],
+                    "focus": [{"cause": r["name"], "tasks": len(r["tasks"]), "kinds": [k["kind"] for k in r["kinds"]]}
+                              for r in focus.ranked] if focus else [],
+                    "require_code": bool(focus and focus.require_code),
                     "candidates": verified, "ladder": (steps.get("verified") or {}).get("ladder") or {},
                     "screens": screens, "best": (steps.get("screened") or {}).get("best"),
-                    "gate": None if gated is None else {k: gated.get(k) for k in ("verdict", "kind", "gain",
-                                                                                   "fixed_count", "regressed_count")},
-                    "installed": short(gated["installed"]) if gated and gated.get("installed") else None,
-                    "carried": short((steps.get("carried") or {}).get("package_ref")) if steps.get("carried") else None,
+                    "installed": short(accepted["installed"]) if accepted.get("installed") else None,
                     "spend": {k: round(v, 6) for k, v in used.items() if v}})
     return out
 
@@ -168,10 +181,13 @@ def build_report(activity) -> dict:
                        "c1": c1_difference(activity, plan, state["plan"], test)})
     events = list(read_jsonl(activity.events.path))
     return {"activity": {"scope": activity.scope_id, "core": short(activity.core_ref), "preset": activity.core.preset,
-                         "code_version": activity.core.code_version, "domain": activity.domain,
+                         "attempt_version": activity.core.attempt_version,
+                         "improver_version": activity.core.improver_version, "domain": activity.domain,
                          "split": activity.splits.hash(), "counts": activity.splits.counts()},
             "release": short(activity.releases.active_ref()) if activity.releases.active_ref() else None,
-            "baseline": baseline, "rounds": rounds_report(activity), "memory": memory_report(activity),
+            "released": short(activity.releases.released_ref()) if activity.releases.released_ref() else None,
+            "baseline": baseline, "rounds": rounds_report(activity), "gate": gate_report(activity),
+            "memory": memory_report(activity),
             "final": finals,
             "test_reads": sum(1 for e in events if e.get("event") == "test_read"),
             "spend": spend(activity)}
@@ -180,8 +196,9 @@ def build_report(activity) -> dict:
 def render_markdown(report: dict) -> str:
     a = report["activity"]
     lines = [f"# {a['scope']}", "",
-             f"K {a['core']} (preset {a['preset']}, code {a['code_version']}), domain {a['domain']}, split {a['split']}",
-             f"active release {report['release']}", "", "## Baseline (W0)"]
+             f"K {a['core']} (preset {a['preset']}, attempt code {a['attempt_version']}, improver code "
+             f"{a['improver_version']}), domain {a['domain']}, split {a['split']}",
+             f"working line {report['release']}, release line {report.get('released')}", "", "## Baseline (W0)"]
     b = report["baseline"]
     if b["train"]:
         lines.append(f"- train: {b['train']['passed']}/{b['train']['tasks']} passed, pass rate {b['train']['pass_rate']}")
@@ -208,26 +225,35 @@ def render_markdown(report: dict) -> str:
     lines += ["", "## Rounds"]
     for r in report["rounds"]:
         lines.append(f"- {r['round']} {r['status']}" + (f" ({r['stop']})" if r.get("stop") else "")
-                     + f": causes {r['causes']}; assigned "
-                     + ", ".join(f"{a['cause']}->{a['kind']}" + ("*" if a["exploration"] else "")
-                                 + (f"x{a['slots']}" if a["slots"] > 1 else "") for a in r["assignments"]))
+                     + f": causes {r['causes']}; focus "
+                     + ", ".join(f"{f['cause']}->{'/'.join(f['kinds'][:3])}" for f in r["focus"])
+                     + (" (a tool or hook required)" if r.get("require_code") else ""))
         if r["candidates"]:
             lines.append("  candidates " + ", ".join(
                 f"{c['dir']} ({c['kind']}, {c.get('outcome') or ('passed' if c['passed'] else 'failed')})"
                 for c in r["candidates"]) + f"; rungs passed {r['ladder']}")
         for sc in r["screens"]:
-            lines.append(f"  screen {sc['dir']}: {sc['outcome']}, fixed {sc['fixed']} (unconditioned "
-                         f"{sc['unconditioned']}), regressed {sc['regressed']}, net {sc['net_flips']}"
-                         + (", thin" if sc["thin"] else ""))
-        if r["gate"]:
-            g = r["gate"]
-            lines.append(f"  gate {r['best']}: {g['verdict']} ({g['kind']}), gain {g['gain']}, dev fixed "
-                         f"{g['fixed_count']} broke {g['regressed_count']}"
-                         + (f"; installed {r['installed']}" if r["installed"] else "")
-                         + (f"; carried {r['carried']}" if r.get("carried") else ""))
+            lines.append(f"  screen {sc['dir']}: {sc['outcome']}, held out {sc['holdout_score']}/{sc['holdout']} "
+                         f"(best so far {sc['best_so_far']}), fixed {sc['fixed']} (unconditioned "
+                         f"{sc['unconditioned']}), regressed {sc['regressed']}, net {sc['net_flips']}: "
+                         + ("accepted" if sc["accepted"] else "rejected" + (f" ({'; '.join(sc['reasons'])})"
+                                                                           if sc["reasons"] else "")))
+        if r["installed"]:
+            lines.append(f"  installed {r['best']} on the working line as {r['installed']}")
         lines.append(f"  spend {r['spend']}")
     if not report["rounds"]:
         lines.append("- none run")
+    lines += ["", "## Release gate"]
+    g = report.get("gate")
+    if not g:
+        lines.append("- not run")
+    elif g["status"] != "done":
+        lines.append(f"- {g['status']}")
+    else:
+        lines.append(f"- working line {g['working']} against W0 on dev: {g['verdict']} ({g['kind']}), gain {g['gain']}, "
+                     f"partial {g['partial_gain']}, dev fixed {g['fixed_count']} broke {g['regressed_count']}"
+                     + (f"; released {g['released']}" if g["released"] else "; no release")
+                     + (f"; {'; '.join(g['reasons'])}" if g["reasons"] and not g["released"] else ""))
     lines += ["", "## Final"]
     for f in report["final"]:
         lines.append(f"- {f['experiment']} ({f['plan']}, {f['status']}): " + ", ".join(

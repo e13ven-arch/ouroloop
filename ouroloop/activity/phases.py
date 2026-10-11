@@ -5,15 +5,19 @@ another package: the attempt and the gate in evaluate/, the run in runtime/, the
               (checks only, no model); without --checks-only, one dev attempt through the whole runner shell
     freeze    the gate's plan template, the budget root and its final share, and — when the config has [final] — the
               sealed final plan; prints the [rsi] lines the config then names
-    baseline  W0 on every train task and on dev `control_readings` times (the pooled control's first readings)
-    library   the memory's train stream and its snapshot as a candidate (docs/design/MEMORY.md §7)
-    round     one round of the improver (docs/design/IMPROVER.md §3); `cycle` runs them with the patience rule
-    evaluate  the sealed final on the test tasks; it reports, it does not choose
+    baseline  W0 on every train task and on dev `control_readings` times (the pooled control's first readings); with
+              [rsi] baseline_from, another workspace's readings of the same AttemptIdentity are imported first
+    library   the memory's train stream and its snapshot as a candidate (docs/design/MEMORY.md §7); K's memory.enabled
+    round     one round of the improver (docs/design/IMPROVER.md §3, v1.2: one package, held-out acceptance on the
+              working line); `cycle` runs them with the patience rule
+    gate      the release gate at the end of the activity (docs/design/EVALUATE.md §5.2): the working line against W0
+              on dev; passed, it becomes the release line's W*
+    evaluate  the sealed final on the test tasks (W* against W0); it reports, it does not choose
     report    the activity's report from what is on disk; no model is called
-    export    an installed release as an app
+    export    the released W* as an app
 
-`cycle --until` runs baseline, then the library, then the rounds, and stops after the named step; run again, it
-resumes, and pays for nothing already on record.
+`cycle --until` runs baseline, then the library, then the rounds (and with `--until gate` the release gate), and stops
+after the named step; run again, it resumes, and pays for nothing already on record.
 """
 from __future__ import annotations
 
@@ -27,13 +31,13 @@ from ..contracts import short, write_json
 from ..evaluate.attempt import make_agent_factory, run_tasks, task_hash
 from ..evaluate.final import FinalPlan, estimate_lines, final_estimate, run_final, seal, share_problem
 from ..evaluate.gate import GatePlan, TaskEvalPlan, refill_attempts
-from ..evaluate.release import NotAuthorized, Release
+from ..evaluate.release import NotAuthorized, Release, Releases
 from ..evaluate.results import TaskResult, attempt_id, summarise
 from ..harness.literals import findings, forbidden, literal_index
 from ..harness.package import Limits, PackageError, build
 from .checks import require, startup_checks
 
-PHASES = ("smoke", "freeze", "baseline", "library", "round", "evaluate", "report", "export")
+PHASES = ("smoke", "freeze", "baseline", "library", "round", "gate", "evaluate", "report", "export")
 
 
 # ---------------------------------------------------------------------------- one arm of tasks
@@ -196,10 +200,11 @@ def gate_template(activity) -> TaskEvalPlan:
 
 def final_plan(activity) -> FinalPlan:
     final = activity.k["final"]
-    release = activity.active_release()
+    release = activity.released_release()
     seed = activity.seed_release()
     # An arm's name is part of every attempt id, which is a session id (runtime.records.SESSION_ID): W* is "W_star".
-    arms = {"W0": seed.ref()} if release.ref() == seed.ref() else {"W0": seed.ref(), "W_star": release.ref()}
+    # W* is the release line's (the release gate's promotion), never the working line's (EVALUATE §7, v1.2).
+    arms = {"W0": seed.ref()} if release is None else {"W0": seed.ref(), "W_star": release.ref()}
     return FinalPlan(experiment_id=f"{activity.scope_id}-final", tasks=tuple(activity.splits.ids(final["tasks"])),
                      repeats=int(final["repeats"]), arms=arms, claims=tuple(final["claims"]) if len(arms) > 1 else (),
                      split_hash=activity.splits.hash(), core_ref=activity.core_ref,
@@ -219,14 +224,14 @@ def freeze(activity, *, out: Callable[[str], None] = print) -> dict:
     unfinished = sorted(p.parent.name for p in (activity.root / "rounds").glob("r*/round.json")
                         if json.loads(p.read_text(encoding="utf-8")).get("status") not in ("done", "stopped"))
     if plan is not None and len(plan.arms) < 2:
-        out("final      not sealed: the final compares W* with W0, and nothing is installed yet; freeze again when "
-            "the rounds are over")
+        out("final      not sealed: the final compares W* with W0, and no release passed the release gate yet; run "
+            "`--phase gate` when the rounds are over, then freeze again")
     elif plan is not None and unfinished:
-        out(f"final      not sealed: round {', '.join(unfinished)} is not finished, and a round can still install; "
-            f"freeze again when the rounds are over")
+        out(f"final      not sealed: round {', '.join(unfinished)} is not finished; freeze again when the rounds and "
+            f"the gate are over")
     elif plan is not None:
-        out(f"final      sealing W* = the active release {short(activity.active_release().ref())}: a round after "
-            f"this one cannot change the final, so seal when the rounds are over")
+        out(f"final      sealing W* = the released {short(activity.released_release().ref())}: a gate after this "
+            f"cannot change the final, so seal when the rounds and the gate are over")
         estimate = final_estimate(list(activity.results.all()), plan, plan_ref=None,
                                   execution_of=lambda ref: _execution(activity, ref), pricing=activity.pricing(),
                                   concurrency=activity.concurrency)
@@ -252,23 +257,107 @@ def _execution(activity, release_ref):
 
 
 # ---------------------------------------------------------------------------- baseline
+def import_baseline(activity, source_root: Path, *, out: Callable[[str], None] = print) -> dict:
+    """Another workspace's W0 readings into this one (EVALUATE §8, ACTIVITY §4, v1.2): when its seed package under its
+    K has this activity's AttemptIdentity, its baseline runs (roles base and control, train and dev), their results,
+    grading rows and transcripts are copied as recorded, with the source on record; nothing is paid. Run again, it
+    copies nothing twice. -> {imported, attempts, identity} or {imported: False, why}."""
+    from ..evaluate.results import RunManifest, Results
+    from ..runtime.records import session_file
+    source_root = Path(source_root)
+    core_file = source_root / "core.json"
+    if not core_file.exists():
+        return {"imported": False, "why": f"{source_root} holds no core.json"}
+    src_core = json.loads(core_file.read_text(encoding="utf-8"))
+    src_releases = Releases(source_root)
+    if src_releases.active_ref() is None:
+        return {"imported": False, "why": f"{source_root} has no release"}
+    src_seed = src_releases.history()[-1]
+    seed = activity.seed_release()
+    if src_seed.package_ref != seed.package_ref:
+        return {"imported": False, "why": "the source's W0 is another package"}
+    from ..evaluate.release import attempt_identity
+    theirs = attempt_identity(attempt_version=src_core.get("attempt_version") or "", package_ref=src_seed.package_ref,
+                              limits=src_core.get("limits") or {}, model=src_core.get("model") or {},
+                              image_id=(src_core.get("worker") or {}).get("image_id"),
+                              split_hash=src_core.get("split_hash") or "")
+    ours = activity.core.attempt_identity(seed.package_ref)
+    if theirs != ours:
+        return {"imported": False, "why": f"AttemptIdentity differs ({theirs} there, {ours} here)"}
+    src = Results(source_root, activity.domain)
+    runs = {h: r for h, r in src.runs().items() if r.package_ref == src_seed.package_ref
+            and r.role in ("base", "control") and r.split in ("train", "dev")}
+    have = {r.attempt_id for r in activity.results.all()}
+    copied, sessions = [], []
+    for row in src.all():
+        run = runs.get(row.run)
+        if run is None or row.attempt_id in have or row.validity != "valid":
+            continue
+        if row.run not in {h for h in activity.results.runs()}:
+            activity.results.put_run(run)
+        activity.results.append(row)
+        copied.append(row.attempt_id)
+        sessions.append(row.evidence or row.attempt_id)
+    activity.results.copy_grading(src, copied)
+    for session in sessions:
+        try:
+            source, target = session_file(source_root, session), session_file(activity.root, session)
+        except ValueError:
+            continue
+        if source.is_file() and not target.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(source.read_bytes())
+    if copied:
+        activity.events.append("baseline_imported", source=str(source_root), attempts=len(copied), identity=ours,
+                               runs=sorted(runs))
+    out(f"baseline   imported {len(copied)} W0 attempts from {source_root} (AttemptIdentity {ours})")
+    return {"imported": True, "attempts": len(copied), "identity": ours}
+
+
+def _read_rows(activity, package_ref: str, *, split: str, candidate: str) -> list[TaskResult]:
+    """The valid readings of this package under runs of this name and split, whoever recorded them (an imported
+    baseline's runs carry the source's release and core), one per (task, repeat), the latest."""
+    runs = activity.results.runs()
+    return latest([r for r in activity.results.all() if r.split == split and r.validity == "valid"
+                   and runs.get(r.run) is not None and runs[r.run].package_ref == package_ref
+                   and runs[r.run].candidate == candidate and runs[r.run].role == "base"])
+
+
 def baseline(activity, *, limit: int | None = None, out: Callable[[str], None] = print) -> dict:
     """W0 on train (once) and on dev `control_readings` times, each reading its own run of the same release, so the
-    pooled control starts with that many readings. A restarted baseline runs only what is missing."""
+    pooled control starts with that many readings. A restarted baseline runs only what is missing; with [rsi]
+    baseline_from, what the named workspace read of the same AttemptIdentity is imported first and not paid."""
     require(startup_checks(activity, phase="baseline"), phase="baseline", activity=activity)
     release = activity.active_release()
     account = activity.account("baseline")
     train = activity.splits.ids("train")[:limit] if limit else activity.splits.ids("train")
     dev = activity.splits.ids("dev")[:limit] if limit else activity.splits.ids("dev")
+    report = {"release": release.ref(), "train": None, "dev": [], "imported": None}
+    source = (activity.config.get("rsi") or {}).get("baseline_from")
+    if source:
+        base = Path(activity.config.get("_base") or ".")
+        path = Path(source).expanduser()
+        report["imported"] = import_baseline(activity, path if path.is_absolute() else (base / path).resolve(),
+                                             out=out)
+        if not report["imported"].get("imported"):
+            out(f"baseline   nothing imported from {source}: {report['imported'].get('why')}")
     out(f"baseline   release {short(release.ref())}: {len(train)} train tasks, {len(dev)} dev tasks × "
         f"{activity.k['gate']['control_readings']} readings")
-    report = {"release": release.ref(), "train": None, "dev": []}
-    rows = _reading(activity, release=release, split="train", candidate="base", tasks=train, account=account, out=out)
-    report["train"] = summarise(rows)
+    read = {r.task_id for r in _read_rows(activity, release.package_ref, split="train", candidate="base")}
+    todo = [t for t in train if t not in read]
+    if todo:
+        _reading(activity, release=release, split="train", candidate="base", tasks=todo, account=account, out=out)
+    wanted = set(train)
+    report["train"] = summarise([r for r in _read_rows(activity, release.package_ref, split="train", candidate="base")
+                                 if r.task_id in wanted])
     for i in range(1, int(activity.k["gate"]["control_readings"]) + 1):
         name = "base" if i == 1 else f"base:reading-{i}"
-        rows = _reading(activity, release=release, split="dev", candidate=name, tasks=dev, account=account, out=out)
-        report["dev"].append(summarise(rows))
+        read = {r.task_id for r in _read_rows(activity, release.package_ref, split="dev", candidate=name)}
+        todo = [t for t in dev if t not in read]
+        if todo:
+            _reading(activity, release=release, split="dev", candidate=name, tasks=todo, account=account, out=out)
+        report["dev"].append(summarise([r for r in _read_rows(activity, release.package_ref, split="dev",
+                                                              candidate=name) if r.task_id in set(dev)]))
     return report
 
 
@@ -299,8 +388,8 @@ def base_readings(activity, release: Release) -> dict:
     out: dict = {}
     for r in activity.results.all():
         run = runs.get(r.run)
-        if r.split != "train" or r.validity != "valid" or r.system_release_ref != release.ref() or run is None \
-                or run.package_ref != release.package_ref or run.role == "library":
+        if r.split != "train" or r.validity != "valid" or run is None or run.package_ref != release.package_ref \
+                or run.role == "library":
             continue
         out.setdefault(r.task_id, []).append(r)
     return out
@@ -496,6 +585,95 @@ def round_(activity, index: int, *, out: Callable[[str], None] = print):
     return run_round(activity, index, run_arm=run_arm, out=out)
 
 
+# ---------------------------------------------------------------------------- the release gate
+def gate(activity, *, out: Callable[[str], None] = print) -> dict:
+    """The release gate at the end of the activity (EVALUATE §5.2; IMPROVER §9.2): the working line's W against W0 on
+    every dev task of the frozen template — W read `repeats` times plus the plan's confirmation, W0 the pooled control
+    of the baseline's readings, topped up. Accepted (confirmed when the plan confirms), the working line's release is
+    promoted to the release line (`rsi/released.json`, reason `gate`); otherwise there is no release and the report
+    says so. Run again, it reads what is on record and pays for nothing done; a gate of a working line that moved
+    since is a new gate."""
+    require(startup_checks(activity, phase="gate"), phase="gate", activity=activity)
+    from ..evaluate.gate import evaluate_task, receipt_differences
+    from ..improver.ledger import Ledger
+    from ..improver.screen import control_pool, cost_per_attempt, gate_attempts, gate_plan
+    from .checks import cli_change_problem
+    work, seed = activity.active_release(), activity.seed_release()
+    path = activity.root / "rsi" / "gate.json"
+    state = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    if state.get("status") == "done" and state.get("working") == work.ref():
+        out(f"gate       on record: {state.get('verdict')} for {short(work.ref())}"
+            + (f"; released {short(state['released'])}" if state.get("released") else ""))
+        return state
+    if work.ref() == seed.ref():
+        out("gate       the working line is W0: nothing was accepted, nothing to gate")
+        return {"status": "nothing_to_gate", "working": work.ref()}
+    unfinished = sorted(p.parent.name for p in (activity.root / "rounds").glob("r*/round.json")
+                        if json.loads(p.read_text(encoding="utf-8")).get("status") not in ("done", "stopped"))
+    if unfinished:
+        raise ValueError(f"gate refused: round {', '.join(unfinished)} is not finished and can still move the working "
+                         f"line; finish or stop it first")
+    problem = cli_change_problem(activity)
+    if problem:
+        raise ValueError(f"gate refused: {problem}")
+    package = activity.package(work)
+    plan = gate_plan(activity, package=package, base_release=seed)
+    plan_ref = activity.objects.put(plan)
+    account = activity.account("gate")
+    name = f"gate:{short(work.ref())}"
+    recorded = {r.task_id for r in activity.results.all() if r.validity == "valid"
+                and activity.results.runs().get(r.run) is not None and activity.results.runs()[r.run].candidate == name}
+    if not recorded:
+        dev = cost_per_attempt(activity, seed.package_ref, "dev")
+        train0, train = cost_per_attempt(activity, seed.package_ref, "train"), \
+            cost_per_attempt(activity, work.package_ref, "train")
+        scale = max(1.0, train / train0) if train and train0 else 1.0
+        usd = None if dev is None else round(gate_attempts(activity, seed.package_ref) * dev * scale * 1.15, 6)
+        left = (account.remaining().get("effective_remaining") or {}).get("usd")
+        out(f"gate       {short(work.ref())} against W0 on {len(plan.task_ids)} dev tasks, up to "
+            f"{gate_attempts(activity, seed.package_ref)} attempts"
+            + (f", about ${usd:.2f} at the costs on record" if usd is not None else ", unpriced")
+            + (f"; ${float(left):.2f} left outside the final's share" if left is not None else ""))
+        if usd is not None and left is not None and usd > float(left) + 1e-9:
+            raise ValueError(f"gate refused: about ${usd:.2f} does not fit the ${float(left):.2f} left outside the "
+                             f"final's share; nothing was run")
+    families = {t: activity.splits.family_of(t) for t in plan.task_ids}
+
+    def run(arm, order, retry=0, supersedes=None):
+        if arm == "control":
+            return run_arm(activity, release=seed, split="dev", candidate=f"control:{short(seed.ref())}:gate",
+                           role="control", pairs=order, account=account, arm="control", retry=retry,
+                           supersedes=supersedes, notes="the release gate's control top-up")
+        # the working line's own release runs its package: the reading is W_work's (the final's estimate reads it)
+        return run_arm(activity, release=work, split="dev", candidate=name, role="subject", pairs=order,
+                       account=account, plan_ref=plan_ref, arm=arm, retry=retry, supersedes=supersedes,
+                       notes=f"the release gate of {short(work.ref())}")
+    receipt = evaluate_task(plan, run=run, objects=activity.objects, families=families,
+                            control_pool=control_pool(activity, seed.package_ref, plan.task_ids))
+    receipt_ref = activity.objects.put(receipt)
+    activity.releases.register_receipt(receipt_ref, phase="gate", working=work.ref())
+    diff = receipt_differences(receipt, activity.objects)
+    metrics = receipt.metrics or {}
+    result = {"status": "done", "working": work.ref(), "receipt": receipt_ref, "verdict": receipt.verdict,
+              "kind": receipt.kind, "gain": metrics.get("gain"), "partial_gain": metrics.get("partial_gain"),
+              "fixed_count": len(diff["fixed"]), "regressed_count": len(diff["regressed"]), "released": None,
+              "reasons": list(receipt.reasons)}
+    if receipt.verdict == "accepted":
+        released = activity.releases.promote(work, receipt_ref, operation_id=f"promote:{short(work.ref())}")
+        result["released"] = released.ref()
+    Ledger(activity.root).row("gated", round_id=None, line=activity.domain, dir="working-line",
+                              verdict=receipt.verdict, gain=result["gain"], fixed_count=result["fixed_count"],
+                              regressed_count=result["regressed_count"], release=result["released"])
+    activity.events.append("release_gate", **{("receipt_kind" if k == "kind" else k): v for k, v in result.items()
+                                             if k != "reasons"})
+    write_json(path, result)
+    out(f"gate       {receipt.verdict} ({receipt.kind}): gain {result['gain']}, partial {result['partial_gain']}, "
+        f"dev fixed {result['fixed_count']}, regressed {result['regressed_count']}"
+        + (f"; released {short(result['released'])}" if result["released"] else "; no release")
+        + (f"; {'; '.join(receipt.reasons)[:300]}" if receipt.reasons and receipt.verdict != "accepted" else ""))
+    return result
+
+
 # ---------------------------------------------------------------------------- the final
 def evaluate(activity, *, out: Callable[[str], None] = print) -> dict:
     """The sealed final ([rsi] final_plan_ref). It prints the expected spend first and refuses when what is left of the
@@ -537,10 +715,13 @@ def report(activity, *, write: bool = True, out: Callable[[str], None] = print) 
 
 
 def export(activity, release_ref: str | None, to: Path, *, out: Callable[[str], None] = print):
+    """The release line's W* as an app (the seed too, as the first released thing: W0 is what runs before any gate
+    passed); a working-line release that no gate promoted is not exported."""
     from ..runtime.app import export as export_app
-    ref = release_ref or activity.releases.active_ref()
-    if ref not in activity.releases.installed() or activity.releases.revoked(ref):
-        raise NotAuthorized(f"{short(ref)} is not an installed, unrevoked release")
+    ref = release_ref or activity.releases.released_ref() or activity.seed_release().ref()
+    released = {e.get("release") for e in activity.events.read("released")} | {activity.seed_release().ref()}
+    if ref not in released or ref not in activity.releases.installed() or activity.releases.revoked(ref):
+        raise NotAuthorized(f"{short(ref)} is not a released, unrevoked release (the release line's W* or W0)")
     release = activity.releases.load(ref)
     validation = {"release": short(ref), "reason": release.reason}
     if release.receipt_ref:
@@ -553,11 +734,14 @@ def export(activity, release_ref: str | None, to: Path, *, out: Callable[[str], 
 
 
 def cycle(activity, *, until: str | None = None, out: Callable[[str], None] = print) -> dict:
-    """baseline -> library -> rounds, stopping after `until` (baseline, library or round-K); each step is on record,
-    so running the cycle again resumes and pays for nothing already done."""
+    """baseline -> library -> rounds (-> gate), stopping after `until` (baseline, library, round-K or gate); each step
+    is on record, so running the cycle again resumes and pays for nothing already done. The rounds stop after
+    schedule.patience rounds in a row without a held-out acceptance, or at schedule.rounds; the release gate runs only
+    under `--until gate` (ACTIVITY §4: the user starts it when the rounds are over)."""
     path = activity.root / "rsi" / "cycle.json"
     state = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"steps": {}}
-    stops = ("baseline", "library") + tuple(f"round-{i}" for i in range(int(activity.k["schedule"]["rounds"])))
+    rounds = int(activity.k["schedule"]["rounds"])
+    stops = ("baseline", "library") + tuple(f"round-{i}" for i in range(rounds)) + ("gate",)
     if until is not None and until not in stops:
         raise ValueError(f"--until {until!r}: one of {list(stops)}")
     if "baseline" not in state["steps"]:
@@ -575,23 +759,28 @@ def cycle(activity, *, until: str | None = None, out: Callable[[str], None] = pr
             return {**state, "status": "stopped", "at": "library"}
     if until == "library":
         return {**state, "status": "stopped", "at": "library"}
-    idle = 0
-    for i in range(int(activity.k["schedule"]["rounds"])):
+    idle, reason = 0, None
+    for i in range(rounds):
         key = f"round-{i}"
         if (state["steps"].get(key) or {}).get("status") not in ("done", "stopped"):
             result = round_(activity, i, out=out)
             state["steps"][key] = {"status": result.status, "installed": result.installed, "stop": result.stop,
-                                   "gated": result.gated, "carried": result.carried}
+                                   "accepted": result.accepted}
             write_json(path, state)
-            if result.status != "done" and result.stop and result.stop.startswith(("budget", "unpriced")):
+            if result.status != "done" and result.stop and result.stop.startswith(("budget", "unpriced", "cli")):
                 return {**state, "status": "stopped", "at": key}
-        # the patience counts gate rounds without an install; a carry round is not idle (IMPROVER §9.2)
-        if state["steps"][key].get("installed"):
-            idle = 0
-        elif state["steps"][key].get("gated") or not state["steps"][key].get("carried"):
-            idle += 1
+        # the patience counts rounds in a row without a held-out acceptance (IMPROVER §3)
+        idle = 0 if state["steps"][key].get("accepted") else idle + 1
         if until == key:
             return {**state, "status": "stopped", "at": key}
         if idle >= int(activity.k["schedule"]["patience"]):
-            return {**state, "status": "stopped", "at": key, "reason": f"{idle} rounds without an install"}
-    return {**state, "status": "done"}
+            reason = f"{idle} rounds without an acceptance"
+            state["rounds_ended"] = {"at": key, "reason": reason}
+            write_json(path, state)
+            break
+    if until != "gate":
+        return {**state, "status": "done" if reason is None else "stopped", **({"reason": reason} if reason else {}),
+                "at": "rounds"}
+    state["steps"]["gate"] = gate(activity, out=out)
+    write_json(path, state)
+    return {**state, "status": "done", "at": "gate"}

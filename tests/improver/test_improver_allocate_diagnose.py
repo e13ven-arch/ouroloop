@@ -1,4 +1,4 @@
-"""Diagnosis and layering (docs/design/IMPROVER.md §5 diagnose.py, §6 allocate.py, §13 "诊断" and "分层"; DESIGN §6.3,
+"""Diagnosis and the focus list (docs/design/IMPROVER.md §5 diagnose.py, §6 allocate.py v1.2, §13; DESIGN §6.3,
 §6.4).
 
 Diagnosis, on the real failed train attempts of the rsi domain's baseline (the forgetful actor misses the #ops message
@@ -24,12 +24,13 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
+import rsi
 from rounds import quiet, round_activity
 from scripted_r import ScriptedR
 
 from ouroloop.contracts import Objects, read_jsonl, write_json
 from ouroloop.improver import diagnose as dg
-from ouroloop.improver.allocate import Assignment, Estimates, allocate, kinds_for, stalled
+from ouroloop.improver.allocate import Estimates, Focus, focus, kinds_for, stalled
 from ouroloop.improver.diagnose import Case, Cause, NoteCache
 from ouroloop.improver.evidence import Evidence
 from ouroloop.improver.ledger import Ledger
@@ -38,6 +39,7 @@ from ouroloop.improver.settings import CAUSES, LOOP_CAUSES, MECHANIZABLE, Settin
 from ouroloop.runtime.chat import ChatTurn
 
 NOTIFY = ("rsi.notify_after_update", "rsi.notify_after_update_variant")
+FAILING = NOTIFY + ("rsi.notify_ticket",)         # what the forgetful actor fails on train (the pair is held out)
 MECH = MECHANIZABLE + ("missed_action",)          # what round_activity's K holds
 LINE = "rsi"
 ROUND = "rsi-test/r1"
@@ -76,11 +78,11 @@ def case_of(evidence, ev, researcher, cache, *, vocabulary=CAUSES, mechanizable=
 
 @pytest.fixture(scope="module")
 def base(tmp_path_factory, fake_upstream):
-    """The rsi activity after its baseline: the two notify tasks failed (missed #ops message), the rest passed."""
+    """The rsi activity after its baseline: the three notify tasks failed (missed #ops message), the rest passed."""
     s = round_activity(tmp_path_factory.mktemp("diagnose"), fake_upstream, "tool")
     evidence = Evidence(s.a)
     failed = evidence.failed(s.a.active_release().package_ref)
-    assert [e.task_id for e in failed] == list(NOTIFY)
+    assert [e.task_id for e in failed] == list(FAILING)
     return SimpleNamespace(s=s, a=s.a, evidence=evidence, failed=failed)
 
 
@@ -99,7 +101,7 @@ def test_a_scripted_research_model_gives_the_cases(base, tmp_path):
         assert case.termination == ev.result.termination
         assert case.tool_errors == tuple(sorted(set(ev.tool_errors)))
         assert ref == case.ref() and Case.from_json(cache.objects.get(ref)).ref() == ref
-    assert r.calls == ["diagnose", "diagnose"]
+    assert r.calls == ["diagnose"] * len(FAILING)
     # mechanizable is the settings' word on the cause, not the model's
     _, case, _ = case_of(base.evidence, base.failed[0], ScriptedR("tool"), cache_in(tmp_path / "plain"),
                          mechanizable=MECHANIZABLE)
@@ -283,7 +285,7 @@ def test_the_baseline_failures_make_one_mechanizable_cause(base, tmp_path):
     settings = Settings.from_core(base.a.k)
     assert "missed_action" in settings.mechanizable
     (only,) = dg.cluster(cases, round_id=ROUND, mechanizable=settings.mechanizable)
-    assert (only.name, only.tasks, only.mechanizable) == ("missed_action", NOTIFY, True)
+    assert (only.name, only.tasks, only.mechanizable) == ("missed_action", FAILING, True)
     assert only.cases == tuple(ref for ref, _ in cases)
 
 
@@ -294,17 +296,19 @@ def test_two_cases_proposing_a_name_add_it_for_the_next_round(base):
     research = base.s.research
     kept, research.r = research.r, proposer
     try:
-        r = Round(base.a, 1, run_arm=None, out=quiet)
-        assert "stale_record" not in r.vocabulary()
-        r.state["steps"]["evidence"] = r.gather()
-        got = r.diagnosed()
+        with pytest.MonkeyPatch.context() as mp:        # every failing task studied: two cases propose the name
+            mp.setattr(Round, "split", lambda self: (tuple(rsi.TRAIN), ()))
+            r = Round(base.a, 1, run_arm=None, out=quiet)
+            assert "stale_record" not in r.vocabulary()
+            r.state["steps"]["evidence"] = r.gather()
+            got = r.diagnosed()
     finally:
         research.r = kept
-    assert len(proposer.asked) == 2
+    assert len(proposer.asked) == len(FAILING)
     rows = [x for x in read_jsonl(base.a.root / "ledger" / "experience.jsonl") if x["stage"] == "vocabulary_added"]
     assert [(x["round_id"], x["names"]) for x in rows] == [(f"{base.a.scope_id}/r1", ["stale_record"])]
     (other,) = [Cause.from_json(base.a.objects.get(ref)) for ref in got["causes"]]
-    assert (other.name, tuple(other.tasks), other.mechanizable) == ("other", NOTIFY, False)
+    assert (other.name, tuple(other.tasks), other.mechanizable) == ("other", FAILING, False)
     assert Round(base.a, 2, run_arm=None, out=quiet).vocabulary()[-1] == "stale_record"
 
 
@@ -355,7 +359,7 @@ def test_a_kind_on_record_with_no_reading_is_not_tried(tmp_path):
     assert Estimates(tmp_path, Settings()).tried(LINE, "real_date") == {"tool"}
 
 
-# ---------------------------------------------------------------------------------------------- allocation
+# ---------------------------------------------------------------------------------------------- the focus list
 def cause(name: str, n: int, *, mech: bool | None = None) -> Cause:
     return Cause(cause_id=f"{ROUND}:{name}", name=name, tasks=tuple(f"{name}.{i}" for i in range(n)),
                  mechanizable=(name in MECHANIZABLE) if mech is None else mech)
@@ -365,17 +369,22 @@ def tried(n: int = 1, fixes: float = 0.0) -> dict:
     return {"fixes": fixes, "cost": 0.0, "n": n}
 
 
-def assign(tmp_path, causes, table=None, *, allowed=ALL, no_code=frozenset(), is_stalled=False,
-           train_available=False, **settings):
-    """allocate() over an estimates table {cause: {kind: row}} for LINE; -> (assignments, notes)."""
+class NoArchive:
+    def for_prompt(self, line, cause, n=10, hide=frozenset()):
+        return []
+
+
+def focused(tmp_path, causes, table=None, *, allowed=ALL, archive=None, is_stalled=False, train_available=False,
+            **settings) -> Focus:
+    """focus() over an estimates table {cause: {kind: row}} for LINE."""
     s = Settings(**settings)
     write_json(tmp_path / "ledger" / "estimates.json", {LINE: table or {}})
-    return allocate(causes, Estimates(tmp_path, s), settings=s, line=LINE, allowed=allowed, no_code=no_code,
-                    stalled=is_stalled, train_available=train_available)
+    return focus(causes, Estimates(tmp_path, s), archive or NoArchive(), settings=s, line=LINE, allowed=allowed,
+                 stalled=is_stalled, train_available=train_available)
 
 
-def pairs(out) -> list[tuple[str, str]]:
-    return [(a.cause, a.kind) for a in out]
+def kinds_of(f: Focus) -> dict:
+    return {r["name"]: [k["kind"] for k in r["kinds"]] for r in f.ranked}
 
 
 def test_the_kinds_a_cause_may_get():
@@ -390,229 +399,135 @@ def test_the_kinds_a_cause_may_get():
                                                                                        "prompt"]
 
 
-def test_the_upper_bound_orders_the_kinds(tmp_path):
-    c = [cause("real_date", 3)]
-    # tool tried and poor (0.225), hook untried (0.3 + 0.3), skill with the best mean (0.39) but the smaller bound
+def test_the_list_ranks_causes_by_size_and_kinds_by_score(tmp_path):
+    causes = [cause("missed_action", 2), cause("wrong_target", 4), cause("real_date", 1), cause("premature_stop", 4),
+              cause("unread_value", 3)]
+    f = focused(tmp_path, causes)
+    assert [r["name"] for r in f.ranked] == ["premature_stop", "wrong_target", "unread_value", "missed_action",
+                                             "real_date"]
+    assert [r["tasks"] for r in f.ranked][:2] == [[f"premature_stop.{i}" for i in range(4)],
+                                                  [f"wrong_target.{i}" for i in range(4)]]
+    # untried: the priors' upper bounds order the kinds, code first; the real_date row is mechanizable
+    assert kinds_of(f)["real_date"] == ["tool", "hook", "skill", "prompt"]
+    assert kinds_of(f)["wrong_target"] == ["skill", "prompt"]
+    row = next(r for r in f.ranked if r["name"] == "real_date")
+    assert row["mechanizable"] is True and row["kinds"][0] == {"kind": "tool", "score": 0.6, "mean": 0.3, "n": 0,
+                                                                "tried": []}
+    assert Focus.from_json(json.loads(json.dumps(f.to_json()))) == f
+
+
+def test_a_reading_moves_a_kind_in_the_list(tmp_path):
+    # tool tried three times without a fix (0.225), hook untried (0.6), skill with the best mean (0.39)
     table = {"real_date": {"tool": tried(3), "skill": tried(1, 0.7)}}
-    out, notes = assign(tmp_path, c, table, explore_slots=0)
-    assert pairs(out) == [("real_date", "hook")] and notes == []
-    (a,) = out
-    assert isinstance(a, Assignment) and a.cause_id == f"{ROUND}:real_date" and (a.slots, a.exploration) == (1, False)
-    assert a.reason == "upper bound 0.6"
-    # a reading that beats the bound moves it (the code guarantee off, to see the order alone)
+    f = focused(tmp_path, [cause("real_date", 3)], table)
+    assert kinds_of(f)["real_date"] == ["hook", "skill", "tool", "prompt"]
+    scores = {k["kind"]: k["score"] for k in f.ranked[0]["kinds"]}
+    assert scores["hook"] == 0.6 and scores["tool"] == 0.225 and scores["skill"] > scores["tool"]
+    # a reading that beats every bound puts a text kind first: the list says so, and the code rule is V0's
     table = {"real_date": {"tool": tried(3), "hook": tried(3), "skill": tried(1, 1.0)}}
-    out, _ = assign(tmp_path, c, table, explore_slots=0, code_guarantee=False)
-    assert pairs(out) == [("real_date", "skill")]
+    f = focused(tmp_path, [cause("real_date", 3)], table)
+    assert kinds_of(f)["real_date"][0] == "skill" and f.require_code
 
 
 def test_ties_go_to_the_earlier_kind_code_first(tmp_path):
     for allowed in (ALL, tuple(reversed(ALL))):
-        out, _ = assign(tmp_path, [cause("real_date", 2)], allowed=allowed, explore_slots=0)
-        assert pairs(out) == [("real_date", "tool")]
-        out, _ = assign(tmp_path, [cause("missed_action", 2)], allowed=allowed, explore_slots=0)
-        assert pairs(out) == [("missed_action", "skill")]
-    table = {"real_date": {"tool": tried(3), "hook": tried(3)},
-             "missed_action": {"skill": tried(1), "prompt": tried(1)}}
-    out, _ = assign(tmp_path, [cause("real_date", 2), cause("missed_action", 1)], table, explore_slots=0)
-    assert pairs(out) == [("real_date", "tool"), ("missed_action", "skill")]
+        assert kinds_of(focused(tmp_path, [cause("real_date", 2)], allowed=allowed))["real_date"][0] == "tool"
+        assert kinds_of(focused(tmp_path, [cause("missed_action", 2)], allowed=allowed))["missed_action"][0] == "skill"
 
 
-def test_clusters_by_size_at_most_k(tmp_path):
-    causes = [cause("missed_action", 2), cause("wrong_target", 4), cause("real_date", 1), cause("premature_stop", 4),
-              cause("unread_value", 3)]
-    out, _ = assign(tmp_path, causes, explore_slots=0, code_guarantee=False)
-    assert [a.cause for a in out] == ["premature_stop", "wrong_target", "unread_value"]
-    out, _ = assign(tmp_path, causes, explore_slots=0, code_guarantee=False, k=1)
-    assert [a.cause for a in out] == ["premature_stop"]
-    out, _ = assign(tmp_path, causes, explore_slots=0, code_guarantee=False, k=9)
-    assert [a.cause for a in out] == ["premature_stop", "wrong_target", "unread_value", "missed_action", "real_date"]
-    # a cause no allowed kind fits takes no slot
-    out, _ = assign(tmp_path, [cause("wrong_target", 5), cause("real_date", 1)], allowed=("tool", "hook"), k=1,
-                    explore_slots=0)
-    assert pairs(out) == [("real_date", "tool")]
+def test_the_list_carries_what_the_archive_tried_on_a_cause_and_kind(tmp_path):
+    class Shelf:
+        def for_prompt(self, line, cause, n=10, hide=frozenset()):
+            assert hide == frozenset() and line == LINE
+            return [{"round": 0, "dir": "package", "kind": "tool+hook", "screen": {"net_flips": 1}}] \
+                if cause == "real_date" else []
+    f = focused(tmp_path, [cause("real_date", 2), cause("wrong_target", 1)], archive=Shelf())
+    rows = {r["name"]: {k["kind"]: k["tried"] for k in r["kinds"]} for r in f.ranked}
+    assert rows["real_date"]["tool"] == rows["real_date"]["hook"] == [{"round": 0, "dir": "package",
+                                                                       "kind": "tool+hook", "screen": {"net_flips": 1}}]
+    assert rows["real_date"]["skill"] == [] and rows["wrong_target"]["skill"] == []
 
 
-def test_the_exploration_slot_takes_an_untried_kind_code_first(tmp_path):
-    c = [cause("real_date", 3)]
-    table = {"real_date": {"tool": tried(1, 1.0)}}            # tool's bound 0.86 beats the untried hook's 0.6
-    out, _ = assign(tmp_path, c, table, explore_slots=0)
-    assert [(a.kind, a.exploration) for a in out] == [("tool", False)]
-    out, _ = assign(tmp_path, c, table)
-    (a,) = out
-    assert (a.kind, a.exploration, a.reason) == ("hook", True, "exploration: hook never tried on real_date")
-    # code first: with both code kinds tried, a text kind (the code guarantee off: it would put tool back)
-    both = {"real_date": {"tool": tried(1, 1.0), "hook": tried(1)}}
-    out, _ = assign(tmp_path, c, both, code_guarantee=False)
-    assert [(a.kind, a.exploration) for a in out] == [("skill", True)]
-    out, _ = assign(tmp_path, c, both)
-    assert [(a.kind, a.exploration) for a in out] == [("tool", False)]
-    # every kind tried: no exploration on this cause, the slot goes to the next one
-    full = {k: tried(1) for k in ("tool", "hook", "skill", "prompt")}
-    out, _ = assign(tmp_path, [cause("real_date", 3), cause("arith_mismatch", 2)], {"real_date": full})
-    assert [(a.cause, a.kind, a.exploration) for a in out] == [("real_date", "tool", False),
-                                                               ("arith_mismatch", "tool", True)]
+def test_a_cause_no_allowed_kind_fits_is_left_out(tmp_path):
+    f = focused(tmp_path, [cause("wrong_target", 5), cause("real_date", 1)], allowed=("tool", "hook"))
+    assert [r["name"] for r in f.ranked] == ["real_date"]
 
 
-def test_an_untried_chosen_kind_stays_as_the_exploration(tmp_path):
-    # nothing tried on a loop cause: agent's bound (0.4) is the highest, and it is itself never tried
-    out, _ = assign(tmp_path, [cause("context_overflow", 2)])
-    assert [(a.kind, a.exploration) for a in out] == [("agent", True)]
+def test_require_code_when_a_mechanizable_cause_is_diagnosed_and_k_allows_code(tmp_path):
+    assert focused(tmp_path, [cause("real_date", 3)]).require_code
+    assert not focused(tmp_path, [cause("wrong_target", 3)]).require_code
+    assert not focused(tmp_path, [cause("real_date", 3)], allowed=("skill", "prompt")).require_code
+    assert not focused(tmp_path, [cause("real_date", 3)], require_code_component=False).require_code
+    f = focused(tmp_path, [cause("real_date", 3)])
+    assert [n for n in f.notes if n.startswith("a mechanizable cause is diagnosed")]
 
 
-def test_only_explore_slots_assignments_explore(tmp_path):
-    causes = [cause("real_date", 3), cause("arith_mismatch", 2), cause("excluded_mentioned", 1)]
-    assert [a.exploration for a in assign(tmp_path, causes)[0]] == [True, False, False]
-    assert [a.exploration for a in assign(tmp_path, causes, explore_slots=2)[0]] == [True, True, False]
-    assert [a.exploration for a in assign(tmp_path, causes, explore_slots=0)[0]] == [False, False, False]
-
-
-def test_the_code_guarantee(tmp_path):
-    poor_code = {"tool": tried(3), "hook": tried(3), "skill": tried(1, 1.0)}
-    out, notes = assign(tmp_path, [cause("real_date", 3)], {"real_date": poor_code}, explore_slots=0)
-    (a,) = out
-    assert (a.kind, a.reason) == ("tool", "code guarantee: real_date is mechanizable")
-    assert notes == ["code guarantee: real_date -> tool"]
-    out, notes = assign(tmp_path, [cause("real_date", 3)], {"real_date": poor_code}, explore_slots=0,
-                        code_guarantee=False)
-    assert pairs(out) == [("real_date", "skill")] and notes == []
-    # the mechanizable cause's own slot is the one replaced
-    causes = [cause("real_date", 5), cause("wrong_target", 2)]
-    out, _ = assign(tmp_path, causes, {"real_date": poor_code}, explore_slots=0)
-    assert pairs(out) == [("real_date", "tool"), ("wrong_target", "skill")]
-    # a mechanizable cause outside the k chosen: the last slot goes to the largest mechanizable cause
-    causes = [cause("wrong_target", 5), cause("unread_value", 4), cause("real_date", 1), cause("arith_mismatch", 2)]
-    out, notes = assign(tmp_path, causes, explore_slots=0, k=2)
-    assert pairs(out) == [("wrong_target", "skill"), ("arith_mismatch", "tool")]
-    assert notes == ["code guarantee: arith_mismatch -> tool"]
-    # one code kind in the round is enough
-    causes = [cause("real_date", 5), cause("excluded_mentioned", 2)]
-    out, notes = assign(tmp_path, causes, {"real_date": poor_code}, explore_slots=0)
-    assert pairs(out) == [("real_date", "skill"), ("excluded_mentioned", "tool")] and notes == []
-    # the code kind K allows; none allowed, no guarantee
-    out, _ = assign(tmp_path, [cause("real_date", 3)], {"real_date": poor_code}, explore_slots=0,
-                    allowed=("hook", "skill", "prompt"))
-    assert pairs(out) == [("real_date", "hook")]
-    out, notes = assign(tmp_path, [cause("real_date", 3)], {"real_date": poor_code}, explore_slots=0,
-                        allowed=("skill", "prompt"))
-    assert pairs(out) == [("real_date", "skill")] and notes == []
-    # no mechanizable cause, no guarantee
-    out, notes = assign(tmp_path, [cause("wrong_target", 3)], explore_slots=0)
-    assert pairs(out) == [("wrong_target", "skill")] and notes == []
-
-
-def test_two_code_slots_after_a_round_without_a_code_candidate(tmp_path):
-    poor_code = {"tool": tried(3), "hook": tried(3), "skill": tried(1, 1.0)}
-    causes = [cause("real_date", 3), cause("excluded_mentioned", 2), cause("arith_mismatch", 1)]
-    out, _ = assign(tmp_path, causes, {"arith_mismatch": poor_code}, explore_slots=0,
-                    no_code={"real_date", "arith_mismatch"})
-    assert [(a.cause, a.kind, a.slots) for a in out] == [("real_date", "tool", 2), ("excluded_mentioned", "tool", 1),
-                                                         ("arith_mismatch", "skill", 1)]
-    assert out[0].reason.endswith("; two code slots after a round without one")
-    assert "two code slots" not in out[1].reason + out[2].reason
-    # the guarantee's code slot doubles too
-    out, _ = assign(tmp_path, [cause("real_date", 3)], {"real_date": poor_code}, explore_slots=0,
-                    no_code={"real_date"})
-    assert [(a.kind, a.slots) for a in out] == [("tool", 2)]
-    out, _ = assign(tmp_path, causes, {"arith_mismatch": poor_code}, explore_slots=0)
-    assert [a.slots for a in out] == [1, 1, 1]
-
-
-def test_l5_kinds_only_for_the_loop_causes(tmp_path):
-    great_agent = {"agent": tried(1, 5.0), "config": tried(1, 5.0), "vendor": tried(1, 5.0)}
-    causes = [cause("missed_action", 3), cause("real_date", 2), cause("context_overflow", 1)]
-    table = {c.name: great_agent for c in causes}
-    out, _ = assign(tmp_path, causes, table, explore_slots=0)
-    assert pairs(out) == [("missed_action", "skill"), ("real_date", "tool"), ("context_overflow", "agent")]
+def test_l5_is_suggested_for_the_loop_causes_only(tmp_path):
+    assert not focused(tmp_path, [cause("missed_action", 3), cause("real_date", 2)]).l5_suggested
+    f = focused(tmp_path, [cause("missed_action", 3), cause("context_overflow", 1)])
+    assert f.l5_suggested and kinds_of(f)["context_overflow"] == ["agent", "vendor", "config", "skill", "prompt"]
+    assert [n for n in f.notes if "at most 1 such change a round" in n]
+    assert not focused(tmp_path, [cause("context_overflow", 1)], allowed=("tool", "skill")).l5_suggested
     assert set(LOOP_CAUSES) == {"context_overflow", "finish_protocol", "tool_error_loop"}
-
-
-def test_at_most_l5_slots_l5_kinds_a_round(tmp_path):
-    causes = [cause("context_overflow", 3), cause("finish_protocol", 2)]
-    out, _ = assign(tmp_path, causes, explore_slots=0)
-    assert pairs(out) == [("context_overflow", "agent"), ("finish_protocol", "skill")]
-    out, _ = assign(tmp_path, causes, explore_slots=0, l5_slots=2)
-    assert pairs(out) == [("context_overflow", "agent"), ("finish_protocol", "agent")]
-    out, _ = assign(tmp_path, causes, explore_slots=0, l5_slots=0)
-    assert pairs(out) == [("context_overflow", "skill"), ("finish_protocol", "skill")]
-    # the exploration slot does not add an L5 kind past the limit either
-    table = {"context_overflow": {"agent": tried(1, 1.0), **{k: tried(1) for k in ("skill", "prompt", "config",
-                                                                                     "vendor")}},
-             "finish_protocol": {"skill": tried(1, 1.0), "prompt": tried(1)}}
-    out, _ = assign(tmp_path, causes, table)
-    assert [(a.cause, a.kind, a.exploration) for a in out] == [("context_overflow", "agent", False),
-                                                               ("finish_protocol", "skill", False)]
-
-
-def test_l5_slots_hold_when_k_allows_only_l5_kinds(tmp_path):
-    out, _ = assign(tmp_path, [cause("context_overflow", 3), cause("finish_protocol", 2)], allowed=L5,
-                    explore_slots=0)
-    assert sum(a.kind in L5 for a in out) <= 1
-
-
-def test_l5_slots_hold_across_exploration_slots(tmp_path):
-    table = {name: {"skill": tried(1, 1.0), "prompt": tried(1)} for name in ("context_overflow", "finish_protocol")}
-    out, _ = assign(tmp_path, [cause("context_overflow", 3), cause("finish_protocol", 2)], table, explore_slots=2)
-    assert sum(a.kind in L5 for a in out) <= 1
 
 
 def test_l6_unavailable_only_when_stalled(tmp_path):
     c = [cause("real_date", 2)]
-    _, notes = assign(tmp_path, c, is_stalled=True)
-    assert [n for n in notes if n.startswith("l6_unavailable")] == \
-        ["l6_unavailable: no install in 3 rounds and the training chain is not bound (stage 5)"]
-    _, notes = assign(tmp_path, c, is_stalled=False)
-    assert not [n for n in notes if n.startswith("l6_unavailable")]
-    _, notes = assign(tmp_path, c, is_stalled=True, train_available=True)
-    assert not [n for n in notes if n.startswith("l6_unavailable")]
+    f = focused(tmp_path, c, is_stalled=True)
+    assert [n for n in f.notes if n.startswith("l6_unavailable")] == \
+        ["l6_unavailable: no acceptance in 3 rounds and the training chain is not bound (stage 5)"]
+    assert not f.l6_suggested
+    assert not [n for n in focused(tmp_path, c, is_stalled=False).notes if n.startswith("l6_unavailable")]
+    f = focused(tmp_path, c, is_stalled=True, train_available=True)
+    assert f.l6_suggested and not [n for n in f.notes if n.startswith("l6_unavailable")]
 
 
-def test_stalled_reads_no_install_in_the_last_n_allocated_rounds(tmp_path):
+def test_stalled_reads_no_acceptance_in_the_last_n_focused_rounds(tmp_path):
     ledger = Ledger(tmp_path)
 
-    def allocated(i):
-        ledger.row("allocated", round_id=f"s/r{i}", line=LINE, assignments=[])
+    def focused_round(i):
+        ledger.row("focused", round_id=f"s/r{i}", line=LINE, causes=[])
     assert not stalled(ledger, 3)
-    allocated(0)
+    focused_round(0)
     assert stalled(ledger, 1) and not stalled(ledger, 3)
-    allocated(1)
+    focused_round(1)
     assert not stalled(ledger, 3)
-    allocated(2)
+    focused_round(2)
     assert stalled(ledger, 3)
-    ledger.row("installed", round_id="s/r1", line=LINE, dir="notify", release="release:x")
+    ledger.row("accepted", round_id="s/r1", line=LINE, dir="package", release="release:x")
     assert not stalled(ledger, 3) and stalled(ledger, 1)
-    allocated(3)
-    assert not stalled(ledger, 3)                     # r1..r3 hold the install
-    ledger.row("gated", round_id="s/r3", line=LINE)
+    focused_round(3)
+    assert not stalled(ledger, 3)                     # r1..r3 hold the acceptance
+    ledger.row("screened", round_id="s/r3", line=LINE, accepted=False)
     ledger.row("rejected", round_id="s/r3", line=LINE)
-    allocated(4)
-    assert stalled(ledger, 3)                         # r2..r4: no install; gated and rejected are not installs
+    focused_round(4)
+    assert stalled(ledger, 3)                         # r2..r4: no acceptance; screened and rejected are not one
     assert not stalled(ledger, 5)
 
 
-def test_the_round_doubles_the_previous_rounds_no_code_cause_and_records_l6(tmp_path, fake_upstream):
-    """Round.allocated: `no_code_candidate` of round i-1 (not older) doubles; `l6_unavailable` goes to the ledger only
-    after stall_rounds allocated rounds without an install."""
+def test_the_round_writes_the_focus_list_and_records_l6(tmp_path, fake_upstream):
+    """Round.focused: the list on record as an object and a ledger row; `l6_unavailable` goes to the ledger only
+    after stall_rounds focused rounds without an acceptance."""
     a = round_activity(tmp_path, fake_upstream, "tool", baseline=False, freeze=False).a
     ledger = Ledger(a.root)
     rid = lambda i: f"{a.scope_id}/r{i}"  # noqa: E731
     for i in range(3):
-        ledger.row("allocated", round_id=rid(i), line=a.domain, assignments=[])
-    ledger.row("no_code_candidate", round_id=rid(2), line=a.domain, cause="real_date")
-    ledger.row("no_code_candidate", round_id=rid(1), line=a.domain, cause="arith_mismatch")
+        ledger.row("focused", round_id=rid(i), line=a.domain, causes=[])
     causes = [a.objects.put(c) for c in (cause("real_date", 3), cause("arith_mismatch", 2))]
 
-    def allocated(i):
+    def run(i) -> Focus:
         r = Round(a, i, run_arm=None, out=quiet)
         r.state["steps"]["diagnosed"] = {"causes": causes}
-        got = r.allocated()
-        return [Assignment.from_json(a.objects.get(ref)) for ref in got["assignments"]], got["notes"]
-    out, notes = allocated(3)
-    assert [(x.cause, x.kind, x.slots) for x in out] == [("real_date", "tool", 2), ("arith_mismatch", "tool", 1)]
+        r.state["steps"]["focused"] = r.focused()
+        return r.focus()
+    f = run(3)
+    assert [x["name"] for x in f.ranked] == ["real_date", "arith_mismatch"] and f.require_code
     assert [(x["round_id"], x["reason"].split(":")[0]) for x in ledger.rows(stage="l6_unavailable")] == \
         [(rid(3), "l6_unavailable")]
-    assert ledger.rows(stage="allocated")[-1]["round_id"] == rid(3)
-    ledger.row("installed", round_id=rid(3), line=a.domain, dir="notify", release="release:x")
-    out, notes = allocated(4)
-    assert [x.slots for x in out] == [1, 1]
-    assert not [n for n in notes if n.startswith("l6_unavailable")]
+    row = ledger.rows(stage="focused")[-1]
+    assert row["round_id"] == rid(3) and row["require_code"] is True
+    assert row["causes"] == [{"cause": "real_date", "tasks": 3, "kinds": ["tool", "hook", "skill", "prompt"]},
+                             {"cause": "arith_mismatch", "tasks": 2, "kinds": ["tool", "hook", "skill", "prompt"]}]
+    ledger.row("accepted", round_id=rid(3), line=a.domain, dir="package", release="release:x")
+    run(4)
     assert [x["round_id"] for x in ledger.rows(stage="l6_unavailable")] == [rid(3)]

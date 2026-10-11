@@ -25,12 +25,12 @@
 ```python
 # config.py
 @dataclass(frozen=True)
-class Core(Record):                      # kind "core"：preset、sections（CONTRACTS §4 的节）、split_hash、code_version；json() 是 core.json
+class Core(Record):                      # kind "core"：preset、sections（CONTRACTS §4 的节）、split_hash、attempt_version、improver_version（v1.2，DESIGN §8）；json() 是 core.json；attempt_identity(package_ref) 是 AttemptIdentity
 def load_config(path) -> dict            # 带 _base（配置所在目录），env_file 像 .env 一样加载
 def check_tables(config) -> None         # 旧表名报错并指出新名；未知表、[rsi] 未知键、占位符 ref 报错
 def merge(config: dict, preset: dict) -> dict          # 按 RULES 只能收紧；违反即 ConfigError 并指出字段
 def resolve(config) -> dict              # preset 补全 + 合并 + 派生字段（model.provider/identity/max_effort、harness.api_version）
-def freeze_core(config: dict, *, split_hash: str, code_version: str) -> Core
+def freeze_core(config: dict, *, split_hash: str, attempt_version: str, improver_version: str) -> Core
 def core_problems(core: Core) -> list[str]
 def workspace_root(config) -> Path;  upstream_path(config) -> str | None
 
@@ -72,7 +72,7 @@ def cycle(activity, *, until: str | None, out) -> dict                  # baseli
 def startup_checks(activity, *, phase: str, needs_model: bool = True, needs_worker: bool | None = None) -> list[str]
     # 钱：预算根与份额存在、价目有界、provider 是订阅登录、effort 钉在 K；
     # 泄漏：划分哈希相符、test 未读（final 之前）、R 与 memory 只读 train 的配置；
-    # 正确性：worker 镜像 id 与 runner sha256、egress 镜像、memory sidecar 的 venv 等于锁文件、模型各文件的 sha256、K 的 backend 钉表等于本检出的锁文件与 flows（library 阶段、开了 memory 的 round，及跑开了 memory 的包的阶段）、种子 ref 与 K 一致、code_version 相符（含 R 的提示词 `improver/prompts/*.md`）、评分契约、round 前 gate 计划模板已冻结、claude CLI 的版本读得出且与活动第一次付费阶段记下的相同（`cli_version` 事件）
+    # 正确性：worker 镜像 id 与 runner sha256、egress 镜像、memory sidecar 的 venv 等于锁文件、模型各文件的 sha256、K 的 backend 钉表等于本检出的锁文件与 flows（library 阶段、开了 memory 的 round，及跑开了 memory 的包的阶段）、种子 ref 与 K 一致、attempt_version 与 improver_version 各自相符（后者含 R 的提示词 `improver/prompts/*.md`）、评分契约、round 前 gate 计划模板已冻结、claude CLI 的版本读得出且与活动第一次付费阶段记下的相同（`cli_version` 事件）
 
 # report.py
 def build_report(activity) -> dict      # 基线、每轮（簇、指派、候选与各档、筛选、gate 判定与增益、装入、停因、本轮花费）、memory 读数、final（各臂与 W* − W0 的家族重抽样 95% 区间）、花费（按步单列）、本活动 final 读 test 的次数
@@ -119,7 +119,7 @@ def write_report(activity, report) -> dict   # 两次相同（确定性）
 
 ## 7 不变量
 
-- K 冻结后，活动期间任何 `.py` 改动都不合入该检出（规则 13，由 `code_version` 守住：启动检查比对）。
+- K 冻结后，活动期间任何 `.py` 改动都不合入该检出（规则 13，由 `attempt_version` 与 `improver_version` 守住：启动检查分别比对）。
 - `freeze` 之后 `[rsi]` 的 ref 不变；改了即启动错误。
 - test 只在 `evaluate` 读；report 披露读取次数；smoke 的近重复提示只看 train 与 dev。
 - 启动检查只查三类；不加别的。

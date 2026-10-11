@@ -2,10 +2,11 @@
 
 - diagnosis (prompts/diagnose.md): reads the case's features and names a cause — the notify tasks' failure (a failed
   slack_message_contains check) is `missed_action`, anything else `other`; a memory entry about #ops is `missed_action`;
-- the coding session (prompts/propose.md): writes the candidate `mode` asks for and finishes with its declaration —
-  "tool": a package tool that posts the phrase in #ops (tools/post_channel_message.py) with a toolcheck script per
-  claimed task; "hook": an on_finish hook that pushes back while a requested #ops post is missing; "none": finishes
-  with nothing;
+- the coding session (prompts/propose.md): writes the candidate package `mode` asks for into candidates/package and
+  finishes with its declaration — "tool": a package tool that posts the phrase in #ops (tools/post_channel_message.py)
+  with a toolcheck script per claimed task; "hook": an on_finish hook that pushes back while a requested #ops post is
+  missing; "both": the tool and the hook in one package (two components, one mechanism); "none": finishes with
+  nothing;
 - the playbook (prompts/playbook.md): one lesson citing the first ledger row it is shown, and one that cites nothing.
 
 It never looks at a task's split or answer: what it knows is what the host put in its inputs and trajectories.
@@ -44,7 +45,11 @@ HOOK_CODE = '''def remind(ctx, event):
     return None
 '''
 HOOK_ENTRY = {"name": "remind_ops", "site": "on_finish", "entrypoint": "middlewares/remind_ops.py:remind"}
-CONTACTS = {"rsi.notify_after_update": "c2", "rsi.notify_after_update_variant": "c3", "rsi.update_stage": "c1"}
+CONTACTS = {"rsi.notify_after_update": "c2", "rsi.notify_after_update_variant": "c3", "rsi.update_stage": "c1",
+            "rsi.notify_ticket": "c4"}
+MECHANISM = {"tool": "a package tool posts the requested #ops message so the agent does not have to compose the call",
+             "hook": "an on_finish hook pushes back while a requested #ops post is missing",
+             "both": "a tool posts the requested #ops message and an on_finish hook pushes back while it is missing"}
 
 
 def script_for(task_id: str, phrase: str = "stage updated") -> str:
@@ -106,9 +111,9 @@ class ScriptedR:
     def _session(self, messages: list[dict]) -> ChatTurn:
         turns = sum(1 for m in messages if m.get("role") == "assistant")
         first = json.loads(messages[0]["content"])
-        assignment = (first.get("assignments") or [{}])[0]
-        if self.mode == "none" or not assignment:
-            return self._calls(("finish", {"candidates": []}))
+        ranked = (first.get("focus") or {}).get("ranked") or []
+        if self.mode == "none" or not ranked:
+            return self._calls(("finish", {"packages": []}))
         if turns == 0:
             return self._calls(("read_file", {"path": "package/manifest.json"}),
                                ("read_file", {"path": "inputs/causes.json"}))
@@ -117,26 +122,29 @@ class ScriptedR:
                                    and r["output"].lstrip().startswith("{\n \"api_version\"")))
         causes = json.loads(next(r["output"] for r in reads if r["name"] == "read_file"
                                  and r["output"].lstrip().startswith("[")))
+        cause_ids = [c["cause_id"] for c in causes]
         tasks = sorted({t for c in causes for t in c["tasks"]})
-        if self.mode == "tool":
-            code = TOOL_CODE
+        files, components = {}, []
+        if self.mode in ("tool", "both"):
             manifest["tools"] = [*manifest.get("tools", []), TOOL_ENTRY]
-            files = {"candidates/notify/tools/post_channel_message.py": code}
-            decl = {"dir": "notify", "cause_id": assignment["cause_id"], "kind": "tool", "site": TOOL_ENTRY["name"],
-                    "predicted_affected": tasks, "trigger": "a request asks for a message in #ops",
-                    "scripts": self.scripts if self.scripts is not None else {t: script_for(t) for t in tasks}}
-        else:
+            files["candidates/package/tools/post_channel_message.py"] = TOOL_CODE
+            components.append({"kind": "tool", "site": TOOL_ENTRY["name"], "cause_ids": cause_ids,
+                               "predicted_affected": tasks, "trigger": "a request asks for a message in #ops",
+                               "scripts": self.scripts if self.scripts is not None
+                               else {t: script_for(t) for t in tasks}})
+        if self.mode in ("hook", "both"):
             manifest["hooks"] = [*manifest.get("hooks", []), HOOK_ENTRY]
-            files = {"candidates/notify/middlewares/remind_ops.py": HOOK_CODE}
-            decl = {"dir": "notify", "cause_id": assignment["cause_id"], "kind": "hook", "site": "on_finish",
-                    "predicted_affected": tasks, "trigger": "the run finishes while #ops was asked for"}
+            files["candidates/package/middlewares/remind_ops.py"] = HOOK_CODE
+            components.append({"kind": "hook", "site": "on_finish", "cause_ids": cause_ids,
+                               "predicted_affected": tasks, "trigger": "the run finishes while #ops was asked for"})
+        decl = {"mechanism": MECHANISM[self.mode], "components": components}
         if turns == 1:
             return self._calls(*[("write_file", {"path": p, "text": t}) for p, t in files.items()],
-                               ("write_file", {"path": "candidates/notify/manifest.json",
+                               ("write_file", {"path": "candidates/package/manifest.json",
                                                "text": json.dumps(manifest, indent=1) + "\n"}))
         if turns == 2:
-            return self._calls(("run_check", {"dir": "notify", "declaration": decl}))
-        return self._calls(("finish", {"candidates": [decl]}))
+            return self._calls(("run_check", {"declaration": decl}))
+        return self._calls(("finish", {"packages": [decl]}))
 
     def _calls(self, *calls) -> ChatTurn:
         n = len(self.calls)

@@ -133,8 +133,11 @@ def test_the_library_phase_needs_the_sidecar_k_pinned(tmp_path, fake_upstream, m
 # ---------------------------------------------------------------------------- correctness
 def test_a_code_change_under_the_activity_is_refused(tmp_path, fake_upstream, monkeypatch):
     a = activity(tmp_path, fake_upstream)
-    monkeypatch.setattr(checks, "code_version", lambda: "0000000000000000")
-    only(problems(a), f"K froze code {a.core.code_version} and this checkout is 0000000000000000")
+    monkeypatch.setattr(checks, "improver_version", lambda: "0000000000000000")
+    only(problems(a), f"K froze the improver code at {a.core.improver_version} and this checkout is 0000000000000000")
+    monkeypatch.setattr(checks, "attempt_version", lambda: "1111111111111111")
+    assert any(p.startswith(f"K froze the attempt code at {a.core.attempt_version} and this checkout is "
+                            f"1111111111111111") for p in problems(a))
 
 
 def test_a_seed_source_changed_under_the_activity_is_refused(tmp_path, fake_upstream, monkeypatch):

@@ -3,8 +3,8 @@
 The package's shape and K's limits (harness.package.check_shape: the manifest, the sizes, the vendored packages'
 protected files, the host-only memory left as the parent has it); the kinds and hook sites K allows; the literal check
 on the lines changed against the seed (a value of one train task is that task's answer); the code a candidate adds
-does not reach for a shell, the network, raw memory or pickles; the declaration says what the files change; the tasks
-it claims are train tasks.
+does not reach for a shell, the network, raw memory or pickles; the declaration says what the files change and the
+files change what it says (both ways); the tasks it claims are train tasks R was given; the causes are the round's.
 """
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from ...harness.kinds import MEMORY_PATH
 from ...harness.literals import describe, findings
 from ...harness.package import Limits, check_shape, diff
 from ..components import components
+from ..settings import L5_KINDS
 
 FORBIDDEN_IMPORTS = ("socket", "subprocess", "ctypes", "pickle", "multiprocessing", "shutil", "urllib", "http",
                      "requests", "httpx")
@@ -21,8 +22,6 @@ FORBIDDEN_CALLS = ("os.system", "os.popen", "os.fork", "eval", "exec", "compile"
 FORBIDDEN_PREFIXES = ("os.exec", "os.spawn")         # os.execv, os.spawnl, ...
 # a candidate's code reaches the world through ctx.tool only; the egress tool of the seed (agent/http_fetch.py) is the
 # package's own and stays as it is
-EXTRA_KINDS = ("test",)               # what any candidate may change besides its declared kind
-SUPPORT_KINDS = ("tool", "hook", "skill", "prompt")   # a mechanism's carriers may travel together (IMPROVER §7.1)
 
 
 def _reaches(text: str, path: str) -> list[tuple[int, str]]:
@@ -70,52 +69,80 @@ def _dotted(node) -> str:
     return ""
 
 
-def declaration_problems(decl, comps: list[dict], *, train_tasks, study_tasks=(), cause_ids=()) -> list[str]:
+def _covered(comp: dict, declared) -> bool:
+    """Whether a changed component of the diff is one a declared component speaks for."""
+    kind, name, change = comp["kind"], comp.get("name"), comp.get("change")
+    if change == "deleted" and kind in ("tool", "hook", "skill"):
+        return any(d.kind == "removal" and d.site == name for d in declared)
+    if kind == "hook":
+        return any(d.kind == "hook" and d.site == comp.get("site") for d in declared)
+    if kind in ("tool", "skill", "prompt", "config", "vendor"):
+        return any(d.kind == kind and d.site == name for d in declared)
+    if kind in ("agent", "memory"):
+        return any(d.kind == kind for d in declared)
+    return False
+
+
+def _matches(d, comps: list[dict]) -> bool:
+    """Whether a declared component is one the diff shows."""
+    if d.kind == "removal":
+        return any(c["change"] == "deleted" and c["kind"] in ("tool", "hook", "skill") and c["name"] == d.site
+                   for c in comps)
+    if d.kind == "hook":
+        return any(c["kind"] == "hook" and c["change"] != "deleted" and c.get("site") == d.site for c in comps)
+    if d.kind in ("tool", "skill"):
+        return any(c["kind"] == d.kind and c["change"] != "deleted" and c["name"] == d.site for c in comps)
+    if d.kind in ("prompt", "config", "vendor"):             # a dropped prompt file is that prompt's change
+        return any(c["kind"] == d.kind and c["name"] == d.site for c in comps)
+    return any(c["kind"] == d.kind for c in comps)
+
+
+def declaration_problems(decl, comps: list[dict], *, train_tasks, study_tasks=(), cause_ids=(), l5_per_round=1) \
+        -> list[str]:
+    """The declaration against the diff, both ways (IMPROVER §7, §8): every declared component is a change the files
+    make, every change the files make (tests aside) is declared; the loop's own kinds within l5_per_round; the model
+    is never a candidate's; the claimed tasks are studied train tasks and the causes the round's."""
     if not comps:
         return ["the candidate changes nothing"]
-    kinds = {c["kind"] for c in comps}
     out = []
-    if decl.kind == "removal":
-        gone = [c for c in comps if c["change"] == "deleted" and c["kind"] in ("tool", "hook", "skill")]
-        if not gone:
-            out.append("a removal deletes a tool, a hook or a skill")
-    elif decl.kind not in kinds:
-        out.append(f"declared kind {decl.kind} but the files change {sorted(kinds)}")
-    else:
-        mine = [c for c in comps if c["kind"] == decl.kind]
-        if decl.kind == "tool" and not any(c["name"] == decl.site and c["change"] != "deleted" for c in mine):
-            out.append(f"a tool candidate's site names the tool it adds or changes; {decl.site!r} is not one of "
-                       f"{sorted(c['name'] for c in mine)}")
-        if decl.kind == "hook" and not any(c.get("site") == decl.site for c in mine):
-            out.append(f"a hook candidate's site is the site of the hook it adds or changes; {decl.site!r} is not one "
-                       f"of {sorted({str(c.get('site')) for c in mine})}")
-        if decl.kind == "skill" and not any(c["name"] == decl.site and c["change"] != "deleted" for c in mine):
-            out.append(f"a skill candidate's site names the skill it adds or changes; {decl.site!r} is not one of "
-                       f"{sorted(c['name'] for c in mine)}")
-        if decl.kind == "prompt" and decl.site and not any(c["name"] == decl.site for c in mine):
-            out.append(f"a prompt candidate's site is system or finish, the file it changes")
-    extra = set(kinds) - {decl.kind} - set(EXTRA_KINDS) - ({"tool", "hook", "skill"} if decl.kind == "removal"
-                                                            else set())
-    if decl.kind in SUPPORT_KINDS:
-        extra -= set(SUPPORT_KINDS)       # one mechanism's supporting components travel with it (IMPROVER §7.1)
-    if extra and not decl.fixed:
-        out.append(f"the files also change {sorted(extra)}: the agent, config, a vendored package, the memory or the "
-                   f"model is a candidate of its own (declare another candidate)")
+    declared = list(decl.components)
+    for d in declared:
+        if not _matches(d, comps):
+            what = {"tool": f"a tool named {d.site!r}", "hook": f"a hook at {d.site!r}", "skill": f"a skill named "
+                    f"{d.site!r}", "prompt": f"the {d.site!r} prompt", "config": f"the config knob {d.site!r}",
+                    "vendor": f"the vendored package {d.site!r}", "removal": f"a deleted tool, hook or skill named "
+                    f"{d.site!r}", "agent": "the agent", "memory": "the memory snapshot"}.get(d.kind, d.kind)
+            out.append(f"the declaration names {what} and the files do not change it (they change "
+                       f"{sorted({c['kind'] + ':' + str(c.get('site') if c['kind'] == 'hook' else c['name']) for c in comps})})")
+    for c in comps:
+        if c["kind"] == "test":
+            continue
+        if c["kind"] == "model":
+            out.append("the model binding is the training chain's, not a candidate's")
+            continue
+        if not _covered(c, declared):
+            name = c.get("site") if c["kind"] == "hook" else c["name"]
+            out.append(f"the files change the {c['kind']} {name!r} ({c['change']}) and the declaration does not name "
+                       f"it: declare every component the package changes")
+    l5 = [d for d in declared if d.kind in L5_KINDS]
+    if len(l5) > int(l5_per_round):
+        out.append(f"{len(l5)} changes of the loop's own kinds ({[d.key for d in l5]}): at most {l5_per_round} of "
+                   f"agent, config or vendor a round")
     if not decl.fixed:
         studied = set(study_tasks or train_tasks)
         outside = sorted(set(decl.predicted_affected) - studied)
         if outside:             # one message for a held-out task and any other id: it does not say which is which
             out.append(f"predicted_affected names {outside[:5]}, which are not among the train tasks you were given")
-        if not decl.predicted_affected:
-            out.append("predicted_affected names no train task")
-        if cause_ids and decl.cause_id not in set(cause_ids):
-            out.append(f"cause_id {decl.cause_id!r} is not a cause you were assigned: one of {sorted(cause_ids)}")
+        if cause_ids:
+            unknown = sorted(set(decl.cause_ids) - set(cause_ids))
+            if unknown:
+                out.append(f"cause_ids {unknown[:5]} are not this round's causes: one of {sorted(cause_ids)}")
     return out
 
 
 def static_check(files: dict[str, str], decl, ctx) -> dict:
     limits = Limits.from_core(ctx.core)
-    memory_candidate = decl.kind == "memory"
+    memory_candidate = "memory" in decl.kinds
     shape = check_shape(files, limits=limits, seed=ctx.seed, parent=None if memory_candidate else ctx.parent)
     if shape:
         return {"passed": False, "detail": "; ".join(shape)[:2000]}
@@ -137,5 +164,6 @@ def static_check(files: dict[str, str], decl, ctx) -> dict:
         if status != "deleted" and path.endswith(".py"):
             problems += code_problems(path, files[path], ctx.parent.files.get(path))
     problems += declaration_problems(decl, components(ctx.parent, files), train_tasks=ctx.train_tasks,
-                                     study_tasks=ctx.study_tasks, cause_ids=ctx.cause_ids)
+                                     study_tasks=ctx.study_tasks, cause_ids=ctx.cause_ids,
+                                     l5_per_round=int(getattr(ctx.settings, "l5_per_round", 1)))
     return {"passed": not problems, "detail": "; ".join(problems)[:3000]}

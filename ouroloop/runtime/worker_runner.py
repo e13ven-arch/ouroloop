@@ -190,7 +190,8 @@ CONTRACT = json.loads("""
   "package",
   "last_usage",
   "events",
-  "max_output_chars"
+  "max_output_chars",
+  "hook_aux_calls"
  ],
  "work_actions": [
   "init",

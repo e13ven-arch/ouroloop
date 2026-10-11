@@ -1,14 +1,15 @@
-"""R's coding session (docs/design/IMPROVER.md §7; DESIGN §6.5): one bounded session per round.
+"""R's coding session (docs/design/IMPROVER.md §7; DESIGN §6.5, v1.2): one bounded session per round, one package.
 
 The model loop runs here, on the host, through the metered research provider (each turn reserved and settled); the
-files live in the isolated worker (`/work`: `package/` read-only, `inputs/` read-only, `candidates/<dir>/` writable,
-a dir created by its first write as a copy of the package). What R can do is the tool list and nothing else: read and
-write the tree, read train trajectories (byte-capped) and search them, run a candidate's package tests or its whole
-free ladder (V0-V2) before it finishes, and finish with one declaration per candidate. There is no shell, no network,
-no host file, no dev or test content, and no tool that raises a cap.
+files live in the isolated worker (`/work`: `package/` read-only, `inputs/` read-only, `candidates/package/` writable,
+created by its first write as a copy of the current package; `candidates/package-2/` and on when K allows more than
+one package a round). What R can do is the tool list and nothing else: read and write the tree, read train
+trajectories (byte-capped) and search them, run the package's tests or its whole free ladder (V0-V2) before it
+finishes, and finish with one declaration per package: the mechanism in a sentence and every component it changes.
+There is no shell, no network, no host file, no dev or test content, and no tool that raises a cap.
 
 The session ends at `finish` with readable declarations, or at a cap (turns, edits): then the declarations already
-accepted stand and nothing else does. A candidate that fails the ladder after the session comes back once (`revise`):
+accepted stand and nothing else does. A package that fails the ladder after the session comes back once (`revise`):
 the verdict is appended and the session continues under the same caps; a revision changes files, not declarations.
 """
 from __future__ import annotations
@@ -17,10 +18,10 @@ import json
 from dataclasses import dataclass, field
 
 from ..runtime.chat import ToolCall, ToolSpec
-from .declaration import Declaration, read_declaration
+from .declaration import DEFAULT_DIR, Declaration, read_declaration
 
 NUDGE = ("Reply with tool calls: list_files, read_file, write_file, edit_file, delete_file, read_trajectory, "
-         "search_trace, run_tests, run_check, or finish with your declarations. Text alone does nothing.")
+         "search_trace, run_tests, run_check, or finish with your package's declaration. Text alone does nothing.")
 CUT = ("Your last reply was cut at the output limit and none of its calls ran. Write one file per reply, change "
        "existing files with edit_file, and keep a run_check or finish with many scripts small.")
 REFUSED = "Your last reply was refused and none of its calls ran. Reply with tool calls for the assigned work."
@@ -30,32 +31,36 @@ CHARS_PER_TOKEN = 3                     # the estimate of a call's tokens from i
 READ_TOOLS = ("read_file", "read_trajectory")
 EDIT_TOOLS = ("write_file", "edit_file", "delete_file")
 ITEM_CHARS = 8000                      # of one message in the stored transcript
-DECLARATION_SCHEMA = {"type": "object", "properties": {
-    "dir": {"type": "string"}, "cause_id": {"type": "string"},
+COMPONENT_SCHEMA = {"type": "object", "properties": {
     "kind": {"type": "string"}, "site": {"type": "string"},
+    "cause_ids": {"type": "array", "items": {"type": "string"}},
     "predicted_affected": {"type": "array", "items": {"type": "string"}},
-    "trigger": {"type": "string"},
-    "differs_from": {"type": "array", "items": {"type": "object"}},
-    "scripts": {"type": "object"}, "probes": {"type": "object"}},
-    "required": ["dir", "cause_id", "kind", "predicted_affected", "trigger"]}
+    "trigger": {"type": "string"}, "scripts": {"type": "object"}, "probes": {"type": "object"},
+    "uses_model": {"type": "boolean"}},
+    "required": ["kind", "cause_ids", "trigger"]}
+DECLARATION_SCHEMA = {"type": "object", "properties": {
+    "dir": {"type": "string"}, "mechanism": {"type": "string"},
+    "components": {"type": "array", "items": COMPONENT_SCHEMA},
+    "differs_from": {"type": "array", "items": {"type": "object"}}},
+    "required": ["mechanism", "components"]}
 
 TOOLS = (
     ToolSpec("list_files", "List the files under a directory of the work tree (default: all of it): package/ is the "
-             "current package, inputs/ this round's inputs, candidates/<dir>/ your candidates.",
+             "current package, inputs/ this round's inputs, candidates/package/ your candidate package.",
              {"type": "object", "properties": {"path": {"type": "string"}}}),
     ToolSpec("read_file", "Read a file of the work tree in pages: `offset` and `limit` in characters; when more "
              "follows, the answer says the offset to read next.",
              {"type": "object", "properties": {"path": {"type": "string"}, "offset": {"type": "integer"},
                                                "limit": {"type": "integer"}}, "required": ["path"]}),
-    ToolSpec("write_file", "Write a whole file under candidates/<dir>/; the first write under a new <dir> creates that "
-             "candidate as a copy of the current package. Counts as one edit.",
+    ToolSpec("write_file", "Write a whole file under candidates/package/; the first write there creates the candidate "
+             "package as a copy of the current one. Counts as one edit.",
              {"type": "object", "properties": {"path": {"type": "string"}, "text": {"type": "string"}},
               "required": ["path", "text"]}),
-    ToolSpec("edit_file", "Replace one exact occurrence of `old` with `new` in a file under candidates/<dir>/. Counts "
-             "as one edit.", {"type": "object", "properties": {"path": {"type": "string"}, "old": {"type": "string"},
+    ToolSpec("edit_file", "Replace one exact occurrence of `old` with `new` in a file under candidates/package/. "
+             "Counts as one edit.", {"type": "object", "properties": {"path": {"type": "string"}, "old": {"type": "string"},
                                                                "new": {"type": "string"}},
                               "required": ["path", "old", "new"]}),
-    ToolSpec("delete_file", "Delete a file under candidates/<dir>/. Counts as one edit.",
+    ToolSpec("delete_file", "Delete a file under candidates/package/. Counts as one edit.",
              {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}),
     ToolSpec("read_trajectory", "Read a train attempt as the agent saw it (its messages, tool calls and results, each "
              "with a trace reference), in pages of bytes. `session` is one listed in inputs/causes.json or "
@@ -66,16 +71,20 @@ TOOLS = (
              "must match. Answers trace references with an excerpt.",
              {"type": "object", "properties": {"query": {"type": "string"}, "kind": {"type": "string"},
                                                "tool": {"type": "string"}}, "required": ["query"]}),
-    ToolSpec("run_tests", "Run the package tests of candidates/<dir> in the isolated worker.",
-             {"type": "object", "properties": {"dir": {"type": "string"}}, "required": ["dir"]}),
-    ToolSpec("run_check", "Run the free part of the verification ladder (V0 static, V1 unit, V2 toolcheck / replay / "
-             "reach, by kind) on candidates/<dir> under a declaration, before you finish. Nothing is paid.",
-             {"type": "object", "properties": {"dir": {"type": "string"}, "declaration": DECLARATION_SCHEMA},
-              "required": ["dir", "declaration"]}),
-    ToolSpec("finish", "End the session with one declaration per candidate directory you want verified. A declaration "
-             "the host cannot read is answered as this call's error; fix it and finish again.",
-             {"type": "object", "properties": {"candidates": {"type": "array", "items": DECLARATION_SCHEMA}},
-              "required": ["candidates"]}),
+    ToolSpec("run_tests", "Run the package tests of your candidate package (candidates/package, or `dir`) in the "
+             "isolated worker.", {"type": "object", "properties": {"dir": {"type": "string"}}}),
+    ToolSpec("run_check", "Run the free part of the verification ladder on your candidate package under the "
+             "declaration you would finish with: V0 (shape, limits, literals, the declaration against the diff both "
+             "ways), V1 (tests, probe, smoke), then each component's rung — V2a toolcheck for a tool, V2b replay for a "
+             "hook, V2c reach for a skill. Nothing is paid.",
+             {"type": "object", "properties": {"declaration": DECLARATION_SCHEMA, "dir": {"type": "string"}},
+              "required": ["declaration"]}),
+    ToolSpec("finish", "End the session with the declaration of each candidate package you want verified (one, unless "
+             "the round allows more): {mechanism, components: [{kind, site, cause_ids, predicted_affected, trigger, "
+             "scripts?, probes?, uses_model?}], differs_from}. A declaration the host cannot read is answered as this "
+             "call's error; fix it and finish again. An empty list ends the session with no candidate.",
+             {"type": "object", "properties": {"packages": {"type": "array", "items": DECLARATION_SCHEMA}},
+              "required": ["packages"]}),
 )
 
 
@@ -110,13 +119,13 @@ class SessionResult:
 class CodingSession:
     """One round's session. `researcher.chat(system, messages, tools) -> ChatTurn` is the metered research model;
     `check(dir, raw declaration) -> str` runs V0-V2 and answers the verdict's text; `tests(dir) -> str` the package
-    tests; `readable` the train sessions read_trajectory may open; `kinds` the kinds this round assigned."""
+    tests; `readable` the train sessions read_trajectory may open; `kinds` the component kinds K allows."""
 
-    def __init__(self, *, researcher, work: WorkTree, trace, check, tests, settings, k: int, system: str,
-                 inputs: dict, readable, kinds):
+    def __init__(self, *, researcher, work: WorkTree, trace, check, tests, settings, system: str, inputs: dict,
+                 readable, kinds):
         self.researcher, self.work, self.trace = researcher, work, trace
         self.check, self.tests, self.s = check, tests, settings
-        self.k, self.system, self.inputs = max(int(k), 1), system, inputs
+        self.n, self.system, self.inputs = max(int(settings.packages_per_round), 1), system, inputs
         self.readable, self.kinds = set(readable), tuple(kinds)
         self.turns = self.edits = self.read_bytes = 0
         self.messages: list[dict] = []
@@ -236,13 +245,16 @@ class CodingSession:
                 return f"search_trace: {e}", True, False
             return json.dumps([h for h in hits if h["session"] in self.readable], ensure_ascii=False), False, False
         if name == "run_tests":
-            if args.get("dir") not in self.dirs:
-                return f"no candidate directory {args.get('dir')!r} ({self.dirs or 'none yet'})", True, False
-            return self.tests(str(args["dir"])), False, False
+            d = args.get("dir") or DEFAULT_DIR
+            if d not in self.dirs:
+                return f"no candidate directory {d!r} ({self.dirs or 'none yet'})", True, False
+            return self.tests(str(d)), False, False
         if name == "run_check":
-            if args.get("dir") not in self.dirs:
-                return f"no candidate directory {args.get('dir')!r} ({self.dirs or 'none yet'})", True, False
-            return self.check(str(args["dir"]), dict(args.get("declaration") or {})), False, False
+            raw = dict(args.get("declaration") or {})
+            d = args.get("dir") or raw.get("dir") or DEFAULT_DIR
+            if d not in self.dirs:
+                return f"no candidate directory {d!r} ({self.dirs or 'none yet'})", True, False
+            return self.check(str(d), raw), False, False
         if name == "finish":
             problem = self._finish_problems(args)
             if problem:
@@ -272,27 +284,27 @@ class CodingSession:
                                                           f"{offset + len(chunk)}]" if rest > 0 else ""), False
 
     def _finish_problems(self, args: dict) -> str:
-        raw = args.get("candidates")
+        raw = args.get("packages")
         if not isinstance(raw, list):
-            return "finish takes candidates: a list of declarations (an empty list ends the session with none)"
-        if len(raw) > self.k:
-            return f"at most {self.k} candidates this round"
+            return "finish takes packages: a list of declarations (an empty list ends the session with none)"
+        if len(raw) > self.n:
+            return f"at most {self.n} candidate package{'s' if self.n > 1 else ''} this round"
         problems, seen = [], set()
         for i, item in enumerate(raw):
             decl, why = read_declaration(item, dirs=self.dirs, kinds_allowed=self.kinds)
             if why:
-                problems.append(f"candidates[{i}]: {why}")
+                problems.append(f"packages[{i}]: {why}")
             elif decl.dir in seen:
-                problems.append(f"candidates[{i}]: dir {decl.dir!r} is declared twice")
+                problems.append(f"packages[{i}]: dir {decl.dir!r} is declared twice")
             elif self.revising and decl.dir not in self.declarations:
-                problems.append(f"candidates[{i}]: a revision changes files of {sorted(self.declarations)}; it "
-                                f"declares no new candidate")
+                problems.append(f"packages[{i}]: a revision changes files of {sorted(self.declarations)}; it "
+                                f"declares no new package")
             else:
                 seen.add(decl.dir)
         return ("the declarations are not readable: " + "; ".join(problems))[:2000] if problems else ""
 
     def _finish(self, args: dict) -> tuple[str, bool]:
-        for item in args["candidates"]:
+        for item in args["packages"]:
             decl, _ = read_declaration(item, dirs=self.dirs, kinds_allowed=self.kinds)
             if decl.dir not in self.declarations:          # a revision changes files, never a declaration
                 self.declarations[decl.dir] = decl

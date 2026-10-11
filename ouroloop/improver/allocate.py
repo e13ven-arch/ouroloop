@@ -1,10 +1,11 @@
-"""The layering (docs/design/IMPROVER.md §6; DESIGN §6.4): which kind of component each cause gets this round.
+"""The focus list (docs/design/IMPROVER.md §6; DESIGN §6.4, v1.2): what the round suggests R works on.
 
-An estimate per (business line, cause, kind) is learned from the ledger's readings: each screened candidate of that
-cause and kind adds its conditioned net flips on the cause's tasks, as a share of them. Before any reading it is the
-prior (Settings.priors), the code kinds with the higher uncertainty, so the upper bound puts the exploration on code
-first. Two structural rules hold whatever the estimates say: a mechanizable cause gets a code candidate (and twice as
-many after a round that delivered none), and the loop's own kinds (L5) only go to the causes that point at the loop.
+An estimate per (business line, cause, kind) is learned from the ledger's readings: each screened candidate's
+conditioned net flips on its causes' held-out tasks, as a share of them, and after an acceptance the credit's reading.
+Before any reading it is the prior (Settings.priors), the code kinds with the higher uncertainty, so the score puts code
+first. The list is advice: R decides what the package holds, over several causes and with several carriers; the hard
+rules (a tool or hook when a mechanizable cause exists, at most l5_per_round changes of the loop's own kinds) are V0's
+and the ledger's (verify/static.py, round.py), not slots.
 """
 from __future__ import annotations
 
@@ -76,88 +77,69 @@ class Estimates:
 
 @register
 @dataclass(frozen=True)
-class Assignment(Record):
-    TYPE = "assignment"
-    cause_id: str = ""
-    cause: str = ""
-    kind: str = ""
-    slots: int = 1
-    exploration: bool = False
-    reason: str = ""
+class Focus(Record):
+    """The round's focus list as R reads it (inputs/focus.json)."""
+    TYPE = "focus"
+    ranked: tuple = ()                  # ({cause_id, name, tasks, mechanizable, kinds: [{kind, score, n, tried}]})
+    require_code: bool = False          # a mechanizable cause is diagnosed: the package holds a tool or a hook
+    l5_suggested: bool = False          # a cause of the loop is diagnosed: agent, config or vendor may be the carrier
+    l6_suggested: bool = False          # stalled, and the training chain is bound (stage 5; False until then)
+    notes: tuple = ()
+
+    def __post_init__(self):
+        object.__setattr__(self, "ranked", tuple(dict(r) for r in self.ranked or ()))
+        object.__setattr__(self, "notes", tuple(self.notes or ()))
 
 
 def kinds_for(cause: str, *, mechanizable: bool, allowed) -> list[str]:
-    """The kinds a cause may be assigned, code first: a mechanizable cause tool, hook, then the text kinds; any other
-    the text kinds; a cause of the loop adds agent, config, vendor (L5). Memory is never R's: the library's snapshot is
-    a fixed candidate. Only kinds K allows."""
+    """The kinds a cause may take, code first: a mechanizable cause tool, hook, then the text kinds; any other the
+    text kinds; a cause of the loop adds agent, config, vendor (L5). Memory is never R's: the library's snapshot is a
+    fixed candidate. Only kinds K allows."""
     kinds = list(CODE_KINDS) + list(TEXT_KINDS) if mechanizable else list(TEXT_KINDS)
     if cause in LOOP_CAUSES:
         kinds += list(L5_KINDS)
     return [k for k in kinds if k in set(allowed)]
 
 
-def allocate(causes, estimates: Estimates, *, settings: Settings, line: str, allowed, no_code: set = frozenset(),
-             stalled: bool = False, train_available: bool = False) -> tuple[list[Assignment], list[str]]:
-    """The round's assignments, and notes for the ledger. `causes` are diagnose.Cause records; `no_code` the causes a
-    previous round left without a code candidate at V2 (their code slots double); `stalled`: the code and text kinds
-    installed nothing for stall_rounds rounds, when L6 (the model) would be next if the training chain were bound."""
-    notes: list[str] = []
-    ranked = sorted(causes, key=lambda c: (-len(c.tasks), c.name))
-    chosen = [c for c in ranked if kinds_for(c.name, mechanizable=c.mechanizable, allowed=allowed)][:settings.k]
-    out: list[Assignment] = []
-    l5 = 0
-    for c in chosen:
+def focus(causes, estimates: Estimates, archive, *, settings: Settings, line: str, allowed, hide=frozenset(),
+          stalled: bool = False, train_available: bool = False) -> Focus:
+    """The focus list: the causes by size, each with its kinds by score (mean + uncertainty, ties by the kind order,
+    code first) and what the archive holds of earlier candidates of that cause and kind (held-out task ids of `hide`
+    counted, never named)."""
+    ranked = []
+    for c in sorted(causes, key=lambda c: (-len(c.tasks), c.name)):
         kinds = kinds_for(c.name, mechanizable=c.mechanizable, allowed=allowed)
-        if l5 >= settings.l5_slots:
-            kinds = [k for k in kinds if k not in L5_KINDS]
-        if not kinds:                   # only L5 kinds, and the round's L5 slots are taken
+        if not kinds:
             continue
-        scored = sorted(kinds, key=lambda k: (-estimates.get(line, c.name, k).upper, kinds.index(k)))
-        kind = scored[0]
-        l5 += kind in L5_KINDS
-        out.append(Assignment(cause_id=c.cause_id, cause=c.name, kind=kind,
-                              reason=f"upper bound {estimates.get(line, c.name, kind).upper}"))
-    # exploration: up to explore_slots assignments take a kind never tried on their cause, code first (the chosen
-    # kind itself when it was never tried)
-    explored = 0
-    for i, a in enumerate(out):
-        if explored >= settings.explore_slots:
-            break
-        c = next(x for x in chosen if x.cause_id == a.cause_id)
-        kinds = kinds_for(c.name, mechanizable=c.mechanizable, allowed=allowed)
-        untried = [k for k in kinds if k not in estimates.tried(line, c.name)
-                   and not (k in L5_KINDS and a.kind not in L5_KINDS and l5 >= settings.l5_slots)]
-        if not untried:
-            continue
-        untried.sort(key=lambda k: (k not in CODE_KINDS, kinds.index(k)))
-        kind = a.kind if a.kind in untried else untried[0]
-        l5 += (kind in L5_KINDS) - (a.kind in L5_KINDS)
-        out[i] = Assignment(cause_id=a.cause_id, cause=a.cause, kind=kind, exploration=True,
-                            reason=f"exploration: {kind} never tried on {a.cause}")
-        explored += 1
-    # the code guarantee
-    mech = [c for c in ranked if c.mechanizable and set(CODE_KINDS) & set(allowed)]
-    if settings.code_guarantee and mech and out and not any(a.kind in CODE_KINDS for a in out):
-        target = mech[0]
-        code = next(k for k in CODE_KINDS if k in set(allowed))
-        replaced = next((i for i, a in enumerate(out) if a.cause_id == target.cause_id), len(out) - 1)
-        out[replaced] = Assignment(cause_id=target.cause_id, cause=target.name, kind=code,
-                                   reason=f"code guarantee: {target.name} is mechanizable")
-        notes.append(f"code guarantee: {target.name} -> {code}")
-    out = [Assignment(cause_id=a.cause_id, cause=a.cause, kind=a.kind, exploration=a.exploration,
-                      slots=2 if a.kind in CODE_KINDS and a.cause in set(no_code) else 1,
-                      reason=a.reason + ("; two code slots after a round without one" if a.kind in CODE_KINDS
-                                         and a.cause in set(no_code) else "")) for a in out]
+        earlier = archive.for_prompt(line, c.name, hide=hide) if archive is not None else []
+        rows = []
+        for k in sorted(kinds, key=lambda k: (-estimates.get(line, c.name, k).upper, kinds.index(k))):
+            e = estimates.get(line, c.name, k)
+            rows.append({"kind": k, "score": e.upper, "mean": e.mean, "n": e.n,
+                         "tried": [x for x in earlier if k in str(x.get("kind") or "").split("+")]})
+        ranked.append({"cause_id": c.cause_id, "name": c.name, "tasks": list(c.tasks), "mechanizable": c.mechanizable,
+                       "kinds": rows})
+    notes = []
+    mech = any(c.mechanizable for c in causes) and bool(set(CODE_KINDS) & set(allowed))
+    if settings.require_code_component and mech:
+        notes.append("a mechanizable cause is diagnosed: the package holds at least one tool or hook, or the ledger "
+                     "records no_code_candidate")
+    l5 = any(c.name in LOOP_CAUSES for c in causes) and bool(set(L5_KINDS) & set(allowed))
+    if l5:
+        notes.append(f"a cause of the loop is diagnosed: the agent, a config knob or a vendored file may change "
+                     f"(at most {settings.l5_per_round} such change a round)")
+    l6 = bool(stalled and train_available)
     if stalled and not train_available:
-        notes.append(f"l6_unavailable: no install in {settings.stall_rounds} rounds and the training chain is not "
+        notes.append(f"l6_unavailable: no acceptance in {settings.stall_rounds} rounds and the training chain is not "
                      f"bound (stage 5)")
-    return out, notes
+    return Focus(ranked=tuple(ranked), require_code=bool(settings.require_code_component and mech), l5_suggested=l5,
+                 l6_suggested=l6, notes=tuple(notes))
 
 
 def stalled(ledger, rounds: int) -> bool:
-    """No install in the last `rounds` rounds that ran (DESIGN §6.4's switch rule, read off the ledger)."""
-    ran = [r.get("round_id") for r in ledger.rows(stage="allocated")]
+    """No acceptance in the last `rounds` rounds that focused (DESIGN §6.4's switch rule, read off the ledger)."""
+    ran = [r.get("round_id") for r in ledger.rows(stage="focused")]
     if len(ran) < rounds:
         return False
     recent = set(ran[-rounds:])
-    return not any(r.get("round_id") in recent for r in ledger.rows(stage="installed"))
+    return not any(r.get("round_id") in recent for r in ledger.rows(stage="accepted"))

@@ -16,7 +16,7 @@ from ..adapters import automationbench as ab
 from ..contracts import Events, Objects, short, write_json
 from ..evaluate.budget import BudgetAccount, Budgets, MeteredProvider, Pricing
 from ..evaluate.limits import Budget
-from ..evaluate.release import Release, Releases, code_version
+from ..evaluate.release import Release, Releases, attempt_version, improver_version
 from ..evaluate.results import Results, RunManifest
 from ..evaluate.splits import SPLIT_RULES, SplitManifest, TaskEntry, assign_splits, stratified_splits
 from ..harness.package import Package, load as load_package
@@ -74,7 +74,12 @@ class Activity:
         return Budget.from_core(self.k["limits"])
 
     def active_release(self) -> Release:
+        """The working line's release (rsi/active.json)."""
         return self.releases.active()
+
+    def released_release(self) -> Release | None:
+        """The release line's W* (rsi/released.json), once the release gate passed; None before."""
+        return self.releases.released()
 
     def package(self, release: Release | None = None) -> Package:
         return load_package(self.objects, (release or self.active_release()).package_ref)
@@ -264,7 +269,8 @@ def open_activity(config: dict, *, out: Callable[[str], None] = print, freeze_k:
     sections = resolve(config)
     results = Results(root, sections["bench"]["domain"])
     splits, drift = freeze_split(suite, sections["bench"], results.manifest_path(), versions)
-    core = freeze_core(config, split_hash=splits.hash(), code_version=code_version())
+    core = freeze_core(config, split_hash=splits.hash(), attempt_version=attempt_version(),
+                       improver_version=improver_version())
     objects = Objects(root)
     core_ref = core.ref()
     pinned = (config.get("rsi") or {}).get("core_ref")
@@ -289,7 +295,8 @@ def open_activity(config: dict, *, out: Callable[[str], None] = print, freeze_k:
     if not core_file.exists():
         objects.put(core)
         write_json(core_file, {**core.json(), "ref": core_ref})
-        activity.events.append("core_frozen", core=core_ref, code_version=core.code_version, split=splits.hash())
+        activity.events.append("core_frozen", core=core_ref, attempt_version=core.attempt_version,
+                               improver_version=core.improver_version, split=splits.hash())
     if releases.active_ref() is None:
         seed = build_seed(core.json()["harness"]["seed"], core=core.json(), objects=objects)
         improver_ref = objects.put("improver", dict(R0))

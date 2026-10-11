@@ -18,7 +18,7 @@ Covered:
   projection keeps only the projected fields and the line; it has no dev task id in a real round; the scoreboard;
   `last_round_of`;
 - archive (§10): put/rows (the latest per round and dir, a line's rows), duplicates (same files in an earlier round,
-  not in the same round), `for_prompt`; on the real round, the archived candidate keeps its screen and receipt;
+  not in the same round), `for_prompt`; on the real round, the archived package keeps its screen and install receipt;
 - credit and anti-bloat (§10; DESIGN §6.8): a delta is conditioned on the footprint, and test and deleted components
   get no credit; `summary`; a component that shows on no attempt for `removal_zero_credit_rounds` credited rounds,
   or that has had no conditioned credit since its install, is a removal candidate, and not one round earlier; a
@@ -49,7 +49,7 @@ from ouroloop.harness.package import Manifest, Package
 from ouroloop.improver.archive import Archive, load_files
 from ouroloop.improver.components import components, present, without
 from ouroloop.improver.credit import Credit, credit, removal_candidates, summary
-from ouroloop.improver.declaration import Declaration
+from ouroloop.improver.declaration import Component, Declaration
 from ouroloop.improver.diagnose import PROMPTS
 from ouroloop.improver.evidence import AttemptEvidence, Evidence, dev_histogram
 from ouroloop.improver.ledger import PROJECTED, Ledger
@@ -394,12 +394,15 @@ def test_last_round_of(tmp_path):
 
 # ---------------------------------------------------------------------------- archive
 def decl(dir_name: str, cause: str = "missed_action", kind: str = "tool", **kw) -> Declaration:
-    return Declaration(dir=dir_name, cause_id=f"s/r0:{cause}", kind=kind, site=kw.pop("site", "post"),
-                       predicted_affected=("t.a",), trigger="a request asks for #ops", **kw)
+    return Declaration(dir=dir_name, mechanism="a mechanism", fixed=kw.pop("fixed", ""),
+                       components=(Component(kind=kind, site=kw.pop("site", "post"), cause_ids=(f"s/r0:{cause}",),
+                                             predicted_affected=("t.a",), trigger="a request asks for #ops", **kw),))
 
 
 def verdict(*passed: bool) -> Verdict:
-    return Verdict(dir="x", steps={rung: {"passed": p, "detail": ""} for rung, p in zip(("V0", "V1", "V2a"), passed)})
+    steps = {rung: {"passed": p, "detail": ""} for rung, p in zip(("V0", "V1"), passed[:2])}
+    comps = {"tool:post": {"V2a": {"passed": passed[2], "detail": ""}}} if len(passed) > 2 else {}
+    return Verdict(dir="x", steps=steps, components=comps)
 
 
 FILES = {"manifest.json": "{}\n", "tools/post.py": "def run(ctx, args):\n    return {}\n"}
@@ -410,9 +413,10 @@ def test_archive_put_and_rows(tmp_path):
     archive = Archive(tmp_path, objects)
     d = decl("notify")
     row = archive.put(0, "notify", FILES, d, verdict(True, True, False), line="d")
-    assert {k: row[k] for k in ("round", "dir", "line", "kind", "cause", "site", "fixed", "screen", "receipt")} == {
-        "round": 0, "dir": "notify", "line": "d", "kind": "tool", "cause": "missed_action", "site": "post",
-        "fixed": "", "screen": None, "receipt": None}
+    assert {k: row[k] for k in ("round", "dir", "line", "kind", "causes", "site", "fixed", "screen", "receipt",
+                                "mechanism")} == {
+        "round": 0, "dir": "notify", "line": "d", "kind": "tool", "causes": ["missed_action"], "site": "post",
+        "fixed": "", "screen": None, "receipt": None, "mechanism": "a mechanism"}
     assert Declaration.from_json(objects.get(row["declaration"])) == d
     assert load_files(tmp_path, 0, "notify") == FILES
     assert json.loads((tmp_path / "rounds" / "r0" / "candidates" / "notify" / "record.json").read_text()) == row
@@ -450,13 +454,14 @@ def test_for_prompt(tmp_path):
                          verdict(True, True, True), screen=screen, receipt_ref="receipt:sha256:" + "5" * 64, line="d")
     archive.put(1, "value", {"y.py": "1"}, decl("value", cause="wrong_value"), verdict(True), line="d")
     archive.put(1, "elsewhere", {"z.py": "1"}, decl("elsewhere"), verdict(True), line="other")
-    want = [{"round": 0, "dir": "notify", "kind": "tool", "site": "post", "declaration": first["declaration"],
-             "rungs": {"V0": True, "V1": True, "V2a": False}, "screen": None, "gated": False},
-            {"round": 1, "dir": "notify2", "kind": "hook", "site": "on_finish", "declaration": second["declaration"],
-             "rungs": {"V0": True, "V1": True, "V2a": True},
+    want = [{"round": 0, "dir": "notify", "kind": "tool", "site": "post", "mechanism": "a mechanism",
+             "declaration": first["declaration"], "rungs": {"V0": True, "V1": True, "V2a": False}, "screen": None,
+             "installed": False},
+            {"round": 1, "dir": "notify2", "kind": "hook", "site": "on_finish", "mechanism": "a mechanism",
+             "declaration": second["declaration"], "rungs": {"V0": True, "V1": True, "V2a": True},
              "screen": {"outcome": "screened", "net_flips": 0, "fixed": ["t.a"], "regressed": ["t.b"],
-                        "fixed_held_out": 0, "regressed_held_out": 0},
-             "gated": True}]
+                        "fixed_held_out": 0, "regressed_held_out": 0, "accepted": False, "reasons": []},
+             "installed": True}]
     assert archive.for_prompt("d", "missed_action") == want
     assert archive.for_prompt("d", "missed_action", n=1) == want[1:]
     assert [r["dir"] for r in archive.for_prompt("d", "wrong_value")] == ["value"]
@@ -667,7 +672,8 @@ def test_a_lesson_citing_a_row_that_does_not_exist_is_dropped(tmp_path):
 # ---------------------------------------------------------------------------- one real round
 @pytest.fixture(scope="module")
 def rnd(tmp_path_factory, fake_upstream) -> SimpleNamespace:
-    """One round on the rsi domain: the scripted R's tool is screened, gated, installed and credited."""
+    """One round on the rsi domain: the scripted R's tool package is screened on the held-out tasks, accepted,
+    installed on the working line and credited."""
     s = round_activity(tmp_path_factory.mktemp("round"), fake_upstream, "tool")
     s.base = s.a.active_release()
     s.result = phases.round_(s.a, 0, out=quiet)
@@ -698,37 +704,39 @@ def test_the_round_refuses_its_dev_sessions_and_the_histogram_names_no_task(rnd)
 def test_the_round_ledger_ids_projection_and_scoreboard(rnd):
     rows = rnd.ledger.rows()
     assert [r["id"] for r in rows] == [f"L{i}" for i in range(1, len(rows) + 1)]
-    assert [r["stage"] for r in rows] == ["measured", "diagnosed", "allocated", "declared", "verified", "screened",
-                                          "gated", "installed", "credited", "playbook"]
+    assert [r["stage"] for r in rows] == ["measured", "diagnosed", "focused", "declared", "verified", "screened",
+                                          "accepted", "installed", "credited", "playbook"]
     raw = (rnd.a.root / "ledger" / "experience.jsonl").read_text(encoding="utf-8")
-    projection = json.dumps(rnd.ledger.projection(line=rnd.a.domain))
+    projection = json.dumps(rnd.ledger.projection(line=rnd.a.domain, hide=set(rsi.HELD)))
     for dev_task in rsi.DEV + rsi.FINAL:
         assert dev_task not in raw and dev_task not in projection
-    assert "rsi.notify_after_update" in projection                      # train task ids are R's to read
-    gated = rnd.ledger.rows(stage="gated")[0]
-    assert {k: gated[k] for k in ("verdict", "fixed_count", "regressed_count")} == \
-        {"verdict": "accepted", "fixed_count": 1, "regressed_count": 0}
+    assert "rsi.notify_ticket" in projection                            # studied train task ids are R's to read
+    assert not any(t in projection for t in rsi.HELD)                   # held-out ones are counts in what R reads
+    assert all(t in raw for t in rsi.HELD)                              # and plain in the host's own ledger
+    accepted = rnd.ledger.rows(stage="accepted")[0]
+    assert {k: accepted[k] for k in ("net_flips", "holdout_score", "best_so_far")} == \
+        {"net_flips": 2, "holdout_score": 2, "best_so_far": 0}
     board = {"candidates": 1, "fixed": 2, "regressed": 0, "net": 2}
     assert rnd.ledger.scoreboard(rnd.a.domain) == {"all": board, "tool": board}
-    assert rnd.ledger.last_round_of("rsi.notify_after_update") == 0
+    assert rnd.ledger.last_round_of("rsi.notify_ticket") == 0
     assert rnd.ledger.last_round_of("rsi.update_stage") == -1
 
 
-def test_the_round_archives_the_screen_and_receipt_of_its_candidate(rnd):
+def test_the_round_archives_the_screen_and_install_receipt_of_its_package(rnd):
     archive = Archive(rnd.a.root, rnd.a.objects)
-    row = next(r for r in archive.rows(line=rnd.a.domain) if r["dir"] == "notify")
-    assert row["receipt"] == rnd.result.gate["receipt"]
-    earlier = archive.for_prompt(rnd.a.domain, "missed_action")
-    assert earlier[-1]["gated"] is True
-    assert earlier[-1]["screen"]["net_flips"] == 2
+    row = next(r for r in archive.rows(line=rnd.a.domain) if r["dir"] == "package")
+    assert row["receipt"] == round_state(rnd.a, 0)["steps"]["accepted"]["receipt"]
+    earlier = archive.for_prompt(rnd.a.domain, "missed_action", hide=set(rsi.HELD))
+    assert earlier[-1]["installed"] is True and earlier[-1]["screen"]["accepted"] is True
+    assert earlier[-1]["screen"]["net_flips"] == 2 and earlier[-1]["screen"]["fixed_held_out"] == 2
 
 
-def test_the_round_archive_holds_the_verified_candidate(rnd):
+def test_the_round_archive_holds_the_verified_package(rnd):
     archive = Archive(rnd.a.root, rnd.a.objects)
     (row,) = archive.rows(line=rnd.a.domain)
-    assert {k: row[k] for k in ("round", "dir", "kind", "cause", "site")} == \
-        {"round": 0, "dir": "notify", "kind": "tool", "cause": "missed_action", "site": "post_channel_message"}
-    files = load_files(rnd.a.root, 0, "notify")
+    assert {k: row[k] for k in ("round", "dir", "kind", "causes", "site")} == \
+        {"round": 0, "dir": "package", "kind": "tool", "causes": ["missed_action"], "site": "post_channel_message"}
+    files = load_files(rnd.a.root, 0, "package")
     assert archive.duplicate(files, before_round=1) == row and archive.duplicate(files, before_round=0) is None
     (earlier,) = archive.for_prompt(rnd.a.domain, "missed_action")
     assert earlier["rungs"] == {"V0": True, "V1": True, "V2a": True}
@@ -741,11 +749,12 @@ def test_the_round_credit_matches_a_recomputation(rnd):
     base_pkg, new_pkg = a.package(rnd.base), a.package(rnd.new)
     comps = [c for c in components(base_pkg, new_pkg.files) if c["kind"] != "test"]
     assert comps == [{"kind": "tool", "name": "post_channel_message", "change": "added"}]
-    again = summary(credit(rnd.new.ref(), ev.reading(rnd.base.package_ref), ev.reading(rnd.new.package_ref),
-                           comps=comps, evidence=ev))
+    held = set(rsi.HELD)                            # the credit is read on the held-out screen's attempts (§10)
+    parent = {t: r for t, r in ev.reading(rnd.base.package_ref).items() if t in held}
+    child = {t: r for t, r in ev.reading(rnd.new.package_ref).items() if t in held}
+    again = summary(credit(rnd.new.ref(), parent, child, comps=comps, evidence=ev))
     assert row["credit"] == {k: v["credit"] for k, v in again.items()} == {"tool:post_channel_message": 2.0}
-    assert sorted(again["tool:post_channel_message"]["fixed"]) == ["rsi.notify_after_update",
-                                                                   "rsi.notify_after_update_variant"]
+    assert sorted(again["tool:post_channel_message"]["fixed"]) == sorted(rsi.HELD)
     assert round_state(a, 0)["steps"]["credited"]["credit"] == again
     history = row["history"]
     assert set(history["footprints"]) == {f"{c['kind']}:{c['name']}" for c in present(new_pkg)}

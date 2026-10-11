@@ -137,7 +137,7 @@ def <hook>(ctx: Ctx, event: dict) -> dict | None
 
 返回 `None` 即无动作。返回形状之外的键是 `CandidateDefect`。hook 抛异常是 `CandidateDefect`（适配层抛 `HookError`，带 `ouroloop_defect` 标记，宿主记 `harness_error`）。每次**有动作的**触发由适配层 `ctx.mark("hook", site=, name=, action=, detail=, turn=)` 上报，宿主转写成 `hook` 行；action 为 none 的不记。
 
-hook 拿到的 ctx 没有 `model`，`tool` 一律只读：hook 只看不做，V2b 才能在记录的事件上回放它。各站点的语义：`before_run` 在系统提示合成后、第一次调用前，hook 看到前面 hook 加的消息；`before_model` 只对 act 调用（摘要的 aux 调用不过）；`before_tool` 第一个 block 结束本回合（同回合其余调用与 finish 都“Not executed”），`args` 改写按 manifest 顺序传给下一个 hook；`after_tool` 的 output 改写串联、feedback 汇总成回合结果后的一条 user 消息；`after_turn` 只在主 agent 的回合末触发（子 agent 的回合不触发）；`on_finish` 的 `reason` 是 "finish" 或 "implicit"（第 N 次纯文本答复转成的 finish），第一个 pushback 生效，最多 `MAX_PUSHBACKS`（2）次且最后一次 act 调用不退回。
+hook 拿到的 ctx 的 `tool` 一律只读：hook 只看不做，V2b 才能在记录的事件上回放它。v1.2（DESIGN §6.4）：`after_turn` 与 `on_finish` 的 hook 可以调 `ctx.model(..., role="aux")` 审核 agent 的工作，一次尝试内所有这类 hook 合计不超过 `ctx.view["hook_aux_calls"]`（K 的 `improver.hook_aux_calls`）次，超出或在其他站点调用都是 `CandidateDefect`；这样的 hook 在声明里标 `uses_model`，没有 V2b（回放不了模型），V1 的 smoke 用脚本化模型答一次。每次 aux 调用由适配层 `ctx.mark("hook_aux_call", ...)` 上报。各站点的语义：`before_run` 在系统提示合成后、第一次调用前，hook 看到前面 hook 加的消息；`before_model` 只对 act 调用（摘要的 aux 调用不过）；`before_tool` 第一个 block 结束本回合（同回合其余调用与 finish 都“Not executed”），`args` 改写按 manifest 顺序传给下一个 hook；`after_tool` 的 output 改写串联、feedback 汇总成回合结果后的一条 user 消息；`after_turn` 只在主 agent 的回合末触发（子 agent 的回合不触发）；`on_finish` 的 `reason` 是 "finish" 或 "implicit"（第 N 次纯文本答复转成的 finish），第一个 pushback 生效，最多 `MAX_PUSHBACKS`（2）次且最后一次 act 调用不退回。
 
 ### 5.3 工具入口
 

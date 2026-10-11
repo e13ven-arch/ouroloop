@@ -13,8 +13,11 @@ ctx                 model(messages, tools, *, role, effort) -> {text, tool_calls
                     limits -> the attempt's remaining hard limits (LIMIT_KEYS)
                     view -> a read-only projection (VIEW_KEYS)
                     mark(kind, **data) -> None: the package's own account of its loop, never evidence
-hook                hook(ctx, event) -> dict | None, event and return per SITES below; a hook's ctx has no `model`
-                    and its `tool` is read-only (a hook looks, it does not act; V2b replays it on recorded events)
+hook                hook(ctx, event) -> dict | None, event and return per SITES below; a hook's `tool` is read-only
+                    (a hook looks, it does not act; V2b replays it on recorded events). At on_finish and after_turn a
+                    hook may call `ctx.model` with role "aux" up to view["hook_aux_calls"] times per attempt (an
+                    audit before the agent finishes; DESIGN §6.4, v1.2); at the other sites, and past the cap, the
+                    call is the package's defect
 tool entry          run(ctx, args) -> {"output": str} | {"output": str, "is_error": true} (a plain str is an output)
 agent entry         run(ctx, task) -> str: the final text; the host ends a run at a hard limit by itself
 toolcheck script    check(ctx, tools) -> None: tools[name](args) runs a candidate tool; the world goes through a
@@ -48,7 +51,8 @@ ACTIONS = ("none", "block", "modify", "feedback", "pushback")
 
 CTX_NAMES = ("model", "tool", "skills", "memory", "limits", "view", "mark")
 LIMIT_KEYS = ("act_calls", "model_calls", "tool_calls", "seconds", "tokens")   # tokens: output tokens
-VIEW_KEYS = ("system", "base_tools", "package", "last_usage", "events", "max_output_chars")
+VIEW_KEYS = ("system", "base_tools", "package", "last_usage", "events", "max_output_chars", "hook_aux_calls")
+AUX_SITES = ("after_turn", "on_finish")        # the sites whose hooks may call the aux model (view["hook_aux_calls"])
 VIEW_EVENTS = 20                               # the broker's latest calls in view["events"]
 
 # The worker protocol (docs/design/RUNTIME.md §4): host -> worker ops, and the worker's callbacks with their answers.

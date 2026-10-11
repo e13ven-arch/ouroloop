@@ -77,7 +77,7 @@ def copy_closure(src: Objects, dst: Objects, refs) -> set[str]   # 导出时拷�
 
 ## 4 K：固定核心
 
-K 是配置经 preset 补全、按“只能收紧”规则合并后冻结的一份 JSON（`core.json`；对象是 `activity.config.Core{preset, sections, split_hash, code_version}`），`core_ref` 覆盖它的全部字节，并含 `code_version`（框架源码与种子目录的摘要），所以改任何 `.py` 都是新 K（PLAN 规则 13）。每个字段的合并规则（cap、floor、subset、superset、ranges、effort、bytes、network、fixed、free）写在 `activity/presets.py` 的 `RULES`。
+K 是配置经 preset 补全、按“只能收紧”规则合并后冻结的一份 JSON（`core.json`；对象是 `activity.config.Core{preset, sections, split_hash, attempt_version, improver_version}`），`core_ref` 覆盖它的全部字节，并含两项代码摘要（v1.2：`attempt_version` 是一次尝试走到的代码，`improver_version` 是其余；见下文），所以改任何 `.py` 都是新 K（PLAN 规则 13）。每个字段的合并规则（cap、floor、subset、superset、ranges、effort、bytes、network、fixed、free）写在 `activity/presets.py` 的 `RULES`。
 
 | 节 | 字段 | 谁用 |
 |---|---|---|

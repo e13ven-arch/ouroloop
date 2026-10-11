@@ -15,6 +15,7 @@ from ...harness.contract import SITES, HookAnswerError, action_of
 from ...runtime.broker import Broker
 from ...runtime.worker import PackageCallError, smoke_view
 from ..components import components
+from ..declaration import component_of
 from .unit import worker_files
 
 FIRST_WINS = ("on_finish", "before_tool")   # the first hook that pushes back or blocks ends the site's dispatch
@@ -134,6 +135,7 @@ def _triggers(session, entries, events, *, task_id, suite, manifest, site) -> tu
 
 
 def replay_check(files: dict[str, str], decl, ctx) -> dict:
+    decl = component_of(decl, "hook")
     manifest = json.loads(files["manifest.json"])
     changed = {c["name"] for c in components(ctx.parent, files) if c["kind"] == "hook" and c["change"] != "deleted"
                and c.get("site") == decl.site}

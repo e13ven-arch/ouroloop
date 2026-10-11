@@ -29,7 +29,10 @@ def quiet(_line):
 
 
 def open_rsi(tmp_path, upstream, worker, research):
-    return rsi.activity(tmp_path, upstream, provider=worker, research=research, memory=dict(MEMORY))
+    # the stream's order of tests/activity/test_activity_library.py (seed 349): a failing notify task comes after the
+    # opportunity lesson and before the other #ops tasks, so a lesson of its own fixes the next one (D > 0)
+    return rsi.activity(tmp_path, upstream, provider=worker, research=research, memory=dict(MEMORY),
+                        gate={"order_seed": 349})
 
 
 def spent(activity, phase: str) -> dict:

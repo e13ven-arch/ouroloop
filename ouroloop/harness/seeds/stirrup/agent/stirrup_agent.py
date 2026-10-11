@@ -251,20 +251,39 @@ class LockedCtx:
             return self._ctx.mark(kind, **data)
 
 
+AUX_SITES = ("after_turn", "on_finish")   # harness/contract.py AUX_SITES: hooks there may call the aux model
+
+
 class SubCtx:
     """What a hook or a package tool holds: the view with the turn, the limits, skills, memory, mark, and `tool`
-    (read-only for a hook and for a tool that does not write). No `model`: hooks and tools are deterministic code."""
+    (read-only for a hook and for a tool that does not write). `model` is a hook's at after_turn and on_finish only,
+    role aux, at most view["hook_aux_calls"] calls per attempt across those hooks (an audit before the agent
+    finishes); a tool, a hook at another site or a call past the cap is the package's defect (HookError)."""
 
-    def __init__(self, ctx, turn: int, *, read_only: bool):
+    def __init__(self, ctx, turn: int, *, read_only: bool, site: str | None = None, aux=None):
         self.view = {**ctx.view, "turn": turn}
         self.limits, self.skills, self.memory = ctx.limits, ctx.skills, ctx.memory
-        self._ctx, self._read_only = ctx, read_only
+        self._ctx, self._read_only, self._site, self._aux = ctx, read_only, site, aux
         self.calls = []
 
     def tool(self, name, args=None, *, read_only=False):
         res = self._ctx.tool(name, dict(args or {}), read_only=self._read_only or read_only)
         self.calls.append({"tool": name, "is_error": bool(_get(res, "is_error"))})
         return res
+
+    def model(self, messages, tools=(), role="aux", effort=None):
+        if self._site is None or self._aux is None:
+            raise HookError("a package tool has no model: tools are deterministic code")
+        if self._site not in AUX_SITES:
+            raise HookError(f"a {self._site} hook has no model: only after_turn and on_finish hooks may call the aux "
+                            f"model")
+        cap = int(self.view.get("hook_aux_calls") or 0)
+        if self._aux["calls"] >= cap:
+            raise HookError(f"hook aux calls: the package's hooks made {self._aux['calls']} aux calls this attempt, "
+                            f"the cap (hook_aux_calls)")
+        self._aux["calls"] += 1
+        self._ctx.mark("hook_aux_call", site=self._site, turn=self.view.get("turn"), call=self._aux["calls"])
+        return self._ctx.model(messages, tools, role="aux", effort=effort)
 
     def mark(self, kind, **data):
         self._ctx.mark(kind, **data)
@@ -329,12 +348,13 @@ class Hooks:
     def __init__(self, ctx, bundle: Bundle, hooks):
         self.ctx, self.bundle = ctx, bundle
         self.by_site = {s: [h for h in hooks or () if h.get("site") == s and h.get("enabled", True)] for s in SITES}
+        self.aux = {"calls": 0}         # the attempt's aux calls by hooks, against view["hook_aux_calls"]
 
     def has(self, site: str) -> bool:
         return bool(self.by_site[site])
 
     def _fire(self, site: str, hook: dict, event: dict, turn: int):
-        hctx = SubCtx(self.ctx, turn, read_only=True)
+        hctx = SubCtx(self.ctx, turn, read_only=True, site=site, aux=self.aux)
         try:
             value = _call(self.bundle.entry(hook["entrypoint"]), hctx, {"site": site, **event})
         except HookError:

@@ -7,8 +7,8 @@ platform's three kinds — money, leakage, correctness. A failing check names it
     leakage      the split is the frozen one (K's and the pinned hash) and upstream has not drifted; no test task was
                  read before the final; the memory stream runs only on a line K does not hold out
     correctness  the worker image is the one K pinned and runs this host's worker_runner.py; the egress image under a
-                 proxy K; the seed K builds is the seed release's; the code is the code K froze; a round has the frozen
-                 gate plan; where memory is read
+                 proxy K; the seed K builds is the seed release's; the code is the code K froze (both versions); a
+                 round has the frozen gate plan; where memory is read
                  or written, the sidecar's venv is the lock, the model is the pinned one and K's backend pins are this
                  checkout's sidecar files
 """
@@ -16,11 +16,11 @@ from __future__ import annotations
 
 from ..adapters import automationbench as ab
 from ..evaluate.budget import call_bound_problem, check_pricing
-from ..evaluate.release import code_version
+from ..evaluate.release import attempt_version, improver_version
 from ..harness.package import Limits, check_shape
 from ..harness.seed import SeedUnavailable, seed_files
 
-PAID = ("smoke", "baseline", "library", "round", "evaluate")
+PAID = ("smoke", "baseline", "library", "round", "gate", "evaluate")
 
 
 def money_problems(activity, *, phase: str, needs_model: bool) -> list[str]:
@@ -116,9 +116,11 @@ def memory_problems(activity) -> list[str]:
 
 def correctness_problems(activity, *, phase: str, needs_worker: bool) -> list[str]:
     problems = []
-    if activity.core.code_version != code_version():
-        problems.append(f"K froze code {activity.core.code_version} and this checkout is {code_version()}: no code "
-                        f"change is merged into a checkout an activity runs from (PLAN rule 13)")
+    for name, frozen, now in (("attempt", activity.core.attempt_version, attempt_version()),
+                              ("improver", activity.core.improver_version, improver_version())):
+        if frozen != now:
+            problems.append(f"K froze the {name} code at {frozen} and this checkout is {now}: no code change is merged "
+                            f"into a checkout an activity runs from (PLAN rule 13)")
     try:
         files = seed_files(activity.k["harness"]["seed"], core=activity.k)
     except SeedUnavailable as e:
@@ -201,3 +203,9 @@ def require(problems: list[str], *, phase: str, activity=None) -> None:
     versions = cli_versions(activity, phase) if activity is not None else None
     if versions is not None and versions[1] and not versions[0]:
         activity.events.append("cli_version", version=versions[1], phase=phase)
+
+
+def cli_change_problem(activity) -> str | None:
+    """evaluate.gate.transport_problem, for the phases."""
+    from ..evaluate.gate import transport_problem
+    return transport_problem(activity)

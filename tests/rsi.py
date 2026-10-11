@@ -30,13 +30,15 @@ FAMILIES = {"rsi.update_stage": "rsi.update",
             "rsi.notify_after_update_variant": "rsi.notify_after_update",
             "rsi.policy_hold": "rsi.hold",
             "rsi.notify_once": "rsi.notify_once",
+            "rsi.notify_ticket": "rsi.notify_ticket",
             "rsi.dev_notify_after_update": "rsi.dev_notify_after_update",
             "rsi.dev_update_stage": "rsi.dev_update",
             "rsi.dev_policy_hold": "rsi.dev_hold",
             "rsi.final_notify_after_update": "rsi.final_notify_after_update",
             "rsi.final_update_stage": "rsi.final_update"}
 SPLITS = {"rsi.update": "train", "rsi.notify_after_update": "train", "rsi.hold": "train",
-          "rsi.notify_once": "train", "rsi.dev_notify_after_update": "dev", "rsi.dev_update": "dev",
+          "rsi.notify_once": "train", "rsi.notify_ticket": "train", "rsi.dev_notify_after_update": "dev",
+          "rsi.dev_update": "dev",
           "rsi.dev_hold": "dev", "rsi.final_notify_after_update": "test", "rsi.final_update": "test"}
 TRAIN = [t for t, f in FAMILIES.items() if SPLITS[f] == "train"]
 DEV = [t for t, f in FAMILIES.items() if SPLITS[f] == "dev"]
@@ -53,13 +55,15 @@ _preset["gate"].update({"min_groups": 1, "min_tasks": 1, "control_readings": 1, 
 _preset["bench"]["concurrency"] = 1
 # the memory under the fake client's bag-of-words vectors (tests/memory/fake_memory.py), one task per stream step
 _preset["memory"].update({"min_score": 0.2, "min_other_tasks": 1, "stream_batch": 1})
-# nothing held out by default: the improver's tests read the claimed tasks on the screen; a test that holds a part of
-# train out sets improver.holdout_share (a floor, so it may only raise it)
-_preset["improver"]["holdout_share"] = 0.0
-# the cadence's cap (IMPROVER §9.2): the round tests gate every round (rounds.round_activity's default), the cadence
-# tests ask for 2
-_preset["improver"]["gate_every"] = 2
+# the held-out part (IMPROVER §3, v1.2) at the preset's share: K's order seed 0 ranks the notify_after_update family
+# first, so its two tasks are held out (HELD) and the other four studied (STUDY); the forgetful actor fails one task
+# on each side (notify_ticket studied, the notify pair held out), so V2a and V2b ask for one claimed task
+_preset["improver"].update({"toolcheck_min_pass": 1, "replay_min_triggers": 1})
+# four rounds at most, two in a row without an acceptance end the cycle
+_preset["schedule"].update({"rounds": 4, "patience": 2})
 presets.PRESETS[TEST_PRESET] = _preset
+HELD = ("rsi.notify_after_update", "rsi.notify_after_update_variant")
+STUDY = ("rsi.update_stage", "rsi.policy_hold", "rsi.notify_once", "rsi.notify_ticket")
 
 PRICING = {"input_per_1k": 0.004, "output_per_1k": 0.02, "cache_read_per_1k": 0.0002, "cache_write_per_1k": 0.008,
            "max_input_tokens": 20000, "max_output_tokens": 5000, "source": "test prices"}

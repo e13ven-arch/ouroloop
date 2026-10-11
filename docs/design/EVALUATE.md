@@ -85,7 +85,10 @@ class Execution: advance(status); operation(step, input_refs); finish(op, status
 def call_bound_problem(pricing, limits, what) -> str;  check_pricing(pricing, limits) -> str;  unfinished(root) -> list
 
 # release.py
-def code_version() -> str      # 框架源码与种子目录的摘要
+def attempt_version() -> str   # 一次尝试走到的代码的摘要（runtime/、harness/ 含种子、evaluate/{attempt,results,limits,splits}.py、adapters/、providers/、contracts.py）
+def improver_version() -> str  # 其余代码的摘要（improver/、memory/、activity/、evaluate/{gate,final,budget,release}.py、R 的提示词）
+def code_version() -> str      # 两者合一的摘要，只给报告
+def attempt_identity(*, attempt_version, package_ref, limits, model, image_id, split_hash) -> str   # AttemptIdentity（CONTRACTS §4）
 class GateReceipt(Record): plan_ref; subject_ref; control_ref; parent_release; results_ref; verdict; reasons; metrics; uncertainty; costs; kind   # kind "receipt"
 class InstallReceipt(Record): operation_id; expected_parent; target_release; status; observed_pointer; reason   # kind "install"
 class Releases:
