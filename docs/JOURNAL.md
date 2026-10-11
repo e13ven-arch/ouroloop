@@ -8,6 +8,22 @@
 
 ---
 
+## 2026-10-11 阶段 4：finance-v4 第 2 轮（累积轮）：三个候选留出筛选 0、0、−1，没有累积；$14.78
+
+- 累积被第 1 轮的 gate 丢弃后从 W0 重新开始：测量复用基线（24/50），诊断 26 例全部命中缓存（$0）。分配：missed_action → skill（上界 0.11）、excluded_mentioned → hook（探索）、arith_mismatch → tool（上界 0.36）。
+- R 的会话 19 回合、24 次编辑（$2.00），3 个候选，都过免费阶梯（V0 3、V1 2、V2a 1、V2b 1、V2c 1）：
+  - `c_hook_scope`（before_tool hook `scope_guard`，带测试：发信、起草、Slack 发帖、评论之前，解码后的文本里有列出"无变化 / 匹配 / 无差异 / 在范围内 / 被排除"项的段落，或点名了计划里排除的项，就拦；excluded_mentioned）：留出失败集 2 道（`prepaid_amortization`、`intercompany_balance_recon`），没修好，净 0。
+  - `c_skill_blockers`（技能 `partial-blocker-still-act`：禁令、限额、阈值、争议、缺记录挡住一部分工作时仍做其余；missed_action）：失败集 3 道，没修好，净 0。
+  - `c_tool_reconcile`（tool `reconcile_figure`，带测试：算数时传入来源的条款/政策文本，标出公式漏掉的调整项与来源里没有的输入；arith_mismatch，三道题探针）：失败集 1 道（`commission_calculation`），没修好，样本退步 1，净 −1。
+  - 没有可累积的候选，台账记 `rejected: no eligible screen`。
+- 读数：
+  - 同一组 cause 第三次有候选（第 0 轮 tool/tool/skill、第 1 轮 prompt/hook/skill、第 2 轮 hook/skill/tool）：excluded_mentioned 的留出 2 道题，`send_email` 修了 1 道，`scope_guard` 一道没修；arith_mismatch 的留出只剩 `commission_calculation` 一道，`compute`、`arith_check`、`reconcile_figure` 三层都没修好它——这道题要么不是算术问题、要么工具没被调用；missed_action 的留出 3 道三种技能/prompt 都没动。估值会把这些 (cause, kind) 的修复压到 0，下一轮的分配会换到别的 cause 或别的层。
+  - 留出失败集的薄度决定了筛选只能给 0、±1 这样的读数；筛选的噪声（样本 6 道里退 1 道）与效应同量级。
+- 花费：$14.78（筛选 $12.69、会话 $2.00、剧本 $0.10）。活动计 $225.36，根剩 $474.64，非 final 部分 $254.64。
+- 下一步：第 3 轮（gate 轮，从 W0 起、没有累积）。
+
+---
+
 ## 2026-10-11 阶段 4：finance-v4 第 1 轮（gate 轮）：累积包 train 30/50；gate 拒绝（增益 −0.02，部分得分 −0.004），累积丢弃；$42.47
 
 - 用户的指示同前（"付费运行直接启动"）；终端工具启动，手动权限模式下放行。

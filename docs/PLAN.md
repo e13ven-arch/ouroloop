@@ -43,7 +43,7 @@
 | 测试 | 全量（Docker + 真 memory sidecar）1,526 passed、1 deselected（JOURNAL 2026-10-10 四项修复一条）。memory 的 venv 在本机 `~/.cache/ouroloop/memory-venv/19f9b139c36d1d05` |
 | test 读过几次 | finance 1、support 0、sales 0、hr 0、marketing 3；operations 从未读过 |
 | 本机记录 | `examples/automationbench/workspace-*/`、`examples/workspace-*/`、`ws/`、`*.local.toml`，git 忽略，不删不改 |
-| 下一步 | finance-v4 第 1 轮跑完（累积包 train 30/50；gate 拒绝，增益 −0.02，部分得分 −0.004，成本 −18% 显著；$42.47；JOURNAL 2026-10-11）；第 2 轮（累积轮）、第 3 轮（gate 轮，再无装入则按耐心结束），有装入则封存 final；用户 2026-10-11 "付费运行直接启动"，每轮跑完记录再接下一轮。付费活动从这个检出跑，期间不往这里合入 `ouroloop/` 的改动（规则 13） |
+| 下一步 | finance-v4 第 2 轮跑完（三个候选留出筛选 0、0、−1，没有累积；$14.78；JOURNAL 2026-10-11）；第 3 轮（gate 轮，从 W0 起，再无装入则按耐心结束），有装入则封存 final；用户 2026-10-11 "付费运行直接启动"，每轮跑完记录再接下一轮。付费活动从这个检出跑，期间不往这里合入 `ouroloop/` 的改动（规则 13） |
 
 ## 1 规则
 
@@ -78,7 +78,7 @@
 | 1 | harness 与平台收缩：`harness/`、`runtime/`、`evaluate/`、`activity/`；Stirrup 种子与六个 hook 站点；worker 资源与网络从 K 读；DESIGN §8 的删除 | 默认与 Docker 全量通过；`quickstart.toml` 的 `--phase smoke --checks-only` 通过；假上游上用新种子跑一次尝试 | $0 | 完成并合入（2026-10-09，`46a4b90`） |
 | 2 | memory 组件：`memory/`、sidecar 与锁文件、`recall` 工具、记功与容量、快照走阶梯、记忆 → 技能 → 工具的升级 | 假上游上 `--phase library` 端到端；变异检查在隔离副本 | $0（sidecar venv 联网安装） | 完成（2026-10-09，`s2/memory`）：假 client 与真 sidecar 各端到端一遍；285 个变异全被杀；待用户确认后合入 |
 | 3 | 改进器：`improver/` 八步、toolcheck 与回放、分层估值与代码先验、档案与反膨胀、R 的配置 | 假上游上脚本化的 R 一轮端到端：tool 候选过 V0～V2a 并在 V3 记条件修复；hook 候选过 V2b；有可机械化簇而无代码候选时台账记 `no_code_candidate` | $0 | 完成（2026-10-09，`s3/improver`）：四种验收都端到端成立，另有快照固定候选进 V3 并装入；257 个新测试，变异 238/243 被杀；评审 12 条全修；待用户确认后合入 |
-| 4 | finance 实测：新 preset，基线 → library → 最多 8 轮、gate 每两轮一次（每步后停）→ 有装入则封存 final → RESULTS、README、合入 main | 过程检查成立；计划哈希早于第一次 test 尝试；报告两次相同 | 名义约 $440（$350～600），每步先批准 | 进行中：finance-v1 在 library 第一步作废（$54.93）；finance-v2 基线 $51.64、library $92.31（D = 3，快照超上限）；第 0 轮 $25.23、第 1 轮 $24.39，gate 都拒绝（增益 0），两轮无装入按耐心规则结束，没有 final。之后三项修复已合入 `s4/finance`（$0）：快照按记功装进 `max_memory_bytes`、V3 只在 R 没研究过的留出 train 题上筛、没用的名额记进台账与估值。finance-v3：freeze（K `core:8a4765606710`）、基线 $51.49（train 23/50，dev 7/25 与 8/25），止于此。之后四项修复（DESIGN §6.12，$0）又改了 K：finance-v4（freeze K `core:a587428e5f26`，6 轮，gate 在第 1、3、5 轮）：基线 $52.28（train 24/50，dev 9/25 与 10/25；real_date 的两道 train 题翻成通过）；library $90.13（219 条，D = 0.0，快照不送 gate）；第 0 轮 $14.43（`send_email`、`compute` 两个工具与一个技能过免费阶梯，`send_email` 留出净 +1 累积）；第 1 轮 $42.47（prompt、hook、技能各一，技能样本内净 +1 进 gate；gate 拒绝，增益 −0.02）；下一步第 2 轮 |
+| 4 | finance 实测：新 preset，基线 → library → 最多 8 轮、gate 每两轮一次（每步后停）→ 有装入则封存 final → RESULTS、README、合入 main | 过程检查成立；计划哈希早于第一次 test 尝试；报告两次相同 | 名义约 $440（$350～600），每步先批准 | 进行中：finance-v1 在 library 第一步作废（$54.93）；finance-v2 基线 $51.64、library $92.31（D = 3，快照超上限）；第 0 轮 $25.23、第 1 轮 $24.39，gate 都拒绝（增益 0），两轮无装入按耐心规则结束，没有 final。之后三项修复已合入 `s4/finance`（$0）：快照按记功装进 `max_memory_bytes`、V3 只在 R 没研究过的留出 train 题上筛、没用的名额记进台账与估值。finance-v3：freeze（K `core:8a4765606710`）、基线 $51.49（train 23/50，dev 7/25 与 8/25），止于此。之后四项修复（DESIGN §6.12，$0）又改了 K：finance-v4（freeze K `core:a587428e5f26`，6 轮，gate 在第 1、3、5 轮）：基线 $52.28（train 24/50，dev 9/25 与 10/25；real_date 的两道 train 题翻成通过）；library $90.13（219 条，D = 0.0，快照不送 gate）；第 0 轮 $14.43（`send_email`、`compute` 两个工具与一个技能过免费阶梯，`send_email` 留出净 +1 累积）；第 1 轮 $42.47（prompt、hook、技能各一，技能样本内净 +1 进 gate；gate 拒绝，增益 −0.02）；第 2 轮 $14.78（hook、技能、工具各一，筛选 0、0、−1，没有累积）；下一步第 3 轮（gate） |
 | 5 | 训练绑定：v2.0 离线链对新记录跑通，`model` 组件绑定；之后按 V2 的 v2.1、v2.2 | V2 §5 的断言 | $0；v2.1 另批 | 待做 |
 
 每个阶段：先把 DESIGN 的对应节改定稿 → 代码 → 测试 → JOURNAL → 停。阶段 1～3 各自一个分支，串行合入。阶段 4 期间不往它的检出合入代码（规则 13）。
