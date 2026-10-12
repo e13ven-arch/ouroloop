@@ -44,9 +44,9 @@
 | 分支 | `s5/search-loop`（阶段 4b、4c）已合入 `m1-automationbench`（`d36ee5d`）；finance-v5 从这个检出跑，期间 `ouroloop/` 不再合入。`main` 在 `b71502d`（v0.3） |
 | 代码 | 阶段 1～3 完成：`contracts.py`、`harness/`（含 stirrup 种子）、`runtime/`（含 `trace.py`）、`evaluate/`、`memory/`（ReMe sidecar、桥、规则、写入步、检索、快照、升级）、`improver/`、`activity/`。阶段 4b（DESIGN v1.2 的六处，JOURNAL 2026-10-11 阶段 4b 一条）已落地：一轮一个包（包级声明、聚焦清单、V0 两向比对、V2 按组件）、留出接受装入工作线（`rsi/active.json`，reason `screen`）、活动末 `--phase gate` 发布到 `rsi/released.json`（reason `gate`）、`after_turn` / `on_finish` 的 hook 可调 aux 模型（`hook_aux_calls`）、preset `automationbench_v2`（library 关）、K 的 `attempt_version` / `improver_version` 与 `[rsi] baseline_from` 的基线导入。10-10 的日期锚、V2a 探针、部分得分规则照用；carry、`gate_every`、样本内筛选删除 |
 | 测试 | 规则放宽后（2026-10-12，`m1-automationbench`）：全量 1,533 passed、1 deselected。阶段 4c 后：默认 1,442 passed、87 deselected；全量（Docker worker 镜像 `sha256:04dbf822…` + 真 memory sidecar）1,528 passed、1 deselected（JOURNAL 2026-10-12 阶段 4c 一条）。两个既有的负载相关中断测试在整套里不稳定、单跑通过、基线 033515d 上亦然。memory 的 venv 在本机 `~/.cache/ouroloop/memory-venv/19f9b139c36d1d05` |
-| test 读过几次 | finance 1、support 0、sales 0、hr 0、marketing 3；operations 从未读过 |
+| test 读过几次 | finance 2（v1 的 final、v5 的 final）、support 0、sales 0、hr 0、marketing 3；operations 从未读过 |
 | 本机记录 | `examples/automationbench/workspace-*/`、`examples/workspace-*/`、`ws/`、`*.local.toml`，git 忽略，不删不改 |
-| 下一步 | finance-v5 已按决定发布（W\* `b114e5e766dc`，JOURNAL 2026-10-12 收口一条），但 final 封不上：份额 $200 装不下预期 $192 加预留 $113，K 冻结改不了。待用户定三条路之一（JOURNAL 同条）；之后合入 `s6/yield`（先跑全量测试），finance-v6 从 v5 的 W\* 起步流式跑 |
+| 下一步 | finance-v5 结束（final：W\* 26/50 对 W0 25/50，+4.0 点 [−4.0, 12.7]，$259.45；JOURNAL 2026-10-12 final 一条）。然后：合并后的 `s6/yield` 全量测试、快进合入 `m1-automationbench`；finance-v6 按 3 个域（用户 2026-10-12："先跑 3 个域"）：smoke、freeze、`--phase stream`、release、freeze、evaluate |
 
 ## 1 规则
 

@@ -2,7 +2,7 @@
 
 ## Summary
 
-Three sealed finals so far. In each, an automatically evolved version W\* was measured against the same starting version W0 on a held-out test split, under a plan sealed and committed before any test task was run: v0.1 and v0.2 on Marketing (23 tasks × 2 runs), v0.4 on finance (25 tasks × 3 runs). v0.3 and v0.5 have no final.
+Four sealed finals so far. In each, an automatically evolved version W\* was measured against the same starting version W0 on a held-out test split, under a plan sealed and committed before any test task was run: v0.1 and v0.2 on Marketing (23 tasks × 2 runs), v0.4 on finance (25 tasks × 3 runs), finance-v5 on finance (50 tasks × 3 runs, the two-way split). v0.3 and v0.5 have no final.
 
 | Activity | W0 on test | W\* on test | Paired difference, 95% interval | Verdict |
 |---|---|---|---|---|
@@ -12,8 +12,29 @@ Three sealed finals so far. In each, an automatically evolved version W\* was me
 | v0.3 (five domains, one shared package) | — | — | — | No final: no change was installed, so by the rule fixed before the run none was run; the new domains' test split is unread |
 | v0.4 (finance, one single-domain activity) | 54.7% | 62.7% | **+8.0** [−4.0, +22.7] | C1 inconclusive; cost per attempt −22%, significant |
 | v0.5 (support, the v0.5 framework against v0.4's in two arms) | — | — | — | No final: the user stopped the comparison on 2026-10-08 after both baselines and the experience-library phase; H1 and C1 are untested and support's test split is unread |
+| finance-v5 (finance, the v1.2 search loop: two rounds, one accepted hook; the two-way split, no dev) | 52.7% (25/50 pass all three repeats) | 56.7% (26/50) | **+4.0** [−4.0, +12.7] | C1 inconclusive; partial credit 0.870 → 0.877; cost per attempt +23% |
 
 What this says: in all three finals the loop found changes from training failures alone that raised the held-out score, by +13, +4 and +8 points. Only the first was large enough for 23–25 test tasks to call significant; the three estimates agree with each other within the noise. v0.4's change also made each attempt 22% cheaper, which is significant on its own. The recursive part, R improving its own research prompts (C4), has not been shown: in v0.2's research slot neither R0 nor the R1 it proposed added anything to W\*, so there was nothing to compare. v0.3 and v0.5 add no held-out number and change none of the rows above. Over five domains with one shared package, v0.3 passed no change through the dev gate in three rounds. v0.5's two-arm comparison on support was stopped before any final, so its numbers are train and dev process evidence only.
+
+## finance-v5: finance, the v1.2 search loop on the two-way split (2026-10-12)
+
+The first activity of the redesigned loop (DESIGN v1.2, stages 4b and 4c; JOURNAL 2026-10-11 to 2026-10-12): finance's 100 public tasks split 50/50 into train and test by the stratified rule (`3b959d143f9d8468`), no dev split and no baseline phase; the improver studies 30 train tasks and screens each candidate package on the other 20, held out from it; an accepted package installs on the working line, which is released by decision when the rounds are over; the final's two arms are the number. Preset `automationbench_v2` (the memory off), the stirrup seed, Claude Opus 5.5 at medium effort, the claude_code CLI.
+
+**The rounds.** Round 0 (W0 on train 25/50): R wrote one `before_tool` hook, `scope`, which intercepts each outgoing message once and hands the decoded body back with an instruction to check the request's scope; the held-out screen read 12/20 against W0's 10/20 (three fixed, one regressed, net +2) and the package was installed. Round 1 (the working line on train 32/50): R wrote an `on_finish` audit hook that calls the aux model once; the screen read 11/20 against 12/20 (one fixed, two regressed) and it was rejected — the audit took the CLI's real date for the task's and made the agent write excluded items into an email. The working line was released by decision as W\* (`b114e5e766dc`).
+
+**The final** (plan `15d7612aeec4`, sealed and committed before the first test attempt; 50 test tasks × 3 repeats × 2 arms = 300 attempts, all valid; $179.52):
+
+| | W0 (the seed) | W\* (the seed + the scope hook) |
+|---|---|---|
+| Tasks passing all three repeats | 25/50 | 26/50 |
+| Mean pass rate (per task, over its three repeats) | 52.7% | 56.7% |
+| Partial credit | 0.870 | 0.877 |
+| Cost per attempt | $0.54 | $0.66 |
+| Tasks by repeats passed, 0 / 1 / 2 / 3 | 23 / 0 / 2 / 25 | 18 / 5 / 1 / 26 |
+
+W\* − W0 = +4.0 points, 95% interval [−4.0, +12.7] over 50 families: not significant. The shape of the gain: five tasks W0 never passed now pass sometimes (1 of 3), one more task passes every time. On train the hook read +14 points (25/50 → 32/50): +17 on the 30 tasks R studied, +10 on the 20 it never saw; on test, +4. The activity spent $259.45 of its $500 root (two rounds $79.93, the final $179.52).
+
+What this says: the v1.2 loop installs a mechanism from held-out acceptance in one round, and the mechanism does not regress on test; the gain is small and within noise, which is what two rounds and one accepted package buy. The next number comes from finance-v6 (stage 4d/4e: several packages a round with stacking, the audit-hook suggestion with the aux date anchor fixed, the streaming loop, three domains' train), whose W0 arm is this activity's W\*.
 
 ## v0.5: support, stopped after the experience-library phase (2026-10-08)
 
