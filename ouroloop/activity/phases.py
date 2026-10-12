@@ -178,8 +178,13 @@ def seed_literal_scan(activity) -> dict:
         rows.append({"task_id": tid, "assertions": [dict(a) for a in grading.assertions],
                      "state": grading.initial_state, "prompt": activity.suite.tasks[tid].trigger})
     banned = forbidden(literal_index(rows))
-    from ..harness.seed import seed_files
-    found = findings(seed_files(activity.k["harness"]["seed"], core=activity.k), None, banned)
+    # the seed release's own files: the code's seed, or another activity's W* under [rsi] seed_from
+    if activity.releases.active_ref():
+        files = activity.package(activity.seed_release()).files
+    else:
+        from ..harness.seed import seed_files
+        files = seed_files(activity.k["harness"]["seed"], core=activity.k)
+    found = findings(files, None, banned)
     return {"forbidden": len(banned), "findings": found}
 
 

@@ -272,6 +272,18 @@ class Releases:
                 self.events.append("installed", release=ref, revision=1, reason="seed")
         return release
 
+    def import_seed(self, package_ref: str, improver_ref: str, core_ref: str) -> Release:
+        """The first release of an activity that starts from another activity's released W* (`[rsi] seed_from`,
+        DESIGN §6.7 v1.3): reason `import`, no parent; like `seed`, a pointer already set is left alone."""
+        release = Release(parent_ref=None, package_ref=package_ref, improver_ref=improver_ref, core_ref=core_ref,
+                          receipt_ref=None, reason="import")
+        ref = self.objects.put(release)
+        with locked(self.active_path):
+            if not self.active_path.exists():
+                write_json(self.active_path, {"release_ref": ref, "revision": 1, "last_operation_id": None})
+                self.events.append("installed", release=ref, revision=1, reason="import")
+        return release
+
     def candidate(self, package_ref: str, receipt_ref: str, *, parent: Release | None = None) -> Release:
         """The release a gate's receipt would install: the parent with W replaced, R and K carried over."""
         parent = parent or self.active()

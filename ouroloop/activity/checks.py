@@ -135,7 +135,12 @@ def correctness_problems(activity, *, phase: str, needs_worker: bool) -> list[st
             seed = Package(manifest=parse_manifest(files["manifest.json"], files, limits=Limits.from_core(activity.k)),
                            files=files) if not shape else None
             first = activity.releases.history()[-1]
-            if seed is not None and seed.ref() != first.package_ref:
+            imported = next(iter(activity.events.read("seed_imported")), None)
+            if imported is not None:            # the seed is another activity's W*: it stays what the import said
+                if first.package_ref != imported.get("package"):
+                    problems.append(f"the seed release's package ({first.package_ref[:28]}) is not the imported W* "
+                                    f"({str(imported.get('package'))[:28]}): the seed moved under the activity")
+            elif seed is not None and seed.ref() != first.package_ref:
                 problems.append(f"the seed K builds now ({seed.ref()[:28]}) is not the seed release's W0 "
                                 f"({first.package_ref[:28]}): the seed's source changed under the activity")
     if needs_worker:

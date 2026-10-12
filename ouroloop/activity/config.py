@@ -25,7 +25,7 @@ from .presets import RULES, preset
 SECTIONS = ("bench", "limits", "model", "research_model", "pricing", "harness", "worker", "memory", "improver", "gate",
             "schedule", "budget", "final")
 OTHER_TABLES = ("workspace", "rsi", "env_file")
-RSI_KEYS = ("scope_id", "core_ref", "split_ref", "final_plan_ref", "baseline_from")
+RSI_KEYS = ("scope_id", "core_ref", "split_ref", "final_plan_ref", "baseline_from", "seed_from")
 OLD_TABLES = {"llm": "[model]", "research": "[research_model]", "improvement": "[harness] preset and [improver]",
               "harness_evolution": "[harness]", "freeze": "[gate], [schedule], [budget] and [final]",
               "estimate": "nothing: the final's estimate reads the costs on record",
@@ -68,6 +68,8 @@ def check_tables(cfg: dict) -> None:
             raise ConfigError(f"[rsi] {key} = {value!r} is a placeholder: run `ouroloop freeze` and name its ref")
     if rsi.get("baseline_from") is not None and not isinstance(rsi["baseline_from"], str):
         raise ConfigError("[rsi] baseline_from is the path of the workspace whose W0 readings are imported")
+    if rsi.get("seed_from") is not None and not isinstance(rsi["seed_from"], str):
+        raise ConfigError("[rsi] seed_from is the path of the workspace whose released W* seeds this activity")
 
 
 # ---------------------------------------------------------------------------- merging (only tighten)
