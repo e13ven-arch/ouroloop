@@ -601,6 +601,9 @@ def test_an_activity_seeded_from_another_ones_release_line_starts_at_its_w_star(
                      rsi={"scope_id": "rsi-test", "seed_from": str(bare.root)})
     with pytest.raises(ConfigError, match="is not an activity's workspace"):
         rsi.activity(tmp_path / "fourth", fake_upstream, rsi={"scope_id": "rsi-test", "seed_from": str(tmp_path / "x")})
+    # a refused import leaves no K behind (2026-10-13): the next freeze, under whatever code, starts clean
+    assert not (tmp_path / "third" / "core.json").exists() and not (tmp_path / "fourth" / "core.json").exists()
+    assert not (tmp_path / "third" / "rsi" / "events.jsonl").exists()
 
 
 def test_an_activity_can_be_seeded_from_another_ones_working_line(tmp_path, fake_upstream):

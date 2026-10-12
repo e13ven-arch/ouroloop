@@ -83,6 +83,6 @@ domains = ["finance"]
 scope_id = "finance-v7"
 seed_from = "workspace-finance-v6"
 seed_line = "working"
-core_ref = "core:sha256:0246b468197889412560d98630604e8330cee328231fdc5cf4c711e018b85c23"
+core_ref = "core:sha256:2a59d873549c483fe7dc74892a3ae60695d011d27b2c61bfaaf8be9161746993"
 split_ref = "1bbf01533d7256af"
 # final_plan_ref: after `--phase release` and the second `freeze`

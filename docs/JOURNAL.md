@@ -18,8 +18,9 @@
   - `[rsi] seed_line = "released" | "working"`（默认 released）：`working` 导入源工作线的头；源活动没有那条线时拒绝；`seed_imported` 事件记 `source_line`。
   - 导入的 W\* 重放到本代码的种子上（`workspace.rebase_files`）：基准是沿 `seed_imported` 回溯到的第一个 reason `seed` 的 release（`origin_seed`；v6 的种子自己就是 v5 的 W\*，拿 v6 的种子当基准会把 v5 的 scope hook 当成"框架文件"换掉——第一版就是这么错的，freeze 报 `test files not listed in the manifest: ['tests/test_scope.py']`）。R 在整条链上没碰过的框架文件取本代码的，新文件补进来，R 改过的照 R 的（框架也改过的记 `kept_over_code`），R 删掉的保持删掉；换了文件就是新的包 ref。没有这一步，v6 的 W\* 带着旧适配层进 v7，审核 hook 答 `missing` 会被旧适配层当成 `HookError`。
   - 测试：`rebase_files` 的四种情形；从工作线导入（默认拒绝、`seed_line` 的两个校验、事件、final 的 W0 臂）；三级链 first → second → third 的 origin 与"同一代码下不重放"。
-- finance-v7：smoke `--checks-only` 过（字面量 0、泄漏 0），`freeze`：导入 v6 工作线 `release:8ea81218e119`（s0 的系统提示词包；留出 7/13 对 4/13），4 个框架文件换成本代码的（`agent/stirrup_agent.py`、`middlewares/write_guard.py`、两个种子测试），scope hook、`tests/test_scope.py`、R 的 `prompt/system.md` 原样；W0 `package:e38c14942fbf`，K `core:0246b4681978`，划分 `1bbf01533d7256af`（与 v6 同一划分），预算根 $750、final 下限 $230。
+- finance-v7：smoke `--checks-only` 过（字面量 0、泄漏 0），`freeze`：导入 v6 工作线 `release:8ea81218e119`（s0 的系统提示词包；留出 7/13 对 4/13），4 个框架文件换成本代码的（`agent/stirrup_agent.py`、`middlewares/write_guard.py`、两个种子测试），scope hook、`tests/test_scope.py`、R 的 `prompt/system.md` 原样；W0 `package:e38c14942fbf`，K `core:2a59d873549c`（重新 freeze 后；第一次冻出的 `core:0246b4681978` 记错了改进器代码版本，见下），划分 `1bbf01533d7256af`（与 v6 同一划分），预算根 $750、final 下限 $230。
 - 全量测试（Docker + memory sidecar，`-m "not live"`）：1,557 passed、1 deselected，12 分 50 秒。没付费、没读 test 内容。
+- 启动 stream 被拒：`K froze the improver code at d3d666e7… and this checkout is 3f2deb7c…`。原因是 `open_activity` 先写 core.json 再导入种子：第一次 freeze 的导入失败（上面的 `tests/test_scope.py`）时 K 已经写下，记的是那版错代码的 `improver_version`；第二次 freeze 见 core.json 已在、节相同，按规则 13 的放宽接受了它。修法：种子先解析（导入并重放，或由代码建）、再写 core.json、再装种子 release，导入被拒不留下 K；测试断言被拒的导入不留 core.json 与事件。那个半冻结的工作区没有任何尝试记录（$0），改名为 `workspace-finance-v7-aborted-freeze-2026-10-13/` 留着不删，`workspace-finance-v7/` 重新 freeze（K `core:2a59d873549c`）。修后的全量测试再跑一遍：1,557 passed、1 deselected。
 
 ---
 
