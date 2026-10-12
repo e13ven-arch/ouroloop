@@ -16,6 +16,8 @@ class Settings:
     packages_per_round: int = 3                  # R 每轮交的候选包数（v1.3：各自筛选，接受的叠装，§9.4）
     audit_hook_share: float = 0.3                # 只剩文字载体的簇占失败案例的份额到此，清单建议一个调 aux 的审核 hook（§6）
     stream_screen_max: int = 30                  # 流式一轮的留出筛选最多跑最近多少道留出题（§3.1；v1.4 从 20 提到 30）
+    failures_max_cases: int = 30                 # inputs/failures.json 最多几条并排（v1.5，§7）
+    failures_case_chars: int = 4000              # 一条并排的正文上限（写入摘录按比例截）
     fixed_per_round: int = 2                     # 固定代码的候选（快照、升级技能、删除）每轮上限
     session_max_turns: int = 40; session_max_edits: int = 48
     session_max_read_bytes: int = 65536; session_max_read_total: int = 196608
@@ -93,8 +95,12 @@ class Evidence:
     def of(self, row: TaskResult) -> AttemptEvidence                   # 只对 train；dev/test 抛 TraceAccessError
     def features(self, ev) -> dict                                     # 确定性：失败断言类型、工具错误、终止、写入数、hook、工具、技能、条目
     def footprint(self, row, component: dict) -> bool                 # 该尝试里这个组件有没有出现（V3 条件记功与记功共用）
+    def digest(self, ev, *, chars) -> dict                             # v1.5：一条并排——请求、失败断言（类型与参数）、写入（工具、方法、URL、正文摘录）、最后的话、读 / 搜计数
+    def persistence(self, task_id) -> int                              # v1.5：这道题在工作线几个不同的包下失败过
 def dev_histogram(activity, release) -> dict                          # 失败断言类型 → 计数；不带题号、参数
 ```
+
+`digest`（DESIGN §6.15）：写入 = `tool` 行里 `api_fetch` 非 GET / HEAD 的调用与包工具的写调用，取方法、URL（去协议）与正文前若干字符；GET 与 `api_search` 只计数；最后的话取 `end` 行的 final text。只对 train；留出题由调用方不传。
 
 `footprint`：tool 在 gateway 的回复里被调用过；hook 在 `hook` 行里触发过（action ≠ none）；skill 在 `skill_read` 行里读到过；memory 条目在 `library_retrieval` 行里给过；prompt、agent、config、vendor 是全部题。
 
@@ -102,8 +108,9 @@ def dev_histogram(activity, release) -> dict                          # 失败�
 
 ```python
 CAUSES = ("excluded_mentioned", "missed_action", "wrong_target", "missing_recipient", "unread_value", "arith_mismatch",
-          "real_date", "wrong_location", "premature_stop", "tool_error_loop", "context_overflow", "finish_protocol", "other")
-MECHANIZABLE = ("excluded_mentioned", "arith_mismatch", "real_date", "wrong_location", "tool_error_loop")
+          "real_date", "wrong_location", "premature_stop", "tool_error_loop", "context_overflow", "finish_protocol",
+          "rule_not_applied", "vocabulary_mismatch", "omitted_report", "other")      # 后三个 v1.5（DESIGN §6.15）
+MECHANIZABLE = ("excluded_mentioned", "arith_mismatch", "real_date", "wrong_location", "tool_error_loop", "vocabulary_mismatch")
 LOOP_CAUSES = ("context_overflow", "finish_protocol", "tool_error_loop")
 @dataclass(frozen=True)
 class Case(Record):  attempt_id; task_id; cause; mechanizable: bool; evidence_refs: tuple; assertion_kinds: tuple; tool_errors: tuple; termination; note; proposed: str
@@ -119,6 +126,7 @@ def vocabulary_extension(cases, vocabulary) -> list[str]
 - 缓存：请求摘要 + 模型名相同就复用，不调模型。
 - memory 的升级（MEMORY §8）：`promotable(entries, settings, mechanizable)` 的 `mechanizable(entry)` 就是对条目原文做同一种 aux 分类，cause 落在 `mechanizable` 里 → `cause_input` 并进那个簇（`memory_entries`）；否则 → 技能候选（固定代码，§10）。
 - 簇 = 同 cause 的案例；`cause_id = f"{round_id}:{name}"`；按题数、再按名字排序。
+- v1.5 的三个 cause（DESIGN §6.15；定义进 `DEFINITIONS` 与诊断提示）：`rule_not_applied`——读过的政策 / 流程 / 更新邮件里的一条要求（一步、一个通知、一个值、一个阈值）没执行到；`vocabulary_mismatch`——记录、政策或请求命名了状态、类别、标签、列格式或单位，agent 用了自己的词、格式或单位；`omitted_report`——请求或政策要求出现在消息或记录里的通知、标记、条目没写（被挡住的动作没报告、被拒 / 被标记的项没列、汇总没发）。`missed_action` 与 `unread_value` 相应收窄为请求正文直接要求的。
 
 ## 6 聚焦（`allocate.py`，v1.2）
 
@@ -163,12 +171,13 @@ class SessionResult: packages: list[tuple[str, dict[str, str], Declaration]]; tu
 TOOLS = ("list_files", "read_file", "write_file", "edit_file", "delete_file", "read_trajectory", "search_trace", "run_tests", "run_check", "finish")
 ```
 
-- 输入 `inputs/`：`focus.json`（§6 的清单）、`causes.json`（研究部分全部簇与案例、证据 ref）、`successes.json`、`histogram.json`（dev 失败类型，只有枚举与计数）、`ledger.json`（投影，留出题号换成计数）、`scoreboard.json`、`playbook.md`、`package_api.md`、`base_tools.json`。
+- 输入 `inputs/`：`focus.json`（§6 的清单）、`causes.json`（研究部分全部簇与案例、证据 ref）、`successes.json`、`histogram.json`（dev 失败类型，只有枚举与计数）、`ledger.json`（投影，留出题号换成计数）、`scoreboard.json`、`playbook.md`、`package_api.md`、`base_tools.json`；v1.5 加 `failures.json`（DESIGN §6.15：研究部分每个失败案例的并排——请求、失败断言的类型与参数、写入、最后的话、cause、`persistent`，按 cause 分组，最多 `failures_max_cases` 条、每条 `failures_case_chars` 字；留出题不进）。
 - 候选目录固定为 `candidates/package/`（`packages_per_round` > 1 时 `package-2/` …）；第一次写就把当前包复制进去。
 - `run_check()` 对候选包跑 V0～V2，按组件返回；`run_tests()` 跑包测试；都不付费。
 - `finish` 带包级声明：`mechanism` 一句话；每个改动的组件一条 `Component`；tool 的 `scripts` 或 `probes`、hook 的 `predicted_affected`、skill 的 `site` 是它的名字；`uses_model` 标出调 aux 的 hook。声明与 diff 不一致（声明了不存在的组件、改了没声明的组件）或某组件不过 V2 → 退回修订一次；仍不过 → 本轮无候选，台账记原因。
 - 提示词（`improver/prompts/propose.md`）相应改：一轮交一个包；对清单里的几个簇一起下手；一个机制可以是工具 + 强制它的 hook + 说明何时用的技能；提交前的审核 hook 可以调 aux 模型；不把一道题的值写进包。
 - v1.3：`packages_per_round` > 1 时提示词要求交几个包就是几种不同的机制、对不同的簇，第一个包对最大的簇；`audit_suggested` 时明说第二个包应当是审核 hook；每个组件的 `cause_ids` 尽量列出它覆盖的所有簇；叠装规则告诉 R：不同的包不要改同一个文件（manifest 除外）。
+- v1.5：提示词说明顽固失败的三种形态（文档里的一条要求没执行到、没沿用记录的词与格式、该报告的没报告），要求候选改变 agent 从文档到动作的方式——把读过的文档里的每条要求与原词抽成待办，做完前逐条对照，被挡住或被拒的项按请求报告——而不是再加一个"再看一眼"的提醒（scope hook 这类试过，带来了漏报）；`failures.json` 的 `persistent` 条目优先。
 
 
 ### 7.1 组合（v1.2：默认）
