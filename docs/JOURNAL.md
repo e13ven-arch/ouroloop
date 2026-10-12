@@ -8,6 +8,20 @@
 
 ---
 
+## 2026-10-12 finance-v5 收口：按决定发布（$0）；final 封不上——$200 的份额装不下 300 次尝试加预留
+
+- 用户的决定（2026-10-12）："按建议 2 收口，先跑 release"。
+- `--phase release`（$0）：工作线 `00ea3d9c6ce0` 的包 50 道 train 读数已齐（研究部分第 1 轮现量过、留出部分第 0 轮筛选读过），不补测；发布线 `b114e5e766dc`（reason `decision`，`rsi/released.json`、`release_decision` 事件）。
+- `freeze` 封存 final 被拒（$0，没写任何东西）：估价 W0 150 次 × $0.5710（70 条读数）= $85.65，W\* 150 次 × $0.7097（50 条）= $106.46，预期 $192.10；再加并发 8 的在飞预留 8 × $11.28 = $90.21 与 2 份卡住的预留 $22.55，共 $304.87，份额 $200 装不下。并发降到 1 也要 $225.93。单次调用的预留上限 $11.28 来自 `[pricing]`（输入上限 1M token 按 cache write $8/M 计，输出 163,840 token 按 $20/M），是实测每次调用（约 $0.02～0.10）的百倍；`[budget] final_usd`、`[pricing]`、`[final] repeats`（floor 3）都在 K 里，K 已冻结，改哪个都是新活动。份额 $200 是冻结时按"两臂 50 题 × 3 遍约 $150"估的，没算预留。
+- 顺带发现：`final_estimate` 按 release ref 归并读数，W\* 的 50 条里含第 1 轮被拒候选在同一 release 下跑的 20 条筛选尝试（$0.76），所以 $0.7097 比包自己的 $0.6712 高；差约 $6，`s6/yield` 上改（改 `evaluate/final.py` 是新 improver_version）。
+- 没读任何 test 题。
+- 待用户决定，三条路（都要先合入 `s6/yield`，finance-v5 已不再从这个检出付费）：
+  1. 新建活动 `finance-v5-final`，`[rsi] release_from = workspace-finance-v5` 把 v5 的发布线 W\* 导进来作 W\*、代码种子作 W0（小改动：导入发布线，像 `seed_from` 一样复制闭包、查形状，reason `import`），final 份额按估价加预留设 $320（实付约 $195）。拿到 v5 的两个数。
+  2. 不改代码：两个只有一臂的活动（`seed_from = v5` 的 W\* 一个、代码种子一个），各封各的 final；两个数分开报，没有配对区间。
+  3. 跳过 v5 的 final，直接 finance-v6（它的 final 的 W0 臂就是 v5 的 W\*）；代码种子的数要么不报，要么给 final 加第三臂。
+
+---
+
 ## 2026-10-12 finance-v5 第 1 轮：R 交了一个调 aux 模型的 on_finish 审核 hook，留出 11/20 对 12/20，净 −1，拒绝；工作线不动；$37.46
 
 - `--phase round --round 1`，自动跑完（用户 2026-10-12："跑第 1 轮，四条改动并行写"）。
