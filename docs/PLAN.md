@@ -48,7 +48,7 @@
 | 测试 | 规则放宽后（`m1-automationbench`）全量 1,533 passed、1 deselected；阶段 4d 后（`s6/yield`）默认 1,441 passed、20 skipped；合并 `m1-automationbench` 后的 `s6/yield` 全量 1,530 passed、20 skipped、1 deselected。两个既有的负载相关中断测试在整套里不稳定、单跑通过。memory 的 venv 在本机 `~/.cache/ouroloop/memory-venv/19f9b139c36d1d05` |
 | test 读过几次 | finance 2（v1 的 final、v5 的 final）、support 0、sales 0、hr 0、marketing 3；operations 从未读过 |
 | 本机记录 | `examples/automationbench/workspace-*/`、`examples/workspace-*/`、`ws/`、`*.local.toml`，git 忽略，不删不改 |
-| 下一步 | finance-v5 结束（final：W\* 26/50 对 W0 25/50，+4.0 点 [−4.0, 12.7]，$259.45；JOURNAL 2026-10-12 final 一条）。finance-v6 按 3 个域（用户 2026-10-12："先跑 3 个域"）：smoke、freeze、提交 `[rsi]`、`--phase stream`（约 $430）、release、freeze、evaluate |
+| 下一步 | finance-v6 的 `--phase stream` 在跑（3 个域 150 题、5 批，约 $430；JOURNAL 2026-10-12 finance-v6 开始一条）；跑完报告，然后 `--phase release`、`freeze` 封存、`--phase evaluate`（finance 50 题两臂 × 3 遍）、report |
 
 ## 1 规则
 

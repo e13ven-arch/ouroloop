@@ -8,6 +8,16 @@
 
 ---
 
+## 2026-10-12 finance-v6 开始：`s6/yield` 合入；三个域的 train 一个流；smoke 与 freeze；流式循环启动
+
+- 用户的决定（2026-10-12）："先跑 3 个域"。`s6/yield`（阶段 4d、4e、aux 日期锚、估价按包）合入 `m1-automationbench`（`0cc1861`；合并前在 worktree 上全量 1,530 passed）。finance-v6 从这个检出跑，期间 `ouroloop/` 不再合入。
+- 配置 `finance-v6.toml`：`domains = ["finance", "hr", "operations"]`，分层划分 seed 1（每个域 train 50 / test 50，哈希 `1bbf01533d7256af`），`seed_from = workspace-finance-v5`，`final.domains = ["finance"]`，`stream_batch` 30（5 批）、`stream_screen_max` 30、三个包一轮；根 $750、final $230（下限）；`[pricing] max_input_tokens` 400k（单次预留 $6.48）。
+- smoke（$0）：第一次 CHECKS FAILED——种子字面量扫描在种子自带的 `tests/test_write_guard.py` 里找到 6 个单题 train 值（'Dana Reyes' 是 operations 一道题的值，几个日期是 hr / operations 的）。这些测试只在 worker 里跑 V1，不进任何一次尝试，所以种子扫描改为不查 `tests/`（HARNESS §7；候选的改动行照查）。再跑：4,167 个单题值 0 命中，审计 0 泄漏，重叠 0.6 以上的 train 题对 80。
+- freeze（$0）：种子 release `9311c3643331` 是 v5 发布线 `b114e5e766dc` 的导入（W `bb2b13f5c849`，reason `import`，估值与剧本一并带来）；K `46054a3be25c`；无 gate 模板；final 未封存（无发布线）。`[rsi]` 两行已填进配置并提交（`a062039`）。
+- `--phase stream` 已启动（并发 8；约 $100 首遇 + 5 轮各约 $66）；跑完读 `rsi/stream.json`、各轮记录与报告。
+
+---
+
 ## 2026-10-12 finance-v5 的 final：W\* 26/50（56.7%）对 W0 25/50（52.7%），+4.0 点 [−4.0, 12.7]；$179.52
 
 - 封存的计划 `15d7612aeec4`：W0 `c7ed22185bcc`（种子）对 W\* `b114e5e766dc`（第 0 轮装入的 scope hook），finance 的 50 道 test 题 × 3 遍，两臂各 150 次尝试，全部有效。test 由本活动读了 1 次（finance 累计 2 次）。
