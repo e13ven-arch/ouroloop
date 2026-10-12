@@ -71,5 +71,7 @@ def ledger_rows(a, stage: str | None = None) -> list[dict]:
     return [r for r in rows if stage is None or r.get("stage") == stage]
 
 
-def round_state(a, index: int) -> dict:
-    return json.loads((a.root / "rounds" / f"r{index}" / "round.json").read_text(encoding="utf-8"))
+def round_state(a, index) -> dict:
+    """rounds/r<index>/round.json, or rounds/<index>/ when `index` names the directory (a stream round's "s0")."""
+    tag = index if isinstance(index, str) else f"r{index}"
+    return json.loads((a.root / "rounds" / tag / "round.json").read_text(encoding="utf-8"))

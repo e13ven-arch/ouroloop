@@ -72,14 +72,38 @@ class Evidence:
         rows = self.reading(package_ref)
         return [self.of(rows[t]) for t in self.activity.splits.ids(TRAIN) if t in rows and rows[t].success]
 
-    def best_successes(self, package_ref: str, n: int, tasks=None) -> list[AttemptEvidence]:
-        """The n cleanest successes (of `tasks` when given): fewest steps, then lowest cost, then the frozen order
-        (RRSI: keep what works)."""
+    def latest(self, tasks, *, prefer: str | None = None) -> dict[str, TaskResult]:
+        """{task_id: its latest valid train attempt} over `tasks`, in their order, under any package but the memory
+        stream's — the stream's evidence pool (IMPROVER §3.1), where a task is read once and its reading may be another
+        line's. With `prefer` (the working line's package) that package's latest attempt stands where it has one, so a
+        rejected candidate's screen attempt never replaces the line's own reading of a held-out task."""
+        wanted = set(tasks)
+        runs = self.activity.results.runs()
+        any_: dict[str, TaskResult] = {}
+        own: dict[str, TaskResult] = {}
+        for r in self.activity.results.all():
+            run = runs.get(r.run)
+            if r.split != TRAIN or r.validity != "valid" or r.task_id not in wanted or run is None \
+                    or run.role in NOT_READINGS:
+                continue
+            any_[r.task_id] = r
+            if prefer is not None and run.package_ref == prefer:
+                own[r.task_id] = r
+        return {t: own.get(t, any_[t]) for t in tasks if t in any_}
+
+    def cleanest(self, rows: dict, n: int) -> list[AttemptEvidence]:
+        """The n cleanest successes of a reading ({task: TaskResult}): fewest steps, then lowest cost, then the frozen
+        order (RRSI: keep what works)."""
         order = {t: i for i, t in enumerate(self.activity.splits.ids(TRAIN))}
-        passed = [e for e in self.passed(package_ref) if tasks is None or e.task_id in set(tasks)]
+        passed = [self.of(r) for r in rows.values() if r.success]
         passed.sort(key=lambda e: (e.result.steps, e.result.cost_usd if e.result.cost_usd is not None else 1e9,
                                    order.get(e.task_id, len(order))))
         return passed[:max(int(n), 0)]
+
+    def best_successes(self, package_ref: str, n: int, tasks=None) -> list[AttemptEvidence]:
+        """The n cleanest successes of the package's reading (of `tasks` when given)."""
+        wanted = None if tasks is None else set(tasks)
+        return self.cleanest({t: r for t, r in self.reading(package_ref).items() if wanted is None or t in wanted}, n)
 
     # ------------------------------------------------------------------ one attempt
     def of(self, row: TaskResult) -> AttemptEvidence:

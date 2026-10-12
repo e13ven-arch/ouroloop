@@ -23,6 +23,7 @@ from ouroloop.runtime.app import App, exported_objects
 from ouroloop.runtime.records import session_file
 
 REPO = Path(__file__).resolve().parents[2]
+TOOL_NAME = "post_channel_message"            # the scripted R's tool (tests/improver/scripted_r.py)
 
 
 def quiet(_line):
@@ -546,6 +547,58 @@ def test_a_zero_dev_ratio_freezes_a_split_without_dev_tasks(tmp_path, fake_upstr
     assert a.splits.ids("dev") == [] and a.splits.ids("train") and a.splits.ids("test")
     assert len(a.splits.ids("train")) + len(a.splits.ids("test")) == len(rsi.TRAIN) + len(rsi.DEV) + len(rsi.FINAL)
     assert phases.gate_template(a) is None
+
+
+# ---------------------------------------------------------------------------- the working line across activities
+def test_an_activity_seeded_from_another_ones_release_line_starts_at_its_w_star(tmp_path, fake_upstream):
+    """DESIGN §6.7 (v1.3), EVALUATE §7: [rsi] seed_from makes the source's released W* this activity's seed (reason
+    import), R's estimates and playbook come along, the checks and the smoke read the imported seed, and the final's
+    W0 arm is it."""
+    import sys
+    sys.path.insert(0, str(REPO / "tests" / "improver"))
+    from rounds import round_activity
+    first = round_activity(tmp_path / "first", fake_upstream, "tool", baseline=False, freeze=False,
+                           splits_table=rsi.NO_DEV_SPLITS)
+    phases.freeze(first.a, out=quiet)
+    assert phases.round_(first.a, 0, out=quiet).accepted
+    released = a_released = phases.release(first.a, out=quiet)["released"]
+    w_star = first.a.releases.load(released)
+    assert (first.a.root / "ledger" / "estimates.json").exists() and (first.a.root / "ledger" / "playbook.md").exists()
+    lines = []
+    second = rsi.activity(tmp_path / "second", fake_upstream, out=lines.append, splits_table=rsi.NO_DEV_SPLITS,
+                          improver=first.a.config["improver"],
+                          rsi={"scope_id": "rsi-test", "seed_from": str(first.a.root)})
+    seed = second.seed_release()
+    assert (seed.reason, seed.parent_ref, seed.package_ref, seed.receipt_ref) == ("import", None, w_star.package_ref,
+                                                                                  None)
+    assert second.active_release().ref() == seed.ref() and second.releases.released_ref() is None
+    assert second.objects.has(w_star.package_ref)
+    assert TOOL_NAME in [t["name"] for t in json.loads(second.package().files["manifest.json"])["tools"]]
+    (event,) = second.events.read("seed_imported")
+    assert (event["source"], event["source_release"], event["package"]) == (str(first.a.root), a_released,
+                                                                            w_star.package_ref)
+    assert sorted(event["policy_files"]) == ["ledger/estimates.json", "ledger/playbook.md"]
+    assert (second.root / "ledger" / "estimates.json").read_bytes() == \
+        (first.a.root / "ledger" / "estimates.json").read_bytes()
+    assert any(line.startswith("release    ") and "imported" in line for line in lines)
+    # the checks and the smoke take the imported seed as the seed; the final compares with it
+    assert startup_checks(second, phase="round") == []
+    report = phases.smoke(second, checks_only=True, out=quiet)
+    assert report["ok"] and report["literals"]["findings"] == []
+    phases.freeze(second, out=quiet)
+    assert phases.final_plan(second).arms == {"W0": seed.ref()}
+    # opened again, the same seed
+    again = rsi.activity(tmp_path / "second", fake_upstream, splits_table=rsi.NO_DEV_SPLITS,
+                         improver=first.a.config["improver"], rsi={"scope_id": "rsi-test", "seed_from": str(first.a.root)})
+    assert again.seed_release() == seed and len(list(again.events.read("seed_imported"))) == 1
+    # a source without a release line, or no workspace at all, is refused before anything is written
+    from ouroloop.activity.config import ConfigError
+    bare = rsi.activity(tmp_path / "bare", fake_upstream, splits_table=rsi.NO_DEV_SPLITS)
+    with pytest.raises(ConfigError, match="has no release line"):
+        rsi.activity(tmp_path / "third", fake_upstream, splits_table=rsi.NO_DEV_SPLITS,
+                     rsi={"scope_id": "rsi-test", "seed_from": str(bare.root)})
+    with pytest.raises(ConfigError, match="is not an activity's workspace"):
+        rsi.activity(tmp_path / "fourth", fake_upstream, rsi={"scope_id": "rsi-test", "seed_from": str(tmp_path / "x")})
 
 
 # ---------------------------------------------------------------------------- the baseline's import

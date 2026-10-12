@@ -60,6 +60,7 @@ ouroloop bench --config C --phase cycle --until baseline   # W0 on train and on 
 ouroloop bench --config C --phase cycle --until library    # the memory's train stream; its snapshot as a candidate
 ouroloop bench --config C --phase cycle --until round-0    # one improver round (then round-1, round-2: stop after each)
 ouroloop bench --config C --phase gate                   # the release gate: the working line against W0 on dev, once
+ouroloop bench --config C --phase stream --until batch-K # the streaming loop: first encounters, a round every batch
 ouroloop bench --config C --phase release                # no dev in the split: release the working line by decision
 ouroloop bench --config C --phase report                # the report from what is on disk; no model is called
 ouroloop export --config C --to DIR                     # the released W* as an app
@@ -85,6 +86,19 @@ promotes the working line by decision after reading its own train tasks; the fin
 to report, W0 beside W*. A round needs the gate plan `freeze` wrote; it is priced
 before its screen is paid, and a resumed round pays only for what is missing. `cycle` stops after
 `schedule.patience` rounds in a row without an acceptance; `cycle --until gate` runs the gate after them.
+
+The streaming loop (`--phase stream`, docs/DESIGN.md §6.13, v1.3) is the other way to spend the train tasks: in a
+frozen order (K's `gate.order_seed`), each task is done once on the working line and scored at that first encounter,
+every `schedule.stream_batch` scored tasks the improver runs a round over the pool of everything scored (nothing is
+measured again; the round lives under `rounds/s<i>`), and an accepted package is installed before the next batch runs.
+`--until batch-K` stops after the K-th batch; run again, the phase continues and pays for nothing on record. The report's
+stream section gives each batch's first-encounter pass rate on the line that ran it and the whole stream's curve. An
+activity may start where another one released: `[rsi] seed_from = <that workspace>` imports its released W* as the seed
+(the final's W0 arm), with R's estimates and playbook (`finance-v6.toml`). This version streams the train split with the
+memory off; the test segment and the memory's stream come later. An activity may also span several domains
+(docs/DESIGN.md §6.14): `[bench] domains = ["finance", "hr", "operations"]` loads their public tasks as one suite
+(the split is stratified per domain), and `[final] domains = ["finance"]` keeps the final and the release's reading
+to one of them, so the mechanisms are screened across domains and the number stays one domain's.
 
 ## What the smoke phase establishes
 

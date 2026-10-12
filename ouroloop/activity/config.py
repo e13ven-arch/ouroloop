@@ -25,7 +25,7 @@ from .presets import RULES, preset
 SECTIONS = ("bench", "limits", "model", "research_model", "pricing", "harness", "worker", "memory", "improver", "gate",
             "schedule", "budget", "final")
 OTHER_TABLES = ("workspace", "rsi", "env_file")
-RSI_KEYS = ("scope_id", "core_ref", "split_ref", "final_plan_ref", "baseline_from")
+RSI_KEYS = ("scope_id", "core_ref", "split_ref", "final_plan_ref", "baseline_from", "seed_from")
 OLD_TABLES = {"llm": "[model]", "research": "[research_model]", "improvement": "[harness] preset and [improver]",
               "harness_evolution": "[harness]", "freeze": "[gate], [schedule], [budget] and [final]",
               "estimate": "nothing: the final's estimate reads the costs on record",
@@ -68,6 +68,8 @@ def check_tables(cfg: dict) -> None:
             raise ConfigError(f"[rsi] {key} = {value!r} is a placeholder: run `ouroloop freeze` and name its ref")
     if rsi.get("baseline_from") is not None and not isinstance(rsi["baseline_from"], str):
         raise ConfigError("[rsi] baseline_from is the path of the workspace whose W0 readings are imported")
+    if rsi.get("seed_from") is not None and not isinstance(rsi["seed_from"], str):
+        raise ConfigError("[rsi] seed_from is the path of the workspace whose released W* seeds this activity")
 
 
 # ---------------------------------------------------------------------------- merging (only tighten)
@@ -207,8 +209,24 @@ def resolve(config: dict) -> dict:
         raise ConfigError(str(e)) from None
     sections = merge(config, table)
     bench = sections["bench"]
+    domains = bench.get("domains")
+    if domains is not None:
+        # v1.4 (DESIGN §6.14): several domains' tasks as one suite, named by the domains joined with `+`
+        if not isinstance(domains, list) or not domains or any(not isinstance(d, str) or not d or "+" in d
+                                                                for d in domains) or len(set(domains)) != len(domains):
+            raise ConfigError("[bench] domains lists distinct domain names, at least one")
+        joined = "+".join(domains)
+        if bench.get("domain") not in (None, joined):
+            raise ConfigError(f"[bench] domain {bench['domain']!r} and domains {domains}: name the domains once")
+        bench["domain"] = joined
     if not bench.get("domain"):
         raise ConfigError("[bench] domain is required")
+    final_domains = sections["final"].get("domains")
+    if final_domains is not None:
+        members = domains or [bench["domain"]]
+        if not isinstance(final_domains, list) or not final_domains or sorted(set(final_domains) - set(members)):
+            raise ConfigError(f"[final] domains = {final_domains!r}: a non-empty subset of the activity's domains "
+                              f"{members}")
     model = sections["model"]
     if not model.get("model"):
         raise ConfigError("[model] model names the actor (the claude_code CLI's model)")
@@ -223,6 +241,13 @@ def resolve(config: dict) -> dict:
     if budget.get("final_usd") is not None and budget.get("usd") is not None \
             and float(budget["final_usd"]) >= float(budget["usd"]):
         raise ConfigError("[budget] final_usd is a share of usd and leaves the rest something to spend")
+    schedule = sections["schedule"]
+    if isinstance(schedule.get("stream_batch"), bool) or int(schedule.get("stream_batch") or 0) < 1:
+        raise ConfigError("[schedule] stream_batch is how many scored tasks make a batch of the stream, at least 1")
+    splits = schedule.get("stream_splits")
+    if splits not in (["train"], ["train", "test"]):
+        raise ConfigError(f"[schedule] stream_splits = {splits!r}: the splits the stream runs, in order — [\"train\"] "
+                          f"or [\"train\", \"test\"] (DESIGN §6.13)")
     return sections
 
 

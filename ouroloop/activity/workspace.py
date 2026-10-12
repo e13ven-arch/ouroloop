@@ -13,13 +13,13 @@ from pathlib import Path
 from typing import Callable
 
 from ..adapters import automationbench as ab
-from ..contracts import Events, Objects, short, write_json
+from ..contracts import Events, Objects, copy_closure, short, write_json
 from ..evaluate.budget import BudgetAccount, Budgets, MeteredProvider, Pricing
 from ..evaluate.limits import Budget
 from ..evaluate.release import Release, Releases, attempt_version, improver_version
 from ..evaluate.results import Results, RunManifest
 from ..evaluate.splits import SPLIT_RULES, SplitManifest, TaskEntry, assign_splits, stratified_splits
-from ..harness.package import Package, load as load_package
+from ..harness.package import Limits, Package, check_shape, load as load_package
 from ..harness.seed import build_seed
 from .config import SECTIONS, ConfigError, Core, freeze_core, upstream_path, workspace_root
 
@@ -55,6 +55,17 @@ class Activity:
     @property
     def domain(self) -> str:
         return self.k["bench"]["domain"]
+
+    @property
+    def final_domains(self) -> list[str]:
+        """The domains the final runs on and the release reads (DESIGN §6.14): [final] domains, else every domain of
+        the activity."""
+        return list(self.k["final"].get("domains") or self.k["bench"].get("domains") or [self.domain])
+
+    def final_tasks(self, split: str) -> list[str]:
+        """The split's tasks of the final's domains, in the frozen order."""
+        wanted = set(self.final_domains)
+        return [t for t in self.splits.ids(split) if self.suite.domain_of(t) in wanted]
 
     @property
     def scope_id(self) -> str:
@@ -261,12 +272,14 @@ def open_activity(config: dict, *, out: Callable[[str], None] = print, freeze_k:
     """The activity of a config. `freeze_k` off (the smoke's checks) reads K without writing core.json or a release."""
     root = workspace_root(config)
     bench = dict(config.get("bench") or {})
-    if not bench.get("domain"):
+    if not bench.get("domain") and not bench.get("domains"):
         raise ConfigError("[bench] domain is required")
     versions = ab.require(upstream_path(config))
-    suite = ab.load_suite(bench["domain"], upstream_path(config))
     from .config import resolve
     sections = resolve(config)
+    bench = sections["bench"]
+    suite = ab.load_suites(bench["domains"], upstream_path(config)) if bench.get("domains") else \
+        ab.load_suite(bench["domain"], upstream_path(config))
     results = Results(root, sections["bench"]["domain"])
     splits, drift = freeze_split(suite, sections["bench"], results.manifest_path(), versions)
     core = freeze_core(config, split_hash=splits.hash(), attempt_version=attempt_version(),
@@ -303,10 +316,14 @@ def open_activity(config: dict, *, out: Callable[[str], None] = print, freeze_k:
         activity.events.append("core_frozen", core=core_ref, attempt_version=core.attempt_version,
                                improver_version=core.improver_version, split=splits.hash())
     if releases.active_ref() is None:
-        seed = build_seed(core.json()["harness"]["seed"], core=core.json(), objects=objects)
-        improver_ref = objects.put("improver", dict(R0))
-        release = releases.seed(seed.ref(), improver_ref, core_ref)
-        out(f"release    {short(release.ref())} seeded (W0 {short(seed.ref())}, R0, K {short(core_ref)})")
+        seed_from = (config.get("rsi") or {}).get("seed_from")
+        if seed_from:
+            release = _import_seed(activity, seed_from, out=out)
+        else:
+            seed = build_seed(core.json()["harness"]["seed"], core=core.json(), objects=objects)
+            improver_ref = objects.put("improver", dict(R0))
+            release = releases.seed(seed.ref(), improver_ref, core_ref)
+            out(f"release    {short(release.ref())} seeded (W0 {short(seed.ref())}, R0, K {short(core_ref)})")
     for line in drift:
         out(f"DRIFT      {line}")
     return activity
@@ -326,3 +343,44 @@ def _frozen_core(recorded: dict, objects: Objects, core_file: Path) -> Core:
         raise ConfigError(f"{core_file} names K {short(ref)} and its contents hash to {short(core.ref())}: the "
                           f"workspace's frozen K is not readable")
     return core
+
+
+# ---------------------------------------------------------------------------- the working line across activities
+POLICY_FILES = ("ledger/estimates.json", "ledger/playbook.md")      # R's learned policy, carried over with W*
+
+
+def _import_seed(activity: Activity, seed_from: str, *, out) -> Release:
+    """The seed of an activity that starts where another one released (DESIGN §6.7 v1.3, EVALUATE §7): the source
+    workspace's release line W* is copied into this object store (its closure), checked against this K's shape with the
+    code's seed as the vendored baseline, and installed as the first release (reason `import`); R's estimates and
+    playbook come along. Refused when the source has no release line or W* does not fit this K."""
+    base = Path(activity.config.get("_base") or ".")
+    src_root = Path(seed_from).expanduser()
+    src_root = src_root if src_root.is_absolute() else (base / src_root).resolve()
+    if not (src_root / "rsi").is_dir():
+        raise ConfigError(f"[rsi] seed_from names {src_root}, which is not an activity's workspace")
+    source = Releases(src_root)
+    released = source.released()
+    if released is None:
+        raise ConfigError(f"[rsi] seed_from names {src_root}, which has no release line (W*): release it first")
+    copy_closure(source.objects, activity.objects, [released.package_ref])
+    package = load_package(activity.objects, released.package_ref)
+    code_seed = build_seed(activity.k["harness"]["seed"], core=activity.k, objects=activity.objects)
+    problems = check_shape(package.files, limits=Limits.from_core(activity.k), seed=code_seed)
+    if problems:
+        raise ConfigError(f"[rsi] seed_from: the released W* {short(released.package_ref)} does not fit this K: "
+                          f"{'; '.join(problems)[:500]}")
+    improver_ref = activity.objects.put("improver", dict(R0))
+    release = activity.releases.import_seed(package.ref(), improver_ref, activity.core_ref)
+    copied = []
+    for rel in POLICY_FILES:
+        src, dst = src_root / rel, activity.root / rel
+        if src.is_file() and not dst.exists():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_bytes(src.read_bytes())
+            copied.append(rel)
+    activity.events.append("seed_imported", source=str(src_root), source_release=released.ref(),
+                           package=package.ref(), policy_files=copied)
+    out(f"release    {short(release.ref())} imported: {src_root}'s released {short(released.ref())} is this "
+        f"activity's seed (W {short(package.ref())}, K {short(activity.core_ref)}; policy files {copied or 'none'})")
+    return release

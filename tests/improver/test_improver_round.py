@@ -53,7 +53,7 @@ TICKET = "rsi.notify_ticket"                      # the studied failure
 PASSING = tuple(t for t in rsi.TRAIN if t not in HELD and t != TICKET)
 FREE = STEPS[:STEPS.index("screened")]             # measure .. verified: no attempt is paid for before the screen
 R0_STAGES = ["measured", "diagnosed", "focused", "declared", "verified", "screened", "accepted", "installed",
-             "credited", "playbook"]
+             "credited", "playbook"]            # a one-package round: the stacked step writes no row
 
 
 class Crash(BaseException):
@@ -330,6 +330,58 @@ def test_a_package_with_a_tool_and_a_hook_climbs_both_rungs_and_credits_each_com
     from ouroloop.improver.ledger import Ledger
     board = Ledger(a.root).scoreboard(a.domain)
     assert board["all"]["net"] == board["tool"]["net"] == board["hook"]["net"] == 2    # the package's net, per kind
+
+
+# ---------------------------------------------------------------------------- two packages a round (§9.4, v1.3)
+@pytest.fixture(scope="module")
+def two(tmp_path_factory, fake_upstream):
+    return played(round_activity(tmp_path_factory.mktemp("two"), fake_upstream, "two"))
+
+
+def test_two_accepted_packages_install_one_and_stack_the_other_on_the_working_line(two):
+    a, r = two.a, two.result
+    assert r.status == "done" and r.accepted and r.candidates == 2
+    screens = {row["dir"]: ScreenResult.from_json(a.objects.get(row["screen"]))
+               for row in round_state(a, 0)["steps"]["screened"]["screens"]}
+    assert set(screens) == {"package", "package-2"} and all(res.accepted for res in screens.values())
+    first = round_state(a, 0)["steps"]["screened"]["best"]
+    other = next(d for d in screens if d != first)
+    stacked = round_state(a, 0)["steps"]["stacked"]
+    assert stacked["stacked"] == [other] and stacked["not_stacked"] == [] and r.stacked == [other]
+    assert a.releases.active_ref() == stacked["line"] == r.installed != round_state(a, 0)["steps"]["accepted"]["installed"]
+    line = a.releases.load(r.installed)
+    assert line.reason == "screen" and line.parent_ref == round_state(a, 0)["steps"]["accepted"]["installed"]
+    stacked_screen = ScreenResult.from_json(a.objects.get(line.screen_ref))
+    assert stacked_screen.outcome == "stacked" and stacked_screen.stacked_on == line.parent_ref
+    assert stacked_screen.package_ref == line.package_ref and stacked_screen.net_flips == screens[other].net_flips
+    manifest = json.loads(load(a.objects, line.package_ref).files["manifest.json"])
+    assert TOOL_ENTRY["name"] in [t["name"] for t in manifest["tools"]]
+    assert HOOK_ENTRY["name"] in [h["name"] for h in manifest["hooks"]]
+    files = load(a.objects, line.package_ref).files
+    assert "tools/post_channel_message.py" in files and "middlewares/remind_ops.py" in files
+    rows = [x for x in ledger_rows(a) if x["stage"] in ("accepted", "installed", "not_stacked")]
+    assert [(x["stage"], x["dir"]) for x in rows] == [("accepted", first), ("installed", first), ("accepted", other),
+                                                       ("installed", other)]
+    assert rows[2]["stacked_on"] == round_state(a, 0)["steps"]["accepted"]["installed"]
+    ops = sorted(p.stem for p in (a.root / "rsi" / "operations").iterdir())
+    assert ops == sorted(["install:rsi-test_r0", f"install:rsi-test_r0:{other}"])
+    # the next round works on the stacked line and finds nothing left to fix on the studied part
+    r1 = phases.round_(a, 1, out=quiet)
+    assert r1.stop.startswith("nothing_to_fix") and round_state(a, 1)["base_release"] == r.installed
+
+
+def test_a_package_that_collides_with_the_installed_one_is_not_stacked(tmp_path, fake_upstream):
+    s = played(round_activity(tmp_path, fake_upstream, "two_conflict"))
+    a, r = s.a, s.result
+    assert r.accepted and r.stacked == []
+    stacked = round_state(a, 0)["steps"]["stacked"]
+    first = round_state(a, 0)["steps"]["screened"]["best"]
+    other = next(d for d in ("package", "package-2") if d != first)
+    assert stacked["not_stacked"] == [other] and stacked["line"] == round_state(a, 0)["steps"]["accepted"]["installed"]
+    (row,) = ledger_rows(a, "not_stacked")
+    assert row["dir"] == other and row["conflicts"] == ["tools/post_channel_message.py"]
+    assert a.releases.active_ref() == r.installed and r.installed == round_state(a, 0)["steps"]["accepted"]["installed"]
+    assert len(a.releases.history()) == 2                              # the seed and one install
 
 
 # ---------------------------------------------------------------------------- end to end: no code candidate

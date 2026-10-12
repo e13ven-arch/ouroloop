@@ -84,6 +84,8 @@ class Focus(Record):
     require_code: bool = False          # a mechanizable cause is diagnosed: the package holds a tool or a hook
     l5_suggested: bool = False          # a cause of the loop is diagnosed: agent, config or vendor may be the carrier
     l6_suggested: bool = False          # stalled, and the training chain is bound (stage 5; False until then)
+    audit_suggested: bool = False       # text-only causes hold audit_hook_share of the cases: an aux audit hook fits
+    text_only_share: float = 0.0        # the share of cases in causes with text carriers only (v1.3)
     notes: tuple = ()
 
     def __post_init__(self):
@@ -132,8 +134,18 @@ def focus(causes, estimates: Estimates, archive, *, settings: Settings, line: st
     if stalled and not train_available:
         notes.append(f"l6_unavailable: no acceptance in {settings.stall_rounds} rounds and the training chain is not "
                      f"bound (stage 5)")
+    # v1.3: causes with text carriers only (not mechanizable, not of the loop) — a hook that audits the agent's work
+    # against the request with the aux model covers several of them at once
+    total = sum(len(c.cases) for c in causes)
+    text_only = [c for c in causes if not c.mechanizable and c.name not in LOOP_CAUSES]
+    share = round(sum(len(c.cases) for c in text_only) / total, 4) if total else 0.0
+    audit = bool(text_only) and share >= float(settings.audit_hook_share) and "hook" in set(allowed)
+    if audit:
+        notes.insert(0, f"audit hook suggested: {share:.0%} of the cases are in causes with text carriers only "
+                        f"({', '.join(c.name for c in text_only)}); one on_finish or after_turn hook that calls the "
+                        f"aux model (uses_model) to check the work against the request covers them together")
     return Focus(ranked=tuple(ranked), require_code=bool(settings.require_code_component and mech), l5_suggested=l5,
-                 l6_suggested=l6, notes=tuple(notes))
+                 l6_suggested=l6, audit_suggested=audit, text_only_share=share, notes=tuple(notes))
 
 
 def stalled(ledger, rounds: int) -> bool:

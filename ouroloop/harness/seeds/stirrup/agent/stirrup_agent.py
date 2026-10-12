@@ -10,7 +10,8 @@ the package contract and nothing else:
   Tool       -> base tools through ctx.tool, package tools through their entrypoints, read_skill through ctx.skills,
                 recall through ctx.memory, http_fetch only when the worker has egress.
   hooks      -> the six sites, dispatched here (SITES): before_run (system prompt and opening messages), before_model
-                (the messages of each act call, non-destructively), before_tool (block or rewrite the arguments),
+                (the messages of each act call and of a hook's aux call, non-destructively; not a summary's),
+                before_tool (block or rewrite the arguments),
                 after_tool (rewrite the output, add feedback), after_turn (a message after the turn's results) and
                 on_finish (push the finish back, at most MAX_PUSHBACKS times and never on the last act call).
   logger     -> CtxLogger: the summary flag and ctx.mark; prints nothing (fd 1 is the protocol's).
@@ -258,12 +259,15 @@ class SubCtx:
     """What a hook or a package tool holds: the view with the turn, the limits, skills, memory, mark, and `tool`
     (read-only for a hook and for a tool that does not write). `model` is a hook's at after_turn and on_finish only,
     role aux, at most view["hook_aux_calls"] calls per attempt across those hooks (an audit before the agent
-    finishes); a tool, a hook at another site or a call past the cap is the package's defect (HookError)."""
+    finishes); a tool, a hook at another site or a call past the cap is the package's defect (HookError). An aux call's
+    messages pass through the package's before_model hooks first, as an act call's do (HARNESS §7.1 rule 4: the audit
+    model is told the real date by the CLI as the agent is, so the date anchor rides along); a summary's aux call does
+    not."""
 
-    def __init__(self, ctx, turn: int, *, read_only: bool, site: str | None = None, aux=None):
+    def __init__(self, ctx, turn: int, *, read_only: bool, site: str | None = None, aux=None, hooks=None):
         self.view = {**ctx.view, "turn": turn}
         self.limits, self.skills, self.memory = ctx.limits, ctx.skills, ctx.memory
-        self._ctx, self._read_only, self._site, self._aux = ctx, read_only, site, aux
+        self._ctx, self._read_only, self._site, self._aux, self._hooks = ctx, read_only, site, aux, hooks
         self.calls = []
 
     def tool(self, name, args=None, *, read_only=False):
@@ -283,7 +287,10 @@ class SubCtx:
                             f"the cap (hook_aux_calls)")
         self._aux["calls"] += 1
         self._ctx.mark("hook_aux_call", site=self._site, turn=self.view.get("turn"), call=self._aux["calls"])
-        return self._ctx.model(messages, tools, role="aux", effort=effort)
+        sent = [dict(m) for m in messages or ()]
+        if self._hooks is not None and self._hooks.has("before_model"):
+            sent = self._hooks.before_model(int(self.view.get("turn") or 0), "aux", sent, list(tools or ()))
+        return self._ctx.model(sent, tools, role="aux", effort=effort)
 
     def mark(self, kind, **data):
         self._ctx.mark(kind, **data)
@@ -354,7 +361,7 @@ class Hooks:
         return bool(self.by_site[site])
 
     def _fire(self, site: str, hook: dict, event: dict, turn: int):
-        hctx = SubCtx(self.ctx, turn, read_only=True, site=site, aux=self.aux)
+        hctx = SubCtx(self.ctx, turn, read_only=True, site=site, aux=self.aux, hooks=self)
         try:
             value = _call(self.bundle.entry(hook["entrypoint"]), hctx, {"site": site, **event})
         except HookError:

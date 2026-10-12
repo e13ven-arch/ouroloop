@@ -20,7 +20,7 @@ from ..evaluate.release import attempt_version, improver_version
 from ..harness.package import Limits, check_shape
 from ..harness.seed import SeedUnavailable, seed_files
 
-PAID = ("smoke", "baseline", "library", "round", "gate", "release", "evaluate")
+PAID = ("smoke", "baseline", "library", "round", "stream", "gate", "release", "evaluate")
 # The phases that run the attempt code only (no round, no gate): they need K's attempt_version and may run on a
 # checkout whose improver code moved (PLAN rule 13, 2026-10-12; the versions go on the `final_code` event)
 FINAL_FAMILY = ("freeze", "release", "evaluate", "report", "export")
@@ -82,16 +82,17 @@ def leakage_problems(activity, *, phase: str) -> list[str]:
         memory = activity.k.get("memory") or {}
         if not memory.get("enabled"):
             problems.append("[memory] enabled = false: this activity runs no memory stream")
-        if activity.domain in set(memory.get("heldout_domains") or ()):
-            problems.append(f"{activity.domain} is a held-out business line ([memory] heldout_domains): none of its "
-                            f"experience enters a library")
+        held = set(memory.get("heldout_domains") or ()) & set(activity.suite.members)
+        if held:
+            problems.append(f"{', '.join(sorted(held))} is a held-out business line ([memory] heldout_domains): none "
+                            f"of its experience enters a library")
     return problems
 
 
 def uses_memory(activity, phase: str) -> bool:
     """Whether this phase needs the memory's sidecar: the library phase, or a package it runs that holds a snapshot
     (a package with memory on and no snapshot reads an empty library, which starts nothing)."""
-    if phase == "library" or (phase == "round" and (activity.k.get("memory") or {}).get("enabled")):
+    if phase == "library" or (phase in ("round", "stream") and (activity.k.get("memory") or {}).get("enabled")):
         return True                     # a round screens the library's snapshot and reads the stream's entries
     releases = [activity.active_release()] if activity.releases.active_ref() else []
     plan_ref = (activity.config.get("rsi") or {}).get("final_plan_ref")
@@ -140,7 +141,12 @@ def correctness_problems(activity, *, phase: str, needs_worker: bool) -> list[st
             seed = Package(manifest=parse_manifest(files["manifest.json"], files, limits=Limits.from_core(activity.k)),
                            files=files) if not shape else None
             first = activity.releases.history()[-1]
-            if seed is not None and seed.ref() != first.package_ref:
+            imported = next(iter(activity.events.read("seed_imported")), None)
+            if imported is not None:            # the seed is another activity's W*: it stays what the import said
+                if first.package_ref != imported.get("package"):
+                    problems.append(f"the seed release's package ({first.package_ref[:28]}) is not the imported W* "
+                                    f"({str(imported.get('package'))[:28]}): the seed moved under the activity")
+            elif seed is not None and seed.ref() != first.package_ref:
                 problems.append(f"the seed K builds now ({seed.ref()[:28]}) is not the seed release's W0 "
                                 f"({first.package_ref[:28]}): the seed's source changed under the activity")
     if needs_worker:
@@ -170,7 +176,7 @@ def correctness_problems(activity, *, phase: str, needs_worker: bool) -> list[st
             problems.append(f"the claude CLI is {current} and this activity ran on {recorded}: a model call's "
                             f"transport is part of what a comparison holds fixed; reinstall {recorded} (and set "
                             f"DISABLE_AUTOUPDATER=1 for the activity's duration) or start a new activity")
-    if phase == "round" and activity.splits.ids("dev") and not list(activity.events.read("gate_template")):
+    if phase in ("round", "stream") and activity.splits.ids("dev") and not list(activity.events.read("gate_template")):
         problems.append("no frozen gate plan: run `ouroloop freeze` before a round (the gate's template is fixed "
                         "before any candidate is seen)")
     if phase in PAID and uses_memory(activity, phase):

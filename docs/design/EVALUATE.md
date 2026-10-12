@@ -138,6 +138,8 @@ v1.1 每轮一次 gate；v1.2 活动内的接受由改进器的留出筛选决�
 
 - `FinalPlan` 封存：任务 = 全部 test、`repeats`、臂（W0 与 W\*，可选 R1）、主张；臂名进每个 attempt id（即 session id），所以计划里 W\* 写作 `W_star`，不能进 attempt id 的臂名在构造时就拒绝；`seal` 写对象与事件，哈希由用户提交到 git（规则 6）。活动只在有发布线（gate 通过或按决定发布，W\* ≠ W0）之后封存（ACTIVITY §4）。
 - 对外的数字（2026-10-12）：final 两臂各自的绝对通过率与部分得分是 README 的主数（W\* 得了多少，W0 臂并列），配对差与区间作为第二个数披露；只用公开集的 test 份，与官方榜的私有集不可比，README 要注明口径（题数、effort、repeats）。
+- 跨域活动（v1.4，DESIGN §6.14）：final 计划只取 `[final] domains` 的 test 题，`release` 只补这些域里 W\* 缺的 train 读数，C1 的族重采样只在这些域上；别的域的 test 不读。
+- 流式的数（v1.3，DESIGN §6.13）：`--phase stream` 的每道题只计首遇那一次；报告按批给首遇通过率、部分得分、每次尝试成本，整段的首遇通过率与前后半段之差是学习曲线。test 段流式跑时，这就是 final：计划先封存，题按序计分，计过分的题才对 R 可读；不再另跑两臂的 final。
 - `run_final` 先打印预计花费与 final 的空间（份额加根的空余，§9），装不下就拒绝；每臂每题每次都是独立尝试；续跑只跑缺的；完成后 `report` 读汇总，披露该域 test 的读取次数。
 
 ## 7 发布与装入
@@ -145,7 +147,8 @@ v1.1 每轮一次 gate；v1.2 活动内的接受由改进器的留出筛选决�
 - `Release` 三元组（CONTRACTS §5）。装入 = `Releases.install(candidate_release, receipt_ref, expected_parent=active.ref)`，CAS：active 不是期望的父就拒绝；`operation_id` 幂等。v1.2：`reason` 有 `seed`、`screen`（留出筛选接受，工作线）、`gate`（活动末发布，`promote`）、`rollback`、`import`；`rsi/active.json` 是工作线，`rsi/released.json` 是发布线（final 与导出只读它）。
 - **按决定发布（阶段 4c）**：`Releases.promote(work, receipt_ref=None, reason="decision", operation_id)` 把工作线的 release 提升为发布线，不带收据；只在 K 没有 dev 题时允许（有 dev 的活动必须过 gate）。`--phase release` 调它之前，先在 train 上补齐 W\* 的包还没有读数的题（研究部分；留出部分筛选时已读过），在 W\* 自己的 release 下跑（role `measure`，候选名 `release:<ref>`），这样 final 的核价读得到 W\* 的带价读数（§6 的估算按 release 执行的 (package, core) 找读数）；工作线就是种子时拒绝（没有可发布的）。重复调用是同一个发布。
 - 回滚只退到 `last_good`（装过且没被撤销的祖先）；没有可退的就拒绝、什么都不撤销。
-- 种子 release：`reason="seed"`，`receipt_ref=None`。
+- 种子 release：`reason="seed"`，`receipt_ref=None`。v1.3：`[rsi] seed_from` 时种子 release 的 `reason="import"`，`package_ref` 是旧工作区发布线 W\* 的包（闭包复制进来），`parent_ref=None`；启动检查里"种子 K 建出的就是种子 release 的 W0"一条改为核对导入事件（`seed_imported`：来源工作区、来源 release、包 ref）。
+- 叠装（IMPROVER §9.4）：`install_screened` 接受 `outcome="stacked"` 的 ScreenResult，它的 `package_ref` 是叠出的包，`accepted` 为真，`stacked_on` 记它叠在哪个 release 上。
 
 ## 8 model 组件的绑定点
 

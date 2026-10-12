@@ -79,19 +79,27 @@ def seal(plan: FinalPlan, root, objects: Objects) -> dict:
 
 
 def final_estimate(rows: list[TaskResult], plan: FinalPlan, *, plan_ref: str | None, execution_of: Callable,
-                   pricing=None, concurrency: int = 1, fallback=None) -> dict:
+                   pricing=None, concurrency: int = 1, fallback=None, package_of: Callable | None = None) -> dict:
     """What a final is expected to spend, from what is on record: for each arm, the attempts still to run times the
     arm's measured cost per valid attempt over every reading of a release that executes as the arm's does
     (`execution_of(release_ref)` -> (package_ref, core_ref)), its dev readings when it has any; and `concurrency`
-    reservations of one call's bound, which the share must hold beside the spend. Without a priced reading the cost is
-    `fallback` (a number or {arm: number}) when given, else unknown — never 0."""
+    reservations of one call's bound, which the share must hold beside the spend. With `package_of(run_hash)` (the run
+    manifest's package) a reading counts only when its run executed the arm's package: a candidate screened under the
+    working line's release ran its own package, not the line's (finance-v5's W* read $0.71 instead of $0.67 for it).
+    Without a priced reading the cost is `fallback` (a number or {arm: number}) when given, else unknown — never 0."""
     planned = len(plan.tasks) * int(plan.repeats)
     out, total, unknown = [], 0.0, []
     for arm, release in plan.arms.items():
         target = execution_of(release)
+
+        def counts(r, _release=release, _target=target) -> bool:
+            same = r.system_release_ref == _release or (_target is not None
+                                                        and execution_of(r.system_release_ref) == _target)
+            if same and package_of is not None and _target is not None:
+                same = package_of(r.run) == _target[0]
+            return same
         readings = [r for r in rows if r.validity == "valid" and r.cost_usd is not None and r.system_release_ref
-                    and (r.system_release_ref == release or (target is not None
-                                                             and execution_of(r.system_release_ref) == target))]
+                    and counts(r)]
         pool = [r for r in readings if r.split == "dev"] or readings
         cpa = round(sum(r.cost_usd for r in pool) / len(pool), 6) if pool else None
         source = ("dev" if pool[0].split == "dev" else "all") if pool else None

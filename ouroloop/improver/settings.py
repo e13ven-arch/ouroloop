@@ -23,7 +23,11 @@ PRIORS = {"tool": (0.3, 0.3), "hook": (0.3, 0.3), "skill": (0.08, 0.1), "prompt"
 
 @dataclass(frozen=True)
 class Settings:
-    packages_per_round: int = 1                  # the candidate packages R hands in a round; the screen picks one
+    packages_per_round: int = 3                  # the candidate packages R hands in a round, each one mechanism; each is
+                                                 # screened, the accepted ones are stacked (IMPROVER §9.4, v1.3)
+    audit_hook_share: float = 0.3                # the share of cases in text-only causes at which the focus list
+                                                 # suggests an aux-model audit hook (IMPROVER §6, v1.3)
+    stream_screen_max: int = 30                  # a streaming round screens at most this many recent held-out tasks
     fixed_per_round: int = 2                     # the fixed code's candidates per round (snapshot, promotions, removals)
     session_max_turns: int = 40
     session_max_edits: int = 48
@@ -71,6 +75,10 @@ class Settings:
             raise ValueError("improver.accept_min_net_flips is at least 1: an acceptance without a fix is a tie")
         if int(self.accept_max_regressions) < 0 or int(self.accept_floor_tolerance) < 0:
             raise ValueError("improver.accept_max_regressions and improver.accept_floor_tolerance are counts")
+        if not 0 <= float(self.audit_hook_share) <= 1:
+            raise ValueError("improver.audit_hook_share is a share of the cases, in [0, 1]")
+        if int(self.stream_screen_max) < 1:
+            raise ValueError("improver.stream_screen_max is at least 1")
         if not 0 < float(self.round_share) <= 1:
             raise ValueError("improver.round_share is a share of the root, in (0, 1]")
 
@@ -127,4 +135,5 @@ RULES = {"packages_per_round": "cap", "fixed_per_round": "cap", "session_max_tur
          "hook_aux_calls": "cap", "toolcheck_min_pass": "floor", "replay_min_triggers": "floor",
          "reach_min_tasks": "floor", "reach_min_score": "floor", "holdout_share": "floor",
          "accept_min_net_flips": "floor", "accept_max_regressions": "cap", "accept_floor_tolerance": "cap",
-         "removal_zero_credit_rounds": "fixed", "round_share": "cap"}
+         "removal_zero_credit_rounds": "fixed", "round_share": "cap", "audit_hook_share": "floor",
+         "stream_screen_max": "cap"}

@@ -5,12 +5,18 @@ package is measured once on the held-out part of train — tasks you are never s
 installed on the working line only when it fixes more held-out tasks than it breaks. A change that only fits the cases
 you read fixes nothing held out: build for the causes, not for the cases.
 
-This round you hand in {packages} candidate package: candidates/package/ (the first write there copies the current
-package; then you change it). It holds one mechanism — what the agent will do differently — carried by as many
-components as that mechanism needs, and it may work on several causes at once. inputs/focus.json ranks the causes
-diagnosed on train attempts (inputs/causes.json: the cases, their trace references, what failed) and, for each, the
-kinds of component that have paid off before (score, how often tried, what was tried: inputs/ledger.json,
-inputs/scoreboard.json, inputs/playbook.md). It is advice, not an order: you choose what the package holds.
+This round you hand in up to {packages} candidate packages: candidates/package/, candidates/package-2/, ... (the first
+write under a directory copies the current package there; then you change it). Each package is one mechanism — what
+the agent will do differently — carried by as many components as that mechanism needs, and it may work on several
+causes at once; different packages are different mechanisms on different causes, and the first one takes the largest
+cause. Each package is screened on its own and the accepted ones are all installed, stacked on each other: so do not
+let two packages change the same file (manifest.json aside) — a package that collides with an installed one is not
+installed. inputs/focus.json ranks the causes diagnosed on train attempts (inputs/causes.json: the cases, their trace
+references, what failed) and, for each, the kinds of component that have paid off before (score, how often tried, what
+was tried: inputs/ledger.json, inputs/scoreboard.json, inputs/playbook.md). It is advice, not an order: you choose what
+the packages hold. When focus.json says audit_suggested, make one package an on_finish or after_turn hook with
+uses_model: true that reads the request and what the agent did and pushes back or corrects before the finish — the
+causes it names there are the ones only text carriers reached so far, and one audit covers them together.
 
 What has moved these tasks: code that does a step for the agent (a tool) or checks a step it took (a hook), far more
 than text that asks the model to try harder. A tool is only useful if the agent calls it: give it a name and a
@@ -33,15 +39,16 @@ the task's work and the grader judges the world), V2b for a hook (replayed on th
 least two claimed tasks; a hook with uses_model is not replayed), V2c for a skill (its description must reach other
 train tasks). Fix what it reports; every component must pass its rung.
 
-finish with the package's declaration: {"mechanism" (one sentence), "components": [one per component the package
-changes: {"kind" (tool | hook | skill | prompt | agent | config | vendor | removal), "site" (tool: its name; hook: its
+finish with one declaration per package: {"dir" (candidates/<dir>; "package" when left out), "mechanism" (one
+sentence), "components": [one per component the package changes: {"kind" (tool | hook | skill | prompt | agent | config | vendor | removal), "site" (tool: its name; hook: its
 site; skill: its name; prompt: system or finish; config: the knob; vendor: the package; removal: the deleted
 component's name), "cause_ids" (from inputs/focus.json), "predicted_affected" (the train task ids it should fix;
 required for a tool or a hook), "trigger" (when it acts), for a tool "probes" ({task_id: [{"args", "expect"}]}) and/or
 "scripts" ({task_id: Python defining check(ctx, tools) that calls tools["<your tool>"]({...})}), for a hook that
 calls the model "uses_model": true}], "differs_from" (earlier candidates of the archive it is not a repeat of,
-[{"ref", "how"}])}. The declaration must name every component the files change and nothing they do not. When nothing
-you can build would help, finish with an empty list: the ledger records that the round has no candidate of yours.
+[{"ref", "how"}])}. Each declaration must name every component its package changes and nothing it does not; list in
+cause_ids every cause a component works on. When nothing you can build would help, finish with an empty list: the
+ledger records that the round has no candidate of yours.
 
 Limits: {max_turns} turns, {max_edits} edits, {max_read} bytes per read (a trajectory or a file) and {max_read_total}
 in all. Each reply, your thinking included, is capped at {max_tokens} output tokens: a reply over the cap is lost and

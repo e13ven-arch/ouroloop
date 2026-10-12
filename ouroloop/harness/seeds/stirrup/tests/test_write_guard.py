@@ -154,7 +154,7 @@ def test_the_anchor_rides_on_every_act_call_once_a_date_is_read(ctx=None):
     again = g.anchor(Ctx(), model_call(later, turn=3))["messages"]
     assert again == tool_turn + [note] + later[len(tool_turn):]
     assert again[:len(answer["messages"])] == answer["messages"]
-    assert g.anchor(Ctx(), model_call(later, role="aux")) is None          # a summary call is left alone
+    assert g.anchor(Ctx(), model_call(later, role="aux"))["messages"] == later + [note]   # a hook's audit: at its end
     assert g.snapshot()["anchored"] == ("2030-06-03", "internalDate")
 
 

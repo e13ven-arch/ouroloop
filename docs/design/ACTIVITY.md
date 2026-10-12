@@ -51,11 +51,12 @@ class Activity:
     # trace() 随阶段 3 加入（runtime/trace.py）
 def freeze_split(suite, bench, path, versions) -> (SplitManifest, drift)
 def open_activity(config: dict, *, out, freeze_k=True, worker_factory=None, provider_factory=None) -> Activity
+    # v1.3：[rsi] seed_from 时种子 release 是旧工作区发布线的 W*（闭包复制进对象库，reason import，R 的策略一并导入）
     # 冻结或读出划分、由配置算 K；[rsi] core_ref 或 core.json 与之不同即拒绝（新 K 是新活动）；
     # freeze_k 时第一次写 core.json 与种子 release；--checks-only 的 smoke 不写
 
 # phases.py
-PHASES = ("smoke", "freeze", "baseline", "library", "round", "gate", "release", "evaluate", "report", "export")
+PHASES = ("smoke", "freeze", "baseline", "library", "round", "stream", "gate", "release", "evaluate", "report", "export")
 def run_arm(activity, *, release, split, candidate, role, pairs, account, plan_ref="", arm="subject", retry=0, supersedes=None, notes="", allocation=None, package=None, memory=None) -> list[TaskResult]
     # 一个运行身份下的一组尝试；已在记录里的不再付费
 def smoke(activity, *, tasks=None, limit=None, checks_only=False, out) -> dict      # 划分哈希、评分契约、输入审计、种子全量字面量扫描；一次 dev 尝试
@@ -63,6 +64,7 @@ def freeze(activity, *, out) -> dict                                    # 冻结
 def baseline(activity, *, out) -> dict                                  # W0 在 train 与 dev（control_readings 次）
 def library(activity, *, out) -> dict                                   # memory 的流与快照（MEMORY §7）：首遇、重试、写入、读数、快照候选（按 K 的 max_memory_bytes 装，MEMORY §7.1）
 def round_(activity, index: int, *, out) -> RoundResult                 # improver.run_round（IMPROVER §3）；每轮后停
+def stream(activity, *, until: int | None, out) -> dict                # 流式循环（DESIGN §6.13，IMPROVER §3.1）：按批首遇计分、每批一轮；`--until batch-K`
 def gate(activity, *, out) -> dict                                      # 活动末的发布 gate（EVALUATE §5.2）；K 没有 dev 题时 nothing_to_gate
 def release(activity, *, out) -> dict                                   # 按决定发布（EVALUATE §7，阶段 4c）：补齐 W* 的包缺的 train 读数，promote(reason decision)；只在没有 dev 的 K 下
 def evaluate(activity, *, out) -> dict                                  # final（EVALUATE §6）
@@ -99,12 +101,17 @@ def write_report(activity, report) -> dict   # 两次相同（确定性）
 | round k | improver 的一轮（IMPROVER §3，v1.2：一个包，留出筛选接受即装入工作线，不读 dev） | 留出筛选的读数与工作线的留出曲线 | 约 $28 |
 | gate | 活动末一次：工作线对 W0 在 dev 上（EVALUATE §5.2）；通过才有发布线；K 没有 dev 题时无事可做 | dev 读数对留出曲线 | 约 $25 |
 | release | 阶段 4c：没有 dev 的活动，轮次跑完由用户按决定把工作线提升为发布线（EVALUATE §7）；先补齐 W\* 的包缺的 train 读数（研究部分）| 留出曲线与工作线的 train 读数 | 约 $15 |
+| stream | v1.3（DESIGN §6.13）：`schedule.stream_splits` 的题按冻结的顺序每道做一次计分，每 `stream_batch` 道一轮（IMPROVER §3.1），接受即装入，下一批在新线上跑；`--until batch-K` 停在第 K 批之后 | 每批的首遇通过率与成本、留出筛选 | 100 题约 $310 |
 | evaluate | final（只在有发布线时） | — | 约 $72 |
 | report | 报告 | — | $0 |
 
 `cycle --until` 保留：`baseline`、`library`、`round-K`、`gate`；中间崩溃按 `Execution` 续跑。v1.2：`baseline` 先查能不能导入——配置 `[rsi] baseline_from = "<旧工作区>"` 且两边 `AttemptIdentity` 相同（CONTRACTS §4）时，复制旧工作区的 W0 读数与 transcript 引用（只读旧工作区，记来源），$0；否则照常跑。`library` 只在 K 的 `memory.enabled` 时跑（preset `automationbench_v2` 默认关）。
 
 **轮数与停止（v1.2）：** `cycle` 连续 `schedule.patience`（3）轮没有留出接受就停；`schedule.rounds` 上限 12。没有 carry 轮、没有活动内的 gate；`--phase gate` 在轮次结束后由用户启动。
+
+**跨域活动（阶段 4e，DESIGN §6.14）：** `[bench] domains` 列几个域，`open_activity` 用 `ab.load_suites` 装成一个 suite，`activity.domain` 是连起来的名（`finance+hr`）；`[final] domains` 限定 final 计划的 test 题与 `release` 补读的 train 题（默认全部域）；其余阶段不变。memory 的 `heldout_domains` 按成员域逐个查。
+
+**流式活动（阶段 4d）：** `freeze`（开预算根；无 dev 时无模板）→ `--phase stream --until batch-K`（每批之后停下看也行，不停也行）→ `--phase release` → `freeze` 封存 final（W0 臂是本活动的种子：`seed_from` 时就是上一活动的 W\*）→ `--phase evaluate`。test 段流式（`stream_splits` 含 `test`）时顺序是：`release`、`freeze` 封存并提交计划哈希，再 `--phase stream` 的 test 段；final 则不再单跑。
 
 **两份划分的活动（阶段 4c，2026-10-12）：** `[bench] ratios = {train, test}`（dev 为 0）。`freeze` 不写 gate 模板，只开预算根；基线阶段不跑（第 0 轮对缺读数的 train 题现量，钱记在本轮账户）；轮次用 `--phase round --round i` 逐轮跑，或 `cycle --until round-K`；轮次结束后 `--phase release`，再 `freeze` 封存 final（W0 与 W\* 两臂，`final.repeats` 3）、`--phase evaluate`。README 的数是 final 两臂的绝对分（EVALUATE §6）。finance 的切法 50/50：train 50（研究 30、留出 20），test 50。
 
