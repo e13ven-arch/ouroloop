@@ -88,4 +88,4 @@ repeats = 3
 scope_id = "finance-v5"
 core_ref = "core:sha256:909c2e86950f40ae27ca36395016f0f2b1e7be49ded8652704d3a60938dceba5"
 split_ref = "3b959d143f9d8468"
-# final_plan_ref: after `--phase release` and the second `freeze` sealed the final
+final_plan_ref = "finalization:sha256:15d7612aeec488d0bb7aed3bee169694e65e145751d8a1cd7244e397cc83535c"
