@@ -8,6 +8,21 @@
 
 ---
 
+## 2026-10-13 finance-v6 收口（不发布、不跑 final）、种子的重放与 `seed_line`、finance-v7 冻结；$0
+
+- 用户的决定（2026-10-12）："批准，按顺序跑完，最后预计能做到多少"——v6 `--phase release`、v7 smoke / freeze、v7 `--phase stream`。预计 v7 的 finance test W\* 约 65（60～70）。
+- v6 的 release 跑不了，两层原因，都记下来：
+  1. 在合入了 4f / 4g 的 `m1-automationbench`（`8a85d24`）上开 v6 工作区被拒：`core.json froze K core:46054a3be25c, and this config and split give core:bf3849c0bd33`。4f / 4g 给 `[improver]` 加了默认值（`failures_max_cases`、`audit_max_false_alarm` 等），K 的节变了，`_frozen_core` 的放宽只认"只有代码版本不同"。final 一族要从活动当时的检出跑（`git worktree add --detach … a062039`）。
+  2. 从 `a062039` 的 worktree 跑又被拒：`no qualified worker: … pinned id sha256:04dbf822… is not available`。4g 重建 worker 镜像时用了同一个 tag `ouroloop-worker:py3.12`，v5 / v6 的 K 钉住的旧镜像 id 被顶掉、已不存在，而镜像 id 在 K 里、改不得。教训进 PLAN 规则 12：活动没结束前不重建它钉住的 tag；新镜像用新 tag。
+- 因此 v6 不发布。按决定发布本来也只是无判断地把工作线的头提升、再补读它在 finance train 上还没读过的题以供 v6 final 的估值，而 v6 不跑 final。改为让 v7 直接从 v6 工作线的头起步，先改文档（DESIGN §6.7、EVALUATE §7、ACTIVITY §4）再改代码：
+  - `[rsi] seed_line = "released" | "working"`（默认 released）：`working` 导入源工作线的头；源活动没有那条线时拒绝；`seed_imported` 事件记 `source_line`。
+  - 导入的 W\* 重放到本代码的种子上（`workspace.rebase_files`）：基准是沿 `seed_imported` 回溯到的第一个 reason `seed` 的 release（`origin_seed`；v6 的种子自己就是 v5 的 W\*，拿 v6 的种子当基准会把 v5 的 scope hook 当成"框架文件"换掉——第一版就是这么错的，freeze 报 `test files not listed in the manifest: ['tests/test_scope.py']`）。R 在整条链上没碰过的框架文件取本代码的，新文件补进来，R 改过的照 R 的（框架也改过的记 `kept_over_code`），R 删掉的保持删掉；换了文件就是新的包 ref。没有这一步，v6 的 W\* 带着旧适配层进 v7，审核 hook 答 `missing` 会被旧适配层当成 `HookError`。
+  - 测试：`rebase_files` 的四种情形；从工作线导入（默认拒绝、`seed_line` 的两个校验、事件、final 的 W0 臂）；三级链 first → second → third 的 origin 与"同一代码下不重放"。
+- finance-v7：smoke `--checks-only` 过（字面量 0、泄漏 0），`freeze`：导入 v6 工作线 `release:8ea81218e119`（s0 的系统提示词包；留出 7/13 对 4/13），4 个框架文件换成本代码的（`agent/stirrup_agent.py`、`middlewares/write_guard.py`、两个种子测试），scope hook、`tests/test_scope.py`、R 的 `prompt/system.md` 原样；W0 `package:e38c14942fbf`，K `core:0246b4681978`，划分 `1bbf01533d7256af`（与 v6 同一划分），预算根 $750、final 下限 $230。
+- 全量测试（Docker + memory sidecar，`-m "not live"`）：1,557 passed、1 deselected，12 分 50 秒。没付费、没读 test 内容。
+
+---
+
 ## 2026-10-12 阶段 4g：学会提升概率——单向审核、审核预演 V2d、审核台账落成代码；分支 `s8/audit`；$0
 
 - 用户的决定（2026-10-12）："写吧，先改文档再改代码，就算是概率性的、只能靠审核的，你应该也知道了没通过的原因，接下来框架的提升方向就是要能够学会解决它，学会提升概率。"文档先改（`d868c8a`：DESIGN §6.16、IMPROVER §2 / §7 / §8 / §10、HARNESS §7、CONTRACTS §4、PLAN），再改代码。

@@ -147,7 +147,7 @@ v1.1 每轮一次 gate；v1.2 活动内的接受由改进器的留出筛选决�
 - `Release` 三元组（CONTRACTS §5）。装入 = `Releases.install(candidate_release, receipt_ref, expected_parent=active.ref)`，CAS：active 不是期望的父就拒绝；`operation_id` 幂等。v1.2：`reason` 有 `seed`、`screen`（留出筛选接受，工作线）、`gate`（活动末发布，`promote`）、`rollback`、`import`；`rsi/active.json` 是工作线，`rsi/released.json` 是发布线（final 与导出只读它）。
 - **按决定发布（阶段 4c）**：`Releases.promote(work, receipt_ref=None, reason="decision", operation_id)` 把工作线的 release 提升为发布线，不带收据；只在 K 没有 dev 题时允许（有 dev 的活动必须过 gate）。`--phase release` 调它之前，先在 train 上补齐 W\* 的包还没有读数的题（研究部分；留出部分筛选时已读过），在 W\* 自己的 release 下跑（role `measure`，候选名 `release:<ref>`），这样 final 的核价读得到 W\* 的带价读数（§6 的估算按 release 执行的 (package, core) 找读数）；工作线就是种子时拒绝（没有可发布的）。重复调用是同一个发布。
 - 回滚只退到 `last_good`（装过且没被撤销的祖先）；没有可退的就拒绝、什么都不撤销。
-- 种子 release：`reason="seed"`，`receipt_ref=None`。v1.3：`[rsi] seed_from` 时种子 release 的 `reason="import"`，`package_ref` 是旧工作区发布线 W\* 的包（闭包复制进来），`parent_ref=None`；启动检查里"种子 K 建出的就是种子 release 的 W0"一条改为核对导入事件（`seed_imported`：来源工作区、来源 release、包 ref）。
+- 种子 release：`reason="seed"`，`receipt_ref=None`。v1.3：`[rsi] seed_from` 时种子 release 的 `reason="import"`，`package_ref` 是旧工作区发布线 W\* 的包（闭包复制进来；v1.6 起先把 W\* 相对链起点代码种子的改动重放到本代码的种子上，DESIGN §6.7；`[rsi] seed_line = "working"` 时取源工作区工作线的头，事件记 `source_line`），`parent_ref=None`；启动检查里"种子 K 建出的就是种子 release 的 W0"一条改为核对导入事件（`seed_imported`：来源工作区、来源 release、包 ref）。
 - 叠装（IMPROVER §9.4）：`install_screened` 接受 `outcome="stacked"` 的 ScreenResult，它的 `package_ref` 是叠出的包，`accepted` 为真，`stacked_on` 记它叠在哪个 release 上。
 
 ## 8 model 组件的绑定点

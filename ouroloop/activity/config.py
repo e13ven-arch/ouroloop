@@ -25,7 +25,8 @@ from .presets import RULES, preset
 SECTIONS = ("bench", "limits", "model", "research_model", "pricing", "harness", "worker", "memory", "improver", "gate",
             "schedule", "budget", "final")
 OTHER_TABLES = ("workspace", "rsi", "env_file")
-RSI_KEYS = ("scope_id", "core_ref", "split_ref", "final_plan_ref", "baseline_from", "seed_from")
+RSI_KEYS = ("scope_id", "core_ref", "split_ref", "final_plan_ref", "baseline_from", "seed_from", "seed_line")
+SEED_LINES = ("released", "working")        # [rsi] seed_line: which line of the seed_from workspace is imported
 OLD_TABLES = {"llm": "[model]", "research": "[research_model]", "improvement": "[harness] preset and [improver]",
               "harness_evolution": "[harness]", "freeze": "[gate], [schedule], [budget] and [final]",
               "estimate": "nothing: the final's estimate reads the costs on record",
@@ -70,6 +71,11 @@ def check_tables(cfg: dict) -> None:
         raise ConfigError("[rsi] baseline_from is the path of the workspace whose W0 readings are imported")
     if rsi.get("seed_from") is not None and not isinstance(rsi["seed_from"], str):
         raise ConfigError("[rsi] seed_from is the path of the workspace whose released W* seeds this activity")
+    if rsi.get("seed_line") is not None and rsi["seed_line"] not in SEED_LINES:
+        raise ConfigError(f"[rsi] seed_line is one of {list(SEED_LINES)}: the line of the seed_from workspace that "
+                          f"is imported (released by default)")
+    if rsi.get("seed_line") is not None and rsi.get("seed_from") is None:
+        raise ConfigError("[rsi] seed_line needs seed_from")
 
 
 # ---------------------------------------------------------------------------- merging (only tighten)

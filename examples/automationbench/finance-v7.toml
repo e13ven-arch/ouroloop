@@ -6,8 +6,11 @@
 # paid, and every audit tried stays on the ledger (inputs/audits.json) for the next one. Otherwise finance-v6's shape:
 # finance, hr and operations' train halves (150 tasks) as one stream of 5 batches, a round every 30 tasks with up to
 # three packages, screens of 30 held-out tasks, the final on finance's test half. It starts where finance-v6's working
-# line stood: `[rsi] seed_from` imports finance-v6's released W* (finance-v6 must be released first: `--phase release`
-# there, about $14), so the final's W0 arm is finance-v6's W*. Every paid step is approved in chat first (PLAN rule 3).
+# line stood: `[rsi] seed_from` with `seed_line = "working"` imports the head of finance-v6's working line (s0's
+# package, screened 7/13 against 4/13; finance-v6 closed without a final and was never released — its release by
+# decision would only have read the rest of its train for a final estimate nobody needs, and its pinned worker image
+# no longer exists), replayed onto this code's seed (the adapter that renders `missing`), so the final's W0 arm is
+# finance-v6's working head. Every paid step is approved in chat first (PLAN rule 3).
 #   1  `... bench --config examples/automationbench/finance-v7.toml --phase smoke --checks-only`                 $0
 #   2  `... freeze --config ...`; add the printed [rsi] lines (core_ref, split_ref) and commit                    $0
 #   3  `... bench --config ... --phase stream` (5 batches, 5 rounds; about $430 + a dry run's $1-2 per audit)
@@ -79,4 +82,7 @@ domains = ["finance"]
 [rsi]
 scope_id = "finance-v7"
 seed_from = "workspace-finance-v6"
-# core_ref, split_ref: what `freeze` prints; final_plan_ref: after `--phase release` and the second `freeze`
+seed_line = "working"
+core_ref = "core:sha256:0246b468197889412560d98630604e8330cee328231fdc5cf4c711e018b85c23"
+split_ref = "1bbf01533d7256af"
+# final_plan_ref: after `--phase release` and the second `freeze`

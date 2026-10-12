@@ -578,6 +578,8 @@ def test_an_activity_seeded_from_another_ones_release_line_starts_at_its_w_star(
     assert (event["source"], event["source_release"], event["package"]) == (str(first.a.root), a_released,
                                                                             w_star.package_ref)
     assert sorted(event["policy_files"]) == ["ledger/estimates.json", "ledger/playbook.md"]
+    assert event["source_package"] == w_star.package_ref and event["rebased"] == []     # the same code seed: nothing to replay
+    assert event["source_line"] == "released"
     assert (second.root / "ledger" / "estimates.json").read_bytes() == \
         (first.a.root / "ledger" / "estimates.json").read_bytes()
     assert any(line.startswith("release    ") and "imported" in line for line in lines)
@@ -599,6 +601,71 @@ def test_an_activity_seeded_from_another_ones_release_line_starts_at_its_w_star(
                      rsi={"scope_id": "rsi-test", "seed_from": str(bare.root)})
     with pytest.raises(ConfigError, match="is not an activity's workspace"):
         rsi.activity(tmp_path / "fourth", fake_upstream, rsi={"scope_id": "rsi-test", "seed_from": str(tmp_path / "x")})
+
+
+def test_an_activity_can_be_seeded_from_another_ones_working_line(tmp_path, fake_upstream):
+    """DESIGN §6.7 (2026-10-12): [rsi] seed_line = "working" imports the head of the source's working line — a source
+    that closed without a final was never released; its head passed its own held-out screen. Refused without the knob
+    when the source has no release line; the event names the line."""
+    import sys
+    sys.path.insert(0, str(REPO / "tests" / "improver"))
+    from rounds import round_activity
+    from ouroloop.activity.config import ConfigError
+    first = round_activity(tmp_path / "first", fake_upstream, "tool", baseline=False, freeze=False,
+                           splits_table=rsi.NO_DEV_SPLITS)
+    phases.freeze(first.a, out=quiet)
+    assert phases.round_(first.a, 0, out=quiet).accepted
+    head = first.a.active_release()
+    assert first.a.releases.released_ref() is None and head.reason == "screen"
+    with pytest.raises(ConfigError, match="has no release line"):
+        rsi.activity(tmp_path / "refused", fake_upstream, splits_table=rsi.NO_DEV_SPLITS,
+                     improver=first.a.config["improver"], rsi={"scope_id": "rsi-test", "seed_from": str(first.a.root)})
+    with pytest.raises(ConfigError, match="seed_line is one of"):
+        rsi.activity(tmp_path / "bad", fake_upstream, splits_table=rsi.NO_DEV_SPLITS,
+                     rsi={"scope_id": "rsi-test", "seed_from": str(first.a.root), "seed_line": "active"})
+    with pytest.raises(ConfigError, match="seed_line needs seed_from"):
+        rsi.activity(tmp_path / "bad2", fake_upstream, splits_table=rsi.NO_DEV_SPLITS,
+                     rsi={"scope_id": "rsi-test", "seed_line": "working"})
+    lines = []
+    second = rsi.activity(tmp_path / "second", fake_upstream, out=lines.append, splits_table=rsi.NO_DEV_SPLITS,
+                          improver=first.a.config["improver"],
+                          rsi={"scope_id": "rsi-test", "seed_from": str(first.a.root), "seed_line": "working"})
+    seed = second.seed_release()
+    assert (seed.reason, seed.package_ref) == ("import", head.package_ref)
+    (event,) = second.events.read("seed_imported")
+    assert (event["source_line"], event["source_release"], event["package"]) == ("working", head.ref(),
+                                                                                 head.package_ref)
+    assert any("'s working " in line for line in lines)
+    assert event["origin"] == {"workspace": str(first.a.root), "release": first.a.seed_release().ref()}
+    assert startup_checks(second, phase="round") == []
+    phases.freeze(second, out=quiet)
+    assert phases.final_plan(second).arms == {"W0": seed.ref()}
+    # a chain: the third imports the second's working head (its imported seed); the replay's baseline is the first's
+    # code seed, so R's package comes through whole and nothing is replayed under the same code
+    third = rsi.activity(tmp_path / "third", fake_upstream, splits_table=rsi.NO_DEV_SPLITS,
+                         improver=first.a.config["improver"],
+                         rsi={"scope_id": "rsi-test", "seed_from": str(second.root), "seed_line": "working"})
+    (event3,) = third.events.read("seed_imported")
+    assert event3["origin"] == event["origin"] and event3["rebased"] == [] and event3["kept_over_code"] == []
+    assert third.seed_release().package_ref == head.package_ref
+    assert TOOL_NAME in [t["name"] for t in json.loads(third.package().files["manifest.json"])["tools"]]
+
+
+def test_an_imported_w_star_is_replayed_onto_this_codes_seed():
+    """DESIGN §6.7 (v1.6): the files R never touched take the new seed's version, a file the new seed adds comes in, R's
+    changes and additions stay, R's deletions stay deleted."""
+    from ouroloop.activity.workspace import rebase_files
+    src_seed = {"agent/a.py": "old adapter", "middlewares/g.py": "guard", "prompt/system.md": "p", "tools/t.py": "t"}
+    w_star = {"agent/a.py": "old adapter", "middlewares/g.py": "guard", "prompt/system.md": "R's prompt",
+              "middlewares/scope.py": "R's hook"}                                        # R deleted tools/t.py
+    new_seed = {"agent/a.py": "new adapter", "middlewares/g.py": "guard", "prompt/system.md": "p2",
+                "tools/t.py": "t", "middlewares/new.py": "new"}
+    files, rebased, kept = rebase_files(src_seed, w_star, new_seed)
+    assert rebased == ["agent/a.py", "middlewares/new.py"] and kept == ["prompt/system.md"]
+    assert files["agent/a.py"] == "new adapter" and files["middlewares/new.py"] == "new"
+    assert files["prompt/system.md"] == "R's prompt" and files["middlewares/scope.py"] == "R's hook"
+    assert "tools/t.py" not in files and files["middlewares/g.py"] == "guard"
+    assert rebase_files(src_seed, dict(src_seed), src_seed) == (src_seed, [], [])
 
 
 # ---------------------------------------------------------------------------- the baseline's import

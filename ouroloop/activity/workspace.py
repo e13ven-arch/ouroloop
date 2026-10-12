@@ -318,7 +318,8 @@ def open_activity(config: dict, *, out: Callable[[str], None] = print, freeze_k:
     if releases.active_ref() is None:
         seed_from = (config.get("rsi") or {}).get("seed_from")
         if seed_from:
-            release = _import_seed(activity, seed_from, out=out)
+            release = _import_seed(activity, seed_from, out=out,
+                                   line=(config.get("rsi") or {}).get("seed_line") or "released")
         else:
             seed = build_seed(core.json()["harness"]["seed"], core=core.json(), objects=objects)
             improver_ref = objects.put("improver", dict(R0))
@@ -349,27 +350,81 @@ def _frozen_core(recorded: dict, objects: Objects, core_file: Path) -> Core:
 POLICY_FILES = ("ledger/estimates.json", "ledger/playbook.md")      # R's learned policy, carried over with W*
 
 
-def _import_seed(activity: Activity, seed_from: str, *, out) -> Release:
+def rebase_files(origin: dict, w_star: dict, new_seed: dict) -> tuple[dict, list, list]:
+    """W* replayed onto this code's seed (DESIGN §6.7, v1.6): a file R never touched (W* has the origin code seed's
+    bytes) takes the new seed's version; a file the new seed adds comes in; a file R changed or added stays as it is
+    (R's version also when the code changed it too: those are named); a file R deleted stays deleted.
+    -> (files, the paths that changed, the paths kept over a code change)."""
+    files = dict(w_star)
+    rebased, kept = [], []
+    for path, text in new_seed.items():
+        if path in origin:
+            if path in files and files[path] == origin[path]:
+                if text != files[path]:
+                    files[path] = text
+                    rebased.append(path)
+            elif path in files and text != origin[path] and text != files[path]:
+                kept.append(path)
+        elif path not in files:
+            files[path] = text
+            rebased.append(path)
+    return files, sorted(rebased), sorted(kept)
+
+
+def origin_seed(src_root: Path) -> tuple[Path, Release]:
+    """The code seed a chain of imports started from: the first release of `src_root`'s line when its reason is `seed`,
+    else the same of the workspace its `seed_imported` event names (v5 -> v6 -> v7). A broken chain is refused."""
+    seen = []
+    root = src_root
+    while True:
+        if root in seen or not (root / "rsi").is_dir():
+            raise ConfigError(f"[rsi] seed_from: the chain of imports behind {src_root} is broken at {root}: the "
+                              f"origin's code seed is the baseline of the replay and cannot be read")
+        seen.append(root)
+        first = Releases(root).history()[-1]
+        if first.reason != "import":
+            return root, first
+        imported = next(iter(Events(root).read("seed_imported")), None)
+        if imported is None:
+            raise ConfigError(f"[rsi] seed_from: {root}'s seed is an import without a seed_imported event")
+        root = Path(imported["source"])
+
+
+def _import_seed(activity: Activity, seed_from: str, *, out, line: str = "released") -> Release:
     """The seed of an activity that starts where another one released (DESIGN §6.7 v1.3, EVALUATE §7): the source
-    workspace's release line W* is copied into this object store (its closure), checked against this K's shape with the
-    code's seed as the vendored baseline, and installed as the first release (reason `import`); R's estimates and
-    playbook come along. Refused when the source has no release line or W* does not fit this K."""
+    workspace's release line W* (`line` "working": the head of its working line, for a source that closed without a
+    final and so was never released) is copied into this object store (its closure), replayed onto this code's seed
+    (`rebase_files`: the framework's files R never touched take this code's version, so the new host's contract and
+    the package's adapter agree), checked against this K's shape with the code's seed as the vendored baseline, and
+    installed as the first release (reason `import`); R's estimates and playbook come along. Refused when the source
+    has no release line or W* does not fit this K."""
     base = Path(activity.config.get("_base") or ".")
     src_root = Path(seed_from).expanduser()
     src_root = src_root if src_root.is_absolute() else (base / src_root).resolve()
     if not (src_root / "rsi").is_dir():
         raise ConfigError(f"[rsi] seed_from names {src_root}, which is not an activity's workspace")
     source = Releases(src_root)
-    released = source.released()
-    if released is None:
-        raise ConfigError(f"[rsi] seed_from names {src_root}, which has no release line (W*): release it first")
+    if line == "working":
+        if source.active_ref() is None:
+            raise ConfigError(f"[rsi] seed_from names {src_root}, which has no working line")
+        released = source.active()
+    else:
+        released = source.released()
+        if released is None:
+            raise ConfigError(f"[rsi] seed_from names {src_root}, which has no release line (W*): release it first "
+                              f"(or import its working line's head: [rsi] seed_line = \"working\")")
     copy_closure(source.objects, activity.objects, [released.package_ref])
-    package = load_package(activity.objects, released.package_ref)
+    w_star = load_package(activity.objects, released.package_ref)
     code_seed = build_seed(activity.k["harness"]["seed"], core=activity.k, objects=activity.objects)
-    problems = check_shape(package.files, limits=Limits.from_core(activity.k), seed=code_seed)
+    origin_root, origin_release = origin_seed(src_root)
+    origin = load_package(Releases(origin_root).objects, origin_release.package_ref)
+    files, rebased, kept = rebase_files(origin.files, w_star.files, code_seed.files)
+    problems = check_shape(files, limits=Limits.from_core(activity.k), seed=code_seed)
     if problems:
         raise ConfigError(f"[rsi] seed_from: the released W* {short(released.package_ref)} does not fit this K: "
                           f"{'; '.join(problems)[:500]}")
+    from ..harness.package import build
+    package = build(activity.objects, files, limits=Limits.from_core(activity.k), seed=code_seed) if rebased else w_star
     improver_ref = activity.objects.put("improver", dict(R0))
     release = activity.releases.import_seed(package.ref(), improver_ref, activity.core_ref)
     copied = []
@@ -379,8 +434,13 @@ def _import_seed(activity: Activity, seed_from: str, *, out) -> Release:
             dst.parent.mkdir(parents=True, exist_ok=True)
             dst.write_bytes(src.read_bytes())
             copied.append(rel)
-    activity.events.append("seed_imported", source=str(src_root), source_release=released.ref(),
-                           package=package.ref(), policy_files=copied)
-    out(f"release    {short(release.ref())} imported: {src_root}'s released {short(released.ref())} is this "
-        f"activity's seed (W {short(package.ref())}, K {short(activity.core_ref)}; policy files {copied or 'none'})")
+    activity.events.append("seed_imported", source=str(src_root), source_line=line, source_release=released.ref(),
+                           origin={"workspace": str(origin_root), "release": origin_release.ref()},
+                           source_package=w_star.ref(), package=package.ref(), rebased=rebased, kept_over_code=kept,
+                           policy_files=copied)
+    out(f"release    {short(release.ref())} imported: {src_root}'s {line} {short(released.ref())} is this "
+        f"activity's seed (W {short(package.ref())}, K {short(activity.core_ref)}; policy files {copied or 'none'}"
+        + (f"; {len(rebased)} file(s) of the framework's taken from this code's seed: {rebased[:6]}" if rebased
+           else "")
+        + (f"; R's version kept where the code changed too: {kept}" if kept else "") + ")")
     return release

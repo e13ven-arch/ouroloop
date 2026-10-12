@@ -51,7 +51,7 @@ class Activity:
     # trace() 随阶段 3 加入（runtime/trace.py）
 def freeze_split(suite, bench, path, versions) -> (SplitManifest, drift)
 def open_activity(config: dict, *, out, freeze_k=True, worker_factory=None, provider_factory=None) -> Activity
-    # v1.3：[rsi] seed_from 时种子 release 是旧工作区发布线的 W*（闭包复制进对象库，reason import，R 的策略一并导入）
+    # v1.3：[rsi] seed_from 时种子 release 是旧工作区发布线的 W*（闭包复制进对象库，reason import，R 的策略一并导入）；v1.6：W* 相对链起点代码种子（沿 seed_imported 回溯到 reason seed 的 release）的改动重放到本代码的种子上（rebase_files），R 没碰的框架文件取新的；[rsi] seed_line = "working" 时导入源工作线的头（源活动不跑 final、未发布时）
     # 冻结或读出划分、由配置算 K；[rsi] core_ref 或 core.json 与之不同即拒绝（新 K 是新活动）；
     # freeze_k 时第一次写 core.json 与种子 release；--checks-only 的 smoke 不写
 
