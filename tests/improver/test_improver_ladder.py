@@ -869,7 +869,7 @@ def test_v2c_fails_a_skill_the_manifest_does_not_name(ctx, parent):
 # ---------------------------------------------------------------------------- run_ladder, ladder_for, Verdict
 @pytest.mark.parametrize("component,rungs", [
     (comp("tool", TOOL), ("V2a",)), (comp("hook", "on_finish"), ("V2b",)),
-    (comp("hook", "on_finish", uses_model=True), ()), (comp("skill", "s", predicted=()), ("V2c",)),
+    (comp("hook", "on_finish", uses_model=True), ("V2d",)), (comp("skill", "s", predicted=()), ("V2c",)),
     (comp("prompt", "system", predicted=()), ()), (comp("agent", None, predicted=()), ()),
     (comp("vendor", "stirrup", predicted=()), ()), (comp("config", "max_turns", predicted=()), ()),
     (comp("memory", None, predicted=()), ()), (comp("removal", "x", predicted=()), ()),
@@ -985,8 +985,10 @@ def test_a_package_with_a_tool_and_a_hook_climbs_each_components_rung(ctx, paren
 
 
 def test_a_hook_that_calls_the_model_has_no_replay_rung(ctx, parent):
-    """IMPROVER §8 (v1.2): a hook with uses_model is checked at V0 and V1 (the smoke answers its one aux call) and
-    then at the paid screen; V2b cannot replay a model."""
+    """IMPROVER §8 (v1.6): a hook with uses_model is an audit — it answers {"missing": [...]} only (free text after a
+    model call is the package's defect, found at V1's smoke), its rung is V2d, the dry run on recorded attempts (the
+    research model answers its calls: the ticket's final text names a planned post with none made, so the audit fires
+    there and on no passing attempt), and V2b never replays a model."""
     code = ("def remind(ctx, event):\n"
             "    said = str(event.get('final_text') or '')\n"
             "    reply = ctx.model([{'role': 'user', 'content': 'Was a message posted? ' + said}], [], role='aux')\n"
@@ -997,9 +999,22 @@ def test_a_hook_that_calls_the_model_has_no_replay_rung(ctx, parent):
     files = with_hook(parent, code)
     audited = decl("hook", "on_finish", uses_model=True)
     verdict = run_ladder(files, audited, ctx)
-    assert list(verdict.steps) == ["V0", "V1"] and verdict.components == {} and verdict.passed(), verdict.text()
+    assert list(verdict.steps) == ["V0", "V1"] and not verdict.passed("V1"), verdict.text()
+    assert "called the model and answered free text" in verdict.text()
+    additive = ("import json\n\ndef remind(ctx, event):\n"
+                "    reply = ctx.model([{'role': 'system', 'content': \"You audit the agent's work.\"},"
+                " {'role': 'user', 'content': 'Final text: ' + str(event.get('final_text') or '')}], [], role='aux')\n"
+                "    text = reply.get('text') if isinstance(reply, dict) else getattr(reply, 'text', '')\n"
+                "    try:\n        items = json.loads(text)\n    except Exception:\n        items = []\n"
+                "    return {'missing': [str(i) for i in items]} if items else None\n")
+    verdict = run_ladder(with_hook(parent, additive), audited, ctx)
+    assert list(verdict.steps) == ["V0", "V1"] and verdict.passed("V0") and verdict.passed("V1"), verdict.text()
+    (key,) = verdict.components
+    got = verdict.components[key]["V2d"]
+    assert key == "hook:on_finish" and got["hits"] == ["rsi.notify_ticket"] and got["false_alarms"] == [] and got["passed"]
+    assert "fires on 1 of 1 claimed failing tasks" in got["detail"] and verdict.passed()
     # declared without uses_model, the replay runs the hook, whose model call is the package's defect there
-    plain = run_ladder(files, decl("hook", "on_finish"), ctx)
+    plain = run_ladder(with_hook(parent, additive), decl("hook", "on_finish"), ctx)
     assert not plain.passed() and not plain.components["hook:on_finish"]["V2b"]["passed"]
     assert "the hook failed" in plain.components["hook:on_finish"]["V2b"]["detail"]
 

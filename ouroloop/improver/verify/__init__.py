@@ -1,8 +1,9 @@
 """The verification ladder (docs/design/IMPROVER.md §8; DESIGN §6.6, v1.2): each rung costs nothing paid. V0 static over
 the whole package (shape, limits, literals, the declaration against the diff both ways), V1 unit when the package holds
 code (its tests, probe and smoke in the worker), then one rung per component by its kind — V2a toolcheck for a tool,
-V2b replay for a hook that does not call the model, V2c reach for a skill; a prompt, a config knob, the agent, a
-vendored file and the memory have no rung of their own. V3 (the paid held-out screen) is screen.py's."""
+V2b replay for a hook that does not call the model, V2d the dry run for a hook that does (v1.6), V2c reach for a skill;
+a prompt, a config knob, the agent, a vendored file and the memory have no rung of their own. V3 (the paid held-out
+screen) is screen.py's."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -17,7 +18,7 @@ UNIT_KINDS = ("tool", "hook", "agent", "vendor", "config")     # kinds whose cha
 def ladder_for(component: Component) -> tuple:
     """The component's own rungs after V0 (and V1 when the package holds code)."""
     if component.kind == "hook" and component.uses_model:
-        return ()                       # its first check is the paid screen, with its calls metered
+        return ("V2d",)                 # the audit's dry run on recorded attempts (DESIGN §6.16)
     rung = RUNGS.get(component.kind)
     return (rung,) if rung else ()
 
@@ -86,17 +87,20 @@ class VerifyContext:
     failed_sessions: dict = field(default_factory=dict)     # task_id -> session of a failing train attempt (V2b)
     study_tasks: tuple = ()             # the train tasks R studies (predicted_affected names only these); () = all
     cause_ids: tuple = ()               # the round's causes: a component names some of them
+    aux: object = None                  # the research model that answers an audit's ctx.model in V2d (metered)
+    hook_aux_calls: int = 2             # K's improver.hook_aux_calls: an audit's calls per attempt in the dry run
 
 
 def run_ladder(files: dict[str, str], decl: Declaration, ctx: VerifyContext, *, rungs: tuple | None = None) -> Verdict:
     """V0 over the package, V1 when it holds code, then every component's own rung (all of them run, so one revision
     sees every problem); a failed V0 or V1 ends the climb. `rungs` restricts the climb to the named rungs."""
+    from .audit import audit_check
     from .reach import reach_check
     from .replay import replay_check
     from .static import static_check
     from .toolcheck import toolcheck
     from .unit import unit_check
-    run = {"V2a": toolcheck, "V2b": replay_check, "V2c": reach_check}
+    run = {"V2a": toolcheck, "V2b": replay_check, "V2c": reach_check, "V2d": audit_check}
     want = None if rungs is None else set(rungs)
     steps: dict = {}
     if want is None or "V0" in want:

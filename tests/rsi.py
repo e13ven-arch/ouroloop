@@ -130,6 +130,7 @@ def activity(root: Path, upstream: str, *, provider=None, worker=None, freeze_k:
 
 # ---------------------------------------------------------------------------- the scripted actor
 PUSHBACK = "Keep working on the task"
+AUDIT_SYSTEM = "You audit the agent's work."     # the scripted audit hook's aux prompt (tests/improver/scripted_r.py)
 FINISH_CHECK_MARK = "name the tool result that shows it is done"
 LIBRARY_MARK = "[lib "                  # an entry of the memory's opening block (memory/retrieval.py)
 NOTIFY_TOOL = "post_channel_message"    # a package tool for the notification: offered, the actor uses it
@@ -167,6 +168,19 @@ def _done(messages: list[dict]) -> dict:
     return {"updated": updated, "sent": sent, "planned": planned}
 
 
+def audit_reply(messages: list[dict], *, noisy: bool = False) -> list[str]:
+    """What the scripted model answers the audit hook (v1.6): the missing items. The hook's prompt carries the agent's
+    final text (with its plan) and its writes; a planned post with no "Message posted." is missing. `noisy`: something
+    is always missing (a false alarm on every passing attempt)."""
+    if noisy:
+        return ["something is missing"]
+    text = " ".join(str(m.get("content") or "") for m in messages if m.get("role") == "user")
+    planned = re.search(r"Planned:.*?(post [^;.]+ in #ops)", text)
+    if planned and "Message posted." not in text:
+        return [planned.group(1)]                       # the planned item, in the agent's own words
+    return []
+
+
 class BusinessWorker:
     """A scripted actor over the rsi tasks.
 
@@ -189,6 +203,8 @@ class BusinessWorker:
     def chat(self, system: str, messages: list[dict], specs, **_kw) -> ChatTurn:
         self.calls += 1
         self.seen.append({"system": system, "messages": messages, "tools": [s.name for s in specs or ()]})
+        if (system or "").startswith(AUDIT_SYSTEM):          # an audit hook's aux call in an attempt
+            return ChatTurn(json.dumps(audit_reply(messages)), [], "end", usage=dict(self.usage))
         names = {s.name for s in specs or ()}
         task = next((m["content"] for m in messages if m.get("role") == "user"), "")
         want, done = _needs(task), _done(messages)
@@ -205,6 +221,11 @@ class BusinessWorker:
 
         def call(name, args, n=1):
             return ChatTurn("", [ToolCall(f"c{self.calls}.{n}", name, args)], "tool_use", usage=usage)
+        planned = ""
+        if done["planned"] and (want["update"] or want["notify"]):
+            items = (["move the contact to opportunity"] if want["update"] else []) + \
+                    ([f"post {want['phrase']} in #ops"] if want["notify"] else [])
+            planned = " Planned: " + "; ".join(items) + "."
         if want["hold"]:
             return self._finish("The request is not allowed by the data policy, so I changed nothing.", names, usage)
         if "plan_changes" in names and not done["planned"] and (want["update"] or want["notify"]):
@@ -223,7 +244,8 @@ class BusinessWorker:
         if want["notify"] and self.repeat_notify and done["sent"] == 1:
             return call("api_fetch", {"method": "POST", "url": SLACK,
                                       "body": json.dumps({"channel": "C1", "text": f"{want['phrase']} again"})})
-        return self._finish("Done: the record is updated." + (" Message posted." if done["sent"] else ""), names, usage)
+        return self._finish("Done: the record is updated." + (" Message posted." if done["sent"] else "") + planned,
+                            names, usage)
 
     def _finish(self, text: str, names: set, usage: dict) -> ChatTurn:
         if getattr(self, "cited", None):

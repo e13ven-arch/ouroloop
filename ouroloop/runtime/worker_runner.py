@@ -155,7 +155,8 @@ CONTRACT = json.loads("""
    "feedback"
   ],
   "after_turn": [
-   "message"
+   "message",
+   "missing"
   ],
   "before_model": [
    "messages"
@@ -169,7 +170,8 @@ CONTRACT = json.loads("""
    "args"
   ],
   "on_finish": [
-   "pushback"
+   "pushback",
+   "missing"
   ]
  },
  "roles": [
@@ -345,17 +347,31 @@ def _no_memory(query, k=None):
 class Context:
     """What a hook, a package tool, a test or a toolcheck script holds: the view, the broker as `tool` (read-only for
     a hook, and for a tool that does not write), empty skills and memory, and `mark`, which records nothing here.
-    No `model`: hooks and tools are deterministic code."""
+    `model` only when the host said so (`aux`: the audit's dry run, IMPROVER §8 V2d, answers it with the research
+    model); otherwise hooks and tools are deterministic code and the call is refused."""
 
-    def __init__(self, view, *, read_only: bool = False):
+    def __init__(self, view, *, read_only: bool = False, aux: bool = False):
         self.view = dict(view or {})
         self.limits = {}
         self.skills = Skills((), _no_skill)
         self.memory = Memory(_no_memory)
         self._read_only = read_only
+        self._aux = aux
 
     def tool(self, name: str, args: dict | None = None, *, read_only: bool = False) -> Result:
         return base_call(name, args, self._read_only or read_only)
+
+    def model(self, messages, tools=(), role: str = "aux", effort=None) -> ModelReply:
+        if not self._aux:
+            raise ModelCallError("no model here: hooks and tools are deterministic code (an audit's dry run has one)")
+        reply = exchange(CONTRACT["callback_ids"]["model_call"],
+                         {"op": "model_call", "role": role, "effort": effort, "messages": list(messages),
+                          "tools": list(tools or ())}, "model_result")
+        if reply.get("is_error"):
+            raise ModelCallError(str(reply.get("error") or "the host refused the call"))
+        calls = [{"id": c.get("id"), "name": c.get("name"), "args": c.get("args") or {}}
+                 for c in reply.get("tool_calls") or () if isinstance(c, dict)]
+        return ModelReply(str(reply.get("text", "")), calls, reply.get("stop"))
 
     def mark(self, kind: str, **data) -> None:
         return None
@@ -872,9 +888,10 @@ def main() -> None:
                 send({"op": "result", "value": plain(call(entry(req["entry"]), ctx, req.get("args") or {}),
                                                      int(req.get("limit") or 20000))})
             elif op == "hook":
-                # the raw answer: the host checks it against the site's shape (harness/contract.py action_of)
-                value = call(entry(req["entry"]), Context(req.get("view") or {}, read_only=True),
-                             req.get("event") or {})
+                # the raw answer: the host checks it against the site's shape (harness/contract.py action_of); `aux`
+                # gives the hook a model, answered by the host (the audit's dry run)
+                value = call(entry(req["entry"]), Context(req.get("view") or {}, read_only=True,
+                                                         aux=bool(req.get("aux"))), req.get("event") or {})
                 send({"op": "result", "value": _json_value(value)})
             elif op == "test":
                 send({"op": "result", "value": run_tests()})

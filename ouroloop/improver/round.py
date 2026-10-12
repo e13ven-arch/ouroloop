@@ -477,7 +477,8 @@ class Round:
                                               for t in passed[:REPLAY_SAMPLE]},
                              study_tasks=study,
                              cause_ids=tuple(c.cause_id for c in self.causes())
-                             if "diagnosed" in self.state["steps"] else ())
+                             if "diagnosed" in self.state["steps"] else (),
+                             aux=self.researcher("verify"), hook_aux_calls=int(self.s.hook_aux_calls))
 
     def _archive(self, *args, **kw) -> dict:
         return self.archive.put(self.i, *args, tag=self.tag, **kw)
@@ -555,7 +556,12 @@ class Round:
                  "failures.json": {"note": "each studied failure side by side: the request, the checks the grader marked "
                                            "failed with their parameters, the agent's writes in order, what it said at "
                                            "the end; persistent = failed under more than one installed package",
-                                   "cases": failures}}
+                                   "cases": failures},
+                 "audits.json": {"note": "every audit (a hook calling the model) tried on this line: its dry run on "
+                                         "recorded attempts — hits on the claimed failing tasks, false alarms on passing "
+                                         "ones with what the audit said — and its screen when it got there; start the "
+                                         "next audit from these errors",
+                                 "audits": self.ledger.audits(self.line)}}
         out = {name: json.dumps(v, ensure_ascii=False, indent=1, default=str) for name, v in files.items()}
         out["playbook.md"] = read_playbook(self.a.root)
         out["package_api.md"] = api
@@ -676,6 +682,10 @@ class Round:
                 files, error = tree.fetch(decl.dir)
                 if files is not None:
                     fetched.append((decl, self.with_memory(files)))
+            # v1.6 (DESIGN §6.16): the focus names several causes and R handed in one package — on the ledger
+            if len(fetched) == 1 and len(self.focus().ranked) >= 2 and self.s.packages_per_round > 1:
+                self.ledger.row("single_package", round_id=self.round_id, line=self.line, dir=fetched[0][0].dir,
+                                causes=len(self.focus().ranked), reason=str(session.ended or "")[:300])
             # on record before anything else can fail: a resumed step does not pay for the session again
             self.state["session_result"] = {"session": str(self.dir / "session.json"), "candidates": [
                 {"declaration": self.a.objects.put(d), "files": self.a.objects.put_json("candidate_files", f)}
@@ -776,6 +786,7 @@ class Round:
             self.ledger.row("verified", round_id=self.round_id, line=self.line, dir=decl.dir, kind=decl.kind,
                             passed=verdict.passed(), outcome="duplicate" if dup else "",
                             failed_components=verdict.failed_components(), reason=verdict.text()[:800])
+            self._audited(decl, verdict)
             if verdict.passed() and not dup:
                 passed.append(item)
         for decl, files in self.fixed_candidates():
@@ -806,6 +817,19 @@ class Round:
                 self.ledger.row("no_code_candidate", round_id=self.round_id, line=self.line, cause=c.name)
         self.out(f"round      {self.round_id}: {len(passed)} candidates passed their free rungs ({ladder})")
         return {"passed": passed, "fixed": fixed, "ladder": ladder}
+
+    def _audited(self, decl: Declaration, verdict: Verdict) -> None:
+        """v1.6 (DESIGN §6.16): each audit's dry run on the ledger — hits, false alarms with the audit's own words on
+        the studied tasks, what it named — so the next audit starts from this one's errors (Ledger.audits)."""
+        for comp in decl.components:
+            got = (verdict.components.get(comp.key) or {}).get("V2d")
+            if not got:
+                continue
+            self.ledger.row("audited", round_id=self.round_id, line=self.line, dir=decl.dir, kind="hook", site=comp.site,
+                            passed=bool(got.get("passed")), hits=list(got.get("hits") or ()),
+                            named=list(got.get("named") or ()), false_alarms=list(got.get("false_alarms") or ()),
+                            false_alarm_rate=got.get("false_alarm_rate"), misfires=list(got.get("misfires") or ()),
+                            reason=str(got.get("detail") or "")[:800])
 
     # ------------------------------------------------------------------ V3: the held-out screen
     def screened(self) -> dict:

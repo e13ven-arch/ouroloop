@@ -14,16 +14,17 @@ from pathlib import Path
 
 from ..contracts import append_jsonl, locked, now, read_jsonl
 
-STAGES = ("measured", "diagnosed", "focused", "declared", "verified", "screened", "accepted", "not_stacked", "gated",
-          "installed", "rejected", "credited", "removal_proposed", "no_code_candidate", "vocabulary_added",
-          "l6_unavailable", "stopped", "playbook")
+STAGES = ("measured", "diagnosed", "focused", "declared", "verified", "audited", "screened", "accepted", "not_stacked",
+          "gated", "installed", "rejected", "credited", "removal_proposed", "no_code_candidate", "single_package",
+          "vocabulary_added", "l6_unavailable", "stopped", "playbook")
 # What R reads of a row (the projection): train facts and counts. Anything else of a row stays with the host.
 TASK_LISTS = ("predicted_affected", "fixed", "regressed")       # the projected fields that name train tasks
 PROJECTED = ("id", "stage", "round_id", "candidate", "dir", "cause", "cause_id", "kind", "site", "trigger",
              "mechanism", "components", "predicted_affected", "differs_from", "fixed", "regressed", "net_flips",
              "fixes", "holdout_score", "best_so_far", "accepted", "reasons", "failed_components", "outcome", "verdict",
              "gain", "fixed_count", "regressed_count", "passed", "steps", "reason", "causes", "require_code",
-             "component", "credit", "names", "status", "holdout_passed", "holdout", "stacked_on", "conflicts")
+             "component", "credit", "names", "status", "holdout_passed", "holdout", "stacked_on", "conflicts",
+             "hits", "false_alarms", "false_alarm_rate", "misfires", "named")
 
 
 def _scrub(value, hide: set):
@@ -105,6 +106,33 @@ class Ledger:
                 slot["regressed"] += regressed
                 slot["net"] += fixed - regressed
         return dict(sorted(board.items()))
+
+    def audits(self, line: str | None = None) -> list[dict]:
+        """v1.6 (DESIGN §6.16): every audit tried on this line — its round and dir, mechanism and site (the declared
+        row), the dry run's hits, false alarms and misfires on the studied part (the `audited` row: the misfires quote
+        the audit's own words on studied tasks), and its screen's counts when it got there — so the next audit starts
+        from the last one's errors."""
+        declared = {(r.get("round_id"), r.get("dir")): r for r in self.rows(stage="declared")
+                    if line is None or r.get("line") in (None, line)}
+        screens = {(r.get("round_id"), r.get("dir")): r for r in self.rows(stage="screened")
+                   if line is None or r.get("line") in (None, line)}
+        out = []
+        for r in self.rows(stage="audited"):
+            if line is not None and r.get("line") not in (None, line):
+                continue
+            key = (r.get("round_id"), r.get("dir"))
+            d, sc = declared.get(key, {}), screens.get(key)
+            out.append({"round_id": r.get("round_id"), "dir": r.get("dir"), "site": r.get("site"),
+                        "mechanism": d.get("mechanism"), "cause": d.get("cause"), "passed": r.get("passed"),
+                        "hits": r.get("hits"), "false_alarms": r.get("false_alarms"),
+                        "false_alarm_rate": r.get("false_alarm_rate"), "named": r.get("named"),
+                        "misfires": r.get("misfires"),
+                        "screen": None if sc is None else {"outcome": sc.get("outcome"), "accepted": sc.get("accepted"),
+                                                           "net_flips": sc.get("net_flips"),
+                                                           "fixed_held_out": len(sc.get("fixed") or ()),
+                                                           "regressed_held_out": len(sc.get("regressed") or ()),
+                                                           "reasons": sc.get("reasons")}})
+        return out
 
     def last_round_of(self, task_id: str) -> int:
         """The index of the latest round that diagnosed this task (-1: never): the least recently diagnosed first."""

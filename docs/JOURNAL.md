@@ -8,6 +8,21 @@
 
 ---
 
+## 2026-10-12 阶段 4g：学会提升概率——单向审核、审核预演 V2d、审核台账落成代码；分支 `s8/audit`；$0
+
+- 用户的决定（2026-10-12）："写吧，先改文档再改代码，就算是概率性的、只能靠审核的，你应该也知道了没通过的原因，接下来框架的提升方向就是要能够学会解决它，学会提升概率。"文档先改（`d868c8a`：DESIGN §6.16、IMPROVER §2 / §7 / §8 / §10、HARNESS §7、CONTRACTS §4、PLAN），再改代码。
+- 代码：
+  - 契约（`harness/contract.py`）：`after_turn` / `on_finish` 的答法多 `missing`（非空字符串列表；与 `message` / `pushback` 不能同给），`action_of` 判为 feedback / pushback；`MISSING_TEXT` 与 `render_missing`——宿主的固定措辞"Keep working on the task: an audit found requirements with no matching write: … Add what is missing; do not change or remove what you have already done."；worker_runner 的内嵌契约重新生成。
+  - 适配层（`stirrup_agent.py`）：`_action` 同样认 `missing`；`after_turn` / `on_finish` 把它渲染成上面的文字；`_fire` 记下这次 hook 调用前后 aux 计数——调过模型还答自由文本（`pushback` / `message`）就是 `HookError`（候选缺陷）：审核只能补缺，这是构造出来的。
+  - worker（`worker_runner.py`）：`hook` 操作的 `Context` 在宿主说 `aux` 时有 `model`（走 `model_call` 回调，和 agent 的一样），否则一如既往拒绝——预演靠它。
+  - V2d（`verify/audit.py`）：`uses_model` 的 hook 的免费档。用 V2b 的 `site_events` 重建声明的失败题与通过题样本的站点事件，视图里的 `events` 是该次尝试记录下来的 broker 调用（只取 broker 的，与真跑时一致），`ctx.tool` 只读对着新开的世界，`ctx.model` 由宿主的 handler 接研究模型（role aux，`hook_aux_calls` 封顶，超出答错误）；前面的 hook 在该事件上已 act 过则跳过（与真跑的先到先得一致）。报警 = 非空 `missing`；非 `missing` 的答法记为错误。门槛：命中 ≥ `replay_min_triggers`，误报率 ≤ `audit_max_false_alarm`；`named` 是命中条目含失败断言参数的字符串值（≥ 3 字）。退回文本列出每个误报的任务请求前 300 字与审核的原话。`ladder_for` 给 `uses_model` 的 hook 返回 `("V2d",)`；`VerifyContext` 多 `aux`、`hook_aux_calls`。
+  - 轮（`round.py`）：`vctx` 带 `researcher("verify")`；`_audited` 把每个 V2d 结果写台账（`audited`：hits、named、false_alarms、false_alarm_rate、misfires、passed）；清单 ≥ 2 簇而 R 只交一个包时记 `single_package`；`inputs/audits.json` = `Ledger.audits(line)`（declared 的机制与 cause、audited 的数与误报原文、screened 的计数——留出题只计数）。
+  - 设置：`audit_additive_only`（fixed true）、`audit_max_false_alarm`（0.25，cap）。提示词：审核答 `missing`、宿主说其余的话、预演会把误报退回来；清单有几个簇就交几个包。
+- 测试（假上游）：脚本化 R 的 `audit` / `audit_noisy` 模式写一个 on_finish 审核（从最后的话与写入问 aux 模型缺什么）；夹具 actor 的最后一句带上它的计划（"Planned: move the contact…; post stage updated in #ops."），并会答审核的 aux 调用。`audit`：预演在 ticket 上命中并点到断言的值、三道通过题 0 误报、过；筛选时宿主渲染的推回让 actor 补发，留出两道都修、装入；`audited` 行与 `Ledger.audits` 带筛选计数、不含留出题号。`audit_noisy`：误报率 1.0，退回文本列出三道通过题的请求与"something is missing"，会话修订一次仍不过，`no_candidate`，没付筛选。适配层：`missing` 的渲染文字、调过模型答自由文本是 `HookError`；契约与适配层对 `missing` 的判定一致（`ANSWERS` 表加例）。improver + runtime + harness + activity 等 682 passed（14 个因镜像过期与旧预期失败的，重建 worker 镜像、改两条阶梯测试的预期后）；全量（Docker + 真 sidecar，镜像重建为 `sha256:e070208d…`）1,535 passed、20 skipped、1 deselected。`finance-v7.toml` 写好：从 v6 的工作线起步（`seed_from = workspace-finance-v6`，v6 要先 release），其余同 v6，镜像钉新 id。
+- 没付费、没读 test 内容。
+
+---
+
 ## 2026-10-12 finance-v6 的流跑完：150 道首遇 89/150（59.3%），一轮装入（系统提示），四轮被拒（全是 hook）；$199.30
 
 - 三个域的 train 各 50 道，5 批 × 30，每批之后一轮。第 3 批中途 claude CLI 的会话额度用尽（`ProviderAccountError`，8 道在飞的题没记录、预留释放），额度恢复后 `--phase stream` 续跑，已计分的 109 道不再付费。

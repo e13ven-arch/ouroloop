@@ -47,11 +47,34 @@ HOOK_CODE = '''def remind(ctx, event):
     return None
 '''
 HOOK_ENTRY = {"name": "remind_ops", "site": "on_finish", "entrypoint": "middlewares/remind_ops.py:remind"}
+# v1.6: an audit — a hook that asks the aux model what is missing, from the agent's final text and its writes
+AUDIT_CODE = '''import json
+
+
+def audit(ctx, event):
+    writes = []
+    for e in ctx.view.get("events") or ():
+        args = e.get("args") or {}
+        if e.get("name") == "api_fetch" and str(args.get("method", "GET")).upper() not in ("GET", "HEAD"):
+            writes.append(f"{args.get('method')} {args.get('url')}")
+    prompt = "Final text: " + str(event.get("final_text") or "") + "\\nWrites: " + "; ".join(writes)
+    reply = ctx.model([{"role": "system", "content": "You audit the agent's work."},
+                       {"role": "user", "content": prompt}], role="aux")
+    try:
+        items = json.loads(reply.text)
+    except Exception:
+        items = []
+    items = [str(i) for i in items if str(i).strip()]
+    return {"missing": items} if items else None
+'''
+AUDIT_ENTRY = {"name": "audit", "site": "on_finish", "entrypoint": "middlewares/audit.py:audit"}
 CONTACTS = {"rsi.notify_after_update": "c2", "rsi.notify_after_update_variant": "c3", "rsi.update_stage": "c1",
             "rsi.notify_ticket": "c4"}
 MECHANISM = {"tool": "a package tool posts the requested #ops message so the agent does not have to compose the call",
              "hook": "an on_finish hook pushes back while a requested #ops post is missing",
-             "both": "a tool posts the requested #ops message and an on_finish hook pushes back while it is missing"}
+             "both": "a tool posts the requested #ops message and an on_finish hook pushes back while it is missing",
+             "audit": "an on_finish audit asks the aux model which planned items have no write and names them",
+             "audit_noisy": "an on_finish audit asks the aux model which planned items have no write and names them"}
 TOOL_CODE_2 = TOOL_CODE.replace("posted to the ops channel", "sent to #ops")     # the same tool, another body
 
 
@@ -90,6 +113,10 @@ class ScriptedR:
         if system.startswith("You improve the harness package"):
             self.calls.append("session")
             return self._session(messages)
+        if system.startswith("You audit the agent's work"):          # the audit's dry run (V2d) asks the research model
+            import rsi
+            self.calls.append("audit")
+            return self._text(json.dumps(rsi.audit_reply(messages, noisy=self.mode == "audit_noisy")))
         raise AssertionError(f"a request ScriptedR does not know: {system[:80]!r}")
 
     # ------------------------------------------------------------------ diagnosis
@@ -142,6 +169,11 @@ class ScriptedR:
             files["candidates/package/middlewares/remind_ops.py"] = HOOK_CODE
             components.append({"kind": "hook", "site": "on_finish", "cause_ids": cause_ids,
                                "predicted_affected": tasks, "trigger": "the run finishes while #ops was asked for"})
+        if self.mode in ("audit", "audit_noisy"):
+            manifest["hooks"] = [*manifest.get("hooks", []), AUDIT_ENTRY]
+            files["candidates/package/middlewares/audit.py"] = AUDIT_CODE
+            components.append({"kind": "hook", "site": "on_finish", "cause_ids": cause_ids,
+                               "predicted_affected": tasks, "trigger": "the run finishes", "uses_model": True})
         decl = {"mechanism": MECHANISM[self.mode], "components": components}
         if turns == 1:
             return self._calls(*[("write_file", {"path": p, "text": t}) for p, t in files.items()],

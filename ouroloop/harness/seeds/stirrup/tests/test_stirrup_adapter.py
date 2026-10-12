@@ -147,6 +147,20 @@ def probe_audit(ctx, event):
     return None
 
 
+def probe_missing(ctx, event):
+    """An audit: asks the model, answers what is missing (v1.6)."""
+    if event["pushbacks"]:
+        return None
+    ctx.model([{"role": "user", "content": "AUDIT"}], role="aux")
+    return {"missing": ["the note to #ops", "the CFO's copy"]}
+
+
+def probe_free_text_audit(ctx, event):
+    """An audit that answers free text: the package's defect (v1.6, audit_additive_only)."""
+    ctx.model([{"role": "user", "content": "AUDIT"}], role="aux")
+    return {"pushback": "Change the amount in the email."}
+
+
 def _probes():
     return [{"name": f"p_{s}", "site": s, "entrypoint": f"{HERE}:probe_{s}", "enabled": True}
             for s in ("before_run", "before_model", "before_tool", "after_tool", "after_turn", "on_finish")]
@@ -197,6 +211,29 @@ def test_a_hooks_aux_call_passes_through_the_before_model_hooks(ctx=None):
     assert aux[-1] == {"role": "user", "content": "PROBE-NOTE"} and len(aux) == 3
     assert fake.hook_marks().count(("before_model", "p_before_model", "modify")) == 2
     assert [d["site"] for k, d in fake.marks if k == "hook_aux_call"] == ["on_finish"]
+
+
+def test_an_audits_missing_items_are_rendered_by_the_host_and_free_text_is_its_defect(ctx=None):
+    fake = FakeCtx([Reply("", [("finish", {"reason": "Done."})]), Reply("[]"), Reply("", [("finish", {"reason": "Done."})])],
+                   hooks=[{"name": "audit", "site": "on_finish", "entrypoint": f"{HERE}:probe_missing"}])
+    fake.view["hook_aux_calls"] = 2
+    assert adapter().run(fake, "Do the task.") == "Done."
+    # the second act call carries the finish's pushback: the host's words around the audit's items
+    results = [r for m in fake.sent[2] if m["role"] == "tool" for r in m["results"]]
+    text = results[-1]["output"]
+    assert text.startswith("Keep working on the task: an audit found requirements with no matching write:")
+    assert "- the note to #ops" in text and "- the CFO's copy" in text
+    assert "Add what is missing; do not change or remove what you have already done." in text
+    assert ("on_finish", "audit", "pushback") in fake.hook_marks()
+    fake = FakeCtx([Reply("", [("finish", {"reason": "Done."})]), Reply("ok")],
+                   hooks=[{"name": "audit", "site": "on_finish", "entrypoint": f"{HERE}:probe_free_text_audit"}])
+    fake.view["hook_aux_calls"] = 2
+    try:
+        adapter().run(fake, "Do the task.")
+    except Exception as e:  # noqa: BLE001 - the adapter's HookError, by name (its class is the loaded module's)
+        assert type(e).__name__ == "HookError" and "answered free text" in str(e)
+    else:
+        raise AssertionError("a free-text answer after a model call must be the package's defect")
 
 
 def test_a_hook_answering_outside_its_protocol_is_the_packages_defect(ctx=None):

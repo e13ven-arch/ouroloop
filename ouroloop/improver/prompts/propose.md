@@ -5,7 +5,8 @@ package is measured once on the held-out part of train — tasks you are never s
 installed on the working line only when it fixes more held-out tasks than it breaks. A change that only fits the cases
 you read fixes nothing held out: build for the causes, not for the cases.
 
-This round you hand in up to {packages} candidate packages: candidates/package/, candidates/package-2/, ... (the first
+This round you hand in {packages} candidate packages when the focus list has that many causes (fewer only when it
+has fewer, and say why in finish): candidates/package/, candidates/package-2/, ... (the first
 write under a directory copies the current package there; then you change it). Each package is one mechanism — what
 the agent will do differently — carried by as many components as that mechanism needs, and it may work on several
 causes at once; different packages are different mechanisms on different causes, and the first one takes the largest
@@ -23,7 +24,14 @@ than text that asks the model to try harder. A tool is only useful if the agent 
 description that make the call obvious, make its output say what it did, and add the hook that makes the agent call
 it or checks its result, and the skill that says when. An on_finish or after_turn hook may call ctx.model (role aux,
 at most {hook_aux_calls} calls per attempt) to audit the agent's work against the request before it finishes: declare
-such a hook with uses_model: true. When a mechanizable cause is in the focus list, the package holds at least one tool
+such a hook with uses_model: true. An audit answers {"missing": ["<a requirement with no matching write>", ...]} or
+None, nothing else: the host tells the agent to add what is missing and to change nothing it already did — every audit
+that asked the agent to correct or remove things has made it break tasks it had right (inputs/audits.json shows each
+one tried on this line, with the false alarms it raised on passing attempts and what it said there). The audit's job
+is to list the requirements in the documents the agent read and the request that have no write yet, read from what the
+agent did (ctx.view["events"], the final text, read-only tools), and to stay silent when everything is there. Before
+the screen, the host dry-runs the audit on recorded attempts: it must fire on the claimed failing tasks and on at most a
+share of the passing ones (the false alarms come back to you with the task's request and your audit's words). When a mechanizable cause is in the focus list, the package holds at least one tool
 or hook (the ledger records a round without one). The agent, a config knob or a vendored file may change too, at most
 {l5_per_round} such change a round; tests under tests/ are free. Never write a task's specific values (names, e-mails,
 ids, amounts) into the package: the host rejects a value that occurs in one train task.

@@ -44,10 +44,22 @@ RETURNS = {
     "before_model": ("messages",),
     "before_tool": ("block", "args"),
     "after_tool": ("output", "feedback"),
-    "after_turn": ("message",),
-    "on_finish": ("pushback",),
+    "after_turn": ("message", "missing"),
+    "on_finish": ("pushback", "missing"),
 }
 ACTIONS = ("none", "block", "modify", "feedback", "pushback")
+# v1.6 (DESIGN §6.16): an audit answers {"missing": [...]} and the host says the rest — the agent is told only what has
+# no matching write, never to change or remove what it did (an additive pushback). The adapter renders this text.
+MISSING_TEXT = ("Keep working on the task: an audit found requirements with no matching write:\n{items}\n"
+                "Add what is missing; do not change or remove what you have already done.")
+
+
+def render_missing(items) -> str:
+    return MISSING_TEXT.format(items="\n".join(f"- {str(i).strip()}" for i in items))
+
+
+def _missing(value) -> bool:
+    return isinstance(value, list) and bool(value) and all(isinstance(i, str) and i.strip() for i in value)
 
 CTX_NAMES = ("model", "tool", "skills", "memory", "limits", "view", "mark")
 LIMIT_KEYS = ("act_calls", "model_calls", "tool_calls", "seconds", "tokens")   # tokens: output tokens
@@ -109,9 +121,21 @@ def action_of(site: str, value) -> str:
                 raise HookAnswerError(f"after_tool: {key} is a string")
         return "feedback" if "feedback" in value and "output" not in value else "modify"
     if site == "after_turn":
+        if "missing" in value:
+            if "message" in value:
+                raise HookAnswerError("after_turn: message or missing, not both")
+            if not _missing(value["missing"]):
+                raise HookAnswerError("after_turn: missing is a non-empty list of non-empty strings")
+            return "feedback"
         if not isinstance(value["message"], str):
             raise HookAnswerError("after_turn: message is a string")
         return "feedback"
+    if "missing" in value:
+        if "pushback" in value:
+            raise HookAnswerError("on_finish: pushback or missing, not both")
+        if not _missing(value["missing"]):
+            raise HookAnswerError("on_finish: missing is a non-empty list of non-empty strings")
+        return "pushback"
     if not isinstance(value["pushback"], str):
         raise HookAnswerError("on_finish: pushback is a string")
     return "pushback"

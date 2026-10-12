@@ -111,8 +111,10 @@ ANSWERS = {
     "before_tool": [None, {"block": {"reason": "r"}}, {"args": {}}, {"block": {"reason": "r"}, "args": {}},
                     {"block": "r"}, {"args": []}, {"output": "x"}],
     "after_tool": [None, {"output": "o"}, {"feedback": "f"}, {"output": "o", "feedback": "f"}, {"output": 1}],
-    "after_turn": [None, {"message": "m"}, {"message": None}, {"pushback": "p"}],
-    "on_finish": [None, {"pushback": "p"}, {"pushback": 3}, {"message": "m"}, ["p"]],
+    "after_turn": [None, {"message": "m"}, {"message": None}, {"pushback": "p"}, {"missing": ["a", "b"]},
+                   {"missing": []}, {"missing": ["a", 1]}, {"missing": ["a"], "message": "m"}],
+    "on_finish": [None, {"pushback": "p"}, {"pushback": 3}, {"message": "m"}, ["p"], {"missing": ["x"]},
+                  {"missing": [" "]}, {"missing": "x"}, {"missing": ["x"], "pushback": "p"}],
 }
 
 

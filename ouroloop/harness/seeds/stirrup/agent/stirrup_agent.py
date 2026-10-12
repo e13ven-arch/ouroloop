@@ -81,7 +81,9 @@ from stirrup.utils.logging import AgentLoggerBase  # noqa: E402
 # ---------------------------------------------------------------------------- the contract (harness/contract.py)
 SITES = ("before_run", "before_model", "before_tool", "after_tool", "after_turn", "on_finish")
 RETURNS = {"before_run": ("system", "messages"), "before_model": ("messages",), "before_tool": ("block", "args"),
-           "after_tool": ("output", "feedback"), "after_turn": ("message",), "on_finish": ("pushback",)}
+           "after_tool": ("output", "feedback"), "after_turn": ("message", "missing"),
+           "on_finish": ("pushback", "missing")}
+
 
 # ---------------------------------------------------------------------------- knobs R may change
 CONTEXT_WINDOW_TOKENS = 200_000       # the actor's window; Stirrup summarizes at config.summarize_at of it
@@ -301,6 +303,20 @@ def _messages(value) -> bool:
     return isinstance(value, list) and all(isinstance(m, dict) and isinstance(m.get("role"), str) for m in value)
 
 
+# v1.6 (harness/contract.py MISSING_TEXT): what the agent is told when an audit answers {"missing": [...]} — only what
+# has no matching write; the hook writes none of these words itself
+MISSING_TEXT = ("Keep working on the task: an audit found requirements with no matching write:\n{items}\n"
+                "Add what is missing; do not change or remove what you have already done.")
+
+
+def render_missing(items) -> str:
+    return MISSING_TEXT.format(items="\n".join(f"- {str(i).strip()}" for i in items))
+
+
+def _missing(value) -> bool:
+    return isinstance(value, list) and bool(value) and all(isinstance(i, str) and i.strip() for i in value)
+
+
 def _action(site: str, value) -> str:
     """The action a hook's answer is (none, block, modify, feedback, pushback), or HookError: harness/contract.py's
     action_of, which the host applies to the same answers (tests check the two agree)."""
@@ -340,9 +356,21 @@ def _action(site: str, value) -> str:
                 raise HookError(f"after_tool: {key} is a string")
         return "feedback" if "feedback" in value and "output" not in value else "modify"
     if site == "after_turn":
+        if "missing" in value:
+            if "message" in value:
+                raise HookError("after_turn: message or missing, not both")
+            if not _missing(value["missing"]):
+                raise HookError("after_turn: missing is a non-empty list of non-empty strings")
+            return "feedback"
         if not isinstance(value["message"], str):
             raise HookError("after_turn: message is a string")
         return "feedback"
+    if "missing" in value:
+        if "pushback" in value:
+            raise HookError("on_finish: pushback or missing, not both")
+        if not _missing(value["missing"]):
+            raise HookError("on_finish: missing is a non-empty list of non-empty strings")
+        return "pushback"
     if not isinstance(value["pushback"], str):
         raise HookError("on_finish: pushback is a string")
     return "pushback"
@@ -362,6 +390,7 @@ class Hooks:
 
     def _fire(self, site: str, hook: dict, event: dict, turn: int):
         hctx = SubCtx(self.ctx, turn, read_only=True, site=site, aux=self.aux, hooks=self)
+        aux_before = self.aux["calls"]
         try:
             value = _call(self.bundle.entry(hook["entrypoint"]), hctx, {"site": site, **event})
         except HookError:
@@ -372,6 +401,11 @@ class Hooks:
             action = _action(site, value)
         except HookError as e:
             raise HookError(f"hook {hook['name']} at {site}: {e}") from None
+        # v1.6 (DESIGN §6.16): a hook that asked the model is an audit, and an audit answers only what is missing —
+        # the host says the rest — so the agent is never told to change or remove what it did
+        if self.aux["calls"] > aux_before and isinstance(value, dict) and ("pushback" in value or "message" in value):
+            raise HookError(f"hook {hook['name']} at {site} called the model and answered free text: an audit answers "
+                            f"{{\"missing\": [...]}} only")
         if action != "none":
             self.ctx.mark("hook", site=site, name=hook["name"], action=action,
                           detail=json.dumps(value, ensure_ascii=False, default=str)[:HOOK_DETAIL_CHARS],
@@ -422,8 +456,10 @@ class Hooks:
         out = []
         for hook in self.by_site["after_turn"]:
             value, action = self._fire("after_turn", hook, {"turn": turn, "tool_results": list(tool_results)}, turn)
-            if action == "feedback" and value["message"]:
-                out.append(value["message"])
+            if action == "feedback":
+                text = render_missing(value["missing"]) if "missing" in value else value["message"]
+                if text:
+                    out.append(text)
         return out
 
     def on_finish(self, turn: int, reason: str, final_text: str, pushbacks: int) -> str | None:
@@ -431,6 +467,8 @@ class Hooks:
             value, action = self._fire("on_finish", hook, {"turn": turn, "reason": reason, "final_text": final_text,
                                                            "pushbacks": pushbacks}, turn)
             if action == "pushback":
+                if "missing" in value:
+                    return render_missing(value["missing"])
                 return value["pushback"] or f"{hook['name']} asks you to check before finishing"
         return None
 
