@@ -46,7 +46,7 @@
 | 测试 | 阶段 4c 后：默认 1,442 passed、87 deselected；全量（Docker worker 镜像 `sha256:04dbf822…` + 真 memory sidecar）1,528 passed、1 deselected（JOURNAL 2026-10-12 阶段 4c 一条）。两个既有的负载相关中断测试在整套里不稳定、单跑通过、基线 033515d 上亦然。memory 的 venv 在本机 `~/.cache/ouroloop/memory-venv/19f9b139c36d1d05` |
 | test 读过几次 | finance 1、support 0、sales 0、hr 0、marketing 3；operations 从未读过 |
 | 本机记录 | `examples/automationbench/workspace-*/`、`examples/workspace-*/`、`ws/`、`*.local.toml`，git 忽略，不删不改 |
-| 下一步 | finance-v5 第 0 轮已跑（JOURNAL 2026-10-12 第 0 轮一条）：hook 装入工作线，留出 10/20 → 12/20，$42.46。待用户定：继续批式第 1 轮（`cycle --until round-1`，约 $28），或先写流式循环（题级首遇计分、每 N 题一轮、下一批当验证）的设计 |
+| 下一步 | finance-v5 第 1 轮已跑（JOURNAL 2026-10-12 第 1 轮一条）：审核 hook 被拒（留出 11/20 对 12/20），工作线不动，累计 $79.93；第 0 轮的 hook 在研究部分 15 → 20。待用户定：第 2 轮（约 $17）还是 `--phase release` → `freeze` → `--phase evaluate` 拿第一个数（约 $150～$180）。阶段 4d 的代码在 `s6/yield`，finance-v5 结束后合入 |
 
 ## 1 规则
 
@@ -98,7 +98,7 @@
 
 | # | 事项 | 建议 |
 |---|---|---|
-| 1 | finance-v5 下一步：批式第 1 轮（约 $28）还是先做流式循环的设计与代码（JOURNAL 2026-10-12 第 0 轮一条） | 建议先写流式设计，不再花批式的钱 |
+| 1 | finance-v5 第 1 轮被拒后：第 2 轮（约 $17）还是现在 release / final（JOURNAL 2026-10-12 第 1 轮一条） | 建议再跑第 2 轮，连续两轮没有接受就 release |
 | 2 | 数值：`hook_aux_calls` 2、`rounds` 上限 12、`patience` 3、留出接受规则（净修复 ≥ 1、退步 ≤ 1、容差 1）、`round_share` 0.15（已按此落码） | 是 |
 | 3 | finance-v5 的预算：根 $500、final 份额 $200；50/50 两份、无基线、7～8 轮、按决定发布、final 两臂 50 题 × 3 遍约 $150 | 到冻结前批准 |
 | 4 | README 主数的口径：final 两臂的绝对通过率与部分得分（公开集 test 份 50 题、medium effort、3 遍），配对差与区间作第二个数 | 是 |

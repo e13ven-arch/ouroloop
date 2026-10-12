@@ -8,6 +8,29 @@
 
 ---
 
+## 2026-10-12 finance-v5 第 1 轮：R 交了一个调 aux 模型的 on_finish 审核 hook，留出 11/20 对 12/20，净 −1，拒绝；工作线不动；$37.46
+
+- `--phase round --round 1`，自动跑完（用户 2026-10-12："跑第 1 轮，四条改动并行写"）。
+- 读数：
+  - 现量：工作线 `00ea3d9c6ce0`（第 0 轮的 scope hook）在研究部分 30 题上 20/30，对 W0 的 15/30：修 6（`payroll_variance_check`、`ap_aging_report`、`financial_close_checklist`、`bank_fee_analysis`、`qb_bill_payment_batch`、`fiscal_year_rollover`）、退 1（`grant_expense_tracking`）；train 全部 32/50 对 W0 的 25/50。每次尝试 $0.68 对 W0 的 $0.54。
+  - 研究部分 10 个失败案例归 6 簇：arith_mismatch 3、missed_action 2、unread_value 2、excluded_mentioned 1、other 1、wrong_location 1；清单要求至少一个 tool 或 hook。
+  - R 的会话 10 回合、7 次编辑（read_file 11、search_trace 3、read_trajectory 1、edit_file 5、write_file 2、run_tests 1、run_check 1）。一个包、两个组件：`on_finish` hook `audit`（`uses_model`，一次 aux 调用：读请求、agent 读过的数据与它做的每条改动和消息（Gmail 解码），按题述规则从源数据重算数字，把每个具体问题推回 agent 改完再结束），对 arith_mismatch、unread_value、missed_action，声明 7 道研究题；另一处 `agent/stirrup_agent.py` 的改动（对 arith_mismatch）。V0、V1 过；`uses_model` 的 hook 没有 V2b。
+  - 留出筛选：20 题全跑，11/20 对工作线的 12/20（best_so_far 12）；修 1（`expense_policy_violation`），退 2（`prepaid_amortization`、`lease_payment_schedule`），净 −1；足迹 20/20（on_finish 每题都触发）。接受规则两条不成立（净 −1 < 1；退步 2 > 1），拒绝，工作线不动。每次尝试 $0.76，对工作线的 $0.67 高 13%。
+  - 剧本 8 条教训。花费 $37.46：现量 $20.36、筛选 $15.12、诊断 $0.69、会话 $1.24、剧本 $0.05。根累计 $79.93 / $500（final 份额 $200 另计）。
+- 判读：
+  - 第 0 轮装入的 hook 在研究部分也 +5（15 → 20），train 整体 25 → 32：这是它在留出部分之外的第二份读数，方向一致，第 0 轮的 +2 不只是噪声。
+  - 第 1 轮正是 v1.3 想要的那类机制（审核 hook 调 aux），但没过：一次 aux 审核把两道通过的题改坏了（`prepaid_amortization` 是第 0 轮刚修好的那道）。看了两道题的筛选轨迹（train，可读）：
+    - `lease_payment_schedule`：审核写"Today is 2026-10-12"，按真实日期算 90 天续约窗口，让 agent 把原本按题设时间正确的 Warehouse / Copier 提醒换成 Main Office——词表里的 real_date。aux 模型知道真实日期（CLI 的系统提示带今天），而 actor 的日期锚没有传给 aux 调用。这是框架该修的：aux 调用要带同样的日期锚（`s6/yield` 上改）。
+    - `prepaid_amortization`：审核对"Software License 本月跳过"的判断是对的，但 agent 改邮件时把被排除的 Software 一项和 $5,500 写进了正文，正撞上两条 `body_not_contains` 检查——excluded_mentioned 的翻版，审核的推回让 agent 解释了不该提的东西。
+    - 三道题的审核都报"重复发送"，是误报：工作线的 scope hook 在第一次发送时 `block`、重发才放行，审核把被拦的那次也数成了一次发送。
+    - "审核 hook 自己不误报"没有免费检验：V2b 对 `uses_model` 的 hook 不跑，它第一次被检验就是 $15 的筛选。v1.3 的审核建议要配一条规则：审核只读世界状态与数据，不读 agent 的调用记录，不假定日期。
+  - 成本：工作线已比 W0 贵 25%，审核 hook 再加 13%；接受规则没有成本项，final 会把成本并列报出。
+- CLI 结尾的 `.get` 崩溃又出现一次（轮已完成、记录完整；`s6/yield` 上已改为 `asdict`，合入后消失）。
+- 没读任何 test 题；memory 关着。
+- 下一步（待用户决定）：第 2 轮约 $17（工作线没动，50 题读数已齐，无需现量；筛选 $15 + 研究 $2），R 会再看到同样的 10 个失败和这次被拒的审核 hook 的台账；或停在这里：`--phase release`（补测 0 题）→ `freeze` 封存 → `--phase evaluate`（两臂 50 题 × 3 遍，约 $150～$180）拿第一个数。建议再跑第 2 轮，连续两轮没有接受就 release。
+
+---
+
 ## 2026-10-12 finance-v5 第 0 轮：R 交了一个 before_tool hook，留出 10/20 → 12/20，装入工作线；$42.46
 
 - `--phase round --round 0`，自动跑完（用户 2026-10-12："不要切到手动模式，自动跑完"）。
