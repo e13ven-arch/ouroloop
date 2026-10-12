@@ -5,8 +5,10 @@
 - the coding session (prompts/propose.md): writes the candidate package `mode` asks for into candidates/package and
   finishes with its declaration — "tool": a package tool that posts the phrase in #ops (tools/post_channel_message.py)
   with a toolcheck script per claimed task; "hook": an on_finish hook that pushes back while a requested #ops post is
-  missing; "both": the tool and the hook in one package (two components, one mechanism); "none": finishes with
-  nothing;
+  missing; "both": the tool and the hook in one package (two components, one mechanism); "two": the tool in
+  candidates/package and the hook in candidates/package-2, two packages that stack; "two_conflict": the second package
+  carries the hook and its own copy of the tool file, so it collides with the first when stacked; "none": finishes
+  with nothing;
 - the playbook (prompts/playbook.md): one lesson citing the first ledger row it is shown, and one that cites nothing.
 
 It never looks at a task's split or answer: what it knows is what the host put in its inputs and trajectories.
@@ -50,6 +52,7 @@ CONTACTS = {"rsi.notify_after_update": "c2", "rsi.notify_after_update_variant": 
 MECHANISM = {"tool": "a package tool posts the requested #ops message so the agent does not have to compose the call",
              "hook": "an on_finish hook pushes back while a requested #ops post is missing",
              "both": "a tool posts the requested #ops message and an on_finish hook pushes back while it is missing"}
+TOOL_CODE_2 = TOOL_CODE.replace("posted to the ops channel", "sent to #ops")     # the same tool, another body
 
 
 def script_for(task_id: str, phrase: str = "stage updated") -> str:
@@ -124,6 +127,8 @@ class ScriptedR:
                                  and r["output"].lstrip().startswith("[")))
         cause_ids = [c["cause_id"] for c in causes]
         tasks = sorted({t for c in causes for t in c["tasks"]})
+        if self.mode in ("two", "two_conflict"):
+            return self._two(turns, manifest, cause_ids, tasks)
         files, components = {}, []
         if self.mode in ("tool", "both"):
             manifest["tools"] = [*manifest.get("tools", []), TOOL_ENTRY]
@@ -145,6 +150,36 @@ class ScriptedR:
         if turns == 2:
             return self._calls(("run_check", {"declaration": decl}))
         return self._calls(("finish", {"packages": [decl]}))
+
+    def _two(self, turns: int, manifest: dict, cause_ids: list, tasks: list) -> ChatTurn:
+        """Two packages: the tool in candidates/package, the hook in candidates/package-2 (plus, in two_conflict mode,
+        the hook package's own copy of the tool file)."""
+        tool_manifest = {**manifest, "tools": [*manifest.get("tools", []), TOOL_ENTRY]}
+        hook_manifest = {**manifest, "hooks": [*manifest.get("hooks", []), HOOK_ENTRY]}
+        files = {"candidates/package/tools/post_channel_message.py": TOOL_CODE,
+                 "candidates/package/manifest.json": json.dumps(tool_manifest, indent=1) + "\n",
+                 "candidates/package-2/middlewares/remind_ops.py": HOOK_CODE}
+        tool = {"kind": "tool", "site": TOOL_ENTRY["name"], "cause_ids": cause_ids, "predicted_affected": tasks,
+                "trigger": "a request asks for a message in #ops",
+                "scripts": self.scripts if self.scripts is not None else {t: script_for(t) for t in tasks}}
+        hook = {"kind": "hook", "site": "on_finish", "cause_ids": cause_ids, "predicted_affected": tasks,
+                "trigger": "the run finishes while #ops was asked for"}
+        second = [hook]
+        if self.mode == "two_conflict":
+            hook_manifest["tools"] = [*hook_manifest.get("tools", []), TOOL_ENTRY]
+            files["candidates/package-2/tools/post_channel_message.py"] = TOOL_CODE_2
+            second = [hook, tool]
+        files["candidates/package-2/manifest.json"] = json.dumps(hook_manifest, indent=1) + "\n"
+        decls = [{"dir": "package", "mechanism": MECHANISM["tool"], "components": [tool]},
+                 {"dir": "package-2", "mechanism": MECHANISM["hook"] + (" with its own copy of the tool"
+                                                                        if self.mode == "two_conflict" else ""),
+                  "components": second}]
+        if turns == 1:
+            return self._calls(*[("write_file", {"path": p, "text": t}) for p, t in files.items()])
+        if turns == 2:
+            return self._calls(("run_check", {"declaration": decls[0]}),
+                               ("run_check", {"dir": "package-2", "declaration": decls[1]}))
+        return self._calls(("finish", {"packages": decls}))
 
     def _calls(self, *calls) -> ChatTurn:
         n = len(self.calls)

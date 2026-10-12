@@ -39,15 +39,16 @@ from .declaration import Declaration, fixed_declaration, read_declaration
 from .evidence import Evidence, dev_histogram
 from .ledger import Ledger
 from .policy import read_playbook, update_playbook
-from .screen import ScreenResult, accept, condition, cost_per_attempt, pick_best, price, screen
+from .screen import ScreenResult, accept, condition, cost_per_attempt, pick_best, pick_order, price, screen
 from .session import CodingSession, WorkTree
+from .stack import stack
 from .settings import CODE_KINDS, Settings
 from .verify import Verdict, VerifyContext, run_ladder
 from .verify.unit import worker_files  # noqa: F401 - re-exported for the tests
 
 PROMPTS = dg.PROMPTS
-STEPS = ("measure", "evidence", "diagnosed", "focused", "implemented", "verified", "screened", "accepted", "credited",
-         "playbook")
+STEPS = ("measure", "evidence", "diagnosed", "focused", "implemented", "verified", "screened", "accepted", "stacked",
+         "credited", "playbook")
 PRICE_MARGIN = 0.15                     # over the means on record: candidates cost what they cost
 REPLAY_SAMPLE = 6                       # passing train attempts V2b reports a hook's false-trigger rate on
 
@@ -62,7 +63,8 @@ class RoundResult:
     ladder: dict = field(default_factory=dict)       # rung -> candidates that passed it
     screen: dict | None = None          # the chosen screen: {dir, net_flips, holdout_score, best_so_far, accepted}
     accepted: bool = False
-    installed: str | None = None
+    installed: str | None = None        # the working line's release after the round's installs
+    stacked: list = field(default_factory=list)      # the dirs stacked on the first installed package (§9.4)
     stop: str | None = None
     spend: dict = field(default_factory=dict)
 
@@ -150,6 +152,7 @@ class Round:
                                                                  if r["dir"] == screened["best"])))
             chosen = {"dir": res.candidate, "net_flips": res.net_flips, "holdout_score": res.holdout_score,
                       "best_so_far": res.best_so_far, "accepted": res.accepted}
+        stacked = steps.get("stacked") or {}
         return RoundResult(round_id=self.round_id, status=self.state.get("status", "running"),
                            causes=len((steps.get("diagnosed") or {}).get("causes") or ()),
                            components=sum(len(i.get("components") or ()) for i in
@@ -157,7 +160,9 @@ class Round:
                            candidates=len((steps.get("implemented") or {}).get("candidates") or ()) +
                            len(verified.get("fixed") or ()),
                            ladder=verified.get("ladder") or {}, screen=chosen,
-                           accepted=bool(accepted.get("installed")), installed=accepted.get("installed"),
+                           accepted=bool(accepted.get("installed")),
+                           installed=stacked.get("line") or accepted.get("installed"),
+                           stacked=list(stacked.get("stacked") or ()),
                            stop=self.state.get("stop"), spend=self.spend())
 
     # ------------------------------------------------------------------ the round
@@ -187,6 +192,7 @@ class Round:
         self.step("screened", self.screened)
         got = self.step("accepted", self.accepted)
         if got.get("installed"):
+            self.step("stacked", self.stacked)
             self.step("credited", self.credited)
         self.step("playbook", self.playbook)
         self.state["status"] = "done"
@@ -856,6 +862,76 @@ class Round:
             self.out(f"round      {self.round_id}: {sc['best']} was accepted and not installed: {done.status}")
         return {"installed": done.target_release if done.status == "installed" else None, "status": done.status,
                 "receipt": receipt_ref}
+
+    # ------------------------------------------------------------------ stacking the other accepted packages (§9.4)
+    def stacked(self) -> dict:
+        """Each further accepted package, in pick order, laid on the working line as it stands when it touches nothing
+        the line changed since the round's base; the stacked package climbs V0 and V1 and installs under its own
+        screen's acceptance. A collision or a failed rung is `not_stacked`, on the ledger."""
+        sc = self.state["steps"]["screened"]
+        first = sc["best"]
+        results = {r["dir"]: ScreenResult.from_json(self.a.objects.get(r["screen"])) for r in sc["screens"]}
+        order = [r for r in pick_order(results.values()) if r.candidate.rpartition(":")[2] != first]
+        line_ref = self.state["steps"]["accepted"]["installed"]
+        base_files = {p: t for p, t in self.package.files.items()}
+        stacked, refused = [], []
+        for res in order:
+            name = res.candidate.rpartition(":")[2]
+            if not res.accepted:
+                continue
+            line = self.a.releases.load(line_ref)
+            line_package = self.a.package(line)
+            item = next(i for i in self.state["steps"]["verified"]["passed"] if i["dir"] == name)
+            decl = Declaration.from_json(self.a.objects.get(item["declaration"]))
+            cand_files = self.a.objects.get(item["files"])
+            files, conflicts = stack(base_files, line_package.files, cand_files)
+            if conflicts:
+                self.ledger.row("not_stacked", round_id=self.round_id, line=self.line, dir=name, kind=decl.kind,
+                                conflicts=conflicts, reason=f"conflict with the working line: {conflicts}")
+                refused.append(name)
+                continue
+            vctx = self.vctx()
+            vctx.parent = line_package
+            vctx.cause_ids = ()                  # the declaration was checked against the base already
+            verdict = run_ladder(files, decl, vctx, rungs=("V0", "V1"))
+            if not verdict.passed():
+                self.ledger.row("not_stacked", round_id=self.round_id, line=self.line, dir=name, kind=decl.kind,
+                                reason=f"stacked on {short(line_ref)}: {verdict.text()[:500]}")
+                refused.append(name)
+                continue
+            try:
+                package = build(self.a.objects, files, limits=Limits.from_core(self.a.k),
+                                seed=self.a.package(self.a.seed_release()), parent=line_package)
+            except PackageError as e:
+                self.ledger.row("not_stacked", round_id=self.round_id, line=self.line, dir=name, kind=decl.kind,
+                                reason=f"build: {e}"[:300])
+                refused.append(name)
+                continue
+            from dataclasses import replace
+            stacked_res = replace(res, package_ref=package.ref(), outcome="stacked", stacked_on=line_ref)
+            screen_ref = self.a.objects.put(stacked_res)
+            release = self.a.releases.screened(package.ref(), screen_ref, parent=line)
+            done = self.a.releases.install_screened(release, screen_ref, expected_parent=line_ref,
+                                                    operation_id=f"install:{self.round_id}:{name}".replace("/", "_"))
+            if done.status != "installed":
+                self.ledger.row("not_stacked", round_id=self.round_id, line=self.line, dir=name, kind=decl.kind,
+                                reason=f"install {done.status}: {done.reason}")
+                refused.append(name)
+                continue
+            line_ref = done.target_release
+            self.archive.put(self.i, name, files, decl, verdict, screen=stacked_res,
+                             receipt_ref=self.a.objects.put(done), package_ref=package.ref(), line=self.line)
+            self.ledger.row("accepted", round_id=self.round_id, line=self.line, dir=name, kind=decl.kind,
+                            release=line_ref, net_flips=res.net_flips, holdout_score=res.holdout_score,
+                            best_so_far=res.best_so_far, stacked_on=stacked_res.stacked_on)
+            self.ledger.row("installed", round_id=self.round_id, line=self.line, dir=name, release=line_ref,
+                            stacked_on=stacked_res.stacked_on)
+            stacked.append(name)
+            self.out(f"round      {self.round_id}: {name} stacked on the working line as {short(line_ref)} "
+                     f"(its own screen: net {res.net_flips}, {res.holdout_score}/{len(res.holdout)})")
+        if refused:
+            self.out(f"round      {self.round_id}: not stacked: {refused}")
+        return {"stacked": stacked, "not_stacked": refused, "line": line_ref}
 
     # ------------------------------------------------------------------ credit
     def credited(self) -> dict:

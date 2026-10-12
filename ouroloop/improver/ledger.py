@@ -14,16 +14,16 @@ from pathlib import Path
 
 from ..contracts import append_jsonl, locked, now, read_jsonl
 
-STAGES = ("measured", "diagnosed", "focused", "declared", "verified", "screened", "accepted", "gated", "installed",
-          "rejected", "credited", "removal_proposed", "no_code_candidate", "vocabulary_added", "l6_unavailable",
-          "stopped", "playbook")
+STAGES = ("measured", "diagnosed", "focused", "declared", "verified", "screened", "accepted", "not_stacked", "gated",
+          "installed", "rejected", "credited", "removal_proposed", "no_code_candidate", "vocabulary_added",
+          "l6_unavailable", "stopped", "playbook")
 # What R reads of a row (the projection): train facts and counts. Anything else of a row stays with the host.
 TASK_LISTS = ("predicted_affected", "fixed", "regressed")       # the projected fields that name train tasks
 PROJECTED = ("id", "stage", "round_id", "candidate", "dir", "cause", "cause_id", "kind", "site", "trigger",
              "mechanism", "components", "predicted_affected", "differs_from", "fixed", "regressed", "net_flips",
              "fixes", "holdout_score", "best_so_far", "accepted", "reasons", "failed_components", "outcome", "verdict",
              "gain", "fixed_count", "regressed_count", "passed", "steps", "reason", "causes", "require_code",
-             "component", "credit", "names", "status", "holdout_passed", "holdout")
+             "component", "credit", "names", "status", "holdout_passed", "holdout", "stacked_on", "conflicts")
 
 
 def _scrub(value, hide: set):

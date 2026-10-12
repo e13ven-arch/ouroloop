@@ -471,6 +471,27 @@ def test_l5_is_suggested_for_the_loop_causes_only(tmp_path):
     assert set(LOOP_CAUSES) == {"context_overflow", "finish_protocol", "tool_error_loop"}
 
 
+def test_the_list_suggests_an_audit_hook_when_text_only_causes_hold_enough_of_the_cases(tmp_path):
+    """IMPROVER §6 (v1.3): causes with text carriers only (not mechanizable, not of the loop) at audit_hook_share of
+    the cases → audit_suggested, with a note naming them; a loop cause or a mechanizable one does not count."""
+    def with_cases(name, n, **kw):
+        c = cause(name, n, **kw)
+        return Cause(cause_id=c.cause_id, name=c.name, tasks=c.tasks, cases=tuple(f"case:{name}.{i}" for i in range(n)),
+                     mechanizable=c.mechanizable)
+    text = [with_cases("missed_action", 3), with_cases("unread_value", 2)]
+    code = [with_cases("real_date", 4), with_cases("context_overflow", 1)]
+    f = focused(tmp_path, text + code)
+    assert f.text_only_share == 0.5 and f.audit_suggested
+    assert f.notes[0].startswith("audit hook suggested: 50% of the cases are in causes with text carriers only "
+                                 "(missed_action, unread_value)")
+    f = focused(tmp_path, text[:1] + code + [with_cases("arith_mismatch", 4)])          # 3 of 12
+    assert f.text_only_share == 0.25 and not f.audit_suggested and not [n for n in f.notes if "audit" in n]
+    assert focused(tmp_path, text[:1] + code + [with_cases("arith_mismatch", 4)], audit_hook_share=0.25).audit_suggested
+    assert not focused(tmp_path, text, allowed=("tool", "skill", "prompt")).audit_suggested     # K allows no hook
+    assert not focused(tmp_path, code).audit_suggested and focused(tmp_path, code).text_only_share == 0.0
+    assert Focus.from_json(json.loads(json.dumps(f.to_json()))) == f
+
+
 def test_l6_unavailable_only_when_stalled(tmp_path):
     c = [cause("real_date", 2)]
     f = focused(tmp_path, c, is_stalled=True)

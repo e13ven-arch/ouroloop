@@ -283,7 +283,7 @@ def test_an_unreadable_finish_is_the_calls_error_and_a_later_finish_ends_the_ses
                     [finish({"dir": "package", "mechanism": "m", "components": []})],   # no component
                     [("finish", {"packages": "package"})],                         # not a list
                     [finish(decl(mechanism="the one that stands"))])
-    cs = coding(world, tree, script)
+    cs = coding(world, tree, script, packages_per_round=1)
     got = cs.start()
     out = results(cs, "finish")
     assert [r["is_error"] for r in out] == [True] * 6 + [False]

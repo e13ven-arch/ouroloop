@@ -43,8 +43,9 @@ class ScreenResult(Record):
     holdout_score: int = 0              # held-out tasks the candidate passes (valid attempts)
     best_so_far: int = 0                # the working line's best held-out score in this activity
     cost: float | None = None           # per valid attempt
-    outcome: str = "screened"           # screened | invalid | budget_exhausted | defect | not_run
+    outcome: str = "screened"           # screened | invalid | budget_exhausted | defect | not_run | stacked
     accepted: bool = False
+    stacked_on: str | None = None       # the working-line release this accepted package was stacked on (§9.4)
     reasons: tuple = ()                 # why it is not accepted (empty when accepted or not screened)
     reason: str = ""                    # why it was not screened
 
@@ -145,12 +146,17 @@ def screen(activity, *, run_arm, name: str, package, base_release, holdout: list
                         accepted=not problems, reasons=tuple(problems))
 
 
-def pick_best(results: list[ScreenResult]) -> ScreenResult | None:
-    """Among the accepted: the most net flips, then the lower cost (unknown last), then the order given."""
+def pick_order(results) -> list[ScreenResult]:
+    """The accepted results in install order: the most net flips, then the lower cost (unknown last), then the order
+    given (IMPROVER §9, §9.4)."""
     ok = [(i, r) for i, r in enumerate(results) if r.accepted]
-    if not ok:
-        return None
-    return sorted(ok, key=lambda x: (-x[1].net_flips, x[1].cost is None, x[1].cost or 0.0, x[0]))[0][1]
+    return [r for _, r in sorted(ok, key=lambda x: (-x[1].net_flips, x[1].cost is None, x[1].cost or 0.0, x[0]))]
+
+
+def pick_best(results) -> ScreenResult | None:
+    """The first of pick_order, or None when nothing is accepted."""
+    order = pick_order(results)
+    return order[0] if order else None
 
 
 def accept(activity, result: ScreenResult, *, round_id: str, base_release):
