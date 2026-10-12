@@ -12,7 +12,8 @@
                           (non-destructive: the agent's history is not changed). A newer date gets its own note where
                           it is first given. Notes never move, so an act call's earlier messages are the previous
                           call's and the provider's prompt cache holds; a summary that shortens the history starts the
-                          notes over at its end.
+                          notes over at its end. A hook's aux call (an audit) gets the note as its last message: it is
+                          a conversation of its own, and its model is told the real date too (HARNESS §7.1 rule 4).
   verify  (on_finish)     the first finish, while act calls remain, is pushed back once with the plan, the ledger and
                           the excluded items side by side and a check in both directions; an empty ledger is named.
 
@@ -291,10 +292,13 @@ def _conversation(messages: list) -> str:
 
 
 def anchor(ctx, event):
-    """The dates read so far, each a note at the place it was first given, in every act call (never a summary's)."""
-    if not DATE_ANCHOR or STATE["date"] is None or event.get("role") != "act":
+    """The dates read so far, each a note at the place it was first given, in every act call; at the end of a hook's aux
+    call (never a summary's: the adapter does not pass those here)."""
+    if not DATE_ANCHOR or STATE["date"] is None or event.get("role") not in ("act", "aux"):
         return None
     messages = [dict(m) for m in event.get("messages") or ()]
+    if event.get("role") == "aux":          # a hook's audit: its own conversation, the newest date's note at its end
+        return {"messages": messages + [{"role": "user", "content": anchor_message()}]}
     notes = STATE["notes"].setdefault(_conversation(messages), [])
     if notes and notes[-1][0] > len(messages):         # a summary shortened the history: start over at its end
         notes.clear()

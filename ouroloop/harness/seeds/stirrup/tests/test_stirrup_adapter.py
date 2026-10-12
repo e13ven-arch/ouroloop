@@ -140,6 +140,13 @@ def probe_bad(ctx, event):
     return {"nonsense": True}
 
 
+def probe_audit(ctx, event):
+    """An on_finish hook that asks the aux model once (HARNESS §7.1 rule 4: the call passes before_model first)."""
+    reply = ctx.model([{"role": "system", "content": "You audit."}, {"role": "user", "content": "AUDIT"}], role="aux")
+    SEEN.append(("audit", getattr(reply, "text", "")))
+    return None
+
+
 def _probes():
     return [{"name": f"p_{s}", "site": s, "entrypoint": f"{HERE}:probe_{s}", "enabled": True}
             for s in ("before_run", "before_model", "before_tool", "after_tool", "after_turn", "on_finish")]
@@ -173,6 +180,23 @@ def test_each_of_the_six_sites_fires_acts_and_is_marked(ctx=None):
     assert ("before_tool", "p_before_tool", "modify") in fake.hook_marks()
     assert ("on_finish", "p_on_finish", "pushback") in fake.hook_marks()
     assert fake.kinds().count("pushback") == 1            # the second finish (pushbacks=1) went through
+
+
+def test_a_hooks_aux_call_passes_through_the_before_model_hooks(ctx=None):
+    fake = FakeCtx([Reply("", [("finish", {"reason": "Done."})]), Reply("all fine")],
+                   hooks=[{"name": "p_before_model", "site": "before_model", "entrypoint": f"{HERE}:probe_before_model"},
+                          {"name": "audit", "site": "on_finish", "entrypoint": f"{HERE}:probe_audit"}])
+    fake.view["hook_aux_calls"] = 1
+    assert adapter().run(fake, "Do the task.") == "Done."
+    assert fake.roles == ["act", "aux"] and fake.replies == []
+    act, aux = fake.sent
+    assert act[-1] == {"role": "user", "content": "PROBE-NOTE"}
+    # the audit's own messages, then the before_model hook's note at their end (the probes' own module is the
+    # adapter's load, so what they saw is read back through the marks and the messages)
+    assert aux[:2] == [{"role": "system", "content": "You audit."}, {"role": "user", "content": "AUDIT"}]
+    assert aux[-1] == {"role": "user", "content": "PROBE-NOTE"} and len(aux) == 3
+    assert fake.hook_marks().count(("before_model", "p_before_model", "modify")) == 2
+    assert [d["site"] for k, d in fake.marks if k == "hook_aux_call"] == ["on_finish"]
 
 
 def test_a_hook_answering_outside_its_protocol_is_the_packages_defect(ctx=None):

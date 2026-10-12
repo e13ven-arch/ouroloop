@@ -307,7 +307,7 @@ ReMe 自带的记账与删除不用（会丢计数、记功共享）；去重只
 - 估值的用法变了：不再给每个 cause 一个名额，而是生成给 R 的建议清单——簇按题数排序，每簇列估值上界最高的类型与试过的记录（档案）。R 自己决定包里放什么：一个包可以同时对几个簇，一个簇可以几个载体。v1.1 的切名额让每个候选只能动 1～2 道题，是 finance-v2～v4 零装入的直接原因（§6.12）。
 - 硬要求只有两条：诊断里有 `mechanizable` 的簇时，包里至少一个 tool 或 hook（否则台账 `no_code_candidate`，候选照常验收，下一轮的建议清单置顶代码类）；agent / config / vendor 的改动一轮至多一处，只在簇指向循环时建议。
 - L6（权重）不变：代码层与文字层连续 `stall_rounds` 轮估值不涨且训练链可用时才建议。
-- 以算力换准确回到候选面：`on_finish` 与 `after_turn` 的 hook 可以调 aux 模型（每次尝试 `improver.hook_aux_calls` 次封顶，每次计量、记 gateway_call），用于提交前的审核与补做。gate 没有成本项，K 的调用限额是边界；W0 的部分得分 0.8 对严格 0.4，差的正是最后一两项断言，这是对准它的杠杆。
+- 以算力换准确回到候选面：`on_finish` 与 `after_turn` 的 hook 可以调 aux 模型（每次尝试 `improver.hook_aux_calls` 次封顶，每次计量、记 gateway_call），用于提交前的审核与补做。gate 没有成本项，K 的调用限额是边界；W0 的部分得分 0.8 对严格 0.4，差的正是最后一两项断言，这是对准它的杠杆。aux 调用与 act 调用一样经过 `before_model` hook（日期锚等）：审核模型也被 CLI 告知真实日期（v1.3；finance-v5 第 1 轮的审核 hook 因此改坏一题，HARNESS §7.1 第 4 条）。
 - v1.3：清单不只排簇，还算只剩文字载体的簇（missed_action、unread_value 这类）占失败案例的份额；占到 `audit_hook_share`（0.3）就在清单顶上建议"一个调 aux 模型的审核 hook"，并说明它覆盖哪几个簇。finance-v5 第 0 轮 R 选了最保守的纯代码单 hook，清单里只剩文字载体的两簇一个没碰，这条就是对它的。
 
 ### 6.5 编码会话

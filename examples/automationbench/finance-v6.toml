@@ -1,0 +1,91 @@
+# finance-v6: the sixth finance activity, the first streamed (docs/PLAN.md stage 4d; docs/DESIGN.md v1.3 §6.13;
+# docs/design/ACTIVITY.md §4 流式活动; docs/JOURNAL.md 2026-10-12 阶段 4d). It starts where finance-v5 released:
+# `[rsi] seed_from` makes finance-v5's released W* this activity's seed (reason `import`; R's estimates and playbook come
+# along), so the final's W0 arm is finance-v5's W* and the README's number is this activity's W* beside it. The same
+# split as finance-v5 (stratified, seed 1: train 50 / test 50, the same hash) under the automationbench_v2 preset with
+# the v1.3 improver (three candidate packages a round, the accepted ones stacked), the memory off. The train tasks are
+# streamed: each is done once on the working line in a frozen order and scored at that first encounter, a round over
+# the scored pool every 10 tasks, an accepted package installed before the next batch runs (5 batches, 5 rounds). Every
+# paid step is approved in chat first (PLAN rule 3). Run from the repository's root with `.venv/bin/python -m ouroloop`,
+# on AC power under `caffeinate -dimsu`; stop a step with one Ctrl-C and let it drain, never kill it.
+#   1  `... bench --config examples/automationbench/finance-v6.toml --phase smoke --checks-only`                 $0
+#      (opening the workspace imports finance-v5's W*: it needs finance-v5 released, `--phase release` there first)
+#   2  `... freeze --config ...`: K and the budget root; no gate template (no dev); the final is not sealed yet; add
+#      the printed [rsi] lines (core_ref, split_ref) and commit                                                   $0
+#   3  `... bench --config ... --phase stream --until batch-0` (10 first encounters, about $7, then round s0: about
+#      $17 for the screen and the research), then `--until batch-1`, ... or without --until to the end; each batch
+#      is read before the next is approved (`--phase report` after each, $0). About $120 for the 50 tasks and 5
+#      rounds; a resumed stream pays for nothing on record
+#   4  `... bench --config ... --phase release`: reads the working line's missing train tasks under its own release
+#      (up to 50, about $35) and promotes it to the release line by decision; then `... freeze --config ...` again
+#      seals the final (W0 = finance-v5's W*, W_star, 50 test tasks × 3 repeats, about $210) and prints
+#      final_plan_ref; commit it before the first test attempt (PLAN rule 6); then `... bench --config ... --phase
+#      evaluate`
+#   5  `--phase report`: the two arms' pass rates and partial credit, and the stream's first-encounter curve by batch
+#
+# The worker image is K's by id (the one built on 2026-10-11; `docker image inspect ouroloop-worker:py3.12`); the
+# smoke checks it. The budget: root $450, the final's share $230.
+
+[workspace]
+root = "workspace-finance-v6"
+
+[bench]
+domain = "finance"
+upstream_path = "~/workspace/AutomationBench"
+split_rule = "stratified"
+seed = 1
+concurrency = 8
+ratios = { train = 0.5, dev = 0.0, test = 0.5 }
+frozen_splits = { finance = "3b959d143f9d8468" }
+
+[model]
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "medium"
+max_tokens = 32000
+timeout = 600
+
+[research_model]
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "medium"
+max_tokens = 32000
+timeout = 900
+
+[pricing]
+input_per_1k = 0.004
+cache_read_per_1k = 0.0002
+cache_write_per_1k = 0.008
+output_per_1k = 0.02
+max_input_tokens = 1000000
+max_output_tokens = 163840
+source = "notional, not a bill: claude-opus-5-5 API list price ($4/$20 per M, cache read $0.20, 1h cache write $8)"
+
+[harness]
+preset = "automationbench_v2"
+seed = "stirrup"
+
+[worker]
+network = "none"
+image_id = "sha256:04dbf822459b1f01c2d7b9008908cc904d09b95a1d78d9016a178109fc0cc792"
+
+[memory]
+enabled = false
+
+[schedule]
+rounds = 12
+patience = 3
+stream_batch = 10
+stream_splits = ["train"]
+
+[budget]
+usd = 450.0
+final_usd = 230.0
+
+[final]
+repeats = 3
+
+[rsi]
+scope_id = "finance-v6"
+seed_from = "workspace-finance-v5"
+# core_ref, split_ref: what `freeze` prints; final_plan_ref: after `--phase release` and the second `freeze`
