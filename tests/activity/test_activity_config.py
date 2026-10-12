@@ -159,16 +159,20 @@ def test_the_final_share_must_be_below_the_root(final_usd):
     assert cf.resolve(config(budget={"usd": 100.0, "final_usd": 99.0}))["budget"] == {"usd": 100.0, "final_usd": 99.0}
 
 
-def test_freeze_core_is_reproducible_and_covers_the_split_and_the_code():
-    k = cf.freeze_core(config(), split_hash="aaaa", code_version="c1")
+def freeze(cfg=None, *, split_hash="aaaa", attempt="a1", improver="i1"):
+    return cf.freeze_core(cfg or config(), split_hash=split_hash, attempt_version=attempt, improver_version=improver)
+
+
+def test_freeze_core_is_reproducible_and_covers_the_split_and_both_code_versions():
+    k = freeze()
     reordered = json.loads(json.dumps(config(), sort_keys=True))
-    assert cf.freeze_core(reordered, split_hash="aaaa", code_version="c1").ref() == k.ref()
-    others = {cf.freeze_core(config(), split_hash="bbbb", code_version="c1").ref(),
-              cf.freeze_core(config(), split_hash="aaaa", code_version="c2").ref(),
-              cf.freeze_core(config(limits={"max_steps": 49}), split_hash="aaaa", code_version="c1").ref()}
-    assert k.ref() not in others and len(others) == 3
+    assert freeze(reordered).ref() == k.ref()
+    others = {freeze(split_hash="bbbb").ref(), freeze(attempt="a2").ref(), freeze(improver="i2").ref(),
+              freeze(config(limits={"max_steps": 49})).ref()}
+    assert k.ref() not in others and len(others) == 4
     doc = k.json()
-    assert doc["split_hash"] == "aaaa" and doc["code_version"] == "c1" and doc["preset"] == "automationbench_v1"
+    assert doc["split_hash"] == "aaaa" and doc["attempt_version"] == "a1" and doc["improver_version"] == "i1"
+    assert doc["preset"] == "automationbench_v1" and "code_version" not in doc
     assert doc["model"]["identity"] == "claude-opus-5-5" and doc["limits"] == PRESET["limits"]
     # the frozen document reads back as the same K
     assert cf.Core.from_json(json.loads(json.dumps(k.to_json()))).ref() == k.ref()

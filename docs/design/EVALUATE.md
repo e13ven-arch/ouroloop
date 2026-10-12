@@ -85,7 +85,10 @@ class Execution: advance(status); operation(step, input_refs); finish(op, status
 def call_bound_problem(pricing, limits, what) -> str;  check_pricing(pricing, limits) -> str;  unfinished(root) -> list
 
 # release.py
-def code_version() -> str      # 框架源码与种子目录的摘要
+def attempt_version() -> str   # 一次尝试走到的代码的摘要（runtime/、harness/ 含种子、evaluate/{attempt,results,limits,splits}.py、adapters/、providers/、contracts.py）
+def improver_version() -> str  # 其余代码的摘要（improver/、memory/、activity/、evaluate/{gate,final,budget,release}.py、R 的提示词）
+def code_version() -> str      # 两者合一的摘要，只给报告
+def attempt_identity(*, attempt_version, package_ref, limits, model, image_id, split_hash) -> str   # AttemptIdentity（CONTRACTS §4）
 class GateReceipt(Record): plan_ref; subject_ref; control_ref; parent_release; results_ref; verdict; reasons; metrics; uncertainty; costs; kind   # kind "receipt"
 class InstallReceipt(Record): operation_id; expected_parent; target_release; status; observed_pointer; reason   # kind "install"
 class Releases:
@@ -121,14 +124,26 @@ class Releases:
 
 退步率、成本项、完整性不变；有确认读数时，确认读数单独也要满足所选的那一条（严格的按 `min_gain`，部分得分的按 `partial_min_gain`）。收据的 `metrics` 多 `partial_gain`、`partial_interval`、`accepted_by`（"strict" | "partial"）；报告两者并列，对外主张仍只用严格口径。
 
+### 5.2 活动末的发布 gate（v1.2）
+
+v1.1 每轮一次 gate；v1.2 活动内的接受由改进器的留出筛选决定（IMPROVER §9），dev 只在活动末读一次：
+
+- 被测臂 = 工作线 W_work（`rsi/active.json`），读 `gate.repeats` 次（preset 2）；对照 = W0 在 dev 上的池化读数（基线的 `control_readings` 次，或导入的基线）。
+- 规则不变（§5 的严格规则，或 §5.1 的部分得分规则）；第二次读数就是确认读数，单独也要满足所选的那条。
+- 通过 → `Releases.promote(W_work, reason="gate")`：发布线 W\*，之后 `freeze` 封存 final；不通过 → 没有发布，活动结束。
+- `GateReceipt.kind` 多一种 `release`；报告并列工作线的留出曲线（每轮的留出通过数）与这一次 dev 读数。
+- **没有 dev 的活动（阶段 4c）**：`[bench] ratios` 的 dev 为 0 时，`freeze` 不写 gate 模板（`gate.min_tasks` 的检查只对有 dev 题的 K），round 的启动检查不要求模板，`--phase gate` 回答 `nothing_to_gate: no dev tasks`；发布走 §7 的按决定发布。
+
 ## 6 final（V5）
 
-- `FinalPlan` 封存：任务 = 全部 test、`repeats`、臂（W0 与 W\*，可选 R1）、主张；臂名进每个 attempt id（即 session id），所以计划里 W\* 写作 `W_star`，不能进 attempt id 的臂名在构造时就拒绝；`seal` 写对象与事件，哈希由用户提交到 git（规则 6）。活动只在有装入（W\* ≠ W0）之后封存（ACTIVITY §4）。
+- `FinalPlan` 封存：任务 = 全部 test、`repeats`、臂（W0 与 W\*，可选 R1）、主张；臂名进每个 attempt id（即 session id），所以计划里 W\* 写作 `W_star`，不能进 attempt id 的臂名在构造时就拒绝；`seal` 写对象与事件，哈希由用户提交到 git（规则 6）。活动只在有发布线（gate 通过或按决定发布，W\* ≠ W0）之后封存（ACTIVITY §4）。
+- 对外的数字（2026-10-12）：final 两臂各自的绝对通过率与部分得分是 README 的主数（W\* 得了多少，W0 臂并列），配对差与区间作为第二个数披露；只用公开集的 test 份，与官方榜的私有集不可比，README 要注明口径（题数、effort、repeats）。
 - `run_final` 先打印预计花费与份额，份额不够就拒绝；每臂每题每次都是独立尝试；续跑只跑缺的；完成后 `report` 读汇总，披露该域 test 的读取次数。
 
 ## 7 发布与装入
 
-- `Release` 三元组（CONTRACTS §5）。装入 = `Releases.install(candidate_release, receipt_ref, expected_parent=active.ref)`，CAS：active 不是期望的父就拒绝；`operation_id` 幂等。
+- `Release` 三元组（CONTRACTS §5）。装入 = `Releases.install(candidate_release, receipt_ref, expected_parent=active.ref)`，CAS：active 不是期望的父就拒绝；`operation_id` 幂等。v1.2：`reason` 有 `seed`、`screen`（留出筛选接受，工作线）、`gate`（活动末发布，`promote`）、`rollback`、`import`；`rsi/active.json` 是工作线，`rsi/released.json` 是发布线（final 与导出只读它）。
+- **按决定发布（阶段 4c）**：`Releases.promote(work, receipt_ref=None, reason="decision", operation_id)` 把工作线的 release 提升为发布线，不带收据；只在 K 没有 dev 题时允许（有 dev 的活动必须过 gate）。`--phase release` 调它之前，先在 train 上补齐 W\* 的包还没有读数的题（研究部分；留出部分筛选时已读过），在 W\* 自己的 release 下跑（role `measure`，候选名 `release:<ref>`），这样 final 的核价读得到 W\* 的带价读数（§6 的估算按 release 执行的 (package, core) 找读数）；工作线就是种子时拒绝（没有可发布的）。重复调用是同一个发布。
 - 回滚只退到 `last_good`（装过且没被撤销的祖先）；没有可退的就拒绝、什么都不撤销。
 - 种子 release：`reason="seed"`，`receipt_ref=None`。
 
@@ -138,6 +153,7 @@ class Releases:
 - 候选把它写进 manifest 的 `model.artifact_ref`；`evaluate.model.check_binding(manifest, core, objects)`：`base` 等于 K 的 identity、产物的父模型等于 base、产物的数据 manifest 只含 train 血缘。阶段 1 的实现读产物记录自己的 `splits` 字段，还没有调用方；训练链接上时（阶段 5）改由 `train.dataset.check_lineage` 判血缘，并在候选进阶梯前调用。
 - 这样的候选从 V3 起走阶梯；评测时 actor provider 由 `serving`（V2 §3.5，RunPod 上的 vLLM 经 `openai_compat`）按 `artifact_ref` 构建，仍经网关计量。
 - 训练与 harness 改动不在同一轮同时进 gate（DESIGN §7）。
+- v1.2：`AttemptIdentity`（CONTRACTS §4）相同的两个活动共享 W0 的基线读数：`import_baseline` 把旧工作区的 train / dev 读数与 transcript 引用复制进新工作区（只读旧工作区，记来源），gate 的对照池与第 0 轮的 measure 直接用它。
 
 ## 9 不变量与必须一直绿的测试
 

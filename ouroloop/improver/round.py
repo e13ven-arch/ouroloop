@@ -1,15 +1,21 @@
-"""One round of the improver (docs/design/IMPROVER.md §3; DESIGN §6.1).
+"""One round of the improver (docs/design/IMPROVER.md §3; DESIGN §6.1, v1.2).
 
-    measure -> evidence -> diagnosed -> allocated -> implemented -> verified -> screened -> gated
-            -> installed | rejected -> credited
+    measure -> evidence -> diagnosed -> focused -> implemented -> verified -> screened -> accepted | rejected
+            -> credited -> playbook
+
+One package a round: R reads a focus list (the diagnosed causes with the kinds that have paid off), builds one
+candidate package of as many components as its mechanism needs, and the package is screened once on every held-out
+train task. An accepted screen installs the package on the working line (reason `screen`); a rejected one leaves the
+line alone and the next round diagnoses the same W again. Dev is never read here: the release gate is the activity's
+last phase (activity/phases.py `gate`).
 
 Each step's output is kept in rounds/r<i>/round.json under the step's name and reused when the round runs again, so an
 interrupted round pays only for what it had not done. A round is bound to the release it started on: if another
 install moved the line meanwhile, the round is refused rather than continued on a W it did not diagnose.
 
 Money: the round spends from its own account `<scope>:round-<i>` (round_share of the root's dollars), one child per
-step kind (measure, diagnose, session, screen, gate, policy). Before the first screen, the screens and the gate are
-priced from the current W's costs on record; what cannot be priced, or does not fit, does not start.
+step kind (measure, diagnose, session, screen, policy). Before the research is paid, one screen of the whole held-out
+part and the research calls are priced from what is on record; what cannot be priced, or does not fit, does not start.
 """
 from __future__ import annotations
 
@@ -25,24 +31,25 @@ from ..harness.literals import forbidden as forbidden_of, literal_index
 from ..harness.package import Limits, PackageError, build, load as load_package
 from ..runtime.worker import WorkerUnavailable
 from . import diagnose as dg
-from .allocate import Estimates, allocate, stalled
+from .allocate import Estimates, Focus, focus as focus_of, stalled
 from .archive import Archive
 from .components import components
 from .credit import credit as credit_of, footprints, removal_candidates, summary
-from .declaration import Declaration, read_declaration
+from .declaration import Declaration, fixed_declaration, read_declaration
 from .evidence import Evidence, dev_histogram
 from .ledger import Ledger
 from .policy import read_playbook, update_playbook
-from .screen import (ScreenResult, condition, cost_per_attempt, gate as run_gate, gate_attempts, passing_sample,
-                     pick_best, price, screen)
+from .screen import ScreenResult, accept, condition, cost_per_attempt, pick_best, price, screen
 from .session import CodingSession, WorkTree
 from .settings import CODE_KINDS, Settings
 from .verify import Verdict, VerifyContext, run_ladder
-from .verify.unit import worker_files
+from .verify.unit import worker_files  # noqa: F401 - re-exported for the tests
 
 PROMPTS = dg.PROMPTS
-STEPS = ("measure", "evidence", "diagnosed", "allocated", "implemented", "verified", "screened", "gated", "credited",
+STEPS = ("measure", "evidence", "diagnosed", "focused", "implemented", "verified", "screened", "accepted", "credited",
          "playbook")
+PRICE_MARGIN = 0.15                     # over the means on record: candidates cost what they cost
+REPLAY_SAMPLE = 6                       # passing train attempts V2b reports a hook's false-trigger rate on
 
 
 @dataclass
@@ -50,19 +57,14 @@ class RoundResult:
     round_id: str
     status: str = "running"             # done | stopped
     causes: int = 0
-    assignments: int = 0
-    candidates: int = 0
+    components: int = 0                 # the components R's candidate package declared
+    candidates: int = 0                 # R's packages and the fixed code's candidates verified
     ladder: dict = field(default_factory=dict)       # rung -> candidates that passed it
-    screened: str | None = None         # the candidate that paid the gate
-    gate: dict | None = None
+    screen: dict | None = None          # the chosen screen: {dir, net_flips, holdout_score, best_so_far, accepted}
+    accepted: bool = False
     installed: str | None = None
-    carried: str | None = None          # the package carried to the next round instead of a gate (IMPROVER §9.2)
-    gated: bool = False                 # whether this round paid a gate
     stop: str | None = None
     spend: dict = field(default_factory=dict)
-
-
-PRICE_MARGIN = 0.15                     # over the means on record: candidates cost what they cost
 
 
 class Stop(Exception):
@@ -83,50 +85,24 @@ class Round:
         active = activity.active_release()
         if self.state_path.exists():
             self.state = json.loads(self.state_path.read_text(encoding="utf-8"))
-            # the line moved under the round, unless the round's own install moved it (killed before its gate step
-            # was saved: the gate's replay is free and the install's replay a no-op)
+            # the line moved under the round, unless the round's own install moved it (killed before its accepted
+            # step was saved: the install's replay is a no-op)
             own = activity.releases.recover(f"install:{self.round_id}".replace("/", "_"))
             if self.state["base_release"] != active.ref() and self.state.get("status") not in ("done", "stopped") \
-                    and "gated" not in self.state["steps"] and getattr(own, "status", None) != "installed":
+                    and "accepted" not in self.state["steps"] and getattr(own, "status", None) != "installed":
                 raise ValueError(f"round {self.i} started on {short(self.state['base_release'])} and the line is now "
                                  f"{short(active.ref())}: a round is not continued on another W")
         else:
             self.state = {"round_id": self.round_id, "index": self.i, "base_release": active.ref(), "steps": {},
-                          "status": "running"}
+                          "status": "running", "improver_version": activity.core.improver_version}
         self.base = activity.releases.load(self.state["base_release"])
-        # the package the round works on: what an earlier round carried (IMPROVER §9.2), while it is the line's base
-        # the carry was taken on; else the base's own
-        self.carry = self._carry()
-        self.package = load_package(activity.objects, self.carry["package_ref"]) if self.carry \
-            else activity.package(self.base)
+        self.package = activity.package(self.base)
         self.account = self._account()
-
-    # ------------------------------------------------------------------ the carry (IMPROVER §9.2)
-    @property
-    def carry_path(self) -> Path:
-        return Path(self.a.root) / "rounds" / "carry.json"
-
-    def _carry(self) -> dict | None:
-        if not self.carry_path.exists():
-            return None
-        carry = json.loads(self.carry_path.read_text(encoding="utf-8"))
-        if not carry.get("package_ref") or carry.get("base") != self.base.ref():
-            return None                     # the line moved: a carry taken on another base is not continued
-        if self.state.get("carry") is not None:         # the round's own record of what it started with
-            return self.state["carry"] or None
-        self.state["carry"] = carry
-        return carry
-
-    def _write_carry(self, carry: dict | None) -> None:
-        write_json(self.carry_path, carry or {"package_ref": None, "base": self.base.ref(), "dirs": []})
 
     @property
     def work_ref(self) -> str:
-        """The package ref the round reads train evidence of: the carried package's, else the base's."""
-        return self.package.ref()
-
-    def gate_round(self) -> bool:
-        return (self.i + 1) % max(int(self.s.gate_every), 1) == 0
+        """The package ref the round reads train evidence of: the working line's."""
+        return self.base.package_ref
 
     # ------------------------------------------------------------------ state, money, models
     def _save(self) -> None:
@@ -166,15 +142,22 @@ class Round:
     def result(self) -> RoundResult:
         steps = self.state["steps"]
         verified = steps.get("verified") or {}
-        gated = steps.get("gated") or None
+        accepted = steps.get("accepted") or {}
+        screened = steps.get("screened") or {}
+        chosen = None
+        if screened.get("best"):
+            res = ScreenResult.from_json(self.a.objects.get(next(r["screen"] for r in screened["screens"]
+                                                                 if r["dir"] == screened["best"])))
+            chosen = {"dir": res.candidate, "net_flips": res.net_flips, "holdout_score": res.holdout_score,
+                      "best_so_far": res.best_so_far, "accepted": res.accepted}
         return RoundResult(round_id=self.round_id, status=self.state.get("status", "running"),
                            causes=len((steps.get("diagnosed") or {}).get("causes") or ()),
-                           assignments=len((steps.get("allocated") or {}).get("assignments") or ()),
+                           components=sum(len(i.get("components") or ()) for i in
+                                          (steps.get("implemented") or {}).get("candidates") or ()),
                            candidates=len((steps.get("implemented") or {}).get("candidates") or ()) +
                            len(verified.get("fixed") or ()),
-                           ladder=verified.get("ladder") or {}, screened=(steps.get("screened") or {}).get("best"),
-                           gate=gated, installed=(gated or {}).get("installed"),
-                           carried=(steps.get("carried") or {}).get("package_ref"), gated=gated is not None,
+                           ladder=verified.get("ladder") or {}, screen=chosen,
+                           accepted=bool(accepted.get("installed")), installed=accepted.get("installed"),
                            stop=self.state.get("stop"), spend=self.spend())
 
     # ------------------------------------------------------------------ the round
@@ -192,34 +175,19 @@ class Round:
         self.step("measure", self.measure)
         ev = self.step("evidence", self.gather)
         if not ev["failed"]:
-            if self.carry and self.gate_round():            # nothing left to fix on the carried package: gate it
-                gated = self.step("gated", self.gated)
-                if gated.get("installed"):
-                    self.step("credited", self.credited)
-                self.step("playbook", self.playbook)
-                self.state["status"] = "done"
-                self._save()
-                return self.result()
-            raise Stop("nothing_to_fix: the current W passes every train task it was read on")
+            raise Stop("nothing_to_fix: the working line passes every studied train task")
         if "diagnosed" not in self.state["steps"]:
             self._floor()
         self.step("diagnosed", self.diagnosed)
-        self.step("allocated", self.allocated)
+        self.step("focused", self.focused)
         self.step("implemented", self.implemented)
         verified = self.step("verified", self.verified)
-        screened = self.step("screened", self.screened) if verified["passed"] else {"best": None}
-        # the gate's cadence (IMPROVER §9.2): a carry round keeps the best screened candidate for the next round; a
-        # gate round pays the gate for it — or, with nothing new, for the package carried so far
-        if screened.get("best") and not self.gate_round():
-            self.step("carried", self.carried)
-        elif screened.get("best") or (self.gate_round() and self.carry):
-            gated = self.step("gated", self.gated)
-            if gated.get("installed"):
-                self.step("credited", self.credited)
-        elif not verified["passed"]:
+        if not verified["passed"]:
             raise Stop("no_candidate: no candidate passed its free rungs")
-        else:
-            self.ledger.row("rejected", round_id=self.round_id, line=self.line, reason="no eligible screen")
+        self.step("screened", self.screened)
+        got = self.step("accepted", self.accepted)
+        if got.get("installed"):
+            self.step("credited", self.credited)
         self.step("playbook", self.playbook)
         self.state["status"] = "done"
         self._save()
@@ -250,25 +218,23 @@ class Round:
         return sum(costs) / len(costs) if costs else None
 
     def _floor(self) -> None:
-        """Before the round pays for diagnosis and R's session, the least the round must pay to have an outcome fits:
-        the gate, one small screen (the passing sample and thin_screen_tasks failing tasks), and the research it is
-        about to pay — a call per case to diagnose and per turn of the session, at the research calls' mean on record
-        (left out before any is on record)."""
-        usd, why = price(self.a, self.base.package_ref,
-                         screen_attempts=self.s.screen_passing_sample + self.s.thin_screen_tasks)
+        """Before the round pays for diagnosis and R's session, the least it must pay to have an outcome fits: one
+        screen of the whole held-out part, and the research it is about to pay — a call per case to diagnose and per
+        turn of the session, at the research calls' mean on record (left out before any is on record)."""
+        usd, why = price(self.a, self.work_ref, screen_attempts=len(self.split()[1]))
         if usd is None:
             raise Stop(f"unpriced: {why}")
         mean = self._research_mean()
         if mean is not None:
             cases = min(len(self.state["steps"]["evidence"]["failed"]), self.s.diagnose_max_cases)
             usd += mean * (cases + self.s.session_max_turns)
-        self._afford(usd, "the gate, the least screen and the research")
+        self._afford(usd, "one held-out screen and the research")
 
     def split(self) -> tuple[tuple, tuple]:
         """(the train tasks R studies, the train tasks held out from it), fixed for the activity: whole families,
         ranked by a hash of K's order seed and the family, are held out while they fit in holdout_share of the train
-        tasks (a family that would overshoot it is skipped; one task at least stays studied).
-        V3 screens on the held-out part only, so a screen reads whether a candidate fixes tasks R never saw."""
+        tasks (a family that would overshoot it is skipped; one task at least stays studied). V3 screens on the
+        held-out part only, so a screen reads whether a candidate fixes tasks R never saw."""
         if getattr(self, "_split", None) is None:
             import hashlib
             train = list(self.a.splits.ids("train"))
@@ -290,6 +256,18 @@ class Round:
         return sum(1 for r in self.a.results.all() if r.validity == "valid" and runs.get(r.run) is not None
                    and runs[r.run].candidate == candidate and runs[r.run].role == role)
 
+    def holdout_score(self, package_ref: str) -> int | None:
+        """A package's passes on the held-out tasks it has a valid train reading of (None: none read)."""
+        held = set(self.split()[1])
+        reading = {t: r for t, r in self.evidence.reading(package_ref).items() if t in held}
+        return sum(1 for r in reading.values() if r.success) if reading else None
+
+    def best_so_far(self) -> int:
+        """The working line's best held-out score in this activity: the baseline's and every release installed since
+        (IMPROVER §9: the floor the accept rule tolerates a step below)."""
+        scores = [self.holdout_score(rel.package_ref) for rel in self.a.releases.history()]
+        return max([s for s in scores if s is not None] or [0])
+
     # ------------------------------------------------------------------ measure, evidence
     def _measure(self, release, package_ref: str, kind: str, package=None) -> dict:
         missing = self.evidence.missing(package_ref)
@@ -309,21 +287,24 @@ class Round:
                 "passed": sum(1 for r in reading.values() if r.success)}
 
     def measure(self) -> dict:
-        got = self._measure(self.base, self.work_ref, "measure", package=self.package if self.carry else None)
+        got = self._measure(self.base, self.work_ref, "measure")
+        held = set(self.split()[1])
+        reading = self.evidence.reading(self.work_ref)
+        got["holdout_passed"] = sum(1 for t, r in reading.items() if t in held and r.success)
+        got["holdout"] = len(held)
         self.ledger.row("measured", round_id=self.round_id, line=self.line, passed=got["passed"], steps=got["tasks"],
-                        **({"carried": short(self.work_ref)} if self.carry else {}))
-        self.out(f"round      {self.round_id}: W {short(self.base.ref())}"
-                 + (f" carrying {short(self.work_ref)}" if self.carry else "")
-                 + f" passes {got['passed']}/{got['tasks']} train tasks ({got['measured']} measured now)")
+                        holdout_passed=got["holdout_passed"], holdout=got["holdout"])
+        self.out(f"round      {self.round_id}: W {short(self.base.ref())} passes {got['passed']}/{got['tasks']} train "
+                 f"tasks ({got['holdout_passed']}/{got['holdout']} held out; {got['measured']} measured now)")
         return got
 
     def gather(self) -> dict:
-        failed = self.evidence.failed(self.work_ref)
+        study = set(self.split()[0])
+        failed = [e for e in self.evidence.failed(self.work_ref) if e.task_id in study]
         order = {t: i for i, t in enumerate(self.a.splits.ids("train"))}
         failed.sort(key=lambda e: (self.ledger.last_round_of(e.task_id), order.get(e.task_id, 0)))
         chosen = failed[:self.s.diagnose_max_cases]
-        successes = self.evidence.best_successes(self.work_ref, self.s.diagnose_successes,
-                                                 tasks=self.split()[0])
+        successes = self.evidence.best_successes(self.work_ref, self.s.diagnose_successes, tasks=study)
         return {"failed": [e.attempt_id for e in chosen], "failed_tasks": [e.task_id for e in chosen],
                 "not_diagnosed": [e.task_id for e in failed[self.s.diagnose_max_cases:]],
                 "successes": [{"task_id": e.task_id, "session": e.session} for e in successes]}
@@ -346,8 +327,7 @@ class Round:
         from ..memory.settings import Settings as MemorySettings
         ms = MemorySettings.from_core(self.a.k)
         entries = json.loads(path.read_text(encoding="utf-8")).get("entries") or {}
-        done = {r.get("source") for r in self.ledger.rows(stage="declared")       # earlier rounds' (a resumed
-                if r.get("source") and r.get("round_id") != self.round_id}         # step declares it again)
+        done = self._fixed_done()
         return {k: e for k, e in entries.items() if e.get("status") == "active" and f"promotion:{k}" not in done
                 and int((e.get("stats") or {}).get("fixes") or 0) >= ms.promote_fixes
                 and len(distilled_from(e)) >= ms.promote_sources}
@@ -394,40 +374,27 @@ class Round:
     def causes(self) -> list:
         return [dg.Cause.from_json(self.a.objects.get(r)) for r in self.state["steps"]["diagnosed"]["causes"]]
 
-    # ------------------------------------------------------------------ layering
-    def allocated(self) -> dict:
-        previous = f"{self.a.scope_id}/r{self.i - 1}"
-        no_code = {r.get("cause") for r in self.ledger.rows(stage="no_code_candidate", round_id=previous)}
+    # ------------------------------------------------------------------ the focus list
+    def focused(self) -> dict:
         estimates = Estimates(self.a.root, self.s)
-        causes, study, held = self.causes(), *(set(p) for p in self.split())
-        not_assigned, in_sample = [], []
-        if held:        # a cause is assigned only where R has the cases V2a and V2b need; one with nothing held out is
-            # screened in sample (IMPROVER §9.1: the gate decides)
-            need = max(int(self.s.toolcheck_min_pass), int(self.s.replay_min_triggers), 1)
-            not_assigned = [{"cause": c.name, "studied": len(study & set(c.tasks)), "held_out": len(held & set(c.tasks))}
-                            for c in causes if len(study & set(c.tasks)) < need]
-            causes = [c for c in causes if len(study & set(c.tasks)) >= need]
-            in_sample = [c.name for c in causes if not (held & set(c.tasks))]
-        assignments, notes = allocate(causes, estimates, settings=self.s, line=self.line,
-                                      allowed=self.a.k["harness"]["kinds"], no_code=no_code,
-                                      stalled=stalled(self.ledger, self.s.stall_rounds), train_available=False)
-        self.ledger.row("allocated", round_id=self.round_id, line=self.line,
-                        assignments=[{"cause": a.cause, "kind": a.kind, "slots": a.slots,
-                                      "exploration": a.exploration} for a in assignments],
-                        **({"not_assigned": not_assigned} if not_assigned else {}),
-                        **({"in_sample": in_sample} if in_sample else {}))
-        for note in notes:
+        held = set(self.split()[1])
+        f = focus_of(self.causes(), estimates, self.archive, settings=self.s, line=self.line,
+                     allowed=self.a.k["harness"]["kinds"], hide=held,
+                     stalled=stalled(self.ledger, self.s.stall_rounds), train_available=False)
+        self.ledger.row("focused", round_id=self.round_id, line=self.line,
+                        causes=[{"cause": r["name"], "tasks": len(r["tasks"]),
+                                 "kinds": [k["kind"] for k in r["kinds"]]} for r in f.ranked],
+                        require_code=f.require_code, l5_suggested=f.l5_suggested)
+        for note in f.notes:
             if note.startswith("l6_unavailable"):
                 self.ledger.row("l6_unavailable", round_id=self.round_id, line=self.line, reason=note)
-        self.out(f"round      {self.round_id}: assigned " + ", ".join(f"{a.cause}->{a.kind}"
-                                                                     + ("*" if a.exploration else "")
-                                                                     + (f"x{a.slots}" if a.slots > 1 else "")
-                                                                     for a in assignments))
-        return {"assignments": [self.a.objects.put(a) for a in assignments], "notes": notes, "in_sample": in_sample}
+        self.out(f"round      {self.round_id}: focus " + ", ".join(
+            f"{r['name']}({len(r['tasks'])})->{'/'.join(k['kind'] for k in r['kinds'][:3])}" for r in f.ranked)
+            + ("; a tool or hook is required" if f.require_code else ""))
+        return {"focus": self.a.objects.put(f)}
 
-    def assignments(self) -> list:
-        from .allocate import Assignment
-        return [Assignment.from_json(self.a.objects.get(r)) for r in self.state["steps"]["allocated"]["assignments"]]
+    def focus(self) -> Focus:
+        return Focus.from_json(self.a.objects.get(self.state["steps"]["focused"]["focus"]))
 
     # ------------------------------------------------------------------ verification
     def vctx(self) -> VerifyContext:
@@ -449,10 +416,10 @@ class Round:
                              settings=self.s, fixture_task=(failed or passed or list(train))[0],
                              failed_sessions={t: reading[t].evidence or reading[t].attempt_id for t in failed},
                              passed_sessions={t: reading[t].evidence or reading[t].attempt_id
-                                              for t in passed[:self.s.screen_passing_sample]},
+                                              for t in passed[:REPLAY_SAMPLE]},
                              study_tasks=study,
-                             cause_ids=tuple(a.cause_id for a in self.assignments())
-                             if "allocated" in self.state["steps"] else ())
+                             cause_ids=tuple(c.cause_id for c in self.causes())
+                             if "diagnosed" in self.state["steps"] else ())
 
     def with_memory(self, files: dict) -> dict:
         """A candidate's files with the parent's host-only memory snapshot put back (R's tree never holds it)."""
@@ -462,16 +429,14 @@ class Round:
         return out
 
     # ------------------------------------------------------------------ the session
-    def inputs(self, assignments) -> tuple[dict, set]:
+    def inputs(self) -> tuple[dict, set]:
         steps = self.state["steps"]
-        causes = {c.cause_id: c for c in self.causes()}
         study, held = (set(p) for p in self.split())
         from ..evaluate.attempt import task_hash
         held_hashes = {task_hash(self.a.suite.tasks[t]) for t in held}
         readable = set()
         cause_rows = []
-        for a in assignments:
-            c = causes[a.cause_id]
+        for c in self.causes():
             rows = []
             for ref in c.cases:
                 case = dg.Case.from_json(self.a.objects.get(ref))
@@ -490,8 +455,7 @@ class Round:
                                "held_out_tasks": sum(1 for t in c.tasks if t in held), "cases": rows,
                                # an entry distilled from a held-out task's trajectory is that task's: not shown
                                "memory_entries": [e for e in c.memory_entries
-                                                  if not set(e.get("distilled_from") or ()) & held_hashes],
-                               "earlier": self.archive.for_prompt(self.line, c.name, hide=held)})
+                                                  if not set(e.get("distilled_from") or ()) & held_hashes]})
         successes = steps["evidence"]["successes"]
         readable |= {s["session"] for s in successes}
         episode = self.a.suite.episode(self.a.splits.ids("train")[0])
@@ -502,8 +466,11 @@ class Round:
         sites = "\n".join(f"    {site}: event {list(EVENTS[site])} -> may answer {list(RETURNS[site])}"
                           for site in EVENTS)
         api = (PROMPTS / "package_api.md").read_text(encoding="utf-8").replace("{sites}", sites)
-        files = {"assignments.json": [{"cause_id": a.cause_id, "cause": a.cause, "kind": a.kind, "slots": a.slots,
-                                       "exploration": a.exploration} for a in assignments],
+        f = self.focus()
+        focus_rows = [{**r, "tasks": [t for t in r["tasks"] if t in study],
+                       "held_out_tasks": sum(1 for t in r["tasks"] if t in held)} for r in f.ranked]
+        files = {"focus.json": {"ranked": focus_rows, "require_code": f.require_code, "l5_suggested": f.l5_suggested,
+                                "l6_suggested": f.l6_suggested, "notes": list(f.notes)},
                  "causes.json": cause_rows, "successes.json": successes,
                  "ledger.json": self.ledger.projection(line=self.line, hide=held),
                  "scoreboard.json": self.ledger.scoreboard(),
@@ -514,10 +481,13 @@ class Round:
         return out, readable
 
     def _declared(self, decl, files: dict, verdict) -> dict:
-        self.ledger.row("declared", round_id=self.round_id, line=self.line, dir=decl.dir, cause_id=decl.cause_id,
-                        cause=decl.cause_id.rpartition(":")[2], kind=decl.kind, site=decl.site, trigger=decl.trigger,
+        self.ledger.row("declared", round_id=self.round_id, line=self.line, dir=decl.dir, mechanism=decl.mechanism,
+                        kind=decl.kind, site=decl.site, cause=list(decl.causes), trigger=decl.mechanism,
+                        components=[{"kind": c.kind, "site": c.site, "cause_ids": list(c.cause_ids),
+                                     "uses_model": c.uses_model} for c in decl.components],
                         predicted_affected=list(decl.predicted_affected), differs_from=list(decl.differs_from))
         return {"dir": decl.dir, "declaration": self.a.objects.put(decl),
+                "components": [c.key for c in decl.components],
                 "files": self.a.objects.put_json("candidate_files", files), "verdict": self.a.objects.put(verdict)}
 
     def _session(self, session: CodingSession, tree: WorkTree):
@@ -563,23 +533,8 @@ class Round:
             if bad:
                 raise RuntimeError(f"R's saved session cannot be restored: candidates/{name}/{path}: {value}")
 
-    def _unused(self, assignments, out: list) -> None:
-        """An assigned (cause, kind) R declared nothing for: on the ledger, and an observation of no fix for its
-        estimate, so the exploration does not keep landing where R does not go."""
-        decls = [Declaration.from_json(self.a.objects.get(i["declaration"])) for i in out]
-        if len(decls) >= min(self.s.k, sum(a.slots for a in assignments)):
-            return                  # R declared as many candidates as it could: an empty slot is the cap's
-        declared = {(d.cause_id, d.kind) for d in decls}
-        estimates = Estimates(self.a.root, self.s)
-        for a in assignments:
-            if (a.cause_id, a.kind) not in declared:
-                self.ledger.row("unused", round_id=self.round_id, line=self.line, cause=a.cause, kind=a.kind)
-                estimates.update(self.line, a.cause, a.kind, fixes=0.0,
-                                 key=f"{self.round_id}:unused:{a.cause}:{a.kind}")
-
     def implemented(self) -> dict:
-        assignments = self.assignments()
-        if not assignments:
+        if not self.causes():
             return {"candidates": [], "session": None}
         saved = self.state.get("session_result")
         if saved is not None:       # the session ran before the step was cut short: its candidates, not paid again
@@ -589,16 +544,15 @@ class Round:
                 decl = Declaration.from_json(self.a.objects.get(item["declaration"]))
                 files = self.a.objects.get(item["files"])
                 out.append(self._declared(decl, files, run_ladder(files, decl, vctx)))
-            self.out(f"round      {self.round_id}: the session's {len(out)} candidates, as it left them")
-            self._unused(assignments, out)
+            self.out(f"round      {self.round_id}: the session's {len(out)} packages, as it left them")
             return {"candidates": out, "session": saved["session"]}
-        inputs, readable = self.inputs(assignments)
-        kinds = sorted({a.kind for a in assignments})
-        k = min(self.s.k, sum(a.slots for a in assignments))
+        inputs, readable = self.inputs()
+        kinds = [k for k in self.a.k["harness"]["kinds"] if k not in ("memory", "model", "test")] + ["removal"]
         system = (PROMPTS / "propose.md").read_text(encoding="utf-8")
-        for name, value in {"k": k, "max_turns": self.s.session_max_turns, "max_edits": self.s.session_max_edits,
-                            "max_read": self.s.session_max_read_bytes,
-                            "max_read_total": self.s.session_max_read_total,
+        for name, value in {"packages": self.s.packages_per_round, "max_turns": self.s.session_max_turns,
+                            "max_edits": self.s.session_max_edits, "max_read": self.s.session_max_read_bytes,
+                            "max_read_total": self.s.session_max_read_total, "l5_per_round": self.s.l5_per_round,
+                            "hook_aux_calls": self.s.hook_aux_calls,
                             "max_tokens": int(self.a.k["research_model"]["max_tokens"])}.items():
             system = system.replace("{" + name + "}", str(value))
         worker = self.a.worker()
@@ -627,12 +581,12 @@ class Round:
                 if files is None:
                     return f"candidates/{dir_name} cannot be read back: {error}"
                 from .verify.unit import unit_check
-                return unit_check(self.with_memory(files), Declaration(dir=dir_name, kind="agent"), vctx)["detail"] \
+                return unit_check(self.with_memory(files), None, vctx)["detail"] \
                     or "the package tests, the probe and the smoke pass"
 
             session = CodingSession(researcher=self.researcher("session"), work=tree, trace=self.evidence.trace,
-                                    check=check, tests=tests, settings=self.s, k=k, system=system, inputs={
-                                        "round": self.round_id, "assignments": json.loads(inputs["assignments.json"]),
+                                    check=check, tests=tests, settings=self.s, system=system, inputs={
+                                        "round": self.round_id, "focus": json.loads(inputs["focus.json"]),
                                         "inputs": sorted(f"inputs/{n}" for n in inputs)},
                                     readable=readable, kinds=kinds)
             result = self._session(session, tree)
@@ -652,38 +606,54 @@ class Round:
                 verdict = run_ladder(files, decl, vctx)
                 if not verdict.passed() and not session.ended:
                     session.revise(f"candidates/{decl.dir} failed its check:\n{verdict.text()}\nEdit its files and "
-                                   f"call finish again with the same declarations.")
+                                   f"call finish again with the same declaration.")
                     again, _ = tree.fetch(decl.dir)
                     if again is not None:
                         files = self.with_memory(again)
                         verdict = run_ladder(files, decl, vctx)
+                        self.state["session_result"]["candidates"] = [
+                            {"declaration": self.a.objects.put(d), "files": self.a.objects.put_json(
+                                "candidate_files", files if d.dir == decl.dir else f)} for d, f in fetched]
+                        self._save()
                 out.append(self._declared(decl, files, verdict))
         finally:
             wsession.close(force=True)
             if session is not None:
                 transcript = self.a.objects.put_json("session_transcript", session.transcript())
                 write_json(self.dir / "session.json", {**session.record(), "transcript": transcript})
-        self.out(f"round      {self.round_id}: the session declared {len(out)} candidates "
+        self.out(f"round      {self.round_id}: the session declared {len(out)} package(s) with "
+                 f"{sum(len(i['components']) for i in out)} components "
                  f"({session.turns if session else 0} turns, {session.edits if session else 0} edits"
                  + (f"; ended: {session.ended}" if session and session.ended else "") + ")")
-        self._unused(assignments, out)
         return {"candidates": out, "session": str(self.dir / "session.json")}
 
     # ------------------------------------------------------------------ the fixed code's candidates
+    def _fixed_done(self) -> set:
+        """The fixed candidates' sources earlier rounds settled: declared, and not left `not_selected` by their
+        screen (one accepted but not chosen comes back the next round)."""
+        done = set()
+        for r in self.ledger.rows(stage="declared"):
+            if r.get("source") and r.get("round_id") != self.round_id:
+                done.add(r["source"])
+        for r in self.ledger.rows(stage="screened"):
+            if r.get("source") and r.get("outcome") == "not_selected" and r.get("round_id") != self.round_id:
+                done.discard(r["source"])
+        return done
+
     def fixed_candidates(self) -> list[tuple[Declaration, dict]]:
         """The library's snapshot not yet on the ladder, the memory's promoted skills, removal candidates — at most
         fixed_per_round, in that order."""
         out: list[tuple[Declaration, dict]] = []
-        done = {r.get("source") for r in self.ledger.rows(stage="declared")       # earlier rounds' (a resumed
-                if r.get("source") and r.get("round_id") != self.round_id}         # step declares it again)
+        done = self._fixed_done()
         for e in reversed(list(self.a.events.read("library_snapshot"))):
             src = f"snapshot:{e.get('snapshot_digest')}"
             if e.get("outcome") == "candidate" and src not in done and e.get("package_ref"):
                 snap = load_package(self.a.objects, e["package_ref"])
                 from ..memory.snapshot import snapshot_candidate
                 files = snapshot_candidate(self.package, snap.memory_text)
-                out.append((Declaration(dir="memory-snapshot", cause_id=f"{self.round_id}:memory", kind="memory",
-                                        site="snapshot", trigger="every attempt reads the library", fixed=src), files))
+                out.append((fixed_declaration("memory-snapshot", source=src, kind="memory", site=None,
+                                              cause_id=f"{self.round_id}:memory",
+                                              trigger="every attempt reads the library"), files))
                 break
         path = Path(self.a.root) / "memory" / self.a.domain / "stream.json"
         entries = json.loads(path.read_text(encoding="utf-8")).get("entries") if path.exists() else {}
@@ -697,17 +667,18 @@ class Round:
                 from ..memory.rules import distilled_from
                 from ..evaluate.attempt import task_hash
                 ids = {task_hash(self.a.suite.tasks[t]): t for t in self.a.splits.ids("train")}
-                out.append((Declaration(dir=f"promoted-{mid[:8]}", cause_id=f"{self.round_id}:memory", kind="skill",
-                                        site=name, predicted_affected=tuple(sorted(ids[h] for h in distilled_from(e)
-                                                                                   if h in ids)),
-                                        trigger="the skill index lists it", fixed=f"promotion:{mid}"), files))
+                out.append((fixed_declaration(f"promoted-{mid[:8]}", source=f"promotion:{mid}", kind="skill",
+                                              site=name, cause_id=f"{self.round_id}:memory",
+                                              trigger="the skill index lists it",
+                                              predicted_affected=sorted(ids[h] for h in distilled_from(e)
+                                                                        if h in ids)), files))
         history = [r.get("history") for r in self.ledger.rows(stage="credited") if r.get("history")]
         for comp, files in removal_candidates(history, self.package, zero_rounds=self.s.removal_zero_credit_rounds):
             src = f"removal:{comp['kind']}:{comp['name']}:{short(self.base.ref())}"
             if src not in done:
-                out.append((Declaration(dir=f"remove-{comp['kind']}-{comp['name']}"[:60], cause_id=f"{self.round_id}:"
-                                        f"bloat", kind="removal", site=comp["name"], trigger=comp["why"],
-                                        fixed=src), files))
+                out.append((fixed_declaration(f"remove-{comp['kind']}-{comp['name']}"[:60], source=src,
+                                              kind="removal", site=comp["name"], cause_id=f"{self.round_id}:bloat",
+                                              trigger=comp["why"]), files))
         return out[:self.s.fixed_per_round]
 
     def verified(self) -> dict:
@@ -719,243 +690,194 @@ class Round:
             files = self.a.objects.get(item["files"])
             dup = self.archive.duplicate(files, before_round=self.i)
             self.archive.put(self.i, decl.dir, files, decl, verdict, line=self.line)
-            for rung, v in verdict.steps.items():
-                ladder[rung] = ladder.get(rung, 0) + bool(v.get("passed"))
+            for rung, ok in verdict.rungs().items():
+                ladder[rung] = ladder.get(rung, 0) + bool(ok)
             self.ledger.row("verified", round_id=self.round_id, line=self.line, dir=decl.dir, kind=decl.kind,
                             passed=verdict.passed(), outcome="duplicate" if dup else "",
-                            reason=verdict.text()[:500])
+                            failed_components=verdict.failed_components(), reason=verdict.text()[:800])
             if verdict.passed() and not dup:
                 passed.append(item)
         for decl, files in self.fixed_candidates():
             vctx = vctx or self.vctx()
             verdict = run_ladder(files, decl, vctx)
             self.ledger.row("declared", round_id=self.round_id, line=self.line, dir=decl.dir, kind=decl.kind,
-                            site=decl.site, source=decl.fixed, cause=decl.cause_id.rpartition(":")[2])
-            if decl.kind == "removal":
+                            site=decl.site, source=decl.fixed, cause=list(decl.causes))
+            if "removal" in decl.kinds:
                 self.ledger.row("removal_proposed", round_id=self.round_id, line=self.line, dir=decl.dir,
-                                site=decl.site, reason=decl.trigger)
+                                site=decl.site, reason=decl.mechanism)
             self.archive.put(self.i, decl.dir, files, decl, verdict, line=self.line)
-            for rung, v in verdict.steps.items():
-                ladder[rung] = ladder.get(rung, 0) + bool(v.get("passed"))
+            for rung, ok in verdict.rungs().items():
+                ladder[rung] = ladder.get(rung, 0) + bool(ok)
             self.ledger.row("verified", round_id=self.round_id, line=self.line, dir=decl.dir, kind=decl.kind,
-                            passed=verdict.passed(), reason=verdict.text()[:500])
-            item = {"dir": decl.dir, "declaration": self.a.objects.put(decl),
+                            passed=verdict.passed(), reason=verdict.text()[:800])
+            item = {"dir": decl.dir, "declaration": self.a.objects.put(decl), "components": [c.key for c in
+                                                                                             decl.components],
                     "files": self.a.objects.put_json("candidate_files", files), "verdict": self.a.objects.put(verdict)}
             fixed.append(decl.dir)
             if verdict.passed():
                 passed.append(item)
-        # the code guarantee: a mechanizable cause and no code candidate past its V2
+        # the code requirement (IMPROVER §6): a mechanizable cause and no tool or hook past its free rungs
         mech = [c for c in self.causes() if c.mechanizable]
-        code = [p for p in passed if Declaration.from_json(self.a.objects.get(p["declaration"])).kind in CODE_KINDS]
-        if mech and not code:
+        code = [p for p in passed if any(c.kind in CODE_KINDS for c in
+                                         Declaration.from_json(self.a.objects.get(p["declaration"])).components)]
+        if self.s.require_code_component and mech and not code:
             for c in mech:
                 self.ledger.row("no_code_candidate", round_id=self.round_id, line=self.line, cause=c.name)
         self.out(f"round      {self.round_id}: {len(passed)} candidates passed their free rungs ({ladder})")
         return {"passed": passed, "fixed": fixed, "ladder": ladder}
 
-    # ------------------------------------------------------------------ V3 and V4
+    # ------------------------------------------------------------------ V3: the held-out screen
     def screened(self) -> dict:
+        from ..evaluate.gate import transport_problem
+        problem = transport_problem(self.a)
+        if problem:
+            raise Stop(problem)
         reading = self.evidence.reading(self.work_ref)
-        held = self.split()[1]
-        in_sample_causes = set((self.state["steps"].get("allocated") or {}).get("in_sample") or ())
-        # V3 reads the held-out train tasks: a candidate's failing set is the held-out tasks of its cause the current W
-        # still fails (the fixed code's: every held-out task it fails), its sample the held-out tasks it passes. With
-        # nothing held out, the claimed and the cause's tasks and a sample of all train tasks (as before).
-        order = list(held) if held else self.a.splits.ids("train")
-        sample = passing_sample(reading, order=order, size=self.s.screen_passing_sample,
-                                seed=int(self.a.k["gate"]["order_seed"]), round_index=self.i)
-        failing_now = {t for t, r in reading.items() if not r.success}
-        causes = {c.cause_id: c for c in self.causes()}
-        plans = []
-        for item in self.state["steps"]["verified"]["passed"]:
-            decl = Declaration.from_json(self.a.objects.get(item["declaration"]))
-            cause = causes.get(decl.cause_id)
-            # a cause with nothing held out is screened on the studied tasks it claims, in sample (IMPROVER §9.1)
-            in_sample = bool(held) and cause is not None and cause.name in in_sample_causes and not decl.fixed
-            claimed = set(cause.tasks if cause is not None else ()) \
-                | (set(decl.predicted_affected) if (not held or in_sample) else set())
-            if decl.fixed:                            # the fixed code's candidates claim every failing task
-                claimed |= failing_now
-            pool = list(self.split()[0]) if in_sample else order
-            failing = [t for t in pool if t in claimed and t in failing_now]
-            plans.append((item, decl, failing, in_sample))
-        # The screens are paid in this order — R's candidates as declared, then the fixed code's, the library's
-        # snapshot last (it claims every failing task) — and each is taken while the screens taken so far, it and the
-        # gate fit what the round has left (each screen's attempts less those on record: a resumed step re-reads them
-        # for free). The credit step's train reading is not priced here: it is paid only after an install, and when
-        # the budget refuses it the credit waits for the next round's measure.
-        plans.sort(key=lambda p: (bool(p[1].fixed), p[1].kind == "memory"))
-        to_pay = lambda chosen: sum(max(len(set(f) | set(sample)) - self._recorded(f"r{self.i}:{d.dir}", "screen"),
-                                        0) for _, d, f, _s in chosen)                    # noqa: E731
+        held = list(self.split()[1])
+        best_so_far = self.best_so_far()
+        items = list(self.state["steps"]["verified"]["passed"])
+        decls = {i["dir"]: Declaration.from_json(self.a.objects.get(i["declaration"])) for i in items}
+        # R's package first, then the fixed code's (the snapshot last); each is paid while it fits what the round has
+        # left beside the screens before it (a resumed step re-reads its attempts for free)
+        items.sort(key=lambda i: (bool(decls[i["dir"]].fixed), "memory" in decls[i["dir"]].kinds))
+        to_pay = lambda chosen: sum(max(len(held) - self._recorded(f"r{self.i}:{i['dir']}", "screen"), 0)  # noqa
+                                    for i in chosen)
         chosen, dropped = [], []
-        for plan in [p for p in plans if p[2]]:
-            usd, why = price(self.a, self.work_ref, screen_attempts=to_pay([*chosen, plan]), dev_ref=self.base.package_ref)
+        for item in items:
+            usd, why = price(self.a, self.work_ref, screen_attempts=to_pay([*chosen, item]))
             if usd is None:
                 raise Stop(f"unpriced: {why}")
             need, left = self._need(usd)
-            (chosen if left is None or need <= left + 1e-9 else dropped).append(plan)
+            (chosen if left is None or need <= left + 1e-9 else dropped).append(item)
         if dropped and not chosen:
-            usd, _ = price(self.a, self.work_ref, screen_attempts=to_pay(dropped[:1]), dev_ref=self.base.package_ref)
-            self._afford(usd, "the screens and the gate")
-        for _item, decl, failing, _s in dropped:
-            self.ledger.row("screened", round_id=self.round_id, line=self.line, dir=decl.dir, kind=decl.kind,
-                            outcome="not_run", reason="budget: its screen and the gate do not fit what the round has "
-                                                      "left beside the screens before it")
-        plans = [p for p in plans if p not in dropped]
-        usd, _ = price(self.a, self.work_ref, screen_attempts=to_pay([p for p in plans if p[2]]),
-                       dev_ref=self.base.package_ref)
+            usd, _ = price(self.a, self.work_ref, screen_attempts=to_pay(dropped[:1]))
+            self._afford(usd, "the held-out screen")
+        for item in dropped:
+            self.ledger.row("screened", round_id=self.round_id, line=self.line, dir=item["dir"],
+                            kind=decls[item["dir"]].kind, outcome="not_run",
+                            reason="budget: its screen does not fit what the round has left beside the screens "
+                                   "before it")
+        usd, _ = price(self.a, self.work_ref, screen_attempts=to_pay(chosen))
         results, rows = [], []
-        for item, decl, failing, in_sample in plans:
+        for item in chosen:
+            decl = decls[item["dir"]]
             files = self.a.objects.get(item["files"])
             try:
                 package = build(self.a.objects, files, limits=Limits.from_core(self.a.k),
                                 seed=self.a.package(self.a.seed_release()),
-                                parent=None if decl.kind == "memory" else self.package)
+                                parent=None if "memory" in decl.kinds else self.package)
             except PackageError as e:
                 self.ledger.row("screened", round_id=self.round_id, line=self.line, dir=decl.dir, kind=decl.kind,
                                 outcome="invalid", reason=f"build: {e}"[:300])
                 continue
+            comps = components(self.package, files)
             res = screen(self.a, run_arm=self.run_arm, name=f"r{self.i}:{decl.dir}", package=package,
-                         base_release=self.base, failing=failing, sample=sample, reading=reading,
-                         evidence=self.evidence, conditions=condition(decl, components(self.package, files)),
-                         account=self.child("screen"), retries=int(self.a.k["gate"]["max_infrastructure_retries"]),
-                         thin_tasks=self.s.thin_screen_tasks, in_sample=in_sample)
+                         base_release=self.base, holdout=held, reading=reading, evidence=self.evidence,
+                         conditions=condition(comps), account=self.child("screen"),
+                         retries=int(self.a.k["gate"]["max_infrastructure_retries"]), best_so_far=best_so_far,
+                         settings=self.s)
             results.append(res)
             rows.append({"dir": decl.dir, "screen": self.a.objects.put(res), "package": package.ref()})
             self.archive.put(self.i, decl.dir, files, decl, Verdict.from_json(self.a.objects.get(item["verdict"])),
                              screen=res, package_ref=package.ref(), line=self.line)
             self.ledger.row("screened", round_id=self.round_id, line=self.line, dir=decl.dir, kind=decl.kind,
-                            cause=decl.cause_id.rpartition(":")[2], predicted_affected=list(decl.predicted_affected),
+                            cause=list(decl.causes), predicted_affected=list(decl.predicted_affected),
                             fixed=list(res.fixed), regressed=list(res.regressed), net_flips=res.net_flips,
-                            fixes=len(res.fixed), outcome=res.outcome, reason=res.reason,
-                            **({"in_sample": True} if res.in_sample else {}))
-            cause = causes.get(decl.cause_id)
-            if res.outcome == "screened" and cause is not None and not decl.fixed:
-                Estimates(self.a.root, self.s).update(self.line, cause.name, decl.kind,
-                                                      fixes=res.net_flips / max(len(res.failing), 1),
-                                                      cost=(res.cost or 0.0) * len(res.tasks),
-                                                      key=f"{self.round_id}:{decl.dir}")
+                            fixes=len(res.fixed), holdout_score=res.holdout_score, best_so_far=res.best_so_far,
+                            outcome=res.outcome, accepted=res.accepted, reasons=list(res.reasons),
+                            reason=res.reason, **({"source": decl.fixed} if decl.fixed else {}))
+            if res.outcome == "screened" and not decl.fixed:
+                self._observe(decl, res, cost=(res.cost or 0.0) * len(res.holdout))
             if res.outcome == "budget_exhausted":
                 raise Stop("budget: the budget refused a screen attempt")
-        best = pick_best(results, self.s)
-        chosen = next((r for r, res in zip(rows, results) if res is best), None) if best is not None else None
+        best = pick_best(results)
+        picked = next((r for r, res in zip(rows, results) if res is best), None) if best is not None else None
+        for r, res in zip(rows, results):
+            if res.accepted and picked is not None and r is not picked:
+                decl = decls[r["dir"]]
+                self.ledger.row("screened", round_id=self.round_id, line=self.line, dir=r["dir"], kind=decl.kind,
+                                outcome="not_selected", reason=f"accepted, and {picked['dir']} is installed this round",
+                                **({"source": decl.fixed} if decl.fixed else {}))
         self.out(f"round      {self.round_id}: screened " + ", ".join(
-            f"{r['dir']} net {res.net_flips} ({res.outcome})" for r, res in zip(rows, results))
-            + (f"; {chosen['dir']} pays the gate" if chosen else "; none is eligible"))
-        return {"screens": rows, "best": chosen["dir"] if chosen else None,
-                "best_package": chosen["package"] if chosen else None, "usd_priced": usd}
+            f"{r['dir']} net {res.net_flips} score {res.holdout_score}/{len(res.holdout)} "
+            f"({'accepted' if res.accepted else res.outcome if res.outcome != 'screened' else 'rejected'})"
+            for r, res in zip(rows, results)) + (f"; {picked['dir']} is installed" if picked else "; none accepted"))
+        return {"screens": rows, "best": picked["dir"] if picked else None,
+                "best_package": picked["package"] if picked else None, "usd_priced": usd, "best_so_far": best_so_far}
 
-    def carried(self) -> dict:
-        """A carry round (IMPROVER §9.2): the best screened candidate is carried to the next round instead of paying
-        the gate; the next round works on it, and the next gate round gates what has accumulated."""
+    def _observe(self, decl: Declaration, res: ScreenResult, *, cost: float, reading: dict | None = None) -> None:
+        """One observation per (component, cause) of a screened package (IMPROVER §6, §10): the component's
+        conditioned net flips on the cause's held-out tasks, as a share of the cause's failing held-out tasks. After
+        an acceptance, `reading` (the new W's) replaces the screen's observation under the same key."""
+        causes = {c.cause_id: c for c in self.causes()}
+        estimates = Estimates(self.a.root, self.s)
+        failing = set(res.failing)
+        for comp in decl.components:
+            shown = set(res.footprints.get(comp.key) or res.footprints.get("prompt:*") or ())
+            for cid in comp.cause_ids:
+                cause = causes.get(cid)
+                if cause is None:
+                    continue
+                tasks = set(cause.tasks)
+                fixed = {t for t in res.fixed if t in tasks and t in shown}
+                regressed = {t for t in res.regressed if t in tasks}
+                denominator = max(len(failing & tasks), 1)
+                estimates.update(self.line, cause.name, comp.kind, fixes=(len(fixed) - len(regressed)) / denominator,
+                                 cost=cost, key=f"{self.round_id}:{decl.dir}:{comp.key}")
+
+    # ------------------------------------------------------------------ acceptance
+    def accepted(self) -> dict:
         sc = self.state["steps"]["screened"]
-        dirs = [*((self.carry or {}).get("dirs") or ()), f"r{self.i}:{sc['best']}"]
-        carry = {"package_ref": sc["best_package"], "base": self.base.ref(), "dirs": dirs, "since": self.round_id}
-        self._write_carry(carry)
-        self.ledger.row("carried", round_id=self.round_id, line=self.line, dir=sc["best"],
-                        package=short(sc["best_package"]), dirs=dirs)
-        self.out(f"round      {self.round_id}: {sc['best']} carried to the next round ({len(dirs)} carried in all); "
-                 f"the gate comes at round {((self.i // max(int(self.s.gate_every), 1)) + 1) * max(int(self.s.gate_every), 1) - 1}")
-        return carry
-
-    def _same_cli(self) -> None:
-        """The gate compares the candidate with readings of the current W taken earlier: the claude CLI they ran on
-        must be the one the activity recorded (an update mid-round would mix two transports in one comparison)."""
-        rows = list(self.a.events.read("cli_version"))
-        if not rows or getattr(self.a, "provider_factory", None) is not None:
-            return
-        from ..providers.claude_code import cli_version
-        now = cli_version()
-        if now != rows[0].get("version"):
-            raise Stop(f"cli: the claude CLI is {now or 'unreadable'} and this activity ran on {rows[0].get('version')}"
-                       f": no gate on mixed transports (reinstall it, with DISABLE_AUTOUPDATER=1)")
-
-    def gated(self) -> dict:
-        sc = self.state["steps"].get("screened") or {}
-        best = sc.get("best")
-        # the gated package: this round's best screened candidate (built on what was carried), else the carry itself
-        package_ref = sc["best_package"] if best else self.carry["package_ref"]
-        name = best or "carry"
-        package = load_package(self.a.objects, package_ref)
-        self._same_cli()
-        if not self._recorded(f"{self.round_id}:gate", "subject"):      # a resumed gate's own attempts are on record
-            dev = cost_per_attempt(self.a, self.base.package_ref, "dev")
-            train = cost_per_attempt(self.a, self.work_ref, "train")
-            if best:
-                res = ScreenResult.from_json(self.a.objects.get(next(r["screen"] for r in sc["screens"]
-                                                                     if r["dir"] == best)))
-                cost = res.cost or 0.0
-            else:
-                cost = cost_per_attempt(self.a, package_ref, "train") or 0.0
-            scale = max(1.0, cost / train) if train else 1.0             # the candidate costs what it costs
-            if dev is not None:
-                self._afford(gate_attempts(self.a, self.base.package_ref) * dev * scale, "the gate")
-        got = run_gate(self.a, run_arm=self.run_arm, round_id=self.round_id, package=package,
-                       base_release=self.base, account=self.child("gate"))
-        if best:
-            item = next(i for i in self.state["steps"]["verified"]["passed"]
-                        if Declaration.from_json(self.a.objects.get(i["declaration"])).dir == best)
-            screened = next(r for r in sc["screens"] if r["dir"] == best)
-            self.archive.put(self.i, best, self.a.objects.get(item["files"]),
-                             Declaration.from_json(self.a.objects.get(item["declaration"])),
-                             Verdict.from_json(self.a.objects.get(item["verdict"])),
-                             screen=ScreenResult.from_json(self.a.objects.get(screened["screen"])),
-                             receipt_ref=got["receipt"], package_ref=package_ref, line=self.line)
-        carried = list((self.carry or {}).get("dirs") or ())
-        self.ledger.row("gated", round_id=self.round_id, line=self.line, dir=name, verdict=got["verdict"],
-                        gain=got.get("gain"), fixed_count=got["fixed_count"], regressed_count=got["regressed_count"],
-                        **({"carried": carried} if carried else {}))
-        if got.get("installed"):
-            self.ledger.row("installed", round_id=self.round_id, line=self.line, dir=name,
-                            release=got["installed"], **({"carried": carried} if carried else {}))
+        if not sc.get("best"):
+            self.ledger.row("rejected", round_id=self.round_id, line=self.line,
+                            reason="no screened package meets the accept rule")
+            return {"installed": None}
+        res = ScreenResult.from_json(self.a.objects.get(next(r["screen"] for r in sc["screens"]
+                                                             if r["dir"] == sc["best"])))
+        done = accept(self.a, res, round_id=self.round_id, base_release=self.base)
+        item = next(i for i in self.state["steps"]["verified"]["passed"] if i["dir"] == sc["best"])
+        decl = Declaration.from_json(self.a.objects.get(item["declaration"]))
+        receipt_ref = self.a.objects.put(done)
+        self.archive.put(self.i, sc["best"], self.a.objects.get(item["files"]), decl,
+                         Verdict.from_json(self.a.objects.get(item["verdict"])), screen=res, receipt_ref=receipt_ref,
+                         package_ref=res.package_ref, line=self.line)
+        if done.status == "installed":
+            self.ledger.row("accepted", round_id=self.round_id, line=self.line, dir=sc["best"], kind=decl.kind,
+                            release=done.target_release, net_flips=res.net_flips, holdout_score=res.holdout_score,
+                            best_so_far=res.best_so_far)
+            self.ledger.row("installed", round_id=self.round_id, line=self.line, dir=sc["best"],
+                            release=done.target_release)
+            self.out(f"round      {self.round_id}: {sc['best']} installed on the working line as "
+                     f"{short(done.target_release)} (held out {res.holdout_score}/{len(res.holdout)}, net "
+                     f"{res.net_flips})")
         else:
-            self.ledger.row("rejected", round_id=self.round_id, line=self.line, dir=name,
-                            verdict=got["verdict"])
-            if self.carry:
-                self.ledger.row("carry_dropped", round_id=self.round_id, line=self.line, dirs=carried,
-                                verdict=got["verdict"])
-        if self.carry or best:
-            self._write_carry(None)             # gated, installed or not: the next round starts from the line
-        self.out(f"round      {self.round_id}: the gate says {got['verdict']} (gain {got.get('gain')})"
-                 + (f" for {name} with {carried} carried" if carried else "")
-                 + (f"; installed {short(got['installed'])}" if got.get("installed") else ""))
-        return got
+            self.ledger.row("rejected", round_id=self.round_id, line=self.line, dir=sc["best"],
+                            reason=f"install {done.status}: {done.reason}")
+            self.out(f"round      {self.round_id}: {sc['best']} was accepted and not installed: {done.status}")
+        return {"installed": done.target_release if done.status == "installed" else None, "status": done.status,
+                "receipt": receipt_ref}
 
     # ------------------------------------------------------------------ credit
     def credited(self) -> dict:
-        new = self.a.releases.load(self.state["steps"]["gated"]["installed"])
+        """The accepted package's credit, from the screen's held-out reading (IMPROVER §10): for every changed
+        component, the delta on the held-out tasks it showed on; the estimates' observations of this package replaced
+        by it; the footprints kept for the anti-bloat rule. The studied part is read by the next round's measure."""
+        new = self.a.releases.load(self.state["steps"]["accepted"]["installed"])
         new_package = self.a.package(new)
-        try:
-            self._measure(new, new.package_ref, "measure")
-        except (Stop, BudgetError) as e:
-            # the install stands; its credit is not recorded (the next round measures the new W for its own reading)
-            self.ledger.row("credited", round_id=self.round_id, line=self.line, release=new.ref(), component=[],
-                            credit={}, reason=f"not credited: {str(e)[:200]}")
-            return {"release": new.ref(), "credit": {}, "not_credited": str(e)[:300]}
-        parent_reading = self.evidence.reading(self.base.package_ref)
-        child_reading = self.evidence.reading(new.package_ref)
+        sc = self.state["steps"]["screened"]
+        res = ScreenResult.from_json(self.a.objects.get(next(r["screen"] for r in sc["screens"]
+                                                             if r["dir"] == sc["best"])))
+        item = next(i for i in self.state["steps"]["verified"]["passed"] if i["dir"] == sc["best"])
+        decl = Declaration.from_json(self.a.objects.get(item["declaration"]))
+        held = set(res.holdout)
+        parent_reading = {t: r for t, r in self.evidence.reading(self.base.package_ref).items() if t in held}
+        child_reading = {t: r for t, r in self.evidence.reading(new.package_ref).items() if t in held}
         comps = [c for c in components(self.a.package(self.base), new_package.files) if c["kind"] != "test"]
         credits = credit_of(new.ref(), parent_reading, child_reading, comps=comps, evidence=self.evidence)
         table = summary(credits)
-        sc = self.state["steps"].get("screened") or {}
-        # the gated package was this round's screened candidate: its cause's estimate learns from the install; a carry
-        # gated on its own (nothing left to fix this round) learnt at its screens (IMPROVER §9.2)
-        decl = next((Declaration.from_json(self.a.objects.get(i["declaration"]))
-                     for i in (self.state["steps"].get("verified") or {}).get("passed") or ()
-                     if Declaration.from_json(self.a.objects.get(i["declaration"])).dir == sc.get("best")), None) \
-            if sc.get("best") else None
-        cause = next((c for c in self.causes() if c.cause_id == decl.cause_id), None) \
-            if decl is not None and "diagnosed" in self.state["steps"] else None
-        if decl is not None and cause is not None and not decl.fixed:
-            # the cause's net fixes where a component of the declared kind showed (IMPROVER §10)
-            shown = {c.task_id for c in credits if c.conditioned and c.kind == decl.kind}
-            fixes = sum(int(child_reading[t].success) - int(parent_reading[t].success) for t in cause.tasks
-                        if t in child_reading and t in parent_reading and t in shown)
-            Estimates(self.a.root, self.s).update(self.line, cause.name, decl.kind,
-                                                  fixes=fixes / max(len(cause.tasks), 1),
-                                                  cost=float((self.spend().get("used") or {}).get("usd") or 0.0),
-                                                  key=f"{self.round_id}:{decl.dir}")
-        if decl is not None and decl.fixed.startswith("promotion:"):   # the entry's skill is installed: superseded
+        if not decl.fixed:
+            self._observe(decl, res, cost=float((self.spend().get("used") or {}).get("usd") or 0.0))
+        if decl.fixed.startswith("promotion:"):     # the entry's skill is installed: superseded
             self.a.memory().supersede(decl.fixed.partition(":")[2], by=new.ref())
         history = {"footprints": footprints(child_reading, new_package, self.evidence),
                    "installed": {k: v["credit"] for k, v in table.items()}}

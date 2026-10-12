@@ -1,15 +1,19 @@
-"""Releases (docs/design/EVALUATE.md §7; CONTRACTS §5): the version an activity runs is the triple {W, R, K} — the
-harness package, the improver's policy, the fixed core — with the release it came from and what installed it. The
-active pointer moves only by compare-and-swap; a rollback only ever goes back to a release that was installed and is
-not revoked.
+"""Releases (docs/design/EVALUATE.md §7; CONTRACTS §5, v1.2): the version an activity runs is the triple {W, R, K} —
+the harness package, the improver's policy, the fixed core — with the release it came from and what installed it. Two
+lines: the working line (`rsi/active.json`), moved by the held-out screens inside the activity, and the release line
+(`rsi/released.json`), moved once by the dev gate at the end of it. Each pointer moves only by compare-and-swap; a
+rollback only ever goes back to a release that was installed and is not revoked.
 
-    Release        parent_ref, package_ref, improver_ref, core_ref, receipt_ref, reason (seed | gate | rollback | import)
+    Release        parent_ref, package_ref, improver_ref, core_ref, receipt_ref | screen_ref,
+                   reason (seed | screen | gate | decision | rollback | import)
     GateReceipt    one paired gate's reading (EVALUATE §5): the plan, both arms' runs in its results object, the verdict
     InstallReceipt the fact of an install or a refusal: expected parent, operation, status, the pointer observed
 
-A receipt installs only when a completed gate registered it ("evaluation_completed" event) and its verdict is accepted;
-a plan that confirms before it installs takes only a confirmed reading. Code identity (`code_version`) is a hash of the
-package's files: every K carries it, so a changed `.py` is a new K.
+A screen result installs on the working line only when it is accepted; a receipt promotes to the release line only
+when a completed gate registered it ("evaluation_completed" event) and its verdict is accepted, confirmed when the plan
+confirms. An activity without dev tasks has no gate: its working line is promoted by decision (reason `decision`, no
+receipt; EVALUATE §7, stage 4c), and the final's two arms are its reading. Code identity is two hashes (`attempt_version`: what an attempt runs; `improver_version`: the rest); every K
+carries both, so a changed `.py` is a new K; `code_version` is the hash of all of it, for reports.
 """
 from __future__ import annotations
 
@@ -21,7 +25,7 @@ from pathlib import Path
 from ..contracts import (ContractError, Events, Objects, Record, check_refs, locked, now, register, short,
                          write_json)
 
-REASONS = ("seed", "gate", "rollback", "import")
+REASONS = ("seed", "screen", "gate", "decision", "rollback", "import")
 VERDICTS = ("accepted", "rejected", "inconclusive", "invalid")
 RECEIPT_KINDS = ("full", "confirmed")
 INSTALL_STATUS = ("installed", "stale_parent", "installation_failed")
@@ -32,6 +36,11 @@ PACKAGE_DATA = ("train/jobs/hosts/bootstrap.sh", "train/jobs/hosts/start.sh", "m
                 "memory/sidecar/requirements-macos-arm64.lock", "improver/prompts/diagnose.md",
                 "improver/prompts/package_api.md", "improver/prompts/playbook.md", "improver/prompts/propose.md")
 SEEDS = "harness/seeds/"
+# What an attempt runs (DESIGN §8, v1.2): the runtime, the harness and its seeds, the attempt's own evaluate modules,
+# the adapters, the providers and the contracts. Everything else of the package is the improver's side.
+ATTEMPT_PREFIXES = ("runtime/", "harness/", "adapters/", "providers/")
+ATTEMPT_FILES = ("evaluate/attempt.py", "evaluate/results.py", "evaluate/limits.py", "evaluate/splits.py",
+                 "contracts.py", "__init__.py")
 
 
 def package_files() -> list[Path]:
@@ -46,12 +55,40 @@ def package_files() -> list[Path]:
     return sorted(out)
 
 
-def code_version() -> str:
-    """A hash of the package's files: the code that builds, gates and serves, the same here and in any install."""
+def is_attempt_file(rel: str) -> bool:
+    return rel.startswith(ATTEMPT_PREFIXES) or rel in ATTEMPT_FILES
+
+
+def _hash(files) -> str:
     h = hashlib.sha256()
-    for f in package_files():
+    for f in files:
         h.update(f.relative_to(PACKAGE).as_posix().encode() + b"\0" + f.read_bytes() + b"\0")
     return h.hexdigest()[:16]
+
+
+def attempt_version() -> str:
+    """A hash of the code an attempt runs: the same here and wherever a reading of the same package is comparable."""
+    return _hash(f for f in package_files() if is_attempt_file(f.relative_to(PACKAGE).as_posix()))
+
+
+def improver_version() -> str:
+    """A hash of the rest: the improver, the memory, the activity's phases, the gate and the final."""
+    return _hash(f for f in package_files() if not is_attempt_file(f.relative_to(PACKAGE).as_posix()))
+
+
+def code_version() -> str:
+    """A hash of every file of the package, for reports."""
+    return _hash(package_files())
+
+
+def attempt_identity(*, attempt_version: str, package_ref: str, limits: dict, model: dict, image_id,
+                     split_hash: str) -> str:
+    """AttemptIdentity (CONTRACTS §4): what makes two activities' readings of one package the same measurement — the
+    attempt code, the package, the limits, the actor model's binding, the worker image and the frozen split."""
+    from ..contracts import digest
+    return digest({"attempt_version": attempt_version, "package_ref": package_ref, "limits": dict(limits or {}),
+                   "model": {k: model.get(k) for k in ("provider", "identity", "effort", "max_tokens")},
+                   "image_id": image_id, "split_hash": split_hash})[:16]
 
 
 class Stale(RuntimeError):
@@ -72,6 +109,7 @@ class Release(Record):
     core_ref: str = ""
     receipt_ref: str | None = None
     reason: str = "seed"
+    screen_ref: str | None = None       # the held-out screen that accepted it (reason `screen`)
 
     def __post_init__(self) -> None:
         if self.reason not in REASONS:
@@ -83,8 +121,13 @@ class Release(Record):
             check_refs([self.parent_ref], kind="release", what="parent release")
         if self.receipt_ref is not None:
             check_refs([self.receipt_ref], kind="receipt", what="gate receipt")
+        if self.screen_ref is not None:
+            check_refs([self.screen_ref], kind="screen", what="screen result")
         if (self.reason == "gate") != (self.receipt_ref is not None):
-            raise ContractError("a release installed by a gate names its receipt, and only such a release does")
+            raise ContractError("a release promoted by a gate names its receipt, and only such a release does")
+        if (self.reason == "screen") != (self.screen_ref is not None):
+            raise ContractError("a release installed by a held-out screen names the screen, and only such a release "
+                                "does")
 
 
 @register
@@ -129,7 +172,8 @@ class InstallReceipt(Record):
 
 
 class Releases:
-    """The release store of one activity: <workspace>/rsi/active.json, the release objects, and their events."""
+    """The release store of one activity: <workspace>/rsi/active.json (the working line), rsi/released.json (the
+    release line), the release objects, and their events."""
 
     def __init__(self, root: str | Path, objects: Objects | None = None):
         self.root = Path(root)
@@ -159,6 +203,62 @@ class Releases:
     def load(self, ref: str) -> Release:
         return self.objects.load(ref, Release)
 
+    # ------------------------------------------------------------------ the release line
+    @property
+    def released_path(self) -> Path:
+        return self.dir / "released.json"
+
+    def released_pointer(self) -> dict:
+        if not self.released_path.exists():
+            return {"release_ref": None, "revision": 0, "last_operation_id": None}
+        return json.loads(self.released_path.read_text(encoding="utf-8"))
+
+    def released_ref(self) -> str | None:
+        return self.released_pointer()["release_ref"]
+
+    def released(self) -> Release | None:
+        ref = self.released_ref()
+        return self.load(ref) if ref else None
+
+    def promote(self, work: Release, receipt_ref: str | None = None, *, reason: str = "gate",
+                operation_id: str) -> Release:
+        """The working line's release becomes the release line's W* — a release of `reason` built on it. With reason
+        `gate` it carries the receipt, which must be registered by a completed gate and accepted (confirmed when its
+        plan confirms); with reason `decision` (an activity without dev tasks, EVALUATE §7) there is no receipt.
+        Promoting again under the same operation is the same release."""
+        if reason not in ("gate", "decision"):
+            raise ContractError(f"a promotion's reason is gate or decision, not {reason!r}")
+        if reason == "gate":
+            if not receipt_ref:
+                raise NotAuthorized("a promotion by the gate names its receipt")
+            receipt = self.objects.load(receipt_ref, GateReceipt)
+            if receipt.verdict != "accepted":
+                raise NotAuthorized(f"the receipt's verdict is {receipt.verdict}, not accepted")
+            if not self.registered_receipt(receipt_ref):
+                raise NotAuthorized("this receipt was not registered by a completed gate")
+            if receipt.plan_ref and self.objects.has(receipt.plan_ref):
+                plan = self.objects.get(receipt.plan_ref)
+                if int(plan.get("confirmation_repeats") or 0) > 0 and receipt.kind != "confirmed":
+                    raise NotAuthorized("the plan confirms before it releases and this receipt is a full reading, not "
+                                        "a confirmed one")
+            if receipt.subject_ref != work.package_ref:
+                raise NotAuthorized("the receipt does not read the package of the release to promote")
+        elif receipt_ref is not None:
+            raise NotAuthorized("a promotion by decision carries no receipt")
+        release = Release(parent_ref=work.ref(), package_ref=work.package_ref, improver_ref=work.improver_ref,
+                          core_ref=work.core_ref, receipt_ref=receipt_ref, reason=reason)
+        ref = self.objects.put(release)
+        with locked(self.released_path):
+            current = self.released_pointer()
+            if current["release_ref"] == ref:
+                return release
+            write_json(self.released_path, {"release_ref": ref, "revision": int(current["revision"]) + 1,
+                                            "last_operation_id": operation_id, "working": work.ref()})
+        self.events.append("released", release=ref, working=work.ref(), receipt=receipt_ref, reason=reason,
+                           operation=operation_id)
+        self.events.append("installed", release=ref, reason=reason, operation=operation_id)
+        return release
+
     # ------------------------------------------------------------------ the seed
     def seed(self, package_ref: str, improver_ref: str, core_ref: str) -> Release:
         """The first release, installed by fixed configuration rather than an evaluation. A second call with the same
@@ -178,6 +278,12 @@ class Releases:
         return Release(parent_ref=parent.ref(), package_ref=package_ref, improver_ref=parent.improver_ref,
                        core_ref=parent.core_ref, receipt_ref=receipt_ref, reason="gate")
 
+    def screened(self, package_ref: str, screen_ref: str, *, parent: Release | None = None) -> Release:
+        """The working-line release a held-out screen's acceptance installs (IMPROVER §9)."""
+        parent = parent or self.active()
+        return Release(parent_ref=parent.ref(), package_ref=package_ref, improver_ref=parent.improver_ref,
+                       core_ref=parent.core_ref, screen_ref=screen_ref, reason="screen")
+
     # ------------------------------------------------------------------ receipts
     def register_receipt(self, receipt_ref: str, **fields) -> dict:
         return self.events.append("evaluation_completed", receipt=receipt_ref, **fields)
@@ -189,7 +295,7 @@ class Releases:
     # ------------------------------------------------------------------ install
     def install(self, candidate_release: Release, receipt_ref: str, *, expected_parent: str,
                 operation_id: str) -> InstallReceipt:
-        """Make the candidate release the active one, or say exactly why not. The only commit point is the
+        """Make a gate's candidate release the active one, or say exactly why not. The only commit point is the
         replacement of active.json under its lock; a replay of the same operation commits once."""
         receipt = self.objects.load(receipt_ref, GateReceipt)
         if receipt.verdict != "accepted":
@@ -203,12 +309,26 @@ class Releases:
                                     "reading, not a confirmed one")
         if candidate_release.receipt_ref != receipt_ref or candidate_release.package_ref != receipt.subject_ref:
             raise NotAuthorized("the release does not install the package this receipt accepted")
+        return self._commit(candidate_release, expected_parent=expected_parent, operation_id=operation_id)
+
+    def install_screened(self, candidate_release: Release, screen_ref: str, *, expected_parent: str,
+                         operation_id: str) -> InstallReceipt:
+        """Make an accepted held-out screen's release the working line's active one (IMPROVER §9): the screen must say
+        accepted and read this package; then the same CAS as a gate's install."""
+        result = self.objects.get(screen_ref)
+        if not isinstance(result, dict) or not result.get("accepted"):
+            raise NotAuthorized("the screen did not accept the package: nothing installs on the working line")
+        if candidate_release.screen_ref != screen_ref or candidate_release.package_ref != result.get("package_ref"):
+            raise NotAuthorized("the release does not install the package this screen accepted")
+        return self._commit(candidate_release, expected_parent=expected_parent, operation_id=operation_id)
+
+    def _commit(self, candidate_release: Release, *, expected_parent: str, operation_id: str) -> InstallReceipt:
         if candidate_release.parent_ref != expected_parent:
             built_on = short(candidate_release.parent_ref) if candidate_release.parent_ref else None
             raise Stale(f"the candidate was built on {built_on}, not on {short(expected_parent)}")
         parent = self.load(expected_parent)
         if candidate_release.core_ref != parent.core_ref:
-            raise NotAuthorized("a gate installs within one K: the candidate's core is not its parent's")
+            raise NotAuthorized("an install stays within one K: the candidate's core is not its parent's")
         target = self.objects.put(candidate_release)
         intent_path = self.dir / "operations" / f"{operation_id}.json"
         intent = json.loads(intent_path.read_text(encoding="utf-8")) if intent_path.exists() else {}

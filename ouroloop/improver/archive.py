@@ -1,5 +1,5 @@
 """The archive of every candidate a round verified (docs/design/IMPROVER.md §10; DESIGN §6.7): its files, declaration,
-verdict, screen and receipt, under rounds/r<i>/candidates/<dir>/ and as objects. It is where credit and R's inputs
+verdict, screen and install receipt, under rounds/r<i>/candidates/<dir>/ and as objects. It is where credit and R's inputs
 read what was tried; it is not a second line of versions (the release line is evaluate's).
 
 `duplicate(files)` finds an earlier candidate with exactly these files: the round does not pay to screen it again."""
@@ -27,8 +27,8 @@ class Archive:
         row = {"round": round_index, "dir": dir_name, "line": line, "files_digest": self.files_digest(files),
                "declaration": self.objects.put(decl), "verdict": self.objects.put(verdict) if verdict else None,
                "screen": self.objects.put(screen) if screen is not None else None, "receipt": receipt_ref,
-               "package_ref": package_ref, "kind": decl.kind, "cause": decl.cause_id.rpartition(":")[2],
-               "site": decl.site, "fixed": decl.fixed}
+               "package_ref": package_ref, "kind": decl.kind, "causes": list(decl.causes), "site": decl.site,
+               "fixed": decl.fixed, "mechanism": decl.mechanism}
         write_json(base / "files.json", files)
         write_json(base / "record.json", row)
         append_jsonl(self.index, row)
@@ -51,19 +51,22 @@ class Archive:
         hide = set(hide)
         out = []
         for r in self.rows(line=line):
-            if r.get("cause") != cause:
+            if cause not in (r.get("causes") or ([r["cause"]] if r.get("cause") else [])):
                 continue
             verdict = self.objects.get(r["verdict"]) if r.get("verdict") else {}
             screen = self.objects.get(r["screen"]) if r.get("screen") else {}
             out.append({"round": r["round"], "dir": r["dir"], "kind": r["kind"], "site": r.get("site"),
-                        "declaration": r["declaration"],
-                        "rungs": {k: bool(v.get("passed")) for k, v in (verdict.get("steps") or {}).items()},
+                        "mechanism": r.get("mechanism"), "declaration": r["declaration"],
+                        "rungs": {**{k: bool(v.get("passed")) for k, v in (verdict.get("steps") or {}).items()},
+                                  **{rung: bool(v.get("passed")) for rungs in (verdict.get("components") or {}).values()
+                                     for rung, v in rungs.items()}},
                         "screen": {"outcome": screen.get("outcome"), "net_flips": screen.get("net_flips"),
                                    **{k: [t for t in screen.get(k) or () if t not in hide]
                                       for k in ("fixed", "regressed")},
                                    **{f"{k}_held_out": sum(1 for t in screen.get(k) or () if t in hide)
-                                      for k in ("fixed", "regressed")}}
-                        if screen else None, "gated": bool(r.get("receipt"))})
+                                      for k in ("fixed", "regressed")},
+                                   "accepted": screen.get("accepted"), "reasons": list(screen.get("reasons") or ())}
+                        if screen else None, "installed": bool(r.get("receipt"))})
         return out[-n:]
 
 

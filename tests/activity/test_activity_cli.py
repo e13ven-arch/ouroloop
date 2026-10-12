@@ -102,9 +102,9 @@ def test_the_smoke_checks_from_a_config_file_freeze_nothing(tmp_path, fake_upstr
 def test_a_failed_check_exits_one(tmp_path, fake_upstream, capsys, monkeypatch):
     from ouroloop.activity import checks
     path = write_config(tmp_path, fake_upstream)
-    monkeypatch.setattr(checks, "code_version", lambda: "0000000000000000")
+    monkeypatch.setattr(checks, "attempt_version", lambda: "0000000000000000")
     assert cli.main(["bench", "--config", str(path), "--phase", "smoke", "--checks-only"]) == 1
-    assert "REFUSED    K froze code" in capsys.readouterr().out
+    assert "REFUSED    K froze the attempt code" in capsys.readouterr().out
 
 
 def test_freeze_prints_the_rsi_lines_the_config_then_names(tmp_path, fake_upstream, capsys):
@@ -147,7 +147,7 @@ def test_export_writes_the_active_release_as_an_app(tmp_path, fake_upstream, cap
     assert App(tmp_path / "app").manifest.release_ref == active
     assert cli.main(["export", "--config", str(path), "--release", "release:sha256:" + "0" * 64,
                      "--to", str(tmp_path / "other")]) == 2
-    assert "is not an installed, unrevoked release" in capsys.readouterr().err
+    assert "is not a released, unrevoked release" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------- python -m

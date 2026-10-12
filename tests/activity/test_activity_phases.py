@@ -1,6 +1,6 @@
-"""The phases of an activity on the miniature upstream's rsi domain (docs/design/ACTIVITY.md §3, §4, §5, §9): smoke,
-freeze, baseline, the final, report, export and cycle, end to end with the stirrup seed in a ProcessWorker and the
-scripted actor; and the stops of the phases that come with stages 2 and 3."""
+"""The phases of an activity on the miniature upstream's rsi domain (docs/design/ACTIVITY.md §3, §4, §5, §9; v1.2):
+smoke, freeze, baseline (and its import from another workspace), the release gate at the end of the activity, the
+final, report, export and cycle, end to end with the stirrup seed in a ProcessWorker and the scripted actor."""
 from __future__ import annotations
 
 import json
@@ -152,7 +152,8 @@ def test_freeze_with_a_final_table_seals_nothing_while_w_star_is_w0(tmp_path, fa
     a = rsi.activity(tmp_path, fake_upstream, final={})
     lines = []
     refs = phases.freeze(a, out=lines.append)
-    assert "final_plan_ref" not in refs and any(l.startswith("final      not sealed: the final compares W* with W0")
+    assert "final_plan_ref" not in refs and any(l.startswith("final      not sealed: the final compares W* with W0, "
+                                                             "and no release passed the release gate yet")
                                                 for l in lines)
     assert "[rsi]" in lines and list(a.events.read("gate_template"))
     assert not (a.root / "rsi" / "finalization").exists()
@@ -261,8 +262,9 @@ def test_evaluate_refuses_without_a_sealed_plan(tmp_path, fake_upstream):
 
 
 def install_w_star(a) -> Release:
-    """A second package installed by a scripted gate: W0's prompt with one more line, its dev reading taken under
-    the candidate release, an accepted receipt registered, and the CAS install on the seed release."""
+    """A second package on the working line and promoted to the release line by a scripted gate: W0's prompt with one
+    more line, its dev reading taken under the candidate release, an accepted receipt registered, the CAS install on
+    the seed release and the promotion (EVALUATE §7, v1.2: W* is the release line's)."""
     w0 = a.package()
     files = apply_patch(w0, {"prompt/system.md": w0.files["prompt/system.md"] + "\nSay which records you changed.\n"})
     w1 = build(a.objects, files, limits=Limits.from_core(a.k), seed=w0, parent=w0)
@@ -277,7 +279,9 @@ def install_w_star(a) -> Release:
     a.releases.register_receipt(receipt_ref, plan=receipt.plan_ref)
     installed = a.releases.install(candidate, receipt_ref, expected_parent=parent.ref(), operation_id="gate-1")
     assert installed.status == "installed" and a.releases.active_ref() == candidate.ref()
-    return candidate
+    released = a.releases.promote(candidate, receipt_ref, operation_id="promote-1")
+    assert a.releases.released_ref() == released.ref() and released.parent_ref == candidate.ref()
+    return released
 
 
 def test_a_sealed_final_runs_w0_and_w_star_on_test_and_the_report_counts_its_reads(tmp_path, fake_upstream):
@@ -342,15 +346,258 @@ def test_export_writes_the_seed_release_as_an_app(tmp_path, fake_upstream):
     assert seed.improver_ref.split(":")[-1] not in exported                      # R never ships
 
 
-def test_only_an_installed_release_exports(tmp_path, fake_upstream):
+def test_only_a_released_release_exports(tmp_path, fake_upstream):
     a = rsi.activity(tmp_path, fake_upstream)
     seed = a.active_release()
     never = Release(parent_ref=seed.ref(), package_ref=seed.package_ref, improver_ref=seed.improver_ref,
                     core_ref=seed.core_ref, receipt_ref=None, reason="import")
     a.objects.put(never)
-    with pytest.raises(NotAuthorized, match="is not an installed, unrevoked release"):
+    with pytest.raises(NotAuthorized, match="is not a released, unrevoked release"):
         phases.export(a, never.ref(), tmp_path / "app", out=quiet)
     assert not (tmp_path / "app").exists()
+    # a working-line release a held-out screen installed is not released either; the gate's promotion is
+    phases.smoke(a, out=quiet)
+    released = install_w_star(a)
+    working = a.releases.load(released.parent_ref)
+    with pytest.raises(NotAuthorized, match="is not a released, unrevoked release"):
+        phases.export(a, working.ref(), tmp_path / "app", out=quiet)
+    manifest = phases.export(a, None, tmp_path / "app", out=quiet)
+    assert manifest.release_ref == released.ref() and manifest.package_ref == released.package_ref
+    assert App(tmp_path / "app").describe()["validation"]["reason"] == "gate"
+
+
+# ---------------------------------------------------------------------------- the release gate
+def improved(tmp_path, fake_upstream):
+    """The rsi activity after one improver round installed the scripted R's tool package on the working line."""
+    import sys
+    sys.path.insert(0, str(REPO / "tests" / "improver"))
+    from rounds import round_activity
+    s = round_activity(tmp_path, fake_upstream, "tool")
+    result = phases.round_(s.a, 0, out=quiet)
+    assert result.accepted and s.a.releases.active_ref() == result.installed
+    return s
+
+
+def test_the_release_gate_reads_the_working_line_against_w0_on_dev_and_promotes_it(tmp_path, fake_upstream):
+    s = improved(tmp_path, fake_upstream)
+    a = s.a
+    work, seed = a.active_release(), a.seed_release()
+    assert a.releases.released_ref() is None
+    calls = s.actor.calls
+    lines = []
+    got = phases.gate(a, out=lines.append)
+    assert got["status"] == "done" and got["working"] == work.ref() and got["verdict"] == "accepted", got
+    assert got["released"] and got["fixed_count"] == 1 and got["regressed_count"] == 0     # dev_notify_after_update
+    released = a.releases.load(got["released"])
+    assert (released.reason, released.parent_ref, released.package_ref, released.receipt_ref) == \
+        ("gate", work.ref(), work.package_ref, got["receipt"])
+    assert a.releases.released_ref() == released.ref() and a.releases.active_ref() == work.ref()   # two lines
+    receipt = GateReceipt.from_json(a.objects.get(got["receipt"]))
+    assert (receipt.subject_ref, receipt.control_ref, receipt.parent_release) == \
+        (work.package_ref, seed.package_ref, seed.ref())
+    assert a.releases.registered_receipt(got["receipt"])
+    # the working line's dev reading is the gate's, the control the baseline's pool: W0 read nothing new
+    dev = [r for r in rows(a, "dev")]
+    runs = a.results.runs()
+    assert {runs[r.run].package_ref for r in dev} == {seed.package_ref, work.package_ref}
+    assert not any(runs[r.run].role == "control" for r in dev)
+    assert s.actor.calls > calls
+    assert json.loads((a.root / "rsi" / "gate.json").read_text(encoding="utf-8"))["released"] == released.ref()
+    assert [e["event"] for e in a.events.read("release_gate")] == ["release_gate"]
+    assert [e["event"] for e in a.events.read("released")] == ["released"]
+    assert lines[-1].startswith("gate       accepted (full): gain ")
+    # run again: on record, nothing paid
+    calls = s.actor.calls
+    assert phases.gate(a, out=quiet) == got and s.actor.calls == calls
+    # the final now compares W* (the release line) with W0
+    b = reopen(a, final={}, improver=a.config["improver"])
+    refs = phases.freeze(b, out=quiet)
+    plan = FinalPlan.from_json(b.objects.get(refs["final_plan_ref"]))
+    assert plan.arms == {"W0": seed.ref(), "W_star": released.ref()}
+    report = phases.report(b, write=False, out=quiet)
+    assert report["gate"]["verdict"] == "accepted" and report["released"] == short(released.ref())
+    assert report["release"] == short(work.ref())
+
+
+def test_the_release_gate_has_nothing_to_do_on_w0_and_refuses_an_unfinished_round(tmp_path, fake_upstream):
+    a = rsi.activity(tmp_path, fake_upstream)
+    phases.freeze(a, out=quiet)
+    got = phases.gate(a, out=quiet)
+    assert got == {"status": "nothing_to_gate", "why": "the working line is W0", "working": a.seed_release().ref()}
+    assert a.releases.released_ref() is None and not (a.root / "rsi" / "gate.json").exists()
+    s = improved(tmp_path / "improved", fake_upstream)
+    write_json(s.a.root / "rounds" / "r1" / "round.json", {"round_id": "x/r1", "index": 1, "status": "running",
+                                                           "steps": {}})
+    with pytest.raises(ValueError, match="gate refused: round r1 is not finished"):
+        phases.gate(s.a, out=quiet)
+
+
+def test_the_cycle_runs_the_gate_only_under_until_gate(tmp_path, fake_upstream):
+    import sys
+    sys.path.insert(0, str(REPO / "tests" / "improver"))
+    from rounds import round_activity
+    s = round_activity(tmp_path, fake_upstream, "tool")
+    first = phases.cycle(s.a, out=quiet)
+    assert first["status"] == "stopped" and first["at"] == "rounds" and "gate" not in first["steps"]
+    assert first["steps"]["round-0"]["accepted"] and not first["steps"]["round-1"]["accepted"]
+    assert first["reason"] == "2 rounds without an acceptance" and first["rounds_ended"]["at"] == "round-2"
+    assert s.a.releases.released_ref() is None
+    second = phases.cycle(s.a, until="gate", out=quiet)
+    assert second["status"] == "done" and second["at"] == "gate"
+    assert second["steps"]["gate"]["verdict"] == "accepted" and s.a.releases.released_ref() == \
+        second["steps"]["gate"]["released"]
+    assert {k: v for k, v in second["steps"].items() if k.startswith("round")} == \
+        {k: v for k, v in first["steps"].items() if k.startswith("round")}         # no round ran again
+
+
+# ---------------------------------------------------------------------------- the two-way split: release by decision
+def test_an_activity_without_dev_runs_rounds_without_a_gate_template_releases_by_decision_and_seals_the_final(
+        tmp_path, fake_upstream):
+    """Stage 4c (ACTIVITY §4, EVALUATE §6-§7): no dev, no baseline phase, no gate; the working line is released by
+    decision after its own train reading, the final has W0 and W* on the test half, export reads the release line."""
+    import sys
+    sys.path.insert(0, str(REPO / "tests" / "improver"))
+    from rounds import round_activity, round_state
+    s = round_activity(tmp_path, fake_upstream, "tool", baseline=False, freeze=False, splits_table=rsi.NO_DEV_SPLITS)
+    a = s.a
+    assert a.splits.ids("dev") == [] and sorted(a.splits.ids("test")) == sorted(rsi.DEV + rsi.FINAL)
+    assert sorted(a.splits.ids("train")) == sorted(rsi.TRAIN)
+    lines = []
+    refs = phases.freeze(a, out=lines.append)
+    assert "gate_template" not in refs and list(a.events.read("gate_template")) == []
+    assert any(line.startswith("gate       no dev tasks in this split: no gate template") for line in lines)
+    assert startup_checks(a, phase="round") == []                     # a round needs no template here
+    with pytest.raises(ValueError, match="release refused: the working line is W0"):
+        phases.release(a, out=quiet)
+    assert a.releases.released_ref() is None
+    # round 0 reads train itself (no baseline phase) and accepts the scripted R's package
+    r0 = phases.round_(a, 0, out=quiet)
+    assert r0.accepted and round_state(a, 0)["steps"]["measure"]["measured"] == len(rsi.TRAIN)
+    work = a.active_release()
+    assert work.ref() == r0.installed
+    assert phases.gate(a, out=quiet) == {"status": "nothing_to_gate", "why": "no dev tasks", "working": work.ref()}
+    # the release: the studied tasks are read under W*'s own release (the held-out ones ran under the base at the
+    # screen), then the promotion by decision, idempotent
+    calls = s.actor.calls
+    got = phases.release(a, out=lines.append)
+    assert got["status"] == "done" and got["working"] == work.ref() and got["measured"] == len(rsi.STUDY)
+    released = a.releases.load(got["released"])
+    assert (released.reason, released.parent_ref, released.package_ref, released.receipt_ref) == \
+        ("decision", work.ref(), work.package_ref, None)
+    assert a.releases.released_ref() == released.ref() and a.releases.active_ref() == work.ref()
+    runs = a.results.runs()
+    measured = [r for r in rows(a, "train") if runs[r.run].candidate == f"release:{short(work.ref())}"]
+    assert sorted(r.task_id for r in measured) == sorted(rsi.STUDY)
+    assert {r.system_release_ref for r in measured} == {work.ref()} and s.actor.calls > calls
+    (event,) = a.events.read("release_decision")
+    assert event["released"] == released.ref() and event["measured"] == len(rsi.STUDY)
+    calls = s.actor.calls
+    assert phases.release(a, out=quiet) == {**got, "measured": 0} and s.actor.calls == calls
+    assert json.loads((a.root / "rsi" / "release.json").read_text(encoding="utf-8"))["released"] == released.ref()
+    # the final: sealed with W0 and W* over the test half, priced from W*'s own reading; run; the report's numbers
+    b = reopen(a, final={}, improver=a.config["improver"])
+    refs = phases.freeze(b, out=lines.append)
+    plan = FinalPlan.from_json(b.objects.get(refs["final_plan_ref"]))
+    assert plan.arms == {"W0": a.seed_release().ref(), "W_star": released.ref()}
+    assert sorted(plan.tasks) == sorted(rsi.DEV + rsi.FINAL) and plan.repeats == 3
+    assert any(line.startswith("estimate   W_star:") for line in lines)
+    named = {k: v for k, v in refs.items() if k != "gate_template"}
+    c = reopen(a, final={}, improver=a.config["improver"], rsi=named)
+    out = phases.evaluate(c, out=quiet)
+    assert set(out["arms"]) == {"W0", "W_star"}
+    test = rows(c, "test")
+    assert len(test) == 2 * len(plan.tasks) * 3 and all(r.validity == "valid" for r in test)
+    report = phases.report(c, write=False, out=quiet)
+    (final,) = report["final"]
+    assert set(final["arms"]) == {"W0", "W_star"} and final["arms"]["W_star"]["passed"] >= final["arms"]["W0"]["passed"]
+    assert report["released"] == short(released.ref()) and report["gate"] is None
+    manifest = phases.export(c, None, tmp_path / "app", out=quiet)
+    assert manifest.release_ref == released.ref()
+    assert App(tmp_path / "app").describe()["validation"] == {"release": short(released.ref()), "reason": "decision"}
+
+
+def test_the_smoke_of_an_activity_without_dev_reads_one_train_task(tmp_path, fake_upstream):
+    provider = rsi.BusinessWorker()
+    a = rsi.activity(tmp_path, fake_upstream, provider=provider, splits_table=rsi.NO_DEV_SPLITS)
+    checks = phases.smoke(a, checks_only=True, out=quiet)
+    assert checks["ok"] and checks["attempts"] == [] and provider.calls == 0
+    lines = []
+    report = phases.smoke(a, out=lines.append)
+    assert report["ok"] and len(report["attempts"]) == 1
+    assert report["attempts"][0]["task_id"] == a.splits.ids("train")[0] and report["attempts"][0]["split"] == "train"
+    assert provider.calls > 0 and not any(r.split == "test" for r in rows(a))
+    noted = phases.smoke(a, tasks=[rsi.FINAL[0]], out=lines.append)
+    assert not noted["ok"] and any("are not train tasks: the smoke reads train only" in line for line in lines)
+
+
+def test_an_activity_with_dev_releases_by_its_gate_not_by_decision(tmp_path, fake_upstream):
+    s = improved(tmp_path, fake_upstream)
+    with pytest.raises(ValueError, match="release refused: this activity has dev tasks"):
+        phases.release(s.a, out=quiet)
+    assert s.a.releases.released_ref() is None
+
+
+def test_a_zero_dev_ratio_freezes_a_split_without_dev_tasks(tmp_path, fake_upstream):
+    """[bench] ratios with dev 0 under the stratified rule: every family is train or test (ACTIVITY §4)."""
+    cfg = rsi.config(tmp_path, fake_upstream, bench={"ratios": {"train": 0.5, "dev": 0.0, "test": 0.5},
+                                                     "split_rule": "stratified"})
+    a = open_activity(cfg, out=quiet, freeze_k=False, worker_factory=lambda: None,
+                      provider_factory=lambda _t: rsi.BusinessWorker())
+    assert a.splits.ids("dev") == [] and a.splits.ids("train") and a.splits.ids("test")
+    assert len(a.splits.ids("train")) + len(a.splits.ids("test")) == len(rsi.TRAIN) + len(rsi.DEV) + len(rsi.FINAL)
+    assert phases.gate_template(a) is None
+
+
+# ---------------------------------------------------------------------------- the baseline's import
+def test_the_baseline_is_imported_from_a_workspace_of_the_same_attempt_identity(tmp_path, fake_upstream):
+    """ACTIVITY §4, EVALUATE §8 (v1.2): the second workspace copies the first one's W0 readings, grading rows and
+    transcripts and pays nothing; a workspace of another identity imports nothing."""
+    provider = rsi.BusinessWorker()
+    first = rsi.activity(tmp_path / "first", fake_upstream, provider=provider)
+    phases.baseline(first, out=quiet)
+    paid = provider.calls
+    # the second workspace starts from the first one's frozen split (as a real one copies it): the same identity
+    import shutil
+    target = tmp_path / "second" / "ws" / "bench" / rsi.DOMAIN / "splits.json"
+    target.parent.mkdir(parents=True)
+    shutil.copy(first.results.manifest_path(), target)
+    second = rsi.activity(tmp_path / "second", fake_upstream, provider=provider,
+                          rsi={"scope_id": "rsi-test", "baseline_from": str(first.root)})
+    assert second.core.attempt_identity(second.seed_release().package_ref) == \
+        first.core.attempt_identity(first.seed_release().package_ref)
+    lines = []
+    report = phases.baseline(second, out=lines.append)
+    imported = report["imported"]
+    assert imported["imported"] and imported["attempts"] == len(rsi.TRAIN) + len(rsi.DEV)
+    assert provider.calls == paid                                       # nothing paid
+    assert report["train"]["tasks"] == len(rsi.TRAIN) and report["train"]["attempts"] == len(rsi.TRAIN)
+    assert sorted(r.task_id for r in rows(second, "train")) == sorted(rsi.TRAIN)
+    assert sorted(r.task_id for r in rows(second, "dev")) == sorted(rsi.DEV)
+    assert {r.attempt_id for r in rows(second)} == {r.attempt_id for r in rows(first)}
+    for r in rows(second):
+        assert session_file(second.root, r.evidence or r.attempt_id).exists()
+    (event,) = second.events.read("baseline_imported")
+    assert event["source"] == str(first.root) and event["attempts"] == imported["attempts"]
+    assert any(line.startswith("baseline   imported") for line in lines)
+    # what the rounds and the gate read is there: the train reading per task, the grading rows, the dev pool
+    from ouroloop.improver.evidence import Evidence
+    from ouroloop.improver.screen import control_pool, template
+    assert Evidence(second).missing(second.seed_release().package_ref) == []
+    assert all(second.results.grading(r.attempt_id) for r in rows(second, "train"))
+    phases.freeze(second, out=quiet)
+    assert len(control_pool(second, second.seed_release().package_ref, template(second).task_ids)) == len(rsi.DEV)
+    # a second import copies nothing twice
+    assert phases.baseline(second, out=quiet)["imported"]["attempts"] == 0
+    assert len(list(rows(second))) == len(rsi.TRAIN) + len(rsi.DEV)
+    # another identity (another step limit) imports nothing and pays for its own baseline
+    target = tmp_path / "other" / "ws" / "bench" / rsi.DOMAIN / "splits.json"
+    target.parent.mkdir(parents=True)
+    shutil.copy(first.results.manifest_path(), target)
+    other = rsi.activity(tmp_path / "other", fake_upstream, provider=provider, limits={"max_steps": 11},
+                         rsi={"scope_id": "rsi-test", "baseline_from": str(first.root)})
+    report = phases.baseline(other, out=quiet)
+    assert not report["imported"]["imported"] and "AttemptIdentity differs" in report["imported"]["why"]
+    assert provider.calls > paid
 
 
 # ---------------------------------------------------------------------------- the hot path

@@ -18,6 +18,7 @@ import json
 
 from ...runtime.broker import Broker
 from ...runtime.worker import PackageCallError, smoke_view
+from ..declaration import component_of
 from .unit import worker_files
 
 
@@ -40,6 +41,7 @@ def probe_script(tool: str, probes: list[dict]) -> str:
 
 
 def toolcheck(files: dict[str, str], decl, ctx) -> dict:
+    decl = component_of(decl, "tool")
     manifest = json.loads(files["manifest.json"])
     tools = [t for t in manifest.get("tools") or () if t.get("enabled", True)]
     if not decl.scripts and not decl.probes:

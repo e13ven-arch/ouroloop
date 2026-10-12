@@ -86,7 +86,7 @@ v0.4 went back to v0.1's shape, one activity per new domain, and fixed the frame
 
 The final also reports W0's pass@k as an equal-cost reference. The rules are in [design/V0_4_PLAN.md](history/V0_4_PLAN.md).
 
-- **Config:** [`examples/automationbench/claude-v4-finance.toml`](../examples/automationbench/claude-v4-finance.toml).
+- **Config:** `examples/automationbench/claude-v4-finance.toml`（tag archive-2026-10-09）.
 - **Workspace:** `workspace-claude-v4-finance`, not committed.
 - **Finance split:** 50 train, 25 dev, 25 test, the same split v0.3 froze (`4fd91eaf9fb8daf5`). Its test was unread until this final.
 - **Tag:** `v0.4.0` (`7f65947`). It is not yet merged into main.
@@ -192,7 +192,7 @@ The +26.9 on 26 dev tasks is a process figure, not a claim. Because R used 1 of 
 
 ### The five-domain activity
 
-Config: [`examples/automationbench/claude-v3.toml`](../examples/automationbench/claude-v3.toml); workspace `workspace-claude-v3`.
+Config: `examples/automationbench/claude-v3.toml`（tag archive-2026-10-09）; workspace `workspace-claude-v3`.
 
 - **Domains.** Marketing keeps v0.2's split (52/25/23, pinned by hash); its test has been read three times and is marked spent, so no new claim reads it. Sales, support, HR and finance (100 tasks each) are split 50/25/25, stratified by the kinds of scored assertion and the tool family, read from the task definitions only. Pooled: train 252, dev 125; the claim's test is the four new domains' 100 tasks.
 - **Plan.** One worker segment of 6 rounds with patience 2, up to k = 3 candidates a round, the dev gate on all 125 tasks (`min_gain` 0.05, confirmation re-run before an install). The research slot (C4) was deferred to a separate workspace and did not run. K's effort ceiling is medium, W0's pin, so a candidate cannot buy a gain with effort. Budget root $1,500 with a $390 final share; 8 attempts in flight.
@@ -268,7 +268,7 @@ The five-domain activity's own total is $424.61. In rounds 1–2, notes and R's 
 
 ## v0.2: the full activity (2026-10-04)
 
-The same model, prompt, preset and limits as v0.1, in a workspace of its own with a budget large enough for the research slot. Config: [`examples/automationbench/claude-full.toml`](../examples/automationbench/claude-full.toml). The final ran from `claude-full-final.toml`, which was removed from HEAD on 2026-10-08 and is at tag `v0.2.0`.
+The same model, prompt, preset and limits as v0.1, in a workspace of its own with a budget large enough for the research slot. Config: `examples/automationbench/claude-full.toml`（tag archive-2026-10-09）. The final ran from `claude-full-final.toml`, which was removed from HEAD on 2026-10-08 and is at tag `v0.2.0`.
 
 | Version | Test pass rate (23 tasks × 2 runs) | Partial credit | Cost per attempt | Steps per attempt |
 |---|---|---|---|---|
@@ -403,7 +403,7 @@ The runs took about 8.6 hours of serial attempts.
 
 ### Reproduce
 
-The commands below run from the repository root. The config, its sealed plans and the final plan are committed in [`examples/automationbench/claude.toml`](../examples/automationbench/claude.toml). The step-by-step protocol is in ROADMAP §3, step 2a（tag archive-2026-10-09）. To run the code that produced this result, check out tag `v0.1.0` first: the slimming plan (design/SLIMMING_INVENTORY.md（tag archive-2026-10-09）) removes this config and its preset from later code.
+The commands below run from the repository root. The config, its sealed plans and the final plan are committed in `examples/automationbench/claude.toml`（tag archive-2026-10-09）. The step-by-step protocol is in ROADMAP §3, step 2a（tag archive-2026-10-09）. To run the code that produced this result, check out tag `v0.1.0` first: the slimming plan (design/SLIMMING_INVENTORY.md（tag archive-2026-10-09）) removes this config and its preset from later code.
 
 ```text
 claude auth login                       # a Claude subscription; turn extra usage off

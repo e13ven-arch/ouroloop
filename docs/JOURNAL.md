@@ -8,6 +8,57 @@
 
 ---
 
+## 2026-10-12 阶段 4c：两份划分与按决定发布；finance-v5 改为 50/50、无基线、final 两臂作对外数字；$0
+
+- 用户的决定（2026-10-12，PLAN §0.2）：对外的数字是 final 上的绝对分并列 W0 臂，不追求比业界更严的筛选；划分两份（train / test，finance 50/50）；基线阶段取消；无 dev 的活动按决定发布；模型不换，改的是代码、工具、流程、prompt、memory；流式学习（test 题首遇计分后变证据、每 N 题一轮）另立阶段。先改文档（DESIGN §6.7 第三条、§10 阶段 4c、§12 第 5 项；EVALUATE §5.2、§6、§7；CONTRACTS §5；ACTIVITY §3、§4；PLAN）再改代码。
+- 代码（`s5/search-loop`）：
+  - `evaluate/release.py`：release reason 多 `decision`；`Releases.promote(work, receipt_ref=None, *, reason, operation_id)`，gate 要收据、decision 不带收据，重复调用是同一个发布。
+  - `activity/phases.py`：K 没有 dev 题时 `gate_template` 为 None，`freeze` 不写模板只开预算根，`gate` 回答 `nothing_to_gate: no dev tasks`；新阶段 `release`：拒绝有 dev 的活动、拒绝工作线仍是 W0、拒绝有未结束的轮；按包补齐 W\* 缺的 train 读数（研究部分，在 W\* 自己的 release 下，role `measure`，候选名 `release:<ref>`，供 final 核价），再 `promote(reason="decision")`，写 `rsi/release.json` 与 `release_decision` 事件；`PHASES` 加 `release`，CLI 分派。`checks.py`：round 的 gate 模板检查只对有 dev 题的 K；`release` 是付费阶段。
+  - 测试夹具：`rsi.NO_DEV_SPLITS`（dev 族归 test）、`rsi.activity(splits_table=)`、`rounds.round_activity(splits_table=)`。新测试：无 dev 的活动端到端（freeze 无模板、round 0 自己现量 train、gate 无事可做、release 补测研究部分 4 题并提升、幂等、final 封存两臂 W0 与 W\* 并跑完、报告与 export 读发布线）；有 dev 的活动 release 拒绝；dev 比例 0 的分层划分没有 dev 题；`promote` 的三种拒绝与幂等。
+  - `examples/automationbench/finance-v5.toml`：`ratios = {train 0.5, dev 0, test 0.5}`，去掉 50/25/25 的划分钉（哈希变了，v1～v4 的数不可比）；步骤改为 smoke → freeze → round 0..k 逐轮（无基线）→ release → freeze 封存 → evaluate → report。README 的阶段表加 `release`。
+- 测试：默认 `pytest -q` 1,442 passed、87 deselected；全量（Docker + 真 sidecar，`-m "not live"`）1,528 passed、1 deselected。两套里各有三个失败：一个是 gate 的 `nothing_to_gate` 多了 `why` 字段而测试期望没更新，改期望后单跑通过；另两个是 adapters 与 providers 的中断测试，既有的负载相关不稳定（单跑通过，基线 033515d 上整套跑同样失败，4b 一条已记）。
+- 没调模型、没付费、没读 `.env`、没读任何 test 内容。
+- 下一步（待批准）：finance-v5 的 smoke 与 freeze（$0），然后逐轮；预算核：train 现量约 $25、7～8 轮约 $200、release 约 $15、final 两臂 50 题 × 3 遍约 $150，根 $500、final 份额 $200。
+- commit：本条所在的提交。
+
+---
+
+## 2026-10-11 阶段 4b：搜索循环 v2 落成代码（DESIGN v1.2 的六处）；假上游上一轮一个包、留出接受装入工作线、活动末 gate 发布；$0
+
+- 做了什么（分支 `s5/search-loop`，按 IMPROVER / EVALUATE / ACTIVITY / CONTRACTS 的 v1.2 节）：
+  1. 一轮一个包：`improver/declaration.py` 改成包级声明 `Declaration{dir, mechanism, components[Component], differs_from}`，`Component{kind, site, cause_ids, predicted_affected, trigger, scripts, probes, uses_model}`；`session.py` 的工具 `run_check(declaration)` / `run_tests()` 不带 dir，`finish(packages=[...])`，候选目录 `candidates/package/`；`allocate.py` 的名额、探索、代码保证删除，换成 `Focus`/`focus()` 建议清单（估值排序、档案里试过的）；`verify/` 的 V0 两向比对声明与 diff（声明了没改的、改了没声明的都拒）、`l5_per_round` 在 V0 拒绝、V1 只在包含代码时跑、V2 按组件（tool V2a、hook V2b、skill V2c；`uses_model` 的 hook 没有 V2b）、`Verdict{steps, components}`；提示词 `propose.md` 重写。
+  2. 留出接受与两条线：`screen.py` 在全部留出题上跑一遍，`ScreenResult{holdout, failing, passing, fixed, regressed, footprints, net_flips, holdout_score, best_so_far, accepted, reasons}`，接受规则三条（`accept_min_net_flips` 1、`accept_max_regressions` 1、`accept_floor_tolerance` 1）；`accept()` 经 `Releases.screened` + `install_screened`（CAS，`install:<round_id>`）装入工作线，release reason `screen`；`round.py` 的步骤改为 `measure → evidence → diagnosed → focused → implemented → verified → screened → accepted → credited → playbook`，carry、`gate_every`、样本内筛选、`unused` 全部删除；记功直接用留出读数；一轮只装一个（R 的包优先，被接受而未选的固定候选下一轮再来）。
+  3. 活动末 gate：`phases.gate`（`--phase gate`、`cycle --until gate`）用冻结模板读工作线对 W0 的 dev（工作线的 release 跑自己的包，W0 用基线的池化读数），通过则 `Releases.promote` 写 `rsi/released.json`（reason `gate`，带收据）；`final_plan` 的 W\* 与 `export` 只读发布线；`cycle` 的耐心数连续无接受的轮，不带 `--until gate` 不跑 gate。
+  4. hook 调 aux：种子适配层 `SubCtx.model`（只在 `after_turn` / `on_finish`，role aux，每次尝试合计 `hook_aux_calls` 次，超出或在别处调用是 `HookError`，每次调用 `mark("hook_aux_call")`）；契约 `VIEW_KEYS` 多 `hook_aux_calls`（runner 从 K 填，smoke 给 1），worker_runner 的内嵌契约同步。
+  5. library 默认关：preset `automationbench_v2`（`memory.enabled = false`；`schedule` 12 / 3 两个 preset 都改）。
+  6. 版本拆分与基线导入：`evaluate/release.py` 的 `attempt_version()`（runtime、harness 含种子、evaluate 的 attempt/results/limits/splits、adapters、providers、contracts）与 `improver_version()`（其余），`Core{attempt_version, improver_version}`，启动检查分别比对；`attempt_identity()`；`phases.import_baseline`（`[rsi] baseline_from`：同 AttemptIdentity 时复制旧工作区 W0 的 base/control 运行、结果、评分行与 transcript，记 `baseline_imported` 事件，$0）；`baseline` 只跑缺的题。
+- 其他：`Settings` v1.2（删 `k`、`explore_slots`、`l5_slots`、`code_guarantee`、`screen_*`、`thin_screen_tasks`、`gate_every`；加 `packages_per_round`、`require_code_component`、`l5_per_round`、`hook_aux_calls`、`accept_*`；`round_share` 0.15、`session_max_edits` 48）；台账 STAGES 加 `focused`、`accepted`，去 `allocated`、`unused`、`carried`、`carry_dropped`；报告加发布 gate 一节，轮次一节按新形状；V2c 只在研究部分的题上算可达（留出题号不进 R 看到的任何字）；运输检查（claude CLI 版本）搬到 `evaluate.gate.transport_problem`，筛选与 gate 前各查一次；`ouroloop/improver` 不再 import `activity`。
+- 假上游（`tests/fake_upstream` 的 rsi 域）加了第六道 train 题 `rsi.notify_ticket`（自成一族，健忘 actor 同样失败），这样留出 share 0.4 下 notify 一对整族留出、notify_ticket 留在研究部分：脚本化的 R（tool / hook / both / none 四种模式）第 0 轮诊断 1 例、交一个包、过 V0/V1/V2、留出 2/2 修复、净 +2、接受装入工作线；第 1 轮在研究部分补测 4 题、`nothing_to_fix`；`none` 模式两轮无候选按耐心停；`cycle --until gate` 之后 gate 通过（dev 修 1 题、退 0）并写发布线；基线导入在同 AttemptIdentity 的工作区上一分钱不付、identity 不同时照常跑。测试文件按 v1.2 重写：round、session_screen、ladder、records、resume、allocate_diagnose（聚焦）、activity phases（gate、cycle、导入、export）、release、config、workspace、checks、cli、library（流的顺序 seed 改成 349：policy_hold 先、update_stage 次、失败题的重试带库标）。
+- 测试：默认 `pytest -q` 1,432 passed、87 deselected；全量（Docker worker 镜像按本检出重建——内嵌契约变了——+ 真 memory sidecar，`-m "not live"`）1,525 passed、1 deselected。两套里各有同样两个失败：adapters 的并发中断测试与 providers 的终端中断测试，单跑、成对跑、接在 tests/activity 之后跑都通过，在基线 033515d 的隔离工作树上整套跑同样失败——既有的负载相关不稳定，与本次改动无关（它们碰的 `evaluate/attempt.py` 的 `run_tasks` 与 `providers/claude_code.py` 本次没动）。真 sidecar 的 library 测试与 fake client 的 library 测试把流的顺序 seed 改成 349（6 道题下与原来 5 道题 seed 0 的顺序同构：policy_hold、update_stage 在前，失败题的教训修后面的同类题）。
+- 没调模型、没付费、没读 `.env`、没读任何 test 内容；finance-v5 的配置写好（`examples/automationbench/finance-v5.toml`，preset v2，根 $500、final $200），其 `worker.image_id` 待镜像重建后填；finance-v4 的基线导不进来（种子字节变了，AttemptIdentity 不同），基线按约 $58 重付。
+- 下一步（待批准）：冻结 finance-v5，`cycle --until baseline`，再逐轮。
+- commit：本条所在的提交。
+
+---
+
+## 2026-10-11 搜索循环 v2 的设计（DESIGN v1.2）：一轮一个包、留出接受累积在工作线、dev 只在活动末读一次；$0
+
+- 用户的判断（2026-10-11）：跑了几次试验效果不好；下一版要改框架代码，不是继续跑活动等它自己提升；先写设计。此前本会话的审查结论：机制每一环都在工作，粒度错了——单 cause 候选最多动 dev 1～2 题，gate 要 1.25 题加确认；每轮一次 dev gate 把发布门槛当成搜索门槛，+1 累积不起来；每次活动 63% 的钱在基线与 library；v0.4 一份跨 cause 的整体 memory 曾给 dev +11.3、test +8。
+- 分支：`s4/finance-v4` 合入 `m1-automationbench`（`c588b9c`，阶段 4 结束，零装入）；设计在 `s5/search-loop` 上。
+- [DESIGN v1.2](DESIGN.md) 的六处修改（§6.12 有读数与理由；§6.1、§6.4～6.7、§8、§10、§12 改定）：
+  1. 一轮一个包：R 看到全部簇与证据，交一个候选包，组件按需组合；阶梯 V0/V1 对整包、V2 按组件；某组件不过退回修订一次。聚焦清单取代名额：估值只给建议，硬要求只剩"有可机械化簇时至少一个 tool/hook"与"一轮至多一处 agent/config/vendor"。
+  2. 搜索接受与发布接受分开：V3 = 在全部留出 train 题上跑一遍，净修复 ≥ 1、退步 ≤ 1、留出通过数不低于历史最好减 1 → 装入工作线（release reason `screen`），逐轮累积；dev 只在活动末 `--phase gate` 读一次（W_work 读 2 次对 W0 池化），通过才有发布线 W\*（reason `gate`）与 final。carry 与 `gate_every` 删除；"留出为空的 cause"随整包筛选不再需要。
+  3. 以算力换准确进候选面：`on_finish` / `after_turn` 的 hook 可调 aux 模型，每次尝试 `hook_aux_calls`（2）次封顶，计量、记 gateway_call；这类 hook 跳过 V2b。
+  4. library 默认关：preset `automationbench_v2` 的 `memory.enabled = false`；包与 sidecar 保留；重开条件写在 MEMORY §9。
+  5. K 的版本拆成 `attempt_version` 与 `improver_version`；`AttemptIdentity = digest(attempt_version, package_ref, limits, model, worker.image_id, split_hash)` 相同时基线从旧工作区导入（`[rsi] baseline_from`，$0）。
+  6. 预期重写：一次活动 dev 严格 +3～6 题或部分得分 +0.05～0.10，成本不升；80% 只在部分得分口径上谈。
+- 模块文档：IMPROVER §2（Settings v1.2）、§3（一轮的步骤与停止）、§6（聚焦）、§7（包级声明）、§8（按组件的阶梯；调模型的 hook）、§9（留出筛选 = 接受；§9.1 适应；§9.2 活动末 gate）、§10～§13；EVALUATE §5.2（发布 gate）、§7（`screen`/`gate` 两种 reason，`released.json`）、§8（基线导入）；ACTIVITY §4（round 不读 dev、新 `gate` 阶段、`baseline_from`、library 只在开着时跑）、§5；CONTRACTS §4（版本拆分、AttemptIdentity、preset v2、`rsi.baseline_from`）、§5；MEMORY §9。另把 RESULTS 里指向阶段 1 删掉的旧配置的四个链接改指 tag。
+- 阶段 4b（PLAN §2）：设计 → 代码（`improver/`、`evaluate/`、`activity/`、`contracts.py`、preset、提示词）→ 假上游上脚本化的 R 跑 6 轮 → finance-v5（基线导入，根 $500、final 份额 $200，名义约 $350）。
+- 没改代码，没调模型，没付费，没读 `.env`，没读任何 test 内容。
+- commit：本条所在的提交。
+
+---
+
 ## 2026-10-11 阶段 4：finance-v4 结束：两轮无进展按耐心停在第 2 轮，没有装入、没有 final；活动 $225.36
 
 - 第 3 轮的启动（$0）：`cycle` 报"2 rounds without an install"结束。第 1 轮付了 gate 没装入、第 2 轮没有候选可累积，各计一次闲置，`patience` 2 到了。IMPROVER §9.2 与 ACTIVITY 原来写"只数 gate 轮"，与代码不一致；按字面只数 gate 轮，`gate_every` = 1 时没有候选的轮会空转到 `rounds` 上限，钱不安全，所以以代码的规则为准，改的是文档措辞（同日提交）。K 不变；活动在冻结的代码下结束，不补第 3 轮。

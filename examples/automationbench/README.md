@@ -37,7 +37,8 @@ python -m ouroloop.memory setup
 
 ## A config
 
-A config names the preset it tightens (`[harness] preset = "automationbench_v1"`); every other table may only
+A config names the preset it tightens (`[harness] preset = "automationbench_v2"`, or `automationbench_v1` with the
+library on by default); every other table may only
 lower a cap, raise a floor or narrow a set (`ouroloop/activity/presets.py`, the RULES table). The tables are
 `[workspace]`, `[bench]`, `[limits]`, `[model]`, `[research_model]`, `[pricing]`, `[harness]`, `[worker]`, `[memory]`,
 `[improver]`, `[gate]`, `[schedule]`, `[budget]`, `[final]` and `[rsi]` (docs/design/CONTRACTS.md §9). The configs of
@@ -58,22 +59,32 @@ ouroloop freeze --config C                              # K, the gate template, 
 ouroloop bench --config C --phase cycle --until baseline   # W0 on train and on dev control_readings times
 ouroloop bench --config C --phase cycle --until library    # the memory's train stream; its snapshot as a candidate
 ouroloop bench --config C --phase cycle --until round-0    # one improver round (then round-1, round-2: stop after each)
+ouroloop bench --config C --phase gate                   # the release gate: the working line against W0 on dev, once
+ouroloop bench --config C --phase release                # no dev in the split: release the working line by decision
 ouroloop bench --config C --phase report                # the report from what is on disk; no model is called
-ouroloop export --config C --to DIR                     # an installed release as an app
+ouroloop export --config C --to DIR                     # the released W* as an app
 ```
 
 `smoke --checks-only` calls no model and writes nothing but the frozen split. Every other phase opens the activity:
-the first time it writes `core.json` (K, with the frozen split's hash and the code version) and the seed release
-{W0, R0, K}; after that, a config, a code change or a split that gives another K is refused — a changed K is a new
-activity (docs/PLAN.md rule 13). The library step streams the train tasks once through W0 with the live library
-(first encounters, a retry with the failed checks), writes what ReMe distils through the platform's checks, and ends
-with the readout (D, the halves) and, when D > 0, the snapshot as a candidate package. A round (docs/design/IMPROVER.md
-§3) measures the current W on train, diagnoses its failures into causes, assigns each a kind of component, runs R's
-coding session, checks every candidate on the free rungs (V0 static, V1 package tests, V2 toolcheck / hook replay /
-skill reach), screens the passing ones on train (V3, its first paid rung), sends the best through the dev gate (V4)
-and installs it when the receipt accepts; the library's snapshot and the memory's promoted skills enter at the ladder
-as fixed candidates. A round needs the gate plan `freeze` wrote; it is priced before its screens are paid, and a
-resumed round pays only for what is missing. `cycle` stops after `schedule.patience` rounds without an install.
+the first time it writes `core.json` (K, with the frozen split's hash and the two code versions: what an attempt
+runs, and the rest) and the seed release {W0, R0, K}; after that, a config, a code change or a split that gives
+another K is refused — a changed K is a new activity (docs/PLAN.md rule 13). With `[rsi] baseline_from` naming
+another workspace of the same AttemptIdentity, the baseline imports its W0 readings and pays nothing. The library
+step (only with `[memory] enabled = true`; the `automationbench_v2` preset has it off) streams the train tasks once
+through W0 with the live library, writes what ReMe distils through the platform's checks, and ends with the readout
+and, when D > 0, the snapshot as a candidate package. A round (docs/design/IMPROVER.md §3, v1.2) measures the working
+line on the studied part of train (the rest is held out from R), diagnoses its failures into causes, writes R a focus
+list, runs R's coding session for one candidate package (one mechanism, as many components as it needs), checks it on
+the free rungs (V0 static, V1 package tests, each component's V2: toolcheck / hook replay / skill reach), screens it
+once on every held-out train task (V3) and installs it on the working line when the accept rule holds (net held-out
+flips ≥ 1, regressions ≤ 1, the held-out score within one of the activity's best); dev is not read inside a round. The
+`gate` phase, run once when the rounds are over, reads the working line against W0 on dev and, accepted, promotes it to
+the release line (W*), which the final and `export` read. A split without dev (`[bench] ratios` with dev 0: the
+two-way protocol of stage 4c) has no gate: `freeze` writes no template, the rounds need none, and `--phase release`
+promotes the working line by decision after reading its own train tasks; the final's two arms are then the number
+to report, W0 beside W*. A round needs the gate plan `freeze` wrote; it is priced
+before its screen is paid, and a resumed round pays only for what is missing. `cycle` stops after
+`schedule.patience` rounds in a row without an acceptance; `cycle --until gate` runs the gate after them.
 
 ## What the smoke phase establishes
 

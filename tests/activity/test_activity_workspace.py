@@ -11,7 +11,7 @@ from ouroloop.activity import workspace as wsp
 from ouroloop.activity.config import ConfigError
 from ouroloop.activity.workspace import open_activity
 from ouroloop.contracts import short
-from ouroloop.evaluate.release import code_version
+from ouroloop.evaluate.release import attempt_version, improver_version
 from ouroloop.evaluate.splits import SplitManifest
 from ouroloop.harness.seed import build_seed
 
@@ -29,7 +29,8 @@ def test_the_first_open_writes_k_and_the_seed_release_and_a_second_open_is_the_s
     a = opened(tmp_path, fake_upstream, lines=lines)
     core = json.loads((a.root / "core.json").read_text(encoding="utf-8"))
     assert core == {**a.core.json(), "ref": a.core_ref}
-    assert core["code_version"] == code_version() and core["split_hash"] == a.splits.hash()
+    assert core["attempt_version"] == attempt_version() and core["improver_version"] == improver_version()
+    assert core["split_hash"] == a.splits.hash()
     assert a.objects.has(a.core_ref)
     seed = a.active_release()
     assert seed.reason == "seed" and seed.parent_ref is None and seed.receipt_ref is None

@@ -70,13 +70,15 @@ def compose_system(base: str, package: Package, opening: str = "") -> str:
     return "\n\n".join(p for p in parts if p)
 
 
-def attempt_view(system: str, surface, package: Package, max_output_chars: int) -> dict:
+def attempt_view(system: str, surface, package: Package, max_output_chars: int, hook_aux_calls: int = 0) -> dict:
     """ctx.view (harness/contract.py VIEW_KEYS): the composed system prompt, the base tools, the package's components as
-    the adapter runs them, the last call's usage, the broker's recent events (refreshed in place) and the output
-    bound. Nothing of the scorer, the provider or the stores."""
+    the adapter runs them, the last call's usage, the broker's recent events (refreshed in place), the output bound
+    and the aux calls an on_finish or after_turn hook may make (K's improver.hook_aux_calls). Nothing of the scorer,
+    the provider or the stores."""
     base_tools = [{"name": s.name, "description": s.description, "schema": s.schema} for s in surface.specs()]
     return {"system": system, "base_tools": base_tools, "package": package_view(package.manifest.to_json()),
-            "last_usage": None, "events": [], "max_output_chars": int(max_output_chars)}
+            "last_usage": None, "events": [], "max_output_chars": int(max_output_chars),
+            "hook_aux_calls": int(hook_aux_calls)}
 
 
 class EgressMeter:
@@ -161,7 +163,8 @@ class PackageAgent:
                                                "site": "start"})
         max_output_chars = int(self.limits.get("max_output_chars") or 20000)
         system = compose_system(self.base_system, self.package, opening)
-        view = attempt_view(system, self.surface, self.package, max_output_chars)
+        view = attempt_view(system, self.surface, self.package, max_output_chars,
+                            int((self.core.get("improver") or {}).get("hook_aux_calls") or 0))
         prefix = f"{self.attempt_id}:"
         self.gateway = Gateway(self.provider, roles=self.roles, max_effort=(self.core.get("model") or {}).get(
             "max_effort"), limits=self.limits, record=self._record, surface=self.surface, call_prefix=prefix,

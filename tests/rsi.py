@@ -30,17 +30,21 @@ FAMILIES = {"rsi.update_stage": "rsi.update",
             "rsi.notify_after_update_variant": "rsi.notify_after_update",
             "rsi.policy_hold": "rsi.hold",
             "rsi.notify_once": "rsi.notify_once",
+            "rsi.notify_ticket": "rsi.notify_ticket",
             "rsi.dev_notify_after_update": "rsi.dev_notify_after_update",
             "rsi.dev_update_stage": "rsi.dev_update",
             "rsi.dev_policy_hold": "rsi.dev_hold",
             "rsi.final_notify_after_update": "rsi.final_notify_after_update",
             "rsi.final_update_stage": "rsi.final_update"}
 SPLITS = {"rsi.update": "train", "rsi.notify_after_update": "train", "rsi.hold": "train",
-          "rsi.notify_once": "train", "rsi.dev_notify_after_update": "dev", "rsi.dev_update": "dev",
+          "rsi.notify_once": "train", "rsi.notify_ticket": "train", "rsi.dev_notify_after_update": "dev",
+          "rsi.dev_update": "dev",
           "rsi.dev_hold": "dev", "rsi.final_notify_after_update": "test", "rsi.final_update": "test"}
 TRAIN = [t for t, f in FAMILIES.items() if SPLITS[f] == "train"]
 DEV = [t for t, f in FAMILIES.items() if SPLITS[f] == "dev"]
 FINAL = [t for t, f in FAMILIES.items() if SPLITS[f] == "test"]
+# the two-way split of stage 4c (ACTIVITY §4): the dev families are test, the release is by decision
+NO_DEV_SPLITS = {f: ("test" if s == "dev" else s) for f, s in SPLITS.items()}
 
 # A preset for the miniature domain: the real preset's every rule, with the gate's floors and the limits small enough for
 # three dev tasks and a scripted actor. Registered under its own name; nothing outside the tests reads it.
@@ -53,13 +57,15 @@ _preset["gate"].update({"min_groups": 1, "min_tasks": 1, "control_readings": 1, 
 _preset["bench"]["concurrency"] = 1
 # the memory under the fake client's bag-of-words vectors (tests/memory/fake_memory.py), one task per stream step
 _preset["memory"].update({"min_score": 0.2, "min_other_tasks": 1, "stream_batch": 1})
-# nothing held out by default: the improver's tests read the claimed tasks on the screen; a test that holds a part of
-# train out sets improver.holdout_share (a floor, so it may only raise it)
-_preset["improver"]["holdout_share"] = 0.0
-# the cadence's cap (IMPROVER §9.2): the round tests gate every round (rounds.round_activity's default), the cadence
-# tests ask for 2
-_preset["improver"]["gate_every"] = 2
+# the held-out part (IMPROVER §3, v1.2) at the preset's share: K's order seed 0 ranks the notify_after_update family
+# first, so its two tasks are held out (HELD) and the other four studied (STUDY); the forgetful actor fails one task
+# on each side (notify_ticket studied, the notify pair held out), so V2a and V2b ask for one claimed task
+_preset["improver"].update({"toolcheck_min_pass": 1, "replay_min_triggers": 1})
+# four rounds at most, two in a row without an acceptance end the cycle
+_preset["schedule"].update({"rounds": 4, "patience": 2})
 presets.PRESETS[TEST_PRESET] = _preset
+HELD = ("rsi.notify_after_update", "rsi.notify_after_update_variant")
+STUDY = ("rsi.update_stage", "rsi.policy_hold", "rsi.notify_once", "rsi.notify_ticket")
 
 PRICING = {"input_per_1k": 0.004, "output_per_1k": 0.02, "cache_read_per_1k": 0.0002, "cache_write_per_1k": 0.008,
            "max_input_tokens": 20000, "max_output_tokens": 5000, "source": "test prices"}
@@ -69,9 +75,9 @@ def suite(path) -> ab.Suite:
     return ab.load_suite(DOMAIN, path)
 
 
-def splits(s: ab.Suite) -> SplitManifest:
+def splits(s: ab.Suite, table: dict | None = None) -> SplitManifest:
     fams, rule = ab.families(s, FAMILIES)
-    return SplitManifest(DOMAIN, s.versions, rule, [TaskEntry.of(e) for e in s.entries(fams)], dict(SPLITS))
+    return SplitManifest(DOMAIN, s.versions, rule, [TaskEntry.of(e) for e in s.entries(fams)], dict(table or SPLITS))
 
 
 def config(root: Path, upstream: str, **sections) -> dict:
@@ -92,7 +98,7 @@ def config(root: Path, upstream: str, **sections) -> dict:
     return cfg
 
 
-def write_split(root: Path, s: ab.Suite) -> SplitManifest:
+def write_split(root: Path, s: ab.Suite, table: dict | None = None) -> SplitManifest:
     """The rsi domain's declared split, frozen into the workspace before the activity opens (freeze_split keeps what is
     on disk), so tests read the train/dev/test sets of SPLITS rather than a hash rule's. A split already frozen there is
     kept: the fake upstream's versions name pydantic only once something has imported it, so freezing it again after a
@@ -100,19 +106,19 @@ def write_split(root: Path, s: ab.Suite) -> SplitManifest:
     path = Results(Path(root) / "ws", DOMAIN).manifest_path()
     if path.exists():
         return SplitManifest.load(path)
-    manifest = splits(s)
+    manifest = splits(s, table)
     manifest.freeze(path)
     return manifest
 
 
 def activity(root: Path, upstream: str, *, provider=None, worker=None, freeze_k: bool = True, out=None,
-             research=None, memory_client=None, **sections):
+             research=None, memory_client=None, splits_table: dict | None = None, **sections):
     """The activity of `config(root, upstream, **sections)` with the declared split, ProcessWorker (a test worker:
     for_tests), `provider` (a BusinessWorker by default) for the actor's calls and `research` for the research model's
     (the actor's provider when none is given). `memory_client` makes the memory's client (a test's in-process stand-in
-    for the sidecar's; the real one otherwise)."""
+    for the sidecar's; the real one otherwise). `splits_table` replaces the declared split (NO_DEV_SPLITS: no dev)."""
     cfg = config(root, upstream, **sections)
-    write_split(root, suite(upstream))
+    write_split(root, suite(upstream), splits_table)
     provider = provider if provider is not None else BusinessWorker()
     research = research if research is not None else provider
     return open_activity(cfg, out=out or (lambda _line: None), freeze_k=freeze_k,

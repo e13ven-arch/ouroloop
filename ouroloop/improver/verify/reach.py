@@ -1,6 +1,7 @@
 """V2c, reach (docs/design/IMPROVER.md §8): a skill is listed in every attempt's system prompt by its name and
 description, so the check is that the description speaks to more than the tasks it was written for: it must be as
-close as `reach_min_score` to at least `reach_min_tasks` train tasks beyond its claimed ones. Vectors: a deterministic
+close as `reach_min_score` to at least `reach_min_tasks` studied train tasks beyond its claimed ones (the held-out
+tasks are not read: their ids never reach R). Vectors: a deterministic
 bag of words (`lexical_embed`), the scale reach_min_score is calibrated on; the round passes no other embedder (on the
 memory's bge-small unrelated texts score 0.5 and above, so 0.2 would pass every description). A context's `embed` is
 used when a caller gives one."""
@@ -10,6 +11,8 @@ import hashlib
 import json
 import math
 import re
+
+from ..declaration import component_of
 
 DIMS = 512
 WORD = re.compile(r"[a-z0-9#@._-]+")
@@ -34,12 +37,13 @@ def _cos(u, v) -> float:
 
 
 def reach_check(files: dict[str, str], decl, ctx) -> dict:
+    decl = component_of(decl, "skill")
     manifest = json.loads(files["manifest.json"])
     skill = next((s for s in manifest.get("skills") or () if s.get("name") == decl.site), None)
     if skill is None:
         return {"passed": False, "detail": f"no skill named {decl.site!r} in the candidate's manifest"}
     text = f"{str(skill['name']).replace('-', ' ').replace('_', ' ')}: {skill.get('description') or ''}"
-    tasks = [t for t in ctx.train_tasks if t in ctx.train_texts]
+    tasks = [t for t in (ctx.study_tasks or ctx.train_tasks) if t in ctx.train_texts]   # never a held-out id
     vectors = (ctx.embed or lexical_embed)([text] + [ctx.train_texts[t] for t in tasks])
     scores = {t: round(_cos(vectors[0], v), 4) for t, v in zip(tasks, vectors[1:])}
     reached = sorted(t for t, s in scores.items() if s >= ctx.settings.reach_min_score

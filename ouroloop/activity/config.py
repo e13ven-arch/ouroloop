@@ -1,9 +1,10 @@
 """A config, its preset, and K (docs/design/ACTIVITY.md §3; CONTRACTS §4, §9).
 
 A config file names a preset ([harness] preset) and may only tighten it (presets.RULES). The merged sections, with the
-domain's frozen split hash and the framework's code version, are K: frozen as `core.json` in the workspace and as a
-`core` object whose ref covers every byte. Any change of a `.py` file is a new code_version and so a new K (PLAN rule
-13); [rsi] core_ref, once `ouroloop freeze` printed it, pins K, and a config that freezes to another K is refused.
+domain's frozen split hash and the framework's two code versions (attempt_version: what an attempt runs;
+improver_version: the rest; DESIGN §8 v1.2), are K: frozen as `core.json` in the workspace and as a `core` object
+whose ref covers every byte. Any change of a `.py` file is a new version and so a new K (PLAN rule 13); [rsi]
+core_ref, once `ouroloop freeze` printed it, pins K, and a config that freezes to another K is refused.
 
 Old table names are not read: [llm] is [model], [research] is [research_model], [improvement] and
 [harness_evolution] are [harness] and [improver], [freeze.*] are [gate], [schedule], [budget] and [final]. The configs
@@ -24,7 +25,7 @@ from .presets import RULES, preset
 SECTIONS = ("bench", "limits", "model", "research_model", "pricing", "harness", "worker", "memory", "improver", "gate",
             "schedule", "budget", "final")
 OTHER_TABLES = ("workspace", "rsi", "env_file")
-RSI_KEYS = ("scope_id", "core_ref", "split_ref", "final_plan_ref")
+RSI_KEYS = ("scope_id", "core_ref", "split_ref", "final_plan_ref", "baseline_from")
 OLD_TABLES = {"llm": "[model]", "research": "[research_model]", "improvement": "[harness] preset and [improver]",
               "harness_evolution": "[harness]", "freeze": "[gate], [schedule], [budget] and [final]",
               "estimate": "nothing: the final's estimate reads the costs on record",
@@ -65,6 +66,8 @@ def check_tables(cfg: dict) -> None:
     for key, value in rsi.items():
         if isinstance(value, str) and value.startswith(PLACEHOLDER):
             raise ConfigError(f"[rsi] {key} = {value!r} is a placeholder: run `ouroloop freeze` and name its ref")
+    if rsi.get("baseline_from") is not None and not isinstance(rsi["baseline_from"], str):
+        raise ConfigError("[rsi] baseline_from is the path of the workspace whose W0 readings are imported")
 
 
 # ---------------------------------------------------------------------------- merging (only tighten)
@@ -166,17 +169,26 @@ def merge(config: dict, preset_table: dict) -> dict:
 @register
 @dataclass(frozen=True)
 class Core(Record):
-    """K: the sections of CONTRACTS §4, the preset's name, the frozen split's hash and the code version."""
+    """K: the sections of CONTRACTS §4, the preset's name, the frozen split's hash and the two code versions."""
     TYPE = "core"
     preset: str = ""
     sections: dict = field(default_factory=dict)
     split_hash: str = ""
-    code_version: str = ""
+    attempt_version: str = ""
+    improver_version: str = ""
 
     def json(self) -> dict:
         """K as one document (what core.json holds and what every package reads)."""
         return {**self.sections, "preset": self.preset, "split_hash": self.split_hash,
-                "code_version": self.code_version}
+                "attempt_version": self.attempt_version, "improver_version": self.improver_version}
+
+    def attempt_identity(self, package_ref: str) -> str:
+        """AttemptIdentity (CONTRACTS §4) of a package under this K."""
+        from ..evaluate.release import attempt_identity
+        return attempt_identity(attempt_version=self.attempt_version, package_ref=package_ref,
+                                limits=self.sections.get("limits") or {}, model=self.sections.get("model") or {},
+                                image_id=(self.sections.get("worker") or {}).get("image_id"),
+                                split_hash=self.split_hash)
 
 
 def preset_name(config: dict) -> str:
@@ -214,12 +226,13 @@ def resolve(config: dict) -> dict:
     return sections
 
 
-def freeze_core(config: dict, *, split_hash: str, code_version: str) -> Core:
+def freeze_core(config: dict, *, split_hash: str, attempt_version: str, improver_version: str) -> Core:
     """K, frozen. Same config, same split, same code: same ref. [bench] concurrency is a setting of the machine
     (Activity.concurrency reads it from the config), not of K: a resume may change it."""
     sections = resolve(config)
     sections["bench"].pop("concurrency", None)
-    return Core(preset=preset_name(config), sections=sections, split_hash=split_hash, code_version=code_version)
+    return Core(preset=preset_name(config), sections=sections, split_hash=split_hash,
+                attempt_version=attempt_version, improver_version=improver_version)
 
 
 def core_problems(core: Core) -> list[str]:

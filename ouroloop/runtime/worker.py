@@ -661,12 +661,13 @@ def package_view(manifest: dict) -> dict:
             "model": {"effort": (manifest.get("model") or {}).get("effort")}}
 
 
-def smoke_view(manifest: dict, fixture, max_output_chars: int) -> dict:
-    """ctx.view for the smoke, in the attempt view's shape: the fixture's base tools and the draft's components."""
+def smoke_view(manifest: dict, fixture, max_output_chars: int, hook_aux_calls: int = 1) -> dict:
+    """ctx.view for the smoke, in the attempt view's shape: the fixture's base tools and the draft's components; a
+    hook that calls the aux model gets one call, answered by the smoke's scripted model (IMPROVER §8)."""
     base = [{"name": s.name, "description": s.description, "schema": s.schema} for s in fixture.specs()] \
         if fixture is not None else []
     return {"system": "", "base_tools": base, "package": package_view(manifest), "last_usage": None, "events": [],
-            "max_output_chars": max_output_chars}
+            "max_output_chars": max_output_chars, "hook_aux_calls": int(hook_aux_calls)}
 
 
 def check_package(worker: Worker, files: dict[str, str], manifest: dict, *, fixture=None, max_chars: int = 2000,

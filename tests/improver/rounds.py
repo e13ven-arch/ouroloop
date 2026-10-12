@@ -1,6 +1,7 @@
 """The improver's test activities: the rsi domain of the fake upstream, the forgetful actor (rsi.BusinessWorker with
 forget_notify: it updates the record and does not post the requested #ops message unless something reminds it), the
-scripted R (scripted_r.ScriptedR), missed_action mechanizable in K, the baseline run and the gate plan frozen.
+scripted R (scripted_r.ScriptedR), missed_action mechanizable in K, the baseline run and the gate plan frozen. The
+notify pair is held out from R (rsi.HELD) and notify_ticket is the studied failure (rsi.STUDY).
 
 `round_activity(..., memory=True)` turns the memory on with the in-process client and answers the bridge's calls with
 fake_memory.ScriptedResearch, every other research call with the ScriptedR. `tried` writes an imported estimate:
@@ -38,7 +39,7 @@ class Research:
 
 def round_activity(root: Path, upstream: str, mode: str = "tool", *, memory: bool = False, tried: dict | None = None,
                    actor=None, improver: dict | None = None, baseline: bool = True, freeze: bool = True,
-                   **sections) -> SimpleNamespace:
+                   splits_table: dict | None = None, **sections) -> SimpleNamespace:
     s = SimpleNamespace(r=ScriptedR(mode), actor=actor or rsi.BusinessWorker(forget_notify=True), client=None)
     extra = {}
     if memory:
@@ -48,9 +49,8 @@ def round_activity(root: Path, upstream: str, mode: str = "tool", *, memory: boo
         extra = {"memory_client": lambda: s.client, "memory": {"enabled": True}}
     else:
         s.research = Research(s.r)
-    s.a = rsi.activity(root, upstream, provider=s.actor, research=s.research,
-                       improver={"mechanizable": list(MECHANIZABLE) + ["missed_action"], "gate_every": 1,
-                                 **(improver or {})},
+    s.a = rsi.activity(root, upstream, provider=s.actor, research=s.research, splits_table=splits_table,
+                       improver={"mechanizable": list(MECHANIZABLE) + ["missed_action"], **(improver or {})},
                        **extra, **sections)
     if tried:
         write_json(s.a.root / "ledger" / "estimates.json",

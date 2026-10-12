@@ -23,7 +23,7 @@ Every file is UTF-8 text. Package code reaches the world only through ctx.
     ctx.skills.index -> [{name, description}];  ctx.skills.read(name) -> str | None
     ctx.memory.recall(query, k=None) -> [{id, when, content, score}]
     ctx.limits -> the attempt's remaining act_calls, model_calls, tool_calls, seconds, tokens
-    ctx.view -> {system, base_tools, package, last_usage, events, max_output_chars}
+    ctx.view -> {system, base_tools, package, last_usage, events, max_output_chars, hook_aux_calls}
     ctx.mark(kind, **data) -> None                                      # the package's own account of its loop
 
 ## A tool
@@ -37,7 +37,9 @@ tools (read_only unless the manifest says writes: true). A tool raising an excep
 
     def <function>(ctx, event: dict) -> dict | None
 
-A hook's ctx has no model and its tool is read-only: a hook looks and answers, it does not act. Per site:
+A hook's tool is read-only: a hook looks and answers, it does not act. A hook at after_turn or on_finish may call
+ctx.model(messages, tools, role="aux") up to ctx.view["hook_aux_calls"] times per attempt (all such hooks together)
+to audit the agent's work; declare it with uses_model: true. A hook at another site has no model. Per site:
 
 {sites}
 

@@ -590,3 +590,18 @@ def evaluate_task(plan: TaskEvalPlan, *, run, objects: Objects, families: dict[s
                        reasons=tuple(reasons), metrics=metrics, uncertainty=uncertainty, kind=kind,
                        costs={"subject_usd": metrics["subject_cost_usd"], "control_usd": metrics["control_cost_usd"],
                               "missing": metrics["cost_missing"]})
+
+
+def transport_problem(activity) -> str | None:
+    """A comparison across readings (a held-out screen, the release gate) holds only on one transport: the claude CLI
+    on PATH must be the one the activity recorded at its first paid phase (the `cli_version` event). None when it is,
+    or when the activity runs a test provider."""
+    rows = list(activity.events.read("cli_version"))
+    if not rows or getattr(activity, "provider_factory", None) is not None:
+        return None
+    from ..providers.claude_code import cli_version
+    now = cli_version()
+    if now != rows[0].get("version"):
+        return (f"cli: the claude CLI is {now or 'unreadable'} and this activity ran on {rows[0].get('version')}: no "
+                f"comparison on mixed transports (reinstall it, with DISABLE_AUTOUPDATER=1)")
+    return None

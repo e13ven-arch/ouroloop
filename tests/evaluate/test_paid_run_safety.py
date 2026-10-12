@@ -55,7 +55,8 @@ def install_w_star(activity, *, operation_id: str = "install-w-star") -> Release
     candidate = activity.releases.candidate(package_ref, receipt, parent=parent)
     assert activity.releases.install(candidate, receipt, expected_parent=parent.ref(),
                                      operation_id=operation_id).status == "installed"
-    return candidate
+    # v1.2: the final reads the release line; the gate's promotion puts W* there (EVALUATE §7)
+    return activity.releases.promote(candidate, receipt, operation_id=f"promote:{operation_id}")
 
 
 def reopen(root: Path, upstream: str, *, provider=None, **sections):

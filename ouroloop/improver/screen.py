@@ -1,25 +1,26 @@
-"""V3, the train screen, and V4, the dev gate (docs/design/IMPROVER.md §9; DESIGN §6.6).
+"""V3, the held-out screen, which is the activity's acceptance (docs/design/IMPROVER.md §9; DESIGN §6.6, §6.7, v1.2).
 
-V3 is the first paid rung. A candidate runs on its failing set — the train tasks of its cause and its claims that the
-current W still fails — and on a passing sample the round draws from the train tasks the current W passes. A fix
-counts only where the candidate's component showed (the footprint: a tool the model called, a hook that acted, a skill
-it read, memory it was given; a prompt, the agent or a config on every attempt): an outcome that changed where the
-component never acted is noise, not its effect. A regression counts on the sample whatever the footprint. The best
-eligible candidate pays V4.
+V3 is the first paid rung and the only one inside an activity. A candidate package runs once on every held-out train
+task — the part of train R never sees, fixed for the activity. The failing set is the held-out tasks the working line
+fails, the passing set the rest. A fix counts only where one of the package's changed components showed in the attempt
+(the footprint: a tool the model called, a hook that acted, a skill it read, memory it was given; a prompt, the agent,
+a config knob or a vendored file on every attempt): an outcome that changed where nothing of the package acted is
+noise. A regression counts on the passing set whatever the footprint.
 
-V4 is evaluate's gate over the frozen template (the `gate_template` event), the candidate against the current W on dev,
-the control pooled from the current W's dev readings under the same conditions and topped up. An accepted receipt —
-confirmed when the plan confirms — is registered and installed by CAS under `install:<round_id>`.
+The accept rule (three clauses, all needed): net flips = conditioned fixes − regressions ≥ accept_min_net_flips;
+regressions ≤ accept_max_regressions; the held-out score ≥ the activity's best so far − accept_floor_tolerance. An
+accepted package is installed on the working line (`rsi/active.json`, reason `screen`, CAS under `install:<round_id>`);
+a rejected one leaves the line where it was. Dev is not read here: the release gate at the end of the activity is
+evaluate's (activity/phases.py `gate`), and `template`, `control_pool`, `gate_attempts` and `price` here serve it.
 
 The runs go through the activity's `run_arm` (handed in: the improver imports nothing of the activity).
 """
 from __future__ import annotations
 
-import random
 from dataclasses import dataclass, replace
 
 from ..contracts import Record, register
-from ..evaluate.gate import TaskEvalPlan, evaluate_task, receipt_differences, refill_attempts, shortfall
+from ..evaluate.gate import TaskEvalPlan, refill_attempts, shortfall
 from ..evaluate.results import TaskResult
 
 WHOLE_KINDS = ("prompt", "agent", "config", "vendor", "removal", "model")
@@ -29,44 +30,46 @@ WHOLE_KINDS = ("prompt", "agent", "config", "vendor", "removal", "model")
 @dataclass(frozen=True)
 class ScreenResult(Record):
     TYPE = "screen"
-    candidate: str = ""
+    candidate: str = ""                 # r<i>:<dir>
     package_ref: str = ""
-    tasks: tuple = ()
-    failing: tuple = ()
-    sample: tuple = ()
-    fixed: tuple = ()                   # failing-set tasks that now pass where the component showed
-    unconditioned: tuple = ()           # failing-set tasks that now pass where it did not (not counted)
-    regressed: tuple = ()               # sample tasks that now fail
+    holdout: tuple = ()                 # every held-out train task
+    failing: tuple = ()                 # held-out tasks the working line fails
+    passing: tuple = ()                 # held-out tasks it passes
+    fixed: tuple = ()                   # failing tasks that pass now where a changed component showed
+    unconditioned: tuple = ()           # failing tasks that pass now where none did (not counted)
+    regressed: tuple = ()               # passing tasks that fail now
+    footprints: dict = None             # component key -> the held-out tasks it showed on
     net_flips: int = 0
+    holdout_score: int = 0              # held-out tasks the candidate passes (valid attempts)
+    best_so_far: int = 0                # the working line's best held-out score in this activity
     cost: float | None = None           # per valid attempt
-    thin: bool = False
-    in_sample: bool = False             # the failing set is studied train tasks (the cause has none held out, §9.1)
     outcome: str = "screened"           # screened | invalid | budget_exhausted | defect | not_run
-    reason: str = ""
+    accepted: bool = False
+    reasons: tuple = ()                 # why it is not accepted (empty when accepted or not screened)
+    reason: str = ""                    # why it was not screened
+
+    def __post_init__(self):
+        for name in ("holdout", "failing", "passing", "fixed", "unconditioned", "regressed", "reasons"):
+            object.__setattr__(self, name, tuple(getattr(self, name) or ()))
+        object.__setattr__(self, "footprints", {k: list(v) for k, v in dict(self.footprints or {}).items()})
 
 
-def passing_sample(reading: dict, *, order, size: int, seed: int, round_index: int, exclude=()) -> list[str]:
-    """`size` train tasks the current W passes, drawn per round (the same round draws the same), in the frozen order."""
-    passed = [t for t in order if t in reading and reading[t].success and t not in set(exclude)]
-    rng = random.Random(f"passing-sample:{int(seed)}:{int(round_index)}")
-    rng.shuffle(passed)
-    chosen = set(passed[:max(int(size), 0)])
-    return [t for t in order if t in chosen]
+def condition(comps: list[dict]) -> list[dict]:
+    """The components whose footprint conditions a fix: every changed component but the tests and the deleted ones;
+    one of the whole kinds (a prompt, the agent, a config knob, a vendored file, a removal) makes every attempt
+    count."""
+    out = []
+    for c in comps:
+        if c["kind"] == "test" or c.get("change") == "deleted":
+            continue
+        out.append({"kind": "prompt", "name": "*"} if c["kind"] in WHOLE_KINDS else c)
+    if any(c["change"] == "deleted" and c["kind"] in ("tool", "hook", "skill") for c in comps) and not out:
+        out.append({"kind": "prompt", "name": "*"})          # a removal: the package acts on every attempt
+    return out
 
 
-def condition(decl, comps: list[dict]) -> list[dict]:
-    """The components whose footprint conditions a fix: those of the declared kind the candidate changed, and the
-    supporting tools, hooks and skills it carries with them (IMPROVER §7.1: any of them showing is the mechanism
-    showing); for a prompt, the agent, a config, a vendored package, a removal or the model, every attempt."""
-    if decl.kind in WHOLE_KINDS:
-        return [{"kind": "prompt", "name": "*"}]
-    if decl.kind == "memory":
-        return [{"kind": "memory", "name": "snapshot"}]
-    own = [c for c in comps if c["kind"] == decl.kind and c["change"] != "deleted"]
-    if decl.fixed:
-        return own
-    return own + [c for c in comps if c["kind"] in ("tool", "hook", "skill") and c["change"] != "deleted"
-                  and c not in own]
+def key(component: dict) -> str:
+    return f"{component['kind']}:{component.get('name')}"
 
 
 def latest(rows: list[TaskResult]) -> dict[str, TaskResult]:
@@ -76,58 +79,88 @@ def latest(rows: list[TaskResult]) -> dict[str, TaskResult]:
     return out
 
 
-def screen(activity, *, run_arm, name: str, package, base_release, failing: list[str], sample: list[str],
-           reading: dict, evidence, conditions: list[dict], account, retries: int, thin_tasks: int,
-           in_sample: bool = False) -> ScreenResult:
-    """Run one candidate's screen and read it. `reading` is the current W's train reading ({task: TaskResult})."""
-    tasks = list(dict.fromkeys([*failing, *sample]))
-    base = dict(candidate=name, package_ref=package.ref(), tasks=tuple(tasks), failing=tuple(failing),
-                sample=tuple(sample), thin=len(failing) < int(thin_tasks), in_sample=bool(in_sample))
-    if not failing:
-        return ScreenResult(**base, outcome="not_run", reason="no train task it claims fails now")
+def accept_problems(*, net_flips: int, regressed: int, holdout_score: int, best_so_far: int, settings) -> list[str]:
+    """The accept rule's failed clauses, in words."""
+    out = []
+    if net_flips < int(settings.accept_min_net_flips):
+        out.append(f"net flips {net_flips} below accept_min_net_flips {settings.accept_min_net_flips}")
+    if regressed > int(settings.accept_max_regressions):
+        out.append(f"{regressed} regressions above accept_max_regressions {settings.accept_max_regressions}")
+    if holdout_score < best_so_far - int(settings.accept_floor_tolerance):
+        out.append(f"held-out score {holdout_score} below the best so far {best_so_far} minus "
+                   f"accept_floor_tolerance {settings.accept_floor_tolerance}")
+    return out
+
+
+def screen(activity, *, run_arm, name: str, package, base_release, holdout: list[str], reading: dict, evidence,
+           conditions: list[dict], account, retries: int, best_so_far: int, settings) -> ScreenResult:
+    """Run one candidate package on every held-out task and read it against the working line's reading
+    (`reading`: {task: TaskResult} of the current W on train)."""
+    failing = [t for t in holdout if t in reading and not reading[t].success]
+    passing = [t for t in holdout if t in reading and reading[t].success]
+    base = dict(candidate=name, package_ref=package.ref(), holdout=tuple(holdout), failing=tuple(failing),
+                passing=tuple(passing), best_so_far=int(best_so_far))
+    if not holdout:
+        return ScreenResult(**base, outcome="not_run", reason="no held-out train task")
 
     def run(arm, chosen, retry=0, supersedes=None):
         return run_arm(activity, release=base_release, split="train", candidate=name, role="screen", pairs=chosen,
                        account=account, arm=arm, retry=retry, supersedes=supersedes, package=package,
                        notes=f"improver screen {name}")
-    rows = refill_attempts(run("subject", [(t, 0) for t in tasks]), run, "subject", int(retries))
-    after = {t: r for t, r in latest(rows).items()}
+    rows = refill_attempts(run("subject", [(t, 0) for t in holdout]), run, "subject", int(retries))
+    after = latest(rows)
     if any(r.failure_class == "budget_exhausted" for r in after.values()):
         return ScreenResult(**base, outcome="budget_exhausted", reason="the budget refused a screen attempt")
     defects = [r for r in after.values() if r.failure_class == "candidate_defect"]
-    valid = {t: r for t, r in after.items() if r.validity == "valid"}
     if defects:
         return ScreenResult(**base, outcome="defect", reason=f"candidate defect on {defects[0].task_id}: "
                                                              f"{defects[0].invalid_reason or defects[0].stop}"[:300])
-    if not any(t in valid for t in failing):
-        return ScreenResult(**base, outcome="invalid", reason="no valid reading on the failing set")
+    valid = {t: r for t, r in after.items() if r.validity == "valid"}
+    if not valid or not any(t in valid for t in failing or holdout):
+        return ScreenResult(**base, outcome="invalid", reason="no valid reading on the held-out tasks")
+    footprints: dict[str, list] = {}
+    for t in holdout:
+        r = valid.get(t)
+        if r is None:
+            continue
+        for c in conditions:
+            if c.get("name") == "*" or evidence.footprint(r, c):
+                footprints.setdefault(key(c), []).append(t)
     fixed, unconditioned = [], []
     for t in failing:
         r = valid.get(t)
         if r is None or not r.success:
             continue
-        shown = any(c.get("name") == "*" or evidence.footprint(r, c) for c in conditions)
+        shown = any(t in footprints.get(key(c), ()) for c in conditions)
         (fixed if shown else unconditioned).append(t)
-    regressed = [t for t in sample if t in valid and t in reading and reading[t].success and not valid[t].success]
+    regressed = [t for t in passing if t in valid and not valid[t].success]
+    score = sum(1 for r in valid.values() if r.success)
     costs = [r.cost_usd for r in valid.values()]
     cost = None if not costs or any(c is None for c in costs) else round(sum(costs) / len(costs), 6)
+    net = len(fixed) - len(regressed)
+    problems = accept_problems(net_flips=net, regressed=len(regressed), holdout_score=score, best_so_far=best_so_far,
+                               settings=settings)
     return ScreenResult(**base, fixed=tuple(fixed), unconditioned=tuple(unconditioned), regressed=tuple(regressed),
-                        net_flips=len(fixed) - len(regressed), cost=cost)
+                        footprints=footprints, net_flips=net, holdout_score=score, cost=cost,
+                        accepted=not problems, reasons=tuple(problems))
 
 
-def eligible(result: ScreenResult, settings) -> bool:
-    return (result.outcome == "screened" and result.net_flips >= settings.screen_min_net_flips
-            and len(result.fixed) >= settings.screen_min_fixes
-            and len(result.regressed) <= settings.screen_max_sample_regressions)
-
-
-def pick_best(results: list[ScreenResult], settings) -> ScreenResult | None:
-    """The one that pays the gate: among the eligible, the most net flips, then the lower cost (unknown last), then
-    the order given."""
-    ok = [(i, r) for i, r in enumerate(results) if eligible(r, settings)]
+def pick_best(results: list[ScreenResult]) -> ScreenResult | None:
+    """Among the accepted: the most net flips, then the lower cost (unknown last), then the order given."""
+    ok = [(i, r) for i, r in enumerate(results) if r.accepted]
     if not ok:
         return None
     return sorted(ok, key=lambda x: (-x[1].net_flips, x[1].cost is None, x[1].cost or 0.0, x[0]))[0][1]
+
+
+def accept(activity, result: ScreenResult, *, round_id: str, base_release):
+    """Install an accepted package on the working line (reason `screen`), CAS under `install:<round_id>`."""
+    if not result.accepted:
+        raise ValueError(f"{result.candidate} is not accepted: {list(result.reasons)}")
+    screen_ref = activity.objects.put(result)
+    release = activity.releases.screened(result.package_ref, screen_ref, parent=base_release)
+    return activity.releases.install_screened(release, screen_ref, expected_parent=base_release.ref(),
+                                              operation_id=f"install:{round_id}".replace("/", "_"))
 
 
 # ---------------------------------------------------------------------------- pricing before anything is paid
@@ -142,9 +175,8 @@ def cost_per_attempt(activity, package_ref: str, split: str) -> float | None:
 
 
 def gate_attempts(activity, control_ref: str | None = None) -> int:
-    """The gate's attempts at most: every dev task of the template, the subject arm and its confirmations, and the
-    pairs the pooled control of `control_ref` (the current W's package) is short of — after an install the new W's
-    dev readings are its gate's subject arm, not a control, so its first gate reads the whole control."""
+    """The release gate's attempts at most: every dev task of the template, the subject arm and its confirmations,
+    and the pairs the pooled control of `control_ref` (W0's package) is short of."""
     plan = template(activity)
     if plan is None:
         return 0
@@ -152,20 +184,16 @@ def gate_attempts(activity, control_ref: str | None = None) -> int:
     return len(plan.task_ids) * plan.repeats * (1 + plan.confirmations) + len(short)
 
 
-def price(activity, base_package_ref: str, *, screen_attempts: int, gate: bool = True,
-          dev_ref: str | None = None) -> tuple[float | None, str]:
-    """What the screens and the gate will cost at most, from the current W's costs on record (`dev_ref`: the package
-    whose dev readings price the gate, when the round works on a carried package that has none). -> (usd, "") or
-    (None, why it cannot be priced)."""
+def price(activity, base_package_ref: str, *, screen_attempts: int) -> tuple[float | None, str]:
+    """What screens will cost at most, from the working line's train costs on record. -> (usd, "") or (None, why it
+    cannot be priced)."""
     train = cost_per_attempt(activity, base_package_ref, "train")
-    dev = cost_per_attempt(activity, dev_ref or base_package_ref, "dev") if gate else 0.0
-    if train is None or dev is None:
-        return None, "the current W has no priced train or dev reading on record: the screens cannot be priced"
-    return round(screen_attempts * train + (gate_attempts(activity, dev_ref or base_package_ref) * dev if gate
-                                            else 0.0), 6), ""
+    if train is None:
+        return None, "the working line has no priced train reading on record: the screen cannot be priced"
+    return round(screen_attempts * train, 6), ""
 
 
-# ---------------------------------------------------------------------------- V4
+# ---------------------------------------------------------------------------- the release gate's readings
 def template(activity) -> TaskEvalPlan | None:
     rows = list(activity.events.read("gate_template"))
     if not rows:
@@ -181,39 +209,10 @@ def control_pool(activity, package_ref: str, task_ids) -> list[TaskResult]:
             and runs[r.run].role in ("base", "control")]
 
 
-def gate(activity, *, run_arm, round_id: str, package, base_release, account) -> dict:
-    """V4: the paired dev gate of one candidate, and its install when the receipt accepts."""
-    from ..contracts import short
+def gate_plan(activity, *, package, base_release) -> TaskEvalPlan:
+    """The frozen template with the arms filled in: the candidate package against W0's."""
     plan = template(activity)
     if plan is None:
         raise ValueError("no frozen gate template: run `ouroloop freeze` first")
-    plan = replace(plan, candidate_ref=package.ref(), control_ref=base_release.package_ref,
+    return replace(plan, candidate_ref=package.ref(), control_ref=base_release.package_ref,
                    parent_release=base_release.ref())
-    plan_ref = activity.objects.put(plan)
-    families = {t: activity.splits.family_of(t) for t in plan.task_ids}
-
-    def run(arm, order, retry=0, supersedes=None):
-        if arm == "control":
-            # this gate's run: a top-up an earlier gate's budget refused is read again, not handed back
-            return run_arm(activity, release=base_release, split="dev",
-                           candidate=f"control:{short(base_release.ref())}:{round_id}", role="control", pairs=order,
-                           account=account, arm="control", retry=retry, supersedes=supersedes,
-                           notes="the gate's control top-up")
-        return run_arm(activity, release=base_release, split="dev", candidate=f"{round_id}:gate", role="subject",
-                       pairs=order, account=account, plan_ref=plan_ref, arm=arm, retry=retry, supersedes=supersedes,
-                       package=package, notes=f"the gate of {round_id}")
-    receipt = evaluate_task(plan, run=run, objects=activity.objects, families=families,
-                            control_pool=control_pool(activity, base_release.package_ref, plan.task_ids))
-    receipt_ref = activity.objects.put(receipt)
-    activity.releases.register_receipt(receipt_ref, round=round_id)
-    diff = receipt_differences(receipt, activity.objects)
-    out = {"receipt": receipt_ref, "verdict": receipt.verdict, "kind": receipt.kind,
-           "gain": (receipt.metrics or {}).get("gain"), "fixed_count": len(diff["fixed"]),
-           "regressed_count": len(diff["regressed"]), "installed": None}
-    if receipt.verdict == "accepted":
-        release = activity.releases.candidate(package.ref(), receipt_ref, parent=base_release)
-        done = activity.releases.install(release, receipt_ref, expected_parent=base_release.ref(),
-                                         operation_id=f"install:{round_id}".replace("/", "_"))
-        out["install"] = done.status
-        out["installed"] = release.ref() if done.status == "installed" else None
-    return out

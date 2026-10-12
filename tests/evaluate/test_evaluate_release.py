@@ -59,6 +59,14 @@ def test_a_release_names_w_r_and_k_by_kind_and_only_a_gate_release_has_a_receipt
         Release(**triple, receipt_ref=ref(objects, "receipt"), reason="rollback")
     with pytest.raises(ContractError, match="a receipt"):
         Release(**triple, parent_ref=seed.ref(), receipt_ref=ref(objects, "plan"), reason="gate")
+    with pytest.raises(ContractError, match="names the screen"):
+        Release(**triple, parent_ref=seed.ref(), reason="screen")
+    with pytest.raises(ContractError, match="names the screen"):
+        Release(**triple, parent_ref=seed.ref(), screen_ref=ref(objects, "screen"), reason="import")
+    with pytest.raises(ContractError, match="screen result"):
+        Release(**triple, parent_ref=seed.ref(), screen_ref=ref(objects, "receipt"), reason="screen")
+    assert Release(**triple, parent_ref=seed.ref(), screen_ref=ref(objects, "screen"), reason="screen").reason \
+        == "screen"
     assert objects.load(seed.ref()) == seed
     with pytest.raises(ContractError, match="receipt kind"):
         GateReceipt(kind="provisional")
@@ -328,8 +336,9 @@ def test_a_model_identity_names_provider_and_base_and_not_when_it_was_seen():
 
 # ---------------------------------------------------------------------------- code identity
 def test_code_version_changes_when_a_py_or_a_seed_file_changes_and_nothing_else(tmp_path, monkeypatch):
-    """Every K carries code_version, so a changed .py is a new K (CONTRACTS §4). Measured on a copy of a package tree,
-    never on the checkout."""
+    """Every K carries the two versions (CONTRACTS §4 v1.2: attempt_version over what an attempt runs, improver_version
+    over the rest), so a changed .py is a new K; code_version hashes all of it for reports. Measured on a copy of a
+    package tree, never on the checkout."""
     pkg = tmp_path / "ouroloop"
     (pkg / "evaluate").mkdir(parents=True)
     (pkg / "harness" / "seeds" / "stirrup").mkdir(parents=True)
@@ -356,6 +365,13 @@ def test_code_version_changes_when_a_py_or_a_seed_file_changes_and_nothing_else(
     assert rel.code_version() == before
     (pkg / "evaluate" / "gate.py").rename(pkg / "evaluate" / "other.py")       # a moved module is other code
     assert rel.code_version() != before
+    # the split: the seed is the attempt's side, the gate the improver's; each hash moves with its own files only
+    (pkg / "evaluate" / "other.py").rename(pkg / "evaluate" / "gate.py")
+    attempt, improver = rel.attempt_version(), rel.improver_version()
+    (pkg / "evaluate" / "gate.py").write_text("MIN_GAIN = 0.07\n")
+    assert rel.attempt_version() == attempt and rel.improver_version() != improver
+    (pkg / "harness" / "seeds" / "stirrup" / "prompt.md").write_text("Do every step, twice.\n")
+    assert rel.attempt_version() != attempt
 
 
 def test_code_version_of_this_checkout_covers_its_modules():
@@ -365,3 +381,43 @@ def test_code_version_of_this_checkout_covers_its_modules():
     assert {f"improver/prompts/{n}.md" for n in ("diagnose", "package_api", "playbook", "propose")} <= files
     assert not any(f.endswith(".pyc") or "__pycache__" in f for f in files)
     assert rel.code_version() == rel.code_version()
+    attempt = {f for f in files if rel.is_attempt_file(f)}
+    assert {"contracts.py", "evaluate/attempt.py", "runtime/runner.py", "harness/package.py",
+            "harness/seeds/stirrup/manifest.json"} <= attempt
+    assert {"evaluate/release.py", "evaluate/gate.py", "improver/round.py", "activity/phases.py",
+            "improver/prompts/propose.md"} <= files - attempt
+    assert len(rel.attempt_version()) == len(rel.improver_version()) == 16
+
+
+def test_attempt_identity_reads_the_attempt_code_the_package_the_limits_the_model_the_image_and_the_split():
+    base = dict(attempt_version="a1", package_ref="package:sha256:" + "1" * 64, limits={"max_steps": 50},
+                model={"provider": "claude_code", "identity": "m", "effort": "medium", "max_tokens": 32000,
+                       "timeout": 600}, image_id="sha256:img", split_hash="s1")
+    same = rel.attempt_identity(**{**base, "model": {**base["model"], "timeout": 900}})      # not an identity field
+    assert rel.attempt_identity(**base) == same and len(same) == 16
+    for change in ({"attempt_version": "a2"}, {"package_ref": "package:sha256:" + "2" * 64},
+                   {"limits": {"max_steps": 49}}, {"model": {**base["model"], "effort": "high"}},
+                   {"image_id": None}, {"split_hash": "s2"}):
+        assert rel.attempt_identity(**{**base, **change}) != same
+
+
+# ---------------------------------------------------------------------------- the release line
+def test_promote_by_decision_releases_the_working_line_without_a_receipt_and_by_the_gate_wants_one(ws):
+    """EVALUATE §7 (stage 4c): a promotion by decision carries no receipt; one by the gate needs a registered,
+    accepted receipt of the same package; promoting again under the same operation is the same release."""
+    objects, releases, seed = ws
+    assert releases.released_ref() is None and releases.released() is None
+    with pytest.raises(NotAuthorized, match="names its receipt"):
+        releases.promote(seed, None, reason="gate", operation_id="g1")
+    with pytest.raises(ContractError, match="gate or decision"):
+        releases.promote(seed, None, reason="screen", operation_id="x")
+    with pytest.raises(NotAuthorized, match="carries no receipt"):
+        releases.promote(seed, ref(objects, "receipt"), reason="decision", operation_id="d0")
+    released = releases.promote(seed, None, reason="decision", operation_id="d1")
+    assert (released.reason, released.parent_ref, released.package_ref, released.receipt_ref) == \
+        ("decision", seed.ref(), seed.package_ref, None)
+    assert releases.released_ref() == released.ref() and releases.released() == released
+    assert releases.active_ref() == seed.ref()                        # the working line does not move
+    assert releases.promote(seed, None, reason="decision", operation_id="d1") == released
+    assert [e["reason"] for e in releases.events.read("released")] == ["decision"]
+    assert released.ref() in releases.installed()

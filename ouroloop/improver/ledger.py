@@ -2,8 +2,9 @@
 <workspace>/ledger/experience.jsonl. Written by fixed code only; R reads a projection of it.
 
 A row is {id, ts, stage, round_id, ...}; ids are `L<n>` in write order, so a playbook lesson can cite the row it rests
-on and the citation can be checked. Rows never hold a dev task id: a gate row keeps the verdict, the gain and the
-counts of fixed and regressed dev tasks, not which ones (they are in the receipt, which R never reads).
+on and the citation can be checked. Rows never hold a dev task id: the release gate's row keeps the verdict, the gain
+and the counts of fixed and regressed dev tasks, not which ones (they are in the receipt, which R never reads). Rows
+name held-out train tasks (a screen's fixed and regressed lists); the projection R reads turns them into counts.
 """
 from __future__ import annotations
 
@@ -13,15 +14,16 @@ from pathlib import Path
 
 from ..contracts import append_jsonl, locked, now, read_jsonl
 
-STAGES = ("measured", "diagnosed", "allocated", "declared", "verified", "screened", "gated", "installed", "rejected",
-          "credited", "removal_proposed", "no_code_candidate", "unused", "vocabulary_added", "l6_unavailable", "stopped",
-          "playbook", "carried", "carry_dropped")
+STAGES = ("measured", "diagnosed", "focused", "declared", "verified", "screened", "accepted", "gated", "installed",
+          "rejected", "credited", "removal_proposed", "no_code_candidate", "vocabulary_added", "l6_unavailable",
+          "stopped", "playbook")
 # What R reads of a row (the projection): train facts and counts. Anything else of a row stays with the host.
 TASK_LISTS = ("predicted_affected", "fixed", "regressed")       # the projected fields that name train tasks
 PROJECTED = ("id", "stage", "round_id", "candidate", "dir", "cause", "cause_id", "kind", "site", "trigger",
-             "predicted_affected", "differs_from", "fixed", "regressed", "net_flips", "fixes", "outcome", "verdict",
-             "gain", "fixed_count", "regressed_count", "passed", "steps", "reason", "assignments", "causes",
-             "component", "credit", "names", "status")
+             "mechanism", "components", "predicted_affected", "differs_from", "fixed", "regressed", "net_flips",
+             "fixes", "holdout_score", "best_so_far", "accepted", "reasons", "failed_components", "outcome", "verdict",
+             "gain", "fixed_count", "regressed_count", "passed", "steps", "reason", "causes", "require_code",
+             "component", "credit", "names", "status", "holdout_passed", "holdout")
 
 
 def _scrub(value, hide: set):
@@ -96,7 +98,7 @@ class Ledger:
             if r.get("outcome") != "screened":
                 continue
             fixed, regressed = len(r.get("fixed") or ()), len(r.get("regressed") or ())
-            for key in ("all", str(r.get("kind") or "?")):
+            for key in ("all", *str(r.get("kind") or "?").split("+")):
                 slot = board.setdefault(key, {"candidates": 0, "fixed": 0, "regressed": 0, "net": 0})
                 slot["candidates"] += 1
                 slot["fixed"] += fixed

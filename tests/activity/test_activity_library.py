@@ -53,8 +53,12 @@ def stream(root: Path, upstream: str, *, actor=None, memory: dict | None = None,
     def client():
         s.starts += 1
         return s.client
+    # order seed 349 streams policy_hold first (no lesson: the first commit writes no memory), update_stage second
+    # (the opportunity lesson), then a failing notify task whose first encounter sees that lesson alone and whose
+    # retry carries the library mark (phases.stream_order); the seed is a free field of K and only these tests read
+    # the stream's order
     s.a = rsi.activity(root, upstream, provider=s.actor, research=s.research, memory_client=client,
-                       memory={"enabled": True, **(memory or {})}, **sections)
+                       memory={"enabled": True, **(memory or {})}, **{"gate": {"order_seed": 349}, **sections})
     return s
 
 
@@ -226,7 +230,8 @@ def test_the_reports_memory_section_reads_the_stream_and_is_the_same_bytes_twice
     assert {p: (a.root / p).read_bytes() for p in ("report.json", "report.md")} == written
     assert first == second == json.loads(written["report.json"])
     m, result = first["memory"], streamed.result
-    assert (m["status"], m["processed"], m["planned"], m["lost"], m["imports"]) == ("done", 5, 5, 0, 0)
+    assert (m["status"], m["processed"], m["planned"], m["lost"], m["imports"]) == ("done", len(rsi.TRAIN),
+                                                                                    len(rsi.TRAIN), 0, 0)
     assert m["readout"] == json.loads(json.dumps(result["readout"]))
     n = result["readout"]["entries"]["active"]
     assert m["snapshot"] == {"outcome": "candidate", "why": None, "package_ref": result["snapshot"]["package_ref"],
@@ -235,7 +240,8 @@ def test_the_reports_memory_section_reads_the_stream_and_is_the_same_bytes_twice
                                  "max_memory_bytes"], "bytes": len(load(a.objects, result["snapshot"]["package_ref"])
                                                                    .memory_text.encode("utf-8"))}}
     md = written["report.md"].decode()
-    assert f"- stream done: 5/5 train tasks (0 lost), {m['dropped']} memories dropped at the checks" in md
+    assert f"- stream done: {len(rsi.TRAIN)}/{len(rsi.TRAIN)} train tasks (0 lost), {m['dropped']} memories dropped " \
+           f"at the checks" in md
     assert f"- D {m['readout']['D']}, B {m['readout']['B']}" in md
     assert f"- snapshot candidate {short(m['snapshot']['package_ref'])}" in md
 
