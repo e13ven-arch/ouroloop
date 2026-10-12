@@ -8,6 +8,22 @@
 
 ---
 
+## 2026-10-12 finance-v5 第 0 轮：R 交了一个 before_tool hook，留出 10/20 → 12/20，装入工作线；$42.46
+
+- `--phase round --round 0`，自动跑完（用户 2026-10-12："不要切到手动模式，自动跑完"）。
+- 读数：
+  - W0 train 25/50，留出部分 10/20；研究部分 15 个失败案例归 5 簇：missed_action 5、excluded_mentioned 4、unread_value 3、arith_mismatch 2、real_date 1。聚焦清单给 excluded_mentioned、arith_mismatch、real_date 建议 tool/hook，另两簇只有 skill/prompt；要求至少一个 tool 或 hook。
+  - R 的会话 13 回合、12 次编辑：读 manifest 与案例、`search_trace` 11 次、读 1 条轨迹，写 `middlewares/scope.py`，`run_tests` 与 `run_check` 各两次后 finish。一个包、一个组件：`before_tool` hook `scope`，对 excluded_mentioned；机制是每条外发消息（Gmail send、Slack post）第一次发出时拦一次，把 base64 解开的正文连同"核对范围、删掉计划里排除的人、供应商、行、费用"的指令回给 agent，重发放行。纯标准库，不调模型，声明 `predicted_affected` 三道研究题。
+  - 阶梯：V0、V1 过；V2b 在 3 道声明题里触发 2 道（阈值 2），在 6 道通过题上也全部触发（误触发率 1.0：它按设计拦每一条消息一次）。
+  - 留出筛选：20 题全跑，12/20 对 W0 的 10/20；修复 3（`po_three_way_match`、`prepaid_amortization`、`intercompany_balance_recon`），退步 1（`expense_split_allocation`），净 +2；足迹 19/20，所以条件记功几乎等于无条件。三条接受规则都成立，装入工作线 `00ea3d9c6ce0`。记功 hook:scope +2.0；剧本两条教训都引得上台账。
+  - 花费 $42.46：现量 $26.77、筛选 $13.20、诊断 $1.07、会话 $1.40、剧本 $0.02。筛选时每次尝试 $0.66，对 W0 的 $0.54 高约 23%：每条消息多一个回合。接受规则没有成本项，final 会把成本并列报出。
+- 判读：机制一轮就装入了，这是 v1.1 四次活动都没做到的；但 +2 在 20 题的噪声之内，修的三道题也不是声明的那三道（hook 的"把正文读一遍"对别的原因也有用），要看后面几轮累不累得起来。R 的产出是单组件、不调模型的 hook，清单里的 missed_action、unread_value（只剩文字类载体）没动。
+- 两个小毛病，等活动结束再改（改 `ouroloop/` 就是新 K）：`--phase round` 跑完后 CLI 对 `RoundResult` 调 `.get` 抛 AttributeError、退出码 1（轮次本身已完成、记录完整；之后的轮用 `cycle --until round-K`，它返回 dict）；无 dev 时 freeze 的"final 未封存"提示仍写 `--phase gate`。
+- 没读任何 test 题；memory 关着。
+- 待用户决定：继续批式跑第 1 轮（约 $28：补测研究部分 30 题约 $16、筛选 $11、研究约 $2），还是先写流式循环的设计（每题首遇计分后变经验、每 N 题一轮、下一批当验证）。
+
+---
+
 ## 2026-10-12 finance-v5 开始：合入 m1-automationbench；smoke 与 freeze；$0
 
 - `s5/search-loop` 合入 `m1-automationbench`（`d36ee5d`，阶段 4b 与 4c）。此后 finance-v5 从这个检出跑，期间 `ouroloop/` 下不再合入任何改动（规则 13；K 的 `improver_version` 也在比对）。
