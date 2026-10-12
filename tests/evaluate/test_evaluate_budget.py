@@ -216,10 +216,12 @@ def test_a_candidate_that_could_only_train_is_not_started(tmp_path):
     assert account.affordable({"usd": 4.0})
     with pytest.raises(BudgetExhausted, match="would exceed usd"):
         account.reserve("train-1", {"usd": 5.0})
-    # the verification itself may spend its allocation, and no more than it
+    # the verification spends its allocation first and may go on into what the scope has left besides (the
+    # allocation is a floor, EVALUATE §9); the scope's own limit is the ceiling
     assert account.reserve("dev-run", {"usd": 6.0}, allocation="verification").bound == {"usd": 6.0}
-    with pytest.raises(BudgetExhausted):
-        account.reserve("dev-run-2", {"usd": 0.5}, allocation="verification")
+    assert account.reserve("dev-run-2", {"usd": 0.5}, allocation="verification").bound == {"usd": 0.5}
+    with pytest.raises(BudgetExhausted, match="would exceed usd"):
+        account.reserve("dev-run-3", {"usd": 4.0}, allocation="verification")
 
 
 def test_an_allocation_larger_than_the_scope_is_refused(tmp_path):
@@ -231,22 +233,26 @@ def test_an_allocation_larger_than_the_scope_is_refused(tmp_path):
 
 def test_the_headroom_is_what_a_reservation_is_actually_allowed(tmp_path):
     """A phase account with no limits of its own spends from the activity's root; what the root set aside for the
-    final is not spendable elsewhere and is not shown as such, and the final spends its share from its own account."""
+    final is not spendable elsewhere and is not shown as such; the final spends its share from its own account and
+    may go on into what the root has left besides (the share is a floor, the root the ceiling: EVALUATE §9)."""
     book = Budgets(tmp_path)
     root = book.account("activity", {"usd": 10.0})
     root.allocate("final", {"usd": 4.0})
     phase, final = root.child("activity:improve", {}), root.child("activity:final", {})
     assert phase.remaining()["effective_remaining"] == {"usd": 6.0}
-    assert final.remaining(allocation="final")["effective_remaining"] == {"usd": 4.0}
+    assert final.remaining(allocation="final")["effective_remaining"] == {"usd": 10.0}
     with pytest.raises(BudgetExhausted):
         phase.reserve("too-much", {"usd": 6.5})
     r = final.reserve("final-1", {"usd": 3.0}, allocation="final")
     final.settle(r.id, {"usd": 3.0})
-    assert final.remaining(allocation="final")["effective_remaining"] == {"usd": 1.0}
+    assert final.remaining(allocation="final")["effective_remaining"] == {"usd": 7.0}
     assert phase.remaining()["effective_remaining"] == {"usd": 6.0}      # the final's spend came out of its share
     phase.settle(phase.reserve("improve-1", {"usd": 6.0}).id, {"usd": 6.0})
     assert phase.remaining()["effective_remaining"] == {"usd": 0.0}
+    assert final.remaining(allocation="final")["effective_remaining"] == {"usd": 1.0}    # the rest of its share
     assert final.affordable({"usd": 1.0}, allocation="final") and not final.affordable({"usd": 1.0})
+    with pytest.raises(BudgetExhausted):                                  # the root is the ceiling
+        final.reserve("final-2", {"usd": 1.5}, allocation="final")
 
 
 def test_a_hold_is_set_aside_once_per_operation(tmp_path):

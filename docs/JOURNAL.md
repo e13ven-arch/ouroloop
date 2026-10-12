@@ -8,6 +8,16 @@
 
 ---
 
+## 2026-10-12 两条规则放宽，让 finance-v5 的 final 原地跑：final 份额是下限；final 一族只比对尝试路径的代码
+
+- 用户的决定（2026-10-12）："预算可以不用限制那么死"；"先把 v5 的 final 跑出来，v6 改成跨域 train"。
+- 规则 1：final 的份额是下限不是上限（EVALUATE §9、ACTIVITY §5、DESIGN §6）。`Budgets._exceeds` / `headroom` 去掉"带标签的预留不得超过份额"那一向：别的阶段仍动不了份额没花的部分，final 花完份额可以继续用根里没分配的剩余，根的 `usd` 是天花板。`phases.final_room`（份额加根的空余）替代 `final_usd` 进 freeze 的 `share_problem` 与打印；evaluate 原本就按 `effective_remaining` 判，语义随之改。`checks.money_problems` 的在飞预留检查改对根。finance-v5：空间 $420，需要 $305，封得上。
+- 规则 2（PLAN 规则 13 放宽）：打开工作区以 `core.json` 冻结的 K 为准（`workspace._frozen_core`），只有配置或划分变了才拒绝；代码版本变了交给各阶段的启动检查：轮次与 gate 要 `attempt_version` 与 `improver_version` 都相符，final 一族（`checks.FINAL_FAMILY`：freeze、release、evaluate、report、export）只要求 `attempt_version`——test 题上跑的是尝试路径，改进器与预算代码碰不到它；`improver_version` 的冻结值与当前值记在 `final_code` 事件（freeze 封存时、evaluate 开跑时）。这样 finance-v5 的 K（`909c2e86950f`）在改了预算代码的检出上照样能 freeze 与 evaluate，改进器的轮次仍拒绝。
+- 测试：预算的两例改为"份额先花、根是天花板"；`test_paid_run_safety` 三例改为把根花到只剩份额（或 $0.10）再判；checks 的在飞预留例改对根（并发 2 × $0.26 对 $0.3）；代码变动例加 final 一族不报改进器；workspace 新例：改进器版本变了打开的是冻结的 K、round 拒绝、release 不拒绝、尝试代码变了处处拒绝、配置变了仍拒绝。全量套件（Docker worker + 真 sidecar，`-m "not live"`）：1,533 passed、1 deselected（11 分 45 秒）。
+- 没读 test；没付费。接下来：freeze 封存 final（$0）、提交计划哈希、evaluate（约 $195）。
+
+---
+
 ## 2026-10-12 finance-v5 收口：按决定发布（$0）；final 封不上——$200 的份额装不下 300 次尝试加预留
 
 - 用户的决定（2026-10-12）："按建议 2 收口，先跑 release"。

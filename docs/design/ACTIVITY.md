@@ -111,7 +111,7 @@ def write_report(activity, report) -> dict   # 两次相同（确定性）
 
 ## 5 预算根与份额
 
-- 一个活动一个根（`budget.usd`）；final 份额在根打开时预留（`final_usd`）；每轮的研究份额按 K 的 `improver.round_share` 分配；超出的付费步骤不开始。
+- 一个活动一个根（`budget.usd`）；final 份额在根打开时预留（`final_usd`），它是下限：别的阶段动不了它，final 花完它还可以用根里没分配的剩余（EVALUATE §9，2026-10-12）；每轮的研究份额按 K 的 `improver.round_share` 分配；超出的付费步骤不开始。
 - 每次付费步骤先 `affordable(bound)`，再预留、再调用、再结算（EVALUATE §3 的 Budgets）。
 - 报告按步单列：基线（或导入）、memory、每轮的 R 会话 / aux 诊断 / 补测 / 留出筛选、活动末 gate、final。
 - v1.2 的典型活动（finance，基线导入）：12 轮 × 约 $28 + gate 约 $25 + final 约 $72 ≈ $430 上限；根 $500、final 份额 $200。
@@ -124,7 +124,7 @@ def write_report(activity, report) -> dict   # 两次相同（确定性）
 
 ## 7 不变量
 
-- K 冻结后，活动期间任何 `.py` 改动都不合入该检出（规则 13，由 `attempt_version` 与 `improver_version` 守住：启动检查分别比对）。
+- K 冻结后，活动期间任何 `.py` 改动都不合入该检出（规则 13，由 `attempt_version` 与 `improver_version` 守住：启动检查分别比对）。2026-10-12 放宽：打开工作区时以 `core.json` 冻结的 K 为准，只有配置或划分变了才拒绝；代码版本变了由各阶段的启动检查决定——轮次与 gate 要两个版本都相符，final 一族（`checks.FINAL_FAMILY`：freeze、release、evaluate、report、export）只要求 `attempt_version` 相符（test 题上跑的是尝试路径，改进器与预算代码碰不到它），`improver_version` 的前后值记在 `final_code` 事件里。
 - `freeze` 之后 `[rsi]` 的 ref 不变；改了即启动错误。
 - test 只在 `evaluate` 读；report 披露读取次数；smoke 的近重复提示只看 train 与 dev。
 - 启动检查只查三类；不加别的。

@@ -34,7 +34,7 @@ from ..contracts import short, write_json
 from ..evaluate.attempt import make_agent_factory, run_tasks, task_hash
 from ..evaluate.final import FinalPlan, estimate_lines, final_estimate, run_final, seal, share_problem
 from ..evaluate.gate import GatePlan, TaskEvalPlan, refill_attempts
-from ..evaluate.release import NotAuthorized, Release, Releases
+from ..evaluate.release import NotAuthorized, Release, Releases, improver_version
 from ..evaluate.results import TaskResult, attempt_id, summarise
 from ..harness.literals import findings, forbidden, literal_index
 from ..harness.package import Limits, PackageError, build
@@ -207,6 +207,19 @@ def gate_template(activity) -> TaskEvalPlan | None:
                         control_pooling=g.get("control_pooling"), confirmation_repeats=int(g["confirmations"]))
 
 
+def final_room(activity) -> float | None:
+    """What the final may spend in dollars: its share and what the root has left unallocated (EVALUATE §9: the share
+    is a floor under the final, the root's limit the ceiling); None without a dollar root."""
+    return (activity.account("final").remaining(allocation="final").get("effective_remaining") or {}).get("usd")
+
+
+def final_code_event(activity, phase: str) -> dict:
+    """The final family runs on the attempt code K froze; the improver code may have moved since (PLAN rule 13,
+    2026-10-12): both versions on record beside the phase."""
+    return activity.events.append("final_code", phase=phase, attempt_version=activity.core.attempt_version,
+                                  improver_frozen=activity.core.improver_version, improver_now=improver_version())
+
+
 def final_plan(activity) -> FinalPlan:
     final = activity.k["final"]
     release = activity.released_release()
@@ -249,12 +262,14 @@ def freeze(activity, *, out: Callable[[str], None] = print) -> dict:
         estimate = final_estimate(list(activity.results.all()), plan, plan_ref=None,
                                   execution_of=lambda ref: _execution(activity, ref), pricing=activity.pricing(),
                                   concurrency=activity.concurrency)
-        for line in estimate_lines(estimate, (activity.k["budget"] or {}).get("final_usd")):
+        room = final_room(activity)
+        for line in estimate_lines(estimate, room):
             out(line)
-        problem = share_problem(estimate, (activity.k["budget"] or {}).get("final_usd"))
+        problem = share_problem(estimate, room, share_usd=(activity.k["budget"] or {}).get("final_usd"))
         if problem:
             raise ValueError(f"freeze refused: {problem}; the plan was not sealed")
         refs["final_plan_ref"] = seal(plan, activity.root, activity.objects)["plan"]
+        final_code_event(activity, "freeze")
     out("frozen     name these under [rsi]:")
     out("[rsi]")
     for key, value in refs.items():
@@ -764,6 +779,7 @@ def evaluate(activity, *, out: Callable[[str], None] = print) -> dict:
             and estimate["expected"] + estimate["reservations"] > float(left) + 1e-9:
         raise ValueError(f"{plan.experiment_id}: the expected spend and the in-flight reservations do not fit the "
                          f"${float(left):.2f} left to the final; nothing was run")
+    final_code_event(activity, "evaluate")
 
     def arm(name, release_ref, pairs, retry, supersedes):
         return run_arm(activity, release=activity.releases.load(release_ref), split="test", candidate=name, role=name,

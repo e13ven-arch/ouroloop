@@ -138,7 +138,7 @@ v1.1 每轮一次 gate；v1.2 活动内的接受由改进器的留出筛选决�
 
 - `FinalPlan` 封存：任务 = 全部 test、`repeats`、臂（W0 与 W\*，可选 R1）、主张；臂名进每个 attempt id（即 session id），所以计划里 W\* 写作 `W_star`，不能进 attempt id 的臂名在构造时就拒绝；`seal` 写对象与事件，哈希由用户提交到 git（规则 6）。活动只在有发布线（gate 通过或按决定发布，W\* ≠ W0）之后封存（ACTIVITY §4）。
 - 对外的数字（2026-10-12）：final 两臂各自的绝对通过率与部分得分是 README 的主数（W\* 得了多少，W0 臂并列），配对差与区间作为第二个数披露；只用公开集的 test 份，与官方榜的私有集不可比，README 要注明口径（题数、effort、repeats）。
-- `run_final` 先打印预计花费与份额，份额不够就拒绝；每臂每题每次都是独立尝试；续跑只跑缺的；完成后 `report` 读汇总，披露该域 test 的读取次数。
+- `run_final` 先打印预计花费与 final 的空间（份额加根的空余，§9），装不下就拒绝；每臂每题每次都是独立尝试；续跑只跑缺的；完成后 `report` 读汇总，披露该域 test 的读取次数。
 
 ## 7 发布与装入
 
@@ -159,6 +159,7 @@ v1.1 每轮一次 gate；v1.2 活动内的接受由改进器的留出筛选决�
 
 - 计划先冻结，读数后判；test 在封存前不读；dev 只给汇总；grading 只对 train。
 - 每次付费调用先预留后结算；一个活动一个预算根；final 的份额事先留出；续跑不重复付费。
+- 份额是下限不是上限（2026-10-12）：`final_usd` 是别的阶段动不了的钱；final 自己花完份额后可以继续用根里没分配的剩余，根的 `usd` 才是天花板。封存（freeze）与开跑（evaluate）前的检查按 final 的"空间"算——份额加根的空余（`phases.final_room`，`BudgetAccount.remaining(allocation="final")` 的 `effective_remaining`）——预期花费 + 并发份在飞预留 + 2 份卡住预留要装得下。finance-v5 的教训：份额 $200 按"约 $150"估，没算预留；预留按定价上限算（1M 输入 token × cache write 价，一次 $11.28），是实付的百倍，8 并发就 $113。
 - `test_paid_run_safety` 的全部用例迁到 `tests/evaluate/`，名单（现有）：预留与结算一一对应、一个根、研究步计量、无法核价的候选不开始、中途耗尽作 budget_exhausted、尝试带成本、用量词表归一化、只在有界的维度上判超、崩溃后续跑只跑缺的、final 用预留的份额、完成的 final 再跑不付费、refill 记前因、中断的改进续跑、无 ref 的实验关闭不猜、freeze 的四条、价目含缓存、尝试保留缓存计数、gate 少于 min_tasks 拒绝、并发是机器设置、并发上限共享、两次确认与 economy 拒绝、速率限制记录、速率计数跨账户错误、研究会话每回合计量、final 份额装不下拒绝、final 先打印预计花费、final 估算读 W\* 的 gate 读数、份额装不下不开始、不封存、验证界核价、checks-only 在付费阶段拒绝。
 - 阶段 1 已在 `tests/evaluate/test_paid_run_safety.py`（加上 `test_evaluate_budget.py`、`test_evaluate_gate.py`）：除下面几条外的全部。等 improver（阶段 3）的：研究步计量、无法核价的候选不开始、中断的改进续跑、无 ref 的实验关闭不猜、研究会话每回合计量、验证界核价，记在 IMPROVER §13。速率限制目前只在 meter 上计数并测试（`MeteredProvider.rate_limited`），还没有写进事件或报告。
 - 失败的调用在重试前等 5 s、20 s（`RETRY_SECONDS`：断开的连接要等一会儿才回来）。请求没到模型（限流、过载，或 API 以 400 拒绝的畸形请求：空白的文本块、提示过长）释放；模型答了而答复不能用（不是一个回合、结构化输出放弃、换了模型）且提供方报了用量，按用量结算；其余（超时、子进程崩溃、没报用量）按上界记 unknown。

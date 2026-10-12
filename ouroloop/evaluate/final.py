@@ -117,18 +117,21 @@ def final_estimate(rows: list[TaskResult], plan: FinalPlan, *, plan_ref: str | N
             "suggested_share": None if expected is None or reservations is None else round(expected + reservations, 2)}
 
 
-def share_problem(estimate: dict, share_usd: float | None, *, stuck: int = STUCK_BOUNDS) -> str:
-    """Why the final's share cannot hold the estimate, or "": the expected spend plus `concurrency` in-flight bounds and
-    `stuck` stuck ones must fit. Unknown cost is a problem, not zero."""
-    if share_usd is None or estimate.get("bound") is None:
+def share_problem(estimate: dict, room_usd: float | None, *, stuck: int = STUCK_BOUNDS,
+                  share_usd: float | None = None) -> str:
+    """Why the final's room cannot hold the estimate, or "": the expected spend plus `concurrency` in-flight bounds and
+    `stuck` stuck ones must fit `room_usd` — what the final may spend: its share and what the root has left besides
+    (EVALUATE §9: the share is a floor, the root the ceiling). Unknown cost is a problem, not zero."""
+    if room_usd is None or estimate.get("bound") is None:
         return ""
     if estimate["expected"] is None:
         return f"the final share cannot be checked: no priced reading of {estimate['unknown']} and no estimate"
     need = estimate["expected"] + estimate["reservations"] + stuck * estimate["bound"]
-    if need > float(share_usd) + 1e-9:
-        return (f"the final share ${float(share_usd):.2f} cannot hold the plan: expected ${estimate['expected']:.2f} + "
-                f"{estimate['concurrency']} in-flight and {stuck} stuck reservations of ${estimate['bound']:.4f} = "
-                f"${need:.2f}")
+    if need > float(room_usd) + 1e-9:
+        where = (f"the final's room ${float(room_usd):.2f} (its share ${float(share_usd):.2f} and what the root has "
+                 f"left besides)" if share_usd is not None else f"the final's room ${float(room_usd):.2f}")
+        return (f"{where} cannot hold the plan: expected ${estimate['expected']:.2f} + {estimate['concurrency']} "
+                f"in-flight and {stuck} stuck reservations of ${estimate['bound']:.4f} = ${need:.2f}")
     return ""
 
 

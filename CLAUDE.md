@@ -15,7 +15,7 @@ Start at `docs/PLAN.md`: where things stand (§0), the rules (§1), the stages i
 - The framework stays benchmark-agnostic: benchmark specifics live in the adapter or are learned by the run from train. Follow the principle; do not add audits or checks to prove it.
 - The platform keeps only three kinds of constraint: protect money, prevent leakage, keep results correct (DESIGN §6).
 - Run records cannot be regenerated. Never delete or modify git-ignored files (`examples/**/workspace*/`, `ws/`, `*.local.toml`, the ignored files in `evals/replay_campaign/`). Remove only tracked files, with `git rm`. Old versions live on tags: `archive-2026-10-09` has the docs removed in the 2026-10-09 cleanup (DESIGN v0.7, ROADMAP, TECHNOLOGY, REHEARSAL, the superseded design drafts, the modules/ docs); `archive-2026-10-08` has every file deleted in the 2026-10-08 cleanup and in slimming batch 1.
-- While a paid activity runs from a checkout, merge nothing under `ouroloop/` into it: `code_version` is part of K.
+- While a paid activity runs from a checkout, merge nothing under `ouroloop/` into it: both code versions are part of K. The final family (freeze, release, evaluate, report, export) needs only the attempt code to match (PLAN rule 13, 2026-10-12).
 - Existing workspaces are not resumed at HEAD: re-render or resume them at their tags (`v0.4.0`, `archive-2026-10-08`). HEAD must still read their train/dev records (`tests/test_record_compat.py`), and one attempt on the fake upstream must behave as before (`tests/test_attempt_behaviour.py`). Hash identity with old workspaces is not kept (PLAN P1, 2026-10-08).
 - Reply to the user in Chinese. End every commit message with
   `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`
