@@ -103,7 +103,8 @@ preset 与配置的关系：preset 给出每个字段的默认值与上限；配
 - K 的版本拆成两项：`attempt_version`（`runtime/`、`harness/` 含种子、`evaluate/{attempt,results,limits,splits}.py`、`adapters/`、`providers/`、`contracts.py` 的摘要）与 `improver_version`（`improver/`、`memory/`、`activity/`、`evaluate/{gate,final,budget,release}.py`、R 的提示词的摘要）；`Core{..., attempt_version, improver_version}`，`code_version` 不再单独存在。启动检查分别比对两者。
 - `AttemptIdentity = digest(attempt_version, package_ref, limits, model, worker.image_id, split_hash)`，写在 `core.json` 与基线的 run manifest 里；两个工作区的 AttemptIdentity 相同时基线可导入（EVALUATE §8、ACTIVITY §4）。
 - `improver` 节按 IMPROVER §2 v1.2（`packages_per_round`、`require_code_component`、`l5_per_round`、`hook_aux_calls`、`accept_*`、`holdout_share`、`round_share`）；`gate_every` 删除。`schedule.rounds` 上限 12，`patience` 3。
-- `rsi` 节多 `baseline_from`（旧工作区路径，可选）。
+- `rsi` 节多 `baseline_from`（旧工作区路径，可选）。v1.3：再多 `seed_from`（旧工作区路径，可选：从它的发布线 W\* 起步，DESIGN §6.7）。
+- v1.3：`schedule` 节多 `stream_batch`（10，cap）与 `stream_splits`（`["train"]`，subset of `["train", "test"]`）；`improver` 节多 `audit_hook_share`（0.3，floor）、`stream_screen_max`（20，cap）；`packages_per_round` 的 preset 值改为 3。trace 的 split 守卫在流式的 test 段按"已计分"放行：`stream_scored` 事件记下每道计过分的题，`TraceStore` 与 `Results.grading` 对这些题放行。
 - preset `automationbench_v2`：以上默认值，`memory.enabled = false`。
 
 ## 5 Release 三元组与收据
@@ -117,7 +118,7 @@ class Release(Record):               # kind "release"
     core_ref: str                    # K
     receipt_ref: str | None          # 装入依据：GateReceipt（gate 发布才有；种子、screen、decision 为 None）
     screen_ref: str | None           # 留出筛选的 ScreenResult（reason screen 才有）
-    reason: str                      # "seed" | "screen"（留出筛选接受，工作线） | "gate"（活动末发布） | "decision"（无 dev 的活动按决定发布，阶段 4c） | "rollback" | "import"
+    reason: str                      # "seed" | "screen"（留出筛选接受，工作线；叠装的也是） | "gate"（活动末发布） | "decision"（无 dev 的活动按决定发布，阶段 4c） | "rollback" | "import"（seed_from 的种子，v1.3）
 
 @dataclass(frozen=True)
 class GateReceipt(Record):           # kind "receipt"：一次配对 gate 的读数（EVALUATE §5）

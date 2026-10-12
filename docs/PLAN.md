@@ -36,6 +36,7 @@
 | 10-11 | 跑了四次活动零装入，下一版改框架代码，不再跑活动等它自己提升；先写设计。按审查改六处：一轮一个包、留出接受累积在工作线、dev 只在活动末读一次、hook 可调 aux、library 默认关、版本拆分与基线导入 | DESIGN v1.2 §6.12 |
 | 10-09 | 不以代码行数作验收；要求是工作量不落在外围组件上，核心系统认真打磨。行数只作读数 | JOURNAL 2026-10-09 不以行数作验收一条 |
 | 10-12 | 对外的数字是 final 上的绝对分（W\* 得了多少，W0 臂并列），不追求比业界更严；划分改两份（train / test，finance 50/50）；基线阶段取消；无 dev 的活动按决定发布；模型不换，改的是代码、工具、流程、prompt、memory；流式学习（test 首遇计分后变证据、每 N 题一轮）另立阶段 | DESIGN §6.7 第三条、§12 第 5 项；ACTIVITY §4 |
+| 10-12 | 第 0 轮 +2 不够，要一次活动提升足够高：finance-v5 批式跑到底拿第一个数；并行做四条（一轮几个包并叠装、清单与提示词对准整体机制与审核 hook、流式循环、工作线跨活动 `seed_from`），v6 从 v5 的 W\* 起步流式跑 | DESIGN §6.1、§6.4、§6.7、§6.13、§12 第 6 项 |
 
 ### 0.3 停在哪里
 
@@ -84,6 +85,7 @@
 | 4 | finance 实测：新 preset，基线 → library → 最多 8 轮、gate 每两轮一次（每步后停）→ 有装入则封存 final → RESULTS、README、合入 main | 过程检查成立；计划哈希早于第一次 test 尝试；报告两次相同 | 名义约 $440（$350～600），每步先批准 | 结束：finance-v1～v4 共 $528，机制全部跑通，零装入（JOURNAL 2026-10-11 finance-v4 结束一条） |
 | 4b | 搜索循环 v2（DESIGN v1.2 §6.12 的六处）：`improver/`（一轮一个包、聚焦、留出接受、工作线）、`evaluate/`（活动末 gate、`promote`、基线导入）、`activity/`（`gate` 阶段、`baseline_from`、preset `automationbench_v2`）、版本拆分与 AttemptIdentity、R 的提示词；然后 finance-v5 | 假上游上脚本化的 R：接受装入工作线、下一轮只补测研究部分、无候选时按耐心停、`cycle --until gate` 发布、同 AttemptIdentity 的基线导入 $0；finance-v5：留出曲线不降，dev 严格 +3～6 题或部分得分 +0.05～0.10，成本不升 | 代码 $0；finance-v5 名义约 $410（基线 $58 重付、轮次、gate $25、final $72；根 $500、final 份额 $200） | 代码完成（2026-10-11，`s5/search-loop`；JOURNAL 阶段 4b 一条），待用户确认后合入并冻结 finance-v5 |
 | 4c | 两份划分与按决定发布（DESIGN §6.7 第三条、§10）：K 没有 dev 题时 freeze 不写 gate 模板、round 不要求它、`gate` 无事可做；`--phase release` 补齐 W\* 的 train 读数并提升为发布线（reason `decision`）；final 只要有发布线；基线阶段可跳过；finance-v5 改为 50/50、无基线、按决定发布、final 两臂 | 假上游上无 dev 的活动端到端：freeze、两轮、release、final 两臂、export；有 dev 的活动行为不变 | 代码 $0；finance-v5 名义约 $400 | 完成（2026-10-12，`s5/search-loop`；JOURNAL 阶段 4c 一条） |
+| 4d | 产出率与流式（DESIGN v1.3：§6.1 一轮几个包与叠装、§6.4 审核 hook 建议与提示词、§6.7 `seed_from`、§6.13 `--phase stream`）；分支 `s6/yield`，finance-v5 期间不合入 | 假上游：两个包各自筛选、第二个叠装过 V0/V1 装入、冲突记 `not_stacked`；清单对只剩文字载体的簇给审核 hook 建议；`seed_from` 的活动从旧 W\* 起步；`stream` 两批各一轮、第二批在新线上跑、报告按批给首遇分 | 代码 $0；finance-v6 名义约 $450 | 文档已写（2026-10-12），代码进行中 |
 | 5 | 训练绑定：v2.0 离线链对新记录跑通，`model` 组件绑定；之后按 V2 的 v2.1、v2.2 | V2 §5 的断言 | $0；v2.1 另批 | 待做 |
 
 每个阶段：先把 DESIGN 的对应节改定稿 → 代码 → 测试 → JOURNAL → 停。阶段 1～3 各自一个分支，串行合入。阶段 4 期间不往它的检出合入代码（规则 13）。

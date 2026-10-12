@@ -13,7 +13,9 @@
 ```python
 @dataclass(frozen=True)
 class Settings:
-    packages_per_round: int = 1                  # R 每轮交的候选包数；多于一个时留出筛选挑最优
+    packages_per_round: int = 3                  # R 每轮交的候选包数（v1.3：各自筛选，接受的叠装，§9.4）
+    audit_hook_share: float = 0.3                # 只剩文字载体的簇占失败案例的份额到此，清单建议一个调 aux 的审核 hook（§6）
+    stream_screen_max: int = 20                  # 流式一轮的留出筛选最多跑最近多少道留出题（§3.1）
     fixed_per_round: int = 2                     # 固定代码的候选（快照、升级技能、删除）每轮上限
     session_max_turns: int = 40; session_max_edits: int = 48
     session_max_read_bytes: int = 65536; session_max_read_total: int = 196608
@@ -35,7 +37,7 @@ class Settings:
     round_share: float = 0.15                    # 一轮的账户占根的比例上限
 ```
 
-合并规则：数量上限 cap（`packages_per_round`、`fixed_per_round`、会话上限、`hook_aux_calls`、`l5_per_round`、`round_share`）；门槛 floor（`accept_min_net_flips`、`toolcheck_min_pass`、`replay_min_triggers`、`reach_*`、`holdout_share`）；退步与容差 cap；`require_code_component`、`priors`、`removal_zero_credit_rounds` fixed；`causes`、`mechanizable` superset。v1.1 的 `k`、`explore_slots`、`l5_slots`、`code_guarantee`、`screen_*`、`thin_screen_tasks`、`gate_every` 删除。
+合并规则：数量上限 cap（`packages_per_round`、`fixed_per_round`、会话上限、`hook_aux_calls`、`l5_per_round`、`round_share`、`stream_screen_max`）；`audit_hook_share` floor；门槛 floor（`accept_min_net_flips`、`toolcheck_min_pass`、`replay_min_triggers`、`reach_*`、`holdout_share`）；退步与容差 cap；`require_code_component`、`priors`、`removal_zero_credit_rounds` fixed；`causes`、`mechanizable` superset。v1.1 的 `k`、`explore_slots`、`l5_slots`、`code_guarantee`、`screen_*`、`thin_screen_tasks`、`gate_every` 删除。
 
 
 ## 3 一轮（`round.py`，v1.2）
@@ -63,6 +65,17 @@ def run_round(activity, index: int, *, out) -> RoundResult
 - 钱：一轮记在 `<scope>:round-<i>` 账户（上限 `round_share × [budget] usd`），下分 `measure`、`diagnose`、`session`、`screen`、`policy`；付诊断之前先核一个下限：研究部分补测 + 一次留出筛选（留出题数 × 当前 W 的 train 每次尝试成本 × 1.15）+ 将要付的研究调用，放不进余额就停在 `budget`。
 
 `cycle --until round-K` 依次跑第 0～K 轮；连续 `schedule.patience` 轮没有接受就停（`rounds` 上限 12，`patience` 3）。没有 carry 轮、没有活动内的 gate。活动末的发布 gate 是 `--phase gate`（EVALUATE §5.2、ACTIVITY §4）。
+
+v1.3：`accepted` 之后多一步 `stacked`（§9.4）：第一个接受的包装入后，其余接受的包叠到工作线上、过 V0/V1、装入或记 `not_stacked`。
+
+### 3.1 流式的一轮（v1.3，DESIGN §6.13）
+
+`--phase stream` 每 `schedule.stream_batch` 道题调一次 `run_round(activity, index, pool=已计分的题)`：
+- 不现量：证据池是 `pool` 里每道题的最新一次有效尝试（`Evidence.latest(pool)`，不论哪个包跑的；role `stream`、`measure`、`screen` 都算，`library` 不算）；
+- 划分：`pool` 按同一个族哈希规则分研究 / 留出两部分（`holdout_share`），一道题的归属在整个流里不变；
+- 诊断只看研究部分的失败，优先最近批次的；
+- 筛选只跑留出部分里最近 `stream_screen_max` 道（按流的顺序），`reading` 是这些题的最新尝试；接受规则不变；`best_so_far` 是工作线历史上在这组留出题上的最高通过数；
+- 其余步骤同批式。轮的目录 `rounds/s<i>/`，round_id `{scope}/s{i}`。
 
 
 ## 4 证据（`runtime/trace.py` + `improver/evidence.py`）
@@ -129,6 +142,7 @@ def focus(causes, estimates, archive, *, settings, line, kinds_allowed, train_av
 3. 硬要求在 V0 的声明检查里：`require_code` 而声明的组件里没有 tool / hook → 台账 `no_code_candidate`，候选照常验收；`l5_per_round` 之外的 agent / config / vendor 改动 → V0 拒绝。
 4. L6：`l6_suggested` 时清单里写明"训练链可用"；阶段 5 之前恒为假，台账记 `l6_unavailable`。
 5. 估值只由记功更新（§10）：一个组件在它声明的每个 cause 的留出题上的条件净修复 / 本轮花费的份额。
+6. v1.3：`Focus` 多 `audit_suggested: bool` 与 `text_only_share: float`——只剩文字载体（不可机械化、不指向循环）的簇的案例数占全部案例的份额；份额 ≥ `audit_hook_share` 时 `audit_suggested` 为真，notes 里写明"一个调 aux 模型的审核 hook（on_finish / after_turn，`uses_model`）可以一个组件覆盖这些簇"，并列出它们。
 
 
 ## 7 编码会话（`session.py`，v1.2）
@@ -153,6 +167,7 @@ TOOLS = ("list_files", "read_file", "write_file", "edit_file", "delete_file", "r
 - `run_check()` 对候选包跑 V0～V2，按组件返回；`run_tests()` 跑包测试；都不付费。
 - `finish` 带包级声明：`mechanism` 一句话；每个改动的组件一条 `Component`；tool 的 `scripts` 或 `probes`、hook 的 `predicted_affected`、skill 的 `site` 是它的名字；`uses_model` 标出调 aux 的 hook。声明与 diff 不一致（声明了不存在的组件、改了没声明的组件）或某组件不过 V2 → 退回修订一次；仍不过 → 本轮无候选，台账记原因。
 - 提示词（`improver/prompts/propose.md`）相应改：一轮交一个包；对清单里的几个簇一起下手；一个机制可以是工具 + 强制它的 hook + 说明何时用的技能；提交前的审核 hook 可以调 aux 模型；不把一道题的值写进包。
+- v1.3：`packages_per_round` > 1 时提示词要求交几个包就是几种不同的机制、对不同的簇，第一个包对最大的簇；`audit_suggested` 时明说第二个包应当是审核 hook；每个组件的 `cause_ids` 尽量列出它覆盖的所有簇；叠装规则告诉 R：不同的包不要改同一个文件（manifest 除外）。
 
 
 ### 7.1 组合（v1.2：默认）
@@ -203,6 +218,12 @@ def accept(activity, result, *, round_id) -> InstallReceipt     # 装入工作�
 - 接受规则：`net_flips = 条件修复 − 退步 ≥ accept_min_net_flips`、`退步 ≤ accept_max_regressions`、`holdout_score ≥ best_so_far − accept_floor_tolerance`（`best_so_far` 是活动内工作线在留出上的最高通过数，基线算第一次）。三条都成立 → `accepted`，装入工作线；否则 `rejected`，原因写进台账与报告。
 - 付费之前核价：留出题数 × 当前工作线的 train 每次尝试成本 × 1.15；放不进本轮余额 → 不筛，停在 `budget`。
 - 候选只有一个时没有挑选；`packages_per_round` > 1 或有固定候选时，按净修复、再成本、再声明顺序挑最优，其余记 `not_selected`。固定候选（快照、升级技能、删除）与 R 的包分开筛，各自可接受，先 R 的包、再固定候选；同一轮两者都接受时先装 R 的包，固定候选在它之上重验 V0 后装入。
+
+### 9.4 几个包：各自筛选，接受的叠装（v1.3）
+
+- 每个过 V2 的包各自在全部留出题上筛一遍（钱按包核价、按声明顺序放，放不下的 `not_run`），接受规则各判。
+- 接受的包按净修复、再成本、再声明顺序排；第一个照常 `accept()` 装入；其余逐个叠装（`stack()`）：取它相对本轮基线的改动集 `D = changed_paths(base, files)`，与当前工作线相对本轮基线的改动集求交；`manifest.json` 按节合并（tools / hooks / skills 按名字并集，同名两边都改即冲突；prompt / config / agent / vendor / memory 的同一键两边都改即冲突），其他文件两边都改即冲突；冲突 → 台账 `not_stacked`（reason `conflict: <paths>`）。无冲突 → 叠出的包过 V0、V1（`run_ladder(rungs=("V0","V1"))`，parent 是当前工作线），过 → 以它自己的筛选读数为依据装入（`ScreenResult` 复制一份换 `package_ref`、`outcome="stacked"`），台账 `accepted` 带 `stacked_on`；不过 → `not_stacked`（reason 是阶梯文字）。
+- 叠装不重筛：假设是效果可加。下一轮的现量读的是叠装后的线，容差规则挡住退步。
 
 ### 9.1 留出部分的适应
 

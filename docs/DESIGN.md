@@ -284,6 +284,11 @@ ReMe 自带的记账与删除不用（会丢计数、记功共享）；去重只
 
 轮数由 `schedule.rounds`（上限 12）与耐心（连续 `patience` 轮没有接受就停）定。一轮约 $28：会话约 $2、诊断约 $2、研究部分补测 ≤ $14、留出 20 题约 $10；dev 整个活动只读一次。
 
+**v1.3（阶段 4d，2026-10-12）：一轮几个包，不冲突的都装。** finance-v5 第 0 轮一个单组件 hook 装入，留出 +2：一轮一个包、一轮只装一个，决定了一轮最多动一两题（JOURNAL 2026-10-12 第 0 轮一条）。改为：
+- R 一轮交至多 `packages_per_round`（preset 3）个包，每个一种机制、对清单里不同的簇（`candidates/package/`、`package-2/`、`package-3/`）；每个包各自过阶梯、各自在全部留出题上筛一遍（钱按包核价，放不下的记 `not_run`）。
+- 接受规则对每个包各判；接受的包按净修复排序，第一个照常装入工作线；其余接受的包**叠装**：把它相对本轮基线改的文件叠到当前工作线的包上，两个包改同一个文件（manifest 按组件合并，同一组件两边都改才算冲突）即冲突，冲突的记 `not_stacked`；叠出来的包过 V0、V1（免费）后装入（reason `screen`，筛选读数是它自己那次的），不过就 `not_stacked`。叠装假设两个机制的效果可加，下一轮的现量与容差规则兜底。
+- 清单与提示词对准整体机制：聚焦清单标出只剩文字载体的簇占失败的份额，占到三成就建议一个调 aux 模型的审核 hook（on_finish / after_turn：对照请求核一遍做过的事，补做或改正），它一个组件覆盖几个簇；提示词要求几个包是几种不同的机制、第一个包对最大的簇、组件尽量跨簇声明。
+
 ### 6.2 证据与 trace
 
 宿主已经写下每次模型调用（messages 以前缀计数加尾段）、每次工具调用、每个 hook 触发、每个 mark。证据层只在读取时派生：`<session>:L<line>` 作稳定引用；按 act 调用重建“actor 看到的轨迹”（跨 Stirrup 的摘要）；SQLite FTS5 全文索引，只索引 train，非 train 的 session 连第一行都不给读。v6-gateway 分支的 `trace.py` 就是这个，照用。
@@ -303,6 +308,7 @@ ReMe 自带的记账与删除不用（会丢计数、记功共享）；去重只
 - 硬要求只有两条：诊断里有 `mechanizable` 的簇时，包里至少一个 tool 或 hook（否则台账 `no_code_candidate`，候选照常验收，下一轮的建议清单置顶代码类）；agent / config / vendor 的改动一轮至多一处，只在簇指向循环时建议。
 - L6（权重）不变：代码层与文字层连续 `stall_rounds` 轮估值不涨且训练链可用时才建议。
 - 以算力换准确回到候选面：`on_finish` 与 `after_turn` 的 hook 可以调 aux 模型（每次尝试 `improver.hook_aux_calls` 次封顶，每次计量、记 gateway_call），用于提交前的审核与补做。gate 没有成本项，K 的调用限额是边界；W0 的部分得分 0.8 对严格 0.4，差的正是最后一两项断言，这是对准它的杠杆。
+- v1.3：清单不只排簇，还算只剩文字载体的簇（missed_action、unread_value 这类）占失败案例的份额；占到 `audit_hook_share`（0.3）就在清单顶上建议"一个调 aux 模型的审核 hook"，并说明它覆盖哪几个簇。finance-v5 第 0 轮 R 选了最保守的纯代码单 hook，清单里只剩文字载体的两簇一个没碰，这条就是对它的。
 
 ### 6.5 编码会话
 
@@ -312,7 +318,7 @@ ReMe 自带的记账与删除不用（会丢计数、记功共享）；去重只
 | 输入 | 聚焦清单（§6.4）、全部簇及其证据 ref、成功轨迹 ref、当前工作线的包、台账的 train 投影（试过什么、留出筛选的结果、记分板）、研究剧本、dev 失败类型直方图（只有枚举与计数）。留出题从不出现 |
 | 工具 | 文件五个（list / read / write / edit / delete）；`read_trajectory(ref)`；`search_trace(query)`；`run_tests()`；`run_check()`：对候选包跑 V0～V2 并按组件返回结果；`finish(declaration)` |
 | 上限 | 回合、编辑数、读取字节、单次回复 token，都是 K 的字段 |
-| 产出 | 一个候选包，包级声明 `{mechanism, components: [{kind, site, cause_ids, predicted_affected, trigger, scripts?, probes?, uses_model?}], differs_from?}`；同一包里可以改工具、hook、技能、提示、config，一轮至多一处 agent / config / vendor |
+| 产出 | 至多 `packages_per_round` 个候选包（v1.3 preset 3），每个一种机制、一份包级声明 `{mechanism, components: [{kind, site, cause_ids, predicted_affected, trigger, scripts?, probes?, uses_model?}], differs_from?}`；同一包里可以改工具、hook、技能、提示、config，一轮至多一处 agent / config / vendor |
 | 没有的 | shell、网络、宿主文件、dev / test 的任何内容、留出题、改自己上限的办法 |
 | 失败处理 | 会话超限或协议错误：本轮无候选，记台账；worker 崩溃：基础设施故障；声明与 diff 不符或某组件不过 V2：退回修订一次，仍不过 → 本轮无候选 |
 
@@ -338,6 +344,7 @@ V3 的接受是搜索的接受，不是发布：它决定下一轮从哪里起�
 - **工作线**：`rsi/active.json`，留出筛选接受就装入（CAS，reason `screen`），父包永远是工作线的上一个 release；活动内的测量、诊断、R 的起点都在工作线上。
 - **发布线**：活动末 dev gate 通过的 W_work 成为 W\*（reason `gate`），final 与导出只用它；gate 不通过就没有发布，工作线的历史与留出曲线照实报告。
 - **按决定发布（阶段 4c，2026-10-12）**：用户要的对外数字是 final 上的绝对分（W\* 得了多少，W0 臂并列），不是比业界更严的筛选。于是划分可以只有两份：train 给改进器（研究部分 + 留出筛选），test 冻结给 final；K 里没有 dev 题时不冻结 gate 模板、没有发布 gate，轮次跑完由用户 `--phase release` 把工作线按决定提升为发布线（reason `decision`，没有收据），`freeze` 再封存 final。基线阶段也不必跑：第 0 轮自己现量 train，W0 的数来自 final 的 W0 臂。流式学习（test 题首遇计分后变成证据、每 N 题一轮）是下一个阶段，另写设计。
+- **工作线跨活动（v1.3，阶段 4d）**：`[rsi] seed_from = "<旧工作区>"` 时，新活动的种子不是代码的种子，而是旧工作区发布线上的 W\*：它的包闭包复制进新工作区的对象库，种子 release 的 reason 是 `import`，R 的策略（估值、剧本）一并导入。K 的 `harness.seed` 仍是代码的种子，只作形状与字面量的基准。final 的 W0 臂就是这个导入的起点，所以每个活动报的是"这一段"的提升，分数一路累积；活动只是预算窗口。
 - 档案保存每个评过的候选：父 ref、声明、逐档结果、筛选读数。多父、重定基仍推迟。
 
 ### 6.8 条件记功与反膨胀
@@ -375,6 +382,17 @@ R 的策略 = 分层估值（§6.4）+ 研究剧本（台账核对过的教训�
 
 v1.2 据此改六处：一轮一个包（§6.1、§6.5）；活动内按留出 train 接受、dev 只在活动末读一次（§6.6、§6.7）；以算力换准确进候选面（§6.4）；library 默认关（MEMORY §9）；K 的版本拆成尝试路径与改进器两部分，基线可跨活动复用（§8）；预期重写（§10）。10-10 的修改里，日期锚、V2a 探针照用；carry 与 `gate_every` 由工作线取代；"留出为空的 cause"随整包在全部留出题上筛选而不再需要；部分得分规则留在活动末的 gate。
 
+
+### 6.13 流式循环（v1.3，阶段 4d）
+
+批式一轮要先跑完 50 题、再反思一次、再补测 30 题，反馈每 50 题一次、补测的钱全是重做旧题。生产里的形态是：任务来了做一次，做完就是经验，每做几道就反思，下几道就受益。`--phase stream`（ACTIVITY §4）把它做成评测协议：
+
+- 任务序列：K 的 `schedule.stream_splits`（默认 `["train"]`）里的题按 `Random(f"stream:{gate.order_seed}:{domain}")` 打乱，冻结在 `rsi/stream.json`。每道题在当前工作线上做一次（run 的 role `stream`，候选名 `stream`），首遇结果就是它的分，之后它的记录是证据。
+- 每 `schedule.stream_batch`（10）道题一轮：改进器的一轮，不现量；证据池是到目前为止已计分的题，每题取最新一次尝试（不论哪条线跑的）；研究部分 / 留出部分按 `holdout_share` 对已计分的题整族划分（同一个哈希规则，所以一道题一旦留出就一直留出）；留出筛选只跑留出部分里最近 `stream_screen_max`（20）道，接受规则不变；接受即装入，下一批在新线上跑。几个包、叠装同批式。
+- 验证就是下一批：报告按批给首遇通过率、部分得分、每次尝试成本；整段序列的首遇通过率是对外的数（EVALUATE §6）。装入后的组件按足迹在后续批次上记功；连续 `removal_zero_credit_rounds` 批零功的生成删除候选（反膨胀照旧）。
+- memory：`memory.enabled` 时工作线的尝试读 live 库（library 阶段的流包形态），每批之后把这批的轨迹蒸馏进 live 库（MEMORY §7 的写入步，首遇规则、留一、记功、退役照旧）；release 时把 live 库按 `max_memory_bytes` 装成快照冻进发布的包。preset v2 关着，开不开是配置的事。
+- test 题也可以流式跑（`stream_splits = ["train", "test"]`）：final 计划先封存（计划哈希先提交，规则 6），然后 test 题按序首遇计分，计过分的题才对 R 可读（trace 守卫按"已计分"放行，CONTRACTS §4）。这时对外报两个数：train 段与 test 段各自的首遇通过率和曲线。两份冻结的 A 模式（§6.7 第三条）照旧可选。
+- 钱：100 道题约 $50 首遇，每批一轮约 $15 研究加 $11 筛选，10 批约 $310；没有补测。
 
 ## 7 训练在同一回路
 
@@ -434,6 +452,7 @@ ouroloop/
 | 4 实测 | finance，新 preset：基线 → library → 3 轮（每轮后停）→ 有装入则封存 final | 过程检查成立；计划哈希早于第一次 test 尝试；报告两次相同 | finance-v1～v4 共 $528：机制全部跑通，零装入（§6.12） |
 | 4b 搜索循环 v2 | 本文 v1.2 的六处修改落成代码（IMPROVER、EVALUATE、ACTIVITY、CONTRACTS、MEMORY 的对应节）；preset `automationbench_v2`；finance-v5 | 假上游上脚本化的 R 跑 6 轮：接受累积在工作线、活动末 gate 一次、基线从旧工作区导入；finance-v5 的预期：留出曲线不降，dev 严格 +3～6 题或部分得分 +0.05～0.10，成本不升 | 代码 $0；finance-v5 名义约 $350（基线导入 $0、12 轮 × $28、gate 约 $25、final 约 $72） |
 | 4c 两份划分与按决定发布 | §6.7 第三条：K 没有 dev 题时 freeze 不写 gate 模板、round 不要求它、`gate` 无事可做；`--phase release` 把工作线按决定提升为发布线（reason `decision`），并补齐 W\* 的包缺的 train 读数以供 final 核价；final 封存只要有发布线；基线阶段可跳过 | 假上游上无 dev 的活动：freeze、两轮、release、final（W0 与 W\* 两臂）、export 端到端；有 dev 的活动行为不变 | 代码 $0；finance-v5 名义约 $400（train 现量 $25、7～8 轮约 $200、W\* 补测约 $15、final 两臂 50 题 × 3 遍约 $150） |
+| 4d 产出率与流式（v1.3） | §6.1 一轮几个包、不冲突的叠装；§6.4 清单的审核 hook 建议与提示词；§6.7 `seed_from` 工作线跨活动；§6.13 `--phase stream` 流式循环（先 train 段，test 段的已计分放行随后） | 假上游：一轮两个包各自筛选、第二个叠装过 V0/V1 装入、冲突的记 `not_stacked`；清单对只剩文字载体的簇给审核 hook 建议；`seed_from` 的活动从旧 W\* 起步、final 的 W0 臂是它；`stream` 两批各一轮、第二批在新线上跑、报告按批给首遇分 | 代码 $0；finance-v6 名义约 $450（train 流式 $310 + final 两臂 $150） |
 | 5 训练绑定 | v2.0 离线链对新记录跑通；`model` 组件绑定；之后按 V2 的 v2.1 | V2 §5 的断言 | $0；v2.1 另批 |
 
 ## 11 考虑过、不做
@@ -461,3 +480,4 @@ ouroloop/
 | 4 | finance-v5 的预算：根 $500、final 份额 $200；基线从 finance-v4 导入（AttemptIdentity 相同时） | 到冻结前批准 |
 | 5 | 对外预期：一次活动 dev 严格 +3～6 题；80% 只在部分得分口径上谈 | 是 |
 | 5 | 2026-10-12：对外的数字是 final 上的绝对分并列 W0 臂，不追求比业界更严；划分两份（train / test）、基线阶段取消、无 dev 的活动按决定发布（§6.7 第三条、§10 阶段 4c）；流式学习另立阶段 | 已定（用户 2026-10-12） |
+| 6 | 2026-10-12：finance-v5 第 0 轮 +2 不够，要的是一次活动提升足够高：一轮几个包并叠装、清单与提示词对准整体机制与审核 hook、流式循环、工作线跨活动（§6.1、§6.4、§6.7、§6.13；阶段 4d）；finance-v5 批式跑到底拿第一个数，v6 从 v5 的 W\* 起步流式跑 | 已定（用户 2026-10-12："跑第 1 轮，四条改动并行写"） |

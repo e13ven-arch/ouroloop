@@ -190,6 +190,10 @@ def import_entries(snapshot_text, *, source_release_ref, source_line, target_lin
 
 钱：sidecar 的每次模型调用经桥，记在 `<scope>:research:memory` 账户；流的尝试记在 `<scope>:library` 账户。
 
+### 7.0 流式活动里的 memory（v1.3，DESIGN §6.13）
+
+`--phase stream` 且 `memory.enabled` 时，library 阶段不再单独跑：工作线的尝试用流包形态（manifest `memory: {"enabled": true}`，读 live）；每批计分之后，这批的轨迹（首遇，失败的不重试）经同一个 `StreamStep.process_batch` 蒸馏进 live 库，首遇规则、留一、记功、退役照旧；b(t) 用这道题之前的读数，没有就不进 D。`--phase release` 时 live 库按 `max_memory_bytes` 装成快照冻进发布的包（`snapshot_candidate` 的文件改动直接并入 W\*，不另走阶梯：它是发布时的冻结，不是候选）。阶段 4d 先做不开 memory 的流式，这一节的代码随后。
+
 ### 7.1 快照行与字节上限
 
 finance-v2 的 library（JOURNAL 2026-10-10）：223 条，live 库的全行平均 2,468 字节（ReMe 的 metadata 与我们的出处约 1,247、正文约 883、触发条件约 303），整库 550,524 字节，K 的 `max_memory_bytes` 262,144，快照因此没有成为候选。原因有两个：快照照抄 live 库的全行；容量按条数（`max_active` 500）而包上限按字节，两者没对齐。修法是快照只带读者要的字段，放不下时按记功挑。
