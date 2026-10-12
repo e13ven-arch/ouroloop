@@ -9,6 +9,8 @@ of the same package all count — the package and K decide what executes, not th
 """
 from __future__ import annotations
 
+import json
+import re
 from collections import Counter
 from dataclasses import dataclass
 
@@ -18,6 +20,8 @@ from ..runtime.trace import TraceAccessError, TraceStore
 TRAIN = "train"
 NOT_READINGS = ("library",)             # run roles whose attempts are not the package's own reading
 WHOLE = ("prompt", "agent", "config", "vendor", "model")     # kinds whose footprint is every attempt
+NOT_WRITES = ("api_search", "finish", "read_skill", "recall", "plan_changes")   # tool calls a digest counts or skips
+REQUEST_CHARS, FINAL_CHARS, MIN_EXCERPT = 1500, 600, 120
 
 
 @dataclass(frozen=True)
@@ -153,6 +157,56 @@ class Evidence:
                 "hooks": sorted({f"{h['site']}:{h['name']}:{h['action']}" for h in ev.hooks}),
                 "skills_read": sorted(set(ev.skills_read)), "entries_shown": list(ev.entries_shown)}
 
+    # ------------------------------------------------------------------ one case side by side (v1.5)
+    def digest(self, ev: AttemptEvidence, *, chars: int) -> dict:
+        """One failing case side by side for R (DESIGN §6.15; IMPROVER §4): the request, the checks the grader marked
+        failed with their parameters, the agent's writes in order (a non-GET api_fetch with its method, URL and body
+        excerpt; any other tool call that is not a read or a search, with its arguments), what it said at the end, and
+        how much it read and searched. The JSON is cut to `chars` by shrinking the writes' excerpts, never the checks."""
+        task = self.activity.suite.tasks[ev.task_id]
+        writes, reads, searches = [], 0, 0
+        for item in self.trace.events(ev.session):
+            e = item["event"]
+            if e.get("kind") != "tool":
+                continue
+            name = str(e.get("name") or "")
+            args = e.get("args") if isinstance(e.get("args"), dict) else {}
+            if name == "api_search":
+                searches += 1
+                continue
+            if name in NOT_WRITES:
+                continue
+            if name == "api_fetch":
+                method = str(args.get("method") or "GET").upper()
+                if method in ("GET", "HEAD"):
+                    reads += 1
+                    continue
+                writes.append({"tool": name, "method": method, "url": re.sub(r"^https?://", "", str(args.get("url") or "")),
+                               "body": str(args.get("body") if args.get("body") is not None else ""),
+                               "error": bool(e.get("is_error"))})
+            else:
+                writes.append({"tool": name, "method": "CALL", "body": json.dumps(args, ensure_ascii=False, default=str),
+                               "error": bool(e.get("is_error"))})
+        said = self.trace.finish(ev.session)
+        row = {"task_id": ev.task_id, "session": ev.session, "request": task.trigger[:REQUEST_CHARS],
+               "termination": ev.result.termination, "partial_credit": ev.result.partial_credit,
+               "failed_checks": [dict(c) for c in ev.failed_checks], "reads": reads, "searches": searches,
+               "writes": writes, "final_text": str(said.get("reason") or said.get("text") or "")[:FINAL_CHARS]}
+        return _fit(row, int(chars))
+
+    def persistence(self, task_id: str) -> int:
+        """Under how many different packages of the working line's history the task has a failing valid train reading
+        (DESIGN §6.15: a task that stays failed across installs was not touched by what was installed)."""
+        packages = {rel.package_ref for rel in self.activity.releases.history()}
+        runs = self.activity.results.runs()
+        failed = set()
+        for r in self.activity.results.all():
+            run = runs.get(r.run)
+            if r.task_id == task_id and r.split == TRAIN and r.validity == "valid" and not r.success and run is not None \
+                    and run.role not in NOT_READINGS and run.package_ref in packages:
+                failed.add(run.package_ref)
+        return len(failed)
+
     def footprint(self, row: TaskResult, component: dict) -> bool:
         """Whether a component showed in this attempt (V3's condition and credit's): a tool the model called, a hook
         that acted, a skill read, memory entries given; prompt, agent, config, vendor and model act on every attempt."""
@@ -170,6 +224,22 @@ class Evidence:
             return bool(ev.entries_shown) if name in (None, "", "snapshot") else \
                 any(str(e).startswith(str(name)[:8]) for e in ev.entries_shown)
         return False
+
+
+def _fit(row: dict, chars: int) -> dict:
+    """Shrink the writes' excerpts (the longest first, never under MIN_EXCERPT) until the row's JSON fits `chars`; the
+    request, the checks and the counts are kept whole."""
+    size = lambda: len(json.dumps(row, ensure_ascii=False, default=str))  # noqa: E731
+    while size() > chars:
+        longest = max(row["writes"], key=lambda w: len(w["body"]), default=None)
+        if longest is None or len(longest["body"]) <= MIN_EXCERPT:
+            break
+        cut = max(MIN_EXCERPT, len(longest["body"]) // 2)
+        shorter = longest["body"][:cut] + f"…(+{len(longest['body']) - cut})"
+        if len(shorter) >= len(longest["body"]):            # the suffix would undo the cut: this is the floor
+            break
+        longest["body"] = shorter
+    return row
 
 
 def dev_histogram(activity, package_ref: str) -> dict:

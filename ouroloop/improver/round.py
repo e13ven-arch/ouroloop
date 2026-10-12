@@ -519,6 +519,22 @@ class Round:
                                                   if not set(e.get("distilled_from") or ()) & held_hashes]})
         successes = steps["evidence"]["successes"]
         readable |= {s["session"] for s in successes}
+        # v1.5 (DESIGN §6.15): the studied failures side by side, the persistent ones first, by cause
+        failures = []
+        for c in self.causes():
+            for ref in c.cases:
+                case = dg.Case.from_json(self.a.objects.get(ref))
+                if case.task_id not in study:
+                    continue
+                row = next(iter(self._rows([case.attempt_id])), None)
+                if row is None:
+                    continue
+                n = self.evidence.persistence(case.task_id)
+                failures.append({**self.evidence.digest(self.evidence.of(row), chars=self.s.failures_case_chars),
+                                 "cause": c.name, "cause_id": c.cause_id, "note": case.explanation,
+                                 "persistence": n, "persistent": n >= 2})
+        failures.sort(key=lambda f: (not f["persistent"], -f["persistence"]))
+        failures = failures[:int(self.s.failures_max_cases)]
         episode = self.a.suite.episode(self.a.splits.ids("train")[0])
         try:
             base_tools = [{"name": s.name, "description": s.description, "schema": s.schema} for s in episode.specs()]
@@ -535,7 +551,11 @@ class Round:
                  "causes.json": cause_rows, "successes.json": successes,
                  "ledger.json": self.ledger.projection(line=self.line, hide=held),
                  "scoreboard.json": self.ledger.scoreboard(),
-                 "histogram.json": dev_histogram(self.a, self.base.package_ref), "base_tools.json": base_tools}
+                 "histogram.json": dev_histogram(self.a, self.base.package_ref), "base_tools.json": base_tools,
+                 "failures.json": {"note": "each studied failure side by side: the request, the checks the grader marked "
+                                           "failed with their parameters, the agent's writes in order, what it said at "
+                                           "the end; persistent = failed under more than one installed package",
+                                   "cases": failures}}
         out = {name: json.dumps(v, ensure_ascii=False, indent=1, default=str) for name, v in files.items()}
         out["playbook.md"] = read_playbook(self.a.root)
         out["package_api.md"] = api

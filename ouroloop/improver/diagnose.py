@@ -23,7 +23,8 @@ from .evidence import AttemptEvidence, Evidence
 PROMPTS = Path(__file__).resolve().parent / "prompts"
 DEFINITIONS = {
     "excluded_mentioned": "the agent acted on or mentioned an item the request, the data or a policy excluded",
-    "missed_action": "a change, message or step the request asked for was not made",
+    "missed_action": "a change, message or step the request itself asked for was not made (a requirement that came from "
+                     "a document the agent read is rule_not_applied)",
     "wrong_target": "the agent changed or wrote to the wrong record, field, channel or object",
     "missing_recipient": "a message went out without someone it had to reach, or to the wrong people",
     "unread_value": "the agent used a value without reading it from the source the request named",
@@ -34,6 +35,13 @@ DEFINITIONS = {
     "tool_error_loop": "the agent repeated failing tool calls instead of reading the error and changing course",
     "context_overflow": "the agent lost track of the task as its context grew (summaries, cut history)",
     "finish_protocol": "the agent did not end the run the way the harness expects (no finish, finish too early)",
+    # v1.5 (DESIGN §6.15): the shapes of the persistent failures read on 2026-10-12
+    "rule_not_applied": "a requirement stated in a document the agent read (a policy, a procedure, an update message, a "
+                        "note in the data) — a step, a notice, a value, a threshold, a discount — was not carried out",
+    "vocabulary_mismatch": "the record, policy or request names a status, category, label, column layout or unit and the "
+                           "agent wrote its own term, format or unit instead of copying it",
+    "omitted_report": "a notice, flag or item the request or a policy required in a message or record was left out: a "
+                      "blocked action not reported, a rejected or flagged item not listed, a summary not sent",
     "other": "none of the above",
 }
 TAIL_CHARS = 12000                    # of the trajectory's end, per case
