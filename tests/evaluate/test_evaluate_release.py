@@ -399,3 +399,25 @@ def test_attempt_identity_reads_the_attempt_code_the_package_the_limits_the_mode
                    {"limits": {"max_steps": 49}}, {"model": {**base["model"], "effort": "high"}},
                    {"image_id": None}, {"split_hash": "s2"}):
         assert rel.attempt_identity(**{**base, **change}) != same
+
+
+# ---------------------------------------------------------------------------- the release line
+def test_promote_by_decision_releases_the_working_line_without_a_receipt_and_by_the_gate_wants_one(ws):
+    """EVALUATE §7 (stage 4c): a promotion by decision carries no receipt; one by the gate needs a registered,
+    accepted receipt of the same package; promoting again under the same operation is the same release."""
+    objects, releases, seed = ws
+    assert releases.released_ref() is None and releases.released() is None
+    with pytest.raises(NotAuthorized, match="names its receipt"):
+        releases.promote(seed, None, reason="gate", operation_id="g1")
+    with pytest.raises(ContractError, match="gate or decision"):
+        releases.promote(seed, None, reason="screen", operation_id="x")
+    with pytest.raises(NotAuthorized, match="carries no receipt"):
+        releases.promote(seed, ref(objects, "receipt"), reason="decision", operation_id="d0")
+    released = releases.promote(seed, None, reason="decision", operation_id="d1")
+    assert (released.reason, released.parent_ref, released.package_ref, released.receipt_ref) == \
+        ("decision", seed.ref(), seed.package_ref, None)
+    assert releases.released_ref() == released.ref() and releases.released() == released
+    assert releases.active_ref() == seed.ref()                        # the working line does not move
+    assert releases.promote(seed, None, reason="decision", operation_id="d1") == released
+    assert [e["reason"] for e in releases.events.read("released")] == ["decision"]
+    assert released.ref() in releases.installed()

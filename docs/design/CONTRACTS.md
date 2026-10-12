@@ -115,8 +115,9 @@ class Release(Record):               # kind "release"
     package_ref: str                 # W（harness.Package 的 ref）
     improver_ref: str                # R 的策略（improver.ImproverPolicy 的 ref：估值、剧本、提示）
     core_ref: str                    # K
-    receipt_ref: str | None          # 装入依据：GateReceipt（种子 release 为 None）
-    reason: str                      # "seed" | "screen"（留出筛选接受，工作线） | "gate"（活动末发布） | "rollback" | "import"
+    receipt_ref: str | None          # 装入依据：GateReceipt（gate 发布才有；种子、screen、decision 为 None）
+    screen_ref: str | None           # 留出筛选的 ScreenResult（reason screen 才有）
+    reason: str                      # "seed" | "screen"（留出筛选接受，工作线） | "gate"（活动末发布） | "decision"（无 dev 的活动按决定发布，阶段 4c） | "rollback" | "import"
 
 @dataclass(frozen=True)
 class GateReceipt(Record):           # kind "receipt"：一次配对 gate 的读数（EVALUATE §5）

@@ -423,7 +423,7 @@ def test_the_release_gate_has_nothing_to_do_on_w0_and_refuses_an_unfinished_roun
     a = rsi.activity(tmp_path, fake_upstream)
     phases.freeze(a, out=quiet)
     got = phases.gate(a, out=quiet)
-    assert got == {"status": "nothing_to_gate", "working": a.seed_release().ref()}
+    assert got == {"status": "nothing_to_gate", "why": "the working line is W0", "working": a.seed_release().ref()}
     assert a.releases.released_ref() is None and not (a.root / "rsi" / "gate.json").exists()
     s = improved(tmp_path / "improved", fake_upstream)
     write_json(s.a.root / "rounds" / "r1" / "round.json", {"round_id": "x/r1", "index": 1, "status": "running",
@@ -448,6 +448,90 @@ def test_the_cycle_runs_the_gate_only_under_until_gate(tmp_path, fake_upstream):
         second["steps"]["gate"]["released"]
     assert {k: v for k, v in second["steps"].items() if k.startswith("round")} == \
         {k: v for k, v in first["steps"].items() if k.startswith("round")}         # no round ran again
+
+
+# ---------------------------------------------------------------------------- the two-way split: release by decision
+def test_an_activity_without_dev_runs_rounds_without_a_gate_template_releases_by_decision_and_seals_the_final(
+        tmp_path, fake_upstream):
+    """Stage 4c (ACTIVITY §4, EVALUATE §6-§7): no dev, no baseline phase, no gate; the working line is released by
+    decision after its own train reading, the final has W0 and W* on the test half, export reads the release line."""
+    import sys
+    sys.path.insert(0, str(REPO / "tests" / "improver"))
+    from rounds import round_activity, round_state
+    s = round_activity(tmp_path, fake_upstream, "tool", baseline=False, freeze=False, splits_table=rsi.NO_DEV_SPLITS)
+    a = s.a
+    assert a.splits.ids("dev") == [] and sorted(a.splits.ids("test")) == sorted(rsi.DEV + rsi.FINAL)
+    assert sorted(a.splits.ids("train")) == sorted(rsi.TRAIN)
+    lines = []
+    refs = phases.freeze(a, out=lines.append)
+    assert "gate_template" not in refs and list(a.events.read("gate_template")) == []
+    assert any(line.startswith("gate       no dev tasks in this split: no gate template") for line in lines)
+    assert startup_checks(a, phase="round") == []                     # a round needs no template here
+    with pytest.raises(ValueError, match="release refused: the working line is W0"):
+        phases.release(a, out=quiet)
+    assert a.releases.released_ref() is None
+    # round 0 reads train itself (no baseline phase) and accepts the scripted R's package
+    r0 = phases.round_(a, 0, out=quiet)
+    assert r0.accepted and round_state(a, 0)["steps"]["measure"]["measured"] == len(rsi.TRAIN)
+    work = a.active_release()
+    assert work.ref() == r0.installed
+    assert phases.gate(a, out=quiet) == {"status": "nothing_to_gate", "why": "no dev tasks", "working": work.ref()}
+    # the release: the studied tasks are read under W*'s own release (the held-out ones ran under the base at the
+    # screen), then the promotion by decision, idempotent
+    calls = s.actor.calls
+    got = phases.release(a, out=lines.append)
+    assert got["status"] == "done" and got["working"] == work.ref() and got["measured"] == len(rsi.STUDY)
+    released = a.releases.load(got["released"])
+    assert (released.reason, released.parent_ref, released.package_ref, released.receipt_ref) == \
+        ("decision", work.ref(), work.package_ref, None)
+    assert a.releases.released_ref() == released.ref() and a.releases.active_ref() == work.ref()
+    runs = a.results.runs()
+    measured = [r for r in rows(a, "train") if runs[r.run].candidate == f"release:{short(work.ref())}"]
+    assert sorted(r.task_id for r in measured) == sorted(rsi.STUDY)
+    assert {r.system_release_ref for r in measured} == {work.ref()} and s.actor.calls > calls
+    (event,) = a.events.read("release_decision")
+    assert event["released"] == released.ref() and event["measured"] == len(rsi.STUDY)
+    calls = s.actor.calls
+    assert phases.release(a, out=quiet) == {**got, "measured": 0} and s.actor.calls == calls
+    assert json.loads((a.root / "rsi" / "release.json").read_text(encoding="utf-8"))["released"] == released.ref()
+    # the final: sealed with W0 and W* over the test half, priced from W*'s own reading; run; the report's numbers
+    b = reopen(a, final={}, improver=a.config["improver"])
+    refs = phases.freeze(b, out=lines.append)
+    plan = FinalPlan.from_json(b.objects.get(refs["final_plan_ref"]))
+    assert plan.arms == {"W0": a.seed_release().ref(), "W_star": released.ref()}
+    assert sorted(plan.tasks) == sorted(rsi.DEV + rsi.FINAL) and plan.repeats == 3
+    assert any(line.startswith("estimate   W_star:") for line in lines)
+    named = {k: v for k, v in refs.items() if k != "gate_template"}
+    c = reopen(a, final={}, improver=a.config["improver"], rsi=named)
+    out = phases.evaluate(c, out=quiet)
+    assert set(out["arms"]) == {"W0", "W_star"}
+    test = rows(c, "test")
+    assert len(test) == 2 * len(plan.tasks) * 3 and all(r.validity == "valid" for r in test)
+    report = phases.report(c, write=False, out=quiet)
+    (final,) = report["final"]
+    assert set(final["arms"]) == {"W0", "W_star"} and final["arms"]["W_star"]["passed"] >= final["arms"]["W0"]["passed"]
+    assert report["released"] == short(released.ref()) and report["gate"] is None
+    manifest = phases.export(c, None, tmp_path / "app", out=quiet)
+    assert manifest.release_ref == released.ref()
+    assert App(tmp_path / "app").describe()["validation"] == {"release": short(released.ref()), "reason": "decision"}
+
+
+def test_an_activity_with_dev_releases_by_its_gate_not_by_decision(tmp_path, fake_upstream):
+    s = improved(tmp_path, fake_upstream)
+    with pytest.raises(ValueError, match="release refused: this activity has dev tasks"):
+        phases.release(s.a, out=quiet)
+    assert s.a.releases.released_ref() is None
+
+
+def test_a_zero_dev_ratio_freezes_a_split_without_dev_tasks(tmp_path, fake_upstream):
+    """[bench] ratios with dev 0 under the stratified rule: every family is train or test (ACTIVITY §4)."""
+    cfg = rsi.config(tmp_path, fake_upstream, bench={"ratios": {"train": 0.5, "dev": 0.0, "test": 0.5},
+                                                     "split_rule": "stratified"})
+    a = open_activity(cfg, out=quiet, freeze_k=False, worker_factory=lambda: None,
+                      provider_factory=lambda _t: rsi.BusinessWorker())
+    assert a.splits.ids("dev") == [] and a.splits.ids("train") and a.splits.ids("test")
+    assert len(a.splits.ids("train")) + len(a.splits.ids("test")) == len(rsi.TRAIN) + len(rsi.DEV) + len(rsi.FINAL)
+    assert phases.gate_template(a) is None
 
 
 # ---------------------------------------------------------------------------- the baseline's import

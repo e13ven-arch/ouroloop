@@ -39,7 +39,7 @@ class Research:
 
 def round_activity(root: Path, upstream: str, mode: str = "tool", *, memory: bool = False, tried: dict | None = None,
                    actor=None, improver: dict | None = None, baseline: bool = True, freeze: bool = True,
-                   **sections) -> SimpleNamespace:
+                   splits_table: dict | None = None, **sections) -> SimpleNamespace:
     s = SimpleNamespace(r=ScriptedR(mode), actor=actor or rsi.BusinessWorker(forget_notify=True), client=None)
     extra = {}
     if memory:
@@ -49,7 +49,7 @@ def round_activity(root: Path, upstream: str, mode: str = "tool", *, memory: boo
         extra = {"memory_client": lambda: s.client, "memory": {"enabled": True}}
     else:
         s.research = Research(s.r)
-    s.a = rsi.activity(root, upstream, provider=s.actor, research=s.research,
+    s.a = rsi.activity(root, upstream, provider=s.actor, research=s.research, splits_table=splits_table,
                        improver={"mechanizable": list(MECHANIZABLE) + ["missed_action"], **(improver or {})},
                        **extra, **sections)
     if tried:

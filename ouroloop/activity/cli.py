@@ -73,6 +73,8 @@ def cmd_bench(args) -> int:
             report = phases.round_(activity, int(args.round or 0))
         elif args.phase == "gate":
             report = phases.gate(activity)
+        elif args.phase == "release":
+            report = phases.release(activity)
         elif args.phase == "evaluate":
             report = phases.evaluate(activity)
         elif args.phase == "report":

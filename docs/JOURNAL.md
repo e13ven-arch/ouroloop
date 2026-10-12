@@ -8,6 +8,21 @@
 
 ---
 
+## 2026-10-12 阶段 4c：两份划分与按决定发布；finance-v5 改为 50/50、无基线、final 两臂作对外数字；$0
+
+- 用户的决定（2026-10-12，PLAN §0.2）：对外的数字是 final 上的绝对分并列 W0 臂，不追求比业界更严的筛选；划分两份（train / test，finance 50/50）；基线阶段取消；无 dev 的活动按决定发布；模型不换，改的是代码、工具、流程、prompt、memory；流式学习（test 题首遇计分后变证据、每 N 题一轮）另立阶段。先改文档（DESIGN §6.7 第三条、§10 阶段 4c、§12 第 5 项；EVALUATE §5.2、§6、§7；CONTRACTS §5；ACTIVITY §3、§4；PLAN）再改代码。
+- 代码（`s5/search-loop`）：
+  - `evaluate/release.py`：release reason 多 `decision`；`Releases.promote(work, receipt_ref=None, *, reason, operation_id)`，gate 要收据、decision 不带收据，重复调用是同一个发布。
+  - `activity/phases.py`：K 没有 dev 题时 `gate_template` 为 None，`freeze` 不写模板只开预算根，`gate` 回答 `nothing_to_gate: no dev tasks`；新阶段 `release`：拒绝有 dev 的活动、拒绝工作线仍是 W0、拒绝有未结束的轮；按包补齐 W\* 缺的 train 读数（研究部分，在 W\* 自己的 release 下，role `measure`，候选名 `release:<ref>`，供 final 核价），再 `promote(reason="decision")`，写 `rsi/release.json` 与 `release_decision` 事件；`PHASES` 加 `release`，CLI 分派。`checks.py`：round 的 gate 模板检查只对有 dev 题的 K；`release` 是付费阶段。
+  - 测试夹具：`rsi.NO_DEV_SPLITS`（dev 族归 test）、`rsi.activity(splits_table=)`、`rounds.round_activity(splits_table=)`。新测试：无 dev 的活动端到端（freeze 无模板、round 0 自己现量 train、gate 无事可做、release 补测研究部分 4 题并提升、幂等、final 封存两臂 W0 与 W\* 并跑完、报告与 export 读发布线）；有 dev 的活动 release 拒绝；dev 比例 0 的分层划分没有 dev 题；`promote` 的三种拒绝与幂等。
+  - `examples/automationbench/finance-v5.toml`：`ratios = {train 0.5, dev 0, test 0.5}`，去掉 50/25/25 的划分钉（哈希变了，v1～v4 的数不可比）；步骤改为 smoke → freeze → round 0..k 逐轮（无基线）→ release → freeze 封存 → evaluate → report。README 的阶段表加 `release`。
+- 测试：默认 `pytest -q` 1,442 passed、87 deselected；全量（Docker + 真 sidecar，`-m "not live"`）1,528 passed、1 deselected。两套里各有三个失败：一个是 gate 的 `nothing_to_gate` 多了 `why` 字段而测试期望没更新，改期望后单跑通过；另两个是 adapters 与 providers 的中断测试，既有的负载相关不稳定（单跑通过，基线 033515d 上整套跑同样失败，4b 一条已记）。
+- 没调模型、没付费、没读 `.env`、没读任何 test 内容。
+- 下一步（待批准）：finance-v5 的 smoke 与 freeze（$0），然后逐轮；预算核：train 现量约 $25、7～8 轮约 $200、release 约 $15、final 两臂 50 题 × 3 遍约 $150，根 $500、final 份额 $200。
+- commit：本条所在的提交。
+
+---
+
 ## 2026-10-11 阶段 4b：搜索循环 v2 落成代码（DESIGN v1.2 的六处）；假上游上一轮一个包、留出接受装入工作线、活动末 gate 发布；$0
 
 - 做了什么（分支 `s5/search-loop`，按 IMPROVER / EVALUATE / ACTIVITY / CONTRACTS 的 v1.2 节）：

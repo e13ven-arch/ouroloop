@@ -11,7 +11,9 @@ another package: the attempt and the gate in evaluate/, the run in runtime/, the
     round     one round of the improver (docs/design/IMPROVER.md §3, v1.2: one package, held-out acceptance on the
               working line); `cycle` runs them with the patience rule
     gate      the release gate at the end of the activity (docs/design/EVALUATE.md §5.2): the working line against W0
-              on dev; passed, it becomes the release line's W*
+              on dev; passed, it becomes the release line's W*; nothing to do in an activity without dev tasks
+    release   the release by decision (EVALUATE §7, stage 4c): in an activity without dev tasks, the working line is
+              promoted to the release line once its own train reading is complete (the final prices it from that)
     evaluate  the sealed final on the test tasks (W* against W0); it reports, it does not choose
     report    the activity's report from what is on disk; no model is called
     export    the released W* as an app
@@ -37,7 +39,7 @@ from ..harness.literals import findings, forbidden, literal_index
 from ..harness.package import Limits, PackageError, build
 from .checks import require, startup_checks
 
-PHASES = ("smoke", "freeze", "baseline", "library", "round", "gate", "evaluate", "report", "export")
+PHASES = ("smoke", "freeze", "baseline", "library", "round", "gate", "release", "evaluate", "report", "export")
 
 
 # ---------------------------------------------------------------------------- one arm of tasks
@@ -178,9 +180,12 @@ def seed_literal_scan(activity) -> dict:
 
 
 # ---------------------------------------------------------------------------- freeze
-def gate_template(activity) -> TaskEvalPlan:
+def gate_template(activity) -> TaskEvalPlan | None:
     """The gate's frozen template: every dev task, K's repeats, order and thresholds; the candidate is filled in at
-    each gate, the rest is never touched again."""
+    each gate, the rest is never touched again. None when the activity has no dev tasks (stage 4c: the release is by
+    decision, the final's two arms are the reading)."""
+    if not activity.splits.ids("dev"):
+        return None
     g = activity.k["gate"]
     gate = GatePlan(min_groups=int(g["min_groups"]), min_gain=float(g["min_gain"]),
                     max_regression_rate=float(g["max_regression_rate"]), missing_cost_policy=g["missing_cost_policy"],
@@ -215,8 +220,13 @@ def freeze(activity, *, out: Callable[[str], None] = print) -> dict:
     """Freeze what the paid phases run under, and print the [rsi] lines that name it. Freezing again gives the same
     refs; a final plan different from the one sealed under the same id is refused."""
     refs = {"scope_id": activity.scope_id, "core_ref": activity.core_ref, "split_ref": activity.splits.hash()}
-    template = activity.objects.put(gate_template(activity))
-    activity.events.append("gate_template", plan=template)
+    plan_template = gate_template(activity)
+    template = None
+    if plan_template is not None:
+        template = activity.objects.put(plan_template)
+        activity.events.append("gate_template", plan=template)
+    else:
+        out("gate       no dev tasks in this split: no gate template; the release is by decision (`--phase release`)")
     root = activity.root_account()
     out(f"budget     root {activity.scope_id}: {root.remaining()['limits'] or 'no dollar limit'}, "
         f"set aside {root.remaining()['allocations'] or 'nothing'}")
@@ -245,7 +255,7 @@ def freeze(activity, *, out: Callable[[str], None] = print) -> dict:
     out("[rsi]")
     for key, value in refs.items():
         out(f'{key} = "{value}"')
-    return {**refs, "gate_template": template}
+    return {**refs, **({"gate_template": template} if template else {})}
 
 
 def _execution(activity, release_ref):
@@ -605,9 +615,12 @@ def gate(activity, *, out: Callable[[str], None] = print) -> dict:
         out(f"gate       on record: {state.get('verdict')} for {short(work.ref())}"
             + (f"; released {short(state['released'])}" if state.get("released") else ""))
         return state
+    if not activity.splits.ids("dev"):
+        out("gate       no dev tasks in this split: nothing to gate; the release is by decision (`--phase release`)")
+        return {"status": "nothing_to_gate", "why": "no dev tasks", "working": work.ref()}
     if work.ref() == seed.ref():
         out("gate       the working line is W0: nothing was accepted, nothing to gate")
-        return {"status": "nothing_to_gate", "working": work.ref()}
+        return {"status": "nothing_to_gate", "why": "the working line is W0", "working": work.ref()}
     unfinished = sorted(p.parent.name for p in (activity.root / "rounds").glob("r*/round.json")
                         if json.loads(p.read_text(encoding="utf-8")).get("status") not in ("done", "stopped"))
     if unfinished:
@@ -671,6 +684,59 @@ def gate(activity, *, out: Callable[[str], None] = print) -> dict:
         f"dev fixed {result['fixed_count']}, regressed {result['regressed_count']}"
         + (f"; released {short(result['released'])}" if result["released"] else "; no release")
         + (f"; {'; '.join(receipt.reasons)[:300]}" if receipt.reasons and receipt.verdict != "accepted" else ""))
+    return result
+
+
+# ---------------------------------------------------------------------------- the release by decision
+def release(activity, *, out: Callable[[str], None] = print) -> dict:
+    """The release by decision (EVALUATE §7, stage 4c): in an activity without dev tasks, the working line's release is
+    promoted to the release line (reason `decision`, no receipt) once its package's train reading is complete — the
+    tasks it lacks (the studied part; the held-out part was read at the screen) are read under its own release first
+    (role `measure`), so the final's estimate prices W* from them. An
+    activity with dev tasks releases by its gate; a working line that is still W0 has nothing to release; a running
+    round refuses. Run again, it promotes nothing twice and pays nothing."""
+    require(startup_checks(activity, phase="release"), phase="release", activity=activity)
+    if activity.splits.ids("dev"):
+        raise ValueError("release refused: this activity has dev tasks, so its release is the gate's (`--phase gate`)")
+    work, seed = activity.active_release(), activity.seed_release()
+    released = activity.releases.released()
+    if released is not None and released.parent_ref == work.ref():
+        out(f"release    on record: {short(released.ref())} released from {short(work.ref())}")
+        return {"status": "done", "working": work.ref(), "released": released.ref(), "measured": 0}
+    if work.ref() == seed.ref():
+        raise ValueError("release refused: the working line is W0: nothing was accepted, nothing to release")
+    unfinished = sorted(p.parent.name for p in (activity.root / "rounds").glob("r*/round.json")
+                        if json.loads(p.read_text(encoding="utf-8")).get("status") not in ("done", "stopped"))
+    if unfinished:
+        raise ValueError(f"release refused: round {', '.join(unfinished)} is not finished and can still move the "
+                         f"working line; finish or stop it first")
+    # what W*'s package has no valid train reading of: the held-out part was read at its screen (under the parent's
+    # release, with this package), the studied part is read now under W*'s own release — enough for the final's
+    # estimate, which prices an arm from readings of a release that executes as it does
+    runs = activity.results.runs()
+    read = {r.task_id for r in activity.results.all() if r.split == "train" and r.validity == "valid"
+            and runs.get(r.run) is not None and runs[r.run].package_ref == work.package_ref
+            and runs[r.run].role != "library"}
+    train = activity.splits.ids("train")
+    todo = [t for t in train if t not in read]
+    out(f"release    {short(work.ref())}: {len(todo)} of {len(train)} train tasks still to read for its package")
+    if todo:
+        account = activity.account("release")
+
+        def run(arm, chosen, retry=0, supersedes=None):
+            return run_arm(activity, release=work, split="train", candidate=f"release:{short(work.ref())}",
+                           role="measure", pairs=chosen, account=account, arm=arm, retry=retry, supersedes=supersedes,
+                           notes="the released W's own train reading")
+        rows = refill_attempts(run("subject", [(t, 0) for t in todo]), run, "subject",
+                               int(activity.k["gate"]["max_infrastructure_retries"]))
+        if any(r.failure_class == "budget_exhausted" for r in rows):
+            raise ValueError("release refused: the budget refused the released W's train reading; nothing was promoted")
+    promoted = activity.releases.promote(work, None, reason="decision", operation_id=f"release:{short(work.ref())}")
+    activity.events.append("release_decision", working=work.ref(), released=promoted.ref(), measured=len(todo))
+    result = {"status": "done", "working": work.ref(), "released": promoted.ref(), "measured": len(todo)}
+    write_json(activity.root / "rsi" / "release.json", result)
+    out(f"release    {short(promoted.ref())} released by decision from the working line {short(work.ref())}; "
+        f"freeze seals the final next")
     return result
 
 

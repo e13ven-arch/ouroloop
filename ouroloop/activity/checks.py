@@ -20,7 +20,7 @@ from ..evaluate.release import attempt_version, improver_version
 from ..harness.package import Limits, check_shape
 from ..harness.seed import SeedUnavailable, seed_files
 
-PAID = ("smoke", "baseline", "library", "round", "gate", "evaluate")
+PAID = ("smoke", "baseline", "library", "round", "gate", "release", "evaluate")
 
 
 def money_problems(activity, *, phase: str, needs_model: bool) -> list[str]:
@@ -165,7 +165,7 @@ def correctness_problems(activity, *, phase: str, needs_worker: bool) -> list[st
             problems.append(f"the claude CLI is {current} and this activity ran on {recorded}: a model call's "
                             f"transport is part of what a comparison holds fixed; reinstall {recorded} (and set "
                             f"DISABLE_AUTOUPDATER=1 for the activity's duration) or start a new activity")
-    if phase == "round" and not list(activity.events.read("gate_template")):
+    if phase == "round" and activity.splits.ids("dev") and not list(activity.events.read("gate_template")):
         problems.append("no frozen gate plan: run `ouroloop freeze` before a round (the gate's template is fixed "
                         "before any candidate is seen)")
     if phase in PAID and uses_memory(activity, phase):

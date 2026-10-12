@@ -5,13 +5,14 @@ lines: the working line (`rsi/active.json`), moved by the held-out screens insid
 rollback only ever goes back to a release that was installed and is not revoked.
 
     Release        parent_ref, package_ref, improver_ref, core_ref, receipt_ref | screen_ref,
-                   reason (seed | screen | gate | rollback | import)
+                   reason (seed | screen | gate | decision | rollback | import)
     GateReceipt    one paired gate's reading (EVALUATE §5): the plan, both arms' runs in its results object, the verdict
     InstallReceipt the fact of an install or a refusal: expected parent, operation, status, the pointer observed
 
 A screen result installs on the working line only when it is accepted; a receipt promotes to the release line only
 when a completed gate registered it ("evaluation_completed" event) and its verdict is accepted, confirmed when the plan
-confirms. Code identity is two hashes (`attempt_version`: what an attempt runs; `improver_version`: the rest); every K
+confirms. An activity without dev tasks has no gate: its working line is promoted by decision (reason `decision`, no
+receipt; EVALUATE §7, stage 4c), and the final's two arms are its reading. Code identity is two hashes (`attempt_version`: what an attempt runs; `improver_version`: the rest); every K
 carries both, so a changed `.py` is a new K; `code_version` is the hash of all of it, for reports.
 """
 from __future__ import annotations
@@ -24,7 +25,7 @@ from pathlib import Path
 from ..contracts import (ContractError, Events, Objects, Record, check_refs, locked, now, register, short,
                          write_json)
 
-REASONS = ("seed", "screen", "gate", "rollback", "import")
+REASONS = ("seed", "screen", "gate", "decision", "rollback", "import")
 VERDICTS = ("accepted", "rejected", "inconclusive", "invalid")
 RECEIPT_KINDS = ("full", "confirmed")
 INSTALL_STATUS = ("installed", "stale_parent", "installation_failed")
@@ -219,24 +220,33 @@ class Releases:
         ref = self.released_ref()
         return self.load(ref) if ref else None
 
-    def promote(self, work: Release, receipt_ref: str, *, operation_id: str) -> Release:
-        """The release gate passed: the working line's release becomes the release line's W* — a release of reason
-        `gate` built on it, carrying the receipt. The receipt must be registered by a completed gate and accepted
-        (confirmed when its plan confirms). Promoting again under the same operation is the same release."""
-        receipt = self.objects.load(receipt_ref, GateReceipt)
-        if receipt.verdict != "accepted":
-            raise NotAuthorized(f"the receipt's verdict is {receipt.verdict}, not accepted")
-        if not self.registered_receipt(receipt_ref):
-            raise NotAuthorized("this receipt was not registered by a completed gate")
-        if receipt.plan_ref and self.objects.has(receipt.plan_ref):
-            plan = self.objects.get(receipt.plan_ref)
-            if int(plan.get("confirmation_repeats") or 0) > 0 and receipt.kind != "confirmed":
-                raise NotAuthorized("the plan confirms before it releases and this receipt is a full reading, not a "
-                                    "confirmed one")
-        if receipt.subject_ref != work.package_ref:
-            raise NotAuthorized("the receipt does not read the package of the release to promote")
+    def promote(self, work: Release, receipt_ref: str | None = None, *, reason: str = "gate",
+                operation_id: str) -> Release:
+        """The working line's release becomes the release line's W* — a release of `reason` built on it. With reason
+        `gate` it carries the receipt, which must be registered by a completed gate and accepted (confirmed when its
+        plan confirms); with reason `decision` (an activity without dev tasks, EVALUATE §7) there is no receipt.
+        Promoting again under the same operation is the same release."""
+        if reason not in ("gate", "decision"):
+            raise ContractError(f"a promotion's reason is gate or decision, not {reason!r}")
+        if reason == "gate":
+            if not receipt_ref:
+                raise NotAuthorized("a promotion by the gate names its receipt")
+            receipt = self.objects.load(receipt_ref, GateReceipt)
+            if receipt.verdict != "accepted":
+                raise NotAuthorized(f"the receipt's verdict is {receipt.verdict}, not accepted")
+            if not self.registered_receipt(receipt_ref):
+                raise NotAuthorized("this receipt was not registered by a completed gate")
+            if receipt.plan_ref and self.objects.has(receipt.plan_ref):
+                plan = self.objects.get(receipt.plan_ref)
+                if int(plan.get("confirmation_repeats") or 0) > 0 and receipt.kind != "confirmed":
+                    raise NotAuthorized("the plan confirms before it releases and this receipt is a full reading, not "
+                                        "a confirmed one")
+            if receipt.subject_ref != work.package_ref:
+                raise NotAuthorized("the receipt does not read the package of the release to promote")
+        elif receipt_ref is not None:
+            raise NotAuthorized("a promotion by decision carries no receipt")
         release = Release(parent_ref=work.ref(), package_ref=work.package_ref, improver_ref=work.improver_ref,
-                          core_ref=work.core_ref, receipt_ref=receipt_ref, reason="gate")
+                          core_ref=work.core_ref, receipt_ref=receipt_ref, reason=reason)
         ref = self.objects.put(release)
         with locked(self.released_path):
             current = self.released_pointer()
@@ -244,8 +254,9 @@ class Releases:
                 return release
             write_json(self.released_path, {"release_ref": ref, "revision": int(current["revision"]) + 1,
                                             "last_operation_id": operation_id, "working": work.ref()})
-        self.events.append("released", release=ref, working=work.ref(), receipt=receipt_ref, operation=operation_id)
-        self.events.append("installed", release=ref, reason="gate", operation=operation_id)
+        self.events.append("released", release=ref, working=work.ref(), receipt=receipt_ref, reason=reason,
+                           operation=operation_id)
+        self.events.append("installed", release=ref, reason=reason, operation=operation_id)
         return release
 
     # ------------------------------------------------------------------ the seed

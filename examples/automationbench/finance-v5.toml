@@ -1,25 +1,32 @@
 # finance-v5: the fifth finance activity, the first under the search loop v2 (docs/PLAN.md stage 4b, docs/DESIGN.md
-# v1.2 §6, docs/JOURNAL.md 2026-10-11). Finance on the stratified split v0.4 read (pinned below), the automationbench_v2
-# preset (the library off, one candidate package a round, held-out acceptance on the working line, one dev gate at the
-# end of the activity), the stirrup seed, up to 12 rounds with a patience of 3. Every paid step is approved in chat
-# first (PLAN rule 3). Run from the repository's root with `.venv/bin/python -m ouroloop`, in a terminal that stays
-# open, on AC power under `caffeinate -dimsu`; stop a step with one Ctrl-C and let it drain, never kill it (a killed
-# call keeps its reservation's bound).
+# v1.2 §6) and the two-way protocol of stage 4c (DESIGN §6.7, ACTIVITY §4, EVALUATE §6-§7; docs/JOURNAL.md 2026-10-11
+# and 2026-10-12). Finance's 100 public tasks split 50/50 by the stratified rule: train 50 (R studies 30, 20 are held
+# out for the screens), test 50 frozen for the final; no dev, so no release gate — the working line is released by
+# decision when the rounds are over, and the final's two arms (W0 and W*) are the number the README reports. The
+# automationbench_v2 preset (the library off, one candidate package a round, held-out acceptance on the working line),
+# the stirrup seed, up to 12 rounds with a patience of 3 (the budget holds about 7 or 8). Every paid step is approved
+# in chat first (PLAN rule 3). Run from the repository's root with `.venv/bin/python -m ouroloop`, in a terminal that
+# stays open, on AC power under `caffeinate -dimsu`; stop a step with one Ctrl-C and let it drain, never kill it (a
+# killed call keeps its reservation's bound).
 #   1  `... bench --config examples/automationbench/finance-v5.toml --phase smoke --checks-only`                 $0
-#   2  `... freeze --config ...`: K (with the two code versions), the gate template and the budget root; the final
-#      is not sealed yet (no release line); add the printed [rsi] lines and commit                               $0
-#   3  `... bench --config ... --phase cycle --until baseline` (about $58: finance-v4's W0 cannot be imported, the
-#      seed's bytes changed with the hook's aux model, so the AttemptIdentity differs), then `--until round-0`,
-#      round-1, ... (each approved, each read before the next; `--phase report` after each, $0; the cycle stops by
-#      itself after 3 rounds in a row without a held-out acceptance, or at round 11)
-#   4  when the rounds are over: `... bench --config ... --phase gate` (about $25: the working line against W0 on
-#      dev, two readings); passed, W* is on the release line and `... freeze --config ...` again seals the final and
-#      prints final_plan_ref; it is committed to git before the first test attempt (PLAN rule 6); then
-#      `... bench --config ... --phase evaluate`
+#   2  `... freeze --config ...`: K (with the two code versions) and the budget root; no gate template (no dev); the
+#      final is not sealed yet (no release line); add the printed [rsi] lines (scope_id, core_ref, split_ref) and
+#      commit                                                                                                    $0
+#   3  no baseline phase: `... bench --config ... --phase round --round 0` reads the 50 train tasks itself (about
+#      $25, in the round's account), then round-1, round-2, ... (each approved, each read before the next;
+#      `--phase report` after each, $0); stop after 3 rounds in a row without a held-out acceptance
+#   4  `... bench --config ... --phase release`: reads the working line's missing train tasks under its own release
+#      (about $15) and promotes it to the release line by decision; then `... freeze --config ...` again seals the
+#      final (W0 and W_star, 50 test tasks × 3 repeats, about $150) and prints final_plan_ref; it is committed to git
+#      before the first test attempt (PLAN rule 6); then `... bench --config ... --phase evaluate`
+#   5  `--phase report`: the two arms' pass rates and partial credit are the README's numbers (the public set's test
+#      half, medium effort, 3 repeats; not the official leaderboard, which scores a private set)
 #
 # The numbers are the preset's (activity/presets.py, from evidence); a value here may only tighten one. The worker runs
 # by the image id below (K pins it: the image built from this checkout on 2026-10-11, after runtime/worker_runner.py's
-# embedded contract gained `hook_aux_calls` in stage 4b; `docker image inspect ouroloop-worker:py3.12`).
+# embedded contract gained `hook_aux_calls` in stage 4b; `docker image inspect ouroloop-worker:py3.12`). The split's
+# hash is new (50/50): finance-v1 to v4 read the 50/25/25 split 4fd91eaf9fb8daf5, so their numbers are not comparable;
+# `freeze` prints the new split_ref to pin under [rsi].
 
 [workspace]
 root = "workspace-finance-v5"
@@ -30,9 +37,7 @@ upstream_path = "~/workspace/AutomationBench"
 split_rule = "stratified"
 seed = 1
 concurrency = 8
-
-[bench.frozen_splits]
-finance = "4fd91eaf9fb8daf5"
+ratios = { train = 0.5, dev = 0.0, test = 0.5 }
 
 [model]
 type = "claude_code"

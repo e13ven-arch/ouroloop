@@ -43,6 +43,8 @@ SPLITS = {"rsi.update": "train", "rsi.notify_after_update": "train", "rsi.hold":
 TRAIN = [t for t, f in FAMILIES.items() if SPLITS[f] == "train"]
 DEV = [t for t, f in FAMILIES.items() if SPLITS[f] == "dev"]
 FINAL = [t for t, f in FAMILIES.items() if SPLITS[f] == "test"]
+# the two-way split of stage 4c (ACTIVITY §4): the dev families are test, the release is by decision
+NO_DEV_SPLITS = {f: ("test" if s == "dev" else s) for f, s in SPLITS.items()}
 
 # A preset for the miniature domain: the real preset's every rule, with the gate's floors and the limits small enough for
 # three dev tasks and a scripted actor. Registered under its own name; nothing outside the tests reads it.
@@ -73,9 +75,9 @@ def suite(path) -> ab.Suite:
     return ab.load_suite(DOMAIN, path)
 
 
-def splits(s: ab.Suite) -> SplitManifest:
+def splits(s: ab.Suite, table: dict | None = None) -> SplitManifest:
     fams, rule = ab.families(s, FAMILIES)
-    return SplitManifest(DOMAIN, s.versions, rule, [TaskEntry.of(e) for e in s.entries(fams)], dict(SPLITS))
+    return SplitManifest(DOMAIN, s.versions, rule, [TaskEntry.of(e) for e in s.entries(fams)], dict(table or SPLITS))
 
 
 def config(root: Path, upstream: str, **sections) -> dict:
@@ -96,7 +98,7 @@ def config(root: Path, upstream: str, **sections) -> dict:
     return cfg
 
 
-def write_split(root: Path, s: ab.Suite) -> SplitManifest:
+def write_split(root: Path, s: ab.Suite, table: dict | None = None) -> SplitManifest:
     """The rsi domain's declared split, frozen into the workspace before the activity opens (freeze_split keeps what is
     on disk), so tests read the train/dev/test sets of SPLITS rather than a hash rule's. A split already frozen there is
     kept: the fake upstream's versions name pydantic only once something has imported it, so freezing it again after a
@@ -104,19 +106,19 @@ def write_split(root: Path, s: ab.Suite) -> SplitManifest:
     path = Results(Path(root) / "ws", DOMAIN).manifest_path()
     if path.exists():
         return SplitManifest.load(path)
-    manifest = splits(s)
+    manifest = splits(s, table)
     manifest.freeze(path)
     return manifest
 
 
 def activity(root: Path, upstream: str, *, provider=None, worker=None, freeze_k: bool = True, out=None,
-             research=None, memory_client=None, **sections):
+             research=None, memory_client=None, splits_table: dict | None = None, **sections):
     """The activity of `config(root, upstream, **sections)` with the declared split, ProcessWorker (a test worker:
     for_tests), `provider` (a BusinessWorker by default) for the actor's calls and `research` for the research model's
     (the actor's provider when none is given). `memory_client` makes the memory's client (a test's in-process stand-in
-    for the sidecar's; the real one otherwise)."""
+    for the sidecar's; the real one otherwise). `splits_table` replaces the declared split (NO_DEV_SPLITS: no dev)."""
     cfg = config(root, upstream, **sections)
-    write_split(root, suite(upstream))
+    write_split(root, suite(upstream), splits_table)
     provider = provider if provider is not None else BusinessWorker()
     research = research if research is not None else provider
     return open_activity(cfg, out=out or (lambda _line: None), freeze_k=freeze_k,

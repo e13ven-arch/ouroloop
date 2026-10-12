@@ -337,6 +337,7 @@ V3 的接受是搜索的接受，不是发布：它决定下一轮从哪里起�
 
 - **工作线**：`rsi/active.json`，留出筛选接受就装入（CAS，reason `screen`），父包永远是工作线的上一个 release；活动内的测量、诊断、R 的起点都在工作线上。
 - **发布线**：活动末 dev gate 通过的 W_work 成为 W\*（reason `gate`），final 与导出只用它；gate 不通过就没有发布，工作线的历史与留出曲线照实报告。
+- **按决定发布（阶段 4c，2026-10-12）**：用户要的对外数字是 final 上的绝对分（W\* 得了多少，W0 臂并列），不是比业界更严的筛选。于是划分可以只有两份：train 给改进器（研究部分 + 留出筛选），test 冻结给 final；K 里没有 dev 题时不冻结 gate 模板、没有发布 gate，轮次跑完由用户 `--phase release` 把工作线按决定提升为发布线（reason `decision`，没有收据），`freeze` 再封存 final。基线阶段也不必跑：第 0 轮自己现量 train，W0 的数来自 final 的 W0 臂。流式学习（test 题首遇计分后变成证据、每 N 题一轮）是下一个阶段，另写设计。
 - 档案保存每个评过的候选：父 ref、声明、逐档结果、筛选读数。多父、重定基仍推迟。
 
 ### 6.8 条件记功与反膨胀
@@ -432,6 +433,7 @@ ouroloop/
 | 3 改进器 | `improver/` 八步；toolcheck 与回放；分层估值与代码先验；档案与反膨胀；R 的配置 | 假上游上脚本化的 R 一轮端到端：tool 候选过 V0～V2a 并在 V3 记条件修复；hook 候选过 V2b；有 mechanizable 簇而无代码候选时台账记 `no_code_candidate` | $0 |
 | 4 实测 | finance，新 preset：基线 → library → 3 轮（每轮后停）→ 有装入则封存 final | 过程检查成立；计划哈希早于第一次 test 尝试；报告两次相同 | finance-v1～v4 共 $528：机制全部跑通，零装入（§6.12） |
 | 4b 搜索循环 v2 | 本文 v1.2 的六处修改落成代码（IMPROVER、EVALUATE、ACTIVITY、CONTRACTS、MEMORY 的对应节）；preset `automationbench_v2`；finance-v5 | 假上游上脚本化的 R 跑 6 轮：接受累积在工作线、活动末 gate 一次、基线从旧工作区导入；finance-v5 的预期：留出曲线不降，dev 严格 +3～6 题或部分得分 +0.05～0.10，成本不升 | 代码 $0；finance-v5 名义约 $350（基线导入 $0、12 轮 × $28、gate 约 $25、final 约 $72） |
+| 4c 两份划分与按决定发布 | §6.7 第三条：K 没有 dev 题时 freeze 不写 gate 模板、round 不要求它、`gate` 无事可做；`--phase release` 把工作线按决定提升为发布线（reason `decision`），并补齐 W\* 的包缺的 train 读数以供 final 核价；final 封存只要有发布线；基线阶段可跳过 | 假上游上无 dev 的活动：freeze、两轮、release、final（W0 与 W\* 两臂）、export 端到端；有 dev 的活动行为不变 | 代码 $0；finance-v5 名义约 $400（train 现量 $25、7～8 轮约 $200、W\* 补测约 $15、final 两臂 50 题 × 3 遍约 $150） |
 | 5 训练绑定 | v2.0 离线链对新记录跑通；`model` 组件绑定；之后按 V2 的 v2.1 | V2 §5 的断言 | $0；v2.1 另批 |
 
 ## 11 考虑过、不做
@@ -458,3 +460,4 @@ ouroloop/
 | 3 | library 默认关（preset `automationbench_v2` 的 `memory.enabled = false`）；memory 包保留，R 的输入里不再有条目 | 是 |
 | 4 | finance-v5 的预算：根 $500、final 份额 $200；基线从 finance-v4 导入（AttemptIdentity 相同时） | 到冻结前批准 |
 | 5 | 对外预期：一次活动 dev 严格 +3～6 题；80% 只在部分得分口径上谈 | 是 |
+| 5 | 2026-10-12：对外的数字是 final 上的绝对分并列 W0 臂，不追求比业界更严；划分两份（train / test）、基线阶段取消、无 dev 的活动按决定发布（§6.7 第三条、§10 阶段 4c）；流式学习另立阶段 | 已定（用户 2026-10-12） |
