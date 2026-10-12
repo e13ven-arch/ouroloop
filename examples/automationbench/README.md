@@ -95,7 +95,10 @@ measured again; the round lives under `rounds/s<i>`), and an accepted package is
 stream section gives each batch's first-encounter pass rate on the line that ran it and the whole stream's curve. An
 activity may start where another one released: `[rsi] seed_from = <that workspace>` imports its released W* as the seed
 (the final's W0 arm), with R's estimates and playbook (`finance-v6.toml`). This version streams the train split with the
-memory off; the test segment and the memory's stream come later.
+memory off; the test segment and the memory's stream come later. An activity may also span several domains
+(docs/DESIGN.md §6.14): `[bench] domains = ["finance", "hr", "operations"]` loads their public tasks as one suite
+(the split is stratified per domain), and `[final] domains = ["finance"]` keeps the final and the release's reading
+to one of them, so the mechanisms are screened across domains and the number stays one domain's.
 
 ## What the smoke phase establishes
 

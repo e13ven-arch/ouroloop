@@ -57,6 +57,17 @@ class Activity:
         return self.k["bench"]["domain"]
 
     @property
+    def final_domains(self) -> list[str]:
+        """The domains the final runs on and the release reads (DESIGN §6.14): [final] domains, else every domain of
+        the activity."""
+        return list(self.k["final"].get("domains") or self.k["bench"].get("domains") or [self.domain])
+
+    def final_tasks(self, split: str) -> list[str]:
+        """The split's tasks of the final's domains, in the frozen order."""
+        wanted = set(self.final_domains)
+        return [t for t in self.splits.ids(split) if self.suite.domain_of(t) in wanted]
+
+    @property
     def scope_id(self) -> str:
         return str((self.config.get("rsi") or {}).get("scope_id") or "activity")
 
@@ -261,12 +272,14 @@ def open_activity(config: dict, *, out: Callable[[str], None] = print, freeze_k:
     """The activity of a config. `freeze_k` off (the smoke's checks) reads K without writing core.json or a release."""
     root = workspace_root(config)
     bench = dict(config.get("bench") or {})
-    if not bench.get("domain"):
+    if not bench.get("domain") and not bench.get("domains"):
         raise ConfigError("[bench] domain is required")
     versions = ab.require(upstream_path(config))
-    suite = ab.load_suite(bench["domain"], upstream_path(config))
     from .config import resolve
     sections = resolve(config)
+    bench = sections["bench"]
+    suite = ab.load_suites(bench["domains"], upstream_path(config)) if bench.get("domains") else \
+        ab.load_suite(bench["domain"], upstream_path(config))
     results = Results(root, sections["bench"]["domain"])
     splits, drift = freeze_split(suite, sections["bench"], results.manifest_path(), versions)
     core = freeze_core(config, split_hash=splits.hash(), attempt_version=attempt_version(),

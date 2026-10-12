@@ -387,7 +387,7 @@ v1.2 据此改六处：一轮一个包（§6.1、§6.5）；活动内按留出 t
 
 批式一轮要先跑完 50 题、再反思一次、再补测 30 题，反馈每 50 题一次、补测的钱全是重做旧题。生产里的形态是：任务来了做一次，做完就是经验，每做几道就反思，下几道就受益。`--phase stream`（ACTIVITY §4）把它做成评测协议：
 
-- 任务序列：K 的 `schedule.stream_splits`（默认 `["train"]`）里的题按 `Random(f"stream:{gate.order_seed}:{domain}")` 打乱，冻结在 `rsi/stream.json`。每道题在当前工作线上做一次（run 的 role `stream`，候选名 `stream`），首遇结果就是它的分，之后它的记录是证据。
+- 任务序列：K 的 `schedule.stream_splits`（默认 `["train"]`）里的题按 `Random(f"stream:{gate.order_seed}:{domain}")` 打乱，冻结在 `rsi/stream.json`。`schedule.stream_batch` 的 preset 上限 30（v1.4；一个域 50 题时配置写 10）。每道题在当前工作线上做一次（run 的 role `stream`，候选名 `stream`），首遇结果就是它的分，之后它的记录是证据。
 - 每 `schedule.stream_batch`（10）道题一轮：改进器的一轮，不现量；证据池是到目前为止已计分的题，每题取最新一次尝试（不论哪条线跑的）；研究部分 / 留出部分按 `holdout_share` 对已计分的题整族划分（同一个哈希规则，所以一道题一旦留出就一直留出）；留出筛选只跑留出部分里最近 `stream_screen_max`（20）道，接受规则不变；接受即装入，下一批在新线上跑。几个包、叠装同批式。
 - 验证就是下一批：报告按批给首遇通过率、部分得分、每次尝试成本；整段序列的首遇通过率是对外的数（EVALUATE §6）。装入后的组件按足迹在后续批次上记功；连续 `removal_zero_credit_rounds` 批零功的生成删除候选（反膨胀照旧）。
 - memory：`memory.enabled` 时工作线的尝试读 live 库（library 阶段的流包形态），每批之后把这批的轨迹蒸馏进 live 库（MEMORY §7 的写入步，首遇规则、留一、记功、退役照旧）；release 时把 live 库按 `max_memory_bytes` 装成快照冻进发布的包。preset v2 关着，开不开是配置的事。

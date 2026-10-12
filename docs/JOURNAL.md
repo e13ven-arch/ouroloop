@@ -8,6 +8,20 @@
 
 ---
 
+## 2026-10-12 阶段 4e：跨域 train（DESIGN v1.4 §6.14）落成代码；分支 `s6/yield`；$0
+
+- 用户的决定（2026-10-12）："v6 改成跨域 train"。设计先写（`9874431`：DESIGN §6.14 与钱的表、ACTIVITY §4、CONTRACTS §4、EVALUATE §6、PLAN 4e），再写代码。
+- 代码：
+  - 适配层：`Suite.domains`（题 → 域）、`domain_of`、`members`；`load_suites(domains, path)` 把几个域的公开题装成一个 suite，名字按 `+` 连起来，题 id 冲突拒绝；`stratum` 在多域 suite 里加域前缀（单域的 stratum 不变，所以 finance-v5 的划分哈希不变）。
+  - K：`[bench] domains`（free；给了它 `bench.domain` 就是连起来的串，两者同给且不一致拒绝）、`[final] domains`（free；非空、是活动域的子集）；`schedule.stream_batch` 的 preset 上限 10 → 30，`improver.stream_screen_max` 20 → 30。
+  - 活动：`open_activity` 按 `domains` 装 suite；`Activity.final_domains` / `final_tasks(split)`；`final_plan` 只取 final 域的 test 题；`release` 只补 final 域里 W\* 缺的 train 读数；`heldout_domains` 的检查按成员域查。
+  - `finance-v6.toml`：`domains = ["finance", "hr", "operations"]`、`final.domains = ["finance"]`、批 30、根 $750 / final $230（下限）、`[pricing] max_input_tokens` 400k（单次预留 $6.48）。README 加一段。
+- 测试：假上游 rsi + marketing 两个域一个活动：suite 合并、stratum 带域前缀而单域不变、分层划分每个域各有 train、`final_tasks` 与 final 计划只有 rsi 的 test、smoke 的检查通过、`stream` 的启动检查通过、记录目录名 `rsi+marketing`；配置的两键校验（重复、带 `+`、不是列表、`domain` 与 `domains` 同给、`final.domains` 不是子集）。activity + evaluate + 流 + 边界 320 passed，config + adapters 96 passed；默认与全量套件等 finance-v5 的 final 跑完再跑（一次只跑一套）。
+- 规模待用户选（PLAN §3 第 1 项）：3 个域、批 30、筛 30 约 $665；6 个域约 $1,095。
+- 没付费、没读 test。
+
+---
+
 ## 2026-10-12 阶段 4d：一轮几个包并叠装、审核 hook 建议、`seed_from`、`--phase stream` 流式循环；分支 `s6/yield`；$0
 
 - 用户的决定（2026-10-12）："我需要这一次能够提升的足够高，而不是只通过了 2 题"；"跑第 1 轮，四条改动并行写"。finance-v5 第 1 轮从主检出跑，四条改动在 worktree 的 `s6/yield` 上写，finance-v5 期间不合入（规则 13）。文档先改（`14cb55f`：DESIGN v1.3 §6.1、§6.4、§6.5、§6.7、§6.13、§10、§12；IMPROVER §2、§3、§3.1、§6、§7、§9.4；ACTIVITY §3、§4；EVALUATE §6、§7；CONTRACTS §4、§5；MEMORY §7.0；PLAN）。

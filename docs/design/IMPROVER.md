@@ -15,7 +15,7 @@
 class Settings:
     packages_per_round: int = 3                  # R 每轮交的候选包数（v1.3：各自筛选，接受的叠装，§9.4）
     audit_hook_share: float = 0.3                # 只剩文字载体的簇占失败案例的份额到此，清单建议一个调 aux 的审核 hook（§6）
-    stream_screen_max: int = 20                  # 流式一轮的留出筛选最多跑最近多少道留出题（§3.1）
+    stream_screen_max: int = 30                  # 流式一轮的留出筛选最多跑最近多少道留出题（§3.1；v1.4 从 20 提到 30）
     fixed_per_round: int = 2                     # 固定代码的候选（快照、升级技能、删除）每轮上限
     session_max_turns: int = 40; session_max_edits: int = 48
     session_max_read_bytes: int = 65536; session_max_read_total: int = 196608

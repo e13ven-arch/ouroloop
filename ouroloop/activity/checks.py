@@ -79,9 +79,10 @@ def leakage_problems(activity, *, phase: str) -> list[str]:
         memory = activity.k.get("memory") or {}
         if not memory.get("enabled"):
             problems.append("[memory] enabled = false: this activity runs no memory stream")
-        if activity.domain in set(memory.get("heldout_domains") or ()):
-            problems.append(f"{activity.domain} is a held-out business line ([memory] heldout_domains): none of its "
-                            f"experience enters a library")
+        held = set(memory.get("heldout_domains") or ()) & set(activity.suite.members)
+        if held:
+            problems.append(f"{', '.join(sorted(held))} is a held-out business line ([memory] heldout_domains): none "
+                            f"of its experience enters a library")
     return problems
 
 

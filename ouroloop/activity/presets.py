@@ -26,8 +26,8 @@ from ..memory.settings import preset_table as memory_preset
 THREAD_ENV = {"OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"}
 
 AUTOMATIONBENCH_V1 = {
-    "bench": {"domain": None, "upstream_path": None, "toolset": "api", "ratios": {"train": 0.5, "dev": 0.25,
-                                                                                    "test": 0.25},
+    "bench": {"domain": None, "domains": None, "upstream_path": None, "toolset": "api",
+              "ratios": {"train": 0.5, "dev": 0.25, "test": 0.25},
               "seed": 0, "split_rule": "stratified", "frozen_splits": {}, "families": {},
               "near_duplicate_threshold": 0.6, "smoke_tasks": 1, "concurrency": 8},
     "limits": {"max_steps": 50, "max_model_calls": 200, "max_tool_calls": 200, "max_seconds": 900,
@@ -55,10 +55,11 @@ AUTOMATIONBENCH_V1 = {
              "partial_min_gain": 0.03},
     # IMPROVER §3 (v1.2): up to 12 rounds; the patience counts rounds in a row without a held-out acceptance
     # v1.3 (DESIGN §6.13): the stream's batch (a round every this many scored tasks) and the splits it runs, in order
-    "schedule": {"rounds": 12, "patience": 3, "max_infrastructure_failures": 2, "stream_batch": 10,
+    "schedule": {"rounds": 12, "patience": 3, "max_infrastructure_failures": 2, "stream_batch": 30,
                  "stream_splits": ["train"]},
     "budget": {"usd": None, "final_usd": None},
-    "final": {"tasks": "test", "repeats": 3, "claims": ["C1"]},
+    # v1.4 (DESIGN §6.14): a cross-domain activity's final runs on these domains' test tasks (None: every domain)
+    "final": {"tasks": "test", "repeats": 3, "claims": ["C1"], "domains": None},
 }
 
 # v1.2 (DESIGN §6.12, MEMORY §9): the search loop redone — the library off by default, one package a round, held-out
@@ -69,7 +70,8 @@ AUTOMATIONBENCH_V2["memory"]["enabled"] = False
 PRESETS = {"automationbench_v1": AUTOMATIONBENCH_V1, "automationbench_v2": AUTOMATIONBENCH_V2}
 
 RULES = {
-    "bench": {"domain": "free", "upstream_path": "free", "toolset": "fixed", "ratios": "free", "seed": "free",
+    "bench": {"domain": "free", "domains": "free", "upstream_path": "free", "toolset": "fixed", "ratios": "free",
+              "seed": "free",
               "split_rule": "free", "frozen_splits": "free", "families": "free", "near_duplicate_threshold": "free",
               "smoke_tasks": "free", "concurrency": "free"},
     "limits": {k: "cap" for k in AUTOMATIONBENCH_V1["limits"]},
@@ -98,7 +100,7 @@ RULES = {
     "schedule": {"rounds": "cap", "patience": "cap", "max_infrastructure_failures": "cap", "stream_batch": "cap",
                  "stream_splits": "free"},
     "budget": {"usd": "free", "final_usd": "free"},
-    "final": {"tasks": "fixed", "repeats": "floor", "claims": "free"},
+    "final": {"tasks": "fixed", "repeats": "floor", "claims": "free", "domains": "free"},
 }
 
 

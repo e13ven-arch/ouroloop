@@ -365,13 +365,24 @@ class Score:
 
 
 class Suite:
-    """A domain's tasks, with the grading kept apart from them."""
+    """A domain's tasks, with the grading kept apart from them — or several domains' (`load_suites`, DESIGN §6.14):
+    `domains` says which domain each task came from."""
 
-    def __init__(self, domain: str, tasks: dict[str, BenchTask], grading: dict[str, Grading], versions: dict):
+    def __init__(self, domain: str, tasks: dict[str, BenchTask], grading: dict[str, Grading], versions: dict,
+                 domains: dict[str, str] | None = None):
         self.domain = domain
         self.tasks = tasks
         self.versions = versions
         self._grading = grading
+        self.domains = dict(domains) if domains is not None else {tid: domain for tid in tasks}
+
+    def domain_of(self, task_id: str) -> str:
+        return self.domains[task_id]
+
+    @property
+    def members(self) -> list[str]:
+        """The domains this suite holds, in the order they were loaded."""
+        return list(dict.fromkeys(self.domains.values()))
 
     def __len__(self) -> int:
         return len(self.tasks)
@@ -423,6 +434,28 @@ def load_suite(domain: str, path: str | Path | None = None) -> Suite:
     if not tasks:
         raise UpstreamError(f"upstream domain {domain} has no tasks")
     return Suite(domain, tasks, grading, versions)
+
+
+def load_suites(domains, path: str | Path | None = None) -> Suite:
+    """Several upstream domains' public tasks as one suite (DESIGN §6.14: a cross-domain activity), named by the
+    domains joined with `+`; the task ids carry their domain already, and a clash is refused."""
+    names = [str(d) for d in domains]
+    if not names:
+        raise UpstreamError("load_suites: name at least one domain")
+    if len(names) == 1:
+        return load_suite(names[0], path)
+    tasks: dict[str, BenchTask] = {}
+    grading: dict[str, Grading] = {}
+    owners: dict[str, str] = {}
+    versions: dict = {}
+    for name in names:
+        one = load_suite(name, path)
+        versions = versions or one.versions
+        for tid, task in one.tasks.items():
+            if tid in tasks:
+                raise UpstreamError(f"domains {owners[tid]} and {name} both have a task called {tid!r}")
+            tasks[tid], grading[tid], owners[tid] = task, one.grading(tid), name
+    return Suite("+".join(names), tasks, grading, versions, domains=owners)
 
 
 def families(suite: Suite, declared: dict[str, str] | None = None) -> tuple[dict[str, str], str]:
@@ -498,7 +531,10 @@ def stratum(suite: Suite, task_id: str) -> str:
     kinds = sorted({assertion_kind(a.get("type")) for a in g.assertions
                     if a.get("scored") is not False and a.get("excluded") is not True})
     family = "app" if set(g.allowed_services) - set(OFFICE_SERVICES) else "office"
-    return f"{'+'.join(kinds) or 'none'}|{family}"
+    # a cross-domain suite (DESIGN §6.14) strats by domain too, so each domain splits 50/50 on its own; a single
+    # domain's strata are unchanged, so its frozen split keeps its hash
+    prefix = f"{suite.domain_of(task_id)}|" if len(suite.members) > 1 else ""
+    return f"{prefix}{'+'.join(kinds) or 'none'}|{family}"
 
 
 def has_must_not(suite: Suite, task_id: str) -> bool:

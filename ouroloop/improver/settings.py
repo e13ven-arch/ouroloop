@@ -27,7 +27,7 @@ class Settings:
                                                  # screened, the accepted ones are stacked (IMPROVER §9.4, v1.3)
     audit_hook_share: float = 0.3                # the share of cases in text-only causes at which the focus list
                                                  # suggests an aux-model audit hook (IMPROVER §6, v1.3)
-    stream_screen_max: int = 20                  # a streaming round screens at most this many recent held-out tasks
+    stream_screen_max: int = 30                  # a streaming round screens at most this many recent held-out tasks
     fixed_per_round: int = 2                     # the fixed code's candidates per round (snapshot, promotions, removals)
     session_max_turns: int = 40
     session_max_edits: int = 48

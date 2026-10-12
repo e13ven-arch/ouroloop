@@ -223,7 +223,8 @@ def final_plan(activity) -> FinalPlan:
     # An arm's name is part of every attempt id, which is a session id (runtime.records.SESSION_ID): W* is "W_star".
     # W* is the release line's (the release gate's promotion), never the working line's (EVALUATE §7, v1.2).
     arms = {"W0": seed.ref()} if release is None else {"W0": seed.ref(), "W_star": release.ref()}
-    return FinalPlan(experiment_id=f"{activity.scope_id}-final", tasks=tuple(activity.splits.ids(final["tasks"])),
+    # a cross-domain activity's final runs on its [final] domains' test tasks only (DESIGN §6.14)
+    return FinalPlan(experiment_id=f"{activity.scope_id}-final", tasks=tuple(activity.final_tasks(final["tasks"])),
                      repeats=int(final["repeats"]), arms=arms, claims=tuple(final["claims"]) if len(arms) > 1 else (),
                      split_hash=activity.splits.hash(), core_ref=activity.core_ref,
                      max_infrastructure_retries=int(activity.k["gate"]["max_infrastructure_retries"]))
@@ -869,9 +870,11 @@ def release(activity, *, out: Callable[[str], None] = print) -> dict:
     read = {r.task_id for r in activity.results.all() if r.split == "train" and r.validity == "valid"
             and runs.get(r.run) is not None and runs[r.run].package_ref == work.package_ref
             and runs[r.run].role != "library"}
-    train = activity.splits.ids("train")
+    train = activity.final_tasks("train")          # the final's domains: enough for its estimate (DESIGN §6.14)
     todo = [t for t in train if t not in read]
-    out(f"release    {short(work.ref())}: {len(todo)} of {len(train)} train tasks still to read for its package")
+    out(f"release    {short(work.ref())}: {len(todo)} of {len(train)} train tasks"
+        + (f" of {activity.final_domains}" if len(train) != len(activity.splits.ids("train")) else "")
+        + " still to read for its package")
     if todo:
         account = activity.account("release")
 
