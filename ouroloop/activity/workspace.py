@@ -21,7 +21,7 @@ from ..evaluate.results import Results, RunManifest
 from ..evaluate.splits import SPLIT_RULES, SplitManifest, TaskEntry, assign_splits, stratified_splits
 from ..harness.package import Limits, Package, check_shape, load as load_package
 from ..harness.seed import build_seed
-from .config import ConfigError, Core, freeze_core, upstream_path, workspace_root
+from .config import SECTIONS, ConfigError, Core, freeze_core, upstream_path, workspace_root
 
 R0 = {"version": "r0", "prompts_ref": None, "estimates_ref": None, "playbook_ref": None, "settings_ref": None}
 
@@ -285,6 +285,18 @@ def open_activity(config: dict, *, out: Callable[[str], None] = print, freeze_k:
     core = freeze_core(config, split_hash=splits.hash(), attempt_version=attempt_version(),
                        improver_version=improver_version())
     objects = Objects(root)
+    core_file = root / "core.json"
+    if core_file.exists():
+        # The frozen K stands. A config or split that gives other sections is another activity; code that moved
+        # under the activity is not refused here — each phase's startup check says whether it may run on this
+        # checkout (PLAN rule 13: the rounds and the gate need both code versions, the final family the attempt
+        # code; activity/checks.py)
+        frozen = _frozen_core(json.loads(core_file.read_text(encoding="utf-8")), objects, core_file)
+        if (frozen.preset, frozen.sections, frozen.split_hash) != (core.preset, core.sections, core.split_hash):
+            raise ConfigError(f"{core_file} froze K {short(frozen.ref())}, and this config and split give "
+                              f"{short(core.ref())}: a changed K is a new activity (PLAN rule 13); run the old K at "
+                              f"its checkout, or start a new workspace")
+        core = frozen
     core_ref = core.ref()
     pinned = (config.get("rsi") or {}).get("core_ref")
     if pinned and pinned != core_ref:
@@ -293,13 +305,6 @@ def open_activity(config: dict, *, out: Callable[[str], None] = print, freeze_k:
     pinned_split = (config.get("rsi") or {}).get("split_ref")
     if pinned_split and pinned_split != splits.hash():
         raise ConfigError(f"[rsi] split_ref pins {pinned_split}, and the frozen split is {splits.hash()}")
-    core_file = root / "core.json"
-    if core_file.exists():
-        recorded = json.loads(core_file.read_text(encoding="utf-8")).get("ref")
-        if recorded != core_ref:
-            raise ConfigError(f"{core_file} froze K {short(recorded)}, and this config, code and split give "
-                              f"{short(core_ref)}: a changed K is a new activity (PLAN rule 13); run the old K at its "
-                              f"checkout, or start a new workspace")
     releases = Releases(root, objects)
     activity = Activity(config, root, core, core_ref, suite, splits, drift, versions, objects, Events(root), releases,
                         Budgets(root), results, worker_factory, provider_factory, memory_client_factory)
@@ -322,6 +327,22 @@ def open_activity(config: dict, *, out: Callable[[str], None] = print, freeze_k:
     for line in drift:
         out(f"DRIFT      {line}")
     return activity
+
+
+def _frozen_core(recorded: dict, objects: Objects, core_file: Path) -> Core:
+    """The K core.json froze: the core object by its ref, else rebuilt from the file (an old workspace whose object
+    store lacks it); a file that does not hash to its ref is refused."""
+    ref = recorded.get("ref")
+    if ref and objects.has(ref):
+        core = Core.from_json(objects.get(ref))
+    else:
+        core = Core(preset=recorded.get("preset", ""), sections={k: v for k, v in recorded.items() if k in SECTIONS},
+                    split_hash=recorded.get("split_hash", ""), attempt_version=recorded.get("attempt_version", ""),
+                    improver_version=recorded.get("improver_version", ""))
+    if ref and core.ref() != ref:
+        raise ConfigError(f"{core_file} names K {short(ref)} and its contents hash to {short(core.ref())}: the "
+                          f"workspace's frozen K is not readable")
+    return core
 
 
 # ---------------------------------------------------------------------------- the working line across activities

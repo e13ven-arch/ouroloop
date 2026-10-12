@@ -21,6 +21,9 @@ from ..harness.package import Limits, check_shape
 from ..harness.seed import SeedUnavailable, seed_files
 
 PAID = ("smoke", "baseline", "library", "round", "stream", "gate", "release", "evaluate")
+# The phases that run the attempt code only (no round, no gate): they need K's attempt_version and may run on a
+# checkout whose improver code moved (PLAN rule 13, 2026-10-12; the versions go on the `final_code` event)
+FINAL_FAMILY = ("freeze", "release", "evaluate", "report", "export")
 
 
 def money_problems(activity, *, phase: str, needs_model: bool) -> list[str]:
@@ -37,11 +40,11 @@ def money_problems(activity, *, phase: str, needs_model: bool) -> list[str]:
             pricing, {"usd": budget["usd"]}, "the activity's budget")
         if reason:
             problems.append(f"the declared budget cannot be enforced: {reason}")
-        if budget.get("final_usd") is not None and pricing.bounded:
+        if pricing.bounded:
             n = activity.concurrency
             bound = pricing.bound().get("usd") or 0.0
-            if n * bound > float(budget["final_usd"]) + 1e-9:
-                problems.append(f"the final share ${budget['final_usd']} cannot hold {n} in-flight reservations of "
+            if n * bound > float(budget["usd"]) + 1e-9:
+                problems.append(f"the budget root ${budget['usd']} cannot hold {n} in-flight reservations of "
                                 f"${bound:.4f}")
     for section in ("model", "research_model"):
         table = activity.model_table(section)
@@ -117,8 +120,10 @@ def memory_problems(activity) -> list[str]:
 
 def correctness_problems(activity, *, phase: str, needs_worker: bool) -> list[str]:
     problems = []
-    for name, frozen, now in (("attempt", activity.core.attempt_version, attempt_version()),
-                              ("improver", activity.core.improver_version, improver_version())):
+    versions = [("attempt", activity.core.attempt_version, attempt_version())]
+    if phase not in FINAL_FAMILY:
+        versions.append(("improver", activity.core.improver_version, improver_version()))
+    for name, frozen, now in versions:
         if frozen != now:
             problems.append(f"K froze the {name} code at {frozen} and this checkout is {now}: no code change is merged "
                             f"into a checkout an activity runs from (PLAN rule 13)")

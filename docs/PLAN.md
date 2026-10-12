@@ -36,18 +36,19 @@
 | 10-11 | 跑了四次活动零装入，下一版改框架代码，不再跑活动等它自己提升；先写设计。按审查改六处：一轮一个包、留出接受累积在工作线、dev 只在活动末读一次、hook 可调 aux、library 默认关、版本拆分与基线导入 | DESIGN v1.2 §6.12 |
 | 10-09 | 不以代码行数作验收；要求是工作量不落在外围组件上，核心系统认真打磨。行数只作读数 | JOURNAL 2026-10-09 不以行数作验收一条 |
 | 10-12 | 对外的数字是 final 上的绝对分（W\* 得了多少，W0 臂并列），不追求比业界更严；划分改两份（train / test，finance 50/50）；基线阶段取消；无 dev 的活动按决定发布；模型不换，改的是代码、工具、流程、prompt、memory；流式学习（test 首遇计分后变证据、每 N 题一轮）另立阶段 | DESIGN §6.7 第三条、§12 第 5 项；ACTIVITY §4 |
+| 10-12 | 第 0 轮 +2 不够，要一次活动提升足够高：一轮几个包并叠装、审核 hook 建议、流式循环、工作线跨活动（阶段 4d）；预算"不用限制那么死"：final 份额是下限、final 一族只比对尝试路径代码（规则 13 放宽）；v6 改成跨域 train，先跑 3 个域 | DESIGN §6.1、§6.4、§6.13、§6.14；EVALUATE §9；PLAN 规则 13 |
 | 10-12 | 第 0 轮 +2 不够，要一次活动提升足够高：finance-v5 批式跑到底拿第一个数；并行做四条（一轮几个包并叠装、清单与提示词对准整体机制与审核 hook、流式循环、工作线跨活动 `seed_from`），v6 从 v5 的 W\* 起步流式跑 | DESIGN §6.1、§6.4、§6.7、§6.13、§12 第 6 项 |
 
 ### 0.3 停在哪里
 
 | 项 | 状态 |
 |---|---|
-| 分支 | `s5/search-loop`（阶段 4b、4c）已合入 `m1-automationbench`（`d36ee5d`）；finance-v5 从这个检出跑，期间 `ouroloop/` 不再合入。阶段 4d 在 worktree 的 `s6/yield` 上（基于 `db813e1`），finance-v5 结束后合入。`main` 在 `b71502d`（v0.3） |
-| 代码 | 阶段 1～3 完成：`contracts.py`、`harness/`（含 stirrup 种子）、`runtime/`（含 `trace.py`）、`evaluate/`、`memory/`（ReMe sidecar、桥、规则、写入步、检索、快照、升级）、`improver/`、`activity/`。阶段 4b（DESIGN v1.2 的六处，JOURNAL 2026-10-11 阶段 4b 一条）已落地：一轮一个包（包级声明、聚焦清单、V0 两向比对、V2 按组件）、留出接受装入工作线（`rsi/active.json`，reason `screen`）、活动末 `--phase gate` 发布到 `rsi/released.json`（reason `gate`）、`after_turn` / `on_finish` 的 hook 可调 aux 模型（`hook_aux_calls`）、preset `automationbench_v2`（library 关）、K 的 `attempt_version` / `improver_version` 与 `[rsi] baseline_from` 的基线导入。10-10 的日期锚、V2a 探针、部分得分规则照用；carry、`gate_every`、样本内筛选删除。阶段 4c（两份划分、`--phase release` 按决定发布）与 4d（`s6/yield`：一轮几个包并叠装、审核 hook 建议、`[rsi] seed_from`、`--phase stream` 流式循环；JOURNAL 2026-10-12 阶段 4d 一条）已落地 |
-| 测试 | 阶段 4d 后（`s6/yield`）：默认 1,441 passed、20 skipped、87 deselected；全量在合入前跑。阶段 4c 后：默认 1,442 passed、87 deselected；全量（Docker worker 镜像 `sha256:04dbf822…` + 真 memory sidecar）1,528 passed、1 deselected（JOURNAL 2026-10-12 阶段 4c 一条）。两个既有的负载相关中断测试在整套里不稳定、单跑通过、基线 033515d 上亦然。memory 的 venv 在本机 `~/.cache/ouroloop/memory-venv/19f9b139c36d1d05` |
+| 分支 | `s5/search-loop`（阶段 4b、4c）已合入 `m1-automationbench`（`d36ee5d`）；finance-v5 从这个检出跑（规则放宽的 `cf99a58`、final 计划 `70aaac3`，tag `finance-v5-final`）。阶段 4d / 4e 在 worktree 的 `s6/yield` 上，`m1-automationbench` 已合入它（2026-10-12），finance-v5 的 final 跑完后快进合回。`main` 在 `b71502d`（v0.3） |
+| 代码 | 阶段 1～3 完成：`contracts.py`、`harness/`（含 stirrup 种子）、`runtime/`（含 `trace.py`）、`evaluate/`、`memory/`（ReMe sidecar、桥、规则、写入步、检索、快照、升级）、`improver/`、`activity/`。阶段 4b（DESIGN v1.2 的六处，JOURNAL 2026-10-11 阶段 4b 一条）已落地：一轮一个包（包级声明、聚焦清单、V0 两向比对、V2 按组件）、留出接受装入工作线（`rsi/active.json`，reason `screen`）、活动末 `--phase gate` 发布到 `rsi/released.json`（reason `gate`）、`after_turn` / `on_finish` 的 hook 可调 aux 模型（`hook_aux_calls`）、preset `automationbench_v2`（library 关）、K 的 `attempt_version` / `improver_version` 与 `[rsi] baseline_from` 的基线导入。10-10 的日期锚、V2a 探针、部分得分规则照用；carry、`gate_every`、样本内筛选删除。阶段 4c（两份划分、`--phase release` 按决定发布）与 4d（`s6/yield`：一轮几个包并叠装、审核 hook 建议、`[rsi] seed_from`、`--phase stream` 流式循环；JOURNAL 2026-10-12 阶段 4d 一条）已落地；4e（跨域 train：`[bench] domains`、`[final] domains`；JOURNAL 阶段 4e 一条）已落地；两条规则放宽（final 份额是下限、final 一族只比对尝试路径代码；JOURNAL 2026-10-12 规则放宽一条）已落地 |
+| 测试 | 规则放宽后（`m1-automationbench`）全量 1,533 passed、1 deselected；阶段 4d 后（`s6/yield`）默认 1,441 passed、20 skipped；合并后的 `s6/yield` 全量待跑（finance-v5 的 final 跑完后，一次只跑一套）。两个既有的负载相关中断测试在整套里不稳定、单跑通过。memory 的 venv 在本机 `~/.cache/ouroloop/memory-venv/19f9b139c36d1d05` |
 | test 读过几次 | finance 1、support 0、sales 0、hr 0、marketing 3；operations 从未读过 |
 | 本机记录 | `examples/automationbench/workspace-*/`、`examples/workspace-*/`、`ws/`、`*.local.toml`，git 忽略，不删不改 |
-| 下一步 | finance-v5 第 1 轮在主检出跑（用户 2026-10-12："跑第 1 轮，四条改动并行写"）；每轮之后停下报告，下一轮要用户批准。finance-v5 的轮次结束后：`--phase release`、`freeze` 封存、`--phase evaluate`、report，拿第一个对外数字；再把 `s6/yield` 合入（先跑全量测试），finance-v6 用 `[rsi] seed_from = workspace-finance-v5` 流式跑（`--phase stream`） |
+| 下一步 | finance-v5 的 final 在跑（`--phase evaluate`，约 $192 + 预留；用户已批准）；跑完 report、JOURNAL。然后：合并后的 `s6/yield` 跑全量，快进合入 `m1-automationbench`；finance-v6 按 3 个域（用户 2026-10-12："先跑 3 个域"）：smoke、freeze、`--phase stream`、release、freeze、evaluate |
 
 ## 1 规则
 
@@ -65,7 +66,7 @@
 | 10 | 所有臂用同一个 effort（medium） | K 的 `max_effort` 钉在 medium；W 不能买 effort |
 | 11 | 开源优先 | 底座原样嵌入，接缝只有适配层；二开先改适配层，再打补丁，补丁带原因与证据；fork 要先讨论（DESIGN §2.3） |
 | 12 | 运行记录没法再生 | git 忽略的工作区、`ws/`、`*.local.toml` 不删不改；删文件只用 `git rm`，只删跟踪的文件；旧版本靠 tag 读 |
-| 13 | 付费活动从哪个检出跑，活动期间就不往那里合入 `ouroloop/` 的改动 | `code_version` 进 K；付费运行共用一个订阅账户，只能串行 |
+| 13 | 付费活动从哪个检出跑，活动期间就不往那里合入 `ouroloop/` 的改动；2026-10-12 放宽：final 一族（freeze、release、evaluate、report、export）只要求尝试路径的代码（`attempt_version`）与 K 相符，改进器那半边变了只记在 `final_code` 事件里 | 两个代码版本都进 K；轮次与 gate 要两个都相符，final 只跑尝试路径；付费运行共用一个订阅账户，只能串行 |
 | 14 | 对外的数字只来自封存 final | dev gate 的增益有选择偏差，只作过程记录 |
 | 15 | 旧工作区只在 tag 上续跑或重渲染 | HEAD 只须读得了它们的 train/dev 记录（`tests/test_record_compat.py`）；一次尝试的行为（`tests/test_attempt_behaviour.py`，种子换时重录夹具）与新活动的资金安全（`test_paid_run_safety`）不变 |
 | 16 | 用中文回复用户 | — |
@@ -101,7 +102,7 @@
 
 | # | 事项 | 建议 |
 |---|---|---|
-| 1 | finance-v6 跨域 train 的规模：几个域、筛选几道（DESIGN §6.14 的表：$560～$1,095） | 建议 3 个域（finance + hr + operations）、批 30、筛 30，约 $665，根 $750 |
+| 1 | finance-v6 跨域 train 的规模（DESIGN §6.14 的表） | 已定：3 个域（finance + hr + operations）、批 30、筛 30，约 $665，根 $750（用户 2026-10-12："先跑 3 个域"） |
 | 2 | 数值：`hook_aux_calls` 2、`rounds` 上限 12、`patience` 3、留出接受规则（净修复 ≥ 1、退步 ≤ 1、容差 1）、`round_share` 0.15（已按此落码） | 是 |
 | 3 | finance-v5 的预算：根 $500、final 份额 $200；50/50 两份、无基线、7～8 轮、按决定发布、final 两臂 50 题 × 3 遍约 $150 | 到冻结前批准 |
 | 4 | README 主数的口径：final 两臂的绝对通过率与部分得分（公开集 test 份 50 题、medium effort、3 遍），配对差与区间作第二个数 | 是 |

@@ -56,9 +56,13 @@ def test_prices_that_do_not_bound_a_call_are_refused(tmp_path, fake_upstream, pr
     assert "a usd limit needs a derivable upper bound per call" in only(problems(a), "cannot be enforced")
 
 
-def test_a_final_share_that_cannot_hold_the_in_flight_reservations_is_refused(tmp_path, fake_upstream):
-    a = activity(tmp_path, fake_upstream, budget={"final_usd": 0.1})          # one call's bound is $0.26
-    only(problems(a), "the final share $0.1 cannot hold 1 in-flight reservations of $0.2600")
+def test_a_budget_root_that_cannot_hold_the_in_flight_reservations_is_refused(tmp_path, fake_upstream):
+    """The final's share is a floor under the final, not a cap (EVALUATE §9): the in-flight bounds are held against
+    the root."""
+    a = activity(tmp_path, fake_upstream, budget={"usd": 0.3, "final_usd": 0.1}, bench={"concurrency": 2})
+    only(problems(a), "the budget root $0.3 cannot hold 2 in-flight reservations of $0.2600")     # one is $0.26
+    assert not [p for p in problems(activity(tmp_path / "ok", fake_upstream, budget={"usd": 0.3, "final_usd": 0.1}))
+                if "in-flight" in p]
 
 
 def test_a_model_that_is_not_the_claude_code_cli_is_refused(tmp_path, fake_upstream, monkeypatch):
@@ -135,9 +139,15 @@ def test_a_code_change_under_the_activity_is_refused(tmp_path, fake_upstream, mo
     a = activity(tmp_path, fake_upstream)
     monkeypatch.setattr(checks, "improver_version", lambda: "0000000000000000")
     only(problems(a), f"K froze the improver code at {a.core.improver_version} and this checkout is 0000000000000000")
+    # the final family runs the attempt code only: a moved improver is no problem there, a moved attempt code is
+    for phase in checks.FINAL_FAMILY:
+        assert not [p for p in checks.correctness_problems(a, phase=phase, needs_worker=False) if "K froze" in p]
     monkeypatch.setattr(checks, "attempt_version", lambda: "1111111111111111")
     assert any(p.startswith(f"K froze the attempt code at {a.core.attempt_version} and this checkout is "
                             f"1111111111111111") for p in problems(a))
+    for phase in checks.FINAL_FAMILY:
+        found = [p for p in checks.correctness_problems(a, phase=phase, needs_worker=False) if "K froze" in p]
+        assert len(found) == 1 and "attempt code" in found[0]
 
 
 def test_a_seed_source_changed_under_the_activity_is_refused(tmp_path, fake_upstream, monkeypatch):

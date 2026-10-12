@@ -60,9 +60,34 @@ def test_rsi_core_ref_pins_k(tmp_path, fake_upstream):
 def test_a_core_json_of_another_k_is_refused_with_or_without_freezing(tmp_path, fake_upstream):
     a = opened(tmp_path, fake_upstream)
     for freeze_k in (True, False):
-        with pytest.raises(ConfigError, match=rf"froze K {short(a.core_ref)}, and this config, code and split give"):
+        with pytest.raises(ConfigError, match=rf"froze K {short(a.core_ref)}, and this config and split give"):
             opened(tmp_path, fake_upstream, freeze_k=freeze_k, limits={"max_steps": 10})
     assert json.loads((a.root / "core.json").read_text(encoding="utf-8"))["ref"] == a.core_ref
+
+
+def test_code_that_moved_under_the_activity_opens_the_frozen_k_and_the_phase_checks_decide(tmp_path, fake_upstream,
+                                                                                            monkeypatch):
+    """PLAN rule 13 (2026-10-12): the frozen K stands when only the code's versions differ; the rounds then refuse
+    at their startup check, the final family (which runs the attempt code only) goes on with the improver's version
+    on record."""
+    from ouroloop.activity import checks
+    from ouroloop.activity.checks import startup_checks
+    a = opened(tmp_path, fake_upstream)
+    monkeypatch.setattr(wsp, "improver_version", lambda: "0000000000000000")
+    monkeypatch.setattr(checks, "improver_version", lambda: "0000000000000000")
+    b = opened(tmp_path, fake_upstream, rsi={"scope_id": "rsi-test", "core_ref": a.core_ref})
+    assert b.core_ref == a.core_ref and b.core.improver_version == a.core.improver_version != "0000000000000000"
+    assert json.loads((b.root / "core.json").read_text(encoding="utf-8"))["ref"] == a.core_ref
+    assert any("K froze the improver code" in p for p in startup_checks(b, phase="round", needs_model=False))
+    assert not [p for p in startup_checks(b, phase="release", needs_model=False) if "K froze" in p]
+    # the attempt code moving is refused everywhere; a changed config still is at the open
+    monkeypatch.setattr(wsp, "attempt_version", lambda: "1111111111111111")
+    monkeypatch.setattr(checks, "attempt_version", lambda: "1111111111111111")
+    c = opened(tmp_path, fake_upstream)
+    assert c.core_ref == a.core_ref
+    assert any("K froze the attempt code" in p for p in startup_checks(c, phase="evaluate", needs_model=False))
+    with pytest.raises(ConfigError, match="this config and split give"):
+        opened(tmp_path, fake_upstream, limits={"max_steps": 10})
 
 
 def test_without_freezing_k_nothing_is_written(tmp_path, fake_upstream):

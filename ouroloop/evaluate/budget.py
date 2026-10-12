@@ -288,11 +288,12 @@ class Budgets:
 
     # -------------------------------------------------------------- writing
     def allocate(self, scope_id: str, name: str, limits: dict) -> dict:
-        """Set aside part of a scope for a purpose that may not be spent elsewhere — the full evaluation and the
-        install probe of a candidate, so training cannot consume the budget that was to verify it (EX-03).
+        """Set aside part of a scope for a purpose that may not be spent elsewhere — the final's share, so the
+        rounds cannot consume the budget that was to measure them (EX-03).
 
         This is an allocation, not a reservation: it constrains what other operations may reserve and is never
-        itself a spend.
+        itself a spend. It is a floor, not a cap (2026-10-12, EVALUATE §9): what is tagged with it may spend
+        beyond it from whatever the scope has left unallocated — the scope's own limit is the ceiling.
         """
         limits = {k: float(v) for k, v in limits.items() if v is not None and k in LIMITS}
         with locked(self.path):
@@ -309,24 +310,10 @@ class Budgets:
                  extra_allocation: str | None = None) -> dict:
         """Which dimension of which scope this bound would break, if any.
 
-        An allocation is a limit in both directions: nothing else may eat it, and what is tagged with it may not
-        exceed it. A verification that no longer fits in its earmark is a candidate that cannot be verified, and
-        the answer to that is not to start it (EX-03).
+        An allocation blocks one direction only: nothing else may eat its unspent part. What is tagged with it
+        (`allocation`) spends it first and may go on into what the scope has left besides, up to the scope's own
+        limit — the final's share is a floor under the final, not a cap over it (EVALUATE §9, 2026-10-12).
         """
-        if allocation is not None:
-            # The allocation sits on this scope or on an ancestor: an activity's root sets aside the final
-            # comparison's share, which the final spends from its own phase account.
-            for owner in (scope_id, *self.ancestors(scope_id, book)):
-                limits = (self.scope(owner, book).get("allocations") or {}).get(allocation)
-                if limits is None:
-                    continue
-                spent = self.usage(owner, book, allocation=allocation)
-                for dim, limit in limits.items():
-                    total = spent.get(dim, 0.0) + float(bound.get(dim, 0.0))
-                    if total > float(limit) + 1e-9:
-                        return {"scope_id": owner, "dimension": dim, "limit": limit, "would_be": round(total, 6),
-                                "allocation": allocation}
-                break
         for name in (scope_id, *self.ancestors(scope_id, book)):
             entry = self.scope(name, book)
             used = self.usage(name, book)
@@ -352,18 +339,9 @@ class Budgets:
 
     def headroom(self, scope_id: str, book: dict, *, allocation: str | None = None) -> dict:
         """What one more reservation from this scope may still take, per limited dimension: the tightest of every
-        limit on the way to the root, less the unspent part of each allocation other than the one being spent, and
-        — when spending an allocation — what is left of it. The same arithmetic as `_exceeds`, so what is shown as
-        remaining is what a reservation is actually allowed."""
+        limit on the way to the root, less the unspent part of each allocation other than the one being spent. The
+        same arithmetic as `_exceeds`, so what is shown as remaining is what a reservation is actually allowed."""
         room: dict = {}
-        if allocation is not None:
-            for owner in (scope_id, *self.ancestors(scope_id, book)):
-                limits = (self.scope(owner, book).get("allocations") or {}).get(allocation)
-                if limits is None:
-                    continue
-                spent = self.usage(owner, book, allocation=allocation)
-                room = {dim: round(float(limit) - spent.get(dim, 0.0), 6) for dim, limit in limits.items()}
-                break
         for name in (scope_id, *self.ancestors(scope_id, book)):
             entry = self.scope(name, book)
             used = self.usage(name, book)

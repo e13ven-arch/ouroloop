@@ -206,7 +206,10 @@ def test_a_budget_that_runs_out_mid_run_ends_attempts_as_budget_exhausted(tmp_pa
     held = reservations(act)
     assert len(held) == actor.calls == 4 and all(r["status"] == "settled" for r in held)
     root = act.root_account().remaining(allocation="final")
-    assert root["effective_remaining"]["usd"] == pytest.approx(0.3) and not root["stopped"]
+    # the final's share is untouched (a floor under the final, EVALUATE §9): its room is the share and what the root
+    # has left besides, nothing of it spent
+    assert root["effective_remaining"]["usd"] == pytest.approx(0.84 - 4 * 0.08) and not root["stopped"]
+    assert act.budgets.usage(act.scope_id, book(act), allocation="final").get("usd", 0.0) == 0.0
     assert not book(act)["breaches"]
 
 
@@ -394,7 +397,11 @@ def test_the_final_prints_its_estimate_first_from_the_dev_readings(paid):
         {"W0": (planned, cpa, "dev"), "W_star": (planned, cpa, "dev")}
     assert estimate["expected"] == pytest.approx(2 * planned * cpa, abs=1e-6)
     assert estimate["reservations"] == round(BOUND, 4)                 # one attempt in flight at a time here
-    assert any(line.startswith("estimate   expected $") and "left to the final: $10.00" in line for line in lines)
+    # what was left to the final when it started: its share and what the root had left besides (EVALUATE §9)
+    ledger = act.budgets._read()
+    before = act.budgets.usage(act.scope_id, ledger)["usd"] - act.budgets.usage(f"{act.scope_id}:final", ledger)["usd"]
+    room = round(float(act.k["budget"]["usd"]) - before, 2)
+    assert any(line.startswith("estimate   expected $") and f"left to the final: ${room:.2f}" in line for line in lines)
 
 
 def test_the_final_estimate_finds_readings_by_what_a_release_executes(paid):
@@ -432,8 +439,12 @@ def test_a_final_plan_refuses_an_arm_name_no_attempt_id_can_carry():
 def test_a_final_the_share_cannot_hold_is_refused_before_the_first_attempt(tmp_path, fake_upstream):
     act, refs = sealed(tmp_path, fake_upstream)
     root = act.root_account()
-    spent = root.reserve("spent elsewhere", {"usd": 9.9}, allocation="final")
-    root.settle(spent.id, {"usd": 9.9})                 # $0.10 left: under one call's $0.26 bound
+    spent = root.reserve("spent on the final", {"usd": 9.9}, allocation="final")
+    root.settle(spent.id, {"usd": 9.9})
+    # the final's room is its share and what the root has left besides (EVALUATE §9): the rest of the root goes too
+    left = root.remaining(allocation="final")["effective_remaining"]["usd"]
+    more = root.reserve("spent elsewhere", {"usd": round(left - 0.10, 6)})
+    root.settle(more.id, {"usd": round(left - 0.10, 6)})          # $0.10 left: under one call's $0.26 bound
     actor = rsi.BusinessWorker()
     act.provider_factory = lambda _table: actor
     lines: list[str] = []
@@ -445,9 +456,9 @@ def test_a_final_the_share_cannot_hold_is_refused_before_the_first_attempt(tmp_p
 
 
 def test_a_final_plan_the_share_cannot_hold_is_not_sealed(tmp_path, fake_upstream):
-    """A $0.50 share holds one call's bound in flight, not that plus the two stuck ones a share keeps room for and
-    the plan's spend: refused at freeze, and nothing is sealed. Without a priced reading the share cannot be checked,
-    and that is refused too."""
+    """The final's room — its share and what the root has left besides (EVALUATE §9) — holds one call's bound in
+    flight, not that plus the two stuck ones a share keeps room for and the plan's spend: refused at freeze, and
+    nothing is sealed. Without a priced reading the share cannot be checked, and that is refused too."""
     act = rsi.activity(tmp_path, fake_upstream, final={}, budget={"usd": 50.0, "final_usd": 0.5})
     install_w_star(act)
     plan = phases.final_plan(act)
@@ -455,9 +466,14 @@ def test_a_final_plan_the_share_cannot_hold_is_not_sealed(tmp_path, fake_upstrea
         phases.freeze(act, out=quiet)
     assert not state_path(act.root, plan).exists()
     phases.baseline(act, out=quiet)
+    root = act.root_account()                      # the rounds spent the root down to the final's $0.50 share
+    left = root.remaining()["effective_remaining"]["usd"]
+    root.settle(root.reserve("spent elsewhere", {"usd": round(left, 6)}).id, {"usd": round(left, 6)})
+    assert phases.final_room(act) == 0.5
     lines: list[str] = []
-    with pytest.raises(ValueError, match=r"the final share \$0\.50 cannot hold the plan: expected \$0\.\d\d \+ 1 "
-                                         r"in-flight and 2 stuck reservations of \$0\.2600"):
+    with pytest.raises(ValueError, match=r"the final's room \$0\.50 \(its share \$0\.50 and what the root has left "
+                                         r"besides\) cannot hold the plan: expected \$0\.\d\d \+ 1 in-flight and 2 "
+                                         r"stuck reservations of \$0\.2600"):
         phases.freeze(act, out=lines.append)
     assert not state_path(act.root, plan).exists() and not list(act.events.read("final_sealed"))
     assert not any(line.startswith("[rsi]") for line in lines) and any(line.startswith("estimate") for line in lines)
