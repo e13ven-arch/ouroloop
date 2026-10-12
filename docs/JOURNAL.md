@@ -8,6 +8,16 @@
 
 ---
 
+## 2026-10-12 finance-v5 开始：合入 m1-automationbench；smoke 与 freeze；$0
+
+- `s5/search-loop` 合入 `m1-automationbench`（`d36ee5d`，阶段 4b 与 4c）。此后 finance-v5 从这个检出跑，期间 `ouroloop/` 下不再合入任何改动（规则 13；K 的 `improver_version` 也在比对）。
+- `--phase smoke --checks-only`（$0）：上游 `4a8e10612540`，包 1.0.6；划分 `3b959d143f9d8468`，分层规则、seed 1，train 50 / dev 0 / test 50（finance 每题一族）；评分契约、输入审计 0 泄漏、种子对 1,076 个单题 train 值 0 命中；train 内重叠 0.6 以上的题对 78。没有读任何 test 题。
+- `freeze`（$0）：种子 release `c7ed22185bcc`（W0 `d9dc14e1b26c`，K `909c2e86950f`）；没有 gate 模板（无 dev）；预算根 $500，final 份额 $200；final 未封存。`[rsi]` 的 `core_ref`、`split_ref` 已填进配置并提交。
+- 一处措辞待改：无 dev 时 freeze 的"final 未封存"一行仍说"run `--phase gate`"，应说 `--phase release`；它在 `activity/phases.py` 里，改了就是新 K，所以等 finance-v5 结束再改。
+- 下一步（待批准）：`--phase round --round 0`，含 50 道 train 的现量，约 $50。
+
+---
+
 ## 2026-10-12 阶段 4c：两份划分与按决定发布；finance-v5 改为 50/50、无基线、final 两臂作对外数字；$0
 
 - 用户的决定（2026-10-12，PLAN §0.2）：对外的数字是 final 上的绝对分并列 W0 臂，不追求比业界更严的筛选；划分两份（train / test，finance 50/50）；基线阶段取消；无 dev 的活动按决定发布；模型不换，改的是代码、工具、流程、prompt、memory；流式学习（test 题首遇计分后变证据、每 N 题一轮）另立阶段。先改文档（DESIGN §6.7 第三条、§10 阶段 4c、§12 第 5 项；EVALUATE §5.2、§6、§7；CONTRACTS §5；ACTIVITY §3、§4；PLAN）再改代码。

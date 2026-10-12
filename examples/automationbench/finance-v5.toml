@@ -86,4 +86,6 @@ repeats = 3
 
 [rsi]
 scope_id = "finance-v5"
-# core_ref, split_ref: from `ouroloop freeze`; final_plan_ref after the gate passed and freeze sealed the final
+core_ref = "core:sha256:909c2e86950f40ae27ca36395016f0f2b1e7be49ded8652704d3a60938dceba5"
+split_ref = "3b959d143f9d8468"
+# final_plan_ref: after `--phase release` and the second `freeze` sealed the final
