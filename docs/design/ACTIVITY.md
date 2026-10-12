@@ -109,6 +109,8 @@ def write_report(activity, report) -> dict   # 两次相同（确定性）
 
 **轮数与停止（v1.2）：** `cycle` 连续 `schedule.patience`（3）轮没有留出接受就停；`schedule.rounds` 上限 12。没有 carry 轮、没有活动内的 gate；`--phase gate` 在轮次结束后由用户启动。
 
+**跨域活动（阶段 4e，DESIGN §6.14）：** `[bench] domains` 列几个域，`open_activity` 用 `ab.load_suites` 装成一个 suite，`activity.domain` 是连起来的名（`finance+hr`）；`[final] domains` 限定 final 计划的 test 题与 `release` 补读的 train 题（默认全部域）；其余阶段不变。memory 的 `heldout_domains` 按成员域逐个查。
+
 **流式活动（阶段 4d）：** `freeze`（开预算根；无 dev 时无模板）→ `--phase stream --until batch-K`（每批之后停下看也行，不停也行）→ `--phase release` → `freeze` 封存 final（W0 臂是本活动的种子：`seed_from` 时就是上一活动的 W\*）→ `--phase evaluate`。test 段流式（`stream_splits` 含 `test`）时顺序是：`release`、`freeze` 封存并提交计划哈希，再 `--phase stream` 的 test 段；final 则不再单跑。
 
 **两份划分的活动（阶段 4c，2026-10-12）：** `[bench] ratios = {train, test}`（dev 为 0）。`freeze` 不写 gate 模板，只开预算根；基线阶段不跑（第 0 轮对缺读数的 train 题现量，钱记在本轮账户）；轮次用 `--phase round --round i` 逐轮跑，或 `cycle --until round-K`；轮次结束后 `--phase release`，再 `freeze` 封存 final（W0 与 W\* 两臂，`final.repeats` 3）、`--phase evaluate`。README 的数是 final 两臂的绝对分（EVALUATE §6）。finance 的切法 50/50：train 50（研究 30、留出 20），test 50。

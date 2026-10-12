@@ -85,6 +85,7 @@
 | 4 | finance 实测：新 preset，基线 → library → 最多 8 轮、gate 每两轮一次（每步后停）→ 有装入则封存 final → RESULTS、README、合入 main | 过程检查成立；计划哈希早于第一次 test 尝试；报告两次相同 | 名义约 $440（$350～600），每步先批准 | 结束：finance-v1～v4 共 $528，机制全部跑通，零装入（JOURNAL 2026-10-11 finance-v4 结束一条） |
 | 4b | 搜索循环 v2（DESIGN v1.2 §6.12 的六处）：`improver/`（一轮一个包、聚焦、留出接受、工作线）、`evaluate/`（活动末 gate、`promote`、基线导入）、`activity/`（`gate` 阶段、`baseline_from`、preset `automationbench_v2`）、版本拆分与 AttemptIdentity、R 的提示词；然后 finance-v5 | 假上游上脚本化的 R：接受装入工作线、下一轮只补测研究部分、无候选时按耐心停、`cycle --until gate` 发布、同 AttemptIdentity 的基线导入 $0；finance-v5：留出曲线不降，dev 严格 +3～6 题或部分得分 +0.05～0.10，成本不升 | 代码 $0；finance-v5 名义约 $410（基线 $58 重付、轮次、gate $25、final $72；根 $500、final 份额 $200） | 代码完成（2026-10-11，`s5/search-loop`；JOURNAL 阶段 4b 一条），待用户确认后合入并冻结 finance-v5 |
 | 4c | 两份划分与按决定发布（DESIGN §6.7 第三条、§10）：K 没有 dev 题时 freeze 不写 gate 模板、round 不要求它、`gate` 无事可做；`--phase release` 补齐 W\* 的 train 读数并提升为发布线（reason `decision`）；final 只要有发布线；基线阶段可跳过；finance-v5 改为 50/50、无基线、按决定发布、final 两臂 | 假上游上无 dev 的活动端到端：freeze、两轮、release、final 两臂、export；有 dev 的活动行为不变 | 代码 $0；finance-v5 名义约 $400 | 完成（2026-10-12，`s5/search-loop`；JOURNAL 阶段 4c 一条） |
+| 4e | 跨域 train（DESIGN v1.4 §6.14）：`[bench] domains` 几个域的 train 进一个活动，`[final] domains` 限定 final 与 release 的域，`stream_screen_max` 上限 30；分支 `s6/yield` | 假上游两个迷你域一个流：留出题混域、final 只取一个域的 test、release 只补该域 | 代码 $0；finance-v6 约 $560～$1,095 | 设计已写（2026-10-12），待用户选域数与筛选题数，再写代码 |
 | 4d | 产出率与流式（DESIGN v1.3：§6.1 一轮几个包与叠装、§6.4 审核 hook 建议与提示词、§6.7 `seed_from`、§6.13 `--phase stream`）；分支 `s6/yield`，finance-v5 期间不合入 | 假上游：两个包各自筛选、第二个叠装过 V0/V1 装入、冲突记 `not_stacked`；清单对只剩文字载体的簇给审核 hook 建议；`seed_from` 的活动从旧 W\* 起步；`stream` 两批各一轮、第二批在新线上跑、报告按批给首遇分 | 代码 $0；finance-v6 名义约 $450 | 代码完成（2026-10-12，`s6/yield`；JOURNAL 阶段 4d 一条）；finance-v5 结束后合入 |
 | 5 | 训练绑定：v2.0 离线链对新记录跑通，`model` 组件绑定；之后按 V2 的 v2.1、v2.2 | V2 §5 的断言 | $0；v2.1 另批 | 待做 |
 
@@ -100,7 +101,7 @@
 
 | # | 事项 | 建议 |
 |---|---|---|
-| 1 | finance-v5 第 1 轮之后：继续批式到停滞（每轮约 $28，每轮批准一次），还是在第 1 轮后就 release / final | 建议：第 1 轮接受就再跑一两轮，不接受就 release 拿数 |
+| 1 | finance-v6 跨域 train 的规模：几个域、筛选几道（DESIGN §6.14 的表：$560～$1,095） | 建议 3 个域（finance + hr + operations）、批 30、筛 30，约 $665，根 $750 |
 | 2 | 数值：`hook_aux_calls` 2、`rounds` 上限 12、`patience` 3、留出接受规则（净修复 ≥ 1、退步 ≤ 1、容差 1）、`round_share` 0.15（已按此落码） | 是 |
 | 3 | finance-v5 的预算：根 $500、final 份额 $200；50/50 两份、无基线、7～8 轮、按决定发布、final 两臂 50 题 × 3 遍约 $150 | 到冻结前批准 |
 | 4 | README 主数的口径：final 两臂的绝对通过率与部分得分（公开集 test 份 50 题、medium effort、3 遍），配对差与区间作第二个数 | 是 |

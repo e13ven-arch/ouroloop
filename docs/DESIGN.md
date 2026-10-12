@@ -394,6 +394,25 @@ v1.2 据此改六处：一轮一个包（§6.1、§6.5）；活动内按留出 t
 - test 题也可以流式跑（`stream_splits = ["train", "test"]`）：final 计划先封存（计划哈希先提交，规则 6），然后 test 题按序首遇计分，计过分的题才对 R 可读（trace 守卫按"已计分"放行，CONTRACTS §4）。这时对外报两个数：train 段与 test 段各自的首遇通过率和曲线。两份冻结的 A 模式（§6.7 第三条）照旧可选。
 - 钱：100 道题约 $50 首遇，每批一轮约 $15 研究加 $11 筛选，10 批约 $310；没有补测。
 
+### 6.14 跨域 train（v1.4，阶段 4e）
+
+一个域的 train 只有 50 题：留出 20 题的筛选看不见 +5% 的机制，R 看到的失败也只有十来个。生产里的形态是一条产品线上几个业务同时跑，经验共用。改法是让一个活动跑几个域的 train，final 只在一个域的 test 上（用户 2026-10-12："v6 改成跨域 train"）：
+
+- `[bench] domains = ["finance", "hr", ...]`：适配层把几个域的公开题装成一个 suite（`load_suites`；题 id 本就带域前缀），K 的 `bench.domain` 是它们按名连起来的串（`finance+hr+...`，记录、memory 的路径、台账的 line 都用它）；分层划分的 stratum 加域前缀，所以每个域各自 50/50；族还是一题一族。
+- `[final] domains = ["finance"]`（默认全部）：final 计划只取这些域的 test 题；`--phase release` 只补这些域的 train 读数（给 final 核价够了）；report 的 C1 只在这些域的族上重采样。别的域的 test 半边一道不读。
+- 流、轮、留出、叠装照 §6.13：顺序对全部 train 打乱；留出按族哈希对全部 train 算，所以留出题是几个域混着的，机制必须跨域才过筛选；`stream_screen_max` 的 preset 上限提到 30（筛选的噪声从 20 题到 30 题）。
+- 钱（每次尝试 $0.67，每轮三个包各筛 `stream_screen_max` 道）：
+
+| 配置 | 首遇 | 轮 | release | final（finance 两臂 × 3 遍） | 合计约 |
+|---|---|---|---|---|---|
+| 3 个域 150 题，批 30，筛 20 | $100 | 5 × $45 | $35 | $200 | $560 |
+| 3 个域，批 30，筛 30 | $100 | 5 × $66 | $35 | $200 | $665 |
+| 6 个域 300 题，批 30，筛 20 | $200 | 10 × $45 | $35 | $200 | $885 |
+| 6 个域，批 30，筛 30 | $200 | 10 × $66 | $35 | $200 | $1,095 |
+
+- `seed_from` 照用：v6 从 v5 的 W\* 起步，final 的 W0 臂是它。
+- 不做：多域各自一条工作线、按域分配名额（DESIGN §8 删掉的"多领域合并"是 v0.x 的 campaign 配对，不是这个）。
+
 ## 7 训练在同一回路
 
 - `model` 是 W 的组件：manifest 的 `model` 项记身份、推理配置与训练产物 ref。训练链（`ouroloop/train/`，按 V2_TRAINING_PIPELINE）从宿主写的 act 调用建数据，训出产物 ref；一个候选 W 把它绑进 `model` 项，从 V3 起走同一条阶梯（V0～V2 换成数据检查与链路收据）。
@@ -452,6 +471,7 @@ ouroloop/
 | 4 实测 | finance，新 preset：基线 → library → 3 轮（每轮后停）→ 有装入则封存 final | 过程检查成立；计划哈希早于第一次 test 尝试；报告两次相同 | finance-v1～v4 共 $528：机制全部跑通，零装入（§6.12） |
 | 4b 搜索循环 v2 | 本文 v1.2 的六处修改落成代码（IMPROVER、EVALUATE、ACTIVITY、CONTRACTS、MEMORY 的对应节）；preset `automationbench_v2`；finance-v5 | 假上游上脚本化的 R 跑 6 轮：接受累积在工作线、活动末 gate 一次、基线从旧工作区导入；finance-v5 的预期：留出曲线不降，dev 严格 +3～6 题或部分得分 +0.05～0.10，成本不升 | 代码 $0；finance-v5 名义约 $350（基线导入 $0、12 轮 × $28、gate 约 $25、final 约 $72） |
 | 4c 两份划分与按决定发布 | §6.7 第三条：K 没有 dev 题时 freeze 不写 gate 模板、round 不要求它、`gate` 无事可做；`--phase release` 把工作线按决定提升为发布线（reason `decision`），并补齐 W\* 的包缺的 train 读数以供 final 核价；final 封存只要有发布线；基线阶段可跳过 | 假上游上无 dev 的活动：freeze、两轮、release、final（W0 与 W\* 两臂）、export 端到端；有 dev 的活动行为不变 | 代码 $0；finance-v5 名义约 $400（train 现量 $25、7～8 轮约 $200、W\* 补测约 $15、final 两臂 50 题 × 3 遍约 $150） |
+| 4e 跨域 train（v1.4） | §6.14：`[bench] domains` 装成一个 suite、`[final] domains` 限定 final 与 release 的域、`stream_screen_max` 上限 30 | 假上游四个迷你域：两个域的 train 一个流，留出题混域，final 只取一个域的 test，release 只补该域 | 代码 $0；finance-v6 约 $560～$1,095（见 §6.14 的表） |
 | 4d 产出率与流式（v1.3） | §6.1 一轮几个包、不冲突的叠装；§6.4 清单的审核 hook 建议与提示词；§6.7 `seed_from` 工作线跨活动；§6.13 `--phase stream` 流式循环（先 train 段，test 段的已计分放行随后） | 假上游：一轮两个包各自筛选、第二个叠装过 V0/V1 装入、冲突的记 `not_stacked`；清单对只剩文字载体的簇给审核 hook 建议；`seed_from` 的活动从旧 W\* 起步、final 的 W0 臂是它；`stream` 两批各一轮、第二批在新线上跑、报告按批给首遇分 | 代码 $0；finance-v6 名义约 $450（train 流式 $310 + final 两臂 $150） |
 | 5 训练绑定 | v2.0 离线链对新记录跑通；`model` 组件绑定；之后按 V2 的 v2.1 | V2 §5 的断言 | $0；v2.1 另批 |
 
