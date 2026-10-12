@@ -35,7 +35,8 @@ import json
 
 import pytest
 from rounds import quiet, round_activity
-from scripted_r import CONTACTS, HOOK_CODE, HOOK_ENTRY, HUBSPOT, SLACK, TOOL_CODE, TOOL_ENTRY, script_for
+from scripted_r import CONTACTS, HOOK_CODE, HOOK_ENTRY, HUBSPOT, NOISY_HOOK_CODE, SLACK, TOOL_CODE, TOOL_ENTRY, \
+    script_for
 
 from ouroloop.harness.kinds import MEMORY_PATH
 from ouroloop.harness.package import Limits, build
@@ -743,12 +744,14 @@ SITE_HOOKS = {
 @pytest.mark.parametrize("site", list(SITE_HOOKS))
 def test_v2b_replays_each_sites_events_from_the_transcripts(ctx, parent, site):
     files = with_hook(parent, site_hook(*SITE_HOOKS[site]), site=site)
-    verdict = run_ladder(files, decl("hook", site), ctx)
+    # these probes act on one of the three passing attempts too: the gate is widened here, it has its own test below
+    verdict = run_ladder(files, decl("hook", site), with_settings(ctx, replay_max_false_trigger=0.5))
     assert list(verdict.steps) == ["V0", "V1"] and list(verdict.components) == [f"hook:{site}"]
     got = verdict.components[f"hook:{site}"]["V2b"]
     assert got["passed"], got["detail"]
     assert got["fired"] == list(FAILING)
     assert got["false_trigger_rate"] == 0.3333
+    assert not run_ladder(files, decl("hook", site), ctx).components[f"hook:{site}"]["V2b"]["passed"]
 
 
 def test_v2b_counts_triggers_on_the_claimed_failing_tasks_and_the_rate_on_passing_ones(ctx, parent):
@@ -756,9 +759,21 @@ def test_v2b_counts_triggers_on_the_claimed_failing_tasks_and_the_rate_on_passin
     got = replay_check(files, decl("hook", "on_finish"), ctx)
     assert got["passed"]
     assert got["fired"] == list(FAILING)
-    assert got["false_trigger_rate"] == 0.6667          # update_stage and policy_hold say nothing was posted
+    assert got["false_trigger_rate"] == 0.0             # it speaks only where a post was planned and none made
     assert "acts on 1 of 1 claimed failing tasks (at least 1)" in got["detail"]
-    assert "on 2 of 3 passing attempts (rate 0.6667)" in got["detail"]
+    assert "on 0 of 3 passing attempts (rate 0.0, at most 0.25)" in got["detail"]
+
+
+def test_v2b_a_hook_that_acts_on_too_many_passing_attempts_fails(ctx, parent):
+    """v1.7 (DESIGN §6.17): the hook finance-v7 installed spoke on 85% of the attempts; its miniature here reminds
+    whenever nothing was posted — on update_stage and policy_hold too, which asked for no post."""
+    got = replay_check(with_hook(parent, NOISY_HOOK_CODE), decl("hook", "on_finish"), ctx)
+    assert got["fired"] == list(FAILING) and got["false_trigger_rate"] == 0.6667
+    assert not got["passed"]
+    assert sorted(got["false_triggers"]) == ["rsi.policy_hold", "rsi.update_stage"]
+    assert "acts on too many passing attempts" in got["detail"] and "a prompt component" in got["detail"]
+    assert replay_check(with_hook(parent, NOISY_HOOK_CODE), decl("hook", "on_finish"),
+                        with_settings(ctx, replay_max_false_trigger=0.7))["passed"]
 
 
 def test_v2b_a_hook_that_never_acts_fails(ctx, parent):

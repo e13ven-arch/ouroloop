@@ -42,10 +42,13 @@ TOOL_ENTRY = {"name": "post_channel_message", "description": "Post a message con
               "entrypoint": "tools/post_channel_message.py:run", "writes": True}
 HOOK_CODE = '''def remind(ctx, event):
     said = (str(event.get("reason") or "") + " " + str(event.get("final_text") or "")).lower()
-    if "posted" not in said:
+    if "in #ops" in said and "posted" not in said:
         return {"pushback": "Keep working on the task: check whether the request asks for a message in #ops."}
     return None
 '''
+# the hook finance-v7 installed, in miniature: it speaks whenever nothing was posted, so on passing tasks that asked for
+# no post too — V2b's false-trigger gate rejects it (v1.7)
+NOISY_HOOK_CODE = HOOK_CODE.replace('"in #ops" in said and "posted" not in said', '"posted" not in said')
 HOOK_ENTRY = {"name": "remind_ops", "site": "on_finish", "entrypoint": "middlewares/remind_ops.py:remind"}
 # v1.6: an audit — a hook that asks the aux model what is missing, from the agent's final text and its writes
 AUDIT_CODE = '''import json

@@ -8,6 +8,25 @@
 
 ---
 
+## 2026-10-13 finance-v7 流式跑完、不跑 final；量出噪声底；阶段 4h：V2b 误触发门与翻转确认（DESIGN v1.7 §6.17）；finance-v8 配置
+
+- **finance-v7 的数**（stream 3 小时 50 分，5 批 5 轮）：首遇 19、14、19、20、18 = 90/150（60.0%；前后半 54.7% → 65.3%），v6 同序同题 89/150。13 个包（2、2、3、3、3），装了 2 个：s1 的词表 hook（留出 13/23 对 11/23，net +2）、s3 的 skill + finish 提示（22/30 对 21/30，net +1）；其余 11 个被拒。活动共 $330.41（预算根的记账）：尝试 $306.53（首遇 150 次 $101.40，筛选 342 次 $205.13），R 的会话、诊断与预演约 $24。工作线停在 `release:42ae681055ed`。v7 不发布、不跑 final（用户 2026-10-13）。
+- **用户的判断**（2026-10-13）："为什么有十道对了，但反而又让 9 道错了，这肯定是改的有问题啊……确保 RSI 的调整是吸收好的经验，而不是遇到一点错误就全盘修改，确定性提升通过率，你设计之前好好分析一遍到底失败在哪里。"核了全部 9 道回退题的轨迹与失败断言，结论：
+  - **噪声底**。同一个包两次跑，4～17% 的题结果翻：v7 批 1 与 v6 同批是同一个包（适配层重放除外），2 升 3 降；同一轮 2～3 个包筛同样的留出题，结果不一致的题 s0 2/13、s1 3/23、s2 4/30、s3 3/30、s4 5/30；v5 final 三遍，W0 2/50、W\* 6/50 道不一致。所以 v5～v7 所有"+2、−1"的筛选结果都在底噪里；接受规则 net ≥ 1 在 13～30 道题上低于底噪，10 个包装 2 个与随机一致。两个被装上的包"修好"的 4 道题（tax_prep_summary、hubspot_mailchimp_sync、confluence_policy_migration、job_posting_refresh）在其它包下照样来回翻。
+  - **9 道回退不是 hook 造成的**。全是同一形态（漏一个要求：漏一条 Slack、Bonus Status 没写 Paid、5 个岗位只发了 1 个……）；装上的 hook 没让 agent 多发消息（每次尝试平均 2.54 条，v6 同题 2.69）；xero_bank_reconcile 写错 Matched 在 hook 说话之前。
+  - **但装上的词表 hook 有缺陷**。它把"请求"定义为所有用户消息，于是把系统提示词里 R 自己写的 "state that assumption in one line, and carry out the procedure" 当成请求要求，之后每条外发消息都被告知"必须含这句话"：批 2～4 的首遇 29/30、30/30、25/30 次尝试收到这条提醒，它自己的筛选 23/23。它真正的词表检查只触发一次（xero），还报反了：说正确的 Investigate 不对、没说错误的 Matched 不对。V2b 预演算出了它在通过题上的触发率（接近 1），但只报不拦——设计遗漏。
+  - **s0 的审核 hook 是 v7 唯一可复现的修复，被噪声埋了**。它在 13 道留出题里对 1 道开火（tax_prep_summary），`missing` 点名"vendor registry type 没改成 LLC"，题从 8/9 变 9/9；12 道通过题 0 误报；但 wave_product_catalog 无足迹地噪声退步（4/5），net 记 0，被拒。方向对的被埋、方向错的被抬。
+  - 没分析、也不在框架层解决的：模型为什么在同一道题上随机漏一个要求（agent 层的随机性）；审核的召回率（7 道失败题只对 1 道开火，R 的手艺）。
+- **决定**（用户 2026-10-13）："v7 不跑 final，先改文档再改代码，v8 从 v6 的头起步。"不加机制，只收紧两个门（DESIGN §6.17、IMPROVER §2 / §8 / §9 / §10、PLAN）：
+  1. V2b 的误触发门 `replay_max_false_trigger`（0.25，cap）：hook 在通过题样本上的触发率超过它就不过；`verified` 行记 `false_trigger_rate`。
+  2. 翻转确认：筛选一次读数后，条件修复与退步的每道题在候选下再读一次（role `confirm`），W 对该题的读数补到两次；可复现修复 = 候选两过有足迹、W 全败；可复现退步 = 候选两败、W 全过；W 自己有过有败的题 `noisy` 不计；其余 `unconfirmed`。接受规则改在可复现的计数上：净 ≥ 1（`accept_min_net_flips`）、可复现退步 0（`accept_max_regressions` 从 1 降到 0）、足迹是全部题的包可复现修复 ≥ 2（`accept_min_whole_fixes`）；容差条不变。算过账：一道 50% 摇摆题被误认成修复的概率 1/16，且要落在候选的足迹里。按这条重算 v7：s1、s3 的包不会装，s0 的审核会装。
+  3. 提示词一句：hook 在出错时才说话，每次都要说的话是 prompt；请求是任务的文本，包自己的提示词不是请求。
+- **代码**：`settings.py`（三个新值与校验、合并规则）；`verify/replay.py`（门与 `false_triggers`）；`screen.py`（`w_readings`、确认、`ScreenResult` 的 `flipped_fixed` / `flipped_regressed` / `noisy` / `unconfirmed` / `confirm_attempts`，`accept_problems` 的全足迹条）；`round.py`（筛选核价加确认的余量 `confirm_allowance`：留出题数的五分之一、至少 2 道，每道 2n−1 次；台账 `screened` 行的新字段；输出行；`verified` 行的触发率）；`prompts/propose.md`。
+- **测试**（假上游）：脚本化 R 的 hook 改精确（只在最后的话里计划了 #ops 的发帖而没发时说话；旧版在 update_stage、policy_hold 上也说话——v7 装上的那种，留作 `NOISY_HOOK_CODE`，V2b 以 0.6667 的误触发率拒它）；夹具 actor 多两个开关：`flaky_tool`（候选的工具只在偶数次尝试用——修复不复现，`unconfirmed`，包被拒）、`flaky_notify`（W 自己在偶数次尝试会发帖——`noisy`，不计）；确定性的修复两边各补读一次后装入（`confirm_attempts` 4）；`confirm_readings = 1` 时不确认、一次读数的翻转照算；核价与角色的三个旧测试按余量改。improver 目录 300 passed；全量（Docker + memory sidecar，`-m "not live"`）1,562 passed、1 deselected，13 分 14 秒。
+- finance-v8 的配置（`examples/automationbench/finance-v8.toml`）：从 v6 工作线的头起步（不是 v7 的），其余同 v7；smoke / freeze 待跑；stream 约 $480，等用户批准。
+
+---
+
 ## 2026-10-13 finance-v6 收口（不发布、不跑 final）、种子的重放与 `seed_line`、finance-v7 冻结；$0
 
 - 用户的决定（2026-10-12）："批准，按顺序跑完，最后预计能做到多少"——v6 `--phase release`、v7 smoke / freeze、v7 `--phase stream`。预计 v7 的 finance test W\* 约 65（60～70）。

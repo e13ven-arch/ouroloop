@@ -58,6 +58,12 @@ PRICE_MARGIN = 0.15                     # over the means on record: candidates c
 REPLAY_SAMPLE = 6                       # passing train attempts V2b reports a hook's false-trigger rate on
 
 
+def confirm_allowance(held: int, settings) -> int:
+    """The attempts a screen is priced with beyond its held-out tasks, for the confirmation (DESIGN §6.17): a fifth of
+    the tasks flipping (two at least), each read again under the candidate and W topped up to confirm_readings."""
+    return max(2, held // 5) * (2 * int(settings.confirm_readings) - 1)
+
+
 @dataclass
 class RoundResult:
     round_id: str
@@ -783,9 +789,12 @@ class Round:
             self._archive(decl.dir, files, decl, verdict, line=self.line)
             for rung, ok in verdict.rungs().items():
                 ladder[rung] = ladder.get(rung, 0) + bool(ok)
+            replays = [c["V2b"] for c in verdict.components.values() if isinstance(c, dict) and "V2b" in c]
             self.ledger.row("verified", round_id=self.round_id, line=self.line, dir=decl.dir, kind=decl.kind,
                             passed=verdict.passed(), outcome="duplicate" if dup else "",
-                            failed_components=verdict.failed_components(), reason=verdict.text()[:800])
+                            failed_components=verdict.failed_components(), reason=verdict.text()[:800],
+                            **({"false_trigger_rate": max(float(x.get("false_trigger_rate") or 0) for x in replays)}
+                               if replays else {}))
             self._audited(decl, verdict)
             if verdict.passed() and not dup:
                 passed.append(item)
@@ -845,8 +854,9 @@ class Round:
         # R's package first, then the fixed code's (the snapshot last); each is paid while it fits what the round has
         # left beside the screens before it (a resumed step re-reads its attempts for free)
         items.sort(key=lambda i: (bool(decls[i["dir"]].fixed), "memory" in decls[i["dir"]].kinds))
-        to_pay = lambda chosen: sum(max(len(held) - self._recorded(f"{self.tag}:{i['dir']}", "screen"), 0)  # noqa
-                                    for i in chosen)
+        allowance = confirm_allowance(len(held), self.s)
+        to_pay = lambda chosen: sum(max(len(held) + allowance - self._recorded(f"{self.tag}:{i['dir']}", "screen")  # noqa
+                                        - self._recorded(f"{self.tag}:{i['dir']}", "confirm"), 0) for i in chosen)
         chosen, dropped = [], []
         for item in items:
             usd, why = price(self.a, self.work_ref, screen_attempts=to_pay([*chosen, item]))
@@ -888,7 +898,10 @@ class Round:
             self.ledger.row("screened", round_id=self.round_id, line=self.line, dir=decl.dir, kind=decl.kind,
                             cause=list(decl.causes), predicted_affected=list(decl.predicted_affected),
                             fixed=list(res.fixed), regressed=list(res.regressed), net_flips=res.net_flips,
-                            fixes=len(res.fixed), holdout_score=res.holdout_score, best_so_far=res.best_so_far,
+                            fixes=len(res.fixed), flipped_fixed=list(res.flipped_fixed),
+                            flipped_regressed=list(res.flipped_regressed), noisy=list(res.noisy),
+                            unconfirmed=list(res.unconfirmed), confirm_attempts=res.confirm_attempts,
+                            holdout_score=res.holdout_score, best_so_far=res.best_so_far,
                             outcome=res.outcome, accepted=res.accepted, reasons=list(res.reasons),
                             reason=res.reason, **({"source": decl.fixed} if decl.fixed else {}))
             if res.outcome == "screened" and not decl.fixed:
@@ -904,7 +917,9 @@ class Round:
                                 outcome="not_selected", reason=f"accepted, and {picked['dir']} is installed this round",
                                 **({"source": decl.fixed} if decl.fixed else {}))
         self.out(f"round      {self.round_id}: screened " + ", ".join(
-            f"{r['dir']} net {res.net_flips} score {res.holdout_score}/{len(res.holdout)} "
+            f"{r['dir']} net {res.net_flips} score {res.holdout_score}/{len(res.holdout)}, confirmed "
+            f"{len(res.fixed)}/{len(res.flipped_fixed)} fixes {len(res.regressed)}/{len(res.flipped_regressed)} "
+            f"regressions{f', noisy {len(res.noisy)}' if res.noisy else ''} "
             f"({'accepted' if res.accepted else res.outcome if res.outcome != 'screened' else 'rejected'})"
             for r, res in zip(rows, results)) + (f"; {picked['dir']} is installed" if picked else "; none accepted"))
         return {"screens": rows, "best": picked["dir"] if picked else None,

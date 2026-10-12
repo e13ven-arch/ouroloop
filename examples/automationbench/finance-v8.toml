@@ -1,0 +1,86 @@
+# finance-v8: the eighth finance activity — the first under stage 4h (docs/DESIGN.md v1.7 §6.17; docs/JOURNAL.md
+# 2026-10-13): finance-v7 measured the noise floor (10–17% of the tasks flip between two runs of one package) and showed
+# that a single reading's "net ≥ 1" installs noise and that V2b reported a hook's false-trigger rate without gating on
+# it. Two gates are tightened, nothing is added: V2b fails a hook that acts on more than a quarter of the passing
+# attempts replayed; the screen reads every flipped task again under the candidate and tops the working line's own
+# readings up to two, and only the flips that repeat count (confirmed net ≥ 1, confirmed regressions 0, a package
+# whose footprint is every attempt needs 2 confirmed fixes). Otherwise finance-v7's shape: finance, hr and operations'
+# train halves (150 tasks) as one stream of 5 batches, a round every 30 tasks with up to three packages, screens of
+# 30 held-out tasks plus their confirmations, the final on finance's test half. It starts where finance-v6's working
+# line stood (`seed_line = "working"`: s0's system prompt package, replayed onto this code's seed), not where v7's did —
+# v7's two installed packages were noise and one of them a defective hook. Every paid step is approved in chat first
+# (PLAN rule 3).
+#   1  `... bench --config examples/automationbench/finance-v8.toml --phase smoke --checks-only`                 $0
+#   2  `... freeze --config ...`; add the printed [rsi] lines (core_ref, split_ref) and commit                    $0
+#   3  `... bench --config ... --phase stream` (5 batches, 5 rounds; about $480: v7's $335 plus the confirmations)
+#   4  `... bench --config ... --phase release` → `... freeze --config ...` seals the final → commit final_plan_ref
+#      → `... bench --config ... --phase evaluate` (finance 50 tasks × 3 repeats × 2 arms, about $200)
+#   5  `--phase report`
+#
+# The worker image is K's by id (built on 2026-10-12; unchanged since, so finance-v7's pin still names an existing
+# image); the smoke checks it. The budget: root $750, the final's share $230 (a floor).
+
+[workspace]
+root = "workspace-finance-v8"
+
+[bench]
+domains = ["finance", "hr", "operations"]
+upstream_path = "~/workspace/AutomationBench"
+split_rule = "stratified"
+seed = 1
+concurrency = 8
+ratios = { train = 0.5, dev = 0.0, test = 0.5 }
+
+[model]
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "medium"
+max_tokens = 32000
+timeout = 600
+
+[research_model]
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "medium"
+max_tokens = 32000
+timeout = 900
+
+[pricing]
+input_per_1k = 0.004
+cache_read_per_1k = 0.0002
+cache_write_per_1k = 0.008
+output_per_1k = 0.02
+max_input_tokens = 400000
+max_output_tokens = 163840
+source = "notional, not a bill: claude-opus-5-5 API list price ($4/$20 per M, cache read $0.20, 1h cache write $8)"
+
+[harness]
+preset = "automationbench_v2"
+seed = "stirrup"
+
+[worker]
+network = "none"
+image_id = "sha256:e070208dbddc713a9993f6700ab15a0455d44d2f6885f47dafc2f4bfd4436f30"
+
+[memory]
+enabled = false
+
+[schedule]
+rounds = 12
+patience = 3
+stream_batch = 30
+stream_splits = ["train"]
+
+[budget]
+usd = 750.0
+final_usd = 230.0
+
+[final]
+repeats = 3
+domains = ["finance"]
+
+[rsi]
+scope_id = "finance-v8"
+seed_from = "workspace-finance-v6"
+seed_line = "working"
+# final_plan_ref: after `--phase release` and the second `freeze`

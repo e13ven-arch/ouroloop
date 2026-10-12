@@ -16,6 +16,7 @@ from ouroloop.contracts import Objects, short
 from ouroloop.improver import diagnose as dg
 from ouroloop.improver import round as round_mod
 from ouroloop.improver.screen import price
+from ouroloop.improver.settings import Settings
 from ouroloop.runtime.chat import ChatTurn
 
 
@@ -68,8 +69,10 @@ def test_a_resumed_screen_step_prices_only_what_it_has_left_to_pay(tmp_path, fak
         phases.round_(s.a, 0, out=quiet)
     assert "screened" not in round_state(s.a, 0)["steps"]
     base = s.a.active_release().package_ref
-    whole, _ = price(s.a, base, screen_attempts=len(rsi.HELD))
-    left, _ = price(s.a, base, screen_attempts=1)  # the killed attempt; the first held-out task is on record
+    allowance = round_mod.confirm_allowance(len(rsi.HELD), Settings())    # the confirmation's attempts, priced with it
+    whole, _ = price(s.a, base, screen_attempts=len(rsi.HELD) + allowance)
+    # the killed attempt; the first held-out task is on record, no confirmation has run yet
+    left, _ = price(s.a, base, screen_attempts=1 + allowance)
     result = phases.round_(s.a, 0, out=quiet)
     assert result.status == "done" and result.installed is not None, result.stop
     assert round_state(s.a, 0)["steps"]["screened"]["usd_priced"] == left < whole
@@ -207,7 +210,8 @@ def test_the_screens_that_fit_are_paid_and_the_rest_are_recorded_as_not_run(tmp_
     def squeezing(line: str) -> None:
         if "passed their free rungs" in line:
             base = s.a.active_release().package_ref
-            one, _ = price(s.a, base, screen_attempts=len(rsi.HELD))
+            one, _ = price(s.a, base, screen_attempts=len(rsi.HELD) + round_mod.confirm_allowance(len(rsi.HELD),
+                                                                                                 Settings()))
             bound = float(s.a.pricing().bound()["usd"])
             squeeze(s.a, one * (1 + PRICE_MARGIN) + 2 * bound + 0.001)
     result = phases.round_(s.a, 0, out=squeezing)

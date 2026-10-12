@@ -33,9 +33,12 @@ class Settings:
     stall_rounds: int = 3
     hook_aux_calls: int = 2                      # on_finish / after_turn 的 hook 每次尝试最多调 aux 模型的次数
     toolcheck_min_pass: int = 2; replay_min_triggers: int = 2; reach_min_tasks: int = 2; reach_min_score: float = 0.2
+    replay_max_false_trigger: float = 0.25       # v1.7：V2b 回放里 hook 在通过题样本上的触发率上限（cap；DESIGN §6.17）
     holdout_share: float = 0.4                   # 留出的 train 题：R 看不到；V3 在全部留出题上筛
-    accept_min_net_flips: int = 1                # 留出筛选的接受：净修复 ≥ 此
-    accept_max_regressions: int = 1              # 留出里通过题退步 ≤ 此
+    accept_min_net_flips: int = 1                # 留出筛选的接受：可复现修复 − 可复现退步 ≥ 此（v1.7：改在可复现的计数上）
+    accept_max_regressions: int = 0              # 留出里可复现的退步 ≤ 此（v1.7 从 1 降到 0）
+    accept_min_whole_fixes: int = 2              # v1.7：足迹是全部题的包（只改 prompt / config / agent / vendor）要这么多可复现修复（floor）
+    confirm_readings: int = 2                    # v1.7：确认时候选与 W 各要有的读数（候选 1 + 1；W 不足的补读；cap）
     accept_floor_tolerance: int = 1              # 留出通过数不低于活动内历史最好减此数
     removal_zero_credit_rounds: int = 3
     round_share: float = 0.15                    # 一轮的账户占根的比例上限
@@ -201,7 +204,7 @@ def run_ladder(files, decl, *, parent, seed, core, worker, evidence, suite, obje
 - V0（`verify/static.py`）：形状、K 允许的类型与站点、上限、相对种子改动行的字面量、`memory/` 未改、manifest、声明与 diff 一致（两个方向）、禁止 import；`require_code` 的检查在这里写台账；`l5_per_round` 在这里拒绝。
 - V1（`verify/unit.py`）：包测试；agent / vendor / config 改动跑 smoke。
 - V2a（`verify/toolcheck.py`）：每个 tool 组件，脚本或探针（§8.1）；`toolcheck_min_pass`。
-- V2b（`verify/replay.py`）：每个 `uses_model = false` 的 hook 组件，在研究部分的轨迹上回放；`replay_min_triggers`；误触发率只报告。
+- V2b（`verify/replay.py`）：每个 `uses_model = false` 的 hook 组件，在研究部分的轨迹上回放；声明的失败题上触发 ≥ `replay_min_triggers`，通过题样本（`REPLAY_SAMPLE`）上的触发率 ≤ `replay_max_false_trigger`（v1.7；此前只报告，v7 装上了一个在 85% 的尝试上说话的 hook）；`verified` 行记 `false_trigger_rate`。
 - V2c（`verify/reach.py`）：每个 skill 组件。
 - V2d（`verify/audit.py`，v1.6，DESIGN §6.16）：每个 `uses_model = true` 的 hook 组件（after_turn / on_finish）。用 V2b 的回放机器把声明的失败题与通过题样本（`REPLAY_SAMPLE`）的站点事件喂给它，`ctx.tool` 只读对着新开的世界，`ctx.model` 接研究模型（role aux，计在轮的 `verify` 子账户，`hook_aux_calls` 封顶）。报警 = 答了非空的 `missing`。门槛：声明的失败题上报警 ≥ `replay_min_triggers`，通过题样本上的报警比例 ≤ `audit_max_false_alarm`；另报告命中条目是否点到没过的断言（断言参数的字符串值或收件人出现在条目里）。不过门槛时退回文本列出每个误报（任务请求的前 300 字、审核的 `missing` 原文），会话修订一次再预演。预演是免费档的最后一级；过了进 V3。
 - 调 aux 模型的 hook（`uses_model = true`）：hook 的 ctx 带 `model(role="aux")`，每次尝试 `hook_aux_calls` 次封顶，超出即 `CandidateDefect`；`audit_additive_only` 下它只能答 `missing`，自由文本的 `pushback` / `message` 是 `CandidateDefect`（HARNESS §7）；V1 的 smoke 用脚本化模型答一次，V2d 预演，然后 V3。
@@ -220,7 +223,7 @@ finance-v2 里 R 两轮都没为 arith_mismatch 写工具：V2a 要求脚本把�
 
 ```python
 @dataclass(frozen=True)
-class ScreenResult(Record): dir: str; package_ref: str; holdout: tuple; failing: tuple; passing: tuple; fixed: tuple; regressed: tuple
+class ScreenResult(Record): dir: str; package_ref: str; holdout: tuple; failing: tuple; passing: tuple; fixed: tuple; regressed: tuple   # v1.7：fixed / regressed 是可复现的；flipped_fixed、flipped_regressed、noisy、confirm_attempts
                             footprints: dict[str, tuple]; net_flips: int; holdout_score: int; best_so_far: int; cost: float | None; outcome: str; reasons: tuple
 def screen(package_ref, decl, *, activity, base_release, holdout, readings, evidence, account) -> ScreenResult
 def pick_best(results, settings) -> ScreenResult | None
@@ -229,7 +232,8 @@ def accept(activity, result, *, round_id) -> InstallReceipt     # 装入工作�
 
 - 任务集 = 全部留出 train 题（`holdout_share` × train，finance 为 20 道）；候选包每道一次尝试（run 的 role `screen`，候选名 `r{i}:package`）。失败集 = 留出里当前工作线失败的题，通过集 = 其余。
 - 条件记功：修复只在该题至少一个改动组件留下足迹时算（tool 调用过、hook 触发过、skill 读过；prompt / config / agent 的足迹是全部题）；退步在通过集上算，不论足迹。`footprints[site]` 记每个组件留下足迹的题。
-- 接受规则：`net_flips = 条件修复 − 退步 ≥ accept_min_net_flips`、`退步 ≤ accept_max_regressions`、`holdout_score ≥ best_so_far − accept_floor_tolerance`（`best_so_far` 是活动内工作线在留出上的最高通过数，基线算第一次）。三条都成立 → `accepted`，装入工作线；否则 `rejected`，原因写进台账与报告。
+- 翻转确认（v1.7，DESIGN §6.17）：一次读数之后，候选与池里读数不同的每道题——条件修复与退步（无足迹的通过 `unconditioned` 本来不计，不再读）——在候选下再读一次（role `confirm`，候选名同筛选，账户同筛选）；对照面是当前 W 对这道题已有的有效 train 读数（首遇、现量、以前的确认；筛选与确认的候选读数不算），不足 `confirm_readings`（2）次的补读到两次（role `confirm`，候选名 `confirm:<W>`）。可复现修复 = 候选两次都过且有足迹、W 的读数全败；可复现退步 = 候选两次都败、W 的读数全过；W 的读数有过有败 → `noisy`，不计。`fixed` / `regressed` 是可复现的集合，`flipped_fixed` / `flipped_regressed` 是一次读数的，`confirm_attempts` 记花了几次。
+- 接受规则：`net_flips = 可复现修复 − 可复现退步 ≥ accept_min_net_flips`（1）、`可复现退步 ≤ accept_max_regressions`（0）、足迹是全部题的包（改动的组件全是 WHOLE_KINDS）`可复现修复 ≥ accept_min_whole_fixes`（2）、`holdout_score ≥ best_so_far − accept_floor_tolerance`（一次读数的通过数；`best_so_far` 是活动内工作线在留出上的最高通过数，基线算第一次）。三条都成立 → `accepted`，装入工作线；否则 `rejected`，原因写进台账与报告。
 - 付费之前核价：留出题数 × 当前工作线的 train 每次尝试成本 × 1.15；放不进本轮余额 → 不筛，停在 `budget`。
 - 候选只有一个时没有挑选；`packages_per_round` > 1 或有固定候选时，按净修复、再成本、再声明顺序挑最优，其余记 `not_selected`。固定候选（快照、升级技能、删除）与 R 的包分开筛，各自可接受，先 R 的包、再固定候选；同一轮两者都接受时先装 R 的包，固定候选在它之上重验 V0 后装入。
 
@@ -285,6 +289,7 @@ def update_playbook(ledger, playbook, *, researcher, line) -> str      # 轮末�
 def export_policy(activity) -> str;  def import_policy(activity, policy_ref) -> None
 ```
 
+- 台账的 `screened` 行（v1.7）：`fixed` / `regressed` / `net_flips` 是可复现的，另记 `flipped_fixed` / `flipped_regressed` / `noisy` / `confirm_attempts`；`verified` 行的 V2b 多 `false_trigger_rate`。
 - 记功（v1.2，接受后）：直接用留出筛选的读数——对改动的每个组件，在它留下足迹的留出题上记 `delta = r_新 − r_旧`；研究部分在下一轮 measure 补测后再记一次。对改动的每个组件，在 `footprint` 为真的题上记 `delta = r_新 − r_旧`；估值 `(line, cause, kind)` 用该 cause 的题上、声明的 kind 的组件有足迹处的净修复与本轮花费更新。估值的每个观测按 `round:dir` 记：筛选时记一次（条件净翻转 / 失败集），装入后用记功的读数替换它，续跑写同一键不重复计。
 - 反膨胀：一个组件连续 `removal_zero_credit_rounds` 个已记功的轮次条件记功为零 → 删除候选（固定代码生成），下一轮作为固定候选进 V3。
 - R 的策略（估值与剧本）在活动内随台账更新；release 里的 `improver_ref` 在一个活动内保持 R0，活动结束时 `export_policy` 产出下一个活动的 R1（DESIGN §6.9）。

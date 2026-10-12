@@ -621,7 +621,7 @@ def test_a_round_without_a_baseline_measures_train_itself_and_goes_on(tmp_path, 
     measured = [x for x in a.results.all() if runs[x.run].role == "measure"]
     assert sorted(x.task_id for x in measured) == sorted(rsi.TRAIN) and {x.split for x in measured} == {"train"}
     assert {runs[x.run].candidate for x in measured} == {f"train:{short(s.base.ref())}:r0"}
-    assert {runs[x.run].role for x in a.results.all()} == {"measure", "screen"}
+    assert {runs[x.run].role for x in a.results.all()} == {"measure", "screen", "confirm"}
     new = new_reservations(s.before, s.after)
     assert settled_by_scope(new)[f"{ACCOUNT}:measure"] > 0 and f"{ACCOUNT}:screen" in settled_by_scope(new)
 

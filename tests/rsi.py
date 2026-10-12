@@ -194,11 +194,16 @@ class BusinessWorker:
     model = "scripted-1"
 
     def __init__(self, *, repeat_notify: bool = False, forget_notify: bool = False, ignore_pushback: bool = False,
-                 usage: dict | None = None):
+                 flaky_tool: bool = False, flaky_notify: bool = False, usage: dict | None = None):
+        """`flaky_tool`: the package's notify tool is used only on a task's even-numbered attempts (a candidate whose
+        fix does not repeat); `flaky_notify`: without the tool, the notification is posted on even-numbered attempts
+        unprompted (a working line whose own readings disagree)."""
         self.repeat_notify, self.forget_notify, self.ignore_pushback = repeat_notify, forget_notify, ignore_pushback
+        self.flaky_tool, self.flaky_notify = flaky_tool, flaky_notify
         self.usage = usage or {"input_tokens": 100, "output_tokens": 20}
         self.calls = 0
         self.seen: list = []
+        self.attempts: dict = {}        # task text -> attempts begun (the first call of an attempt has no results)
 
     def chat(self, system: str, messages: list[dict], specs, **_kw) -> ChatTurn:
         self.calls += 1
@@ -207,6 +212,9 @@ class BusinessWorker:
             return ChatTurn(json.dumps(audit_reply(messages)), [], "end", usage=dict(self.usage))
         names = {s.name for s in specs or ()}
         task = next((m["content"] for m in messages if m.get("role") == "user"), "")
+        if not any(m.get("role") in ("assistant", "tool") for m in messages):
+            self.attempts[task] = self.attempts.get(task, 0) + 1
+        even = self.attempts.get(task, 0) % 2 == 0
         want, done = _needs(task), _done(messages)
         read = [r.get("output", "") for m in messages if m.get("role") == "tool" for r in m.get("results") or ()]
         # a pushback comes back as a user message or as the finish tool's result (the stirrup seed's on_finish)
@@ -236,9 +244,10 @@ class BusinessWorker:
         if want["update"] and not done["updated"]:
             return call("api_fetch", {"method": "PATCH", "url": HUBSPOT,
                                       "body": json.dumps({"id": want["contact"], "stage": "opportunity"})})
-        if want["notify"] and NOTIFY_TOOL in names and done["sent"] == 0 and (done["updated"] or not want["update"]):
+        if want["notify"] and NOTIFY_TOOL in names and done["sent"] == 0 and (done["updated"] or not want["update"]) \
+                and (not self.flaky_tool or even):
             return call(NOTIFY_TOOL, {"phrase": want["phrase"]})
-        if want["notify"] and (reminded or not want["update"]) and done["sent"] == 0:
+        if want["notify"] and (reminded or not want["update"] or (self.flaky_notify and even)) and done["sent"] == 0:
             return call("api_fetch", {"method": "POST", "url": SLACK,
                                       "body": json.dumps({"channel": "C1", "text": f"{want['phrase']} for the contact"})})
         if want["notify"] and self.repeat_notify and done["sent"] == 1:

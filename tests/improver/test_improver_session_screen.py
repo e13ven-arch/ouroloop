@@ -564,7 +564,11 @@ def test_a_regression_counts_on_the_held_out_passing_tasks_whatever_the_footprin
     assert (silent.holdout, silent.failing, silent.passing) == (WITH_PASSING, NOTIFY, ("rsi.notify_once",))
     assert silent.regressed == ("rsi.notify_once",) and silent.fixed == () and silent.unconditioned == ()
     assert silent.net_flips == -1 and silent.holdout_score == 0 and not silent.accepted
-    assert silent.reasons == ("net flips -1 below accept_min_net_flips 1",)
+    assert silent.reasons == ("net flips -1 below accept_min_net_flips 1",
+                              "1 regressions above accept_max_regressions 0")
+    # the confirmation (v1.7): the regression repeated under the candidate and W passed the task again
+    assert silent.flipped_regressed == ("rsi.notify_once",) and silent.noisy == () and silent.unconfirmed == ()
+    assert silent.confirm_attempts == 2
     # the hook never acted there: the regression counts all the same
     row = screen_rows(world, "silent")["rsi.notify_once"]
     assert not row.success and not world.evidence.footprint(row, {"kind": "hook", "name": "inert_ops"})
@@ -624,23 +628,45 @@ def result(name, *, fixed=1, regressed=0, net=None, cost=0.01, outcome="screened
                            cost=cost, outcome=outcome, accepted=accepted and outcome == "screened")
 
 
-def test_the_accept_rule_has_three_clauses():
+def test_the_accept_rule_has_four_clauses():
+    """v1.7 (DESIGN §6.17): the counts are the confirmed ones, no confirmed regression is tolerated, and a package whose
+    footprint is every attempt needs accept_min_whole_fixes confirmed fixes."""
     s = Settings()
-    assert (s.accept_min_net_flips, s.accept_max_regressions, s.accept_floor_tolerance) == (1, 1, 1)
+    assert (s.accept_min_net_flips, s.accept_max_regressions, s.accept_floor_tolerance, s.accept_min_whole_fixes,
+            s.confirm_readings) == (1, 0, 1, 2, 2)
     ok = dict(net_flips=1, regressed=0, holdout_score=5, best_so_far=5, settings=s)
     assert sc.accept_problems(**ok) == []
-    assert sc.accept_problems(**{**ok, "regressed": 1}) == []                              # at the regression cap
     assert sc.accept_problems(**{**ok, "holdout_score": 4}) == []                          # within the tolerance
     assert sc.accept_problems(**{**ok, "net_flips": 0}) == ["net flips 0 below accept_min_net_flips 1"]
-    assert sc.accept_problems(**{**ok, "regressed": 2}) == ["2 regressions above accept_max_regressions 1"]
+    assert sc.accept_problems(**{**ok, "regressed": 1}) == ["1 regressions above accept_max_regressions 0"]
     assert sc.accept_problems(**{**ok, "holdout_score": 3}) == \
         ["held-out score 3 below the best so far 5 minus accept_floor_tolerance 1"]
     assert len(sc.accept_problems(net_flips=-2, regressed=3, holdout_score=0, best_so_far=5, settings=s)) == 3
+    # the whole-footprint clause: one confirmed fix is not enough for a prompt-only package, two are; a package with a
+    # footprint (a tool, a hook) needs one
+    assert sc.accept_problems(**{**ok, "fixed": 1, "whole": True}) == \
+        ["1 confirmed fixes below accept_min_whole_fixes 2 for a package whose footprint is every attempt"]
+    assert sc.accept_problems(**{**ok, "net_flips": 2, "fixed": 2, "whole": True}) == []
+    assert sc.accept_problems(**{**ok, "fixed": 1, "whole": False}) == []
     strict = Settings(accept_min_net_flips=2, accept_max_regressions=0, accept_floor_tolerance=0)
     assert sc.accept_problems(**{**ok, "settings": strict}) == ["net flips 1 below accept_min_net_flips 2"]
     assert sc.accept_problems(**{**ok, "regressed": 1, "holdout_score": 4, "settings": strict}) == [
         "net flips 1 below accept_min_net_flips 2", "1 regressions above accept_max_regressions 0",
         "held-out score 4 below the best so far 5 minus accept_floor_tolerance 0"]
+    with pytest.raises(ValueError, match="accept_min_whole_fixes and improver.confirm_readings"):
+        Settings(confirm_readings=0)
+    with pytest.raises(ValueError, match="replay_max_false_trigger is a share"):
+        Settings(replay_max_false_trigger=1.5)
+
+
+def test_with_one_reading_a_side_nothing_is_confirmed_and_the_first_reading_stands(world, screens):
+    """confirm_readings = 1 (a floor; the Settings allow it): no confirmation runs and the first reading's flips
+    count — the rule before v1.7, read from the same recorded screen."""
+    tool = screens["tool"]
+    before = len(list(world.a.results.all()))
+    res = run_screen(world, "tool", tool.files, tool.package, settings=Settings(confirm_readings=1))
+    assert res.fixed == NOTIFY and res.flipped_fixed == NOTIFY and res.confirm_attempts == 0 and res.accepted
+    assert len(list(world.a.results.all())) == before
 
 
 def test_the_floor_clause_reads_the_best_so_far(world, screens):
@@ -742,7 +768,8 @@ def test_a_round_without_a_priced_reading_measures_before_it_prices(tmp_path, fa
         return rows
     got = run_round(s.a, 0, run_arm=run_arm, out=quiet)
     assert got.status == "done" and got.accepted, got.stop
-    assert arms[0] == ("measure", "train") and set(arms) == {("measure", "train"), ("screen", "train")}
+    assert arms[0] == ("measure", "train") and set(arms) == {("measure", "train"), ("screen", "train"),
+                                                             ("confirm", "train")}
     rd = Round(s.a, 0, run_arm=phases.run_arm)
     assert (rd.child("measure").remaining().get("used") or {}).get("usd") > 0
 

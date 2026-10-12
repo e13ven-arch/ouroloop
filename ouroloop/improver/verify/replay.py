@@ -5,8 +5,10 @@ The six sites' events are rebuilt from a train attempt's transcript — before_r
 carried it), after_turn (a turn's results), on_finish (a finish, as the seed gives it) — and the candidate's
 hook at its declared site is called on each through the worker's `hook` op, its world a fresh episode behind a
 read-only broker (a hook looks, it does not act). An answer other than none is a trigger. The rung passes when the hook
-triggers on at least `replay_min_triggers` of the failing train tasks it claims; its trigger rate on passing train
-attempts is reported beside it (a hook that fires everywhere is a hook that changes everything)."""
+triggers on at least `replay_min_triggers` of the failing train tasks it claims and on at most
+`replay_max_false_trigger` of the passing train attempts replayed (v1.7, DESIGN §6.17: a hook that fires everywhere is
+a hook that changes everything — finance-v7 installed one that spoke on 85% of the attempts; a text the agent should
+see every time is a prompt component)."""
 from __future__ import annotations
 
 import json
@@ -166,8 +168,14 @@ def replay_check(files: dict[str, str], decl, ctx) -> dict:
         session.close()
     rate = round(len(sample_fired) / len(ctx.passed_sessions), 4) if ctx.passed_sessions else None
     need = int(ctx.settings.replay_min_triggers)
-    passed = len(fired) >= need and not errors
+    cap = float(getattr(ctx.settings, "replay_max_false_trigger", 1.0))
+    noisy = rate is not None and rate > cap
+    passed = len(fired) >= need and not errors and not noisy
     detail = (f"the hook acts on {len(fired)} of {len(claimed)} claimed failing tasks (at least {need}): "
-              f"{fired}; on {len(sample_fired)} of {len(ctx.passed_sessions)} passing attempts (rate {rate})"
+              f"{fired}; on {len(sample_fired)} of {len(ctx.passed_sessions)} passing attempts (rate {rate}, at most "
+              f"{cap})"
+              + (f"; it acts on too many passing attempts ({sample_fired}): a hook acts when something is wrong, and "
+                 f"a text the agent should see every time is a prompt component" if noisy else "")
               + (f"; the hook failed: {errors[:3]}" if errors else ""))
-    return {"passed": passed, "fired": fired, "false_trigger_rate": rate, "detail": detail[:3000]}
+    return {"passed": passed, "fired": fired, "false_trigger_rate": rate, "false_triggers": sample_fired,
+            "detail": detail[:3000]}

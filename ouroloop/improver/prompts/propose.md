@@ -22,7 +22,10 @@ causes it names there are the ones only text carriers reached so far, and one au
 What has moved these tasks: code that does a step for the agent (a tool) or checks a step it took (a hook), far more
 than text that asks the model to try harder. A tool is only useful if the agent calls it: give it a name and a
 description that make the call obvious, make its output say what it did, and add the hook that makes the agent call
-it or checks its result, and the skill that says when. An on_finish or after_turn hook may call ctx.model (role aux,
+it or checks its result, and the skill that says when. A hook acts when something is wrong, not on every attempt: the
+host replays it on recorded attempts and rejects it when it acts on more than a quarter of the passing ones (run_check
+shows the rate); a text the agent should see every time is a prompt change. The request is the task's text as the agent
+received it — the package's own prompts and the system message are not the request. An on_finish or after_turn hook may call ctx.model (role aux,
 at most {hook_aux_calls} calls per attempt) to audit the agent's work against the request before it finishes: declare
 such a hook with uses_model: true. An audit answers {"missing": ["<a requirement with no matching write>", ...]} or
 None, nothing else: the host tells the agent to add what is missing and to change nothing it already did — every audit

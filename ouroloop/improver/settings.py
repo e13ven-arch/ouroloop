@@ -51,11 +51,14 @@ class Settings:
     hook_aux_calls: int = 2                      # aux model calls an on_finish or after_turn hook may make per attempt
     toolcheck_min_pass: int = 2
     replay_min_triggers: int = 2
+    replay_max_false_trigger: float = 0.25       # v1.7: V2b — the share of the passing attempts replayed a hook may act on
     reach_min_tasks: int = 2
     reach_min_score: float = 0.2
     holdout_share: float = 0.4                   # the train tasks R never sees; V3 screens there only
-    accept_min_net_flips: int = 1                # held-out acceptance: conditioned fixes minus regressions, at least
-    accept_max_regressions: int = 1              # held-out passing tasks that fail now, at most
+    accept_min_net_flips: int = 1                # held-out acceptance: confirmed fixes minus confirmed regressions, at least
+    accept_max_regressions: int = 0              # held-out passing tasks that fail now, confirmed, at most (v1.7: from 1)
+    accept_min_whole_fixes: int = 2              # v1.7: confirmed fixes a package whose footprint is every attempt needs
+    confirm_readings: int = 2                    # v1.7: readings each side of a flipped task has before it counts
     accept_floor_tolerance: int = 1              # held-out score at least the activity's best so far minus this
     removal_zero_credit_rounds: int = 3
     round_share: float = 0.15                    # a round's account, as a share of the root's dollars
@@ -87,6 +90,10 @@ class Settings:
             raise ValueError("improver.stream_screen_max is at least 1")
         if not 0 <= float(self.audit_max_false_alarm) <= 1:
             raise ValueError("improver.audit_max_false_alarm is a share, in [0, 1]")
+        if not 0 <= float(self.replay_max_false_trigger) <= 1:
+            raise ValueError("improver.replay_max_false_trigger is a share, in [0, 1]")
+        if int(self.accept_min_whole_fixes) < 1 or int(self.confirm_readings) < 1:
+            raise ValueError("improver.accept_min_whole_fixes and improver.confirm_readings are at least 1")
         if int(self.failures_max_cases) < 0 or int(self.failures_case_chars) < 500:
             raise ValueError("improver.failures_max_cases is a count (0: no failures.json); failures_case_chars at least "
                              "500")
@@ -148,4 +155,5 @@ RULES = {"packages_per_round": "cap", "fixed_per_round": "cap", "session_max_tur
          "accept_min_net_flips": "floor", "accept_max_regressions": "cap", "accept_floor_tolerance": "cap",
          "removal_zero_credit_rounds": "fixed", "round_share": "cap", "audit_hook_share": "floor",
          "stream_screen_max": "cap", "failures_max_cases": "cap", "failures_case_chars": "cap",
-         "audit_additive_only": "fixed", "audit_max_false_alarm": "cap"}
+         "audit_additive_only": "fixed", "audit_max_false_alarm": "cap", "replay_max_false_trigger": "cap",
+         "accept_min_whole_fixes": "floor", "confirm_readings": "floor"}
