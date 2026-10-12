@@ -1,6 +1,7 @@
 """Command line (docs/design/ACTIVITY.md §3): ouroloop bench | freeze | export.
 
-    ouroloop bench --config C --phase P [--until U] [--task T] [--limit N] [--checks-only] [--out J] [--concurrency N]
+    ouroloop bench --config C --phase P [--until U] [--round I] [--task T] [--limit N] [--checks-only] [--out J]
+                   [--concurrency N]
     ouroloop freeze --config C
     ouroloop export --config C [--release R] --to DIR
 
@@ -11,7 +12,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
 from ..contracts import load_dotenv
@@ -45,6 +48,16 @@ def _lock(root: Path):
     return f
 
 
+def batch_index(until: str | None) -> int | None:
+    """`--until batch-K` of the stream: the batch after which it stops."""
+    if until is None:
+        return None
+    m = re.fullmatch(r"batch-(\d+)", str(until))
+    if not m:
+        raise ValueError(f"--until {until!r}: the stream stops after a batch, `--until batch-K`")
+    return int(m.group(1))
+
+
 def cmd_bench(args) -> int:
     from ..adapters.automationbench import UpstreamError
     from . import phases
@@ -70,7 +83,13 @@ def cmd_bench(args) -> int:
         elif args.phase == "library":
             report = phases.library(activity)
         elif args.phase == "round":
-            report = phases.round_(activity, int(args.round or 0))
+            report = asdict(phases.round_(activity, int(args.round or 0)))
+        elif args.phase == "stream":
+            report = phases.stream(activity, until=batch_index(args.until))
+            fe = report.get("first_encounter") or {}
+            print(f"stream     {report['status']}" + (f" at {report['at']}" if report.get("at") else "")
+                  + (f": {report['reason']}" if report.get("reason") else "")
+                  + f"; first encounters {fe.get('passed')}/{fe.get('tasks')}")
         elif args.phase == "gate":
             report = phases.gate(activity)
         elif args.phase == "release":
@@ -142,7 +161,8 @@ def main(argv: list[str] | None = None) -> int:
     bn.set_defaults(fn=cmd_bench)
     bn.add_argument("--config", required=True, help="e.g. examples/automationbench/quickstart.toml")
     bn.add_argument("--phase", choices=[*PHASES, CYCLE], default="smoke")
-    bn.add_argument("--until", help="cycle: stop after baseline, library, round-K or gate (the release gate)")
+    bn.add_argument("--until", help="cycle: stop after baseline, library, round-K or gate (the release gate); "
+                                    "stream: stop after batch-K")
     bn.add_argument("--round", type=int, help="round: which round of the schedule")
     bn.add_argument("--task", action="append", help="smoke: only this dev task; repeatable")
     bn.add_argument("--limit", type=int, help="smoke and baseline: at most this many tasks")

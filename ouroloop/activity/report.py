@@ -3,8 +3,11 @@ same bytes every time it is written (nothing in it reads the clock).
 
     activity   scope, K, preset, code version, the split's hash and counts
     baseline   W0's train reading and its dev readings
-    rounds     each round of the improver: causes, the focus list, candidates and the rungs they passed, the held-out
-               screens with the accept rule's answer, the install on the working line, the stop, the round's spend
+    rounds     each round of the improver (batch r<i> and stream s<i>): causes, the focus list, candidates and the rungs
+               they passed, the held-out screens with the accept rule's answer, the install on the working line, the
+               stop, the round's spend
+    stream     the streaming loop's ledger (rsi/stream.json): each batch's first-encounter pass rate, partial credit and
+               cost on the line that ran it, its round's outcome, and the whole stream's number with its two halves
     gate       the release gate at the end of the activity: the working line against W0 on dev, and the release
     memory     the memory stream's readout (D, the halves, the entries), what it dropped and lost, its snapshot
     final      each arm of the sealed final, W* - W0 on test with its 95% interval over families (C1), and how many
@@ -96,7 +99,8 @@ def gate_report(activity) -> dict | None:
 def rounds_report(activity) -> list[dict]:
     """Each round as rounds/r<i>/round.json, the ledger and the budget book hold it (no timestamps). The improver's
     modules are loaded only when there is a round to read (a phase before the rounds stays off its path)."""
-    paths = sorted((activity.root / "rounds").glob("r*/round.json"), key=lambda p: int(p.parent.name[1:]))
+    paths = sorted((activity.root / "rounds").glob("[rs]*/round.json"),
+                   key=lambda p: (p.parent.name[0], int(p.parent.name[1:])))
     if not paths:
         return []
     from ..improver.allocate import Focus
@@ -122,7 +126,7 @@ def rounds_report(activity) -> list[dict]:
                             "net_flips": sc.net_flips, "holdout_score": sc.holdout_score, "holdout": len(sc.holdout),
                             "best_so_far": sc.best_so_far, "accepted": sc.accepted, "reasons": list(sc.reasons)})
         accepted = steps.get("accepted") or {}
-        scope = f"{activity.scope_id}:round-{state['index']}"
+        scope = state.get("account") or f"{activity.scope_id}:round-{state['index']}"
         used = activity.budgets.usage(scope, book) if scope in book.get("scopes", {}) else {}
         out.append({"round": state["round_id"], "status": state.get("status"), "stop": state.get("stop"),
                     "causes": {c.name: len(c.tasks) for c in causes},
@@ -134,6 +138,25 @@ def rounds_report(activity) -> list[dict]:
                     "installed": short(accepted["installed"]) if accepted.get("installed") else None,
                     "spend": {k: round(v, 6) for k, v in used.items() if v}})
     return out
+
+
+def stream_report(activity) -> dict | None:
+    """The stream's ledger (rsi/stream.json) as the report reads it: no refs longer than a short, no timestamps."""
+    path = activity.root / "rsi" / "stream.json"
+    if not path.exists():
+        return None
+    state = json.loads(path.read_text(encoding="utf-8"))
+    batches = []
+    for b in state.get("batches") or ():
+        rnd = b.get("round") or {}
+        batches.append({"index": b["index"], "tasks": len(b.get("tasks") or ()), "release": short(b["release"]),
+                        **{k: b.get(k) for k in ("tasks_scored", "passed", "pass_rate", "partial_credit",
+                                                 "cost_per_attempt")},
+                        "round": {**{k: rnd.get(k) for k in ("status", "accepted", "stop")},
+                                  "installed": short(rnd["installed"]) if rnd.get("installed") else None,
+                                  "stacked": list(rnd.get("stacked") or ())} if rnd else None})
+    return {"status": state.get("status"), "split": state.get("split"), "tasks": len(state.get("order") or ()),
+            "batches": batches, "first_encounter": state.get("first_encounter")}
 
 
 def c1_difference(activity, plan: dict, plan_ref: str, test: dict) -> dict | None:
@@ -186,8 +209,8 @@ def build_report(activity) -> dict:
                          "split": activity.splits.hash(), "counts": activity.splits.counts()},
             "release": short(activity.releases.active_ref()) if activity.releases.active_ref() else None,
             "released": short(activity.releases.released_ref()) if activity.releases.released_ref() else None,
-            "baseline": baseline, "rounds": rounds_report(activity), "gate": gate_report(activity),
-            "memory": memory_report(activity),
+            "baseline": baseline, "rounds": rounds_report(activity), "stream": stream_report(activity),
+            "gate": gate_report(activity), "memory": memory_report(activity),
             "final": finals,
             "test_reads": sum(1 for e in events if e.get("event") == "test_read"),
             "spend": spend(activity)}
@@ -243,6 +266,21 @@ def render_markdown(report: dict) -> str:
         lines.append(f"  spend {r['spend']}")
     if not report["rounds"]:
         lines.append("- none run")
+    lines += ["", "## Stream"]
+    st = report.get("stream")
+    if not st:
+        lines.append("- not run")
+    else:
+        for b in st["batches"]:
+            r = b.get("round")
+            lines.append(f"- batch {b['index']} on {b['release']}: {b['passed']}/{b['tasks']} first encounters passed, "
+                         f"partial {b['partial_credit']}, cost/attempt {b['cost_per_attempt']}"
+                         + (f"; round s{b['index']} {r['status']}" + (f" ({r['stop']})" if r.get("stop") else "")
+                            + (f", installed {r['installed']}" if r.get("installed") else "") if r else ""))
+        fe = st.get("first_encounter") or {}
+        lines.append(f"- {st['status']}: {fe.get('passed')}/{fe.get('tasks')} first encounters passed (rate "
+                     f"{fe.get('pass_rate')}, partial {fe.get('partial_credit')}), halves {fe.get('first_half')} -> "
+                     f"{fe.get('second_half')}")
     lines += ["", "## Release gate"]
     g = report.get("gate")
     if not g:

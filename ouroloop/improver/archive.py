@@ -1,5 +1,6 @@
 """The archive of every candidate a round verified (docs/design/IMPROVER.md §10; DESIGN §6.7): its files, declaration,
-verdict, screen and install receipt, under rounds/r<i>/candidates/<dir>/ and as objects. It is where credit and R's inputs
+verdict, screen and install receipt, under rounds/r<i>/candidates/<dir>/ (a stream round's under rounds/s<i>/) and as
+objects. It is where credit and R's inputs
 read what was tried; it is not a second line of versions (the release line is evaluate's).
 
 `duplicate(files)` finds an earlier candidate with exactly these files: the round does not pay to screen it again."""
@@ -22,9 +23,12 @@ class Archive:
         return digest({p: files[p] for p in sorted(files)})
 
     def put(self, round_index: int, dir_name: str, files: dict[str, str], decl, verdict, *, screen=None,
-            receipt_ref: str | None = None, package_ref: str | None = None, line: str = "") -> dict:
-        base = self.root / f"r{round_index}" / "candidates" / dir_name
-        row = {"round": round_index, "dir": dir_name, "line": line, "files_digest": self.files_digest(files),
+            receipt_ref: str | None = None, package_ref: str | None = None, line: str = "",
+            tag: str | None = None) -> dict:
+        tag = tag or f"r{round_index}"
+        base = self.root / tag / "candidates" / dir_name
+        row = {"round": round_index, "tag": tag, "dir": dir_name, "line": line,
+               "files_digest": self.files_digest(files),
                "declaration": self.objects.put(decl), "verdict": self.objects.put(verdict) if verdict else None,
                "screen": self.objects.put(screen) if screen is not None else None, "receipt": receipt_ref,
                "package_ref": package_ref, "kind": decl.kind, "causes": list(decl.causes), "site": decl.site,
@@ -70,6 +74,6 @@ class Archive:
         return out[-n:]
 
 
-def load_files(root, round_index: int, dir_name: str) -> dict[str, str]:
-    return json.loads((Path(root) / "rounds" / f"r{round_index}" / "candidates" / dir_name / "files.json")
+def load_files(root, round_index: int, dir_name: str, tag: str | None = None) -> dict[str, str]:
+    return json.loads((Path(root) / "rounds" / (tag or f"r{round_index}") / "candidates" / dir_name / "files.json")
                       .read_text(encoding="utf-8"))

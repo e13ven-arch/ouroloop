@@ -225,6 +225,13 @@ def resolve(config: dict) -> dict:
     if budget.get("final_usd") is not None and budget.get("usd") is not None \
             and float(budget["final_usd"]) >= float(budget["usd"]):
         raise ConfigError("[budget] final_usd is a share of usd and leaves the rest something to spend")
+    schedule = sections["schedule"]
+    if isinstance(schedule.get("stream_batch"), bool) or int(schedule.get("stream_batch") or 0) < 1:
+        raise ConfigError("[schedule] stream_batch is how many scored tasks make a batch of the stream, at least 1")
+    splits = schedule.get("stream_splits")
+    if splits not in (["train"], ["train", "test"]):
+        raise ConfigError(f"[schedule] stream_splits = {splits!r}: the splits the stream runs, in order — [\"train\"] "
+                          f"or [\"train\", \"test\"] (DESIGN §6.13)")
     return sections
 
 

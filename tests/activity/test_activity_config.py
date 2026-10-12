@@ -163,6 +163,20 @@ def freeze(cfg=None, *, split_hash="aaaa", attempt="a1", improver="i1"):
     return cf.freeze_core(cfg or config(), split_hash=split_hash, attempt_version=attempt, improver_version=improver)
 
 
+@pytest.mark.parametrize("table", [{"stream_batch": 0}, {"stream_batch": 11}, {"stream_batch": True},
+                                   {"stream_splits": ["test"]}, {"stream_splits": ["train", "dev"]},
+                                   {"stream_splits": []}, {"stream_splits": ["test", "train"]}])
+def test_the_streams_schedule_is_a_batch_of_at_most_the_presets_and_the_train_then_test_splits(table):
+    """v1.3 (DESIGN §6.13; CONTRACTS §4): stream_batch a count a config may lower, stream_splits ["train"] or
+    ["train", "test"]."""
+    with pytest.raises(ConfigError, match=next(iter(table))):
+        cf.resolve(config(schedule=table))
+    k = cf.resolve(config())
+    assert (k["schedule"]["stream_batch"], k["schedule"]["stream_splits"]) == (10, ["train"])
+    k = cf.resolve(config(schedule={"stream_batch": 4, "stream_splits": ["train", "test"]}))
+    assert (k["schedule"]["stream_batch"], k["schedule"]["stream_splits"]) == (4, ["train", "test"])
+
+
 def test_freeze_core_is_reproducible_and_covers_the_split_and_both_code_versions():
     k = freeze()
     reordered = json.loads(json.dumps(config(), sort_keys=True))

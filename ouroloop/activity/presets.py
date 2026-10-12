@@ -54,7 +54,9 @@ AUTOMATIONBENCH_V1 = {
              # strict rate in steps of 4 points; the partial credit is continuous)
              "partial_min_gain": 0.03},
     # IMPROVER §3 (v1.2): up to 12 rounds; the patience counts rounds in a row without a held-out acceptance
-    "schedule": {"rounds": 12, "patience": 3, "max_infrastructure_failures": 2},
+    # v1.3 (DESIGN §6.13): the stream's batch (a round every this many scored tasks) and the splits it runs, in order
+    "schedule": {"rounds": 12, "patience": 3, "max_infrastructure_failures": 2, "stream_batch": 10,
+                 "stream_splits": ["train"]},
     "budget": {"usd": None, "final_usd": None},
     "final": {"tasks": "test", "repeats": 3, "claims": ["C1"]},
 }
@@ -93,7 +95,8 @@ RULES = {
              "regression_drop": "cap", "confirmations": "floor", "control_pooling": "fixed",
              "control_readings": "floor", "repeats": "floor", "order_seed": "free", "missing_cost_policy": "fixed",
              "max_infrastructure_retries": "cap", "partial_min_gain": "floor"},
-    "schedule": {"rounds": "cap", "patience": "cap", "max_infrastructure_failures": "cap"},
+    "schedule": {"rounds": "cap", "patience": "cap", "max_infrastructure_failures": "cap", "stream_batch": "cap",
+                 "stream_splits": "free"},
     "budget": {"usd": "free", "final_usd": "free"},
     "final": {"tasks": "fixed", "repeats": "floor", "claims": "free"},
 }

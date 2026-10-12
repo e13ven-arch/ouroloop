@@ -11,6 +11,9 @@ another package: the attempt and the gate in evaluate/, the run in runtime/, the
     library   the memory's train stream and its snapshot as a candidate (docs/design/MEMORY.md §7); K's memory.enabled
     round     one round of the improver (docs/design/IMPROVER.md §3, v1.2: one package, held-out acceptance on the
               working line); `cycle` runs them with the patience rule
+    stream    the streaming loop (DESIGN §6.13, v1.3): the train tasks in a frozen order, each done once on the working
+              line and scored at that first encounter, a round over the scored pool every schedule.stream_batch tasks,
+              an accepted package installed before the next batch; `--until batch-K` stops after the K-th batch
     gate      the release gate at the end of the activity (docs/design/EVALUATE.md §5.2): the working line against W0
               on dev; passed, it becomes the release line's W*; nothing to do in an activity without dev tasks
     release   the release by decision (EVALUATE §7, stage 4c): in an activity without dev tasks, the working line is
@@ -40,7 +43,8 @@ from ..harness.literals import findings, forbidden, literal_index
 from ..harness.package import Limits, PackageError, build
 from .checks import require, startup_checks
 
-PHASES = ("smoke", "freeze", "baseline", "library", "round", "gate", "release", "evaluate", "report", "export")
+PHASES = ("smoke", "freeze", "baseline", "library", "round", "stream", "gate", "release", "evaluate", "report",
+          "export")
 
 
 # ---------------------------------------------------------------------------- one arm of tasks
@@ -240,8 +244,7 @@ def freeze(activity, *, out: Callable[[str], None] = print) -> dict:
     out(f"budget     root {activity.scope_id}: {root.remaining()['limits'] or 'no dollar limit'}, "
         f"set aside {root.remaining()['allocations'] or 'nothing'}")
     plan = final_plan(activity) if "final" in activity.config else None
-    unfinished = sorted(p.parent.name for p in (activity.root / "rounds").glob("r*/round.json")
-                        if json.loads(p.read_text(encoding="utf-8")).get("status") not in ("done", "stopped"))
+    unfinished = unfinished_rounds(activity)
     if plan is not None and len(plan.arms) < 2:
         out("final      not sealed: the final compares W* with W0, and no release passed the release gate yet; run "
             "`--phase gate` when the rounds are over, then freeze again")
@@ -265,6 +268,12 @@ def freeze(activity, *, out: Callable[[str], None] = print) -> dict:
     for key, value in refs.items():
         out(f'{key} = "{value}"')
     return {**refs, **({"gate_template": template} if template else {})}
+
+
+def unfinished_rounds(activity) -> list[str]:
+    """The rounds (batch r<i> and stream s<i>) not done or stopped: they can still move the working line."""
+    return sorted(p.parent.name for p in (activity.root / "rounds").glob("[rs]*/round.json")
+                  if json.loads(p.read_text(encoding="utf-8")).get("status") not in ("done", "stopped"))
 
 
 def _execution(activity, release_ref):
@@ -604,6 +613,142 @@ def round_(activity, index: int, *, out: Callable[[str], None] = print):
     return run_round(activity, index, run_arm=run_arm, out=out)
 
 
+# ---------------------------------------------------------------------------- the streaming loop (v1.3)
+def stream_order_of(activity, split: str = "train") -> list[str]:
+    """The split's tasks in the stream's order: shuffled once by K's gate.order_seed and the domain (DESIGN §6.13), then
+    frozen in rsi/stream.json."""
+    order = list(activity.splits.ids(split))
+    random.Random(f"stream:{activity.k['gate']['order_seed']}:{activity.domain}").shuffle(order)
+    return order
+
+
+def stream_scored(activity) -> dict[str, TaskResult]:
+    """{task: its latest valid first encounter} — the attempts of role `stream`, whichever release ran them."""
+    runs = activity.results.runs()
+    out: dict = {}
+    for r in activity.results.all():
+        run = runs.get(r.run)
+        if r.validity == "valid" and run is not None and run.role == "stream":
+            out[r.task_id] = r
+    return out
+
+
+def first_encounter_summary(order: list, scored: dict) -> dict:
+    """The stream's number (EVALUATE §6): over the scored tasks in the stream's order, the first-encounter pass rate,
+    the partial credit and the cost per attempt, and the pass rate of each half (the learning curve's two points)."""
+    rows = [scored[t] for t in order if t in scored]
+    s = summarise(rows)
+    half = len(rows) // 2
+    return {"tasks": s["tasks"], "passed": s["passed"], "pass_rate": s["pass_rate"],
+            "partial_credit": s["partial_credit"], "cost_per_attempt": s["cost_per_attempt"],
+            "first_half": summarise(rows[:half])["pass_rate"], "second_half": summarise(rows[half:])["pass_rate"]}
+
+
+def _first_encounters(activity, *, release: Release, tasks: list, batch: int, account, retries: int,
+                      earlier: set) -> list[TaskResult]:
+    """One attempt at each of `tasks` on the working line (role `stream`, candidate `stream:b<i>`). What is on record
+    is kept; an attempt the budget refused on an earlier run of the phase is no evidence and runs again at the next
+    block of retry indexes (as the memory's stream does), superseding it."""
+    def run_from(offset: int):
+        def run(arm, chosen, retry=0, supersedes=None):
+            return run_arm(activity, release=release, split="train", candidate=f"stream:b{batch}", role="stream",
+                           pairs=chosen, account=account, arm=arm, retry=offset + retry, supersedes=supersedes,
+                           notes=f"the stream's first encounters, batch {batch}")
+        return run
+    rows = latest(refill_attempts(run_from(0)("subject", [(t, 0) for t in tasks]), run_from(0), "subject", retries))
+    offset = 0
+    while True:
+        refused = {(r.task_id, r.attempt): r.attempt_id for r in rows
+                   if r.failure_class == "budget_exhausted" and r.attempt_id in earlier}
+        if not refused:
+            return rows
+        offset += retries + 1
+        run = run_from(offset)
+        rows = latest(rows + refill_attempts(run("subject", sorted(refused), 0, refused), run, "subject", retries))
+
+
+def stream(activity, *, until: int | None = None, out: Callable[[str], None] = print) -> dict:
+    """The streaming loop (DESIGN §6.13; IMPROVER §3.1; ACTIVITY §4). The train tasks in the frozen order, a batch of
+    schedule.stream_batch at a time: each task not yet scored is done once on the working line as it stands (its first
+    encounter is its score; every later record of it is evidence), then the improver's round over the pool of every
+    scored task (rounds/s<i>, nothing measured), an accepted package installed on the working line before the next
+    batch runs. `until` stops after that batch (`--until batch-K`); run again, the phase continues and pays for nothing
+    on record. The memory and the test segment are not streamed in this version (MEMORY §7.0; CONTRACTS §4)."""
+    schedule = activity.k["schedule"]
+    if (activity.k.get("memory") or {}).get("enabled"):
+        raise NotImplementedError("the stream with [memory] enabled is not implemented yet (MEMORY §7.0): this version "
+                                  "streams with the memory off")
+    if list(schedule["stream_splits"]) != ["train"]:
+        raise NotImplementedError(f"[schedule] stream_splits {schedule['stream_splits']}: this version streams the train "
+                                  f"split only; the test segment (released by the scored-task guard, CONTRACTS §4) is "
+                                  f"a later stage")
+    require(startup_checks(activity, phase="stream"), phase="stream", activity=activity)
+    from ..improver.round import run_round
+    path = activity.root / "rsi" / "stream.json"
+    state = json.loads(path.read_text(encoding="utf-8")) if path.exists() else \
+        {"split": "train", "order": stream_order_of(activity), "batches": [], "status": "running"}
+    order = list(state["order"])
+    size = int(schedule["stream_batch"])
+    batches = [order[i:i + size] for i in range(0, len(order), size)]
+    scored = stream_scored(activity)
+    account = activity.account("stream")
+    retries = int(activity.k["gate"]["max_infrastructure_retries"])
+    earlier = {r.attempt_id for r in activity.results.all()}
+    by_index = {b["index"]: b for b in state["batches"]}
+    out(f"stream     {len(order)} train tasks in {len(batches)} batches of {size}; {len(scored)} scored; the working "
+        f"line is {short(activity.active_release().ref())}")
+
+    def save(status: str, **extra) -> dict:
+        state["batches"] = [by_index[i] for i in sorted(by_index)]
+        state["status"] = status
+        state["first_encounter"] = first_encounter_summary(order, scored)
+        for key in ("at", "reason"):
+            state.pop(key, None)
+        state.update(extra)
+        write_json(path, state)
+        return {"status": status, "first_encounter": state["first_encounter"], "batches": state["batches"], **extra}
+
+    for i, tasks in enumerate(batches):
+        release = activity.active_release()
+        todo = [t for t in tasks if t not in scored]
+        if todo:
+            rows = _first_encounters(activity, release=release, tasks=todo, batch=i, account=account,
+                                     retries=retries, earlier=earlier)
+            if any(r.failure_class == "budget_exhausted" for r in rows):
+                out(f"stream     stopped at batch {i}: the budget refused a first encounter; run the phase again to "
+                    f"continue")
+                return save("budget_exhausted", at=f"batch-{i}")
+            for r in rows:
+                if r.validity == "valid":
+                    scored[r.task_id] = r
+                    activity.events.append("stream_scored", batch=i, task=r.task_id, attempt=r.attempt_id,
+                                           release=release.ref(), success=bool(r.success))
+        s = summarise([scored[t] for t in tasks if t in scored])
+        entry = by_index.get(i) or {"index": i, "tasks": tasks, "release": release.ref()}
+        if todo:
+            entry["release"] = release.ref()
+        entry.update(tasks_scored=s["tasks"], passed=s["passed"], pass_rate=s["pass_rate"],
+                     partial_credit=s["partial_credit"], cost_per_attempt=s["cost_per_attempt"])
+        by_index[i] = entry
+        out(f"stream     batch {i} on {short(entry['release'])}: {s['passed']}/{len(tasks)} first encounters passed, "
+            f"partial={s['partial_credit']}, cost/attempt="
+            f"{'unmeasured' if s['cost_per_attempt'] is None else s['cost_per_attempt']}")
+        save("running")
+        result = run_round(activity, i, run_arm=run_arm, out=out,
+                           pool=[t for b in batches[:i + 1] for t in b if t in scored])
+        entry["round"] = {"status": result.status, "accepted": result.accepted, "installed": result.installed,
+                          "stacked": list(result.stacked), "stop": result.stop}
+        if result.status != "done" and result.stop and result.stop.startswith(("budget", "unpriced", "cli")):
+            out(f"stream     stopped at batch {i}: round {result.round_id} {result.stop}")
+            return save("stopped", at=f"batch-{i}", reason=result.stop)
+        if until is not None and i >= until and i < len(batches) - 1:
+            return save("stopped", at=f"batch-{i}")
+    fe = first_encounter_summary(order, scored)
+    out(f"stream     done: {fe['passed']}/{fe['tasks']} first encounters passed (rate {fe['pass_rate']}; halves "
+        f"{fe['first_half']} -> {fe['second_half']}); the working line is {short(activity.active_release().ref())}")
+    return save("done")
+
+
 # ---------------------------------------------------------------------------- the release gate
 def gate(activity, *, out: Callable[[str], None] = print) -> dict:
     """The release gate at the end of the activity (EVALUATE §5.2; IMPROVER §9.2): the working line's W against W0 on
@@ -630,8 +775,7 @@ def gate(activity, *, out: Callable[[str], None] = print) -> dict:
     if work.ref() == seed.ref():
         out("gate       the working line is W0: nothing was accepted, nothing to gate")
         return {"status": "nothing_to_gate", "why": "the working line is W0", "working": work.ref()}
-    unfinished = sorted(p.parent.name for p in (activity.root / "rounds").glob("r*/round.json")
-                        if json.loads(p.read_text(encoding="utf-8")).get("status") not in ("done", "stopped"))
+    unfinished = unfinished_rounds(activity)
     if unfinished:
         raise ValueError(f"gate refused: round {', '.join(unfinished)} is not finished and can still move the working "
                          f"line; finish or stop it first")
@@ -714,8 +858,7 @@ def release(activity, *, out: Callable[[str], None] = print) -> dict:
         return {"status": "done", "working": work.ref(), "released": released.ref(), "measured": 0}
     if work.ref() == seed.ref():
         raise ValueError("release refused: the working line is W0: nothing was accepted, nothing to release")
-    unfinished = sorted(p.parent.name for p in (activity.root / "rounds").glob("r*/round.json")
-                        if json.loads(p.read_text(encoding="utf-8")).get("status") not in ("done", "stopped"))
+    unfinished = unfinished_rounds(activity)
     if unfinished:
         raise ValueError(f"release refused: round {', '.join(unfinished)} is not finished and can still move the "
                          f"working line; finish or stop it first")

@@ -16,6 +16,11 @@ install moved the line meanwhile, the round is refused rather than continued on 
 Money: the round spends from its own account `<scope>:round-<i>` (round_share of the root's dollars), one child per
 step kind (measure, diagnose, session, screen, policy). Before the research is paid, one screen of the whole held-out
 part and the research calls are priced from what is on record; what cannot be priced, or does not fit, does not start.
+
+A stream round (v1.3, IMPROVER §3.1; activity/phases.py `stream`) is the same round over `pool`, the stream's scored
+tasks: nothing is measured (the pool's latest attempt of each task is the reading, the working line's own where it has
+one), the studied and held-out parts are the activity's split restricted to the pool, the screen runs on the most
+recent stream_screen_max held-out tasks, and the round lives under rounds/s<i> as `<scope>/s<i>`.
 """
 from __future__ import annotations
 
@@ -74,11 +79,14 @@ class Stop(Exception):
 
 
 class Round:
-    def __init__(self, activity, index: int, *, run_arm, out=print):
+    def __init__(self, activity, index: int, *, run_arm, out=print, pool=None):
         self.a, self.i, self.run_arm, self.out = activity, int(index), run_arm, out
         self.s = Settings.from_core(activity.k)
-        self.round_id = f"{activity.scope_id}/r{self.i}"
-        self.dir = Path(activity.root) / "rounds" / f"r{self.i}"
+        # a stream round works from `pool` (the stream's scored tasks, in its order) under rounds/s<i>; a batch round
+        # measures the working line on every train task under rounds/r<i>
+        self.tag = f"s{self.i}" if pool is not None else f"r{self.i}"
+        self.round_id = f"{activity.scope_id}/{self.tag}"
+        self.dir = Path(activity.root) / "rounds" / self.tag
         self.state_path = self.dir / "round.json"
         self.ledger = Ledger(activity.root)
         self.archive = Archive(activity.root, activity.objects)
@@ -96,15 +104,31 @@ class Round:
                                  f"{short(active.ref())}: a round is not continued on another W")
         else:
             self.state = {"round_id": self.round_id, "index": self.i, "base_release": active.ref(), "steps": {},
-                          "status": "running", "improver_version": activity.core.improver_version}
+                          "status": "running", "improver_version": activity.core.improver_version,
+                          "account": f"{activity.scope_id}:round-{self.tag if pool is not None else self.i}"}
+            if pool is not None:
+                self.state["pool"] = list(pool)
+        # a resumed stream round keeps the pool it started on
+        self.pool = list(self.state["pool"]) if "pool" in self.state else None
         self.base = activity.releases.load(self.state["base_release"])
         self.package = activity.package(self.base)
         self.account = self._account()
 
     @property
+    def stream(self) -> bool:
+        return self.pool is not None
+
+    @property
     def work_ref(self) -> str:
         """The package ref the round reads train evidence of: the working line's."""
         return self.base.package_ref
+
+    def reading(self) -> dict:
+        """The W's train reading the round works from: the working line's own (a batch round), or the pool's latest
+        attempts, the working line's own where it has one (a stream round, IMPROVER §3.1)."""
+        if self.stream:
+            return self.evidence.latest(self.pool, prefer=self.work_ref)
+        return self.evidence.reading(self.work_ref)
 
     # ------------------------------------------------------------------ state, money, models
     def _save(self) -> None:
@@ -122,10 +146,10 @@ class Round:
         root = self.a.root_account()
         usd = (root.remaining().get("limits") or {}).get("usd")
         limits = {"usd": round(float(usd) * self.s.round_share, 6)} if usd is not None else {}
-        return root.child(f"{self.a.scope_id}:round-{self.i}", limits)
+        return root.child(self.state.get("account") or f"{self.a.scope_id}:round-{self.i}", limits)
 
     def child(self, kind: str):
-        return self.account.child(f"{self.a.scope_id}:round-{self.i}:{kind}", {})
+        return self.account.child(f"{self.account.scope_id}:{kind}", {})
 
     def researcher(self, kind: str):
         return self.a.research_provider(f"round-{self.i}:{kind}", account=self.child(kind))
@@ -227,7 +251,7 @@ class Round:
         """Before the round pays for diagnosis and R's session, the least it must pay to have an outcome fits: one
         screen of the whole held-out part, and the research it is about to pay — a call per case to diagnose and per
         turn of the session, at the research calls' mean on record (left out before any is on record)."""
-        usd, why = price(self.a, self.work_ref, screen_attempts=len(self.split()[1]))
+        usd, why = price(self.a, self.work_ref, screen_attempts=len(self.screen_holdout()))
         if usd is None:
             raise Stop(f"unpriced: {why}")
         mean = self._research_mean()
@@ -253,8 +277,20 @@ class Round:
             for fam in sorted(families, key=lambda f: hashlib.sha256(f"holdout:{seed}:{f}".encode()).hexdigest()):
                 if len(held) + len(families[fam]) <= want:      # a family that would overshoot the share is skipped
                     held += families[fam]
-            self._split = (tuple(t for t in train if t not in set(held)), tuple(t for t in train if t in set(held)))
+            held_set = set(held)
+            if self.stream:
+                # the pool's part of the same split, in the stream's order: a task's side never changes (§3.1)
+                self._split = (tuple(t for t in self.pool if t not in held_set),
+                               tuple(t for t in self.pool if t in held_set))
+            else:
+                self._split = (tuple(t for t in train if t not in held_set), tuple(t for t in train if t in held_set))
         return self._split
+
+    def screen_holdout(self) -> list[str]:
+        """The held-out tasks the screen runs on: every one (a batch round); the stream's most recent stream_screen_max
+        of them (a stream round, §3.1)."""
+        held = list(self.split()[1])
+        return held[-int(self.s.stream_screen_max):] if self.stream else held
 
     def _recorded(self, candidate: str, role: str) -> int:
         """The valid attempts on record under a run of this name and role."""
@@ -263,15 +299,19 @@ class Round:
                    and runs[r.run].candidate == candidate and runs[r.run].role == role)
 
     def holdout_score(self, package_ref: str) -> int | None:
-        """A package's passes on the held-out tasks it has a valid train reading of (None: none read)."""
-        held = set(self.split()[1])
+        """A package's passes on the screen's held-out tasks it has a valid train reading of (None: none read)."""
+        held = set(self.screen_holdout())
         reading = {t: r for t, r in self.evidence.reading(package_ref).items() if t in held}
         return sum(1 for r in reading.values() if r.success) if reading else None
 
     def best_so_far(self) -> int:
         """The working line's best held-out score in this activity: the baseline's and every release installed since
-        (IMPROVER §9: the floor the accept rule tolerates a step below)."""
+        (IMPROVER §9: the floor the accept rule tolerates a step below); in a stream round, the pool's reading of the
+        screen's tasks too, whichever line read each (§3.1)."""
         scores = [self.holdout_score(rel.package_ref) for rel in self.a.releases.history()]
+        if self.stream:
+            held = set(self.screen_holdout())
+            scores.append(sum(1 for t, r in self.reading().items() if t in held and r.success))
         return max([s for s in scores if s is not None] or [0])
 
     # ------------------------------------------------------------------ measure, evidence
@@ -293,24 +333,36 @@ class Round:
                 "passed": sum(1 for r in reading.values() if r.success)}
 
     def measure(self) -> dict:
-        got = self._measure(self.base, self.work_ref, "measure")
+        if self.stream:         # no measurement: the pool's latest attempts are the reading (§3.1)
+            reading = self.reading()
+            got = {"package": self.work_ref, "measured": 0, "tasks": len(reading),
+                   "passed": sum(1 for r in reading.values() if r.success), "pool": len(self.pool)}
+        else:
+            got = self._measure(self.base, self.work_ref, "measure")
+            reading = self.reading()
         held = set(self.split()[1])
-        reading = self.evidence.reading(self.work_ref)
         got["holdout_passed"] = sum(1 for t, r in reading.items() if t in held and r.success)
         got["holdout"] = len(held)
         self.ledger.row("measured", round_id=self.round_id, line=self.line, passed=got["passed"], steps=got["tasks"],
                         holdout_passed=got["holdout_passed"], holdout=got["holdout"])
-        self.out(f"round      {self.round_id}: W {short(self.base.ref())} passes {got['passed']}/{got['tasks']} train "
-                 f"tasks ({got['holdout_passed']}/{got['holdout']} held out; {got['measured']} measured now)")
+        self.out(f"round      {self.round_id}: W {short(self.base.ref())} passes {got['passed']}/{got['tasks']} "
+                 f"{'scored tasks of the stream' if self.stream else 'train tasks'} ({got['holdout_passed']}/"
+                 f"{got['holdout']} held out; {got['measured']} measured now)")
         return got
 
     def gather(self) -> dict:
         study = set(self.split()[0])
-        failed = [e for e in self.evidence.failed(self.work_ref) if e.task_id in study]
-        order = {t: i for i, t in enumerate(self.a.splits.ids("train"))}
-        failed.sort(key=lambda e: (self.ledger.last_round_of(e.task_id), order.get(e.task_id, 0)))
+        reading = self.reading()
+        failed = [self.evidence.of(r) for t, r in reading.items() if t in study and not r.success]
+        if self.stream:         # the latest batches first (§3.1)
+            position = {t: i for i, t in enumerate(self.pool)}
+            failed.sort(key=lambda e: (self.ledger.last_round_of(e.task_id), -position.get(e.task_id, 0)))
+        else:
+            order = {t: i for i, t in enumerate(self.a.splits.ids("train"))}
+            failed.sort(key=lambda e: (self.ledger.last_round_of(e.task_id), order.get(e.task_id, 0)))
         chosen = failed[:self.s.diagnose_max_cases]
-        successes = self.evidence.best_successes(self.work_ref, self.s.diagnose_successes, tasks=study)
+        successes = self.evidence.cleanest({t: r for t, r in reading.items() if t in study},
+                                           self.s.diagnose_successes)
         return {"failed": [e.attempt_id for e in chosen], "failed_tasks": [e.task_id for e in chosen],
                 "not_diagnosed": [e.task_id for e in failed[self.s.diagnose_max_cases:]],
                 "successes": [{"task_id": e.task_id, "session": e.session} for e in successes]}
@@ -405,7 +457,7 @@ class Round:
     # ------------------------------------------------------------------ verification
     def vctx(self) -> VerifyContext:
         train = tuple(self.a.splits.ids("train"))
-        reading = self.evidence.reading(self.work_ref)
+        reading = self.reading()
         rows = [{"task_id": t, "assertions": [dict(x) for x in self.a.suite.grading(t).assertions],
                  "state": self.a.suite.grading(t).initial_state, "prompt": self.a.suite.tasks[t].trigger}
                 for t in train]
@@ -426,6 +478,9 @@ class Round:
                              study_tasks=study,
                              cause_ids=tuple(c.cause_id for c in self.causes())
                              if "diagnosed" in self.state["steps"] else ())
+
+    def _archive(self, *args, **kw) -> dict:
+        return self.archive.put(self.i, *args, tag=self.tag, **kw)
 
     def with_memory(self, files: dict) -> dict:
         """A candidate's files with the parent's host-only memory snapshot put back (R's tree never holds it)."""
@@ -695,7 +750,7 @@ class Round:
             decl = Declaration.from_json(self.a.objects.get(item["declaration"]))
             files = self.a.objects.get(item["files"])
             dup = self.archive.duplicate(files, before_round=self.i)
-            self.archive.put(self.i, decl.dir, files, decl, verdict, line=self.line)
+            self._archive(decl.dir, files, decl, verdict, line=self.line)
             for rung, ok in verdict.rungs().items():
                 ladder[rung] = ladder.get(rung, 0) + bool(ok)
             self.ledger.row("verified", round_id=self.round_id, line=self.line, dir=decl.dir, kind=decl.kind,
@@ -711,7 +766,7 @@ class Round:
             if "removal" in decl.kinds:
                 self.ledger.row("removal_proposed", round_id=self.round_id, line=self.line, dir=decl.dir,
                                 site=decl.site, reason=decl.mechanism)
-            self.archive.put(self.i, decl.dir, files, decl, verdict, line=self.line)
+            self._archive(decl.dir, files, decl, verdict, line=self.line)
             for rung, ok in verdict.rungs().items():
                 ladder[rung] = ladder.get(rung, 0) + bool(ok)
             self.ledger.row("verified", round_id=self.round_id, line=self.line, dir=decl.dir, kind=decl.kind,
@@ -738,15 +793,15 @@ class Round:
         problem = transport_problem(self.a)
         if problem:
             raise Stop(problem)
-        reading = self.evidence.reading(self.work_ref)
-        held = list(self.split()[1])
+        reading = self.reading()
+        held = self.screen_holdout()
         best_so_far = self.best_so_far()
         items = list(self.state["steps"]["verified"]["passed"])
         decls = {i["dir"]: Declaration.from_json(self.a.objects.get(i["declaration"])) for i in items}
         # R's package first, then the fixed code's (the snapshot last); each is paid while it fits what the round has
         # left beside the screens before it (a resumed step re-reads its attempts for free)
         items.sort(key=lambda i: (bool(decls[i["dir"]].fixed), "memory" in decls[i["dir"]].kinds))
-        to_pay = lambda chosen: sum(max(len(held) - self._recorded(f"r{self.i}:{i['dir']}", "screen"), 0)  # noqa
+        to_pay = lambda chosen: sum(max(len(held) - self._recorded(f"{self.tag}:{i['dir']}", "screen"), 0)  # noqa
                                     for i in chosen)
         chosen, dropped = [], []
         for item in items:
@@ -777,14 +832,14 @@ class Round:
                                 outcome="invalid", reason=f"build: {e}"[:300])
                 continue
             comps = components(self.package, files)
-            res = screen(self.a, run_arm=self.run_arm, name=f"r{self.i}:{decl.dir}", package=package,
+            res = screen(self.a, run_arm=self.run_arm, name=f"{self.tag}:{decl.dir}", package=package,
                          base_release=self.base, holdout=held, reading=reading, evidence=self.evidence,
                          conditions=condition(comps), account=self.child("screen"),
                          retries=int(self.a.k["gate"]["max_infrastructure_retries"]), best_so_far=best_so_far,
                          settings=self.s)
             results.append(res)
             rows.append({"dir": decl.dir, "screen": self.a.objects.put(res), "package": package.ref()})
-            self.archive.put(self.i, decl.dir, files, decl, Verdict.from_json(self.a.objects.get(item["verdict"])),
+            self._archive(decl.dir, files, decl, Verdict.from_json(self.a.objects.get(item["verdict"])),
                              screen=res, package_ref=package.ref(), line=self.line)
             self.ledger.row("screened", round_id=self.round_id, line=self.line, dir=decl.dir, kind=decl.kind,
                             cause=list(decl.causes), predicted_affected=list(decl.predicted_affected),
@@ -844,7 +899,7 @@ class Round:
         item = next(i for i in self.state["steps"]["verified"]["passed"] if i["dir"] == sc["best"])
         decl = Declaration.from_json(self.a.objects.get(item["declaration"]))
         receipt_ref = self.a.objects.put(done)
-        self.archive.put(self.i, sc["best"], self.a.objects.get(item["files"]), decl,
+        self._archive(sc["best"], self.a.objects.get(item["files"]), decl,
                          Verdict.from_json(self.a.objects.get(item["verdict"])), screen=res, receipt_ref=receipt_ref,
                          package_ref=res.package_ref, line=self.line)
         if done.status == "installed":
@@ -919,7 +974,7 @@ class Round:
                 refused.append(name)
                 continue
             line_ref = done.target_release
-            self.archive.put(self.i, name, files, decl, verdict, screen=stacked_res,
+            self._archive(name, files, decl, verdict, screen=stacked_res,
                              receipt_ref=self.a.objects.put(done), package_ref=package.ref(), line=self.line)
             self.ledger.row("accepted", round_id=self.round_id, line=self.line, dir=name, kind=decl.kind,
                             release=line_ref, net_flips=res.net_flips, holdout_score=res.holdout_score,
@@ -946,7 +1001,7 @@ class Round:
         item = next(i for i in self.state["steps"]["verified"]["passed"] if i["dir"] == sc["best"])
         decl = Declaration.from_json(self.a.objects.get(item["declaration"]))
         held = set(res.holdout)
-        parent_reading = {t: r for t, r in self.evidence.reading(self.base.package_ref).items() if t in held}
+        parent_reading = {t: r for t, r in self.reading().items() if t in held}
         child_reading = {t: r for t, r in self.evidence.reading(new.package_ref).items() if t in held}
         comps = [c for c in components(self.a.package(self.base), new_package.files) if c["kind"] != "test"]
         credits = credit_of(new.ref(), parent_reading, child_reading, comps=comps, evidence=self.evidence)
@@ -973,5 +1028,6 @@ class Round:
         return got
 
 
-def run_round(activity, index: int, *, run_arm, out=print) -> RoundResult:
-    return Round(activity, index, run_arm=run_arm, out=out).run()
+def run_round(activity, index: int, *, run_arm, out=print, pool=None) -> RoundResult:
+    """One round; with `pool` (the stream's scored tasks, in its order), the stream's round over them (§3.1)."""
+    return Round(activity, index, run_arm=run_arm, out=out, pool=pool).run()

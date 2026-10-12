@@ -8,6 +8,20 @@
 
 ---
 
+## 2026-10-12 阶段 4d：一轮几个包并叠装、审核 hook 建议、`seed_from`、`--phase stream` 流式循环；分支 `s6/yield`；$0
+
+- 用户的决定（2026-10-12）："我需要这一次能够提升的足够高，而不是只通过了 2 题"；"跑第 1 轮，四条改动并行写"。finance-v5 第 1 轮从主检出跑，四条改动在 worktree 的 `s6/yield` 上写，finance-v5 期间不合入（规则 13）。文档先改（`14cb55f`：DESIGN v1.3 §6.1、§6.4、§6.5、§6.7、§6.13、§10、§12；IMPROVER §2、§3、§3.1、§6、§7、§9.4；ACTIVITY §3、§4；EVALUATE §6、§7；CONTRACTS §4、§5；MEMORY §7.0；PLAN）。
+- 代码：
+  1. 一轮几个包与叠装（`4e3bace`）：`improver/settings.py` 的 `packages_per_round` 3、`audit_hook_share` 0.3（floor）、`stream_screen_max` 20（cap）；`improver/stack.py`：`merge_manifests`（tools / hooks / skills 按名合并，agent / prompt / config / memory / model 按键，tests 并集）与 `stack(base, line, cand)`（候选相对 base 的改动路径叠到工作线上，同一路径两边改法不同即冲突）；`round.py` 的步骤多 `stacked`：pick_order 的第一个装入后，其余被接受的包逐个叠在当前工作线上，过 V0 / V1、build、`releases.screened` + `install_screened`（`install:<round_id>:<dir>`），冲突或失败记 `not_stacked`；`ScreenResult.stacked_on`、`pick_order`；台账阶段 `not_stacked`，投影多 `stacked_on` / `conflicts`。
+  2. 审核 hook 建议与提示词（`4e3bace`）：`allocate.Focus` 多 `audit_suggested`、`text_only_share`；只剩文字载体（不可机械化且不是循环类）的簇占案例 ≥ `audit_hook_share` 且 hook 允许时，清单首条备注建议一个 `on_finish` / `after_turn` 的 `uses_model` 审核 hook；`prompts/propose.md` 重写：几个包、不同机制、第一个对最大簇、叠装规则（不改同一文件）、审核建议。
+  3. `seed_from`（`6646f33`）：`[rsi] seed_from = <旧工作区>`：打开活动时没有 release 就把源工作区发布线 W\* 的闭包复制进本对象库，按本 K 的形状检查（代码种子作 vendored 基线），`Releases.import_seed`（reason `import`）作种子；`ledger/estimates.json`、`ledger/playbook.md` 一并复制；事件 `seed_imported`；启动检查的种子项、smoke 的字面量扫描、final 的 W0 臂都读导入的种子；源没有发布线或不是工作区时 ConfigError。
+  4. 流式循环（本条所在提交）：K 的 `schedule.stream_batch`（10，cap）与 `stream_splits`（`["train"]`，free，只接受 `["train"]` / `["train", "test"]`）；`Evidence.latest(tasks, prefer=)`、`cleanest`；`Round(pool=)`：round_id `{scope}/s{i}`、目录 `rounds/s<i>`、账户 `{scope}:round-s<i>`，不现量，读数是池内每题最新一次有效尝试（工作线自己的优先），研究 / 留出取整个 train 的族哈希划分在池内的部分，筛选只跑留出部分最近 `stream_screen_max` 道，`best_so_far` 含池内读数；`phases.stream(activity, until)`：顺序 `Random(f"stream:{order_seed}:{domain}")` 冻结在 `rsi/stream.json`，每批未计分的题在当前工作线上首遇一次（role `stream`，候选 `stream:b<i>`；预算拒绝过的按 library 的办法在下一块重试号重跑），`stream_scored` 事件，每批之后 `run_round(pool=已计分)`，装入后下一批在新线上跑，`--until batch-K`；报告多 `stream` 节（按批的首遇通过率、部分得分、每次尝试成本与该批那一轮的结果；整段的首遇通过率与前后两半）；`rounds_report` 读 `[rs]*`；freeze / gate / release 的"未结束的轮"检查含 s 轮；CLI `--phase stream`，`--phase round` 的 RoundResult 转 dict（修了第 0 轮记下的 `.get` 崩溃）；memory 开着或含 test 段的流在付费前拒绝（NotImplementedError）。
+- 测试（假上游，脚本化 R）：两个包各自筛选、第二个叠装过 V0 / V1 装入，冲突的记 `not_stacked`；清单对只剩文字载体的簇给审核建议；`seed_from` 的活动从旧 W\* 起步、策略文件带过来、smoke 与启动检查通过、final 的 W0 臂是它、没有发布线的源拒绝；流：seed 0 下顺序 policy_hold、variant、notify_once、ticket | notify_after_update、update_stage，批 4：第 0 批首遇 2/4，s0 不现量、研究 ticket、留出 variant，R 的 tool 修了 variant（净 +1，1/1 对 0）并装入；第 1 批在新线上 2/2；s1 池 6，旧线上记的 ticket 失败再被诊断，R 的 tool 叠在已含它的 manifest 上过不了 V0，`no_candidate`；再跑不付费、台账不变；报告按批给首遇分并读两轮各自的账户；之后 `release` 补测 3 题并发布；不支持的配置在付费前拒绝。默认套件（`-q`，`live` / `slow` 除外）：1,346 passed、20 skipped（adapters 与 providers 目录另跑：95 passed；合计 1,441，与 4c 后的 1,442 相差的一条是 4c 的 gate 期望改法）。全量（Docker + 真 sidecar）在合入 `m1-automationbench` 前跑。
+- 已知局限：流里一道题只首遇一次，装入后旧线上记的失败留在池里会被再诊断（档案去重与 V0 挡住重复的候选，不再付筛选）；`stream_splits` 的 test 段（计过分的题才对 R 可读）与 memory 的流（MEMORY §7.0）留给下一阶段。
+- 没调模型、没付费、没读 `.env`、没读任何 test 内容。
+
+---
+
 ## 2026-10-12 finance-v5 第 0 轮：R 交了一个 before_tool hook，留出 10/20 → 12/20，装入工作线；$42.46
 
 - `--phase round --round 0`，自动跑完（用户 2026-10-12："不要切到手动模式，自动跑完"）。

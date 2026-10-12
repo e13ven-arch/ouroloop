@@ -71,11 +71,12 @@ v1.3：`accepted` 之后多一步 `stacked`（§9.4）：第一个接受的包�
 ### 3.1 流式的一轮（v1.3，DESIGN §6.13）
 
 `--phase stream` 每 `schedule.stream_batch` 道题调一次 `run_round(activity, index, pool=已计分的题)`：
-- 不现量：证据池是 `pool` 里每道题的最新一次有效尝试（`Evidence.latest(pool)`，不论哪个包跑的；role `stream`、`measure`、`screen` 都算，`library` 不算）；
+- 不现量：证据池是 `pool` 里每道题的最新一次有效尝试（`Evidence.latest(pool, prefer=工作线的包)`：同一道题有工作线自己的尝试时取它，否则取任何包的最新一次——role `stream`、`measure`、`screen` 都算，`library` 不算），所以被拒候选的筛选尝试不会顶掉工作线自己的读数；装入之前在旧线上记下的失败留在池里当证据，直到这道题再被读到（流里一道题只首遇一次，所以同一个失败可能被再诊断；重复的候选由档案的去重挡住，不再付筛选）；
 - 划分：`pool` 按同一个族哈希规则分研究 / 留出两部分（`holdout_share`），一道题的归属在整个流里不变；
 - 诊断只看研究部分的失败，优先最近批次的；
 - 筛选只跑留出部分里最近 `stream_screen_max` 道（按流的顺序），`reading` 是这些题的最新尝试；接受规则不变；`best_so_far` 是工作线历史上在这组留出题上的最高通过数；
-- 其余步骤同批式。轮的目录 `rounds/s<i>/`，round_id `{scope}/s{i}`。
+- 划分的归属与批式同一个：先在整个 train 上按族哈希算出留出部分，再取池内的部分（研究 / 留出各按流的顺序）；
+- 其余步骤同批式。轮的目录 `rounds/s<i>/`，round_id `{scope}/s{i}`，账户 `{scope}:round-s<i>`（`round.json` 的 `account` 与 `pool`）。
 
 
 ## 4 证据（`runtime/trace.py` + `improver/evidence.py`）

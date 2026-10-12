@@ -78,7 +78,7 @@ def test_the_package_version_is_pyprojects():
         assert ouroloop.__version__ == tomllib.load(f)["project"]["version"]
 
 
-@pytest.mark.parametrize("phase", ["freeze", "baseline", "library", "round", "evaluate", "report", "cycle"])
+@pytest.mark.parametrize("phase", ["freeze", "baseline", "library", "round", "stream", "evaluate", "report", "cycle"])
 def test_checks_only_outside_the_smoke_is_refused_before_anything_runs(phase, tmp_path, monkeypatch, capsys):
     """`--checks-only` is read by the smoke alone: on another phase it would be ignored and the phase would run for
     real, so it is refused before the config is even read."""
@@ -182,3 +182,9 @@ def test_a_second_process_on_one_activity_is_refused_before_it_pays(tmp_path, fa
     finally:
         held.close()
     assert cli._lock(tmp_path / "ws") is not None
+
+
+def test_the_streams_until_names_a_batch():
+    assert cli.batch_index(None) is None and cli.batch_index("batch-3") == 3
+    with pytest.raises(ValueError, match="batch-K"):
+        cli.batch_index("round-1")
