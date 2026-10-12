@@ -94,4 +94,6 @@ domains = ["finance"]
 [rsi]
 scope_id = "finance-v6"
 seed_from = "workspace-finance-v5"
-# core_ref, split_ref: what `freeze` prints; final_plan_ref: after `--phase release` and the second `freeze`
+core_ref = "core:sha256:46054a3be25cf22b49b947bca4d13b10a8f126bf43e3b79531eb10738c7389e2"
+split_ref = "1bbf01533d7256af"
+# final_plan_ref: after `--phase release` and the second `freeze` sealed the final

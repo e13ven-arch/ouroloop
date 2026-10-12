@@ -229,7 +229,7 @@ def upgrade(seed_dir: Path, new_source: Path, provenance: Provenance) -> list[st
 
 适配层职责（`agent/stirrup_agent.py`，沿用 v6-agent 的实现并扩站点）：`LLMClient` → `ctx.model`；`Tool` → 基础工具经 `ctx.tool`、包工具经入口、`read_skill`、`recall`（manifest 的 memory 开着才提供）；六个站点的分发与 `mark`；finish 的七处修正；`config.max_turns`、`summarize_at` 生效，子 agent 只在 `config.subagent_depth ≥ 1` 时提供；摘要用 role `aux`。
 
-种子的写入守卫（DESIGN §4.2）：`ledger`（after_tool，记写操作、计划与读到的最新日期，第一次写之后不再读日期）、`triage`（before_tool，未调 `plan_changes` 的第一次写阻止一次）、`anchor`（before_model，读到日期后，在第一次知道这个日期的 act 调用末尾放一条日期注记，之后每次调用都把它留在原位；更新的日期另放一条；不改历史。注记不挪位置，所以每次调用的前段就是上一次调用，提供方的提示缓存能读到——v4 的读数下挪到末尾会让每次尝试的成本约 ×3.5）、`verify`（on_finish，第一次 finish 退回一次，列出计划、台账与排除项）。种子测试里的示例日期不取任何 train 题的值（smoke 的种子全量字面量扫描会查）。
+种子的写入守卫（DESIGN §4.2）：`ledger`（after_tool，记写操作、计划与读到的最新日期，第一次写之后不再读日期）、`triage`（before_tool，未调 `plan_changes` 的第一次写阻止一次）、`anchor`（before_model，读到日期后，在第一次知道这个日期的 act 调用末尾放一条日期注记，之后每次调用都把它留在原位；更新的日期另放一条；不改历史。注记不挪位置，所以每次调用的前段就是上一次调用，提供方的提示缓存能读到——v4 的读数下挪到末尾会让每次尝试的成本约 ×3.5）、`verify`（on_finish，第一次 finish 退回一次，列出计划、台账与排除项）。种子测试里的示例值不进任何一次尝试（V1 在 worker 里跑它们），smoke 的种子全量字面量扫描不查 `tests/`（2026-10-12：三个域的 train 值里有种子测试夹具用的名字与日期；候选的改动行照查，含它的测试）。
 
 ### 7.1 日期锚的规则（2026-10-10 修订）
 

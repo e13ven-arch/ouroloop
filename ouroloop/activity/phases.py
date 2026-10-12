@@ -188,6 +188,10 @@ def seed_literal_scan(activity) -> dict:
     else:
         from ..harness.seed import seed_files
         files = seed_files(activity.k["harness"]["seed"], core=activity.k)
+    # the package's own tests never enter an attempt (V1 runs them in the worker), so their fixture values are not
+    # what the check is for: across three domains' train the seed tests' example name and dates were single-task
+    # values of hr and operations tasks (finance-v6's smoke, 2026-10-12; HARNESS §7)
+    files = {p: t for p, t in files.items() if not p.startswith("tests/")}
     found = findings(files, None, banned)
     return {"forbidden": len(banned), "findings": found}
 
