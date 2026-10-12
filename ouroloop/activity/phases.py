@@ -2,7 +2,8 @@
 another package: the attempt and the gate in evaluate/, the run in runtime/, the package in harness/.
 
     smoke     the upstream version, the frozen split, the scorer contract, the input audit and the seed's literal scan
-              (checks only, no model); without --checks-only, one dev attempt through the whole runner shell
+              (checks only, no model); without --checks-only, one dev attempt through the whole runner shell (a split
+              without dev: one train attempt)
     freeze    the gate's plan template, the budget root and its final share, and — when the config has [final] — the
               sealed final plan; prints the [rsi] lines the config then names
     baseline  W0 on every train task and on dev `control_readings` times (the pooled control's first readings); with
@@ -117,18 +118,21 @@ def smoke(activity, *, tasks=None, limit: int | None = None, checks_only: bool =
     # train and dev only: the test tasks' assertions are not read before the final plan is sealed (PLAN rule 6)
     dups = ab.near_duplicates(activity.suite, threshold, ids=[*splits.ids("train"), *splits.ids("dev")])
     out(f"families   {len(splits.splits)} groups; {len(dups)} train/dev task pairs above overlap {threshold}")
-    dev = splits.ids("dev")
-    chosen = [t for t in (tasks or []) if t in dev] if tasks else dev[:int(activity.k["bench"]["smoke_tasks"])]
+    # the smoke's tasks are dev's; a split without dev (the two-way protocol, ACTIVITY §4) reads train instead —
+    # never test (PLAN rule 6)
+    split = "dev" if splits.ids("dev") else "train"
+    pool = splits.ids(split)
+    chosen = [t for t in (tasks or []) if t in pool] if tasks else pool[:int(activity.k["bench"]["smoke_tasks"])]
     chosen = chosen[:limit] if limit else chosen
-    outside = sorted(set(tasks or ()) - set(dev))
+    outside = sorted(set(tasks or ()) - set(pool))
     if outside:
-        out(f"NOTE       {outside} are not dev tasks: the smoke reads dev only")
-    checks = ab.contract_check(activity.suite, chosen or dev[:1])
+        out(f"NOTE       {outside} are not {split} tasks: the smoke reads {split} only")
+    checks = ab.contract_check(activity.suite, chosen or pool[:1])
     out(f"contract   rubric={checks['rubric'].get('funcs') or 'not importable'}")
     for line in checks["failed"]:
         out(f"FAILED     {line}")
     leaks = []
-    for tid in chosen or dev[:1]:
+    for tid in chosen or pool[:1]:
         episode = activity.suite.episode(tid)
         try:
             found = ab.audit_inputs(activity.suite.tasks[tid], activity.suite.grading(tid),
@@ -136,7 +140,7 @@ def smoke(activity, *, tasks=None, limit: int | None = None, checks_only: bool =
         finally:
             episode.close()
         leaks += found["leaks"]
-    out(f"audit      {len(chosen or dev[:1])} tasks: {len(leaks)} leaks")
+    out(f"audit      {len(chosen or pool[:1])} tasks: {len(leaks)} leaks")
     for line in leaks:
         out(f"LEAK       {line}")
     literal = seed_literal_scan(activity)
@@ -154,7 +158,7 @@ def smoke(activity, *, tasks=None, limit: int | None = None, checks_only: bool =
               and not literal["findings"] and not problems}
     if not checks_only and report["ok"]:
         release = activity.active_release()
-        rows = run_arm(activity, release=release, split="dev", candidate="smoke", role="base",
+        rows = run_arm(activity, release=release, split=split, candidate="smoke", role="base",
                        pairs=[(t, 0) for t in chosen], account=activity.account("smoke"), notes="ouroloop smoke")
         for r in rows:
             out(f"attempt    {r.task_id} success={r.success} partial={r.partial_credit:.3f} steps={r.steps} "

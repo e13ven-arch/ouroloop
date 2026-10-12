@@ -516,6 +516,20 @@ def test_an_activity_without_dev_runs_rounds_without_a_gate_template_releases_by
     assert App(tmp_path / "app").describe()["validation"] == {"release": short(released.ref()), "reason": "decision"}
 
 
+def test_the_smoke_of_an_activity_without_dev_reads_one_train_task(tmp_path, fake_upstream):
+    provider = rsi.BusinessWorker()
+    a = rsi.activity(tmp_path, fake_upstream, provider=provider, splits_table=rsi.NO_DEV_SPLITS)
+    checks = phases.smoke(a, checks_only=True, out=quiet)
+    assert checks["ok"] and checks["attempts"] == [] and provider.calls == 0
+    lines = []
+    report = phases.smoke(a, out=lines.append)
+    assert report["ok"] and len(report["attempts"]) == 1
+    assert report["attempts"][0]["task_id"] == a.splits.ids("train")[0] and report["attempts"][0]["split"] == "train"
+    assert provider.calls > 0 and not any(r.split == "test" for r in rows(a))
+    noted = phases.smoke(a, tasks=[rsi.FINAL[0]], out=lines.append)
+    assert not noted["ok"] and any("are not train tasks: the smoke reads train only" in line for line in lines)
+
+
 def test_an_activity_with_dev_releases_by_its_gate_not_by_decision(tmp_path, fake_upstream):
     s = improved(tmp_path, fake_upstream)
     with pytest.raises(ValueError, match="release refused: this activity has dev tasks"):
