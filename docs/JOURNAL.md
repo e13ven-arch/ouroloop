@@ -18,7 +18,7 @@
   - `improver/round.py` 的 `inputs()`：`failures.json`——研究部分每个诊断过的案例一条并排，带 cause、cause_id、诊断的 note、`persistence` 与 `persistent`（≥ 2），持久的排前面，最多 `failures_max_cases` 条；留出题一道不进（案例本来就只取研究部分）。
   - `prompts/propose.md`：一段说明顽固失败的三种形态与 `failures.json`，要求候选改变 agent 从文档到动作的方式，不是再加提醒（提醒类试过并带来漏报）。
 - 测试：`test_r_reads_only_the_studied_tasks…` 加并排的断言（notify_ticket 的请求、`slack_message_contains` 与参数、PATCH hubapi 的写入、读 / 搜 0、finish 的话、persistence 1）；新例：装入的包下再记一条失败读数后 `persistence` 为 2；`_fit` 的截断、下限与"截不动就停"；词表每个 cause 都有定义、`vocabulary_mismatch` 可机械化。improver + 边界 309 passed；activity + evaluate 另跑（见下）。
-- 没付费、没读 test 内容。activity + evaluate 303 passed。全量（Docker + sidecar）在合入前跑。
+- 没付费、没读 test 内容。activity + evaluate 303 passed；全量（Docker + 真 sidecar）1,533 passed、20 skipped、1 deselected。合入要等 finance-v6 收口：新的 `improver.causes` 默认值让 v6 的 K 在合并后的代码下打不开（节不同即新 K）。
 
 ---
 
