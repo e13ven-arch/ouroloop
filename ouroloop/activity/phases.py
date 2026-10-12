@@ -270,7 +270,7 @@ def freeze(activity, *, out: Callable[[str], None] = print) -> dict:
             f"cannot change the final, so seal when the rounds and the gate are over")
         estimate = final_estimate(list(activity.results.all()), plan, plan_ref=None,
                                   execution_of=lambda ref: _execution(activity, ref), pricing=activity.pricing(),
-                                  concurrency=activity.concurrency)
+                                  concurrency=activity.concurrency, package_of=_package_of(activity))
         room = final_room(activity)
         for line in estimate_lines(estimate, room):
             out(line)
@@ -290,6 +290,12 @@ def unfinished_rounds(activity) -> list[str]:
     """The rounds (batch r<i> and stream s<i>) not done or stopped: they can still move the working line."""
     return sorted(p.parent.name for p in (activity.root / "rounds").glob("[rs]*/round.json")
                   if json.loads(p.read_text(encoding="utf-8")).get("status") not in ("done", "stopped"))
+
+
+def _package_of(activity) -> Callable[[str], str | None]:
+    """run hash -> the package the run executed (its manifest's), for the final's estimate."""
+    runs = activity.results.runs()
+    return lambda run: runs[run].package_ref if run in runs else None
 
 
 def _execution(activity, release_ref):
@@ -922,7 +928,8 @@ def evaluate(activity, *, out: Callable[[str], None] = print) -> dict:
     account = activity.account("final")
     rows = list(activity.results.all())
     estimate = final_estimate(rows, plan, plan_ref=ref, execution_of=lambda r: _execution(activity, r),
-                              pricing=activity.pricing(), concurrency=activity.concurrency)
+                              pricing=activity.pricing(), concurrency=activity.concurrency,
+                              package_of=_package_of(activity))
     left = account.remaining(allocation="final").get("effective_remaining", {}).get("usd")
     for line in estimate_lines(estimate, left):
         out(line)

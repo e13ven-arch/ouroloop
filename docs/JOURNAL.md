@@ -17,7 +17,8 @@
   - 活动：`open_activity` 按 `domains` 装 suite；`Activity.final_domains` / `final_tasks(split)`；`final_plan` 只取 final 域的 test 题；`release` 只补 final 域里 W\* 缺的 train 读数；`heldout_domains` 的检查按成员域查。
   - `finance-v6.toml`：`domains = ["finance", "hr", "operations"]`、`final.domains = ["finance"]`、批 30、根 $750 / final $230（下限）、`[pricing] max_input_tokens` 400k（单次预留 $6.48）。README 加一段。
 - 测试：假上游 rsi + marketing 两个域一个活动：suite 合并、stratum 带域前缀而单域不变、分层划分每个域各有 train、`final_tasks` 与 final 计划只有 rsi 的 test、smoke 的检查通过、`stream` 的启动检查通过、记录目录名 `rsi+marketing`；配置的两键校验（重复、带 `+`、不是列表、`domain` 与 `domains` 同给、`final.domains` 不是子集）。activity + evaluate + 流 + 边界 320 passed，config + adapters 96 passed；默认与全量套件等 finance-v5 的 final 跑完再跑（一次只跑一套）。
-- 规模待用户选（PLAN §3 第 1 项）：3 个域、批 30、筛 30 约 $665；6 个域约 $1,095。
+- 规模：用户 2026-10-12 选了 3 个域（"先跑 3 个域"）：批 30、筛 30 约 $665，根 $750。
+- 顺带修了 finance-v5 收口时发现的估价偏差：`final_estimate` 多了 `package_of(run)`，一条读数只在它的运行跑的就是该臂的包时才计入（在工作线 release 下筛选的候选跑的是自己的包）；freeze 与 evaluate 传 `_package_of(activity)`。
 - 没付费、没读 test。
 
 ---

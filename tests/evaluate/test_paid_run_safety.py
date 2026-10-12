@@ -420,6 +420,18 @@ def test_the_final_estimate_finds_readings_by_what_a_release_executes(paid):
                                       core_ref=seed.core_ref, receipt_ref=receipt, reason="gate"))
     priced = final_estimate(rows, plan, plan_ref=None, execution_of=execution, pricing=act.pricing())
     assert priced["expected"] is not None and not priced["unknown"]
+    # a candidate screened under W0's release ran its own package: with `package_of` (the run manifest's package) its
+    # dear attempt does not price W0 (finance-v5's W* read $0.71 for $0.67 without this)
+    import dataclasses
+    screened = dataclasses.replace(rows[0], run="run-of-another-package", cost_usd=100.0, attempt_id="screened#0")
+    runs = {**{r.run: seed.package_ref for r in rows}, "run-of-another-package": other.ref()}
+    inflated = final_estimate([*rows, screened], plan, plan_ref=None, execution_of=execution, pricing=act.pricing())
+    exact = final_estimate([*rows, screened], plan, plan_ref=None, execution_of=execution, pricing=act.pricing(),
+                           package_of=runs.get)
+    w0 = lambda est: next(a for a in est["arms"] if a["arm"] == "W0")      # noqa: E731
+    assert w0(inflated)["cost_per_attempt"] > w0(priced)["cost_per_attempt"]
+    assert w0(exact)["cost_per_attempt"] == w0(priced)["cost_per_attempt"]
+    assert w0(exact)["readings"] == w0(priced)["readings"] == w0(inflated)["readings"] - 1
     unread = FinalPlan(experiment_id="x", tasks=plan.tasks, repeats=1, arms={"W0": seed.ref(), "W2": another},
                        claims=("C1",), split_hash=plan.split_hash, core_ref=plan.core_ref)
     estimate = final_estimate(rows, unread, plan_ref=None, execution_of=execution, pricing=act.pricing())
