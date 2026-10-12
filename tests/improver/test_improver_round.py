@@ -742,6 +742,53 @@ def test_r_reads_only_the_studied_tasks_and_its_package_predicts_only_those(tool
     (screened,) = [x for x in json.loads(inputs["ledger.json"]) if x["stage"] == "screened"]
     assert "fixed" not in screened and screened["fixed_held_out"] == 2
     assert not any(t in json.dumps(json.loads(inputs["ledger.json"])) for t in HELD)
+    # v1.5 (DESIGN §6.15): the studied failure side by side — the request, the failed check with its parameters, the
+    # agent's writes in order, what it said; the held-out failures are not there
+    failures = json.loads(inputs["failures.json"])
+    (case,) = failures["cases"]
+    assert case["task_id"] == TICKET and case["cause"] == "missed_action" and case["cause_id"] == f"{ROUND}:missed_action"
+    assert "Kai Mercer" in case["request"] and "stage updated" in case["request"]
+    assert [c["type"] for c in case["failed_checks"]] == ["slack_message_contains"]
+    assert case["failed_checks"][0]["params"]              # the grader's expected values, train only
+    assert [(w["tool"], w["method"]) for w in case["writes"]] == [("api_fetch", "PATCH")] and "hubapi" in case["writes"][0]["url"]
+    assert case["reads"] == 0 and case["searches"] == 0 and case["termination"] == "finished"
+    assert case["final_text"].startswith("Done") and case["note"]
+    assert (case["persistence"], case["persistent"]) == (1, False)       # one package (W0) failed it so far
+    assert len(json.dumps(case)) <= a.k["improver"]["failures_case_chars"]
+
+
+def test_a_task_that_keeps_failing_under_another_installed_package_is_persistent(tool):
+    """`persistence` counts the working line's packages a task has a failing valid train reading under (DESIGN §6.15):
+    the installed package's reading of the ticket, failed again, makes it persistent and first in failures.json."""
+    import dataclasses
+    a = tool.a
+    ev = Evidence(a)
+    assert ev.persistence(TICKET) == 1
+    new = a.active_release()                                   # round 0's tool is installed
+    run = a.run_manifest(candidate="synthetic", role="measure", split="train", release=new)
+    a.results.put_run(run)
+    base_row = ev.reading(a.seed_release().package_ref)[TICKET]
+    a.results.append(dataclasses.replace(base_row, run=run.hash(), candidate="synthetic", success=False,
+                                         partial_credit=0.5, attempt_id=f"{run.hash()}/{TICKET}/r0/subject#0",
+                                         system_release_ref=new.ref()))
+    assert ev.persistence(TICKET) == 2 and ev.persistence(STUDY[0]) == 0
+
+
+def test_a_digest_shrinks_its_writes_to_the_cap_and_keeps_the_checks():
+    """`_fit` (IMPROVER §4, v1.5): the longest write's excerpt is halved first, never under MIN_EXCERPT; the request and
+    the checks are kept whole; a row that cannot shrink any further is returned as it is."""
+    from ouroloop.improver.evidence import MIN_EXCERPT, _fit
+    row = lambda: {"task_id": "t", "request": "r" * 300, "failed_checks": [{"type": "x", "params": {"v": 1}}],  # noqa: E731
+                   "writes": [{"tool": "api_fetch", "method": "POST", "url": "u", "body": "a" * 3000, "error": False},
+                              {"tool": "api_fetch", "method": "PUT", "url": "u", "body": "b" * 1000, "error": False}],
+                   "final_text": "done"}
+    fitted = _fit(row(), 2000)
+    assert len(json.dumps(fitted)) <= 2000 and fitted["failed_checks"] == row()["failed_checks"]
+    assert fitted["request"] == "r" * 300 and fitted["writes"][0]["body"].endswith(")")
+    assert len(fitted["writes"][0]["body"]) < 3000 and MIN_EXCERPT <= len(fitted["writes"][1]["body"]) <= 1000 + 12
+    floor = _fit(row(), 10)
+    assert all(len(w["body"]) >= MIN_EXCERPT for w in floor["writes"])         # it stops at the floor, no loop
+    assert _fit(row(), 100000) == row()
 
 
 def test_v3_screens_on_exactly_the_held_out_tasks(tool):

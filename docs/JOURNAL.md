@@ -8,6 +8,20 @@
 
 ---
 
+## 2026-10-12 阶段 4f：失败并排与词表落成代码；分支 `s7/evidence`；$0
+
+- 用户的决定（2026-10-12）："写吧，先改文档再改代码"。文档先改（`b2deaaf`：DESIGN §6.15、IMPROVER §2 / §4 / §5 / §7、CONTRACTS §4、PLAN），再改代码。finance-v6 期间不合入 `m1-automationbench`。
+- 代码：
+  - `improver/settings.py`：`CAUSES` 加 `rule_not_applied`、`vocabulary_mismatch`、`omitted_report`，`MECHANIZABLE` 加 `vocabulary_mismatch`；`failures_max_cases` 30（cap）、`failures_case_chars` 4000（cap，≥ 500）。
+  - `improver/diagnose.py`：三个新 cause 的定义进 `DEFINITIONS`（诊断提示按词表给定义）；`missed_action` 的定义收窄为"请求正文直接要求的"。
+  - `improver/evidence.py`：`Evidence.digest(ev, chars)`——一条并排：请求原文（≤ 1,500 字）、没过的断言（类型与参数）、agent 的写入按顺序（`api_fetch` 非 GET / HEAD 的方法、URL、正文；其他非读 / 搜 / finish 的工具调用带参数）、读与搜的计数、最后的话（finish 的 reason，否则最后一句）；`_fit` 把最长的写入摘录对半截到装进 `chars`，下限 120 字，请求与断言不截，截不动就停（第一版在"后缀抵消截断"处死循环，测试跑了 10 分钟没停，已修）。`Evidence.persistence(task_id)`：这道题在工作线历史上几个不同的包下有失败的有效 train 读数。
+  - `improver/round.py` 的 `inputs()`：`failures.json`——研究部分每个诊断过的案例一条并排，带 cause、cause_id、诊断的 note、`persistence` 与 `persistent`（≥ 2），持久的排前面，最多 `failures_max_cases` 条；留出题一道不进（案例本来就只取研究部分）。
+  - `prompts/propose.md`：一段说明顽固失败的三种形态与 `failures.json`，要求候选改变 agent 从文档到动作的方式，不是再加提醒（提醒类试过并带来漏报）。
+- 测试：`test_r_reads_only_the_studied_tasks…` 加并排的断言（notify_ticket 的请求、`slack_message_contains` 与参数、PATCH hubapi 的写入、读 / 搜 0、finish 的话、persistence 1）；新例：装入的包下再记一条失败读数后 `persistence` 为 2；`_fit` 的截断、下限与"截不动就停"；词表每个 cause 都有定义、`vocabulary_mismatch` 可机械化。improver + 边界 309 passed；activity + evaluate 另跑（见下）。
+- 没付费、没读 test 内容。activity + evaluate 303 passed。全量（Docker + sidecar）在合入前跑。
+
+---
+
 ## 2026-10-12 读了 18 道顽固失败题的轨迹：失败的是"文档里的某条规则没执行到"，不是能力；我们装的机制可能还加重了一类
 
 - 起因：用户 2026-10-12 指出历次版本分数不动、失败的题可能一直是同一批。核了一下：W0 在 train 上失败的题，v2 / v3 / v4 / v5 四次活动 48 道共有题里 21～23 道每次都失败；v5 的 test 上 W0 三遍全败 23 道、W\* 三遍全败 18 道，其中 17 道相同。于是把 W\* 在 train 上仍失败的 18 道题的轨迹（train，可读）逐道读了：请求、没过的断言（含期望值）、agent 读了什么、写了什么。

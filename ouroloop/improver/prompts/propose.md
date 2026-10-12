@@ -28,6 +28,19 @@ or hook (the ledger records a round without one). The agent, a config knob or a 
 {l5_per_round} such change a round; tests under tests/ are free. Never write a task's specific values (names, e-mails,
 ids, amounts) into the package: the host rejects a value that occurs in one train task.
 
+What the persistent failures look like (inputs/failures.json puts each one side by side: the request, the checks that
+failed with the values they expected, every write the agent made, what it said at the end; persistent ones first — they
+failed under every package installed so far): the agent does the bulk of the task and misses one requirement. Three
+shapes recur. A requirement stated in a document the agent read — a policy, a procedure, an update message, a note in a
+sheet — was not carried out (a notice to one more party, a discount, a corrected figure, a threshold). The record,
+policy or request named a status, category, label, column layout or unit and the agent wrote its own term, format or
+unit instead of copying it. A notice the request or a policy required was left out: an action blocked by a policy went
+unreported, a rejected or flagged item was dropped from the summary, a summary was drafted and never sent. Build
+packages that change how the agent works from what it reads to what it writes — extract every requirement and every
+exact term from the documents it read into a list, check each item before it finishes, keep the record's own
+vocabulary, report blocked and rejected items where the request asks for a report — not another reminder to look
+again: reminder hooks have been tried (the ledger shows them) and one of them made the agent leave required items out.
+
 Before you write, read the evidence: read_trajectory on the failing sessions of the causes you take on and on a few
 successes (inputs/successes.json), and search_trace for what you need across all train attempts.
 

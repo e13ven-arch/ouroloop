@@ -11,8 +11,10 @@ from dataclasses import dataclass, field, fields
 
 CAUSES = ("excluded_mentioned", "missed_action", "wrong_target", "missing_recipient", "unread_value", "arith_mismatch",
           "real_date", "wrong_location", "premature_stop", "tool_error_loop", "context_overflow", "finish_protocol",
+          "rule_not_applied", "vocabulary_mismatch", "omitted_report",     # v1.5 (DESIGN §6.15; IMPROVER §5)
           "other")
-MECHANIZABLE = ("excluded_mentioned", "arith_mismatch", "real_date", "wrong_location", "tool_error_loop")
+MECHANIZABLE = ("excluded_mentioned", "arith_mismatch", "real_date", "wrong_location", "tool_error_loop",
+                "vocabulary_mismatch")
 LOOP_CAUSES = ("context_overflow", "finish_protocol", "tool_error_loop")
 CODE_KINDS = ("tool", "hook")
 TEXT_KINDS = ("skill", "prompt")
@@ -28,6 +30,8 @@ class Settings:
     audit_hook_share: float = 0.3                # the share of cases in text-only causes at which the focus list
                                                  # suggests an aux-model audit hook (IMPROVER §6, v1.3)
     stream_screen_max: int = 30                  # a streaming round screens at most this many recent held-out tasks
+    failures_max_cases: int = 30                 # inputs/failures.json: at most this many cases side by side (§7, v1.5)
+    failures_case_chars: int = 4000              # one case's JSON at most (the writes' excerpts shrink to fit)
     fixed_per_round: int = 2                     # the fixed code's candidates per round (snapshot, promotions, removals)
     session_max_turns: int = 40
     session_max_edits: int = 48
@@ -79,6 +83,9 @@ class Settings:
             raise ValueError("improver.audit_hook_share is a share of the cases, in [0, 1]")
         if int(self.stream_screen_max) < 1:
             raise ValueError("improver.stream_screen_max is at least 1")
+        if int(self.failures_max_cases) < 0 or int(self.failures_case_chars) < 500:
+            raise ValueError("improver.failures_max_cases is a count (0: no failures.json); failures_case_chars at least "
+                             "500")
         if not 0 < float(self.round_share) <= 1:
             raise ValueError("improver.round_share is a share of the root, in (0, 1]")
 
@@ -136,4 +143,4 @@ RULES = {"packages_per_round": "cap", "fixed_per_round": "cap", "session_max_tur
          "reach_min_tasks": "floor", "reach_min_score": "floor", "holdout_share": "floor",
          "accept_min_net_flips": "floor", "accept_max_regressions": "cap", "accept_floor_tolerance": "cap",
          "removal_zero_credit_rounds": "fixed", "round_share": "cap", "audit_hook_share": "floor",
-         "stream_screen_max": "cap"}
+         "stream_screen_max": "cap", "failures_max_cases": "cap", "failures_case_chars": "cap"}

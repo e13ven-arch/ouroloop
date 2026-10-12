@@ -18,6 +18,15 @@ allocation step to see the previous round's `no_code_candidate` and the `l6_unav
 """
 from __future__ import annotations
 
+
+def test_every_cause_of_the_vocabulary_has_a_definition():
+    """v1.5 (DESIGN §6.15): the three new causes, like the old ones, enter the diagnosis prompt with a definition."""
+    from ouroloop.improver.diagnose import DEFINITIONS
+    from ouroloop.improver.settings import CAUSES, MECHANIZABLE
+    assert set(CAUSES) <= set(DEFINITIONS) and set(MECHANIZABLE) <= set(CAUSES)
+    assert {"rule_not_applied", "vocabulary_mismatch", "omitted_report"} <= set(CAUSES)
+    assert "vocabulary_mismatch" in MECHANIZABLE and "omitted_report" not in MECHANIZABLE
+
 import json
 import math
 from dataclasses import replace
