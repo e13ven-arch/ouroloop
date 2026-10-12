@@ -18,6 +18,8 @@ class Settings:
     stream_screen_max: int = 30                  # 流式一轮的留出筛选最多跑最近多少道留出题（§3.1；v1.4 从 20 提到 30）
     failures_max_cases: int = 30                 # inputs/failures.json 最多几条并排（v1.5，§7）
     failures_case_chars: int = 4000              # 一条并排的正文上限（写入摘录按比例截）
+    audit_additive_only: bool = True             # v1.6：调 aux 的 hook 只能答 missing（fixed）
+    audit_max_false_alarm: float = 0.25          # v1.6：V2d 预演里在通过题样本上报警的比例上限（cap）
     fixed_per_round: int = 2                     # 固定代码的候选（快照、升级技能、删除）每轮上限
     session_max_turns: int = 40; session_max_edits: int = 48
     session_max_read_bytes: int = 65536; session_max_read_total: int = 196608
@@ -177,6 +179,7 @@ TOOLS = ("list_files", "read_file", "write_file", "edit_file", "delete_file", "r
 - `finish` 带包级声明：`mechanism` 一句话；每个改动的组件一条 `Component`；tool 的 `scripts` 或 `probes`、hook 的 `predicted_affected`、skill 的 `site` 是它的名字；`uses_model` 标出调 aux 的 hook。声明与 diff 不一致（声明了不存在的组件、改了没声明的组件）或某组件不过 V2 → 退回修订一次；仍不过 → 本轮无候选，台账记原因。
 - 提示词（`improver/prompts/propose.md`）相应改：一轮交一个包；对清单里的几个簇一起下手；一个机制可以是工具 + 强制它的 hook + 说明何时用的技能；提交前的审核 hook 可以调 aux 模型；不把一道题的值写进包。
 - v1.3：`packages_per_round` > 1 时提示词要求交几个包就是几种不同的机制、对不同的簇，第一个包对最大的簇；`audit_suggested` 时明说第二个包应当是审核 hook；每个组件的 `cause_ids` 尽量列出它覆盖的所有簇；叠装规则告诉 R：不同的包不要改同一个文件（manifest 除外）。
+- v1.6（DESIGN §6.16）：审核 hook 用 `{"missing": [...]}` 答（§8 的 V2d 预演它；自由文本是候选缺陷）；提示词说明"只补缺、不改已写"是构造出来的，审核要做的是把读过的文档里的每条要求与 agent 的写入对照、列出没有对应写入的；`inputs/audits.json`（这条线上试过的审核：机制、预演与筛选的数、研究部分的误报原文）是下一个审核的起点。清单有几个簇就交几个包，少交要在 finish 里说明（台账 `single_package`）。
 - v1.5：提示词说明顽固失败的三种形态（文档里的一条要求没执行到、没沿用记录的词与格式、该报告的没报告），要求候选改变 agent 从文档到动作的方式——把读过的文档里的每条要求与原词抽成待办，做完前逐条对照，被挡住或被拒的项按请求报告——而不是再加一个"再看一眼"的提醒（scope hook 这类试过，带来了漏报）；`failures.json` 的 `persistent` 条目优先。
 
 
@@ -200,7 +203,8 @@ def run_ladder(files, decl, *, parent, seed, core, worker, evidence, suite, obje
 - V2a（`verify/toolcheck.py`）：每个 tool 组件，脚本或探针（§8.1）；`toolcheck_min_pass`。
 - V2b（`verify/replay.py`）：每个 `uses_model = false` 的 hook 组件，在研究部分的轨迹上回放；`replay_min_triggers`；误触发率只报告。
 - V2c（`verify/reach.py`）：每个 skill 组件。
-- 调 aux 模型的 hook（`uses_model = true`）：hook 的 ctx 带 `model(role="aux")`，每次尝试 `hook_aux_calls` 次封顶，超出即 `CandidateDefect`；它没有免费档，V1 的 smoke 用脚本化模型答一次，之后直接进 V3。
+- V2d（`verify/audit.py`，v1.6，DESIGN §6.16）：每个 `uses_model = true` 的 hook 组件（after_turn / on_finish）。用 V2b 的回放机器把声明的失败题与通过题样本（`REPLAY_SAMPLE`）的站点事件喂给它，`ctx.tool` 只读对着新开的世界，`ctx.model` 接研究模型（role aux，计在轮的 `verify` 子账户，`hook_aux_calls` 封顶）。报警 = 答了非空的 `missing`。门槛：声明的失败题上报警 ≥ `replay_min_triggers`，通过题样本上的报警比例 ≤ `audit_max_false_alarm`；另报告命中条目是否点到没过的断言（断言参数的字符串值或收件人出现在条目里）。不过门槛时退回文本列出每个误报（任务请求的前 300 字、审核的 `missing` 原文），会话修订一次再预演。预演是免费档的最后一级；过了进 V3。
+- 调 aux 模型的 hook（`uses_model = true`）：hook 的 ctx 带 `model(role="aux")`，每次尝试 `hook_aux_calls` 次封顶，超出即 `CandidateDefect`；`audit_additive_only` 下它只能答 `missing`，自由文本的 `pushback` / `message` 是 `CandidateDefect`（HARNESS §7）；V1 的 smoke 用脚本化模型答一次，V2d 预演，然后 V3。
 
 
 ### 8.1 V2a 的两种证明：脚本与探针（2026-10-10 修订）
@@ -272,6 +276,7 @@ class Ledger:    # ledger/experience.jsonl
     def rows(self, *, stage=None, round_id=None) -> list[dict]
     def projection(self, *, line, hide=()) -> list[dict]   # 给 R：只有 train 题号（hide 里的留出题换成计数）；dev 只有计数
     def scoreboard(self, line) -> dict              # 每类候选在筛选上的修复、退步、净值（计数）
+    def audits(self, line) -> list[dict]             # v1.6：这条线上试过的审核——机制、V2d 的命中与误报（研究部分的误报带原文）、筛选的数（`audited` 与 `screened` 行）
 
 # policy.py
 @dataclass(frozen=True)
