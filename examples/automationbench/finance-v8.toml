@@ -83,6 +83,8 @@ domains = ["finance"]
 scope_id = "finance-v8"
 seed_from = "workspace-finance-v6"
 seed_line = "working"
-core_ref = "core:sha256:302004624bbd7cc4beaa34236e2b2ee520c0e54600bab6c279ed8a6d97b68927"
+# the second freeze (2026-10-13, stage 4i's code): the first K, core:302004624bbd, was 4h's and never ran; that
+# workspace is workspace-finance-v8-aborted-freeze-2026-10-13/ (kept, $0)
+core_ref = "core:sha256:ce2af8d8ca4b8b81c5bb7238d1fc38f3f277a26d032a910582fac2d08f7ea42a"
 split_ref = "1bbf01533d7256af"
 # final_plan_ref: after `--phase release` and the second `freeze`

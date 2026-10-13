@@ -46,12 +46,12 @@
 
 | 项 | 状态 |
 |---|---|
-| 分支 | `s5/search-loop`（阶段 4b、4c）已合入 `m1-automationbench`（`d36ee5d`）；finance-v5 从这个检出跑（规则放宽的 `cf99a58`、final 计划 `70aaac3`，tag `finance-v5-final`）。阶段 4d / 4e 的 `s6/yield` 已合入 `m1-automationbench`（2026-10-12，finance-v5 结束后）；finance-v6 从这个检出跑，期间 `ouroloop/` 不再合入。阶段 4i 在 `s9/frontier`（从 `m1-automationbench` 的 4h 头分出），待审后合入。`main` 在 `b71502d`（v0.3） |
+| 分支 | `s5/search-loop`（阶段 4b、4c）已合入 `m1-automationbench`（`d36ee5d`）；finance-v5 从这个检出跑（规则放宽的 `cf99a58`、final 计划 `70aaac3`，tag `finance-v5-final`）。阶段 4d / 4e 的 `s6/yield` 已合入 `m1-automationbench`（2026-10-12，finance-v5 结束后）；finance-v6 从这个检出跑，期间 `ouroloop/` 不再合入。阶段 4i 的 `s9/frontier` 已合入 `m1-automationbench`（`92a48a6`，2026-10-13）；finance-v8 从这个检出跑，期间 `ouroloop/` 不再合入。`main` 在 `b71502d`（v0.3） |
 | 代码 | 阶段 1～3 完成：`contracts.py`、`harness/`（含 stirrup 种子）、`runtime/`（含 `trace.py`）、`evaluate/`、`memory/`（ReMe sidecar、桥、规则、写入步、检索、快照、升级）、`improver/`、`activity/`。阶段 4b（DESIGN v1.2 的六处，JOURNAL 2026-10-11 阶段 4b 一条）已落地：一轮一个包（包级声明、聚焦清单、V0 两向比对、V2 按组件）、留出接受装入工作线（`rsi/active.json`，reason `screen`）、活动末 `--phase gate` 发布到 `rsi/released.json`（reason `gate`）、`after_turn` / `on_finish` 的 hook 可调 aux 模型（`hook_aux_calls`）、preset `automationbench_v2`（library 关）、K 的 `attempt_version` / `improver_version` 与 `[rsi] baseline_from` 的基线导入。10-10 的日期锚、V2a 探针、部分得分规则照用；carry、`gate_every`、样本内筛选删除。阶段 4c（两份划分、`--phase release` 按决定发布）与 4d（`s6/yield`：一轮几个包并叠装、审核 hook 建议、`[rsi] seed_from`、`--phase stream` 流式循环；JOURNAL 2026-10-12 阶段 4d 一条）已落地；4e（跨域 train：`[bench] domains`、`[final] domains`；JOURNAL 阶段 4e 一条）已落地；两条规则放宽（final 份额是下限、final 一族只比对尝试路径代码；JOURNAL 2026-10-12 规则放宽一条）已落地 |
-| 测试 | 阶段 4i 后（`s9/frontier`，2026-10-13）默认 1,504 passed、87 deselected（live / slow / Docker / memory 的未跑；4h 后 4 个既有测试因新字段、研究抽样计价与第三道 test 题改了断言）；阶段 4h 后（`m1-automationbench`，2026-10-13）全量 1,562 passed、1 deselected；finance-v7 冻结后全量 1,557 passed、1 deselected；规则放宽后（`m1-automationbench`）全量 1,533 passed、1 deselected；阶段 4d 后（`s6/yield`）默认 1,441 passed、20 skipped；合并 `m1-automationbench` 后的 `s6/yield` 全量 1,530 passed、20 skipped、1 deselected。两个既有的负载相关中断测试在整套里不稳定、单跑通过。memory 的 venv 在本机 `~/.cache/ouroloop/memory-venv/19f9b139c36d1d05` |
+| 测试 | 阶段 4i 合入后（`m1-automationbench`，2026-10-13）Docker 全量 1,590 passed、1 deselected；阶段 4i 后（`s9/frontier`，2026-10-13）默认 1,504 passed、87 deselected（live / slow / Docker / memory 的未跑；4h 后 4 个既有测试因新字段、研究抽样计价与第三道 test 题改了断言）；阶段 4h 后（`m1-automationbench`，2026-10-13）全量 1,562 passed、1 deselected；finance-v7 冻结后全量 1,557 passed、1 deselected；规则放宽后（`m1-automationbench`）全量 1,533 passed、1 deselected；阶段 4d 后（`s6/yield`）默认 1,441 passed、20 skipped；合并 `m1-automationbench` 后的 `s6/yield` 全量 1,530 passed、20 skipped、1 deselected。两个既有的负载相关中断测试在整套里不稳定、单跑通过。memory 的 venv 在本机 `~/.cache/ouroloop/memory-venv/19f9b139c36d1d05` |
 | test 读过几次 | finance 2（v1 的 final、v5 的 final）、support 0、sales 0、hr 0、marketing 3；operations 从未读过 |
 | 本机记录 | `examples/automationbench/workspace-*/`、`examples/workspace-*/`、`ws/`、`*.local.toml`，git 忽略，不删不改 |
-| 下一步 | 用户审阶段 4i 的代码（`s9/frontier`，§3 第 1 项）；审定后本地合入 `m1-automationbench`，跑 Docker 全量，重新冻结 finance-v8（4i 的 K；现在的 v8 工作区冻在 4h 的代码上、没开跑）并按 §3 第 2 项批准后跑 stream |
+| 下一步 | finance-v8 已在 4i 的代码上重新冻结（K `core:ce2af8d8ca4b`，种子 v6 工作线 `release:8ea81218e119`；4h 的冻结放在 `workspace-finance-v8-aborted-freeze-2026-10-13/`）；用户 2026-10-13 批准（"可以跑吧，我想尽快看到结果"）：stream 5 批 5 轮，约 $500；跑完每批停下看受保护集曲线与合并接受率 |
 
 ## 1 规则
 
@@ -109,8 +109,8 @@
 
 | # | 事项 | 建议 |
 |---|---|---|
-| 1 | 阶段 4i 的代码（`s9/frontier`）与超参默认值（`regression_evidence` research、抽样 6、前沿 4、每轮合并 1、合并尝试 2、`replay_max_false_trigger` 0.2、文字只增、词表 ≥ 3）；research 抽样只对有可复现退步的包跑、接受规则仍只看留出 | 审后合入 `m1-automationbench` |
-| 2 | finance-v8：4i 合入后重新冻结（根 $750、final 下限 $230、从 v6 工作线的头起步、5 批 5 轮，约 $500） | 到重冻结前批准 |
+| 1 | 阶段 4i 的代码审查：用户 2026-10-13 选择不单独审、直接跑（"直接跑最有可能拿到更高分的方式"）；超参用默认值 | 已合入；v8 的结果就是审查 |
+| 2 | finance-v8 的 stream（根 $750、final 下限 $230、从 v6 工作线的头起步、5 批 5 轮，约 $500）：2026-10-13 已批准、已启动；release / final / evaluate 各步仍逐步批准 | — |
 | 3 | README 主数的口径：final 两臂的绝对通过率与部分得分（公开集 test 份 50 题、medium effort、3 遍），配对差与区间作第二个数 | 是 |
 
 ## 4 文档地图
