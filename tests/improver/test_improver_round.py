@@ -262,7 +262,8 @@ def test_every_step_of_the_round_is_on_record_in_round_json(tool):
     assert list(state["steps"]) == list(STEPS)
     steps = state["steps"]
     assert steps["measure"] == {"package": tool.base.package_ref, "measured": 0, "tasks": len(rsi.TRAIN),
-                                "passed": len(PASSING), "holdout_passed": 0, "holdout": len(HELD)}
+                                "passed": len(PASSING), "holdout_passed": 0, "holdout": len(HELD),
+                                "protected": 0, "protected_passed": 0}     # v1.8: W0 passed no held-out task
     assert steps["evidence"]["failed_tasks"] == [TICKET] and steps["evidence"]["not_diagnosed"] == []
     assert len(steps["diagnosed"]["causes"]) == 1 and len(steps["diagnosed"]["cases"]) == 1
     assert [c["dir"] for c in steps["implemented"]["candidates"]] == ["package"]
@@ -280,7 +281,7 @@ def test_the_next_round_measures_the_new_w_on_the_studied_tasks_only_and_stops_n
     assert state["base_release"] == tool.result.installed
     assert state["steps"]["measure"] == {"package": a.releases.load(tool.result.installed).package_ref,
                                          "measured": len(STUDY), "tasks": len(rsi.TRAIN), "passed": len(rsi.TRAIN),
-                                         "holdout_passed": 2, "holdout": 2}
+                                         "holdout_passed": 2, "holdout": 2, "protected": 0, "protected_passed": 0}
     measured = results_of_role(a, "measure")
     assert sorted(x.task_id for x in measured) == sorted(STUDY)             # the held-out reading is the screen's
     assert Evidence(a).missing(state["steps"]["measure"]["package"]) == []

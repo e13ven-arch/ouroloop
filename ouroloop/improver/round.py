@@ -25,7 +25,7 @@ recent stream_screen_max held-out tasks, and the round lives under rounds/s<i> a
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from ..contracts import BudgetError, MemorySidecarError, short, write_json
@@ -41,10 +41,12 @@ from .archive import Archive
 from .components import components
 from .credit import credit as credit_of, footprints, removal_candidates, summary
 from .declaration import Declaration, fixed_declaration, read_declaration
-from .evidence import Evidence, dev_histogram
-from .ledger import Ledger
+from .evidence import NOT_READINGS, TRAIN, Evidence, dev_histogram
+from .frontier import Frontier, FrontierEntry
+from .ledger import Ledger, scrub
 from .policy import read_playbook, update_playbook
-from .screen import ScreenResult, accept, condition, cost_per_attempt, pick_best, pick_order, price, screen
+from .screen import (ScreenResult, accept, condition, cost_per_attempt, pick_best, pick_order, price,
+                     regression_evidence, research_run, research_sample, screen)
 from .session import CodingSession, WorkTree
 from .stack import stack
 from .settings import CODE_KINDS, Settings
@@ -56,6 +58,8 @@ STEPS = ("measure", "evidence", "diagnosed", "focused", "implemented", "verified
          "credited", "playbook")
 PRICE_MARGIN = 0.15                     # over the means on record: candidates cost what they cost
 REPLAY_SAMPLE = 6                       # passing train attempts V2b reports a hook's false-trigger rate on
+REGRESSIONS_SHOWN = 8                   # v1.8: packages of this line whose regression evidence R reads, newest first
+MERGE_DIR = "merge"                     # v1.8: the candidate directory of a frontier entry's conditioned version
 
 
 def confirm_allowance(held: int, settings) -> int:
@@ -97,6 +101,7 @@ class Round:
         self.ledger = Ledger(activity.root)
         self.archive = Archive(activity.root, activity.objects)
         self.evidence = Evidence(activity)
+        self.frontier = Frontier(activity.root, self.s)        # v1.8: the partial packages R is asked to merge
         self.line = activity.domain
         active = activity.active_release()
         if self.state_path.exists():
@@ -349,12 +354,31 @@ class Round:
         held = set(self.split()[1])
         got["holdout_passed"] = sum(1 for t, r in reading.items() if t in held and r.success)
         got["holdout"] = len(held)
+        protected, kept = self.protected(held, reading)
+        got["protected"], got["protected_passed"] = len(protected), len(kept)
         self.ledger.row("measured", round_id=self.round_id, line=self.line, passed=got["passed"], steps=got["tasks"],
-                        holdout_passed=got["holdout_passed"], holdout=got["holdout"])
+                        holdout_passed=got["holdout_passed"], holdout=got["holdout"], protected=len(protected),
+                        protected_passed=len(kept))
         self.out(f"round      {self.round_id}: W {short(self.base.ref())} passes {got['passed']}/{got['tasks']} "
                  f"{'scored tasks of the stream' if self.stream else 'train tasks'} ({got['holdout_passed']}/"
-                 f"{got['holdout']} held out; {got['measured']} measured now)")
+                 f"{got['holdout']} held out, {len(kept)}/{len(protected)} of the protected set; {got['measured']} "
+                 f"measured now)")
         return got
+
+    def protected(self, held, reading: dict) -> tuple[list[str], list[str]]:
+        """v1.8 (DESIGN §6.18): the protected set — the held-out tasks whose first valid train reading in this
+        activity passed — and those of them the current W passes. The activity's success is this count never going
+        down from round to round; the report draws it."""
+        first: dict = {}
+        runs = self.a.results.runs()
+        for r in self.a.results.all():
+            run = runs.get(r.run)
+            if r.task_id in held and r.task_id not in first and r.split == TRAIN and r.validity == "valid" \
+                    and run is not None and run.role not in NOT_READINGS:
+                first[r.task_id] = r
+        order = {t: i for i, t in enumerate(self.a.splits.ids(TRAIN))}
+        protected = sorted((t for t, r in first.items() if r.success), key=lambda t: order.get(t, len(order)))
+        return protected, [t for t in protected if t in reading and reading[t].success]
 
     def gather(self) -> dict:
         study = set(self.split()[0])
@@ -445,20 +469,44 @@ class Round:
         f = focus_of(self.causes(), estimates, self.archive, settings=self.s, line=self.line,
                      allowed=self.a.k["harness"]["kinds"], hide=held,
                      stalled=stalled(self.ledger, self.s.stall_rounds), train_available=False)
+        # v1.8 (DESIGN §6.18): the frontier's entries R is asked to merge this round, one package each
+        picks = self.frontier.picks(self.line, int(self.s.merge_per_round))
+        if picks:
+            f = replace(f, merge=tuple(self._merge_item(e, f, i) for i, e in enumerate(picks)))
         self.ledger.row("focused", round_id=self.round_id, line=self.line,
                         causes=[{"cause": r["name"], "tasks": len(r["tasks"]),
                                  "kinds": [k["kind"] for k in r["kinds"]]} for r in f.ranked],
-                        require_code=f.require_code, l5_suggested=f.l5_suggested)
+                        require_code=f.require_code, l5_suggested=f.l5_suggested,
+                        **({"merge": [e.id for e in picks]} if picks else {}))
         for note in f.notes:
             if note.startswith("l6_unavailable"):
                 self.ledger.row("l6_unavailable", round_id=self.round_id, line=self.line, reason=note)
         self.out(f"round      {self.round_id}: focus " + ", ".join(
             f"{r['name']}({len(r['tasks'])})->{'/'.join(k['kind'] for k in r['kinds'][:3])}" for r in f.ranked)
-            + ("; a tool or hook is required" if f.require_code else ""))
+            + ("; a tool or hook is required" if f.require_code else "")
+            + (f"; merge {', '.join(e.id for e in picks)} from the frontier" if picks else ""))
         return {"focus": self.a.objects.put(f)}
 
     def focus(self) -> Focus:
         return Focus.from_json(self.a.objects.get(self.state["steps"]["focused"]["focus"]))
+
+    def _merge_item(self, entry: FrontierEntry, f: Focus, index: int = 0) -> dict:
+        """One frontier entry as focus.json names it: its counts, the candidate directory its merge goes in, and the
+        cause ids a merge declares — this round's id of each cause the entry's package named, or the entry's own
+        where the cause is not diagnosed this round."""
+        decl = Declaration.from_json(self.a.objects.get(entry.declaration_ref))
+        by_name = {r["name"]: r["cause_id"] for r in f.ranked}
+        cause_ids = sorted({by_name.get(i.rpartition(":")[2], i) for i in decl.cause_ids})
+        return {"entry": entry.id, "round": entry.tag, "dir": entry.dir, "mechanism": entry.mechanism,
+                "kind": entry.kind, "fixes": len(entry.fixed), "regressions": len(entry.regressed),
+                "attempts": entry.attempts, "cause_ids": cause_ids, "heuristic_terms": dict(entry.heuristic_terms),
+                "candidate_dir": MERGE_DIR if index == 0 else f"{MERGE_DIR}-{index + 1}"}
+
+    def merge_ids(self) -> tuple:
+        """The frontier entries this round merges (focus.json's `merge`): what a declaration's merge_of may name."""
+        if "focused" not in self.state["steps"]:
+            return ()
+        return tuple(m["entry"] for m in self.focus().merge)
 
     # ------------------------------------------------------------------ verification
     def vctx(self) -> VerifyContext:
@@ -473,6 +521,9 @@ class Round:
         # V2c reads reach on lexical_embed's scale, the one reach_min_score is calibrated on (bge-small puts unrelated
         # texts at 0.5 and above: on it 0.2 would pass every description)
         embed = None
+        cause_ids = tuple(c.cause_id for c in self.causes()) if "diagnosed" in self.state["steps"] else ()
+        if "focused" in self.state["steps"]:       # v1.8: a merge may name the entry's own causes
+            cause_ids = tuple(dict.fromkeys([*cause_ids, *(i for m in self.focus().merge for i in m["cause_ids"])]))
         return VerifyContext(parent=self.package, seed=self.a.package(self.a.seed_release()), core=self.a.k,
                              objects=self.a.objects, worker=self.a.worker(), suite=self.a.suite,
                              evidence=self.evidence, forbidden=forbidden_of(literal_index(rows)), train_tasks=train,
@@ -481,9 +532,7 @@ class Round:
                              failed_sessions={t: reading[t].evidence or reading[t].attempt_id for t in failed},
                              passed_sessions={t: reading[t].evidence or reading[t].attempt_id
                                               for t in passed[:REPLAY_SAMPLE]},
-                             study_tasks=study,
-                             cause_ids=tuple(c.cause_id for c in self.causes())
-                             if "diagnosed" in self.state["steps"] else (),
+                             study_tasks=study, cause_ids=cause_ids,
                              aux=self.researcher("verify"), hook_aux_calls=int(self.s.hook_aux_calls))
 
     def _archive(self, *args, **kw) -> dict:
@@ -553,8 +602,11 @@ class Round:
         f = self.focus()
         focus_rows = [{**r, "tasks": [t for t in r["tasks"] if t in study],
                        "held_out_tasks": sum(1 for t in r["tasks"] if t in held)} for r in f.ranked]
+        regressions, research_sessions = self._regressions_input(held)
+        readable |= research_sessions
         files = {"focus.json": {"ranked": focus_rows, "require_code": f.require_code, "l5_suggested": f.l5_suggested,
-                                "l6_suggested": f.l6_suggested, "notes": list(f.notes)},
+                                "l6_suggested": f.l6_suggested, "notes": list(f.notes), "merge": list(f.merge)},
+                 "regressions.json": regressions, "frontier.json": self._frontier_input(held),
                  "causes.json": cause_rows, "successes.json": successes,
                  "ledger.json": self.ledger.projection(line=self.line, hide=held),
                  "scoreboard.json": self.ledger.scoreboard(),
@@ -572,6 +624,70 @@ class Round:
         out["playbook.md"] = read_playbook(self.a.root)
         out["package_api.md"] = api
         return out, readable
+
+    # ------------------------------------------------------------------ v1.8: what R reads of regressions, the frontier
+    def _regression_view(self, ref: str) -> tuple[dict, set]:
+        """One package's regression evidence as R reads it at K's level: the counts; the de-identified records at
+        `abstract` and above; the research sample with the two sessions of each regressed studied task at `research`.
+        -> (the view, the sessions R may read)."""
+        obj = self.a.objects.get(ref)
+        view = {"round": obj.get("round_id"), "dir": obj.get("dir"), "kind": obj.get("kind"),
+                "mechanism": obj.get("mechanism"), "fixes": obj.get("fixes"), "regressions": obj.get("regressions"),
+                "heuristic_terms": obj.get("heuristic_terms") or {}}
+        sessions: set = set()
+        if self.s.evidence_at_least("abstract"):
+            view["evidence"] = [{k: v for k, v in r.items() if k != "ref"} for r in obj.get("records") or ()]
+        if self.s.evidence_at_least("research"):
+            research = obj.get("research") or {}
+            view["research"] = {"sample": list(research.get("sample") or ()),
+                                "regressed": [{"task_id": t, **s} for t, s in (research.get("sessions") or {}).items()]}
+            sessions = {s for pair in (research.get("sessions") or {}).values() for s in pair.values()}
+        return view, sessions
+
+    def _regressions_input(self, held) -> tuple[dict, set]:
+        """inputs/regressions.json: the regression evidence of this line's screened packages, the newest first
+        (REGRESSIONS_SHOWN at most); held-out task ids never appear (the records carry none; a text is scrubbed)."""
+        rows = [r for r in self.ledger.rows(stage="screened") if r.get("line") in (None, self.line)
+                and r.get("regression_ref")]
+        packages, sessions = [], set()
+        for r in reversed(rows[-REGRESSIONS_SHOWN:]):
+            view, read = self._regression_view(r["regression_ref"])
+            view.update(accepted=bool(r.get("accepted")), partial=bool(r.get("partial")))
+            packages.append(view)
+            sessions |= read
+        level = self.s.regression_evidence
+        note = {"counts": "each earlier package of this line that broke held-out tasks it had passed: how many it "
+                          "fixed and broke",
+                "abstract": "each earlier package of this line that broke held-out tasks: one de-identified record per "
+                            "confirmed regression — the assertion kinds that failed, the components of the package that "
+                            "acted on that attempt with what they said, the agent's writes before and after by route "
+                            "(no values), the termination; no task id, no request",
+                "research": "each earlier package of this line that broke held-out tasks: one de-identified record per "
+                            "confirmed regression (the assertion kinds that failed, what the package's components said "
+                            "on that attempt, the writes before and after by route) and `research`: studied tasks the "
+                            "working line passes, run once under the package — the regressed ones name two sessions "
+                            "you can read_trajectory, the working line's and the package's"}[level]
+        out = {"note": note + ". A regression is the package acting where the task's own documents asked for the "
+                       "opposite: narrow the mechanism's condition to what the documents say, do not try another "
+                       "global rule", "level": level, "packages": packages}
+        return scrub(out, held), sessions
+
+    def _frontier_input(self, held) -> dict:
+        """inputs/frontier.json: this line's active frontier entries — each one's diff against the working line it was
+        built on, its mechanism and components, the counts of confirmed fixes and regressions, its regression evidence
+        and how often it was merged."""
+        entries = []
+        for e in self.frontier.active(self.line):
+            regressions = self._regression_view(e.regression_ref)[0] if e.regression_ref else None
+            entries.append(self.frontier.for_prompt(
+                e, base_files=load_package(self.a.objects, e.base_package_ref).files,
+                files=self.a.objects.get(e.files_ref), declaration=self.a.objects.get(e.declaration_ref),
+                regressions=regressions, hide=held, scrub=lambda v: scrub(v, held)))
+        return {"note": "packages of earlier rounds that fixed held-out tasks and were rejected only because they broke "
+                        "others (confirmed both ways). focus.json's `merge` names the one(s) to merge this round: hand "
+                        "in a conditioned version of the same mechanism in candidates/<candidate_dir>/, its trigger "
+                        "narrowed so it does not act on the regression shapes, declared with merge_of",
+                "entries": entries}
 
     def _declared(self, decl, files: dict, verdict) -> dict:
         self.ledger.row("declared", round_id=self.round_id, line=self.line, dir=decl.dir, mechanism=decl.mechanism,
@@ -641,12 +757,31 @@ class Round:
             return {"candidates": out, "session": saved["session"]}
         inputs, readable = self.inputs()
         kinds = [k for k in self.a.k["harness"]["kinds"] if k not in ("memory", "model", "test")] + ["removal"]
+        merge_ids = self.merge_ids()
         system = (PROMPTS / "propose.md").read_text(encoding="utf-8")
+        merge_text = ""
+        if merge_ids:
+            picks = self.focus().merge
+            merge_text = (
+                "\nThis round also merges from the frontier (inputs/frontier.json): "
+                + "; ".join(f"entry {m['entry']} ({m['kind']}, {m['fixes']} confirmed fixes, {m['regressions']} "
+                            f"confirmed regressions, merged {m['attempts']} time(s) before) -> candidates/"
+                            f"{m['candidate_dir']}/" for m in picks)
+                + ". One of your packages is that entry's conditioned version: the same mechanism and components, "
+                  "its trigger narrowed so it no longer acts on the regression shapes the evidence shows (it acts "
+                  "only when the task's own documents or request ask for it; a tool plus a hook with a predicate "
+                  "where a hook alone fired on everything), declared with \"merge_of\": \"<entry id>\" and the "
+                  "entry's cause_ids from focus.json's merge item. It is verified and screened like any package; "
+                  "accepted, it is installed. Do not hand the entry in again as it is: it has a confirmed "
+                  "regression.\n")
         for name, value in {"packages": self.s.packages_per_round, "max_turns": self.s.session_max_turns,
                             "max_edits": self.s.session_max_edits, "max_read": self.s.session_max_read_bytes,
                             "max_read_total": self.s.session_max_read_total, "l5_per_round": self.s.l5_per_round,
                             "hook_aux_calls": self.s.hook_aux_calls,
-                            "max_tokens": int(self.a.k["research_model"]["max_tokens"])}.items():
+                            "max_tokens": int(self.a.k["research_model"]["max_tokens"]),
+                            "replay_max_false_trigger": f"{float(self.s.replay_max_false_trigger):.0%}",
+                            "accept_min_whole_fixes": self.s.accept_min_whole_fixes,
+                            "heuristic_terms_min": self.s.heuristic_terms_min, "merge": merge_text}.items():
             system = system.replace("{" + name + "}", str(value))
         worker = self.a.worker()
         if worker is None:
@@ -664,7 +799,8 @@ class Round:
                 files, error = tree.fetch(dir_name)
                 if files is None:
                     return f"candidates/{dir_name} cannot be read back: {error}"
-                decl, why = read_declaration({**raw, "dir": dir_name}, dirs=[dir_name], kinds_allowed=kinds)
+                decl, why = read_declaration({**raw, "dir": dir_name}, dirs=[dir_name], kinds_allowed=kinds,
+                                             merge_ids=merge_ids)
                 if why:
                     return f"the declaration is not readable: {why}"
                 return run_ladder(self.with_memory(files), decl, vctx).text()
@@ -681,7 +817,7 @@ class Round:
                                     check=check, tests=tests, settings=self.s, system=system, inputs={
                                         "round": self.round_id, "focus": json.loads(inputs["focus.json"]),
                                         "inputs": sorted(f"inputs/{n}" for n in inputs)},
-                                    readable=readable, kinds=kinds)
+                                    readable=readable, kinds=kinds, merge_ids=merge_ids)
             result = self._session(session, tree)
             fetched = []
             for decl in result.declarations:
@@ -790,11 +926,13 @@ class Round:
             for rung, ok in verdict.rungs().items():
                 ladder[rung] = ladder.get(rung, 0) + bool(ok)
             replays = [c["V2b"] for c in verdict.components.values() if isinstance(c, dict) and "V2b" in c]
+            terms = (verdict.steps.get("V0") or {}).get("heuristic_terms") or {}
             self.ledger.row("verified", round_id=self.round_id, line=self.line, dir=decl.dir, kind=decl.kind,
                             passed=verdict.passed(), outcome="duplicate" if dup else "",
                             failed_components=verdict.failed_components(), reason=verdict.text()[:800],
                             **({"false_trigger_rate": max(float(x.get("false_trigger_rate") or 0) for x in replays)}
-                               if replays else {}))
+                               if replays else {}), **({"heuristic_terms": terms} if terms else {}),
+                            **({"merge_of": decl.merge_of} if decl.merge_of else {}))
             self._audited(decl, verdict)
             if verdict.passed() and not dup:
                 passed.append(item)
@@ -855,8 +993,12 @@ class Round:
         # left beside the screens before it (a resumed step re-reads its attempts for free)
         items.sort(key=lambda i: (bool(decls[i["dir"]].fixed), "memory" in decls[i["dir"]].kinds))
         allowance = confirm_allowance(len(held), self.s)
-        to_pay = lambda chosen: sum(max(len(held) + allowance - self._recorded(f"{self.tag}:{i['dir']}", "screen")  # noqa
-                                        - self._recorded(f"{self.tag}:{i['dir']}", "confirm"), 0) for i in chosen)
+        # v1.8: the research level's sample of studied tasks, priced for every package (run for the regressing ones)
+        sample = int(self.s.regression_research_sample) if self.s.evidence_at_least("research") else 0
+        to_pay = lambda chosen: sum(max(len(held) + allowance + sample  # noqa
+                                        - self._recorded(f"{self.tag}:{i['dir']}", "screen")
+                                        - self._recorded(f"{self.tag}:{i['dir']}", "confirm")
+                                        - self._recorded(f"{self.tag}:{i['dir']}", "research"), 0) for i in chosen)
         chosen, dropped = [], []
         for item in items:
             usd, why = price(self.a, self.work_ref, screen_attempts=to_pay([*chosen, item]))
@@ -886,11 +1028,17 @@ class Round:
                                 outcome="invalid", reason=f"build: {e}"[:300])
                 continue
             comps = components(self.package, files)
+            # v1.8: a rewrite of existing text is screened as a whole-footprint package
+            conditions = [{"kind": "prompt", "name": "*"}] if any(c.rewrite for c in decl.components) \
+                else condition(comps)
             res = screen(self.a, run_arm=self.run_arm, name=f"{self.tag}:{decl.dir}", package=package,
                          base_release=self.base, holdout=held, reading=reading, evidence=self.evidence,
-                         conditions=condition(comps), account=self.child("screen"),
+                         conditions=conditions, account=self.child("screen"),
                          retries=int(self.a.k["gate"]["max_infrastructure_retries"]), best_so_far=best_so_far,
                          settings=self.s)
+            if res.outcome == "budget_exhausted":
+                raise Stop("budget: the budget refused a screen attempt")
+            res = replace(self._regressions(decl, item, res), merge_of=decl.merge_of)
             results.append(res)
             rows.append({"dir": decl.dir, "screen": self.a.objects.put(res), "package": package.ref()})
             self._archive(decl.dir, files, decl, Verdict.from_json(self.a.objects.get(item["verdict"])),
@@ -903,11 +1051,14 @@ class Round:
                             unconfirmed=list(res.unconfirmed), confirm_attempts=res.confirm_attempts,
                             holdout_score=res.holdout_score, best_so_far=res.best_so_far,
                             outcome=res.outcome, accepted=res.accepted, reasons=list(res.reasons),
-                            reason=res.reason, **({"source": decl.fixed} if decl.fixed else {}))
+                            reason=res.reason, partial=res.partial, regression_ref=res.regression_ref,
+                            research_sample=len(res.research_sample),
+                            research_regressed=list(res.research_regressed),
+                            **({"source": decl.fixed} if decl.fixed else {}),
+                            **({"merge_of": decl.merge_of} if decl.merge_of else {}))
             if res.outcome == "screened" and not decl.fixed:
                 self._observe(decl, res, cost=(res.cost or 0.0) * len(res.holdout))
-            if res.outcome == "budget_exhausted":
-                raise Stop("budget: the budget refused a screen attempt")
+        self._frontier_after_screens(chosen, decls, results)
         best = pick_best(results)
         picked = next((r for r, res in zip(rows, results) if res is best), None) if best is not None else None
         for r, res in zip(rows, results):
@@ -945,6 +1096,106 @@ class Round:
                 estimates.update(self.line, cause.name, comp.kind, fixes=(len(fixed) - len(regressed)) / denominator,
                                  cost=cost, key=f"{self.round_id}:{decl.dir}:{comp.key}")
 
+    # ------------------------------------------------------------------ v1.8: regression evidence, the frontier
+    def _regressions(self, decl: Declaration, item: dict, res: ScreenResult) -> ScreenResult:
+        """A screened package with confirmed regressions: its evidence at K's level (screen.regression_evidence; the
+        research level runs the sample of studied passing tasks under the candidate), stored as an object the
+        `screened` row and the frontier entry reference, and written to rounds/<tag>/regressions.json."""
+        if res.outcome != "screened" or not res.regressed or decl.fixed:
+            return res
+        changed = [c for c in components(self.package, self.a.objects.get(item["files"])) if c["change"] != "deleted"]
+        records = regression_evidence(self.a, res, evidence=self.evidence, base_package_ref=self.work_ref,
+                                      tool_names=[c["name"] for c in changed if c["kind"] == "tool"],
+                                      hook_names=[c["name"] for c in changed if c["kind"] == "hook"]) \
+            if self.s.evidence_at_least("abstract") else []
+        research = {"sample": [], "regressed": [], "sessions": {}}
+        if self.s.evidence_at_least("research") and int(self.s.regression_research_sample) > 0:
+            verdict = Verdict.from_json(self.a.objects.get(item["verdict"]))
+            fired = [t for rungs in verdict.components.values() for t in (rungs.get("V2b") or {}).get("false_triggers")
+                     or ()]
+            reading = self.reading()
+            sample = research_sample(self.split()[0], reading, fired=fired, n=self.s.regression_research_sample,
+                                     seed=res.candidate)
+            got = research_run(self.a, run_arm=self.run_arm, name=res.candidate,
+                               package=load_package(self.a.objects, res.package_ref), base_release=self.base,
+                               sample=sample, reading=reading, account=self.child("screen"),
+                               retries=int(self.a.k["gate"]["max_infrastructure_retries"]))
+            if got["outcome"] == "budget_exhausted":
+                raise Stop("budget: the budget refused a research-sample attempt")
+            research = {k: got[k] for k in ("sample", "regressed", "sessions")}
+        terms = (Verdict.from_json(self.a.objects.get(item["verdict"])).steps.get("V0") or {}).get("heuristic_terms")
+        obj = {"candidate": res.candidate, "round_id": self.round_id, "dir": decl.dir, "kind": decl.kind,
+               "mechanism": decl.mechanism, "level": self.s.regression_evidence, "fixes": len(res.fixed),
+               "regressions": len(res.regressed), "records": [r.to_json() for r in records],
+               "research": research, "heuristic_terms": terms or {}}
+        ref = self.a.objects.put_json("regression_evidence_set", obj)
+        path = self.dir / "regressions.json"
+        file = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"packages": []}
+        file["packages"] = [p for p in file["packages"] if p.get("dir") != decl.dir] + [{**obj, "ref": ref,
+                                                                                        "regressed": list(res.regressed)}]
+        write_json(path, file)
+        return replace(res, regression_ref=ref, research_sample=tuple(research["sample"]),
+                       research_regressed=tuple(research["regressed"]))
+
+    def _entry_of(self, decl: Declaration, item: dict, res: ScreenResult) -> FrontierEntry:
+        verdict = Verdict.from_json(self.a.objects.get(item["verdict"]))
+        return FrontierEntry(id="", round_index=self.i, tag=self.tag, dir=decl.dir, line=self.line,
+                             files_ref=item["files"], declaration_ref=item["declaration"],
+                             base_package_ref=self.work_ref, fixed=res.fixed, regressed=res.regressed,
+                             regression_ref=res.regression_ref, screen_ref=self.a.objects.put(res),
+                             mechanism=decl.mechanism, kind=decl.kind,
+                             heuristic_terms=(verdict.steps.get("V0") or {}).get("heuristic_terms") or {})
+
+    def _frontier_after_screens(self, items: list, decls: dict, results: list) -> None:
+        """The frontier's in and out after the screens (DESIGN §6.18): a partial package of R's goes on it (ledger
+        `partial`; the weakest beyond frontier_max dropped, `frontier_pruned`); a rejected merge counts one more
+        attempt on its entry — a partial one takes the entry's place — and at frontier_max_attempts the entry is
+        `abandoned`. An accepted merge is marked `merged` when it is installed (accepted, stacked)."""
+        by_dir = {i["dir"]: i for i in items}
+        for res in results:
+            name = res.candidate.rpartition(":")[2]
+            decl, item = decls[name], by_dir[name]
+            if decl.fixed or res.outcome != "screened":
+                continue
+            if decl.merge_of:
+                if res.accepted:
+                    continue
+                replacement = self._entry_of(decl, item, res) if res.partial else None
+                entry, outcome = self.frontier.failed(decl.merge_of, round_id=self.round_id, dir_name=decl.dir,
+                                                      replacement=replacement)
+                if outcome == "abandoned":
+                    self.ledger.row("abandoned", round_id=self.round_id, line=self.line, dir=decl.dir,
+                                    entry=decl.merge_of, attempts=entry.attempts,
+                                    reason=f"its merges were rejected {entry.attempts} time(s) "
+                                           f"(frontier_max_attempts {self.s.frontier_max_attempts})")
+                elif outcome == "replaced":
+                    self.ledger.row("partial", round_id=self.round_id, line=self.line, dir=decl.dir, kind=decl.kind,
+                                    entry=decl.merge_of, fixes=len(res.fixed), regressed=list(res.regressed),
+                                    attempts=entry.attempts, reason="a rejected merge, itself partial, takes the "
+                                                                    "entry's place")
+                if outcome in ("abandoned", "retried", "replaced"):
+                    self.out(f"round      {self.round_id}: merge {decl.dir} of {decl.merge_of} rejected: the entry is "
+                             f"{outcome} (attempts {entry.attempts})")
+            elif res.partial:
+                entry, dropped = self.frontier.add(self._entry_of(decl, item, res))
+                self.ledger.row("partial", round_id=self.round_id, line=self.line, dir=decl.dir, kind=decl.kind,
+                                entry=entry.id, fixes=len(res.fixed), regressed=list(res.regressed),
+                                reason="rejected only for its confirmed regressions: on the frontier for a merge")
+                for d in dropped:
+                    self.ledger.row("frontier_pruned", round_id=self.round_id, line=self.line, entry=d,
+                                    reason=f"dropped: the frontier keeps {self.s.frontier_max} entries")
+                self.out(f"round      {self.round_id}: {decl.dir} is partial ({len(res.fixed)} fixes, "
+                         f"{len(res.regressed)} regressions): frontier entry {entry.id}"
+                         + (f"; dropped {dropped}" if dropped else ""))
+
+    def _merged(self, dir_name: str, decl: Declaration, release_ref: str) -> None:
+        if not decl.merge_of:
+            return
+        self.frontier.merged(decl.merge_of, round_id=self.round_id, dir_name=dir_name)
+        self.ledger.row("merged", round_id=self.round_id, line=self.line, dir=dir_name, entry=decl.merge_of,
+                        release=release_ref)
+        self.out(f"round      {self.round_id}: frontier entry {decl.merge_of} merged by {dir_name}")
+
     # ------------------------------------------------------------------ acceptance
     def accepted(self) -> dict:
         sc = self.state["steps"]["screened"]
@@ -970,6 +1221,7 @@ class Round:
             self.out(f"round      {self.round_id}: {sc['best']} installed on the working line as "
                      f"{short(done.target_release)} (held out {res.holdout_score}/{len(res.holdout)}, net "
                      f"{res.net_flips})")
+            self._merged(sc["best"], decl, done.target_release)
         else:
             self.ledger.row("rejected", round_id=self.round_id, line=self.line, dir=sc["best"],
                             reason=f"install {done.status}: {done.reason}")
@@ -1043,6 +1295,7 @@ class Round:
             stacked.append(name)
             self.out(f"round      {self.round_id}: {name} stacked on the working line as {short(line_ref)} "
                      f"(its own screen: net {res.net_flips}, {res.holdout_score}/{len(res.holdout)})")
+            self._merged(name, decl, line_ref)
         if refused:
             self.out(f"round      {self.round_id}: not stacked: {refused}")
         return {"stacked": stacked, "not_stacked": refused, "line": line_ref}
@@ -1074,6 +1327,14 @@ class Round:
         self.ledger.row("credited", round_id=self.round_id, line=self.line, release=new.ref(),
                         component=sorted(table), credit={k: v["credit"] for k, v in table.items()},
                         history=history)
+        # v1.8: frontier entries whose fixes the working line passes every one of by now leave it
+        line_ref = (self.state["steps"].get("stacked") or {}).get("line") or new.ref()
+        line_reading = self.evidence.reading(self.a.releases.load(line_ref).package_ref)
+        passes = {t for t, r in (line_reading or child_reading).items() if r.success}
+        for entry_id in self.frontier.prune(self.line, passes):
+            self.ledger.row("frontier_pruned", round_id=self.round_id, line=self.line, entry=entry_id,
+                            reason="subsumed: the working line passes every held-out task it fixed")
+            self.out(f"round      {self.round_id}: frontier entry {entry_id} subsumed by the working line")
         return {"release": new.ref(), "credit": table}
 
     # ------------------------------------------------------------------ the playbook

@@ -761,7 +761,7 @@ def test_v2b_counts_triggers_on_the_claimed_failing_tasks_and_the_rate_on_passin
     assert got["fired"] == list(FAILING)
     assert got["false_trigger_rate"] == 0.0             # it speaks only where a post was planned and none made
     assert "acts on 1 of 1 claimed failing tasks (at least 1)" in got["detail"]
-    assert "on 0 of 3 passing attempts (rate 0.0, at most 0.25)" in got["detail"]
+    assert "on 0 of 3 passing attempts (rate 0.0, at most 0.2)" in got["detail"]
 
 
 def test_v2b_a_hook_that_acts_on_too_many_passing_attempts_fails(ctx, parent):

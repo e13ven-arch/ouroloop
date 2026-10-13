@@ -46,12 +46,12 @@
 
 | 项 | 状态 |
 |---|---|
-| 分支 | `s5/search-loop`（阶段 4b、4c）已合入 `m1-automationbench`（`d36ee5d`）；finance-v5 从这个检出跑（规则放宽的 `cf99a58`、final 计划 `70aaac3`，tag `finance-v5-final`）。阶段 4d / 4e 的 `s6/yield` 已合入 `m1-automationbench`（2026-10-12，finance-v5 结束后）；finance-v6 从这个检出跑，期间 `ouroloop/` 不再合入。`main` 在 `b71502d`（v0.3） |
+| 分支 | `s5/search-loop`（阶段 4b、4c）已合入 `m1-automationbench`（`d36ee5d`）；finance-v5 从这个检出跑（规则放宽的 `cf99a58`、final 计划 `70aaac3`，tag `finance-v5-final`）。阶段 4d / 4e 的 `s6/yield` 已合入 `m1-automationbench`（2026-10-12，finance-v5 结束后）；finance-v6 从这个检出跑，期间 `ouroloop/` 不再合入。阶段 4i 在 `s9/frontier`（从 `m1-automationbench` 的 4h 头分出），待审后合入。`main` 在 `b71502d`（v0.3） |
 | 代码 | 阶段 1～3 完成：`contracts.py`、`harness/`（含 stirrup 种子）、`runtime/`（含 `trace.py`）、`evaluate/`、`memory/`（ReMe sidecar、桥、规则、写入步、检索、快照、升级）、`improver/`、`activity/`。阶段 4b（DESIGN v1.2 的六处，JOURNAL 2026-10-11 阶段 4b 一条）已落地：一轮一个包（包级声明、聚焦清单、V0 两向比对、V2 按组件）、留出接受装入工作线（`rsi/active.json`，reason `screen`）、活动末 `--phase gate` 发布到 `rsi/released.json`（reason `gate`）、`after_turn` / `on_finish` 的 hook 可调 aux 模型（`hook_aux_calls`）、preset `automationbench_v2`（library 关）、K 的 `attempt_version` / `improver_version` 与 `[rsi] baseline_from` 的基线导入。10-10 的日期锚、V2a 探针、部分得分规则照用；carry、`gate_every`、样本内筛选删除。阶段 4c（两份划分、`--phase release` 按决定发布）与 4d（`s6/yield`：一轮几个包并叠装、审核 hook 建议、`[rsi] seed_from`、`--phase stream` 流式循环；JOURNAL 2026-10-12 阶段 4d 一条）已落地；4e（跨域 train：`[bench] domains`、`[final] domains`；JOURNAL 阶段 4e 一条）已落地；两条规则放宽（final 份额是下限、final 一族只比对尝试路径代码；JOURNAL 2026-10-12 规则放宽一条）已落地 |
-| 测试 | 阶段 4h 后（`m1-automationbench`，2026-10-13）全量 1,562 passed、1 deselected；finance-v7 冻结后全量 1,557 passed、1 deselected；规则放宽后（`m1-automationbench`）全量 1,533 passed、1 deselected；阶段 4d 后（`s6/yield`）默认 1,441 passed、20 skipped；合并 `m1-automationbench` 后的 `s6/yield` 全量 1,530 passed、20 skipped、1 deselected。两个既有的负载相关中断测试在整套里不稳定、单跑通过。memory 的 venv 在本机 `~/.cache/ouroloop/memory-venv/19f9b139c36d1d05` |
+| 测试 | 阶段 4i 后（`s9/frontier`，2026-10-13）默认 1,504 passed、87 deselected（live / slow / Docker / memory 的未跑；4h 后 4 个既有测试因新字段、研究抽样计价与第三道 test 题改了断言）；阶段 4h 后（`m1-automationbench`，2026-10-13）全量 1,562 passed、1 deselected；finance-v7 冻结后全量 1,557 passed、1 deselected；规则放宽后（`m1-automationbench`）全量 1,533 passed、1 deselected；阶段 4d 后（`s6/yield`）默认 1,441 passed、20 skipped；合并 `m1-automationbench` 后的 `s6/yield` 全量 1,530 passed、20 skipped、1 deselected。两个既有的负载相关中断测试在整套里不稳定、单跑通过。memory 的 venv 在本机 `~/.cache/ouroloop/memory-venv/19f9b139c36d1d05` |
 | test 读过几次 | finance 2（v1 的 final、v5 的 final）、support 0、sales 0、hr 0、marketing 3；operations 从未读过 |
 | 本机记录 | `examples/automationbench/workspace-*/`、`examples/workspace-*/`、`ws/`、`*.local.toml`，git 忽略，不删不改 |
-| 下一步 | finance-v6、v7 都不跑 final（用户 2026-10-12、2026-10-13；v7 的数与判读在 JOURNAL 2026-10-13 v7 一条）。阶段 4h（DESIGN §6.17）文档与代码已落地（2026-10-13）；finance-v8 的配置已写（从 v6 工作线的头起步，`seed_line = "working"`）：smoke / freeze → 提交 → 等用户批准 stream（约 $480）→ release → freeze → evaluate（约 $200）→ report |
+| 下一步 | 用户审阶段 4i 的代码（`s9/frontier`，§3 第 1 项）；审定后本地合入 `m1-automationbench`，跑 Docker 全量，重新冻结 finance-v8（4i 的 K；现在的 v8 工作区冻在 4h 的代码上、没开跑）并按 §3 第 2 项批准后跑 stream |
 
 ## 1 规则
 
@@ -89,6 +89,7 @@
 | 4 | finance 实测：新 preset，基线 → library → 最多 8 轮、gate 每两轮一次（每步后停）→ 有装入则封存 final → RESULTS、README、合入 main | 过程检查成立；计划哈希早于第一次 test 尝试；报告两次相同 | 名义约 $440（$350～600），每步先批准 | 结束：finance-v1～v4 共 $528，机制全部跑通，零装入（JOURNAL 2026-10-11 finance-v4 结束一条） |
 | 4b | 搜索循环 v2（DESIGN v1.2 §6.12 的六处）：`improver/`（一轮一个包、聚焦、留出接受、工作线）、`evaluate/`（活动末 gate、`promote`、基线导入）、`activity/`（`gate` 阶段、`baseline_from`、preset `automationbench_v2`）、版本拆分与 AttemptIdentity、R 的提示词；然后 finance-v5 | 假上游上脚本化的 R：接受装入工作线、下一轮只补测研究部分、无候选时按耐心停、`cycle --until gate` 发布、同 AttemptIdentity 的基线导入 $0；finance-v5：留出曲线不降，dev 严格 +3～6 题或部分得分 +0.05～0.10，成本不升 | 代码 $0；finance-v5 名义约 $410（基线 $58 重付、轮次、gate $25、final $72；根 $500、final 份额 $200） | 代码完成（2026-10-11，`s5/search-loop`；JOURNAL 阶段 4b 一条），待用户确认后合入并冻结 finance-v5 |
 | 4c | 两份划分与按决定发布（DESIGN §6.7 第三条、§10）：K 没有 dev 题时 freeze 不写 gate 模板、round 不要求它、`gate` 无事可做；`--phase release` 补齐 W\* 的 train 读数并提升为发布线（reason `decision`）；final 只要有发布线；基线阶段可跳过；finance-v5 改为 50/50、无基线、按决定发布、final 两臂 | 假上游上无 dev 的活动端到端：freeze、两轮、release、final 两臂、export；有 dev 的活动行为不变 | 代码 $0；finance-v5 名义约 $400 | 完成（2026-10-12，`s5/search-loop`；JOURNAL 阶段 4c 一条） |
+| 4i | 不退步的累积（DESIGN v1.8 §6.18）：退步证据回灌 R（`regression_evidence` counts / abstract / research，`regression_research_sample`）、前沿与合并（`frontier_max`、`merge_per_round`、`frontier_min_fixes`、`frontier_max_attempts`）、文字只增（`text_additive_only`）、启发式软信号（`heuristic_terms_min`）、`replay_max_false_trigger` 0.2；分支 `s9/frontier` | 假上游：部分包进前沿、合并包条件化后零退步装入；research 档的退步轨迹进 R 的输入且不含留出题号；文字删改被 V0 拒、单独的 rewrite 包可筛；finance-v8 重新冻结后：受保护集通过数逐轮不降，接受的包零可复现退步 | 代码 $0；v8 重冻结后 stream 约 $500 | 代码与假上游测试完成（`s9/frontier`，JOURNAL 2026-10-13 阶段 4i 一条）；待审、合入、重冻结 v8 |
 | 4h | 可复现的接受（DESIGN v1.7 §6.17）：V2b 的误触发门 `replay_max_false_trigger`（0.25）；翻转确认（候选再读一次、W 补到两次，`noisy` 不计）；接受规则改在可复现的计数上（净 ≥ 1、退步 0、全足迹的包修复 ≥ 2）；提示词一句 | 假上游：乱触发的 hook 在 V2b 被拒；确认时翻回去的题不计、包被拒；可复现的修复装入；`screened` 行两组计数 | 代码 $0；finance-v8 约 $480 | 代码完成（2026-10-13，`m1-automationbench`；JOURNAL 2026-10-13 v7 一条）；finance-v8 待批准 |
 | 4g | 学会提升概率（DESIGN v1.6 §6.16）：审核的 `missing` 答法与 `audit_additive_only`、V2d 审核预演（误报率、命中、修订一次）、`audited` 台账与 `audits.json`、几个包的要求；分支 `s8/audit` | 假上游：`missing` 审核在通过题上不报、在声明的失败题上命中并进筛选；乱报的预演不过、修订后过；自由文本的审核答法是候选缺陷；台账与 `audits.json` | 代码 $0 | 已在 `m1-automationbench`（`8a85d24`）；finance-v7 从这个检出跑，期间 `ouroloop/` 不再合入 |
 | 4f | 失败并排与词表（DESIGN v1.5 §6.15）：R 的输入加 `failures.json`（请求、失败断言、写入、`persistent`），`CAUSES` 加 `rule_not_applied` / `vocabulary_mismatch` / `omitted_report`，提示词对准三类形态；分支 `s7/evidence`，finance-v6 期间不合入 | 假上游：notify_ticket 的并排内容、留出题不在、第二轮 `persistent`、新 cause 进诊断的定义与词表 | 代码 $0 | 代码完成（2026-10-12，`s7/evidence`；JOURNAL 阶段 4f 一条）；finance-v6 结束后合入 |
@@ -108,11 +109,9 @@
 
 | # | 事项 | 建议 |
 |---|---|---|
-| 1 | finance-v6 跨域 train 的规模（DESIGN §6.14 的表） | 已定：3 个域（finance + hr + operations）、批 30、筛 30，约 $665，根 $750（用户 2026-10-12："先跑 3 个域"） |
-| 2 | 数值：`hook_aux_calls` 2、`rounds` 上限 12、`patience` 3、留出接受规则（净修复 ≥ 1、退步 ≤ 1、容差 1）、`round_share` 0.15（已按此落码） | 是；2026-10-13 接受规则改为可复现净修复 ≥ 1、可复现退步 0、全足迹的包修复 ≥ 2（DESIGN §6.17） |
-| 5 | finance-v8 的预算：根 $750、final 份额 $230；从 v6 工作线的头起步，5 批 5 轮，筛选加确认约 $480 | 到冻结前批准 |
-| 3 | finance-v5 的预算：根 $500、final 份额 $200；50/50 两份、无基线、7～8 轮、按决定发布、final 两臂 50 题 × 3 遍约 $150 | 到冻结前批准 |
-| 4 | README 主数的口径：final 两臂的绝对通过率与部分得分（公开集 test 份 50 题、medium effort、3 遍），配对差与区间作第二个数 | 是 |
+| 1 | 阶段 4i 的代码（`s9/frontier`）与超参默认值（`regression_evidence` research、抽样 6、前沿 4、每轮合并 1、合并尝试 2、`replay_max_false_trigger` 0.2、文字只增、词表 ≥ 3）；research 抽样只对有可复现退步的包跑、接受规则仍只看留出 | 审后合入 `m1-automationbench` |
+| 2 | finance-v8：4i 合入后重新冻结（根 $750、final 下限 $230、从 v6 工作线的头起步、5 批 5 轮，约 $500） | 到重冻结前批准 |
+| 3 | README 主数的口径：final 两臂的绝对通过率与部分得分（公开集 test 份 50 题、medium effort、3 遍），配对差与区间作第二个数 | 是 |
 
 ## 4 文档地图
 

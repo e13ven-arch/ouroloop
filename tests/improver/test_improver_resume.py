@@ -69,7 +69,8 @@ def test_a_resumed_screen_step_prices_only_what_it_has_left_to_pay(tmp_path, fak
         phases.round_(s.a, 0, out=quiet)
     assert "screened" not in round_state(s.a, 0)["steps"]
     base = s.a.active_release().package_ref
-    allowance = round_mod.confirm_allowance(len(rsi.HELD), Settings())    # the confirmation's attempts, priced with it
+    # the confirmation's attempts and the research sample (v1.8: every package is priced with it), priced with it
+    allowance = round_mod.confirm_allowance(len(rsi.HELD), Settings()) + Settings().regression_research_sample
     whole, _ = price(s.a, base, screen_attempts=len(rsi.HELD) + allowance)
     # the killed attempt; the first held-out task is on record, no confirmation has run yet
     left, _ = price(s.a, base, screen_attempts=1 + allowance)
@@ -187,7 +188,8 @@ def test_the_report_shows_each_round_and_is_the_same_bytes_twice(tmp_path, fake_
     assert r["candidates"] == [{"dir": "package", "kind": "tool", "passed": True}]
     assert r["screens"] == [{"dir": "package", "outcome": "screened", "fixed": 2, "unconditioned": 0, "regressed": 0,
                              "net_flips": 2, "holdout_score": 2, "holdout": 2, "best_so_far": 0, "accepted": True,
-                             "reasons": []}]
+                             "reasons": [], "partial": False, "merge_of": None, "research_sample": 0,
+                             "research_regressed": 0}]
     assert r["best"] == "package" and r["installed"] == short(result.installed)
     assert r["spend"]["usd"] == pytest.approx(result.spend["used"]["usd"])
     assert first["gate"] is None and first["released"] is None and first["release"] == short(result.installed)
@@ -211,7 +213,8 @@ def test_the_screens_that_fit_are_paid_and_the_rest_are_recorded_as_not_run(tmp_
         if "passed their free rungs" in line:
             base = s.a.active_release().package_ref
             one, _ = price(s.a, base, screen_attempts=len(rsi.HELD) + round_mod.confirm_allowance(len(rsi.HELD),
-                                                                                                 Settings()))
+                                                                                                 Settings())
+                           + Settings().regression_research_sample)         # v1.8: the sample is priced too
             bound = float(s.a.pricing().bound()["usd"])
             squeeze(s.a, one * (1 + PRICE_MARGIN) + 2 * bound + 0.001)
     result = phases.round_(s.a, 0, out=squeezing)

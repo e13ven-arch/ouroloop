@@ -293,7 +293,7 @@ def test_a_sealed_final_runs_w0_and_w_star_on_test_and_the_report_counts_its_rea
     lines = []
     b = reopen(a, final={})
     refs = phases.freeze(b, out=lines.append)
-    assert any(line.startswith("estimate   W_star: 6 attempts to run") for line in lines)
+    assert any(line.startswith(f"estimate   W_star: {3 * len(rsi.FINAL)} attempts to run") for line in lines)
     assert f'final_plan_ref = "{refs["final_plan_ref"]}"' in lines
     plan = FinalPlan.from_json(b.objects.get(refs["final_plan_ref"]))
     assert plan.arms == {"W0": b.seed_release().ref(), "W_star": w_star.ref()} and plan.claims == ("C1",)
@@ -322,7 +322,8 @@ def test_a_sealed_final_runs_w0_and_w_star_on_test_and_the_report_counts_its_rea
     c1 = report["final"][0]["c1"]                                            # W* - W0 over the test tasks
     assert c1["tasks"] == len(rsi.FINAL) and c1["low"] <= c1["points"] <= c1["high"] and c1["confidence"] == 0.95
     assert "W* - W0:" in (c.root / "report.md").read_text(encoding="utf-8")
-    assert {arm: s["attempts"] for arm, s in report["final"][0]["arms"].items()} == {"W0": 6, "W_star": 6}
+    assert {arm: s["attempts"] for arm, s in report["final"][0]["arms"].items()} == \
+        {"W0": 3 * len(rsi.FINAL), "W_star": 3 * len(rsi.FINAL)}
     assert "final" in report["spend"]["phases"]
 
     calls = provider.calls
