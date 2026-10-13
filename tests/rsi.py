@@ -31,20 +31,26 @@ FAMILIES = {"rsi.update_stage": "rsi.update",
             "rsi.policy_hold": "rsi.hold",
             "rsi.notify_once": "rsi.notify_once",
             "rsi.notify_ticket": "rsi.notify_ticket",
+            "rsi.update_no_notify": "rsi.update_no_notify",
             "rsi.dev_notify_after_update": "rsi.dev_notify_after_update",
             "rsi.dev_update_stage": "rsi.dev_update",
             "rsi.dev_policy_hold": "rsi.dev_hold",
             "rsi.final_notify_after_update": "rsi.final_notify_after_update",
             "rsi.final_update_stage": "rsi.final_update"}
 SPLITS = {"rsi.update": "train", "rsi.notify_after_update": "train", "rsi.hold": "train",
-          "rsi.notify_once": "train", "rsi.notify_ticket": "train", "rsi.dev_notify_after_update": "dev",
-          "rsi.dev_update": "dev",
+          "rsi.notify_once": "train", "rsi.notify_ticket": "train", "rsi.update_no_notify": "test",
+          "rsi.dev_notify_after_update": "dev", "rsi.dev_update": "dev",
           "rsi.dev_hold": "dev", "rsi.final_notify_after_update": "test", "rsi.final_update": "test"}
 TRAIN = [t for t, f in FAMILIES.items() if SPLITS[f] == "train"]
 DEV = [t for t, f in FAMILIES.items() if SPLITS[f] == "dev"]
 FINAL = [t for t, f in FAMILIES.items() if SPLITS[f] == "test"]
 # the two-way split of stage 4c (ACTIVITY §4): the dev families are test, the release is by decision
 NO_DEV_SPLITS = {f: ("test" if s == "dev" else s) for f, s in SPLITS.items()}
+# v1.8 (DESIGN §6.18): the quiet update in train — its family ranks second in the held-out order, so with seven train
+# tasks (holdout_share 0.4 -> 3) it is held out beside the notify pair: the held-out passing task a global "post in
+# #ops" heuristic breaks while it fixes the pair
+QUIET = "rsi.update_no_notify"
+QUIET_SPLITS = {**SPLITS, "rsi.update_no_notify": "train"}
 
 # A preset for the miniature domain: the real preset's every rule, with the gate's floors and the limits small enough for
 # three dev tasks and a scripted actor. Registered under its own name; nothing outside the tests reads it.
@@ -66,6 +72,7 @@ _preset["schedule"].update({"rounds": 4, "patience": 2})
 presets.PRESETS[TEST_PRESET] = _preset
 HELD = ("rsi.notify_after_update", "rsi.notify_after_update_variant")
 STUDY = ("rsi.update_stage", "rsi.policy_hold", "rsi.notify_once", "rsi.notify_ticket")
+HELD_QUIET = (*HELD, QUIET)             # the held-out part under QUIET_SPLITS (the studied part is STUDY)
 
 PRICING = {"input_per_1k": 0.004, "output_per_1k": 0.02, "cache_read_per_1k": 0.0002, "cache_write_per_1k": 0.008,
            "max_input_tokens": 20000, "max_output_tokens": 5000, "source": "test prices"}
@@ -144,7 +151,8 @@ def _needs(text: str) -> dict:
             "contact": CONTACTS.get(name or "", ""),
             "notify": "#ops" in text and phrase is not None,
             "phrase": (phrase.group(1).strip() if phrase else ""),
-            "hold": "change nothing" in text}
+            "hold": "change nothing" in text,
+            "quiet": "#ops" in text and "do not post" in text}       # the request forbids a post in #ops
 
 
 def _done(messages: list[dict]) -> dict:
@@ -194,12 +202,15 @@ class BusinessWorker:
     model = "scripted-1"
 
     def __init__(self, *, repeat_notify: bool = False, forget_notify: bool = False, ignore_pushback: bool = False,
-                 flaky_tool: bool = False, flaky_notify: bool = False, usage: dict | None = None):
+                 flaky_tool: bool = False, flaky_notify: bool = False, suggestible: bool = False,
+                 usage: dict | None = None):
         """`flaky_tool`: the package's notify tool is used only on a task's even-numbered attempts (a candidate whose
         fix does not repeat); `flaky_notify`: without the tool, the notification is posted on even-numbered attempts
-        unprompted (a working line whose own readings disagree)."""
+        unprompted (a working line whose own readings disagree); `suggestible` (v1.8): a pushback that names #ops
+        makes it post there even when the request forbade it — the agent of finance-v7's s4, which did what the
+        hook said rather than what the task's documents said."""
         self.repeat_notify, self.forget_notify, self.ignore_pushback = repeat_notify, forget_notify, ignore_pushback
-        self.flaky_tool, self.flaky_notify = flaky_tool, flaky_notify
+        self.flaky_tool, self.flaky_notify, self.suggestible = flaky_tool, flaky_notify, suggestible
         self.usage = usage or {"input_tokens": 100, "output_tokens": 20}
         self.calls = 0
         self.seen: list = []
@@ -253,8 +264,15 @@ class BusinessWorker:
         if want["notify"] and self.repeat_notify and done["sent"] == 1:
             return call("api_fetch", {"method": "POST", "url": SLACK,
                                       "body": json.dumps({"channel": "C1", "text": f"{want['phrase']} again"})})
-        return self._finish("Done: the record is updated." + (" Message posted." if done["sent"] else "") + planned,
-                            names, usage)
+        pushback_text = " ".join(str(m.get("content", "")) for m in messages if m.get("role") == "user") \
+            + " ".join(str(r) for r in read)
+        if want["quiet"] and self.suggestible and pushed and "#ops" in pushback_text.split(PUSHBACK, 1)[-1] \
+                and done["sent"] == 0:
+            return call("api_fetch", {"method": "POST", "url": SLACK,
+                                      "body": json.dumps({"channel": "C1", "text": "update for the contact"})})
+        quiet = " No message in #ops, as the request says." if want["quiet"] else ""
+        return self._finish("Done: the record is updated." + (" Message posted." if done["sent"] else "") + quiet
+                            + planned, names, usage)
 
     def _finish(self, text: str, names: set, usage: dict) -> ChatTurn:
         if getattr(self, "cited", None):

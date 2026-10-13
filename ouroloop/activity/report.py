@@ -124,20 +124,59 @@ def rounds_report(activity) -> list[dict]:
             screens.append({"dir": r["dir"], "outcome": sc.outcome, "fixed": len(sc.fixed),
                             "unconditioned": len(sc.unconditioned), "regressed": len(sc.regressed),
                             "net_flips": sc.net_flips, "holdout_score": sc.holdout_score, "holdout": len(sc.holdout),
-                            "best_so_far": sc.best_so_far, "accepted": sc.accepted, "reasons": list(sc.reasons)})
+                            "best_so_far": sc.best_so_far, "accepted": sc.accepted, "reasons": list(sc.reasons),
+                            # v1.8
+                            "partial": sc.partial, "merge_of": sc.merge_of or None,
+                            "research_sample": len(sc.research_sample),
+                            "research_regressed": len(sc.research_regressed)})
         accepted = steps.get("accepted") or {}
+        measured = steps.get("measure") or {}
         scope = state.get("account") or f"{activity.scope_id}:round-{state['index']}"
         used = activity.budgets.usage(scope, book) if scope in book.get("scopes", {}) else {}
+        frontier = [{"stage": r["stage"], "entry": r.get("entry"), "dir": r.get("dir"), "reason": r.get("reason")}
+                    for r in ledger.rows(round_id=state["round_id"])
+                    if r["stage"] in ("partial", "frontier_pruned", "merged", "abandoned")]
         out.append({"round": state["round_id"], "status": state.get("status"), "stop": state.get("stop"),
                     "causes": {c.name: len(c.tasks) for c in causes},
                     "focus": [{"cause": r["name"], "tasks": len(r["tasks"]), "kinds": [k["kind"] for k in r["kinds"]]}
                               for r in focus.ranked] if focus else [],
                     "require_code": bool(focus and focus.require_code),
+                    "merge": [m["entry"] for m in focus.merge] if focus else [],
+                    "protected": {"passed": measured.get("protected_passed"), "tasks": measured.get("protected")}
+                    if measured.get("protected") is not None else None,
                     "candidates": verified, "ladder": (steps.get("verified") or {}).get("ladder") or {},
                     "screens": screens, "best": (steps.get("screened") or {}).get("best"),
                     "installed": short(accepted["installed"]) if accepted.get("installed") else None,
+                    "frontier": frontier,
                     "spend": {k: round(v, 6) for k, v in used.items() if v}})
     return out
+
+
+def frontier_report(activity) -> dict | None:
+    """v1.8 (DESIGN §6.18): how the accumulation went — the protected set's pass count round by round, the
+    frontier's entries by status, the merges screened and accepted, and whether the research sample caught a
+    regression where the held-out screen confirmed one."""
+    path = activity.root / "rounds" / "frontier.json"
+    ledger_path = activity.root / "ledger" / "experience.jsonl"
+    if not path.exists() and not ledger_path.exists():
+        return None
+    from ..improver.ledger import Ledger
+    ledger = Ledger(activity.root)
+    entries = json.loads(path.read_text(encoding="utf-8")).get("entries") if path.exists() else []
+    by_status: dict = {}
+    for e in entries or ():
+        by_status[e["status"]] = by_status.get(e["status"], 0) + 1
+    screened = [r for r in ledger.rows(stage="screened") if r.get("outcome") == "screened"]
+    merges = [r for r in screened if r.get("merge_of")]
+    regressing = [r for r in screened if r.get("regressed")]
+    sampled = [r for r in regressing if r.get("research_sample")]
+    curve = [{"round": r.get("round_id"), "passed": r.get("protected_passed"), "tasks": r.get("protected")}
+             for r in ledger.rows(stage="measured") if r.get("protected") is not None]
+    return {"protected_curve": curve,
+            "entries": {"total": len(entries or ()), **by_status},
+            "merges": {"screened": len(merges), "accepted": sum(1 for r in merges if r.get("accepted"))},
+            "research": {"packages_with_regressions": len(regressing), "sampled": len(sampled),
+                         "hits": sum(1 for r in sampled if r.get("research_regressed"))}}
 
 
 def stream_report(activity) -> dict | None:
@@ -210,6 +249,7 @@ def build_report(activity) -> dict:
             "release": short(activity.releases.active_ref()) if activity.releases.active_ref() else None,
             "released": short(activity.releases.released_ref()) if activity.releases.released_ref() else None,
             "baseline": baseline, "rounds": rounds_report(activity), "stream": stream_report(activity),
+            "frontier": frontier_report(activity),
             "gate": gate_report(activity), "memory": memory_report(activity),
             "final": finals,
             "test_reads": sum(1 for e in events if e.get("event") == "test_read"),
@@ -250,22 +290,45 @@ def render_markdown(report: dict) -> str:
         lines.append(f"- {r['round']} {r['status']}" + (f" ({r['stop']})" if r.get("stop") else "")
                      + f": causes {r['causes']}; focus "
                      + ", ".join(f"{f['cause']}->{'/'.join(f['kinds'][:3])}" for f in r["focus"])
-                     + (" (a tool or hook required)" if r.get("require_code") else ""))
+                     + (" (a tool or hook required)" if r.get("require_code") else "")
+                     + (f"; merge {', '.join(r['merge'])}" if r.get("merge") else "")
+                     + (f"; protected {r['protected']['passed']}/{r['protected']['tasks']}" if r.get("protected")
+                        else ""))
         if r["candidates"]:
             lines.append("  candidates " + ", ".join(
                 f"{c['dir']} ({c['kind']}, {c.get('outcome') or ('passed' if c['passed'] else 'failed')})"
                 for c in r["candidates"]) + f"; rungs passed {r['ladder']}")
         for sc in r["screens"]:
-            lines.append(f"  screen {sc['dir']}: {sc['outcome']}, held out {sc['holdout_score']}/{sc['holdout']} "
+            lines.append(f"  screen {sc['dir']}" + (f" (merge of {sc['merge_of']})" if sc.get("merge_of") else "")
+                         + f": {sc['outcome']}, held out {sc['holdout_score']}/{sc['holdout']} "
                          f"(best so far {sc['best_so_far']}), fixed {sc['fixed']} (unconditioned "
                          f"{sc['unconditioned']}), regressed {sc['regressed']}, net {sc['net_flips']}: "
                          + ("accepted" if sc["accepted"] else "rejected" + (f" ({'; '.join(sc['reasons'])})"
-                                                                           if sc["reasons"] else "")))
+                                                                           if sc["reasons"] else ""))
+                         + (" — partial" if sc.get("partial") else "")
+                         + (f"; research sample {sc['research_sample']}, regressed {sc['research_regressed']}"
+                            if sc.get("research_sample") else ""))
+        for f in r.get("frontier") or ():
+            lines.append(f"  frontier {f['stage']} {f.get('entry') or ''}" + (f" ({f['dir']})" if f.get("dir") else "")
+                         + (f": {f['reason']}" if f.get("reason") else ""))
         if r["installed"]:
             lines.append(f"  installed {r['best']} on the working line as {r['installed']}")
         lines.append(f"  spend {r['spend']}")
     if not report["rounds"]:
         lines.append("- none run")
+    lines += ["", "## Accumulation (v1.8)"]
+    fr = report.get("frontier")
+    if not fr:
+        lines.append("- no round")
+    else:
+        curve = fr["protected_curve"]
+        lines.append("- protected set (held-out tasks the first reading passed), round by round: "
+                     + (", ".join(f"{c['passed']}/{c['tasks']}" for c in curve) if curve else "none"))
+        lines.append(f"- frontier entries {fr['entries']}; merges screened {fr['merges']['screened']}, accepted "
+                     f"{fr['merges']['accepted']}")
+        rs = fr["research"]
+        lines.append(f"- research sample: {rs['sampled']} of {rs['packages_with_regressions']} regressing packages "
+                     f"sampled, {rs['hits']} with a regression in the sample")
     lines += ["", "## Stream"]
     st = report.get("stream")
     if not st:

@@ -454,14 +454,14 @@ v1.8 在 4h 之上加四条，参数都进 K 的 `improver` 节：
 
 | 机制 | 内容 | 超参（默认） |
 |---|---|---|
-| 退步证据回灌 R | 三档，逐级包含。`counts`：现状，只有计数。`abstract`：每道可复现退步的留出题给 R 一条去题化记录——域、候选下没过而 W 下过的断言**类别**（不含参数）、候选下在该题出手的组件与它们说的话（R 自己写的文字，原样）、agent 写入的变化（按工具与路由的次数：W 下 n 次、候选下 m 次，不含参数值）、终止方式；不含题 id、请求、任何取自世界的值。`research`：再从研究部分抽 `regression_research_sample` 道稳定通过的题（回放里候选的 hook 会出手的优先，其余随机）在候选下跑一遍，退步的题 R 可以 `read_trajectory` 读 W 下与候选下两条轨迹——这些题 R 本来看得到，不泄漏，每包约 $3。证据写 `rounds/r<i>/regressions.json`，下一轮进 `inputs/regressions.json`；`screened` 行带它的 ref | `regression_evidence`（`research`；可取 `counts` / `abstract` / `research`）、`regression_research_sample`（6，cap） |
-| 前沿与合并 | 筛选被拒、可复现修复 ≥ `frontier_min_fixes`、且只因可复现退步被拒的包是**部分包**，进前沿 `rounds/frontier.json`：文件、声明、修复集与退步集（留出题号只在宿主）、退步证据、尝试次数。前沿按可复现修复排序，超 `frontier_max` 丢最弱；工作线后来已通过它的全部修复题的条目退出（`subsumed`）。前沿非空时聚焦清单加一项 `merge`：给 R 该部分包相对当时基线的 diff（R 自己的代码）、修复与退步的计数、退步证据；要求交一个**条件化版本**——同一机制，触发条件收窄到不碰退步形态（改成"文档明确要求时才"、工具 + 带谓词的 hook 等）。合并包占 `packages_per_round` 的一个名额，每轮至多 `merge_per_round` 个，照常验收与筛选；接受即装入，条目退出（`merged`）；再被拒则 `attempts` 加一，到 `frontier_max_attempts` 退出（`abandoned`）。不做：两个已接受包之间的合并（叠装已覆盖）；前沿条目直接装入（它有可复现退步） | `frontier_max`（4，cap）、`merge_per_round`（1，cap）、`frontier_min_fixes`（1，floor）、`frontier_max_attempts`（2，cap） |
+| 退步证据回灌 R | 三档，逐级包含。`counts`：现状，只有计数。`abstract`：每道可复现退步的留出题给 R 一条去题化记录——域、候选下没过而 W 下过的断言**类别**（不含参数）、候选下在该题出手的组件与它们说的话（R 自己写的文字，原样）、agent 写入的变化（按工具与路由的次数：W 下 n 次、候选下 m 次，不含参数值）、终止方式；不含题 id、请求、任何取自世界的值。`research`：只对有可复现退步的包，再从研究部分抽 `regression_research_sample` 道 W 读数通过的题（回放里候选的 hook 误触发的优先，其余按候选名播种的固定顺序）在候选下跑一遍（role `research`），退步的题 R 可以 `read_trajectory` 读 W 下与候选下两条轨迹——这些题 R 本来看得到，不泄漏，每包约 $3。证据写 `rounds/r<i>/regressions.json`，下一轮进 `inputs/regressions.json`；`screened` 行带它的 ref | `regression_evidence`（`research`；可取 `counts` / `abstract` / `research`）、`regression_research_sample`（6，cap） |
+| 前沿与合并 | 筛选被拒、可复现修复 ≥ `frontier_min_fixes`、且只因可复现退步被拒的包是**部分包**，进前沿 `rounds/frontier.json`：文件、声明、修复集与退步集（留出题号只在宿主）、退步证据、尝试次数。前沿按可复现修复排序，超 `frontier_max` 丢最弱（`dropped`）；工作线后来已通过它的全部修复题的条目退出（`subsumed`）。前沿非空时聚焦清单加一项 `merge`：给 R 该部分包相对当时基线的 diff（R 自己的代码）、修复与退步的计数、退步证据；要求交一个**条件化版本**——同一机制，触发条件收窄到不碰退步形态（改成"文档明确要求时才"、工具 + 带谓词的 hook 等）。合并包占 `packages_per_round` 的一个名额，每轮至多 `merge_per_round` 个，照常验收与筛选；接受即装入，条目退出（`merged`）；再被拒则 `attempts` 加一，到 `frontier_max_attempts` 退出（`abandoned`）。不做：两个已接受包之间的合并（叠装已覆盖）；前沿条目直接装入（它有可复现退步） | `frontier_max`（4，cap）、`merge_per_round`（1，cap）、`frontier_min_fixes`（1，floor）、`frontier_max_attempts`（2，cap） |
 | 文字只增 | `prompt/*.md` 与父包已有的 `skills/*.md`，候选的改动只能是插入：相对父包的 diff 里没有删除或改写的行。要删或改写已有文字，那个包只能含这一个组件（kind prompt 或 skill，声明 `rewrite: true`），单独筛，按全足迹规则接受（`accept_min_whole_fixes`）。V0 执行；Meta-Harness 赢的候选是"纯增量"，ACE 的上下文只做增量更新，都是同一条经验 | `text_additive_only`（true，fixed） |
 | 启发式软信号 | V0 扫 hook / tool 代码里作为触发条件的字面词表（正则或列表里 ≥ `heuristic_terms_min` 个自然语言词），记进 verdict 与台账 `verified` 行的 `heuristic_terms`，并进 R 的 `regressions.json` 与 `frontier.json`（"这个机制靠词表触发"）；不拒绝。提示词写明：机制的条件必须来自本题的文档与请求，写死的词表在别的题上会反 | `heuristic_terms_min`（3，floor） |
 
 另外 `replay_max_false_trigger` 从 0.25 降到 0.2（cap；v7 装上的噪声 hook 接近 1.0，v1.7 的夹具是 0.67）。
 
-怎么判断它有没有用（finance-v8 重新冻结后，报告并列）：工作线在受保护集（留出里 W 两次都过的题）上的通过数逐轮不降；接受的包可复现退步为 0；只因退步被拒的包里，经合并后被接受的比例；研究部分抽样退步的命中率（`research` 档有没有抓到留出上也退步的形态）。产出的度量不是"每轮接受几个包"，是工作线的留出通过数的单调曲线。
+怎么判断它有没有用（finance-v8 重新冻结后，报告并列）：工作线在受保护集（留出里首次读数通过的题；每轮 `measured` 行记 `protected_passed`）上的通过数逐轮不降；接受的包可复现退步为 0；只因退步被拒的包里，经合并后被接受的比例；研究部分抽样退步的命中率（`research` 档有没有抓到留出上也退步的形态）。产出的度量不是"每轮接受几个包"，是工作线的留出通过数的单调曲线。
 
 仍不做：装入后的回退监测（v1.7 推迟）；两个已接受包之间的 GEPA 式合并。
 

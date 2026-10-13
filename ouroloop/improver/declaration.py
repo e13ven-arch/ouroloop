@@ -30,6 +30,9 @@ class Component(Record):
     scripts: dict = field(default_factory=dict)     # task_id -> toolcheck script (a tool)
     probes: dict = field(default_factory=dict)      # task_id -> [{args, expect}] (a tool, IMPROVER §8.1)
     uses_model: bool = False            # a hook that calls the aux model (no V2b; metered at V3)
+    rewrite: bool = False               # v1.8: a prompt or skill that deletes or rewrites existing text (V0 refuses it
+                                        # otherwise); the package holds this component alone and is screened as a
+                                        # whole-footprint one (accept_min_whole_fixes)
 
     def __post_init__(self):
         object.__setattr__(self, "cause_ids", tuple(self.cause_ids or ()))
@@ -51,6 +54,7 @@ class Declaration(Record):
     components: tuple = ()              # (Component)
     differs_from: tuple = ()            # ({ref, how}) of earlier candidates it is not a repeat of
     fixed: str = ""                     # "" for R's; the fixed code's source otherwise (snapshot, promotion, removal)
+    merge_of: str = ""                  # v1.8: the frontier entry this package is the conditioned version of
 
     def __post_init__(self):
         comps = tuple(c if isinstance(c, Component) else Component.from_json(dict(c)) for c in self.components or ())
@@ -133,16 +137,20 @@ def _component(raw, *, kinds_allowed, index: int) -> tuple[Component | None, str
     uses_model = bool(raw.get("uses_model"))
     if uses_model and kind != "hook":
         return None, f"{where}.uses_model is a hook's (an on_finish or after_turn hook that calls the aux model)"
+    rewrite = bool(raw.get("rewrite"))
+    if rewrite and kind not in ("prompt", "skill"):
+        return None, f"{where}.rewrite is a prompt's or a skill's (one that deletes or rewrites existing text)"
     return Component(kind=kind, site=None if site in (None, "") else str(site), cause_ids=tuple(causes),
                      predicted_affected=tuple(predicted), trigger=str(raw["trigger"])[:TRIGGER_CHARS],
                      scripts=dict(scripts),
                      probes={k: [{"args": dict(x["args"]), "expect": x.get("expect")} for x in v]
-                             for k, v in probes.items()}, uses_model=uses_model), ""
+                             for k, v in probes.items()}, uses_model=uses_model, rewrite=rewrite), ""
 
 
-def read_declaration(raw, *, dirs, kinds_allowed) -> tuple[Declaration | None, str]:
+def read_declaration(raw, *, dirs, kinds_allowed, merge_ids=()) -> tuple[Declaration | None, str]:
     """A declaration from `finish`'s arguments, or why it is not one (handed back to R as the tool's error). `dirs`
-    are the candidate directories the session wrote; a declaration without `dir` is candidates/package's."""
+    are the candidate directories the session wrote; a declaration without `dir` is candidates/package's. `merge_ids`
+    are the frontier entries this round merges: a declaration's `merge_of` names one of them (v1.8)."""
     if not isinstance(raw, dict):
         return None, "a declaration is an object"
     name = raw.get("dir") or DEFAULT_DIR
@@ -171,9 +179,15 @@ def read_declaration(raw, *, dirs, kinds_allowed) -> tuple[Declaration | None, s
     if not isinstance(differs, list) or not all(isinstance(d, dict) and isinstance(d.get("ref"), str)
                                                 for d in differs):
         return None, "differs_from is a list of {ref, how}"
+    merge_of = raw.get("merge_of") or ""
+    if not isinstance(merge_of, str):
+        return None, "merge_of is the id of the frontier entry this package is the conditioned version of"
+    if merge_of and merge_of not in set(merge_ids):
+        return None, f"merge_of {merge_of!r} is not a frontier entry this round merges " \
+                     f"({sorted(merge_ids) or 'none: focus.json lists none'})"
     return Declaration(dir=name, mechanism=mechanism.strip()[:MECHANISM_CHARS], components=tuple(comps),
                        differs_from=tuple({"ref": d["ref"], "how": str(d.get("how") or "")[:TRIGGER_CHARS]}
-                                          for d in differs)), ""
+                                          for d in differs), merge_of=merge_of), ""
 
 
 def fixed_declaration(dir_name: str, *, source: str, kind: str, site: str | None, cause_id: str, trigger: str,

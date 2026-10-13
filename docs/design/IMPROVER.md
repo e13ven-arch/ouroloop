@@ -55,7 +55,7 @@ class Settings:
 合并规则：数量上限 cap（`packages_per_round`、`fixed_per_round`、会话上限、`hook_aux_calls`、`l5_per_round`、`round_share`、`stream_screen_max`）；`audit_hook_share` floor；门槛 floor（`accept_min_net_flips`、`toolcheck_min_pass`、`replay_min_triggers`、`reach_*`、`holdout_share`）；退步与容差 cap；`require_code_component`、`priors`、`removal_zero_credit_rounds` fixed；`causes`、`mechanizable` superset。v1.1 的 `k`、`explore_slots`、`l5_slots`、`code_guarantee`、`screen_*`、`thin_screen_tasks`、`gate_every` 删除。
 
 
-v1.8（阶段 4i，DESIGN §6.18）：`regression_evidence` 三档逐级包含（配置可降档不可升档以外的任何值都拒绝）；`replay_max_false_trigger` 默认改为 0.2。
+v1.8（阶段 4i，DESIGN §6.18）：`regression_evidence` 三档逐级包含，规则 free（三档之一都可以配；research 档的花费由 `regression_research_sample` 的 cap 封顶，三档都只读研究题）；`replay_max_false_trigger` 默认改为 0.2。
 
 ## 3 一轮（`round.py`，v1.2）
 
@@ -282,20 +282,24 @@ ScreenResult 多：partial: bool（可复现修复 ≥ frontier_min_fixes 且只
 
 # frontier.py
 @dataclass
-class FrontierEntry: id; round_index; dir; files_ref; declaration_ref; fixed: tuple; regressed: tuple; regression_ref; attempts: int; status: str   # active | merged | subsumed | abandoned
+class FrontierEntry: id; round_index; tag; dir; line; files_ref; declaration_ref; base_package_ref; fixed: tuple; regressed: tuple; regression_ref; screen_ref; mechanism; kind; heuristic_terms: dict; attempts: int; status: str; history: tuple   # status: active | merged | subsumed | abandoned | dropped（超 frontier_max 被丢）
 class Frontier:                     # rounds/frontier.json
-    def add(self, entry) -> None    # 按可复现修复排序，超 frontier_max 丢最弱
-    def prune(self, line_passes: set[str]) -> list[str]   # 修复集全被工作线通过的条目 → subsumed
-    def pick(self) -> FrontierEntry | None               # 本轮要合并的条目：attempts 最少、修复最多
-    def for_prompt(self, entry, *, base_files, hide) -> dict   # diff、计数、证据；留出题号换成计数
+    def add(self, entry) -> (entry, dropped_ids)          # 同一候选再加是原条目（续跑）；按可复现修复排序，超 frontier_max 的弱者 dropped
+    def prune(self, line, line_passes) -> list[str]        # 修复集全被工作线通过的条目 → subsumed
+    def picks(self, line, n) -> list[FrontierEntry]        # 本轮要合并的条目：attempts 最少、修复最多，至多 n 个
+    def merged(self, entry_id, *, round_id, dir_name)      # 合并包装入 → merged
+    def failed(self, entry_id, *, round_id, dir_name, replacement=None) -> (entry, "retried" | "replaced" | "abandoned" | "on_record" | "not_active")
+    def for_prompt(self, entry, *, base_files, files, declaration, regressions, hide, scrub) -> dict   # diff、计数、证据；留出题号换成计数
 ```
 
 - 筛选之后：`partial` 的包进前沿（`Frontier.add`，台账 `partial`）；工作线每次装入后 `prune`（台账 `frontier_pruned`）。
-- 聚焦：前沿非空且本轮 `merge_per_round` 未用尽时，`Focus.merge = Frontier.pick()`，提示词的合并段打开：交一个条件化版本，目录 `candidates/merge/`，声明 `merge_of: <entry id>`，组件同原包（触发条件收窄）。
-- 验收与筛选与普通包相同；接受 → 装入，条目 `merged`；拒绝 → `attempts += 1`，到 `frontier_max_attempts` 则 `abandoned`；合并包自己也可以是 `partial`（替换原条目，attempts 继承）。
-- `research` 档的抽样：研究部分里 W 两次都过的题，按 V2b 的回放里候选 hook 出手的题优先，不足随机补到 `regression_research_sample`；候选跑一遍（role `screen`，账户同筛选）；退步的题记 `research_regressed`，`regressions.json` 里给两条轨迹的 session id（R 用 `read_trajectory` 读）。
-- 文字只增（V0）：`verify/static.py` 对 `prompt/*.md` 与父包已有的 `skills/*.md` 做行级 diff，出现删除或改写即 `PackageError`，除非该包只含这一个组件且声明 `rewrite: true`（那它按全足迹规则筛）。
-- 启发式软信号（V0）：`heuristic_terms(code) -> list[str]`：正则字面量与字符串列表里连续的自然语言词 ≥ `heuristic_terms_min` 个的那些词；写进 verdict 与 `verified` 行；`frontier.json` 与 `regressions.json` 里标在对应组件上。
+- 聚焦：前沿非空时 `Focus.merge = Frontier.picks(line, merge_per_round)`（每项：entry、round、dir、mechanism、kind、修复与退步计数、attempts、`cause_ids`——条目所列 cause 在本轮的 id，本轮没诊断到的沿用条目自己的、`candidate_dir`），提示词的合并段打开：交一个条件化版本，目录 `candidates/merge/`（第二个 `merge-2/`），声明 `merge_of: <entry id>`，组件同原包（触发条件收窄）。`read_declaration` 只接受 focus.json 列出的 entry id；V0 的 cause 检查也接受条目自己的 cause id。
+- `partial` 的判定（`screen.partial_of`）：outcome 为 screened、未接受、有可复现退步、可复现修复 ≥ `frontier_min_fixes`，且把退步计数置零后接受规则的各条都成立（全足迹的包仍要 `accept_min_whole_fixes` 个修复）。
+- 验收与筛选与普通包相同；接受并装入 → 条目 `merged`（台账 `merged`）；拒绝 → `attempts += 1`，到 `frontier_max_attempts` 则 `abandoned`（台账 `abandoned`）；合并包自己也是 `partial` 时替换原条目的文件、修复集、退步集与证据，attempts 继承（台账 `partial`，带 entry）。
+- `research` 档的抽样：只对有可复现退步的包做（证据是给退步用的）；从研究部分里 W 的读数通过的题里取，V2b 回放里候选 hook 误触发的题优先，其余按候选名播种的固定顺序补到 `regression_research_sample`；候选跑一遍（role `research`，账户同筛选，核价时每包按上限计入）；退步的题记 `research_regressed`，`regressions.json` 里给两条轨迹的 session id（R 用 `read_trajectory` 读；只会是研究题）。证据对象（`regression_evidence_set`：level、计数、records、research、heuristic_terms）由 `screened` 行的 `regression_ref` 与前沿条目引用，同时写 `rounds/<tag>/regressions.json`；下一轮的 `inputs/regressions.json` 取本线最近 8 个带证据的包，按当前档只给对应内容。
+- 受保护集：留出里首次有效读数通过的题；每轮 `measured` 行记 `protected` 与 `protected_passed`，报告画逐轮曲线。
+- 文字只增（V0）：`verify/static.py` 的 `text_problems` 对 `prompt/*.md` 与父包已有的 `skills/*.md` 做行级 diff，出现删除或改写即 V0 不过，除非该包只含这一个组件且声明 `rewrite: true`（筛选时按全足迹条件）；声明了 rewrite 却还有别的组件也不过。固定代码的候选不查。
+- 启发式软信号（V0）：`heuristic_terms(code, minimum) -> list[str]`：只数作为条件用的词表——`in` / `not in` 右边的字面量列表（或模块常量）、for / 推导式遍历的词表、交给 `re.*` 的正则的候选项；schema 的 `required` 这类数据不算。≥ `heuristic_terms_min` 个自然语言词时写进 V0 结果的 `heuristic_terms`（按文件）、verdict、`verified` 行、前沿条目与证据对象；不拒绝。
 
 台账新增 stage：`partial`、`frontier_pruned`、`merged`、`abandoned`。报告新增：受保护集通过数的逐轮曲线、前沿的进出、合并的接受率、research 档抽样的命中率。
 

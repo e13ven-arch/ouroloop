@@ -23,8 +23,8 @@ What has moved these tasks: code that does a step for the agent (a tool) or chec
 than text that asks the model to try harder. A tool is only useful if the agent calls it: give it a name and a
 description that make the call obvious, make its output say what it did, and add the hook that makes the agent call
 it or checks its result, and the skill that says when. A hook acts when something is wrong, not on every attempt: the
-host replays it on recorded attempts and rejects it when it acts on more than a quarter of the passing ones (run_check
-shows the rate); a text the agent should see every time is a prompt change. The request is the task's text as the agent
+host replays it on recorded attempts and rejects it when it acts on more than {replay_max_false_trigger} of the passing
+ones (run_check shows the rate); a text the agent should see every time is a prompt change. The request is the task's text as the agent
 received it — the package's own prompts and the system message are not the request. An on_finish or after_turn hook may call ctx.model (role aux,
 at most {hook_aux_calls} calls per attempt) to audit the agent's work against the request before it finishes: declare
 such a hook with uses_model: true. An audit answers {"missing": ["<a requirement with no matching write>", ...]} or
@@ -38,6 +38,19 @@ share of the passing ones (the false alarms come back to you with the task's req
 or hook (the ledger records a round without one). The agent, a config knob or a vendored file may change too, at most
 {l5_per_round} such change a round; tests under tests/ are free. Never write a task's specific values (names, e-mails,
 ids, amounts) into the package: the host rejects a value that occurs in one train task.
+
+What has broken tasks the agent had right: a global rule read off a few failing cases — "exclude the pending rows",
+"notify every address the document mentions", "push back whenever nothing was posted" — applied to a task whose own
+documents ask for the opposite. The only rule that is right everywhere is the task's own documents: a mechanism's
+condition comes from what the agent read for this task and from the request, not from a fixed list of words
+(run_check notes a hook or tool whose trigger is a list of {heuristic_terms_min} or more words; such a list is wrong on
+the task that uses one of them differently). inputs/regressions.json shows, for every earlier package of this line
+that broke held-out tasks it had passed, what the package did on those attempts and what the agent wrote before and
+after: read it before you write, and narrow the condition instead of trying another global rule. Existing text only
+grows: in prompt/*.md and in a skill the package already has you may add lines, never delete or rewrite them — a
+package that must rewrite existing text holds that one prompt or skill component alone, declared "rewrite": true; it
+is screened on its own and accepted only with {accept_min_whole_fixes} confirmed fixes.
+{merge}
 
 What the persistent failures look like (inputs/failures.json puts each one side by side: the request, the checks that
 failed with the values they expected, every write the agent made, what it said at the end; persistent ones first — they
@@ -69,10 +82,11 @@ site; skill: its name; prompt: system or finish; config: the knob; vendor: the p
 component's name), "cause_ids" (from inputs/focus.json), "predicted_affected" (the train task ids it should fix;
 required for a tool or a hook), "trigger" (when it acts), for a tool "probes" ({task_id: [{"args", "expect"}]}) and/or
 "scripts" ({task_id: Python defining check(ctx, tools) that calls tools["<your tool>"]({...})}), for a hook that
-calls the model "uses_model": true}], "differs_from" (earlier candidates of the archive it is not a repeat of,
-[{"ref", "how"}])}. Each declaration must name every component its package changes and nothing it does not; list in
-cause_ids every cause a component works on. When nothing you can build would help, finish with an empty list: the
-ledger records that the round has no candidate of yours.
+calls the model "uses_model": true, for a prompt or skill that rewrites existing text "rewrite": true}], "differs_from"
+(earlier candidates of the archive it is not a repeat of, [{"ref", "how"}]), "merge_of" (the frontier entry this
+package is the conditioned version of, when focus.json's merge names one)}. Each declaration must name every component
+its package changes and nothing it does not; list in cause_ids every cause a component works on. When nothing you can
+build would help, finish with an empty list: the ledger records that the round has no candidate of yours.
 
 Limits: {max_turns} turns, {max_edits} edits, {max_read} bytes per read (a trajectory or a file) and {max_read_total}
 in all. Each reply, your thinking included, is capped at {max_tokens} output tokens: a reply over the cap is lost and

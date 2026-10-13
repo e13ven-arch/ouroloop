@@ -21,6 +21,8 @@ TEXT_KINDS = ("skill", "prompt")
 L5_KINDS = ("agent", "config", "vendor")
 PRIORS = {"tool": (0.3, 0.3), "hook": (0.3, 0.3), "skill": (0.08, 0.1), "prompt": (0.08, 0.1), "agent": (0.1, 0.3),
           "config": (0.1, 0.2), "vendor": (0.05, 0.3), "model": (0.0, 0.5)}
+# v1.8 (DESIGN §6.18): what R reads of a package's confirmed regressions, each level holding the one before it
+REGRESSION_LEVELS = ("counts", "abstract", "research")
 
 
 @dataclass(frozen=True)
@@ -51,7 +53,8 @@ class Settings:
     hook_aux_calls: int = 2                      # aux model calls an on_finish or after_turn hook may make per attempt
     toolcheck_min_pass: int = 2
     replay_min_triggers: int = 2
-    replay_max_false_trigger: float = 0.25       # v1.7: V2b — the share of the passing attempts replayed a hook may act on
+    replay_max_false_trigger: float = 0.2        # v1.7: V2b — the share of the passing attempts replayed a hook may act on
+                                                 # (v1.8: from 0.25; the hook finance-v7 installed was near 1.0)
     reach_min_tasks: int = 2
     reach_min_score: float = 0.2
     holdout_share: float = 0.4                   # the train tasks R never sees; V3 screens there only
@@ -62,6 +65,19 @@ class Settings:
     accept_floor_tolerance: int = 1              # held-out score at least the activity's best so far minus this
     removal_zero_credit_rounds: int = 3
     round_share: float = 0.15                    # a round's account, as a share of the root's dollars
+    # v1.8 (DESIGN §6.18; IMPROVER §9.5): accumulation without regression
+    regression_evidence: str = "research"        # what R reads of a package's confirmed regressions: counts | abstract
+                                                 # (de-identified records of each one) | research (the abstract records,
+                                                 # and a sample of studied passing tasks run under the candidate, the
+                                                 # regressed ones readable as two trajectories)
+    regression_research_sample: int = 6          # the research level's sample of studied passing tasks, per package
+    frontier_max: int = 4                        # partial packages kept on the frontier (rounds/frontier.json), at most
+    merge_per_round: int = 1                     # frontier entries R is asked to merge (a conditioned version) a round
+    frontier_min_fixes: int = 1                  # confirmed fixes a rejected package needs to be a partial one
+    frontier_max_attempts: int = 2               # merges a frontier entry gets before it is abandoned
+    text_additive_only: bool = True              # prompt/*.md and existing skills/*.md only grow: a package that deletes
+                                                 # or rewrites existing text holds that one component, declared rewrite
+    heuristic_terms_min: int = 3                 # V0 notes a hook or tool whose trigger is a list of this many words
 
     def __post_init__(self):
         for name in ("causes", "mechanizable"):
@@ -99,6 +115,17 @@ class Settings:
                              "500")
         if not 0 < float(self.round_share) <= 1:
             raise ValueError("improver.round_share is a share of the root, in (0, 1]")
+        if self.regression_evidence not in REGRESSION_LEVELS:
+            raise ValueError(f"improver.regression_evidence is one of {list(REGRESSION_LEVELS)}")
+        if min(int(self.regression_research_sample), int(self.frontier_max), int(self.merge_per_round)) < 0:
+            raise ValueError("improver.regression_research_sample, frontier_max and merge_per_round are counts "
+                             "(0 turns the research sample, the frontier or the merges off)")
+        if min(int(self.frontier_min_fixes), int(self.frontier_max_attempts), int(self.heuristic_terms_min)) < 1:
+            raise ValueError("improver.frontier_min_fixes, frontier_max_attempts and heuristic_terms_min are at least 1")
+
+    def evidence_at_least(self, level: str) -> bool:
+        """Whether regression_evidence holds `level` (each level holds the ones before it)."""
+        return REGRESSION_LEVELS.index(self.regression_evidence) >= REGRESSION_LEVELS.index(level)
 
     def prior(self, kind: str) -> tuple[float, float]:
         mean, unc = self.priors.get(kind, (0.0, 0.5))
@@ -156,4 +183,9 @@ RULES = {"packages_per_round": "cap", "fixed_per_round": "cap", "session_max_tur
          "removal_zero_credit_rounds": "fixed", "round_share": "cap", "audit_hook_share": "floor",
          "stream_screen_max": "cap", "failures_max_cases": "cap", "failures_case_chars": "cap",
          "audit_additive_only": "fixed", "audit_max_false_alarm": "cap", "replay_max_false_trigger": "cap",
-         "accept_min_whole_fixes": "floor", "confirm_readings": "floor"}
+         "accept_min_whole_fixes": "floor", "confirm_readings": "floor",
+         # v1.8: the level is the user's (any of the three; the sample's size is capped), the frontier's sizes capped,
+         # its entry threshold a floor, the text rule fixed, the word-list threshold a floor
+         "regression_evidence": "free", "regression_research_sample": "cap", "frontier_max": "cap",
+         "merge_per_round": "cap", "frontier_min_fixes": "floor", "frontier_max_attempts": "cap",
+         "text_additive_only": "fixed", "heuristic_terms_min": "floor"}

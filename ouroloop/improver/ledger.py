@@ -16,15 +16,24 @@ from ..contracts import append_jsonl, locked, now, read_jsonl
 
 STAGES = ("measured", "diagnosed", "focused", "declared", "verified", "audited", "screened", "accepted", "not_stacked",
           "gated", "installed", "rejected", "credited", "removal_proposed", "no_code_candidate", "single_package",
-          "vocabulary_added", "l6_unavailable", "stopped", "playbook")
+          "vocabulary_added", "l6_unavailable", "stopped", "playbook",
+          "partial", "frontier_pruned", "merged", "abandoned")      # v1.8: the frontier's in and out
 # What R reads of a row (the projection): train facts and counts. Anything else of a row stays with the host.
-TASK_LISTS = ("predicted_affected", "fixed", "regressed")       # the projected fields that name train tasks
+TASK_LISTS = ("predicted_affected", "fixed", "regressed", "research_regressed")   # the projected fields naming tasks
 PROJECTED = ("id", "stage", "round_id", "candidate", "dir", "cause", "cause_id", "kind", "site", "trigger",
              "mechanism", "components", "predicted_affected", "differs_from", "fixed", "regressed", "net_flips",
              "fixes", "holdout_score", "best_so_far", "accepted", "reasons", "failed_components", "outcome", "verdict",
              "gain", "fixed_count", "regressed_count", "passed", "steps", "reason", "causes", "require_code",
              "component", "credit", "names", "status", "holdout_passed", "holdout", "stacked_on", "conflicts",
-             "hits", "false_alarms", "false_alarm_rate", "misfires", "named")
+             "hits", "false_alarms", "false_alarm_rate", "misfires", "named",
+             "partial", "entry", "merge_of", "merge", "heuristic_terms", "research_sample", "research_regressed",
+             "attempts", "protected", "protected_passed")           # v1.8
+
+
+def scrub(value, hide):
+    """`value` with every held-out task id of `hide` inside a text replaced (v1.8: R's regression and frontier
+    inputs are built from host records that may name one in a reason)."""
+    return _scrub(value, set(hide)) if hide else value
 
 
 def _scrub(value, hide: set):

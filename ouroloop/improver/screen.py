@@ -24,18 +24,51 @@ accepted package is installed on the working line (`rsi/active.json`, reason `sc
 a rejected one leaves the line where it was. Dev is not read here: the release gate at the end of the activity is
 evaluate's (activity/phases.py `gate`), and `template`, `control_pool`, `gate_attempts` and `price` here serve it.
 
+v1.8 (DESIGN §6.18; IMPROVER §9.5): a rejected package's confirmed regressions come back to R as evidence, at the
+level K sets (`regression_evidence`): `counts` as before; `abstract` adds one de-identified record per regressed
+held-out task (RegressionEvidence: the assertion kinds that failed, the components of the package that acted on the
+attempt with what they said, the writes before and after by route, the termination — no task id, no request, no
+value from the world); `research` adds a sample of studied tasks the working line passes, run once under the
+candidate, whose regressions R may read as two trajectories (they are studied tasks: nothing held out leaks). A
+rejected package with confirmed fixes whose only failed clauses are its regressions is `partial`: the round puts it
+on the frontier (frontier.py) for R to merge into a conditioned version.
+
 The runs go through the activity's `run_arm` (handed in: the improver imports nothing of the activity).
 """
 from __future__ import annotations
 
+import hashlib
+import re
+from collections import Counter
 from dataclasses import dataclass, replace
 
 from ..contracts import Record, register, short
 from ..evaluate.gate import TaskEvalPlan, refill_attempts, shortfall
 from ..evaluate.results import TaskResult
-from .evidence import NOT_READINGS, TRAIN
+from .evidence import NOT_READINGS, NOT_WRITES, TRAIN
 
 WHOLE_KINDS = ("prompt", "agent", "config", "vendor", "removal", "model")
+CANDIDATE_ROLES = ("screen", "confirm", "research")     # the runs a candidate's own readings come from
+SAID_CHARS = 300
+
+
+@register
+@dataclass(frozen=True)
+class RegressionEvidence(Record):
+    """One confirmed regression of a held-out task, de-identified (v1.8): what R reads of it."""
+    TYPE = "regression_evidence"
+    domain: str = ""
+    failed_kinds: tuple = ()            # assertion types the candidate's attempt failed (no params)
+    passed_kinds_before: tuple = ()     # assertion types the task has, every one passed under the working line
+    footprints: tuple = ()              # ({kind, name, site, action, said}): the package's components that acted
+    writes: dict = None                 # {"before": {route: n}, "after": {route: n}}: the agent's writes, no values
+    termination: str = ""               # the candidate attempt's termination
+
+    def __post_init__(self):
+        for name in ("failed_kinds", "passed_kinds_before"):
+            object.__setattr__(self, name, tuple(getattr(self, name) or ()))
+        object.__setattr__(self, "footprints", tuple(dict(f) for f in self.footprints or ()))
+        object.__setattr__(self, "writes", {k: dict(v) for k, v in dict(self.writes or {}).items()})
 
 
 @register
@@ -65,10 +98,16 @@ class ScreenResult(Record):
     stacked_on: str | None = None       # the working-line release this accepted package was stacked on (§9.4)
     reasons: tuple = ()                 # why it is not accepted (empty when accepted or not screened)
     reason: str = ""                    # why it was not screened
+    whole: bool = False                 # v1.8: the footprint is every attempt (accept_min_whole_fixes applies)
+    partial: bool = False               # v1.8: rejected, with confirmed fixes, only for its confirmed regressions
+    regression_ref: str | None = None   # v1.8: the regression evidence object ({level, records, research})
+    research_sample: tuple = ()         # v1.8: studied passing tasks run under the candidate (the research level)
+    research_regressed: tuple = ()      # v1.8: the sample's tasks the candidate failed
+    merge_of: str = ""                  # v1.8: the frontier entry this package merged
 
     def __post_init__(self):
         for name in ("holdout", "failing", "passing", "fixed", "unconditioned", "regressed", "reasons", "flipped_fixed",
-                     "flipped_regressed", "noisy", "unconfirmed"):
+                     "flipped_regressed", "noisy", "unconfirmed", "research_sample", "research_regressed"):
             object.__setattr__(self, name, tuple(getattr(self, name) or ()))
         object.__setattr__(self, "footprints", {k: list(v) for k, v in dict(self.footprints or {}).items()})
 
@@ -179,7 +218,8 @@ def screen(activity, *, run_arm, name: str, package, base_release, holdout: list
     cost = None if not costs or any(c is None for c in costs) else round(sum(costs) / len(costs), 6)
     whole = bool(conditions) and all(c.get("name") == "*" for c in conditions)
     base.update(flipped_fixed=tuple(flipped_fixed), flipped_regressed=tuple(flipped_regressed),
-                unconditioned=tuple(unconditioned), footprints=footprints, holdout_score=score, cost=cost)
+                unconditioned=tuple(unconditioned), footprints=footprints, holdout_score=score, cost=cost,
+                whole=whole)
     # the confirmation (DESIGN §6.17): the flipped tasks again under the candidate, W's readings topped up
     n = int(getattr(settings, "confirm_readings", 1))
     flipped = flipped_fixed + flipped_regressed
@@ -238,9 +278,147 @@ def screen(activity, *, run_arm, name: str, package, base_release, holdout: list
     net = len(fixed) - len(regressed)
     problems = accept_problems(net_flips=net, regressed=len(regressed), holdout_score=score, best_so_far=best_so_far,
                                settings=settings, fixed=len(fixed), whole=whole)
-    return ScreenResult(**base, fixed=tuple(fixed), regressed=tuple(regressed), noisy=tuple(noisy),
-                        unconfirmed=tuple(unconfirmed), confirm_attempts=used, net_flips=net,
-                        accepted=not problems, reasons=tuple(problems))
+    result = ScreenResult(**base, fixed=tuple(fixed), regressed=tuple(regressed), noisy=tuple(noisy),
+                          unconfirmed=tuple(unconfirmed), confirm_attempts=used, net_flips=net,
+                          accepted=not problems, reasons=tuple(problems))
+    return replace(result, partial=partial_of(result, settings))
+
+
+# ---------------------------------------------------------------------------- v1.8: partial packages, the evidence
+def partial_of(result: ScreenResult, settings) -> bool:
+    """A rejected screen with at least frontier_min_fixes confirmed fixes that the accept rule would take if its
+    confirmed regressions were not there: the frontier's entry (DESIGN §6.18)."""
+    if result.outcome != "screened" or result.accepted or not result.regressed:
+        return False
+    if len(result.fixed) < int(getattr(settings, "frontier_min_fixes", 1)):
+        return False
+    without = accept_problems(net_flips=len(result.fixed), regressed=0,
+                              holdout_score=result.holdout_score + len(result.regressed),
+                              best_so_far=result.best_so_far, settings=settings, fixed=len(result.fixed),
+                              whole=result.whole)
+    return not without
+
+
+def candidate_rows(activity, name: str, tasks) -> dict[str, list[TaskResult]]:
+    """{task: the candidate's valid train readings of it}, under the runs named `name` (screen, confirm, research)."""
+    runs = activity.results.runs()
+    out: dict[str, list[TaskResult]] = {t: [] for t in tasks}
+    for r in activity.results.all():
+        run = runs.get(r.run)
+        if r.task_id in out and r.split == TRAIN and r.validity == "valid" and run is not None \
+                and run.candidate == name and run.role in CANDIDATE_ROLES:
+            out[r.task_id].append(r)
+    return out
+
+
+def write_route(e: dict) -> str | None:
+    """The route of a tool event that writes, without values: `PATCH api.hubapi.com/crm/v3/objects/contacts/<id>`
+    for an api_fetch, the tool's name for any other write; None for a read, a search or a finish."""
+    if e.get("kind") != "tool":
+        return None
+    name = str(e.get("name") or "")
+    args = e.get("args") if isinstance(e.get("args"), dict) else {}
+    if name in NOT_WRITES:
+        return None
+    if name != "api_fetch":
+        return name
+    method = str(args.get("method") or "GET").upper()
+    if method in ("GET", "HEAD"):
+        return None
+    url = re.sub(r"^https?://", "", str(args.get("url") or "")).split("?")[0]
+    url = re.sub(r"/[0-9a-f]{6,}(?=/|$)|/\d+(?=/|$)", "/<id>", url)
+    return f"{method} {url}"
+
+
+def writes_of(evidence, session: str) -> dict[str, int]:
+    out: Counter = Counter()
+    for item in evidence.trace.events(session):
+        route = write_route(item["event"])
+        if route:
+            out[route] += 1
+    return dict(sorted(out.items()))
+
+
+def footprints_of(evidence, session: str, tool_names, hook_names) -> list[dict]:
+    """The package's components that acted on the attempt: each of its hooks (`hook_names`: the ones the package
+    added or changed, not the parent's) that answered, with what it said (R's own text), and each of its tools the
+    model called."""
+    out = []
+    tools, hooks = set(tool_names), set(hook_names)
+    for item in evidence.trace.events(session):
+        e = item["event"]
+        if e.get("kind") == "hook" and e.get("action") not in (None, "none") and e.get("name") in hooks:
+            out.append({"kind": "hook", "name": e.get("name"), "site": e.get("site"), "action": e.get("action"),
+                        "said": str(e.get("detail") or "")[:SAID_CHARS]})
+        elif e.get("kind") == "gateway_call" and e.get("role") == "act":
+            for c in (e.get("response") or {}).get("tool_calls") or ():
+                if isinstance(c, dict) and c.get("name") in tools:
+                    out.append({"kind": "tool", "name": c.get("name"), "site": None, "action": "called", "said": ""})
+    return out
+
+
+def regression_evidence(activity, result: ScreenResult, *, evidence, base_package_ref: str, tool_names=(),
+                        hook_names=()) -> list[RegressionEvidence]:
+    """One de-identified record per confirmed regression (the abstract level): the candidate's failing reading of the
+    task against the working line's (`base_package_ref`) passing one. `tool_names` and `hook_names` are the
+    package's own changed components, whose acting is the footprint."""
+    cand = candidate_rows(activity, result.candidate, result.regressed)
+    w_rows = w_readings(activity, base_package_ref, result.regressed)
+    out = []
+    for t in result.regressed:
+        failing = [r for r in cand.get(t) or () if not r.success]
+        if not failing:
+            continue
+        after = failing[-1]
+        before = next((r for r in reversed(w_rows[t]) if r.success), None)
+        ev_after = evidence.of(after)
+        failed = sorted({str(c["type"]) for c in ev_after.failed_checks})
+        kinds_before = sorted({str(a.get("type")) for a in activity.results.grading(before.attempt_id)
+                               if not a.get("excluded")}) if before is not None else ()
+        out.append(RegressionEvidence(
+            domain=str(t).partition(".")[0], failed_kinds=tuple(failed), passed_kinds_before=tuple(kinds_before),
+            footprints=tuple(footprints_of(evidence, ev_after.session, tool_names, hook_names)),
+            writes={"before": writes_of(evidence, before.evidence or before.attempt_id) if before is not None else {},
+                    "after": writes_of(evidence, ev_after.session)},
+            termination=after.termination))
+    return out
+
+
+def research_sample(study, reading: dict, *, fired, n: int, seed: str) -> list[str]:
+    """The studied tasks the working line passes, `n` of them: first those V2b's replay said the candidate's hook acts
+    on (`fired`), then the rest in an order fixed by `seed` (the candidate's name: the same sample when a step is
+    resumed, a different one for another candidate)."""
+    passing = [t for t in study if t in reading and reading[t].success]
+    first = [t for t in passing if t in set(fired)]
+    rest = sorted((t for t in passing if t not in set(fired)),
+                  key=lambda t: hashlib.sha256(f"research:{seed}:{t}".encode()).hexdigest())
+    return (first + rest)[:max(int(n), 0)]
+
+
+def research_run(activity, *, run_arm, name: str, package, base_release, sample: list[str], reading: dict, account,
+                 retries: int) -> dict:
+    """The research level's runs: the sample once under the candidate (role `research`, the screen's account); the
+    tasks it fails where the working line passed are `regressed`, each with the two sessions R may read."""
+    if not sample:
+        return {"sample": [], "regressed": [], "sessions": {}, "outcome": "ok"}
+
+    def run(arm, chosen, retry=0, supersedes=None):
+        return run_arm(activity, release=base_release, split="train", candidate=name, role="research", pairs=chosen,
+                       account=account, arm=arm, retry=retry, supersedes=supersedes, package=package,
+                       notes=f"improver research sample {name}: studied passing tasks under the candidate")
+    rows = refill_attempts(run("subject", [(t, 0) for t in sample]), run, "subject", int(retries))
+    after = latest(rows)
+    if any(r.failure_class == "budget_exhausted" for r in after.values()):
+        return {"sample": list(sample), "regressed": [], "sessions": {}, "outcome": "budget_exhausted"}
+    regressed, sessions = [], {}
+    for t in sample:
+        r = after.get(t)
+        if r is None or r.validity != "valid" or r.success or t not in reading:
+            continue
+        regressed.append(t)
+        sessions[t] = {"working_line": reading[t].evidence or reading[t].attempt_id,
+                       "candidate": r.evidence or r.attempt_id}
+    return {"sample": list(sample), "regressed": regressed, "sessions": sessions, "outcome": "ok"}
 
 def pick_order(results) -> list[ScreenResult]:
     """The accepted results in install order: the most net flips, then the lower cost (unknown last), then the order

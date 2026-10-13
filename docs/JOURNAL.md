@@ -8,6 +8,27 @@
 
 ---
 
+## 2026-10-13 阶段 4i 落地：退步证据回灌、前沿与合并、文字只增、词表软信号（DESIGN v1.8 §6.18）；$0
+
+**做了什么。** 分支 `s9/frontier`，按 IMPROVER §9.5 把 v1.8 的四条机制写成代码，全部参数进 K 的 `improver` 节（`settings.py`）：
+
+- 退步证据回灌 R（`screen.py`）：筛选后有可复现退步的包，按 `regression_evidence` 的档生成证据对象（`regression_evidence_set`）——`counts` 只有计数；`abstract` 每道退步的留出题一条去题化记录（`RegressionEvidence`：域、候选下没过的断言类别、W 下该题的断言类别、候选下出手的组件与它说的话、前后写入按路由计数、终止方式；没有题号、请求、世界里的值）；`research` 再从研究部分抽 W 通过的题（V2b 误触发的优先，其余按候选名播种的固定顺序，至多 `regression_research_sample`）在候选下跑一遍（role `research`），退步的题给两条轨迹的 session id。证据写 `rounds/<tag>/regressions.json`，`screened` 行带 `regression_ref`，下一轮进 `inputs/regressions.json`（本线最近 8 个包，按当前档裁剪；研究题的 session 加进 R 可读集）。只对有可复现退步的包抽样：证据是给退步用的。
+- 前沿与合并（新文件 `frontier.py`，`rounds/frontier.json`）：`partial_of` 判定部分包（筛选被拒、修复 ≥ `frontier_min_fixes`、把退步计数置零后接受规则成立）；进前沿（台账 `partial`），超 `frontier_max` 的弱者 `dropped`；聚焦时 `Focus.merge` 列出 `picks`（attempts 最少、修复最多，至多 `merge_per_round`），提示词打开合并段，R 在 `candidates/merge/` 交条件化版本、声明 `merge_of`（`read_declaration` 只接受 focus.json 列出的 id，V0 也接受条目自己的 cause id）；接受装入 → `merged`，拒绝 → attempts +1，到 `frontier_max_attempts` → `abandoned`，拒绝的合并包自己是部分包时替换条目并继承 attempts；每次装入后 `prune`，修复集全被工作线通过的条目 `subsumed`（台账 `frontier_pruned`）。`inputs/frontier.json` 给每个活动条目相对当时基线的 unified diff、组件、计数、证据、合并史。
+- 文字只增（`verify/static.py` 的 `text_problems`）：`prompt/*.md` 与父包已有的 `skills/*.md` 只能插入；删改要单独一个组件、声明 `rewrite: true`，筛选时按全足迹条件（`accept_min_whole_fixes`）。
+- 启发式软信号（`heuristic_terms`）：只数作为条件用的词表（`in` 的右操作数、for / 推导式遍历的词表、`re.*` 的候选项），≥ `heuristic_terms_min` 个词写进 V0 结果、verdict、`verified` 行、前沿条目与证据对象；不拒绝。schema 的 `required` 这类数据不算（第一版把种子 `plan_changes` 的状态枚举也数进去了，改成只数条件后不再误报）。
+- `replay_max_false_trigger` 默认 0.25 → 0.2；提示词改成从设置取数，另加一段"全局规则为什么会反"、`inputs/regressions.json` 怎么用、文字只增与词表的规则；合并段只在有 picks 时出现。
+- 受保护集：留出里首次读数通过的题，每轮 `measured` 行记 `protected` / `protected_passed`；报告新加 "Accumulation (v1.8)"：逐轮曲线、前沿条目按状态、合并的筛选/接受数、研究抽样的命中率；每轮的筛选行标 partial / merge of / research。
+
+**夹具。** 假上游 rsi 域加第七道 train 候选题 `rsi.update_no_notify`（更新但不许在 #ops 发消息：`slack_message_count 0`），家族名选得让它在 seed 0 的留出排序里排第二，`rsi.QUIET_SPLITS` 把它放进 train 时留出 = notify 对 + 它（默认划分里它在 test，既有测试不受影响）。actor 加 `suggestible`：pushback 提到 #ops 就照发（finance-v7 s4 那个"文档提到的邮箱都通知"的 agent）。脚本化 R 加 `partial`（全局 hook："请求提到 #ops 又没发就打回"——研究部分没有一道通过题提到 #ops 又不发，所以过 V2b；留出上修 2 退 1）、`merge`（条件化：只在 agent 自己的计划里列了 #ops 消息又没发时打回）、`merge_bad`（原样再交）。
+
+**证据（假上游）。** `tests/improver/test_improver_frontier.py`：28 个测试全过（含两轮端到端的合并、拒绝后 abandoned、tool 装入后 subsumed、counts 档只给计数）。端到端：第 0 轮全局 hook 修 2 退 1 全部确认、按退步 0 被拒、进前沿 f1，证据记录里断言类别是 `slack_message_count`、hook 说的话含 #ops、写入从 PATCH 1 次变成 PATCH 1 + POST 1，记录与 R 的输入里都没有留出题号；研究抽样跑了三道研究通过题、无退步；第 1 轮聚焦列出 f1、`frontier.json` 有 diff 与证据、`regressions.json` 有三档内容，合并包修 2 退 0 装入、f1 `merged`；`merge_bad` 下再拒一次即 `abandoned`（`frontier_max_attempts` 1）；之后装入的 tool 包让 f1 `subsumed`；`counts` 档只给计数、不跑抽样。
+
+**测试。** 默认 1,504 passed、87 deselected（live / slow / Docker / memory 的未跑；4h 后 4 个既有测试因新字段、研究抽样计价与第三道 test 题改了断言）
+
+**没做。** 装入后的回退监测（v1.7 推迟）；两个已接受包之间的合并；research 抽样对没有留出退步的包不跑（接受规则仍只看留出）。
+
+**下一步。** 用户审代码与 §3 第 2 项；合入 `m1-automationbench`，重新冻结 finance-v8（4i 的 K），stream 约 $500。
+
 ## 2026-10-13 机制分析：为什么"修好几道、弄坏几道"；阶段 4i 的设计（DESIGN v1.8 §6.18）；$0
 
 - 用户（2026-10-13）："效果一直在反复，每次改动修好了几个失败的题，就有原本几个成功的题失败……要么 A 要么 B……RSI 框架在改进的时候，其实失去了对于过去的记忆……需要有机制来确保再遇到新的问题要进行提升的时候，不会让之前成功的机制失效……其他人的框架肯定考虑了。"随后："先把机制分析清楚好了，不用改代码和文档。"分析之后："按照建议进行修改，里面的一些参数可以作为超参来进行调整……D 的前沿与合并，如果分析下来这个副作用很小，也一起引入。需要的是有更完善的机制，能够提升最后的效果，而不是一步步的去试探每一个改动能带来多少提升。"

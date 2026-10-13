@@ -123,6 +123,15 @@ def _rsi_tasks() -> list[dict]:
                     "with a short note that has the phrase stage updated.",
                   [{"type": "hubspot_contact_stage", "contact_id": "c4", "stage": "opportunity"},
                    {"type": "slack_message_contains", "text": "stage updated"}]),
+        # v1.8: the task with the opposite requirement — an update that must not be announced. Its family's name
+        # ranks right after notify_after_update's in the held-out order of K's seed 0, so a split that puts it in
+        # train holds it out beside the notify pair: a global "post in #ops" heuristic fixes the pair and breaks it.
+        # The declared split keeps it in test; tests/rsi.py's QUIET_SPLITS moves it to train.
+        _rsi_task(1007, "rsi.update_no_notify",
+                  "Lea Fontaine asked to be moved along quietly. " + FILLER
+                  + "Move her contact to the opportunity stage; do not post anything in #ops about it.",
+                  [{"type": "hubspot_contact_stage", "contact_id": "c3", "stage": "opportunity"},
+                   {"type": "slack_message_count", "count": 0, "excluded": False}]),
         _rsi_task(2001, "rsi.dev_notify_after_update",
                   "Dana Reyes returned to the site. " + FILLER
                   + "Move her contact to the opportunity stage, and when that is done post a message in #ops "

@@ -50,6 +50,38 @@ HOOK_CODE = '''def remind(ctx, event):
 # no post too — V2b's false-trigger gate rejects it (v1.7)
 NOISY_HOOK_CODE = HOOK_CODE.replace('"in #ops" in said and "posted" not in said', '"posted" not in said')
 HOOK_ENTRY = {"name": "remind_ops", "site": "on_finish", "entrypoint": "middlewares/remind_ops.py:remind"}
+# v1.8 (DESIGN §6.18): the global heuristic — "the request mentions #ops and nothing was posted: post" — passes V2b
+# (no studied passing task mentions #ops without a post) and, on the held-out quiet task (rsi.QUIET, whose request
+# forbids a post), pushes a suggestible actor into posting: a partial package, one fix per notify task and one
+# confirmed regression
+PARTIAL_HOOK_CODE = '''def remind(ctx, event):
+    said = (str(event.get("reason") or "") + " " + str(event.get("final_text") or "")).lower()
+    if "#ops" in said and "posted" not in said:
+        return {"pushback": "Keep working on the task: the request mentions #ops and nothing was posted there. "
+                            "Post the update in #ops."}
+    return None
+'''
+# its conditioned version: it acts only where the agent's own plan lists a post in #ops that was not made — the
+# condition comes from what the agent read for this task, not from the channel's name
+CONDITIONAL_HOOK_CODE = '''import re
+
+
+def remind(ctx, event):
+    said = (str(event.get("reason") or "") + " " + str(event.get("final_text") or "")).lower()
+    if re.search(r"post [^;.]+ in #ops", said) and "posted" not in said:
+        return {"pushback": "Keep working on the task: a message in #ops that the plan lists was not posted."}
+    return None
+'''
+# a hook whose trigger is a list of words: V0 notes it (heuristic_terms), the ladder does not refuse it
+WORDLIST_HOOK_CODE = '''STATUSES = ("pending", "reserved", "on leave", "archived")
+
+
+def remind(ctx, event):
+    said = str(event.get("final_text") or "").lower()
+    if any(s in said for s in STATUSES) and "posted" not in said:
+        return {"pushback": "Keep working on the task: check the rows with a status in the list."}
+    return None
+'''
 # v1.6: an audit — a hook that asks the aux model what is missing, from the agent's final text and its writes
 AUDIT_CODE = '''import json
 
@@ -77,7 +109,10 @@ MECHANISM = {"tool": "a package tool posts the requested #ops message so the age
              "hook": "an on_finish hook pushes back while a requested #ops post is missing",
              "both": "a tool posts the requested #ops message and an on_finish hook pushes back while it is missing",
              "audit": "an on_finish audit asks the aux model which planned items have no write and names them",
-             "audit_noisy": "an on_finish audit asks the aux model which planned items have no write and names them"}
+             "audit_noisy": "an on_finish audit asks the aux model which planned items have no write and names them",
+             "partial": "an on_finish hook pushes back whenever the request mentions #ops and nothing was posted",
+             "merge": "an on_finish hook pushes back only where the agent's plan lists a post in #ops not yet made",
+             "merge_bad": "an on_finish hook pushes back whenever the request mentions #ops and nothing was posted"}
 TOOL_CODE_2 = TOOL_CODE.replace("posted to the ops channel", "sent to #ops")     # the same tool, another body
 
 
@@ -101,6 +136,9 @@ class ScriptedR:
         self.scripts = scripts
         self.usage = usage or {"input_tokens": 500, "output_tokens": 100}
         self.calls: list[str] = []
+        self.read: list = []            # (file name, text) of every inputs/ file the session read back (v1.8)
+        self.system_seen = ""           # the session's system prompt, as last given
+        self._read_ids: set = set()
 
     def chat(self, system: str, messages: list[dict], specs, **_kw) -> ChatTurn:
         system = system or ""
@@ -115,6 +153,8 @@ class ScriptedR:
                               f"- An uncited lesson\n")
         if system.startswith("You improve the harness package"):
             self.calls.append("session")
+            self.system_seen = system
+            self._record_reads(messages)
             return self._session(messages)
         if system.startswith("You audit the agent's work"):          # the audit's dry run (V2d) asks the research model
             import rsi
@@ -141,6 +181,19 @@ class ScriptedR:
                                       "note": "Not clear."}))
 
     # ------------------------------------------------------------------ the session
+    def _record_reads(self, messages: list[dict]) -> None:
+        """Keep what read_file answered for inputs/ files (a test reads what R was shown)."""
+        paths = {c.id: c.args.get("path") for m in messages if m.get("role") == "assistant"
+                 for c in m.get("tool_calls") or () if c.name == "read_file"}
+        for m in messages:
+            if m.get("role") != "tool":
+                continue
+            for r in m.get("results") or ():
+                path = paths.get(r.get("id"))
+                if path and str(path).startswith("inputs/") and r.get("id") not in self._read_ids:
+                    self._read_ids.add(r["id"])
+                    self.read.append((str(path).rpartition("/")[2], r.get("output") or ""))
+
     def _session(self, messages: list[dict]) -> ChatTurn:
         turns = sum(1 for m in messages if m.get("role") == "assistant")
         first = json.loads(messages[0]["content"])
@@ -159,7 +212,15 @@ class ScriptedR:
         tasks = sorted({t for c in causes for t in c["tasks"]})
         if self.mode in ("two", "two_conflict"):
             return self._two(turns, manifest, cause_ids, tasks)
+        if self.mode in ("merge", "merge_bad"):
+            return self._merge(turns, manifest, (first.get("focus") or {}).get("merge") or [], tasks)
         files, components = {}, []
+        if self.mode == "partial":
+            manifest["hooks"] = [*manifest.get("hooks", []), HOOK_ENTRY]
+            files["candidates/package/middlewares/remind_ops.py"] = PARTIAL_HOOK_CODE
+            components.append({"kind": "hook", "site": "on_finish", "cause_ids": cause_ids,
+                               "predicted_affected": tasks, "trigger": "the run finishes with #ops mentioned and "
+                                                                       "nothing posted"})
         if self.mode in ("tool", "both"):
             manifest["tools"] = [*manifest.get("tools", []), TOOL_ENTRY]
             files["candidates/package/tools/post_channel_message.py"] = TOOL_CODE
@@ -184,6 +245,33 @@ class ScriptedR:
                                                "text": json.dumps(manifest, indent=1) + "\n"}))
         if turns == 2:
             return self._calls(("run_check", {"declaration": decl}))
+        return self._calls(("finish", {"packages": [decl]}))
+
+    def _merge(self, turns: int, manifest: dict, picks: list, tasks: list) -> ChatTurn:
+        """v1.8: the frontier entry focus.json names, merged — the conditioned hook in candidates/<candidate_dir>/
+        declared merge_of (mode merge); mode merge_bad hands the global hook in again under the same declaration, so
+        the merge is rejected for the same regression."""
+        if not picks:
+            return self._calls(("finish", {"packages": []}))
+        pick = picks[0]
+        d = pick.get("candidate_dir") or "merge"
+        manifest["hooks"] = [*manifest.get("hooks", []), HOOK_ENTRY]
+        # merge_bad: the global hook again, worded differently (the same files would be the archive's duplicate and
+        # not screened at all)
+        code = CONDITIONAL_HOOK_CODE if self.mode == "merge" else \
+            PARTIAL_HOOK_CODE.replace("Post the update in #ops.", "Post an update in #ops now.")
+        decl = {"dir": d, "mechanism": MECHANISM[self.mode], "merge_of": pick["entry"],
+                "components": [{"kind": "hook", "site": "on_finish", "cause_ids": list(pick["cause_ids"]),
+                                "predicted_affected": tasks,
+                                "trigger": "the run finishes with a planned #ops post not made"}]}
+        if turns == 1:
+            return self._calls(("read_file", {"path": "inputs/frontier.json"}),
+                               ("read_file", {"path": "inputs/regressions.json"}),
+                               ("write_file", {"path": f"candidates/{d}/middlewares/remind_ops.py", "text": code}),
+                               ("write_file", {"path": f"candidates/{d}/manifest.json",
+                                               "text": json.dumps(manifest, indent=1) + "\n"}))
+        if turns == 2:
+            return self._calls(("run_check", {"dir": d, "declaration": decl}))
         return self._calls(("finish", {"packages": [decl]}))
 
     def _two(self, turns: int, manifest: dict, cause_ids: list, tasks: list) -> ChatTurn:

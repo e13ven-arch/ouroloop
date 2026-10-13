@@ -87,10 +87,13 @@ class Focus(Record):
     audit_suggested: bool = False       # text-only causes hold audit_hook_share of the cases: an aux audit hook fits
     text_only_share: float = 0.0        # the share of cases in causes with text carriers only (v1.3)
     notes: tuple = ()
+    merge: tuple = ()                   # v1.8: the frontier entries this round asks R to merge ({entry, round, dir,
+                                        # mechanism, kind, fixes, regressions, attempts, cause_ids, heuristic_terms})
 
     def __post_init__(self):
         object.__setattr__(self, "ranked", tuple(dict(r) for r in self.ranked or ()))
         object.__setattr__(self, "notes", tuple(self.notes or ()))
+        object.__setattr__(self, "merge", tuple(dict(m) for m in self.merge or ()))
 
 
 def kinds_for(cause: str, *, mechanizable: bool, allowed) -> list[str]:

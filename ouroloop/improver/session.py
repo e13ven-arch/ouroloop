@@ -122,11 +122,12 @@ class CodingSession:
     tests; `readable` the train sessions read_trajectory may open; `kinds` the component kinds K allows."""
 
     def __init__(self, *, researcher, work: WorkTree, trace, check, tests, settings, system: str, inputs: dict,
-                 readable, kinds):
+                 readable, kinds, merge_ids=()):
         self.researcher, self.work, self.trace = researcher, work, trace
         self.check, self.tests, self.s = check, tests, settings
         self.n, self.system, self.inputs = max(int(settings.packages_per_round), 1), system, inputs
         self.readable, self.kinds = set(readable), tuple(kinds)
+        self.merge_ids = tuple(merge_ids)          # v1.8: the frontier entries a declaration's merge_of may name
         self.turns = self.edits = self.read_bytes = 0
         self.messages: list[dict] = []
         self.calls: list[dict] = []
@@ -291,7 +292,7 @@ class CodingSession:
             return f"at most {self.n} candidate package{'s' if self.n > 1 else ''} this round"
         problems, seen = [], set()
         for i, item in enumerate(raw):
-            decl, why = read_declaration(item, dirs=self.dirs, kinds_allowed=self.kinds)
+            decl, why = read_declaration(item, dirs=self.dirs, kinds_allowed=self.kinds, merge_ids=self.merge_ids)
             if why:
                 problems.append(f"packages[{i}]: {why}")
             elif decl.dir in seen:
@@ -305,7 +306,7 @@ class CodingSession:
 
     def _finish(self, args: dict) -> tuple[str, bool]:
         for item in args["packages"]:
-            decl, _ = read_declaration(item, dirs=self.dirs, kinds_allowed=self.kinds)
+            decl, _ = read_declaration(item, dirs=self.dirs, kinds_allowed=self.kinds, merge_ids=self.merge_ids)
             if decl.dir not in self.declarations:          # a revision changes files, never a declaration
                 self.declarations[decl.dir] = decl
         return "declared: " + (", ".join(self.declarations) or "nothing"), False
