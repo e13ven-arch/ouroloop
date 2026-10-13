@@ -1,5 +1,7 @@
-# ouroloop 架构设计（v1.2，正向设计）
+# ouroloop 架构设计（v1.8，正向设计）
 
+> 2026-10-13 修订（v1.8，阶段 4i）：不退步的累积——可复现退步的证据回灌 R（三档粒度）、只因退步被拒的包进前沿并由 R 合并成条件化版本、文字组件只能增量、靠词表触发的机制记软信号；参数都是 K 的超参（§6.18）。
+>
 > 2026-10-11 修订（v1.2）：搜索循环按 finance-v2～v4 的读数重做——一轮一个包、活动内按留出 train 接受并累积在工作线上、dev 只在活动末 gate 一次、以算力换准确进候选面、library 默认关、K 的版本拆成尝试路径与改进器两部分、基线可跨活动复用（§6、§8、§10、§12）。读数与理由在 §6.12。
 >
 > 2026-10-09。取代 v0.7 的 DESIGN、10-08 的三份设计稿与 modules/ 的十份模块文档（都在 tag `archive-2026-10-09` 上）。本文从框架的职责出发，先定“让哪一层发生变化”，再推出 harness、agent、memory、改进器（evolution）、训练与平台各自该是什么样，整体结构对照主流开源 RSI 框架，但不照搬。
@@ -444,6 +446,25 @@ finance-v7（2026-10-13，JOURNAL 同日一条）量出了此前所有"+2、−1
 
 不做：装入后的回退监测（下一批里新 hook 在通过题上的触发率）与筛选的无效提前停（筛到一半退步已超门就停）——先看这两道门在 v8 上的效果，再定。
 
+### 6.18 不退步的累积：退步证据回灌、前沿与合并、文字只增（v1.8，阶段 4i）
+
+finance-v7 的 13 个包逐题看（JOURNAL 2026-10-13 机制分析一条）：留出 30 道题里约 7 道在同一条线下来回翻（60 道读过 3 次以上的题有 14 道翻转，23%），这部分 4h 的翻转确认已经挡住；剩下的是真实互斥——s3 的三个包都把 `hr.zoom_orientation_sessions`（此前 6/6 通过）弄坏，机制都是"排除 reserved / pending / on leave 的行"，而这道题要求把 on leave 的人照样列进去；s4 的包把四道 6/6 通过的题弄坏，机制是"文档里提到要通知的每个邮箱都进通知名单"。R 从几道失败题归纳出一条全局启发式，基准里另一些题对同一表面形态有相反要求；它只收到"退步 2"的计数，无法把启发式改成条件式，于是 s2 → s3 → s4 换一种启发式再试。能同时对的不变量只有一条：按本题自己的文档办。
+
+v1.8 在 4h 之上加四条，参数都进 K 的 `improver` 节：
+
+| 机制 | 内容 | 超参（默认） |
+|---|---|---|
+| 退步证据回灌 R | 三档，逐级包含。`counts`：现状，只有计数。`abstract`：每道可复现退步的留出题给 R 一条去题化记录——域、候选下没过而 W 下过的断言**类别**（不含参数）、候选下在该题出手的组件与它们说的话（R 自己写的文字，原样）、agent 写入的变化（按工具与路由的次数：W 下 n 次、候选下 m 次，不含参数值）、终止方式；不含题 id、请求、任何取自世界的值。`research`：再从研究部分抽 `regression_research_sample` 道稳定通过的题（回放里候选的 hook 会出手的优先，其余随机）在候选下跑一遍，退步的题 R 可以 `read_trajectory` 读 W 下与候选下两条轨迹——这些题 R 本来看得到，不泄漏，每包约 $3。证据写 `rounds/r<i>/regressions.json`，下一轮进 `inputs/regressions.json`；`screened` 行带它的 ref | `regression_evidence`（`research`；可取 `counts` / `abstract` / `research`）、`regression_research_sample`（6，cap） |
+| 前沿与合并 | 筛选被拒、可复现修复 ≥ `frontier_min_fixes`、且只因可复现退步被拒的包是**部分包**，进前沿 `rounds/frontier.json`：文件、声明、修复集与退步集（留出题号只在宿主）、退步证据、尝试次数。前沿按可复现修复排序，超 `frontier_max` 丢最弱；工作线后来已通过它的全部修复题的条目退出（`subsumed`）。前沿非空时聚焦清单加一项 `merge`：给 R 该部分包相对当时基线的 diff（R 自己的代码）、修复与退步的计数、退步证据；要求交一个**条件化版本**——同一机制，触发条件收窄到不碰退步形态（改成"文档明确要求时才"、工具 + 带谓词的 hook 等）。合并包占 `packages_per_round` 的一个名额，每轮至多 `merge_per_round` 个，照常验收与筛选；接受即装入，条目退出（`merged`）；再被拒则 `attempts` 加一，到 `frontier_max_attempts` 退出（`abandoned`）。不做：两个已接受包之间的合并（叠装已覆盖）；前沿条目直接装入（它有可复现退步） | `frontier_max`（4，cap）、`merge_per_round`（1，cap）、`frontier_min_fixes`（1，floor）、`frontier_max_attempts`（2，cap） |
+| 文字只增 | `prompt/*.md` 与父包已有的 `skills/*.md`，候选的改动只能是插入：相对父包的 diff 里没有删除或改写的行。要删或改写已有文字，那个包只能含这一个组件（kind prompt 或 skill，声明 `rewrite: true`），单独筛，按全足迹规则接受（`accept_min_whole_fixes`）。V0 执行；Meta-Harness 赢的候选是"纯增量"，ACE 的上下文只做增量更新，都是同一条经验 | `text_additive_only`（true，fixed） |
+| 启发式软信号 | V0 扫 hook / tool 代码里作为触发条件的字面词表（正则或列表里 ≥ `heuristic_terms_min` 个自然语言词），记进 verdict 与台账 `verified` 行的 `heuristic_terms`，并进 R 的 `regressions.json` 与 `frontier.json`（"这个机制靠词表触发"）；不拒绝。提示词写明：机制的条件必须来自本题的文档与请求，写死的词表在别的题上会反 | `heuristic_terms_min`（3，floor） |
+
+另外 `replay_max_false_trigger` 从 0.25 降到 0.2（cap；v7 装上的噪声 hook 接近 1.0，v1.7 的夹具是 0.67）。
+
+怎么判断它有没有用（finance-v8 重新冻结后，报告并列）：工作线在受保护集（留出里 W 两次都过的题）上的通过数逐轮不降；接受的包可复现退步为 0；只因退步被拒的包里，经合并后被接受的比例；研究部分抽样退步的命中率（`research` 档有没有抓到留出上也退步的形态）。产出的度量不是"每轮接受几个包"，是工作线的留出通过数的单调曲线。
+
+仍不做：装入后的回退监测（v1.7 推迟）；两个已接受包之间的 GEPA 式合并。
+
 ## 7 训练在同一回路
 
 - `model` 是 W 的组件：manifest 的 `model` 项记身份、推理配置与训练产物 ref。训练链（`ouroloop/train/`，按 V2_TRAINING_PIPELINE）从宿主写的 act 调用建数据，训出产物 ref；一个候选 W 把它绑进 `model` 项，从 V3 起走同一条阶梯（V0～V2 换成数据检查与链路收据）。
@@ -502,6 +523,7 @@ ouroloop/
 | 4 实测 | finance，新 preset：基线 → library → 3 轮（每轮后停）→ 有装入则封存 final | 过程检查成立；计划哈希早于第一次 test 尝试；报告两次相同 | finance-v1～v4 共 $528：机制全部跑通，零装入（§6.12） |
 | 4b 搜索循环 v2 | 本文 v1.2 的六处修改落成代码（IMPROVER、EVALUATE、ACTIVITY、CONTRACTS、MEMORY 的对应节）；preset `automationbench_v2`；finance-v5 | 假上游上脚本化的 R 跑 6 轮：接受累积在工作线、活动末 gate 一次、基线从旧工作区导入；finance-v5 的预期：留出曲线不降，dev 严格 +3～6 题或部分得分 +0.05～0.10，成本不升 | 代码 $0；finance-v5 名义约 $350（基线导入 $0、12 轮 × $28、gate 约 $25、final 约 $72） |
 | 4c 两份划分与按决定发布 | §6.7 第三条：K 没有 dev 题时 freeze 不写 gate 模板、round 不要求它、`gate` 无事可做；`--phase release` 把工作线按决定提升为发布线（reason `decision`），并补齐 W\* 的包缺的 train 读数以供 final 核价；final 封存只要有发布线；基线阶段可跳过 | 假上游上无 dev 的活动：freeze、两轮、release、final（W0 与 W\* 两臂）、export 端到端；有 dev 的活动行为不变 | 代码 $0；finance-v5 名义约 $400（train 现量 $25、7～8 轮约 $200、W\* 补测约 $15、final 两臂 50 题 × 3 遍约 $150） |
+| 4i 不退步的累积（v1.8） | §6.18：退步证据回灌 R（`regression_evidence` 三档）；前沿与合并（`frontier_max`、`merge_per_round`）；文字只增（`text_additive_only`）；启发式软信号（`heuristic_terms_min`）；`replay_max_false_trigger` 0.2 | 假上游：部分包进前沿、合并包条件化后零退步装入；research 档的退步轨迹进 R 的输入且不含留出题号；文字删改被 V0 拒、单独的 rewrite 包可筛。finance-v8 重冻结后：受保护集通过数逐轮不降，接受的包零可复现退步 | 代码 $0；v8 重冻结后 stream 约 $500 |
 | 4h 可复现的接受（v1.7） | §6.17：V2b 的误触发门 `replay_max_false_trigger`；翻转确认（候选再读一次、W 补到两次）；接受规则改在可复现的计数上（净 ≥ 1、退步 0、全足迹的包修复 ≥ 2）；提示词一句 | 假上游：通过题上乱触发的 hook 在 V2b 被拒；一次读数翻转、确认时翻回去的题不计，包被拒；可复现的两道修复装入；`screened` 行记两组计数 | 代码 $0；finance-v8 从 v6 的头起步，约 $480 |
 | 4g 学会提升概率（v1.6） | §6.16：`missing` 答法与 `audit_additive_only`、V2d 审核预演（误报率、命中、修订一次）、`audited` 台账与 `audits.json`、几个包的要求 | 假上游：一个 `missing` 审核在通过题上不报、在声明的失败题上命中并进筛选；一个在通过题上乱报的审核预演不过、修订后过；自由文本的审核答法是候选缺陷；台账与 `audits.json` 有它 | 代码 $0 |
 | 4f 失败并排与词表（v1.5） | §6.15：`inputs/failures.json`（请求、失败断言、写入、`persistent`）、三个新 cause、提示词对准三类形态 | 假上游：notify_ticket 的并排含请求、`slack_message_contains`、PATCH 写入与最后的话，留出题不在；第二轮仍失败的题 `persistent`；新词表进诊断的定义 | 代码 $0 |

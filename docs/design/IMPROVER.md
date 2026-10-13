@@ -42,10 +42,20 @@ class Settings:
     accept_floor_tolerance: int = 1              # 留出通过数不低于活动内历史最好减此数
     removal_zero_credit_rounds: int = 3
     round_share: float = 0.15                    # 一轮的账户占根的比例上限
+    regression_evidence: str = "research"        # v1.8：退步证据回灌 R 的档：counts | abstract | research（§9.5）
+    regression_research_sample: int = 6          # v1.8：research 档在研究部分抽几道稳定通过题跑候选（cap）
+    frontier_max: int = 4                        # v1.8：前沿最多几个部分包（cap）
+    merge_per_round: int = 1                     # v1.8：一轮最多几个合并包（cap）
+    frontier_min_fixes: int = 1                  # v1.8：进前沿要的可复现修复数（floor）
+    frontier_max_attempts: int = 2               # v1.8：一个前沿条目最多合并几次（cap）
+    text_additive_only: bool = True              # v1.8：prompt 与已有 skill 只能插入；删改另作 rewrite 包（fixed）
+    heuristic_terms_min: int = 3                 # v1.8：触发条件里的字面词表到这么多词就记软信号（floor）
 ```
 
 合并规则：数量上限 cap（`packages_per_round`、`fixed_per_round`、会话上限、`hook_aux_calls`、`l5_per_round`、`round_share`、`stream_screen_max`）；`audit_hook_share` floor；门槛 floor（`accept_min_net_flips`、`toolcheck_min_pass`、`replay_min_triggers`、`reach_*`、`holdout_share`）；退步与容差 cap；`require_code_component`、`priors`、`removal_zero_credit_rounds` fixed；`causes`、`mechanizable` superset。v1.1 的 `k`、`explore_slots`、`l5_slots`、`code_guarantee`、`screen_*`、`thin_screen_tasks`、`gate_every` 删除。
 
+
+v1.8（阶段 4i，DESIGN §6.18）：`regression_evidence` 三档逐级包含（配置可降档不可升档以外的任何值都拒绝）；`replay_max_false_trigger` 默认改为 0.2。
 
 ## 3 一轮（`round.py`，v1.2）
 
@@ -176,7 +186,7 @@ class SessionResult: packages: list[tuple[str, dict[str, str], Declaration]]; tu
 TOOLS = ("list_files", "read_file", "write_file", "edit_file", "delete_file", "read_trajectory", "search_trace", "run_tests", "run_check", "finish")
 ```
 
-- 输入 `inputs/`：`focus.json`（§6 的清单）、`causes.json`（研究部分全部簇与案例、证据 ref）、`successes.json`、`histogram.json`（dev 失败类型，只有枚举与计数）、`ledger.json`（投影，留出题号换成计数）、`scoreboard.json`、`playbook.md`、`package_api.md`、`base_tools.json`；v1.5 加 `failures.json`（DESIGN §6.15：研究部分每个失败案例的并排——请求、失败断言的类型与参数、写入、最后的话、cause、`persistent`，按 cause 分组，最多 `failures_max_cases` 条、每条 `failures_case_chars` 字；留出题不进）。
+- 输入 `inputs/`（v1.8 另加 `regressions.json`：上一轮可复现退步的证据，按 `regression_evidence` 的档；`frontier.json`：前沿条目的 diff、修复与退步计数、退步证据、尝试次数；§9.5）：`focus.json`（§6 的清单）、`causes.json`（研究部分全部簇与案例、证据 ref）、`successes.json`、`histogram.json`（dev 失败类型，只有枚举与计数）、`ledger.json`（投影，留出题号换成计数）、`scoreboard.json`、`playbook.md`、`package_api.md`、`base_tools.json`；v1.5 加 `failures.json`（DESIGN §6.15：研究部分每个失败案例的并排——请求、失败断言的类型与参数、写入、最后的话、cause、`persistent`，按 cause 分组，最多 `failures_max_cases` 条、每条 `failures_case_chars` 字；留出题不进）。
 - 候选目录固定为 `candidates/package/`（`packages_per_round` > 1 时 `package-2/` …）；第一次写就把当前包复制进去。
 - `run_check()` 对候选包跑 V0～V2，按组件返回；`run_tests()` 跑包测试；都不付费。
 - `finish` 带包级声明：`mechanism` 一句话；每个改动的组件一条 `Component`；tool 的 `scripts` 或 `probes`、hook 的 `predicted_affected`、skill 的 `site` 是它的名字；`uses_model` 标出调 aux 的 hook。声明与 diff 不一致（声明了不存在的组件、改了没声明的组件）或某组件不过 V2 → 退回修订一次；仍不过 → 本轮无候选，台账记原因。
@@ -256,6 +266,39 @@ R 看不到留出题，但工作线连续多轮按同一组留出题接受，会
 
 严格通过率是任务级 0/1，25 题的分辨率是 4 个点；部分得分（通过的断言比例）是连续的，同一次读数的功效高一个量级。gate 同时报两者，接受规则二选一（EVALUATE §5.1）：严格增益 ≥ `min_gain`（原规则），或部分得分的配对增益 ≥ `partial_min_gain` 且其区间不含 0、严格增益 ≥ 0、退步率与成本项照旧；确认读数单独也要满足所选的那条。对外的 C1 仍按严格口径，部分得分并列披露。
 
+### 9.5 退步证据回灌与前沿合并（v1.8，阶段 4i）
+
+```python
+# screen.py
+@dataclass(frozen=True)
+class RegressionEvidence(Record):   # 一道可复现退步的留出题，去题化
+    domain: str; failed_kinds: tuple[str, ...]; passed_kinds_before: tuple[str, ...]
+    footprints: tuple[dict, ...]       # [{site, kind, action, said}]：候选下在该题出手的组件与它说的话（R 自己写的文字）
+    writes: dict                       # {"before": {tool/route: n}, "after": {tool/route: m}}，不含参数值
+    termination: str
+def regression_evidence(activity, result: ScreenResult, *, level: str, evidence) -> list[RegressionEvidence]
+def research_regressions(activity, *, run_arm, package, base_release, sample: list[str], reading) -> dict   # research 档：研究部分抽样题在候选下的读数，退步题附两条轨迹的 session id
+ScreenResult 多：partial: bool（可复现修复 ≥ frontier_min_fixes 且只因可复现退步被拒）、regression_ref（证据对象的 ref）、research_sample: tuple、research_regressed: tuple
+
+# frontier.py
+@dataclass
+class FrontierEntry: id; round_index; dir; files_ref; declaration_ref; fixed: tuple; regressed: tuple; regression_ref; attempts: int; status: str   # active | merged | subsumed | abandoned
+class Frontier:                     # rounds/frontier.json
+    def add(self, entry) -> None    # 按可复现修复排序，超 frontier_max 丢最弱
+    def prune(self, line_passes: set[str]) -> list[str]   # 修复集全被工作线通过的条目 → subsumed
+    def pick(self) -> FrontierEntry | None               # 本轮要合并的条目：attempts 最少、修复最多
+    def for_prompt(self, entry, *, base_files, hide) -> dict   # diff、计数、证据；留出题号换成计数
+```
+
+- 筛选之后：`partial` 的包进前沿（`Frontier.add`，台账 `partial`）；工作线每次装入后 `prune`（台账 `frontier_pruned`）。
+- 聚焦：前沿非空且本轮 `merge_per_round` 未用尽时，`Focus.merge = Frontier.pick()`，提示词的合并段打开：交一个条件化版本，目录 `candidates/merge/`，声明 `merge_of: <entry id>`，组件同原包（触发条件收窄）。
+- 验收与筛选与普通包相同；接受 → 装入，条目 `merged`；拒绝 → `attempts += 1`，到 `frontier_max_attempts` 则 `abandoned`；合并包自己也可以是 `partial`（替换原条目，attempts 继承）。
+- `research` 档的抽样：研究部分里 W 两次都过的题，按 V2b 的回放里候选 hook 出手的题优先，不足随机补到 `regression_research_sample`；候选跑一遍（role `screen`，账户同筛选）；退步的题记 `research_regressed`，`regressions.json` 里给两条轨迹的 session id（R 用 `read_trajectory` 读）。
+- 文字只增（V0）：`verify/static.py` 对 `prompt/*.md` 与父包已有的 `skills/*.md` 做行级 diff，出现删除或改写即 `PackageError`，除非该包只含这一个组件且声明 `rewrite: true`（那它按全足迹规则筛）。
+- 启发式软信号（V0）：`heuristic_terms(code) -> list[str]`：正则字面量与字符串列表里连续的自然语言词 ≥ `heuristic_terms_min` 个的那些词；写进 verdict 与 `verified` 行；`frontier.json` 与 `regressions.json` 里标在对应组件上。
+
+台账新增 stage：`partial`、`frontier_pruned`、`merged`、`abandoned`。报告新增：受保护集通过数的逐轮曲线、前沿的进出、合并的接受率、research 档抽样的命中率。
+
 ## 10 档案、记功、台账、策略、固定候选
 
 ```python
@@ -323,6 +366,8 @@ def export_policy(activity) -> str;  def import_policy(activity, policy_ref) -> 
 | `research/methods.py` 的 `reach_check`、`replay_events` | 思路进 `verify/reach.py`、`verify/replay.py`，代码不搬 |
 
 ## 13 测试
+
+- v1.8：部分包进前沿（修复 ≥ 1、只因退步被拒）；前沿排序与 `frontier_max`、`subsumed`、`abandoned`；合并包占名额、声明 `merge_of`、接受后条目 `merged`；`regressions.json` 三档的内容（abstract 不含题 id / 请求 / 参数值；research 带两条轨迹的 session id 且只有研究题）；research 抽样优先回放里出手的题；文字删改被 V0 拒，`rewrite: true` 的单组件包可筛；`heuristic_terms` 的检出与软信号；`replay_max_false_trigger` 0.2 下 v1.7 的噪声 hook 仍被拒。脚本化 R 的模式 `partial`（修 1 退 1 的全局 hook）与 `merge`（条件化后零退步）在假上游上端到端。
 
 - v1.2 新增：一轮一个包（声明的两向一致、某组件不过 V2 退回一次、仍不过则无候选）；聚焦清单不含名额且 `require_code` 只写台账不拒绝；留出筛选在全部留出题上跑、三条接受规则各一例失败、`best_so_far` 的容差；接受装入工作线（reason `screen`）、拒绝不动；活动末 gate 通过才有发布线；留出题号不出现在 R 的任何输入；调 aux 的 hook 计量、封顶、跳过 V2b；脚本化 R 在假上游上跑 6 轮：接受累积、耐心停、基线导入后第 0 轮不付测量。
 

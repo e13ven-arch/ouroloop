@@ -108,6 +108,7 @@ preset 与配置的关系：preset 给出每个字段的默认值与上限；配
 - v1.5（阶段 4f，DESIGN §6.15）：`improver` 节多 `failures_max_cases`（30，cap）、`failures_case_chars`（4000，cap）；`causes` 的 preset 多 `rule_not_applied`、`vocabulary_mismatch`、`omitted_report`，`mechanizable` 多 `vocabulary_mismatch`（superset 规则不变）。
 - v1.4（阶段 4e，DESIGN §6.14）：`bench` 节多 `domains`（free，域名列表；给了它 `domain` 就是它们连起来的串，K 里两者都有）；`final` 节多 `domains`（free，`bench.domains` 的子集，默认全部）；`improver.stream_screen_max` 的 preset 值 30（cap）；`schedule.stream_batch` 的 preset 值 30（cap；跨域的 150 题分 5 批）。
 - v1.3：`schedule` 节多 `stream_batch`（10，cap）与 `stream_splits`（`["train"]`，free；只接受 `["train"]` 或 `["train", "test"]`，本版只实现 train 段，含 test 的配置在 `--phase stream` 处拒绝）；`improver` 节多 `audit_hook_share`（0.3，floor）、`stream_screen_max`（20，cap）；`packages_per_round` 的 preset 值改为 3。trace 的 split 守卫在流式的 test 段按"已计分"放行：`stream_scored` 事件记下每道计过分的题，`TraceStore` 与 `Results.grading` 对这些题放行。
+- v1.8（阶段 4i，DESIGN §6.18）：`improver` 节多 `regression_evidence`（`research`；counts / abstract / research）、`regression_research_sample`（6，cap）、`frontier_max`（4，cap）、`merge_per_round`（1，cap）、`frontier_min_fixes`（1，floor）、`frontier_max_attempts`（2，cap）、`text_additive_only`（true，fixed）、`heuristic_terms_min`（3，floor）；`replay_max_false_trigger` 的默认 0.2。工作区多 `rounds/frontier.json` 与 `rounds/r<i>/regressions.json`。
 - preset `automationbench_v2`：以上默认值，`memory.enabled = false`。
 
 ## 5 Release 三元组与收据

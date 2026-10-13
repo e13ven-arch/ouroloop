@@ -8,6 +8,25 @@
 
 ---
 
+## 2026-10-13 机制分析：为什么"修好几道、弄坏几道"；阶段 4i 的设计（DESIGN v1.8 §6.18）；$0
+
+- 用户（2026-10-13）："效果一直在反复，每次改动修好了几个失败的题，就有原本几个成功的题失败……要么 A 要么 B……RSI 框架在改进的时候，其实失去了对于过去的记忆……需要有机制来确保再遇到新的问题要进行提升的时候，不会让之前成功的机制失效……其他人的框架肯定考虑了。"随后："先把机制分析清楚好了，不用改代码和文档。"分析之后："按照建议进行修改，里面的一些参数可以作为超参来进行调整……D 的前沿与合并，如果分析下来这个副作用很小，也一起引入。需要的是有更完善的机制，能够提升最后的效果，而不是一步步的去试探每一个改动能带来多少提升。"
+- 分析（finance-v7 的 13 个包逐题读数）：
+  - 两种成分混在一起。噪声翻转：60 道读过 3 次以上的题有 14 道（23%）在同一条线下来回翻（hubspot_mailchimp_sync 0 1 0 0 1 0、contractor_badge_expiration 1 1 0 1 1 0 0 0 1）；s1"修好"的 hubspot 是一次 1。真实互斥：zoom_orientation_sessions 在 b1、s1、s2 的 6 次读数全过，s3 三个包下 3 次全败（1.0 → 0.83），三个包的机制都是"排除 reserved / pending / on leave 的行"；s4 的包把 qb_customer_balance_review、role_based_access_audit 等 6/6 通过的题弄坏，机制是"文档里提到要通知的每个邮箱都进通知名单"。
+  - 根因：R 从几道失败题归纳出全局启发式，基准里另一些题对同一表面形态有相反要求；R 只收到"退步 2"的计数，无法改成条件式，于是换一种启发式再试。框架没守住的：接受允许 1 道退步（s3 带着真实退步装入）、v7 的 K 早于翻转确认与误触发门、R 看不到弄坏了什么、没有受保护集、单一工作线无法把对 A 好与对 B 好的包合起来、没有东西挡住写死的词表。
+  - 别人：AutoSaddler 的退步分类与"宁换勿加"；RRSI 的地板、未预测退步记分板、`trigger_condition`；Meta-Harness 的"纯增量"；GEPA 的按题前沿与系统感知合并；AgentDevel 的按翻转方向判；Voyager 的技能只增、ACE 的增量更新；持续学习的 rehearsal 与 isolation。
+- 设计（[DESIGN §6.18](DESIGN.md)，IMPROVER §2 / §7 / §9.5 / §13，CONTRACTS §4，PLAN 4i；4h 已覆盖零可复现退步、翻转确认、误触发门）：
+  1. 退步证据回灌 R：`regression_evidence` 三档逐级包含——counts（现状）、abstract（去题化：域、失败断言类别、出手的组件与它说的话、写入次数的变化、终止；无题 id / 请求 / 参数值）、research（再在研究部分抽 `regression_research_sample` 6 道稳定通过题跑候选，退步题给两条轨迹的 session id，R 本来看得到）；默认 research。
+  2. 前沿与合并：只因可复现退步被拒、修复 ≥ `frontier_min_fixes` 的包进前沿（`frontier_max` 4）；聚焦清单加 `merge`，R 交条件化版本（`candidates/merge/`，`merge_of`），每轮 ≤ `merge_per_round` 1，照常验收筛选；接受即装入并 `merged`，再拒则 `attempts` 加一，到 `frontier_max_attempts` 2 `abandoned`；工作线覆盖了其修复集的条目 `subsumed`。副作用：每轮至多一个合并包的会话与筛选约 $20，不碰留出题的可见性。
+  3. 文字只增：`text_additive_only`（fixed）；prompt 与已有 skill 的删改只能作单组件的 `rewrite: true` 包单独筛。
+  4. 启发式软信号：`heuristic_terms_min` 3；V0 扫触发条件里的字面词表记进台账与 R 的输入，不拒绝。
+  5. `replay_max_false_trigger` 0.25 → 0.2。判断标准改为工作线在受保护集上的通过数逐轮不降，而不是每轮接受几个包。
+- finance-v8 冻结在 4h 的代码上、还没开跑（没有 stream 记录）；4i 合入后重新冻结再跑。分支 `s9/frontier`，从 `m1-automationbench` 的 `b20ab9b` 起。
+- 没改代码，没调模型，没付费，没读 `.env`，没读任何 test 内容。
+- commit：本条所在的提交。
+
+---
+
 ## 2026-10-13 finance-v7 流式跑完、不跑 final；量出噪声底；阶段 4h：V2b 误触发门与翻转确认（DESIGN v1.7 §6.17）；finance-v8 配置
 
 - **finance-v7 的数**（stream 3 小时 50 分，5 批 5 轮）：首遇 19、14、19、20、18 = 90/150（60.0%；前后半 54.7% → 65.3%），v6 同序同题 89/150。13 个包（2、2、3、3、3），装了 2 个：s1 的词表 hook（留出 13/23 对 11/23，net +2）、s3 的 skill + finish 提示（22/30 对 21/30，net +1）；其余 11 个被拒。活动共 $330.41（预算根的记账）：尝试 $306.53（首遇 150 次 $101.40，筛选 342 次 $205.13），R 的会话、诊断与预演约 $24。工作线停在 `release:42ae681055ed`。v7 不发布、不跑 final（用户 2026-10-13）。
