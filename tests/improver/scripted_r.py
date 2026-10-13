@@ -8,7 +8,10 @@
   missing; "both": the tool and the hook in one package (two components, one mechanism); "two": the tool in
   candidates/package and the hook in candidates/package-2, two packages that stack; "two_conflict": the second package
   carries the hook and its own copy of the tool file, so it collides with the first when stacked; "none": finishes
-  with nothing;
+  with nothing; v1.9: "trial" first hands in a hook whose pushback the actor does not heed (it acts, so V2b passes,
+  and fixes nothing in the trial), then, told so by the trial, rewrites it into the hook that works; "trial_bad"
+  hands the weak hook in again after every trial; "merge_lost" merges the frontier entry into a hook that never
+  acts where the entry fixed a task (the merge's replay sends it back);
 - the playbook (prompts/playbook.md): one lesson citing the first ledger row it is shown, and one that cites nothing.
 
 It never looks at a task's split or answer: what it knows is what the host put in its inputs and trajectories.
@@ -50,6 +53,12 @@ HOOK_CODE = '''def remind(ctx, event):
 # no post too — V2b's false-trigger gate rejects it (v1.7)
 NOISY_HOOK_CODE = HOOK_CODE.replace('"in #ops" in said and "posted" not in said', '"posted" not in said')
 HOOK_ENTRY = {"name": "remind_ops", "site": "on_finish", "entrypoint": "middlewares/remind_ops.py:remind"}
+# v1.9: a hook that acts (V2b counts a trigger) and whose pushback the actor does not read as a reminder (tests/rsi.py
+# heeds a pushback that starts with PUSHBACK): the trial shows it fixes nothing, and R rewrites it into HOOK_CODE
+WEAK_HOOK_CODE = HOOK_CODE.replace(
+    '"Keep working on the task: check whether the request asks for a message in #ops."',
+    '"Please double-check whether the request asks for a message in #ops."')
+TRIAL_MARK = "Trial of candidates/"      # how the host's trial feedback starts (improver/trial.py)
 # v1.8 (DESIGN §6.18): the global heuristic — "the request mentions #ops and nothing was posted: post" — passes V2b
 # (no studied passing task mentions #ops without a post) and, on the held-out quiet task (rsi.QUIET, whose request
 # forbids a post), pushes a suggestible actor into posting: a partial package, one fix per notify task and one
@@ -61,6 +70,9 @@ PARTIAL_HOOK_CODE = '''def remind(ctx, event):
                             "Post the update in #ops."}
     return None
 '''
+# a merge that narrows the entry's hook until it never acts where the entry fixed a task
+LOST_HOOK_CODE = PARTIAL_HOOK_CODE.replace('if "#ops" in said and "posted" not in said:',
+                                          'if "#ops" in said and "posted" not in said and "never" in said:')
 # its conditioned version: it acts only where the agent's own plan lists a post in #ops that was not made — the
 # condition comes from what the agent read for this task, not from the channel's name
 CONDITIONAL_HOOK_CODE = '''import re
@@ -112,7 +124,10 @@ MECHANISM = {"tool": "a package tool posts the requested #ops message so the age
              "audit_noisy": "an on_finish audit asks the aux model which planned items have no write and names them",
              "partial": "an on_finish hook pushes back whenever the request mentions #ops and nothing was posted",
              "merge": "an on_finish hook pushes back only where the agent's plan lists a post in #ops not yet made",
-             "merge_bad": "an on_finish hook pushes back whenever the request mentions #ops and nothing was posted"}
+             "merge_bad": "an on_finish hook pushes back whenever the request mentions #ops and nothing was posted",
+             "merge_lost": "an on_finish hook pushes back only where the request says never and #ops",
+             "trial": "an on_finish hook asks the agent to double-check the #ops message before it finishes",
+             "trial_bad": "an on_finish hook asks the agent to double-check the #ops message before it finishes"}
 TOOL_CODE_2 = TOOL_CODE.replace("posted to the ops channel", "sent to #ops")     # the same tool, another body
 
 
@@ -137,6 +152,7 @@ class ScriptedR:
         self.usage = usage or {"input_tokens": 500, "output_tokens": 100}
         self.calls: list[str] = []
         self.read: list = []            # (file name, text) of every inputs/ file the session read back (v1.8)
+        self.trial_feedback: list = []  # v1.9: the host's trial feedback texts, as the session received them
         self.system_seen = ""           # the session's system prompt, as last given
         self._read_ids: set = set()
 
@@ -212,8 +228,10 @@ class ScriptedR:
         tasks = sorted({t for c in causes for t in c["tasks"]})
         if self.mode in ("two", "two_conflict"):
             return self._two(turns, manifest, cause_ids, tasks)
-        if self.mode in ("merge", "merge_bad"):
+        if self.mode in ("merge", "merge_bad", "merge_lost"):
             return self._merge(turns, manifest, (first.get("focus") or {}).get("merge") or [], tasks)
+        if self.mode in ("trial", "trial_bad"):
+            return self._trial(turns, manifest, cause_ids, tasks, messages)
         files, components = {}, []
         if self.mode == "partial":
             manifest["hooks"] = [*manifest.get("hooks", []), HOOK_ENTRY]
@@ -247,6 +265,29 @@ class ScriptedR:
             return self._calls(("run_check", {"declaration": decl}))
         return self._calls(("finish", {"packages": [decl]}))
 
+    def _trial(self, turns: int, manifest: dict, cause_ids: list, tasks: list, messages: list) -> ChatTurn:
+        """v1.9: the weak hook first; after the host's trial feedback, the working hook (mode trial) or the weak one
+        again (mode trial_bad), then finish with the same declaration."""
+        manifest["hooks"] = [*manifest.get("hooks", []), HOOK_ENTRY]
+        decl = {"mechanism": MECHANISM[self.mode], "components": [
+            {"kind": "hook", "site": "on_finish", "cause_ids": cause_ids, "predicted_affected": tasks,
+             "trigger": "the run finishes while #ops was asked for"}]}
+        last = messages[-1] if messages else {}
+        if last.get("role") == "user" and str(last.get("content") or "").startswith(TRIAL_MARK):
+            self.trial_feedback.append(str(last["content"]))
+            n = len(self.trial_feedback)
+            code = HOOK_CODE if self.mode == "trial" else WEAK_HOOK_CODE + f"\n# revision {n}\n"
+            return self._calls(("write_file", {"path": "candidates/package/middlewares/remind_ops.py",
+                                              "text": code}))
+        if turns == 1:
+            return self._calls(("write_file", {"path": "candidates/package/middlewares/remind_ops.py",
+                                              "text": WEAK_HOOK_CODE}),
+                               ("write_file", {"path": "candidates/package/manifest.json",
+                                              "text": json.dumps(manifest, indent=1) + "\n"}))
+        if turns == 2:
+            return self._calls(("run_check", {"declaration": decl}))
+        return self._calls(("finish", {"packages": [decl]}))
+
     def _merge(self, turns: int, manifest: dict, picks: list, tasks: list) -> ChatTurn:
         """v1.8: the frontier entry focus.json names, merged — the conditioned hook in candidates/<candidate_dir>/
         declared merge_of (mode merge); mode merge_bad hands the global hook in again under the same declaration, so
@@ -258,7 +299,7 @@ class ScriptedR:
         manifest["hooks"] = [*manifest.get("hooks", []), HOOK_ENTRY]
         # merge_bad: the global hook again, worded differently (the same files would be the archive's duplicate and
         # not screened at all)
-        code = CONDITIONAL_HOOK_CODE if self.mode == "merge" else \
+        code = CONDITIONAL_HOOK_CODE if self.mode == "merge" else LOST_HOOK_CODE if self.mode == "merge_lost" else \
             PARTIAL_HOOK_CODE.replace("Post the update in #ops.", "Post an update in #ops now.")
         decl = {"dir": d, "mechanism": MECHANISM[self.mode], "merge_of": pick["entry"],
                 "components": [{"kind": "hook", "site": "on_finish", "cause_ids": list(pick["cause_ids"]),

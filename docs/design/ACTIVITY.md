@@ -105,7 +105,7 @@ def write_report(activity, report) -> dict   # 两次相同（确定性）
 | evaluate | final（只在有发布线时） | — | 约 $72 |
 | report | 报告 | — | $0 |
 
-`cycle --until` 保留：`baseline`、`library`、`round-K`、`gate`；中间崩溃按 `Execution` 续跑。v1.2：`baseline` 先查能不能导入——配置 `[rsi] baseline_from = "<旧工作区>"` 且两边 `AttemptIdentity` 相同（CONTRACTS §4）时，复制旧工作区的 W0 读数与 transcript 引用（只读旧工作区，记来源），$0；否则照常跑。`library` 只在 K 的 `memory.enabled` 时跑（preset `automationbench_v2` 默认关）。
+`cycle --until` 保留：`baseline`、`library`、`round-K`、`gate`；中间崩溃按 `Execution` 续跑。v1.2：`baseline` 先查能不能导入——配置 `[rsi] baseline_from = "<旧工作区>"` 且两边 `AttemptIdentity` 相同（CONTRACTS §4）时，复制旧工作区的 W0 读数与 transcript 引用（只读旧工作区，记来源），$0；否则照常跑。v1.9：导入的角色除 base / control 外还有 `stream`（旧活动在同一 W0 上的首遇，连同 `stream_scored` 事件），`--phase stream` 开始时也先导入——新 K 的流式活动于是从旧活动的首遇接着跑轮次，不再付 150 道的 $100。`library` 只在 K 的 `memory.enabled` 时跑（preset `automationbench_v2` 默认关）。
 
 **轮数与停止（v1.2）：** `cycle` 连续 `schedule.patience`（3）轮没有留出接受就停；`schedule.rounds` 上限 12。没有 carry 轮、没有活动内的 gate；`--phase gate` 在轮次结束后由用户启动。
 

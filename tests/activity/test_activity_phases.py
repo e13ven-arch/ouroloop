@@ -482,17 +482,18 @@ def test_an_activity_without_dev_runs_rounds_without_a_gate_template_releases_by
     # screen), then the promotion by decision, idempotent
     calls = s.actor.calls
     got = phases.release(a, out=lines.append)
-    assert got["status"] == "done" and got["working"] == work.ref() and got["measured"] == len(rsi.STUDY)
+    # v1.9: round 0's trial read the installed package on the studied failure already
+    assert got["status"] == "done" and got["working"] == work.ref() and got["measured"] == len(rsi.STUDY) - 1
     released = a.releases.load(got["released"])
     assert (released.reason, released.parent_ref, released.package_ref, released.receipt_ref) == \
         ("decision", work.ref(), work.package_ref, None)
     assert a.releases.released_ref() == released.ref() and a.releases.active_ref() == work.ref()
     runs = a.results.runs()
     measured = [r for r in rows(a, "train") if runs[r.run].candidate == f"release:{short(work.ref())}"]
-    assert sorted(r.task_id for r in measured) == sorted(rsi.STUDY)
+    assert sorted(r.task_id for r in measured) == sorted(t for t in rsi.STUDY if t != "rsi.notify_ticket")
     assert {r.system_release_ref for r in measured} == {work.ref()} and s.actor.calls > calls
     (event,) = a.events.read("release_decision")
-    assert event["released"] == released.ref() and event["measured"] == len(rsi.STUDY)
+    assert event["released"] == released.ref() and event["measured"] == len(rsi.STUDY) - 1
     calls = s.actor.calls
     assert phases.release(a, out=quiet) == {**got, "measured": 0} and s.actor.calls == calls
     assert json.loads((a.root / "rsi" / "release.json").read_text(encoding="utf-8"))["released"] == released.ref()

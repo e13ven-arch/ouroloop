@@ -8,6 +8,34 @@
 
 ---
 
+## 2026-10-13 阶段 4j 落地：R 对着失败题改、改完真跑、通过了再筛退步（DESIGN v1.9 §6.19）；$0
+
+**做了什么。** 分支 `s10-insample`（worktree），先写设计（DESIGN §6.19 与 v1.9 头注、§6.1 / §6.6 的表；IMPROVER §2 的七个新字段与合并规则、§3、§3.1、§7、§8、§9、§9.5、新 §9.6、§10、§13；CONTRACTS §4、ACTIVITY §4、EVALUATE §8 各一行），再按设计改代码，九条机制全部落地，参数都进 K 的 `improver` 节：
+
+1. **样本内试跑（新文件 `improver/trial.py`）。** R 的包过了免费阶梯之后、进留出筛选之前，先在它声明 `predicted_affected`（没声明的组件取其 cause 的题）里研究部分当前失败的题上真跑（run 的 role `trial`，候选名同筛选，钱记本轮的 `trial` 子账户），每包每次 ≤ `trial_max_tasks`（4）、一轮 ≤ `trial_max_attempts`（12）；每道题的通过 / 失败、失败断言的类别与参数、出手的组件、候选下的 session 作为一条 user 消息交回会话（`revise`，session 加进 R 可读集），R 改文件再 finish，至多 `trial_max_rounds`（2）次；样本内修复（通过且有足迹）≥ `trial_min_fixes`（1）才进留出筛选，否则 `verified` 行 outcome `no_trial_fix`、不筛。试跑过了门槛就不再回会话。核价：付诊断前的下限加 `trial_max_attempts` 次 train 尝试，每次试跑前再核一次，放不下就不试、照常进筛选；试跑按候选名 + 包 ref 续跑免付（修订后的包是新 run）。台账 `trialed` 行每次迭代一行；`round.json` 的 implemented 步记每包的 `trial` 摘要，续跑时读它、不再修订。**接受仍只看留出**：试跑不记功、不进估值与记分板，留出题从不在试跑里（DESIGN §6.19 写明与 §6.6 / §6.7 的区别）。
+2. **退步按足迹（`screen.py`）。** 只含 tool / hook / skill 组件的包，留出通过题上的翻转只在那次尝试有足迹时才是退步候选、才进确认，确认的每次候选读数也要有足迹（与修复对称）；没出手的记 `unconditioned_regressed`，不确认、不计、不进证据。全足迹包照旧。`regression_by_footprint`（true，fixed）。
+3. **前沿条目带修复证据。** 每道可复现修复一条去题化记录 `FixEvidence`（域、W 下没过而候选下过的断言类别、出手的组件与它说的话、前后写入按路由、终止），进证据对象的 `fixes_evidence`、`regressions.json`（abstract 档及以上）与 `frontier.json`；前沿条目记 `fixed_sessions`（修复题上候选自己的 session，只在宿主）。合并包在筛选前先回放（新文件 `verify/merge.py`，verdict 的 `merge` 步）：不调模型的 hook 在条目修复题的尝试上须出手 ≥ `merge_min_acts`（1）道，否则回给 R 的只有计数、会话修订一次再回放，仍不出手 → 不筛；只有工具或调模型 hook 的合并版记 `not_replayable` 直接进筛选。流式筛选窗口在最近 `stream_screen_max` 道之外另加本轮合并条目的修复集与退步集；合并包的 ScreenResult 与 `screened` 行记 `kept_fixes`。
+4. **导入 stream 的首遇（`activity/phases.py`）。** `import_baseline` 除 base / control 外也导入 role `stream` 的 train 读数（同一 AttemptIdentity），连同它们的 `stream_scored` 事件（记 `imported_from`）；`--phase stream` 开始时也查 `[rsi] baseline_from`。`baseline_imported` 事件多 `roles`。
+5. **V0 的未挂 hook 提示（`verify/static.py`）。** `middlewares/*.py` 里两个位置参数 `(ctx, event)` 的函数而 manifest 没有哪条 entrypoint 指向它的，记 V0 结果的 `unregistered_hooks`、verdict 与 `verified` 行；不拒。
+6. **`heuristic_terms` 去误报。** 词只数自然语言的（token 首字母任意、其余小写——排除全大写的 HTTP 方法与驼峰的工具名；整个词 ≥ 4 字符）；`x in LIST` 只在 `x` 不是名字类的值（`event.get("name")`、`call.name`、`method`、`site`、`url`……）时算；for / 推导式遍历的词表只在循环变量与文本做 `in` 比对时算。v8 的三次误报都不再报；v1.8 的八个用例不变。
+7. **会话的编辑额度提醒（`session.py`）。** 编辑到 `session_max_edits` 的 75% 时那次工具结果末尾附一句，90% 再附一次（`EDIT_REMINDERS`，随 checkpoint 保存）；会话因额度结束时台账记 `session_ended`（原因、turns、edits、已声明的包数）。
+8. **核价不挤掉第三个包（`round.py`）。** 筛选的事前核价不再把 `regression_research_sample` 计入每个包；研究抽样只对筛选后有可复现退步的包按实际题数再核一次，放不下就不抽（证据对象 `research.outcome = budget`，轮次不停）。
+9. **V2b 样本与实际出手份额。** `REPLAY_SAMPLE` 常量 6 改为设置 `replay_sample`（12，floor；V2d 同一样本）；筛选结果记 `acted`（一次读数里有足迹的题）与 `footprint_share`（/ 有效读数；全足迹包 1.0），进 `screened` 行与报告。
+
+报告：每轮的试跑行（迭代、修复 / 题数、尝试、进不进筛选）、每个筛选行的出手份额、无足迹的退步候选数、合并保留的修复数。提示词：试跑的规则与"每个 hook 都要在 manifest 里挂上"、合并版须在条目修复题上仍出手。
+
+**夹具与测试。** 脚本化 R 加三个模式：`trial`（先交一个 pushback 不以 "Keep working on the task" 开头的 hook——回放算出手、V2b 过，试跑里 actor 不理它、ticket 不过；收到试跑反馈后改成起效的 hook，第二次试跑过，进筛选、修复留出对、装入）、`trial_bad`（修订后仍交弱 hook：`no_trial_fix`，不筛，没付筛选）、`merge_lost`（合并版加一个 "never" 条件、在条目修复题上不再出手：`merge` 步不过、修订一次仍不过、不筛，条目 attempts 不加）。新测试 `tests/improver/test_improver_trial.py`：30 个（18 个加词表的 12 个用例）——试跑与修订、trial 账户与 `screened` 行的新字段、报告、`no_trial_fix`、尝试上限与 `trial_min_fixes = 0`、`trial_max_tasks = 0`、筛选中被杀后续跑不重付试跑、`trial_tasks` 的顺序、`session_ended`、按足迹的退步（有 / 无足迹、规则关、全足迹包）、未挂的 hook、词表的 12 个新用例、合并回放与修复证据、流式窗口、导入 stream 首遇后第二个活动的 stream 不付首遇、编辑提醒与 checkpoint、研究抽样放不下就不抽、设置校验。既有测试改了 7 个文件的 17 处断言（台账多 `trialed` 阶段、`trial` 子账户、核价信息、研究抽样不计入事前核价、`research.outcome`、报告的新字段，以及下面两处行为变化）。
+
+**证据（假上游）。** 默认全套 1,514 passed、20 skipped、87 deselected（12 分 20 秒；4i 后是 1,504 passed，新增 30 个）。Docker 全量没跑：worktree 里没有 venv 与镜像，合入前再跑。
+
+**测试发现的两处行为变化（都保留）。** (1) 试跑的尝试是候选包在那道题上的有效 train 读数：包装入后它就是工作线对这道题的读数——下一轮的 measure 与 `release` 的补读少付一道；流式里装入前记下的旧失败不再被再诊断（`test_improver_stream` 原来期望第二轮再诊断那道陈旧的失败、R 交重复的包被 V0 拒，现在是 `nothing_to_fix`）；被拒候选的试跑不是流式证据池的读数（`Evidence.latest` 跳过非工作线包的 `trial`）。(2) `trial_min_fixes` 的合并规则从 floor 改成 free：它只决定花不花筛选的钱，不是接受；floor 下配置写不了 0。另外 `declared` 行改在试跑之前写（台账顺序 declared → trialed → verified）。
+
+**取舍。** 试跑过了门槛不再把结果回给会话（省 R 的回合；下一轮 R 从台账投影的 `trialed` 行看得到）；确认退步也要每次候选读数都有足迹（与修复对称，噪声底再降一半）；合并的修复保留只作回放门与 `kept_fixes` 读数，不加接受条款（合并版在别的题上净正也该装）；`replay_sample` 作 floor（样本越大误触发率越准，V2d 多几次 aux 调用可接受）。
+
+**没做。** 试跑结果进接受规则（设计上明确不做）；试跑过了门槛不再把结果回给会话；全足迹包按"某种足迹"判退步（没有足迹）；两个已接受包之间的合并；装入后的回退监测；`baseline` 阶段对导入的 stream 读数仍按 candidate `base` 补读 W0 的 train（流式活动不跑 baseline 阶段，不受影响）。
+
+**下一步。** 用户审代码；合入 `m1-automationbench` 须等 finance-v8 的检出不再跑付费活动（规则 13）；新活动用 `[rsi] baseline_from = "<finance-v8 的工作区>"` 复用 150 道首遇，只付轮次。
+
 ## 2026-10-13 finance-v8 流式跑完（4h + 4i 的 K）：首遇 87/150，五轮零装入；一个部分包进前沿、合并版丢了修复；$261
 
 **跑了什么。** K `core:ce2af8d8ca4b`（`m1-automationbench` 的 `92a48a6`，阶段 4i 合入后重新冻结；4h 的冻结放在 `workspace-finance-v8-aborted-freeze-2026-10-13/`，$0），种子 finance-v6 工作线 `release:8ea81218e119`，finance + hr + operations 的 train 150 道分 5 批流式，每批后一轮，留出 60 道（筛选取最近 30 道），`regression_evidence = research`。用户 2026-10-13 批准："可以跑吧，我想尽快看到结果，看到你的改动把失败的问题解决了，并且原本通过的没有被影响"。

@@ -52,8 +52,9 @@ HELD, STUDY = rsi.HELD, rsi.STUDY
 TICKET = "rsi.notify_ticket"                      # the studied failure
 PASSING = tuple(t for t in rsi.TRAIN if t not in HELD and t != TICKET)
 FREE = STEPS[:STEPS.index("screened")]             # measure .. verified: no attempt is paid for before the screen
-R0_STAGES = ["measured", "diagnosed", "focused", "declared", "verified", "screened", "accepted", "installed",
-             "credited", "playbook"]            # a one-package round: the stacked step writes no row
+R0_STAGES = ["measured", "diagnosed", "focused", "declared", "trialed", "verified", "screened", "accepted",
+             "installed", "credited", "playbook"]    # a one-package round: the stacked step writes no row; v1.9:
+                                                     # one trial (the tool fixes the ticket at once)
 
 
 class Crash(BaseException):
@@ -279,11 +280,13 @@ def test_the_next_round_measures_the_new_w_on_the_studied_tasks_only_and_stops_n
     assert (r.status, r.stop) == ("stopped", "nothing_to_fix: the working line passes every studied train task")
     state = round_state(a, 1)
     assert state["base_release"] == tool.result.installed
+    # v1.9: the trial read the installed package on the ticket already; the other studied tasks are measured now
     assert state["steps"]["measure"] == {"package": a.releases.load(tool.result.installed).package_ref,
-                                         "measured": len(STUDY), "tasks": len(rsi.TRAIN), "passed": len(rsi.TRAIN),
-                                         "holdout_passed": 2, "holdout": 2, "protected": 0, "protected_passed": 0}
+                                         "measured": len(STUDY) - 1, "tasks": len(rsi.TRAIN),
+                                         "passed": len(rsi.TRAIN), "holdout_passed": 2, "holdout": 2,
+                                         "protected": 0, "protected_passed": 0}
     measured = results_of_role(a, "measure")
-    assert sorted(x.task_id for x in measured) == sorted(STUDY)             # the held-out reading is the screen's
+    assert sorted(x.task_id for x in measured) == sorted(t for t in STUDY if t != TICKET)   # the held-out: the screen's
     assert Evidence(a).missing(state["steps"]["measure"]["package"]) == []
     after = paid(tool)
     assert after["r"] == before["r"]                                        # no research call
@@ -485,10 +488,15 @@ def test_every_paid_call_of_the_round_is_reserved_in_its_account_and_the_spend_i
     assert research == {"diagnose": 1, "session": 4, "playbook": 1}
     assert seen and not any(any(t in task_of(x) for t in dev) for x in seen)          # no dev attempt in a round
     assert {t for x in seen for t in triggers(a, HELD) if t in task_of(x)} == set(triggers(a, HELD))   # the screen's
-    # each research call in its step's child, each screen attempt's call in the screen's; nothing elsewhere
+    # v1.9: the trial's calls are the studied failure's (the ticket), the screen's the held-out pair's
+    trial_calls = [x for x in seen if triggers(a, (TICKET,))[0] in task_of(x)]
+    assert trial_calls and len(trial_calls) < len(seen)
+    # each research call in its step's child, each attempt's call in the trial's or the screen's; nothing elsewhere
     assert settled_by_scope(new) == {f"{ACCOUNT}:diagnose": research["diagnose"],
                                      f"{ACCOUNT}:session": research["session"],
-                                     f"{ACCOUNT}:policy": research["playbook"], f"{ACCOUNT}:screen": len(seen)}
+                                     f"{ACCOUNT}:policy": research["playbook"],
+                                     f"{ACCOUNT}:trial": len(trial_calls),
+                                     f"{ACCOUNT}:screen": len(seen) - len(trial_calls)}
     for scope in settled_by_scope(new):
         assert data["scopes"][scope]["parent"] == ACCOUNT
     for kind in ("diagnose", "session", "policy"):
@@ -622,7 +630,7 @@ def test_a_round_without_a_baseline_measures_train_itself_and_goes_on(tmp_path, 
     measured = [x for x in a.results.all() if runs[x.run].role == "measure"]
     assert sorted(x.task_id for x in measured) == sorted(rsi.TRAIN) and {x.split for x in measured} == {"train"}
     assert {runs[x.run].candidate for x in measured} == {f"train:{short(s.base.ref())}:r0"}
-    assert {runs[x.run].role for x in a.results.all()} == {"measure", "screen", "confirm"}
+    assert {runs[x.run].role for x in a.results.all()} == {"measure", "trial", "screen", "confirm"}
     new = new_reservations(s.before, s.after)
     assert settled_by_scope(new)[f"{ACCOUNT}:measure"] > 0 and f"{ACCOUNT}:screen" in settled_by_scope(new)
 
@@ -638,17 +646,19 @@ def test_a_screen_that_does_not_fit_what_the_round_has_left_is_not_started(tmp_p
         if "passed their free rungs" in line:
             left = s.a.account("other").remaining()["effective_remaining"]["usd"]
             s.a.account("other").hold("someone else's reservation", {"usd": round(left - 0.01, 6)})
-    before = paid(s)
+    before, seen_before = paid(s), len(s.actor.seen)
     result = phases.round_(s.a, 0, out=out)
     assert result.status == "stopped" and re.fullmatch(
         r"budget: the held-out screen would need up to \$\d+\.\d\d \(\$\d+\.\d\d at the means on record, \+15%, and "
         r"two calls' bound\) and the round has \$0\.01", result.stop), result.stop
     assert lines[-1] == f"round      {ROUND} stopped: {result.stop}"
     after = paid(s)
-    assert after["actor"] == before["actor"] and after["r"][len(before["r"]):] == ["diagnose"] + ["session"] * 4
+    # v1.9: the actor's only calls are the trial's, on the studied failure; no held-out task was paid for
+    assert after["actor"] > before["actor"] and after["r"][len(before["r"]):] == ["diagnose"] + ["session"] * 4
+    assert {task_of(x) for x in s.actor.seen[seen_before:]} == set(triggers(s.a, (TICKET,)))
     assert results_of_role(s.a, "screen") == [] and tuple(round_state(s.a, 0)["steps"]) == FREE
     assert {x["scope_id"] for x in new_reservations(before, after).values()} == {
-        f"{ACCOUNT}:diagnose", f"{ACCOUNT}:session", "rsi-test:other"}
+        f"{ACCOUNT}:diagnose", f"{ACCOUNT}:session", f"{ACCOUNT}:trial", "rsi-test:other"}   # v1.9: the trial ran
 
 
 def test_a_round_the_budget_refuses_stops_on_record_and_the_cycle_stops_there(tmp_path, fake_upstream):
@@ -661,7 +671,7 @@ def test_a_round_the_budget_refuses_stops_on_record_and_the_cycle_stops_there(tm
     cycle = phases.cycle(s.a, out=quiet)
     assert (cycle["status"], cycle["at"]) == ("stopped", "round-0") and "round-1" not in cycle["steps"]
     stop = cycle["steps"]["round-0"]["stop"]
-    assert stop.startswith("budget: one held-out screen and the research would need up to $") and \
+    assert stop.startswith("budget: one held-out screen, the trials and the research would need up to $") and \
         cycle["steps"]["round-0"]["status"] == "stopped"
     assert paid(s) == before
     assert stages(s.a) == ["measured", "stopped"] and ledger_rows(s.a)[-1]["reason"] == stop

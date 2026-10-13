@@ -40,7 +40,8 @@ class FrontierEntry:
     base_package_ref: str               # the working line's package the candidate was built on
     fixed: tuple = ()                   # confirmed fixes (held-out task ids: host only)
     regressed: tuple = ()               # confirmed regressions (held-out task ids: host only)
-    regression_ref: str | None = None   # the regression evidence object of its screen
+    regression_ref: str | None = None   # the regression evidence object of its screen (v1.9: the fixes' records too)
+    fixed_sessions: dict = field(default_factory=dict)       # v1.9: fixed task -> the candidate's passing session
     screen_ref: str | None = None
     mechanism: str = ""
     kind: str = ""
@@ -58,6 +59,7 @@ class FrontierEntry:
     def to_json(self) -> dict:
         d = asdict(self)
         d["fixed"], d["regressed"], d["history"] = list(self.fixed), list(self.regressed), list(self.history)
+        d["fixed_sessions"] = dict(self.fixed_sessions or {})
         return d
 
     @classmethod
@@ -151,7 +153,8 @@ class Frontier:
             outcome = "retried"
             if replacement is not None:
                 for name in ("round_index", "tag", "dir", "files_ref", "declaration_ref", "base_package_ref", "fixed",
-                             "regressed", "regression_ref", "screen_ref", "mechanism", "kind", "heuristic_terms"):
+                             "regressed", "regression_ref", "screen_ref", "mechanism", "kind", "heuristic_terms",
+                             "fixed_sessions"):
                     setattr(e, name, getattr(replacement, name))
                 outcome = "replaced"
             if e.attempts >= int(self.s.frontier_max_attempts):
@@ -183,5 +186,7 @@ class Frontier:
                               for c in declaration.get("components") or ()],
                "fixes": len(entry.fixed), "regressions": len(entry.regressed), "attempts": entry.attempts,
                "merges": [dict(h) for h in entry.history], "heuristic_terms": dict(entry.heuristic_terms),
-               "diff": diff, "regressions_evidence": regressions}
+               "diff": diff, "regressions_evidence": regressions,
+               # v1.9: why the mechanism worked — one de-identified record per confirmed fix
+               "fixes_evidence": list((regressions or {}).get("fixes_evidence") or ())}
         return scrub(out) if scrub is not None and hide else out

@@ -2,8 +2,9 @@
 the whole package (shape, limits, literals, the declaration against the diff both ways), V1 unit when the package holds
 code (its tests, probe and smoke in the worker), then one rung per component by its kind — V2a toolcheck for a tool,
 V2b replay for a hook that does not call the model, V2d the dry run for a hook that does (v1.6), V2c reach for a skill;
-a prompt, a config knob, the agent, a vendored file and the memory have no rung of their own. V3 (the paid held-out
-screen) is screen.py's."""
+a prompt, a config knob, the agent, a vendored file and the memory have no rung of their own; a merge of a frontier
+entry ends with the `merge` step (v1.9, merge.py: its hooks replayed on the attempts the entry fixed). V3 (the paid
+held-out screen) is screen.py's, and the in-sample trial between them trial.py's."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -89,12 +90,15 @@ class VerifyContext:
     cause_ids: tuple = ()               # the round's causes: a component names some of them
     aux: object = None                  # the research model that answers an audit's ctx.model in V2d (metered)
     hook_aux_calls: int = 2             # K's improver.hook_aux_calls: an audit's calls per attempt in the dry run
+    merge_sessions: dict = field(default_factory=dict)      # v1.9: frontier entry id -> {task: session of the
+                                        # candidate's passing attempt on each confirmed fix} (host only; merge.py)
 
 
 def run_ladder(files: dict[str, str], decl: Declaration, ctx: VerifyContext, *, rungs: tuple | None = None) -> Verdict:
     """V0 over the package, V1 when it holds code, then every component's own rung (all of them run, so one revision
     sees every problem); a failed V0 or V1 ends the climb. `rungs` restricts the climb to the named rungs."""
     from .audit import audit_check
+    from .merge import merge_check
     from .reach import reach_check
     from .replay import replay_check
     from .static import static_check
@@ -117,4 +121,6 @@ def run_ladder(files: dict[str, str], decl: Declaration, ctx: VerifyContext, *, 
             if want is not None and rung not in want:
                 continue
             comps.setdefault(c.key, {})[rung] = run[rung](files, c, ctx)
+    if getattr(decl, "merge_of", "") and (want is None or "merge" in want):     # v1.9: the merge keeps its fixes
+        steps["merge"] = merge_check(files, decl, ctx)
     return Verdict(dir=decl.dir, steps=steps, components=comps)

@@ -33,6 +33,14 @@ candidate, whose regressions R may read as two trajectories (they are studied ta
 rejected package with confirmed fixes whose only failed clauses are its regressions is `partial`: the round puts it
 on the frontier (frontier.py) for R to merge into a conditioned version.
 
+v1.9 (DESIGN §6.19): a package whose components leave footprints (tools, hooks, skills only) regresses only where one
+of them acted — a passing task that fails under the candidate with no footprint is `unconditioned_regressed`, not
+confirmed, not counted, not evidence (finance-v8 confirmed a regression on a task its hook never touched: at a 15–25%
+flip rate that is the noise floor's doing); a whole-footprint package regresses everywhere, as before. The screen
+also reads how much of the held-out part the package acted on (`acted`, `footprint_share`: V2b's 6-task replay
+said 0.17 where the screen showed 0.53), and each confirmed fix gets its own de-identified record (FixEvidence) so
+the frontier can tell R why the mechanism worked, not only what it broke.
+
 The runs go through the activity's `run_arm` (handed in: the improver imports nothing of the activity).
 """
 from __future__ import annotations
@@ -48,7 +56,7 @@ from ..evaluate.results import TaskResult
 from .evidence import NOT_READINGS, NOT_WRITES, TRAIN
 
 WHOLE_KINDS = ("prompt", "agent", "config", "vendor", "removal", "model")
-CANDIDATE_ROLES = ("screen", "confirm", "research")     # the runs a candidate's own readings come from
+CANDIDATE_ROLES = ("screen", "confirm", "research", "trial")     # the runs a candidate's own readings come from
 SAID_CHARS = 300
 
 
@@ -67,6 +75,23 @@ class RegressionEvidence(Record):
     def __post_init__(self):
         for name in ("failed_kinds", "passed_kinds_before"):
             object.__setattr__(self, name, tuple(getattr(self, name) or ()))
+        object.__setattr__(self, "footprints", tuple(dict(f) for f in self.footprints or ()))
+        object.__setattr__(self, "writes", {k: dict(v) for k, v in dict(self.writes or {}).items()})
+
+
+@register
+@dataclass(frozen=True)
+class FixEvidence(Record):
+    """One confirmed fix of a held-out task, de-identified (v1.9): what R reads of why the package worked."""
+    TYPE = "fix_evidence"
+    domain: str = ""
+    fixed_kinds: tuple = ()             # assertion types the working line's attempt failed and the candidate's passed
+    footprints: tuple = ()              # ({kind, name, site, action, said}): the package's components that acted
+    writes: dict = None                 # {"before": {route: n}, "after": {route: m}}: the agent's writes, no values
+    termination: str = ""
+
+    def __post_init__(self):
+        object.__setattr__(self, "fixed_kinds", tuple(self.fixed_kinds or ()))
         object.__setattr__(self, "footprints", tuple(dict(f) for f in self.footprints or ()))
         object.__setattr__(self, "writes", {k: dict(v) for k, v in dict(self.writes or {}).items()})
 
@@ -104,10 +129,15 @@ class ScreenResult(Record):
     research_sample: tuple = ()         # v1.8: studied passing tasks run under the candidate (the research level)
     research_regressed: tuple = ()      # v1.8: the sample's tasks the candidate failed
     merge_of: str = ""                  # v1.8: the frontier entry this package merged
+    unconditioned_regressed: tuple = () # v1.9: passing tasks that failed where no component acted (not counted)
+    acted: tuple = ()                   # v1.9: held-out tasks a component acted on, first reading
+    footprint_share: float | None = None    # v1.9: len(acted) / valid held-out readings (1.0 for a whole package)
+    kept_fixes: int | None = None       # v1.9: a merge's confirmed fixes among the entry's fixed tasks
 
     def __post_init__(self):
         for name in ("holdout", "failing", "passing", "fixed", "unconditioned", "regressed", "reasons", "flipped_fixed",
-                     "flipped_regressed", "noisy", "unconfirmed", "research_sample", "research_regressed"):
+                     "flipped_regressed", "noisy", "unconfirmed", "research_sample", "research_regressed",
+                     "unconditioned_regressed", "acted"):
             object.__setattr__(self, name, tuple(getattr(self, name) or ()))
         object.__setattr__(self, "footprints", {k: list(v) for k, v in dict(self.footprints or {}).items()})
 
@@ -212,14 +242,23 @@ def screen(activity, *, run_arm, name: str, package, base_release, holdout: list
         if r is None or not r.success:
             continue
         (flipped_fixed if shown(r) else unconditioned).append(t)
-    flipped_regressed = [t for t in passing if t in valid and not valid[t].success]
+    whole = bool(conditions) and all(c.get("name") == "*" for c in conditions)
+    # v1.9: a package that leaves footprints regresses only where one of its components acted
+    by_footprint = bool(getattr(settings, "regression_by_footprint", True)) and not whole
+    flipped_regressed, unconditioned_regressed = [], []
+    for t in passing:
+        r = valid.get(t)
+        if r is None or r.success:
+            continue
+        (flipped_regressed if not by_footprint or shown(r) else unconditioned_regressed).append(t)
+    acted = [t for t in holdout if t in valid and shown(valid[t])]
     score = sum(1 for r in valid.values() if r.success)
     costs = [r.cost_usd for r in valid.values()]
     cost = None if not costs or any(c is None for c in costs) else round(sum(costs) / len(costs), 6)
-    whole = bool(conditions) and all(c.get("name") == "*" for c in conditions)
     base.update(flipped_fixed=tuple(flipped_fixed), flipped_regressed=tuple(flipped_regressed),
                 unconditioned=tuple(unconditioned), footprints=footprints, holdout_score=score, cost=cost,
-                whole=whole)
+                whole=whole, unconditioned_regressed=tuple(unconditioned_regressed), acted=tuple(acted),
+                footprint_share=round(len(acted) / len(valid), 4) if valid else None)
     # the confirmation (DESIGN §6.17): the flipped tasks again under the candidate, W's readings topped up
     n = int(getattr(settings, "confirm_readings", 1))
     flipped = flipped_fixed + flipped_regressed
@@ -269,7 +308,8 @@ def screen(activity, *, run_arm, name: str, package, base_release, holdout: list
                 noisy.append(t)
             elif t in flipped_fixed and all(x.success and shown(x) for x in c) and w_fail:
                 fixed.append(t)
-            elif t in flipped_regressed and all(not x.success for x in c) and w_pass:
+            elif t in flipped_regressed and all(not x.success and (not by_footprint or shown(x)) for x in c) \
+                    and w_pass:
                 regressed.append(t)
             else:
                 unconfirmed.append(t)
@@ -381,6 +421,43 @@ def regression_evidence(activity, result: ScreenResult, *, evidence, base_packag
             writes={"before": writes_of(evidence, before.evidence or before.attempt_id) if before is not None else {},
                     "after": writes_of(evidence, ev_after.session)},
             termination=after.termination))
+    return out
+
+
+def fix_evidence(activity, result: ScreenResult, *, evidence, base_package_ref: str, tool_names=(),
+                 hook_names=()) -> list[FixEvidence]:
+    """One de-identified record per confirmed fix (v1.9): the candidate's passing reading of the task against the
+    working line's failing one — which assertion kinds turned, which of the package's components acted and what
+    they said, the writes before and after by route."""
+    cand = candidate_rows(activity, result.candidate, result.fixed)
+    w_rows = w_readings(activity, base_package_ref, result.fixed)
+    out = []
+    for t in result.fixed:
+        passing = [r for r in cand.get(t) or () if r.success]
+        if not passing:
+            continue
+        after = passing[-1]
+        before = next((r for r in reversed(w_rows[t]) if not r.success), None)
+        ev_after = evidence.of(after)
+        kinds_before = sorted({str(c["type"]) for c in evidence.of(before).failed_checks}) if before is not None else ()
+        out.append(FixEvidence(
+            domain=str(t).partition(".")[0], fixed_kinds=tuple(kinds_before),
+            footprints=tuple(footprints_of(evidence, ev_after.session, tool_names, hook_names)),
+            writes={"before": writes_of(evidence, before.evidence or before.attempt_id) if before is not None else {},
+                    "after": writes_of(evidence, ev_after.session)},
+            termination=after.termination))
+    return out
+
+
+def fixed_sessions(activity, result: ScreenResult) -> dict[str, str]:
+    """{fixed task: the session of the candidate's latest passing reading of it} (v1.9: what a merge is replayed
+    on; the ids stay on the host)."""
+    cand = candidate_rows(activity, result.candidate, result.fixed)
+    out = {}
+    for t in result.fixed:
+        passing = [r for r in cand.get(t) or () if r.success]
+        if passing:
+            out[t] = passing[-1].evidence or passing[-1].attempt_id
     return out
 
 

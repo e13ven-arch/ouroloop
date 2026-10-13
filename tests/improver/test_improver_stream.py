@@ -7,8 +7,9 @@ batch runs on the line the first round installed.
 Covered: each task is scored once at its first encounter and never paid for again; a round runs after every batch over
 the scored pool without measuring, its studied and held-out parts the activity's split restricted to the pool, its
 screen on the pool's held-out tasks; an accepted package is installed before the next batch, which runs on the new
-line; the second round diagnoses the stale failure again and R's tool, laid over a manifest that already lists
-it, fails V0, so the round stops `no_candidate`; `--until` stops after a batch and a later run continues; the stream's ledger, the `stream_scored`
+line; the second round finds no studied failure — the trial of the installed package read the ticket (v1.9), so
+the stale first encounter is no longer the pool's evidence — and stops `nothing_to_fix`; `--until` stops after a
+batch and a later run continues; the stream's ledger, the `stream_scored`
 events, the report's stream section and the per-batch accounts; the release by decision reads what W* lacks; a
 configuration this version does not stream is refused before anything runs."""
 from __future__ import annotations
@@ -78,7 +79,7 @@ def test_the_stream_scores_each_task_once_runs_a_round_every_batch_and_the_next_
     assert book["rsi-test:round-s0:screen"]["parent"] == "rsi-test:round-s0"
     calls = s.actor.calls
     # batch 1 on the new line: both first encounters pass (the tool posts the message); round s1 over the pool of six
-    # sees the stale ticket failure, R's tool again is a duplicate of round s0's: no candidate
+    # reads the ticket under the installed package (its trial, v1.9) and finds nothing to fix
     report = phases.stream(a, out=lines.append)
     assert report["status"] == "done" and "at" not in report
     state = stream_state(a)
@@ -90,12 +91,11 @@ def test_the_stream_scores_each_task_once_runs_a_round_every_batch_and_the_next_
     assert [(e["batch"], e["task"]) for e in a.events.read("stream_scored")][4:] == [(1, NOTIFY), (1, ORDER[5])]
     r1 = round_state(a, "s1")
     assert r1["pool"] == ORDER and r1["base_release"] == installed and r1["status"] == "stopped"
-    assert r1["stop"].startswith("no_candidate") and r1["steps"]["evidence"]["failed_tasks"] == [TICKET]
+    assert r1["stop"].startswith("nothing_to_fix") and r1["steps"]["evidence"]["failed_tasks"] == []
     assert r1["steps"]["measure"]["measured"] == 0 and (r1["steps"]["measure"]["holdout"],
                                                         r1["steps"]["measure"]["holdout_passed"]) == (2, 2)
-    # (R's second tool is laid over a manifest that already lists it: the package fails V0, so nothing is screened)
-    rows_v = [r for r in ledger_rows(a, "verified") if r["round_id"] == "rsi-test/s1"]
-    assert [r["passed"] for r in rows_v] == [False] and "screened" not in r1["steps"]
+    assert r1["steps"]["measure"]["passed"] == 6 and "screened" not in r1["steps"]
+    assert [r for r in ledger_rows(a, "verified") if r["round_id"] == "rsi-test/s1"] == []
     fe = state["first_encounter"]
     assert (fe["tasks"], fe["passed"], fe["pass_rate"]) == (6, 4, 0.6667)
     assert (fe["first_half"], fe["second_half"]) == (0.6667, 0.6667)
@@ -114,10 +114,10 @@ def test_the_stream_scores_each_task_once_runs_a_round_every_batch_and_the_next_
     assert rep["stream"]["batches"][0]["round"]["installed"] == short(installed)
     assert rep["stream"]["batches"][1]["round"]["status"] == "stopped"
     assert rep["stream"]["first_encounter"] == fe
-    # the release by decision: the finished rounds do not refuse it; W*'s package lacks the three studied tasks the
-    # seed scored and reads them under its own release
+    # the release by decision: the finished rounds do not refuse it; W*'s package lacks the two studied tasks the
+    # seed scored and its trial did not read, and reads them under its own release
     released = phases.release(a, out=quiet)
-    assert released["measured"] == 3 and a.releases.released().parent_ref == installed
+    assert released["measured"] == 2 and a.releases.released().parent_ref == installed
     assert phases.unfinished_rounds(a) == []
 
 

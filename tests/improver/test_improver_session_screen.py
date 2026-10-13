@@ -569,9 +569,12 @@ def test_a_regression_counts_on_the_held_out_passing_tasks_whatever_the_footprin
     # the confirmation (v1.7): the regression repeated under the candidate and W passed the task again
     assert silent.flipped_regressed == ("rsi.notify_once",) and silent.noisy == () and silent.unconfirmed == ()
     assert silent.confirm_attempts == 2
-    # the hook never acted there: the regression counts all the same
+    # the hook never acted there, the tool did (the actor called it): the regression counts (v1.9: a package of
+    # tool/hook/skill components regresses where one of them acted — test_improver_trial covers the other case)
     row = screen_rows(world, "silent")["rsi.notify_once"]
     assert not row.success and not world.evidence.footprint(row, {"kind": "hook", "name": "inert_ops"})
+    assert world.evidence.footprint(row, {"kind": "tool", "name": TOOL_ENTRY["name"]})
+    assert silent.acted == ("rsi.notify_once",) and silent.unconditioned_regressed == ()
     assert screens["tool"].result.regressed == () and screens["mixed"].result.regressed == ()
 
 
@@ -768,8 +771,8 @@ def test_a_round_without_a_priced_reading_measures_before_it_prices(tmp_path, fa
         return rows
     got = run_round(s.a, 0, run_arm=run_arm, out=quiet)
     assert got.status == "done" and got.accepted, got.stop
-    assert arms[0] == ("measure", "train") and set(arms) == {("measure", "train"), ("screen", "train"),
-                                                             ("confirm", "train")}
+    assert arms[0] == ("measure", "train") and set(arms) == {("measure", "train"), ("trial", "train"),
+                                                             ("screen", "train"), ("confirm", "train")}
     rd = Round(s.a, 0, run_arm=phases.run_arm)
     assert (rd.child("measure").remaining().get("used") or {}).get("usd") > 0
 

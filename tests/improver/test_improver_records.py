@@ -704,8 +704,8 @@ def test_the_round_refuses_its_dev_sessions_and_the_histogram_names_no_task(rnd)
 def test_the_round_ledger_ids_projection_and_scoreboard(rnd):
     rows = rnd.ledger.rows()
     assert [r["id"] for r in rows] == [f"L{i}" for i in range(1, len(rows) + 1)]
-    assert [r["stage"] for r in rows] == ["measured", "diagnosed", "focused", "declared", "verified", "screened",
-                                          "accepted", "installed", "credited", "playbook"]
+    assert [r["stage"] for r in rows] == ["measured", "diagnosed", "focused", "declared", "trialed", "verified",
+                                          "screened", "accepted", "installed", "credited", "playbook"]
     raw = (rnd.a.root / "ledger" / "experience.jsonl").read_text(encoding="utf-8")
     projection = json.dumps(rnd.ledger.projection(line=rnd.a.domain, hide=set(rsi.HELD)))
     for dev_task in rsi.DEV + rsi.FINAL:
