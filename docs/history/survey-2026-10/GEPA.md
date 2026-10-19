@@ -1,6 +1,6 @@
 # GEPA (gepa-ai/gepa) deep read — for ouroloop maintainers
 
-Sources read: the repo at main commit `fb1ed58` (2026-10-02), cloned to the scratchpad; the ICLR 2026 paper v2 (2026-02-14); the docs site, guides and blog posts shipped in `docs/`; GitHub API metadata; issues #133/#139/#379; and three third-party sources. Everything below is cited; items I could not verify are marked **[unverified]**. Local paths for ouroloop context: `/Users/leon/workspace/ouroloop/docs/DESIGN.md`, `/Users/leon/workspace/ouroloop/docs/RESULTS.md`.
+Sources read: the repo at main commit `fb1ed58` (2026-10-02), cloned to the scratchpad; the ICLR 2026 paper v2 (2026-02-14); the docs site, guides and blog posts shipped in `docs/`; GitHub API metadata; issues #133/#139/#379; and three third-party sources. Everything below is cited; items I could not verify are marked **[unverified]**. Local paths for ouroloop context: `docs/DESIGN.md`, `docs/RESULTS.md`.
 
 ## 1. What it modifies
 

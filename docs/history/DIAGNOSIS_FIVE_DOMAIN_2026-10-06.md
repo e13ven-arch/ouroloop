@@ -1,6 +1,6 @@
 # Synthesis: why three RSI rounds gained only on marketing, and what to change
 
-All five analysts' numbers were cross-checked against the receipts, `events.jsonl` and the config. Nothing under `/Users/leon/workspace/ouroloop` was modified, and no test split was read. My one new computation is a gate simulation at `/private/tmp/claude-502/-Users-leon-workspace-ouroloop/c9591706-bc88-4f6c-9900-8380bdb28477/scratchpad/diag/synth/claimgate.py`. It reuses analyst-e's calibrated noise model.
+All five analysts' numbers were cross-checked against the receipts, `events.jsonl` and the config. Nothing under `<the checkout>` was modified, and no test split was read. My one new computation is a gate simulation at `/private/tmp/claude-502/-Users-leon-workspace-ouroloop/c9591706-bc88-4f6c-9900-8380bdb28477/scratchpad/diag/synth/claimgate.py`. It reuses analyst-e's calibrated noise model.
 
 ## (1) Diagnosis: root causes, strongest evidence first
 
