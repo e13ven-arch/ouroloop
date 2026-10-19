@@ -156,7 +156,7 @@ v1.1 每轮一次 gate；v1.2 活动内的接受由改进器的留出筛选决�
 - 候选把它写进 manifest 的 `model.artifact_ref`；`evaluate.model.check_binding(manifest, core, objects)`：`base` 等于 K 的 identity、产物的父模型等于 base、产物的数据 manifest 只含 train 血缘。阶段 1 的实现读产物记录自己的 `splits` 字段，还没有调用方；训练链接上时（阶段 5）改由 `train.dataset.check_lineage` 判血缘，并在候选进阶梯前调用。
 - 这样的候选从 V3 起走阶梯；评测时 actor provider 由 `serving`（V2 §3.5，RunPod 上的 vLLM 经 `openai_compat`）按 `artifact_ref` 构建，仍经网关计量。
 - 训练与 harness 改动不在同一轮同时进 gate（DESIGN §7）。
-- v1.2：`AttemptIdentity`（CONTRACTS §4）相同的两个活动共享 W0 的基线读数：`import_baseline` 把旧工作区的 train / dev 读数与 transcript 引用复制进新工作区（只读旧工作区，记来源），gate 的对照池与第 0 轮的 measure 直接用它。
+- v1.2：`AttemptIdentity`（CONTRACTS §4）相同的两个活动共享 W0 的基线读数：`import_baseline` 把旧工作区的 train / dev 读数与 transcript 引用复制进新工作区（只读旧工作区，记来源），gate 的对照池与第 0 轮的 measure 直接用它。v1.9：role `stream` 的 train 首遇也导入（ACTIVITY §4）。
 
 ## 9 不变量与必须一直绿的测试
 

@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Callable
 
 from ..adapters import automationbench as ab
-from ..contracts import short, write_json
+from ..contracts import Events, short, write_json
 from ..evaluate.attempt import make_agent_factory, run_tasks, task_hash
 from ..evaluate.final import FinalPlan, estimate_lines, final_estimate, run_final, seal, share_problem
 from ..evaluate.gate import GatePlan, TaskEvalPlan, refill_attempts
@@ -313,9 +313,10 @@ def _execution(activity, release_ref):
 # ---------------------------------------------------------------------------- baseline
 def import_baseline(activity, source_root: Path, *, out: Callable[[str], None] = print) -> dict:
     """Another workspace's W0 readings into this one (EVALUATE §8, ACTIVITY §4, v1.2): when its seed package under its
-    K has this activity's AttemptIdentity, its baseline runs (roles base and control, train and dev), their results,
-    grading rows and transcripts are copied as recorded, with the source on record; nothing is paid. Run again, it
-    copies nothing twice. -> {imported, attempts, identity} or {imported: False, why}."""
+    K has this activity's AttemptIdentity, its baseline runs (roles base and control, train and dev) and, v1.9, its
+    stream's first encounters of the same package (role stream, train, with their `stream_scored` events), their
+    results, grading rows and transcripts are copied as recorded, with the source on record; nothing is paid. Run
+    again, it copies nothing twice. -> {imported, attempts, identity, roles} or {imported: False, why}."""
     from ..evaluate.results import RunManifest, Results
     from ..runtime.records import session_file
     source_root = Path(source_root)
@@ -340,9 +341,10 @@ def import_baseline(activity, source_root: Path, *, out: Callable[[str], None] =
         return {"imported": False, "why": f"AttemptIdentity differs ({theirs} there, {ours} here)"}
     src = Results(source_root, activity.domain)
     runs = {h: r for h, r in src.runs().items() if r.package_ref == src_seed.package_ref
-            and r.role in ("base", "control") and r.split in ("train", "dev")}
+            and (r.role in ("base", "control") and r.split in ("train", "dev")
+                 or r.role == "stream" and r.split == "train")}
     have = {r.attempt_id for r in activity.results.all()}
-    copied, sessions = [], []
+    copied, sessions, roles = [], [], {}
     for row in src.all():
         run = runs.get(row.run)
         if run is None or row.attempt_id in have or row.validity != "valid":
@@ -352,7 +354,14 @@ def import_baseline(activity, source_root: Path, *, out: Callable[[str], None] =
         activity.results.append(row)
         copied.append(row.attempt_id)
         sessions.append(row.evidence or row.attempt_id)
+        roles[run.role] = roles.get(run.role, 0) + 1
     activity.results.copy_grading(src, copied)
+    # v1.9: the stream's own account of the copied first encounters (the scored-task guard, the report's batches)
+    wanted = set(copied)
+    for e in Events(source_root).read("stream_scored"):
+        if e.get("attempt") in wanted:
+            activity.events.append("stream_scored", **{k: v for k, v in e.items() if k not in ("ts", "event")},
+                                   imported_from=str(source_root))
     for session in sessions:
         try:
             source, target = session_file(source_root, session), session_file(activity.root, session)
@@ -363,9 +372,10 @@ def import_baseline(activity, source_root: Path, *, out: Callable[[str], None] =
             target.write_bytes(source.read_bytes())
     if copied:
         activity.events.append("baseline_imported", source=str(source_root), attempts=len(copied), identity=ours,
-                               runs=sorted(runs))
-    out(f"baseline   imported {len(copied)} W0 attempts from {source_root} (AttemptIdentity {ours})")
-    return {"imported": True, "attempts": len(copied), "identity": ours}
+                               runs=sorted(runs), roles=roles)
+    out(f"baseline   imported {len(copied)} W0 attempts from {source_root} (AttemptIdentity {ours}"
+        + (f"; by role {roles}" if roles else "") + ")")
+    return {"imported": True, "attempts": len(copied), "identity": ours, "roles": roles}
 
 
 def _read_rows(activity, package_ref: str, *, split: str, candidate: str) -> list[TaskResult]:
@@ -710,6 +720,14 @@ def stream(activity, *, until: int | None = None, out: Callable[[str], None] = p
                                   f"a later stage")
     require(startup_checks(activity, phase="stream"), phase="stream", activity=activity)
     from ..improver.round import run_round
+    # v1.9: an earlier workspace's first encounters of the same W0 (and its baseline) are read, not paid again
+    source = (activity.config.get("rsi") or {}).get("baseline_from")
+    if source:
+        base = Path(activity.config.get("_base") or ".")
+        src = Path(source).expanduser()
+        got = import_baseline(activity, src if src.is_absolute() else (base / src).resolve(), out=out)
+        if not got.get("imported"):
+            out(f"stream     nothing imported from {source}: {got.get('why')}")
     path = activity.root / "rsi" / "stream.json"
     state = json.loads(path.read_text(encoding="utf-8")) if path.exists() else \
         {"split": "train", "order": stream_order_of(activity), "batches": [], "status": "running"}

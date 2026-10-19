@@ -126,7 +126,8 @@ def test_the_regression_evidence_is_de_identified_and_the_research_sample_ran(pa
     assert not any(t in text for t in HELD) and "Lea Fontaine" not in text and "c3" not in text
     # the research level: the studied passing tasks ran under the candidate, none regressed
     assert sorted(res.research_sample) == sorted(PASSING) and res.research_regressed == ()
-    assert obj["research"] == {"sample": list(res.research_sample), "regressed": [], "sessions": {}}
+    assert obj["research"] == {"sample": list(res.research_sample), "regressed": [], "sessions": {},
+                               "outcome": "ok"}
     runs = a.results.runs()
     research = [r for r in a.results.all() if runs[r.run].role == "research"]
     assert sorted(r.task_id for r in research) == sorted(PASSING) and all(r.success for r in research)
@@ -394,6 +395,7 @@ def test_the_counts_level_gives_r_counts_only(tmp_path, fake_upstream):
     assert res.partial and res.research_sample == () and res.regression_ref
     obj = s.a.objects.get(res.regression_ref)
     assert obj["level"] == "counts" and obj["records"] == [] and obj["research"]["sample"] == []
+    assert obj["fixes_evidence"] == [] and obj["research"]["outcome"] == "not_run"
     runs = s.a.results.runs()
     assert not any(runs[r.run].role == "research" for r in s.a.results.all())
     s.r.mode = "merge"

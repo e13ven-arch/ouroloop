@@ -17,6 +17,12 @@ Money: the round spends from its own account `<scope>:round-<i>` (round_share of
 step kind (measure, diagnose, session, screen, policy). Before the research is paid, one screen of the whole held-out
 part and the research calls are priced from what is on record; what cannot be priced, or does not fit, does not start.
 
+v1.9 (DESIGN §6.19): between the free rungs and the paid screen each of R's packages is tried on the studied failing
+tasks it claims (trial.py), its results handed back to the session for a bounded number of revisions, and only a
+package that fixed one of them in-sample is screened; a stream round's screen window also holds the fixed and
+regressed tasks of the frontier entries merged this round; the research sample is priced after the screen, not
+before it for every package.
+
 A stream round (v1.3, IMPROVER §3.1; activity/phases.py `stream`) is the same round over `pool`, the stream's scored
 tasks: nothing is measured (the pool's latest attempt of each task is the reading, the working line's own where it has
 one), the studied and held-out parts are the activity's split restricted to the pool, the screen runs on the most
@@ -45,9 +51,10 @@ from .evidence import NOT_READINGS, TRAIN, Evidence, dev_histogram
 from .frontier import Frontier, FrontierEntry
 from .ledger import Ledger, scrub
 from .policy import read_playbook, update_playbook
-from .screen import (ScreenResult, accept, condition, cost_per_attempt, pick_best, pick_order, price,
-                     regression_evidence, research_run, research_sample, screen)
+from .screen import (ScreenResult, accept, condition, cost_per_attempt, fix_evidence, fixed_sessions, pick_best,
+                     pick_order, price, regression_evidence, research_run, research_sample, screen)
 from .session import CodingSession, WorkTree
+from .trial import TrialResult, feedback as trial_feedback, trial as run_trial, trial_tasks
 from .stack import stack
 from .settings import CODE_KINDS, Settings
 from .verify import Verdict, VerifyContext, run_ladder
@@ -57,7 +64,6 @@ PROMPTS = dg.PROMPTS
 STEPS = ("measure", "evidence", "diagnosed", "focused", "implemented", "verified", "screened", "accepted", "stacked",
          "credited", "playbook")
 PRICE_MARGIN = 0.15                     # over the means on record: candidates cost what they cost
-REPLAY_SAMPLE = 6                       # passing train attempts V2b reports a hook's false-trigger rate on
 REGRESSIONS_SHOWN = 8                   # v1.8: packages of this line whose regression evidence R reads, newest first
 MERGE_DIR = "merge"                     # v1.8: the candidate directory of a frontier entry's conditioned version
 
@@ -262,14 +268,15 @@ class Round:
         """Before the round pays for diagnosis and R's session, the least it must pay to have an outcome fits: one
         screen of the whole held-out part, and the research it is about to pay — a call per case to diagnose and per
         turn of the session, at the research calls' mean on record (left out before any is on record)."""
-        usd, why = price(self.a, self.work_ref, screen_attempts=len(self.screen_holdout()))
+        trials = int(self.s.trial_max_attempts) if int(self.s.trial_max_tasks) > 0 else 0     # v1.9
+        usd, why = price(self.a, self.work_ref, screen_attempts=len(self.screen_holdout()) + trials)
         if usd is None:
             raise Stop(f"unpriced: {why}")
         mean = self._research_mean()
         if mean is not None:
             cases = min(len(self.state["steps"]["evidence"]["failed"]), self.s.diagnose_max_cases)
             usd += mean * (cases + self.s.session_max_turns)
-        self._afford(usd, "one held-out screen and the research")
+        self._afford(usd, "one held-out screen, the trials and the research")
 
     def split(self) -> tuple[tuple, tuple]:
         """(the train tasks R studies, the train tasks held out from it), fixed for the activity: whole families,
@@ -299,15 +306,35 @@ class Round:
 
     def screen_holdout(self) -> list[str]:
         """The held-out tasks the screen runs on: every one (a batch round); the stream's most recent stream_screen_max
-        of them (a stream round, §3.1)."""
+        of them (a stream round, §3.1) and, v1.9, the fixed and regressed tasks of the frontier entries this round
+        merges — a merge is read where the entry fixed and broke, whatever the window."""
         held = list(self.split()[1])
-        return held[-int(self.s.stream_screen_max):] if self.stream else held
+        if not self.stream:
+            return held
+        wanted = set(held[-int(self.s.stream_screen_max):])
+        for e in self._merge_entries():
+            wanted |= set(e.fixed) | set(e.regressed)
+        return [t for t in held if t in wanted]
 
-    def _recorded(self, candidate: str, role: str) -> int:
-        """The valid attempts on record under a run of this name and role."""
+    def _merge_entries(self) -> list[FrontierEntry]:
+        """The frontier entries this round merges: focus.json's once the focus is on record, else the picks the
+        focus would make (the frontier only moves after the screens)."""
+        if "focused" in self.state["steps"]:
+            return [e for e in (self.frontier.get(m["entry"]) for m in self.focus().merge) if e is not None]
+        return self.frontier.picks(self.line, int(self.s.merge_per_round))
+
+    def _recorded(self, candidate: str, role: str, package_ref: str | None = None) -> int:
+        """The valid attempts on record under a run of this name and role (and package, when given)."""
         runs = self.a.results.runs()
         return sum(1 for r in self.a.results.all() if r.validity == "valid" and runs.get(r.run) is not None
-                   and runs[r.run].candidate == candidate and runs[r.run].role == role)
+                   and runs[r.run].candidate == candidate and runs[r.run].role == role
+                   and (package_ref is None or runs[r.run].package_ref == package_ref))
+
+    def _trial_used(self) -> int:
+        """The trial attempts this round has on record, over its packages and iterations (v1.9: trial_max_attempts)."""
+        runs = self.a.results.runs()
+        return sum(1 for r in self.a.results.all() if runs.get(r.run) is not None and runs[r.run].role == "trial"
+                   and str(runs[r.run].candidate).startswith(f"{self.tag}:"))
 
     def holdout_score(self, package_ref: str) -> int | None:
         """A package's passes on the screen's held-out tasks it has a valid train reading of (None: none read)."""
@@ -531,9 +558,11 @@ class Round:
                              settings=self.s, fixture_task=(failed or passed or list(train))[0],
                              failed_sessions={t: reading[t].evidence or reading[t].attempt_id for t in failed},
                              passed_sessions={t: reading[t].evidence or reading[t].attempt_id
-                                              for t in passed[:REPLAY_SAMPLE]},
+                                              for t in passed[:int(self.s.replay_sample)]},
                              study_tasks=study, cause_ids=cause_ids,
-                             aux=self.researcher("verify"), hook_aux_calls=int(self.s.hook_aux_calls))
+                             aux=self.researcher("verify"), hook_aux_calls=int(self.s.hook_aux_calls),
+                             merge_sessions={e.id: dict(e.fixed_sessions)
+                                             for e in self.frontier.active(self.line)})     # v1.9
 
     def _archive(self, *args, **kw) -> dict:
         return self.archive.put(self.i, *args, tag=self.tag, **kw)
@@ -637,6 +666,9 @@ class Round:
         sessions: set = set()
         if self.s.evidence_at_least("abstract"):
             view["evidence"] = [{k: v for k, v in r.items() if k != "ref"} for r in obj.get("records") or ()]
+            # v1.9: why the mechanism worked, one record per confirmed fix
+            view["fixes_evidence"] = [{k: v for k, v in r.items() if k != "ref"}
+                                      for r in obj.get("fixes_evidence") or ()]
         if self.s.evidence_at_least("research"):
             research = obj.get("research") or {}
             view["research"] = {"sample": list(research.get("sample") or ()),
@@ -689,15 +721,20 @@ class Round:
                         "narrowed so it does not act on the regression shapes, declared with merge_of",
                 "entries": entries}
 
-    def _declared(self, decl, files: dict, verdict) -> dict:
+    def _declared_row(self, decl) -> None:
+        """The declaration on the ledger (once: a row written again is the row on record)."""
         self.ledger.row("declared", round_id=self.round_id, line=self.line, dir=decl.dir, mechanism=decl.mechanism,
                         kind=decl.kind, site=decl.site, cause=list(decl.causes), trigger=decl.mechanism,
                         components=[{"kind": c.kind, "site": c.site, "cause_ids": list(c.cause_ids),
                                      "uses_model": c.uses_model} for c in decl.components],
                         predicted_affected=list(decl.predicted_affected), differs_from=list(decl.differs_from))
+
+    def _declared(self, decl, files: dict, verdict, trial: dict | None = None) -> dict:
+        self._declared_row(decl)
         return {"dir": decl.dir, "declaration": self.a.objects.put(decl),
                 "components": [c.key for c in decl.components],
-                "files": self.a.objects.put_json("candidate_files", files), "verdict": self.a.objects.put(verdict)}
+                "files": self.a.objects.put_json("candidate_files", files), "verdict": self.a.objects.put(verdict),
+                "trial": trial}
 
     def _session(self, session: CodingSession, tree: WorkTree):
         """Start R's session, or go on with the one a provider failure stopped (its messages, counters and candidate
@@ -752,7 +789,13 @@ class Round:
             for item in saved["candidates"]:
                 decl = Declaration.from_json(self.a.objects.get(item["declaration"]))
                 files = self.a.objects.get(item["files"])
-                out.append(self._declared(decl, files, run_ladder(files, decl, vctx)))
+                verdict = run_ladder(files, decl, vctx)
+                trial = item.get("trial")
+                if trial is None and verdict.passed() and not decl.fixed and int(self.s.trial_max_tasks) > 0:
+                    # killed in the trial: its attempts are on record, the revision is not; one trial, no revision
+                    res = self._trial_once(decl, files, iteration=0)
+                    trial = self._trial_summary([res])
+                out.append(self._declared(decl, files, verdict, trial))
             self.out(f"round      {self.round_id}: the session's {len(out)} packages, as it left them")
             return {"candidates": out, "session": saved["session"]}
         inputs, readable = self.inputs()
@@ -781,7 +824,9 @@ class Round:
                             "max_tokens": int(self.a.k["research_model"]["max_tokens"]),
                             "replay_max_false_trigger": f"{float(self.s.replay_max_false_trigger):.0%}",
                             "accept_min_whole_fixes": self.s.accept_min_whole_fixes,
-                            "heuristic_terms_min": self.s.heuristic_terms_min, "merge": merge_text}.items():
+                            "heuristic_terms_min": self.s.heuristic_terms_min, "merge": merge_text,
+                            "trial_max_tasks": self.s.trial_max_tasks, "trial_max_rounds": self.s.trial_max_rounds,
+                            "trial_min_fixes": self.s.trial_min_fixes}.items():
             system = system.replace("{" + name + "}", str(value))
         worker = self.a.worker()
         if worker is None:
@@ -824,6 +869,7 @@ class Round:
                 files, error = tree.fetch(decl.dir)
                 if files is not None:
                     fetched.append((decl, self.with_memory(files)))
+                    self._declared_row(decl)         # on the ledger before its trials (v1.9)
             # v1.6 (DESIGN §6.16): the focus names several causes and R handed in one package — on the ledger
             if len(fetched) == 1 and len(self.focus().ranked) >= 2 and self.s.packages_per_round > 1:
                 self.ledger.row("single_package", round_id=self.round_id, line=self.line, dir=fetched[0][0].dir,
@@ -834,6 +880,10 @@ class Round:
                 for d, f in fetched]}
             self.state.pop("session_checkpoint", None)
             self._save()
+            if session.ended:        # v1.9: a session at a cap, on the ledger
+                self.ledger.row("session_ended", round_id=self.round_id, line=self.line,
+                                reason=str(session.ended)[:300], turns=session.turns, edits=session.edits,
+                                declared=len(result.declarations))
             out = []
             for decl, files in fetched:
                 verdict = run_ladder(files, decl, vctx)
@@ -844,11 +894,10 @@ class Round:
                     if again is not None:
                         files = self.with_memory(again)
                         verdict = run_ladder(files, decl, vctx)
-                        self.state["session_result"]["candidates"] = [
-                            {"declaration": self.a.objects.put(d), "files": self.a.objects.put_json(
-                                "candidate_files", files if d.dir == decl.dir else f)} for d, f in fetched]
-                        self._save()
-                out.append(self._declared(decl, files, verdict))
+                        self._save_candidate(decl, files)
+                # v1.9: the in-sample trial, R's revisions, and the summary the verified step gates on
+                files, verdict, trial = self._trials(session, tree, decl, files, verdict, vctx)
+                out.append(self._declared(decl, files, verdict, trial))
         finally:
             wsession.close(force=True)
             if session is not None:
@@ -859,6 +908,127 @@ class Round:
                  f"({session.turns if session else 0} turns, {session.edits if session else 0} edits"
                  + (f"; ended: {session.ended}" if session and session.ended else "") + ")")
         return {"candidates": out, "session": str(self.dir / "session.json")}
+
+    def _save_candidate(self, decl: Declaration, files: dict, trial: dict | None = None) -> None:
+        """The session's record of one candidate directory as it stands now (a resumed step reads it)."""
+        items = self.state["session_result"]["candidates"]
+        for item in items:
+            if Declaration.from_json(self.a.objects.get(item["declaration"])).dir == decl.dir:
+                item["files"] = self.a.objects.put_json("candidate_files", files)
+                if trial is not None:
+                    item["trial"] = trial
+        self._save()
+
+    # ------------------------------------------------------------------ v1.9: the in-sample trial
+    def _trial_once(self, decl: Declaration, files: dict, *, iteration: int) -> TrialResult:
+        """One trial of a package (IMPROVER §9.6): the studied failing tasks it claims, priced against what the round
+        has left, run once under the candidate (role `trial`, the round's trial account). Attempts on record under
+        the same package are read, not paid."""
+        name = f"{self.tag}:{decl.dir}"
+        reading = self.reading()
+        study_failing = [t for t in self.split()[0] if t in reading and not reading[t].success]
+        room = int(self.s.trial_max_attempts) - self._trial_used()
+        tasks = trial_tasks(decl, causes=self.causes(), study_failing=study_failing,
+                            n=min(int(self.s.trial_max_tasks), max(room, 0)))
+        base = dict(candidate=name, iteration=int(iteration))
+        if not tasks:
+            return TrialResult(**base, outcome="not_run",
+                               reason="no studied failing task it claims" if room > 0 else
+                               f"the round's {self.s.trial_max_attempts} trial attempts are used")
+        try:
+            package = build(self.a.objects, files, limits=Limits.from_core(self.a.k),
+                            seed=self.a.package(self.a.seed_release()), parent=self.package)
+        except PackageError as e:
+            return TrialResult(**base, tasks=tuple(tasks), outcome="invalid", reason=f"build: {e}"[:300])
+        to_pay = max(len(tasks) - self._recorded(name, "trial", package.ref()), 0)
+        if to_pay:
+            usd, why = price(self.a, self.work_ref, screen_attempts=to_pay)
+            if usd is None:
+                return TrialResult(**base, package_ref=package.ref(), tasks=tuple(tasks), outcome="not_run",
+                                   reason=f"unpriced: {why}")
+            need, left = self._need(usd)
+            if left is not None and need > left + 1e-9:
+                return TrialResult(**base, package_ref=package.ref(), tasks=tuple(tasks), outcome="budget",
+                                   reason=f"the trial would need up to ${need:.2f} and the round has ${left:.2f}")
+        comps = components(self.package, files)
+        conditions = [{"kind": "prompt", "name": "*"}] if any(c.rewrite for c in decl.components) \
+            else condition(comps)
+        res = run_trial(self.a, run_arm=self.run_arm, name=name, package=package, base_release=self.base, tasks=tasks,
+                        evidence=self.evidence, conditions=conditions, account=self.child("trial"),
+                        retries=int(self.a.k["gate"]["max_infrastructure_retries"]), iteration=iteration)
+        if res.outcome == "budget":
+            raise Stop("budget: the budget refused a trial attempt")
+        return res
+
+    def _trialed_row(self, decl: Declaration, res: TrialResult) -> None:
+        self.ledger.row("trialed", round_id=self.round_id, line=self.line, dir=decl.dir, kind=decl.kind,
+                        iteration=res.iteration, outcome=res.outcome, trial_tasks=list(res.tasks),
+                        trial_fixed=list(res.fixed), trial_failed=list(res.failed), fixes=len(res.fixed),
+                        attempts=res.attempts, reason=res.reason,
+                        passed=(len(res.fixed) >= int(self.s.trial_min_fixes)) if res.outcome == "ok" else None)
+
+    def _trial_summary(self, results: list) -> dict:
+        """What the implemented step keeps of a package's trials: the iterations, the attempts, whether a trial read
+        the package (`ran`), the latest reading's fixes and whether they reach trial_min_fixes (`passed`; None when
+        no trial read it, which opens no gate)."""
+        read = [r for r in results if r.outcome == "ok"]
+        last = read[-1] if read else None
+        return {"iterations": [{"iteration": r.iteration, "outcome": r.outcome, "tasks": list(r.tasks),
+                                "fixed": list(r.fixed), "failed": list(r.failed), "attempts": r.attempts,
+                                "reason": r.reason, "trial": self.a.objects.put(r)} for r in results],
+                "attempts": sum(r.attempts for r in results), "ran": last is not None,
+                "fixes": len(last.fixed) if last else 0,
+                "passed": (len(last.fixed) >= int(self.s.trial_min_fixes)) if last else None}
+
+    def _trials(self, session: CodingSession, tree: WorkTree, decl: Declaration, files: dict, verdict: Verdict,
+                vctx: VerifyContext) -> tuple[dict, Verdict, dict | None]:
+        """The in-sample trial of one package and R's revisions (DESIGN §6.19; IMPROVER §9.6): the package that passed
+        its free rungs runs on the studied failing tasks it claims; a trial that fixed fewer than trial_min_fixes
+        comes back to the session with every task's outcome and session, R edits and finishes again, the ladder
+        and the trial run again — trial_max_rounds revisions at most, within the round's trial_max_attempts. A trial
+        that fixed enough does not go back (the session's cost is R's). -> (files, verdict, the summary)."""
+        if decl.fixed or int(self.s.trial_max_tasks) <= 0 or not verdict.passed():
+            return files, verdict, None
+        results: list = []
+        revisions = int(self.s.trial_max_rounds)
+        iteration = 0
+        while True:
+            res = self._trial_once(decl, files, iteration=iteration)
+            self._trialed_row(decl, res)
+            results.append(res)
+            self._save_candidate(decl, files, self._trial_summary(results))
+            self.out(f"round      {self.round_id}: trial of {decl.dir} (iteration {iteration}): {res.outcome}"
+                     + (f", {len(res.fixed)} fixed of {len(res.tasks)} tried" if res.outcome == "ok" else
+                        f" ({res.reason})"))
+            if res.outcome != "ok" or len(res.fixed) >= int(self.s.trial_min_fixes):
+                break
+            left = int(self.s.trial_max_attempts) - self._trial_used()
+            if revisions <= 0 or left <= 0 or session.ended:
+                break
+            text = trial_feedback(res, evidence=self.evidence, activity=self.a, revisions_left=revisions,
+                                  attempts_left=left, min_fixes=int(self.s.trial_min_fixes))
+            session.readable |= {s for s in res.sessions.values() if s}      # studied tasks: R may read them
+            session.revise(text)
+            revisions -= 1
+            iteration += 1
+            again, _ = tree.fetch(decl.dir)
+            if again is None:
+                break
+            files = self.with_memory(again)
+            verdict = run_ladder(files, decl, vctx)
+            self._save_candidate(decl, files)
+            if not verdict.passed() and revisions > 0 and not session.ended:
+                session.revise(f"candidates/{decl.dir} failed its check after the revision:\n{verdict.text()}\nEdit "
+                               f"its files and call finish again with the same declaration.")
+                revisions -= 1
+                again, _ = tree.fetch(decl.dir)
+                if again is not None:
+                    files = self.with_memory(again)
+                    verdict = run_ladder(files, decl, vctx)
+                    self._save_candidate(decl, files)
+            if not verdict.passed():
+                break
+        return files, verdict, self._trial_summary(results)
 
     # ------------------------------------------------------------------ the fixed code's candidates
     def _fixed_done(self) -> set:
@@ -927,15 +1097,25 @@ class Round:
                 ladder[rung] = ladder.get(rung, 0) + bool(ok)
             replays = [c["V2b"] for c in verdict.components.values() if isinstance(c, dict) and "V2b" in c]
             terms = (verdict.steps.get("V0") or {}).get("heuristic_terms") or {}
+            loose = (verdict.steps.get("V0") or {}).get("unregistered_hooks") or {}
+            # v1.9: a package whose trial read it and fixed too little in-sample is not screened
+            trial = item.get("trial") or {}
+            no_fix = bool(trial.get("ran")) and trial.get("passed") is False
             self.ledger.row("verified", round_id=self.round_id, line=self.line, dir=decl.dir, kind=decl.kind,
-                            passed=verdict.passed(), outcome="duplicate" if dup else "",
+                            passed=verdict.passed(), outcome="duplicate" if dup else "no_trial_fix" if no_fix else "",
                             failed_components=verdict.failed_components(), reason=verdict.text()[:800],
                             **({"false_trigger_rate": max(float(x.get("false_trigger_rate") or 0) for x in replays)}
                                if replays else {}), **({"heuristic_terms": terms} if terms else {}),
-                            **({"merge_of": decl.merge_of} if decl.merge_of else {}))
+                            **({"unregistered_hooks": loose} if loose else {}),
+                            **({"merge_of": decl.merge_of} if decl.merge_of else {}),
+                            **({"trial_fixed": list(trial["iterations"][-1]["fixed"]),
+                                "attempts": trial.get("attempts")} if trial.get("iterations") else {}))
             self._audited(decl, verdict)
-            if verdict.passed() and not dup:
+            if verdict.passed() and not dup and not no_fix:
                 passed.append(item)
+            elif no_fix:
+                self.out(f"round      {self.round_id}: {decl.dir} fixed {trial.get('fixes')} of its trial tasks "
+                         f"in-sample (trial_min_fixes {self.s.trial_min_fixes}): not screened")
         for decl, files in self.fixed_candidates():
             vctx = vctx or self.vctx()
             verdict = run_ladder(files, decl, vctx)
@@ -993,12 +1173,11 @@ class Round:
         # left beside the screens before it (a resumed step re-reads its attempts for free)
         items.sort(key=lambda i: (bool(decls[i["dir"]].fixed), "memory" in decls[i["dir"]].kinds))
         allowance = confirm_allowance(len(held), self.s)
-        # v1.8: the research level's sample of studied tasks, priced for every package (run for the regressing ones)
-        sample = int(self.s.regression_research_sample) if self.s.evidence_at_least("research") else 0
-        to_pay = lambda chosen: sum(max(len(held) + allowance + sample  # noqa
+        # v1.9: the research sample is priced after the screen, for the regressing packages only (priced for every
+        # package up front, it squeezed finance-v8's third package out of the round)
+        to_pay = lambda chosen: sum(max(len(held) + allowance  # noqa
                                         - self._recorded(f"{self.tag}:{i['dir']}", "screen")
-                                        - self._recorded(f"{self.tag}:{i['dir']}", "confirm")
-                                        - self._recorded(f"{self.tag}:{i['dir']}", "research"), 0) for i in chosen)
+                                        - self._recorded(f"{self.tag}:{i['dir']}", "confirm"), 0) for i in chosen)
         chosen, dropped = [], []
         for item in items:
             usd, why = price(self.a, self.work_ref, screen_attempts=to_pay([*chosen, item]))
@@ -1038,6 +1217,9 @@ class Round:
                          settings=self.s)
             if res.outcome == "budget_exhausted":
                 raise Stop("budget: the budget refused a screen attempt")
+            if decl.merge_of:        # v1.9: how many of the entry's fixes the merge kept
+                entry = self.frontier.get(decl.merge_of)
+                res = replace(res, kept_fixes=len(set(res.fixed) & set(entry.fixed)) if entry is not None else None)
             res = replace(self._regressions(decl, item, res), merge_of=decl.merge_of)
             results.append(res)
             rows.append({"dir": decl.dir, "screen": self.a.objects.put(res), "package": package.ref()})
@@ -1054,6 +1236,9 @@ class Round:
                             reason=res.reason, partial=res.partial, regression_ref=res.regression_ref,
                             research_sample=len(res.research_sample),
                             research_regressed=list(res.research_regressed),
+                            unconditioned_regressed=list(res.unconditioned_regressed), acted=len(res.acted),
+                            footprint_share=res.footprint_share,            # v1.9
+                            **({"kept_fixes": res.kept_fixes} if res.kept_fixes is not None else {}),
                             **({"source": decl.fixed} if decl.fixed else {}),
                             **({"merge_of": decl.merge_of} if decl.merge_of else {}))
             if res.outcome == "screened" and not decl.fixed:
@@ -1070,7 +1255,10 @@ class Round:
         self.out(f"round      {self.round_id}: screened " + ", ".join(
             f"{r['dir']} net {res.net_flips} score {res.holdout_score}/{len(res.holdout)}, confirmed "
             f"{len(res.fixed)}/{len(res.flipped_fixed)} fixes {len(res.regressed)}/{len(res.flipped_regressed)} "
-            f"regressions{f', noisy {len(res.noisy)}' if res.noisy else ''} "
+            f"regressions{f', noisy {len(res.noisy)}' if res.noisy else ''}"
+            f"{f', {len(res.unconditioned_regressed)} broke with no footprint' if res.unconditioned_regressed else ''}"
+            f", acted on {len(res.acted)}/{len(res.holdout)}"
+            f"{f', kept {res.kept_fixes} of the entry\'s fixes' if res.kept_fixes is not None else ''} "
             f"({'accepted' if res.accepted else res.outcome if res.outcome != 'screened' else 'rejected'})"
             for r, res in zip(rows, results)) + (f"; {picked['dir']} is installed" if picked else "; none accepted"))
         return {"screens": rows, "best": picked["dir"] if picked else None,
@@ -1104,11 +1292,15 @@ class Round:
         if res.outcome != "screened" or not res.regressed or decl.fixed:
             return res
         changed = [c for c in components(self.package, self.a.objects.get(item["files"])) if c["change"] != "deleted"]
+        tools = [c["name"] for c in changed if c["kind"] == "tool"]
+        hooks = [c["name"] for c in changed if c["kind"] == "hook"]
         records = regression_evidence(self.a, res, evidence=self.evidence, base_package_ref=self.work_ref,
-                                      tool_names=[c["name"] for c in changed if c["kind"] == "tool"],
-                                      hook_names=[c["name"] for c in changed if c["kind"] == "hook"]) \
+                                      tool_names=tools, hook_names=hooks) \
             if self.s.evidence_at_least("abstract") else []
-        research = {"sample": [], "regressed": [], "sessions": {}}
+        # v1.9: why the mechanism worked, one record per confirmed fix — the frontier hands it to the merge
+        fixes = fix_evidence(self.a, res, evidence=self.evidence, base_package_ref=self.work_ref, tool_names=tools,
+                             hook_names=hooks) if self.s.evidence_at_least("abstract") else []
+        research = {"sample": [], "regressed": [], "sessions": {}, "outcome": "not_run"}
         if self.s.evidence_at_least("research") and int(self.s.regression_research_sample) > 0:
             verdict = Verdict.from_json(self.a.objects.get(item["verdict"]))
             fired = [t for rungs in verdict.components.values() for t in (rungs.get("V2b") or {}).get("false_triggers")
@@ -1116,17 +1308,28 @@ class Round:
             reading = self.reading()
             sample = research_sample(self.split()[0], reading, fired=fired, n=self.s.regression_research_sample,
                                      seed=res.candidate)
-            got = research_run(self.a, run_arm=self.run_arm, name=res.candidate,
-                               package=load_package(self.a.objects, res.package_ref), base_release=self.base,
-                               sample=sample, reading=reading, account=self.child("screen"),
-                               retries=int(self.a.k["gate"]["max_infrastructure_retries"]))
-            if got["outcome"] == "budget_exhausted":
-                raise Stop("budget: the budget refused a research-sample attempt")
-            research = {k: got[k] for k in ("sample", "regressed", "sessions")}
+            # v1.9: priced now, for this package alone, against what the round has left after its screens
+            to_pay = max(len(sample) - self._recorded(res.candidate, "research", res.package_ref), 0)
+            usd, why = price(self.a, self.work_ref, screen_attempts=to_pay) if to_pay else (0.0, "")
+            need, left = self._need(usd) if usd is not None else (None, None)
+            if usd is None or (left is not None and need > left + 1e-9):
+                research = {"sample": [], "regressed": [], "sessions": {}, "outcome": "budget",
+                            "reason": why or f"the sample of {len(sample)} would need up to ${need:.2f} and the round "
+                                             f"has ${left:.2f}"}
+                self.out(f"round      {self.round_id}: no research sample for {decl.dir}: {research['reason']}")
+            else:
+                got = research_run(self.a, run_arm=self.run_arm, name=res.candidate,
+                                   package=load_package(self.a.objects, res.package_ref), base_release=self.base,
+                                   sample=sample, reading=reading, account=self.child("screen"),
+                                   retries=int(self.a.k["gate"]["max_infrastructure_retries"]))
+                if got["outcome"] == "budget_exhausted":
+                    raise Stop("budget: the budget refused a research-sample attempt")
+                research = {k: got[k] for k in ("sample", "regressed", "sessions", "outcome")}
         terms = (Verdict.from_json(self.a.objects.get(item["verdict"])).steps.get("V0") or {}).get("heuristic_terms")
         obj = {"candidate": res.candidate, "round_id": self.round_id, "dir": decl.dir, "kind": decl.kind,
                "mechanism": decl.mechanism, "level": self.s.regression_evidence, "fixes": len(res.fixed),
                "regressions": len(res.regressed), "records": [r.to_json() for r in records],
+               "fixes_evidence": [r.to_json() for r in fixes],
                "research": research, "heuristic_terms": terms or {}}
         ref = self.a.objects.put_json("regression_evidence_set", obj)
         path = self.dir / "regressions.json"
@@ -1144,7 +1347,8 @@ class Round:
                              base_package_ref=self.work_ref, fixed=res.fixed, regressed=res.regressed,
                              regression_ref=res.regression_ref, screen_ref=self.a.objects.put(res),
                              mechanism=decl.mechanism, kind=decl.kind,
-                             heuristic_terms=(verdict.steps.get("V0") or {}).get("heuristic_terms") or {})
+                             heuristic_terms=(verdict.steps.get("V0") or {}).get("heuristic_terms") or {},
+                             fixed_sessions=fixed_sessions(self.a, res))        # v1.9: what a merge is replayed on
 
     def _frontier_after_screens(self, items: list, decls: dict, results: list) -> None:
         """The frontier's in and out after the screens (DESIGN §6.18): a partial package of R's goes on it (ledger

@@ -80,7 +80,9 @@ class Evidence:
         """{task_id: its latest valid train attempt} over `tasks`, in their order, under any package but the memory
         stream's — the stream's evidence pool (IMPROVER §3.1), where a task is read once and its reading may be another
         line's. With `prefer` (the working line's package) that package's latest attempt stands where it has one, so a
-        rejected candidate's screen attempt never replaces the line's own reading of a held-out task."""
+        rejected candidate's screen attempt never replaces the line's own reading of a held-out task. A trial
+        attempt (v1.9: a candidate run on a studied failure before the screen) is evidence only when that package is
+        the working line's — a rejected package's trial says nothing of W."""
         wanted = set(tasks)
         runs = self.activity.results.runs()
         any_: dict[str, TaskResult] = {}
@@ -88,7 +90,7 @@ class Evidence:
         for r in self.activity.results.all():
             run = runs.get(r.run)
             if r.split != TRAIN or r.validity != "valid" or r.task_id not in wanted or run is None \
-                    or run.role in NOT_READINGS:
+                    or run.role in NOT_READINGS or (run.role == "trial" and run.package_ref != prefer):
                 continue
             any_[r.task_id] = r
             if prefer is not None and run.package_ref == prefer:

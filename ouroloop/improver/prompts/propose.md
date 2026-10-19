@@ -51,6 +51,17 @@ grows: in prompt/*.md and in a skill the package already has you may add lines, 
 package that must rewrite existing text holds that one prompt or skill component alone, declared "rewrite": true; it
 is screened on its own and accepted only with {accept_min_whole_fixes} confirmed fixes.
 {merge}
+After you finish, the host tries each package that passed its free rungs on the studied failing tasks it claims
+(predicted_affected; a prompt or skill: the tasks of its causes), at most {trial_max_tasks} of them, and hands you
+every task's outcome — the checks that failed, which of your components acted, the session to read_trajectory. A
+package that fixed fewer than {trial_min_fixes} of them in that trial is not screened on the held-out tasks: read
+the sessions, change the files so the mechanism acts and fixes them, and call finish again with the same
+declaration (at most {trial_max_rounds} revisions). Build so the trial passes: a mechanism that does not fix the
+failures you studied will not fix the ones you have not seen. Every hook you write must be registered in
+manifest.json under hooks with its site, or it never runs (run_check notes functions shaped like a hook entry that
+no hook names). A merge of a frontier entry is replayed on the attempts the entry fixed before it is screened: it
+must still act there (inputs/frontier.json's fixes_evidence shows what the entry's components said when they
+fixed a task), and narrow only the regression shapes.
 
 What the persistent failures look like (inputs/failures.json puts each one side by side: the request, the checks that
 failed with the values they expected, every write the agent made, what it said at the end; persistent ones first — they

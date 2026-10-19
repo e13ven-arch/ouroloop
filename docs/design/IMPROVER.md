@@ -50,12 +50,21 @@ class Settings:
     frontier_max_attempts: int = 2               # v1.8：一个前沿条目最多合并几次（cap）
     text_additive_only: bool = True              # v1.8：prompt 与已有 skill 只能插入；删改另作 rewrite 包（fixed）
     heuristic_terms_min: int = 3                 # v1.8：触发条件里的字面词表到这么多词就记软信号（floor）
+    trial_max_tasks: int = 4                     # v1.9：样本内试跑每包每次至多几道研究失败题（cap；0 关掉试跑，§9.6）
+    trial_max_rounds: int = 2                    # v1.9：试跑之后 R 最多修订几次再试（cap）
+    trial_max_attempts: int = 12                 # v1.9：一轮全部试跑尝试的上限（cap）
+    trial_min_fixes: int = 1                     # v1.9：进留出筛选要的样本内修复数（free；0 只反馈不设门）
+    regression_by_footprint: bool = True         # v1.9：只含 tool / hook / skill 的包，退步只在组件出手的题上算（fixed）
+    merge_min_acts: int = 1                      # v1.9：合并版回放时须在条目修复题的尝试上出手的题数（floor）
+    replay_sample: int = 12                      # v1.9：V2b / V2d 的通过题样本（floor；此前常量 6）
 ```
 
 合并规则：数量上限 cap（`packages_per_round`、`fixed_per_round`、会话上限、`hook_aux_calls`、`l5_per_round`、`round_share`、`stream_screen_max`）；`audit_hook_share` floor；门槛 floor（`accept_min_net_flips`、`toolcheck_min_pass`、`replay_min_triggers`、`reach_*`、`holdout_share`）；退步与容差 cap；`require_code_component`、`priors`、`removal_zero_credit_rounds` fixed；`causes`、`mechanizable` superset。v1.1 的 `k`、`explore_slots`、`l5_slots`、`code_guarantee`、`screen_*`、`thin_screen_tasks`、`gate_every` 删除。
 
 
 v1.8（阶段 4i，DESIGN §6.18）：`regression_evidence` 三档逐级包含，规则 free（三档之一都可以配；research 档的花费由 `regression_research_sample` 的 cap 封顶，三档都只读研究题）；`replay_max_false_trigger` 默认改为 0.2。
+
+v1.9（阶段 4j，DESIGN §6.19）：试跑的三个数量 cap、`trial_min_fixes` free（它只决定花不花筛选的钱，不是接受；0 时试跑只作反馈）；`regression_by_footprint` fixed；`merge_min_acts`、`replay_sample` floor。`REPLAY_SAMPLE` 常量删除。
 
 ## 3 一轮（`round.py`，v1.2）
 
@@ -72,14 +81,14 @@ def run_round(activity, index: int, *, out) -> RoundResult
 - **研究部分与留出部分**：train 题按 `holdout_share` 分两部分，整个活动固定（整族留出，family 按 `gate.order_seed` 与 family 名的哈希排序）。诊断覆盖研究部分的失败题；R 只看研究部分；留出部分只在 V3 跑，它的题号从不进 R 的输入、台账投影与剧本（换成计数）。
 - **measure**：工作线的包在研究部分每道题要有一次有效读数；第 0 轮用基线（或导入的基线，ACTIVITY §4）；接受装入之后缺的题现量（run 的 role `measure`，每轮一个 run）。留出部分的读数来自上一轮的筛选（接受的包）或基线。
 - **focused**：§6 的建议清单与硬要求。
-- **implemented**：§7 的会话，产出 ≤ `packages_per_round` 个候选包。
-- **verified**：§8，按组件；不过的退回修订一次。
+- **implemented**：§7 的会话，产出 ≤ `packages_per_round` 个候选包；v1.9：每个过了免费阶梯的包随即在它声明的研究失败题上试跑（§9.6），结果回会话修订，至多 `trial_max_rounds` 次。
+- **verified**：§8，按组件；不过的退回修订一次。v1.9：试跑过而样本内修复 < `trial_min_fixes` 的包不进筛选（`verified` 行 outcome `no_trial_fix`）。
 - **screened**：§9，每个过 V2 的包在全部留出题上跑一次；`packages_per_round` > 1 时按净修复、再成本、再声明顺序挑最优。
 - **accepted**：装入工作线（CAS，reason `screen`，`install:<round_id>` 幂等）；**rejected**：工作线不动，台账记读数。
 - **credited**：§10，按组件在留出题上的足迹记功，估值更新；零功组件 N 轮后生成删除候选（下一轮作固定候选）。
 - **stop**：研究部分没有失败题 → `nothing_to_fix`；份额不够付下一档 → `budget`；会话没有候选且没有固定候选 → `no_candidate`。停下的一轮不再续跑，`cycle` 从下一轮接着。
 - **续跑**：会话一结束，声明与文件就记进 `round.json`；之后断了只重验、不重付会话；筛选的尝试按 attempt id 续跑；装入与记功幂等。
-- 钱：一轮记在 `<scope>:round-<i>` 账户（上限 `round_share × [budget] usd`），下分 `measure`、`diagnose`、`session`、`screen`、`policy`；付诊断之前先核一个下限：研究部分补测 + 一次留出筛选（留出题数 × 当前 W 的 train 每次尝试成本 × 1.15）+ 将要付的研究调用，放不进余额就停在 `budget`。
+- 钱：一轮记在 `<scope>:round-<i>` 账户（上限 `round_share × [budget] usd`），下分 `measure`、`diagnose`、`session`、`screen`、`policy`；付诊断之前先核一个下限：研究部分补测 + 一次留出筛选（留出题数 × 当前 W 的 train 每次尝试成本 × 1.15）+ `trial_max_attempts` 次试跑（v1.9）+ 将要付的研究调用，放不进余额就停在 `budget`。子账户多一个 `trial`。
 
 `cycle --until round-K` 依次跑第 0～K 轮；连续 `schedule.patience` 轮没有接受就停（`rounds` 上限 12，`patience` 3）。没有 carry 轮、没有活动内的 gate。活动末的发布 gate 是 `--phase gate`（EVALUATE §5.2、ACTIVITY §4）。
 
@@ -91,7 +100,7 @@ v1.3：`accepted` 之后多一步 `stacked`（§9.4）：第一个接受的包�
 - 不现量：证据池是 `pool` 里每道题的最新一次有效尝试（`Evidence.latest(pool, prefer=工作线的包)`：同一道题有工作线自己的尝试时取它，否则取任何包的最新一次——role `stream`、`measure`、`screen` 都算，`library` 不算），所以被拒候选的筛选尝试不会顶掉工作线自己的读数；装入之前在旧线上记下的失败留在池里当证据，直到这道题再被读到（流里一道题只首遇一次，所以同一个失败可能被再诊断；重复的候选由档案的去重挡住，不再付筛选）；
 - 划分：`pool` 按同一个族哈希规则分研究 / 留出两部分（`holdout_share`），一道题的归属在整个流里不变；
 - 诊断只看研究部分的失败，优先最近批次的；
-- 筛选只跑留出部分里最近 `stream_screen_max` 道（按流的顺序），`reading` 是这些题的最新尝试；接受规则不变；`best_so_far` 是工作线历史上在这组留出题上的最高通过数；
+- 筛选只跑留出部分里最近 `stream_screen_max` 道（按流的顺序），v1.9 另加本轮合并条目（`Focus.merge`）的修复集与退步集（按流的顺序并入，同一轮每个包同一个窗口），`reading` 是这些题的最新尝试；接受规则不变；`best_so_far` 是工作线历史上在这组留出题上的最高通过数；
 - 划分的归属与批式同一个：先在整个 train 上按族哈希算出留出部分，再取池内的部分（研究 / 留出各按流的顺序）；
 - 其余步骤同批式。轮的目录 `rounds/s<i>/`，round_id `{scope}/s{i}`，账户 `{scope}:round-s<i>`（`round.json` 的 `account` 与 `pool`）。
 
@@ -193,6 +202,7 @@ TOOLS = ("list_files", "read_file", "write_file", "edit_file", "delete_file", "r
 - 提示词（`improver/prompts/propose.md`）相应改：一轮交一个包；对清单里的几个簇一起下手；一个机制可以是工具 + 强制它的 hook + 说明何时用的技能；提交前的审核 hook 可以调 aux 模型；不把一道题的值写进包。
 - v1.3：`packages_per_round` > 1 时提示词要求交几个包就是几种不同的机制、对不同的簇，第一个包对最大的簇；`audit_suggested` 时明说第二个包应当是审核 hook；每个组件的 `cause_ids` 尽量列出它覆盖的所有簇；叠装规则告诉 R：不同的包不要改同一个文件（manifest 除外）。
 - v1.6（DESIGN §6.16）：审核 hook 用 `{"missing": [...]}` 答（§8 的 V2d 预演它；自由文本是候选缺陷）；提示词说明"只补缺、不改已写"是构造出来的，审核要做的是把读过的文档里的每条要求与 agent 的写入对照、列出没有对应写入的；`inputs/audits.json`（这条线上试过的审核：机制、预演与筛选的数、研究部分的误报原文）是下一个审核的起点。清单有几个簇就交几个包，少交要在 finish 里说明（台账 `single_package`）。
+- v1.9（DESIGN §6.19）：**试跑的反馈**——会话 finish 之后，每个过了免费阶梯的包先在研究失败题上试跑（§9.6），宿主把每道题的结果作为一条 user 消息交回会话（`revise`）：题号、通过与否、出手的组件、失败断言的类别与参数（train 的评分行，R 本来看得到）、候选下的 session（加进 `readable`，R 用 `read_trajectory` 读），剩几次修订、剩几次试跑尝试；R 改文件后再 finish（修订不改声明），宿主重验阶梯、再试。**编辑额度提醒**：编辑数到 `session_max_edits` 的 75% 时那次工具结果末尾附一句（用了几次、剩下的留给 finish），到 90% 再附一次（`EDIT_REMINDERS`）；会话因 turns / edits 额度结束时台账记 `session_ended`（原因、turns、edits、已声明的包数）。
 - v1.5：提示词说明顽固失败的三种形态（文档里的一条要求没执行到、没沿用记录的词与格式、该报告的没报告），要求候选改变 agent 从文档到动作的方式——把读过的文档里的每条要求与原词抽成待办，做完前逐条对照，被挡住或被拒的项按请求报告——而不是再加一个"再看一眼"的提醒（scope hook 这类试过，带来了漏报）；`failures.json` 的 `persistent` 条目优先。
 
 
@@ -211,12 +221,13 @@ def ladder_for(component: Component) -> tuple[str, ...]   # tool: V2a；hook: V2
 def run_ladder(files, decl, *, parent, seed, core, worker, evidence, suite, objects) -> Verdict
 ```
 
-- V0（`verify/static.py`）：形状、K 允许的类型与站点、上限、相对种子改动行的字面量、`memory/` 未改、manifest、声明与 diff 一致（两个方向）、禁止 import；`require_code` 的检查在这里写台账；`l5_per_round` 在这里拒绝。
+- V0（`verify/static.py`）：形状、K 允许的类型与站点、上限、相对种子改动行的字面量、`memory/` 未改、manifest、声明与 diff 一致（两个方向）、禁止 import；`require_code` 的检查在这里写台账；`l5_per_round` 在这里拒绝。v1.9：`middlewares/*.py` 里定义了两个位置参数 `(ctx, event)` 的函数而 manifest 的 hooks 没有哪条 entrypoint 指向它的，记 V0 结果的 `unregistered_hooks`（按文件）、verdict 与 `verified` 行，提示 R 挂上或删掉；不拒。
 - V1（`verify/unit.py`）：包测试；agent / vendor / config 改动跑 smoke。
 - V2a（`verify/toolcheck.py`）：每个 tool 组件，脚本或探针（§8.1）；`toolcheck_min_pass`。
-- V2b（`verify/replay.py`）：每个 `uses_model = false` 的 hook 组件，在研究部分的轨迹上回放；声明的失败题上触发 ≥ `replay_min_triggers`，通过题样本（`REPLAY_SAMPLE`）上的触发率 ≤ `replay_max_false_trigger`（v1.7；此前只报告，v7 装上了一个在 85% 的尝试上说话的 hook）；`verified` 行记 `false_trigger_rate`。
+- V2b（`verify/replay.py`）：每个 `uses_model = false` 的 hook 组件，在研究部分的轨迹上回放；声明的失败题上触发 ≥ `replay_min_triggers`，通过题样本（`replay_sample`，12）上的触发率 ≤ `replay_max_false_trigger`（v1.7；此前只报告，v7 装上了一个在 85% 的尝试上说话的 hook）；`verified` 行记 `false_trigger_rate`。
 - V2c（`verify/reach.py`）：每个 skill 组件。
-- V2d（`verify/audit.py`，v1.6，DESIGN §6.16）：每个 `uses_model = true` 的 hook 组件（after_turn / on_finish）。用 V2b 的回放机器把声明的失败题与通过题样本（`REPLAY_SAMPLE`）的站点事件喂给它，`ctx.tool` 只读对着新开的世界，`ctx.model` 接研究模型（role aux，计在轮的 `verify` 子账户，`hook_aux_calls` 封顶）。报警 = 答了非空的 `missing`。门槛：声明的失败题上报警 ≥ `replay_min_triggers`，通过题样本上的报警比例 ≤ `audit_max_false_alarm`；另报告命中条目是否点到没过的断言（断言参数的字符串值或收件人出现在条目里）。不过门槛时退回文本列出每个误报（任务请求的前 300 字、审核的 `missing` 原文），会话修订一次再预演。预演是免费档的最后一级；过了进 V3。
+- V2d（`verify/audit.py`，v1.6，DESIGN §6.16）：每个 `uses_model = true` 的 hook 组件（after_turn / on_finish）。用 V2b 的回放机器把声明的失败题与通过题样本（`replay_sample`，12）的站点事件喂给它，`ctx.tool` 只读对着新开的世界，`ctx.model` 接研究模型（role aux，计在轮的 `verify` 子账户，`hook_aux_calls` 封顶）。报警 = 答了非空的 `missing`。门槛：声明的失败题上报警 ≥ `replay_min_triggers`，通过题样本上的报警比例 ≤ `audit_max_false_alarm`；另报告命中条目是否点到没过的断言（断言参数的字符串值或收件人出现在条目里）。不过门槛时退回文本列出每个误报（任务请求的前 300 字、审核的 `missing` 原文），会话修订一次再预演。预演是免费档的最后一级；过了进 V3。
+- 合并包的回放（v1.9，`verify/merge.py`，verdict 的 `merge` 步）：声明 `merge_of` 的包，其不调模型的 hook 在条目修复题上候选自己的留出尝试（条目筛选时的 session，宿主的 `VerifyContext.merge_sessions`）上回放，须在 ≥ `merge_min_acts` 道上出手；不过时回给 R 的只有计数（"在条目修好的 2 道题的尝试上一道都不出手"），会话修订一次再回放；仍不过 → verdict 不过，不筛。没有可回放的 hook（只有 tool、或 hook 调模型）→ 步记 `not_replayable`，通过。
 - 调 aux 模型的 hook（`uses_model = true`）：hook 的 ctx 带 `model(role="aux")`，每次尝试 `hook_aux_calls` 次封顶，超出即 `CandidateDefect`；`audit_additive_only` 下它只能答 `missing`，自由文本的 `pushback` / `message` 是 `CandidateDefect`（HARNESS §7）；V1 的 smoke 用脚本化模型答一次，V2d 预演，然后 V3。
 
 
@@ -241,10 +252,10 @@ def accept(activity, result, *, round_id) -> InstallReceipt     # 装入工作�
 ```
 
 - 任务集 = 全部留出 train 题（`holdout_share` × train，finance 为 20 道）；候选包每道一次尝试（run 的 role `screen`，候选名 `r{i}:package`）。失败集 = 留出里当前工作线失败的题，通过集 = 其余。
-- 条件记功：修复只在该题至少一个改动组件留下足迹时算（tool 调用过、hook 触发过、skill 读过；prompt / config / agent 的足迹是全部题）；退步在通过集上算，不论足迹。`footprints[site]` 记每个组件留下足迹的题。
-- 翻转确认（v1.7，DESIGN §6.17）：一次读数之后，候选与池里读数不同的每道题——条件修复与退步（无足迹的通过 `unconditioned` 本来不计，不再读）——在候选下再读一次（role `confirm`，候选名同筛选，账户同筛选）；对照面是当前 W 对这道题已有的有效 train 读数（首遇、现量、以前的确认；筛选与确认的候选读数不算），不足 `confirm_readings`（2）次的补读到两次（role `confirm`，候选名 `confirm:<W>`）。可复现修复 = 候选两次都过且有足迹、W 的读数全败；可复现退步 = 候选两次都败、W 的读数全过；W 的读数有过有败 → `noisy`，不计。`fixed` / `regressed` 是可复现的集合，`flipped_fixed` / `flipped_regressed` 是一次读数的，`confirm_attempts` 记花了几次。
+- 条件记功：修复只在该题至少一个改动组件留下足迹时算（tool 调用过、hook 触发过、skill 读过；prompt / config / agent 的足迹是全部题）；退步在通过集上算——v1.9（`regression_by_footprint`）：只含 tool / hook / skill 组件的包，通过题上的翻转只在该次尝试有足迹时才是退步候选，没有足迹的记 `unconditioned_regressed`（不确认、不计、不进证据）；全足迹包照旧每道都算。`footprints[site]` 记每个组件留下足迹的题；`acted` 与 `footprint_share`（一次读数里有足迹的题数 / 有效读数；全足迹包 1.0）记候选在留出上的实际出手份额。
+- 翻转确认（v1.7，DESIGN §6.17）：一次读数之后，候选与池里读数不同的每道题——条件修复与退步（无足迹的通过 `unconditioned` 本来不计，不再读）——在候选下再读一次（role `confirm`，候选名同筛选，账户同筛选）；对照面是当前 W 对这道题已有的有效 train 读数（首遇、现量、以前的确认；筛选与确认的候选读数不算），不足 `confirm_readings`（2）次的补读到两次（role `confirm`，候选名 `confirm:<W>`）。可复现修复 = 候选两次都过且有足迹、W 的读数全败；可复现退步 = 候选两次都败（v1.9：按足迹的包，每次都有足迹）、W 的读数全过；W 的读数有过有败 → `noisy`，不计。`fixed` / `regressed` 是可复现的集合，`flipped_fixed` / `flipped_regressed` 是一次读数的，`confirm_attempts` 记花了几次。
 - 接受规则：`net_flips = 可复现修复 − 可复现退步 ≥ accept_min_net_flips`（1）、`可复现退步 ≤ accept_max_regressions`（0）、足迹是全部题的包（改动的组件全是 WHOLE_KINDS）`可复现修复 ≥ accept_min_whole_fixes`（2）、`holdout_score ≥ best_so_far − accept_floor_tolerance`（一次读数的通过数；`best_so_far` 是活动内工作线在留出上的最高通过数，基线算第一次）。三条都成立 → `accepted`，装入工作线；否则 `rejected`，原因写进台账与报告。
-- 付费之前核价：留出题数 × 当前工作线的 train 每次尝试成本 × 1.15；放不进本轮余额 → 不筛，停在 `budget`。
+- 付费之前核价：留出题数（加确认的余量）× 当前工作线的 train 每次尝试成本 × 1.15；放不进本轮余额 → 不筛，停在 `budget`。v1.9：研究抽样不计入每个包的事前核价（它挤掉过第三个包）；筛选后只对有可复现退步的包按实际题数再核一次，放不下就不抽，证据对象的 `research.outcome` 记 `budget`，轮次不停。
 - 候选只有一个时没有挑选；`packages_per_round` > 1 或有固定候选时，按净修复、再成本、再声明顺序挑最优，其余记 `not_selected`。固定候选（快照、升级技能、删除）与 R 的包分开筛，各自可接受，先 R 的包、再固定候选；同一轮两者都接受时先装 R 的包，固定候选在它之上重验 V0 后装入。
 
 ### 9.4 几个包：各自筛选，接受的叠装（v1.3）
@@ -296,12 +307,32 @@ class Frontier:                     # rounds/frontier.json
 - 聚焦：前沿非空时 `Focus.merge = Frontier.picks(line, merge_per_round)`（每项：entry、round、dir、mechanism、kind、修复与退步计数、attempts、`cause_ids`——条目所列 cause 在本轮的 id，本轮没诊断到的沿用条目自己的、`candidate_dir`），提示词的合并段打开：交一个条件化版本，目录 `candidates/merge/`（第二个 `merge-2/`），声明 `merge_of: <entry id>`，组件同原包（触发条件收窄）。`read_declaration` 只接受 focus.json 列出的 entry id；V0 的 cause 检查也接受条目自己的 cause id。
 - `partial` 的判定（`screen.partial_of`）：outcome 为 screened、未接受、有可复现退步、可复现修复 ≥ `frontier_min_fixes`，且把退步计数置零后接受规则的各条都成立（全足迹的包仍要 `accept_min_whole_fixes` 个修复）。
 - 验收与筛选与普通包相同；接受并装入 → 条目 `merged`（台账 `merged`）；拒绝 → `attempts += 1`，到 `frontier_max_attempts` 则 `abandoned`（台账 `abandoned`）；合并包自己也是 `partial` 时替换原条目的文件、修复集、退步集与证据，attempts 继承（台账 `partial`，带 entry）。
-- `research` 档的抽样：只对有可复现退步的包做（证据是给退步用的）；从研究部分里 W 的读数通过的题里取，V2b 回放里候选 hook 误触发的题优先，其余按候选名播种的固定顺序补到 `regression_research_sample`；候选跑一遍（role `research`，账户同筛选，核价时每包按上限计入）；退步的题记 `research_regressed`，`regressions.json` 里给两条轨迹的 session id（R 用 `read_trajectory` 读；只会是研究题）。证据对象（`regression_evidence_set`：level、计数、records、research、heuristic_terms）由 `screened` 行的 `regression_ref` 与前沿条目引用，同时写 `rounds/<tag>/regressions.json`；下一轮的 `inputs/regressions.json` 取本线最近 8 个带证据的包，按当前档只给对应内容。
+- `research` 档的抽样：只对有可复现退步的包做（证据是给退步用的）；从研究部分里 W 的读数通过的题里取，V2b 回放里候选 hook 误触发的题优先，其余按候选名播种的固定顺序补到 `regression_research_sample`；候选跑一遍（role `research`，账户同筛选，v1.9：筛选后按实际题数核价，不计入事前上限）；退步的题记 `research_regressed`，`regressions.json` 里给两条轨迹的 session id（R 用 `read_trajectory` 读；只会是研究题）。证据对象（`regression_evidence_set`：level、计数、records、research、heuristic_terms）由 `screened` 行的 `regression_ref` 与前沿条目引用，同时写 `rounds/<tag>/regressions.json`；下一轮的 `inputs/regressions.json` 取本线最近 8 个带证据的包，按当前档只给对应内容。
 - 受保护集：留出里首次有效读数通过的题；每轮 `measured` 行记 `protected` 与 `protected_passed`，报告画逐轮曲线。
 - 文字只增（V0）：`verify/static.py` 的 `text_problems` 对 `prompt/*.md` 与父包已有的 `skills/*.md` 做行级 diff，出现删除或改写即 V0 不过，除非该包只含这一个组件且声明 `rewrite: true`（筛选时按全足迹条件）；声明了 rewrite 却还有别的组件也不过。固定代码的候选不查。
 - 启发式软信号（V0）：`heuristic_terms(code, minimum) -> list[str]`：只数作为条件用的词表——`in` / `not in` 右边的字面量列表（或模块常量）、for / 推导式遍历的词表、交给 `re.*` 的正则的候选项；schema 的 `required` 这类数据不算。≥ `heuristic_terms_min` 个自然语言词时写进 V0 结果的 `heuristic_terms`（按文件）、verdict、`verified` 行、前沿条目与证据对象；不拒绝。
 
-台账新增 stage：`partial`、`frontier_pruned`、`merged`、`abandoned`。报告新增：受保护集通过数的逐轮曲线、前沿的进出、合并的接受率、research 档抽样的命中率。
+- v1.9（DESIGN §6.19）**修复证据**：每道可复现修复一条去题化记录 `FixEvidence`（域、W 下没过而候选下过的断言类别 `fixed_kinds`、出手的组件与它说的话、前后写入按路由、终止；无题号、请求、世界里的值），`fix_evidence(activity, result, ...)` 生成，进证据对象的 `fixes_evidence`（abstract 档及以上给 R）、`regressions.json`、前沿条目（`fix_ref`）与 `frontier.json`（`fixes_evidence`）。合并版的回放（§8 的 `merge` 步）用条目修复题上候选自己的留出 session（`FrontierEntry.fixed_sessions`：题号 → session，只在宿主）；流式窗口另加本轮合并条目的修复集与退步集（§3.1）；合并包的 `screened` 行与 ScreenResult 记 `kept_fixes`。
+
+台账新增 stage：`partial`、`frontier_pruned`、`merged`、`abandoned`；v1.9 再加 `trialed`、`session_ended`。报告新增：受保护集通过数的逐轮曲线、前沿的进出、合并的接受率、research 档抽样的命中率；v1.9：每个筛选行的出手份额、无足迹的退步候选数、合并保留的修复数，每轮的试跑（题数、修复、尝试、进筛选的包）。
+
+### 9.6 样本内试跑（v1.9，阶段 4j，`trial.py`）
+
+```python
+@dataclass(frozen=True)
+class TrialResult(Record): candidate: str; package_ref: str; iteration: int; tasks: tuple; fixed: tuple; failed: tuple; unconditioned: tuple; attempts: int; outcome: str   # ok | budget | invalid | defect | not_run
+def trial_tasks(decl, *, causes, study_failing, n) -> list[str]   # 声明的 predicted_affected（空则取组件 cause 的题）∩ 研究部分当前失败的题，冻结顺序，至多 n
+def trial(activity, *, run_arm, name, package, base_release, tasks, reading, evidence, conditions, account, retries, iteration) -> TrialResult
+def feedback(result, *, evidence, grading, revisions_left, attempts_left) -> tuple[str, set]   # 给 R 的文字与可读的 session
+```
+
+- 时机：会话 finish → 阶梯 → 过了的包试跑 → 结果 `revise` 回会话 → R 改文件再 finish → 重验阶梯 → 再试，至多 `trial_max_rounds` 次修订；会话已因额度结束的不修订。固定代码的候选不试。
+- 题：`trial_tasks`，每包每次 ≤ `trial_max_tasks`；一轮全部包全部迭代的尝试 ≤ `trial_max_attempts`，用完就不再试、不再修订。没有可试的题 → 不试、不设门，`trialed` 行记 `not_run`。
+- 跑：run 的 role `trial`，候选名同筛选（`{tag}:{dir}`），钱记本轮 `trial` 子账户；run 的身份含包 ref，修订后的包是新 run；续跑按记录免付。每次试跑前 `_afford`（题数 × W 的 train 每次尝试成本），放不下 → 这次不试（outcome `budget`），包照常按核价进筛选。
+- 判：样本内修复 = 通过且至少一个改动组件有足迹（与 V3 的条件记功同一个 `condition` 与 `footprint`）；通过而无足迹记 `unconditioned`，不算。
+- 门：`verified` 步只放行试跑过且修复 ≥ `trial_min_fixes` 的包（以及没试的包）；不过的 `verified` 行 outcome `no_trial_fix`，台账 `trialed` 行每次迭代一行（round_id、dir、iteration、tasks、fixed、failed、unconditioned、attempts、passed）。`round.json` 的 implemented 步记每包的 `trial`（迭代列表与总尝试）。
+- 不是接受：不记功、不进估值与记分板的修复计数；留出题从不在试跑里。R 看到的 session 都是研究题的。
+- 读数：试跑的尝试是候选包在那道题上的有效 train 读数——包装入后它就是工作线对这道题的读数（下一轮的 measure 与 release 的补读不再付它）；被拒候选的试跑不是流式证据池的读数（`Evidence.latest` 跳过非工作线包的 `trial` 尝试），旧线上的失败仍留作证据。
 
 ## 10 档案、记功、台账、策略、固定候选
 
@@ -321,7 +352,9 @@ def removal_candidates(credits_by_round, package, *, zero_rounds) -> list[tuple[
 
 # ledger.py
 STAGES = ("measured", "diagnosed", "focused", "declared", "verified", "screened", "accepted", "gated", "installed",
-          "rejected", "credited", "removal_proposed", "no_code_candidate", "vocabulary_added", "l6_unavailable", "stopped", "playbook")
+          "rejected", "credited", "removal_proposed", "no_code_candidate", "vocabulary_added", "l6_unavailable", "stopped", "playbook",
+          "partial", "frontier_pruned", "merged", "abandoned",           # v1.8
+          "trialed", "session_ended")                                   # v1.9
 class Ledger:    # ledger/experience.jsonl
     def row(self, stage, **fields) -> dict
     def rows(self, *, stage=None, round_id=None) -> list[dict]
@@ -336,7 +369,7 @@ def update_playbook(ledger, playbook, *, researcher, line) -> str      # 轮末�
 def export_policy(activity) -> str;  def import_policy(activity, policy_ref) -> None
 ```
 
-- 台账的 `screened` 行（v1.7）：`fixed` / `regressed` / `net_flips` 是可复现的，另记 `flipped_fixed` / `flipped_regressed` / `noisy` / `confirm_attempts`；`verified` 行的 V2b 多 `false_trigger_rate`。
+- 台账的 `screened` 行（v1.7）：`fixed` / `regressed` / `net_flips` 是可复现的，另记 `flipped_fixed` / `flipped_regressed` / `noisy` / `confirm_attempts`；`verified` 行的 V2b 多 `false_trigger_rate`。v1.9：`screened` 行多 `unconditioned_regressed`、`acted`、`footprint_share`、`kept_fixes`（合并包）；`verified` 行多 `unregistered_hooks`、outcome `no_trial_fix`；`trialed` 行与 `session_ended` 行如 §9.6、§7。
 - 记功（v1.2，接受后）：直接用留出筛选的读数——对改动的每个组件，在它留下足迹的留出题上记 `delta = r_新 − r_旧`；研究部分在下一轮 measure 补测后再记一次。对改动的每个组件，在 `footprint` 为真的题上记 `delta = r_新 − r_旧`；估值 `(line, cause, kind)` 用该 cause 的题上、声明的 kind 的组件有足迹处的净修复与本轮花费更新。估值的每个观测按 `round:dir` 记：筛选时记一次（条件净翻转 / 失败集），装入后用记功的读数替换它，续跑写同一键不重复计。
 - 反膨胀：一个组件连续 `removal_zero_credit_rounds` 个已记功的轮次条件记功为零 → 删除候选（固定代码生成），下一轮作为固定候选进 V3。
 - R 的策略（估值与剧本）在活动内随台账更新；release 里的 `improver_ref` 在一个活动内保持 R0，活动结束时 `export_policy` 产出下一个活动的 R1（DESIGN §6.9）。
@@ -370,6 +403,8 @@ def export_policy(activity) -> str;  def import_policy(activity, policy_ref) -> 
 | `research/methods.py` 的 `reach_check`、`replay_events` | 思路进 `verify/reach.py`、`verify/replay.py`，代码不搬 |
 
 ## 13 测试
+
+- v1.9：脚本化 R 的模式 `trial`（第一版的 hook 在试跑里不出手、不过；收到试跑反馈后修订成出手的版本，第二次试跑过，进筛选并装入）与 `trial_bad`（修订后仍不过：`no_trial_fix`，不筛，台账两行 `trialed`）；试跑的尝试记在 `trial` 子账户、按候选名与包 ref 续跑免付、`trial_max_attempts` 用完不再试；`trial_max_tasks = 0` 时不试照常筛；退步按足迹：hook 没出手的通过题翻转记 `unconditioned_regressed`、不确认、不进证据，全足迹包照旧；`footprint_share` 与 `acted`；修复证据的记录与 R 的输入（无留出题号）；合并版回放不出手 → 修订一次 → 仍不出手不筛；流式窗口含条目的修复集与退步集；导入 stream 读数（同一 AttemptIdentity）后 `--phase stream` 不再付首遇；V0 的 `unregistered_hooks`；`heuristic_terms` 对 HTTP 方法元组、工具名列表、驼峰与短词不报；编辑额度 75% / 90% 的提醒与 `session_ended`；研究抽样不计入事前核价、筛选后放不下就不抽。
 
 - v1.8：部分包进前沿（修复 ≥ 1、只因退步被拒）；前沿排序与 `frontier_max`、`subsumed`、`abandoned`；合并包占名额、声明 `merge_of`、接受后条目 `merged`；`regressions.json` 三档的内容（abstract 不含题 id / 请求 / 参数值；research 带两条轨迹的 session id 且只有研究题）；research 抽样优先回放里出手的题；文字删改被 V0 拒，`rewrite: true` 的单组件包可筛；`heuristic_terms` 的检出与软信号；`replay_max_false_trigger` 0.2 下 v1.7 的噪声 hook 仍被拒。脚本化 R 的模式 `partial`（修 1 退 1 的全局 hook）与 `merge`（条件化后零退步）在假上游上端到端。
 

@@ -78,6 +78,17 @@ class Settings:
     text_additive_only: bool = True              # prompt/*.md and existing skills/*.md only grow: a package that deletes
                                                  # or rewrites existing text holds that one component, declared rewrite
     heuristic_terms_min: int = 3                 # V0 notes a hook or tool whose trigger is a list of this many words
+    # v1.9 (DESIGN §6.19; IMPROVER §9.6): the in-sample trial — R's package runs on the studied failing tasks it
+    # predicts before the paid held-out screen, the results go back to R, and only a package that fixes one there is
+    # screened; regressions by footprint; the merge's replay; the replay sample
+    trial_max_tasks: int = 4                     # studied failing tasks a package is tried on, per iteration (0: off)
+    trial_max_rounds: int = 2                    # revisions R gets after a trial that fixed too little
+    trial_max_attempts: int = 12                 # trial attempts a round pays for, over its packages and iterations
+    trial_min_fixes: int = 1                     # in-sample fixes a package needs to reach the screen (0: feedback
+                                                 # only; the user's to set either way)
+    regression_by_footprint: bool = True         # a package of tool/hook/skill components regresses only where one acted
+    merge_min_acts: int = 1                      # a merge's hook must act on this many of the entry's fixed attempts
+    replay_sample: int = 12                      # passing train attempts V2b (and V2d) replays for the false-trigger rate
 
     def __post_init__(self):
         for name in ("causes", "mechanizable"):
@@ -122,6 +133,12 @@ class Settings:
                              "(0 turns the research sample, the frontier or the merges off)")
         if min(int(self.frontier_min_fixes), int(self.frontier_max_attempts), int(self.heuristic_terms_min)) < 1:
             raise ValueError("improver.frontier_min_fixes, frontier_max_attempts and heuristic_terms_min are at least 1")
+        if min(int(self.trial_max_tasks), int(self.trial_max_rounds), int(self.trial_max_attempts),
+               int(self.trial_min_fixes)) < 0:
+            raise ValueError("improver.trial_max_tasks, trial_max_rounds, trial_max_attempts and trial_min_fixes are "
+                             "counts (trial_max_tasks 0 turns the trial off; trial_min_fixes 0 keeps it as feedback only)")
+        if int(self.merge_min_acts) < 1 or int(self.replay_sample) < 1:
+            raise ValueError("improver.merge_min_acts and replay_sample are at least 1")
 
     def evidence_at_least(self, level: str) -> bool:
         """Whether regression_evidence holds `level` (each level holds the ones before it)."""
@@ -188,4 +205,9 @@ RULES = {"packages_per_round": "cap", "fixed_per_round": "cap", "session_max_tur
          # its entry threshold a floor, the text rule fixed, the word-list threshold a floor
          "regression_evidence": "free", "regression_research_sample": "cap", "frontier_max": "cap",
          "merge_per_round": "cap", "frontier_min_fixes": "floor", "frontier_max_attempts": "cap",
-         "text_additive_only": "fixed", "heuristic_terms_min": "floor"}
+         "text_additive_only": "fixed", "heuristic_terms_min": "floor",
+         # v1.9: the trial's sizes capped, its entry threshold a floor; regressions by footprint fixed; the merge's
+         # replay threshold and the replay sample floors (a larger sample reads the false-trigger rate better)
+         "trial_max_tasks": "cap", "trial_max_rounds": "cap", "trial_max_attempts": "cap",
+         "trial_min_fixes": "free", "regression_by_footprint": "fixed", "merge_min_acts": "floor",
+         "replay_sample": "floor"}

@@ -17,9 +17,11 @@ from ..contracts import append_jsonl, locked, now, read_jsonl
 STAGES = ("measured", "diagnosed", "focused", "declared", "verified", "audited", "screened", "accepted", "not_stacked",
           "gated", "installed", "rejected", "credited", "removal_proposed", "no_code_candidate", "single_package",
           "vocabulary_added", "l6_unavailable", "stopped", "playbook",
-          "partial", "frontier_pruned", "merged", "abandoned")      # v1.8: the frontier's in and out
+          "partial", "frontier_pruned", "merged", "abandoned",      # v1.8: the frontier's in and out
+          "trialed", "session_ended")                                # v1.9: the in-sample trial, a session at a cap
 # What R reads of a row (the projection): train facts and counts. Anything else of a row stays with the host.
-TASK_LISTS = ("predicted_affected", "fixed", "regressed", "research_regressed")   # the projected fields naming tasks
+TASK_LISTS = ("predicted_affected", "fixed", "regressed", "research_regressed", "unconditioned_regressed",
+              "trial_fixed", "trial_failed", "trial_tasks")       # the projected fields naming tasks
 PROJECTED = ("id", "stage", "round_id", "candidate", "dir", "cause", "cause_id", "kind", "site", "trigger",
              "mechanism", "components", "predicted_affected", "differs_from", "fixed", "regressed", "net_flips",
              "fixes", "holdout_score", "best_so_far", "accepted", "reasons", "failed_components", "outcome", "verdict",
@@ -27,7 +29,9 @@ PROJECTED = ("id", "stage", "round_id", "candidate", "dir", "cause", "cause_id",
              "component", "credit", "names", "status", "holdout_passed", "holdout", "stacked_on", "conflicts",
              "hits", "false_alarms", "false_alarm_rate", "misfires", "named",
              "partial", "entry", "merge_of", "merge", "heuristic_terms", "research_sample", "research_regressed",
-             "attempts", "protected", "protected_passed")           # v1.8
+             "attempts", "protected", "protected_passed",           # v1.8
+             "unconditioned_regressed", "acted", "footprint_share", "kept_fixes", "unregistered_hooks",
+             "iteration", "trial_tasks", "trial_fixed", "trial_failed", "turns", "edits", "declared")   # v1.9
 
 
 def scrub(value, hide):

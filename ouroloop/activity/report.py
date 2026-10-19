@@ -128,7 +128,17 @@ def rounds_report(activity) -> list[dict]:
                             # v1.8
                             "partial": sc.partial, "merge_of": sc.merge_of or None,
                             "research_sample": len(sc.research_sample),
-                            "research_regressed": len(sc.research_regressed)})
+                            "research_regressed": len(sc.research_regressed),
+                            # v1.9: how much of the held-out part the package acted on, the regressions it is not
+                            # charged with, a merge's kept fixes
+                            "acted": len(sc.acted), "footprint_share": sc.footprint_share,
+                            "unconditioned_regressed": len(sc.unconditioned_regressed),
+                            "kept_fixes": sc.kept_fixes})
+        # v1.9: the in-sample trials of this round, one row per iteration
+        trials = [{"dir": r.get("dir"), "iteration": r.get("iteration"), "outcome": r.get("outcome"),
+                   "tasks": len(r.get("trial_tasks") or ()), "fixed": len(r.get("trial_fixed") or ()),
+                   "attempts": r.get("attempts"), "passed": r.get("passed")}
+                  for r in ledger.rows(stage="trialed", round_id=state["round_id"])]
         accepted = steps.get("accepted") or {}
         measured = steps.get("measure") or {}
         scope = state.get("account") or f"{activity.scope_id}:round-{state['index']}"
@@ -145,6 +155,7 @@ def rounds_report(activity) -> list[dict]:
                     "protected": {"passed": measured.get("protected_passed"), "tasks": measured.get("protected")}
                     if measured.get("protected") is not None else None,
                     "candidates": verified, "ladder": (steps.get("verified") or {}).get("ladder") or {},
+                    "trials": trials,
                     "screens": screens, "best": (steps.get("screened") or {}).get("best"),
                     "installed": short(accepted["installed"]) if accepted.get("installed") else None,
                     "frontier": frontier,
@@ -298,6 +309,10 @@ def render_markdown(report: dict) -> str:
             lines.append("  candidates " + ", ".join(
                 f"{c['dir']} ({c['kind']}, {c.get('outcome') or ('passed' if c['passed'] else 'failed')})"
                 for c in r["candidates"]) + f"; rungs passed {r['ladder']}")
+        for t in r.get("trials") or ():
+            lines.append(f"  trial {t['dir']} (iteration {t['iteration']}): {t['outcome']}, fixed {t['fixed']} of "
+                         f"{t['tasks']} studied failing tasks, {t['attempts']} attempts"
+                         + ("" if t.get("passed") is None else " — screened" if t["passed"] else " — not screened"))
         for sc in r["screens"]:
             lines.append(f"  screen {sc['dir']}" + (f" (merge of {sc['merge_of']})" if sc.get("merge_of") else "")
                          + f": {sc['outcome']}, held out {sc['holdout_score']}/{sc['holdout']} "
@@ -307,7 +322,13 @@ def render_markdown(report: dict) -> str:
                                                                            if sc["reasons"] else ""))
                          + (" — partial" if sc.get("partial") else "")
                          + (f"; research sample {sc['research_sample']}, regressed {sc['research_regressed']}"
-                            if sc.get("research_sample") else ""))
+                            if sc.get("research_sample") else "")
+                         + (f"; acted on {sc['acted']}/{sc['holdout']} (share {sc['footprint_share']})"
+                            if sc.get("footprint_share") is not None else "")
+                         + (f"; {sc['unconditioned_regressed']} broke with no footprint (not counted)"
+                            if sc.get("unconditioned_regressed") else "")
+                         + (f"; kept {sc['kept_fixes']} of the entry's fixes" if sc.get("kept_fixes") is not None
+                            else ""))
         for f in r.get("frontier") or ():
             lines.append(f"  frontier {f['stage']} {f.get('entry') or ''}" + (f" ({f['dir']})" if f.get("dir") else "")
                          + (f": {f['reason']}" if f.get("reason") else ""))

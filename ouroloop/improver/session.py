@@ -11,6 +11,8 @@ There is no shell, no network, no host file, no dev or test content, and no tool
 The session ends at `finish` with readable declarations, or at a cap (turns, edits): then the declarations already
 accepted stand and nothing else does. A package that fails the ladder after the session comes back once (`revise`):
 the verdict is appended and the session continues under the same caps; a revision changes files, not declarations.
+The in-sample trial's results come back the same way (round.py, v1.9). At EDIT_REMINDERS of the edit cap the tool's
+result carries a line saying how many edits are left (finance-v8's s1 used its 48 edits and never finished).
 """
 from __future__ import annotations
 
@@ -31,6 +33,7 @@ CHARS_PER_TOKEN = 3                     # the estimate of a call's tokens from i
 READ_TOOLS = ("read_file", "read_trajectory")
 EDIT_TOOLS = ("write_file", "edit_file", "delete_file")
 ITEM_CHARS = 8000                      # of one message in the stored transcript
+EDIT_REMINDERS = (0.75, 0.9)           # v1.9: shares of session_max_edits at which a tool result reminds R to finish
 COMPONENT_SCHEMA = {"type": "object", "properties": {
     "kind": {"type": "string"}, "site": {"type": "string"},
     "cause_ids": {"type": "array", "items": {"type": "string"}},
@@ -137,6 +140,7 @@ class CodingSession:
         self.revising = False
         self.cut = 0                    # replies in a row cut at the output limit
         self.compactions = 0
+        self.reminded: list = []        # v1.9: the EDIT_REMINDERS shares already said
 
     # ------------------------------------------------------------------ driving
     def start(self) -> SessionResult:
@@ -216,7 +220,7 @@ class CodingSession:
             if not bad and isinstance(path, str) and path.count("/") >= 2 and path.split("/")[1] not in self.dirs:
                 self.dirs.append(path.split("/")[1])
             record.update(path=path, ok=not bad)
-            return (value if isinstance(value, str) else json.dumps(value)), bad, False
+            return (value if isinstance(value, str) else json.dumps(value)) + self._edit_reminder(), bad, False
         if name == "list_files":
             value, bad = self.work.do("list", path=args.get("path") or ".")
             return (json.dumps(value) if not bad else value), bad, False
@@ -262,6 +266,17 @@ class CodingSession:
                 return problem, True, False
             return self._finish(args)[0], False, True
         return f"unknown tool {name!r}", True, False
+
+    def _edit_reminder(self) -> str:
+        """A line for the tool result when the edits just reached one of EDIT_REMINDERS of the cap (v1.9)."""
+        cap = int(self.s.session_max_edits)
+        for share in EDIT_REMINDERS:
+            if share not in self.reminded and self.edits >= max(1, int(round(share * cap))):
+                self.reminded.append(share)
+                return (f"\n[note: {self.edits} of the session's {cap} edits are used; a session that runs out of "
+                        f"edits without finish hands in nothing — call finish with your declaration while edits are "
+                        f"left]")
+        return ""
 
     def _read_trajectory(self, args: dict) -> tuple[str, bool]:
         session = args.get("session")
@@ -363,7 +378,8 @@ class CodingSession:
         return {"messages": [_plain(m) for m in self.messages], "turns": self.turns, "edits": self.edits,
                 "read_bytes": self.read_bytes, "calls": list(self.calls), "dirs": list(self.dirs),
                 "declarations": {d: decl.to_json() for d, decl in self.declarations.items()}, "ended": self.ended,
-                "revising": self.revising, "cut": self.cut, "compactions": self.compactions}
+                "revising": self.revising, "cut": self.cut, "compactions": self.compactions,
+                "reminded": list(self.reminded)}
 
     def restore(self, state: dict) -> None:
         self.messages = [_unplain(m) for m in state.get("messages") or ()]
@@ -373,6 +389,7 @@ class CodingSession:
         self.declarations = {d: Declaration.from_json(v) for d, v in (state.get("declarations") or {}).items()}
         self.ended, self.revising = str(state.get("ended") or ""), bool(state.get("revising"))
         self.cut, self.compactions = int(state.get("cut") or 0), int(state.get("compactions") or 0)
+        self.reminded = list(state.get("reminded") or ())
 
     # ------------------------------------------------------------------ records
     def record(self) -> dict:
