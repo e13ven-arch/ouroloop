@@ -12,6 +12,9 @@
 #   3  import finance-v8's readings (activity.phases.import_baseline; the round phase itself imports nothing)     $0
 #   4  `... bench --config ... --phase round --round 0` (round r0: diagnosis, R's session, the trial, one screen of
 #      60 held-out tasks plus confirmations; approved at $150 on 2026-10-19)
+#      r0 ran on 2026-10-19: one after_tool hook package, trial 1 fixed of 3, screened net 0 (33/60 against W's
+#      34/60; confirmed 0 fixes, 0 regressions; 6 of 7 first-reading flips had no footprint, 1 was noise),
+#      rejected; $48.21 (JOURNAL 2026-10-19 finance-v9)
 #   5  stop; JOURNAL and PLAN. A second round, a release or a final needs its own approval.
 #
 # Money: a round's account is round_share (0.15, a cap the config cannot raise) of the root's dollars, so the root is

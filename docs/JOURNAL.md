@@ -8,6 +8,26 @@
 
 ---
 
+## 2026-10-19 finance-v9 r0：阶段 4j 的第一轮实跑——R 的包过了试跑（3 道试、1 道修）进筛选，留出 60 道确认后修 0 退 0（净 0，33 对 34）被拒；7 个首读翻转里 6 个没有足迹、1 个是噪声；V2b 的回放把 R 从 before_tool 的 hold 逼成 after_tool 的事后提示；$48.21
+
+**做了什么。** 用户 2026-10-19 批准 $150 跑 4j 的第 1 轮。合入阶段 4j（`500201a` → `042944d`）；Docker 全量 1,619 passed、1 failed——`test_a_regression_counts_on_the_held_out_passing_tasks_whatever_the_footprint` 的一个断言写错（夹具 actor 在 notify 对上也调用包的工具，silent 包在整个留出部分都有足迹，`acted` 是 WITH_PASSING、份额 1.0，不是 notify_once 一道），改断言（`c96249f`），代码照设计不动。finance-v9（`b48f02a`）：K `core:cbe73108ba70`，种子 finance-v8 的工作线（它自己的种子，`package:e38c14942fbf`），split `1bbf01533d7256af` 不变；4j 没动尝试路径的代码（`attempt_version` 仍是 8d3d2d25d7d619b6），`import_baseline` 把 v8 的 150 道首遇（role stream，AttemptIdentity adc0c5828d0fdd64）导进来，$0——round 阶段自己不导入，用脚本调了一次 `import_baseline`。跑的是**批式** r0（不是流式）：筛选覆盖全部 60 道留出，不是流式窗口的最近 30 道；每轮 1 个包（`packages_per_round = 1`）。钱：`round_share` 0.15 是 cap，根写成 $1000 才给 r0 一个 $150 的账户；只批了 r0，根的数字是算术不是批准。
+
+**r0 的过程（$48.21）。** measure 0 道新测：W 87/150，留出 34/60，受保护集 34/34。诊断 37 道研究题（$2.57），11 类：excluded_mentioned 9、rule_not_applied 9、vocabulary_mismatch 5、other 3、wrong_target 3、unread_value 2、wrong_location 2、missed_action / missing_recipient / omitted_report / tool_error_loop 各 1。会话 23 回合、27 次编辑（$2.50），交一个包 `marked_rows`（after_tool 一个 hook）：读 agent 读到的每张表（sheet 的 values 或 ≥ 3 条记录的列表），找"至多三分之一的行填了、填的是 ≥ 3 个词的短语"的稀疏列，记下这些行；agent 的计划（plan_changes 的 changes）或写入点到这样的行、或点到它自己在任何 plan_changes 里排除过的项，就把那行的备注原样回给 agent，让它对照请求与政策决定剔除还是照做。试跑（$1.56）：3 道——safety_certification_gap_analysis 修（hook 出手）、training_compliance_check 仍失败（0.75）、zoom_deal_review 过了但 hook 没出手不算；1 道修达到 `trial_min_fixes`，进筛选。V0 过（注：词表 args / find / name / query——都是 JSON 键名，误报）、V1 过、V2b 在 3/3 认领题出手、12 道通过题回放误触发 2（0.167）。筛选（$41.52，60 + 2 次尝试）：候选 33/60 对 W 34/60。首读翻转 7 个：修 3（tax_prep_summary、po_three_way_match、job_posting_refresh）全部没有足迹 → `unconditioned`，不计；退 4：3 道没有足迹（jira_it_onboarding、confluence_policy_migration、confluence_gmail_policy_notice）→ `unconditioned_regressed`，不计；1 道有足迹（tuition_reimbursement）→ 确认：候选再读仍失败（0.78），W 补读也失败 → 噪声。确认修 0 退 0，净 0 < 1 → **拒绝**；没有确认修复，不进前沿。hook 出手 11/60（份额 0.183，和 V2b 的 0.167 相近）：4 道 W 过的仍过，6 道 W 不过的仍不过且部分得分一字不差，1 道翻（就是那道噪声）——**hook 出手的地方什么都没变**。部分得分均值 0.827 → 0.840，全来自三道没有足迹的"修复"。
+
+**4j 的读数（DESIGN §6.19 的判据）。** 进筛选的包有样本内修复：1/1；被拒的包零留出翻转：0/1（首读 7 个翻转，确认后 0）；无足迹的退步候选 3、确认退步 0（v8 把这类当噪声底读出来，这次按规则不计也不进证据）；合并的 `kept_fixes`：无合并；`footprint_share` 0.183 对 V2b 0.167；会话因额度结束：0（27/48 次编辑）。回路按设计运转，一轮 $48（v8 每轮约 $75），读数干净：没装噪声，也没把噪声判成退步。差的是机制本身。
+
+**读到的 1：V2b 的回放把 R 从对的设计逼到弱的设计。** 会话记录（`rounds/r0/session.json` 的 transcript）：R 第 11 回合写的是 **before_tool 的 hold**——写入点名带备注的行或排除过的项就暂停一次、把备注给 agent、原样重发即放行，和人工包的"带证据的 hold"同一思路。V2b 回放报它只在 6 道认领题里的 1 道出手（zoom：排除项来自 plan_changes 的参数，before_tool 事件自己带着）；safety_cert 的表读过了却不出手。R 判断"回放里看不到前面的读结果"——对的：回放给 hook 的 view 是 `smoke_view`，`events` 为空（`verify/replay.py` `_triggers`），而真跑时 `ctx.view["events"]` 是最近 20 条调用连结果（`runtime/broker.py`）；回放又按站点各自回放，before_tool 的 hook 看不到 after_tool 的事件，所以靠 after_tool 观察者喂共享状态的写法（人工包就是这样写的，它从没跑过 V2b）同样过不了。R 试了两回（加 after_tool 读取器、读 view 里的每个字符串）都还是 1/6，第 43 回合："before_tool 的 hold 过不了回放这一阶梯，去掉它，把检查搬到 after_tool"——于是提示在写入已经发生之后才来（"undo or correct this write if the system allows"）。试跑 1/3、留出出手 11 道零变化和这一点一致：事后提示挡不住已经创建的记录。playbook 自己总结的"下次把条件收窄到远少于 11 道"读偏了：问题不在出手多少，在出手的时机；而时机是回放逼出来的。
+
+**读到的 2。** 这个 hook 的三种提示都把行名和备注写给 agent（人工包与 v7 的反规律：展示排除项，agent 就把它写进报告）；这次 11 道出手题上没出现这种确认退步（1 道候选噪声），样本小，不能说反规律不成立。
+
+**读到的 3。** 留出的 26 道失败题从未被诊断（设计如此），hook 在其中 6 道出手且全无变化：这 6 道的失败未必是 excluded_mentioned。单机制包在留出能修几道，上限是留出里这一机制的题数，而这个数没人读过——留出筛选量的是"机制 × 留出里有多少这类题"，不只是机制。
+
+**改了什么。** 一处测试断言（`c96249f`）；`ouroloop/` 没动。工作区 `workspace-finance-v9/`（git 忽略）；r0 的日志与报告在它的 `analysis/`。
+
+**下一步（待用户定）。** (a) 先修 V2b 的回放保真，$0：回放时给 hook 与真跑同形的 view（`events` 窗口按记录的调用重建），并把一个包的全部 hook 按记录的事件顺序一起回放（共享模块状态），让 before_tool 的 hold 在回放里能出手；fake upstream 上加测试。(b) 再跑 r1（约 $50；$150 里还剩 $101.79）：R 从台账看得到 r0，提示词加一句"before_tool 的 hold 按真跑的 view 回放"。(c) 或直接做 4k：证据仓库 + hold 合成器进种子，R 只写证据规则。(a) 是 (b) 和 (c) 的前提。
+
+---
+
 ## 2026-10-19 直接对着错题改：人工写的 W 包（带证据的 hold）在 finance-v8 的 55 道失败 train 题上 22 道通过；留出筛选 v2 修 5 退 3 被拒，v3 修 5 退 3 再被拒（留出 35 对 33）；人工包累计 $121（试跑 $34、两次筛选 $87）
 
 **为什么这么做。** 用户 2026-10-13："为什么不直接跑修改代码跑提升环节，确保没通过的通过掉……都已经知道错题了，直接对着错题开始改就好了"；之后"按照建议来"：A（本会话直接按错题改 W、在错题上真跑）与 B（另一个会话改回路，阶段 4j，提交 `500201a`，等 v8 的付费步骤结束后合入）并行。本条是 A。它量到的是**人工工程化的 harness**：改法由本会话的读者从 train 轨迹写出，不是改进器 R 写的；不能记作 RSI 的成绩。
