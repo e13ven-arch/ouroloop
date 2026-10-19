@@ -8,6 +8,26 @@
 
 ---
 
+## 2026-10-19 直接对着错题改：人工写的 W 包（带证据的 hold）在 finance-v8 的 55 道失败 train 题上 22 道通过；留出筛选 v2 修 5 退 3 被拒，v3 修 5 退 3 再被拒（留出 35 对 33）；人工包累计 $121（试跑 $34、两次筛选 $87）
+
+**为什么这么做。** 用户 2026-10-13："为什么不直接跑修改代码跑提升环节，确保没通过的通过掉……都已经知道错题了，直接对着错题开始改就好了"；之后"按照建议来"：A（本会话直接按错题改 W、在错题上真跑）与 B（另一个会话改回路，阶段 4j，提交 `500201a`，等 v8 的付费步骤结束后合入）并行。本条是 A。它量到的是**人工工程化的 harness**：改法由本会话的读者从 train 轨迹写出，不是改进器 R 写的；不能记作 RSI 的成绩。
+
+**改法从哪来。** [FINANCE_V8_FAILURES_FIX_PLAN_2026-10-13.md](history/FINANCE_V8_FAILURES_FIX_PLAN_2026-10-13.md)：63 道失败题逐题读（63 个读者）→ 8 类机制 → 逐类反驳核验（诚实预期 18～20 道）。8 类里 5 类是一个基础设施："带证据的 hold"——写守卫在发消息 / 第一次写记录 / 第一批创建 / finish 四个站点 hold 一次，hold 的文字由代码从本次运行的请求、读过的文档、自己的调用里算出，没证据不 hold，原样重发即放行。
+
+**包的结构（在 v6 工作线的包 `package:e38c14942fbf` 上改）。** 新模块：`middlewares/evidence.py`（共享仓库：请求、目录、读结果与表格、文档正文、写入与解码的信件、错误；worker 按文件路径加载模块、不互相 import，所以靠 `sys.modules` 里的一份实例共享）、`guard.py`（三个 hook：`request`@before_run、`observe`@after_tool、`hold`@before_tool，把各检查的证据行合成一次 hold）、五个检查模块 `lint_message`（消息：被替换的旧值、换人通知、请求要求的原话、排除项命中）、`lint_record`（记录写入：表头保护是硬拒绝、空白单元格、写入单元格与读到值并排、行的备注与少数状态、签批条件、创建前未完成的读、plan 修订规则）、`provenance`（标识符来源、空过滤结果与 404 路由的反馈、finish 时未用的请求 id）、`coverage`（第一次写入前的来源覆盖、未连接服务的替代来源）、`finish_gate`（未发的草稿、搜了没调的服务、无效写入、排除项的改道）；改了 `write_guard.py`（请求里写明的日期优先；verify 的推回附上 finish 段）与 `tools/plan_changes.py`（`excluded` 可带 `{item, rule, branch}`，新增 `redirected`）。删了 `middlewares/scope.py`（并入 lint_message）。5 个实现者 + 5 个评审者并行写成（174 个包测试）；进包的是去 docstring 的紧凑版（K 的 `max_package_bytes` 786,432，包约 786,0xx 字节；测试不进包）。V0 禁 urllib，自写了百分号解码；两个正则量词 `{3,200}` 被字面量检查当成金额，改成无上界。
+
+**真跑（finance-v8 工作区，候选名 `hand:v1a`，role `research`，账户 `finance-v8:hand`）。** 先 22 道反驳者认定会翻的题：13 道通过（$15）；再 33 道其余目标题：9 道通过（$19）。合计 55 道原失败题 22 道通过（40%；噪声底一次重读约 15～25%），平均部分得分 0.602 → 0.777，26 道变好、27 道不变、2 道略差，平均步数不变（13.4 → 13.5）：hold 没有把运行撑长。两道 0 分题在 v8 就是 0 分。复盘后的 v2：A5 对文档正文里提到过的 id 不再 hold；A3 在请求句写明容器 id 时去掉"原样重发"的退路；记录写入的"条件句"只匹配写入的值、列名、行键与该行的单元格。
+
+**留出筛选 v2（2026-10-13，`hand_screen.py` 走 `screen.py` 的接受规则，$45）。** 60 道留出（W 过 34、不过 26）：首读翻转修 5 退 6；确认后修 5（invoice_file_organization、xero_multicurrency_payment、job_posting_refresh、contractor_badge_expiration、parking_allocation_management）、退 3（intercompany_balance_recon、tuition_reimbursement、utility_cost_allocation）、噪声 1、未重现 2；净 +2，留出分 33 对基线 34；接受规则要求确认退步 0 → **拒绝、未装入**。三道退步逐条读：utility 是 hold 引用了"临时空置的部门须排除"的规则后 agent 把 "Vacant floor … not allocated" 写进了给财务的邮件（经典的"排除项被提到"）；tuition 是 agent 把今天锚到了更早的日期（读了不同文档，记录最新日期不同），把 Ada 的课程判成未结束 → Pending，两次都如此；intercompany 没有任何 hook 出手，候选把全部对账（含 East）写进一封给 controller 的邮件、W 分成两封——行为漂移，证据指向系统提示的两行或更长的工具描述。
+
+**v3（2026-10-19）。** scratchpad 在 /tmp 下 6 天没动被系统清掉，源码与 174 个测试丢失；包从对象库恢复（紧凑版），工具脚本重写，此后放在工作区 `analysis/hand/`。四处改动：去掉两行系统提示（包只剩 hook/tool，退步按足迹计时它才有足迹）；日期锚只认请求里写明的日期，文档里的 as-of 不再算；记录写入的 hold 引用排除规则时加一句"被排除的项与原因不进任何消息"；消息检查加"排除行的备注词"命中（表格里该行的备注/状态单元格里、别的行与请求都没有的词）。4 个新测试，V0/V1 过。留出筛选 v3：修 5（同一批五道）、退 3（intercompany、utility 再现，新增 prepaid_amortization）、噪声 3、未重现 1；留出 35 对基线 33；再次因退步被拒（$42）。读三道退步：prepaid 是记录 hold 列出了"你的计划排除了 Software License"，agent 随即发了一封更正邮件把它写进去；utility 两次都把 Vacant floor 写进给财务的邮件，v3 加的那句和备注词命中没拦住；intercompany 仍无 hook 出手、四次读数都把 East 写进同一封邮件。前两道有足迹，4j 的"退步按足迹"救不了。
+
+**读到的。** (1) 人工拿着全部轨迹写出来的 harness 机制，在不带偏的留出上也只有净 +2/60（约 +3%）：这批题剩下的失败多是逐题各异的判断，不是几条通用机制能批量扫掉的；噪声底又让 +2～+3 在 50 题 test 上量不出显著。(2) 一条可复现的反规律：hold 把被排除的项（名字、备注、排除规则）展示给 agent，agent 就会把它写进报告——finance-v7 的 s3 hook 与这次的 lint_record 在 `operations.utility_cost_allocation` 上重蹈覆辙；R 的提示词与 V2b 回放要把它当规则。(3) 日期锚不能从文档的 as-of 取：tuition 的退步来自此。(4) 一次写入的 hold 不会撑长运行（平均步数 13.4 → 13.5）。(5) 这类检查真正通用的是"证据仓库 + 一次性 hold 合成"这层基础设施，R 以后该写的是几十行可回放的证据规则，不是整个 hook（4k 的方向，先讨论）。
+
+**没做。** 状态词表检查（反驳者说会教错词）；两个已接受包的合并；final 要等用户定。
+
+**下一步。** 用户 2026-10-19：人工包停在 v3、不装；批准 $150 跑 4j 的第 1 轮——合入 `500201a`，Docker 全量，开 finance-v9（导入 v8 的 150 道读数，每轮 1 个包），跑一轮看试跑循环是否成立。final 不跑。
+
 ## 2026-10-13 finance-v8 流式跑完（4h + 4i 的 K）：首遇 87/150，五轮零装入；一个部分包进前沿、合并版丢了修复；$261
 
 **跑了什么。** K `core:ce2af8d8ca4b`（`m1-automationbench` 的 `92a48a6`，阶段 4i 合入后重新冻结；4h 的冻结放在 `workspace-finance-v8-aborted-freeze-2026-10-13/`，$0），种子 finance-v6 工作线 `release:8ea81218e119`，finance + hr + operations 的 train 150 道分 5 批流式，每批后一轮，留出 60 道（筛选取最近 30 道），`regression_evidence = research`。用户 2026-10-13 批准："可以跑吧，我想尽快看到结果，看到你的改动把失败的问题解决了，并且原本通过的没有被影响"。

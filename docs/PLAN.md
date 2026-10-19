@@ -18,6 +18,7 @@
 | v0.4 | finance，25 × 3 | 54.7% | 62.7% | +8.0 [−4.0, +22.7] | 不确定；每次尝试成本 −22%，显著 | tag `v0.4.0`；[事后分析](history/FINANCE_V04_ANALYSIS_2026-10-07.md) |
 | v0.5 | support 两臂对照 | — | — | 没有 final：2026-10-08 用户叫停 | 只有 train/dev 过程证据（经验库流 D = 3.0，快照过 dev gate +0.16） | JOURNAL 2026-10-08 |
 | finance-v8 | 4h + 4i 的 K，三域 train 150 道流式 | 首遇 87/150 | — | 没有 final：5 轮零装入（W\* = W0）；一个部分包进前沿，合并版丢了修复 | $261；JOURNAL 2026-10-13 finance-v8 一条 |
+| 人工包（A） | 对 63 道错题逐题读出 8 类机制、人工写成 W 包，在 v8 工作区试跑与留出筛选 | 55 道原失败题单次 22 过 | — | 留出 +5 −3 两次（v2、v3）被拒，未装入；没有 final | $121；JOURNAL 2026-10-19 一条 |
 | 阶段 4 | finance-v2、v4（正向设计后的 RSI 实测） | dev 9.5/25 | — | 没有 final：三次 gate 都拒绝（0、0、−0.02） | 过程证据：候选过免费阶梯、留出筛选 ±1、成本 −18% 显著 | JOURNAL 2026-10-10～11；tag `finance-v2`、`finance-v4` |
 
 ### 0.2 已定的事
@@ -52,7 +53,7 @@
 | 测试 | 阶段 4i 合入后（`m1-automationbench`，2026-10-13）Docker 全量 1,590 passed、1 deselected；阶段 4i 后（`s9/frontier`，2026-10-13）默认 1,504 passed、87 deselected（live / slow / Docker / memory 的未跑；4h 后 4 个既有测试因新字段、研究抽样计价与第三道 test 题改了断言）；阶段 4h 后（`m1-automationbench`，2026-10-13）全量 1,562 passed、1 deselected；finance-v7 冻结后全量 1,557 passed、1 deselected；规则放宽后（`m1-automationbench`）全量 1,533 passed、1 deselected；阶段 4d 后（`s6/yield`）默认 1,441 passed、20 skipped；合并 `m1-automationbench` 后的 `s6/yield` 全量 1,530 passed、20 skipped、1 deselected。两个既有的负载相关中断测试在整套里不稳定、单跑通过。memory 的 venv 在本机 `~/.cache/ouroloop/memory-venv/19f9b139c36d1d05` |
 | test 读过几次 | finance 2（v1 的 final、v5 的 final）、support 0、sales 0、hr 0、marketing 3；operations 从未读过 |
 | 本机记录 | `examples/automationbench/workspace-*/`、`examples/workspace-*/`、`ws/`、`*.local.toml`，git 忽略，不删不改 |
-| 下一步 | finance-v8 的 stream 跑完（$261）：首遇 87/150，5 轮零装入，f1 的合并版丢了修复（JOURNAL 2026-10-13 finance-v8 一条）。不跑 release / final。等用户定 §3 第 1 项：改机制（退步按足迹、前沿带修复证据且合并必须保留修复、未挂的 hook 函数提示、词表信号去误报、会话编辑额度提醒、核价不挤掉第三个包、V2b 样本），先写设计再改代码 |
+| 下一步 | 人工包停在 v3（留出 +5 −3，JOURNAL 2026-10-19 一条）。用户 2026-10-19 批准 $150：合入阶段 4j（`claude/s10-insample-9cfddb` 的 `500201a`），Docker 全量，开 finance-v9（`seed_from` / `baseline_from` = workspace-finance-v8，导入 150 道读数，每轮 1 个包），跑第 1 轮（试跑 + 留出筛选）后停下汇报 |
 
 ## 1 规则
 
@@ -110,7 +111,7 @@
 
 | # | 事项 | 建议 |
 |---|---|---|
-| 1 | finance-v8 之后的下一步：按 JOURNAL 2026-10-13 finance-v8 一条的 (a)～(g) 改机制（阶段 4j），先写 DESIGN / IMPROVER 的对应节再改代码；或者改别的方向 | 改机制；不再跑同一版本的活动 |
+| 1 | 阶段 4j 已在 `500201a` 落地（B 会话）；用户 2026-10-19 批准 $150 跑 finance-v9 第 1 轮 | 已批准 |
 | 2 | finance-v8 不跑 release / final（W\* = W0，没有可测的东西）；工作区留着不动 | 是 |
 | 3 | README 主数的口径：final 两臂的绝对通过率与部分得分（公开集 test 份 50 题、medium effort、3 遍），配对差与区间作第二个数 | 是 |
 
