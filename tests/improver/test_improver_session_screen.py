@@ -574,7 +574,9 @@ def test_a_regression_counts_on_the_held_out_passing_tasks_whatever_the_footprin
     row = screen_rows(world, "silent")["rsi.notify_once"]
     assert not row.success and not world.evidence.footprint(row, {"kind": "hook", "name": "inert_ops"})
     assert world.evidence.footprint(row, {"kind": "tool", "name": TOOL_ENTRY["name"]})
-    assert silent.acted == ("rsi.notify_once",) and silent.unconditioned_regressed == ()
+    # `acted` is every held-out task a component showed on: the actor calls the package's tool on the notify pair
+    # too (they fail either way, so they are no flips), so the silent package acted on the whole held-out part
+    assert silent.acted == WITH_PASSING and silent.footprint_share == 1.0 and silent.unconditioned_regressed == ()
     assert screens["tool"].result.regressed == () and screens["mixed"].result.regressed == ()
 
 
