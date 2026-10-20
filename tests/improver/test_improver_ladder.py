@@ -803,6 +803,114 @@ def test_v2b_a_hook_answering_outside_its_sites_protocol_fails(ctx, parent):
     assert "the hook failed" in got["detail"] and "rsi.notify_once" in got["detail"]
 
 
+# v1.10 (DESIGN §6.20): the attempt replayed whole — one module serves a before_run observer, an after_tool observer
+# and the hook that acts on what they saw and on the view's events of that moment; a smoke view with no events and
+# one site at a time (the replay before finance-v9 r0) could never see it act
+CROSS_SITE_CODE = '''STATE = {"runs": 0}
+
+
+def on_run(ctx, event):
+    STATE["runs"] += 1
+    STATE["wants_ops"] = "#ops" in str(event.get("task") or "")
+    return None
+
+
+def on_tool(ctx, event):
+    if event["name"] == "api_fetch" and str(event["args"].get("method") or "").upper() == "PATCH" and not event["is_error"]:
+        STATE["updated"] = True
+    return None
+
+
+def _patched(ctx):
+    return any(e["name"] == "api_fetch" and str(e["args"].get("method") or "").upper() == "PATCH"
+               for e in ctx.view.get("events") or ())
+
+
+def _posted(ctx):
+    return any(e["name"] == "api_fetch" and "slack" in str(e["args"].get("url") or "")
+               for e in ctx.view.get("events") or ())
+
+
+def hold_finish(ctx, event):
+    if STATE.get("wants_ops") and STATE.get("updated") and _patched(ctx) and not _posted(ctx):
+        return {"pushback": "Keep working on the task: the #ops message the plan listed is not posted yet"}
+    return None
+
+
+def hold_post(ctx, event):
+    if event["name"] == "api_fetch" and "slack" in str(event["args"].get("url") or "") and STATE.get("wants_ops") \
+            and not _posted(ctx) and int(ctx.view.get("turn") or 0) >= 2:
+        return {"block": {"reason": "check the request once more before you post"}}
+    return None
+
+
+def leak(ctx, event):
+    return {"pushback": "a state from another task"} if STATE["runs"] >= 2 else None
+'''
+
+
+def with_cross_site(parent, *entries: dict) -> dict:
+    """The parent with middlewares/cross.py and the given hook entries (name, site, fn) on it."""
+    hooks = [{"name": e["name"], "site": e["site"], "entrypoint": f"middlewares/cross.py:{e['fn']}"} for e in entries]
+    return rewrite(parent.files, lambda m: m["hooks"].extend(hooks), {"middlewares/cross.py": CROSS_SITE_CODE})
+
+
+OBSERVERS = ({"name": "on_run", "site": "before_run", "fn": "on_run"},
+             {"name": "on_tool", "site": "after_tool", "fn": "on_tool"})
+
+
+def test_attempt_events_interleave_the_sites_in_order_with_the_views_events_of_each_moment(ctx):
+    """One recorded attempt of the forgetful actor on the ticket: before_run, then per turn before_model, the calls
+    in order (before_tool, after_tool), on_finish at the finish, after_turn at the turn's end; `view_events` holds the
+    broker's calls before that moment (none at the first call, the PATCH once it ran), `turn` counts up."""
+    from ouroloop.improver.verify.replay import attempt_events, site_events
+    events = attempt_events(ctx.evidence.trace, ctx.failed_sessions[FAILING[0]])
+    sites = [e["site"] for e in events]
+    assert sites[0] == "before_run" and sites[1] == "before_model" and sites[-1] == "after_turn"
+    assert events[0]["view_events"] == [] and events[0]["turn"] == 0 and events[1]["turn"] == 1
+    tools = [e for e in events if e["site"] in ("before_tool", "after_tool")]
+    patch = next(i for i, e in enumerate(tools) if e["site"] == "before_tool" and e["name"] == "api_fetch")
+    before, after = tools[patch], tools[patch + 1]
+    assert after["site"] == "after_tool" and after["call_id"] == before["call_id"]
+    assert all(e["name"] != "api_fetch" for e in before["view_events"])
+    assert [e["name"] for e in after["view_events"]][-1:] == ["api_fetch"]
+    assert after["view_events"][-1]["args"].get("method") == "PATCH" and after["view_events"][-1]["error"] == ""
+    assert set(after["view_events"][-1]) == {"call_id", "name", "args", "result_excerpt", "error", "truncated", "step"}
+    finish = [e for e in events if e["site"] == "on_finish"]
+    assert finish and all(any(v["name"] == "api_fetch" for v in e["view_events"]) for e in finish)
+    for i, e in enumerate(events[1:], 1):
+        assert e["turn"] >= events[i - 1]["turn"]
+    # the per-site projection the audit's dry run and the merge's replay read is the same stream
+    by_site = site_events(ctx.evidence.trace, ctx.failed_sessions[FAILING[0]])
+    assert [e for s in by_site.values() for e in s] and sum(len(v) for v in by_site.values()) == len(events)
+    assert all("view_events" in e for v in by_site.values() for e in v)
+
+
+def test_v2b_replays_the_whole_attempt_so_a_hook_can_act_on_what_other_sites_and_the_view_saw(ctx, parent):
+    """The finish hold acts only when the before_run observer saw #ops asked for, the after_tool observer saw the
+    update, the view's events show the PATCH and no post: the ticket (failing) and none of the passing attempts."""
+    files = with_cross_site(parent, *OBSERVERS, {"name": "hold_finish", "site": "on_finish", "fn": "hold_finish"})
+    got = replay_check(files, decl("hook", "on_finish"), ctx)
+    assert got["passed"], got["detail"]
+    assert got["fired"] == list(FAILING) and got["false_trigger_rate"] == 0.0
+
+
+def test_v2b_a_before_tool_hook_sees_the_views_events_of_its_moment(ctx, parent):
+    """The post hold blocks a first Slack post (none in the view's events yet) when the before_run observer saw #ops
+    asked for, from the second turn on: notify_once (passing) and no failing task (the forgetful actor never
+    posts)."""
+    files = with_cross_site(parent, *OBSERVERS, {"name": "hold_post", "site": "before_tool", "fn": "hold_post"})
+    got = replay_check(files, decl("hook", "before_tool"), ctx)
+    assert got["fired"] == [] and got["false_triggers"] == ["rsi.notify_once"]
+    assert not got["passed"]
+
+
+def test_v2b_reloads_the_package_for_every_task_so_no_state_leaks_between_attempts(ctx, parent):
+    files = with_cross_site(parent, OBSERVERS[0], {"name": "leak", "site": "on_finish", "fn": "leak"})
+    got = replay_check(files, decl("hook", "on_finish"), ctx)
+    assert got["fired"] == [] and got["false_trigger_rate"] == 0.0
+
+
 def test_v2b_replays_only_an_enabled_changed_hook_at_the_declared_site(ctx, parent):
     elsewhere = replay_check(with_hook(parent, HOOK_CODE, site="after_turn"), decl("hook", "on_finish"), ctx)
     assert elsewhere == {"passed": False, "detail": "no hook of the candidate changed at on_finish"}

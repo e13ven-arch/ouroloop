@@ -785,6 +785,57 @@ def test_a_task_that_keeps_failing_under_another_installed_package_is_persistent
     assert ev.persistence(TICKET) == 2 and ev.persistence(STUDY[0]) == 0
 
 
+def test_a_task_the_working_line_also_passed_is_divergent_and_comes_first_with_a_passing_session(tool):
+    """v1.10 (DESIGN §6.20): `readings_of` counts W's own passing and failing readings of a task under the packages
+    of the line's history — after round 0 the ticket failed under W0 and passed in the installed package's trial
+    (the line's reading of it now), so it is divergent: failures.json marks it, names the passing session to read
+    beside the failure, and the session is readable; a rejected candidate's trial reading is not W's; a task the line
+    only passed is not divergent."""
+    import dataclasses
+    a = tool.a
+    ev = Evidence(a)
+    got = ev.readings_of(TICKET)
+    failed = got["failed"]                      # W0's, plus what earlier tests of this module appended under the line
+    assert (got["passed"], got["divergent"]) == (1, True) and failed >= 1
+    assert got["failing_session"] and got["passing_session"] and got["failing_session"] != got["passing_session"]
+    runs = a.results.runs()
+    trial_sessions = {(r.evidence or r.attempt_id) for r in a.results.all() if runs[r.run].role == "trial"
+                      and r.task_id == TICKET and r.success}
+    assert got["passing_session"] in trial_sessions
+    quiet_task = ev.readings_of(STUDY[0])
+    assert quiet_task["failed"] == 0 and quiet_task["divergent"] is False and quiet_task["failing_session"] is None
+    r = Round(a, 0, run_arm=None, out=quiet)
+    inputs, readable = r.inputs()
+    (case,) = json.loads(inputs["failures.json"])["cases"]
+    assert case["divergent"] is True and case["w_readings"] == {"passed": 1, "failed": failed}
+    assert case["passing_session"] == got["passing_session"] and case["passing_session"] in readable
+    assert "divergent first" in json.loads(inputs["failures.json"])["note"]
+    # a trial reading of a package that is not the line's says nothing of W
+    base_row = ev.reading(a.seed_release().package_ref)[TICKET]
+    other = a.run_manifest(candidate="r9:package", role="trial", split="train", release=a.seed_release())
+    a.results.put_run(other)
+    a.results.append(dataclasses.replace(base_row, run=other.hash(), candidate="r9:package", success=True,
+                                         partial_credit=1.0, attempt_id=f"{other.hash()}/{TICKET}/r0/subject#0"))
+    assert ev.readings_of(TICKET)["passed"] == 1
+
+
+def test_the_system_prompt_asks_for_the_two_scopes_only_with_two_packages_or_more(tool):
+    """v1.10 (DESIGN §6.20): with packages_per_round >= 2 the prompt names candidates/package/ invariant and
+    candidates/package-2/ domain; with one package, or scoped_packages off, it does not; the evidence order is always
+    there."""
+    import dataclasses
+    r = Round(tool.a, 0, run_arm=None, out=quiet)
+    r.s = dataclasses.replace(r.s, packages_per_round=1)
+    one = r.system_prompt()
+    assert "two scopes" not in one and "{scopes}" not in one and "The order of evidence" in one
+    assert "divergent" in one and "cheapest" in one
+    r.s = dataclasses.replace(r.s, packages_per_round=2)
+    two = r.system_prompt()
+    assert "two scopes" in two and "candidates/package/ is invariant" in two and "candidates/package-2/ is domain" in two
+    r.s = dataclasses.replace(r.s, packages_per_round=2, scoped_packages=False)
+    assert "two scopes" not in r.system_prompt()
+
+
 def test_a_digest_shrinks_its_writes_to_the_cap_and_keeps_the_checks():
     """`_fit` (IMPROVER §4, v1.5): the longest write's excerpt is halved first, never under MIN_EXCERPT; the request and
     the checks are kept whole; a row that cannot shrink any further is returned as it is."""

@@ -57,6 +57,7 @@ class Settings:
     regression_by_footprint: bool = True         # v1.9：只含 tool / hook / skill 的包，退步只在组件出手的题上算（fixed）
     merge_min_acts: int = 1                      # v1.9：合并版回放时须在条目修复题的尝试上出手的题数（floor）
     replay_sample: int = 12                      # v1.9：V2b / V2d 的通过题样本（floor；此前常量 6）
+    scoped_packages: bool = True                 # v1.10：packages_per_round ≥ 2 时第一个包是通用的、第二个是领域的（fixed；§7）
 ```
 
 合并规则：数量上限 cap（`packages_per_round`、`fixed_per_round`、会话上限、`hook_aux_calls`、`l5_per_round`、`round_share`、`stream_screen_max`）；`audit_hook_share` floor；门槛 floor（`accept_min_net_flips`、`toolcheck_min_pass`、`replay_min_triggers`、`reach_*`、`holdout_share`）；退步与容差 cap；`require_code_component`、`priors`、`removal_zero_credit_rounds` fixed；`causes`、`mechanizable` superset。v1.1 的 `k`、`explore_slots`、`l5_slots`、`code_guarantee`、`screen_*`、`thin_screen_tasks`、`gate_every` 删除。
@@ -65,6 +66,8 @@ class Settings:
 v1.8（阶段 4i，DESIGN §6.18）：`regression_evidence` 三档逐级包含，规则 free（三档之一都可以配；research 档的花费由 `regression_research_sample` 的 cap 封顶，三档都只读研究题）；`replay_max_false_trigger` 默认改为 0.2。
 
 v1.9（阶段 4j，DESIGN §6.19）：试跑的三个数量 cap、`trial_min_fixes` free（它只决定花不花筛选的钱，不是接受；0 时试跑只作反馈）；`regression_by_footprint` fixed；`merge_min_acts`、`replay_sample` floor。`REPLAY_SAMPLE` 常量删除。
+
+v1.10（阶段 4l，DESIGN §6.20）：`scoped_packages` fixed。回放保真、分歧优先与按组件裁决没有超参。
 
 ## 3 一轮（`round.py`，v1.2）
 
@@ -121,10 +124,13 @@ class Evidence:
     def footprint(self, row, component: dict) -> bool                 # 该尝试里这个组件有没有出现（V3 条件记功与记功共用）
     def digest(self, ev, *, chars) -> dict                             # v1.5：一条并排——请求、失败断言（类型与参数）、写入（工具、方法、URL、正文摘录）、最后的话、读 / 搜计数
     def persistence(self, task_id) -> int                              # v1.5：这道题在工作线几个不同的包下失败过
+    def readings_of(self, task_id) -> dict                             # v1.10：工作线历史包在该题的有效 train 读数 {passed, failed, passing_session, failing_session}
 def dev_histogram(activity, release) -> dict                          # 失败断言类型 → 计数；不带题号、参数
 ```
 
 `digest`（DESIGN §6.15）：写入 = `tool` 行里 `api_fetch` 非 GET / HEAD 的调用与包工具的写调用，取方法、URL（去协议）与正文前若干字符；GET 与 `api_search` 只计数；最后的话取 `end` 行的 final text。只对 train；留出题由调用方不传。
+
+`readings_of`（v1.10，DESIGN §6.20）：工作线历史（`releases.history()`）里每个包在这道题上的有效 train 读数（role 不在 `NOT_READINGS`；被拒候选的 trial 不算），过与败各计数，并给最新的一次通过与失败的 session；`divergent = passed ≥ 1 and failed ≥ 1`。只对 train。
 
 `footprint`：tool 在 gateway 的回复里被调用过；hook 在 `hook` 行里触发过（action ≠ none）；skill 在 `skill_read` 行里读到过；memory 条目在 `library_retrieval` 行里给过；prompt、agent、config、vendor 是全部题。
 
@@ -203,6 +209,7 @@ TOOLS = ("list_files", "read_file", "write_file", "edit_file", "delete_file", "r
 - v1.3：`packages_per_round` > 1 时提示词要求交几个包就是几种不同的机制、对不同的簇，第一个包对最大的簇；`audit_suggested` 时明说第二个包应当是审核 hook；每个组件的 `cause_ids` 尽量列出它覆盖的所有簇；叠装规则告诉 R：不同的包不要改同一个文件（manifest 除外）。
 - v1.6（DESIGN §6.16）：审核 hook 用 `{"missing": [...]}` 答（§8 的 V2d 预演它；自由文本是候选缺陷）；提示词说明"只补缺、不改已写"是构造出来的，审核要做的是把读过的文档里的每条要求与 agent 的写入对照、列出没有对应写入的；`inputs/audits.json`（这条线上试过的审核：机制、预演与筛选的数、研究部分的误报原文）是下一个审核的起点。清单有几个簇就交几个包，少交要在 finish 里说明（台账 `single_package`）。
 - v1.9（DESIGN §6.19）：**试跑的反馈**——会话 finish 之后，每个过了免费阶梯的包先在研究失败题上试跑（§9.6），宿主把每道题的结果作为一条 user 消息交回会话（`revise`）：题号、通过与否、出手的组件、失败断言的类别与参数（train 的评分行，R 本来看得到）、候选下的 session（加进 `readable`，R 用 `read_trajectory` 读），剩几次修订、剩几次试跑尝试；R 改文件后再 finish（修订不改声明），宿主重验阶梯、再试。**编辑额度提醒**：编辑数到 `session_max_edits` 的 75% 时那次工具结果末尾附一句（用了几次、剩下的留给 finish），到 90% 再附一次（`EDIT_REMINDERS`）；会话因 turns / edits 额度结束时台账记 `session_ended`（原因、turns、edits、已声明的包数）。
+- v1.10（DESIGN §6.20）：**分歧优先**——`failures.json` 每条并排加 `w_readings`（`{passed, failed}`）、`divergent` 与 `passing_session`（W 通过的一次 session，加进 `readable`）；排序：分歧题在先，其次 `persistent`，再其余（同档按 `persistence` 降序）。提示词加一段证据顺序：先改分歧（两条轨迹并读、找最早分叉的时刻），再改重复的具体失败，最后才是没兑现的风险；每处改动追溯到一个轨迹时刻，没有的不交；每个失败配最便宜的有效组件，常驻 prompt 最贵，按需的 skill / hook 优先。**两种 scope**——`scoped_packages` 且 `packages_per_round` ≥ 2 时提示词要求 `candidates/package/` 是通用的（`"scope": "invariant"`：agent 怎么做事——抽要求、核对、完成协议、工具使用、上下文），`candidates/package-2/` 是领域的（`"scope": "domain"`：从业者知道什么——交付物的形状、谁收、以哪份文档为准、记录自己的词与格式）；声明的 `scope` 可选，取值只能是这两个；台账 `declared` / `screened` 行记它。
 - v1.5：提示词说明顽固失败的三种形态（文档里的一条要求没执行到、没沿用记录的词与格式、该报告的没报告），要求候选改变 agent 从文档到动作的方式——把读过的文档里的每条要求与原词抽成待办，做完前逐条对照，被挡住或被拒的项按请求报告——而不是再加一个"再看一眼"的提醒（scope hook 这类试过，带来了漏报）；`failures.json` 的 `persistent` 条目优先。
 
 
@@ -225,6 +232,7 @@ def run_ladder(files, decl, *, parent, seed, core, worker, evidence, suite, obje
 - V1（`verify/unit.py`）：包测试；agent / vendor / config 改动跑 smoke。
 - V2a（`verify/toolcheck.py`）：每个 tool 组件，脚本或探针（§8.1）；`toolcheck_min_pass`。
 - V2b（`verify/replay.py`）：每个 `uses_model = false` 的 hook 组件，在研究部分的轨迹上回放；声明的失败题上触发 ≥ `replay_min_triggers`，通过题样本（`replay_sample`，12）上的触发率 ≤ `replay_max_false_trigger`（v1.7；此前只报告，v7 装上了一个在 85% 的尝试上说话的 hook）；`verified` 行记 `false_trigger_rate`。
+- V2b 回放保真（v1.10，DESIGN §6.20）：`attempt_events(trace, session)` 把一条轨迹重建成**一条**事件流——六个站点按记录顺序交错（before_run；每回合 before_model，然后按调用顺序 before_tool / after_tool 与 on_finish，回合末 after_turn），每个事件带 `view_events`（该时刻之前 broker 的调用，最近 `VIEW_EVENTS` 条，`call_id` / `name` / `args` / `result_excerpt` / `error` / `truncated` / `step`，与真跑的 `ctx.view["events"]` 同形；回合内按基础工具调用的名字顺序对齐 `tool` 行，包工具的调用吞掉两次对齐之间的行）与 `turn`；`site_events` 是它按站点的投影（V2d 与合并回放照用）。回放一道题：worker 里重新 `load` 包（模块状态清零），view 的 `events` 与 `turn` 按事件换，包里全部不调模型的 hook 按 manifest 顺序跑在每个事件上；first-wins 站点上先答 block / pushback 的 hook 结束该事件的派发（调模型的父 hook 按记录的 `acted`）；只有候选在声明站点改过的 hook 答非 none 才记触发。门槛与 `verified` 行的字段不变。
 - V2c（`verify/reach.py`）：每个 skill 组件。
 - V2d（`verify/audit.py`，v1.6，DESIGN §6.16）：每个 `uses_model = true` 的 hook 组件（after_turn / on_finish）。用 V2b 的回放机器把声明的失败题与通过题样本（`replay_sample`，12）的站点事件喂给它，`ctx.tool` 只读对着新开的世界，`ctx.model` 接研究模型（role aux，计在轮的 `verify` 子账户，`hook_aux_calls` 封顶）。报警 = 答了非空的 `missing`。门槛：声明的失败题上报警 ≥ `replay_min_triggers`，通过题样本上的报警比例 ≤ `audit_max_false_alarm`；另报告命中条目是否点到没过的断言（断言参数的字符串值或收件人出现在条目里）。不过门槛时退回文本列出每个误报（任务请求的前 300 字、审核的 `missing` 原文），会话修订一次再预演。预演是免费档的最后一级；过了进 V3。
 - 合并包的回放（v1.9，`verify/merge.py`，verdict 的 `merge` 步）：声明 `merge_of` 的包，其不调模型的 hook 在条目修复题上候选自己的留出尝试（条目筛选时的 session，宿主的 `VerifyContext.merge_sessions`）上回放，须在 ≥ `merge_min_acts` 道上出手；不过时回给 R 的只有计数（"在条目修好的 2 道题的尝试上一道都不出手"），会话修订一次再回放；仍不过 → verdict 不过，不筛。没有可回放的 hook（只有 tool、或 hook 调模型）→ 步记 `not_replayable`，通过。
@@ -369,6 +377,7 @@ def update_playbook(ledger, playbook, *, researcher, line) -> str      # 轮末�
 def export_policy(activity) -> str;  def import_policy(activity, policy_ref) -> None
 ```
 
+- v1.10（DESIGN §6.20）**按组件裁决**：筛选后 `component_verdicts(result)` 对包改动的每个组件给 `{verdict, acted, fixed, regressed}`——`hurt`（它出手的题里有可复现退步）、`helped`（出手的题里有可复现修复、无退步）、`no_effect`（出手了、出手的题零可复现翻转）、`unobserved`（留出上没出手）；包级 `confounded` = 无足迹的翻转数（`unconditioned` + `unconditioned_regressed`）。进 `screened` 行的 `verdicts`（只有计数，题号不进）与 R 的投影；`scoreboard` 在 kind 之外按 `scope` 另列（`scope:invariant`、`scope:domain`）；剧本提示词：每条教训点名组件与它的裁决，`no_effect` 的组件不得写成起效。
 - 台账的 `screened` 行（v1.7）：`fixed` / `regressed` / `net_flips` 是可复现的，另记 `flipped_fixed` / `flipped_regressed` / `noisy` / `confirm_attempts`；`verified` 行的 V2b 多 `false_trigger_rate`。v1.9：`screened` 行多 `unconditioned_regressed`、`acted`、`footprint_share`、`kept_fixes`（合并包）；`verified` 行多 `unregistered_hooks`、outcome `no_trial_fix`；`trialed` 行与 `session_ended` 行如 §9.6、§7。
 - 记功（v1.2，接受后）：直接用留出筛选的读数——对改动的每个组件，在它留下足迹的留出题上记 `delta = r_新 − r_旧`；研究部分在下一轮 measure 补测后再记一次。对改动的每个组件，在 `footprint` 为真的题上记 `delta = r_新 − r_旧`；估值 `(line, cause, kind)` 用该 cause 的题上、声明的 kind 的组件有足迹处的净修复与本轮花费更新。估值的每个观测按 `round:dir` 记：筛选时记一次（条件净翻转 / 失败集），装入后用记功的读数替换它，续跑写同一键不重复计。
 - 反膨胀：一个组件连续 `removal_zero_credit_rounds` 个已记功的轮次条件记功为零 → 删除候选（固定代码生成），下一轮作为固定候选进 V3。
@@ -403,6 +412,8 @@ def export_policy(activity) -> str;  def import_policy(activity, policy_ref) -> 
 | `research/methods.py` 的 `reach_check`、`replay_events` | 思路进 `verify/reach.py`、`verify/replay.py`，代码不搬 |
 
 ## 13 测试
+
+- v1.10：回放保真——假上游一条 train 轨迹的 `attempt_events` 按记录顺序交错六个站点，每个 before_tool / after_tool 事件的 `view_events` 只含它之前的 broker 调用；一个两 hook 的包（before_run 记状态、before_tool 只在状态与 `view["events"]` 都成立时 hold）在 V2b 里于声称题出手（旧回放里永远不出手）；每道题重载后前一道题的状态不泄漏；V2d 与合并回放照旧通过。分歧优先——W 有过有败的题在 `failures.json` 里 `divergent`、带 `passing_session`、排在顽固题之前，`readable` 含该 session。scope——声明的 `scope` 只收两个值；`packages_per_round` ≥ 2 时提示词含两段 scope 的要求、1 时不含；`declared` / `screened` 行与记分板带 scope。裁决——`component_verdicts` 对出手零翻转的组件给 `no_effect`、对有退步的给 `hurt`、没出手的 `unobserved`，`screened` 行与投影里只有计数。
 
 - v1.9：脚本化 R 的模式 `trial`（第一版的 hook 在试跑里不出手、不过；收到试跑反馈后修订成出手的版本，第二次试跑过，进筛选并装入）与 `trial_bad`（修订后仍不过：`no_trial_fix`，不筛，台账两行 `trialed`）；试跑的尝试记在 `trial` 子账户、按候选名与包 ref 续跑免付、`trial_max_attempts` 用完不再试；`trial_max_tasks = 0` 时不试照常筛；退步按足迹：hook 没出手的通过题翻转记 `unconditioned_regressed`、不确认、不进证据，全足迹包照旧；`footprint_share` 与 `acted`；修复证据的记录与 R 的输入（无留出题号）；合并版回放不出手 → 修订一次 → 仍不出手不筛；流式窗口含条目的修复集与退步集；导入 stream 读数（同一 AttemptIdentity）后 `--phase stream` 不再付首遇；V0 的 `unregistered_hooks`；`heuristic_terms` 对 HTTP 方法元组、工具名列表、驼峰与短词不报；编辑额度 75% / 90% 的提醒与 `session_ended`；研究抽样不计入事前核价、筛选后放不下就不抽。
 

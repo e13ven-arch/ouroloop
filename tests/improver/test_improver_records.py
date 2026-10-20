@@ -353,6 +353,39 @@ def test_the_projection_keeps_projected_fields_of_the_line(tmp_path):
     assert all(set(r) <= set(PROJECTED) for r in ledger.projection())
 
 
+def test_the_scoreboard_lists_the_scopes_beside_the_kinds_and_the_projection_keeps_scope_and_verdicts(tmp_path):
+    """v1.10 (DESIGN §6.20): a screened row with a scope counts under scope:<name> too; the projection hands R the
+    scope and the per-component verdicts (counts only)."""
+    ledger = Ledger(tmp_path)
+    verdicts = {"components": {"hook:h": {"verdict": "no_effect", "acted": 11, "fixed": 0, "regressed": 0}},
+                "confounded": 6}
+    ledger.row("screened", round_id="s/r0", line="d", kind="hook", scope="invariant", fixed=[], regressed=[],
+               outcome="screened", verdicts=verdicts)
+    ledger.row("screened", round_id="s/r0", line="d", kind="skill", scope="domain", fixed=["h1"], regressed=[],
+               outcome="screened")
+    ledger.row("screened", round_id="s/r0", line="d", kind="tool", fixed=["h2"], regressed=["h3"], outcome="screened")
+    board = ledger.scoreboard("d")
+    assert board["scope:invariant"] == {"candidates": 1, "fixed": 0, "regressed": 0, "net": 0}
+    assert board["scope:domain"] == {"candidates": 1, "fixed": 1, "regressed": 0, "net": 1}
+    assert board["all"] == {"candidates": 3, "fixed": 2, "regressed": 1, "net": 1} and "scope:" not in "".join(
+        k for k in board if k.startswith("tool"))
+    rows = ledger.projection(line="d", hide={"h1", "h2", "h3"})
+    assert rows[0]["scope"] == "invariant" and rows[0]["verdicts"] == verdicts and rows[1]["scope"] == "domain"
+    assert "scope" not in rows[2] and "verdicts" not in rows[1]
+
+
+def test_a_declaration_scope_is_invariant_or_domain_or_left_out():
+    from ouroloop.improver.declaration import read_declaration
+    raw = {"dir": "package", "mechanism": "m", "components": [{"kind": "prompt", "site": "system", "cause_ids": ["c"],
+                                                              "trigger": "t"}]}
+    for scope, want in (("invariant", "invariant"), ("domain", "domain"), (None, "")):
+        d, why = read_declaration({**raw, **({"scope": scope} if scope else {})}, dirs=["package"],
+                                  kinds_allowed=["prompt"])
+        assert why == "" and d.scope == want
+    d, why = read_declaration({**raw, "scope": "both"}, dirs=["package"], kinds_allowed=["prompt"])
+    assert d is None and "scope is one of ['invariant', 'domain']" in why
+
+
 def test_the_scoreboard(tmp_path):
     """Per kind and in all: the candidates screened, their conditioned fixes, regressions and net, in counts (the
     screens run on the held-out train tasks, so predictions are not matched there); a screen not run is left out."""

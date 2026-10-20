@@ -8,6 +8,24 @@
 
 ---
 
+## 2026-10-20 阶段 4l 落地：向 Harness² 学来的四处——V2b 回放保真、分歧优先、两种 scope、按组件裁决（DESIGN v1.10 §6.20）；$0
+
+**为什么。** 用户问起 Google Research 2026-10-09 开源的 Harness²（arXiv 2610.14224，github.com/google-research/harness2）："好像跟我们的理念有相似之处，但是别人看起来提升的确定性很高"。读了论文正文、附录与仓库（`core/prompts.py`、`recursion.py`、`library.py`、`selection.py`）：它改的也是冻结模型外的 harness，两层递归；报告的增益大半是每道题上的测试时算力（参考执行 + 2k 个候选真跑 + 合成版 + 匿名答案里挑一个；去掉库仍有一半增益）与 Opus 4.8 给弱执行器写 skills，唯一同口径的数（JobBench 建库、WorkBuddy 单步）是 +0.5～+2.9，在我们的噪声带里。用户："不要光看别人不好的地方，要看好的，能够稳定提升效果的机制，学习进来。"于是按它机制里**与我们已有读数一致**的四处改（DESIGN §6.20 的表），先写设计再写代码。
+
+**做了什么（分支 `s11-contrast`）。**
+1. **V2b 回放保真**（`verify/replay.py` 重写）：`attempt_events` 把一条 train 轨迹重建成一条事件流——六个站点按记录顺序交错，每个事件带 `view_events`（该时刻之前 broker 的调用窗口，与真跑的 `ctx.view["events"]` 同形；回合内按基础工具调用的名字顺序对齐 `tool` 行）与 `turn`；`replay_task` 对一道题先在 worker 里重载包（模块状态清零），包里全部不调模型的 hook 按 manifest 顺序跑在每个事件上，first-wins 站点上先答 block / pushback 的 hook 结束派发，只有候选改过的 hook 在声明站点出手才计触发。`site_events` 保留为按站点的投影；V2d 的审核预演（`audit.py`）每个事件用它那一刻的 `view_events`，合并版回放（`merge.py`）改走 `replay_task`。门槛不变。这就是 r0 之后 PLAN §3 的 (a)。
+2. **分歧优先**：`Evidence.readings_of(task)` 数工作线历史包在该题的有效 train 读数（装入包的 trial 算 W 的读数，被拒候选的不算）；`failures.json` 每条加 `w_readings` / `divergent` / `passing_session`（通过的 session 进 R 的可读集），排序改为分歧题 → 顽固题 → 其余；`propose.md` 加一段证据顺序（分歧 > 重复失败 > 未兑现的风险；每处改动追溯到轨迹时刻；最便宜的有效组件，常驻 prompt 最贵）。
+3. **两种 scope**：声明可选 `scope`（`invariant` | `domain`，`declaration.SCOPES`）；`Settings.scoped_packages`（true，fixed）且 `packages_per_round` ≥ 2 时 `Round.system_prompt` 填 `{scopes}` 段（第一个包通用、第二个领域；系统提示从 `implemented` 里抽成方法）；`declared` / `screened` 行记 `scope`，`scoreboard` 加 `scope:<name>` 键，投影放行 `scope`。
+4. **按组件裁决**：`screen.component_verdicts(result)`——每个改动组件 `{verdict, acted, fixed, regressed}`（hurt / helped / no_effect / unobserved）与包级 `confounded`（无足迹的翻转数），只有计数；进 `screened` 行的 `verdicts` 与投影；`playbook.md` 要求教训点名组件与裁决，`no_effect` 的不得写成起效。
+
+**测试（假上游，`tests/improver/`，新增 8 个）。** `attempt_events` 的交错顺序与每事件的 view 窗口（第一次调用前为空，PATCH 之后窗口末尾是它）；一个两 hook 的包（before_run 记"请求提到 #ops"、after_tool 记"更新已写"、on_finish 看 view 里有 PATCH 无 POST 才 hold）在 V2b 于 notify_ticket 出手、三道通过题零误触发——旧回放（空 view、各站点各自回放）下它永远不出手；before_tool 的 hook 看到它那一刻的 view 与 turn（notify_once 的首次 POST）；每道题重载后前一道题的状态不泄漏；分歧题（round 0 之后 ticket 在 W0 下败、在装入包的 trial 里过）带通过 session 排在前，被拒候选的 trial 不算；系统提示按包数与 `scoped_packages` 开合 scope 段；`scope` 只收两个值；记分板按 scope、投影带 `verdicts`；`component_verdicts` 的四种裁决。原有 V2b / V2d / 合并回放测试不改全过。默认全量（`s11-contrast`，2026-10-20）：1,543 passed、87 deselected（live / slow / Docker / memory 的未跑；第一遍 1 failed 是新测试把失败读数写死、同模块前一个测试多加了一条，改断言后该文件 33 passed）；Docker 全量合入前再跑。
+
+**没做、为什么。** 逐题的任务级递归与答案 selector（测试时算力，口径不同；要更大的数另立一臂并与 best-of-4 算力对齐）；test 流上的在线库（流式学习另有阶段且只在 train 段）；R 的 effort 单独提高（PLAN §3 新增第 4 项待用户定）。配置没动：finance-v9 的 K 钉着 r0，r1 若要两种 scope 要新 K 把 `packages_per_round` 设 2。
+
+**下一步（待用户定）。** 审后合入 `m1-automationbench`、Docker 全量；然后 r1（约 $50）看 §6.20 末段的四个读数，或直接 4k。
+
+---
+
 ## 2026-10-19 finance-v9 r0：阶段 4j 的第一轮实跑——R 的包过了试跑（3 道试、1 道修）进筛选，留出 60 道确认后修 0 退 0（净 0，33 对 34）被拒；7 个首读翻转里 6 个没有足迹、1 个是噪声；V2b 的回放把 R 从 before_tool 的 hold 逼成 after_tool 的事后提示；$48.21
 
 **做了什么。** 用户 2026-10-19 批准 $150 跑 4j 的第 1 轮。合入阶段 4j（`500201a` → `042944d`）；Docker 全量 1,619 passed、1 failed——`test_a_regression_counts_on_the_held_out_passing_tasks_whatever_the_footprint` 的一个断言写错（夹具 actor 在 notify 对上也调用包的工具，silent 包在整个留出部分都有足迹，`acted` 是 WITH_PASSING、份额 1.0，不是 notify_once 一道），改断言（`c96249f`），代码照设计不动。finance-v9（`b48f02a`）：K `core:cbe73108ba70`，种子 finance-v8 的工作线（它自己的种子，`package:e38c14942fbf`），split `1bbf01533d7256af` 不变；4j 没动尝试路径的代码（`attempt_version` 仍是 8d3d2d25d7d619b6），`import_baseline` 把 v8 的 150 道首遇（role stream，AttemptIdentity adc0c5828d0fdd64）导进来，$0——round 阶段自己不导入，用脚本调了一次 `import_baseline`。跑的是**批式** r0（不是流式）：筛选覆盖全部 60 道留出，不是流式窗口的最近 30 道；每轮 1 个包（`packages_per_round = 1`）。钱：`round_share` 0.15 是 cap，根写成 $1000 才给 r0 一个 $150 的账户；只批了 r0，根的数字是算术不是批准。

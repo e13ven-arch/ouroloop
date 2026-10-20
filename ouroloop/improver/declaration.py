@@ -45,6 +45,9 @@ class Component(Record):
         return f"{self.kind}:{self.site}" if self.site else self.kind
 
 
+SCOPES = ("", "invariant", "domain")      # v1.10: a package's scope (DESIGN §6.20)
+
+
 @register
 @dataclass(frozen=True)
 class Declaration(Record):
@@ -55,6 +58,8 @@ class Declaration(Record):
     differs_from: tuple = ()            # ({ref, how}) of earlier candidates it is not a repeat of
     fixed: str = ""                     # "" for R's; the fixed code's source otherwise (snapshot, promotion, removal)
     merge_of: str = ""                  # v1.8: the frontier entry this package is the conditioned version of
+    scope: str = ""                     # v1.10 (DESIGN §6.20): invariant (how the agent works) | domain (what a
+                                        # practitioner knows) | "" (unscoped)
 
     def __post_init__(self):
         comps = tuple(c if isinstance(c, Component) else Component.from_json(dict(c)) for c in self.components or ())
@@ -185,9 +190,13 @@ def read_declaration(raw, *, dirs, kinds_allowed, merge_ids=()) -> tuple[Declara
     if merge_of and merge_of not in set(merge_ids):
         return None, f"merge_of {merge_of!r} is not a frontier entry this round merges " \
                      f"({sorted(merge_ids) or 'none: focus.json lists none'})"
+    scope = raw.get("scope") or ""
+    if not isinstance(scope, str) or scope not in SCOPES:
+        return None, f"scope is one of {list(SCOPES[1:])} (invariant: how the agent works; domain: what a practitioner " \
+                     f"knows), or left out"
     return Declaration(dir=name, mechanism=mechanism.strip()[:MECHANISM_CHARS], components=tuple(comps),
                        differs_from=tuple({"ref": d["ref"], "how": str(d.get("how") or "")[:TRIGGER_CHARS]}
-                                          for d in differs), merge_of=merge_of), ""
+                                          for d in differs), merge_of=merge_of, scope=scope), ""
 
 
 def fixed_declaration(dir_name: str, *, source: str, kind: str, site: str | None, cause_id: str, trigger: str,

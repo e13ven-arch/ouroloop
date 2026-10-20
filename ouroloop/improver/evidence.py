@@ -209,6 +209,24 @@ class Evidence:
                 failed.add(run.package_ref)
         return len(failed)
 
+    def readings_of(self, task_id: str) -> dict:
+        """The working line's valid train readings of a task under the packages of its history (v1.10, DESIGN §6.20):
+        how many passed and failed, and the latest passing and failing sessions (R reads both side by side on a
+        divergent task — one the agent can already do, which the harness only has to make reliable). A rejected
+        candidate's trial is not W's reading."""
+        packages = {rel.package_ref for rel in self.activity.releases.history()}
+        runs = self.activity.results.runs()
+        passed, failed = [], []
+        for r in self.activity.results.all():
+            run = runs.get(r.run)
+            if r.task_id != task_id or r.split != TRAIN or r.validity != "valid" or run is None \
+                    or run.role in NOT_READINGS or run.package_ref not in packages \
+                    or (run.role == "trial" and run.package_ref != self.activity.active_release().package_ref):
+                continue
+            (passed if r.success else failed).append(r.evidence or r.attempt_id)
+        return {"passed": len(passed), "failed": len(failed), "passing_session": passed[-1] if passed else None,
+                "failing_session": failed[-1] if failed else None, "divergent": bool(passed) and bool(failed)}
+
     def footprint(self, row: TaskResult, component: dict) -> bool:
         """Whether a component showed in this attempt (V3's condition and credit's): a tool the model called, a hook
         that acted, a skill read, memory entries given; prompt, agent, config, vendor and model act on every attempt."""

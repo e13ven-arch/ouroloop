@@ -160,6 +160,24 @@ def key(component: dict) -> str:
     return f"{component['kind']}:{component.get('name')}"
 
 
+VERDICTS = ("helped", "hurt", "no_effect", "unobserved")
+
+
+def component_verdicts(result: "ScreenResult") -> dict:
+    """What each changed component did on the held-out part, in counts (v1.10, DESIGN §6.20, Harness²'s per-edit
+    rows): `hurt` where a task it acted on is a confirmed regression, `helped` where one is a confirmed fix (and
+    none a regression), `no_effect` where it acted and nothing it acted on flipped, `unobserved` where it acted on
+    no held-out task; `confounded` counts the flips with no footprint. Task ids never leave here."""
+    fixed, regressed = set(result.fixed), set(result.regressed)
+    out = {}
+    for comp, tasks in sorted((result.footprints or {}).items()):
+        shown = set(tasks)
+        f, r = len(shown & fixed), len(shown & regressed)
+        verdict = "hurt" if r else "helped" if f else "no_effect" if shown else "unobserved"
+        out[comp] = {"verdict": verdict, "acted": len(shown), "fixed": f, "regressed": r}
+    return {"components": out, "confounded": len(result.unconditioned) + len(result.unconditioned_regressed)}
+
+
 def latest(rows: list[TaskResult]) -> dict[str, TaskResult]:
     out: dict = {}
     for r in rows:

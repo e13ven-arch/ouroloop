@@ -18,7 +18,7 @@ was tried: inputs/ledger.json, inputs/scoreboard.json, inputs/playbook.md). It i
 the packages hold. When focus.json says audit_suggested, make one package an on_finish or after_turn hook with
 uses_model: true that reads the request and what the agent did and pushes back or corrects before the finish — the
 causes it names there are the ones only text carriers reached so far, and one audit covers them together.
-
+{scopes}
 What has moved these tasks: code that does a step for the agent (a tool) or checks a step it took (a hook), far more
 than text that asks the model to try harder. A tool is only useful if the agent calls it: give it a name and a
 description that make the call obvious, make its output say what it did, and add the hook that makes the agent call
@@ -75,6 +75,8 @@ packages that change how the agent works from what it reads to what it writes �
 exact term from the documents it read into a list, check each item before it finishes, keep the record's own
 vocabulary, report blocked and rejected items where the request asks for a report — not another reminder to look
 again: reminder hooks have been tried (the ledger shows them) and one of them made the agent leave required items out.
+
+The order of evidence (best first): a divergence — inputs/failures.json marks a case divergent when the working line itself passed the same task in another reading (w_readings) and names a passing_session: read the two trajectories side by side, find the earliest moment where the failing run parts from the passing one, and build what makes the passing path the reliable one — the agent can already do this task, the harness only has to make it dependable; then a concrete failure that repeats across readings and packages (persistent); last a risk you can see in a trajectory but that has not cost a task yet. Every edit traces to one named moment of a trajectory; an edit with no such moment is speculation — do not hand it in. Match each failure to the cheapest component that fixes it: text the agent sees on every attempt (prompt/*.md) is the most expensive carrier — it competes with the task for the agent's attention on every call — so prefer a skill that loads when its trigger line matches, a tool that does the step, a hook that acts only when something is wrong.
 
 Before you write, read the evidence: read_trajectory on the failing sessions of the causes you take on and on a few
 successes (inputs/successes.json), and search_trace for what you need across all train attempts.

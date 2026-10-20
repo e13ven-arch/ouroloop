@@ -51,7 +51,8 @@ from .evidence import NOT_READINGS, TRAIN, Evidence, dev_histogram
 from .frontier import Frontier, FrontierEntry
 from .ledger import Ledger, scrub
 from .policy import read_playbook, update_playbook
-from .screen import (ScreenResult, accept, condition, cost_per_attempt, fix_evidence, fixed_sessions, pick_best,
+from .screen import (ScreenResult, accept, component_verdicts, condition, cost_per_attempt, fix_evidence,
+                     fixed_sessions, pick_best,
                      pick_order, price, regression_evidence, research_run, research_sample, screen)
 from .session import CodingSession, WorkTree
 from .trial import TrialResult, feedback as trial_feedback, trial as run_trial, trial_tasks
@@ -615,10 +616,17 @@ class Round:
                 if row is None:
                     continue
                 n = self.evidence.persistence(case.task_id)
+                # v1.10 (DESIGN §6.20): W's own readings of the task — a divergent task (passed and failed) comes
+                # with a passing session to read beside the failing one
+                w = self.evidence.readings_of(case.task_id)
+                if w["passing_session"]:
+                    readable.add(w["passing_session"])
                 failures.append({**self.evidence.digest(self.evidence.of(row), chars=self.s.failures_case_chars),
                                  "cause": c.name, "cause_id": c.cause_id, "note": case.explanation,
-                                 "persistence": n, "persistent": n >= 2})
-        failures.sort(key=lambda f: (not f["persistent"], -f["persistence"]))
+                                 "persistence": n, "persistent": n >= 2,
+                                 "w_readings": {"passed": w["passed"], "failed": w["failed"]},
+                                 "divergent": w["divergent"], "passing_session": w["passing_session"]})
+        failures.sort(key=lambda f: (not f["divergent"], not f["persistent"], -f["persistence"]))
         failures = failures[:int(self.s.failures_max_cases)]
         episode = self.a.suite.episode(self.a.splits.ids("train")[0])
         try:
@@ -642,7 +650,10 @@ class Round:
                  "histogram.json": dev_histogram(self.a, self.base.package_ref), "base_tools.json": base_tools,
                  "failures.json": {"note": "each studied failure side by side: the request, the checks the grader marked "
                                            "failed with their parameters, the agent's writes in order, what it said at "
-                                           "the end; persistent = failed under more than one installed package",
+                                           "the end; divergent = the working line itself passed this task in another "
+                                           "reading (w_readings; passing_session is one to read_trajectory beside "
+                                           "this failure), persistent = failed under more than one installed package; "
+                                           "divergent first, then persistent",
                                    "cases": failures},
                  "audits.json": {"note": "every audit (a hook calling the model) tried on this line: its dry run on "
                                          "recorded attempts — hits on the claimed failing tasks, false alarms on passing "
@@ -727,7 +738,8 @@ class Round:
                         kind=decl.kind, site=decl.site, cause=list(decl.causes), trigger=decl.mechanism,
                         components=[{"kind": c.kind, "site": c.site, "cause_ids": list(c.cause_ids),
                                      "uses_model": c.uses_model} for c in decl.components],
-                        predicted_affected=list(decl.predicted_affected), differs_from=list(decl.differs_from))
+                        predicted_affected=list(decl.predicted_affected), differs_from=list(decl.differs_from),
+                        **({"scope": decl.scope} if decl.scope else {}))
 
     def _declared(self, decl, files: dict, verdict, trial: dict | None = None) -> dict:
         self._declared_row(decl)
@@ -779,28 +791,9 @@ class Round:
             if bad:
                 raise RuntimeError(f"R's saved session cannot be restored: candidates/{name}/{path}: {value}")
 
-    def implemented(self) -> dict:
-        if not self.causes():
-            return {"candidates": [], "session": None}
-        saved = self.state.get("session_result")
-        if saved is not None:       # the session ran before the step was cut short: its candidates, not paid again
-            vctx = self.vctx()
-            out = []
-            for item in saved["candidates"]:
-                decl = Declaration.from_json(self.a.objects.get(item["declaration"]))
-                files = self.a.objects.get(item["files"])
-                verdict = run_ladder(files, decl, vctx)
-                trial = item.get("trial")
-                if trial is None and verdict.passed() and not decl.fixed and int(self.s.trial_max_tasks) > 0:
-                    # killed in the trial: its attempts are on record, the revision is not; one trial, no revision
-                    res = self._trial_once(decl, files, iteration=0)
-                    trial = self._trial_summary([res])
-                out.append(self._declared(decl, files, verdict, trial))
-            self.out(f"round      {self.round_id}: the session's {len(out)} packages, as it left them")
-            return {"candidates": out, "session": saved["session"]}
-        inputs, readable = self.inputs()
-        kinds = [k for k in self.a.k["harness"]["kinds"] if k not in ("memory", "model", "test")] + ["removal"]
-        merge_ids = self.merge_ids()
+    def system_prompt(self, merge_ids=()) -> str:
+        """prompts/propose.md with the round's numbers, the frontier's merge paragraph and, with scoped_packages and
+        packages_per_round >= 2, the two scopes (v1.10, DESIGN §6.20)."""
         system = (PROMPTS / "propose.md").read_text(encoding="utf-8")
         merge_text = ""
         if merge_ids:
@@ -826,8 +819,45 @@ class Round:
                             "accept_min_whole_fixes": self.s.accept_min_whole_fixes,
                             "heuristic_terms_min": self.s.heuristic_terms_min, "merge": merge_text,
                             "trial_max_tasks": self.s.trial_max_tasks, "trial_max_rounds": self.s.trial_max_rounds,
-                            "trial_min_fixes": self.s.trial_min_fixes}.items():
+                            "trial_min_fixes": self.s.trial_min_fixes, "scopes": self.scopes_text()}.items():
             system = system.replace("{" + name + "}", str(value))
+        return system
+
+    def scopes_text(self) -> str:
+        if not bool(getattr(self.s, "scoped_packages", True)) or int(self.s.packages_per_round) < 2:
+            return ""
+        return ("\nThe packages have two scopes, and you declare each one's (\"scope\"): candidates/package/ is "
+                "invariant — how the agent works on any task of this line: how it turns what it reads into a list of "
+                "requirements and exact terms, checks each before it finishes, uses its tools, reports what it could "
+                "not do, keeps its context; no professional rule, no fact of the domain. candidates/package-2/ is "
+                "domain — what a practitioner of this line knows: the shape of the deliverable and who receives it, "
+                "which document is controlling when two disagree, the required structure, the record's own vocabulary "
+                "and formats, as checkable rules in a skill whose trigger is a situation (not a topic) or a tool; no "
+                "value of one task. Each is one mechanism on its own causes; they are screened on their own.\n")
+
+    def implemented(self) -> dict:
+        if not self.causes():
+            return {"candidates": [], "session": None}
+        saved = self.state.get("session_result")
+        if saved is not None:       # the session ran before the step was cut short: its candidates, not paid again
+            vctx = self.vctx()
+            out = []
+            for item in saved["candidates"]:
+                decl = Declaration.from_json(self.a.objects.get(item["declaration"]))
+                files = self.a.objects.get(item["files"])
+                verdict = run_ladder(files, decl, vctx)
+                trial = item.get("trial")
+                if trial is None and verdict.passed() and not decl.fixed and int(self.s.trial_max_tasks) > 0:
+                    # killed in the trial: its attempts are on record, the revision is not; one trial, no revision
+                    res = self._trial_once(decl, files, iteration=0)
+                    trial = self._trial_summary([res])
+                out.append(self._declared(decl, files, verdict, trial))
+            self.out(f"round      {self.round_id}: the session's {len(out)} packages, as it left them")
+            return {"candidates": out, "session": saved["session"]}
+        inputs, readable = self.inputs()
+        kinds = [k for k in self.a.k["harness"]["kinds"] if k not in ("memory", "model", "test")] + ["removal"]
+        merge_ids = self.merge_ids()
+        system = self.system_prompt(merge_ids)
         worker = self.a.worker()
         if worker is None:
             raise WorkerUnavailable("R's coding session needs the isolated worker and none is available")
@@ -1240,7 +1270,9 @@ class Round:
                             footprint_share=res.footprint_share,            # v1.9
                             **({"kept_fixes": res.kept_fixes} if res.kept_fixes is not None else {}),
                             **({"source": decl.fixed} if decl.fixed else {}),
-                            **({"merge_of": decl.merge_of} if decl.merge_of else {}))
+                            **({"merge_of": decl.merge_of} if decl.merge_of else {}),
+                            **({"scope": decl.scope} if decl.scope else {}),           # v1.10
+                            **({"verdicts": component_verdicts(res)} if res.outcome == "screened" else {}))
             if res.outcome == "screened" and not decl.fixed:
                 self._observe(decl, res, cost=(res.cost or 0.0) * len(res.holdout))
         self._frontier_after_screens(chosen, decls, results)

@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 
 from ..components import components
-from .replay import _triggers, site_events
+from .replay import attempt_events, changed_hooks, hooks_of, replay_task
 from .unit import worker_files
 
 
@@ -29,31 +29,22 @@ def merge_check(files: dict[str, str], decl, ctx) -> dict:
         return {"passed": True, "acts_on": None, "of": 0, "outcome": "not_replayable",
                 "detail": "the entry keeps no recorded attempt of its fixes to replay on"}
     manifest = json.loads(files["manifest.json"])
-    changed = {(c["name"], c.get("site")) for c in components(ctx.parent, files)
-               if c["kind"] == "hook" and c["change"] != "deleted"}
-    entries_by_site: dict = {}
-    for comp in hooks:
-        at_site = [h for h in manifest.get("hooks") or () if h.get("site") == comp.site and h.get("enabled", True)]
-        entries = [(h["name"], h["entrypoint"], [x["name"] for x in at_site[:i]]) for i, h in enumerate(at_site)
-                   if (h.get("name"), comp.site) in changed]
-        if entries:
-            entries_by_site[comp.site] = entries
-    if not entries_by_site:
+    changed = changed_hooks(ctx.parent, files)
+    sites = {comp.site for comp in hooks
+             if any(s == comp.site and any(h.get("name") == n for h in hooks_of(manifest)[comp.site])
+                    for n, s in changed.items())}
+    if not sites:
         return {"passed": False, "acts_on": 0, "of": len(sessions), "outcome": "no_hook",
                 "detail": "none of the merge's declared hooks is a changed hook of the manifest at its site"}
     need = int(getattr(ctx.settings, "merge_min_acts", 1))
     session = ctx.worker.start()
     acts, errors = 0, []
     try:
-        session.load(worker_files(files, tests=False))
         for task_id, sid in sorted(sessions.items()):
-            events = site_events(ctx.evidence.trace, sid)
-            hit = False
-            for site, entries in entries_by_site.items():
-                got, error = _triggers(session, entries, events[site], task_id=task_id, suite=ctx.suite,
-                                       manifest=manifest, site=site)
-                errors += [error] if error else []
-                hit = hit or got
+            # v1.10: the whole attempt replayed, every hook of the package in order (DESIGN §6.20)
+            hit, error = replay_task(session, files, manifest, attempt_events(ctx.evidence.trace, sid),
+                                     task_id=task_id, suite=ctx.suite, own=set(changed), count_at=sites)
+            errors += [error] if error else []
             acts += int(hit)
     finally:
         session.close()

@@ -544,6 +544,27 @@ def test_a_fix_counts_only_where_a_changed_component_showed(world, screens):
     assert len(list(world.a.results.all())) == before
 
 
+def test_component_verdicts_say_what_each_component_did_where_it_acted():
+    """v1.10 (DESIGN §6.20): finance-v9 r0's hook acted on 11 held-out tasks and changed none of them — no_effect; a
+    component with a confirmed regression where it acted is hurt, with a confirmed fix helped, one that never acted
+    unobserved; the flips with no footprint are confounded, and no task id is in the answer."""
+    res = sc.ScreenResult(candidate="r0:package", holdout=tuple(f"t{i}" for i in range(8)),
+                          fixed=("t1",), regressed=("t5",), unconditioned=("t2", "t3"), unconditioned_regressed=("t6",),
+                          footprints={"hook:hold": ["t0", "t4", "t7"], "tool:post": ["t1"], "hook:guard": ["t5", "t1"],
+                                      "skill:ops": []})
+    got = sc.component_verdicts(res)
+    assert got["components"] == {
+        "hook:guard": {"verdict": "hurt", "acted": 2, "fixed": 1, "regressed": 1},
+        "hook:hold": {"verdict": "no_effect", "acted": 3, "fixed": 0, "regressed": 0},
+        "skill:ops": {"verdict": "unobserved", "acted": 0, "fixed": 0, "regressed": 0},
+        "tool:post": {"verdict": "helped", "acted": 1, "fixed": 1, "regressed": 0}}
+    assert got["confounded"] == 3 and "t" not in json.dumps(got).replace("verdict", "").replace("regressed", "") \
+        .replace("fixed", "").replace("acted", "").replace("components", "").replace("confounded", "") \
+        .replace("hook:hold", "").replace("hook:guard", "").replace("tool:post", "").replace("skill:ops", "") \
+        .replace("no_effect", "").replace("unobserved", "").replace("helped", "").replace("hurt", "")
+    assert sc.component_verdicts(sc.ScreenResult(candidate="x", outcome="invalid")) == {"components": {}, "confounded": 0}
+
+
 def test_condition_is_every_changed_component_or_every_attempt():
     comps = [{"kind": "tool", "name": "a", "change": "added"}, {"kind": "tool", "name": "b", "change": "deleted"},
              {"kind": "hook", "name": "h", "change": "modified", "site": "on_finish"},

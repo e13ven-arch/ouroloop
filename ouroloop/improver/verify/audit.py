@@ -21,7 +21,7 @@ from ...runtime.gateway import split_system, tool_spec
 from ...runtime.worker import PackageCallError, smoke_view
 from ..components import components
 from ..declaration import component_of
-from .replay import FIRST_WINS, site_events
+from .replay import FIRST_WINS, PRIVATE, site_events
 from .unit import worker_files
 
 REQUEST_CHARS = 300                     # of a misfiring task's request, in the detail R reads
@@ -66,13 +66,17 @@ def _fires(session, entries, events, *, task_id, suite, manifest, site, trace, s
     episode = suite.episode(task_id)
     counter = {"calls": 0}
     try:
-        view = {**smoke_view(manifest, episode, session.limits.max_output_chars,
-                             hook_aux_calls=int(ctx.hook_aux_calls)), "events": recorded_events(trace, sid)}
+        base = smoke_view(manifest, episode, session.limits.max_output_chars, hook_aux_calls=int(ctx.hook_aux_calls))
+        recorded = recorded_events(trace, sid)
         broker = Broker(episode, read_only=True)
         handlers = {"base_call": session.base_call_handler(broker, session.limits.max_base_calls),
                     "model_call": _model_handler(ctx.aux, int(ctx.hook_aux_calls), counter)}
         for event in events:
-            sent = {k: v for k, v in event.items() if k != "acted"}
+            sent = {k: v for k, v in event.items() if k not in PRIVATE}
+            # v1.10: the view's events as they stood at that moment (DESIGN §6.20); the whole record as before when
+            # the event carries no window
+            view = {**base, "events": list(event["view_events"]) if "view_events" in event else recorded,
+                    "turn": int(event.get("turn") or 0)}
             for _name, entry, earlier in entries:
                 if site in FIRST_WINS and set(event.get("acted") or ()) & set(earlier):
                     continue            # an earlier hook at the site acted here: the audit was not reached

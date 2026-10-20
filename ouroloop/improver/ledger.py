@@ -31,6 +31,7 @@ PROJECTED = ("id", "stage", "round_id", "candidate", "dir", "cause", "cause_id",
              "partial", "entry", "merge_of", "merge", "heuristic_terms", "research_sample", "research_regressed",
              "attempts", "protected", "protected_passed",           # v1.8
              "unconditioned_regressed", "acted", "footprint_share", "kept_fixes", "unregistered_hooks",
+         "scope", "verdicts",                                  # v1.10
              "iteration", "trial_tasks", "trial_fixed", "trial_failed", "turns", "edits", "declared")   # v1.9
 
 
@@ -112,7 +113,10 @@ class Ledger:
             if r.get("outcome") != "screened":
                 continue
             fixed, regressed = len(r.get("fixed") or ()), len(r.get("regressed") or ())
-            for key in ("all", *str(r.get("kind") or "?").split("+")):
+            keys = ["all", *str(r.get("kind") or "?").split("+")]
+            if r.get("scope"):                                  # v1.10: by scope too (DESIGN §6.20)
+                keys.append(f"scope:{r['scope']}")
+            for key in keys:
                 slot = board.setdefault(key, {"candidates": 0, "fixed": 0, "regressed": 0, "net": 0})
                 slot["candidates"] += 1
                 slot["fixed"] += fixed

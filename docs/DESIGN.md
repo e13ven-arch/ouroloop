@@ -1,5 +1,7 @@
-# ouroloop 架构设计（v1.9，正向设计）
+# ouroloop 架构设计（v1.10，正向设计）
 
+> 2026-10-20 修订（v1.10，阶段 4l）：向 Google Research 的 Harness²（arXiv 2610.14224，2026-10-09）学四处能稳定起效的机制——V2b 回放给 hook 真跑同形的 view（`events` 窗口按记录重建）并把一个包的全部 hook 按事件顺序一起回放；R 的证据按"分歧 > 顽固失败 > 未兑现的风险"排序，分歧题（W 自己有过有败）带通过轨迹并排；一轮的候选分成"通用（agent 怎么做事）"与"领域（从业者知道什么）"两种 scope；筛选后按组件裁决（helped / hurt / no_effect / unobserved）进台账与剧本。不学的：逐题的测试时递归与在匿名答案里挑一个（那是测试时算力，不是冻结的 W\*）（§6.20）。
+>
 > 2026-10-13 修订（v1.9，阶段 4j）：回路改成"R 对着失败题改、改完真跑、通过了再筛退步"——样本内试跑作为 R 的反馈与留出筛选的入场门槛（接受仍只看留出）、只含代码 / 技能组件的包退步按足迹计、前沿条目带修复证据且合并版筛选前先回放、导入 stream 的首遇、V0 提示未挂的 hook、词表信号去误报、编辑额度提醒、核价与 V2b 样本（§6.19）。
 >
 > 2026-10-13 修订（v1.8，阶段 4i）：不退步的累积——可复现退步的证据回灌 R（三档粒度）、只因退步被拒的包进前沿并由 R 合并成条件化版本、文字组件只能增量、靠词表触发的机制记软信号；参数都是 K 的超参（§6.18）。
@@ -335,7 +337,7 @@ ReMe 自带的记账与删除不用（会丢计数、记功共享）；去重只
 | V0 静态 | 包形状、类型与站点是否被 K 允许、上限、相对种子改动行的字面量检查、禁止读 `memory/`、manifest schema、声明与 diff 一致（声明的组件都在 diff 里，diff 里的组件都被声明） | 整包 |
 | V1 单元 | 包测试在 worker 里跑；agent / vendor / config 改动另跑 smoke（脚本化模型） | 整包 |
 | V2a toolcheck | 脚本（在该题的新世界里做完任务）或探针（在轨迹抽出的输入上调用）；≥ 2 道声称题 | 每个 tool |
-| V2b 回放 | 对研究部分的轨迹回放 hook：声称题触发 ≥ 2 道；通过题样本（`replay_sample` 道，12；v1.9 从 6 提到 12）上的触发率 ≤ `replay_max_false_trigger`（0.25；v1.7，§6.17——此前只报不拦）。调 aux 模型的 hook 不能回放，走 V2d | 每个不调模型的 hook |
+| V2b 回放 | 对研究部分的轨迹回放 hook：声称题触发 ≥ 2 道；通过题样本（`replay_sample` 道，12；v1.9 从 6 提到 12）上的触发率 ≤ `replay_max_false_trigger`（0.25；v1.7，§6.17——此前只报不拦）。调 aux 模型的 hook 不能回放，走 V2d。v1.10（§6.20）：回放保真——每个事件带真跑同形的 `view["events"]`（该时刻之前的 broker 调用窗口）与 `turn`，一道题的全部站点事件按记录顺序一起回放，包的全部不调模型的 hook 都跑（模块状态共享，每道题重载），只有候选在声明站点改过的 hook 出手才计 | 每个不调模型的 hook |
 | V2c 可达 | 描述能检索到 ≥ 2 道来源外研究题 | 每个 skill |
 | V2t 样本内试跑（v1.9，§6.19） | 付费但便宜：包在它声明的研究失败题上各跑一次（≤ `trial_max_tasks`），每道的结果与 session 回给 R 修订（≤ `trial_max_rounds` 次）；翻转 ≥ `trial_min_fixes` 道才进 V3。是入场门槛，不是接受 | R 的包 |
 | V3 留出筛选 = 活动内接受 | 付费：候选包在全部留出 train 题上各一次，翻转的题再读一次确认（v1.7，§6.17）；按足迹记功；接受规则：可复现修复 − 可复现退步 ≥ `accept_min_net_flips`（1）、可复现退步 ≤ `accept_max_regressions`（0）、足迹是全部题的包可复现修复 ≥ `accept_min_whole_fixes`（2）、留出通过数 ≥ 历史最好 − `accept_floor_tolerance`。接受即装入工作线；只含 tool / hook / skill 的包，通过题上的翻转只在组件出手时才是退步候选（v1.9） | 整包 |
@@ -491,6 +493,21 @@ v1.9 把回路改成**"R 对着失败题改、改完真跑、通过了再筛退�
 **怎么判断它有没有用（下一次活动）：** 进留出筛选的包里有样本内修复的比例（应为 1）；筛选被拒的包里零留出翻转的比例（v8 是 8/9，应明显下降）；没有足迹的退步候选数（`unconditioned_regressed`，v8 读到的那类）与确认退步数；合并包在条目修复题上的 `kept_fixes`（v8 是 0）；`footprint_share` 对 V2b 误触发率的差；一轮里因额度结束而没有 finish 的会话数。
 
 不做：试跑结果进接受规则（见上）；对全足迹包按"某种足迹"判退步（它们没有足迹）；两个已接受包之间的合并；装入后的回退监测（仍推迟）。
+
+### 6.20 向 Harness² 学来的四处：回放保真、分歧优先、两种 scope、按组件裁决（v1.10，阶段 4l）
+
+finance-v9 r0（JOURNAL 2026-10-19）之后用户问起 Google Research 的 Harness²（"Recursive Agent Harnessing for an Open World"，arXiv 2610.14224，代码 github.com/google-research/harness2，Apache-2.0）。它和本框架同源：模型冻结，改的是 harness（system prompt、guardrails、memory、tool guidance、skills、scripts、subagents、plugin），两层递归——任务级的 Propose-Probe-Compose 与库级的"采用的 harness + EXPERIENCE.md"。它报告的增益大半来自每道题上的测试时算力（参考执行 + 2k 个候选真跑 + 合成版 + 在匿名答案里挑一个；去掉库仍有一半增益；编辑器 Opus 4.8 给弱执行器 GLM-5 / Gemini Flash 写 skills）与 test 流上的在线库，和我们"冻结的 W\* 在封存 final 上比 W0 多多少"不是一个口径；它唯一同口径的数（JobBench 建库、WorkBuddy 单步跑）是 +0.5～+2.9，落在我们量到的噪声带里。所以学的不是它的指标，是它机制里**与我们已有读数一致、且能稳定起效**的四处。用户 2026-10-20："不要光看别人不好的地方，要看好的，能够稳定提升效果的机制，学习进来。"
+
+| # | 学来的 | 它那边 | 我们这边的读数 | 改法 | 超参 |
+|---|---|---|---|---|---|
+| 1 | **候选在真题上真跑、对着参考执行比**，没有回放这一档 | Probe：每个候选在同一道题上执行，轨迹与交付物和参考执行并排 | v9 r0：V2b 的回放把 R 的 before_tool hold 逼成 after_tool 的事后提示（回放给的是 `smoke_view`，`events` 为空；各站点各自回放，before_tool 看不到 after_tool 喂的状态） | **V2b 回放保真**：`verify/replay.py` 从一条 train 轨迹重建**整条**事件流（六个站点按记录顺序交错，每个事件带该时刻之前的 broker 调用窗口 `view["events"]`，真跑同形，与 `turn`）；一道题在 worker 里重载包（模块状态清零）后，包里全部不调模型的 hook 按 manifest 顺序在每个事件上跑，先出手的 block / pushback 结束该事件的派发（与种子一致；调模型的父 hook 按记录的 `acted` 判）；只有候选在声明站点改过的 hook 出手才计触发。V2d 的审核预演与合并版的回放用同一台机器。回放仍是免费档，不是真跑；真跑是 V2t | — |
+| 2 | **证据的顺序：分歧 > 重复失败 > 未兑现的风险**；每处改动追溯到轨迹里的一个时刻；修最早的分歧；每个失败配最便宜的有效组件；常驻文字最贵，优先按需组件 | 编辑器提示词：优先 "runs disagreed and the agent can already do the thing"，再 "a repeated concrete failure"，再 "a visible but unrealised risk"；没有轨迹时刻的改动是 speculation | v7 量到同一个包两次跑 10～17% 的题翻转：研究部分里 W 自己有过有败的题很多，它们正是"agent 已经会做、harness 只需让它稳定"的题；R 至今只看失败轨迹 | `failures.json` 每条并排加 `w_readings`（W 这条线在该题的有效 train 读数：过几次、败几次）、`divergent`（有过有败）与 `passing_session`（W 通过的一次 session，R 可 `read_trajectory`）；排序改为分歧题在先、其次顽固题（`persistent`）、再其余；提示词加一段：先读分歧题的两条轨迹找最早分叉的时刻，改动落在最便宜的有效组件上，常驻 prompt 最贵，按需的 skill / hook 优先；没有轨迹时刻的改动不要交 | — |
+| 3 | **每轮两类候选**：通用（INV：procedure、tool use、completion）与领域（DOM：deliverable、audience、controlling sources、required structure） | 消融里最大的一项：去掉 scoping，WorkBuddy −2.9、JobBench −3.7 | 一轮几个包（§6.1 v1.3）已允许，但 v9 配的是一轮 1 个包，提示词只要求"不同机制对不同簇" | 声明加可选 `scope`（`invariant` \| `domain`）；`packages_per_round` ≥ 2 时提示词要求第一个包是通用的（agent 怎么做事：抽要求、核对、完成协议、工具使用）、第二个是领域的（从业者知道什么：交付物的形状、谁收、以哪份文档为准、记录自己的词），各自筛选、各自叠装（§9.4 不变）；台账的 `declared` / `screened` 行记 `scope`，记分板按 scope 另列 | `scoped_packages`（true，fixed） |
+| 4 | **按组件裁决**：每个改动的组件一行 helped / hurt / no observed effect / confounded；一次至多一条可迁移的教训，cue 是情境的形状，教训点名组件；没有具体对比就 NO_ENTRY | 库级反思的提示词；"Lessons are retained only when supported by execution contrasts" | v9 r0：hook 在留出 11 道题出手，出手的地方什么都没变——这正是 no_effect，台账里只有 `acted` 的计数，剧本读不出 | 筛选后对包的每个组件算裁决：`hurt`（它出手的题里有可复现退步）、`helped`（出手的题里有可复现修复）、`no_effect`（出手了、出手的题零翻转）、`unobserved`（留出上没出手）；包级另记 `confounded`（无足迹的翻转数）。进 `screened` 行（`verdicts`，只有计数）与 R 的台账投影；剧本提示词要求每条教训点名组件与裁决，`no_effect` 的组件不得写成起效 | — |
+
+**不学的，与为什么。** (a) 逐题的任务级递归（每道题 4 次以上执行 + 编辑会话，交付合成版的答案）：那是测试时算力，我们的对外数字是冻结 W\* 的 final，尝试成本还降了 18～22%；若以后要一个更大的数，另立一臂并与算力对齐的 best-of-4 对照。(b) 在匿名答案里挑一个（selector）：同上。(c) test 流上的在线库：我们的流式学习另有阶段（§6.13），且只在 train 段。(d) 编辑器强于执行器：我们的 actor 与 R 同一模型、同一 effort（PLAN 规则 9、10）；R 的 effort 是否单独提高，列为待用户决定，不在本阶段改。
+
+**怎么判断它有没有用（下一次活动）：** V2b 对 before_tool hold 的触发计数（r0 是 1/6，应与 V2t 真跑的出手一致）；`failures.json` 里分歧题的数量与 R 的包有多少 `predicted_affected` 落在分歧题上；两个 scope 的包各自的试跑修复与留出净值；`verdicts` 里 `no_effect` 的组件数与下一轮 R 是否还交同类组件。
 
 ## 7 训练在同一回路
 
