@@ -86,3 +86,7 @@ trial_max_tasks = 3         # the host's trial after finish, per package; R's ow
 scope_id = "finance-v13"
 seed_from = "workspace-finance-v9"
 seed_line = "working"
+# frozen 2026-10-21 on stage 4n's code: the seed is finance-v9's working line (finance-v8's package e38c14942fbf, with
+# v9's estimates and playbook); the finance two-way split, as finance-v5's
+core_ref = "core:sha256:f77fe3ab45d03c97f3930361350b31822ee3ebeac9a2dd9710f888eb13341101"
+split_ref = "3b959d143f9d8468"
