@@ -437,6 +437,39 @@ def test_the_streams_first_encounters_are_imported_and_the_next_stream_pays_none
     assert any(line.startswith("baseline   imported 6 W0 attempts") and "'stream': 6" in line for line in lines)
     # run again: nothing copied twice
     assert phases.import_baseline(second.a, first.a.root, out=quiet)["attempts"] == 0
+    # v1.10 (finance-v10, 2026-10-21): a third workspace imports from the second, whose readings are themselves
+    # imported — the events carry `imported_from` already and the chain's last link is recorded; an import cut
+    # short after the rows (the first one crashed on exactly this) is completed by the next run
+    from ouroloop.runtime.records import session_file
+    target = tmp_path / "third" / "ws" / "bench" / rsi.DOMAIN / "splits.json"
+    target.parent.mkdir(parents=True)
+    shutil.copy(first.a.results.manifest_path(), target)
+    third = round_activity(tmp_path / "third", fake_upstream, "none", actor=provider, baseline=False,
+                           splits_table=rsi.NO_DEV_SPLITS, schedule={"stream_batch": 4},
+                           rsi={"scope_id": "rsi-test", "baseline_from": str(second.a.root)})
+    original = third.a.events.append
+
+    def cut(kind, **fields):
+        if kind == "stream_scored":
+            raise RuntimeError("cut short")
+        return original(kind, **fields)
+    third.a.events.append = cut
+    with pytest.raises(RuntimeError):
+        phases.import_baseline(third.a, second.a.root, out=quiet)
+    third.a.events.append = original
+    assert len(list(rows_of_role(third.a, "stream"))) == 6 and not list(third.a.events.read("stream_scored"))
+    got = phases.import_baseline(third.a, second.a.root, out=quiet)
+    assert (got["attempts"], got["events"], got["transcripts"]) == (0, 6, 6)
+    chained = list(third.a.events.read("stream_scored"))
+    assert len(chained) == 6 and all(e["imported_from"] == str(second.a.root) for e in chained)
+    for r in rows_of_role(third.a, "stream"):
+        assert session_file(third.a.root, r.evidence or r.attempt_id).exists()
+    (event,) = third.a.events.read("baseline_imported")
+    assert (event["attempts"], event["events"], event["transcripts"]) == (0, 6, 6)
+    again = phases.import_baseline(third.a, second.a.root, out=quiet)
+    assert (again["attempts"], again["events"], again["transcripts"]) == (0, 0, 0)
+    phases.stream(third.a, out=quiet)
+    assert provider.calls == paid                                      # the chain pays for no first encounter
 
 
 # ---------------------------------------------------------------------------- the session's edit reminders

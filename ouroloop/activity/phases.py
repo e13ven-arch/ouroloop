@@ -356,12 +356,22 @@ def import_baseline(activity, source_root: Path, *, out: Callable[[str], None] =
         sessions.append(row.evidence or row.attempt_id)
         roles[run.role] = roles.get(run.role, 0) + 1
     activity.results.copy_grading(src, copied)
-    # v1.9: the stream's own account of the copied first encounters (the scored-task guard, the report's batches)
-    wanted = set(copied)
+    # v1.9: the stream's own account of the copied first encounters (the scored-task guard, the report's batches).
+    # v1.10: a source whose readings were themselves imported carries `imported_from` already (finance-v10 from
+    # finance-v9 from finance-v8): the chain's last link is recorded, the event's own copy dropped; and an import
+    # cut short is completed on the next run — every reading of these runs now here gets its event and transcript
+    here = {r.attempt_id for r in activity.results.all()}
+    wanted = {row.attempt_id for row in src.all() if row.run in runs and row.attempt_id in here}
+    seen = {e.get("attempt") for e in activity.events.read("stream_scored")}
+    added = 0
     for e in Events(source_root).read("stream_scored"):
-        if e.get("attempt") in wanted:
-            activity.events.append("stream_scored", **{k: v for k, v in e.items() if k not in ("ts", "event")},
+        if e.get("attempt") in wanted and e.get("attempt") not in seen:
+            activity.events.append("stream_scored",
+                                   **{k: v for k, v in e.items() if k not in ("ts", "event", "imported_from")},
                                    imported_from=str(source_root))
+            added += 1
+    sessions = [row.evidence or row.attempt_id for row in src.all() if row.attempt_id in wanted]
+    transcripts = 0
     for session in sessions:
         try:
             source, target = session_file(source_root, session), session_file(activity.root, session)
@@ -370,12 +380,15 @@ def import_baseline(activity, source_root: Path, *, out: Callable[[str], None] =
         if source.is_file() and not target.exists():
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(source.read_bytes())
-    if copied:
+            transcripts += 1
+    if copied or added or transcripts:
         activity.events.append("baseline_imported", source=str(source_root), attempts=len(copied), identity=ours,
-                               runs=sorted(runs), roles=roles)
+                               runs=sorted(runs), roles=roles, events=added, transcripts=transcripts)
     out(f"baseline   imported {len(copied)} W0 attempts from {source_root} (AttemptIdentity {ours}"
-        + (f"; by role {roles}" if roles else "") + ")")
-    return {"imported": True, "attempts": len(copied), "identity": ours, "roles": roles}
+        + (f"; by role {roles}" if roles else "") + (f"; completed {added} events, {transcripts} transcripts"
+                                                     if not copied and (added or transcripts) else "") + ")")
+    return {"imported": True, "attempts": len(copied), "identity": ours, "roles": roles, "events": added,
+            "transcripts": transcripts}
 
 
 def _read_rows(activity, package_ref: str, *, split: str, candidate: str) -> list[TaskResult]:
