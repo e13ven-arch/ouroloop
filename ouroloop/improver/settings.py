@@ -48,7 +48,7 @@ class Settings:
     mechanizable: tuple = MECHANIZABLE
     priors: dict = field(default_factory=lambda: {k: list(v) for k, v in PRIORS.items()})
     require_code_component: bool = True          # a mechanizable cause and no tool or hook in the package: on the ledger
-    l5_per_round: int = 1                        # agent, config or vendor changes a round, at most
+    l5_per_round: int = 3                        # agent, config or vendor changes a round, at most (v1.12: 1 -> 3)
     stall_rounds: int = 3
     hook_aux_calls: int = 2                      # aux model calls an on_finish or after_turn hook may make per attempt
     toolcheck_min_pass: int = 2
@@ -59,10 +59,11 @@ class Settings:
     reach_min_score: float = 0.2
     holdout_share: float = 0.4                   # the train tasks R never sees; V3 screens there only
     accept_min_net_flips: int = 1                # held-out acceptance: confirmed fixes minus confirmed regressions, at least
-    accept_max_regressions: int = 0              # held-out passing tasks that fail now, confirmed, at most (v1.7: from 1)
+    accept_max_regressions: int = 3              # held-out passing tasks that fail now, confirmed, at most (v1.7: 1 -> 0;
+                                                 # v1.12: 0 -> 3 — the climb needs net-positive installs, DESIGN §6.22)
     accept_min_whole_fixes: int = 2              # v1.7: confirmed fixes a package whose footprint is every attempt needs
     confirm_readings: int = 2                    # v1.7: readings each side of a flipped task has before it counts
-    accept_floor_tolerance: int = 1              # held-out score at least the activity's best so far minus this
+    accept_floor_tolerance: int = 3              # held-out score at least the activity's best so far minus this (v1.12: 1 -> 3)
     removal_zero_credit_rounds: int = 3
     round_share: float = 0.15                    # a round's account, as a share of the root's dollars
     # v1.8 (DESIGN §6.18; IMPROVER §9.5): accumulation without regression

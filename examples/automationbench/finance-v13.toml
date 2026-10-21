@@ -1,0 +1,88 @@
+# finance-v13: stage 4n (docs/DESIGN.md v1.12 §6.22; docs/JOURNAL.md 2026-10-21) — the climb. The user, 2026-10-21:
+# "we do not need everything strict; Harness² says it reached 80-odd on the same kind of tasks, we want a similar
+# effect; this stage has to be wrapped up". So: finance only (the two-way split, 50 train / 50 test, as finance-v5),
+# the accept rule loosened to net-positive installs (confirmed regressions at most 3, the held-out floor 3 below the
+# best; the confirmation and the footprint rule stand, regressions go to the frontier for the next round's merge),
+# three loop changes a round, eight rounds with patience 3, two scoped packages a round with R's per-task probe;
+# then the working line is released by decision, the final plan sealed and the final run (50 test tasks x 3, W0
+# beside W*). The seed is finance-v9's working line (finance-v8's package, with the estimates and playbook); the
+# split is another one, so the baseline is paid (50 train attempts). Steps:
+#   1  `... bench --config examples/automationbench/finance-v13.toml --phase smoke --checks-only`                $0
+#   2  `... freeze --config ...`; add the printed [rsi] lines and commit                                         $0
+#   3  `... bench --config ... --phase cycle --until round-7` (baseline about $30, then eight rounds at about $45
+#      each: the session with its tries, up to two screens of 20 held-out tasks with confirmations)
+#   4  `... bench --config ... --phase release`; `... freeze` (the final plan); `... --phase evaluate`; `report`
+#      (about $160: the release's top-up reads and the final's 300 attempts)
+# About $600 in all, approved as one sum (PLAN rule 3) before step 3 starts.
+#
+# Money: a round's account is round_share (0.15, a cap) of the root's dollars; the root is written as $1000 so each
+# round has a $150 account; the root's figure is arithmetic, the approval is the sum above.
+
+[workspace]
+root = "workspace-finance-v13"
+
+[bench]
+domain = "finance"
+upstream_path = "~/workspace/AutomationBench"
+split_rule = "stratified"
+seed = 1
+concurrency = 8
+ratios = { train = 0.5, dev = 0.0, test = 0.5 }
+
+[model]
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "medium"
+max_tokens = 32000
+timeout = 600
+
+[research_model]
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "medium"
+max_tokens = 32000
+timeout = 900
+
+[pricing]
+input_per_1k = 0.004
+cache_read_per_1k = 0.0002
+cache_write_per_1k = 0.008
+output_per_1k = 0.02
+max_input_tokens = 400000
+max_output_tokens = 163840
+source = "notional, not a bill: claude-opus-5-5 API list price ($4/$20 per M, cache read $0.20, 1h cache write $8)"
+
+[harness]
+preset = "automationbench_v2"
+seed = "stirrup"
+
+[worker]
+network = "none"
+image_id = "sha256:e070208dbddc713a9993f6700ab15a0455d44d2f6885f47dafc2f4bfd4436f30"
+
+[memory]
+enabled = false
+
+[schedule]
+rounds = 8
+patience = 3
+stream_batch = 30
+stream_splits = ["train"]
+
+[budget]
+usd = 1000.0
+
+[final]
+repeats = 3
+
+[improver]
+packages_per_round = 2      # v1.10: candidates/package/ invariant, candidates/package-2/ domain (DESIGN §6.20)
+accept_max_regressions = 3  # v1.12 (DESIGN §6.22): net-positive installs, the regressions go to the frontier
+accept_floor_tolerance = 3
+l5_per_round = 3
+trial_max_tasks = 3         # the host's trial after finish, per package; R's own tries share trial_max_attempts (40)
+
+[rsi]
+scope_id = "finance-v13"
+seed_from = "workspace-finance-v9"
+seed_line = "working"

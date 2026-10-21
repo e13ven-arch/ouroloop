@@ -66,7 +66,10 @@ _preset["memory"].update({"min_score": 0.2, "min_other_tasks": 1, "stream_batch"
 # the held-out part (IMPROVER §3, v1.2) at the preset's share: K's order seed 0 ranks the notify_after_update family
 # first, so its two tasks are held out (HELD) and the other four studied (STUDY); the forgetful actor fails one task
 # on each side (notify_ticket studied, the notify pair held out), so V2a and V2b ask for one claimed task
-_preset["improver"].update({"toolcheck_min_pass": 1, "replay_min_triggers": 1})
+_preset["improver"].update({"toolcheck_min_pass": 1, "replay_min_triggers": 1,
+                            # the strict rule of v1.7 (DESIGN §6.17): the tests describe it; v1.12 loosened
+                            # the preset's ceilings (DESIGN §6.22), a config may still tighten them
+                            "accept_max_regressions": 0, "accept_floor_tolerance": 1, "l5_per_round": 1})
 # four rounds at most, two in a row without an acceptance end the cycle
 _preset["schedule"].update({"rounds": 4, "patience": 2})
 presets.PRESETS[TEST_PRESET] = _preset

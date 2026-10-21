@@ -29,17 +29,17 @@ class Settings:
     priors: dict = {"tool": (0.3, 0.3), "hook": (0.3, 0.3), "skill": (0.08, 0.1), "prompt": (0.08, 0.1),
                     "agent": (0.1, 0.3), "config": (0.1, 0.2), "vendor": (0.05, 0.3), "model": (0.0, 0.5)}
     require_code_component: bool = True          # 有可机械化簇时包里至少一个 tool/hook，否则台账 no_code_candidate
-    l5_per_round: int = 1                        # 一轮至多一处 agent/config/vendor 改动
+    l5_per_round: int = 3                        # 一轮至多几处 agent/config/vendor 改动（v1.12：1 → 3）
     stall_rounds: int = 3
     hook_aux_calls: int = 2                      # on_finish / after_turn 的 hook 每次尝试最多调 aux 模型的次数
     toolcheck_min_pass: int = 2; replay_min_triggers: int = 1; reach_min_tasks: int = 2; reach_min_score: float = 0.2   # v1.11：replay_min_triggers 2 → 1
     replay_max_false_trigger: float = 0.25       # v1.7：V2b 回放里 hook 在通过题样本上的触发率上限（cap；DESIGN §6.17）
     holdout_share: float = 0.4                   # 留出的 train 题：R 看不到；V3 在全部留出题上筛
     accept_min_net_flips: int = 1                # 留出筛选的接受：可复现修复 − 可复现退步 ≥ 此（v1.7：改在可复现的计数上）
-    accept_max_regressions: int = 0              # 留出里可复现的退步 ≤ 此（v1.7 从 1 降到 0）
+    accept_max_regressions: int = 3              # 留出里可复现的退步 ≤ 此（v1.7 从 1 降到 0；v1.12 放到 3，DESIGN §6.22）
     accept_min_whole_fixes: int = 2              # v1.7：足迹是全部题的包（只改 prompt / config / agent / vendor）要这么多可复现修复（floor）
     confirm_readings: int = 2                    # v1.7：确认时候选与 W 各要有的读数（候选 1 + 1；W 不足的补读；cap）
-    accept_floor_tolerance: int = 1              # 留出通过数不低于活动内历史最好减此数
+    accept_floor_tolerance: int = 3              # 留出通过数不低于活动内历史最好减此数（v1.12：1 → 3）
     removal_zero_credit_rounds: int = 3
     round_share: float = 0.15                    # 一轮的账户占根的比例上限
     regression_evidence: str = "research"        # v1.8：退步证据回灌 R 的档：counts | abstract | research（§9.5）

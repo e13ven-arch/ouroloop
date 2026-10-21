@@ -117,7 +117,7 @@
 
 | # | 事项 | 建议 |
 |---|---|---|
-| 1 | 2026-10-21：finance-v12 r0 跑完（$83.18）。下一步 r1：R 对着前沿 f1 的退步证据合并条件化的技能，试跑过门槛再筛（约 $35 + $45，r1 的 $150 账户）| 建议跑 r1，照样分阶段、逐题看对比。此前 4l 的记录：$0 读数（JOURNAL 2026-10-20 4l 一条的补记）：R 放弃的 before_tool hold 在新回放下 3/6 出手、误触发 0.167，本来能过 V2b。下一步：finance-v10（新工作区，导入 v9 / v8 的读数 $0；v9 的 K 在 HEAD 上打不开，sections 多了 `scoped_packages`）跑一轮约 $50（批的 $150 里剩 $101.79），还是直接做 4k | 建议：开 finance-v10 跑 r0，`packages_per_round = 2`（两种 scope 才生效），其余同 v9；4k 在它之后定 |
+| 1 | 2026-10-21 用户："不需要一切都卡得非常严格……做到类似 Harness² 的效果就好，这一阶段尽快收尾"→ 阶段 4n（DESIGN v1.12 §6.22）：接受规则放松（退步 ≤ 3、容差 3）、循环改动 3、只跑 finance、8 轮爬坡、release、final。finance-v13 待批准：基线 50 道约 $30 + 8 轮约 $400（每轮两包：会话与 try 约 $15、筛选 20 道留出 × 2 约 $30）+ release 补读约 $10 + final 50 × 3 × 2 臂约 $150 ≈ $600 | 建议批准 $600 一次跑到底，每轮读数照样实时推送（JOURNAL 2026-10-20 4l 一条的补记）：R 放弃的 before_tool hold 在新回放下 3/6 出手、误触发 0.167，本来能过 V2b。下一步：finance-v10（新工作区，导入 v9 / v8 的读数 $0；v9 的 K 在 HEAD 上打不开，sections 多了 `scoped_packages`）跑一轮约 $50（批的 $150 里剩 $101.79），还是直接做 4k | 建议：开 finance-v10 跑 r0，`packages_per_round = 2`（两种 scope 才生效），其余同 v9；4k 在它之后定 |
 | 4 | R 的 effort 是否单独提到 high（Harness² 的大增益来自编辑器强于执行器；我们 actor 与 R 同一模型同一 effort，规则 9、10 只钉 actor 各臂）| 不在 4l 改；r1 仍 medium，先看 4l 自己的读数 |
 | 2 | finance-v8 不跑 release / final（W\* = W0，没有可测的东西）；工作区留着不动 | 是 |
 | 3 | README 主数的口径：final 两臂的绝对通过率与部分得分（公开集 test 份 50 题、medium effort、3 遍），配对差与区间作第二个数 | 是 |

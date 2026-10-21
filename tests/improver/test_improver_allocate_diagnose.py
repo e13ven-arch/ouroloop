@@ -476,7 +476,7 @@ def test_l5_is_suggested_for_the_loop_causes_only(tmp_path):
     assert not focused(tmp_path, [cause("missed_action", 3), cause("real_date", 2)]).l5_suggested
     f = focused(tmp_path, [cause("missed_action", 3), cause("context_overflow", 1)])
     assert f.l5_suggested and kinds_of(f)["context_overflow"] == ["hook", "agent", "vendor", "config", "skill", "prompt"]
-    assert [n for n in f.notes if "at most 1 such change a round" in n]
+    assert [n for n in f.notes if "at most 3 such change a round" in n]       # v1.12: l5_per_round 3
     assert not focused(tmp_path, [cause("context_overflow", 1)], allowed=("tool", "skill")).l5_suggested
     assert set(LOOP_CAUSES) == {"context_overflow", "finish_protocol", "tool_error_loop"}
 

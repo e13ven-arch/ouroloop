@@ -494,7 +494,9 @@ def run_screen(world, name, files, package, *, holdout=NOTIFY, account=None, con
     return sc.screen(world.a, run_arm=phases.run_arm, name=f"r9:{name}", package=package,
                      base_release=world.base_release, holdout=list(holdout), reading=world.reading,
                      evidence=world.evidence, conditions=conditions, account=account or world.a.account("screen-tests"),
-                     retries=0, best_so_far=best_so_far, settings=settings or Settings())
+                     retries=0, best_so_far=best_so_far,
+                     # the strict rule of v1.7 these tests describe (v1.12 loosened the preset's ceilings)
+                     settings=settings or Settings(accept_max_regressions=0, accept_floor_tolerance=1))
 
 
 def screen_rows(world, name) -> dict:
@@ -657,7 +659,9 @@ def result(name, *, fixed=1, regressed=0, net=None, cost=0.01, outcome="screened
 def test_the_accept_rule_has_four_clauses():
     """v1.7 (DESIGN §6.17): the counts are the confirmed ones, no confirmed regression is tolerated, and a package whose
     footprint is every attempt needs accept_min_whole_fixes confirmed fixes."""
-    s = Settings()
+    loose = Settings()                      # v1.12 (DESIGN §6.22): the preset's ceilings allow net-positive installs
+    assert (loose.accept_max_regressions, loose.accept_floor_tolerance, loose.l5_per_round) == (3, 3, 3)
+    s = Settings(accept_max_regressions=0, accept_floor_tolerance=1)     # the strict rule of v1.7
     assert (s.accept_min_net_flips, s.accept_max_regressions, s.accept_floor_tolerance, s.accept_min_whole_fixes,
             s.confirm_readings) == (1, 0, 1, 2, 2)
     ok = dict(net_flips=1, regressed=0, holdout_score=5, best_so_far=5, settings=s)
@@ -690,7 +694,8 @@ def test_with_one_reading_a_side_nothing_is_confirmed_and_the_first_reading_stan
     count — the rule before v1.7, read from the same recorded screen."""
     tool = screens["tool"]
     before = len(list(world.a.results.all()))
-    res = run_screen(world, "tool", tool.files, tool.package, settings=Settings(confirm_readings=1))
+    res = run_screen(world, "tool", tool.files, tool.package,
+                     settings=Settings(confirm_readings=1, accept_max_regressions=0, accept_floor_tolerance=1))
     assert res.fixed == NOTIFY and res.flipped_fixed == NOTIFY and res.confirm_attempts == 0 and res.accepted
     assert len(list(world.a.results.all())) == before
 
