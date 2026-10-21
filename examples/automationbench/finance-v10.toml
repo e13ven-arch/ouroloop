@@ -90,7 +90,7 @@ scope_id = "finance-v10"
 seed_from = "workspace-finance-v9"
 seed_line = "working"
 baseline_from = "workspace-finance-v9"
-# frozen 2026-10-21 on stage 4l's code (e966050): the seed is finance-v9's working line (nothing was installed
-# there: finance-v8's working package e38c14942fbf, with v9's estimates and playbook); the split is unchanged
-core_ref = "core:sha256:d474bf86c587574ead2b61bc419da31e9e879f8853de5d0ca4574f00e640f51a"
+# frozen 2026-10-21 on stage 4l's code with the import fix: the seed is finance-v9's working line (nothing was
+# installed there: finance-v8's working package e38c14942fbf, with v9's estimates and playbook); the split is unchanged
+core_ref = "core:sha256:b30ec9ce6d62301170ed01c88871fab9d8e591e12bc8a0fc0feef11320ece344"
 split_ref = "1bbf01533d7256af"
