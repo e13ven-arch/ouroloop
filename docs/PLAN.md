@@ -19,6 +19,7 @@
 | v0.5 | support 两臂对照 | — | — | 没有 final：2026-10-08 用户叫停 | 只有 train/dev 过程证据（经验库流 D = 3.0，快照过 dev gate +0.16） | JOURNAL 2026-10-08 |
 | finance-v8 | 4h + 4i 的 K，三域 train 150 道流式 | 首遇 87/150 | — | 没有 final：5 轮零装入（W\* = W0）；一个部分包进前沿，合并版丢了修复 | $261；JOURNAL 2026-10-13 finance-v8 一条 |
 | 人工包（A） | 对 63 道错题逐题读出 8 类机制、人工写成 W 包，在 v8 工作区试跑与留出筛选 | 55 道原失败题单次 22 过 | — | 留出 +5 −3 两次（v2、v3）被拒，未装入；没有 final | $121；JOURNAL 2026-10-19 一条 |
+| finance-v12 | 4m 的 K（逐题 probe），批式 r0，两个 scope 的包 | 首遇 87/150（导入） | — | 没有 final：hold 包三次 try 从未出手不筛；`held_item_routing` 技能样本内 4 道有足迹翻转，留出可复现修复 1、退步 2（32 对 34）被拒进前沿 f1 | $83.18；JOURNAL 2026-10-21 finance-v12 一条 |
 | finance-v9 | 4j 的 K，批式 r0 over finance-v8 导入的 150 道首遇（每轮 1 个包） | 首遇 87/150（导入） | — | 没有 final：r0 的 hook 包过试跑（3 道试 1 道修）进筛选，留出 60 道确认后修 0 退 0（33 对 34）被拒；7 个首读翻转 6 个无足迹、1 个噪声 | $48.21；JOURNAL 2026-10-19 finance-v9 一条 |
 | 阶段 4 | finance-v2、v4（正向设计后的 RSI 实测） | dev 9.5/25 | — | 没有 final：三次 gate 都拒绝（0、0、−0.02） | 过程证据：候选过免费阶梯、留出筛选 ±1、成本 −18% 显著 | JOURNAL 2026-10-10～11；tag `finance-v2`、`finance-v4` |
 
@@ -55,7 +56,7 @@
 | 测试 | 阶段 4l 合入后（`m1-automationbench`，2026-10-20）Docker 全量 1,629 passed、1 deselected；阶段 4l 后（`s11-contrast`）默认 1,543 passed、87 deselected（新增 8 个）；阶段 4j 合入后（`m1-automationbench`，2026-10-19）Docker 全量 1,619 passed、1 failed——一个断言写错，改断言（`c96249f`）后该文件与 test_improver_trial 共 67 passed；阶段 4j 后（`s10-insample`，2026-10-13）默认 1,514 passed、20 skipped、87 deselected（新增 30 个；Docker 全量未跑：worktree 没有 venv 与镜像，合入前再跑）；阶段 4i 合入后（`m1-automationbench`，2026-10-13）Docker 全量 1,590 passed、1 deselected；阶段 4i 后（`s9/frontier`，2026-10-13）默认 1,504 passed、87 deselected（live / slow / Docker / memory 的未跑；4h 后 4 个既有测试因新字段、研究抽样计价与第三道 test 题改了断言）；阶段 4h 后（`m1-automationbench`，2026-10-13）全量 1,562 passed、1 deselected；finance-v7 冻结后全量 1,557 passed、1 deselected；规则放宽后（`m1-automationbench`）全量 1,533 passed、1 deselected；阶段 4d 后（`s6/yield`）默认 1,441 passed、20 skipped；合并 `m1-automationbench` 后的 `s6/yield` 全量 1,530 passed、20 skipped、1 deselected。两个既有的负载相关中断测试在整套里不稳定、单跑通过。memory 的 venv 在本机 `~/.cache/ouroloop/memory-venv/19f9b139c36d1d05` |
 | test 读过几次 | finance 2（v1 的 final、v5 的 final）、support 0、sales 0、hr 0、marketing 3；operations 从未读过 |
 | 本机记录 | `examples/automationbench/workspace-*/`、`examples/workspace-*/`、`ws/`、`*.local.toml`，git 忽略，不删不改 |
-| 下一步 | 阶段 4m（2026-10-21，JOURNAL 同日一条）：`try_task` 逐题 probe；finance-v11 r0 阶段 A（$3.39）R 交了 hold 但在回放诊断上耗尽编辑、交了空列表 → 第二批修订（try 计入 V2b、`replay_min_triggers` 1、会话上限 60/80、没交的目录存档带进下一轮、回放传 modify）。finance-v12 从 v9 导入，分阶段跑 r0。此前：finance-v10 阶段 A 停（$12.96）。finance-v9 r1（约 $50，$150 里剩 $101.79；新 K 要把 `packages_per_round` 设成 2 才有两种 scope），或 4k（证据仓库 + hold 合成器进种子） |
+| 下一步 | finance-v12 r0 跑完（$83.18，JOURNAL 2026-10-21 finance-v12 一条）：`held_item_routing` 被拒进前沿 f1（修复 1、退步 2，两条退步证据去题化）。待用户定：同一 K 上跑 r1（约 $35 + 若筛 $45），R 合并 f1 的条件化版本。此前：阶段 4m 第二刀、v11 阶段 A（$3.39）、v10 阶段 A（$12.96）。finance-v10 阶段 A 停（$12.96）。finance-v9 r1（约 $50，$150 里剩 $101.79；新 K 要把 `packages_per_round` 设成 2 才有两种 scope），或 4k（证据仓库 + hold 合成器进种子） |
 
 ## 1 规则
 
@@ -116,7 +117,7 @@
 
 | # | 事项 | 建议 |
 |---|---|---|
-| 1 | 2026-10-21：finance-v11 r0 阶段 A（约 $15：诊断、会话、R 的 try）在用户同一轮批准下跑；筛选（每包约 $40）付之前先报读数。此前 4l 的记录：$0 读数（JOURNAL 2026-10-20 4l 一条的补记）：R 放弃的 before_tool hold 在新回放下 3/6 出手、误触发 0.167，本来能过 V2b。下一步：finance-v10（新工作区，导入 v9 / v8 的读数 $0；v9 的 K 在 HEAD 上打不开，sections 多了 `scoped_packages`）跑一轮约 $50（批的 $150 里剩 $101.79），还是直接做 4k | 建议：开 finance-v10 跑 r0，`packages_per_round = 2`（两种 scope 才生效），其余同 v9；4k 在它之后定 |
+| 1 | 2026-10-21：finance-v12 r0 跑完（$83.18）。下一步 r1：R 对着前沿 f1 的退步证据合并条件化的技能，试跑过门槛再筛（约 $35 + $45，r1 的 $150 账户）| 建议跑 r1，照样分阶段、逐题看对比。此前 4l 的记录：$0 读数（JOURNAL 2026-10-20 4l 一条的补记）：R 放弃的 before_tool hold 在新回放下 3/6 出手、误触发 0.167，本来能过 V2b。下一步：finance-v10（新工作区，导入 v9 / v8 的读数 $0；v9 的 K 在 HEAD 上打不开，sections 多了 `scoped_packages`）跑一轮约 $50（批的 $150 里剩 $101.79），还是直接做 4k | 建议：开 finance-v10 跑 r0，`packages_per_round = 2`（两种 scope 才生效），其余同 v9；4k 在它之后定 |
 | 4 | R 的 effort 是否单独提到 high（Harness² 的大增益来自编辑器强于执行器；我们 actor 与 R 同一模型同一 effort，规则 9、10 只钉 actor 各臂）| 不在 4l 改；r1 仍 medium，先看 4l 自己的读数 |
 | 2 | finance-v8 不跑 release / final（W\* = W0，没有可测的东西）；工作区留着不动 | 是 |
 | 3 | README 主数的口径：final 两臂的绝对通过率与部分得分（公开集 test 份 50 题、medium effort、3 遍），配对差与区间作第二个数 | 是 |

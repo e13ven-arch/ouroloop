@@ -8,6 +8,24 @@
 
 ---
 
+## 2026-10-21 finance-v12 r0（阶段 4m 第二刀的第一轮实跑，$83.18）：R 的 try 与宿主试跑在样本内 4 道有足迹翻转，留出筛选可复现修复 1、可复现退步 2 → `held_item_routing` 技能被拒进前沿（f1）；hold 包三次 try 从未出手、不筛
+
+**跑法。** finance-v12（`f0d2a85`，K `core:02b5c334e8ff`）：v11 的形状，150 道首遇从 v9 导入（$0），v11 r0 没交的 hold 与 R 的收尾说明用脚本搬成 `unfinished` 行（跨活动的搬运还没写成代码）。Docker 全量 1,633 passed 后分阶段跑：A（诊断、R 会话含 try、宿主试跑，$27.48），用户看过读数后 B（筛选，$55.70）。每条 `round` 行与留出上每道题的翻转都经监控实时推送，逐题读了并排对比。
+
+**阶段 A。** 诊断 37 道 10 类（excluded_mentioned 11、rule_not_applied 8、vocabulary_mismatch 5…）。R 先读了 `inputs/unfinished.json`，接着 v11 的 hold 改（manifest 与测试一字不差）。会话 27 回合、17 次编辑，4 次 try：
+- `package`（invariant，hold `excluded_write`）：zoom_deal_review 两次 PASS、capex_approval FAIL，**三次都没出手**。zoom 的三次读数 PASS / FAIL / PASS——W 那次失败就是噪声；capex 的错是 agent 把待审批的 CX-002 写成 Rejected，而它的 plan_changes 只排除了 CX-004：按"计划里的排除项"触发的 hold 够不到这类判断错误。R 最后只认领 zoom，宿主试跑三轮 0 修复 → `no_trial_fix`，不筛（省 $40）。
+- `package-2`（domain，技能 `held_item_routing`：文档把某项排除/搁置但点名了去处时，把去处作为单独一项执行，消息只发给文档点名的一方）：R 的 try candidate_offer_negotiation_tracking FAIL 0.67 → PASS；宿主试跑 bad_debt_writeoff FAIL 0.86 → PASS、job_board_monitoring FAIL 0.86 → PASS、financial_ratio_analysis 0.0 → 0.75。全部有足迹，失败形态一致（文档点名的通知没发）。V2c 触达另外 4 道 train 题。
+
+**阶段 B（只筛 package-2）。** 首轮 60 道：候选 32 对 W 34，技能在 27 道上被读到（份额 0.45）。翻转 8 道：有足迹修复候选 3（po_three_way_match、expense_report_audit、contractor_badge_expiration）、有足迹退步候选 3（jira_it_onboarding、zoom_orientation_sessions、tuition_reimbursement）、无足迹退步 2（prepaid_amortization、lease_payment_schedule，不计）。确认：修复只有 contractor_badge 复现（W 两次失败、候选两次通过）；po_three_way 与 expense_report 候选第二次失败（未复现）；退步 jira 与 zoom_orientation 复现（候选两败、W 两过），tuition 噪声（W 补读也失败）。研究抽样 6 道零退步。接受规则三条都不过（净 −1、退步 2、32 < 34 − 1）→ **拒绝**；退步置零后净 +1 → 部分包进前沿 **f1**。
+
+**两道可复现退步的形态（逐题读的）。** jira_it_onboarding：安全政策禁止为 AWS root access 建票，W 照办并在收尾说明；候选多建了第 5 张票、描述含 "root access"——技能第 1 条把"文档禁止的动作"当成了"要路由的被搁置项"。zoom_orientation_sessions：W 给 3 个新员工注册并发确认邮件，候选漏了 Mei-Ling Chow（在 jira 题里是 IT-VENDOR 身份）——技能把"身份不同的人"当成"要搁置另行处理的项"。同一个形态：技能对"被区别对待的项"比文档更激进。剧本自己写出了"下一版要把描述收窄到远少于 27 道"。
+
+**读到的。** (1) 逐题 probe 第一次给出了可观测的因果链：机制对准的失败形态 → try 里组件出手且题翻 → 留出上出手的地方有变化（4 道样本内、留出 1 修 2 退都有足迹），不再是 v9 那种"出手 11 道零变化"。(2) 一次 rollout 的通过确实是弱证据：留出 3 道修复候选只复现 1 道；hold 在 zoom 上的三次读数坐实了那道题是噪声。(3) 零退步规则 + 足迹 + 前沿的组合按设计运转：被拒的包带着修复与两条去题化的退步证据进了前沿，r1 的合并有明确的收窄目标。(4) 技能的 V2c 触达 4 道题预示了它在留出上出手 27 道——描述太宽；对比里的"文档明确禁止 / 只是身份不同"就是收窄条件。(5) 花费：试跑与 try 约 $12、筛选含确认与研究抽样约 $56。
+
+**下一步（待用户定）。** 同一个 K 上跑 r1（约 $35 + 若进筛选 $45，r1 自己的 $150 账户）：R 对着 f1 的退步证据合并出条件化的 `held_item_routing`（文档明确禁止的动作不路由、只是身份不同的人不搁置），试跑过门槛再筛；hold 这条线由 R 自己决定要不要续。
+
+---
+
 ## 2026-10-21 finance-v10 r0 阶段 A 停在半途（$12.96）；阶段 4m 落地：逐题 probe——R 的 `try_task` 当场跑一道题、宿主给并排对比（DESIGN v1.11 §6.21）；$0
 
 **finance-v10（`efaca3e`）。** 4l 后 v9 的 K 在 HEAD 上打不开（improver 节多了 `scoped_packages`），开 v10：种子与 150 道首遇都从 v9 导入（$0；导入时发现 `import_baseline` 对链式导入崩溃——v9 的 `stream_scored` 事件已带 `imported_from`，再传一次就重复关键字；修成记链上最后一环、半途中断的导入下次补齐事件与轨迹，假上游加测试；v10 重冻结 K `core:b30ec9ce6d62`），`packages_per_round = 2`、`trial_max_tasks = 3`。用户要求每一步付费前先看读数、每次执行都可观测，r0 拆成阶段 A（诊断、R 会话、试跑）与 B（筛选）分开跑（`analysis/round0_stepwise.py`）。阶段 A 跑到 23 分钟：诊断 37 道 11 类（和 v9 几乎一样）；R 交了两个包——`package`：on_finish 的调模型审核（只列"文档要求但没有对应写入"的项），认领 12 道；`package-2`：技能 `record-vocabulary`（沿用记录的原词）。两个都没写 `scope`（提示词的 scope 段要求了，finish 的字段清单没列，R 按清单写）。用户："跑到现在你没有什么要修改的地方吗？这不就是逐题目 debug 吗？""既然已经知道如何改了，就不用等跑完再改，持续 debug 然后修复。"阶段 A 在免费阶梯里停掉（kill），$12.96，筛选没付。
