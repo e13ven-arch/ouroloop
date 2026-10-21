@@ -15,9 +15,13 @@ let two packages change the same file (manifest.json aside) — a package that c
 installed. inputs/focus.json ranks the causes diagnosed on train attempts (inputs/causes.json: the cases, their trace
 references, what failed) and, for each, the kinds of component that have paid off before (score, how often tried, what
 was tried: inputs/ledger.json, inputs/scoreboard.json, inputs/playbook.md). It is advice, not an order: you choose what
-the packages hold. When focus.json says audit_suggested, make one package an on_finish or after_turn hook with
-uses_model: true that reads the request and what the agent did and pushes back or corrects before the finish — the
-causes it names there are the ones only text carriers reached so far, and one audit covers them together.
+the packages hold. A hook that calls the model to audit the work before the finish (uses_model: true) is one
+option for the causes focus.json marks audit_suggested, not the default: three of them were tried on this line and
+each broke tasks the agent had right, and inputs/audits.json shows what they said. The carrier that has fixed a
+document's requirement or an excluded item most reliably is a hold: a before_tool hook that, once, before the write
+that would go wrong, blocks it with the evidence this run has — the rule read from the document, the excluded item
+the plan named, the row's note — and lets the same call through when the agent sends it again; the host replays it
+on the recorded attempts with the view's events as they stood, so it can be checked for free.
 {scopes}
 What has moved these tasks: code that does a step for the agent (a tool) or checks a step it took (a hook), far more
 than text that asks the model to try harder. A tool is only useful if the agent calls it: give it a name and a
@@ -51,17 +55,27 @@ grows: in prompt/*.md and in a skill the package already has you may add lines, 
 package that must rewrite existing text holds that one prompt or skill component alone, declared "rewrite": true; it
 is screened on its own and accepted only with {accept_min_whole_fixes} confirmed fixes.
 {merge}
-After you finish, the host tries each package that passed its free rungs on the studied failing tasks it claims
-(predicted_affected; a prompt or skill: the tasks of its causes), at most {trial_max_tasks} of them, and hands you
-every task's outcome — the checks that failed, which of your components acted, the session to read_trajectory. A
-package that fixed fewer than {trial_min_fixes} of them in that trial is not screened on the held-out tasks: read
-the sessions, change the files so the mechanism acts and fixes them, and call finish again with the same
-declaration (at most {trial_max_rounds} revisions). Build so the trial passes: a mechanism that does not fix the
-failures you studied will not fix the ones you have not seen. Every hook you write must be registered in
-manifest.json under hooks with its site, or it never runs (run_check notes functions shaped like a hook entry that
-no hook names). A merge of a frontier entry is replayed on the attempts the entry fixed before it is screened: it
-must still act there (inputs/frontier.json's fixes_evidence shows what the entry's components said when they
-fixed a task), and narrow only the regression shapes.
+How to work (the probe, DESIGN §6.21): one studied failure at a time, from inputs/failures.json. read_trajectory the
+working line's run of it and find the earliest moment where what the agent did parts from what the request or a
+document it read required — a write it made too early, a requirement it read and never carried out, an excluded
+item it still wrote. Build the smallest mechanism that makes that moment go right, for the cause (this task is its
+first case), then call try_task on that task: the package runs once on it, for real, and the answer puts the run
+beside the working line's reading — the checks that failed before and after, the hooks that acted and what they
+said, the writes by route, the final text, which of your components acted. Read it as evidence of two kinds. What
+is certain: whether your component acted, at which step, what it said, what the agent wrote before and after it —
+if it did not act, fix its trigger from what this run read; if it acted and the agent still did the wrong thing,
+change what it says or does. What is one rollout: pass or fail — the same task flips between two runs of one
+package one time in six, so a pass here is not a fix and a fail is not a verdict; the held-out screen reads every
+flip twice. At most {try_per_task} tries on one task, {trial_max_attempts} trial attempts a round for everything;
+then the next failure, and the mechanism grows to cover it or a second mechanism goes in the second package. After
+you finish, the host tries each package that passed its free rungs on the studied failing tasks it claims
+(predicted_affected; a prompt or skill: the tasks of its causes), at most {trial_max_tasks} of them, reading your
+tries where they stand, and hands you every task's outcome; a package that fixed fewer than {trial_min_fixes} of
+them is not screened. Every hook you write must be registered in manifest.json under hooks with its site, or it
+never runs (run_check notes functions shaped like a hook entry that no hook names). A merge of a frontier entry is
+replayed on the attempts the entry fixed before it is screened: it must still act there (inputs/frontier.json's
+fixes_evidence shows what the entry's components said when they fixed a task), and narrow only the regression
+shapes.
 
 What the persistent failures look like (inputs/failures.json puts each one side by side: the request, the checks that
 failed with the values they expected, every write the agent made, what it said at the end; persistent ones first — they
@@ -97,7 +111,8 @@ required for a tool or a hook), "trigger" (when it acts), for a tool "probes" ({
 "scripts" ({task_id: Python defining check(ctx, tools) that calls tools["<your tool>"]({...})}), for a hook that
 calls the model "uses_model": true, for a prompt or skill that rewrites existing text "rewrite": true}], "differs_from"
 (earlier candidates of the archive it is not a repeat of, [{"ref", "how"}]), "merge_of" (the frontier entry this
-package is the conditioned version of, when focus.json's merge names one)}. Each declaration must name every component
+package is the conditioned version of, when focus.json's merge names one), "scope" ("invariant" or "domain", when the
+round has two scopes)}. Each declaration must name every component
 its package changes and nothing it does not; list in cause_ids every cause a component works on. When nothing you can
 build would help, finish with an empty list: the ledger records that the round has no candidate of yours.
 

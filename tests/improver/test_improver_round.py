@@ -827,13 +827,14 @@ def test_the_system_prompt_asks_for_the_two_scopes_only_with_two_packages_or_mor
     r = Round(tool.a, 0, run_arm=None, out=quiet)
     r.s = dataclasses.replace(r.s, packages_per_round=1)
     one = r.system_prompt()
-    assert "two scopes" not in one and "{scopes}" not in one and "The order of evidence" in one
+    assert "The packages have two scopes" not in one and "{scopes}" not in one and "The order of evidence" in one
     assert "divergent" in one and "cheapest" in one
     r.s = dataclasses.replace(r.s, packages_per_round=2)
     two = r.system_prompt()
-    assert "two scopes" in two and "candidates/package/ is invariant" in two and "candidates/package-2/ is domain" in two
+    assert "The packages have two scopes" in two and "candidates/package/ is invariant" in two \
+        and "candidates/package-2/ is domain" in two
     r.s = dataclasses.replace(r.s, packages_per_round=2, scoped_packages=False)
-    assert "two scopes" not in r.system_prompt()
+    assert "The packages have two scopes" not in r.system_prompt()
 
 
 def test_a_digest_shrinks_its_writes_to_the_cap_and_keeps_the_checks():

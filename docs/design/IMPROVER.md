@@ -52,7 +52,8 @@ class Settings:
     heuristic_terms_min: int = 3                 # v1.8：触发条件里的字面词表到这么多词就记软信号（floor）
     trial_max_tasks: int = 4                     # v1.9：样本内试跑每包每次至多几道研究失败题（cap；0 关掉试跑，§9.6）
     trial_max_rounds: int = 2                    # v1.9：试跑之后 R 最多修订几次再试（cap）
-    trial_max_attempts: int = 12                 # v1.9：一轮全部试跑尝试的上限（cap）
+    trial_max_attempts: int = 40                 # v1.9：一轮全部试跑尝试的上限（cap）；v1.11 从 12 提到 40（R 的 try 也计入）
+    try_per_task: int = 2                        # v1.11：R 对同一道研究题最多 try 几次（cap；一次 rollout 是弱证据，DESIGN §6.21）
     trial_min_fixes: int = 1                     # v1.9：进留出筛选要的样本内修复数（free；0 只反馈不设门）
     regression_by_footprint: bool = True         # v1.9：只含 tool / hook / skill 的包，退步只在组件出手的题上算（fixed）
     merge_min_acts: int = 1                      # v1.9：合并版回放时须在条目修复题的尝试上出手的题数（floor）
@@ -176,7 +177,7 @@ class Focus(Record):
 def focus(causes, estimates, archive, *, settings, line, kinds_allowed, train_available=False) -> Focus
 ```
 
-1. 簇按题数从大到小；每簇列可用的 kind（可机械化 → tool、hook、skill、prompt；否则 skill、prompt；`LOOP_CAUSES` 再加 agent、config、vendor），按分数 `mean + unc` 排序，附该 (cause, kind) 在档案里试过的候选与结果。
+1. 簇按题数从大到小；每簇列可用的 kind（可机械化 → tool、hook、skill、prompt；否则 hook、skill、prompt（v1.11：hold 对文档要求类失败也是载体）；`LOOP_CAUSES` 再加 agent、config、vendor），按分数 `mean + unc` 排序，附该 (cause, kind) 在档案里试过的候选与结果。
 2. 清单是建议：R 自己决定包里放什么，可以对多个簇、一个簇多个载体。名额、探索、代码保证的翻倍都删除。
 3. 硬要求在 V0 的声明检查里：`require_code` 而声明的组件里没有 tool / hook → 台账 `no_code_candidate`，候选照常验收；`l5_per_round` 之外的 agent / config / vendor 改动 → V0 拒绝。
 4. L6：`l6_suggested` 时清单里写明"训练链可用"；阶段 5 之前恒为假，台账记 `l6_unavailable`。
@@ -198,7 +199,7 @@ class CodingSession:
     def revise(self, verdict_text: str) -> SessionResult          # 验收退回的修订，续写同一会话，一次
 @dataclass
 class SessionResult: packages: list[tuple[str, dict[str, str], Declaration]]; turns: int; edits: int; ended: str
-TOOLS = ("list_files", "read_file", "write_file", "edit_file", "delete_file", "read_trajectory", "search_trace", "run_tests", "run_check", "finish")
+TOOLS = ("list_files", "read_file", "write_file", "edit_file", "delete_file", "read_trajectory", "search_trace", "run_tests", "run_check", "try_task", "finish")
 ```
 
 - 输入 `inputs/`（v1.8 另加 `regressions.json`：上一轮可复现退步的证据，按 `regression_evidence` 的档；`frontier.json`：前沿条目的 diff、修复与退步计数、退步证据、尝试次数；§9.5）：`focus.json`（§6 的清单）、`causes.json`（研究部分全部簇与案例、证据 ref）、`successes.json`、`histogram.json`（dev 失败类型，只有枚举与计数）、`ledger.json`（投影，留出题号换成计数）、`scoreboard.json`、`playbook.md`、`package_api.md`、`base_tools.json`；v1.5 加 `failures.json`（DESIGN §6.15：研究部分每个失败案例的并排——请求、失败断言的类型与参数、写入、最后的话、cause、`persistent`，按 cause 分组，最多 `failures_max_cases` 条、每条 `failures_case_chars` 字；留出题不进）。
@@ -209,6 +210,7 @@ TOOLS = ("list_files", "read_file", "write_file", "edit_file", "delete_file", "r
 - v1.3：`packages_per_round` > 1 时提示词要求交几个包就是几种不同的机制、对不同的簇，第一个包对最大的簇；`audit_suggested` 时明说第二个包应当是审核 hook；每个组件的 `cause_ids` 尽量列出它覆盖的所有簇；叠装规则告诉 R：不同的包不要改同一个文件（manifest 除外）。
 - v1.6（DESIGN §6.16）：审核 hook 用 `{"missing": [...]}` 答（§8 的 V2d 预演它；自由文本是候选缺陷）；提示词说明"只补缺、不改已写"是构造出来的，审核要做的是把读过的文档里的每条要求与 agent 的写入对照、列出没有对应写入的；`inputs/audits.json`（这条线上试过的审核：机制、预演与筛选的数、研究部分的误报原文）是下一个审核的起点。清单有几个簇就交几个包，少交要在 finish 里说明（台账 `single_package`）。
 - v1.9（DESIGN §6.19）：**试跑的反馈**——会话 finish 之后，每个过了免费阶梯的包先在研究失败题上试跑（§9.6），宿主把每道题的结果作为一条 user 消息交回会话（`revise`）：题号、通过与否、出手的组件、失败断言的类别与参数（train 的评分行，R 本来看得到）、候选下的 session（加进 `readable`，R 用 `read_trajectory` 读），剩几次修订、剩几次试跑尝试；R 改文件后再 finish（修订不改声明），宿主重验阶梯、再试。**编辑额度提醒**：编辑数到 `session_max_edits` 的 75% 时那次工具结果末尾附一句（用了几次、剩下的留给 finish），到 90% 再附一次（`EDIT_REMINDERS`）；会话因 turns / edits 额度结束时台账记 `session_ended`（原因、turns、edits、已声明的包数）。
+- v1.11（DESIGN §6.21）：**逐题 debug**——`try_task(task, dir?)`：宿主取回候选目录、build、V1，在这一道研究失败题上真跑一次（role `trial`，候选名 `{tag}:{dir}`，`trial` 子账户，按包 ref 免付），交回 `trial.contrast` 的并排文字（W 的读数与这次执行：通过、部分得分、步数、失败断言、出手的 hook 与它说的话、写入按路由、最后的话；R 的组件哪个出手；剩几次尝试），session 进 `readable`；留出题 `AccessDenied`；一轮 R 的 try 与宿主试跑合计 ≤ `trial_max_attempts`；每次 try 前核价；台账 `tried` 行。提示词改成 Harness² 的 probe 形状（读 W 的轨迹找最早分叉 → 一处追溯到时刻的改动 → try 一次 → 看对比：出手与否、说了什么、写入变没变是确定的依据，通过与否是一次 rollout、标明未确认 → 同一道题至多 `try_per_task` 次 → 下一道）；hold 是文档要求类失败的首选载体；审核不再是默认建议；声明字段清单加 `scope`。
 - v1.10（DESIGN §6.20）：**分歧优先**——`failures.json` 每条并排加 `w_readings`（`{passed, failed}`）、`divergent` 与 `passing_session`（W 通过的一次 session，加进 `readable`）；排序：分歧题在先，其次 `persistent`，再其余（同档按 `persistence` 降序）。提示词加一段证据顺序：先改分歧（两条轨迹并读、找最早分叉的时刻），再改重复的具体失败，最后才是没兑现的风险；每处改动追溯到一个轨迹时刻，没有的不交；每个失败配最便宜的有效组件，常驻 prompt 最贵，按需的 skill / hook 优先。**两种 scope**——`scoped_packages` 且 `packages_per_round` ≥ 2 时提示词要求 `candidates/package/` 是通用的（`"scope": "invariant"`：agent 怎么做事——抽要求、核对、完成协议、工具使用、上下文），`candidates/package-2/` 是领域的（`"scope": "domain"`：从业者知道什么——交付物的形状、谁收、以哪份文档为准、记录自己的词与格式）；声明的 `scope` 可选，取值只能是这两个；台账 `declared` / `screened` 行记它。
 - v1.5：提示词说明顽固失败的三种形态（文档里的一条要求没执行到、没沿用记录的词与格式、该报告的没报告），要求候选改变 agent 从文档到动作的方式——把读过的文档里的每条要求与原词抽成待办，做完前逐条对照，被挡住或被拒的项按请求报告——而不是再加一个"再看一眼"的提醒（scope hook 这类试过，带来了漏报）；`failures.json` 的 `persistent` 条目优先。
 
@@ -412,6 +414,8 @@ def export_policy(activity) -> str;  def import_policy(activity, policy_ref) -> 
 | `research/methods.py` 的 `reach_check`、`replay_events` | 思路进 `verify/reach.py`、`verify/replay.py`，代码不搬 |
 
 ## 13 测试
+
+- v1.11：脚本化 R 的模式 `debug`——写弱 hook，`try_task` 票据题：对比文字说 FAILED、hook 出手、W 的失败断言；改成能用的 hook 再 try：PASSED；finish 后宿主的试跑按记录免付（attempts 0），包筛选装入；台账 `tried` 两行；留出题 `AccessDenied`；没有候选目录时拒绝；尝试上限用完拒绝；同一道题超过 `try_per_task` 拒绝；`try` 计入 `_trial_used`；对比文字把通过标为未确认。
 
 - v1.10：回放保真——假上游一条 train 轨迹的 `attempt_events` 按记录顺序交错六个站点，每个 before_tool / after_tool 事件的 `view_events` 只含它之前的 broker 调用；一个两 hook 的包（before_run 记状态、before_tool 只在状态与 `view["events"]` 都成立时 hold）在 V2b 里于声称题出手（旧回放里永远不出手）；每道题重载后前一道题的状态不泄漏；V2d 与合并回放照旧通过。分歧优先——W 有过有败的题在 `failures.json` 里 `divergent`、带 `passing_session`、排在顽固题之前，`readable` 含该 session。scope——声明的 `scope` 只收两个值；`packages_per_round` ≥ 2 时提示词含两段 scope 的要求、1 时不含；`declared` / `screened` 行与记分板带 scope。裁决——`component_verdicts` 对出手零翻转的组件给 `no_effect`、对有退步的给 `hurt`、没出手的 `unobserved`，`screened` 行与投影里只有计数。
 

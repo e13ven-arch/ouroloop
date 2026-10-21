@@ -83,11 +83,13 @@ class Settings:
     # screened; regressions by footprint; the merge's replay; the replay sample
     trial_max_tasks: int = 4                     # studied failing tasks a package is tried on, per iteration (0: off)
     trial_max_rounds: int = 2                    # revisions R gets after a trial that fixed too little
-    trial_max_attempts: int = 12                 # trial attempts a round pays for, over its packages and iterations
+    trial_max_attempts: int = 40                 # trial attempts a round pays for, over its packages and iterations
     trial_min_fixes: int = 1                     # in-sample fixes a package needs to reach the screen (0: feedback
                                                  # only; the user's to set either way)
     regression_by_footprint: bool = True         # a package of tool/hook/skill components regresses only where one acted
     merge_min_acts: int = 1                      # a merge's hook must act on this many of the entry's fixed attempts
+    try_per_task: int = 2                        # v1.11 (DESIGN §6.21): R's try_task on one studied task, at most (one
+                                                 # rollout is weak evidence; the probe is bounded as Harness²'s is)
     scoped_packages: bool = True                 # v1.10 (DESIGN §6.20): with packages_per_round >= 2, the first package
                                                  # is invariant (how the agent works), the second domain (what a
                                                  # practitioner knows); the declaration's `scope` names which
@@ -215,4 +217,6 @@ RULES = {"packages_per_round": "cap", "fixed_per_round": "cap", "session_max_tur
          "trial_min_fixes": "free", "regression_by_footprint": "fixed", "merge_min_acts": "floor",
          "replay_sample": "floor",
          # v1.10: the two scopes are fixed
-         "scoped_packages": "fixed"}
+         "scoped_packages": "fixed",
+         # v1.11: R's tries per task capped
+         "try_per_task": "cap"}

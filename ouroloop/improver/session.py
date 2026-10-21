@@ -44,7 +44,8 @@ COMPONENT_SCHEMA = {"type": "object", "properties": {
 DECLARATION_SCHEMA = {"type": "object", "properties": {
     "dir": {"type": "string"}, "mechanism": {"type": "string"},
     "components": {"type": "array", "items": COMPONENT_SCHEMA},
-    "differs_from": {"type": "array", "items": {"type": "object"}}},
+    "differs_from": {"type": "array", "items": {"type": "object"}},
+    "scope": {"type": "string"}},
     "required": ["mechanism", "components"]}
 
 TOOLS = (
@@ -82,9 +83,17 @@ TOOLS = (
              "hook, V2c reach for a skill. Nothing is paid.",
              {"type": "object", "properties": {"declaration": DECLARATION_SCHEMA, "dir": {"type": "string"}},
               "required": ["declaration"]}),
+    ToolSpec("try_task", "Run your candidate package (candidates/package, or `dir`) once on one studied failing task "
+             "(a task of inputs/failures.json) in the real world, paid from the round's trial attempts. The answer "
+             "puts this run beside the working line's reading of the task: pass or fail (one rollout, not a "
+             "confirmation), the checks that failed, the hooks that acted and what they said, the writes by route, "
+             "the final text, which of your components acted, and the session for read_trajectory. At most "
+             "try_per_task tries per task; the package must build and pass V1 first.",
+             {"type": "object", "properties": {"task": {"type": "string"}, "dir": {"type": "string"}},
+              "required": ["task"]}),
     ToolSpec("finish", "End the session with the declaration of each candidate package you want verified (one, unless "
              "the round allows more): {mechanism, components: [{kind, site, cause_ids, predicted_affected, trigger, "
-             "scripts?, probes?, uses_model?}], differs_from}. A declaration the host cannot read is answered as this "
+             "scripts?, probes?, uses_model?}], differs_from, scope?}. A declaration the host cannot read is answered as this "
              "call's error; fix it and finish again. An empty list ends the session with no candidate.",
              {"type": "object", "properties": {"packages": {"type": "array", "items": DECLARATION_SCHEMA}},
               "required": ["packages"]}),
@@ -125,9 +134,10 @@ class CodingSession:
     tests; `readable` the train sessions read_trajectory may open; `kinds` the component kinds K allows."""
 
     def __init__(self, *, researcher, work: WorkTree, trace, check, tests, settings, system: str, inputs: dict,
-                 readable, kinds, merge_ids=()):
+                 readable, kinds, merge_ids=(), tryer=None):
         self.researcher, self.work, self.trace = researcher, work, trace
         self.check, self.tests, self.s = check, tests, settings
+        self.tryer = tryer                          # v1.11: try_task -> (text, is_error); None: the tool is refused
         self.n, self.system, self.inputs = max(int(settings.packages_per_round), 1), system, inputs
         self.readable, self.kinds = set(readable), tuple(kinds)
         self.merge_ids = tuple(merge_ids)          # v1.8: the frontier entries a declaration's merge_of may name
@@ -260,6 +270,18 @@ class CodingSession:
             if d not in self.dirs:
                 return f"no candidate directory {d!r} ({self.dirs or 'none yet'})", True, False
             return self.check(str(d), raw), False, False
+        if name == "try_task":
+            d = args.get("dir") or DEFAULT_DIR
+            if d not in self.dirs:
+                return f"no candidate directory {d!r} ({self.dirs or 'none yet'})", True, False
+            task = args.get("task")
+            if not isinstance(task, str) or not task:
+                return "task is a studied task id (inputs/failures.json)", True, False
+            if self.tryer is None:
+                return "try_task is not available in this session", True, False
+            text, bad = self.tryer(str(d), task)
+            record.update(task=task, ok=not bad)
+            return text, bad, False
         if name == "finish":
             problem = self._finish_problems(args)
             if problem:

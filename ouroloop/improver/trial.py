@@ -21,6 +21,52 @@ from ..evaluate.gate import refill_attempts
 from .screen import key, latest
 
 SAID_CHARS = 240
+DETAIL_CHARS = 200                     # of what a hook said, in the contrast
+PARAM_CHARS = 120                      # of a failed check's parameters
+
+
+def describe(activity, evidence, row) -> dict:
+    """One execution as the contrast shows it (DESIGN §6.21): pass or fail, the partial credit and steps, the checks
+    that failed (type and parameters: train grading), the hooks that acted (site, name, action, what they said), the
+    writes by route (method and path, counted), and what the agent said at the end."""
+    checks = [f"{c.get('type')} {str(c.get('params'))[:PARAM_CHARS]}" for c in activity.results.grading(row.attempt_id)
+              if not c.get("passed") and not c.get("excluded")]
+    session = row.evidence or row.attempt_id
+    hooks, writes = [], {}
+    for item in evidence.trace.events(session):
+        e = item["event"]
+        if e.get("kind") == "hook" and e.get("action") not in (None, "none"):
+            hooks.append(f"{e.get('site')} {e.get('name')} -> {e.get('action')}: {str(e.get('detail') or '')[:DETAIL_CHARS]!r}")
+        if e.get("kind") == "tool" and e.get("name") == "api_fetch":
+            args = e.get("args") if isinstance(e.get("args"), dict) else {}
+            method = str(args.get("method") or "GET").upper()
+            if method not in ("GET", "HEAD"):
+                route = f"{method} {str(args.get('url') or '').split('?')[0].split('//')[-1]}"
+                writes[route] = writes.get(route, 0) + 1
+    said = evidence.trace.finish(session)
+    return {"passed": bool(row.success), "partial": row.partial_credit, "steps": row.steps, "checks": checks,
+            "hooks": hooks, "writes": writes, "said": str(said.get("reason") or said.get("text") or "")[:SAID_CHARS],
+            "session": session}
+
+
+def contrast(activity, evidence, *, task: str, dir_name: str, before, after, acted: list, tries_left: int,
+             attempts_left: int) -> str:
+    """What R reads of one try_task (DESIGN §6.21): this run beside the working line's reading of the task. A pass is
+    one rollout and says so; what acted, where, and what changed is the part to debug on."""
+    now = describe(activity, evidence, after)
+    lines = [f"try_task candidates/{dir_name} on {task}: {'PASSED' if now['passed'] else 'FAILED'} (partial "
+             f"{now['partial']}, {now['steps']} steps) — one rollout, not a confirmation: the held-out screen confirms "
+             f"a fix. Your components that acted: {', '.join(acted) or 'none (no footprint: whatever happened is not '
+             'your package)'}."]
+    if before is not None:
+        was = describe(activity, evidence, before)
+        lines.append(f"  W's reading ({was['session']}): {'PASSED' if was['passed'] else 'FAILED'} (partial {was['partial']}, "
+                     f"{was['steps']} steps); checks failed: {was['checks'] or 'none'}; hooks that acted: "
+                     f"{was['hooks'] or 'none'}; writes: {was['writes'] or 'none'}; said: {was['said']!r}")
+    lines.append(f"  this run ({now['session']}, read_trajectory may open it): checks failed: {now['checks'] or 'none'}; "
+                 f"hooks that acted: {now['hooks'] or 'none'}; writes: {now['writes'] or 'none'}; said: {now['said']!r}")
+    lines.append(f"  {tries_left} try(ies) left on this task, {attempts_left} trial attempt(s) left this round.")
+    return "\n".join(lines)
 
 
 @register

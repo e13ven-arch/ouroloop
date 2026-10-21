@@ -100,7 +100,9 @@ def kinds_for(cause: str, *, mechanizable: bool, allowed) -> list[str]:
     """The kinds a cause may take, code first: a mechanizable cause tool, hook, then the text kinds; any other the
     text kinds; a cause of the loop adds agent, config, vendor (L5). Memory is never R's: the library's snapshot is a
     fixed candidate. Only kinds K allows."""
-    kinds = list(CODE_KINDS) + list(TEXT_KINDS) if mechanizable else list(TEXT_KINDS)
+    # v1.11 (DESIGN §6.21): a hook (a hold before a write, with the evidence of this run) carries a document's rule
+    # or an excluded item as well as a mechanizable check — every cause may take one, before the text kinds
+    kinds = list(CODE_KINDS) + list(TEXT_KINDS) if mechanizable else ["hook"] + list(TEXT_KINDS)
     if cause in LOOP_CAUSES:
         kinds += list(L5_KINDS)
     return [k for k in kinds if k in set(allowed)]

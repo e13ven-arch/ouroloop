@@ -127,7 +127,8 @@ MECHANISM = {"tool": "a package tool posts the requested #ops message so the age
              "merge_bad": "an on_finish hook pushes back whenever the request mentions #ops and nothing was posted",
              "merge_lost": "an on_finish hook pushes back only where the request says never and #ops",
              "trial": "an on_finish hook asks the agent to double-check the #ops message before it finishes",
-             "trial_bad": "an on_finish hook asks the agent to double-check the #ops message before it finishes"}
+             "trial_bad": "an on_finish hook asks the agent to double-check the #ops message before it finishes",
+             "debug": "an on_finish hook pushes back while a requested #ops post is missing"}
 TOOL_CODE_2 = TOOL_CODE.replace("posted to the ops channel", "sent to #ops")     # the same tool, another body
 
 
@@ -153,6 +154,7 @@ class ScriptedR:
         self.calls: list[str] = []
         self.read: list = []            # (file name, text) of every inputs/ file the session read back (v1.8)
         self.trial_feedback: list = []  # v1.9: the host's trial feedback texts, as the session received them
+        self.tries: list = []           # v1.11: what try_task answered, in order (mode debug)
         self.system_seen = ""           # the session's system prompt, as last given
         self._read_ids: set = set()
 
@@ -171,6 +173,7 @@ class ScriptedR:
             self.calls.append("session")
             self.system_seen = system
             self._record_reads(messages)
+            self._record_tries(messages)
             return self._session(messages)
         if system.startswith("You audit the agent's work"):          # the audit's dry run (V2d) asks the research model
             import rsi
@@ -197,6 +200,15 @@ class ScriptedR:
                                       "note": "Not clear."}))
 
     # ------------------------------------------------------------------ the session
+    def _record_tries(self, messages: list[dict]) -> None:
+        for m in messages:
+            if m.get("role") != "tool":
+                continue
+            for r in m.get("results") or ():
+                if r.get("name") == "try_task" and r.get("id") not in self._read_ids:
+                    self._read_ids.add(r["id"])
+                    self.tries.append((bool(r.get("is_error")), r.get("output") or ""))
+
     def _record_reads(self, messages: list[dict]) -> None:
         """Keep what read_file answered for inputs/ files (a test reads what R was shown)."""
         paths = {c.id: c.args.get("path") for m in messages if m.get("role") == "assistant"
@@ -232,6 +244,8 @@ class ScriptedR:
             return self._merge(turns, manifest, (first.get("focus") or {}).get("merge") or [], tasks)
         if self.mode in ("trial", "trial_bad"):
             return self._trial(turns, manifest, cause_ids, tasks, messages)
+        if self.mode == "debug":
+            return self._debug(turns, manifest, cause_ids, tasks)
         files, components = {}, []
         if self.mode == "partial":
             manifest["hooks"] = [*manifest.get("hooks", []), HOOK_ENTRY]
@@ -286,6 +300,30 @@ class ScriptedR:
                                               "text": json.dumps(manifest, indent=1) + "\n"}))
         if turns == 2:
             return self._calls(("run_check", {"declaration": decl}))
+        return self._calls(("finish", {"packages": [decl]}))
+
+    def _debug(self, turns: int, manifest: dict, cause_ids: list, tasks: list) -> ChatTurn:
+        """v1.11 (DESIGN §6.21): the probe — the weak hook, try_task on the studied failure (it acts, the agent does
+        not heed it: FAILED), the working hook, try_task again (PASSED, one rollout), then finish with the scope."""
+        manifest["hooks"] = [*manifest.get("hooks", []), HOOK_ENTRY]
+        task = tasks[0]
+        decl = {"mechanism": MECHANISM["debug"], "scope": "invariant", "components": [
+            {"kind": "hook", "site": "on_finish", "cause_ids": cause_ids, "predicted_affected": tasks,
+             "trigger": "the run finishes while #ops was asked for"}]}
+        if turns == 1:
+            return self._calls(("write_file", {"path": "candidates/package/middlewares/remind_ops.py",
+                                              "text": WEAK_HOOK_CODE}),
+                               ("write_file", {"path": "candidates/package/manifest.json",
+                                              "text": json.dumps(manifest, indent=1) + "\n"}))
+        if turns == 2:
+            return self._calls(("try_task", {"task": task}))
+        if turns == 3:
+            return self._calls(("write_file", {"path": "candidates/package/middlewares/remind_ops.py",
+                                              "text": HOOK_CODE}))
+        if turns == 4:
+            return self._calls(("try_task", {"task": task}))
+        if turns == 5:         # a third try on the same task: refused (try_per_task 2), the session goes on
+            return self._calls(("try_task", {"task": task}))
         return self._calls(("finish", {"packages": [decl]}))
 
     def _merge(self, turns: int, manifest: dict, picks: list, tasks: list) -> ChatTurn:

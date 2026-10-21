@@ -398,8 +398,9 @@ def kinds_of(f: Focus) -> dict:
 
 def test_the_kinds_a_cause_may_get():
     assert kinds_for("real_date", mechanizable=True, allowed=ALL) == ["tool", "hook", "skill", "prompt"]
-    assert kinds_for("missed_action", mechanizable=False, allowed=ALL) == ["skill", "prompt"]
-    assert kinds_for("context_overflow", mechanizable=False, allowed=ALL) == ["skill", "prompt", *L5]
+    # v1.11 (DESIGN §6.21): a hold is a carrier for every cause, before the text kinds
+    assert kinds_for("missed_action", mechanizable=False, allowed=ALL) == ["hook", "skill", "prompt"]
+    assert kinds_for("context_overflow", mechanizable=False, allowed=ALL) == ["hook", "skill", "prompt", *L5]
     assert kinds_for("tool_error_loop", mechanizable=True, allowed=ALL) == ["tool", "hook", "skill", "prompt", *L5]
     # never memory or model; only what K allows, in the fixed order whatever K's order
     assert kinds_for("tool_error_loop", mechanizable=True, allowed=("vendor", "prompt", "memory", "model")) == \
@@ -418,7 +419,7 @@ def test_the_list_ranks_causes_by_size_and_kinds_by_score(tmp_path):
                                                   [f"wrong_target.{i}" for i in range(4)]]
     # untried: the priors' upper bounds order the kinds, code first; the real_date row is mechanizable
     assert kinds_of(f)["real_date"] == ["tool", "hook", "skill", "prompt"]
-    assert kinds_of(f)["wrong_target"] == ["skill", "prompt"]
+    assert kinds_of(f)["wrong_target"] == ["hook", "skill", "prompt"]          # v1.11: a hold for every cause
     row = next(r for r in f.ranked if r["name"] == "real_date")
     assert row["mechanizable"] is True and row["kinds"][0] == {"kind": "tool", "score": 0.6, "mean": 0.3, "n": 0,
                                                                 "tried": []}
@@ -441,7 +442,7 @@ def test_a_reading_moves_a_kind_in_the_list(tmp_path):
 def test_ties_go_to_the_earlier_kind_code_first(tmp_path):
     for allowed in (ALL, tuple(reversed(ALL))):
         assert kinds_of(focused(tmp_path, [cause("real_date", 2)], allowed=allowed))["real_date"][0] == "tool"
-        assert kinds_of(focused(tmp_path, [cause("missed_action", 2)], allowed=allowed))["missed_action"][0] == "skill"
+        assert kinds_of(focused(tmp_path, [cause("missed_action", 2)], allowed=allowed))["missed_action"][0] == "hook"
 
 
 def test_the_list_carries_what_the_archive_tried_on_a_cause_and_kind(tmp_path):
@@ -458,7 +459,7 @@ def test_the_list_carries_what_the_archive_tried_on_a_cause_and_kind(tmp_path):
 
 
 def test_a_cause_no_allowed_kind_fits_is_left_out(tmp_path):
-    f = focused(tmp_path, [cause("wrong_target", 5), cause("real_date", 1)], allowed=("tool", "hook"))
+    f = focused(tmp_path, [cause("wrong_target", 5), cause("real_date", 1)], allowed=("tool",))
     assert [r["name"] for r in f.ranked] == ["real_date"]
 
 
@@ -474,7 +475,7 @@ def test_require_code_when_a_mechanizable_cause_is_diagnosed_and_k_allows_code(t
 def test_l5_is_suggested_for_the_loop_causes_only(tmp_path):
     assert not focused(tmp_path, [cause("missed_action", 3), cause("real_date", 2)]).l5_suggested
     f = focused(tmp_path, [cause("missed_action", 3), cause("context_overflow", 1)])
-    assert f.l5_suggested and kinds_of(f)["context_overflow"] == ["agent", "vendor", "config", "skill", "prompt"]
+    assert f.l5_suggested and kinds_of(f)["context_overflow"] == ["hook", "agent", "vendor", "config", "skill", "prompt"]
     assert [n for n in f.notes if "at most 1 such change a round" in n]
     assert not focused(tmp_path, [cause("context_overflow", 1)], allowed=("tool", "skill")).l5_suggested
     assert set(LOOP_CAUSES) == {"context_overflow", "finish_protocol", "tool_error_loop"}

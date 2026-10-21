@@ -55,7 +55,7 @@ from .screen import (ScreenResult, accept, component_verdicts, condition, cost_p
                      fixed_sessions, pick_best,
                      pick_order, price, regression_evidence, research_run, research_sample, screen)
 from .session import CodingSession, WorkTree
-from .trial import TrialResult, feedback as trial_feedback, trial as run_trial, trial_tasks
+from .trial import TrialResult, contrast, feedback as trial_feedback, trial as run_trial, trial_tasks
 from .stack import stack
 from .settings import CODE_KINDS, Settings
 from .verify import Verdict, VerifyContext, run_ladder
@@ -819,7 +819,9 @@ class Round:
                             "accept_min_whole_fixes": self.s.accept_min_whole_fixes,
                             "heuristic_terms_min": self.s.heuristic_terms_min, "merge": merge_text,
                             "trial_max_tasks": self.s.trial_max_tasks, "trial_max_rounds": self.s.trial_max_rounds,
-                            "trial_min_fixes": self.s.trial_min_fixes, "scopes": self.scopes_text()}.items():
+                            "trial_min_fixes": self.s.trial_min_fixes, "scopes": self.scopes_text(),
+                            "try_per_task": getattr(self.s, "try_per_task", 2),
+                            "trial_max_attempts": self.s.trial_max_attempts}.items():
             system = system.replace("{" + name + "}", str(value))
         return system
 
@@ -888,11 +890,22 @@ class Round:
                 return unit_check(self.with_memory(files), None, vctx)["detail"] \
                     or "the package tests, the probe and the smoke pass"
 
+            def tryer(dir_name: str, task_id: str) -> tuple[str, bool]:
+                # v1.11 (DESIGN §6.21): R's own probe — the candidate once on one studied failing task, the
+                # contrast with W's reading back, the run's session opened to R
+                files, error = tree.fetch(dir_name)
+                if files is None:
+                    return f"candidates/{dir_name} cannot be read back: {error}", True
+                text, bad, opened = self._try_task(dir_name, self.with_memory(files), task_id, vctx)
+                if opened and session is not None:
+                    session.readable.add(opened)
+                return text, bad
+
             session = CodingSession(researcher=self.researcher("session"), work=tree, trace=self.evidence.trace,
                                     check=check, tests=tests, settings=self.s, system=system, inputs={
                                         "round": self.round_id, "focus": json.loads(inputs["focus.json"]),
                                         "inputs": sorted(f"inputs/{n}" for n in inputs)},
-                                    readable=readable, kinds=kinds, merge_ids=merge_ids)
+                                    readable=readable, kinds=kinds, merge_ids=merge_ids, tryer=tryer)
             result = self._session(session, tree)
             fetched = []
             for decl in result.declarations:
@@ -948,6 +961,78 @@ class Round:
                 if trial is not None:
                     item["trial"] = trial
         self._save()
+
+    # ------------------------------------------------------------------ v1.11: R's own try of a package on one task
+    def _tries_of(self, dir_name: str, task_id: str) -> int:
+        return sum(1 for r in self.ledger.rows(stage="tried", round_id=self.round_id)
+                   if r.get("dir") == dir_name and r.get("task") == task_id)
+
+    def _try_task(self, dir_name: str, files: dict, task_id: str, vctx) -> tuple[str, bool, str | None]:
+        """try_task (DESIGN §6.21; IMPROVER §7): the candidate directory as it stands, built and past V1, run once on
+        one studied task the working line fails (role `trial`, the screen's candidate name, the round's trial
+        account; an attempt on record under the same package is read, not paid), the contrast with W's reading
+        handed back. -> (text, is_error, the run's session or None). Refused: a held-out or passing task, more than
+        try_per_task tries on the task, the round's trial attempts used up, a package that does not build or fails
+        V1, a try the round cannot pay."""
+        study, held = self.split()
+        reading = self.reading()
+        if task_id in set(held) or task_id not in set(study):
+            return f"AccessDenied: {task_id!r} is not a studied train task of this round", True, None
+        row = reading.get(task_id)
+        if row is None or row.success:
+            return (f"{task_id} is not a studied task the working line fails: try_task runs on the failures of "
+                    f"inputs/failures.json"), True, None
+        per_task = int(getattr(self.s, "try_per_task", 2))
+        tries = self._tries_of(dir_name, task_id)
+        if tries >= per_task:
+            return (f"refused: candidates/{dir_name} was tried {tries} time(s) on {task_id} already (try_per_task "
+                    f"{per_task}); one rollout is weak evidence — move to the next task, the screen confirms"), True, None
+        used = self._trial_used()
+        if used >= int(self.s.trial_max_attempts):
+            return f"refused: the round's {self.s.trial_max_attempts} trial attempts are used", True, None
+        try:
+            package = build(self.a.objects, files, limits=Limits.from_core(self.a.k),
+                            seed=self.a.package(self.a.seed_release()), parent=self.package)
+        except PackageError as e:
+            return f"the package does not build: {e}"[:600], True, None
+        from .verify.unit import unit_check
+        v1 = unit_check(files, None, vctx)
+        if not v1.get("passed", not v1.get("detail")):
+            return f"V1 failed, nothing run: {v1.get('detail')}"[:1200], True, None
+        name = f"{self.tag}:{dir_name}"
+        runs = self.a.results.runs()
+        on_record = any(r.validity == "valid" and r.task_id == task_id and runs.get(r.run) is not None
+                        and runs[r.run].candidate == name and runs[r.run].role == "trial"
+                        and runs[r.run].package_ref == package.ref() for r in self.a.results.all())
+        if not on_record:
+            usd, why = price(self.a, self.work_ref, screen_attempts=1)
+            if usd is None:
+                return f"refused: the try cannot be priced ({why})", True, None
+            need, left = self._need(usd)
+            if left is not None and need > left + 1e-9:
+                return f"refused: the try would need up to ${need:.2f} and the round has ${left:.2f}", True, None
+        comps = components(self.package, files)
+        conditions = condition(comps)
+        res = run_trial(self.a, run_arm=self.run_arm, name=name, package=package, base_release=self.base,
+                        tasks=[task_id], evidence=self.evidence, conditions=conditions, account=self.child("trial"),
+                        retries=int(self.a.k["gate"]["max_infrastructure_retries"]), iteration=tries)
+        if res.outcome == "budget":
+            raise Stop("budget: the budget refused a trial attempt")
+        acted = list(res.footprints.get(task_id) or ())
+        passed = task_id in res.fixed or task_id in res.unconditioned
+        self.ledger.row("tried", round_id=self.round_id, line=self.line, dir=dir_name, task=task_id,
+                        iteration=tries, outcome=res.outcome, passed=passed if res.outcome == "ok" else None,
+                        acted_components=acted, attempts=res.attempts, reason=res.reason)
+        self.out(f"round      {self.round_id}: try of {dir_name} on {task_id} (try {tries + 1}): {res.outcome}"
+                 + (f", {'PASSED' if passed else 'FAILED'}, acted {acted or 'nothing'}" if res.outcome == "ok" else
+                    f" ({res.reason})"))
+        if res.outcome != "ok":
+            return f"the try did not read the task: {res.outcome} ({res.reason})", True, None
+        after = next(r for r in self.a.results.all() if (r.evidence or r.attempt_id) == res.sessions[task_id])
+        text = contrast(self.a, self.evidence, task=task_id, dir_name=dir_name, before=row, after=after, acted=acted,
+                        tries_left=per_task - tries - 1,
+                        attempts_left=max(int(self.s.trial_max_attempts) - self._trial_used(), 0))
+        return text, False, res.sessions[task_id]
 
     # ------------------------------------------------------------------ v1.9: the in-sample trial
     def _trial_once(self, decl: Declaration, files: dict, *, iteration: int) -> TrialResult:

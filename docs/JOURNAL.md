@@ -8,6 +8,26 @@
 
 ---
 
+## 2026-10-21 finance-v10 r0 阶段 A 停在半途（$12.96）；阶段 4m 落地：逐题 probe——R 的 `try_task` 当场跑一道题、宿主给并排对比（DESIGN v1.11 §6.21）；$0
+
+**finance-v10（`efaca3e`）。** 4l 后 v9 的 K 在 HEAD 上打不开（improver 节多了 `scoped_packages`），开 v10：种子与 150 道首遇都从 v9 导入（$0；导入时发现 `import_baseline` 对链式导入崩溃——v9 的 `stream_scored` 事件已带 `imported_from`，再传一次就重复关键字；修成记链上最后一环、半途中断的导入下次补齐事件与轨迹，假上游加测试；v10 重冻结 K `core:b30ec9ce6d62`），`packages_per_round = 2`、`trial_max_tasks = 3`。用户要求每一步付费前先看读数、每次执行都可观测，r0 拆成阶段 A（诊断、R 会话、试跑）与 B（筛选）分开跑（`analysis/round0_stepwise.py`）。阶段 A 跑到 23 分钟：诊断 37 道 11 类（和 v9 几乎一样）；R 交了两个包——`package`：on_finish 的调模型审核（只列"文档要求但没有对应写入"的项），认领 12 道；`package-2`：技能 `record-vocabulary`（沿用记录的原词）。两个都没写 `scope`（提示词的 scope 段要求了，finish 的字段清单没列，R 按清单写）。用户："跑到现在你没有什么要修改的地方吗？这不就是逐题目 debug 吗？""既然已经知道如何改了，就不用等跑完再改，持续 debug 然后修复。"阶段 A 在免费阶梯里停掉（kill），$12.96，筛选没付。
+
+**读到的。** R 又交了 4g 时三次"改过头"的审核和先验最低的词表技能，不是 before_tool 的 hold——回放保真就是为 hold 修的。原因在框架自己的清单：rule_not_applied 这簇只开放 skill / prompt，`audit_suggested` 明说"做一个审核覆盖这些簇"，剧本写着"r0 的 hook 被拒"。更根本的是回路形状：R 读一遍轨迹就要为 cause 写，写完才拿 3 道题试一次、修一次；分歧优先那段在每题一次读数的活动里是空的。
+
+**用户问"提示词改为逐题循环对吗？Harness² 也是这样做的吗？不要引入过多不稳定因素"。** 不是：Harness² 每道题只走一遍固定循环——参考执行 → 候选各跑一次 → 对着参考执行合成，明说"单次 rollout 是弱证据"。所以 4m 学它的 probe 与对比，不学无界的逐题循环：同一道题至多两次 try，通过标为未确认，机制仍按 cause 写；接受路径不加一处。
+
+**做了什么（4m，`m1-automationbench` 直接改，没有付费活动在跑）。**
+1. **`try_task(task, dir?)`**（`session.py` 的新工具；`round._try_task`）：取回候选目录、build、V1，在这一道研究失败题上真跑一次（role `trial`、候选名 `{tag}:{dir}`、`trial` 子账户、同包同题的记录免付），交回 `trial.contrast` 的并排文字：W 的读数与这次执行各自的通过与否、部分得分、步数、失败断言、出手的 hook 与它说的话、写入按路由、最后的话，R 的组件哪个出手，剩几次；session 进 R 的可读集。留出题 `AccessDenied`，W 通过的题拒绝，同一道题 ≤ `try_per_task`（2，cap），一轮 R 的 try 与宿主试跑合计 ≤ `trial_max_attempts`（12 → 40，cap），每次 try 前核价；台账 `tried` 行（dir、task、iteration、passed、acted_components、attempts）。
+2. **提示词**：工作方式改成 probe 的形状（一道题 → 读 W 的轨迹找最早分叉 → 最小机制 → try 一次 → 读对比：出手与否 / 说了什么 / 写入变没变是确定的依据，通过与否是一次 rollout → 至多再试一次 → 下一道）；审核从"做一个"改成"一种选项、三次都退步过"，hold（写入前暂停一次、给证据、原样重发放行）写明是文档要求类失败的首选载体；声明字段清单加 `scope`。
+3. **载体表**（`allocate.kinds_for`）：不可机械化的簇也开放 hook，排在文字载体前；`require_code` 不变。
+4. 宿主 finish 后的试跑照旧，R try 过的题按记录免付。
+
+**测试。** 脚本化 R 的 `debug` 模式：弱 hook → try 票据题（FAILED，hook 出手、失败断言、W 的读数都在对比里）→ 换能用的 hook → try（PASSED，标"一次 rollout"）→ 第三次 try 被 `try_per_task` 拒 → finish 带 `scope`；宿主试跑 attempts 0（读记录）、包筛选装入；`tried` 两行；留出题 / W 通过的题 / 不能 build 的包被拒。`tests/improver` 369 passed（四处旧断言随载体表、默认值与提示词措辞改）。默认全量与 Docker 全量见下方补记。
+
+**下一步。** 开 finance-v11（同 v10 的形状，从 v9 导入），分阶段跑 r0：阶段 A 看 R try 了哪些题、对比里出没出手、交的是不是 hold；再决定付不付筛选。
+
+---
+
 ## 2026-10-20 阶段 4l 落地：向 Harness² 学来的四处——V2b 回放保真、分歧优先、两种 scope、按组件裁决（DESIGN v1.10 §6.20）；$0
 
 **为什么。** 用户问起 Google Research 2026-10-09 开源的 Harness²（arXiv 2610.14224，github.com/google-research/harness2）："好像跟我们的理念有相似之处，但是别人看起来提升的确定性很高"。读了论文正文、附录与仓库（`core/prompts.py`、`recursion.py`、`library.py`、`selection.py`）：它改的也是冻结模型外的 harness，两层递归；报告的增益大半是每道题上的测试时算力（参考执行 + 2k 个候选真跑 + 合成版 + 匿名答案里挑一个；去掉库仍有一半增益）与 Opus 4.8 给弱执行器写 skills，唯一同口径的数（JobBench 建库、WorkBuddy 单步）是 +0.5～+2.9，在我们的噪声带里。用户："不要光看别人不好的地方，要看好的，能够稳定提升效果的机制，学习进来。"于是按它机制里**与我们已有读数一致**的四处改（DESIGN §6.20 的表），先写设计再写代码。

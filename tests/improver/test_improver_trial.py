@@ -472,6 +472,67 @@ def test_the_streams_first_encounters_are_imported_and_the_next_stream_pays_none
     assert provider.calls == paid                                      # the chain pays for no first encounter
 
 
+# ---------------------------------------------------------------------------- v1.11: R's own probe (try_task)
+@pytest.fixture(scope="module")
+def debug(tmp_path_factory, fake_upstream):
+    s = round_activity(tmp_path_factory.mktemp("debug"), fake_upstream, "debug")
+    s.lines = []
+    s.result = phases.round_(s.a, 0, out=s.lines.append)
+    return s
+
+
+def test_r_tries_its_package_on_the_studied_failure_reads_the_contrast_and_the_host_trial_pays_nothing(debug):
+    """DESIGN §6.21: try_task runs the candidate once on the ticket and answers the contrast with W's reading — the
+    weak hook acts and the agent does not heed it (FAILED, the hook in the acted list, the failed check named),
+    the working hook flips it (PASSED, marked one rollout); a third try on the same task is refused by try_per_task;
+    the host's trial after finish reads the recorded attempt and pays nothing; the package is screened and
+    installed; the declaration's scope is on the ledger."""
+    a, r = debug.a, debug.result
+    assert r.status == "done" and r.accepted and r.screen["dir"] == "r0:package"
+    tries = debug.r.tries
+    assert [bad for bad, _ in tries] == [False, False, True]
+    first, second, third = (t for _, t in tries)
+    assert first.startswith(f"try_task candidates/package on {TICKET}: FAILED") and "one rollout" in first
+    assert "Your components that acted: hook:remind_ops" in first
+    assert "W's reading (" in first and "slack_message_contains" in first and "this run (" in first
+    assert "on_finish remind_ops -> pushback" in first and "1 try(ies) left on this task" in first
+    assert second.startswith(f"try_task candidates/package on {TICKET}: PASSED") and "not a confirmation" in second
+    assert "0 try(ies) left on this task" in second
+    assert third.startswith("refused: candidates/package was tried 2 time(s)") and "try_per_task 2" in third
+    rows = ledger_rows(a, "tried")
+    assert [(x["dir"], x["task"], x["iteration"], x["passed"], x["acted_components"], x["attempts"]) for x in rows] == \
+        [("package", TICKET, 0, False, ["hook:remind_ops"], 1), ("package", TICKET, 1, True, ["hook:remind_ops"], 1)]
+    # the host's trial after finish: the ticket's attempt under the finished package is on record, nothing paid
+    (trialed,) = ledger_rows(a, "trialed")
+    assert (trialed["trial_fixed"], trialed["attempts"], trialed["passed"]) == ([TICKET], 0, True)
+    trials = rows_of_role(a, "trial")
+    assert [t.task_id for t in trials] == [TICKET, TICKET] and [t.success for t in trials] == [False, True]
+    assert ledger_rows(a, "declared")[-1]["scope"] == "invariant"
+    assert any(f"try of package on {TICKET} (try 1): ok, FAILED, acted ['hook:remind_ops']" in line
+               for line in debug.lines)
+    assert any(f"try of package on {TICKET} (try 2): ok, PASSED" in line for line in debug.lines)
+    # R could read the try's session afterwards
+    assert all(t.evidence or t.attempt_id for t in trials)
+
+
+def test_try_task_refuses_held_out_and_passing_tasks_and_packages_that_do_not_build(debug):
+    a = debug.a
+    rd = Round(a, 0, run_arm=None, out=quiet)
+    vctx = rd.vctx()
+    files = {p: t for p, t in rd.package.files.items() if p != MEMORY_PATH}
+    text, bad, opened = rd._try_task("package", files, HELD[0], vctx)
+    assert bad and text.startswith("AccessDenied") and opened is None
+    passing = next(t for t in STUDY if t != TICKET)
+    text, bad, _ = rd._try_task("package", files, passing, vctx)
+    assert bad and "not a studied task the working line fails" in text
+    broken = {**files, "manifest.json": "{"}
+    text, bad, _ = rd._try_task("package-9", broken, TICKET, vctx)
+    assert bad and "does not build" in text
+    # the cap: two tries of package on the ticket are on the ledger
+    text, bad, _ = rd._try_task("package", files, TICKET, vctx)
+    assert bad and text.startswith("refused: candidates/package was tried 2 time(s)")
+
+
 # ---------------------------------------------------------------------------- the session's edit reminders
 class Script:
     def __init__(self, *turns):
@@ -555,7 +616,7 @@ def test_the_research_sample_is_priced_after_the_screen_and_skipped_when_it_does
 
 def test_settings_v19_are_validated():
     s = Settings()
-    assert (s.trial_max_tasks, s.trial_max_rounds, s.trial_max_attempts, s.trial_min_fixes) == (4, 2, 12, 1)
+    assert (s.trial_max_tasks, s.trial_max_rounds, s.trial_max_attempts, s.trial_min_fixes) == (4, 2, 40, 1)   # v1.11: 12 -> 40
     assert s.regression_by_footprint and s.merge_min_acts == 1 and s.replay_sample == 12
     with pytest.raises(ValueError, match="trial_max_tasks"):
         Settings(trial_max_attempts=-1)
