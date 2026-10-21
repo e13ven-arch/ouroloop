@@ -30,7 +30,7 @@ from collections import Counter
 import pytest
 import rsi
 from rounds import ledger_rows, quiet, round_activity, round_state
-from scripted_r import HOOK_ENTRY, TOOL_ENTRY
+from scripted_r import WEAK_HOOK_CODE, HOOK_ENTRY, TOOL_ENTRY
 
 from ouroloop.activity import phases
 from ouroloop.activity.checks import startup_checks
@@ -837,7 +837,27 @@ def test_the_system_prompt_asks_for_the_two_scopes_only_with_two_packages_or_mor
     assert "The packages have two scopes" not in r.system_prompt()
 
 
-def test_a_digest_shrinks_its_writes_to_the_cap_and_keeps_the_checks():
+def test_a_candidate_r_built_and_did_not_hand_in_is_kept_for_the_next_round(tmp_path, fake_upstream):
+    """v1.11 (DESIGN §6.21): finance-v11 r0's session debugged a hold for 44 edits and finished with nothing — the
+    directory it wrote is kept on the ledger (`unfinished`, with its files and closing note), the round stops
+    no_candidate, and the next round's inputs carry the changed files under inputs/unfinished/<dir>/."""
+    s = round_activity(tmp_path, fake_upstream, "unfinished")
+    r = phases.round_(s.a, 0, out=quiet)
+    assert r.status == "stopped" and r.stop.startswith("no_candidate")
+    (row,) = ledger_rows(s.a, "unfinished")
+    assert row["dir"] == "package" and row["note"].startswith("Handing in nothing") and row["files"]
+    kept = s.a.objects.get(row["files"])
+    assert kept["middlewares/remind_ops.py"] == WEAK_HOOK_CODE
+    nxt = Round(s.a, 1, run_arm=None, out=quiet)
+    unfinished, files = nxt._unfinished_input()
+    (item,) = unfinished["items"]
+    assert item["dir"] == "package" and item["round"] == ROUND and item["note"].startswith("Handing in nothing")
+    assert set(item["changed_files"]) == {"manifest.json", "middlewares/remind_ops.py"}
+    assert files["unfinished/package/middlewares/remind_ops.py"] == WEAK_HOOK_CODE
+    assert Round(s.a, 0, run_arm=None, out=quiet)._unfinished_input()[0]["items"] == []    # not its own round's
+
+
+
     """`_fit` (IMPROVER §4, v1.5): the longest write's excerpt is halved first, never under MIN_EXCERPT; the request and
     the checks are kept whole; a row that cannot shrink any further is returned as it is."""
     from ouroloop.improver.evidence import MIN_EXCERPT, _fit

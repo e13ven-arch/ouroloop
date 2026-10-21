@@ -911,6 +911,42 @@ def test_v2b_reloads_the_package_for_every_task_so_no_state_leaks_between_attemp
     assert got["fired"] == [] and got["false_trigger_rate"] == 0.0
 
 
+def test_v2b_counts_a_claimed_task_where_the_hook_acted_in_one_of_rs_tries(ctx, parent):
+    """v1.11 (DESIGN §6.21): a real run outranks the replay — a hook that never acts in the replay passes V2b when R's
+    own try on the claimed task recorded it acting (VerifyContext.tried_acted); a try where it did not act counts
+    nothing."""
+    import dataclasses
+    silent = with_hook(parent, "def remind(ctx, event):\n    return None\n")
+    tried = dataclasses.replace(ctx, tried_acted={FAILING[0]: {"hook:remind_ops"}})
+    got = replay_check(silent, decl("hook", "on_finish"), tried)
+    assert got["passed"] and got["fired"] == [FAILING[0]] and "(1 of them in your tries)" in got["detail"]
+    other = dataclasses.replace(ctx, tried_acted={FAILING[0]: {"tool:post_channel_message"}})
+    assert not replay_check(silent, decl("hook", "on_finish"), other)["passed"]
+    assert not replay_check(silent, decl("hook", "on_finish"), ctx)["passed"]
+
+
+MODIFY_CODE = '''def tag(ctx, event):
+    if event["name"] == "api_fetch":
+        return {"args": {**event["args"], "tagged": True}}
+    return None
+
+
+def hold(ctx, event):
+    if event["name"] == "api_fetch" and event["args"].get("tagged"):
+        return {"block": {"reason": "tagged by the hook before me"}}
+    return None
+'''
+
+
+def test_the_replay_hands_a_modified_event_on_to_the_next_hook_as_the_seed_does(ctx, parent):
+    """v1.11: a before_tool hook that modifies the arguments is followed by one that sees them modified."""
+    hooks = [{"name": "tag", "site": "before_tool", "entrypoint": "middlewares/pair.py:tag"},
+             {"name": "hold", "site": "before_tool", "entrypoint": "middlewares/pair.py:hold"}]
+    files = rewrite(parent.files, lambda m: m["hooks"].extend(hooks), {"middlewares/pair.py": MODIFY_CODE})
+    got = replay_check(files, decl("hook", "before_tool"), ctx)
+    assert got["fired"] == list(FAILING) and got["false_trigger_rate"] > 0      # every attempt calls api_fetch
+
+
 def test_v2b_replays_only_an_enabled_changed_hook_at_the_declared_site(ctx, parent):
     elsewhere = replay_check(with_hook(parent, HOOK_CODE, site="after_turn"), decl("hook", "on_finish"), ctx)
     assert elsewhere == {"passed": False, "detail": "no hook of the candidate changed at on_finish"}

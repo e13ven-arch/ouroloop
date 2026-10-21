@@ -21,7 +21,7 @@ class Settings:
     audit_additive_only: bool = True             # v1.6：调 aux 的 hook 只能答 missing（fixed）
     audit_max_false_alarm: float = 0.25          # v1.6：V2d 预演里在通过题样本上报警的比例上限（cap）
     fixed_per_round: int = 2                     # 固定代码的候选（快照、升级技能、删除）每轮上限
-    session_max_turns: int = 40; session_max_edits: int = 48
+    session_max_turns: int = 60; session_max_edits: int = 80            # v1.11：40 / 48 → 60 / 80
     session_max_read_bytes: int = 65536; session_max_read_total: int = 196608
     session_compact_tokens: int = 120000
     diagnose_max_cases: int = 60; diagnose_successes: int = 6
@@ -32,7 +32,7 @@ class Settings:
     l5_per_round: int = 1                        # 一轮至多一处 agent/config/vendor 改动
     stall_rounds: int = 3
     hook_aux_calls: int = 2                      # on_finish / after_turn 的 hook 每次尝试最多调 aux 模型的次数
-    toolcheck_min_pass: int = 2; replay_min_triggers: int = 2; reach_min_tasks: int = 2; reach_min_score: float = 0.2
+    toolcheck_min_pass: int = 2; replay_min_triggers: int = 1; reach_min_tasks: int = 2; reach_min_score: float = 0.2   # v1.11：replay_min_triggers 2 → 1
     replay_max_false_trigger: float = 0.25       # v1.7：V2b 回放里 hook 在通过题样本上的触发率上限（cap；DESIGN §6.17）
     holdout_share: float = 0.4                   # 留出的 train 题：R 看不到；V3 在全部留出题上筛
     accept_min_net_flips: int = 1                # 留出筛选的接受：可复现修复 − 可复现退步 ≥ 此（v1.7：改在可复现的计数上）
@@ -415,7 +415,7 @@ def export_policy(activity) -> str;  def import_policy(activity, policy_ref) -> 
 
 ## 13 测试
 
-- v1.11：脚本化 R 的模式 `debug`——写弱 hook，`try_task` 票据题：对比文字说 FAILED、hook 出手、W 的失败断言；改成能用的 hook 再 try：PASSED；finish 后宿主的试跑按记录免付（attempts 0），包筛选装入；台账 `tried` 两行；留出题 `AccessDenied`；没有候选目录时拒绝；尝试上限用完拒绝；同一道题超过 `try_per_task` 拒绝；`try` 计入 `_trial_used`；对比文字把通过标为未确认。
+- v1.11：脚本化 R 的模式 `debug`——写弱 hook，`try_task` 票据题：对比文字说 FAILED、hook 出手、W 的失败断言；改成能用的 hook 再 try：PASSED；finish 后宿主的试跑按记录免付（attempts 0），包筛选装入；台账 `tried` 两行；留出题 `AccessDenied`；没有候选目录时拒绝；尝试上限用完拒绝；同一道题超过 `try_per_task` 拒绝；`try` 计入 `_trial_used`；对比文字把通过标为未确认。V2b 把 R 的 try 里 hook 出手的认领题计为触发（`tried_acted`）；回放把 modify 后的事件传给下一个 hook；R 写了没交的目录进台账 `unfinished`，下一轮的 `_unfinished_input` 把改过的文件放到 `inputs/unfinished/<dir>/`。
 
 - v1.10：回放保真——假上游一条 train 轨迹的 `attempt_events` 按记录顺序交错六个站点，每个 before_tool / after_tool 事件的 `view_events` 只含它之前的 broker 调用；一个两 hook 的包（before_run 记状态、before_tool 只在状态与 `view["events"]` 都成立时 hold）在 V2b 里于声称题出手（旧回放里永远不出手）；每道题重载后前一道题的状态不泄漏；V2d 与合并回放照旧通过。分歧优先——W 有过有败的题在 `failures.json` 里 `divergent`、带 `passing_session`、排在顽固题之前，`readable` 含该 session。scope——声明的 `scope` 只收两个值；`packages_per_round` ≥ 2 时提示词含两段 scope 的要求、1 时不含；`declared` / `screened` 行与记分板带 scope。裁决——`component_verdicts` 对出手零翻转的组件给 `no_effect`、对有退步的给 `hurt`、没出手的 `unobserved`，`screened` 行与投影里只有计数。
 

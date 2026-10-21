@@ -92,6 +92,8 @@ class VerifyContext:
     hook_aux_calls: int = 2             # K's improver.hook_aux_calls: an audit's calls per attempt in the dry run
     merge_sessions: dict = field(default_factory=dict)      # v1.9: frontier entry id -> {task: session of the
                                         # candidate's passing attempt on each confirmed fix} (host only; merge.py)
+    tried_acted: dict = field(default_factory=dict)         # v1.11: studied task -> component keys that acted in R's
+                                        # own tries this round (a real run counts for V2b as a trigger)
 
 
 def run_ladder(files: dict[str, str], decl: Declaration, ctx: VerifyContext, *, rungs: tuple | None = None) -> Verdict:

@@ -563,7 +563,8 @@ class Round:
                              study_tasks=study, cause_ids=cause_ids,
                              aux=self.researcher("verify"), hook_aux_calls=int(self.s.hook_aux_calls),
                              merge_sessions={e.id: dict(e.fixed_sessions)
-                                             for e in self.frontier.active(self.line)})     # v1.9
+                                             for e in self.frontier.active(self.line)},     # v1.9
+                             tried_acted=self._tried_acted())                               # v1.11
 
     def _archive(self, *args, **kw) -> dict:
         return self.archive.put(self.i, *args, tag=self.tag, **kw)
@@ -663,6 +664,10 @@ class Round:
         out = {name: json.dumps(v, ensure_ascii=False, indent=1, default=str) for name, v in files.items()}
         out["playbook.md"] = read_playbook(self.a.root)
         out["package_api.md"] = api
+        unfinished, carried = self._unfinished_input()                  # v1.11
+        if unfinished["items"]:
+            out["unfinished.json"] = json.dumps(unfinished, ensure_ascii=False, indent=1)
+            out.update(carried)
         return out, readable
 
     # ------------------------------------------------------------------ v1.8: what R reads of regressions, the frontier
@@ -913,6 +918,25 @@ class Round:
                 if files is not None:
                     fetched.append((decl, self.with_memory(files)))
                     self._declared_row(decl)         # on the ledger before its trials (v1.9)
+            # v1.11 (DESIGN §6.21): a directory R wrote and did not hand in is kept with its closing note, for the
+            # next round to continue from (finance-v11 r0: a hold debugged for 44 edits, then finish([]))
+            declared_dirs = {d.dir for d in result.declarations}
+            note = next((m.get("text") or "" for m in reversed(session.messages) if m.get("role") == "assistant"
+                         and (m.get("text") or "").strip()), "")
+            for d in session.dirs:
+                if d in declared_dirs:
+                    continue
+                left, _ = tree.fetch(d)
+                if left is None:
+                    continue
+                parent = {p: t for p, t in self.package.files.items() if p != MEMORY_PATH}
+                if all(parent.get(p) == t for p, t in left.items()) and set(left) == set(parent):
+                    continue                        # an untouched copy of the package
+                self.ledger.row("unfinished", round_id=self.round_id, line=self.line, dir=d,
+                                files=self.a.objects.put_json("candidate_files", self.with_memory(left)),
+                                note=note[:4000], reason=str(session.ended or "finished without it")[:300])
+                self.out(f"round      {self.round_id}: candidates/{d} was built and not handed in: kept for the next "
+                         f"round")
             # v1.6 (DESIGN §6.16): the focus names several causes and R handed in one package — on the ledger
             if len(fetched) == 1 and len(self.focus().ranked) >= 2 and self.s.packages_per_round > 1:
                 self.ledger.row("single_package", round_id=self.round_id, line=self.line, dir=fetched[0][0].dir,
@@ -963,6 +987,37 @@ class Round:
         self._save()
 
     # ------------------------------------------------------------------ v1.11: R's own try of a package on one task
+    def _tried_acted(self) -> dict:
+        """studied task -> the component keys that acted in R's tries this round (VerifyContext.tried_acted)."""
+        out: dict = {}
+        for r in self.ledger.rows(stage="tried", round_id=self.round_id):
+            if r.get("outcome") == "ok" and r.get("task"):
+                out.setdefault(r["task"], set()).update(r.get("acted_components") or ())
+        return out
+
+    def _unfinished_input(self) -> tuple[dict, dict]:
+        """What earlier rounds' sessions built and did not hand in (ledger `unfinished`, the latest per dir of this
+        line): -> (inputs/unfinished.json, {inputs/unfinished/<dir>/<path>: text})."""
+        latest: dict = {}
+        for r in self.ledger.rows(stage="unfinished"):
+            if r.get("line") in (None, self.line) and r.get("round_id") != self.round_id and r.get("files"):
+                latest[r["dir"]] = r
+        items, files = [], {}
+        for d, r in sorted(latest.items()):
+            try:
+                tree = self.a.objects.get(r["files"])
+            except Exception:  # noqa: BLE001 - an object gone is nothing to show
+                continue
+            parent = {p: t for p, t in self.package.files.items() if p != MEMORY_PATH}
+            changed = sorted(p for p, t in tree.items() if parent.get(p) != t)
+            for p in changed:
+                files[f"unfinished/{d}/{p}"] = tree[p]
+            items.append({"dir": d, "round": r.get("round_id"), "changed_files": changed,
+                          "note": str(r.get("note") or "")[:4000]})
+        return {"note": "what the last session built in these candidate directories and did not hand in, with its "
+                        "closing note; the changed files are under inputs/unfinished/<dir>/ — continue from them "
+                        "when the mechanism is right, or start over", "items": items}, files
+
     def _tries_of(self, dir_name: str, task_id: str) -> int:
         return sum(1 for r in self.ledger.rows(stage="tried", round_id=self.round_id)
                    if r.get("dir") == dir_name and r.get("task") == task_id)

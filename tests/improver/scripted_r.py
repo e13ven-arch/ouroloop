@@ -128,7 +128,8 @@ MECHANISM = {"tool": "a package tool posts the requested #ops message so the age
              "merge_lost": "an on_finish hook pushes back only where the request says never and #ops",
              "trial": "an on_finish hook asks the agent to double-check the #ops message before it finishes",
              "trial_bad": "an on_finish hook asks the agent to double-check the #ops message before it finishes",
-             "debug": "an on_finish hook pushes back while a requested #ops post is missing"}
+             "debug": "an on_finish hook pushes back while a requested #ops post is missing",
+             "unfinished": "an on_finish hook pushes back while a requested #ops post is missing"}
 TOOL_CODE_2 = TOOL_CODE.replace("posted to the ops channel", "sent to #ops")     # the same tool, another body
 
 
@@ -246,6 +247,16 @@ class ScriptedR:
             return self._trial(turns, manifest, cause_ids, tasks, messages)
         if self.mode == "debug":
             return self._debug(turns, manifest, cause_ids, tasks)
+        if self.mode == "unfinished":      # v1.11: writes the hook, hands in nothing, leaves a note
+            manifest["hooks"] = [*manifest.get("hooks", []), HOOK_ENTRY]
+            if turns == 1:
+                return self._calls(("write_file", {"path": "candidates/package/middlewares/remind_ops.py",
+                                                  "text": WEAK_HOOK_CODE}),
+                                   ("write_file", {"path": "candidates/package/manifest.json",
+                                                  "text": json.dumps(manifest, indent=1) + "\n"}))
+            turn = self._calls(("finish", {"packages": []}))
+            turn.text = "Handing in nothing: the hook pushes back but the agent ignores it; next round, change its words."
+            return turn
         files, components = {}, []
         if self.mode == "partial":
             manifest["hooks"] = [*manifest.get("hooks", []), HOOK_ENTRY]

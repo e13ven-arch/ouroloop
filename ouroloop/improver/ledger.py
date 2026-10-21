@@ -19,7 +19,7 @@ STAGES = ("measured", "diagnosed", "focused", "declared", "verified", "audited",
           "vocabulary_added", "l6_unavailable", "stopped", "playbook",
           "partial", "frontier_pruned", "merged", "abandoned",      # v1.8: the frontier's in and out
           "trialed", "session_ended",                                # v1.9: the in-sample trial, a session at a cap
-          "tried")                                                   # v1.11: R's own try of a package on one task
+          "tried", "unfinished")                                     # v1.11: R's own try; a candidate R did not hand in
 # What R reads of a row (the projection): train facts and counts. Anything else of a row stays with the host.
 TASK_LISTS = ("predicted_affected", "fixed", "regressed", "research_regressed", "unconditioned_regressed",
               "trial_fixed", "trial_failed", "trial_tasks")       # the projected fields naming tasks
@@ -33,7 +33,7 @@ PROJECTED = ("id", "stage", "round_id", "candidate", "dir", "cause", "cause_id",
              "attempts", "protected", "protected_passed",           # v1.8
              "unconditioned_regressed", "acted", "footprint_share", "kept_fixes", "unregistered_hooks",
          "scope", "verdicts",                                  # v1.10
-         "task", "iteration", "acted_components",              # v1.11
+         "task", "iteration", "acted_components", "note", "files",  # v1.11
              "iteration", "trial_tasks", "trial_fixed", "trial_failed", "turns", "edits", "declared")   # v1.9
 
 

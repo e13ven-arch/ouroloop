@@ -24,7 +24,11 @@
 
 **测试。** 脚本化 R 的 `debug` 模式：弱 hook → try 票据题（FAILED，hook 出手、失败断言、W 的读数都在对比里）→ 换能用的 hook → try（PASSED，标"一次 rollout"）→ 第三次 try 被 `try_per_task` 拒 → finish 带 `scope`；宿主试跑 attempts 0（读记录）、包筛选装入；`tried` 两行；留出题 / W 通过的题 / 不能 build 的包被拒。`tests/improver` 369 passed（四处旧断言随载体表、默认值与提示词措辞改）。默认全量与 Docker 全量见下方补记。
 
-**下一步。** 开 finance-v11（同 v10 的形状，从 v9 导入），分阶段跑 r0：阶段 A 看 R try 了哪些题、对比里出没出手、交的是不是 hold；再决定付不付筛选。
+**finance-v11 r0 阶段 A（`834a786`，$3.39；Docker 全量 1,631 passed 后启动）。** 诊断 37 道 12 类。R 第一次就交了 hold：`excluded_write`（before_tool；记录写入碰到 agent 自己在 plan_changes 里排除的项时暂停一次，引用计划里那条，原样重发放行；条件只来自本次运行的计划；docstring 写明 zoom_deal_review 与 capex_approval 的时刻）。一次 try（zoom）：PASS 1.0 对 W 的 FAIL 0.8，但 hook 没出手——agent 这次自己没建 TechStart 的会议（W 那次建了两个删了一个）；对比如实标成无足迹的通过。此后 R 把 44/48 次编辑花在给回放加 DIAG 开关上：V2b 要 ≥ 2 道认领题出手，回放里只有 zoom（capex 要靠表格行号匹配没做成；training_compliance、safety_cert 两道 agent 没把人列进排除项，机制够不到），29 回合后 finish 了空列表并留了说明；写了的代码随之丢掉。R 自己的复盘也对：先改了三处没证据的、把 search_trace 的高亮括号读成了回放数据。
+
+**第二批修订（同日，代码直接改在 `m1-automationbench`）。** (1) R 的 try 里 hook 真出手的认领题计入 V2b（`VerifyContext.tried_acted`）；(2) `replay_min_triggers` 2 → 1；(3) 会话 40 回合 / 48 编辑 → 60 / 80；(4) 没交的候选目录存档（台账 `unfinished`，文件 + 收尾说明），下一轮 `inputs/unfinished.json` 与 `inputs/unfinished/<dir>/`，提示词要求先读；(5) 回放把 modify 后的事件传给下一个 hook。提示词另加"回放弱于 try、看不懂就 try、别把编辑花在诊断上、做成一道题就交"。测试：V2b 计 try 的出手、modify 传递、`unfinished` 模式（round 0 停 `no_candidate`、台账带文件与说明、round 1 的输入带改过的文件）。
+
+**下一步。** finance-v12（v11 的形状，从 v9 导入；v11 的 K 又打不开），分阶段跑 r0。
 
 ---
 

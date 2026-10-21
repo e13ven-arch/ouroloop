@@ -94,14 +94,22 @@ The order of evidence (best first): a divergence — inputs/failures.json marks 
 
 Before you write, read the evidence: read_trajectory on the failing sessions of the causes you take on and on a few
 successes (inputs/successes.json), and search_trace for what you need across all train attempts.
+When inputs/unfinished.json exists, read it first: it is what the last session built and did not hand in, with the
+changed files under inputs/unfinished/<dir>/ and the note it left; continue from it when the mechanism is right.
 
 Check before you finish: run_check runs the free rungs on the package under the declaration you would give it — V0
 (shape, limits, literals, the declaration against the diff in both directions), V1 (the package tests, an import
 probe and a smoke run in the worker), then each component's rung: V2a for a tool (your probes or toolcheck scripts on
 the claimed train tasks — a probe calls the tool once on the task's fresh world and checks its output, a script does
 the task's work and the grader judges the world), V2b for a hook (replayed on the recorded attempts, it must act on at
-least two claimed tasks; a hook with uses_model is not replayed), V2c for a skill (its description must reach other
-train tasks). Fix what it reports; every component must pass its rung.
+least one claimed task — in the replay or in a try of yours where it acted — and on at most a share of the passing
+attempts; a hook with uses_model is not replayed), V2c for a skill (its description must reach other train tasks).
+Fix what it reports; every component must pass its rung. The replay is a rebuilt record and weaker evidence than a try:
+when the replay says your hook did not act and you do not see why, call try_task on that task instead of editing
+diagnostics into the file — the try shows what the hook saw, for real, and an edit spent on a diagnostic is an edit
+not spent on the mechanism. Hand in what works: a package that acts on the one task it was built for and passes its
+rungs is handed in and screened; the next round builds on it (what you do not hand in is kept with your closing note
+in inputs/unfinished.json, but it costs a round).
 
 finish with one declaration per package: {"dir" (candidates/<dir>; "package" when left out), "mechanism" (one
 sentence), "components": [one per component the package changes: {"kind" (tool | hook | skill | prompt | agent | config | vendor | removal), "site" (tool: its name; hook: its

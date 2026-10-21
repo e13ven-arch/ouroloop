@@ -37,8 +37,8 @@ class Settings:
     audit_additive_only: bool = True             # v1.6: a hook that called the model answers {"missing": [...]} only
     audit_max_false_alarm: float = 0.25          # v1.6: V2d — the share of passing attempts an audit may fire on
     fixed_per_round: int = 2                     # the fixed code's candidates per round (snapshot, promotions, removals)
-    session_max_turns: int = 40
-    session_max_edits: int = 48
+    session_max_turns: int = 60                  # v1.11: 40 -> 60, 48 -> 80 (finance-v11 r0: R ran out of edits
+    session_max_edits: int = 80                  # debugging its hold and handed in nothing)
     session_max_read_bytes: int = 65536          # one read (read_trajectory or read_file)
     session_max_read_total: int = 196608         # all reads of a session: the transcript is re-sent every turn
     session_compact_tokens: int = 120000         # past this many input tokens the oldest outputs are elided
@@ -52,7 +52,7 @@ class Settings:
     stall_rounds: int = 3
     hook_aux_calls: int = 2                      # aux model calls an on_finish or after_turn hook may make per attempt
     toolcheck_min_pass: int = 2
-    replay_min_triggers: int = 2
+    replay_min_triggers: int = 1                 # v1.11: 2 -> 1; a try where the hook acted counts too (DESIGN §6.21)
     replay_max_false_trigger: float = 0.2        # v1.7: V2b — the share of the passing attempts replayed a hook may act on
                                                  # (v1.8: from 0.25; the hook finance-v7 installed was near 1.0)
     reach_min_tasks: int = 2

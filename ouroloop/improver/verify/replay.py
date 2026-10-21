@@ -216,6 +216,13 @@ def replay_task(session, files: dict[str, str], manifest: dict, events: list[dic
                     return True, ""
                 if site in FIRST_WINS and action in ("block", "pushback"):
                     break
+                # v1.11: as the seed does, a hook that modified the arguments or the output hands the next hook the
+                # modified event
+                if action == "modify" and isinstance(value, dict):
+                    if site == "before_tool" and isinstance(value.get("args"), dict):
+                        sent = {**sent, "args": dict(value["args"])}
+                    elif site == "after_tool" and isinstance(value.get("output"), str):
+                        sent = {**sent, "output": value["output"]}
         return False, ""
     finally:
         episode.close()
@@ -255,13 +262,19 @@ def replay_check(files: dict[str, str], decl, ctx) -> dict:
             errors += [error] if error else []
     finally:
         session.close()
+    # v1.11 (DESIGN §6.21): a claimed task where the hook acted in one of R's own tries this round is a trigger — a
+    # real run outranks the replay
+    keys = {f"hook:{n}" for n in at_site}
+    tried = sorted(t for t in claimed if set((ctx.tried_acted or {}).get(t) or ()) & keys and t not in fired)
+    fired = sorted([*fired, *tried])
     rate = round(len(sample_fired) / len(ctx.passed_sessions), 4) if ctx.passed_sessions else None
     need = int(ctx.settings.replay_min_triggers)
     cap = float(getattr(ctx.settings, "replay_max_false_trigger", 1.0))
     noisy = rate is not None and rate > cap
     passed = len(fired) >= need and not errors and not noisy
     detail = (f"the hook acts on {len(fired)} of {len(claimed)} claimed failing tasks (at least {need}): "
-              f"{fired}; on {len(sample_fired)} of {len(ctx.passed_sessions)} passing attempts (rate {rate}, at most "
+              f"{fired}" + (f" ({len(tried)} of them in your tries)" if tried else "")
+              + f"; on {len(sample_fired)} of {len(ctx.passed_sessions)} passing attempts (rate {rate}, at most "
               f"{cap})"
               + (f"; it acts on too many passing attempts ({sample_fired}): a hook acts when something is wrong, and "
                  f"a text the agent should see every time is a prompt component" if noisy else "")

@@ -522,6 +522,8 @@ finance-v10 r0 的阶段 A（2026-10-21，$12.96 后停掉）：R 对着同一�
 | 载体表 | `allocate.kinds_for`：不可机械化的簇也开放 hook（排在文字载体前）；`require_code` 不变 |
 | finish 之后 | 宿主的试跑照旧（§6.19）：R 自己 try 过的题按记录免付；`trial_min_fixes` 的门不变 |
 
+**finance-v11 r0 阶段 A 的读数（2026-10-21，$3.39）与第二批修订。** R 第一次就交了 hold（`excluded_write`：记录写入碰到 agent 自己在 plan_changes 里排除的项时暂停一次，条件只来自本次运行的计划，docstring 写明追溯的时刻），try 了 zoom_deal_review 一次：通过但 hook 没出手（agent 这次自己没建被排除的会议），对比如实说"无足迹的通过"。之后 R 把 44/48 次编辑花在给**回放**加诊断开关上——V2b 要 hook 在 ≥ 2 道认领题出手，它在回放里只做到 zoom 一道（capex 要靠表格行号匹配，没做成；另两道 agent 根本没把人列进排除项，机制够不到）——最后 finish 了空列表，写了的代码随之丢掉。五处修订：(1) R 的 try 里 hook 真出手的认领题计入 V2b（`VerifyContext.tried_acted`，真跑优于回放）；(2) `replay_min_triggers` 默认 2 → 1（floor），试跑的门（`trial_min_fixes`）已经守着钱；(3) 会话上限 40 回合 / 48 次编辑 → 60 / 80（cap）；(4) R 写了但没交的候选目录存档（台账 `unfinished`：文件、R 的收尾说明），下一轮的 `inputs/unfinished.json` 与 `inputs/unfinished/<dir>/` 带进去，提示词要求先读；(5) 回放里 modify 的参数 / 输出传给后面的 hook（与种子一致）。提示词另加：回放比 try 弱，看不懂回放就 try，不要把编辑花在诊断上；做成一道题的包就交。
+
 **与 Harness² 的异同，与稳定性（用户 2026-10-21 问）。** 它每道题只走一遍固定循环：参考执行 → 候选各跑一次 → 对着参考执行合成；明说"单次 rollout 的候选结果是弱证据"。我们学它的 probe 与对比，不学无界的逐题循环：同一道题至多两次 try，对比文字把通过标成未确认，机制仍按 cause 写。接受路径一处不加：留出、两次读数确认、零退步（§6.17）；try 不记功、不进估值。新引入的不稳定只有 try 的花费，有 `trial_max_attempts` 封顶、每次核价。
 
 **不变的。** 接受仍只看留出（§6.6、§6.7）；R 看不到留出题；try 的结果不记功、不进估值。
