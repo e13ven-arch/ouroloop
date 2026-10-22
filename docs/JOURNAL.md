@@ -14,7 +14,11 @@
 
 **测试（假上游 rsi 域，`tests/activity/test_activity_repeat.py` 5 个）。** freeze 封存计划（3 道 test 题 × 3 次，两臂，base = 种子）不读 test；学习臂：notify 题 e1 FAIL → R 读 task.json 与库索引、写 hook、try 一次（probe 出手，有 Slack 写入）→ composer 采用 → e2、e3 PASS，库 lib1 带教训与改动文件；update 题 R 交空、保留 base；禁止发帖的题 probe 后 composer 保留 base；对照臂 9 次都跑 base、notify 三次 FAIL；报告 learn [2, 3, 3] 对 control [2, 2, 2]，learn−control e3 +33.3 点；再跑一遍 $0；无计划拒绝、未知臂拒绝；R / composer / reflector 的输入里没有评分、断言、grading。
 
-**下一步。** finance-v14：`[repeat] split = "train", max_tasks = 20` 预演（约 $110）→ 读数合格（学习臂 e3 − e1 减对照臂的差 ≥ 3 道）→ 改 `split = "test"` 重冻结、跑学习臂（约 $275）与对照臂（约 $90）→ 报告。每步先批。
+**finance-v14 预演，学习臂跑到第 3 道失败题停（2026-10-22，7 道题，$31.59；`142c048`，Docker 全量 1,638 passed 后启动）。** 完全无反馈（Harness² 的严格设定：两次之间 R 只拿轨迹）。逐题：commission_calculation 0.78 → R 读完说"都做对了"交空 → 三次 0.78；xero_bank_reconcile 1.0 → R 仍写了两个候选、composer 采用技能（理由：候选没动 E5–E6 两行）→ 三次 1.0；**invoice_file_organization 0.2 → R 从轨迹看出表头被覆盖（PUT A1:E1、清空 A5:E5）、写了表头保护的 hold、probe 出手、采用 → 第 2 次 1.0 → 第 3 次 0.2**：agent 换了条路（10 步、没先读表就写），hold 以"读到过表头"为条件、没有证据没出手；cash_flow_forecast 1.0 → 保留；invoice_dispute 1.0、contract_billing 1.0 → R 各写技能、composer 都采用（理由居然是"两次写入完全一样"）→ 没退步；xero_bill_entry 0.86 → R 交空。会话每题 $1～8，通过的题也照开。
+
+**读到的。** (1) 回路在真题上闭环了：读轨迹 → 候选 → probe → 采用 → 本题的 harness → 库，之前所有活动都没有这一步。(2) 无反馈能学到的只有轨迹里可见的破坏（invoice：1/3 道失败题），"只差一项"的 0.78、0.86 R 判不出；(3) 一次通过不是修好：hold 的证据条件（读过表头）在 agent 跳过读的路径上失效，第 3 次又错；(4) composer 在通过的题上偏向采用，连"无差异"也采用——没退步但白花钱、带风险；(5) 钱比预估高一倍（通过题上的会话）。结论：完全无反馈在这个基准上出不了可对外讲的数；改成"退单一比特"（第 1 次没被接受才开会话、R 知道有错去找、通过的题跳过），对外写明只用了这 1 比特；composer 无差异一律保留；提示词让 R 把"缺读"也当证据。
+
+**下一步。** 第二刀 $0 → finance-v15 预演（train 20 道，约 $50）→ test。
 
 ---
 
