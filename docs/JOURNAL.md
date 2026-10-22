@@ -14,7 +14,9 @@
 
 **改了什么。** `Settings` 的上限：`accept_max_regressions` 0 → 3、`accept_floor_tolerance` 1 → 3、`l5_per_round` 1 → 3（都是 cap，配置可再收紧；测试的 preset 与直接构造 `Settings()` 的筛选测试显式钉回严格值，它们描述的是 v1.7 的规则）。两次读数确认、按足迹、前沿与合并、防泄漏三条都不变。finance-v13（`finance-v13.toml`）：只跑 finance，两份划分 50/50（同 v5），种子 v9 的工作线（划分不同，基线要付 50 道约 $30），8 轮、patience 3、每轮两个 scope 的包、R 的逐题 probe；轮次结束后 release → freeze（final 计划）→ evaluate（50 × 3 × 2 臂）→ report。预算约 $600 一次批准。
 
-**下一步。** 用户批准后 `--phase cycle --until round-7`，每轮读数实时推送；然后 final。
+**finance-v13 基线与 r0（2026-10-22，用户"一点点跑，不要一次性跑大量的预算"）。** 基线 $37：W0 在 finance train 35/50（70%，部分得分 0.890）——只跑 finance 的起点比三域混跑高得多；研究部分 30 道（失败 8）、留出 20 道（过 13）。r0（$44）：诊断 8 道 5 类；R 交了 `owed`（before_model hook：请求点名的邮箱若没收到任何成功写入，finish 被推回后加一条"收件人仍该收到一条引用文档原话的通知，不带被扣住的数字"）与 `policy_routing`（v12 技能的后继）。R 的 try：owed 在 financial_ratio_analysis 上 0.0 → 1.0 有足迹（v12 技能只修到 0.75 的那道）；技能 bad_debt 第一次没翻、改后翻、grant_expense 没翻。宿主试跑 1/1 与 1/3，两包都进筛选。**筛选：零可复现翻转**——owed 在留出 20 道上一次都没出手（触发情形没碰上），2 过 1 退全无足迹；技能 20/20 读到、修 2 退 2 候选，确认后 3 道噪声、其余未复现。两个不同的包在 po_three_way、xero、prepaid、expense_policy_violation 上同向翻，W 补读又翻回：这 20 道留出里至少 4 道 W 自己不稳，每次筛选约 3 道噪声翻转，确认读数全拦住了。松开的接受规则没有用武之地：没有真翻转可接受。累计 $74.40。
+
+**下一步。** 用户定要不要 r1（约 $45）；train 只有 15 道失败题、研究部分 8 道，每轮能确认的真翻转目前是 0。
 
 ---
 
