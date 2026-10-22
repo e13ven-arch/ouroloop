@@ -88,3 +88,8 @@ max_probes = 4          # the learn arm's extra executions a task, at most
 scope_id = "finance-v14"
 seed_from = "workspace-finance-v9"
 seed_line = "working"
+# frozen 2026-10-22 on stage 4o's code: the seed is finance-v9's working line (finance-v8's package e38c14942fbf);
+# the finance two-way split; the repeat plan: the first 20 train tasks in the stream's order x 3 encounters, both arms
+core_ref = "core:sha256:be28ef043a21cb6e676afd8afbc672b8461eb688b601706cb09da7a67f0e0cf4"
+split_ref = "3b959d143f9d8468"
+repeat_plan_ref = "repeat_plan:sha256:8f455f5eab4d888abf9a5f2bfc1bcf2b8a2598a86a60c11bec411a8afb590882"
