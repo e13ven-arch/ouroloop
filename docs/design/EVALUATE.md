@@ -142,6 +142,26 @@ v1.1 每轮一次 gate；v1.2 活动内的接受由改进器的留出筛选决�
 - 流式的数（v1.3，DESIGN §6.13）：`--phase stream` 的每道题只计首遇那一次；报告按批给首遇通过率、部分得分、每次尝试成本，整段的首遇通过率与前后半段之差是学习曲线。test 段流式跑时，这就是 final：计划先封存，题按序计分，计过分的题才对 R 可读；不再另跑两臂的 final。
 - `run_final` 先打印预计花费与 final 的空间（份额加根的空余，§9），装不下就拒绝；每臂每题每次都是独立尝试；续跑只跑缺的；完成后 `report` 读汇总，披露该域 test 的读取次数。
 
+## 6b 重复流（v2.0，DESIGN §6.23）
+
+对外的第二个数、最后一版的主数：同一请求再次到来时 agent 用自己上次的经验修正过的 harness 去做，报"首次通过率 → 稳态通过率"，W0 原样重复作对照臂。
+
+```python
+# evaluate/repeat.py
+@dataclass(frozen=True)
+class RepeatPlan(Record): experiment_id; tasks: tuple; encounters: int = 3; base: str; arms: tuple = ("learn", "control"); split: str = "test"; split_hash; core_ref; max_infrastructure_retries; max_probes: int = 4
+def seal(plan, root, objects) -> dict           # rsi/repeat/<id>.json；事件 repeat_sealed；同 id 另一个计划被拒
+def scored(events, *, plan_ref) -> dict         # {arm: {task: {encounter: {passed, partial_credit}}}}，读 repeat_scored 事件
+def summary(table, *, encounters) -> dict       # 每臂每次的 tasks / passed / pass_rate / partial_credit
+def paired(table, *, families, subject, control, seed, replicates) -> dict   # (臂, 次) 对 (臂, 次) 的配对差，按族重采样
+```
+
+- **计划**：`freeze` 在配置有 `[repeat]` 表时封存（`encounters` 3、`split` test | train、`max_tasks`、`max_probes` 4、`arms`），`[rsi] repeat_plan_ref` 记下并提交；第一次 test 尝试在它之后（规则 6）。`tasks` 是该 split 按流序的题（`[final] domains` 限域）。
+- **臂**：`learn`——第 1 次跑 base（计划里的 release：发布线或种子），两次之间 `improver/repeat.adopt` 只凭这条轨迹（不读评分）采用一个包或保留 base，第 2～E 次用这道题自己的包；`control`——每次都跑 base。两臂各自的账户 `{scope}:repeat-<arm>`。
+- **记录**：每次计分写一条 `repeat_scored`（arm、task、encounter、passed、partial_credit、attempt、package）；采用写 `repeat_adopted` / `repeat_kept`（task、choice、why、probes、candidates、entry、package）。probe 的尝试 role `probe`，不是 encounter，报告不计。续跑按 run 名与题免付。
+- **报告**：每臂每次的通过率；`learn:eE-e1`、`control:eE-e1`、`learn-control:eE`、`learn-control:e1` 四个配对差（点数、区间、题数、族数）；采用数、保留数、库条目数；`complete` 要两臂每题每次都有读数。
+- **防泄漏**：R、composer、reflector 的输入里没有评分、断言、grading（`improver/repeat.digest` 只有调用、错误标记、hook、写入、技能、最后的话）；轨迹经 `TraceStore.allow` 只对本题的会话放行；test 题的评分行只由宿主在 encounter 之后读。
+
 ## 7 发布与装入
 
 - `Release` 三元组（CONTRACTS §5）。装入 = `Releases.install(candidate_release, receipt_ref, expected_parent=active.ref)`，CAS：active 不是期望的父就拒绝；`operation_id` 幂等。v1.2：`reason` 有 `seed`、`screen`（留出筛选接受，工作线）、`gate`（活动末发布，`promote`）、`rollback`、`import`；`rsi/active.json` 是工作线，`rsi/released.json` 是发布线（final 与导出只读它）。

@@ -134,10 +134,11 @@ class CodingSession:
     tests; `readable` the train sessions read_trajectory may open; `kinds` the component kinds K allows."""
 
     def __init__(self, *, researcher, work: WorkTree, trace, check, tests, settings, system: str, inputs: dict,
-                 readable, kinds, merge_ids=(), tryer=None):
+                 readable, kinds, merge_ids=(), tryer=None, require_causes: bool = True):
         self.researcher, self.work, self.trace = researcher, work, trace
         self.check, self.tests, self.s = check, tests, settings
         self.tryer = tryer                          # v1.11: try_task -> (text, is_error); None: the tool is refused
+        self.require_causes = require_causes        # v2.0: the repeat loop has no causes (DESIGN §6.23)
         self.n, self.system, self.inputs = max(int(settings.packages_per_round), 1), system, inputs
         self.readable, self.kinds = set(readable), tuple(kinds)
         self.merge_ids = tuple(merge_ids)          # v1.8: the frontier entries a declaration's merge_of may name
@@ -329,7 +330,8 @@ class CodingSession:
             return f"at most {self.n} candidate package{'s' if self.n > 1 else ''} this round"
         problems, seen = [], set()
         for i, item in enumerate(raw):
-            decl, why = read_declaration(item, dirs=self.dirs, kinds_allowed=self.kinds, merge_ids=self.merge_ids)
+            decl, why = read_declaration(item, dirs=self.dirs, kinds_allowed=self.kinds, merge_ids=self.merge_ids,
+                                         require_causes=self.require_causes)
             if why:
                 problems.append(f"packages[{i}]: {why}")
             elif decl.dir in seen:
@@ -343,7 +345,8 @@ class CodingSession:
 
     def _finish(self, args: dict) -> tuple[str, bool]:
         for item in args["packages"]:
-            decl, _ = read_declaration(item, dirs=self.dirs, kinds_allowed=self.kinds, merge_ids=self.merge_ids)
+            decl, _ = read_declaration(item, dirs=self.dirs, kinds_allowed=self.kinds, merge_ids=self.merge_ids,
+                                       require_causes=self.require_causes)
             if decl.dir not in self.declarations:          # a revision changes files, never a declaration
                 self.declarations[decl.dir] = decl
         return "declared: " + (", ".join(self.declarations) or "nothing"), False

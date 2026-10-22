@@ -209,6 +209,36 @@ def stream_report(activity) -> dict | None:
             "batches": batches, "first_encounter": state.get("first_encounter")}
 
 
+def repeat_report(activity) -> dict | None:
+    """The repetitive stream (DESIGN v2.0 §6.23): per arm the pass rate at each encounter, the paired difference
+    between the last and the first encounter of each arm and between the arms at the last encounter, resampled over
+    families; what the learn arm adopted."""
+    from ..evaluate.repeat import RepeatPlan, paired, scored, summary
+    ref = (activity.config.get("rsi") or {}).get("repeat_plan_ref")
+    if not ref or not activity.objects.has(ref):
+        return None
+    plan = RepeatPlan.from_json(activity.objects.get(ref))
+    table = scored(activity.events.read("repeat_scored"), plan_ref=ref)
+    if not table:
+        return {"plan": short(ref), "tasks": len(plan.tasks), "encounters": plan.encounters, "arms": {}, "status": "not run"}
+    families = {t: activity.splits.family_of(t) for t in plan.tasks}
+    last = int(plan.encounters)
+    diffs = {}
+    for arm in table:
+        diffs[f"{arm}:e{last}-e1"] = paired(table, families=families, subject=(arm, last), control=(arm, 1))
+    if "learn" in table and "control" in table:
+        diffs[f"learn-control:e{last}"] = paired(table, families=families, subject=("learn", last),
+                                                  control=("control", last))
+        diffs["learn-control:e1"] = paired(table, families=families, subject=("learn", 1), control=("control", 1))
+    adopted = [e for e in activity.events.read("repeat_adopted") if e.get("plan") == ref]
+    kept = [e for e in activity.events.read("repeat_kept") if e.get("plan") == ref]
+    return {"plan": short(ref), "tasks": len(plan.tasks), "encounters": plan.encounters,
+            "arms": summary(table, encounters=last), "differences": {k: v for k, v in diffs.items() if v},
+            "adopted": len(adopted), "kept": len(kept), "library": len(list((activity.root / "library").glob("lib*"))),
+            "status": "complete" if all(len(v) == len(plan.tasks) and all(len(x) == last for x in v.values())
+                                        for v in table.values()) and len(table) == len(plan.arms) else "partial"}
+
+
 def c1_difference(activity, plan: dict, plan_ref: str, test: dict) -> dict | None:
     """W* - W0 on the final's test tasks: per task the mean success of each arm, the paired difference and its 95%
     interval resampled over families (evaluate.gate.paired_bootstrap), in points."""
@@ -260,6 +290,7 @@ def build_report(activity) -> dict:
             "release": short(activity.releases.active_ref()) if activity.releases.active_ref() else None,
             "released": short(activity.releases.released_ref()) if activity.releases.released_ref() else None,
             "baseline": baseline, "rounds": rounds_report(activity), "stream": stream_report(activity),
+            "repeat": repeat_report(activity),
             "frontier": frontier_report(activity),
             "gate": gate_report(activity), "memory": memory_report(activity),
             "final": finals,
@@ -365,6 +396,20 @@ def render_markdown(report: dict) -> str:
         lines.append(f"- {st['status']}: {fe.get('passed')}/{fe.get('tasks')} first encounters passed (rate "
                      f"{fe.get('pass_rate')}, partial {fe.get('partial_credit')}), halves {fe.get('first_half')} -> "
                      f"{fe.get('second_half')}")
+    rp = report.get("repeat")
+    if rp:
+        lines += ["", "## Repetitive stream"]
+        if not rp.get("arms"):
+            lines.append(f"- plan {rp['plan']}: {rp['tasks']} tasks x {rp['encounters']} encounters, not run")
+        else:
+            for arm, rows in rp["arms"].items():
+                lines.append(f"- {arm}: " + ", ".join(f"e{r['encounter']} {r['passed']}/{r['tasks']} "
+                                                       f"(partial {r['partial_credit']})" for r in rows))
+            for name, d in (rp.get("differences") or {}).items():
+                lines.append(f"- {name}: {d['points']:+.1f} points [{d['low']:+.1f}, {d['high']:+.1f}] over "
+                             f"{d['tasks']} tasks")
+            lines.append(f"- adopted {rp['adopted']}, kept the base {rp['kept']}, library entries {rp['library']}; "
+                         f"{rp['status']}")
     lines += ["", "## Release gate"]
     g = report.get("gate")
     if not g:

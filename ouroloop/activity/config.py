@@ -24,8 +24,9 @@ from .presets import RULES, preset
 
 SECTIONS = ("bench", "limits", "model", "research_model", "pricing", "harness", "worker", "memory", "improver", "gate",
             "schedule", "budget", "final")
-OTHER_TABLES = ("workspace", "rsi", "env_file")
-RSI_KEYS = ("scope_id", "core_ref", "split_ref", "final_plan_ref", "baseline_from", "seed_from", "seed_line")
+OTHER_TABLES = ("workspace", "rsi", "env_file", "repeat")   # [repeat]: the repetitive stream (DESIGN §6.23)
+RSI_KEYS = ("scope_id", "core_ref", "split_ref", "final_plan_ref", "baseline_from", "seed_from", "seed_line",
+            "repeat_plan_ref")
 SEED_LINES = ("released", "working")        # [rsi] seed_line: which line of the seed_from workspace is imported
 OLD_TABLES = {"llm": "[model]", "research": "[research_model]", "improvement": "[harness] preset and [improver]",
               "harness_evolution": "[harness]", "freeze": "[gate], [schedule], [budget] and [final]",

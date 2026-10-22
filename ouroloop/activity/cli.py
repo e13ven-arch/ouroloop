@@ -48,6 +48,16 @@ def _lock(root: Path):
     return f
 
 
+def task_index(until: str | None) -> int | None:
+    """`--until task-K` of the repetitive stream: the task after which it stops."""
+    if until is None:
+        return None
+    m = re.fullmatch(r"task-(\d+)", str(until))
+    if not m:
+        raise ValueError(f"--until {until!r}: the repeat phase stops after a task, `--until task-K`")
+    return int(m.group(1))
+
+
 def batch_index(until: str | None) -> int | None:
     """`--until batch-K` of the stream: the batch after which it stops."""
     if until is None:
@@ -86,6 +96,8 @@ def cmd_bench(args) -> int:
             report = asdict(phases.round_(activity, int(args.round or 0)))
         elif args.phase == "stream":
             report = phases.stream(activity, until=batch_index(args.until))
+        elif args.phase == "repeat":
+            report = phases.repeat(activity, arm=args.arm or "learn", until=task_index(args.until))
             fe = report.get("first_encounter") or {}
             print(f"stream     {report['status']}" + (f" at {report['at']}" if report.get("at") else "")
                   + (f": {report['reason']}" if report.get("reason") else "")
@@ -164,6 +176,7 @@ def main(argv: list[str] | None = None) -> int:
     bn.add_argument("--until", help="cycle: stop after baseline, library, round-K or gate (the release gate); "
                                     "stream: stop after batch-K")
     bn.add_argument("--round", type=int, help="round: which round of the schedule")
+    bn.add_argument("--arm", choices=["learn", "control"], help="repeat: which arm of the repetitive stream to run")
     bn.add_argument("--task", action="append", help="smoke: only this dev task; repeatable")
     bn.add_argument("--limit", type=int, help="smoke and baseline: at most this many tasks")
     bn.add_argument("--checks-only", action="store_true", help="smoke: run the checks and call no model")

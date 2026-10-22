@@ -437,6 +437,25 @@ def export_policy(activity) -> str;  def import_policy(activity, policy_ref) -> 
 - 装入的 operation_id 与 Execution 的操作 id 不冲突。
 - 端到端（`fake_upstream` 的 `rsi` 域，脚本化 R；第六道 train 题 `rsi.notify_ticket` 让留出一对与研究部分各有一道失败题）：一轮产出一个 tool 包过 V0～V2a、V3 在留出题上记条件修复并接受装入工作线、记功；一个 hook 包过 V2b；tool + hook 的两组件包各过各的档；有可机械化簇而无代码候选时台账记 `no_code_candidate`；memory 快照作为固定候选进 V3。
 
+## 15 逐题采用（v2.0，`repeat.py`，DESIGN §6.23）
+
+```python
+def digest(trace, session) -> dict             # 无标签：steps、calls（工具、方法、路由、错误标记与摘录）、errors、hooks（站点、名字、动作、说的话）、writes 按路由、skills_read、termination、final_text
+def footprint_of(trace, session) -> dict       # {hooks, tools, skills}：出手的 hook、模型调过的工具、读过的技能
+def acted_components(conditions, foot) -> list[str]
+def contrast_text(reference, probe, *, task, dir_name, acted, probes_left) -> str   # try_task 在这里的答复：两次执行并排、无评分
+class Library:                                 # <root>/library/：entries.json、INDEX.md、<id>/EXPERIENCE.md + 改动的文件
+    def add(self, *, task, dir_name, mechanism, files_ref, changed, experience, why, scope) -> dict
+    def inputs(self) -> dict                   # inputs/library/INDEX.md 与最新 LIBRARY_ENTRIES_SHOWN 条的文件
+def verify_context(activity, settings, *, package) -> VerifyContext   # 只给 V0 / V1：study_tasks=()、cause_ids=()
+def adopt(activity, *, task_id, reference, base_release, run_arm, account, plan, library, out) -> dict
+    # -> {choice: "base" | dir, why, package_ref, files_ref, probes, candidates, entry, session, usd, verdicts}
+```
+
+- 会话：`prompts/repeat.md`；输入 `task.json`（请求 + 参考执行的 digest）、`package_api.md`、`library/…`；`readable` 只有本题的参考会话；`require_causes=False`（声明的 `cause_ids` / `predicted_affected` 可空）；`try_task` 绑定本题：build、V1，`run_arm(split=plan.split, role="probe", candidate="probe:<dir>", package=候选)` 一次，答 `contrast_text`；每个目录一次，总数 ≤ `plan.max_probes`。
+- finish 后：每个声明过 V0+V1（`rungs=("V0","V1")`），R 没 try 过的由宿主 probe 一次；composer（`prompts/compose.md`，一次 aux 调用，输入请求、参考 digest、每个候选的机制 / 组件 / 出手 / digest）答 `{"choice", "why"}`；采用则 reflector（`prompts/reflect.md`）答逐组件裁决与至多一条教训（cue / lesson / evidence / confidence 齐全才入库）。
+- 不做：接受规则、留出筛选、两次确认、记功、估值——这条回路的正确性只由第 2～E 次的计分在报告里量。
+
 ## 14 开发顺序
 
 `settings.py` → `evidence.py` → `ledger.py`、`archive.py` → `diagnose.py` → `allocate.py` → `verify/static.py`、`unit.py` → `session.py` → `verify/toolcheck.py`、`replay.py`、`reach.py` → `screen.py` → `credit.py` → `policy.py` → `round.py` → activity 的 `round` 阶段、cycle 与活动末的 `gate` → 测试。阶段 1 留下的三项（种子传 effort、回合用完记 budget、速率限制落事件）先做。

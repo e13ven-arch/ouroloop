@@ -156,6 +156,8 @@ class ScriptedR:
         self.read: list = []            # (file name, text) of every inputs/ file the session read back (v1.8)
         self.trial_feedback: list = []  # v1.9: the host's trial feedback texts, as the session received them
         self.tries: list = []           # v1.11: what try_task answered, in order (mode debug)
+        self.composed: list = []        # v2.0: what the composer was given
+        self.reflected: list = []       # v2.0: what the reflector was given
         self.system_seen = ""           # the session's system prompt, as last given
         self._read_ids: set = set()
 
@@ -170,6 +172,35 @@ class ScriptedR:
             first = rows[0]["id"] if rows else "L1"
             return self._text(f"- A tool that posts the requested message fixed missed_action [{first}]\n"
                               f"- An uncited lesson\n")
+        if system.startswith("You improve the harness package of an AI agent for one task"):   # v2.0: the repeat loop
+            self.calls.append("repeat")
+            self.system_seen = system
+            self._record_reads(messages)
+            self._record_tries(messages)
+            return self._repeat(messages)
+        if system.startswith("You compose the harness"):            # v2.0: the composer, no score
+            self.calls.append("compose")
+            data = json.loads(messages[0]["content"])
+            self.composed.append(data)
+            # adopt the candidate whose run posted the message its reference run did not (a write to Slack)
+            for c in data.get("candidates") or ():
+                writes = (c.get("run") or {}).get("writes") or {}
+                ref_writes = (data.get("reference_run") or {}).get("writes") or {}
+                if any("slack" in k for k in writes) and not any("slack" in k for k in ref_writes) and c.get("acted"):
+                    return self._text(json.dumps({"choice": c["dir"], "why": "the candidate's run posted the #ops "
+                                                  "message the request asked for; the reference run finished without it"}))
+            return self._text(json.dumps({"choice": "base", "why": "no candidate's run delivered more than the reference"}))
+        if system.startswith("You keep the library of an AI agent's harness"):    # v2.0: the reflector
+            self.calls.append("reflect")
+            data = json.loads(messages[0]["content"])
+            self.reflected.append(data)
+            return self._text(json.dumps({"edits": [{"component": c, "verdict": "helped", "evidence": "the post"}
+                                                    for c in data.get("components") or ()],
+                                          "entry": {"cue": "the request asks for a message in a channel and the final "
+                                                           "text says none was posted",
+                                                    "lesson": "an on_finish hook pushes the agent back to post it",
+                                                    "evidence": "reference: no Slack write; adopted run: one",
+                                                    "confidence": "medium"}}))
         if system.startswith("You improve the harness package"):
             self.calls.append("session")
             self.system_seen = system
@@ -334,6 +365,35 @@ class ScriptedR:
         if turns == 4:
             return self._calls(("try_task", {"task": task}))
         if turns == 5:         # a third try on the same task: refused (try_per_task 2), the session goes on
+            return self._calls(("try_task", {"task": task}))
+        return self._calls(("finish", {"packages": [decl]}))
+
+    def _repeat(self, messages: list[dict]) -> ChatTurn:
+        """v2.0 (DESIGN §6.23): one task's session — read task.json and the library index, write the working hook
+        (the base keeps the request's post missing), try it once on this task, finish with the scope."""
+        turns = sum(1 for m in messages if m.get("role") == "assistant")
+        first = json.loads(messages[0]["content"])
+        task = first.get("task")
+        if turns == 0:
+            return self._calls(("read_file", {"path": "inputs/task.json"}), ("read_file", {"path": "inputs/library/INDEX.md"}),
+                               ("read_file", {"path": "package/manifest.json"}))
+        reads = [r for m in messages if m.get("role") == "tool" for r in m.get("results") or ()]
+        manifest = json.loads(next(r["output"] for r in reads if r["name"] == "read_file"
+                                   and r["output"].lstrip().startswith("{\n \"api_version\"")))
+        task_json = json.loads(next(r["output"] for r in reads if r["name"] == "read_file"
+                                    and r["output"].lstrip().startswith("{\n \"task_id\"")))
+        self.task_seen = task_json
+        if self.mode == "repeat_none" or "#ops" not in str(task_json.get("request") or ""):
+            return self._calls(("finish", {"packages": []}))
+        manifest["hooks"] = [*manifest.get("hooks", []), HOOK_ENTRY]
+        decl = {"mechanism": MECHANISM["hook"], "scope": "invariant", "components": [
+            {"kind": "hook", "site": "on_finish", "cause_ids": [], "predicted_affected": [],
+             "trigger": "the run finishes while #ops was asked for"}]}
+        if turns == 1:
+            return self._calls(("write_file", {"path": "candidates/package/middlewares/remind_ops.py", "text": HOOK_CODE}),
+                               ("write_file", {"path": "candidates/package/manifest.json",
+                                              "text": json.dumps(manifest, indent=1) + "\n"}))
+        if turns == 2:
             return self._calls(("try_task", {"task": task}))
         return self._calls(("finish", {"packages": [decl]}))
 

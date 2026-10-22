@@ -43,7 +43,7 @@ from ..harness.literals import findings, forbidden, literal_index
 from ..harness.package import Limits, PackageError, build
 from .checks import require, startup_checks
 
-PHASES = ("smoke", "freeze", "baseline", "library", "round", "stream", "gate", "release", "evaluate", "report",
+PHASES = ("smoke", "freeze", "baseline", "library", "round", "stream", "repeat", "gate", "release", "evaluate", "report",
           "export")
 
 
@@ -283,6 +283,13 @@ def freeze(activity, *, out: Callable[[str], None] = print) -> dict:
             raise ValueError(f"freeze refused: {problem}; the plan was not sealed")
         refs["final_plan_ref"] = seal(plan, activity.root, activity.objects)["plan"]
         final_code_event(activity, "freeze")
+    if "repeat" in activity.config:               # v2.0 (DESIGN §6.23): the repetitive stream's plan, sealed now
+        from ..evaluate.repeat import seal as seal_repeat
+        rplan = repeat_plan(activity)
+        refs["repeat_plan_ref"] = seal_repeat(rplan, activity.root, activity.objects)["plan"]
+        out(f"repeat     sealed: {len(rplan.tasks)} {rplan.split} tasks x {rplan.encounters} encounters, arms "
+            f"{list(rplan.arms)}, base {short(rplan.base)}; the first encounter and the control arm read the base, "
+            f"the learn arm's later encounters read what each task adopted")
     out("frozen     name these under [rsi]:")
     out("[rsi]")
     for key, value in refs.items():
@@ -661,6 +668,108 @@ def round_(activity, index: int, *, out: Callable[[str], None] = print):
     from ..improver.round import run_round
     return run_round(activity, index, run_arm=run_arm, out=out)
 
+
+
+# ---------------------------------------------------------------------------- the repetitive stream (v2.0)
+def repeat_plan(activity):
+    """The RepeatPlan of a config's [repeat] table: the test tasks in the stream's order, `encounters` (3), the base
+    (the released W* when a gate promoted one, else the seed's W0), both arms."""
+    from ..evaluate.repeat import ARMS, RepeatPlan
+    table = dict(activity.config.get("repeat") or {})
+    release = activity.released_release() or activity.seed_release()
+    split = str(table.get("split") or "test")
+    tasks = stream_order_of(activity, split)
+    domains = (activity.k.get("final") or {}).get("domains")
+    if domains:
+        tasks = [t for t in tasks if t.split(".", 1)[0] in set(domains)]
+    if table.get("max_tasks"):
+        tasks = tasks[:int(table["max_tasks"])]
+    arms = tuple(table.get("arms") or ARMS)
+    return RepeatPlan(experiment_id=f"{activity.scope_id}-repeat-{split}", tasks=tuple(tasks), split=split,
+                      encounters=int(table.get("encounters") or 3), base=release.ref(), arms=arms,
+                      split_hash=activity.splits.hash(), core_ref=activity.core_ref,
+                      max_infrastructure_retries=int(activity.k["gate"]["max_infrastructure_retries"]),
+                      max_probes=int(table.get("max_probes") or 4))
+
+
+def repeat(activity, *, arm: str = "learn", until: int | None = None, out: Callable[[str], None] = print) -> dict:
+    """The repetitive stream (DESIGN v2.0 §6.23; evaluate/repeat.py; improver/repeat.py): every test task of the
+    sealed plan, in its order, met `encounters` times. Arm `learn`: the first encounter runs the base, then the
+    improver adopts a package for the task from that run alone (no score), and the later encounters run it. Arm
+    `control`: the base every time. Each encounter's score goes to a `repeat_scored` event once it is read; run
+    again, nothing on record is paid twice; `until` stops after that many tasks."""
+    from ..evaluate.repeat import ARMS, RepeatPlan
+    from ..improver.repeat import Library, adopt
+    ref = (activity.config.get("rsi") or {}).get("repeat_plan_ref")
+    if not ref or not activity.objects.has(ref):
+        raise ValueError("[rsi] repeat_plan_ref must name the repeat plan `ouroloop freeze` sealed (a [repeat] table "
+                         "in the config); PLAN rule 6: the plan is committed before the first test attempt")
+    plan = RepeatPlan.from_json(activity.objects.get(ref))
+    if arm not in plan.arms or arm not in ARMS:
+        raise ValueError(f"arm {arm!r} is not in the plan's arms {list(plan.arms)}")
+    require(startup_checks(activity, phase="repeat"), phase="repeat", activity=activity)
+    final_code_event(activity, "repeat")
+    base = activity.releases.load(plan.base)
+    account = activity.account(f"repeat-{arm}")
+    state_path = activity.root / "rsi" / "repeat" / f"{plan.experiment_id}.{arm}.json"
+    state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {"tasks": {}}
+    library = Library(activity.root)
+    tasks = list(plan.tasks)[: until if until is not None else None]
+    retries = int(plan.max_infrastructure_retries)
+
+    def encounter(task: str, k: int, package=None):
+        rows = run_arm(activity, release=base, split=plan.split, candidate=f"{arm}:e{k}", role="repeat",
+                       pairs=[(task, 0)], account=account, plan_ref=ref, arm=arm, package=package,
+                       notes=f"repeat {arm} encounter {k} of {task}")
+        rows = refill_attempts(rows, lambda a, chosen, retry=0, supersedes=None: run_arm(
+            activity, release=base, split=plan.split, candidate=f"{arm}:e{k}", role="repeat", pairs=chosen,
+            account=account, plan_ref=ref, arm=arm, retry=retry, supersedes=supersedes, package=package),
+            arm, retries)
+        row = next((r for r in rows if r.task_id == task), None)
+        if row is None or row.validity != "valid":
+            raise RuntimeError(f"{task}: encounter {k} read no valid attempt ({getattr(row, 'validity', 'none')})")
+        return row
+
+    def save():
+        write_json(state_path, state)
+
+    for i, task in enumerate(tasks, 1):
+        st = state["tasks"].setdefault(task, {"encounters": {}, "adopted": None})
+        package = None
+        for k in range(1, int(plan.encounters) + 1):
+            if k == 2 and arm == "learn":
+                if st.get("adopted") is None:
+                    first = next((r for r in activity.results.all() if r.attempt_id == st["encounters"]["1"]), None)
+                    got = adopt(activity, task_id=task, reference=first, base_release=base, run_arm=run_arm,
+                                account=account, plan=plan, library=library, out=out)
+                    st["adopted"] = {k2: v for k2, v in got.items() if k2 != "verdicts"}
+                    save()
+                    activity.events.append("repeat_adopted" if got["choice"] != "base" else "repeat_kept", plan=ref,
+                                           task=task, choice=got["choice"], why=got["why"], probes=got["probes"],
+                                           candidates=got["candidates"], entry=got["entry"],
+                                           package=got["package_ref"])
+                    out(f"repeat     {task}: {'adopted candidates/' + got['choice'] if got['choice'] != 'base' else 'kept the base'}"
+                        f" ({got['probes']} probes; {got['why'][:160]!r})")
+                adopted = st["adopted"]
+                if adopted and adopted.get("package_ref"):
+                    files = activity.objects.get(adopted["files_ref"])
+                    package = build(activity.objects, files, limits=Limits.from_core(activity.k),
+                                    seed=activity.package(activity.seed_release()), parent=activity.package(base))
+            if str(k) in st["encounters"]:
+                continue
+            row = encounter(task, k, package=package)
+            st["encounters"][str(k)] = row.attempt_id
+            save()
+            activity.events.append("repeat_scored", plan=ref, arm=arm, task=task, encounter=k,
+                                   passed=bool(row.success), partial_credit=row.partial_credit,
+                                   attempt=row.attempt_id, package=(package.ref() if package is not None else None))
+            out(f"repeat     {arm} {task} e{k}: {'PASS' if row.success else 'FAIL'} {row.partial_credit}"
+                + (" (the task's own package)" if package is not None else ""))
+        out(f"repeat     {arm}: {i}/{len(tasks)} tasks done; spent ${(account.remaining().get('used') or {}).get('usd', 0):.2f}")
+    from ..evaluate.repeat import scored, summary
+    table = scored(activity.events.read("repeat_scored"), plan_ref=ref)
+    return {"arm": arm, "tasks": len(tasks), "summary": summary(table, encounters=int(plan.encounters)),
+            "spent": (account.remaining().get("used") or {}).get("usd")}
 
 # ---------------------------------------------------------------------------- the streaming loop (v1.3)
 def stream_order_of(activity, split: str = "train") -> list[str]:

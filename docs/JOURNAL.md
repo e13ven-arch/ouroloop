@@ -8,6 +8,16 @@
 
 ---
 
+## 2026-10-22 阶段 4o 落地：逐题采用 + 重复流评测（DESIGN v2.0 §6.23）；$0
+
+**做了什么。** `evaluate/repeat.py`：`RepeatPlan`（题、次数、base、臂、split、probe 上限）、`seal`、`scored` / `summary` / `paired`；`improver/repeat.py`：无标签的执行 digest、足迹、并排文字、`Library`（整树 + EXPERIENCE.md + 索引）、`adopt`（按题开会话 → `try_task` 当 probe → V0/V1 → composer 一次 aux 调用采用或保留 base → reflector 一次 aux 调用给裁决与教训入库）；`prompts/repeat.md`、`compose.md`、`reflect.md`；`activity/phases.py`：`repeat_plan`、`freeze` 在有 `[repeat]` 时封存、`--phase repeat --arm learn|control [--until task-K]`（每题 E 次，学习臂第 2 次前采用，续跑免付，事件 `repeat_scored` / `repeat_adopted` / `repeat_kept`）；报告的"Repetitive stream"段（每臂每次通过率、四个配对差、采用 / 保留 / 库条目）；`TraceStore.allow`（本题的会话放行，评分不在轨迹里）；声明读取的 `require_causes`（重复流无簇、无认领）。设计文档：EVALUATE §6b、IMPROVER §15。
+
+**测试（假上游 rsi 域，`tests/activity/test_activity_repeat.py` 5 个）。** freeze 封存计划（3 道 test 题 × 3 次，两臂，base = 种子）不读 test；学习臂：notify 题 e1 FAIL → R 读 task.json 与库索引、写 hook、try 一次（probe 出手，有 Slack 写入）→ composer 采用 → e2、e3 PASS，库 lib1 带教训与改动文件；update 题 R 交空、保留 base；禁止发帖的题 probe 后 composer 保留 base；对照臂 9 次都跑 base、notify 三次 FAIL；报告 learn [2, 3, 3] 对 control [2, 2, 2]，learn−control e3 +33.3 点；再跑一遍 $0；无计划拒绝、未知臂拒绝；R / composer / reflector 的输入里没有评分、断言、grading。
+
+**下一步。** finance-v14：`[repeat] split = "train", max_tasks = 20` 预演（约 $110）→ 读数合格（学习臂 e3 − e1 减对照臂的差 ≥ 3 道）→ 改 `split = "test"` 重冻结、跑学习臂（约 $275）与对照臂（约 $90）→ 报告。每步先批。
+
+---
+
 ## 2026-10-21 阶段 4n：松开接受规则、爬坡到 final（DESIGN v1.12 §6.22）；finance-v13 配置；$0
 
 **为什么。** 用户问"现在的结论是什么、评分能做到多少"——对外的数仍是四个旧 final（v0.1 +13.0 显著，其余不确定），finance-v6 以来 8 个活动约 $1,150 零装入，W\* = W0。问"做不到 80 分以上吗"——同基准同种子的 StarHarness 报过 57 → 83（单次、一遍、无区间）；我们 v7 之后的零退步规则把爬坡堵死了（v12 的技能出手 27/60 道，修 1 退 2 被拒）。用户："我们不需要一切都卡得非常严格，Harness² 不也说自己在同样的任务上做到了 80 多分吗，我们也要做到类似的效果就好了，我们的任务不是一直在跑测试数据集，这一阶段的任务需要尽快收尾掉。"

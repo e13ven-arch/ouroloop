@@ -117,6 +117,13 @@ class TraceStore:
         self.index_path = self.root / "index" / "trace.sqlite"
         self.split_of = split_of
         self._splits: dict[str, tuple[str | None, str | None]] = {}     # session -> (task_hash, split)
+        self.allowed: set[str] = set()      # v2.0 (DESIGN §6.23): sessions readable whatever their split — the
+                                            # agent's own encounters of a test task in the repetitive stream; the
+                                            # grading of those attempts is never here, only the transcript
+
+    def allow(self, sessions) -> None:
+        """Open these sessions to the readers (the repeat loop: the task's own trajectory, no score)."""
+        self.allowed |= {str(s) for s in sessions}
 
     # ------------------------------------------------------------------ sessions and splits
     def _path(self, session: str) -> Path:
@@ -171,7 +178,7 @@ class TraceStore:
 
     def task_hash(self, session: str) -> str:
         digest, split = self._classify(session)
-        if split != "train":
+        if split != "train" and session not in self.allowed:
             raise TraceAccessError(f"session {session} is not a train session ({split or 'split unknown'}): trace "
                                    f"memory reads train only")
         return digest

@@ -106,7 +106,7 @@ class Declaration(Record):
         return d
 
 
-def _component(raw, *, kinds_allowed, index: int) -> tuple[Component | None, str]:
+def _component(raw, *, kinds_allowed, index: int, require_causes: bool = True) -> tuple[Component | None, str]:
     where = f"components[{index}]"
     if not isinstance(raw, dict):
         return None, f"{where} is an object"
@@ -120,12 +120,12 @@ def _component(raw, *, kinds_allowed, index: int) -> tuple[Component | None, str
         return None, f"{where}.site names the {kind} (a tool's or skill's name, a hook's site, a prompt's key, a " \
                      f"config knob, a vendored package, a removed component)"
     causes = raw.get("cause_ids")
-    if not isinstance(causes, list) or not causes or not all(isinstance(c, str) and c for c in causes):
+    if require_causes and (not isinstance(causes, list) or not causes or not all(isinstance(c, str) and c for c in causes)):
         return None, f"{where}.cause_ids is a non-empty list of the round's cause ids"
     predicted = raw.get("predicted_affected") or []
     if not isinstance(predicted, list) or not all(isinstance(t, str) for t in predicted):
         return None, f"{where}.predicted_affected is a list of train task ids"
-    if kind in PROVING and not predicted:
+    if require_causes and kind in PROVING and not predicted:      # v2.0: the repeat loop claims no train task
         return None, f"{where}.predicted_affected names the train tasks a {kind} should fix"
     if not isinstance(raw.get("trigger"), str) or not raw.get("trigger"):
         return None, f"{where}.trigger says when it acts"
@@ -152,7 +152,7 @@ def _component(raw, *, kinds_allowed, index: int) -> tuple[Component | None, str
                              for k, v in probes.items()}, uses_model=uses_model, rewrite=rewrite), ""
 
 
-def read_declaration(raw, *, dirs, kinds_allowed, merge_ids=()) -> tuple[Declaration | None, str]:
+def read_declaration(raw, *, dirs, kinds_allowed, merge_ids=(), require_causes: bool = True) -> tuple[Declaration | None, str]:
     """A declaration from `finish`'s arguments, or why it is not one (handed back to R as the tool's error). `dirs`
     are the candidate directories the session wrote; a declaration without `dir` is candidates/package's. `merge_ids`
     are the frontier entries this round merges: a declaration's `merge_of` names one of them (v1.8)."""
@@ -173,7 +173,7 @@ def read_declaration(raw, *, dirs, kinds_allowed, merge_ids=()) -> tuple[Declara
         return None, "components is a non-empty list: one entry per component the package changes"
     comps, seen = [], set()
     for i, item in enumerate(comps_raw):
-        comp, why = _component(item, kinds_allowed=kinds_allowed, index=i)
+        comp, why = _component(item, kinds_allowed=kinds_allowed, index=i, require_causes=require_causes)
         if why:
             return None, why
         if comp.key in seen:

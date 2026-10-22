@@ -20,7 +20,7 @@ from ..evaluate.release import attempt_version, improver_version
 from ..harness.package import Limits, check_shape
 from ..harness.seed import SeedUnavailable, seed_files
 
-PAID = ("smoke", "baseline", "library", "round", "stream", "gate", "release", "evaluate")
+PAID = ("smoke", "baseline", "library", "round", "stream", "gate", "release", "evaluate", "repeat")
 # The phases that run the attempt code only (no round, no gate): they need K's attempt_version and may run on a
 # checkout whose improver code moved (PLAN rule 13, 2026-10-12; the versions go on the `final_code` event)
 FINAL_FAMILY = ("freeze", "release", "evaluate", "report", "export")
