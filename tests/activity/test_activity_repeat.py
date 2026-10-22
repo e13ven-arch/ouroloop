@@ -33,13 +33,19 @@ def quiet(_line):
     pass
 
 
-def activity(root, upstream, *, provider, r: ScriptedR, **sections):
-    return rsi.activity(root, upstream, provider=provider, research=Research(r), repeat={"encounters": 3},
+# the module fixture runs Harness²'s setting (feedback "none": the run alone, every task gets a session); the second
+# cut's default (feedback "outcome": one bit, a passing task is left alone) has its own test below
+NONE = {"encounters": 3, "feedback": "none"}
+
+
+def activity(root, upstream, *, provider, r: ScriptedR, repeat=None, **sections):
+    return rsi.activity(root, upstream, provider=provider, research=Research(r), repeat=dict(repeat or NONE),
                         **sections)
 
 
-def reopen(a, *, provider, r: ScriptedR, **sections):
-    cfg = rsi.config(Path(a.config["_base"]), a.config["bench"]["upstream_path"], repeat={"encounters": 3}, **sections)
+def reopen(a, *, provider, r: ScriptedR, repeat=None, **sections):
+    cfg = rsi.config(Path(a.config["_base"]), a.config["bench"]["upstream_path"], repeat=dict(repeat or NONE),
+                     **sections)
     research = Research(r)
     return open_activity(cfg, out=quiet, worker_factory=a.worker_factory,
                          provider_factory=lambda table: research if table.get("model") == rsi.RESEARCH_MODEL
@@ -69,7 +75,7 @@ def test_freeze_seals_the_repeat_plan_before_any_test_task_is_read(stream):
     assert "repeat_plan_ref" in refs and any(line.startswith("repeat     sealed") for line in stream["freeze_lines"])
     plan = RepeatPlan.from_json(a.objects.get(refs["repeat_plan_ref"]))
     assert sorted(plan.tasks) == sorted(rsi.FINAL) and plan.encounters == 3 and plan.arms == ("learn", "control")
-    assert plan.split == "test" and plan.experiment_id == "rsi-test-repeat-test"
+    assert plan.split == "test" and plan.experiment_id == "rsi-test-repeat-test" and plan.feedback == "none"
     assert plan.base == a.seed_release().ref() and plan.core_ref == a.core_ref and plan.split_hash == a.splits.hash()
     (sealed,) = a.events.read("repeat_sealed")
     assert sealed["plan"] == refs["repeat_plan_ref"]
@@ -146,6 +152,37 @@ def test_the_report_pairs_the_encounters_and_a_second_run_pays_nothing(stream):
     calls = actor.calls
     again = phases.repeat(a, arm="learn", out=quiet)
     assert actor.calls == calls and again["summary"]["learn"][2]["passed"] == 3
+
+
+def test_with_the_one_bit_of_feedback_a_passing_task_is_left_alone_and_a_failing_one_is_told_it_was_sent_back(
+        tmp_path, fake_upstream):
+    """The second cut (DESIGN §6.23): feedback "outcome" (the default) — the learn arm opens no session on a task
+    whose first encounter was accepted (kept, no probe, no composer), and the session on the failing task reads
+    `outcome: not accepted` with no detail; the adoption and the later encounters are as before."""
+    actor = rsi.BusinessWorker(forget_notify=True)
+    r = ScriptedR("repeat")
+    a = activity(tmp_path, fake_upstream, provider=actor, r=r, repeat={"encounters": 3})
+    refs = phases.freeze(a, out=quiet)
+    plan = RepeatPlan.from_json(a.objects.get(refs["repeat_plan_ref"]))
+    assert plan.feedback == "outcome"
+    b = reopen(a, provider=actor, r=r, repeat={"encounters": 3},
+               rsi={"scope_id": "rsi-test", **{k: v for k, v in refs.items() if k != "gate_template"}})
+    out = []
+    phases.repeat(b, arm="learn", out=out.append)
+    scored = {(e["task"], e["encounter"]): e["passed"] for e in b.events.read("repeat_scored")}
+    assert [scored[(NOTIFY, k)] for k in (1, 2, 3)] == [False, True, True]
+    kept = {e["task"]: e for e in b.events.read("repeat_kept")}
+    assert set(kept) == {UPDATE, QUIET} and all(e["why"].startswith("accepted on the first encounter") for e in kept.values())
+    assert all(e["probes"] == 0 and e["candidates"] == [] for e in kept.values())
+    assert r.calls.count("compose") == 1 and r.calls.count("reflect") == 1          # the failing task's only
+    assert r.task_seen["task_id"] == NOTIFY and r.task_seen["outcome"] == "not accepted"
+    assert "NOT accepted" in r.task_seen["note"] and "passed" not in json.dumps(r.task_seen)
+    assert "This request was NOT accepted" in r.system_seen and "{feedback}" not in r.system_seen
+    (adopted,) = b.events.read("repeat_adopted")
+    assert adopted["task"] == NOTIFY and adopted["choice"] == "package"
+    runs = b.results.runs()
+    assert [x.task_id for x in b.results.all() if runs[x.run].role == "probe"] == [NOTIFY]
+    assert any("kept the base" in line and UPDATE in line for line in out)
 
 
 def test_the_phase_refuses_without_the_sealed_plan_or_with_an_unknown_arm(tmp_path, fake_upstream):

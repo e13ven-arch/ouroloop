@@ -32,6 +32,14 @@ from .verify import VerifyContext, run_ladder
 from .verify.unit import unit_check
 
 PROMPTS = Path(__file__).parent / "prompts"
+FEEDBACK_OUTCOME = ("This request was NOT accepted (inputs/task.json `outcome`): something the agent did, or left undone, "
+                    "was wrong, and you are not told what. That is the one thing you know beyond the run itself. Read the "
+                    "run against the request and every document it read until you find what a careful practitioner "
+                    "would send back: a requirement it did not carry out, a value it got wrong, an item it should have "
+                    "left alone or reported, a recipient it never told, a term it replaced. There is one; build against "
+                    "it.")
+FEEDBACK_NONE = ("You are told nothing about whether the run was accepted: read it as a practitioner reads a colleague's "
+                 "work, and hand in nothing when you find nothing wrong.")
 EXCERPT = 160                    # of a call's output or error in a digest
 SAID = 600                       # of the final text
 DETAIL = 240                     # of what a hook said
@@ -211,7 +219,7 @@ def verify_context(activity, settings: Settings, *, package) -> VerifyContext:
 
 
 def adopt(activity, *, task_id: str, reference, base_release, run_arm, account, plan, library: Library,
-          out=print) -> dict:
+          out=print, outcome: str | None = None) -> dict:
     """One task's Propose-Probe-Compose after its first encounter (`reference`: that attempt's TaskResult).
     -> {choice: "base" | dir, why, package_ref | None, files_ref | None, probes, candidates, entry | None,
     session, usd}."""
@@ -226,6 +234,10 @@ def adopt(activity, *, task_id: str, reference, base_release, run_arm, account, 
     task_json = {"task_id": task_id, "request": request, "reference_run": reference_digest,
                  "note": "the agent's own run of this request: every call with its error flag, the hooks that acted, "
                          "the writes by route, the final text; no score is given or exists here"}
+    if outcome:                     # the one bit of feedback (DESIGN §6.23, the second cut): sent back, not what for
+        task_json["outcome"] = outcome
+        task_json["note"] += ("; outcome: the request was NOT accepted — something the agent did or left undone was "
+                              "wrong, and you are not told what")
     from ..improver.round import EVENTS, RETURNS  # the package contract's site table, as the rounds render it
     sites = "\n".join(f"    {site}: event {list(EVENTS[site])} -> may answer {list(RETURNS[site])}" for site in EVENTS)
     api = (PROMPTS / "package_api.md").read_text(encoding="utf-8").replace("{sites}", sites)
@@ -236,7 +248,8 @@ def adopt(activity, *, task_id: str, reference, base_release, run_arm, account, 
     for name, value in {"max_turns": s.session_max_turns, "max_edits": s.session_max_edits,
                         "max_read": s.session_max_read_bytes, "max_read_total": s.session_max_read_total,
                         "max_tokens": int(activity.k["research_model"]["max_tokens"]),
-                        "max_probes": int(plan.max_probes)}.items():
+                        "max_probes": int(plan.max_probes),
+                        "feedback": (FEEDBACK_OUTCOME if outcome else FEEDBACK_NONE)}.items():
         system = system.replace("{" + name + "}", str(value))
     vctx = verify_context(activity, s, package=package)
     worker = activity.worker()

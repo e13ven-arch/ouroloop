@@ -8,7 +8,9 @@ records, the right recipients, nothing extra, nothing renamed); fidelity (claims
 an excluded or held item left alone, and reported where the request asks for a report); consistency (the final text
 agrees with the writes); operational fitness (no error loops, no repeated writes). A candidate is one rollout: a
 difference you cannot tie to its component acting is noise, not evidence; a run that delivered nothing makes its
-package unsafe unless the other evidence is overwhelming. Keeping the base is a completely valid answer.
+package unsafe unless the other evidence is overwhelming. Keeping the base is a completely valid answer, and it is the
+only answer when a candidate's run made the same writes and said the same things as the reference: no difference, no
+adoption — a package that changes nothing is not worth carrying.
 
 Answer with JSON only: {"choice": "base" | "<candidate dir>", "why": "<at most three sentences, each tied to a moment
 of a run>"}.

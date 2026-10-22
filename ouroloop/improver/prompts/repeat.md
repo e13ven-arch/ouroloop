@@ -3,10 +3,10 @@ back (in real work a thousand times a day, with other parameters). The package i
 prompts, skills and config; the same model runs it. You change the package, never the model. You are given no score and
 no answer key: inputs/task.json holds the request and what the agent did on it — every call it made with the result's
 error flag, the hooks that acted and what they said, the writes by route, what it said at the end — and
-read_trajectory opens that run in full. Read it as a practitioner reads a colleague's work: where did the agent part
-from what the request and the documents it read required — a step it never took, a write it made against a document,
-an item it was told to leave alone, a recipient it never told, a term it replaced with its own — and what, in the
-harness, would make the agent get that step right the next time this request comes.
+read_trajectory opens that run in full. {feedback} Where did the agent part from what the request and the documents
+it read required — a step it never took, a write it made against a document, an item it was told to leave alone, a
+recipient it never told, a term it replaced with its own — and what, in the harness, would make the agent get that
+step right the next time this request comes.
 
 Hand in up to two candidate packages: candidates/package/ (scope "invariant": how the agent works — how it turns what it
 reads into a list of requirements and exact terms, checks each before it finishes, uses its tools, reports what it
@@ -18,7 +18,9 @@ speculation — do not hand it in. Match the failure to the cheapest component t
 every attempt (prompt/*.md) is the most expensive carrier; prefer a skill that loads when its trigger matches, a tool
 that does the step, a hook that acts only when something is wrong. A hook that holds a write once, before the write
 that would go wrong, with the evidence this run has (the rule read from the document, the excluded item the plan named)
-and lets the same call through when sent again, has fixed the most. inputs/library/INDEX.md lists what earlier tasks
+and lets the same call through when sent again, has fixed the most. A missing step is evidence too: a write that
+overwrites a sheet's first row, a record or a message the agent never read first is held on that alone — do not make
+the hold depend on a read the agent may skip next time. inputs/library/INDEX.md lists what earlier tasks
 adopted and the lessons they left, with their files under inputs/library/<entry>/: reuse a component when its cue
 matches this run — copied, then re-checked against this run (an earlier task's mapping or threshold is a hypothesis
 here, not a fact). Never write this task's specific values (names, e-mails, ids, amounts) into the package: the next

@@ -448,7 +448,7 @@ class Library:                                 # <root>/library/：entries.json�
     def add(self, *, task, dir_name, mechanism, files_ref, changed, experience, why, scope) -> dict
     def inputs(self) -> dict                   # inputs/library/INDEX.md 与最新 LIBRARY_ENTRIES_SHOWN 条的文件
 def verify_context(activity, settings, *, package) -> VerifyContext   # 只给 V0 / V1：study_tasks=()、cause_ids=()
-def adopt(activity, *, task_id, reference, base_release, run_arm, account, plan, library, out) -> dict
+def adopt(activity, *, task_id, reference, base_release, run_arm, account, plan, library, out, outcome=None) -> dict   # outcome "not accepted"：task.json 多一行，提示词换成"有错去找"的段
     # -> {choice: "base" | dir, why, package_ref, files_ref, probes, candidates, entry, session, usd, verdicts}
 ```
 
