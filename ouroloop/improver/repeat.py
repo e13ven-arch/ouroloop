@@ -14,6 +14,7 @@ transcript is the agent's own experience, which real work has too.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import threading
@@ -45,10 +46,18 @@ FEEDBACK_ATTEMPTS = (FEEDBACK_OUTCOME + " After each try_task you are told one m
                      "A candidate whose run was accepted is adopted for this task; one whose run was not accepted is "
                      "not — use the tries you have left to change what it does, then try again. Hand in every "
                      "candidate you tried; the accepted one is kept.")
+FEEDBACK_ITEMS = (FEEDBACK_ATTEMPTS + " You are also told what the request was sent back for (inputs/task.json "
+                  "`rejected_items`; after a try_task that was not accepted, the items of that run): each item names the "
+                  "kind of check and what it is about — which message, channel, row or record — never what it should "
+                  "have contained. Start from the item: find the step of the run that produced that message, row or "
+                  "record, what it took from the documents and how it derived what it wrote, and build what makes that "
+                  "step right.")
 ACCEPTED_LINE = {True: "  THIS RUN WAS ACCEPTED: hand this candidate in and it is adopted for the task.",
                  False: "  This run was NOT accepted: what it did is still wrong somewhere; change the candidate and "
                         "try again while tries are left."}
 EXCERPT = 160                    # of a call's output or error in a digest
+ARGS = 200                       # of a package tool's arguments in a digest (v2.1: R reads its tool's calls)
+TOOL_SAID = 300                  # of a package tool's output in a digest
 SAID = 600                       # of the final text
 DETAIL = 240                     # of what a hook said
 LIBRARY_ENTRIES_SHOWN = 12       # the newest entries whose files go into a session's inputs
@@ -84,17 +93,34 @@ def acted_components(conditions: list[dict], foot: dict) -> list[str]:
     return out
 
 
-def digest(trace, session: str) -> dict:
+def digest(trace, session: str, *, detail_tools=()) -> dict:
     """One run as R and the composer read it: no score. The calls in order (a base tool's name, method, route and
-    whether it errored, with an excerpt of an error), the hooks that acted and what they said, the writes by route,
-    the skills read, the final text, the steps."""
+    whether it errored, with an excerpt of an error; a tool named in `detail_tools` — the package's own — with its
+    arguments and output), the hooks that acted and what they said, the writes by route, the skills read, the final
+    text, the steps."""
     calls, hooks, writes, skills, errors = [], [], {}, [], 0
     steps = 0
+    pending: dict = {}                  # a package tool's call id -> its row, until its result comes back
     for item in trace.events(session):
         e = item["event"]
         kind = e.get("kind")
         if kind == "gateway_call" and e.get("role") == "act":
             steps += 1
+            if detail_tools:            # the package's own tools are not broker calls: the model's call and its
+                for m in e.get("messages_tail") or ():       # result live in the conversation (v2.1)
+                    if m.get("role") == "tool":
+                        for res in m.get("results") or ():
+                            row = pending.pop(str(res.get("id")), None)
+                            if row is not None:
+                                row["error"] = bool(res.get("is_error"))
+                                row["said"] = str(res.get("output") or "")[:TOOL_SAID]
+                                errors += int(row["error"])
+                for c in (e.get("response") or {}).get("tool_calls") or ():
+                    if str(c.get("name")) in detail_tools:
+                        row = {"tool": str(c.get("name")), "method": None, "route": None, "error": False,
+                               "args": json.dumps(c.get("args") or {}, ensure_ascii=False)[:ARGS], "said": ""}
+                        calls.append(row)
+                        pending[str(c.get("id"))] = row
         elif kind == "tool":
             args = e.get("args") if isinstance(e.get("args"), dict) else {}
             name = str(e.get("name") or "")
@@ -126,12 +152,28 @@ def contrast_text(reference: dict, probe: dict, *, task: str, dir_name: str, act
         return (f"steps {d['steps']}, errors {d['errors']}; hooks that acted: "
                 f"{[(h['site'], h['name'], h['action'], h['said'][:120]) for h in d['hooks']] or 'none'}; writes: "
                 f"{d['writes'] or 'none'}; skills read: {d['skills_read'] or 'none'}; said: {d['final_text'][:300]!r}")
+    own = [c for c in probe["calls"] if "args" in c]
+    tools_line = ("\n  your tool's calls in this run: "
+                  + "; ".join(f"{c['tool']}({c['args']}) -> {c.get('said', '')!r}" for c in own[:6])) if own else ""
     return (f"try_task candidates/{dir_name} on {task}: the package ran the request again. No score is read here: "
             f"what is certain is what acted and what changed. Your components that acted: "
             f"{', '.join(acted) or 'none (no footprint)'}.\n"
             f"  the first run ({reference['session']}): {line(reference)}\n"
-            f"  this run ({probe['session']}, read_trajectory may open it): {line(probe)}\n"
+            f"  this run ({probe['session']}, read_trajectory may open it): {line(probe)}{tools_line}\n"
             f"  {probes_left} try_task run(s) left for this task.")
+
+
+def tool_names(files: dict) -> set:
+    """The tools a package's manifest offers."""
+    try:
+        return {str(t.get("name")) for t in (json.loads(files.get("manifest.json") or "{}").get("tools") or [])}
+    except (ValueError, AttributeError):
+        return set()
+
+
+def files_hash(files: dict) -> str:
+    """What a candidate's files are, for 'changed since its try' (v2.1)."""
+    return hashlib.sha256(json.dumps(sorted(files.items()), ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
 
 
 # ---------------------------------------------------------------------------- the library
@@ -245,8 +287,9 @@ def session_spend(account, prefix: str) -> float:
 
 
 def adopt(activity, *, task_id: str, reference, base_release, run_arm, account, plan, library: Library,
-          out=print, outcome: str | None = None, feedback: str = "attempts") -> dict:
-    """One task's Propose-Probe-Compose after its first encounter (`reference`: that attempt's TaskResult).
+          out=print, outcome: str | None = None, feedback: str = "attempts", rejected=None) -> dict:
+    """One task's Propose-Probe-Compose after its first encounter (`reference`: that attempt's TaskResult). `rejected`
+    (feedback "items", v2.1): attempt_id -> the items the reviewer sent that attempt back for, kinds and objects only.
     -> {choice: "base" | dir, why, package_ref | None, files_ref | None, probes, candidates, entry | None,
     session, usd (what this task's session cost: its research calls and its probes, not the arm's total)}."""
     s = Settings.from_core(activity.k)
@@ -264,6 +307,10 @@ def adopt(activity, *, task_id: str, reference, base_release, run_arm, account, 
         task_json["outcome"] = outcome
         task_json["note"] += ("; outcome: the request was NOT accepted — something the agent did or left undone was "
                               "wrong, and you are not told what")
+    if rejected is not None:        # v2.1 (DESIGN §6.24): what it was sent back for — the checks' kinds and objects
+        task_json["rejected_items"] = list(rejected(reference.attempt_id))
+        task_json["note"] += ("; rejected_items: what the reviewer sent it back for — the kind of each check and what "
+                              "it is about, never what it should have contained")
     from ..improver.round import EVENTS, RETURNS  # the package contract's site table, as the rounds render it
     sites = "\n".join(f"    {site}: event {list(EVENTS[site])} -> may answer {list(RETURNS[site])}" for site in EVENTS)
     api = (PROMPTS / "package_api.md").read_text(encoding="utf-8").replace("{sites}", sites)
@@ -275,7 +322,8 @@ def adopt(activity, *, task_id: str, reference, base_release, run_arm, account, 
                         "max_read": s.session_max_read_bytes, "max_read_total": s.session_max_read_total,
                         "max_tokens": int(activity.k["research_model"]["max_tokens"]),
                         "max_probes": int(plan.max_probes),
-                        "feedback": (FEEDBACK_ATTEMPTS if feedback == "attempts" else FEEDBACK_OUTCOME if outcome
+                        "feedback": (FEEDBACK_ITEMS if feedback == "items" else FEEDBACK_ATTEMPTS
+                                     if feedback == "attempts" else FEEDBACK_OUTCOME if outcome
                                      else FEEDBACK_NONE)}.items():
         system = system.replace("{" + name + "}", str(value))
     vctx = verify_context(activity, s, package=package)
@@ -287,8 +335,9 @@ def adopt(activity, *, task_id: str, reference, base_release, run_arm, account, 
     researcher = activity.research_provider(f"repeat:{task_id}", account=account)
 
     def probe(dir_name: str, files: dict) -> tuple[str, bool]:
-        if dir_name in probes:
-            return f"candidates/{dir_name} was already tried on this task; edit it under another name or finish", True
+        if dir_name in probes and probes[dir_name]["files_hash"] == files_hash(files):
+            return (f"candidates/{dir_name} is unchanged since its try on this task: change it before trying it again "
+                    f"(a changed candidate may be tried again while tries are left), or finish", True)
         if spent["probes"] >= int(plan.max_probes):
             return f"refused: the {plan.max_probes} try_task runs of this task are used", True
         try:
@@ -312,17 +361,21 @@ def adopt(activity, *, task_id: str, reference, base_release, run_arm, account, 
         trace.allow({session_id})
         conds = condition(components(package, files))
         acted = acted_components(conds, footprint_of(trace, session_id))
-        d = digest(trace, session_id)
+        d = digest(trace, session_id, detail_tools=tool_names(files) - tool_names(package.files))
         probes[dir_name] = {"session": session_id, "digest": d, "acted": acted, "package_ref": cand.ref(),
                             "files_ref": activity.objects.put_json("candidate_files", files), "attempt": row.attempt_id,
-                            "accepted": bool(row.success)}
+                            "accepted": bool(row.success), "files_hash": files_hash(files)}
         out(f"repeat     {task_id}: probe of {dir_name}: acted {acted or 'nothing'}, {d['steps']} steps, "
             f"writes {sum(d['writes'].values())}" + (f", {'ACCEPTED' if row.success else 'not accepted'}"
-                                                     if feedback == "attempts" else ""))
+                                                     if feedback in ("attempts", "items") else ""))
         text = contrast_text(reference_digest, d, task=task_id, dir_name=dir_name, acted=acted,
                              probes_left=int(plan.max_probes) - spent["probes"])
-        if feedback == "attempts":              # the one bit per attempt: the request was accepted, or sent back
+        if feedback in ("attempts", "items"):   # the one bit per attempt: the request was accepted, or sent back
             text += "\n" + ACCEPTED_LINE[bool(row.success)]
+        if rejected is not None and not row.success:    # v2.1: and what this run was sent back for
+            items = list(rejected(row.attempt_id))
+            probes[dir_name]["rejected"] = items
+            text += "\n  sent back for: " + ("; ".join(items) or "(no item named)")
         return text, False
 
     session = None
@@ -367,9 +420,14 @@ def adopt(activity, *, task_id: str, reference, base_release, run_arm, account, 
             if not verdict.passed():
                 out(f"repeat     {task_id}: candidates/{decl.dir} failed its free rungs: {verdict.text()[:200]}")
                 continue
-            if decl.dir not in probes:                   # R never tried it: the host probes it once
+            if decl.dir not in probes or probes[decl.dir]["files_hash"] != files_hash(files):
+                # R never tried it, or changed it after its last try (v2.1): the host probes what is handed in; with
+                # no try left, the last tried version stands — it is what an adoption installs
                 text, bad = probe(decl.dir, files)
-                if bad:
+                if bad and decl.dir in probes and text.startswith("refused"):
+                    out(f"repeat     {task_id}: candidates/{decl.dir} changed after its last try and no try is left: "
+                        f"the tried version stands")
+                elif bad:
                     out(f"repeat     {task_id}: candidates/{decl.dir} not probed: {text[:160]}")
                     continue
             candidates.append(decl)
@@ -379,7 +437,7 @@ def adopt(activity, *, task_id: str, reference, base_release, run_arm, account, 
     # ---- compose: with the per-attempt bit, the accepted candidate is adopted (the latest, R's most refined);
     # without it, one aux call over the reference and the probes, no score
     choice, why = "base", "no candidate reached the composer"
-    if candidates and feedback == "attempts":
+    if candidates and feedback in ("attempts", "items"):
         accepted = [d for d in candidates if probes[d.dir]["accepted"]]
         if accepted:
             choice, why = accepted[-1].dir, f"its run on this request was accepted (candidates/{accepted[-1].dir})"
@@ -419,7 +477,8 @@ def adopt(activity, *, task_id: str, reference, base_release, run_arm, account, 
                                 why=why, scope=chosen.scope)
     usd = round(session_spend(account, f"repeat:{task_id}") + spent["usd"], 6)
     return {"choice": choice, "why": why, "package_ref": probes[choice]["package_ref"] if chosen else None,
-            "accepted": {d: bool(p.get("accepted")) for d, p in probes.items()} if feedback == "attempts" else None,
+            "accepted": {d: bool(p.get("accepted")) for d, p in probes.items()} if feedback in ("attempts", "items")
+            else None,
             "files_ref": probes[choice]["files_ref"] if chosen else None, "probes": spent["probes"],
             "candidates": [d.dir for d in candidates], "entry": entry["id"] if entry else None,
             "session": transcript, "usd": usd,

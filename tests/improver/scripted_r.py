@@ -385,6 +385,19 @@ class ScriptedR:
         self.task_seen = task_json
         if self.mode == "repeat_none" or "#ops" not in str(task_json.get("request") or ""):
             return self._calls(("finish", {"packages": []}))
+        if self.mode == "repeat_tool":          # v2.1 (DESIGN §6.24): the step as a tool the agent calls
+            tool_manifest = {**manifest, "tools": [*manifest.get("tools", []), TOOL_ENTRY]}
+            decl = {"mechanism": MECHANISM["tool"], "scope": "invariant", "components": [
+                {"kind": "tool", "site": TOOL_ENTRY["name"], "cause_ids": [], "predicted_affected": [],
+                 "trigger": "the request asks for a message in #ops"}]}
+            if turns == 1:
+                return self._calls(("write_file", {"path": "candidates/package/tools/post_channel_message.py",
+                                                   "text": TOOL_CODE}),
+                                   ("write_file", {"path": "candidates/package/manifest.json",
+                                                   "text": json.dumps(tool_manifest, indent=1) + "\n"}))
+            if turns == 2:
+                return self._calls(("try_task", {"task": task}))
+            return self._calls(("finish", {"packages": [decl]}))
         manifest["hooks"] = [*manifest.get("hooks", []), HOOK_ENTRY]
         decl = {"mechanism": MECHANISM["hook"], "scope": "invariant", "components": [
             {"kind": "hook", "site": "on_finish", "cause_ids": [], "predicted_affected": [],
@@ -395,6 +408,13 @@ class ScriptedR:
                                               "text": json.dumps(manifest, indent=1) + "\n"}))
         if turns == 2:
             return self._calls(("try_task", {"task": task}))
+        if self.mode == "repeat_retry":         # v2.1: the same candidate again unchanged (refused), then changed
+            if turns == 3:
+                return self._calls(("try_task", {"task": task}))
+            if turns == 4:
+                return self._calls(("edit_file", {"path": "candidates/package/middlewares/remind_ops.py",
+                                                  "old": "return None", "new": "return None  # revised after the try"}),
+                                   ("try_task", {"task": task}))
         return self._calls(("finish", {"packages": [decl]}))
 
     def _merge(self, turns: int, manifest: dict, picks: list, tasks: list) -> ChatTurn:

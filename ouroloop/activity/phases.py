@@ -682,7 +682,15 @@ def repeat_plan(activity):
     domains = (activity.k.get("final") or {}).get("domains")
     if domains:
         tasks = [t for t in tasks if t.split(".", 1)[0] in set(domains)]
-    if table.get("max_tasks"):
+    named = [str(t) for t in (table.get("tasks") or [])]
+    if named:                                   # v2.1 (DESIGN §6.24): the plan names its tasks (a focused run)
+        if table.get("max_tasks"):
+            raise ValueError("[repeat] tasks and max_tasks: name the tasks or cap their number, not both")
+        unknown = [t for t in named if t not in set(tasks)]
+        if unknown:
+            raise ValueError(f"[repeat] tasks not in the {split} split's stream: {unknown}")
+        tasks = [t for t in tasks if t in set(named)]
+    elif table.get("max_tasks"):
         tasks = tasks[:int(table["max_tasks"])]
     arms = tuple(table.get("arms") or ARMS)
     return RepeatPlan(experiment_id=f"{activity.scope_id}-repeat-{split}", tasks=tuple(tasks), split=split,
@@ -739,6 +747,11 @@ def repeat(activity, *, arm: str = "learn", until: int | None = None, out: Calla
         with lock:
             write_json(state_path, state)
 
+    def rejected_of(attempt_id: str) -> list:
+        """v2.1 (DESIGN §6.24): what the reviewer sent an attempt back for — the failed checks' kinds and objects,
+        read by the host after the attempt was scored; no expected value leaves the adapter."""
+        return ab.rejected_items(activity.results.grading(attempt_id, splits=(plan.split,)))
+
     def one(task: str) -> None:
         """One task's encounters, sequential within the task (each depends on the one before); tasks run in
         parallel, [repeat] concurrency at a time (a machine setting, not in the plan)."""
@@ -749,7 +762,7 @@ def repeat(activity, *, arm: str = "learn", until: int | None = None, out: Calla
             if k == 2 and arm == "learn":
                 if st.get("adopted") is None:
                     first = next((r for r in activity.results.all() if r.attempt_id == st["encounters"]["1"]), None)
-                    if plan.feedback in ("outcome", "attempts") and first is not None and first.success:
+                    if plan.feedback in ("outcome", "attempts", "items") and first is not None and first.success:
                         # the request was accepted: nothing to correct, no session (the one bit of feedback)
                         got = {"choice": "base", "why": "accepted on the first encounter: nothing to correct",
                                "package_ref": None, "files_ref": None, "probes": 0, "candidates": [], "entry": None,
@@ -757,8 +770,10 @@ def repeat(activity, *, arm: str = "learn", until: int | None = None, out: Calla
                     else:
                         got = adopt(activity, task_id=task, reference=first, base_release=base, run_arm=run_arm,
                                     account=account, plan=plan, library=library, out=out,
-                                    outcome=("not accepted" if plan.feedback in ("outcome", "attempts") else None),
-                                    feedback=plan.feedback)
+                                    outcome=("not accepted" if plan.feedback in ("outcome", "attempts", "items")
+                                             else None),
+                                    feedback=plan.feedback,
+                                    rejected=(rejected_of if plan.feedback == "items" else None))
                     st["adopted"] = {k2: v for k2, v in got.items() if k2 != "verdicts"}
                     save()
                     activity.events.append("repeat_adopted" if got["choice"] != "base" else "repeat_kept", plan=ref,

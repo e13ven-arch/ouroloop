@@ -253,3 +253,98 @@ def test_the_phase_refuses_without_the_sealed_plan_or_with_an_unknown_arm(tmp_pa
     with pytest.raises(ValueError, match="arm"):
         phases.repeat(b, arm="other", out=quiet)
     assert actor.calls == 0
+
+
+def _learn(tmp_path, fake_upstream, *, actor, r, repeat):
+    a = activity(tmp_path, fake_upstream, provider=actor, r=r, repeat=repeat)
+    refs = phases.freeze(a, out=quiet)
+    b = reopen(a, provider=actor, r=r, repeat=repeat,
+               rsi={"scope_id": "rsi-test", **{k: v for k, v in refs.items() if k != "gate_template"}})
+    out = []
+    phases.repeat(b, arm="learn", out=out.append)
+    return a, b, out
+
+
+def test_a_tool_r_writes_in_the_session_is_adopted_and_the_agent_calls_it_on_the_later_encounters(tmp_path, fake_upstream):
+    """v2.1 (DESIGN §6.24): the step as a tool — R writes the tool that posts the message and registers it; the actor,
+    offered the tool, calls it; the probe is accepted, the tool is adopted for the task, the later encounters'
+    footprints show the call, the library entry carries the tool's file, and the try's answer lists the tool's calls
+    with their inputs and outputs."""
+    from ouroloop.improver.evidence import Evidence
+    from ouroloop.improver.repeat import footprint_of
+    actor = rsi.BusinessWorker(forget_notify=True)
+    r = ScriptedR("repeat_tool")
+    _, b, out = _learn(tmp_path, fake_upstream, actor=actor, r=r, repeat={"encounters": 3, "concurrency": 1})
+    scored = {(e["task"], e["encounter"]): e["passed"] for e in b.events.read("repeat_scored")}
+    assert [scored[(NOTIFY, k)] for k in (1, 2, 3)] == [False, True, True]
+    (adopted,) = b.events.read("repeat_adopted")
+    assert adopted["task"] == NOTIFY and adopted["choice"] == "package" and adopted["accepted"] == {"package": True}
+    st = json.loads((b.root / "rsi" / "repeat" / "rsi-test-repeat-test.learn.json").read_text(encoding="utf-8"))["tasks"]
+    assert "tools/post_channel_message.py" in b.objects.get(st[NOTIFY]["adopted"]["files_ref"])
+    try_text = next(t for _, t in r.tries if f"on {NOTIFY}" in t)
+    assert "tool:post_channel_message" in try_text and 'post_channel_message({"phrase"' in try_text
+    assert "posted to the ops channel" in try_text and "THIS RUN WAS ACCEPTED" in try_text
+    assert any("probe of package: acted ['tool:post_channel_message']" in line for line in out)
+    runs = b.results.runs()
+    e2 = next(x for x in b.results.all() if runs[x.run].candidate == "learn:e2" and x.task_id == NOTIFY)
+    ev = Evidence(b)
+    ev.trace.allow({e2.evidence or e2.attempt_id})
+    assert "post_channel_message" in footprint_of(ev.trace, e2.evidence or e2.attempt_id)["tools"]
+    assert "tools/post_channel_message.py" in (b.root / "library" / "INDEX.md").read_text(encoding="utf-8")
+
+
+def test_with_the_rejected_items_r_is_told_what_was_sent_back_but_never_what_it_should_have_said(tmp_path, fake_upstream):
+    """v2.1: feedback "items" — task.json carries the items the first encounter was sent back for (the checks' kinds
+    and objects, no expected text), the prompt says so, a try that was not accepted comes back with that run's
+    items, and the acceptance rule is the attempts rule (no accepted run: the base stays)."""
+    deaf = rsi.BusinessWorker(forget_notify=True, ignore_pushback=True)
+    r = ScriptedR("repeat")
+    cfg = {"encounters": 3, "feedback": "items", "concurrency": 1}
+    a, b, _ = _learn(tmp_path, fake_upstream, actor=deaf, r=r, repeat=cfg)
+    plan = RepeatPlan.from_json(a.objects.get(next(e["plan"] for e in a.events.read("repeat_sealed"))))
+    assert plan.feedback == "items"
+    items = r.task_seen["rejected_items"]
+    assert items and all(i.startswith("slack message") for i in items) and r.task_seen["outcome"] == "not accepted"
+    # the items carry the check's kind, never the text the grader looked for (the request itself names the phrase,
+    # so the whole task.json is not the place to look: the items and the try's "sent back for" line are)
+    looked_for = [str(x.get("text")) for x in a.suite.grading(NOTIFY).assertions if x.get("text")]
+    assert looked_for and not any(t in json.dumps(items) for t in looked_for)
+    assert "what the request was sent back for" in r.system_seen and "{feedback}" not in r.system_seen
+    try_text = next(t for _, t in r.tries if f"on {NOTIFY}" in t)
+    assert "This run was NOT accepted" in try_text and "sent back for: slack message" in try_text
+    sent_back = try_text.split("sent back for:", 1)[1]
+    assert not any(t in sent_back for t in looked_for)
+    kept = {e["task"]: e for e in b.events.read("repeat_kept")}
+    assert kept[NOTIFY]["choice"] == "base" and kept[NOTIFY]["accepted"] == {"package": False}
+
+
+def test_the_plan_may_name_its_tasks_and_refuses_one_outside_the_split(tmp_path, fake_upstream):
+    """v2.1: [repeat] tasks names the tasks of a focused run (sealed like any plan); a task not in the split's
+    stream, or tasks beside max_tasks, is refused."""
+    actor = rsi.BusinessWorker(forget_notify=True)
+    r = ScriptedR("repeat")
+    a = activity(tmp_path / "named", fake_upstream, provider=actor, r=r,
+                 repeat={"encounters": 3, "tasks": [NOTIFY], "concurrency": 1})
+    refs = phases.freeze(a, out=quiet)
+    assert RepeatPlan.from_json(a.objects.get(refs["repeat_plan_ref"])).tasks == (NOTIFY,)
+    c = activity(tmp_path / "outside", fake_upstream, provider=actor, r=r,
+                 repeat={"encounters": 3, "tasks": ["rsi.update_stage"], "concurrency": 1})
+    with pytest.raises(ValueError, match="not in the test split"):
+        phases.freeze(c, out=quiet)
+    d = activity(tmp_path / "both", fake_upstream, provider=actor, r=r,
+                 repeat={"encounters": 3, "tasks": [NOTIFY], "max_tasks": 1, "concurrency": 1})
+    with pytest.raises(ValueError, match="not both"):
+        phases.freeze(d, out=quiet)
+
+
+def test_a_candidate_changed_after_its_try_may_be_tried_again_and_an_unchanged_one_is_refused(tmp_path, fake_upstream):
+    """v2.1: try_task on a candidate unchanged since its try is refused (no run); the same candidate, changed, runs
+    again (finance-v18: R re-tried unchanged directories and lost its tries); the adoption counts both runs."""
+    actor = rsi.BusinessWorker(forget_notify=True)
+    r = ScriptedR("repeat_retry")
+    _, b, _ = _learn(tmp_path, fake_upstream, actor=actor, r=r, repeat={"encounters": 3, "concurrency": 1})
+    refused = [t for err, t in r.tries if err]
+    ran = [t for err, t in r.tries if not err and f"on {NOTIFY}" in t]
+    assert len(refused) == 1 and "unchanged since its try" in refused[0] and len(ran) == 2
+    (adopted,) = b.events.read("repeat_adopted")
+    assert adopted["task"] == NOTIFY and adopted["probes"] == 2 and adopted["choice"] == "package"

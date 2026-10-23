@@ -878,3 +878,22 @@ def _plain_type(entry: dict) -> str | None:
         rest = [x.get("type") for x in entry["anyOf"] if x.get("type") != "null"]
         return rest[0] if len(rest) == 1 else None
     return t
+
+
+IDENTIFIER_KEYS = ("to", "cc", "from", "channel", "channel_name", "row_id", "invoice_number")
+
+
+def rejected_items(assertions) -> list[str]:
+    """What a reviewer's rejection names (DESIGN §6.24, `[repeat] feedback = "items"`): one line per failed, not
+    excluded assertion — its kind (the grader's type name, underscores opened) and what it is about (a recipient, a
+    channel, a row, a record or an invoice: IDENTIFIER_KEYS and every `*_id`), never the value it expected or the
+    text it looked for. The benchmark's vocabulary stays in this adapter."""
+    out = []
+    for a in assertions or ():
+        if a.get("passed") or a.get("excluded"):
+            continue
+        params = a.get("params") if isinstance(a.get("params"), dict) else {}
+        about = ", ".join(f"{k} {v}" for k, v in params.items()
+                          if (k in IDENTIFIER_KEYS or str(k).endswith("_id")) and isinstance(v, (str, int)))
+        out.append(str(a.get("type") or "check").replace("_", " ") + (f" ({about})" if about else ""))
+    return out

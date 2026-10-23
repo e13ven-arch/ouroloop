@@ -56,8 +56,10 @@ class RepeatPlan(Record):
             raise ContractError(f"arms are among {list(ARMS)}")
         if self.split not in ("train", "test"):
             raise ContractError("split is train (a rehearsal) or test (the number)")
-        if self.feedback not in ("attempts", "outcome", "none"):
-            raise ContractError("feedback is attempts (one bit per attempt), outcome (the first encounter's bit) or none")
+        if self.feedback not in ("attempts", "items", "outcome", "none"):
+            raise ContractError("feedback is attempts (one bit per attempt), items (the bit and what was sent back: "
+                                "the failed checks' kinds and objects, no values), outcome (the first encounter's "
+                                "bit) or none")
         check_refs([self.base], kind="release", what="base release")
 
 

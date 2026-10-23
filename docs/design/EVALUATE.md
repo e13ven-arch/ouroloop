@@ -149,7 +149,7 @@ v1.1 每轮一次 gate；v1.2 活动内的接受由改进器的留出筛选决�
 ```python
 # evaluate/repeat.py
 @dataclass(frozen=True)
-class RepeatPlan(Record): experiment_id; tasks: tuple; encounters: int = 3; base: str; arms: tuple = ("learn", "control"); split: str = "test"; feedback: str = "outcome"; split_hash; core_ref; max_infrastructure_retries; max_probes: int = 4
+class RepeatPlan(Record): experiment_id; tasks: tuple; encounters: int = 3; base: str; arms: tuple = ("learn", "control"); split: str = "test"; feedback: str = "attempts"   # none | outcome | attempts | items; split_hash; core_ref; max_infrastructure_retries; max_probes: int = 4
 def seal(plan, root, objects) -> dict           # rsi/repeat/<id>.json；事件 repeat_sealed；同 id 另一个计划被拒
 def scored(events, *, plan_ref) -> dict         # {arm: {task: {encounter: {passed, partial_credit}}}}，读 repeat_scored 事件
 def summary(table, *, encounters) -> dict       # 每臂每次的 tasks / passed / pass_rate / partial_credit
@@ -161,8 +161,9 @@ def paired(table, *, families, subject, control, seed, replicates) -> dict   # (
 - **并行**：`[repeat] concurrency`（默认 4，机器设置，不进计划）——题与题之间并行，一道题内的几次执行仍串行（后一次依赖前一次）；调用次数与花费不变，只省时间。
 - **记录**：每次计分写一条 `repeat_scored`（arm、task、encounter、passed、partial_credit、attempt、package）；采用写 `repeat_adopted` / `repeat_kept`（task、choice、why、probes、candidates、entry、package）。probe 的尝试 role `probe`，不是 encounter，报告不计。续跑按 run 名与题免付。
 - **报告**：每臂每次的通过率；`learn:eE-e1`、`control:eE-e1`、`learn-control:eE`、`learn-control:e1` 四个配对差（点数、区间、题数、族数）；采用数、保留数、库条目数；`complete` 要两臂每题每次都有读数。
-- **反馈**：`feedback = "attempts"`（默认）——第 1 次被接受的题保留 base、不开会话；没被接受的题开会话，R 每次 try 之后被告知那次被接受没有，probe 被接受的候选才采用（取最后一个），没有就保留 base，不问 composer。`"outcome"`——只有第 1 次的比特，probe 的好坏由 composer 读轨迹判（finance-v15：两道都判反）。`"none"`——Harness² 的严格口径，每题都开会话、R 只拿轨迹。对外的数要写明用的是哪种。
-- **防泄漏**：R、composer、reflector 的输入里没有评分、断言、grading（outcome 模式下多一个比特：接受与否）（`improver/repeat.digest` 只有调用、错误标记、hook、写入、技能、最后的话）；轨迹经 `TraceStore.allow` 只对本题的会话放行；test 题的评分行只由宿主在 encounter 之后读。
+- **反馈**：`feedback = "attempts"`（默认）——第 1 次被接受的题保留 base、不开会话；没被接受的题开会话，R 每次 try 之后被告知那次被接受没有，probe 被接受的候选才采用（取最后一个），没有就保留 base，不问 composer。`"items"`（v2.1，DESIGN §6.24）——attempts 的规则，加上每次没被接受时 R 拿到**退回项**：失败检查的种类与对象（适配器 `rejected_items(assertions)`：类型名 + 标识键——`to`、`channel`、`channel_name`、`row_id` 与所有 `*_id`、`invoice_number`——其余键一律不放行，期望值与内容从不进 R）；第 1 次的放在 `task.json` 的 `rejected_items`，probe 的附在 try 的对比里。`"outcome"`——只有第 1 次的比特，probe 的好坏由 composer 读轨迹判（finance-v15：两道都判反）。`"none"`——Harness² 的严格口径，每题都开会话、R 只拿轨迹。对外的数要写明用的是哪种。
+- **点名**（v2.1）：`[repeat] tasks = [...]` 只跑这些题（须在 split 内，按流序；与 `max_tasks` 二选一）；专项用它在 train 上跑两三道。
+- **防泄漏**：R、composer、reflector 的输入里没有评分、断言、grading（outcome / attempts 模式下多一个比特：接受与否；items 模式下多退回项的种类与对象，没有期望值）（`improver/repeat.digest` 只有调用、错误标记、hook、写入、技能、最后的话）；轨迹经 `TraceStore.allow` 只对本题的会话放行；test 题的评分行只由宿主在 encounter 之后读。
 
 ## 7 发布与装入
 

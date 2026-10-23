@@ -26,9 +26,22 @@ matches this run — copied, then re-checked against this run (an earlier task's
 here, not a fact). Never write this task's specific values (names, e-mails, ids, amounts) into the package: the next
 request has other ones, and the host rejects a value that occurs in one task.
 
-Then call try_task on this task for each candidate (once each): the package runs the same request again, for real,
-and the answer puts that run beside the first one — the hooks that acted and what they said, the writes by route, the
-final text, which of your components acted, the errors — with no score. Read it for what is certain: whether your
+A value the agent derived — a fee, a tax, a total, a ratio, a tier, a match between two lists, a roll-up by category,
+a date inside or outside a window, a rule applied to a row — is a step of the work, and a step is carried by code,
+not by the model's own arithmetic or by a reminder: when what was sent back is such a value, write the tool that
+does that step (tools/<name>.py, registered in manifest.json under tools with a description that says when to call
+it and an input_schema of what it takes), with the values the agent read from the documents as its arguments and an
+output that shows every input, the rule or formula applied and the result, so the agent copies the result and the
+run shows what it was computed from. A tool the agent never calls fixes nothing: name it for the step, say in its
+description the situation that calls for it, and add the skill or the hold that sends the agent to it (a before_tool
+hold, once, on a message or record that states a derived value while no call of the tool came before it). try_task
+shows your tool's calls with their inputs and outputs beside what the agent then wrote.
+
+Then call try_task on this task for each candidate (once each; a candidate you changed after its try may be tried
+again while tries are left — the version that ran is the one an adoption installs): the package runs the same
+request again, for real, and the answer puts that run beside the first one — the hooks that acted and what they
+said, the writes by route, the final text, which of your components acted (your tool's calls with their inputs and
+outputs), the errors — with no score. Read it for what is certain: whether your
 component acted, where, what it said, what the agent wrote before and after. If it did not act, fix its trigger from
 what the run shows and try once more if a try is left; if it acted and the agent still did the wrong thing, change
 what it says or does. A composer then reads the first run and the candidates' runs and adopts one package for this task,

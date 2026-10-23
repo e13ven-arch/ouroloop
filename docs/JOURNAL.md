@@ -8,6 +8,20 @@
 
 ---
 
+## 2026-10-24 阶段 4p 落地：退回项反馈 + R 造工具（DESIGN v2.1 §6.24）；finance-v19 配置；$0
+
+**为什么。** v18 的 15 道没修好的题逐题读完（4o 一条的 v18 补记）：错在用哪个数 / 哪一档 / 哪一行，R 的候选 12/15 改在别处，18 次会话零工具。用户："如果是数值计算问题，难道不应该创建数值计算的工具，或者写代码来保证计算的准确性吗？""工具不应该是 agent 在 rsi 过程中动态识别并创造出来的吗？""不需要跑那么多题……选两三个任务来测就行。"定下：种子不动；R 该在任务里识别并写出计算 / 匹配 / 汇总类的工具；专项只用两三道 train 题验证——原来没用代码解决、现在 R 写了代码并解决了。
+
+**做了什么。** (1) `feedback = "items"`（`evaluate/repeat.RepeatPlan`）：第 1 次与每个 probe 没被接受时，R 拿到退回项——适配器 `automationbench.rejected_items(assertions)`：失败检查的类型名（下划线打开）+ 标识键（`to`、`cc`、`from`、`channel`、`channel_name`、`row_id`、`invoice_number` 与所有 `*_id`），期望值与内容一律不放行；宿主在计分后读 grading 交给 `adopt(..., rejected=...)`，写进 `task.json` 的 `rejected_items` 和 try 答复的 "sent back for:" 一行；提示词 `FEEDBACK_ITEMS`。(2) `repeat.md` 加"派生值的步骤写成工具"一段（输入是读到的原值、输出带来源与公式、配技能或 hold 让 agent 调用）；try 的答复列出 R 的工具每次调用的参数与输出（`digest(detail_tools=…)` 从 gateway_call 的 response 与下一次调用的 messages_tail 里取——包工具不是 broker 调用，轨迹里没有它的 `tool` 事件）。(3) try 的规则：同一目录文件改过（`files_hash`）可再 try，没改过的拒绝；finish 时改过的目录宿主再 probe，没 try 剩的按最后一次 try 的版本算（采用装的本来就是 probe 过的版本）。(4) `[repeat] tasks` 点名题目（须在 split 内；与 `max_tasks` 二选一）。
+
+**测试（假上游 rsi 域，`test_activity_repeat.py` 新增 4 个，共 12 个；默认 1,559 passed、87 deselected）。** 脚本化 R 的 `repeat_tool` 模式写 `post_channel_message` 工具并注册，actor 看到工具就用它：probe 被接受、采用、第 2 / 3 次足迹里有 `post_channel_message`、库索引带 `tools/` 文件、try 答复里有 `tool:post_channel_message` 与它的调用参数和输出；items 模式：task.json 的 `rejected_items` 是 "slack message contains"（不含 grader 找的短语）、没被接受的 try 附 "sent back for"、无接受则保留 base；点名计划只封存点名的题，split 外的题与同时给 `max_tasks` 被拒；`repeat_retry` 模式：原样再 try 被拒（"unchanged since its try"）、改过再 try 跑了，采用记 2 次 probe。
+
+**finance-v19（`finance-v19.toml`）。** v18 的形状，`split = "train"`，点名 quarterly_tax_estimate、timesheet_to_invoice、po_three_way_match（v13 基线失败在派生值上：105,792 的税额、13,162.5 的工时账、第 3 行的 Price Variance；v16 没跑它们；没有被代码解决过），`feedback = "items"`，只跑学习臂，并发 3。通过标准：采用的包里有工具、agent 在 probe 与再遇里调用了它、题通过并站住。免费检查通过（划分哈希同 v18）。
+
+**下一步。** 用户批约 $30 → 跑学习臂 → 逐题读 → 没过就改 R（提示词、库样例、剧本）再跑一轮，不跑全量。
+
+---
+
 ## 2026-10-22 阶段 4o 落地：逐题采用 + 重复流评测（DESIGN v2.0 §6.23）；$0
 
 **做了什么。** `evaluate/repeat.py`：`RepeatPlan`（题、次数、base、臂、split、probe 上限）、`seal`、`scored` / `summary` / `paired`；`improver/repeat.py`：无标签的执行 digest、足迹、并排文字、`Library`（整树 + EXPERIENCE.md + 索引）、`adopt`（按题开会话 → `try_task` 当 probe → V0/V1 → composer 一次 aux 调用采用或保留 base → reflector 一次 aux 调用给裁决与教训入库）；`prompts/repeat.md`、`compose.md`、`reflect.md`；`activity/phases.py`：`repeat_plan`、`freeze` 在有 `[repeat]` 时封存、`--phase repeat --arm learn|control [--until task-K]`（每题 E 次，学习臂第 2 次前采用，续跑免付，事件 `repeat_scored` / `repeat_adopted` / `repeat_kept`）；报告的"Repetitive stream"段（每臂每次通过率、四个配对差、采用 / 保留 / 库条目）；`TraceStore.allow`（本题的会话放行，评分不在轨迹里）；声明读取的 `require_causes`（重复流无簇、无认领）。设计文档：EVALUATE §6b、IMPROVER §15。
