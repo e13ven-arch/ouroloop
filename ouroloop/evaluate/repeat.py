@@ -38,9 +38,11 @@ class RepeatPlan(Record):
     core_ref: str = ""
     max_infrastructure_retries: int = 1
     max_probes: int = 4               # the learn arm's extra executions a task, at most (the candidates' probes)
-    feedback: str = "outcome"        # what the improver learns from besides the run: "outcome" — one bit, whether
-                                      # the first encounter was accepted (a request sent back; a passing task is left
-                                      # alone); "none" — nothing (Harness²'s setting: the run alone)
+    feedback: str = "attempts"       # what the improver learns from besides the run: "attempts" — one bit per
+                                      # attempt, whether it was accepted (the first encounter and each probe: a
+                                      # request sent back until it is right; the accepted candidate is adopted, no
+                                      # composer's guess); "outcome" — the first encounter's bit only, the composer
+                                      # judges the probes; "none" — nothing (Harness²'s setting: the run alone)
     sealed_at: str = ""               # volatile: not part of the plan's identity
 
     def __post_init__(self) -> None:
@@ -54,8 +56,8 @@ class RepeatPlan(Record):
             raise ContractError(f"arms are among {list(ARMS)}")
         if self.split not in ("train", "test"):
             raise ContractError("split is train (a rehearsal) or test (the number)")
-        if self.feedback not in ("outcome", "none"):
-            raise ContractError("feedback is outcome (one bit: accepted or not) or none")
+        if self.feedback not in ("attempts", "outcome", "none"):
+            raise ContractError("feedback is attempts (one bit per attempt), outcome (the first encounter's bit) or none")
         check_refs([self.base], kind="release", what="base release")
 
 

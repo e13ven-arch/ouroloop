@@ -160,7 +160,7 @@ def paired(table, *, families, subject, control, seed, replicates) -> dict   # (
 - **臂**：`learn`——第 1 次跑 base（计划里的 release：发布线或种子），两次之间 `improver/repeat.adopt` 只凭这条轨迹（不读评分）采用一个包或保留 base，第 2～E 次用这道题自己的包；`control`——每次都跑 base。两臂各自的账户 `{scope}:repeat-<arm>`。
 - **记录**：每次计分写一条 `repeat_scored`（arm、task、encounter、passed、partial_credit、attempt、package）；采用写 `repeat_adopted` / `repeat_kept`（task、choice、why、probes、candidates、entry、package）。probe 的尝试 role `probe`，不是 encounter，报告不计。续跑按 run 名与题免付。
 - **报告**：每臂每次的通过率；`learn:eE-e1`、`control:eE-e1`、`learn-control:eE`、`learn-control:e1` 四个配对差（点数、区间、题数、族数）；采用数、保留数、库条目数；`complete` 要两臂每题每次都有读数。
-- **反馈**：`feedback = "outcome"`（默认）——学习臂只在第 1 次没被接受的题上开会话，R 知道"没被接受"这一个比特、不知道为什么；被接受的题保留 base、不付会话。`"none"`——Harness² 的严格口径，每题都开会话、R 只拿轨迹。对外的数要写明用的是哪种。
+- **反馈**：`feedback = "attempts"`（默认）——第 1 次被接受的题保留 base、不开会话；没被接受的题开会话，R 每次 try 之后被告知那次被接受没有，probe 被接受的候选才采用（取最后一个），没有就保留 base，不问 composer。`"outcome"`——只有第 1 次的比特，probe 的好坏由 composer 读轨迹判（finance-v15：两道都判反）。`"none"`——Harness² 的严格口径，每题都开会话、R 只拿轨迹。对外的数要写明用的是哪种。
 - **防泄漏**：R、composer、reflector 的输入里没有评分、断言、grading（outcome 模式下多一个比特：接受与否）（`improver/repeat.digest` 只有调用、错误标记、hook、写入、技能、最后的话）；轨迹经 `TraceStore.allow` 只对本题的会话放行；test 题的评分行只由宿主在 encounter 之后读。
 
 ## 7 发布与装入

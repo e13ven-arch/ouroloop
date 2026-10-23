@@ -40,6 +40,13 @@ FEEDBACK_OUTCOME = ("This request was NOT accepted (inputs/task.json `outcome`):
                     "it.")
 FEEDBACK_NONE = ("You are told nothing about whether the run was accepted: read it as a practitioner reads a colleague's "
                  "work, and hand in nothing when you find nothing wrong.")
+FEEDBACK_ATTEMPTS = (FEEDBACK_OUTCOME + " After each try_task you are told one more thing: whether that run was ACCEPTED. "
+                     "A candidate whose run was accepted is adopted for this task; one whose run was not accepted is "
+                     "not — use the tries you have left to change what it does, then try again. Hand in every "
+                     "candidate you tried; the accepted one is kept.")
+ACCEPTED_LINE = {True: "  THIS RUN WAS ACCEPTED: hand this candidate in and it is adopted for the task.",
+                 False: "  This run was NOT accepted: what it did is still wrong somewhere; change the candidate and "
+                        "try again while tries are left."}
 EXCERPT = 160                    # of a call's output or error in a digest
 SAID = 600                       # of the final text
 DETAIL = 240                     # of what a hook said
@@ -219,7 +226,7 @@ def verify_context(activity, settings: Settings, *, package) -> VerifyContext:
 
 
 def adopt(activity, *, task_id: str, reference, base_release, run_arm, account, plan, library: Library,
-          out=print, outcome: str | None = None) -> dict:
+          out=print, outcome: str | None = None, feedback: str = "attempts") -> dict:
     """One task's Propose-Probe-Compose after its first encounter (`reference`: that attempt's TaskResult).
     -> {choice: "base" | dir, why, package_ref | None, files_ref | None, probes, candidates, entry | None,
     session, usd}."""
@@ -249,7 +256,8 @@ def adopt(activity, *, task_id: str, reference, base_release, run_arm, account, 
                         "max_read": s.session_max_read_bytes, "max_read_total": s.session_max_read_total,
                         "max_tokens": int(activity.k["research_model"]["max_tokens"]),
                         "max_probes": int(plan.max_probes),
-                        "feedback": (FEEDBACK_OUTCOME if outcome else FEEDBACK_NONE)}.items():
+                        "feedback": (FEEDBACK_ATTEMPTS if feedback == "attempts" else FEEDBACK_OUTCOME if outcome
+                                     else FEEDBACK_NONE)}.items():
         system = system.replace("{" + name + "}", str(value))
     vctx = verify_context(activity, s, package=package)
     worker = activity.worker()
@@ -285,11 +293,16 @@ def adopt(activity, *, task_id: str, reference, base_release, run_arm, account, 
         acted = acted_components(conds, footprint_of(trace, session_id))
         d = digest(trace, session_id)
         probes[dir_name] = {"session": session_id, "digest": d, "acted": acted, "package_ref": cand.ref(),
-                            "files_ref": activity.objects.put_json("candidate_files", files), "attempt": row.attempt_id}
+                            "files_ref": activity.objects.put_json("candidate_files", files), "attempt": row.attempt_id,
+                            "accepted": bool(row.success)}
         out(f"repeat     {task_id}: probe of {dir_name}: acted {acted or 'nothing'}, {d['steps']} steps, "
-            f"writes {sum(d['writes'].values())}")
-        return contrast_text(reference_digest, d, task=task_id, dir_name=dir_name, acted=acted,
-                             probes_left=int(plan.max_probes) - spent["probes"]), False
+            f"writes {sum(d['writes'].values())}" + (f", {'ACCEPTED' if row.success else 'not accepted'}"
+                                                     if feedback == "attempts" else ""))
+        text = contrast_text(reference_digest, d, task=task_id, dir_name=dir_name, acted=acted,
+                             probes_left=int(plan.max_probes) - spent["probes"])
+        if feedback == "attempts":              # the one bit per attempt: the request was accepted, or sent back
+            text += "\n" + ACCEPTED_LINE[bool(row.success)]
+        return text, False
 
     session = None
     try:
@@ -342,9 +355,16 @@ def adopt(activity, *, task_id: str, reference, base_release, run_arm, account, 
     finally:
         wsession.close(force=True)
         transcript = activity.objects.put_json("session_transcript", session.transcript()) if session else None
-    # ---- compose: one aux call over the reference and the probes, no score
+    # ---- compose: with the per-attempt bit, the accepted candidate is adopted (the latest, R's most refined);
+    # without it, one aux call over the reference and the probes, no score
     choice, why = "base", "no candidate reached the composer"
-    if candidates:
+    if candidates and feedback == "attempts":
+        accepted = [d for d in candidates if probes[d.dir]["accepted"]]
+        if accepted:
+            choice, why = accepted[-1].dir, f"its run on this request was accepted (candidates/{accepted[-1].dir})"
+        else:
+            why = f"no candidate's run was accepted ({[d.dir for d in candidates]}): the base stays"
+    elif candidates:
         compose_in = {"request": request, "reference_run": reference_digest,
                       "candidates": [{"dir": d.dir, "scope": d.scope, "mechanism": d.mechanism,
                                       "components": [c.key for c in d.components],
@@ -378,6 +398,7 @@ def adopt(activity, *, task_id: str, reference, base_release, run_arm, account, 
                                 why=why, scope=chosen.scope)
     usd = (account.remaining().get("used") or {}).get("usd")
     return {"choice": choice, "why": why, "package_ref": probes[choice]["package_ref"] if chosen else None,
+            "accepted": {d: bool(p.get("accepted")) for d, p in probes.items()} if feedback == "attempts" else None,
             "files_ref": probes[choice]["files_ref"] if chosen else None, "probes": spent["probes"],
             "candidates": [d.dir for d in candidates], "entry": entry["id"] if entry else None,
             "session": transcript, "usd": usd,

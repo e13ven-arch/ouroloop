@@ -161,11 +161,11 @@ def test_with_the_one_bit_of_feedback_a_passing_task_is_left_alone_and_a_failing
     `outcome: not accepted` with no detail; the adoption and the later encounters are as before."""
     actor = rsi.BusinessWorker(forget_notify=True)
     r = ScriptedR("repeat")
-    a = activity(tmp_path, fake_upstream, provider=actor, r=r, repeat={"encounters": 3})
+    a = activity(tmp_path, fake_upstream, provider=actor, r=r, repeat={"encounters": 3, "feedback": "outcome"})
     refs = phases.freeze(a, out=quiet)
     plan = RepeatPlan.from_json(a.objects.get(refs["repeat_plan_ref"]))
     assert plan.feedback == "outcome"
-    b = reopen(a, provider=actor, r=r, repeat={"encounters": 3},
+    b = reopen(a, provider=actor, r=r, repeat={"encounters": 3, "feedback": "outcome"},
                rsi={"scope_id": "rsi-test", **{k: v for k, v in refs.items() if k != "gate_template"}})
     out = []
     phases.repeat(b, arm="learn", out=out.append)
@@ -183,6 +183,42 @@ def test_with_the_one_bit_of_feedback_a_passing_task_is_left_alone_and_a_failing
     runs = b.results.runs()
     assert [x.task_id for x in b.results.all() if runs[x.run].role == "probe"] == [NOTIFY]
     assert any("kept the base" in line and UPDATE in line for line in out)
+
+
+def test_with_a_bit_per_attempt_the_accepted_probe_is_adopted_and_the_composer_is_not_asked(tmp_path, fake_upstream):
+    """The third cut (DESIGN §6.23): feedback "attempts" (the default) — after each try_task R is told whether that
+    run was accepted; the candidate whose run was accepted is adopted without a composer's guess (finance-v15: the
+    label-free composer adopted a worse probe and rejected a passing one); with no accepted run the base stays."""
+    actor = rsi.BusinessWorker(forget_notify=True)
+    r = ScriptedR("repeat")
+    a = activity(tmp_path / "yes", fake_upstream, provider=actor, r=r, repeat={"encounters": 3})
+    refs = phases.freeze(a, out=quiet)
+    assert RepeatPlan.from_json(a.objects.get(refs["repeat_plan_ref"])).feedback == "attempts"
+    b = reopen(a, provider=actor, r=r, repeat={"encounters": 3},
+               rsi={"scope_id": "rsi-test", **{k: v for k, v in refs.items() if k != "gate_template"}})
+    out = []
+    phases.repeat(b, arm="learn", out=out.append)
+    scored = {(e["task"], e["encounter"]): e["passed"] for e in b.events.read("repeat_scored")}
+    assert [scored[(NOTIFY, k)] for k in (1, 2, 3)] == [False, True, True]
+    (adopted,) = b.events.read("repeat_adopted")
+    assert adopted["task"] == NOTIFY and adopted["choice"] == "package" and adopted["accepted"] == {"package": True}
+    assert adopted["why"].startswith("its run on this request was accepted")
+    assert "compose" not in r.calls and r.calls.count("reflect") == 1
+    try_text = next(t for _, t in r.tries if f"on {NOTIFY}" in t)
+    assert "THIS RUN WAS ACCEPTED" in try_text and "After each try_task you are told" in r.system_seen
+    assert any("ACCEPTED" in line and "probe of package" in line for line in out)
+    # an actor that ignores the hook's pushback: the probe is not accepted, the base stays
+    deaf = rsi.BusinessWorker(forget_notify=True, ignore_pushback=True)
+    r2 = ScriptedR("repeat")
+    c = activity(tmp_path / "no", fake_upstream, provider=deaf, r=r2, repeat={"encounters": 3})
+    refs2 = phases.freeze(c, out=quiet)
+    d = reopen(c, provider=deaf, r=r2, repeat={"encounters": 3},
+               rsi={"scope_id": "rsi-test", **{k: v for k, v in refs2.items() if k != "gate_template"}})
+    phases.repeat(d, arm="learn", out=quiet)
+    kept = {e["task"]: e for e in d.events.read("repeat_kept")}
+    assert kept[NOTIFY]["why"].startswith("no candidate's run was accepted") and kept[NOTIFY]["accepted"] == {"package": False}
+    assert list(d.events.read("repeat_adopted")) == []
+    assert "This run was NOT accepted" in next(t for _, t in r2.tries if f"on {NOTIFY}" in t)
 
 
 def test_the_phase_refuses_without_the_sealed_plan_or_with_an_unknown_arm(tmp_path, fake_upstream):

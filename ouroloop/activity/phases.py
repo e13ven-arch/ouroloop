@@ -689,7 +689,7 @@ def repeat_plan(activity):
                       encounters=int(table.get("encounters") or 3), base=release.ref(), arms=arms,
                       split_hash=activity.splits.hash(), core_ref=activity.core_ref,
                       max_infrastructure_retries=int(activity.k["gate"]["max_infrastructure_retries"]),
-                      max_probes=int(table.get("max_probes") or 4), feedback=str(table.get("feedback") or "outcome"))
+                      max_probes=int(table.get("max_probes") or 4), feedback=str(table.get("feedback") or "attempts"))
 
 
 def repeat(activity, *, arm: str = "learn", until: int | None = None, out: Callable[[str], None] = print) -> dict:
@@ -740,7 +740,7 @@ def repeat(activity, *, arm: str = "learn", until: int | None = None, out: Calla
             if k == 2 and arm == "learn":
                 if st.get("adopted") is None:
                     first = next((r for r in activity.results.all() if r.attempt_id == st["encounters"]["1"]), None)
-                    if plan.feedback == "outcome" and first is not None and first.success:
+                    if plan.feedback in ("outcome", "attempts") and first is not None and first.success:
                         # the request was accepted: nothing to correct, no session (the one bit of feedback)
                         got = {"choice": "base", "why": "accepted on the first encounter: nothing to correct",
                                "package_ref": None, "files_ref": None, "probes": 0, "candidates": [], "entry": None,
@@ -748,13 +748,14 @@ def repeat(activity, *, arm: str = "learn", until: int | None = None, out: Calla
                     else:
                         got = adopt(activity, task_id=task, reference=first, base_release=base, run_arm=run_arm,
                                     account=account, plan=plan, library=library, out=out,
-                                    outcome=("not accepted" if plan.feedback == "outcome" else None))
+                                    outcome=("not accepted" if plan.feedback in ("outcome", "attempts") else None),
+                                    feedback=plan.feedback)
                     st["adopted"] = {k2: v for k2, v in got.items() if k2 != "verdicts"}
                     save()
                     activity.events.append("repeat_adopted" if got["choice"] != "base" else "repeat_kept", plan=ref,
                                            task=task, choice=got["choice"], why=got["why"], probes=got["probes"],
                                            candidates=got["candidates"], entry=got["entry"],
-                                           package=got["package_ref"])
+                                           package=got["package_ref"], accepted=got.get("accepted"))
                     out(f"repeat     {task}: {'adopted candidates/' + got['choice'] if got['choice'] != 'base' else 'kept the base'}"
                         f" ({got['probes']} probes; {got['why'][:160]!r})")
                 adopted = st["adopted"]

@@ -18,7 +18,9 @@
 
 **读到的。** (1) 回路在真题上闭环了：读轨迹 → 候选 → probe → 采用 → 本题的 harness → 库，之前所有活动都没有这一步。(2) 无反馈能学到的只有轨迹里可见的破坏（invoice：1/3 道失败题），"只差一项"的 0.78、0.86 R 判不出；(3) 一次通过不是修好：hold 的证据条件（读过表头）在 agent 跳过读的路径上失效，第 3 次又错；(4) composer 在通过的题上偏向采用，连"无差异"也采用——没退步但白花钱、带风险；(5) 钱比预估高一倍（通过题上的会话）。结论：完全无反馈在这个基准上出不了可对外讲的数；改成"退单一比特"（第 1 次没被接受才开会话、R 知道有错去找、通过的题跳过），对外写明只用了这 1 比特；composer 无差异一律保留；提示词让 R 把"缺读"也当证据。
 
-**下一步。** 第二刀 $0 → finance-v15 预演（train 20 道，约 $50）→ test。
+**finance-v15 前 3 道（2026-10-23，$9.60；`bd955ed`，Docker 全量 1,639 passed）。** `feedback = "outcome"`。commission_calculation 0.78 → R 带着"被退回"写了领域技能、理由"漏了 Dave Kim"→ probe 0.7（题目本不该给 Dave 发邮件，多失败一条；真正的错是给 Bob、Eve 的邮件里的 4,500 / 9,600 两个数）→ composer 采用 → 0.70、0.70。xero_bank_reconcile 1.0 → 跳过，$1.46（v14 这道花了 $10）。invoice_file_organization 0.2 → R 写表头 hold → probe **1.0** → composer 以"追加的行只有 3 列"拒绝 → 0.2、0.2。宿主侧核对：composer 两道都判反。结论：1 比特让 R 动起来了，但候选对不对只靠读轨迹判不出；现实里重做的单子每次都有接受 / 退回——第三刀 `feedback = "attempts"`：每次尝试一个比特，probe 被接受的才采用，不问 composer；假上游两个测试（被接受 → 采用、无 compose 调用；actor 不听 pushback → probe 不被接受 → 保留 base）。CLI 的 repeat 分支少了收尾行（KeyError）一并修。
+
+**下一步。** finance-v16（attempts）先跑同样 3 道（约 $10）验证两道退单题的结果，再跑完 20 道、对照臂，再上 test。
 
 ---
 

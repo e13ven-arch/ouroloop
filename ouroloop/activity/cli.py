@@ -96,12 +96,16 @@ def cmd_bench(args) -> int:
             report = asdict(phases.round_(activity, int(args.round or 0)))
         elif args.phase == "stream":
             report = phases.stream(activity, until=batch_index(args.until))
-        elif args.phase == "repeat":
-            report = phases.repeat(activity, arm=args.arm or "learn", until=task_index(args.until))
             fe = report.get("first_encounter") or {}
             print(f"stream     {report['status']}" + (f" at {report['at']}" if report.get("at") else "")
                   + (f": {report['reason']}" if report.get("reason") else "")
                   + f"; first encounters {fe.get('passed')}/{fe.get('tasks')}")
+        elif args.phase == "repeat":
+            report = phases.repeat(activity, arm=args.arm or "learn", until=task_index(args.until))
+            rows = (report.get("summary") or {}).get(report["arm"]) or []
+            print(f"repeat     {report['arm']}: {report['tasks']} tasks; "
+                  + ", ".join(f"e{r['encounter']} {r['passed']}/{r['tasks']}" for r in rows)
+                  + f"; spent ${report.get('spent') or 0:.2f}")
         elif args.phase == "gate":
             report = phases.gate(activity)
         elif args.phase == "release":
