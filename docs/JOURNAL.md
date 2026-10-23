@@ -30,7 +30,9 @@
 
 **读到的。** (1) 机制在 test 上成立，幅度比 train 小：预演 5 道退单修 3（60%），test 18 道修 3（17%）。test 的退单题多是 0.67～0.91 的"差一项"，R 的 hold 大多出手了却没把那一项改对（intercompany_invoice 四个候选两个没出手、两个出手没过；invoice_email_extract 的 sheet_guard 三次出手三次没过）；修好的三道都是"该发的消息没发 / 该拒的动作没拒"这类有明确写入点的失败。(2) 没装错东西：三道采用的都在第 3 次站住，没有一道通过题因学习退步，退步只来自 base 自己的噪声——每次尝试一比特的接受规则做到了"只吸收被接受的"。(3) 两处可修：R 提前交（5/18 道还剩 2 次 try）；反思在 vendor_spend 上没给出完整教训。(4) adopt 记录的 `usd` 记成了账户累计（并发下没有意义），改成会话自己的花费（`session_spend`：本题的研究调用 + probe 尝试；假上游测试加断言）。
 
-**下一步。** 对照臂（50 × 3 base，约 $90）随用户定，只在要对外讲 learn−control 时需要；要不要再改一版（R 用完 try、反思的教训）后重跑，还是以 v18 收尾，待用户定。
+**退单题逐题读数（2026-10-24，$0；`workspace-finance-v18/analysis/why_kept.py` → `why_kept.txt`）。** 15 道留 base 的题，e1 失败的检查按形态分三类。(a) 数值 / 档位错 7 道：ap_turnover 的 Metro DPO 算成 18.4（应 15.33）；late_fee 给 Meridian 的滞纳金 675（应 1,125，档位错）；invoice_email_extract 记了 12,340.5（应 11,340.5）；xero_credit 给 Baxter 分配 1,500（应 2,000）；intercompany_transfer 邮件里 35,000 被换成汇率换算后的 38,000、还覆写了 FX Rate 列；intercompany_invoice 给 East 的邮件带上了 HR 总池 20,000；employee_reimbursement 给 Bob 的邮件带了申请额 340。(b) 项目范围错 6 道：deferred_revenue 确认了待签补充协议的 Meridian；subscription_billing 给该排除的 Ridgeway 开了票；payment_reconciliation 漏报 PMT-2026-0405；weekly_expense 漏了 Equipment 类；wire_transfer 改了不该动的第 4 行；refund_processing 没更新跟踪表（R 的 pushback 让它更新后又多改了第 5 行）。(c) 渠道错 2 道：duplicate_payment 的汇总发了邮件没发 #finance-alerts；expense_anomaly 发到了猜的频道 id C_FIN_ALERTS。R 的 56 次 probe 里 51 次候选出手，但 15 道里 12 道改的是别处（表头、日期、格式、没读的源）：一比特反馈不说哪一项错，R 从轨迹里只看得见结构性的可疑点，看不见"这个数 / 这一档 / 这一行是错的"——那需要知道正确答案。猜对位置的三道也没过：employee_reimbursement 的"只写批准额"hold 没触发；refund 的 tracker pushback 过头；deferred_revenue 的 policy_gate 让 Meridian 被扣住了、agent 却把别的数改坏。另两处机制问题：hold 是"拦一次、原样重发放行"，agent 坚持时等于没拦（intercompany_transfer 的 FX 列、payment_terms 的 persist_check 连发四次）；R 用同一个目录名重复 try 被拒（"already tried … edit it under another name"），weekly_expense、employee_reimbursement 等 6 道只跑了 2 次 probe 多半是这样耗掉的。结论：剩下的 15 道不是机制没出手，是反馈太薄。现实里退回的单子会写原因（"Meridian 那封的滞纳金不对"）。
+
+**下一步。** 待用户定：(a) 反馈改成"退回 + 退回项"（失败检查的对象与类型，不带期望值），R 对着退回项修，再跑一遍看能修几道（约 $190）；(b) 对照臂（50 × 3 base，约 $90），只在要对外讲 learn−control 时需要；(c) 以 v18 收尾。
 
 ---
 
