@@ -20,7 +20,11 @@
 
 **finance-v15 前 3 道（2026-10-23，$9.60；`bd955ed`，Docker 全量 1,639 passed）。** `feedback = "outcome"`。commission_calculation 0.78 → R 带着"被退回"写了领域技能、理由"漏了 Dave Kim"→ probe 0.7（题目本不该给 Dave 发邮件，多失败一条；真正的错是给 Bob、Eve 的邮件里的 4,500 / 9,600 两个数）→ composer 采用 → 0.70、0.70。xero_bank_reconcile 1.0 → 跳过，$1.46（v14 这道花了 $10）。invoice_file_organization 0.2 → R 写表头 hold → probe **1.0** → composer 以"追加的行只有 3 列"拒绝 → 0.2、0.2。宿主侧核对：composer 两道都判反。结论：1 比特让 R 动起来了，但候选对不对只靠读轨迹判不出；现实里重做的单子每次都有接受 / 退回——第三刀 `feedback = "attempts"`：每次尝试一个比特，probe 被接受的才采用，不问 composer；假上游两个测试（被接受 → 采用、无 compose 调用；actor 不听 pushback → probe 不被接受 → 保留 base）。CLI 的 repeat 分支少了收尾行（KeyError）一并修。
 
-**下一步。** finance-v16（attempts）先跑同样 3 道（约 $10）验证两道退单题的结果，再跑完 20 道、对照臂，再上 test。
+**finance-v16 学习臂，20 道 train 题（2026-10-23，$51.06；`1e5f263`，Docker 全量 1,640 passed）。** `feedback = "attempts"`。**e1 15/20 → e2 16/20 → e3 18/20。** 5 道退单题：commission_calculation 0.78 → 1.0 → 1.0（3 次 try，前两次未被接受，第 3 次改种子的消息检查 hook 被接受）；invoice_file_organization 0.2 → 1.0 → 1.0（表头 hold，这次第 3 次也站住）；vendor_early_pay_discount 0.75 → 1.0 → 1.0（2 次 try）；xero_bill_entry 0.86 × 3、grant_expense_tracking 0.75 × 3（各 2 次 try 没被接受，R 没用完剩下的 try 就交了，base 保留——没装错东西）。15 道通过的题全部跳过（$0 会话）；xero_bank_reconcile、po_three_way_match 各在第 2 次随机翻一次又翻回（base 噪声，第 3 次都 PASS）。第一次有可复现的提升：修好的 3 道都在重复上站住。用户不跑对照臂。
+
+**读到的。** 每次尝试一个比特是这条路的关键：采用不再靠猜，R 也能在 try 之间换方向（commission 换了 3 次才对）。没修好的两道都是 R 提前交了——提示词要更强地要求用完 try。花费 $2.5/题（通过题 $1.4，退单题 $5～7）。
+
+**下一步。** 同样的规则上 test（50 道，学习臂约 $130）出对外的数；对照臂随用户定。
 
 ---
 
