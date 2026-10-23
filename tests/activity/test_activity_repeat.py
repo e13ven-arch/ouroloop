@@ -98,6 +98,11 @@ def test_the_learn_arm_adopts_a_hook_for_the_failing_task_and_its_later_encounte
     e2 = rows[("learn:e2", NOTIFY)]
     assert runs[e2.run].package_ref == adopted["package"] and e2.success
     assert runs[rows[("learn:e1", NOTIFY)].run].package_ref == a.package(a.seed_release()).ref()
+    # each session's record prices that session alone (its research calls and probes), not the arm's running total
+    st = json.loads((a.root / "rsi" / "repeat" / "rsi-test-repeat-test.learn.json").read_text(encoding="utf-8"))
+    own = {task: st["tasks"][task]["adopted"]["usd"] for task in (NOTIFY, QUIET, UPDATE)}
+    assert all(u is not None and u >= 0 for u in own.values())
+    assert sum(own.values()) <= float(stream["learn"]["spent"] or 0.0) + 1e-6
     # the probe is an extra test attempt of its own role, never an encounter
     probes = [x for x in a.results.all() if runs[x.run].role == "probe"]
     assert sorted(p.task_id for p in probes) == sorted([NOTIFY, QUIET])

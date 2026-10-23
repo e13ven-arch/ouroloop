@@ -26,7 +26,11 @@
 
 **finance-v17（test，串行）跑了 1 道就停（$5）。** 一道退单题 20～30 分钟、通过题 6～10 分钟，50 道要 6～7 小时；用户问能不能把一道题的多步包成一次调用——不能（每步要看工具结果才能定下一步，包成一次就是让 CLI 自己的循环跑、运行的不再是我们的 harness），但题与题独立，可以并行。加 `[repeat] concurrency`（默认 4）：线程池按题并行，题内串行，`Library.add` 加锁；调用次数与钱不变。finance-v18 重新封存 test 计划跑。
 
-**下一步。** finance-v18 学习臂（50 道 test，并发 4，约 $130、约 2 小时）出对外的数；对照臂随用户定。
+**finance-v18 学习臂，50 道 finance test 题（2026-10-23 晚～24 日凌晨，3 小时 36 分，并发 4；$183.77；冻结 `bbcd2a9`，Docker 全量 1,633 passed）。** 对外的数：**首次 e1 32/50（64%）→ e2 32/50 → 稳态 e3 34/50（68%）**，部分得分 0.911 → 0.905 → 0.923；learn:e3−e1 **+4.0 点 [−4.0, +12.0]**（50 道配对 bootstrap，区间含 0）。18 道退单题（e1 FAIL）：**采用 3 道，三道 e2、e3 都 PASS**——wave_freelance_invoice 0.5 → 1.0 → 1.0（第 1 次 try 就被接受：on_finish 的消息检查 hook，库 lib1）、vendor_spend_analysis 0.8 → 1.0 → 1.0（第 2 次 try：before_tool 的 declined_action hold；反思没给出完整的教训，不入库）、payment_terms_tracking 0.86 → 1.0 → 1.0（第 4 次 try 的 survey_hold，库 lib2）；15 道保留 base：10 道用满 4 次 try，5 道 R 只试 2 次就交了（deferred_revenue、employee_reimbursement、expense_anomaly、subscription_billing、weekly_expense_summary）。56 次 probe 3 次被接受、5 次候选组件根本没出手。保留 base 的题 e2、e3 与 e1 一样（refund_processing e2 在 base 上随机过一次，e3 又回）。32 道通过题全部跳过（$0 会话）；它们在 base 上 e2 翻了 4 道（12.5%，噪声底之内），e3 翻回 3 道，xero_po_matching e2、e3 都 0.71——稳态 34 = 31 + 3。花费：尝试 $139.93（150 次遭遇 + 56 次 probe，2,996 次模型调用）、R 会话与反思 $43.83（每道退单题 $1.1～3.7）。记录在 `workspace-finance-v18/`（`report.md`、`analysis/per_task.txt`、`analysis/learn.log`）。
+
+**读到的。** (1) 机制在 test 上成立，幅度比 train 小：预演 5 道退单修 3（60%），test 18 道修 3（17%）。test 的退单题多是 0.67～0.91 的"差一项"，R 的 hold 大多出手了却没把那一项改对（intercompany_invoice 四个候选两个没出手、两个出手没过；invoice_email_extract 的 sheet_guard 三次出手三次没过）；修好的三道都是"该发的消息没发 / 该拒的动作没拒"这类有明确写入点的失败。(2) 没装错东西：三道采用的都在第 3 次站住，没有一道通过题因学习退步，退步只来自 base 自己的噪声——每次尝试一比特的接受规则做到了"只吸收被接受的"。(3) 两处可修：R 提前交（5/18 道还剩 2 次 try）；反思在 vendor_spend 上没给出完整教训。(4) adopt 记录的 `usd` 记成了账户累计（并发下没有意义），改成会话自己的花费（`session_spend`：本题的研究调用 + probe 尝试；假上游测试加断言）。
+
+**下一步。** 对照臂（50 × 3 base，约 $90）随用户定，只在要对外讲 learn−control 时需要；要不要再改一版（R 用完 try、反思的教训）后重跑，还是以 v18 收尾，待用户定。
 
 ---
 

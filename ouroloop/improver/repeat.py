@@ -233,11 +233,22 @@ def verify_context(activity, settings: Settings, *, package) -> VerifyContext:
                          settings=settings, fixture_task=train[0] if train else None, study_tasks=(), cause_ids=())
 
 
+def session_spend(account, prefix: str) -> float:
+    """What the research calls of one operation family measured on `account`, in usd: those whose operation id is
+    `<prefix>#...` (a task's session is `repeat:<task>`). The stream's workers share the account, so its total says
+    nothing about one task."""
+    book = account.budgets._read()
+    return round(sum(float((r.get("measured") or {}).get("usd") or 0.0)
+                     for r in (book.get("reservations") or {}).values()
+                     if r.get("status") == "settled" and r.get("scope_id") == account.scope_id
+                     and str(r.get("operation_id") or "").startswith(prefix + "#")), 6)
+
+
 def adopt(activity, *, task_id: str, reference, base_release, run_arm, account, plan, library: Library,
           out=print, outcome: str | None = None, feedback: str = "attempts") -> dict:
     """One task's Propose-Probe-Compose after its first encounter (`reference`: that attempt's TaskResult).
     -> {choice: "base" | dir, why, package_ref | None, files_ref | None, probes, candidates, entry | None,
-    session, usd}."""
+    session, usd (what this task's session cost: its research calls and its probes, not the arm's total)}."""
     s = Settings.from_core(activity.k)
     package = activity.package(base_release)
     ev = Evidence(activity)
@@ -272,7 +283,7 @@ def adopt(activity, *, task_id: str, reference, base_release, run_arm, account, 
     wsession = worker.start()
     tree = WorkTree(wsession)
     probes: dict[str, dict] = {}            # dir -> {session, digest, acted, package_ref, files_ref}
-    spent = {"probes": 0}
+    spent = {"probes": 0, "usd": 0.0}
     researcher = activity.research_provider(f"repeat:{task_id}", account=account)
 
     def probe(dir_name: str, files: dict) -> tuple[str, bool]:
@@ -293,6 +304,8 @@ def adopt(activity, *, task_id: str, reference, base_release, run_arm, account, 
                        notes=f"repeat probe of candidates/{dir_name} on {task_id}")
         spent["probes"] += 1
         row = next((r for r in rows if r.task_id == task_id), None)
+        if row is not None and row.cost_usd is not None:
+            spent["usd"] += float(row.cost_usd)
         if row is None or row.validity != "valid":
             return f"the probe did not read the task ({getattr(row, 'validity', 'no attempt')})", True
         session_id = row.evidence or row.attempt_id
@@ -404,7 +417,7 @@ def adopt(activity, *, task_id: str, reference, base_release, run_arm, account, 
             entry = library.add(task=task_id, dir_name=chosen.dir, mechanism=chosen.mechanism,
                                 files_ref=probes[chosen.dir]["files_ref"], changed=changed, experience=experience,
                                 why=why, scope=chosen.scope)
-    usd = (account.remaining().get("used") or {}).get("usd")
+    usd = round(session_spend(account, f"repeat:{task_id}") + spent["usd"], 6)
     return {"choice": choice, "why": why, "package_ref": probes[choice]["package_ref"] if chosen else None,
             "accepted": {d: bool(p.get("accepted")) for d, p in probes.items()} if feedback == "attempts" else None,
             "files_ref": probes[choice]["files_ref"] if chosen else None, "probes": spent["probes"],
