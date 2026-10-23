@@ -1,0 +1,98 @@
+# finance-v18: stage 4o, the number (finance-v17 restarted with the tasks in parallel) — the repetitive stream on the finance TEST tasks (the rehearsal was finance-v16) (docs/DESIGN.md v2.0 §6.23; docs/JOURNAL.md 2026-10-22) — the last version, on the repetitive
+# stream. Each task is met three times: the first encounter runs the base, then the improver corrects the harness for
+# that task from its own run (no score: Harness²'s Propose-Probe-Compose, each candidate probed once on the same
+# request, a composer adopting one or keeping the base, a reflector leaving a lesson in the library), and the later
+# encounters run the task's own harness; a control arm runs the base every time. The external number is the first-pass
+# rate against the steady-state rate, the control arm beside it. This config is the REHEARSAL on 20 train tasks
+# ([repeat] split = "train", max_tasks = 20); when its reading is good (the learn arm's e3 - e1 beats the control
+# arm's by 3 tasks or more) the same shape runs on test (split = "test", a new workspace: another plan).
+#   1  `... bench --config examples/automationbench/finance-v14.toml --phase smoke --checks-only`                $0
+#   2  `... freeze --config ...`; add the printed [rsi] lines (core_ref, split_ref, repeat_plan_ref) and commit    $0
+#   3  `... bench --config ... --phase repeat --arm learn` (20 tasks: 3 encounters + up to 4 probes + R's session
+#      each, about $80); then `--arm control` (60 attempts, about $30). Approved in chat first (PLAN rule 3).
+#   4  `... bench --config ... --phase report`
+#
+# Money: the root is written as $1000 so each arm's account has room; the approval is the sum above, not the root.
+
+[workspace]
+root = "workspace-finance-v18"
+
+[bench]
+domain = "finance"
+upstream_path = "~/workspace/AutomationBench"
+split_rule = "stratified"
+seed = 1
+concurrency = 8
+ratios = { train = 0.5, dev = 0.0, test = 0.5 }
+
+[model]
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "medium"
+max_tokens = 32000
+timeout = 600
+
+[research_model]
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "medium"
+max_tokens = 32000
+timeout = 900
+
+[pricing]
+input_per_1k = 0.004
+cache_read_per_1k = 0.0002
+cache_write_per_1k = 0.008
+output_per_1k = 0.02
+max_input_tokens = 400000
+max_output_tokens = 163840
+source = "notional, not a bill: claude-opus-5-5 API list price ($4/$20 per M, cache read $0.20, 1h cache write $8)"
+
+[harness]
+preset = "automationbench_v2"
+seed = "stirrup"
+
+[worker]
+network = "none"
+image_id = "sha256:e070208dbddc713a9993f6700ab15a0455d44d2f6885f47dafc2f4bfd4436f30"
+
+[memory]
+enabled = false
+
+[schedule]
+rounds = 1
+patience = 1
+stream_batch = 30
+stream_splits = ["train"]
+
+[budget]
+usd = 1000.0
+
+[final]
+repeats = 3
+
+[improver]
+packages_per_round = 2      # v1.10: candidates/package/ invariant, candidates/package-2/ domain (DESIGN §6.20)
+accept_max_regressions = 3  # v1.12 (DESIGN §6.22): net-positive installs, the regressions go to the frontier
+accept_floor_tolerance = 3
+l5_per_round = 3
+trial_max_tasks = 3         # the host's trial after finish, per package; R's own tries share trial_max_attempts (40)
+
+[repeat]
+encounters = 3          # each task met three times: the base, then the task's own harness twice
+split = "test"          # the number: every finance test task, in the stream's order
+# max_tasks: none — all 50 test tasks
+max_probes = 4          # the learn arm's extra executions a task, at most
+feedback = "attempts"   # one bit per attempt: a task accepted on its first encounter is left alone; a sent-back task is corrected until a try is accepted
+concurrency = 4         # tasks in parallel (a machine setting, not in the plan); a task's encounters stay sequential
+
+[rsi]
+scope_id = "finance-v18"
+seed_from = "workspace-finance-v9"
+seed_line = "working"
+# frozen 2026-10-23: the seed is finance-v9's working line; the finance two-way split; the repeat plan: all 50 finance
+# test tasks in the stream's order x 3 encounters, both arms, feedback attempts — sealed and committed before the
+# first test attempt (PLAN rule 6)
+core_ref = "core:sha256:4ef8d1b45da51d0cf533f6c3b3d53140048fea24edfb6bc5a9ad24b5af179284"
+split_ref = "3b959d143f9d8468"
+repeat_plan_ref = "repeat_plan:sha256:10d7c36b3493e85a867afed12e328d2f9fcaccc366439b8314311d8857b3d9b3"
