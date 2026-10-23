@@ -730,11 +730,20 @@ def repeat(activity, *, arm: str = "learn", until: int | None = None, out: Calla
             raise RuntimeError(f"{task}: encounter {k} read no valid attempt ({getattr(row, 'validity', 'none')})")
         return row
 
-    def save():
-        write_json(state_path, state)
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    lock = threading.Lock()
+    progress = {"done": 0}
 
-    for i, task in enumerate(tasks, 1):
-        st = state["tasks"].setdefault(task, {"encounters": {}, "adopted": None})
+    def save():
+        with lock:
+            write_json(state_path, state)
+
+    def one(task: str) -> None:
+        """One task's encounters, sequential within the task (each depends on the one before); tasks run in
+        parallel, [repeat] concurrency at a time (a machine setting, not in the plan)."""
+        with lock:
+            st = state["tasks"].setdefault(task, {"encounters": {}, "adopted": None})
         package = None
         for k in range(1, int(plan.encounters) + 1):
             if k == 2 and arm == "learn":
@@ -773,7 +782,22 @@ def repeat(activity, *, arm: str = "learn", until: int | None = None, out: Calla
                                    attempt=row.attempt_id, package=(package.ref() if package is not None else None))
             out(f"repeat     {arm} {task} e{k}: {'PASS' if row.success else 'FAIL'} {row.partial_credit}"
                 + (" (the task's own package)" if package is not None else ""))
-        out(f"repeat     {arm}: {i}/{len(tasks)} tasks done; spent ${(account.remaining().get('used') or {}).get('usd', 0):.2f}")
+        with lock:
+            progress["done"] += 1
+            done = progress["done"]
+        out(f"repeat     {arm}: {done}/{len(tasks)} tasks done; spent ${(account.remaining().get('used') or {}).get('usd', 0):.2f}")
+
+    workers = max(int((activity.config.get("repeat") or {}).get("concurrency") or 4), 1)
+    failures: list = []
+    with ThreadPoolExecutor(max_workers=min(workers, max(len(tasks), 1))) as pool:
+        for task, future in [(t, pool.submit(one, t)) for t in tasks]:
+            try:
+                future.result()
+            except Exception as e:  # noqa: BLE001 - one task's failure is reported, the others finish
+                failures.append(f"{task}: {type(e).__name__}: {str(e)[:200]}")
+                out(f"repeat     {task}: FAILED {type(e).__name__}: {str(e)[:200]}")
+    if failures:
+        raise RuntimeError(f"{len(failures)} task(s) did not finish: {failures[:3]}")
     from ..evaluate.repeat import scored, summary
     table = scored(activity.events.read("repeat_scored"), plan_ref=ref)
     return {"arm": arm, "tasks": len(tasks), "summary": summary(table, encounters=int(plan.encounters)),

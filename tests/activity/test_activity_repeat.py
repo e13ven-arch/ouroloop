@@ -35,7 +35,7 @@ def quiet(_line):
 
 # the module fixture runs Harness²'s setting (feedback "none": the run alone, every task gets a session); the second
 # cut's default (feedback "outcome": one bit, a passing task is left alone) has its own test below
-NONE = {"encounters": 3, "feedback": "none"}
+NONE = {"encounters": 3, "feedback": "none", "concurrency": 1}   # one task at a time: the scripted R keeps state
 
 
 def activity(root, upstream, *, provider, r: ScriptedR, repeat=None, **sections):
@@ -161,11 +161,11 @@ def test_with_the_one_bit_of_feedback_a_passing_task_is_left_alone_and_a_failing
     `outcome: not accepted` with no detail; the adoption and the later encounters are as before."""
     actor = rsi.BusinessWorker(forget_notify=True)
     r = ScriptedR("repeat")
-    a = activity(tmp_path, fake_upstream, provider=actor, r=r, repeat={"encounters": 3, "feedback": "outcome"})
+    a = activity(tmp_path, fake_upstream, provider=actor, r=r, repeat={"encounters": 3, "feedback": "outcome", "concurrency": 1})
     refs = phases.freeze(a, out=quiet)
     plan = RepeatPlan.from_json(a.objects.get(refs["repeat_plan_ref"]))
     assert plan.feedback == "outcome"
-    b = reopen(a, provider=actor, r=r, repeat={"encounters": 3, "feedback": "outcome"},
+    b = reopen(a, provider=actor, r=r, repeat={"encounters": 3, "feedback": "outcome", "concurrency": 1},
                rsi={"scope_id": "rsi-test", **{k: v for k, v in refs.items() if k != "gate_template"}})
     out = []
     phases.repeat(b, arm="learn", out=out.append)
@@ -191,7 +191,7 @@ def test_with_a_bit_per_attempt_the_accepted_probe_is_adopted_and_the_composer_i
     label-free composer adopted a worse probe and rejected a passing one); with no accepted run the base stays."""
     actor = rsi.BusinessWorker(forget_notify=True)
     r = ScriptedR("repeat")
-    a = activity(tmp_path / "yes", fake_upstream, provider=actor, r=r, repeat={"encounters": 3})
+    a = activity(tmp_path / "yes", fake_upstream, provider=actor, r=r, repeat={"encounters": 3, "concurrency": 1})
     refs = phases.freeze(a, out=quiet)
     assert RepeatPlan.from_json(a.objects.get(refs["repeat_plan_ref"])).feedback == "attempts"
     b = reopen(a, provider=actor, r=r, repeat={"encounters": 3},
@@ -210,7 +210,7 @@ def test_with_a_bit_per_attempt_the_accepted_probe_is_adopted_and_the_composer_i
     # an actor that ignores the hook's pushback: the probe is not accepted, the base stays
     deaf = rsi.BusinessWorker(forget_notify=True, ignore_pushback=True)
     r2 = ScriptedR("repeat")
-    c = activity(tmp_path / "no", fake_upstream, provider=deaf, r=r2, repeat={"encounters": 3})
+    c = activity(tmp_path / "no", fake_upstream, provider=deaf, r=r2, repeat={"encounters": 3, "concurrency": 1})
     refs2 = phases.freeze(c, out=quiet)
     d = reopen(c, provider=deaf, r=r2, repeat={"encounters": 3},
                rsi={"scope_id": "rsi-test", **{k: v for k, v in refs2.items() if k != "gate_template"}})
@@ -219,6 +219,22 @@ def test_with_a_bit_per_attempt_the_accepted_probe_is_adopted_and_the_composer_i
     assert kept[NOTIFY]["why"].startswith("no candidate's run was accepted") and kept[NOTIFY]["accepted"] == {"package": False}
     assert list(d.events.read("repeat_adopted")) == []
     assert "This run was NOT accepted" in next(t for _, t in r2.tries if f"on {NOTIFY}" in t)
+
+
+def test_tasks_run_in_parallel_and_every_encounter_is_on_record(tmp_path, fake_upstream):
+    """[repeat] concurrency: the tasks of the stream run in parallel (each task's encounters stay sequential); the
+    control arm with two workers scores every task's three encounters once."""
+    actor = rsi.BusinessWorker(forget_notify=True)
+    r = ScriptedR("repeat")
+    a = activity(tmp_path, fake_upstream, provider=actor, r=r, repeat={"encounters": 3, "concurrency": 2})
+    refs = phases.freeze(a, out=quiet)
+    b = reopen(a, provider=actor, r=r, repeat={"encounters": 3, "concurrency": 2},
+               rsi={"scope_id": "rsi-test", **{k: v for k, v in refs.items() if k != "gate_template"}})
+    got = phases.repeat(b, arm="control", out=quiet)
+    rows = got["summary"]["control"]
+    assert [x["tasks"] for x in rows] == [3, 3, 3] and [x["passed"] for x in rows] == [2, 2, 2]
+    events = list(b.events.read("repeat_scored"))
+    assert len(events) == 9 and len({(e["task"], e["encounter"]) for e in events}) == 9
 
 
 def test_the_phase_refuses_without_the_sealed_plan_or_with_an_unknown_arm(tmp_path, fake_upstream):

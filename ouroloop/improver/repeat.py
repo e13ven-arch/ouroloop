@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from pathlib import Path
 
 from ..contracts import write_json
@@ -138,6 +139,8 @@ class Library:
     """<root>/library/: entries.json, INDEX.md and one directory per entry holding EXPERIENCE.md and the files the
     adopted package changed against the base. The whole adopted tree stays in the object store (files_ref)."""
 
+    _lock = threading.Lock()            # tasks adopt in parallel; one writer at a time
+
     def __init__(self, root):
         self.dir = Path(root) / "library"
         self.path = self.dir / "entries.json"
@@ -149,6 +152,11 @@ class Library:
 
     def add(self, *, task: str, dir_name: str, mechanism: str, files_ref: str, changed: dict, experience: dict,
             why: str, scope: str = "") -> dict:
+        with self._lock:
+            return self._add(task=task, dir_name=dir_name, mechanism=mechanism, files_ref=files_ref, changed=changed,
+                             experience=experience, why=why, scope=scope)
+
+    def _add(self, *, task, dir_name, mechanism, files_ref, changed, experience, why, scope) -> dict:
         entries = self.entries()
         entry_id = f"lib{len(entries) + 1}"
         entry = {"id": entry_id, "task": task, "dir": dir_name, "scope": scope, "mechanism": mechanism,
