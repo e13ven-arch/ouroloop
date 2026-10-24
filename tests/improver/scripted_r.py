@@ -413,6 +413,22 @@ class ScriptedR:
                                               "text": json.dumps(manifest, indent=1) + "\n"}))
         if turns == 2:
             return self._calls(("try_task", {"task": task}))
+        if self.mode == "repeat_harden":        # v2.1, third cut: the accepted hook hardened with the tool in package-2
+            if turns == 3:
+                hard = {**manifest, "tools": [*manifest.get("tools", []), TOOL_ENTRY]}
+                return self._calls(("write_file", {"path": "candidates/package-2/middlewares/remind_ops.py", "text": HOOK_CODE}),
+                                   ("write_file", {"path": "candidates/package-2/tools/post_channel_message.py",
+                                                   "text": TOOL_CODE}),
+                                   ("write_file", {"path": "candidates/package-2/manifest.json",
+                                                   "text": json.dumps(hard, indent=1) + "\n"}))
+            if turns == 4:
+                return self._calls(("try_task", {"task": task, "dir": "package-2"}))
+            if turns == 5:
+                hardened = {"dir": "package-2", "mechanism": MECHANISM["tool"], "scope": "invariant", "components": [
+                    dict(decl["components"][0]),
+                    {"kind": "tool", "site": TOOL_ENTRY["name"], "cause_ids": [], "predicted_affected": [],
+                     "trigger": "the request asks for a message in #ops"}]}
+                return self._calls(("finish", {"packages": [{**decl, "dir": "package"}, hardened]}))
         if self.mode == "repeat_retry":         # v2.1: the same candidate again unchanged (refused), then changed
             if turns == 3:
                 # the try's own session is readable (v2.1, second cut): open it before trying again

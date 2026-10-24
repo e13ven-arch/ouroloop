@@ -359,3 +359,27 @@ def test_a_candidate_changed_after_its_try_may_be_tried_again_and_an_unchanged_o
     assert adopted["task"] == NOTIFY and adopted["probes"] == 2 and adopted["choice"] == "package"
     # the try's session is readable to R (second cut): read_trajectory on it answered the run, not AccessDenied
     assert r.trajectory_reads and not r.trajectory_reads[0][0] and "AccessDenied" not in r.trajectory_reads[0][1]
+
+
+def test_an_accepted_candidate_hardened_with_a_tool_in_a_second_directory_is_the_one_adopted(tmp_path, fake_upstream):
+    """v2.1, third cut (DESIGN §6.24): after an accepted try R copies the accepted package into package-2, adds the
+    tool, tries it; both runs accepted, the last declared (package-2) is adopted and carries the hook and the tool;
+    the later encounters call the tool."""
+    from ouroloop.improver.evidence import Evidence
+    from ouroloop.improver.repeat import footprint_of
+    actor = rsi.BusinessWorker(forget_notify=True)
+    r = ScriptedR("repeat_harden")
+    _, b, out = _learn(tmp_path, fake_upstream, actor=actor, r=r, repeat={"encounters": 3, "concurrency": 1})
+    scored = {(e["task"], e["encounter"]): e["passed"] for e in b.events.read("repeat_scored")}
+    assert [scored[(NOTIFY, k)] for k in (1, 2, 3)] == [False, True, True]
+    (adopted,) = b.events.read("repeat_adopted")
+    assert adopted["task"] == NOTIFY and adopted["choice"] == "package-2" and adopted["probes"] == 2
+    assert adopted["accepted"] == {"package": True, "package-2": True} and adopted["candidates"] == ["package", "package-2"]
+    st = json.loads((b.root / "rsi" / "repeat" / "rsi-test-repeat-test.learn.json").read_text(encoding="utf-8"))["tasks"]
+    files = b.objects.get(st[NOTIFY]["adopted"]["files_ref"])
+    assert "tools/post_channel_message.py" in files and "middlewares/remind_ops.py" in files
+    runs = b.results.runs()
+    e2 = next(x for x in b.results.all() if runs[x.run].candidate == "learn:e2" and x.task_id == NOTIFY)
+    ev = Evidence(b)
+    ev.trace.allow({e2.evidence or e2.attempt_id})
+    assert "post_channel_message" in footprint_of(ev.trace, e2.evidence or e2.attempt_id)["tools"]

@@ -94,9 +94,17 @@ re-checked against this run; its thresholds and mappings are hypotheses here.
    tool compute, from which inputs. read_trajectory may open the try's session. Change what that evidence says — a
    trigger that did not fire, a tool the agent did not call, a source still unread, an input still stale — and try
    again while tries are left ({max_probes} for this task; a candidate unchanged since its try is refused).
-5. finish with one declaration per package. A candidate you changed after its last try is tried once more at finish
-   while tries are left, and that run decides; with none left, the last tried version is what an adoption installs.
-   Do not change a candidate whose run was accepted. An empty list keeps the base for this task.
+5. Harden an accepted derived value. When a try was accepted, the item was a derived value, the agent computed it
+   itself (no tool of yours in that run) and tries are left: write candidates/package-2 as a copy of the accepted
+   package (write its files again — the first write under a directory starts from the current package, not from
+   another candidate) plus the tool that derives the value from the inputs the run read and the hold that sends the
+   agent to it, run_check it, and try it once. The agent's own arithmetic is one rollout: the same inputs come out
+   right one time and wrong the next; the tool makes the next run repeat the accepted one.
+6. finish with one declaration per package, the accepted package first and a hardened package-2 last: of several
+   accepted candidates the last declared is adopted, so an accepted package-2 replaces the first and a rejected one
+   leaves it in place. A candidate you changed after its last try is tried once more at finish while tries are
+   left, and that run decides; with none left, the last tried version is what an adoption installs. Never edit the
+   accepted directory. An empty list keeps the base for this task.
 
 The declaration: {"dir", "mechanism" (one sentence), "scope" ("invariant" or "domain"), "components": [one per
 component the package changes: {"kind" (tool | hook | skill | prompt | agent | config | vendor), "site" (tool: its
