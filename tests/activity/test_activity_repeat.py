@@ -375,6 +375,10 @@ def test_an_accepted_candidate_hardened_with_a_tool_in_a_second_directory_is_the
     (adopted,) = b.events.read("repeat_adopted")
     assert adopted["task"] == NOTIFY and adopted["choice"] == "package-2" and adopted["probes"] == 2
     assert adopted["accepted"] == {"package": True, "package-2": True} and adopted["candidates"] == ["package", "package-2"]
+    # the acceptance line of the hook's try says to harden (no tool of R's ran, tries left); the hardened try's does not
+    first, second = [t for _, t in r.tries if f"on {NOTIFY}" in t][:2]
+    assert "THIS RUN WAS ACCEPTED" in first and "harden before you finish" in first and "3 tries left" in first
+    assert "THIS RUN WAS ACCEPTED" in second and "harden before you finish" not in second
     st = json.loads((b.root / "rsi" / "repeat" / "rsi-test-repeat-test.learn.json").read_text(encoding="utf-8"))["tasks"]
     files = b.objects.get(st[NOTIFY]["adopted"]["files_ref"])
     assert "tools/post_channel_message.py" in files and "middlewares/remind_ops.py" in files

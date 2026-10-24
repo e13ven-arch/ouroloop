@@ -45,14 +45,14 @@ FEEDBACK_NONE = ("You are told nothing about whether the run was accepted: read 
 FEEDBACK_ATTEMPTS = (FEEDBACK_OUTCOME + " After each try_task you are told one more thing: whether that run was ACCEPTED. "
                      "A candidate whose run was accepted is adopted for this task; one whose run was not accepted is "
                      "not — use the tries you have left to change what it does, then try again. Hand in every "
-                     "candidate you tried; the accepted one is kept.")
+                     "candidate you tried; of several accepted, the last declared is adopted.")
 FEEDBACK_ITEMS = ("This request was NOT accepted (inputs/task.json `outcome`), and you are told what the request was sent "
                   "back for: `rejected_items`, one entry per check that failed, each naming the kind of check and what it "
                   "is about — which message, channel, row or record — never what it should have contained. After each "
                   "try_task you are told whether that run was accepted and, when it was not, the items of that run. A "
                   "candidate whose run was accepted is adopted for this task; one whose run was not is not — change what "
-                  "it does and try again while tries are left. Hand in every candidate you tried; the accepted one is "
-                  "kept.")
+                  "it does and try again while tries are left. Hand in every candidate you tried; of several accepted, "
+                  "the last declared is adopted.")
 REPEAT_TOOL_NOTES = {       # v2.1: the session tools worded for one task (the shared descriptions speak of rounds)
     "try_task": "Run a candidate package (candidates/package, or `dir`) once on this task (`task` = task.json's "
                 "task_id), for real. The answer puts "
@@ -78,9 +78,22 @@ REPEAT_TOOL_NOTES = {       # v2.1: the session tools worded for one task (the s
               "installs. A declaration the host cannot read is answered as this call's error; fix it and finish "
               "again. An empty list keeps the base for this task.",
 }
-ACCEPTED_LINE = {True: "  THIS RUN WAS ACCEPTED: hand this candidate in and it is adopted for the task.",
+ACCEPTED_LINE = {True: "  THIS RUN WAS ACCEPTED: this candidate is adopted for the task when you hand it in.",
                  False: "  This run was NOT accepted: what it did is still wrong somewhere; change the candidate and "
                         "try again while tries are left."}
+HARDEN_LINE = ("  No tool of yours was called in this run: whatever the agent derived, it derived itself, and that "
+               "is one rollout. With {left} tries left, harden before you finish (step 5): candidates/package-2 = "
+               "this package plus the tool that derives the value from the inputs the run read, try it once, then "
+               "finish with this package first and package-2 last.")
+
+
+def accepted_line(success: bool, *, acted, tries_left: int) -> str:
+    """The bit after a try (v2.1, fourth cut): accepted or not, and — when the accepted run called no tool of R's and
+    tries are left — the hardening step, so the try's answer does not contradict the prompt's workflow."""
+    line = ACCEPTED_LINE[bool(success)]
+    if success and tries_left > 0 and not any(str(a).startswith("tool:") for a in acted or ()):
+        line += "\n" + HARDEN_LINE.format(left=tries_left)
+    return line
 EXCERPT = 160                    # of a call's output or error in a digest
 ARGS = 200                       # of a package tool's arguments in a digest (v2.1: R reads its tool's calls)
 TOOL_SAID = 300                  # of a package tool's output in a digest
@@ -415,7 +428,8 @@ def adopt(activity, *, task_id: str, reference, base_release, run_arm, account, 
             probes[dir_name]["sources"] = sources(task_id, d)
             text += "\n  sources in this run: " + sources_line(probes[dir_name]["sources"])
         if feedback in ("attempts", "items"):   # the one bit per attempt: the request was accepted, or sent back
-            text += "\n" + ACCEPTED_LINE[bool(row.success)]
+            text += "\n" + accepted_line(bool(row.success), acted=acted,
+                                          tries_left=int(plan.max_probes) - spent["probes"])
         if rejected is not None and not row.success:    # v2.1: and what this run was sent back for
             items = list(rejected(row.attempt_id))
             probes[dir_name]["rejected"] = items
