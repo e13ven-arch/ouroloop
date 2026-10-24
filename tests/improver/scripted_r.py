@@ -156,6 +156,7 @@ class ScriptedR:
         self.read: list = []            # (file name, text) of every inputs/ file the session read back (v1.8)
         self.trial_feedback: list = []  # v1.9: the host's trial feedback texts, as the session received them
         self.tries: list = []           # v1.11: what try_task answered, in order (mode debug)
+        self.trajectory_reads: list = []  # v2.1: (is_error, head) of every read_trajectory answer
         self.composed: list = []        # v2.0: what the composer was given
         self.reflected: list = []       # v2.0: what the reflector was given
         self.system_seen = ""           # the session's system prompt, as last given
@@ -175,6 +176,7 @@ class ScriptedR:
         if system.startswith("You improve the harness package of an AI agent for one task"):   # v2.0: the repeat loop
             self.calls.append("repeat")
             self.system_seen = system
+            self.tool_notes_seen = {s.name: s.description for s in specs or ()}
             self._record_reads(messages)
             self._record_tries(messages)
             return self._repeat(messages)
@@ -240,6 +242,9 @@ class ScriptedR:
                 if r.get("name") == "try_task" and r.get("id") not in self._read_ids:
                     self._read_ids.add(r["id"])
                     self.tries.append((bool(r.get("is_error")), r.get("output") or ""))
+                if r.get("name") == "read_trajectory" and r.get("id") not in self._read_ids:
+                    self._read_ids.add(r["id"])
+                    self.trajectory_reads.append((bool(r.get("is_error")), str(r.get("output") or "")[:120]))
 
     def _record_reads(self, messages: list[dict]) -> None:
         """Keep what read_file answered for inputs/ files (a test reads what R was shown)."""
@@ -410,7 +415,11 @@ class ScriptedR:
             return self._calls(("try_task", {"task": task}))
         if self.mode == "repeat_retry":         # v2.1: the same candidate again unchanged (refused), then changed
             if turns == 3:
-                return self._calls(("try_task", {"task": task}))
+                # the try's own session is readable (v2.1, second cut): open it before trying again
+                tried = next((t for _, t in self.tries if "this run (" in t), "")
+                m = re.search(r"this run \(([^,]+), read_trajectory", tried)
+                reads = [("read_trajectory", {"session": m.group(1)})] if m else []
+                return self._calls(*reads, ("try_task", {"task": task}))
             if turns == 4:
                 return self._calls(("edit_file", {"path": "candidates/package/middlewares/remind_ops.py",
                                                   "old": "return None", "new": "return None  # revised after the try"}),

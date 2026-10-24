@@ -752,6 +752,17 @@ def repeat(activity, *, arm: str = "learn", until: int | None = None, out: Calla
         read by the host after the attempt was scored; no expected value leaves the adapter."""
         return ab.rejected_items(activity.results.grading(attempt_id, splits=(plan.split,)))
 
+    def sources_of(task_id: str, run: dict) -> dict:
+        """v2.1, second cut (DESIGN §6.24): the world's sources (names and counts, no contents) and whether `run`
+        (a digest) read or wrote each — the inventory R reads beside the run."""
+        holds = ab.world_sources(activity.suite.grading(task_id).initial_state)
+        read, written = set(), set()
+        for c in run.get("calls") or ():
+            service = ab.service_of_route(c.get("route") or "")
+            if service:
+                (written if str(c.get("method") or "GET").upper() not in ("GET", "HEAD") else read).add(service)
+        return {svc: {"holds": what, "read": svc in read, "written": svc in written} for svc, what in holds.items()}
+
     def one(task: str) -> None:
         """One task's encounters, sequential within the task (each depends on the one before); tasks run in
         parallel, [repeat] concurrency at a time (a machine setting, not in the plan)."""
@@ -773,7 +784,8 @@ def repeat(activity, *, arm: str = "learn", until: int | None = None, out: Calla
                                     outcome=("not accepted" if plan.feedback in ("outcome", "attempts", "items")
                                              else None),
                                     feedback=plan.feedback,
-                                    rejected=(rejected_of if plan.feedback == "items" else None))
+                                    rejected=(rejected_of if plan.feedback == "items" else None),
+                                    sources=sources_of)
                     st["adopted"] = {k2: v for k2, v in got.items() if k2 != "verdicts"}
                     save()
                     activity.events.append("repeat_adopted" if got["choice"] != "base" else "repeat_kept", plan=ref,

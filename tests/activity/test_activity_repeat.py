@@ -291,6 +291,9 @@ def test_a_tool_r_writes_in_the_session_is_adopted_and_the_agent_calls_it_on_the
     ev.trace.allow({e2.evidence or e2.attempt_id})
     assert "post_channel_message" in footprint_of(ev.trace, e2.evidence or e2.attempt_id)["tools"]
     assert "tools/post_channel_message.py" in (b.root / "library" / "INDEX.md").read_text(encoding="utf-8")
+    # the session's tools are worded for one task, not for a round's failures.json
+    assert "on this task" in r.tool_notes_seen["try_task"] and "reference_run" in r.tool_notes_seen["read_trajectory"]
+    assert "failures.json" not in r.tool_notes_seen["try_task"]
 
 
 def test_with_the_rejected_items_r_is_told_what_was_sent_back_but_never_what_it_should_have_said(tmp_path, fake_upstream):
@@ -314,6 +317,12 @@ def test_with_the_rejected_items_r_is_told_what_was_sent_back_but_never_what_it_
     assert "This run was NOT accepted" in try_text and "sent back for: slack message" in try_text
     sent_back = try_text.split("sent back for:", 1)[1]
     assert not any(t in sent_back for t in looked_for)
+    # the world's sources beside the run: names and counts, read or not — the chat the actor never opened shows so
+    src = r.task_seen["sources"]
+    assert src["slack"]["read"] is False and src["slack"]["written"] is False and "channels" in src["slack"]["holds"]
+    assert src["hubspot"]["written"] is True and "contacts" in src["hubspot"]["holds"]
+    assert "sources in this run: " in try_text and "slack (" in try_text and "never read" in try_text
+    assert "stage updated" not in json.dumps(src)
     kept = {e["task"]: e for e in b.events.read("repeat_kept")}
     assert kept[NOTIFY]["choice"] == "base" and kept[NOTIFY]["accepted"] == {"package": False}
 
@@ -348,3 +357,5 @@ def test_a_candidate_changed_after_its_try_may_be_tried_again_and_an_unchanged_o
     assert len(refused) == 1 and "unchanged since its try" in refused[0] and len(ran) == 2
     (adopted,) = b.events.read("repeat_adopted")
     assert adopted["task"] == NOTIFY and adopted["probes"] == 2 and adopted["choice"] == "package"
+    # the try's session is readable to R (second cut): read_trajectory on it answered the run, not AccessDenied
+    assert r.trajectory_reads and not r.trajectory_reads[0][0] and "AccessDenied" not in r.trajectory_reads[0][1]

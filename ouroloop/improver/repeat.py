@@ -46,12 +46,38 @@ FEEDBACK_ATTEMPTS = (FEEDBACK_OUTCOME + " After each try_task you are told one m
                      "A candidate whose run was accepted is adopted for this task; one whose run was not accepted is "
                      "not — use the tries you have left to change what it does, then try again. Hand in every "
                      "candidate you tried; the accepted one is kept.")
-FEEDBACK_ITEMS = (FEEDBACK_ATTEMPTS + " You are also told what the request was sent back for (inputs/task.json "
-                  "`rejected_items`; after a try_task that was not accepted, the items of that run): each item names the "
-                  "kind of check and what it is about — which message, channel, row or record — never what it should "
-                  "have contained. Start from the item: find the step of the run that produced that message, row or "
-                  "record, what it took from the documents and how it derived what it wrote, and build what makes that "
-                  "step right.")
+FEEDBACK_ITEMS = ("This request was NOT accepted (inputs/task.json `outcome`), and you are told what the request was sent "
+                  "back for: `rejected_items`, one entry per check that failed, each naming the kind of check and what it "
+                  "is about — which message, channel, row or record — never what it should have contained. After each "
+                  "try_task you are told whether that run was accepted and, when it was not, the items of that run. A "
+                  "candidate whose run was accepted is adopted for this task; one whose run was not is not — change what "
+                  "it does and try again while tries are left. Hand in every candidate you tried; the accepted one is "
+                  "kept.")
+REPEAT_TOOL_NOTES = {       # v2.1: the session tools worded for one task (the shared descriptions speak of rounds)
+    "try_task": "Run a candidate package (candidates/package, or `dir`) once on this task (`task` = task.json's "
+                "task_id), for real. The answer puts "
+                "that run beside the first one: the hooks that acted and what they said, your tool's calls with their "
+                "inputs and outputs, the writes by route, the sources read, the final text, and whether the run was "
+                "accepted (and what it was sent back for, when that is told). {max_probes} runs for this task in all; "
+                "a candidate unchanged since its last try is refused, a changed one may be tried again. The package "
+                "must build and pass V1 first.",
+    "read_trajectory": "Read a run of this task as the agent saw it (its messages, tool calls and results), in pages "
+                       "of bytes: `session` is inputs/task.json's reference_run.session, or a try's session as its "
+                       "answer names it.",
+    "run_check": "Run the free rungs on a candidate package (candidates/package, or `dir`) under the declaration you "
+                 "would finish with: V0 (shape, limits, literals, the declaration against the diff both ways) and V1 "
+                 "(the package's tests, an import probe, a smoke run in the worker). Nothing is paid; nothing else "
+                 "runs here.",
+    "write_file": "Write a whole file under candidates/<dir>/ (candidates/package/ or candidates/package-2/); the "
+                  "first write under a directory creates that candidate as a copy of the current package. Counts "
+                  "as one edit.",
+    "finish": "End the session with one declaration per candidate package (candidates/package and "
+              "candidates/package-2 at most): {dir, mechanism, scope, components: [{kind, site, trigger, cause_ids: "
+              "[], predicted_affected: [], uses_model?}]}. A candidate changed after its last try is tried once more "
+              "while tries are left and that run decides; otherwise the last tried version is what an adoption "
+              "installs. A declaration the host cannot read is answered as this call's error; fix it and finish "
+              "again. An empty list keeps the base for this task.",
+}
 ACCEPTED_LINE = {True: "  THIS RUN WAS ACCEPTED: hand this candidate in and it is adopted for the task.",
                  False: "  This run was NOT accepted: what it did is still wrong somewhere; change the candidate and "
                         "try again while tries are left."}
@@ -161,6 +187,12 @@ def contrast_text(reference: dict, probe: dict, *, task: str, dir_name: str, act
             f"  the first run ({reference['session']}): {line(reference)}\n"
             f"  this run ({probe['session']}, read_trajectory may open it): {line(probe)}{tools_line}\n"
             f"  {probes_left} try_task run(s) left for this task.")
+
+
+def sources_line(sources: dict) -> str:
+    """One line of the world's sources beside a run: what each holds, read or not, written or not."""
+    return "; ".join(f"{svc} ({v.get('holds')}): " + ("read" if v.get("read") else "never read")
+                     + (", written" if v.get("written") else "") for svc, v in (sources or {}).items()) or "none"
 
 
 def tool_names(files: dict) -> set:
@@ -287,9 +319,11 @@ def session_spend(account, prefix: str) -> float:
 
 
 def adopt(activity, *, task_id: str, reference, base_release, run_arm, account, plan, library: Library,
-          out=print, outcome: str | None = None, feedback: str = "attempts", rejected=None) -> dict:
+          out=print, outcome: str | None = None, feedback: str = "attempts", rejected=None, sources=None) -> dict:
     """One task's Propose-Probe-Compose after its first encounter (`reference`: that attempt's TaskResult). `rejected`
     (feedback "items", v2.1): attempt_id -> the items the reviewer sent that attempt back for, kinds and objects only.
+    `sources` (v2.1, second cut): (task_id, digest) -> the world's sources with what each holds (counts) and whether
+    that run read or wrote it.
     -> {choice: "base" | dir, why, package_ref | None, files_ref | None, probes, candidates, entry | None,
     session, usd (what this task's session cost: its research calls and its probes, not the arm's total)}."""
     s = Settings.from_core(activity.k)
@@ -307,6 +341,10 @@ def adopt(activity, *, task_id: str, reference, base_release, run_arm, account, 
         task_json["outcome"] = outcome
         task_json["note"] += ("; outcome: the request was NOT accepted — something the agent did or left undone was "
                               "wrong, and you are not told what")
+    if sources is not None:         # v2.1, second cut: the world's sources beside the run (an inventory, no contents)
+        task_json["sources"] = sources(task_id, reference_digest)
+        task_json["note"] += ("; sources: every data source this request's world holds, what it holds (counts) and "
+                              "whether this run read or wrote it")
     if rejected is not None:        # v2.1 (DESIGN §6.24): what it was sent back for — the checks' kinds and objects
         task_json["rejected_items"] = list(rejected(reference.attempt_id))
         task_json["note"] += ("; rejected_items: what the reviewer sent it back for — the kind of each check and what "
@@ -318,6 +356,7 @@ def adopt(activity, *, task_id: str, reference, base_release, run_arm, account, 
               **library.inputs()}
     kinds = [k for k in activity.k["harness"]["kinds"] if k not in ("memory", "model", "test")]
     system = (PROMPTS / "repeat.md").read_text(encoding="utf-8")
+    notes = {k: v.replace("{max_probes}", str(int(plan.max_probes))) for k, v in REPEAT_TOOL_NOTES.items()}
     for name, value in {"max_turns": s.session_max_turns, "max_edits": s.session_max_edits,
                         "max_read": s.session_max_read_bytes, "max_read_total": s.session_max_read_total,
                         "max_tokens": int(activity.k["research_model"]["max_tokens"]),
@@ -331,6 +370,7 @@ def adopt(activity, *, task_id: str, reference, base_release, run_arm, account, 
     wsession = worker.start()
     tree = WorkTree(wsession)
     probes: dict[str, dict] = {}            # dir -> {session, digest, acted, package_ref, files_ref}
+    readable = {ref_session}                # grows with each try's session: read_trajectory may open them
     spent = {"probes": 0, "usd": 0.0}
     researcher = activity.research_provider(f"repeat:{task_id}", account=account)
 
@@ -359,6 +399,7 @@ def adopt(activity, *, task_id: str, reference, base_release, run_arm, account, 
             return f"the probe did not read the task ({getattr(row, 'validity', 'no attempt')})", True
         session_id = row.evidence or row.attempt_id
         trace.allow({session_id})
+        readable.add(session_id)
         conds = condition(components(package, files))
         acted = acted_components(conds, footprint_of(trace, session_id))
         d = digest(trace, session_id, detail_tools=tool_names(files) - tool_names(package.files))
@@ -370,6 +411,9 @@ def adopt(activity, *, task_id: str, reference, base_release, run_arm, account, 
                                                      if feedback in ("attempts", "items") else ""))
         text = contrast_text(reference_digest, d, task=task_id, dir_name=dir_name, acted=acted,
                              probes_left=int(plan.max_probes) - spent["probes"])
+        if sources is not None:
+            probes[dir_name]["sources"] = sources(task_id, d)
+            text += "\n  sources in this run: " + sources_line(probes[dir_name]["sources"])
         if feedback in ("attempts", "items"):   # the one bit per attempt: the request was accepted, or sent back
             text += "\n" + ACCEPTED_LINE[bool(row.success)]
         if rejected is not None and not row.success:    # v2.1: and what this run was sent back for
@@ -408,7 +452,8 @@ def adopt(activity, *, task_id: str, reference, base_release, run_arm, account, 
 
         session = CodingSession(researcher=researcher, work=tree, trace=trace, check=check, tests=tests, settings=s,
                                 system=system, inputs={"task": task_id, "inputs": sorted(f"inputs/{n}" for n in inputs)},
-                                readable={ref_session}, kinds=kinds, tryer=tryer, require_causes=False)
+                                readable=readable, kinds=kinds, tryer=tryer, require_causes=False,
+                                tool_notes=notes)
         result = session.start()
         candidates = []
         for decl in result.declarations:

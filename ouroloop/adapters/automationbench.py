@@ -897,3 +897,38 @@ def rejected_items(assertions) -> list[str]:
                           if (k in IDENTIFIER_KEYS or str(k).endswith("_id")) and isinstance(v, (str, int)))
         out.append(str(a.get("type") or "check").replace("_", " ") + (f" ({about})" if about else ""))
     return out
+
+
+SERVICE_HOSTS = {"slack": ("slack.com",), "gmail": ("gmail.googleapis.com",), "google_sheets": ("sheets.googleapis.com",),
+                 "google_drive": ("www.googleapis.com/drive", "drive.googleapis.com"),
+                 "google_calendar": ("www.googleapis.com/calendar", "calendar.googleapis.com"),
+                 "hubspot": ("api.hubapi.com",), "quickbooks": ("quickbooks.api.intuit.com",),
+                 "xero": ("api.xero.com",), "wave": ("gql.waveapps.com",), "notion": ("api.notion.com",),
+                 "jira": ("atlassian.net",), "zoom": ("api.zoom.us",), "airtable": ("api.airtable.com",),
+                 "monday": ("api.monday.com",)}
+
+
+def service_of_route(route: str) -> str | None:
+    """The world's service a call's route belongs to (a route as the digest writes it: host and path, no scheme)."""
+    r = str(route or "").split("//")[-1]
+    for service, hosts in SERVICE_HOSTS.items():
+        if any(r.startswith(h) for h in hosts):
+            return service
+    return None
+
+
+def world_sources(initial_state) -> dict:
+    """What a request's world holds, service by service, as counts only (DESIGN §6.24, second cut): `{service: "3
+    messages, 0 labels"}`. Never a message, a cell or a record — an inventory of the environment, not a label."""
+    out = {}
+    for service, data in (initial_state or {}).items():
+        if service == "meta" or not isinstance(data, dict):
+            continue
+        parts = []
+        for k, v in data.items():
+            if isinstance(v, list):
+                parts.append(f"{len(v)} {k}")
+                if k == "spreadsheets":
+                    parts.append(f"{sum(len(x.get('worksheets') or []) for x in v if isinstance(x, dict))} worksheets")
+        out[str(service)] = ", ".join(parts) or "present"
+    return out

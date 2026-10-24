@@ -22,7 +22,7 @@
 
 **读到的。** (1) 造工具这条路通了：提示词改了之后真 R 第一次就写了工具、agent 用了它、数字从工具一路带进邮件。(2) 派生值的错在这个基准上一半是输入：更正贴在聊天频道或邮箱里（v18 的 payment_terms、vendor_spend、ap_turnover 同形）。工具是必要的，不够；还要"算之前把每个源读一遍"——库里的 lib2（survey_hold：搜了空结果就列出那个源）是它的近亲，但 agent 根本没搜 Slack 时它不触发。(3) R 的 try 用法改好了：4 次都是改过再 try。
 
-**下一步（待用户定）。** 提示词再加一句：退回项落在派生值上时，先看运行里哪些源一次都没打开（聊天频道、邮箱），"第一次派生写入前列出没读的源"的 hold 是第一候选、工具是第二；然后重跑税额与工时两道（约 $20）。
+**第二刀（2026-10-24，用户："改，用少量的题，明确 R 能自己学出来的机制，prompt 需要严格审查好好设计，可以参考 Claude Code 的设计理念"；$0）。** 设计见 DESIGN §6.24 第二刀。做了：(1) `task.json` 多一项 `sources`——请求世界里每个数据源的服务名与条数（适配器 `world_sources(initial_state)`：频道数、消息数、表与页数，不含内容）和这次运行按服务读过 / 写过哪些（`service_of_route` 按路由归服务）；try 的答复附 "sources in this run:" 一行，R 能看到自己的 hold 有没有让 agent 把源读开。(2) `repeat.md` 重写成五段：你知道什么与各有多确定 → 往哪看（请求或文档指向而运行没打开的源 → 派生值的每个输入从哪来 → 文档里没执行的要求）→ 建什么（hold 的返回形状与模块级状态、工具的输入输出契约、同一缺陷的组件放同一目录）→ 怎么做（读 → 最小改动 → run_check → try → 按证据改 → 交付）→ 限制；每句可执行，不劝说。(3) `CodingSession(tool_notes=…)`：重复流里 try_task、read_trajectory、run_check、write_file、finish 的说明按本题写（原来说的是轮次的 failures.json 和 V2a/b/c）。(4) 独立审查（一个只读代码与提示词的 reviewer，10 条意见，全部处理）：try 的会话 R 原来打不开（`readable` 被拷贝；改成共享集合，每次 probe 加入）；"交付跑过的版本"写准成宿主的实际行为（改过且有 try 剩就再 probe、否则最后一次 try 的版本）；去掉从 v19 两道题抄来的词表（"current / latest / 折扣 / 税率"），改成通用的"请求或文档指向的源"——否则 v20 验证的就不是 R 自己的诊断；FEEDBACK_ITEMS 不再以"不告诉你是什么"开头；`sources` 的语义按服务说清（GET 算读、其余算写，频道与页在路由里）；try_task 要给 `task`。测试：12 个重复流测试通过（新增断言：工具说明按本题、`sources` 里 slack 未读、R 读 try 的会话不被拒）。finance-v20 配置：点名 quarterly_tax_estimate、timesheet_to_invoice，items 反馈，并发 2。
 
 ---
 

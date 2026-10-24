@@ -134,13 +134,16 @@ class CodingSession:
     tests; `readable` the train sessions read_trajectory may open; `kinds` the component kinds K allows."""
 
     def __init__(self, *, researcher, work: WorkTree, trace, check, tests, settings, system: str, inputs: dict,
-                 readable, kinds, merge_ids=(), tryer=None, require_causes: bool = True):
+                 readable, kinds, merge_ids=(), tryer=None, require_causes: bool = True, tool_notes=None):
         self.researcher, self.work, self.trace = researcher, work, trace
+        # v2.1: a loop may word a tool's description for its own context (the repeat loop's try_task is on one task)
+        self.tools = [ToolSpec(t.name, (tool_notes or {}).get(t.name, t.description), t.schema) for t in TOOLS]
         self.check, self.tests, self.s = check, tests, settings
         self.tryer = tryer                          # v1.11: try_task -> (text, is_error); None: the tool is refused
         self.require_causes = require_causes        # v2.0: the repeat loop has no causes (DESIGN §6.23)
         self.n, self.system, self.inputs = max(int(settings.packages_per_round), 1), system, inputs
-        self.readable, self.kinds = set(readable), tuple(kinds)
+        # the set itself when one is given: a loop may add sessions as it runs them (the repeat loop's tries)
+        self.readable, self.kinds = (readable if isinstance(readable, set) else set(readable)), tuple(kinds)
         self.merge_ids = tuple(merge_ids)          # v1.8: the frontier entries a declaration's merge_of may name
         self.turns = self.edits = self.read_bytes = 0
         self.messages: list[dict] = []
@@ -181,7 +184,7 @@ class CodingSession:
                 return self._end(f"the session used its {self.s.session_max_turns} turns")
             self.turns += 1
             self._compact()
-            reply = self.researcher.chat(self.system, self.messages, list(TOOLS))
+            reply = self.researcher.chat(self.system, self.messages, list(self.tools))
             calls = [c for c in getattr(reply, "tool_calls", None) or () if isinstance(c, ToolCall)]
             self.messages.append({"role": "assistant", "text": reply.text or "", "tool_calls": calls})
             if not calls:
@@ -277,7 +280,8 @@ class CodingSession:
                 return f"no candidate directory {d!r} ({self.dirs or 'none yet'})", True, False
             task = args.get("task")
             if not isinstance(task, str) or not task:
-                return "task is a studied task id (inputs/failures.json)", True, False
+                return ("task is the task id to try: inputs/task.json's task_id in a per-task session, a studied "
+                        "task of inputs/failures.json in a round"), True, False
             if self.tryer is None:
                 return "try_task is not available in this session", True, False
             text, bad = self.tryer(str(d), task)
@@ -304,7 +308,7 @@ class CodingSession:
     def _read_trajectory(self, args: dict) -> tuple[str, bool]:
         session = args.get("session")
         if session not in self.readable:
-            return f"AccessDenied: {session!r} is not a train attempt of this round's inputs", True
+            return f"AccessDenied: {session!r} is not a session this session may read", True
         try:
             offset = max(int(args.get("offset") or 0), 0)
             limit = min(int(args.get("limit") or self.s.session_max_read_bytes), self.s.session_max_read_bytes)
