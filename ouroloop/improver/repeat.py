@@ -168,6 +168,8 @@ def digest(trace, session: str, *, detail_tools=()) -> dict:
             is_error = bool(e.get("is_error"))
             errors += int(is_error)
             row = {"tool": name, "method": method or None, "route": route or None, "error": is_error}
+            if e.get("read_only"):          # a hook's own read-only call (ctx.tool(read_only=True)), not the agent's
+                row["by"] = "hook"
             if is_error:
                 row["said"] = str(e.get("output") or "")[:EXCERPT]
             calls.append(row)
@@ -202,10 +204,35 @@ def contrast_text(reference: dict, probe: dict, *, task: str, dir_name: str, act
             f"  {probes_left} try_task run(s) left for this task.")
 
 
+def sources_of(holds: dict, calls, service_of_route) -> dict:
+    """The world's sources beside one run: per service, what it holds (`holds`, from the adapter: names and counts) and
+    whether the agent read it (a GET of its own), only a hook of R's read it (a read-only call made by a hook — the
+    agent saw nothing of it), or the agent wrote to it (any other method). v2.1, fifth cut: three sessions read
+    "slack: read" off their own hook's listing and spent a try on a hold that had fired for nothing."""
+    read, hook_read, written = set(), set(), set()
+    for c in calls or ():
+        service = service_of_route(c.get("route") or "")
+        if not service:
+            continue
+        if str(c.get("method") or "GET").upper() in ("GET", "HEAD"):
+            (hook_read if c.get("by") == "hook" else read).add(service)
+        else:
+            written.add(service)
+    return {svc: {"holds": what, "read": svc in read, "hook_read": svc in hook_read and svc not in read,
+                  "written": svc in written} for svc, what in (holds or {}).items()}
+
+
 def sources_line(sources: dict) -> str:
-    """One line of the world's sources beside a run: what each holds, read or not, written or not."""
-    return "; ".join(f"{svc} ({v.get('holds')}): " + ("read" if v.get("read") else "never read")
-                     + (", written" if v.get("written") else "") for svc, v in (sources or {}).items()) or "none"
+    """One line of the world's sources beside a run: what each holds; read by the agent, read only by a hook of
+    R's, or never read; written or not."""
+    def state(v):
+        if v.get("read"):
+            return "read by the agent"
+        if v.get("hook_read"):
+            return "listed only by your hook (the agent read nothing of it)"
+        return "never read"
+    return "; ".join(f"{svc} ({v.get('holds')}): " + state(v) + (", written" if v.get("written") else "")
+                     for svc, v in (sources or {}).items()) or "none"
 
 
 def tool_names(files: dict) -> set:

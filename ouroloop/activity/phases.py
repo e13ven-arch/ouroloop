@@ -755,13 +755,9 @@ def repeat(activity, *, arm: str = "learn", until: int | None = None, out: Calla
     def sources_of(task_id: str, run: dict) -> dict:
         """v2.1, second cut (DESIGN §6.24): the world's sources (names and counts, no contents) and whether `run`
         (a digest) read or wrote each — the inventory R reads beside the run."""
-        holds = ab.world_sources(activity.suite.grading(task_id).initial_state)
-        read, written = set(), set()
-        for c in run.get("calls") or ():
-            service = ab.service_of_route(c.get("route") or "")
-            if service:
-                (written if str(c.get("method") or "GET").upper() not in ("GET", "HEAD") else read).add(service)
-        return {svc: {"holds": what, "read": svc in read, "written": svc in written} for svc, what in holds.items()}
+        from ..improver.repeat import sources_of as sources_beside
+        return sources_beside(ab.world_sources(activity.suite.grading(task_id).initial_state), run.get("calls"),
+                              ab.service_of_route)
 
     def one(task: str) -> None:
         """One task's encounters, sequential within the task (each depends on the one before); tasks run in

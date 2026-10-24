@@ -12,9 +12,10 @@ inputs/task.json holds:
   that acted and what they said, the writes by route, the skills read, the final text (its first 600 characters).
   read_trajectory with `session` = reference_run.session opens the whole run, in order.
 - `sources`: every data source this request's world holds — a chat service, a mailbox, spreadsheets and their
-  worksheets, a drive, a record system — with what it holds (counts, never contents) and, per service, whether this
-  run read it (any GET call to it) or wrote to it (any other call). Which channel, message or worksheet was read is
-  in the routes of reference_run.calls.
+  worksheets, a drive, a record system — with what it holds (counts, never contents) and, per service, whether the
+  agent read it (`read`: a GET of its own), only a hook of yours read it (`hook_read`: a read-only call your hook
+  made; the agent saw nothing of it), or the agent wrote to it (any other call). Which channel, message or
+  worksheet was read is in the routes of the run's calls; a call with `by: hook` is your hook's, not the agent's.
 - `outcome` and `rejected_items`, when given: whether the request was accepted and what it was sent back for.
 
 {feedback}

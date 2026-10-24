@@ -30,7 +30,13 @@
 
 **第三刀（2026-10-24，用户选 a；finance-v21 税额一道，$4.17，冻结 `848818c`）。** 提示词"怎么做"加第 5 步：被接受的派生值补工具（package-2 = 被接受的包 + 工具，再 try 一次，声明放最后；采用取最后一个被接受的候选，代码本来如此）；假上游测试 `repeat_harden`（hook 被接受、hook + 工具的 package-2 也被接受 → 采用 package-2）。真跑：e1 0.67 → R 的 hold 第 1 次没出手（和 v20 同一个坑：它自己的只读列表调用）、第 2 次出手、agent 读 #tax-updates 算出 105,792、被接受 → **R 没做第 5 步就交了**（还剩 2 次 try）→ e2 0.67（hold 出手、Slack 读了、agent 算成 23,448：这次没年化）、e3 0.67（105,725：心算错）。同一组输入三次三个数——派生值不走代码就不稳，这一点坐实了。R 为什么跳过第 5 步：try 答复最后一行写的是 "THIS RUN WAS ACCEPTED: hand this candidate in and it is adopted"，FEEDBACK 文字也说 "the accepted one is kept"——最近、最强的信号说"交"，提示词里的第 5 步被盖过（Claude Code 的原则：工具结果里的指令不能和系统提示的流程打架）。另记：v21 的 K 和 v20 相同——改进器的提示词不在冻结的代码哈希里，只有 .py 在；可复现性缺口，待补。
 
-**第四刀（同日，$0）。** 接受行改成按情形说话：`accepted_line(success, acted, tries_left)`——被接受且这次运行没调用 R 的任何工具、还有 try 剩，就附一句"先补工具再交（第 5 步）：package-2 = 本包 + 工具，try 一次，声明时本包在前、package-2 在后"；FEEDBACK 文字改成"几个都被接受时采用最后声明的"。测试：harden 模式里 hook 那次 try 的答复带补工具的话、工具那次不带。待批：finance-v22 税额一道再跑（约 $5）。
+**第四刀（同日，$0）。** 接受行改成按情形说话：`accepted_line(success, acted, tries_left)`——被接受且这次运行没调用 R 的任何工具、还有 try 剩，就附一句"先补工具再交（第 5 步）：package-2 = 本包 + 工具，try 一次，声明时本包在前、package-2 在后"；FEEDBACK 文字改成"几个都被接受时采用最后声明的"。测试：harden 模式里 hook 那次 try 的答复带补工具的话、工具那次不带。
+
+**finance-v22（税额一道，$6.29，冻结 `2988806`）。** e1 0.67 → try 1、2 hold 没出手（又是它自己的只读列表调用被 R 当成"agent 读过 Slack"）→ try 3 hold 出手、agent 读了 #tax-updates、算成 23,448（混合税率对了，但没年化）→ **try 4 hold + 工具都出手**（R 这次按接受行之前的流程直接把工具加进来了）、工具按"不年化"算成 23,431 → 4 次都没被接受，留 base，e2、e3 0.67。R 的收尾说明清楚：第一次运行没开 Slack，频道里有税率变更，它建了 hold 和工具。差的是程序里"年化"这一步的解读：procedures 写 "Divide annual estimate by 4"，YTD 是 3 个月，评分按"先 ×4 年化"算；agent 在 v20/v21 两种解读各出现过（105,792 / 23,448），R 这一会话里只试了不年化的那种，退回项（"发给 tax@ 的邮件"）分不出这两种。四次 try 里两次耗在 hold 的误判上，没剩下试另一种解读的机会（v19 里 R 两种都试过）。
+
+**第五刀（同日，$0）。** 三个会话都在同一处丢了第一次 try：hook 自己的只读列表调用在 sources 行里算成"读过"。轨迹里这类调用带 `read_only: true`（`ctx.tool(read_only=True)`），agent 自己的调用没有。digest 给这类调用标 `by: hook`；`sources_of(holds, calls, service_of_route)` 分三态：agent 读过 / 只有你的 hook 列过（agent 什么都没看到）/ 没读过；sources 行照此措辞；提示词的 `sources` 一条说明。单元测试一个。
+
+**读到的。** 机制层面：v20～v22 四个会话里 R 都建出了"没读的源"hold，三个会话里 agent 随后读到了更正；v22 在被接受前就把工具加上了。剩下的不稳定来自文档本身的歧义（年化与否）加上一比特 + 退回项分不出歧义的哪一边——这是反馈厚度的问题，不是机制的问题；再多的 try 能让 R 把两种解读都试到（v19 就试到了），所以先把 try 还给它。
 
 ---
 

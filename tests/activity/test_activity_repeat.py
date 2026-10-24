@@ -322,6 +322,7 @@ def test_with_the_rejected_items_r_is_told_what_was_sent_back_but_never_what_it_
     assert src["slack"]["read"] is False and src["slack"]["written"] is False and "channels" in src["slack"]["holds"]
     assert src["hubspot"]["written"] is True and "contacts" in src["hubspot"]["holds"]
     assert "sources in this run: " in try_text and "slack (" in try_text and "never read" in try_text
+    assert src["slack"]["hook_read"] is False
     assert "stage updated" not in json.dumps(src)
     kept = {e["task"]: e for e in b.events.read("repeat_kept")}
     assert kept[NOTIFY]["choice"] == "base" and kept[NOTIFY]["accepted"] == {"package": False}
@@ -387,3 +388,21 @@ def test_an_accepted_candidate_hardened_with_a_tool_in_a_second_directory_is_the
     ev = Evidence(b)
     ev.trace.allow({e2.evidence or e2.attempt_id})
     assert "post_channel_message" in footprint_of(ev.trace, e2.evidence or e2.attempt_id)["tools"]
+
+
+def test_a_hooks_own_listing_is_not_the_agent_reading_the_source():
+    """v2.1, fifth cut: a read-only call a hook made (`by: hook` in the digest) shows a source as listed only by the
+    hook, not as read; the agent's own GET shows it as read; any other method as written."""
+    from ouroloop.improver.repeat import sources_line, sources_of
+    svc = lambda route: "slack" if "slack" in route else "gmail" if "gmail" in route else None  # noqa: E731
+    holds = {"slack": "1 channels, 3 messages", "gmail": "3 messages"}
+    only_hook = sources_of(holds, [{"route": "slack.com/api/conversations.list", "method": "GET", "by": "hook"},
+                                   {"route": "gmail.googleapis.com/gmail/v1/users/me/messages/send", "method": "POST"}], svc)
+    assert only_hook["slack"] == {"holds": "1 channels, 3 messages", "read": False, "hook_read": True, "written": False}
+    assert only_hook["gmail"] == {"holds": "3 messages", "read": False, "hook_read": False, "written": True}
+    assert "slack (1 channels, 3 messages): listed only by your hook" in sources_line(only_hook)
+    agent = sources_of(holds, [{"route": "slack.com/api/conversations.list", "method": "GET", "by": "hook"},
+                               {"route": "slack.com/api/conversations.history", "method": "GET"}], svc)
+    assert agent["slack"]["read"] is True and agent["slack"]["hook_read"] is False
+    assert "slack (1 channels, 3 messages): read by the agent" in sources_line(agent)
+    assert "never read" in sources_line(sources_of(holds, [], svc))
