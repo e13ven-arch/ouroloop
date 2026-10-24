@@ -67,7 +67,14 @@ AUTOMATIONBENCH_V1 = {
 AUTOMATIONBENCH_V2 = json.loads(json.dumps(AUTOMATIONBENCH_V1))
 AUTOMATIONBENCH_V2["memory"]["enabled"] = False
 
-PRESETS = {"automationbench_v1": AUTOMATIONBENCH_V1, "automationbench_v2": AUTOMATIONBENCH_V2}
+# 2026-10-24: the same preset with the effort ceiling at "max" for both the actor and the improver — the user's
+# experiment (finance-v24) on whether the mechanism reads better at max; every arm of an activity still runs one
+# effort. The default presets keep "medium" as the ceiling.
+AUTOMATIONBENCH_V2_MAX = json.loads(json.dumps(AUTOMATIONBENCH_V2))
+AUTOMATIONBENCH_V2_MAX["model"]["effort"] = "max"
+AUTOMATIONBENCH_V2_MAX["research_model"]["effort"] = "max"
+PRESETS = {"automationbench_v1": AUTOMATIONBENCH_V1, "automationbench_v2": AUTOMATIONBENCH_V2,
+           "automationbench_v2_max": AUTOMATIONBENCH_V2_MAX}
 
 RULES = {
     "bench": {"domain": "free", "domains": "free", "upstream_path": "free", "toolset": "fixed", "ratios": "free",
