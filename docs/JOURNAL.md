@@ -46,6 +46,8 @@
 - grant_expense_tracking：e1 **PASS**（medium 下 v16 三次 0.75 从没过）→ 跳过 → e2 0.75、e3 PASS：base 在 max 下首遇更好，但同样有波动。
 报告：e1 1/3 → e3 2/3；采用 1、留 base 2。
 
+**第六刀与 finance-v25（2026-10-25，max 抽样 test 前 10 道，$67.70 后被预算保护停掉）。** 先补了两个坑：会话无 finish 的被接受 probe 由宿主从 diff 合成声明、跑 V0 + V1 后采用（假上游测试 `repeat_cut`）；max 预设 `max_tokens` 翻倍到 64,000（`[pricing] max_output_tokens` 盖住 5 倍）。v25：e1 退回 4 道（duplicate_payment、late_fee、airtable、xero_credit），通过 2 道（qb_invoice_from_orders、vendor_payment_approval），refund 0.6 刚退回。1 小时 43 分后 **R 在 xero_credit 会话里的一次调用量到 400,793 input tokens**（CLI 自己续写了几次，一次回复 68,818 输出 token，每次续写重发整个上下文），超过每次调用的预留上限 400,000（`[pricing] max_input_tokens`）→ 平台按"保护钱"的规则停掉这个臂的账户，4 个在跑的会话全部 BudgetExhausted，剩两道题首遇没跑。能读的：airtable 0.8 → R 的 `issued` hook（package-2，按第 5 步补的第二个候选）被接受 → e2、e3 PASS；late_fee：R 读完所有源后**交空**——"滞纳金档位取决于今天是哪天，任何源里没有这个日期，猜一个日期就是给这一道题写值"，判断正确，缺口在环境：world 的时钟 `meta.current_time`（02-15）没有给到 agent，上游 API 的实现里用它盖时间戳但不告诉 agent，我们的日期锚钩子取"记录里最新日期"（02-01）所以错档。4 道完整的：e1 2/4 → e3 3/4，样本太小。
+
 **读到的。** (1) max 下 R 的一个会话顶 medium 的三个活动：它在被接受前就把"读齐源 + 工具年化 + 混合税率"一次做全，税额题第一次稳态站住。(2) 代价 5～7 倍：R 会话 $18～25、2～3 小时；三道题 $61。(3) 两个工程缺口被 max 暴露：R 的回复上限 32,000 在 max 下不够（思考量大），要随 effort 放大；会话没 finish 但已有被接受的 probe 时，宿主该直接采用那次跑过的版本（采用装的本来就是 probe 过的文件；V0 要补跑一次），不该丢掉——工时题就是这样丢的。(4) base 自己在 max 下首遇更强（grant 过了），但噪声仍在。
 
 ---
