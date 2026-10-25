@@ -73,6 +73,10 @@ AUTOMATIONBENCH_V2["memory"]["enabled"] = False
 AUTOMATIONBENCH_V2_MAX = json.loads(json.dumps(AUTOMATIONBENCH_V2))
 AUTOMATIONBENCH_V2_MAX["model"]["effort"] = "max"
 AUTOMATIONBENCH_V2_MAX["research_model"]["effort"] = "max"
+# at max the model thinks longer: finance-v24's improver lost an accepted candidate when two replies in a row hit the
+# 32,000-token output cap; the ceiling doubles here ([pricing] max_output_tokens must cover 5 x max_tokens)
+AUTOMATIONBENCH_V2_MAX["model"]["max_tokens"] = 64000
+AUTOMATIONBENCH_V2_MAX["research_model"]["max_tokens"] = 64000
 PRESETS = {"automationbench_v1": AUTOMATIONBENCH_V1, "automationbench_v2": AUTOMATIONBENCH_V2,
            "automationbench_v2_max": AUTOMATIONBENCH_V2_MAX}
 

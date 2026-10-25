@@ -517,6 +517,36 @@ def adopt(activity, *, task_id: str, reference, base_release, run_arm, account, 
                     out(f"repeat     {task_id}: candidates/{decl.dir} not probed: {text[:160]}")
                     continue
             candidates.append(decl)
+        # v2.1, sixth cut: an accepted try the session never handed in (finance-v24: R's replies were cut at the
+        # output limit twice after its accepted try, and the session ended without a finish). The decision was the
+        # acceptance; the declaration is the host's, read off the diff, and V0 + V1 run on the tried files as on
+        # any hand-in. What an adoption installs is the tried version in every case.
+        declared = {d.dir for d in result.declarations}
+        for dir_name, p in probes.items():
+            if not p.get("accepted") or dir_name in declared:
+                continue
+            tried = activity.objects.get(p["files_ref"])
+            manifest = json.loads(tried.get("manifest.json") or "{}")
+            sites = {h.get("name"): h.get("site") for h in manifest.get("hooks") or []}
+            comps = [{"kind": c["kind"], "site": (sites.get(c["name"]) if c["kind"] == "hook" else c["name"]),
+                      "cause_ids": [], "predicted_affected": [], "trigger": "undeclared: the accepted try stands"}
+                     for c in components(package, tried) if c["kind"] in kinds]
+            raw = {"dir": dir_name, "scope": "invariant", "components": comps,
+                   "mechanism": (f"undeclared: the session ended ({result.ended or 'without a finish'}) after this "
+                                 f"candidate's try was accepted; the tried version stands")}
+            decl, why = read_declaration(raw, dirs=[dir_name], kinds_allowed=kinds, require_causes=False)
+            if decl is None:
+                out(f"repeat     {task_id}: candidates/{dir_name} was accepted and never handed in; the host cannot "
+                    f"declare it: {why}")
+                continue
+            verdict = run_ladder(tried, decl, vctx, rungs=("V0", "V1"))
+            if not verdict.passed():
+                out(f"repeat     {task_id}: candidates/{dir_name} was accepted and never handed in; it fails its free "
+                    f"rungs: {verdict.text()[:200]}")
+                continue
+            out(f"repeat     {task_id}: candidates/{dir_name} was accepted and never handed in: the host declares it "
+                f"from the diff and it stands")
+            candidates.append(decl)
     finally:
         wsession.close(force=True)
         transcript = activity.objects.put_json("session_transcript", session.transcript()) if session else None

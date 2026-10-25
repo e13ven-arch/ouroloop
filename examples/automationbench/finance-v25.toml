@@ -1,0 +1,95 @@
+# finance-v25: stage 4p, the max-effort SAMPLE on test (docs/DESIGN.md v2.1 §6.24 sixth cut; docs/JOURNAL.md 2026-10-25) —
+# the user: "max 上抽样跑一下就好，测一下预期能够达到的效果". The shape of finance-v24 (preset automationbench_v2_max: actor and
+# improver at effort max, output ceiling 64,000; items feedback: the rejected checks' kinds and objects, no values; the
+# learn arm only) on the first 10 finance TEST tasks of the stream's order, each met three times. The number read here
+# is a sample's: first-pass and steady-state rates over 10 tasks, to be reported with the feedback kind, the effort
+# and the sample size. The plan is sealed and its ref committed before the first test attempt (PLAN rule 6).
+#   1  `... bench --config examples/automationbench/finance-v25.toml --phase smoke --checks-only`                $0
+#   2  `... freeze --config ...`; add the printed [rsi] lines (core_ref, split_ref, repeat_plan_ref) and commit    $0
+#   3  `... bench --config ... --phase repeat --arm learn` (10 tasks x 3 encounters + R's sessions on the sent-back
+#      ones; at finance-v24's prices about $150-200, 5-6 hours). Approved in chat first (PLAN rule 3).
+#   4  `... bench --config ... --phase report`
+
+[workspace]
+root = "workspace-finance-v25"
+
+[bench]
+domain = "finance"
+upstream_path = "~/workspace/AutomationBench"
+split_rule = "stratified"
+seed = 1
+concurrency = 8
+ratios = { train = 0.5, dev = 0.0, test = 0.5 }
+
+[model]
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "max"
+max_tokens = 64000
+timeout = 600
+
+[research_model]
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "max"
+max_tokens = 64000
+timeout = 900
+
+[pricing]
+input_per_1k = 0.004
+cache_read_per_1k = 0.0002
+cache_write_per_1k = 0.008
+output_per_1k = 0.02
+max_input_tokens = 400000
+max_output_tokens = 327680
+source = "notional, not a bill: claude-opus-5-5 API list price ($4/$20 per M, cache read $0.20, 1h cache write $8)"
+
+[harness]
+preset = "automationbench_v2_max"   # automationbench_v2 with the effort ceiling at max (this experiment only)
+seed = "stirrup"
+
+[worker]
+network = "none"
+image_id = "sha256:e070208dbddc713a9993f6700ab15a0455d44d2f6885f47dafc2f4bfd4436f30"
+
+[memory]
+enabled = false
+
+[schedule]
+rounds = 1
+patience = 1
+stream_batch = 30
+stream_splits = ["train"]
+
+[budget]
+usd = 1000.0
+
+[final]
+repeats = 3
+
+[improver]
+packages_per_round = 2      # v1.10: candidates/package/ invariant, candidates/package-2/ domain (DESIGN §6.20)
+accept_max_regressions = 3  # v1.12 (DESIGN §6.22): net-positive installs, the regressions go to the frontier
+accept_floor_tolerance = 3
+l5_per_round = 3
+trial_max_tasks = 3         # the host's trial after finish, per package; R's own tries share trial_max_attempts (40)
+
+[repeat]
+encounters = 3          # each task met three times: the base, then the task's own harness twice
+split = "test"          # the sample of the number: the first 10 test tasks in the stream's order (the plan is sealed first)
+max_tasks = 10
+max_probes = 4          # the learn arm's extra executions a task, at most
+feedback = "items"      # the bit per attempt and what each rejected run was sent back for (kinds and objects, no values)
+concurrency = 4
+arms = ["learn"]        # no control arm in the focused run
+
+[rsi]
+scope_id = "finance-v25"
+seed_from = "workspace-finance-v9"
+seed_line = "working"
+# frozen 2026-10-25: the seed is finance-v9's working line; the finance two-way split; the repeat plan: the first ten
+# finance test tasks of the stream's order x 3 encounters, the learn arm, feedback items, effort max — sealed and
+# committed before the first test attempt (PLAN rule 6)
+core_ref = "core:sha256:b0c36bb8e130fa6f0457ed668e10e19b1733a550e44b6c79227d123f43134712"
+split_ref = "3b959d143f9d8468"
+repeat_plan_ref = "repeat_plan:sha256:4f754db12c58e971c6e63473e2a027af80c4e0ec48a653c317a85a480488ba47"

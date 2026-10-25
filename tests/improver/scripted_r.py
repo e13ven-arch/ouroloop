@@ -413,6 +413,8 @@ class ScriptedR:
                                               "text": json.dumps(manifest, indent=1) + "\n"}))
         if turns == 2:
             return self._calls(("try_task", {"task": task}))
+        if self.mode == "repeat_cut" and turns >= 3:   # v2.1, sixth cut: after the accepted try, two replies cut
+            return ChatTurn("", [], "max_tokens", usage=dict(self.usage))
         if self.mode == "repeat_harden":        # v2.1, third cut: the accepted hook hardened with the tool in package-2
             if turns == 3:
                 hard = {**manifest, "tools": [*manifest.get("tools", []), TOOL_ENTRY]}

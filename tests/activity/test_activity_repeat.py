@@ -406,3 +406,19 @@ def test_a_hooks_own_listing_is_not_the_agent_reading_the_source():
     assert agent["slack"]["read"] is True and agent["slack"]["hook_read"] is False
     assert "slack (1 channels, 3 messages): read by the agent" in sources_line(agent)
     assert "never read" in sources_line(sources_of(holds, [], svc))
+
+
+def test_an_accepted_try_the_session_never_handed_in_is_declared_by_the_host_and_stands(tmp_path, fake_upstream):
+    """v2.1, sixth cut (finance-v24): R's try is accepted, then its replies are cut at the output limit twice and the
+    session ends without a finish — the host declares the accepted candidate from the diff, runs V0 and V1 on the
+    tried files, and adopts it; the later encounters pass."""
+    actor = rsi.BusinessWorker(forget_notify=True)
+    r = ScriptedR("repeat_cut")
+    _, b, out = _learn(tmp_path, fake_upstream, actor=actor, r=r, repeat={"encounters": 3, "concurrency": 1})
+    scored = {(e["task"], e["encounter"]): e["passed"] for e in b.events.read("repeat_scored")}
+    assert [scored[(NOTIFY, k)] for k in (1, 2, 3)] == [False, True, True]
+    (adopted,) = b.events.read("repeat_adopted")
+    assert adopted["task"] == NOTIFY and adopted["choice"] == "package" and adopted["accepted"] == {"package": True}
+    assert any("was accepted and never handed in: the host declares it from the diff" in line for line in out)
+    entries = json.loads((b.root / "library" / "entries.json").read_text(encoding="utf-8"))["entries"]
+    assert entries and entries[0]["mechanism"].startswith("undeclared: the session ended (two replies in a row")
