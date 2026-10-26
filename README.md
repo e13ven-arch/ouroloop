@@ -2,58 +2,56 @@
 
 English | [中文](README.zh-CN.md)
 
-An engineering prototype of bounded recursive self-improvement (bounded RSI) for agent applications, built and measured on [AutomationBench](https://github.com/zapier/AutomationBench). The system is S = (W, R, E; K):
+A bounded self-improvement loop for business agents, built and measured on [AutomationBench](https://github.com/zapier/AutomationBench). An improver reads an agent's own run of a task, writes changes to the agent's harness package (tools, hooks, skills, prompts), tries them for real, and the platform decides what is installed — by evidence, never by a person. Everything the improver cannot touch is frozen: the scorer, the data splits, the gates, the budget. The system is S = (W, R, E; K):
 
 - **W**, the worker: an evolvable agent program (a versioned harness package that holds the loop itself, its tools, hooks, prompts, skills and memory), run by a fixed runner shell against a pinned model.
-- **R**, the improver: it reads train failures and writes package changes in a bounded coding session; its packages climb a verification ladder before a held-out screen decides whether they are installed.
-- **E**, the evidence: the permission-filtered record of attempts, screens and rounds, written by the host, never by the package.
+- **R**, the improver: a bounded coding session that reads one run, builds a package, and tries it on the same request before the host decides.
+- **E**, the evidence: the permission-filtered record of attempts, tries and adoptions, written by the host, never by the package.
 - **K**, the fixed core: scorer, splits, gates, permissions, budgets and per-attempt limits. R cannot change any of it.
 
-A change is installed only after it passes free checks (static, unit, tool check, hook replay), an in-sample trial on the failures it claims, and a screen on held-out train tasks whose flips are read twice. An effect is claimed only from a sealed final on the test split, under a plan committed before the first test attempt. The recursion is bounded: an update to R counts only when a downstream W\* comparison validates it ([design §7](docs/DESIGN.md)); that part has not been shown.
+Two loops exist. The first (stages 4b–4n) searched for packages that generalise across different workflows: a candidate climbed a verification ladder and was installed only when a held-out screen read more fixes than regressions, twice. The second (stages 4o–4p, the main line since 2026-10-22) follows how real work repeats: **the same request comes back**, and the agent should get it right the second time. Each task is met three times; after a first encounter that was sent back, R corrects the harness for that task from that run alone, and the later encounters run the task's own harness. What R learns is never a label: at most the one bit "accepted or sent back" per attempt, and the reviewer's rejected items (which message, which row — never the expected value).
 
-**Where it stands (2026-10-19).** Four sealed finals and a dozen measured activities on a subscription budget. The loop finds changes from train failures alone; the one significant gain is +13 points on Marketing (v0.1), the finance finals are +8 and +4 within noise. The later activities measured the noise floor of the benchmark (10–25% of tasks flip between two runs of the same package), rebuilt acceptance on confirmed flips and footprints, and have not yet produced a package that beats that floor on held-out tasks. The numbers are below, with what each one does and does not show.
+**Where it stands (2026-10-26).** The repetitive stream works and its limits are known. On 50 finance test tasks with the one-bit signal, the steady-state pass rate rose from 64% to 68% with zero regressions ($184, not significant). With the rejected items as the signal, R learned mechanisms by itself on train tasks — a hold that opens every source the run never read before the first write, a tool that derives a figure from the inputs read — in four independent sessions, with no word of them in its prompt; one task went 0.5 → 1.0 → 1.0, another reached its correct figure and held once the model ran at effort max. The remaining failures are documented: corrections in sources the agent never opened (now handled), ambiguities the thin signal cannot resolve, the world's clock not given to the agent, and a 10–17% noise floor of the benchmark itself. The numbers and what each shows are below.
 
 ## Results
 
-Each final tests claim C1, a same-model gain: it compares the evolved version W\* with the starting version W0 on held-out test tasks, under a plan sealed and committed before the first test attempt. The actor and R are Claude Opus 5.5 at effort medium through headless Claude Code, one level for every arm. Costs are nominal API-equivalent dollars on a subscription, not a bill.
+The actor and R are Claude Opus 5.5 through headless Claude Code, at one effort level for every arm (medium unless stated). Costs are nominal API-equivalent dollars on a subscription, not a bill. Every installed change came from the agent's own runs; no person chose it.
+
+**The repetitive stream (stages 4o–4p).** Each task is met three times. "First pass" is the first encounter on the base harness; "steady state" is the third encounter, on whatever the task adopted. Feedback: *one bit* = accepted or sent back, per attempt; *items* = the bit plus the rejected checks' kinds and objects, never a value.
+
+| Activity | Tasks | Feedback | First pass → steady state | What happened | Cost |
+|---|---|---|---|---|---|
+| finance-v16 (rehearsal) | 20 train | one bit | 15/20 → 18/20 | 5 sent back, 3 corrected and holding; the 15 accepted tasks untouched | $51 |
+| finance-v18 (**the number**) | 50 test | one bit | **32/50 (64%) → 34/50 (68%)**, +4.0 [−4.0, +12.0] | 18 sent back, 3 corrected and holding, no passing task lost to learning; the 15 unfixed: 7 wrong figure or tier, 6 wrong item scope, 2 wrong channel — R's candidates aimed elsewhere on 12 because one bit never says which item | $184 |
+| finance-v19 | 2 train | items | — | R wrote a tool for a tax estimate and the agent called it on every try; the arithmetic was right, the input lacked a rate change posted in a chat channel the agent never opened | $8 |
+| finance-v20 | 2 train | items | 0/2 → 2/2 | two independent sessions each built the same "unread sources" hold; the agent then read the channel and derived 13,162.5 and 105,792 from the corrected inputs; one task's third encounter flipped on mental arithmetic | $11 |
+| finance-v21, v22 | 1 train | items | 0/1 → 0/1 | the hold held, the tool came, the session chose the wrong reading of an ambiguous procedure; two of four tries lost to host defects since fixed | $10 |
+| finance-v24 (**effort max**) | 3 train | items | 1/3 → 2/3 | one session built the hold, the routing hold and the tool together and the task's steady state held at 105,792; another's accepted candidate was lost to the output cap (fixed since); the base passed a task it never passed at medium | $61 |
+| finance-v25 (effort max) | 10 test | items | 2/4 → 3/4 on the 4 tasks completed | stopped by the budget guard after 4 tasks: one improver call summed 400,793 input tokens against a 400,000 bound (the CLI's continuations resend the context) | $68 |
+
+What these runs show, in order: the one-bit rule installs only what was accepted, so nothing regresses; the bit alone cannot aim R at the wrong item; with the rejected items and an inventory of the world's sources, R finds the generic mechanisms on its own; at effort max it finds them in one session at five to seven times the cost. Per-task detail: [docs/JOURNAL.md](docs/JOURNAL.md) (entries of 2026-10-22 to 2026-10-25).
+
+**The held-out screen loop (stages 4b–4n): four sealed finals.** Each compared the evolved version W\* with the starting version W0 on held-out test tasks, under a plan sealed and committed before the first test attempt.
 
 | Version | Activity | W0 | W\* | Paired difference, 95% interval | Reading |
 |---|---|---|---|---|---|
-| v0.1 | Marketing, 23 test tasks × 2 | 41.3% | 54.3% | **+13.0** [+2.2, +26.1] | C1 supported |
+| v0.1 | Marketing, 23 test tasks × 2 | 41.3% | 54.3% | **+13.0** [+2.2, +26.1] | supported |
 | v0.2 | Marketing with the research slot, 23 × 2 | 47.8% | 52.2% | +4.3 [−10.9, +19.6] | inconclusive |
-| v0.3 | five domains, one shared package | — | — | no final: three rounds rejected on 125 dev tasks, nothing installed | — |
-| v0.4 | finance, 25 × 3 | 54.7% | 62.7% | +8.0 [−4.0, +22.7] | inconclusive; cost per attempt $0.482 → $0.378 (−22%, significant) |
-| v0.5 | support, v0.4 arm against v0.5 arm | — | — | no final: the comparison was stopped after the experience-library step | train/dev process evidence only |
-| finance-v2 to v4 | finance, 50 train / 25 dev; the first runs of the redesigned loop with a dev gate | — | — | no final: the dev gate rejected three times (gain 0, 0, −0.02), nothing installed | candidates passed the free rungs; cost per attempt −18%, significant; v4 $225 |
-| finance-v5 | finance, 50 × 3 on the two-way split; the v1.2 search loop, two rounds, one hook installed | 52.7% | 56.7% | +4.0 [−4.0, +12.7] | inconclusive; partial credit 0.870 → 0.877; cost per attempt +23% |
+| v0.4 | finance, 25 × 3 | 54.7% | 62.7% | +8.0 [−4.0, +22.7] | inconclusive; cost per attempt −22%, significant |
+| finance-v5 | finance, 50 × 3 on the two-way split | 52.7% | 56.7% | +4.0 [−4.0, +12.7] | inconclusive |
 
-Every installed change came from train failures alone; no person chose it. Gains read on dev or on the held-out screen are selected by the gate and are process records, never results.
-
-**The three-domain stream (no finals; finance's test split unread since finance-v5).** From finance-v6 on, the train halves of finance, hr and operations (150 tasks) run as one stream: each task is attempted once on the working line as it stands (its first encounter is its score), and the improver runs a round every 30 tasks.
-
-| Activity | Loop | First encounters | Outcome | Cost |
-|---|---|---|---|---|
-| finance-v6 | several packages a round, stacking, audit hooks, `seed_from`, the stream (stages 4d/4e) | 89/150 | one package installed in 5 rounds (a system-prompt change) | $199 |
-| finance-v7 | failures side by side, vocabulary causes, one-way audits with a rehearsal (4f/4g) | 90/150 | two packages installed in 5 rounds, both within the noise floor the run measured: 10–17% of tasks flip between two runs of one package | $335 |
-| finance-v8 | V2b false-trigger gate, flip confirmation, acceptance on confirmed counts, regression evidence and a frontier of partial packages (4h/4i) | 87/150 | no package installed in 5 rounds; one partial package on the frontier, its merge lost the fix | $261 |
-| hand-made package | not RSI: a person read the 63 failing train tasks, wrote one evidence-bearing hold package and screened it with the loop's own rule | — | 22 of 55 failing train tasks pass on one reading; held-out +5 fixes −3 regressions, twice, rejected under the zero-regression rule | $121 |
-| finance-v9 r0 | in-sample trial before the screen, regressions only where a component acted, fix evidence on the frontier (4j) | 87/150 (imported from v8) | R's hook passed the trial (1 of 3 tasks fixed) and the free rungs; on 60 held-out tasks confirmed 0 fixes, 0 regressions (6 of 7 first-reading flips had no footprint, 1 was noise), rejected | $48 |
-
-What these runs taught, in order: a single reading of a held-out screen installs noise, so a flip counts only when it repeats under the candidate and the working line agrees with itself; a package of tools and hooks is credited or blamed only on attempts where one of its components acted; a hook that passes the recorded-attempt replay can still change nothing live, and the replay itself gives a before_tool hook less than a live run does (the open defect in [docs/PLAN.md](docs/PLAN.md) §3). Per-activity detail, diagnoses and limits: [docs/RESULTS.md](docs/RESULTS.md) and [docs/JOURNAL.md](docs/JOURNAL.md).
-
-Test splits read so far: marketing 3 times, finance twice (v0.4 and finance-v5), support, sales and hr never. Operations has never been read and stays fully held out.
+After finance-v5, eight activities (finance-v6 to v13, about $1,150) measured the benchmark's noise floor (10–17% of tasks flip between two runs of one package), rebuilt acceptance on confirmed flips and footprints, and installed nothing that beat the floor. The diagnosis that changed the main line: AutomationBench's 150 train tasks are 150 distinct workflows — there is no repetition to learn from across them — while real work repeats the same pattern with other parameters. [docs/RESULTS.md](docs/RESULTS.md) has every activity with its diagnosis and limits.
 
 ## Status
 
-- **Released:** tag `v0.4.0`, the last evaluated version merged into `main`; earlier tags `v0.1.0` to `v0.3.0`. Everything after it is on `m1-automationbench` and unreleased.
-- **Design:** [docs/DESIGN.md](docs/DESIGN.md), v1.1 (2026-10-09) with the amendments §6.12 to §6.19 (v1.9). Tools and flow code are the main search surface, text is auxiliary, the loop may change but rarely, weights come second. The deliverable is a lightweight per-business harness package plus the runner shell and a model descriptor, with distillation as a second lever. The module designs and interfaces are in [docs/design/](docs/design/README.md).
-- **Stages 1 to 3 (2026-10-09):** the platform rebuilt to the design. `ouroloop/harness/` is the typed package (ten component kinds, manifest v3, the literal check, the vendored-upstream patch stack, the Stirrup seed with six hook sites); `runtime/` the gateway, broker, isolated worker, egress and runner shell; `evaluate/` the splits, attempts, the paired gate, the sealed final, the budget book and releases {W, R, K}; `activity/` config and presets to K, the phases, the startup checks (money, leakage, correctness only), the report and the CLI; `memory/` ReMe's task memory in a sidecar under the platform's rules; `improver/` the round as resumable steps: measure, diagnose into causes, allocate a component kind per cause, R's coding session in the worker, the ladder V0 static / V1 unit / V2a toolcheck / V2b hook replay / V2c reach / V2d audit rehearsal, V3 the held-out screen, install by compare-and-swap, the ledger and the playbook.
-- **Stage 4 (2026-10-10 to 2026-10-19):** the measured runs above and the loop changes they forced — one package per round with held-out acceptance accumulating on the working line (4b/4c), several packages a round, audit hooks and the stream (4d/4e), failures side by side and one-way audits (4f/4g), reproducible acceptance (4h), accumulation without regression (4i), the in-sample trial and regressions by footprint (4j). Each is a section of DESIGN §6 and a JOURNAL entry with its numbers.
-- **Next (waiting on the user, [docs/PLAN.md](docs/PLAN.md) §3):** fix V2b's replay so a before_tool hook sees the same view a live run gives it and a package's hooks replay together; then finance-v9's next round, or stage 4k (an evidence store and hold composer in the seed, so R writes evidence rules instead of infrastructure).
+- **Released:** tag `v0.4.0`, the last evaluated version merged into `main`; earlier tags `v0.1.0` to `v0.3.0`. Everything after it is on `m1-automationbench`.
+- **Design:** [docs/DESIGN.md](docs/DESIGN.md) v2.1 — the forward design of 2026-10-09 with the amendments each measured run forced (§6.12 to §6.24). The module designs and interfaces are in [docs/design/](docs/design/README.md).
+- **The platform:** `harness/` the typed package (ten component kinds, manifest v3, the literal check, the vendored-upstream patch stack, the Stirrup seed with six hook sites); `runtime/` the gateway, broker, isolated worker, egress and runner shell; `evaluate/` splits, attempts, the paired gate, the sealed final, the sealed repeat plan, the budget book and releases; `activity/` config and presets to K, the phases, the startup checks, the report and the CLI; `improver/` R's session and prompts, the verification ladder, the held-out screen, the per-task loop with its library; `memory/` ReMe's task memory in a sidecar.
+- **Open items ([docs/PLAN.md](docs/PLAN.md) §3):** the world's clock (`meta.current_time`) as environment information for the agent; the per-call input bound and the session's context budget at effort max; the improver's prompts into the frozen code hash; then a fuller max-effort sample on test.
 
 ## Quick start
 
-You need Python 3.11 or newer, on macOS or Linux (on Windows, use WSL).
+Python 3.11 or newer, macOS or Linux (on Windows, WSL).
 
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
@@ -62,60 +60,47 @@ pytest -q                                      # offline: no network, no model; 
 OUROLOOP_TEST_REQUIRE_DOCKER=1 OUROLOOP_TEST_REQUIRE_MEMORY=1 pytest -q -m "not live"   # the full run: Docker worker, upstream checkout, memory sidecar
 ```
 
-Then run a first activity with [examples/automationbench/quickstart.toml](examples/automationbench/quickstart.toml): finance on v0.4's split in a new workspace, `examples/automationbench/workspace-quickstart/`, with nothing frozen yet, so it touches no existing record. It needs the benchmark checkout (next section). The first command calls no model:
+The first activity to run is the repetitive stream on a few train tasks, [examples/automationbench/quickstart-repeat.toml](examples/automationbench/quickstart-repeat.toml): a new workspace, nothing frozen yet, no test task read. It needs the benchmark checkout and the worker image (next section). The first two commands call no model:
 
 ```bash
-ouroloop bench --config examples/automationbench/quickstart.toml --phase smoke --checks-only   # $0: splits, scorer contract, input audit, the seed's literals
-ouroloop bench --config examples/automationbench/quickstart.toml --phase smoke                 # one dev attempt, ~$0.5 nominal
-ouroloop freeze --config examples/automationbench/quickstart.toml                              # K, gate template, budget root; prints the [rsi] lines to add
-ouroloop bench --config examples/automationbench/quickstart.toml --phase cycle --until baseline   # W0 on train and dev, ~$58 nominal
+ouroloop bench --config examples/automationbench/quickstart-repeat.toml --phase smoke --checks-only   # $0: splits, scorer contract, input audit, the seed's literals
+ouroloop freeze --config examples/automationbench/quickstart-repeat.toml                              # $0: K, the budget root, the sealed repeat plan; prints the [rsi] lines to add
+ouroloop bench --config examples/automationbench/quickstart-repeat.toml --phase repeat --arm learn    # 5 train tasks x 3 encounters, R's session on each sent-back one: ~$15-25 nominal
+ouroloop bench --config examples/automationbench/quickstart-repeat.toml --phase report                # $0
 ```
 
-The config's header lists the stages that follow and what each costs. The file has no `[final]` on purpose: a final reads finance's test split, which two finals have already read.
+[quickstart.toml](examples/automationbench/quickstart.toml) is the older entry point: the batch activity with the memory library and the improver's rounds under the held-out screen.
 
 ## Run on AutomationBench
 
-AutomationBench simulates business workflows across 47 SaaS tools. It scores the world state that the agent's tools leave behind. The agent receives the task prompt and the tool schemas; the assertions and the seeded state stay in an object it never receives.
+AutomationBench simulates business workflows across 47 SaaS tools and scores the world state the agent's tools leave behind. The agent receives the task prompt and the tool schemas; the assertions and the seeded state stay in an object it never receives.
 
 ouroloop imports the benchmark lazily. Clone it and point `[bench] upstream_path` at the checkout; [examples/automationbench/README.md](examples/automationbench/README.md) lists what to install. A local score on the public task set is not a leaderboard score.
 
-**Model.** The actor (`[model]`) and R (`[research_model]`) use `type = "claude_code"`.
-- Each call is a fresh headless `claude -p` on this machine's Claude subscription login (`claude auth login`), in an empty directory, with no tools and no local customization.
-- Tool calls come back as structured JSON output, not native tool use.
-- The startup check refuses a login that is not a subscription, and a table without `effort`.
-- The measured configs pin `claude-opus-5-5` at effort medium, one level for every arm.
+**Model.** The actor (`[model]`) and R (`[research_model]`) use `type = "claude_code"`: each call is a fresh headless `claude -p` on this machine's Claude subscription login (`claude auth login`), in an empty directory, with no tools and no local customization; tool calls come back as structured JSON. The startup check refuses a login that is not a subscription and a table without `effort`. The measured configs pin `claude-opus-5-5`; the preset caps the effort at medium, and `automationbench_v2_max` lifts both arms to max for the experiment above. The `openai_compat` and `anthropic` providers also exist; no reported result uses them.
 
-The `openai_compat` and `anthropic` providers also exist; no reported result uses them.
-
-**Package code** runs only in the isolated worker image (the runner and the Stirrup seed's dependencies, pinned by hash); an activity's K pins the image by id:
+**Package code** runs only in the isolated worker image, pinned by id in an activity's K:
 
 ```bash
 docker build --provenance=false -f docker/worker.Dockerfile -t ouroloop-worker:py3.12 .
 ```
 
-**Commands.** An activity runs in phases, and you stop after each one to read it. Every paid phase is resumable and pays for nothing on record twice; every one stops at the activity's budget root, in notional dollars.
+**Commands.** An activity runs in phases; you stop after each one and read it. Every paid phase is resumable and pays for nothing on record twice; every one stops at the activity's budget root.
 
 | Command | What it does |
 |---|---|
 | `ouroloop bench --config <cfg> --phase smoke --checks-only` | upstream identity, the frozen split, scorer contract, input audit, the seed's literal scan; no model call |
-| `ouroloop bench --config <cfg> --phase smoke` | the same checks, then one dev attempt end to end |
-| `ouroloop freeze --config <cfg>` | K, the gate template and the budget root (and, after a release, the final plan from `[final]`); prints the `[rsi]` lines to add |
-| `ouroloop bench --config <cfg> --phase baseline` | W0 on train and on dev `control_readings` times; `[rsi] baseline_from` imports another workspace's readings of the same attempt identity first, unpaid |
-| `ouroloop bench --config <cfg> --phase library` | the memory's train stream and its snapshot as a candidate (needs `python -m ouroloop.memory setup`) |
-| `ouroloop bench --config <cfg> --phase round --round K` | one round of the improver on the working line's train reading |
-| `ouroloop bench --config <cfg> --phase stream [--until batch-K]` | the streaming loop: first encounters a batch at a time, a round after each batch |
-| `ouroloop bench --config <cfg> --phase gate` / `--phase release` | the release gate on dev at the end of the activity, or the release by decision when the split has no dev |
-| `ouroloop bench --config <cfg> --phase evaluate` | the sealed final on the test split; only after a release, with the plan hash committed |
+| `ouroloop bench --config <cfg> --phase smoke` | the same checks, then one attempt end to end |
+| `ouroloop freeze --config <cfg>` | K, the budget root, the gate template, and the sealed plans (`[final]`, `[repeat]`); prints the `[rsi]` lines to add |
+| `ouroloop bench --config <cfg> --phase repeat --arm learn\|control [--until task-K]` | the repetitive stream: every task of the sealed plan met `encounters` times; the learn arm adopts a package per sent-back task, the control arm runs the base every time |
+| `ouroloop bench --config <cfg> --phase baseline` / `--phase round --round K` / `--phase stream` | the held-out screen loop: W0's readings, one improver round, or the streaming loop |
+| `ouroloop bench --config <cfg> --phase gate` / `--phase release` / `--phase evaluate` | the release gate, the release by decision, the sealed final on the test split |
 | `ouroloop bench --config <cfg> --phase report` | the report from the records on disk; no model call |
-| `ouroloop bench --config <cfg> --phase cycle --until baseline\|library\|round-K\|gate` | the batch phases in order, stopping where told |
 | `ouroloop export --config <cfg> --to exported-app` | an installed release as an app |
-| `python -m ouroloop.train decide \| smoke --jev \| host init \| host check` | the optional training stack: one decision from a backend, a backend smoke, a training host ([docs/TRAINING_HOSTS.md](docs/TRAINING_HOSTS.md)) |
 
-**Configs.** A config names a preset (`[harness] preset`) and may only tighten it; the tables are listed in [docs/design/CONTRACTS.md](docs/design/CONTRACTS.md) §9.
-- `quickstart.toml` is the template for a new activity; `finance-v5.toml` to `finance-v9.toml` are the measured activities of stage 4, each header listing its steps and costs.
-- Their workspaces hold local, git-ignored run records. Workspaces from before stage 1 are re-rendered or resumed at their tags (`v0.4.0`, `archive-2026-10-08`), not at HEAD.
+**Configs.** A config names a preset (`[harness] preset`) and may only tighten it; the tables are listed in [docs/design/CONTRACTS.md](docs/design/CONTRACTS.md) §9 and the `[repeat]` table in [docs/design/EVALUATE.md](docs/design/EVALUATE.md) §6b. `finance-v14.toml` to `finance-v25.toml` are the measured activities of stages 4o–4p, each header listing its steps, costs and what it was for; `finance-v5.toml` to `finance-v13.toml` the held-out screen loop. Their workspaces hold local, git-ignored run records.
 
-For another domain, copy `quickstart.toml`. Change `[bench] domain` (or `domains`) and the `[bench.frozen_splits]` pin: use the hash an earlier workspace froze for that domain, or remove the pin for a fresh split. Give the copy a new `[workspace] root` and `[rsi] scope_id`.
+For another domain, copy a quickstart. Change `[bench] domain`, give the copy a new `[workspace] root` and `[rsi] scope_id`, and keep `[repeat] split = "train"` until a plan for the test split is sealed and committed.
 
 ## Code layout
 
@@ -123,26 +108,25 @@ For another domain, copy `quickstart.toml`. Change `[bench] domain` (or `domains
 |---|---|
 | `ouroloop/contracts.py` | identity and the content-addressed object store, events, the file helpers, the error classes |
 | `ouroloop/harness/` | the harness package: component kinds, manifest v3, shape and literal checks, the vendored-upstream patch stack, the seeds (`seeds/stirrup/`: Stirrup 0.2.0, its adapter, the write guard, `plan_changes`) |
-| `ouroloop/runtime/` | one attempt: the gateway, the broker, the worker and its runner protocol, egress, the runner shell, the trace, the exported app |
-| `ouroloop/evaluate/` | splits, hard limits, attempts and results, the paired gate, the sealed final, the budget book and metering, releases {W, R, K}, the model binding |
-| `ouroloop/improver/` | the round: evidence, diagnosis, allocation, R's session and prompts, the verification ladder (`verify/`), the held-out screen, the trial, the frontier, the ledger and the playbook |
-| `ouroloop/memory/` | the memory component: the ReMe sidecar, its bridge and rules, the train stream's write path, retrieval, snapshots |
+| `ouroloop/runtime/` | one attempt: the gateway, the broker, the worker and its runner protocol, egress, the runner shell, the trace |
+| `ouroloop/evaluate/` | splits, hard limits, attempts and results, the paired gate, the sealed final, the sealed repeat plan (`repeat.py`), the budget book and metering, releases |
+| `ouroloop/improver/` | R's session and prompts (`prompts/repeat.md` for the per-task loop, `propose.md` for rounds), the per-task loop and its library (`repeat.py`), the verification ladder (`verify/`), the held-out screen, the trial, the frontier, the ledger |
+| `ouroloop/memory/` | the memory component: the ReMe sidecar, its bridge and rules, retrieval, snapshots |
 | `ouroloop/activity/` | config and presets to K, the workspace, the phases, the startup checks, the report, the `ouroloop` CLI |
-| `ouroloop/adapters/automationbench.py` | tasks, business tools, the official scorer (imports nothing of the framework) |
+| `ouroloop/adapters/automationbench.py` | tasks, business tools, the official scorer, the rejected-items and world-sources views (imports nothing of the framework) |
 | `ouroloop/providers/` | `claude_code`, `openai_compat`, `anthropic` |
-| `ouroloop/train/` (extra `[train]`) | the training and decision stack, off the benchmark path: decision contracts, labels and datasets, `train_artifact`, backends (Jev, TDE, LLM), model stores and serving, trainer plugins, StopGuard, `python -m ouroloop.train` |
-| `ouroloop/train/jobs/` (extra `[train-jobs]`) | training jobs on this machine, on a host over ssh, or on a RunPod or Vast.ai instance; host setup scripts and the training-host image |
+| `ouroloop/train/` (extra `[train]`) | the training and decision stack, off the benchmark path |
 
 ## Documents
 
 The design documents are in Chinese.
 
-- [docs/DESIGN.md](docs/DESIGN.md): the architecture (v1.9): responsibilities, which layer changes, the typed harness, the agent seed, memory, the improver, training, the platform, code layout, stages, and the amendments each measured run forced (§6.12 to §6.19).
-- [docs/PLAN.md](docs/PLAN.md): where things stand, the rules, the next stages, and what waits for the user. Start here.
+- [docs/DESIGN.md](docs/DESIGN.md): the architecture (v2.1) and the amendments each measured run forced; §6.23 the repetitive stream, §6.24 the rejected items, the world's sources and R building tools.
+- [docs/PLAN.md](docs/PLAN.md): where things stand, the rules, the stages, and what waits for the user. Start here.
 - [docs/RESULTS.md](docs/RESULTS.md) and [docs/JOURNAL.md](docs/JOURNAL.md): the results, and a log of every change and run with its numbers, newest first.
-- [docs/design/](docs/design/README.md): the module designs and interfaces, and the v2 training chain; [docs/history/](docs/history/): the pre-registered plans and analyses of measured activities, the failure analysis behind the hand-made package, and the framework survey.
+- [docs/design/](docs/design/README.md): the module designs and interfaces; [docs/history/](docs/history/): pre-registered plans, analyses, the framework survey and announcement drafts.
 
-Every file deleted on 2026-10-08, in the cleanup and in slimming batch 1, is still readable at tag `archive-2026-10-08`; the code and documents stage 1 replaced are at tag `archive-2026-10-09`.
+Files removed in the cleanups of 2026-10-08 and 2026-10-09 are readable at tags `archive-2026-10-08` and `archive-2026-10-09`.
 
 ## License
 

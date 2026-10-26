@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ouroloop"
-version = "0.3.0"
-description = "Bounded recursive self-improvement for agent applications: a research policy evolves the agent's capability package under a fixed core, and a change installs only through a paired gate"
+version = "0.5.0"
+description = "A bounded self-improvement loop for business agents: an improver corrects the agent's harness package from the agent's own runs, under a fixed core, and only what a real try got accepted is adopted"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

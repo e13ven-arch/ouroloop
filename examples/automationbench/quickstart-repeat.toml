@@ -1,0 +1,90 @@
+# Quick start: the repetitive stream (docs/DESIGN.md v2.1 §6.23-6.24; docs/design/EVALUATE.md §6b) on five finance
+# TRAIN tasks in a new workspace. Each task is met three times: the first encounter runs the base harness; a task that
+# was sent back gets the improver's session — it reads that run and the reviewer's rejected items (the failed checks'
+# kinds and objects, never a value), builds a package, tries it on the same request, and the accepted try is adopted
+# for the task; the later encounters run the task's own harness. Nothing here reads a test task.
+#
+# Run in stages and stop after each one. Costs are nominal API-equivalent dollars on the Claude subscription at effort
+# medium; the first two steps call no model.
+#   1  `ouroloop bench --config examples/automationbench/quickstart-repeat.toml --phase smoke --checks-only`
+#      upstream identity, the frozen split, scorer contract, input audit, the seed's literal scan              $0
+#   2  `ouroloop freeze --config examples/automationbench/quickstart-repeat.toml`: K, the budget root and the sealed
+#      repeat plan; prints the [rsi] lines (core_ref, split_ref, repeat_plan_ref) to add below                  $0
+#   3  `... --phase repeat --arm learn`: 5 tasks x 3 encounters, the improver's session on each sent-back task
+#      (about $3-6 a sent-back task, $1-2 an accepted one)                                                 ~$15-25
+#   4  `... --phase report`                                                                                    $0
+#   Then `--arm control` (the base three times, about $8) if you want the paired difference against no learning.
+#
+# Paid steps need the subscription login (`claude auth login`) and the worker image
+# (`docker build --provenance=false -f docker/worker.Dockerfile -t ouroloop-worker:py3.12 .`). The benchmark checkout
+# is [bench] upstream_path (examples/automationbench/README.md).
+
+[workspace]
+root = "workspace-quickstart-repeat"
+
+[bench]
+domain = "finance"
+upstream_path = "~/workspace/AutomationBench"
+split_rule = "stratified"
+seed = 1
+concurrency = 4
+ratios = { train = 0.5, dev = 0.0, test = 0.5 }
+
+[model]
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "medium"
+max_tokens = 32000
+timeout = 600
+
+[research_model]
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "medium"
+max_tokens = 32000
+timeout = 900
+
+[pricing]
+input_per_1k = 0.004
+cache_read_per_1k = 0.0002
+cache_write_per_1k = 0.008
+output_per_1k = 0.02
+max_input_tokens = 400000
+max_output_tokens = 163840
+source = "notional, not a bill: claude-opus-5-5 API list price ($4/$20 per M, cache read $0.20, 1h cache write $8)"
+
+[harness]
+preset = "automationbench_v2"
+seed = "stirrup"
+
+[worker]
+network = "none"
+
+[memory]
+enabled = false
+
+[schedule]
+rounds = 1
+patience = 1
+stream_batch = 30
+stream_splits = ["train"]
+
+[budget]
+usd = 100.0
+
+[final]
+repeats = 3
+
+[improver]
+packages_per_round = 2
+
+[repeat]
+encounters = 3          # each task met three times: the base, then the task's own harness twice
+split = "train"         # train only: a test plan is a planned activity whose plan hash is committed first (PLAN rule 6)
+max_tasks = 5           # the first five train tasks of the stream's order
+max_probes = 4          # the improver's extra executions a task, at most
+feedback = "items"      # the bit per attempt plus what each rejected run was sent back for (kinds and objects, no values)
+concurrency = 4         # tasks in parallel (a machine setting, not in the plan)
+
+[rsi]
+scope_id = "quickstart-repeat"
