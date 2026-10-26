@@ -1,0 +1,31 @@
+{
+ "api_version": "harness_package.v3",
+ "agent": {"entrypoint": "agent/stirrup_agent.py:run", "roles": ["act", "aux"]},
+ "vendor": [{"name": "stirrup", "provenance": "vendor/stirrup/PROVENANCE.json"}],
+ "tools": [
+  {"name": "plan_changes",
+   "description": "Record your plan before you change anything: every change the request requires (one entry per record to create or update and per message, each recipient named, values copied verbatim from the source) with its status, and in excluded every entity or item that must not be changed, contacted or mentioned. Call it again, once a turn, to update the statuses as you go. It changes nothing in the world.",
+   "input_schema": {"type": "object",
+                    "properties": {"changes": {"type": "array", "description": "Every change the request requires.",
+                                               "items": {"type": "object",
+                                                         "properties": {"content": {"type": "string"},
+                                                                        "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]}},
+                                                         "required": ["content", "status"], "additionalProperties": false}},
+                                   "excluded": {"type": "array", "items": {"type": "string"},
+                                                "description": "Every entity or item that must not be changed, contacted or mentioned."}},
+                    "required": ["changes", "excluded"], "additionalProperties": false},
+   "entrypoint": "tools/plan_changes.py:run", "writes": false}
+ ],
+ "hooks": [
+  {"name": "ledger", "site": "after_tool", "entrypoint": "middlewares/write_guard.py:ledger"},
+  {"name": "triage", "site": "before_tool", "entrypoint": "middlewares/write_guard.py:triage"},
+  {"name": "anchor", "site": "before_model", "entrypoint": "middlewares/write_guard.py:anchor"},
+  {"name": "verify", "site": "on_finish", "entrypoint": "middlewares/write_guard.py:verify"}
+ ],
+ "prompt": {"system": "prompt/system.md", "finish": "prompt/finish.md"},
+ "skills": [],
+ "memory": {"enabled": false},
+ "model": {"base": "", "effort": "medium", "artifact_ref": null},
+ "config": {"max_turns": 50, "summarize_at": 0.7, "shown_k": 2, "subagent_depth": 1},
+ "tests": ["tests/test_stirrup_adapter.py", "tests/test_write_guard.py"]
+}

@@ -1,0 +1,94 @@
+# finance-v23: stage 4p, fifth cut (docs/DESIGN.md v2.1 §6.24; docs/JOURNAL.md 2026-10-24) — finance-v22 again (a hook's own read-only calls no longer count as the agent reading a source) on the
+# one task whose steady state was fragile: quarterly_tax_estimate (v20: R built the unread-source hold, the agent read
+# the channel, then computed the blended estimate right on one encounter and wrong on the other). What changes: the
+# improver is told to harden an accepted derived value — copy the accepted package into package-2, add the tool that
+# derives the value from the inputs read, try it once, declare it last (the last accepted candidate is adopted). Pass:
+# the adopted package holds the tool, both later encounters pass with 105,792. The seed is unchanged.
+#   1  `... bench --config examples/automationbench/finance-v21.toml --phase smoke --checks-only`                $0
+#   2  `... freeze --config ...`; add the printed [rsi] lines (core_ref, split_ref, repeat_plan_ref) and commit    $0
+#   3  `... bench --config ... --phase repeat --arm learn` (1 task: 3 encounters + up to 4 probes + R, about $5).
+#      Approved in chat first (PLAN rule 3).
+#   4  `... bench --config ... --phase report`
+
+[workspace]
+root = "workspace-finance-v23"
+
+[bench]
+domain = "finance"
+upstream_path = "~/workspace/AutomationBench"
+split_rule = "stratified"
+seed = 1
+concurrency = 8
+ratios = { train = 0.5, dev = 0.0, test = 0.5 }
+
+[model]
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "medium"
+max_tokens = 32000
+timeout = 600
+
+[research_model]
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "medium"
+max_tokens = 32000
+timeout = 900
+
+[pricing]
+input_per_1k = 0.004
+cache_read_per_1k = 0.0002
+cache_write_per_1k = 0.008
+output_per_1k = 0.02
+max_input_tokens = 400000
+max_output_tokens = 163840
+source = "notional, not a bill: claude-opus-5-5 API list price ($4/$20 per M, cache read $0.20, 1h cache write $8)"
+
+[harness]
+preset = "automationbench_v2"
+seed = "stirrup"
+
+[worker]
+network = "none"
+image_id = "sha256:e070208dbddc713a9993f6700ab15a0455d44d2f6885f47dafc2f4bfd4436f30"
+
+[memory]
+enabled = false
+
+[schedule]
+rounds = 1
+patience = 1
+stream_batch = 30
+stream_splits = ["train"]
+
+[budget]
+usd = 1000.0
+
+[final]
+repeats = 3
+
+[improver]
+packages_per_round = 2      # v1.10: candidates/package/ invariant, candidates/package-2/ domain (DESIGN §6.20)
+accept_max_regressions = 3  # v1.12 (DESIGN §6.22): net-positive installs, the regressions go to the frontier
+accept_floor_tolerance = 3
+l5_per_round = 3
+trial_max_tasks = 3         # the host's trial after finish, per package; R's own tries share trial_max_attempts (40)
+
+[repeat]
+encounters = 3          # each task met three times: the base, then the task's own harness twice
+split = "train"         # the focused run stays on train: test is for the sealed number only
+tasks = ["finance.quarterly_tax_estimate"]
+max_probes = 4          # the learn arm's extra executions a task, at most
+feedback = "items"      # the bit per attempt and what each rejected run was sent back for (kinds and objects, no values)
+concurrency = 1
+arms = ["learn"]        # no control arm in the focused run
+
+[rsi]
+scope_id = "finance-v23"
+seed_from = "workspace-finance-v9"
+seed_line = "working"
+# frozen 2026-10-24: the seed is finance-v9's working line; the finance two-way split; the repeat plan: the one named
+# train task x 3 encounters, the learn arm, feedback items — sealed before any attempt
+core_ref = "core:sha256:3477a35ab51baf1446db49dde734587bec30e54f044d5c45d5ec7e6930f77c4f"
+split_ref = "3b959d143f9d8468"
+repeat_plan_ref = "repeat_plan:sha256:2d156aca3979fd9d75a34adf40bdadde24a03dc5fffa5eb8240c6a9ffdd8bbda"

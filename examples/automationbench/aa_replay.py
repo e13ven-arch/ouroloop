@@ -39,12 +39,13 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent.parent))
 
-from ouroloop.benchmark import Results, SplitManifest, TaskResult, pair_key  # noqa: E402
-from ouroloop.evolve.task_gate import GatePlan, TaskEvalPlan, judge  # noqa: E402
+from reharness.evaluate.gate import GatePlan, TaskEvalPlan, judge  # noqa: E402
+from reharness.evaluate.results import Results, TaskResult, pair_key  # noqa: E402
+from reharness.evaluate.splits import SplitManifest  # noqa: E402
 
 DOMAIN = "marketing"
 WORKSPACES = (HERE / "workspace-claude", HERE / "workspace-claude-full", HERE / "workspace-claude-full-final")
-# The v3 preset's gate (bench.PRESETS["automationbench_harness_v3"]["task_plan"]["gate"]) less the cost term, which
+# The v3 preset's gate (now activity/presets.py automationbench_v1's [gate]) less the cost term, which
 # the exit condition does not name; `min_groups` 5 is far under the 25 single-task families of Marketing.
 NEW_RULE = GatePlan(min_gain=0.05, min_groups=5, max_regression_rate=0.1, regression_drop=0.5,
                     bootstrap_replicates=200)
@@ -107,7 +108,7 @@ def under(plan: TaskEvalPlan, rows: list[TaskResult]) -> list[TaskResult]:
 def replay(readings: list[list[TaskResult]], families: dict, tasks: list[str], *, gate: GatePlan = NEW_RULE,
            old_gate: GatePlan = OLD_RULE, cost_gate: GatePlan | None = WITH_COST) -> dict:
     """Every directional pair of readings under the new rule and the old one. -> the counts and each pair's numbers."""
-    plan = TaskEvalPlan(candidate_ref="policyset:sha256:" + "a" * 64, control_ref="policyset:sha256:" + "a" * 64,
+    plan = TaskEvalPlan(candidate_ref="package:sha256:" + "a" * 64, control_ref="package:sha256:" + "a" * 64,
                         core_ref="core:sha256:" + "0" * 64, split_ref="aa", task_ids=tuple(tasks), repeats=1,
                         gate_plan=gate.to_json(), control_pooling="pooled", confirmation_repeats=1)
     old_plan = TaskEvalPlan.from_json({**{k: v for k, v in plan.to_json().items() if k != "ref"},

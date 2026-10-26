@@ -1,0 +1,87 @@
+# Quick start: a new single-domain activity on finance in its own workspace, under the automationbench_v1 preset
+# (docs/design/CONTRACTS.md §9, docs/design/ACTIVITY.md §4). Everything it writes goes under
+# examples/automationbench/workspace-quickstart/ (git-ignored); it touches no existing run record.
+#
+# Run in stages and stop after each one (docs/PLAN.md rule 5). Costs are nominal API-equivalent dollars on the Claude
+# subscription; the first step calls no model.
+#   1  `reharness bench --config examples/automationbench/quickstart.toml --phase smoke --checks-only`
+#      upstream identity, the frozen split (must print hash 4fd91eaf9fb8daf5), scorer contract, input audit, the
+#      seed's literal scan                                                                                         $0
+#   2  `... --phase smoke`: one dev attempt end to end through the runner shell (needs the worker image)        ~$0.5
+#   3  `reharness freeze --config examples/automationbench/quickstart.toml`: K, the gate template and the budget root;
+#      prints the [rsi] lines (scope_id, core_ref, split_ref) to add below                                          $0
+#   4  `... --phase cycle --until baseline`: W0 on train 50 + dev 25 x 2 readings                                ~$58
+#   5  `... --phase cycle --until library`: the memory's stream over train 50 (first encounters, retries of the
+#      failed ones, ReMe's summaries through the metered bridge); needs `python -m reharness.memory setup`  ~$50-100
+#   The improver's rounds (stage 3) come with its package.
+#
+# No [final] table here, on purpose: a sealed final reads finance's test split, which v0.4's final read once
+# (docs/PLAN.md §0.1); a final belongs to a planned activity whose plan hash is committed before its first test attempt
+# (PLAN rule 6). Paid steps need the subscription login (`claude auth login`) and the worker image
+# (`docker build --provenance=false -f docker/worker.Dockerfile -t reharness-worker:py3.12 .`).
+
+[workspace]
+root = "workspace-quickstart"
+
+[bench]
+domain = "finance"
+upstream_path = "~/workspace/AutomationBench"
+split_rule = "stratified"
+seed = 1
+concurrency = 8                 # attempts in flight; a machine setting, part of no plan
+smoke_tasks = 1
+
+[bench.frozen_splits]
+finance = "4fd91eaf9fb8daf5"    # the stratified split workspace-claude-v3 froze: the 50 train and 25 dev tasks of v0.4
+
+[limits]                        # the preset's five hard limits of one attempt; a config may only lower them
+max_steps = 50
+max_model_calls = 200
+max_tool_calls = 200
+max_seconds = 900
+max_tokens = 400000
+
+[model]                         # the actor: Claude Opus 5.5 through headless Claude Code, at effort medium (rule 10)
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "medium"
+max_tokens = 32000
+timeout = 600
+
+[research_model]
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "medium"
+max_tokens = 32000
+timeout = 900
+
+[pricing]
+input_per_1k = 0.004
+cache_read_per_1k = 0.0002
+cache_write_per_1k = 0.008
+output_per_1k = 0.02
+max_input_tokens = 1000000
+max_output_tokens = 163840
+source = "notional, not a bill: claude-opus-5-5 API list price ($4/$20 per M, cache read $0.20, 1h cache write $8)"
+
+[harness]
+preset = "automationbench_v1"
+seed = "stirrup"
+
+[worker]
+network = "none"
+
+[memory]
+enabled = true                  # the library phase (docs/design/MEMORY.md); false runs no memory stream
+
+[schedule]
+rounds = 3
+patience = 2
+
+[budget]
+usd = 450.0                     # the activity's hard stop in notional dollars, fixed when the root opens
+final_usd = 160.0               # set aside from the start; unused without a final
+
+[rsi]
+scope_id = "finance-quickstart"
+# core_ref / split_ref: add the lines `reharness freeze` prints (step 3).

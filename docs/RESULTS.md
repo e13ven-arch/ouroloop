@@ -2,7 +2,7 @@
 
 ## Summary
 
-Three sealed finals so far. In each, an automatically evolved version W\* was measured against the same starting version W0 on a held-out test split, under a plan sealed and committed before any test task was run: v0.1 and v0.2 on Marketing (23 tasks × 2 runs), v0.4 on finance (25 tasks × 3 runs). v0.3 and v0.5 have no final.
+Four sealed finals so far. In each, an automatically evolved version W\* was measured against the same starting version W0 on a held-out test split, under a plan sealed and committed before any test task was run: v0.1 and v0.2 on Marketing (23 tasks × 2 runs), v0.4 on finance (25 tasks × 3 runs), finance-v5 on finance (50 tasks × 3 runs, the two-way split). v0.3 and v0.5 have no final.
 
 | Activity | W0 on test | W\* on test | Paired difference, 95% interval | Verdict |
 |---|---|---|---|---|
@@ -12,12 +12,57 @@ Three sealed finals so far. In each, an automatically evolved version W\* was me
 | v0.3 (five domains, one shared package) | — | — | — | No final: no change was installed, so by the rule fixed before the run none was run; the new domains' test split is unread |
 | v0.4 (finance, one single-domain activity) | 54.7% | 62.7% | **+8.0** [−4.0, +22.7] | C1 inconclusive; cost per attempt −22%, significant |
 | v0.5 (support, the v0.5 framework against v0.4's in two arms) | — | — | — | No final: the user stopped the comparison on 2026-10-08 after both baselines and the experience-library phase; H1 and C1 are untested and support's test split is unread |
+| finance-v5 (finance, the v1.2 search loop: two rounds, one accepted hook; the two-way split, no dev) | 52.7% (25/50 pass all three repeats) | 56.7% (26/50) | **+4.0** [−4.0, +12.7] | C1 inconclusive; partial credit 0.870 → 0.877; cost per attempt +23% |
+| finance-v6 (finance + hr + operations train as one stream of 150 tasks, 5 rounds; seeded from v5's W\*) | — | — | — | No final (the user, 2026-10-12): first encounters 89/150 (59.3%), one package installed in 5 rounds; finance's test split unread |
+| finance-v7 (the same stream under stages 4f and 4g; seeded from v6's working head) | — | — | — | No final (the user, 2026-10-13): first encounters 90/150 (60.0%), two packages installed in 5 rounds, both within the noise floor the run measured (10–17% of tasks flip between two runs of one package) and one a defective hook; the acceptance rule is tightened in v1.7 (docs/JOURNAL.md 2026-10-13) |
+| finance-v8 (the same stream under stages 4h and 4i: the V2b false-trigger gate, flip confirmation, acceptance on confirmed counts, regression evidence and a frontier of partial packages; seeded from v6's working head) | — | — | — | No final (the user, 2026-10-13): first encounters 87/150 (58.0%), no package installed in 5 rounds; one partial package on the frontier, its conditioned merge lost the fix; $261; finance's test split unread |
+| hand-made package (not RSI: a person read the 63 failing train tasks of finance-v8, wrote one evidence-bearing hold package and screened it with the loop's own rule, in v8's workspace) | — | — | — | No final: 22 of 55 failing train tasks pass on one reading (partial credit 0.602 → 0.777); the held-out screen read +5 confirmed fixes and −3 confirmed regressions twice (v2, v3), rejected under the zero-regression rule; $121 |
+| finance-v9 r0 (stage 4j: the in-sample trial before the screen, regressions only where a component acted, fix evidence on the frontier; one batch round over finance-v8's 150 first encounters, imported) | — | — | — | No final: R's after_tool hook passed the trial (1 of 3 tasks fixed) and the free rungs; on the 60 held-out tasks 33 against W's 34, confirmed 0 fixes and 0 regressions (6 of 7 first-reading flips had no footprint, 1 was noise), rejected; $48.21 |
+| finance-v18 (the repetitive stream, stage 4o: 50 finance test tasks met three times; after a sent-back first encounter the improver corrects the harness for that task from that run and the per-attempt accepted-or-sent-back bit; the plan sealed before the first test attempt) | first pass 32/50 (64%) | steady state 34/50 (68%) | **+4.0** [-4.0, +12.0] (third encounter against the first, 50 families) | inconclusive; 3 of 18 sent-back tasks corrected and holding, no passing task lost to learning; $184. The focused runs that followed (finance-v19 to v25: rejected items as feedback, R building the unread-source hold and derived-value tools, effort max) are in the section below |
 
 What this says: in all three finals the loop found changes from training failures alone that raised the held-out score, by +13, +4 and +8 points. Only the first was large enough for 23–25 test tasks to call significant; the three estimates agree with each other within the noise. v0.4's change also made each attempt 22% cheaper, which is significant on its own. The recursive part, R improving its own research prompts (C4), has not been shown: in v0.2's research slot neither R0 nor the R1 it proposed added anything to W\*, so there was nothing to compare. v0.3 and v0.5 add no held-out number and change none of the rows above. Over five domains with one shared package, v0.3 passed no change through the dev gate in three rounds. v0.5's two-arm comparison on support was stopped before any final, so its numbers are train and dev process evidence only.
 
+## The repetitive stream: per-task adoption (stages 4o-4p, 2026-10-22 to 2026-10-25)
+
+The main line since 2026-10-22 (DESIGN v2.0-2.1 §6.23-6.24). Each task of the sealed plan is met three times. The first encounter runs the base harness and is the first-pass reading. A task that was sent back gets the improver's session: it reads that run (no score), builds a candidate package, tries it on the same request for real, and the candidate whose try was accepted is adopted for the task; the later encounters run the task's own harness and give the steady-state reading. The improver never sees a label: with `feedback = "attempts"` it is told, per attempt, whether the run was accepted; with `feedback = "items"` it is also told the rejected checks' kinds and objects (the message, the channel, the row), never an expected value. The seed harness is finance-v9's working line in every activity; the actor and the improver are Claude Opus 5.5 at effort medium unless stated.
+
+| Activity | Split and tasks | Feedback | First pass -> steady state | Adopted / sent back | Cost |
+|---|---|---|---|---|---|
+| finance-v14 (rehearsal, no feedback) | 7 train | none | stopped after 7 | the improver fixed only visible breakage (1 of 3 failing tasks); the composer adopted on passing tasks too | $32 |
+| finance-v15 (rehearsal) | 3 train | outcome (the first encounter's bit) | — | the label-free composer judged both probes wrong (adopted a 0.7 run, rejected a 1.0 run): the per-attempt bit replaced it | $10 |
+| finance-v16 (rehearsal) | 20 train | one bit per attempt | 15/20 -> 18/20 | 3 of 5 sent-back tasks corrected and holding on the third encounter; the 15 accepted tasks untouched | $51 |
+| **finance-v18** | **50 test** | one bit per attempt | **32/50 (64%) -> 32/50 -> 34/50 (68%)**; learn:e3-e1 +4.0 points [-4.0, +12.0] over 50 families | 3 adopted of 18 sent back, all three holding; no passing task lost to learning (4 of 32 flipped on the base at e2, 3 back at e3: the noise floor) | $184, 3 h 36 min at concurrency 4 |
+| finance-v19 | 2 train (named) | items | — | the improver wrote a `quarterly_tax_estimate` tool and the agent called it on all four tries; the arithmetic was right for the inputs read, the state-rate change posted in Slack was never read | $8 |
+| finance-v20 | 2 train (named) | items | 0/2 -> 2/2 | two independent sessions built the same "unread sources" hold; the agent read the channel on the later encounters and derived 13,162.5 and 105,792; the tax task's second encounter flipped on mental arithmetic (105,725) | $11 |
+| finance-v21, finance-v22 | 1 train (named) | items | 0/1 -> 0/1 | the hold held and (v22) the tool came, but the session took the un-annualised reading of an ambiguous procedure; two of four tries lost to host defects (the acceptance line overriding the prompt; a hook's own listing counted as the agent reading) — both fixed | $4 + $6 |
+| finance-v24, effort **max** | 3 train (named) | items | 1/3 -> 2/3 | one session built the coverage hold, the routing hold and the tool, and the tax task held at 105,792 twice; the timesheet task's accepted candidate was lost when two replies hit the 32k output cap (the host now adopts an accepted try the session never handed in); grant_expense_tracking passed its first encounter at max, never at medium | $61, 4 h |
+| finance-v25, effort max | 10 test (the first ten) | items | 2/4 -> 3/4 on the four tasks completed | stopped by the budget guard after four tasks: one improver call summed 400,793 input tokens against the 400,000 per-call bound; airtable_expense_approval corrected and holding, late_fee_calculation correctly left alone (its tier depends on a date no source holds: the world's clock is not given to the agent) | $68 |
+
+**What it shows.** The per-attempt acceptance rule adopts only what a real try got accepted, so learning never regressed a passing task in any of these runs. One bit cannot aim the improver at the item that was wrong: on test it corrected 3 of 18 sent-back tasks, and on the other 15 it changed something else. Given the rejected items and an inventory of the world's sources (service names and counts, no contents), it found generic mechanisms by itself — read every source before deriving, derive by code — in four independent sessions with none of those words in its prompt; at effort max it found them in one session, at five to seven times the cost. **What it does not show.** A significant gain on test: +4.0 points over 50 tasks is inside the interval. A number at effort max on test: the sample stopped at four tasks. The remaining failures are documented in JOURNAL (2026-10-24): document ambiguities the thin signal cannot resolve, the benchmark's clock, and a 10-17% noise floor.
+
+## finance-v5: finance, the v1.2 search loop on the two-way split (2026-10-12)
+
+The first activity of the redesigned loop (DESIGN v1.2, stages 4b and 4c; JOURNAL 2026-10-11 to 2026-10-12): finance's 100 public tasks split 50/50 into train and test by the stratified rule (`3b959d143f9d8468`), no dev split and no baseline phase; the improver studies 30 train tasks and screens each candidate package on the other 20, held out from it; an accepted package installs on the working line, which is released by decision when the rounds are over; the final's two arms are the number. Preset `automationbench_v2` (the memory off), the stirrup seed, Claude Opus 5.5 at medium effort, the claude_code CLI.
+
+**The rounds.** Round 0 (W0 on train 25/50): R wrote one `before_tool` hook, `scope`, which intercepts each outgoing message once and hands the decoded body back with an instruction to check the request's scope; the held-out screen read 12/20 against W0's 10/20 (three fixed, one regressed, net +2) and the package was installed. Round 1 (the working line on train 32/50): R wrote an `on_finish` audit hook that calls the aux model once; the screen read 11/20 against 12/20 (one fixed, two regressed) and it was rejected — the audit took the CLI's real date for the task's and made the agent write excluded items into an email. The working line was released by decision as W\* (`b114e5e766dc`).
+
+**The final** (plan `15d7612aeec4`, sealed and committed before the first test attempt; 50 test tasks × 3 repeats × 2 arms = 300 attempts, all valid; $179.52):
+
+| | W0 (the seed) | W\* (the seed + the scope hook) |
+|---|---|---|
+| Tasks passing all three repeats | 25/50 | 26/50 |
+| Mean pass rate (per task, over its three repeats) | 52.7% | 56.7% |
+| Partial credit | 0.870 | 0.877 |
+| Cost per attempt | $0.54 | $0.66 |
+| Tasks by repeats passed, 0 / 1 / 2 / 3 | 23 / 0 / 2 / 25 | 18 / 5 / 1 / 26 |
+
+W\* − W0 = +4.0 points, 95% interval [−4.0, +12.7] over 50 families: not significant. The shape of the gain: five tasks W0 never passed now pass sometimes (1 of 3), one more task passes every time. On train the hook read +14 points (25/50 → 32/50): +17 on the 30 tasks R studied, +10 on the 20 it never saw; on test, +4. The activity spent $259.45 of its $500 root (two rounds $79.93, the final $179.52).
+
+What this says: the v1.2 loop installs a mechanism from held-out acceptance in one round, and the mechanism does not regress on test; the gain is small and within noise, which is what two rounds and one accepted package buy. The next number comes from finance-v6 (stage 4d/4e: several packages a round with stacking, the audit-hook suggestion with the aux date anchor fixed, the streaming loop, three domains' train), whose W0 arm is this activity's W\*.
+
 ## v0.5: support, stopped after the experience-library phase (2026-10-08)
 
-v0.5 adds two parts to v0.4's single-domain loop. Both appear only under the preset `automationbench_harness_v5`; the rules are in [design/V0_5_PLAN.md](design/V0_5_PLAN.md).
+v0.5 adds two parts to v0.4's single-domain loop. Both appear only under the preset `automationbench_harness_v5`; the rules are in [design/V0_5_PLAN.md](history/V0_5_PLAN.md).
 
 - **A method library.** R writes read-only, deterministic `m_` package tools. Fixed code learns from paired train rewards where each one should be used and freezes that as a table.
 - **An experience library.** Entries are distilled from train attempts the grader verified and retrieved per task for the actor, leaving out the task's own entries. They are credited and retired by reward. The whole library goes through the gate as one candidate and is frozen before a final.
@@ -62,7 +107,7 @@ v0.5 was merged into `m1-automationbench` (`7e7732e`). It is not released: there
 - **Process evidence only, not a claim.** All three pre-registered process readings for the experience library held (V0_5_PLAN §3): it is effective on train (D ≥ +2), it has a learning curve (P ≥ 0.8), and its credit carries information (rank correlation > 0). They are noisy, with one reading per train task.
 - **The dev gain is selection-biased.** The gate used it to select, and it fell from +0.24 on the first reading to +0.08 on the confirmation. The true effect is probably below +0.16; only a test final could tell, and none ran.
 - **The method library has no readings.** Its two readings ("R can build a usable method", "it learned where to use it") need the R rounds and the fit, which did not run.
-- **What follows from this.** The slimming plan's third batch had a rule fixed before the stop: without an H1 reading, each library is judged on its own process readings ([design/SLIMMING_INVENTORY.md](design/SLIMMING_INVENTORY.md) §3).
+- **What follows from this.** The slimming plan's third batch had a rule fixed before the stop: without an H1 reading, each library is judged on its own process readings (design/SLIMMING_INVENTORY.md（tag archive-2026-10-09） §3).
   - The experience library passed both of its readings. It is kept, behind a preset switch and off by default, as the memory base for later work.
   - The method library has no readings, so under the same rule it is cut. This is a proposal, and the user may veto it.
 
@@ -70,7 +115,7 @@ v0.5 was merged into `m1-automationbench` (`7e7732e`). It is not released: there
 
 - **Cost.** The v0.4 arm spent $56.19 and the v0.5 arm $138.83 ($56.97 + $81.86), $195.02 together. These are notional API-equivalent dollars at list prices, as above.
 - **Records.** The two workspaces, `workspace-claude-v4-support` and `workspace-claude-v5-support`, are not committed; they stay as local records.
-- **Code.** No `.py` or `.toml` file changed between the freeze (`e414f7c`) and tag `archive-2026-10-08`, so that tag holds the code both arms ran. Each arm's report re-renders there with `ouroloop bench --config examples/automationbench/claude-v5-support.toml --phase report`, or the same with `claude-v4-support.toml`.
+- **Code.** No `.py` or `.toml` file changed between the freeze (`e414f7c`) and tag `archive-2026-10-08`, so that tag holds the code both arms ran. Each arm's report re-renders there with `reharness bench --config examples/automationbench/claude-v5-support.toml --phase report`, or the same with `claude-v4-support.toml`.
 - **H1 script.** `support_h1.py` was never run; it is at that tag only.
 
 What comes next is in [PLAN.md](PLAN.md).
@@ -84,9 +129,9 @@ v0.4 went back to v0.1's shape, one activity per new domain, and fixed the frame
 - a screen blind to harm: a 6-task passing sample redrawn each round, with at most 1 sample regression allowed;
 - a single control reading, replaced by three W0 dev readings.
 
-The final also reports W0's pass@k as an equal-cost reference. The rules are in [design/V0_4_PLAN.md](design/V0_4_PLAN.md).
+The final also reports W0's pass@k as an equal-cost reference. The rules are in [design/V0_4_PLAN.md](history/V0_4_PLAN.md).
 
-- **Config:** [`examples/automationbench/claude-v4-finance.toml`](../examples/automationbench/claude-v4-finance.toml).
+- **Config:** `examples/automationbench/claude-v4-finance.toml`（tag archive-2026-10-09）.
 - **Workspace:** `workspace-claude-v4-finance`, not committed.
 - **Finance split:** 50 train, 25 dev, 25 test, the same split v0.3 froze (`4fd91eaf9fb8daf5`). Its test was unread until this final.
 - **Tag:** `v0.4.0` (`7f65947`). It is not yet merged into main.
@@ -144,8 +189,8 @@ The full post-hoc analysis is in [history/FINANCE_V04_ANALYSIS_2026-10-07.md](hi
 The config and the sealed final plan are committed; the workspace is not. To rerun the same code:
 
 1. Check out tag `v0.4.0`.
-2. Copy the config. Give the copy its own `[workspace] root` and `[rsi] scope_id`, as in [ROADMAP §3, step 2a](ROADMAP.md); the committed config points at the original workspace.
-3. Run `ouroloop freeze` on the copy, and add the `[rsi]` lines it prints.
+2. Copy the config. Give the copy its own `[workspace] root` and `[rsi] scope_id`, as in ROADMAP §3, step 2a（tag archive-2026-10-09）; the committed config points at the original workspace.
+3. Run `reharness freeze` on the copy, and add the `[rsi]` lines it prints.
 4. Run `--phase cycle`.
 5. Fill `[freeze.final]` with W\*, freeze and commit the plan, then run `--phase evaluate`.
 
@@ -192,7 +237,7 @@ The +26.9 on 26 dev tasks is a process figure, not a claim. Because R used 1 of 
 
 ### The five-domain activity
 
-Config: [`examples/automationbench/claude-v3.toml`](../examples/automationbench/claude-v3.toml); workspace `workspace-claude-v3`.
+Config: `examples/automationbench/claude-v3.toml`（tag archive-2026-10-09）; workspace `workspace-claude-v3`.
 
 - **Domains.** Marketing keeps v0.2's split (52/25/23, pinned by hash); its test has been read three times and is marked spent, so no new claim reads it. Sales, support, HR and finance (100 tasks each) are split 50/25/25, stratified by the kinds of scored assertion and the tool family, read from the task definitions only. Pooled: train 252, dev 125; the claim's test is the four new domains' 100 tasks.
 - **Plan.** One worker segment of 6 rounds with patience 2, up to k = 3 candidates a round, the dev gate on all 125 tasks (`min_gain` 0.05, confirmation re-run before an install). The research slot (C4) was deferred to a separate workspace and did not run. K's effort ceiling is medium, W0's pin, so a candidate cannot buy a gain with effort. Budget root $1,500 with a $390 final share; 8 attempts in flight.
@@ -268,7 +313,7 @@ The five-domain activity's own total is $424.61. In rounds 1–2, notes and R's 
 
 ## v0.2: the full activity (2026-10-04)
 
-The same model, prompt, preset and limits as v0.1, in a workspace of its own with a budget large enough for the research slot. Config: [`examples/automationbench/claude-full.toml`](../examples/automationbench/claude-full.toml). The final ran from `claude-full-final.toml`, which was removed from HEAD on 2026-10-08 and is at tag `v0.2.0`.
+The same model, prompt, preset and limits as v0.1, in a workspace of its own with a budget large enough for the research slot. Config: `examples/automationbench/claude-full.toml`（tag archive-2026-10-09）. The final ran from `claude-full-final.toml`, which was removed from HEAD on 2026-10-08 and is at tag `v0.2.0`.
 
 | Version | Test pass rate (23 tasks × 2 runs) | Partial credit | Cost per attempt | Steps per attempt |
 |---|---|---|---|---|
@@ -346,7 +391,7 @@ The comparison plan was sealed and committed (`663f930`) before any test task wa
   - Dev decides installs, and R sees only aggregate dev scores.
   - Test was run only for this final comparison.
 - **Model.** Claude Opus 5.5 (`claude-opus-5-5`, effort medium) is both the actor and the research agent R.
-  - It is called through headless Claude Code (`claude -p`), one fresh process per call, with no tools and no local customization, on a Claude subscription login. See the [`claude_code` provider](modules/01_POLICY_RUNTIME.md).
+  - It is called through headless Claude Code (`claude -p`), one fresh process per call, with no tools and no local customization, on a Claude subscription login. See the `claude_code` provider（tag archive-2026-10-09）.
   - Tool calls are structured JSON output, not native tool use.
   - The CLI also attaches the account's e-mail address and the date. The actor's format note says these are not part of the task.
   - These scores are therefore not directly comparable with published native tool-use results.
@@ -403,13 +448,13 @@ The runs took about 8.6 hours of serial attempts.
 
 ### Reproduce
 
-The commands below run from the repository root. The config, its sealed plans and the final plan are committed in [`examples/automationbench/claude.toml`](../examples/automationbench/claude.toml). The step-by-step protocol is in [ROADMAP §3, step 2a](ROADMAP.md). To run the code that produced this result, check out tag `v0.1.0` first: the slimming plan ([design/SLIMMING_INVENTORY.md](design/SLIMMING_INVENTORY.md)) removes this config and its preset from later code.
+The commands below run from the repository root. The config, its sealed plans and the final plan are committed in `examples/automationbench/claude.toml`（tag archive-2026-10-09）. The step-by-step protocol is in ROADMAP §3, step 2a（tag archive-2026-10-09）. To run the code that produced this result, check out tag `v0.1.0` first: the slimming plan (design/SLIMMING_INVENTORY.md（tag archive-2026-10-09）) removes this config and its preset from later code.
 
 ```text
 claude auth login                       # a Claude subscription; turn extra usage off
-ouroloop bench --config examples/automationbench/claude.toml --phase cycle --until segment-0
-ouroloop bench --config examples/automationbench/claude.toml --phase evaluate
-ouroloop bench --config examples/automationbench/claude.toml --phase report
+reharness bench --config examples/automationbench/claude.toml --phase cycle --until segment-0
+reharness bench --config examples/automationbench/claude.toml --phase evaluate
+reharness bench --config examples/automationbench/claude.toml --phase report
 ```
 
 A new workspace makes its own choices. R's proposals will differ, and a reproduction measures the loop, not this particular change.

@@ -1,0 +1,94 @@
+# ReMe 0.3.1.10 flows of the reharness v6 memory sidecar (docs/design/MEMORY.md).
+#
+# A template (Python string.Template): serve.py fills its placeholders from K's library table and loads the result
+# as the `flows` section of ReMe's config (the rendered config is written to the run's working dir). Its sha256 is
+# K's library.backend.flows_sha256.
+#
+# summary_task_memory_v6 is ReMe's summary_task_memory (reme/config/service.yaml) with its prompts, ops and order
+# unchanged; the last op is BatchOnlyDeduplication (dedup within the batch only, §5.7 row 1) and each LLM op has its
+# own LLM (llms.reme_<op>, model research/reme:<op>), so the bridge can meter and label every call. The extraction
+# ops of the origins K disables are left out of the parallel group. `ol_pinned` holds the request values the
+# sidecar fixes for this flow (a request may not override them): ReMe reads its thresholds from the request context,
+# so K's are put there.
+flows:
+  summary_task_memory_v6:
+    flow_content: TrajectoryPreprocess(raise_exception=True, max_retries=1) >> (${extractors}) >> MemoryValidation(llm="reme_validation", raise_exception=True, max_retries=1) >> BatchOnlyDeduplication(raise_exception=True, max_retries=1)
+    description: "ReMe's task-memory summary: success, failure and comparative extraction, LLM validation, dedup within the batch"
+    ol_pinned:
+      success_threshold: ${success_threshold}
+      enable_soft_comparison: true
+      enable_similarity_comparison: false
+      validation_threshold: ${validation_threshold}
+      similarity_threshold: ${batch_dedup_threshold}
+    parameters:
+      type: object
+      properties:
+        trajectories:
+          type: array
+          description: "[{task_id, messages (OpenAI format), score (partial score), metadata: {query: task text}}]"
+      required: [trajectories]
+
+  add_task_memory_v6:
+    flow_content: OlMemoryAddition(max_retries=1)
+    description: "Insert memories (stamped and checked by the platform) into a collection"
+    parameters:
+      type: object
+      properties:
+        collection: {type: string, description: "chroma collection: ol-live-<scope8> or ol-snap-<digest16>"}
+        memory_list: {type: array, description: "ReMe MemoryNode dicts"}
+      required: [collection, memory_list]
+
+  retrieve_task_memory_v6:
+    flow_content: OlFilteredMemoryRetrieval(max_retries=1)
+    description: "Similarity search with a metadata filter; no LLM op (no query building, rerank or rewrite)"
+    parameters:
+      type: object
+      properties:
+        collection: {type: string, description: "chroma collection"}
+        query: {type: string, description: "the query text, as the platform gives it"}
+        top_k: {type: integer, description: "results to return"}
+        where: {type: object, description: "ReMe's universal filter, e.g. {ol_line: finance, ol_split: train}"}
+        query_mode: {type: boolean, description: "add the retriever's query prefix (default true; false for dedup)"}
+        expected_count: {type: integer, description: "the rows the caller knows the collection holds: any other count, or no collection, fails the call"}
+      required: [collection, query]
+
+  get_task_memory_v6:
+    flow_content: OlGetById(max_retries=1)
+    description: "The stored memories with these ids (vectors left out)"
+    parameters:
+      type: object
+      properties:
+        collection: {type: string, description: "chroma collection"}
+        ids: {type: array, description: "memory ids"}
+      required: [collection, ids]
+
+  retire_task_memory_v6:
+    flow_content: OlRetireById(max_retries=1)
+    description: "Delete these ids from a collection"
+    parameters:
+      type: object
+      properties:
+        collection: {type: string, description: "chroma collection"}
+        ids: {type: array, description: "memory ids"}
+      required: [collection, ids]
+
+  dump_memory_v6:
+    flow_content: OlDumpMemory(max_retries=1)
+    description: "ReMe's DumpMemory of one collection to a JSONL file (the platform canonicalises it)"
+    parameters:
+      type: object
+      properties:
+        collection: {type: string, description: "chroma collection"}
+        dump_file_path: {type: string, description: "absolute path of the JSONL file to write"}
+      required: [collection, dump_file_path]
+
+  load_memory_v6:
+    flow_content: OlLoadMemory(max_retries=1)
+    description: "ReMe's LoadMemory of a JSONL file into one collection"
+    parameters:
+      type: object
+      properties:
+        collection: {type: string, description: "chroma collection"}
+        load_file_path: {type: string, description: "absolute path of the JSONL file to read"}
+        clear_existing: {type: boolean, description: "empty the collection first"}
+      required: [collection, load_file_path]

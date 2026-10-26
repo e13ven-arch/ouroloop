@@ -2,7 +2,7 @@
 
 > **范围。** v0.4 finance 活动已经结束：3 轮（第 1 轮装上 `source_memory`，第 2、3 轮被拒），封存 final 已跑。final 的计划 `finalization:sha256:2af18001…` 在 `68c9efd` 提交，早于任何 test 尝试。本文是事后读数。finance 的 test 从此 spent，本文在 test 上做的任何新切分都不是主张。
 >
-> **方法。** 只读。用 ouroloop 自己的读取器（`benchmark.Results`、`task_gate.paired_bootstrap`、`evolve.experience.ledger_rows`、contracts 对象）读 `examples/automationbench/workspace-claude-v4-finance` 下的 `bench/finance/` 结果与判分行、`transcripts/`、`rsi/events.jsonl`、`rsi/objects/`、`rsi/experience.jsonl`。四路并行分析（final、机制、被拒的两轮、v0.4 各项改动）之后做综合。脚本在会话 scratchpad，不在仓库。没有调用模型，没有付费阶段，没有读 `.env`。仓库里只写了本文件。
+> **方法。** 只读。用 reharness 自己的读取器（`benchmark.Results`、`task_gate.paired_bootstrap`、`evolve.experience.ledger_rows`、contracts 对象）读 `examples/automationbench/workspace-claude-v4-finance` 下的 `bench/finance/` 结果与判分行、`transcripts/`、`rsi/events.jsonl`、`rsi/objects/`、`rsi/experience.jsonl`。四路并行分析（final、机制、被拒的两轮、v0.4 各项改动）之后做综合。脚本在会话 scratchpad，不在仓库。没有调用模型，没有付费阶段，没有读 `.env`。仓库里只写了本文件。
 >
 > **标记。** **数据**：从记录读出或复算的数。**解读**：推断。轮次按 JOURNAL 叫第 1、2、3 轮，对应 events 里的 round 0、1、2。
 >
@@ -496,7 +496,7 @@ V0_4_PLAN §3 的预注册过程检查：
 
 ## 5. 对 v0.5 的含义
 
-按“保留 / 推迟 / 删”给出，只推荐一条路径。v0.5 的三份设计稿（[方法库](../design/V0_5_METHOD_LIBRARY.md)、agent 内 RL（`V0_5_AGENT_RL.md`，2026-10-08 删除，tag `archive-2026-10-08` 上可读）、[进化搜索与经验库](../design/V0_5_EVOLVING_SEARCH.md)）都写于本次 final 之前，下面用本次的证据去检验它们的前提。
+按“保留 / 推迟 / 删”给出，只推荐一条路径。v0.5 的三份设计稿（方法库（tag archive-2026-10-09）、agent 内 RL（`V0_5_AGENT_RL.md`，2026-10-08 删除，tag `archive-2026-10-08` 上可读）、进化搜索与经验库（tag archive-2026-10-09））都写于本次 final 之前，下面用本次的证据去检验它们的前提。
 
 ### 5.1 主张与 gate 的功效
 

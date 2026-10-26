@@ -3,16 +3,16 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ouroloop"
-version = "0.3.0"
-description = "A lightweight RSI framework: an LLM improves a small decision model, and the decision model improves the agent harness"
+name = "reharness"
+version = "0.5.0"
+description = "A bounded self-improvement loop for business agents: an improver corrects the agent's harness package from the agent's own runs, under a fixed core, and only what a real try got accepted is adopted"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
-authors = [{ name = "The ouroloop Authors" }]
+authors = [{ name = "The reharness Authors" }]
 requires-python = ">=3.11"
 dependencies = ["httpx>=0.27"]
-keywords = ["agents", "llm", "harness", "decision-model", "self-improvement", "rsi"]
+keywords = ["agents", "llm", "harness", "self-improvement", "rsi", "evaluation"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -27,35 +27,60 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/e13ven-arch/ouroloop"
-Repository = "https://github.com/e13ven-arch/ouroloop"
-Issues = "https://github.com/e13ven-arch/ouroloop/issues"
+Homepage = "https://github.com/e13ven-arch/reharness"
+Repository = "https://github.com/e13ven-arch/reharness"
+Issues = "https://github.com/e13ven-arch/reharness/issues"
 
 [project.optional-dependencies]
 anthropic = ["anthropic>=1.7"]
-# What ouroloop's environment needs to run AutomationBench tasks. The benchmark itself is a checkout that
+# What reharness's environment needs to run AutomationBench tasks. The benchmark itself is a checkout that
 # [bench] upstream_path points at (examples/automationbench/README.md); these are what importing its world, its
 # task loader and its tool registry needs. `verifiers` is optional and only widens what the contract check can
 # compare against upstream.
 automationbench = ["pydantic>=2", "datasets>=2", "openai>=1"]
 dev = ["pytest>=8"]
+# What the vendored Stirrup of the stirrup seed imports, so the host's ProcessWorker can run the seed in the default test
+# suite. The worker image pins the same versions by hash (docker/worker.requirements.txt), installed with --no-deps
+# there and here: moviepy 2.2.1 declares pillow<12 and imports fine with 12.3.
+#   pip install --no-deps -r docker/worker.requirements.txt   (without the hashes on another platform)
+seed = ["pydantic>=2", "anyio>=4", "filetype>=1.2", "pillow>=11", "moviepy>=2.2", "rich>=13", "httpx>=0.27",
+        "trafilatura>=2", "tenacity>=9", "numpy>=2"]
+# The training and decision stack (reharness/train/, `python -m reharness.train`). Its code is in every install and nothing
+# on the bench path imports it; this is what it needs besides httpx: huggingface_hub, for an "hf" model store and
+# models fetched from the Hub (train/stores/hf.py, train/backends/tde.py). TDE itself, and torch, are a trainer
+# plugin's source ([trainers.tde] source): host init installs them on the training machine, and test_tde_compat
+# reads a checkout at TDE_REPO.
+train = ["huggingface_hub>=0.20"]
+# The job layer (reharness/train/jobs/): jobs on this machine, on a host over ssh, or on a RunPod or Vast.ai instance.
+# It needs ssh, rsync and tar on the control plane and no Python package beyond [train].
+train-jobs = ["reharness[train]"]
 
 [project.scripts]
-ouroloop = "ouroloop.cli:main"
+reharness = "reharness.activity.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["ouroloop*"]
+include = ["reharness*"]
 
 [tool.setuptools.package-data]
 # host init sends bootstrap.sh; images and cloud instances start with start.sh. Keep release.PACKAGE_DATA the same:
 # code_version hashes, and host init sends, the modules and these files only.
-"ouroloop.hosts" = ["bootstrap.sh", "start.sh"]
+"reharness.train.jobs.hosts" = ["bootstrap.sh", "start.sh"]
+# The seeds are source trees, not Python packages: every file under them is package data (harness/seed.py reads them).
+"reharness.harness" = ["seeds/**/*"]
+# The memory's sidecar runs in its own venv: its modules, flows and hashed lock are files the host starts and pins
+# (memory/__init__.py), not modules of this package.
+"reharness.memory" = ["sidecar/*.py", "sidecar/flows.yaml", "sidecar/requirements-macos-arm64.lock"]
+# R's prompts are read at every round step: they are part of the code an activity freezes (code_version).
+"reharness.improver" = ["prompts/diagnose.md", "prompts/package_api.md", "prompts/playbook.md", "prompts/propose.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]          # tests import the package and the examples from the checkout
+# tests import the package and the examples from the checkout, and the shared test modules by name wherever they
+# live: tests/train/ holds the training stack's tests and their fixtures (decision_fixtures, train_fixtures),
+# tests/train/jobs/ the job layer's (jobs_fixtures)
+pythonpath = [".", "tests", "tests/memory", "tests/improver", "tests/train", "tests/train/jobs"]
 markers = [
     "live: calls a real external API and needs its key",
-    "slow: end-to-end in Docker or against the real upstream checkout (about 90 s); run with -m 'not live' before a paid run or a merge",
+    "slow: end-to-end in Docker, against the real upstream checkout, or on the real memory sidecar (its venv); run with -m 'not live' before a paid run or a merge",
 ]
 addopts = "-m 'not live and not slow'"

@@ -1,0 +1,91 @@
+# finance-v5: the fifth finance activity, the first under the search loop v2 (docs/PLAN.md stage 4b, docs/DESIGN.md
+# v1.2 §6) and the two-way protocol of stage 4c (DESIGN §6.7, ACTIVITY §4, EVALUATE §6-§7; docs/JOURNAL.md 2026-10-11
+# and 2026-10-12). Finance's 100 public tasks split 50/50 by the stratified rule: train 50 (R studies 30, 20 are held
+# out for the screens), test 50 frozen for the final; no dev, so no release gate — the working line is released by
+# decision when the rounds are over, and the final's two arms (W0 and W*) are the number the README reports. The
+# automationbench_v2 preset (the library off, one candidate package a round, held-out acceptance on the working line),
+# the stirrup seed, up to 12 rounds with a patience of 3 (the budget holds about 7 or 8). Every paid step is approved
+# in chat first (PLAN rule 3). Run from the repository's root with `.venv/bin/python -m reharness`, in a terminal that
+# stays open, on AC power under `caffeinate -dimsu`; stop a step with one Ctrl-C and let it drain, never kill it (a
+# killed call keeps its reservation's bound).
+#   1  `... bench --config examples/automationbench/finance-v5.toml --phase smoke --checks-only`                 $0
+#   2  `... freeze --config ...`: K (with the two code versions) and the budget root; no gate template (no dev); the
+#      final is not sealed yet (no release line); add the printed [rsi] lines (scope_id, core_ref, split_ref) and
+#      commit                                                                                                    $0
+#   3  no baseline phase: `... bench --config ... --phase round --round 0` reads the 50 train tasks itself (about
+#      $25, in the round's account), then round-1, round-2, ... (each approved, each read before the next;
+#      `--phase report` after each, $0); stop after 3 rounds in a row without a held-out acceptance
+#   4  `... bench --config ... --phase release`: reads the working line's missing train tasks under its own release
+#      (about $15) and promotes it to the release line by decision; then `... freeze --config ...` again seals the
+#      final (W0 and W_star, 50 test tasks × 3 repeats, about $150) and prints final_plan_ref; it is committed to git
+#      before the first test attempt (PLAN rule 6); then `... bench --config ... --phase evaluate`
+#   5  `--phase report`: the two arms' pass rates and partial credit are the README's numbers (the public set's test
+#      half, medium effort, 3 repeats; not the official leaderboard, which scores a private set)
+#
+# The numbers are the preset's (activity/presets.py, from evidence); a value here may only tighten one. The worker runs
+# by the image id below (K pins it: the image built from this checkout on 2026-10-11, after runtime/worker_runner.py's
+# embedded contract gained `hook_aux_calls` in stage 4b; `docker image inspect reharness-worker:py3.12`). The split's
+# hash is new (50/50): finance-v1 to v4 read the 50/25/25 split 4fd91eaf9fb8daf5, so their numbers are not comparable;
+# `freeze` prints the new split_ref to pin under [rsi].
+
+[workspace]
+root = "workspace-finance-v5"
+
+[bench]
+domain = "finance"
+upstream_path = "~/workspace/AutomationBench"
+split_rule = "stratified"
+seed = 1
+concurrency = 8
+ratios = { train = 0.5, dev = 0.0, test = 0.5 }
+
+[model]
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "medium"
+max_tokens = 32000
+timeout = 600
+
+[research_model]
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "medium"
+max_tokens = 32000
+timeout = 900
+
+[pricing]
+input_per_1k = 0.004
+cache_read_per_1k = 0.0002
+cache_write_per_1k = 0.008
+output_per_1k = 0.02
+max_input_tokens = 1000000
+max_output_tokens = 163840
+source = "notional, not a bill: claude-opus-5-5 API list price ($4/$20 per M, cache read $0.20, 1h cache write $8)"
+
+[harness]
+preset = "automationbench_v2"
+seed = "stirrup"
+
+[worker]
+network = "none"
+image_id = "sha256:04dbf822459b1f01c2d7b9008908cc904d09b95a1d78d9016a178109fc0cc792"
+
+[memory]
+enabled = false
+
+[schedule]
+rounds = 12
+patience = 3
+
+[budget]
+usd = 500.0
+final_usd = 200.0
+
+[final]
+repeats = 3
+
+[rsi]
+scope_id = "finance-v5"
+core_ref = "core:sha256:909c2e86950f40ae27ca36395016f0f2b1e7be49ded8652704d3a60938dceba5"
+split_ref = "3b959d143f9d8468"
+final_plan_ref = "finalization:sha256:15d7612aeec488d0bb7aed3bee169694e65e145751d8a1cd7244e397cc83535c"

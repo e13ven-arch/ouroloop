@@ -1,0 +1,5 @@
+# The egress image's own build context (BuildKit reads <Dockerfile>.dockerignore before the root .dockerignore): the
+# pinned requirements and the addon, nothing else — no workspace, no .env, no virtualenv, no other code.
+*
+!docker/egress.requirements.txt
+!reharness/runtime/egress_addon.py

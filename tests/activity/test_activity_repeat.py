@@ -1,0 +1,424 @@
+"""The repetitive stream (DESIGN v2.0 §6.23; evaluate/repeat.py; improver/repeat.py; activity/phases.py `repeat`) on
+the fake upstream's rsi domain: the forgetful actor fails the test task that asks for a #ops post on its first
+encounter; the learn arm's improver reads that run (no score), writes the hook that pushes the agent back, tries it
+once on the same request (a probe), the composer adopts it, the reflector leaves a lesson in the library, and the
+task's later encounters pass; the other test task needs nothing and keeps the base; the control arm runs the base
+three times and keeps failing; the report pairs the encounters; a second run pays nothing; the phase refuses to run
+without the sealed plan; no grading reaches R or the composer."""
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO / "tests"))
+sys.path.insert(0, str(REPO / "tests" / "improver"))
+import rsi  # noqa: E402
+from rounds import Research  # noqa: E402
+from scripted_r import HOOK_CODE, ScriptedR  # noqa: E402
+
+from reharness.activity import phases  # noqa: E402
+from reharness.activity.workspace import open_activity  # noqa: E402
+from reharness.evaluate.repeat import RepeatPlan  # noqa: E402
+
+NOTIFY, UPDATE, QUIET = "rsi.final_notify_after_update", "rsi.final_update_stage", "rsi.update_no_notify"
+# the test split: the notify task (fails first: the forgetful actor), the update task (passes) and the quiet task
+# (passes; its request forbids a post — the composer keeps the base against the hook's probe there)
+
+
+def quiet(_line):
+    pass
+
+
+# the module fixture runs Harness²'s setting (feedback "none": the run alone, every task gets a session); the second
+# cut's default (feedback "outcome": one bit, a passing task is left alone) has its own test below
+NONE = {"encounters": 3, "feedback": "none", "concurrency": 1}   # one task at a time: the scripted R keeps state
+
+
+def activity(root, upstream, *, provider, r: ScriptedR, repeat=None, **sections):
+    return rsi.activity(root, upstream, provider=provider, research=Research(r), repeat=dict(repeat or NONE),
+                        **sections)
+
+
+def reopen(a, *, provider, r: ScriptedR, repeat=None, **sections):
+    cfg = rsi.config(Path(a.config["_base"]), a.config["bench"]["upstream_path"], repeat=dict(repeat or NONE),
+                     **sections)
+    research = Research(r)
+    return open_activity(cfg, out=quiet, worker_factory=a.worker_factory,
+                         provider_factory=lambda table: research if table.get("model") == rsi.RESEARCH_MODEL
+                         else provider)
+
+
+@pytest.fixture(scope="module")
+def stream(tmp_path_factory, fake_upstream):
+    root = tmp_path_factory.mktemp("repeat")
+    actor = rsi.BusinessWorker(forget_notify=True)
+    r = ScriptedR("repeat")
+    a = activity(root, fake_upstream, provider=actor, r=r)
+    lines = []
+    refs = phases.freeze(a, out=lines.append)
+    b = reopen(a, provider=actor, r=r, rsi={"scope_id": "rsi-test", **{k: v for k, v in refs.items()
+                                                                       if k != "gate_template"}})
+    out = []
+    learn = phases.repeat(b, arm="learn", out=out.append)
+    paid = actor.calls
+    control = phases.repeat(b, arm="control", out=out.append)
+    return type("S", (), {})() if False else dict(a=b, actor=actor, r=r, refs=refs, freeze_lines=lines, lines=out,
+                                                   learn=learn, control=control, paid_after_learn=paid)
+
+
+def test_freeze_seals_the_repeat_plan_before_any_test_task_is_read(stream):
+    a, refs = stream["a"], stream["refs"]
+    assert "repeat_plan_ref" in refs and any(line.startswith("repeat     sealed") for line in stream["freeze_lines"])
+    plan = RepeatPlan.from_json(a.objects.get(refs["repeat_plan_ref"]))
+    assert sorted(plan.tasks) == sorted(rsi.FINAL) and plan.encounters == 3 and plan.arms == ("learn", "control")
+    assert plan.split == "test" and plan.experiment_id == "rsi-test-repeat-test" and plan.feedback == "none"
+    assert plan.base == a.seed_release().ref() and plan.core_ref == a.core_ref and plan.split_hash == a.splits.hash()
+    (sealed,) = a.events.read("repeat_sealed")
+    assert sealed["plan"] == refs["repeat_plan_ref"]
+
+
+def test_the_learn_arm_adopts_a_hook_for_the_failing_task_and_its_later_encounters_pass(stream):
+    a, r = stream["a"], stream["r"]
+    scored = {(e["arm"], e["task"], e["encounter"]): e["passed"] for e in a.events.read("repeat_scored")}
+    assert [scored[("learn", NOTIFY, k)] for k in (1, 2, 3)] == [False, True, True]
+    assert [scored[("learn", UPDATE, k)] for k in (1, 2, 3)] == [True, True, True]
+    (adopted,) = a.events.read("repeat_adopted")
+    assert adopted["task"] == NOTIFY and adopted["choice"] == "package" and adopted["probes"] == 1
+    assert adopted["entry"] == "lib1" and adopted["package"]
+    kept = {e["task"]: e for e in a.events.read("repeat_kept")}
+    assert kept[UPDATE]["choice"] == "base" and kept[UPDATE]["candidates"] == []          # R handed in nothing
+    assert kept[QUIET]["choice"] == "base" and kept[QUIET]["candidates"] == ["package"]   # probed, not adopted
+    # the later encounters ran the task's own package: the hook acted there, the first encounter had none
+    runs = a.results.runs()
+    rows = {(runs[x.run].candidate, x.task_id): x for x in a.results.all() if runs[x.run].role == "repeat"}
+    e2 = rows[("learn:e2", NOTIFY)]
+    assert runs[e2.run].package_ref == adopted["package"] and e2.success
+    assert runs[rows[("learn:e1", NOTIFY)].run].package_ref == a.package(a.seed_release()).ref()
+    # each session's record prices that session alone (its research calls and probes), not the arm's running total
+    st = json.loads((a.root / "rsi" / "repeat" / "rsi-test-repeat-test.learn.json").read_text(encoding="utf-8"))
+    own = {task: st["tasks"][task]["adopted"]["usd"] for task in (NOTIFY, QUIET, UPDATE)}
+    assert all(u is not None and u >= 0 for u in own.values())
+    assert sum(own.values()) <= float(stream["learn"]["spent"] or 0.0) + 1e-6
+    # the probe is an extra test attempt of its own role, never an encounter
+    probes = [x for x in a.results.all() if runs[x.run].role == "probe"]
+    assert sorted(p.task_id for p in probes) == sorted([NOTIFY, QUIET])
+    assert next(p for p in probes if p.task_id == NOTIFY).success
+    assert not {p.attempt_id for p in probes} & {e["attempt"] for e in a.events.read("repeat_scored")}
+    # what R saw: the request and the run, no score, no assertion, no grading
+    seen = json.dumps(r.task_seen)
+    assert "#ops" in r.task_seen["request"]                      # the last session's: the quiet task's or the notify's
+    assert "reference_run" in r.task_seen and r.task_seen["reference_run"]["final_text"]
+    assert not any(word in seen for word in ("slack_message_contains", "\"passed\"", "assertion", "grading", "partial_credit"))
+    try_text = next(t for _, t in r.tries if f"on {NOTIFY}" in t)
+    assert try_text.startswith(f"try_task candidates/package on {NOTIFY}") and "No score is read here" in try_text
+    assert "hook:remind_ops" in try_text and "slack" in try_text
+    # the composer and the reflector read digests only
+    composed = next(c for c in r.composed if NOTIFY in c["reference_run"]["session"])
+    assert composed["candidates"][0]["acted"] == ["hook:remind_ops"] and "passed" not in json.dumps(composed)
+    (reflected,) = r.reflected
+    assert reflected["components"] == ["hook:on_finish"] and "passed" not in json.dumps(reflected)
+    # the library: one entry with the lesson, the changed files and an index the next session reads
+    lib = a.root / "library"
+    assert (lib / "lib1" / "EXPERIENCE.md").read_text(encoding="utf-8").startswith("# lib1")
+    assert (lib / "lib1" / "middlewares" / "remind_ops.py").read_text(encoding="utf-8") == HOOK_CODE
+    entries = json.loads((lib / "entries.json").read_text(encoding="utf-8"))["entries"]
+    assert entries[0]["task"] == NOTIFY and entries[0]["experience"]["confidence"] == "medium"
+    assert "lib1" in (lib / "INDEX.md").read_text(encoding="utf-8")
+
+
+def test_the_control_arm_runs_the_base_every_time_and_adopts_nothing(stream):
+    a = stream["a"]
+    scored = {(e["arm"], e["task"], e["encounter"]): e["passed"] for e in a.events.read("repeat_scored")}
+    assert [scored[("control", NOTIFY, k)] for k in (1, 2, 3)] == [False, False, False]
+    assert [scored[("control", t, k)] for t in (UPDATE, QUIET) for k in (1, 2, 3)] == [True] * 6
+    assert len(list(a.events.read("repeat_adopted"))) == 1                # the learn arm's only
+    runs = a.results.runs()
+    control = [x for x in a.results.all() if runs[x.run].role == "repeat" and runs[x.run].candidate.startswith("control:")]
+    assert len(control) == 9 and {runs[x.run].package_ref for x in control} == {a.package(a.seed_release()).ref()}
+    assert stream["learn"]["summary"]["learn"][2]["passed"] == 3 and stream["control"]["summary"]["control"][2]["passed"] == 2
+
+
+def test_the_report_pairs_the_encounters_and_a_second_run_pays_nothing(stream):
+    a, actor = stream["a"], stream["actor"]
+    report = phases.report(a, out=quiet)
+    rp = report["repeat"]
+    assert [row["passed"] for row in rp["arms"]["learn"]] == [2, 3, 3]
+    assert [row["passed"] for row in rp["arms"]["control"]] == [2, 2, 2]
+    third = round(100 / 3, 6)
+    assert rp["differences"]["learn:e3-e1"]["points"] == third and rp["differences"]["control:e3-e1"]["points"] == 0.0
+    assert rp["differences"]["learn-control:e3"]["points"] == third and rp["differences"]["learn-control:e1"]["points"] == 0.0
+    assert rp["status"] == "complete" and rp["adopted"] == 1 and rp["kept"] == 2 and rp["library"] == 1
+    md = (a.root / "report.md").read_text(encoding="utf-8")
+    assert "## Repetitive stream" in md and "learn-control:e3: +33.3 points" in md
+    calls = actor.calls
+    again = phases.repeat(a, arm="learn", out=quiet)
+    assert actor.calls == calls and again["summary"]["learn"][2]["passed"] == 3
+
+
+def test_with_the_one_bit_of_feedback_a_passing_task_is_left_alone_and_a_failing_one_is_told_it_was_sent_back(
+        tmp_path, fake_upstream):
+    """The second cut (DESIGN §6.23): feedback "outcome" (the default) — the learn arm opens no session on a task
+    whose first encounter was accepted (kept, no probe, no composer), and the session on the failing task reads
+    `outcome: not accepted` with no detail; the adoption and the later encounters are as before."""
+    actor = rsi.BusinessWorker(forget_notify=True)
+    r = ScriptedR("repeat")
+    a = activity(tmp_path, fake_upstream, provider=actor, r=r, repeat={"encounters": 3, "feedback": "outcome", "concurrency": 1})
+    refs = phases.freeze(a, out=quiet)
+    plan = RepeatPlan.from_json(a.objects.get(refs["repeat_plan_ref"]))
+    assert plan.feedback == "outcome"
+    b = reopen(a, provider=actor, r=r, repeat={"encounters": 3, "feedback": "outcome", "concurrency": 1},
+               rsi={"scope_id": "rsi-test", **{k: v for k, v in refs.items() if k != "gate_template"}})
+    out = []
+    phases.repeat(b, arm="learn", out=out.append)
+    scored = {(e["task"], e["encounter"]): e["passed"] for e in b.events.read("repeat_scored")}
+    assert [scored[(NOTIFY, k)] for k in (1, 2, 3)] == [False, True, True]
+    kept = {e["task"]: e for e in b.events.read("repeat_kept")}
+    assert set(kept) == {UPDATE, QUIET} and all(e["why"].startswith("accepted on the first encounter") for e in kept.values())
+    assert all(e["probes"] == 0 and e["candidates"] == [] for e in kept.values())
+    assert r.calls.count("compose") == 1 and r.calls.count("reflect") == 1          # the failing task's only
+    assert r.task_seen["task_id"] == NOTIFY and r.task_seen["outcome"] == "not accepted"
+    assert "NOT accepted" in r.task_seen["note"] and "passed" not in json.dumps(r.task_seen)
+    assert "This request was NOT accepted" in r.system_seen and "{feedback}" not in r.system_seen
+    (adopted,) = b.events.read("repeat_adopted")
+    assert adopted["task"] == NOTIFY and adopted["choice"] == "package"
+    runs = b.results.runs()
+    assert [x.task_id for x in b.results.all() if runs[x.run].role == "probe"] == [NOTIFY]
+    assert any("kept the base" in line and UPDATE in line for line in out)
+
+
+def test_with_a_bit_per_attempt_the_accepted_probe_is_adopted_and_the_composer_is_not_asked(tmp_path, fake_upstream):
+    """The third cut (DESIGN §6.23): feedback "attempts" (the default) — after each try_task R is told whether that
+    run was accepted; the candidate whose run was accepted is adopted without a composer's guess (finance-v15: the
+    label-free composer adopted a worse probe and rejected a passing one); with no accepted run the base stays."""
+    actor = rsi.BusinessWorker(forget_notify=True)
+    r = ScriptedR("repeat")
+    a = activity(tmp_path / "yes", fake_upstream, provider=actor, r=r, repeat={"encounters": 3, "concurrency": 1})
+    refs = phases.freeze(a, out=quiet)
+    assert RepeatPlan.from_json(a.objects.get(refs["repeat_plan_ref"])).feedback == "attempts"
+    b = reopen(a, provider=actor, r=r, repeat={"encounters": 3},
+               rsi={"scope_id": "rsi-test", **{k: v for k, v in refs.items() if k != "gate_template"}})
+    out = []
+    phases.repeat(b, arm="learn", out=out.append)
+    scored = {(e["task"], e["encounter"]): e["passed"] for e in b.events.read("repeat_scored")}
+    assert [scored[(NOTIFY, k)] for k in (1, 2, 3)] == [False, True, True]
+    (adopted,) = b.events.read("repeat_adopted")
+    assert adopted["task"] == NOTIFY and adopted["choice"] == "package" and adopted["accepted"] == {"package": True}
+    assert adopted["why"].startswith("its run on this request was accepted")
+    assert "compose" not in r.calls and r.calls.count("reflect") == 1
+    try_text = next(t for _, t in r.tries if f"on {NOTIFY}" in t)
+    assert "THIS RUN WAS ACCEPTED" in try_text and "After each try_task you are told" in r.system_seen
+    assert any("ACCEPTED" in line and "probe of package" in line for line in out)
+    # an actor that ignores the hook's pushback: the probe is not accepted, the base stays
+    deaf = rsi.BusinessWorker(forget_notify=True, ignore_pushback=True)
+    r2 = ScriptedR("repeat")
+    c = activity(tmp_path / "no", fake_upstream, provider=deaf, r=r2, repeat={"encounters": 3, "concurrency": 1})
+    refs2 = phases.freeze(c, out=quiet)
+    d = reopen(c, provider=deaf, r=r2, repeat={"encounters": 3},
+               rsi={"scope_id": "rsi-test", **{k: v for k, v in refs2.items() if k != "gate_template"}})
+    phases.repeat(d, arm="learn", out=quiet)
+    kept = {e["task"]: e for e in d.events.read("repeat_kept")}
+    assert kept[NOTIFY]["why"].startswith("no candidate's run was accepted") and kept[NOTIFY]["accepted"] == {"package": False}
+    assert list(d.events.read("repeat_adopted")) == []
+    assert "This run was NOT accepted" in next(t for _, t in r2.tries if f"on {NOTIFY}" in t)
+
+
+def test_tasks_run_in_parallel_and_every_encounter_is_on_record(tmp_path, fake_upstream):
+    """[repeat] concurrency: the tasks of the stream run in parallel (each task's encounters stay sequential); the
+    control arm with two workers scores every task's three encounters once."""
+    actor = rsi.BusinessWorker(forget_notify=True)
+    r = ScriptedR("repeat")
+    a = activity(tmp_path, fake_upstream, provider=actor, r=r, repeat={"encounters": 3, "concurrency": 2})
+    refs = phases.freeze(a, out=quiet)
+    b = reopen(a, provider=actor, r=r, repeat={"encounters": 3, "concurrency": 2},
+               rsi={"scope_id": "rsi-test", **{k: v for k, v in refs.items() if k != "gate_template"}})
+    got = phases.repeat(b, arm="control", out=quiet)
+    rows = got["summary"]["control"]
+    assert [x["tasks"] for x in rows] == [3, 3, 3] and [x["passed"] for x in rows] == [2, 2, 2]
+    events = list(b.events.read("repeat_scored"))
+    assert len(events) == 9 and len({(e["task"], e["encounter"]) for e in events}) == 9
+
+
+def test_the_phase_refuses_without_the_sealed_plan_or_with_an_unknown_arm(tmp_path, fake_upstream):
+    actor = rsi.BusinessWorker()
+    a = activity(tmp_path, fake_upstream, provider=actor, r=ScriptedR("repeat"))
+    with pytest.raises(ValueError, match="repeat_plan_ref"):
+        phases.repeat(a, arm="learn", out=quiet)
+    refs = phases.freeze(a, out=quiet)
+    b = reopen(a, provider=actor, r=ScriptedR("repeat"), rsi={"scope_id": "rsi-test", **{k: v for k, v in refs.items()
+                                                                                        if k != "gate_template"}})
+    with pytest.raises(ValueError, match="arm"):
+        phases.repeat(b, arm="other", out=quiet)
+    assert actor.calls == 0
+
+
+def _learn(tmp_path, fake_upstream, *, actor, r, repeat):
+    a = activity(tmp_path, fake_upstream, provider=actor, r=r, repeat=repeat)
+    refs = phases.freeze(a, out=quiet)
+    b = reopen(a, provider=actor, r=r, repeat=repeat,
+               rsi={"scope_id": "rsi-test", **{k: v for k, v in refs.items() if k != "gate_template"}})
+    out = []
+    phases.repeat(b, arm="learn", out=out.append)
+    return a, b, out
+
+
+def test_a_tool_r_writes_in_the_session_is_adopted_and_the_agent_calls_it_on_the_later_encounters(tmp_path, fake_upstream):
+    """v2.1 (DESIGN §6.24): the step as a tool — R writes the tool that posts the message and registers it; the actor,
+    offered the tool, calls it; the probe is accepted, the tool is adopted for the task, the later encounters'
+    footprints show the call, the library entry carries the tool's file, and the try's answer lists the tool's calls
+    with their inputs and outputs."""
+    from reharness.improver.evidence import Evidence
+    from reharness.improver.repeat import footprint_of
+    actor = rsi.BusinessWorker(forget_notify=True)
+    r = ScriptedR("repeat_tool")
+    _, b, out = _learn(tmp_path, fake_upstream, actor=actor, r=r, repeat={"encounters": 3, "concurrency": 1})
+    scored = {(e["task"], e["encounter"]): e["passed"] for e in b.events.read("repeat_scored")}
+    assert [scored[(NOTIFY, k)] for k in (1, 2, 3)] == [False, True, True]
+    (adopted,) = b.events.read("repeat_adopted")
+    assert adopted["task"] == NOTIFY and adopted["choice"] == "package" and adopted["accepted"] == {"package": True}
+    st = json.loads((b.root / "rsi" / "repeat" / "rsi-test-repeat-test.learn.json").read_text(encoding="utf-8"))["tasks"]
+    assert "tools/post_channel_message.py" in b.objects.get(st[NOTIFY]["adopted"]["files_ref"])
+    try_text = next(t for _, t in r.tries if f"on {NOTIFY}" in t)
+    assert "tool:post_channel_message" in try_text and 'post_channel_message({"phrase"' in try_text
+    assert "posted to the ops channel" in try_text and "THIS RUN WAS ACCEPTED" in try_text
+    assert any("probe of package: acted ['tool:post_channel_message']" in line for line in out)
+    runs = b.results.runs()
+    e2 = next(x for x in b.results.all() if runs[x.run].candidate == "learn:e2" and x.task_id == NOTIFY)
+    ev = Evidence(b)
+    ev.trace.allow({e2.evidence or e2.attempt_id})
+    assert "post_channel_message" in footprint_of(ev.trace, e2.evidence or e2.attempt_id)["tools"]
+    assert "tools/post_channel_message.py" in (b.root / "library" / "INDEX.md").read_text(encoding="utf-8")
+    # the session's tools are worded for one task, not for a round's failures.json
+    assert "on this task" in r.tool_notes_seen["try_task"] and "reference_run" in r.tool_notes_seen["read_trajectory"]
+    assert "failures.json" not in r.tool_notes_seen["try_task"]
+
+
+def test_with_the_rejected_items_r_is_told_what_was_sent_back_but_never_what_it_should_have_said(tmp_path, fake_upstream):
+    """v2.1: feedback "items" — task.json carries the items the first encounter was sent back for (the checks' kinds
+    and objects, no expected text), the prompt says so, a try that was not accepted comes back with that run's
+    items, and the acceptance rule is the attempts rule (no accepted run: the base stays)."""
+    deaf = rsi.BusinessWorker(forget_notify=True, ignore_pushback=True)
+    r = ScriptedR("repeat")
+    cfg = {"encounters": 3, "feedback": "items", "concurrency": 1}
+    a, b, _ = _learn(tmp_path, fake_upstream, actor=deaf, r=r, repeat=cfg)
+    plan = RepeatPlan.from_json(a.objects.get(next(e["plan"] for e in a.events.read("repeat_sealed"))))
+    assert plan.feedback == "items"
+    items = r.task_seen["rejected_items"]
+    assert items and all(i.startswith("slack message") for i in items) and r.task_seen["outcome"] == "not accepted"
+    # the items carry the check's kind, never the text the grader looked for (the request itself names the phrase,
+    # so the whole task.json is not the place to look: the items and the try's "sent back for" line are)
+    looked_for = [str(x.get("text")) for x in a.suite.grading(NOTIFY).assertions if x.get("text")]
+    assert looked_for and not any(t in json.dumps(items) for t in looked_for)
+    assert "what the request was sent back for" in r.system_seen and "{feedback}" not in r.system_seen
+    try_text = next(t for _, t in r.tries if f"on {NOTIFY}" in t)
+    assert "This run was NOT accepted" in try_text and "sent back for: slack message" in try_text
+    sent_back = try_text.split("sent back for:", 1)[1]
+    assert not any(t in sent_back for t in looked_for)
+    # the world's sources beside the run: names and counts, read or not — the chat the actor never opened shows so
+    src = r.task_seen["sources"]
+    assert src["slack"]["read"] is False and src["slack"]["written"] is False and "channels" in src["slack"]["holds"]
+    assert src["hubspot"]["written"] is True and "contacts" in src["hubspot"]["holds"]
+    assert "sources in this run: " in try_text and "slack (" in try_text and "never read" in try_text
+    assert src["slack"]["hook_read"] is False
+    assert "stage updated" not in json.dumps(src)
+    kept = {e["task"]: e for e in b.events.read("repeat_kept")}
+    assert kept[NOTIFY]["choice"] == "base" and kept[NOTIFY]["accepted"] == {"package": False}
+
+
+def test_the_plan_may_name_its_tasks_and_refuses_one_outside_the_split(tmp_path, fake_upstream):
+    """v2.1: [repeat] tasks names the tasks of a focused run (sealed like any plan); a task not in the split's
+    stream, or tasks beside max_tasks, is refused."""
+    actor = rsi.BusinessWorker(forget_notify=True)
+    r = ScriptedR("repeat")
+    a = activity(tmp_path / "named", fake_upstream, provider=actor, r=r,
+                 repeat={"encounters": 3, "tasks": [NOTIFY], "concurrency": 1})
+    refs = phases.freeze(a, out=quiet)
+    assert RepeatPlan.from_json(a.objects.get(refs["repeat_plan_ref"])).tasks == (NOTIFY,)
+    c = activity(tmp_path / "outside", fake_upstream, provider=actor, r=r,
+                 repeat={"encounters": 3, "tasks": ["rsi.update_stage"], "concurrency": 1})
+    with pytest.raises(ValueError, match="not in the test split"):
+        phases.freeze(c, out=quiet)
+    d = activity(tmp_path / "both", fake_upstream, provider=actor, r=r,
+                 repeat={"encounters": 3, "tasks": [NOTIFY], "max_tasks": 1, "concurrency": 1})
+    with pytest.raises(ValueError, match="not both"):
+        phases.freeze(d, out=quiet)
+
+
+def test_a_candidate_changed_after_its_try_may_be_tried_again_and_an_unchanged_one_is_refused(tmp_path, fake_upstream):
+    """v2.1: try_task on a candidate unchanged since its try is refused (no run); the same candidate, changed, runs
+    again (finance-v18: R re-tried unchanged directories and lost its tries); the adoption counts both runs."""
+    actor = rsi.BusinessWorker(forget_notify=True)
+    r = ScriptedR("repeat_retry")
+    _, b, _ = _learn(tmp_path, fake_upstream, actor=actor, r=r, repeat={"encounters": 3, "concurrency": 1})
+    refused = [t for err, t in r.tries if err]
+    ran = [t for err, t in r.tries if not err and f"on {NOTIFY}" in t]
+    assert len(refused) == 1 and "unchanged since its try" in refused[0] and len(ran) == 2
+    (adopted,) = b.events.read("repeat_adopted")
+    assert adopted["task"] == NOTIFY and adopted["probes"] == 2 and adopted["choice"] == "package"
+    # the try's session is readable to R (second cut): read_trajectory on it answered the run, not AccessDenied
+    assert r.trajectory_reads and not r.trajectory_reads[0][0] and "AccessDenied" not in r.trajectory_reads[0][1]
+
+
+def test_an_accepted_candidate_hardened_with_a_tool_in_a_second_directory_is_the_one_adopted(tmp_path, fake_upstream):
+    """v2.1, third cut (DESIGN §6.24): after an accepted try R copies the accepted package into package-2, adds the
+    tool, tries it; both runs accepted, the last declared (package-2) is adopted and carries the hook and the tool;
+    the later encounters call the tool."""
+    from reharness.improver.evidence import Evidence
+    from reharness.improver.repeat import footprint_of
+    actor = rsi.BusinessWorker(forget_notify=True)
+    r = ScriptedR("repeat_harden")
+    _, b, out = _learn(tmp_path, fake_upstream, actor=actor, r=r, repeat={"encounters": 3, "concurrency": 1})
+    scored = {(e["task"], e["encounter"]): e["passed"] for e in b.events.read("repeat_scored")}
+    assert [scored[(NOTIFY, k)] for k in (1, 2, 3)] == [False, True, True]
+    (adopted,) = b.events.read("repeat_adopted")
+    assert adopted["task"] == NOTIFY and adopted["choice"] == "package-2" and adopted["probes"] == 2
+    assert adopted["accepted"] == {"package": True, "package-2": True} and adopted["candidates"] == ["package", "package-2"]
+    # the acceptance line of the hook's try says to harden (no tool of R's ran, tries left); the hardened try's does not
+    first, second = [t for _, t in r.tries if f"on {NOTIFY}" in t][:2]
+    assert "THIS RUN WAS ACCEPTED" in first and "harden before you finish" in first and "3 tries left" in first
+    assert "THIS RUN WAS ACCEPTED" in second and "harden before you finish" not in second
+    st = json.loads((b.root / "rsi" / "repeat" / "rsi-test-repeat-test.learn.json").read_text(encoding="utf-8"))["tasks"]
+    files = b.objects.get(st[NOTIFY]["adopted"]["files_ref"])
+    assert "tools/post_channel_message.py" in files and "middlewares/remind_ops.py" in files
+    runs = b.results.runs()
+    e2 = next(x for x in b.results.all() if runs[x.run].candidate == "learn:e2" and x.task_id == NOTIFY)
+    ev = Evidence(b)
+    ev.trace.allow({e2.evidence or e2.attempt_id})
+    assert "post_channel_message" in footprint_of(ev.trace, e2.evidence or e2.attempt_id)["tools"]
+
+
+def test_a_hooks_own_listing_is_not_the_agent_reading_the_source():
+    """v2.1, fifth cut: a read-only call a hook made (`by: hook` in the digest) shows a source as listed only by the
+    hook, not as read; the agent's own GET shows it as read; any other method as written."""
+    from reharness.improver.repeat import sources_line, sources_of
+    svc = lambda route: "slack" if "slack" in route else "gmail" if "gmail" in route else None  # noqa: E731
+    holds = {"slack": "1 channels, 3 messages", "gmail": "3 messages"}
+    only_hook = sources_of(holds, [{"route": "slack.com/api/conversations.list", "method": "GET", "by": "hook"},
+                                   {"route": "gmail.googleapis.com/gmail/v1/users/me/messages/send", "method": "POST"}], svc)
+    assert only_hook["slack"] == {"holds": "1 channels, 3 messages", "read": False, "hook_read": True, "written": False}
+    assert only_hook["gmail"] == {"holds": "3 messages", "read": False, "hook_read": False, "written": True}
+    assert "slack (1 channels, 3 messages): listed only by your hook" in sources_line(only_hook)
+    agent = sources_of(holds, [{"route": "slack.com/api/conversations.list", "method": "GET", "by": "hook"},
+                               {"route": "slack.com/api/conversations.history", "method": "GET"}], svc)
+    assert agent["slack"]["read"] is True and agent["slack"]["hook_read"] is False
+    assert "slack (1 channels, 3 messages): read by the agent" in sources_line(agent)
+    assert "never read" in sources_line(sources_of(holds, [], svc))
+
+
+def test_an_accepted_try_the_session_never_handed_in_is_declared_by_the_host_and_stands(tmp_path, fake_upstream):
+    """v2.1, sixth cut (finance-v24): R's try is accepted, then its replies are cut at the output limit twice and the
+    session ends without a finish — the host declares the accepted candidate from the diff, runs V0 and V1 on the
+    tried files, and adopts it; the later encounters pass."""
+    actor = rsi.BusinessWorker(forget_notify=True)
+    r = ScriptedR("repeat_cut")
+    _, b, out = _learn(tmp_path, fake_upstream, actor=actor, r=r, repeat={"encounters": 3, "concurrency": 1})
+    scored = {(e["task"], e["encounter"]): e["passed"] for e in b.events.read("repeat_scored")}
+    assert [scored[(NOTIFY, k)] for k in (1, 2, 3)] == [False, True, True]
+    (adopted,) = b.events.read("repeat_adopted")
+    assert adopted["task"] == NOTIFY and adopted["choice"] == "package" and adopted["accepted"] == {"package": True}
+    assert any("was accepted and never handed in: the host declares it from the diff" in line for line in out)
+    entries = json.loads((b.root / "library" / "entries.json").read_text(encoding="utf-8"))["entries"]
+    assert entries and entries[0]["mechanism"].startswith("undeclared: the session ended (two replies in a row")

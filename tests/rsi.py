@@ -1,10 +1,10 @@
-"""The shared fixture of docs/modules/08_INTEGRATION_CASES.md §1: the `rsi` domain of the miniature upstream, a
-scripted worker that responds to what it is actually given, and a workspace with W0/R0/K installed.
+"""The shared fixture: the `rsi` domain of the miniature upstream (tests/fake_upstream), a scripted actor that responds to
+what it is actually given, and an activity over them with a small preset, the host's ProcessWorker and the scripted
+actor in place of the claude CLI.
 
-The scripted worker never looks at a candidate's name. It reads the request, the system prompt and the tool
-results, so a test that shows a new policy fixing a task shows the policy changing behaviour — not a fixture
-deciding to be nice to a version it recognises. Every report built from these tasks is marked
-`synthetic_contract_test`; the numbers are the fixture's, not a measurement.
+The scripted actor never looks at a candidate's name. It reads the request, the system prompt and the tool results, so a
+test that shows a package changing a task's outcome shows the package changing behaviour — not a fixture deciding to be
+nice to a version it recognises. Every number from these tasks is the fixture's, not a measurement.
 """
 from __future__ import annotations
 
@@ -12,94 +12,138 @@ import json
 import re
 from pathlib import Path
 
-from ouroloop.adapters import automationbench as ab
-from ouroloop.backends import KeywordBackend
-from ouroloop.benchmark import Budget, RunManifest, SplitManifest, digest
-from ouroloop.chat import ChatTurn, ToolCall
-from ouroloop.evolve import contracts as ct
-from ouroloop.points import builtin_points
-from ouroloop.runtime import Runtime
+from reharness.activity import presets
+from reharness.activity.workspace import open_activity
+from reharness.adapters import automationbench as ab
+from reharness.evaluate.results import Results
+from reharness.evaluate.splits import SplitManifest, TaskEntry
+from reharness.runtime.chat import ChatTurn, ToolCall
+from reharness.runtime.worker import ProcessWorker
 
 DOMAIN = "rsi"
 SLACK = "https://slack.com/api/chat.postMessage"
 HUBSPOT = "https://api.hubapi.com/crm/v3/objects/contacts"
 CONTACTS = {"Dana Reyes": "c1", "Sam Okafor": "c2", "Lea Fontaine": "c3", "Kai Mercer": "c4"}
-# Variants of one workflow are one family, declared rather than guessed (docs/DESIGN.md §3.1.2).
+# Variants of one workflow are one family, declared rather than guessed.
 FAMILIES = {"rsi.update_stage": "rsi.update",
             "rsi.notify_after_update": "rsi.notify_after_update",
             "rsi.notify_after_update_variant": "rsi.notify_after_update",
             "rsi.policy_hold": "rsi.hold",
             "rsi.notify_once": "rsi.notify_once",
+            "rsi.notify_ticket": "rsi.notify_ticket",
+            "rsi.update_no_notify": "rsi.update_no_notify",
             "rsi.dev_notify_after_update": "rsi.dev_notify_after_update",
             "rsi.dev_update_stage": "rsi.dev_update",
             "rsi.dev_policy_hold": "rsi.dev_hold",
             "rsi.final_notify_after_update": "rsi.final_notify_after_update",
             "rsi.final_update_stage": "rsi.final_update"}
 SPLITS = {"rsi.update": "train", "rsi.notify_after_update": "train", "rsi.hold": "train",
-          "rsi.notify_once": "train", "rsi.dev_notify_after_update": "dev", "rsi.dev_update": "dev",
+          "rsi.notify_once": "train", "rsi.notify_ticket": "train", "rsi.update_no_notify": "test",
+          "rsi.dev_notify_after_update": "dev", "rsi.dev_update": "dev",
           "rsi.dev_hold": "dev", "rsi.final_notify_after_update": "test", "rsi.final_update": "test"}
 TRAIN = [t for t, f in FAMILIES.items() if SPLITS[f] == "train"]
 DEV = [t for t, f in FAMILIES.items() if SPLITS[f] == "dev"]
 FINAL = [t for t, f in FAMILIES.items() if SPLITS[f] == "test"]
+# the two-way split of stage 4c (ACTIVITY §4): the dev families are test, the release is by decision
+NO_DEV_SPLITS = {f: ("test" if s == "dev" else s) for f, s in SPLITS.items()}
+# v1.8 (DESIGN §6.18): the quiet update in train — its family ranks second in the held-out order, so with seven train
+# tasks (holdout_share 0.4 -> 3) it is held out beside the notify pair: the held-out passing task a global "post in
+# #ops" heuristic breaks while it fixes the pair
+QUIET = "rsi.update_no_notify"
+QUIET_SPLITS = {**SPLITS, "rsi.update_no_notify": "train"}
+
+# A preset for the miniature domain: the real preset's every rule, with the gate's floors and the limits small enough for
+# three dev tasks and a scripted actor. Registered under its own name; nothing outside the tests reads it.
+TEST_PRESET = "rsi_test"
+RESEARCH_MODEL = "scripted-research"
+_preset = json.loads(json.dumps(presets.AUTOMATIONBENCH_V1))
+_preset["limits"] = {"max_steps": 12, "max_model_calls": 30, "max_tool_calls": 20, "max_seconds": 120,
+                     "max_tokens": 50000, "max_output_chars": 20000}
+_preset["gate"].update({"min_groups": 1, "min_tasks": 1, "control_readings": 1, "confirmations": 0})
+_preset["bench"]["concurrency"] = 1
+# the memory under the fake client's bag-of-words vectors (tests/memory/fake_memory.py), one task per stream step
+_preset["memory"].update({"min_score": 0.2, "min_other_tasks": 1, "stream_batch": 1})
+# the held-out part (IMPROVER §3, v1.2) at the preset's share: K's order seed 0 ranks the notify_after_update family
+# first, so its two tasks are held out (HELD) and the other four studied (STUDY); the forgetful actor fails one task
+# on each side (notify_ticket studied, the notify pair held out), so V2a and V2b ask for one claimed task
+_preset["improver"].update({"toolcheck_min_pass": 1, "replay_min_triggers": 1,
+                            # the strict rule of v1.7 (DESIGN §6.17): the tests describe it; v1.12 loosened
+                            # the preset's ceilings (DESIGN §6.22), a config may still tighten them
+                            "accept_max_regressions": 0, "accept_floor_tolerance": 1, "l5_per_round": 1})
+# four rounds at most, two in a row without an acceptance end the cycle
+_preset["schedule"].update({"rounds": 4, "patience": 2})
+presets.PRESETS[TEST_PRESET] = _preset
+HELD = ("rsi.notify_after_update", "rsi.notify_after_update_variant")
+STUDY = ("rsi.update_stage", "rsi.policy_hold", "rsi.notify_once", "rsi.notify_ticket")
+HELD_QUIET = (*HELD, QUIET)             # the held-out part under QUIET_SPLITS (the studied part is STUDY)
+
+PRICING = {"input_per_1k": 0.004, "output_per_1k": 0.02, "cache_read_per_1k": 0.0002, "cache_write_per_1k": 0.008,
+           "max_input_tokens": 20000, "max_output_tokens": 5000, "source": "test prices"}
 
 
 def suite(path) -> ab.Suite:
     return ab.load_suite(DOMAIN, path)
 
 
-def splits(s: ab.Suite) -> SplitManifest:
+def splits(s: ab.Suite, table: dict | None = None) -> SplitManifest:
     fams, rule = ab.families(s, FAMILIES)
-    return SplitManifest(DOMAIN, s.versions, rule, s.entries(fams), dict(SPLITS))
+    return SplitManifest(DOMAIN, s.versions, rule, [TaskEntry.of(e) for e in s.entries(fams)], dict(table or SPLITS))
 
 
-def runtime(root) -> Runtime:
-    rt = Runtime(root, {"mock": KeywordBackend()}, "mock", seed=0)
-    for p in builtin_points():
-        rt.register(p)
-    return rt
+def config(root: Path, upstream: str, **sections) -> dict:
+    """A config of the miniature domain under the test preset. `sections` replace or extend tables."""
+    cfg = {"_base": str(root), "workspace": {"root": str(Path(root) / "ws")},
+           "bench": {"domain": DOMAIN, "upstream_path": upstream, "families": dict(FAMILIES), "smoke_tasks": 1},
+           "model": {"type": "claude_code", "model": "scripted-1", "effort": "medium", "max_tokens": 1000},
+           "research_model": {"type": "claude_code", "model": RESEARCH_MODEL, "effort": "medium", "max_tokens": 1000},
+           "pricing": dict(PRICING), "harness": {"preset": TEST_PRESET}, "memory": {"enabled": False},
+           "budget": {"usd": 50.0, "final_usd": 10.0}, "rsi": {"scope_id": "rsi-test"}}
+    for name, table in sections.items():
+        if table is None:
+            cfg.pop(name, None)
+        elif isinstance(table, dict) and isinstance(cfg.get(name), dict):
+            cfg[name] = {**cfg[name], **table}
+        else:
+            cfg[name] = table
+    return cfg
 
 
-def workspace(root, split_ref: str = "", worker_ref: str | None = None, research_ref: str | None = None,
-              **core_kw):
-    """A workspace with W0, R0, K and a bootstrap release installed. -> (Releases, release ref, Objects)."""
-    from ouroloop import policies as P
-    objects = ct.Objects(root)
-    releases, rel = P.bootstrap_workspace(root, objects=objects, worker_ref=worker_ref,
-                                          research_ref=research_ref, domain=DOMAIN, split_ref=split_ref,
-                                          adapter="ouroloop.adapters.automationbench", scorer="rubric.v1",
-                                          toolset=ab.TOOLSET, **core_kw)
-    return releases, rel, objects
+def write_split(root: Path, s: ab.Suite, table: dict | None = None) -> SplitManifest:
+    """The rsi domain's declared split, frozen into the workspace before the activity opens (freeze_split keeps what is
+    on disk), so tests read the train/dev/test sets of SPLITS rather than a hash rule's. A split already frozen there is
+    kept: the fake upstream's versions name pydantic only once something has imported it, so freezing it again after a
+    phase would read as a changed split."""
+    path = Results(Path(root) / "ws", DOMAIN).manifest_path()
+    if path.exists():
+        return SplitManifest.load(path)
+    manifest = splits(s, table)
+    manifest.freeze(path)
+    return manifest
 
 
-def run_manifest(candidate: str, role: str, split: str, *, budget: Budget | None = None,
-                 data: str = "", **v2) -> RunManifest:
-    return RunManifest(candidate, role, split, {"provider": "scripted", "model": "scripted-1"},
-                       prompt_hash=digest({"system": candidate})[:16],
-                       environment={"upstream": "fake", "toolset": ab.TOOLSET},
-                       budget=budget or Budget(max_steps=8, max_tool_calls=12), data=data, **v2)
+def activity(root: Path, upstream: str, *, provider=None, worker=None, freeze_k: bool = True, out=None,
+             research=None, memory_client=None, splits_table: dict | None = None, **sections):
+    """The activity of `config(root, upstream, **sections)` with the declared split, ProcessWorker (a test worker:
+    for_tests), `provider` (a BusinessWorker by default) for the actor's calls and `research` for the research model's
+    (the actor's provider when none is given). `memory_client` makes the memory's client (a test's in-process stand-in
+    for the sidecar's; the real one otherwise). `splits_table` replaces the declared split (NO_DEV_SPLITS: no dev)."""
+    cfg = config(root, upstream, **sections)
+    write_split(root, suite(upstream), splits_table)
+    provider = provider if provider is not None else BusinessWorker()
+    research = research if research is not None else provider
+    return open_activity(cfg, out=out or (lambda _line: None), freeze_k=freeze_k,
+                         worker_factory=(lambda: worker) if worker is not None else
+                         (lambda: ProcessWorker(for_tests=True)),
+                         provider_factory=lambda table: research if table.get("model") == RESEARCH_MODEL else provider,
+                         memory_client_factory=memory_client)
 
 
-W0_FINISH = "Report what you did when you are finished."
-
-
-def w0(objects) -> str:
-    """The starting worker version: no finish check, so the scripted agent stops after the update."""
-    from ouroloop import policies as P
-    return P.default_worker_set(objects, finish_check=W0_FINISH)
-
-
-def w1(objects) -> str:
-    """The same version with a finish-check instruction bound to worker.finish."""
-    from ouroloop import policies as P
-    return P.replace_policies(objects, w0(objects), [
-        P.descriptor(objects, "worker.finish", "workflow",
-                     {"builtin": "finish_check.v1",
-                      "instruction_ref": objects.put_json("change", {"text": P.FINISH_CHECK})})])
-
-
-# ---------------------------------------------------------------------------- the scripted worker
+# ---------------------------------------------------------------------------- the scripted actor
 PUSHBACK = "Keep working on the task"
+AUDIT_SYSTEM = "You audit the agent's work."     # the scripted audit hook's aux prompt (tests/improver/scripted_r.py)
 FINISH_CHECK_MARK = "name the tool result that shows it is done"
+LIBRARY_MARK = "[lib "                  # an entry of the memory's opening block (memory/retrieval.py)
+NOTIFY_TOOL = "post_channel_message"    # a package tool for the notification: offered, the actor uses it
 
 
 def _needs(text: str) -> dict:
@@ -110,403 +154,132 @@ def _needs(text: str) -> dict:
             "contact": CONTACTS.get(name or "", ""),
             "notify": "#ops" in text and phrase is not None,
             "phrase": (phrase.group(1).strip() if phrase else ""),
-            "hold": "change nothing" in text}
+            "hold": "change nothing" in text,
+            "quiet": "#ops" in text and "do not post" in text}       # the request forbids a post in #ops
 
 
 def _done(messages: list[dict]) -> dict:
-    """What has already been done, read from the tool calls in the conversation."""
-    updated, sent = False, 0
+    """What has been done, read from the calls whose results came back without an error."""
+    ok = {r.get("id") for m in messages if m.get("role") == "tool" for r in m.get("results") or ()
+          if not r.get("is_error")}
+    updated, sent, planned = False, 0, False
     for m in messages:
         for call in m.get("tool_calls") or ():
+            if call.id not in ok:
+                continue
+            if call.name == "plan_changes":
+                planned = True
+            if call.name == NOTIFY_TOOL:
+                sent += 1
             if call.name != "api_fetch":
                 continue
             body = json.loads(call.args.get("body") or "{}")
             updated = updated or (call.args.get("url") == HUBSPOT and body.get("stage") == "opportunity")
             sent += int(call.args.get("url") == SLACK)
-    return {"updated": updated, "sent": sent}
+    return {"updated": updated, "sent": sent, "planned": planned}
+
+
+def audit_reply(messages: list[dict], *, noisy: bool = False) -> list[str]:
+    """What the scripted model answers the audit hook (v1.6): the missing items. The hook's prompt carries the agent's
+    final text (with its plan) and its writes; a planned post with no "Message posted." is missing. `noisy`: something
+    is always missing (a false alarm on every passing attempt)."""
+    if noisy:
+        return ["something is missing"]
+    text = " ".join(str(m.get("content") or "") for m in messages if m.get("role") == "user")
+    planned = re.search(r"Planned:.*?(post [^;.]+ in #ops)", text)
+    if planned and "Message posted." not in text:
+        return [planned.group(1)]                       # the planned item, in the agent's own words
+    return []
 
 
 class BusinessWorker:
-    """A scripted agent over the rsi tasks.
+    """A scripted actor over the rsi tasks.
 
-    It updates the record, and it posts the notification only when something in front of it says to check the
-    request again: a finish-check instruction in the system prompt, or a pushback from the guard. Without either
-    it finishes after the update, which is the behaviour gap the loop starts from (IT-01).
-    """
+    It plans first when the package offers plan_changes, updates the record, and posts the notification only when
+    something in front of it says to check the request again: the finish-check text in the system prompt, a pushback,
+    or a note of the memory's opening block about #ops — or when the package offers a tool for it (NOTIFY_TOOL), which
+    it then uses. It finishes with the finish tool when one is offered, and
+    then names the library entries it was shown in a `library-used:` line. `forget_notify` ignores the finish check,
+    which is the behaviour gap a candidate (or a lesson of the memory) can close."""
     name = "scripted"
     model = "scripted-1"
 
-    def __init__(self, *, repeat_notify: bool = False, ignore_finish_check: bool = False,
-                 ignore_pushback: bool = False):
-        self.repeat_notify = repeat_notify              # sends twice: the regression on rsi.notify_once
-        self.ignore_finish_check = ignore_finish_check
-        self.ignore_pushback = ignore_pushback
+    def __init__(self, *, repeat_notify: bool = False, forget_notify: bool = False, ignore_pushback: bool = False,
+                 flaky_tool: bool = False, flaky_notify: bool = False, suggestible: bool = False,
+                 usage: dict | None = None):
+        """`flaky_tool`: the package's notify tool is used only on a task's even-numbered attempts (a candidate whose
+        fix does not repeat); `flaky_notify`: without the tool, the notification is posted on even-numbered attempts
+        unprompted (a working line whose own readings disagree); `suggestible` (v1.8): a pushback that names #ops
+        makes it post there even when the request forbade it — the agent of finance-v7's s4, which did what the
+        hook said rather than what the task's documents said."""
+        self.repeat_notify, self.forget_notify, self.ignore_pushback = repeat_notify, forget_notify, ignore_pushback
+        self.flaky_tool, self.flaky_notify, self.suggestible = flaky_tool, flaky_notify, suggestible
+        self.usage = usage or {"input_tokens": 100, "output_tokens": 20}
         self.calls = 0
+        self.seen: list = []
+        self.attempts: dict = {}        # task text -> attempts begun (the first call of an attempt has no results)
 
-    def chat(self, system: str, messages: list[dict], specs) -> ChatTurn:
+    def chat(self, system: str, messages: list[dict], specs, **_kw) -> ChatTurn:
         self.calls += 1
+        self.seen.append({"system": system, "messages": messages, "tools": [s.name for s in specs or ()]})
+        if (system or "").startswith(AUDIT_SYSTEM):          # an audit hook's aux call in an attempt
+            return ChatTurn(json.dumps(audit_reply(messages)), [], "end", usage=dict(self.usage))
+        names = {s.name for s in specs or ()}
         task = next((m["content"] for m in messages if m.get("role") == "user"), "")
+        if not any(m.get("role") in ("assistant", "tool") for m in messages):
+            self.attempts[task] = self.attempts.get(task, 0) + 1
+        even = self.attempts.get(task, 0) % 2 == 0
         want, done = _needs(task), _done(messages)
-        pushed = any(PUSHBACK in str(m.get("content", "")) for m in messages if m.get("role") == "user")
-        # A capability package speaks through the same channels: its memory is in the system prompt, and a skill's
-        # text arrives as the result of a read_skill call the worker chose to make.
         read = [r.get("output", "") for m in messages if m.get("role") == "tool" for r in m.get("results") or ()]
-        reminded = (FINISH_CHECK_MARK in (system or "") and not self.ignore_finish_check) or \
-                   (pushed and not self.ignore_pushback) or any(FINISH_CHECK_MARK in str(r) for r in read)
-        usage = {"input_tokens": 100, "output_tokens": 20}
-        skills = re.findall(r"^- ([a-z0-9_-]+)", (system or "").split("read_skill tool", 1)[1], re.M) \
-            if "read_skill tool" in (system or "") else []
-        asked = {c.args.get("name") for m in messages for c in m.get("tool_calls") or () if c.name == "read_skill"}
-        unread = [name for name in skills if name not in asked]
-        if unread and any(sp.name == "read_skill" for sp in specs or ()):
-            return ChatTurn("", [ToolCall(f"k{len(asked)}", "read_skill", {"name": unread[0]})], "tool_use",
-                            usage=usage)
+        # a pushback comes back as a user message or as the finish tool's result (the stirrup seed's on_finish)
+        pushed = any(PUSHBACK in str(m.get("content", "")) for m in messages if m.get("role") == "user") or \
+            any(str(r).startswith(PUSHBACK) for r in read)
+        noted = LIBRARY_MARK in (system or "") and "#ops" in (system or "").split(LIBRARY_MARK, 1)[1]
+        reminded = not self.forget_notify and (FINISH_CHECK_MARK in (system or "") or
+                                               any(FINISH_CHECK_MARK in str(r) for r in read)) or \
+            (pushed and not self.ignore_pushback) or noted
+        self.cited = sorted(set(re.findall(r"\[lib ([0-9a-f]{8})\]", system or "")))
+        usage = dict(self.usage)
+
+        def call(name, args, n=1):
+            return ChatTurn("", [ToolCall(f"c{self.calls}.{n}", name, args)], "tool_use", usage=usage)
+        planned = ""
+        if done["planned"] and (want["update"] or want["notify"]):
+            items = (["move the contact to opportunity"] if want["update"] else []) + \
+                    ([f"post {want['phrase']} in #ops"] if want["notify"] else [])
+            planned = " Planned: " + "; ".join(items) + "."
         if want["hold"]:
-            return ChatTurn("The request is not allowed by the data policy, so I changed nothing.", [], "end",
-                            usage=usage)
+            return self._finish("The request is not allowed by the data policy, so I changed nothing.", names, usage)
+        if "plan_changes" in names and not done["planned"] and (want["update"] or want["notify"]):
+            changes = [{"content": "move the contact to opportunity", "status": "pending"}] if want["update"] else []
+            if want["notify"]:
+                changes.append({"content": f"post {want['phrase']} in #ops", "status": "pending"})
+            return call("plan_changes", {"changes": changes, "excluded": []})
         if want["update"] and not done["updated"]:
-            return ChatTurn("", [ToolCall("t1", "api_fetch", {
-                "method": "PATCH", "url": HUBSPOT,
-                "body": json.dumps({"id": want["contact"], "stage": "opportunity"})})], "tool_use", usage=usage)
-        if want["notify"] and (reminded or not want["update"]) and done["sent"] == 0:
-            return ChatTurn("", [ToolCall("t2", "api_fetch", {
-                "method": "POST", "url": SLACK,
-                "body": json.dumps({"channel": "C1", "text": f"{want['phrase']} for the contact"})})],
-                "tool_use", usage=usage)
+            return call("api_fetch", {"method": "PATCH", "url": HUBSPOT,
+                                      "body": json.dumps({"id": want["contact"], "stage": "opportunity"})})
+        if want["notify"] and NOTIFY_TOOL in names and done["sent"] == 0 and (done["updated"] or not want["update"]) \
+                and (not self.flaky_tool or even):
+            return call(NOTIFY_TOOL, {"phrase": want["phrase"]})
+        if want["notify"] and (reminded or not want["update"] or (self.flaky_notify and even)) and done["sent"] == 0:
+            return call("api_fetch", {"method": "POST", "url": SLACK,
+                                      "body": json.dumps({"channel": "C1", "text": f"{want['phrase']} for the contact"})})
         if want["notify"] and self.repeat_notify and done["sent"] == 1:
-            return ChatTurn("", [ToolCall("t3", "api_fetch", {
-                "method": "POST", "url": SLACK,
-                "body": json.dumps({"channel": "C1", "text": f"{want['phrase']} again"})})], "tool_use",
-                usage=usage)
-        return ChatTurn("Done: the record is updated." + (" Message posted." if done["sent"] else ""), [],
-                        "end", usage=usage)
+            return call("api_fetch", {"method": "POST", "url": SLACK,
+                                      "body": json.dumps({"channel": "C1", "text": f"{want['phrase']} again"})})
+        pushback_text = " ".join(str(m.get("content", "")) for m in messages if m.get("role") == "user") \
+            + " ".join(str(r) for r in read)
+        if want["quiet"] and self.suggestible and pushed and "#ops" in pushback_text.split(PUSHBACK, 1)[-1] \
+                and done["sent"] == 0:
+            return call("api_fetch", {"method": "POST", "url": SLACK,
+                                      "body": json.dumps({"channel": "C1", "text": "update for the contact"})})
+        quiet = " No message in #ops, as the request says." if want["quiet"] else ""
+        return self._finish("Done: the record is updated." + (" Message posted." if done["sent"] else "") + quiet
+                            + planned, names, usage)
 
-
-# ---------------------------------------------------------------------------- a fixture decision model
-class PhraseDecider:
-    """A decision backend that reads the view: the task is complete when the phrase the request asked for appears
-    in a tool result, and the record has been updated if the request asked for that.
-
-    A fixture, not a training result. Its quality is defined here, so a test that shows the model changing what
-    the agent does shows the wiring; whether a real small model can learn this is what a real experiment answers.
-    """
-    name = "phrase"
-
-    def __init__(self, model: str = "trained-1", confidence: float = 0.9):
-        self.model, self.confidence = model, confidence
-        self.views: list[str] = []
-
-    def decide(self, requests):
-        from ouroloop.types import Answer
-        out = []
-        for r in requests:
-            self.views.append(r.state)
-            head, _, tail = r.state.partition("tool calls and what they returned")
-            phrase = re.search(r"phrase ([a-z ]+?)(?:,|\.|$)", head)
-            needs_update = "opportunity stage" in head and "change nothing" not in head
-            done = (phrase is None or phrase.group(1).strip() in tail) and (
-                not needs_update or "PATCH" in tail)
-            p = self.confidence if done else 1 - self.confidence
-            out.append(Answer({"yes": p, "no": 1 - p}, self.model))
-        return out
-
-
-class PhraseTrainer:
-    """Trains nothing and says so: it reads the dataset the framework built (so a missing file is still an error)
-    and returns a PhraseDecider as the artifact."""
-    supports_weights = True
-    name = "phrase"
-
-    def __init__(self, model: str = "trained-1", fail: bool = False, confidence: float = 0.9):
-        self.model, self.fail, self.confidence = model, fail, confidence
-        self.jobs: list = []
-        self.attached: list = []
-
-    def train(self, job):
-        from ouroloop.evolve.train import TrainError, TrainResult
-        if self.fail:
-            raise TrainError("CUDA out of memory")
-        rows = sum(1 for _ in open(Path(job.data_dir) / "train.jsonl", encoding="utf-8"))
-        self.jobs.append({"version": job.version, "rows": rows, "recipe": dict(job.recipe)})
-        return TrainResult(self.model, {"type": "rsi:PhraseDecider", "model": self.model,
-                                       "confidence": self.confidence},
-                           {"id": f"job-{job.version}", "host": "local", "result": {"rows": rows}})
-
-
-class UnknownJobTrainer(PhraseTrainer):
-    """A trainer whose remote job state cannot be read: `attach` returns nothing, and nothing is resubmitted."""
-
-    def attach(self, job_id):
-        self.attached.append(job_id)
-        return None
-
-
-def collect(root, suite, splits, *, worker_ref=None, provider=None, tasks=(), probe=True, serving=None,
-            releases=None, objects=None, rt=None, split="train", repeats=1, candidate="W0", role="base",
-            arm="subject", plan_ref="", stop_view=None):
-    """Run some tasks with a bound release and return everything a later step needs.
-
-    With `probe`, the completion probe labels each stop decision from the state it was made on, which is what the
-    train split is for; the runner refuses it anywhere else.
-    """
-    from ouroloop import policies as P
-    from ouroloop.evolve.task_eval import make_agent_factory, run_tasks
-    rt = rt or runtime(root)
-    objects = objects or ct.Objects(root)
-    if releases is None:
-        releases, release, objects = workspace(root, split_ref=splits.hash(), worker_ref=worker_ref)
-    release = releases.active()["release_ref"]
-    bound = P.bind_release(release, profile="task", services=P.Services(objects, serving=serving),
-                           authorization="bootstrap")
-    manifest = run_manifest(candidate, role, split, data=splits.hash(), system_release_ref=release,
-                            worker_ref=objects.load(release, ct.SystemRelease).worker_ref,
-                            research_ref=objects.load(release, ct.SystemRelease).research_ref,
-                            core_ref=objects.load(release, ct.SystemRelease).core_ref)
-    factory = make_agent_factory(rt, provider or BusinessWorker(), budget=manifest.budget, bound=bound,
-                                objects=objects, stop_view=stop_view)
-    results = run_tasks(suite, list(tasks or TRAIN), factory, run=manifest, splits=splits, probe=probe,
-                        repeats=repeats, arm=arm, plan_ref=plan_ref, release_ref=release)
-    return {"rt": rt, "objects": objects, "bound": bound, "results": results, "releases": releases,
-            "release": release, "run": manifest}
-
-
-# ---------------------------------------------------------------------------- a scripted research step
-class ScriptedResearcher:
-    """A research step that reads the context it is given.
-
-    It names a gap only where the results it can see show tasks that half-passed, and it cites evidence that is
-    actually in the context. It proposes the carrier it was configured for, so a test can exercise the
-    prompt-only path and the training path through the same loop. It never looks at a candidate's name, and it
-    cannot see a task outside its partitions, because the context does not contain one.
-    """
-
-    def __init__(self, *, carrier: str = "prompt", instruction: str | None = None, min_labels: int = 4,
-                 cite_missing: bool = False, target: str = "worker.finish", follow_prompt: bool = False):
-        self.carrier = carrier
-        self.instruction = instruction
-        self.min_labels = min_labels
-        self.cite_missing = cite_missing       # RL-04: cite evidence that does not exist
-        self.target = target
-        # With follow_prompt, the change it proposes depends on what the loaded research policy's propose prompt
-        # asks for: that is how a campaign can tell two research policies apart by what they produce.
-        self.follow_prompt = follow_prompt
-        self.seen: list = []
-        self.requests: list = []
-
-    def diagnose(self, context, prompt: str):
-        self.requests.append({"step": "diagnose", "prompt": prompt,
-                              "prompt_hash": ct.digest({"system": prompt})[:16]})
-        self.seen.append(context)
-        out = []
-        for task_id, entry in sorted((context.results or {}).get("tasks", {}).items()):
-            if entry.get("pass_rate") in (None, 1.0):
-                continue
-            if not entry.get("mean_partial_credit"):
-                continue
-            out.append({"id": f"req:{task_id}", "context": f"{task_id} in {entry['split']}",
-                        "expected_behavior": "every requirement of the request is carried out, including the "
-                                             "one stated at the end",
-                        "observed_behavior": f"the task scored {entry['mean_partial_credit']} and completed "
-                                             f"{entry['pass_rate']}",
-                        "evidence_refs": list(context.evidence[:2]), "acceptance": "the task completes",
-                        "recurrence": entry.get("attempts", 1)})
-        return out
-
-    def propose(self, context, prompt: str, requirements, experience=()):
-        from ouroloop.research.experiment import ProposalResult
-        self.requests.append({"step": "propose", "prompt": prompt,
-                              "prompt_hash": ct.digest({"system": prompt})[:16]})
-        if not requirements:
-            return ProposalResult([], next_action="collect", reason="no task in the context shows a gap")
-        evidence = tuple(context.evidence[:2])
-        if self.cite_missing:
-            evidence = ("evidence:sha256:" + "f" * 64,)
-        if self.carrier == "train":
-            labels = int((context.feedback or {}).get("valid") or 0)
-            if labels < self.min_labels:
-                return ProposalResult([], next_action="collect",
-                                      reason=f"{labels} labels is too few to train on")
-            options = (context.targets or {}).get("worker.stop.training")
-            if not options:
-                return ProposalResult([], next_action="stop",
-                                      reason="this activity has no trainer, so training cannot be proposed")
-            proposal = ct.ExperimentProposal(
-                owner="worker", hypothesis="a learned completion judgement stops the agent from finishing early",
-                requirements=tuple(r["id"] for r in requirements), evidence_refs=evidence, changes=(),
-                training=({"point": options["point"], "feedback_ref": options["feedback"][0],
-                           "data_selection_ref": options["data_selection_ref"],
-                           "recipe_ref": options["recipe_ref"]},),
-                expected="the model proposes no at the moment the notification is still missing")
-            return ProposalResult([proposal], next_action="none", evidence_refs=evidence)
-        text = self.instruction
-        if text is None:
-            from ouroloop.policies import FINISH_CHECK
-            text = FINISH_CHECK
-            if self.follow_prompt and "finish check" not in (prompt or "").lower():
-                # The prompt did not ask for a check of the request's requirements, so this step proposes the
-                # blander change it was told to: the step follows its instructions, not a version name.
-                text = "Keep your final message short and say what you did."
-        change = ({"target": self.target, "kind": "workflow",
-                   "change": {"builtin": "finish_check.v1", "instruction": text}}
-                  if self.carrier == "workflow" else
-                  {"target": self.target, "kind": "prompt", "change": {"text": text}})
-        proposal = ct.ExperimentProposal(
-            owner="worker", hypothesis="the agent finishes before doing the step stated at the end of the request",
-            requirements=tuple(r["id"] for r in requirements), evidence_refs=evidence,
-            changes=(change,), expected="the half-passing tasks complete, and the others do not regress",
-            abandon_if="the tasks that already passed start failing")
-        return ProposalResult([proposal], next_action="none", evidence_refs=evidence)
-
-
-class ResearchPolicyProposer:
-    """A research step that proposes a change to its own R, from what the research history shows.
-
-    It looks for rounds that ended without an installed candidate — evidence that the way this policy proposes
-    changes is not closing the gaps — and proposes a propose-prompt that names the missing step. It reads the
-    experience it was given; it does not know which version it is running as.
-    """
-
-    def __init__(self, *, target: str = "research.propose", instruction: str | None = None):
-        self.target = target
-        self.instruction = instruction
-        self.requests: list = []
-
-    def diagnose(self, context, prompt: str):
-        self.requests.append({"step": "diagnose", "prompt_hash": ct.digest({"system": prompt})[:16]})
-        idle = [e for e in (context.experience or ())
-                if e.get("kind") == "round" or (e.get("kind") == "experiment" and not e.get("installed"))]
-        half = [t for t, entry in ((context.results or {}).get("tasks") or {}).items()
-                if entry.get("pass_rate") not in (None, 1.0) and entry.get("mean_partial_credit")]
-        if not idle and not half:
-            return []
-        return [{"id": "req:research.propose", "context": "the research history of this activity",
-                 "expected_behavior": "a proposal names the step the request asks for at the end and how it "
-                                      "would be checked",
-                 "observed_behavior": f"{len(idle)} rounds installed nothing while {len(half)} tasks kept "
-                                      f"half-passing",
-                 "evidence_refs": list(context.evidence[:1]), "acceptance": "the next proposal closes the gap",
-                 "recurrence": max(len(idle), 1)}]
-
-    def propose(self, context, prompt: str, requirements, experience=()):
-        from ouroloop.research.experiment import ProposalResult
-        self.requests.append({"step": "propose", "prompt_hash": ct.digest({"system": prompt})[:16]})
-        if not requirements:
-            return ProposalResult([], next_action="collect", reason="the research history shows no gap yet")
-        from ouroloop.policies import PROPOSE
-        text = self.instruction or (
-            PROPOSE + " When a request states a requirement at its end, propose a finish check that names the "
-                      "tool result showing each requirement is done.")
-        proposal = ct.ExperimentProposal(
-            owner="research", hypothesis="a propose step that asks for a finish check produces candidates that "
-                                        "close end-of-request gaps",
-            requirements=tuple(r["id"] for r in requirements), evidence_refs=tuple(context.evidence[:1]),
-            changes=({"target": self.target, "kind": "prompt", "change": {"text": text}},),
-            expected="the worker candidates this policy proposes close the gap the requirement names")
-        return ProposalResult([proposal], next_action="none", evidence_refs=tuple(context.evidence[:1]))
-
-
-# ---------------------------------------------------------------------------- a scripted coding session (v0.3)
-class SessionScript:
-    """A research step for the coding-session round (docs/modules/04_RESEARCH_LOOP.md §1, v0.3): notes as the
-    scripted note researchers write them, and the session played by tool calls from a plan.
-
-    `plan(inputs) -> [candidate]` reads the session's first message (the round's inputs as JSON: notes, coverage,
-    package_files, ledger, histogram, k, limits) and returns the candidates to make, each
-    {"dir", "files": {path: text}, "declaration": {mechanism, site, carrier, trigger_condition, differs_from?}} —
-    `notes` and `predicted_affected` are filled from the inputs' notes when the candidate leaves them out, so the
-    declaration cites what the round really gave it. Each candidate's files go out in one turn of write_file calls
-    and the last turn is `finish`. `repair(message, inputs) -> [candidate]` answers a check output in the same
-    session: its candidates' files are written and `finish` is called again. The script reads only what the
-    session hands it and never looks up a workspace.
-
-    v0.4 (docs/design/V0_4_PLAN.md §1.3): with `read` (the default) the session's first turn reads, with
-    read_trajectory, one listed failed attempt among each candidate's predicted tasks and the first listed passing
-    attempt — what admission's read floors ask of a candidate under the v3 preset. `read=False` plays a session that
-    reads nothing."""
-    origin = "scripted"
-
-    def __init__(self, plan, *, repair=None, note=None, read: bool = True):
-        self.plan, self.repair, self._note, self.read = plan, repair, note, read
-        self.requests: list = []
-        self.seen: list = []
-        self.inputs: dict | None = None
-        self._queue: list = []
-
-    def note_request(self, summary, prompt, *, allowed=()):
-        return prompt, json.dumps({"allowed": list(allowed), "failure": summary}, sort_keys=True)
-
-    def note(self, system, user):
-        failure = json.loads(user)["failure"]
-        self.requests.append({"step": "note", "task": failure["task_id"]})
-        self.seen.append(user)
-        if self._note is not None:
-            return self._note(failure)
-        missed = any("slack" in json.dumps(c).lower() or "message" in json.dumps(c).lower()
-                     for c in failure["checks"] if not c["passed"])
-        return {"failure_class": "missed_step" if missed else "other",
-                "root_cause": "finished after the update without doing the rest of the request",
-                "mechanism": "re-read the request and check every step before finishing",
-                "component": "memory", "generality": "any multi-step request can end early"}
-
-    def _declare(self, candidates: list) -> ToolCall:
-        notes = [n for n in (self.inputs or {}).get("notes") or ()]
-        declared = []
-        for c in candidates:
-            d = dict(c["declaration"])
-            d.setdefault("notes", [n["note_ref"] for n in notes])
-            d.setdefault("predicted_affected", sorted({n["task_id"] for n in notes}))
-            d.setdefault("trigger_condition", "always")
-            declared.append({"dir": c["dir"], **d})
-        return ToolCall("f1", "finish", {"candidates": declared})
-
-    def _reads(self, candidates: list) -> list:
-        """One read_trajectory per candidate of a listed failed attempt among its predicted tasks (the notes' tasks
-        when it names none), and one of the first listed passing attempt."""
-        listed = list((self.inputs or {}).get("trajectories") or ())
-        notes = [n["task_id"] for n in (self.inputs or {}).get("notes") or ()]
-        refs = []
-        for c in candidates:
-            predicted = set(c["declaration"].get("predicted_affected") or notes)
-            hit = next((e["attempt_ref"] for e in listed if e.get("outcome") != "passing"
-                        and e.get("task_id") in predicted), None)
-            if hit and hit not in refs:
-                refs.append(hit)
-        passing = next((e["attempt_ref"] for e in listed if e.get("outcome") == "passing"), None)
-        if passing:
-            refs.append(passing)
-        return [ToolCall(f"r{i}", "read_trajectory", {"attempt_ref": ref, "limit": 4096}) for i, ref in enumerate(refs)]
-
-    def _enqueue(self, candidates: list) -> None:
-        if not candidates:
-            # nothing to propose: the session ends with a next_action, as the summary call answered `stop`
-            self._queue.append([ToolCall("f1", "finish", {"next_action": "stop", "reason": "nothing to change"})])
-            return
-        for c in candidates:
-            self._queue.append([ToolCall(f"w{i}", "write_file", {"path": f"candidates/{c['dir']}/{path}", "text": text})
-                                for i, (path, text) in enumerate(sorted(c["files"].items()))])
-        self._queue.append([self._declare(candidates)])
-
-    def session_turn(self, system, messages, tools):
-        self.requests.append({"step": "session", "system": system, "prompt_hash": ct.digest({"system": system})[:16]})
-        last = messages[-1]
-        self.seen.append(json.dumps(last, default=str))
-        if len(messages) == 1:
-            # a new session: its first message is the round's inputs and nothing else (one session per round)
-            self.inputs = json.loads(messages[0]["content"])
-            self._queue = []
-            candidates = self.plan(self.inputs)
-            reads = self._reads(candidates) if self.read and candidates else []
-            if reads:
-                self._queue.append(reads)
-            self._enqueue(candidates)
-        elif last.get("role") == "user" and "failed its draft check" in str(last.get("content", "")):
-            self._queue = []
-            fixed = self.repair(str(last["content"]), self.inputs) if self.repair is not None else []
-            if fixed:
-                self._enqueue(fixed)
-            else:
-                return ChatTurn("I cannot fix this.", [], "end")
-        if not self._queue:
-            return ChatTurn("done", [], "end")
-        calls = self._queue.pop(0)
-        return ChatTurn("", calls, "tool_use")
+    def _finish(self, text: str, names: set, usage: dict) -> ChatTurn:
+        if getattr(self, "cited", None):
+            text += "\nlibrary-used: " + ",".join(self.cited)
+        if "finish" in names:
+            return ChatTurn("", [ToolCall(f"c{self.calls}.f", "finish", {"reason": text})], "tool_use", usage=usage)
+        return ChatTurn(text, [], "end", usage=usage)

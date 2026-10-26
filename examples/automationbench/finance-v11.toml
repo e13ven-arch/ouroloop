@@ -1,0 +1,94 @@
+# finance-v11: the first run of stage 4m (docs/DESIGN.md v1.11 §6.21; docs/JOURNAL.md 2026-10-21): R probes one
+# studied failure at a time — try_task runs the candidate once on the task and hands back the contrast with the
+# working line's reading (the checks before and after, the hooks that acted and what they said, the writes by route,
+# the final text; a pass is one rollout, not a confirmation), at most two tries a task — on top of stage 4l (the
+# faithful replay, two package scopes, per-component verdicts). The shape is finance-v10's (whose round 0 was
+# stopped in its free rungs after R handed in an audit and a vocabulary skill again, $12.96): one batch round over
+# the 150 first encounters imported from finance-v9 ($0: the same AttemptIdentity — attempt code 8d3d2d25d7d619b6,
+# the same working package e38c14942fbf, split 1bbf01533d7256af, the worker image by id), finance-v9's working line
+# as the seed with its estimates and playbook, two scoped packages per round, each screened on all 60 held-out tasks
+# with its confirmations, nothing installed without the zero-regression rule. Run in stages (analysis/round0_stepwise.py):
+# A — diagnosis, R's session with its tries and the host's trials (about $15); the readings are looked at before
+# B — the screens (about $40 a package) are paid. Every paid step is approved in chat first (PLAN rule 3).
+#   1  `... bench --config examples/automationbench/finance-v11.toml --phase smoke --checks-only`                $0
+#   2  `... freeze --config ...`; add the printed [rsi] lines (core_ref, split_ref) and commit                    $0
+#   3  import finance-v9's readings (activity.phases.import_baseline; the round phase itself imports nothing)     $0
+#   4  `python analysis/round0_stepwise.py A`, then, looked at and approved, `... B`
+#   5  stop; JOURNAL and PLAN. A second round, a release or a final needs its own approval.
+#
+# Money: a round's account is round_share (0.15, a cap the config cannot raise) of the root's dollars, so the root is
+# written as $1000 to give round r0 a $150 account; the root's figure is that arithmetic, not an approval — only
+# round r0 is approved and run, and every later phase is approved in chat before it starts. No final share is set
+# aside (a final needs its own decision).
+
+[workspace]
+root = "workspace-finance-v11"
+
+[bench]
+domains = ["finance", "hr", "operations"]
+upstream_path = "~/workspace/AutomationBench"
+split_rule = "stratified"
+seed = 1
+concurrency = 8
+ratios = { train = 0.5, dev = 0.0, test = 0.5 }
+
+[model]
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "medium"
+max_tokens = 32000
+timeout = 600
+
+[research_model]
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "medium"
+max_tokens = 32000
+timeout = 900
+
+[pricing]
+input_per_1k = 0.004
+cache_read_per_1k = 0.0002
+cache_write_per_1k = 0.008
+output_per_1k = 0.02
+max_input_tokens = 400000
+max_output_tokens = 163840
+source = "notional, not a bill: claude-opus-5-5 API list price ($4/$20 per M, cache read $0.20, 1h cache write $8)"
+
+[harness]
+preset = "automationbench_v2"
+seed = "stirrup"
+
+[worker]
+network = "none"
+image_id = "sha256:e070208dbddc713a9993f6700ab15a0455d44d2f6885f47dafc2f4bfd4436f30"
+
+[memory]
+enabled = false
+
+[schedule]
+rounds = 1
+patience = 1
+stream_batch = 30
+stream_splits = ["train"]
+
+[budget]
+usd = 1000.0
+
+[final]
+repeats = 3
+domains = ["finance"]
+
+[improver]
+packages_per_round = 2      # v1.10: candidates/package/ invariant, candidates/package-2/ domain (DESIGN §6.20)
+trial_max_tasks = 3         # the host's trial after finish, per package; R's own tries share trial_max_attempts (40)
+
+[rsi]
+scope_id = "finance-v11"
+seed_from = "workspace-finance-v9"
+seed_line = "working"
+baseline_from = "workspace-finance-v9"
+# frozen 2026-10-21 on stage 4m's code (9a0b4d7): the seed is finance-v9's working line (nothing was installed there:
+# finance-v8's working package e38c14942fbf, with v9's estimates and playbook); the split is unchanged
+core_ref = "core:sha256:9e2443d9bb3c0e4768989d2f5047321de37ff8e47c45c1eb9a6e23fbd9acc2e7"
+split_ref = "1bbf01533d7256af"

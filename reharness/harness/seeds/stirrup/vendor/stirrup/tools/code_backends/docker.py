@@ -1,0 +1,993 @@
+"""Docker container execution environment backend for code execution."""
+
+import contextlib
+import hashlib
+import os
+import shlex
+import shutil
+import tempfile
+from pathlib import Path, PurePosixPath
+from typing import ClassVar, Self
+
+import anyio
+from anyio import fail_after, to_thread
+from dotenv import load_dotenv
+
+from stirrup.core.models import ImageContentBlock
+
+try:
+    import docker
+    from docker.client import DockerClient
+    from docker.errors import APIError, BuildError, ImageNotFound, NotFound
+    from docker.models.containers import Container
+except ImportError as e:
+    raise ImportError(
+        "Requires installation of the docker extra. Install with (for example): `uv pip install stirrup[docker]` or `uv add stirrup[docker]`",
+    ) from e
+
+import logging
+
+from stirrup.core.models import Tool, ToolUseCountMetadata
+
+from .base import (
+    SHELL_TIMEOUT,
+    CodeExecToolProvider,
+    CodeExecutionParams,
+    CommandResult,
+    OutputSourceRoot,
+    SaveOutputFilesResult,
+    UploadedFile,
+    UploadFilesResult,
+    _host_output_destination_identity,
+    _relative_to_canonical_host_root,
+    _safe_output_relative_path,
+    _save_host_output_files,
+)
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_WORKING_DIR = "/workspace"
+
+
+class DockerCodeExecToolProvider(CodeExecToolProvider):
+    """Docker container code execution tool provider.
+
+    Creates a persistent Docker container with a host directory mounted
+    as a volume. Commands are executed via docker exec, and files persist
+    between commands within the same session.
+
+    Usage:
+        # From pre-built image
+        provider = DockerCodeExecToolProvider.from_image("python:3.12-slim")
+
+        # From Dockerfile
+        provider = DockerCodeExecToolProvider.from_dockerfile(Path("./Dockerfile"))
+
+        # With command allowlist
+        provider = DockerCodeExecToolProvider.from_image(
+            "python:3.12-slim",
+            allowed_commands=[r"^python", r"^pip"],
+        )
+
+        # With Agent
+        from stirrup.clients.chat_completions_client import ChatCompletionsClient
+
+        client = ChatCompletionsClient(model="gpt-5.6-luna", max_tokens=8_192, context_window_tokens=1_000_000)
+        agent = Agent(client=client, name="assistant", tools=[provider])
+        async with agent.session() as session:
+            await session.run("Run Python code")
+    """
+
+    # Serialize image prepare per image name across the whole process. The
+    # Docker daemon can return transient ImageNotFound on `GET /images/<tag>`
+    # while another concurrent task is creating a container from the same
+    # image; without serialization the second task would fall into the pull
+    # branch and surface a 404 for images without a registry (e.g. `:local`).
+    # Note: this is intra-process only — multiple processes sharing a Docker
+    # daemon will still race, but the retry fallback in `_prepare_image`
+    # keeps behavior correct in that case. The dict grows unboundedly (one
+    # entry per distinct image name) for the lifetime of the process; for
+    # services that prepare many short-lived `:local` tags this is a slow
+    # leak, but the per-entry cost is a single lock object so a refcounted
+    # cleanup isn't worth the complexity.
+    _image_prep_locks: ClassVar[dict[str, anyio.Lock]] = {}
+
+    @classmethod
+    def _get_image_lock(cls, image_name: str) -> anyio.Lock:
+        # Invariant: no `await` between the .get() and __setitem__ below —
+        # asyncio's cooperative scheduling makes this check-then-set safe
+        # only as long as nothing yields the event loop in between.
+        lock = cls._image_prep_locks.get(image_name)
+        if lock is None:
+            lock = anyio.Lock()
+            cls._image_prep_locks[image_name] = lock
+        return lock
+
+    def __init__(
+        self,
+        source: str | Path,
+        *,
+        is_dockerfile: bool = False,
+        dockerfile_context: Path | None = None,
+        working_dir: str = DEFAULT_WORKING_DIR,
+        allowed_commands: list[str] | None = None,
+        temp_base_dir: Path | None = None,
+        env_vars: list[str] | None = None,
+        shell_timeout: int = SHELL_TIMEOUT,
+    ) -> None:
+        """Initialize DockerCodeExecToolProvider configuration.
+
+        Args:
+            source: Docker image name (e.g., "python:3.12-slim") or path to Dockerfile.
+            is_dockerfile: If True, source is treated as a Dockerfile path. Default False.
+            dockerfile_context: Build context directory for Dockerfile builds.
+            working_dir: Container working directory (default: /workspace).
+            allowed_commands: Optional regex patterns for command allowlist.
+            temp_base_dir: Optional host base directory for temp files.
+            env_vars: Optional list of environment variable names to inject into the
+                container. Values are loaded from the current environment (os.environ)
+                after calling load_dotenv() to load any .env file.
+            shell_timeout: Per-command wall-clock timeout (seconds) for every
+                ``code_exec`` invocation. Enforced in-container via coreutils
+                ``timeout(1)``; see ``run_command`` for the mechanism. Defaults
+                to ``SHELL_TIMEOUT``.
+
+        Prefer using the factory methods for clarity:
+        - DockerCodeExecToolProvider.from_image() for pre-built images
+        - DockerCodeExecToolProvider.from_dockerfile() for building from Dockerfile
+
+        """
+        super().__init__(allowed_commands=allowed_commands, shell_timeout=shell_timeout)
+
+        self._source = source
+        self._is_dockerfile = is_dockerfile
+        self._dockerfile_context = dockerfile_context
+        self._working_dir = working_dir.rstrip("/")
+        self._temp_base_dir = temp_base_dir
+        self._env_vars = env_vars
+
+        # Runtime state
+        self._temp_dir: Path | None = None
+        self._client: DockerClient | None = None
+        self._container: Container | None = None
+
+    @property
+    def temp_dir(self) -> Path | None:
+        """Return the host temp directory path, or None if not started."""
+        return self._temp_dir
+
+    @property
+    def container_id(self) -> str | None:
+        """Return the container short ID, or None if not started."""
+        return self._container.short_id if self._container else None
+
+    @classmethod
+    def from_image(
+        cls,
+        image: str,
+        *,
+        working_dir: str = DEFAULT_WORKING_DIR,
+        allowed_commands: list[str] | None = None,
+        temp_base_dir: Path | str | None = None,
+        env_vars: list[str] | None = None,
+        shell_timeout: int = SHELL_TIMEOUT,
+    ) -> Self:
+        """Create tool provider from a pre-built Docker image.
+
+        Args:
+            image: Docker image name (e.g., "python:3.12-slim").
+            working_dir: Container working directory (default: /workspace).
+            allowed_commands: Optional regex patterns for command allowlist.
+            temp_base_dir: Optional host base directory for temp files.
+            env_vars: Optional list of environment variable names to inject into the
+                container. Values are loaded from os.environ (after load_dotenv()).
+            shell_timeout: See ``__init__``. Default ``SHELL_TIMEOUT``.
+
+        Returns:
+            Configured DockerCodeExecToolProvider instance.
+
+        Example:
+            provider = DockerCodeExecToolProvider.from_image(
+                "python:3.12-slim",
+                env_vars=["OPENROUTER_API_KEY", "DATABASE_URL"],
+            )
+            async with provider as tool:
+                result = await provider.run_command("python --version")
+
+        """
+        return cls(
+            image,
+            is_dockerfile=False,
+            working_dir=working_dir,
+            allowed_commands=allowed_commands,
+            temp_base_dir=Path(temp_base_dir) if temp_base_dir else None,
+            env_vars=env_vars,
+            shell_timeout=shell_timeout,
+        )
+
+    @classmethod
+    def from_dockerfile(
+        cls,
+        dockerfile: Path | str,
+        *,
+        context: Path | str | None = None,
+        working_dir: str = DEFAULT_WORKING_DIR,
+        allowed_commands: list[str] | None = None,
+        temp_base_dir: Path | str | None = None,
+        env_vars: list[str] | None = None,
+        shell_timeout: int = SHELL_TIMEOUT,
+    ) -> Self:
+        """Create tool provider by building from a Dockerfile.
+
+        Args:
+            dockerfile: Path to the Dockerfile.
+            context: Build context directory. Defaults to Dockerfile's parent.
+            working_dir: Container working directory (default: /workspace).
+            allowed_commands: Optional regex patterns for command allowlist.
+            temp_base_dir: Optional host base directory for temp files.
+            env_vars: Optional list of environment variable names to inject into the
+                container. Values are loaded from os.environ (after load_dotenv()).
+            shell_timeout: See ``__init__``. Default ``SHELL_TIMEOUT``.
+
+        Returns:
+            Configured DockerCodeExecToolProvider instance.
+
+        Example:
+            provider = DockerCodeExecToolProvider.from_dockerfile(
+                Path("./Dockerfile"),
+                env_vars=["OPENROUTER_API_KEY", "ANTHROPIC_API_KEY"],
+            )
+            async with provider as tool:
+                result = await provider.run_command("python script.py")
+
+        """
+        return cls(
+            dockerfile,
+            is_dockerfile=True,
+            dockerfile_context=Path(context) if context else None,
+            working_dir=working_dir,
+            allowed_commands=allowed_commands,
+            temp_base_dir=Path(temp_base_dir) if temp_base_dir else None,
+            env_vars=env_vars,
+            shell_timeout=shell_timeout,
+        )
+
+    async def __aenter__(self) -> Tool[CodeExecutionParams, ToolUseCountMetadata]:
+        """Initialize Docker container and return the code_exec tool.
+
+        Creates a temp directory on the host, initializes the Docker client,
+        prepares the image (pull or build), and starts a persistent container
+        with the temp directory mounted as a volume.
+        """
+        # 1. Load environment variables from .env file
+        load_dotenv()
+
+        # 2. Build environment dict from requested env var names
+        env_dict: dict[str, str] = {}
+        if self._env_vars:
+            for name in self._env_vars:
+                if name in os.environ:
+                    env_dict[name] = os.environ[name]
+                else:
+                    logger.warning("Requested env var '%s' not found in environment", name)
+            if env_dict:
+                logger.debug("Injecting environment variables: %s", list(env_dict.keys()))
+
+        # 3. Create temp directory on host
+        if self._temp_base_dir:
+            self._temp_base_dir.mkdir(parents=True, exist_ok=True)
+        self._temp_dir = Path(tempfile.mkdtemp(prefix="docker_exec_env_", dir=self._temp_base_dir))
+
+        # 4. Initialize Docker client
+        self._client = await to_thread.run_sync(docker.from_env)
+        if self._client is None:
+            raise RuntimeError("Failed to connect to Docker daemon. Is Docker running?")
+        client = self._client  # Capture for lambda type narrowing
+
+        # 5. Prepare image (pull or build)
+        image_name = await self._prepare_image()
+
+        # 6. Start container with volume mount and environment variables
+        self._container = await to_thread.run_sync(
+            lambda: client.containers.run(
+                image_name,
+                command="tail -f /dev/null",  # Keep container running
+                detach=True,
+                volumes={
+                    str(self._temp_dir): {
+                        "bind": self._working_dir,
+                        "mode": "rw",
+                    },
+                },
+                working_dir=self._working_dir,
+                environment=env_dict if env_dict else None,
+                remove=False,  # We handle removal manually
+            )
+        )
+        logger.info("Started container: %s (image: %s)", self._container.short_id, image_name)
+        return self.get_code_exec_tool()
+
+    async def _prepare_image(self) -> str:
+        """Prepare Docker image (pull pre-built or build from Dockerfile).
+
+        Returns:
+            The image name/tag to use for container creation.
+
+        Raises:
+            RuntimeError: If image build or pull fails.
+
+        """
+        if self._client is None:
+            raise RuntimeError("Docker client not initialized")
+        client = self._client  # Capture for lambda type narrowing
+
+        if self._is_dockerfile:
+            # Build from Dockerfile
+            dockerfile_path = Path(self._source).resolve()
+            context_path = self._dockerfile_context.resolve() if self._dockerfile_context else dockerfile_path.parent
+
+            # Generate unique tag based on dockerfile path
+            tag = f"stirrup-exec-env-{hashlib.md5(str(dockerfile_path).encode()).hexdigest()[:8]}"
+
+            logger.info("Building image from %s with tag %s", dockerfile_path, tag)
+
+            try:
+                # Determine dockerfile path relative to context
+                if dockerfile_path.is_relative_to(context_path):
+                    dockerfile_rel = str(dockerfile_path.relative_to(context_path))
+                else:
+                    dockerfile_rel = str(dockerfile_path)
+
+                _image, build_logs = await to_thread.run_sync(
+                    lambda: client.images.build(
+                        path=str(context_path),
+                        dockerfile=dockerfile_rel,
+                        tag=tag,
+                        rm=True,  # Remove intermediate containers
+                    )
+                )
+                for log in build_logs:
+                    if "stream" in log:
+                        logger.debug("Build: %s", log["stream"].strip())
+                return tag
+            except BuildError as exc:
+                raise RuntimeError(f"Failed to build Docker image: {exc}") from exc
+        else:
+            # Pull pre-built image
+            image_name = str(self._source)
+
+            async with self._get_image_lock(image_name):
+                try:
+                    # Check if image exists locally
+                    await to_thread.run_sync(client.images.get, image_name)
+                    logger.debug("Image %s found locally", image_name)
+                except ImageNotFound:
+                    logger.info("Pulling image: %s", image_name)
+                    try:
+                        await to_thread.run_sync(client.images.pull, image_name)
+                    except APIError as exc:
+                        # If a sibling task finished preparing the image
+                        # between our get() and pull(), a retry will succeed
+                        # and we can continue rather than surface the 404.
+                        # Any failure from the retry itself (ImageNotFound or
+                        # otherwise — e.g. a transient daemon hiccup) means
+                        # the image truly isn't ready, so surface the
+                        # original pull failure rather than masking it with
+                        # the retry's error.
+                        try:
+                            await to_thread.run_sync(client.images.get, image_name)
+                        except Exception:
+                            raise RuntimeError(f"Failed to pull Docker image '{image_name}': {exc}") from exc
+                        logger.debug(
+                            "Pull of %s failed but image is present locally; continuing",
+                            image_name,
+                        )
+
+            return image_name
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: object,
+    ) -> None:
+        """Stop container and cleanup temp directory."""
+        # Fix ownership of all files before cleanup (prevents permission errors on nested directories)
+        if self._container and self._temp_dir:
+            await self._fix_file_ownership()
+
+        # Stop and remove container
+        if self._container:
+            container = self._container  # Capture for lambda type narrowing
+            try:
+                logger.info("Stopping container: %s", container.short_id)
+                await to_thread.run_sync(lambda: container.stop(timeout=10))
+                await to_thread.run_sync(lambda: container.remove(force=True))
+                logger.info("Removed container: %s", container.short_id)
+            except NotFound:
+                logger.debug("Container already removed")
+            except Exception as exc:
+                logger.warning("Failed to cleanup container: %s", exc)
+            self._container = None
+
+        # Close Docker client
+        if self._client:
+            with contextlib.suppress(Exception):
+                await to_thread.run_sync(self._client.close)
+            self._client = None
+
+        # Cleanup temp directory
+        if self._temp_dir and self._temp_dir.exists():
+            try:
+                shutil.rmtree(self._temp_dir)
+            except Exception as exc:
+                logger.warning("Failed to cleanup temp directory %s: %s", self._temp_dir, exc)
+        self._temp_dir = None
+
+    def _container_path_to_host(self, path: str) -> Path:
+        """Convert a container or host path to the corresponding host path.
+
+        Args:
+            path: Path to resolve. Can be relative to the container working directory,
+                an absolute container path (starting with working_dir), or an absolute
+                host path already within the temp directory.
+
+        Returns:
+            Resolved Path on the host filesystem.
+
+        Raises:
+            RuntimeError: If environment not started.
+            ValueError: If path is outside the mounted directory.
+
+        """
+        if self._temp_dir is None:
+            raise RuntimeError("ExecutionEnvironment not started.")
+
+        source_path = Path(path)
+
+        # Handle absolute host paths, absolute container paths, and relative paths
+        if source_path.is_absolute():
+            host_relative_path = _relative_to_canonical_host_root(path, (OutputSourceRoot.for_host(self._temp_dir),))
+            if host_relative_path is not None:
+                host_path = self._temp_dir / host_relative_path
+            else:
+                try:
+                    relative = source_path.relative_to(self._working_dir)
+                except ValueError as exc:
+                    raise ValueError(f"Path is outside mounted directory: {path}") from exc
+                host_path = self._temp_dir / relative
+        else:
+            host_path = self._temp_dir / source_path
+
+        # Security: ensure path is within temp directory
+        try:
+            host_path.resolve().relative_to(self._temp_dir.resolve())
+        except ValueError as e:
+            raise ValueError(f"Path is outside execution environment: {path}") from e
+
+        return host_path
+
+    async def read_file_bytes(self, path: str) -> bytes:
+        """Read file content as bytes from the container.
+
+        Since files are volume-mounted, reads directly from the host temp directory.
+
+        Args:
+            path: File path (relative, absolute container, or absolute host path).
+
+        Returns:
+            File contents as bytes.
+
+        Raises:
+            RuntimeError: If environment not started.
+            ValueError: If path is outside mounted directory.
+            FileNotFoundError: If file does not exist.
+
+        """
+        host_path = self._container_path_to_host(path)
+        if not host_path.exists():
+            raise FileNotFoundError(f"File not found: {path}")
+        return host_path.read_bytes()
+
+    async def write_file_bytes(self, path: str, content: bytes) -> None:
+        """Write bytes to a file in the container.
+
+        Since files are volume-mounted, writes directly to the host temp directory.
+
+        Args:
+            path: Destination path (relative, absolute container, or absolute host path).
+            content: File contents to write.
+
+        Raises:
+            RuntimeError: If environment not started.
+            ValueError: If path is outside mounted directory.
+
+        """
+        host_path = self._container_path_to_host(path)
+        host_path.parent.mkdir(parents=True, exist_ok=True)
+        host_path.write_bytes(content)
+
+    async def file_exists(self, path: str) -> bool:
+        """Check if a file exists in the container.
+
+        Since files are volume-mounted, checks directly on the host temp directory.
+
+        Args:
+            path: File path (relative, absolute container, or absolute host path).
+
+        Returns:
+            True if the file exists, False otherwise.
+
+        Raises:
+            RuntimeError: If environment not started.
+            ValueError: If path is outside mounted directory.
+
+        """
+        host_path = self._container_path_to_host(path)
+        return host_path.exists() and host_path.is_file()
+
+    async def is_directory(self, path: str) -> bool:
+        """Check if a path is a directory in the container.
+
+        Since files are volume-mounted, checks directly on the host temp directory.
+
+        Args:
+            path: Path (relative, absolute container, or absolute host path).
+
+        Returns:
+            True if the path exists and is a directory, False otherwise.
+
+        Raises:
+            RuntimeError: If environment not started.
+            ValueError: If path is outside mounted directory.
+
+        """
+        host_path = self._container_path_to_host(path)
+        return host_path.exists() and host_path.is_dir()
+
+    async def list_files(self, path: str) -> list[str]:
+        """List all files recursively in a directory within the container.
+
+        Since files are volume-mounted, lists directly from the host temp directory.
+
+        Args:
+            path: Directory path (relative, absolute container, or absolute host path).
+
+        Returns:
+            List of file paths (relative to the given path) for all files in the directory.
+            Returns an empty list if the path is a file or doesn't exist.
+
+        Raises:
+            RuntimeError: If environment not started.
+            ValueError: If path is outside mounted directory.
+
+        """
+        host_path = self._container_path_to_host(path)
+        if not host_path.exists() or not host_path.is_dir():
+            return []
+
+        files = []
+        for file_path in host_path.rglob("*"):
+            if file_path.is_file():
+                rel_path = file_path.relative_to(host_path)
+                files.append(str(rel_path))
+        return files
+
+    async def run_command(self, cmd: str, *, timeout: int | None = None) -> CommandResult:
+        """Execute a shell command in the Docker container.
+
+        Args:
+            cmd: Shell command to execute (bash syntax).
+            timeout: Maximum time in seconds to wait for command completion.
+                If None, falls back to ``self._shell_timeout`` (set in
+                ``__init__``), so direct callers share the same budget as the
+                LLM ``code_exec`` tool.
+
+        Returns:
+            CommandResult with exit_code, stdout, stderr, and optional error info.
+
+        """
+        if self._container is None:
+            raise RuntimeError(
+                "ExecutionEnvironment not started. Ensure current Agent is equipped with a CodeExecToolProvider."
+            )
+
+        # With an allowlist, the parsed argv must run directly (no shell).
+        argv, rejection = self._prepare_command(cmd)
+        if rejection is not None:
+            return rejection
+        return await self._run_command_unchecked(cmd, timeout=timeout, argv=argv)
+
+    async def _run_command_unchecked(
+        self, cmd: str, *, timeout: int | None = None, argv: list[str] | None = None
+    ) -> CommandResult:
+        """Execute a trusted maintenance command or a prevalidated user command.
+
+        ``argv`` is the shlex-parsed command from an active allowlist; when set,
+        it runs directly with no shell. Trusted internal callers (e.g. ownership
+        repair) pass only ``cmd`` and run through a shell.
+        """
+        if self._container is None:
+            raise RuntimeError(
+                "ExecutionEnvironment not started. Ensure current Agent is equipped with a CodeExecToolProvider."
+            )
+        if timeout is None:
+            timeout = self._shell_timeout
+        container = self._container  # Capture for lambda type narrowing
+
+        # Enforce the timeout inside the container via coreutils `timeout(1)`.
+        # It runs the command in its own process group and sends SIGKILL to the
+        # whole group after --kill-after, so descendants can't leak as orphans
+        # parented to container PID 1 when the client gives up (moby/moby#9098).
+        # Exit 124 == SIGTERM expiry, 137 == --kill-after SIGKILL; both map to
+        # error_kind="timeout" for the caller.
+        if argv is not None:
+            exec_cmd = ["timeout", "--kill-after=5s", f"{timeout}s", *argv]
+        else:
+            wrapped = f"timeout --kill-after=5s {timeout}s bash -c {shlex.quote(cmd)}"
+            exec_cmd = ["bash", "-c", wrapped]
+
+        try:
+            # Outer fail_after is a safety net for a stalled docker socket; the
+            # in-container timeout(1) should fire first in the normal case.
+            with fail_after(timeout + 10):
+                exec_result = await to_thread.run_sync(
+                    lambda: container.exec_run(
+                        cmd=exec_cmd,
+                        workdir=self._working_dir,
+                        demux=True,  # Separate stdout/stderr
+                    )
+                )
+
+            exit_code = exec_result.exit_code
+            stdout_bytes, stderr_bytes = exec_result.output
+
+            if exit_code in (124, 137):
+                logger.warning("Command timed out after %d seconds: %s", timeout, cmd[:100])
+                partial_stderr = (stderr_bytes or b"").decode("utf-8", errors="replace")
+                timeout_msg = f"Command timed out after {timeout} seconds"
+                combined_stderr = f"{partial_stderr}\n{timeout_msg}" if partial_stderr else timeout_msg
+                return CommandResult(
+                    exit_code=exit_code,
+                    stdout=(stdout_bytes or b"").decode("utf-8", errors="replace"),
+                    stderr=combined_stderr,
+                    error_kind="timeout",
+                )
+
+            stderr_text = (stderr_bytes or b"").decode("utf-8", errors="replace")
+
+            # Heuristic: exit 127 + a "timeout: ... not found" message from the
+            # shell means coreutils timeout(1) is absent from the base image, so
+            # the wrapper command never ran. Surface a clear pointer instead of
+            # letting the caller debug a generic "command not found".
+            if exit_code == 127 and "timeout" in stderr_text and "not found" in stderr_text:
+                return CommandResult(
+                    exit_code=exit_code,
+                    stdout=(stdout_bytes or b"").decode("utf-8", errors="replace"),
+                    stderr=stderr_text,
+                    error_kind="image_missing_timeout",
+                    advice=(
+                        "DockerCodeExecToolProvider wraps every command with coreutils "
+                        "`timeout(1)` to enforce the per-command shell_timeout. The active "
+                        "image does not provide it. Use a base image that includes coreutils "
+                        "(most Debian/Ubuntu/Alpine images do) or install it (e.g. "
+                        "`apt-get install -y coreutils` / `apk add coreutils`)."
+                    ),
+                )
+
+            return CommandResult(
+                exit_code=exit_code,
+                stdout=(stdout_bytes or b"").decode("utf-8", errors="replace"),
+                stderr=stderr_text,
+            )
+
+        except TimeoutError:
+            logger.warning("Command timed out after %d seconds: %s", timeout, cmd[:100])
+            return CommandResult(
+                exit_code=1,
+                stdout="",
+                stderr=f"Command timed out after {timeout} seconds",
+                error_kind="timeout",
+            )
+        except APIError as exc:
+            return CommandResult(
+                exit_code=1,
+                stdout="",
+                stderr=str(exc),
+                error_kind="docker_api_error",
+                advice="Docker API error occurred. Check Docker daemon is running.",
+            )
+        except Exception as exc:
+            return CommandResult(
+                exit_code=1,
+                stdout="",
+                stderr=str(exc),
+                error_kind="execution_error",
+            )
+
+    async def _fix_file_ownership(self, paths: list[str] | None = None) -> None:
+        """Fix ownership of files created by the container.
+
+        Files and directories created inside the Docker container run as root,
+        which can prevent the host process from reading them.
+        This method runs chown inside the container to fix ownership.
+
+        Args:
+            paths: Specific paths to fix. If None, fixes all files in working_dir.
+                   For each regular file inside the mount, repairs that file and
+                   the in-root parents needed for host traversal. Directory
+                   sources are skipped and never trigger a recursive chown.
+        """
+        if self._container is None or self._temp_dir is None:
+            return
+
+        try:
+            # Get the host user ID to chown to
+            host_uid = os.getuid()
+            host_gid = os.getgid()
+
+            if paths:
+                container_root = PurePosixPath(self._working_dir)
+                host_roots = (
+                    PurePosixPath(str(self._temp_dir)),
+                    PurePosixPath(str(self._temp_dir.resolve(strict=False))),
+                )
+                container_paths: list[str] = []
+                for path in paths:
+                    if not path or "\x00" in path:
+                        continue
+                    source_path = PurePosixPath(path)
+                    if ".." in source_path.parts or not source_path.name:
+                        continue
+
+                    relative_path: PurePosixPath | None = None
+                    if source_path.is_absolute():
+                        for host_root in host_roots:
+                            try:
+                                relative_path = source_path.relative_to(host_root)
+                            except ValueError:
+                                continue
+                            break
+                        if relative_path is None:
+                            try:
+                                relative_path = source_path.relative_to(container_root)
+                            except ValueError:
+                                try:
+                                    relative_path = _relative_to_canonical_host_root(
+                                        path,
+                                        (OutputSourceRoot.for_host(self._temp_dir),),
+                                    )
+                                except OSError:
+                                    continue
+                    else:
+                        relative_path = source_path
+
+                    if relative_path is None or not relative_path.name or ".." in relative_path.parts:
+                        continue
+                    container_paths.append((container_root / relative_path).as_posix())
+
+                if not container_paths:
+                    return
+
+                quoted_paths = " ".join(shlex.quote(path) for path in dict.fromkeys(container_paths))
+                quoted_root = shlex.quote(container_root.as_posix())
+                chown_cmd = (
+                    f"root_path=$(realpath -e -- {quoted_root}) || exit 0\n"
+                    f"for source_path in {quoted_paths}; do\n"
+                    '  resolved_path=$(realpath -e -- "$source_path") || continue\n'
+                    '  case "$resolved_path" in "$root_path"/*) ;; *) continue ;; esac\n'
+                    '  [ -f "$resolved_path" ] || continue\n'
+                    f'  chown {host_uid}:{host_gid} -- "$resolved_path" 2>/dev/null || true\n'
+                    "  parent_path=${resolved_path%/*}\n"
+                    '  while [ "$parent_path" != "$root_path" ]; do\n'
+                    '    case "$parent_path" in "$root_path"/*) ;; *) break ;; esac\n'
+                    f'    chown {host_uid}:{host_gid} -- "$parent_path" 2>/dev/null || true\n'
+                    "    parent_path=${parent_path%/*}\n"
+                    "  done\n"
+                    "done"
+                )
+                await self._run_command_unchecked(chown_cmd, timeout=10)
+            else:
+                # Fix all files in working directory
+                chown_cmd = f"chown -R {host_uid}:{host_gid} {shlex.quote(self._working_dir)} 2>/dev/null || true"
+                await self._run_command_unchecked(chown_cmd, timeout=10)
+
+        except Exception as exc:
+            # Don't fail the operation if chown fails, just log warning
+            logger.warning("Failed to fix file ownership: %s", exc)
+
+    async def save_output_files(
+        self,
+        paths: list[str],
+        output_dir: Path | str,
+        dest_env: "CodeExecToolProvider | None" = None,
+    ) -> SaveOutputFilesResult:
+        """Copy files from the mounted temp directory to a destination.
+
+        Sources remain available in the container. Existing destination files
+        are atomically replaced, while duplicate destinations within one call
+        are rejected and reported in ``failed``.
+
+        When dest_env is provided (cross-environment transfer), files are copied
+        using the base class implementation via read/write primitives.
+
+        Args:
+            paths: List of file paths in the execution environment (relative, absolute container,
+                   or absolute host paths). Relative paths are resolved against the container
+                   working directory. Absolute container paths starting with working_dir are
+                   mapped to the host. Absolute host paths are accepted when they canonically
+                   resolve beneath the temp directory (symlink-equivalent spellings included).
+            output_dir: Directory path to save files to.
+            dest_env: If provided, output_dir is interpreted as a path within dest_env
+                      (cross-environment transfer). If None, output_dir is a local
+                      filesystem path.
+
+        Returns:
+            SaveOutputFilesResult containing lists of saved files and any failures.
+
+        """
+        if self._temp_dir is None:
+            raise RuntimeError(
+                "ExecutionEnvironment not started. Ensure current Agent is equipped with a CodeExecToolProvider."
+            )
+
+        # If dest_env is provided, use the base class implementation (cross-env transfer)
+        if dest_env is not None:
+            return await super().save_output_files(paths, output_dir, dest_env)
+
+        await self._fix_file_ownership(paths)
+
+        return _save_host_output_files(
+            paths,
+            output_dir,
+            source_roots=self.output_source_roots(),
+            resolve_source=self._container_path_to_host,
+        )
+
+    def output_source_roots(self) -> tuple[OutputSourceRoot, ...]:
+        """Return absolute execution roots accepted when resolving output paths."""
+        roots: tuple[OutputSourceRoot, ...] = (OutputSourceRoot(path=self._working_dir),)
+        if self._temp_dir is not None:
+            roots += (OutputSourceRoot.for_host(self._temp_dir),)
+        return roots
+
+    async def resolve_output_source(self, source_path: str) -> str:
+        """Repair host access and require a regular file inside the mounted root."""
+        _safe_output_relative_path(source_path, source_roots=self.output_source_roots())
+        await self._fix_file_ownership([source_path])
+
+        host_path = self._container_path_to_host(source_path)
+        if not host_path.exists():
+            raise FileNotFoundError(f"File not found: {source_path}")
+        if not host_path.is_file():
+            raise ValueError("Path is not a file")
+        return source_path
+
+    async def output_destination_identity(self, destination: str, output_root: Path | str) -> str:
+        """Validate a cross-environment destination and return its host identity."""
+        host_destination = self._container_path_to_host(destination)
+        host_root = self._container_path_to_host(str(output_root))
+        return _host_output_destination_identity(host_destination, host_root)
+
+    async def upload_files(
+        self,
+        *paths: Path | str,
+        source_env: "CodeExecToolProvider | None" = None,
+        dest_dir: str | None = None,
+    ) -> UploadFilesResult:
+        """Upload files to the execution environment.
+
+        Since files are volume-mounted, this copies files to the host temp directory
+        which makes them automatically visible in the container at working_dir.
+
+        When source_env is None (local filesystem), files are COPIED (not moved) -
+        originals remain on the local filesystem.
+        Directories are uploaded recursively, preserving their structure.
+
+        When source_env is provided (cross-environment transfer), files are copied
+        using the base class implementation via read/write primitives.
+
+        Args:
+            *paths: File or directory paths to upload. If source_env is None, these
+                    are local filesystem paths. If source_env is provided, these are
+                    paths within source_env.
+            source_env: If provided, paths are within source_env. If None, paths are
+                        local filesystem paths.
+            dest_dir: Destination subdirectory within the container working directory.
+                      If None, files are placed directly in the working directory.
+
+        Returns:
+            UploadFilesResult containing lists of uploaded files and any failures.
+
+        """
+        if self._temp_dir is None:
+            raise RuntimeError(
+                "ExecutionEnvironment not started. Ensure current Agent is equipped with a CodeExecToolProvider."
+            )
+
+        # If source_env is provided, use the base class implementation (cross-env transfer)
+        if source_env is not None:
+            return await super().upload_files(*paths, source_env=source_env, dest_dir=dest_dir)
+
+        # Local filesystem - use optimized copy operation
+        dest_base = self._temp_dir / dest_dir if dest_dir else self._temp_dir
+        dest_base.mkdir(parents=True, exist_ok=True)
+
+        result = UploadFilesResult()
+
+        for source in paths:
+            source = Path(source).resolve()
+
+            if not source.exists():
+                result.failed[str(source)] = "File or directory does not exist"
+                logger.warning("Upload source does not exist: %s", source)
+                continue
+
+            try:
+                if source.is_file():
+                    dest = dest_base / source.name
+                    shutil.copy2(source, dest)
+                    # Report path as it appears in container
+                    container_path = f"{self._working_dir}/{dest.relative_to(self._temp_dir)}"
+                    result.uploaded.append(
+                        UploadedFile(
+                            source_path=source,
+                            dest_path=container_path,
+                            size=source.stat().st_size,
+                        ),
+                    )
+                    logger.debug("Uploaded file: %s -> %s", source, container_path)
+
+                elif source.is_dir():
+                    # If dest_dir was explicitly provided, copy contents directly to dest_base
+                    # Otherwise, create a subdirectory with the source's name
+                    if dest_dir:
+                        dest = dest_base
+                        # Copy contents of source directory into dest_base
+                        for item in source.iterdir():
+                            item_dest = dest / item.name
+                            if item.is_file():
+                                shutil.copy2(item, item_dest)
+                            else:
+                                shutil.copytree(item, item_dest, dirs_exist_ok=True)
+                    else:
+                        dest = dest_base / source.name
+                        shutil.copytree(source, dest, dirs_exist_ok=True)
+                    # Track all individual files uploaded
+                    for file_path in source.rglob("*"):
+                        if file_path.is_file():
+                            relative = file_path.relative_to(source)
+                            dest_file = dest / relative
+                            container_path = f"{self._working_dir}/{dest_file.relative_to(self._temp_dir)}"
+                            result.uploaded.append(
+                                UploadedFile(
+                                    source_path=file_path,
+                                    dest_path=container_path,
+                                    size=file_path.stat().st_size,
+                                ),
+                            )
+                    logger.debug("Uploaded directory: %s -> %s", source, dest)
+
+            except Exception as exc:
+                result.failed[str(source)] = str(exc)
+                logger.exception("Failed to upload: %s", source)
+
+        return result
+
+    async def view_image(self, path: str) -> ImageContentBlock:
+        """Read and return an image file from the Docker execution environment.
+
+        Args:
+            path: Path to image file (relative, absolute container, or absolute host path).
+
+        Returns:
+            ImageContentBlock containing the image data.
+
+        Raises:
+            RuntimeError: If execution environment not started.
+            FileNotFoundError: If file does not exist.
+            ValueError: If path is outside mounted directory, is a directory, or not a valid image.
+
+        """
+        file_bytes = await self.read_file_bytes(path)
+        return ImageContentBlock(data=file_bytes)

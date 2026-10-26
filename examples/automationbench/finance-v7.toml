@@ -1,0 +1,88 @@
+# finance-v7: the seventh finance activity — the first under stages 4f and 4g (docs/DESIGN.md v1.5 §6.15 and v1.6
+# §6.16; docs/JOURNAL.md 2026-10-12): R reads every studied failure side by side (inputs/failures.json: the request,
+# the checks that failed with their expected values, the agent's writes), diagnoses with three more causes
+# (rule_not_applied, vocabulary_mismatch, omitted_report), and an audit hook can only add what is missing — the host
+# renders its pushback, a dry run on recorded attempts (V2d) measures its hits and false alarms before any screen is
+# paid, and every audit tried stays on the ledger (inputs/audits.json) for the next one. Otherwise finance-v6's shape:
+# finance, hr and operations' train halves (150 tasks) as one stream of 5 batches, a round every 30 tasks with up to
+# three packages, screens of 30 held-out tasks, the final on finance's test half. It starts where finance-v6's working
+# line stood: `[rsi] seed_from` with `seed_line = "working"` imports the head of finance-v6's working line (s0's
+# package, screened 7/13 against 4/13; finance-v6 closed without a final and was never released — its release by
+# decision would only have read the rest of its train for a final estimate nobody needs, and its pinned worker image
+# no longer exists), replayed onto this code's seed (the adapter that renders `missing`), so the final's W0 arm is
+# finance-v6's working head. Every paid step is approved in chat first (PLAN rule 3).
+#   1  `... bench --config examples/automationbench/finance-v7.toml --phase smoke --checks-only`                 $0
+#   2  `... freeze --config ...`; add the printed [rsi] lines (core_ref, split_ref) and commit                    $0
+#   3  `... bench --config ... --phase stream` (5 batches, 5 rounds; about $430 + a dry run's $1-2 per audit)
+#   4  `... bench --config ... --phase release` (about $35) → `... freeze --config ...` seals the final → commit
+#      final_plan_ref → `... bench --config ... --phase evaluate` (finance 50 tasks × 3 repeats × 2 arms, about $200)
+#   5  `--phase report`
+#
+# The worker image is K's by id (rebuilt on 2026-10-12 after the worker runner's embedded contract gained `missing`); the smoke checks it. The budget: root $750, the final's share $230 (a floor).
+
+[workspace]
+root = "workspace-finance-v7"
+
+[bench]
+domains = ["finance", "hr", "operations"]
+upstream_path = "~/workspace/AutomationBench"
+split_rule = "stratified"
+seed = 1
+concurrency = 8
+ratios = { train = 0.5, dev = 0.0, test = 0.5 }
+
+[model]
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "medium"
+max_tokens = 32000
+timeout = 600
+
+[research_model]
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "medium"
+max_tokens = 32000
+timeout = 900
+
+[pricing]
+input_per_1k = 0.004
+cache_read_per_1k = 0.0002
+cache_write_per_1k = 0.008
+output_per_1k = 0.02
+max_input_tokens = 400000
+max_output_tokens = 163840
+source = "notional, not a bill: claude-opus-5-5 API list price ($4/$20 per M, cache read $0.20, 1h cache write $8)"
+
+[harness]
+preset = "automationbench_v2"
+seed = "stirrup"
+
+[worker]
+network = "none"
+image_id = "sha256:e070208dbddc713a9993f6700ab15a0455d44d2f6885f47dafc2f4bfd4436f30"
+
+[memory]
+enabled = false
+
+[schedule]
+rounds = 12
+patience = 3
+stream_batch = 30
+stream_splits = ["train"]
+
+[budget]
+usd = 750.0
+final_usd = 230.0
+
+[final]
+repeats = 3
+domains = ["finance"]
+
+[rsi]
+scope_id = "finance-v7"
+seed_from = "workspace-finance-v6"
+seed_line = "working"
+core_ref = "core:sha256:2a59d873549c483fe7dc74892a3ae60695d011d27b2c61bfaaf8be9161746993"
+split_ref = "1bbf01533d7256af"
+# final_plan_ref: after `--phase release` and the second `freeze`

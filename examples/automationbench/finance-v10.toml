@@ -1,0 +1,96 @@
+# finance-v10: the first run of stage 4l (docs/DESIGN.md v1.10 §6.20; docs/JOURNAL.md 2026-10-20): the four
+# mechanisms learned from Harness² — V2b's replay faithful to a real run (the view's events, every hook of the package
+# in order; R's abandoned before_tool hold of finance-v9 r0 passes it on the records, 3 of 6 claimed tasks, false
+# triggers 0.167), divergence-first evidence, two package scopes (invariant: how the agent works; domain: what a
+# practitioner knows), per-component verdicts into the ledger and the playbook. The shape is finance-v9's: one batch
+# round over the 150 first encounters imported from finance-v9 (which imported them from finance-v8, $0: the same
+# AttemptIdentity — attempt code 8d3d2d25d7d619b6 unchanged by the 4l merge, the same working package, split
+# 1bbf01533d7256af, the worker image by id), finance-v9's working line as the seed (nothing was installed there,
+# so it is finance-v8's), with its estimates and playbook; two packages per round, each screened on all 60 held-out
+# tasks with its confirmations, nothing installed without the zero-regression rule. finance-v9's K does not open on
+# this code (its improver section lacks scoped_packages), so this is a new workspace (PLAN rule 13). Every paid step
+# is approved in chat first (PLAN rule 3): the user asked for this round on 2026-10-21.
+#   1  `... bench --config examples/automationbench/finance-v10.toml --phase smoke --checks-only`                $0
+#   2  `... freeze --config ...`; add the printed [rsi] lines (core_ref, split_ref) and commit                    $0
+#   3  import finance-v9's readings (activity.phases.import_baseline; the round phase itself imports nothing)     $0
+#   4  `... bench --config ... --phase round --round 0` (round r0: diagnosis, R's session with two scoped packages,
+#      the trials, up to two screens of 60 held-out tasks plus confirmations; about $100 expected, within the $150
+#      round account)
+#   5  stop; JOURNAL and PLAN. A second round, a release or a final needs its own approval.
+#
+# Money: a round's account is round_share (0.15, a cap the config cannot raise) of the root's dollars, so the root is
+# written as $1000 to give round r0 a $150 account; the root's figure is that arithmetic, not an approval — only
+# round r0 is approved and run, and every later phase is approved in chat before it starts. No final share is set
+# aside (a final needs its own decision).
+
+[workspace]
+root = "workspace-finance-v10"
+
+[bench]
+domains = ["finance", "hr", "operations"]
+upstream_path = "~/workspace/AutomationBench"
+split_rule = "stratified"
+seed = 1
+concurrency = 8
+ratios = { train = 0.5, dev = 0.0, test = 0.5 }
+
+[model]
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "medium"
+max_tokens = 32000
+timeout = 600
+
+[research_model]
+type = "claude_code"
+model = "claude-opus-5-5"
+effort = "medium"
+max_tokens = 32000
+timeout = 900
+
+[pricing]
+input_per_1k = 0.004
+cache_read_per_1k = 0.0002
+cache_write_per_1k = 0.008
+output_per_1k = 0.02
+max_input_tokens = 400000
+max_output_tokens = 163840
+source = "notional, not a bill: claude-opus-5-5 API list price ($4/$20 per M, cache read $0.20, 1h cache write $8)"
+
+[harness]
+preset = "automationbench_v2"
+seed = "stirrup"
+
+[worker]
+network = "none"
+image_id = "sha256:e070208dbddc713a9993f6700ab15a0455d44d2f6885f47dafc2f4bfd4436f30"
+
+[memory]
+enabled = false
+
+[schedule]
+rounds = 1
+patience = 1
+stream_batch = 30
+stream_splits = ["train"]
+
+[budget]
+usd = 1000.0
+
+[final]
+repeats = 3
+domains = ["finance"]
+
+[improver]
+packages_per_round = 2      # v1.10: candidates/package/ invariant, candidates/package-2/ domain (DESIGN §6.20)
+trial_max_tasks = 3         # two packages share trial_max_attempts (12, a cap): 3 tasks each leaves each one revision
+
+[rsi]
+scope_id = "finance-v10"
+seed_from = "workspace-finance-v9"
+seed_line = "working"
+baseline_from = "workspace-finance-v9"
+# frozen 2026-10-21 on stage 4l's code with the import fix: the seed is finance-v9's working line (nothing was
+# installed there: finance-v8's working package e38c14942fbf, with v9's estimates and playbook); the split is unchanged
+core_ref = "core:sha256:b30ec9ce6d62301170ed01c88871fab9d8e591e12bc8a0fc0feef11320ece344"
+split_ref = "1bbf01533d7256af"

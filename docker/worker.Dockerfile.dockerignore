@@ -1,0 +1,5 @@
+# The context of docker/worker.Dockerfile (BuildKit reads <Dockerfile>.dockerignore before the root .dockerignore): the
+# runner and the hashed requirements, nothing else — no workspace, no .env, no virtualenv reaches the build.
+*
+!reharness/runtime/worker_runner.py
+!docker/worker.requirements.txt

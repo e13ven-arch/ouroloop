@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from ouroloop.benchmark import Results, TaskResult
+from reharness.evaluate.results import Results, TaskResult
 
 SCRIPT = Path(__file__).resolve().parent.parent / "examples" / "automationbench" / "aa_replay.py"
 
@@ -76,13 +76,21 @@ def test_the_example_workspaces_hold_five_dev_and_four_test_readings_of_w0():
     """The records the exit number is read from (docs/ROADMAP.md §3 第 2a.9 步, RESULTS.md): W0's three dev readings
     in v0.1's workspace and two in v0.2's, all at 25 tasks; four complete test readings at 23 tasks (final-1's W0
     arm, cut short by its share, is not one). The dev pass rates are the 36% and 48% on record."""
+    from test_record_compat import RECORDS, ReadOnly
     aa = load()
-    if not all(Results(w, aa.DOMAIN).path.exists() for w in aa.WORKSPACES):
-        pytest.skip("the v0.1/v0.2 example workspaces are local records (git-ignored), not in the repository")
-    dev, families, tasks = aa.w0_readings(split="dev")
+    workspaces = tuple(RECORDS / w.name for w in aa.WORKSPACES)
+    if not all(Results(w, aa.DOMAIN).path.exists() for w in workspaces):
+        pytest.skip(f"the v0.1/v0.2 example workspaces are not under {RECORDS} (git-ignored run records; set "
+                    f"REHARNESS_RECORDS_ROOT)")
+    guards = [ReadOnly(w) for w in workspaces]
+    for guard in guards:
+        guard.read(Results(guard.root, aa.DOMAIN).path)
+    dev, families, tasks = aa.w0_readings(workspaces, split="dev")
     assert len(dev) == 5 and len(tasks) == 25 and all(len(r) == 25 for r in dev)
     rates = sorted(round(sum(r.success for r in reading) / 25, 2) for reading in dev)
     assert rates == [0.36, 0.36, 0.36, 0.36, 0.48]
-    test, _, test_tasks = aa.w0_readings(split="test")
+    test, _, test_tasks = aa.w0_readings(workspaces, split="test")
     assert len(test) == 4 and len(test_tasks) == 23 and all(len(r) == 23 for r in test)
     assert families and all(families[t] == t for t in tasks)
+    for guard in guards:
+        guard.check()

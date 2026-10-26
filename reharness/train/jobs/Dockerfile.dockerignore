@@ -1,0 +1,8 @@
+# The build context is the reharness checkout; the image needs only what host init would pack (start.sh is in it).
+*
+!pyproject.toml
+!README.md
+!LICENSE
+!reharness/
+**/__pycache__
+**/*.pyc
