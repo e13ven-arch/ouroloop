@@ -26,3 +26,6 @@ ws/
 *.orig
 *.rej
 .claude/settings.local.json
+
+# the agent guide stays local (the user, 2026-10-26)
+CLAUDE.md
