@@ -254,15 +254,7 @@ v1.2（2026-10-11）：library 默认关。finance-v2、v4 两次流 D = 3、0�
 
 ## 10 与现有代码的对应
 
-| 现有 | 处理 |
-|---|---|
-| `v6-memory` 的 `memory/*` | 搬入；`vel.py` 改名 `rules.py`，`V6Settings` 改成 `settings.Settings`（§3 的字段名），加 `literal_pass`、`promotable`；`research.library` 的 `literal_pass`、`rank_correlation`、`stream_readout` 的学习曲线并进 `rules.py`；`retrieval_block_v6` 改成 `LibraryReader` |
-| `v6-gateway` 的 `bridge.py` | → `memory/bridge.py`（唯一使用者在 memory）；`research_provider` 移到 activity |
-| `v6-gateway` 的 `trace.py` | → `runtime/trace.py`；行格式按阶段 1（`reply`、`mark` 行、`hook` 行、broker 的 call id）；任务的划分按冻结划分里的 task_id |
-| `research/library.py`（VEL） | 已在阶段 1 删除（tag `archive-2026-10-09` 可读） |
-| `tests/test_memory_*.py`、`test_trace.py`、`test_bridge*.py`、`fake_openai_server.py`（v6） | → `tests/memory/`、`tests/runtime/test_trace.py` |
-
-trace 的归属：`TraceStore` 放 `runtime/trace.py`（它只读 transcript，属于证据的读取面），improver 与 memory 都 import 它，不违反 CONTRACTS §1 的方向。IMPROVER §4 据此写。
+（2026-10-09 迁移时的代码对应表与开发顺序已清理；需要时见 tag `archive-2026-10-09` 上的版本。）
 
 ## 11 测试
 
@@ -282,4 +274,5 @@ trace 的归属：`TraceStore` 放 `runtime/trace.py`（它只读 transcript，�
 
 ## 12 开发顺序
 
-搬入（sidecar、client、bridge、importing、`__main__`）→ `settings.py`、`rules.py` → `runtime/trace.py` → `retrieval.py` 与 runtime/evaluate 的接线（`TaskMemory`、开场行）→ `track.py` → `service.py` → `snapshot.py`、`promote.py` → activity 的 `library` 阶段、preset 与启动检查 → 测试。
+（2026-10-09 迁移时的代码对应表与开发顺序已清理；需要时见 tag `archive-2026-10-09` 上的版本。）
+

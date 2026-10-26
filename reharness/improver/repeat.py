@@ -1,16 +1,17 @@
-"""Per-task adoption on the repetitive stream (DESIGN v2.0 §6.23; IMPROVER §15): Harness²'s Propose-Probe-Compose,
-without labels, on one task the agent has just done and will do again.
+"""Per-task adoption on the repetitive stream (DESIGN v2.0-2.1 §6.23-6.24; IMPROVER §15): one task the agent has just
+done and will do again, corrected from its own run without labels.
 
-After a task's first encounter the host opens that run's transcript to R (never its grading), gives it the request,
-a label-free digest of the run, the library of what earlier tasks adopted (with the lessons they left), and a session
-with try_task bound to this task: each candidate package R hands in is run once more on the same request (a probe,
-role `probe`, an extra test attempt the report never counts as an encounter) and the probe's digest comes back beside
-the reference. A composer (one aux call, prompts/compose.md) reads the reference and the probes and adopts one package
-for this task or keeps the base; a reflector (one aux call, prompts/reflect.md) gives each changed component a verdict
-and, when one supports it, writes a transferable lesson into the library (the whole adopted tree beside an
-EXPERIENCE.md, as Harness²'s library does). The task's later encounters run its adopted package; the working line
-never moves here. Leakage: no score, no grading row and no assertion is ever in R's or the composer's inputs; the
-transcript is the agent's own experience, which real work has too.
+After a task's first encounter was sent back, the host opens that run's transcript to R (never its grading) and gives
+it the request, a label-free digest of the run, the world's sources as counts (read by the agent, read only by R's own
+hook, or never read), the feedback the plan allows (one bit per attempt; under `items` also the rejected checks' kinds
+and objects, never a value), the library of what earlier tasks adopted, and a session with try_task bound to this
+task: a candidate package runs once more on the same request (a probe, role `probe`, an extra attempt the report never
+counts as an encounter) and the new run comes back beside the first with the bit. The candidate whose try was accepted
+is adopted for the task (the last one, when several were); none accepted, the base stays. A composer (one aux call,
+prompts/compose.md) decides only under feedback none / outcome, both measured worse (finance-v14, v15). A reflector
+(one aux call, prompts/reflect.md) gives each changed component a verdict and, when one supports it, writes a lesson
+into the library (the whole adopted tree beside an EXPERIENCE.md). The task's later encounters run its adopted package;
+the working line never moves here. Leakage: no score, no grading row and no expected value is ever in R's inputs.
 """
 from __future__ import annotations
 

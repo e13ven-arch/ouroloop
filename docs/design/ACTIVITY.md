@@ -56,7 +56,7 @@ def open_activity(config: dict, *, out, freeze_k=True, worker_factory=None, prov
     # freeze_k 时第一次写 core.json 与种子 release：先解析种子（导入并重放，或由代码建），再写 core.json，再装种子 release——导入被拒不留下 K（2026-10-13）；--checks-only 的 smoke 不写
 
 # phases.py
-PHASES = ("smoke", "freeze", "baseline", "library", "round", "stream", "gate", "release", "evaluate", "report", "export")
+PHASES = ("smoke", "freeze", "baseline", "library", "round", "stream", "repeat", "gate", "release", "evaluate", "report", "export")   # repeat：v2.0 的重复流（EVALUATE §6b；`--arm learn|control`、`--until task-K`）
 def run_arm(activity, *, release, split, candidate, role, pairs, account, plan_ref="", arm="subject", retry=0, supersedes=None, notes="", allocation=None, package=None, memory=None) -> list[TaskResult]
     # 一个运行身份下的一组尝试；已在记录里的不再付费
 def smoke(activity, *, tasks=None, limit=None, checks_only=False, out) -> dict      # 划分哈希、评分契约、输入审计、种子全量字面量扫描；一次 dev 尝试
@@ -138,13 +138,7 @@ def write_report(activity, report) -> dict   # 两次相同（确定性）
 
 ## 8 与现有代码的对应
 
-| 现有 | 处理 |
-|---|---|
-| `bench.py` | `BenchConfig`/`RsiConfig` → `config.py`；`Activity`/`open_activity` → `workspace.py`；`smoke`/`freeze`/`baseline`/`library_track`/`improve`/`evaluate`/`report`/`cycle` → `phases.py`（内容大改：round 交给 improver，library 交给 memory）；`startup_checks` 等 → `checks.py`；其余删（§6） |
-| `cli.py` | → `activity/cli.py`；去掉 `--rounds`/`--reason`/`--plan`/`--replace-splits` 之外的旧项保留 |
-| `report.py` | → `activity/report.py`；去掉 `v05_evidence`、`m_tool_writes`、研究位与多领域的段；加各档通过数与条件记功 |
-| `config.py` | `load`、`load_dotenv`、`build_provider` → `activity/config.py` 与 `providers/` |
-| `examples/automationbench/*.toml` | 旧配置删（`claude.toml`、`claude-full.toml`、`claude-v3.toml`、`improvement.toml`、`claude-v4-*`、`claude-v5-*`：工作区留在本机，配置在 tag 上）；新写 `quickstart.toml`（新表名）与 `finance-v1.toml` |
+（2026-10-09 迁移时的代码对应表与开发顺序已清理；需要时见 tag `archive-2026-10-09` 上的版本。）
 
 ## 9 测试
 
@@ -156,4 +150,5 @@ def write_report(activity, report) -> dict   # 两次相同（确定性）
 
 ## 10 开发顺序
 
-`presets.py`、`config.py` → `workspace.py` → `phases.py`（smoke、freeze、baseline 先；library、round 等 memory、improver 包到位后接）→ `checks.py` → `report.py` → `cli.py` → 新配置与 README。
+（2026-10-09 迁移时的代码对应表与开发顺序已清理；需要时见 tag `archive-2026-10-09` 上的版本。）
+

@@ -2,52 +2,115 @@
 
 English | [中文](README.zh-CN.md)
 
-A bounded self-improvement loop for business agents, built and measured on [AutomationBench](https://github.com/zapier/AutomationBench). An improver reads an agent's own run of a task, writes changes to the agent's harness package (tools, hooks, skills, prompts), tries them for real, and the platform decides what is installed — by evidence, never by a person. Everything the improver cannot touch is frozen: the scorer, the data splits, the gates, the budget. The system is S = (W, R, E; K):
+**An agent that gets the same request right the second time.** reharness runs a business agent on repeated requests. When a request comes back sent back, an improver reads the agent's own run of it, changes the agent's harness package — its tools, hooks, skills, prompts — and tries the change on the same request for real. Only a try that comes back accepted is adopted, and only for that request. No person picks the change, no model judges it, and the improver is never shown an answer: at most "accepted or sent back" per attempt and which check was rejected.
 
-- **W**, the worker: an evolvable agent program (a versioned harness package that holds the loop itself, its tools, hooks, prompts, skills and memory), run by a fixed runner shell against a pinned model.
-- **R**, the improver: a bounded coding session that reads one run, builds a package, and tries it on the same request before the host decides.
-- **E**, the evidence: the permission-filtered record of attempts, tries and adoptions, written by the host, never by the package.
-- **K**, the fixed core: scorer, splits, gates, permissions, budgets and per-attempt limits. R cannot change any of it.
+Built and measured on [AutomationBench](https://github.com/zapier/AutomationBench) (47 simulated SaaS tools, scored on the world state the agent leaves behind) with Claude Opus 5.5 as both the agent and the improver, on a subscription budget.
 
-Two loops exist. The first (stages 4b–4n) searched for packages that generalise across different workflows: a candidate climbed a verification ladder and was installed only when a held-out screen read more fixes than regressions, twice. The second (stages 4o–4p, the main line since 2026-10-22) follows how real work repeats: **the same request comes back**, and the agent should get it right the second time. Each task is met three times; after a first encounter that was sent back, R corrects the harness for that task from that run alone, and the later encounters run the task's own harness. What R learns is never a label: at most the one bit "accepted or sent back" per attempt, and the reviewer's rejected items (which message, which row — never the expected value).
+## How it works
 
-**Where it stands (2026-10-26).** The repetitive stream works and its limits are known. On 50 finance test tasks with the one-bit signal, the steady-state pass rate rose from 64% to 68% with zero regressions ($184, not significant). With the rejected items as the signal, R learned mechanisms by itself on train tasks — a hold that opens every source the run never read before the first write, a tool that derives a figure from the inputs read — in four independent sessions, with no word of them in its prompt; one task went 0.5 → 1.0 → 1.0, another reached its correct figure and held once the model ran at effort max. The remaining failures are documented: corrections in sources the agent never opened (now handled), ambiguities the thin signal cannot resolve, the world's clock not given to the agent, and a 10–17% noise floor of the benchmark itself. The numbers and what each shows are below.
+```mermaid
+graph TD
+  subgraph K [K frozen core]
+    SPLIT[frozen splits<br/>assigned per task family by hash]
+    PLAN[sealed plan<br/>tasks, encounters, feedback level]
+    BOOK[budget book<br/>reserve the bound, settle after, a breach stops the scope]
+    PINS[pins<br/>worker image id, code hashes, CLI version]
+    GRADE[scorer and grading rows<br/>stay on the host]
+  end
+  subgraph W [W harness package]
+    SEED[seed<br/>Stirrup vendored under provenance<br/>adapter, write guard, plan_changes]
+    PKG[typed package<br/>tools, hooks at six sites, prompts, skills, config<br/>content-addressed manifest]
+  end
+  subgraph RT [runtime for one attempt]
+    WK[Docker worker<br/>no network, read-only root, unprivileged<br/>runner sha256 checked on load]
+    GW[gateway<br/>metered model calls, effort cap, hard limits]
+    BR[broker<br/>deny table, read-only callers]
+    TR[transcript E<br/>host-written, append-only]
+  end
+  subgraph LOOP [one task, three encounters]
+    E1[encounter 1 on the base]
+    ACC{accepted?}
+    KEEP[keep the base<br/>no session, $0]
+    SESS[improver session R<br/>label-free digest, sources inventory<br/>rejected kinds and ids, library]
+    CAND[candidate package<br/>static and unit checks at $0]
+    TRY[try_task<br/>a real run on the same request<br/>at most four tries]
+    BIT{that run accepted?}
+    ADOPT[adopt the last accepted candidate]
+    E23[encounters 2 and 3<br/>on the adopted package]
+    LIB[library of adoptions]
+    REP[report<br/>first pass vs steady state<br/>family-paired bootstrap]
+  end
+  SEED --> PKG
+  PKG --> WK
+  WK --> GW
+  WK --> BR
+  GW --> TR
+  BR --> TR
+  BOOK --> GW
+  PINS --> WK
+  SPLIT --> PLAN
+  PLAN --> E1
+  E1 --> ACC
+  ACC -- yes --> KEEP
+  ACC -- sent back --> SESS
+  GRADE -. one bit, rejected kinds and ids, never a value .-> SESS
+  TR --> SESS
+  LIB --> SESS
+  SESS --> CAND
+  CAND --> TRY
+  TRY --> BIT
+  BIT -- not accepted, tries left --> SESS
+  BIT -- accepted --> ADOPT
+  BIT -- none accepted --> KEEP
+  ADOPT --> E23
+  KEEP --> E23
+  ADOPT --> LIB
+  E23 --> REP
+  BOOK -. a breach stops the arm .-> SESS
+```
 
-## Results
+### The loop
 
-The actor and R are Claude Opus 5.5 through headless Claude Code, at one effort level for every arm (medium unless stated). Costs are nominal API-equivalent dollars on a subscription, not a bill. Every installed change came from the agent's own runs; no person chose it.
+A sealed plan names the tasks and how many times each is met (three). Encounter 1 runs the base harness. If the request was accepted, the task is finished: no session, nothing changes, $0. If it was sent back, the improver R gets one coding session bound to that task, and whatever it adopts runs on encounters 2 and 3. The base harness never moves; tasks influence each other only through a library of earlier adoptions. The report reads the pass rate at encounter 1 (first pass) against encounter 3 (steady state), paired by task family with a bootstrap interval. Tasks run in parallel, a task's encounters in order, and every encounter is on record, so a rerun pays for nothing twice.
 
-**The repetitive stream (stages 4o–4p).** Each task is met three times. "First pass" is the first encounter on the base harness; "steady state" is the third encounter, on whatever the task adopted. Feedback: *one bit* = accepted or sent back, per attempt; *items* = the bit plus the rejected checks' kinds and objects, never a value.
+### The learning signal
 
-| Activity | Tasks | Feedback | First pass → steady state | What happened | Cost |
-|---|---|---|---|---|---|
-| finance-v16 (rehearsal) | 20 train | one bit | 15/20 → 18/20 | 5 sent back, 3 corrected and holding; the 15 accepted tasks untouched | $51 |
-| finance-v18 (**the number**) | 50 test | one bit | **32/50 (64%) → 34/50 (68%)**, +4.0 [−4.0, +12.0] | 18 sent back, 3 corrected and holding, no passing task lost to learning; the 15 unfixed: 7 wrong figure or tier, 6 wrong item scope, 2 wrong channel — R's candidates aimed elsewhere on 12 because one bit never says which item | $184 |
-| finance-v19 | 2 train | items | — | R wrote a tool for a tax estimate and the agent called it on every try; the arithmetic was right, the input lacked a rate change posted in a chat channel the agent never opened | $8 |
-| finance-v20 | 2 train | items | 0/2 → 2/2 | two independent sessions each built the same "unread sources" hold; the agent then read the channel and derived 13,162.5 and 105,792 from the corrected inputs; one task's third encounter flipped on mental arithmetic | $11 |
-| finance-v21, v22 | 1 train | items | 0/1 → 0/1 | the hold held, the tool came, the session chose the wrong reading of an ambiguous procedure; two of four tries lost to host defects since fixed | $10 |
-| finance-v24 (**effort max**) | 3 train | items | 1/3 → 2/3 | one session built the hold, the routing hold and the tool together and the task's steady state held at 105,792; another's accepted candidate was lost to the output cap (fixed since); the base passed a task it never passed at medium | $61 |
-| finance-v25 (effort max) | 10 test | items | 2/4 → 3/4 on the 4 tasks completed | stopped by the budget guard after 4 tasks: one improver call summed 400,793 input tokens against a 400,000 bound (the CLI's continuations resend the context) | $68 |
+R's inputs are the request; a digest of the run with no score in it (each call with its route and error flag, the hooks that acted and what they said, the writes by route, the final text); an inventory of the world's data sources as counts per service, never contents, each marked read by the agent, read only by R's own hook, or never read; the library; and the feedback the plan allows. `feedback` is a field of the sealed plan. `attempts` is one bit per attempt: accepted or sent back. `items` adds, per failed check, its kind and the object it is about (a recipient, a channel, a row id), never the expected value; the adapter writes these lines and the grading row stays on the host. The trace store opens train sessions and this task's own runs, nothing else.
 
-What these runs show, in order: the one-bit rule installs only what was accepted, so nothing regresses; the bit alone cannot aim R at the wrong item; with the rejected items and an inventory of the world's sources, R finds the generic mechanisms on its own; at effort max it finds them in one session at five to seven times the cost. Per-task detail: [docs/JOURNAL.md](docs/JOURNAL.md) (entries of 2026-10-22 to 2026-10-25).
+### The acceptance rule
 
-**The held-out screen loop (stages 4b–4n): four sealed finals.** Each compared the evolved version W\* with the starting version W0 on held-out test tasks, under a plan sealed and committed before the first test attempt.
+R edits a copy of the package and calls `try_task`. The host builds the candidate, runs the free checks (static: shape, limits, a scan of the changed lines for a value that belongs to one train task, the declaration against the diff; unit: the package's tests and a smoke run in the worker), then executes the same request once for real. The answer is the new run beside the first, plus the bit. An unchanged candidate is refused; four tries per task. At the end, the last candidate whose try was accepted is adopted for this task; if none was, the base stays. An accepted try the session never handed in is declared by the host from the diff and stands.
 
-| Version | Activity | W0 | W\* | Paired difference, 95% interval | Reading |
-|---|---|---|---|---|---|
-| v0.1 | Marketing, 23 test tasks × 2 | 41.3% | 54.3% | **+13.0** [+2.2, +26.1] | supported |
-| v0.2 | Marketing with the research slot, 23 × 2 | 47.8% | 52.2% | +4.3 [−10.9, +19.6] | inconclusive |
-| v0.4 | finance, 25 × 3 | 54.7% | 62.7% | +8.0 [−4.0, +22.7] | inconclusive; cost per attempt −22%, significant |
-| finance-v5 | finance, 50 × 3 on the two-way split | 52.7% | 56.7% | +4.0 [−4.0, +12.7] | inconclusive |
+### The frozen core and the guards
 
-After finance-v5, eight activities (finance-v6 to v13, about $1,150) measured the benchmark's noise floor (10–17% of tasks flip between two runs of one package), rebuilt acceptance on confirmed flips and footprints, and installed nothing that beat the floor. The diagnosis that changed the main line: AutomationBench's 150 train tasks are 150 distinct workflows — there is no repetition to learn from across them — while real work repeats the same pattern with other parameters. [docs/RESULTS.md](docs/RESULTS.md) has every activity with its diagnosis and limits.
+K is a preset a config may only tighten, frozen with the split hash, the worker image id, two code hashes and the CLI version; a startup check refuses any phase on a mismatch. K holds three kinds of guard and nothing else. Money: every model call reserves its worst-case cost before it is made and settles after; an unknown outcome keeps its bound; a measurement above the bound stops the scope. Leakage: splits are assigned per task family by hash and frozen; the plan is sealed and its reference committed before the first test attempt; a test read ends development. Correctness: the pinned image and code, and failures typed as the candidate's defect, infrastructure or a hard limit, so only infrastructure is retried.
 
-## Status
+### The package
 
-- **Released:** tag `v0.4.0`, the last evaluated version merged into `main`; earlier tags `v0.1.0` to `v0.3.0`. Everything after it is on `m1-automationbench`.
-- **Design:** [docs/DESIGN.md](docs/DESIGN.md) v2.1 — the forward design of 2026-10-09 with the amendments each measured run forced (§6.12 to §6.24). The module designs and interfaces are in [docs/design/](docs/design/README.md).
-- **The platform:** `harness/` the typed package (ten component kinds, manifest v3, the literal check, the vendored-upstream patch stack, the Stirrup seed with six hook sites); `runtime/` the gateway, broker, isolated worker, egress and runner shell; `evaluate/` splits, attempts, the paired gate, the sealed final, the sealed repeat plan, the budget book and releases; `activity/` config and presets to K, the phases, the startup checks, the report and the CLI; `improver/` R's session and prompts, the verification ladder, the held-out screen, the per-task loop with its library; `memory/` ReMe's task memory in a sidecar.
-- **Open items ([docs/PLAN.md](docs/PLAN.md) §3):** the world's clock (`meta.current_time`) as environment information for the agent; the per-call input bound and the session's context budget at effort max; the improver's prompts into the frozen code hash; then a fuller max-effort sample on test.
+A harness package is a directory of fixed shape: the agent loop, Stirrup vendored under a provenance file, tools, hooks at six sites, prompts, skills, config, tests and one manifest, every file content-addressed. The seed carries four generic hooks (a ledger, a triage before the first write, a date anchor, a verify on finish) and one tool that writes nothing, `plan_changes`; every calculation or matching tool in an adopted package was written by R. File counts, bytes, hook and tool counts and the effort ceiling come from K.
+
+### The runtime
+
+Package code never runs in the control process. It runs in a Docker worker pinned by image id: no network, a read-only root, an unprivileged user, a standard-library runner whose sha256 the host checks on every load. The package reaches the model only through a metered gateway (effort capped, hard limits) and the world only through a broker with a deny table; hooks get a read-only broker. The host writes the transcript; the package can only add lines marked as its own.
+
+## What it achieves
+
+**The number.** On the 50 finance test tasks of AutomationBench, with one bit of feedback per attempt and the plan sealed and committed before the first test attempt: first pass 32/50 (64%), steady state 34/50 (68%). 18 tasks were sent back; 3 were corrected by an accepted try and held on both later encounters; the 32 accepted tasks got no session; no passing task was lost to learning (the base itself flipped 4 of 32 at encounter 2 and 3 back). The paired difference is +4.0 points [−4.0, +12.0] over 50 families, inside the interval. $184, 3 h 36 min with four tasks in parallel.
+
+**What R learned by itself.** Told which checks were rejected and what sources the world holds, R built the same two mechanisms in independent sessions with none of the words in its prompt: a hold that stops the first write until every unread source is opened (four sessions), and a tool that derives a figure from the inputs read (three activities). On two train tasks whose figure hung on a correction posted in a chat channel, the agent read the channel on its later encounters and produced the right figures: 0/2 → 2/2 for $11.
+
+**Effort max.** One session built the whole mechanism — a coverage hold, a routing hold, a `tax_estimate` tool — and the tax task held at the right figure on both later encounters, which three medium-effort runs never reached, at five to seven times the cost ($61 for three tasks). The test sample at max stopped after four tasks when the budget guard caught one call at 400,793 input tokens against a 400,000 bound.
+
+**Cost.** About $3.70 per task for three encounters at medium; a sent-back task's session $1–4 with one bit, $3–6 with the rejected items, $18–25 at max.
+
+**Limits.**
+- +4.0 points on test is inside its interval; 3 of 18 sent-back test tasks were corrected, 3 of 5 on train.
+- The control arm was not run on test; the base's own flips stand in.
+- Document ambiguities the signal cannot resolve, and a world clock the agent is never told.
+- A 10–17% noise floor: that share of tasks flips between two runs of one package.
+- The effort-max sample stopped at four tasks.
+
+**Before this loop.** Eight activities (about $1,150) searched for packages that generalise across different workflows under a held-out screen with confirmed flips; four sealed finals read +13.0 (Marketing, significant), +4.3, +8.0 and +4.0 (finance, inside their intervals), and nothing later beat the noise floor. The diagnosis that changed the main line: the benchmark's 150 train tasks are 150 distinct workflows, while real work repeats the same pattern with other parameters. [docs/RESULTS.md](docs/RESULTS.md) has every activity.
 
 ## Quick start
 
@@ -55,78 +118,51 @@ Python 3.11 or newer, macOS or Linux (on Windows, WSL).
 
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
-pip install -e ".[dev,automationbench]"        # add ,train,train-jobs for the training stack; installs the `reharness` command
-pytest -q                                      # offline: no network, no model; live and slow tests excluded
-REHARNESS_TEST_REQUIRE_DOCKER=1 REHARNESS_TEST_REQUIRE_MEMORY=1 pytest -q -m "not live"   # the full run: Docker worker, upstream checkout, memory sidecar
+pip install -e ".[dev,automationbench]"        # installs the `reharness` command
+pytest -q                                      # offline: no network, no model
 ```
 
-The first activity to run is the repetitive stream on a few train tasks, [examples/automationbench/quickstart-repeat.toml](examples/automationbench/quickstart-repeat.toml): a new workspace, nothing frozen yet, no test task read. It needs the benchmark checkout and the worker image (next section). The first two commands call no model:
-
-```bash
-reharness bench --config examples/automationbench/quickstart-repeat.toml --phase smoke --checks-only   # $0: splits, scorer contract, input audit, the seed's literals
-reharness freeze --config examples/automationbench/quickstart-repeat.toml                              # $0: K, the budget root, the sealed repeat plan; prints the [rsi] lines to add
-reharness bench --config examples/automationbench/quickstart-repeat.toml --phase repeat --arm learn    # 5 train tasks x 3 encounters, R's session on each sent-back one: ~$15-25 nominal
-reharness bench --config examples/automationbench/quickstart-repeat.toml --phase report                # $0
-```
-
-[quickstart.toml](examples/automationbench/quickstart.toml) is the older entry point: the batch activity with the memory library and the improver's rounds under the held-out screen.
-
-## Run on AutomationBench
-
-AutomationBench simulates business workflows across 47 SaaS tools and scores the world state the agent's tools leave behind. The agent receives the task prompt and the tool schemas; the assertions and the seeded state stay in an object it never receives.
-
-reharness imports the benchmark lazily. Clone it and point `[bench] upstream_path` at the checkout; [examples/automationbench/README.md](examples/automationbench/README.md) lists what to install. A local score on the public task set is not a leaderboard score.
-
-**Model.** The actor (`[model]`) and R (`[research_model]`) use `type = "claude_code"`: each call is a fresh headless `claude -p` on this machine's Claude subscription login (`claude auth login`), in an empty directory, with no tools and no local customization; tool calls come back as structured JSON. The startup check refuses a login that is not a subscription and a table without `effort`. The measured configs pin `claude-opus-5-5`; the preset caps the effort at medium, and `automationbench_v2_max` lifts both arms to max for the experiment above. The `openai_compat` and `anthropic` providers also exist; no reported result uses them.
-
-**Package code** runs only in the isolated worker image, pinned by id in an activity's K:
+Clone AutomationBench and point `[bench] upstream_path` at it ([examples/automationbench/README.md](examples/automationbench/README.md) lists what to install), build the worker image, and run the repetitive stream on five train tasks in a new workspace. The first two commands call no model:
 
 ```bash
 docker build --provenance=false -f docker/worker.Dockerfile -t reharness-worker:py3.12 .
+reharness bench --config examples/automationbench/quickstart-repeat.toml --phase smoke --checks-only   # $0: splits, scorer contract, input audit, the seed's literals
+reharness freeze --config examples/automationbench/quickstart-repeat.toml                              # $0: K, the budget root, the sealed plan; prints the [rsi] lines to add
+reharness bench --config examples/automationbench/quickstart-repeat.toml --phase repeat --arm learn    # 5 tasks x 3 encounters, R's session on each sent-back one: ~$15-25 nominal
+reharness bench --config examples/automationbench/quickstart-repeat.toml --phase report                # $0
 ```
 
-**Commands.** An activity runs in phases; you stop after each one and read it. Every paid phase is resumable and pays for nothing on record twice; every one stops at the activity's budget root.
+The actor (`[model]`) and R (`[research_model]`) run through headless Claude Code on this machine's subscription login (`claude auth login`), each call a fresh `claude -p` in an empty directory with no tools; the startup check refuses a login that is not a subscription. The preset caps the effort at medium; `automationbench_v2_max` lifts both arms to max. Costs are nominal API-equivalent dollars, not a bill.
 
 | Command | What it does |
 |---|---|
 | `reharness bench --config <cfg> --phase smoke --checks-only` | upstream identity, the frozen split, scorer contract, input audit, the seed's literal scan; no model call |
-| `reharness bench --config <cfg> --phase smoke` | the same checks, then one attempt end to end |
-| `reharness freeze --config <cfg>` | K, the budget root, the gate template, and the sealed plans (`[final]`, `[repeat]`); prints the `[rsi]` lines to add |
-| `reharness bench --config <cfg> --phase repeat --arm learn\|control [--until task-K]` | the repetitive stream: every task of the sealed plan met `encounters` times; the learn arm adopts a package per sent-back task, the control arm runs the base every time |
-| `reharness bench --config <cfg> --phase baseline` / `--phase round --round K` / `--phase stream` | the held-out screen loop: W0's readings, one improver round, or the streaming loop |
-| `reharness bench --config <cfg> --phase gate` / `--phase release` / `--phase evaluate` | the release gate, the release by decision, the sealed final on the test split |
+| `reharness freeze --config <cfg>` | K, the budget root and the sealed plan; prints the `[rsi]` lines to add |
+| `reharness bench --config <cfg> --phase repeat --arm learn\|control [--until task-K]` | the repetitive stream; the learn arm adopts a package per sent-back task, the control arm runs the base every time |
 | `reharness bench --config <cfg> --phase report` | the report from the records on disk; no model call |
-| `reharness export --config <cfg> --to exported-app` | an installed release as an app |
 
-**Configs.** A config names a preset (`[harness] preset`) and may only tighten it; the tables are listed in [docs/design/CONTRACTS.md](docs/design/CONTRACTS.md) §9 and the `[repeat]` table in [docs/design/EVALUATE.md](docs/design/EVALUATE.md) §6b. `finance-v14.toml` to `finance-v25.toml` are the measured activities of stages 4o–4p, each header listing its steps, costs and what it was for; `finance-v5.toml` to `finance-v13.toml` the held-out screen loop. Their workspaces hold local, git-ignored run records.
-
-For another domain, copy a quickstart. Change `[bench] domain`, give the copy a new `[workspace] root` and `[rsi] scope_id`, and keep `[repeat] split = "train"` until a plan for the test split is sealed and committed.
+A config names a preset (`[harness] preset`) and may only tighten it; the `[repeat]` table is described in [docs/design/EVALUATE.md](docs/design/EVALUATE.md) §6b. `finance-v14.toml` to `finance-v25.toml` are the measured activities, each header listing its steps, costs and what it was for; their workspaces hold local, git-ignored run records. For another domain, copy the quickstart, change `[bench] domain`, give the copy a new `[workspace] root` and `[rsi] scope_id`, and keep `[repeat] split = "train"` until a plan for the test split is sealed and committed.
 
 ## Code layout
 
 | Path | What it holds |
 |---|---|
-| `reharness/contracts.py` | identity and the content-addressed object store, events, the file helpers, the error classes |
-| `reharness/harness/` | the harness package: component kinds, manifest v3, shape and literal checks, the vendored-upstream patch stack, the seeds (`seeds/stirrup/`: Stirrup 0.2.0, its adapter, the write guard, `plan_changes`) |
-| `reharness/runtime/` | one attempt: the gateway, the broker, the worker and its runner protocol, egress, the runner shell, the trace |
-| `reharness/evaluate/` | splits, hard limits, attempts and results, the paired gate, the sealed final, the sealed repeat plan (`repeat.py`), the budget book and metering, releases |
-| `reharness/improver/` | R's session and prompts (`prompts/repeat.md` for the per-task loop, `propose.md` for rounds), the per-task loop and its library (`repeat.py`), the verification ladder (`verify/`), the held-out screen, the trial, the frontier, the ledger |
-| `reharness/memory/` | the memory component: the ReMe sidecar, its bridge and rules, retrieval, snapshots |
-| `reharness/activity/` | config and presets to K, the workspace, the phases, the startup checks, the report, the `reharness` CLI |
-| `reharness/adapters/automationbench.py` | tasks, business tools, the official scorer, the rejected-items and world-sources views (imports nothing of the framework) |
-| `reharness/providers/` | `claude_code`, `openai_compat`, `anthropic` |
-| `reharness/train/` (extra `[train]`) | the training and decision stack, off the benchmark path |
+| `reharness/activity/` | config and presets to K, the workspace, the phases (`phases.py`: `repeat`), the startup checks, the report, the CLI |
+| `reharness/improver/repeat.py`, `prompts/repeat.md` | the per-task loop: the label-free digest, `try_task`, the acceptance bit, the rejected items, the world's sources, the library |
+| `reharness/evaluate/` | frozen splits, attempts and results, the sealed plans (`repeat.py`, `final.py`), the paired bootstrap, the budget book, releases |
+| `reharness/harness/` | the typed package: component kinds, manifest, shape and literal checks, the vendored seed (`seeds/stirrup/`) |
+| `reharness/runtime/` | one attempt: gateway, broker, the Docker worker and its runner, egress, the trace |
+| `reharness/adapters/automationbench.py` | tasks, business tools, the official scorer, the rejected-items and world-sources views |
+| `reharness/improver/` (the rest), `reharness/memory/`, `reharness/train/` | the earlier held-out screen loop (rounds, the verification ladder, the screen, the frontier), the memory sidecar (off in every measured preset), the training stack (never run); kept for the record |
 
 ## Documents
 
-The design documents are in Chinese.
+The design documents are in Chinese; the English README carries the architecture.
 
-- [docs/DESIGN.md](docs/DESIGN.md): the architecture (v2.1) and the amendments each measured run forced; §6.23 the repetitive stream, §6.24 the rejected items, the world's sources and R building tools.
-- [docs/PLAN.md](docs/PLAN.md): where things stand, the rules, the stages, and what waits for the user. Start here.
+- [docs/DESIGN.md](docs/DESIGN.md): the architecture and the amendments each measured run forced; §6.23–§6.24 the repetitive stream, the rejected items, the world's sources, R building tools.
+- [docs/PLAN.md](docs/PLAN.md): where things stand, the rules, and what waits for the user.
 - [docs/RESULTS.md](docs/RESULTS.md) and [docs/JOURNAL.md](docs/JOURNAL.md): the results, and a log of every change and run with its numbers, newest first.
-- [docs/design/](docs/design/README.md): the module designs and interfaces; [docs/history/](docs/history/): pre-registered plans, analyses, the framework survey and announcement drafts.
-
-Files removed in the cleanups of 2026-10-08 and 2026-10-09 are readable at tags `archive-2026-10-08` and `archive-2026-10-09`.
+- [docs/design/](docs/design/README.md): the module designs and interfaces; [docs/history/](docs/history/): plans, analyses, the framework survey and the announcement drafts.
 
 ## License
 

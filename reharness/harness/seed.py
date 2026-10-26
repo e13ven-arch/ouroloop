@@ -52,18 +52,6 @@ def read_tree(root: Path) -> dict[str, str]:
     return files
 
 
-def protected_files(name: str) -> dict[str, bytes]:
-    """{vendor/<pkg>/LICENSE | PROVENANCE.json: bytes} of the seed's source tree."""
-    root = seed_dir(name) / "vendor"
-    out = {}
-    for pkg in sorted(p for p in root.iterdir() if p.is_dir()) if root.is_dir() else ():
-        for leaf in ("LICENSE", "PROVENANCE.json"):
-            if not (pkg / leaf).is_file():
-                raise SeedUnavailable(f"seed {name}: vendor/{pkg.name}/{leaf} is missing")
-            out[f"vendor/{pkg.name}/{leaf}"] = (pkg / leaf).read_bytes()
-    return out
-
-
 def seed_files(name: str, *, core: dict) -> dict[str, str]:
     """The seed's files as K builds them: provenance checked, patches replayed, manifest filled from K."""
     root = seed_dir(name)

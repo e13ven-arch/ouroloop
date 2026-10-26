@@ -53,6 +53,13 @@ removed from here.
 ## The phases
 
 ```bash
+# the main line (stages 4o-4p): the repetitive stream, docs/design/EVALUATE.md §6b
+reharness bench --config C --phase smoke --checks-only   # upstream, frozen split, scorer contract, input audit, the seed's literals: $0
+reharness freeze --config C                              # K, the budget root, the sealed repeat plan from [repeat]; prints [rsi]
+reharness bench --config C --phase repeat --arm learn    # every task of the plan met `encounters` times; a sent-back task gets R's session
+reharness bench --config C --phase repeat --arm control  # the base every time, for the paired difference against no learning
+reharness bench --config C --phase report                # first pass against steady state, family-paired
+# the earlier held-out screen loop (stages 4b-4n), kept for the record:
 reharness bench --config C --phase smoke --checks-only   # upstream, frozen split, scorer contract, input audit, the seed's literals: $0
 reharness bench --config C --phase smoke                 # one dev attempt end to end through the runner shell
 reharness freeze --config C                              # K, the gate template, the budget root (and a final plan); prints [rsi]

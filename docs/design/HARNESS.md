@@ -12,7 +12,7 @@
 
 | 文件 | 内容 |
 |---|---|
-| `harness/package.py` | `Manifest`、`Package`、`Limits`、`classify`、`parse_manifest`、`check_shape`、`build`、`files_of`、`apply_patch`、`diff` |
+| `harness/package.py` | `Manifest`、`Package`、`Limits`、`classify`、`parse_manifest`、`check_shape`、`build`、`apply_patch`、`diff` |
 | `harness/kinds.py` | 组件类型表：位置模式、manifest 条目、是代码还是文本、验收档、记功条件（§3） |
 | `harness/contract.py` | 包侧契约：ctx 的名字与形状、hook 站点与事件、各站点返回形状与 `action_of`（把 hook 的答复归为 none/block/modify/feedback/pushback，越界即 `HookAnswerError`）、worker 协议的 op 与回调；`as_json()` 是 `worker_runner.py` 嵌入的常量 |
 | `harness/literals.py` | 字面量索引与检查（相对种子改动的行） |
@@ -177,7 +177,6 @@ def check_shape(files: dict[str, str], *, limits: Limits, seed: Package | None, 
     # 形状、上限、vendor 保护文件（与 seed 相同）、HOST_KINDS 未改（与 parent 相同；memory 包构建时不给 parent）
 def build(objects: Objects, files: dict[str, str], *, limits: Limits, seed: Package | None, parent: Package | None = None) -> Package
 def load(objects: Objects, package_ref: str) -> Package
-def files_of(objects: Objects, package_ref: str) -> dict[str, str]
 def run_files(package: Package) -> dict[str, str]        # 装进 worker 的文件：去掉 tests/ 与 memory/
 def apply_patch(parent: Package, patch: dict[str, str | None]) -> dict[str, str]   # None 即删除
 @dataclass(frozen=True)
@@ -187,7 +186,6 @@ class Diff:
     sites: set[str]
     vendor_touched: bool
 def diff(parent: Package, files: dict[str, str]) -> Diff
-def needs_worker(package: Package) -> bool               # 永远 True（种子带 agent）；留作接口
 
 # kinds.py
 @dataclass(frozen=True)
@@ -206,7 +204,6 @@ def describe(found) -> str                                       # 给 R 的检�
 # seed.py
 def build_seed(name: str, *, core: dict, objects: Objects) -> Package
 def seed_dir(name: str) -> Path
-def protected_files(name: str) -> dict[str, bytes]      # vendor/<name>/{LICENSE, PROVENANCE.json}
 
 # vendor.py
 @dataclass(frozen=True)
@@ -250,12 +247,7 @@ finance-v2 的 27 道 train 失败里 5 道是 real_date，三道的锚点本身
 
 ## 9 与现有代码的对应
 
-| 现有 | 处理 |
-|---|---|
-| `agent/harness_package.py`（HEAD 723 行；v6 加 vendor/library） | 拆成 `package.py`、`literals.py`、`kinds.py`；`library` kind 改名 `memory`；`PackageView`/`prompt_block` 移到 runtime（宿主合成系统提示） |
-| `agent/seed_v6/**`（v6-agent） | 搬到 `harness/seeds/stirrup/`；hook 站点扩到六个；manifest 升到 v3 |
-| `agent/default_agent.py` | 删；它的执行与 hook 分发并入 `stirrup_agent.py` |
-| `tests/test_harness_package.py`、`test_write_guard.py`（v6） | 重写到 `tests/harness/`（`test_harness_package.py`、`test_harness_literals.py`、`test_harness_seed.py`）；`test_worker_resources.py` 归 `tests/runtime/` |
+（2026-10-09 迁移时的代码对应表与开发顺序已清理；需要时见 tag `archive-2026-10-09` 上的版本。）
 
 ## 10 测试
 
@@ -269,4 +261,5 @@ finance-v2 的 27 道 train 失败里 5 道是 real_date，三道的锚点本身
 
 ## 11 开发顺序
 
-`contract.py` → `kinds.py` → `package.py`（含 manifest）→ `literals.py` → `vendor.py`、`seed.py` → 搬入种子并扩站点 → 测试。runtime 的 worker_runner 协议同步改（RUNTIME §4）。
+（2026-10-09 迁移时的代码对应表与开发顺序已清理；需要时见 tag `archive-2026-10-09` 上的版本。）
+

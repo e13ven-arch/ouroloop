@@ -1,15 +1,14 @@
-# finance-v18: stage 4o, the number (finance-v17 restarted with the tasks in parallel) — the repetitive stream on the finance TEST tasks (the rehearsal was finance-v16) (docs/DESIGN.md v2.0 §6.23; docs/JOURNAL.md 2026-10-22) — the last version, on the repetitive
-# stream. Each task is met three times: the first encounter runs the base, then the improver corrects the harness for
-# that task from its own run (no score: Harness²'s Propose-Probe-Compose, each candidate probed once on the same
-# request, a composer adopting one or keeping the base, a reflector leaving a lesson in the library), and the later
-# encounters run the task's own harness; a control arm runs the base every time. The external number is the first-pass
-# rate against the steady-state rate, the control arm beside it. This config is the REHEARSAL on 20 train tasks
-# ([repeat] split = "train", max_tasks = 20); when its reading is good (the learn arm's e3 - e1 beats the control
-# arm's by 3 tasks or more) the same shape runs on test (split = "test", a new workspace: another plan).
-#   1  `... bench --config examples/automationbench/finance-v14.toml --phase smoke --checks-only`                $0
+# finance-v18: stage 4o, THE NUMBER — the repetitive stream on all 50 finance TEST tasks (docs/DESIGN.md v2.0 §6.23;
+# docs/JOURNAL.md 2026-10-22, the v18 addendum; the rehearsal on train was finance-v16, finance-v17 was the same plan run
+# sequentially and stopped). Each task is met three times: the first encounter runs the base; a task that was sent back
+# gets the improver's session with one bit of feedback per attempt (`feedback = "attempts"`: accepted or sent back, the
+# candidate whose try was accepted is adopted, no composer); the later encounters run the task's own harness. Read:
+# e1 32/50 -> e3 34/50, +4.0 [-4.0, +12.0], 3 of 18 sent-back tasks corrected and holding, $183.77. The plan was sealed
+# and its ref committed before the first test attempt (PLAN rule 6). The control arm was not run.
+#   1  `... bench --config examples/automationbench/finance-v18.toml --phase smoke --checks-only`                $0
 #   2  `... freeze --config ...`; add the printed [rsi] lines (core_ref, split_ref, repeat_plan_ref) and commit    $0
-#   3  `... bench --config ... --phase repeat --arm learn` (20 tasks: 3 encounters + up to 4 probes + R's session
-#      each, about $80); then `--arm control` (60 attempts, about $30). Approved in chat first (PLAN rule 3).
+#   3  `... bench --config ... --phase repeat --arm learn` (50 tasks x 3 encounters + up to 4 probes + R's session on
+#      each sent-back task, four tasks at a time). Approved in chat first (PLAN rule 3).
 #   4  `... bench --config ... --phase report`
 #
 # Money: the root is written as $1000 so each arm's account has room; the approval is the sum above, not the root.

@@ -8,8 +8,7 @@ its budget spent ends the attempt at that dimension (LimitHit) once the refusal 
 
 SkillReader answers ctx.skills from the package's own text; MemoryRecall answers ctx.memory.recall through the memory
 reader the activity gives (none before the memory package is in place); Marks writes what the package says about its
-own loop, labelled `source: "package"`, a hook's mark as the `hook` line the improver credits by. HostContext is the
-same names in this process, for the toolcheck and for tests.
+own loop, labelled `source: "package"`, a hook's mark as the `hook` line the improver credits by.
 """
 from __future__ import annotations
 
@@ -183,66 +182,3 @@ class Marks:
             self.record("hook", {**line, "source": "package"})
         else:
             self.record("mark", {"mark": kind, "data": data, "source": "package"})
-
-
-# ---------------------------------------------------------------------------- the same names in this process
-class _Reply:
-    """Protocol data with attributes and the same names as keys, as the worker's records are."""
-
-    def __getitem__(self, key):
-        if key not in vars(self):
-            raise KeyError(key)
-        return vars(self)[key]
-
-    def get(self, key, default=None):
-        return vars(self).get(key, default)
-
-
-class ModelReply(_Reply):
-    def __init__(self, text: str, tool_calls: list, stop):
-        self.text, self.tool_calls, self.stop = text, tool_calls, stop
-
-
-class ToolReply(_Reply):
-    def __init__(self, output: str, is_error: bool = False):
-        self.output, self.is_error = output, is_error
-
-
-class ModelCallError(RuntimeError):
-    """The gateway refused a ctx.model call (an undeclared role, a malformed call). The agent may catch it."""
-
-
-class HostContext:
-    """The contract's names over the host's gateway, broker, skills, memory and marks, in this process: for the
-    toolcheck's scripts (IMPROVER §8) and for tests. Nothing of the host behind the names."""
-
-    __slots__ = ("view", "skills", "memory", "limits", "model", "tool", "mark")
-
-    def __init__(self, gateway, broker: AttemptBroker, skills: SkillReader, memory: MemoryRecall, marks: Marks,
-                 view: dict):
-        self.view, self.skills, self.memory = view, skills, memory
-        self.limits = gateway.limits() if gateway is not None else {}
-
-        def refresh():
-            if gateway is not None:
-                self.limits = gateway.limits()
-
-        def model(messages, tools=(), role: str = "act", effort=None) -> ModelReply:
-            if gateway is None:
-                raise ModelCallError("no model here")
-            reply = gateway.model(messages, tools, role, effort)
-            refresh()
-            if reply.get("is_error"):
-                raise ModelCallError(str(reply.get("error") or "the gateway refused the call"))
-            self.view["last_usage"] = reply.get("usage")
-            return ModelReply(reply["text"], list(reply["tool_calls"]), reply["stop"])
-
-        def tool(name: str, args=None, *, read_only: bool = False) -> ToolReply:
-            output, is_error = broker.call(name, args or {}, read_only=read_only)
-            refresh()
-            return ToolReply(output, is_error)
-
-        def mark(kind: str, **data) -> None:
-            marks.mark(kind, data)
-
-        self.model, self.tool, self.mark = model, tool, mark

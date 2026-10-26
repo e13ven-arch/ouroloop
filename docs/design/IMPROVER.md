@@ -401,17 +401,7 @@ def export_policy(activity) -> str;  def import_policy(activity, policy_ref) -> 
 
 ## 12 与现有代码的对应
 
-`research/` 与 `evolve/` 已在阶段 1 删除，下表的“现有”从 tag `archive-2026-10-09` 读。
-
-| 现有 | 处理 |
-|---|---|
-| `research/session.py` | `CodingSession`、`WorkTree` 的形状保留，改输入与工具（加 `search_trace`、`run_tests`、`run_check`）；`TrajectoryReader` 改由 TraceStore 重建轨迹；`ScreenSettings` → Settings；`passing_sample`、`screen_counts`、`pick_best` 的规则保留；方法库、读取下限、`FINISH_V5` 删 |
-| `research/drafts.py` | 草稿检查链 → `verify/static.py` + `verify/unit.py`；修订循环 → `CodingSession.revise` |
-| `research/experiment.py` | 声明检查 → `verify/static.py`；`duplicate_experiment` → `Archive` 的重复检查；其余删 |
-| `research/diagnosis.py` | `failure_summary`、`NoteCache` → `diagnose.py`（输出改 Case，轨迹改由 TraceStore 给） |
-| `research/context.py`、`inspection.py` | 删（投影由 `Ledger.projection` 与 `Evidence` 给） |
-| `evolve/experience.py` | → `ledger.py`（行的形状改 STAGES） |
-| `research/methods.py` 的 `reach_check`、`replay_events` | 思路进 `verify/reach.py`、`verify/replay.py`，代码不搬 |
+（2026-10-09 迁移时的代码对应表与开发顺序已清理；需要时见 tag `archive-2026-10-09` 上的版本。）
 
 ## 13 测试
 
@@ -459,4 +449,5 @@ def adopt(activity, *, task_id, reference, base_release, run_arm, account, plan,
 
 ## 14 开发顺序
 
-`settings.py` → `evidence.py` → `ledger.py`、`archive.py` → `diagnose.py` → `allocate.py` → `verify/static.py`、`unit.py` → `session.py` → `verify/toolcheck.py`、`replay.py`、`reach.py` → `screen.py` → `credit.py` → `policy.py` → `round.py` → activity 的 `round` 阶段、cycle 与活动末的 `gate` → 测试。阶段 1 留下的三项（种子传 effort、回合用完记 budget、速率限制落事件）先做。
+（2026-10-09 迁移时的代码对应表与开发顺序已清理；需要时见 tag `archive-2026-10-09` 上的版本。）
+

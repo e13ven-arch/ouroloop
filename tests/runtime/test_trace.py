@@ -584,7 +584,7 @@ def test_the_index_is_incremental_derived_and_rebuildable(stirrup, tmp_path):
     assert TraceStore(root, stirrup.split_of).index() == NOTHING      # the index's own record, not the store's memory
     hits = store.search("zanzibarite")
     assert hits and indexed(root, "SELECT count(*) FROM docs") == [(first["docs"],)]
-    assert store.rebuild() == first and store.search("zanzibarite") == hits
+    assert store.search("zanzibarite") == hits
     # an index of another schema is built again
     db = sqlite3.connect(root / "index" / "trace.sqlite")
     db.execute("UPDATE meta SET value = '1' WHERE key = 'schema'")
@@ -739,7 +739,7 @@ def test_without_fts5_search_raises_and_does_not_fall_back(stirrup, tmp_path, mo
             return Guard()
     monkeypatch.setattr(T, "sqlite3", NoFts)
     store = TraceStore(root, stirrup.split_of)
-    for read in (lambda: store.search("zanzibarite"), store.index, store.rebuild):
+    for read in (lambda: store.search("zanzibarite"), store.index):
         with pytest.raises(TraceIndexError, match="FTS5"):
             read()
     assert not (root / "index" / "trace.sqlite").exists()

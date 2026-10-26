@@ -8,6 +8,16 @@
 
 ---
 
+## 2026-10-26 评审与清理、把故事讲清：11 个读者 + 20 个反驳者 + 三个视角；$0
+
+**做法（用户："review 一遍代码和系统设计，清理冗余部分，凸显特色，结果不需要保证那么严谨，需要讲清楚设计和取得的提升；发布稿包括 README 的内容，里面需要包括特色的架构设计"）。** 一个工作流：11 个只读读者各读一个子系统或一组文档，报"冗余候选"（带 grep 证据与风险）和"特色"（绑到文件与函数）；候选去重后按规模取前 20 条，各由一个反驳者从代码（import、入口、阶段、runner 协议、测试）和记录（设计文档、配置、磁盘格式、规则）两个角度试着推翻，不确定即推翻；同时三个视角（系统架构、自改进 agent 研究、第一次来看仓库的工程师）各提炼特色，一个合成者核对代码路径与数字后给出特色排序、mermaid 架构图、README 的 "How it works" 与 "What it achieves" 两节和"故事怎么改"清单。127 条候选，20 条验证，12 条站住、8 条被推翻（配置、训练链设计、memory 库测试、ceiling/ 等都是记录或测试依赖）。
+
+**清理（12 条里做了 9 条）。** 删了没有任何调用方的 `harness/package.py` 的 `Manifest.text`、`Package.component`、`files_of`、`needs_worker`、`code_kinds`；`harness/seed.py` 的 `protected_files`；`runtime/broker.py` 里只给测试用的 `HostContext` / `_Reply` / `ModelReply` / `ToolReply` / `ModelCallError` 一段（两个测试随之删 / 改）；`runtime/records.py` 的 `on_line`；`runtime/trace.py` 的 `rebuild`（测试改）；`runtime/gateway.py` 的 `by_role`；种子 `stirrup_agent.py` 里从未启用的 Stirrup 原生工具通路（`STIRRUP_TOOLS = ()`、`_native`）。六份设计文档里 2026-10-09 迁移时的"与现有代码的对应 / 开发顺序"两节各留标题、正文换成一行指向 tag（编号不动，`IMPROVER §15` 之类的引用照旧）。没做的三条：`apply_patch` 被 `test_activity_phases` 用到；`ScriptedChat` 被 providers 的点路径加载测试用到；`write_guard` 的 `_42` 参数被种子自己的测试用到——反驳者漏看了测试。231 行净减；相关测试 179 passed。
+
+**故事（按合成者的清单改，README 英 / 中与发布稿同步）。** 开头直接说回路（一道题、一次运行、一个会话、真跑一次、一个比特，只采用被接受的），S = (W, R, E; K) 退到第二段；"How it works" 带 mermaid 架构图（K / W / 运行时 / 一道题三次遭遇）和六小节（回路、学习信号、接受规则、冻结核心与三类保护、包、运行时）；"What it achieves" 讲数字、R 自己学出的机制、max 的发现、费用、边界五段，不逐句对冲但不说假话；留出筛选回路降为一段加链接；去掉 v0.4 的 −22% 成本行、Harness² 的 composer / reflector 词汇、维护者才关心的 tag 与分支名；命令表只留 smoke / freeze / repeat / report；代码结构表只列主线跑过的文件，轮次回路、memory、训练栈合为一行"留作记录"。发布稿 = README 的"不一样在哪 + 怎么工作（含图）+ 做到了什么 + 为什么这样设计 + 你能拿到什么"，英中各一份。其余过时处：示例 README 的阶段块加 `repeat`，ACTIVITY §3 的 PHASES 加 `repeat`，设计索引 IMPROVER 一行改为主线在前，finance-v18 配置头改成它实际是什么。读者报的其它过时文档（IMPROVER §3～§7 签名漂移、EVALUATE §3/§5、MEMORY §4、训练栈 docstring 引用已删文档等）留在 PLAN §3 待清。
+
+---
+
 ## 2026-10-26 开源打包与改名：ouroloop → reharness；$0
 
 **打包（用户："包装一下，准备开源"）。** README（英 / 中）重写到 v2.1 的状态：重复流为主线、两张结果表（重复流 v16～v25；四次封存 final）、"现在在哪"讲整体效果、快速上手改为 `quickstart-repeat.toml`（新建：5 道 train 题的重复流，$0 检查通过）、命令表加 `--phase repeat`、代码结构与文档索引更新；RESULTS 加"重复流"一节和 finance-v18 的汇总行；CONTRIBUTING（钱、泄漏、结果正确三条规矩与测试跑法）；CI 的镜像查找修到 `runtime.worker`（原来指向不存在的 `agent.worker`）；pyproject 0.5.0 与新描述；发布稿草案 `docs/history/ANNOUNCEMENT_DRAFT_2026-10-26.md`（英 + 中，未发）。扫过跟踪文件：无密钥、无个人路径。用户：CLAUDE.md 不进仓库——改为本地忽略文件。

@@ -137,18 +137,7 @@ worker → 宿主的回调：`model_call{id, role, effort, messages, tools}` →
 
 ## 7 与现有代码的对应
 
-| 现有 | 处理 |
-|---|---|
-| `agent/gateway.py` | → `runtime/gateway.py` + `runtime/broker.py`（拆开）；加 `MemoryRecall` |
-| `agent/worker.py`（v6 版） | → `runtime/worker.py`；`WorkerResources` 取代散落的参数 |
-| `agent/worker_runner.py` | → `runtime/worker_runner.py`；加 `memory_recall`、`check` 两个 op；hook op 的 event 形状按 HARNESS §5.2 |
-| `agent/runner.py`（v6 版，含 EgressMeter、last_usage） | → `runtime/runner.py`；去掉 `bound`/policies 的参数，改收 `package` 与 `core` |
-| `egress/__init__.py`、`egress/addon.py`（v6-gateway） | → `runtime/egress.py`、`runtime/egress_addon.py` 原样 |
-| `app.py` | → `runtime/app.py`；不再经 policies 绑定 |
-| `agent/deny.py` | → `runtime/broker.py` 的模块级 `DENY` 表与 `denied()` |
-| `chat.py`（ToolSpec、ToolCall、ScriptedChat） | → `runtime/chat.py` |
-| `providers/` | 不动（`claude_code`、`openai_compat`、`anthropic`）；`build_provider` 从 `config.py` 搬进 `providers/__init__.py` |
-| `docker/worker-v6.Dockerfile`、`egress.Dockerfile`（v6） | → `docker/worker.Dockerfile`（标签 `reharness-worker:py3.12`，带 Stirrup 的依赖闭包，`docker/worker.requirements.txt` 按哈希）、`docker/egress.Dockerfile`（`reharness-egress:v6.1`） |
+（2026-10-09 迁移时的代码对应表与开发顺序已清理；需要时见 tag `archive-2026-10-09` 上的版本。）
 
 ## 8 测试
 
@@ -161,4 +150,5 @@ worker → 宿主的回调：`model_call{id, role, effort, messages, tools}` →
 
 ## 9 开发顺序
 
-`records.py` → `gateway.py`、`broker.py` → `worker_runner.py`（协议）→ `worker.py`（含 egress）→ `runner.py` → `app.py` → 迁测试。
+（2026-10-09 迁移时的代码对应表与开发顺序已清理；需要时见 tag `archive-2026-10-09` 上的版本。）
+

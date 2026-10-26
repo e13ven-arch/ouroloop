@@ -194,16 +194,9 @@ def paired(table, *, families, subject, control, seed, replicates) -> dict   # (
 
 ## 10 与现有代码的对应
 
-| 现有 | 处理 |
-|---|---|
-| `benchmark.py` | 拆成 `splits.py`、`limits.py`、`results.py`；`V2_FIELDS`/`V06_FIELDS` 的兼容字段只保留读 |
-| `evolve/task_eval.py` | → `attempt.py`；去掉 `bound`、policies |
-| `evolve/task_gate.py` | → `gate.py`；删 economy / protected / `_ratio`；`screen()` 由 improver 的 V3 代替 |
-| `evolve/execution.py` | 预算、Execution、Pricing、MeteredProvider → `budget.py`；`execute_experiment` 的状态机由 improver 的 round 用 Execution 自己驱动；`Schedule` → activity |
-| `ledger.py` | `Ledger`（决策行）与 `SessionStore` 搬进 `train/ledger.py`；`_append_jsonl`、`redact`、`now`、`new_id` → `contracts.py` |
-| `release.py` | → `release.py`；记录改三元组；`export_deployment` → `runtime.app.export` |
-| `workspace.py` | 删（session 行由 runner 写 `task`/`end`，`.release.json` 不再需要） |
+（2026-10-09 迁移时的代码对应表与开发顺序已清理；需要时见 tag `archive-2026-10-09` 上的版本。）
 
 ## 11 开发顺序
 
-`limits.py`、`splits.py`、`results.py`（搬）→ `budget.py`（搬）→ `release.py`（改记录）→ `attempt.py`（接 runtime）→ `gate.py` → `final.py` → `model.py` → 迁 `test_paid_run_safety`、`test_record_compat`。
+（2026-10-09 迁移时的代码对应表与开发顺序已清理；需要时见 tag `archive-2026-10-09` 上的版本。）
+

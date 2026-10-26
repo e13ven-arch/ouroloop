@@ -10,7 +10,7 @@
 | [EVALUATE](EVALUATE.md) | `reharness/evaluate/`：划分、硬限额、尝试、配对 gate、final 封存、发布与 model 绑定 | contracts、harness、runtime | 1 |
 | [ACTIVITY](ACTIVITY.md) | `reharness/activity/`：配置与 preset → K、工作区、阶段编排、预算根、启动检查、报告、CLI | 以上全部 + memory、improver | 1 |
 | [MEMORY](MEMORY.md) | `reharness/memory/`：sidecar、规则、写入步、检索与 `recall`、快照、升级 | contracts、harness、runtime | 2 |
-| [IMPROVER](IMPROVER.md) | `reharness/improver/`：证据、诊断、分层、编码会话、验收阶梯、筛选、档案、记功、台账、策略 | contracts、harness、runtime、evaluate、memory | 3 |
+| [IMPROVER](IMPROVER.md) | `reharness/improver/`：主线是逐题回路（§15，`repeat.py` + `prompts/repeat.md`：无标签 digest、try_task、接受比特、退回项、源清单、库）；此前的轮次回路（证据、诊断、分层、编码会话、验收阶梯、筛选、档案、记功、台账、策略）留作记录 | contracts、harness、runtime、evaluate、memory | 3 |
 | [V2_TRAINING_PIPELINE](V2_TRAINING_PIPELINE.md) | `reharness/train/`：训练链（已定稿，不改） | contracts、evaluate | 5 |
 
 阅读顺序：CONTRACTS → HARNESS → RUNTIME → EVALUATE → ACTIVITY → MEMORY → IMPROVER。

@@ -100,9 +100,6 @@ MAX_TOOL_OUTPUT = 20000               # when the view gives no max_output_chars
 NOTE_CHARS = 4000                     # feedback shown after a turn's results
 READ_SKILL = "read_skill"
 RECALL = "recall"
-STIRRUP_TOOLS = ()                    # Stirrup's own tools to offer, by name of NATIVE_TOOLS; none in the seed
-NATIVE_TOOLS = {"calculator": ("stirrup.tools.calculator", "CALCULATOR_TOOL")}
-STIRRUP_TOOL_CHARS = 2000             # of a native tool's output, in its mark
 EGRESS_FLAG = "REHARNESS_EGRESS"       # "1" in the worker's environment when K's network is the proxy
 HTTP_FETCH = "agent/http_fetch.py"
 # Sub-agents to offer the model when config.subagent_depth >= 1, each {"name", "description", "system_prompt",
@@ -769,11 +766,6 @@ class Tools:
         self.turn_results: list[dict] = []
         self.sub_agents: dict[str, Tool] = {}
         self.sub_specs: list[dict] = []
-        self.native = {}
-        for name in STIRRUP_TOOLS:
-            module, attr = NATIVE_TOOLS[name]
-            tool = getattr(importlib.import_module(module), attr)
-            self.native[tool.name] = tool
         self.fetch = self.bundle.entry(f"{HTTP_FETCH}:run") if os.environ.get(EGRESS_FLAG) == "1" else None
         self.fetch_spec = self.bundle.modules[HTTP_FETCH].SPEC if self.fetch is not None else None
 
@@ -793,8 +785,6 @@ class Tools:
                               "query": {"type": "string", "description": "What you need advice about."},
                               "k": {"type": "integer", "description": "How many notes at most."}},
                               "required": ["query"], "additionalProperties": False}})
-        specs += [{"name": t.name, "description": t.description, "schema": t.parameters.model_json_schema()}
-                  for t in self.native.values()]
         if self.fetch_spec is not None:
             specs.append(dict(self.fetch_spec))
         return specs + [dict(s) for s in self.sub_specs]
@@ -869,8 +859,6 @@ class Tools:
                 return ToolResult(content=f"Stopped before execution: {self.blocked[owner]}", success=False)
         if name in self.sub_agents:
             output, is_error = await self._sub_agent(name, args, call_id, turn)
-        elif name in self.native:
-            output, is_error = self._native(name, args, call_id, turn)
         elif self.fetch is not None and name == self.fetch_spec["name"]:
             output, is_error = self._fetch(args, call_id, turn)
         else:
@@ -916,19 +904,6 @@ class Tools:
                                for e in entries), False
         res = self.ctx.tool(name, args)
         return str(_get(res, "output", "")), bool(_get(res, "is_error"))
-
-    def _native(self, name: str, args: dict, call_id, turn) -> tuple[str, bool]:
-        tool = self.native[name]
-        try:
-            params = tool.parameters.model_validate(args)
-        except ValidationError:
-            output, is_error = "Tool arguments are not valid", True
-        else:
-            result = _call(tool.executor, params)
-            output, is_error = _text(result.content)[:self._limit()], not result.success
-        self.ctx.mark("stirrup_tool", tool=name, call_id=call_id, turn=turn, args=args,
-                      output=output[:STIRRUP_TOOL_CHARS], is_error=is_error)
-        return output, is_error
 
     def _fetch(self, args: dict, call_id, turn) -> tuple[str, bool]:
         answer = _call(self.fetch, self.ctx, args)

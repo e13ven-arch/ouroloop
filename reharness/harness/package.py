@@ -17,7 +17,7 @@ from pathlib import PurePosixPath
 
 from ..contracts import ContractError, Objects, Record, check_refs, parse_ref, ref_for, register
 from .contract import API_VERSION, EFFORTS, ROLES, SITES
-from .kinds import CODE_KINDS, HOST_KINDS, KIND_TABLE, KINDS, MEMORY_PATH, PATTERNS
+from .kinds import HOST_KINDS, KINDS, MEMORY_PATH, PATTERNS
 
 HOST_TOOLS = ("read_skill", "recall")        # tools the adapter adds; a package tool may not take their names
 TOOL_NAME_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
@@ -125,9 +125,6 @@ class Manifest:
                    skills=tuple(d.get("skills") or ()), memory=dict(d.get("memory") or {"enabled": False}),
                    model=dict(d.get("model") or {}), config=dict(d.get("config") or {}),
                    tests=tuple(d.get("tests") or ()))
-
-    def text(self) -> str:
-        return json.dumps(self.to_json(), indent=1, sort_keys=False) + "\n"
 
 
 def classify(path: str) -> str:
@@ -439,13 +436,6 @@ class Package(Record):
     def kinds(self) -> set[str]:
         return kinds_of(self.manifest, self.files)
 
-    def component(self, kind: str) -> list[dict]:
-        """The manifest entries of one kind (a one-entry list for the dict-shaped ones)."""
-        value = getattr(self.manifest, KIND_TABLE[kind].manifest_key)
-        if isinstance(value, dict):
-            return [dict(value)] if value else []
-        return [v if isinstance(v, dict) else {"path": v} for v in value]
-
     @property
     def memory_text(self) -> str:
         return self.files.get(MEMORY_PATH, "")
@@ -570,18 +560,9 @@ def load(objects: Objects, package_ref: str) -> Package:
     return package
 
 
-def files_of(objects: Objects, package_ref: str) -> dict[str, str]:
-    return dict(load(objects, package_ref).files)
-
-
 def run_files(package: Package) -> dict[str, str]:
     """What the worker loads: everything but tests/ and the host-only memory snapshot."""
     return {p: t for p, t in package.files.items() if classify(p) not in ("test", *HOST_KINDS)}
-
-
-def needs_worker(package: Package) -> bool:
-    """Always: every v3 package carries its agent, which runs only in the worker."""
-    return True
 
 
 def apply_patch(parent: Package, patch: dict) -> dict[str, str]:
@@ -693,6 +674,3 @@ def _normal(key: str, value):
 
 normal_section = _normal              # public: a raw manifest section as parse_manifest stores it
 
-
-def code_kinds(kinds) -> set[str]:
-    return set(kinds) & set(CODE_KINDS)

@@ -357,11 +357,6 @@ class TraceStore:
             db.close()
         return stats
 
-    def rebuild(self) -> dict:
-        """Drop the index and build it again from the transcripts (it is derived data)."""
-        self._drop_index()
-        return self.index()
-
     def _index_session(self, db: sqlite3.Connection, session: str, digest: str):
         """One session's new lines, read and inserted under the index's write lock (BEGIN IMMEDIATE before the
         session's row is read): two stores indexing the same session at once insert its documents once."""

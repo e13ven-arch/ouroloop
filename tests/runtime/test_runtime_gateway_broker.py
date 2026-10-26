@@ -11,8 +11,7 @@ from reharness.evaluate.attempt import Budgeted
 from reharness.evaluate.budget import Budgets, MeteredProvider, Pricing
 from reharness.evaluate.limits import Budget
 from reharness.harness import contract as hc
-from reharness.runtime.broker import (AttemptBroker, HostContext, Marks, MemoryRecall, ModelCallError, SkillReader,
-                                     denied)
+from reharness.runtime.broker import AttemptBroker, Marks, MemoryRecall, SkillReader, denied
 from reharness.runtime.chat import ToolSpec
 from reharness.runtime.gateway import Gateway, cap_effort, malformed, normalize_usage
 from reharness.runtime.records import EVENT_CHARS, Transcript, digest16, read
@@ -74,9 +73,6 @@ def test_an_undeclared_role_or_an_unknown_effort_is_refused_without_a_provider_c
     assert provider.n == 0 and gw.model_calls == 0
     assert [(p["role"], p["effort_requested"]) for p in lines.of("protocol")] == [("aux", None), ("act", "ultra")]
     assert lines.of("gateway_call") == []
-    ctx = HostContext(gw, None, None, None, None, {})
-    with pytest.raises(ModelCallError, match="not declared"):
-        ctx.model(USER, role="aux")
 
 
 @pytest.mark.parametrize("messages, tools, problem", [
@@ -351,26 +347,6 @@ def test_a_mark_is_the_packages_and_cannot_set_the_lines_own_fields(tmp_path):
     assert mark == {"kind": "mark", "ts": mark["ts"], "seq": 2, "mark": "progress", "data": {"step": 1, "mark": "x"},
                     "source": "package"}
     assert marks.hooks == [{k: hook[k] for k in Marks.HOOK_FIELDS}] and marks.kinds == {"hook": 1, "progress": 1}
-
-
-def test_the_host_context_has_the_contracts_names_and_nothing_of_the_host(tmp_path):
-    """HostContext (the toolcheck's and the tests' ctx in this process) exposes the contract's names only; the
-    gateway, broker and provider behind it are not reachable through it, and nothing can be added to it."""
-    lines = Lines(tmp_path)
-    broker, _, _, gw = broker_on(tmp_path / "b")
-    ctx = HostContext(gw, broker, SkillReader(None, record=lines), MemoryRecall(None, record=lines), Marks(lines),
-                      {"events": []})
-    assert set(HostContext.__slots__) == set(hc.CTX_NAMES)
-    assert {n for n in dir(ctx) if not n.startswith("_")} == set(hc.CTX_NAMES)
-    for name in ("gateway", "broker", "provider", "surface", "record"):
-        with pytest.raises(AttributeError):
-            getattr(ctx, name)
-    with pytest.raises(AttributeError):
-        ctx.extra = 1
-    assert ctx.model(USER).text == "x" and ctx.limits["act_calls"] == LIMITS["max_steps"] - 1
-    assert ctx.tool("api_search", {"q": "y"}).output == "api_search ok" and ctx.limits["tool_calls"] == 2
-    ctx.mark("note", text="mine")
-    assert lines.of("mark")[-1]["data"] == {"text": "mine"} and ctx.memory.recall("q") == []
 
 
 def test_the_gateway_clock_starts_with_the_surfaces(tmp_path):

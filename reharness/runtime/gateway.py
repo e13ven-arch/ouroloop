@@ -191,7 +191,6 @@ class Gateway:
         self.act_calls = 0
         self.model_calls = 0
         self.tokens = 0                       # output tokens of every call so far, thinking included
-        self.by_role: dict[str, dict] = {}
         self.usage: dict[str, int] = {}       # the attempt's usage, normalized, summed
         self.costs: list = []                 # per call: USD, or None when the call cannot be priced
         self.last_call_id: str | None = None
@@ -271,9 +270,6 @@ class Gateway:
             self.costs.append(self.pricing.cost(normal) if usage else None)
         out_tokens = normal.get("output_tokens", 0)
         self.tokens += out_tokens
-        tally = self.by_role.setdefault(role, {"calls": 0, "tokens": 0})
-        tally["calls"] += 1
-        tally["tokens"] += out_tokens
         call_id = f"{self.call_prefix}m{self.model_calls}.{uuid.uuid4().hex[:8]}"
         self.last_call_id = call_id
         calls = [{"id": c_.id, "name": c_.name, "args": dict(c_.args or {})} for c_ in turn.tool_calls]

@@ -50,11 +50,10 @@ def session_file(root: Path, session: str) -> Path:
 
 
 class Transcript:
-    """The writer of one session's file. `on_line(line)` sees every line as written (the runner's tallies)."""
+    """The writer of one session's file."""
 
-    def __init__(self, path: Path, on_line=None):
+    def __init__(self, path: Path):
         self.path = Path(path)
-        self.on_line = on_line
         self.seq = sum(1 for _ in read_jsonl(self.path))     # a reopened session continues its numbering
         self._lock = threading.Lock()
 
@@ -65,8 +64,6 @@ class Transcript:
             self.seq += 1
             line = redact({"kind": kind, "ts": now(), "seq": self.seq, **fields})
             append_jsonl(self.path, line)
-        if self.on_line is not None:
-            self.on_line(line)
         return line
 
     def __call__(self, kind: str, data: dict) -> dict:
