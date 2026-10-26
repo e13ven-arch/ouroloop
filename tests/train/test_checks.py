@@ -4,9 +4,9 @@ the v1 pipeline in P1 step 5c; `check` reads only `ds.splits`, so they run here 
 import random
 from types import SimpleNamespace
 
-from ouroloop.train.calibrate import fit_temperature
-from ouroloop.train.checks import check, min_detectable_difference, ngrams
-from ouroloop.train.types import temper
+from reharness.train.calibrate import fit_temperature
+from reharness.train.checks import check, min_detectable_difference, ngrams
+from reharness.train.types import temper
 
 LOOSE = {"min_train": 100, "max_mde": 0.2}
 SPLITS = (("train", 210), ("calibration", 60), ("test", 120))

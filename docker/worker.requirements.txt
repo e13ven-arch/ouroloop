@@ -1,4 +1,4 @@
-# The third-party import closure of the vendored Stirrup 0.2.0 (ouroloop/harness/seeds/stirrup/vendor/stirrup), for the
+# The third-party import closure of the vendored Stirrup 0.2.0 (reharness/harness/seeds/stirrup/vendor/stirrup), for the
 # worker image (docker/worker.Dockerfile). linux/arm64, CPython 3.12; installed with
 # `pip install --require-hashes --no-deps`, so exactly these wheels and nothing they would pull in. Stirrup itself is
 # not here: it ships with the package, so R can edit it. No litellm (Stirrup's LLMClient is the adapter's ctx.model).

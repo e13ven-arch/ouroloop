@@ -12,16 +12,16 @@ import time
 
 import pytest
 
-from ouroloop.adapters import automationbench as ab
-from ouroloop.contracts import Objects
-from ouroloop.evaluate.attempt import Budgeted, make_agent_factory, run_attempt, run_tasks
-from ouroloop.evaluate.limits import Budget
-from ouroloop.evaluate.results import Results, RunManifest
-from ouroloop.evaluate.splits import SplitManifest, TaskEntry
-from ouroloop.harness.seed import build_seed
-from ouroloop.runtime.chat import ChatTurn, ScriptedChat, ToolCall
-from ouroloop.runtime.records import read as read_transcript, session_file
-from ouroloop.runtime.worker import ProcessWorker
+from reharness.adapters import automationbench as ab
+from reharness.contracts import Objects
+from reharness.evaluate.attempt import Budgeted, make_agent_factory, run_attempt, run_tasks
+from reharness.evaluate.limits import Budget
+from reharness.evaluate.results import Results, RunManifest
+from reharness.evaluate.splits import SplitManifest, TaskEntry
+from reharness.harness.seed import build_seed
+from reharness.runtime.chat import ChatTurn, ScriptedChat, ToolCall
+from reharness.runtime.records import read as read_transcript, session_file
+from reharness.runtime.worker import ProcessWorker
 
 LEAD = "marketing.lead_followup"
 HOLD = "marketing.unverified_request_hold"
@@ -91,7 +91,7 @@ class TestProbe:
         report = ab.probe(fake_upstream)
         assert report["missing"] == [] and report["package"] == "0.0.0-fake"
         # Without upstream's runner this adapter supplies the two functions itself, and says so.
-        assert report["runner"] == "ouroloop"
+        assert report["runner"] == "reharness"
         assert any("compute_allowed_services" in n for n in report["notes"])
 
     def test_require_raises_with_what_to_do(self, tmp_path):

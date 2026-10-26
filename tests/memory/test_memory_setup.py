@@ -1,4 +1,4 @@
-"""`python -m ouroloop.memory check` (docs/design/MEMORY.md §2 `__main__.py`, §11).
+"""`python -m reharness.memory check` (docs/design/MEMORY.md §2 `__main__.py`, §11).
 
 Check only: no test runs `setup` (it installs the lock's 161 wheels and fetches the model). The memory venv passes
 check; a venv whose freeze differs from the lock in one version, or holds one package more, fails check and the
@@ -18,16 +18,16 @@ from pathlib import Path
 import pytest
 
 from memory_support import REPO, venv  # noqa: F401
-from ouroloop.contracts import MemorySidecarError
-from ouroloop.memory import LOCK, MODEL_AUX_SHA256, MODEL_FILE, MODEL_REPO, MODEL_REVISION, lock_sha256, model_snapshot
-from ouroloop.memory.client import MemoryClient
-from ouroloop.memory.settings import Settings
+from reharness.contracts import MemorySidecarError
+from reharness.memory import LOCK, MODEL_AUX_SHA256, MODEL_FILE, MODEL_REPO, MODEL_REVISION, lock_sha256, model_snapshot
+from reharness.memory.client import MemoryClient
+from reharness.memory.settings import Settings
 
 pytestmark = pytest.mark.slow
 
 
 def memory(*args, env=None):
-    run = subprocess.run([sys.executable, "-m", "ouroloop.memory", *map(str, args)], cwd=REPO,
+    run = subprocess.run([sys.executable, "-m", "reharness.memory", *map(str, args)], cwd=REPO,
                          env={**os.environ, "PYTHONPATH": str(REPO), **(env or {})}, capture_output=True, text=True,
                          timeout=300)
     try:

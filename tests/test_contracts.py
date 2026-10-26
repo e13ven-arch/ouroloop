@@ -6,9 +6,9 @@ from dataclasses import dataclass
 
 import pytest
 
-from ouroloop import contracts as ct
-from ouroloop.evaluate.gate import GatePlan, TaskEvalPlan
-from ouroloop.evaluate.release import GateReceipt
+from reharness import contracts as ct
+from reharness.evaluate.gate import GatePlan, TaskEvalPlan
+from reharness.evaluate.release import GateReceipt
 
 
 @ct.register

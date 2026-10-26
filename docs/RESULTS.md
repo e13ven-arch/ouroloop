@@ -115,7 +115,7 @@ v0.5 was merged into `m1-automationbench` (`7e7732e`). It is not released: there
 
 - **Cost.** The v0.4 arm spent $56.19 and the v0.5 arm $138.83 ($56.97 + $81.86), $195.02 together. These are notional API-equivalent dollars at list prices, as above.
 - **Records.** The two workspaces, `workspace-claude-v4-support` and `workspace-claude-v5-support`, are not committed; they stay as local records.
-- **Code.** No `.py` or `.toml` file changed between the freeze (`e414f7c`) and tag `archive-2026-10-08`, so that tag holds the code both arms ran. Each arm's report re-renders there with `ouroloop bench --config examples/automationbench/claude-v5-support.toml --phase report`, or the same with `claude-v4-support.toml`.
+- **Code.** No `.py` or `.toml` file changed between the freeze (`e414f7c`) and tag `archive-2026-10-08`, so that tag holds the code both arms ran. Each arm's report re-renders there with `reharness bench --config examples/automationbench/claude-v5-support.toml --phase report`, or the same with `claude-v4-support.toml`.
 - **H1 script.** `support_h1.py` was never run; it is at that tag only.
 
 What comes next is in [PLAN.md](PLAN.md).
@@ -190,7 +190,7 @@ The config and the sealed final plan are committed; the workspace is not. To rer
 
 1. Check out tag `v0.4.0`.
 2. Copy the config. Give the copy its own `[workspace] root` and `[rsi] scope_id`, as in ROADMAP §3, step 2a（tag archive-2026-10-09）; the committed config points at the original workspace.
-3. Run `ouroloop freeze` on the copy, and add the `[rsi]` lines it prints.
+3. Run `reharness freeze` on the copy, and add the `[rsi]` lines it prints.
 4. Run `--phase cycle`.
 5. Fill `[freeze.final]` with W\*, freeze and commit the plan, then run `--phase evaluate`.
 
@@ -452,9 +452,9 @@ The commands below run from the repository root. The config, its sealed plans an
 
 ```text
 claude auth login                       # a Claude subscription; turn extra usage off
-ouroloop bench --config examples/automationbench/claude.toml --phase cycle --until segment-0
-ouroloop bench --config examples/automationbench/claude.toml --phase evaluate
-ouroloop bench --config examples/automationbench/claude.toml --phase report
+reharness bench --config examples/automationbench/claude.toml --phase cycle --until segment-0
+reharness bench --config examples/automationbench/claude.toml --phase evaluate
+reharness bench --config examples/automationbench/claude.toml --phase report
 ```
 
 A new workspace makes its own choices. R's proposals will differ, and a reproduction measures the loop, not this particular change.

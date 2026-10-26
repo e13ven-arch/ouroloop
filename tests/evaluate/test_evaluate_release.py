@@ -5,11 +5,11 @@ import json
 
 import pytest
 
-from ouroloop.contracts import ContractError, Events, Objects
-from ouroloop.evaluate import release as rel
-from ouroloop.evaluate.gate import GatePlan, TaskEvalPlan
-from ouroloop.evaluate.model import ModelIdentity, check_binding, identity_of
-from ouroloop.evaluate.release import GateReceipt, InstallReceipt, NotAuthorized, Release, Releases, Stale
+from reharness.contracts import ContractError, Events, Objects
+from reharness.evaluate import release as rel
+from reharness.evaluate.gate import GatePlan, TaskEvalPlan
+from reharness.evaluate.model import ModelIdentity, check_binding, identity_of
+from reharness.evaluate.release import GateReceipt, InstallReceipt, NotAuthorized, Release, Releases, Stale
 
 
 def ref(objects, kind, **payload):
@@ -339,7 +339,7 @@ def test_code_version_changes_when_a_py_or_a_seed_file_changes_and_nothing_else(
     """Every K carries the two versions (CONTRACTS §4 v1.2: attempt_version over what an attempt runs, improver_version
     over the rest), so a changed .py is a new K; code_version hashes all of it for reports. Measured on a copy of a
     package tree, never on the checkout."""
-    pkg = tmp_path / "ouroloop"
+    pkg = tmp_path / "reharness"
     (pkg / "evaluate").mkdir(parents=True)
     (pkg / "harness" / "seeds" / "stirrup").mkdir(parents=True)
     (pkg / "__pycache__").mkdir()

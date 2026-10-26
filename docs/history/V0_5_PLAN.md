@@ -81,7 +81,7 @@
 
 **等上限，不是等花费（2026-10-07 的决定）。** 两臂的根都是 $600：v0.5 臂能跑完它的整套设计，v0.4 臂按自己的日程停下、用不完。所以比较的是“同样的上限、同样的日程下，两套框架各自做到哪里”；报告在 H1 旁边并列两臂的实际花费（`support_h1.py` 读各自的预算账本）。
 
-**final 的顺序（写死）。** (1) v0.4 臂若有确认的安装：填 `[freeze.final]`（W\* 与 W0），`ouroloop freeze` 封存并打印计划哈希；(2) v0.5 臂同样封存；(3) 两份哈希（或 v0.4 臂没有 final 的说明）随 JOURNAL 提交；(4) 然后才各自 `--phase evaluate`：support 的 25 道 test × 3 次，W0 对 W\*，并列 W0 的 pass@k；(5) `python examples/automationbench/support_h1.py --v5 <v0.5 工作区> --v4 <v0.4 工作区>` 算 H1。任何一份 final 运行之前两份计划都已封存（test 不用来挑选任何东西）。
+**final 的顺序（写死）。** (1) v0.4 臂若有确认的安装：填 `[freeze.final]`（W\* 与 W0），`reharness freeze` 封存并打印计划哈希；(2) v0.5 臂同样封存；(3) 两份哈希（或 v0.4 臂没有 final 的说明）随 JOURNAL 提交；(4) 然后才各自 `--phase evaluate`：support 的 25 道 test × 3 次，W0 对 W\*，并列 W0 的 pass@k；(5) `python examples/automationbench/support_h1.py --v5 <v0.5 工作区> --v4 <v0.4 工作区>` 算 H1。任何一份 final 运行之前两份计划都已封存（test 不用来挑选任何东西）。
 
 **预注册的读法（在第一笔付费之前随 JOURNAL 提交，之后不改）。**
 

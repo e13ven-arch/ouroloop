@@ -14,14 +14,14 @@ their own (`ViewPolicy`).
 """
 from __future__ import annotations
 
-from ouroloop.contracts import new_id
-from ouroloop.evaluate.attempt import Budgeted
-from ouroloop.evaluate.limits import Budget
-from ouroloop.train.probe import CompletionProbe
-from ouroloop.train.runtime import Runtime
-from ouroloop.train.stop import StopGuard
-from ouroloop.train.trace import record_trace, stop_context, tool_event
-from ouroloop.train.views import business_stop_point
+from reharness.contracts import new_id
+from reharness.evaluate.attempt import Budgeted
+from reharness.evaluate.limits import Budget
+from reharness.train.probe import CompletionProbe
+from reharness.train.runtime import Runtime
+from reharness.train.stop import StopGuard
+from reharness.train.trace import record_trace, stop_context, tool_event
+from reharness.train.views import business_stop_point
 
 PUSHBACK = "{reason}\nKeep working on the task, or explain why it is already done."
 BUDGET = Budget(max_steps=8, max_tool_calls=12)
@@ -30,7 +30,7 @@ BUDGET = Budget(max_steps=8, max_tool_calls=12)
 def stop_runtime(root, **kw) -> Runtime:
     """The general runtime over a workspace root, with the business stop point registered under its name, "stop", and
     in-process serving (a trained artifact's load probe asks a model through it)."""
-    from ouroloop.train.serving import Serving
+    from reharness.train.serving import Serving
     kw.setdefault("serving", Serving())
     rt = Runtime(root, seed=0, **kw)
     rt.register(business_stop_point())

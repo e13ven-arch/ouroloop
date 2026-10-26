@@ -20,11 +20,11 @@ import pytest
 from fake_openai_server import LESSONS, FakeOpenAI
 from memory_support import (HASH, REPO, TASKS, TESTS, TRAIN_TEXTS, Sessions, attempt, conversation,  # noqa: F401
                             items, scope_of, settings, sidecar, standard_sessions, stream, task, venv)
-from ouroloop.contracts import MemorySidecarError
-from ouroloop.memory.client import parse_jsonl
-from ouroloop.memory.retrieval import LibraryReader
-from ouroloop.memory.rules import PROVENANCE_KEYS, REME_META_KEYS, content_id
-from ouroloop.memory.track import MemoryStepError, StreamStep, cut_trajectory
+from reharness.contracts import MemorySidecarError
+from reharness.memory.client import parse_jsonl
+from reharness.memory.retrieval import LibraryReader
+from reharness.memory.rules import PROVENANCE_KEYS, REME_META_KEYS, content_id
+from reharness.memory.track import MemoryStepError, StreamStep, cut_trajectory
 
 pytestmark = pytest.mark.slow
 
@@ -96,8 +96,8 @@ from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 import memory_support as ms
 from fake_openai_server import Control
-from ouroloop.memory.client import MemoryClient
-from ouroloop.memory.track import StreamStep
+from reharness.memory.client import MemoryClient
+from reharness.memory.track import StreamStep
 
 root, where = Path(sys.argv[2]), sys.argv[3]
 conn, bridge = json.loads(os.environ["OL_TEST_CONN"]), json.loads(os.environ["OL_TEST_BRIDGE"])

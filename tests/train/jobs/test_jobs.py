@@ -1,4 +1,4 @@
-"""The training job path (docs/DESIGN.md §2.2, pipeline 2): JobTrainer -> Compute -> python -m ouroloop.train.jobs.worker -> the
+"""The training job path (docs/DESIGN.md §2.2, pipeline 2): JobTrainer -> Compute -> python -m reharness.train.jobs.worker -> the
 tde plugin -> TDE, on this machine against a stub TDE checkout, and over a stand-in for ssh; model refs served
 in-process; Hugging Face through a stand-in package. Nothing trains, nothing leaves this machine. Hosts and the
 signature plugin end to end: test_hosts.py."""
@@ -19,18 +19,18 @@ from pathlib import Path
 import pytest
 
 from jobs_fixtures import FAKE_HF, dataset
-from ouroloop.train import config as train_config
-from ouroloop.train.backends import TdeBackend
-from ouroloop.train.jobs import compute as compute_module
-from ouroloop.train.jobs.compute import SEP, Compute
-from ouroloop.train.jobs.trainer import CHECKOUT, JobTrainer
-from ouroloop.train.train import DEFAULT_RECIPE, TrainError, TrainJob, check_change, full_recipe, train_artifact
-from ouroloop.evaluate.release import code_version
-from ouroloop.train.serving import Serving
-from ouroloop.train.stores import make as make_store
-from ouroloop.train.trainers.signature import SignatureTrainer
-from ouroloop.train.types import Question, Request
-from ouroloop.train.runtime import Runtime
+from reharness.train import config as train_config
+from reharness.train.backends import TdeBackend
+from reharness.train.jobs import compute as compute_module
+from reharness.train.jobs.compute import SEP, Compute
+from reharness.train.jobs.trainer import CHECKOUT, JobTrainer
+from reharness.train.train import DEFAULT_RECIPE, TrainError, TrainJob, check_change, full_recipe, train_artifact
+from reharness.evaluate.release import code_version
+from reharness.train.serving import Serving
+from reharness.train.stores import make as make_store
+from reharness.train.trainers.signature import SignatureTrainer
+from reharness.train.types import Question, Request
+from reharness.train.runtime import Runtime
 
 STUB_TRAIN = """
 import json, os, pathlib, sys, time
@@ -164,7 +164,7 @@ def left(tmp_path, jobs, name, tag) -> Path:
     spec = tmp_path / "left" / name / "spec.json"
     spec.parent.mkdir()
     spec.write_text(json.dumps({"workspace": tag}))
-    subprocess.run([sys.executable, "-c", "import sys; from ouroloop.train.jobs.compute import Compute; "
+    subprocess.run([sys.executable, "-c", "import sys; from reharness.train.jobs.compute import Compute; "
                     "Compute(None, sys.argv[1]).launch(sys.argv[2], sys.argv[3:-1], sys.argv[-1])",
                     str(jobs), name, str(spec), str(sleeper)], check=True, cwd=CHECKOUT)
     return jobs / name
@@ -195,13 +195,13 @@ def test_a_trained_artifact_is_a_job_and_the_next_one_starts_from_its_model(tmp_
                                   "options": {"init_from": base}}
     assert job["host"] is None and job["id"].startswith("m_0001_")
     result = job["result"]
-    assert (result["model"], result["ouroloop"]) == (job["id"], code_version()) and job["spec"]["store"] == {
+    assert (result["model"], result["reharness"]) == (job["id"], code_version()) and job["spec"]["store"] == {
         "type": "dir", "root": str(jobs)}
     assert result["plugin"] == {"name": "tde", "version": f"git {git(repo, 'rev-parse', 'HEAD').strip()}"}
     assert result["host"]["gpu"] == [] and result["host"]["python"]
     spec = job["spec"]
     assert spec["workspace"] == str(rt.root.resolve()) and spec["recipe"]["lr_head"] == 0.000123
-    assert spec["ouroloop"]["code"] == code_version() and spec["parent"] == base    # [trainers.tde] init_from
+    assert spec["reharness"]["code"] == code_version() and spec["parent"] == base    # [trainers.tde] init_from
     # the job's directory: the three files it was given, and what the job wrote
     d = jobs / job["id"]
     assert sorted(p.name for p in d.iterdir()) == ["exit", "log", "pid", "result.json", "run", "spec.json", "tde",
@@ -389,18 +389,18 @@ def test_a_trainer_checks_how_its_models_are_stored_and_served_before_any_job(tm
                     ({"store": {"type": "hf"}}, "needs prefix"),
                     ({"store": {"type": "dir", "jobs_root": "j"}}, "may only set"),
                     (host, "stay there"),
-                    ({**host, "store": {"type": "dir", "root": "~/.ouroloop/jobs"}}, "stay there"),
+                    ({**host, "store": {"type": "dir", "root": "~/.reharness/jobs"}}, "stay there"),
                     ({**host, **hub, "jobs_root": "jobs"}, "jobs_root 'jobs'")):
         with pytest.raises(ValueError, match=why):
             JobTrainer("tde", **kw)
     JobTrainer("tde", **host, **hub)                                            # loaded here, from the Hub
     # a host over ssh runs the jobs under the venv host init made there
-    assert JobTrainer("tde", **host, **hub).python == "~/.ouroloop/venv/bin/python"
+    assert JobTrainer("tde", **host, **hub).python == "~/.reharness/venv/bin/python"
 
 
 # ---------------------------------------------------------------- over ssh
 class Host:
-    """Stands in for ssh and rsync to a host whose home is /home/u, prepared by host init for this ouroloop, the tde
+    """Stands in for ssh and rsync to a host whose home is /home/u, prepared by host init for this reharness, the tde
     plugin and an "hf" store; its jobs publish to the Hub under `prefix`. Status reads fail `drop` times first."""
     PREFIX = "o/p-"
 
@@ -416,8 +416,8 @@ class Host:
         self.commands.append(args)
         out = ""
         command = args[-1] if args[0] == "ssh" else ""
-        if "/.ouroloop/host.json" in command:
-            out = json.dumps({"ouroloop": {"code": code_version()}, "plugins": {"tde": {"source": None}},
+        if "/.reharness/host.json" in command:
+            out = json.dumps({"reharness": {"code": code_version()}, "plugins": {"tde": {"source": None}},
                               "stores": {"hf": {"hub": True, "token": True}}})
         elif 'echo "$HOME"' in command:
             out = "/home/u\n"
@@ -447,15 +447,15 @@ def test_over_ssh_status_reads_may_fail_and_no_spec_value_reaches_a_shell(tmp_pa
     assert result.model_id == host.ref and result.job["host"] == "user@gpu" and host.polls == 4
     ssh = [a[-1] for a in host.commands if a[0] == "ssh"]
     launch = next(c for c in ssh if "setsid" in c)
-    assert f"jobs/{host.job} " in launch and "setsid nohup sh -c" in launch and "-m ouroloop.train.jobs.worker spec.json" in launch
-    assert '"$HOME"/.ouroloop/venv/bin/python' in launch        # the worker host init installed there
+    assert f"jobs/{host.job} " in launch and "setsid nohup sh -c" in launch and "-m reharness.train.jobs.worker spec.json" in launch
+    assert '"$HOME"/.reharness/venv/bin/python' in launch        # the worker host init installed there
     assert launch.split(" > /dev/null")[0].endswith(f" {host.job}")    # the job id marks its processes
     for a in host.commands:                             # a dead peer is noticed in about a minute
         ssh = a if a[0] == "ssh" else shlex.split(a[a.index("-e") + 1])
         assert "ConnectTimeout=20" in ssh and "ServerAliveInterval=15" in ssh
     assert '"$HOME"' in launch                           # ~ is the host's home, not this machine's
     pushed = sorted(a[-1] for a in host.commands if a[0] == "rsync")
-    assert pushed == [f"user@gpu:/home/u/.ouroloop/jobs/{host.job}/{n}" for n in ("spec.json", "train.jsonl",
+    assert pushed == [f"user@gpu:/home/u/.reharness/jobs/{host.job}/{n}" for n in ("spec.json", "train.jsonl",
                                                                                   "val.jsonl")]
     shell = " ".join(ssh + pushed)          # what a shell on either side reads: spec values only reach it as a file
     for value in (str(tmp_path), "runs/base", "0.000123"):
@@ -471,7 +471,7 @@ def test_a_job_whose_launch_failed_is_cancelled_or_left_to_the_next_sweep(tmp_pa
         with pytest.raises(TrainError, match="could not start.*Connection reset"):
             tde.train(a_job(ws))
         assert any("kill -s TERM" in a[-1] for a in host.commands)          # it may have started
-        swept = ("user@gpu", "~/.ouroloop/jobs", str(ws.resolve())) in JobTrainer._swept
+        swept = ("user@gpu", "~/.reharness/jobs", str(ws.resolve())) in JobTrainer._swept
         assert swept is not fail_cancel
 
 
@@ -497,11 +497,11 @@ def test_hf_commits_the_run_once_and_the_ref_loads_at_that_commit(tmp_path, repo
     spec.loader.exec_module(hub)
     monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
     jobs = tmp_path / "jobs"
-    tde = trainer(repo, jobs, store={"type": "hf", "prefix": "org/ouroloop-"})
+    tde = trainer(repo, jobs, store={"type": "hf", "prefix": "org/reharness-"})
     result = tde.train(a_job(tmp_path / "ws"))
     repo_id, _, sha = result.model_id.partition("@")
-    assert repo_id == f"org/ouroloop-{result.job['id']}" and re.fullmatch(r"[0-9a-f]{40}", sha)
-    assert result.job["spec"]["store"] == {"type": "hf", "prefix": "org/ouroloop-"}
+    assert repo_id == f"org/reharness-{result.job['id']}" and re.fullmatch(r"[0-9a-f]{40}", sha)
+    assert result.job["spec"]["store"] == {"type": "hf", "prefix": "org/reharness-"}
     stored = tmp_path / "hub" / repo_id
     assert json.loads((stored / "repo.json").read_text()) == {"private": True}
     assert sorted(str(p.relative_to(stored / sha)) for p in (stored / sha).rglob("*") if p.is_file()) == [
@@ -530,10 +530,10 @@ def test_serving_loads_a_job_by_its_ref_and_refuses_anything_else(tmp_path, deci
     assert len(ans) == 600 and {a.model for a in ans} == {"m_0001_abc"} and ans[1].label == "yes"
     assert ans[0].label == "no" and decider == [str(jobs / "m_0001_abc" / "run")]
     for bad in ("../m_0001_abc", "m_0001_abc/run", "/etc/passwd", "m_0002_none", "evil/x@" + "0" * 40,
-                "org/ouroloop-x@HEAD", 7):
+                "org/reharness-x@HEAD", 7):
         with pytest.raises(ValueError, match="not a model ref|no model"):
             serving.backend({"type": "model", "model": bad, "trainer": "tde"})
-    for trainer in ("os", "ouroloop.cli", "nosuch"):                 # a spec never names a module to import
+    for trainer in ("os", "reharness.cli", "nosuch"):                 # a spec never names a module to import
         with pytest.raises(ValueError, match="no trainer plugin"):
             serving.backend({"type": "model", "model": "m_0001_abc", "trainer": trainer})
     with pytest.raises(ValueError, match="no model"):               # this package's plugin: loads, or says no

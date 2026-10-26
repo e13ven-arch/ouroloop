@@ -20,7 +20,7 @@ class PhraseDecider:
         self.views: list[str] = []
 
     def decide(self, requests):
-        from ouroloop.train.types import Answer
+        from reharness.train.types import Answer
         out = []
         for r in requests:
             self.views.append(r.state)
@@ -46,7 +46,7 @@ class PhraseTrainer:
         self.attached: list = []
 
     def train(self, job):
-        from ouroloop.train.train import TrainError, TrainResult
+        from reharness.train.train import TrainError, TrainResult
         if self.fail:
             raise TrainError("CUDA out of memory")
         rows = sum(1 for _ in open(Path(job.data_dir) / "train.jsonl", encoding="utf-8"))

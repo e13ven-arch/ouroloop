@@ -2,4 +2,4 @@
 # pinned requirements and the addon, nothing else — no workspace, no .env, no virtualenv, no other code.
 *
 !docker/egress.requirements.txt
-!ouroloop/runtime/egress_addon.py
+!reharness/runtime/egress_addon.py

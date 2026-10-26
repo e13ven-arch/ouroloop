@@ -6,12 +6,12 @@ from __future__ import annotations
 import pytest
 import rsi
 
-from ouroloop.activity import phases
-from ouroloop.activity.checks import startup_checks
-from ouroloop.activity.config import ConfigError, resolve
-from ouroloop.activity.workspace import open_activity
-from ouroloop.adapters import automationbench as ab
-from ouroloop.runtime.worker import ProcessWorker
+from reharness.activity import phases
+from reharness.activity.checks import startup_checks
+from reharness.activity.config import ConfigError, resolve
+from reharness.activity.workspace import open_activity
+from reharness.adapters import automationbench as ab
+from reharness.runtime.worker import ProcessWorker
 
 
 def quiet(_line):

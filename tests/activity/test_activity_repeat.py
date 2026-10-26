@@ -20,9 +20,9 @@ import rsi  # noqa: E402
 from rounds import Research  # noqa: E402
 from scripted_r import HOOK_CODE, ScriptedR  # noqa: E402
 
-from ouroloop.activity import phases  # noqa: E402
-from ouroloop.activity.workspace import open_activity  # noqa: E402
-from ouroloop.evaluate.repeat import RepeatPlan  # noqa: E402
+from reharness.activity import phases  # noqa: E402
+from reharness.activity.workspace import open_activity  # noqa: E402
+from reharness.evaluate.repeat import RepeatPlan  # noqa: E402
 
 NOTIFY, UPDATE, QUIET = "rsi.final_notify_after_update", "rsi.final_update_stage", "rsi.update_no_notify"
 # the test split: the notify task (fails first: the forgetful actor), the update task (passes) and the quiet task
@@ -270,8 +270,8 @@ def test_a_tool_r_writes_in_the_session_is_adopted_and_the_agent_calls_it_on_the
     offered the tool, calls it; the probe is accepted, the tool is adopted for the task, the later encounters'
     footprints show the call, the library entry carries the tool's file, and the try's answer lists the tool's calls
     with their inputs and outputs."""
-    from ouroloop.improver.evidence import Evidence
-    from ouroloop.improver.repeat import footprint_of
+    from reharness.improver.evidence import Evidence
+    from reharness.improver.repeat import footprint_of
     actor = rsi.BusinessWorker(forget_notify=True)
     r = ScriptedR("repeat_tool")
     _, b, out = _learn(tmp_path, fake_upstream, actor=actor, r=r, repeat={"encounters": 3, "concurrency": 1})
@@ -366,8 +366,8 @@ def test_an_accepted_candidate_hardened_with_a_tool_in_a_second_directory_is_the
     """v2.1, third cut (DESIGN §6.24): after an accepted try R copies the accepted package into package-2, adds the
     tool, tries it; both runs accepted, the last declared (package-2) is adopted and carries the hook and the tool;
     the later encounters call the tool."""
-    from ouroloop.improver.evidence import Evidence
-    from ouroloop.improver.repeat import footprint_of
+    from reharness.improver.evidence import Evidence
+    from reharness.improver.repeat import footprint_of
     actor = rsi.BusinessWorker(forget_notify=True)
     r = ScriptedR("repeat_harden")
     _, b, out = _learn(tmp_path, fake_upstream, actor=actor, r=r, repeat={"encounters": 3, "concurrency": 1})
@@ -393,7 +393,7 @@ def test_an_accepted_candidate_hardened_with_a_tool_in_a_second_directory_is_the
 def test_a_hooks_own_listing_is_not_the_agent_reading_the_source():
     """v2.1, fifth cut: a read-only call a hook made (`by: hook` in the digest) shows a source as listed only by the
     hook, not as read; the agent's own GET shows it as read; any other method as written."""
-    from ouroloop.improver.repeat import sources_line, sources_of
+    from reharness.improver.repeat import sources_line, sources_of
     svc = lambda route: "slack" if "slack" in route else "gmail" if "gmail" in route else None  # noqa: E731
     holds = {"slack": "1 channels, 3 messages", "gmail": "3 messages"}
     only_hook = sources_of(holds, [{"route": "slack.com/api/conversations.list", "method": "GET", "by": "hook"},

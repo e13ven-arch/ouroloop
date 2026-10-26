@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import re
 
-from ouroloop.runtime.chat import ChatTurn, ToolCall
+from reharness.runtime.chat import ChatTurn, ToolCall
 
 SLACK = "https://slack.com/api/chat.postMessage"
 HUBSPOT = "https://api.hubapi.com/crm/v3/objects/contacts"

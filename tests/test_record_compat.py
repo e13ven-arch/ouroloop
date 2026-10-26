@@ -7,8 +7,8 @@ because the v2 data pipeline reads them (docs/design/V2_TRAINING_PIPELINE.md §2
 evaluate.results, the grading rows, the transcripts as JSONL through runtime.records, and the releases the attempts ran
 with everything they refer to as plain JSON through contracts.Objects and refs_in.
 
-The records are git-ignored and live only in the main checkout, under OUROLOOP_RECORDS_ROOT (default: this
-checkout's examples/automationbench); a workspace that is not there is skipped, unless OUROLOOP_RECORDS_ROOT is set,
+The records are git-ignored and live only in the main checkout, under REHARNESS_RECORDS_ROOT (default: this
+checkout's examples/automationbench); a workspace that is not there is skipped, unless REHARNESS_RECORDS_ROOT is set,
 where a missing workspace fails (a misdirected root would otherwise skip every test here and pass). They cannot be
 regenerated, so:
 
@@ -33,11 +33,11 @@ from pathlib import Path
 
 import pytest
 
-from ouroloop.contracts import Objects, parse_ref, read_jsonl, refs_in, short
-from ouroloop.evaluate.results import Results, RunManifest, TaskResult, summarise
-from ouroloop.runtime import records
+from reharness.contracts import Objects, parse_ref, read_jsonl, refs_in, short
+from reharness.evaluate.results import Results, RunManifest, TaskResult, summarise
+from reharness.runtime import records
 
-RECORDS = Path(os.environ.get("OUROLOOP_RECORDS_ROOT")
+RECORDS = Path(os.environ.get("REHARNESS_RECORDS_ROOT")
                or Path(__file__).resolve().parents[1] / "examples" / "automationbench")
 TRAIN_DEV = ("train", "dev")
 # The line kinds the v3-v5 runner shell wrote (read over every train/dev transcript of the four workspaces).
@@ -154,9 +154,9 @@ def ws(request, tmp_path) -> Workspace:
     name = request.param
     root = RECORDS / name
     if not root.is_dir():
-        if os.environ.get("OUROLOOP_RECORDS_ROOT"):
-            pytest.fail(f"{name} is not under OUROLOOP_RECORDS_ROOT={RECORDS}")
-        pytest.skip(f"{name} is not under {RECORDS} (git-ignored run records; set OUROLOOP_RECORDS_ROOT)")
+        if os.environ.get("REHARNESS_RECORDS_ROOT"):
+            pytest.fail(f"{name} is not under REHARNESS_RECORDS_ROOT={RECORDS}")
+        pytest.skip(f"{name} is not under {RECORDS} (git-ignored run records; set REHARNESS_RECORDS_ROOT)")
     expected = EXPECTED[name]
     guard = ReadOnly(root)
     copy = tmp_path / name

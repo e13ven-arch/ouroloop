@@ -7,12 +7,12 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from ouroloop.contracts import BudgetError, BudgetExhausted, BudgetMismatch, Events
-from ouroloop.evaluate.budget import (Budgets, Execution, MeteredProvider, Pricing, StateError, call_bound_problem,
+from reharness.contracts import BudgetError, BudgetExhausted, BudgetMismatch, Events
+from reharness.evaluate.budget import (Budgets, Execution, MeteredProvider, Pricing, StateError, call_bound_problem,
                                       check_pricing, operation_id, unfinished)
-from ouroloop.providers import ProviderAccountError, ProviderError
-from ouroloop.runtime.chat import ChatTurn
-from ouroloop.runtime.gateway import normalize_usage
+from reharness.providers import ProviderAccountError, ProviderError
+from reharness.runtime.chat import ChatTurn
+from reharness.runtime.gateway import normalize_usage
 
 PRICING = Pricing(0.003, 0.015, 4000, 1000, source="test prices")      # one call's bound: 0.012 + 0.015 = 0.027
 
@@ -439,9 +439,9 @@ def test_a_reservation_refused_for_headroom_waits_for_a_call_in_flight_rather_th
 def test_a_failed_call_is_retried_after_the_meters_wait(tmp_path, monkeypatch):
     """A dropped connection is retried after RETRY_SECONDS (5 s, then 20 s), not at once."""
     import time
-    from ouroloop.evaluate import budget as b
-    from ouroloop.providers import ProviderError
-    from ouroloop.runtime.chat import ChatTurn
+    from reharness.evaluate import budget as b
+    from reharness.providers import ProviderError
+    from reharness.runtime.chat import ChatTurn
     monkeypatch.setattr(b, "RETRY_SECONDS", (5.0, 20.0))
     waits = []
     monkeypatch.setattr(time, "sleep", waits.append)

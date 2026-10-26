@@ -9,13 +9,13 @@ import sys
 import pytest
 
 from jobs_fixtures import FAKE_HF, keys  # noqa: F401 - keys is a fixture
-from ouroloop.train import config as train_config
-from ouroloop.train.jobs.trainer import JobTrainer
-from ouroloop.train.train import TrainError
-from ouroloop.evaluate.release import code_version
-from ouroloop.train.serving import PROBE, Serving
-from ouroloop.train.stores import make
-from ouroloop.train.trainers import signature
+from reharness.train import config as train_config
+from reharness.train.jobs.trainer import JobTrainer
+from reharness.train.train import TrainError
+from reharness.evaluate.release import code_version
+from reharness.train.serving import PROBE, Serving
+from reharness.train.stores import make
+from reharness.train.trainers import signature
 
 EXAMPLE = {"id": "e", "state": "say yes", "question": "done?", "candidates": [{"name": "yes"}, {"name": "no"}],
            "target": [1.0, 0.0], "meta": {"weight": 1.0}}
@@ -47,7 +47,7 @@ def signature_job(jobs, job_id: str) -> str:
 
 # ---------------------------------------------------------------- the model store
 @pytest.mark.parametrize("table", [{"type": "dir"}, {"type": "dir", "root": "models"},
-                                   {"type": "hf", "prefix": "org/ouroloop-"}])
+                                   {"type": "hf", "prefix": "org/reharness-"}])
 def test_a_dir_store_and_an_hf_store_behind_one_interface(tmp_path, hub, monkeypatch, table):
     monkeypatch.chdir(tmp_path)
     jobs = tmp_path / "jobs"
@@ -62,7 +62,7 @@ def test_a_dir_store_and_an_hf_store_behind_one_interface(tmp_path, hub, monkeyp
     else:
         with pytest.raises(OSError):                        # a ref names one run: publishing again never replaces it
             store.publish(f"{job}/run", job, "m_0001_x")
-    other = "m_0001_x" if table["type"] == "hf" else f"org/ouroloop-m_0001_x@{'a' * 40}"
+    other = "m_0001_x" if table["type"] == "hf" else f"org/reharness-m_0001_x@{'a' * 40}"
     for bad in (other, "../x", "/etc/passwd", f"else/where@{'a' * 40}", 7):
         assert store.job(bad) is None
         with pytest.raises(ValueError, match="not a model ref"):
@@ -96,7 +96,7 @@ def test_old_configs_with_transport_and_models_still_load(tmp_path):
     with pytest.raises(ValueError, match=r"\[store\] and \[trainer\] transport, \[trainer\] hf_prefix"):
         train_config.build_trainer({"trainer": hf["trainer"], "store": {"type": "dir"}, "serving": {}})
     # an old model server's config: [models] jobs_root and hf_prefix, no transport, loaded refs from the Hub
-    server = {"models": {"jobs_root": "~/.ouroloop/jobs", "hf_prefix": "org/o-"}}
+    server = {"models": {"jobs_root": "~/.reharness/jobs", "hf_prefix": "org/o-"}}
     assert train_config.store_table(server) == {"type": "hf", "prefix": "org/o-"}
     assert train_config.build_serving(server).store.job(f"org/o-m_0001_x@{'a' * 40}") == "m_0001_x"
 
@@ -177,19 +177,19 @@ STORE = ObjectStore
 
 
 def test_a_new_store_is_a_new_module_only(tmp_path, monkeypatch, keys):
-    from ouroloop.train import stores
-    from ouroloop.train.jobs import cloud as clouds
-    from ouroloop.train.jobs.hosts import manifest, plan, stale
+    from reharness.train import stores
+    from reharness.train.jobs import cloud as clouds
+    from reharness.train.jobs.hosts import manifest, plan, stale
     from jobs_fixtures import Ssh, VastApi, a_job, options
     (tmp_path / "more").mkdir()
     (tmp_path / "more" / "objects.py").write_text(OBJECTS)
     monkeypatch.setattr(stores, "__path__", [*stores.__path__, str(tmp_path / "more")])
-    monkeypatch.delitem(sys.modules, "ouroloop.train.stores.objects", raising=False)
+    monkeypatch.delitem(sys.modules, "reharness.train.stores.objects", raising=False)
     store = stores.make({"type": "objects"})
     assert "objects" in stores.types() and manifest()["stores"]["objects"] == {"client": True}
     assert "objclient" in (plan({}, tmp_path / "init", store) / "requirements.txt").read_text().splitlines()
-    assert stale({"ouroloop": {"code": code_version()}}, {}, store) == ["no objclient"]
-    assert stale({"ouroloop": {"code": code_version()}, "stores": {"objects": {"client": True}}}, {}, store) == []
+    assert stale({"reharness": {"code": code_version()}}, {}, store) == ["no objclient"]
+    assert stale({"reharness": {"code": code_version()}, "stores": {"objects": {"client": True}}}, {}, store) == []
     # a cloud job: the store's ENV is required here, and given to the instance
     api, seen = VastApi(), {}
     t = JobTrainer("signature", cloud=options("vast", keys), api=api.transport(), runner=Ssh(),

@@ -10,7 +10,7 @@
 # memory off. The train tasks are streamed: each is done once on the working line in a frozen order and scored at
 # that first encounter, a round over the scored pool every 30 tasks, an accepted package installed before the next
 # batch runs (5 batches, 5 rounds). Every
-# paid step is approved in chat first (PLAN rule 3). Run from the repository's root with `.venv/bin/python -m ouroloop`,
+# paid step is approved in chat first (PLAN rule 3). Run from the repository's root with `.venv/bin/python -m reharness`,
 # on AC power under `caffeinate -dimsu`; stop a step with one Ctrl-C and let it drain, never kill it.
 #   1  `... bench --config examples/automationbench/finance-v6.toml --phase smoke --checks-only`                 $0
 #      (opening the workspace imports finance-v5's W*: it needs finance-v5 released, `--phase release` there first)
@@ -27,7 +27,7 @@
 #      then `... bench --config ... --phase evaluate`
 #   5  `--phase report`: the two arms' pass rates and partial credit, and the stream's first-encounter curve by batch
 #
-# The worker image is K's by id (the one built on 2026-10-11; `docker image inspect ouroloop-worker:py3.12`); the
+# The worker image is K's by id (the one built on 2026-10-11; `docker image inspect reharness-worker:py3.12`); the
 # smoke checks it. The budget: root $750, the final's share $230 (a floor: the final may also spend what the root has
 # left, EVALUATE §9). The pricing's input cap is 400k tokens (an attempt's own token limit), so one call's reservation
 # is about $6.5 instead of $11.3.

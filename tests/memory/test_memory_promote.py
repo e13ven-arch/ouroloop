@@ -8,17 +8,17 @@ import json
 import pytest
 from fake_memory import FakeMemoryClient
 
-from ouroloop.contracts import Objects
-from ouroloop.harness.package import Limits, build
-from ouroloop.harness.seed import build_seed
-from ouroloop.memory.client import canonical_rows
-from ouroloop.memory.promote import SKILL_DIR, cause_input, mark_superseded, skill_candidate, skill_provenance
-from ouroloop.memory.retrieval import LibraryReader
-from ouroloop.memory.rules import content_id, new_stats, promotable, stamp
-from ouroloop.memory.settings import Settings
-from ouroloop.memory.snapshot import library_of, snapshot_candidate
-from ouroloop.memory.track import StreamStep
-from ouroloop.runtime.runner import SKILL_INDEX, compose_system
+from reharness.contracts import Objects
+from reharness.harness.package import Limits, build
+from reharness.harness.seed import build_seed
+from reharness.memory.client import canonical_rows
+from reharness.memory.promote import SKILL_DIR, cause_input, mark_superseded, skill_candidate, skill_provenance
+from reharness.memory.retrieval import LibraryReader
+from reharness.memory.rules import content_id, new_stats, promotable, stamp
+from reharness.memory.settings import Settings
+from reharness.memory.snapshot import library_of, snapshot_candidate
+from reharness.memory.track import StreamStep
+from reharness.runtime.runner import SKILL_INDEX, compose_system
 
 CORE = {"model": {"identity": "scripted-1", "effort": "medium", "max_effort": "medium"},
         "memory": {"enabled": False}, "limits": {"max_steps": 8, "max_model_calls": 20, "max_tool_calls": 10,

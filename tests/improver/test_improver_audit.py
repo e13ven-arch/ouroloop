@@ -15,10 +15,10 @@ import json
 import rsi
 from rounds import ledger_rows, quiet, round_activity, round_state
 
-from ouroloop.activity import phases
-from ouroloop.improver.ledger import Ledger
-from ouroloop.improver.round import Round
-from ouroloop.improver.verify import Verdict
+from reharness.activity import phases
+from reharness.improver.ledger import Ledger
+from reharness.improver.round import Round
+from reharness.improver.verify import Verdict
 
 TICKET, HELD, STUDY = "rsi.notify_ticket", rsi.HELD, rsi.STUDY
 

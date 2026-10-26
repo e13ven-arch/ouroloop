@@ -13,13 +13,13 @@ import pytest
 
 from memory_support import (HASH, TASKS, attempt, fake, items, scope_of, sidecar, stamped, stream, task,  # noqa: F401
                             venv)
-from ouroloop.contracts import TrainOnlyError
-from ouroloop.memory import snapshot_digest
-from ouroloop.memory.client import canonical_rows, parse_jsonl
-from ouroloop.memory.importing import import_entries
-from ouroloop.memory.retrieval import LibraryReader
-from ouroloop.memory.settings import Settings
-from ouroloop.memory.track import MemoryStepError
+from reharness.contracts import TrainOnlyError
+from reharness.memory import snapshot_digest
+from reharness.memory.client import canonical_rows, parse_jsonl
+from reharness.memory.importing import import_entries
+from reharness.memory.retrieval import LibraryReader
+from reharness.memory.settings import Settings
+from reharness.memory.track import MemoryStepError
 
 pytestmark = pytest.mark.slow
 

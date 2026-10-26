@@ -12,11 +12,11 @@ import math
 import pytest
 
 from memory_support import sidecar, stamped, venv  # noqa: F401
-from ouroloop.contracts import MemorySidecarError
-from ouroloop.memory import MODEL_AUX_SHA256, retriever_digest
-from ouroloop.memory.client import MemoryClient
-from ouroloop.memory.rules import cosine
-from ouroloop.memory.settings import Settings
+from reharness.contracts import MemorySidecarError
+from reharness.memory import MODEL_AUX_SHA256, retriever_digest
+from reharness.memory.client import MemoryClient
+from reharness.memory.rules import cosine
+from reharness.memory.settings import Settings
 
 pytestmark = pytest.mark.slow
 PREFIX = "Represent this sentence for searching relevant passages: "
@@ -120,7 +120,7 @@ def test_a_retriever_that_is_not_the_pinned_model_refuses_to_start(venv, tmp_pat
 def test_a_retriever_table_that_leaves_a_read_file_unpinned_refuses_to_start(venv, tmp_path, monkeypatch):
     """The host completes K's table (complete_retriever) and refuses one that leaves the tokenizer or a config
     unpinned; the sidecar checks the same on its own side, since another tokenizer changes every vector."""
-    import ouroloop.memory.settings as settings_module
+    import reharness.memory.settings as settings_module
 
     class AsGiven(dict):
         def to_json(self):

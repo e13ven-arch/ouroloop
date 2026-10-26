@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from ouroloop.train.trainers.tde import yaml_json
+from reharness.train.trainers.tde import yaml_json
 
 
 def test_the_trainer_config_reads_back_as_the_same_types_in_json_and_yaml():

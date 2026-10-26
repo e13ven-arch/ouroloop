@@ -32,18 +32,18 @@ import rsi
 from rounds import ledger_rows, quiet, round_activity, round_state
 from scripted_r import WEAK_HOOK_CODE, HOOK_ENTRY, TOOL_ENTRY
 
-from ouroloop.activity import phases
-from ouroloop.activity.checks import startup_checks
-from ouroloop.contracts import short
-from ouroloop.evaluate.budget import operation_id as execution_operation_id
-from ouroloop.evaluate.release import InstallReceipt
-from ouroloop.harness.package import load
-from ouroloop.improver.archive import Archive
-from ouroloop.improver.declaration import Declaration
-from ouroloop.improver.evidence import Evidence
-from ouroloop.improver.round import STEPS, Round
-from ouroloop.improver.screen import ScreenResult
-from ouroloop.improver.verify import Verdict
+from reharness.activity import phases
+from reharness.activity.checks import startup_checks
+from reharness.contracts import short
+from reharness.evaluate.budget import operation_id as execution_operation_id
+from reharness.evaluate.release import InstallReceipt
+from reharness.harness.package import load
+from reharness.improver.archive import Archive
+from reharness.improver.declaration import Declaration
+from reharness.improver.evidence import Evidence
+from reharness.improver.round import STEPS, Round
+from reharness.improver.screen import ScreenResult
+from reharness.improver.verify import Verdict
 
 ROUND = "rsi-test/r0"
 ACCOUNT = "rsi-test:round-0"
@@ -331,7 +331,7 @@ def test_a_package_with_a_tool_and_a_hook_climbs_both_rungs_and_credits_each_com
     (credited,) = [x for x in ledger_rows(a) if x["stage"] == "credited"]
     assert set(credited["component"]) == {"tool:post_channel_message", f"hook:{HOOK_ENTRY['name']}"}
     assert credited["credit"] == {"tool:post_channel_message": 2.0, f"hook:{HOOK_ENTRY['name']}": 0.0}
-    from ouroloop.improver.ledger import Ledger
+    from reharness.improver.ledger import Ledger
     board = Ledger(a.root).scoreboard(a.domain)
     assert board["all"]["net"] == board["tool"]["net"] == board["hook"]["net"] == 2    # the package's net, per kind
 
@@ -860,7 +860,7 @@ def test_a_candidate_r_built_and_did_not_hand_in_is_kept_for_the_next_round(tmp_
 
     """`_fit` (IMPROVER §4, v1.5): the longest write's excerpt is halved first, never under MIN_EXCERPT; the request and
     the checks are kept whole; a row that cannot shrink any further is returned as it is."""
-    from ouroloop.improver.evidence import MIN_EXCERPT, _fit
+    from reharness.improver.evidence import MIN_EXCERPT, _fit
     row = lambda: {"task_id": "t", "request": "r" * 300, "failed_checks": [{"type": "x", "params": {"v": 1}}],  # noqa: E731
                    "writes": [{"tool": "api_fetch", "method": "POST", "url": "u", "body": "a" * 3000, "error": False},
                               {"tool": "api_fetch", "method": "PUT", "url": "u", "body": "b" * 1000, "error": False}],
@@ -881,7 +881,7 @@ def test_v3_screens_on_exactly_the_held_out_tasks(tool):
 
 
 def test_a_memory_entry_distilled_from_a_held_out_task_is_not_shown_to_r(tool, monkeypatch):
-    from ouroloop.evaluate.attempt import task_hash
+    from reharness.evaluate.attempt import task_hash
     import dataclasses
     r = Round(tool.a, 0, run_arm=None, out=quiet)
     hashed = {t: task_hash(tool.a.suite.tasks[t]) for t in rsi.TRAIN}

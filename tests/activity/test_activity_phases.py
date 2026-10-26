@@ -12,15 +12,15 @@ from pathlib import Path
 import pytest
 import rsi
 
-from ouroloop.activity import phases
-from ouroloop.activity.checks import startup_checks
-from ouroloop.activity.workspace import open_activity
-from ouroloop.contracts import write_json, short
-from ouroloop.evaluate.final import FinalPlan
-from ouroloop.evaluate.release import GateReceipt, NotAuthorized, Release
-from ouroloop.harness.package import Limits, apply_patch, build
-from ouroloop.runtime.app import App, exported_objects
-from ouroloop.runtime.records import session_file
+from reharness.activity import phases
+from reharness.activity.checks import startup_checks
+from reharness.activity.workspace import open_activity
+from reharness.contracts import write_json, short
+from reharness.evaluate.final import FinalPlan
+from reharness.evaluate.release import GateReceipt, NotAuthorized, Release
+from reharness.harness.package import Limits, apply_patch, build
+from reharness.runtime.app import App, exported_objects
+from reharness.runtime.records import session_file
 
 REPO = Path(__file__).resolve().parents[2]
 TOOL_NAME = "post_channel_message"            # the scripted R's tool (tests/improver/scripted_r.py)
@@ -57,7 +57,7 @@ def rows(a, split=None) -> list:
 
 
 def reopen(a, *, provider=None, **sections):
-    """The activity of the same workspace under `rsi.config(**sections)`, opened as `ouroloop` opens it: the split on
+    """The activity of the same workspace under `rsi.config(**sections)`, opened as `reharness` opens it: the split on
     disk is read, not written again."""
     cfg = rsi.config(Path(a.config["_base"]), a.config["bench"]["upstream_path"], **sections)
     factory = (lambda _table: provider) if provider is not None else a.provider_factory
@@ -255,7 +255,7 @@ def test_evaluate_refuses_without_a_sealed_plan(tmp_path, fake_upstream):
     for name, ref in (("none", None), ("unknown", "finalization:sha256:" + "0" * 64)):
         a = rsi.activity(tmp_path / name, fake_upstream, provider=provider,
                          rsi={"scope_id": "rsi-test", "final_plan_ref": ref})
-        with pytest.raises(ValueError, match=r"\[rsi\] final_plan_ref must name the final plan `ouroloop freeze` "
+        with pytest.raises(ValueError, match=r"\[rsi\] final_plan_ref must name the final plan `reharness freeze` "
                                              r"sealed"):
             phases.evaluate(a, out=quiet)
         assert list(a.events.read("test_read")) == [] and rows(a, "test") == []
@@ -596,7 +596,7 @@ def test_an_activity_seeded_from_another_ones_release_line_starts_at_its_w_star(
                          improver=first.a.config["improver"], rsi={"scope_id": "rsi-test", "seed_from": str(first.a.root)})
     assert again.seed_release() == seed and len(list(again.events.read("seed_imported"))) == 1
     # a source without a release line, or no workspace at all, is refused before anything is written
-    from ouroloop.activity.config import ConfigError
+    from reharness.activity.config import ConfigError
     bare = rsi.activity(tmp_path / "bare", fake_upstream, splits_table=rsi.NO_DEV_SPLITS)
     with pytest.raises(ConfigError, match="has no release line"):
         rsi.activity(tmp_path / "third", fake_upstream, splits_table=rsi.NO_DEV_SPLITS,
@@ -615,7 +615,7 @@ def test_an_activity_can_be_seeded_from_another_ones_working_line(tmp_path, fake
     import sys
     sys.path.insert(0, str(REPO / "tests" / "improver"))
     from rounds import round_activity
-    from ouroloop.activity.config import ConfigError
+    from reharness.activity.config import ConfigError
     first = round_activity(tmp_path / "first", fake_upstream, "tool", baseline=False, freeze=False,
                            splits_table=rsi.NO_DEV_SPLITS)
     phases.freeze(first.a, out=quiet)
@@ -659,7 +659,7 @@ def test_an_activity_can_be_seeded_from_another_ones_working_line(tmp_path, fake
 def test_an_imported_w_star_is_replayed_onto_this_codes_seed():
     """DESIGN §6.7 (v1.6): the files R never touched take the new seed's version, a file the new seed adds comes in, R's
     changes and additions stay, R's deletions stay deleted."""
-    from ouroloop.activity.workspace import rebase_files
+    from reharness.activity.workspace import rebase_files
     src_seed = {"agent/a.py": "old adapter", "middlewares/g.py": "guard", "prompt/system.md": "p", "tools/t.py": "t"}
     w_star = {"agent/a.py": "old adapter", "middlewares/g.py": "guard", "prompt/system.md": "R's prompt",
               "middlewares/scope.py": "R's hook"}                                        # R deleted tools/t.py
@@ -705,8 +705,8 @@ def test_the_baseline_is_imported_from_a_workspace_of_the_same_attempt_identity(
     assert event["source"] == str(first.root) and event["attempts"] == imported["attempts"]
     assert any(line.startswith("baseline   imported") for line in lines)
     # what the rounds and the gate read is there: the train reading per task, the grading rows, the dev pool
-    from ouroloop.improver.evidence import Evidence
-    from ouroloop.improver.screen import control_pool, template
+    from reharness.improver.evidence import Evidence
+    from reharness.improver.screen import control_pool, template
     assert Evidence(second).missing(second.seed_release().package_ref) == []
     assert all(second.results.grading(r.attempt_id) for r in rows(second, "train"))
     phases.freeze(second, out=quiet)
@@ -731,18 +731,18 @@ import json, sys
 from pathlib import Path
 sys.path[:0] = [sys.argv[1], sys.argv[1] + "/tests", sys.argv[2]]
 import rsi
-from ouroloop.activity import phases
+from reharness.activity import phases
 root = Path(sys.argv[3])
 a = rsi.activity(root, sys.argv[2])
 phases.smoke(a, checks_only=True, out=lambda _l: None)
 phases.smoke(a, out=lambda _l: None)
 phases.baseline(a, limit=1, out=lambda _l: None)
-# K's memory section reads its defaults from ouroloop.memory.settings (standard library only); W0's path starts no
+# K's memory section reads its defaults from reharness.memory.settings (standard library only); W0's path starts no
 # memory: no client, bridge, service, stream or reader, and never the sidecar's own modules
-print(json.dumps(sorted(m for m in sys.modules if m.startswith(("ouroloop.train", "ouroloop.improver",
-                                                                 "ouroloop.memory"))
-                        and m not in ("ouroloop.memory", "ouroloop.memory.settings", "ouroloop.improver",
-                                      "ouroloop.improver.settings"))))
+print(json.dumps(sorted(m for m in sys.modules if m.startswith(("reharness.train", "reharness.improver",
+                                                                 "reharness.memory"))
+                        and m not in ("reharness.memory", "reharness.memory.settings", "reharness.improver",
+                                      "reharness.improver.settings"))))
 """
 
 

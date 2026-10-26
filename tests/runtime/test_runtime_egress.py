@@ -1,12 +1,12 @@
 """Egress through the proxy (docs/design/RUNTIME.md §2, §6, §8; runtime/egress.py, v6-gateway's unchanged), all of it
-real: Docker's internal networks (one per session), the `ouroloop-egress:v6.1` proxy container (mitmproxy 12.2.3
-unmodified + ouroloop/runtime/egress_addon.py), a client container on its session's network only that goes out with
+real: Docker's internal networks (one per session), the `reharness-egress:v6.1` proxy container (mitmproxy 12.2.3
+unmodified + reharness/runtime/egress_addon.py), a client container on its session's network only that goes out with
 Python's urllib (or a raw socket) and nothing but the session's environment, and two target containers on the default
 bridge only — a plain HTTP server and a TLS server, both the stdlib's. Then the platform's side: the addon's request
 cap, the process's shared pools, and the stirrup seed's attempt going out through its own capped credential.
 
-The Docker tests are skipped without docker or the images, and fail instead under OUROLOOP_TEST_REQUIRE_DOCKER=1.
-Build the proxy first: docker build --provenance=false -f docker/egress.Dockerfile -t ouroloop-egress:v6.1 .
+The Docker tests are skipped without docker or the images, and fail instead under REHARNESS_TEST_REQUIRE_DOCKER=1.
+Build the proxy first: docker build --provenance=false -f docker/egress.Dockerfile -t reharness-egress:v6.1 .
 """
 from __future__ import annotations
 
@@ -20,9 +20,9 @@ import uuid
 
 import pytest
 
-from ouroloop.runtime import egress as E
-from ouroloop.runtime.egress import DEFAULT_IMAGE, EgressError, EgressPool, parse_policy, policy_sha256
-from ouroloop.runtime.records import RESERVED_KEYS, Transcript, read
+from reharness.runtime import egress as E
+from reharness.runtime.egress import DEFAULT_IMAGE, EgressError, EgressPool, parse_policy, policy_sha256
+from reharness.runtime.records import RESERVED_KEYS, Transcript, read
 from runtime_world import docker, docker_running, image_present, require
 
 BASE = "python:3.12-slim@sha256:05cda9777409a9c3ffddd94a4c476b79f0769a0b4857f0c7ed9226b6800b0d6f"
@@ -222,12 +222,12 @@ def images():
 def targets(images):
     """A self-signed certificate (made by the base image's openssl), and the two targets on the default bridge."""
     out = docker("run", "--rm", BASE, "sh", "-c",
-                 "openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=ouroloop-egress-target "
+                 "openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=reharness-egress-target "
                  "-keyout /tmp/k.pem -out /tmp/c.pem 2>/dev/null && cat /tmp/c.pem /tmp/k.pem")
     cert = out[:out.index("-----END CERTIFICATE-----") + len("-----END CERTIFICATE-----")] + "\n"
     key = out[out.index("-----BEGIN PRIVATE KEY-----"):]
     run = uuid.uuid4().hex[:8]
-    names = {"plain": f"ouroloop-egress-test-plain-{run}", "tls": f"ouroloop-egress-test-tls-{run}"}
+    names = {"plain": f"reharness-egress-test-plain-{run}", "tls": f"reharness-egress-test-tls-{run}"}
     env = {"TLS_CERT": cert, "TLS_KEY": key}
     try:
         for kind, port in (("plain", 8080), ("tls", 8443)):
@@ -277,7 +277,7 @@ def by_path(rows, method, host_port, path=None):
 def test_the_proxy_lets_out_only_what_the_allowlist_names_and_records_every_request(pool, targets, tmp_path):
     rw = pool.session("run/t1/0")
     ro = pool.session("smoke/t1", read_only=True)
-    assert rw.network != ro.network and rw.env["OUROLOOP_EGRESS"] == "1"
+    assert rw.network != ro.network and rw.env["REHARNESS_EGRESS"] == "1"
     token = rw.env["HTTP_PROXY"].split("attempt:", 1)[1].split("@", 1)[0]
     assert rw.token_id == hashlib.sha256(token.encode()).hexdigest()[:12]
     got = client(rw, targets, "get", "echo", "head", "other_host", "post", "tls", "tls_on_plain_port", "direct",
@@ -357,7 +357,7 @@ def test_stop_returns_the_rows_of_sessions_left_open_and_removes_the_proxy_and_i
     assert [(r["method"], r["status"], r["attempt_id"]) for r in rows] == [("GET", 200, "run/t2/0")]
     assert docker("ps", "-a", "--filter", f"name=^{p.container}$", "--format", "{{.Names}}").strip() == ""
     assert docker("network", "ls", "--filter", f"name=^{left_open.network}$", "--format", "{{.Name}}").strip() == ""
-    assert docker("network", "ls", "--filter", f"label=ouroloop.egress.owner={p.owner['nonce']}", "--format",
+    assert docker("network", "ls", "--filter", f"label=reharness.egress.owner={p.owner['nonce']}", "--format",
                   "{{.Name}}").strip() == ""
     with pytest.raises(EgressError):
         p.session("late")
@@ -381,7 +381,7 @@ def test_the_proxy_container_is_locked_down_and_its_control_port_is_only_on_the_
     # the control listener is bound to the uplink address only (the session networks never see it)
     assert pool.control_bind == networks["bridge"]["IPAddress"]
     labels = info["Config"]["Labels"]
-    assert labels["ouroloop.egress.pid"] == str(os.getpid()) and labels["ouroloop.egress.owner"] == pool.owner["nonce"]
+    assert labels["reharness.egress.pid"] == str(os.getpid()) and labels["reharness.egress.owner"] == pool.owner["nonce"]
     session.close()
     # neither the policy nor the key is on the container's command line
     assert pool._key not in json.dumps(info["Config"]["Cmd"] or []) + json.dumps(info["Args"] or [])
@@ -422,7 +422,7 @@ def test_close_waits_for_a_request_still_in_flight_and_returns_its_row(pool, tar
     session = pool.session("run/t3/0")
     env = {**session.env, "PLAIN": targets["plain"], "TLS": targets["tls"], "OTHER": targets["plain"],
            "TLS_CERT": targets["cert"]}
-    name = f"ouroloop-egress-test-slow-{uuid.uuid4().hex[:8]}"
+    name = f"reharness-egress-test-slow-{uuid.uuid4().hex[:8]}"
     docker("run", "-d", "--name", name, "--network", session.network, "--user", "65534:65534",
            *[x for k in env for x in ("-e", k)], BASE, "python", "-c", CLIENT, "slow", env=env)
     try:
@@ -475,7 +475,7 @@ def test_the_host_and_the_addon_read_a_policy_alike_without_importing_mitmproxy(
     import importlib.util
     import sys
     from pathlib import Path
-    import ouroloop.runtime.egress as host
+    import reharness.runtime.egress as host
     path = Path(host.__file__).with_name("egress_addon.py")
     spec = importlib.util.spec_from_file_location("egress_addon_under_test", path)
     addon = importlib.util.module_from_spec(spec)
@@ -521,7 +521,7 @@ def test_each_session_has_its_own_network_and_reaches_nothing_but_the_proxy(pool
     for s in (a, b):
         info = json.loads(docker("network", "inspect", s.network))[0]
         assert info["Internal"] is True and [c["Name"] for c in info["Containers"].values()] == [pool.container]
-    peer = f"ouroloop-egress-test-peer-{uuid.uuid4().hex[:8]}"
+    peer = f"reharness-egress-test-peer-{uuid.uuid4().hex[:8]}"
     docker("run", "-d", "--name", peer, "--network", a.network, "--user", "65534:65534", BASE, "python", "-m",
            "http.server", "8000")
     try:
@@ -563,7 +563,7 @@ def test_one_proxy_per_scope_a_live_owner_is_never_displaced_and_a_dead_ones_pro
     repo = Path(__file__).resolve().parents[2]
     code = textwrap.dedent(f"""
         import json, os
-        from ouroloop.runtime.egress import EgressPool
+        from reharness.runtime.egress import EgressPool
         p = EgressPool({policy!r}, {scope!r}).start()
         s = p.session("run/crashed/0")
         print(json.dumps({{"network": s.network}}), flush=True)
@@ -588,7 +588,7 @@ def test_a_host_name_on_the_allowlist_is_matched_by_name_and_its_address_is_not(
     """Hosts are matched exactly as named: an entry `target.test:8080` lets a request to that name out (the proxy
     resolves it on its uplink network), and the same target's IP literal is refused."""
     run = uuid.uuid4().hex[:8]
-    uplink, target = f"ouroloop-egress-test-up-{run}", f"ouroloop-egress-test-named-{run}"
+    uplink, target = f"reharness-egress-test-up-{run}", f"reharness-egress-test-named-{run}"
     docker("network", "create", uplink)
     try:
         docker("run", "-d", "--name", target, "--network", uplink, "--network-alias", "target.test", "--user",
@@ -655,7 +655,7 @@ def test_a_tunnel_to_an_unreachable_port_and_a_tunnel_still_open_at_close_are_re
     dead = client(session, targets, "dead_port", DEAD=f"{targets['ips']['plain']}:9")
     assert dead["dead_port"]["status"] == 502
     env = {**session.env, "TLS": targets["tls"]}
-    holder = f"ouroloop-egress-test-hold-{uuid.uuid4().hex[:8]}"
+    holder = f"reharness-egress-test-hold-{uuid.uuid4().hex[:8]}"
     docker("run", "-d", "--name", holder, "--network", session.network, "--user", "65534:65534",
            *[x for k in env for x in ("-e", k)], BASE, "python", "-c", HOLD, env=env)
     try:
@@ -714,8 +714,8 @@ def addon(monkeypatch):
     """The addon loaded by path, as the image runs it, configured from its environment; no mitmproxy on the host."""
     import importlib.util
     from pathlib import Path
-    monkeypatch.setenv("OUROLOOP_EGRESS_CONTROL_KEY", KEY)
-    monkeypatch.setenv("OUROLOOP_EGRESS_POLICY", json.dumps([{"host": "api.example.com", "port": 443,
+    monkeypatch.setenv("REHARNESS_EGRESS_CONTROL_KEY", KEY)
+    monkeypatch.setenv("REHARNESS_EGRESS_POLICY", json.dumps([{"host": "api.example.com", "port": 443,
                                                               "methods": ["CONNECT", "GET"]}]))
     spec = importlib.util.spec_from_file_location("egress_addon_cap", Path(E.__file__).with_name("egress_addon.py"))
     module = importlib.util.module_from_spec(spec)
@@ -791,7 +791,7 @@ THREAD_ENV = {"OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1", "MKL_NUM_THRE
 def proxy_k(targets):
     """K's proxy network allowing the plain target (GET and POST), the worker image's qualified worker under it with
     a pool of its own (started at the first session, stopped after the test)."""
-    from ouroloop.runtime.worker import DEFAULT_IMAGE as WORKER_IMAGE, WorkerResources, docker_worker
+    from reharness.runtime.worker import DEFAULT_IMAGE as WORKER_IMAGE, WorkerResources, docker_worker
     from runtime_world import core
     require(image_present(WORKER_IMAGE), f"the image {WORKER_IMAGE} is not here")
     network = {"mode": "proxy", "allow": [{"host": targets["ips"]["plain"], "port": 8080, "methods": ["GET", "POST"]}]}

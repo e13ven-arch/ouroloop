@@ -20,7 +20,7 @@ jobs:
       - run: pip install -e ".[dev]"
       # The isolated worker for package code (docker/worker.Dockerfile), under the tag the code looks for. The image
       # is python:3.12-slim whatever the matrix says: the matrix is the host's Python, not the worker's.
-      - run: docker build -f docker/worker.Dockerfile -t "$(python -c 'from ouroloop.runtime.worker import DEFAULT_IMAGE; print(DEFAULT_IMAGE)')" .
+      - run: docker build -f docker/worker.Dockerfile -t "$(python -c 'from reharness.runtime.worker import DEFAULT_IMAGE; print(DEFAULT_IMAGE)')" .
       - run: pytest -q -rs
         env:
-          OUROLOOP_TEST_REQUIRE_DOCKER: "1"   # the image is built above: a missing worker fails the Docker tests, never skips them
+          REHARNESS_TEST_REQUIRE_DOCKER: "1"   # the image is built above: a missing worker fails the Docker tests, never skips them

@@ -13,8 +13,8 @@ sys.path.insert(0, str(REPO / "tests" / "improver"))
 import rsi  # noqa: E402
 from rounds import round_activity  # noqa: E402
 
-from ouroloop.activity import phases  # noqa: E402
-from ouroloop.improver.screen import ScreenResult  # noqa: E402
+from reharness.activity import phases  # noqa: E402
+from reharness.improver.screen import ScreenResult  # noqa: E402
 
 HELD = tuple(sorted(rsi.HELD))
 

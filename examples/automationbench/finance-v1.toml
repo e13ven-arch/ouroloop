@@ -1,7 +1,7 @@
 # finance-v1: the first measured activity under the forward design (docs/PLAN.md stage 4, docs/DESIGN.md §10). Finance on
 # the stratified split v0.4 read (pinned below), the automationbench_v1 preset, the stirrup seed, the memory on, three
 # improver rounds. Every paid step is approved in chat first (PLAN rule 3). Run from the repository's root with
-# `.venv/bin/python -m ouroloop`, in a terminal that stays open (tmux), on AC power under `caffeinate -dimsu`; stop a
+# `.venv/bin/python -m reharness`, in a terminal that stays open (tmux), on AC power under `caffeinate -dimsu`; stop a
 # step with one Ctrl-C and let it drain, never kill it (a killed call keeps its reservation's bound).
 #   1  `... bench --config examples/automationbench/finance-v1.toml --phase smoke --checks-only`                 $0
 #   2  `... freeze --config ...`: K (with the code version), the gate template and the budget root; the final is not
@@ -13,7 +13,7 @@
 #      (PLAN rule 6); then `... bench --config ... --phase evaluate`
 #
 # The numbers are the preset's (activity/presets.py, from evidence); a value here may only tighten one. The worker runs
-# by the image id below (K pins it; the tag ouroloop-worker:finance-v1 keeps the image from being pruned).
+# by the image id below (K pins it; the tag reharness-worker:finance-v1 keeps the image from being pruned).
 
 [workspace]
 root = "workspace-finance-v1"
@@ -80,6 +80,6 @@ repeats = 3
 
 [rsi]
 scope_id = "finance-v1"
-# printed by `ouroloop freeze` on 2026-10-09 (K frozen at code s4/finance 19b01bd); final_plan_ref comes with the seal
+# printed by `reharness freeze` on 2026-10-09 (K frozen at code s4/finance 19b01bd); final_plan_ref comes with the seal
 core_ref = "core:sha256:5e021a1ca650aaa5d7fd9ecb34fb98690f28b887ff7de39deb0c6d96d885118e"
 split_ref = "4fd91eaf9fb8daf5"

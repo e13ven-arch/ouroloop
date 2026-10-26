@@ -18,7 +18,7 @@ the order it first appears in, so a change to any framework file (which changes 
 does not move the fixture, and a change of behaviour does. To re-record it after a change that is meant to alter
 behaviour (a new seed, a new hook, a new prompt; and only then, with the diff explained in the commit):
 
-    OUROLOOP_CAPTURE_BEHAVIOUR=1 .venv/bin/python -m pytest -q tests/test_attempt_behaviour.py
+    REHARNESS_CAPTURE_BEHAVIOUR=1 .venv/bin/python -m pytest -q tests/test_attempt_behaviour.py
 """
 from __future__ import annotations
 
@@ -29,13 +29,13 @@ import re
 from pathlib import Path
 
 import rsi
-from ouroloop.activity import phases
-from ouroloop.contracts import read_jsonl
-from ouroloop.runtime.chat import ChatTurn, ToolCall
-from ouroloop.runtime.records import session_file
+from reharness.activity import phases
+from reharness.contracts import read_jsonl
+from reharness.runtime.chat import ChatTurn, ToolCall
+from reharness.runtime.records import session_file
 
 FIXTURE = Path(__file__).parent / "fixtures" / "attempt_behaviour_stirrup.json"
-CAPTURE = os.environ.get("OUROLOOP_CAPTURE_BEHAVIOUR") == "1"
+CAPTURE = os.environ.get("REHARNESS_CAPTURE_BEHAVIOUR") == "1"
 TASK = "rsi.notify_after_update"
 
 

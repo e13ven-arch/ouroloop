@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import rsi
 
-from ouroloop.activity import phases
-from ouroloop.runtime.records import read, session_file
+from reharness.activity import phases
+from reharness.runtime.records import read, session_file
 
 
 def quiet(_line):

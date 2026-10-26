@@ -4,11 +4,11 @@ import random
 
 import pytest
 
-from ouroloop.train.decision import Choice, Noul, Spec
-from ouroloop.contracts import redact
-from ouroloop.train.ledger import Ledger, SessionStore
-from ouroloop.train.policy import Policy, cp_upper, fit_threshold, route
-from ouroloop.train.types import Answer, Question
+from reharness.train.decision import Choice, Noul, Spec
+from reharness.contracts import redact
+from reharness.train.ledger import Ledger, SessionStore
+from reharness.train.policy import Policy, cp_upper, fit_threshold, route
+from reharness.train.types import Answer, Question
 
 
 # ---------------------------------------------------------------- policy
@@ -120,7 +120,7 @@ def test_redaction_and_session_store(tmp_path):
 def test_candidate_order_is_shuffled_at_presentation(tmp_path):
     import random
 
-    from ouroloop.train.types import Question
+    from reharness.train.types import Question
 
     q = Question("choice", "which", {"a": "A", "b": "B", "c": "C", "d": "D (do nothing)"})
     orders = {tuple(q.presented(random.Random(s)).labels()) for s in range(30)}

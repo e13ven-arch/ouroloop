@@ -6,10 +6,10 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from ouroloop.providers import ProviderAccountError, ProviderError, build_provider, is_account_error
-from ouroloop.providers.anthropic import AnthropicProvider, to_anthropic
-from ouroloop.providers.openai_compat import OpenAICompatProvider
-from ouroloop.runtime.chat import ScriptedChat, ToolCall, ToolSpec
+from reharness.providers import ProviderAccountError, ProviderError, build_provider, is_account_error
+from reharness.providers.anthropic import AnthropicProvider, to_anthropic
+from reharness.providers.openai_compat import OpenAICompatProvider
+from reharness.runtime.chat import ScriptedChat, ToolCall, ToolSpec
 
 
 class FakeMessages:
@@ -152,7 +152,7 @@ def test_an_account_error_is_read_only_from_a_provider():
 def test_build_provider_names_the_type_or_a_class(tmp_path):
     p = build_provider({"type": "openai_compat", "model": "qwen3", "base_url": "http://x/v1"})
     assert isinstance(p, OpenAICompatProvider) and p.model == "qwen3"
-    scripted = build_provider({"type": "ouroloop.runtime.chat:ScriptedChat", "script": []})
+    scripted = build_provider({"type": "reharness.runtime.chat:ScriptedChat", "script": []})
     assert isinstance(scripted, ScriptedChat)
     with pytest.raises(TypeError):
         build_provider({"type": "openai_compat"})                  # a model is required

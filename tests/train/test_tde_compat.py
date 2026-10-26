@@ -1,6 +1,6 @@
 """Checks against the real TDE repository (skipped when it is not next to this one; set TDE_REPO to point at it).
 They prove the training path produces what TDE accepts, without training anything. And the in-process TDE backend on
-the GPU host (ouroloop installed into the TDE venv), with TDE stood in for. The training job itself: test_jobs.py."""
+the GPU host (reharness installed into the TDE venv), with TDE stood in for. The training job itself: test_jobs.py."""
 import ast
 import contextlib
 import importlib.machinery
@@ -14,15 +14,15 @@ from pathlib import Path
 
 import pytest
 
-from ouroloop.train import config as train_config
-from ouroloop.train.backends import TdeBackend
-from ouroloop.train.dataset import to_example
-from ouroloop.train.decision import Choice, Noul, Score
-from ouroloop.train import train
-from ouroloop.train.runtime import Runtime
-from ouroloop.train.trainers import tde
-from ouroloop.train.trainers.tde import prepare_job, tde_config
-from ouroloop.train.types import Question, Request
+from reharness.train import config as train_config
+from reharness.train.backends import TdeBackend
+from reharness.train.dataset import to_example
+from reharness.train.decision import Choice, Noul, Score
+from reharness.train import train
+from reharness.train.runtime import Runtime
+from reharness.train.trainers import tde
+from reharness.train.trainers.tde import prepare_job, tde_config
+from reharness.train.types import Question, Request
 
 REPO = Path(os.environ.get("TDE_REPO", Path(__file__).resolve().parents[3] / "jev"))
 needs_tde = pytest.mark.skipif(not (REPO / "tde" / "schema.py").exists(), reason="TDE repository not found")
@@ -218,9 +218,9 @@ def test_a_tilde_in_a_run_path_is_the_training_machines_home(tmp_path):
     data = tmp_path / "data"
     data.mkdir()
     (data / "train.jsonl").write_text(json.dumps({"id": 1}) + "\n")
-    cfg = tde_config(DEFAULT_RECIPE, "~/tde/ouroloop_jobs/m_0001/run", "~/tde/runs/base", "m_0001")
+    cfg = tde_config(DEFAULT_RECIPE, "~/tde/reharness_jobs/m_0001/run", "~/tde/runs/base", "m_0001")
     written = json.loads(Path(prepare_job(str(data), json.dumps(cfg))).read_text())
-    assert written["out_dir"] == os.path.expanduser("~/tde/ouroloop_jobs/m_0001/run")      # not a directory named ~
+    assert written["out_dir"] == os.path.expanduser("~/tde/reharness_jobs/m_0001/run")      # not a directory named ~
     assert written["init_from"] == os.path.expanduser("~/tde/runs/base")
     assert (data / "tde" / "calibration.jsonl").read_text() == ""      # no val split: TDE has nothing to select on
     (data / "val.jsonl").write_text(json.dumps({"id": 2, "split": "val"}) + "\n")

@@ -1,4 +1,4 @@
-# ouroloop
+# reharness
 
 [English](README.md) | 中文
 
@@ -55,18 +55,18 @@ Python 3.11 或更新，macOS 或 Linux（Windows 用 WSL）。
 
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
-pip install -e ".[dev,automationbench]"        # 训练栈加 ,train,train-jobs；装上 `ouroloop` 命令
+pip install -e ".[dev,automationbench]"        # 训练栈加 ,train,train-jobs；装上 `reharness` 命令
 pytest -q                                      # 离线：不联网、不调模型；排除 live 与 slow
-OUROLOOP_TEST_REQUIRE_DOCKER=1 OUROLOOP_TEST_REQUIRE_MEMORY=1 pytest -q -m "not live"   # 全量：Docker worker、上游检出、memory sidecar
+REHARNESS_TEST_REQUIRE_DOCKER=1 REHARNESS_TEST_REQUIRE_MEMORY=1 pytest -q -m "not live"   # 全量：Docker worker、上游检出、memory sidecar
 ```
 
 第一个活动跑重复流，用几道 train 题：[examples/automationbench/quickstart-repeat.toml](examples/automationbench/quickstart-repeat.toml)——新工作区、什么都没冻结、不读 test。需要基准检出和 worker 镜像（下一节）。前两条命令不调模型：
 
 ```bash
-ouroloop bench --config examples/automationbench/quickstart-repeat.toml --phase smoke --checks-only   # $0：划分、评分器契约、输入审计、种子的字面量
-ouroloop freeze --config examples/automationbench/quickstart-repeat.toml                              # $0：K、预算根、封存的重复计划；打印要加进 [rsi] 的行
-ouroloop bench --config examples/automationbench/quickstart-repeat.toml --phase repeat --arm learn    # 5 道 train 题 × 3 次，退单题各开一个 R 会话：约 $15～25
-ouroloop bench --config examples/automationbench/quickstart-repeat.toml --phase report                # $0
+reharness bench --config examples/automationbench/quickstart-repeat.toml --phase smoke --checks-only   # $0：划分、评分器契约、输入审计、种子的字面量
+reharness freeze --config examples/automationbench/quickstart-repeat.toml                              # $0：K、预算根、封存的重复计划；打印要加进 [rsi] 的行
+reharness bench --config examples/automationbench/quickstart-repeat.toml --phase repeat --arm learn    # 5 道 train 题 × 3 次，退单题各开一个 R 会话：约 $15～25
+reharness bench --config examples/automationbench/quickstart-repeat.toml --phase report                # $0
 ```
 
 [quickstart.toml](examples/automationbench/quickstart.toml) 是旧的入口：带 memory 库和留出筛选轮次的批式活动。
@@ -75,28 +75,28 @@ ouroloop bench --config examples/automationbench/quickstart-repeat.toml --phase 
 
 AutomationBench 模拟 47 个 SaaS 工具上的业务流程，对 agent 的工具留下的世界状态评分。agent 拿到任务文本和工具 schema；断言与初始状态在一个它永远拿不到的对象里。
 
-ouroloop 懒加载基准。clone 后把 `[bench] upstream_path` 指向检出；要装什么见 [examples/automationbench/README.md](examples/automationbench/README.md)。公开题集上的本地分数不是榜单分数。
+reharness 懒加载基准。clone 后把 `[bench] upstream_path` 指向检出；要装什么见 [examples/automationbench/README.md](examples/automationbench/README.md)。公开题集上的本地分数不是榜单分数。
 
 **模型。** actor（`[model]`）与 R（`[research_model]`）用 `type = "claude_code"`：每次调用都是本机 Claude 订阅登录（`claude auth login`）下一次全新的无头 `claude -p`，空目录、无工具、无本地定制；工具调用以结构化 JSON 返回。启动检查拒绝非订阅登录和没写 `effort` 的表。实测配置 pin `claude-opus-5-5`；预设把 effort 封顶在 medium，`automationbench_v2_max` 把两臂都放到 max 做上面的实验。`openai_compat` 与 `anthropic` 两个 provider 也在，没有任何报告的结果用它们。
 
 **包代码**只在隔离的 worker 镜像里跑，活动的 K 按 id pin 住它：
 
 ```bash
-docker build --provenance=false -f docker/worker.Dockerfile -t ouroloop-worker:py3.12 .
+docker build --provenance=false -f docker/worker.Dockerfile -t reharness-worker:py3.12 .
 ```
 
 **命令。** 活动分阶段跑，每个阶段后停下来读。付费阶段都可续跑，记录在案的不会付两次；都在活动的预算根停住。
 
 | 命令 | 做什么 |
 |---|---|
-| `ouroloop bench --config <cfg> --phase smoke --checks-only` | 上游身份、冻结的划分、评分器契约、输入审计、种子的字面量扫描；不调模型 |
-| `ouroloop bench --config <cfg> --phase smoke` | 同上检查，再跑一次完整的尝试 |
-| `ouroloop freeze --config <cfg>` | K、预算根、gate 模板，以及封存的计划（`[final]`、`[repeat]`）；打印要加的 `[rsi]` 行 |
-| `ouroloop bench --config <cfg> --phase repeat --arm learn\|control [--until task-K]` | 重复流：封存计划里的每道题遇到 `encounters` 次；学习臂给每道退单题采用一个包，对照臂每次跑 base |
-| `ouroloop bench --config <cfg> --phase baseline` / `--phase round --round K` / `--phase stream` | 留出筛选回路：W0 的读数、一轮改进器、流式循环 |
-| `ouroloop bench --config <cfg> --phase gate` / `--phase release` / `--phase evaluate` | 发布 gate、按决定发布、test 上的封存 final |
-| `ouroloop bench --config <cfg> --phase report` | 从磁盘记录出报告；不调模型 |
-| `ouroloop export --config <cfg> --to exported-app` | 把装入的发布导出为应用 |
+| `reharness bench --config <cfg> --phase smoke --checks-only` | 上游身份、冻结的划分、评分器契约、输入审计、种子的字面量扫描；不调模型 |
+| `reharness bench --config <cfg> --phase smoke` | 同上检查，再跑一次完整的尝试 |
+| `reharness freeze --config <cfg>` | K、预算根、gate 模板，以及封存的计划（`[final]`、`[repeat]`）；打印要加的 `[rsi]` 行 |
+| `reharness bench --config <cfg> --phase repeat --arm learn\|control [--until task-K]` | 重复流：封存计划里的每道题遇到 `encounters` 次；学习臂给每道退单题采用一个包，对照臂每次跑 base |
+| `reharness bench --config <cfg> --phase baseline` / `--phase round --round K` / `--phase stream` | 留出筛选回路：W0 的读数、一轮改进器、流式循环 |
+| `reharness bench --config <cfg> --phase gate` / `--phase release` / `--phase evaluate` | 发布 gate、按决定发布、test 上的封存 final |
+| `reharness bench --config <cfg> --phase report` | 从磁盘记录出报告；不调模型 |
+| `reharness export --config <cfg> --to exported-app` | 把装入的发布导出为应用 |
 
 **配置。** 配置点名一个预设（`[harness] preset`），只能收紧它；各表见 [docs/design/CONTRACTS.md](docs/design/CONTRACTS.md) §9，`[repeat]` 表见 [docs/design/EVALUATE.md](docs/design/EVALUATE.md) §6b。`finance-v14.toml`～`finance-v25.toml` 是阶段 4o～4p 的实测活动，每个文件头列了步骤、费用和用途；`finance-v5.toml`～`finance-v13.toml` 是留出筛选回路的。它们的工作区放本机的、git 忽略的运行记录。
 
@@ -106,16 +106,16 @@ docker build --provenance=false -f docker/worker.Dockerfile -t ouroloop-worker:p
 
 | 路径 | 内容 |
 |---|---|
-| `ouroloop/contracts.py` | 身份与内容寻址的对象库、事件、文件工具、错误类 |
-| `ouroloop/harness/` | harness 包：组件种类、manifest v3、形状与字面量检查、上游补丁栈、种子（`seeds/stirrup/`：Stirrup 0.2.0、适配器、写入守卫、`plan_changes`） |
-| `ouroloop/runtime/` | 一次尝试：网关、broker、worker 与运行协议、出口、运行壳、轨迹 |
-| `ouroloop/evaluate/` | 划分、硬限额、尝试与结果、配对 gate、封存 final、封存的重复计划（`repeat.py`）、预算账本与计量、发布 |
-| `ouroloop/improver/` | R 的会话与提示词（逐题回路 `prompts/repeat.md`，轮次 `propose.md`）、逐题回路与库（`repeat.py`）、验收阶梯（`verify/`）、留出筛选、试跑、前沿、台账 |
-| `ouroloop/memory/` | memory 组件：ReMe sidecar、桥与规则、检索、快照 |
-| `ouroloop/activity/` | 配置与预设到 K、工作区、阶段、启动检查、报告、`ouroloop` CLI |
-| `ouroloop/adapters/automationbench.py` | 任务、业务工具、官方评分器、退回项与源清单的视图（不 import 框架） |
-| `ouroloop/providers/` | `claude_code`、`openai_compat`、`anthropic` |
-| `ouroloop/train/`（extra `[train]`） | 训练与决策栈，不在基准路径上 |
+| `reharness/contracts.py` | 身份与内容寻址的对象库、事件、文件工具、错误类 |
+| `reharness/harness/` | harness 包：组件种类、manifest v3、形状与字面量检查、上游补丁栈、种子（`seeds/stirrup/`：Stirrup 0.2.0、适配器、写入守卫、`plan_changes`） |
+| `reharness/runtime/` | 一次尝试：网关、broker、worker 与运行协议、出口、运行壳、轨迹 |
+| `reharness/evaluate/` | 划分、硬限额、尝试与结果、配对 gate、封存 final、封存的重复计划（`repeat.py`）、预算账本与计量、发布 |
+| `reharness/improver/` | R 的会话与提示词（逐题回路 `prompts/repeat.md`，轮次 `propose.md`）、逐题回路与库（`repeat.py`）、验收阶梯（`verify/`）、留出筛选、试跑、前沿、台账 |
+| `reharness/memory/` | memory 组件：ReMe sidecar、桥与规则、检索、快照 |
+| `reharness/activity/` | 配置与预设到 K、工作区、阶段、启动检查、报告、`reharness` CLI |
+| `reharness/adapters/automationbench.py` | 任务、业务工具、官方评分器、退回项与源清单的视图（不 import 框架） |
+| `reharness/providers/` | `claude_code`、`openai_compat`、`anthropic` |
+| `reharness/train/`（extra `[train]`） | 训练与决策栈，不在基准路径上 |
 
 ## 文档
 
@@ -130,4 +130,4 @@ docker build --provenance=false -f docker/worker.Dockerfile -t ouroloop-worker:p
 
 ## 许可证
 
-MIT，见 [LICENSE](LICENSE)。Stirrup 种子按它自己的许可证 vendored 在 `ouroloop/harness/seeds/stirrup/vendor/stirrup/LICENSE`。
+MIT，见 [LICENSE](LICENSE)。Stirrup 种子按它自己的许可证 vendored 在 `reharness/harness/seeds/stirrup/vendor/stirrup/LICENSE`。

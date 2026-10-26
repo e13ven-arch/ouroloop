@@ -1,4 +1,4 @@
-"""Cloud GPU workers (ouroloop/train/jobs/cloud.py): a RunPod or Vast.ai instance per training job, against fakes of both APIs
+"""Cloud GPU workers (reharness/train/jobs/cloud.py): a RunPod or Vast.ai instance per training job, against fakes of both APIs
 (httpx.MockTransport) and a stand-in for ssh and rsync. Nothing reaches a provider, a host or docker."""
 import json
 import re
@@ -10,12 +10,12 @@ import pytest
 
 from jobs_fixtures import (COMMIT, GPU_RP, GPU_VAST, HF_TOKEN, PREFIX, RUNPOD_KEY, STORE, VAST_KEY, RunPodApi, Ssh,
                            VastApi, a_job, dataset, keys, options)  # noqa: F401 - keys is a fixture
-from ouroloop.train import config as train_config
-from ouroloop.train.jobs import cloud
-from ouroloop.train.train import train_artifact
-from ouroloop.train.jobs.trainer import JobTrainer
-from ouroloop.train.train import TrainError
-from ouroloop.train.runtime import Runtime
+from reharness.train import config as train_config
+from reharness.train.jobs import cloud
+from reharness.train.train import train_artifact
+from reharness.train.jobs.trainer import JobTrainer
+from reharness.train.train import TrainError
+from reharness.train.runtime import Runtime
 
 def trainer(cloud_options, api, ssh, **kw) -> JobTrainer:
     return JobTrainer("signature", cloud=cloud_options, api=api.transport(), runner=ssh, store=STORE,
@@ -41,7 +41,7 @@ def test_a_job_runs_on_a_new_instance_which_is_stopped_after_it(tmp_path, keys, 
         body = create[4]
         assert body["name"] == f"{ws_tag(tmp_path / 'ws')}-{job['id']}" and body["ports"] == ["22/tcp"]
         assert body["gpu"] == {"id": GPU_RP, "count": 1} and body["cloud"] == "SECURE" and body["image"].endswith(":1")
-        assert body["entrypoint"][:2] == ["sh", "-c"] and "ouroloop-start" in body["entrypoint"][2]
+        assert body["entrypoint"][:2] == ["sh", "-c"] and "reharness-start" in body["entrypoint"][2]
         assert rec == {"provider": "runpod", "instance": "pod1", "gpu": f"1 x {GPU_RP}", "price_per_hour": 0.69,
                        "uptime_s": rec["uptime_s"]}
         assert api.pods["pod1"]["status"] == "TERMINATED" and api.calls("DELETE", "/v2/pods/pod1")
@@ -54,10 +54,10 @@ def test_a_job_runs_on_a_new_instance_which_is_stopped_after_it(tmp_path, keys, 
         (create,) = api.calls("PUT", "/api/v0/asks/")
         body = create[4]
         assert create[1] == "/api/v0/asks/11/" and body["label"] == f"{ws_tag(tmp_path / 'ws')}-{job['id']}"
-        assert body["runtype"] == "ssh_direct" and body["env"]["OUROLOOP_SSHD"] == "0"
-        assert "ouroloop-start" in body["onstart"]
+        assert body["runtype"] == "ssh_direct" and body["env"]["REHARNESS_SSHD"] == "0"
+        assert "reharness-start" in body["onstart"]
         (attach,) = api.calls("POST", "/api/v0/instances/7001/ssh/")
-        assert attach[4] == {"ssh_key": "ssh-ed25519 AAAAtest ouroloop@test"}
+        assert attach[4] == {"ssh_key": "ssh-ed25519 AAAAtest reharness@test"}
         assert rec == {"provider": "vast", "instance": "7001", "gpu": f"1 x {GPU_VAST}", "price_per_hour": 0.42,
                        "uptime_s": rec["uptime_s"]}
         assert "7001" not in api.instances and api.calls("DELETE", "/api/v0/instances/7001/")
@@ -80,7 +80,7 @@ def test_a_job_runs_on_a_new_instance_which_is_stopped_after_it(tmp_path, keys, 
     assert all(r[0] == "GET" and r[1] in ("/v2/pods", "/api/v1/instances/") for r in api.requests[stop + 1:])
     assert "stopped instance" in capsys.readouterr().err
     # its life is bounded without this process too: the boot, a host init, the deadline and a margin
-    assert int(body["env"]["OUROLOOP_TTL_S"]) == 900 + 3600 + 28800 + 0 + 1800
+    assert int(body["env"]["REHARNESS_TTL_S"]) == 900 + 3600 + 28800 + 0 + 1800
 
 
 def test_an_image_without_the_worker_is_initialized_before_the_job(tmp_path, keys):
@@ -116,7 +116,7 @@ def test_an_instance_that_never_answers_is_stopped_at_the_boot_timeout(tmp_path,
     ssh = Ssh()
 
     def refuse(args, input=None, timeout=None):     # on Vast.ai the API says running; ssh never answers
-        if args[0] == "ssh" and ".ouroloop/started" in args[-1]:
+        if args[0] == "ssh" and ".reharness/started" in args[-1]:
             raise subprocess.CalledProcessError(255, args, stderr="Connection refused")
         return ssh(args, input, timeout)
     runner = refuse if provider == "vast" else ssh
@@ -333,8 +333,8 @@ def test_an_interrupt_during_the_stop_still_stops_the_known_instance(tmp_path, k
 def test_the_workspace_tag_is_a_random_id_kept_in_the_workspace(tmp_path):
     ws = tmp_path / "ws"
     first = cloud.tag(str(ws))
-    assert re.fullmatch(r"ouroloop-[0-9a-f]{12}", first) and cloud.tag(str(ws)) == first
-    assert (ws / "models" / ".cloud_id").read_text().strip() == first.removeprefix("ouroloop-")
+    assert re.fullmatch(r"reharness-[0-9a-f]{12}", first) and cloud.tag(str(ws)) == first
+    assert (ws / "models" / ".cloud_id").read_text().strip() == first.removeprefix("reharness-")
     (ws / "models" / ".cloud_id").unlink()              # another control plane at the same path: another tag
     assert cloud.tag(str(ws)) != first
 
@@ -342,13 +342,13 @@ def test_the_workspace_tag_is_a_random_id_kept_in_the_workspace(tmp_path):
 def test_start_sh_marks_when_it_is_done(tmp_path):
     """The trainer's boot waits for this marker: on Vast.ai sshd answers before start.sh (onstart) is done."""
     home = tmp_path / "home"
-    (home / ".ouroloop").mkdir(parents=True)
-    (home / ".ouroloop" / "started").write_text("")        # a marker from an earlier boot is removed first
-    env = {"HOME": str(home), "PATH": "/usr/bin:/bin", "OUROLOOP_SSHD": "0", "PUBLIC_KEY": "ssh-ed25519 AAAAk",
+    (home / ".reharness").mkdir(parents=True)
+    (home / ".reharness" / "started").write_text("")        # a marker from an earlier boot is removed first
+    env = {"HOME": str(home), "PATH": "/usr/bin:/bin", "REHARNESS_SSHD": "0", "PUBLIC_KEY": "ssh-ed25519 AAAAk",
            "HF_TOKEN": "hf_x"}
     out = subprocess.run(["sh", str(cloud.START)], env=env, capture_output=True, text=True)
     assert out.returncode == 0, out.stderr
-    assert (home / ".ouroloop" / "started").exists()
+    assert (home / ".reharness" / "started").exists()
     assert (home / ".ssh" / "authorized_keys").read_text() == "ssh-ed25519 AAAAk\n"
     assert (home / ".cache" / "huggingface" / "token").read_text() == "hf_x"
     script = cloud.START.read_text()
@@ -371,9 +371,9 @@ def test_a_cloud_trainer_refuses_a_dir_store_and_bad_options(keys):
     # built from the config: [trainer.cloud], and [store]; an old config's transport "hf" is that store
     for cfg in ({"trainer": {"type": "signature", "cloud": options("vast", keys)}, "store": STORE},
                 {"trainer": {"type": "signature", "transport": "hf", "hf_prefix": PREFIX,
-                             "cloud": options("vast", keys)}, "models": {"jobs_root": "~/.ouroloop/jobs"}}):
+                             "cloud": options("vast", keys)}, "models": {"jobs_root": "~/.reharness/jobs"}}):
         tr = train_config.build_trainer(cfg)
-        assert tr.cloud["provider"] == "vast" and tr.python == "~/.ouroloop/venv/bin/python"
+        assert tr.cloud["provider"] == "vast" and tr.python == "~/.reharness/venv/bin/python"
         assert tr.store.table == STORE and tr.serving.store.table == STORE
 
 

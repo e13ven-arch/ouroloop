@@ -9,11 +9,11 @@ from pathlib import Path
 
 import pytest
 
-from ouroloop.activity import config as cf
-from ouroloop.activity import presets
-from ouroloop.activity.config import ConfigError
-from ouroloop.harness.contract import SITES
-from ouroloop.providers.claude_code import REQUESTS_PER_CALL
+from reharness.activity import config as cf
+from reharness.activity import presets
+from reharness.activity.config import ConfigError
+from reharness.harness.contract import SITES
+from reharness.providers.claude_code import REQUESTS_PER_CALL
 
 PRESET = presets.preset("automationbench_v1")
 PROXY = {"mode": "proxy", "allow": [{"host": "api.example.com", "port": 443, "methods": ["GET"]},
@@ -43,8 +43,8 @@ RULE_CASES = {
                [20, 40]),
     "effort": ("model", {"effort": "high"}, "effort", {"effort": "low"}, lambda k: k["model"]["effort"], "low"),
     "bytes": ("worker", {"memory": "1g"}, "memory", {"memory": "256m"}, lambda k: k["worker"]["memory"], "256m"),
-    "fixed": ("worker", {"image": "someone-elses-image:latest"}, "image", {"image": "ouroloop-worker:py3.12"},
-              lambda k: k["worker"]["image"], "ouroloop-worker:py3.12"),
+    "fixed": ("worker", {"image": "someone-elses-image:latest"}, "image", {"image": "reharness-worker:py3.12"},
+              lambda k: k["worker"]["image"], "reharness-worker:py3.12"),
     "network": ("worker", {"network": PROXY}, "network", {"network": "none"}, lambda k: k["worker"]["network"],
                 "none"),
     "superset": ("memory", {"heldout_domains": ["finance"]}, "heldout_domains",
@@ -123,9 +123,9 @@ def test_an_unknown_table_an_unknown_key_and_an_unknown_rsi_key_are_refused():
         cf.resolve(config(rsi={"scope_id": "s", "budget_ref": "change:sha256:" + "0" * 64}))
 
 
-@pytest.mark.parametrize("value", ["<printed by ouroloop freeze>", "TODO", "changeme"])
+@pytest.mark.parametrize("value", ["<printed by reharness freeze>", "TODO", "changeme"])
 def test_a_placeholder_ref_is_refused(value):
-    with pytest.raises(ConfigError, match="placeholder: run `ouroloop freeze`"):
+    with pytest.raises(ConfigError, match="placeholder: run `reharness freeze`"):
         cf.resolve(config(rsi={"scope_id": "s", "core_ref": value}))
 
 

@@ -4,11 +4,11 @@ import json
 
 import pytest
 
-from ouroloop.contracts import ContractError, Objects
-from ouroloop.evaluate.gate import (GatePlan, TaskEvalPlan, evaluate_task, judge, paired_bootstrap, per_task,
+from reharness.contracts import ContractError, Objects
+from reharness.evaluate.gate import (GatePlan, TaskEvalPlan, evaluate_task, judge, paired_bootstrap, per_task,
                                     receipt_differences, refill_attempts, regressed, regression_rate, shortfall)
-from ouroloop.evaluate.release import GateReceipt
-from ouroloop.evaluate.results import TaskResult, pair_key
+from reharness.evaluate.release import GateReceipt
+from reharness.evaluate.results import TaskResult, pair_key
 
 FAMILIES = {"t1": "f1", "t2": "f1", "t3": "f2", "t4": "f3", "t5": "f4"}
 TASKS = ("t1", "t2", "t3", "t4", "t5")

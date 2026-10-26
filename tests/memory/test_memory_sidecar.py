@@ -39,14 +39,14 @@ import pytest
 from fake_openai_server import FakeOpenAI
 from memory_support import (HASH, REPO, TASKS, TESTS, conversation, fake, items, live_of, scope_of,  # noqa: F401
                             settings, sidecar, stamped, stream, venv)
-from ouroloop.contracts import MemorySidecarError, TrainOnlyError
-from ouroloop.memory import (COLLECTION_NAME, LOCK, MODEL_AUX_SHA256, MODEL_FILE, MODEL_SHA256, SIDECAR_DIR,
+from reharness.contracts import MemorySidecarError, TrainOnlyError
+from reharness.memory import (COLLECTION_NAME, LOCK, MODEL_AUX_SHA256, MODEL_FILE, MODEL_SHA256, SIDECAR_DIR,
                              flows_sha256, lock_sha256)
-from ouroloop.memory.client import SHORT, MemoryClient, canonical_rows, parse_jsonl
-from ouroloop.memory.retrieval import LibraryReader, snapshot_collection
-from ouroloop.memory.rules import snapshot_rows
-from ouroloop.memory.settings import Settings
-from ouroloop.memory.snapshot import fit_snapshot
+from reharness.memory.client import SHORT, MemoryClient, canonical_rows, parse_jsonl
+from reharness.memory.retrieval import LibraryReader, snapshot_collection
+from reharness.memory.rules import snapshot_rows
+from reharness.memory.settings import Settings
+from reharness.memory.snapshot import fit_snapshot
 
 FLOWS = sorted(["summary_task_memory_v6", "add_task_memory_v6", "retrieve_task_memory_v6", "get_task_memory_v6",
                 "retire_task_memory_v6", "dump_memory_v6", "load_memory_v6"])
@@ -765,8 +765,8 @@ import json, sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 import memory_support as ms
-import ouroloop.memory.importing, ouroloop.memory.retrieval, ouroloop.memory.track, ouroloop.memory.rules  # noqa
-import ouroloop.memory.service, ouroloop.memory.snapshot, ouroloop.memory.promote, ouroloop.memory.bridge  # noqa
+import reharness.memory.importing, reharness.memory.retrieval, reharness.memory.track, reharness.memory.rules  # noqa
+import reharness.memory.service, reharness.memory.snapshot, reharness.memory.promote, reharness.memory.bridge  # noqa
 c = ms.sidecar(Path(sys.argv[2]), Path(sys.argv[3]))
 try:
     c.embed(["a query"], query=True)
@@ -799,21 +799,21 @@ def imports_of(path: Path) -> set[str]:
     return out
 
 
-def test_host_modules_import_the_standard_library_httpx_and_ouroloop_only():
-    host = sorted((REPO / "ouroloop" / "memory").glob("*.py"))
-    allowed = set(sys.stdlib_module_names) | {"httpx", "ouroloop", "."}
+def test_host_modules_import_the_standard_library_httpx_and_reharness_only():
+    host = sorted((REPO / "reharness" / "memory").glob("*.py"))
+    allowed = set(sys.stdlib_module_names) | {"httpx", "reharness", "."}
     for path in host:
         assert imports_of(path) <= allowed, (path.name, sorted(imports_of(path) - allowed))
     assert {p.name for p in host} >= {"__init__.py", "__main__.py", "client.py", "rules.py", "track.py",
                                       "retrieval.py", "importing.py", "bridge.py", "service.py"}
 
 
-def test_sidecar_modules_import_nothing_of_ouroloop():
+def test_sidecar_modules_import_nothing_of_reharness():
     side = sorted(SIDECAR_DIR.glob("*.py"))
     assert {p.name for p in side} == {"serve.py", "ops.py", "embed.py"}
     for path in side:
         got = imports_of(path)
-        assert "ouroloop" not in got and "." not in got, (path.name, sorted(got))
+        assert "reharness" not in got and "." not in got, (path.name, sorted(got))
 
 
 def test_the_collection_name_rule_and_the_short_marker_are_the_same_on_both_sides():

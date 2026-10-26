@@ -40,19 +40,19 @@ import rsi
 from rounds import ledger_rows, quiet, round_activity, round_state
 from scripted_r import TOOL_CODE, TOOL_ENTRY
 
-from ouroloop.activity import phases
-from ouroloop.evaluate.gate import shortfall
-from ouroloop.harness.kinds import MEMORY_PATH
-from ouroloop.harness.package import Limits, build
-from ouroloop.improver import screen as sc
-from ouroloop.improver.components import components
-from ouroloop.improver.declaration import Declaration
-from ouroloop.improver.evidence import Evidence
-from ouroloop.improver.round import Round, run_round
-from ouroloop.improver.session import ITEM_CHARS, NUDGE, CodingSession, WorkTree
-from ouroloop.improver.settings import Settings
-from ouroloop.improver.verify import Verdict, run_ladder
-from ouroloop.runtime.chat import ChatTurn, ToolCall
+from reharness.activity import phases
+from reharness.evaluate.gate import shortfall
+from reharness.harness.kinds import MEMORY_PATH
+from reharness.harness.package import Limits, build
+from reharness.improver import screen as sc
+from reharness.improver.components import components
+from reharness.improver.declaration import Declaration
+from reharness.improver.evidence import Evidence
+from reharness.improver.round import Round, run_round
+from reharness.improver.session import ITEM_CHARS, NUDGE, CodingSession, WorkTree
+from reharness.improver.settings import Settings
+from reharness.improver.verify import Verdict, run_ladder
+from reharness.runtime.chat import ChatTurn, ToolCall
 
 NOTIFY = rsi.HELD                                                          # the held-out pair the actor fails
 TICKET = "rsi.notify_ticket"                                               # the studied task it fails
@@ -749,7 +749,7 @@ def test_accept_installs_the_accepted_package_on_the_working_line_and_refuses_a_
     rejected = run_screen(world, "tool", files, package, best_so_far=9)
     with pytest.raises(ValueError, match="is not accepted"):
         sc.accept(s.a, rejected, round_id="rsi-test/r10", base_release=new)
-    from ouroloop.evaluate.release import NotAuthorized
+    from reharness.evaluate.release import NotAuthorized
     forged = s.a.releases.screened(package.ref(), s.a.objects.put(rejected), parent=new)
     with pytest.raises(NotAuthorized, match="did not accept"):
         s.a.releases.install_screened(forged, forged.screen_ref, expected_parent=new.ref(), operation_id="x")

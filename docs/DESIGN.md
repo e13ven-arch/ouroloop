@@ -1,4 +1,4 @@
-# ouroloop 架构设计（v2.1，正向设计）
+# reharness 架构设计（v2.1，正向设计）
 
 > 2026-10-24 修订（v2.1，阶段 4p）：finance-v18 的 test 数出来了（首次 64% → 稳态 68%，零退步，$183.77）；逐题读 15 道没修好的题：错在用哪个数 / 哪一档 / 哪一行，R 的候选 12/15 改在别处，18 次会话零工具。第四刀（§6.24）：反馈改成"退回项"（检查的种类与对象，不带期望值），R 的工作方法加"该成工具的步骤"，改过的目录可再 try、交付前宿主再 probe，计划可点名题目；专项只用两三道需要造工具的 train 题验证——原来没用代码解决、现在 R 写了代码并解决了。种子不动。
 >
@@ -20,7 +20,7 @@
 >
 > 用户原话（2026-10-09）："RSI 框架本身的职责要清楚，就是自动化提升 harness 和训练模型。那么这里的 harness 的设计如何能够完成自动提升的都要有正向的设计。" "需要引入开源组件的直接使用即可，如果要自己开发必须要设计完善，不能只开发一个 demo 机制。" "积累记忆、自动写技能、优化任务代码、修改自身 harness，是不同层次的自我改进。选型时先确定你想让哪一层发生变化。" "之前我们 RSI 对于代码、工具和流程上的修改偏弱，大部分时间都没有做代码上的提升，因此很难获得更高的得分。"
 >
-> 状态：待用户审。审定之前不改代码、不付费。已定的前提：actor 与 R 经 claude_code CLI 走订阅；各臂统一 effort（medium）；对外数字只来自封存 final；训练与蒸馏属于框架，在 `ouroloop/train/`；框架不为某个基准定制。
+> 状态：待用户审。审定之前不改代码、不付费。已定的前提：actor 与 R 经 claude_code CLI 走订阅；各臂统一 effort（medium）；对外数字只来自封存 final；训练与蒸馏属于框架，在 `reharness/train/`；框架不为某个基准定制。
 
 ## 0 结论
 
@@ -127,7 +127,7 @@ S = (W, R, E; K) 不变：W 是 harness 包，R 是改进器，E 是宿主写的
 ### 3.2 包、种子与候选
 
 - **包**是不可变对象：每个文件一个对象，manifest 列出各类型的条目，整包一个 ref。
-- **种子**（W0）由 K 点名，从 `ouroloop/harness/seeds/<name>/` 构建：上游源码（vendor）+ 适配层 + 补丁栈 + 种子 hook（只放通用的写入守卫：分诊计划、提交前核对、日期锚）。具体工具不放进种子，留给 R 编译，让“RSI 的增益”与“人写架构的增益”按构造分开。
+- **种子**（W0）由 K 点名，从 `reharness/harness/seeds/<name>/` 构建：上游源码（vendor）+ 适配层 + 补丁栈 + 种子 hook（只放通用的写入守卫：分诊计划、提交前核对、日期锚）。具体工具不放进种子，留给 R 编译，让“RSI 的增益”与“人写架构的增益”按构造分开。
 - **候选** = 对父包的一组类型化改动，带声明 `{cause_id, kind, site, predicted_affected, trigger, differs_from?}`。固定代码对照 diff 核对声明。字面量检查只扫相对种子改动的行。
 - **身份**：包 ref 覆盖全部字节；改 vendor 一行也是新 W。
 
@@ -599,7 +599,7 @@ finance-v6 到 v12 八个活动约 $1,150，工作线一次都没装入，W\* = 
 
 ## 7 训练在同一回路
 
-- `model` 是 W 的组件：manifest 的 `model` 项记身份、推理配置与训练产物 ref。训练链（`ouroloop/train/`，按 V2_TRAINING_PIPELINE）从宿主写的 act 调用建数据，训出产物 ref；一个候选 W 把它绑进 `model` 项，从 V3 起走同一条阶梯（V0～V2 换成数据检查与链路收据）。
+- `model` 是 W 的组件：manifest 的 `model` 项记身份、推理配置与训练产物 ref。训练链（`reharness/train/`，按 V2_TRAINING_PIPELINE）从宿主写的 act 调用建数据，训出产物 ref；一个候选 W 把它绑进 `model` 项，从 V3 起走同一条阶梯（V0～V2 换成数据检查与链路收据）。
 - 顺序不变：演化 → 冻结 release → 在该 release 上采集/训练 → 换学生 → 在学生上重新演化。
 - 什么时候训：按 §6.4 的停滞规则，或用户指定；训练与 harness 改动不在同一轮同时进 gate（SIA 指出的“两个优化器互相过拟合固定验证器”）。
 - 决策模型（写门等）是同一机制的另一个插件；首个挂点仍是 broker 边界的 `write_gate`。本文不改 V2 的任何决定。
@@ -619,7 +619,7 @@ finance-v6 到 v12 八个活动约 $1,150，工作线一次都没装入，W\* = 
 ## 9 代码布局与现有代码的对应
 
 ```
-ouroloop/
+reharness/
   harness/      包模型、组件类型、种子构建、vendor 与补丁栈、字面量检查      ← agent/harness_package.py、v6-agent 分支
     seeds/stirrup/   适配层、写入守卫、plan_changes、补丁栈、PROVENANCE      ← v6 的 seed_v6
   runtime/      网关、broker、worker 与运行器、egress、导出的 App            ← agent/{gateway,worker,worker_runner,runner}.py、app.py、v6-gateway

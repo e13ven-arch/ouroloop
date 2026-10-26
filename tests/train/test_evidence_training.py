@@ -10,14 +10,14 @@ import rsi
 from stop_fixtures import play, stop_runtime
 from train_fixtures import PhraseTrainer, UnknownJobTrainer
 
-from ouroloop.activity.phases import run_arm
-from ouroloop.evaluate.budget import Budgets, Execution
-from ouroloop.runtime.runner import compose_system
-from ouroloop.train import records
-from ouroloop.train.dataset import build_task_dataset, check_lineage
-from ouroloop.train.feedback import COMPLETION_SNAPSHOT, build_feedback
-from ouroloop.train.train import train_artifact
-from ouroloop.train.views import business_stop_point
+from reharness.activity.phases import run_arm
+from reharness.evaluate.budget import Budgets, Execution
+from reharness.runtime.runner import compose_system
+from reharness.train import records
+from reharness.train.dataset import build_task_dataset, check_lineage
+from reharness.train.feedback import COMPLETION_SNAPSHOT, build_feedback
+from reharness.train.train import train_artifact
+from reharness.train.views import business_stop_point
 
 
 def gather(root, upstream, *, tasks=None, repeats=1, provider=None, probe=True):
@@ -214,7 +214,7 @@ def test_dt08_an_unreadable_remote_job_is_queried_not_resubmitted(tmp_path, fake
 
 # ---------------------------------------------------------------------------- DT-07
 def test_dt07_a_scorer_that_raises_produces_unknown_and_never_a_no(tmp_path, fake_upstream, monkeypatch):
-    from ouroloop.adapters import automationbench as ab
+    from reharness.adapters import automationbench as ab
 
     def broken(self, world=None):
         raise RuntimeError("the rubric could not read this state")

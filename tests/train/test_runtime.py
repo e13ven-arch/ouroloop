@@ -1,13 +1,13 @@
-"""The decision runtime (ouroloop/train/runtime.py): `record` writes the shadow row the v1 runtime wrote (compared
+"""The decision runtime (reharness/train/runtime.py): `record` writes the shadow row the v1 runtime wrote (compared
 row for row with it in P1 step 4, before that runtime went in step 5), from the phase's default answerer or a rule's
 veto, and asks no model; a broken view or rule leaves a row and the fixed default."""
 from dataclasses import replace
 
 import pytest
 
-from ouroloop.train.backends import KeywordBackend
-from ouroloop.train.decision import Noul
-from ouroloop.train.runtime import Runtime
+from reharness.train.backends import KeywordBackend
+from reharness.train.decision import Noul
+from reharness.train.runtime import Runtime
 
 
 def says_yes(ctx) -> str:

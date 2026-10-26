@@ -9,14 +9,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from ouroloop.contracts import LimitHit, StaleWorker
-from ouroloop.evaluate.attempt import Budgeted
-from ouroloop.evaluate.budget import Pricing
-from ouroloop.evaluate.limits import Budget
-from ouroloop.memory.retrieval import TaskMemory
-from ouroloop.runtime.records import TERMINATIONS, digest16
-from ouroloop.runtime.runner import SKILL_INDEX, EgressMeter, compose_system
-from ouroloop.runtime.worker import RUNNER, ProcessWorker
+from reharness.contracts import LimitHit, StaleWorker
+from reharness.evaluate.attempt import Budgeted
+from reharness.evaluate.budget import Pricing
+from reharness.evaluate.limits import Budget
+from reharness.memory.retrieval import TaskMemory
+from reharness.runtime.records import TERMINATIONS, digest16
+from reharness.runtime.runner import SKILL_INDEX, EgressMeter, compose_system
+from reharness.runtime.worker import RUNNER, ProcessWorker
 from runtime_world import (ATTEMPT, EffortAware, Script, World, attempt, core, finish, kinds, minimal, of, seed, turn,
                            variant)
 
@@ -238,7 +238,7 @@ class FakeEgress:
     def __init__(self, polls, final=()):
         self.polls, self.final = list(polls), list(final)
         self.token_id, self.used, self.caps, self.closed = "abc123def456", 0, [], False
-        self.network, self.env = "ouroloop-egress-test", {"HTTP_PROXY": "http://attempt:t@egress:3128"}
+        self.network, self.env = "reharness-egress-test", {"HTTP_PROXY": "http://attempt:t@egress:3128"}
 
     def poll(self, *, max_requests=None):
         self.caps.append(max_requests)

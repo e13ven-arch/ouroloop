@@ -5,9 +5,9 @@ from dataclasses import asdict
 
 import pytest
 
-from ouroloop.evaluate.limits import Budget
-from ouroloop.evaluate.results import (Results, RunManifest, TaskResult, attempt_id, pair_key, summarise)
-from ouroloop.evaluate.splits import Frozen, SplitManifest, TaskEntry, assign_splits, stratified_splits
+from reharness.evaluate.limits import Budget
+from reharness.evaluate.results import (Results, RunManifest, TaskResult, attempt_id, pair_key, summarise)
+from reharness.evaluate.splits import Frozen, SplitManifest, TaskEntry, assign_splits, stratified_splits
 
 RATIOS = {"train": 0.5, "dev": 0.25, "test": 0.25}
 
@@ -115,7 +115,7 @@ class TestStratified:
     def test_both_rules_still_give_the_assignment_frozen_splits_were_made_with(self):
         """A pinned split ([bench] frozen_splits) must be reproduced by later code, so the assignment of a fixed input
         under a fixed seed may not move: these digests were taken from the rules as they stood at stage 1."""
-        from ouroloop.evaluate.splits import digest
+        from reharness.evaluate.splits import digest
         strata = {f"f{i}": f"s{i % 3}" for i in range(30)}
         assert digest(stratified_splits(strata, RATIOS, seed=1))[:16] == "590534a695735928"
         assert digest(assign_splits(list(strata), RATIOS, seed=1))[:16] == "d9a1a274f38a93dd"
@@ -289,7 +289,7 @@ class TestRunIdentity:
                "environment": {"upstream": "c"}, "budget": {"max_steps": 10, "max_tool_calls": 20,
                                                             "max_seconds": 30.0, "max_usd": None},
                "data": "d", "repeats": 1}
-        from ouroloop.evaluate.splits import digest
+        from reharness.evaluate.splits import digest
         run = RunManifest.from_json(old)
         assert run.hash() == digest(old)[:16]          # the bytes it was recorded under
         assert RunManifest.from_json(json.loads(json.dumps(run.to_json()))).hash() == run.hash()

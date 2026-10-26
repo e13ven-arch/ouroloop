@@ -39,9 +39,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent.parent))
 
-from ouroloop.evaluate.gate import GatePlan, TaskEvalPlan, judge  # noqa: E402
-from ouroloop.evaluate.results import Results, TaskResult, pair_key  # noqa: E402
-from ouroloop.evaluate.splits import SplitManifest  # noqa: E402
+from reharness.evaluate.gate import GatePlan, TaskEvalPlan, judge  # noqa: E402
+from reharness.evaluate.results import Results, TaskResult, pair_key  # noqa: E402
+from reharness.evaluate.splits import SplitManifest  # noqa: E402
 
 DOMAIN = "marketing"
 WORKSPACES = (HERE / "workspace-claude", HERE / "workspace-claude-full", HERE / "workspace-claude-full-final")

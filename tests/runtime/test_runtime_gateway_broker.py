@@ -6,16 +6,16 @@ import time
 
 import pytest
 
-from ouroloop.contracts import LimitHit
-from ouroloop.evaluate.attempt import Budgeted
-from ouroloop.evaluate.budget import Budgets, MeteredProvider, Pricing
-from ouroloop.evaluate.limits import Budget
-from ouroloop.harness import contract as hc
-from ouroloop.runtime.broker import (AttemptBroker, HostContext, Marks, MemoryRecall, ModelCallError, SkillReader,
+from reharness.contracts import LimitHit
+from reharness.evaluate.attempt import Budgeted
+from reharness.evaluate.budget import Budgets, MeteredProvider, Pricing
+from reharness.evaluate.limits import Budget
+from reharness.harness import contract as hc
+from reharness.runtime.broker import (AttemptBroker, HostContext, Marks, MemoryRecall, ModelCallError, SkillReader,
                                      denied)
-from ouroloop.runtime.chat import ToolSpec
-from ouroloop.runtime.gateway import Gateway, cap_effort, malformed, normalize_usage
-from ouroloop.runtime.records import EVENT_CHARS, Transcript, digest16, read
+from reharness.runtime.chat import ToolSpec
+from reharness.runtime.gateway import Gateway, cap_effort, malformed, normalize_usage
+from reharness.runtime.records import EVENT_CHARS, Transcript, digest16, read
 from runtime_world import EffortAware, Script, World, of, seed, turn, variant
 
 LIMITS = {"max_steps": 4, "max_model_calls": 6, "max_tool_calls": 3, "max_seconds": 60, "max_tokens": 1000}

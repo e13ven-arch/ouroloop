@@ -16,10 +16,10 @@ import pytest
 import rsi
 from fake_memory import ReMeResearch
 from memory_support import venv  # noqa: F401
-from ouroloop.activity import phases
-from ouroloop.harness.kinds import MEMORY_PATH
-from ouroloop.harness.package import load as load_package
-from ouroloop.memory.client import parse_jsonl
+from reharness.activity import phases
+from reharness.harness.kinds import MEMORY_PATH
+from reharness.harness.package import load as load_package
+from reharness.memory.client import parse_jsonl
 
 MEMORY = {"enabled": True, "min_score": 0.62, "min_other_tasks": 2}
 
@@ -42,7 +42,7 @@ def spent(activity, phase: str) -> dict:
 @pytest.mark.slow
 def test_the_library_phase_on_the_real_sidecar_makes_a_snapshot_candidate_and_pays_once(venv, tmp_path, fake_upstream,
                                                                                           monkeypatch):
-    monkeypatch.setenv("OUROLOOP_MEMORY_VENV", str(venv))
+    monkeypatch.setenv("REHARNESS_MEMORY_VENV", str(venv))
     worker, research = rsi.BusinessWorker(forget_notify=True), ReMeResearch()
     a = open_rsi(tmp_path, fake_upstream, worker, research)
     try:

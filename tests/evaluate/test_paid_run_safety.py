@@ -13,19 +13,19 @@ from types import SimpleNamespace
 import pytest
 import rsi
 
-from ouroloop.activity import cli, phases
-from ouroloop.activity.config import ConfigError
-from ouroloop.activity.workspace import open_activity
-from ouroloop.contracts import BudgetExhausted, BudgetMismatch, ContractError, read_jsonl
-from ouroloop.evaluate import attempt as attempt_mod
-from ouroloop.evaluate.attempt import make_agent_factory, run_tasks
-from ouroloop.evaluate.budget import Budgets, MeteredProvider, Pricing, normalize_usage
-from ouroloop.evaluate.final import FinalPlan, final_estimate, share_problem, state_path
-from ouroloop.evaluate.gate import GatePlan
-from ouroloop.evaluate.release import GateReceipt, Release
-from ouroloop.harness import package as pk
-from ouroloop.providers import ProviderAccountError, ProviderError
-from ouroloop.runtime.worker import ProcessWorker
+from reharness.activity import cli, phases
+from reharness.activity.config import ConfigError
+from reharness.activity.workspace import open_activity
+from reharness.contracts import BudgetExhausted, BudgetMismatch, ContractError, read_jsonl
+from reharness.evaluate import attempt as attempt_mod
+from reharness.evaluate.attempt import make_agent_factory, run_tasks
+from reharness.evaluate.budget import Budgets, MeteredProvider, Pricing, normalize_usage
+from reharness.evaluate.final import FinalPlan, final_estimate, share_problem, state_path
+from reharness.evaluate.gate import GatePlan
+from reharness.evaluate.release import GateReceipt, Release
+from reharness.harness import package as pk
+from reharness.providers import ProviderAccountError, ProviderError
+from reharness.runtime.worker import ProcessWorker
 
 # One call's reservation under rsi.PRICING: 20000 input tokens at the dearest input-side rate (a cache write) and 5000
 # output tokens.
@@ -695,7 +695,7 @@ def test_a_metered_call_is_retried_only_when_worth_it(tmp_path, monkeypatch):
 def test_checks_only_on_a_paid_phase_is_refused_before_anything_runs(phase, tmp_path, monkeypatch, capsys):
     """`--checks-only` is the smoke's; a paid phase would ignore it and run for real, so it is refused before the
     config is even read: nothing is opened, nothing paid."""
-    from ouroloop.activity import workspace
+    from reharness.activity import workspace
     opened = []
     monkeypatch.setattr(workspace, "open_activity", lambda *a, **k: opened.append(1))
     code = cli.main(["bench", "--config", str(tmp_path / "missing.toml"), "--phase", phase, "--checks-only"])

@@ -1,4 +1,4 @@
-# ouroloop
+# reharness
 
 English | [中文](README.zh-CN.md)
 
@@ -55,18 +55,18 @@ Python 3.11 or newer, macOS or Linux (on Windows, WSL).
 
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
-pip install -e ".[dev,automationbench]"        # add ,train,train-jobs for the training stack; installs the `ouroloop` command
+pip install -e ".[dev,automationbench]"        # add ,train,train-jobs for the training stack; installs the `reharness` command
 pytest -q                                      # offline: no network, no model; live and slow tests excluded
-OUROLOOP_TEST_REQUIRE_DOCKER=1 OUROLOOP_TEST_REQUIRE_MEMORY=1 pytest -q -m "not live"   # the full run: Docker worker, upstream checkout, memory sidecar
+REHARNESS_TEST_REQUIRE_DOCKER=1 REHARNESS_TEST_REQUIRE_MEMORY=1 pytest -q -m "not live"   # the full run: Docker worker, upstream checkout, memory sidecar
 ```
 
 The first activity to run is the repetitive stream on a few train tasks, [examples/automationbench/quickstart-repeat.toml](examples/automationbench/quickstart-repeat.toml): a new workspace, nothing frozen yet, no test task read. It needs the benchmark checkout and the worker image (next section). The first two commands call no model:
 
 ```bash
-ouroloop bench --config examples/automationbench/quickstart-repeat.toml --phase smoke --checks-only   # $0: splits, scorer contract, input audit, the seed's literals
-ouroloop freeze --config examples/automationbench/quickstart-repeat.toml                              # $0: K, the budget root, the sealed repeat plan; prints the [rsi] lines to add
-ouroloop bench --config examples/automationbench/quickstart-repeat.toml --phase repeat --arm learn    # 5 train tasks x 3 encounters, R's session on each sent-back one: ~$15-25 nominal
-ouroloop bench --config examples/automationbench/quickstart-repeat.toml --phase report                # $0
+reharness bench --config examples/automationbench/quickstart-repeat.toml --phase smoke --checks-only   # $0: splits, scorer contract, input audit, the seed's literals
+reharness freeze --config examples/automationbench/quickstart-repeat.toml                              # $0: K, the budget root, the sealed repeat plan; prints the [rsi] lines to add
+reharness bench --config examples/automationbench/quickstart-repeat.toml --phase repeat --arm learn    # 5 train tasks x 3 encounters, R's session on each sent-back one: ~$15-25 nominal
+reharness bench --config examples/automationbench/quickstart-repeat.toml --phase report                # $0
 ```
 
 [quickstart.toml](examples/automationbench/quickstart.toml) is the older entry point: the batch activity with the memory library and the improver's rounds under the held-out screen.
@@ -75,28 +75,28 @@ ouroloop bench --config examples/automationbench/quickstart-repeat.toml --phase 
 
 AutomationBench simulates business workflows across 47 SaaS tools and scores the world state the agent's tools leave behind. The agent receives the task prompt and the tool schemas; the assertions and the seeded state stay in an object it never receives.
 
-ouroloop imports the benchmark lazily. Clone it and point `[bench] upstream_path` at the checkout; [examples/automationbench/README.md](examples/automationbench/README.md) lists what to install. A local score on the public task set is not a leaderboard score.
+reharness imports the benchmark lazily. Clone it and point `[bench] upstream_path` at the checkout; [examples/automationbench/README.md](examples/automationbench/README.md) lists what to install. A local score on the public task set is not a leaderboard score.
 
 **Model.** The actor (`[model]`) and R (`[research_model]`) use `type = "claude_code"`: each call is a fresh headless `claude -p` on this machine's Claude subscription login (`claude auth login`), in an empty directory, with no tools and no local customization; tool calls come back as structured JSON. The startup check refuses a login that is not a subscription and a table without `effort`. The measured configs pin `claude-opus-5-5`; the preset caps the effort at medium, and `automationbench_v2_max` lifts both arms to max for the experiment above. The `openai_compat` and `anthropic` providers also exist; no reported result uses them.
 
 **Package code** runs only in the isolated worker image, pinned by id in an activity's K:
 
 ```bash
-docker build --provenance=false -f docker/worker.Dockerfile -t ouroloop-worker:py3.12 .
+docker build --provenance=false -f docker/worker.Dockerfile -t reharness-worker:py3.12 .
 ```
 
 **Commands.** An activity runs in phases; you stop after each one and read it. Every paid phase is resumable and pays for nothing on record twice; every one stops at the activity's budget root.
 
 | Command | What it does |
 |---|---|
-| `ouroloop bench --config <cfg> --phase smoke --checks-only` | upstream identity, the frozen split, scorer contract, input audit, the seed's literal scan; no model call |
-| `ouroloop bench --config <cfg> --phase smoke` | the same checks, then one attempt end to end |
-| `ouroloop freeze --config <cfg>` | K, the budget root, the gate template, and the sealed plans (`[final]`, `[repeat]`); prints the `[rsi]` lines to add |
-| `ouroloop bench --config <cfg> --phase repeat --arm learn\|control [--until task-K]` | the repetitive stream: every task of the sealed plan met `encounters` times; the learn arm adopts a package per sent-back task, the control arm runs the base every time |
-| `ouroloop bench --config <cfg> --phase baseline` / `--phase round --round K` / `--phase stream` | the held-out screen loop: W0's readings, one improver round, or the streaming loop |
-| `ouroloop bench --config <cfg> --phase gate` / `--phase release` / `--phase evaluate` | the release gate, the release by decision, the sealed final on the test split |
-| `ouroloop bench --config <cfg> --phase report` | the report from the records on disk; no model call |
-| `ouroloop export --config <cfg> --to exported-app` | an installed release as an app |
+| `reharness bench --config <cfg> --phase smoke --checks-only` | upstream identity, the frozen split, scorer contract, input audit, the seed's literal scan; no model call |
+| `reharness bench --config <cfg> --phase smoke` | the same checks, then one attempt end to end |
+| `reharness freeze --config <cfg>` | K, the budget root, the gate template, and the sealed plans (`[final]`, `[repeat]`); prints the `[rsi]` lines to add |
+| `reharness bench --config <cfg> --phase repeat --arm learn\|control [--until task-K]` | the repetitive stream: every task of the sealed plan met `encounters` times; the learn arm adopts a package per sent-back task, the control arm runs the base every time |
+| `reharness bench --config <cfg> --phase baseline` / `--phase round --round K` / `--phase stream` | the held-out screen loop: W0's readings, one improver round, or the streaming loop |
+| `reharness bench --config <cfg> --phase gate` / `--phase release` / `--phase evaluate` | the release gate, the release by decision, the sealed final on the test split |
+| `reharness bench --config <cfg> --phase report` | the report from the records on disk; no model call |
+| `reharness export --config <cfg> --to exported-app` | an installed release as an app |
 
 **Configs.** A config names a preset (`[harness] preset`) and may only tighten it; the tables are listed in [docs/design/CONTRACTS.md](docs/design/CONTRACTS.md) §9 and the `[repeat]` table in [docs/design/EVALUATE.md](docs/design/EVALUATE.md) §6b. `finance-v14.toml` to `finance-v25.toml` are the measured activities of stages 4o–4p, each header listing its steps, costs and what it was for; `finance-v5.toml` to `finance-v13.toml` the held-out screen loop. Their workspaces hold local, git-ignored run records.
 
@@ -106,16 +106,16 @@ For another domain, copy a quickstart. Change `[bench] domain`, give the copy a 
 
 | Path | What it holds |
 |---|---|
-| `ouroloop/contracts.py` | identity and the content-addressed object store, events, the file helpers, the error classes |
-| `ouroloop/harness/` | the harness package: component kinds, manifest v3, shape and literal checks, the vendored-upstream patch stack, the seeds (`seeds/stirrup/`: Stirrup 0.2.0, its adapter, the write guard, `plan_changes`) |
-| `ouroloop/runtime/` | one attempt: the gateway, the broker, the worker and its runner protocol, egress, the runner shell, the trace |
-| `ouroloop/evaluate/` | splits, hard limits, attempts and results, the paired gate, the sealed final, the sealed repeat plan (`repeat.py`), the budget book and metering, releases |
-| `ouroloop/improver/` | R's session and prompts (`prompts/repeat.md` for the per-task loop, `propose.md` for rounds), the per-task loop and its library (`repeat.py`), the verification ladder (`verify/`), the held-out screen, the trial, the frontier, the ledger |
-| `ouroloop/memory/` | the memory component: the ReMe sidecar, its bridge and rules, retrieval, snapshots |
-| `ouroloop/activity/` | config and presets to K, the workspace, the phases, the startup checks, the report, the `ouroloop` CLI |
-| `ouroloop/adapters/automationbench.py` | tasks, business tools, the official scorer, the rejected-items and world-sources views (imports nothing of the framework) |
-| `ouroloop/providers/` | `claude_code`, `openai_compat`, `anthropic` |
-| `ouroloop/train/` (extra `[train]`) | the training and decision stack, off the benchmark path |
+| `reharness/contracts.py` | identity and the content-addressed object store, events, the file helpers, the error classes |
+| `reharness/harness/` | the harness package: component kinds, manifest v3, shape and literal checks, the vendored-upstream patch stack, the seeds (`seeds/stirrup/`: Stirrup 0.2.0, its adapter, the write guard, `plan_changes`) |
+| `reharness/runtime/` | one attempt: the gateway, the broker, the worker and its runner protocol, egress, the runner shell, the trace |
+| `reharness/evaluate/` | splits, hard limits, attempts and results, the paired gate, the sealed final, the sealed repeat plan (`repeat.py`), the budget book and metering, releases |
+| `reharness/improver/` | R's session and prompts (`prompts/repeat.md` for the per-task loop, `propose.md` for rounds), the per-task loop and its library (`repeat.py`), the verification ladder (`verify/`), the held-out screen, the trial, the frontier, the ledger |
+| `reharness/memory/` | the memory component: the ReMe sidecar, its bridge and rules, retrieval, snapshots |
+| `reharness/activity/` | config and presets to K, the workspace, the phases, the startup checks, the report, the `reharness` CLI |
+| `reharness/adapters/automationbench.py` | tasks, business tools, the official scorer, the rejected-items and world-sources views (imports nothing of the framework) |
+| `reharness/providers/` | `claude_code`, `openai_compat`, `anthropic` |
+| `reharness/train/` (extra `[train]`) | the training and decision stack, off the benchmark path |
 
 ## Documents
 
@@ -130,4 +130,4 @@ Files removed in the cleanups of 2026-10-08 and 2026-10-09 are readable at tags 
 
 ## License
 
-MIT, see [LICENSE](LICENSE). The Stirrup seed is vendored under its own license in `ouroloop/harness/seeds/stirrup/vendor/stirrup/LICENSE`.
+MIT, see [LICENSE](LICENSE). The Stirrup seed is vendored under its own license in `reharness/harness/seeds/stirrup/vendor/stirrup/LICENSE`.

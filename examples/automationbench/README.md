@@ -1,17 +1,17 @@
 # AutomationBench runs
 
 The upstream benchmark ([zapier/AutomationBench](https://github.com/zapier/AutomationBench)) is a separate
-runtime. ouroloop imports it lazily, so nothing here changes ouroloop's own dependencies; the adapter is
-`ouroloop/adapters/automationbench.py` (it imports nothing of the framework) and the phases are
-`ouroloop/activity/phases.py` (docs/design/ACTIVITY.md).
+runtime. reharness imports it lazily, so nothing here changes reharness's own dependencies; the adapter is
+`reharness/adapters/automationbench.py` (it imports nothing of the framework) and the phases are
+`reharness/activity/phases.py` (docs/design/ACTIVITY.md).
 
 ## What to install
 
-Clone the benchmark and point `[bench] upstream_path` (or `OUROLOOP_AUTOMATIONBENCH`) at the checkout. Upstream
+Clone the benchmark and point `[bench] upstream_path` (or `REHARNESS_AUTOMATIONBENCH`) at the checkout. Upstream
 declares `requires-python >= 3.13`; the pieces this adapter uses are plain pydantic code and import on 3.12 too,
-which is what `ouroloop bench` reports so a mismatch is visible rather than assumed.
+which is what `reharness bench` reports so a mismatch is visible rather than assumed.
 
-Into the environment ouroloop runs in:
+Into the environment reharness runs in:
 
 | Package | Needed for |
 | --- | --- |
@@ -24,22 +24,22 @@ The worker image runs the package's agent (the stirrup seed: Stirrup 0.2.0 vendo
 Stirrup's own dependencies, pinned by hash in `docker/worker.requirements.txt`:
 
 ```bash
-docker build --provenance=false -f docker/worker.Dockerfile -t ouroloop-worker:py3.12 .
+docker build --provenance=false -f docker/worker.Dockerfile -t reharness-worker:py3.12 .
 ```
 
 The memory (`[memory] enabled = true`, the `library` phase) runs ReMe 0.3.1.10 in a sidecar with its own venv, built
-from the hashed lock `ouroloop/memory/sidecar/requirements-macos-arm64.lock` (161 wheels) together with the pinned
+from the hashed lock `reharness/memory/sidecar/requirements-macos-arm64.lock` (161 wheels) together with the pinned
 bge-small model; the startup checks refuse a venv that is not the lock (docs/design/MEMORY.md):
 
 ```bash
-python -m ouroloop.memory setup
+python -m reharness.memory setup
 ```
 
 ## A config
 
 A config names the preset it tightens (`[harness] preset = "automationbench_v2"`, or `automationbench_v1` with the
 library on by default); every other table may only
-lower a cap, raise a floor or narrow a set (`ouroloop/activity/presets.py`, the RULES table). The tables are
+lower a cap, raise a floor or narrow a set (`reharness/activity/presets.py`, the RULES table). The tables are
 `[workspace]`, `[bench]`, `[limits]`, `[model]`, `[research_model]`, `[pricing]`, `[harness]`, `[worker]`, `[memory]`,
 `[improver]`, `[gate]`, `[schedule]`, `[budget]`, `[final]` and `[rsi]` (docs/design/CONTRACTS.md §9). The configs of
 the activities before stage 1 used other tables; they run at their tags (`v0.4.0`, `archive-2026-10-08`) and were
@@ -53,17 +53,17 @@ removed from here.
 ## The phases
 
 ```bash
-ouroloop bench --config C --phase smoke --checks-only   # upstream, frozen split, scorer contract, input audit, the seed's literals: $0
-ouroloop bench --config C --phase smoke                 # one dev attempt end to end through the runner shell
-ouroloop freeze --config C                              # K, the gate template, the budget root (and a final plan); prints [rsi]
-ouroloop bench --config C --phase cycle --until baseline   # W0 on train and on dev control_readings times
-ouroloop bench --config C --phase cycle --until library    # the memory's train stream; its snapshot as a candidate
-ouroloop bench --config C --phase cycle --until round-0    # one improver round (then round-1, round-2: stop after each)
-ouroloop bench --config C --phase gate                   # the release gate: the working line against W0 on dev, once
-ouroloop bench --config C --phase stream --until batch-K # the streaming loop: first encounters, a round every batch
-ouroloop bench --config C --phase release                # no dev in the split: release the working line by decision
-ouroloop bench --config C --phase report                # the report from what is on disk; no model is called
-ouroloop export --config C --to DIR                     # the released W* as an app
+reharness bench --config C --phase smoke --checks-only   # upstream, frozen split, scorer contract, input audit, the seed's literals: $0
+reharness bench --config C --phase smoke                 # one dev attempt end to end through the runner shell
+reharness freeze --config C                              # K, the gate template, the budget root (and a final plan); prints [rsi]
+reharness bench --config C --phase cycle --until baseline   # W0 on train and on dev control_readings times
+reharness bench --config C --phase cycle --until library    # the memory's train stream; its snapshot as a candidate
+reharness bench --config C --phase cycle --until round-0    # one improver round (then round-1, round-2: stop after each)
+reharness bench --config C --phase gate                   # the release gate: the working line against W0 on dev, once
+reharness bench --config C --phase stream --until batch-K # the streaming loop: first encounters, a round every batch
+reharness bench --config C --phase release                # no dev in the split: release the working line by decision
+reharness bench --config C --phase report                # the report from what is on disk; no model is called
+reharness export --config C --to DIR                     # the released W* as an app
 ```
 
 `smoke --checks-only` calls no model and writes nothing but the frozen split. Every other phase opens the activity:
@@ -124,7 +124,7 @@ leaderboard runs a private task set. The outside numbers come only from a sealed
 
 `aa_replay.py` replays the gate rule (pooled control, confirmation reading, regression as a drop of 0.5, min_gain
 0.05) over the readings of the same W0 kept in three v0.1/v0.2 workspaces — every directional pair judged through the
-production `ouroloop.evaluate.gate.judge` with the rest pooled as the control, the v0.1/v0.2 rule beside it. No model
+production `reharness.evaluate.gate.judge` with the rest pooled as the control, the v0.1/v0.2 rule beside it. No model
 is called. The rule accepts 0/20 dev pairs and 0/12 test pairs; the v0.1/v0.2 rule accepted 4/20.
 
 ## The ceiling experiment (v0.3 step 4)

@@ -9,10 +9,10 @@ from pathlib import Path
 
 import pytest
 
-from ouroloop.contracts import Objects
-from ouroloop.harness import contract as hc
-from ouroloop.harness import seed as sd
-from ouroloop.harness import vendor as vd
+from reharness.contracts import Objects
+from reharness.harness import contract as hc
+from reharness.harness import seed as sd
+from reharness.harness import vendor as vd
 
 CORE = {"model": {"identity": "claude-opus-5-5", "effort": "medium", "max_effort": "medium"},
         "memory": {"enabled": False}}

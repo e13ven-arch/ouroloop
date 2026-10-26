@@ -9,10 +9,10 @@ from pathlib import Path
 import httpx
 import pytest
 
-from ouroloop.train.dataset import DatasetBuild
-from ouroloop.train.jobs.compute import SEP
-from ouroloop.train.train import DEFAULT_RECIPE, TrainJob
-from ouroloop.evaluate.release import code_version
+from reharness.train.dataset import DatasetBuild
+from reharness.train.jobs.compute import SEP
+from reharness.train.train import DEFAULT_RECIPE, TrainJob
+from reharness.evaluate.release import code_version
 
 # huggingface_hub, stood in for: repositories and commits under $FAKE_HF; a job's Python imports it from PYTHONPATH.
 FAKE_HF = """
@@ -59,7 +59,7 @@ def keys(monkeypatch, tmp_path):
     monkeypatch.setenv("HF_TOKEN", HF_TOKEN)
     key = tmp_path / "sshkey"
     key.write_text("PRIVATE")
-    (tmp_path / "sshkey.pub").write_text("ssh-ed25519 AAAAtest ouroloop@test\n")
+    (tmp_path / "sshkey.pub").write_text("ssh-ed25519 AAAAtest reharness@test\n")
     return str(key)
 
 
@@ -173,7 +173,7 @@ class VastApi(Api):
 
 class Ssh:
     """ssh and rsync to a new instance whose home is /root. The first probe fails (sshd still starting). host.json is
-    this ouroloop's (the worker image) unless `image` is "plain": then only after bootstrap.sh ran. `job` says how the
+    this reharness's (the worker image) unless `image` is "plain": then only after bootstrap.sh ran. `job` says how the
     job goes: "ok", "fail" (exit 1), "hang" (never exits), "interrupt" (^C while it is polled)."""
 
     def __init__(self, job="ok", image="worker"):
@@ -181,7 +181,7 @@ class Ssh:
         self.probes, self.bootstrapped, self.id = 0, False, None
 
     def manifest(self):
-        return {"ouroloop": {"code": code_version()}, "plugins": {"signature": {"source": None}},
+        return {"reharness": {"code": code_version()}, "plugins": {"signature": {"source": None}},
                 "stores": {"hf": {"hub": True, "token": True}}}
 
     def __call__(self, args, input=None, timeout=None):
@@ -193,11 +193,11 @@ class Ssh:
                 self.pushed[local.name] = local.read_text()
             return subprocess.CompletedProcess(args, 0, "", "")
         command = args[-1]
-        if command == 'test -f "$HOME"/.ouroloop/started':      # start.sh is done
+        if command == 'test -f "$HOME"/.reharness/started':      # start.sh is done
             self.probes += 1
             if self.probes == 1:
                 raise subprocess.CalledProcessError(255, args, stderr="ssh: connect to host: Connection refused")
-        elif "/.ouroloop/host.json" in command:
+        elif "/.reharness/host.json" in command:
             out = json.dumps(self.manifest()) if self.image == "worker" or self.bootstrapped else ""
         elif "bootstrap.sh" in command:
             self.bootstrapped = True
@@ -233,7 +233,7 @@ def a_job(root, version="m_0001") -> TrainJob:
 
 def options(provider, key, **kw):
     gpu = GPU_RP if provider == "runpod" else GPU_VAST
-    return {"provider": provider, "image": "ghcr.io/org/ouroloop-worker:1", "gpu": gpu, "max_price": 1.0,
+    return {"provider": provider, "image": "ghcr.io/org/reharness-worker:1", "gpu": gpu, "max_price": 1.0,
             "ssh_key": key, "boot_poll_s": 10, **kw}
 
 

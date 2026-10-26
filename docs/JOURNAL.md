@@ -4,7 +4,15 @@
 
 证据只写量到过的：贪吃蛇（当时的 `examples/snake`）在一台 GPU 主机上的几次多代运行（下称 run4、run5、run6）、离线运行、决策集上的统计，以及先写失败测试再修的评审。没有证据的改动照实说"没有运行证据"。
 
-哪些数字能复算，哪些不能：决策集上的统计在 tag `archive-2026-10-08` 上从 `evals/replay_campaign/` 重算（`evals/` 与 `ouroloop replay` 随 2026-10-08 瘦身第一批移出 HEAD；被 git 忽略的三个文件留在主检出原处）；M6 的真实验收从 `examples/workspace-m6/ledger/` 重算。**贪吃蛇场景包与多代演示循环已于 2026-09-27 删除**（见当日第二条记录），因此所有贪吃蛇数字——离线演示与 run4～run6——现在都无法从本仓库复算；它们留在下面的历史条目里，作为当时改动的依据，不作为可复现结果。run4、run5、run6 本来也跑在一台未发布工作区的 GPU 主机上。
+哪些数字能复算，哪些不能：决策集上的统计在 tag `archive-2026-10-08` 上从 `evals/replay_campaign/` 重算（`evals/` 与 `reharness replay` 随 2026-10-08 瘦身第一批移出 HEAD；被 git 忽略的三个文件留在主检出原处）；M6 的真实验收从 `examples/workspace-m6/ledger/` 重算。**贪吃蛇场景包与多代演示循环已于 2026-09-27 删除**（见当日第二条记录），因此所有贪吃蛇数字——离线演示与 run4～run6——现在都无法从本仓库复算；它们留在下面的历史条目里，作为当时改动的依据，不作为可复现结果。run4、run5、run6 本来也跑在一台未发布工作区的 GPU 主机上。
+
+---
+
+## 2026-10-26 开源打包与改名：ouroloop → reharness；$0
+
+**打包（用户："包装一下，准备开源"）。** README（英 / 中）重写到 v2.1 的状态：重复流为主线、两张结果表（重复流 v16～v25；四次封存 final）、"现在在哪"讲整体效果、快速上手改为 `quickstart-repeat.toml`（新建：5 道 train 题的重复流，$0 检查通过）、命令表加 `--phase repeat`、代码结构与文档索引更新；RESULTS 加"重复流"一节和 finance-v18 的汇总行；CONTRIBUTING（钱、泄漏、结果正确三条规矩与测试跑法）；CI 的镜像查找修到 `runtime.worker`（原来指向不存在的 `agent.worker`）；pyproject 0.5.0 与新描述；发布稿草案 `docs/history/ANNOUNCEMENT_DRAFT_2026-10-26.md`（英 + 中，未发）。扫过跟踪文件：无密钥、无个人路径。用户：CLAUDE.md 不进仓库——改为本地忽略文件。
+
+**改名（用户："项目名需要换一下，更贴近 harness 或者 RSI"；选了 reharness——请求被退回后 agent 的 harness 被重做一次）。** PyPI 上 reharness 空着（harnessmith、autoharness、harnessloop 已被占）。`git mv ouroloop reharness`，全部跟踪文件按大小写替换（189 文件、1,629 处）：包与 import、CLI 命令 `reharness`、环境变量 `REHARNESS_*`（TEST_REQUIRE_DOCKER / TEST_REQUIRE_MEMORY / MEMORY_VENV / AUTOMATIONBENCH / EGRESS_* / RECORDS_ROOT / …）、镜像名 `reharness-worker:py3.12`、`reharness-egress:v6.1`（本机把原镜像重新打了标签，id 不变，所以已冻结配置里 pin 的 `image_id` 照旧）、memory sidecar 的缓存目录 `~/.cache/reharness/`（本机目录已移过去）、`python -m reharness.memory / .train` 入口、文档与配置里的名字、pyproject 的仓库地址（`e13ven-arch/reharness`，GitHub 侧改名由用户做）。K 随代码内容变：新活动用新 K；旧工作区本来就在各自 tag 上续跑，`test_record_compat` 读旧记录不依赖模块名。本机仓库目录名 `~/workspace/ouroloop` 由用户改。测试见 PLAN §0.3。
 
 ---
 
@@ -144,7 +152,7 @@
 3. **两种 scope**：声明可选 `scope`（`invariant` | `domain`，`declaration.SCOPES`）；`Settings.scoped_packages`（true，fixed）且 `packages_per_round` ≥ 2 时 `Round.system_prompt` 填 `{scopes}` 段（第一个包通用、第二个领域；系统提示从 `implemented` 里抽成方法）；`declared` / `screened` 行记 `scope`，`scoreboard` 加 `scope:<name>` 键，投影放行 `scope`。
 4. **按组件裁决**：`screen.component_verdicts(result)`——每个改动组件 `{verdict, acted, fixed, regressed}`（hurt / helped / no_effect / unobserved）与包级 `confounded`（无足迹的翻转数），只有计数；进 `screened` 行的 `verdicts` 与投影；`playbook.md` 要求教训点名组件与裁决，`no_effect` 的不得写成起效。
 
-**测试（假上游，`tests/improver/`，新增 8 个）。** `attempt_events` 的交错顺序与每事件的 view 窗口（第一次调用前为空，PATCH 之后窗口末尾是它）；一个两 hook 的包（before_run 记"请求提到 #ops"、after_tool 记"更新已写"、on_finish 看 view 里有 PATCH 无 POST 才 hold）在 V2b 于 notify_ticket 出手、三道通过题零误触发——旧回放（空 view、各站点各自回放）下它永远不出手；before_tool 的 hook 看到它那一刻的 view 与 turn（notify_once 的首次 POST）；每道题重载后前一道题的状态不泄漏；分歧题（round 0 之后 ticket 在 W0 下败、在装入包的 trial 里过）带通过 session 排在前，被拒候选的 trial 不算；系统提示按包数与 `scoped_packages` 开合 scope 段；`scope` 只收两个值；记分板按 scope、投影带 `verdicts`；`component_verdicts` 的四种裁决。原有 V2b / V2d / 合并回放测试不改全过。默认全量（`s11-contrast`，2026-10-20）：1,543 passed、87 deselected（live / slow / Docker / memory 的未跑；第一遍 1 failed 是新测试把失败读数写死、同模块前一个测试多加了一条，改断言后该文件 33 passed）；合入 `m1-automationbench`（fast-forward，`73ee923`，2026-10-20）后 Docker 全量：1,629 passed、1 deselected（worker 镜像 `ouroloop-worker:py3.12` 是 finance-v9 的 K 钉住的、Dockerfile 自 10-09 未改，没有重建）。
+**测试（假上游，`tests/improver/`，新增 8 个）。** `attempt_events` 的交错顺序与每事件的 view 窗口（第一次调用前为空，PATCH 之后窗口末尾是它）；一个两 hook 的包（before_run 记"请求提到 #ops"、after_tool 记"更新已写"、on_finish 看 view 里有 PATCH 无 POST 才 hold）在 V2b 于 notify_ticket 出手、三道通过题零误触发——旧回放（空 view、各站点各自回放）下它永远不出手；before_tool 的 hook 看到它那一刻的 view 与 turn（notify_once 的首次 POST）；每道题重载后前一道题的状态不泄漏；分歧题（round 0 之后 ticket 在 W0 下败、在装入包的 trial 里过）带通过 session 排在前，被拒候选的 trial 不算；系统提示按包数与 `scoped_packages` 开合 scope 段；`scope` 只收两个值；记分板按 scope、投影带 `verdicts`；`component_verdicts` 的四种裁决。原有 V2b / V2d / 合并回放测试不改全过。默认全量（`s11-contrast`，2026-10-20）：1,543 passed、87 deselected（live / slow / Docker / memory 的未跑；第一遍 1 failed 是新测试把失败读数写死、同模块前一个测试多加了一条，改断言后该文件 33 passed）；合入 `m1-automationbench`（fast-forward，`73ee923`，2026-10-20）后 Docker 全量：1,629 passed、1 deselected（worker 镜像 `reharness-worker:py3.12` 是 finance-v9 的 K 钉住的、Dockerfile 自 10-09 未改，没有重建）。
 
 **$0 读数（2026-10-21，v9 r0 的记录在副本上重算；脚本与表在 `workspace-finance-v9/analysis/4l-replay-check-2026-10-21/`）。** (1) 回放保真：r0 归档的最终文件里还留着 R 放弃的 `hold(event, ctx)`，登记回 before_tool 后用 r0 的 VerifyContext 跑新回放——6 道认领题出手 3 道（和 after_tool 读取器出手的三道相同）、通过题误触发 2/12（0.167 ≤ 0.2），**本来能过 V2b**；旧回放给的是 1/6（r0 会话里 run_check 的记录）。R 保留的 after_tool 读取器在新回放下 3/3、2/12，与 r0 记录相同。会话记录的 write_file 正文被截断，中间版本重建不出来。(2) 分歧优先：v9 研究部分 90 道题每道只有 1 次 W 读数（导入的首遇），分歧题 0——第二次读数只在装入后的 measure 与装入包的试跑里出现，r0 零装入，这条在 v9 读不到数。(3) 裁决：r0 的包 `hook:marked_rows_read` → no_effect（出手 11、修 0、退 0），confounded 6，与 10-19 的读法一致。另：4l 让 K 的 sections 多了 `improver.scoped_packages`（`bench.concurrency` 也不在旧 K 里），finance-v9 的 K 在 HEAD 上打不开（PLAN 规则 13）：r1 要开新工作区、导入 v9 / v8 的读数（$0），和 v9 当初导入 v8 一样。
 
@@ -168,7 +176,7 @@
 
 **读到的 3。** 留出的 26 道失败题从未被诊断（设计如此），hook 在其中 6 道出手且全无变化：这 6 道的失败未必是 excluded_mentioned。单机制包在留出能修几道，上限是留出里这一机制的题数，而这个数没人读过——留出筛选量的是"机制 × 留出里有多少这类题"，不只是机制。
 
-**改了什么。** 一处测试断言（`c96249f`）；`ouroloop/` 没动。工作区 `workspace-finance-v9/`（git 忽略）；r0 的日志与报告在它的 `analysis/`。
+**改了什么。** 一处测试断言（`c96249f`）；`reharness/` 没动。工作区 `workspace-finance-v9/`（git 忽略）；r0 的日志与报告在它的 `analysis/`。
 
 **下一步（待用户定）。** (a) 先修 V2b 的回放保真，$0：回放时给 hook 与真跑同形的 view（`events` 窗口按记录的调用重建），并把一个包的全部 hook 按记录的事件顺序一起回放（共享模块状态），让 before_tool 的 hold 在回放里能出手；fake upstream 上加测试。(b) 再跑 r1（约 $50；$150 里还剩 $101.79）：R 从台账看得到 r0，提示词加一句"before_tool 的 hold 按真跑的 view 回放"。(c) 或直接做 4k：证据仓库 + hold 合成器进种子，R 只写证据规则。(a) 是 (b) 和 (c) 的前提。
 
@@ -323,7 +331,7 @@
 - 用户的决定（2026-10-12）："批准，按顺序跑完，最后预计能做到多少"——v6 `--phase release`、v7 smoke / freeze、v7 `--phase stream`。预计 v7 的 finance test W\* 约 65（60～70）。
 - v6 的 release 跑不了，两层原因，都记下来：
   1. 在合入了 4f / 4g 的 `m1-automationbench`（`8a85d24`）上开 v6 工作区被拒：`core.json froze K core:46054a3be25c, and this config and split give core:bf3849c0bd33`。4f / 4g 给 `[improver]` 加了默认值（`failures_max_cases`、`audit_max_false_alarm` 等），K 的节变了，`_frozen_core` 的放宽只认"只有代码版本不同"。final 一族要从活动当时的检出跑（`git worktree add --detach … a062039`）。
-  2. 从 `a062039` 的 worktree 跑又被拒：`no qualified worker: … pinned id sha256:04dbf822… is not available`。4g 重建 worker 镜像时用了同一个 tag `ouroloop-worker:py3.12`，v5 / v6 的 K 钉住的旧镜像 id 被顶掉、已不存在，而镜像 id 在 K 里、改不得。教训进 PLAN 规则 12：活动没结束前不重建它钉住的 tag；新镜像用新 tag。
+  2. 从 `a062039` 的 worktree 跑又被拒：`no qualified worker: … pinned id sha256:04dbf822… is not available`。4g 重建 worker 镜像时用了同一个 tag `reharness-worker:py3.12`，v5 / v6 的 K 钉住的旧镜像 id 被顶掉、已不存在，而镜像 id 在 K 里、改不得。教训进 PLAN 规则 12：活动没结束前不重建它钉住的 tag；新镜像用新 tag。
 - 因此 v6 不发布。按决定发布本来也只是无判断地把工作线的头提升、再补读它在 finance train 上还没读过的题以供 v6 final 的估值，而 v6 不跑 final。改为让 v7 直接从 v6 工作线的头起步，先改文档（DESIGN §6.7、EVALUATE §7、ACTIVITY §4）再改代码：
   - `[rsi] seed_line = "released" | "working"`（默认 released）：`working` 导入源工作线的头；源活动没有那条线时拒绝；`seed_imported` 事件记 `source_line`。
   - 导入的 W\* 重放到本代码的种子上（`workspace.rebase_files`）：基准是沿 `seed_imported` 回溯到的第一个 reason `seed` 的 release（`origin_seed`；v6 的种子自己就是 v5 的 W\*，拿 v6 的种子当基准会把 v5 的 scope hook 当成"框架文件"换掉——第一版就是这么错的，freeze 报 `test files not listed in the manifest: ['tests/test_scope.py']`）。R 在整条链上没碰过的框架文件取本代码的，新文件补进来，R 改过的照 R 的（框架也改过的记 `kept_over_code`），R 删掉的保持删掉；换了文件就是新的包 ref。没有这一步，v6 的 W\* 带着旧适配层进 v7，审核 hook 答 `missing` 会被旧适配层当成 `HookError`。
@@ -411,7 +419,7 @@
 
 ## 2026-10-12 finance-v6 开始：`s6/yield` 合入；三个域的 train 一个流；smoke 与 freeze；流式循环启动
 
-- 用户的决定（2026-10-12）："先跑 3 个域"。`s6/yield`（阶段 4d、4e、aux 日期锚、估价按包）合入 `m1-automationbench`（`0cc1861`；合并前在 worktree 上全量 1,530 passed）。finance-v6 从这个检出跑，期间 `ouroloop/` 不再合入。
+- 用户的决定（2026-10-12）："先跑 3 个域"。`s6/yield`（阶段 4d、4e、aux 日期锚、估价按包）合入 `m1-automationbench`（`0cc1861`；合并前在 worktree 上全量 1,530 passed）。finance-v6 从这个检出跑，期间 `reharness/` 不再合入。
 - 配置 `finance-v6.toml`：`domains = ["finance", "hr", "operations"]`，分层划分 seed 1（每个域 train 50 / test 50，哈希 `1bbf01533d7256af`），`seed_from = workspace-finance-v5`，`final.domains = ["finance"]`，`stream_batch` 30（5 批）、`stream_screen_max` 30、三个包一轮；根 $750、final $230（下限）；`[pricing] max_input_tokens` 400k（单次预留 $6.48）。
 - smoke（$0）：第一次 CHECKS FAILED——种子字面量扫描在种子自带的 `tests/test_write_guard.py` 里找到 6 个单题 train 值（'Dana Reyes' 是 operations 一道题的值，几个日期是 hr / operations 的）。这些测试只在 worker 里跑 V1，不进任何一次尝试，所以种子扫描改为不查 `tests/`（HARNESS §7；候选的改动行照查）。再跑：4,167 个单题值 0 命中，审计 0 泄漏，重叠 0.6 以上的 train 题对 80。
 - freeze（$0）：种子 release `9311c3643331` 是 v5 发布线 `b114e5e766dc` 的导入（W `bb2b13f5c849`，reason `import`，估值与剧本一并带来）；K `46054a3be25c`；无 gate 模板；final 未封存（无发布线）。`[rsi]` 两行已填进配置并提交（`a062039`）。
@@ -527,7 +535,7 @@
   - 留出筛选：20 题全跑，12/20 对 W0 的 10/20；修复 3（`po_three_way_match`、`prepaid_amortization`、`intercompany_balance_recon`），退步 1（`expense_split_allocation`），净 +2；足迹 19/20，所以条件记功几乎等于无条件。三条接受规则都成立，装入工作线 `00ea3d9c6ce0`。记功 hook:scope +2.0；剧本两条教训都引得上台账。
   - 花费 $42.46：现量 $26.77、筛选 $13.20、诊断 $1.07、会话 $1.40、剧本 $0.02。筛选时每次尝试 $0.66，对 W0 的 $0.54 高约 23%：每条消息多一个回合。接受规则没有成本项，final 会把成本并列报出。
 - 判读：机制一轮就装入了，这是 v1.1 四次活动都没做到的；但 +2 在 20 题的噪声之内，修的三道题也不是声明的那三道（hook 的"把正文读一遍"对别的原因也有用），要看后面几轮累不累得起来。R 的产出是单组件、不调模型的 hook，清单里的 missed_action、unread_value（只剩文字类载体）没动。
-- 两个小毛病，等活动结束再改（改 `ouroloop/` 就是新 K）：`--phase round` 跑完后 CLI 对 `RoundResult` 调 `.get` 抛 AttributeError、退出码 1（轮次本身已完成、记录完整；之后的轮用 `cycle --until round-K`，它返回 dict）；无 dev 时 freeze 的"final 未封存"提示仍写 `--phase gate`。
+- 两个小毛病，等活动结束再改（改 `reharness/` 就是新 K）：`--phase round` 跑完后 CLI 对 `RoundResult` 调 `.get` 抛 AttributeError、退出码 1（轮次本身已完成、记录完整；之后的轮用 `cycle --until round-K`，它返回 dict）；无 dev 时 freeze 的"final 未封存"提示仍写 `--phase gate`。
 - 没读任何 test 题；memory 关着。
 - 待用户决定：继续批式跑第 1 轮（约 $28：补测研究部分 30 题约 $16、筛选 $11、研究约 $2），还是先写流式循环的设计（每题首遇计分后变经验、每 N 题一轮、下一批当验证）。
 
@@ -535,7 +543,7 @@
 
 ## 2026-10-12 finance-v5 开始：合入 m1-automationbench；smoke 与 freeze；$0
 
-- `s5/search-loop` 合入 `m1-automationbench`（`d36ee5d`，阶段 4b 与 4c）。此后 finance-v5 从这个检出跑，期间 `ouroloop/` 下不再合入任何改动（规则 13；K 的 `improver_version` 也在比对）。
+- `s5/search-loop` 合入 `m1-automationbench`（`d36ee5d`，阶段 4b 与 4c）。此后 finance-v5 从这个检出跑，期间 `reharness/` 下不再合入任何改动（规则 13；K 的 `improver_version` 也在比对）。
 - `--phase smoke --checks-only`（$0）：上游 `4a8e10612540`，包 1.0.6；划分 `3b959d143f9d8468`，分层规则、seed 1，train 50 / dev 0 / test 50（finance 每题一族）；评分契约、输入审计 0 泄漏、种子对 1,076 个单题 train 值 0 命中；train 内重叠 0.6 以上的题对 78。没有读任何 test 题。
 - `freeze`（$0）：种子 release `c7ed22185bcc`（W0 `d9dc14e1b26c`，K `909c2e86950f`）；没有 gate 模板（无 dev）；预算根 $500，final 份额 $200；final 未封存。`[rsi]` 的 `core_ref`、`split_ref` 已填进配置并提交。
 - 一处措辞待改：无 dev 时 freeze 的"final 未封存"一行仍说"run `--phase gate`"，应说 `--phase release`；它在 `activity/phases.py` 里，改了就是新 K，所以等 finance-v5 结束再改。
@@ -567,7 +575,7 @@
   4. hook 调 aux：种子适配层 `SubCtx.model`（只在 `after_turn` / `on_finish`，role aux，每次尝试合计 `hook_aux_calls` 次，超出或在别处调用是 `HookError`，每次调用 `mark("hook_aux_call")`）；契约 `VIEW_KEYS` 多 `hook_aux_calls`（runner 从 K 填，smoke 给 1），worker_runner 的内嵌契约同步。
   5. library 默认关：preset `automationbench_v2`（`memory.enabled = false`；`schedule` 12 / 3 两个 preset 都改）。
   6. 版本拆分与基线导入：`evaluate/release.py` 的 `attempt_version()`（runtime、harness 含种子、evaluate 的 attempt/results/limits/splits、adapters、providers、contracts）与 `improver_version()`（其余），`Core{attempt_version, improver_version}`，启动检查分别比对；`attempt_identity()`；`phases.import_baseline`（`[rsi] baseline_from`：同 AttemptIdentity 时复制旧工作区 W0 的 base/control 运行、结果、评分行与 transcript，记 `baseline_imported` 事件，$0）；`baseline` 只跑缺的题。
-- 其他：`Settings` v1.2（删 `k`、`explore_slots`、`l5_slots`、`code_guarantee`、`screen_*`、`thin_screen_tasks`、`gate_every`；加 `packages_per_round`、`require_code_component`、`l5_per_round`、`hook_aux_calls`、`accept_*`；`round_share` 0.15、`session_max_edits` 48）；台账 STAGES 加 `focused`、`accepted`，去 `allocated`、`unused`、`carried`、`carry_dropped`；报告加发布 gate 一节，轮次一节按新形状；V2c 只在研究部分的题上算可达（留出题号不进 R 看到的任何字）；运输检查（claude CLI 版本）搬到 `evaluate.gate.transport_problem`，筛选与 gate 前各查一次；`ouroloop/improver` 不再 import `activity`。
+- 其他：`Settings` v1.2（删 `k`、`explore_slots`、`l5_slots`、`code_guarantee`、`screen_*`、`thin_screen_tasks`、`gate_every`；加 `packages_per_round`、`require_code_component`、`l5_per_round`、`hook_aux_calls`、`accept_*`；`round_share` 0.15、`session_max_edits` 48）；台账 STAGES 加 `focused`、`accepted`，去 `allocated`、`unused`、`carried`、`carry_dropped`；报告加发布 gate 一节，轮次一节按新形状；V2c 只在研究部分的题上算可达（留出题号不进 R 看到的任何字）；运输检查（claude CLI 版本）搬到 `evaluate.gate.transport_problem`，筛选与 gate 前各查一次；`reharness/improver` 不再 import `activity`。
 - 假上游（`tests/fake_upstream` 的 rsi 域）加了第六道 train 题 `rsi.notify_ticket`（自成一族，健忘 actor 同样失败），这样留出 share 0.4 下 notify 一对整族留出、notify_ticket 留在研究部分：脚本化的 R（tool / hook / both / none 四种模式）第 0 轮诊断 1 例、交一个包、过 V0/V1/V2、留出 2/2 修复、净 +2、接受装入工作线；第 1 轮在研究部分补测 4 题、`nothing_to_fix`；`none` 模式两轮无候选按耐心停；`cycle --until gate` 之后 gate 通过（dev 修 1 题、退 0）并写发布线；基线导入在同 AttemptIdentity 的工作区上一分钱不付、identity 不同时照常跑。测试文件按 v1.2 重写：round、session_screen、ladder、records、resume、allocate_diagnose（聚焦）、activity phases（gate、cycle、导入、export）、release、config、workspace、checks、cli、library（流的顺序 seed 改成 349：policy_hold 先、update_stage 次、失败题的重试带库标）。
 - 测试：默认 `pytest -q` 1,432 passed、87 deselected；全量（Docker worker 镜像按本检出重建——内嵌契约变了——+ 真 memory sidecar，`-m "not live"`）1,525 passed、1 deselected。两套里各有同样两个失败：adapters 的并发中断测试与 providers 的终端中断测试，单跑、成对跑、接在 tests/activity 之后跑都通过，在基线 033515d 的隔离工作树上整套跑同样失败——既有的负载相关不稳定，与本次改动无关（它们碰的 `evaluate/attempt.py` 的 `run_tasks` 与 `providers/claude_code.py` 本次没动）。真 sidecar 的 library 测试与 fake client 的 library 测试把流的顺序 seed 改成 349（6 道题下与原来 5 道题 seed 0 的顺序同构：policy_hold、update_stage 在前，失败题的教训修后面的同类题）。
 - 没调模型、没付费、没读 `.env`、没读任何 test 内容；finance-v5 的配置写好（`examples/automationbench/finance-v5.toml`，preset v2，根 $500、final $200），其 `worker.image_id` 待镜像重建后填；finance-v4 的基线导不进来（种子字节变了，AttemptIdentity 不同），基线按约 $58 重付。
@@ -709,7 +717,7 @@
 ## 2026-10-10 阶段 4：四项修复落地（日期锚、组合候选与 V2a 探针、留出为空的 cause、每两轮一次 gate 带累积与部分得分）；finance-v4 冻结；$0
 
 - 用户的决定（2026-10-10）："按这四项改，改完再跑 finance-v3"。设计先定稿（`c370fed`：[DESIGN §6.12](DESIGN.md)，[HARNESS §7.1](design/HARNESS.md)，[IMPROVER §7.1、§8.1、§9.1～§9.3](design/IMPROVER.md)，[EVALUATE §5.1](design/EVALUATE.md)，CONTRACTS 的三个键），再改代码；分支 `s4/finance-v4`（从 `s4/finance` 的 `20a7fa7` 起）。
-- 为什么是 finance-v4 而不是续跑 finance-v3：四项修复改了 `ouroloop/`，code_version 变了，K 就变了，finance-v3 的 K 与基线（$51.49）不能沿用（规则 13），新活动要重付基线（约 $51）。这笔重复花费这次先写明，开跑前讲清。
+- 为什么是 finance-v4 而不是续跑 finance-v3：四项修复改了 `reharness/`，code_version 变了，K 就变了，finance-v3 的 K 与基线（$51.49）不能沿用（规则 13），新活动要重付基线（约 $51）。这笔重复花费这次先写明，开跑前讲清。
 - 代码（`9c13d6a`）：
   1. 日期锚（种子 `middlewares/write_guard.py`）：键或路径里带 `SYSTEM_WORDS`（meta、metadata、updated、modified、edited、lastupdated、lastmodified、lastedited、sync、synced、indexed、audit）的字段不作日期；等于或晚于 worker 当天的日期不作日期（`STATE["today"]`，默认真实日期；finance-v2 的三道 real_date 失败读的 QuickBooks `MetaData.CreateTime` / `LastUpdatedTime` 与 Xero `UpdatedDateUTC` 都是这两条之一）；`DATE_WORDS` 去掉 updated、modified；写入之后继续读（写入自己的结果仍不读）。
   2. 组合候选：`declaration.py` 加 `probes`（{task: [{args, expect}]}）并校验；V0 允许声明种类之外的 tool、hook、skill、prompt 作同一机制的载体（agent、config、vendor、memory、model 仍须各自成候选）；`verify/__init__.py` 的 `supporting()` 给每个载体一个影子声明，按各自的 rung（`V2a@<名>`、`V2b@<名>`、`V2c@<名>`）接在主梯之后爬，文本候选带代码时插入 V1；`screen.condition()` 的条件记功算上载体；`package_api.md`、`propose.md` 写明"为 cause 造，不为题造"、一个机制可带几个载体。
@@ -730,7 +738,7 @@
 
 - 用户的批准（2026-10-10）："开 finance-v3，先 freeze 再跑 baseline"。配置 [finance-v3.toml](../examples/automationbench/finance-v3.toml) 由 finance-v2 的改来，只改工作区、scope 与注释。
 - smoke（`--checks-only`，$0）通过：切分哈希 `4fd91eaf9fb8daf5`（50 / 25 / 25，每题一族），种子对 1,103 个单题 train 值查过，0 处。freeze（$0）：K `core:8a4765606710`（代码 `s4/finance` `d9dca97`，code_version `073054b7fe2b9c83`），预算根 $700、final 份额 $220，镜像 id 与 finance-v2 相同，K 的 `improver.holdout_share` 0.4；`[rsi]` 三行提交在 `4547faa`。
-- 为什么重付基线：三项修复改了 `ouroloop/`，code_version 变了，K 就变了，finance-v2 的记录在新 K 下不能用。实际上 baseline 走的尝试路径（actor、harness、worker_runner、评分）这次没改，finance-v2 的 W0 读数内容上仍有效；是哈希覆盖整个包、不分哪部分影响读数。开跑前没有把这笔重复花费讲清楚，是疏漏。拆分 code_version 的设计稿作为待办提出（只写设计、不改代码）。
+- 为什么重付基线：三项修复改了 `reharness/`，code_version 变了，K 就变了，finance-v2 的记录在新 K 下不能用。实际上 baseline 走的尝试路径（actor、harness、worker_runner、评分）这次没改，finance-v2 的 W0 读数内容上仍有效；是哈希覆盖整个包、不分哪部分影响读数。开跑前没有把这笔重复花费讲清楚，是疏漏。拆分 code_version 的设计稿作为待办提出（只写设计、不改代码）。
 - 基线：train 23/50（partial 0.789，$26.06）；dev 7/25（0.744，$12.98）与 8/25（0.768，$12.44）；合计 $51.49。
 - 与 finance-v2 的 W0 逐题对比（同一 W0 包、同一切分，只是 K 不同，不能正式合并，只作旁证）：
   - dev 四次读数 11、9、7、8：7 道每次都过，13 道每次都没过，5 道时过时不过（cash_sweep、expense_split_allocation、financial_close_checklist 只在 v2 的第一次读数里过；vendor_insurance_verification 0100；vendor_payment_approval 1101）。
@@ -775,7 +783,7 @@
   - 容量：字节只在快照处管，上限就是 K 的 `max_memory_bytes`；`max_active` 500 仍只管 live 库的条数。理由：字节上限是包的性质；排序要的证据只在流里积累，在流里按字节淘汰会在观察期里扔条目、让 D 随包上限变；一个约束只在一处执行。
 - 用 finance-v2 的 live 库只读重算：精简行平均 1,331 字节（全行 2,469），精简后整库 296,867 字节，仍超上限；装下 197/223 条（261,488 字节），4 条有修复的、24 条有引用的全在，没装的 26 条都没有修复也没有引用。
 - 代码：`memory/snapshot.py`（`snapshot_row`、`snapshot_rank`、`row_bytes`、`fit_snapshot`）、`memory/track.py`（`finish(max_bytes=…)`，台账 `snapshot_fit`）、`memory/rules.py`（`snapshot_abort` 的 `fit`）、`memory/importing.py`（导入的 live 行与 `stamp` 一样置空时间字段，否则 ReMe 补导入时刻）、`activity/phases.py`（传 K 的上限、打印、事件带 `fit`）、`activity/report.py`（报告的快照段带 `fit` 摘要）。
-- 测试：新增 10 个（默认套件 9：精简行的字段与幂等、超上限的库成为放得下且留下有记功条目的候选、严格前缀与含上限的边界、放得下的库一条不少且字节稳定、精简行与全行检索给同样的条目、一条都放不下就 abort、V0 在 preset 上限下过、`finish(max_bytes)` 记下没装的、library 阶段在调低的上限下产出放得下的候选；真 sidecar 1 个：ReMe 加载精简行、检索与全行相同）；改 5 个旧断言到新契约（live 文件仍是全行而快照是精简行；出处与 trace ref 从台账读，导入的行经 `ol_imported_from` 回到 A；报告多 `fit`）。默认套件 1,395 passed、20 skipped、87 deselected（skip 主要是 worktree 里没有 git 忽略的运行记录）；全量（Docker + 真 memory sidecar，`OUROLOOP_RECORDS_ROOT` 指主检出的记录，只读）1,498 passed、3 skipped（worktree 里没有 TDE 仓库）、1 deselected。变异在隔离副本（rsync 到 scratchpad，前后 `git diff` 与未跟踪文件一致）：19 个，第一遍活下 3 个（引用排在修复前、跳过放不下的行继续装、上限不含等号），补了严格前缀的测试后 19/19 被杀。
+- 测试：新增 10 个（默认套件 9：精简行的字段与幂等、超上限的库成为放得下且留下有记功条目的候选、严格前缀与含上限的边界、放得下的库一条不少且字节稳定、精简行与全行检索给同样的条目、一条都放不下就 abort、V0 在 preset 上限下过、`finish(max_bytes)` 记下没装的、library 阶段在调低的上限下产出放得下的候选；真 sidecar 1 个：ReMe 加载精简行、检索与全行相同）；改 5 个旧断言到新契约（live 文件仍是全行而快照是精简行；出处与 trace ref 从台账读，导入的行经 `ol_imported_from` 回到 A；报告多 `fit`）。默认套件 1,395 passed、20 skipped、87 deselected（skip 主要是 worktree 里没有 git 忽略的运行记录）；全量（Docker + 真 memory sidecar，`REHARNESS_RECORDS_ROOT` 指主检出的记录，只读）1,498 passed、3 skipped（worktree 里没有 TDE 仓库）、1 deselected。变异在隔离副本（rsync 到 scratchpad，前后 `git diff` 与未跟踪文件一致）：19 个，第一遍活下 3 个（引用排在修复前、跳过放不下的行继续装、上限不含等号），补了严格前缀的测试后 19/19 被杀。
 - 对 K：preset 的数值不变（`max_memory_bytes` 262,144、`max_active` 500）；新活动的 K 只因 code_version 不同；配置不需要新键。同一个库的快照字节与旧格式不同（精简行），所以摘要也不同；HEAD 照样读旧的全行快照。
 - 合入：finance-v2 结束后合入 `s4/finance`（2026-10-10，与第 1 轮的条目在文件顶部冲突，两条都留、按时间排）。下一个活动要重付基线与 library（约 $145）。
 
@@ -844,7 +852,7 @@
 
 ## 2026-10-09 阶段 4：修复 ReMe 调用的空 system，memory 探针，开 finance-v2
 
-- 用户的决定（2026-10-09）："按 A 走，先修代码"：放弃 finance-v1，修代码后开新活动 finance-v2，重付基线。用户问 code_version 变了有什么影响、RSI 不是一直在变吗：RSI 改的是 W（每轮装入）与 R 的策略；K（平台代码、preset、划分、阈值、预算）在一个活动里不变，是比较读数的量尺；这次的修复其实不碰测量路径，但 code_version 对 `ouroloop/` 的任何改动都敏感，更窄的“K 修订”规则记为以后的设计项，这次不做。
+- 用户的决定（2026-10-09）："按 A 走，先修代码"：放弃 finance-v1，修代码后开新活动 finance-v2，重付基线。用户问 code_version 变了有什么影响、RSI 不是一直在变吗：RSI 改的是 W（每轮装入）与 R 的策略；K（平台代码、preset、划分、阈值、预算）在一个活动里不变，是比较读数的量尺；这次的修复其实不碰测量路径，但 code_version 对 `reharness/` 的任何改动都敏感，更窄的“K 修订”规则记为以后的设计项，这次不做。
 - finance-v1 的代码打本地 tag `finance-v1`（`d82ba92`，code_version `47a0c958db380d8e`）；它的记录原样保留，新代码打不开它（`a changed K is a new activity`，探针脚本第一次运行时撞上了这条保护）。
 - 修复（`647fea9`）：claude_code 提供方给没有 system 的调用传一句中性的 system（`NO_SYSTEM`），不传空白；API 以 400 拒绝的畸形请求（空白文本块、提示过长）释放预留、不重试，不再按上界记 unknown。测试各一；全量 1,491 passed。
 - memory 探针（用户批准，`finance-v1-probe3.local.toml`，根 $40）：取 finance-v1 library 首批里成败混合的一道 train 题（`finance.tax_prep_summary`，三条轨迹：基线失败、首遇失败、重试成功，只读 finance-v1 的记录），经 sidecar、桥与真实 CLI 让 ReMe 总结一遍：15 次桥调用全部 200（success 1、failure 2、comparative 1、validation 11），全部结算；验证通过 11 条、去重后 6 条，都是程序性的通用经验（表格读不全时扩大范围、邮件里要求逐字保留的数值照抄等）。花费 $1.48。
@@ -860,7 +868,7 @@
 - 结果：第一批 4 道题的首遇与重试跑完（8 次尝试，4 道通过，$3.72），随后 ReMe 的总结流向桥发出 12 次研究调用（success、failure、comparative 各 4 次），全部失败：`API Error: 400 system: text content blocks must contain non-whitespace text`。这批什么都没写（`MemoryStepError`），阶段按设计暂停（`paused`），流的台账停在 `ol-live-59c81405:00001`。
 - 原因：ReMe 的每次调用只有一条 user 消息、没有 system；桥把空的 system 交给 claude_code 提供方，提供方在命令行上以 `--system-prompt " "` 传出（空 system 的占位），API 拒绝只有空白的 system 文本块。测试里的研究模型全是脚本化的，探针只发了带 system 的两种 R 调用，这条路径在冻结前没被真实 CLI 走过（预检评审 OPS-9 指出过这类风险）。
 - 钱：12 次调用各按上界 $11.28 记 unknown，共 $135.32 占在根上（这些请求在模型运行前就被 API 拒绝，没有计费；而且走的是订阅）。提供方把 `API Error: 400` 归为不可重试、但没有标成未计费，所以按上界扣着。活动累计记账 $190.25，其中实际结算 $54.93（基线 $51.21 + library 的 8 次尝试 $3.72）。根的有效余额 $289.75（不含 final 的 $220）。
-- 后果：修复要改 `ouroloop/` 的代码（空 system 的占位，以及 400 归为未计费），code_version 随之变，K 是 finance-v1 冻结的那个，这个活动在新代码上不能续跑（规则 13）；它也不能跳过 library（K 里 memory 开着，cycle 要 library 完成才进入轮次）。finance-v1 的代码在 `7764f75`。
+- 后果：修复要改 `reharness/` 的代码（空 system 的占位，以及 400 归为未计费），code_version 随之变，K 是 finance-v1 冻结的那个，这个活动在新代码上不能续跑（规则 13）；它也不能跳过 library（K 里 memory 开着，cycle 要 library 完成才进入轮次）。finance-v1 的代码在 `7764f75`。
 - 待用户：是否放弃 finance-v1、修代码后开新活动（finance-v2：新工作区与 scope，重付基线约 $51）。
 - 没读 `.env`，没读任何 test 题的内容。
 
@@ -869,7 +877,7 @@
 ## 2026-10-09 阶段 4：finance-v1 冻结与基线
 
 - 用户的批准（2026-10-09）：定预算、freeze、跑 baseline（在“继续跑测试”的确认里选了“定预算、freeze、跑 baseline”）。先于此，用户让推送 `m1-automationbench`（`b51083c..c22f698`）、`s4/finance`（新分支，`9af98c2`）与 tag `archive-2026-10-09` 到 origin，推送前全量 1,489 passed。
-- 预算（K）：根 $700，final 份额 $220（`19b01bd`）。`ouroloop freeze`：K `core:sha256:5e021a1ca650…`，code_version `47a0c958db380d8e`，划分 `4fd91eaf9fb8daf5`，种子 release `c4dcd052272b`（W0 = 包 `fabb9f63495d`），gate 模板冻结；final 没有封存（还没有装入）。`[rsi]` 的两行在 `a6b244f` 里。
+- 预算（K）：根 $700，final 份额 $220（`19b01bd`）。`reharness freeze`：K `core:sha256:5e021a1ca650…`，code_version `47a0c958db380d8e`，划分 `4fd91eaf9fb8daf5`，种子 release `c4dcd052272b`（W0 = 包 `fabb9f63495d`），gate 模板冻结；final 没有封存（还没有装入）。`[rsi]` 的两行在 `a6b244f` 里。
 - 基线（`--phase cycle --until baseline`，并发 8，在用户的终端面板里跑，约 30 分钟）：
   - train：21/50 通过（42%），部分得分 0.768；dev 两次读数都是 8/25（32%），部分得分 0.793 / 0.746。
   - 噪声：dev 的两次读数逐题完全相同（8 道都过，17 道都没过，0 道翻转）。gate 的对照很稳；`min_gain` 0.05 在 25 道 dev 上要净修好 2 道。
@@ -919,7 +927,7 @@
 
 - 用户的指示（2026-10-09）："合入 m1-automationbench，然后开始阶段 3"。`s2/memory` 本地合入 `m1-automationbench`（`c92ddcc`），从那里开分支 `s3/improver`。
 - 先文档后代码（`fea5813`）：IMPROVER.md 按阶段 1、2 的代码定稿；CONTRACTS 的 `rounds/r<i>/`、`rounds/notes.jsonl`、`ledger/`；ACTIVITY 的 round 与 cycle。阶段 1 留下的三项先做（`82484a9`）：种子把 K 的 effort 传给模型；宿主截断回合后种子补一次 act 调用记 finished；速率限制落 `rate_limited` 事件。
-- 代码（`749107b`，`ouroloop/improver/` 2,871 行）：Settings（K 的 `improver` 节、preset、收紧规则）；证据（只读 train，dev 只有失败类型直方图）；诊断（固定词表，两例才增项，NoteCache）；分层（估值上界、探索名额、代码保证、`no_code_candidate` 后代码名额加倍、L5 只给循环类簇、L6 停滞时记不可用）；编码会话（worker 里的文件树，`read_trajectory`、`search_trace`、`run_check`、`run_tests`、`finish`，上限都在 K）；阶梯 V0 静态、V1 包测试、V2a toolcheck、V2b hook 回放、V2c 可达；V3 train 筛选按足迹条件记功；V4 冻结模板的配对 gate、池化对照、CAS 装入 `install:<round_id>`；档案、记功与反膨胀、台账（train 投影、记分板）、剧本（只留引得上台账行的教训）、策略导出导入；`round.py` 的可续跑步骤与本轮账户 `<scope>:round-<i>`（`round_share` × 根）及六个子账户。`phases.round_` 与 `cycle`（耐心规则）接上。
+- 代码（`749107b`，`reharness/improver/` 2,871 行）：Settings（K 的 `improver` 节、preset、收紧规则）；证据（只读 train，dev 只有失败类型直方图）；诊断（固定词表，两例才增项，NoteCache）；分层（估值上界、探索名额、代码保证、`no_code_candidate` 后代码名额加倍、L5 只给循环类簇、L6 停滞时记不可用）；编码会话（worker 里的文件树，`read_trajectory`、`search_trace`、`run_check`、`run_tests`、`finish`，上限都在 K）；阶梯 V0 静态、V1 包测试、V2a toolcheck、V2b hook 回放、V2c 可达；V3 train 筛选按足迹条件记功；V4 冻结模板的配对 gate、池化对照、CAS 装入 `install:<round_id>`；档案、记功与反膨胀、台账（train 投影、记分板）、剧本（只留引得上台账行的教训）、策略导出导入；`round.py` 的可续跑步骤与本轮账户 `<scope>:round-<i>`（`round_share` × 根）及六个子账户。`phases.round_` 与 `cycle`（耐心规则）接上。
 - 先在假上游上手跑一轮（脚本化 R `tests/improver/scripted_r.py`，忘发通知的 actor）找到的问题，与代码一起提交：
   - **字面量索引一直是空的**（阶段 1 起）：`literal_index` 只读断言的 `params`，而评分器的断言是扁平 dict，种子扫描、library 的禁用集和 V0 都没拿到任何断言值。修后 finance 的 train 有 1,105 个单题值，种子 0 命中（`smoke --checks-only`，$0；它写下了 `workspace-finance-v1/bench/finance/splits.json`，哈希 `4fd91eaf9fb8daf5`，与配置钉的一致）。
   - 种子的适配器测试驱动 manifest 里的所有 hook，候选加任何 on_finish hook 都让它们失败（V1 拒掉所有 hook 候选）；改为按名字驱动 write guard 的四个 hook。
@@ -935,7 +943,7 @@
   - 条件与无条件记功：假上游上真 tool 候选的两道修复都在工具被调用的题上（条件 2、无条件 0）；同一次运行若候选声明的是一个从不出手的 hook，同样两道翻转全归无条件（条件 0），不够资格进 gate；去掉条件它会带着 2 个净翻转去付 gate 的钱。真实差距要到阶段 4 量。
 - 证据：
   - 默认套件 1,385 passed、86 deselected（评审修复后）；全量（Docker + 真 memory sidecar，`-m "not live"`）在评审之前 1,460 passed、1 deselected；评审修复后（`75e6623`）1,471 passed、1 deselected（live 一个），0 失败。
-  - 行数（只作读数）：`improver/` 2,871 行，提示 109 行；`ouroloop/` 不含种子 24,553 行；improver 测试 3,999 行。
+  - 行数（只作读数）：`improver/` 2,871 行，提示 109 行；`reharness/` 不含种子 24,553 行；improver 测试 3,999 行。
 - 已知、没修：
   - 一轮停在 `budget` 就不再续（它的份额已用完），`cycle` 再跑从下一轮接着；library 阶段则是下次接着。设计里写明了这一条（IMPROVER §3）。
   - 核价用每次尝试的均值，预算按单次调用的上界预留，核价通过后预算仍可能拒掉一次尝试，这一轮停在 `budget`。
@@ -951,20 +959,20 @@
 - 用户的指示（2026-10-09）："s1/harness-platform 应该已经合入 m1-automationbench了，测试的分支清理掉，然后继续开发"。阶段 1 已由用户在 `46a4b90` 合入；阶段 1 测试用的六个 worktree 分支与四个停在 9 月旧提交的空 workflow 分支（都已合入、worktree 干净）删掉；阶段 2 从 `m1-automationbench`（`c133043`）开分支 `s2/memory`。
 - 先文档后代码（`f51f98e`）：MEMORY.md 按 v6 的证据与阶段 1 的代码定稿。Settings 取 v6 校准过的数（`min_score` 0.62、`sibling_sim` 0.95、去重 0.85/0.9/0.85；草稿里的 0.2 会让几乎所有条目都过），删掉没有证据的 `rerank`、`title_chars`、`collection_prefix`；研究调用的并发是机器设置、不进 K；新接口 `MemoryService`、`TaskMemory`、`make_agent_factory(memory=...)`；流的包、顺序、b(t)、重试、lost；工作区 `memory/<line>/`；启动检查；`heldout_domains` 用新的 superset 规则；两层测试。CONTRACTS、EVALUATE、RUNTIME、ACTIVITY 跟着改。
 - 代码（`a91f0e5`）：
-  - `ouroloop/memory/`：v6 的 sidecar（ReMe 0.3.1.10 的 HttpService 加我们的 op、chroma、bge-small ONNX、按哈希的锁文件）、client、桥（provider 按鸭子类型；activity 用 `research_provider(step, retries=False)` 建，重试全关）、importing、setup CLI 原样搬入；`settings.py`；`rules.py`（v6 的 VEL 规则，加字面量一次占位、学习曲线与 P(后半更好)、`promotable`）；`track.py`（StreamStep，加冻结的流顺序与 lost）；`retrieval.py`（`LibraryReader`、`TaskMemory`；agent 看到的条目 id 都是 8 位）；`service.py`；`snapshot.py`（流的包与快照候选，manifest 的 memory 项原地替换）；`promote.py`。
+  - `reharness/memory/`：v6 的 sidecar（ReMe 0.3.1.10 的 HttpService 加我们的 op、chroma、bge-small ONNX、按哈希的锁文件）、client、桥（provider 按鸭子类型；activity 用 `research_provider(step, retries=False)` 建，重试全关）、importing、setup CLI 原样搬入；`settings.py`；`rules.py`（v6 的 VEL 规则，加字面量一次占位、学习曲线与 P(后半更好)、`promotable`）；`track.py`（StreamStep，加冻结的流顺序与 lost）；`retrieval.py`（`LibraryReader`、`TaskMemory`；agent 看到的条目 id 都是 8 位）；`service.py`；`snapshot.py`（流的包与快照候选，manifest 的 memory 项原地替换）；`promote.py`。
   - `runtime/trace.py`：v6 的 TraceStore 改读阶段 1 的行（`reply`、带 `data` 的 `mark` 行、broker 的 call id），按冻结划分判 train；加 `finish()`。
   - 接线：`PackageAgent(memory=TaskMemory)` 在 task 行后写开场的 `library_retrieval`；`make_agent_factory` 按题哈希给每次尝试它的 TaskMemory；preset 的 memory 节就是 Settings；启动检查（library 要 memory 开、业务线没留出；sidecar 的 venv 等于锁文件、模型是钉的、K 的 backend 钉表等于本检出的文件）取代阶段 1 的整体拒绝；`library` 阶段、cycle 的 library 一步、报告的 memory 一节。
 - 测试：六个 agent 各在自己的 worktree 写一块，一个只读 agent 做独立评审，然后合入（6 个 merge）。
-  - 新测试：规则与 Settings 146、写入步 34、trace 41、桥 64、真 sidecar 93（其中 85 个标 slow，只在全量里跑）、读取/快照/升级/service/library 阶段 64。默认套件用进程内的假 client（`tests/memory/fake_memory.py`：词袋向量，总结经真桥发到脚本化的研究模型，所以计量路径是真的）；真 sidecar 的测试要 venv，没有就跳过，`OUROLOOP_TEST_REQUIRE_MEMORY=1` 时失败。
+  - 新测试：规则与 Settings 146、写入步 34、trace 41、桥 64、真 sidecar 93（其中 85 个标 slow，只在全量里跑）、读取/快照/升级/service/library 阶段 64。默认套件用进程内的假 client（`tests/memory/fake_memory.py`：词袋向量，总结经真桥发到脚本化的研究模型，所以计量路径是真的）；真 sidecar 的测试要 venv，没有就跳过，`REHARNESS_TEST_REQUIRE_MEMORY=1` 时失败。
   - 变异检查：规则 63、写入步 57、trace 37、桥 48、真 sidecar 32、library 48，共 285 个，全部被杀；各在 scratchpad 里自己的目录（`s2-<块>-mut`），worktree 前后的 status 与 diff 相同。阶段 1 那次两个 agent 撞同一个目录的事没再发生。
   - agent 顺手修的缺陷（各自单独提交）：`00c4c1f` 已升级（superseded）的条目会被后面的题重新学回来；`859af2a` 两个进程同时把新索引切成 WAL 时偶发 "database is locked"（v6 的六进程并发测试 1/6 失败，私有复现 9/100，修后 0/200）；`855eda1` 预算拒掉首遇后，阶段说“再跑一次继续”却永远继续不了。
   - 评审（只读，在 `s2-review-scratch` 里复现）报了 9 条，我在 `e244687` 全修并各加回归测试：一批含 lost 题又写入失败时续跑卡死（lost 改到这批写入之后记）；预算拒掉的重试被当成没重试提交（改为停下、下次重跑）；sidecar 宕机把剩下的题永久记 lost（改为暂停：开场取不到时 `run_attempt` 抛出，记 lost 之前先查 sidecar 是否还在答）；没有基线读数也照付一整轮（改为付费前拒绝）；W0 在 memory 开着的 K 下为空库起 sidecar（种子的 `memory.enabled` 取 K，HARNESS §7；改为空库什么都不起，且流的包就是 W0 时 b(t) 只算基线的 run）；桥上等空位的时间算在 ReMe 客户端超时里，可能超时重发、一个调用付两次（改为等待有上限，超了就在调用 provider 之前答 503、不记账，`llm_timeout_s` 默认 1800 s）；没有模型调用的有效尝试卡住流；导入带回已退役或已升级的内容；sidecar 的文件不是包数据。小的：`library-used:` 空着时读到下一行、丢弃原因写错字面量、`message_time` 没清空、单个字符串的留出业务线被拆成字符。
 - 证据：
   - 假上游上 library 阶段端到端：假 client 与真 sidecar（ReMe 0.3.1.10、chroma、bge-small，经真桥）各一遍，结果相同：5 道 train 题 D = 1.0（W0 用 `forget_notify` 做错的通知题，首遇时读到库里关于 #ops 的教训后做对了），B = 0，4 条条目，快照成为候选包；真 sidecar 一遍约 24 s。再跑一次不付任何钱。
-  - sidecar 的 venv 按锁文件建好（`python -m ouroloop.memory setup`：161 个包，按哈希；bge-small 已在 HF 缓存）。从 PyPI 下载，没有付费。
-  - 全量（`OUROLOOP_TEST_REQUIRE_DOCKER=1 OUROLOOP_TEST_REQUIRE_MEMORY=1 -m "not live"`，先重建 worker 镜像）：1208 passed、1 failed，失败的是 quickstart 的配置测试还钉着 `memory.enabled = false`（quickstart 已打开 memory），改测试后默认套件 1124 passed、86 deselected（85 个 slow 的真 sidecar 测试与 1 个 live）。
+  - sidecar 的 venv 按锁文件建好（`python -m reharness.memory setup`：161 个包，按哈希；bge-small 已在 HF 缓存）。从 PyPI 下载，没有付费。
+  - 全量（`REHARNESS_TEST_REQUIRE_DOCKER=1 REHARNESS_TEST_REQUIRE_MEMORY=1 -m "not live"`，先重建 worker 镜像）：1208 passed、1 failed，失败的是 quickstart 的配置测试还钉着 `memory.enabled = false`（quickstart 已打开 memory），改测试后默认套件 1124 passed、86 deselected（85 个 slow 的真 sidecar 测试与 1 个 live）。
   - `quickstart.toml --phase smoke --checks-only` 在 memory 开着时通过（划分哈希 `4fd91eaf9fb8daf5`）；它的 memory 启动检查在本机也通过（venv 等于锁文件、模型与 K 的钉表一致）。
-  - 行数（只作读数）：`memory/` 宿主侧 3,100 行，sidecar 990 行，`runtime/trace.py` 682 行；`ouroloop/` 不含种子 21,619 行（含训练栈与 sidecar）。memory 相关测试 8,664 行。
+  - 行数（只作读数）：`memory/` 宿主侧 3,100 行，sidecar 990 行，`runtime/trace.py` 682 行；`reharness/` 不含种子 21,619 行（含训练栈与 sidecar）。memory 相关测试 8,664 行。
 - 已知、没修：
   - 升级（§8）的三个函数与测试已交付，接进轮次是阶段 3；快照候选从 V3 起走阶梯也是阶段 3。
   - 桥的 slot 数等于活动的并发，ReMe 一次总结里三个提炼算子并行，并发高时会等；等待超过上限答 503，这次总结失败，通过的保留、其余下次再总结（会重付这几次）。实测负载下是否常见要到阶段 4 才知道。
@@ -1002,11 +1010,11 @@
     - `9f706a9` `train/dataset.py` 的局部变量 `records` 遮住了模块名，构建数据集时 AttributeError。
   - `c2f9ff4` 合并后的修正：一次调用的预留上界按输入侧最贵的单价算（缓存写入 $0.008/1k 比普通输入 $0.004/1k 贵；quickstart 的单次上界因此从 $7.28 变成 $11.28）；某类 token 没有声明价格的调用，账本按上界扣，不再记 $0（agent 报告：没有缓存单价时美元上限实际不生效）。`tests/rsi.write_split` 保留已冻结的划分。指向已删 `policies.*`、`task_eval.run_tasks` 的 docstring 改指新位置或 tag。设计文档对齐：CONTRACTS §7 的 attempt id 形式、EVALUATE §5（`min_tasks` 在冻结时查）/§6（`W_star`）/§8（`check_binding` 还没有调用方）/§9（付费安全里等到阶段 3 的六条；两条保守计价规则）/§10、RUNTIME 的 `DENY`、HARNESS §4、IMPROVER §12/§13、MEMORY §10。
 - 证据：
-  - 默认套件 751 passed、1 deselected（live）；带 Docker 的全量（`OUROLOOP_TEST_REQUIRE_DOCKER=1 -m "not live"`，先重建 `ouroloop-worker:py3.12`）751 passed、0 skipped。
-  - `OUROLOOP_RECORDS_ROOT=examples/automationbench` 下 `test_record_compat`、`test_aa_replay`、`test_attempt_behaviour`、`test_hot_path_boundary` 共 32 passed：HEAD 读得了旧工作区的 train/dev 记录，只读守卫没报改动。
+  - 默认套件 751 passed、1 deselected（live）；带 Docker 的全量（`REHARNESS_TEST_REQUIRE_DOCKER=1 -m "not live"`，先重建 `reharness-worker:py3.12`）751 passed、0 skipped。
+  - `REHARNESS_RECORDS_ROOT=examples/automationbench` 下 `test_record_compat`、`test_aa_replay`、`test_attempt_behaviour`、`test_hot_path_boundary` 共 32 passed：HEAD 读得了旧工作区的 train/dev 记录，只读守卫没报改动。
   - `quickstart.toml --phase smoke --checks-only`：upstream `4a8e10612540`（package 1.0.6，python 3.12.14）；划分哈希 `4fd91eaf9fb8daf5`，train 50 / dev 25 / test 25；评分契约 `partial_credit`、`task_completed_correctly`；输入审查 0 泄漏；种子对 988 个单题 train 值的字面量搜索 0 命中。没调模型。
   - 新种子在假上游上的一次尝试：`tests/fixtures/attempt_behaviour_stirrup.json` 重录，8 次 act 调用（第一次写被 triage 拦下 → plan_changes → PUT 404 → PATCH → POST → finish → verify 退回 → 再 finish），连放 6 次相同；同一种子在真实 DockerWorker 里跑一次尝试的测试也通过。
-  - 行数：`ouroloop/` 的 Python（不含种子）从 30,113 行（`6a06e45`）降到 16,489 行，其中训练栈 5,157 行、其余框架 11,332 行（验收线 22k）。种子 14,082 行，绝大部分是原样 vendor 的 Stirrup。测试 23,966 → 13,762 行。
+  - 行数：`reharness/` 的 Python（不含种子）从 30,113 行（`6a06e45`）降到 16,489 行，其中训练栈 5,157 行、其余框架 11,332 行（验收线 22k）。种子 14,082 行，绝大部分是原样 vendor 的 Stirrup。测试 23,966 → 13,762 行。
   - 变异检查（都在 scratchpad 的私有副本里，worktree 前后的 `git status`/`git diff` 相同）：evaluate 69 个全部被杀（加强了两条测试后）；付费安全 18/18；activity 58/59，剩下一个是等价变异（续跑时 baseline 重跑但不付费）；runtime 31/31；边界与兼容 15/16，剩下的是 hook 细节从 500 字截到 300 字，这次尝试的细节本来就短于 300；适配器与训练栈 11/12，剩下的由另一条拒答检查兜住。两个 agent 曾误把文件拷进别人用的 `scratchpad/mut`，被覆盖的是基线内容，只可能让变异显得“存活”，不会造出假的“被杀”；它们之后都改在自己的目录里跑。
 - 已知、没修（记在设计文档里）：
   - stirrup 种子不把 manifest 的 `model.effort` 传给 `ctx.model`，调用按 K 的 effort（medium）走，候选改 effort 不生效；种子按 `ctx.limits["act_calls"]` 给自己的回合封顶，用完回合的尝试记作 `finished` 而不是 `budget`/`act_calls`，报告里的步数上限终止会少算（HARNESS §4）。
@@ -1046,7 +1054,7 @@
   - §4 agent 一节：Stirrup 作种子，Pi 的扩展事件模型作 hook API 参照（站点从 3 个扩到 6 个：before_run、before_model、before_tool、after_tool、after_turn、on_finish），Deep Agents 的中间件集合作复杂任务能力清单并逐项对照；不选 Pi、Deep Agents 作种子的原因写明。
   - §5.6 记忆 → 技能 → 工具/hook 的逐级升级；§6.4 分层的代码先验与结构保证；§6.11 运行语义；§11 不做的项加 Pi、Deep Agents、OpenEvolve/GEPA 种群、SIA 在线 RL、Exo 自我重建。
 - 文档清理（续）：`git rm -r docs/modules/`（十份 v0.7 的模块文档；描述的代码随阶段 1～3 替换，规则以 DESIGN 为准；代码 docstring 里对 `docs/modules/*.md` 的引用在代码重写时一并改）。docs/ 现在是：DESIGN、PLAN、JOURNAL、RESULTS、SURVEY_RSI_FRAMEWORKS、TRAINING_HOSTS、design/V2_TRAINING_PIPELINE、history/。
-- 证据：没改 `ouroloop/` 下的代码，没跑测试，没调模型，没付费，没读 `.env`，没读任何 test 内容。
+- 证据：没改 `reharness/` 下的代码，没跑测试，没调模型，没付费，没读 `.env`，没读任何 test 内容。
 - commit：本条所在的提交。
 
 ---
@@ -1059,7 +1067,7 @@
   - 新写 [DESIGN v1.0](DESIGN.md)，取代 v0.7 的 DESIGN 与 10-08 的三份设计稿。要点：框架两项职责（自动提升 harness、训练模型）；harness 是有类型的组件图（agent / vendor / tool / hook / prompt / skill / memory / model / config / test），每类有位置、改法、$0 验收、记功条件与 K 的上限；开源底座 Stirrup 整份 vendor 进 W，接缝只有一个适配文件，二开按适配层 → 补丁栈 → R 直接改三档，升级 = 换上游重放补丁；memory 是 W 的组件，ReMe 算子在 sidecar 里提炼与检索，平台管出处、train-only、留一、引用记功、退役、容量，快照走阶梯，反复出现又可机械化的条目升级成 tool/hook；改进器是我们自己的八步循环（证据 → 诊断成原因簇 → 学出来的分层 → 编码会话 → 逐档验收 → 筛选与 gate → 装入与存档 → 条件记功与反膨胀），验收阶梯 V0 静态 / V1 单元 / V2 toolcheck·回放·可达 / V3 train 筛 / V4 dev gate / V5 final；模型是 W 的 `model` 组件，训练链产物绑进候选走同一条阶梯；平台只留保护钱、防泄漏、保结果正确三类；目标布局 `harness/ runtime/ memory/ improver/ evaluate/ activity/`，框架 30k → 约 20k 行；五个阶段，阶段 0～3 都是 $0。
   - 文档清理（tag `archive-2026-10-09` = `6a06e45`，删掉的都在上面）：删 `ROADMAP.md`（活的部分在 PLAN，历史在 JOURNAL/RESULTS）、`TECHNOLOGY.md`、`REHEARSAL.md`（记录的代码已删）、`design/OSS_COMPONENTS_PLAN.md`、`design/MEMORY_AGENT_ITERATION.md`、`design/V0_6_DESIGN.md`（三份被 DESIGN v1.0 取代；V0_6 的证据表与 S1 读数在 DESIGN 里引用）、`design/SLIMMING_INVENTORY.md`（第一批已完成，其余并入阶段 1）、`design/V0_5_EVOLVING_SEARCH.md`、`design/V0_5_METHOD_LIBRARY.md`（方法库删，经验库由 memory 组件取代）、`history/V0_6_AUDIT_2026-10-01.md`、`history/V0_6_REVIEW_2026-10-02.md`（审的代码已删）。`design/V0_4_PLAN.md`、`design/V0_5_PLAN.md` 是已测活动的预注册记录，移到 `history/`。其他文档里指向删掉文件的链接改成“（tag archive-2026-10-09）”。留下：PLAN、JOURNAL、RESULTS、DESIGN、SURVEY_RSI_FRAMEWORKS、TRAINING_HOSTS、design/V2_TRAINING_PIPELINE、modules/（描述现有代码，随阶段 1～3 的代码一起删）、history/ 的分析与调研。
   - [PLAN](PLAN.md) 改写：阶段按 DESIGN §8 重排（0～5），原 P2～P7 并入；规则加第 19（不为基准定制）、20（平台只留三类）条；§3 列待审项。`CLAUDE.md`、两份 README 的状态段与文档链接随之改。
-- 证据：没改 `ouroloop/` 下的代码，没跑测试，没调模型，没付费，没读 `.env`，没读任何 test 内容。
+- 证据：没改 `reharness/` 下的代码，没跑测试，没调模型，没付费，没读 `.env`，没读任何 test 内容。
 - commit：本条所在的提交。
 
 ---
@@ -1067,20 +1075,20 @@
 ## 2026-10-08 瘦身第一批的验收与三份评审（P1）
 
 - 验收（在 `288ea61` 上，没改代码，没提交）：
-  - 默认套件 1118 passed、5 skipped、1 deselected；带 Docker 的全量（`OUROLOOP_TEST_REQUIRE_DOCKER=1 -m "not live"`）同数。`ouroloop/agent/worker_runner.py` 与 `docker/worker.Dockerfile` 自 tag `archive-2026-10-08` 起没改过。
-  - `python -m ouroloop.train smoke --jev --backend mock` 退出 0，三行 ok，与 tag 上旧命令 `python -m ouroloop smoke --backend mock` 的输出相同（两边都在空目录里跑：两个 CLI 都读 `./.env`）。
+  - 默认套件 1118 passed、5 skipped、1 deselected；带 Docker 的全量（`REHARNESS_TEST_REQUIRE_DOCKER=1 -m "not live"`）同数。`reharness/agent/worker_runner.py` 与 `docker/worker.Dockerfile` 自 tag `archive-2026-10-08` 起没改过。
+  - `python -m reharness.train smoke --jev --backend mock` 退出 0，三行 ok，与 tag 上旧命令 `python -m reharness smoke --backend mock` 的输出相同（两边都在空目录里跑：两个 CLI 都读 `./.env`）。
   - `--checks-only` 字节对照（P1 验收原文的一条，上一条记为没做）：两棵树各在一份 workspace-claude-v4-finance 拷贝上跑，退出码 0，stdout（31 行）与 stderr 相同，划分哈希 `4fd91eaf9fb8daf5`，拷贝的 1257 个文件一个没变。
-  - 假上游上的尝试对照：`slim/1` 对 tag `archive-2026-10-08`（`ouroloop/` 与 `tests/fake_upstream` 与 `8434c03` 相同），两边 `code_version` 打桩成同一常量，每个场景每棵树跑两次。smoke（1 次尝试、5 次模型调用、5 次工具调用）与 v3、v5 的 baseline（各 2 次尝试、9 次模型调用、9 次工具调用）的模型调用序列、结果行、评分行、运行清单、transcript、session 行、`.release.json` 与台账都相同，内容哈希也相同。差的只有已记的删除：baseline 打印的 frontier 两行与返回报告的 `c2_complete`、`frontier`（6a）；`rsi/defaults.json`（`Releases.defaults` 删了，5c）。
+  - 假上游上的尝试对照：`slim/1` 对 tag `archive-2026-10-08`（`reharness/` 与 `tests/fake_upstream` 与 `8434c03` 相同），两边 `code_version` 打桩成同一常量，每个场景每棵树跑两次。smoke（1 次尝试、5 次模型调用、5 次工具调用）与 v3、v5 的 baseline（各 2 次尝试、9 次模型调用、9 次工具调用）的模型调用序列、结果行、评分行、运行清单、transcript、session 行、`.release.json` 与台账都相同，内容哈希也相同。差的只有已记的删除：baseline 打印的 frontier 两行与返回报告的 `c2_complete`、`frontier`（6a）；`rsi/defaults.json`（`Releases.defaults` 删了，5c）。
   - 范围（行为评审的提醒）：这是 HEAD 的 v3、v5 preset 在迷你 `rsi` 领域上、用 ProcessWorker 跑的，不是四个工作区各自冻结的 K 与 Docker 镜像。四个工作区的 K 都是 `max_effort=medium`、`training=False`，两棵树都让它们走运行壳；它们的记录由 `test_record_compat` 只读核对，不在 HEAD 上重跑。
   - 另看了无 preset 的 v0.1 式配置（四个工作区都不用）：tag 上走 v1 循环，`slim/1` 走运行壳（5b）。模型调用、工具调用及其参数与输出、结果、评分与运行清单相同；transcript 多了 `agent`、`tool_specs`、`gateway_call`、`broker_event` 事件，工具 id 带网关前缀；台账与结果行里的 5 个 `worker.stop` 决策没了，也没有 `sessions/<id>.jsonl`。
 - 三份评审（读兼容与行为、资金安全与测试保证、完整性）都认为可以合入，提了 4 + 4 + 11 条。逐条核过，修了的（每个提交之前默认套件都通过）：
-  - `8a72709` 读兼容：`test_record_compat` 把四个对象库里类型化的冻结对象（finalization、receipt、change 除外，它们装着 final 的计划与读数）都用 HEAD 的类型载入，plan 连同它的 GatePlan、schedule 按 `Schedule`；四个库的 143 个 release 都在 preflight 下绑定。新加经验台账一项：`ledger_rows`、`ledger_projection` 照读，HEAD 的 `pick_best` 按 K 的筛选设置逐轮重放，选中的就是记录里的 `selected`（v3 3/3 轮、v4-finance 3/3、v5-support 1/1）。设了 `OUROLOOP_RECORDS_ROOT` 却找不到工作区时改为失败，不再整组 skip；broker_event 断言 16 位的 `output_digest`。`test_aa_replay` 与 `test_harness_package` 的字面量重放改从 `OUROLOOP_RECORDS_ROOT` 找工作区（原来在 worktree 里总是 skip），用本检出的代码跑，并核对工作区只被读过。变异检查（隔离副本）：去掉 REGISTRY 的 `worker.stop`、GatePlan 拒绝 `regression_drop`、`pick_best` 反序、`min_net_flips` 差一，都被抓到；`min_fixes` 下限这几份记录区分不出。
+  - `8a72709` 读兼容：`test_record_compat` 把四个对象库里类型化的冻结对象（finalization、receipt、change 除外，它们装着 final 的计划与读数）都用 HEAD 的类型载入，plan 连同它的 GatePlan、schedule 按 `Schedule`；四个库的 143 个 release 都在 preflight 下绑定。新加经验台账一项：`ledger_rows`、`ledger_projection` 照读，HEAD 的 `pick_best` 按 K 的筛选设置逐轮重放，选中的就是记录里的 `selected`（v3 3/3 轮、v4-finance 3/3、v5-support 1/1）。设了 `REHARNESS_RECORDS_ROOT` 却找不到工作区时改为失败，不再整组 skip；broker_event 断言 16 位的 `output_digest`。`test_aa_replay` 与 `test_harness_package` 的字面量重放改从 `REHARNESS_RECORDS_ROOT` 找工作区（原来在 worktree 里总是 skip），用本检出的代码跑，并核对工作区只被读过。变异检查（隔离副本）：去掉 REGISTRY 的 `worker.stop`、GatePlan 拒绝 `regression_drop`、`pick_best` 反序、`min_net_flips` 差一，都被抓到；`min_fixes` 下限这几份记录区分不出。
   - `ab79761` 行为：`test_attempt_behaviour` 对 v3、v5 两个 preset 各跑一次。v5 的录制在 tag `archive-2026-10-08` 上做，与 v3 的夹具逐字节相同（W0 没有库条目也没有方法），所以一份夹具守两个 preset。
   - `794d144` 资金：`test_paid_run_safety` 新加 v3 一轮的计量测试（`prepared_v3`：measure、R 的会话、train_screen、dev gate 与确认），每个预留都 settled、根的 `used.model_calls` 等于预留数。让 train_screen 的调用不结算的变异只被它抓到。原来的计量测试都跑在 `prepared` 的无 preset K 与 v2 轮上。
   - `7ea956a` `TestPhases` 在 `tmp_path` 里跑：原来它往 pytest 当前目录的 `ws/` 引导一个 release（上一条“发现了，没修”的第一项）。跑完默认套件，worktree 里没有新文件，被忽略的也没有。
-  - `0651017` 研究位的准入不再加载 `ouroloop.train`：`core_checks` 只在提案有训练条目时才取已注册的 feedback builder。
+  - `0651017` 研究位的准入不再加载 `reharness.train`：`core_checks` 只在提案有训练条目时才取已注册的 feedback builder。
   - `7704a3e` `[train]` 里留着的 `train/checks.py` 与 `fit_temperature` 随 test_evolve 失去了全部测试，补回 `tests/train/test_checks.py`（截断、13-gram、test 与 train 重复、`min_train`、可测差、答案位置偏斜与并列答案、温度拟合；每项的变异都被抓到）；`release.Revoked`/`revoke` 加往返测试；删了没有调用者、也没有 V2 段落点名的 `train/types.py` 的 `brier` 与 `train/policy.py` 的 `cp_lower`；`tests/test_core.py` 只测 train 的决策原语，移进 `tests/train/`；test_jobs 去掉没用的 `httpx` 导入。
-  - `3da9a0c` 措辞与版本：trainer 插件契约、TDE 插件、`JobTrainer` 缺父模型的报错（上一条“发现了，没修”的一项）与 stores 的说明不再写冠军、gate、校准与部署；指向已删 `agent/loop.py` 的四处写明是 tag 上的 v1 循环；`ouroloop/__init__.py` 与 pyproject 的描述改用 README 的说法；`__version__` 由 0.1.0 改为 pyproject 的 0.3.0（host init 用它给发出的 sdist 命名），加测试守住两者相等。
+  - `3da9a0c` 措辞与版本：trainer 插件契约、TDE 插件、`JobTrainer` 缺父模型的报错（上一条“发现了，没修”的一项）与 stores 的说明不再写冠军、gate、校准与部署；指向已删 `agent/loop.py` 的四处写明是 tag 上的 v1 循环；`reharness/__init__.py` 与 pyproject 的描述改用 README 的说法；`__version__` 由 0.1.0 改为 pyproject 的 0.3.0（host init 用它给发出的 sdist 命名），加测试守住两者相等。
   - 本条所在的提交：文档（本条、上一条的更正、PLAN、SLIMMING）。
 - 没修的，与原因：
   - `startup_checks` 对 `[trainer]` 的拒绝（资金评审第 3 条，评审记为可选）：没加。运行壳不问 `worker.stop`，训练出的模型赢不了对照（IT-02 的读数就是 gain 0）；但运行壳不写 stop 决策，数据集凑不齐，不会付训练费。现在加，IT-02 与 test_research_round 的两个训练提案测试就跑不了 `bench.improve`，留在 `[train]` 的训练路径会失去端到端测试。等第二批迁夹具或 V2 §3.8 的 stop 桥时一起定（PLAN P2 第 5 步）。
@@ -1088,13 +1096,13 @@
   - `compute.py` 的 MARK 改了，瘦身前的控制面起的作业不再被 `unfinished`/`cancel` 认出。现在没有在跑的旧作业，云实例仍按标签清理。
   - test_jobs 里取消残留作业的测试偶发计时失败，base 上一样，不属于 P1。
 - 读数（`3da9a0c`，代码与本条所在的提交相同）：
-  - 默认套件 1136 passed、3 skipped、1 deselected（约 159 s）；带 Docker 的全量同数（约 162 s）。比验收时多 18 个 passed：16 个新测试，另 2 个是原来 skip 的 `test_aa_replay` 与字面量重放，现在在 `OUROLOOP_RECORDS_ROOT` 下真跑；剩下 3 个 skip 是没有 TDE 仓库，1 个 deselected 是唯一的 live 测试 `tests/train/test_live_jev.py`。
-  - `--checks-only` 对照与假上游上的尝试对照在 `3da9a0c` 上重跑（tag 一侧用 `git archive` 解出的副本，不建 worktree），结果与验收时逐项相同；`python -m ouroloop.train smoke --jev --backend mock` 退出 0。
-  - 行数（`8434c03` → `3da9a0c`）：框架 `ouroloop/**/*.py` 103 个文件 35,253 行 → 95 个文件 30,113 行（−5,140，−14.6%），其中主包 25,391、`[train]` 3,025、`[train-jobs]` 1,697；`ouroloop/` 下全部文件 35,460 → 30,386。测试（`tests/**/*.py`，不含 fake_upstream）25,554 → 23,529。`8434c03..3da9a0c` 共 34 个提交。
+  - 默认套件 1136 passed、3 skipped、1 deselected（约 159 s）；带 Docker 的全量同数（约 162 s）。比验收时多 18 个 passed：16 个新测试，另 2 个是原来 skip 的 `test_aa_replay` 与字面量重放，现在在 `REHARNESS_RECORDS_ROOT` 下真跑；剩下 3 个 skip 是没有 TDE 仓库，1 个 deselected 是唯一的 live 测试 `tests/train/test_live_jev.py`。
+  - `--checks-only` 对照与假上游上的尝试对照在 `3da9a0c` 上重跑（tag 一侧用 `git archive` 解出的副本，不建 worktree），结果与验收时逐项相同；`python -m reharness.train smoke --jev --backend mock` 退出 0。
+  - 行数（`8434c03` → `3da9a0c`）：框架 `reharness/**/*.py` 103 个文件 35,253 行 → 95 个文件 30,113 行（−5,140，−14.6%），其中主包 25,391、`[train]` 3,025、`[train-jobs]` 1,697；`reharness/` 下全部文件 35,460 → 30,386。测试（`tests/**/*.py`，不含 fake_upstream）25,554 → 23,529。`8434c03..3da9a0c` 共 34 个提交。
 - 合入前要知道的：
   - `m1-automationbench` 在验收之后到了 `03cca42`，只加了 `docs/design/V0_6_DESIGN.md`（914 行），不碰 `slim/1` 删的路径；`git merge-tree` 没有冲突。两点 diff（`m1-automationbench..slim/1`）会把它和 `MEMORY_AGENT_ITERATION.md` 算成删除，合并会留着它们。
   - V0_6 计划的三个 worktree（`v6-agent`、`v6-gateway`、`v6-memory`）从 `slim/1@eb8c505` 分出，与 HEAD 文本上都能干净合并；`v6-agent` 改 `harness_package.py`，`v6-gateway` 改 `gateway.py` 与 `runner.py`，`slim/1` 在 `eb8c505` 之后也改过这三个文件，所以要在 HEAD 之上重跑它们的套件。`v6-agent` 加的一处 docstring 引了 5c 删掉的 `PackageRuntime.call_tool`；V0_6 里的 file:line 以 `eb8c505` 为准。
-  - 合并后从主检出跑默认套件，`OUROLOOP_RECORDS_ROOT` 可以不设（默认就是主检出的 `examples/automationbench`），读兼容与两个重放测试都会真跑，只读。
+  - 合并后从主检出跑默认套件，`REHARNESS_RECORDS_ROOT` 可以不设（默认就是主检出的 `examples/automationbench`），读兼容与两个重放测试都会真跑，只读。
 - 证据：没调模型，没付费，没读 `.env`，也没读任何 test 题的内容；对象库里装 final 读数的 finalization、receipt、change 不被类型化载入。`test_aa_replay` 照旧读 v0.1/v0.2 工作区里 W0 的 marketing test 读数（只计数，那份 test 早已读过三次）。
 - commit：`8a72709`～`3da9a0c` 与本条所在的提交，都在 `slim/1` 上，没合入。
 
@@ -1107,18 +1115,18 @@
   - 写进了 PLAN（§0.2 末行、规则 15、P1 第 1 步，以及 P2～P5 里提到金标的地方）、SLIMMING（页首、§1、§3 各批、§4、§5），ROADMAP、V2、DESIGN 就地加注。
 - 做了什么。分支 `slim/1`，从 `8434c03` 起，27 个提交，在 worktree 里做，主检出一行没动。每个提交之前默认套件都通过。
   - 第 1 步 `2dbd935`：两组测试，代替金标。
-    - `tests/test_record_compat.py`（24 个）：在 `OUROLOOP_RECORDS_ROOT` 下只读四个工作区。读的是 train/dev 的结果、运行清单、评分行、抽样的 transcript、session 行与 `.release.json`、release 与对象闭包、`library_stream.json`。读前读后对每个文件求哈希，工作区的文件、大小与 mtime 都不变；缺了工作区就 skip。
+    - `tests/test_record_compat.py`（24 个）：在 `REHARNESS_RECORDS_ROOT` 下只读四个工作区。读的是 train/dev 的结果、运行清单、评分行、抽样的 transcript、session 行与 `.release.json`、release 与对象闭包、`library_stream.json`。读前读后对每个文件求哈希，工作区的文件、大小与 mtime 都不变；缺了工作区就 skip。
     - `tests/test_attempt_behaviour.py` 加夹具 `tests/fixtures/attempt_behaviour_v3.json`（在 `8434c03` 上录）：v3 preset 的 K 下，脚本化的 actor 跑一次 dev、一次 train 尝试。
   - 第 2 步 `eb8c505`：热路径解耦，行为不变。
     - 尝试改用薄的 `workspace.Workspace` 写 session 行与 `.release.json`，`release.spec` 写冻结常量。rule 类 `worker.stop` 不再构造决策点。feedback、build、points 改懒导入；拒绝表移到 `agent/deny.py`。
-    - 新加 `tests/test_hot_path_boundary.py`：在新解释器里跑 v3、v5 的 smoke 检查、一次 smoke 尝试、基线与测量，之后 `ouroloop.train` 与其余决策栈一个模块都没被加载。
+    - 新加 `tests/test_hot_path_boundary.py`：在新解释器里跑 v3、v5 的 smoke 检查、一次 smoke 尝试、基线与测量，之后 `reharness.train` 与其余决策栈一个模块都没被加载。
   - 第 3 步 `24a2aa6`～`0115d1d`：删旧入口。
-    - `ouroloop` 命令只剩 bench、freeze、export；decide、`smoke --jev`、host 移到 `python -m ouroloop.train`。
+    - `reharness` 命令只剩 bench、freeze、export；decide、`smoke --jev`、host 移到 `python -m reharness.train`。
     - 删了 demo 与 MockProvider（夹具移进测试）、serve、`agent/{suite,prompt,probe}`、`evolve/harness.py`、manual provider（`request_json` 移到 `providers/claude_code.py`）、`evals/`（35 个跟踪文件，3,091 行）、`marketing.toml`。
-  - 第 4 步 `7432c0e`～`81e75ee`：建子包。`ouroloop/train/`（`[train]`）与 `ouroloop/train/jobs/`（`[train-jobs]`），pyproject 加两个 extra；测试移进 `tests/train/`、`tests/train/jobs/`。`[train-jobs]` 的测试改写到 `train_artifact` 上，不再经 gate。
+  - 第 4 步 `7432c0e`～`81e75ee`：建子包。`reharness/train/`（`[train]`）与 `reharness/train/jobs/`（`[train-jobs]`），pyproject 加两个 extra；测试移进 `tests/train/`、`tests/train/jobs/`。`[train-jobs]` 的测试改写到 `train_artifact` 上，不再经 gate。
   - 第 5 步 `16db62a`～`af3f82e`：删冠军指针一族与 v1 循环（SLIMMING §0.1 E）。
     - 每次尝试都走运行壳；`tests/rsi.py` 冻结 v3 式的 K，原来走 v1 循环的 126 个测试换到运行壳上。
-    - 删了 `agent/loop.py`、`points/`、`runtime.py`、gate、plan、pipeline、replay、monitor、registry、calibrate、build、`research/agent.py`、`ask.py`、`backends/http.py` 与 serving 的 url 模式、`--phase collect`、`examples/ouroloop.toml`。
+    - 删了 `agent/loop.py`、`points/`、`runtime.py`、gate、plan、pipeline、replay、monitor、registry、calibrate、build、`research/agent.py`、`ask.py`、`backends/http.py` 与 serving 的 url 模式、`--phase collect`、`examples/reharness.toml`。
   - 第 6、7 步 `c766cd4`～`455ffe2`：顺带删的与注释。
     - 删：本地 frontier 臂（C2 只引公开结果）；task_gate 的 economy、protected、成本比与 v1 dev 筛选，计划字段留着取冻结值，设了这些的 gate 会被拒绝，54 份冻结计划没有一份设过；没有调用者的函数；v0.3 的筛选与准入兼容。
     - 7 处“invariant 6”注释改指新的不变量 6。
@@ -1129,12 +1137,12 @@
     - 删了 DEMO、RESEARCH_AGENT、`history/V0_5_IMPLEMENTATION.md`、`docs/assets/`。指向快照的四处链接改指 tag。本文页首“从 `evals/replay_campaign/` 重算”一句改为在 tag 上重算。
 - 量到的数：
   - 行数：
-    - 框架 `ouroloop/**/*.py` 35,253 → 30,126（−5,127，−14.5%）。主包 25,387，`[train]` 3,042，`[train-jobs]` 1,697（另有 sh 与 Dockerfile）。`bench.py` 5,360。
+    - 框架 `reharness/**/*.py` 35,253 → 30,126（−5,127，−14.5%）。主包 25,387，`[train]` 3,042，`[train-jobs]` 1,697（另有 sh 与 Dockerfile）。`bench.py` 5,360。
     - 测试（不含 fake_upstream）25,554 → 23,265（原写 23,237，是文档提交加 `quickstart.toml` 的测试之前的数；评审后的读数见 2026-10-08 瘦身第一批的验收与评审一条）。
     - `8434c03..455ffe2` 共 191 个文件，+6,848/−15,571。
   - 默认套件，每步末：第 2 步 1252 passed、5 skipped、2 deselected；第 3 步 1240、5、1；第 4 步 1244、5、1；第 5 步 1124、5、1；第 6、7 步 1117、5、1；本条提交 1118 passed、5 skipped、1 deselected（约 144 s）。
     - 第 5 步少的约 120 个，是随 v1 循环和冠军指针一族整删的测试文件：test_gate_record、test_act、test_gate_bypass、test_evolve、test_loop 等。
-  - 带 Docker 的全量（`OUROLOOP_TEST_REQUIRE_DOCKER=1 -m "not live"`）：第 2 步 1253 passed，多出的一个是唯一的 slow 测试，第 3 步随 test_harness 删掉；之后各步都与默认套件同数。加 `TDE_REPO` 时第 5 步为 1127 passed、2 skipped。干净副本（`git archive`）第 6、7 步末 1093 passed、29 skipped。
+  - 带 Docker 的全量（`REHARNESS_TEST_REQUIRE_DOCKER=1 -m "not live"`）：第 2 步 1253 passed，多出的一个是唯一的 slow 测试，第 3 步随 test_harness 删掉；之后各步都与默认套件同数。加 `TDE_REPO` 时第 5 步为 1127 passed、2 skipped。干净副本（`git archive`）第 6、7 步末 1093 passed、29 skipped。
   - 变异检查：每步在隔离的 `git archive` 副本里做，共 83 个变异（第 2 步 9、第 3 步 17、第 4 步 15、第 5 步 19、第 6 步 23）。
     - 初次漏掉 5 个，都补了测试：`request_json` 丢掉工具 schema（`0115d1d`）；bench 的 Workspace 的 serving 换成 None（`81e75ee`）；网关从 K 读的 effort 上限，以及没有好祖先可退的回滚（`af3f82e`）；`grounding_inputs` 恒返回 None，这是这一批之前就有的缺口（`455ffe2`）。
     - 另 1 个漏掉，是选测试文件时漏了 `test_research_round`，补上之后就抓到了。补测后全部抓到。
@@ -1145,7 +1153,7 @@
 - 停下来分析：
   - 有没有字节差？行为夹具与第 2 步的比对都没有。没做的：PLAN 验收里在 finance 副本上跑 `--checks-only` 的逐字节对照。按上面的决定，旧工作区不在 HEAD 上续跑，这个对照不再是要求；checks-only 与尝试路径由假上游上的边界与行为测试覆盖。（验收时补做了：两棵树的输出相同，拷贝没变；见 2026-10-08 瘦身第一批的验收与评审一条。）`quickstart.toml` 在 scratch 副本里对真实上游跑了 `--phase smoke --checks-only`（通过，finance 划分哈希 `4fd91eaf9fb8daf5`）和 `freeze`（打印出三行 `[rsi]`）。
   - 有没有哪项保证只在被删的路径上测过？有五项，现在没有测试，因为代码没了：
-    - hook 入口的失效保护：它从不弄坏 Claude Code 会话，运行时起不来时也保留拒绝表。随 `ouroloop hook` 删；适配器的拒绝表仍有测试。
+    - hook 入口的失效保护：它从不弄坏 Claude Code 会话，运行时起不来时也保留拒绝表。随 `reharness hook` 删；适配器的拒绝表仍有测试。
     - PR-05：撤销后重新绑定 session。一次运行臂现在只绑一次 release。
     - CT-05：遗留冠军与已安装的 release 并存。
     - HTTP 后端的重试与 256 条分块。
@@ -1159,7 +1167,7 @@
   - 运行壳下，hook 在运行时抛错、答出协议之外或弄死 worker，算基础设施，不算候选的缺陷；有界的 worker 调用（草稿、探针）仍算包的缺陷。
   - `train_artifact` 的失败原因现在留头和尾。
   - Claude Code 适配器去掉了 `live` 模式。
-  - 没跑 `pip install -e '.[train,train-jobs]'`，因为会改主 venv 的可编辑安装；在 worktree 里用 `PYTHONPATH` 跑了 `python -m ouroloop.train smoke --jev --backend mock`，退出码 0。
+  - 没跑 `pip install -e '.[train,train-jobs]'`，因为会改主 venv 的可编辑安装；在 worktree 里用 `PYTHONPATH` 跑了 `python -m reharness.train smoke --jev --backend mock`，退出码 0。
 - 发现了，没修：
   - `tests/test_bench_phase.py::TestPhases` 用默认的 base `"."` 与 root `"ws"`，会往 pytest 的当前目录写 `ws/bench/marketing` 与 `ws/rsi`。从主检出跑默认套件时，它写的就是主检出的 `ws/`，而规则 12 把 `ws/` 列为不能再生的运行记录。改法是传 `tmp_path` 作 base。（评审后已修，`7ea956a`。）
   - 检索的 `statuses` 过滤（`policies.py:135`）现在匹配不到框架写的任何东西，因为 summary 行已删。它是 W/R 的策略键，留给第二批。
@@ -1206,7 +1214,7 @@
     - git 忽略的本地文件不动：各工作区，以及彩排目录里的 `*.local.toml`、`workspace-rehearsal*` 与 `workspace-actor-manual`。
   - 改的测试：`tests/test_aa_replay.py` 加 skip-if-absent。它读 git 忽略的 `workspace-claude` 记录，干净检出上原本会失败。
   - 暂不删、随瘦身各批走的：
-    - 第一批（还有代码或测试引用）：`DEMO.md`、`RESEARCH_AGENT.md`、`docs/assets/`、`history/V0_5_IMPLEMENTATION.md`、`evals/`、`marketing.toml`、`examples/ouroloop.toml`。
+    - 第一批（还有代码或测试引用）：`DEMO.md`、`RESEARCH_AGENT.md`、`docs/assets/`、`history/V0_5_IMPLEMENTATION.md`、`evals/`、`marketing.toml`、`examples/reharness.toml`。
     - 第二批（测试载入）：`improvement.toml`、`claude.toml`、`claude-full.toml`、`claude-v3.toml`。
     - 第三批：`V0_5_METHOD_LIBRARY.md`，用户不否决方法库的删除时才删。
     - `docs/REHEARSAL.md` 作记录保留。
@@ -1224,7 +1232,7 @@
     - 其余文档的同步见提交。
   - 复核后补（同日）：PLAN 的 P1～P3 补上测试夹具的跨文件导入（test_gate_record、test_cycle、test_rsi_integration）、`api_errors._calls` 先移走、第二批的小分支、金标比对时给 `code_version` 打桩并去掉 `ts`、金标测试不写工作区；SLIMMING 里与规则 12 冲突的三处（`*.local.toml` 的通配、“移出仓库归档”）改掉；OSS 正文里按“support 正在跑”写的时机就地改掉，S1 改为与瘦身第一批并行；X1 的域照 V2 §4.2；TRAINING_HOSTS 页首的核价更正；被本次整理挪动的 file:line。
   - 下一阶段的计划写在 [PLAN.md](PLAN.md)（新的活文档），另加根目录的 `CLAUDE.md`；ROADMAP 只放指针，不重复。
-- 证据：没有运行证据。没改 `ouroloop/` 下的代码，没调模型，没付费，没读 `.env` 与任何 test 内容。
+- 证据：没有运行证据。没改 `reharness/` 下的代码，没调模型，没付费，没读 `.env` 与任何 test 内容。
   - 清理前在 `80254a3` 上：`.venv/bin/pytest -q -m "not live"` 为 1245 passed, 1 deselected；默认 `pytest -q` 为 1243 passed, 3 deselected。
   - 在 scratch 的干净副本里（`git archive HEAD`，没有 git 忽略的文件）：`1 failed, 1240 passed, 4 skipped`，失败的是 `test_aa_replay`，它读 git 忽略的 v0.1/v0.2 工作区。
   - 同一副本删掉上面的示例与测试、给 `test_aa_replay` 加 skip-if-absent 之后：`1220 passed, 5 skipped`。少的 20 个测试是天花板 10、彩排 6、support_h1 4。
@@ -1249,7 +1257,7 @@
 
 ## 2026-10-08 support v0.5 臂 3b：经验库流与快照轮
 
-- 做了什么：`ouroloop bench --config examples/automationbench/claude-v5-support.toml --phase library`（2026-10-07 开始，2026-10-08 跑完），之后 `--phase report`（不付费）。
+- 做了什么：`reharness bench --config examples/automationbench/claude-v5-support.toml --phase library`（2026-10-07 开始，2026-10-08 跑完），之后 `--phase report`（不付费）。
 - 证据（train 流，每题一次读数，不是主张）：50 道 train 题，D = 3.0（修好 4、弄坏 1，按配对效应计），B = 1；前后两半 0.00 → 0.12（后半更好的自助概率 0.8895）；每 10 题窗口 +0.00、+0.00、+0.10、+0.20、+0.00；记功的秩相关 0.2；条目 active 7、retired 35、在检查处丢弃 45，提炼调用 45 次，每次尝试平均展示 1.24 条。
 - 证据（快照轮，dev 25 题，配对 gate）：筛选 fixes 2、样本退步 1、net flips 1，入选；gate 首读 +0.24，确认读数单独 +0.08（≥ min_gain 0.05），合并 +0.16，dev 区间 [+0.047, +0.287]（25 族，2000 次重抽），退步率 0；通过率 0.52 对合并对照（3 次读数）0.36；每次尝试成本 $0.407 对 $0.435（−6.6%，区间不含 0）。装上 release `9f07d95032b4`（6 个 library-* skill）。`m_tool_writes` 0。
 - 预注册读法（V0_5_PLAN §3）：经验库在 train 上有效（D ≥ +2）成立；学习曲线（后半 − 前半 > 0 且 P ≥ 0.8）成立；记功有信息（秩相关 > 0）成立。三项都是过程证据，噪声大（每题一次读数）；dev 增益在 gate 里被用来选择，首读到确认从 +0.24 落到 +0.08，真实效应大概率低于 +0.16，只有 test final 能定。
@@ -1270,7 +1278,7 @@
   - (a) C4 保留 R 递归，改为跨活动比较（R1 臂 = R0 加前一个活动的 playbook，联合 final）；删活动内研究位的编排。
   - (b) Jev、TDE 与本地决策 trainer 收进可选子包、移出热路径；撤回的只有“v1 Agent 循环的决策点与冠军发布继续可用”。
   - 冠军指针一族（已被 Releases 与 task_gate 取代）按过时删，v2 按 Releases 重写。
-  - 训练与蒸馏是 ouroloop 框架的一部分（不放在 jev 仓库），GPU 作业设施保留；数据管线、试验设计与训练管线另写设计。
+  - 训练与蒸馏是 reharness 框架的一部分（不放在 jev 仓库），GPU 作业设施保留；数据管线、试验设计与训练管线另写设计。
   - 老师输出的许可与条款不在范围内：交付的是开发者用自己可插拔的 teacher/judge/actor/student/trainer 跑通的链，Claude 只验收链路；清单里的条款说明随之删去（`b58f5cc`）。
   - 每一批都等 support 两份 final 评完、H1 算完之后才合入。
 - v2 训练链设计（`b58f5cc` 提交时为草案，用户按默认确认后定稿）：两条轨道。A 是交付的链：v2.0 离线（$0）；v2.1 接真模型并跑首个试验 X1（train 的 val+cal 族上 S0 对 S_F，只读方向；Claude 名义 ≤ $35，真实 ≤ $80）；v2.2 老师审阅的采集链路（≤ $20）。B 是效果主张 C5、C3（另有 C5′、C3b、C6），在自己冻结的计划下跑，名义约 $0.8–1.3k。数据来自宿主记录加离线重放标签，按族划分，防泄漏规则由固定代码执行；训练产物作为 W 的组件走同一个 `task_gate`；读法与止损 K0～K7 预注册。同一提交把清单里的写门上限更正为 train 8.1%、dev 16.0%（只因 must-not 失败的比例；旧数 14%/20% 的两组分母不同）。
@@ -1281,7 +1289,7 @@
   4. 采集时学生用 W0，老师带 K（各域 W\* 的 memory 与 skills 原文，固定模板渲染）审阅，同 HZ。
   5. 五个域（finance、hr、marketing、sales、support）合训一个学生，operations 留出报 LODO。
   6. 底座 Qwen3.5-9B，训练后端 Tinker 作参考实现；自托管走 `module:Class`。
-  7. 子包 `ouroloop/train/`，extra `[train]` 与 `[train-jobs]`，入口 `python -m ouroloop.train`；瘦身第一批按此命名，代码只搬一次（取代清单原来的 `ouroloop[decision]`、`ouroloop[decision-jobs]`）。
+  7. 子包 `reharness/train/`，extra `[train]` 与 `[train-jobs]`，入口 `python -m reharness.train`；瘦身第一批按此命名，代码只搬一次（取代清单原来的 `reharness[decision]`、`reharness[decision-jobs]`）。
   8. `contact_human` 在本基准上不作效果主张；真实标签来自 v2.5 的部署审批。
 - 顺序：support 两份 final 与 H1 → 瘦身第一批 → v2 代码。代码改动现在一律不做，因为主检出正跑着 support，任何 `.py` 改动都会改 `code_version`，从而改两臂冻结的 K；V2 §7 列出的 providers 里 “never training targets” 的注释随瘦身第一批改，闸门改血缘与默认值随 v2.0。
 - commit：`198799a`、`ce50c8d`、`7065a99`、`03f68b3`（瘦身清单）、`b58f5cc`（V2 设计稿）；本条与 ROADMAP 的两节见本条之后的提交。
@@ -1290,7 +1298,7 @@
 
 ## 2026-10-07 support 两臂对照：冻结
 
-- 做了什么：v0.5 合并进 `m1-automationbench`（`7e7732e`，全套 `-m "not live"` 1245 passed）；`ouroloop freeze` 冻结 support 的两臂：v0.4 臂（`claude-v4-support.toml`，plan `c978e0a1…`）与 v0.5 臂（`claude-v5-support.toml`，plan `98874475…`），同一 schedule `15aa3cf6…`、同一 budget `b4c638b7…`（根 $600、final 份额 $160），两个工作区的划分都是 `3da11232f5d5ff38`，test 未读。预先登记的判定照 V0_5_PLAN §3 与两份配置的注释，本条提交之后才付第一笔钱。
+- 做了什么：v0.5 合并进 `m1-automationbench`（`7e7732e`，全套 `-m "not live"` 1245 passed）；`reharness freeze` 冻结 support 的两臂：v0.4 臂（`claude-v4-support.toml`，plan `c978e0a1…`）与 v0.5 臂（`claude-v5-support.toml`，plan `98874475…`），同一 schedule `15aa3cf6…`、同一 budget `b4c638b7…`（根 $600、final 份额 $160），两个工作区的划分都是 `3da11232f5d5ff38`，test 未读。预先登记的判定照 V0_5_PLAN §3 与两份配置的注释，本条提交之后才付第一笔钱。
 - commit：见 git log。
 
 ---
@@ -1328,7 +1336,7 @@
 ## 2026-10-06 v0.4 finance 第 3 轮被拒；封存 final 计划
 
 - 第 3 轮：R 5 回合、读轨迹 4 次、2 个候选（policy_routes、send_scope，各修 2、样本退 0）；进 gate 的候选 dev 10/25（40%）对 W1 的 46%，−6 个点，vendor_insurance_verification 又退步（第 2 轮的候选也弄坏过它），成本项不过；拒。cycle 三轮结束：一次安装（source_memory）。累计 $145.24。
-- 封存：`[freeze.final]` 写入 W\*（`release:sha256:2c64a06c…`）与 W0（`release:sha256:5739b283…`），finance 的 25 道 test × 3 次；`ouroloop freeze` 估计 $61.10（W\* $0.373、W0 $0.441 一次），份额 $160 容得下；`final_plan_ref = finalization:sha256:2af18001…`。本条与配置一起提交之后才跑 `--phase evaluate`。
+- 封存：`[freeze.final]` 写入 W\*（`release:sha256:2c64a06c…`）与 W0（`release:sha256:5739b283…`），finance 的 25 道 test × 3 次；`reharness freeze` 估计 $61.10（W\* $0.373、W0 $0.441 一次），份额 $160 容得下；`final_plan_ref = finalization:sha256:2af18001…`。本条与配置一起提交之后才跑 `--phase evaluate`。
 - commit：见 git log。
 
 ---
@@ -1399,7 +1407,7 @@
 
 ## 2026-10-06 v0.3.0 发版
 
-- 做了什么：按 ROADMAP v0.3 第 6 步发版。只改文档与版本号：`docs/RESULTS.md` 加 “v0.3 (2026-10-06)” 一节（在 v0.2 之前）、总表加 v0.3 一行（五领域：无 final，原因是没有安装），v0.1/v0.2 的行不变；两份 README 的结果段加 v0.3、能力清单加 “v0.3 新增”；ROADMAP 第 5 步写状态并指向诊断、第 6 步写状态、加 “v0.4 方向” 指针（设计写进 `docs/design/`）；`pyproject.toml` 的 version 0.1.0 → 0.3.0（`ouroloop/__init__.py` 的 `__version__` 是代码、进 `code_version()` 的哈希，未改）。没有调用模型、没有付费阶段、没有读 `.env`。
+- 做了什么：按 ROADMAP v0.3 第 6 步发版。只改文档与版本号：`docs/RESULTS.md` 加 “v0.3 (2026-10-06)” 一节（在 v0.2 之前）、总表加 v0.3 一行（五领域：无 final，原因是没有安装），v0.1/v0.2 的行不变；两份 README 的结果段加 v0.3、能力清单加 “v0.3 新增”；ROADMAP 第 5 步写状态并指向诊断、第 6 步写状态、加 “v0.4 方向” 指针（设计写进 `docs/design/`）；`pyproject.toml` 的 version 0.1.0 → 0.3.0（`reharness/__init__.py` 的 `__version__` 是代码、进 `code_version()` 的哈希，未改）。没有调用模型、没有付费阶段、没有读 `.env`。
 - 版本内容（框架）：agent 程序与运行壳（包 API v2、五项单次尝试硬限额、K 的 effort 上限）；gate 统计与速度（合并对照按题补齐、确认复测须单独清过 min_gain——A/A 回放 dev 0/20、test 0/12——、幅度制退步、成本项、min_tasks、并发）；R 作为有界编码会话（k 个带声明的候选、引擎台账、train 侧筛选、原始轨迹、dev 失败类型直方图）；多领域活动（每领域分层划分、Marketing 划分钉住且 test 已 spent、按领域的报告、final 份额检查）；分阶段运行；笔记按领域分层与有记录的续跑。
 - 结果（全部是 Claude 订阅上的名义 API 等价美元，Opus 5.5 经 claude_code）：
   - 天花板实验（第 4 步）：判 training——手写包在 W* 仍失败的 8 道 Marketing 题里修 1、破 2，两臂都是 6/26；$45.28。
@@ -1441,7 +1449,7 @@
   - 对本工作区的离线核对（只读）：W0 的 148 道 train 失败为 marketing 27、sales 33、support 27、hr 38、finance 23；按新规则第 2 轮的 30 条笔记各域 6 条（12 条是 marketing、sales 最久以前纳入的，按身份复用缓存）。前两轮在 R 的台账投影里现在是：rulesmem marketing +24（修 6、坏 0）、hr +8、finance +4、support −4、sales −16（修 2、坏 6）；writemem marketing +16、finance +4、hr 0、support 0、sales −8；投影里没有任何 dev 任务 id。
   - 新增测试：`test_diagnosis.py::test_notes_over_five_domains_are_stratified_and_rotate_within_each_domain`、`test_a_single_domain_selects_notes_exactly_as_before`、`test_research_round.py::test_the_ledger_projection_shows_each_domains_gate_outcome_without_dev_task_ids`、`test_bench_phase.py::test_an_extension_after_a_patience_stop_runs_the_next_round_and_is_recorded`（夹具：三个领域、两轮被拒后 patience 停下，续跑 1 轮跑第 2 轮，笔记每域 1 条且是各域没读过的，gate 读合并对照、没付对照臂，事件、段记录、cycle.json 与报告都有这次续跑，之后的 cycle 不再跑这个段）。全套离线测试（前台）1139 passed、1 deselected（live）。
   - 续跑一轮的费用（第 2 阶段实测）：笔记与会话每轮约 $5.35、筛选约 $18、gate 候选臂 125 × $0.495 ≈ $62，约 $85；加确认约 $147；装上后的下一轮另有约 $66 的 train 重测。根里可用约 $684（扣 final 份额、已花、3 笔 unknown 与 8 路在飞）。
-- 每轮的命令：`.venv/bin/ouroloop bench --config examples/automationbench/claude-v3.toml --phase improve --rounds 1 --reason "2026-10-06: R's notes are now stratified by domain (stage 2 noted only marketing and sales); continue segment-0 after its patience stop, one round at a time (user decision)"`。
+- 每轮的命令：`.venv/bin/reharness bench --config examples/automationbench/claude-v3.toml --phase improve --rounds 1 --reason "2026-10-06: R's notes are now stratified by domain (stage 2 noted only marketing and sales); continue segment-0 after its patience stop, one round at a time (user decision)"`。
 - 读法：续跑是对冻结 schedule 的公开偏离，理由是框架缺陷（不是看了结果再调），记录随活动走；final 仍按第 4 阶段的规则，只在有安装时跑。
 - commit：未提交。
 
@@ -1467,7 +1475,7 @@
 
 ## 2026-10-05 v0.3 第 5 步第 1 阶段：五领域基线
 
-- 做了什么：`ouroloop freeze --config examples/automationbench/claude-v3.toml`（五个领域：Marketing 沿用 v0.2 划分 52/25/23、test 标 spent；sales、support、hr、finance 分层 50/25/25；根 $1,500、final 份额 $390；K 的 effort 上限 medium；一段 6 轮、研究位延后），把打印的 `[rsi]` 引用写进配置（commit `4d9b345`）；在终端面板里跑 `--phase cycle --until baseline`，8 路并发，没有做 16 路试跑。
+- 做了什么：`reharness freeze --config examples/automationbench/claude-v3.toml`（五个领域：Marketing 沿用 v0.2 划分 52/25/23、test 标 spent；sales、support、hr、finance 分层 50/25/25；根 $1,500、final 份额 $390；K 的 effort 上限 medium；一段 6 轮、研究位延后），把打印的 `[rsi]` 引用写进配置（commit `4d9b345`）；在终端面板里跑 `--phase cycle --until baseline`，8 路并发，没有做 16 路试跑。
 - 证据：377 次尝试全部有效、全部正常结束，名义 $175.97，每次 $0.466。W0 train 41.3%（104/252）、dev 40.8%（51/125）；按领域 train / dev：marketing 48.1 / 28.0，sales 34.0 / 48.0，support 46.0 / 36.0，hr 24.0 / 60.0，finance 54.0 / 32.0。3 笔调用结算为 unknown（尝试本身都由计量器重试后有效完成），共占 $21.83。
 - 读法：W0 在合并 dev 上 40.8%，余量大；每域 25 道 dev 的差别是噪声。单价略高于估计、unknown 比率约高一倍，第 2 + 3 阶段与根的余额刚好相当，第 3 阶段按第 2 阶段的实花再定。
 - commit：见 git log。
@@ -1493,7 +1501,7 @@
 - 评审修正（每条先写一个修正前会失败的测试）：
   1. 研究位开位的钱检查加上公共输入的估算（`bench.common_inputs_estimate`）；公共输入复用主线对起点 W 的有效读数（`bench._mainline_readings`、`Improvement.prior_readings`），W0 时 train 与内层 dev 全部复用、公共工作区一次也不付费，已装的 W 复用它已有的 train 读数；为让执行身份相同，研究位的 release 带上主线的宿主契约（`bench._campaign_host`）；两支在没有自己的测量时从公共测量原样起步。测试 `test_cycle.py::test_a_slot_whose_common_inputs_the_root_cannot_hold_asks_r_nothing`、`test_the_slot_reuses_the_mainline_readings_of_the_start_w`、`test_an_installed_start_w_reuses_its_own_readings_and_measures_the_rest`。改写的旧测试：`test_an_arm_pools_only_the_common_readings_and_its_own`（公共 dev 读数现在是主线基线的 `base` 读数）、`test_common_inputs_that_leave_the_arms_short_end_the_slot_inconclusive` 与 `test_real_run_findings.py::test_every_cycle_step_pauses_on_an_account_error[common-slot-0]`（关掉复用，保住这一步里要付费的调用）。
   2. `final_estimate` 按执行身份（W 与 K）找读数，W* 在 gate 里的读数（记在候选 release 上）也算；份额余额放不下“预期 + 在飞预留”时 `--phase evaluate` 在付费前拒绝。测试 `test_paid_run_safety.py::test_the_final_estimate_reads_w_stars_gate_readings_by_execution_identity`、`test_a_final_the_share_cannot_hold_is_refused_before_the_first_attempt`。
-  3. `ouroloop freeze` 封存 final 计划前打印并检查估算（读数优先，否则 `[estimate]`；预期 + 并发 × 上界 + 2 个卡住的上界须放进份额，否则不封存）。测试 `test_a_final_plan_the_share_cannot_hold_is_not_sealed`。
+  3. `reharness freeze` 封存 final 计划前打印并检查估算（读数优先，否则 `[estimate]`；预期 + 并发 × 上界 + 2 个卡住的上界须放进份额，否则不封存）。测试 `test_a_final_plan_the_share_cannot_hold_is_not_sealed`。
   4. `Improvement._verify_bound` 加美元项（尝试数 × 父版本实测每次成本 × (1 + β0)），筛选按同价并入第一次筛选前的检查；付不起的 gate 不开始。测试 `test_the_verification_bound_prices_the_gate_and_a_gate_it_cannot_pay_for_never_starts`。
   5. 省钱的复用：由第 1 条覆盖。6. 试点的 k：见上。
   7. `test_task_gate.py::test_a_receipt_over_several_domains_carries_per_domain_means`（真实收据）；IT6-36 报告测试的 docstring 改为它实际检查的内容；`per_domain` 只对 `领域.题名` 形式的 id 生效（夹具里 `t1` 这类 id 原来会被当成五个领域）。
@@ -1511,7 +1519,7 @@
 - 做了什么：按用户在天花板结论之后的决定（第 5 步照完整设计跑，含研究位），把多领域活动实现到“可以运行”为止。全程离线：没有调用任何模型、没有付费阶段、没有读 `.env`，未提交。
   - 领域列表：`[bench] domains`、`split_rule`、`spent`、`[bench.frozen_splits]`（`bench._domain_keys`）；单值 `domain` 读作一个元素的列表，旧配置的路径、manifest 与 hash 不变（`claude.toml`、`claude-full.toml` 照原样读）。每个领域的划分冻结在 `bench/<domain>/`；多领域时合并成一份 `family_rule = "pooled"` 的 manifest（`benchmark.pool_manifests`），记下每个领域的 hash、规则、计数、分层计数与 spent 领域，冻结在合并名（`a+b+...`）下；合并 suite 拒绝没有领域前缀或撞名的任务 id（`ab.pool_suites`）。结果与判分明细存在合并名下的一个目录，不按领域分目录（M7 §2 原文写按领域存放；一个读数是跨领域的一个 RunManifest，拆目录要给每个读者加路由，按领域读只需按 task id 前缀过滤），M7 §2 已改写。
   - 分层划分：层键 = 计分断言的种类集合 × 工具族（`ab.stratum`）。种类用天花板实验的读法（`_not_`/`count`/`contains`/其余），取集合而不是类型多重集：真实上游每领域 100 题有 56～98 种多重集，按多重集分层每层一题。工具族：订阅了办公服务（gmail、drive、sheets、calendar、slack）以外的业务应用为 `app`，否则 `office`。分配（`benchmark.stratified_splits`）用一条“落后最多者先得”的序列定各层名额，整域计数正好是比例，层内按原哈希点填；只读任务定义，不读结果、不给状态评分。manifest 的 `split_rule`/`strata` 为 None 时不进哈希，旧 manifest 的 hash 不变；已冻结的划分在规则改变后照原样保留（只打印说明）；`frozen_splits` 钉住的领域按哈希规则划分并核对 hash。
-  - 启动检查与 preset：v3 preset 去掉 Marketing 锁（`domain` 为 None），每次打开活动都经 `bench.load_domains`，装不上的领域点名拒绝；`startup_checks` 另核对各领域划分的 hash 与合并划分所记的一致、核心 `split_ref` 等于合并 hash，并对每个领域一道 dev 题做评分器契约检查；`ouroloop freeze` 打印每个领域的 hash、计数与分层计数。
+  - 启动检查与 preset：v3 preset 去掉 Marketing 锁（`domain` 为 None），每次打开活动都经 `bench.load_domains`，装不上的领域点名拒绝；`startup_checks` 另核对各领域划分的 hash 与合并划分所记的一致、核心 `split_ref` 等于合并 hash，并对每个领域一道 dev 题做评分器契约检查；`reharness freeze` 打印每个领域的 hash、计数与分层计数。
   - 研究位：合并 dev 在每个领域内对半分（`bench.halve_dev`，奇数题的领域交替把多出的一题给外层/内层），两半都覆盖每个领域；按合并顺序直接切，前两个领域会整个落在内层。研究位记下 `headroom_by_domain` 与 `halves_by_domain`（计数，不记题号）。
   - final：`tasks = "test"` 只解析为非 spent 领域的 test，显式列出 spent 领域 test 题的计划拒绝冻结，`--phase evaluate` 对这样的计划在付费前拒绝；`bench.final_share_problem` 在冻结预算时拒绝放不下 `concurrency` × 单次上界的 final 份额，并打印 `bench.final_estimate` 的预期花费与建议份额；`--phase evaluate` 在第一次尝试前打印每臂“还要跑的尝试数 × 该臂 release 的实测每次成本（dev 读数）”、合计、在飞预留与份额余额（只打印）。
   - 报告：多领域时 `identity.domains`/`spent`、每 run 的 `per_domain`（通过率、`cost_per_attempt`）、`final_by_domain`（spent 领域单列、主张行只合并非 spent 领域、best-of-k 未跑写 not_run）、C1～C3 的区间去掉 spent 领域的题；gate 收据在多领域时多一项 `metrics.per_domain`（按领域两臂均值与差值，不进经验日志）；台账 `by_domain`、研究位 `headroom`。单领域报告不变。
@@ -1563,7 +1571,7 @@
     - F 全部读到且 |R| ≥ 4 时，|X| > |R|/2 且 |X| > |B| 判“搜索”，否则判“训练准备”。
     - |R| < 4 判 inconclusive；有题没读到判 incomplete。
 - 证据：
-  - 草稿检查：两个包在 Docker worker（`ouroloop-worker:py3.12`，镜像 `9ace6dbc112a`）里离线通过，用的是 v3 preset 的包上限、Marketing train 初始状态与 v0.2 train 判分的字面量（2,761 个）、第一道 train 题作 fixture。手写包 6 个文件约 41 KB；W* 包 4 个文件，重算的 bundle ref 等于 v0.2 记录的。检查过程中改了两处：
+  - 草稿检查：两个包在 Docker worker（`reharness-worker:py3.12`，镜像 `9ace6dbc112a`）里离线通过，用的是 v3 preset 的包上限、Marketing train 初始状态与 v0.2 train 判分的字面量（2,761 个）、第一道 train 题作 fixture。手写包 6 个文件约 41 KB；W* 包 4 个文件，重算的 bundle ref 等于 v0.2 记录的。检查过程中改了两处：
     - 第一版草稿被字面量检查拒绝：7 个四位以上的数字常量（20000、4000 等）恰好出现在 train 题的初始状态里。改写成乘式后通过。
     - aux 调用被拒时，代理本来会自己吞掉错误；改为不捕获。现在 manifest 去掉 `aux` 时，smoke 报未声明的角色，机制不会悄悄关掉而让手写包读成 W*。
   - 离线重放 W* 在这 13 题上 25 次尝试的 576 次工具调用（不调模型，只量输出长度）：最长 7,689 字符，宿主的 20,000 截断一次也没有触发。所以在这个世界里，(a) 能起作用的只有 `read_full` 与分页/摘要提示。
@@ -1578,7 +1586,7 @@
   - 全套：`1095 passed, 1 deselected`（3 分 45 秒，含 Docker 的测试；上一条 1086，本条加 9 个）。
 - 因此改了什么：
   - 任务数与文档不同：文档写“4 道 dev 题”，按多数读数或最近读数实为 6 道，另加 7 道 train，共 13 题、52 次尝试。
-  - 费用估算约 $40（$34～47）。依据是 v0.2 的 W* 在这 13 题上每次 $0.50（medium），加 effort high 与手写包的 aux 调用。这高于 ROADMAP 原写的 $10～20，也高于初稿 $30 的根：每次调用预留 $7.28，根里可花约 $22.7，多半停在第二轮重复，结论为 incomplete。协调者随后把根改为 $60，评审后定为 $150（见本条末），并把 worker 镜像按 Dockerfile 干净重建（Docker Hub 放开；`ouroloop-worker:py3.12` = `c7005dd5c421`，runner 摘要 `a79b6f9d…` 与宿主一致；旧的叠层镜像留作 `ouroloop-worker:overlay-step3`）。
+  - 费用估算约 $40（$34～47）。依据是 v0.2 的 W* 在这 13 题上每次 $0.50（medium），加 effort high 与手写包的 aux 调用。这高于 ROADMAP 原写的 $10～20，也高于初稿 $30 的根：每次调用预留 $7.28，根里可花约 $22.7，多半停在第二轮重复，结论为 incomplete。协调者随后把根改为 $60，评审后定为 $150（见本条末），并把 worker 镜像按 Dockerfile 干净重建（Docker Hub 放开；`reharness-worker:py3.12` = `c7005dd5c421`，runner 摘要 `a79b6f9d…` 与宿主一致；旧的叠层镜像留作 `reharness-worker:overlay-step3`）。
 - 证据的边界：
   - 只证明接线与记账，不证明任何机制有效：脚本化模型的行为是夹具定的。
   - 没有对真实配置跑 `--checks-only`：它会 bootstrap `workspace-claude-ceiling`、把当时的镜像 id 冻进 K，并执行 `claude auth status`，留给运行前。镜像已由协调者按 Dockerfile 重建（`c7005dd5c421`），两个包在它上面的草稿检查也已离线通过。
@@ -1612,7 +1620,7 @@
 
 - 做了什么：协调者在各自的仓库副本里第三次验证（真实工作树与快照逐字节相同）：上一条的 18 处修正成立，每处撤回都让其测试失败；`run_worker_rounds` 改为 `while True` 后，对抗序列（丢失与采集交替、只丢失、只采集、50 轮混合）都停下，付费会话数有界；副本全套同为 1083。另确认 4 处，由协调者直接改：(1)/(3) 同一问题——Anthropic provider 的回复自带原生内容并在下一轮原样回放，若其正文里写出的 JSON 调用被读作调用，紧随的 tool_result 无对应的 tool_use，API 以 400 拒绝、活动暂停为 repair_runtime；改为有原生内容的回复不读正文调用、回以提示语（`research/session.py::_calls_of`），纯文本 provider（manual）照旧；(2) 续跑的 `loop.counters_of` 未把丢给基础设施的轮次计入连续失败数，续跑后可多付一轮；改为与运行中一致：计入失败数、不计 idle，暂停记号归零；`test_campaign.py` 的 RC6-17 例期望由 (1, 0) 改为 (1, 1)；(4) 包自己的异常文本含孤立代理字符时，草稿检查的错误写事件会 UnicodeEncodeError 终止本轮；`Drafts.check` 统一把错误转成反斜杠转义的严格 UTF-8（会话路径与 v2 路径都经此）。
 - 证据：新增 `test_research_session.py::test_a_call_written_in_the_text_of_a_native_tool_use_reply_is_no_call`（假 Anthropic 客户端，断言每个 tool_result 都对应前一条助手消息里的 tool_use；纯文本 provider 仍读正文调用）、`::test_a_draft_check_error_is_strict_utf8`、`test_cycle.py::test_a_resumed_run_counts_rounds_lost_to_infrastructure_as_the_live_loop_does`；三处修正在隔离副本里各自撤回都让对应测试失败。
-- worker 镜像：按 `docker/worker.Dockerfile` 从头重建仍被 Docker Hub 限流（`python:3.12-slim` 元数据 HEAD 429）；现用的 `ouroloop-worker:py3.12` 是在缓存镜像上叠加新 `worker_runner.py` 的层，基础层、用户（65534:65534）、entrypoint 与 Dockerfile 构建的相同，runner 摘要 `a79b6f9d…` 与宿主文件一致（每次 `load` 都核对，不一致即 `StaleWorker`）。注册表放开后应按 Dockerfile 重建一次。
+- worker 镜像：按 `docker/worker.Dockerfile` 从头重建仍被 Docker Hub 限流（`python:3.12-slim` 元数据 HEAD 429）；现用的 `reharness-worker:py3.12` 是在缓存镜像上叠加新 `worker_runner.py` 的层，基础层、用户（65534:65534）、entrypoint 与 Dockerfile 构建的相同，runner 摘要 `a79b6f9d…` 与宿主文件一致（每次 `load` 都核对，不一致即 `StaleWorker`）。注册表放开后应按 Dockerfile 重建一次。
 - 全套：`1086 passed, 1 deselected`（前台）。
 - commit：见 git log（第 3 步提交）。
 
@@ -1669,7 +1677,7 @@
 ## 2026-10-05 v0.3 第 3 步：R 作为编码会话、台账、k 候选、筛选、输入
 
 - 做了什么：按 M4 §1/§2/§5、M0 §3、M5 §1～§2、M6 §2～§4、M7 §2/§4 的 v0.3 规则，把 R 的汇总步换成每轮一个有界编码会话，并加上台账、k 候选、train 侧筛选与三项新输入；只在 K 带 `research_session`（package_api v2 的核心，v3 preset）时启用，v1 preset 与第 3 步前冻结的工作区仍走汇总调用。
-  - 会话（`ouroloop/research/session.py`）：宿主驱动模型循环（`PolicyResearcher.session_turn`，经 `_Completions.turn`，计量标签 `session`），`/work` 树在 worker（`agent/worker_runner.py` 新操作 `work`：`init/list/read/write/edit/delete/export`，写只许 `candidates/<dir>/`，首次写入以包副本建目录）；工具 `list_files/read_file/write_file/edit_file/delete_file/read_trajectory/finish`，无 shell；上限 40 回合、24 次编辑、`read_trajectory` 单次 65536、累计 524288 字节，到顶即结束、本轮 invalid；修订续写同一会话；`finish` 的声明按 `candidate_declaration.v1` 读，不合法作为该调用的错误回给 R。每轮一条 `research_session` 事件（回合、编辑、每次工具调用、轨迹读取次数与字节）。
+  - 会话（`reharness/research/session.py`）：宿主驱动模型循环（`PolicyResearcher.session_turn`，经 `_Completions.turn`，计量标签 `session`），`/work` 树在 worker（`agent/worker_runner.py` 新操作 `work`：`init/list/read/write/edit/delete/export`，写只许 `candidates/<dir>/`，首次写入以包副本建目录）；工具 `list_files/read_file/write_file/edit_file/delete_file/read_trajectory/finish`，无 shell；上限 40 回合、24 次编辑、`read_trajectory` 单次 65536、累计 524288 字节，到顶即结束、本轮 invalid；修订续写同一会话；`finish` 的声明按 `candidate_declaration.v1` 读，不合法作为该调用的错误回给 R。每轮一条 `research_session` 事件（回合、编辑、每次工具调用、轨迹读取次数与字节）。
   - 声明与 k 候选：`ExperimentProposal.declaration_ref`（默认 None，旧 ref 不变）指向 `declaration` 对象；固定代码按候选目录对当前包的 diff 核对 carrier/site（memory/skill/prompt/hook/tool/agent），不符记 `declaration_mismatch`，同 (mechanism, site) 的后者记 dropped，超过 k 的记 dropped；W 的提示文本以 `worker/system_prompt.md`、`worker/finish.md` 出现在候选目录里，改它们即 `carrier=prompt`。每个候选自己的草稿链（`Drafts.check`，`max_draft_repairs` 按候选计）、准入（核心检查 + `declaration_reasons`：`repeated_mechanism`、`predicted_affected` 限 train）。`bench.py` 的 `max_candidates_per_round` ≠1 拒绝改为 1..preset（v3 为 3、缺省 3），`_beyond_preset` 对 schedule 的 `candidates_per_round` 只拒高于配置。
   - 筛选：`Improvement.train_screen`（arm `train_screen`，split train，一次尝试，自己的 permit 与计划），任务 = 笔记来源的失败题 ∪ `predicted_affected`（train）+ 固定通过样本（`passing_sample` 5，按 `order_seed` 抽，一轮一组）；净翻转 ≥ `min_net_flips` 1 的最高者付 dev gate，同分取均值成本低者再按声明顺序；都不满足本轮 `screened_out`（计入 patience）；失败集（笔记任务 ∪ predicted_affected，∩ 最新 train 测量仍失败）少于 3 题；通过样本不计的标 `thin_screen`（定义 2026-10-05 再复核时统一）；候选的 Experiment id 在筛选时定下（`screen_build(proposal, experiment_id)`），筛选的 W 与 gate 的 W 同一；安装后的下一轮测量按运行身份（`RUN_LABELS` 之外的字段相等）复用筛选读数（`screen_readings`），不再付。
   - 台账（`evolve/experience.py`）：每阶段一行 `kind="ledger"`（declared/drafted/admitted/screened/gated），`ledger_rows` 折叠成每候选一条带 `outcome`；gated 行的 fixed/regressed/still_failing 由 `task_gate.receipt_differences` 从收据结果对象读出；`ledger_projection` 给 R（dev 只以三类题数出现）；两支 E0 经 `strip_dev_task_ids`；报告加 `ledger` 与 `sessions` 小节（`report._ledger_report`）。
@@ -1693,7 +1701,7 @@
 
 ## 2026-10-04 v0.3 第 2 步续：确认复测规则第二版
 
-- 做了什么：上一条的 A/A 回放接受 4/20，退出条件未达成，按第 2 步的约定回到 M3 §2.1(b) 改规则。决定：确认读数单独对合并对照也须清过 `min_gain`（不再只是 ≥ 0）——候选要在两次独立读数上各清过一次 gate；其余不动（第一读数清过 `min_gain` 与退步规则；退步规则与成本项按合并读数判；合并增益照记为 `metrics.gain`；`kind`、`first_reading`、`confirmation_gain` 的形状不变；`min_gain` 0.05 已定）。先改文档（M3 §2.1(b) 第二版一段与依据、(h)、§2.3；DESIGN §、M5 §1、M7 §1/§2/§4、M8 IT6-33、README、ROADMAP 的措辞），再改 `judge` 的确认条款（`ouroloop/evolve/task_gate.py`：`confirmation_gain < gate.min_gain` 即 rejected，理由写两个数 `the confirmation reading alone has gain X, below the plan's min_gain 0.05`；接受理由写“on the first reading, on the confirmation reading alone and on the pool of both”），改受影响的测试（原“复测 < 0 拒绝”的用例改为“复测恰为 0 拒绝”，加“两次都清过才接受”含阈值恰为 0.05 的边界，`test_aa_replay.py` 加真实记录形状的用例）。
+- 做了什么：上一条的 A/A 回放接受 4/20，退出条件未达成，按第 2 步的约定回到 M3 §2.1(b) 改规则。决定：确认读数单独对合并对照也须清过 `min_gain`（不再只是 ≥ 0）——候选要在两次独立读数上各清过一次 gate；其余不动（第一读数清过 `min_gain` 与退步规则；退步规则与成本项按合并读数判；合并增益照记为 `metrics.gain`；`kind`、`first_reading`、`confirmation_gain` 的形状不变；`min_gain` 0.05 已定）。先改文档（M3 §2.1(b) 第二版一段与依据、(h)、§2.3；DESIGN §、M5 §1、M7 §1/§2/§4、M8 IT6-33、README、ROADMAP 的措辞），再改 `judge` 的确认条款（`reharness/evolve/task_gate.py`：`confirmation_gain < gate.min_gain` 即 rejected，理由写两个数 `the confirmation reading alone has gain X, below the plan's min_gain 0.05`；接受理由写“on the first reading, on the confirmation reading alone and on the pool of both”），改受影响的测试（原“复测 < 0 拒绝”的用例改为“复测恰为 0 拒绝”，加“两次都清过才接受”含阈值恰为 0.05 的边界，`test_aa_replay.py` 加真实记录形状的用例）。
 - 依据（写进 M3 §2.1(b)）：同一个 W 再读一次，对合并对照的期望正好是 0，所以“≥ 0”约束不了任何东西；合并对照之下每次读数的噪声约等于单次读数的 sd（25 × 1 时 0.06～0.076），无改动时一次读数 ≥ +0.05 约 0.22，两次独立读数都 ≥ +0.05 约 0.05 ≈ 1/20；真实 +0.10 时两次都清过的功效约 0.64、+0.15 约 0.88、+0.05 约 0.25——放弃的是 test 分区本来也证实不了的小增益，换的是误接受率。
 - 结果：同一回放，**dev 0/20**（第一读数仍清过 4 组，都是 48% 的读数作候选；确认读数 36% 对合并 36% 都是 0 < 0.05），加成本项 0/20；**test 0/12**（第一读数清过 3 组，确认 +0.022、−0.043、+0.022）；第一版规则的 4/20 与 2/12 留在上一条与 M3 §2.1 末。退出条件达成。第 2 步实现里没有别处依赖“≥ 0”：`Releases.install` 只看 kind 与计划的 `confirmation_repeats`，`confirming` 状态机与续跑只看状态与 attempt id，`evaluate_task` 只传 `first`，都未改。
 - 证据：973 passed, 1 deselected（3 分 28 秒；上一条是 971，本条加 2 个用例、改 1 个）；回放不调模型，费用 0。
@@ -1702,7 +1710,7 @@
 
 ## 2026-10-04 v0.3 第 2 步：gate 统计与速度
 
-- 做了什么：按 M3 §2.1、M5 §1～§2、M6 §2 的 v0.3 规则改 gate 的统计与运行的速度，不改第 1 步的运行壳。M3：`GatePlan` 加 `regression_drop`、`cost_beta0/1`、`min_tasks`，`TaskEvalPlan` 加 `control_pooling`、`confirmation_repeats`，`EvaluationReceipt` 加 `kind`（`full`/`confirmed`）——全部缺省 None、读作今日规则，`Record.payload` 与 `GatePlan.to_json` 不写缺省值，所以旧计划、旧收据的 ref 不变，同一张 `[freeze.task_plan]` 表再冻结是同一个 ref；v3 preset 带设计的值（pooled、1、0.5、0.10/2.0、25），`_beyond_preset` 只许加严。`judge` 按 (h) 的顺序判：合并对照的完整性按每题读数数（≥ repeats）而不是配对键；退步按“下降超过 `regression_drop`”（ER6-19 的 1.0 → 0.5 不计，设计稿的“≥”会计入，文档随之改）；成本项 `cost_subject ≤ cost_control × (1 + β0 + β1 × gain)`，缺价按 `missing_cost_policy`，收据 `metrics.cost_per_attempt {subject, control, allowed}`；确认读数并入候选的逐题均值，`first_reading`、`confirmation_gain`、`readings`、`control_readings`、`control_attempt_refs` 进 metrics。`evaluate_task` 在合并计划下有池就不跑对照臂，第一读数 accepted 且计划要求确认时告知 `confirming` 回调、再读 `confirm` 臂（candidate `confirmation`，自己的运行身份，续跑按自己的 attempt id 补缺），收据 kind `confirmed`。合并对照的归属（`Improvement.control_pool`）：读数的 RunManifest 去掉 candidate/role、计划 ref、预算 scope、release 与 R 后与本 gate 对照臂的相同，且读数自己的计划（有的话）条件相同；基线的 dev 运行、历次 gate 的对照臂、装入后的候选/确认臂都在池里。M5：状态机加 `confirming`（evaluated → confirming → evaluated），`execute_experiment` 向接受 `confirming` 的 evaluate 处理器递回调，临时 `evaluated` 带 `provisional: true`，续跑不重写；`_verify_bound` = 候选臂 × (1 + confirmation_repeats) + 没有池时的对照臂；`Releases.install` 对 `confirmation_repeats > 0` 的计划只认 `confirmed`；`MeteredProvider.rate_limited` 数未计费可重试的拒绝，`run_arm` 每臂记一条 `rate_limited` 事件，报告 `run_cost` 列出；`summarise` 与报告都给 `cost_per_attempt`；`task_eval.in_flight_cap` 进程内一个信号量；`Diagnosis.concurrency` 并发写笔记，经 `PolicyResearcher.note_with_record`（每次请求带自己的记录），缓存与顺序在主线程按冻结顺序；计量器的步骤标签按线程。v3 preset `concurrency` 8（`preset_concurrency`，没有 preset 仍 1），`ouroloop bench --concurrency N` 只覆盖本次运行。M6：`_cycle_slot` 先查两半各 ≥ `min_tasks`（`no_slot_pool`）、再查余量（`bench.slot_headroom`，按合并对照规则数起点 W 从未通过的内层题，`no_headroom`）、再查预算，结局进 `rsi/cycle.json` 与报告的 C4；内层 gate 带模板 gate 的全部条款；合并计划下公共输入多取一次起点 W 的内层 dev 读数并连 run manifest 复制进两支（`_copy_readings`）；两支的内层计划带 `control_pooling`/`confirmation_repeats`；v3 preset `worker_round_limit` 3、`min_headroom_tasks` 6。
+- 做了什么：按 M3 §2.1、M5 §1～§2、M6 §2 的 v0.3 规则改 gate 的统计与运行的速度，不改第 1 步的运行壳。M3：`GatePlan` 加 `regression_drop`、`cost_beta0/1`、`min_tasks`，`TaskEvalPlan` 加 `control_pooling`、`confirmation_repeats`，`EvaluationReceipt` 加 `kind`（`full`/`confirmed`）——全部缺省 None、读作今日规则，`Record.payload` 与 `GatePlan.to_json` 不写缺省值，所以旧计划、旧收据的 ref 不变，同一张 `[freeze.task_plan]` 表再冻结是同一个 ref；v3 preset 带设计的值（pooled、1、0.5、0.10/2.0、25），`_beyond_preset` 只许加严。`judge` 按 (h) 的顺序判：合并对照的完整性按每题读数数（≥ repeats）而不是配对键；退步按“下降超过 `regression_drop`”（ER6-19 的 1.0 → 0.5 不计，设计稿的“≥”会计入，文档随之改）；成本项 `cost_subject ≤ cost_control × (1 + β0 + β1 × gain)`，缺价按 `missing_cost_policy`，收据 `metrics.cost_per_attempt {subject, control, allowed}`；确认读数并入候选的逐题均值，`first_reading`、`confirmation_gain`、`readings`、`control_readings`、`control_attempt_refs` 进 metrics。`evaluate_task` 在合并计划下有池就不跑对照臂，第一读数 accepted 且计划要求确认时告知 `confirming` 回调、再读 `confirm` 臂（candidate `confirmation`，自己的运行身份，续跑按自己的 attempt id 补缺），收据 kind `confirmed`。合并对照的归属（`Improvement.control_pool`）：读数的 RunManifest 去掉 candidate/role、计划 ref、预算 scope、release 与 R 后与本 gate 对照臂的相同，且读数自己的计划（有的话）条件相同；基线的 dev 运行、历次 gate 的对照臂、装入后的候选/确认臂都在池里。M5：状态机加 `confirming`（evaluated → confirming → evaluated），`execute_experiment` 向接受 `confirming` 的 evaluate 处理器递回调，临时 `evaluated` 带 `provisional: true`，续跑不重写；`_verify_bound` = 候选臂 × (1 + confirmation_repeats) + 没有池时的对照臂；`Releases.install` 对 `confirmation_repeats > 0` 的计划只认 `confirmed`；`MeteredProvider.rate_limited` 数未计费可重试的拒绝，`run_arm` 每臂记一条 `rate_limited` 事件，报告 `run_cost` 列出；`summarise` 与报告都给 `cost_per_attempt`；`task_eval.in_flight_cap` 进程内一个信号量；`Diagnosis.concurrency` 并发写笔记，经 `PolicyResearcher.note_with_record`（每次请求带自己的记录），缓存与顺序在主线程按冻结顺序；计量器的步骤标签按线程。v3 preset `concurrency` 8（`preset_concurrency`，没有 preset 仍 1），`reharness bench --concurrency N` 只覆盖本次运行。M6：`_cycle_slot` 先查两半各 ≥ `min_tasks`（`no_slot_pool`）、再查余量（`bench.slot_headroom`，按合并对照规则数起点 W 从未通过的内层题，`no_headroom`）、再查预算，结局进 `rsi/cycle.json` 与报告的 C4；内层 gate 带模板 gate 的全部条款；合并计划下公共输入多取一次起点 W 的内层 dev 读数并连 run manifest 复制进两支（`_copy_readings`）；两支的内层计划带 `control_pooling`/`confirmation_repeats`；v3 preset `worker_round_limit` 3、`min_headroom_tasks` 6。
 - 结果：
   - 新测试 24 个函数、25 个用例（`test_task_gate.py` 12、`test_paid_run_safety.py` 3、`test_claude_code_provider.py` 1、`test_diagnosis.py` 1、`test_cycle.py` 5（余量那条参数化为 2）、`test_aa_replay.py` 2），改 2 个既有断言（v3 preset 的表按设计不再等于 v1 的；研究位现在会存一个与主线相同的 gate 对象）。
   - A/A 回放（`examples/automationbench/aa_replay.py`，用 `judge` 本身）：W0 的 5 次 dev 读数（36%、36%、36%、36%、48%）给 20 个有向对（候选读数、确认读数；对照为其余 3 次合并），新规则接受 **4/20**，旧规则 4/20，加成本项 4/20；都是 48% 的读数作候选（第一读数 +0.12 → 合并 +0.06 ≥ 0.05，确认读数 0 ≥ 0）。test 的 4 次读数 12 组：新 2、旧 3。五次 dev 读数每次尝试成本 $0.366～$0.390。**退出条件（≤ 1）未达成**。
@@ -1971,7 +1979,7 @@
     - 重建测量时纳入同一版本的补采结果。
   - 启动检查：
     - 按 pin 的 actor 与研究模型核对输出上限和 key，manual 免检。
-    - 计划未命名时，付费阶段拒绝启动；有 `[improvement]` 时，`ouroloop freeze` 也冻结 preset 的 task plan 与 schedule。
+    - 计划未命名时，付费阶段拒绝启动；有 `[improvement]` 时，`reharness freeze` 也冻结 preset 的 task plan 与 schedule。
     - cycle 拒绝多于 preset 的研究位。
   - 停止点：cycle 加 `--until`，可停在 `baseline`、`segment-N`、`segment-N/round-K` 或 `slot-N`。
   - final 分配：`[freeze.budget.final]` 在根上划出 final 的份额。
@@ -2103,7 +2111,7 @@
     - 包工具不得与基础工具或 read_skill 同名，草稿检查与挂载时都会拒绝。
     - 草稿检查扩展为 isolated_probe → package_test，包测试只在由 train 构造的世界里运行。
   - 故障归属：包代码抛异常、调 sys.exit、杀死或挂住 worker 时，如果新起的 worker 仍能正常应答，记为候选缺陷。只有新 worker 也不应答才算基础设施，并以 repair_runtime 暂停活动。worker 的 stderr 边读边丢弃，只留末尾；输出与单行长度都有上限；超时的容器会被删除。
-  - C 导出（`release.export_deployment`、`app.py`、`ouroloop export`）：
+  - C 导出（`release.export_deployment`、`app.py`、`reharness export`）：
     - 按白名单导出 W、actor 身份、包的运行部分和 K 的运行投影，不含 R、测试和证据。
     - 先在临时目录构建，扫描凭据和本地路径后再移入目标目录。
     - App 只在合格且镜像一致的 worker 上运行含代码的包。
@@ -2136,7 +2144,7 @@
   - slot 的研究门槛组数取自 worker gate，示例配置下 R1 永远无法安装。
   - slot 暂停后 cycle 仍继续下一段。
 - 设计补充（写入 M7 §2）：research slot 的配对规则（开发家族按冻结顺序对半，前一半为内层 gate，后一半为外层）与每支预算比例由 preset 固定；`test_timeout_seconds` 用作 worker 每个请求的时限。
-- 证据边界：全部为离线 fixture 与脚本研究员，只证明接线，不是收益。没有付费运行，没有真实模型的能力包演化或 C4 结果。Docker 隔离尚未在真实 daemon 上验证（构建命令：`docker build -f docker/worker.Dockerfile -t ouroloop-worker:py3.12 .`）。上一条记录中的未决问题（dev 回归被拒时的诊断信号）不因实现而改变。
+- 证据边界：全部为离线 fixture 与脚本研究员，只证明接线，不是收益。没有付费运行，没有真实模型的能力包演化或 C4 结果。Docker 隔离尚未在真实 daemon 上验证（构建命令：`docker build -f docker/worker.Dockerfile -t reharness-worker:py3.12 .`）。上一条记录中的未决问题（dev 回归被拒时的诊断信号）不因实现而改变。
 - commit：未提交。
 
 ## 2026-09-30 首版阶段 A 实现：诊断输入与文本能力包
@@ -2211,7 +2219,7 @@
 
 ## 2026-09-28 第一次真实模型运行：GLM-5.3 跑一个 Marketing dev 任务
 
-- 做了什么：领先模型改为引用公布数字，不在本地运行（DESIGN §3.2、ROADMAP M2、模块 07）。来源两个：官方榜单（私有集）与上游 README 的公开集结果（含 GLM 5.2 max 26.17%，六域合计）。本地用智谱 GLM-5.3（OpenAI 兼容接口，thinking 为默认开启），经我们的 W0（含 finish check、业务停止视图、计量）跑 dev 任务 `marketing.product_adoption`（14 个断言，长度居中）：`ouroloop bench --config examples/automationbench/marketing.local.toml --phase baseline --task marketing.product_adoption`。
+- 做了什么：领先模型改为引用公布数字，不在本地运行（DESIGN §3.2、ROADMAP M2、模块 07）。来源两个：官方榜单（私有集）与上游 README 的公开集结果（含 GLM 5.2 max 26.17%，六域合计）。本地用智谱 GLM-5.3（OpenAI 兼容接口，thinking 为默认开启），经我们的 W0（含 finish check、业务停止视图、计量）跑 dev 任务 `marketing.product_adoption`（14 个断言，长度居中）：`reharness bench --config examples/automationbench/marketing.local.toml --phase baseline --task marketing.product_adoption`。
 - 证据：通过（task_completed_correctly = 1，partial 1.0），15 轮、29 次工具调用、229 秒。prompt 共 225,196 tokens，其中缓存命中 197,568（88%）；输出 11,662，其中推理 6,441。
 - token 从哪来：第一轮 prompt 只有 1,210 tokens（系统提示、工具定义与任务），之后每次请求都带上全部历史，平均每轮增加约 1.85k，到第 15 轮是 27,132。增长主要来自 `api_search` 返回的端点目录（top_k 10～15，每次约 2.5k～4k tokens）和 base64 编码的邮件正文；另有两轮花在未连接的 Salesforce、HubSpot（401），两轮花在回读已发邮件核对。
 - 证据边界：一个任务、一次运行，不代表通过率。这次的 `cost_usd` 为空（运行时没有 `[pricing]`），费用由逐轮用量离线换算。
@@ -2219,7 +2227,7 @@
 
 ## 2026-09-28 付费运行前的补齐：计量、计费、续跑与计划冻结
 
-- 做了什么：`MeteredProvider` 接到所有阶段，agent 与研究员的每次模型调用先预留、按实测结算，额度用尽的尝试记为 `budget_exhausted`（不补跑，比较记 inconclusive）；一个活动只有一个预算根，各阶段、campaign 各支与外层评测都是其子额度。每次尝试按 `[pricing]` 计算 `cost_usd`，先用 `normalize_usage` 统一供应商的用量词汇，缓存读写单独计价，缺价则 unknown。`evaluate` 与 `improve` 中断后从记录续跑：尝试 id 由计划、臂、任务、重复与重试决定，已记录的尝试原样保留，构建已完成的不重训，安装重放自身 operation 最多提交一次。补跑在写入结果库时就带上 `supersedes`。新增 `ouroloop freeze`，从 `[freeze.task_plan]`、`[freeze.schedule]`、`[freeze.budget]`、`[freeze.final]` 冻结对象并打印 `[rsi]` 引用。
+- 做了什么：`MeteredProvider` 接到所有阶段，agent 与研究员的每次模型调用先预留、按实测结算，额度用尽的尝试记为 `budget_exhausted`（不补跑，比较记 inconclusive）；一个活动只有一个预算根，各阶段、campaign 各支与外层评测都是其子额度。每次尝试按 `[pricing]` 计算 `cost_usd`，先用 `normalize_usage` 统一供应商的用量词汇，缓存读写单独计价，缺价则 unknown。`evaluate` 与 `improve` 中断后从记录续跑：尝试 id 由计划、臂、任务、重复与重试决定，已记录的尝试原样保留，构建已完成的不重训，安装重放自身 operation 最多提交一次。补跑在写入结果库时就带上 `supersedes`。新增 `reharness freeze`，从 `[freeze.task_plan]`、`[freeze.schedule]`、`[freeze.budget]`、`[freeze.final]` 冻结对象并打印 `[rsi]` 引用。
 - 更正：此前把 BR-05 记为已覆盖，实际 `evaluate` 恢复时会把全部尝试重跑一遍，只是不重复写状态文件；已按验收实现并在 07 文档里写明。
 - 补齐过程中发现并修正的四处：其一，`settle` 把预留时没有上界的维度当作上界 0，第一次调用的 token 用量就会被判越界并停止一切付费操作——计量一接上，第一条集成测试就停在这里；其二，campaign 原先另开一个预算根并拿到同样的额度，等于把活动预算翻倍；其三，OpenAI 兼容接口报 `prompt_tokens`/`completion_tokens`，按 `input_tokens` 读会把费用算成 0，而 0 正是未知费用绝不能变成的数；其四，补跑的 `supersedes` 原本在结果写入之后才在内存里补上，只追加的结果库和据此生成的报告永远看不到它。
 - 证据：`python -m pytest -q` → 553 passed, 1 deselected（新增 18 项在 `tests/test_paid_run_safety.py`）。模拟进程在最终评测第一臂中途死亡后再运行：8 个计划尝试各出现一次，崩溃前记录的全部保留；模拟在改进轮评测中途死亡后再运行：同一实验从 evaluating 续跑并安装，恰好一次安装事件。
@@ -2228,8 +2236,8 @@
 
 ## 2026-09-27 删除贪吃蛇场景包与多代演示循环
 
-- 做了什么：删除 `examples/snake/`（游戏、标签器、规则、场景、两份配置）、`tests/test_snake.py`（14 项）与 `ouroloop/generations.py`（场景包的多代循环）；`ouroloop demo` 只保留合成数据上的离线一轮，不再接场景包参数。`tests/test_counting.py` 去掉依赖 `generations._judged` 的那一项——同一处计数由它上面基于 `replay.summarize` 的用例覆盖；`tests/test_tde_compat.py` 原先从 `examples/snake/demo.toml` 读配方，改为内联一份同形状的小配方，并删掉只检查那两份示例配置的用例。
-- 为什么：v0.5 的主线是 AutomationBench 业务闭环，贪吃蛇只作 smoke；场景包删除后 `generations.py` 没有可运行的住户，留着就是死代码。保留的是业务循环用得到的东西：`ouroloop/demo.py` 的合成离线一轮（四个测试文件在用）、`evolve/monitor.py`、`trainers/signature.py`、旧 decision profile 的全部路径。
+- 做了什么：删除 `examples/snake/`（游戏、标签器、规则、场景、两份配置）、`tests/test_snake.py`（14 项）与 `reharness/generations.py`（场景包的多代循环）；`reharness demo` 只保留合成数据上的离线一轮，不再接场景包参数。`tests/test_counting.py` 去掉依赖 `generations._judged` 的那一项——同一处计数由它上面基于 `replay.summarize` 的用例覆盖；`tests/test_tde_compat.py` 原先从 `examples/snake/demo.toml` 读配方，改为内联一份同形状的小配方，并删掉只检查那两份示例配置的用例。
+- 为什么：v0.5 的主线是 AutomationBench 业务闭环，贪吃蛇只作 smoke；场景包删除后 `generations.py` 没有可运行的住户，留着就是死代码。保留的是业务循环用得到的东西：`reharness/demo.py` 的合成离线一轮（四个测试文件在用）、`evolve/monitor.py`、`trainers/signature.py`、旧 decision profile 的全部路径。
 - 证据：`python -m pytest -q` → 535 passed, 1 deselected（此前 550，减去 15 项贪吃蛇与世代计数用例）；套件耗时从约 90 秒降到约 55 秒。删除本身没有产生新的运行证据。
 - 因此改了文档：README（中英）、DEMO、ROADMAP、DESIGN、RESEARCH_AGENT、TRAINING_HOSTS、modules/README、modules/05、modules/07 里指向贪吃蛇或 `generations.py` 的说法改为业务循环入口；本文件头部说明贪吃蛇数字已无法复算。历史条目原样保留。
 - commit：见本条记录的 Git 历史。
@@ -2270,7 +2278,7 @@
 
 ## 2026-09-27 M1：先有运行契约，再有分数
 
-- 做了什么：`benchmark.py`（冻结的任务分组、运行 manifest、`TaskResult`、预算）、`adapters/automationbench.py`（延迟导入上游、`api` 工具集、官方评分、快照、契约检查与输入审计）、`evolve/task_eval.py`（一次尝试、有效性、预算）、`bench.py` 与 `ouroloop bench --phase smoke`、`examples/automationbench/marketing.toml`，以及 `tests/fake_upstream/`——上游的微缩替身，使 88 个新测试不需要真实上游。
+- 做了什么：`benchmark.py`（冻结的任务分组、运行 manifest、`TaskResult`、预算）、`adapters/automationbench.py`（延迟导入上游、`api` 工具集、官方评分、快照、契约检查与输入审计）、`evolve/task_eval.py`（一次尝试、有效性、预算）、`bench.py` 与 `reharness bench --phase smoke`、`examples/automationbench/marketing.toml`，以及 `tests/fake_upstream/`——上游的微缩替身，使 88 个新测试不需要真实上游。
 - 读源码确认的上游事实（`zapier/AutomationBench` @ `4a8e106`，2026-08-04）：默认工具集是 `api`，只有三个函数（`api_search`、`api_fetch`、`base64_encode`），都是 pydantic `WorldState` 上的普通同步函数，所以评分和工具都不需要 `verifiers`；`rubric.partial_credit` 和 `task_completed_correctly` 是 state dict 上的纯函数，后者读前者缓存的值，因此调用顺序是契约的一部分。公开 Marketing 是 100 个任务，`info` 只有 `zapier_tools` / `initial_state` / `assertions` 三个键，**没有 family 或 variant 字段**——所以默认一任务一家族，只保证同一任务的尝试、分支与重复不跨 split；`near_duplicates` 报工具与断言重叠高的任务对供人工声明。`automationbench.tools` 会连带导入整个 Zapier 工具注册表，其中一个模块在模块级 `from openai import OpenAI`，所以哪怕只用 `api` 工具集也必须装 `openai`。`tools/zapier/chatgpt/completions.py` 在有 `OPENAI_API_KEY` 时会真的调 OpenAI，没有 key 时返回固定串；公开 Marketing 的 100 个任务都没有 seed 或授予 chatgpt，上游的服务订阅门也会拒，episode 仍在工具运行期间隐藏这个变量，双重保险。
 - 证据：测试过程发现两个真实缺陷，都先写了会失败的测试。其一，`WorldState(**grading.initial_state)` 与评分时重建的初始世界共享嵌套结构，agent 改完 HubSpot 阶段后，"初始状态"里也变了，于是那条断言被判成"本来就成立"而被排除出分母，`partial_credit` 从 0.5 变回 0.0——上游 runner 自己 deep-copy 过初始状态，适配器没有；现在两份都是深拷贝。其二，leak 审计原先在 `json.dumps(payload)` 上做子串匹配，一条粘进 system prompt 的断言在那里是转义的（`\"type\"`），搜不到；现在遍历结构里的每个字符串和每个键。契约检查也因此发现自己的洞：`contract_check` 原来在 `task_ids` 为空时回退到全部任务，会去读 test 任务的初始状态得分，现在必须指名。
 - 因此改了：`ids()` 必须指名 split（空调用报错，不返回全部也不返回空）；冻结的 split 文件被改派时报错，工作区已有结果时连 `--replace-splits` 也拒绝；未测到的费用一路保持 `null`，汇总另报"缺在几次尝试上"；infrastructure 类终止不能是有效尝试；test split 的 session 带 `held_out`，已有的建数据路径取不到；M2～M6 的 phase 名报错并指向路线图，不悄悄做别的事。
@@ -2291,7 +2299,7 @@
 
 ## 2026-09-27 重切：训练线为主线，部署线冻结，研究员回到设计实验
 
-**证据。** 离线 demo 6 代（`ouroloop demo snake --config examples/snake/offline.toml`，2026-09-26 晚重跑）：冠军 food 0.7～0.9，与规则蛇的括号值持平；第 3～5 代晋升的每个冠军都只接管了 2 局、2 局都受害、被监控撤销（下界 22.4% > 5%），合并受害率 6/6 = 100%。GPU 上 run4～run6：模型推翻规则的步只对 15%～26%。也就是说，从 9 月 26 日起加的每一层护栏（按 session 计风险、增益门、运行时监控、撤销冷却、准入）都工作正常，而蛇一局都没有多吃到。根因是签名模型看不见死路（`rules.signature` 只看四邻格与食物方位），这是特征问题，被当成了安全问题处理。
+**证据。** 离线 demo 6 代（`reharness demo snake --config examples/snake/offline.toml`，2026-09-26 晚重跑）：冠军 food 0.7～0.9，与规则蛇的括号值持平；第 3～5 代晋升的每个冠军都只接管了 2 局、2 局都受害、被监控撤销（下界 22.4% > 5%），合并受害率 6/6 = 100%。GPU 上 run4～run6：模型推翻规则的步只对 15%～26%。也就是说，从 9 月 26 日起加的每一层护栏（按 session 计风险、增益门、运行时监控、撤销冷却、准入）都工作正常，而蛇一局都没有多吃到。根因是签名模型看不见死路（`rules.signature` 只看四邻格与食物方位），这是特征问题，被当成了安全问题处理。
 
 **外部。** TypeSafe 9 月 19 日发布 Jev（typed decision model，闭源权重，4000 万美元种子），48 小时内出现 pi-warden、typesafe-mcp、openjev、dspy-typesafeify 等项目；REFLEX（arXiv 2609.26532）用 Jev 做 agent 的 selective control，无门、无账本、不学习。"self-improving agent" 是 2026 年最拥挤的标签（Hermes 9.5 万星，OpenClaw 34.5 万星）。
 
@@ -2301,7 +2309,7 @@
 
 **同日追加。** 对照业界对 RSI 的定义（改进者自己也要被改进）重新审了设计：到 W11 为止是自我改进的训练循环，递归只在"策略改变数据"这一条；补上研究决策上环（`worth_running`、`pick_arm`、`stop_line` 三个决策点，门的结论只对它们是标签）作为 W12 与主张 C7，元指标是每次接受的改进消耗的实验数与算力随代数下降。把提升机制写成四条通道（数据、表示、规格、分布）加门的单调性；决策点准入条件用 Kahneman 与 Klein 的两个条件（封闭标签集、可观察结果，再加分布稳定）。部署线改称"同一产品的下半场"，第一个实例定为 Claude Code hooks 上的 `tool_gate`。
 
-**同日第二次追加（流程审查）。** 把设计的来历写成九条第一性原理（DESIGN §1.0：决策与推理分开、真相只来自环境和人、策略改变分布、改进者碰不到评测器、一个结论一个变量、每个数字落盘、数据是用户自己的、机器故障不是证据、概念与依赖最少），按它们核对每个循环与适配器的数据路径，记录在 DESIGN §十。改了八处：arena 种子由公开公式改为随机抽取只存记录（P4）；准入移到开记录之前（P9）；C3 的误接受表述补上 α 的对象（统计）；研究决策点由三个收成 `worth_running` 一个，排序不否决、带 ε（P9、P2）；适配器补记权限模式、`stop` 列为已知缺口、条款与隐私写进 P7（P2、P7）；`adapters/` 从部署层移到环境层，与场景包并列为两种住户（架构一致性）；策略模式下"默认错误"定义为"规则蛇在此会错"（P3）；确认研究员看冠军历史 arena 汇总不泄漏（P4）。目的与一句话重写：ouroloop 提升 agent 的决策质量，证明场是模拟环境，目的地是真实 harness。
+**同日第二次追加（流程审查）。** 把设计的来历写成九条第一性原理（DESIGN §1.0：决策与推理分开、真相只来自环境和人、策略改变分布、改进者碰不到评测器、一个结论一个变量、每个数字落盘、数据是用户自己的、机器故障不是证据、概念与依赖最少），按它们核对每个循环与适配器的数据路径，记录在 DESIGN §十。改了八处：arena 种子由公开公式改为随机抽取只存记录（P4）；准入移到开记录之前（P9）；C3 的误接受表述补上 α 的对象（统计）；研究决策点由三个收成 `worth_running` 一个，排序不否决、带 ε（P9、P2）；适配器补记权限模式、`stop` 列为已知缺口、条款与隐私写进 P7（P2、P7）；`adapters/` 从部署层移到环境层，与场景包并列为两种住户（架构一致性）；策略模式下"默认错误"定义为"规则蛇在此会错"（P3）；确认研究员看冠军历史 arena 汇总不泄漏（P4）。目的与一句话重写：reharness 提升 agent 的决策质量，证明场是模拟环境，目的地是真实 harness。
 
 ## 2026-09-26 一次撤销只买一次训练，准入不再拒错轮次
 
@@ -2326,22 +2334,22 @@
 
 ## 2026-09-26 四个角色：模型库和服务从训练里拆出来，部署与回滚
 
-- 做了什么：`ouroloop/stores/`（dir 与 hf 两种实现，一个接口，返回不可变 ref）、`ouroloop/serving.py`（训练好的模型只经此被问）、部署探针、按血缘的回滚。
+- 做了什么：`reharness/stores/`（dir 与 hf 两种实现，一个接口，返回不可变 ref）、`reharness/serving.py`（训练好的模型只经此被问）、部署探针、按血缘的回滚。
 - 证据：没有运行证据，是四处设计缺陷的结果，它们都是"全部跑在一台 GPU 主机上"留下的痕迹：transport `direct` 让训练来决定模型住在哪；评测的后端来自训练器而不是服务；晋升只是翻一个指针，没有任何一次加载；冠军被撤销后 session 掉回默认，而不是掉到上一个好版本。
-- 因此改了：worker 经模型库发布并取回 ref，卡片上模型只按 ref 指认（backend spec 里只有 ref，服务、校准、session 钉和撤销名单都只用它），作业目录和主机名仍记在卡片的 `job` 一栏里备查；门接受之后，服务先加载、报出的模型 id 必须和卡片一致，冠军才移动，部署失败则冠军不动（`ouroloop deploy <version>` 重试）；回滚落到最近一个被接受、已部署、未撤销的祖先（`Registry.rollback`），没有就回到默认。
+- 因此改了：worker 经模型库发布并取回 ref，卡片上模型只按 ref 指认（backend spec 里只有 ref，服务、校准、session 钉和撤销名单都只用它），作业目录和主机名仍记在卡片的 `job` 一栏里备查；门接受之后，服务先加载、报出的模型 id 必须和卡片一致，冠军才移动，部署失败则冠军不动（`reharness deploy <version>` 重试）；回滚落到最近一个被接受、已部署、未撤销的祖先（`Registry.rollback`），没有就回到默认。
 - commit：f22c64c
 
 ## 2026-09-26 没有计划不训练，没有数据不成计划
 
 - 做了什么：一轮改为 数据 → 诊断 → 假设 → 计划 → 准入 → 训练（`evolve/plan.py`），只有最后一步花 GPU；`pipeline.schedule` 删除，它的三条反射变成规则计划器的三条提案分支（`plan.plan`：还没训过、默认错误翻倍、冠军被撤销），提案之后还要过 `admit`，撤销那条另加"带来新数据"的条件（`Champion.rows >= MATERIAL * rows`）。
-- 强制点：这条规则落在 `ouroloop/generations.py` 的世代循环里，不在 `pipeline.evolve_model` 里。`ouroloop evolve`（`cli.cmd_evolve`）仍然不看计划就训一个候选；世代循环里 `[demo] plant` 指定的那一代也有意跳过 `decide`——植入的坏候选按定义要走同一道门。
+- 强制点：这条规则落在 `reharness/generations.py` 的世代循环里，不在 `pipeline.evolve_model` 里。`reharness evolve`（`cli.cmd_evolve`）仍然不看计划就训一个候选；世代循环里 `[demo] plant` 指定的那一代也有意跳过 `decide`——植入的坏候选按定义要走同一道门。
 - 证据：run6（把执行后监控放进运行时之后）：坏模型在害了 2 个 session 时就被撤销，但日程按"撤销即重训"立刻重训，新候选看到的几乎是同一批数据（被撤销的模型只在 2 个 session 里执行过，失败几乎没留下新数据），于是以同样的方式失败，连着两次。
-- 因此改了：撤销是证据，不是触发器；准入的决定性检查在训练前就能算出来——risk r 下一个阈值需要 `sessions_needed(r)` 个一条错都没有的 session（r = 0.05 时 59），而只有含默认错误的校准 session 才买得到一个，不够就说明这份数据训出来的模型永远不可能执行。`ouroloop plan` 把诊断、提议和准入结论连理由一起打出来。
+- 因此改了：撤销是证据，不是触发器；准入的决定性检查在训练前就能算出来——risk r 下一个阈值需要 `sessions_needed(r)` 个一条错都没有的 session（r = 0.05 时 59），而只有含默认错误的校准 session 才买得到一个，不够就说明这份数据训出来的模型永远不可能执行。`reharness plan` 把诊断、提议和准入结论连理由一起打出来。
 - commit：b0a01d4、8ac06d9（合并；合并时把"目标只算真的部署了的模型"补进 plan.py）
 
 ## 2026-09-26 训练器变插件，通用 worker，主机自举，云 GPU
 
-- 做了什么：`ouroloop/trainers/`（插件契约，tde 与 signature 两个插件按契约声明自己的 `RECIPE`，tde 另有 `PATH_KEYS`；两者都是可选项，不声明就用框架的 `DEFAULT_RECIPE` 和 `PATH_KEYS = {"init_from"}`）、`ouroloop/worker.py`（主机上 `python -m ouroloop.worker`，版本不符就拒绝）、`ouroloop/hosts/`（bootstrap 与检查）、`evolve/cloud.py`（RunPod / Vast.ai 每个任务一个实例，用完必销毁）、`docker/worker` 镜像。
+- 做了什么：`reharness/trainers/`（插件契约，tde 与 signature 两个插件按契约声明自己的 `RECIPE`，tde 另有 `PATH_KEYS`；两者都是可选项，不声明就用框架的 `DEFAULT_RECIPE` 和 `PATH_KEYS = {"init_from"}`）、`reharness/worker.py`（主机上 `python -m reharness.worker`，版本不符就拒绝）、`reharness/hosts/`（bootstrap 与检查）、`evolve/cloud.py`（RunPod / Vast.ai 每个任务一个实例，用完必销毁）、`docker/worker` 镜像。
 - 证据：没有运行证据，来自取舍清单（9195962、ee328c5 两个计划提交）和一次评审：任务的父模型只有同一插件训的冠军才算，host.json 要和 venv 里的实际代码对；云侧 create 不盲目重发、等 `start.sh` 的标记、实例 TTL 与 SIGTERM/SIGHUP、实例消失立即失败。
 - 因此改了：训练路径只剩一条（本地或 ssh 或云），只有 spec.json、train.jsonl、val.jsonl 过界；transport `hf` 让云实例可用。
 - commit：b5105f1、485a0a7、85bddc0、e4f22c5、9195962、ee328c5
@@ -2421,7 +2429,7 @@
 
 ## 2026-09-26 贪吃蛇场景与多代演示
 
-- 做了什么：`examples/snake`（游戏、棋盘文本、move 决策点、环境 BFS 标签、局即 session 的运行器、指标）、`providers/manual.py`（把 API provider 的接口和数据协议落成文件）、`evolve/monitor.py`、本地 TDE 路径、`ouroloop demo <scenario> --generations N`。
+- 做了什么：`examples/snake`（游戏、棋盘文本、move 决策点、环境 BFS 标签、局即 session 的运行器、指标）、`providers/manual.py`（把 API provider 的接口和数据协议落成文件）、`evolve/monitor.py`、本地 TDE 路径、`reharness demo <scenario> --generations N`。
 - 证据：随后的几次运行（run4-run6）就是这套装置量出来的；本条自身没有量化证据。
 - 附带修的：满盘时吃到最后一个食物即胜（否则 labeler 绕着尾巴走）；manual provider 的 usage 允许任意对象（OpenAI 兼容服务端会嵌套 `prompt_tokens_details`）；`prepare_job` 打乱 val 切分（TDE 只用 `calibration.jsonl` 的前 `eval_limit` 行选 checkpoint，按账本顺序就是最旧的那些 session）。
 - commit：e27a132、37cdca9、90d936c、e99d3fe
@@ -2442,7 +2450,7 @@
 
 ## 2026-09-25 M6：阶段、session 事件、StopGuard 和探针
 
-- 做了什么：决策点声明阶段（阶段 → 默认动作），每行记下阶段和默认；`Runtime.session` 写 session 事件；`ouroloop/stop.py` 的 StopGuard 取代 `Agent._pushback`；`agent/probe.py` 在每个 stop 决策处复制工作目录，会话结束后写入隐藏测试、跑检查、给当时的决策打标签（运行中的任何东西都看不到结果）。
+- 做了什么：决策点声明阶段（阶段 → 默认动作），每行记下阶段和默认；`Runtime.session` 写 session 事件；`reharness/stop.py` 的 StopGuard 取代 `Agent._pushback`；`agent/probe.py` 在每个 stop 决策处复制工作目录，会话结束后写入隐藏测试、跑检查、给当时的决策打标签（运行中的任何东西都看不到结果）。
 - 证据：真实验收（在固定于 M6 提交的独立工作树里采集）：前 50 个 session 里 yes 和 no 两种探针标签都出现；按起始顺序前 85 个 session 共 326 个 stop 决策（325 个有探针标签），per_turn 阶段 153 个 no、129 个 yes，on_finish 阶段 41 个 yes、2 个 no——收益集中在 per_turn。（这组数可从 `examples/workspace-m6/ledger/` 复算；M6 当时的进度记录写的"前 86 个 session、327 个决策"复算不出来，前 86 个是 330 个决策、154 no / 131 yes / 42 yes / 2 no。）任务集从 10 个扩到 29 个（8 个 held-out），每个都"照原样失败、带解法通过"。
 - 因此改了：评审又修三处——per_turn 判"完成"要先跑 checker 才结束（模型不推翻规则）；最后一轮之后不再问 per_turn（记下的默认动作根本不会发生）；探针复制不了或检查不了的状态保持无标签，而不是中断整次运行或让任务集崩溃。
 - commit：74686e5、4c183b0、ea0c384、a3f31a9
@@ -2454,7 +2462,7 @@
 - 因此改了：能否决候选的切分属于选择程序，不是对这个程序产物的独立估计——held-out 照跑照记，但不参与接受或拒绝。
 - commit：f2942b8、c0b6f7d、94e799b
 
-## 2026-09-23 ouroloop 0.1.0
+## 2026-09-23 reharness 0.1.0
 
 - 做了什么：第一版骨架：决策层（类型化决策点、带校准阈值的策略、探索与倾向、只追加的 JSONL 账本）、决策后端（mock、Jev API、TDE、LLM 兜底、HTTP 服务）、最小 agent（读写编辑与 bash，五个内置决策点）、evolve 流水线（建数据集、数据检查、训练器、校准、配对 bootstrap 的晋升门、带回滚的注册表）、研究 agent 接口、带隐藏检查的任务集、Claude Code hook 数据源。
 - 证据：无，这是起点。

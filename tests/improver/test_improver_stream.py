@@ -20,9 +20,9 @@ import pytest
 import rsi
 from rounds import ledger_rows, quiet, round_activity, round_state
 
-from ouroloop.activity import phases
-from ouroloop.contracts import short
-from ouroloop.improver.screen import ScreenResult
+from reharness.activity import phases
+from reharness.contracts import short
+from reharness.improver.screen import ScreenResult
 
 TICKET, VARIANT, NOTIFY = "rsi.notify_ticket", "rsi.notify_after_update_variant", "rsi.notify_after_update"
 ORDER = ["rsi.policy_hold", VARIANT, "rsi.notify_once", TICKET, NOTIFY, "rsi.update_stage"]

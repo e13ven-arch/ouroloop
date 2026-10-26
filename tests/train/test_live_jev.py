@@ -4,10 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from ouroloop.train.backends import JevBackend
-from ouroloop.train.cli import SMOKE_QUESTIONS, SMOKE_STATE
-from ouroloop.contracts import load_dotenv
-from ouroloop.train.types import Request
+from reharness.train.backends import JevBackend
+from reharness.train.cli import SMOKE_QUESTIONS, SMOKE_STATE
+from reharness.contracts import load_dotenv
+from reharness.train.types import Request
 
 pytestmark = pytest.mark.live
 

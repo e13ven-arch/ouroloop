@@ -14,9 +14,9 @@ import pytest
 
 openai = pytest.importorskip("openai", reason="the openai SDK is not installed here (the automationbench extra)")
 
-from ouroloop.evaluate.budget import Budgets, MeteredProvider  # noqa: E402
-from ouroloop.memory.bridge import RESEARCH_SECONDS, SDK_READ_SECONDS, Bridge  # noqa: E402
-from ouroloop.providers import ProviderAccountError, ProviderError  # noqa: E402
+from reharness.evaluate.budget import Budgets, MeteredProvider  # noqa: E402
+from reharness.memory.bridge import RESEARCH_SECONDS, SDK_READ_SECONDS, Bridge  # noqa: E402
+from reharness.providers import ProviderAccountError, ProviderError  # noqa: E402
 
 from test_memory_bridge import MODELS, PRICING, ROUTES, SCOPE, USAGE, Rows, ScriptedReMeModel  # noqa: E402
 

@@ -41,24 +41,24 @@ import rsi
 from rounds import quiet, round_activity, round_state
 from scripted_r import ScriptedR
 
-from ouroloop.activity import phases
-from ouroloop.contracts import Objects
-from ouroloop.evaluate.results import Results, RunManifest, TaskResult
-from ouroloop.harness.contract import API_VERSION
-from ouroloop.harness.package import Manifest, Package
-from ouroloop.improver.archive import Archive, load_files
-from ouroloop.improver.components import components, present, without
-from ouroloop.improver.credit import Credit, credit, removal_candidates, summary
-from ouroloop.improver.declaration import Component, Declaration
-from ouroloop.improver.diagnose import PROMPTS
-from ouroloop.improver.evidence import AttemptEvidence, Evidence, dev_histogram
-from ouroloop.improver.ledger import PROJECTED, Ledger
-from ouroloop.improver.policy import (MAX_LESSONS, ImproverPolicy, check_lessons, export_policy, import_policy,
+from reharness.activity import phases
+from reharness.contracts import Objects
+from reharness.evaluate.results import Results, RunManifest, TaskResult
+from reharness.harness.contract import API_VERSION
+from reharness.harness.package import Manifest, Package
+from reharness.improver.archive import Archive, load_files
+from reharness.improver.components import components, present, without
+from reharness.improver.credit import Credit, credit, removal_candidates, summary
+from reharness.improver.declaration import Component, Declaration
+from reharness.improver.diagnose import PROMPTS
+from reharness.improver.evidence import AttemptEvidence, Evidence, dev_histogram
+from reharness.improver.ledger import PROJECTED, Ledger
+from reharness.improver.policy import (MAX_LESSONS, ImproverPolicy, check_lessons, export_policy, import_policy,
                                       playbook_path, read_playbook, update_playbook)
-from ouroloop.improver.screen import ScreenResult
-from ouroloop.improver.verify import Verdict
-from ouroloop.runtime.records import session_file
-from ouroloop.runtime.trace import TraceAccessError, TraceStore
+from reharness.improver.screen import ScreenResult
+from reharness.improver.verify import Verdict
+from reharness.runtime.records import session_file
+from reharness.runtime.trace import TraceAccessError, TraceStore
 
 # ---------------------------------------------------------------------------- a hand-built workspace
 SPLIT = {"t.a": "train", "t.b": "train", "t.c": "train", "t.dev": "dev", "t.test": "test"}
@@ -375,7 +375,7 @@ def test_the_scoreboard_lists_the_scopes_beside_the_kinds_and_the_projection_kee
 
 
 def test_a_declaration_scope_is_invariant_or_domain_or_left_out():
-    from ouroloop.improver.declaration import read_declaration
+    from reharness.improver.declaration import read_declaration
     raw = {"dir": "package", "mechanism": "m", "components": [{"kind": "prompt", "site": "system", "cause_ids": ["c"],
                                                               "trigger": "t"}]}
     for scope, want in (("invariant", "invariant"), ("domain", "domain"), (None, "")):

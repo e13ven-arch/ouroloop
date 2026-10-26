@@ -9,14 +9,14 @@ from pathlib import Path
 
 import pytest
 
-from ouroloop.contracts import Objects, short
-from ouroloop.evaluate.attempt import Budgeted
-from ouroloop.evaluate.limits import Budget
-from ouroloop.evaluate.release import Release
-from ouroloop.runtime.app import App, AppError, AppManifest, export, exported_objects
-from ouroloop.runtime.records import read, session_file
-from ouroloop.runtime.runner import PackageAgent
-from ouroloop.runtime.worker import DEFAULT_IMAGE, RUNNER, ProcessWorker, WorkerResources, docker_worker
+from reharness.contracts import Objects, short
+from reharness.evaluate.attempt import Budgeted
+from reharness.evaluate.limits import Budget
+from reharness.evaluate.release import Release
+from reharness.runtime.app import App, AppError, AppManifest, export, exported_objects
+from reharness.runtime.records import read, session_file
+from reharness.runtime.runner import PackageAgent
+from reharness.runtime.worker import DEFAULT_IMAGE, RUNNER, ProcessWorker, WorkerResources, docker_worker
 from runtime_world import Script, World, core, finish, image_present, of, require, seed, turn
 
 IMAGE_ID = "sha256:" + "a" * 64

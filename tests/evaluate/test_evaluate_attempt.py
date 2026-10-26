@@ -9,14 +9,14 @@ from dataclasses import replace
 import pytest
 import rsi
 
-from ouroloop.activity import phases
-from ouroloop.contracts import read_jsonl
-from ouroloop.evaluate.attempt import make_agent_factory, run_attempt, run_tasks
-from ouroloop.evaluate.limits import Budget
-from ouroloop.evaluate.splits import SplitManifest
-from ouroloop.harness import package as pk
-from ouroloop.runtime.records import session_file
-from ouroloop.runtime.worker import ProcessWorker
+from reharness.activity import phases
+from reharness.contracts import read_jsonl
+from reharness.evaluate.attempt import make_agent_factory, run_attempt, run_tasks
+from reharness.evaluate.limits import Budget
+from reharness.evaluate.splits import SplitManifest
+from reharness.harness import package as pk
+from reharness.runtime.records import session_file
+from reharness.runtime.worker import ProcessWorker
 
 NOTIFY = "rsi.dev_notify_after_update"            # update a contact, then post in #ops: two writes
 

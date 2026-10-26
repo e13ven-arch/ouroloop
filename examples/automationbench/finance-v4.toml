@@ -2,7 +2,7 @@
 # the stratified split v0.4 read (pinned below), the automationbench_v1 preset, the stirrup seed, the memory on, six
 # improver rounds with a gate every second round (improver.gate_every 2, the preset's: rounds 0, 2 and 4 screen and
 # carry their best candidate; rounds 1, 3 and 5 gate). Every paid step is approved in chat first (PLAN rule 3). Run
-# from the repository's root with `.venv/bin/python -m ouroloop`, in a terminal that stays open, on AC power under
+# from the repository's root with `.venv/bin/python -m reharness`, in a terminal that stays open, on AC power under
 # `caffeinate -dimsu`; stop a step with one Ctrl-C and let it drain, never kill it (a killed call keeps its
 # reservation's bound).
 #   1  `... bench --config examples/automationbench/finance-v4.toml --phase smoke --checks-only`                 $0
@@ -15,7 +15,7 @@
 #      (PLAN rule 6); then `... bench --config ... --phase evaluate`
 #
 # The numbers are the preset's (activity/presets.py, from evidence); a value here may only tighten one. The worker runs
-# by the image id below (K pins it; the tag ouroloop-worker:finance-v1 keeps the image from being pruned; the image
+# by the image id below (K pins it; the tag reharness-worker:finance-v1 keeps the image from being pruned; the image
 # copies only runtime/worker_runner.py, unchanged since finance-v1).
 # It follows finance-v3, which stopped after its baseline (train 23/50, dev 7/25 and 8/25): the analysis of finance-v2's
 # two gate-rejected rounds led to four fixes (docs/JOURNAL.md 2026-10-10, DESIGN §6.12) that changed the code, so
@@ -92,6 +92,6 @@ repeats = 3
 
 [rsi]
 scope_id = "finance-v4"
-# printed by `ouroloop freeze` on 2026-10-10 (K frozen at code s4/finance-v4 9c13d6a); final_plan_ref comes with the seal
+# printed by `reharness freeze` on 2026-10-10 (K frozen at code s4/finance-v4 9c13d6a); final_plan_ref comes with the seal
 core_ref = "core:sha256:a587428e5f26fc4d3871f6369926924b71500890a6f521408251b3d2a312befd"
 split_ref = "4fd91eaf9fb8daf5"

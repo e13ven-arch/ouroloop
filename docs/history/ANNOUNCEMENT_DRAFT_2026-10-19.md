@@ -7,9 +7,9 @@ not noise, docs/PLAN.md §0.1) the results are not yet the headline it would nee
 
 ---
 
-## ouroloop: a bounded self-improvement loop for business agents, measured honestly
+## reharness: a bounded self-improvement loop for business agents, measured honestly
 
-ouroloop is an open-source prototype of bounded recursive self-improvement for agent applications. An improver reads
+reharness is an open-source prototype of bounded recursive self-improvement for agent applications. An improver reads
 an agent's failures on training tasks, writes changes to the agent's harness package (tools, hooks, prompts, skills,
 memory), and the platform decides whether to install them — by evidence, never by a person. Everything the improver
 cannot touch is frozen: the scorer, the data splits, the gates, the budget. The claim for any version is a sealed final
@@ -40,13 +40,13 @@ scripts that produced each number are tracked.
 the improver from the right mechanism to a weaker one in the last round), then moving the evidence infrastructure
 into the seed so the improver writes rules instead of plumbing.
 
-Repository: https://github.com/e13ven-arch/ouroloop (MIT).
+Repository: https://github.com/e13ven-arch/reharness (MIT).
 
 ---
 
-## ouroloop：一个诚实测量的业务 agent 有界自改进回路
+## reharness：一个诚实测量的业务 agent 有界自改进回路
 
-ouroloop 是一个面向 agent 应用的有界递归自改进开源原型。改进器读 agent 在训练任务上的失败，改 agent 的 harness 包
+reharness 是一个面向 agent 应用的有界递归自改进开源原型。改进器读 agent 在训练任务上的失败，改 agent 的 harness 包
 （工具、hook、提示词、技能、memory），由平台按证据决定装不装——不由人挑。改进器碰不到的东西都冻结：评分器、数据划分、
 gate、预算。任何版本的主张只来自留出 test 题上的封存 final，计划在第一次 test 尝试之前提交。
 
@@ -68,4 +68,4 @@ Opus 5.5、同一档 effort、订阅预算。
 **接下来做什么。** 修 hook 回放，让 hook 在回放里看到和真跑一样的东西（上一轮把改进器从对的机制逼到弱机制的缺陷）；再把
 证据基础设施搬进种子，让改进器写规则而不是写管道。
 
-仓库：https://github.com/e13ven-arch/ouroloop（MIT）。
+仓库：https://github.com/e13ven-arch/reharness（MIT）。

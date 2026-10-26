@@ -1,6 +1,6 @@
 # memory：sidecar、规则、写入步、检索与 recall、快照、升级
 
-> 阶段 2 的设计文档（接口随阶段 1 一起定；2026-10-09 开发前按 v6 的证据与阶段 1 的代码定稿）。包 `ouroloop/memory/`。对应 [DESIGN](../DESIGN.md) §5。来源：`v6-memory` 分支（`memory/{client,vel,track,retrieval,importing,sidecar/*}`）、`v6-gateway` 的 `bridge.py` 与 `trace.py`。
+> 阶段 2 的设计文档（接口随阶段 1 一起定；2026-10-09 开发前按 v6 的证据与阶段 1 的代码定稿）。包 `reharness/memory/`。对应 [DESIGN](../DESIGN.md) §5。来源：`v6-memory` 分支（`memory/{client,vel,track,retrieval,importing,sidecar/*}`）、`v6-gateway` 的 `bridge.py` 与 `trace.py`。
 
 ## 1 职责与不做
 
@@ -13,7 +13,7 @@
 | 文件 | 内容 |
 |---|---|
 | `memory/__init__.py` | 钉死的版本与哈希（ReMe 0.3.1.10 的轮子、bge-small 的修订与各文件 sha256）、sidecar 文件的路径、`snapshot_digest`、`default_venv`、`model_problems` |
-| `memory/__main__.py` | `python -m ouroloop.memory setup|check`：按锁文件建 sidecar 的 venv、取模型、核对（v6 原样） |
+| `memory/__main__.py` | `python -m reharness.memory setup|check`：按锁文件建 sidecar 的 venv、取模型、核对（v6 原样） |
 | `memory/settings.py` | `Settings`（K 的 `memory` 节，§3）与 `retriever`、`backend` 两张钉表 |
 | `memory/client.py` | `MemoryClient`：sidecar 的生命周期与 HTTP 调用（v6 原样；错误类是 `contracts.MemorySidecarError`） |
 | `memory/sidecar/` | `serve.py`（ReMe HttpService + 我们的 op）、`ops.py`、`embed.py`（bge-small ONNX）、`flows.yaml`、`requirements-macos-arm64.lock`。只在 sidecar 的 venv 里跑，不 import 本框架（v6 原样） |
@@ -186,7 +186,7 @@ def import_entries(snapshot_text, *, source_release_ref, source_line, target_lin
 - 续跑：已记录的尝试按 attempt id 复用、不重付；台账是真相，`resume()` 对齐 store；挂起的 batch 不重新总结。
 - 装入后 dev/test 只见快照。
 
-工作区：`<root>/memory/<domain>/` 下 `stream.json`（台账）、`live.jsonl`（live 库的规范 JSONL）、`chroma/`（store，sidecar 独占锁）、`bridge_calls.jsonl`（桥的调用记录，train 数据）。sidecar 的工作目录在仓库外（`~/.cache/ouroloop/memory-run/<scope>`）。venv：`OUROLOOP_MEMORY_VENV`，否则 `default_venv()`（机器设置，不进 K；K 钉的是锁文件与模型的哈希）。
+工作区：`<root>/memory/<domain>/` 下 `stream.json`（台账）、`live.jsonl`（live 库的规范 JSONL）、`chroma/`（store，sidecar 独占锁）、`bridge_calls.jsonl`（桥的调用记录，train 数据）。sidecar 的工作目录在仓库外（`~/.cache/reharness/memory-run/<scope>`）。venv：`REHARNESS_MEMORY_VENV`，否则 `default_venv()`（机器设置，不进 K；K 钉的是锁文件与模型的哈希）。
 
 钱：sidecar 的每次模型调用经桥，记在 `<scope>:research:memory` 账户；流的尝试记在 `<scope>:library` 账户。
 
@@ -268,7 +268,7 @@ trace 的归属：`TraceStore` 放 `runtime/trace.py`（它只读 transcript，�
 
 两层：
 - 默认套件：规则、写入步、读取、快照、升级、library 阶段在一个进程内的假 client（`tests/memory/fake_memory.py`：确定的词袋向量、脚本化的总结、桥的调用记录）上跑，不要 venv；
-- memory 套件：真 sidecar（ReMe、chroma、bge-small）加脚本化的 OpenAI 服务（`fake_openai_server.py`），要 `OUROLOOP_MEMORY_VENV`；没有就跳过，`OUROLOOP_TEST_REQUIRE_MEMORY=1` 时不跳而失败。合并与付费前必跑。
+- memory 套件：真 sidecar（ReMe、chroma、bge-small）加脚本化的 OpenAI 服务（`fake_openai_server.py`），要 `REHARNESS_MEMORY_VENV`；没有就跳过，`REHARNESS_TEST_REQUIRE_MEMORY=1` 时不跳而失败。合并与付费前必跑。
 
 清单：
 - sidecar：锁文件哈希不符拒绝启动；健康检查；`summarize` 走桥且每次调用有记录（变异：绕过桥的调用被 `_check_replies` 抓到）。

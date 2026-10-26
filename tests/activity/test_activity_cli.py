@@ -1,5 +1,5 @@
-"""The two command lines (docs/design/ACTIVITY.md §3): `ouroloop` runs an activity (bench, freeze, export); the training
-stack's commands are `python -m ouroloop.train`. Exit 1 is a failed check, exit 2 a command that could not run as
+"""The two command lines (docs/design/ACTIVITY.md §3): `reharness` runs an activity (bench, freeze, export); the training
+stack's commands are `python -m reharness.train`. Exit 1 is a failed check, exit 2 a command that could not run as
 asked. Every run here is in a scratch directory, so no operator .env is read."""
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 import rsi
 
-from ouroloop.activity import cli
+from reharness.activity import cli
 
 REPO = Path(__file__).resolve().parents[2]
 OLD_COMMANDS = ("run", "suite", "demo", "decide", "smoke", "replay", "research", "evolve", "deploy", "plan",
@@ -59,7 +59,7 @@ def write_config(tmp_path, fake_upstream, **sections) -> Path:
 
 
 # ---------------------------------------------------------------------------- the commands
-def test_the_ouroloop_command_runs_an_activity_only(capsys):
+def test_the_reharness_command_runs_an_activity_only(capsys):
     with pytest.raises(SystemExit) as shown:
         cli.main(["--help"])
     assert shown.value.code == 0 and "{bench,freeze,export}" in capsys.readouterr().out
@@ -73,9 +73,9 @@ def test_the_ouroloop_command_runs_an_activity_only(capsys):
 def test_the_package_version_is_pyprojects():
     """pip names an install after pyproject's version, and host init names the sdist it sends after __version__
     (train/jobs/hosts): the two are one number."""
-    import ouroloop
+    import reharness
     with open(REPO / "pyproject.toml", "rb") as f:
-        assert ouroloop.__version__ == tomllib.load(f)["project"]["version"]
+        assert reharness.__version__ == tomllib.load(f)["project"]["version"]
 
 
 @pytest.mark.parametrize("phase", ["freeze", "baseline", "library", "round", "stream", "evaluate", "report", "cycle"])
@@ -100,7 +100,7 @@ def test_the_smoke_checks_from_a_config_file_freeze_nothing(tmp_path, fake_upstr
 
 
 def test_a_failed_check_exits_one(tmp_path, fake_upstream, capsys, monkeypatch):
-    from ouroloop.activity import checks
+    from reharness.activity import checks
     path = write_config(tmp_path, fake_upstream)
     monkeypatch.setattr(checks, "attempt_version", lambda: "0000000000000000")
     assert cli.main(["bench", "--config", str(path), "--phase", "smoke", "--checks-only"]) == 1
@@ -135,7 +135,7 @@ def test_a_phase_of_a_later_stage_exits_two_and_says_which(tmp_path, fake_upstre
     assert cli.main(["bench", "--config", str(path), "--phase", "round"]) == 2
     assert "no frozen gate plan" in capsys.readouterr().err
     assert cli.main(["bench", "--config", str(path), "--phase", "export"]) == 2
-    assert "`ouroloop export --config C --to DIR`" in capsys.readouterr().err
+    assert "`reharness export --config C --to DIR`" in capsys.readouterr().err
 
 
 def test_export_writes_the_active_release_as_an_app(tmp_path, fake_upstream, capsys):
@@ -143,7 +143,7 @@ def test_export_writes_the_active_release_as_an_app(tmp_path, fake_upstream, cap
     assert cli.main(["export", "--config", str(path), "--to", str(tmp_path / "app")]) == 0
     active = json.loads((tmp_path / "ws" / "rsi" / "active.json").read_text(encoding="utf-8"))["release_ref"]
     assert "exported" in capsys.readouterr().out
-    from ouroloop.runtime.app import App
+    from reharness.runtime.app import App
     assert App(tmp_path / "app").manifest.release_ref == active
     assert cli.main(["export", "--config", str(path), "--release", "release:sha256:" + "0" * 64,
                      "--to", str(tmp_path / "other")]) == 2
@@ -157,14 +157,14 @@ def run_module(tmp_path, *args):
                           timeout=120)
 
 
-def test_python_m_ouroloop_is_the_same_command(tmp_path):
-    done = run_module(tmp_path, "ouroloop", "--help")
+def test_python_m_reharness_is_the_same_command(tmp_path):
+    done = run_module(tmp_path, "reharness", "--help")
     assert done.returncode == 0, done.stderr
     assert "{bench,freeze,export}" in done.stdout
 
 
-def test_python_m_ouroloop_train_runs_the_smoke(tmp_path):
-    done = run_module(tmp_path, "ouroloop.train", "smoke", "--jev", "--backend", "mock")
+def test_python_m_reharness_train_runs_the_smoke(tmp_path):
+    done = run_module(tmp_path, "reharness.train", "smoke", "--jev", "--backend", "mock")
     assert done.returncode == 0, done.stderr
     assert done.stdout.count(" ok") == 3 and "model=mock-keyword" in done.stdout
 
@@ -176,7 +176,7 @@ def test_a_second_process_on_one_activity_is_refused_before_it_pays(tmp_path, fa
     held = cli._lock(tmp_path / "ws")
     try:
         assert cli.main(["bench", "--config", str(path), "--phase", "baseline"]) == 2
-        assert "another ouroloop process is running this activity" in capsys.readouterr().err
+        assert "another reharness process is running this activity" in capsys.readouterr().err
         assert not list((tmp_path / "ws").glob("bench/*/results/*.jsonl"))
         assert cli.main(["bench", "--config", str(path), "--phase", "report"]) == 0
     finally:

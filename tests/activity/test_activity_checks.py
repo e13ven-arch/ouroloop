@@ -11,14 +11,14 @@ import sys
 import pytest
 import rsi
 
-from ouroloop.activity import checks, phases, presets
-from ouroloop.activity.checks import startup_checks
-from ouroloop.activity.workspace import open_activity
-from ouroloop.adapters import automationbench as ab
-from ouroloop.harness import seed as sd
-from ouroloop.runtime import egress as eg
-from ouroloop.runtime import worker as wk
-from ouroloop.runtime.worker import DEFAULT_IMAGE, DockerWorker, ProcessWorker, docker_worker
+from reharness.activity import checks, phases, presets
+from reharness.activity.checks import startup_checks
+from reharness.activity.workspace import open_activity
+from reharness.adapters import automationbench as ab
+from reharness.harness import seed as sd
+from reharness.runtime import egress as eg
+from reharness.runtime import worker as wk
+from reharness.runtime.worker import DEFAULT_IMAGE, DockerWorker, ProcessWorker, docker_worker
 
 
 def activity(tmp_path, fake_upstream, **sections):
@@ -129,7 +129,7 @@ def test_the_library_phase_needs_the_memory_on_and_a_line_k_does_not_hold_out(tm
 
 def test_the_library_phase_needs_the_sidecar_k_pinned(tmp_path, fake_upstream, monkeypatch):
     """No venv for the lock (here: an empty directory named as the venv) is refused before anything is paid."""
-    monkeypatch.setenv("OUROLOOP_MEMORY_VENV", str(tmp_path / "no-venv"))
+    monkeypatch.setenv("REHARNESS_MEMORY_VENV", str(tmp_path / "no-venv"))
     a = activity(tmp_path, fake_upstream, memory={"enabled": True})
     only(problems(a, "library"), "the memory sidecar's venv: ")
 
@@ -165,7 +165,7 @@ def test_a_seed_source_changed_under_the_activity_is_refused(tmp_path, fake_upst
 def test_no_worker_is_refused(tmp_path, fake_upstream):
     a = activity(tmp_path, fake_upstream)
     a.worker_factory = lambda: None
-    only(problems(a), "no qualified worker: Docker or the image ouroloop-worker:py3.12")
+    only(problems(a), "no qualified worker: Docker or the image reharness-worker:py3.12")
     assert startup_checks(a, phase="smoke", needs_model=False) == []           # the checks-only smoke needs none
 
 
@@ -194,24 +194,24 @@ def test_a_proxy_k_needs_its_egress_image(tmp_path, fake_upstream, monkeypatch):
     table["worker"]["network"] = {"mode": "proxy", "allow": [{"host": "slack.com", "port": 443, "methods": ["POST"]}]}
     monkeypatch.setitem(presets.PRESETS, "rsi_test_proxy", table)
     a = activity(tmp_path, fake_upstream, harness={"preset": "rsi_test_proxy"})
-    monkeypatch.setattr(eg, "DEFAULT_IMAGE", "ouroloop-egress:not-built")
-    only(problems(a), "K's network is the egress proxy and the image ouroloop-egress:not-built is not built")
+    monkeypatch.setattr(eg, "DEFAULT_IMAGE", "reharness-egress:not-built")
+    only(problems(a), "K's network is the egress proxy and the image reharness-egress:not-built is not built")
 
 
 # ---------------------------------------------------------------------------- the qualified worker K pins
 @pytest.fixture(scope="module")
 def docker():
     """Docker and the worker image. Without them these tests are skipped, never passed; where the image was built
-    for the full run (OUROLOOP_TEST_REQUIRE_DOCKER) a missing worker fails them."""
+    for the full run (REHARNESS_TEST_REQUIRE_DOCKER) a missing worker fails them."""
     if docker_worker() is None:
-        if os.environ.get("OUROLOOP_TEST_REQUIRE_DOCKER"):
-            pytest.fail(f"OUROLOOP_TEST_REQUIRE_DOCKER is set and docker or the {DEFAULT_IMAGE} image is not available")
+        if os.environ.get("REHARNESS_TEST_REQUIRE_DOCKER"):
+            pytest.fail(f"REHARNESS_TEST_REQUIRE_DOCKER is set and docker or the {DEFAULT_IMAGE} image is not available")
         pytest.skip(f"docker or the {DEFAULT_IMAGE} image is not available")
 
 
 def test_ks_docker_worker_serves_this_host_and_a_pin_it_does_not_hold_is_no_worker(docker, tmp_path, fake_upstream):
     a = activity(tmp_path / "a", fake_upstream)
-    a.worker_factory = None                                        # the worker K describes, as `ouroloop` builds it
+    a.worker_factory = None                                        # the worker K describes, as `reharness` builds it
     worker = a.worker()
     assert isinstance(worker, DockerWorker) and worker.qualified and worker.runner_problem() is None
     assert problems(a) == []
@@ -230,9 +230,9 @@ def test_the_claude_cli_an_activity_first_ran_on_is_recorded_and_a_changed_one_r
     """The CLI is the actor's transport: its version is recorded at the first paid phase, and a later paid phase on
     another version is refused (a comparison holds the transport fixed). A test's providers record nothing."""
     from types import SimpleNamespace
-    from ouroloop.activity import checks
-    from ouroloop.contracts import Events
-    import ouroloop.providers.claude_code as cc
+    from reharness.activity import checks
+    from reharness.contracts import Events
+    import reharness.providers.claude_code as cc
     version = {"now": "2.1.288 (Claude Code)"}
     monkeypatch.setattr(cc, "cli_version", lambda binary="claude": version["now"])
     table = {"type": "claude_code", "model": "m", "effort": "medium", "max_tokens": 1, "timeout": 1}

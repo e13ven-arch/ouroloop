@@ -1,6 +1,6 @@
 """Shared pieces of the runtime tests (docs/design/RUNTIME.md §8): a small tool surface, scripted providers, worker
 sessions over the host's ProcessWorker, the stirrup seed under a test K, one attempt under the runner shell, and the
-Docker gate (a skip without Docker or the image, a failure under OUROLOOP_TEST_REQUIRE_DOCKER)."""
+Docker gate (a skip without Docker or the image, a failure under REHARNESS_TEST_REQUIRE_DOCKER)."""
 from __future__ import annotations
 
 import json
@@ -12,15 +12,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from ouroloop.contracts import Objects
-from ouroloop.evaluate.attempt import Budgeted
-from ouroloop.evaluate.limits import Budget
-from ouroloop.harness.package import Limits, build
-from ouroloop.harness.seed import build_seed
-from ouroloop.runtime.chat import ChatTurn, ToolCall, ToolSpec
-from ouroloop.runtime.records import Transcript, read, session_file
-from ouroloop.runtime.runner import PackageAgent
-from ouroloop.runtime.worker import ProcessWorker, WorkerLimits
+from reharness.contracts import Objects
+from reharness.evaluate.attempt import Budgeted
+from reharness.evaluate.limits import Budget
+from reharness.harness.package import Limits, build
+from reharness.harness.seed import build_seed
+from reharness.runtime.chat import ChatTurn, ToolCall, ToolSpec
+from reharness.runtime.records import Transcript, read, session_file
+from reharness.runtime.runner import PackageAgent
+from reharness.runtime.worker import ProcessWorker, WorkerLimits
 
 LIMITS = {"max_steps": 8, "max_model_calls": 20, "max_tool_calls": 10, "max_seconds": 60, "max_tokens": 10000,
           "max_output_chars": 20000}
@@ -122,11 +122,11 @@ def session_with(files: dict, **limits):
 def runner_module():
     """runtime/worker_runner.py imported for its names. On import it points fd 1 at stderr (the protocol keeps its own
     descriptor), so fd 1 and sys.stdout are put back afterwards."""
-    if "ouroloop.runtime.worker_runner" in sys.modules:
-        return sys.modules["ouroloop.runtime.worker_runner"]
+    if "reharness.runtime.worker_runner" in sys.modules:
+        return sys.modules["reharness.runtime.worker_runner"]
     saved_fd, saved_out = os.dup(1), sys.stdout
     try:
-        import ouroloop.runtime.worker_runner as wr
+        import reharness.runtime.worker_runner as wr
     finally:
         os.dup2(saved_fd, 1)
         os.close(saved_fd)
@@ -195,8 +195,8 @@ def require(available: bool, why: str) -> None:
     """Skip without Docker or an image; fail instead where the full run demands them."""
     if available:
         return
-    if os.environ.get("OUROLOOP_TEST_REQUIRE_DOCKER"):
-        pytest.fail(f"OUROLOOP_TEST_REQUIRE_DOCKER is set and {why}")
+    if os.environ.get("REHARNESS_TEST_REQUIRE_DOCKER"):
+        pytest.fail(f"REHARNESS_TEST_REQUIRE_DOCKER is set and {why}")
     pytest.skip(why)
 
 

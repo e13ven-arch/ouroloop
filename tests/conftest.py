@@ -28,5 +28,5 @@ def fake_upstream():
 @pytest.fixture(autouse=True)
 def no_retry_wait(monkeypatch):
     """The meter waits RETRY_SECONDS before retrying a failed call; the tests' providers fail on purpose and at once."""
-    from ouroloop.evaluate import budget
+    from reharness.evaluate import budget
     monkeypatch.setattr(budget, "RETRY_SECONDS", (0.0,))

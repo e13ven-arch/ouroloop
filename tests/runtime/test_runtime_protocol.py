@@ -12,10 +12,10 @@ import sys
 
 import pytest
 
-from ouroloop.contracts import CandidateDefect, Infrastructure, LimitHit, StaleWorker, WorkerCrashed, WorkerUnavailable
-from ouroloop.harness import contract as hc
-from ouroloop.runtime.broker import Broker
-from ouroloop.runtime.worker import (MAX_LINE, MAX_MODEL_LINE, PACKAGE_OPS, RUNNER, AgentRunError, PackageCallError,
+from reharness.contracts import CandidateDefect, Infrastructure, LimitHit, StaleWorker, WorkerCrashed, WorkerUnavailable
+from reharness.harness import contract as hc
+from reharness.runtime.broker import Broker
+from reharness.runtime.worker import (MAX_LINE, MAX_MODEL_LINE, PACKAGE_OPS, RUNNER, AgentRunError, PackageCallError,
                                      ProcessWorker, RunDefect, check_package, runner_digest)
 from runtime_world import World, runner_module, seed, session_with
 
@@ -170,10 +170,10 @@ def test_a_gateway_refusal_is_an_error_the_agent_may_catch():
 
 
 def test_a_defect_marked_exception_in_run_is_run_defect_and_any_other_is_agent_run_error():
-    """In a run, an exception the package marks as its own defect (`ouroloop_defect`: a hook outside its protocol, a
+    """In a run, an exception the package marks as its own defect (`reharness_defect`: a hook outside its protocol, a
     package tool that raised) is RunDefect, a candidate defect; any other exception, a return value that is not a
     string and an agent entrypoint not named run are AgentRunError, infrastructure. The worker answers on after each."""
-    files = {"agent/defect.py": "class HookError(Exception):\n    ouroloop_defect = True\n"
+    files = {"agent/defect.py": "class HookError(Exception):\n    reharness_defect = True\n"
                                 "def run(ctx, task):\n    raise HookError('hook g answered 7')\n",
              "agent/boom.py": "def run(ctx, task):\n    raise ValueError('boom')\n",
              "agent/none.py": "def run(ctx, task):\n    return None\n",

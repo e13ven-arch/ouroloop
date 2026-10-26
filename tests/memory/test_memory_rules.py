@@ -9,10 +9,10 @@ import math
 
 import pytest
 
-from ouroloop.contracts import TrainOnlyError
-from ouroloop.harness import literals as L
-from ouroloop.memory import rules as R
-from ouroloop.memory.settings import ORIGINS, Settings
+from reharness.contracts import TrainOnlyError
+from reharness.harness import literals as L
+from reharness.memory import rules as R
+from reharness.memory.settings import ORIGINS, Settings
 
 S = Settings()
 A, B, C, D = "aaaaaaaa00000001", "bbbbbbbb00000002", "cccccccc00000003", "dddddddd00000004"

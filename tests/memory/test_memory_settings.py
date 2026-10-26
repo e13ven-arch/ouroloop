@@ -10,11 +10,11 @@ from dataclasses import fields
 
 import pytest
 
-from ouroloop import memory as M
-from ouroloop.activity import config as cf
-from ouroloop.activity import presets
-from ouroloop.activity.config import ConfigError
-from ouroloop.memory.settings import ORIGINS, Settings, preset_table, settings_of
+from reharness import memory as M
+from reharness.activity import config as cf
+from reharness.activity import presets
+from reharness.activity.config import ConfigError
+from reharness.memory.settings import ORIGINS, Settings, preset_table, settings_of
 
 PRESET = presets.preset("automationbench_v1")
 
@@ -281,7 +281,7 @@ def test_a_held_out_line_given_as_one_string_is_one_line():
 
 
 def test_the_clients_timeout_leaves_the_research_provider_its_time_and_a_minute_for_a_slot():
-    from ouroloop.memory import RESEARCH_SECONDS
+    from reharness.memory import RESEARCH_SECONDS
     assert Settings().llm_timeout_s >= RESEARCH_SECONDS + 60
     with pytest.raises(ValueError, match="at least 600 s"):
         Settings(llm_timeout_s=RESEARCH_SECONDS + 59)

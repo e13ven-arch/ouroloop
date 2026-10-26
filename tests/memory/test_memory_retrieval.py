@@ -14,19 +14,19 @@ from types import SimpleNamespace
 import pytest
 from fake_memory import FakeMemoryClient, bow, cosine
 
-from ouroloop.contracts import MemorySidecarError, Objects
-from ouroloop.evaluate.attempt import Budgeted
-from ouroloop.evaluate.limits import Budget
-from ouroloop.harness.package import Limits, build
-from ouroloop.memory import retriever_digest, snapshot_digest
-from ouroloop.memory.client import SHORT, canonical_rows
-from ouroloop.memory.retrieval import CITE, INTRO, LibraryReader, TaskMemory, format_block, snapshot_collection
-from ouroloop.memory.rules import content_id
-from ouroloop.memory.settings import Settings
-from ouroloop.runtime.chat import ToolSpec
-from ouroloop.runtime.records import Transcript, read, session_file
-from ouroloop.runtime.runner import PackageAgent
-from ouroloop.runtime.worker import ProcessWorker
+from reharness.contracts import MemorySidecarError, Objects
+from reharness.evaluate.attempt import Budgeted
+from reharness.evaluate.limits import Budget
+from reharness.harness.package import Limits, build
+from reharness.memory import retriever_digest, snapshot_digest
+from reharness.memory.client import SHORT, canonical_rows
+from reharness.memory.retrieval import CITE, INTRO, LibraryReader, TaskMemory, format_block, snapshot_collection
+from reharness.memory.rules import content_id
+from reharness.memory.settings import Settings
+from reharness.runtime.chat import ToolSpec
+from reharness.runtime.records import Transcript, read, session_file
+from reharness.runtime.runner import PackageAgent
+from reharness.runtime.worker import ProcessWorker
 
 LINE = "rsi"
 TASK = "a" * 16                       # the task an attempt is at (task_hash: 16 hex)

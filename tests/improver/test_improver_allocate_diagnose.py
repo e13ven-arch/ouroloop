@@ -21,8 +21,8 @@ from __future__ import annotations
 
 def test_every_cause_of_the_vocabulary_has_a_definition():
     """v1.5 (DESIGN §6.15): the three new causes, like the old ones, enter the diagnosis prompt with a definition."""
-    from ouroloop.improver.diagnose import DEFINITIONS
-    from ouroloop.improver.settings import CAUSES, MECHANIZABLE
+    from reharness.improver.diagnose import DEFINITIONS
+    from reharness.improver.settings import CAUSES, MECHANIZABLE
     assert set(CAUSES) <= set(DEFINITIONS) and set(MECHANIZABLE) <= set(CAUSES)
     assert {"rule_not_applied", "vocabulary_mismatch", "omitted_report"} <= set(CAUSES)
     assert "vocabulary_mismatch" in MECHANIZABLE and "omitted_report" not in MECHANIZABLE
@@ -37,15 +37,15 @@ import rsi
 from rounds import quiet, round_activity
 from scripted_r import ScriptedR
 
-from ouroloop.contracts import Objects, read_jsonl, write_json
-from ouroloop.improver import diagnose as dg
-from ouroloop.improver.allocate import Estimates, Focus, focus, kinds_for, stalled
-from ouroloop.improver.diagnose import Case, Cause, NoteCache
-from ouroloop.improver.evidence import Evidence
-from ouroloop.improver.ledger import Ledger
-from ouroloop.improver.round import Round
-from ouroloop.improver.settings import CAUSES, LOOP_CAUSES, MECHANIZABLE, Settings
-from ouroloop.runtime.chat import ChatTurn
+from reharness.contracts import Objects, read_jsonl, write_json
+from reharness.improver import diagnose as dg
+from reharness.improver.allocate import Estimates, Focus, focus, kinds_for, stalled
+from reharness.improver.diagnose import Case, Cause, NoteCache
+from reharness.improver.evidence import Evidence
+from reharness.improver.ledger import Ledger
+from reharness.improver.round import Round
+from reharness.improver.settings import CAUSES, LOOP_CAUSES, MECHANIZABLE, Settings
+from reharness.runtime.chat import ChatTurn
 
 NOTIFY = ("rsi.notify_after_update", "rsi.notify_after_update_variant")
 FAILING = NOTIFY + ("rsi.notify_ticket",)         # what the forgetful actor fails on train (the pair is held out)

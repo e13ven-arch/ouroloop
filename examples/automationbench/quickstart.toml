@@ -4,21 +4,21 @@
 #
 # Run in stages and stop after each one (docs/PLAN.md rule 5). Costs are nominal API-equivalent dollars on the Claude
 # subscription; the first step calls no model.
-#   1  `ouroloop bench --config examples/automationbench/quickstart.toml --phase smoke --checks-only`
+#   1  `reharness bench --config examples/automationbench/quickstart.toml --phase smoke --checks-only`
 #      upstream identity, the frozen split (must print hash 4fd91eaf9fb8daf5), scorer contract, input audit, the
 #      seed's literal scan                                                                                         $0
 #   2  `... --phase smoke`: one dev attempt end to end through the runner shell (needs the worker image)        ~$0.5
-#   3  `ouroloop freeze --config examples/automationbench/quickstart.toml`: K, the gate template and the budget root;
+#   3  `reharness freeze --config examples/automationbench/quickstart.toml`: K, the gate template and the budget root;
 #      prints the [rsi] lines (scope_id, core_ref, split_ref) to add below                                          $0
 #   4  `... --phase cycle --until baseline`: W0 on train 50 + dev 25 x 2 readings                                ~$58
 #   5  `... --phase cycle --until library`: the memory's stream over train 50 (first encounters, retries of the
-#      failed ones, ReMe's summaries through the metered bridge); needs `python -m ouroloop.memory setup`  ~$50-100
+#      failed ones, ReMe's summaries through the metered bridge); needs `python -m reharness.memory setup`  ~$50-100
 #   The improver's rounds (stage 3) come with its package.
 #
 # No [final] table here, on purpose: a sealed final reads finance's test split, which v0.4's final read once
 # (docs/PLAN.md §0.1); a final belongs to a planned activity whose plan hash is committed before its first test attempt
 # (PLAN rule 6). Paid steps need the subscription login (`claude auth login`) and the worker image
-# (`docker build --provenance=false -f docker/worker.Dockerfile -t ouroloop-worker:py3.12 .`).
+# (`docker build --provenance=false -f docker/worker.Dockerfile -t reharness-worker:py3.12 .`).
 
 [workspace]
 root = "workspace-quickstart"
@@ -84,4 +84,4 @@ final_usd = 160.0               # set aside from the start; unused without a fin
 
 [rsi]
 scope_id = "finance-quickstart"
-# core_ref / split_ref: add the lines `ouroloop freeze` prints (step 3).
+# core_ref / split_ref: add the lines `reharness freeze` prints (step 3).

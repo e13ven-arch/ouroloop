@@ -5,8 +5,8 @@ import random
 
 import pytest
 
-from ouroloop.train.decision import Noul, _digest
-from ouroloop.train.policy import cp_upper, fit_threshold, harmed
+from reharness.train.decision import Noul, _digest
+from reharness.train.policy import cp_upper, fit_threshold, harmed
 
 
 def naive(confidences, correct, sessions, risk):

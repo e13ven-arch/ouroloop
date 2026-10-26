@@ -6,9 +6,9 @@ import json
 
 import pytest
 
-from ouroloop.contracts import Objects
-from ouroloop.harness import literals as L
-from ouroloop.harness import seed as sd
+from reharness.contracts import Objects
+from reharness.harness import literals as L
+from reharness.harness import seed as sd
 
 CORE = {"model": {"identity": "claude-opus-5-5", "effort": "medium", "max_effort": "medium"}, "memory": {}}
 ROWS = [

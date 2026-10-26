@@ -10,12 +10,12 @@ import pytest
 import rsi
 from fake_memory import FakeMemoryClient, ScriptedResearch
 
-from ouroloop.evaluate.budget import Budgets, MeteredProvider, Pricing
-from ouroloop.memory import digest
-from ouroloop.memory.retrieval import LibraryReader
-from ouroloop.memory.service import LLM_OPS, MemoryService
-from ouroloop.memory.settings import Settings
-from ouroloop.memory.track import StreamStep
+from reharness.evaluate.budget import Budgets, MeteredProvider, Pricing
+from reharness.memory import digest
+from reharness.memory.retrieval import LibraryReader
+from reharness.memory.service import LLM_OPS, MemoryService
+from reharness.memory.settings import Settings
+from reharness.memory.track import StreamStep
 
 LINE = "rsi"
 

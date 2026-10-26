@@ -16,21 +16,21 @@ import pytest
 import rsi
 from fake_memory import FakeMemoryClient, ScriptedResearch
 
-from ouroloop.activity import phases
-from ouroloop.activity.checks import startup_checks
-from ouroloop.activity.workspace import open_activity
-from ouroloop.contracts import short
-from ouroloop.evaluate.attempt import task_hash
-from ouroloop.evaluate.release import GateReceipt
-from ouroloop.harness.kinds import MEMORY_PATH
-from ouroloop.harness.package import Limits, build, load
-from ouroloop.memory import snapshot_digest
-from ouroloop.memory.client import parse_jsonl
-from ouroloop.memory.retrieval import snapshot_collection
-from ouroloop.memory.settings import Settings
-from ouroloop.memory.snapshot import fit_snapshot, library_of
-from ouroloop.memory.track import StreamStep
-from ouroloop.runtime.records import read, session_file
+from reharness.activity import phases
+from reharness.activity.checks import startup_checks
+from reharness.activity.workspace import open_activity
+from reharness.contracts import short
+from reharness.evaluate.attempt import task_hash
+from reharness.evaluate.release import GateReceipt
+from reharness.harness.kinds import MEMORY_PATH
+from reharness.harness.package import Limits, build, load
+from reharness.memory import snapshot_digest
+from reharness.memory.client import parse_jsonl
+from reharness.memory.retrieval import snapshot_collection
+from reharness.memory.settings import Settings
+from reharness.memory.snapshot import fit_snapshot, library_of
+from reharness.memory.track import StreamStep
+from reharness.runtime.records import read, session_file
 
 LIBRARY_MARK = "[lib "
 RETRY_NOTE = "A previous attempt at this very task was graded and failed these checks"
@@ -402,7 +402,7 @@ def test_the_library_refuses_a_k_whose_backend_pins_are_not_this_checkouts_sidec
                                                                                   monkeypatch):
     s = stream(tmp_path, fake_upstream)
     assert startup_checks(s.a, phase="library") == []
-    import ouroloop.memory as memory
+    import reharness.memory as memory
     pinned = Settings.from_core(s.a.k).backend["flows_sha256"]
     monkeypatch.setattr(memory, "flows_sha256", lambda: "0" * 64)
     (problem,) = startup_checks(s.a, phase="library")
@@ -413,7 +413,7 @@ def test_the_library_refuses_a_k_whose_backend_pins_are_not_this_checkouts_sidec
 
 
 def test_without_an_in_process_client_the_library_needs_the_sidecars_venv(tmp_path, fake_upstream, monkeypatch):
-    monkeypatch.setenv("OUROLOOP_MEMORY_VENV", str(tmp_path / "no-venv"))
+    monkeypatch.setenv("REHARNESS_MEMORY_VENV", str(tmp_path / "no-venv"))
     s = stream(tmp_path, fake_upstream)
     assert not [p for p in startup_checks(s.a, phase="library") if "venv" in p or "model" in p]
     real = open_activity(s.a.config, out=quiet, worker_factory=s.a.worker_factory,
@@ -469,7 +469,7 @@ def test_a_release_carrying_a_snapshot_reads_it_on_dev_and_leave_one_out_exclude
 def test_a_w0_baseline_without_memory_starts_no_memory_client(tmp_path, fake_upstream, monkeypatch):
     """W0 of a K with the memory off reads none: the baseline never makes the memory's client, needs no sidecar venv,
     and its attempts carry no block and no retrieval line."""
-    monkeypatch.setenv("OUROLOOP_MEMORY_VENV", str(tmp_path / "no-venv"))
+    monkeypatch.setenv("REHARNESS_MEMORY_VENV", str(tmp_path / "no-venv"))
     s = stream(tmp_path, fake_upstream, memory={"enabled": False})
     assert not s.a.package().manifest.memory.get("enabled") and startup_checks(s.a, phase="baseline") == []
     phases.baseline(s.a, out=quiet)
@@ -533,9 +533,9 @@ def test_a_failed_batch_holding_a_lost_task_is_cut_the_same_on_the_next_run(tmp_
 def test_a_retry_the_budget_refused_stops_the_phase_and_runs_on_the_next(tmp_path, fake_upstream, monkeypatch):
     """A retry refused by the budget is no evidence: the phase stops before the batch is written, and the next run
     runs the retry again (superseding it) and goes on."""
-    from ouroloop.contracts import BudgetExhausted
-    from ouroloop.evaluate import budget as bg
-    from ouroloop.memory import retrieval as rt
+    from reharness.contracts import BudgetExhausted
+    from reharness.evaluate import budget as bg
+    from reharness.memory import retrieval as rt
     state = {"refuse": True, "retrying": False}
     for_task, reserve = rt.LibraryReader.for_task, bg.BudgetAccount.reserve
 
@@ -568,7 +568,7 @@ def test_a_retry_the_budget_refused_stops_the_phase_and_runs_on_the_next(tmp_pat
 def test_a_sidecar_that_dies_mid_stream_pauses_the_phase_and_loses_no_task(tmp_path, fake_upstream):
     """The sidecar stops answering once the library holds an entry: the phase pauses (nothing is recorded as lost
     for it), and the next run with a working sidecar streams every remaining task."""
-    from ouroloop.contracts import MemorySidecarError
+    from reharness.contracts import MemorySidecarError
 
     class Dying(FakeMemoryClient):
         dead = False
@@ -621,7 +621,7 @@ def test_the_streams_own_attempts_never_count_as_w_bases_readings(streamed):
 
 def test_a_w0_baseline_under_the_memory_on_starts_no_sidecar_and_needs_no_venv(tmp_path, fake_upstream, monkeypatch):
     """W0 holds no snapshot: its empty library starts nothing, so its baseline needs neither the client nor the venv."""
-    monkeypatch.setenv("OUROLOOP_MEMORY_VENV", str(tmp_path / "no-venv"))
+    monkeypatch.setenv("REHARNESS_MEMORY_VENV", str(tmp_path / "no-venv"))
     s = stream(tmp_path, fake_upstream)
     s.a.memory_client_factory = None
     assert s.a.package().manifest.memory == {"enabled": True}

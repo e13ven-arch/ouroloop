@@ -19,26 +19,26 @@ import rsi
 from rounds import ledger_rows, quiet, round_activity, round_state
 from scripted_r import HOOK_CODE, HOOK_ENTRY, LOST_HOOK_CODE, TOOL_ENTRY, WEAK_HOOK_CODE  # noqa: F401
 
-from ouroloop.activity import phases
-from ouroloop.activity.report import build_report, render_markdown
-from ouroloop.harness.kinds import MEMORY_PATH
-from ouroloop.harness.package import Limits, build
-from ouroloop.improver import round as round_mod
-from ouroloop.improver import screen as sc
-from ouroloop.improver.components import components
-from ouroloop.improver.declaration import Component, Declaration
-from ouroloop.improver.diagnose import Cause
-from ouroloop.improver.evidence import Evidence
-from ouroloop.improver.frontier import Frontier, FrontierEntry
-from ouroloop.improver.ledger import Ledger
-from ouroloop.improver.round import Round
-from ouroloop.improver.screen import ScreenResult
-from ouroloop.improver.session import EDIT_REMINDERS, CodingSession, WorkTree
-from ouroloop.improver.settings import Settings
-from ouroloop.improver.trial import TrialResult, trial_tasks
-from ouroloop.improver.verify import run_ladder
-from ouroloop.improver.verify.static import heuristic_terms, static_check, unregistered_hooks
-from ouroloop.runtime.chat import ChatTurn, ToolCall
+from reharness.activity import phases
+from reharness.activity.report import build_report, render_markdown
+from reharness.harness.kinds import MEMORY_PATH
+from reharness.harness.package import Limits, build
+from reharness.improver import round as round_mod
+from reharness.improver import screen as sc
+from reharness.improver.components import components
+from reharness.improver.declaration import Component, Declaration
+from reharness.improver.diagnose import Cause
+from reharness.improver.evidence import Evidence
+from reharness.improver.frontier import Frontier, FrontierEntry
+from reharness.improver.ledger import Ledger
+from reharness.improver.round import Round
+from reharness.improver.screen import ScreenResult
+from reharness.improver.session import EDIT_REMINDERS, CodingSession, WorkTree
+from reharness.improver.settings import Settings
+from reharness.improver.trial import TrialResult, trial_tasks
+from reharness.improver.verify import run_ladder
+from reharness.improver.verify.static import heuristic_terms, static_check, unregistered_hooks
+from reharness.runtime.chat import ChatTurn, ToolCall
 
 HELD, STUDY, TICKET = rsi.HELD, rsi.STUDY, "rsi.notify_ticket"
 INERT_HOOK = "def inert(ctx, event):\n    return None\n"
@@ -440,7 +440,7 @@ def test_the_streams_first_encounters_are_imported_and_the_next_stream_pays_none
     # v1.10 (finance-v10, 2026-10-21): a third workspace imports from the second, whose readings are themselves
     # imported — the events carry `imported_from` already and the chain's last link is recorded; an import cut
     # short after the rows (the first one crashed on exactly this) is completed by the next run
-    from ouroloop.runtime.records import session_file
+    from reharness.runtime.records import session_file
     target = tmp_path / "third" / "ws" / "bench" / rsi.DOMAIN / "splits.json"
     target.parent.mkdir(parents=True)
     shutil.copy(first.a.results.manifest_path(), target)

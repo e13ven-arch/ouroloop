@@ -11,19 +11,19 @@ import json
 import pytest
 
 from fake_memory import FakeMemoryClient
-from ouroloop.activity.presets import AUTOMATIONBENCH_V1
-from ouroloop.contracts import Objects
-from ouroloop.harness.kinds import MEMORY_PATH
-from ouroloop.harness.package import Limits, PackageError, build, check_shape
-from ouroloop.harness.seed import build_seed
-from ouroloop.memory import snapshot_digest
-from ouroloop.memory.client import canonical_rows, parse_jsonl
-from ouroloop.memory.importing import imported_row
-from ouroloop.memory.retrieval import LibraryReader, snapshot_collection
-from ouroloop.memory.rules import (content_id, new_stats, snapshot_abort, snapshot_rows, sources_of_row, stamp,
+from reharness.activity.presets import AUTOMATIONBENCH_V1
+from reharness.contracts import Objects
+from reharness.harness.kinds import MEMORY_PATH
+from reharness.harness.package import Limits, PackageError, build, check_shape
+from reharness.harness.seed import build_seed
+from reharness.memory import snapshot_digest
+from reharness.memory.client import canonical_rows, parse_jsonl
+from reharness.memory.importing import imported_row
+from reharness.memory.retrieval import LibraryReader, snapshot_collection
+from reharness.memory.rules import (content_id, new_stats, snapshot_abort, snapshot_rows, sources_of_row, stamp,
                                    stats_of_row)
-from ouroloop.memory.settings import Settings
-from ouroloop.memory.snapshot import (MEMORY_ENTRY, fit_snapshot, library_of, row_bytes, snapshot_candidate,
+from reharness.memory.settings import Settings
+from reharness.memory.snapshot import (MEMORY_ENTRY, fit_snapshot, library_of, row_bytes, snapshot_candidate,
                                       snapshot_rank, snapshot_row, stream_files, with_memory)
 
 CORE = {"model": {"identity": "scripted-1", "effort": "medium", "max_effort": "medium"},

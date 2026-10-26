@@ -1,8 +1,8 @@
 """The Claude Code adapter (train/claude_code.py): its hooks record decisions and labels from normal sessions, and it
 never allows a call."""
-from ouroloop.train.claude_code import ClaudeCodeAdapter, settings, tool_gate_point
-from ouroloop.train.decision import Noul
-from ouroloop.train.runtime import Runtime
+from reharness.train.claude_code import ClaudeCodeAdapter, settings, tool_gate_point
+from reharness.train.decision import Noul
+from reharness.train.runtime import Runtime
 
 
 def retry_point():

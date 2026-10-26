@@ -23,12 +23,12 @@ from pathlib import Path
 import httpx
 import pytest
 
-import ouroloop.memory.bridge as B
-from ouroloop.evaluate.budget import BudgetAccount, Budgets, MeteredProvider, Pricing
-from ouroloop.memory.bridge import (MAX_BODY, RESEARCH_SECONDS, SDK_READ_SECONDS, Bridge, BridgeError, map_messages,
+import reharness.memory.bridge as B
+from reharness.evaluate.budget import BudgetAccount, Budgets, MeteredProvider, Pricing
+from reharness.memory.bridge import (MAX_BODY, RESEARCH_SECONDS, SDK_READ_SECONDS, Bridge, BridgeError, map_messages,
                                     usage_of)
-from ouroloop.providers import ProviderAccountError, ProviderError
-from ouroloop.runtime.chat import ChatTurn, ToolCall
+from reharness.providers import ProviderAccountError, ProviderError
+from reharness.runtime.chat import ChatTurn, ToolCall
 
 PRICING = Pricing(0.003, 0.015, 4000, 1000, source="test", cache_read_per_1k=0.0003, cache_write_per_1k=0.00375)
 SCOPE = "act-mem"
@@ -766,7 +766,7 @@ def test_the_claude_code_research_model_behind_the_bridge(tmp_path, fake_upstrea
     JSON reply reaches the stream byte for byte, each op is booked under its own label, a requested effort is capped
     on the CLI, and a subscription limit is a 502 `account` that closes the scope after one CLI call."""
     import rsi
-    from ouroloop.providers.claude_code import ClaudeCodeProvider
+    from reharness.providers.claude_code import ClaudeCodeProvider
     cli = Cli(tmp_path / "cli")
     research = ClaudeCodeProvider(CLI_MODEL, effort="medium", binary=str(cli.binary), workdir=str(tmp_path / "empty"),
                                   sleep=lambda _s: None)

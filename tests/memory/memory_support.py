@@ -2,9 +2,9 @@
 
 These tests run the real path: ReMe 0.3.1.10's own HTTP service in the memory venv, chroma on disk and bge-small on
 onnxruntime; only the LLM is scripted (tests/memory/fake_openai_server.py, or the real bridge in front of a scripted
-research model). They need the venv: OUROLOOP_MEMORY_VENV=<path>, else ouroloop.memory.default_venv() (what
-`python -m ouroloop.memory setup` builds from the lock). Without one they are skipped; with
-OUROLOOP_TEST_REQUIRE_MEMORY=1 a missing venv fails them instead. Every test that starts a sidecar is marked slow: the
+research model). They need the venv: REHARNESS_MEMORY_VENV=<path>, else reharness.memory.default_venv() (what
+`python -m reharness.memory setup` builds from the lock). Without one they are skipped; with
+REHARNESS_TEST_REQUIRE_MEMORY=1 a missing venv fails them instead. Every test that starts a sidecar is marked slow: the
 default run leaves them out, the full run (-m "not live") takes them.
 """
 from __future__ import annotations
@@ -18,24 +18,24 @@ from pathlib import Path
 import pytest
 
 from fake_openai_server import FakeOpenAI
-from ouroloop.memory import default_venv
-from ouroloop.memory.client import MemoryClient
-from ouroloop.memory.settings import Settings
+from reharness.memory import default_venv
+from reharness.memory.client import MemoryClient
+from reharness.memory.settings import Settings
 
 TESTS = Path(__file__).resolve().parent          # tests/memory: a child process puts it on sys.path
 REPO = TESTS.parents[1]
 
 
 def memory_venv() -> Path:
-    """The memory venv these tests run the sidecar in, or a skip (a failure under OUROLOOP_TEST_REQUIRE_MEMORY)."""
-    path = os.environ.get("OUROLOOP_MEMORY_VENV")
+    """The memory venv these tests run the sidecar in, or a skip (a failure under REHARNESS_TEST_REQUIRE_MEMORY)."""
+    path = os.environ.get("REHARNESS_MEMORY_VENV")
     venv = Path(path).expanduser() if path else default_venv()
     if (venv / "bin" / "python").exists():
         return venv
-    why = (f"OUROLOOP_MEMORY_VENV={path!r} has no bin/python" if path else
-           f"{venv} has no bin/python (python -m ouroloop.memory setup, or point OUROLOOP_MEMORY_VENV at a venv)")
-    if os.environ.get("OUROLOOP_TEST_REQUIRE_MEMORY"):
-        pytest.fail(f"OUROLOOP_TEST_REQUIRE_MEMORY is set and the memory venv is missing: {why}")
+    why = (f"REHARNESS_MEMORY_VENV={path!r} has no bin/python" if path else
+           f"{venv} has no bin/python (python -m reharness.memory setup, or point REHARNESS_MEMORY_VENV at a venv)")
+    if os.environ.get("REHARNESS_TEST_REQUIRE_MEMORY"):
+        pytest.fail(f"REHARNESS_TEST_REQUIRE_MEMORY is set and the memory venv is missing: {why}")
     pytest.skip(f"the memory sidecar tests need the memory venv: {why}")
 
 
@@ -153,7 +153,7 @@ def items(names=("T1", "T2", "T3", "T4"), **over) -> list:
 def stream(client, fake, root: Path, *, collection: str = "ol-live-test0001", line: str = "finance",
            sessions: Sessions | None = None, bridge_calls_of=None, set_step=None, **over):
     """A StreamStep over the scripted bridge (set_step and calls are the fake's, as the bridge Scope's)."""
-    from ouroloop.memory.track import StreamStep
+    from reharness.memory.track import StreamStep
     return StreamStep(client, settings(**over), ledger_path=Path(root) / "memory" / line / "stream.json",
                       live_path=Path(root) / "memory" / line / "live.jsonl", collection=collection,
                       business_line=line, activity="act-test", heldout_domains=("operations",),
@@ -165,7 +165,7 @@ def stream(client, fake, root: Path, *, collection: str = "ol-live-test0001", li
 def stamped(content: str, when: str, *, line: str = "finance", task_name: str = "T1", origin: str = "success",
             score: float = 0.8, split: str = "train") -> dict:
     """A stored row as StreamStep writes it (for tests that need rows without a summary)."""
-    from ouroloop.memory.rules import content_id, stamp
+    from reharness.memory.rules import content_id, stamp
     mem = {"memory_id": content_id(content), "memory_type": "procedural", "when_to_use": when,
            "content": content, "author": f"research/reme:{origin}", "score": score,
            "metadata": {"step_type": "action", "tags": ["fake"]}}

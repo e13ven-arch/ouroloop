@@ -23,11 +23,11 @@ import threading
 
 import httpx
 
-from ouroloop.contracts import MemorySidecarError
-from ouroloop.memory.client import SHORT, canonical_rows, parse_jsonl
-from ouroloop.memory.rules import content_id
-from ouroloop.memory.settings import settings_of
-from ouroloop.runtime.chat import ChatTurn
+from reharness.contracts import MemorySidecarError
+from reharness.memory.client import SHORT, canonical_rows, parse_jsonl
+from reharness.memory.rules import content_id
+from reharness.memory.settings import settings_of
+from reharness.runtime.chat import ChatTurn
 
 DIMS = 512
 WORD = re.compile(r"[a-z0-9#]+")

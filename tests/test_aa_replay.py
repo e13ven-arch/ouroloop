@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from ouroloop.evaluate.results import Results, TaskResult
+from reharness.evaluate.results import Results, TaskResult
 
 SCRIPT = Path(__file__).resolve().parent.parent / "examples" / "automationbench" / "aa_replay.py"
 
@@ -81,7 +81,7 @@ def test_the_example_workspaces_hold_five_dev_and_four_test_readings_of_w0():
     workspaces = tuple(RECORDS / w.name for w in aa.WORKSPACES)
     if not all(Results(w, aa.DOMAIN).path.exists() for w in workspaces):
         pytest.skip(f"the v0.1/v0.2 example workspaces are not under {RECORDS} (git-ignored run records; set "
-                    f"OUROLOOP_RECORDS_ROOT)")
+                    f"REHARNESS_RECORDS_ROOT)")
     guards = [ReadOnly(w) for w in workspaces]
     for guard in guards:
         guard.read(Results(guard.root, aa.DOMAIN).path)

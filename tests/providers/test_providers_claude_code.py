@@ -8,10 +8,10 @@ from pathlib import Path
 
 import pytest
 
-from ouroloop.providers import ProviderAccountError, ProviderError, build_provider, is_account_error
-from ouroloop.providers.claude_code import _SET, TURN_NOTE, ClaudeCodeProvider, cli_problem, request_json
-from ouroloop.runtime.chat import ToolCall, ToolSpec
-from ouroloop.runtime.gateway import normalize_usage
+from reharness.providers import ProviderAccountError, ProviderError, build_provider, is_account_error
+from reharness.providers.claude_code import _SET, TURN_NOTE, ClaudeCodeProvider, cli_problem, request_json
+from reharness.runtime.chat import ToolCall, ToolSpec
+from reharness.runtime.gateway import normalize_usage
 
 FAKE = """#!{python}
 import json, os, sys, time
@@ -359,7 +359,7 @@ def test_a_rate_limit_refusal_is_unbilled_retryable_and_counted(cli, provider, t
     reservation, sends the request again, counts the refusal in `rate_limited`, and books only the call that
     answered. Nothing pauses and no attempt is invalid."""
     import time
-    from ouroloop.evaluate.budget import Budgets, MeteredProvider, Pricing
+    from reharness.evaluate.budget import Budgets, MeteredProvider, Pricing
     monkeypatch.setattr(time, "sleep", lambda _s: None)
     account = Budgets(tmp_path / "book").account("arm", {"model_calls": 10})
     metered = MeteredProvider(provider, account, Pricing(), operation="arm", max_retries=2)
@@ -377,7 +377,7 @@ def test_a_rate_limit_refusal_is_unbilled_retryable_and_counted(cli, provider, t
 # ---------------------------------------------------------------------------- stage 0/1 review (2026-10-05): the child's session
 PARENT = """
 import json, sys, threading
-from ouroloop.providers.claude_code import ClaudeCodeProvider
+from reharness.providers.claude_code import ClaudeCodeProvider
 p = ClaudeCodeProvider({model!r}, binary={binary!r}, workdir={workdir!r}, retries=0, timeout=60)
 out, done = {{}}, threading.Event()
 
@@ -472,8 +472,8 @@ def test_an_answer_that_is_not_a_turn_is_booked_at_what_it_used_not_at_the_bound
     settles the call at its measured cost, retries, and keeps nothing at the bound. A call whose failure came with no
     reported use stays unknown."""
     import time
-    from ouroloop.evaluate.budget import Budgets, MeteredProvider, Pricing
-    from ouroloop.runtime.chat import ToolSpec
+    from reharness.evaluate.budget import Budgets, MeteredProvider, Pricing
+    from reharness.runtime.chat import ToolSpec
     monkeypatch.setattr(time, "sleep", lambda _s: None)
     account = Budgets(tmp_path / "book").account("arm", {"usd": 100.0})
     pricing = Pricing(input_per_1k=0.004, output_per_1k=0.02, cache_read_per_1k=0.0002, cache_write_per_1k=0.008,
@@ -491,7 +491,7 @@ def test_an_answer_that_is_not_a_turn_is_booked_at_what_it_used_not_at_the_bound
 def test_a_call_with_no_system_sends_a_plain_one_not_a_blank(cli, provider):
     """ReMe's calls are a single user message: the API refuses a system text that is only whitespace (400), so a call
     without one sends NO_SYSTEM, never " " (finance-v1's library lost its first step to this)."""
-    from ouroloop.providers.claude_code import NO_SYSTEM
+    from reharness.providers.claude_code import NO_SYSTEM
     for system in ("", "   ", None):
         cli.reply(ok("fine"))
         assert provider.chat(system, [{"role": "user", "content": "Summarise this."}], []).text == "fine"
@@ -505,7 +505,7 @@ def test_a_request_the_api_refuses_as_malformed_is_released_not_held_at_the_boun
                                                                                   monkeypatch):
     """A 400 (a blank text block, a prompt too long) is refused before any model runs: the meter releases its
     reservation and does not retry the same request."""
-    from ouroloop.evaluate.budget import Budgets, MeteredProvider, Pricing
+    from reharness.evaluate.budget import Budgets, MeteredProvider, Pricing
     account = Budgets(tmp_path / "book").account("arm", {"model_calls": 10})
     metered = MeteredProvider(provider, account, Pricing(), operation="arm", max_retries=2)
     for text in ("API Error: 400 system: text content blocks must contain non-whitespace text",

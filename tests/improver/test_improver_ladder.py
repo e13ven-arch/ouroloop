@@ -38,19 +38,19 @@ from rounds import quiet, round_activity
 from scripted_r import CONTACTS, HOOK_CODE, HOOK_ENTRY, HUBSPOT, NOISY_HOOK_CODE, SLACK, TOOL_CODE, TOOL_ENTRY, \
     script_for
 
-from ouroloop.harness.kinds import MEMORY_PATH
-from ouroloop.harness.package import Limits, build
-from ouroloop.improver.components import components, without
-from ouroloop.improver.declaration import Component, Declaration, read_declaration
-from ouroloop.improver.round import Round
-from ouroloop.improver.verify import Verdict, VerifyContext, ladder_for, run_ladder
-from ouroloop.improver.verify.reach import lexical_embed, reach_check
-from ouroloop.improver.verify.replay import replay_check, site_events
-from ouroloop.improver.verify.static import static_check
-from ouroloop.improver.verify.toolcheck import toolcheck
-from ouroloop.improver.verify.unit import unit_check
-from ouroloop.activity.presets import AUTOMATIONBENCH_V1
-from ouroloop.memory.snapshot import fit_snapshot, snapshot_candidate
+from reharness.harness.kinds import MEMORY_PATH
+from reharness.harness.package import Limits, build
+from reharness.improver.components import components, without
+from reharness.improver.declaration import Component, Declaration, read_declaration
+from reharness.improver.round import Round
+from reharness.improver.verify import Verdict, VerifyContext, ladder_for, run_ladder
+from reharness.improver.verify.reach import lexical_embed, reach_check
+from reharness.improver.verify.replay import replay_check, site_events
+from reharness.improver.verify.static import static_check
+from reharness.improver.verify.toolcheck import toolcheck
+from reharness.improver.verify.unit import unit_check
+from reharness.activity.presets import AUTOMATIONBENCH_V1
+from reharness.memory.snapshot import fit_snapshot, snapshot_candidate
 
 HELD = ("rsi.notify_after_update", "rsi.notify_after_update_variant")   # held out from R: V2 never asks for them
 FAILING = ("rsi.notify_ticket",)                                            # the studied failure
@@ -863,7 +863,7 @@ def test_attempt_events_interleave_the_sites_in_order_with_the_views_events_of_e
     """One recorded attempt of the forgetful actor on the ticket: before_run, then per turn before_model, the calls
     in order (before_tool, after_tool), on_finish at the finish, after_turn at the turn's end; `view_events` holds the
     broker's calls before that moment (none at the first call, the PATCH once it ran), `turn` counts up."""
-    from ouroloop.improver.verify.replay import attempt_events, site_events
+    from reharness.improver.verify.replay import attempt_events, site_events
     events = attempt_events(ctx.evidence.trace, ctx.failed_sessions[FAILING[0]])
     sites = [e["site"] for e in events]
     assert sites[0] == "before_run" and sites[1] == "before_model" and sites[-1] == "after_turn"

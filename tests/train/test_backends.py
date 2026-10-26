@@ -4,8 +4,8 @@ import httpx
 import pytest
 
 from decision_fixtures import MockProvider
-from ouroloop.train.backends import JevBackend, JevError, KeywordBackend, LlmBackend, TdeBackend
-from ouroloop.train.types import Question, Request
+from reharness.train.backends import JevBackend, JevError, KeywordBackend, LlmBackend, TdeBackend
+from reharness.train.types import Question, Request
 
 NOUL = Question("noul", "urgent?")
 CHOICE = Question("choice", "team?", {"billing": "money", "technical": "bugs"})

@@ -1,6 +1,6 @@
 # runtime：网关、broker、worker 与运行器、egress、运行壳、App
 
-> 阶段 1 设计文档。包 `ouroloop/runtime/`。对应 [DESIGN](../DESIGN.md) §3.4、§3.5、§8。来源：`agent/gateway.py`、`agent/worker.py`、`agent/worker_runner.py`、`agent/runner.py`、`app.py`，以及 `v6-gateway`（egress、usage view）、`v6-agent`（worker 资源从 K 读）、`v6` 合并分支在 WIP 之前的 `0f33550`（egress 的请求配额与 `poll`、`LazyPool`、`EgressMeter`）。2026-10-09 按阶段 1 的实现对齐。
+> 阶段 1 设计文档。包 `reharness/runtime/`。对应 [DESIGN](../DESIGN.md) §3.4、§3.5、§8。来源：`agent/gateway.py`、`agent/worker.py`、`agent/worker_runner.py`、`agent/runner.py`、`app.py`，以及 `v6-gateway`（egress、usage view）、`v6-agent`（worker 资源从 K 读）、`v6` 合并分支在 WIP 之前的 `0f33550`（egress 的请求配额与 `poll`、`LazyPool`、`EgressMeter`）。2026-10-09 按阶段 1 的实现对齐。
 
 ## 1 职责与不做
 
@@ -117,7 +117,7 @@ worker → 宿主的回调：`model_call{id, role, effort, messages, tools}` →
 
 `load` 的答复里的 `runner_sha256` 必须等于宿主的副本；不等即 `StaleWorker`（启动检查与每次 load 都查）。
 
-错误的 kind：`protocol`（宿主答错了，包捕获不了）、`package`（包代码的异常：run 中是 `AgentRunError`，基础设施；有界 op 中是 `PackageCallError`，候选缺陷）、`defect`（异常带 `ouroloop_defect`：run 中是 `RunDefect`，尝试记 `harness_error`）。worker_runner 嵌入的 `CONTRACT` 等于 `harness.contract.as_json()`，测试比对。
+错误的 kind：`protocol`（宿主答错了，包捕获不了）、`package`（包代码的异常：run 中是 `AgentRunError`，基础设施；有界 op 中是 `PackageCallError`，候选缺陷）、`defect`（异常带 `reharness_defect`：run 中是 `RunDefect`，尝试记 `harness_error`）。worker_runner 嵌入的 `CONTRACT` 等于 `harness.contract.as_json()`，测试比对。
 
 ## 5 一次尝试的流程（`PackageAgent.run`）
 
@@ -148,7 +148,7 @@ worker → 宿主的回调：`model_call{id, role, effort, messages, tools}` →
 | `agent/deny.py` | → `runtime/broker.py` 的模块级 `DENY` 表与 `denied()` |
 | `chat.py`（ToolSpec、ToolCall、ScriptedChat） | → `runtime/chat.py` |
 | `providers/` | 不动（`claude_code`、`openai_compat`、`anthropic`）；`build_provider` 从 `config.py` 搬进 `providers/__init__.py` |
-| `docker/worker-v6.Dockerfile`、`egress.Dockerfile`（v6） | → `docker/worker.Dockerfile`（标签 `ouroloop-worker:py3.12`，带 Stirrup 的依赖闭包，`docker/worker.requirements.txt` 按哈希）、`docker/egress.Dockerfile`（`ouroloop-egress:v6.1`） |
+| `docker/worker-v6.Dockerfile`、`egress.Dockerfile`（v6） | → `docker/worker.Dockerfile`（标签 `reharness-worker:py3.12`，带 Stirrup 的依赖闭包，`docker/worker.requirements.txt` 按哈希）、`docker/egress.Dockerfile`（`reharness-egress:v6.1`） |
 
 ## 8 测试
 

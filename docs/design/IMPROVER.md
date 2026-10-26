@@ -1,6 +1,6 @@
 # improver：证据、诊断、聚焦、编码会话、验收阶梯、留出筛选、档案、记功、台账、策略
 
-> 阶段 3 的设计文档（接口随阶段 1 一起定；2026-10-09 开发前按阶段 1、2 的代码定稿）。包 `ouroloop/improver/`。对应 [DESIGN](../DESIGN.md) §6。来源：tag `archive-2026-10-09` 上的 `research/{session,drafts,experiment,diagnosis}.py`（拆分重写）、`evolve/experience.py`；`runtime/trace.py`（阶段 2 已搬入）。
+> 阶段 3 的设计文档（接口随阶段 1 一起定；2026-10-09 开发前按阶段 1、2 的代码定稿）。包 `reharness/improver/`。对应 [DESIGN](../DESIGN.md) §6。来源：tag `archive-2026-10-09` 上的 `research/{session,drafts,experiment,diagnosis}.py`（拆分重写）、`evolve/experience.py`；`runtime/trace.py`（阶段 2 已搬入）。
 
 ## 1 职责与不做
 

@@ -4,11 +4,11 @@ A draft of the public note for the open-source release, written on 2026-10-26 af
 
 ---
 
-## ouroloop: an agent that gets the same request right the second time
+## reharness: an agent that gets the same request right the second time
 
 Most real work repeats. A finance team runs the same reconciliation, the same invoice batch, the same tax estimate again and again with other numbers. An agent that fails such a request once should not fail it the same way tomorrow — and whatever fixes it should be checked by evidence, not chosen by a person.
 
-ouroloop is an open-source loop that does this for a business agent on Zapier's AutomationBench (47 simulated SaaS tools, scored on the world state the agent leaves behind). The agent's harness — its tools, hooks, skills and prompts — is a versioned package. When a request comes back rejected, an improver (the same model, Claude Opus 5.5) reads the agent's own run of it, builds a change to the package, tries it on the same request for real, and only a try that comes back accepted is adopted for that request. Everything else is frozen: the scorer, the splits, the budget, and what the improver may see — at most "accepted or sent back" per attempt, and which message or row was rejected, never the expected value.
+reharness is an open-source loop that does this for a business agent on Zapier's AutomationBench (47 simulated SaaS tools, scored on the world state the agent leaves behind). The agent's harness — its tools, hooks, skills and prompts — is a versioned package. When a request comes back rejected, an improver (the same model, Claude Opus 5.5) reads the agent's own run of it, builds a change to the package, tries it on the same request for real, and only a try that comes back accepted is adopted for that request. Everything else is frozen: the scorer, the splits, the budget, and what the improver may see — at most "accepted or sent back" per attempt, and which message or row was rejected, never the expected value.
 
 **What we measured.**
 - On 50 finance test tasks with only the accepted-or-sent-back bit, the steady-state pass rate went from 64% to 68%, with zero regressions: 18 tasks were sent back, 3 were corrected and stayed corrected, and no task that passed was broken by learning ($184 of nominal API cost).
@@ -21,11 +21,11 @@ ouroloop is an open-source loop that does this for a business agent on Zapier's 
 
 ---
 
-## ouroloop：同一个请求，第二次就做对的 agent
+## reharness：同一个请求，第二次就做对的 agent
 
 真实工作大多在重复。财务团队反复跑同一个对账、同一批发票、同一份税额估算，只是数字换了。一个 agent 这次把请求做砸了，明天不该再以同样的方式砸一次——而修它的改动应当由证据裁定，不是由人挑。
 
-ouroloop 是一个开源回路，在 Zapier 的 AutomationBench（47 个模拟 SaaS 工具，按 agent 留下的世界状态评分）上为业务 agent 做这件事。agent 的 harness——工具、hook、技能、提示词——是一个版本化的包。一个请求被退回时，改进器（同一个模型，Claude Opus 5.5）读 agent 自己那次运行，给包写一个改动，在同一个请求上真跑一次，只有被接受的那次 try 才会被这个请求采用。其他一切冻结：评分器、划分、预算，以及改进器能看到什么——至多每次尝试一个"被接受 / 被退回"的比特，和哪封邮件、哪一行被退回，从不带期望值。
+reharness 是一个开源回路，在 Zapier 的 AutomationBench（47 个模拟 SaaS 工具，按 agent 留下的世界状态评分）上为业务 agent 做这件事。agent 的 harness——工具、hook、技能、提示词——是一个版本化的包。一个请求被退回时，改进器（同一个模型，Claude Opus 5.5）读 agent 自己那次运行，给包写一个改动，在同一个请求上真跑一次，只有被接受的那次 try 才会被这个请求采用。其他一切冻结：评分器、划分、预算，以及改进器能看到什么——至多每次尝试一个"被接受 / 被退回"的比特，和哪封邮件、哪一行被退回，从不带期望值。
 
 **量到了什么。**
 - finance 的 50 道 test 题上，只给"接受 / 退回"一个比特，稳态通过率从 64% 到 68%，零退步：18 道被退回，3 道修好并站住，没有一道通过题被学习弄坏（名义 API 费用 $184）。

@@ -1,4 +1,4 @@
-"""StopGuard (ouroloop/train/stop.py), Runtime.propose (train/runtime.py) and a stop decision's record (train/trace.py):
+"""StopGuard (reharness/train/stop.py), Runtime.propose (train/runtime.py) and a stop decision's record (train/trace.py):
 the guard's rules on the general runtime, and a worker.stop policy proposing, being overruled and falling back on the
 fixture domain.
 
@@ -9,15 +9,15 @@ import pytest
 import rsi
 from stop_fixtures import ViewPolicy, play, stop_runtime
 
-from ouroloop.contracts import CandidateDefect, Objects
-from ouroloop.harness.package import Package
-from ouroloop.harness.seed import build_seed
-from ouroloop.runtime.runner import compose_system
-from ouroloop.train import records
-from ouroloop.train.runtime import Runtime
-from ouroloop.train.stop import StopGuard
-from ouroloop.train.trace import stop_context, tool_event
-from ouroloop.train.views import business_stop_point
+from reharness.contracts import CandidateDefect, Objects
+from reharness.harness.package import Package
+from reharness.harness.seed import build_seed
+from reharness.runtime.runner import compose_system
+from reharness.train import records
+from reharness.train.runtime import Runtime
+from reharness.train.stop import StopGuard
+from reharness.train.trace import stop_context, tool_event
+from reharness.train.views import business_stop_point
 
 NOTIFY = "rsi.notify_after_update"
 TASK = "Move Dana Reyes to opportunity stage, then post a message in #ops containing the phrase stage updated."

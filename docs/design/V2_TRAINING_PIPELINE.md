@@ -1,6 +1,6 @@
 # V2 训练链设计：数据管线、试验设计、训练管线
 
-> **现状（2026-10-08，support 对照停止后）：** 现行，已定稿；§7 第 9 项待用户定。用户已停止 support 两臂对照（JOURNAL 2026-10-08）：文中“等 support 两份 final 评完、H1 算完”的时机（§1“时机”、§2.6 第 8 条、§4.6 轨道 B 的排期、§7 同步清单）改为“瘦身第一批合入之后”，support 的重放现在就能做；support 没有跑 final，§7 第 2 项的“support（final 后读过 2 次）”应为读过 0 次。support 的 K（W\* 文本）现在只有 v0.5 臂经 dev gate 装上的经验库快照（release `9f07d95032b4`，6 个 library-* skill，没有 final）：拿它作 K，还是当 support 没有 W\*、K 为空，待用户定（§2.6 第 6 条、§7 第 4 项）。§7“核价更正待同步”清单里的 DESIGN、TECHNOLOGY、02、TRAINING_HOSTS、ROADMAP 五处已于 2026-10-08 整理时同步。瘦身第一批已于 2026-10-08 在分支 `slim/1` 上完成（[PLAN](../PLAN.md) P1）：子包 `ouroloop/train/`、`ouroloop/train/jobs/` 已建，入口 `python -m ouroloop.train` 已有（`decide`、`smoke --jev`、`host`），§2.5 与 §7 列的 7 处注释已改；v2.0 的代码从这里开始。同日用户定：不写金标身份测试，旧工作区的哈希身份不必保持；§3.6 “身份由金标测试守住”一句随之改写。
+> **现状（2026-10-08，support 对照停止后）：** 现行，已定稿；§7 第 9 项待用户定。用户已停止 support 两臂对照（JOURNAL 2026-10-08）：文中“等 support 两份 final 评完、H1 算完”的时机（§1“时机”、§2.6 第 8 条、§4.6 轨道 B 的排期、§7 同步清单）改为“瘦身第一批合入之后”，support 的重放现在就能做；support 没有跑 final，§7 第 2 项的“support（final 后读过 2 次）”应为读过 0 次。support 的 K（W\* 文本）现在只有 v0.5 臂经 dev gate 装上的经验库快照（release `9f07d95032b4`，6 个 library-* skill，没有 final）：拿它作 K，还是当 support 没有 W\*、K 为空，待用户定（§2.6 第 6 条、§7 第 4 项）。§7“核价更正待同步”清单里的 DESIGN、TECHNOLOGY、02、TRAINING_HOSTS、ROADMAP 五处已于 2026-10-08 整理时同步。瘦身第一批已于 2026-10-08 在分支 `slim/1` 上完成（[PLAN](../PLAN.md) P1）：子包 `reharness/train/`、`reharness/train/jobs/` 已建，入口 `python -m reharness.train` 已有（`decide`、`smoke --jev`、`host`），§2.5 与 §7 列的 7 处注释已改；v2.0 的代码从这里开始。同日用户定：不写金标身份测试，旧工作区的哈希身份不必保持；§3.6 “身份由金标测试守住”一句随之改写。
 >
 > **状态：** 已定稿（2026-10-08：用户按 §7 默认值全部确认；§7 第 9 项是核价后新增的，待用户决定；同日第 2 项由用户改为全部域可跑 final）。**日期：** 2026-10-08。
 >
@@ -10,7 +10,7 @@
 >
 > **依据。** 在 HEAD `03f68b3` 上只读阅读代码和文档：SLIMMING_INVENTORY §0.1/§0.2、modules/02、09、DESIGN、TECHNOLOGY、ROADMAP、RESULTS。另外参考四份子报告（assets、jev、data、external）和两份评审（evidence、scope）。
 > - 计数只读了 train/dev 记录，没有读 test。脚本在 scratchpad 的 `v2-train/{assets,data,stats,scope}/` 下。
-> - file:line 以 `03f68b3` 为准（`ouroloop/` 与 tag `archive-2026-10-08` 相同）。瘦身第一批会把决策栈搬进子包，合入后按 SLIMMING §2.3、§3 改写这些引用。（2026-10-08，瘦身第一批完成后：搬进子包或被删掉的模块，引用已改成新路径，路径以 `train/` 开头，行号按 `slim/1` 的 `455ffe2`；删掉的写明 tag。§2.5 的代码位置清单与 §7 的注释清单也按 `455ffe2` 改了。其余文件没有搬，行号仍按 `03f68b3`，在 tag `archive-2026-10-08` 上对照。）
+> - file:line 以 `03f68b3` 为准（`reharness/` 与 tag `archive-2026-10-08` 相同）。瘦身第一批会把决策栈搬进子包，合入后按 SLIMMING §2.3、§3 改写这些引用。（2026-10-08，瘦身第一批完成后：搬进子包或被删掉的模块，引用已改成新路径，路径以 `train/` 开头，行号按 `slim/1` 的 `455ffe2`；删掉的写明 tag。§2.5 的代码位置清单与 §7 的注释清单也按 `455ffe2` 改了。其余文件没有搬，行号仍按 `03f68b3`，在 tag `archive-2026-10-08` 上对照。）
 > - 行数是估计，误差约 ±25%。
 
 ## 0 结论
@@ -84,7 +84,7 @@
 
 **在 RSI 里的位置。**
 - 训练产物就是 W 的一个组件变更。它和包候选走同一条路：`build_candidate`（policies.py:896-985）→ `task_gate` → Releases → 导出。不为模型另立 gate。
-- 轨道 A 由 `python -m ouroloop.train` 驱动。轨道 B 加一个 `train` 阶段（现在 `PHASES` 里没有，bench.py:41），由 K 的排程触发。
+- 轨道 A 由 `python -m reharness.train` 驱动。轨道 B 加一个 `train` 阶段（现在 `PHASES` 里没有，bench.py:41），由 K 的排程触发。
 - `LATER_METHODS`（bench.py:1825、:1965）对 R 继续拒绝训练方法。等至少一个主张记为"支持"之后（v2.5），才放开 R 提训练条目（research/experiment.py:286-307）。
 
 **不在范围内：** "联系人工"的效果主张；在 Opus 上测 C3；RL、DPO/KTO、on-policy 蒸馏；每个决策点各训一个模型（DESIGN §4 规定最多一个 controller）。
@@ -377,7 +377,7 @@ per_task_cap = 4
 |---|---|---|---|---|---|---|
 | 血缘与精确脱敏 | ledger.py:20-49；evolve/contracts.py:671、:682-684；train/feedback.py:22、:60-61、:68、:123 | source 文法、选择器、按值脱敏 | 90–130 | | | |
 | 写分类与 adapter 钩子 | adapters/automationbench.py:604 | `is_write`、`labelers()`、只读 POST 白名单 | 40–60 | | | |
-| 投影器 | `assets/scan.py` 原型 | `ouroloop/train/stream.py`，带逐行 token 计数 | 250–350 | | | |
+| 投影器 | `assets/scan.py` 原型 | `reharness/train/stream.py`，带逐行 token 计数 | 250–350 | | | |
 | 重放 | `data/replay.py` 原型（201 行）；adapters/automationbench.py:604-650 | 按题名加载、ID 重映射、复现率；`replay_skip`；输出回填 | 250–350 | 160–240 | | |
 | 打标器与 FamilySplit | train/feedback.py:78-138；train/dataset.py:113-238 | 3 个打标器、FamilySplit、交叉拟合折 | 180–260 | | 60–80 | |
 | 两个 builder 与检查 | train/dataset.py:31-49、:64-76；train/checks.py | 见 §3.2 | 450–650 | | | |
@@ -390,12 +390,12 @@ per_task_cap = 4
 | ref、store、serving | train/stores/；train/serving.py:21；train/backends/jev.py:40-42 | hub ref、tinker ref 与 digest、key 可选、能力探针、学生计价 | | 200–330 | | |
 | 网关角色与审阅 | evolve/contracts.py:774-802（`CollectionRequest(mode="reviewed")`）；M2 §1a | role → provider 映射、审阅钩子、ReviewRecord、K 构建、有界修复 | | | 450–700 | |
 | 导出 | release.py:543-624；app.py:25-34 | 导出模型 ref；App.bind 带 Serving | 60–100 | | | |
-| CLI 与臂运行 | train/config.py:82-96、train/cli.py；evolve/task_eval.py:247、:366 | `python -m ouroloop.train`；`arm` 子命令（在 val+cal 族上跑学生） | 150–220 | 100–150 | | `bench --phase train` 与计划字段 300–450 |
+| CLI 与臂运行 | train/config.py:82-96、train/cli.py；evolve/task_eval.py:247、:366 | `python -m reharness.train`；`arm` 子命令（在 val+cal 族上跑学生） | 150–220 | 100–150 | | `bench --phase train` 与计划字段 300–450 |
 | **合计** | | | **2.2–3.2k** | **1.0–1.6k** | **0.5–0.8k** | **0.75–1.1k** |
 
 - 测试：v2.0 约 1.2k 行，v2.1–v2.2 约 0.8k 行。
-- 另外沿用瘦身第一批搬进 `[train]` 的约 2.4k 行，复用 `[train-jobs]` 约 2.0k 行（同一子包，代码只搬一次）。2026-10-08 实际搬完：`ouroloop/train/` 3,042 行（不含 jobs），`ouroloop/train/jobs/` 1,697 行（另有 sh 与 Dockerfile）。
-- jev 一侧保留模型代码、tde-serve 和 releases。ouroloop 不 import jev 的内部函数，只 pin `tde` 版本。
+- 另外沿用瘦身第一批搬进 `[train]` 的约 2.4k 行，复用 `[train-jobs]` 约 2.0k 行（同一子包，代码只搬一次）。2026-10-08 实际搬完：`reharness/train/` 3,042 行（不含 jobs），`reharness/train/jobs/` 1,697 行（另有 sh 与 Dockerfile）。
+- jev 一侧保留模型代码、tde-serve 和 releases。reharness 不 import jev 的内部函数，只 pin `tde` 版本。
 
 ## 4 试验设计
 
@@ -532,16 +532,16 @@ Claude 走订阅，金额是按牌价折算的名义费用。GPU 和 Tinker 是�
 **范围：** §3.8 中 v2.0 一列。
 
 ```
-python -m ouroloop.train plan      --source examples/automationbench/workspace-claude-v4-finance --split train --out <plan>
-python -m ouroloop.train project   <plan>
-python -m ouroloop.train label     <plan> --labelers final_success,replay_effect
-python -m ouroloop.train build     <plan> --role decision --point worker.decide.write_gate
-python -m ouroloop.train build     <plan> --role actor --dataset teacher_rollouts
-python -m ouroloop.train check     <plan>
-python -m ouroloop.train fit       <plan> --role decision          # 用 [train.decision]
-python -m ouroloop.train threshold <plan> <model_ref>
-python -m ouroloop.train eval      <plan> <model_ref> --controls always,rule
-python -m ouroloop.train smoke     --offline
+python -m reharness.train plan      --source examples/automationbench/workspace-claude-v4-finance --split train --out <plan>
+python -m reharness.train project   <plan>
+python -m reharness.train label     <plan> --labelers final_success,replay_effect
+python -m reharness.train build     <plan> --role decision --point worker.decide.write_gate
+python -m reharness.train build     <plan> --role actor --dataset teacher_rollouts
+python -m reharness.train check     <plan>
+python -m reharness.train fit       <plan> --role decision          # 用 [train.decision]
+python -m reharness.train threshold <plan> <model_ref>
+python -m reharness.train eval      <plan> <model_ref> --controls always,rule
+python -m reharness.train smoke     --offline
 pytest -q tests/train/test_train_data.py tests/train/test_train_decision.py tests/train/test_train_actor.py \
           tests/train/test_evidence_training.py tests/train/jobs/test_jobs.py tests/train/test_train_config.py tests/test_export.py
 ```
@@ -573,10 +573,10 @@ pytest -q tests/train/test_train_data.py tests/train/test_train_decision.py test
 **范围：** §3.8 中 v2.1 一列。
 
 ```
-python -m ouroloop.train smoke --real --config examples/automationbench/v2-chain.local.toml
-python -m ouroloop.train arm   --config examples/automationbench/v2-x1.toml --arm S0 --tasks val,cal
-python -m ouroloop.train arm   --config examples/automationbench/v2-x1.toml --arm S_F --tasks val,cal
-python -m ouroloop.train label <x1-plan> --labelers replay_effect,replay_skip
+python -m reharness.train smoke --real --config examples/automationbench/v2-chain.local.toml
+python -m reharness.train arm   --config examples/automationbench/v2-x1.toml --arm S0 --tasks val,cal
+python -m reharness.train arm   --config examples/automationbench/v2-x1.toml --arm S_F --tasks val,cal
+python -m reharness.train label <x1-plan> --labelers replay_effect,replay_skip
 ```
 
 - **决策链**：
@@ -611,8 +611,8 @@ python -m ouroloop.train label <x1-plan> --labelers replay_effect,replay_skip
 
 | 步 | 命令 | 停止条件 |
 |---|---|---|
-| 冻结 | `ouroloop freeze --config examples/automationbench/v2-distill.toml`：冻结 FamilySplit、学生和老师身份、K 的 ref、配方、采样温度、上限、预算根、预注册读法、≥ 3 次 S0 对照读数 | — |
-| 采集 | `ouroloop bench … --phase train --role actor --until collect`：先跑 100 次试点 | K2 |
+| 冻结 | `reharness freeze --config examples/automationbench/v2-distill.toml`：冻结 FamilySplit、学生和老师身份、K 的 ref、配方、采样温度、上限、预算根、预注册读法、≥ 3 次 S0 对照读数 | — |
+| 采集 | `reharness bench … --phase train --role actor --until collect`：先跑 100 次试点 | K2 |
 | 训练 | `… --until fit`：建集 → 检查 → 训练 → 探针 → val 族上不带老师，每臂 2 次读数 | K3 |
 | dev gate | `… --until gate`：合并 dev 100 题，S1 对 S0，按域报告 | K4 |
 | 写门 | 在学生记录上做交叉拟合的 C3b 离线报告 → 选 G → 在 train-cal 上 shadow | K5、K6 |
@@ -665,7 +665,7 @@ python -m ouroloop.train label <x1-plan> --labelers replay_effect,replay_skip
 | 4 | 采集用的 harness | W0 加 K（W\* 文本），同 HZ | 要改 M2 §3a 第 2–3 步和 DT6-14 | 按默认，2026-10-08 |
 | 5 | 跨域合并 | 5 个域合训一个学生，并报 LODO | HZ 是按域分别训练的 | 按默认，2026-10-08 |
 | 6 | 学生底座和训练后端 | Qwen3.5-9B 加 Tinker LoRA 作参考实现；9B 是第一期链路验收的默认底座，K1 的"更大底座"是 Qwen3.8-27B（§4.2）。自托管训练不走 `module:Class`（它在控制平面进程里直接构造，没有作业、云上生命周期和价格上限），而是由 `JobTrainer` 运行的插件模块（写模块路径）。评测时大批量的学生推理走 RunPod 上自托管的 vLLM（合并权重，经 `openai_compat`）；Tinker 采样及其 OpenAI/Anthropic 兼容 beta 接口只作冒烟或兜底（2026-10-08 按 Tinker/RunPod 核价更正） | v2 不维护第二套生成训练栈 | 按默认，2026-10-08；自托管的接法和推理位置同日按核价更正 |
-| 7 | 命名与搬家 | 在瘦身第一批之前定下来：子包叫 `ouroloop/train/`，extra 叫 `[train]`/`[train-jobs]`，入口是 `python -m ouroloop.train`。代码只搬一次 | 要改 SLIMMING §2.3、§3 第一批的命名 | 按默认，2026-10-08 |
+| 7 | 命名与搬家 | 在瘦身第一批之前定下来：子包叫 `reharness/train/`，extra 叫 `[train]`/`[train-jobs]`，入口是 `python -m reharness.train`。代码只搬一次 | 要改 SLIMMING §2.3、§3 第一批的命名 | 按默认，2026-10-08 |
 | 8 | `contact_human` | 本基准上不作效果主张；真实标签来自 v2.5 的部署审批 | — | 按默认，2026-10-08 |
 | 9 | 学生的思考档位（关，还是 low/medium） | 关（现行 §3.7） | 关：claude_code 给的老师轨迹没有思考内容，训练目标只有可见回合，训练与评测一致；但 27B 关思考按 AA 换算只有约 7%（估），卡在 K1 边上。low/medium：27B 约 18% / 24%（估），K1、K1b 大概率不触发，但训练目标里没有思考，训练与评测的格式不一致。要在 X1 计划冻结前定，可先看 §4.2 的 S0 小探针（2026-10-08 按 Tinker/RunPod 核价更正） | 待用户决定。注（2026-10-08）：用户对 actor 的 effort 说"不要，就保持统一的档位"（OSS_COMPONENTS_PLAN §9 第 4 项）。那一条管的是 v1 的 Opus actor，学生档位仍是本项、仍待定；但"同一比较里各臂用同一档位"的偏好在这里同样适用。§4.1、§4.2 的"S0 开、关思考各跑一次，取较好的一个作对照"与这一偏好有出入，随本项一起定 |
 

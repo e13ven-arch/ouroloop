@@ -1,7 +1,7 @@
 """The import boundaries of docs/design/CONTRACTS.md §1.
 
-- An attempt (`evaluate.attempt.run_attempt`) leaves no `ouroloop.improver`, `ouroloop.memory.sidecar` or
-  `ouroloop.train` in sys.modules, and neither do the activity phases an attempt runs under (ACTIVITY.md §9).
+- An attempt (`evaluate.attempt.run_attempt`) leaves no `reharness.improver`, `reharness.memory.sidecar` or
+  `reharness.train` in sys.modules, and neither do the activity phases an attempt runs under (ACTIVITY.md §9).
 - The control plane never imports package code: nothing of a package's vendor/, agent/, tools/, middlewares/ or
   tests/ is a module of the host process; it runs in the worker only.
 - adapters/ imports nothing of the framework, and harness, runtime, evaluate, activity and contracts import only the
@@ -21,14 +21,14 @@ from pathlib import Path
 
 import pytest
 
-from ouroloop.harness import seed as sd
+from reharness.harness import seed as sd
 
 TESTS = Path(__file__).resolve().parent
 REPO = TESTS.parent
-PACKAGE = REPO / "ouroloop"
+PACKAGE = REPO / "reharness"
 
 # Off the hot path: the improver and the memory's sidecar client (stages 2 and 3) and the training stack.
-OFF_PATH = ("ouroloop.improver", "ouroloop.memory.sidecar", "ouroloop.train")
+OFF_PATH = ("reharness.improver", "reharness.memory.sidecar", "reharness.train")
 # A package's code directories (HARNESS §2): they run in the worker, never in the control plane.
 PACKAGE_DIRS = ("vendor", "agent", "tools", "middlewares", "tests")
 
@@ -56,11 +56,11 @@ import json, sys
 from pathlib import Path
 upstream, tmp = sys.argv[1], Path(sys.argv[2])
 sys.path.insert(0, upstream)
-import ouroloop
+import reharness
 import rsi
-from ouroloop.activity import cli  # noqa: F401 - the CLI module is on the path of `ouroloop bench` too
-from ouroloop.activity import phases
-from ouroloop.evaluate.attempt import make_agent_factory, run_attempt
+from reharness.activity import cli  # noqa: F401 - the CLI module is on the path of `reharness bench` too
+from reharness.activity import phases
+from reharness.evaluate.attempt import make_agent_factory, run_attempt
 
 def modules():
     return {name: getattr(m, "__file__", None) for name, m in list(sys.modules.items())}
@@ -76,7 +76,7 @@ make = make_agent_factory(provider=activity.actor_provider(activity.account("bou
                           core_ref=activity.core_ref)
 attempt = run_attempt(activity.suite, rsi.TRAIN[1], make, run=run, splits=activity.splits, release_ref=release.ref())
 attempt.episode.close()
-print(json.dumps({"ouroloop": ouroloop.__file__, "termination": attempt.result.termination,
+print(json.dumps({"reharness": reharness.__file__, "termination": attempt.result.termination,
                   "validity": attempt.result.validity, "success": attempt.result.success,
                   "steps": attempt.result.steps, "modules": modules()}))
 # the phases an attempt runs under: the smoke with its attempt, freeze, a baseline of one train and one dev task, report
@@ -93,7 +93,7 @@ print(json.dumps({"smoke_ok": smoke["ok"], "smoke_attempts": len(smoke["attempts
 
 # K's sections take their defaults from the packages they configure; those modules import nothing of the improver's
 # or the memory's code (standard library only), and are the only ones of those packages a phase of W0 may load.
-SETTINGS_MODULES = ("ouroloop.improver", "ouroloop.improver.settings")
+SETTINGS_MODULES = ("reharness.improver", "reharness.improver.settings")
 
 
 def loaded(prefix: str, modules) -> list[str]:
@@ -125,12 +125,12 @@ def test_an_attempt_and_the_phases_load_no_off_path_or_package_code(fake_upstrea
     assert run.returncode == 0, run.stderr[-4000:]
     attempt, activity = [json.loads(line) for line in run.stdout.splitlines() if line.startswith("{")]
     # this checkout's code ran, and the path really ran: a valid attempt, the smoke's attempt, a baseline of two
-    assert Path(attempt["ouroloop"]).resolve().is_relative_to(REPO)
+    assert Path(attempt["reharness"]).resolve().is_relative_to(REPO)
     assert (attempt["termination"], attempt["validity"], attempt["success"]) == ("finished", "valid", True)
     assert attempt["steps"] > 1
     assert activity["smoke_ok"] and activity["smoke_attempts"] == 1 and activity["baseline"] == [1, 1]
     assert "core_ref" in activity["frozen"] and "baseline" in activity["report"]
-    assert "ouroloop.runtime.runner" in attempt["modules"] and "ouroloop.activity.phases" in activity["modules"]
+    assert "reharness.runtime.runner" in attempt["modules"] and "reharness.activity.phases" in activity["modules"]
     for snapshot in (attempt, activity):
         assert [m for prefix in OFF_PATH for m in loaded(prefix, snapshot["modules"])] == []
         assert package_code(snapshot["modules"]) == []
@@ -167,7 +167,7 @@ def imports(path: Path) -> list[tuple[str, int, bool]]:
 
 def framework_edges(package: str) -> list[tuple[str, str, bool]]:
     """(file:line, the framework package imported, inside a function) for every import from `package` of another
-    ouroloop package. The seeds under harness/seeds/ are package code, not the harness package's."""
+    reharness package. The seeds under harness/seeds/ are package code, not the harness package's."""
     root = PACKAGE / package
     files = [root.with_suffix(".py")] if not root.is_dir() else \
         [f for f in sorted(root.rglob("*.py")) if "seeds" not in f.relative_to(root).parts]
@@ -176,7 +176,7 @@ def framework_edges(package: str) -> list[tuple[str, str, bool]]:
     for f in files:
         for target, line, in_function in imports(f):
             parts = target.split(".")
-            if parts[0] != "ouroloop" or len(parts) < 2 or parts[1] == package or parts[1] == "__version__":
+            if parts[0] != "reharness" or len(parts) < 2 or parts[1] == package or parts[1] == "__version__":
                 continue
             edges.append((f"{f.relative_to(REPO)}:{line}", parts[1], in_function))
     return edges
@@ -205,11 +205,11 @@ def test_each_package_imports_only_the_packages_below_it(package):
 IMPORT_ALL = r"""
 import importlib, json, pkgutil, sys
 name, out = sys.argv[1], sys.argv[2]
-top = importlib.import_module("ouroloop." + name)
+top = importlib.import_module("reharness." + name)
 for info in pkgutil.iter_modules(getattr(top, "__path__", []), top.__name__ + "."):
     importlib.import_module(info.name)
 with open(out, "w") as f:           # not stdout: runtime.worker_runner takes fd 1 for its protocol when imported
-    json.dump({"ouroloop": sys.modules["ouroloop"].__file__, "modules": sorted(sys.modules)}, f)
+    json.dump({"reharness": sys.modules["reharness"].__file__, "modules": sorted(sys.modules)}, f)
 """
 
 
@@ -224,8 +224,8 @@ def test_importing_a_package_loads_nothing_above_it(package, tmp_path):
     assert run.returncode == 0, run.stderr[-4000:]
     got = json.loads(out.read_text())
     modules = got["modules"]
-    assert Path(got["ouroloop"]).resolve().is_relative_to(REPO)
-    pulled = {m.split(".")[1] for m in modules if m.startswith("ouroloop.")} - {package}
-    assert f"ouroloop.{package}" in modules
-    assert pulled <= LAYERS[package], f"ouroloop.{package} loads {sorted(pulled - LAYERS[package])}"
-    assert [m for prefix in OFF_PATH if prefix != f"ouroloop.{package}" for m in loaded(prefix, modules)] == []
+    assert Path(got["reharness"]).resolve().is_relative_to(REPO)
+    pulled = {m.split(".")[1] for m in modules if m.startswith("reharness.")} - {package}
+    assert f"reharness.{package}" in modules
+    assert pulled <= LAYERS[package], f"reharness.{package} loads {sorted(pulled - LAYERS[package])}"
+    assert [m for prefix in OFF_PATH if prefix != f"reharness.{package}" for m in loaded(prefix, modules)] == []

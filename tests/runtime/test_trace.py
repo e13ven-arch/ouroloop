@@ -30,12 +30,12 @@ import rsi
 from runtime_world import Script, core, finish, minimal, seed, turn
 from runtime_world import attempt as run_attempt
 
-from ouroloop.activity import phases
-from ouroloop.memory.retrieval import TaskMemory
-from ouroloop.runtime import trace as T
-from ouroloop.runtime.chat import ToolSpec
-from ouroloop.runtime.records import EVENT_CHARS, Transcript, session_file
-from ouroloop.runtime.trace import TraceAccessError, TraceError, TraceIndexError, TraceStore, parse_ref, plain
+from reharness.activity import phases
+from reharness.memory.retrieval import TaskMemory
+from reharness.runtime import trace as T
+from reharness.runtime.chat import ToolSpec
+from reharness.runtime.records import EVENT_CHARS, Transcript, session_file
+from reharness.runtime.trace import TraceAccessError, TraceError, TraceIndexError, TraceStore, parse_ref, plain
 
 NOTHING = {"sessions": 0, "lines": 0, "docs": 0}
 

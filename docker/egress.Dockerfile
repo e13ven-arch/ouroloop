@@ -1,9 +1,9 @@
-# The egress proxy (docs/design/RUNTIME.md §2): mitmproxy, unmodified, with ouroloop's addon as its only script.
-# Build: docker build --provenance=false -f docker/egress.Dockerfile -t ouroloop-egress:v6.1 .  (v6.1: the addon with the
+# The egress proxy (docs/design/RUNTIME.md §2): mitmproxy, unmodified, with reharness's addon as its only script.
+# Build: docker build --provenance=false -f docker/egress.Dockerfile -t reharness-egress:v6.1 .  (v6.1: the addon with the
 # request cap and `poll`, control protocol 2; the pool refuses an older addon)
 # The base image is pinned by digest and every Python package by its wheel's sha256 (docker/egress.requirements.txt,
 # installed with --require-hashes --no-deps: nothing outside the list can enter). linux/arm64 only (an amd64 lock is not written yet).
-# At run time ouroloop.runtime.egress.EgressPool adds --read-only, a /tmp tmpfs, --cap-drop ALL, no-new-privileges, CPU,
+# At run time reharness.runtime.egress.EgressPool adds --read-only, a /tmp tmpfs, --cap-drop ALL, no-new-privileges, CPU,
 # memory and PID limits, the allowlist, the control key and the per-credential row cap; the container starts on the
 # uplink network (where the addon binds its control listener, published to the host's 127.0.0.1 only) and is then
 # attached to each session's own internal network (the worker's only network, where it is `egress`).
@@ -13,7 +13,7 @@ COPY docker/egress.requirements.txt /egress/requirements.txt
 RUN pip install --require-hashes --no-deps --only-binary=:all: -r /egress/requirements.txt \
     && pip check \
     && python -c "import mitmproxy.version as v; assert v.VERSION == '12.2.3', v.VERSION"
-COPY ouroloop/runtime/egress_addon.py /egress/addon.py
+COPY reharness/runtime/egress_addon.py /egress/addon.py
 RUN python -c "import ast, sys; ast.parse(open('/egress/addon.py').read())" \
     && chmod -R a-w /egress
 USER 65534:65534

@@ -3,7 +3,7 @@
 Without Docker: WorkerResources.from_core and its refusals, the command DockerWorker builds from them (every resource
 from K, the isolation flags fixed), the network rules (none refuses an egress session; proxy needs one, on an internal
 network only, and its pool; R's work tree never needs one), and which workers may run package code at all.
-In Docker (skipped without it or the image, failed under OUROLOOP_TEST_REQUIRE_DOCKER): what package code can reach in
+In Docker (skipped without it or the image, failed under REHARNESS_TEST_REQUIRE_DOCKER): what package code can reach in
 the real image, K's resources as Docker reads them (and a change of K changing them), the image run by the content id K
 froze, a hung package's container removed, swap and pids as K sets them, the proxy network, and the seed's whole
 attempt in the image under K's limits.
@@ -17,11 +17,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from ouroloop.activity import presets
-from ouroloop.contracts import EgressUnavailable, Infrastructure, WorkerUnavailable
-from ouroloop.runtime import worker as W
-from ouroloop.runtime.egress import EgressError
-from ouroloop.runtime.worker import (DEFAULT_IMAGE, EGRESS_ENV, RESOURCE_KEYS, WORKER_ENV, DockerWorker,
+from reharness.activity import presets
+from reharness.contracts import EgressUnavailable, Infrastructure, WorkerUnavailable
+from reharness.runtime import worker as W
+from reharness.runtime.egress import EgressError
+from reharness.runtime.worker import (DEFAULT_IMAGE, EGRESS_ENV, RESOURCE_KEYS, WORKER_ENV, DockerWorker,
                                      PackageCallError, ProcessWorker, WorkerLimits, WorkerResources, check_package,
                                      docker_worker, usable_worker)
 from runtime_world import Script, attempt, core, docker, finish, inspect, kinds, of, require, seed, turn
@@ -49,10 +49,10 @@ def isolated(cmd: list[str]) -> None:
     assert cmd[-3:] == ["python", "-I", "/runner/worker_runner.py"] and env_tail(cmd)[:2] == list(WORKER_ENV)
 
 
-def egress(network="ouroloop-egress-1a2b3c4d", **env):
+def egress(network="reharness-egress-1a2b3c4d", **env):
     return SimpleNamespace(network=network, env={"HTTP_PROXY": "http://attempt:tok@egress:3128",
                                                  "HTTPS_PROXY": "http://attempt:tok@egress:3128",
-                                                 "NO_PROXY": "", "OUROLOOP_EGRESS": "1", **env})
+                                                 "NO_PROXY": "", "REHARNESS_EGRESS": "1", **env})
 
 
 # ---------------------------------------------------------------------------- K's worker table
@@ -81,7 +81,7 @@ def test_every_resource_is_read_from_ks_worker_table_and_the_preset_names_them_a
     ({"env": {"X": "a\nb"}}, "one line"),
     ({"env": {"HTTP_PROXY": "http://elsewhere:8080"}}, "egress session's"),
     ({"env": {"https_proxy": "http://elsewhere:8080"}}, "egress session's"),
-    ({"env": {"OUROLOOP_EGRESS": "1"}}, "egress session's"),
+    ({"env": {"REHARNESS_EGRESS": "1"}}, "egress session's"),
     ({"env": ["NO_PROXY=*"]}, "egress session's"),
 ])
 def test_a_k_worker_table_that_is_refused(table, match):
@@ -134,10 +134,10 @@ def test_network_none_refuses_an_egress_session_and_proxy_needs_one_on_a_named_n
         with pytest.raises(ValueError, match="egress network"):
             worker.start(egress=egress(network=bad))
     with pytest.raises(ValueError, match="mapping"):
-        worker.start(egress=SimpleNamespace(network="ouroloop-egress-1", env=["HTTP_PROXY=x"]))
+        worker.start(egress=SimpleNamespace(network="reharness-egress-1", env=["HTTP_PROXY=x"]))
     session_egress = egress()
     cmd = worker.command("w", session_egress)
-    assert cmd[cmd.index("--network") + 1] == "ouroloop-egress-1a2b3c4d"
+    assert cmd[cmd.index("--network") + 1] == "reharness-egress-1a2b3c4d"
     assert env_tail(cmd) == [*WORKER_ENV, *(f"{k}={v}" for k, v in THREAD_ENV.items()),
                              *(f"{k}={v}" for k, v in session_egress.env.items())]
     isolated(cmd)
@@ -277,7 +277,7 @@ def test_the_qualified_worker_runs_the_image_k_froze_by_its_content_id():
     nothing, and names it in describe(); an id that is gone is no worker."""
     image_id = qualified().image_id()
     assert image_id and image_id.startswith("sha256:")
-    pinned = docker_worker(WorkerResources(image="ouroloop-worker:no-such-tag-" + uuid.uuid4().hex[:8],
+    pinned = docker_worker(WorkerResources(image="reharness-worker:no-such-tag-" + uuid.uuid4().hex[:8],
                                            image_id=image_id, request_seconds=7))
     assert pinned is not None and pinned.pinned_id == image_id
     assert pinned.command("n")[pinned.command("n").index("--cpus") + 2] == image_id
@@ -349,7 +349,7 @@ def test_under_pids_16_the_thread_variables_in_ks_env_decide_whether_numpy_impor
 
 ENV_AND_NET = '''import os, socket
 def run(ctx, args):
-    seen = {k: os.environ.get(k) for k in ("HTTP_PROXY", "HTTPS_PROXY", "OUROLOOP_EGRESS", "OPENBLAS_NUM_THREADS")}
+    seen = {k: os.environ.get(k) for k in ("HTTP_PROXY", "HTTPS_PROXY", "REHARNESS_EGRESS", "OPENBLAS_NUM_THREADS")}
     try:
         socket.create_connection(("1.1.1.1", 80), timeout=3).close()
         direct = "open"
@@ -360,7 +360,7 @@ def run(ctx, args):
 
 
 def _network(internal: bool) -> str:
-    name = f"ouroloop-test-{uuid.uuid4().hex[:8]}"
+    name = f"reharness-test-{uuid.uuid4().hex[:8]}"
     docker("network", "create", *(["--internal"] if internal else []), name)
     return name
 
@@ -380,7 +380,7 @@ def test_a_proxy_worker_joins_only_an_internal_network_and_sees_the_egress_varia
     finally:
         docker("network", "rm", open_net, check=False)
     with pytest.raises(EgressUnavailable, match="does not exist"):
-        worker.start(egress=egress(network=f"ouroloop-test-gone-{uuid.uuid4().hex[:8]}"))
+        worker.start(egress=egress(network=f"reharness-test-gone-{uuid.uuid4().hex[:8]}"))
     assert spawned == []                                  # no container was started for either
     network = _network(internal=True)
     try:
@@ -392,10 +392,10 @@ def test_a_proxy_worker_joins_only_an_internal_network_and_sees_the_egress_varia
             value = session.request({"op": "call_tool", "entry": "tools/env.py:run", "args": {}, "view": {}})
             names, seen, direct = eval(value["output"])            # noqa: S307 - our own repr of a tuple
             assert seen == {"HTTP_PROXY": "http://attempt:tok@egress:3128",
-                            "HTTPS_PROXY": "http://attempt:tok@egress:3128", "OUROLOOP_EGRESS": "1",
+                            "HTTPS_PROXY": "http://attempt:tok@egress:3128", "REHARNESS_EGRESS": "1",
                             "OPENBLAS_NUM_THREADS": "1"}
             assert set(names) == {"PATH", "LANG", "OPENBLAS_NUM_THREADS", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
-                                  "OUROLOOP_EGRESS"}
+                                  "REHARNESS_EGRESS"}
             assert direct != "open"
         finally:
             session.close(force=True)

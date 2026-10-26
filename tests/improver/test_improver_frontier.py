@@ -28,16 +28,16 @@ from rounds import ledger_rows, quiet, round_activity, round_state
 from scripted_r import CONDITIONAL_HOOK_CODE, HOOK_ENTRY, PARTIAL_HOOK_CODE, TOOL_CODE, TOOL_ENTRY, \
     WORDLIST_HOOK_CODE
 
-from ouroloop.activity import phases
-from ouroloop.activity.report import build_report, render_markdown
-from ouroloop.harness.package import Limits, build
-from ouroloop.improver.declaration import Component, Declaration
-from ouroloop.improver.frontier import Frontier, FrontierEntry
-from ouroloop.improver.round import Round
-from ouroloop.improver.screen import RegressionEvidence, ScreenResult, partial_of, research_run, research_sample
-from ouroloop.improver.settings import Settings
-from ouroloop.improver.verify import run_ladder
-from ouroloop.improver.verify.static import heuristic_terms, static_check, text_problems
+from reharness.activity import phases
+from reharness.activity.report import build_report, render_markdown
+from reharness.harness.package import Limits, build
+from reharness.improver.declaration import Component, Declaration
+from reharness.improver.frontier import Frontier, FrontierEntry
+from reharness.improver.round import Round
+from reharness.improver.screen import RegressionEvidence, ScreenResult, partial_of, research_run, research_sample
+from reharness.improver.settings import Settings
+from reharness.improver.verify import run_ladder
+from reharness.improver.verify.static import heuristic_terms, static_check, text_problems
 
 HELD = rsi.HELD_QUIET                       # the notify pair and the quiet update
 NOTIFY = rsi.HELD
@@ -482,7 +482,7 @@ def test_heuristic_terms(code, terms):
 
 
 def test_a_declaration_reads_rewrite_and_merge_of():
-    from ouroloop.improver.declaration import read_declaration
+    from reharness.improver.declaration import read_declaration
     raw = {"mechanism": "m", "components": [{"kind": "prompt", "site": "system", "cause_ids": ["c"], "trigger": "t",
                                              "rewrite": True}]}
     d, why = read_declaration(raw, dirs=["package"], kinds_allowed=["prompt", "hook"])

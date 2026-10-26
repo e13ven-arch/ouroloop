@@ -7,13 +7,13 @@ import json
 import pytest
 import rsi
 
-from ouroloop.activity import workspace as wsp
-from ouroloop.activity.config import ConfigError
-from ouroloop.activity.workspace import open_activity
-from ouroloop.contracts import short
-from ouroloop.evaluate.release import attempt_version, improver_version
-from ouroloop.evaluate.splits import SplitManifest
-from ouroloop.harness.seed import build_seed
+from reharness.activity import workspace as wsp
+from reharness.activity.config import ConfigError
+from reharness.activity.workspace import open_activity
+from reharness.contracts import short
+from reharness.evaluate.release import attempt_version, improver_version
+from reharness.evaluate.splits import SplitManifest
+from reharness.harness.seed import build_seed
 
 
 def opened(tmp_path, fake_upstream, *, lines=None, **kw):
@@ -70,8 +70,8 @@ def test_code_that_moved_under_the_activity_opens_the_frozen_k_and_the_phase_che
     """PLAN rule 13 (2026-10-12): the frozen K stands when only the code's versions differ; the rounds then refuse
     at their startup check, the final family (which runs the attempt code only) goes on with the improver's version
     on record."""
-    from ouroloop.activity import checks
-    from ouroloop.activity.checks import startup_checks
+    from reharness.activity import checks
+    from reharness.activity.checks import startup_checks
     a = opened(tmp_path, fake_upstream)
     monkeypatch.setattr(wsp, "improver_version", lambda: "0000000000000000")
     monkeypatch.setattr(checks, "improver_version", lambda: "0000000000000000")

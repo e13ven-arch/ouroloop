@@ -1,7 +1,7 @@
 """StreamStep, the write path of the train stream (docs/design/MEMORY.md §5, §7; §11 "写入步").
 
 The in-process client (tests/memory/fake_memory.py FakeMemoryClient) makes its summaries as real HTTP calls to a
-research scope of the real bridge (ouroloop/memory/bridge.py), whose provider is a MeteredProvider over ScriptedResearch
+research scope of the real bridge (reharness/memory/bridge.py), whose provider is a MeteredProvider over ScriptedResearch
 on a Budgets book: every research call is metered, booked and recorded, and StreamStep checks each summary against the
 scope's record (`scope.calls`, `scope.set_step`). `trajectory_of` gives canned OpenAI-format messages. The scenarios are
 v6's (tests/test_memory_track.py and tests/test_memory_pitfalls.py on tag v6-memory) that make sense without the real
@@ -24,17 +24,17 @@ from pathlib import Path
 import pytest
 
 from fake_memory import FakeMemoryClient, ScriptedResearch, bow, cosine
-from ouroloop.contracts import MemorySidecarError, TrainOnlyError
-from ouroloop.evaluate.budget import Budgets, MeteredProvider, Pricing
-from ouroloop.memory import snapshot_digest, track
-from ouroloop.memory.bridge import Bridge
-from ouroloop.memory.client import canonical_rows, parse_jsonl
-from ouroloop.memory.retrieval import LibraryReader
-from ouroloop.memory.rules import PROVENANCE_KEYS, REME_META_KEYS, content_id, new_stats, stamp
-from ouroloop.memory.service import LLM_OPS
-from ouroloop.memory.settings import Settings
-from ouroloop.memory.snapshot import fit_snapshot, row_bytes
-from ouroloop.memory.track import MemoryStepError, StreamStep, cut_trajectory
+from reharness.contracts import MemorySidecarError, TrainOnlyError
+from reharness.evaluate.budget import Budgets, MeteredProvider, Pricing
+from reharness.memory import snapshot_digest, track
+from reharness.memory.bridge import Bridge
+from reharness.memory.client import canonical_rows, parse_jsonl
+from reharness.memory.retrieval import LibraryReader
+from reharness.memory.rules import PROVENANCE_KEYS, REME_META_KEYS, content_id, new_stats, stamp
+from reharness.memory.service import LLM_OPS
+from reharness.memory.settings import Settings
+from reharness.memory.snapshot import fit_snapshot, row_bytes
+from reharness.memory.track import MemoryStepError, StreamStep, cut_trajectory
 
 LINE = "crm"
 ACTIVITY = "act-track"
@@ -969,7 +969,7 @@ def test_only_train_tasks_of_a_line_that_is_not_held_out_enter(env):
 def test_an_attempt_without_a_trajectory_is_summarised_without_it_and_blocks_nothing(env):
     """A valid attempt that made no model call (a harness_error before its first call) has no gateway_call lines:
     its trajectory is left out and counted; a task with no trajectory at all costs no research call."""
-    from ouroloop.runtime.trace import TraceError
+    from reharness.runtime.trace import TraceError
 
     def no_calls(session):
         if session.startswith("T1-"):

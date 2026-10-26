@@ -1,6 +1,6 @@
 # 公共契约：对象、工作区、K、release、记录、错误、测试约定
 
-> 阶段 1 设计文档。所有包共用的形状都在这里定；各包文档只引用。实现文件：`ouroloop/contracts.py`（由 `evolve/contracts.py` 收缩而来：身份、Record 与类型注册、对象库、事件、文件与 JSONL 助手、错误类）、`ouroloop/runtime/records.py`（transcript 行的 kind 与字段）。2026-10-09 按阶段 1 的实现对齐。
+> 阶段 1 设计文档。所有包共用的形状都在这里定；各包文档只引用。实现文件：`reharness/contracts.py`（由 `evolve/contracts.py` 收缩而来：身份、Record 与类型注册、对象库、事件、文件与 JSONL 助手、错误类）、`reharness/runtime/records.py`（transcript 行的 kind 与字段）。2026-10-09 按阶段 1 的实现对齐。
 
 ## 1 包的依赖方向
 
@@ -16,13 +16,13 @@ train/           训练链                                                     �
 ```
 
 硬规则（`tests/test_hot_path_boundary.py` 守住）：
-- 一次尝试（`evaluate.run_attempt`）跑完，`sys.modules` 里没有 `ouroloop.improver`、`ouroloop.memory.sidecar`、`ouroloop.train`；例外只有 K 的节取默认值的 `ouroloop.improver.settings`（与包的 `__init__`），它们只用标准库。
+- 一次尝试（`evaluate.run_attempt`）跑完，`sys.modules` 里没有 `reharness.improver`、`reharness.memory.sidecar`、`reharness.train`；例外只有 K 的节取默认值的 `reharness.improver.settings`（与包的 `__init__`），它们只用标准库。
 - 控制面进程永远不 import 包里的代码（`vendor/`、`agent/`、`tools/`、`middlewares/`、`tests/`）；它们只在 worker 里跑。
 - `adapters/` 不 import 本框架的其他包。
 
 ## 2 对象与引用
 
-现有 `evolve/contracts.py` 的对象库保留，收缩成 `ouroloop/contracts.py`：
+现有 `evolve/contracts.py` 的对象库保留，收缩成 `reharness/contracts.py`：
 
 ```python
 def canonical(obj) -> bytes            # 规范 JSON（键排序、无空白、UTF-8）
@@ -170,7 +170,7 @@ class InstallReceipt(Record):        # kind "install"：装入或回滚的事实
 | 异常 | 含义 | 循环怎么处理 |
 |---|---|---|
 | `ContractError` | 形状、schema、引用不合法 | 配置或代码错误，立刻停 |
-| `CandidateDefect` | 包自己的错：hook 抛错、答非协议、工具抛错、smoke 崩溃。运行中由包抛出的、带 `ouroloop_defect` 标记的异常是 `RunDefect`：尝试记 `harness_error`，按现状评分，失败类 `candidate_defect` 使该次 gate 比较 invalid | 候选在该档失败，退回 R 修订或作废；不算基础设施 |
+| `CandidateDefect` | 包自己的错：hook 抛错、答非协议、工具抛错、smoke 崩溃。运行中由包抛出的、带 `reharness_defect` 标记的异常是 `RunDefect`：尝试记 `harness_error`，按现状评分，失败类 `candidate_defect` 使该次 gate 比较 invalid | 候选在该档失败，退回 R 修订或作废；不算基础设施 |
 | `Infrastructure`（`WorkerUnavailable`、`WorkerCrashed`、`EgressUnavailable`、`MemorySidecarError`；`ProviderError` 留在 `providers/`） | 宿主侧故障 | 尝试标 `infrastructure`，按日程的 `max_infrastructure_failures` 计数；不进 gate 读数 |
 | `LimitHit(limit)` | 五项硬限额之一到顶 | 尝试正常结束，termination `budget`，世界按现状评分 |
 | `BudgetError`（`BudgetExhausted`、`BudgetMismatch`） | 预算簿拒绝 | 付费步骤不开始；活动结束 `budget_exhausted` |
@@ -201,7 +201,7 @@ class InstallReceipt(Record):        # kind "install"：装入或回滚的事实
 
 ## 10 测试约定
 
-- 两套命令不变：默认 `.venv/bin/python -m pytest -q`；全量 `OUROLOOP_TEST_REQUIRE_DOCKER=1 ... -m "not live"`。
+- 两套命令不变：默认 `.venv/bin/python -m pytest -q`；全量 `REHARNESS_TEST_REQUIRE_DOCKER=1 ... -m "not live"`。
 - 夹具：`tests/fake_upstream`（`rsi`、`marketing`、`sales`、`support` 四个迷你域）；`ScriptedChat`（脚本化模型）；`ProcessWorker`（协议测试，`qualified=False`）；`tests/fixtures/attempt_behaviour_<seed>.json`（一次尝试的行为夹具，换种子时重录）。
 - 必须一直绿：`test_record_compat`（读四个旧工作区的 train/dev 记录，只读）、`test_attempt_behaviour`、`test_paid_run_safety`（名单见 EVALUATE §9）、`test_hot_path_boundary`。
 - 每个模块文档的“测试”一节列出必须有的测试；每项改动都要有一个去掉改动就失败的测试；变异检查只在隔离副本里做（PLAN 规则 7）。

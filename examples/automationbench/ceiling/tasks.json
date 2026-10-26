@@ -1,5 +1,5 @@
 {
- "schema": "ouroloop.ceiling_tasks.v1",
+ "schema": "reharness.ceiling_tasks.v1",
  "frozen_at": "2026-10-05",
  "purpose": "The task set of the ceiling experiment (docs/ROADMAP.md §3 v0.3 step 4), chosen from records before any run: the dev tasks v0.2's W* still fails and the train tasks it failed in its last train measurement. Never test. The runner (examples/automationbench/ceiling_run.py) reads this file and never chooses tasks itself.",
  "rule": {
@@ -79,7 +79,7 @@
    ],
    "rule": "Improvement.measure: after an install, the previous measurement's failed train tasks are rerun under the new version"
   },
-  "readers": "ouroloop.benchmark.Results (all, runs, grading with splits train+dev), ouroloop.release.Releases.active, ouroloop.evolve.contracts.Objects; rsi/cycle.json; rsi/events.jsonl (installed, measurement_planned, evaluation_completed)"
+  "readers": "reharness.benchmark.Results (all, runs, grading with splits train+dev), reharness.release.Releases.active, reharness.evolve.contracts.Objects; rsi/cycle.json; rsi/events.jsonl (installed, measurement_planned, evaluation_completed)"
  },
  "dev": [
   {

@@ -5,7 +5,7 @@
 # decision when the rounds are over, and the final's two arms (W0 and W*) are the number the README reports. The
 # automationbench_v2 preset (the library off, one candidate package a round, held-out acceptance on the working line),
 # the stirrup seed, up to 12 rounds with a patience of 3 (the budget holds about 7 or 8). Every paid step is approved
-# in chat first (PLAN rule 3). Run from the repository's root with `.venv/bin/python -m ouroloop`, in a terminal that
+# in chat first (PLAN rule 3). Run from the repository's root with `.venv/bin/python -m reharness`, in a terminal that
 # stays open, on AC power under `caffeinate -dimsu`; stop a step with one Ctrl-C and let it drain, never kill it (a
 # killed call keeps its reservation's bound).
 #   1  `... bench --config examples/automationbench/finance-v5.toml --phase smoke --checks-only`                 $0
@@ -24,7 +24,7 @@
 #
 # The numbers are the preset's (activity/presets.py, from evidence); a value here may only tighten one. The worker runs
 # by the image id below (K pins it: the image built from this checkout on 2026-10-11, after runtime/worker_runner.py's
-# embedded contract gained `hook_aux_calls` in stage 4b; `docker image inspect ouroloop-worker:py3.12`). The split's
+# embedded contract gained `hook_aux_calls` in stage 4b; `docker image inspect reharness-worker:py3.12`). The split's
 # hash is new (50/50): finance-v1 to v4 read the 50/25/25 split 4fd91eaf9fb8daf5, so their numbers are not comparable;
 # `freeze` prints the new split_ref to pin under [rsi].
 

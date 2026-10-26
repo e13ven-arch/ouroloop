@@ -1,6 +1,6 @@
 # activity：配置与 preset → K、工作区、阶段编排、预算根、启动检查、报告、CLI
 
-> 阶段 1 设计文档。包 `ouroloop/activity/`。对应 [DESIGN](../DESIGN.md) §8、§10。来源：`bench.py`（5,360 行）、`cli.py`、`report.py`、`config.py`、`policies.py`（删）。2026-10-09 按阶段 1 的实现对齐（`activity/` 合计约 1,300 行）。
+> 阶段 1 设计文档。包 `reharness/activity/`。对应 [DESIGN](../DESIGN.md) §8、§10。来源：`bench.py`（5,360 行）、`cli.py`、`report.py`、`config.py`、`policies.py`（删）。2026-10-09 按阶段 1 的实现对齐（`activity/` 合计约 1,300 行）。
 
 ## 1 职责与不做
 
@@ -18,7 +18,7 @@
 | `activity/phases.py` | 八个阶段函数与 `cycle --until` |
 | `activity/checks.py` | 启动检查 |
 | `activity/report.py` | `build_report`、`render_markdown`、`write_report` |
-| `activity/cli.py` | `ouroloop bench / freeze / export` |
+| `activity/cli.py` | `reharness bench / freeze / export` |
 
 ## 3 接口
 
@@ -84,9 +84,9 @@ def render_markdown(report) -> str
 def write_report(activity, report) -> dict   # 两次相同（确定性）
 
 # cli.py
-# ouroloop bench --config C --phase P [--until U] [--task T] [--limit N] [--checks-only] [--out J] [--concurrency N]
-# ouroloop freeze --config C
-# ouroloop export --config C [--release R] --to DIR
+# reharness bench --config C --phase P [--until U] [--task T] [--limit N] [--checks-only] [--out J] [--concurrency N]
+# reharness freeze --config C
+# reharness export --config C [--release R] --to DIR
 # 付费阶段与 freeze 持有 <root>/rsi/activity.lock：同一个活动同时只有一个进程（两个进程会为同样缺的尝试各付一次）；cycle 结束时打印停在哪、为什么、活动已花多少；花费一节列根的直接子账户（各带子树），加起来等于根
 ```
 

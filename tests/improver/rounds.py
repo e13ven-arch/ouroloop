@@ -15,9 +15,9 @@ from types import SimpleNamespace
 import rsi
 from scripted_r import ScriptedR
 
-from ouroloop.activity import phases
-from ouroloop.contracts import write_json
-from ouroloop.improver.settings import MECHANIZABLE
+from reharness.activity import phases
+from reharness.contracts import write_json
+from reharness.improver.settings import MECHANIZABLE
 
 
 def quiet(_line: str) -> None:

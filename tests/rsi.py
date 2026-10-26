@@ -12,13 +12,13 @@ import json
 import re
 from pathlib import Path
 
-from ouroloop.activity import presets
-from ouroloop.activity.workspace import open_activity
-from ouroloop.adapters import automationbench as ab
-from ouroloop.evaluate.results import Results
-from ouroloop.evaluate.splits import SplitManifest, TaskEntry
-from ouroloop.runtime.chat import ChatTurn, ToolCall
-from ouroloop.runtime.worker import ProcessWorker
+from reharness.activity import presets
+from reharness.activity.workspace import open_activity
+from reharness.adapters import automationbench as ab
+from reharness.evaluate.results import Results
+from reharness.evaluate.splits import SplitManifest, TaskEntry
+from reharness.runtime.chat import ChatTurn, ToolCall
+from reharness.runtime.worker import ProcessWorker
 
 DOMAIN = "rsi"
 SLACK = "https://slack.com/api/chat.postMessage"

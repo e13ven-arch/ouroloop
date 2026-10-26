@@ -1,15 +1,15 @@
-"""The completion probe (ouroloop/train/probe.py): the stop point's environment label — was the task actually complete
+"""The completion probe (reharness/train/probe.py): the stop point's environment label — was the task actually complete
 when the agent decided to stop? Called directly here, on an episode of the miniature upstream and decisions the test
 records: the runner shell asks no decision point, so no attempt makes a stop decision for it to label."""
 import json
 
 import pytest
 
-from ouroloop.adapters import automationbench as ab
-from ouroloop.evaluate.attempt import Budgeted
-from ouroloop.evaluate.limits import Budget
-from ouroloop.train.probe import CompletionProbe, ProbeError
-from ouroloop.train.runtime import Runtime
+from reharness.adapters import automationbench as ab
+from reharness.evaluate.attempt import Budgeted
+from reharness.evaluate.limits import Budget
+from reharness.train.probe import CompletionProbe, ProbeError
+from reharness.train.runtime import Runtime
 
 LEAD = "marketing.lead_followup"
 UPDATE = ("api_fetch", {"method": "PATCH", "url": "https://api.hubapi.com/crm/v3/objects/contacts",

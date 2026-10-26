@@ -1,6 +1,6 @@
 # evaluate：划分、硬限额、尝试、配对 gate、final 封存、发布与 model 绑定
 
-> 阶段 1 设计文档。包 `ouroloop/evaluate/`。对应 [DESIGN](../DESIGN.md) §6.6（V3～V5）、§7、§8。来源：`benchmark.py`、`evolve/task_eval.py`、`evolve/task_gate.py`、`evolve/execution.py`（预算部分）、`release.py`、`ledger.py`（MeteredProvider 的计量部分）。2026-10-09 按阶段 1 的实现对齐。
+> 阶段 1 设计文档。包 `reharness/evaluate/`。对应 [DESIGN](../DESIGN.md) §6.6（V3～V5）、§7、§8。来源：`benchmark.py`、`evolve/task_eval.py`、`evolve/task_gate.py`、`evolve/execution.py`（预算部分）、`release.py`、`ledger.py`（MeteredProvider 的计量部分）。2026-10-09 按阶段 1 的实现对齐。
 
 ## 1 职责与不做
 

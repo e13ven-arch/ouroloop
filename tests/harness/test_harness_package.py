@@ -6,10 +6,10 @@ import json
 
 import pytest
 
-from ouroloop.contracts import Objects
-from ouroloop.harness import package as pk
-from ouroloop.harness import seed as sd
-from ouroloop.harness.kinds import KIND_TABLE, KINDS, MEMORY_PATH, PATTERNS
+from reharness.contracts import Objects
+from reharness.harness import package as pk
+from reharness.harness import seed as sd
+from reharness.harness.kinds import KIND_TABLE, KINDS, MEMORY_PATH, PATTERNS
 
 CORE = {"model": {"identity": "claude-opus-5-5", "effort": "medium", "max_effort": "medium", "max_tokens": 32000},
         "memory": {"enabled": True}, "harness": {}}
