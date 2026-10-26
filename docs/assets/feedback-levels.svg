@@ -1,12 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 330" font-family="Inter, Helvetica, Arial, sans-serif" font-size="15">
   <rect width="1400" height="330" fill="#ffffff"/>
-  <text x="30" y="36" font-size="20" font-weight="700" fill="#0f172a">What the improver is told — a field of the sealed plan</text>
-  <text x="30" y="58" fill="#475569">every level carries the run's own digest (calls, hooks, writes, the final text; no score) and the world's sources as counts; the levels add only what is listed</text>
+  <text x="30" y="36" font-size="20" font-weight="700" fill="#0f172a">Feedback tiers — a field of the Sealed Protocol</text>
+  <text x="30" y="58" fill="#475569">every tier carries the Run Digest (calls, hooks, writes, the final text; no score) and the Source Inventory as counts; the tiers add only what is listed</text>
 
   <g font-size="14" fill="#1f2937">
     <rect x="30" y="90" width="310" height="200" rx="12" fill="#f8fafc" stroke="#cbd5e1" stroke-width="2"/>
     <text x="50" y="118" font-size="17" font-weight="700">none</text>
-    <text x="50" y="140" fill="#475569">Harness²'s setting</text>
+    <text x="50" y="140" fill="#475569">no signal at all</text>
     <text x="50" y="170">the run alone; every task gets a session;</text>
     <text x="50" y="190">a judge model decides what to adopt</text>
     <text x="50" y="222" fill="#b91c1c">measured worse: fixed 1 of 3, adopted on</text>
@@ -24,21 +24,21 @@
     <rect x="700" y="90" width="310" height="200" rx="12" fill="#eff6ff" stroke="#60a5fa" stroke-width="2"/>
     <text x="720" y="118" font-size="17" font-weight="700">attempts</text>
     <text x="720" y="140" fill="#1e3a8a">one bit per attempt — the test number</text>
-    <text x="720" y="170">after every try: accepted or sent back;</text>
-    <text x="720" y="190">the accepted try is adopted, no judge;</text>
+    <text x="720" y="170">after every probe: accepted or returned;</text>
+    <text x="720" y="190">the accepted probe is adopted, no judge;</text>
     <text x="720" y="210">what real work gives: a request is</text>
     <text x="720" y="228">accepted or comes back, every time</text>
     <text x="720" y="258" fill="#166534">finance-v18: 64% → 68%, 3 of 18 fixed, none lost</text>
 
     <rect x="1035" y="90" width="335" height="200" rx="12" fill="#eff6ff" stroke="#60a5fa" stroke-width="2"/>
     <text x="1055" y="118" font-size="17" font-weight="700">items</text>
-    <text x="1055" y="140" fill="#1e3a8a">the bit plus the rejected items</text>
+    <text x="1055" y="140" fill="#1e3a8a">the bit plus the Rejected Checks</text>
     <text x="1055" y="170">per failed check: its kind and the object</text>
     <text x="1055" y="190">it is about — a recipient, a channel, a row —</text>
     <text x="1055" y="210">never the expected value;</text>
     <text x="1055" y="228">what a reviewer's note says</text>
-    <text x="1055" y="258" fill="#166534">finance-v20: 0/2 → 2/2; R built the</text>
-    <text x="1055" y="276" fill="#166534">unread-sources hold and a tool by itself</text>
+    <text x="1055" y="258" fill="#166534">finance-v20: 0/2 → 2/2; a session built the</text>
+    <text x="1055" y="276" fill="#166534">unread-sources guard and a tool by itself</text>
   </g>
-  <text x="30" y="318" fill="#475569" font-size="13">The grading row with its expected values stays on the host at every level. The trace store opens train sessions and the task's own runs, nothing else.</text>
+  <text x="30" y="318" fill="#475569" font-size="13">The grading row with its expected values stays on the host at every tier. The trace store opens train sessions and the task's own runs, nothing else.</text>
 </svg>

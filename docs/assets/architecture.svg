@@ -1,196 +1,162 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 860" font-family="Inter, Helvetica, Arial, sans-serif" font-size="15">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 820" font-family="Inter, Helvetica, Arial, sans-serif" font-size="15">
   <defs>
-    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
-    </marker>
-    <marker id="arrow-dim" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/>
-    </marker>
-    <marker id="arrow-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#b91c1c"/>
-    </marker>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/></marker>
+    <marker id="ad" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/></marker>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#b91c1c"/></marker>
+    <marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#15803d"/></marker>
   </defs>
-  <rect width="1400" height="860" fill="#ffffff"/>
+  <rect width="1400" height="820" fill="#ffffff"/>
+  <text x="30" y="34" font-size="22" font-weight="700" fill="#0f172a">Components and architecture</text>
+  <text x="30" y="56" fill="#475569">S = (W, R, E; K): the Harness Package the improver may change, the Revision Session that changes it, the Host Transcript it is judged from, and the Frozen Core that bounds all three</text>
 
-  <!-- ===== K: frozen core ===== -->
-  <rect x="30" y="30" width="1340" height="150" rx="14" fill="#fff1f2" stroke="#fda4af" stroke-width="2"/>
-  <text x="50" y="60" font-size="20" font-weight="700" fill="#9f1239">K  ·  frozen core</text>
-  <text x="50" y="82" fill="#9f1239">a config may only tighten a preset; nothing here can be changed by the improver</text>
+  <!-- ===== Frozen Core (K) ===== -->
+  <rect x="30" y="80" width="1340" height="140" rx="14" fill="#fff1f2" stroke="#fda4af" stroke-width="2"/>
+  <text x="50" y="108" font-size="19" font-weight="700" fill="#9f1239">Frozen Core  (K)</text>
+  <text x="240" y="108" fill="#9f1239">a preset a config may only tighten; nothing here is open to the improver</text>
   <g font-size="14" fill="#1f2937">
-    <rect x="50" y="100" width="245" height="62" rx="8" fill="#ffffff" stroke="#fda4af"/>
-    <text x="62" y="122" font-weight="600">Sealed plan</text>
-    <text x="62" y="142">tasks · encounters · feedback level</text>
-    <text x="62" y="156" fill="#6b7280">sealed before the first test attempt</text>
-
-    <rect x="310" y="100" width="245" height="62" rx="8" fill="#ffffff" stroke="#fda4af"/>
-    <text x="322" y="122" font-weight="600">Frozen splits</text>
-    <text x="322" y="142">assigned per task family by hash</text>
-    <text x="322" y="156" fill="#6b7280">a test read ends development</text>
-
-    <rect x="570" y="100" width="265" height="62" rx="8" fill="#ffffff" stroke="#fda4af"/>
-    <text x="582" y="122" font-weight="600">Budget book</text>
-    <text x="582" y="142">reserve the worst case → call → settle</text>
-    <text x="582" y="156" fill="#6b7280">above its bound → the scope stops</text>
-
-    <rect x="850" y="100" width="245" height="62" rx="8" fill="#ffffff" stroke="#fda4af"/>
-    <text x="862" y="122" font-weight="600">Pins</text>
-    <text x="862" y="142">worker image id · code hashes</text>
-    <text x="862" y="156" fill="#6b7280">CLI version · effort ceiling</text>
-
-    <rect x="1110" y="100" width="240" height="62" rx="8" fill="#ffffff" stroke="#fda4af"/>
-    <text x="1122" y="122" font-weight="600">Scorer and grading rows</text>
-    <text x="1122" y="142">stay on the host</text>
-    <text x="1122" y="156" fill="#6b7280">never in the improver's inputs</text>
+    <rect x="50" y="126" width="252" height="78" rx="8" fill="#ffffff" stroke="#fda4af"/>
+    <text x="62" y="148" font-weight="600">Sealed Protocol</text>
+    <text x="62" y="168">tasks · encounters · feedback tier</text>
+    <text x="62" y="186" fill="#6b7280">sealed before the first test attempt</text>
+    <rect x="312" y="126" width="252" height="78" rx="8" fill="#ffffff" stroke="#fda4af"/>
+    <text x="324" y="148" font-weight="600">Family Split</text>
+    <text x="324" y="168">per task family, assigned by hash</text>
+    <text x="324" y="186" fill="#6b7280">a test read ends development</text>
+    <rect x="574" y="126" width="252" height="78" rx="8" fill="#ffffff" stroke="#fda4af"/>
+    <text x="586" y="148" font-weight="600">Budget Guard</text>
+    <text x="586" y="168">reserve worst case → call → settle</text>
+    <text x="586" y="186" fill="#6b7280">above its bound: the scope stops</text>
+    <rect x="836" y="126" width="252" height="78" rx="8" fill="#ffffff" stroke="#fda4af"/>
+    <text x="848" y="148" font-weight="600">Integrity Pins</text>
+    <text x="848" y="168">worker image id · code hashes · CLI</text>
+    <text x="848" y="186" fill="#6b7280">checked before every phase</text>
+    <rect x="1098" y="126" width="252" height="78" rx="8" fill="#ffffff" stroke="#fda4af"/>
+    <text x="1110" y="148" font-weight="600">Host-Side Scorer</text>
+    <text x="1110" y="168">the scorer and its grading rows</text>
+    <text x="1110" y="186" fill="#6b7280">never in the improver's inputs</text>
   </g>
 
-  <!-- ===== the loop ===== -->
-  <rect x="30" y="210" width="1340" height="330" rx="14" fill="#eff6ff" stroke="#93c5fd" stroke-width="2"/>
-  <text x="50" y="240" font-size="20" font-weight="700" fill="#1e3a8a">One task, three encounters</text>
-  <text x="50" y="262" fill="#1e3a8a">the same request comes back; what the improver adopts for it runs on the later encounters</text>
-
+  <!-- ===== Harness Package (W) ===== -->
+  <rect x="30" y="250" width="400" height="530" rx="14" fill="#f0fdf4" stroke="#86efac" stroke-width="2"/>
+  <text x="50" y="278" font-size="19" font-weight="700" fill="#14532d">Harness Package  (W)</text>
+  <text x="50" y="298" font-size="14" fill="#14532d">the only thing the improver may change;</text>
+  <text x="50" y="316" font-size="14" fill="#14532d">fixed shape, every file content-addressed</text>
   <g font-size="14" fill="#1f2937">
-    <!-- encounter 1 -->
-    <rect x="50" y="300" width="170" height="80" rx="10" fill="#ffffff" stroke="#60a5fa" stroke-width="2"/>
-    <text x="135" y="330" text-anchor="middle" font-weight="700">Encounter 1</text>
-    <text x="135" y="350" text-anchor="middle">the base harness</text>
-    <text x="135" y="368" text-anchor="middle" fill="#6b7280">first-pass reading</text>
-
-    <!-- accepted? -->
-    <polygon points="300,300 380,340 300,380 220,340" fill="#ffffff" stroke="#60a5fa" stroke-width="2"/>
-    <text x="300" y="336" text-anchor="middle" font-weight="600">accepted?</text>
-    <text x="300" y="354" text-anchor="middle" fill="#6b7280">one bit</text>
-    <line x1="220" y1="340" x2="222" y2="340" stroke="#334155"/>
-
-    <!-- yes: keep -->
-    <line x1="300" y1="380" x2="300" y2="460" stroke="#334155" stroke-width="1.5" marker-end="url(#arrow)"/>
-    <text x="308" y="420" fill="#334155">yes</text>
-    <rect x="215" y="460" width="170" height="54" rx="10" fill="#ffffff" stroke="#60a5fa"/>
-    <text x="300" y="483" text-anchor="middle" font-weight="600">keep the base</text>
-    <text x="300" y="502" text-anchor="middle" fill="#6b7280">no session, $0</text>
-
-    <!-- sent back: session -->
-    <line x1="380" y1="340" x2="430" y2="340" stroke="#334155" stroke-width="1.5" marker-end="url(#arrow)"/>
-    <text x="405" y="330" text-anchor="middle" fill="#334155">sent back</text>
-    <rect x="432" y="288" width="250" height="104" rx="10" fill="#ffffff" stroke="#60a5fa" stroke-width="2"/>
-    <text x="557" y="312" text-anchor="middle" font-weight="700">Improver session  R</text>
-    <text x="557" y="332" text-anchor="middle">reads the run's digest (no score),</text>
-    <text x="557" y="350" text-anchor="middle">the world's sources as counts,</text>
-    <text x="557" y="368" text-anchor="middle">the rejected items, the library;</text>
-    <text x="557" y="386" text-anchor="middle">edits a copy of the package</text>
-
-    <!-- checks -->
-    <line x1="682" y1="340" x2="730" y2="340" stroke="#334155" stroke-width="1.5" marker-end="url(#arrow)"/>
-    <rect x="732" y="300" width="150" height="80" rx="10" fill="#ffffff" stroke="#60a5fa"/>
-    <text x="807" y="326" text-anchor="middle" font-weight="600">$0 checks</text>
-    <text x="807" y="346" text-anchor="middle">static · literal scan</text>
-    <text x="807" y="364" text-anchor="middle">package tests · smoke</text>
-
-    <!-- try -->
-    <line x1="882" y1="340" x2="930" y2="340" stroke="#334155" stroke-width="1.5" marker-end="url(#arrow)"/>
-    <rect x="932" y="288" width="190" height="104" rx="10" fill="#ffffff" stroke="#60a5fa" stroke-width="2"/>
-    <text x="1027" y="312" text-anchor="middle" font-weight="700">try_task</text>
-    <text x="1027" y="332" text-anchor="middle">the candidate runs the</text>
-    <text x="1027" y="350" text-anchor="middle">same request for real;</text>
-    <text x="1027" y="368" text-anchor="middle">the new run beside the first</text>
-    <text x="1027" y="386" text-anchor="middle" fill="#6b7280">at most four tries</text>
-
-    <!-- that run accepted? -->
-    <line x1="1122" y1="340" x2="1170" y2="340" stroke="#334155" stroke-width="1.5" marker-end="url(#arrow)"/>
-    <polygon points="1255,300 1340,340 1255,380 1170,340" fill="#ffffff" stroke="#60a5fa" stroke-width="2"/>
-    <text x="1255" y="336" text-anchor="middle" font-weight="600">that run</text>
-    <text x="1255" y="354" text-anchor="middle" font-weight="600">accepted?</text>
-
-    <!-- not accepted: back to R -->
-    <path d="M 1255 300 L 1255 275 L 557 275 L 557 288" fill="none" stroke="#334155" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#arrow)"/>
-    <text x="900" y="270" text-anchor="middle" fill="#334155">not accepted and tries left: change the candidate and try again</text>
-
-    <!-- accepted: adopt -->
-    <line x1="1255" y1="380" x2="1255" y2="420" stroke="#334155" stroke-width="1.5" marker-end="url(#arrow)"/>
-    <text x="1263" y="405" fill="#334155">accepted</text>
-    <rect x="1130" y="420" width="220" height="54" rx="10" fill="#dcfce7" stroke="#22c55e" stroke-width="2"/>
-    <text x="1240" y="443" text-anchor="middle" font-weight="700">adopt for this task</text>
-    <text x="1240" y="462" text-anchor="middle" fill="#166534">the last accepted candidate</text>
-
-    <!-- none accepted: keep -->
-    <path d="M 1130 447 L 400 447 L 400 460" fill="none" stroke="#334155" stroke-width="1.5" stroke-dasharray="6 4"/>
-    <text x="765" y="440" text-anchor="middle" fill="#334155">none accepted: the base stays</text>
-
-    <!-- encounters 2 and 3 -->
-    <rect x="432" y="460" width="330" height="54" rx="10" fill="#ffffff" stroke="#60a5fa" stroke-width="2"/>
-    <text x="597" y="483" text-anchor="middle" font-weight="700">Encounters 2 and 3</text>
-    <text x="597" y="502" text-anchor="middle" fill="#6b7280">base or adopted package · steady-state reading</text>
-    <line x1="385" y1="487" x2="430" y2="487" stroke="#334155" stroke-width="1.5" marker-end="url(#arrow)"/>
-    <path d="M 1130 460 L 1130 487 L 764 487" fill="none" stroke="#334155" stroke-width="1.5" marker-end="url(#arrow)"/>
-
-    <!-- library -->
-    <rect x="800" y="460" width="300" height="54" rx="10" fill="#ffffff" stroke="#60a5fa"/>
-    <text x="950" y="483" text-anchor="middle" font-weight="600">Library of adoptions</text>
-    <text x="950" y="502" text-anchor="middle" fill="#6b7280">the adopted tree and its lesson</text>
-    <path d="M 1240 474 L 1240 500 L 1102 500" fill="none" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#arrow-dim)"/>
-    <path d="M 800 487 L 760 487" fill="none" stroke="#94a3b8" stroke-width="0"/>
-    <path d="M 850 460 L 850 400 L 557 400 L 557 392" fill="none" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#arrow-dim)"/>
+    <rect x="50" y="332" width="360" height="56" rx="8" fill="#ffffff" stroke="#86efac"/>
+    <text x="62" y="353" font-weight="600">Agent Loop</text>
+    <text x="62" y="373">the vendored seed behind one adapter</text>
+    <rect x="50" y="398" width="175" height="94" rx="8" fill="#ffffff" stroke="#86efac"/>
+    <text x="62" y="419" font-weight="600">Tools</text>
+    <text x="62" y="439">the seed ships one, and</text>
+    <text x="62" y="457">it writes nothing; every</text>
+    <text x="62" y="475">other tool is R's</text>
+    <rect x="235" y="398" width="175" height="94" rx="8" fill="#ffffff" stroke="#86efac"/>
+    <text x="247" y="419" font-weight="600">Hooks · six sites</text>
+    <text x="247" y="439">before/after model,</text>
+    <text x="247" y="457">before/after tool,</text>
+    <text x="247" y="475">after turn, on finish</text>
+    <rect x="50" y="502" width="175" height="94" rx="8" fill="#ffffff" stroke="#86efac"/>
+    <text x="62" y="523" font-weight="600">Prompts · Skills</text>
+    <text x="62" y="543">existing text may only</text>
+    <text x="62" y="561">grow; a skill loads</text>
+    <text x="62" y="579">on its trigger</text>
+    <rect x="235" y="502" width="175" height="94" rx="8" fill="#ffffff" stroke="#86efac"/>
+    <text x="247" y="523" font-weight="600">Config · Tests</text>
+    <text x="247" y="543">knobs inside K's ranges;</text>
+    <text x="247" y="561">the package's own tests</text>
+    <rect x="50" y="606" width="360" height="56" rx="8" fill="#ffffff" stroke="#86efac"/>
+    <text x="62" y="627" font-weight="600">Manifest</text>
+    <text x="62" y="647">registers tools, hooks, skills; checked for shape</text>
+    <rect x="50" y="672" width="360" height="90" rx="8" fill="#dcfce7" stroke="#22c55e"/>
+    <text x="62" y="693" font-weight="600" fill="#14532d">Guards, the improver's usual build</text>
+    <text x="62" y="713">a before-tool hook that blocks one call once,</text>
+    <text x="62" y="731">states its reasons, and lets the same call</text>
+    <text x="62" y="749">through when the agent sends it again</text>
   </g>
 
-  <!-- information flow from K: the bit and the rejected items -->
-  <path d="M 1230 162 L 1230 190 L 557 190 L 557 288" fill="none" stroke="#b91c1c" stroke-width="1.5" stroke-dasharray="3 5" marker-end="url(#arrow-red)"/>
-  <text x="760" y="200" text-anchor="middle" fill="#b91c1c" font-size="13">to R: accepted or sent back, and which checks were rejected (kinds and ids) — never an expected value</text>
-
-  <!-- ===== W and the runtime ===== -->
-  <rect x="30" y="570" width="650" height="260" rx="14" fill="#f0fdf4" stroke="#86efac" stroke-width="2"/>
-  <text x="50" y="600" font-size="20" font-weight="700" fill="#14532d">W  ·  harness package</text>
-  <text x="50" y="622" fill="#14532d">fixed shape, content-addressed; the only thing the improver may change</text>
+  <!-- ===== Isolated Worker ===== -->
+  <rect x="460" y="250" width="400" height="530" rx="14" fill="#f8fafc" stroke="#cbd5e1" stroke-width="2"/>
+  <text x="480" y="278" font-size="19" font-weight="700" fill="#0f172a">Isolated Worker</text>
+  <text x="480" y="298" font-size="14" fill="#334155">package code never runs in the control process;</text>
+  <text x="480" y="316" font-size="14" fill="#334155">every encounter and every probe runs here</text>
   <g font-size="14" fill="#1f2937">
-    <rect x="50" y="640" width="190" height="72" rx="8" fill="#ffffff" stroke="#86efac"/>
-    <text x="62" y="662" font-weight="600">Agent loop (seed)</text>
-    <text x="62" y="680">Stirrup, vendored under</text>
-    <text x="62" y="698">provenance, one adapter</text>
-    <rect x="255" y="640" width="200" height="72" rx="8" fill="#ffffff" stroke="#86efac"/>
-    <text x="267" y="662" font-weight="600">Tools</text>
-    <text x="267" y="680">the seed has one, writing nothing;</text>
-    <text x="267" y="698">every other tool is R's</text>
-    <rect x="470" y="640" width="190" height="72" rx="8" fill="#ffffff" stroke="#86efac"/>
-    <text x="482" y="662" font-weight="600">Hooks at six sites</text>
-    <text x="482" y="680">before/after model, before/after</text>
-    <text x="482" y="698">tool, after turn, on finish</text>
-    <rect x="50" y="728" width="190" height="72" rx="8" fill="#ffffff" stroke="#86efac"/>
-    <text x="62" y="750" font-weight="600">Prompts and skills</text>
-    <text x="62" y="768">existing text only grows;</text>
-    <text x="62" y="786">a skill loads on its trigger</text>
-    <rect x="255" y="728" width="200" height="72" rx="8" fill="#ffffff" stroke="#86efac"/>
-    <text x="267" y="750" font-weight="600">Config and tests</text>
-    <text x="267" y="768">knobs inside K's ranges;</text>
-    <text x="267" y="786">the package's own tests</text>
-    <rect x="470" y="728" width="190" height="72" rx="8" fill="#ffffff" stroke="#86efac"/>
-    <text x="482" y="750" font-weight="600">Manifest</text>
-    <text x="482" y="768">registers every tool, hook</text>
-    <text x="482" y="786">and skill; checked for shape</text>
+    <rect x="480" y="332" width="360" height="108" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+    <text x="492" y="353" font-weight="600">Container pinned by image id</text>
+    <text x="492" y="373">no network · read-only root · unprivileged user</text>
+    <text x="492" y="391">a standard-library runner, its sha256 checked</text>
+    <text x="492" y="409">on every load; effort capped at the ceiling;</text>
+    <text x="492" y="427">hard limits on calls, tokens, steps and time</text>
+    <rect x="480" y="450" width="360" height="110" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+    <text x="492" y="471" font-weight="600">Host Transcript  (E)</text>
+    <text x="492" y="491">every model call, tool call, hook decision,</text>
+    <text x="492" y="509">write and mark, written by the host; the</text>
+    <text x="492" y="527">package may only append lines marked as its own</text>
+    <text x="492" y="545">failures typed: defect · infrastructure · limit</text>
+    <rect x="480" y="570" width="360" height="80" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+    <text x="492" y="591" font-weight="600">Metered Gateway  → the model</text>
+    <text x="492" y="611">every call reserved at its worst case first,</text>
+    <text x="492" y="629">settled after; roles declared, effort capped</text>
+    <rect x="480" y="660" width="360" height="88" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+    <text x="492" y="681" font-weight="600">World Broker  → the business tools</text>
+    <text x="492" y="701">one path to the world, with a deny table;</text>
+    <text x="492" y="719">hooks receive it read-only; every call</text>
+    <text x="492" y="737">the agent makes lands in the transcript</text>
   </g>
 
-  <rect x="710" y="570" width="660" height="260" rx="14" fill="#f8fafc" stroke="#cbd5e1" stroke-width="2"/>
-  <text x="730" y="600" font-size="20" font-weight="700" fill="#0f172a">Runtime of one attempt</text>
-  <text x="730" y="622" fill="#0f172a">package code never runs in the control process</text>
+  <!-- ===== Revision Session (R) ===== -->
+  <rect x="890" y="250" width="480" height="530" rx="14" fill="#eff6ff" stroke="#93c5fd" stroke-width="2"/>
+  <text x="910" y="278" font-size="19" font-weight="700" fill="#1e3a8a">Revision Session  (R)</text>
+  <text x="910" y="298" font-size="14" fill="#1e3a8a">one bounded coding session per returned request;</text>
+  <text x="910" y="316" font-size="14" fill="#1e3a8a">it edits a copy of the package and must prove it live</text>
   <g font-size="14" fill="#1f2937">
-    <rect x="730" y="640" width="300" height="160" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
-    <text x="742" y="662" font-weight="600">Docker worker, pinned by image id</text>
-    <text x="742" y="684">no network · read-only root · unprivileged user</text>
-    <text x="742" y="702">a standard-library runner whose sha256</text>
-    <text x="742" y="720">the host checks on every load</text>
-    <text x="742" y="746" font-weight="600">Failures are typed</text>
-    <text x="742" y="764">candidate defect: scored as the world stands</text>
-    <text x="742" y="782">infrastructure: retried · hard limit: scored</text>
+    <text x="910" y="344" font-weight="600" fill="#1e3a8a">What it is told</text>
+    <rect x="910" y="352" width="215" height="72" rx="8" fill="#ffffff" stroke="#93c5fd"/>
+    <text x="922" y="372" font-weight="600">Acceptance Signal</text>
+    <text x="922" y="391">accepted or returned,</text>
+    <text x="922" y="409">once per attempt</text>
+    <rect x="1135" y="352" width="215" height="72" rx="8" fill="#ffffff" stroke="#93c5fd"/>
+    <text x="1147" y="372" font-weight="600">Rejected Checks</text>
+    <text x="1147" y="391">which message, row or record</text>
+    <text x="1147" y="409">failed, never the value</text>
+    <rect x="910" y="432" width="215" height="72" rx="8" fill="#ffffff" stroke="#93c5fd"/>
+    <text x="922" y="452" font-weight="600">Run Digest</text>
+    <text x="922" y="471">calls, hooks, writes, the</text>
+    <text x="922" y="489">final text; no score</text>
+    <rect x="1135" y="432" width="215" height="72" rx="8" fill="#ffffff" stroke="#93c5fd"/>
+    <text x="1147" y="452" font-weight="600">Source Inventory</text>
+    <text x="1147" y="471">the world's sources as</text>
+    <text x="1147" y="489">counts: read, or never</text>
+    <rect x="910" y="512" width="440" height="36" rx="8" fill="#ffffff" stroke="#93c5fd"/>
+    <text x="922" y="535" font-weight="600">Experience Library <tspan font-weight="400">— every adopted tree with its lesson</tspan></text>
 
-    <rect x="1050" y="640" width="300" height="72" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
-    <text x="1062" y="662" font-weight="600">Gateway → model</text>
-    <text x="1062" y="680">every call metered and reserved first;</text>
-    <text x="1062" y="698">effort capped; hard limits on calls, tokens</text>
-    <rect x="1050" y="728" width="300" height="72" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
-    <text x="1062" y="750" font-weight="600">Broker → the world  ·  Transcript E</text>
-    <text x="1062" y="768">a deny table; hooks get it read-only;</text>
-    <text x="1062" y="786">the host writes E, the package only marks</text>
+    <text x="910" y="574" font-weight="600" fill="#1e3a8a">What it must pass</text>
+    <rect x="910" y="582" width="215" height="90" rx="8" fill="#ffffff" stroke="#93c5fd" stroke-width="2"/>
+    <text x="922" y="602" font-weight="600">Live Probe</text>
+    <text x="922" y="621">runs the candidate on the same</text>
+    <text x="922" y="639">request, in the worker; at</text>
+    <text x="922" y="657">most four probes per task</text>
+    <rect x="1135" y="582" width="215" height="90" rx="8" fill="#ffffff" stroke="#93c5fd"/>
+    <text x="1147" y="602" font-weight="600">Preflight Checks</text>
+    <text x="1147" y="621">shape · one-task literal scan</text>
+    <text x="1147" y="639">package tests · a smoke run</text>
+    <text x="1147" y="657" fill="#6b7280">all at no cost</text>
+    <rect x="910" y="682" width="440" height="84" rx="8" fill="#dcfce7" stroke="#22c55e" stroke-width="2"/>
+    <text x="922" y="703" font-weight="600" fill="#14532d">Per-Task Adoption</text>
+    <text x="922" y="722">the last candidate whose probe came back accepted</text>
+    <text x="922" y="740">becomes this task's harness; none accepted, the base</text>
+    <text x="922" y="758">stays. No judge model, no person, no expected value.</text>
   </g>
 
-  <!-- vertical links between bands -->
-  <path d="M 135 540 L 135 570" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow-dim)"/>
-  <text x="145" y="560" fill="#64748b" font-size="13">every encounter and try runs the package in the runtime</text>
-  <path d="M 1027 540 L 1027 570" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow-dim)"/>
+  <!-- ===== arrows ===== -->
+  <line x1="430" y1="360" x2="460" y2="360" stroke="#334155" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="860" y1="468" x2="910" y2="468" stroke="#334155" stroke-width="1.5" marker-end="url(#a)"/>
+  <text x="885" y="460" text-anchor="middle" fill="#334155" font-size="12">digest</text>
+  <line x1="910" y1="627" x2="860" y2="627" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#ad)"/>
+  <text x="885" y="619" text-anchor="middle" fill="#64748b" font-size="12">probe</text>
+  <path d="M 1224 204 L 1224 228 L 1300 228 L 1300 352" fill="none" stroke="#b91c1c" stroke-width="1.5" stroke-dasharray="3 5" marker-end="url(#ar)"/>
+  <text x="1290" y="244" text-anchor="end" fill="#b91c1c" font-size="12">the verdict, and which checks failed — never an expected value</text>
+  <path d="M 1130 766 L 1130 802 L 230 802 L 230 780" fill="none" stroke="#15803d" stroke-width="2" marker-end="url(#ag)"/>
+  <text x="680" y="793" text-anchor="middle" fill="#15803d" font-size="13">adopted for this task only: the task's own Harness Package on its later encounters</text>
+  <path d="M 230 220 L 230 250" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#ad)"/>
+  <path d="M 660 220 L 660 250" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#ad)"/>
 </svg>

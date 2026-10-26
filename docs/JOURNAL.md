@@ -8,6 +8,14 @@
 
 ---
 
+## 2026-10-26 README 的两张图：组件与架构、一次提升如何发生；$0
+
+**做法（用户："这里面能够表达清楚架构设计和一次提升是怎么发生的吗？可以分两张图，组件和架构设计是一个，一次提升如何发生的是一个，然后里面的任务和概念需要稍微包装一下，不要太直白"；"不要包含任何参考其他仓库的信息进去"）。** 一个工作流先定词表与分镜：把代码里的名字（K / W / R / E、try_task、hold、items、sources、library、digest）包装成对外的概念名——Frozen Core、Harness Package、Revision Session、Host Transcript、Sealed Protocol、Family Split、Budget Guard、Integrity Pins、Host-Side Scorer、Run Digest、Source Inventory、Acceptance Signal、Rejected Checks、Experience Library、Preflight Checks、Live Probe、Per-Task Adoption、First Pass / Steady State、Isolated Worker、Metered Gateway、World Broker；分镜取 finance-v24 的季度税额预估一道，七格。两张手绘 SVG：`docs/assets/architecture.svg`（1400×820：K 一条横带五格；下面三栏 W / 隔离 worker / R，R 栏分"被告知什么"与"必须通过什么"，按题采用为绿色；箭头：包进 worker、轨迹→运行摘要、探针→worker、评分器→被退回的检查（红虚线：只给裁决与哪条检查，从不给期望值）、采用→这道题的包）和 `docs/assets/one-improvement.svg`（1400×620：第一行首次被退回（23,625，没开频道）→ 会话读运行（摘要、源清单"chat 没读过"、被退回的检查"预估邮件"，没有分数与期望值）→ 候选三组件（源覆盖守卫、路由守卫、预估工具）→ 实跑探针三次（手算 105,725 退回、工具不年化 23,448 退回、工具年化 105,792 接受），虚线回到会话再探；第二行按题采用 → 稳态两次 105,792 → 经验库，虚线回到下一个会话；底部宿主侧评分器一条，虚线指向首次与稳态）。浏览器里逐格放大核对过，无溢出。`feedback-levels.svg` 只换词（Feedback tiers、Rejected Checks、probe / returned）。
+
+**README（英 / 中）。** 改用这套词：开头一段、核心想法、架构表（K / W / R / E / 隔离 worker / 适配器各用概念名）、"The loop" 改为 "How one improvement happens"（图二在前，六步按 First Pass / Revision Session / Candidate and Preflight Checks / Live Probe / Per-Task Adoption / Steady State）、"What the improver is told" 改为 "Feedback tiers"；"sent back" 统一成 "returned"，"improver" 只留在代码路径里；中文对应修订会话、Harness 包、冻结核心、宿主轨迹、封存协议、预算守卫、完整性 pin、运行摘要、源清单、被退回的检查、经验库、预检、实跑探针、按题采用、首次 / 稳态、反馈档。发布稿的 mermaid 换成这两张图。README、图与发布稿里没有任何其它仓库的名字。两个 README commit（研究体例一版 `0d365cb` 与这一版）在本机，未推送，未合入 main。
+
+---
+
 ## 2026-10-26 评审与清理、把故事讲清：11 个读者 + 20 个反驳者 + 三个视角；$0
 
 **做法（用户："review 一遍代码和系统设计，清理冗余部分，凸显特色，结果不需要保证那么严谨，需要讲清楚设计和取得的提升；发布稿包括 README 的内容，里面需要包括特色的架构设计"）。** 一个工作流：11 个只读读者各读一个子系统或一组文档，报"冗余候选"（带 grep 证据与风险）和"特色"（绑到文件与函数）；候选去重后按规模取前 20 条，各由一个反驳者从代码（import、入口、阶段、runner 协议、测试）和记录（设计文档、配置、磁盘格式、规则）两个角度试着推翻，不确定即推翻；同时三个视角（系统架构、自改进 agent 研究、第一次来看仓库的工程师）各提炼特色，一个合成者核对代码路径与数字后给出特色排序、mermaid 架构图、README 的 "How it works" 与 "What it achieves" 两节和"故事怎么改"清单。127 条候选，20 条验证，12 条站住、8 条被推翻（配置、训练链设计、memory 库测试、ceiling/ 等都是记录或测试依赖）。
