@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "reharness: a self-improving agent rewrites its own harness, not its model, and proves each change live"
+abstract: "Bounded recursive self-improvement of an LLM agent's harness. When a repeated request comes back returned, a Revision Session reads the agent's own run, changes the Harness Package (tools, hooks, skills, prompts) and proves the change with a Live Probe on the same request; only an accepted probe is adopted, and only for that task. The session is never shown an answer. Measured on AutomationBench."
+authors:
+  - name: "The reharness Authors"
+repository-code: "https://github.com/e13ven-arch/reharness"
+url: "https://github.com/e13ven-arch/reharness"
+license: MIT
+version: 0.5.0
+date-released: "2026-10-27"
+keywords:
+  - self-improving agents
+  - recursive self-improvement
+  - agent harness
+  - harness engineering
+  - LLM agents
+  - continual learning
+  - AutomationBench

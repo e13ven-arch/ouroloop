@@ -8,6 +8,15 @@
 
 ---
 
+## 2026-10-27 宣传语、结果一节、可发现性：README 头部与仓库元数据；$0
+
+**宣传语（用户："An agent that gets the same request right the second time. 这个宣传语不对劲吧，看起来也不像 RSI 啊，也不符合 harness 啊，优化一下，然后最好能够确保别人能搜到我们的仓库，能够提升一下 star"）。** 一个工作流：四个角度（RSI、harness、证明步骤、用户所得）各出六条英中宣传语与一条 GitHub 描述；两个研究 agent（GitHub 侧：当前描述还是 ouroloop 时代的"LLM 改小决策模型"、topics 为空；同类主题的 topic 统计——llm、ai-agents、agentic-ai、recursive-self-improvement、harness-engineering、harness；README 侧：检索词出现位置、首段重写、star 缺口）；三位评委（研究者、平台工程师、双语编辑）按 RSI / harness / 真实 / 好记 / 中文地道各 0～3 分；一个合成者。10 个 agent。旧标语只说结果，没说谁在改、改什么，还会被读成"记住上次答案"。定稿 **"A self-improving agent rewrites its own harness, not its model, and proves each change live."** / **"自我改进的 agent：改写自己的 harness 而不是模型，每个改动都真跑一次来证明。"**（三位评委一致第一，与第二名"edit the harness, not the model"合并）；"recursive" 不进标语——修订会话自身不被回路改进，直接写 recursive 略有拔高——放进 GitHub 描述、README 首段与 CITATION 的 abstract 并带 "bounded"。落到四处：两份 README 第 5 行、BibTeX title、发布稿两个标题。
+
+**结果一节（用户："需要对比的是原始模型和用了我们框架之后的效果，只写分数提升就好，不要写多少次实验，成本可以计算进去，分数可以参考 automation bench 上面的数据"；随后"保留最终的效果和 automation 网站上原始模型跑出来的数据对比，框架本身的效果也是我们实现的，不用对比这个"）。** 一个 agent 查了 AutomationBench 官方榜单（zapier.com/benchmarks v1.0.6，2026-10-27 读取）：Claude Opus 5.5（默认回退，Max）总分 42.47%，finance 域最高 50.00%（Claude Sonnet 5.5 Max），Opus 5.5 的 finance 分未单列；榜单评私有、更难的题集，README 只承诺公开集与私有集"方向一致"。两份 README 的结果表改为：两行榜单参照（Opus 5.5 全域 42.47%、finance 最高 50.00%）+ 三行 reharness 最终效果（finance 50 道留出题稳态 68%，$184；finance 25 道 62.7%，$210；Marketing 23 道 54.3%，$153），不再列活动名与次数，base harness 那一列去掉；一句话注明题集不同、effort medium；榜单数与本地数不混排。
+
+**可发现性。** README 首段重写成含检索词的版本（self-improving agent harness、bounded recursive self-improvement、harness engineering），机制词汇不变；徽章行加一枚结果徽章（AutomationBench finance 64%→68% steady state，链到结果一节）；新增 `CITATION.cff`（GitHub 侧栏的 "Cite this repository"；version 0.5.0）；README 加 "Contributing / 参与贡献" 一节链到 CONTRIBUTING.md 与 Issues；pyproject 的 description 改用现在的词汇（去掉 improver、real try）、keywords 换成 topic 式的十个；社交预览图 `docs/assets/social-preview.svg` 与渲染好的 `social-preview.png`（1280×640，159 KB），供用户在仓库设置里上传。用户点头后执行了 `gh repo edit`（About 描述、Website 指向结果一节、18 个 topics；Discussions 没开），结果表按用户要求去掉"私有集 / 全域"字眼与题数，只留指标；推送并合入 main。工作流还建议了 "Why this is different" 三条（与核心想法重复，没加）、路线图一节（涉及付费运行的承诺，留给用户定）、Show HN / Reddit / 知乎发帖与 awesome 列表 PR（只能用户做）。
+---
+
 ## 2026-10-27 两张图重画：只画约束与边界、把规则画成门；$0
 
 **评审（用户："review 一下这几张图……我希望是相对严谨的逻辑，而不是过于务实的实验记录"；"有一些概念是不是没有用啊，例如 preflight check 这种特意写出来 0 花费在 RSI 的过程中有什么意义呢？"）。** 一个工作流：五个视角（逻辑闭环、实验记录味、概念必要性、冷读者、按形式化定义重画）各读图源与渲染图，94 条发现去重 79 条，前 8 条各由一个反驳者核对（7 条站住、1 条被驳），一个合成者给结论与重画规格；14 个 agent。结论：图一是混合体（骨架原理性，约三分之一文字是本仓库怎么跑的记录：K 带五格有三格是方法与记账、worker 栏五行容器配置、"usual build" 把结果画成组件、信息边界重复断言五次），图二是实验记录（活动名、effort、十个美元数、只画成功路径、规则成灰色脚注，"only the verdict comes back" 与 README 第 4 步矛盾，"Evidence: $23,625 → $105,792" 看起来自违"从不给期望值"）。闭环上拓扑闭合、逻辑靠脑补：评分器没有入边；探针 → 裁决 → 采用没画成链；Per-Task Adoption 画在 R 里面；W 只有一个框，没有 W₀ 与 W_t；首次被接受、探针全退回两个 else 分支都缺。Preflight Checks：整格是成本手段（无入出边、无行动者、无失败分支、用价格做标题），"at no cost" 在回路里没有逻辑内容；但其中的单题字面量扫描是真不变量——宿主拿会话看不到的 train 评分行扫候选改动、拒绝只属于一道题的值，是"学习惯不学答案"的强制机制，应从成本脚注升为 K 里的规则。概念分级与逐元素规格见当日的评审稿（scratchpad，未入库）。
@@ -16,7 +25,7 @@
 
 **图二 `docs/assets/one-improvement.svg`（1400×830，重画）。** 评分器一条横带在顶上（"every run passes through here"），运行向上进、裁决向下出：First Pass → 菱形 accepted?（yes → 终止点："finished: no session; later encounters run W₀, never revised"；returned →）Revision Session → Candidate W′ = W_t + diff → 琥珀格 Admissible?（fails → 回会话，不探）→ Live Probe → 评分器 → 菱形 accepted?（yes → Per-Task Adoption；returned → 菱形 probes left?：yes → 虚线内环回到会话，注明载荷 "the probe's run beside the first, with its verdict; change the candidate, probe again"；none left → W_t stays，进同一个采用框）→ Later Encounters（run W_t；each run scored, for the record）。采用框写两个分支与 "the bytes that ran are adopted"。经验库在流程外：采用 → tree + lesson → 库；库 → "read first by the next returned request's session" → 会话（与内环相交处跳线）。税额例子降为底部一条灰带，用会话自己的词：没有美元数、活动名、effort、搜索次数；最后一行列五条不变量。删掉："(finance-v24, effort max)"、"(at medium effort this task never held)"、全部美元数、"Run Digest: seven searches"、"only the verdict comes back"、"nothing can regress"、"Preflight Checks passed, at no cost"。两张图在 qlmanage 2000px 渲染与浏览器里逐区核对，无溢出。
 
-**README（英 / 中）同步。** 开头一段"冻结的是评分器、会话能被告知什么、包的契约、上界"；核心想法第一条改为结构性陈述（被接受的题不开会话、包从不被修订；采用只绑定一道题），去掉"学习不可能弄坏本来能过的题"；第四条从"三类守卫"改为"四条不变量"，划分 / 封存 / pin / 预算守卫降为"回路外面的测量"；架构表 K 行领以四条不变量，R 行加"每次探针前宿主按确定性规则判准入"；"一次提升如何发生"的引言改为"跟一道题的包、例子取自一条真实轨迹"，第 1 步去掉 "$0"，第 3 步"候选与预检"改为"候选与准入"（契约内、无单题字面量、确实改过；包测试与冒烟是同一点上的 fail-fast，不参与裁定）；两张图的 alt 文本重写；发布稿图二的 alt 同步。三个 README commit（`0d365cb`、`7599feb`、本条 `64f7e3f`）已推送到 origin（用户要求），未合入 main。
+**README（英 / 中）同步。** 开头一段"冻结的是评分器、会话能被告知什么、包的契约、上界"；核心想法第一条改为结构性陈述（被接受的题不开会话、包从不被修订；采用只绑定一道题），去掉"学习不可能弄坏本来能过的题"；第四条从"三类守卫"改为"四条不变量"，划分 / 封存 / pin / 预算守卫降为"回路外面的测量"；架构表 K 行领以四条不变量，R 行加"每次探针前宿主按确定性规则判准入"；"一次提升如何发生"的引言改为"跟一道题的包、例子取自一条真实轨迹"，第 1 步去掉 "$0"，第 3 步"候选与预检"改为"候选与准入"（契约内、无单题字面量、确实改过；包测试与冒烟是同一点上的 fail-fast，不参与裁定）；两张图的 alt 文本重写；发布稿图二的 alt 同步。三个 README commit（`0d365cb`、`7599feb`、本条 `64f7e3f`）已推送到 origin 并合入 main（merge commit `fa52cf2`，用户要求）。
 
 ---
 
