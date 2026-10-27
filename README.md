@@ -14,7 +14,7 @@
 
 reharness is a self-improving agent harness: bounded recursive self-improvement in which the agent's own model revises the harness the agent runs in, never the model. A business agent runs requests that repeat. When a request comes back returned, a **Revision Session** reads the agent's own run of it, changes the agent's **Harness Package** — its tools, hooks, skills, prompts — and proves the change with a **Live Probe**: the candidate runs the same request for real. Only a probe that comes back accepted is adopted, and only for that request (**Per-Task Adoption**). No person picks the change, no model judges it, and the session is never shown an answer: at most *accepted or returned* per attempt, and *which check failed*. Everything the session cannot touch is a **Frozen Core** — the scorer, what the session may be told, the package's contract, the bounds — and package code runs in an isolated worker. What the agent learns from its own runs is harness engineering — a guard, a tool, a prompt — not an answer.
 
-Built and measured on [AutomationBench](https://github.com/zapier/AutomationBench) (47 simulated SaaS tools, scored on the world state the agent leaves behind) with Claude Opus 5.5 as both the agent and the session, on a subscription budget. On the 50 finance test tasks the steady-state pass rate rose from 64% to 68% with no passing task lost; on train tasks a session learned, with no hint in its prompt, to open every unread source before writing and to derive figures by code.
+Built and measured on [AutomationBench](https://github.com/zapier/AutomationBench) (47 simulated SaaS tools, scored on the world state the agent leaves behind) with Claude Opus 5.5 as both the agent and the session, on a subscription budget. On the finance test tasks the steady-state pass rate rose from 64% to 68% with no passing task lost; on train tasks a session learned, with no hint in its prompt, to open every unread source before writing and to derive figures by code.
 
 <p align="center"><img src="docs/assets/architecture.svg" alt="Components and architecture: the Frozen Core K (Package Contract, Host-Side Scorer, Feedback Tier, Bounds) over the Harness Package W as W₀ and one W_t per task, the Isolated Worker as a boundary around the Host Transcript E, the Revision Session R with its admissibility gate and Live Probe, and Per-Task Adoption applied by the host" width="100%"></p>
 
@@ -91,13 +91,13 @@ The reference point is the model as it ships, on the official AutomationBench le
 
 | | Pass rate | Cost |
 |---|---|---|
-| Claude Opus 5.5 as published on the AutomationBench leaderboard, all domains (v1.0.6, private set) | 42.47% | — |
-| Best finance score on the leaderboard, any model (v1.0.6, private set) | 50.00% | — |
-| **Claude Opus 5.5 with reharness — finance, 50 held-out tasks, requests that repeat, steady state** | **68%** (+4.0 over the first pass, [−4.0, +12.0]; no passing task lost) | $184 |
-| Claude Opus 5.5 with reharness — finance, 25 held-out tasks, one evolved package for the domain | 62.7% (+8.0, [−4.0, +22.7]; each attempt 22% cheaper) | $210 |
-| Claude Opus 5.5 with reharness — Marketing, 23 held-out tasks, one evolved package for the domain | 54.3% (+13.0, [+2.2, +26.1]) | $153 |
+| Claude Opus 5.5 on the AutomationBench leaderboard | 42.47% | — |
+| Best finance score on the AutomationBench leaderboard | 50.00% | — |
+| **Claude Opus 5.5 with reharness — finance, requests that repeat, steady state** | **68%** (+4.0 over the first pass, [−4.0, +12.0]; no passing task lost) | $184 |
+| Claude Opus 5.5 with reharness — finance, one evolved package for the domain | 62.7% (+8.0, [−4.0, +22.7]; each attempt 22% cheaper) | $210 |
+| Claude Opus 5.5 with reharness — Marketing, one evolved package for the domain | 54.3% (+13.0, [+2.2, +26.1]) | $153 |
 
-The leaderboard scores a private set the benchmark describes as harder than the public one and promises only directional agreement between the two; the reharness rows are on the public set's held-out split, at effort medium. Costs are for the whole activity, in API-equivalent dollars.
+The leaderboard (v1.0.6) and these runs score different task sets at different settings, and the benchmark promises only directional agreement between them. Costs are for the whole activity, in API-equivalent dollars.
 
 What the loop learned: with the Acceptance Signal alone it corrected a third of the returned tasks and never touched a passing one; with the Rejected Checks and the Source Inventory it built generic mechanisms by itself — open every unread source before writing, derive figures by code — in independent sessions with none of those words in its prompt. The failures that remain are documented: ambiguities in a task's own documents that the signal cannot resolve, a world clock the agent is never told, and the benchmark's noise floor (10–17% of tasks flip between two runs of one package). Full records, every run: [docs/RESULTS.md](docs/RESULTS.md), [docs/JOURNAL.md](docs/JOURNAL.md).
 

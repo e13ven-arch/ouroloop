@@ -9,7 +9,7 @@
     <text x="80" y="398">the session is never shown an answer: accepted or returned, and which check failed</text>
   </g>
   <rect x="80" y="450" width="1120" height="100" rx="14" fill="#14532d"/>
-  <text x="110" y="492" font-size="26" fill="#bbf7d0">AutomationBench finance, 50 held-out tasks, Claude Opus 5.5 + reharness</text>
+  <text x="110" y="492" font-size="26" fill="#bbf7d0">AutomationBench finance, held-out tasks, Claude Opus 5.5 + reharness</text>
   <text x="110" y="530" font-size="27" font-weight="700" fill="#ffffff">64% → 68% steady state · no passing task lost · learned habits, never answers</text>
   <text x="80" y="606" font-size="20" fill="#64748b">self-improving agent harness · bounded recursive self-improvement · MIT · github.com/e13ven-arch/reharness</text>
 </svg>
