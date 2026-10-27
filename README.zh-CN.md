@@ -1,169 +1,166 @@
+<div align="center">
+
 # reharness
 
-[English](README.md) | 中文
+**同一个请求，第二次就做对的 agent。**
 
-**同一个请求，第二次就做对的 agent。** reharness 让业务 agent 处理反复到来的请求。一个请求被退回后，改进器读 agent 自己那次运行，改 agent 的 harness 包——工具、hook、技能、提示词——然后在同一个请求上真跑一次试它。只有被接受的那次 try 才会被采用，而且只对这个请求采用。没有人挑改动，没有模型当裁判，改进器也从来看不到答案：至多每次尝试一个"被接受 / 被退回"的比特，和哪条检查被退回。
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
+[![Benchmark: AutomationBench](https://img.shields.io/badge/benchmark-AutomationBench-555.svg)](https://github.com/zapier/AutomationBench)
+[![English](https://img.shields.io/badge/README-English-lightgrey.svg)](README.md)
 
-在 [AutomationBench](https://github.com/zapier/AutomationBench)（47 个模拟 SaaS 工具，按 agent 留下的世界状态评分）上实现和测量，agent 与改进器都是 Claude Opus 5.5，跑在订阅预算上。
+</div>
 
-## 怎么工作
+reharness 让业务 agent 处理反复到来的请求。一个请求被退回后，一个**修订会话**（Revision Session）读 agent 自己那次运行，改 agent 的 **Harness 包**——工具、hook、技能、提示词——再用一次**实跑探针**（Live Probe）证明这个改动：候选在同一个请求上真跑一次。只有被接受的探针才会被采用，而且只对这个请求采用。没有人挑改动，没有模型当裁判，会话也从来看不到答案：至多每次尝试一个"被接受 / 被退回"的信号，和*哪条检查没过*。会话碰不到的东西全部冻结——评分器、会话能被告知什么、包的契约、各项上界——包代码跑在隔离的 worker 里。
 
-```mermaid
-graph TD
-  subgraph K [K 冻结核心]
-    SPLIT[冻结的划分<br/>按任务族哈希分配]
-    PLAN[封存的计划<br/>题、遇到次数、反馈等级]
-    BOOK[预算账本<br/>调用前预留上限、事后结算、超限即停]
-    PINS[pin 住的<br/>worker 镜像 id、代码哈希、CLI 版本]
-    GRADE[评分器与评分行<br/>留在宿主]
-  end
-  subgraph W [W harness 包]
-    SEED[种子<br/>Stirrup 带 provenance vendored<br/>适配器、写入守卫、plan_changes]
-    PKG[类型化的包<br/>工具、六个站点的 hook、提示词、技能、配置<br/>内容寻址的 manifest]
-  end
-  subgraph RT [一次尝试的运行时]
-    WK[Docker worker<br/>无网络、只读根、非特权用户<br/>加载时核对 runner 的 sha256]
-    GW[网关<br/>计量的模型调用、effort 上限、硬限额]
-    BR[broker<br/>拒绝表、只读调用方]
-    TR[轨迹 E<br/>宿主写、只追加]
-  end
-  subgraph LOOP [一道题，三次遭遇]
-    E1[第 1 次：base]
-    ACC{被接受?}
-    KEEP[保留 base<br/>不开会话，$0]
-    SESS[改进器会话 R<br/>无标签 digest、源清单<br/>退回项的种类与 id、库]
-    CAND[候选包<br/>$0 的静态与单元检查]
-    TRY[try_task<br/>同一请求真跑一次<br/>至多四次]
-    BIT{这次被接受?}
-    ADOPT[采用最后一个被接受的候选]
-    E23[第 2、3 次<br/>用采用的包]
-    LIB[采用记录的库]
-    REP[报告<br/>首次对稳态<br/>按族配对 bootstrap]
-  end
-  SEED --> PKG
-  PKG --> WK
-  WK --> GW
-  WK --> BR
-  GW --> TR
-  BR --> TR
-  BOOK --> GW
-  PINS --> WK
-  SPLIT --> PLAN
-  PLAN --> E1
-  E1 --> ACC
-  ACC -- 是 --> KEEP
-  ACC -- 被退回 --> SESS
-  GRADE -. 一比特、退回项的种类与 id，从不带值 .-> SESS
-  TR --> SESS
-  LIB --> SESS
-  SESS --> CAND
-  CAND --> TRY
-  TRY --> BIT
-  BIT -- 没被接受、还有 try --> SESS
-  BIT -- 被接受 --> ADOPT
-  BIT -- 都没被接受 --> KEEP
-  ADOPT --> E23
-  KEEP --> E23
-  ADOPT --> LIB
-  E23 --> REP
-  BOOK -. 超限停掉这个臂 .-> SESS
-```
+在 [AutomationBench](https://github.com/zapier/AutomationBench)（47 个模拟 SaaS 工具，按 agent 留下的世界状态评分）上实现和测量，agent 与会话都是 Claude Opus 5.5，跑在订阅预算上。finance 的 50 道 test 题上稳态通过率从 64% 到 68%，没有一道通过题变坏；train 题上会话在提示词没有任何暗示的情况下，自己学会了写入前打开每个没读的源、数字由代码算。
 
-### 回路
+<p align="center"><img src="docs/assets/architecture.svg" alt="组件与架构：冻结核心 K（包契约、宿主侧评分器、反馈档、上界）之下，Harness 包 W 画成 W₀ 与每题一个的 W_t，隔离 worker 是围住宿主轨迹 E 的边界，修订会话 R 带准入门与实跑探针，按题采用由宿主执行" width="100%"></p>
 
-一份封存的计划点名题目和每道题遇到的次数（三次）。第 1 次用 base harness 跑。请求被接受，这道题就结束：不开会话、什么都不改、$0。被退回，改进器 R 得到一个绑定这道题的编码会话，它采用的东西在第 2、3 次运行。base harness 永远不动；题与题只通过一个"此前采用了什么"的库互相影响。报告读第 1 次的通过率（首次）对第 3 次的（稳态），按任务族配对、bootstrap 给区间。题与题并行，一道题的三次按顺序，每次都在记录里，重跑不会付两次钱。
+## 目录
 
-### 学习信号
+- [核心想法](#核心想法)
+- [架构](#架构)
+- [一次提升如何发生](#一次提升如何发生)
+- [反馈档](#反馈档)
+- [实验设计](#实验设计)
+- [结果](#结果)
+- [安装](#安装)
+- [运行](#运行)
+- [仓库结构](#仓库结构)
+- [引用](#引用)
+- [许可证](#许可证)
 
-R 的输入是：请求；一份没有评分的运行 digest（每次调用的路由和错误标记、出手的 hook 和它说的话、按路由的写入、最后的话）；请求世界里数据源的清单——每个服务有多少条，不含内容，标明 agent 读过 / 只有 R 自己的 hook 读过 / 没读过；库；以及计划允许的反馈。`feedback` 是封存计划的一个字段。`attempts` 是每次尝试一个比特：被接受或被退回。`items` 再加上每条失败检查的种类和它针对的对象（收件人、频道、行 id），从不带期望值；这些行由适配器写，评分行留在宿主。轨迹库只对 train 的会话和这道题自己的运行开放。
+## 核心想法
 
-### 接受规则
+- **按题采用，凭一次被接受的实跑探针。** 会话的候选真跑这个请求，回来的裁决决定；规则由宿主执行，没有裁判模型，没有人。被接受的题不开会话，它的包从不被修订；采用只绑定一道题，所以在一个请求上证明过的改动到不了别的题。题与题只通过一个记录此前采用的经验库互相影响。
+- **类型化、有界的学习信号。** 会话能学什么是封存协议的一个字段——反馈档：只有接受信号（每次尝试一个"被接受 / 被退回"），或者信号加上被退回检查的种类与对象（哪封邮件、哪一行——从不带值），再加一份只有条数的源清单。评分行从不离开宿主。
+- **会话学的是习惯，不是答案。** 在这个信号下，它在互不相通的会话里建出了同样的两个机制，提示词里没有这些词：第一次写入前打开每个没读的源的守卫，以及按读到的输入算数字的工具。采用的包里每一个计算工具都是会话写的，种子里一个都没有。
+- **四条不变量构成的冻结核心。** 宿主侧评分器，它的评分行从不离开宿主；反馈档，规定什么能过到会话那边；包契约——固定形状、字节数、数量与 effort 上限，以及"包里没有答案"：候选的改动行对着 train 评分行扫描，只属于一道题的值被拒；上界——探针、步数、token、时间、钱，会话无法放大。回路外面是测量，不是机制：按任务族划分、协议在第一次 test 尝试前封存并提交、worker 镜像与代码的完整性 pin、把每次模型调用先按最坏情况预留的预算守卫。
 
-R 改包的一个副本，调 `try_task`。宿主构建候选、跑免费检查（静态：形状、限额、对改动行扫一个只属于一道 train 题的值、声明对 diff 双向核对；单元：包自己的测试和 worker 里的冒烟），然后在同一请求上真跑一次。答复是新运行和第一次的并排，加上那个比特。没改过的候选被拒；每题四次 try。最后，最后一个 try 被接受的候选被这道题采用；都没被接受就保留 base。会话没交上来但 try 被接受的候选，由宿主从 diff 声明，照样算数。
+## 架构
 
-### 冻结核心与三类保护
+系统记作 S = (W, R, E; K)：会话可以改的 Harness 包 **W**、改它的修订会话 **R**、评判它所依据的宿主轨迹 **E**、约束这三者的冻结核心 **K**。
 
-K 是一个配置只能收紧的预设，连同划分哈希、worker 镜像 id、两个代码哈希和 CLI 版本一起冻结；启动检查遇到不一致就拒绝任何阶段。K 只保留三类保护。钱：每次模型调用先按最坏情况预留、事后结算；结果未知按上限计；量到超过上限就停掉该作用域。泄漏：划分按任务族哈希分配并冻结；计划在第一次 test 尝试前封存、ref 提交；读过 test 就结束开发。正确性：pin 住的镜像与代码；失败分成候选自己的缺陷、基础设施、硬限额三类，只有基础设施重试。
+| 组件 | 是什么 | 在哪 |
+|---|---|---|
+| **K** 冻结核心 | 四条不变量——宿主侧评分器与评分行，从不离开宿主；反馈档；包契约，含单题字面量扫描；上界——装在配置只能收紧的预设里，连同划分哈希、worker 镜像 id、两个代码哈希和 CLI 版本（完整性 pin）、封存协议、预算守卫一起冻结 | `reharness/activity/presets.py`、`checks.py`；`reharness/evaluate/repeat.py`、`budget.py` |
+| **W** Harness 包 | 固定形状的目录，每个文件内容寻址：agent 循环（Stirrup，带 provenance 文件 vendored 在一个适配器后面）、工具、六个站点的 hook、提示词、技能、配置、测试、一个 manifest；形状、字节数、数量上限和 effort 上限来自 K | `reharness/harness/` |
+| **R** 修订会话 | 每道退回题一个有界的编码会话：读运行摘要、源清单、被退回的检查和经验库；改包的副本；每次探针前宿主按确定性规则判候选是否准入；实跑探针（`try_task`）真跑；至多四次 | `reharness/improver/repeat.py`、`prompts/repeat.md` |
+| **E** 宿主轨迹 | 宿主写的每次尝试的记录（调用、hook、写入、标记）、预算账本、事件；包只能加标明是自己写的行 | `reharness/runtime/trace.py`、`records.py` |
+| 隔离 worker | 一次尝试：按镜像 id pin 住的 Docker 容器（无网络、只读根、非特权用户、标准库 runner，宿主每次加载核对 sha256）；到模型的计量网关；到业务工具的带拒绝表的世界 broker；hook 拿到的是只读的 | `reharness/runtime/` |
+| 适配器 | 基准的任务、工具与官方评分器；回路需要的视图——被退回检查的种类与标识、源清单的条数 | `reharness/adapters/automationbench.py` |
 
-### 包
+种子带四个通用 hook（台账、第一次写入前的 triage、日期锚、收尾核对）和一个不写任何东西的工具 `plan_changes`。六个 hook 站点是模型调用前后、工具调用前后、每轮之后、收尾时；hook 以固定形状回答（block、modify、feedback、pushback），而*守卫*——在工具调用前拦住一次、给出理由、同一调用重发即放行的 hook——是会话手里最便宜的组件。
 
-harness 包是一个固定形状的目录：agent 循环、带 provenance 文件 vendored 的 Stirrup、工具、六个站点的 hook、提示词、技能、配置、测试和一个 manifest，每个文件内容寻址。种子只带四个通用 hook（台账、第一次写入前的 triage、日期锚、收尾核对）和一个不写任何东西的工具 `plan_changes`；采用的包里每一个计算或匹配工具都是 R 写的。文件数、字节数、hook 与工具数、effort 上限都来自 K。
+## 一次提升如何发生
 
-### 运行时
+<p align="center"><img src="docs/assets/one-improvement.svg" alt="一次提升如何发生：每次运行都经过宿主侧评分器；首次被接受即结束、从不修订，被退回则开一个修订会话，它改出候选、宿主准入后实跑探针；被接受的探针由宿主按题采用，都没被接受则 W_t 不变；之后的几次用 W_t 跑；教训进经验库，题与题之间唯一的通道" width="100%"></p>
 
-包代码从不在控制进程里跑。它跑在按镜像 id pin 住的 Docker worker 里：无网络、只读根、非特权用户、一个标准库写的 runner，宿主每次加载都核对它的 sha256。包只能经计量网关（effort 封顶、硬限额）碰模型，只能经带拒绝表的 broker 碰世界；hook 拿到的是只读 broker。轨迹由宿主写，包只能加标明是自己写的行。
+一份封存协议点名题目和每道题遇到的次数（三次）。图里跟的是一道题的包走过的各步，每道题都一样；图下方的例子是一个季度税额预估请求，取自一条真实轨迹（finance-v24，effort max）。
 
-## 做到了什么
+1. **首次。** 第 1 次用 base 包跑。被接受的请求到此结束：不开会话，它的包从不被修订。
+2. **修订会话。** 被退回的请求给 R 一个绑定这道题的编码会话。它读运行摘要——每次调用的路由和错误标记、出手的 hook 和它说的话、按路由的写入、最后的话；没有评分——源清单（每个源：agent 读过 / 只有会话自己的 hook 读过 / 没读过）、协议允许的被退回检查、经验库。
+3. **候选与准入。** R 改包的一个副本；候选是这道题的包加上 diff，按 diff 算，不按会话的说法算。任何探针之前，宿主按确定性规则、不问模型判准入：在包契约之内（形状与限额、manifest 对 diff 双向核对）、没有单题字面量（改动行对着 train 评分行扫描）、确实改过（同一棵树不探两次）。包自己的测试和 worker 里的冒烟放在同一个点上做 fail-fast，不参与裁定。
+4. **实跑探针。** 候选在同一请求上真跑一次。答复是新运行和第一次的并排，加上裁决——items 档下还有这次没过的检查。没改过的候选被拒，改过可以再探；每题四次。
+5. **按题采用。** 最后一个探针被接受的候选被这道题采用；都没被接受就保留 base。会话没交上来但探针被接受的候选，由宿主从 diff 声明，照样算数。采用的树和教训进经验库。
+6. **稳态。** 第 2、3 次用这道题自己的包跑。报告读第 1 次（首次）对第 3 次（稳态），按任务族配对、bootstrap 给区间。
 
-**数字。** AutomationBench 的 50 道 finance test 题，每次尝试一个比特，计划在第一次 test 尝试前封存并提交：首次 32/50（64%），稳态 34/50（68%）。18 道被退回，3 道由被接受的 try 修好并在两次再遇里站住；32 道被接受的题没开会话；没有一道通过题因学习变坏（base 自己在第 2 次翻了 32 道里的 4 道，第 3 次翻回 3 道）。配对差 +4.0 分 [−4.0, +12.0]，50 个族，在区间内。$184，并发 4 跑 3 小时 36 分。
+题与题并行，一道题的三次按顺序，每次都在记录里，重跑不会付两次钱。
 
-**R 自己学出的东西。** 告诉它哪条检查被退回、世界里有哪些源之后，R 在互不相通的会话里建出了同样的两个机制，提示词里没有这些词：一个在打开所有没读的源之前拦住第一次写入的 hold（四个会话），一个按读到的输入算派生数字的工具（三个活动）。两道数字取决于聊天频道里一条更正的 train 题上，agent 在再遇时读了频道、算出了正确的数：0/2 → 2/2，$11。
+## 反馈档
 
-**effort = max。** 一个会话把整个机制建全——覆盖源的 hold、送去工具的 hold、一个 `tax_estimate` 工具——税额题在两次再遇里都算对并站住，medium 下三个活动都没做到；代价五到七倍（三道题 $61）。max 下的 test 抽样跑了四道就被预算保护停住：一次调用 400,793 输入 token，超过 400,000 的上限。
+<p align="center"><img src="docs/assets/feedback-levels.svg" alt="四个反馈档：none、outcome、attempts、items" width="100%"></p>
 
-**费用。** medium 下三次遭遇约 $3.70/题；退单题的会话一比特时 $1～4、退回项时 $3～6、max 时 $18～25。
+`feedback` 是封存协议的一个字段，所以每个活动报的数都说明了会话拿到了什么。量出来更差的两个档——裁判模型只凭运行判断——留作对比。
 
-**边界。**
-- test 上 +4.0 分在区间内；18 道退单修 3 道，train 上 5 道修 3 道。
-- test 上没跑对照臂，用 base 自己的翻转代替。
-- 薄信号分不出的文档歧义，以及从不告诉 agent 的世界时钟。
-- 10～17% 的噪声底：同一个包跑两次有这么多题翻转。
-- max 的抽样只跑到四道。
+## 实验设计
 
-**这条回路之前。** 八个活动（约 $1,150）在带确认翻转的留出筛选下找跨不同工作流泛化的包；四次封存 final 读到 +13.0（Marketing，显著）、+4.3、+8.0、+4.0（finance，区间内），之后没有东西高于噪声底。改变主线的诊断：基准的 150 道 train 题是 150 个不同的工作流，而真实工作是同一个模式换参数反复来。[docs/RESULTS.md](docs/RESULTS.md) 有每个活动。
+- **基准。** AutomationBench 的 finance 域：100 道公开题，每道是跨模拟 SaaS 工具（表格、邮件、聊天、账务系统）的业务流程，按运行后世界状态上的断言评分，断言全部成立才算通过。公开题集上的本地分数不是榜单分数。
+- **划分。** 按任务族哈希分到 train 与 test（50 / 50）并冻结；划分哈希是 K 的一部分。
+- **封存。** 一份协议——题目、次数、臂、反馈档、base 版本——封存成一个文件，ref 在第一次 test 尝试前提交。会话只能打开 train 的会话和这道题自己的运行，轨迹库拒绝其他的。
+- **臂。** 学习臂按题采用；对照臂每次跑 base。报的数是学习臂的首次对稳态，按题配对、按族重采样；base 自己的翻转率放在旁边（同一个包跑两次有 10～17% 的题翻转）。
+- **模型与费用。** agent 与会话都是经无头 Claude Code 调用的 Claude Opus 5.5，所有臂同一 effort（未注明即 medium；`automationbench_v2_max` 把两臂放到 max）。费用是订阅上的名义 API 等价美元；预算守卫把每次模型调用先按最坏情况预留。
+- **报数时披露什么。** 划分、反馈档、effort、样本量、配对差与区间、费用。
 
-## 快速上手
+## 结果
 
-Python 3.11 或更新，macOS 或 Linux（Windows 用 WSL）。
+| 活动 | 题 | 反馈 | 首次 → 稳态 | 发生了什么 | 费用 |
+|---|---|---|---|---|---|
+| finance-v16（预演） | 20 train | 一比特 | 15/20 → 18/20 | 5 道退回题修好 3 道且站住；被接受的题没动 | $51 |
+| **finance-v18** | **50 test** | 一比特 | **32/50（64%）→ 34/50（68%）**，+4.0 [−4.0, +12.0] | 18 道退回，3 道修好并站住，没有一道通过题变坏（base 自己第 2 次翻了 32 道里的 4 道，第 3 次翻回 3 道） | $184 |
+| finance-v20 | 2 train | items | 0/2 → 2/2 | 两个独立会话建出同一个"没读的源"守卫；agent 随后读了聊天频道，算出 13,162.5 和 105,792 | $11 |
+| finance-v24（effort max） | 3 train | items | 1/3 → 2/3 | 一个会话建了源覆盖守卫、路由守卫和一个预估工具；税额题两次都 105,792，medium 下三个活动都没做到；代价 5～7 倍 | $61 |
+
+依次说明：按题采用只留下实跑探针被接受的，所以学习从没让通过题退步；只有一比特时会话瞄不准没过的那一项（test 上 18 道修 3 道，12 道改在别处）；有被退回的检查和源清单之后它自己找到通用机制；max 下一个会话就找到。剩下的失败都记清了：薄信号分不出的任务文档歧义、从不告诉 agent 的世界时钟、基准的噪声底。全部活动——包括此前留出筛选下的八个（四次封存 final：Marketing +13.0 显著；finance +4.3、+8.0、+4.0 区间内；之后没有高于噪声底的）——见 [docs/RESULTS.md](docs/RESULTS.md)，每次运行的读数见 [docs/JOURNAL.md](docs/JOURNAL.md)。
+
+## 安装
+
+Python 3.11 或更新，macOS 或 Linux（Windows 用 WSL）；worker 需要 Docker。
 
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev,automationbench]"        # 装上 `reharness` 命令
 pytest -q                                      # 离线：不联网、不调模型
+docker build --provenance=false -f docker/worker.Dockerfile -t reharness-worker:py3.12 .
 ```
 
-clone AutomationBench 并把 `[bench] upstream_path` 指向它（要装什么见 [examples/automationbench/README.md](examples/automationbench/README.md)），构建 worker 镜像，然后在新工作区用 5 道 train 题跑重复流。前两条命令不调模型：
+clone AutomationBench 并把 `[bench] upstream_path` 指向它；适配器要 import 什么见 [examples/automationbench/README.md](examples/automationbench/README.md)。agent 与会话经本机 Claude 订阅登录（`claude auth login`）下的无头 Claude Code 调用；启动检查拒绝非订阅登录。
+
+## 运行
+
+快速上手在新工作区用 5 道 train 题跑回路；前两条命令不调模型。
 
 ```bash
-docker build --provenance=false -f docker/worker.Dockerfile -t reharness-worker:py3.12 .
 reharness bench --config examples/automationbench/quickstart-repeat.toml --phase smoke --checks-only   # $0：划分、评分器契约、输入审计、种子的字面量
-reharness freeze --config examples/automationbench/quickstart-repeat.toml                              # $0：K、预算根、封存的计划；打印要加进 [rsi] 的行
-reharness bench --config examples/automationbench/quickstart-repeat.toml --phase repeat --arm learn    # 5 道 × 3 次，退单题各开一个 R 会话：约 $15～25
+reharness freeze --config examples/automationbench/quickstart-repeat.toml                              # $0：K、预算根、封存协议；打印要加进 [rsi] 的行
+reharness bench --config examples/automationbench/quickstart-repeat.toml --phase repeat --arm learn    # 5 道 × 3 次，退回题各开一个修订会话：约 $15～25
 reharness bench --config examples/automationbench/quickstart-repeat.toml --phase report                # $0
 ```
 
-actor（`[model]`）与 R（`[research_model]`）经本机 Claude 订阅登录（`claude auth login`）下的无头 Claude Code 调用，每次都是空目录、无工具的新 `claude -p`；启动检查拒绝非订阅登录。预设把 effort 封顶在 medium，`automationbench_v2_max` 把两臂放到 max。费用是名义 API 等价美元，不是账单。
-
 | 命令 | 做什么 |
 |---|---|
-| `reharness bench --config <cfg> --phase smoke --checks-only` | 上游身份、冻结的划分、评分器契约、输入审计、种子的字面量扫描；不调模型 |
-| `reharness freeze --config <cfg>` | K、预算根与封存的计划；打印要加的 `[rsi]` 行 |
-| `reharness bench --config <cfg> --phase repeat --arm learn\|control [--until task-K]` | 重复流；学习臂给每道退单题采用一个包，对照臂每次跑 base |
-| `reharness bench --config <cfg> --phase report` | 从磁盘记录出报告；不调模型 |
+| `reharness bench --config <cfg> --phase smoke --checks-only` | 上游身份、冻结的划分、评分器契约、输入审计、种子的字面量扫描 |
+| `reharness freeze --config <cfg>` | K、预算根与封存协议；打印要加的 `[rsi]` 行 |
+| `reharness bench --config <cfg> --phase repeat --arm learn\|control [--until task-K]` | 重复流；学习臂按退回题采用，对照臂每次跑 base |
+| `reharness bench --config <cfg> --phase report` | 从磁盘记录出报告 |
 
-配置点名一个预设（`[harness] preset`），只能收紧它；`[repeat]` 表见 [docs/design/EVALUATE.md](docs/design/EVALUATE.md) §6b。`finance-v14.toml`～`finance-v25.toml` 是实测活动，文件头列了步骤、费用和用途；它们的工作区放本机的、git 忽略的运行记录。换领域：复制 quickstart，改 `[bench] domain`，给新的 `[workspace] root` 和 `[rsi] scope_id`，在为 test 封存并提交计划之前保持 `[repeat] split = "train"`。
+| `[repeat]` 选项 | 行为 |
+|---|---|
+| `split = "train" \| "test"` | 协议点名哪个划分；test 协议在第一次 test 尝试前封存并提交 |
+| `tasks = [...]` 或 `max_tasks = N` | 点名的题，或流序的前 N 道 |
+| `encounters = 3` | 每道题遇到几次 |
+| `feedback = "attempts" \| "items" \| "outcome" \| "none"` | 反馈档：会话被告知什么（见上） |
+| `max_probes = 4` | 每题实跑探针次数 |
+| `arms = ["learn", "control"]`、`concurrency = 4` | 要跑的臂；题并行数（机器设置，不进协议） |
 
-## 代码结构
+配置点名一个预设（`[harness] preset`），只能收紧它（[docs/design/CONTRACTS.md](docs/design/CONTRACTS.md) §9、[docs/design/EVALUATE.md](docs/design/EVALUATE.md) §6b）。`finance-v14.toml`～`finance-v25.toml` 是实测活动；工作区放本机的、git 忽略的运行记录。换领域：复制 quickstart，改 `[bench] domain`，给新的 `[workspace] root` 和 `[rsi] scope_id`，在为 test 封存并提交协议之前保持 `[repeat] split = "train"`。
+
+## 仓库结构
 
 | 路径 | 内容 |
 |---|---|
 | `reharness/activity/` | 配置与预设到 K、工作区、阶段（`phases.py`：`repeat`）、启动检查、报告、CLI |
-| `reharness/improver/repeat.py`、`prompts/repeat.md` | 逐题回路：无标签 digest、`try_task`、接受比特、退回项、源清单、库 |
-| `reharness/evaluate/` | 冻结的划分、尝试与结果、封存的计划（`repeat.py`、`final.py`）、配对 bootstrap、预算账本、发布 |
+| `reharness/improver/repeat.py`、`prompts/repeat.md` | 逐题回路：无标签的运行摘要、实跑探针（`try_task`）、接受信号、被退回的检查、源清单、经验库 |
+| `reharness/evaluate/` | 冻结的划分、尝试与结果、封存协议（`repeat.py`、`final.py`）、配对 bootstrap、预算账本、发布 |
 | `reharness/harness/` | 类型化的包：组件种类、manifest、形状与字面量检查、vendored 的种子（`seeds/stirrup/`） |
 | `reharness/runtime/` | 一次尝试：网关、broker、Docker worker 与 runner、出口、轨迹 |
-| `reharness/adapters/automationbench.py` | 任务、业务工具、官方评分器、退回项与源清单的视图 |
-| `reharness/improver/`（其余）、`reharness/memory/`、`reharness/train/` | 早先的留出筛选回路（轮次、验收阶梯、筛选、前沿）、memory sidecar（实测预设里都关着）、训练栈（没跑过）；留作记录 |
+| `reharness/adapters/automationbench.py` | 任务、业务工具、官方评分器、被退回检查与源清单的视图 |
+| `docs/` | 设计（`DESIGN.md`、`design/`）、计划、结果、日志、发布稿（中文为主） |
+| `reharness/improver/`（其余）、`reharness/memory/`、`reharness/train/` | 早先的留出筛选回路、memory sidecar（实测预设里都关着）、训练栈（没跑过）；留作记录 |
 
-## 文档
+## 引用
 
-设计文档是中文的；架构由 README 自己讲。
-
-- [docs/DESIGN.md](docs/DESIGN.md)：架构与每次实测逼出的修订；§6.23～§6.24 重复流、退回项、源清单、R 造工具。
-- [docs/PLAN.md](docs/PLAN.md)：现在在哪、规则、等用户定的事。
-- [docs/RESULTS.md](docs/RESULTS.md) 与 [docs/JOURNAL.md](docs/JOURNAL.md)：结果，以及每次改动与运行带数字的日志，倒序。
-- [docs/design/](docs/design/README.md)：模块设计与接口；[docs/history/](docs/history/)：计划、分析、框架调研与发布稿。
+```bibtex
+@software{reharness2026,
+  title   = {reharness: an agent that gets the same request right the second time},
+  author  = {The reharness Authors},
+  year    = {2026},
+  url     = {https://github.com/e13ven-arch/reharness},
+  note    = {Bounded self-improvement of an agent's harness package, measured on AutomationBench}
+}
+```
 
 ## 许可证
 
-MIT，见 [LICENSE](LICENSE)。Stirrup 种子按它自己的许可证 vendored 在 `reharness/harness/seeds/stirrup/vendor/stirrup/LICENSE`。
+MIT，见 [LICENSE](LICENSE)。Stirrup 种子按它自己的许可证 vendored 在 `reharness/harness/seeds/stirrup/vendor/stirrup/LICENSE`；AutomationBench 保留上游许可证。

@@ -1,6 +1,6 @@
 # Announcement draft (2026-10-26) — not published
 
-The public note for the open-source release of reharness, written on 2026-10-26. The user decides whether and when it goes out. Every number is on record (docs/RESULTS.md, docs/JOURNAL.md). The Chinese version follows the English one. The architecture section is the README's; the diagram renders on GitHub.
+The public note for the open-source release of reharness, written on 2026-10-26. The user decides whether and when it goes out. Every number is on record (docs/RESULTS.md, docs/JOURNAL.md). The Chinese version follows the English one. The architecture figures are the README's two (`docs/assets/architecture.svg`, `docs/assets/one-improvement.svg`); attach them wherever the note is posted.
 
 ---
 
@@ -19,66 +19,9 @@ reharness is an open-source loop that does this for a business agent on Zapier's
 
 ### How it works
 
-```mermaid
-graph TD
-  subgraph K [K frozen core]
-    SPLIT[frozen splits<br/>assigned per task family by hash]
-    PLAN[sealed plan<br/>tasks, encounters, feedback level]
-    BOOK[budget book<br/>reserve the bound, settle after, a breach stops the scope]
-    PINS[pins<br/>worker image id, code hashes, CLI version]
-    GRADE[scorer and grading rows<br/>stay on the host]
-  end
-  subgraph W [W harness package]
-    SEED[seed<br/>Stirrup vendored under provenance<br/>adapter, write guard, plan_changes]
-    PKG[typed package<br/>tools, hooks at six sites, prompts, skills, config<br/>content-addressed manifest]
-  end
-  subgraph RT [runtime for one attempt]
-    WK[Docker worker<br/>no network, read-only root, unprivileged<br/>runner sha256 checked on load]
-    GW[gateway<br/>metered model calls, effort cap, hard limits]
-    BR[broker<br/>deny table, read-only callers]
-    TR[transcript E<br/>host-written, append-only]
-  end
-  subgraph LOOP [one task, three encounters]
-    E1[encounter 1 on the base]
-    ACC{accepted?}
-    KEEP[keep the base<br/>no session, $0]
-    SESS[improver session R<br/>label-free digest, sources inventory<br/>rejected kinds and ids, library]
-    CAND[candidate package<br/>static and unit checks at $0]
-    TRY[try_task<br/>a real run on the same request<br/>at most four tries]
-    BIT{that run accepted?}
-    ADOPT[adopt the last accepted candidate]
-    E23[encounters 2 and 3<br/>on the adopted package]
-    LIB[library of adoptions]
-    REP[report<br/>first pass vs steady state<br/>family-paired bootstrap]
-  end
-  SEED --> PKG
-  PKG --> WK
-  WK --> GW
-  WK --> BR
-  GW --> TR
-  BR --> TR
-  BOOK --> GW
-  PINS --> WK
-  SPLIT --> PLAN
-  PLAN --> E1
-  E1 --> ACC
-  ACC -- yes --> KEEP
-  ACC -- sent back --> SESS
-  GRADE -. one bit, rejected kinds and ids, never a value .-> SESS
-  TR --> SESS
-  LIB --> SESS
-  SESS --> CAND
-  CAND --> TRY
-  TRY --> BIT
-  BIT -- not accepted, tries left --> SESS
-  BIT -- accepted --> ADOPT
-  BIT -- none accepted --> KEEP
-  ADOPT --> E23
-  KEEP --> E23
-  ADOPT --> LIB
-  E23 --> REP
-  BOOK -. a breach stops the arm .-> SESS
-```
+<p align="center"><img src="../assets/architecture.svg" alt="Components and architecture: the Frozen Core K over the Harness Package W, the Isolated Worker and the Revision Session R" width="100%"></p>
+
+<p align="center"><img src="../assets/one-improvement.svg" alt="How one improvement happens: every run through the Host-Side Scorer, the first pass accepted or returned, one Revision Session, an admitted candidate under Live Probe, Per-Task Adoption by the host, later encounters on W_t" width="100%"></p>
 
 A sealed plan names the tasks and how many times each is met (three). Encounter 1 runs the base harness; an accepted request is finished at $0. A sent-back request gives the improver one coding session bound to that task: it reads the run's digest (calls, hooks, writes, the final text — no score), the inventory of the world's sources, the rejected items the plan allows, and the library of earlier adoptions; it edits a copy of the package; the host runs the free static and unit checks and then `try_task` executes the same request once for real. The answer is the new run beside the first, plus the bit. At most four tries; the last candidate whose try was accepted is adopted and runs on encounters 2 and 3. The report reads the pass rate at encounter 1 against encounter 3, paired by task family with a bootstrap interval.
 
