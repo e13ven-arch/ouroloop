@@ -21,7 +21,7 @@ reharness is an open-source loop that does this for a business agent on Zapier's
 
 <p align="center"><img src="../assets/architecture.svg" alt="Components and architecture: the Frozen Core K over the Harness Package W, the Isolated Worker and the Revision Session R" width="100%"></p>
 
-<p align="center"><img src="../assets/one-improvement.svg" alt="How one improvement happens: a quarterly tax estimate request met three times" width="100%"></p>
+<p align="center"><img src="../assets/one-improvement.svg" alt="How one improvement happens: every run through the Host-Side Scorer, the first pass accepted or returned, one Revision Session, an admitted candidate under Live Probe, Per-Task Adoption by the host, later encounters on W_t" width="100%"></p>
 
 A sealed plan names the tasks and how many times each is met (three). Encounter 1 runs the base harness; an accepted request is finished at $0. A sent-back request gives the improver one coding session bound to that task: it reads the run's digest (calls, hooks, writes, the final text — no score), the inventory of the world's sources, the rejected items the plan allows, and the library of earlier adoptions; it edits a copy of the package; the host runs the free static and unit checks and then `try_task` executes the same request once for real. The answer is the new run beside the first, plus the bit. At most four tries; the last candidate whose try was accepted is adopted and runs on encounters 2 and 3. The report reads the pass rate at encounter 1 against encounter 3, paired by task family with a bootstrap interval.
 

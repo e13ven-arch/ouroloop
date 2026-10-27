@@ -1,114 +1,129 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 620" font-family="Inter, Helvetica, Arial, sans-serif" font-size="14">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 830" font-family="Inter, Helvetica, Arial, sans-serif" font-size="12">
   <defs>
     <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/></marker>
     <marker id="ad" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/></marker>
     <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#b91c1c"/></marker>
     <marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#15803d"/></marker>
   </defs>
-  <rect width="1400" height="620" fill="#ffffff"/>
+  <rect width="1400" height="830" fill="#ffffff"/>
   <text x="30" y="34" font-size="22" font-weight="700" fill="#0f172a">How one improvement happens</text>
-  <text x="30" y="54" fill="#475569">a quarterly tax estimate request, met three times (finance-v24, effort max): the first run was returned, one Revision Session corrected it, the later runs held</text>
+  <text x="30" y="56" font-size="14" fill="#475569">one task's package, step by step: the first run returned, one Revision Session, a proved change adopted for that task, the later runs held — the steps are the same for every task</text>
 
-  <!-- retry loop, drawn above row 1 -->
-  <path d="M 1210 86 L 1210 76 L 525 76 L 525 86" fill="none" stroke="#334155" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#a)"/>
-  <rect x="683" y="68" width="370" height="18" fill="#ffffff"/>
-  <text x="868" y="81" text-anchor="middle" fill="#334155" font-size="13">returned, and probes left: change the candidate, probe again</text>
+  <!-- ===== the scorer: every run passes through here ===== -->
+  <rect x="30" y="76" width="1340" height="48" rx="10" fill="#fff1f2" stroke="#fda4af" stroke-width="2"/>
+  <text x="50" y="96" font-size="14" font-weight="700" fill="#9f1239">Host-Side Scorer — every run passes through here: the first pass, each probe, each later encounter</text>
+  <text x="50" y="114" font-size="13" fill="#9f1239">it scores the world the run leaves behind; the grading rows never leave the host; what comes down is the verdict and, at the items tier, which check failed — never the expected value</text>
 
-  <!-- ===== row 1: panels 1-4 ===== -->
+  <!-- runs up, verdicts down -->
+  <line x1="155" y1="170" x2="155" y2="124" stroke="#334155" stroke-width="1.5" marker-end="url(#a)"/>
+  <text x="163" y="150" font-size="11" fill="#334155">the world after the run</text>
+  <line x1="370" y1="124" x2="370" y2="180" stroke="#b91c1c" stroke-width="1.5" stroke-dasharray="3 5" marker-end="url(#ar)"/>
+  <text x="380" y="150" font-size="11" fill="#b91c1c">verdict</text>
+  <line x1="770" y1="124" x2="770" y2="336" stroke="#b91c1c" stroke-width="1.5" stroke-dasharray="3 5" marker-end="url(#ar)"/>
+  <text x="780" y="150" font-size="11" fill="#b91c1c">verdict; at the items tier, which check failed</text>
+  <line x1="1260" y1="170" x2="1260" y2="124" stroke="#334155" stroke-width="1.5" marker-end="url(#a)"/>
+  <text x="1252" y="150" font-size="11" fill="#334155" text-anchor="end">the world after the run</text>
+
+  <!-- ===== row 1 ===== -->
   <g fill="#1f2937">
-    <rect x="30" y="86" width="310" height="196" rx="12" fill="#fff7ed" stroke="#fdba74" stroke-width="2"/>
-    <circle cx="52" cy="108" r="12" fill="#ea580c"/><text x="52" y="113" text-anchor="middle" fill="#fff" font-weight="700" font-size="13">1</text>
-    <text x="72" y="113" font-weight="700" font-size="16">First Pass — returned</text>
-    <text x="46" y="142">The agent reads the sheets and the mail,</text>
-    <text x="46" y="160">estimates the quarter at a 5% state rate,</text>
-    <text x="46" y="178">and emails <tspan font-weight="600">$23,625</tspan>.</text>
-    <text x="46" y="204" fill="#9a3412">It never opened the chat channel where</text>
-    <text x="46" y="222" fill="#9a3412">the rate change to 4.5% was posted.</text>
-    <text x="46" y="250" fill="#6b7280">scored on the host; the verdict: returned</text>
-    <text x="46" y="268" fill="#6b7280">(the session will never see the expected figure)</text>
+    <rect x="30" y="170" width="250" height="80" rx="10" fill="#fff7ed" stroke="#fdba74" stroke-width="2"/>
+    <text x="44" y="192" font-size="14" font-weight="700">First Pass</text>
+    <text x="44" y="212">encounter 1: W_t, the base at first,</text>
+    <text x="44" y="228">runs the request on a fresh world</text>
 
-    <rect x="370" y="86" width="310" height="196" rx="12" fill="#eff6ff" stroke="#93c5fd" stroke-width="2"/>
-    <circle cx="392" cy="108" r="12" fill="#2563eb"/><text x="392" y="113" text-anchor="middle" fill="#fff" font-weight="700" font-size="13">2</text>
-    <text x="412" y="113" font-weight="700" font-size="16">Revision Session — reads the run</text>
-    <text x="386" y="142">Run Digest: seven searches, no channel</text>
-    <text x="386" y="160">read, one email sent, the final text.</text>
-    <text x="386" y="178">Source Inventory: <tspan font-weight="600">chat — never read</tspan>.</text>
-    <text x="386" y="196">Rejected Check: the estimate email.</text>
-    <text x="386" y="222" fill="#1e3a8a">No score, no expected value, no hint of</text>
-    <text x="386" y="240" fill="#1e3a8a">what the figure should have been.</text>
-    <text x="386" y="268" fill="#6b7280">diagnosis: a value derived, sources unread</text>
+    <path d="M 370 180 L 430 210 L 370 240 L 310 210 Z" fill="#ffffff" stroke="#334155" stroke-width="1.5"/>
+    <text x="370" y="214" text-anchor="middle" font-weight="700">accepted?</text>
 
-    <rect x="710" y="86" width="310" height="196" rx="12" fill="#eff6ff" stroke="#93c5fd" stroke-width="2"/>
-    <circle cx="732" cy="108" r="12" fill="#2563eb"/><text x="732" y="113" text-anchor="middle" fill="#fff" font-weight="700" font-size="13">3</text>
-    <text x="752" y="113" font-weight="700" font-size="16">Candidate — three components</text>
-    <text x="726" y="142"><tspan font-weight="600">Source Coverage Guard</tspan>: before the</text>
-    <text x="726" y="160">first write, open every unread source.</text>
-    <text x="726" y="182"><tspan font-weight="600">Routing Guard</tspan>: a derived figure goes</text>
-    <text x="726" y="200">through the tool, not the model's head.</text>
-    <text x="726" y="222"><tspan font-weight="600">Estimate Tool</tspan>: annualise the year to</text>
-    <text x="726" y="240">date, blend the rate across the quarter.</text>
-    <text x="726" y="268" fill="#6b7280">Preflight Checks passed, at no cost</text>
+    <rect x="470" y="170" width="230" height="80" rx="10" fill="#eff6ff" stroke="#93c5fd" stroke-width="2"/>
+    <text x="484" y="192" font-size="14" font-weight="700">Revision Session</text>
+    <text x="484" y="210">reads the run, the Source Inventory,</text>
+    <text x="484" y="225">the Rejected Checks, the library;</text>
+    <text x="484" y="240">no score, no expected value</text>
 
-    <rect x="1050" y="86" width="320" height="196" rx="12" fill="#eff6ff" stroke="#93c5fd" stroke-width="2"/>
-    <circle cx="1072" cy="108" r="12" fill="#2563eb"/><text x="1072" y="113" text-anchor="middle" fill="#fff" font-weight="700" font-size="13">4</text>
-    <text x="1092" y="113" font-weight="700" font-size="16">Live Probes — the same request</text>
-    <text x="1066" y="142">Each candidate runs the request for real;</text>
-    <text x="1066" y="160">only the verdict comes back.</text>
-    <text x="1066" y="186">1 · by hand · $105,725</text>
-    <text x="1356" y="186" text-anchor="end" fill="#b91c1c">returned</text>
-    <text x="1066" y="206">2 · tool, un-annualised · $23,448</text>
-    <text x="1356" y="206" text-anchor="end" fill="#b91c1c">returned</text>
-    <text x="1066" y="226">3 · tool, annualised · <tspan font-weight="600">$105,792</tspan></text>
-    <text x="1356" y="226" text-anchor="end" fill="#15803d" font-weight="600">accepted</text>
-    <text x="1066" y="252" fill="#6b7280">at most four probes; an unchanged candidate</text>
-    <text x="1066" y="270" fill="#6b7280">is refused; what ran is what is kept</text>
+    <rect x="800" y="170" width="155" height="80" rx="10" fill="#eff6ff" stroke="#93c5fd" stroke-width="2"/>
+    <text x="814" y="192" font-size="14" font-weight="700">Candidate</text>
+    <text x="814" y="212">W′ = W_t + diff,</text>
+    <text x="814" y="228">taken as the diff</text>
+
+    <rect x="970" y="170" width="145" height="80" rx="10" fill="#fffbeb" stroke="#f59e0b" stroke-width="2"/>
+    <text x="982" y="190" font-size="13" font-weight="700">Admissible?</text>
+    <text x="982" y="206" font-size="11">by the host, no model:</text>
+    <text x="982" y="220" font-size="11">the contract; no literal</text>
+    <text x="982" y="234" font-size="11">of one task; changed</text>
+
+    <rect x="1150" y="170" width="220" height="80" rx="10" fill="#eff6ff" stroke="#60a5fa" stroke-width="2"/>
+    <text x="1164" y="192" font-size="14" font-weight="700">Live Probe</text>
+    <text x="1164" y="210">W′ runs the same request,</text>
+    <text x="1164" y="225">for real, on a fresh world;</text>
+    <text x="1164" y="240">the same tree never twice</text>
   </g>
-  <line x1="340" y1="184" x2="370" y2="184" stroke="#334155" stroke-width="1.5" marker-end="url(#a)"/>
-  <line x1="680" y1="184" x2="710" y2="184" stroke="#334155" stroke-width="1.5" marker-end="url(#a)"/>
-  <line x1="1020" y1="184" x2="1050" y2="184" stroke="#334155" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="430" y1="210" x2="470" y2="210" stroke="#334155" stroke-width="1.5" marker-end="url(#a)"/>
+  <text x="450" y="201" font-size="11" fill="#b91c1c" text-anchor="middle">returned</text>
+  <line x1="700" y1="210" x2="800" y2="210" stroke="#334155" stroke-width="1.5" marker-end="url(#a)"/>
+  <text x="750" y="201" font-size="11" fill="#334155" text-anchor="middle">edits a copy of W_t</text>
+  <line x1="955" y1="210" x2="970" y2="210" stroke="#334155" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="1115" y1="210" x2="1150" y2="210" stroke="#334155" stroke-width="1.5" marker-end="url(#a)"/>
+  <text x="1132" y="200" font-size="11" fill="#334155" text-anchor="middle">pass</text>
+  <!-- admissibility fails: back to the session -->
+  <path d="M 1045 250 L 1045 268 L 880 268 L 880 250" fill="none" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#ad)"/>
+  <text x="967" y="284" font-size="11" fill="#64748b" text-anchor="middle">fails: back to the session, no probe</text>
+  <!-- first pass accepted: finished -->
+  <line x1="370" y1="240" x2="370" y2="272" stroke="#15803d" stroke-width="1.5"/>
+  <circle cx="370" cy="276" r="4" fill="#15803d"/>
+  <text x="355" y="268" font-size="11" fill="#15803d" text-anchor="end">accepted → finished: no session;</text>
+  <text x="355" y="281" font-size="11" fill="#15803d" text-anchor="end">later encounters run W₀, never revised</text>
 
-  <!-- ===== row 2: panels 5-7, right to left ===== -->
+  <!-- ===== row 2 ===== -->
   <g fill="#1f2937">
-    <rect x="1050" y="330" width="320" height="150" rx="12" fill="#dcfce7" stroke="#22c55e" stroke-width="2"/>
-    <circle cx="1072" cy="352" r="12" fill="#15803d"/><text x="1072" y="357" text-anchor="middle" fill="#fff" font-weight="700" font-size="13">5</text>
-    <text x="1092" y="357" font-weight="700" font-size="16">Per-Task Adoption</text>
-    <text x="1066" y="386">The candidate whose probe was accepted</text>
-    <text x="1066" y="404">becomes this request's harness, as it ran.</text>
-    <text x="1066" y="428" fill="#14532d">No judge model, no person. Every other</text>
-    <text x="1066" y="446" fill="#14532d">task keeps the base; nothing can regress.</text>
-    <text x="1066" y="470" fill="#6b7280">on record: the adopted tree and the reason</text>
+    <rect x="440" y="322" width="220" height="88" rx="10" fill="#dcfce7" stroke="#22c55e" stroke-width="2"/>
+    <text x="454" y="342" font-size="13" font-weight="700" fill="#14532d">Per-Task Adoption — by the host</text>
+    <text x="454" y="359">W_t := the accepted W′, as it ran —</text>
+    <text x="454" y="374">the bytes that ran are adopted;</text>
+    <text x="454" y="389">none accepted: W_t stays. No judge,</text>
+    <text x="454" y="404">no person; other tasks untouched</text>
 
-    <rect x="710" y="330" width="310" height="150" rx="12" fill="#f0fdf4" stroke="#86efac" stroke-width="2"/>
-    <circle cx="732" cy="352" r="12" fill="#15803d"/><text x="732" y="357" text-anchor="middle" fill="#fff" font-weight="700" font-size="13">6</text>
-    <text x="752" y="357" font-weight="700" font-size="16">Steady State — encounters 2 and 3</text>
-    <text x="726" y="386">The guard fires, the channel is read,</text>
-    <text x="726" y="404">the tool is called, the email says</text>
-    <text x="726" y="424"><tspan font-weight="600">$105,792</tspan> — twice, <tspan fill="#15803d" font-weight="600">accepted</tspan> both times.</text>
-    <text x="726" y="452" fill="#6b7280">first pass returned → steady state held</text>
-    <text x="726" y="470" fill="#6b7280">(at medium effort this task never held)</text>
-
-    <rect x="370" y="330" width="310" height="150" rx="12" fill="#f8fafc" stroke="#cbd5e1" stroke-width="2"/>
-    <circle cx="392" cy="352" r="12" fill="#475569"/><text x="392" y="357" text-anchor="middle" fill="#fff" font-weight="700" font-size="13">7</text>
-    <text x="412" y="357" font-weight="700" font-size="16">Experience Library</text>
-    <text x="386" y="386">one entry: the adopted tree, its lesson.</text>
-    <text x="386" y="404">Cue: a source was searched, never read.</text>
-    <text x="386" y="422">Lesson: open every source before deriving.</text>
-    <text x="386" y="440">Evidence: $23,625 → $105,792.</text>
-    <text x="386" y="470" fill="#6b7280">read first by the next session</text>
+    <path d="M 770 336 L 830 366 L 770 396 L 710 366 Z" fill="#ffffff" stroke="#334155" stroke-width="1.5"/>
+    <text x="770" y="370" text-anchor="middle" font-weight="700">accepted?</text>
   </g>
-  <path d="M 1210 282 L 1210 330" fill="none" stroke="#15803d" stroke-width="2" marker-end="url(#ag)"/>
-  <text x="1222" y="312" fill="#15803d" font-size="13">accepted</text>
-  <line x1="1050" y1="405" x2="1020" y2="405" stroke="#334155" stroke-width="1.5" marker-end="url(#a)"/>
-  <text x="1035" y="395" text-anchor="middle" fill="#334155" font-size="12">runs</text>
-  <path d="M 1050 460 L 1035 460 L 1035 500 L 700 500 L 700 460 L 680 460" fill="none" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#ad)"/>
-  <text x="868" y="516" text-anchor="middle" fill="#64748b" font-size="12">the adopted tree and its lesson enter the library</text>
-  <path d="M 525 330 L 525 282" fill="none" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#ad)"/>
-  <text x="515" y="310" text-anchor="end" fill="#64748b" font-size="12">read first by the next returned request's session</text>
+  <line x1="710" y1="366" x2="660" y2="366" stroke="#15803d" stroke-width="1.5" marker-end="url(#ag)"/>
+  <text x="685" y="380" font-size="11" fill="#15803d" text-anchor="middle">yes</text>
+  <line x1="770" y1="396" x2="770" y2="458" stroke="#334155" stroke-width="1.5" marker-end="url(#a)"/>
+  <text x="778" y="430" font-size="11" fill="#b91c1c">returned</text>
 
-  <!-- the scorer line -->
-  <rect x="30" y="540" width="1340" height="54" rx="10" fill="#fff1f2" stroke="#fda4af"/>
-  <text x="50" y="562" font-weight="600" fill="#9f1239">Host-Side Scorer, at every step</text>
-  <text x="50" y="582" fill="#9f1239" font-size="13">the first pass, each probe and the later encounters are scored on the host; the grading rows never leave it — the session sees the verdict and, at the items tier, which check failed, never the expected $105,792</text>
-  <path d="M 185 540 L 185 282" fill="none" stroke="#b91c1c" stroke-width="1.5" stroke-dasharray="3 5" marker-end="url(#ar)"/>
-  <path d="M 865 540 L 865 480" fill="none" stroke="#b91c1c" stroke-width="1.5" stroke-dasharray="3 5" marker-end="url(#ar)"/>
+  <!-- ===== row 3 ===== -->
+  <g fill="#1f2937">
+    <rect x="30" y="448" width="350" height="80" rx="10" fill="#f8fafc" stroke="#94a3b8" stroke-width="2"/>
+    <text x="44" y="470" font-size="14" font-weight="700">Experience Library</text>
+    <text x="44" y="490">every adopted tree with its lesson;</text>
+    <text x="44" y="506">the only channel between tasks</text>
+
+    <rect x="440" y="448" width="220" height="80" rx="10" fill="#f0fdf4" stroke="#86efac" stroke-width="2"/>
+    <text x="454" y="470" font-size="14" font-weight="700">Later Encounters</text>
+    <text x="454" y="490">run W_t, nothing else changes;</text>
+    <text x="454" y="506">each run scored, for the record</text>
+
+    <path d="M 770 458 L 830 488 L 770 518 L 710 488 Z" fill="#ffffff" stroke="#334155" stroke-width="1.5"/>
+    <text x="770" y="492" text-anchor="middle" font-weight="700">probes left?</text>
+  </g>
+  <line x1="550" y1="410" x2="550" y2="448" stroke="#334155" stroke-width="1.5" marker-end="url(#a)"/>
+  <text x="558" y="433" font-size="11" fill="#334155">W_t</text>
+  <path d="M 710 488 L 680 488 L 680 392 L 660 392" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#ad)"/>
+  <text x="694" y="432" font-size="11" fill="#64748b" text-anchor="middle" transform="rotate(-90 694 432)">none left: W_t stays</text>
+  <!-- probes left: the inner loop -->
+  <path d="M 830 488 L 900 488 L 900 668 L 15 668 L 15 306 L 585 306 L 585 250" fill="none" stroke="#334155" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#a)"/>
+  <text x="457" y="663" font-size="12" fill="#334155" text-anchor="middle">probes left: the probe's run beside the first, with its verdict; change the candidate, probe again</text>
+  <!-- adoption writes the library; the next session reads it -->
+  <path d="M 440 396 L 400 396 L 400 488 L 380 488" fill="none" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#ad)"/>
+  <text x="392" y="442" font-size="11" fill="#64748b" text-anchor="middle" transform="rotate(-90 392 442)">tree + lesson</text>
+  <rect x="193" y="299" width="14" height="14" fill="#ffffff"/>
+  <path d="M 200 448 L 200 288 L 490 288 L 490 250" fill="none" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="4 4" marker-end="url(#ad)"/>
+  <text x="215" y="300" font-size="11" fill="#64748b">read first by the next returned request's session</text>
+
+  <!-- ===== worked example, no values ===== -->
+  <rect x="30" y="700" width="1340" height="82" rx="10" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="50" y="720" font-size="13" font-weight="600" fill="#334155">Worked example — a quarterly tax estimate, drawn from one real trace</text>
+  <text x="50" y="738" fill="#475569">first pass: the figure derived in the model's head, at a rate posted in a chat channel never opened → returned · session: the inventory shows chat never read; the rejected check is the estimate email</text>
+  <text x="50" y="755" fill="#475569">candidate: a source-coverage guard, a routing guard, an estimate tool · probes: derived by hand → returned; through the tool, not annualised → returned; through the tool, annualised → accepted</text>
+  <text x="50" y="772" fill="#475569">adopted for this task · encounters 2 and 3: the guard fires, the channel is read, accepted twice · library — cue: a source searched, never read; lesson: open every source, then derive by code</text>
+  <text x="30" y="810" fill="#64748b">Invariants, as in the first figure: I1 only W changes · I2 R never sees a value · I3 an accepted task opens no session · I4 adoption binds to one task · I5 tasks meet only through the library</text>
 </svg>
