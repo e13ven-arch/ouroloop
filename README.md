@@ -2,16 +2,17 @@
 
 # reharness
 
-**An agent that gets the same request right the second time.**
+**A self-improving agent rewrites its own harness, not its model, and proves each change live.**
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
 [![Benchmark: AutomationBench](https://img.shields.io/badge/benchmark-AutomationBench-555.svg)](https://github.com/zapier/AutomationBench)
+[![AutomationBench finance: 64%→68% steady state](https://img.shields.io/badge/AutomationBench%20finance-64%25%E2%86%9268%25%20steady%20state-2e7d32.svg)](#results)
 [![中文](https://img.shields.io/badge/README-%E4%B8%AD%E6%96%87-lightgrey.svg)](README.zh-CN.md)
 
 </div>
 
-reharness runs a business agent on requests that repeat. When a request comes back returned, a **Revision Session** reads the agent's own run of it, changes the agent's **Harness Package** — its tools, hooks, skills, prompts — and proves the change with a **Live Probe**: the candidate runs the same request for real. Only a probe that comes back accepted is adopted, and only for that request. No person picks the change, no model judges it, and the session is never shown an answer: at most *accepted or returned* per attempt, and *which check failed*. Everything the session cannot touch is frozen — the scorer, what the session may be told, the package's contract, the bounds — and package code runs in an isolated worker.
+reharness is a self-improving agent harness: bounded recursive self-improvement in which the agent's own model revises the harness the agent runs in, never the model. A business agent runs requests that repeat. When a request comes back returned, a **Revision Session** reads the agent's own run of it, changes the agent's **Harness Package** — its tools, hooks, skills, prompts — and proves the change with a **Live Probe**: the candidate runs the same request for real. Only a probe that comes back accepted is adopted, and only for that request (**Per-Task Adoption**). No person picks the change, no model judges it, and the session is never shown an answer: at most *accepted or returned* per attempt, and *which check failed*. Everything the session cannot touch is a **Frozen Core** — the scorer, what the session may be told, the package's contract, the bounds — and package code runs in an isolated worker. What the agent learns from its own runs is harness engineering — a guard, a tool, a prompt — not an answer.
 
 Built and measured on [AutomationBench](https://github.com/zapier/AutomationBench) (47 simulated SaaS tools, scored on the world state the agent leaves behind) with Claude Opus 5.5 as both the agent and the session, on a subscription budget. On the 50 finance test tasks the steady-state pass rate rose from 64% to 68% with no passing task lost; on train tasks a session learned, with no hint in its prompt, to open every unread source before writing and to derive figures by code.
 
@@ -28,6 +29,7 @@ Built and measured on [AutomationBench](https://github.com/zapier/AutomationBenc
 - [Install](#install)
 - [Run](#run)
 - [Repository layout](#repository-layout)
+- [Contributing](#contributing)
 - [Citation](#citation)
 - [License](#license)
 
@@ -85,14 +87,19 @@ Tasks run in parallel, a task's encounters in order, and every encounter is on r
 
 ## Results
 
-| Activity | Tasks | Feedback | First Pass → Steady State | What happened | Cost |
-|---|---|---|---|---|---|
-| finance-v16 (rehearsal) | 20 train | one bit | 15/20 → 18/20 | 3 of 5 returned tasks corrected and holding; accepted tasks untouched | $51 |
-| **finance-v18** | **50 test** | one bit | **32/50 (64%) → 34/50 (68%)**, +4.0 [−4.0, +12.0] | 18 returned, 3 corrected and holding, no passing task lost (the base flipped 4 of 32 at encounter 2, 3 back at 3) | $184 |
-| finance-v20 | 2 train | items | 0/2 → 2/2 | two independent sessions built the same unread-sources guard; the agent then read the chat channel and derived 13,162.5 and 105,792 | $11 |
-| finance-v24 (effort max) | 3 train | items | 1/3 → 2/3 | one session built a Source Coverage Guard, a Routing Guard and an estimate tool; the tax task held at 105,792 twice, which three medium runs never reached; 5–7× the cost | $61 |
+The reference point is the model as it ships, on the official AutomationBench leaderboard; the result is the same model running the harness reharness built from its own runs, on the benchmark's held-out tasks, under a protocol sealed before the first test attempt.
 
-What these show, in order: Per-Task Adoption keeps only what a Live Probe got accepted, so learning never regressed a passing task; one bit alone does not point a session at the failing item (it corrected 3 of 18 on test and changed something else on 12); with the Rejected Checks and the Source Inventory it finds generic mechanisms on its own; at effort max it finds them in one session. The remaining failures are documented: ambiguities in a task's own documents that the signal cannot resolve, a world clock the agent is never told, and the benchmark's noise floor. Every activity, including the eight earlier ones under a held-out screen (four sealed finals: +13.0 on Marketing, significant; +4.3, +8.0, +4.0 on finance, inside their intervals; nothing later above the noise floor), is in [docs/RESULTS.md](docs/RESULTS.md); each run's reading is in [docs/JOURNAL.md](docs/JOURNAL.md).
+| | Pass rate | Cost |
+|---|---|---|
+| Claude Opus 5.5 as published on the AutomationBench leaderboard, all domains (v1.0.6, private set) | 42.47% | — |
+| Best finance score on the leaderboard, any model (v1.0.6, private set) | 50.00% | — |
+| **Claude Opus 5.5 with reharness — finance, 50 held-out tasks, requests that repeat, steady state** | **68%** (+4.0 over the first pass, [−4.0, +12.0]; no passing task lost) | $184 |
+| Claude Opus 5.5 with reharness — finance, 25 held-out tasks, one evolved package for the domain | 62.7% (+8.0, [−4.0, +22.7]; each attempt 22% cheaper) | $210 |
+| Claude Opus 5.5 with reharness — Marketing, 23 held-out tasks, one evolved package for the domain | 54.3% (+13.0, [+2.2, +26.1]) | $153 |
+
+The leaderboard scores a private set the benchmark describes as harder than the public one and promises only directional agreement between the two; the reharness rows are on the public set's held-out split, at effort medium. Costs are for the whole activity, in API-equivalent dollars.
+
+What the loop learned: with the Acceptance Signal alone it corrected a third of the returned tasks and never touched a passing one; with the Rejected Checks and the Source Inventory it built generic mechanisms by itself — open every unread source before writing, derive figures by code — in independent sessions with none of those words in its prompt. The failures that remain are documented: ambiguities in a task's own documents that the signal cannot resolve, a world clock the agent is never told, and the benchmark's noise floor (10–17% of tasks flip between two runs of one package). Full records, every run: [docs/RESULTS.md](docs/RESULTS.md), [docs/JOURNAL.md](docs/JOURNAL.md).
 
 ## Install
 
@@ -149,11 +156,15 @@ A config names a preset (`[harness] preset`) and may only tighten it ([docs/desi
 | `docs/` | the design (`DESIGN.md`, `design/`), the plan, the results, the journal, the announcement drafts (in Chinese, except this README and the announcement) |
 | `reharness/improver/` (the rest), `reharness/memory/`, `reharness/train/` | the earlier held-out screen loop, the memory sidecar (off in every measured preset) and the training stack (never run); kept for the record |
 
+## Contributing
+
+Three kinds of contribution are useful: another adapter — a benchmark or a real business tool set — behind the same Package Contract; a feedback-tier experiment with its Sealed Protocol committed before the first test attempt; a reproduction report with config, split hash, effort and cost. Every measured number comes with the disclosures listed under Experiment design. See [CONTRIBUTING.md](CONTRIBUTING.md); questions go to [Issues](https://github.com/e13ven-arch/reharness/issues).
+
 ## Citation
 
 ```bibtex
 @software{reharness2026,
-  title   = {reharness: an agent that gets the same request right the second time},
+  title   = {reharness: a self-improving agent rewrites its own harness, not its model, and proves each change live},
   author  = {The reharness Authors},
   year    = {2026},
   url     = {https://github.com/e13ven-arch/reharness},

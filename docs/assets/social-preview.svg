@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" font-family="Inter, Helvetica, Arial, sans-serif">
+  <rect width="1280" height="640" fill="#0f172a"/>
+  <rect x="0" y="0" width="1280" height="8" fill="#22c55e"/>
+  <text x="80" y="150" font-size="72" font-weight="800" fill="#ffffff">reharness</text>
+  <text x="80" y="235" font-size="34" font-weight="600" fill="#e2e8f0">A self-improving agent rewrites its own harness,</text>
+  <text x="80" y="282" font-size="34" font-weight="600" fill="#e2e8f0">not its model, and proves each change live.</text>
+  <g font-size="24" fill="#94a3b8">
+    <text x="80" y="360">Revision Session · Harness Package · Live Probe · Per-Task Adoption · Frozen Core</text>
+    <text x="80" y="398">the session is never shown an answer: accepted or returned, and which check failed</text>
+  </g>
+  <rect x="80" y="450" width="1120" height="100" rx="14" fill="#14532d"/>
+  <text x="110" y="492" font-size="26" fill="#bbf7d0">AutomationBench finance, 50 held-out tasks, Claude Opus 5.5 + reharness</text>
+  <text x="110" y="530" font-size="27" font-weight="700" fill="#ffffff">64% → 68% steady state · no passing task lost · learned habits, never answers</text>
+  <text x="80" y="606" font-size="20" fill="#64748b">self-improving agent harness · bounded recursive self-improvement · MIT · github.com/e13ven-arch/reharness</text>
+</svg>

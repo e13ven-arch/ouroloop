@@ -4,7 +4,7 @@ The public note for the open-source release of reharness, written on 2026-10-26.
 
 ---
 
-## reharness: an agent that gets the same request right the second time
+## reharness: A self-improving agent rewrites its own harness, not its model, and proves each change live
 
 Most real work repeats. A finance team runs the same reconciliation, the same invoice batch, the same tax estimate again and again with other numbers. An agent that fails such a request once should not fail it the same way tomorrow — and whatever fixes it should be checked by evidence, not chosen by a person.
 
@@ -38,7 +38,7 @@ A sealed plan names the tasks and how many times each is met (three). Encounter 
 
 ---
 
-## reharness：同一个请求，第二次就做对的 agent
+## reharness：自我改进的 agent：改写自己的 harness 而不是模型，每个改动都真跑一次来证明
 
 真实工作大多在重复。财务团队反复跑同一个对账、同一批发票、同一份税额估算，只是数字换了。一个 agent 这次把请求做砸了，明天不该再以同样的方式砸一次——而修它的改动应当由证据裁定，不是由人挑。
 
