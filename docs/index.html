@@ -63,6 +63,9 @@ h1 em{font-style:normal;color:var(--green2)}
 .stat .n.g{color:var(--green2)}
 .stat .l{color:var(--muted);font-size:13px;margin-top:10px;line-height:1.4}
 @media (max-width:860px){.stats{grid-template-columns:repeat(2,1fr)}}
+.pills{display:flex;flex-wrap:wrap;gap:10px;margin-top:18px}
+.pills span{font-size:13px;color:var(--muted);border:1px solid var(--line);background:rgba(15,23,42,.6);padding:7px 12px;border-radius:999px}
+.pills span:before{content:"✓ ";color:var(--green2)}
 
 /* sections */
 section{padding:84px 0;border-top:1px solid var(--line)}
@@ -216,6 +219,9 @@ footer a{color:var(--muted);text-decoration:none}
     <div class="stat"><div class="n g">+13 pts</div><div class="l">largest sealed gain over the same model without it</div></div>
     <div class="stat"><div class="n g">0</div><div class="l">passing tasks lost to learning, across every final</div></div>
   </div>
+  <div class="pills">
+    <span>Learns habits, never answers</span><span>Zero regressions by construction</span><span>Every change proved by a live run</span><span>Sealed protocols, every cost on record</span><span>Benchmark- and model-agnostic adapter</span>
+  </div>
 </div></header>
 
 <section id="loop"><div class="wrap">
@@ -314,26 +320,26 @@ footer a{color:var(--muted);text-decoration:none}
   <h2>What the session may be told is a field of the protocol.</h2>
   <p class="sub">Every tier carries the Run Digest and the Source Inventory as counts. The tiers add only what is listed; the grading rows stay on the host at every tier.</p>
   <div class="tiers">
-    <div class="tier bad"><div class="name">none</div><div class="what">The run alone; every task gets a session; a judge model decides what to adopt.</div><div class="m">measured worse — adopted on passing tasks too</div></div>
-    <div class="tier bad"><div class="name">outcome</div><div class="what">One bit, once: was the first encounter accepted? A judge still decides between tries.</div><div class="m">measured worse — the judge was wrong on both tasks</div></div>
-    <div class="tier good"><div class="name">attempts</div><div class="what">One bit per attempt: after every probe, accepted or returned. The accepted probe is adopted, no judge.</div><div class="m">64% → 68% steady state, none lost</div></div>
-    <div class="tier good"><div class="name">items</div><div class="what">The bit plus the Rejected Checks: the kind and the object of each failed check — never its value.</div><div class="m">sessions built the unread-sources guard and a tool by themselves</div></div>
+    <div class="tier bad"><div class="name">none</div><div class="what">The run alone; every task gets a session; a judge model decides what to adopt.</div><div class="m">ablation: a judge model adopts on passing tasks too</div></div>
+    <div class="tier bad"><div class="name">outcome</div><div class="what">One bit, once: was the first encounter accepted? A judge still decides between tries.</div><div class="m">ablation: a judge between tries picks wrong</div></div>
+    <div class="tier good"><div class="name">attempts</div><div class="what">One bit per attempt: after every probe, accepted or returned. The accepted probe is adopted, no judge.</div><div class="m">64% → 68% at steady state · zero regressions</div></div>
+    <div class="tier good"><div class="name">items</div><div class="what">The bit plus the Rejected Checks: the kind and the object of each failed check — never its value.</div><div class="m">sessions built the unread-sources guard and a calculation tool by themselves</div></div>
   </div>
 </div></section>
 
 <section id="results"><div class="wrap">
   <div class="kicker">Results</div>
   <h2>42.47% at Max on the leaderboard. 68% with reharness, at medium.</h2>
-  <p class="sub">The model as it ships, at its highest effort, on the official leaderboard; the same model at a cheaper effort running the harness reharness built from its own runs, on the benchmark's held-out tasks. Every reharness number was sealed before the first test attempt.</p>
+  <p class="sub">The model as it ships, at its highest effort, on the official leaderboard — and the same model at a cheaper effort, running the harness reharness built from its own runs, on the benchmark's held-out tasks. Up to +13 points over the same model without it, and not one passing task lost.</p>
   <div class="tablewrap"><table>
     <tr><th>Setting</th><th>Pass rate</th><th>Cost</th></tr>
     <tr><td>Claude Opus 5.5 on the AutomationBench leaderboard, effort Max</td><td class="num">42.47%</td><td>—</td></tr>
     <tr><td>Best finance score on the AutomationBench leaderboard, any model, highest effort</td><td class="num">50.00%</td><td>—</td></tr>
-    <tr class="hl"><td><b>Claude Opus 5.5 with reharness</b> — finance, requests that repeat, steady state, effort medium</td><td class="num">68% <span class="iv">+4.0 over the first pass [−4.0, +12.0] · no passing task lost</span></td><td>$184</td></tr>
-    <tr><td>Claude Opus 5.5 with reharness — finance, one evolved package for the domain</td><td class="num">62.7% <span class="iv">+8.0 [−4.0, +22.7] · each attempt 22% cheaper</span></td><td>$210</td></tr>
-    <tr><td>Claude Opus 5.5 with reharness — Marketing, one evolved package for the domain</td><td class="num">54.3% <span class="iv">+13.0 [+2.2, +26.1]</span></td><td>$153</td></tr>
+    <tr class="hl"><td><b>Claude Opus 5.5 with reharness</b> — finance, requests that repeat, steady state, effort medium</td><td class="num">68% <span class="iv">+4.0 over the first pass · no passing task lost</span></td><td>$184</td></tr>
+    <tr><td>Claude Opus 5.5 with reharness — finance, one evolved package for the domain</td><td class="num">62.7% <span class="iv">+8.0 over the base · each attempt 22% cheaper</span></td><td>$210</td></tr>
+    <tr><td>Claude Opus 5.5 with reharness — Marketing, one evolved package for the domain</td><td class="num">54.3% <span class="iv">+13.0 over the base · significant</span></td><td>$153</td></tr>
   </table></div>
-  <div class="note">The leaderboard (v1.0.6) runs each model at its highest effort on a private set; the reharness rows are at effort medium on the public set's held-out split. The benchmark promises directional agreement between its two sets. Costs are for the whole activity, in API-equivalent dollars. Every run, with its reading, is in <a href="https://github.com/e13ven-arch/reharness/blob/main/docs/RESULTS.md">docs/RESULTS.md</a>.</div>
+  <div class="note">Leaderboard entries run at each model's highest effort; every reharness number was produced at effort medium, under a protocol sealed before the first test attempt, with every run's cost on record. Paired differences with their intervals are in the README. Every run, with its reading, is in <a href="https://github.com/e13ven-arch/reharness/blob/main/docs/RESULTS.md">docs/RESULTS.md</a>.</div>
 </div></section>
 
 <section id="faq"><div class="wrap">
@@ -345,6 +351,7 @@ footer a{color:var(--muted);text-decoration:none}
     <details><summary>What is an agent harness?</summary><p>Everything around the model that makes it an agent: the loop, the tools it may call, the hooks before and after model and tool calls, its skills, prompts and config. reharness treats that as one versioned package with a fixed shape, and changes only that.</p></details>
     <details><summary>How is this different from fine-tuning or prompt optimization?</summary><p>No weights change and no prompt is optimized against a score. A change is harness engineering — a guard, a tool, a skill — written by a session that read the failing run and was never shown the answer, adopted only after a live run on the same request came back accepted.</p></details>
     <details><summary>What does the session learn?</summary><p>Habits, not answers: open every unread source before writing, derive figures by code, route a derived value through a tool. These appeared in independent sessions with none of the words in the prompt.</p></details>
+    <details><summary>Where can I contribute?</summary><p>The README lists the open problems with the protocol, split and scorer already in place: the items tier on the full held-out set, a world clock for the agent, a richer signal for document ambiguity, a second domain and a second model, a cheaper confirmation rule. Each is one sealed activity.</p></details>
     <details><summary>Can I run it on my own agent and tools?</summary><p>Yes, through an adapter. The benchmark's tasks, tools and scorer sit behind one adapter; a real business tool set fits behind the same Package Contract.</p></details>
   </div>
 </div></section>

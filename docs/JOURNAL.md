@@ -21,6 +21,8 @@
 
 **动画流程图（用户："流程图也有一个动画版本的，动画演示运作过程……网站上不适合直接放一个架构图进去吧，这个感觉适合直接在 github 上看"）。** 落地页去掉两张静态图版（留在 README），"How it works" 一节改成页内 SVG 动画：十个节点（Run on W_t、Host-Side Scorer、accepted? 菱形、Finished、Revision Session、Candidate W′、admissible? 菱形、Live Probe、Per-Task Adoption、W_t、Experience Library）、十四条连线；一个发光光点沿路径走（SMIL animateMotion，JS 逐步换 mpath 并 beginElement），走到的节点点亮、走过的边留下绿色轨迹、当前边流动虚线；时间线 33 步：首次 → 评分 → 退回 → 会话 → 候选 → 准入 ✓ → 探针 1 → 评分 → 退回 → 会话改 → 探针 2 → 退回 → 探针 3 → 接受 → 按题采用 → W_t → 经验库 → 下一个会话先读 → 第 2 次用 W_t → 接受 → 完成 → 第 3 次 → 接受、稳态；底部一行字幕说明每步；门上显示 returned / accepted；进入视口开始、结束 5 秒后循环；reduced-motion 下全部点亮并给一句静态说明。本地起服务在浏览器里跑过，光点、点亮、字幕正常，控制台无报错。
 
+**包装（用户："大家写论文，发开源都是只讲好的不讲坏的……让别人发现不完美的地方才有后续的贡献，成果好好包装展示一下"）。** 正文只讲做到的，不足单独成"开放问题——欢迎贡献的地方"一节（README 英 / 中，在"安装"之前）：items 档上完整留出集、世界时钟、文档歧义的信号、第二领域与第二模型、噪声底的确认规则，每条写成"协议、划分、评分器已就位的一次封存活动"。结果一节去掉"基准只承诺方向一致"这类对冲句，改成事实陈述（榜单最高 effort / reharness medium、封存、费用在册）；"回路学到了什么"段去掉剩余失败的列举，加"采用的包里每一个计算工具都是会话写的"。落地页：hero 数字条下加五个亮点胶囊（learns habits never answers、zero regressions by construction、every change proved live、sealed protocols every cost on record、benchmark- and model-agnostic adapter）；结果表去掉区间（README 里保留）、每行改成"over the base"；反馈档的 "measured worse" 改成 "ablation"；结果区导语加 "up to +13 points…not one passing task lost"；FAQ 加 "Where can I contribute?"。
+
 ---
 
 ## 2026-10-27 宣传语、结果一节、可发现性：README 头部与仓库元数据；$0
