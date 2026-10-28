@@ -1,0 +1,17 @@
+# reharness
+
+> A self-improving agent harness: bounded recursive self-improvement (RSI) in which an LLM agent's own model revises the harness the agent runs in — tools, hooks, skills, prompts — from the agent's own returned runs, and proves each change with a live run before adoption. Measured on AutomationBench with Claude Opus 5.5.
+
+Key facts:
+- A Revision Session reads the agent's own returned run (no score, no expected value), edits a copy of the Harness Package, and proves the change with a Live Probe: the candidate runs the same request for real.
+- Per-Task Adoption: only a probe that comes back accepted is adopted, and only for that task; an accepted task opens no session and is never revised.
+- The session is never shown an answer: at most accepted/returned per attempt and which check failed (its kind and object).
+- A Frozen Core the session cannot touch: the host-side scorer, the feedback tier, the package contract (no answer in the package), the bounds.
+- Results: Claude Opus 5.5 scores 42.47% on the AutomationBench leaderboard; with reharness, on the benchmark's held-out finance tasks, 68% at steady state; across sealed finals up to +13 points over the same model without it, no passing task lost.
+
+## Docs
+- [README](https://github.com/e13ven-arch/reharness/blob/main/README.md): key ideas, architecture, how one improvement happens, results, install, run
+- [Results record](https://github.com/e13ven-arch/reharness/blob/main/docs/RESULTS.md): every sealed final and run, with costs
+- [Design](https://github.com/e13ven-arch/reharness/blob/main/docs/DESIGN.md): the loop's design and its revisions
+- [Journal](https://github.com/e13ven-arch/reharness/blob/main/docs/JOURNAL.md): the development log, newest first
+- [Citation](https://github.com/e13ven-arch/reharness/blob/main/CITATION.cff)

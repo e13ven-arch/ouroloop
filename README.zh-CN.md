@@ -14,7 +14,7 @@
 
 reharness 是一个自我改进的 agent harness：有界的递归自我改进（recursive self-improvement），由 agent 自己的模型来修订 agent 运行其中的 harness，从不改模型本身。业务 agent 处理反复到来的请求。一个请求被退回后，一个**修订会话**（Revision Session）读 agent 自己那次运行，改 agent 的 **Harness 包**——工具、hook、技能、提示词——再用一次**实跑探针**（Live Probe）证明这个改动：候选在同一个请求上真跑一次。只有被接受的探针才会被采用，而且只对这个请求采用（**按题采用**，Per-Task Adoption）。没有人挑改动，没有模型当裁判，会话也从来看不到答案：至多每次尝试一个"被接受 / 被退回"的信号，和*哪条检查没过*。会话碰不到的东西全部是**冻结核心**——评分器、会话能被告知什么、包的契约、各项上界——包代码跑在隔离的 worker 里。agent 从自己的运行里学到的是 harness 工程——一个 guard、一个工具、一条提示词——而不是答案。
 
-在 [AutomationBench](https://github.com/zapier/AutomationBench)（47 个模拟 SaaS 工具，按 agent 留下的世界状态评分）上实现和测量，agent 与会话都是 Claude Opus 5.5，跑在订阅预算上。Claude Opus 5.5 在 AutomationBench 榜单上的成绩是 42.47%；用了 reharness，在基准的留出 finance 题上稳态成绩是 68%，没有一道通过题变坏；train 题上会话在提示词没有任何暗示的情况下，自己学会了写入前打开每个没读的源、数字由代码算。
+在 [AutomationBench](https://github.com/zapier/AutomationBench)（47 个模拟 SaaS 工具，按 agent 留下的世界状态评分）上实现和测量，agent 与会话都是 Claude Opus 5.5，跑在订阅预算上。截至 2026 年 10 月，Claude Opus 5.5 在 AutomationBench 榜单上的成绩是 42.47%；用了 reharness，在基准的留出 finance 题上稳态成绩是 68%，没有一道通过题变坏；train 题上会话在提示词没有任何暗示的情况下，自己学会了写入前打开每个没读的源、数字由代码算。
 
 <p align="center"><img src="docs/assets/architecture.svg" alt="组件与架构：冻结核心 K（包契约、宿主侧评分器、反馈档、上界）之下，Harness 包 W 画成 W₀ 与每题一个的 W_t，隔离 worker 是围住宿主轨迹 E 的边界，修订会话 R 带准入门与实跑探针，按题采用由宿主执行" width="100%"></p>
 
@@ -29,6 +29,7 @@ reharness 是一个自我改进的 agent harness：有界的递归自我改进�
 - [安装](#安装)
 - [运行](#运行)
 - [仓库结构](#仓库结构)
+- [FAQ](#faq)
 - [参与贡献](#参与贡献)
 - [引用](#引用)
 - [许可证](#许可证)
@@ -155,6 +156,20 @@ reharness bench --config examples/automationbench/quickstart-repeat.toml --phase
 | `reharness/adapters/automationbench.py` | 任务、业务工具、官方评分器、被退回检查与源清单的视图 |
 | `docs/` | 设计（`DESIGN.md`、`design/`）、计划、结果、日志、发布稿（中文为主） |
 | `reharness/improver/`（其余）、`reharness/memory/`、`reharness/train/` | 早先的留出筛选回路、memory sidecar（实测预设里都关着）、训练栈（没跑过）；留作记录 |
+
+## FAQ
+
+**reharness 是什么？** 一个开源的自我改进 agent harness：有界的递归自我改进（RSI）——由 LLM agent 自己的模型，从 agent 自己被退回的运行里，修订 agent 运行其中的 harness（工具、hook、技能、提示词），每个改动都先真跑一次证明才采用。
+
+**这算递归自我改进吗？** 算有界的那种。agent 的模型改进 agent 的 harness；模型权重、评分器、反馈档、包契约、各项上界都冻结，做改动的修订会话自己也不被这个回路改进。这里的"有界 RSI"就是这个意思。
+
+**什么是 agent harness？** 模型之外让它成为 agent 的一切：agent 循环、能调的工具、模型与工具调用前后的 hook、技能、提示词、配置。reharness 把这些当成一个固定形状、有版本的 Harness 包，回路只改这个包。
+
+**和微调、提示词优化有什么不同？** 不改权重，也不拿分数去优化提示词。一个改动是一段 harness 工程——一个 guard、一个工具、一个技能——由一个读过失败运行、从没见过答案的编码会话写出来；只有实跑探针在同一请求上真跑一次并被接受才采用，而且只对这道题采用。
+
+**那会话学到的是什么？** 习惯，不是答案：写入前打开每个没读的源、数字由代码算而不是心算、算出来的值经工具而不是经模型。这些机制在互不相通的会话里各自出现，提示词里没有这些词。
+
+**能接我自己的 agent 和工具吗？** 能，通过适配器：基准的题、工具、评分器都在一个适配器后面，一套真实业务工具可以接在同一份包契约后面。见"仓库结构"和 CONTRIBUTING.md。
 
 ## 参与贡献
 
