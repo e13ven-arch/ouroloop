@@ -17,6 +17,8 @@
 **用户点头后（同日）。** 推送并合入 main（`b96d2d4`）；开了 GitHub Pages（main 的 docs/，https://e13ven-arch.github.io/reharness/）；建了 Release v0.5.0（现有 tag，说明取自 POSTS 文件）；arXiv 技术报告的提议用户已开成独立会话。**仍要用户做的。** 发 PyPI（要用户的 token）；Search Console / Bing Webmaster 验证 Pages 站点并请求索引、IndexNow；发帖；awesome 列表 PR；最大的一根杠杆是一篇 arXiv 技术报告（这类词的搜索结果被论文页占据），用户定。
 **自查后再改（用户："你自己 review 一下自己的网页设计，以及成果展示，别忘了我们用的还是 medium 模型，成果对比上可以更大胆一些"）。** 漏掉的有利事实：榜单上每个模型都在最高 effort（Opus 5.5 为 Max），我们全部数字是 effort medium。改：数字条、结果表、README 英 / 中首段与结果一节开头、社交预览图都标明"榜单 Max 42.47% / reharness medium 68%"，结果区标题改成这两个事实并列的大字；落地页新增"What a session built, unprompted"一节（税额题：源覆盖守卫、路由守卫、预估工具三张卡，三次探针的裁决，max 下站住而 medium 三次没到）；题集与设置不同的说明保留。
 
+**动态演示（用户："pages 里面适当的加入一些动图的演示，不能只写数字"）。** 落地页回路一节改成实时回放：左边一个终端面板逐行打出一条真实轨迹（finance-v24 的季度税额题）的浓缩版——首次运行（读表与邮件、聊天频道没开、心算后发邮件）→ 宿主评分"returned、被退回检查：预估邮件、期望值留在宿主"→ 开修订会话、读摘要与源清单（chat never read）与经验库 → 候选三文件 → 准入三项 ✓ → 探针 1（手算，returned）→ 会话再改 → 探针 2（工具未年化，returned）→ 探针 3（年化，accepted）→ 按题采用 → 第 2、3 次 accepted、稳态；右边六个状态卡（首次、修订会话、准入、实跑探针、按题采用、稳态）随回放点亮、完成打 ✓；进入视口自动播放、播完 6 秒后循环、有 ↻ replay 按钮；数字条进入视口时计数滚动；prefers-reduced-motion 下一次性全部显示。只用 agent 自己的行为与裁决，期望值不出现。本地起 http.server 在浏览器里跑过：回放与点亮正常，控制台无报错。
+
 ---
 
 ## 2026-10-27 宣传语、结果一节、可发现性：README 头部与仓库元数据；$0
