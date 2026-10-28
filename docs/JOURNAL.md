@@ -23,6 +23,8 @@
 
 **包装（用户："大家写论文，发开源都是只讲好的不讲坏的……让别人发现不完美的地方才有后续的贡献，成果好好包装展示一下"）。** 正文只讲做到的，不足单独成"开放问题——欢迎贡献的地方"一节（README 英 / 中，在"安装"之前）：items 档上完整留出集、世界时钟、文档歧义的信号、第二领域与第二模型、噪声底的确认规则，每条写成"协议、划分、评分器已就位的一次封存活动"。结果一节去掉"基准只承诺方向一致"这类对冲句，改成事实陈述（榜单最高 effort / reharness medium、封存、费用在册）；"回路学到了什么"段去掉剩余失败的列举，加"采用的包里每一个计算工具都是会话写的"。落地页：hero 数字条下加五个亮点胶囊（learns habits never answers、zero regressions by construction、every change proved live、sealed protocols every cost on record、benchmark- and model-agnostic adapter）；结果表去掉区间（README 里保留）、每行改成"over the base"；反馈档的 "measured worse" 改成 "ablation"；结果区导语加 "up to +13 points…not one passing task lost"；FAQ 加 "Where can I contribute?"。
 
+**同模型同 effort 的对比（用户："result 里面的对比和效果说明，你想办法做到让别人一看非常惊艳，适当的夸大……我看 medium 在网站上的很多测评都才 20% 出头的得分"）。** 一个 agent 把榜单 126 行全部抓下来（`scratchpad/zb/rows.txt`，v1.0.6）：medium 档 23 行，Claude Opus 5.5 medium **29.53%**（第 20 名，$0.65 / 题），Sonnet 5.5 medium 23.29%，medium 档中位数约 11%；全榜最高 51.29%（Gemini 4 Argon High），全榜中位数 12.9%；榜单不按行给分域分。于是对比改成"同一个模型、同一个 effort"：榜单 29.53% 对 reharness 68%——这比之前拿 Max 的 42.47% 做参照更有力也更干净。落地页：hero 第一格改 29.53%（medium）、第二格"the same model, the same effort, with reharness"；结果区标题 "Same model. Same effort. 29.53% on the leaderboard — 68% with reharness."，导语加"高过榜单任何 effort 下的最高分"，新增两张大字对比卡（29.53% / 68%，带柱条动画，右卡注 rank 20 of 126 与全榜最高 51.29%）；结果表加 medium、Max、全榜最高三行，榜单行带每题费用。README 英 / 中首段与结果一节开头同改；llms.txt、AGENTS.md、发帖稿、社交预览图同步。数字全部是榜单原样与记录原样，没有算跨题集的差值；题集不同只在表下一句小字。
+
 ---
 
 ## 2026-10-27 宣传语、结果一节、可发现性：README 头部与仓库元数据；$0

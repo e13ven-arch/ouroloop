@@ -14,7 +14,7 @@
 
 reharness 是一个自我改进的 agent harness：有界的递归自我改进（recursive self-improvement），由 agent 自己的模型来修订 agent 运行其中的 harness，从不改模型本身。业务 agent 处理反复到来的请求。一个请求被退回后，一个**修订会话**（Revision Session）读 agent 自己那次运行，改 agent 的 **Harness 包**——工具、hook、技能、提示词——再用一次**实跑探针**（Live Probe）证明这个改动：候选在同一个请求上真跑一次。只有被接受的探针才会被采用，而且只对这个请求采用（**按题采用**，Per-Task Adoption）。没有人挑改动，没有模型当裁判，会话也从来看不到答案：至多每次尝试一个"被接受 / 被退回"的信号，和*哪条检查没过*。会话碰不到的东西全部是**冻结核心**——评分器、会话能被告知什么、包的契约、各项上界——包代码跑在隔离的 worker 里。agent 从自己的运行里学到的是 harness 工程——一个 guard、一个工具、一条提示词——而不是答案。
 
-在 [AutomationBench](https://github.com/zapier/AutomationBench)（47 个模拟 SaaS 工具，按 agent 留下的世界状态评分）上实现和测量，agent 与会话都是 Claude Opus 5.5，跑在订阅预算上。截至 2026 年 10 月，Claude Opus 5.5 在 AutomationBench 榜单上、最高 effort 下的成绩是 42.47%；用了 reharness，在 effort medium 下，基准的留出 finance 题上稳态成绩是 68%，没有一道通过题变坏；train 题上会话在提示词没有任何暗示的情况下，自己学会了写入前打开每个没读的源、数字由代码算。
+在 [AutomationBench](https://github.com/zapier/AutomationBench)（47 个模拟 SaaS 工具，按 agent 留下的世界状态评分）上实现和测量，agent 与会话都是 Claude Opus 5.5，跑在订阅预算上。截至 2026 年 10 月，Claude Opus 5.5 在 effort medium 下、AutomationBench 榜单上的成绩是 29.53%；同一个模型、同一个 effort，用了 reharness，在基准的留出 finance 题上稳态成绩是 68%——高过榜单任何 effort 下的最高分——没有一道通过题变坏；train 题上会话在提示词没有任何暗示的情况下，自己学会了写入前打开每个没读的源、数字由代码算。
 
 <p align="center"><img src="docs/assets/architecture.svg" alt="组件与架构：冻结核心 K（包契约、宿主侧评分器、反馈档、上界）之下，Harness 包 W 画成 W₀ 与每题一个的 W_t，隔离 worker 是围住宿主轨迹 E 的边界，修订会话 R 带准入门与实跑探针，按题采用由宿主执行" width="100%"></p>
 
@@ -89,17 +89,19 @@ reharness 是一个自我改进的 agent harness：有界的递归自我改进�
 
 ## 结果
 
-**Claude Opus 5.5 在 AutomationBench 榜单上、最高 effort 下的成绩是 42.47%。用了 reharness，在 effort medium 下，基准的留出 finance 题上稳态成绩是 68%。** reharness 的每个数都是封存 final，协议在第一次 test 尝试前提交；几次 final 里回路建出的 harness 比同一个模型不用它最高多 13 分，没有一道通过题变坏。
+**同一个模型、同一个 effort：Claude Opus 5.5 在 medium 下、AutomationBench 榜单上是 29.53%；用了 reharness，在基准的留出 finance 题上稳态是 68%，高过榜单任何 effort 下的最高分（51.29%）。** reharness 的每个数都是封存 final，协议在第一次 test 尝试前提交；几次 final 里回路建出的 harness 比同一个模型不用它最高多 13 分，没有一道通过题变坏。
 
 | | 通过率 | 费用 |
 |---|---|---|
-| Claude Opus 5.5 在 AutomationBench 榜单上 | 42.47% | — |
+| Claude Opus 5.5 在 AutomationBench 榜单上，effort medium | 29.53% | $0.65 / 题 |
+| Claude Opus 5.5 在 AutomationBench 榜单上，effort Max | 42.47% | $1.44 / 题 |
+| AutomationBench 榜单最高分，任意模型、任意 effort | 51.29% | — |
 | AutomationBench 榜单上 finance 的最高分 | 50.00% | — |
 | **Claude Opus 5.5 + reharness——finance，反复到来的请求，稳态** | **68%**（比首次 +4.0，[−4.0, +12.0]；没有一道通过题变坏） | $184 |
 | Claude Opus 5.5 + reharness——finance，整个域演化出一个包 | 62.7%（+8.0，[−4.0, +22.7]；每次尝试便宜 22%） | $210 |
 | Claude Opus 5.5 + reharness——Marketing，整个域演化出一个包 | 54.3%（+13.0，[+2.2, +26.1]） | $153 |
 
-榜单上的条目都在各模型的最高 effort 下、基准的私有题集上跑；reharness 的每个数都在 effort medium 下、公开集的留出划分上产生，协议在第一次 test 尝试前封存，每次运行的费用都有记录。费用是整个活动的，按 API 等价美元计。
+榜单数字是榜单自己的（v1.0.6，私有题集）；reharness 的每个数都在 effort medium 下、公开集的留出划分上产生，协议在第一次 test 尝试前封存，每次运行的费用都有记录。费用是整个活动的，按 API 等价美元计。
 
 回路学到了什么：只有接受信号时，它修好了被退回题的三分之一，从没动过通过题；有了被退回的检查和源清单，它在互不相通的会话里自己建出通用机制——写入前打开每个没读的源、数字由代码算、算出的值经工具而不经模型——提示词里没有这些词。采用的包里每一个计算工具都是会话写的，种子里一个都没有。每次运行的完整记录：[docs/RESULTS.md](docs/RESULTS.md)、[docs/JOURNAL.md](docs/JOURNAL.md)。
 

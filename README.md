@@ -14,7 +14,7 @@
 
 reharness is a self-improving agent harness: bounded recursive self-improvement in which the agent's own model revises the harness the agent runs in, never the model. A business agent runs requests that repeat. When a request comes back returned, a **Revision Session** reads the agent's own run of it, changes the agent's **Harness Package** — its tools, hooks, skills, prompts — and proves the change with a **Live Probe**: the candidate runs the same request for real. Only a probe that comes back accepted is adopted, and only for that request (**Per-Task Adoption**). No person picks the change, no model judges it, and the session is never shown an answer: at most *accepted or returned* per attempt, and *which check failed*. Everything the session cannot touch is a **Frozen Core** — the scorer, what the session may be told, the package's contract, the bounds — and package code runs in an isolated worker. What the agent learns from its own runs is harness engineering — a guard, a tool, a prompt — not an answer.
 
-Built and measured on [AutomationBench](https://github.com/zapier/AutomationBench) (47 simulated SaaS tools, scored on the world state the agent leaves behind) with Claude Opus 5.5 as both the agent and the session, on a subscription budget. As of October 2026, Claude Opus 5.5 scores 42.47% on the AutomationBench leaderboard at its highest effort; with reharness, at effort medium, it scores 68% at steady state on the benchmark's held-out finance tasks, with no passing task lost; on train tasks a session learned, with no hint in its prompt, to open every unread source before writing and to derive figures by code.
+Built and measured on [AutomationBench](https://github.com/zapier/AutomationBench) (47 simulated SaaS tools, scored on the world state the agent leaves behind) with Claude Opus 5.5 as both the agent and the session, on a subscription budget. As of October 2026, Claude Opus 5.5 at effort medium scores 29.53% on the AutomationBench leaderboard; the same model at the same effort, with reharness, scores 68% at steady state on the benchmark's held-out finance tasks — above the top of the leaderboard at any effort — with no passing task lost; on train tasks a session learned, with no hint in its prompt, to open every unread source before writing and to derive figures by code.
 
 <p align="center"><img src="docs/assets/architecture.svg" alt="Components and architecture: the Frozen Core K (Package Contract, Host-Side Scorer, Feedback Tier, Bounds) over the Harness Package W as W₀ and one W_t per task, the Isolated Worker as a boundary around the Host Transcript E, the Revision Session R with its admissibility gate and Live Probe, and Per-Task Adoption applied by the host" width="100%"></p>
 
@@ -89,17 +89,19 @@ Tasks run in parallel, a task's encounters in order, and every encounter is on r
 
 ## Results
 
-**Claude Opus 5.5 scores 42.47% on the AutomationBench leaderboard, at its highest effort. With reharness, at effort medium, it scores 68% at steady state on the benchmark's held-out finance tasks.** Every reharness number is a sealed final, the protocol committed before the first test attempt; across the finals the harness the loop built gained up to +13 points over the same model without it, and not one passing task was lost.
+**Same model, same effort: Claude Opus 5.5 at medium scores 29.53% on the AutomationBench leaderboard; with reharness it scores 68% at steady state on the benchmark's held-out finance tasks, above the top of the leaderboard at any effort (51.29%).** Every reharness number is a sealed final, the protocol committed before the first test attempt; across the finals the harness the loop built gained up to +13 points over the same model without it, and not one passing task was lost.
 
 | | Pass rate | Cost |
 |---|---|---|
-| Claude Opus 5.5 on the AutomationBench leaderboard | 42.47% | — |
+| Claude Opus 5.5 on the AutomationBench leaderboard, effort medium | 29.53% | $0.65 / task |
+| Claude Opus 5.5 on the AutomationBench leaderboard, effort Max | 42.47% | $1.44 / task |
+| Best entry on the AutomationBench leaderboard, any model, any effort | 51.29% | — |
 | Best finance score on the AutomationBench leaderboard | 50.00% | — |
 | **Claude Opus 5.5 with reharness — finance, requests that repeat, steady state** | **68%** (+4.0 over the first pass, [−4.0, +12.0]; no passing task lost) | $184 |
 | Claude Opus 5.5 with reharness — finance, one evolved package for the domain | 62.7% (+8.0, [−4.0, +22.7]; each attempt 22% cheaper) | $210 |
 | Claude Opus 5.5 with reharness — Marketing, one evolved package for the domain | 54.3% (+13.0, [+2.2, +26.1]) | $153 |
 
-Leaderboard entries run at each model's highest effort on the benchmark's private set; every reharness number was produced at effort medium on the public set's held-out split, under a protocol sealed before the first test attempt, with every run's cost on record. Costs are for the whole activity, in API-equivalent dollars.
+Leaderboard figures are the board's own (v1.0.6, its private set); every reharness number was produced at effort medium on the public set's held-out split, under a protocol sealed before the first test attempt, with every run's cost on record. Costs are for the whole activity, in API-equivalent dollars.
 
 What the loop learned: with the Acceptance Signal alone it corrected a third of the returned tasks and never touched a passing one; with the Rejected Checks and the Source Inventory it built generic mechanisms by itself — open every unread source before writing, derive figures by code, route a derived value through a tool — in independent sessions with none of those words in its prompt. Every calculation tool in an adopted package was written by a session; the seed has none. Full records, every run: [docs/RESULTS.md](docs/RESULTS.md), [docs/JOURNAL.md](docs/JOURNAL.md).
 
