@@ -14,7 +14,7 @@
 
 **仓库侧已做。** README 英 / 中各加 FAQ 一节（六问：是什么、算不算 RSI、什么是 agent harness、与微调 / 提示词优化的区别、学到什么、能否接自己的工具；答案定义式、40～60 词）；首段加日期（"截至 2026 年 10 月"）；根目录 `llms.txt`、`AGENTS.md`；`docs/index.md` + `docs/_config.yml`（GitHub Pages 站点页：标题含 self-improving agent harness / bounded RSI，两张图，引用条目；排除内部文档）；发布稿词汇改到现在的口径（improver → Revision Session、sent back → returned、real try → Live Probe）；`docs/history/POSTS_2026-10-28.md`：Show HN、Reddit、X 线程、知乎 / V2EX 的稿子与 v0.5.0 Release 说明。`python -m build` 本地构建通过（wheel + sdist），PyPI 名 `reharness` 未被占。
 
-**要用户做或点头的。** 开 Pages（docs/ 目录，API 一条命令，公开站点）；建 Release v0.5.0（公开）；发 PyPI（要用户的 token）；Search Console / Bing Webmaster 验证 Pages 站点并请求索引、IndexNow；发帖；awesome 列表 PR；最大的一根杠杆是一篇 arXiv 技术报告（这类词的搜索结果被论文页占据），用户定。
+**用户点头后（同日）。** 推送并合入 main（`b96d2d4`）；开了 GitHub Pages（main 的 docs/，https://e13ven-arch.github.io/reharness/）；建了 Release v0.5.0（现有 tag，说明取自 POSTS 文件）；arXiv 技术报告的提议用户已开成独立会话。**仍要用户做的。** 发 PyPI（要用户的 token）；Search Console / Bing Webmaster 验证 Pages 站点并请求索引、IndexNow；发帖；awesome 列表 PR；最大的一根杠杆是一篇 arXiv 技术报告（这类词的搜索结果被论文页占据），用户定。
 ---
 
 ## 2026-10-27 宣传语、结果一节、可发现性：README 头部与仓库元数据；$0
