@@ -1,0 +1,4 @@
+title: reharness
+description: A self-improving agent harness — bounded recursive self-improvement of an LLM agent's tools, hooks, skills and prompts, proved live
+theme: jekyll-theme-minimal
+exclude: [design/, history/, DESIGN.md, JOURNAL.md, PLAN.md, RESULTS.md, SURVEY_RSI_FRAMEWORKS.md, TRAINING_HOSTS.md]

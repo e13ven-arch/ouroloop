@@ -8,6 +8,15 @@
 
 ---
 
+## 2026-10-28 SEO / GEO 与 star：FAQ、llms.txt、AGENTS.md、Pages 页、发帖稿；$0
+
+**现状（用户："这个名字的 seo 和 geo 都要做一下，现在搜 reharness 都搜不到，最好是搜 rsi 和 harness 能搜到，想办法增长一下 star"）。** 一个研究 agent（网页搜索，2026-10-28）：仓库在索引里完全没有（site: 查询无结果；新仓库通常数周）；"reharness" 撞英文动词 reharness（dictionary.com 收录）与 Harness.io；"self-improving agent harness"、"recursive self-improvement agent"、"RSI agent framework"、"harness engineering LLM agents" 这些词的前五名几乎全是 arXiv 论文、HF 论文页与 ecosyste.ms 聚合页，github.com 本身很少直接上榜。有据可查的 GEO 做法：Google 官方不要求 llms.txt 之类文件（Mueller：目前没有 AI 系统用它），正文为 HTML 文本、结构化数据与可见文本一致；Princeton GEO（KDD '24）：加统计数字、引语、引用可提升生成引擎可见度；benchlm.ai：先在 Bing 有排名（ChatGPT 引用约 87% 与 Bing 前十重合）、首段 100 词内一句"实体 + 数字 + 日期"的自含陈述、40～60 词的 FAQ 答案；Pages 站点进 Search Console 并手动请求索引、Bing 用 IndexNow（数小时内）；AGENTS.md + llms.txt 便宜可做。
+
+**仓库侧已做。** README 英 / 中各加 FAQ 一节（六问：是什么、算不算 RSI、什么是 agent harness、与微调 / 提示词优化的区别、学到什么、能否接自己的工具；答案定义式、40～60 词）；首段加日期（"截至 2026 年 10 月"）；根目录 `llms.txt`、`AGENTS.md`；`docs/index.md` + `docs/_config.yml`（GitHub Pages 站点页：标题含 self-improving agent harness / bounded RSI，两张图，引用条目；排除内部文档）；发布稿词汇改到现在的口径（improver → Revision Session、sent back → returned、real try → Live Probe）；`docs/history/POSTS_2026-10-28.md`：Show HN、Reddit、X 线程、知乎 / V2EX 的稿子与 v0.5.0 Release 说明。`python -m build` 本地构建通过（wheel + sdist），PyPI 名 `reharness` 未被占。
+
+**要用户做或点头的。** 开 Pages（docs/ 目录，API 一条命令，公开站点）；建 Release v0.5.0（公开）；发 PyPI（要用户的 token）；Search Console / Bing Webmaster 验证 Pages 站点并请求索引、IndexNow；发帖；awesome 列表 PR；最大的一根杠杆是一篇 arXiv 技术报告（这类词的搜索结果被论文页占据），用户定。
+---
+
 ## 2026-10-27 宣传语、结果一节、可发现性：README 头部与仓库元数据；$0
 
 **宣传语（用户："An agent that gets the same request right the second time. 这个宣传语不对劲吧，看起来也不像 RSI 啊，也不符合 harness 啊，优化一下，然后最好能够确保别人能搜到我们的仓库，能够提升一下 star"）。** 一个工作流：四个角度（RSI、harness、证明步骤、用户所得）各出六条英中宣传语与一条 GitHub 描述；两个研究 agent（GitHub 侧：当前描述还是 ouroloop 时代的"LLM 改小决策模型"、topics 为空；同类主题的 topic 统计——llm、ai-agents、agentic-ai、recursive-self-improvement、harness-engineering、harness；README 侧：检索词出现位置、首段重写、star 缺口）；三位评委（研究者、平台工程师、双语编辑）按 RSI / harness / 真实 / 好记 / 中文地道各 0～3 分；一个合成者。10 个 agent。旧标语只说结果，没说谁在改、改什么，还会被读成"记住上次答案"。定稿 **"A self-improving agent rewrites its own harness, not its model, and proves each change live."** / **"自我改进的 agent：改写自己的 harness 而不是模型，每个改动都真跑一次来证明。"**（三位评委一致第一，与第二名"edit the harness, not the model"合并）；"recursive" 不进标语——修订会话自身不被回路改进，直接写 recursive 略有拔高——放进 GitHub 描述、README 首段与 CITATION 的 abstract 并带 "bounded"。落到四处：两份 README 第 5 行、BibTeX title、发布稿两个标题。

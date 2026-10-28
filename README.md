@@ -14,7 +14,7 @@
 
 reharness is a self-improving agent harness: bounded recursive self-improvement in which the agent's own model revises the harness the agent runs in, never the model. A business agent runs requests that repeat. When a request comes back returned, a **Revision Session** reads the agent's own run of it, changes the agent's **Harness Package** — its tools, hooks, skills, prompts — and proves the change with a **Live Probe**: the candidate runs the same request for real. Only a probe that comes back accepted is adopted, and only for that request (**Per-Task Adoption**). No person picks the change, no model judges it, and the session is never shown an answer: at most *accepted or returned* per attempt, and *which check failed*. Everything the session cannot touch is a **Frozen Core** — the scorer, what the session may be told, the package's contract, the bounds — and package code runs in an isolated worker. What the agent learns from its own runs is harness engineering — a guard, a tool, a prompt — not an answer.
 
-Built and measured on [AutomationBench](https://github.com/zapier/AutomationBench) (47 simulated SaaS tools, scored on the world state the agent leaves behind) with Claude Opus 5.5 as both the agent and the session, on a subscription budget. Claude Opus 5.5 scores 42.47% on the AutomationBench leaderboard; with reharness, on the benchmark's held-out finance tasks, it scores 68% at steady state, with no passing task lost; on train tasks a session learned, with no hint in its prompt, to open every unread source before writing and to derive figures by code.
+Built and measured on [AutomationBench](https://github.com/zapier/AutomationBench) (47 simulated SaaS tools, scored on the world state the agent leaves behind) with Claude Opus 5.5 as both the agent and the session, on a subscription budget. As of October 2026, Claude Opus 5.5 scores 42.47% on the AutomationBench leaderboard; with reharness, on the benchmark's held-out finance tasks, it scores 68% at steady state, with no passing task lost; on train tasks a session learned, with no hint in its prompt, to open every unread source before writing and to derive figures by code.
 
 <p align="center"><img src="docs/assets/architecture.svg" alt="Components and architecture: the Frozen Core K (Package Contract, Host-Side Scorer, Feedback Tier, Bounds) over the Harness Package W as W₀ and one W_t per task, the Isolated Worker as a boundary around the Host Transcript E, the Revision Session R with its admissibility gate and Live Probe, and Per-Task Adoption applied by the host" width="100%"></p>
 
@@ -29,6 +29,7 @@ Built and measured on [AutomationBench](https://github.com/zapier/AutomationBenc
 - [Install](#install)
 - [Run](#run)
 - [Repository layout](#repository-layout)
+- [FAQ](#faq)
 - [Contributing](#contributing)
 - [Citation](#citation)
 - [License](#license)
@@ -155,6 +156,20 @@ A config names a preset (`[harness] preset`) and may only tighten it ([docs/desi
 | `reharness/adapters/automationbench.py` | tasks, business tools, the official scorer, the Rejected Checks and Source Inventory views |
 | `docs/` | the design (`DESIGN.md`, `design/`), the plan, the results, the journal, the announcement drafts (in Chinese, except this README and the announcement) |
 | `reharness/improver/` (the rest), `reharness/memory/`, `reharness/train/` | the earlier held-out screen loop, the memory sidecar (off in every measured preset) and the training stack (never run); kept for the record |
+
+## FAQ
+
+**What is reharness?** reharness is an open-source self-improving agent harness: a bounded form of recursive self-improvement (RSI) in which an LLM agent's own model revises the harness the agent runs in — its tools, hooks, skills and prompts — from the agent's own returned runs, and proves every change with a live run before it is adopted.
+
+**Is this recursive self-improvement?** It is the bounded kind. The agent's model improves the agent's harness; the model's weights, the scorer, the feedback tier, the package contract and the bounds are frozen, and the Revision Session that makes the change is not itself improved by the loop. That is what "bounded RSI" means here.
+
+**What is an agent harness?** Everything around the model that makes it an agent: the agent loop, the tools it may call, the hooks that run before and after model and tool calls, its skills, prompts and config. reharness treats that as one versioned Harness Package with a fixed shape, and the loop changes only that package.
+
+**How is this different from fine-tuning or prompt optimization?** No weights change and no prompt is optimized against a score. A change is a piece of harness engineering — a guard, a tool, a skill — written by a coding session that has read the failing run and is never shown the answer; it is adopted only after a Live Probe runs the same request for real and comes back accepted, and only for that task.
+
+**What does the session learn, then?** Habits, not answers: open every unread source before writing, derive figures by code instead of in the model's head, route a derived value through a tool. Those mechanisms appeared in independent sessions with none of the words in the prompt.
+
+**Can I run it on my own agent and tools?** Yes, through an adapter: the benchmark's tasks, tools and scorer sit behind one adapter, and a real business tool set fits behind the same Package Contract. See Repository layout and CONTRIBUTING.md.
 
 ## Contributing
 
