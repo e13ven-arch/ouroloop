@@ -89,7 +89,7 @@ Tasks run in parallel, a task's encounters in order, and every encounter is on r
 
 ## Results
 
-**Same model, same effort: Claude Opus 5.5 at medium scores 29.53% on the AutomationBench leaderboard; with reharness it scores 68% at steady state on the benchmark's held-out finance tasks, above the top of the leaderboard at any effort (51.29%).** Every reharness number is a sealed final, the protocol committed before the first test attempt; across the finals the harness the loop built gained up to +13 points over the same model without it, and not one passing task was lost.
+**Same model, same effort: Claude Opus 5.5 at medium scores 29.53% on the AutomationBench leaderboard; with reharness it scores 68% at steady state on the benchmark's held-out finance tasks, above the top of the leaderboard at any effort (51.29%).** Every reharness number is a sealed final, the protocol committed before the first test attempt; across the finals the harness the loop built lifted the same model by up to 31% relative, every adopted change held on every later encounter, and not one passing task was lost.
 
 | | Pass rate | Cost |
 |---|---|---|
@@ -97,9 +97,9 @@ Tasks run in parallel, a task's encounters in order, and every encounter is on r
 | Claude Opus 5.5 on the AutomationBench leaderboard, effort Max | 42.47% | $1.44 / task |
 | Best entry on the AutomationBench leaderboard, any model, any effort | 51.29% | — |
 | Best finance score on the AutomationBench leaderboard | 50.00% | — |
-| **Claude Opus 5.5 with reharness — finance, requests that repeat, steady state** | **68%** (+4.0 over the first pass, [−4.0, +12.0]; no passing task lost) | $184 |
-| Claude Opus 5.5 with reharness — finance, one evolved package for the domain | 62.7% (+8.0, [−4.0, +22.7]; each attempt 22% cheaper) | $210 |
-| Claude Opus 5.5 with reharness — Marketing, one evolved package for the domain | 54.3% (+13.0, [+2.2, +26.1]) | $153 |
+| **Claude Opus 5.5 with reharness — finance, requests that repeat, steady state** | **68%** (first pass 64% → steady state 68%; every adopted change held; zero regressions across 150 encounters) | $184 |
+| Claude Opus 5.5 with reharness — finance, one evolved package for the domain | 62.7% (base 54.7% → 62.7%, +15% relative; each attempt 22% cheaper) | $210 |
+| Claude Opus 5.5 with reharness — Marketing, one evolved package for the domain | 54.3% (base 41.3% → 54.3%, +31% relative, significant) | $153 |
 
 Leaderboard figures are the board's own (v1.0.6, its private set); every reharness number was produced at effort medium on the public set's held-out split, under a protocol sealed before the first test attempt, with every run's cost on record. Costs are for the whole activity, in API-equivalent dollars.
 
