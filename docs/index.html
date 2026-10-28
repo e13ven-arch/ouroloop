@@ -118,6 +118,26 @@ h2{font-size:clamp(26px,3.2vw,40px);letter-spacing:-.025em;line-height:1.12;marg
 @media (max-width:900px){.replay{grid-template-columns:1fr}.term{min-height:380px}}
 @media (prefers-reduced-motion:reduce){.ln{animation:none;opacity:1;transform:none}.cursor{animation:none}}
 
+/* animated flow */
+.flowwrap{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:18px 10px 6px;box-shadow:0 30px 80px rgba(0,0,0,.45)}
+#flow{display:block;width:100%;height:auto}
+#flow .node rect,#flow .node path{fill:#0b1220;stroke:#334155;stroke-width:1.5;transition:.35s}
+#flow .node .t{fill:#e5edf7;font-size:15px;font-weight:700}
+#flow .node .s{fill:#64748b;font-size:11.5px}
+#flow .node .verdict{font-size:12px;font-weight:700;letter-spacing:.04em}
+#flow .node.lit rect,#flow .node.lit path{stroke:#86efac;fill:#0f2a1a;filter:url(#glow)}
+#flow .node.red.lit rect{stroke:#f87171;fill:#2a0f14}
+#flow .node.blue.lit rect{stroke:#60a5fa;fill:#0f1c33}
+#flow .node.amber.lit path{stroke:#fbbf24;fill:#2a2208}
+#flow .node.gate.lit path{stroke:#fbbf24;fill:#2a2208}
+#flow .node.gate.ret path{stroke:#f87171;fill:#2a0f14}
+#flow .node.gate.acc path{stroke:#22c55e;fill:#0f2a1a}
+#flow .verdict.ret{fill:#fca5a5}#flow .verdict.acc{fill:#86efac}#flow .verdict.ok{fill:#fde68a}
+#flow .edges path.flow{stroke:#86efac;stroke-dasharray:8 6;animation:dash .6s linear infinite}
+#flow .edges path.trail{stroke:#3f6e4f}
+@keyframes dash{to{stroke-dashoffset:-14}}
+@media (prefers-reduced-motion:reduce){#flow .edges path.flow{animation:none}}
+
 /* figure plates */
 .plate{background:#fff;border-radius:var(--radius);padding:10px;border:1px solid var(--line2);box-shadow:0 30px 80px rgba(0,0,0,.45)}
 .plate img{display:block;width:100%;height:auto;border-radius:8px}
@@ -181,7 +201,7 @@ footer a{color:var(--muted);text-decoration:none}
 
 <nav><div class="wrap">
   <a class="brand" href="#"><i></i>reharness</a>
-  <ul><li><a href="#loop">The loop</a></li><li><a href="#architecture">Architecture</a></li><li><a href="#learned">What it built</a></li><li><a href="#tiers">Feedback tiers</a></li><li><a href="#results">Results</a></li><li><a href="#faq">FAQ</a></li></ul>
+  <ul><li><a href="#loop">The loop</a></li><li><a href="#architecture">How it works</a></li><li><a href="#learned">What it built</a></li><li><a href="#tiers">Feedback tiers</a></li><li><a href="#results">Results</a></li><li><a href="#faq">FAQ</a></li></ul>
   <a class="btn" href="https://github.com/e13ven-arch/reharness">GitHub ↗</a>
 </div></nav>
 
@@ -216,24 +236,65 @@ footer a{color:var(--muted);text-decoration:none}
 </div></section>
 
 <section id="architecture"><div class="wrap">
-  <div class="kicker">Architecture</div>
-  <h2>Four things, and a line between them.</h2>
-  <p class="sub">S = (W, R, E; K): the package a session may change, the session that changes it, the transcript it reads, and the Frozen Core that bounds all three.</p>
-  <figure class="plate" style="margin:0"><img src="assets/architecture.svg" alt="Components and architecture of reharness" loading="lazy"></figure>
-  <div class="cap">Figure 1 · the Frozen Core holds four invariants; the worker is a boundary, not a component; adoption is applied by the host, outside the session.</div>
+  <div class="kicker">How it works · animated</div>
+  <h2>Watch the loop run.</h2>
+  <p class="sub">One request, met three times. The light follows the run: scored on the host, returned to a session, a candidate admitted and probed, adopted for this task only, and the later encounters holding. The static figures are in the <a href="https://github.com/e13ven-arch/reharness#architecture">README</a>.</p>
+  <div class="flowwrap">
+  <svg id="flow" viewBox="0 0 1230 580" xmlns="http://www.w3.org/2000/svg" font-family="Inter, system-ui, sans-serif" role="img" aria-label="Animated flow of the reharness loop">
+    <defs>
+      <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#475569"/></marker>
+      <filter id="glow"><feGaussianBlur stdDeviation="4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    </defs>
+    <!-- edges -->
+    <g class="edges" fill="none" stroke="#334155" stroke-width="2" marker-end="url(#ah)">
+      <path id="e1" d="M40 80 L205 80"/>
+      <path id="e2" d="M395 80 L505 80"/>
+      <path id="e3" d="M695 80 L810 80"/>
+      <path id="e4" d="M880 110 L880 242"/>
+      <path id="e5" d="M785 270 L735 270"/>
+      <path id="e6" d="M545 270 L475 270"/>
+      <path id="e7" d="M325 270 L255 270"/>
+      <path id="e8" d="M160 242 L160 160 L600 160 L600 108"/>
+      <path id="e11" d="M880 110 L880 140 L1090 140 L1090 242"/>
+      <path id="e12" d="M1090 298 L1090 432"/>
+      <path id="e12b" d="M1090 298 L1090 360 L820 360 L820 432"/>
+      <path id="e13" d="M1090 488 L1090 530 L40 530 L40 80 L205 80"/>
+      <path id="e14" d="M950 80 L985 80"/>
+      <path id="e15" d="M880 432 L880 298" stroke-dasharray="4 4"/>
+    </g>
+    <!-- edge labels -->
+    <g class="elabels" font-size="12" fill="#64748b">
+      <text x="122" y="70" text-anchor="middle">request t · W_t</text>
+      <text x="380" y="152">the world after the run</text>
+      <text x="892" y="182">returned → a session</text>
+      <text x="985" y="132">accepted → adopt · none left → W_t stays</text>
+      <text x="955" y="352" text-anchor="end">tree + lesson</text>
+      <text x="892" y="372">read first</text>
+      <text x="565" y="548" text-anchor="middle">later encounters run the task's own W_t</text>
+      <text x="300" y="120" text-anchor="middle" fill="#475569">encounter 1: W₀</text>
+    </g>
+    <!-- nodes -->
+    <g class="node" id="n-run"><rect x="205" y="52" width="190" height="56" rx="10"/><text x="300" y="76" text-anchor="middle" class="t">Run on W_t</text><text x="300" y="94" text-anchor="middle" class="s">isolated worker · fresh world</text></g>
+    <g class="node red" id="n-scorer"><rect x="505" y="52" width="190" height="56" rx="10"/><text x="600" y="76" text-anchor="middle" class="t">Host-Side Scorer</text><text x="600" y="94" text-anchor="middle" class="s">grading rows never leave</text></g>
+    <g class="node gate" id="n-gate"><path d="M880 50 L950 80 L880 110 L810 80 Z"/><text x="880" y="84" text-anchor="middle" class="t">accepted?</text><text id="verdict" x="880" y="36" text-anchor="middle" class="verdict"></text></g>
+    <g class="node green" id="n-done"><rect x="985" y="52" width="210" height="56" rx="10"/><text x="1090" y="76" text-anchor="middle" class="t">Finished</text><text x="1090" y="94" text-anchor="middle" class="s">no session · W_t never revised</text></g>
+    <g class="node blue" id="n-session"><rect x="785" y="242" width="190" height="56" rx="10"/><text x="880" y="266" text-anchor="middle" class="t">Revision Session</text><text x="880" y="284" text-anchor="middle" class="s">reads the run · no answer</text></g>
+    <g class="node blue" id="n-cand"><rect x="545" y="242" width="190" height="56" rx="10"/><text x="640" y="266" text-anchor="middle" class="t">Candidate W′</text><text x="640" y="284" text-anchor="middle" class="s">W_t + diff</text></g>
+    <g class="node gate amber" id="n-adm"><path d="M400 240 L475 270 L400 300 L325 270 Z"/><text x="400" y="274" text-anchor="middle" class="t">admissible?</text><text id="adm" x="400" y="226" text-anchor="middle" class="verdict"></text></g>
+    <g class="node blue" id="n-probe"><rect x="65" y="242" width="190" height="56" rx="10"/><text x="160" y="266" text-anchor="middle" class="t">Live Probe</text><text x="160" y="284" text-anchor="middle" class="s">W′ on the same request</text></g>
+    <g class="node green" id="n-adopt"><rect x="995" y="242" width="200" height="56" rx="10"/><text x="1095" y="266" text-anchor="middle" class="t">Per-Task Adoption</text><text x="1095" y="284" text-anchor="middle" class="s">by the host · as it ran</text></g>
+    <g class="node green" id="n-wt"><rect x="995" y="432" width="200" height="56" rx="10"/><text x="1095" y="456" text-anchor="middle" class="t">W_t</text><text x="1095" y="474" text-anchor="middle" class="s">this task's package only</text></g>
+    <g class="node" id="n-lib"><rect x="725" y="432" width="190" height="56" rx="10"/><text x="820" y="456" text-anchor="middle" class="t">Experience Library</text><text x="820" y="474" text-anchor="middle" class="s">the only channel between tasks</text></g>
+    <!-- the moving light -->
+    <circle id="dot" r="7" fill="#86efac" filter="url(#glow)" opacity="0"><animateMotion id="mv" dur="1s" fill="freeze" begin="indefinite"><mpath href="#e1"/></animateMotion></circle>
+    <text id="caption" x="615" y="570" text-anchor="middle" font-size="13" fill="#94a3b8"></text>
+  </svg>
+  </div>
   <div class="cols">
     <div class="col w"><div class="k">W · Harness Package</div><h3>The only thing that changes</h3><ul><li>Agent loop, tools, hooks at six sites, prompts, skills, config, one manifest</li><li>W₀ is the base; W_t is one task's adopted package, else W₀</li><li>Fixed shape; prompts may only grow; the manifest must equal the diff</li></ul></div>
     <div class="col r"><div class="k">R · Revision Session</div><h3>Told little, must prove much</h3><ul><li>Acceptance Signal, Rejected Checks, Run Digest, Source Inventory</li><li>Edits a copy; the candidate is taken as the diff, never as its claim</li><li>Proves it with a Live Probe in the isolated worker</li></ul></div>
     <div class="col kk"><div class="k">K · Frozen Core</div><h3>Fixed for the whole loop</h3><ul><li>Host-Side Scorer: grading rows never leave the host</li><li>Feedback Tier: the one boundary; never an expected value</li><li>Package Contract: no answer in the package. Bounds no session can raise</li></ul></div>
   </div>
-</div></section>
-
-<section><div class="wrap">
-  <div class="kicker">How one improvement happens</div>
-  <h2>Every run passes through the scorer. Every rule is a gate.</h2>
-  <p class="sub">Two return edges: probes left, the session tries again with the probe's run beside the first; and the Experience Library, the only channel between tasks.</p>
-  <figure class="plate" style="margin:0"><img src="assets/one-improvement.svg" alt="How one improvement happens in reharness" loading="lazy"></figure>
-  <div class="cap">Figure 2 · the worked example beneath the flow is a quarterly tax estimate drawn from one real trace: the session built a source-coverage guard, a routing guard and an estimate tool; the third probe was accepted and held.</div>
 </div></section>
 
 <section id="learned"><div class="wrap">
@@ -368,6 +429,63 @@ reharness bench --config examples/automationbench/quickstart-repeat.toml --phase
   if('IntersectionObserver' in window){
     new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting&&!started){started=true;play();}})},{threshold:.3}).observe(document.getElementById('term'));
   }else{play();}
+  // ---- animated flow ----
+  (function(){
+    var svg=document.getElementById('flow');if(!svg)return;
+    var dot=document.getElementById('dot'),mv=document.getElementById('mv'),mp=mv.querySelector('mpath'),cap=document.getElementById('caption');
+    var verdict=document.getElementById('verdict'),adm=document.getElementById('adm');
+    var N=function(id){return document.getElementById(id)};
+    var T=[
+      ['e1','n-run',900,'encounter 1: the request runs on W₀ in a fresh world'],
+      ['e2','n-scorer',700,'the world after the run is scored on the host'],
+      ['e3','n-gate',600,'returned — the session is told the verdict and which check failed',['ret','returned']],
+      ['e4','n-session',800,'a Revision Session opens, bound to this task: it reads the run, never an answer'],
+      ['e5','n-cand',600,'it edits a copy: the candidate is the diff'],
+      ['e6','n-adm',500,'the host checks admissibility — contract, no one-task literal, changed; no model asked',['ok','✓']],
+      ['e7','n-probe',600,'probe 1: W′ runs the same request for real'],
+      ['e8','n-scorer',1100,'scored on the host'],
+      ['e3','n-gate',600,'probe 1 returned — probes left, the session sees the new run beside the first',['ret','returned']],
+      ['e4','n-session',800,'the session changes the candidate'],
+      ['e5','n-cand',500,''],['e6','n-adm',450,'admissible',['ok','✓']],['e7','n-probe',500,'probe 2'],['e8','n-scorer',1000,''],
+      ['e3','n-gate',600,'probe 2 returned',['ret','returned']],
+      ['e4','n-session',700,'the session changes the candidate again'],
+      ['e5','n-cand',500,''],['e6','n-adm',450,'admissible',['ok','✓']],['e7','n-probe',500,'probe 3'],['e8','n-scorer',1000,''],
+      ['e3','n-gate',600,'probe 3 accepted',['acc','accepted']],
+      ['e11','n-adopt',1000,'the host adopts W′ as it ran — for this task only; no judge, no person'],
+      ['e12','n-wt',600,'W_t := W′'],
+      ['e12b','n-lib',900,'the tree and its lesson enter the Experience Library'],
+      ['e15','n-session',600,'the next returned request\'s session reads it first'],
+      ['e13','n-run',2200,'encounter 2: the task runs on its own W_t'],
+      ['e2','n-scorer',700,''],
+      ['e3','n-gate',600,'accepted',['acc','accepted']],
+      ['e14','n-done',600,'finished — no session; W_t is never revised'],
+      ['e13','n-run',2200,'encounter 3: W_t again'],
+      ['e2','n-scorer',700,''],
+      ['e3','n-gate',600,'accepted — steady state',['acc','accepted']],
+      ['e14','n-done',600,'held']
+    ];
+    var reduced=window.matchMedia('(prefers-reduced-motion: reduce)').matches,k=0,timer=null,lastEdge=null;
+    function reset(){svg.querySelectorAll('.node').forEach(function(n){n.classList.remove('lit','ret','acc')});svg.querySelectorAll('.edges path').forEach(function(p){p.classList.remove('flow','trail')});verdict.textContent='';adm.textContent='';cap.textContent='';dot.setAttribute('opacity','0');}
+    function step(){
+      if(k>=T.length){timer=setTimeout(function(){k=0;reset();step();},5000);return;}
+      var s=T[k++],edge=N(s[0]),node=N(s[1]);
+      if(lastEdge){lastEdge.classList.remove('flow');lastEdge.classList.add('trail');}
+      lastEdge=edge;edge.classList.add('flow');
+      mp.setAttribute('href','#'+s[0]);mp.setAttributeNS('http://www.w3.org/1999/xlink','xlink:href','#'+s[0]);
+      mv.setAttribute('dur',(s[2]/1000)+'s');dot.setAttribute('opacity','1');mv.beginElement();
+      if(s[3])cap.textContent=s[3];
+      timer=setTimeout(function(){
+        svg.querySelectorAll('.node.lit').forEach(function(n){if(n!==node)n.classList.remove('lit')});
+        node.classList.add('lit');
+        if(s[1]==='n-gate'){node.classList.remove('ret','acc');node.classList.add(s[4][0]);verdict.textContent=s[4][1];verdict.setAttribute('class','verdict '+s[4][0]);}
+        if(s[1]==='n-adm'){adm.textContent=s[4][1];adm.setAttribute('class','verdict ok');}
+        timer=setTimeout(step,s[1]==='n-gate'||s[1]==='n-adopt'?900:350);
+      },s[2]);
+    }
+    if(reduced){svg.querySelectorAll('.node').forEach(function(n){n.classList.add('lit')});cap.textContent='the loop: run → score → returned → session → candidate → admissible → probe → score → accepted → adopted for this task → later encounters hold';return;}
+    var begun=false;
+    if('IntersectionObserver' in window){new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting&&!begun){begun=true;step();}})},{threshold:.35}).observe(svg);}else{step();}
+  })();
   // counters
   var nums=document.querySelectorAll('.stat .n');
   function count(el){
