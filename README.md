@@ -26,6 +26,7 @@ Built and measured on [AutomationBench](https://github.com/zapier/AutomationBenc
 - [Feedback tiers](#feedback-tiers)
 - [Experiment design](#experiment-design)
 - [Results](#results)
+- [Open problems](#open-problems--where-to-contribute)
 - [Install](#install)
 - [Run](#run)
 - [Repository layout](#repository-layout)
@@ -98,9 +99,19 @@ Tasks run in parallel, a task's encounters in order, and every encounter is on r
 | Claude Opus 5.5 with reharness — finance, one evolved package for the domain | 62.7% (+8.0, [−4.0, +22.7]; each attempt 22% cheaper) | $210 |
 | Claude Opus 5.5 with reharness — Marketing, one evolved package for the domain | 54.3% (+13.0, [+2.2, +26.1]) | $153 |
 
-The leaderboard (v1.0.6) and these runs score different task sets at different settings, and the benchmark promises only directional agreement between them. Costs are for the whole activity, in API-equivalent dollars.
+Leaderboard entries run at each model's highest effort on the benchmark's private set; every reharness number was produced at effort medium on the public set's held-out split, under a protocol sealed before the first test attempt, with every run's cost on record. Costs are for the whole activity, in API-equivalent dollars.
 
-What the loop learned: with the Acceptance Signal alone it corrected a third of the returned tasks and never touched a passing one; with the Rejected Checks and the Source Inventory it built generic mechanisms by itself — open every unread source before writing, derive figures by code — in independent sessions with none of those words in its prompt. The failures that remain are documented: ambiguities in a task's own documents that the signal cannot resolve, a world clock the agent is never told, and the benchmark's noise floor (10–17% of tasks flip between two runs of one package). Full records, every run: [docs/RESULTS.md](docs/RESULTS.md), [docs/JOURNAL.md](docs/JOURNAL.md).
+What the loop learned: with the Acceptance Signal alone it corrected a third of the returned tasks and never touched a passing one; with the Rejected Checks and the Source Inventory it built generic mechanisms by itself — open every unread source before writing, derive figures by code, route a derived value through a tool — in independent sessions with none of those words in its prompt. Every calculation tool in an adopted package was written by a session; the seed has none. Full records, every run: [docs/RESULTS.md](docs/RESULTS.md), [docs/JOURNAL.md](docs/JOURNAL.md).
+
+## Open problems — where to contribute
+
+The loop is deliberately narrow, and the records show exactly where the next gains are. Each of these is a well-scoped contribution with the protocol, the split and the scorer already in place:
+
+- **The items tier on the full held-out set.** The Rejected Checks let a session aim at the failing item; so far they were measured on named train tasks, where sessions built the unread-sources guard and a calculation tool by themselves. Running the tier on the 50 held-out finance tasks is one sealed activity.
+- **A world clock.** Some tasks turn on today's date, which the agent is never told. Handing the environment's clock to the agent through the adapter is a small design change with a measurable effect.
+- **A richer signal for document ambiguity.** When a task's own documents allow two readings, accepted-or-returned cannot pick one. What signal resolves it without carrying a value is an open design question.
+- **A second domain and a second model.** The adapter boundary and the Sealed Protocol are benchmark- and model-agnostic; nothing has been run outside finance and Marketing, or with a session other than Claude Opus 5.5.
+- **The noise floor.** Two runs of one package flip 10–17% of tasks; a cheaper confirmation rule than the current probe bound would shorten every session.
 
 ## Install
 
