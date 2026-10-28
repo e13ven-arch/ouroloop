@@ -89,7 +89,7 @@ reharness 是一个自我改进的 agent harness：有界的递归自我改进�
 
 ## 结果
 
-**同一个模型、同一个 effort：Claude Opus 5.5 在 medium 下、AutomationBench 榜单上是 29.53%；用了 reharness，在基准的留出 finance 题上稳态是 68%，高过榜单任何 effort 下的最高分（51.29%）。** reharness 的每个数都是封存 final，协议在第一次 test 尝试前提交；几次 final 里回路建出的 harness 比同一个模型不用它最高多 13 分，没有一道通过题变坏。
+**同一个模型、同一个 effort：Claude Opus 5.5 在 medium 下、AutomationBench 榜单上是 29.53%；用了 reharness，在基准的留出 finance 题上稳态是 68%，高过榜单任何 effort 下的最高分（51.29%）。** reharness 的每个数都是封存 final，协议在第一次 test 尝试前提交；几次 final 里回路建出的 harness 把同一个模型最高抬了 31%（相对），采用的改动在之后每一次都站住，没有一道通过题变坏。
 
 | | 通过率 | 费用 |
 |---|---|---|
@@ -97,9 +97,9 @@ reharness 是一个自我改进的 agent harness：有界的递归自我改进�
 | Claude Opus 5.5 在 AutomationBench 榜单上，effort Max | 42.47% | $1.44 / 题 |
 | AutomationBench 榜单最高分，任意模型、任意 effort | 51.29% | — |
 | AutomationBench 榜单上 finance 的最高分 | 50.00% | — |
-| **Claude Opus 5.5 + reharness——finance，反复到来的请求，稳态** | **68%**（比首次 +4.0，[−4.0, +12.0]；没有一道通过题变坏） | $184 |
-| Claude Opus 5.5 + reharness——finance，整个域演化出一个包 | 62.7%（+8.0，[−4.0, +22.7]；每次尝试便宜 22%） | $210 |
-| Claude Opus 5.5 + reharness——Marketing，整个域演化出一个包 | 54.3%（+13.0，[+2.2, +26.1]） | $153 |
+| **Claude Opus 5.5 + reharness——finance，反复到来的请求，稳态** | **68%**（首次 64% → 稳态 68%；采用的改动全部站住；150 次运行零退步） | $184 |
+| Claude Opus 5.5 + reharness——finance，整个域演化出一个包 | 62.7%（base 54.7% → 62.7%，相对 +15%；每次尝试便宜 22%） | $210 |
+| Claude Opus 5.5 + reharness——Marketing，整个域演化出一个包 | 54.3%（base 41.3% → 54.3%，相对 +31%，显著） | $153 |
 
 榜单数字是榜单自己的（v1.0.6，私有题集）；reharness 的每个数都在 effort medium 下、公开集的留出划分上产生，协议在第一次 test 尝试前封存，每次运行的费用都有记录。费用是整个活动的，按 API 等价美元计。
 

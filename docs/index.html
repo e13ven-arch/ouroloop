@@ -230,7 +230,7 @@ footer a{color:var(--muted);text-decoration:none}
   <div class="stats">
     <div class="stat"><div class="n">29.53%</div><div class="l">Claude Opus 5.5 on the AutomationBench leaderboard, at effort medium</div></div>
     <div class="stat"><div class="n g">68%</div><div class="l">the same model, the same effort, with reharness — held-out finance tasks, steady state</div></div>
-    <div class="stat"><div class="n g">+13 pts</div><div class="l">largest sealed gain over the same model without it</div></div>
+    <div class="stat"><div class="n g">+31%</div><div class="l">largest relative lift over the same model without it (Marketing, significant)</div></div>
     <div class="stat"><div class="n g">0</div><div class="l">passing tasks lost to learning, across every final</div></div>
   </div>
   <div class="pills">
@@ -344,7 +344,7 @@ footer a{color:var(--muted);text-decoration:none}
 <section id="results"><div class="wrap">
   <div class="kicker">Results</div>
   <h2>Same model. Same effort. 29.53% on the leaderboard — 68% with reharness.</h2>
-  <p class="sub">Claude Opus 5.5 at medium effort, as it ships, against Claude Opus 5.5 at medium effort running the harness it built for itself. A figure above the top of the leaderboard at any effort, from a session that never saw an answer.</p>
+  <p class="sub">Claude Opus 5.5 at medium effort, as it ships, against Claude Opus 5.5 at medium effort running the harness it built for itself. A figure above the top of the leaderboard at any effort, from a session that never saw an answer; across the sealed finals, up to a 31% relative lift, every adopted change held, zero regressions.</p>
   <div class="vs">
     <div class="vs-card"><div class="vs-k">Claude Opus 5.5 · effort medium · AutomationBench leaderboard</div><div class="vs-n">29.53%</div><div class="vs-bar"><i style="width:29.53%"></i></div><div class="vs-s">rank 20 of 126 · the best entry on the board, any model, any effort: 51.29%</div></div>
     <div class="vs-card hi"><div class="vs-k">Claude Opus 5.5 · effort medium · with reharness</div><div class="vs-n">68%</div><div class="vs-bar"><i style="width:68%"></i></div><div class="vs-s">steady state on held-out finance tasks · not one passing task lost · learned habits, never answers</div></div>
@@ -354,9 +354,9 @@ footer a{color:var(--muted);text-decoration:none}
     <tr><td>Claude Opus 5.5 on the AutomationBench leaderboard, effort medium</td><td class="num">29.53%</td><td>$0.65 / task</td></tr>
     <tr><td>Claude Opus 5.5 on the AutomationBench leaderboard, effort Max</td><td class="num">42.47%</td><td>$1.44 / task</td></tr>
     <tr><td>Best entry on the AutomationBench leaderboard, any model, any effort</td><td class="num">51.29%</td><td>—</td></tr>
-    <tr class="hl"><td><b>Claude Opus 5.5 with reharness</b> — finance, requests that repeat, steady state, effort medium</td><td class="num">68% <span class="iv">+4.0 over the first pass · no passing task lost</span></td><td>$184</td></tr>
-    <tr><td>Claude Opus 5.5 with reharness — finance, one evolved package for the domain</td><td class="num">62.7% <span class="iv">+8.0 over the base · each attempt 22% cheaper</span></td><td>$210</td></tr>
-    <tr><td>Claude Opus 5.5 with reharness — Marketing, one evolved package for the domain</td><td class="num">54.3% <span class="iv">+13.0 over the base · significant</span></td><td>$153</td></tr>
+    <tr class="hl"><td><b>Claude Opus 5.5 with reharness</b> — finance, requests that repeat, steady state, effort medium</td><td class="num">68% <span class="iv">first pass 64% → steady state 68% · every adopted change held · zero regressions across 150 encounters</span></td><td>$184</td></tr>
+    <tr><td>Claude Opus 5.5 with reharness — finance, one evolved package for the domain</td><td class="num">62.7% <span class="iv">base 54.7% → 62.7% · +15% relative · each attempt 22% cheaper</span></td><td>$210</td></tr>
+    <tr><td>Claude Opus 5.5 with reharness — Marketing, one evolved package for the domain</td><td class="num">54.3% <span class="iv">base 41.3% → 54.3% · +31% relative · significant</span></td><td>$153</td></tr>
   </table></div>
   <div class="note">Leaderboard figures are the board's own (v1.0.6); every reharness number was produced at effort medium under a protocol sealed before the first test attempt, with every run's cost on record. Paired differences with their intervals are in the README. Every run, with its reading, is in <a href="https://github.com/e13ven-arch/reharness/blob/main/docs/RESULTS.md">docs/RESULTS.md</a>.</div>
 </div></section>

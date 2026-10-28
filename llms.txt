@@ -7,7 +7,7 @@ Key facts:
 - Per-Task Adoption: only a probe that comes back accepted is adopted, and only for that task; an accepted task opens no session and is never revised.
 - The session is never shown an answer: at most accepted/returned per attempt and which check failed (its kind and object).
 - A Frozen Core the session cannot touch: the host-side scorer, the feedback tier, the package contract (no answer in the package), the bounds.
-- Results: Claude Opus 5.5 at effort medium scores 29.53% on the AutomationBench leaderboard (42.47% at Max; the board's best entry at any effort is 51.29%); the same model at medium with reharness scores 68% at steady state on the benchmark's held-out finance tasks; across sealed finals up to +13 points over the same model without it, no passing task lost.
+- Results: Claude Opus 5.5 at effort medium scores 29.53% on the AutomationBench leaderboard (42.47% at Max; the board's best entry at any effort is 51.29%); the same model at medium with reharness scores 68% at steady state on the benchmark's held-out finance tasks; across sealed finals up to a 31% relative lift over the same model without it, every adopted change held, no passing task lost.
 
 ## Docs
 - [README](https://github.com/e13ven-arch/reharness/blob/main/README.md): key ideas, architecture, how one improvement happens, results, install, run
