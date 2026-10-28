@@ -84,6 +84,40 @@ h2{font-size:clamp(26px,3.2vw,40px);letter-spacing:-.025em;line-height:1.12;marg
 @media (max-width:1000px){.steps{grid-template-columns:repeat(2,1fr)}}
 @media (max-width:560px){.steps{grid-template-columns:1fr}}
 
+
+/* replay */
+.replay{display:grid;grid-template-columns:1.15fr .85fr;gap:18px;align-items:stretch}
+.term{background:#050810;border:1px solid var(--line2);border-radius:var(--radius);overflow:hidden;display:flex;flex-direction:column;min-height:460px;box-shadow:0 30px 80px rgba(0,0,0,.45)}
+.term .bar{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid var(--line);font-size:12px;color:var(--dim);font-family:"JetBrains Mono",monospace}
+.term .bar i{width:10px;height:10px;border-radius:50%;background:#334155;display:inline-block}
+.term .bar i:nth-child(1){background:#f87171}.term .bar i:nth-child(2){background:#fbbf24}.term .bar i:nth-child(3){background:#22c55e}
+.term .bar span{margin-left:8px}
+.term .bar button{margin-left:auto;background:transparent;border:1px solid var(--line2);color:var(--muted);border-radius:6px;padding:4px 10px;font:inherit;cursor:pointer}
+.term .bar button:hover{color:var(--text);border-color:#3b4a63}
+.term .out{padding:16px 18px;font-family:"JetBrains Mono",monospace;font-size:13px;line-height:1.75;flex:1;overflow:hidden}
+.ln{display:flex;gap:12px;opacity:0;transform:translateY(4px);animation:in .25s forwards}
+@keyframes in{to{opacity:1;transform:none}}
+.ln .who{flex:0 0 78px;color:var(--dim);font-size:11px;letter-spacing:.06em;text-transform:uppercase;padding-top:3px}
+.ln.host .who{color:#f1a7b2}.ln.session .who{color:var(--blue)}.ln.worker .who{color:var(--muted)}.ln.agent .who{color:#c4b5fd}
+.ln .msg{color:#cbd5e1;white-space:pre-wrap}
+.ln .v{font-weight:700;padding:0 6px;border-radius:4px}
+.ln .v.ret{color:#fecaca;background:rgba(248,113,113,.14)}.ln .v.acc{color:#bbf7d0;background:rgba(34,197,94,.16)}
+.ln .dim{color:var(--dim)}
+.cursor{display:inline-block;width:8px;height:14px;background:var(--green);vertical-align:-2px;animation:blink 1s steps(2) infinite}
+@keyframes blink{50%{opacity:0}}
+.states{display:flex;flex-direction:column;gap:10px}
+.state{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px 14px 48px;color:var(--muted);transition:.3s;font-size:14px}
+.state b{display:block;color:var(--text);font-size:15px;margin-bottom:2px}
+.state:before{content:attr(data-n);position:absolute;left:16px;top:14px;font-family:"JetBrains Mono",monospace;font-size:12px;color:var(--dim)}
+.state.on{border-color:var(--green);background:rgba(34,197,94,.08);box-shadow:0 0 0 1px rgba(34,197,94,.25),0 0 30px rgba(34,197,94,.12)}
+.state.on:before{color:var(--green2)}
+.state.done{border-color:rgba(34,197,94,.35)}
+.state.done:before{content:"✓";color:var(--green2)}
+.state.gate.on{border-color:var(--amber);background:rgba(251,191,36,.08);box-shadow:0 0 0 1px rgba(251,191,36,.25)}
+.state .tag{position:absolute;right:14px;top:14px;font-size:11px;color:var(--dim);font-family:"JetBrains Mono",monospace}
+@media (max-width:900px){.replay{grid-template-columns:1fr}.term{min-height:380px}}
+@media (prefers-reduced-motion:reduce){.ln{animation:none;opacity:1;transform:none}.cursor{animation:none}}
+
 /* figure plates */
 .plate{background:#fff;border-radius:var(--radius);padding:10px;border:1px solid var(--line2);box-shadow:0 30px 80px rgba(0,0,0,.45)}
 .plate img{display:block;width:100%;height:auto;border-radius:8px}
@@ -165,15 +199,19 @@ footer a{color:var(--muted);text-decoration:none}
 </div></header>
 
 <section id="loop"><div class="wrap">
-  <div class="kicker">The loop</div>
+  <div class="kicker">The loop · live replay</div>
   <h2>One returned request, one session, one proof.</h2>
-  <p class="sub">Every step is host-run except the edit. The host decides what the session is told, whether a candidate is admissible, whether a probe is accepted, and what is adopted.</p>
-  <div class="steps">
-    <div class="step"><span class="tag">host</span><h3>Returned</h3><p>The first encounter runs the task's package. Accepted: finished, never revised. Returned: a session opens.</p></div>
-    <div class="step"><span class="tag">session</span><h3>Revision Session</h3><p>Reads the Run Digest, the Source Inventory, the Rejected Checks and the Experience Library. No score, no expected value.</p></div>
-    <div class="step gate"><span class="tag">host · deterministic</span><h3>Admissible?</h3><p>Within the Package Contract; no literal that belongs to one task; actually changed. No model asked.</p></div>
-    <div class="step"><span class="tag">worker</span><h3>Live Probe</h3><p>The candidate runs the same request for real, on a fresh world. Bounded; the same tree is never probed twice.</p></div>
-    <div class="step win"><span class="tag">host</span><h3>Per-Task Adoption</h3><p>The last accepted candidate, as it ran, becomes this task's package. None accepted: it stays. No judge, no person.</p></div>
+  <p class="sub">A condensed replay of one real trace: a quarterly tax estimate. The host writes every line on the left; the session only ever sees the lines marked for it. The states on the right light up as the loop moves. The expected value never appears, because the session never sees it.</p>
+  <div class="replay">
+    <div class="term" id="term"><div class="bar"><i></i><i></i><i></i><span>host transcript · finance / quarterly_tax_estimate · effort medium</span><button id="replayBtn" type="button">↻ replay</button></div><div class="out" id="out"></div></div>
+    <div class="states" id="states">
+      <div class="state" data-n="01" data-step="1"><span class="tag">host</span><b>First Pass</b>Encounter 1 runs the task's package. Accepted: finished, never revised. Returned: a session opens.</div>
+      <div class="state" data-n="02" data-step="2"><span class="tag">session</span><b>Revision Session</b>Reads the Run Digest, the Source Inventory, the Rejected Checks, the Experience Library. No score, no expected value.</div>
+      <div class="state gate" data-n="03" data-step="3"><span class="tag">host · deterministic</span><b>Admissible?</b>Within the Package Contract; no literal of one task; actually changed. No model asked.</div>
+      <div class="state" data-n="04" data-step="4"><span class="tag">worker</span><b>Live Probe</b>The candidate runs the same request for real, on a fresh world. Bounded; the same tree never twice.</div>
+      <div class="state" data-n="05" data-step="5"><span class="tag">host</span><b>Per-Task Adoption</b>The last accepted candidate, as it ran, becomes this task's package. No judge, no person.</div>
+      <div class="state" data-n="06" data-step="6"><span class="tag">worker</span><b>Steady State</b>Later encounters run the task's own package; each run scored, for the record.</div>
+    </div>
   </div>
 </div></section>
 
@@ -273,5 +311,76 @@ reharness bench --config examples/automationbench/quickstart-repeat.toml --phase
   <div>reharness · MIT · <a href="https://github.com/e13ven-arch/reharness/blob/main/CITATION.cff">Cite</a> · <a href="https://github.com/e13ven-arch/reharness/blob/main/docs/RESULTS.md">Results record</a> · <a href="https://github.com/e13ven-arch/reharness/blob/main/docs/DESIGN.md">Design</a> · <a href="https://github.com/e13ven-arch/reharness/releases">Releases</a></div>
   <div>Measured on AutomationBench with Claude Opus 5.5, October 2026.</div>
 </div></footer>
+<script>
+(function(){
+  var out=document.getElementById('out'),btn=document.getElementById('replayBtn'),states=document.querySelectorAll('#states .state');
+  var reduced=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var L=[
+    [1,'host','encounter 1 · W_t = W₀ · fresh world · request: "estimate this quarter\'s state tax, email finance"'],
+    [1,'agent','read sheets ×3, mail ×2, search ×7 · chat channel never opened'],
+    [1,'agent','derived the figure in the model\'s head at the old rate · emailed the estimate'],
+    [1,'host','scored on the host → <span class="v ret">returned</span> · rejected check: <span class="dim">estimate email</span> · expected value: <span class="dim">stays on the host</span>'],
+    [2,'host','open Revision Session · bound to this task · budget reserved'],
+    [2,'session','read Run Digest: 12 calls, 1 write, final text · Source Inventory: sheets read, mail read, <b>chat never read</b>'],
+    [2,'session','read Experience Library: 0 entries for this cue'],
+    [2,'session','diagnosis: a value derived with a source unread · plan: guard the first write, route derived values through a tool'],
+    [3,'session','candidate W′ = W_t + diff · hooks/source_coverage_guard.py · hooks/routing_guard.py · tools/estimate.py'],
+    [3,'host','admissible? contract ✓ · no one-task literal ✓ · changed ✓ · <span class="dim">no model asked</span>'],
+    [4,'worker','probe 1 · W′ on the same request · fresh world'],
+    [4,'agent','guard fired → opened chat · found the rate change · derived by hand · emailed'],
+    [4,'host','probe 1 → <span class="v ret">returned</span> · rejected check: estimate email'],
+    [2,'session','read probe 1 beside the first run · change: force the tool, not the head'],
+    [4,'worker','probe 2 · W′ (routing guard tightened) · fresh world'],
+    [4,'agent','guard fired → chat read · tool called, year-to-date not annualised · emailed'],
+    [4,'host','probe 2 → <span class="v ret">returned</span> · rejected check: estimate email'],
+    [2,'session','read probe 2 · change: annualise before blending the rate'],
+    [4,'worker','probe 3 · W′ (estimate tool revised) · fresh world'],
+    [4,'agent','guard fired → chat read · tool: annualised, rate blended across the quarter · emailed'],
+    [4,'host','probe 3 → <span class="v acc">accepted</span>'],
+    [5,'host','Per-Task Adoption: W_t := W′ as it ran · 3 components · other tasks untouched · tree + lesson → Experience Library'],
+    [6,'worker','encounter 2 · W_t · fresh world → guard fired, chat read, tool called → <span class="v acc">accepted</span>'],
+    [6,'worker','encounter 3 · W_t · fresh world → <span class="v acc">accepted</span>'],
+    [6,'host','steady state: held · no session opened again · cost of this task\'s session and probes on the budget book']
+  ];
+  var timer=null,i=0,cur=null;
+  function setStep(s){
+    if(s===cur)return;cur=s;
+    states.forEach(function(el){var n=+el.dataset.step;el.classList.toggle('on',n===s);el.classList.toggle('done',n<s);});
+  }
+  function line(l){
+    var d=document.createElement('div');d.className='ln '+l[1];
+    d.innerHTML='<span class="who">'+l[1]+'</span><span class="msg">'+l[2]+'</span>';
+    out.appendChild(d);
+    while(out.scrollHeight>out.clientHeight&&out.children.length>1)out.removeChild(out.firstChild);
+  }
+  function play(){
+    clearTimeout(timer);out.innerHTML='';i=0;cur=null;setStep(0);
+    if(reduced){L.forEach(function(l){line(l)});setStep(6);return;}
+    (function tick(){
+      if(i>=L.length){var c=document.createElement('div');c.className='ln';c.innerHTML='<span class="who"></span><span class="msg"><span class="cursor"></span></span>';out.appendChild(c);timer=setTimeout(play,6000);return;}
+      var l=L[i++];setStep(l[0]);line(l);
+      var pause=/returned|accepted/.test(l[2])?1500:(l[1]==='session'?1100:800);
+      timer=setTimeout(tick,pause);
+    })();
+  }
+  btn.addEventListener('click',play);
+  var started=false;
+  if('IntersectionObserver' in window){
+    new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting&&!started){started=true;play();}})},{threshold:.3}).observe(document.getElementById('term'));
+  }else{play();}
+  // counters
+  var nums=document.querySelectorAll('.stat .n');
+  function count(el){
+    var txt=el.textContent.trim(),m=txt.match(/^([+]?)(\d+(?:\.\d+)?)(.*)$/);if(!m||reduced)return;
+    var target=parseFloat(m[2]),dec=(m[2].split('.')[1]||'').length,t0=null;
+    function f(ts){if(!t0)t0=ts;var p=Math.min(1,(ts-t0)/1200),e=1-Math.pow(1-p,3);el.textContent=m[1]+(target*e).toFixed(dec)+m[3];if(p<1)requestAnimationFrame(f);}
+    requestAnimationFrame(f);
+  }
+  if('IntersectionObserver' in window){
+    var io=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){count(e.target);io.unobserve(e.target);}})},{threshold:.6});
+    nums.forEach(function(n){io.observe(n)});
+  }
+})();
+</script>
 </body>
 </html>
