@@ -141,6 +141,20 @@ h2{font-size:clamp(26px,3.2vw,40px);letter-spacing:-.025em;line-height:1.12;marg
 @keyframes dash{to{stroke-dashoffset:-14}}
 @media (prefers-reduced-motion:reduce){#flow .edges path.flow{animation:none}}
 
+/* versus */
+.vs{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:0 0 28px}
+.vs-card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:26px 26px 22px}
+.vs-card.hi{border-color:rgba(34,197,94,.5);background:linear-gradient(180deg,rgba(34,197,94,.10),rgba(34,197,94,.03));box-shadow:0 0 0 1px rgba(34,197,94,.2),0 30px 80px rgba(0,0,0,.4)}
+.vs-k{font-size:13px;color:var(--muted);font-weight:600;letter-spacing:.02em}
+.vs-n{font-size:clamp(56px,7vw,96px);font-weight:800;letter-spacing:-.04em;line-height:1;margin:10px 0 14px}
+.vs-card.hi .vs-n{color:var(--green2)}
+.vs-bar{height:10px;border-radius:999px;background:#1e293b;overflow:hidden}
+.vs-bar i{display:block;height:100%;background:#64748b;border-radius:999px;transform-origin:left;animation:grow 1.2s cubic-bezier(.2,.8,.2,1) both}
+.vs-card.hi .vs-bar i{background:linear-gradient(90deg,#22c55e,#86efac)}
+@keyframes grow{from{transform:scaleX(0)}}
+.vs-s{font-size:13px;color:var(--dim);margin-top:12px}
+@media (max-width:760px){.vs{grid-template-columns:1fr}}
+
 /* figure plates */
 .plate{background:#fff;border-radius:var(--radius);padding:10px;border:1px solid var(--line2);box-shadow:0 30px 80px rgba(0,0,0,.45)}
 .plate img{display:block;width:100%;height:auto;border-radius:8px}
@@ -214,8 +228,8 @@ footer a{color:var(--muted);text-decoration:none}
   <p class="lede">When a request comes back returned, a <b>Revision Session</b> reads the agent's own run, changes its <b>Harness Package</b> — tools, hooks, skills, prompts — and a <b>Live Probe</b> runs the same request for real. Only an accepted probe is adopted, and only for that task. The session is never shown an answer.</p>
   <div class="cta"><a class="btn primary" href="https://github.com/e13ven-arch/reharness">View on GitHub</a><a class="btn" href="#loop">See the loop</a><a class="btn" href="https://github.com/e13ven-arch/reharness/blob/main/README.zh-CN.md">中文</a></div>
   <div class="stats">
-    <div class="stat"><div class="n">42.47%</div><div class="l">Claude Opus 5.5 on the AutomationBench leaderboard, at its highest effort (Max)</div></div>
-    <div class="stat"><div class="n g">68%</div><div class="l">with reharness, held-out finance tasks, steady state — at effort <b>medium</b></div></div>
+    <div class="stat"><div class="n">29.53%</div><div class="l">Claude Opus 5.5 on the AutomationBench leaderboard, at effort medium</div></div>
+    <div class="stat"><div class="n g">68%</div><div class="l">the same model, the same effort, with reharness — held-out finance tasks, steady state</div></div>
     <div class="stat"><div class="n g">+13 pts</div><div class="l">largest sealed gain over the same model without it</div></div>
     <div class="stat"><div class="n g">0</div><div class="l">passing tasks lost to learning, across every final</div></div>
   </div>
@@ -329,17 +343,22 @@ footer a{color:var(--muted);text-decoration:none}
 
 <section id="results"><div class="wrap">
   <div class="kicker">Results</div>
-  <h2>42.47% at Max on the leaderboard. 68% with reharness, at medium.</h2>
-  <p class="sub">The model as it ships, at its highest effort, on the official leaderboard — and the same model at a cheaper effort, running the harness reharness built from its own runs, on the benchmark's held-out tasks. Up to +13 points over the same model without it, and not one passing task lost.</p>
+  <h2>Same model. Same effort. 29.53% on the leaderboard — 68% with reharness.</h2>
+  <p class="sub">Claude Opus 5.5 at medium effort, as it ships, against Claude Opus 5.5 at medium effort running the harness it built for itself. A figure above the top of the leaderboard at any effort, from a session that never saw an answer.</p>
+  <div class="vs">
+    <div class="vs-card"><div class="vs-k">Claude Opus 5.5 · effort medium · AutomationBench leaderboard</div><div class="vs-n">29.53%</div><div class="vs-bar"><i style="width:29.53%"></i></div><div class="vs-s">rank 20 of 126 · the best entry on the board, any model, any effort: 51.29%</div></div>
+    <div class="vs-card hi"><div class="vs-k">Claude Opus 5.5 · effort medium · with reharness</div><div class="vs-n">68%</div><div class="vs-bar"><i style="width:68%"></i></div><div class="vs-s">steady state on held-out finance tasks · not one passing task lost · learned habits, never answers</div></div>
+  </div>
   <div class="tablewrap"><table>
     <tr><th>Setting</th><th>Pass rate</th><th>Cost</th></tr>
-    <tr><td>Claude Opus 5.5 on the AutomationBench leaderboard, effort Max</td><td class="num">42.47%</td><td>—</td></tr>
-    <tr><td>Best finance score on the AutomationBench leaderboard, any model, highest effort</td><td class="num">50.00%</td><td>—</td></tr>
+    <tr><td>Claude Opus 5.5 on the AutomationBench leaderboard, effort medium</td><td class="num">29.53%</td><td>$0.65 / task</td></tr>
+    <tr><td>Claude Opus 5.5 on the AutomationBench leaderboard, effort Max</td><td class="num">42.47%</td><td>$1.44 / task</td></tr>
+    <tr><td>Best entry on the AutomationBench leaderboard, any model, any effort</td><td class="num">51.29%</td><td>—</td></tr>
     <tr class="hl"><td><b>Claude Opus 5.5 with reharness</b> — finance, requests that repeat, steady state, effort medium</td><td class="num">68% <span class="iv">+4.0 over the first pass · no passing task lost</span></td><td>$184</td></tr>
     <tr><td>Claude Opus 5.5 with reharness — finance, one evolved package for the domain</td><td class="num">62.7% <span class="iv">+8.0 over the base · each attempt 22% cheaper</span></td><td>$210</td></tr>
     <tr><td>Claude Opus 5.5 with reharness — Marketing, one evolved package for the domain</td><td class="num">54.3% <span class="iv">+13.0 over the base · significant</span></td><td>$153</td></tr>
   </table></div>
-  <div class="note">Leaderboard entries run at each model's highest effort; every reharness number was produced at effort medium, under a protocol sealed before the first test attempt, with every run's cost on record. Paired differences with their intervals are in the README. Every run, with its reading, is in <a href="https://github.com/e13ven-arch/reharness/blob/main/docs/RESULTS.md">docs/RESULTS.md</a>.</div>
+  <div class="note">Leaderboard figures are the board's own (v1.0.6); every reharness number was produced at effort medium under a protocol sealed before the first test attempt, with every run's cost on record. Paired differences with their intervals are in the README. Every run, with its reading, is in <a href="https://github.com/e13ven-arch/reharness/blob/main/docs/RESULTS.md">docs/RESULTS.md</a>.</div>
 </div></section>
 
 <section id="faq"><div class="wrap">
