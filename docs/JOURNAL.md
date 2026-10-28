@@ -15,6 +15,8 @@
 **仓库侧已做。** README 英 / 中各加 FAQ 一节（六问：是什么、算不算 RSI、什么是 agent harness、与微调 / 提示词优化的区别、学到什么、能否接自己的工具；答案定义式、40～60 词）；首段加日期（"截至 2026 年 10 月"）；根目录 `llms.txt`、`AGENTS.md`；**用户点头后（同日）。** 推送并合入 main（`b96d2d4`）；开了 GitHub Pages（main 的 docs/，https://e13ven-arch.github.io/reharness/）；建了 Release v0.5.0（现有 tag，说明取自 POSTS 文件）；arXiv 技术报告的提议用户已开成独立会话。**仍要用户做的。** 发布稿词汇改到现在的口径（improver → Revision Session、sent back → returned、real try → Live Probe）；`docs/history/POSTS_2026-10-28.md`：Show HN、Reddit、X 线程、知乎 / V2EX 的稿子与 v0.5.0 Release 说明。`python -m build` 本地构建通过（wheel + sdist），PyPI 名 `reharness` 未被占。
 
 **用户点头后（同日）。** 推送并合入 main（`b96d2d4`）；开了 GitHub Pages（main 的 docs/，https://e13ven-arch.github.io/reharness/）；建了 Release v0.5.0（现有 tag，说明取自 POSTS 文件）；arXiv 技术报告的提议用户已开成独立会话。**仍要用户做的。** 发 PyPI（要用户的 token）；Search Console / Bing Webmaster 验证 Pages 站点并请求索引、IndexNow；发帖；awesome 列表 PR；最大的一根杠杆是一篇 arXiv 技术报告（这类词的搜索结果被论文页占据），用户定。
+**自查后再改（用户："你自己 review 一下自己的网页设计，以及成果展示，别忘了我们用的还是 medium 模型，成果对比上可以更大胆一些"）。** 漏掉的有利事实：榜单上每个模型都在最高 effort（Opus 5.5 为 Max），我们全部数字是 effort medium。改：数字条、结果表、README 英 / 中首段与结果一节开头、社交预览图都标明"榜单 Max 42.47% / reharness medium 68%"，结果区标题改成这两个事实并列的大字；落地页新增"What a session built, unprompted"一节（税额题：源覆盖守卫、路由守卫、预估工具三张卡，三次探针的裁决，max 下站住而 medium 三次没到）；题集与设置不同的说明保留。
+
 ---
 
 ## 2026-10-27 宣传语、结果一节、可发现性：README 头部与仓库元数据；$0
