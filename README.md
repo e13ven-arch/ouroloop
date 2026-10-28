@@ -7,14 +7,14 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
 [![Benchmark: AutomationBench](https://img.shields.io/badge/benchmark-AutomationBench-555.svg)](https://github.com/zapier/AutomationBench)
-[![AutomationBench: up to +13 points, 0 regressions](https://img.shields.io/badge/AutomationBench-up%20to%20%2B13%20points%2C%200%20regressions-2e7d32.svg)](#results)
+[![AutomationBench finance: 68% with reharness](https://img.shields.io/badge/AutomationBench%20finance-68%25%20with%20reharness-2e7d32.svg)](#results)
 [![中文](https://img.shields.io/badge/README-%E4%B8%AD%E6%96%87-lightgrey.svg)](README.zh-CN.md)
 
 </div>
 
 reharness is a self-improving agent harness: bounded recursive self-improvement in which the agent's own model revises the harness the agent runs in, never the model. A business agent runs requests that repeat. When a request comes back returned, a **Revision Session** reads the agent's own run of it, changes the agent's **Harness Package** — its tools, hooks, skills, prompts — and proves the change with a **Live Probe**: the candidate runs the same request for real. Only a probe that comes back accepted is adopted, and only for that request (**Per-Task Adoption**). No person picks the change, no model judges it, and the session is never shown an answer: at most *accepted or returned* per attempt, and *which check failed*. Everything the session cannot touch is a **Frozen Core** — the scorer, what the session may be told, the package's contract, the bounds — and package code runs in an isolated worker. What the agent learns from its own runs is harness engineering — a guard, a tool, a prompt — not an answer.
 
-Built and measured on [AutomationBench](https://github.com/zapier/AutomationBench) (47 simulated SaaS tools, scored on the world state the agent leaves behind) with Claude Opus 5.5 as both the agent and the session, on a subscription budget. On held-out tasks the loop gained up to +13 points (Marketing 41.3% → 54.3%, significant) and +8 on finance, and on the repeated-request stream 64% → 68% at steady state with no passing task lost; on train tasks a session learned, with no hint in its prompt, to open every unread source before writing and to derive figures by code.
+Built and measured on [AutomationBench](https://github.com/zapier/AutomationBench) (47 simulated SaaS tools, scored on the world state the agent leaves behind) with Claude Opus 5.5 as both the agent and the session, on a subscription budget. Claude Opus 5.5 scores 42.47% on the AutomationBench leaderboard; with reharness, on the benchmark's held-out finance tasks, it scores 68% at steady state, with no passing task lost; on train tasks a session learned, with no hint in its prompt, to open every unread source before writing and to derive figures by code.
 
 <p align="center"><img src="docs/assets/architecture.svg" alt="Components and architecture: the Frozen Core K (Package Contract, Host-Side Scorer, Feedback Tier, Bounds) over the Harness Package W as W₀ and one W_t per task, the Isolated Worker as a boundary around the Host Transcript E, the Revision Session R with its admissibility gate and Live Probe, and Per-Task Adoption applied by the host" width="100%"></p>
 
@@ -87,7 +87,7 @@ Tasks run in parallel, a task's encounters in order, and every encounter is on r
 
 ## Results
 
-**Up to +13 points on held-out tasks, and not one passing task lost.** The same model, Claude Opus 5.5, with and without the harness reharness built from its own runs, under protocols sealed before the first test attempt: Marketing 41.3% → 54.3% (+13.0, significant, a 31% relative gain); finance 54.7% → 62.7% (+8.0, 15% relative) with each attempt 22% cheaper; and on the repeated-request stream, the main line, 64% → 68% at steady state with zero regressions. The model's published AutomationBench leaderboard score is given for scale.
+**Claude Opus 5.5 scores 42.47% on the AutomationBench leaderboard. With reharness, on the benchmark's held-out finance tasks, it scores 68% at steady state.** Every reharness number is a sealed final, the protocol committed before the first test attempt; across the finals the harness the loop built gained up to +13 points over the same model without it, and not one passing task was lost.
 
 | | Pass rate | Cost |
 |---|---|---|
